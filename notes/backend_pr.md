@@ -45,7 +45,7 @@ CloudBase 云函数（Node.js）
 | 顾客档案（姓名、手机号、会员等级、主美容师等） | Workfine DB | 读 | 不建立 PG 实体；小程序通过 client_wechat_users 识别顾客身份，历史档案数据实时从 Workfine UDT_S_311 只读查询 |
 | 销售单/订单 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_209 结构优化设计；Workfine 相关表仅供历史查阅 |
 | 营业额分配记录 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_M_217 结构；Workfine 相关表仅供历史查阅 |
-| 服务核销记录（护理单） | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_259/UDT_S_762 结构；Workfine 相关表仅供历史查阅 |
+| 服务核销记录（护理单） | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_259 结构；Workfine 相关表仅供历史查阅 |
 | 微信用户（openid、session、手机号绑定） | PG 自托管数据库 | 读写 | 客户端与员工端各一张表（`client_wechat_users` / `staff_wechat_users`），两端 appid 不同，openid 相互独立 |
 | SPU 商品元数据（product_spu） | PG 自托管数据库 | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
 | SKU↔WorkFine 映射（product_spu_sku_map） | PG 自托管数据库 | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
@@ -110,6 +110,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `order_no` | string | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
+| `order_type` | enum | 订单类型：`正式`（价格来自 WorkFine，默认）/ `体验`（员工代创建，价格由店长自定义，用于首次体验/引流场景，支付流程与正式订单相同） |
 | `market_name` | string | 所属市场（快照，防止组织架构调整影响历史单） |
 | `store_name` | string | 所属门店（快照，同上） |
 | `order_datetime` | datetime | 销售日期时间 |
@@ -176,12 +177,12 @@ CloudBase 云函数（Node.js）
 
 ### 实体三：护理单
 
-#### service_orders（护理单主表，合并 UDT_S_762 售前 + UDT_S_259 售后）
+#### service_orders（护理单主表，对应 Workfine UDT_S_259（统一护理单，所有护理均来自订单））
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}` |
-| `service_type` | enum | 护理单类型：`售前` / `售后` |
+| `order_no` | string | 关联 `orders.order_no`（NOT NULL；正式订单或体验单均可，所有护理单必须来自已存在的订单） |
 | `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
 | `market_name` | string | 所属市场（快照，与 orders 一致） |
 | `store_name` | string | 所属门店（快照，与 orders 一致） |
@@ -194,11 +195,11 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-#### service_items（护理明细，合并 UDT_M_763 售前 + UDT_M_260 售后）
+#### service_items（护理明细，对应 Workfine UDT_M_260（统一护理明细））
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `flow_no` | string | 主键，流水号（售后: `XSLSH-WX-` 核销 `order_items.item_flow_no`；售前（自动生成）: `TKKLS-WX-` 拓客卡体系） |
+| `flow_no` | string | 主键，流水号，直接引用关联订单的 `order_items.item_flow_no`（格式 `XSLSH-WX-`） |
 | `service_order_no` | string | 关联 `service_orders.service_order_no` |
 | `sku_id` | string | null | 关联 `product_spu_sku_map.sku_id` |
 | `session_used` | integer | 本次划卡次数 |
@@ -302,7 +303,7 @@ CloudBase 云函数（Node.js）
 
 | 角色 | 权限范围 |
 |------|----------|
-| 店长（门店经理） | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号 |
+| 店长（门店经理） | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号、创建体验单 |
 | 美容师 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
 | 顾客（客户端） | 自助下单、发起微信支付/选择线下付款、查看自己的订单与预约 |
 
@@ -323,6 +324,8 @@ CloudBase 云函数（Node.js）
 8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
 9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`，记录 `voided_at`）；重新付款不重新分配，由店长手动操作。
 10. **疗程卡并发扣减**：使用原子 UPDATE 而非显式行锁，格式为 `UPDATE order_items SET remaining_sessions = remaining_sessions - {n} WHERE item_flow_no = $1 AND remaining_sessions >= {n}`，通过检查 `rowCount` 是否为 1 判断扣减是否成功；`rowCount = 0` 时返回次数不足错误，不得在应用层先 SELECT 再 UPDATE。
+11. **所有护理单必须来自已存在的订单**（含体验单），不存在无订单的护理单；`service_orders.order_no` 为 NOT NULL 外键。
+12. **体验/引流服务**需先由店长创建体验单（`order_type = 体验`，价格由店长自定义），支付确认后再从该体验单创建护理单；体验单走与正式订单相同的支付流程和状态机。
 
 ---
 
@@ -343,6 +346,7 @@ CloudBase 云函数（Node.js）
 - `已支付` 触发：微信支付回调成功，或店长确认线下收款成功
 - `待确认收款`：仅用于顾客端选择线下付款后的中间状态
 - `支付失败 → 待支付`：店长手动重置，使顾客可重新发起付款，对应第七节第 9 条
+- 体验单（`order_type = 体验`）与正式订单走相同的支付流程和状态机
 
 ### 服务单状态机
 
