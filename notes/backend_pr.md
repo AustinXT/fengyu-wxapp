@@ -77,8 +77,8 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `spu_id` | string | 主键，自生成 |
 | `name` | string | 商品名称（如"蜜语生玑精华护理疗程"） |
-| `category` | string | 品项分类（二级，如"蜜语生玑"），对应 UDT_M_229.UDF_M_522 |
-| `big_category` | enum | `生美` / `非生美`：对应 UDT_M_229.UDF_M_17416（服务项目类 SPU）；`院装产品`：独立枚举值（对应 UDT_M_341 院装产品数据源） |
+| `category` | string | 品项分类（如"蜜语生玑"），对应 UDT_M_229.UDF_M_522；作为左侧选择器的一级导航节点 |
+| `big_category` | enum | `生美` / `非生美`：服务项目类 SPU 的商品标签，来自 UDT_M_1281.UDF_M_17783 / UDT_M_1383.UDF_M_17784，展示在商品卡和详情页；`院装产品`：标识院装产品类 SPU（对应 UDT_M_341 数据源），用于区分核销逻辑 |
 | `product_type` | enum | `疗程卡` / `单品` / `院装产品` |
 | `cover_image` | string | 封面图 URL |
 | `description` | string | 商品描述（选填） |
