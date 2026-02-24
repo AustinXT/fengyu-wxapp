@@ -76,11 +76,11 @@ CloudBase 云函数（Node.js）
 | `name` | string | 商品名称（如"蜜语生玑精华护理疗程"） |
 | `category` | string | 品项分类（如"蜜语生玑"），对应 UDT_M_229.UDF_M_522；作为左侧选择器的一级导航节点 |
 | `big_category` | enum | `生美` / `非生美`：服务项目类 SPU 的商品标签，来自 UDT_M_1281.UDF_M_17783 / UDT_M_1383.UDF_M_17784，展示在商品卡和详情页；`院装产品`：标识院装产品类 SPU（对应 UDT_M_341 数据源），用于区分核销逻辑 |
-| `product_type` | enum | `疗程卡` / `单品` / `院装产品` |
 | `cover_image` | string | 封面图 URL |
 | `description` | string | 商品描述（选填） |
 | `sort_order` | integer | 排序权重 |
-| `is_active` | boolean | 是否上架 |
+
+> SPU 是否在商品列表中展示由其关联的 SKU 决定：若所有 SKU 均 `is_active = false`，该 SPU 不对外展示；存在至少一个 `is_active = true` 的 SKU 时显示该 SPU。
 
 #### product_spu_sku_map（SPU↔WorkFine 映射表，PG 自托管数据库）
 
@@ -90,8 +90,10 @@ CloudBase 云函数（Node.js）
 | `spu_id` | string | 关联 product_spu.spu_id |
 | `workfine_item_id` | string | WorkFine 中的疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
 | `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/ `UDT_M_1460`（促销方案项目子表）/ `UDT_M_341`（院装产品） |
+| `product_type` | enum | `疗程卡` / `单品` / `院装产品`；决定核销流程（疗程卡/单品走到店核销；院装产品支付后直接完成） |
 | `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
 | `sort_order` | integer | 规格排序 |
+| `is_active` | boolean | 该 SKU 是否上架；SPU 展示状态由其所有 SKU 的 `is_active` 派生 |
 
 > UNIQUE 约束：`(spu_id, workfine_item_id, workfine_source)`
 >
@@ -126,13 +128,13 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`，同一顾客（已注册）同一时刻只能有一笔待支付订单。对于 `client_user_id` 为 null 的员工开单场景，在应用层按"同一门店 + 同一手机号"校验重复开单。
+> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`，同一顾客（已注册）同一时刻只能有一笔待支付订单。对于 `client_user_id` 为 null 的员工开单场景，在应用层按"同一门店 + 同一手机号"校验重复开单；建议同时在数据库层添加部分唯一索引作为兜底：`UNIQUE (client_phone, store_name) WHERE status = '待支付' AND client_user_id IS NULL`，防止并发下重复开单。
 
 #### order_items（销售明细，对应 UDT_M_213）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.flow_no` 引用作为核销锚点 |
+| `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.item_flow_no` 引用作为核销锚点 |
 | `order_no` | string | 关联 `orders.order_no` |
 | `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
 | `session_count` | integer \| null | 疗程总次数（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
@@ -199,7 +201,8 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `flow_no` | string | 主键，流水号，直接引用关联订单的 `order_items.item_flow_no`（格式 `XSLSH-WX-`） |
+| `service_item_id` | string | 主键，UUID，系统自生成 |
+| `item_flow_no` | string | 外键，关联 `order_items.item_flow_no`（指向具体疗程卡行） |
 | `service_order_no` | string | 关联 `service_orders.service_order_no` |
 | `sku_id` | string | null | 关联 `product_spu_sku_map.sku_id` |
 | `session_used` | integer | 本次划卡次数 |
@@ -246,7 +249,7 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `appointment_id` | string | 主键，系统自生成 |
-| `status` | enum | 预约状态：`待确认` / `已确认` / `已完成` / `已取消` |
+| `status` | enum | 预约状态：`待确认` / `已确认` / `已完成` / `已取消` / `已关闭` |
 | `market_name` | string | 所属市场 |
 | `store_name` | string | 所属门店 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（预约顾客的微信用户 ID） |
@@ -318,6 +321,9 @@ CloudBase 云函数（Node.js）
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 2 倍）
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
+
+> **混购完成规则**：订单包含多类项目时，`已完成` 以**最后一个疗程卡行次数归零**为触发条件；院装产品行支付即视为该行已交付，不单独影响订单整体状态。
+
 5. **幂等要求**：支付回调、服务完成两类接口必须幂等；重复开单通过 `orders` 表部分唯一索引（`UNIQUE (client_user_id) WHERE status = '待支付'`）在数据库层拦截
 6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 7. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
@@ -326,6 +332,8 @@ CloudBase 云函数（Node.js）
 10. **疗程卡并发扣减**：使用原子 UPDATE 而非显式行锁，格式为 `UPDATE order_items SET remaining_sessions = remaining_sessions - {n} WHERE item_flow_no = $1 AND remaining_sessions >= {n}`，通过检查 `rowCount` 是否为 1 判断扣减是否成功；`rowCount = 0` 时返回次数不足错误，不得在应用层先 SELECT 再 UPDATE。
 11. **所有护理单必须来自已存在的订单**（含体验单），不存在无订单的护理单；`service_orders.order_no` 为 NOT NULL 外键。
 12. **体验/引流服务**需先由店长创建体验单（`order_type = 体验`，价格由店长自定义），支付确认后再从该体验单创建护理单；体验单走与正式订单相同的支付流程和状态机。
+13. **顾客端指定美容师后的营业额分配**：顾客端自助下单时若指定了美容师（`preferred_staff_wf_id` 不为 null），员工端收到已支付通知后，营业额分配界面中系统默认将该员工作为候选人填入，店长可在确认线下收款后进入分配流程确认或调整；微信支付自动到账时，营业额分配由店长在订单详情中手动发起并完成补录。
+14. **手机号补全机制**：顾客端小程序首次登录并完成手机号绑定时，系统查询 `orders` 表中 `client_phone = 绑定手机号 AND client_user_id IS NULL` 的记录，批量将 `client_user_id` 更新为当前用户的 `user_id`，使历史体验单（及正式订单）在顾客端可见。此操作在绑定手机号的云函数中同步执行。
 
 ---
 
@@ -362,9 +370,13 @@ CloudBase 云函数（Node.js）
 
 ```text
 待确认 -> 已确认 -> 已完成（到店核销完成后自动流转）
-待确认 -> 已取消
-已确认 -> 已取消
+待确认 -> 已取消（顾客取消）
+已确认 -> 已取消（顾客取消）
+待确认 -> 已关闭（订单行剩余次数归零时系统自动流转）
+已确认 -> 已关闭（订单行剩余次数归零时系统自动流转）
 ```
+
+> `已关闭` 触发：服务完成后，若该 `order_items` 行 `remaining_sessions` 归零，系统批量将该行所有处于 `待确认` 或 `已确认` 状态的预约置为 `已关闭`，在同一事务内完成。
 
 ---
 
