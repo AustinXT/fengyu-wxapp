@@ -72,7 +72,7 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `spu_id` | string | 主键，自生成 |
+| `spu_id` | string | 主键，UUID |
 | `name` | string | 商品名称（如"蜜语生玑精华护理疗程"） |
 | `category` | string | 品项分类（如"蜜语生玑"），对应 UDT_M_229.UDF_M_522；作为左侧选择器的一级导航节点 |
 | `big_category` | enum | `生美` / `非生美`：服务项目类 SPU 的商品标签，来自 UDT_M_1281.UDF_M_17783 / UDT_M_1383.UDF_M_17784，展示在商品卡和详情页；`院装产品`：标识院装产品类 SPU（对应 UDT_M_341 数据源），用于区分核销逻辑 |
@@ -86,10 +86,10 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sku_id` | string | 主键，自生成 |
+| `sku_id` | string | 主键，UUID |
 | `spu_id` | string | 关联 product_spu.spu_id |
 | `workfine_item_id` | string | WorkFine 中的疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
-| `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/`UDT_S_1459`（促销方案）/ `UDT_M_341`（院装产品） |
+| `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/ `UDT_M_1460`（促销方案项目子表）/ `UDT_M_341`（院装产品） |
 | `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
 | `sort_order` | integer | 规格排序 |
 
@@ -113,7 +113,8 @@ CloudBase 云函数（Node.js）
 | `market_name` | string | 所属市场（快照，防止组织架构调整影响历史单） |
 | `store_name` | string | 所属门店（快照，同上） |
 | `order_datetime` | datetime | 销售日期时间 |
-| `client_user_id` | string | 关联 `client_wechat_users.user_id`（下单顾客的微信用户 ID） |
+| `client_user_id` | string \| null | 关联 `client_wechat_users.user_id`（下单顾客的微信用户 ID）；员工开单时若顾客尚未注册客户端小程序则为 null |
+| `client_phone` | string \| null | 顾客手机号快照（员工开单时必填，作为 `client_user_id` 为 null 时的替代标识；顾客后续注册小程序绑定手机号后，系统通过此字段匹配补全 `client_user_id`） |
 | `payment_method` | enum | 收款方式：`wechat`（微信支付）/ `offline`（线下收款）|
 | `order_source` | enum | 下单端：`client`（客户端自助）/ `staff`（员工端开单） |
 | `opened_by` | string | 开单人员工编号（员工端开单时填入，客户端自助时为 null） |
@@ -124,19 +125,19 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付'`，同一顾客同一时刻只能有一笔待支付订单，防止重复开单。
+> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`，同一顾客（已注册）同一时刻只能有一笔待支付订单。对于 `client_user_id` 为 null 的员工开单场景，在应用层按"同一门店 + 同一手机号"校验重复开单。
 
 #### order_items（销售明细，对应 UDT_M_213）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.flow_no` 引用作为核销锚点 |
-| `order_id` | string | 关联 `orders.order_id` |
+| `order_no` | string | 关联 `orders.order_no` |
 | `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
 | `session_count` | integer \| null | 疗程总次数（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
 | `remaining_sessions` | integer \| null | 剩余可用次数（**仅疗程卡适用**；每次护理核销时以**行级锁 + 事务**原子更新，不得低于 0） |
 | `unit_price` | decimal | 原价（开单时从 WorkFine 读取并快照，防止后续价格变更影响历史单） |
-| `quantity` | decimal | 销售数量 |
+| `quantity` | integer | 销售数量 |
 | `unit_discount` | decimal | 单价优惠金额（无优惠时为 0） |
 | `sale_amount` | decimal | 销售金额（优惠后；持久化原因：存在多种折扣组合，应用层计算后写入） |
 | `receivable` | decimal | 应收金额 |
@@ -149,14 +150,16 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
-| `order_id` | string | 关联 `orders.order_id` |
+| `order_no` | string | 关联 `orders.order_no` |
 | `employee_id` | string | 员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `allocation_ratio` | decimal | 占比（同部门多人时如 0.3；跨部门或单人时为 1.0） |
 | `total_amount` | decimal | 该员工最终分配金额（等于 `revenue_allocation_items` 的 amount 之和） |
+| `is_void` | boolean | 是否已作废（订单关闭/支付失败时置 true），NOT NULL DEFAULT false |
+| `voided_at` | timestamp | 作废时间（`is_void` 为 true 时填入） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（重新分配时更新） |
 
-> UNIQUE 约束：`(order_id, employee_id)`
+> UNIQUE 约束：`(order_no, employee_id)`
 
 #### revenue_allocation_items（业绩分类明细）
 
@@ -180,9 +183,11 @@ CloudBase 云函数（Node.js）
 | `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}` |
 | `service_type` | enum | 护理单类型：`售前` / `售后` |
 | `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
+| `market_name` | string | 所属市场（快照，与 orders 一致） |
+| `store_name` | string | 所属门店（快照，与 orders 一致） |
 | `service_date` | date | 护理服务日期 |
-| `service_duration` | string | 服务时长（分钟） |
-| `is_card_counted` | string | 是否核算卡数（是 / 否） |
+| `service_duration` | integer | 服务时长（分钟） |
+| `assigned_staff_wf_id` | string | 分配的主责服务人员编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（用于服务单状态推进权限校验） |
 | `remark` | string | 备注 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
 | `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
@@ -193,8 +198,8 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `flow_no` | string | 主键，流水号（售后: `XSLSH-WX-` 核销 `order_items.item_flow_no`；售前: `TKKLS-WX-` 拓客卡体系） |
-| `service_order_id` | string | 关联 `service_orders.service_order_id` |
+| `flow_no` | string | 主键，流水号（售后: `XSLSH-WX-` 核销 `order_items.item_flow_no`；售前（自动生成）: `TKKLS-WX-` 拓客卡体系） |
+| `service_order_no` | string | 关联 `service_orders.service_order_no` |
 | `sku_id` | string | null | 关联 `product_spu_sku_map.sku_id` |
 | `session_used` | integer | 本次划卡次数 |
 | `employee_id` | string | 服务美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
@@ -293,6 +298,19 @@ CloudBase 云函数（Node.js）
 
 ---
 
+## 六、权限与角色
+
+| 角色 | 权限范围 |
+|------|----------|
+| 店长（门店经理） | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号 |
+| 美容师 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
+| 顾客（客户端） | 自助下单、发起微信支付/选择线下付款、查看自己的订单与预约 |
+
+- 权限校验以登录用户的 `staff_wf_id` 在 WorkFine 中的职位/部门数据为依据，由云函数中间件统一拦截
+- 服务单状态推进：仅**店长**或**`service_orders.assigned_staff_wf_id` 匹配的服务人员**可操作
+
+---
+
 ## 七、关键业务规则
 
 1. 只有**店长（门店经理）**可开单，普通美容师无开单权限
@@ -303,7 +321,8 @@ CloudBase 云函数（Node.js）
 6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 7. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
 8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
-9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（加 `is_void` 标记）；重新付款不重新分配，由店长手动操作。
+9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`，记录 `voided_at`）；重新付款不重新分配，由店长手动操作。
+10. **疗程卡并发扣减**：使用原子 UPDATE 而非显式行锁，格式为 `UPDATE order_items SET remaining_sessions = remaining_sessions - {n} WHERE item_flow_no = $1 AND remaining_sessions >= {n}`，通过检查 `rowCount` 是否为 1 判断扣减是否成功；`rowCount = 0` 时返回次数不足错误，不得在应用层先 SELECT 再 UPDATE。
 
 ---
 
@@ -312,13 +331,18 @@ CloudBase 云函数（Node.js）
 ### 订单状态机
 
 ```text
-待支付 -> 支付失败
-待支付 -> 已关闭
-待支付 -> 待确认收款 -> 已支付
+待支付 → 已支付          （微信支付回调成功）
+待支付 → 待确认收款      （顾客选择线下付款提交）
+待支付 → 支付失败        （微信支付超时/失败）
+待支付 → 已关闭          （手动关闭）
+待确认收款 → 已支付      （店长确认线下收款）
+支付失败 → 待支付        （店长手动重置，允许重新付款）
+已支付 → 已完成          （疗程卡：全部 order_items 剩余次数归零；单品/院装产品：支付即完成）
 ```
 
 - `已支付` 触发：微信支付回调成功，或店长确认线下收款成功
 - `待确认收款`：仅用于顾客端选择线下付款后的中间状态
+- `支付失败 → 待支付`：店长手动重置，使顾客可重新发起付款，对应第七节第 9 条
 
 ### 服务单状态机
 
