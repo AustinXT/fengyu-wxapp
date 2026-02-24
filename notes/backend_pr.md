@@ -126,26 +126,19 @@ CloudBase 云函数（Node.js）
 | `improve_focus` | string | 改善重点 |
 | `skin_issues` | string | 皮肤问题 |
 | `wellness_preference` | string | 接受养生方式 |
-| `total_spent` | decimal | 顾客累计消费金额 |
-| `max_single_spent` | decimal | 单笔最高消费金额 |
-| `spent_2022` | decimal | 2022 年累计消费 |
-| `spent_2023` | decimal | 2023 年累计消费 |
-| `spent_2024` | decimal | 2024 年累计消费 |
-| `spent_2025` | decimal | 2025 年累计消费 |
-| `last_visit_interval` | string | 未到店时间间隔 |
-| `annual_spend_tier` | string | 本年度总消费档位 |
-| `annual_beauty_tier` | string | 本年度生美消费档位 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
 #### customer_consumption_details（顾客消费明细，对应 UDT_M_312）
 
+> **只读快照**：同步自 WorkFine，记录顾客购买行为的历史快照，不作为财务数据唯一来源。`order_no` / `item_flow_no` 可追溯至 `orders` / `order_items`。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
 | `customer_id` | string | 关联 `customers.customer_id` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店 |
+| `market_name` | string | 所属市场（发生时快照，不随主表更新） |
+| `store_name` | string | 所属门店（发生时快照，不随主表更新） |
 | `sale_date` | date | 销售日期 |
 | `performance_type` | string | 业绩类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上美团首次） |
 | `order_no` | string | 销售单号，关联 `orders.order_no` |
@@ -158,12 +151,14 @@ CloudBase 云函数（Node.js）
 
 #### customer_care_details（顾客护理明细，对应 UDT_M_331）
 
+> **只读快照**：同步自 WorkFine，记录顾客到店服务的历史快照。`service_order_no` 可追溯至 `service_orders`。
+
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
 | `customer_id` | string | 关联 `customers.customer_id` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店 |
+| `market_name` | string | 所属市场（发生时快照，不随主表更新） |
+| `store_name` | string | 所属门店（发生时快照，不随主表更新） |
 | `service_date` | date | 护理服务日期 |
 | `customer_type` | string | 顾客类型 |
 | `service_order_no` | string | 护理单编号，关联 `service_orders.service_order_no` |
