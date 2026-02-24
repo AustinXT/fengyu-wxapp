@@ -1,4 +1,18 @@
-import { boolean, date, integer, numeric, pgTable, sql, text, timestamp, unique, uniqueIndex } from 'drizzle-orm/pg-core'
+import {
+  bigint,
+  bigserial,
+  boolean,
+  date,
+  index,
+  integer,
+  numeric,
+  pgTable,
+  sql,
+  text,
+  timestamp,
+  unique,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core'
 import { orderSourceEnum, orderStatusEnum, orderTypeEnum, paymentMethodEnum } from './enums'
 import { productSpuSkuMap } from './product'
 
@@ -32,6 +46,12 @@ export const orders = pgTable(
      * 顾客绑定手机号后通过此字段批量补全 client_user_id（手机号补全机制）。
      */
     clientPhone: text('client_phone'),
+    /**
+     * 顾客姓名快照；员工开单时写入，便于员工端列表展示。
+     * client_user_id 为 null 时无法反查 WorkFine，必须依赖此快照。
+     * 与 appointments.customer_name 保持一致。
+     */
+    customerName: text('customer_name'),
     paymentMethod: paymentMethodEnum('payment_method').notNull(),
     orderSource: orderSourceEnum('order_source').notNull(),
     /** 开单人员工编号，客户端自助时为 null */
@@ -39,10 +59,16 @@ export const orders = pgTable(
     /** 顾客指定美容师，关联 WorkFine UDT_S_287.UDF_S_1147，未指定为 null */
     preferredStaffWfId: text('preferred_staff_wf_id'),
     paidAt: timestamp('paid_at'),
+    /**
+     * 微信支付回调返回的流水号（transaction_id）。
+     * 用途：回调幂等性校验（已存在则不重复入账）、对账、退款接口必填参数。
+     * 线下付款时为 null。
+     */
+    wechatTransactionId: text('wechat_transaction_id').unique(),
     offlineConfirmedBy: text('offline_confirmed_by'),
     offlineConfirmedAt: timestamp('offline_confirmed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (table) => [
     // 已注册顾客同一时刻只能有一笔待支付订单
@@ -53,6 +79,8 @@ export const orders = pgTable(
     uniqueIndex('uq_orders_phone_pending').on(table.clientPhone, table.storeName).where(
       sql`${table.status} = '待支付' AND ${table.clientUserId} IS NULL`,
     ),
+    index('idx_orders_client_user_id').on(table.clientUserId),
+    index('idx_orders_store_status').on(table.storeName, table.status),
   ],
 )
 
@@ -65,29 +93,35 @@ export const orders = pgTable(
  *   WHERE item_flow_no = $1 AND remaining_sessions >= n
  * 检查 rowCount=1 判断成功，禁止先 SELECT 再 UPDATE。
  */
-export const orderItems = pgTable('order_items', {
-  /** 主键，销售流水号，格式 XSLSH-WX-{YYYYMMDD}{序号}，被 service_items 引用作为核销锚点 */
-  itemFlowNo: text('item_flow_no').primaryKey(),
-  orderNo: text('order_no')
-    .notNull()
-    .references(() => orders.orderNo),
-  skuId: text('sku_id').references(() => productSpuSkuMap.skuId),
-  /** 疗程卡≥2，单品=1，院装产品=null */
-  sessionCount: integer('session_count'),
-  /** 初始值等于 session_count；院装产品=null；不得低于 0 */
-  remainingSessions: integer('remaining_sessions'),
-  /** 原价快照，开单时从 WorkFine 读取并持久化，防止后续价格变更影响历史单 */
-  unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
-  quantity: integer('quantity').notNull().default(1),
-  unitDiscount: numeric('unit_discount', { precision: 12, scale: 2 }).notNull().default('0'),
-  /** 优惠后销售金额，应用层计算后写入 */
-  saleAmount: numeric('sale_amount', { precision: 12, scale: 2 }).notNull(),
-  receivable: numeric('receivable', { precision: 12, scale: 2 }).notNull(),
-  received: numeric('received', { precision: 12, scale: 2 }).notNull(),
-  /** 疗程卡及单品适用，院装产品为 null；疗程卡：开单时写入合同约定到期日；单品：支付回调成功时由系统写入 paid_at + 1 year */
-  expireDate: date('expire_date'),
-  remark: text('remark'),
-})
+export const orderItems = pgTable(
+  'order_items',
+  {
+    /** 主键，销售流水号，格式 XSLSH-WX-{YYYYMMDD}{序号}，被 service_items 引用作为核销锚点 */
+    itemFlowNo: text('item_flow_no').primaryKey(),
+    orderNo: text('order_no')
+      .notNull()
+      .references(() => orders.orderNo),
+    skuId: text('sku_id').references(() => productSpuSkuMap.skuId),
+    /** 疗程卡≥2，单品=1，院装产品=null */
+    sessionCount: integer('session_count'),
+    /** 初始值等于 session_count；院装产品=null；不得低于 0 */
+    remainingSessions: integer('remaining_sessions'),
+    /** 原价快照，开单时从 WorkFine 读取并持久化，防止后续价格变更影响历史单 */
+    unitPrice: numeric('unit_price', { precision: 12, scale: 2 }).notNull(),
+    quantity: integer('quantity').notNull().default(1),
+    unitDiscount: numeric('unit_discount', { precision: 12, scale: 2 }).notNull().default('0'),
+    /** 优惠后销售金额，应用层计算后写入 */
+    saleAmount: numeric('sale_amount', { precision: 12, scale: 2 }).notNull(),
+    receivable: numeric('receivable', { precision: 12, scale: 2 }).notNull(),
+    received: numeric('received', { precision: 12, scale: 2 }).notNull(),
+    /** 疗程卡及单品适用，院装产品为 null；疗程卡：开单时写入合同约定到期日；单品：支付回调成功时由系统写入 paid_at + 1 year */
+    expireDate: date('expire_date'),
+    remark: text('remark'),
+  },
+  (table) => [
+    index('idx_order_items_order_no').on(table.orderNo),
+  ],
+)
 
 /**
  * 实体二：营业额分配（对应 WorkFine UDT_M_217）
@@ -98,7 +132,7 @@ export const orderItems = pgTable('order_items', {
 export const revenueAllocations = pgTable(
   'revenue_allocations',
   {
-    id: numeric('id').primaryKey(), // bigserial，迁移时声明 GENERATED ALWAYS AS IDENTITY
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
     orderNo: text('order_no')
       .notNull()
       .references(() => orders.orderNo),
@@ -111,9 +145,12 @@ export const revenueAllocations = pgTable(
     isVoid: boolean('is_void').notNull().default(false),
     voidedAt: timestamp('voided_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
-  (table) => [unique('uq_rev_alloc_order_emp').on(table.orderNo, table.employeeId)],
+  (table) => [
+    unique('uq_rev_alloc_order_emp').on(table.orderNo, table.employeeId),
+    index('idx_rev_alloc_order_no').on(table.orderNo),
+  ],
 )
 
 /**
@@ -122,8 +159,8 @@ export const revenueAllocations = pgTable(
  * 新增业绩分类只需插入新行，无需变更表结构。
  */
 export const revenueAllocationItems = pgTable('revenue_allocation_items', {
-  id: numeric('id').primaryKey(), // bigserial
-  allocationId: numeric('allocation_id')
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  allocationId: bigint('allocation_id', { mode: 'number' })
     .notNull()
     .references(() => revenueAllocations.id),
   /** 业绩分类名称，如"眉眼"、"唇"、"祛斑点痣"、"单品" */

@@ -1,5 +1,6 @@
-import { date, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { date, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { serviceOrderStatusEnum } from './enums'
+import { appointments } from './appointment'
 import { orderItems, orders } from './order'
 import { productSpuSkuMap } from './product'
 import { clientWechatUsers } from './user'
@@ -13,31 +14,41 @@ import { clientWechatUsers } from './user'
  *   - 仅在 服务中->已完成 时扣减 session_used 次，且不得小于 0
  *   - 重复点击完成时后端按同一服务单 ID 幂等处理，不得重复扣次
  */
-export const serviceOrders = pgTable('service_orders', {
-  /** 主键，护理单编号，格式 HLD-WX-{YYMMDD}{序号} */
-  serviceOrderNo: text('service_order_no').primaryKey(),
-  orderNo: text('order_no')
-    .notNull()
-    .references(() => orders.orderNo),
-  status: serviceOrderStatusEnum('status').notNull().default('待服务'),
-  /** 所属市场快照，与 orders 一致 */
-  marketName: text('market_name').notNull(),
-  /** 所属门店快照，与 orders 一致 */
-  storeName: text('store_name').notNull(),
-  serviceDate: date('service_date').notNull(),
-  /** 服务时长（分钟） */
-  serviceDuration: integer('service_duration'),
-  /** 主责服务人员，关联 WorkFine UDT_S_287.UDF_S_1147，用于状态推进权限校验 */
-  assignedStaffWfId: text('assigned_staff_wf_id').notNull(),
-  remark: text('remark'),
-  clientUserId: text('client_user_id')
-    .notNull()
-    .references(() => clientWechatUsers.userId),
-  /** 关联预约记录；无预约直接到店时为 null */
-  appointmentId: text('appointment_id'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-})
+export const serviceOrders = pgTable(
+  'service_orders',
+  {
+    /** 主键，护理单编号，格式 HLD-WX-{YYMMDD}{序号} */
+    serviceOrderNo: text('service_order_no').primaryKey(),
+    orderNo: text('order_no')
+      .notNull()
+      .references(() => orders.orderNo),
+    status: serviceOrderStatusEnum('status').notNull().default('待服务'),
+    /** 所属市场快照，与 orders 一致 */
+    marketName: text('market_name').notNull(),
+    /** 所属门店快照，与 orders 一致 */
+    storeName: text('store_name').notNull(),
+    serviceDate: date('service_date').notNull(),
+    /** 服务时长（分钟） */
+    serviceDuration: integer('service_duration'),
+    /** 主责服务人员，关联 WorkFine UDT_S_287.UDF_S_1147，用于状态推进权限校验 */
+    assignedStaffWfId: text('assigned_staff_wf_id').notNull(),
+    remark: text('remark'),
+    /**
+     * 关联 client_wechat_users.user_id；
+     * 员工开单时顾客可能未注册客户端小程序，允许为 null。
+     */
+    clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
+    /** 关联预约记录；无预约直接到店时为 null */
+    appointmentId: text('appointment_id').references(() => appointments.appointmentId),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('idx_svc_orders_order_no').on(table.orderNo),
+    index('idx_svc_orders_store_date').on(table.storeName, table.serviceDate),
+    index('idx_svc_orders_assigned_staff').on(table.assignedStaffWfId),
+  ],
+)
 
 /**
  * 实体三：护理明细（对应 WorkFine UDT_M_260）
