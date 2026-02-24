@@ -226,7 +226,7 @@ CloudBase 云函数（Node.js）
 | `order_id` | string | 关联 `orders.order_id` |
 | `item_flow_no` | string | 销售流水号，格式 `XSLSH-{YYYYMMDD}{序号}`（被护理单核销引用） |
 | `product_type` | string | 产品类型（疗程卡 / 单品 / 自定义-疗程 / 自定义-单品） |
-| `wf_item_id` | string | 疗程项目编号，关联 WorkFine `UDT_M_1281.UDF_M_14503` |
+| `wf_item_id` | string | 疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
 | `category` | string | 品项分类 |
 | `item_name` | string | 项目名称 |
 | `unit` | string | 计量单位 |
@@ -312,7 +312,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `id` | bigint | 主键，自增 |
 | `service_order_id` | string | 关联 `service_orders.service_order_id` |
-| `wf_item_id` | string | 疗程项目编号（**售后专有**），关联 `order_items.wf_item_id` |
+| `wf_item_id` | string | WorkFine 项目编号（仅作参考），核销关联通过 `flow_no` → `order_items.item_flow_no` 建立 |
 | `item_name` | string | 护理项目名称 |
 | `category` | string | 品项分类 |
 | `flow_no` | string | 流水号（售后: `XSLSH-` 核销 `order_items.item_flow_no`；售前: `TKKLS-` 拓客卡体系） |
@@ -490,7 +490,7 @@ CloudBase 云函数（Node.js）
 - `已支付` 触发：微信支付回调成功，或店长确认线下收款成功
 - `待确认收款`：仅用于顾客端选择线下付款后的中间状态
 - 疗程卡订单：进入 `已支付` 后状态为"待服务"，每次服务核销后更新剩余次数
-- 家居产品订单：进入 `已支付` 后可直接置为 `已完成`
+- 院装产品订单：进入 `已支付` 后可直接置为 `已完成`
 
 ### 服务单状态机
 
