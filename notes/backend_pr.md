@@ -81,6 +81,24 @@ CloudBase 云函数（Node.js）
 | `sort_order` | integer | 排序权重 |
 
 > SPU 是否在商品列表中展示由其关联的 SKU 决定：若所有 SKU 均 `is_active = false`，该 SPU 不对外展示；存在至少一个 `is_active = true` 的 SKU 时显示该 SPU。
+>
+> **左侧品项分类选择器查询逻辑**：分类列表从 `product_spu` 动态派生，不直接查询 WorkFine UDT_M_229；仅显示存在至少一个 `is_active = true` SKU 的分类，院装产品作为固定末尾节点单独追加。
+>
+> ```sql
+> -- 左侧分类列表（有效 SPU 的去重分类，按分类最小 sort_order 排序）
+> SELECT p.category, MIN(p.sort_order) AS category_order
+> FROM product_spu p
+> WHERE p.big_category != '院装产品'
+>   AND EXISTS (
+>     SELECT 1 FROM product_spu_sku_map m
+>     WHERE m.spu_id = p.spu_id AND m.is_active = true
+>   )
+> GROUP BY p.category
+> ORDER BY category_order ASC;
+> -- 院装产品节点：WHERE big_category = '院装产品'，固定追加在末尾
+> ```
+>
+> 分类顺序由该分类下 `sort_order` 最小的 SPU 决定；调整分类显示顺序时，修改该分类第一个 SPU 的 `sort_order` 即可，无需维护独立的分类排序表。
 
 #### product_spu_sku_map（SPU↔WorkFine 映射表，PG 自托管数据库）
 
@@ -90,7 +108,7 @@ CloudBase 云函数（Node.js）
 | `spu_id` | string | 关联 product_spu.spu_id |
 | `workfine_item_id` | string | WorkFine 中的疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
 | `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/ `UDT_M_1460`（促销方案项目子表）/ `UDT_M_341`（院装产品） |
-| `product_type` | enum | `疗程卡` / `单品` / `院装产品`；决定核销流程（疗程卡/单品走到店核销；院装产品支付后直接完成） |
+| `product_type` | enum | `疗程卡` / `单品` / `院装产品`；决定核销流程：<br>- `疗程卡`：session_count 按合同次数（≥2），需多次到店核销，次数归零后完成<br>- `单品`：session_count = 1，需一次到店核销，服务完成后该行完成；无到期日（expire_date = null）<br>- `院装产品`：支付后直接完成，不走到店服务流程（session_count = null） |
 | `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
 | `sort_order` | integer | 规格排序 |
 | `is_active` | boolean | 该 SKU 是否上架；SPU 展示状态由其所有 SKU 的 `is_active` 派生 |
@@ -137,15 +155,15 @@ CloudBase 云函数（Node.js）
 | `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.item_flow_no` 引用作为核销锚点 |
 | `order_no` | string | 关联 `orders.order_no` |
 | `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
-| `session_count` | integer \| null | 疗程总次数（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
-| `remaining_sessions` | integer \| null | 剩余可用次数（**仅疗程卡适用**；每次护理核销时以**行级锁 + 事务**原子更新，不得低于 0） |
+| `session_count` | integer \| null | 疗程总次数：疗程卡按合同次数（≥2）；单品固定为 1；院装产品为 null |
+| `remaining_sessions` | integer \| null | 剩余可用次数：疗程卡/单品适用（初始值等于 session_count）；院装产品为 null；每次护理核销时原子更新，不得低于 0 |
 | `unit_price` | decimal | 原价（开单时从 WorkFine 读取并快照，防止后续价格变更影响历史单） |
 | `quantity` | integer | 销售数量 |
 | `unit_discount` | decimal | 单价优惠金额（无优惠时为 0） |
 | `sale_amount` | decimal | 销售金额（优惠后；持久化原因：存在多种折扣组合，应用层计算后写入） |
 | `receivable` | decimal | 应收金额 |
 | `received` | decimal | 实收金额 |
-| `expire_date` | date \| null | 疗程卡到期日（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
+| `expire_date` | date \| null | 疗程卡到期日（**仅疗程卡适用**，单品 / 院装产品 为 null；单品无到期概念） |
 | `remark` | string | 备注 |
 
 #### revenue_allocations（营业额分配，对应 UDT_M_217）
@@ -322,7 +340,7 @@ CloudBase 云函数（Node.js）
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
 
-> **混购完成规则**：订单包含多类项目时，`已完成` 以**最后一个疗程卡行次数归零**为触发条件；院装产品行支付即视为该行已交付，不单独影响订单整体状态。
+> **混购完成规则**：订单包含多类项目时，`已完成` 以**所有疗程卡行与单品行的 remaining_sessions 全部归零**为触发条件；院装产品行支付即视为该行已交付，不参与完成条件判断。
 
 5. **幂等要求**：支付回调、服务完成两类接口必须幂等；重复开单通过 `orders` 表部分唯一索引（`UNIQUE (client_user_id) WHERE status = '待支付'`）在数据库层拦截
 6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
@@ -332,7 +350,11 @@ CloudBase 云函数（Node.js）
 10. **疗程卡并发扣减**：使用原子 UPDATE 而非显式行锁，格式为 `UPDATE order_items SET remaining_sessions = remaining_sessions - {n} WHERE item_flow_no = $1 AND remaining_sessions >= {n}`，通过检查 `rowCount` 是否为 1 判断扣减是否成功；`rowCount = 0` 时返回次数不足错误，不得在应用层先 SELECT 再 UPDATE。
 11. **所有护理单必须来自已存在的订单**（含体验单），不存在无订单的护理单；`service_orders.order_no` 为 NOT NULL 外键。
 12. **体验/引流服务**需先由店长创建体验单（`order_type = 体验`，价格由店长自定义），支付确认后再从该体验单创建护理单；体验单走与正式订单相同的支付流程和状态机。
-13. **顾客端指定美容师后的营业额分配**：顾客端自助下单时若指定了美容师（`preferred_staff_wf_id` 不为 null），员工端收到已支付通知后，营业额分配界面中系统默认将该员工作为候选人填入，店长可在确认线下收款后进入分配流程确认或调整；微信支付自动到账时，营业额分配由店长在订单详情中手动发起并完成补录。
+13. **顾客端自助下单的营业额分配**：客户端自助下单无论是否指定美容师，订单进入已支付后，"订单详情"页均出现营业额分配入口，店长可随时进入完成分配：
+   - 已指定美容师（`preferred_staff_wf_id` 不为 null）：分配界面默认将该员工作为候选人填入，店长确认或调整后提交
+   - 未指定美容师（`preferred_staff_wf_id` 为 null）：分配界面无默认候选人，店长从全店可分配业绩员工中手动选择
+   微信支付自动到账时，营业额分配均由店长在订单详情中手动发起并完成。
+14. **营业额分配锁定规则**：分配记录在订单处于 `待支付` 且顾客尚未扫码（二维码显示状态为"待扫码"）时可被删除并重建（即"修改"）；顾客扫码后（二维码显示状态变为"已扫码待付款"或之后）分配方案立即锁定，不得修改；如需变更，须将订单置为 `已关闭` 并由店长重新开单。
 14. **手机号补全机制**：顾客端小程序首次登录并完成手机号绑定时，系统查询 `orders` 表中 `client_phone = 绑定手机号 AND client_user_id IS NULL` 的记录，批量将 `client_user_id` 更新为当前用户的 `user_id`，使历史体验单（及正式订单）在顾客端可见。此操作在绑定手机号的云函数中同步执行。
 
 ---
@@ -348,7 +370,7 @@ CloudBase 云函数（Node.js）
 待支付 → 已关闭          （手动关闭）
 待确认收款 → 已支付      （店长确认线下收款）
 支付失败 → 待支付        （店长手动重置，允许重新付款）
-已支付 → 已完成          （疗程卡：全部 order_items 剩余次数归零；单品/院装产品：支付即完成）
+已支付 → 已完成          （疗程卡/单品：全部相关 order_items remaining_sessions 归零；院装产品：支付即完成）
 ```
 
 - `已支付` 触发：微信支付回调成功，或店长确认线下收款成功
@@ -363,7 +385,7 @@ CloudBase 云函数（Node.js）
 ```
 
 - 只有店长或被分配的服务人员可推进状态
-- 仅在 `服务中 -> 已完成` 时扣减 1 次，且剩余次数不得小于 0
+- 仅在 `服务中 -> 已完成` 时扣减 session_used 次（疗程卡/单品均适用），且剩余次数不得小于 0
 - 重复点击"完成服务"时，后端按同一服务单 ID 幂等处理，不得重复扣次
 
 ### 预约状态机
