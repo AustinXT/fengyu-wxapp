@@ -11,14 +11,14 @@
     ↓
 CloudBase 云函数（Node.js）
     ├── CloudBase DB（小程序专属数据）
-    └── Workfine SQL Server DB（直连读写，mssql 驱动）
+    └── Workfine SQL Server DB（直连只读，mssql 驱动）
 ```
 
 | 项 | 方案 |
 |----|------|
 | 前端 | 微信小程序（客户端 + 员工端，共两个小程序） |
 | 后端 | CloudBase 云函数（Node.js） |
-| 业务数据库 | Workfine SQL Server（直连读写） |
+| 业务数据库 | Workfine SQL Server（直连只读） |
 | 小程序数据库 | CloudBase DB |
 | SQL Server 驱动 | `mssql`（node-mssql）npm 包，云函数内直连 |
 | 支付 | 微信支付多商户模式（特约商户）+ 线下付款标记 |
@@ -31,20 +31,21 @@ CloudBase 云函数（Node.js）
 
 ### 连接信息
 
-- **连接方式**：云函数通过 `mssql`（node-mssql）驱动直连 Workfine SQL Server
-- **服务器地址**：`111.229.31.128`（端口与数据库凭据需甲方确认）
-- **前置条件**：需甲方提供 Workfine 数据库表结构文档或直接开放查询权限，以确认字段映射关系
+- **连接方式**：云函数通过 `mssql`（node-mssql）驱动直连 Workfine SQL Server，**仅读取**
+- **服务器地址**：`111.229.31.128:1433`，数据库 `wkdb_20220804_86cd3292`，用户名 `Sa`，密码 `oHx#+Q`
+- **重要**：Workfine 数据库所有表均为**只读**，小程序不直接写入 Workfine
 
 ### 数据库分工
 
 | 数据 | 存储位置 | 读/写 | 说明 |
 |------|---------|-------|------|
 | 员工（姓名、职位、门店、部门、是否可分配业绩） | Workfine DB | 读 | 业务主数据，由甲方在 Workfine 维护 |
-| 服务项目/产品（名称、价格、分类） | Workfine DB | 读 | 含原价（即开单价格） |
+| 服务项目/产品（名称、价格、分类） | Workfine DB | 读 | 含原价（即开单价格），运行时实时从 Workfine 读取 |
 | 组织架构（市场、部门、门店） | Workfine DB | 读 | 人事架构以 Workfine 为准 |
-| 销售单/订单 | Workfine DB | 写 | 写入 Workfine 已有的销售单表单 |
-| 营业额分配记录 | Workfine DB | 写 | 写入 Workfine 已有表单 |
-| 服务核销记录 | Workfine DB | 写 | 疗程卡扣次写入 Workfine |
+| 顾客档案（姓名、手机号、会员等级、主美容师等） | CloudBase DB | 读写 | 建立 CloudBase 实体，前期从 Workfine UDT_S_311 同步；小程序读写 CloudBase |
+| 销售单/订单 | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_S_209 结构优化设计；Workfine 相关表仅供历史查阅 |
+| 营业额分配记录 | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_M_217 结构；Workfine 相关表仅供历史查阅 |
+| 服务核销记录（护理单） | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_S_259/UDT_S_762 结构；Workfine 相关表仅供历史查阅 |
 | 微信用户（openid、session、手机号绑定） | CloudBase DB | 读写 | 小程序认证专属 |
 | SPU 商品元数据（product_spu） | CloudBase DB | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
 | SKU↔WorkFine 映射（product_spu_sku_map） | CloudBase DB | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
@@ -213,5 +214,5 @@ CloudBase 云函数（Node.js）
 4. 同一服务单重复点击"完成服务"不产生重复扣次
 5. 角色越权操作应被拒绝（美容师不可开单、技师不可查看完整手机号）
 6. 小程序读取的员工、产品、组织架构数据与 Workfine 设计端一致
-7. 小程序中完成开单后，Workfine 对应的销售单表中能查到同一笔记录
-8. 小程序中完成营业额分配后，Workfine 对应表中能查到分配明细
+7. 小程序中完成开单后，CloudBase 订单实体中能查到同一笔记录
+8. 小程序中完成营业额分配后，CloudBase 营业额分配实体中能查到分配明细
