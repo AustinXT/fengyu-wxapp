@@ -78,7 +78,7 @@ CloudBase 云函数（Node.js）
 | `spu_id` | string | 主键，自生成 |
 | `name` | string | 商品名称（如"蜜语生玑精华护理疗程"） |
 | `category` | string | 品项分类（二级，如"蜜语生玑"），对应 UDT_M_229.UDF_M_522 |
-| `big_category` | enum | `生美` / `非生美` / `院装产品`，对应 UDT_M_229.UDF_M_17416 |
+| `big_category` | enum | `生美` / `非生美`：对应 UDT_M_229.UDF_M_17416（服务项目类 SPU）；`院装产品`：独立枚举值（对应 UDT_M_341 院装产品数据源） |
 | `product_type` | enum | `疗程卡` / `单品` / `院装产品` |
 | `cover_image` | string | 封面图 URL |
 | `description` | string | 商品描述（选填） |
@@ -208,7 +208,9 @@ CloudBase 云函数（Node.js）
 | `is_new_customer` | string | 是否为新客纳客 |
 | `member_level_snapshot` | string | 下单时顾客会员等级快照 |
 | `is_approved` | string | 是否需要审批 |
-| `opened_by` | string | 开单人员工编号 |
+| `order_source` | enum | 下单端：`client`（客户端自助）/ `staff`（员工端开单） |
+| `opened_by` | string | 开单人员工编号（员工端开单时填入，客户端自助下单时为 null） |
+| `preferred_staff_wf_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（顾客未指定时为 null） |
 | `paid_at` | timestamp | 支付完成时间 |
 | `offline_confirmed_by` | string | 线下收款确认人员工编号 |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
@@ -297,6 +299,7 @@ CloudBase 云函数（Node.js）
 | `remark` | string | 备注 |
 | `category` | string | 护理分类 |
 | `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `customer_phone` | string | 顾客联系电话 |
 | `staff_id` | string | 主服务人员编号 |
 | `staff_position` | string | 主服务人员职位 |
@@ -364,6 +367,8 @@ CloudBase 云函数（Node.js）
 | `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `staff_name` | string | 预约美容师姓名（冗余存储） |
 | `appointment_time` | datetime | 预约到店时间 |
+| `order_id` | string | 来源订单，关联 `orders.order_id` |
+| `item_flow_no` | string | 销售流水号，关联 `order_items.item_flow_no`，指向具体疗程卡行 |
 | `service_item` | string | 预约项目描述（自由文本） |
 | `notes` | string | 备注 |
 | `cancelled_reason` | string | 取消原因（已取消时填入） |

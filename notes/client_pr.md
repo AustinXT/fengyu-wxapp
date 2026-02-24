@@ -36,7 +36,7 @@
 
 ## 功能模块
 
-### 2.1 服务浏览
+### 2.1 服务/产品浏览
 
 - 展示门店的美容服务和院装产品列表
 - 商品展示四层结构：
@@ -64,8 +64,8 @@
 
 - **对接方式**：CloudBase 云函数直连 WorkFine 只读查询（SQL Server）
 - **SKU 价格/次数**：运行时从 WorkFine 实时读取，不缓存至 CloudBase
-- **SPU 商品元数据**（名称、图片、描述、排序）：存储在 CloudBase `product_spu` 表
-- **SKU↔WorkFine 映射**：存储在 CloudBase `product_spu_sku_map` 表
+- **SPU 商品元数据**（名称、图片、描述、排序）：存储在 PG 自托管数据库 `product_spu` 表
+- **SKU↔WorkFine 映射**：存储在 PG 自托管数据库 `product_spu_sku_map` 表
 
 ---
 
