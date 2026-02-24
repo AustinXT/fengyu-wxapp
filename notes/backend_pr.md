@@ -42,11 +42,11 @@ CloudBase 云函数（Node.js）
 | 员工（姓名、职位、门店、部门、是否可分配业绩） | Workfine DB | 读 | 业务主数据，由甲方在 Workfine 维护 |
 | 服务项目/产品（名称、价格、分类） | Workfine DB | 读 | 含原价（即开单价格），运行时实时从 Workfine 读取 |
 | 组织架构（市场、部门、门店） | Workfine DB | 读 | 人事架构以 Workfine 为准 |
-| 顾客档案（姓名、手机号、会员等级、主美容师等） | PG 自托管数据库 | 读写 | 建立 PG 实体，前期从 Workfine UDT_S_311 同步；小程序读写 PG 自托管数据库 |
+| 顾客档案（姓名、手机号、会员等级、主美容师等） | Workfine DB | 读 | 不建立 PG 实体；小程序通过 client_wechat_users 识别顾客身份，历史档案数据实时从 Workfine UDT_S_311 只读查询 |
 | 销售单/订单 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_209 结构优化设计；Workfine 相关表仅供历史查阅 |
 | 营业额分配记录 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_M_217 结构；Workfine 相关表仅供历史查阅 |
 | 服务核销记录（护理单） | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_259/UDT_S_762 结构；Workfine 相关表仅供历史查阅 |
-| 微信用户（openid、session、手机号绑定） | PG 自托管数据库 | 读写 | 小程序认证专属 |
+| 微信用户（openid、session、手机号绑定） | PG 自托管数据库 | 读写 | 客户端与员工端各一张表（`client_wechat_users` / `staff_wechat_users`），两端 appid 不同，openid 相互独立 |
 | SPU 商品元数据（product_spu） | PG 自托管数据库 | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
 | SKU↔WorkFine 映射（product_spu_sku_map） | PG 自托管数据库 | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
 | 实时推送状态 | PG 自托管数据库 | 读写 | WebSocket 连接与消息队列 |
@@ -60,7 +60,7 @@ CloudBase 云函数（Node.js）
 |------|----------|
 | 门店 | 名称、所属市场、地址、状态 |
 | 员工 | 姓名、职位、所属门店、所属部门、是否可分配业绩 |
-| 顾客 | 姓名、手机号、绑定门店、主美容师 |
+| 顾客（微信用户） | openid、绑定手机号、绑定门店（client_wechat_users） |
 | SPU 商品 | spu_id、名称、品项分类（二级）、大分类（生美/非生美/院装产品）、产品类型（疗程卡/单品/院装产品）、封面图、描述、排序权重、是否上架 |
 | SKU↔WorkFine 映射 | spu_id、workfine_item_id（疗程项目编号或商品编号）、workfine_source（UDT_M_1281 / UDT_M_1383 / UDT_M_341）、规格展示名、排序 |
 | 订单 | 订单号、顾客、项目、金额、支付方式、支付状态、下单端、下单人、美容师、支付时间、线下确认人、线下确认时间 |
@@ -71,7 +71,9 @@ CloudBase 云函数（Node.js）
 | 市场 | 名称、编号 |
 | 部门 | 名称、所属市场/门店、类型 |
 
-### product_spu（SPU 商品概念表，PG 自托管数据库）
+### 实体一：SPU 商品 & SKU 映射
+
+#### product_spu（SPU 商品概念表，PG 自托管数据库）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -85,7 +87,7 @@ CloudBase 云函数（Node.js）
 | `sort_order` | integer | 排序权重 |
 | `is_active` | boolean | 是否上架 |
 
-### product_spu_sku_map（SPU↔WorkFine 映射表，PG 自托管数据库）
+#### product_spu_sku_map（SPU↔WorkFine 映射表，PG 自托管数据库）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -96,80 +98,6 @@ CloudBase 云函数（Node.js）
 | `sort_order` | integer | 规格排序 |
 
 > SKU 的价格、疗程服务次数等字段运行时从 WorkFine 实时读取，不存入 PG 自托管数据库。
-
----
-
-### 实体一：顾客档案
-
-#### customers（顾客主表，对应 UDT_S_311）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `customer_id` | string | 主键，格式 `FYGK-{YYYYMMDD}{序号}`，同步自 WorkFine `UDF_S_1475` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店（分院名称），关联 `UDT_M_219.UDF_M_438` |
-| `registered_at` | date | 登记时间 |
-| `customer_name` | string | 顾客姓名 |
-| `member_tag` | string | 会员分类标签 |
-| `member_level` | string | 会员等级（普通 / VIP 等） |
-| `phone` | string | 手机号码 |
-| `birthday` | date | 生日（月日） |
-| `age` | integer | 年龄 |
-| `occupation` | string | 职业 |
-| `is_married` | string | 是否已婚 |
-| `customer_category` | string | 顾客分类标签 |
-| `is_shared` | string | 是否与其他分院共享档案 |
-| `main_beautician` | string | 所属美容师姓名（营业额分配默认人员） |
-| `wechat_name` | string | 微信昵称 |
-| `customer_source` | string | 顾客来源（售前 / 拓客 / 推荐等） |
-| `skin_type` | string | 肤质类型 |
-| `improve_focus` | string | 改善重点 |
-| `skin_issues` | string | 皮肤问题 |
-| `wellness_preference` | string | 接受养生方式 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-#### customer_consumption_details（顾客消费明细，对应 UDT_M_312）
-
-> **只读快照**：同步自 WorkFine，记录顾客购买行为的历史快照，不作为财务数据唯一来源。`order_no` / `item_flow_no` 可追溯至 `orders` / `order_items`。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | bigint | 主键，自增 |
-| `customer_id` | string | 关联 `customers.customer_id` |
-| `market_name` | string | 所属市场（发生时快照，不随主表更新） |
-| `store_name` | string | 所属门店（发生时快照，不随主表更新） |
-| `sale_date` | date | 销售日期 |
-| `performance_type` | string | 业绩类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上美团首次） |
-| `order_no` | string | 销售单号，关联 `orders.order_no` |
-| `item_flow_no` | string | 销售流水号，关联 `order_items.item_flow_no` |
-| `category` | string | 品项分类 |
-| `item_name` | string | 项目名称 |
-| `session_count` | decimal | 疗程服务次数 |
-| `sale_amount` | decimal | 销售金额（优惠后） |
-| `unit_discount` | decimal | 单价优惠金额 |
-
-#### customer_care_details（顾客护理明细，对应 UDT_M_331）
-
-> **只读快照**：同步自 WorkFine，记录顾客到店服务的历史快照。`service_order_no` 可追溯至 `service_orders`。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | bigint | 主键，自增 |
-| `customer_id` | string | 关联 `customers.customer_id` |
-| `market_name` | string | 所属市场（发生时快照，不随主表更新） |
-| `store_name` | string | 所属门店（发生时快照，不随主表更新） |
-| `service_date` | date | 护理服务日期 |
-| `customer_type` | string | 顾客类型 |
-| `service_order_no` | string | 护理单编号，关联 `service_orders.service_order_no` |
-| `item_name` | string | 护理项目名称 |
-| `session_used` | decimal | 划卡次数 |
-| `employee_position` | string | 服务员工职位 |
-| `employee_name` | string | 服务员工姓名 |
-| `service_fee` | decimal | 服务费 |
-| `item_count` | decimal | 项目个数 |
-| `satisfaction` | string | 顾客满意度 |
-| `is_gift` | string | 是否赠送（是 / 否） |
 
 ---
 
@@ -187,7 +115,7 @@ CloudBase 云函数（Node.js）
 | `order_date` | date | 销售日期 |
 | `performance_type` | string | 业绩类型（售后 / 售前一次 / 售前二次 / 老带新 / 线上美团首次） |
 | `customer_source` | string | 顾客来源渠道 |
-| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `client_user_id` | string | 关联 `client_wechat_users.user_id`（下单顾客的微信用户 ID） |
 | `customer_name` | string | 顾客姓名（冗余存储） |
 | `sale_type` | string | 销售类型（全额销售 / 回单销售） |
 | `total_payment` | decimal | 收款合计 |
@@ -295,7 +223,7 @@ CloudBase 云函数（Node.js）
 | `appointment_time` | datetime | 预约/到店时间（**售前专有**，售后为 null） |
 | `remark` | string | 备注 |
 | `category` | string | 护理分类 |
-| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
 | `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `customer_phone` | string | 顾客联系电话 |
 | `staff_id` | string | 主服务人员编号 |
@@ -331,17 +259,30 @@ CloudBase 云函数（Node.js）
 
 ### 实体四：微信用户
 
-#### wechat_users（微信用户，PG 自托管数据库）
+> 两个小程序 appid 不同，同一微信用户在客户端与员工端的 openid 互相独立，因此拆为两张表，各自独立管理。
+
+#### client_wechat_users（客户端微信用户，PG 自托管数据库）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `user_id` | string | 主键，系统自生成 |
-| `openid` | string | 微信 openid（唯一索引） |
+| `openid` | string | 微信 openid（客户端 appid 下，唯一索引） |
 | `session_key` | string | 微信 session_key（加密存储） |
-| `phone` | string | 绑定手机号（明文，与 `customers.phone` / WorkFine 员工手机核对） |
-| `customer_id` | string | 关联 `customers.customer_id`（顾客端绑定后填入，可为 null） |
-| `staff_wf_id` | string | 关联 WorkFine `UDT_S_287.UDF_S_1147`（员工端绑定后填入，可为 null） |
-| `role` | enum | 用户角色：`customer`（顾客端）/ `staff`（员工端） |
+| `phone` | string | 绑定手机号（明文，与 `customers.phone` 核对） |
+| `bound_store_name` | string | 顾客端绑定的门店名（来自 UDT_M_219.UDF_M_438），初始 null，门店选择后填入 |
+| `last_login_at` | timestamp | 最近一次登录时间 |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+#### staff_wechat_users（员工端微信用户，PG 自托管数据库）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | string | 主键，系统自生成 |
+| `openid` | string | 微信 openid（员工端 appid 下，唯一索引） |
+| `session_key` | string | 微信 session_key（加密存储） |
+| `phone` | string | 绑定手机号（明文，与 WorkFine 员工手机核对） |
+| `staff_wf_id` | string | 关联 WorkFine `UDT_S_287.UDF_S_1147`（根据手机号自动绑定员工档案后，可为 null） |
 | `last_login_at` | timestamp | 最近一次登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -358,7 +299,7 @@ CloudBase 云函数（Node.js）
 | `status` | enum | 预约状态：`待确认` / `已确认` / `已完成` / `已取消` |
 | `market_name` | string | 所属市场 |
 | `store_name` | string | 所属门店 |
-| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `client_user_id` | string | 关联 `client_wechat_users.user_id`（预约顾客的微信用户 ID） |
 | `customer_name` | string | 顾客姓名（冗余存储） |
 | `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `staff_name` | string | 预约美容师姓名（冗余存储） |
@@ -469,6 +410,7 @@ CloudBase 云函数（Node.js）
 7. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 8. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
 9. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
+10. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（可物理删除或加 `is_void` 标记）；重新付款不重新分配，由店长手动操作。
 
 ---
 
