@@ -10,12 +10,12 @@
 
 | # | 数据域 | WorkFine 表单 | 小程序对接方式 |
 |---|--------|--------------|--------------|
-| 1 | 顾客档案 | UDT_S_311 + UDT_M_312 + UDT_M_331 | **建立 CloudBase 实体**，前期从 WorkFine 同步数据 |
+| 1 | 顾客档案 | UDT_S_311 + UDT_M_312 + UDT_M_331 | **建立 PG 实体**，前期从 WorkFine 同步数据 |
 | 2 | 员工信息 | UDT_S_287 + UDT_S_211 / UDT_M_212 | CloudBase 云函数直连 WorkFine 只读查询 |
 | 3 | 产品与服务 | UDT_S_340/341、UDT_S_1280/1281、UDT_S_1382/1383、UDT_S_1459/1460、UDT_S_228/229 | CloudBase 云函数直连 WorkFine 只读查询 |
 | 4 | 门店信息 | UDT_S_218 + UDT_M_219 | CloudBase 云函数直连 WorkFine 只读查询 |
-| 5 | 订单（销售单） | UDT_S_209 + UDT_M_213 + UDT_M_217 + UDT_M_1259 | **建立 CloudBase 实体**，参考 WorkFine 结构优化设计 |
-| 6 | 护理单 | UDT_S_762 / UDT_M_763 + UDT_S_259 / UDT_M_260 | **建立 CloudBase 实体**，参考 WorkFine 结构优化设计 |
+| 5 | 订单（销售单） | UDT_S_209 + UDT_M_213 + UDT_M_217 + UDT_M_1259 | **建立 PG 实体**，参考 WorkFine 结构优化设计 |
+| 6 | 护理单 | UDT_S_762 / UDT_M_763 + UDT_S_259 / UDT_M_260 | **建立 PG 实体**，参考 WorkFine 结构优化设计 |
 
 ---
 

@@ -1,6 +1,6 @@
 # 后端服务需求
 
-> 技术栈：CloudBase 云函数（Node.js）+ Workfine SQL Server + CloudBase DB
+> 技术栈：CloudBase 云函数（Node.js）+ Workfine SQL Server + PG 自托管数据库
 
 ---
 
@@ -10,7 +10,7 @@
 小程序（客户端 + 员工端）
     ↓
 CloudBase 云函数（Node.js）
-    ├── CloudBase DB（小程序专属数据）
+    ├── PG 自托管数据库（小程序专属数据）
     └── Workfine SQL Server DB（直连只读，mssql 驱动）
 ```
 
@@ -19,7 +19,7 @@ CloudBase 云函数（Node.js）
 | 前端 | 微信小程序（客户端 + 员工端，共两个小程序） |
 | 后端 | CloudBase 云函数（Node.js） |
 | 业务数据库 | Workfine SQL Server（直连只读） |
-| 小程序数据库 | CloudBase DB |
+| 小程序数据库 | PG 自托管数据库 |
 | SQL Server 驱动 | `mssql`（node-mssql）npm 包，云函数内直连 |
 | 支付 | 微信支付多商户模式（特约商户）+ 线下付款标记 |
 | 实时通信 | WebSocket 或小程序订阅消息 |
@@ -42,15 +42,15 @@ CloudBase 云函数（Node.js）
 | 员工（姓名、职位、门店、部门、是否可分配业绩） | Workfine DB | 读 | 业务主数据，由甲方在 Workfine 维护 |
 | 服务项目/产品（名称、价格、分类） | Workfine DB | 读 | 含原价（即开单价格），运行时实时从 Workfine 读取 |
 | 组织架构（市场、部门、门店） | Workfine DB | 读 | 人事架构以 Workfine 为准 |
-| 顾客档案（姓名、手机号、会员等级、主美容师等） | CloudBase DB | 读写 | 建立 CloudBase 实体，前期从 Workfine UDT_S_311 同步；小程序读写 CloudBase |
-| 销售单/订单 | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_S_209 结构优化设计；Workfine 相关表仅供历史查阅 |
-| 营业额分配记录 | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_M_217 结构；Workfine 相关表仅供历史查阅 |
-| 服务核销记录（护理单） | CloudBase DB | 读写 | 建立 CloudBase 实体，参考 Workfine UDT_S_259/UDT_S_762 结构；Workfine 相关表仅供历史查阅 |
-| 微信用户（openid、session、手机号绑定） | CloudBase DB | 读写 | 小程序认证专属 |
-| SPU 商品元数据（product_spu） | CloudBase DB | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
-| SKU↔WorkFine 映射（product_spu_sku_map） | CloudBase DB | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
-| 实时推送状态 | CloudBase DB | 读写 | WebSocket 连接与消息队列 |
-| 操作日志 | CloudBase DB | 写 | 小程序侧操作留痕 |
+| 顾客档案（姓名、手机号、会员等级、主美容师等） | PG 自托管数据库 | 读写 | 建立 PG 实体，前期从 Workfine UDT_S_311 同步；小程序读写 PG 自托管数据库 |
+| 销售单/订单 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_209 结构优化设计；Workfine 相关表仅供历史查阅 |
+| 营业额分配记录 | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_M_217 结构；Workfine 相关表仅供历史查阅 |
+| 服务核销记录（护理单） | PG 自托管数据库 | 读写 | 建立 PG 实体，参考 Workfine UDT_S_259/UDT_S_762 结构；Workfine 相关表仅供历史查阅 |
+| 微信用户（openid、session、手机号绑定） | PG 自托管数据库 | 读写 | 小程序认证专属 |
+| SPU 商品元数据（product_spu） | PG 自托管数据库 | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
+| SKU↔WorkFine 映射（product_spu_sku_map） | PG 自托管数据库 | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
+| 实时推送状态 | PG 自托管数据库 | 读写 | WebSocket 连接与消息队列 |
+| 操作日志 | PG 自托管数据库 | 写 | 小程序侧操作留痕 |
 
 ---
 
@@ -71,7 +71,7 @@ CloudBase 云函数（Node.js）
 | 市场 | 名称、编号 |
 | 部门 | 名称、所属市场/门店、类型 |
 
-### product_spu（SPU 商品概念表，CloudBase DB）
+### product_spu（SPU 商品概念表，PG 自托管数据库）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -85,7 +85,7 @@ CloudBase 云函数（Node.js）
 | `sort_order` | integer | 排序权重 |
 | `is_active` | boolean | 是否上架 |
 
-### product_spu_sku_map（SPU↔WorkFine 映射表，CloudBase DB）
+### product_spu_sku_map（SPU↔WorkFine 映射表，PG 自托管数据库）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -95,7 +95,7 @@ CloudBase 云函数（Node.js）
 | `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
 | `sort_order` | integer | 规格排序 |
 
-> SKU 的价格、疗程服务次数等字段运行时从 WorkFine 实时读取，不存入 CloudBase。
+> SKU 的价格、疗程服务次数等字段运行时从 WorkFine 实时读取，不存入 PG 自托管数据库。
 
 ---
 
@@ -214,5 +214,5 @@ CloudBase 云函数（Node.js）
 4. 同一服务单重复点击"完成服务"不产生重复扣次
 5. 角色越权操作应被拒绝（美容师不可开单、技师不可查看完整手机号）
 6. 小程序读取的员工、产品、组织架构数据与 Workfine 设计端一致
-7. 小程序中完成开单后，CloudBase 订单实体中能查到同一笔记录
-8. 小程序中完成营业额分配后，CloudBase 营业额分配实体中能查到分配明细
+7. 小程序中完成开单后，PG 自托管数据库订单表中能查到同一笔记录
+8. 小程序中完成营业额分配后，PG 自托管数据库营业额分配表中能查到分配明细
