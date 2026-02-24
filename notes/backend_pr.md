@@ -99,6 +99,319 @@ CloudBase 云函数（Node.js）
 
 ---
 
+### 实体一：顾客档案
+
+#### customers（顾客主表，对应 UDT_S_311）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `customer_id` | string | 主键，格式 `FYGK-{YYYYMMDD}{序号}`，同步自 WorkFine `UDF_S_1475` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店（分院名称），关联 `UDT_M_219.UDF_M_438` |
+| `registered_at` | date | 登记时间 |
+| `customer_name` | string | 顾客姓名 |
+| `member_tag` | string | 会员分类标签 |
+| `member_level` | string | 会员等级（普通 / VIP 等） |
+| `phone` | string | 手机号码 |
+| `birthday` | date | 生日（月日） |
+| `age` | integer | 年龄 |
+| `occupation` | string | 职业 |
+| `is_married` | string | 是否已婚 |
+| `customer_category` | string | 顾客分类标签 |
+| `is_shared` | string | 是否与其他分院共享档案 |
+| `main_beautician` | string | 所属美容师姓名（营业额分配默认人员） |
+| `wechat_name` | string | 微信昵称 |
+| `customer_source` | string | 顾客来源（售前 / 拓客 / 推荐等） |
+| `skin_type` | string | 肤质类型 |
+| `improve_focus` | string | 改善重点 |
+| `skin_issues` | string | 皮肤问题 |
+| `wellness_preference` | string | 接受养生方式 |
+| `total_spent` | decimal | 顾客累计消费金额 |
+| `max_single_spent` | decimal | 单笔最高消费金额 |
+| `spent_2022` | decimal | 2022 年累计消费 |
+| `spent_2023` | decimal | 2023 年累计消费 |
+| `spent_2024` | decimal | 2024 年累计消费 |
+| `spent_2025` | decimal | 2025 年累计消费 |
+| `last_visit_interval` | string | 未到店时间间隔 |
+| `annual_spend_tier` | string | 本年度总消费档位 |
+| `annual_beauty_tier` | string | 本年度生美消费档位 |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+#### customer_consumption_details（顾客消费明细，对应 UDT_M_312）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `customer_id` | string | 关联 `customers.customer_id` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店 |
+| `sale_date` | date | 销售日期 |
+| `performance_type` | string | 业绩类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上美团首次） |
+| `order_no` | string | 销售单号，关联 `orders.order_no` |
+| `item_flow_no` | string | 销售流水号，关联 `order_items.item_flow_no` |
+| `category` | string | 品项分类 |
+| `item_name` | string | 项目名称 |
+| `session_count` | decimal | 疗程服务次数 |
+| `sale_amount` | decimal | 销售金额（优惠后） |
+| `unit_discount` | decimal | 单价优惠金额 |
+
+#### customer_care_details（顾客护理明细，对应 UDT_M_331）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `customer_id` | string | 关联 `customers.customer_id` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店 |
+| `service_date` | date | 护理服务日期 |
+| `customer_type` | string | 顾客类型 |
+| `service_order_no` | string | 护理单编号，关联 `service_orders.service_order_no` |
+| `item_name` | string | 护理项目名称 |
+| `session_used` | decimal | 划卡次数 |
+| `employee_position` | string | 服务员工职位 |
+| `employee_name` | string | 服务员工姓名 |
+| `service_fee` | decimal | 服务费 |
+| `item_count` | decimal | 项目个数 |
+| `satisfaction` | string | 顾客满意度 |
+| `is_gift` | string | 是否赠送（是 / 否） |
+
+---
+
+### 实体二：订单（销售单）
+
+#### orders（订单主表，对应 UDT_S_209）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `order_id` | string | 主键，系统自生成 |
+| `order_no` | string | 销售单号，格式 `FY-XSD{YYMMDD}{序号}` |
+| `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店 |
+| `order_date` | date | 销售日期 |
+| `performance_type` | string | 业绩类型（售后 / 售前一次 / 售前二次 / 老带新 / 线上美团首次） |
+| `customer_source` | string | 顾客来源渠道 |
+| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `customer_name` | string | 顾客姓名（冗余存储） |
+| `sale_type` | string | 销售类型（全额销售 / 回单销售） |
+| `total_payment` | decimal | 收款合计 |
+| `total_performance` | decimal | 本单业绩 |
+| `dept_undistributed` | decimal | 美容部充公业绩（未分配给个人） |
+| `debt_amount` | decimal | 本单欠款合计 |
+| `promo_id` | string | 促销方案编号，关联 WorkFine `UDT_S_1459.UDF_S_17159` |
+| `promo_name` | string | 促销方案名称（冗余） |
+| `gift_coupon` | decimal | 本单赠送现金券金额 |
+| `coupon_balance_snapshot` | decimal | 下单时顾客现金券余额快照 |
+| `coupon_used` | decimal | 本单消耗现金券金额 |
+| `is_locked` | string | 是否锁客 |
+| `is_new_customer` | string | 是否为新客纳客 |
+| `member_level_snapshot` | string | 下单时顾客会员等级快照 |
+| `is_approved` | string | 是否需要审批 |
+| `opened_by` | string | 开单人员工编号 |
+| `paid_at` | timestamp | 支付完成时间 |
+| `offline_confirmed_by` | string | 线下收款确认人员工编号 |
+| `offline_confirmed_at` | timestamp | 线下收款确认时间 |
+| `idempotency_key` | string | 幂等键，防重复开单 |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+#### order_items（销售明细，对应 UDT_M_213）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `order_id` | string | 关联 `orders.order_id` |
+| `item_flow_no` | string | 销售流水号，格式 `XSLSH-{YYYYMMDD}{序号}`（被护理单核销引用） |
+| `product_type` | string | 产品类型（疗程卡 / 单品 / 自定义-疗程 / 自定义-单品） |
+| `wf_item_id` | string | 疗程项目编号，关联 WorkFine `UDT_M_1281.UDF_M_14503` |
+| `category` | string | 品项分类 |
+| `item_name` | string | 项目名称 |
+| `unit` | string | 计量单位 |
+| `session_count` | integer | 疗程服务次数（总次数） |
+| `remaining_sessions` | integer | 剩余可用次数（每次护理核销后更新） |
+| `unit_price` | decimal | 原价（标准售价） |
+| `quantity` | decimal | 销售数量 |
+| `unit_discount` | decimal | 单价优惠金额 |
+| `sale_amount` | decimal | 销售金额（优惠后） |
+| `receivable` | decimal | 应收金额 |
+| `received` | decimal | 实收金额 |
+| `paid_count` | integer | 已付款次数（分期） |
+| `is_gift` | string | 是否赠送（是 / 否） |
+| `expire_date` | date | 疗程卡到期日 |
+| `unit_price_per_session` | decimal | 单次价格（实收 ÷ 服务次数） |
+| `debt` | decimal | 顾客欠款（应收 - 实收） |
+| `remark` | string | 备注 |
+
+#### revenue_allocations（营业额分配，对应 UDT_M_217）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `order_id` | string | 关联 `orders.order_id` |
+| `employee_id` | string | 员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
+| `employee_name` | string | 员工姓名 |
+| `position_series` | string | 职位序列编码 |
+| `position` | string | 职位名称 |
+| `dept_name` | string | 职位所属部门（美容部 / 推广部等） |
+| `dept_code` | string | 部门编码 |
+| `performance_brow_eye` | decimal | 个人业绩1眉眼 |
+| `performance_lip` | decimal | 个人业绩2唇 |
+| `performance_spot` | decimal | 祛斑点痣业绩 |
+| `performance_product` | decimal | 单品业绩 |
+| `total_amount` | decimal | 核算金额（该员工总分配金额） |
+| `created_at` | timestamp | 记录创建时间 |
+
+#### payment_records（收款方式明细，对应 UDT_M_1259）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `order_id` | string | 关联 `orders.order_id` |
+| `payment_method` | string | 收款方式（现金 / 扫码 / 刷卡 / 抖音收款 / 美团收款 / 第三方收款） |
+| `amount` | decimal | 该方式收款金额 |
+| `remark` | string | 备注说明 |
+
+---
+
+### 实体三：护理单
+
+#### service_orders（护理单主表，合并 UDT_S_762 售前 + UDT_S_259 售后）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `service_order_id` | string | 主键，系统自生成 |
+| `service_order_no` | string | 护理单编号，格式 `HLD-{YYMMDD}{序号}` |
+| `service_type` | enum | 护理单类型：`售前` / `售后` |
+| `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店 |
+| `service_date` | date | 护理服务日期 |
+| `customer_name` | string | 顾客姓名 |
+| `customer_type` | string | 顾客类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上/美团首次） |
+| `service_duration` | string | 服务时长（分钟） |
+| `is_card_counted` | string | 是否核算卡数（是 / 否） |
+| `outreach_type` | string | 拓客类型 |
+| `promoter` | string | 推广员 |
+| `appointment_time` | datetime | 预约/到店时间（**售前专有**，售后为 null） |
+| `remark` | string | 备注 |
+| `category` | string | 护理分类 |
+| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `customer_phone` | string | 顾客联系电话 |
+| `staff_id` | string | 主服务人员编号 |
+| `staff_position` | string | 主服务人员职位 |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+#### service_items（护理明细，合并 UDT_M_763 售前 + UDT_M_260 售后）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `service_order_id` | string | 关联 `service_orders.service_order_id` |
+| `wf_item_id` | string | 疗程项目编号（**售后专有**），关联 `order_items.wf_item_id` |
+| `item_name` | string | 护理项目名称 |
+| `category` | string | 品项分类 |
+| `flow_no` | string | 流水号（售后: `XSLSH-` 核销 `order_items.item_flow_no`；售前: `TKKLS-` 拓客卡体系） |
+| `session_used` | integer | 本次划卡次数 |
+| `employee_id` | string | 服务美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
+| `employee_name` | string | 服务美容师姓名 |
+| `position_series` | string | 职位序列（**售前专有**） |
+| `employee_position` | string | 美容师职位 |
+| `service_fee` | decimal | 服务费金额 |
+| `item_count` | decimal | 项目数量 |
+| `satisfaction` | string | 顾客满意度 |
+| `consumption` | decimal | 本次消耗金额 |
+| `unit_price` | decimal | 单次服务价格 |
+| `is_gift` | string | 是否赠送（是 / 否） |
+| `remaining_count` | decimal | 当前剩余可用次数 |
+| `count_change` | decimal | 次数变化（**售前专有**，如 -2） |
+| `expire_date` | date | 到期日 |
+
+---
+
+### 实体四：微信用户
+
+#### wechat_users（微信用户，PG 自托管数据库）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_id` | string | 主键，系统自生成 |
+| `openid` | string | 微信 openid（唯一索引） |
+| `session_key` | string | 微信 session_key（加密存储） |
+| `phone` | string | 绑定手机号（明文，与 `customers.phone` / WorkFine 员工手机核对） |
+| `customer_id` | string | 关联 `customers.customer_id`（顾客端绑定后填入，可为 null） |
+| `staff_wf_id` | string | 关联 WorkFine `UDT_S_287.UDF_S_1147`（员工端绑定后填入，可为 null） |
+| `role` | enum | 用户角色：`customer`（顾客端）/ `staff`（员工端） |
+| `last_login_at` | timestamp | 最近一次登录时间 |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+---
+
+### 实体五：预约
+
+#### appointments（预约，PG 自托管数据库）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `appointment_id` | string | 主键，系统自生成 |
+| `status` | enum | 预约状态：`待确认` / `已确认` / `已完成` / `已取消` |
+| `market_name` | string | 所属市场 |
+| `store_name` | string | 所属门店 |
+| `customer_id` | string | 顾客编号，关联 `customers.customer_id` |
+| `customer_name` | string | 顾客姓名（冗余存储） |
+| `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
+| `staff_name` | string | 预约美容师姓名（冗余存储） |
+| `appointment_time` | datetime | 预约到店时间 |
+| `service_item` | string | 预约项目描述（自由文本） |
+| `notes` | string | 备注 |
+| `cancelled_reason` | string | 取消原因（已取消时填入） |
+| `created_by` | string | 创建人员工编号（员工端创建）或 `customer`（顾客端自助） |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+---
+
+### 实体六：实时推送状态
+
+#### push_events（实时推送事件队列，PG 自托管数据库）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `event_type` | string | 事件类型（`order_paid` / `service_started` / `service_completed` 等） |
+| `biz_id` | string | 关联业务主键（如 `orders.order_id`） |
+| `target_store` | string | 目标推送门店（员工端按门店订阅） |
+| `payload` | jsonb | 推送负载（订单号、顾客名、金额等关键字段快照） |
+| `status` | enum | 推送状态：`pending` / `sent` / `failed` |
+| `retry_count` | integer | 已重试次数（失败后最多重试 3 次） |
+| `sent_at` | timestamp | 成功推送时间（null 表示未送达） |
+| `created_at` | timestamp | 事件创建时间 |
+
+> 员工端 WebSocket 断开时，轮询兜底每 30 秒查询 `status = 'pending'` 事件，不依赖 WebSocket 连接状态。
+
+---
+
+### 实体七：操作日志
+
+#### audit_logs（操作日志，PG 自托管数据库）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigint | 主键，自增 |
+| `biz_type` | string | 业务类型（`order` / `service_order` / `appointment` / `payment` / `customer` 等） |
+| `biz_id` | string | 业务主键（如 `order_id` / `service_order_id`） |
+| `operator_id` | string | 操作人员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（顾客端操作记为 `customer:{openid}`） |
+| `operator_name` | string | 操作人姓名（冗余存储） |
+| `action` | string | 操作动作（`create` / `pay` / `confirm` / `cancel` / `complete` / `allocate` 等） |
+| `before_value` | jsonb | 变更前值（首次创建时为 null） |
+| `after_value` | jsonb | 变更后值（删除时为 null） |
+| `ip_address` | string | 客户端 IP（可选，安全审计用） |
+| `created_at` | timestamp | 操作时间 |
+
+---
+
 ## 四、核心接口
 
 | 接口 | 说明 |
