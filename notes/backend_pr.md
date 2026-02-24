@@ -212,7 +212,6 @@ CloudBase 云函数（Node.js）
 | `assigned_staff_wf_id` | string | 分配的主责服务人员编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（用于服务单状态推进权限校验） |
 | `remark` | string | 备注 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
-| `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -276,7 +275,6 @@ CloudBase 云函数（Node.js）
 | `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `staff_name` | string | 预约美容师姓名（冗余存储） |
 | `appointment_time` | datetime | 预约到店时间 |
-| `item_flow_no` | string | 销售流水号，关联 `order_items.item_flow_no`，指向具体疗程卡行 |
 | `notes` | string | 备注 |
 | `cancelled_reason` | string | 取消原因（已取消时填入） |
 | `created_at` | timestamp | 记录创建时间 |
@@ -357,7 +355,7 @@ CloudBase 云函数（Node.js）
 14. **营业额分配锁定规则**：分配记录在订单处于 `待支付` 且顾客尚未扫码（二维码显示状态为"待扫码"）时可被删除并重建（即"修改"）；顾客扫码后（二维码显示状态变为"已扫码待付款"或之后）分配方案立即锁定，不得修改；如需变更，须将订单置为 `已关闭` 并由店长重新开单。
 15. **手机号补全机制**：顾客端小程序首次登录并完成手机号绑定时，系统查询 `orders` 表中 `client_phone = 绑定手机号 AND client_user_id IS NULL` 的记录，批量将 `client_user_id` 更新为当前用户的 `user_id`，使历史体验单（及正式订单）在顾客端可见。此操作在绑定手机号的云函数中同步执行。
 16. **员工开单顾客身份验证**：员工端开单时，顾客手机号为**必填项**。系统在提交开单时通过手机号查询 `client_wechat_users.phone`：若已注册客户端，将对应 `user_id` 直接写入 `orders.client_user_id`，订单在顾客端立即可见；若未注册，`client_user_id` 为 null，待顾客完成手机号绑定后通过第 15 条补全机制自动关联。
-17. **预约取消后可重新发起**：同一订单行的预约处于 `已取消` 状态时，顾客可对该订单行重新发起新预约；仅当该订单行存在 `待确认` 或 `已确认` 状态的预约时，才禁止再次发起；`已关闭` 状态的预约（因次数归零触发）不可重新发起。
+17. **预约取消后可重新发起**：处于 `已取消` 状态的预约（顾客主动取消），顾客可重新发起新预约；`已关闭` 状态的预约（超期系统自动关闭）不可重新发起。
 
 ---
 
@@ -396,11 +394,11 @@ CloudBase 云函数（Node.js）
 待确认 -> 已确认 -> 已完成（到店核销完成后自动流转）
 待确认 -> 已取消（顾客取消）
 已确认 -> 已取消（顾客取消）
-待确认 -> 已关闭（订单行剩余次数归零时系统自动流转）
-已确认 -> 已关闭（订单行剩余次数归零时系统自动流转）
+待确认 -> 已关闭（超过预约时间一天未到店，系统自动流转）
+已确认 -> 已关闭（超过预约时间一天未到店，系统自动流转）
 ```
 
-> `已关闭` 触发：服务完成后，若该 `order_items` 行 `remaining_sessions` 归零，系统批量将该行所有处于 `待确认` 或 `已确认` 状态的预约置为 `已关闭`，在同一事务内完成。
+> `已关闭` 触发：定时任务每日检查 `appointment_time < NOW() - INTERVAL '1 day'` 且状态为 `待确认` 或 `已确认` 的预约，批量置为 `已关闭`。`已关闭` 预约不可重新发起；`已取消` 预约（顾客主动取消）可重新发起。
 
 ---
 

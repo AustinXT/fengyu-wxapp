@@ -1,6 +1,5 @@
 import { date, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { serviceOrderStatusEnum } from './enums'
-import { appointments } from './appointment'
 import { orderItems } from './order'
 import { productSpuSkuMap } from './product'
 import { clientWechatUsers } from './user'
@@ -36,8 +35,6 @@ export const serviceOrders = pgTable(
      * 员工开单时顾客可能未注册客户端小程序，允许为 null。
      */
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
-    /** 关联预约记录；无预约直接到店时为 null */
-    appointmentId: text('appointment_id').references(() => appointments.appointmentId),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
