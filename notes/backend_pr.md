@@ -62,7 +62,7 @@ CloudBase 云函数（Node.js）
 | 员工 | 姓名、职位、所属门店、所属部门、是否可分配业绩 |
 | 顾客（微信用户） | openid、绑定手机号、绑定门店（client_wechat_users） |
 | SPU 商品 | spu_id、名称、品项分类（二级）、大分类（生美/非生美/院装产品）、产品类型（疗程卡/单品/院装产品）、封面图、描述、排序权重、是否上架 |
-| SKU↔WorkFine 映射 | spu_id、workfine_item_id（疗程项目编号或商品编号）、workfine_source（UDT_M_1281 / UDT_M_1383 / UDT_M_341）、规格展示名、排序 |
+| SKU↔WorkFine 映射 | sku_id（主键）、spu_id、workfine_item_id（疗程项目编号或商品编号）、workfine_source（UDT_M_1281 / UDT_M_1383 / UDT_M_341）、规格展示名、排序；UNIQUE(spu_id, workfine_item_id, workfine_source) |
 | 订单 | 订单号、顾客、项目、金额、支付方式、支付状态、下单端、下单人、美容师、支付时间、线下确认人、线下确认时间 |
 | 营业额分配 | 订单ID、员工、部门、分配金额 |
 | 预约 | 顾客、美容师、时间、状态 |
@@ -91,12 +91,15 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
+| `sku_id` | string | 主键，自生成 |
 | `spu_id` | string | 关联 product_spu.spu_id |
 | `workfine_item_id` | string | WorkFine 中的疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
-| `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/ `UDT_M_341`（院装产品） |
+| `workfine_source` | enum | `UDT_M_1281`（全国可售项目）/ `UDT_M_1383`（门店自定义）/`UDT_S_1459`（促销方案）/ `UDT_M_341`（院装产品） |
 | `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
 | `sort_order` | integer | 规格排序 |
 
+> UNIQUE 约束：`(spu_id, workfine_item_id, workfine_source)`
+>
 > SKU 的价格、疗程服务次数等字段运行时从 WorkFine 实时读取，不存入 PG 自托管数据库。
 
 ---
@@ -112,35 +115,23 @@ CloudBase 云函数（Node.js）
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
 | `market_name` | string | 所属市场 |
 | `store_name` | string | 所属门店 |
-| `order_date` | date | 销售日期 |
-| `performance_type` | string | 业绩类型（售后 / 售前一次 / 售前二次 / 老带新 / 线上美团首次） |
-| `customer_source` | string | 顾客来源渠道 |
+| `order_datetime` | datetime | 销售日期时间 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（下单顾客的微信用户 ID） |
-| `customer_name` | string | 顾客姓名（冗余存储） |
-| `sale_type` | string | 销售类型（全额销售 / 回单销售） |
 | `total_payment` | decimal | 收款合计 |
 | `payment_method` | enum | 收款方式：`wechat`（微信支付）/ `offline`（线下收款）|
 | `total_performance` | decimal | 本单业绩 |
 | `dept_undistributed` | decimal | 美容部充公业绩（未分配给个人） |
 | `debt_amount` | decimal | 本单欠款合计 |
-| `promo_id` | string | 促销方案编号，关联 WorkFine `UDT_S_1459.UDF_S_17159` |
-| `promo_name` | string | 促销方案名称（冗余） |
-| `gift_coupon` | decimal | 本单赠送现金券金额 |
-| `coupon_balance_snapshot` | decimal | 下单时顾客现金券余额快照 |
-| `coupon_used` | decimal | 本单消耗现金券金额 |
-| `is_locked` | string | 是否锁客 |
-| `is_new_customer` | string | 是否为新客纳客 |
-| `member_level_snapshot` | string | 下单时顾客会员等级快照 |
-| `is_approved` | string | 是否需要审批 |
 | `order_source` | enum | 下单端：`client`（客户端自助）/ `staff`（员工端开单） |
-| `opened_by` | string | 开单人员工编号（员工端开单时填入，客户端自助下单时为 null） |
+| `opened_by` | string | 开单人员工编号（员工端开单时自动填入，客户端自助下单时为 null） |
 | `preferred_staff_wf_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（顾客未指定时为 null） |
 | `paid_at` | timestamp | 支付完成时间 |
 | `offline_confirmed_by` | string | 线下收款确认人员工编号 |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
-| `idempotency_key` | string | 幂等键，防重复开单 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
+
+> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付'`，同一顾客同一时刻只能有一笔待支付订单，防止重复开单。（销售明细，对应 UDT_M_213）
 
 #### order_items（销售明细，对应 UDT_M_213）
 
@@ -150,7 +141,7 @@ CloudBase 云函数（Node.js）
 | `order_id` | string | 关联 `orders.order_id` |
 | `item_flow_no` | string | 销售流水号，格式 `XSLSH-{YYYYMMDD}{序号}`（被护理单核销引用） |
 | `product_type` | string | 产品类型（疗程卡 / 单品 / 自定义-疗程 / 自定义-单品） |
-| `wf_item_id` | string | 疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） |
+| `sku_id` | string | 关联 `product_spu_sku_map.sku_id`，通过 SKU 映射间接关联 WorkFine 项目 |
 | `category` | string | 品项分类 |
 | `item_name` | string | 项目名称 |
 | `unit` | string | 计量单位 |
@@ -406,7 +397,7 @@ CloudBase 云函数（Node.js）
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **技师不可见**客户真实电话号码
 5. **日历入账口径**：仅 `已支付` 订单计入当日消费
-6. **幂等要求**：下单、支付回调、服务完成三类接口必须幂等
+6. **幂等要求**：支付回调、服务完成两类接口必须幂等；重复开单通过 `orders` 表部分唯一索引（`UNIQUE (client_user_id) WHERE status = '待支付'`）在数据库层拦截
 7. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 8. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
 9. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
@@ -454,7 +445,7 @@ CloudBase 云函数（Node.js）
 
 | 场景 | 处理方式 |
 |------|----------|
-| 重复下单 | 返回同一订单号，不重复创建订单 |
+| 重复下单 | 部分唯一索引拦截，返回错误提示，不重复创建订单 |
 | 重复支付回调 | 仅第一次成功回调生效，不重复入账日历 |
 | 重复线下确认收款 | 仅第一次确认生效，不重复入账日历 |
 | 网络抖动导致实时推送失败 | 轮询兜底后保证最终一致 |
