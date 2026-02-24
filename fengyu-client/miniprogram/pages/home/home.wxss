@@ -57,10 +57,6 @@
   gap: 32rpx;
 }
 
-.no-store-btn {
-  width: 280rpx;
-}
-
 /* ===== 分类+内容双栏 ===== */
 .catalog {
   display: flex;

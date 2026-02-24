@@ -24,30 +24,8 @@
 }
 
 .brand-logo {
-  width: 64rpx;
-  height: 64rpx;
-}
-
-.brand-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2rpx;
-}
-
-.brand-name {
-  font-size: 36rpx;
-  font-weight: 700;
-  color: #D4A76A;  /* Logo 金色 */
-  letter-spacing: 4rpx;
-  line-height: 1.2;
-}
-
-.brand-sub {
-  font-size: 18rpx;
-  color: #D4A76A;
-  letter-spacing: 1rpx;
-  opacity: 0.7;
-  line-height: 1.2;
+  width: 212rpx;
+  height: 80rpx;
 }
 
 .header-store {
@@ -77,10 +55,6 @@
   flex-direction: column;
   align-items: center;
   gap: 32rpx;
-}
-
-.no-store-btn {
-  width: 280rpx;
 }
 
 /* ===== 分类+内容双栏 ===== */
