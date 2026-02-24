@@ -84,7 +84,7 @@ export const orderItems = pgTable('order_items', {
   saleAmount: numeric('sale_amount', { precision: 12, scale: 2 }).notNull(),
   receivable: numeric('receivable', { precision: 12, scale: 2 }).notNull(),
   received: numeric('received', { precision: 12, scale: 2 }).notNull(),
-  /** 仅疗程卡适用；单品/院装产品为 null */
+  /** 疗程卡及单品适用，院装产品为 null；疗程卡：开单时写入合同约定到期日；单品：支付回调成功时由系统写入 paid_at + 1 year */
   expireDate: date('expire_date'),
   remark: text('remark'),
 })
