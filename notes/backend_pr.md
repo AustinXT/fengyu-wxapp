@@ -191,6 +191,7 @@ CloudBase 云函数（Node.js）
 | `customer_name` | string | 顾客姓名（冗余存储） |
 | `sale_type` | string | 销售类型（全额销售 / 回单销售） |
 | `total_payment` | decimal | 收款合计 |
+| `payment_method` | enum | 收款方式：`wechat`（微信支付）/ `offline`（线下收款）|
 | `total_performance` | decimal | 本单业绩 |
 | `dept_undistributed` | decimal | 美容部充公业绩（未分配给个人） |
 | `debt_amount` | decimal | 本单欠款合计 |
@@ -252,22 +253,23 @@ CloudBase 云函数（Node.js）
 | `position` | string | 职位名称 |
 | `dept_name` | string | 职位所属部门（美容部 / 推广部等） |
 | `dept_code` | string | 部门编码 |
-| `performance_brow_eye` | decimal | 个人业绩1眉眼 |
-| `performance_lip` | decimal | 个人业绩2唇 |
-| `performance_spot` | decimal | 祛斑点痣业绩 |
-| `performance_product` | decimal | 单品业绩 |
-| `total_amount` | decimal | 核算金额（该员工总分配金额） |
+| `allocation_ratio` | decimal | 占比（同部门多人时如 0.3；跨部门或单人时为 1.0） |
+| `total_amount` | decimal | 该员工最终分配金额（等于 `revenue_allocation_items` 的 amount 之和） |
 | `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间（重新分配时更新） |
 
-#### payment_records（收款方式明细，对应 UDT_M_1259）
+> UNIQUE 约束：`(order_id, employee_id)`
+
+#### revenue_allocation_items（业绩分类明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
-| `order_id` | string | 关联 `orders.order_id` |
-| `payment_method` | string | 收款方式（现金 / 扫码 / 刷卡 / 抖音收款 / 美团收款 / 第三方收款） |
-| `amount` | decimal | 该方式收款金额 |
-| `remark` | string | 备注说明 |
+| `allocation_id` | bigint | 关联 `revenue_allocations.id` |
+| `performance_category` | string | 业绩分类名称（如 `眉眼`、`唇`、`祛斑点痣`、`单品`；可按业务扩展） |
+| `amount` | decimal | 该分类的分配金额 |
+
+> 新增业绩分类时只需插入新行，无需变更表结构。
 
 ---
 

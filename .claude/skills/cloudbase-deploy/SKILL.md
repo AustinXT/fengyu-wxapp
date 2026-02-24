@@ -1,0 +1,193 @@
+---
+name: cloudbase-deploy
+description: |
+  Deploys CloudBase cloud functions using the cloudbase-mcp MCP server.
+  Use when user says "部署云函数", "重新上传云函数", "部署 cloudfunctions", "部署到云服务",
+  "使用 MCP 部署", or requests deploying / redeploying any cloud function.
+  Also use for updating cloud function environment variables or invoking a function action to verify.
+alwaysApply: false
+metadata:
+  author: opc
+  version: 1.0.0
+  title: CloudBase 云函数部署
+  description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数，支持全量/单函数部署、环境变量更新和调用验证
+---
+
+# CloudBase 云函数部署指南
+
+通过 `@cloudbase/cloudbase-mcp` MCP 服务器部署和管理 CloudBase 云函数。
+
+## When to Use / 何时使用
+
+- 用户修改云函数代码后需要重新部署
+- 用户请求全量部署整个云函数目录
+- 需要更新云函数的环境变量（数据库连接串、密钥等）
+- 部署后需要调用某个 action 验证是否生效
+
+**不适用于：**
+- CloudRun 容器服务（另见 `cloudrun-development`）
+- 仅修改小程序前端代码（无需部署云函数）
+- 通过 `tcb` CLI 或微信开发者工具手动部署
+
+---
+
+## 第一步：探查项目结构
+
+在部署前先了解项目的云函数布局：
+
+```
+# 云函数通常位于以下位置之一：
+cloudfunctions/          # 微信小程序默认
+functions/               # 自定义目录
+```
+
+关键信息：
+- **functionRootPath**：云函数目录的**父目录**绝对路径（不是函数本身的目录）
+- **envId**：CloudBase 环境 ID，格式如 `cloud1-xxxxxxxx`，从项目配置文件（如 `cloudbaserc.yml`）或 MCP 配置中读取
+- **functionName**：函数子目录名称
+
+---
+
+## 部署工作流
+
+### 模式 A：全量部署（所有云函数）
+
+触发词：`"部署 cloudfunctions"` / `"部署所有云函数"` / `"全量部署"`
+
+```
+1. 列出 cloudfunctions/ 下所有子目录（每个子目录是一个云函数）
+2. 对每个函数依次调用 updateFunctionCode（已存在）或 createFunction（首次）
+3. 汇报每个函数的部署结果
+```
+
+**MCP 工具调用示例（更新已有函数代码）：**
+```json
+{
+  "tool": "updateFunctionCode",
+  "envId": "<cloudbase-env-id>",
+  "functionName": "<function-name>",
+  "functionRootPath": "/absolute/path/to/cloudfunctions"
+}
+```
+
+### 模式 B：仅部署单个函数
+
+触发词：`"重新上传云函数"` / `"部署 <function-name>"` / `"重新部署"`
+
+```
+1. 确认目标函数名称（询问用户或根据上下文推断）
+2. 调用 updateFunctionCode 仅部署该函数
+3. 确认部署成功
+```
+
+### 模式 C：调用 action 验证（部署后冒烟测试）
+
+触发词：`"调用 <action> 验证"` / `"部署后测试一下"` / `"调用 <functionName> 的 <action>"`
+
+```
+1. 部署完成后，调用 invokeFunction（或 callFunction）
+2. 传入 action 参数触发对应逻辑
+3. 检查返回值 { code, message, data } 确认无错误
+```
+
+**MCP 工具调用示例：**
+```json
+{
+  "tool": "invokeFunction",
+  "envId": "<cloudbase-env-id>",
+  "functionName": "<function-name>",
+  "params": { "action": "<action-name>" }
+}
+```
+
+---
+
+## 环境变量更新
+
+**核心原则：先读后合并，绝不直接覆盖**
+
+```
+1. 读取现有环境变量：getFunctionConfig → envVariables
+2. 将新 key-value 合并到现有列表
+3. 调用 updateFunctionConfig 写入完整合并后的列表
+```
+
+常见环境变量示例（SQL Server 场景）：
+```
+# 示例格式，替换为实际值，不要硬编码在源代码中
+WF_SERVER=YOUR_DB_HOST
+WF_PORT=1433
+WF_DATABASE=YOUR_DB_NAME
+WF_USER=YOUR_DB_USER
+WF_PASSWORD=YOUR_DB_PASSWORD
+```
+
+**错误示例（避免）：** 直接 `updateFunctionConfig` 只传新变量 → 会清空其他已有变量
+
+---
+
+## 函数代码规范
+
+云函数入口（`index.js` / `index.ts`）必须导出 `main`：
+
+```js
+exports.main = async (event, context) => {
+  try {
+    // 业务逻辑
+    return { code: 0, message: 'success', data: result }
+  } catch (err) {
+    return { code: -1, message: err.message, data: null }
+  }
+}
+```
+
+- **无需本地编译**：上传 `.ts` 源文件时，CloudBase 会在服务端自动执行 `tsc`
+- `package.json` 中的依赖会在服务端自动 `npm install`，无需上传 `node_modules`
+
+---
+
+## 运行时说明
+
+| 运行时 | 说明 |
+|--------|------|
+| `Nodejs18.15` | 默认推荐，最新稳定版 |
+| `Nodejs16.13` | 兼容旧项目 |
+
+**注意：** 函数创建后运行时**无法修改**。如需变更，必须删除重建。
+
+---
+
+## MCP 工具速查
+
+| 操作 | MCP 工具 | 必填参数 |
+|------|----------|----------|
+| 更新函数代码 | `updateFunctionCode` | `envId`, `functionName`, `functionRootPath` |
+| 创建新函数 | `createFunction` | `envId`, `functionName`, `functionRootPath`, `runtime` |
+| 更新配置/环境变量 | `updateFunctionConfig` | `envId`, `functionName`, `envVariables` |
+| 读取函数配置 | `getFunctionConfig` | `envId`, `functionName` |
+| 调用函数 | `invokeFunction` | `envId`, `functionName`, `params` |
+| 查询日志列表 | `getFunctionLogs` | `envId`, `functionName`, `startTime`, `endTime` |
+| 查询日志详情 | `getFunctionLogDetail` | `envId`, `requestId` |
+
+**Plan B（MCP 工具不可用时）：** 使用 `callCloudApi` 调用 CloudBase 原始 API，参数见[官方文档](https://cloud.tencent.com/document/product/876)。
+
+---
+
+## 常见错误排查
+
+| 错误 | 原因 | 解决方法 |
+|------|------|---------|
+| `ETIMEOUT: connect ECONNREFUSED` | 数据库 IP/端口错误 | 检查 `WF_SERVER` 和 `WF_PORT` 环境变量 |
+| `ELOGIN: Login failed` | 密码错误或 `WF_PASSWORD` 为空 | 更新环境变量，确认无硬编码 fallback |
+| `errCode: -601034 没有权限` | 跨环境调用未授权 | 在微信云开发控制台开启「环境共享」 |
+| `Invalid column name` | SQL 字段名错误 | 检查 SQL 查询中的列名是否与数据库匹配 |
+| 函数不存在 | 首次部署使用了 `updateFunctionCode` | 改用 `createFunction` 初始化 |
+
+---
+
+## 查询日志（调试用）
+
+```
+1. getFunctionLogs：获取日志列表和 RequestId（时间范围最大 1 天）
+2. getFunctionLogDetail：传入 RequestId 获取完整日志内容
+```
