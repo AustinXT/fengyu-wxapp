@@ -64,7 +64,7 @@ CloudBase 云函数（Node.js）
 | 订单 | 订单号、顾客、项目、金额、支付方式、支付状态、下单端、下单人、美容师、支付时间、线下确认人、线下确认时间 |
 | 营业额分配 | 订单ID、员工、部门、分配金额 |
 | 预约 | 顾客、美容师、时间、状态 |
-| 服务单 | 订单ID、顾客、服务人、开始时间、完成时间、状态、扣减次数 |
+| 服务单 | 顾客、服务人、开始时间、完成时间、状态、扣减次数（无 order_no，通过明细 item_flow_no 关联订单） |
 
 ### 实体一：SPU 商品 & SKU 映射
 
@@ -197,12 +197,13 @@ CloudBase 云函数（Node.js）
 
 ### 实体三：护理单
 
-#### service_orders（护理单主表，对应 Workfine UDT_S_259（统一护理单，所有护理均来自订单））
+#### service_orders（护理单主表，对应 Workfine UDT_S_259）
+
+> 与订单的关联通过 `service_items.item_flow_no → order_items.item_flow_no` 实现，主表不存 `order_no`，支持同一次到店跨多笔订单核销。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}` |
-| `order_no` | string | 关联 `orders.order_no`（NOT NULL；正式订单或体验单均可，所有护理单必须来自已存在的订单） |
 | `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
 | `market_name` | string | 所属市场（快照，与 orders 一致） |
 | `store_name` | string | 所属门店（快照，与 orders 一致） |
@@ -348,7 +349,7 @@ CloudBase 云函数（Node.js）
 8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
 9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`，记录 `voided_at`）；重新付款不重新分配，由店长手动操作。
 10. **疗程卡并发扣减**：使用原子 UPDATE 而非显式行锁，格式为 `UPDATE order_items SET remaining_sessions = remaining_sessions - {n} WHERE item_flow_no = $1 AND remaining_sessions >= {n}`，通过检查 `rowCount` 是否为 1 判断扣减是否成功；`rowCount = 0` 时返回次数不足错误，不得在应用层先 SELECT 再 UPDATE。
-11. **所有护理单必须来自已存在的订单**（含体验单），不存在无订单的护理单；`service_orders.order_no` 为 NOT NULL 外键。
+11. **护理单来源约束**：护理单明细（`service_items`）中每条 `item_flow_no` 必须关联一条已支付订单的 `order_items` 行；约束在明细层执行，主表（`service_orders`）不存 `order_no`，允许同一次到店跨多笔订单核销。
 12. **体验/引流服务**需先由店长创建体验单（`order_type = 体验`，价格由店长自定义），支付确认后再从该体验单创建护理单；体验单走与正式订单相同的支付流程和状态机。**先服务后付款不在 MVP 范围**：护理单必须在订单进入已支付后才可创建，不支持先到店服务后补单付款的场景。
 13. **顾客端自助下单的营业额分配**：
    - 已指定美容师（`preferred_staff_wf_id` 不为 null）：订单进入已支付时，系统自动以该美容师为唯一被分配人创建分配记录（`allocation_ratio = 1.0`，`total_amount = received`），无需店长手动操作；店长可在订单详情页查看分配结果

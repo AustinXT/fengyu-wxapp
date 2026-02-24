@@ -1,14 +1,15 @@
 import { date, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { serviceOrderStatusEnum } from './enums'
 import { appointments } from './appointment'
-import { orderItems, orders } from './order'
+import { orderItems } from './order'
 import { productSpuSkuMap } from './product'
 import { clientWechatUsers } from './user'
 
 /**
  * 实体三：护理单主表（对应 WorkFine UDT_S_259）
  *
- * 所有护理单必须来自已存在的订单（含体验单），order_no 为 NOT NULL 外键。
+ * 与订单的关联通过 service_items.item_flow_no → order_items.item_flow_no 实现，
+ * 主表不存 order_no，支持同一次到店跨多笔订单核销（orders ↔ service_orders 为 N:N）。
  * 状态流转：待服务 -> 服务中 -> 已完成
  *   - 仅店长或 assigned_staff_wf_id 匹配的服务人员可推进状态
  *   - 仅在 服务中->已完成 时扣减 session_used 次，且不得小于 0
@@ -19,13 +20,10 @@ export const serviceOrders = pgTable(
   {
     /** 主键，护理单编号，格式 HLD-WX-{YYMMDD}{序号} */
     serviceOrderNo: text('service_order_no').primaryKey(),
-    orderNo: text('order_no')
-      .notNull()
-      .references(() => orders.orderNo),
     status: serviceOrderStatusEnum('status').notNull().default('待服务'),
-    /** 所属市场快照，与 orders 一致 */
+    /** 所属市场快照 */
     marketName: text('market_name').notNull(),
-    /** 所属门店快照，与 orders 一致 */
+    /** 所属门店快照 */
     storeName: text('store_name').notNull(),
     serviceDate: date('service_date').notNull(),
     /** 服务时长（分钟） */
@@ -44,7 +42,6 @@ export const serviceOrders = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => [
-    index('idx_svc_orders_order_no').on(table.orderNo),
     index('idx_svc_orders_store_date').on(table.storeName, table.serviceDate),
     index('idx_svc_orders_assigned_staff').on(table.assignedStaffWfId),
   ],
