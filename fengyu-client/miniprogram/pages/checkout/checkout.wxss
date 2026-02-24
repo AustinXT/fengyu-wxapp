@@ -1,0 +1,46 @@
+/* pages/checkout/checkout.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 160rpx;
+}
+
+/* 消费协议行 */
+.agreement-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.agreement-text {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+
+.agreement-link {
+  font-size: 26rpx;
+  color: var(--color-primary);
+}
+
+/* 价格合计行 */
+.total-row {
+  border-top: 1px solid var(--color-border);
+}
+
+.total-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.total-symbol {
+  font-size: 22rpx;
+  font-weight: 600;
+}
+
+.total-value {
+  font-size: 40rpx;
+  font-weight: 700;
+}

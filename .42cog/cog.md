@@ -20,7 +20,7 @@
   - 员工（staff_wechat_users）：员工端 appid，角色分店长/美容师
 - 订单：销售行为的完整记录，含主表（orders）和明细（order_items）
 - 服务单：到店核销记录，含主表（service_orders）和明细（service_items）
-- 预约：顾客提前预约到店时间，关联订单明细（order_items）
+- 预约：顾客提前预约到店时间，不关联订单明细
 - SPU/SKU：商品概念层（product_spu）与 WorkFine 映射层（product_spu_sku_map）
 - 营业额分配：订单级业绩归属记录（revenue_allocations + revenue_allocation_items）
 - 员工档案（WorkFine 只读）：人事主数据，含职位/门店/是否可分配业绩
@@ -34,7 +34,7 @@
 </微信用户>
 
 <订单>
-- 唯一编码：order_no，格式 `FY-XSD-WX-{YYMMDD}{序号}`；订单明细 item_flow_no，格式 `XSLSH-WX-{YYYYMMDD}{序号}`（是核销锚点，被服务单和预约引用）
+- 唯一编码：order_no，格式 `FY-XSD-WX-{YYMMDD}{序号}`；订单明细 item_flow_no，格式 `XSLSH-WX-{YYYYMMDD}{序号}`（是核销锚点，被服务单引用）
 - 常见分类（by 类型）：正式；体验
 - 常见分类（by 下单端）：client（顾客自助）；staff（员工开单）
 - 常见分类（by 支付）：wechat；offline
@@ -45,13 +45,13 @@
 <服务单>
 - 唯一编码：service_order_no，格式 `HLD-WX-{YYMMDD}{序号}`
 - 常见分类（by 状态）：待服务；服务中；已完成
-- 说明：无 order_no 字段，与订单的关联完全通过 service_items.item_flow_no 实现；同一次到店可核销来自不同订单的项目；appointment_id 为可选关联
+- 说明：无 order_no 字段，与订单的关联完全通过 service_items.item_flow_no 实现；同一次到店可核销来自不同订单的项目
 </服务单>
 
 <预约>
 - 唯一编码：appointment_id（UUID）
 - 常见分类（by 状态）：待确认；已确认；已完成；已取消；已关闭
-- 说明：每条预约绑定一个 item_flow_no（已购买的服务项），表示"预约核销哪一项"；次数归零时系统自动将待确认/已确认预约批量置为已关闭
+- 说明：次数归零时系统自动将待确认/已确认预约批量置为已关闭
 </预约>
 
 <SPU-SKU>
@@ -72,8 +72,6 @@
 - 订单-订单明细：1:N（一笔订单多个 SKU 明细）
 - 订单明细-服务单明细：1:N（一个订单明细可被多次核销，每次对应一条 service_items）
 - 订单-服务单：N:N（通过 service_items.item_flow_no 明细层关联；一张服务单可跨多笔订单核销，一笔订单可产生多张服务单）
-- 订单明细-预约：1:N（通过 item_flow_no 关联，同一订单明细同时只能有一条有效预约）
-- 服务单-预约：N:0..1（service_orders.appointment_id 可选，服务单可不依赖预约产生）
 - 订单-营业额分配：1:N（一笔订单可分配给多名员工，但 order_no+employee_id 唯一）
 - 员工-服务单：1:N（assigned_staff_wf_id，一名员工被分配多张服务单）
 - SPU-SKU映射：1:N（一个 SPU 多个规格，UNIQUE (spu_id, workfine_item_id, workfine_source)）

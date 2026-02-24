@@ -1,0 +1,63 @@
+/* pages/profile/profile.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+/* ===== 用户信息卡（黑金主题） ===== */
+.user-card {
+  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
+  padding: 60rpx 40rpx 48rpx;
+  display: flex;
+  align-items: center;
+  gap: 32rpx;
+}
+
+.user-avatar-wrap {
+  width: 120rpx;
+  height: 120rpx;
+  background: rgba(212, 167, 106, 0.2);
+  border: 2rpx solid rgba(212, 167, 106, 0.4);
+  border-radius: 60rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.user-info {
+  flex: 1;
+}
+
+.user-phone {
+  display: block;
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #D4A76A;
+  margin-bottom: 12rpx;
+}
+
+.user-store-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.user-store {
+  font-size: 24rpx;
+  color: rgba(212, 167, 106, 0.8);
+}
+
+/* ===== 区块标题 ===== */
+.section-title {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  padding: 24rpx 32rpx 12rpx;
+  letter-spacing: 1rpx;
+}
+
+/* ===== 底部留白 ===== */
+.bottom-space {
+  height: 60rpx;
+}

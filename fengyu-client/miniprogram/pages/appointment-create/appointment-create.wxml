@@ -1,0 +1,157 @@
+<!-- pages/appointment-create/appointment-create.wxml — 发起预约 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 选择可预约项目 -->
+  <van-cell-group title="选择预约项目" inset>
+    <view wx:if="{{appointableItems.length === 0}}" class="no-items-tip">
+      <van-empty
+        description="暂无可预约项目"
+        image="search"
+      >
+        <van-button round type="primary" size="small" slot="bottom" bindtap="onGoOrders">去查看订单</van-button>
+      </van-empty>
+    </view>
+    <view wx:else>
+      <van-cell
+        wx:for="{{appointableItems}}"
+        wx:key="item_flow_no"
+        title="{{item.spu_name}}"
+        label="{{item.sku_display_name}} · 剩余 {{item.remaining_sessions}} 次"
+        clickable
+        bind:click="onSelectItem"
+        data-item="{{item}}"
+        class="{{selectedItemFlowNo === item.item_flow_no ? 'item-selected' : ''}}"
+      >
+        <van-icon
+          slot="right-icon"
+          name="{{selectedItemFlowNo === item.item_flow_no ? 'success' : 'circle'}}"
+          color="{{selectedItemFlowNo === item.item_flow_no ? '#C9986A' : '#DCDCDC'}}"
+          size="40rpx"
+        />
+      </van-cell>
+    </view>
+  </van-cell-group>
+
+  <!-- 预约时间 -->
+  <van-cell-group title="预约到店时间" inset>
+    <van-cell
+      title="选择日期"
+      value="{{appointmentDate || '请选择'}}"
+      is-link
+      bindtap="onShowDatePicker"
+    />
+    <van-cell
+      title="到店时段"
+      value="{{appointmentTimeSlot || '请填写'}}"
+      is-link
+      bindtap="onShowTimePicker"
+    />
+  </van-cell-group>
+
+  <!-- 选择美容师（可选） -->
+  <van-cell-group title="指定美容师（可选）" inset>
+    <van-cell
+      title="{{selectedStaffName || '不指定'}}"
+      label="{{defaultStaffName ? '主美容师：' + defaultStaffName : ''}}"
+      is-link
+      icon="manager-o"
+      bindtap="onShowStaffPopup"
+    />
+  </van-cell-group>
+
+  <!-- 备注 -->
+  <van-cell-group title="备注" inset>
+    <van-field
+      model:value="{{notes}}"
+      type="textarea"
+      placeholder="如有特殊需求请填写（选填）"
+      rows="3"
+      autosize
+      maxlength="200"
+      show-word-limit
+    />
+  </van-cell-group>
+
+  <!-- 底部提交 -->
+  <view class="submit-wrap safe-area-bottom">
+    <van-button
+      type="primary"
+      block
+      round
+      size="large"
+      loading="{{submitting}}"
+      disabled="{{!selectedItemFlowNo || !appointmentDate || !appointmentTimeSlot || submitting}}"
+      bindtap="onSubmit"
+    >提交预约申请</van-button>
+  </view>
+
+  <!-- 日期选择器 -->
+  <van-calendar
+    show="{{showCalendar}}"
+    min-date="{{minDate}}"
+    max-date="{{maxDate}}"
+    bind:confirm="onDateConfirm"
+    bind:close="onCloseCalendar"
+    color="#C9986A"
+    title="选择到店日期"
+  />
+
+  <!-- 时段选择 Popup -->
+  <van-popup
+    show="{{showTimePicker}}"
+    position="bottom"
+    round
+    closeable
+    bind:close="onCloseTimePicker"
+  >
+    <van-picker
+      title="选择到店时段"
+      columns="{{timeSlots}}"
+      bind:confirm="onTimeConfirm"
+      bind:cancel="onCloseTimePicker"
+    />
+  </van-popup>
+
+  <!-- 美容师选择 Popup -->
+  <van-popup
+    show="{{showStaffPopup}}"
+    position="bottom"
+    round
+    closeable
+    bind:close="onCloseStaffPopup"
+  >
+    <view class="staff-popup">
+      <view class="staff-popup__title">选择美容师</view>
+      <view class="staff-list">
+        <view
+          class="staff-item {{!selectedStaffWfId ? 'staff-item--active' : ''}}"
+          bindtap="onStaffSelect"
+          data-wf-id=""
+          data-name=""
+        >
+          <view class="staff-avatar">
+            <van-icon name="user-o" size="48rpx" color="#B09880" />
+          </view>
+          <text class="staff-name">不指定</text>
+        </view>
+        <view
+          wx:for="{{staffList}}"
+          wx:key="staff_wf_id"
+          class="staff-item {{selectedStaffWfId === item.staff_wf_id ? 'staff-item--active' : ''}}"
+          bindtap="onStaffSelect"
+          data-wf-id="{{item.staff_wf_id}}"
+          data-name="{{item.name}}"
+        >
+          <view class="staff-avatar">
+            <van-icon name="manager-o" size="48rpx" color="#C9986A" />
+          </view>
+          <text class="staff-name">{{item.name}}</text>
+          <text class="staff-role">{{item.position}}</text>
+        </view>
+      </view>
+    </view>
+  </van-popup>
+
+</view>

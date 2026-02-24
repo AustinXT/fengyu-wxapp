@@ -1,0 +1,64 @@
+<!-- pages/profile/profile.wxml — 我的 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 用户信息卡 -->
+  <view class="user-card">
+    <view class="user-avatar-wrap">
+      <van-icon name="contact" size="88rpx" color="#C9986A" />
+    </view>
+    <view class="user-info">
+      <text class="user-phone">{{maskedPhone || '未绑定手机号'}}</text>
+      <view class="user-store-row" wx:if="{{boundStoreName}}">
+        <van-icon name="location-o" size="24rpx" color="#B09880" />
+        <text class="user-store">{{boundStoreName}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 快捷入口 -->
+  <view class="section-title">快速操作</view>
+  <van-cell-group inset>
+    <van-cell
+      title="我的订单"
+      icon="orders-o"
+      is-link
+      bindtap="onOrders"
+    />
+    <van-cell
+      title="我的预约"
+      icon="calendar-o"
+      is-link
+      bindtap="onAppointments"
+    />
+  </van-cell-group>
+
+  <!-- 设置 -->
+  <view class="section-title" style="margin-top:32rpx">账户设置</view>
+  <van-cell-group inset>
+    <van-cell
+      title="绑定手机号"
+      icon="phone-o"
+      is-link
+      bindtap="onBindPhone"
+      value="{{maskedPhone || '未绑定'}}"
+    />
+    <van-cell
+      title="切换门店"
+      icon="shop-o"
+      is-link
+      bindtap="onSwitchStore"
+      value="{{boundStoreName || '未选择'}}"
+    />
+  </van-cell-group>
+
+  <!-- 关于 -->
+  <view class="section-title" style="margin-top:32rpx">关于</view>
+  <van-cell-group inset>
+    <van-cell title="凤御美容" icon="info-o" value="v1.0.0" />
+  </van-cell-group>
+
+  <view class="bottom-space" />
+
+</view>

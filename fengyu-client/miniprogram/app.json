@@ -1,0 +1,55 @@
+{
+  "pages": [
+    "pages/home/home",
+    "pages/appointment/appointment",
+    "pages/orders/orders",
+    "pages/profile/profile",
+    "pages/store-select/store-select",
+    "pages/service-detail/service-detail",
+    "pages/checkout/checkout",
+    "pages/order-detail/order-detail",
+    "pages/appointment-create/appointment-create",
+    "pages/scan-pay/scan-pay"
+  ],
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#D4A76A",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/home",
+        "text": "首页",
+        "iconPath": "images/icons/tab-home.png",
+        "selectedIconPath": "images/icons/tab-home-active.png"
+      },
+      {
+        "pagePath": "pages/appointment/appointment",
+        "text": "预约",
+        "iconPath": "images/icons/tab-calendar.png",
+        "selectedIconPath": "images/icons/tab-calendar-active.png"
+      },
+      {
+        "pagePath": "pages/orders/orders",
+        "text": "订单",
+        "iconPath": "images/icons/tab-orders.png",
+        "selectedIconPath": "images/icons/tab-orders-active.png"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的",
+        "iconPath": "images/icons/tab-profile.png",
+        "selectedIconPath": "images/icons/tab-profile-active.png"
+      }
+    ]
+  },
+  "window": {
+    "backgroundTextStyle": "dark",
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTitleText": "凤御",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#FAFAFA"
+  },
+  "sitemapLocation": "sitemap.json",
+  "usingComponents": {}
+}

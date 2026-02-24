@@ -3,3 +3,8 @@ sources/
 node_modules/
 miniprogram_npm/
 project.private.config.json
+
+# PostgreSQL & Docker
+db/.env
+*.sql.backup
+postgres_data/

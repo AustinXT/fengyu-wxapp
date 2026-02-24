@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fengyu-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fengyu
+      POSTGRES_PASSWORD: fengyu123
+      POSTGRES_DB: fengyu
+      # 设置默认时区
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
+    ports:
+      - "5432:5432"
+    volumes:
+      # 数据持久化
+      - postgres_data:/var/lib/postgresql/data
+      # 初始化脚本（首次启动时执行）
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fengyu -d fengyu"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+    driver: local
+
+# 网络配置（可选，用于与其他服务连接）
+networks:
+  default:
+    name: fengyu-network

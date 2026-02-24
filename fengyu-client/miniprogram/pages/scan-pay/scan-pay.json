@@ -1,0 +1,19 @@
+{
+  "navigationBarTitleText": "扫码收款",
+  "navigationBarBackgroundColor": "#FFFFFF",
+  "navigationBarTextStyle": "black",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "van-icon":         "@vant/weapp/icon/index",
+    "van-loading":      "@vant/weapp/loading/index",
+    "van-tag":          "@vant/weapp/tag/index",
+    "van-cell":         "@vant/weapp/cell/index",
+    "van-cell-group":   "@vant/weapp/cell-group/index",
+    "van-radio":        "@vant/weapp/radio/index",
+    "van-radio-group":  "@vant/weapp/radio-group/index",
+    "van-submit-bar":   "@vant/weapp/submit-bar/index",
+    "van-button":       "@vant/weapp/button/index",
+    "van-toast":        "@vant/weapp/toast/index",
+    "van-dialog":       "@vant/weapp/dialog/index"
+  }
+}

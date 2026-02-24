@@ -1,0 +1,18 @@
+{
+  "navigationBarTitleText": "发起预约",
+  "navigationBarBackgroundColor": "#FFFFFF",
+  "navigationBarTextStyle": "black",
+  "enablePullDownRefresh": false,
+  "usingComponents": {
+    "van-icon":         "@vant/weapp/icon/index",
+    "van-cell":         "@vant/weapp/cell/index",
+    "van-cell-group":   "@vant/weapp/cell-group/index",
+    "van-field":        "@vant/weapp/field/index",
+    "van-button":       "@vant/weapp/button/index",
+    "van-empty":        "@vant/weapp/empty/index",
+    "van-popup":        "@vant/weapp/popup/index",
+    "van-picker":       "@vant/weapp/picker/index",
+    "van-calendar":     "@vant/weapp/calendar/index",
+    "van-toast":        "@vant/weapp/toast/index"
+  }
+}

@@ -1,0 +1,86 @@
+/* pages/appointment-create/appointment-create.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 180rpx;
+}
+
+/* 无可预约项提示 */
+.no-items-tip {
+  padding: 40rpx 0;
+}
+
+/* 已选中的项目行 */
+.item-selected {
+  background: var(--color-primary-light) !important;
+}
+
+/* ===== 底部提交 ===== */
+.submit-wrap {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20rpx 32rpx;
+  background: rgba(255,255,255,0.95);
+  border-top: 1px solid var(--color-border);
+}
+
+/* ===== 美容师弹窗 ===== */
+.staff-popup {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.staff-popup__title {
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 32rpx 0 20rpx;
+}
+
+.staff-list {
+  display: flex;
+  overflow-x: auto;
+  padding: 16rpx 24rpx 40rpx;
+  gap: 24rpx;
+}
+
+.staff-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+  flex-shrink: 0;
+  padding: 16rpx;
+  border-radius: 16rpx;
+  border: 2px solid transparent;
+  min-width: 120rpx;
+}
+
+.staff-item--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.staff-avatar {
+  width: 96rpx;
+  height: 96rpx;
+  background: #F0EBE4;
+  border-radius: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.staff-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.staff-role {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}

@@ -1,0 +1,85 @@
+<!-- pages/appointment/appointment.wxml — 预约管理 -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- Tab 筛选 -->
+  <van-tabs
+    active="{{activeTab}}"
+    bind:change="onTabChange"
+    sticky
+    color="#C9986A"
+    title-active-color="#C9986A"
+    title-inactive-color="#7A6553"
+  >
+    <van-tab title="全部"   name="all" />
+    <van-tab title="待确认" name="pending" />
+    <van-tab title="已确认" name="confirmed" />
+    <van-tab title="已取消" name="cancelled" />
+  </van-tabs>
+
+  <!-- 加载态 -->
+  <view wx:if="{{isLoading}}" class="skeleton-list">
+    <van-skeleton title row="3" />
+    <van-skeleton title row="3" style="margin-top:24rpx" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{list.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无预约记录" />
+    <van-button type="primary" size="normal" class="empty-btn" bindtap="onCreateAppointment">
+      发起预约
+    </van-button>
+  </view>
+
+  <!-- 预约列表 -->
+  <view wx:else class="list-wrap">
+    <view
+      wx:for="{{list}}"
+      wx:key="appointment_id"
+      class="appt-card"
+    >
+      <!-- 卡片头：服务名 + 状态 -->
+      <view class="appt-card__header">
+        <text class="appt-service">{{item.service_name}}</text>
+        <van-tag
+          type="{{item.statusType}}"
+          color="{{item.statusColor}}"
+          text-color="{{item.statusTextColor}}"
+        >{{item.status_label}}</van-tag>
+      </view>
+
+      <!-- 详情行 -->
+      <van-cell-group border="{{false}}">
+        <van-cell title="预约时间" value="{{item.appointment_time_fmt}}" />
+        <van-cell title="美容师"   value="{{item.staff_name || '未指定'}}" />
+        <van-cell title="来源订单" value="{{item.order_no}}" />
+      </van-cell-group>
+
+      <!-- 操作按钮 -->
+      <view class="appt-card__actions" wx:if="{{item.status === '待确认' || item.status === '已确认'}}">
+        <van-button
+          size="small"
+          plain
+          type="danger"
+          round
+          bindtap="onCancelAppt"
+          data-id="{{item.appointment_id}}"
+        >取消预约</van-button>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部发起预约按钮 -->
+  <view class="fab-wrap safe-area-bottom" wx:if="{{!isLoading}}">
+    <van-button
+      type="primary"
+      block
+      round
+      size="large"
+      bindtap="onCreateAppointment"
+    >发起预约</van-button>
+  </view>
+
+</view>

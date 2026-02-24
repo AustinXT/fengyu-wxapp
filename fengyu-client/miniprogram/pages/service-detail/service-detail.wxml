@@ -1,0 +1,128 @@
+<!-- pages/service-detail/service-detail.wxml — 商品详情 + SKU 选择 -->
+<van-toast id="van-toast" />
+
+<view class="container" wx:if="{{!isLoading}}">
+
+  <!-- 封面图 -->
+  <view class="cover-wrap">
+    <image
+      wx:if="{{spu.cover_image}}"
+      class="cover-img"
+      src="{{spu.cover_image}}"
+      mode="aspectFill"
+    />
+    <view wx:else class="cover-placeholder">
+      <van-icon name="photo-o" size="80rpx" color="#C9986A" />
+    </view>
+  </view>
+
+  <!-- 商品基础信息 -->
+  <view class="info-card">
+    <view class="info-tags">
+      <van-tag type="primary" wx:if="{{spu.big_category === '生美'}}">生美</van-tag>
+      <van-tag color="#006D75" wx:elif="{{spu.big_category === '非生美'}}">非生美</van-tag>
+      <van-tag color="#D46B08" wx:elif="{{spu.big_category === '院装产品'}}">院装产品</van-tag>
+    </view>
+    <text class="spu-name">{{spu.name}}</text>
+    <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
+
+    <!-- 选中 SKU 价格 -->
+    <view class="price-row" wx:if="{{selectedSku}}">
+      <view class="price-group">
+        <text class="price-symbol">¥</text>
+        <text class="price-integer">{{selectedSku.price}}</text>
+      </view>
+      <text class="price-unit" wx:if="{{selectedSku.session_count}}">/ {{selectedSku.session_count}} 次</text>
+    </view>
+    <view class="price-row" wx:else>
+      <text class="price-hint">请选择规格</text>
+    </view>
+  </view>
+
+  <!-- SKU 规格选择 -->
+  <view class="sku-card">
+    <text class="sku-title">选择规格</text>
+    <view class="sku-list">
+      <view
+        wx:for="{{skuList}}"
+        wx:key="sku_id"
+        class="sku-item {{selectedSku.sku_id === item.sku_id ? 'sku-item--active' : ''}}"
+        bindtap="onSkuTap"
+        data-sku-id="{{item.sku_id}}"
+      >
+        <text class="sku-display-name">{{item.sku_display_name}}</text>
+        <text class="sku-price">¥{{item.price}}</text>
+        <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 选择美容师（可选） -->
+  <van-cell-group title="指定美容师（可选）" inset>
+    <van-cell
+      title="{{selectedStaffName || '不指定美容师'}}"
+      is-link
+      icon="manager-o"
+      bindtap="onSelectStaff"
+      value="{{selectedStaffName ? '' : '可不选'}}"
+    />
+  </van-cell-group>
+
+  <!-- 底部提交栏 -->
+  <van-submit-bar
+    price="{{selectedSku ? selectedSku.price * 100 : 0}}"
+    button-text="立即下单"
+    disabled="{{!selectedSku}}"
+    tip="{{!selectedSku ? '请先选择规格' : ''}}"
+    bind:submit="onSubmit"
+    safe-area-inset-bottom
+  />
+
+  <!-- 美容师选择 Popup -->
+  <van-popup
+    show="{{showStaffPopup}}"
+    position="bottom"
+    round
+    closeable
+    bind:close="onCloseStaffPopup"
+  >
+    <view class="staff-popup">
+      <view class="staff-popup__title">选择美容师</view>
+      <view class="staff-list">
+        <!-- 不指定 -->
+        <view
+          class="staff-item {{!selectedStaffWfId ? 'staff-item--active' : ''}}"
+          bindtap="onStaffSelect"
+          data-wf-id=""
+          data-name=""
+        >
+          <view class="staff-avatar">
+            <van-icon name="user-o" size="48rpx" color="#B09880" />
+          </view>
+          <text class="staff-name">不指定</text>
+        </view>
+        <!-- 美容师列表 -->
+        <view
+          wx:for="{{staffList}}"
+          wx:key="staff_wf_id"
+          class="staff-item {{selectedStaffWfId === item.staff_wf_id ? 'staff-item--active' : ''}}"
+          bindtap="onStaffSelect"
+          data-wf-id="{{item.staff_wf_id}}"
+          data-name="{{item.name}}"
+        >
+          <view class="staff-avatar">
+            <van-icon name="manager-o" size="48rpx" color="#C9986A" />
+          </view>
+          <text class="staff-name">{{item.name}}</text>
+          <text class="staff-title">{{item.position}}</text>
+        </view>
+      </view>
+    </view>
+  </van-popup>
+
+</view>
+
+<!-- 骨架屏 -->
+<view wx:else class="skeleton-wrap">
+  <van-skeleton title avatar row="5" />
+</view>

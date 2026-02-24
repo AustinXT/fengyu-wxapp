@@ -1,0 +1,77 @@
+<!-- pages/orders/orders.wxml — 订单列表 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <van-tabs
+    active="{{activeTab}}"
+    bind:change="onTabChange"
+    sticky
+    color="#C9986A"
+    title-active-color="#C9986A"
+    title-inactive-color="#7A6553"
+    swipeable
+  >
+    <van-tab title="全部"   name="all" />
+    <van-tab title="待支付" name="待支付" />
+    <van-tab title="已支付" name="已支付" />
+    <van-tab title="已完成" name="已完成" />
+  </van-tabs>
+
+  <!-- 加载 -->
+  <view wx:if="{{isLoading}}" class="skeleton-list">
+    <van-skeleton title row="4" />
+    <van-skeleton title row="4" style="margin-top:24rpx" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{list.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无订单记录" />
+  </view>
+
+  <!-- 订单卡片 -->
+  <view wx:else class="list-wrap">
+    <view
+      wx:for="{{list}}"
+      wx:key="order_no"
+      class="order-card"
+      bindtap="onOrderTap"
+      data-order-no="{{item.order_no}}"
+    >
+      <!-- 卡片头 -->
+      <view class="order-card__header">
+        <view class="order-no-row">
+          <text class="order-no">{{item.order_no}}</text>
+          <van-tag wx:if="{{item.order_type === '体验'}}" color="#F9F0FF" text-color="#722ED1">体验</van-tag>
+        </view>
+        <text class="order-status {{item.statusClass}}">{{item.status}}</text>
+      </view>
+
+      <!-- 商品明细摘要 -->
+      <view class="order-items">
+        <view wx:for="{{item.items}}" wx:key="item_flow_no" wx:for-item="oi" class="order-item-row">
+          <text class="oi-name">{{oi.spu_name}} · {{oi.sku_display_name}}</text>
+          <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
+            <text class="oi-sessions-text">剩余 {{oi.remaining_sessions}} 次</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 底部：金额 + 时间 -->
+      <view class="order-card__footer">
+        <text class="order-time">{{item.order_time_fmt}}</text>
+        <view class="order-amount-wrap">
+          <text class="order-amount-label">合计</text>
+          <text class="order-amount">¥{{item.total_amount}}</text>
+        </view>
+      </view>
+
+      <!-- 待支付操作 -->
+      <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
+        <van-button size="small" plain round bindtap="onPayTap" data-order-no="{{item.order_no}}" catch:tap="onPayTap" data-order-no="{{item.order_no}}">去支付</van-button>
+      </view>
+
+    </view>
+  </view>
+
+</view>

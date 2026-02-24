@@ -1,0 +1,140 @@
+/* pages/scan-pay/scan-pay.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+/* ===== 加载态 ===== */
+.loading-wrap {
+  padding-top: 240rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24rpx;
+}
+
+.loading-text {
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 错误态 ===== */
+.error-wrap {
+  padding-top: 160rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.error-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.error-desc {
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+  max-width: 560rpx;
+  text-align: center;
+  line-height: 1.5;
+  margin-bottom: 16rpx;
+}
+
+/* ===== 订单展示 ===== */
+.order-wrap {
+  padding-bottom: 180rpx;
+}
+
+.order-header {
+  background: #FFFFFF;
+  padding: 28rpx 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.order-store {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* ===== 商品明细 ===== */
+.items-section {
+  background: #FFFFFF;
+  padding: 16rpx 32rpx 24rpx;
+}
+
+.order-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16rpx 0;
+  border-bottom: 1px solid #F5F0EB;
+}
+
+.order-item:last-child {
+  border-bottom: none;
+}
+
+.item-left {
+  flex: 1;
+}
+
+.item-name {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  margin-bottom: 6rpx;
+}
+
+.item-spec {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.item-price {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+/* ===== 合计 ===== */
+.order-total {
+  background: #FFFFFF;
+  padding: 24rpx 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border);
+  margin-bottom: 16rpx;
+}
+
+.total-label {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+
+.total-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.total-symbol {
+  font-size: 22rpx;
+  font-weight: 600;
+}
+
+.total-value {
+  font-size: 44rpx;
+  font-weight: 700;
+}

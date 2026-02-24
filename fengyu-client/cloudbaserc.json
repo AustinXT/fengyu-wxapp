@@ -1,0 +1,20 @@
+{
+  "envId": "fengyu-8gz6p2d7f9f54217",
+  "version": "2.0",
+  "functions": [
+    {
+      "name": "clientApi",
+      "timeout": 30,
+      "envVariables": {
+        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@localhost:5432/fengyu",
+        "MSSQL_SERVER": "111.229.31.128",
+        "MSSQL_PORT": "1433",
+        "MSSQL_USER": "Sa",
+        "MSSQL_PASSWORD": "oHx#+Q",
+        "MSSQL_DATABASE": "wkdb_20220804_86cd3292"
+      },
+      "runtime": "Nodejs18.15",
+      "handler": "index.main"
+    }
+  ]
+}

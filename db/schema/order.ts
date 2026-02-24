@@ -7,12 +7,12 @@ import {
   integer,
   numeric,
   pgTable,
-  sql,
   text,
   timestamp,
   unique,
   uniqueIndex,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { orderSourceEnum, orderStatusEnum, orderTypeEnum, paymentMethodEnum } from './enums'
 import { productSpuSkuMap } from './product'
 
@@ -72,13 +72,13 @@ export const orders = pgTable(
   },
   (table) => [
     // 已注册顾客同一时刻只能有一笔待支付订单
-    uniqueIndex('uq_orders_client_pending').on(table.clientUserId).where(
-      sql`${table.status} = '待支付' AND ${table.clientUserId} IS NOT NULL`,
-    ),
+    uniqueIndex('uq_orders_client_pending')
+      .on(table.clientUserId)
+      .where(sql`status = '待支付' AND client_user_id IS NOT NULL`),
     // 未注册顾客（employee 开单）防并发重复开单兜底
-    uniqueIndex('uq_orders_phone_pending').on(table.clientPhone, table.storeName).where(
-      sql`${table.status} = '待支付' AND ${table.clientUserId} IS NULL`,
-    ),
+    uniqueIndex('uq_orders_phone_pending')
+      .on(table.clientPhone, table.storeName)
+      .where(sql`status = '待支付' AND client_user_id IS NULL`),
     index('idx_orders_client_user_id').on(table.clientUserId),
     index('idx_orders_store_status').on(table.storeName, table.status),
   ],

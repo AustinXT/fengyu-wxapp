@@ -1,0 +1,148 @@
+/* pages/order-detail/order-detail.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 180rpx;
+}
+
+.skeleton-wrap {
+  padding: 32rpx;
+}
+
+/* ===== 状态大图区 ===== */
+.status-hero {
+  background: #FFFFFF;
+  padding: 48rpx 40rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}
+
+.status-label {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.status-hint {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 服务明细区 ===== */
+.section-wrap {
+  margin: 0 24rpx 24rpx;
+}
+
+.section-title {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  padding: 16rpx 8rpx 12rpx;
+  letter-spacing: 1rpx;
+}
+
+.items-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+}
+
+.order-item {
+  padding: 24rpx 24rpx;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.order-item:last-child {
+  border-bottom: none;
+}
+
+.order-item__main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16rpx;
+}
+
+.order-item__info {
+  flex: 1;
+}
+
+.oi-name {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  margin-bottom: 6rpx;
+}
+
+.oi-spec {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.order-item__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8rpx;
+}
+
+.oi-price {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.oi-sessions-text {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+}
+
+.oi-expire {
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
+  margin-top: 12rpx;
+}
+
+.oi-expire-text {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 金额合计 ===== */
+.total-cell {
+  border-top: 1px solid var(--color-border) !important;
+}
+
+.total-price-wrap {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.total-symbol {
+  font-size: 22rpx;
+  font-weight: 600;
+}
+
+.total-amount {
+  font-size: 40rpx;
+  font-weight: 700;
+}
+
+/* ===== 操作区 ===== */
+.actions-wrap {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 20rpx 32rpx;
+  background: rgba(255,255,255,0.95);
+  border-top: 1px solid var(--color-border);
+}
