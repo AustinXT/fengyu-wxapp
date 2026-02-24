@@ -9,7 +9,7 @@
   <depends>real.md</depends>
 </meta>
 
-基于"智能体 + 信息 + 上下文"框架描述凤御微信小程序的核心概念模型。两个小程序（客户端/员工端）共用同一套 CloudBase 云函数后端，通过不同 appid 区分用户身份。
+基于"智能体 + 信息 + 上下文"框架描述凤御微信小程序的核心概念模型。
 
 ---
 
@@ -72,7 +72,8 @@
 - 订单-订单明细：1:N（一笔订单多个 SKU 明细）
 - 订单明细-服务单明细：1:N（一个订单明细可被多次核销，每次对应一条 service_items）
 - 订单-服务单：N:N（通过 service_items.item_flow_no 明细层关联；一张服务单可跨多笔订单核销，一笔订单可产生多张服务单）
-- 订单-预约：1:N（通过 order_items.item_flow_no 关联，同一订单明细同时只能有一条有效预约）
+- 订单明细-预约：1:N（通过 item_flow_no 关联，同一订单明细同时只能有一条有效预约）
+- 服务单-预约：N:0..1（service_orders.appointment_id 可选，服务单可不依赖预约产生）
 - 订单-营业额分配：1:N（一笔订单可分配给多名员工，但 order_no+employee_id 唯一）
 - 员工-服务单：1:N（assigned_staff_wf_id，一名员工被分配多张服务单）
 - SPU-SKU映射：1:N（一个 SPU 多个规格，UNIQUE (spu_id, workfine_item_id, workfine_source)）
