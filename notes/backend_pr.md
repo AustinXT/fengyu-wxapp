@@ -49,8 +49,6 @@ CloudBase 云函数（Node.js）
 | 微信用户（openid、session、手机号绑定） | PG 自托管数据库 | 读写 | 客户端与员工端各一张表（`client_wechat_users` / `staff_wechat_users`），两端 appid 不同，openid 相互独立 |
 | SPU 商品元数据（product_spu） | PG 自托管数据库 | 读写 | 名称、封面图、描述、排序，由运营在控制台维护 |
 | SKU↔WorkFine 映射（product_spu_sku_map） | PG 自托管数据库 | 读写 | SPU 与 WorkFine 疗程项目编号/商品编号的对应关系 |
-| 实时推送状态 | PG 自托管数据库 | 读写 | WebSocket 连接与消息队列 |
-| 操作日志 | PG 自托管数据库 | 写 | 小程序侧操作留痕 |
 
 ---
 
@@ -67,9 +65,6 @@ CloudBase 云函数（Node.js）
 | 营业额分配 | 订单ID、员工、部门、分配金额 |
 | 预约 | 顾客、美容师、时间、状态 |
 | 服务单 | 订单ID、顾客、服务人、开始时间、完成时间、状态、扣减次数 |
-| 操作日志 | 业务类型、业务ID、操作人、操作动作、时间、变更前后值 |
-| 市场 | 名称、编号 |
-| 部门 | 名称、所属市场/门店、类型 |
 
 ### 实体一：SPU 商品 & SKU 映射
 
@@ -137,7 +132,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.flow_no` 引用作为核销锚点 |
 | `order_id` | string | 关联 `orders.order_id` |
-| `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id`；自定义商品（`自定义-疗程` / `自定义-单品`）时为 null |
+| `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
 | `session_count` | integer \| null | 疗程总次数（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
 | `remaining_sessions` | integer \| null | 剩余可用次数（**仅疗程卡适用**；每次护理核销时以**行级锁 + 事务**原子更新，不得低于 0） |
 | `unit_price` | decimal | 原价（开单时从 WorkFine 读取并快照，防止后续价格变更影响历史单） |
@@ -178,32 +173,19 @@ CloudBase 云函数（Node.js）
 
 ### 实体三：护理单
 
-> **设计说明：为何需要 `service_items`？**
-> 一次护理单可同时服务多个项目（顾客同一次到店可核销疗程卡 A 和疗程卡 B 各一次）；不同项目可由不同美容师服务，需行级记录服务人员；每个明细行通过 `item_flow_no_ref` 精确关联到对应 `order_items` 行并触发剩余次数扣减。因此护理明细必须行级存储，不能压入主表。
-
 #### service_orders（护理单主表，合并 UDT_S_762 售前 + UDT_S_259 售后）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}`（UNIQUE） |
+| `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}` |
 | `service_type` | enum | 护理单类型：`售前` / `售后` |
 | `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
-| `market_name` | string | 所属市场（快照） |
-| `store_name` | string | 所属门店（快照） |
 | `service_date` | date | 护理服务日期 |
-| `customer_name` | string | 顾客姓名（冗余快照） |
-| `customer_phone` | string | 顾客联系电话（冗余快照，员工端查看时脱敏展示） |
-| `customer_type` | string | 顾客类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上美团首次） |
-| `service_duration` | integer | 服务时长（分钟） |
-| `is_card_counted` | boolean | 是否核算卡数 |
-| `outreach_type` | string | 拓客类型 |
-| `promoter` | string | 推广员 |
-| `appointment_time` | datetime \| null | 预约/到店时间（**售前专有**，售后为 null） |
+| `service_duration` | string | 服务时长（分钟） |
+| `is_card_counted` | string | 是否核算卡数（是 / 否） |
 | `remark` | string | 备注 |
-| `category` | string | 护理分类 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
-| `appointment_id` | string \| null | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
-| `staff_id` | string | 主服务人员编号 |
+| `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -211,26 +193,11 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `flow_no` | string | 主键，本行业务流水号，UNIQUE（售后: `XSLSH-WX-{date}{seq}`；售前: `TKKLS-WX-{date}{seq}`） |
+| `flow_no` | string | 主键，流水号（售后: `XSLSH-WX-` 核销 `order_items.item_flow_no`；售前: `TKKLS-WX-` 拓客卡体系） |
 | `service_order_id` | string | 关联 `service_orders.service_order_id` |
-| `item_flow_no_ref` | string \| null | **售后专有**，关联 `order_items.item_flow_no`，是触发疗程卡次数扣减的关联键；售前为 null |
-| `wf_item_id` | string \| null | WorkFine 项目编号（仅供参考，不用于数据库关联） |
-| `item_name` | string | 护理项目名称 |
-| `category` | string | 品项分类 |
-| `session_used` | integer \| null | 本次划卡次数（**售后专有**，售前为 null） |
-| `remaining_sessions_after` | integer \| null | 本次核销后的剩余次数（历史快照，**售后疗程卡专有**；实时剩余次数以 `order_items.remaining_sessions` 为准） |
-| `count_change` | decimal \| null | 次数变化（**售前专有**，如 -2，拓客卡体系专属；与 `session_used` 含义不同，不可混用） |
+| `sku_id` | string | null | 关联 `product_spu_sku_map.sku_id` |
+| `session_used` | integer | 本次划卡次数 |
 | `employee_id` | string | 服务美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
-| `employee_name` | string | 服务美容师姓名 |
-| `position_series` | string \| null | 职位序列（**售前专有**） |
-| `employee_position` | string | 美容师职位 |
-| `service_fee` | decimal | 服务费金额 |
-| `item_count` | decimal | 项目数量 |
-| `satisfaction` | string | 顾客满意度 |
-| `consumption` | decimal | 本次消耗金额 |
-| `unit_price` | decimal | 单次服务价格 |
-| `is_gift` | boolean | 是否赠送 |
-| `expire_date` | date \| null | 到期日（疗程卡适用） |
 
 ---
 
@@ -281,53 +248,11 @@ CloudBase 云函数（Node.js）
 | `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `staff_name` | string | 预约美容师姓名（冗余存储） |
 | `appointment_time` | datetime | 预约到店时间 |
-| `order_id` | string | 来源订单，关联 `orders.order_id` |
 | `item_flow_no` | string | 销售流水号，关联 `order_items.item_flow_no`，指向具体疗程卡行 |
-| `service_item` | string | 预约项目描述（自由文本） |
 | `notes` | string | 备注 |
 | `cancelled_reason` | string | 取消原因（已取消时填入） |
-| `created_by` | string | 创建人员工编号（员工端创建）或 `customer`（顾客端自助） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
-
----
-
-### 实体六：实时推送状态
-
-#### push_events（实时推送事件队列，PG 自托管数据库）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | bigint | 主键，自增 |
-| `event_type` | string | 事件类型（`order_paid` / `service_started` / `service_completed` 等） |
-| `biz_id` | string | 关联业务主键（如 `orders.order_id`） |
-| `target_store` | string | 目标推送门店（员工端按门店订阅） |
-| `payload` | jsonb | 推送负载（订单号、顾客名、金额等关键字段快照） |
-| `status` | enum | 推送状态：`pending` / `sent` / `failed` |
-| `retry_count` | integer | 已重试次数（失败后最多重试 3 次） |
-| `sent_at` | timestamp | 成功推送时间（null 表示未送达） |
-| `created_at` | timestamp | 事件创建时间 |
-
-> 员工端 WebSocket 断开时，轮询兜底每 30 秒查询 `status = 'pending'` 事件，不依赖 WebSocket 连接状态。
-
----
-
-### 实体七：操作日志
-
-#### audit_logs（操作日志，PG 自托管数据库）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | bigint | 主键，自增 |
-| `biz_type` | string | 业务类型（`order` / `service_order` / `appointment` / `payment` / `customer` 等） |
-| `biz_id` | string | 业务主键（如 `order_id` / `service_order_id`） |
-| `operator_id` | string | 操作人员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（顾客端操作记为 `customer:{openid}`） |
-| `operator_name` | string | 操作人姓名（冗余存储） |
-| `action` | string | 操作动作（`create` / `pay` / `confirm` / `cancel` / `complete` / `allocate` 等） |
-| `before_value` | jsonb | 变更前值（首次创建时为 null） |
-| `after_value` | jsonb | 变更后值（删除时为 null） |
-| `ip_address` | string | 客户端 IP（可选，安全审计用） |
-| `created_at` | timestamp | 操作时间 |
 
 ---
 
@@ -351,15 +276,7 @@ CloudBase 云函数（Node.js）
 
 ---
 
-## 五、实时通信
-
-- 订单进入 `已支付` 后，员工端需**即时感知**并更新日历视图
-- **技术方案**：WebSocket 或小程序消息订阅
-- **兜底机制**：WebSocket 断开时，员工端每 30 秒轮询一次顾客日历数据；恢复连接后回到实时推送
-
----
-
-## 六、组织架构
+## 五、组织架构
 
 ```
 品牌总部
@@ -381,13 +298,12 @@ CloudBase 云函数（Node.js）
 1. 只有**店长（门店经理）**可开单，普通美容师无开单权限
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 2 倍）
 3. **美容师选择非必须**：顾客下单时可不指定美容师
-4. **技师不可见**客户真实电话号码
-5. **日历入账口径**：仅 `已支付` 订单计入当日消费
-6. **幂等要求**：支付回调、服务完成两类接口必须幂等；重复开单通过 `orders` 表部分唯一索引（`UNIQUE (client_user_id) WHERE status = '待支付'`）在数据库层拦截
-7. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
-8. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
-9. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
-10. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（可物理删除或加 `is_void` 标记）；重新付款不重新分配，由店长手动操作。
+4. **日历入账口径**：仅 `已支付` 订单计入当日消费
+5. **幂等要求**：支付回调、服务完成两类接口必须幂等；重复开单通过 `orders` 表部分唯一索引（`UNIQUE (client_user_id) WHERE status = '待支付'`）在数据库层拦截
+6. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
+7. 支付成功触发条件统一为**订单进入已支付**，而不是"仅创建订单成功"
+8. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建
+9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（加 `is_void` 标记）；重新付款不重新分配，由店长手动操作。
 
 ---
 
@@ -396,7 +312,6 @@ CloudBase 云函数（Node.js）
 ### 订单状态机
 
 ```text
-待支付 -> 已支付 -> 已完成
 待支付 -> 支付失败
 待支付 -> 已关闭
 待支付 -> 待确认收款 -> 已支付
@@ -404,8 +319,6 @@ CloudBase 云函数（Node.js）
 
 - `已支付` 触发：微信支付回调成功，或店长确认线下收款成功
 - `待确认收款`：仅用于顾客端选择线下付款后的中间状态
-- 疗程卡订单：进入 `已支付` 后状态为"待服务"，每次服务核销后更新剩余次数
-- 院装产品订单：进入 `已支付` 后可直接置为 `已完成`
 
 ### 服务单状态机
 
