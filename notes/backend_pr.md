@@ -106,58 +106,47 @@ CloudBase 云函数（Node.js）
 
 ### 实体二：订单（销售单）
 
+> **设计说明：为何需要 `order_items`？**
+> 一笔销售单可包含多个项目（疗程卡、单品、院装产品可混购），且疗程卡需要**独立追踪剩余次数与到期日**，并作为护理单核销的引用锚点（通过 `item_flow_no`）。因此明细必须以行级方式独立存储，不能压入主表字段。
+
 #### orders（订单主表，对应 UDT_S_209）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `order_id` | string | 主键，系统自生成 |
-| `order_no` | string | 销售单号，格式 `FY-XSD{YYMMDD}{序号}` |
+| `order_no` | string | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店 |
+| `market_name` | string | 所属市场（快照，防止组织架构调整影响历史单） |
+| `store_name` | string | 所属门店（快照，同上） |
 | `order_datetime` | datetime | 销售日期时间 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（下单顾客的微信用户 ID） |
-| `total_payment` | decimal | 收款合计 |
 | `payment_method` | enum | 收款方式：`wechat`（微信支付）/ `offline`（线下收款）|
-| `total_performance` | decimal | 本单业绩 |
-| `dept_undistributed` | decimal | 美容部充公业绩（未分配给个人） |
-| `debt_amount` | decimal | 本单欠款合计 |
 | `order_source` | enum | 下单端：`client`（客户端自助）/ `staff`（员工端开单） |
-| `opened_by` | string | 开单人员工编号（员工端开单时自动填入，客户端自助下单时为 null） |
-| `preferred_staff_wf_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（顾客未指定时为 null） |
+| `opened_by` | string | 开单人员工编号（员工端开单时填入，客户端自助时为 null） |
+| `preferred_staff_wf_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（未指定时为 null） |
 | `paid_at` | timestamp | 支付完成时间 |
 | `offline_confirmed_by` | string | 线下收款确认人员工编号 |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付'`，同一顾客同一时刻只能有一笔待支付订单，防止重复开单。（销售明细，对应 UDT_M_213）
+> 部分唯一索引：`UNIQUE (client_user_id) WHERE status = '待支付'`，同一顾客同一时刻只能有一笔待支付订单，防止重复开单。
 
 #### order_items（销售明细，对应 UDT_M_213）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | bigint | 主键，自增 |
+| `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}`，被护理单 `service_items.flow_no` 引用作为核销锚点 |
 | `order_id` | string | 关联 `orders.order_id` |
-| `item_flow_no` | string | 销售流水号，格式 `XSLSH-{YYYYMMDD}{序号}`（被护理单核销引用） |
-| `product_type` | string | 产品类型（疗程卡 / 单品 / 自定义-疗程 / 自定义-单品） |
-| `sku_id` | string | 关联 `product_spu_sku_map.sku_id`，通过 SKU 映射间接关联 WorkFine 项目 |
-| `category` | string | 品项分类 |
-| `item_name` | string | 项目名称 |
-| `unit` | string | 计量单位 |
-| `session_count` | integer | 疗程服务次数（总次数） |
-| `remaining_sessions` | integer | 剩余可用次数（每次护理核销后更新） |
-| `unit_price` | decimal | 原价（标准售价） |
+| `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id`；自定义商品（`自定义-疗程` / `自定义-单品`）时为 null |
+| `session_count` | integer \| null | 疗程总次数（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
+| `remaining_sessions` | integer \| null | 剩余可用次数（**仅疗程卡适用**；每次护理核销时以**行级锁 + 事务**原子更新，不得低于 0） |
+| `unit_price` | decimal | 原价（开单时从 WorkFine 读取并快照，防止后续价格变更影响历史单） |
 | `quantity` | decimal | 销售数量 |
-| `unit_discount` | decimal | 单价优惠金额 |
-| `sale_amount` | decimal | 销售金额（优惠后） |
+| `unit_discount` | decimal | 单价优惠金额（无优惠时为 0） |
+| `sale_amount` | decimal | 销售金额（优惠后；持久化原因：存在多种折扣组合，应用层计算后写入） |
 | `receivable` | decimal | 应收金额 |
 | `received` | decimal | 实收金额 |
-| `paid_count` | integer | 已付款次数（分期） |
-| `is_gift` | string | 是否赠送（是 / 否） |
-| `expire_date` | date | 疗程卡到期日 |
-| `unit_price_per_session` | decimal | 单次价格（实收 ÷ 服务次数） |
-| `debt` | decimal | 顾客欠款（应收 - 实收） |
+| `expire_date` | date \| null | 疗程卡到期日（**仅疗程卡适用**，`单品` / `院装产品` 为 null） |
 | `remark` | string | 备注 |
 
 #### revenue_allocations（营业额分配，对应 UDT_M_217）
@@ -167,11 +156,6 @@ CloudBase 云函数（Node.js）
 | `id` | bigint | 主键，自增 |
 | `order_id` | string | 关联 `orders.order_id` |
 | `employee_id` | string | 员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
-| `employee_name` | string | 员工姓名 |
-| `position_series` | string | 职位序列编码 |
-| `position` | string | 职位名称 |
-| `dept_name` | string | 职位所属部门（美容部 / 推广部等） |
-| `dept_code` | string | 部门编码 |
 | `allocation_ratio` | decimal | 占比（同部门多人时如 0.3；跨部门或单人时为 1.0） |
 | `total_amount` | decimal | 该员工最终分配金额（等于 `revenue_allocation_items` 的 amount 之和） |
 | `created_at` | timestamp | 记录创建时间 |
@@ -194,29 +178,31 @@ CloudBase 云函数（Node.js）
 
 ### 实体三：护理单
 
+> **设计说明：为何需要 `service_items`？**
+> 一次护理单可同时服务多个项目（顾客同一次到店可核销疗程卡 A 和疗程卡 B 各一次）；不同项目可由不同美容师服务，需行级记录服务人员；每个明细行通过 `item_flow_no_ref` 精确关联到对应 `order_items` 行并触发剩余次数扣减。因此护理明细必须行级存储，不能压入主表。
+
 #### service_orders（护理单主表，合并 UDT_S_762 售前 + UDT_S_259 售后）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `service_order_id` | string | 主键，系统自生成 |
-| `service_order_no` | string | 护理单编号，格式 `HLD-{YYMMDD}{序号}` |
+| `service_order_no` | string | 主键，护理单编号，格式 `HLD-WX-{YYMMDD}{序号}`（UNIQUE） |
 | `service_type` | enum | 护理单类型：`售前` / `售后` |
 | `status` | enum | 服务状态：`待服务` / `服务中` / `已完成` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店 |
+| `market_name` | string | 所属市场（快照） |
+| `store_name` | string | 所属门店（快照） |
 | `service_date` | date | 护理服务日期 |
-| `customer_name` | string | 顾客姓名 |
-| `customer_type` | string | 顾客类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上/美团首次） |
-| `service_duration` | string | 服务时长（分钟） |
-| `is_card_counted` | string | 是否核算卡数（是 / 否） |
+| `customer_name` | string | 顾客姓名（冗余快照） |
+| `customer_phone` | string | 顾客联系电话（冗余快照，员工端查看时脱敏展示） |
+| `customer_type` | string | 顾客类型（售前一次 / 售后 / 老带新 / 售前二次 / 线上美团首次） |
+| `service_duration` | integer | 服务时长（分钟） |
+| `is_card_counted` | boolean | 是否核算卡数 |
 | `outreach_type` | string | 拓客类型 |
 | `promoter` | string | 推广员 |
-| `appointment_time` | datetime | 预约/到店时间（**售前专有**，售后为 null） |
+| `appointment_time` | datetime \| null | 预约/到店时间（**售前专有**，售后为 null） |
 | `remark` | string | 备注 |
 | `category` | string | 护理分类 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
-| `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
-| `customer_phone` | string | 顾客联系电话 |
+| `appointment_id` | string \| null | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `staff_id` | string | 主服务人员编号 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -225,26 +211,26 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | bigint | 主键，自增 |
+| `flow_no` | string | 主键，本行业务流水号，UNIQUE（售后: `XSLSH-WX-{date}{seq}`；售前: `TKKLS-WX-{date}{seq}`） |
 | `service_order_id` | string | 关联 `service_orders.service_order_id` |
-| `wf_item_id` | string | WorkFine 项目编号（仅作参考），核销关联通过 `flow_no` → `order_items.item_flow_no` 建立 |
+| `item_flow_no_ref` | string \| null | **售后专有**，关联 `order_items.item_flow_no`，是触发疗程卡次数扣减的关联键；售前为 null |
+| `wf_item_id` | string \| null | WorkFine 项目编号（仅供参考，不用于数据库关联） |
 | `item_name` | string | 护理项目名称 |
 | `category` | string | 品项分类 |
-| `flow_no` | string | 流水号（售后: `XSLSH-` 核销 `order_items.item_flow_no`；售前: `TKKLS-` 拓客卡体系） |
-| `session_used` | integer | 本次划卡次数 |
+| `session_used` | integer \| null | 本次划卡次数（**售后专有**，售前为 null） |
+| `remaining_sessions_after` | integer \| null | 本次核销后的剩余次数（历史快照，**售后疗程卡专有**；实时剩余次数以 `order_items.remaining_sessions` 为准） |
+| `count_change` | decimal \| null | 次数变化（**售前专有**，如 -2，拓客卡体系专属；与 `session_used` 含义不同，不可混用） |
 | `employee_id` | string | 服务美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `employee_name` | string | 服务美容师姓名 |
-| `position_series` | string | 职位序列（**售前专有**） |
+| `position_series` | string \| null | 职位序列（**售前专有**） |
 | `employee_position` | string | 美容师职位 |
 | `service_fee` | decimal | 服务费金额 |
 | `item_count` | decimal | 项目数量 |
 | `satisfaction` | string | 顾客满意度 |
 | `consumption` | decimal | 本次消耗金额 |
 | `unit_price` | decimal | 单次服务价格 |
-| `is_gift` | string | 是否赠送（是 / 否） |
-| `remaining_count` | decimal | 当前剩余可用次数 |
-| `count_change` | decimal | 次数变化（**售前专有**，如 -2） |
-| `expire_date` | date | 到期日 |
+| `is_gift` | boolean | 是否赠送 |
+| `expire_date` | date \| null | 到期日（疗程卡适用） |
 
 ---
 
