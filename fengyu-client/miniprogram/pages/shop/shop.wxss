@@ -1,4 +1,4 @@
-/* pages/home/home.wxss */
+/* pages/shop/shop.wxss */
 
 .container {
   display: flex;
@@ -24,8 +24,30 @@
 }
 
 .brand-logo {
-  width: 212rpx;
-  height: 80rpx;
+  width: 64rpx;
+  height: 64rpx;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2rpx;
+}
+
+.brand-name {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #D4A76A;  /* Logo 金色 */
+  letter-spacing: 4rpx;
+  line-height: 1.2;
+}
+
+.brand-sub {
+  font-size: 18rpx;
+  color: #D4A76A;
+  letter-spacing: 1rpx;
+  opacity: 0.7;
+  line-height: 1.2;
 }
 
 .header-store {

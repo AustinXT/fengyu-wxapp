@@ -233,8 +233,7 @@ page {
 ```json
 {
   "navigationBarTitleText": "订单详情",
-  "navigationBarBackgroundColor": "#ffffff",
-  "navigationBarTextStyle": "black",
+  
   "enablePullDownRefresh": false,
   "usingComponents": {}
 }

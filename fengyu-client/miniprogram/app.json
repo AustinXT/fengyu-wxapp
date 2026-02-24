@@ -1,6 +1,7 @@
 {
   "pages": [
     "pages/home/home",
+    "pages/shop/shop",
     "pages/appointment/appointment",
     "pages/orders/orders",
     "pages/profile/profile",
@@ -24,16 +25,16 @@
         "selectedIconPath": "images/icons/tab-home-active.png"
       },
       {
+        "pagePath": "pages/shop/shop",
+        "text": "服务",
+        "iconPath": "images/icons/tab-orders.png",
+        "selectedIconPath": "images/icons/tab-orders-active.png"
+      },
+      {
         "pagePath": "pages/appointment/appointment",
         "text": "预约",
         "iconPath": "images/icons/tab-calendar.png",
         "selectedIconPath": "images/icons/tab-calendar-active.png"
-      },
-      {
-        "pagePath": "pages/orders/orders",
-        "text": "订单",
-        "iconPath": "images/icons/tab-orders.png",
-        "selectedIconPath": "images/icons/tab-orders-active.png"
       },
       {
         "pagePath": "pages/profile/profile",
@@ -44,11 +45,11 @@
     ]
   },
   "window": {
-    "backgroundTextStyle": "dark",
-    "navigationBarBackgroundColor": "#FFFFFF",
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#000000",
     "navigationBarTitleText": "凤御",
-    "navigationBarTextStyle": "black",
-    "backgroundColor": "#FAFAFA"
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#000000"
   },
   "sitemapLocation": "sitemap.json",
   "usingComponents": {}

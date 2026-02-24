@@ -1,4 +1,4 @@
-<!-- pages/home/home.wxml — 首页（服务/产品浏览） -->
+<!-- pages/shop/shop.wxml — 服务/产品浏览 -->
 <van-toast id="van-toast" />
 
 <view class="container">
@@ -7,6 +7,10 @@
   <view class="header">
     <view class="header-brand">
       <image class="brand-logo" src="/images/logo.png" mode="aspectFit" />
+      <view class="brand-text">
+        <text class="brand-name">凤御</text>
+        <text class="brand-sub">FENGYU BEAUTY</text>
+      </view>
     </view>
     <view class="header-store" bindtap="onSelectStore">
       <text class="store-name">{{boundStoreName || '选择门店'}}</text>

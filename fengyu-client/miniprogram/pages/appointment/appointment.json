@@ -1,18 +1,16 @@
 {
-  "navigationBarTitleText": "我的预约",
-  "navigationBarBackgroundColor": "#FFFFFF",
-  "navigationBarTextStyle": "black",
+  "navigationBarTitleText": "预约",
   "enablePullDownRefresh": true,
   "usingComponents": {
-    "van-tabs":       "@vant/weapp/tabs/index",
-    "van-tab":        "@vant/weapp/tab/index",
-    "van-cell":       "@vant/weapp/cell/index",
+    "van-tabs": "@vant/weapp/tabs/index",
+    "van-tab": "@vant/weapp/tab/index",
+    "van-cell": "@vant/weapp/cell/index",
     "van-cell-group": "@vant/weapp/cell-group/index",
-    "van-button":     "@vant/weapp/button/index",
-    "van-tag":        "@vant/weapp/tag/index",
-    "van-empty":      "@vant/weapp/empty/index",
-    "van-skeleton":   "@vant/weapp/skeleton/index",
-    "van-toast":      "@vant/weapp/toast/index",
-    "van-dialog":     "@vant/weapp/dialog/index"
+    "van-button": "@vant/weapp/button/index",
+    "van-tag": "@vant/weapp/tag/index",
+    "van-empty": "@vant/weapp/empty/index",
+    "van-skeleton": "@vant/weapp/skeleton/index",
+    "van-toast": "@vant/weapp/toast/index",
+    "van-dialog": "@vant/weapp/dialog/index"
   }
 }

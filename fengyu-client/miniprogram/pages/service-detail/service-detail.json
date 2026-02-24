@@ -1,17 +1,16 @@
 {
   "navigationBarTitleText": "服务详情",
-  "navigationBarBackgroundColor": "#FFFFFF",
-  "navigationBarTextStyle": "black",
+
   "enablePullDownRefresh": false,
   "usingComponents": {
-    "van-icon":         "@vant/weapp/icon/index",
-    "van-tag":          "@vant/weapp/tag/index",
-    "van-cell":         "@vant/weapp/cell/index",
-    "van-cell-group":   "@vant/weapp/cell-group/index",
-    "van-button":       "@vant/weapp/button/index",
-    "van-submit-bar":   "@vant/weapp/submit-bar/index",
-    "van-popup":        "@vant/weapp/popup/index",
-    "van-skeleton":     "@vant/weapp/skeleton/index",
-    "van-toast":        "@vant/weapp/toast/index"
+    "van-icon": "@vant/weapp/icon/index",
+    "van-tag": "@vant/weapp/tag/index",
+    "van-cell": "@vant/weapp/cell/index",
+    "van-cell-group": "@vant/weapp/cell-group/index",
+    "van-button": "@vant/weapp/button/index",
+    "van-submit-bar": "@vant/weapp/submit-bar/index",
+    "van-popup": "@vant/weapp/popup/index",
+    "van-skeleton": "@vant/weapp/skeleton/index",
+    "van-toast": "@vant/weapp/toast/index"
   }
 }
