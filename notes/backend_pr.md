@@ -299,7 +299,6 @@ CloudBase 云函数（Node.js）
 | `appointment_id` | string | 关联预约记录 `appointments.appointment_id`（无预约直接到店时为 null） |
 | `customer_phone` | string | 顾客联系电话 |
 | `staff_id` | string | 主服务人员编号 |
-| `staff_position` | string | 主服务人员职位 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
