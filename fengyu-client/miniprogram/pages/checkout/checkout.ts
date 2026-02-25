@@ -12,6 +12,12 @@ interface CheckoutItem {
   quantity: number;
 }
 
+interface Staff {
+  staff_wf_id: string;
+  name: string;
+  position: string;
+}
+
 // 调用 clientApi 云函数
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
   const res = await wx.cloud.callFunction({
@@ -46,11 +52,18 @@ Page({
     totalPrice: '0.00',
     // 手机号绑定弹窗
     showPhoneBind: false,
+    // 美容师选择
+    staffList: [] as Staff[],
+    showStaffPopup: false,
   },
 
   onLoad(options) {
     const { skuId, spuName, staffWfId, staffName, orderNo, fromCart } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
+
+    // 加载美容师列表 + 默认美容师
+    this.loadStaffList();
+    this.loadDefaultStaff();
 
     if (orderNo) {
       // 场景 B：扫码收款，订单已存在
@@ -116,6 +129,55 @@ Page({
     } catch {
       Toast.fail('加载订单信息失败');
     }
+  },
+
+  async loadStaffList() {
+    try {
+      const storeName = app.globalData.boundStoreName;
+      if (!storeName) return;
+      const data = await callClientApi('staff.list', { storeName });
+      const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
+        staff_wf_id: s.staff_id,
+        name: s.name,
+        position: s.position
+      }));
+      this.setData({ staffList });
+    } catch {
+      // 美容师加载失败不影响主流程
+    }
+  },
+
+  async loadDefaultStaff() {
+    try {
+      // 若 URL 已传入 staffWfId，不覆盖
+      if (this.data.staffWfId) return;
+      const data = await callClientApi('staff.default', {});
+      if (data?.mainStaffId) {
+        this.setData({
+          staffWfId: data.mainStaffId,
+          staffName: data.mainStaffName || '',
+        });
+      }
+    } catch {
+      // 获取默认美容师失败不影响主流程
+    }
+  },
+
+  onSelectStaff() {
+    this.setData({ showStaffPopup: true });
+  },
+
+  onCloseStaffPopup() {
+    this.setData({ showStaffPopup: false });
+  },
+
+  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
+    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+    this.setData({
+      staffWfId: wfId,
+      staffName: name,
+      showStaffPopup: false,
+    });
   },
 
   onAgreementChange(e: WechatMiniprogram.CustomEvent<boolean>) {
@@ -227,7 +289,8 @@ Page({
         name: 'clientApi',
         data: {
           action: 'auth.bindPhone',
-          payload: { cloudID: wx.cloud.CloudID(cloudID as string) }
+          payload: {},
+          phoneData: wx.cloud.CloudID(cloudID as string)
         }
       }) as any;
 
@@ -240,7 +303,9 @@ Page({
       wx.setStorageSync('phone', res.result.data.phone);
       this.setData({ showPhoneBind: false });
 
-      Toast.success('绑定成功，请重新提交订单');
+      Toast.success('绑定成功');
+      // 绑定成功后自动重新提交订单
+      setTimeout(() => this.onSubmitOrder(), 800);
     } catch (err: any) {
       wx.hideLoading();
       Toast.fail(err.message || '绑定失败，请重试');

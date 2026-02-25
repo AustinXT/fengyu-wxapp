@@ -45,33 +45,20 @@
   font-weight: 700;
 }
 
-/* ===== 手机号绑定弹窗 ===== */
-.phone-bind-popup {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 40rpx 0 20rpx;
-}
-
-.phone-bind-title {
-  font-size: 34rpx;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  margin-top: 24rpx;
-}
-
-.phone-bind-desc {
-  font-size: 26rpx;
-  color: var(--color-text-hint);
-  margin-top: 12rpx;
-  text-align: center;
-  line-height: 1.5;
+/* ===== 手机号绑定底栏 ===== */
+.phone-bind-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16rpx 32rpx calc(16rpx + env(safe-area-inset-bottom));
+  background: #fff;
+  box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
 }
 
 .phone-bind-btn {
   width: 100%;
   height: 88rpx;
-  margin-top: 48rpx;
   background: var(--color-primary);
   color: #FFFFFF;
   font-size: 30rpx;
@@ -83,4 +70,62 @@
 
 .phone-bind-btn::after {
   border: none;
+}
+
+/* ===== 美容师选择 Popup ===== */
+.staff-popup {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.staff-popup__title {
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 32rpx 0 20rpx;
+}
+
+.staff-list {
+  display: flex;
+  overflow-x: auto;
+  padding: 16rpx 24rpx 40rpx;
+  gap: 24rpx;
+}
+
+.staff-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+  flex-shrink: 0;
+  padding: 16rpx;
+  border-radius: 16rpx;
+  border: 2px solid transparent;
+  min-width: 120rpx;
+}
+
+.staff-item--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.staff-avatar {
+  width: 96rpx;
+  height: 96rpx;
+  background: #F0EBE4;
+  border-radius: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.staff-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.staff-title {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
 }

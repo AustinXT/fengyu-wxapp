@@ -68,15 +68,29 @@
     />
   </van-cell-group>
 
-  <!-- 底部提交栏 -->
-  <van-submit-bar
-    price="{{selectedSku ? selectedSku.price * 100 : 0}}"
-    button-text="立即下单"
-    disabled="{{!selectedSku}}"
-    tip="{{!selectedSku ? '请先选择规格' : ''}}"
-    bind:submit="onSubmit"
-    safe-area-inset-bottom
-  />
+  <!-- 底部操作栏 -->
+  <view class="action-bar">
+    <!-- 价格区 -->
+    <view class="action-bar__price" wx:if="{{selectedSku}}">
+      <text class="action-bar__price-symbol">¥</text>
+      <text class="action-bar__price-value">{{selectedSku.price}}</text>
+    </view>
+    <view class="action-bar__price" wx:else>
+      <text class="action-bar__price-hint">请选择规格</text>
+    </view>
+
+    <!-- 购物车图标 -->
+    <view class="action-bar__cart-icon" bindtap="onCartTap">
+      <van-icon name="shopping-cart-o" size="48rpx" />
+      <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
+    </view>
+
+    <!-- 按钮区 -->
+    <view class="action-bar__btns">
+      <view class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
+      <view class="action-bar__btn action-bar__btn--buy {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+    </view>
+  </view>
 
   <!-- 美容师选择 Popup -->
   <van-popup
@@ -102,6 +116,7 @@
           <text class="staff-name">不指定</text>
         </view>
         <!-- 美容师列表 -->
+        <van-loading wx:if="{{staffListLoading && staffList.length === 0}}" size="24px" vertical style="padding: 40rpx 0;">加载中...</van-loading>
         <view
           wx:for="{{staffList}}"
           wx:key="staff_wf_id"
@@ -115,6 +130,9 @@
           </view>
           <text class="staff-name">{{item.name}}</text>
           <text class="staff-title">{{item.position}}</text>
+        </view>
+        <view wx:if="{{!staffListLoading && staffList.length === 0}}" class="staff-empty">
+          <text>暂无可选美容师</text>
         </view>
       </view>
     </view>

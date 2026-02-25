@@ -10,7 +10,8 @@
         "MSSQL_CONNECTION_STRING": "Server=111.229.31.128,1433;Database=wkdb_20220804_86cd3292;User Id=Sa;Password=oHx#+Q;TrustServerCertificate=True"
       },
       "runtime": "Nodejs18.15",
-      "handler": "index.main"
+      "handler": "index.main",
+      "installDependency": false
     }
   ]
 }

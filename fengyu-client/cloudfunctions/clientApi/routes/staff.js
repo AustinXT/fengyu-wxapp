@@ -9,7 +9,6 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const pg = require('../db/pg')
 const mssql = require('../db/mssql')
 const { requireFields } = require('../middleware/validate')
-const { requirePhone } = require('../middleware/auth')
 
 /**
  * 美容师列表
@@ -51,10 +50,17 @@ async function list(ctx) {
  * 需要用户已绑定手机号
  */
 async function defaultStaff(ctx) {
-  // 必须绑定手机号
-  await requirePhone()(ctx, async () => {})
-
   const { phone } = ctx.auth
+
+  // 未绑定手机号时直接返回空结果
+  if (!phone) {
+    ctx.result = {
+      mainStaffId: null,
+      mainStaffName: null,
+      storeName: null
+    }
+    return
+  }
 
   // 从顾客档案查询主美容师
   const customerSql = `

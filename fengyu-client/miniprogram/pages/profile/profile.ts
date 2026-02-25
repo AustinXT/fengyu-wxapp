@@ -68,9 +68,8 @@ Page({
         name: 'clientApi',
         data: {
           action: 'auth.bindPhone',
-          payload: {
-            cloudID: wx.cloud.CloudID(cloudID as string)
-          }
+          payload: {},
+          phoneData: wx.cloud.CloudID(cloudID as string)
         }
       }) as any;
 

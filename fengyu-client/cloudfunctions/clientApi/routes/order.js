@@ -45,13 +45,19 @@ async function create(ctx) {
   const orderNo = await generateOrderNo()
   const now = new Date()
 
-  // 查询 SKU 信息并从 WorkFine 读取价格
+  // 查询 SKU 信息并从 WorkFine 读取价格（并行）
   const orderItems = []
   let totalAmount = 0
 
-  for (const item of items) {
-    const skuInfo = await getSkuInfo(item.skuId)
-    const workfinePrice = await getWorkfinePrice(skuInfo.workfineItemId, skuInfo.workfineSource)
+  const skuResults = await Promise.all(
+    items.map(async (item) => {
+      const skuInfo = await getSkuInfo(item.skuId)
+      const workfinePrice = await getWorkfinePrice(skuInfo.workfineItemId, skuInfo.workfineSource)
+      return { item, skuInfo, workfinePrice }
+    })
+  )
+
+  for (const { item, skuInfo, workfinePrice } of skuResults) {
 
     const unitPrice = workfinePrice.originalPrice
     const quantity = item.quantity || 1

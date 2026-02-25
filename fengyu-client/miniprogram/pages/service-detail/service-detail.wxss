@@ -194,3 +194,111 @@
   font-size: 20rpx;
   color: var(--color-text-hint);
 }
+
+.staff-empty {
+  width: 100%;
+  text-align: center;
+  padding: 40rpx 0;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 底部操作栏 ===== */
+.action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  height: 100rpx;
+  background: #fff;
+  padding: 0 16rpx;
+  padding-bottom: env(safe-area-inset-bottom);
+  box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
+  z-index: 100;
+}
+
+.action-bar__price {
+  flex: 1;
+  min-width: 0;
+  padding-left: 12rpx;
+  display: flex;
+  align-items: baseline;
+}
+
+.action-bar__price-symbol {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.action-bar__price-value {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.action-bar__price-hint {
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+}
+
+.action-bar__cart-icon {
+  position: relative;
+  width: 80rpx;
+  height: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.action-bar__badge {
+  position: absolute;
+  top: 4rpx;
+  right: 2rpx;
+  min-width: 32rpx;
+  height: 32rpx;
+  line-height: 32rpx;
+  padding: 0 8rpx;
+  border-radius: 16rpx;
+  background: #ee0a24;
+  color: #fff;
+  font-size: 20rpx;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.action-bar__btns {
+  display: flex;
+  gap: 12rpx;
+  flex-shrink: 0;
+}
+
+.action-bar__btn {
+  height: 72rpx;
+  line-height: 72rpx;
+  padding: 0 28rpx;
+  border-radius: 36rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.action-bar__btn--cart-add {
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  background: #fff;
+}
+
+.action-bar__btn--buy {
+  color: #fff;
+  background: var(--color-primary);
+}
+
+.action-bar__btn--disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}

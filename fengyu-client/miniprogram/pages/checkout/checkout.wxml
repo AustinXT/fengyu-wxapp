@@ -10,6 +10,8 @@
     <van-cell
       title="指定美容师"
       value="{{staffName || '不指定'}}"
+      is-link
+      bindtap="onSelectStaff"
     />
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
@@ -59,6 +61,7 @@
 
   <!-- 底部提交 -->
   <van-submit-bar
+    wx:if="{{!showPhoneBind}}"
     price="{{unitPrice * 100}}"
     button-text="{{paymentMethod === 'wechat' ? '微信支付' : '提交订单'}}"
     loading="{{submitting}}"
@@ -68,25 +71,56 @@
     safe-area-inset-bottom
   />
 
-</view>
-
-<!-- 手机号绑定弹窗 -->
-<van-popup
-  show="{{showPhoneBind}}"
-  position="bottom"
-  round
-  closeable
-  bind:close="onClosePhoneBind"
-  custom-style="padding: 48rpx 40rpx env(safe-area-inset-bottom);"
->
-  <view class="phone-bind-popup">
-    <van-icon name="phone-o" size="64rpx" color="#D4A76A" />
-    <text class="phone-bind-title">需要绑定手机号</text>
-    <text class="phone-bind-desc">下单前请先绑定手机号，用于订单通知和售后服务</text>
+  <!-- 需要绑定手机号时替换提交栏 -->
+  <view wx:if="{{showPhoneBind}}" class="phone-bind-bar">
     <button
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
-    >微信一键绑定</button>
+    >绑定手机号并下单</button>
+  </view>
+
+</view>
+
+
+<!-- 美容师选择 Popup -->
+<van-popup
+  show="{{showStaffPopup}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onCloseStaffPopup"
+>
+  <view class="staff-popup">
+    <view class="staff-popup__title">选择美容师</view>
+    <view class="staff-list">
+      <!-- 不指定 -->
+      <view
+        class="staff-item {{!staffWfId ? 'staff-item--active' : ''}}"
+        bindtap="onStaffSelect"
+        data-wf-id=""
+        data-name=""
+      >
+        <view class="staff-avatar">
+          <van-icon name="user-o" size="48rpx" color="#B09880" />
+        </view>
+        <text class="staff-name">不指定</text>
+      </view>
+      <!-- 美容师列表 -->
+      <view
+        wx:for="{{staffList}}"
+        wx:key="staff_wf_id"
+        class="staff-item {{staffWfId === item.staff_wf_id ? 'staff-item--active' : ''}}"
+        bindtap="onStaffSelect"
+        data-wf-id="{{item.staff_wf_id}}"
+        data-name="{{item.name}}"
+      >
+        <view class="staff-avatar">
+          <van-icon name="manager-o" size="48rpx" color="#C9986A" />
+        </view>
+        <text class="staff-name">{{item.name}}</text>
+        <text class="staff-title">{{item.position}}</text>
+      </view>
+    </view>
   </view>
 </van-popup>

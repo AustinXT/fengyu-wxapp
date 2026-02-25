@@ -6,39 +6,30 @@
 const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
-// 导入路由模块
-const authRoutes = require('./routes/auth')
-const storeRoutes = require('./routes/store')
-const productRoutes = require('./routes/product')
-const staffRoutes = require('./routes/staff')
-const orderRoutes = require('./routes/order')
-const appointmentRoutes = require('./routes/appointment')
-const serviceRoutes = require('./routes/service')
-
 // 导入中间件
 const { auth } = require('./middleware/auth')
 
-// 路由映射表
+// 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
-  'auth.login': authRoutes.login,
-  'auth.bindPhone': authRoutes.bindPhone,
-  'auth.bindStore': authRoutes.bindStore,
-  'store.list': storeRoutes.list,
-  'product.categories': productRoutes.categories,
-  'product.spuList': productRoutes.spuList,
-  'product.skuDetail': productRoutes.skuDetail,
-  'staff.list': staffRoutes.list,
-  'staff.default': staffRoutes.defaultStaff,
-  'order.create': orderRoutes.create,
-  'order.pay': orderRoutes.pay,
-  'order.offlinePay': orderRoutes.offlinePay,
-  'order.list': orderRoutes.list,
-  'order.detail': orderRoutes.detail,
-  'order.appointableItems': orderRoutes.appointableItems,
-  'appointment.create': appointmentRoutes.create,
-  'appointment.list': appointmentRoutes.list,
-  'appointment.cancel': appointmentRoutes.cancel,
-  'service.detail': serviceRoutes.detail
+  'auth.login': () => require('./routes/auth').login,
+  'auth.bindPhone': () => require('./routes/auth').bindPhone,
+  'auth.bindStore': () => require('./routes/auth').bindStore,
+  'store.list': () => require('./routes/store').list,
+  'product.categories': () => require('./routes/product').categories,
+  'product.spuList': () => require('./routes/product').spuList,
+  'product.skuDetail': () => require('./routes/product').skuDetail,
+  'staff.list': () => require('./routes/staff').list,
+  'staff.default': () => require('./routes/staff').defaultStaff,
+  'order.create': () => require('./routes/order').create,
+  'order.pay': () => require('./routes/order').pay,
+  'order.offlinePay': () => require('./routes/order').offlinePay,
+  'order.list': () => require('./routes/order').list,
+  'order.detail': () => require('./routes/order').detail,
+  'order.appointableItems': () => require('./routes/order').appointableItems,
+  'appointment.create': () => require('./routes/appointment').create,
+  'appointment.list': () => require('./routes/appointment').list,
+  'appointment.cancel': () => require('./routes/appointment').cancel,
+  'service.detail': () => require('./routes/service').detail
 }
 
 /**
@@ -52,11 +43,12 @@ exports.main = async (event, context) => {
     return { code: -1, message: '缺少 action 参数' }
   }
 
-  // 查找路由
-  const handler = routes[action]
-  if (!handler) {
+  // 查找路由（懒加载：首次调用时才 require 对应模块）
+  const resolver = routes[action]
+  if (!resolver) {
     return { code: -1, message: `未知的 action: ${action}` }
   }
+  const handler = resolver()
 
   // 构造上下文
   const ctx = {

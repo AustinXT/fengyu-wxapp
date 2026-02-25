@@ -1,5 +1,6 @@
 // pages/service-detail/service-detail.ts
 import Toast from '@vant/weapp/toast/toast';
+import { addToCart, getCartCount } from '../../utils/cart';
 
 const app = getApp<IAppOption>();
 
@@ -44,10 +45,12 @@ Page({
     skuList: [] as Sku[],
     selectedSku: null as Sku | null,
     staffList: [] as Staff[],
+    staffListLoading: false,
     selectedStaffWfId: '',
     selectedStaffName: '',
     showStaffPopup: false,
     isLoading: true,
+    cartCount: 0,
   },
 
   onLoad(options) {
@@ -59,6 +62,10 @@ Page({
     this.loadDetail(spuId);
     this.loadStaffList();
     this.loadDefaultStaff();
+  },
+
+  onShow() {
+    this.setData({ cartCount: getCartCount() });
   },
 
   async loadDetail(spuId: string) {
@@ -114,9 +121,11 @@ Page({
   },
 
   async loadStaffList() {
+    // 优先用 globalData，其次用本地缓存
+    const storeName = app.globalData.boundStoreName || wx.getStorageSync('boundStoreName');
+    if (!storeName) return;
+    this.setData({ staffListLoading: true });
     try {
-      const storeName = app.globalData.boundStoreName;
-      if (!storeName) return;
       const data = await callClientApi('staff.list', { storeName });
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         staff_wf_id: s.staff_id,
@@ -127,6 +136,8 @@ Page({
       this.setData({ staffList });
     } catch {
       // 美容师加载失败不影响主流程
+    } finally {
+      this.setData({ staffListLoading: false });
     }
   },
 
@@ -138,6 +149,10 @@ Page({
 
   onSelectStaff() {
     this.setData({ showStaffPopup: true });
+    // 列表为空时重试加载（boundStoreName 可能在 onLoad 时尚未就绪）
+    if (this.data.staffList.length === 0 && !this.data.staffListLoading) {
+      this.loadStaffList();
+    }
   },
 
   onCloseStaffPopup() {
@@ -151,6 +166,32 @@ Page({
       selectedStaffName: name,
       showStaffPopup: false,
     });
+  },
+
+  onAddToCart() {
+    const { selectedSku, spu } = this.data;
+    if (!selectedSku) {
+      Toast('请先选择规格');
+      return;
+    }
+
+    addToCart({
+      skuId: selectedSku.sku_id,
+      spuId: spu.spu_id,
+      spuName: spu.name,
+      skuDisplayName: selectedSku.sku_display_name,
+      coverImage: spu.cover_image,
+      price: selectedSku.price,
+      bigCategory: spu.big_category,
+      productType: selectedSku.product_type,
+    });
+
+    this.setData({ cartCount: getCartCount() });
+    Toast.success('已加入购物车');
+  },
+
+  onCartTap() {
+    wx.navigateTo({ url: '/pages/cart/cart' });
   },
 
   onSubmit() {

@@ -7,40 +7,46 @@
 
 const sql = require('mssql')
 
-// 延迟初始化连接池
-let pool = null
+// 连接池（Promise），模块加载时即开始连接，不阻塞主线程
+let poolPromise = null
+
+function connectPool() {
+  const connectionString = process.env.MSSQL_CONNECTION_STRING
+
+  if (connectionString) {
+    return sql.connect(connectionString)
+  }
+
+  return sql.connect({
+    user: process.env.MSSQL_USER || 'Sa',
+    password: process.env.MSSQL_PASSWORD || 'oHx#+Q',
+    database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
+    server: process.env.MSSQL_SERVER || '111.229.31.128',
+    port: parseInt(process.env.MSSQL_PORT) || 1433,
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+      enableArithAbort: true
+    },
+    pool: {
+      max: 5,
+      min: 1,
+      idleTimeoutMillis: 30000
+    }
+  })
+}
 
 async function getPool() {
-  if (!pool) {
-    // 优先使用连接串，如果不存在则使用分离的环境变量
-    const connectionString = process.env.MSSQL_CONNECTION_STRING
-
-    if (connectionString) {
-      // 使用连接串格式：Server=host,port;Database=db;User Id=user;Password=pass
-      pool = await sql.connect(connectionString)
-    } else {
-      // 使用分离的环境变量（向后兼容）
-      pool = await sql.connect({
-        user: process.env.MSSQL_USER || 'Sa',
-        password: process.env.MSSQL_PASSWORD || 'oHx#+Q',
-        database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
-        server: process.env.MSSQL_SERVER || '111.229.31.128',
-        port: parseInt(process.env.MSSQL_PORT) || 1433,
-        options: {
-          encrypt: false,
-          trustServerCertificate: true,
-          enableArithAbort: true
-        },
-        pool: {
-          max: 5,
-          min: 0,
-          idleTimeoutMillis: 30000
-        }
-      })
-    }
+  if (!poolPromise) {
+    poolPromise = connectPool()
+    // 连接失败时重置，下次重试
+    poolPromise.catch(() => { poolPromise = null })
   }
-  return pool
+  return poolPromise
 }
+
+// 预热：模块加载时立即发起连接（fire-and-forget）
+getPool().catch(() => {})
 
 /**
  * 执行 SQL 查询(只读)

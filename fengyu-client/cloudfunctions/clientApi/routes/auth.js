@@ -8,6 +8,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const pg = require('../db/pg')
 const mssql = require('../db/mssql')
 const { requireFields } = require('../middleware/validate')
+const { invalidateAuthCache } = require('../middleware/auth')
 
 /**
  * 微信登录
@@ -64,22 +65,28 @@ async function login(ctx) {
  */
 async function bindPhone(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { cloudID, phoneNumber: directPhone } = ctx.event.payload
+  const { phoneNumber: directPhone } = ctx.event.payload
+  // CloudID 必须在 event 顶层才能被微信平台自动解密
+  // 解密后结构: { cloudID: "原始值", data: { phoneNumber, purePhoneNumber, countryCode, watermark } }
+  const phoneData = ctx.event.phoneData
 
   let phoneNumber = null
 
   // 方式1: CloudID 方式（推荐）
-  if (cloudID) {
-    // CloudID 在云函数中被自动解密
-    // 解密后结构为扁平对象: { phoneNumber, purePhoneNumber, countryCode, watermark }
-    console.log('[bindPhone] cloudID resolved:', JSON.stringify(cloudID))
+  if (phoneData) {
+    console.log('[bindPhone] phoneData resolved:', JSON.stringify(phoneData))
 
-    if (cloudID.errCode) {
-      throw new Error(`INVALID_PARAMS: 手机号解密失败 (${cloudID.errMsg || cloudID.errCode})`)
+    if (phoneData.errCode) {
+      throw new Error(`INVALID_PARAMS: 手机号解密失败 (${phoneData.errMsg || phoneData.errCode})`)
+    }
+
+    const resolved = phoneData.data
+    if (!resolved) {
+      throw new Error('INVALID_PARAMS: CloudID 未被解密，请检查是否放在 data 顶层')
     }
 
     // 优先使用 purePhoneNumber（纯数字），其次 phoneNumber（带区号）
-    phoneNumber = cloudID.purePhoneNumber || cloudID.phoneNumber
+    phoneNumber = resolved.purePhoneNumber || resolved.phoneNumber
 
     if (!phoneNumber) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
@@ -91,7 +98,7 @@ async function bindPhone(ctx) {
   }
   // 缺少参数
   else {
-    throw new Error('INVALID_PARAMS: 缺少 cloudID 或 phoneNumber 参数')
+    throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
   }
 
   const now = new Date()
@@ -123,6 +130,9 @@ async function bindPhone(ctx) {
     'UPDATE client_wechat_users SET phone = $1, updated_at = $2 WHERE user_id = $3',
     [phoneNumber, now, userId]
   )
+
+  // 清除认证缓存，避免 requirePhone 仍读到旧的 phone: null
+  invalidateAuthCache(OPENID)
 
   // 补全历史订单的 client_user_id
   const updateResult = await pg.query(

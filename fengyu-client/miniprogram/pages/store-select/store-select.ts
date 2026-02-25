@@ -91,21 +91,14 @@ Page({
   async onStoreTap(e: WechatMiniprogram.TouchEvent) {
     const { storeName } = e.currentTarget.dataset as { storeName: string };
     try {
-      // TODO: 云函数需新增 auth.bindStore 接口来更新用户门店
-      // 临时方案：先调用 auth.login，然后在本地更新（后端需要完善）
-      const data = await callClientApi('auth.login', { storeName });
-      // 后端 auth.login 目前不支持 storeName 参数，需要扩展
-      // 暂时使用本地存储，后续需后端支持
+      await callClientApi('auth.bindStore', { storeName });
       app.setStore(storeName);
       this.setData({ selectedStore: storeName });
       Toast.success('门店已切换');
       setTimeout(() => wx.navigateBack(), 1200);
-    } catch {
-      // 降级：仅本地存储
-      app.setStore(storeName);
-      this.setData({ selectedStore: storeName });
-      Toast.success('门店已切换（本地）');
-      setTimeout(() => wx.navigateBack(), 1200);
+    } catch (err: any) {
+      console.error('[onStoreTap] bindStore failed:', err);
+      Toast.fail('切换门店失败: ' + (err?.message || '未知错误'));
     }
   },
 

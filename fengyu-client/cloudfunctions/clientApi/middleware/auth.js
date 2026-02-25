@@ -4,9 +4,13 @@
  */
 
 const cloud = require('wx-server-sdk')
-cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
+// cloud.init() 已在 index.js 中调用，此处不再重复
 
 const pg = require('../db/pg')
+
+// 用户信息缓存：OPENID → { data, ts }
+const AUTH_CACHE = new Map()
+const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 
 /**
  * 认证中间件
@@ -23,6 +27,13 @@ async function auth(ctx, next) {
     throw new Error('UNAUTHORIZED: 无法获取用户身份')
   }
 
+  // 检查缓存
+  const cached = AUTH_CACHE.get(effectiveOpenid)
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    ctx.auth = cached.data
+    return await next()
+  }
+
   // 查询用户
   const users = await pg.query(
     'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE openid = $1',
@@ -30,7 +41,6 @@ async function auth(ctx, next) {
   )
 
   if (users.length === 0) {
-    // 用户不存在,返回未注册状态
     ctx.auth = {
       isOpenid: true,
       userId: null,
@@ -43,6 +53,17 @@ async function auth(ctx, next) {
       userId: users[0].user_id,
       phone: users[0].phone,
       boundStoreName: users[0].bound_store_name
+    }
+  }
+
+  // 写入缓存
+  AUTH_CACHE.set(effectiveOpenid, { data: ctx.auth, ts: Date.now() })
+
+  // 防止缓存无限增长（简单淘汰：超过 200 条清理最早的一半）
+  if (AUTH_CACHE.size > 200) {
+    const keys = [...AUTH_CACHE.keys()]
+    for (let i = 0; i < 100; i++) {
+      AUTH_CACHE.delete(keys[i])
     }
   }
 
@@ -61,7 +82,16 @@ function requirePhone() {
   }
 }
 
+/**
+ * 清除指定 OPENID 的认证缓存
+ * 在绑定手机号等修改用户信息后调用
+ */
+function invalidateAuthCache(openid) {
+  AUTH_CACHE.delete(openid)
+}
+
 module.exports = {
   auth,
-  requirePhone
+  requirePhone,
+  invalidateAuthCache
 }

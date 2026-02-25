@@ -8,12 +8,14 @@ App<IAppOption>({
   },
 
   onLaunch() {
-    // 登录态检查（由云函数处理）
     wx.cloud.init({ traceUser: true });
-    this.checkLogin();
+    // 先从本地缓存恢复（快速展示）
+    this.restoreFromCache();
+    // 再从服务器同步最新数据（含 boundStoreName）
+    this.syncLoginState();
   },
 
-  checkLogin() {
+  restoreFromCache() {
     const userId = wx.getStorageSync('userId');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     if (userId) {
@@ -21,6 +23,32 @@ App<IAppOption>({
     }
     if (boundStoreName) {
       this.globalData.boundStoreName = boundStoreName;
+    }
+  },
+
+  async syncLoginState() {
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'clientApi',
+        data: { action: 'auth.login', payload: {} }
+      }) as any;
+      if (res.result?.code === 0 && res.result.data) {
+        const { userId, phone, boundStoreName } = res.result.data;
+        if (userId) {
+          this.globalData.userId = userId;
+          wx.setStorageSync('userId', userId);
+        }
+        if (phone) {
+          wx.setStorageSync('phone', phone);
+        }
+        // 同步服务器端绑定的门店（核心：即使本地缓存被清除也能恢复）
+        if (boundStoreName) {
+          this.globalData.boundStoreName = boundStoreName;
+          wx.setStorageSync('boundStoreName', boundStoreName);
+        }
+      }
+    } catch (err) {
+      console.error('[syncLoginState] failed:', err);
     }
   },
 
