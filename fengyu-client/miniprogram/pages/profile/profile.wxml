@@ -27,10 +27,10 @@
       bindtap="onOrders"
     />
     <van-cell
-      title="我的预约"
-      icon="calendar-o"
+      title="我的疗程卡"
+      icon="card"
       is-link
-      bindtap="onAppointments"
+      bindtap="onTreatmentCards"
     />
   </van-cell-group>
 

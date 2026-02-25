@@ -1,0 +1,131 @@
+/* pages/treatment-cards/treatment-cards.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+.skeleton-wrap {
+  padding: 32rpx;
+}
+
+.empty-wrap {
+  padding-top: 80rpx;
+}
+
+/* ===== 列表 ===== */
+.list-wrap {
+  padding: 24rpx 24rpx 40rpx;
+}
+
+/* ===== 疗程卡卡片 ===== */
+.tc-card {
+  background: #FFFFFF;
+  border-radius: 20rpx;
+  overflow: hidden;
+  margin-bottom: 20rpx;
+  padding: 28rpx;
+}
+
+/* 头部 */
+.tc-card__header {
+  margin-bottom: 24rpx;
+}
+
+.tc-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 8rpx;
+}
+
+.tc-card__name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.tc-card__sku {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+/* 进度条 */
+.tc-card__progress {
+  margin-bottom: 24rpx;
+}
+
+.progress-bar {
+  height: 12rpx;
+  background: #F0F0F0;
+  border-radius: 6rpx;
+  overflow: hidden;
+  margin-bottom: 12rpx;
+}
+
+.progress-bar__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #D4A76A 0%, #C9986A 100%);
+  border-radius: 6rpx;
+  transition: width 0.3s ease;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.progress-used {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.progress-remain {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+}
+
+.progress-remain__num {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+/* 底部 */
+.tc-card__footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-top: 20rpx;
+  border-top: 1px solid var(--color-border);
+}
+
+.tc-card__meta {
+  flex: 1;
+}
+
+.tc-card__store,
+.tc-card__expire {
+  display: flex;
+  align-items: center;
+  gap: 6rpx;
+  margin-bottom: 4rpx;
+}
+
+.tc-card__store-text,
+.tc-card__expire-text {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* 预约按钮 */
+.tc-card__book-btn {
+  flex-shrink: 0;
+  padding: 10rpx 32rpx;
+  font-size: 24rpx;
+  font-weight: 500;
+  color: #FFFFFF;
+  background: var(--color-primary);
+  border-radius: 32rpx;
+}

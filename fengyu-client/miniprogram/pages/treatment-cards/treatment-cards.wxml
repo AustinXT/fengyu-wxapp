@@ -1,0 +1,76 @@
+<!-- pages/treatment-cards/treatment-cards.wxml — 我的疗程卡 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载 -->
+  <view wx:if="{{isLoading}}" class="skeleton-wrap">
+    <van-skeleton title row="4" />
+    <van-skeleton title row="4" style="margin-top:24rpx" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{cards.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无疗程卡" />
+  </view>
+
+  <!-- 疗程卡列表 -->
+  <view wx:else class="list-wrap">
+    <view
+      wx:for="{{cards}}"
+      wx:key="itemFlowNo"
+      class="tc-card"
+      bindtap="onCardTap"
+      data-order-no="{{item.orderNo}}"
+    >
+      <!-- 头部：项目名 + 类型标签 -->
+      <view class="tc-card__header">
+        <view class="tc-card__title-row">
+          <text class="tc-card__name">{{item.spuName}}</text>
+          <van-tag
+            wx:if="{{item.productType === '疗程卡'}}"
+            color="#FFF7ED"
+            text-color="#C9986A"
+          >疗程卡</van-tag>
+          <van-tag
+            wx:elif="{{item.productType === '单品'}}"
+            color="#F0FAF0"
+            text-color="#389E0D"
+          >单品</van-tag>
+        </view>
+        <text class="tc-card__sku">{{item.skuDisplayName}}</text>
+      </view>
+
+      <!-- 进度区 -->
+      <view class="tc-card__progress">
+        <view class="progress-bar">
+          <view class="progress-bar__fill" style="width: {{item.percent}}%"></view>
+        </view>
+        <view class="progress-info">
+          <text class="progress-used">已用 {{item.sessionCount - item.remainingSessions}} 次</text>
+          <text class="progress-remain">剩余 <text class="progress-remain__num">{{item.remainingSessions}}</text>/{{item.sessionCount}} 次</text>
+        </view>
+      </view>
+
+      <!-- 底部：门店 + 有效期 + 预约按钮 -->
+      <view class="tc-card__footer">
+        <view class="tc-card__meta">
+          <view class="tc-card__store">
+            <van-icon name="shop-o" size="24rpx" color="#999" />
+            <text class="tc-card__store-text">{{item.storeName}}</text>
+          </view>
+          <view class="tc-card__expire" wx:if="{{item.expireFmt}}">
+            <van-icon name="clock-o" size="24rpx" color="#999" />
+            <text class="tc-card__expire-text">{{item.expireFmt}} 到期</text>
+          </view>
+        </view>
+        <view
+          class="tc-card__book-btn"
+          catchtap="onBookTap"
+          data-order-no="{{item.orderNo}}"
+        >预约</view>
+      </view>
+    </view>
+  </view>
+
+</view>

@@ -31,11 +31,11 @@ Page({
   },
 
   onOrders() {
-    wx.switchTab({ url: '/pages/orders/orders' });
+    wx.navigateTo({ url: '/pages/orders/orders' });
   },
 
-  onAppointments() {
-    wx.switchTab({ url: '/pages/appointment/appointment' });
+  onTreatmentCards() {
+    wx.navigateTo({ url: '/pages/treatment-cards/treatment-cards' });
   },
 
   onBindPhone() {

@@ -11,7 +11,8 @@
     "pages/order-detail/order-detail",
     "pages/appointment-create/appointment-create",
     "pages/scan-pay/scan-pay",
-    "pages/cart/cart"
+    "pages/cart/cart",
+    "pages/treatment-cards/treatment-cards"
   ],
   "tabBar": {
     "color": "#999999",
