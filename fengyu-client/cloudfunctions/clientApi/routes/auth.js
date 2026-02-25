@@ -70,14 +70,16 @@ async function bindPhone(ctx) {
 
   // 方式1: CloudID 方式（推荐）
   if (cloudID) {
-    // CloudID 对象在云函数中被自动解密，直接访问 cloudID.data 获取手机号
-    // 结构: { data: { phoneNumber: string, purePhoneNumber: string, countryCode: string }, errCode: number }
+    // CloudID 在云函数中被自动解密
+    // 解密后结构为扁平对象: { phoneNumber, purePhoneNumber, countryCode, watermark }
+    console.log('[bindPhone] cloudID resolved:', JSON.stringify(cloudID))
+
     if (cloudID.errCode) {
       throw new Error(`INVALID_PARAMS: 手机号解密失败 (${cloudID.errMsg || cloudID.errCode})`)
     }
 
     // 优先使用 purePhoneNumber（纯数字），其次 phoneNumber（带区号）
-    phoneNumber = cloudID.data?.purePhoneNumber || cloudID.data?.phoneNumber
+    phoneNumber = cloudID.purePhoneNumber || cloudID.phoneNumber
 
     if (!phoneNumber) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')

@@ -51,8 +51,6 @@
           wx:for="{{spuList}}"
           wx:key="spu_id"
           class="spu-card"
-          bindtap="onSpuTap"
-          data-spu-id="{{item.spu_id}}"
         >
           <!-- 商品封面 -->
           <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
@@ -85,13 +83,27 @@
                 <text class="price-integer">{{item.min_price}}</text>
                 <text class="price-start">起</text>
               </view>
-              <van-button size="mini" type="primary" round>查看详情</van-button>
+              <view class="spu-add-btn" bindtap="onSpuTap" data-spu-id="{{item.spu_id}}">
+                <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+              </view>
             </view>
           </view>
         </view>
       </view>
 
     </scroll-view>
+  </view>
+
+  <!-- 底部悬浮购物车栏 -->
+  <view class="cart-bar" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
+    <view class="cart-icon-wrap">
+      <van-icon name="shopping-cart-o" size="44rpx" color="#FFFFFF" />
+      <view class="cart-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>
+    </view>
+    <view class="cart-info">
+      <text class="cart-tip">购物车</text>
+    </view>
+    <van-button type="warning" size="small" round>去结算</van-button>
   </view>
 
 </view>

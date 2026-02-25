@@ -69,3 +69,24 @@
   />
 
 </view>
+
+<!-- 手机号绑定弹窗 -->
+<van-popup
+  show="{{showPhoneBind}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onClosePhoneBind"
+  custom-style="padding: 48rpx 40rpx env(safe-area-inset-bottom);"
+>
+  <view class="phone-bind-popup">
+    <van-icon name="phone-o" size="64rpx" color="#D4A76A" />
+    <text class="phone-bind-title">需要绑定手机号</text>
+    <text class="phone-bind-desc">下单前请先绑定手机号，用于订单通知和售后服务</text>
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >微信一键绑定</button>
+  </view>
+</van-popup>

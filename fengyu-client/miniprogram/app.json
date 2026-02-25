@@ -10,7 +10,8 @@
     "pages/checkout/checkout",
     "pages/order-detail/order-detail",
     "pages/appointment-create/appointment-create",
-    "pages/scan-pay/scan-pay"
+    "pages/scan-pay/scan-pay",
+    "pages/cart/cart"
   ],
   "tabBar": {
     "color": "#999999",

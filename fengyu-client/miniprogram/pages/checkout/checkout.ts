@@ -1,7 +1,16 @@
 // pages/checkout/checkout.ts
 import Toast from '@vant/weapp/toast/toast';
+import { clearCart } from '../../utils/cart';
 
 const app = getApp<IAppOption>();
+
+interface CheckoutItem {
+  skuId: string;
+  spuName: string;
+  skuDisplayName: string;
+  price: number;
+  quantity: number;
+}
 
 // 调用 clientApi 云函数
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
@@ -10,7 +19,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }
@@ -29,16 +40,40 @@ Page({
     submitting: false,
     // 若从员工端扫码进入，持有已有 orderNo
     existingOrderNo: '',
+    // 购物车批量下单
+    fromCart: false,
+    cartItems: [] as CheckoutItem[],
+    totalPrice: '0.00',
+    // 手机号绑定弹窗
+    showPhoneBind: false,
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     if (orderNo) {
       // 场景 B：扫码收款，订单已存在
       this.setData({ existingOrderNo: orderNo });
       this.loadExistingOrder(orderNo);
+    } else if (fromCart === '1') {
+      // 场景 C：购物车批量下单
+      const checkoutItems: CheckoutItem[] = wx.getStorageSync('checkoutItems') || [];
+      if (checkoutItems.length === 0) {
+        Toast.fail('无结算商品');
+        setTimeout(() => wx.navigateBack(), 1000);
+        return;
+      }
+      const total = checkoutItems.reduce((s, i) => s + i.price * i.quantity, 0);
+      this.setData({
+        fromCart: true,
+        cartItems: checkoutItems,
+        spuName: checkoutItems.length === 1 ? checkoutItems[0].spuName : `${checkoutItems.length} 件商品`,
+        skuDisplayName: checkoutItems.length === 1 ? checkoutItems[0].skuDisplayName : checkoutItems.map(i => i.spuName).join('、'),
+        unitPrice: total.toFixed(2),
+        totalPrice: total.toFixed(2),
+        storeName,
+      });
     } else {
       // 场景 A：自助下单
       this.loadSkuPrice(skuId);
@@ -133,10 +168,18 @@ Page({
       const store = storeList?.stores?.find((s: any) => s.store_name === this.data.storeName);
       const marketName = store?.market_name || '';
 
+      // 构建订单项
+      let items: { skuId: string; quantity: number }[];
+      if (this.data.fromCart) {
+        items = this.data.cartItems.map(i => ({ skuId: i.skuId, quantity: i.quantity }));
+      } else {
+        items = [{ skuId: this.data.skuId, quantity: 1 }];
+      }
+
       const data = await callClientApi('order.create', {
         storeName: this.data.storeName,
         marketName,
-        items: [{ skuId: this.data.skuId, quantity: 1 }],
+        items,
         preferredStaffWfId: this.data.staffWfId || null,
         paymentMethod: this.data.paymentMethod
       });
@@ -145,15 +188,62 @@ Page({
       if (!orderNo) throw new Error('创建订单失败');
 
       if (this.data.paymentMethod === 'offline') {
+        if (this.data.fromCart) clearCart();
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` }), 1500);
       } else {
         await this.doWechatPay(orderNo);
+        if (this.data.fromCart) clearCart();
       }
     } catch (err: any) {
-      Toast.fail(err?.message || '下单失败，请重试');
+      if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
+        this.setData({ showPhoneBind: true });
+      } else {
+        Toast.fail(err?.message || '下单失败，请重试');
+      }
     } finally {
       this.setData({ submitting: false });
+    }
+  },
+
+  onClosePhoneBind() {
+    this.setData({ showPhoneBind: false });
+  },
+
+  async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    const { cloudID, errMsg } = e.detail;
+
+    if (!cloudID) {
+      if (errMsg?.includes('auth deny')) {
+        Toast('您拒绝了授权');
+      }
+      return;
+    }
+
+    try {
+      wx.showLoading({ title: '绑定中...', mask: true });
+
+      const res = await wx.cloud.callFunction({
+        name: 'clientApi',
+        data: {
+          action: 'auth.bindPhone',
+          payload: { cloudID: wx.cloud.CloudID(cloudID as string) }
+        }
+      }) as any;
+
+      wx.hideLoading();
+
+      if (res.result?.code !== 0) {
+        throw new Error(res.result?.message || '绑定失败');
+      }
+
+      wx.setStorageSync('phone', res.result.data.phone);
+      this.setData({ showPhoneBind: false });
+
+      Toast.success('绑定成功，请重新提交订单');
+    } catch (err: any) {
+      wx.hideLoading();
+      Toast.fail(err.message || '绑定失败，请重试');
     }
   },
 

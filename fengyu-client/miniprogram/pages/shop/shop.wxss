@@ -138,3 +138,68 @@
   align-items: center;
   justify-content: space-between;
 }
+
+.spu-add-btn {
+  width: 56rpx;
+  height: 56rpx;
+  background: #D4A76A;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ===== 底部悬浮购物车栏 ===== */
+.cart-bar {
+  position: fixed;
+  bottom: 40rpx;
+  left: 24rpx;
+  right: 24rpx;
+  height: 100rpx;
+  background: #1A1A1A;
+  border-radius: 50rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(0, 0, 0, 0.3);
+  z-index: 100;
+}
+
+.cart-icon-wrap {
+  position: relative;
+  width: 72rpx;
+  height: 72rpx;
+  background: #D4A76A;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 20rpx;
+}
+
+.cart-badge {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  min-width: 36rpx;
+  height: 36rpx;
+  padding: 0 8rpx;
+  background: #FF4D4F;
+  border-radius: 18rpx;
+  font-size: 22rpx;
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cart-info {
+  flex: 1;
+}
+
+.cart-tip {
+  font-size: 28rpx;
+  color: #D4A76A;
+  font-weight: 500;
+}

@@ -58,6 +58,7 @@ Page({
     }
     this.loadDetail(spuId);
     this.loadStaffList();
+    this.loadDefaultStaff();
   },
 
   async loadDetail(spuId: string) {
@@ -95,6 +96,20 @@ Page({
       Toast.fail('加载失败');
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  async loadDefaultStaff() {
+    try {
+      const data = await callClientApi('staff.default', {});
+      if (data?.mainStaffId) {
+        this.setData({
+          selectedStaffWfId: data.mainStaffId,
+          selectedStaffName: data.mainStaffName || '',
+        });
+      }
+    } catch {
+      // 获取默认美容师失败不影响主流程
     }
   },
 

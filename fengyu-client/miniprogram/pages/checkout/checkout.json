@@ -11,6 +11,7 @@
     "van-checkbox": "@vant/weapp/checkbox/index",
     "van-submit-bar": "@vant/weapp/submit-bar/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-dialog": "@vant/weapp/dialog/index"
+    "van-dialog": "@vant/weapp/dialog/index",
+    "van-popup": "@vant/weapp/popup/index"
   }
 }
