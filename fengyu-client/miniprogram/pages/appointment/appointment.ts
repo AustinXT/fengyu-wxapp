@@ -10,6 +10,18 @@ const STATUS_MAP: Record<string, { label: string; type: string; color: string; t
   '已关闭': { label: '已关闭', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
 };
 
+// 调用 clientApi 云函数
+async function callClientApi(action: string, payload: Record<string, any> = {}) {
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: { action, payload }
+  }) as any;
+  if (res.result?.code !== 0) {
+    throw new Error(res.result?.message || '请求失败');
+  }
+  return res.result.data;
+}
+
 Page({
   data: {
     activeTab: 'all',
@@ -37,11 +49,9 @@ Page({
   async loadList() {
     this.setData({ isLoading: true });
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'getAppointments',
-        data: { status: this.data.activeTab === 'all' ? undefined : this.data.activeTab },
-      }) as any;
-      const raw: any[] = res.result?.data || [];
+      const payload = this.data.activeTab === 'all' ? {} : { status: this.data.activeTab };
+      const data = await callClientApi('appointment.list', payload);
+      const raw: any[] = data?.appointments || [];
       const list = raw.map(item => {
         const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
         const d = new Date(item.appointment_time);
@@ -71,7 +81,7 @@ Page({
     Dialog.confirm({ title: '取消预约', message: '确定要取消此预约吗？取消后可重新发起。' })
       .then(async () => {
         try {
-          await wx.cloud.callFunction({ name: 'cancelAppointment', data: { appointmentId: id } });
+          await callClientApi('appointment.cancel', { appointmentId: id });
           Toast.success('预约已取消');
           this.loadList();
         } catch {

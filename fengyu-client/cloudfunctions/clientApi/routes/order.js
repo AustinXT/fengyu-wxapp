@@ -302,6 +302,86 @@ async function detail(ctx) {
   }
 }
 
+/**
+ * 获取可预约项目列表
+ * 查询已支付订单中有剩余次数的项目(疗程卡/单品)
+ * 性能优化:一次查询获取所有可预约项目,无需 order.list + order.detail 组合
+ */
+async function appointableItems(ctx) {
+  const { userId } = ctx.auth
+
+  // 查询已支付订单中有剩余次数的项目
+  const items = await pg.query(`
+    SELECT
+      o.order_no,
+      o.status AS order_status,
+      o.store_name,
+      o.market_name,
+      o.preferred_staff_wf_id,
+      oi.item_flow_no,
+      oi.sku_id,
+      oi.session_count,
+      oi.remaining_sessions,
+      oi.unit_price,
+      oi.sale_amount,
+      oi.expire_date,
+      p.spu_id,
+      p.name AS spu_name,
+      p.category,
+      p.big_category,
+      m.sku_display_name,
+      m.product_type,
+      m.workfine_item_id,
+      m.workfine_source
+    FROM orders o
+    INNER JOIN order_items oi ON o.order_no = oi.order_no
+    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    WHERE o.client_user_id = $1
+      AND o.status = '已支付'
+      AND oi.remaining_sessions > 0
+      AND (oi.expire_date IS NULL OR oi.expire_date > CURRENT_DATE)
+      AND m.product_type IN ('疗程卡', '单品')
+    ORDER BY o.paid_at DESC, oi.item_flow_no
+  `, [userId])
+
+  // 按订单号分组
+  const orderMap = new Map()
+  for (const item of items) {
+    if (!orderMap.has(item.order_no)) {
+      orderMap.set(item.order_no, {
+        orderNo: item.order_no,
+        orderStatus: item.order_status,
+        storeName: item.store_name,
+        marketName: item.market_name,
+        preferredStaffWfId: item.preferred_staff_wf_id,
+        items: []
+      })
+    }
+    orderMap.get(item.order_no).items.push({
+      itemFlowNo: item.item_flow_no,
+      skuId: item.sku_id,
+      spuId: item.spu_id,
+      spuName: item.spu_name,
+      category: item.category,
+      bigCategory: item.big_category,
+      skuDisplayName: item.sku_display_name,
+      productType: item.product_type,
+      sessionCount: item.session_count,
+      remainingSessions: item.remaining_sessions,
+      unitPrice: item.unit_price,
+      saleAmount: item.sale_amount,
+      expireDate: item.expire_date,
+      workfineItemId: item.workfine_item_id,
+      workfineSource: item.workfine_source
+    })
+  }
+
+  ctx.result = {
+    orders: Array.from(orderMap.values())
+  }
+}
+
 // ========== 辅助函数 ==========
 
 /**
@@ -419,5 +499,6 @@ module.exports = {
   pay,
   offlinePay,
   list,
-  detail
+  detail,
+  appointableItems
 }

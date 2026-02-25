@@ -6,6 +6,7 @@ const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
+const mssql = require('../db/mssql')
 const { requireFields } = require('../middleware/validate')
 
 /**
@@ -118,7 +119,58 @@ function generateUserId() {
   return 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
+/**
+ * 更新用户绑定门店
+ * 验证门店是否有效(从 UDT_M_219 查询)
+ */
+async function bindStore(ctx) {
+  const { OPENID } = cloud.getWXContext()
+  const { storeName } = ctx.event.payload
+
+  // 参数校验
+  if (!storeName) {
+    throw new Error('INVALID_PARAMS: 缺少 storeName 参数')
+  }
+
+  // 查询当前用户
+  const users = await pg.query(
+    'SELECT user_id, phone FROM client_wechat_users WHERE openid = $1',
+    [OPENID]
+  )
+
+  if (users.length === 0) {
+    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
+  }
+
+  // 验证门店是否存在(从 WorkFine UDT_M_219 查询)
+  const storeCheck = await mssql.query(`
+    SELECT UDF_M_438 AS store_name
+    FROM UDT_M_219
+    WHERE UDF_M_438 = '${storeName.replace(/'/g, "''")}'
+      AND (UDF_M_11956 IS NULL OR UDF_M_11956 != '是')
+  `)
+
+  if (storeCheck.length === 0) {
+    throw new Error('INVALID_PARAMS: 门店不存在或已停业')
+  }
+
+  const now = new Date()
+
+  // 更新绑定门店
+  await pg.query(
+    'UPDATE client_wechat_users SET bound_store_name = $1, updated_at = $2 WHERE user_id = $3',
+    [storeName, now, users[0].user_id]
+  )
+
+  ctx.result = {
+    success: true,
+    userId: users[0].user_id,
+    boundStoreName: storeName
+  }
+}
+
 module.exports = {
   login,
-  bindPhone
+  bindPhone,
+  bindStore
 }

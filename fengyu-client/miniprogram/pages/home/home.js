@@ -1,32 +1,66 @@
 // pages/home/home.js
 Page({
+
+  /**
+   * 页面的初始数据
+   */
   data: {
-    boundStoreName: '',
+
   },
 
-  onLoad() {
-    const app = getApp();
-    const storeName = app?.globalData?.boundStoreName || '';
-    this.setData({ boundStoreName: storeName });
+  /**
+   * 生命周期函数--监听页面加载
+   */
+  onLoad(options) {
+
   },
 
+  /**
+   * 生命周期函数--监听页面初次渲染完成
+   */
+  onReady() {
+
+  },
+
+  /**
+   * 生命周期函数--监听页面显示
+   */
   onShow() {
-    const app = getApp();
-    const storeName = app?.globalData?.boundStoreName || '';
-    if (storeName !== this.data.boundStoreName) {
-      this.setData({ boundStoreName: storeName });
-    }
+
   },
 
-  onSelectStore() {
-    wx.navigateTo({ url: '/pages/store-select/store-select' });
+  /**
+   * 生命周期函数--监听页面隐藏
+   */
+  onHide() {
+
   },
 
-  onNavigateToShop() {
-    wx.switchTab({ url: '/pages/shop/shop' });
+  /**
+   * 生命周期函数--监听页面卸载
+   */
+  onUnload() {
+
   },
 
-  onNavigateToAppointment() {
-    wx.switchTab({ url: '/pages/appointment/appointment' });
+  /**
+   * 页面相关事件处理函数--监听用户下拉动作
+   */
+  onPullDownRefresh() {
+
   },
-});
+
+  /**
+   * 页面上拉触底事件的处理函数
+   */
+  onReachBottom() {
+
+  },
+
+  /**
+   * 用户点击右上角分享
+   */
+  onShareAppMessage() {
+
+  }
+})

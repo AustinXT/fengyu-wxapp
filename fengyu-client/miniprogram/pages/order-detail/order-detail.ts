@@ -10,6 +10,18 @@ const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '已关闭':     { icon: 'close',     color: '#8C8C8C' },
 };
 
+// 调用 clientApi 云函数
+async function callClientApi(action: string, payload: Record<string, any> = {}) {
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: { action, payload }
+  }) as any;
+  if (res.result?.code !== 0) {
+    throw new Error(res.result?.message || '请求失败');
+  }
+  return res.result.data;
+}
+
 Page({
   data: {
     order: null as any,
@@ -40,14 +52,15 @@ Page({
   async loadDetail(orderNo: string) {
     this.setData({ isLoading: true });
     try {
-      const res = await wx.cloud.callFunction({ name: 'getOrderDetail', data: { orderNo } }) as any;
-      const order = res.result?.data || {};
+      const data = await callClientApi('order.detail', { orderNo });
+      const order = data?.order || {};
+      const items = data?.items || [];
       const d = new Date(order.order_datetime);
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
       const hasAppointableItems = order.status === '已支付'
-        && (order.items || []).some((i: any) =>
+        && items.some((i: any) =>
             i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
           );
 

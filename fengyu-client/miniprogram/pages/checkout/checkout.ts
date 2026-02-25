@@ -3,6 +3,18 @@ import Toast from '@vant/weapp/toast/toast';
 
 const app = getApp<IAppOption>();
 
+// 调用 clientApi 云函数
+async function callClientApi(action: string, payload: Record<string, any> = {}) {
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: { action, payload }
+  }) as any;
+  if (res.result?.code !== 0) {
+    throw new Error(res.result?.message || '请求失败');
+  }
+  return res.result.data;
+}
+
 Page({
   data: {
     spuName: '',
@@ -42,14 +54,12 @@ Page({
 
   async loadSkuPrice(skuId: string) {
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'getSkuPrice',
-        data: { skuId, storeName: app.globalData.boundStoreName },
-      }) as any;
-      const data = res.result?.data || {};
+      // 使用 product.skuDetail 获取 SKU 价格
+      const data = await callClientApi('product.skuDetail', { skuId });
+      const sku = data?.sku;
       this.setData({
-        skuDisplayName: data.sku_display_name || '',
-        unitPrice: data.price || '0.00',
+        skuDisplayName: sku?.sku_display_name || '',
+        unitPrice: String(sku?.originalPrice || '0.00'),
       });
     } catch {
       Toast.fail('加载价格失败');
@@ -58,13 +68,14 @@ Page({
 
   async loadExistingOrder(orderNo: string) {
     try {
-      const res = await wx.cloud.callFunction({ name: 'getOrderDetail', data: { orderNo } }) as any;
-      const order = res.result?.data || {};
-      const firstItem = order.items?.[0] || {};
+      const data = await callClientApi('order.detail', { orderNo });
+      const order = data?.order || {};
+      const items = data?.items || [];
+      const firstItem = items[0] || {};
       this.setData({
         spuName: firstItem.spu_name || '',
         skuDisplayName: firstItem.sku_display_name || '',
-        unitPrice: order.total_amount || '0.00',
+        unitPrice: order.receivable || '0.00',
         storeName: order.store_name || '',
       });
     } catch {
@@ -104,10 +115,7 @@ Page({
     try {
       if (this.data.existingOrderNo && this.data.paymentMethod === 'offline') {
         // 扫码 + 线下付款
-        await wx.cloud.callFunction({
-          name: 'submitOfflinePayment',
-          data: { orderNo: this.data.existingOrderNo },
-        });
+        await callClientApi('order.offlinePay', { orderNo: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.navigateBack(), 1500);
         return;
@@ -120,17 +128,20 @@ Page({
       }
 
       // 自助下单
-      const res = await wx.cloud.callFunction({
-        name: 'createOrder',
-        data: {
-          skuId: this.data.skuId,
-          staffWfId: this.data.staffWfId || null,
-          paymentMethod: this.data.paymentMethod,
-          storeName: this.data.storeName,
-        },
-      }) as any;
+      // 需要先获取门店的市场名称
+      const storeList = await callClientApi('store.list');
+      const store = storeList?.stores?.find((s: any) => s.store_name === this.data.storeName);
+      const marketName = store?.market_name || '';
 
-      const { orderNo } = res.result?.data || {};
+      const data = await callClientApi('order.create', {
+        storeName: this.data.storeName,
+        marketName,
+        items: [{ skuId: this.data.skuId, quantity: 1 }],
+        preferredStaffWfId: this.data.staffWfId || null,
+        paymentMethod: this.data.paymentMethod
+      });
+
+      const { orderNo } = data || {};
       if (!orderNo) throw new Error('创建订单失败');
 
       if (this.data.paymentMethod === 'offline') {
@@ -147,12 +158,9 @@ Page({
   },
 
   async doWechatPay(orderNo: string) {
-    const res = await wx.cloud.callFunction({
-      name: 'createWechatPayment',
-      data: { orderNo },
-    }) as any;
-    const payParams = res.result?.data || {};
-    await wx.requestPayment(payParams);
+    const data = await callClientApi('order.pay', { orderNo });
+    const paymentParams = data?.paymentParams || {};
+    await wx.requestPayment(paymentParams);
     Toast.success('支付成功');
     setTimeout(() => wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` }), 1200);
   },
