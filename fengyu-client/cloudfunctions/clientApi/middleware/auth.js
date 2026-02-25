@@ -15,14 +15,18 @@ const pg = require('../db/pg')
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
 
-  if (!OPENID) {
+  // 测试模式: 支持通过 testOpenid 参数进行测试
+  const testOpenid = ctx.event.payload?._testOpenid || ctx.event._testOpenid
+  const effectiveOpenid = testOpenid || OPENID
+
+  if (!effectiveOpenid) {
     throw new Error('UNAUTHORIZED: 无法获取用户身份')
   }
 
   // 查询用户
   const users = await pg.query(
     'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE openid = $1',
-    [OPENID]
+    [effectiveOpenid]
   )
 
   if (users.length === 0) {

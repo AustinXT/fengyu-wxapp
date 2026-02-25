@@ -17,7 +17,7 @@
       "disablePlugins": [],
       "outputPath": ""
     },
-    "useCompilerPlugins": false,
+    "useCompilerPlugins": ["typescript"],
     "minifyWXML": true
   },
   "compileType": "miniprogram",

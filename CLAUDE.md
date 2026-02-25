@@ -83,6 +83,26 @@ cd fengyu-client/miniprogram
 # 开发阶段通常不常用 npm 脚本
 ```
 
+### TypeScript 配置（重要）
+
+小程序**仅支持 TypeScript (`.ts`)**，禁止使用 JavaScript (`.js`)。
+
+**必须配置：**
+
+1. `project.config.json` 中启用 TypeScript 编译器：
+```json
+"useCompilerPlugins": ["typescript"]
+```
+
+2. 禁止创建同名的 `.js` 文件覆盖 `.ts`：
+   - 微信开发者工具默认优先使用 `.js`，如果存在同名 `.js` 会忽略 `.ts`
+   - 所有页面逻辑必须写在 `.ts` 文件中
+
+3. 删除项目中所有覆盖 `.ts` 的 `.js` 文件：
+```bash
+find pages -name "*.js" -type f -delete
+```
+
 ## 云函数架构
 
 ### API 路由模式
