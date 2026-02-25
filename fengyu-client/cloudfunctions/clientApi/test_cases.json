@@ -1,0 +1,177 @@
+/**
+ * clientApi 云函数接口测试脚本
+ *
+ * 使用方法:
+ * 1. 在微信开发者工具中打开云函数测试面板
+ * 2. 复制下面的测试用例到测试参数中执行
+ * 3. 查看返回结果是否符合预期
+ */
+
+// ===== 1. 认证模块测试 =====
+
+// 1.1 登录测试
+{
+  "action": "auth.login",
+  "payload": {}
+}
+
+// 1.2 绑定手机号测试
+{
+  "action": "auth.bindPhone",
+  "payload": {
+    "phoneNumber": "13800138000"
+  }
+}
+
+// ===== 2. 门店模块测试 =====
+
+// 2.1 门店列表
+{
+  "action": "store.list",
+  "payload": {}
+}
+
+// ===== 3. 商品模块测试 =====
+
+// 3.1 品项分类列表
+{
+  "action": "product.categories",
+  "payload": {}
+}
+
+// 3.2 SPU 列表(按分类筛选)
+{
+  "action": "product.spuList",
+  "payload": {
+    "category": "蜜语生玑"
+  }
+}
+
+// 3.3 SPU 列表(按大分类筛选)
+{
+  "action": "product.spuList",
+  "payload": {
+    "bigCategory": "生美"
+  }
+}
+
+// 3.4 SKU 详情
+{
+  "action": "product.skuDetail",
+  "payload": {
+    "skuId": "sku_test_001"
+  }
+}
+
+// ===== 4. 员工模块测试 =====
+
+// 4.1 美容师列表
+{
+  "action": "staff.list",
+  "payload": {
+    "storeName": "南昌梦祥店"
+  }
+}
+
+// ===== 5. 订单模块测试 =====
+
+// 5.1 创建订单
+{
+  "action": "order.create",
+  "payload": {
+    "storeName": "南昌梦祥店",
+    "marketName": "南商市场",
+    "items": [
+      {
+        "skuId": "sku_test_001",
+        "quantity": 1,
+        "unitPrice": 2980,
+        "saleAmount": 2980,
+        "receivable": 2980,
+        "received": 2980
+      }
+    ],
+    "paymentMethod": "wechat",
+    "preferredStaffWfId": "FY-20200101001"
+  }
+}
+
+// 5.2 订单列表
+{
+  "action": "order.list",
+  "payload": {
+    "page": 1,
+    "pageSize": 20
+  }
+}
+
+// 5.3 订单详情
+{
+  "action": "order.detail",
+  "payload": {
+    "orderNo": "FY-XSD-WX-250225001"
+  }
+}
+
+// ===== 6. 预约模块测试 =====
+
+// 6.1 创建预约
+{
+  "action": "appointment.create",
+  "payload": {
+    "storeName": "南昌梦祥店",
+    "marketName": "南商市场",
+    "staffWfId": "FY-20200101001",
+    "appointmentTime": "2026-02-26 14:00:00",
+    "notes": "首次到店"
+  }
+}
+
+// 6.2 预约列表
+{
+  "action": "appointment.list",
+  "payload": {
+    "page": 1,
+    "pageSize": 20
+  }
+}
+
+// 6.3 取消预约
+{
+  "action": "appointment.cancel",
+  "payload": {
+    "appointmentId": "appt_xxx"
+  }
+}
+
+// ===== 7. 服务模块测试 =====
+
+// 7.1 服务详情
+{
+  "action": "service.detail",
+  "payload": {
+    "serviceOrderNo": "HLD-WX-250225001"
+  }
+}
+
+// ===== 错误场景测试 =====
+
+// 缺少必填参数
+{
+  "action": "product.skuDetail",
+  "payload": {}
+}
+
+// 不存在的 SKU
+{
+  "action": "product.skuDetail",
+  "payload": {
+    "skuId": "not_exist_sku"
+  }
+}
+
+// 无效的 action
+{
+  "action": "invalid.action",
+  "payload": {}
+}

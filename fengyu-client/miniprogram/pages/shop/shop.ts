@@ -3,7 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 
 const app = getApp<IAppOption>();
 
-interface Category { category: string; category_order: number; }
+interface Category { category: string; category_order: number; big_category: string; }
 
 interface SpuItem {
   spu_id: string;
@@ -25,16 +25,16 @@ Page({
   },
 
   onLoad() {
-    const storeName = app.globalData.boundStoreName;
+    const storeName = app.globalData.boundStoreName || '';
     this.setData({ boundStoreName: storeName });
-    if (storeName) this.loadCategories();
+    this.loadCategories();
   },
 
   onShow() {
-    const storeName = app.globalData.boundStoreName;
+    const storeName = app.globalData.boundStoreName || '';
     if (storeName !== this.data.boundStoreName) {
       this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [] });
-      if (storeName) this.loadCategories();
+      this.loadCategories();
     }
   },
 
@@ -44,16 +44,23 @@ Page({
 
   async loadCategories() {
     try {
+      this.setData({ isLoading: true });
       const res = await wx.cloud.callFunction({
-        name: 'getCategories',
-        data: { storeName: this.data.boundStoreName },
+        name: 'clientApi',
+        data: {
+          action: 'product.categories',
+          payload: { storeName: this.data.boundStoreName },
+        },
       }) as any;
-      const categories: Category[] = res.result?.data || [];
+      const categories: Category[] = res.result?.data?.categories || [];
       this.setData({ categories, activeCategoryIndex: 0 });
       const first = categories[0]?.category;
       if (first) this.loadSpuList(first);
-    } catch {
+    } catch (err) {
+      console.error('loadCategories error:', err);
       Toast.fail('加载分类失败');
+    } finally {
+      this.setData({ isLoading: false });
     }
   },
 
@@ -69,11 +76,21 @@ Page({
     this.setData({ isLoading: true });
     try {
       const res = await wx.cloud.callFunction({
-        name: 'getSpuList',
-        data: { category, storeName: this.data.boundStoreName },
+        name: 'clientApi',
+        data: {
+          action: 'product.spuList',
+          payload: { category, storeName: this.data.boundStoreName },
+        },
       }) as any;
-      this.setData({ spuList: res.result?.data || [] });
-    } catch {
+      const spuList: SpuItem[] = res.result?.data?.spuList || [];
+      // 计算每个 SPU 的最低价
+      const listWithPrice = spuList.map((spu: any) => ({
+        ...spu,
+        min_price: spu.priceFrom || '0',
+      }));
+      this.setData({ spuList: listWithPrice });
+    } catch (err) {
+      console.error('loadSpuList error:', err);
       Toast.fail('加载商品失败');
     } finally {
       this.setData({ isLoading: false });

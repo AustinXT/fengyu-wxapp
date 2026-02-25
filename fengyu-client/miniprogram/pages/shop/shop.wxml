@@ -14,16 +14,8 @@
     </view>
   </view>
 
-  <!-- 未选择门店 -->
-  <view wx:if="{{!boundStoreName}}" class="no-store">
-    <van-empty description="请先选择您常去的门店" />
-    <van-button type="primary" size="normal" class="no-store-btn" bindtap="onSelectStore">
-      选择门店
-    </van-button>
-  </view>
-
-  <!-- 分类 + 商品主区域 -->
-  <view wx:else class="catalog">
+  <!-- 分类 + 商品主区域（始终显示） -->
+  <view class="catalog">
 
     <!-- 左侧：Vant Sidebar -->
     <scroll-view class="sidebar-scroll" scroll-y>
@@ -33,7 +25,6 @@
           wx:key="category"
           title="{{item.category}}"
         />
-        <van-sidebar-item title="院装产品" />
       </van-sidebar>
     </scroll-view>
 
@@ -47,7 +38,10 @@
       </view>
 
       <!-- 空态 -->
-      <view wx:elif="{{spuList.length === 0}}">
+      <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
+        <van-empty description="暂无服务项目" />
+      </view>
+      <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
         <van-empty description="该分类暂无服务项目" />
       </view>
 

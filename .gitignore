@@ -8,3 +8,4 @@ project.private.config.json
 db/.env
 *.sql.backup
 postgres_data/
+.env

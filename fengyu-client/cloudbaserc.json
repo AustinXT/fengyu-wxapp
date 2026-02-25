@@ -1,17 +1,13 @@
 {
-  "envId": "fengyu-8gz6p2d7f9f54217",
+  "envId": "cloud1-3gpht4b01ff88838",
   "version": "2.0",
   "functions": [
     {
       "name": "clientApi",
       "timeout": 30,
       "envVariables": {
-        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@localhost:5432/fengyu",
-        "MSSQL_SERVER": "111.229.31.128",
-        "MSSQL_PORT": "1433",
-        "MSSQL_USER": "Sa",
-        "MSSQL_PASSWORD": "oHx#+Q",
-        "MSSQL_DATABASE": "wkdb_20220804_86cd3292"
+        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp",
+        "MSSQL_CONNECTION_STRING": "Server=111.229.31.128,1433;Database=wkdb_20220804_86cd3292;User Id=Sa;Password=oHx#+Q;TrustServerCertificate=True"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main"

@@ -9,10 +9,16 @@ const mssql = require('../db/mssql')
 /**
  * 品项分类列表
  * 从 product_spu 动态派生,仅显示含有效 SKU 的分类
+ * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品分类
  */
 async function categories(ctx) {
-  // 查询有效分类(生美/非生美)
-  const categoriesResult = await pg.query(`
+  const { storeName } = ctx.event.payload || {}
+
+  // 门店专供产品的 SKU 来源是 UDT_M_1383
+  // 通用产品的 SKU 来源是 UDT_M_1281 或 UDT_M_341
+
+  // 生美/非生美分类（排除院装产品）
+  let categoriesSql = `
     SELECT
       p.category,
       p.big_category,
@@ -23,12 +29,29 @@ async function categories(ctx) {
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id AND m.is_active = true
       )
+  `
+
+  // 未绑定门店时，过滤掉只有门店专供 SKU 的 SPU
+  if (!storeName) {
+    categoriesSql += `
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id
+          AND m.is_active = true
+          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
+      )
+    `
+  }
+
+  categoriesSql += `
     GROUP BY p.category, p.big_category
     ORDER BY MIN(p.sort_order) ASC
-  `)
+  `
 
-  // 查询院装产品分类
-  const inStoreResult = await pg.query(`
+  const categoriesResult = await pg.query(categoriesSql)
+
+  // 院装产品分类
+  let inStoreSql = `
     SELECT
       '院装产品' AS category,
       '院装产品' AS big_category,
@@ -39,7 +62,21 @@ async function categories(ctx) {
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id AND m.is_active = true
       )
-  `)
+  `
+
+  // 未绑定门店时，院装产品也只显示通用的
+  if (!storeName) {
+    inStoreSql += `
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id
+          AND m.is_active = true
+          AND m.workfine_source = 'UDT_M_341'
+      )
+    `
+  }
+
+  const inStoreResult = await pg.query(inStoreSql)
 
   ctx.result = {
     categories: [...categoriesResult, ...inStoreResult]
@@ -49,12 +86,25 @@ async function categories(ctx) {
 /**
  * SPU 列表
  * PG 查询 SPU + WorkFine 实时读取 SKU 价格
+ * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品
  */
 async function spuList(ctx) {
-  const { category, bigCategory } = ctx.event.payload || {}
+  const { category, bigCategory, storeName } = ctx.event.payload || {}
 
   let whereClause = 'WHERE EXISTS (SELECT 1 FROM product_spu_sku_map m WHERE m.spu_id = p.spu_id AND m.is_active = true)'
   const params = []
+
+  // 未绑定门店时，过滤掉门店专供产品（UDT_M_1383）
+  if (!storeName) {
+    whereClause += `
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id
+          AND m.is_active = true
+          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
+      )
+    `
+  }
 
   if (category) {
     params.push(category)
@@ -84,6 +134,14 @@ async function spuList(ctx) {
   // 查询每个 SPU 的 SKU 列表
   const result = []
   for (const spu of spuList) {
+    // 未绑定门店时，只查询通用产品的 SKU
+    let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
+    const skuParams = [spu.spu_id]
+
+    if (!storeName) {
+      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+    }
+
     const skuList = await pg.query(`
       SELECT
         sku_id,
@@ -93,9 +151,9 @@ async function spuList(ctx) {
         sku_display_name,
         sort_order
       FROM product_spu_sku_map
-      WHERE spu_id = $1 AND is_active = true
+      ${skuFilterSql}
       ORDER BY sort_order ASC
-    `, [spu.spu_id])
+    `, skuParams)
 
     // 从 WorkFine 读取价格信息
     const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)

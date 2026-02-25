@@ -1,5 +1,4 @@
 // pages/home/home.ts
-const app = getApp<IAppOption>();
 
 Page({
   data: {
@@ -7,12 +6,14 @@ Page({
   },
 
   onLoad() {
-    const storeName = app.globalData.boundStoreName;
+    const app = getApp<IAppOption>();
+    const storeName = app?.globalData?.boundStoreName || '';
     this.setData({ boundStoreName: storeName });
   },
 
   onShow() {
-    const storeName = app.globalData.boundStoreName;
+    const app = getApp<IAppOption>();
+    const storeName = app?.globalData?.boundStoreName || '';
     if (storeName !== this.data.boundStoreName) {
       this.setData({ boundStoreName: storeName });
     }
