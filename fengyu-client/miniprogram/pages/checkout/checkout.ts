@@ -50,6 +50,7 @@ Page({
     fromCart: false,
     cartItems: [] as CheckoutItem[],
     totalPrice: '0.00',
+    quantity: 1,
     // 手机号绑定弹窗
     showPhoneBind: false,
     // 美容师选择
@@ -58,7 +59,7 @@ Page({
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart, quantity } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
@@ -89,25 +90,28 @@ Page({
       });
     } else {
       // 场景 A：自助下单
-      this.loadSkuPrice(skuId);
+      const qty = parseInt(quantity, 10) || 1;
+      this.loadSkuPrice(skuId, qty);
       this.setData({
         skuId: skuId || '',
         spuName: decodeURIComponent(spuName || ''),
         staffWfId: staffWfId || '',
         staffName: decodeURIComponent(staffName || ''),
         storeName,
+        quantity: qty,
       });
     }
   },
 
-  async loadSkuPrice(skuId: string) {
+  async loadSkuPrice(skuId: string, quantity: number = 1) {
     try {
-      // 使用 product.skuDetail 获取 SKU 价格
       const data = await callClientApi('product.skuDetail', { skuId });
       const sku = data?.sku;
+      const unitPrice = sku?.originalPrice || 0;
       this.setData({
         skuDisplayName: sku?.sku_display_name || '',
-        unitPrice: String(sku?.originalPrice || '0.00'),
+        unitPrice: String(unitPrice),
+        totalPrice: (unitPrice * quantity).toFixed(2),
       });
     } catch {
       Toast.fail('加载价格失败');
@@ -235,7 +239,7 @@ Page({
       if (this.data.fromCart) {
         items = this.data.cartItems.map(i => ({ skuId: i.skuId, quantity: i.quantity }));
       } else {
-        items = [{ skuId: this.data.skuId, quantity: 1 }];
+        items = [{ skuId: this.data.skuId, quantity: this.data.quantity }];
       }
 
       const data = await callClientApi('order.create', {

@@ -44,6 +44,7 @@ Page({
     spu: {} as Spu,
     skuList: [] as Sku[],
     selectedSku: null as Sku | null,
+    quantity: 1,
     staffList: [] as Staff[],
     staffListLoading: false,
     selectedStaffWfId: '',
@@ -144,7 +145,11 @@ Page({
   onSkuTap(e: WechatMiniprogram.TouchEvent) {
     const { skuId } = e.currentTarget.dataset as { skuId: string };
     const sku = this.data.skuList.find(s => s.sku_id === skuId) || null;
-    this.setData({ selectedSku: sku });
+    this.setData({ selectedSku: sku, quantity: 1 });
+  },
+
+  onQuantityChange(e: WechatMiniprogram.CustomEvent<number>) {
+    this.setData({ quantity: e.detail });
   },
 
   onSelectStaff() {
@@ -169,7 +174,7 @@ Page({
   },
 
   onAddToCart() {
-    const { selectedSku, spu } = this.data;
+    const { selectedSku, spu, quantity } = this.data;
     if (!selectedSku) {
       Toast('请先选择规格');
       return;
@@ -184,7 +189,7 @@ Page({
       price: selectedSku.price,
       bigCategory: spu.big_category,
       productType: selectedSku.product_type,
-    });
+    }, quantity);
 
     this.setData({ cartCount: getCartCount() });
     Toast.success('已加入购物车');
@@ -195,13 +200,13 @@ Page({
   },
 
   onSubmit() {
-    const { selectedSku, selectedStaffWfId, selectedStaffName, spu } = this.data;
+    const { selectedSku, selectedStaffWfId, selectedStaffName, spu, quantity } = this.data;
     if (!selectedSku) {
       Toast('请先选择规格');
       return;
     }
     wx.navigateTo({
-      url: `/pages/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}`,
+      url: `/pages/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`,
     });
   },
 

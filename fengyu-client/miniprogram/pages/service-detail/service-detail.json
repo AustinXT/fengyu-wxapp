@@ -10,6 +10,7 @@
     "van-button": "@vant/weapp/button/index",
     "van-popup": "@vant/weapp/popup/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
-    "van-toast": "@vant/weapp/toast/index"
+    "van-toast": "@vant/weapp/toast/index",
+    "van-stepper": "@vant/weapp/stepper/index"
   }
 }

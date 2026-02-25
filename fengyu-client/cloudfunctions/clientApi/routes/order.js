@@ -41,14 +41,11 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 您已有待支付订单,请先完成支付或取消订单')
   }
 
-  // 生成订单号
+  // 生成订单号（在事务外先生成，订单号无唯一约束冲突风险因为有用户级唯一检查）
   const orderNo = await generateOrderNo()
   const now = new Date()
 
   // 查询 SKU 信息并从 WorkFine 读取价格（并行）
-  const orderItems = []
-  let totalAmount = 0
-
   const skuResults = await Promise.all(
     items.map(async (item) => {
       const skuInfo = await getSkuInfo(item.skuId)
@@ -57,17 +54,14 @@ async function create(ctx) {
     })
   )
 
-  for (const { item, skuInfo, workfinePrice } of skuResults) {
-
+  // 预计算明细数据（不含 itemFlowNo，流水号在事务内生成）
+  let totalAmount = 0
+  const itemsData = skuResults.map(({ item, skuInfo, workfinePrice }) => {
     const unitPrice = workfinePrice.originalPrice
     const quantity = item.quantity || 1
     const saleAmount = unitPrice * quantity
     totalAmount += saleAmount
-
-    const itemFlowNo = await generateItemFlowNo()
-
-    orderItems.push({
-      itemFlowNo,
+    return {
       skuId: item.skuId,
       sessionCount: workfinePrice.sessionCount,
       remainingSessions: workfinePrice.sessionCount,
@@ -78,11 +72,30 @@ async function create(ctx) {
       receivable: saleAmount,
       received: 0,
       productType: skuInfo.product_type
-    })
-  }
+    }
+  })
 
-  // 使用事务创建订单
+  // 使用事务创建订单（流水号在事务内原子生成）
   await pg.transaction(async (client) => {
+    // 获取 advisory lock 防止并发生成重复流水号
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['item_flow_no_gen'])
+
+    // 在事务内查询今日最大序号（使用 client 而非 pg.query，确保同连接可见性）
+    const today = new Date()
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await client.query(
+      `SELECT item_flow_no FROM order_items
+       WHERE item_flow_no LIKE $1
+       ORDER BY item_flow_no DESC
+       LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+
+    let seq = 1
+    if (maxResult.rows.length > 0) {
+      seq = parseInt(maxResult.rows[0].item_flow_no.slice(-4)) + 1
+    }
+
     // 创建订单主表
     await client.query(
       `INSERT INTO orders (
@@ -93,17 +106,19 @@ async function create(ctx) {
       [orderNo, marketName, storeName, now, userId, paymentMethod, preferredStaffWfId || null]
     )
 
-    // 创建订单明细
-    for (const orderItem of orderItems) {
+    // 创建订单明细（流水号递增）
+    for (let i = 0; i < itemsData.length; i++) {
+      const itemFlowNo = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const d = itemsData[i]
       await client.query(
         `INSERT INTO order_items (
           item_flow_no, order_no, sku_id, session_count, remaining_sessions,
           unit_price, quantity, unit_discount, sale_amount, receivable, received
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
-          orderItem.itemFlowNo, orderNo, orderItem.skuId, orderItem.sessionCount,
-          orderItem.remainingSessions, orderItem.unitPrice, orderItem.quantity,
-          orderItem.unitDiscount, orderItem.saleAmount, orderItem.receivable, orderItem.received
+          itemFlowNo, orderNo, d.skuId, d.sessionCount,
+          d.remainingSessions, d.unitPrice, d.quantity,
+          d.unitDiscount, d.saleAmount, d.receivable, d.received
         ]
       )
     }
@@ -225,28 +240,33 @@ async function list(ctx) {
   const { status } = ctx.event.payload || {}
 
   // 构造查询条件
-  let whereClause = 'WHERE client_user_id = $1'
+  let whereClause = 'WHERE o.client_user_id = $1'
   const params = [userId]
 
   if (status) {
     params.push(status)
-    whereClause += ` AND status = $${params.length}`
+    whereClause += ` AND o.status = $${params.length}`
   }
 
   const orders = await pg.query(`
     SELECT
-      order_no,
-      status,
-      order_type,
-      market_name,
-      store_name,
-      order_datetime,
-      payment_method,
-      preferred_staff_wf_id,
-      created_at
-    FROM orders
+      o.order_no,
+      o.status,
+      o.order_type,
+      o.market_name,
+      o.store_name,
+      o.order_datetime,
+      o.payment_method,
+      o.preferred_staff_wf_id,
+      o.created_at,
+      COALESCE((
+        SELECT SUM(oi.receivable)
+        FROM order_items oi
+        WHERE oi.order_no = o.order_no
+      ), 0) AS total_amount
+    FROM orders o
     ${whereClause}
-    ORDER BY created_at DESC
+    ORDER BY o.created_at DESC
     LIMIT 100
   `, params)
 
@@ -302,9 +322,57 @@ async function detail(ctx) {
     ORDER BY oi.item_flow_no
   `, [orderNo])
 
+  // 计算总金额
+  const totalAmount = items.reduce((sum, item) => sum + Number(item.receivable || 0), 0)
+
   ctx.result = {
-    order,
+    order: {
+      ...order,
+      total_amount: totalAmount
+    },
     items
+  }
+}
+
+/**
+ * 取消订单
+ * 仅可取消待支付状态的订单
+ */
+async function cancel(ctx) {
+  const { userId } = ctx.auth
+  const { orderNo } = ctx.event.payload || {}
+
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+  }
+
+  // 查询订单
+  const orders = await pg.query(
+    'SELECT * FROM orders WHERE order_no = $1 AND client_user_id = $2',
+    [orderNo, userId]
+  )
+
+  if (orders.length === 0) {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
+  const order = orders[0]
+
+  if (order.status !== '待支付') {
+    throw new Error('INVALID_PARAMS: 当前订单状态不允许取消')
+  }
+
+  // 更新订单状态为已关闭
+  const now = new Date()
+  await pg.query(
+    "UPDATE orders SET status = '已关闭', updated_at = $1 WHERE order_no = $2",
+    [now, orderNo]
+  )
+
+  ctx.result = {
+    orderNo,
+    status: '已关闭',
+    message: '订单已取消'
   }
 }
 
@@ -416,31 +484,6 @@ async function generateOrderNo() {
 }
 
 /**
- * 生成销售流水号
- * 格式: XSLSH-WX-{YYYYMMDD}{序号}
- */
-async function generateItemFlowNo() {
-  const today = new Date()
-  const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
-
-  // 查询今日最大序号
-  const result = await pg.query(`
-    SELECT item_flow_no FROM order_items
-    WHERE item_flow_no LIKE 'XSLSH-WX-${dateStr}%'
-    ORDER BY item_flow_no DESC
-    LIMIT 1
-  `)
-
-  let seq = 1
-  if (result.length > 0) {
-    const lastNo = result[0].item_flow_no
-    seq = parseInt(lastNo.slice(-4)) + 1
-  }
-
-  return `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
-}
-
-/**
  * 获取 SKU 信息
  */
 async function getSkuInfo(skuId) {
@@ -510,5 +553,6 @@ module.exports = {
   offlinePay,
   list,
   detail,
+  cancel,
   appointableItems
 }

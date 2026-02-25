@@ -28,9 +28,6 @@
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无预约记录" />
-    <van-button type="primary" size="normal" class="empty-btn" bindtap="onCreateAppointment">
-      发起预约
-    </van-button>
   </view>
 
   <!-- 预约列表 -->

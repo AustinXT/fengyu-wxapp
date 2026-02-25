@@ -57,6 +57,19 @@
     </view>
   </view>
 
+  <!-- 购买数量 -->
+  <view class="quantity-card" wx:if="{{selectedSku}}">
+    <text class="quantity-label">购买数量</text>
+    <van-stepper
+      value="{{quantity}}"
+      min="1"
+      max="99"
+      bind:change="onQuantityChange"
+      input-width="44px"
+      button-size="28px"
+    />
+  </view>
+
   <!-- 选择美容师（可选） -->
   <van-cell-group title="指定美容师（可选）" inset>
     <van-cell
@@ -73,7 +86,8 @@
     <!-- 价格区 -->
     <view class="action-bar__price" wx:if="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
-      <text class="action-bar__price-value">{{selectedSku.price}}</text>
+      <text class="action-bar__price-value">{{selectedSku.price * quantity}}</text>
+      <text class="action-bar__price-qty" wx:if="{{quantity > 1}}"> x{{quantity}}</text>
     </view>
     <view class="action-bar__price" wx:else>
       <text class="action-bar__price-hint">请选择规格</text>

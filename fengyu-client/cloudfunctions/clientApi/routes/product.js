@@ -301,8 +301,68 @@ async function enrichSkuWithWorkfinePrice(skuList) {
   return result
 }
 
+/**
+ * 热门推荐列表
+ * 返回 sort_order 最小的 N 个 SPU（排除院装产品）
+ */
+async function hotList(ctx) {
+  const { storeName, limit = 6 } = ctx.event.payload || {}
+
+  let whereClause = `WHERE p.big_category != '院装产品'
+    AND EXISTS (
+      SELECT 1 FROM product_spu_sku_map m
+      WHERE m.spu_id = p.spu_id AND m.is_active = true
+    )`
+
+  if (!storeName) {
+    whereClause += `
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id
+          AND m.is_active = true
+          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
+      )
+    `
+  }
+
+  const spuListResult = await pg.query(`
+    SELECT p.spu_id, p.name, p.category, p.big_category, p.cover_image, p.sort_order
+    FROM product_spu p
+    ${whereClause}
+    ORDER BY p.sort_order ASC
+    LIMIT $1
+  `, [limit])
+
+  const result = []
+  for (const spu of spuListResult) {
+    let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
+    const skuParams = [spu.spu_id]
+
+    if (!storeName) {
+      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+    }
+
+    const skuList = await pg.query(`
+      SELECT sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
+      FROM product_spu_sku_map
+      ${skuFilterSql}
+      ORDER BY sort_order ASC
+    `, skuParams)
+
+    const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
+
+    result.push({
+      ...spu,
+      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null
+    })
+  }
+
+  ctx.result = { spuList: result }
+}
+
 module.exports = {
   categories,
   spuList,
-  skuDetail
+  skuDetail,
+  hotList
 }

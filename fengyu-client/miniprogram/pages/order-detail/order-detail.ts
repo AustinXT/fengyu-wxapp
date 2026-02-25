@@ -85,6 +85,29 @@ Page({
     wx.navigateTo({ url: `/pages/checkout/checkout?orderNo=${order_no}` });
   },
 
+  async onCancel() {
+    const { order_no } = this.data.order;
+    try {
+      await wx.showModal({
+        title: '确认取消',
+        content: '确定要取消该订单吗？取消后无法恢复。',
+        confirmText: '确定取消',
+        confirmColor: '#FF4D4F',
+      }).then(res => {
+        if (!res.confirm) throw new Error('USER_CANCELLED');
+      });
+
+      Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
+      await callClientApi('order.cancel', { orderNo: order_no });
+      Toast.success('订单已取消');
+      this.loadDetail(order_no);
+    } catch (err: any) {
+      if (err.message !== 'USER_CANCELLED') {
+        Toast.fail(err.message || '取消失败');
+      }
+    }
+  },
+
   onCreateAppointment() {
     const { order_no } = this.data.order;
     wx.navigateTo({ url: `/pages/appointment-create/appointment-create?orderNo=${order_no}` });

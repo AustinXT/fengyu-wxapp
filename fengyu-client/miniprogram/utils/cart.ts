@@ -43,18 +43,16 @@ function saveCart(cart: Cart): void {
 /**
  * 添加商品到购物车
  */
-export function addToCart(item: Omit<CartItem, 'quantity' | 'addedAt'>): Cart {
+export function addToCart(item: Omit<CartItem, 'quantity' | 'addedAt'>, quantity: number = 1): Cart {
   const cart = getCart();
   const existingIndex = cart.items.findIndex(i => i.skuId === item.skuId);
 
   if (existingIndex > -1) {
-    // 已存在，数量+1
-    cart.items[existingIndex].quantity += 1;
+    cart.items[existingIndex].quantity += quantity;
   } else {
-    // 新增商品
     cart.items.push({
       ...item,
-      quantity: 1,
+      quantity,
       addedAt: Date.now(),
     });
   }

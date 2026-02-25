@@ -137,6 +137,22 @@
   color: var(--color-text-hint);
 }
 
+/* ===== 购买数量 ===== */
+.quantity-card {
+  background: #FFFFFF;
+  padding: 24rpx 32rpx;
+  margin-bottom: 16rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.quantity-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
 /* ===== 美容师 Popup ===== */
 .staff-popup {
   padding-bottom: env(safe-area-inset-bottom);
@@ -242,6 +258,12 @@
 .action-bar__price-hint {
   font-size: 26rpx;
   color: var(--color-text-hint);
+}
+
+.action-bar__price-qty {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  margin-left: 6rpx;
 }
 
 .action-bar__cart-icon {
