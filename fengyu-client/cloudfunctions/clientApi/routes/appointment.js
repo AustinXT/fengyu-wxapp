@@ -25,54 +25,62 @@ async function create(ctx) {
     notes // 备注(可选)
   } = payload
 
-  if (!itemFlowNo || !appointmentTime) {
-    throw new Error('INVALID_PARAMS: 参数不完整')
+  if (!appointmentTime) {
+    throw new Error('INVALID_PARAMS: 缺少预约时间')
   }
 
-  // 查询订单明细,验证权限和剩余次数
-  const orderItems = await pg.query(`
-    SELECT
-      oi.item_flow_no,
-      oi.order_no,
-      oi.remaining_sessions,
-      o.client_user_id,
-      o.store_name,
-      o.market_name
-    FROM order_items oi
-    LEFT JOIN orders o ON oi.order_no = o.order_no
-    WHERE oi.item_flow_no = $1
-  `, [itemFlowNo])
-
-  if (orderItems.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单明细不存在')
-  }
-
-  const orderItem = orderItems[0]
-
-  if (orderItem.client_user_id !== userId) {
-    throw new Error('PERMISSION_DENIED: 无权操作该订单')
-  }
-
-  if (orderItem.remaining_sessions <= 0) {
-    throw new Error('INVALID_PARAMS: 剩余次数不足')
-  }
-
-  // 检查是否已有待确认或已确认的预约
-  const existingAppointments = await pg.query(
-    `SELECT appointment_id FROM appointments
-     WHERE item_flow_no = $1 AND status IN ('待确认', '已确认')`,
-    [itemFlowNo]
-  )
-
-  if (existingAppointments.length > 0) {
-    throw new Error('INVALID_PARAMS: 该订单明细已有待确认或已确认的预约')
-  }
-
-  // 查询顾客姓名(冗余存储)
+  // 查询顾客信息
   const users = await pg.query(
-    'SELECT phone FROM client_wechat_users WHERE user_id = $1',
+    'SELECT phone, store_name, market_name FROM client_wechat_users WHERE user_id = $1',
     [userId]
   )
+
+  let orderItem = null
+
+  if (itemFlowNo) {
+    // 关联疗程卡：验证权限和剩余次数
+    const orderItems = await pg.query(`
+      SELECT
+        oi.item_flow_no,
+        oi.order_no,
+        oi.remaining_sessions,
+        o.client_user_id,
+        o.store_name,
+        o.market_name
+      FROM order_items oi
+      LEFT JOIN orders o ON oi.order_no = o.order_no
+      WHERE oi.item_flow_no = $1
+    `, [itemFlowNo])
+
+    if (orderItems.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单明细不存在')
+    }
+
+    orderItem = orderItems[0]
+
+    if (orderItem.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+
+    if (orderItem.remaining_sessions <= 0) {
+      throw new Error('INVALID_PARAMS: 剩余次数不足')
+    }
+
+    // 检查是否已有待确认或已确认的预约
+    const existingAppointments = await pg.query(
+      `SELECT appointment_id FROM appointments
+       WHERE item_flow_no = $1 AND status IN ('待确认', '已确认')`,
+      [itemFlowNo]
+    )
+
+    if (existingAppointments.length > 0) {
+      throw new Error('INVALID_PARAMS: 该订单明细已有待确认或已确认的预约')
+    }
+  }
+
+  // 门店信息：优先从订单取，否则从用户绑定门店取
+  const marketName = orderItem?.market_name || users[0]?.market_name || ''
+  const storeName = orderItem?.store_name || users[0]?.store_name || ''
 
   // 查询美容师姓名(如果指定了)
   let staffName = null
@@ -92,9 +100,9 @@ async function create(ctx) {
       appointment_time, notes, item_flow_no, created_at, updated_at
     ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
   `, [
-    appointmentId, orderItem.market_name, orderItem.store_name,
+    appointmentId, marketName, storeName,
     userId, users[0]?.phone || '', staffWfId, staffName,
-    appointmentTime, notes || '', itemFlowNo, now
+    appointmentTime, notes || '', itemFlowNo || null, now
   ])
 
   ctx.result = {
@@ -130,9 +138,10 @@ async function list(ctx) {
       a.staff_name,
       a.appointment_time,
       a.notes,
+      a.item_flow_no,
       a.created_at,
       oi.order_no,
-      p.name AS spu_name,
+      COALESCE(p.name, '到店预约') AS service_name,
       m.sku_display_name
     FROM appointments a
     LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
