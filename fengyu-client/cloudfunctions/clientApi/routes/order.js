@@ -52,7 +52,7 @@ async function create(ctx) {
   const skuResults = await Promise.all(
     items.map(async (item) => {
       const skuInfo = await getSkuInfo(item.skuId)
-      const workfinePrice = await getWorkfinePrice(skuInfo.workfineItemId, skuInfo.workfineSource)
+      const workfinePrice = await getWorkfinePrice(skuInfo.workfine_item_id, skuInfo.workfine_source)
       return { item, skuInfo, workfinePrice }
     })
   )
@@ -77,7 +77,7 @@ async function create(ctx) {
       saleAmount,
       receivable: saleAmount,
       received: 0,
-      productType: skuInfo.productType
+      productType: skuInfo.product_type
     })
   }
 
@@ -460,6 +460,10 @@ async function getSkuInfo(skuId) {
  * 从 WorkFine 读取价格信息
  */
 async function getWorkfinePrice(workfineItemId, workfineSource) {
+  if (!workfineItemId || !workfineSource) {
+    throw new Error(`INVALID_PARAMS: WorkFine 参数缺失 (itemId=${workfineItemId}, source=${workfineSource})`)
+  }
+
   let sql = ''
 
   if (workfineSource === 'UDT_M_1281') {

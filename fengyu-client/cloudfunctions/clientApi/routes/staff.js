@@ -31,7 +31,7 @@ async function list(ctx) {
       UDF_S_1513 AS department,
       UDF_S_1152 AS phone
     FROM UDT_S_287
-    WHERE UDF_S_1624 = '否'
+    WHERE UDF_S_1624 NOT IN ('是', '离职')
       AND UDF_S_1163 = '${storeName.replace(/'/g, "''")}'
       AND (UDF_S_1513 = '美容部' OR UDF_S_1161 = '美容师')
     ORDER BY UDF_S_1155
@@ -104,7 +104,7 @@ async function defaultStaff(ctx) {
       UDF_S_1161 AS position
     FROM UDT_S_287
     WHERE UDF_S_1147 = '${mainStaffId.replace(/'/g, "''")}'
-      AND UDF_S_1624 = '否'
+      AND UDF_S_1624 NOT IN ('是', '离职')
   `
 
   const staffList = await mssql.query(staffSql)
