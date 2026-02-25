@@ -2,3 +2,4 @@
 test_*.js
 scripts
 test_cases.json
+node_modules

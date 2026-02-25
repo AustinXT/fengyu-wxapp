@@ -67,7 +67,7 @@
     button-text="{{paymentMethod === 'wechat' ? '微信支付' : '提交订单'}}"
     loading="{{submitting}}"
     disabled="{{!agreed || submitting}}"
-    tip="{{!agreed ? '请先同意消费协议' : ''}}"
+    tip="{{!agreed ? '请先同意消费协议' : false}}"
     bind:submit="onSubmitOrder"
     safe-area-inset-bottom
   />

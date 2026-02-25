@@ -3,9 +3,6 @@
   "version": "1.0.0",
   "description": "客户端统一云函数入口",
   "main": "index.js",
-  "scripts": {
-    "postinstall": "node scripts/prune-deps.js"
-  },
   "dependencies": {
     "wx-server-sdk": "latest",
     "pg": "^8.11.3",

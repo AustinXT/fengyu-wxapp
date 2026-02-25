@@ -3,7 +3,13 @@ import Toast from '@vant/weapp/toast/toast';
 
 const app = getApp<IAppOption>();
 
-const TIME_SLOTS = ['上午 09:00-11:00', '上午 11:00-13:00', '下午 13:00-15:00', '下午 15:00-17:00', '下午 17:00-19:00'];
+const TIME_SLOTS = [
+  { text: '上午 09:00-11:00', value: '09:00-11:00' },
+  { text: '上午 11:00-13:00', value: '11:00-13:00' },
+  { text: '下午 13:00-15:00', value: '13:00-15:00' },
+  { text: '下午 15:00-17:00', value: '15:00-17:00' },
+  { text: '下午 17:00-19:00', value: '17:00-19:00' },
+];
 
 // 调用 clientApi 云函数
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
@@ -141,8 +147,9 @@ Page({
     this.setData({ showTimePicker: false });
   },
 
-  onTimeConfirm(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    this.setData({ appointmentTimeSlot: e.detail.value, showTimePicker: false });
+  onTimeConfirm(e: WechatMiniprogram.CustomEvent<{ value: { text: string; value: string }[] }>) {
+    const selected = e.detail.value[0];
+    this.setData({ appointmentTimeSlot: selected.text, showTimePicker: false });
   },
 
   onShowStaffPopup() {
