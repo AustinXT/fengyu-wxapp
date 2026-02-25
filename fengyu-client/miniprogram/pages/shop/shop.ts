@@ -1,5 +1,6 @@
 // pages/shop/shop.ts
 import Toast from '@vant/weapp/toast/toast';
+import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 
 const app = getApp<IAppOption>();
 
@@ -13,6 +14,7 @@ interface SpuItem {
   cover_image: string;
   min_price: string;
   is_recommend: boolean;
+  skuList?: any[];
 }
 
 Page({
@@ -22,24 +24,71 @@ Page({
     activeCategoryIndex: 0,
     spuList: [] as SpuItem[],
     isLoading: false,
+    cartCount: 0,
   },
 
   onLoad() {
     const storeName = app.globalData.boundStoreName || '';
     this.setData({ boundStoreName: storeName });
     this.loadCategories();
+    this.updateCartCount();
   },
 
   onShow() {
     const storeName = app.globalData.boundStoreName || '';
     if (storeName !== this.data.boundStoreName) {
-      this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [] });
+      // 切换门店时清空购物车
+      clearCart();
+      this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [], cartCount: 0 });
       this.loadCategories();
+    } else {
+      this.updateCartCount();
     }
   },
 
   onSelectStore() {
     wx.navigateTo({ url: '/pages/store-select/store-select' });
+  },
+
+  updateCartCount() {
+    this.setData({ cartCount: getCartCount() });
+  },
+
+  // 点击"加入购物车"按钮
+  async onAddToCart(e: WechatMiniprogram.TouchEvent) {
+    e.stopPropagation(); // 阻止冒泡，避免触发卡片点击
+    const { spuId } = e.currentTarget.dataset as { spuId: string };
+    const spu = this.data.spuList.find(s => s.spu_id === spuId);
+    if (!spu) return;
+
+    // 获取第一个 SKU 作为默认添加到购物车的商品
+    const skuList = spu.skuList || [];
+    if (skuList.length === 0) {
+      Toast('暂无可购规格');
+      return;
+    }
+
+    // 使用最低价的 SKU
+    const sku = skuList[0];
+
+    addToCart({
+      skuId: sku.sku_id,
+      spuId: spu.spu_id,
+      spuName: spu.name,
+      skuDisplayName: sku.sku_display_name,
+      coverImage: spu.cover_image,
+      price: sku.originalPrice || 0,
+      bigCategory: spu.big_category,
+      productType: sku.product_type,
+    });
+
+    this.updateCartCount();
+    Toast.success('已加入购物车');
+  },
+
+  // 点击底部购物车栏
+  onCartTap() {
+    wx.navigateTo({ url: '/pages/cart/cart' });
   },
 
   async loadCategories() {

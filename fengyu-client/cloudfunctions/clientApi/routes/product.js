@@ -106,7 +106,10 @@ async function spuList(ctx) {
     `
   }
 
-  if (category) {
+  // 院装产品特殊处理：category 参数传入 "院装产品" 时，改为按 big_category 查询
+  if (category === '院装产品') {
+    whereClause += ` AND p.big_category = '院装产品'`
+  } else if (category) {
     params.push(category)
     whereClause += ` AND p.category = $${params.length}`
   }
