@@ -37,13 +37,19 @@
   <!-- 设置 -->
   <view class="section-title" style="margin-top:32rpx">账户设置</view>
   <van-cell-group inset>
-    <van-cell
-      title="绑定手机号"
-      icon="phone-o"
-      is-link
-      bindtap="onBindPhone"
-      value="{{maskedPhone || '未绑定'}}"
-    />
+    <!-- 使用 button + getPhoneNumber 获取手机号 -->
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >
+      <van-cell
+        title="绑定手机号"
+        icon="phone-o"
+        is-link
+        value="{{maskedPhone || '未绑定'}}"
+      />
+    </button>
     <van-cell
       title="切换门店"
       icon="shop-o"

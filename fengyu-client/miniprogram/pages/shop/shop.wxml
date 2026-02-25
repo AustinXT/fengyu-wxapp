@@ -22,7 +22,7 @@
       <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
         <van-sidebar-item
           wx:for="{{categories}}"
-          wx:key="category"
+          wx:key="_index"
           title="{{item.category}}"
         />
       </van-sidebar>

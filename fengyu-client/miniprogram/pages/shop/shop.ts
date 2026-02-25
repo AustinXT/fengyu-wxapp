@@ -53,7 +53,12 @@ Page({
         },
       }) as any;
       const categories: Category[] = res.result?.data?.categories || [];
-      this.setData({ categories, activeCategoryIndex: 0 });
+      // 为每个分类添加唯一索引，避免重复名称导致 wx:key 警告
+      const categoriesWithIndex = categories.map((c, i) => ({
+        ...c,
+        _index: i,
+      }));
+      this.setData({ categories: categoriesWithIndex, activeCategoryIndex: 0 });
       const first = categories[0]?.category;
       if (first) this.loadSpuList(first);
     } catch (err) {
@@ -64,11 +69,15 @@ Page({
     }
   },
 
-  onCategoryChange(e: WechatMiniprogram.CustomEvent<{ index: number }>) {
-    const index = e.detail.index;
-    this.setData({ activeCategoryIndex: index, spuList: [] });
+  onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
+    console.log('onCategoryChange', e.detail);
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
+    if (typeof index !== 'number') return;
     const { categories } = this.data;
+    if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
+    this.setData({ activeCategoryIndex: index, spuList: [] });
     const category = index < categories.length ? categories[index].category : '院装产品';
+    console.log('Loading category:', index, category);
     this.loadSpuList(category);
   },
 

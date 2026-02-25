@@ -57,14 +57,40 @@ async function login(ctx) {
 
 /**
  * 绑定手机号
+ * 支持两种方式：
+ * 1. CloudID 方式（推荐）：前端传入 wx.cloud.CloudID(cloudID)，云函数自动解密
+ * 2. 直接传入手机号（用于测试或特殊场景）
  * 同时补全历史订单的 client_user_id
  */
 async function bindPhone(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { phoneNumber } = ctx.event.payload
+  const { cloudID, phoneNumber: directPhone } = ctx.event.payload
 
-  // 参数校验
-  requireFields('phoneNumber')(ctx, () => {})
+  let phoneNumber = null
+
+  // 方式1: CloudID 方式（推荐）
+  if (cloudID) {
+    // CloudID 对象在云函数中被自动解密，直接访问 cloudID.data 获取手机号
+    // 结构: { data: { phoneNumber: string, purePhoneNumber: string, countryCode: string }, errCode: number }
+    if (cloudID.errCode) {
+      throw new Error(`INVALID_PARAMS: 手机号解密失败 (${cloudID.errMsg || cloudID.errCode})`)
+    }
+
+    // 优先使用 purePhoneNumber（纯数字），其次 phoneNumber（带区号）
+    phoneNumber = cloudID.data?.purePhoneNumber || cloudID.data?.phoneNumber
+
+    if (!phoneNumber) {
+      throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
+    }
+  }
+  // 方式2: 直接传入手机号（用于测试或特殊场景）
+  else if (directPhone) {
+    phoneNumber = directPhone
+  }
+  // 缺少参数
+  else {
+    throw new Error('INVALID_PARAMS: 缺少 cloudID 或 phoneNumber 参数')
+  }
 
   const now = new Date()
 
