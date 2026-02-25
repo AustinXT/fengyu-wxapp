@@ -219,86 +219,90 @@ async function skuDetail(ctx) {
 }
 
 /**
- * 从 WorkFine 读取 SKU 价格/次数信息
+ * 从 WorkFine 批量读取 SKU 价格/次数信息
+ * 按 workfine_source 分组，每组一次查询（最多 3 次远程查询）
  */
 async function enrichSkuWithWorkfinePrice(skuList) {
-  const result = []
+  if (skuList.length === 0) return []
 
+  // 按 workfine_source 分组
+  const groups = {}
   for (const sku of skuList) {
-    let workfineData = null
-
-    // 根据数据源查询 WorkFine
-    if (sku.workfine_source === 'UDT_M_1281') {
-      // 全国可售项目
-      const sql = `
-        SELECT
-          UDF_M_14503 AS item_id,
-          UDF_M_14505 AS item_name,
-          UDF_M_14506 AS session_count,
-          UDF_M_14508 AS original_price,
-          UDF_M_17783 AS is_shengmei
-        FROM UDT_M_1281
-        WHERE UDF_M_14503 = '${sku.workfine_item_id}'
-      `
-      const rows = await mssql.query(sql)
-      if (rows.length > 0) {
-        workfineData = {
-          itemName: rows[0].item_name,
-          sessionCount: rows[0].session_count,
-          originalPrice: rows[0].original_price,
-          isShengmei: rows[0].is_shengmei
-        }
-      }
-    } else if (sku.workfine_source === 'UDT_M_1383') {
-      // 门店自定义项目
-      const sql = `
-        SELECT
-          UDF_M_14503 AS item_id,
-          UDF_M_14505 AS item_name,
-          UDF_M_14506 AS session_count,
-          UDF_M_14508 AS original_price,
-          UDF_M_17784 AS is_shengmei
-        FROM UDT_M_1383
-        WHERE UDF_M_14503 = '${sku.workfine_item_id}'
-      `
-      const rows = await mssql.query(sql)
-      if (rows.length > 0) {
-        workfineData = {
-          itemName: rows[0].item_name,
-          sessionCount: rows[0].session_count,
-          originalPrice: rows[0].original_price,
-          isShengmei: rows[0].is_shengmei
-        }
-      }
-    } else if (sku.workfine_source === 'UDT_M_341') {
-      // 院装产品
-      const sql = `
-        SELECT
-          UDF_M_1870 AS item_id,
-          UDF_M_1871 AS item_name,
-          UDF_M_1872 AS specification,
-          UDF_M_1875 AS retail_price
-        FROM UDT_M_341
-        WHERE UDF_M_1870 = '${sku.workfine_item_id}'
-      `
-      const rows = await mssql.query(sql)
-      if (rows.length > 0) {
-        workfineData = {
-          itemName: rows[0].item_name,
-          specification: rows[0].specification,
-          originalPrice: rows[0].retail_price,
-          sessionCount: null // 院装产品无次数概念
-        }
-      }
-    }
-
-    result.push({
-      ...sku,
-      ...workfineData
-    })
+    const src = sku.workfine_source
+    if (!groups[src]) groups[src] = []
+    groups[src].push(sku)
   }
 
-  return result
+  // 转义单引号防注入
+  const esc = (v) => String(v).replace(/'/g, "''")
+
+  // 按分组并发查询 WorkFine
+  const workfineMap = {} // item_id -> workfineData
+  const queries = []
+
+  if (groups['UDT_M_1281']) {
+    const ids = groups['UDT_M_1281'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+    queries.push(
+      mssql.query(`
+        SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
+               UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
+               UDF_M_17783 AS is_shengmei
+        FROM UDT_M_1281 WHERE UDF_M_14503 IN (${ids})
+      `).then(rows => {
+        for (const r of rows) {
+          workfineMap[r.item_id] = {
+            itemName: r.item_name, sessionCount: r.session_count,
+            originalPrice: r.original_price, isShengmei: r.is_shengmei
+          }
+        }
+      })
+    )
+  }
+
+  if (groups['UDT_M_1383']) {
+    const ids = groups['UDT_M_1383'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+    queries.push(
+      mssql.query(`
+        SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
+               UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
+               UDF_M_17784 AS is_shengmei
+        FROM UDT_M_1383 WHERE UDF_M_14503 IN (${ids})
+      `).then(rows => {
+        for (const r of rows) {
+          workfineMap[r.item_id] = {
+            itemName: r.item_name, sessionCount: r.session_count,
+            originalPrice: r.original_price, isShengmei: r.is_shengmei
+          }
+        }
+      })
+    )
+  }
+
+  if (groups['UDT_M_341']) {
+    const ids = groups['UDT_M_341'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+    queries.push(
+      mssql.query(`
+        SELECT UDF_M_1870 AS item_id, UDF_M_1871 AS item_name,
+               UDF_M_1872 AS specification, UDF_M_1875 AS retail_price
+        FROM UDT_M_341 WHERE UDF_M_1870 IN (${ids})
+      `).then(rows => {
+        for (const r of rows) {
+          workfineMap[r.item_id] = {
+            itemName: r.item_name, specification: r.specification,
+            originalPrice: r.retail_price, sessionCount: null
+          }
+        }
+      })
+    )
+  }
+
+  await Promise.all(queries)
+
+  // 将 WorkFine 数据合并回 SKU 列表
+  return skuList.map(sku => ({
+    ...sku,
+    ...(workfineMap[sku.workfine_item_id] || {})
+  }))
 }
 
 /**
@@ -360,9 +364,63 @@ async function hotList(ctx) {
   ctx.result = { spuList: result }
 }
 
+/**
+ * SPU 详情（含 SKU 列表）
+ * 根据 spuId 查询单个 SPU 及其 SKU 价格信息
+ * @param {string} spuId - SPU ID
+ * @param {string} storeName - 门店名称（可选）
+ */
+async function spuDetail(ctx) {
+  const { spuId, storeName } = ctx.event.payload || {}
+
+  if (!spuId) {
+    throw new Error('INVALID_PARAMS: 缺少 spuId 参数')
+  }
+
+  // 查询单个 SPU
+  const spuRows = await pg.query(`
+    SELECT spu_id, name, category, big_category, cover_image, description, sort_order
+    FROM product_spu
+    WHERE spu_id = $1
+  `, [spuId])
+
+  if (spuRows.length === 0) {
+    throw new Error('INVALID_PARAMS: 商品不存在')
+  }
+
+  const spu = spuRows[0]
+
+  // 查询该 SPU 的 SKU 列表
+  let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
+  const skuParams = [spuId]
+
+  if (!storeName) {
+    skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+  }
+
+  const skuList = await pg.query(`
+    SELECT sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
+    FROM product_spu_sku_map
+    ${skuFilterSql}
+    ORDER BY sort_order ASC
+  `, skuParams)
+
+  // 从 WorkFine 读取价格信息
+  const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
+
+  ctx.result = {
+    spu: {
+      ...spu,
+      skuList: skuWithPrice,
+      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null
+    }
+  }
+}
+
 module.exports = {
   categories,
   spuList,
   skuDetail,
+  spuDetail,
   hotList
 }

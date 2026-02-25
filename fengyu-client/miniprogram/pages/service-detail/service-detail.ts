@@ -71,13 +71,9 @@ Page({
 
   async loadDetail(spuId: string) {
     try {
-      // 根据 spuId 查找第一个 sku_id，然后调用 skuDetail
-      // product.skuDetail 需要 skuId 参数，这里需要先获取 sku 列表
-      // 简化处理：调用 product.spuList 获取该分类下的所有 SPU
       const storeName = app.globalData.boundStoreName || '';
-      const data = await callClientApi('product.spuList', { storeName });
-      const spuList = data?.spuList || [];
-      const spu = spuList.find((s: any) => s.spu_id === spuId);
+      const data = await callClientApi('product.spuDetail', { spuId, storeName });
+      const spu = data?.spu;
 
       if (!spu) {
         throw new Error('商品不存在');

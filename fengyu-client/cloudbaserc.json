@@ -1,6 +1,7 @@
 {
   "envId": "cloud1-3gpht4b01ff88838",
   "version": "2.0",
+  "functionRoot": "cloudfunctions",
   "functions": [
     {
       "name": "clientApi",
@@ -12,7 +13,7 @@
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",
-      "installDependency": true
+      "installDependency": false
     }
   ]
 }

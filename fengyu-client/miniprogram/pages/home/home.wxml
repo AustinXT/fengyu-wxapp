@@ -41,108 +41,97 @@
       </view>
     </view>
 
-    <!-- 未选择门店 -->
-    <view wx:if="{{!boundStoreName}}" class="no-store-section">
-      <van-empty description="请先选择您常去的门店" />
-      <van-button type="primary" size="normal" bindtap="onSelectStore">
-        选择门店
-      </van-button>
+    <!-- ===== 2. 用户信息 + 疗程卡 ===== -->
+    <view class="section-treatment-cards">
+    <view class="section-header">
+        <text class="section-title">我的疗程卡</text>
+        <text class="section-more" bindtap="onViewAllCards">查看全部</text>
     </view>
 
-    <view wx:else>
+    <!-- 未登录 -->
+    <view wx:if="{{!isLoggedIn}}" class="tc-login-prompt" bindtap="onLoginTap">
+        <van-icon name="user-o" size="48rpx" color="#D4A76A" />
+        <text class="login-text">登录后查看您的疗程卡</text>
+        <van-button type="primary" size="small" round>立即登录</van-button>
+    </view>
 
-      <!-- ===== 2. 用户信息 + 疗程卡 ===== -->
-      <view class="section-treatment-cards">
-        <view class="section-header">
-          <text class="section-title">我的疗程卡</text>
-          <text class="section-more" bindtap="onViewAllCards">查看全部</text>
-        </view>
+    <!-- 已登录，无疗程卡 -->
+    <view wx:elif="{{tcCards.length === 0 && !tcLoading}}" class="tc-empty">
+        <text class="tc-empty-text">暂无疗程卡</text>
+        <text class="tc-empty-hint">选购服务后即可查看</text>
+        <van-button type="primary" size="small" round bindtap="onBrowseServices">去选购</van-button>
+    </view>
 
-        <!-- 未登录 -->
-        <view wx:if="{{!isLoggedIn}}" class="tc-login-prompt" bindtap="onLoginTap">
-          <van-icon name="user-o" size="48rpx" color="#D4A76A" />
-          <text class="login-text">登录后查看您的疗程卡</text>
-          <van-button type="primary" size="small" round>立即登录</van-button>
-        </view>
-
-        <!-- 已登录，无疗程卡 -->
-        <view wx:elif="{{tcCards.length === 0 && !tcLoading}}" class="tc-empty">
-          <text class="tc-empty-text">暂无疗程卡</text>
-          <text class="tc-empty-hint">选购服务后即可查看</text>
-          <van-button type="primary" size="small" round bindtap="onBrowseServices">去选购</van-button>
-        </view>
-
-        <!-- 疗程卡横向滚动 -->
-        <scroll-view wx:elif="{{tcCards.length > 0}}" class="tc-scroll" scroll-x="{{true}}">
-          <view class="tc-list">
-            <view
-              wx:for="{{tcCards}}"
-              wx:key="itemFlowNo"
-              class="tc-card"
-              bindtap="onCardTap"
-              data-order-no="{{item.orderNo}}"
-            >
-              <view class="tc-card__name">{{item.spuName}}</view>
-              <view class="tc-card__sku">{{item.skuDisplayName}}</view>
-              <view class="tc-card__progress">
-                <van-progress percentage="{{item.percent}}" stroke-width="6rpx" color="#D4A76A" track-color="#F0F0F0" show-pivot="{{false}}" />
-                <text class="tc-card__progress-text">剩余 {{item.remainingSessions}}/{{item.sessionCount}} 次</text>
-              </view>
-              <view class="tc-card__book-btn" catchtap="onBookTap" data-order-no="{{item.orderNo}}">预约</view>
+    <!-- 疗程卡横向滚动 -->
+    <scroll-view wx:elif="{{tcCards.length > 0}}" class="tc-scroll" scroll-x="{{true}}">
+        <view class="tc-list">
+        <view
+            wx:for="{{tcCards}}"
+            wx:key="itemFlowNo"
+            class="tc-card"
+            bindtap="onCardTap"
+            data-order-no="{{item.orderNo}}"
+        >
+            <view class="tc-card__name">{{item.spuName}}</view>
+            <view class="tc-card__sku">{{item.skuDisplayName}}</view>
+            <view class="tc-card__progress">
+            <van-progress percentage="{{item.percent}}" stroke-width="6rpx" color="#D4A76A" track-color="#F0F0F0" show-pivot="{{false}}" />
+            <text class="tc-card__progress-text">剩余 {{item.remainingSessions}}/{{item.sessionCount}} 次</text>
             </view>
-          </view>
-        </scroll-view>
-      </view>
+            <view class="tc-card__book-btn" catchtap="onBookTap" data-order-no="{{item.orderNo}}">预约</view>
+        </view>
+        </view>
+    </scroll-view>
+    </view>
 
-      <!-- ===== 3. 两个大按钮 ===== -->
-      <view class="section-actions">
-        <view class="action-btn action-btn__service" bindtap="onBrowseServices">
-          <van-icon name="shop-o" size="56rpx" color="#FFFFFF" />
-          <text class="action-btn__text">浏览服务</text>
-          <text class="action-btn__subtext">查看门店服务项目</text>
-        </view>
-        <view class="action-btn action-btn__appointment" bindtap="onBookAppointment">
-          <van-icon name="calendar-o" size="56rpx" color="#FFFFFF" />
-          <text class="action-btn__text">预约护理</text>
-          <text class="action-btn__subtext">预约到店服务时间</text>
-        </view>
-      </view>
+    <!-- ===== 3. 两个大按钮 ===== -->
+    <view class="section-actions">
+    <view class="action-btn action-btn__service" bindtap="onBrowseServices">
+        <van-icon name="shop-o" size="56rpx" color="#FFFFFF" />
+        <text class="action-btn__text">浏览服务</text>
+        <text class="action-btn__subtext">查看门店服务项目</text>
+    </view>
+    <view class="action-btn action-btn__appointment" bindtap="onBookAppointment">
+        <van-icon name="calendar-o" size="56rpx" color="#FFFFFF" />
+        <text class="action-btn__text">预约护理</text>
+        <text class="action-btn__subtext">预约到店服务时间</text>
+    </view>
+    </view>
 
-      <!-- ===== 4. 热门服务推荐 ===== -->
-      <view class="section-hot">
-        <view class="section-header">
-          <text class="section-title">热门推荐</text>
-          <text class="section-more" bindtap="onViewAllServices">查看更多</text>
-        </view>
+    <!-- ===== 4. 热门服务推荐 ===== -->
+    <view class="section-hot">
+    <view class="section-header">
+        <text class="section-title">热门推荐</text>
+        <text class="section-more" bindtap="onViewAllServices">查看更多</text>
+    </view>
 
-        <view wx:if="{{hotLoading}}" class="hot-loading">
-          <view class="hot-skeleton" wx:for="{{3}}" wx:key="*this"></view>
-        </view>
+    <view wx:if="{{hotLoading}}" class="hot-loading">
+        <view class="hot-skeleton" wx:for="{{3}}" wx:key="*this"></view>
+    </view>
 
-        <view wx:elif="{{hotList.length === 0}}" class="hot-empty">
-          <van-empty description="暂无推荐" />
-        </view>
+    <view wx:elif="{{hotList.length === 0}}" class="hot-empty">
+        <van-empty description="暂无推荐" />
+    </view>
 
-        <view wx:else class="hot-grid">
-          <view
-            wx:for="{{hotList}}"
-            wx:key="spu_id"
-            class="hot-item"
-            bindtap="onSpuTap"
-            data-spu-id="{{item.spu_id}}"
-          >
-            <view class="hot-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="48rpx" color="#D4A76A" />
-            </view>
-            <image wx:else class="hot-cover" src="{{item.cover_image}}" mode="aspectFill" />
-            <view class="hot-name">{{item.name}}</view>
-            <view class="hot-price">
-              <text class="price-symbol">¥</text>
-              <text class="price-integer">{{item.priceFrom}}</text>
-            </view>
-          </view>
+    <view wx:else class="hot-grid">
+        <view
+        wx:for="{{hotList}}"
+        wx:key="spu_id"
+        class="hot-item"
+        bindtap="onSpuTap"
+        data-spu-id="{{item.spu_id}}"
+        >
+        <view class="hot-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+            <van-icon name="photo-o" size="48rpx" color="#D4A76A" />
         </view>
-      </view>
+        <image wx:else class="hot-cover" src="{{item.cover_image}}" mode="aspectFill" />
+        <view class="hot-name">{{item.name}}</view>
+        <view class="hot-price">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{item.priceFrom}}</text>
+        </view>
+        </view>
+    </view>
 
       <!-- 底部安全区 -->
       <view class="safe-area-bottom"></view>

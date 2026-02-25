@@ -147,8 +147,8 @@ Page({
     this.setData({ showTimePicker: false });
   },
 
-  onTimeConfirm(e: WechatMiniprogram.CustomEvent<{ value: { text: string; value: string }[] }>) {
-    const selected = e.detail.value[0];
+  onTimeConfirm(e: WechatMiniprogram.CustomEvent) {
+    const selected = e.detail.value as { text: string; value: string };
     this.setData({ appointmentTimeSlot: selected.text, showTimePicker: false });
   },
 

@@ -18,6 +18,7 @@ const routes = {
   'product.categories': () => require('./routes/product').categories,
   'product.spuList': () => require('./routes/product').spuList,
   'product.skuDetail': () => require('./routes/product').skuDetail,
+  'product.spuDetail': () => require('./routes/product').spuDetail,
   'product.hotList': () => require('./routes/product').hotList,
   'staff.list': () => require('./routes/staff').list,
   'staff.default': () => require('./routes/staff').defaultStaff,
