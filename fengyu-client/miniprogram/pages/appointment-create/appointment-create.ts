@@ -125,6 +125,10 @@ Page({
     });
   },
 
+  onClearItem() {
+    this.setData({ selectedItemFlowNo: '', selectedItemOrderNo: '' });
+  },
+
   onShowDatePicker() {
     this.setData({ showCalendar: true });
   },
@@ -148,8 +152,11 @@ Page({
   },
 
   onTimeConfirm(e: WechatMiniprogram.CustomEvent) {
-    const selected = e.detail.value as { text: string; value: string };
-    this.setData({ appointmentTimeSlot: selected.text, showTimePicker: false });
+    const { index } = e.detail;
+    const slot = TIME_SLOTS[index];
+    if (slot) {
+      this.setData({ appointmentTimeSlot: slot.text, showTimePicker: false });
+    }
   },
 
   onShowStaffPopup() {
@@ -171,15 +178,15 @@ Page({
 
   async onSubmit() {
     const { selectedItemFlowNo, appointmentDate, appointmentTimeSlot, selectedStaffWfId, notes } = this.data;
-    if (!selectedItemFlowNo || !appointmentDate || !appointmentTimeSlot) {
-      Toast('请填写完整预约信息');
+    if (!appointmentDate || !appointmentTimeSlot) {
+      Toast('请选择预约日期和时段');
       return;
     }
     if (this.data.submitting) return;
     this.setData({ submitting: true });
     try {
       await callClientApi('appointment.create', {
-        itemFlowNo: selectedItemFlowNo,
+        itemFlowNo: selectedItemFlowNo || null,
         appointmentTime: `${appointmentDate} ${appointmentTimeSlot}`,
         staffWfId: selectedStaffWfId || null,
         notes: notes.trim() || null,

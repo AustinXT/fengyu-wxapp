@@ -66,7 +66,10 @@ Page({
       });
       this.setData({ list });
     } catch {
-      Toast.fail('加载失败');
+      // 空列表不提示错误，仅在已有数据时提示刷新失败
+      if (this.data.list.length > 0) {
+        Toast.fail('加载失败');
+      }
     } finally {
       this.setData({ isLoading: false });
     }

@@ -3,17 +3,27 @@
 
 <view class="container">
 
-  <!-- 选择可预约项目 -->
-  <van-cell-group title="选择预约项目" inset>
+  <!-- 关联疗程卡（可选） -->
+  <van-cell-group title="关联疗程卡（可选）" inset>
     <view wx:if="{{appointableItems.length === 0}}" class="no-items-tip">
-      <van-empty
-        description="暂无可预约项目"
-        image="search"
-      >
-        <van-button round type="primary" size="small" slot="bottom" bindtap="onGoOrders">去查看订单</van-button>
-      </van-empty>
+      <van-cell title="无可关联项目" label="您可以直接预约到店时间" icon="info-o" />
     </view>
     <view wx:else>
+      <!-- 不关联选项 -->
+      <van-cell
+        title="不关联疗程卡"
+        label="仅预约到店时间"
+        clickable
+        bind:click="onClearItem"
+        class="{{!selectedItemFlowNo ? 'item-selected' : ''}}"
+      >
+        <van-icon
+          slot="right-icon"
+          name="{{!selectedItemFlowNo ? 'success' : 'circle'}}"
+          color="{{!selectedItemFlowNo ? '#C9986A' : '#DCDCDC'}}"
+          size="40rpx"
+        />
+      </van-cell>
       <van-cell
         wx:for="{{appointableItems}}"
         wx:key="item_flow_no"
@@ -82,7 +92,7 @@
       round
       size="large"
       loading="{{submitting}}"
-      disabled="{{!selectedItemFlowNo || !appointmentDate || !appointmentTimeSlot || submitting}}"
+      disabled="{{!appointmentDate || !appointmentTimeSlot || submitting}}"
       bindtap="onSubmit"
     >提交预约申请</van-button>
   </view>
@@ -103,10 +113,10 @@
     show="{{showTimePicker}}"
     position="bottom"
     round
-    closeable
     bind:close="onCloseTimePicker"
   >
     <van-picker
+      show-toolbar
       title="选择到店时段"
       columns="{{timeSlots}}"
       bind:confirm="onTimeConfirm"
