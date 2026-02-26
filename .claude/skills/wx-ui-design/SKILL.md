@@ -1,10 +1,16 @@
 ---
 name: wx-ui-design
-description: 用于指导微信小程序原生 UI 设计与实现，覆盖设计思维与审美方向、750rpx 布局系统、WXML 原生组件规范、配色字体方案、页面配置、自定义组件开发与图标资源管理。
+description: >-
+  Use this skill to design and implement WeChat Mini Program UI pages and custom
+  components. Covers design-thinking workflow, 750rpx layout system, WXSS
+  selector rules, Vant Weapp theme integration, component patterns with style
+  isolation, and icon resource management. Invoke when building, reviewing, or
+  refactoring any miniprogram page or component.
 metadata:
   title: 微信小程序 UI 设计
-  author: fengyu
-  version: 2.0.0
+  author: opc
+  version: 1.0.0
+  description_zh: 微信小程序原生 UI 设计与实现指南，覆盖设计思维、750rpx 布局、WXSS 规范、Vant Weapp 集成、组件模式与图标资源管理。
 ---
 
 > 设计前请先了解 `.42cog/real.md`（业务约束）和 `.42cog/cog.md`（认知模型）。
@@ -23,16 +29,29 @@ metadata:
 - 图标与资源管理
 
 **不适用于：**
-- 页面逻辑与云函数（请使用 `wx-coding`）
-- 数据库设计（请使用 `wx-database-design`）
+
+- Vant 组件 API 细节、事件签名 → 使用 `vant-weapp`
+- 页面逻辑与云函数 → 使用 `wx-coding`
+- 数据库设计 → 使用 `wx-database-design`
 
 ---
 
-# 设计思维
+## 参考文件路由表
+
+| 文件 | 编号范围 | 关键模式 |
+|---|---|---|
+| [design-system.md](references/design-system.md) | R2.x | CSS 变量主题、Vant 主题覆盖、状态色、价格排版、动画 |
+| [layout-patterns.md](references/layout-patterns.md) | R3.x | 三态视图、底部安全区、Tab 列表、弹窗面板、表单、横滑、选择 UI |
+| [component-patterns.md](references/component-patterns.md) | R4.x | 样式隔离、多 slot、info-card 示例、Vant+原生决策表 |
+| [anti-patterns.md](references/anti-patterns.md) | R5.x | AI 模板检测、12 个实战踩坑、DO/DON'T、WXSS 陷阱、交付清单 |
+
+---
+
+# R1 设计思维
 
 你是一位专业的小程序前端工程师，擅长创建具有独特审美风格的高保真界面。你的主要职责是将需求转化为可开发的小程序页面——功能完整且视觉令人难忘。
 
-## 强制性的设计前检查（编写任何代码前必须完成）
+## R1.1 强制性的设计前检查 [关键]
 
 **在编写任何页面代码之前，你必须明确输出此分析：**
 
@@ -42,7 +61,7 @@ metadata:
 1. 目的声明：[关于问题/用户/背景的 2-3 句话]
 2. 审美方向：[从列表中选择一个，禁止："modern"、"clean"、"simple"]
 3. 配色方案：[列出 3-5 个具体颜色及十六进制代码]
-   禁用颜色：紫色 (#800080-#9370DB)、紫罗兰 (#8B00FF-#EE82EE)、靛蓝 (#4B0082-#6610F2)、紫红 (#FF00FF-#FF77FF)、蓝紫渐变
+   禁用颜色：紫色 (#800080-#9370DB)、紫罗兰 (#8B00FF-#EE82EE)、靛蓝 (#4B0082-#6610F2)、紫红 (#FF00FF-#FF77FF)、蓝紫渐变 — 这些是过度使用的 AI 模板色
 4. 字体策略：[指定中文字体栈偏好与字重搭配]
 5. 布局策略：[描述视觉层次、节奏感、留白方式]
    禁止：所有页面千篇一律的居中卡片堆叠
@@ -53,29 +72,30 @@ metadata:
 | 方向 | 适用场景 | 小程序表现手法 |
 |---|---|---|
 | 极度简约 | 工具类、效率类 | 大留白、克制配色、精准间距 |
-| 奢华精致 | 美业、高端服务 | 深色底、金色点缀、精致描边 |
+| 奢华精致 | 高端服务、会所 | 深色底、金色点缀、精致描边 |
 | 柔和粉彩 | 美容、女性用户 | 低饱和暖色、圆角、柔光阴影 |
-| 有机自然 | 健康、养生 | 自然色系、不规则形状、纹理背景 |
+| 有机自然 | 健康、养生、茶饮 | 自然色系、不规则形状、纹理背景 |
 | 杂志编辑 | 内容展示、品牌 | 大字重对比、错落排版、留白呼吸感 |
 | 工业实用 | 管理后台、B 端 | 紧凑信息密度、网格对齐、低彩度 |
 | 装饰艺术 | 品牌调性强 | 几何图案、对称装饰、金属质感 |
-
-**美业小程序推荐**：奢华精致 / 柔和粉彩 / 有机自然
+| 复古未来 | 创意类、潮流品牌 | 霓虹色 + 暗底、网格线、等宽字体 |
+| 趣味玩具 | 儿童、游戏化、社交 | 高饱和色块、大圆角、插画风图标 |
 
 ### 上下文感知推荐
 
-- **客户端（C 端）**：奢华精致 / 柔和粉彩 — 顾客体验导向
-- **员工端（B 端）**：工业实用 / 极度简约 — 效率导向
+- **面向消费者（C 端）**：奢华精致 / 柔和粉彩 / 有机自然 — 体验导向
+- **面向管理者（B 端）**：工业实用 / 极度简约 — 效率导向
 
 ### 触发词检测器
 
 **如果你发现自己正在写这些，立即停止并重新阅读设计规范：**
-- 配色使用了紫色/紫罗兰/靛蓝/紫红/蓝紫渐变
+
+- 配色使用了紫色/紫罗兰/靛蓝/紫红/蓝紫渐变（AI 模板色）
 - 所有页面一模一样的白底灰卡片
 - 没有明确风格方向就开始写样式
 - 用 emoji 字符当图标
 
-**操作**：返回设计规范 --> 选择替代方案 --> 继续
+**操作**：返回设计规范 → 选择替代方案 → 继续
 
 ## 设计流程
 
@@ -87,7 +107,7 @@ metadata:
 
 ---
 
-# 设计系统基础
+# R1.2 设计系统基础
 
 ## 设计原则
 
@@ -127,7 +147,7 @@ page {
 
 | 禁用 | 原因 |
 |---|---|
-| 紫色系 (#800080 ~ #9370DB) | 过度使用的 AI 生成美学 |
+| 紫色系 (#800080 ~ #9370DB) | 过度使用的 AI 模板色 |
 | 紫罗兰系 (#8B00FF ~ #EE82EE) | 同上 |
 | 靛蓝系 (#4B0082 ~ #6610F2) | 同上 |
 | 紫红系 (#FF00FF ~ #FF77FF) | 同上 |
@@ -137,19 +157,24 @@ page {
 
 ```css
 page {
-  --color-primary: #D4A574;       /* 主色 */
-  --color-primary-light: #F0E0CC; /* 主色亮 */
-  --color-primary-dark: #B8895A;  /* 主色暗 */
-  --color-accent: #C97B5A;        /* 强调色 */
-  --color-success: #52C41A;       /* 语义：成功 */
-  --color-warning: #FAAD14;       /* 语义：警告 */
-  --color-error: #FF4D4F;         /* 语义：错误 */
-  --color-text-primary: #333333;  /* 主文本 */
-  --color-text-secondary: #666666;/* 副文本 */
-  --color-text-hint: #999999;     /* 提示文本 */
-  --color-border: #E8E8E8;        /* 边框 */
-  --color-bg-page: #F6F6F6;       /* 页面背景 */
-  --color-bg-card: #FFFFFF;       /* 卡片背景 */
+  /* === 品牌色（按项目替换） === */
+  --color-primary: <your-brand-color>;         /* 主色 */
+  --color-primary-light: <your-brand-light>;   /* 主色亮 */
+  --color-primary-dark: <your-brand-dark>;     /* 主色暗 */
+  --color-accent: <your-accent-color>;         /* 强调色 */
+
+  /* === 语义色（通用） === */
+  --color-success: #52C41A;
+  --color-warning: #FAAD14;
+  --color-error: #FF4D4F;
+
+  /* === 中性色（通用） === */
+  --color-text-primary: #333333;
+  --color-text-secondary: #666666;
+  --color-text-hint: #999999;
+  --color-border: #E8E8E8;
+  --color-bg-page: #F6F6F6;
+  --color-bg-card: #FFFFFF;
 }
 ```
 
@@ -166,7 +191,7 @@ page {
 
 ---
 
-# 750rpx 布局系统
+# R1.3 750rpx 布局系统
 
 ## 核心规则
 
@@ -204,7 +229,7 @@ page {
 
 ---
 
-# WXML 原生组件规范
+# R1.4 WXML 原生组件规范
 
 **严禁**使用任何 HTML 标签，必须使用原生组件：
 
@@ -226,24 +251,62 @@ page {
 
 ---
 
+# R1.5 WXSS 选择器规范
+
+## 支持的选择器
+
+| 选择器 | 示例 | 说明 |
+|---|---|---|
+| `.class` | `.intro` | 类选择器 |
+| `#id` | `#firstname` | ID 选择器（仅页面级可用） |
+| `element` | `view` | 标签选择器（仅页面级可用） |
+| `::before` | `view::before` | 伪元素 |
+| `::after` | `view::after` | 伪元素 |
+| `:host` | `:host` | 组件默认样式（组件内使用） |
+
+## 样式导入
+
+```css
+/* 使用相对路径 @import 导入 */
+@import "./common.wxss";
+@import "../styles/theme.wxss";
+```
+
+## 全局 vs 局部样式
+
+- `app.wxss` 为全局样式，作用于所有页面
+- 页面 `.wxss` 会覆盖 `app.wxss` 中的同名选择器
+- 组件 `.wxss` 默认隔离，不受页面和全局样式影响（详见 [component-patterns.md](references/component-patterns.md) R4.1）
+
+## 内联样式注意
+
+```xml
+<!-- 动态样式用 style 绑定 -->
+<view style="color: {{dynamicColor}}; font-size: {{size}}rpx;">动态</view>
+
+<!-- 静态样式写在 class 中，不要放 style 里（影响渲染速度） -->
+<view class="static-style">正确</view>
+```
+
+---
+
 # 页面配置与生命周期
 
-## page.json 必备配置
+## page.json 推荐配置
 
 ```json
 {
-  "navigationBarTitleText": "订单详情",
-  
+  "navigationBarTitleText": "页面标题",
   "enablePullDownRefresh": false,
   "usingComponents": {}
 }
 ```
 
-项目约定：每个新页面的 JSON 配置应包含 `navigationBarTitleText`，避免留空或仅 `{}`。（官方文档中此字段为可选，默认空字符串）
+推荐：每个新页面的 JSON 配置应包含 `navigationBarTitleText`，避免留空或仅 `{}`。（官方文档中此字段为可选，默认空字符串）
 
 ## 生命周期规范
 
-### Page 必须包含
+### Page 推荐包含
 
 ```typescript
 Page({
@@ -254,7 +317,7 @@ Page({
     // 页面显示时刷新
   },
   onShareAppMessage() {
-    // 项目约定（非框架强制）：防止页面无法分享
+    // 推荐：防止页面无法分享
     return {
       title: '分享标题',
       path: '/pages/index/index'
@@ -263,7 +326,7 @@ Page({
 })
 ```
 
-### Component 必须包含
+### Component 推荐包含
 
 ```typescript
 Component({
@@ -287,7 +350,7 @@ wx.navigateTo({ url: '/pages/detail/detail?id=123' })
 // 重定向（替换当前页）
 wx.redirectTo({ url: '/pages/result/result' })
 
-// 跳转 Tab 页
+// 跳转 Tab 页（只能跳 tabBar 页面）
 wx.switchTab({ url: '/pages/home/home' })
 
 // 返回上一页
@@ -308,22 +371,14 @@ wx.navigateBack({ delta: 1 })
     <text class="title">页面标题</text>
   </view>
 
-  <!-- 内容区域 -->
+  <!-- 内容区域（三态视图，详见 R3.1） -->
   <view class="content">
-    <!-- 加载态 -->
-    <view wx:if="{{isLoading}}" class="loading">
-      <text>加载中...</text>
+    <view wx:if="{{loading}}" class="skeleton">
+      <!-- 骨架屏 -->
     </view>
-
-    <!-- 空态 -->
-    <view wx:elif="{{!list.length}}" class="empty">
-      <image src="/images/empty.png" class="empty-icon" />
-      <text class="empty-text">暂无数据</text>
-    </view>
-
-    <!-- 数据列表 -->
+    <van-empty wx:elif="{{!list.length}}" description="暂无数据" />
     <view wx:else class="list">
-      <view class="list-item" wx:for="{{list}}" wx:key="_id">
+      <view class="list-item" wx:for="{{list}}" wx:key="id">
         <text>{{item.name}}</text>
       </view>
     </view>
@@ -335,11 +390,18 @@ wx.navigateBack({ delta: 1 })
 
 # 图标与资源管理
 
-## 图标方案
+## R1.6 图标方案优先级
 
-小程序中**不使用 Web 图标字体库**（FontAwesome、Heroicons 等 CDN 加载方式不适用），采用以下方案：
+按优先级选择图标方案：
 
-### Icons8 图片图标（推荐）
+| 优先级 | 方案 | 适用场景 |
+|---|---|---|
+| 1 | `van-icon` | Vant 内置图标，最方便 |
+| 2 | Icons8 图片图标 | 需要更丰富的图标库 |
+| 3 | 本地 SVG/PNG | 自定义图标、品牌图标 |
+| 4 | Iconfont（下载到本地） | 团队自有图标库 |
+
+### Icons8 图片图标
 
 URL 格式：`https://img.icons8.com/{style}/{size}/{color}/{icon-name}.png`
 
@@ -352,7 +414,7 @@ URL 格式：`https://img.icons8.com/{style}/{size}/{color}/{icon-name}.png`
 
 ```text
 未选中（灰色线框）：https://img.icons8.com/ios/100/8E8E93/checked--v1.png
-已选中（主色填充）：https://img.icons8.com/ios-filled/100/D4A574/checked--v1.png
+已选中（品牌色填充）：https://img.icons8.com/ios-filled/100/<brand-hex>/checked--v1.png
 ```
 
 ### 下载流程
@@ -363,7 +425,7 @@ URL 格式：`https://img.icons8.com/{style}/{size}/{color}/{icon-name}.png`
 
 | 禁止 | 替代方案 |
 |---|---|
-| Emoji 字符作为图标 | Icons8 图片或 SVG 内联 |
+| Emoji 字符作为图标 | van-icon / Icons8 图片 / 本地 SVG |
 | Web 字体图标 CDN（FontAwesome `<i>` 标签等） | 本地图片资源 |
 | 远程 URL 直接引用（不下载） | 下载到本地 `images/` 目录 |
 
@@ -373,7 +435,7 @@ URL 格式：`https://img.icons8.com/{style}/{size}/{color}/{icon-name}.png`
 
 # 自定义组件开发
 
-组件结构为 4 文件（`.wxml`、`.wxss`、`.ts`、`.json`），使用 `Component({})` API。完整示例（含 order-card 组件代码与事件通信）详见 [references/component-patterns.md](references/component-patterns.md)。
+组件结构为 4 文件（`.wxml`、`.wxss`、`.ts`、`.json`），使用 `Component({})` API。完整示例（含 info-card 组件代码、样式隔离与事件通信）详见 [references/component-patterns.md](references/component-patterns.md)。
 
 核心要点：
 
@@ -382,11 +444,4 @@ URL 格式：`https://img.icons8.com/{style}/{size}/{color}/{icon-name}.png`
 - 使用 `lifetimes.attached/detached` 管理生命周期
 - 通过 `this.triggerEvent('eventName', detail)` 向父组件通信
 - 在页面 `page.json` 的 `usingComponents` 中按需注册，避免全局注册影响性能
-
----
-
-## 参考资源
-
-- [设计系统详细规范](references/design-system.md) — 配色方案、字体、动效、空间构图
-- [组件开发模式](references/component-patterns.md) — WXML 原生组件、自定义组件完整示例
-- [反模式与交付清单](references/anti-patterns.md) — 常见错误速查、代码自检清单
+- 样式隔离模式选择详见 R4.1

@@ -1,14 +1,15 @@
 ---
 name: wx-database-design
 description: |
-  指导微信小程序 + CloudBase 数据库的设计、查询与迁移操作。覆盖三种选型
+  用于帮助设计和操作微信小程序 + CloudBase 数据库。覆盖三种选型
   （NoSQL 文档数据库、CloudBase MySQL、外部 PostgreSQL + Drizzle ORM），
-  包括 schema 设计、迁移工作流、CRUD 查询、安全规则与云函数数据库连接。
+  帮助生成 schema 定义、编写 CRUD 查询、配置安全规则与执行数据库迁移。
+  Use when designing database schemas, writing queries, or managing migrations.
   当用户需要设计表结构、编写数据库查询、配置安全规则、执行数据迁移时激活。
 metadata:
   title: 微信小程序数据库设计
   author: fengyu
-  version: 2.0.0
+  version: 1.0.0
   description_zh: 微信小程序三种数据库选型与操作指南
 ---
 
@@ -47,7 +48,7 @@ metadata:
 
 ## 选型建议
 
-```
+```text
 需要前端直调数据库？
 ├── 是 → 需要实时推送（watch）？
 │   ├── 是 → CloudBase NoSQL
@@ -68,7 +69,7 @@ metadata:
 
 ## 项目结构
 
-```
+```text
 db/
 ├── schema/           # Schema 定义（唯一真相源）
 │   ├── index.ts      # 统一导出
@@ -394,7 +395,7 @@ const result = await app.models.orders.list({
 
 ## 配置流程
 
-```
+```text
 创建集合/表 → 配置安全规则 → 等待缓存清除(约 2-5 分钟) → 编写代码 → 测试
 ```
 
