@@ -1,6 +1,7 @@
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 import { appointmentStatusEnum } from "./enums";
 import { clientWechatUsers } from "./user";
+import { orderItems } from "./order";
 
 /**
  * 实体五：预约
@@ -27,6 +28,8 @@ export const appointments = pgTable(
     staffWfId: text("staff_wf_id").notNull(),
     /** 美容师姓名，冗余存储 */
     staffName: text("staff_name").notNull(),
+    /** 关联 order_items.item_flow_no，可选（允许不关联具体项目） */
+    itemFlowNo: text("item_flow_no").references(() => orderItems.itemFlowNo),
     appointmentTime: timestamp("appointment_time").notNull(),
     notes: text("notes"),
     cancelledReason: text("cancelled_reason"),

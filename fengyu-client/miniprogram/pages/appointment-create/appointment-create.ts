@@ -33,8 +33,8 @@ Page({
     // 时间
     appointmentDate: '',
     appointmentTimeSlot: '',
-    minDate: Date.now(),
-    maxDate: Date.now() + 90 * 24 * 60 * 60 * 1000,
+    minDate: 0,
+    maxDate: 0,
 
     // 美容师
     staffList: [] as any[],
@@ -53,6 +53,11 @@ Page({
   },
 
   onLoad(options) {
+    const now = Date.now();
+    this.setData({
+      minDate: now,
+      maxDate: now + 90 * 24 * 60 * 60 * 1000,
+    });
     const { orderNo } = options as { orderNo?: string };
     this.loadAppointableItems(orderNo);
     this.loadStaffList();
@@ -177,7 +182,7 @@ Page({
   },
 
   async onSubmit() {
-    const { selectedItemFlowNo, appointmentDate, appointmentTimeSlot, selectedStaffWfId, notes } = this.data;
+    const { selectedItemFlowNo, appointmentDate, appointmentTimeSlot, selectedStaffWfId, selectedStaffName, notes } = this.data;
     if (!appointmentDate || !appointmentTimeSlot) {
       Toast('请选择预约日期和时段');
       return;
@@ -189,6 +194,7 @@ Page({
         itemFlowNo: selectedItemFlowNo || null,
         appointmentTime: `${appointmentDate} ${appointmentTimeSlot}`,
         staffWfId: selectedStaffWfId || null,
+        staffName: selectedStaffName || null,
         notes: notes.trim() || null,
       });
       Toast.success('预约申请已提交');

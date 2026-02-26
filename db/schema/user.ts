@@ -18,6 +18,8 @@ export const clientWechatUsers = pgTable('client_wechat_users', {
   phone: text('phone').unique(),
   /** 顾客端绑定门店名，来自 UDT_M_219.UDF_M_438，初始为 null */
   boundStoreName: text('bound_store_name'),
+  /** 顾客端绑定市场名，初始为 null */
+  boundMarketName: text('bound_market_name'),
   lastLoginAt: timestamp('last_login_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),

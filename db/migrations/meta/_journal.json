@@ -8,6 +8,20 @@
       "when": 1771988313570,
       "tag": "0000_equal_earthquake",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772001239787,
+      "tag": "0001_special_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772084534031,
+      "tag": "0002_premium_nighthawk",
+      "breakpoints": true
     }
   ]
 }

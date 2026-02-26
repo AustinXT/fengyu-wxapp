@@ -19,8 +19,9 @@ async function create(ctx) {
   const payload = ctx.event.payload
 
   const {
-    itemFlowNo, // 销售流水号,对应 order_items.item_flow_no
+    itemFlowNo, // 销售流水号,对应 order_items.item_flow_no（可选）
     staffWfId, // 预约美容师(可选)
+    staffName: inputStaffName, // 美容师姓名(前端传入)
     appointmentTime, // 预约到店时间
     notes // 备注(可选)
   } = payload
@@ -29,11 +30,18 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少预约时间')
   }
 
+  // 解析前端传入的时段字符串，如 "2026-02-26 上午 11:00-13:00"
+  // 提取日期和开始时间，转为合法 timestamp
+  const parsedTime = parseAppointmentTime(appointmentTime)
+
   // 查询顾客信息
   const users = await pg.query(
-    'SELECT phone, store_name, market_name FROM client_wechat_users WHERE user_id = $1',
+    'SELECT phone, bound_store_name, bound_market_name FROM client_wechat_users WHERE user_id = $1',
     [userId]
   )
+
+  const userStoreName = users[0]?.bound_store_name || ''
+  const userMarketName = users[0]?.bound_market_name || ''
 
   let orderItem = null
 
@@ -79,15 +87,8 @@ async function create(ctx) {
   }
 
   // 门店信息：优先从订单取，否则从用户绑定门店取
-  const marketName = orderItem?.market_name || users[0]?.market_name || ''
-  const storeName = orderItem?.store_name || users[0]?.store_name || ''
-
-  // 查询美容师姓名(如果指定了)
-  let staffName = null
-  if (staffWfId) {
-    // TODO: 从 WorkFine 查询美容师姓名
-    staffName = '美容师' // 临时占位
-  }
+  const marketName = orderItem?.market_name || userMarketName
+  const storeName = orderItem?.store_name || userStoreName
 
   // 创建预约
   const appointmentId = generateAppointmentId()
@@ -101,8 +102,8 @@ async function create(ctx) {
     ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
   `, [
     appointmentId, marketName, storeName,
-    userId, users[0]?.phone || '', staffWfId, staffName,
-    appointmentTime, notes || '', itemFlowNo || null, now
+    userId, users[0]?.phone || '', staffWfId || '', inputStaffName || '',
+    parsedTime, notes || '', itemFlowNo || null, now
   ])
 
   ctx.result = {
@@ -199,6 +200,24 @@ async function cancel(ctx) {
     status: '已取消',
     message: '预约已取消'
   }
+}
+
+/**
+ * 解析前端时段字符串为 Date 对象
+ * 输入格式: "2026-02-26 上午 11:00-13:00" 或 "2026-02-26 下午 15:00-17:00"
+ * 提取日期 + 时段开始时间，返回 Date
+ */
+function parseAppointmentTime(timeStr) {
+  // 匹配日期和开始时间: "YYYY-MM-DD ... HH:MM-HH:MM"
+  const match = timeStr.match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
+  if (!match) {
+    throw new Error('INVALID_PARAMS: 预约时间格式不正确')
+  }
+  const date = new Date(`${match[1]}T${match[2]}:00+08:00`)
+  if (isNaN(date.getTime())) {
+    throw new Error('INVALID_PARAMS: 预约时间解析失败')
+  }
+  return date
 }
 
 /**
