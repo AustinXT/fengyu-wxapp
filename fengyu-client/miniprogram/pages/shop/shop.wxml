@@ -51,6 +51,8 @@
           wx:for="{{spuList}}"
           wx:key="spu_id"
           class="spu-card"
+          bindtap="onSpuTap"
+          data-spu-id="{{item.spu_id}}"
         >
           <!-- 商品封面 -->
           <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
@@ -81,7 +83,7 @@
                 <text class="price-integer">{{item.min_price}}</text>
                 <text class="price-start">起</text>
               </view>
-              <view class="spu-add-btn" bindtap="onSpuTap" data-spu-id="{{item.spu_id}}">
+              <view class="spu-add-btn">
                 <van-icon name="plus" size="36rpx" color="#FFFFFF" />
               </view>
             </view>

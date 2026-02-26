@@ -455,11 +455,35 @@ async function spuDetail(ctx) {
   // 从 WorkFine 读取价格信息
   const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
 
+  // 促销方案：从 WorkFine 反查方案编号
+  let promotionSchemeId = null
+  let promotionSchemeName = null
+  if (spu.big_category === '促销方案' && skuWithPrice.length > 0) {
+    const firstItemId = skuWithPrice[0].workfine_item_id
+    const esc = (v) => String(v).replace(/'/g, "''")
+    try {
+      const schemeRows = await mssql.query(`
+        SELECT s.UDF_S_17159 AS scheme_id, s.UDF_S_17175 AS scheme_name
+        FROM UDT_S_1459 s
+        INNER JOIN UDT_M_1460 m ON m.RID = s.RID
+        WHERE m.UDF_M_17163 = '${esc(firstItemId)}'
+      `)
+      if (schemeRows.length > 0) {
+        promotionSchemeId = schemeRows[0].scheme_id
+        promotionSchemeName = schemeRows[0].scheme_name
+      }
+    } catch {
+      // 方案编号查询失败不阻塞主流程
+    }
+  }
+
   ctx.result = {
     spu: {
       ...spu,
       skuList: skuWithPrice,
-      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null
+      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null,
+      promotionSchemeId,
+      promotionSchemeName
     }
   }
 }

@@ -117,6 +117,7 @@ export const orderItems = pgTable(
     /** 疗程卡及单品适用，院装产品为 null；疗程卡：开单时写入合同约定到期日；单品：支付回调成功时由系统写入 paid_at + 1 year */
     expireDate: date('expire_date'),
     remark: text('remark'),
+    promotionSchemeId: text('promotion_scheme_id'),
   },
   (table) => [
     index('idx_order_items_order_no').on(table.orderNo),

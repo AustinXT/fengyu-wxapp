@@ -10,6 +10,7 @@ interface Spu {
   big_category: string;
   cover_image: string;
   description: string;
+  promotionSchemeId: string;
 }
 
 interface Sku {
@@ -85,7 +86,8 @@ Page({
           name: spu.name,
           big_category: spu.big_category,
           cover_image: spu.cover_image,
-          description: spu.description || ''
+          description: spu.description || '',
+          promotionSchemeId: spu.promotionSchemeId || ''
         },
         skuList: (spu.skuList || []).map((sku: any) => ({
           sku_id: sku.sku_id,
@@ -201,9 +203,12 @@ Page({
       Toast('请先选择规格');
       return;
     }
-    wx.navigateTo({
-      url: `/pages/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`,
-    });
+    let url = `/pages/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
+    // 促销方案传入 scheme 信息
+    if (spu.big_category === '促销方案' && spu.promotionSchemeId) {
+      url += `&orderType=promo&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
+    }
+    wx.navigateTo({ url });
   },
 
   onShareAppMessage() {

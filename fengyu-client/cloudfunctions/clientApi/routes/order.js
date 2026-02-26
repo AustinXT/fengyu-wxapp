@@ -25,7 +25,9 @@ async function create(ctx) {
     marketName,
     items, // [{ skuId, quantity }]
     preferredStaffWfId, // 可选,指定美容师
-    paymentMethod // 'wechat' | 'offline'
+    paymentMethod, // 'wechat' | 'offline'
+    orderType: orderTypeParam, // 可选, 'promo' | undefined
+    promotionSchemeId: promoSchemeId // 可选, 促销方案编号
   } = payload
 
   if (!storeName || !marketName || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
@@ -96,14 +98,18 @@ async function create(ctx) {
       seq = parseInt(maxResult.rows[0].item_flow_no.slice(-4)) + 1
     }
 
+    // 确定订单类型
+    const orderType = orderTypeParam === 'promo' ? '促销方案' : '正式'
+    const promotionSchemeId = promoSchemeId || null
+
     // 创建订单主表
     await client.query(
       `INSERT INTO orders (
         order_no, status, order_type, market_name, store_name,
         order_datetime, client_user_id, payment_method, order_source,
         preferred_staff_wf_id, created_at, updated_at
-      ) VALUES ($1, '待支付', '正式', $2, $3, $4, $5, $6, 'client', $7, $4, $4)`,
-      [orderNo, marketName, storeName, now, userId, paymentMethod, preferredStaffWfId || null]
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, 'client', $8, $5, $5)`,
+      [orderNo, orderType, marketName, storeName, now, userId, paymentMethod, preferredStaffWfId || null]
     )
 
     // 创建订单明细（流水号递增）
@@ -113,12 +119,14 @@ async function create(ctx) {
       await client.query(
         `INSERT INTO order_items (
           item_flow_no, order_no, sku_id, session_count, remaining_sessions,
-          unit_price, quantity, unit_discount, sale_amount, receivable, received
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          unit_price, quantity, unit_discount, sale_amount, receivable, received,
+          promotion_scheme_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           itemFlowNo, orderNo, d.skuId, d.sessionCount,
           d.remainingSessions, d.unitPrice, d.quantity,
-          d.unitDiscount, d.saleAmount, d.receivable, d.received
+          d.unitDiscount, d.saleAmount, d.receivable, d.received,
+          promotionSchemeId
         ]
       )
     }

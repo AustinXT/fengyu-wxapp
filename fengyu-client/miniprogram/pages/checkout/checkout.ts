@@ -56,10 +56,13 @@ Page({
     // 美容师选择
     staffList: [] as Staff[],
     showStaffPopup: false,
+    // 促销方案
+    orderType: 'normal' as string,
+    promotionSchemeId: '',
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart, quantity } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart, quantity, orderType, promotionSchemeId } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
@@ -99,6 +102,8 @@ Page({
         staffName: decodeURIComponent(staffName || ''),
         storeName,
         quantity: qty,
+        orderType: orderType || 'normal',
+        promotionSchemeId: promotionSchemeId ? decodeURIComponent(promotionSchemeId) : '',
       });
     }
   },
@@ -247,7 +252,9 @@ Page({
         marketName,
         items,
         preferredStaffWfId: this.data.staffWfId || null,
-        paymentMethod: this.data.paymentMethod
+        paymentMethod: this.data.paymentMethod,
+        orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
+        promotionSchemeId: this.data.promotionSchemeId || undefined,
       });
 
       const { orderNo } = data || {};

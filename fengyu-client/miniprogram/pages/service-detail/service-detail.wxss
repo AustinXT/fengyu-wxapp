@@ -324,3 +324,7 @@
   opacity: 0.4;
   pointer-events: none;
 }
+
+.action-bar__btn--full {
+  width: 100%;
+}

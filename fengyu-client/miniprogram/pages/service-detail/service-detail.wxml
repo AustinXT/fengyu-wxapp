@@ -94,16 +94,16 @@
       <text class="action-bar__price-hint">请选择规格</text>
     </view>
 
-    <!-- 购物车图标 -->
-    <view class="action-bar__cart-icon" bindtap="onCartTap">
+    <!-- 购物车图标：促销方案不显示 -->
+    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{spu.big_category !== '促销方案'}}">
       <van-icon name="shopping-cart-o" size="48rpx" />
       <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
     </view>
 
     <!-- 按钮区 -->
     <view class="action-bar__btns">
-      <view class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
-      <view class="action-bar__btn action-bar__btn--buy {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+      <view wx:if="{{spu.big_category !== '促销方案'}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
+      <view class="action-bar__btn action-bar__btn--buy {{spu.big_category === '促销方案' ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
     </view>
   </view>
 
