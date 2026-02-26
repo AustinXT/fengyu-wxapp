@@ -1,13 +1,10 @@
 ---
 name: wx-system-architecture
-description: |
-  用于规划微信小程序 + CloudBase 系统架构。覆盖运行时双线程模型、生命周期状态机、
-  项目目录结构、CloudBase 服务拓扑、分包与启动性能策略、安全架构与核心架构决策规则。
-  在进行架构设计、技术选型或项目初始化时使用。
+description: 用于规划微信小程序 + CloudBase 系统架构。覆盖 CloudBase 服务拓扑、双线程运行时模型、分包性能策略、安全架构与核心架构决策规则。在进行架构设计、技术选型或项目初始化时使用。
 metadata:
   title: 微信小程序系统架构设计
   author: 42ailab
-  version: 2.0.0
+  version: 2.1.0
   description_zh: 微信小程序 + CloudBase 系统架构规划指南
 ---
 
@@ -27,6 +24,18 @@ metadata:
 - 页面 UI 设计（请使用 `wx-ui-design`）
 - 具体编码实现（请使用 `wx-coding`）
 - 数据库表结构设计（请使用 `wx-database-design`）
+
+## 快速索引
+
+| 决策点 | 参考章节 |
+|--------|----------|
+| CloudBase 服务选型 | CloudBase 平台架构 |
+| 双线程 / setData 性能 | 运行时架构 |
+| 分包策略 | 性能架构 |
+| 安全认证 | 安全架构 |
+| 运行环境差异 / 生命周期细节 | [references/runtime-architecture.md](references/runtime-architecture.md) |
+| 开发者工具配置 / MCP / mcporter | [references/dev-environment.md](references/dev-environment.md) |
+| 控制台 URL | [references/console-urls.md](references/console-urls.md) |
 
 ---
 
@@ -134,20 +143,6 @@ App({
 - **逻辑层**负责 JavaScript 执行，所有页面共享一个逻辑层线程
 - 两层之间的数据传输通过 Native 桥接（`setData` 触发），需要序列化，因此 `setData` 的数据量直接影响性能
 
-## 运行环境差异
-
-| 平台 | 逻辑层引擎 | 渲染层引擎 | 备注 |
-|---|---|---|---|
-| **iOS** | JavaScriptCore | WKWebView | 无 JIT 编译，JS 执行性能较低 |
-| **Android** | V8 | XWeb（基于 Mobile Chromium） | 性能较好 |
-| **Windows** | Chromium | Chromium | 逻辑层与视图层共用 |
-| **DevTools** | NW.js | Chromium Webview | 仅用于开发调试 |
-
-**平台差异注意事项：**
-- iOS 不支持 JIT，涉及大量计算的逻辑在 iOS 上会明显慢于 Android
-- 建议开启 ES6 转 ES5（`project.config.json` 中 `"es6": true`），确保低版本兼容
-- WXSS 渲染在不同平台可能存在细微差异，需多端真机测试
-
 ## 生命周期状态机
 
 ### 启动方式
@@ -177,49 +172,7 @@ App({
 | `"homePage"`（默认） | 销毁后重新打开时回到首页 |
 | `"homePageAndLatestPage"` | 重新打开时回到最后浏览的页面 |
 
-### 退出状态保留
-
-通过 `onSaveExitState` 生命周期保存退出前的状态数据，下次冷启动时可恢复：
-
-```typescript
-Page({
-  onSaveExitState() {
-    return {
-      data: { scrollTop: this.data.scrollTop },
-      expireTimeStamp: Date.now() + 60 * 60 * 1000  // 1 小时过期
-    }
-  },
-  onLoad() {
-    const exitState = this.exitState
-    if (exitState) {
-      this.setData(exitState.data)
-    }
-  }
-})
-```
-
-### 版本更新机制
-
-使用 `wx.getUpdateManager()` 在小程序启动时检查新版本：
-
-```typescript
-const updateManager = wx.getUpdateManager()
-updateManager.onCheckForUpdate((res) => {
-  console.log('是否有新版本：', res.hasUpdate)
-})
-updateManager.onUpdateReady(() => {
-  wx.showModal({
-    title: '更新提示',
-    content: '新版本已下载，是否重启应用？',
-    success(res) {
-      if (res.confirm) updateManager.applyUpdate()
-    }
-  })
-})
-updateManager.onUpdateFailed(() => {
-  // 新版本下载失败，提示用户删除小程序重新进入
-})
-```
+> 平台运行环境差异（iOS/Android/DevTools）、`onSaveExitState` 退出状态保留、版本更新机制详见 [references/runtime-architecture.md](references/runtime-architecture.md)。
 
 ---
 
@@ -304,35 +257,13 @@ project-root/
 - `cloudfunctionRoot` 指向云函数目录
 - `lazyCodeLoading: "requiredComponents"` — 官方推荐，按需加载组件代码，优化启动性能
 
-### libVersion 选项
-
-| 值 | 说明 | 适用场景 |
-|---|---|---|
-| `"latest"` | 最新版本 | 开发调试 |
-| `"trial"` | 预览版 | 测试新特性 |
-| `"widelyUsed"` | 广泛使用的稳定版 | **生产环境推荐** |
-
-> 开发阶段可使用 `"latest"`，上线前建议切换为 `"widelyUsed"` 以确保用户基础库兼容性。
+> libVersion 选项说明、开发者工具 CLI 命令、MCP 配置、mcporter、glass-easel 详见 [references/dev-environment.md](references/dev-environment.md)。
 
 ---
 
 # 开发环境搭建
 
-## 微信开发者工具
-
-### 打开项目
-
-- **macOS**: `/Applications/wechatwebdevtools.app/Contents/MacOS/cli open --project "/path/to/project"`
-- **Windows**: `"C:\Program Files (x86)\Tencent\微信web开发者工具\cli.bat" open --project "项目根目录"`
-- 项目路径指向**包含 `project.config.json` 的目录**
-
-### 关键检查
-
-1. 确认 `project.config.json` 已配置 `appid`
-2. 确认云开发环境已关联
-3. 基础库版本建议使用 `latest`（开发阶段）或 `widelyUsed`（生产环境）
-
-### 渲染引擎选型
+## 渲染引擎选型
 
 微信小程序支持两种渲染引擎：
 
@@ -343,91 +274,7 @@ project-root/
 
 > Skyline 引擎提供更优的渲染性能和专属组件（如 `list-view`、`grid-view`、`sticky-header`），但部分 CSS 特性和组件行为与 WebView 存在差异，迁移前需评估兼容性。
 
-### glass-easel 组件框架（新特性参考）
-
-微信新推出的 glass-easel 组件框架支持模板内函数调用、链式 API、动态 slot 等增强能力。使用标准组件框架即可满足大多数场景，如需更灵活的组件开发能力可评估迁移。
-
-### app.json 性能优化配置
-
-```json
-{
-  "lazyCodeLoading": "requiredComponents",
-  "enablePassiveEvent": true
-}
-```
-
-| 配置 | 说明 |
-|---|---|
-| `lazyCodeLoading` | 按需加载组件代码，减少启动时间（**官方强烈推荐**） |
-| `enablePassiveEvent` | 优化滚动性能，将 touch 事件标记为 passive |
-
-## MCP 配置（CloudBase）
-
-在 `.mcp.json` 中配置 CloudBase MCP：
-
-```json
-{
-  "mcpServers": {
-    "cloudbase": {
-      "command": "npx",
-      "args": ["@cloudbase/cloudbase-mcp@latest"]
-    }
-  }
-}
-```
-
-MCP 提供的工具：环境管理、函数部署、数据库操作、安全规则配置等。
-
-### 其他 IDE 的 MCP 配置
-
-| IDE | 配置文件位置 | 格式 |
-|---|---|---|
-| **Claude Code** | `.mcp.json` | JSON |
-| **Cursor** | `.cursor/mcp.json` | JSON |
-| **Windsurf** | `~/.codeium/windsurf/mcp_config.json`（用户级） | JSON |
-| **Cline** | 在 Cline 设置中查看 MCP 配置位置 | JSON |
-| **GitHub Copilot Chat** | 在 VS Code 设置中查看 MCP 配置位置 | JSON |
-| **Continue** | `.continue/mcpServers/` 目录 | YAML |
-
-Continue 的 YAML 格式示例：
-
-```yaml
-name: CloudBase MCP
-version: 1.0.0
-schema: v1
-mcpServers:
-  - uses: stdio
-    command: npx
-    args: ["@cloudbase/cloudbase-mcp@latest"]
-```
-
-### mcporter CLI（MCP 不可用时的替代方案）
-
-在不支持 MCP 的环境中，使用 mcporter CLI 调用 MCP 工具：
-
-```bash
-mcporter list                            # 列出服务器/工具
-mcporter list <server> --schema          # 显示工具模式
-mcporter call <server.tool> key=value    # 调用工具
-```
-
-配置文件 `./config/mcporter.json`：
-
-```json
-{
-  "mcpServers": {
-    "cloudbase-mcp": {
-      "command": "npx",
-      "args": ["@cloudbase/cloudbase-mcp@latest"],
-      "env": {
-        "TENCENTCLOUD_SECRETID": "<your_secret_id>",
-        "TENCENTCLOUD_SECRETKEY": "<your_secret_key>",
-        "CLOUDBASE_ENV_ID": "<your_env_id>"
-      }
-    }
-  }
-}
-```
+> app.json 性能配置（`lazyCodeLoading`、`enablePassiveEvent`）、MCP 配置详见 [references/dev-environment.md](references/dev-environment.md)。
 
 ---
 
@@ -500,11 +347,7 @@ mcporter call <server.tool> key=value    # 调用工具
 
 **HTTPS 强制要求：** 除本地开发环境外，所有网络请求均要求 HTTPS 协议。
 
-### 文件上传白名单
-
-小程序允许上传的文件后缀（共 18 种）：
-
-`wxs`, `png`, `jpg`, `jpeg`, `gif`, `svg`, `json`, `cer`, `mp3`, `aac`, `m4a`, `mp4`, `wav`, `ogg`, `silk`, `wasm`, `br`, `cert`
+> 文件上传白名单（18 种后缀）详见 [references/dev-environment.md](references/dev-environment.md)。
 
 ---
 

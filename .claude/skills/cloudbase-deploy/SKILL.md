@@ -1,21 +1,22 @@
 ---
 name: cloudbase-deploy
 description: |
-  Deploys CloudBase cloud functions using the cloudbase-mcp MCP server.
+  Deploys CloudBase cloud functions using the cloudbase-mcp MCP server (preferred),
+  or tcb CLI as fallback when MCP is unavailable.
   Use when user says "部署云函数", "重新上传云函数", "部署 cloudfunctions", "部署到云服务",
-  "使用 MCP 部署", or requests deploying / redeploying any cloud function.
+  "使用 MCP 部署", "tcb 部署", or requests deploying / redeploying any cloud function.
   Also use for updating cloud function environment variables or invoking a function action to verify.
 alwaysApply: false
 metadata:
   author: opc
-  version: 1.0.0
+  version: 1.1.0
   title: CloudBase 云函数部署
-  description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数，支持全量/单函数部署、环境变量更新和调用验证
+  description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数（首选），MCP 不可用时回退到 tcb CLI
 ---
 
 # CloudBase 云函数部署指南
 
-通过 `@cloudbase/cloudbase-mcp` MCP 服务器部署和管理 CloudBase 云函数。
+**优先**通过 `@cloudbase/cloudbase-mcp` MCP 服务器部署；MCP 不可用时回退到 `tcb` CLI。
 
 ## When to Use / 何时使用
 
@@ -27,7 +28,6 @@ metadata:
 **不适用于：**
 - CloudRun 容器服务（另见 `cloudrun-development`）
 - 仅修改小程序前端代码（无需部署云函数）
-- 通过 `tcb` CLI 或微信开发者工具手动部署
 
 ---
 
@@ -169,7 +169,64 @@ exports.main = async (event, context) => {
 | 查询日志列表 | `getFunctionLogs` | `envId`, `functionName`, `startTime`, `endTime` |
 | 查询日志详情 | `getFunctionLogDetail` | `envId`, `requestId` |
 
-**Plan B（MCP 工具不可用时）：** 使用 `callCloudApi` 调用 CloudBase 原始 API，参数见[官方文档](https://cloud.tencent.com/document/product/876)。
+---
+
+## Plan B：tcb CLI 备用部署
+
+**触发条件：** MCP 工具不可用（`可用的 MCP 服务器中没有 cloudbase`）时使用。
+
+### 前置条件
+
+```bash
+# 安装 CLI（如未安装）
+npm i -g @cloudbase/cli
+
+# 确认登录状态（cloud1-xxx 环境属于微信账号体系，需用微信账号登录）
+tcb fn list -e <envId>
+# 若报"无权限"或"环境不存在"，需切换账号：
+tcb logout && tcb login
+```
+
+### 首次部署（函数不存在）
+
+```bash
+# 带绝对路径，最稳健
+tcb fn deploy <functionName> \
+  --envId <envId> \
+  --dir /absolute/path/to/cloudfunctions/<functionName> \
+  --force
+
+# 从项目目录，用 echo 跳过交互确认
+cd /path/to/miniprogram-root
+echo | tcb fn deploy <functionName> --envId <envId> --dir cloudfunctions/<functionName> --force
+```
+
+### 迭代更新代码（函数已存在）
+
+```bash
+# 比 fn deploy 更快，不重建函数配置
+tcb fn code update <functionName> --envId <envId>
+```
+
+> **首次用 `fn deploy`，后续迭代用 `fn code update`**
+
+### 常用辅助命令
+
+```bash
+# 列出环境中所有函数
+tcb fn list -e <envId>
+
+# 查看函数日志
+tcb fn log <functionName> --envId <envId>
+```
+
+### tcb CLI 特有问题
+
+| 问题 | 原因 | 解决方法 |
+|------|------|---------|
+| 云端 `npm install` 失败，函数状态 "Creation failed" | 网络或依赖兼容性问题 | 本地先 `npm install`，在 `cloudbaserc.json` 中设置 `autoInstallDependencies: false`，连同 `node_modules` 一起上传 |
+| 无权限 / 环境不存在 | `cloud1-xxx` 属于微信账号，当前登录的是腾讯云账号 | `tcb logout && tcb login` 切换到微信账号 |
+| 部署到了错误的环境 | 未指定 `--envId` 时用了 CLI 默认环境 | 始终显式传 `--envId <envId>` |
 
 ---
 
