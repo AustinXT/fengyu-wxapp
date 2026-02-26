@@ -7,56 +7,6 @@
   overflow: hidden;
 }
 
-/* ===== 顶部品牌区（黑金主题） ===== */
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20rpx 32rpx;
-  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
-  flex-shrink: 0;
-}
-
-.header-brand {
-  display: flex;
-  align-items: center;
-  gap: 16rpx;
-}
-
-.brand-logo {
-  width: 212rpx;
-  height: 80rpx;
-}
-
-.header-store {
-  display: flex;
-  align-items: center;
-  gap: 8rpx;
-  padding: 12rpx 24rpx;
-  background: rgba(212, 167, 106, 0.15);
-  border: 1px solid rgba(212, 167, 106, 0.3);
-  border-radius: 40rpx;
-  max-width: 260rpx;
-}
-
-.store-name {
-  font-size: 26rpx;
-  font-weight: 500;
-  color: #D4A76A;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ===== 未选门店 ===== */
-.no-store {
-  padding: 80rpx 40rpx 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 32rpx;
-}
-
 /* ===== 分类+内容双栏 ===== */
 .catalog {
   display: flex;

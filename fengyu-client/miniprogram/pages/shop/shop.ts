@@ -17,15 +17,22 @@ interface SpuItem {
   skuList?: any[];
 }
 
+const BIG_CATEGORIES = ['生美', '非生美', '院装产品'];
+
 Page({
   data: {
     boundStoreName: '',
+    bigCategories: BIG_CATEGORIES,
+    activeBigCategoryIndex: 0,
     categories: [] as Category[],
     activeCategoryIndex: 0,
     spuList: [] as SpuItem[],
     isLoading: false,
     cartCount: 0,
   },
+
+  // 所有分类（未过滤）
+  _allCategories: [] as Category[],
 
   // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
   _spuCache: {} as Record<string, SpuItem[]>,
@@ -43,7 +50,8 @@ Page({
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
       this._spuCache = {};
-      this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [], cartCount: 0 });
+      this._allCategories = [];
+      this.setData({ boundStoreName: storeName, activeBigCategoryIndex: 0, activeCategoryIndex: 0, spuList: [], cartCount: 0 });
       this.loadShopInit();
     } else {
       this.updateCartCount();
@@ -114,32 +122,73 @@ Page({
       const categories: Category[] = res.result.data?.categories || [];
       const spuList: SpuItem[] = res.result.data?.spuList || [];
 
-      // 为每个分类添加唯一索引，避免重复名称导致 wx:key 警告
-      const categoriesWithIndex = categories.map((c, i) => ({
-        ...c,
-        _index: i,
-      }));
-
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
         min_price: spu.priceFrom || '0',
       }));
 
-      // 缓存第一个分类的 SPU 列表
+      // 缓存 shopInit 返回的 SPU 列表（对应全局第一个分类）
       if (categories.length > 0) {
         this._spuCache[categories[0].category] = listWithPrice;
+      }
+
+      // 保存全部分类，按当前大类筛选侧边栏
+      this._allCategories = categories;
+      const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
+      const filtered = categories.filter(c => c.big_category === activeBig);
+      const categoriesWithIndex = filtered.map((c, i) => ({
+        ...c,
+        _index: i,
+      }));
+
+      // 判断第一个筛选后的分类是否有缓存
+      let displayList = listWithPrice;
+      if (filtered.length > 0 && filtered[0].category !== categories[0]?.category) {
+        // 首个大类分类与全局首个分类不同，需单独加载
+        displayList = [];
       }
 
       this.setData({
         categories: categoriesWithIndex,
         activeCategoryIndex: 0,
-        spuList: listWithPrice,
+        spuList: displayList,
       });
+
+      // 如需单独加载首个大类的 SPU
+      if (filtered.length > 0 && displayList.length === 0) {
+        this.loadSpuList(filtered[0].category);
+      }
     } catch (err: any) {
       console.error('loadShopInit error:', err);
       Toast.fail(err?.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.index;
+    if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
+
+    const activeBig = BIG_CATEGORIES[index];
+    const filtered = this._allCategories.filter(c => c.big_category === activeBig);
+    const categoriesWithIndex = filtered.map((c, i) => ({ ...c, _index: i }));
+
+    this.setData({
+      activeBigCategoryIndex: index,
+      categories: categoriesWithIndex,
+      activeCategoryIndex: 0,
+      spuList: [],
+    });
+
+    if (filtered.length > 0) {
+      const firstCategory = filtered[0].category;
+      const cached = this._spuCache[firstCategory];
+      if (cached) {
+        this.setData({ spuList: cached });
+      } else {
+        this.loadSpuList(firstCategory);
+      }
     }
   },
 

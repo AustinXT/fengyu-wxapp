@@ -5,13 +5,13 @@
     "minified": true,
     "uglifyFileName": false,
     "enhance": true,
+    "packNpmManually": true,
     "packNpmRelationList": [
-    {
-      "miniprogramNpmDistDir": "./miniprogram_npm",
-      "npmPackageName": "@vant/weapp",
-      "packageJsonPath": "./package.json"
-    }
-  ],
+      {
+        "packageJsonPath": "./package.json",
+        "miniprogramNpmDistDir": "./miniprogram_npm"
+      }
+    ],
     "babelSetting": {
       "ignore": [],
       "disablePlugins": [],

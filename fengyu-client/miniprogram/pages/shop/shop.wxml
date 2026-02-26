@@ -3,16 +3,16 @@
 
 <view class="container">
 
-  <!-- 顶部品牌/门店区（黑金主题） -->
-  <view class="header">
-    <view class="header-brand">
-      <image class="brand-logo" src="/images/logo.png" mode="aspectFit" />
-    </view>
-    <view class="header-store" bindtap="onSelectStore">
-      <text class="store-name">{{boundStoreName || '选择门店'}}</text>
-      <van-icon name="arrow" size="28rpx" color="#D4A76A" />
-    </view>
-  </view>
+  <!-- 顶部一级分类横向导航 -->
+  <van-tabs
+    active="{{activeBigCategoryIndex}}"
+    bind:change="onBigCategoryChange"
+    color="#D4A76A"
+    title-active-color="#D4A76A"
+    line-width="40rpx"
+  >
+    <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
+  </van-tabs>
 
   <!-- 分类 + 商品主区域（始终显示） -->
   <view class="catalog">
@@ -67,11 +67,8 @@
           <!-- 商品信息 -->
           <view class="spu-body">
             <!-- 标签行 -->
-            <view class="spu-tags">
-              <van-tag type="primary" wx:if="{{item.big_category === '生美'}}">生美</van-tag>
-              <van-tag color="#006D75" wx:elif="{{item.big_category === '非生美'}}">非生美</van-tag>
-              <van-tag color="#D46B08" wx:elif="{{item.big_category === '院装产品'}}">产品</van-tag>
-              <van-tag color="#D4A76A" wx:if="{{item.is_recommend}}">推荐</van-tag>
+            <view class="spu-tags" wx:if="{{item.is_recommend}}">
+              <van-tag color="#D4A76A">推荐</van-tag>
             </view>
 
             <!-- 商品名 -->

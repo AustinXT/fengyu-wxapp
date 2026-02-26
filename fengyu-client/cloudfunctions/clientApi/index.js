@@ -29,6 +29,7 @@ const routes = {
   'order.offlinePay': () => require('./routes/order').offlinePay,
   'order.list': () => require('./routes/order').list,
   'order.detail': () => require('./routes/order').detail,
+  'order.cancel': () => require('./routes/order').cancel,
   'order.appointableItems': () => require('./routes/order').appointableItems,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
