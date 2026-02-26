@@ -22,15 +22,19 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
   return res.result.data;
 }
 
+// Tab name → 数据库 status 映射
+const TAB_STATUS_MAP: Record<string, string> = {
+  'pending':   '待确认',
+  'confirmed': '已确认',
+  'cancelled': '已取消',
+};
+
 Page({
   data: {
     activeTab: 'all',
     list: [] as any[],
     isLoading: false,
-  },
-
-  onLoad() {
-    this.loadList();
+    loadError: false,
   },
 
   onShow() {
@@ -47,9 +51,10 @@ Page({
   },
 
   async loadList() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
-      const payload = this.data.activeTab === 'all' ? {} : { status: this.data.activeTab };
+      const dbStatus = TAB_STATUS_MAP[this.data.activeTab];
+      const payload = dbStatus ? { status: dbStatus } : {};
       const data = await callClientApi('appointment.list', payload);
       const raw: any[] = data?.appointments || [];
       const list = raw.map(item => {
@@ -65,11 +70,9 @@ Page({
         };
       });
       this.setData({ list });
-    } catch {
-      // 空列表不提示错误，仅在已有数据时提示刷新失败
-      if (this.data.list.length > 0) {
-        Toast.fail('加载失败');
-      }
+    } catch (err) {
+      console.error('[appointment.loadList] error:', err);
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }
