@@ -1,176 +1,235 @@
 ---
 name: wx-database-design
-description: 用于指导微信小程序 + CloudBase 数据库设计与操作，覆盖 NoSQL 文档数据库与 MySQL 关系型数据库的选型决策、数据建模、CRUD 操作、安全规则配置与数据模型 SDK 使用。
+description: |
+  指导微信小程序 + CloudBase 数据库的设计、查询与迁移操作。覆盖三种选型
+  （NoSQL 文档数据库、CloudBase MySQL、外部 PostgreSQL + Drizzle ORM），
+  包括 schema 设计、迁移工作流、CRUD 查询、安全规则与云函数数据库连接。
+  当用户需要设计表结构、编写数据库查询、配置安全规则、执行数据迁移时激活。
 metadata:
   title: 微信小程序数据库设计
   author: fengyu
-  version: 1.0.0
+  version: 2.0.0
+  description_zh: 微信小程序三种数据库选型与操作指南
 ---
-
-> 设计前请先了解 `.42cog/real.md`（业务约束）和 `.42cog/cog.md`（认知模型）。
 
 ## 何时使用此技能
 
-在进行 **微信小程序数据库设计** 时使用，包括：
+在进行 **微信小程序数据库设计与操作** 时使用，包括：
 
-- 选择 NoSQL 还是 MySQL 数据库
-- 设计集合/表结构与数据建模
+- 选择数据库方案（NoSQL / CloudBase MySQL / 外部 PostgreSQL）
+- 设计 Drizzle ORM schema 或 NoSQL 集合结构
+- 执行数据库迁移（generate → migrate → push）
+- 编写云函数中的数据库查询
 - 配置数据库安全规则
-- 编写数据库查询操作
-- 地理位置查询、聚合分析、分页
+- 连接外部数据库（PostgreSQL、SQL Server 等）
 
 **不适用于：**
 - 前端页面开发（请使用 `wx-ui-design` / `wx-coding`）
-- 云函数开发（请使用 `wx-coding`）
-- Web 端数据库操作（请使用 CloudBase Web SDK 相关文档）
+- 云函数路由与部署（请使用 `wx-coding` / `cloudbase-deploy`）
+- Web 端数据库操作
 
 ---
 
 # 数据库选型决策框架
 
-## NoSQL vs MySQL 对比
+## 三种方案对比
 
-| 维度 | CloudBase NoSQL（文档数据库） | CloudBase MySQL（关系型数据库） |
-|------|------|------|
-| **数据结构** | 灵活 schema，嵌套文档 | 严格 schema，关系表 |
-| **实时推送** | 支持 `.watch()` 实时监听 | 不支持 |
-| **事务** | 支持（`db.runTransaction`） | 原生 ACID 事务 |
-| **安全规则** | READONLY/PRIVATE/ADMINWRITE/CUSTOM | 同上 |
-| **小程序端直调** | `wx.cloud.database()` 直接操作 | 需通过数据模型 SDK |
-| **复杂查询** | 聚合管道，地理位置查询 | 标准 SQL，JOIN |
-| **适用场景** | 实时数据、灵活结构、watch 推送 | 复杂关联、严格事务、报表统计 |
+| 维度 | CloudBase NoSQL | CloudBase MySQL | 外部 SQL（PostgreSQL 等） |
+|------|----------------|-----------------|--------------------------|
+| **数据结构** | 灵活 schema，嵌套文档 | 严格 schema，关系表 | 严格 schema，关系表 |
+| **实时推送** | `.watch()` 实时监听 | 不支持 | 不支持 |
+| **ORM 支持** | 无（SDK 直操作） | 数据模型 SDK | Drizzle / Prisma / Knex |
+| **TypeScript** | 手动 interface | 手动 interface | Drizzle 自动类型推断 |
+| **迁移管理** | 无（无 schema） | 手动 DDL | Drizzle Kit 自动迁移 |
+| **事务** | `db.runTransaction` | 原生 ACID | 原生 ACID |
+| **安全规则** | 支持前端直调 | 支持前端直调 | 仅云函数访问 |
+| **适用场景** | 实时数据、watch 推送 | 简单关系、前端直调 | 复杂业务、类型安全 |
 
 ## 选型建议
 
-- **需要实时推送（如订单状态变更）** → NoSQL（支持 watch）
-- **需要复杂 JOIN 和事务一致性** → MySQL
-- **双库混用**：实时数据存 NoSQL，主数据源存 MySQL/外部 SQL Server，创建订单先写 NoSQL 触发 watch 再同步 MySQL
-
----
-
-# Mermaid 数据建模
-
-当需要为复杂业务创建可视化数据模型文档时使用。
-
-## classDiagram 语法规则
-
-### 类型映射
-
-| 业务字段 | Mermaid 类型 |
-|---|---|
-| 文本 | string |
-| 数字 | number |
-| 布尔值 | boolean |
-| 枚举 | x-enum |
-| 邮箱 | email |
-| 手机号 | phone |
-| URL | url |
-| 文件 | x-file |
-| 图片 | x-image |
-| 富文本 | x-rtf |
-| 地区 | x-area-code |
-| 时间 | time |
-| 日期 | date |
-| 日期时间 | datetime |
-| 对象 | object |
-| 数组 | string[] |
-| 位置 | x-location |
-
-### 命名规范
-
-- 类名：PascalCase（中文转英文）
-- 字段名：camelCase
-- 枚举值：保留中文原文
-
-### 标准示例
-
-```mermaid
-classDiagram
-    class Order {
-        orderNo: string <<订单编号>>
-        storeId: string <<门店 ID>>
-        customerName: string <<顾客姓名>>
-        totalAmount: number <<总金额>>
-        status: x-enum = "待支付" <<订单状态>>
-        paymentMethod: x-enum <<支付方式>>
-        paidAt: datetime <<支付时间>>
-        required() ["orderNo", "storeId", "totalAmount"]
-        unique() ["orderNo"]
-        enum_status() ["待支付", "已支付", "已取消", "已退款"]
-        enum_paymentMethod() ["微信支付", "线下付款"]
-        display_field() "orderNo"
-    }
-
-    %% Class naming
-    note for Order "订单模型"
+```
+需要前端直调数据库？
+├── 是 → 需要实时推送（watch）？
+│   ├── 是 → CloudBase NoSQL
+│   └── 否 → CloudBase MySQL
+└── 否（云函数中转）→ 外部 SQL（推荐 PostgreSQL + Drizzle ORM）
 ```
 
-### 关系标注
-
-- `A "n" --> "1" B : fieldName` — A 多对一 B，数据在 A 的 fieldName 字段
-- `A "1" --> "1" B : fieldName` — 一对一关系
-- `A "n" --> "m" B : fieldName` — 多对多关系
-
-### Mermaid 类型 → MySQL 类型映射
-
-当 Mermaid 模型需要落地为 MySQL 表时，使用以下映射：
-
-| Mermaid 类型 | MySQL 类型 | 备注 |
-|---|---|---|
-| `string` | `VARCHAR(255)` / `TEXT` | 短文本用 VARCHAR，长文本用 TEXT |
-| `number` | `INT` / `DECIMAL(10,2)` | 整数用 INT，金额用 DECIMAL |
-| `boolean` | `TINYINT(1)` | 0/1 |
-| `x-enum` | `ENUM('值1','值2')` | 枚举值原样匹配 |
-| `date` / `datetime` / `time` | `DATE` / `DATETIME` / `TIME` | 对应映射 |
-| `email` / `phone` / `url` | `VARCHAR(255)` | 加业务校验 |
-| `x-file` / `x-image` | `VARCHAR(500)` | 存文件路径/URL |
-| `x-rtf` | `LONGTEXT` | 富文本 |
-| `x-area-code` | `VARCHAR(20)` | 地区编码 |
-| `x-location` | `POINT` / `VARCHAR(50)` | 地理坐标 |
-| `string[]` | `JSON` / 中间表 | 简单数组用 JSON，多对多用中间表 |
+**常见组合模式：**
+- **纯 NoSQL**：适合简单 CRUD、实时聊天、状态监听
+- **纯外部 SQL**：适合复杂业务逻辑、强类型需求、多表关联
+- **混合模式**：主数据源存外部 SQL，实时状态用 NoSQL watch 推送
 
 ---
 
-# NoSQL 文档数据库设计
+# 外部 SQL 数据库（PostgreSQL + Drizzle ORM）
 
-## 集合命名规范
+适用于通过云函数访问外部 PostgreSQL（或 MySQL）的场景。
 
-- 使用 **camelCase**（如 `orders`、`serviceRecords`、`bindingApplies`）
-- 同一项目内所有集合名称保持风格一致
-- **建议**为同一项目中的所有集合添加统一前缀（如 `fy_orders`、`fy_customers`），避免与其他项目冲突
+## 项目结构
 
-## 类型定义规范
+```
+db/
+├── schema/           # Schema 定义（唯一真相源）
+│   ├── index.ts      # 统一导出
+│   ├── enums.ts      # pgEnum 枚举定义
+│   ├── user.ts       # 用户表
+│   ├── order.ts      # 订单及关联表
+│   └── ...
+├── migrations/       # 自动生成的迁移文件
+├── drizzle.config.ts # Drizzle Kit 配置
+└── package.json      # db:generate / db:migrate / db:push
+```
 
-**强烈建议**为每个集合创建 TypeScript 类型定义，作为数据库 schema 的唯一可信来源：
+## Schema 定义规范
+
+### 枚举
 
 ```typescript
-// models/order.ts
-interface IOrder {
-  _id: string
-  _openid: string
-  orderNo: string        // FY-XSD{YYMMDD}{序号}
-  storeId: string
-  customerId: string
-  customerName: string   // 冗余常读字段
-  items: IOrderItem[]
-  totalAmount: number
-  status: '待支付' | '已支付' | '已取消' | '已退款'
-  paymentMethod: '微信支付' | '线下付款'
-  paidAt?: Date
-  createdAt: Date
-  updatedAt: Date
+import { pgEnum } from 'drizzle-orm/pg-core'
+
+// 中文枚举值 — 与业务语义一致，前端可直接展示
+export const orderStatusEnum = pgEnum('order_status', [
+  '待支付', '已支付', '已完成', '已关闭',
+])
+```
+
+### 表定义
+
+```typescript
+import {
+  pgTable, text, timestamp, integer, numeric,
+  index, unique, uniqueIndex,
+} from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+
+export const orders = pgTable(
+  'orders',
+  {
+    orderNo: text('order_no').primaryKey(),
+    status: orderStatusEnum('status').notNull().default('待支付'),
+    storeName: text('store_name').notNull(),
+    clientUserId: text('client_user_id'),
+    totalAmount: numeric('total_amount', { precision: 12, scale: 2 }).notNull(),
+    paidAt: timestamp('paid_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    // 普通索引
+    index('idx_orders_store_status').on(table.storeName, table.status),
+    // 部分唯一索引（条件唯一）
+    uniqueIndex('uq_orders_client_pending')
+      .on(table.clientUserId)
+      .where(sql`status = '待支付' AND client_user_id IS NOT NULL`),
+  ],
+)
+```
+
+### 类型推断
+
+```typescript
+// 自动生成 TypeScript 类型，无需手写 interface
+export type Order = typeof orders.$inferSelect    // 查询结果类型
+export type NewOrder = typeof orders.$inferInsert  // 插入参数类型
+```
+
+### 外键引用
+
+```typescript
+export const orderItems = pgTable('order_items', {
+  itemFlowNo: text('item_flow_no').primaryKey(),
+  orderNo: text('order_no')
+    .notNull()
+    .references(() => orders.orderNo),  // 外键引用
+  skuId: text('sku_id')
+    .references(() => productSpuSkuMap.skuId),  // 可选外键
+})
+```
+
+## 迁移工作流
+
+```bash
+cd db
+
+# 1. 修改 schema/*.ts 后生成迁移文件
+npm run db:generate    # → migrations/XXXX_xxx.sql
+
+# 2. 执行迁移（生产环境）
+npm run db:migrate     # 按顺序执行未应用的迁移
+
+# 3. 直接推送 schema（开发环境，跳过迁移文件）
+npm run db:push
+
+# 4. 可视化查看数据
+npm run db:studio
+```
+
+**迁移注意事项：**
+- 生成的 SQL 文件可手动审查和编辑
+- 生产环境始终使用 `db:migrate`，不要用 `db:push`
+- 破坏性变更（删列、改类型）需人工确认迁移 SQL
+
+## 云函数中连接外部数据库
+
+```typescript
+// cloudfunctions/myApi/src/db.ts
+import { drizzle } from 'drizzle-orm/node-postgres'
+import pg from 'pg'
+import * as schema from '../../../db/schema'
+
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 5,          // 云函数并发受限，连接池不宜过大
+  idleTimeoutMillis: 30000,
+})
+
+export const db = drizzle(pool, { schema })
+```
+
+**连接池建议：**
+- 云函数冷启动会创建新连接，`max` 设 3-5
+- 设置 `idleTimeoutMillis` 避免僵尸连接
+- 连接字符串通过环境变量传入，不硬编码
+
+## 只读外部数据库（如 SQL Server / WorkFine）
+
+```typescript
+import sql from 'mssql'
+
+const pool = new sql.ConnectionPool({
+  server: process.env.WF_HOST!,
+  database: process.env.WF_DB!,
+  user: process.env.WF_USER!,
+  password: process.env.WF_PASS!,
+  options: { encrypt: false, trustServerCertificate: true },
+})
+
+// 只读查询，不写入
+export async function queryWorkFine<T>(query: string): Promise<T[]> {
+  const conn = await pool.connect()
+  try {
+    const result = await conn.request().query(query)
+    return result.recordset as T[]
+  } finally {
+    conn.release()
+  }
 }
 ```
 
-## 初始化与引用
+详见 [Drizzle ORM 完整参考](references/drizzle-orm.md)
 
-```javascript
-// 小程序端 — 默认环境
+---
+
+# CloudBase NoSQL 文档数据库
+
+## 初始化
+
+```typescript
+// 小程序端
 const db = wx.cloud.database()
-const _ = db.command  // 查询操作符
-
-// 小程序端 — 指定环境（多环境测试时使用）
-const testDb = wx.cloud.database({ env: 'test-env-id' })
+const _ = db.command
 
 // 云函数端
 const cloud = require('wx-server-sdk')
@@ -179,87 +238,49 @@ const db = cloud.database()
 const _ = db.command
 ```
 
-## 索引策略
+## 集合命名规范
 
-- 为频繁 `where` 查询的字段创建索引
-- 为 `orderBy` 排序字段创建索引
-- 地理位置字段必须创建 `2dsphere` 索引
-- 复合索引应匹配最常用的查询模式
+- 使用 **camelCase**（如 `orders`、`serviceRecords`）
+- 建议添加项目前缀（如 `fy_orders`），避免与其他项目冲突
 
-## 安全规则
+## 类型定义
 
-在编写代码前**必须先配置安全规则**。使用 `writeSecurityRule` MCP 工具配置：
-
-| 规则类型 | 说明 | 适用场景 |
-|---|---|---|
-| `READONLY` | 所有人可读，仅创建者/管理员可写 | 商品、服务项目 |
-| `PRIVATE` | 仅创建者/管理员可读写 | 操作日志、系统配置 |
-| `ADMINWRITE` | 所有人可读，仅管理员可写 | 公告、系统数据 |
-| `ADMINONLY` | 仅管理员可读写 | 敏感数据 |
-| `CUSTOM` | 自定义规则 | 订单（用户只能读自己的） |
-
-**关键：**
-- 配置后需等待数分钟缓存清除再测试（经验值约 2-5 分钟，官方未明确具体时间）
-- 云函数拥有管理员权限，不受安全规则限制
-- 跨集合操作必须通过云函数实现
-
----
-
-# NoSQL 操作参考
-
-### 常用查询操作符速查
-
-| 操作符 | 描述 | 示例 |
-|---|---|---|
-| `_.gt(n)` | 大于 | `age: _.gt(18)` |
-| `_.gte(n)` | 大于等于 | `price: _.gte(100)` |
-| `_.lt(n)` | 小于 | `stock: _.lt(10)` |
-| `_.lte(n)` | 小于等于 | `score: _.lte(60)` |
-| `_.eq(v)` | 等于 | `status: _.eq('已支付')` |
-| `_.neq(v)` | 不等于 | `deleted: _.neq(true)` |
-| `_.in([])` | 值在数组中 | `role: _.in(['店长', '美容师'])` |
-| `_.nin([])` | 值不在数组中 | `status: _.nin(['已取消'])` |
-
-### 常用更新操作符速查
-
-| 操作符 | 描述 | 示例 |
-|---|---|---|
-| `_.inc(n)` | 递增 | `remainCount: _.inc(-1)` |
-| `_.mul(n)` | 乘以 | `price: _.mul(0.8)` |
-| `_.push(items)` | 数组追加 | `tags: _.push(['new'])` |
-| `_.pull(item)` | 数组移除 | `tags: _.pull('old')` |
-| `_.set(v)` | 设置值 | `status: _.set('已支付')` |
-| `_.remove()` | 删除字段 | `tempField: _.remove()` |
-
-### 查询 limit 限制（客户端 vs 云函数）
-
-> **⚠️ 重要差异**：小程序端（客户端）和云函数端的 `.get()` 默认返回条数和上限不同，务必区分：
-
-| 调用环境 | 默认 limit | 最大 limit | 说明 |
-|---|---|---|---|
-| **小程序端**（`wx.cloud.database()`） | **20** | **20** | 客户端安全限制，超过 20 需分页多次请求 |
-| **云函数端**（`cloud.database()`） | 100 | 1000 | 服务端权限，适合批量操作 |
-
-```javascript
-// 小程序端 — 最多获取 20 条
-const { data } = await db.collection('orders')
-  .where({ status: '已支付' })
-  .limit(20)  // 最大只能设为 20，设更大值无效
-  .get()
-
-// 云函数端 — 最多获取 1000 条
-const { data } = await db.collection('orders')
-  .where({ status: '已支付' })
-  .limit(1000)  // 云函数端最大 1000
-  .get()
-
-// 如需在小程序端获取超过 20 条数据，请通过云函数中转
+```typescript
+interface IOrder {
+  _id: string
+  _openid: string
+  orderNo: string
+  status: '待支付' | '已支付' | '已取消'
+  items: IOrderItem[]
+  totalAmount: number
+  createdAt: Date
+  updatedAt: Date
+}
 ```
 
-### 实时推送（watch）
+## limit 差异（关键陷阱）
 
-```javascript
-// 监听订单变更
+| 调用环境 | 默认 limit | 最大 limit |
+|----------|-----------|-----------|
+| **小程序端** | 20 | **20** |
+| **云函数端** | 100 | 1000 |
+
+超过 20 条数据必须通过云函数中转。
+
+## 常用操作速查
+
+| 查询 | 更新 |
+|------|------|
+| `_.gt(n)` 大于 | `_.inc(n)` 递增 |
+| `_.gte(n)` 大于等于 | `_.mul(n)` 乘以 |
+| `_.in([])` 在数组中 | `_.push([])` 数组追加 |
+| `_.nin([])` 不在数组中 | `_.pull(v)` 数组移除 |
+| `_.eq(v)` 等于 | `_.set(v)` 设置值 |
+| `_.neq(v)` 不等于 | `_.remove()` 删除字段 |
+
+## 实时推送（watch）
+
+```typescript
 const watcher = db.collection('orders')
   .where({ storeId: 'store-001', status: '已支付' })
   .watch({
@@ -268,41 +289,71 @@ const watcher = db.collection('orders')
     },
     onError(err) {
       console.error('监听失败：', err)
-      // 降级为轮询
     }
   })
 
-// 关闭监听
+// 页面卸载时关闭
 watcher.close()
 ```
 
+## 服务端时间戳
+
+> **时间戳：** 始终使用 `db.serverDate()` 而非 `new Date()`，避免客户端时钟偏差。
+
+```typescript
+const serverDate = db.serverDate()
+await db.collection('orders').add({
+  createdAt: serverDate,
+  updatedAt: serverDate
+})
+```
+
+## 突破 limit 上限（批量拉取）
+
+超过 20 条数据必须通过云函数中转，云函数中可批量拉取：
+
+```typescript
+// 云函数端：批量拉取所有数据
+const { total } = await db.collection('orders').count()
+const batches = Math.ceil(total / 100)
+const tasks = Array.from({ length: batches }, (_, i) =>
+  db.collection('orders').skip(i * 100).limit(100).get()
+)
+const results = (await Promise.all(tasks)).flatMap(r => r.data)
+```
+
+## 批量删除限制
+
+> **批量删除：** 小程序端只能 `doc(id).remove()` 单条删除；条件批量删除 `.where({}).remove()` 仅云函数可用。
+
+详见 [NoSQL 操作参考](references/nosql-operations.md) | [NoSQL 高级查询](references/nosql-advanced.md)
+
 ---
 
-# MySQL 关系型数据库
+# CloudBase MySQL
 
-## MCP 工具操作
+## 操作方式
 
-通过 MCP 工具操作 CloudBase MySQL，**不要**在 MCP 上下文中使用 SDK：
+CloudBase MySQL 分两种操作场景：DDL 管理用 MCP 工具，应用查询用数据模型 SDK。
+
+**DDL / 管理操作**（通过 MCP 工具）：
 
 | 工具 | 用途 |
-|---|---|
-| `executeReadOnlySQL` | SELECT 查询（只读） |
+|------|------|
+| `executeReadOnlySQL` | SELECT 查询 |
 | `executeWriteSQL` | INSERT/UPDATE/DELETE/DDL |
-| `readSecurityRule` | 读取表安全规则 |
-| `writeSecurityRule` | 设置表安全规则 |
+| `readSecurityRule` | 读取安全规则 |
+| `writeSecurityRule` | 设置安全规则 |
 
 ## 建表规范
-
-创建新表时**必须**包含 `_openid` 列：
 
 ```sql
 CREATE TABLE orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  _openid VARCHAR(64) DEFAULT '' NOT NULL,
+  _openid VARCHAR(64) DEFAULT '' NOT NULL,  -- 必须包含
   order_no VARCHAR(50) NOT NULL UNIQUE,
-  store_id VARCHAR(50) NOT NULL,
   total_amount DECIMAL(10,2) NOT NULL,
-  status ENUM('待支付','已支付','已取消','已退款') DEFAULT '待支付',
+  status ENUM('待支付','已支付','已取消') DEFAULT '待支付',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
@@ -310,31 +361,52 @@ CREATE TABLE orders (
 
 > `_openid` 由服务器自动填充，INSERT 时无需手动设置。
 
-## 安全操作流程
+## 数据模型 SDK
 
-1. 先用 `executeReadOnlySQL` 查询验证假设
-2. 再用 `executeWriteSQL` 执行变更
-3. 执行破坏性操作前必须说明原因
+```typescript
+// 小程序端
+const { initHTTPOverCallFunction } = require('@cloudbase/wx-cloud-client-sdk')
+const client = initHTTPOverCallFunction(wx.cloud)
+
+const result = await client.models.orders.list({
+  filter: { where: { status: { $eq: '已支付' } } },
+  pageSize: 20,
+  pageNumber: 1
+})
+```
+
+```typescript
+// 云函数端（@cloudbase/node-sdk）
+const cloudbase = require('@cloudbase/node-sdk')
+const app = cloudbase.init({ env: cloudbase.DYNAMIC_CURRENT_ENV })
+const result = await app.models.orders.list({
+  filter: { where: { status: { $eq: '已支付' } } },
+  pageSize: 20,
+  pageNumber: 1
+})
+```
+
+**关键：** MySQL 数据模型**不能**使用 `db.collection()`，**必须**使用 `app.models.modelName`。
 
 ---
 
-# 安全规则配置
+# 安全规则
 
-## 配置工作流
+## 配置流程
 
-```text
-创建集合/表 → 配置安全规则 → 等待缓存清除(经验值约 2-5 分钟) → 编写代码 → 测试
+```
+创建集合/表 → 配置安全规则 → 等待缓存清除(约 2-5 分钟) → 编写代码 → 测试
 ```
 
-## 常见场景配置
+## 规则类型速查
 
-| 业务场景 | 推荐规则 | 说明 |
-|---|---|---|
-| 服务项目列表 | `READONLY` | 所有人可浏览，管理员维护 |
-| 用户订单 | `CUSTOM` | 用户只能读写自己的订单 |
-| 操作日志 | `PRIVATE` | 仅创建者和管理员可见 |
-| 门店绑定申请 | `CUSTOM` | 用户可创建，店长可审批 |
-| 系统配置 | `ADMINONLY` | 仅管理员读写 |
+| 规则 | 读 | 写 | 适用场景 |
+|------|----|----|----------|
+| `READONLY` | 所有人 | 创建者/管理员 | 商品列表、服务项目 |
+| `PRIVATE` | 创建者/管理员 | 创建者/管理员 | 操作日志 |
+| `ADMINWRITE` | 所有人 | 管理员 | 公告、系统数据 |
+| `ADMINONLY` | 管理员 | 管理员 | 敏感配置 |
+| `CUSTOM` | 自定义 | 自定义 | 用户订单（只读自己的） |
 
 ## CUSTOM 规则示例
 
@@ -345,61 +417,28 @@ CREATE TABLE orders (
 }
 ```
 
----
-
-# 数据模型 SDK
-
-## 小程序端（wx-cloud-client-sdk）
-
-```javascript
-const { initHTTPOverCallFunction } = require('@cloudbase/wx-cloud-client-sdk')
-const client = initHTTPOverCallFunction(wx.cloud)
-
-// 查询数据模型
-const result = await client.models.modelName.list({
-  filter: { where: { status: { $eq: '已支付' } } },
-  pageSize: 20,
-  pageNumber: 1
-})
-```
-
-## 云函数端（node-sdk）
-
-```javascript
-const cloudbase = require('@cloudbase/node-sdk')  // v3.10+
-const app = cloudbase.init({ env: process.env.ENV_ID })
-
-// 查询数据模型
-const result = await app.models.modelName.list({
-  filter: { where: {} }
-})
-```
-
-**关键规则：**
-- MySQL 数据模型**不能**使用 `db.collection()` 方法
-- **必须**使用 `app.models.modelName` 方式调用
-- 使用 `manageDataModel` MCP 工具查询模型详情和 SDK 用法
+**关键：** 云函数拥有管理员权限，不受安全规则限制。
 
 ---
 
-## 最佳实践
+# 数据建模最佳实践
 
-1. **类型定义先行**：为每个集合/表创建 TypeScript 类型定义
-2. **安全规则前置**：编码前配置好安全规则
-3. **读多冗余**：订单中存储顾客姓名等常读字段，减少关联查询
-4. **写多引用**：营业额分配等关系通过 ID 引用
-5. **索引覆盖**：为所有查询条件和排序字段建索引
-6. **事务保护**：对幂等操作（下单、支付确认、疗程卡核销）使用事务或行级锁
-7. **双库同步**：创建订单先写 NoSQL 触发 watch，再同步外部数据库
+1. **类型定义先行**：Drizzle 用 schema + `$inferSelect`；NoSQL 用 TypeScript interface
+2. **安全规则前置**：NoSQL/MySQL 编码前配置好安全规则
+3. **读多冗余**：常读字段（如顾客姓名）冗余存储，减少关联查询
+4. **写多引用**：营业额分配等关系通过 ID 引用，不冗余
+5. **索引覆盖**：所有 `WHERE` 条件和 `ORDER BY` 字段必须建索引
+6. **事务保护**：涉及金额、库存、次卡核销等操作使用事务
+7. **原子更新**：并发扣减用 `UPDATE ... SET remaining = remaining - n WHERE remaining >= n`，禁止先 SELECT 再 UPDATE
+8. **枚举一致**：数据库枚举值与前端展示文案保持一致，减少映射逻辑
+9. **快照字段**：订单中的价格、门店名等使用快照，防止源数据变更影响历史记录
+10. **软删除**：重要业务数据用 `is_void` / `deleted_at` 标记，不物理删除
 
 ---
 
 ## 参考资源
 
-详细操作文档参见 `references/` 目录：
-
-- [CRUD 操作](references/crud-operations.md) — add/get/update/set/remove、事务
-- [复杂查询](references/complex-queries.md) — 操作符、排序、字段选择、逻辑组合
-- [聚合查询](references/aggregation.md) — group、match、sort、project 管道
-- [分页查询](references/pagination.md) — skip/limit 分页、游标分页、无限滚动
-- [地理位置查询](references/geolocation.md) — Point/Polygon、geoNear/geoWithin/geoIntersects
+- [Drizzle ORM 完整参考](references/drizzle-orm.md) — Schema 定义、迁移、类型、查询模式
+- [NoSQL 操作参考](references/nosql-operations.md) — CRUD、复杂查询、事务
+- [NoSQL 高级查询](references/nosql-advanced.md) — 聚合管道、分页、实时推送
+- [地理位置查询](references/geolocation.md) — Point/Polygon、geoNear/geoWithin

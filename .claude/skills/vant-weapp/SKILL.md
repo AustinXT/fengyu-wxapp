@@ -1,32 +1,90 @@
 ---
 name: vant-weapp
-description: 用于指导 Vant Weapp 微信小程序 UI 组件库的正确使用。当用户请求使用 Vant 组件开发小程序页面、表单、列表、弹窗等 UI 时激活，确保组件注册、样式定制和 API 调用符合规范。
+description: >
+  提供 Vant Weapp 微信小程序 UI 组件库的复合模式指导与陷阱避坑参考。聚焦高频复合模式 （Popup 选择器、Tab
+  列表、Radio/Checkbox-in-Cell 等），包含 TypeScript 事件类型 速查和关键错误对比。当用户请求使用 Vant
+  组件开发小程序页面时激活。 请勿用于纯逻辑/后端开发（请使用 wx-coding 技能）。
 metadata:
-  author: 42ailab
-  version: '1.0'
-  title: Vant Weapp 组件规范
+  author: opc
+  version: 1.0.0
+  title: Vant Weapp 模式驱动实战指南
+  description_zh: Vant Weapp 微信小程序 UI 组件库复合模式指南，涵盖 Popup 选择器、Tab 列表、事件类型速查与常见陷阱。
+triggers:
+  keywords:
+    - vant
+    - van-button
+    - van-dialog
+    - van-popup
+    - van-cell
+    - van-tabs
+    - van-field
+    - van-picker
+    - van-calendar
+    - van-radio
+    - van-checkbox
+    - van-swipe-cell
+    - van-submit-bar
+    - UI组件
+    - 选择器弹窗
+    - 底部弹出选择
+    - 标签页筛选
+    - 滑动删除
+    - 提交订单栏
 ---
 
-# Vant Weapp 组件规范
+# Vant Weapp 模式驱动实战指南
 
 ## 概述
 
-Vant Weapp 是有赞开源的轻量级微信小程序 UI 组件库。本技能确保正确使用 Vant 组件，避免常见的注册遗漏、样式冲突和 API 误用。
+Vant Weapp 是有赞开源的微信小程序 UI 组件库。本技能以**复合模式**为核心，指导如何将多个组件组合成实际开发中常用的交互模式，而非逐个介绍单组件 API。
 
 ## 何时使用
 
-- 开发小程序页面需要使用 Vant UI 组件
-- 创建表单（Field、Picker、DatetimePicker）
-- 构建列表/卡片布局（Cell、Card、Grid）
-- 弹窗交互（Dialog、ActionSheet、Popup、Toast）
-- 导航结构（Tab、Navbar、Sidebar）
+- 使用 Vant 组件构建小程序页面
+- 需要复合交互模式（底部选择器、Tab 筛选列表、行内选择等）
+- 自定义 Vant 组件主题样式
+- TypeScript 项目中标注 Vant 事件类型
 
 ## 不适用场景
 
-- 纯原生组件开发（无 Vant 依赖）
-- 使用其他 UI 库（如 WeUI）
+- 纯原生组件开发 → 参考 `wechat-coding`
+- 使用其他 UI 库（WeUI 等）
+- UI 设计规范 → 参考 `wx-ui-design`
 
-## 快速参考
+---
+
+## 快速决策框架
+
+根据交互需求选择组件/模式：
+
+```text
+需要什么交互？
+├── 用户输入
+│   ├── 文本输入 → Field
+│   ├── 从固定选项选一个
+│   │   ├── 选项 ≤ 5 个 → Radio-in-Cell（模式 4）
+│   │   ├── 选项 > 5 个 → Popup 底部选择器（模式 3）
+│   │   └── 日期/时间 → Calendar + Picker（模式 7）
+│   ├── 从选项选多个 → Checkbox-in-Cell（模式 5）
+│   └── 数量调整 → Stepper
+├── 数据展示
+│   ├── 加载状态 → 加载三态（模式 1）
+│   ├── 分类列表 → Tab 筛选列表（模式 2）
+│   ├── 可操作列表 → SwipeCell 左滑删除（模式 6）
+│   └── 商品信息 → Card
+├── 用户操作
+│   ├── 确认/取消 → Dialog
+│   ├── 多个操作 → ActionSheet
+│   └── 轻提示 → Toast
+└── 导航
+    ├── 顶部分类 → Tabs
+    ├── 侧边分类 → Sidebar
+    └── 页面导航 → NavBar
+```
+
+---
+
+## 必备前置步骤
 
 ### 安装
 
@@ -36,296 +94,364 @@ npm i @vant/weapp -S --production
 
 安装后在微信开发者工具中：**工具 → 构建 npm**。
 
-### 组件注册（必须步骤）
+### 组件注册
 
-每个使用 Vant 组件的页面/组件，必须在对应 `.json` 中声明：
+每个使用 Vant 的页面/组件，必须在 `.json` 中声明。路径格式：`@vant/weapp/{组件名}/index`
 
 ```json
 {
   "usingComponents": {
     "van-button": "@vant/weapp/button/index",
-    "van-cell": "@vant/weapp/cell/index",
-    "van-cell-group": "@vant/weapp/cell-group/index",
-    "van-field": "@vant/weapp/field/index",
-    "van-icon": "@vant/weapp/icon/index"
+    "van-cell": "@vant/weapp/cell/index"
   }
 }
 ```
 
-**路径格式**: `@vant/weapp/{组件名}/index`
+> 完整注册路径表见 [references/components.md](references/components.md)。
 
-### 常用组件注册速查
+### 命令式组件节点（必须！）
 
-| 组件 | 注册路径 | 用途 |
-|------|----------|------|
-| Button | `@vant/weapp/button/index` | 按钮 |
-| Cell / CellGroup | `cell/index`, `cell-group/index` | 单元格列表 |
-| Field | `@vant/weapp/field/index` | 输入框 |
-| Popup | `@vant/weapp/popup/index` | 弹出层 |
-| Dialog | `@vant/weapp/dialog/index` | 对话框 |
-| Toast | `@vant/weapp/toast/index` | 轻提示 |
-| ActionSheet | `@vant/weapp/action-sheet/index` | 动作面板 |
-| Tab / Tabs | `@vant/weapp/tab/index`, `tabs/index` | 标签页 |
-| NavBar | `@vant/weapp/nav-bar/index` | 导航栏 |
-| Card | `@vant/weapp/card/index` | 商品卡片 |
-| Grid / GridItem | `grid/index`, `grid-item/index` | 宫格 |
-| Tag | `@vant/weapp/tag/index` | 标签 |
-| SubmitBar | `@vant/weapp/submit-bar/index` | 提交订单栏 |
-| Picker | `@vant/weapp/picker/index` | 选择器 |
-| DatetimePicker | `@vant/weapp/datetime-picker/index` | 日期时间选择 |
-| Search | `@vant/weapp/search/index` | 搜索 |
-| Stepper | `@vant/weapp/stepper/index` | 步进器 |
-| SwipeCell | `@vant/weapp/swipe-cell/index` | 滑动单元格 |
-| NoticeBar | `@vant/weapp/notice-bar/index` | 通知栏 |
-| Calendar | `@vant/weapp/calendar/index` | 日历 |
-| Empty | `@vant/weapp/empty/index` | 空状态 |
-| Skeleton | `@vant/weapp/skeleton/index` | 骨架屏 |
-| ConfigProvider | `@vant/weapp/config-provider/index` | 主题配置 |
-
-## 主题定制
-
-### 方式一：全局 CSS 变量（推荐）
-
-在 `app.wxss` 中定义：
-
-```css
-page {
-  --button-border-radius: 10rpx;
-  --button-default-color: #f2f3f5;
-  --cell-large-title-font-size: 32rpx;
-}
-```
-
-### 方式二：局部样式覆盖
+Toast、Dialog、Notify 是**命令式调用**，但**必须在 WXML 中放置对应节点**，否则无任何反应：
 
 ```xml
-<van-button class="my-button">按钮</van-button>
+<!-- ✅ 正确：WXML 中有节点 -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<!-- JS/TS 中调用 -->
 ```
 
-```css
-.my-button {
-  --button-border-radius: 10rpx;
-  --button-default-color: #f2f3f5;
-}
-```
+```typescript
+import Toast from '@vant/weapp/toast/toast'
+import Dialog from '@vant/weapp/dialog/dialog'
 
-### 方式三：ConfigProvider 组件
+Toast('提示内容')
+Toast.loading({ message: '加载中...', forbidClick: true })
 
-```xml
-<van-config-provider theme-vars="{{ themeVars }}">
-  <van-cell-group>
-    <van-field label="评分">
-      <view slot="input" style="width: 100%">
-        <van-rate model:value="{{ rate }}" />
-      </view>
-    </van-field>
-  </van-cell-group>
-  <view style="margin: 16px">
-    <van-button round block type="primary">提交</van-button>
-  </view>
-</van-config-provider>
-```
-
-```javascript
-Page({
-  data: {
-    themeVars: {
-      rateIconFullColor: '#07c160',
-      sliderBarHeight: '4px',
-      buttonPrimaryBorderColor: '#07c160',
-      buttonPrimaryBackgroundColor: '#07c160',
-    }
-  }
-});
-```
-
-### 方式四：动态切换主题
-
-```xml
-<van-button style="{{ buttonStyle }}">按钮</van-button>
-```
-
-```javascript
-Page({
-  data: {
-    buttonStyle: '--button-border-radius: 10rpx; --button-default-color: green;'
-  }
-});
-```
-
-## 核心组件用法
-
-### Field 输入框
-
-```xml
-<van-cell-group>
-  <!-- 基础用法 + 双向绑定（基础库 >= 2.9.3） -->
-  <van-field model:value="{{ username }}" label="用户名" placeholder="请输入用户名" required clearable />
-
-  <!-- 密码输入 -->
-  <van-field model:value="{{ password }}" type="password" label="密码" placeholder="请输入密码" required />
-
-  <!-- 多行文本 -->
-  <van-field model:value="{{ message }}" type="textarea" label="留言" placeholder="请输入留言"
-    rows="3" autosize show-word-limit maxlength="200" />
-
-  <!-- 带按钮插槽 -->
-  <van-field value="{{ sms }}" center clearable label="验证码" placeholder="请输入验证码" use-button-slot>
-    <van-button slot="button" size="small" type="primary">发送验证码</van-button>
-  </van-field>
-
-  <!-- 错误提示 -->
-  <van-field value="{{ email }}" label="邮箱" placeholder="请输入邮箱"
-    required error="{{ emailError }}" error-message="{{ emailErrorMsg }}" />
-</van-cell-group>
-```
-
-### Toast 轻提示
-
-```javascript
-import Toast from '@vant/weapp/toast/toast';
-
-// 页面中必须放置 toast 节点
-// <van-toast id="van-toast" />
-
-Toast('提示内容');
-Toast.success('成功');
-Toast.fail('失败');
-Toast.loading({ message: '加载中...', forbidClick: true });
-Toast.clear();
-```
-
-### Dialog 对话框
-
-```javascript
-import Dialog from '@vant/weapp/dialog/dialog';
-
-// 页面中必须放置 dialog 节点
-// <van-dialog id="van-dialog" />
-
-Dialog.alert({ title: '标题', message: '内容' }).then(() => { /* 确认 */ });
-Dialog.confirm({ title: '标题', message: '确定删除？' })
+Dialog.confirm({ title: '提示', message: '确定删除？' })
   .then(() => { /* 确认 */ })
-  .catch(() => { /* 取消 */ });
+  .catch(() => { /* 取消 */ })
 ```
 
-### Popup 弹出层
+对比声明式组件（Popup 等）：不需要 JS import，直接用属性控制：
 
 ```xml
-<van-popup show="{{ showPopup }}" position="bottom" round closeable bind:close="onClosePopup">
-  <view class="popup-content">
-    <!-- 自定义内容 -->
+<!-- 声明式：用 show 属性控制 -->
+<van-popup show="{{ showPopup }}" position="bottom" bind:close="onClose">
+  内容
+</van-popup>
+```
+
+---
+
+## 复合模式
+
+> 以下为精简版。完整可复制代码见 [references/patterns.md](references/patterns.md)。
+
+### 模式 1：加载三态（Skeleton → Empty → Content）
+
+页面加载的标准三态切换。
+
+```xml
+<van-skeleton title row="3" loading="{{ loading }}">
+  <van-empty wx:if="{{ !list.length }}" description="暂无数据">
+    <van-button slot="bottom" round type="primary" size="small" bind:click="onRetry">
+      重新加载
+    </van-button>
+  </van-empty>
+  <view wx:else>
+    <view wx:for="{{ list }}" wx:key="id">{{ item.name }}</view>
+  </view>
+</van-skeleton>
+```
+
+**要点**：Skeleton 的 `loading` 属性控制骨架屏/内容切换；Empty 在数据为空时展示。
+
+### 模式 2：Tab 筛选列表（sticky + swipeable）
+
+顶部标签切换不同列表，支持粘性定位和手势滑动。
+
+```xml
+<van-tabs active="{{ activeTab }}" sticky swipeable bind:change="onTabChange">
+  <van-tab wx:for="{{ tabs }}" wx:key="name" title="{{ item.title }}" name="{{ item.name }}">
+    <van-skeleton title row="3" loading="{{ item.loading }}">
+      <van-empty wx:if="{{ !item.list.length }}" description="暂无数据" />
+      <view wx:else>
+        <!-- 列表内容 -->
+      </view>
+    </van-skeleton>
+  </van-tab>
+</van-tabs>
+```
+
+```typescript
+onTabChange(e: WechatMiniprogram.CustomEvent<{ name: string }>) {
+  const name = e.detail.name
+  this.setData({ activeTab: name })
+  // 首次切换时加载数据
+}
+```
+
+**要点**：用 `name` 属性标识 Tab（而非索引），便于维护。每个 Tab 独立维护 loading/list 状态。
+
+### 模式 3：Popup 底部选择器
+
+不使用 Picker 的自定义选择列表（适合带图标、多行的选项）。
+
+```xml
+<van-cell title="选择类型" value="{{ selectedLabel || '请选择' }}" is-link bind:click="onOpenPicker" />
+
+<van-popup show="{{ showPicker }}" position="bottom" round safe-area-inset-bottom bind:close="onClosePicker">
+  <view class="picker-header">
+    <text class="picker-title">选择类型</text>
+  </view>
+  <view
+    wx:for="{{ options }}" wx:key="value"
+    class="picker-option {{ selected === item.value ? 'picker-option--active' : '' }}"
+    data-value="{{ item.value }}" data-label="{{ item.label }}"
+    bindtap="onSelectOption"
+  >
+    <text>{{ item.label }}</text>
+    <van-icon wx:if="{{ selected === item.value }}" name="success" color="#07c160" />
   </view>
 </van-popup>
 ```
 
-### Tab 标签页
-
-```xml
-<van-tabs active="{{ activeTab }}" bind:change="onTabChange">
-  <van-tab title="全部">内容一</van-tab>
-  <van-tab title="待支付">内容二</van-tab>
-  <van-tab title="已完成">内容三</van-tab>
-</van-tabs>
+```typescript
+onSelectOption(e: WechatMiniprogram.CustomEvent) {
+  const { value, label } = e.currentTarget.dataset as { value: string; label: string }
+  this.setData({ selected: value, selectedLabel: label, showPicker: false })
+}
 ```
 
-### Card 商品卡片
+**要点**：用 `data-*` 属性传参而非闭包；`bindtap`（原生事件）而非 `bind:click`。
+
+### 模式 4：Radio-in-Cell 排他选择
 
 ```xml
-<van-card
-  num="2"
-  price="10.00"
-  title="商品标题"
-  desc="描述信息"
-  thumb="{{ imageUrl }}"
->
-  <view slot="footer">
-    <van-button size="mini" round type="danger">购买</van-button>
+<van-radio-group value="{{ selected }}" bind:change="onRadioChange">
+  <van-cell-group>
+    <van-cell wx:for="{{ options }}" wx:key="value"
+      title="{{ item.label }}" clickable
+      data-value="{{ item.value }}" bind:click="onCellClick"
+    >
+      <van-radio slot="right-icon" name="{{ item.value }}" checked-color="#07c160" />
+    </van-cell>
+  </van-cell-group>
+</van-radio-group>
+```
+
+**要点**：Cell 的 `clickable` 属性提供点击反馈；同时绑定 Cell `bind:click` 和 RadioGroup `bind:change`，确保点击整行都能选中。
+
+### 模式 5：Checkbox-in-Cell 行内勾选
+
+```xml
+<van-checkbox-group value="{{ selectedList }}" bind:change="onCheckboxChange">
+  <van-cell-group>
+    <van-cell wx:for="{{ options }}" wx:key="value"
+      title="{{ item.label }}" clickable
+      data-value="{{ item.value }}" bind:click="onToggle"
+    >
+      <van-checkbox slot="right-icon" name="{{ item.value }}" checked-color="#07c160" />
+    </van-cell>
+  </van-cell-group>
+</van-checkbox-group>
+```
+
+**要点**：结构与 Radio-in-Cell 几乎相同，区别是 `value` 为数组、用 `checkbox` 替代 `radio`。Cell `bind:click` 需手动切换数组。也可用 `slot="title"` 把 checkbox 放在标题位置（适合协议勾选等场景）。
+
+### 模式 6：SwipeCell 左滑删除
+
+```xml
+<van-swipe-cell wx:for="{{ list }}" wx:key="id" right-width="{{ 130 }}">
+  <van-cell title="{{ item.name }}" value="{{ item.desc }}" />
+  <view slot="right" class="swipe-actions">
+    <view class="swipe-btn swipe-btn--delete" data-id="{{ item.id }}" bindtap="onDelete">
+      删除
+    </view>
   </view>
-</van-card>
+</van-swipe-cell>
 ```
 
-### SubmitBar 提交订单栏
+**要点**：`right-width` 单位为 px（不是 rpx）；slot="right" 内用原生 `bindtap`；配合 Dialog.confirm 做二次确认。
+
+### 模式 7：Calendar + Picker 日期时间组合
 
 ```xml
-<van-submit-bar
-  price="{{ totalPrice }}"
-  button-text="提交订单"
-  bind:submit="onSubmit"
-  tip="{{ true }}"
->
-  <van-tag type="primary">标签</van-tag>
-</van-submit-bar>
+<van-cell title="日期" value="{{ dateLabel || '请选择' }}" is-link bind:click="onOpenCalendar" />
+<van-calendar show="{{ showCalendar }}" bind:confirm="onConfirmDate" bind:close="onCloseCalendar" />
+
+<van-cell title="时间" value="{{ timeLabel || '请选择' }}" is-link bind:click="onOpenTimePicker" />
+<van-popup show="{{ showTimePicker }}" position="bottom" round bind:close="onCloseTimePicker">
+  <van-picker columns="{{ timeColumns }}" show-toolbar title="选择时间"
+    bind:confirm="onConfirmTime" bind:cancel="onCloseTimePicker" />
+</van-popup>
 ```
 
-## 关键规则
-
-### 1. 组件节点必须存在
-
-Toast、Dialog、Notify 等命令式组件，必须在 WXML 中放置对应节点：
-
-```xml
-<van-toast id="van-toast" />
-<van-dialog id="van-dialog" />
+```typescript
+onConfirmDate(e: WechatMiniprogram.CustomEvent<Date>) {
+  // ⚠️ e.detail 是 Date 对象，不是字符串！
+  const date = e.detail
+  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+  this.setData({ selectedDate: dateStr, dateLabel: dateStr, showCalendar: false })
+}
 ```
 
-### 2. 事件绑定用 bind: 前缀
+**要点**：Calendar 返回 **Date 对象**；`min-date`/`max-date` 需传**毫秒时间戳**。
 
-```xml
-<!-- Vant 事件命名 -->
-<van-button bind:click="onClick">按钮</van-button>
-<van-field bind:change="onChange" bind:blur="onBlur" />
-<van-tabs bind:change="onTabChange" />
-<van-popup bind:close="onClose" />
+---
+
+## 主题定制速查
+
+### CSS 变量（推荐）
+
+在 `app.wxss` 或局部 WXSS 中覆盖：
+
+```css
+page {
+  --button-border-radius: 10rpx;
+  --cell-large-title-font-size: 32rpx;
+}
 ```
 
-### 3. 插槽使用 slot 属性
+### 外部样式类
 
-```xml
-<van-field use-button-slot>
-  <van-button slot="button" size="small" type="primary">发送</van-button>
-</van-field>
-
-<van-card>
-  <view slot="footer">
-    <van-button size="mini">操作</van-button>
-  </view>
-</van-card>
-```
-
-### 4. 样式隔离注意事项
-
-Vant 组件默认启用样式隔离，外部样式无法直接穿透。使用以下方式覆盖：
-- CSS 变量（推荐）
-- `external-classes` 属性（部分组件支持）
-- 组件 `custom-class`、`title-class` 等外部样式类
+部分组件支持 `custom-class`、`title-class` 等：
 
 ```xml
 <van-cell custom-class="my-cell" title-class="my-cell-title" title="标题" />
 ```
 
-### 5. 与 rpx 布局协同
+> Vant 组件启用了样式隔离，普通选择器无法穿透。只能通过 CSS 变量或外部样式类覆盖。
 
-Vant 组件内部使用 `px`，自定义样式仍须遵循项目 `rpx` 规范。通过 CSS 变量覆盖 Vant 尺寸时使用 `rpx`：
+---
 
-```css
-page {
-  --cell-large-title-font-size: 32rpx;
-  --cell-line-height: 48rpx;
+## TypeScript 事件类型速查
+
+| 组件 | 事件 | e.detail | 类型签名 |
+|------|------|----------|----------|
+| Tabs | `bind:change` | `{ name, title, index }` | `CustomEvent<{ name: string; title: string; index: number }>` |
+| Picker | `bind:confirm` | `{ value, index }` | `CustomEvent<{ value: string \| string[]; index: number \| number[] }>` |
+| Calendar | `bind:confirm` | Date 对象 ⚠️ | `CustomEvent<Date>` |
+| RadioGroup | `bind:change` | 选中的 name | `CustomEvent<string>` |
+| CheckboxGroup | `bind:change` | name 数组 | `CustomEvent<string[]>` |
+| Field | `bind:change` | 输入值 | `CustomEvent<string>` |
+| Stepper | `bind:change` | 当前值 | `CustomEvent<number>` |
+| SwipeCell | `bind:open` | `{ position, name }` | `CustomEvent<{ position: 'left' \| 'right'; name: string }>` |
+| ActionSheet | `bind:select` | 选项对象 | `CustomEvent<{ name: string; subname?: string }>` |
+
+> 完整类型声明和工具类型见 [references/typescript.md](references/typescript.md)。
+
+---
+
+## 关键规则与常见错误
+
+### 1. 命令式节点遗漏
+
+```xml
+<!-- ❌ 错误：只在 JS 中调用，WXML 无节点 → 无反应 -->
+<script>
+import Toast from '@vant/weapp/toast/toast'
+Toast('提示')
+</script>
+
+<!-- ✅ 正确：WXML 中必须有节点 -->
+<van-toast id="van-toast" />
+```
+
+### 2. SubmitBar 价格单位
+
+```typescript
+// ❌ 错误：传入元
+this.setData({ price: 99.9 })  // 显示 ¥0.10
+
+// ✅ 正确：传入分
+this.setData({ price: 9990 })  // 显示 ¥99.90
+```
+
+`price` 属性单位是**分**，不是元。
+
+### 3. Calendar 返回值类型
+
+```typescript
+// ❌ 错误：当字符串用
+onConfirmDate(e: any) {
+  this.setData({ date: e.detail })  // date 是 Date 对象，模板中显示 [object Object]
+}
+
+// ✅ 正确：格式化 Date 对象
+onConfirmDate(e: WechatMiniprogram.CustomEvent<Date>) {
+  const d = e.detail
+  this.setData({ date: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}` })
 }
 ```
 
-## 常见错误
+### 4. model:value 基础库要求
 
-| 错误 | 原因 | 修正 |
+```xml
+<!-- ❌ 在低版本基础库中无效 -->
+<van-field model:value="{{ name }}" />
+
+<!-- ✅ 兼容写法 -->
+<van-field value="{{ name }}" bind:change="onNameChange" />
+```
+
+`model:value` 双向绑定需要基础库 >= 2.9.3。
+
+### 5. SwipeCell right-width 单位
+
+```xml
+<!-- ❌ 错误：rpx 单位 -->
+<van-swipe-cell right-width="{{ 130 }}rpx">
+
+<!-- ✅ 正确：px 单位（数字即可） -->
+<van-swipe-cell right-width="{{ 65 }}">
+```
+
+`right-width` / `left-width` 单位是 **px**，不是 rpx。
+
+### 6. Popup 底部安全区
+
+```xml
+<!-- ❌ 遗漏：iPhone 底部内容被遮挡 -->
+<van-popup show="{{ show }}" position="bottom">
+
+<!-- ✅ 正确：加上底部安全区 -->
+<van-popup show="{{ show }}" position="bottom" safe-area-inset-bottom>
+```
+
+`position="bottom"` 的 Popup 务必加 `safe-area-inset-bottom`。
+
+### 7. 事件前缀混淆
+
+```xml
+<!-- ❌ 错误：Vant 事件用了原生前缀 -->
+<van-tabs bindchange="onTabChange" />
+
+<!-- ✅ 正确：Vant 事件用 bind: 带冒号 -->
+<van-tabs bind:change="onTabChange" />
+
+<!-- 注意：Popup 内自定义元素用原生 bindtap -->
+<view bindtap="onSelect">选项</view>
+```
+
+Vant 组件事件用 `bind:xxx`（带冒号）；Popup/SwipeCell 内的原生 view 用 `bindtap`（无冒号）。
+
+### 常见错误速查
+
+| 现象 | 原因 | 修正 |
 |------|------|------|
-| Toast/Dialog 无反应 | 缺少 WXML 节点 | 添加 `<van-toast id="van-toast" />` |
-| 组件不显示 | 未在 JSON 中注册 | 在页面 `.json` 的 `usingComponents` 中添加 |
+| Toast/Dialog 无反应 | WXML 缺节点 | 添加 `<van-toast id="van-toast" />` |
+| 组件不显示 | 未注册 | 在 `.json` 的 `usingComponents` 中声明 |
 | 样式不生效 | 样式隔离 | 用 CSS 变量或 `custom-class` |
-| 构建报错找不到模块 | 未构建 npm | 微信开发者工具 → 工具 → 构建 npm |
-| `model:value` 无效 | 基础库版本低 | 需要基础库 >= 2.9.3，否则用 `value` + `bind:change` |
+| 构建报错 | 未构建 npm | 微信开发者工具 → 工具 → 构建 npm |
+| 价格显示异常 | SubmitBar price 单位为分 | 传入分值（100 = ¥1.00） |
+| 日期显示 `[object Object]` | Calendar 返回 Date 对象 | 手动格式化 |
+
+---
 
 ## 参考资源
 
+- 复合模式完整代码：[references/patterns.md](references/patterns.md)
 - 组件 API 速查：[references/components.md](references/components.md)
 - TypeScript 类型声明：[references/typescript.md](references/typescript.md)
