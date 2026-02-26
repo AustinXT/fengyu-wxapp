@@ -318,6 +318,23 @@ const res = await wx.cloud.callFunction({
 })
 ```
 
+```javascript
+// 云函数端
+exports.main = async (event) => {
+  const weRunData = event.weRunData
+  if (weRunData.errCode) {
+    return { code: -1, message: '步数数据解密失败' }
+  }
+  const stepInfoList = weRunData.data.stepInfoList
+  // stepInfoList: [{ timestamp, step }, ...]
+}
+```
+
+**关键规则：**
+- **禁止** 使用 session_key 手动解密方式 — CloudID 更安全更简单
+- **必须** 实现兜底机制（如返回模拟数据）以处理 cloudID 获取失败的情况
+- 需要基础库 2.7.0+
+
 ## AI 模型调用
 
 基础库 3.7.1+ 支持通过 `wx.cloud.extend.AI` 调用大模型：

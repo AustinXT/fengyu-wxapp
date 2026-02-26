@@ -411,7 +411,7 @@ if (OPENID !== event.resourceOwnerId) {
 }
 ```
 
-> 认证细节参考 `auth-wechat` 技能。
+> 认证架构参考 `wx-system-architecture` 技能。
 
 ---
 
@@ -495,5 +495,5 @@ try {
 | `wx-ui-design` | WXML/WXSS 布局与样式 |
 | `vant-weapp` | Vant Weapp 组件注册与使用 |
 | `wx-database-design` | 数据库 Schema 设计 |
-| `auth-wechat` | 微信认证深入（OPENID/UNIONID/CloudID） |
+| `wx-system-architecture` | 系统架构规划、平台配置、认证模型 |
 | `cloudbase-deploy` | 部署工作流与 MCP 工具 |

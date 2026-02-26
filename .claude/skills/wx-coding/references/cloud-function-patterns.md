@@ -286,6 +286,17 @@ CloudBase Cron 表达式为 **7 个字段**（比标准 Cron 多「秒」和「�
 | node_modules | **不上传** — 云端自动安装依赖 |
 | functionRootPath | 函数目录的**父目录**（如 `cloudfunctions/`） |
 
+**支持的 Node.js 运行时：**
+
+| 运行时 | 说明 |
+|---|---|
+| `Nodejs18.15` | **默认，推荐新项目使用** |
+| `Nodejs16.13` | |
+| `Nodejs14.18` | |
+| `Nodejs12.16` | |
+
+> 仅在依赖项需要特定 Node.js 版本时才选择旧版本。
+
 **部署工具链：**
 
 | 操作 | MCP 工具 |
@@ -351,6 +362,10 @@ await db.runTransaction(async (transaction) => {
 
 将云函数暴露为 HTTP 端点（适用于 webhook、第三方回调）：
 
+**HTTP API vs HTTP 访问的区别：**
+- **HTTP API**：通过 CloudBase API 端点（`https://api.cloudbase.net/v1/{envId}/functions/{functionName}/invoke`）调用，需认证令牌
+- **HTTP 访问**：创建直接 HTTP/HTTPS 端点用于标准 REST API 访问（GET/POST），无需 SDK
+
 ```javascript
 // 通过 MCP 工具创建 HTTP 访问
 createFunctionHTTPAccess({
@@ -360,4 +375,62 @@ createFunctionHTTPAccess({
 })
 ```
 
+**备用方法（MCP 工具不可用时）：** 使用 `callCloudApi` 配合 `CreateCloudBaseGWAPI`：
+
+```javascript
+callCloudApi({
+  service: "tcb",
+  action: "CreateCloudBaseGWAPI",
+  params: {
+    EnableUnion: true,
+    Path: "/api/webhook",
+    ServiceId: "{envId}",
+    Type: 6,              // 6 = 云函数类型（必填）
+    Name: "webhook",
+    AuthSwitch: 2,        // 2 = 无需鉴权, 1 = 需要鉴权
+    PathTransmission: 2,
+    EnableRegion: true,
+    Domain: "*"           // "*" = 默认域名
+  }
+})
+```
+
 URL 格式：`https://{envId}.{region}.app.tcloudbase.com/{path}`
+
+## 日志查询
+
+**主要方法：** 使用 `getFunctionLogs` 获取日志列表 + `getFunctionLogDetail` 获取详细内容。
+
+**备用方法（MCP 工具不可用时）：**
+
+```javascript
+// 1. 获取日志列表
+callCloudApi({
+  service: "tcb",
+  action: "GetFunctionLogs",
+  params: {
+    EnvId: "{envId}",
+    FunctionName: "myApi",
+    Offset: 0, Limit: 10,
+    StartTime: "2024-01-01 00:00:00",
+    EndTime: "2024-01-01 23:59:59",
+    Qualifier: "$LATEST"
+  }
+})
+
+// 2. 获取日志详情（需要步骤 1 中的 RequestId）
+callCloudApi({
+  service: "tcb",
+  action: "GetFunctionLogDetail",
+  params: {
+    StartTime: "2024-01-01 00:00:00",
+    EndTime: "2024-01-01 23:59:59",
+    LogRequestId: "request-id-from-step-1"
+  }
+})
+```
+
+**日志查询限制：**
+- 时间范围不超过 24 小时
+- `Offset + Limit <= 10,000`
+- 使用 RequestId 定位具体调用
