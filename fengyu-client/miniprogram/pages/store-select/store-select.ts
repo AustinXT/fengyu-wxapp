@@ -82,8 +82,8 @@ Page({
     this.setData({ groupedStores });
   },
 
-  onSearch(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
-    const keyword = e.detail.value.trim();
+  onSearch(e: WechatMiniprogram.CustomEvent<string>) {
+    const keyword = (e.detail as string).trim();
     this.setData({ keyword });
     const filtered = keyword
       ? this.data.allStores.filter(s =>
