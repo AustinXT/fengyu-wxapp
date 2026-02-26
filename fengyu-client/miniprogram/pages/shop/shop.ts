@@ -17,7 +17,7 @@ interface SpuItem {
   skuList?: any[];
 }
 
-const BIG_CATEGORIES = ['生美', '非生美', '院装产品'];
+const BIG_CATEGORIES = ['生美', '非生美', '组合套餐', '院装产品'];
 
 Page({
   data: {

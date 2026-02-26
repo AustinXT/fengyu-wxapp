@@ -15,12 +15,10 @@ const priceCache = new Map()
  * 内部函数：获取分类列表（合并为一条 SQL）
  */
 async function getCategoriesList(storeName) {
-  // 合并生美/非生美和院装产品为一条 SQL
-  // 院装产品统一 category 为 '院装产品'，其余保留原 category
   let sql = `
     SELECT
-      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.category END AS category,
-      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.big_category END AS big_category,
+      p.category,
+      p.big_category,
       MIN(p.sort_order) AS category_order
     FROM product_spu p
     WHERE EXISTS (
@@ -30,25 +28,25 @@ async function getCategoriesList(storeName) {
   `
 
   if (!storeName) {
-    // 未绑定门店：非院装产品只显示通用 SKU，院装产品只显示 UDT_M_341
+    // 未绑定门店：生美/非生美只显示通用 SKU，院装产品只显示 UDT_M_341，组合套餐只显示 UDT_M_1460
     sql += `
       AND EXISTS (
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id
           AND m.is_active = true
           AND (
-            (p.big_category != '院装产品' AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
+            (p.big_category NOT IN ('院装产品', '组合套餐') AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
             OR
             (p.big_category = '院装产品' AND m.workfine_source = 'UDT_M_341')
+            OR
+            (p.big_category = '组合套餐' AND m.workfine_source = 'UDT_M_1460')
           )
       )
     `
   }
 
   sql += `
-    GROUP BY
-      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.category END,
-      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.big_category END
+    GROUP BY p.category, p.big_category
     ORDER BY MIN(p.sort_order) ASC
   `
 
@@ -84,9 +82,7 @@ async function getSpuListByCategory({ category, bigCategory, storeName }) {
     `
   }
 
-  if (category === '院装产品') {
-    whereClause += ` AND p.big_category = '院装产品'`
-  } else if (category) {
+  if (category) {
     params.push(category)
     whereClause += ` AND p.category = $${params.length}`
   }
@@ -333,7 +329,7 @@ async function enrichSkuWithWorkfinePrice(skuList) {
 async function hotList(ctx) {
   const { storeName, limit = 6 } = ctx.event.payload || {}
 
-  let whereClause = `WHERE p.big_category != '院装产品'
+  let whereClause = `WHERE p.big_category NOT IN ('院装产品', '组合套餐')
     AND EXISTS (
       SELECT 1 FROM product_spu_sku_map m
       WHERE m.spu_id = p.spu_id AND m.is_active = true

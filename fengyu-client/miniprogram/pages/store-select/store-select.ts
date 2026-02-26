@@ -8,6 +8,7 @@ interface Store {
   market: string;
   market_name?: string;
   store_region?: string;
+  region?: string;
   open_date?: string;
   available_beds?: number;
 }
@@ -47,7 +48,7 @@ Page({
 
   async loadStores() {
     this.setData({ isLoading: true });
-    console.log('[Stores] start loadingload, boundStoreName:', this.data.boundStoreName);
+    console.log('[Stores] start loading, selectedStore:', this.data.selectedStore);
     try {
       const data = await callClientApi('store.list');
       console.log('[loadStores] data:', JSON.stringify(data));

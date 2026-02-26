@@ -1,0 +1,1 @@
+ALTER TYPE "public"."big_category" ADD VALUE '组合套餐' BEFORE '院装产品';
