@@ -752,3 +752,183 @@ Page({
 - **Calendar `bind:confirm` 返回 Date 对象**，不是字符串。必须手动格式化。
 - **Calendar `min-date`/`max-date` 需要时间戳**（毫秒），不是 Date 对象。
 - **Picker `bind:confirm` 的 `e.detail.value`** 是选中值数组（多列时），不是单个值。
+
+---
+
+## 模式 8：侧边栏 + 商品网格（van-sidebar + scroll-view）
+
+左侧固定分类侧边栏 + 右侧可滚动商品网格，常用于商品分类浏览页。
+
+### JSON
+
+```json
+{
+  "usingComponents": {
+    "van-sidebar": "@vant/weapp/sidebar/index",
+    "van-sidebar-item": "@vant/weapp/sidebar-item/index",
+    "van-card": "@vant/weapp/card/index"
+  }
+}
+```
+
+### WXML
+
+```xml
+<view class="category-page">
+  <!-- 左侧分类 -->
+  <view class="category-sidebar">
+    <van-sidebar active-key="{{ activeCategory }}" bind:change="onCategoryChange">
+      <van-sidebar-item
+        wx:for="{{ categories }}"
+        wx:key="id"
+        title="{{ item.name }}"
+      />
+    </van-sidebar>
+  </view>
+
+  <!-- 右侧商品 -->
+  <scroll-view
+    class="category-content"
+    scroll-y
+    enhanced
+    show-scrollbar="{{ false }}"
+  >
+    <view class="product-grid">
+      <view
+        wx:for="{{ currentProducts }}"
+        wx:key="id"
+        class="product-item"
+        data-id="{{ item.id }}"
+        bindtap="onProductTap"
+      >
+        <image class="product-img" src="{{ item.image }}" mode="aspectFill" />
+        <text class="product-name">{{ item.name }}</text>
+        <text class="product-price">¥{{ item.price }}</text>
+      </view>
+    </view>
+  </scroll-view>
+</view>
+```
+
+### WXSS
+
+```css
+.category-page {
+  display: flex;
+  height: 100vh;
+}
+.category-sidebar {
+  width: 160rpx;
+  flex-shrink: 0;
+}
+.category-content {
+  flex: 1;
+  height: 100vh;
+}
+.product-grid {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 16rpx;
+  gap: 16rpx;
+}
+.product-item {
+  width: calc(50% - 8rpx);
+  background: #fff;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+.product-img {
+  width: 100%;
+  height: 200rpx;
+}
+.product-name {
+  display: block;
+  padding: 8rpx 12rpx 0;
+  font-size: 26rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.product-price {
+  display: block;
+  padding: 4rpx 12rpx 12rpx;
+  font-size: 28rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+```
+
+### TypeScript
+
+```typescript
+Page({
+  data: {
+    activeCategory: 0,
+    categories: [] as Array<{ id: string; name: string }>,
+    productsByCategory: {} as Record<string, any[]>,
+    currentProducts: [] as any[],
+  },
+
+  onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
+    const idx = e.detail
+    this.setData({ activeCategory: idx })
+    this.loadCategoryProducts(idx)
+  },
+
+  loadCategoryProducts(idx: number) {
+    const catId = this.data.categories[idx]?.id
+    const products = this.data.productsByCategory[catId] || []
+    this.setData({ currentProducts: products })
+  },
+
+  onProductTap(e: WechatMiniprogram.CustomEvent) {
+    const id = e.currentTarget.dataset.id
+    wx.navigateTo({ url: `/pages/product-detail/product-detail?id=${id}` })
+  },
+})
+```
+
+**关键点：**
+- 左侧 `van-sidebar` 固定宽度 `160rpx`，右侧 `flex: 1` 填充剩余空间
+- 右侧用 `scroll-view` 独立滚动，不与左侧联动
+- 商品网格使用 `flex-wrap` 实现两列布局
+
+---
+
+## 通用交互陷阱
+
+### stopPropagation 嵌套列表按钮
+
+在 `van-cell` / `van-card` 等列表项内嵌操作按钮时，按钮点击会冒泡触发卡片的点击事件。用 `catchtap`（替代 `bindtap`）阻止冒泡：
+
+```xml
+<!-- ❌ bindtap 会冒泡，点击按钮同时触发 onCardTap -->
+<van-cell bindtap="onCardTap" data-id="{{ item.id }}">
+  <van-button slot="right-icon" size="small" bindtap="onDelete" data-id="{{ item.id }}">
+    删除
+  </van-button>
+</van-cell>
+
+<!-- ✅ catchtap 阻止冒泡 -->
+<van-cell bindtap="onCardTap" data-id="{{ item.id }}">
+  <van-button slot="right-icon" size="small" catchtap="onDelete" data-id="{{ item.id }}">
+    删除
+  </van-button>
+</van-cell>
+```
+
+**JS 中也可以用 `stopPropagation`：**
+
+```typescript
+onDelete(e: WechatMiniprogram.CustomEvent) {
+  // 如果用 bindtap 而非 catchtap，可在 handler 中手动阻止
+  // 但 catchtap 更简洁直接
+  const id = e.currentTarget.dataset.id
+  // ... 删除逻辑
+}
+```
+
+**常见场景：**
+- 列表项右侧的编辑/删除按钮
+- 卡片内的收藏/分享图标
+- SwipeCell 展开状态下的操作按钮与卡片整体点击冲突

@@ -80,6 +80,9 @@ git diff --cached --stat
 - [ ] 是否有新路由未注册？（routes/ 有新导出但 index.js 未添加）
 - [ ] 是否有新页面未注册？（pages/ 有新目录但 app.json 未添加）
 - [ ] 是否有 `.js` 文件出现在 miniprogram/？（严禁，仅允许 `.ts`）
+- [ ] `cloudbaserc.json` 中 `installDependency` 是否为 `false`？（必须为 false，由云端自动安装依赖）
+- [ ] `.cloudbaseignore` 是否排除测试文件（`__tests__/`、`*.test.*`）但包含 `node_modules`？
+- [ ] 是否有遗留的 `console.log` 调试语句？（搜索 `console.log` 排除结构化日志）
 
 ---
 

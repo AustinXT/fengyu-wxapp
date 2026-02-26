@@ -388,3 +388,116 @@ const appInfo = wx.getAppBaseInfo()      // SDK 版本
 | `getTempFileURL` | 获取临时链接 | `wx.cloud.getTempFileURL({ fileList })` |
 | `deleteFile` | 删除云存储文件 | `wx.cloud.deleteFile({ fileList })` |
 | `CloudID` | 包装敏感数据标识 | `wx.cloud.CloudID(cloudID)` |
+
+## Per-Page Inline callApi
+
+本项目中，每个页面定义自己的 `callClientApi` / `callStaffApi` 内联函数，而非从 `utils/` 导入公共封装。这是有意为之的设计选择：
+
+```typescript
+// 每个页面顶部定义
+async function callClientApi(action: string, payload: Record<string, any> = {}) {
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: { action, payload }
+  }) as any
+  const err = { code: res.result?.code, message: res.result?.message }
+  if (err.code !== 0) {
+    throw err  // ✅ 保留 err.code 用于特殊处理
+  }
+  return res.result.data
+}
+```
+
+**为什么保留 `err.code`：** 前端需要区分 `-403 PHONE_REQUIRED` 弹出手机号授权弹窗，而不是通用的错误提示。如果 throw `new Error(message)` 则丢失了 code 信息。
+
+```typescript
+// 页面中捕获特定错误码
+catch (err: any) {
+  if (err.code === -403) {
+    // 弹出手机号授权
+    this.setData({ showPhoneAuth: true })
+    return
+  }
+  wx.showToast({ title: err.message || '请求失败', icon: 'error' })
+}
+```
+
+## 提交防重 (submitting guard)
+
+表单提交类操作（下单、确认、审核）必须加 `submitting` 标志位防止重复提交：
+
+```typescript
+Page({
+  data: {
+    submitting: false,
+  },
+
+  async onSubmit() {
+    if (this.data.submitting) return   // ✅ 防重入
+    this.setData({ submitting: true })
+
+    try {
+      await callClientApi('order.create', { /* params */ })
+      wx.showToast({ title: '提交成功', icon: 'success' })
+
+      // ✅ 成功后用 redirectTo（非 navigateTo），防止返回重复提交
+      setTimeout(() => {
+        wx.redirectTo({ url: '/pages/orders/orders' })
+      }, 1500)
+    } catch (err: any) {
+      if (err.code === -403) {
+        this.setData({ showPhoneAuth: true })  // 弹手机号授权
+        return
+      }
+      wx.showToast({ title: err.message || '提交失败', icon: 'error' })
+    } finally {
+      this.setData({ submitting: false })  // ✅ 无论成功失败都重置
+    }
+  }
+})
+```
+
+**要点：**
+- `submitting` 标志位在函数入口检查，`finally` 中重置
+- 成功后用 `wx.redirectTo`（替换当前页），避免用户返回后重复提交
+- `-403` 错误码触发手机号授权弹窗，而非通用错误提示
+
+## onShow 双加载模式
+
+Tab 页和列表页需要在 `onLoad` **和** `onShow` 中都加载数据，因为 `wx.navigateBack()` 返回时**不触发 onLoad**，只触发 `onShow`：
+
+```typescript
+Page({
+  data: {
+    list: [] as IItem[],
+    isLoading: false,
+  },
+
+  onLoad() {
+    this.loadData()
+  },
+
+  onShow() {
+    // ✅ navigateBack 返回时也能刷新数据
+    this.loadData()
+  },
+
+  async loadData() {
+    if (this.data.isLoading) return
+    this.setData({ isLoading: true })
+    try {
+      const data = await callClientApi('item.list')
+      this.setData({ list: data, isLoading: false })
+    } catch {
+      this.setData({ isLoading: false })
+    }
+  }
+})
+```
+
+**适用场景：**
+- Tab 页（`switchTab` 切回时只触发 `onShow`）
+- 列表页（从详情页 `navigateBack` 返回后需刷新，如提交订单后返回订单列表）
+- 需要实时性的页面（每次展示都应拿到最新数据）
+
+> 注意：`onLoad` + `onShow` 在页面首次打开时会各调一次，用 `isLoading` 标志位防止并发重复请求。

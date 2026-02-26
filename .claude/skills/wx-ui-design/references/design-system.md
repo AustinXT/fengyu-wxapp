@@ -292,6 +292,49 @@ this.animate('.header', [
 
 ---
 
+## R2.5 全局状态工具类 [中]
+
+在 `app.wxss` 中定义全局状态色 class，替代内联样式中散落的颜色硬编码。与 R2.2 状态色变量配合使用：
+
+```css
+/* app.wxss — 全局状态工具类 */
+.status-pending {
+  color: var(--status-pending);
+}
+.status-active {
+  color: var(--status-active);
+}
+.status-completed {
+  color: var(--status-completed);
+}
+.status-cancelled {
+  color: var(--status-cancelled);
+}
+.status-error {
+  color: var(--status-error);
+}
+.status-paid {
+  color: var(--status-completed);  /* 已支付 = 完成态 */
+}
+.status-failed {
+  color: var(--status-error);      /* 支付失败 = 错误态 */
+}
+```
+
+**使用方式：**
+
+```xml
+<!-- ✅ 用全局工具类 -->
+<text class="status-{{order.status}}">{{statusText}}</text>
+
+<!-- ❌ 避免内联样式硬编码颜色 -->
+<text style="color: {{order.status === 'paid' ? '#52C41A' : '#FF4D4F'}}">{{statusText}}</text>
+```
+
+**优势：** 颜色统一管理，修改一处全局生效；WXML 更简洁；减少动态 style 的渲染开销。
+
+---
+
 ## 配色正确/错误示例
 
 ```css

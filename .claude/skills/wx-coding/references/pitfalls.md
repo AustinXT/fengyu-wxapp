@@ -221,6 +221,52 @@ await updateFunctionConfig({
 
 ---
 
+## 业务逻辑陷阱
+
+### Auth 缓存过期
+
+Auth 中间件有 5 分钟内存缓存。写操作（如 `bindPhone`、`bindStore`）后不清缓存，后续请求在缓存过期前返回旧数据。
+
+```javascript
+// ❌ 绑定手机号后未清缓存 → 5 分钟内 ctx.auth.phone 仍为 null
+exports.bindPhone = async (ctx) => {
+  await auth(ctx, async () => {
+    await pg.query('UPDATE users SET phone = $1 WHERE openid = $2', [phone, OPENID])
+    ctx.result = { success: true }
+  })
+}
+
+// ✅ 写操作后立即清除缓存
+const { auth, invalidateAuthCache } = require('../middleware/auth')
+
+exports.bindPhone = async (ctx) => {
+  await auth(ctx, async () => {
+    await pg.query('UPDATE users SET phone = $1 WHERE openid = $2', [phone, OPENID])
+    invalidateAuthCache(OPENID)   // ✅ 立即清除
+    ctx.result = { success: true }
+  })
+}
+```
+
+### onLoad vs navigateBack
+
+`wx.navigateBack()` 返回上一页时**不触发 onLoad**，只触发 `onShow`。列表页如果只在 `onLoad` 中加载数据，用户从详情页返回后看到的仍是旧数据。
+
+```typescript
+// ❌ 仅 onLoad 加载 → navigateBack 返回后数据不刷新
+Page({
+  onLoad() { this.loadData() },
+})
+
+// ✅ onLoad + onShow 双加载
+Page({
+  onLoad() { this.loadData() },
+  onShow() { this.loadData() },  // navigateBack 返回时也触发
+})
+```
+
+---
+
 ## 交付自检清单
 
 发布前逐项确认：
@@ -239,3 +285,5 @@ await updateFunctionConfig({
 | 10 | NoSQL limit | 前端查询显式设置 limit |
 | 11 | TypeScript | 所有 .ts 文件，无 .js |
 | 12 | 组件按需注册 | 组件在页面级 .json 注册，非 app.json |
+| 13 | Auth 缓存 | 写操作后调用 invalidateAuthCache(OPENID) |
+| 14 | onShow 刷新 | Tab/列表页在 onShow 中也加载数据 |

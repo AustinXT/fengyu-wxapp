@@ -398,6 +398,51 @@ this.setData({ 'list[0].status': '已支付' })  // 而非替换整个 list
 
 ---
 
+# 冒烟测试矩阵
+
+部署后对核心 action 逐一验证，确保基本功能正常。
+
+## clientApi 冒烟测试
+
+| # | Action | 测试 Payload | 预期结果 |
+|---|---|---|---|
+| 1 | `auth.login` | `{}` | `code: 0`，返回用户信息或新建用户 |
+| 2 | `product.categories` | `{ storeId }` | `code: 0`，返回分类数组 |
+| 3 | `product.spuList` | `{ storeId, categoryId }` | `code: 0`，返回商品列表 |
+| 4 | `product.skuDetail` | `{ spuId }` | `code: 0`，返回 SKU 详情 |
+| 5 | `order.create` | `{ storeId, items, ... }` | `code: 0`，返回 orderId |
+| 6 | `order.list` | `{ status: 'all' }` | `code: 0`，返回订单数组 |
+| 7 | `appointment.list` | `{}` | `code: 0`，返回预约数组 |
+
+## staffApi 冒烟测试
+
+| # | Action | 测试 Payload | 预期结果 |
+|---|---|---|---|
+| 1 | `auth.login` | `{}` | `code: 0`，返回员工信息 |
+| 2 | `store.list` | `{}` | `code: 0`，返回门店列表 |
+| 3 | `staff.list` | `{ storeId }` | `code: 0`，返回员工列表 |
+| 4 | `order.list` | `{ storeId }` | `code: 0`，返回订单列表 |
+| 5 | `appointment.list` | `{ storeId }` | `code: 0`，返回预约数组 |
+| 6 | `service.list` | `{ storeId }` | `code: 0`，返回服务单列表 |
+| 7 | `customer.search` | `{ storeId, keyword }` | `code: 0`，返回客户列表 |
+
+> 使用 `invokeFunction` MCP 工具执行，需要在 payload 中加 `_testOpenid` 以绕过微信 OPENID 注入。
+
+## 常见部署后根因速查
+
+部署后接口行为异常时，按此表快速定位根因：
+
+| 现象 | 根因 | 修复方式 |
+|---|---|---|
+| `relation "xxx" does not exist` | 数据库迁移未执行 | `cd db && npm run db:migrate` |
+| `ETIMEOUT` / `ECONNREFUSED` | 环境变量中数据库地址错误或缺失 | `getFunctionConfig` 检查并修正环境变量 |
+| 代码已修改但行为未变 | 云函数未重新部署 | 重新执行 `updateFunctionCode` |
+| `ELOGIN` / `Login failed` | SQL Server 账号密码错误 | 检查 `WF_USER` / `WF_PASSWORD` 环境变量 |
+| `Cannot find module 'xxx'` | `package.json` 缺少依赖 | 添加依赖后重新部署 |
+| `action "xxx" not found` | 路由未在 `index.js` 中注册 | 在路由映射表中添加 action |
+
+---
+
 # Bug 预防与常见问题
 
 ## 已知平台 Bug

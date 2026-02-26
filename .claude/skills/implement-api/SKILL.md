@@ -198,12 +198,42 @@ async function queryWorkFine(storeWfId) {
 - `UDT_M_1383` — 门店自定义项目
 - `UDT_M_341` — 院装产品
 
+### 3.3.1 MSSQL 连接预热 + WorkFine 价格缓存
+
+**连接预热：** 在 `db/mssql.js` 模块顶层 fire-and-forget 预热，减少首次查询延迟：
+
+```javascript
+getPool().catch(() => {})  // 模块加载时即开始连接
+```
+
+**WorkFine 价格缓存：** 对不频繁变动的 WorkFine 数据（如项目价格列表），使用 5 分钟 TTL Map 缓存，避免每次请求都查 SQL Server：
+
+```javascript
+const priceCache = new Map()  // key → { data, expireAt }
+const PRICE_CACHE_TTL = 5 * 60 * 1000  // 5 分钟
+
+async function getCachedPrices(storeWfId) {
+  const cacheKey = `prices_${storeWfId}`
+  const cached = priceCache.get(cacheKey)
+  if (cached && cached.expireAt > Date.now()) return cached.data
+
+  const pool = await mssql.getPool()
+  const result = await pool.request()
+    .input('storeId', mssql.NVarChar, storeWfId)
+    .query('SELECT ... FROM UDT_M_1281 WHERE ...')
+  const data = result.recordset
+
+  priceCache.set(cacheKey, { data, expireAt: Date.now() + PRICE_CACHE_TTL })
+  return data
+}
+```
+
 ### 3.4 事务模式（如需要）
 
 ```javascript
 await pg.transaction(async (client) => {
-  // Advisory lock 防并发
-  await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
+  // Advisory lock 防并发（hashtext 将字符串转为 bigint）
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [lockKey])
 
   // 生成序号
   const { rows: [{ next_seq }] } = await client.query(`
@@ -295,6 +325,19 @@ const routes = {
 - [ ] 权限校验：无手机号时返回 `{ code: -403, message: "PHONE_REQUIRED:..." }`
 - [ ] 数据正确性：返回数据与预期结构一致
 - [ ] real.md 约束：WorkFine 无写入，权限校验到位，幂等安全
+
+### 6.2.1 错误码映射表
+
+云函数返回的错误码与业务语义对照：
+
+| 业务错误 | 返回 code | 前端处理 |
+|---|---|---|
+| `UNAUTHORIZED` | `-401` | 提示重新登录 |
+| `PHONE_REQUIRED` | `-403` | 弹出手机号授权弹窗 |
+| `PERMISSION_DENIED` | `-403` | 提示无权限 |
+| `INVALID_PARAMS` | `-400` | 提示参数错误 |
+| `NOT_FOUND` | `-404` | 提示资源不存在 |
+| 未知错误 | `-1` | 通用错误提示 |
 
 ### 6.3 错误排查
 
