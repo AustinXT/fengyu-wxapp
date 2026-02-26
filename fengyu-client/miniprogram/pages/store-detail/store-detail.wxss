@@ -1,0 +1,50 @@
+/* pages/store-detail/store-detail.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 140rpx;
+}
+
+.skeleton-wrap {
+  padding: 24rpx;
+}
+
+.empty-wrap {
+  padding-top: 80rpx;
+}
+
+/* Hero 区域 */
+.hero {
+  display: flex;
+  align-items: center;
+  padding: 48rpx 32rpx 32rpx;
+  gap: 24rpx;
+}
+
+.hero-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.hero-name {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.bottom-space {
+  height: 60rpx;
+}
+
+/* 底部固定操作栏 */
+.bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16rpx 32rpx;
+  background: var(--color-bg-card);
+  box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
+}

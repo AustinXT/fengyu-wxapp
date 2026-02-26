@@ -51,8 +51,11 @@
       <view class="order-items">
         <view wx:for="{{item.items}}" wx:key="item_flow_no" wx:for-item="oi" class="order-item-row">
           <text class="oi-name">{{oi.spu_name}} · {{oi.sku_display_name}}</text>
-          <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
-            <text class="oi-sessions-text">剩余 {{oi.remaining_sessions}} 次</text>
+          <view class="oi-right">
+            <text class="oi-qty">×{{oi.quantity}}</text>
+            <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
+              <text class="oi-sessions-text">剩余{{oi.remaining_sessions}}次</text>
+            </view>
           </view>
         </view>
       </view>

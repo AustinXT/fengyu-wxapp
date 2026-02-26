@@ -61,6 +61,7 @@
             class="spu-cover"
             src="{{item.cover_image}}"
             mode="aspectFill"
+            lazy-load
           />
 
           <!-- 商品信息 -->

@@ -81,9 +81,19 @@
   flex: 1;
 }
 
-.oi-sessions {
+.oi-right {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
   margin-left: 16rpx;
 }
+
+.oi-qty {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.oi-sessions {}
 
 .oi-sessions-text {
   font-size: 22rpx;

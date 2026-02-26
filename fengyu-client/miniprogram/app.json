@@ -6,6 +6,7 @@
     "pages/orders/orders",
     "pages/profile/profile",
     "pages/store-select/store-select",
+    "pages/store-detail/store-detail",
     "pages/service-detail/service-detail",
     "pages/checkout/checkout",
     "pages/order-detail/order-detail",

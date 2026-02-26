@@ -6,6 +6,55 @@
 const pg = require('../db/pg')
 const mssql = require('../db/mssql')
 
+// WorkFine 价格缓存（模块级，云函数实例回收时自动清除）
+// key: `${workfine_source}:${workfine_item_id}`, value: { data, ts }
+const PRICE_CACHE_TTL = 5 * 60 * 1000 // 5 分钟
+const priceCache = new Map()
+
+/**
+ * 内部函数：获取分类列表（合并为一条 SQL）
+ */
+async function getCategoriesList(storeName) {
+  // 合并生美/非生美和院装产品为一条 SQL
+  // 院装产品统一 category 为 '院装产品'，其余保留原 category
+  let sql = `
+    SELECT
+      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.category END AS category,
+      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.big_category END AS big_category,
+      MIN(p.sort_order) AS category_order
+    FROM product_spu p
+    WHERE EXISTS (
+      SELECT 1 FROM product_spu_sku_map m
+      WHERE m.spu_id = p.spu_id AND m.is_active = true
+    )
+  `
+
+  if (!storeName) {
+    // 未绑定门店：非院装产品只显示通用 SKU，院装产品只显示 UDT_M_341
+    sql += `
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id
+          AND m.is_active = true
+          AND (
+            (p.big_category != '院装产品' AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
+            OR
+            (p.big_category = '院装产品' AND m.workfine_source = 'UDT_M_341')
+          )
+      )
+    `
+  }
+
+  sql += `
+    GROUP BY
+      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.category END,
+      CASE WHEN p.big_category = '院装产品' THEN '院装产品' ELSE p.big_category END
+    ORDER BY MIN(p.sort_order) ASC
+  `
+
+  return pg.query(sql)
+}
+
 /**
  * 品项分类列表
  * 从 product_spu 动态派生,仅显示含有效 SKU 的分类
@@ -13,88 +62,17 @@ const mssql = require('../db/mssql')
  */
 async function categories(ctx) {
   const { storeName } = ctx.event.payload || {}
-
-  // 门店专供产品的 SKU 来源是 UDT_M_1383
-  // 通用产品的 SKU 来源是 UDT_M_1281 或 UDT_M_341
-
-  // 生美/非生美分类（排除院装产品）
-  let categoriesSql = `
-    SELECT
-      p.category,
-      p.big_category,
-      MIN(p.sort_order) AS category_order
-    FROM product_spu p
-    WHERE p.big_category != '院装产品'
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id AND m.is_active = true
-      )
-  `
-
-  // 未绑定门店时，过滤掉只有门店专供 SKU 的 SPU
-  if (!storeName) {
-    categoriesSql += `
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id
-          AND m.is_active = true
-          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
-      )
-    `
-  }
-
-  categoriesSql += `
-    GROUP BY p.category, p.big_category
-    ORDER BY MIN(p.sort_order) ASC
-  `
-
-  const categoriesResult = await pg.query(categoriesSql)
-
-  // 院装产品分类
-  let inStoreSql = `
-    SELECT
-      '院装产品' AS category,
-      '院装产品' AS big_category,
-      MIN(p.sort_order) AS category_order
-    FROM product_spu p
-    WHERE p.big_category = '院装产品'
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id AND m.is_active = true
-      )
-  `
-
-  // 未绑定门店时，院装产品也只显示通用的
-  if (!storeName) {
-    inStoreSql += `
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id
-          AND m.is_active = true
-          AND m.workfine_source = 'UDT_M_341'
-      )
-    `
-  }
-
-  const inStoreResult = await pg.query(inStoreSql)
-
-  ctx.result = {
-    categories: [...categoriesResult, ...inStoreResult]
-  }
+  const categoriesList = await getCategoriesList(storeName)
+  ctx.result = { categories: categoriesList }
 }
 
 /**
- * SPU 列表
- * PG 查询 SPU + WorkFine 实时读取 SKU 价格
- * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品
+ * 内部函数：按分类获取 SPU 列表（含 SKU 价格）
  */
-async function spuList(ctx) {
-  const { category, bigCategory, storeName } = ctx.event.payload || {}
-
+async function getSpuListByCategory({ category, bigCategory, storeName }) {
   let whereClause = 'WHERE EXISTS (SELECT 1 FROM product_spu_sku_map m WHERE m.spu_id = p.spu_id AND m.is_active = true)'
   const params = []
 
-  // 未绑定门店时，过滤掉门店专供产品（UDT_M_1383）
   if (!storeName) {
     whereClause += `
       AND EXISTS (
@@ -106,7 +84,6 @@ async function spuList(ctx) {
     `
   }
 
-  // 院装产品特殊处理：category 参数传入 "院装产品" 时，改为按 big_category 查询
   if (category === '院装产品') {
     whereClause += ` AND p.big_category = '院装产品'`
   } else if (category) {
@@ -119,58 +96,78 @@ async function spuList(ctx) {
     whereClause += ` AND p.big_category = $${params.length}`
   }
 
-  // 查询 SPU 列表
-  const spuList = await pg.query(`
+  const spuRows = await pg.query(`
     SELECT
-      p.spu_id,
-      p.name,
-      p.category,
-      p.big_category,
-      p.cover_image,
-      p.description,
-      p.sort_order
+      p.spu_id, p.name, p.category, p.big_category,
+      p.cover_image, p.description, p.sort_order
     FROM product_spu p
     ${whereClause}
     ORDER BY p.sort_order ASC
   `, params)
 
-  // 查询每个 SPU 的 SKU 列表
-  const result = []
-  for (const spu of spuList) {
-    // 未绑定门店时，只查询通用产品的 SKU
-    let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
-    const skuParams = [spu.spu_id]
-
+  // 批量查询所有 SPU 的 SKU（消除 N+1）
+  const spuIds = spuRows.map(s => s.spu_id)
+  let allSkus = []
+  if (spuIds.length > 0) {
+    let skuFilterSql = 'WHERE spu_id = ANY($1) AND is_active = true'
     if (!storeName) {
       skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
     }
-
-    const skuList = await pg.query(`
-      SELECT
-        sku_id,
-        workfine_item_id,
-        workfine_source,
-        product_type,
-        sku_display_name,
-        sort_order
+    allSkus = await pg.query(`
+      SELECT spu_id, sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
       FROM product_spu_sku_map
       ${skuFilterSql}
       ORDER BY sort_order ASC
-    `, skuParams)
+    `, [spuIds])
+  }
 
-    // 从 WorkFine 读取价格信息
-    const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
+  const allSkusWithPrice = await enrichSkuWithWorkfinePrice(allSkus)
 
-    result.push({
+  const skuBySpu = {}
+  for (const sku of allSkusWithPrice) {
+    if (!skuBySpu[sku.spu_id]) skuBySpu[sku.spu_id] = []
+    skuBySpu[sku.spu_id].push(sku)
+  }
+
+  return spuRows.map(spu => {
+    const skus = skuBySpu[spu.spu_id] || []
+    return {
       ...spu,
-      skuList: skuWithPrice,
-      // 价格起步(最小价格)
-      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null
-    })
+      skuList: skus,
+      priceFrom: skus.length > 0 ? Math.min(...skus.map(s => s.originalPrice || 0)) : null
+    }
+  })
+}
+
+/**
+ * SPU 列表
+ * PG 查询 SPU + WorkFine 实时读取 SKU 价格
+ * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品
+ */
+async function spuList(ctx) {
+  const { category, bigCategory, storeName } = ctx.event.payload || {}
+  const result = await getSpuListByCategory({ category, bigCategory, storeName })
+  ctx.result = { spuList: result }
+}
+
+/**
+ * Shop 页初始化接口（合并 categories + 第一个分类的 spuList）
+ * 一次云函数调用返回所有初始数据
+ */
+async function shopInit(ctx) {
+  const { storeName } = ctx.event.payload || {}
+
+  const categoriesList = await getCategoriesList(storeName)
+
+  let firstSpuList = []
+  if (categoriesList.length > 0) {
+    const firstCategory = categoriesList[0].category
+    firstSpuList = await getSpuListByCategory({ category: firstCategory, storeName })
   }
 
   ctx.result = {
-    spuList: result
+    categories: categoriesList,
+    spuList: firstSpuList
   }
 }
 
@@ -221,82 +218,106 @@ async function skuDetail(ctx) {
 /**
  * 从 WorkFine 批量读取 SKU 价格/次数信息
  * 按 workfine_source 分组，每组一次查询（最多 3 次远程查询）
+ * 带模块级缓存，TTL 5 分钟
  */
 async function enrichSkuWithWorkfinePrice(skuList) {
   if (skuList.length === 0) return []
 
-  // 按 workfine_source 分组
-  const groups = {}
-  for (const sku of skuList) {
-    const src = sku.workfine_source
-    if (!groups[src]) groups[src] = []
-    groups[src].push(sku)
-  }
+  const now = Date.now()
 
-  // 转义单引号防注入
-  const esc = (v) => String(v).replace(/'/g, "''")
-
-  // 按分组并发查询 WorkFine
+  // 分离缓存命中与未命中的 SKU
   const workfineMap = {} // item_id -> workfineData
-  const queries = []
+  const uncachedSkus = []
 
-  if (groups['UDT_M_1281']) {
-    const ids = groups['UDT_M_1281'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
-    queries.push(
-      mssql.query(`
-        SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
-               UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
-               UDF_M_17783 AS is_shengmei
-        FROM UDT_M_1281 WHERE UDF_M_14503 IN (${ids})
-      `).then(rows => {
-        for (const r of rows) {
-          workfineMap[r.item_id] = {
-            itemName: r.item_name, sessionCount: r.session_count,
-            originalPrice: r.original_price, isShengmei: r.is_shengmei
-          }
-        }
-      })
-    )
+  for (const sku of skuList) {
+    const cacheKey = `${sku.workfine_source}:${sku.workfine_item_id}`
+    const cached = priceCache.get(cacheKey)
+    if (cached && (now - cached.ts) < PRICE_CACHE_TTL) {
+      workfineMap[sku.workfine_item_id] = cached.data
+    } else {
+      uncachedSkus.push(sku)
+    }
   }
 
-  if (groups['UDT_M_1383']) {
-    const ids = groups['UDT_M_1383'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
-    queries.push(
-      mssql.query(`
-        SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
-               UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
-               UDF_M_17784 AS is_shengmei
-        FROM UDT_M_1383 WHERE UDF_M_14503 IN (${ids})
-      `).then(rows => {
-        for (const r of rows) {
-          workfineMap[r.item_id] = {
-            itemName: r.item_name, sessionCount: r.session_count,
-            originalPrice: r.original_price, isShengmei: r.is_shengmei
-          }
-        }
-      })
-    )
-  }
+  // 仅对未命中的 SKU 发起 MSSQL 查询
+  if (uncachedSkus.length > 0) {
+    // 按 workfine_source 分组
+    const groups = {}
+    for (const sku of uncachedSkus) {
+      const src = sku.workfine_source
+      if (!groups[src]) groups[src] = []
+      groups[src].push(sku)
+    }
 
-  if (groups['UDT_M_341']) {
-    const ids = groups['UDT_M_341'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
-    queries.push(
-      mssql.query(`
-        SELECT UDF_M_1870 AS item_id, UDF_M_1871 AS item_name,
-               UDF_M_1872 AS specification, UDF_M_1875 AS retail_price
-        FROM UDT_M_341 WHERE UDF_M_1870 IN (${ids})
-      `).then(rows => {
-        for (const r of rows) {
-          workfineMap[r.item_id] = {
-            itemName: r.item_name, specification: r.specification,
-            originalPrice: r.retail_price, sessionCount: null
-          }
-        }
-      })
-    )
-  }
+    // 转义单引号防注入
+    const esc = (v) => String(v).replace(/'/g, "''")
 
-  await Promise.all(queries)
+    const queries = []
+
+    if (groups['UDT_M_1281']) {
+      const ids = groups['UDT_M_1281'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+      queries.push(
+        mssql.query(`
+          SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
+                 UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
+                 UDF_M_17783 AS is_shengmei
+          FROM UDT_M_1281 WHERE UDF_M_14503 IN (${ids})
+        `).then(rows => {
+          for (const r of rows) {
+            const data = {
+              itemName: r.item_name, sessionCount: r.session_count,
+              originalPrice: r.original_price, isShengmei: r.is_shengmei
+            }
+            workfineMap[r.item_id] = data
+            priceCache.set(`UDT_M_1281:${r.item_id}`, { data, ts: now })
+          }
+        })
+      )
+    }
+
+    if (groups['UDT_M_1383']) {
+      const ids = groups['UDT_M_1383'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+      queries.push(
+        mssql.query(`
+          SELECT UDF_M_14503 AS item_id, UDF_M_14505 AS item_name,
+                 UDF_M_14506 AS session_count, UDF_M_14508 AS original_price,
+                 UDF_M_17784 AS is_shengmei
+          FROM UDT_M_1383 WHERE UDF_M_14503 IN (${ids})
+        `).then(rows => {
+          for (const r of rows) {
+            const data = {
+              itemName: r.item_name, sessionCount: r.session_count,
+              originalPrice: r.original_price, isShengmei: r.is_shengmei
+            }
+            workfineMap[r.item_id] = data
+            priceCache.set(`UDT_M_1383:${r.item_id}`, { data, ts: now })
+          }
+        })
+      )
+    }
+
+    if (groups['UDT_M_341']) {
+      const ids = groups['UDT_M_341'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+      queries.push(
+        mssql.query(`
+          SELECT UDF_M_1870 AS item_id, UDF_M_1871 AS item_name,
+                 UDF_M_1872 AS specification, UDF_M_1875 AS retail_price
+          FROM UDT_M_341 WHERE UDF_M_1870 IN (${ids})
+        `).then(rows => {
+          for (const r of rows) {
+            const data = {
+              itemName: r.item_name, specification: r.specification,
+              originalPrice: r.retail_price, sessionCount: null
+            }
+            workfineMap[r.item_id] = data
+            priceCache.set(`UDT_M_341:${r.item_id}`, { data, ts: now })
+          }
+        })
+      )
+    }
+
+    await Promise.all(queries)
+  }
 
   // 将 WorkFine 数据合并回 SKU 列表
   return skuList.map(sku => ({
@@ -337,29 +358,38 @@ async function hotList(ctx) {
     LIMIT $1
   `, [limit])
 
-  const result = []
-  for (const spu of spuListResult) {
-    let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
-    const skuParams = [spu.spu_id]
-
+  // 批量查询所有 SPU 的 SKU（消除 N+1）
+  const spuIds = spuListResult.map(s => s.spu_id)
+  let allSkus = []
+  if (spuIds.length > 0) {
+    let skuFilterSql = 'WHERE spu_id = ANY($1) AND is_active = true'
     if (!storeName) {
       skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
     }
-
-    const skuList = await pg.query(`
-      SELECT sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
+    allSkus = await pg.query(`
+      SELECT spu_id, sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
       FROM product_spu_sku_map
       ${skuFilterSql}
       ORDER BY sort_order ASC
-    `, skuParams)
-
-    const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
-
-    result.push({
-      ...spu,
-      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null
-    })
+    `, [spuIds])
   }
+
+  const allSkusWithPrice = await enrichSkuWithWorkfinePrice(allSkus)
+
+  // 按 spu_id 分组，只取 priceFrom
+  const skuBySpu = {}
+  for (const sku of allSkusWithPrice) {
+    if (!skuBySpu[sku.spu_id]) skuBySpu[sku.spu_id] = []
+    skuBySpu[sku.spu_id].push(sku)
+  }
+
+  const result = spuListResult.map(spu => {
+    const skus = skuBySpu[spu.spu_id] || []
+    return {
+      ...spu,
+      priceFrom: skus.length > 0 ? Math.min(...skus.map(s => s.originalPrice || 0)) : null
+    }
+  })
 
   ctx.result = { spuList: result }
 }
@@ -422,5 +452,6 @@ module.exports = {
   spuList,
   skuDetail,
   spuDetail,
-  hotList
+  hotList,
+  shopInit
 }

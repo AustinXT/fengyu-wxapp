@@ -270,6 +270,41 @@ async function list(ctx) {
     LIMIT 100
   `, params)
 
+  // 批量查询所有订单的明细项（含商品名称）
+  if (orders.length > 0) {
+    const orderNos = orders.map(o => o.order_no)
+    const placeholders = orderNos.map((_, i) => `$${i + 1}`).join(',')
+    const items = await pg.query(`
+      SELECT
+        oi.order_no,
+        oi.item_flow_no,
+        oi.quantity,
+        oi.remaining_sessions,
+        p.name AS spu_name,
+        m.sku_display_name,
+        m.product_type
+      FROM order_items oi
+      LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+      LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+      WHERE oi.order_no IN (${placeholders})
+      ORDER BY oi.item_flow_no
+    `, orderNos)
+
+    // 按订单号分组
+    const itemsMap = new Map()
+    for (const item of items) {
+      if (!itemsMap.has(item.order_no)) {
+        itemsMap.set(item.order_no, [])
+      }
+      itemsMap.get(item.order_no).push(item)
+    }
+
+    // 挂载到每个订单上
+    for (const order of orders) {
+      order.items = itemsMap.get(order.order_no) || []
+    }
+  }
+
   ctx.result = {
     orders
   }

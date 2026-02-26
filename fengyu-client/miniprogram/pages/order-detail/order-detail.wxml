@@ -22,6 +22,13 @@
       value="{{order.preferred_staff_name || '未指定'}}"
       wx:if="{{order.preferred_staff_wf_id}}"
     />
+    <van-cell title="购买产品" label=" ">
+      <view slot="right-icon" class="cell-products">
+        <view wx:for="{{order.items}}" wx:key="item_flow_no" class="cell-product-row">
+          <text>{{item.spu_name}} ×{{item.quantity}}</text>
+        </view>
+      </view>
+    </van-cell>
   </van-cell-group>
 
   <!-- 服务明细 -->
@@ -37,9 +44,10 @@
           <view class="order-item__info">
             <text class="oi-name">{{item.spu_name}}</text>
             <text class="oi-spec">{{item.sku_display_name}}</text>
+            <text class="oi-qty">×{{item.quantity}}</text>
           </view>
           <view class="order-item__right">
-            <text class="oi-price">¥{{item.unit_price}}</text>
+            <text class="oi-price">¥{{item.receivable}}</text>
             <view class="oi-sessions" wx:if="{{item.remaining_sessions !== null}}">
               <text class="oi-sessions-text">剩余 {{item.remaining_sessions}}/{{item.session_count}} 次</text>
             </view>

@@ -27,20 +27,24 @@ Page({
     cartCount: 0,
   },
 
+  // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
+  _spuCache: {} as Record<string, SpuItem[]>,
+
   onLoad() {
     const storeName = app.globalData.boundStoreName || '';
     this.setData({ boundStoreName: storeName });
-    this.loadCategories();
+    this.loadShopInit();
     this.updateCartCount();
   },
 
   onShow() {
     const storeName = app.globalData.boundStoreName || '';
     if (storeName !== this.data.boundStoreName) {
-      // 切换门店时清空购物车
+      // 切换门店时清空购物车和 SPU 缓存
       clearCart();
+      this._spuCache = {};
       this.setData({ boundStoreName: storeName, activeCategoryIndex: 0, spuList: [], cartCount: 0 });
-      this.loadCategories();
+      this.loadShopInit();
     } else {
       this.updateCartCount();
     }
@@ -91,42 +95,67 @@ Page({
     wx.navigateTo({ url: '/pages/cart/cart' });
   },
 
-  async loadCategories() {
+  // 使用 shopInit 合并接口一次性加载分类 + 第一个分类的 SPU 列表
+  async loadShopInit() {
     try {
       this.setData({ isLoading: true });
       const res = await wx.cloud.callFunction({
         name: 'clientApi',
         data: {
-          action: 'product.categories',
+          action: 'product.shopInit',
           payload: { storeName: this.data.boundStoreName },
         },
       }) as any;
+
       const categories: Category[] = res.result?.data?.categories || [];
+      const spuList: SpuItem[] = res.result?.data?.spuList || [];
+
       // 为每个分类添加唯一索引，避免重复名称导致 wx:key 警告
       const categoriesWithIndex = categories.map((c, i) => ({
         ...c,
         _index: i,
       }));
-      this.setData({ categories: categoriesWithIndex, activeCategoryIndex: 0 });
-      const first = categories[0]?.category;
-      if (first) this.loadSpuList(first);
+
+      const listWithPrice = spuList.map((spu: any) => ({
+        ...spu,
+        min_price: spu.priceFrom || '0',
+      }));
+
+      // 缓存第一个分类的 SPU 列表
+      if (categories.length > 0) {
+        this._spuCache[categories[0].category] = listWithPrice;
+      }
+
+      this.setData({
+        categories: categoriesWithIndex,
+        activeCategoryIndex: 0,
+        spuList: listWithPrice,
+      });
     } catch (err) {
-      console.error('loadCategories error:', err);
-      Toast.fail('加载分类失败');
+      console.error('loadShopInit error:', err);
+      Toast.fail('加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
-    console.log('onCategoryChange', e.detail);
     const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
     if (typeof index !== 'number') return;
     const { categories } = this.data;
     if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
-    this.setData({ activeCategoryIndex: index, spuList: [] });
+
     const category = index < categories.length ? categories[index].category : '院装产品';
-    console.log('Loading category:', index, category);
+
+    // 先查缓存：命中则直接替换，不清空不闪烁
+    const cached = this._spuCache[category];
+    if (cached) {
+      this.setData({ activeCategoryIndex: index, spuList: cached });
+      return;
+    }
+
+    // 未命中缓存：清空列表显示骨架屏，发起请求
+    this.setData({ activeCategoryIndex: index, spuList: [] });
     this.loadSpuList(category);
   },
 
@@ -141,11 +170,14 @@ Page({
         },
       }) as any;
       const spuList: SpuItem[] = res.result?.data?.spuList || [];
-      // 计算每个 SPU 的最低价
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
         min_price: spu.priceFrom || '0',
       }));
+
+      // 写入缓存
+      this._spuCache[category] = listWithPrice;
+
       this.setData({ spuList: listWithPrice });
     } catch (err) {
       console.error('loadSpuList error:', err);

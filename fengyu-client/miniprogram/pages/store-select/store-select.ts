@@ -6,7 +6,10 @@ const app = getApp<IAppOption>();
 interface Store {
   store_name: string;
   market: string;
+  market_name?: string;
   store_region?: string;
+  open_date?: string;
+  available_beds?: number;
 }
 
 interface StoreGroup {
@@ -49,8 +52,9 @@ Page({
       const data = await callClientApi('store.list');
       console.log('[loadStores] data:', JSON.stringify(data));
       const stores: Store[] = data?.stores || [];
-      // 兼容旧字段名
+      // 兼容字段名：API 返回 market_name，前端使用 market
       stores.forEach(s => {
+        (s as any).market = (s as any).market_name || '其他';
         (s as any).region = (s as any).store_region || '';
       });
       console.log('[loadStores] stores count:', stores.length);
@@ -88,18 +92,15 @@ Page({
     this.buildGroups(filtered);
   },
 
+  onShow() {
+    this.setData({ selectedStore: app.globalData.boundStoreName });
+  },
+
   async onStoreTap(e: WechatMiniprogram.TouchEvent) {
     const { storeName } = e.currentTarget.dataset as { storeName: string };
-    try {
-      await callClientApi('auth.bindStore', { storeName });
-      app.setStore(storeName);
-      this.setData({ selectedStore: storeName });
-      Toast.success('门店已切换');
-      setTimeout(() => wx.navigateBack(), 1200);
-    } catch (err: any) {
-      console.error('[onStoreTap] bindStore failed:', err);
-      Toast.fail('切换门店失败: ' + (err?.message || '未知错误'));
-    }
+    wx.navigateTo({
+      url: `/pages/store-detail/store-detail?storeName=${encodeURIComponent(storeName)}`
+    });
   },
 
   onShareAppMessage() {
