@@ -19,9 +19,9 @@
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag type="primary" wx:if="{{spu.big_category === '生美'}}">生美</van-tag>
+      <van-tag color="#722ED1" wx:if="{{spu.big_category === '促销方案'}}">促销方案</van-tag>
+      <van-tag type="primary" wx:elif="{{spu.big_category === '生美'}}">生美</van-tag>
       <van-tag color="#006D75" wx:elif="{{spu.big_category === '非生美'}}">非生美</van-tag>
-      <van-tag color="#722ED1" wx:elif="{{spu.big_category === '组合套餐'}}">组合套餐</van-tag>
       <van-tag color="#D46B08" wx:elif="{{spu.big_category === '院装产品'}}">院装产品</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>

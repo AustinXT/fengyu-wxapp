@@ -1,6 +1,6 @@
 import { pgEnum } from 'drizzle-orm/pg-core'
 
-export const bigCategoryEnum = pgEnum('big_category', ['生美', '非生美', '组合套餐', '院装产品'])
+export const bigCategoryEnum = pgEnum('big_category', ['促销方案', '生美', '非生美', '院装产品'])
 
 export const workfineSourceEnum = pgEnum('workfine_source', [
   'UDT_M_1281',
@@ -20,7 +20,7 @@ export const orderStatusEnum = pgEnum('order_status', [
   '已关闭',
 ])
 
-export const orderTypeEnum = pgEnum('order_type', ['正式', '体验'])
+export const orderTypeEnum = pgEnum('order_type', ['正式', '体验', '促销方案'])
 
 export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'offline'])
 

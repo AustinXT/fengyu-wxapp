@@ -1,0 +1,1 @@
+ALTER TYPE "public"."big_category" RENAME VALUE '组合套餐' TO '促销方案';

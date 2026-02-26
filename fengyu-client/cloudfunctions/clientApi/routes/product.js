@@ -28,18 +28,18 @@ async function getCategoriesList(storeName) {
   `
 
   if (!storeName) {
-    // 未绑定门店：生美/非生美只显示通用 SKU，院装产品只显示 UDT_M_341，组合套餐只显示 UDT_M_1460
+    // 未绑定门店：生美/非生美只显示通用 SKU，院装产品只显示 UDT_M_341，促销方案只显示 UDT_M_1460
     sql += `
       AND EXISTS (
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id
           AND m.is_active = true
           AND (
-            (p.big_category NOT IN ('院装产品', '组合套餐') AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
+            (p.big_category NOT IN ('院装产品', '促销方案') AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
             OR
             (p.big_category = '院装产品' AND m.workfine_source = 'UDT_M_341')
             OR
-            (p.big_category = '组合套餐' AND m.workfine_source = 'UDT_M_1460')
+            (p.big_category = '促销方案' AND m.workfine_source = 'UDT_M_1460')
           )
       )
     `
@@ -77,7 +77,7 @@ async function getSpuListByCategory({ category, bigCategory, storeName }) {
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id
           AND m.is_active = true
-          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
+          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')
       )
     `
   }
@@ -107,7 +107,7 @@ async function getSpuListByCategory({ category, bigCategory, storeName }) {
   if (spuIds.length > 0) {
     let skuFilterSql = 'WHERE spu_id = ANY($1) AND is_active = true'
     if (!storeName) {
-      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')`
     }
     allSkus = await pg.query(`
       SELECT spu_id, sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
@@ -213,7 +213,7 @@ async function skuDetail(ctx) {
 
 /**
  * 从 WorkFine 批量读取 SKU 价格/次数信息
- * 按 workfine_source 分组，每组一次查询（最多 3 次远程查询）
+ * 按 workfine_source 分组，每组一次查询（最多 4 次远程查询）
  * 带模块级缓存，TTL 5 分钟
  */
 async function enrichSkuWithWorkfinePrice(skuList) {
@@ -312,6 +312,27 @@ async function enrichSkuWithWorkfinePrice(skuList) {
       )
     }
 
+    if (groups['UDT_M_1460']) {
+      const ids = groups['UDT_M_1460'].map(s => `'${esc(s.workfine_item_id)}'`).join(',')
+      queries.push(
+        mssql.query(`
+          SELECT UDF_M_17163 AS item_id, UDF_M_17165 AS item_name,
+                 UDF_M_17167 AS session_count, UDF_M_17168 AS original_price,
+                 UDF_M_17171 AS promo_price
+          FROM UDT_M_1460 WHERE UDF_M_17163 IN (${ids})
+        `).then(rows => {
+          for (const r of rows) {
+            const data = {
+              itemName: r.item_name, sessionCount: r.session_count,
+              originalPrice: r.promo_price, listPrice: r.original_price
+            }
+            workfineMap[r.item_id] = data
+            priceCache.set(`UDT_M_1460:${r.item_id}`, { data, ts: now })
+          }
+        })
+      )
+    }
+
     await Promise.all(queries)
   }
 
@@ -329,7 +350,7 @@ async function enrichSkuWithWorkfinePrice(skuList) {
 async function hotList(ctx) {
   const { storeName, limit = 6 } = ctx.event.payload || {}
 
-  let whereClause = `WHERE p.big_category NOT IN ('院装产品', '组合套餐')
+  let whereClause = `WHERE p.big_category NOT IN ('院装产品', '促销方案')
     AND EXISTS (
       SELECT 1 FROM product_spu_sku_map m
       WHERE m.spu_id = p.spu_id AND m.is_active = true
@@ -421,7 +442,7 @@ async function spuDetail(ctx) {
   const skuParams = [spuId]
 
   if (!storeName) {
-    skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+    skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')`
   }
 
   const skuList = await pg.query(`
