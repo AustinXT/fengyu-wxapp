@@ -107,8 +107,12 @@ Page({
         },
       }) as any;
 
-      const categories: Category[] = res.result?.data?.categories || [];
-      const spuList: SpuItem[] = res.result?.data?.spuList || [];
+      if (res.result?.code !== 0) {
+        throw new Error(res.result?.message || '加载失败');
+      }
+
+      const categories: Category[] = res.result.data?.categories || [];
+      const spuList: SpuItem[] = res.result.data?.spuList || [];
 
       // 为每个分类添加唯一索引，避免重复名称导致 wx:key 警告
       const categoriesWithIndex = categories.map((c, i) => ({
@@ -131,9 +135,9 @@ Page({
         activeCategoryIndex: 0,
         spuList: listWithPrice,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('loadShopInit error:', err);
-      Toast.fail('加载失败');
+      Toast.fail(err?.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
@@ -169,7 +173,12 @@ Page({
           payload: { category, storeName: this.data.boundStoreName },
         },
       }) as any;
-      const spuList: SpuItem[] = res.result?.data?.spuList || [];
+
+      if (res.result?.code !== 0) {
+        throw new Error(res.result?.message || '加载商品失败');
+      }
+
+      const spuList: SpuItem[] = res.result.data?.spuList || [];
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
         min_price: spu.priceFrom || '0',
@@ -179,9 +188,9 @@ Page({
       this._spuCache[category] = listWithPrice;
 
       this.setData({ spuList: listWithPrice });
-    } catch (err) {
+    } catch (err: any) {
       console.error('loadSpuList error:', err);
-      Toast.fail('加载商品失败');
+      Toast.fail(err?.message || '加载商品失败');
     } finally {
       this.setData({ isLoading: false });
     }

@@ -11,7 +11,7 @@
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",
-      "installDependency": true
+      "installDependency": false
     }
   ]
 }

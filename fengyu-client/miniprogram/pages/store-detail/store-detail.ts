@@ -9,6 +9,8 @@ interface StoreInfo {
   store_region: string;
   open_date: string;
   available_beds: number;
+  staff_count: number;
+  customer_count: number;
 }
 
 async function callClientApi(action: string, payload: Record<string, any> = {}) {

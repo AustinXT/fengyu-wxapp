@@ -1,7 +1,7 @@
-node_modules
 *.md
 test_*.js
 test_cases.json
 scripts
 .env*
 .npmrc
+cloudbaserc.json
