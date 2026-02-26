@@ -43,6 +43,13 @@
       "when": 1772111063000,
       "tag": "0005_big_baron_zemo",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1772112160028,
+      "tag": "0006_narrow_nocturne",
+      "breakpoints": true
     }
   ]
 }

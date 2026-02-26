@@ -36,7 +36,7 @@ async function auth(ctx, next) {
 
   // 查询用户
   const users = await pg.query(
-    'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE openid = $1',
+    'SELECT user_id, phone, bound_store_name, bound_market_name FROM client_wechat_users WHERE openid = $1',
     [effectiveOpenid]
   )
 
@@ -45,14 +45,16 @@ async function auth(ctx, next) {
       isOpenid: true,
       userId: null,
       phone: null,
-      boundStoreName: null
+      boundStoreName: null,
+      boundMarketName: null
     }
   } else {
     ctx.auth = {
       isOpenid: true,
       userId: users[0].user_id,
       phone: users[0].phone,
-      boundStoreName: users[0].bound_store_name
+      boundStoreName: users[0].bound_store_name,
+      boundMarketName: users[0].bound_market_name
     }
   }
 

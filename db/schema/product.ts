@@ -52,6 +52,8 @@ export const productSpuSkuMap = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     /** SPU 展示状态由所有 SKU 的 is_active 派生 */
     isActive: boolean('is_active').notNull().default(true),
+    /** 市场限制：为 null 表示全国可见，有值则仅对应市场用户可见 */
+    marketRestriction: text('market_restriction'),
   },
   (table) => [unique('uq_spu_workfine').on(table.spuId, table.workfineItemId, table.workfineSource)],
 )

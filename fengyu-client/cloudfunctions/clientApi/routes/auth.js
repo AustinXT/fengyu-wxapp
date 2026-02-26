@@ -19,7 +19,7 @@ async function login(ctx) {
 
   // 检查用户是否存在
   const users = await pg.query(
-    'SELECT user_id, phone, bound_store_name, last_login_at FROM client_wechat_users WHERE openid = $1',
+    'SELECT user_id, phone, bound_store_name, bound_market_name, last_login_at FROM client_wechat_users WHERE openid = $1',
     [OPENID]
   )
 
@@ -38,7 +38,8 @@ async function login(ctx) {
       isNewUser: true,
       userId,
       phone: null,
-      boundStoreName: null
+      boundStoreName: null,
+      boundMarketName: null
     }
   } else {
     // 老用户,更新最后登录时间
@@ -51,7 +52,8 @@ async function login(ctx) {
       isNewUser: false,
       userId: users[0].user_id,
       phone: users[0].phone,
-      boundStoreName: users[0].bound_store_name
+      boundStoreName: users[0].bound_store_name,
+      boundMarketName: users[0].bound_market_name
     }
   }
 }
@@ -180,9 +182,9 @@ async function bindStore(ctx) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
 
-  // 验证门店是否存在(从 WorkFine UDT_M_219 查询)
+  // 验证门店是否存在(从 WorkFine UDT_M_219 查询)，同时获取市场名
   const storeCheck = await mssql.query(`
-    SELECT UDF_M_438 AS store_name
+    SELECT UDF_M_438 AS store_name, UDF_M_437 AS market_name
     FROM UDT_M_219
     WHERE UDF_M_438 = '${storeName.replace(/'/g, "''")}'
       AND (UDF_M_11956 IS NULL OR UDF_M_11956 != '是')
@@ -192,18 +194,23 @@ async function bindStore(ctx) {
     throw new Error('INVALID_PARAMS: 门店不存在或已停业')
   }
 
+  const marketName = storeCheck[0].market_name ? storeCheck[0].market_name.trim() : null
   const now = new Date()
 
-  // 更新绑定门店
+  // 更新绑定门店和市场名
   await pg.query(
-    'UPDATE client_wechat_users SET bound_store_name = $1, updated_at = $2 WHERE user_id = $3',
-    [storeName, now, users[0].user_id]
+    'UPDATE client_wechat_users SET bound_store_name = $1, bound_market_name = $2, updated_at = $3 WHERE user_id = $4',
+    [storeName, marketName, now, users[0].user_id]
   )
+
+  // 清除认证缓存，确保后续请求读到最新的 boundMarketName
+  invalidateAuthCache(OPENID)
 
   ctx.result = {
     success: true,
     userId: users[0].user_id,
-    boundStoreName: storeName
+    boundStoreName: storeName,
+    boundMarketName: marketName
   }
 }
 

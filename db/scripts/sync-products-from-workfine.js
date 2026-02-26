@@ -4,6 +4,7 @@
  * 数据源：
  * - UDT_M_1281: 全国可售项目
  * - UDT_M_1383: 门店自定义项目
+ * - UDT_M_1460: 促销方案（JOIN UDT_S_1459 取方案名和市场限制）
  * - UDT_M_341: 院装产品
  */
 
@@ -88,27 +89,51 @@ async function fetchWorkFineData(mssqlPool) {
         RTRIM(UDF_M_17783) AS big_category_raw,
         UDF_M_14506 AS session_count,
         UDF_M_14508 AS original_price,
-        RTRIM(UDF_M_14502) AS product_type_raw
+        RTRIM(UDF_M_14502) AS product_type_raw,
+        NULL AS plan_name,
+        NULL AS market_restriction
       FROM UDT_M_1281
       WHERE UDF_M_14508 > 0
         AND UDF_M_14503 IS NOT NULL
         AND UDF_M_14505 IS NOT NULL
     `,
 
-    // UDT_M_1383: 门店自定义项目
+    // UDT_M_1383: 门店自定义项目（JOIN UDT_S_1382 取市场限制）
     'UDT_M_1383': `
       SELECT
-        RTRIM(UDF_M_14503) AS workfine_item_id,
-        RTRIM(UDF_M_14505) AS name,
-        RTRIM(UDF_M_14504) AS category,
-        RTRIM(UDF_M_17784) AS big_category_raw,
-        UDF_M_14506 AS session_count,
-        UDF_M_14508 AS original_price,
-        RTRIM(UDF_M_14502) AS product_type_raw
-      FROM UDT_M_1383
-      WHERE UDF_M_17415 = '是'
-        AND UDF_M_14503 IS NOT NULL
-        AND UDF_M_14505 IS NOT NULL
+        RTRIM(m.UDF_M_14503) AS workfine_item_id,
+        RTRIM(m.UDF_M_14505) AS name,
+        RTRIM(m.UDF_M_14504) AS category,
+        RTRIM(m.UDF_M_17784) AS big_category_raw,
+        m.UDF_M_14506 AS session_count,
+        m.UDF_M_14508 AS original_price,
+        RTRIM(m.UDF_M_14502) AS product_type_raw,
+        NULL AS plan_name,
+        RTRIM(s.UDF_S_15997) AS market_restriction
+      FROM UDT_M_1383 m
+      INNER JOIN UDT_S_1382 s ON m.RID = s.RID
+      WHERE m.UDF_M_17415 = '是'
+        AND m.UDF_M_14503 IS NOT NULL
+        AND m.UDF_M_14505 IS NOT NULL
+    `,
+
+    // UDT_M_1460: 促销方案（JOIN UDT_S_1459 取方案名和市场限制）
+    'UDT_M_1460': `
+      SELECT
+        RTRIM(m.UDF_M_17163) AS workfine_item_id,
+        RTRIM(m.UDF_M_17165) AS name,
+        RTRIM(ISNULL(s.UDF_S_17175, '')) AS plan_name,
+        RTRIM(m.UDF_M_17164) AS category_raw,
+        m.UDF_M_17167 AS session_count,
+        m.UDF_M_17168 AS original_price,
+        RTRIM(m.UDF_M_17162) AS product_type_raw,
+        RTRIM(s.UDF_S_17793) AS market_restriction
+      FROM UDT_M_1460 m
+      INNER JOIN UDT_S_1459 s ON m.RID = s.RID
+      WHERE m.UDF_M_17163 IS NOT NULL
+        AND m.UDF_M_17165 IS NOT NULL
+        AND (s.UDF_S_17157 IS NULL OR s.UDF_S_17157 <= GETDATE())
+        AND (s.UDF_S_17158 IS NULL OR s.UDF_S_17158 >= GETDATE())
     `,
 
     // UDT_M_341: 院装产品
@@ -120,7 +145,9 @@ async function fetchWorkFineData(mssqlPool) {
         NULL AS big_category_raw,
         NULL AS session_count,
         UDF_M_1875 AS original_price,
-        NULL AS product_type_raw
+        NULL AS product_type_raw,
+        NULL AS plan_name,
+        NULL AS market_restriction
       FROM UDT_M_341
       WHERE UDF_M_7494 = '是'
         AND UDF_M_1870 IS NOT NULL
@@ -151,18 +178,37 @@ function transformData(workFineData) {
 
   for (const [source, records] of Object.entries(workFineData)) {
     for (const record of records) {
-      const { workfine_item_id, name, category, big_category_raw, session_count, product_type_raw } = record
+      const { workfine_item_id, name, category, big_category_raw, session_count, product_type_raw, plan_name, market_restriction } = record
+
+      // 确定分类和大分类
+      let spuCategory, spuBigCategory, spuMarketRestriction
+
+      if (source === 'UDT_M_1460') {
+        // 促销方案：category 用方案名（plan_name），无方案名归入"其他"
+        spuCategory = (plan_name && plan_name.trim()) ? plan_name.trim() : '其他'
+        spuBigCategory = '促销方案'
+        spuMarketRestriction = (market_restriction && market_restriction.trim()) || null
+      } else if (source === 'UDT_M_1383') {
+        spuCategory = category
+        spuBigCategory = mapBigCategory(big_category_raw, source)
+        spuMarketRestriction = (market_restriction && market_restriction.trim()) || null
+      } else {
+        // UDT_M_1281 / UDT_M_341：无市场限制
+        spuCategory = category
+        spuBigCategory = mapBigCategory(big_category_raw, source)
+        spuMarketRestriction = null
+      }
 
       // 生成 SPU ID (基于名称和分类去重)
-      const spuId = generateId(name, category)
+      const spuId = generateId(name, spuCategory)
 
       // 如果 SPU 不存在，创建它
       if (!spuMap.has(spuId)) {
         spuMap.set(spuId, {
           spu_id: spuId,
           name: name,
-          category: category,
-          big_category: mapBigCategory(big_category_raw, source),
+          category: spuCategory,
+          big_category: spuBigCategory,
           cover_image: null,
           description: null,
           sort_order: 0
@@ -181,7 +227,8 @@ function transformData(workFineData) {
         product_type: productType,
         sku_display_name: skuDisplayName,
         sort_order: 0,
-        is_active: true
+        is_active: true,
+        market_restriction: spuMarketRestriction
       })
     }
   }
@@ -230,18 +277,19 @@ async function syncToPostgreSQL(pgPool, spuList, skuList, dryRun = false) {
     let skuInserted = 0
     for (const sku of skuList) {
       if (dryRun) {
-        console.log(`[DRY-RUN] SKU: ${sku.sku_display_name} -> ${sku.workfine_item_id} (${sku.workfine_source})`)
+        console.log(`[DRY-RUN] SKU: ${sku.sku_display_name} -> ${sku.workfine_item_id} (${sku.workfine_source}) market=${sku.market_restriction || 'null'}`)
       } else {
         await client.query(
           `INSERT INTO product_spu_sku_map
-           (sku_id, spu_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order, is_active)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           (sku_id, spu_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order, is_active, market_restriction)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (sku_id) DO UPDATE SET
              workfine_item_id = EXCLUDED.workfine_item_id,
              workfine_source = EXCLUDED.workfine_source,
              product_type = EXCLUDED.product_type,
-             sku_display_name = EXCLUDED.sku_display_name`,
-          [sku.sku_id, sku.spu_id, sku.workfine_item_id, sku.workfine_source, sku.product_type, sku.sku_display_name, sku.sort_order, sku.is_active]
+             sku_display_name = EXCLUDED.sku_display_name,
+             market_restriction = EXCLUDED.market_restriction`,
+          [sku.sku_id, sku.spu_id, sku.workfine_item_id, sku.workfine_source, sku.product_type, sku.sku_display_name, sku.sort_order, sku.is_active, sku.market_restriction]
         )
       }
       skuInserted++

@@ -5,6 +5,7 @@ App<IAppOption>({
     userId: '' as string,
     boundStoreName: '' as string,
     boundStoreId: '' as string,
+    boundMarketName: '' as string,
   },
 
   onLaunch() {
@@ -18,11 +19,15 @@ App<IAppOption>({
   restoreFromCache() {
     const userId = wx.getStorageSync('userId');
     const boundStoreName = wx.getStorageSync('boundStoreName');
+    const boundMarketName = wx.getStorageSync('boundMarketName');
     if (userId) {
       this.globalData.userId = userId;
     }
     if (boundStoreName) {
       this.globalData.boundStoreName = boundStoreName;
+    }
+    if (boundMarketName) {
+      this.globalData.boundMarketName = boundMarketName;
     }
   },
 
@@ -33,7 +38,7 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { userId, phone, boundStoreName } = res.result.data;
+        const { userId, phone, boundStoreName, boundMarketName } = res.result.data;
         if (userId) {
           this.globalData.userId = userId;
           wx.setStorageSync('userId', userId);
@@ -45,6 +50,11 @@ App<IAppOption>({
         if (boundStoreName) {
           this.globalData.boundStoreName = boundStoreName;
           wx.setStorageSync('boundStoreName', boundStoreName);
+        }
+        // 同步市场名
+        if (boundMarketName) {
+          this.globalData.boundMarketName = boundMarketName;
+          wx.setStorageSync('boundMarketName', boundMarketName);
         }
       }
     } catch (err) {
@@ -61,8 +71,12 @@ App<IAppOption>({
     }
   },
 
-  setStore(storeName: string) {
+  setStore(storeName: string, marketName?: string) {
     this.globalData.boundStoreName = storeName;
     wx.setStorageSync('boundStoreName', storeName);
+    if (marketName !== undefined) {
+      this.globalData.boundMarketName = marketName;
+      wx.setStorageSync('boundMarketName', marketName);
+    }
   },
 });

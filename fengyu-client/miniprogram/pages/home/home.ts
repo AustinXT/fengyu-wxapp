@@ -95,7 +95,7 @@ Page({
         name: 'clientApi',
         data: {
           action: 'product.hotList',
-          payload: { storeName: this.data.boundStoreName, limit: 6 },
+          payload: { limit: 6 },
         },
       }) as any;
       const hotList: HotItem[] = res.result?.data?.spuList || [];

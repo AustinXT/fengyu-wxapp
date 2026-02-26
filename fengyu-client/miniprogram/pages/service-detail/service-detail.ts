@@ -72,8 +72,7 @@ Page({
 
   async loadDetail(spuId: string) {
     try {
-      const storeName = app.globalData.boundStoreName || '';
-      const data = await callClientApi('product.spuDetail', { spuId, storeName });
+      const data = await callClientApi('product.spuDetail', { spuId });
       const spu = data?.spu;
 
       if (!spu) {

@@ -13,9 +13,22 @@ const priceCache = new Map()
 
 /**
  * 内部函数：获取分类列表（合并为一条 SQL）
+ * @param {string|null} marketName - 用户绑定市场名，用于 market_restriction 过滤
  */
-async function getCategoriesList(storeName) {
-  let sql = `
+async function getCategoriesList(marketName) {
+  const params = []
+  let marketFilter
+
+  if (marketName) {
+    // 有市场名：显示无限制 + 对应市场的项目
+    params.push(marketName)
+    marketFilter = `AND (m.market_restriction IS NULL OR m.market_restriction = $${params.length})`
+  } else {
+    // 无市场名：仅显示无限制的项目
+    marketFilter = 'AND m.market_restriction IS NULL'
+  }
+
+  const sql = `
     SELECT
       p.category,
       p.big_category,
@@ -24,63 +37,44 @@ async function getCategoriesList(storeName) {
     WHERE EXISTS (
       SELECT 1 FROM product_spu_sku_map m
       WHERE m.spu_id = p.spu_id AND m.is_active = true
+      ${marketFilter}
     )
-  `
-
-  if (!storeName) {
-    // 未绑定门店：生美/非生美只显示通用 SKU，院装产品只显示 UDT_M_341，促销方案只显示 UDT_M_1460
-    sql += `
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id
-          AND m.is_active = true
-          AND (
-            (p.big_category NOT IN ('院装产品', '促销方案') AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341'))
-            OR
-            (p.big_category = '院装产品' AND m.workfine_source = 'UDT_M_341')
-            OR
-            (p.big_category = '促销方案' AND m.workfine_source = 'UDT_M_1460')
-          )
-      )
-    `
-  }
-
-  sql += `
     GROUP BY p.category, p.big_category
     ORDER BY MIN(p.sort_order) ASC
   `
 
-  return pg.query(sql)
+  return pg.query(sql, params)
 }
 
 /**
  * 品项分类列表
  * 从 product_spu 动态派生,仅显示含有效 SKU 的分类
- * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品分类
+ * 使用 auth 上下文中的 boundMarketName 做市场限制过滤
  */
 async function categories(ctx) {
-  const { storeName } = ctx.event.payload || {}
-  const categoriesList = await getCategoriesList(storeName)
+  const marketName = ctx.auth?.boundMarketName || null
+  const categoriesList = await getCategoriesList(marketName)
   ctx.result = { categories: categoriesList }
 }
 
 /**
  * 内部函数：按分类获取 SPU 列表（含 SKU 价格）
+ * @param {string|null} marketName - 用户绑定市场名，用于 market_restriction 过滤
  */
-async function getSpuListByCategory({ category, bigCategory, storeName }) {
-  let whereClause = 'WHERE EXISTS (SELECT 1 FROM product_spu_sku_map m WHERE m.spu_id = p.spu_id AND m.is_active = true)'
+async function getSpuListByCategory({ category, bigCategory, marketName }) {
   const params = []
 
-  if (!storeName) {
-    whereClause += `
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id
-          AND m.is_active = true
-          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')
-      )
-    `
+  // 构建 market_restriction 过滤条件
+  if (marketName) {
+    params.push(marketName)
   }
+  const marketParamIndex = params.length // marketName 参数位置（若有）
+
+  let whereClause = `WHERE EXISTS (
+    SELECT 1 FROM product_spu_sku_map m
+    WHERE m.spu_id = p.spu_id AND m.is_active = true
+    AND (m.market_restriction IS NULL${marketName ? ` OR m.market_restriction = $${marketParamIndex}` : ''})
+  )`
 
   if (category) {
     params.push(category)
@@ -101,20 +95,24 @@ async function getSpuListByCategory({ category, bigCategory, storeName }) {
     ORDER BY p.sort_order ASC
   `, params)
 
-  // 批量查询所有 SPU 的 SKU（消除 N+1）
+  // 批量查询所有 SPU 的 SKU（消除 N+1），附加 market_restriction 过滤
   const spuIds = spuRows.map(s => s.spu_id)
   let allSkus = []
   if (spuIds.length > 0) {
+    const skuParams = [spuIds]
     let skuFilterSql = 'WHERE spu_id = ANY($1) AND is_active = true'
-    if (!storeName) {
-      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')`
+    if (marketName) {
+      skuParams.push(marketName)
+      skuFilterSql += ` AND (market_restriction IS NULL OR market_restriction = $${skuParams.length})`
+    } else {
+      skuFilterSql += ' AND market_restriction IS NULL'
     }
     allSkus = await pg.query(`
       SELECT spu_id, sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
       FROM product_spu_sku_map
       ${skuFilterSql}
       ORDER BY sort_order ASC
-    `, [spuIds])
+    `, skuParams)
   }
 
   const allSkusWithPrice = await enrichSkuWithWorkfinePrice(allSkus)
@@ -138,11 +136,12 @@ async function getSpuListByCategory({ category, bigCategory, storeName }) {
 /**
  * SPU 列表
  * PG 查询 SPU + WorkFine 实时读取 SKU 价格
- * @param {string} storeName - 门店名称（可选），未绑定时只显示通用产品
+ * 使用 auth 上下文中的 boundMarketName 做市场限制过滤
  */
 async function spuList(ctx) {
-  const { category, bigCategory, storeName } = ctx.event.payload || {}
-  const result = await getSpuListByCategory({ category, bigCategory, storeName })
+  const { category, bigCategory } = ctx.event.payload || {}
+  const marketName = ctx.auth?.boundMarketName || null
+  const result = await getSpuListByCategory({ category, bigCategory, marketName })
   ctx.result = { spuList: result }
 }
 
@@ -151,14 +150,14 @@ async function spuList(ctx) {
  * 一次云函数调用返回所有初始数据
  */
 async function shopInit(ctx) {
-  const { storeName } = ctx.event.payload || {}
+  const marketName = ctx.auth?.boundMarketName || null
 
-  const categoriesList = await getCategoriesList(storeName)
+  const categoriesList = await getCategoriesList(marketName)
 
   let firstSpuList = []
   if (categoriesList.length > 0) {
     const firstCategory = categoriesList[0].category
-    firstSpuList = await getSpuListByCategory({ category: firstCategory, storeName })
+    firstSpuList = await getSpuListByCategory({ category: firstCategory, marketName })
   }
 
   ctx.result = {
@@ -348,47 +347,49 @@ async function enrichSkuWithWorkfinePrice(skuList) {
  * 返回 sort_order 最小的 N 个 SPU（排除院装产品）
  */
 async function hotList(ctx) {
-  const { storeName, limit = 6 } = ctx.event.payload || {}
+  const { limit = 6 } = ctx.event.payload || {}
+  const marketName = ctx.auth?.boundMarketName || null
 
-  let whereClause = `WHERE p.big_category NOT IN ('院装产品', '促销方案')
-    AND EXISTS (
-      SELECT 1 FROM product_spu_sku_map m
-      WHERE m.spu_id = p.spu_id AND m.is_active = true
-    )`
-
-  if (!storeName) {
-    whereClause += `
-      AND EXISTS (
-        SELECT 1 FROM product_spu_sku_map m
-        WHERE m.spu_id = p.spu_id
-          AND m.is_active = true
-          AND m.workfine_source IN ('UDT_M_1281', 'UDT_M_341')
-      )
-    `
+  const params = [limit]
+  let marketFilter
+  if (marketName) {
+    params.push(marketName)
+    marketFilter = `AND (m.market_restriction IS NULL OR m.market_restriction = $${params.length})`
+  } else {
+    marketFilter = 'AND m.market_restriction IS NULL'
   }
 
   const spuListResult = await pg.query(`
     SELECT p.spu_id, p.name, p.category, p.big_category, p.cover_image, p.sort_order
     FROM product_spu p
-    ${whereClause}
+    WHERE p.big_category NOT IN ('院装产品', '促销方案')
+      AND EXISTS (
+        SELECT 1 FROM product_spu_sku_map m
+        WHERE m.spu_id = p.spu_id AND m.is_active = true
+        ${marketFilter}
+      )
     ORDER BY p.sort_order ASC
     LIMIT $1
-  `, [limit])
+  `, params)
 
   // 批量查询所有 SPU 的 SKU（消除 N+1）
   const spuIds = spuListResult.map(s => s.spu_id)
   let allSkus = []
   if (spuIds.length > 0) {
+    const skuParams = [spuIds]
     let skuFilterSql = 'WHERE spu_id = ANY($1) AND is_active = true'
-    if (!storeName) {
-      skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_341')`
+    if (marketName) {
+      skuParams.push(marketName)
+      skuFilterSql += ` AND (market_restriction IS NULL OR market_restriction = $${skuParams.length})`
+    } else {
+      skuFilterSql += ' AND market_restriction IS NULL'
     }
     allSkus = await pg.query(`
       SELECT spu_id, sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
       FROM product_spu_sku_map
       ${skuFilterSql}
       ORDER BY sort_order ASC
-    `, [spuIds])
+    `, skuParams)
   }
 
   const allSkusWithPrice = await enrichSkuWithWorkfinePrice(allSkus)
@@ -414,11 +415,11 @@ async function hotList(ctx) {
 /**
  * SPU 详情（含 SKU 列表）
  * 根据 spuId 查询单个 SPU 及其 SKU 价格信息
- * @param {string} spuId - SPU ID
- * @param {string} storeName - 门店名称（可选）
+ * 使用 auth 上下文中的 boundMarketName 做市场限制过滤
  */
 async function spuDetail(ctx) {
-  const { spuId, storeName } = ctx.event.payload || {}
+  const { spuId } = ctx.event.payload || {}
+  const marketName = ctx.auth?.boundMarketName || null
 
   if (!spuId) {
     throw new Error('INVALID_PARAMS: 缺少 spuId 参数')
@@ -437,12 +438,15 @@ async function spuDetail(ctx) {
 
   const spu = spuRows[0]
 
-  // 查询该 SPU 的 SKU 列表
-  let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
+  // 查询该 SPU 的 SKU 列表，附加 market_restriction 过滤
   const skuParams = [spuId]
+  let skuFilterSql = 'WHERE spu_id = $1 AND is_active = true'
 
-  if (!storeName) {
-    skuFilterSql += ` AND workfine_source IN ('UDT_M_1281', 'UDT_M_1460', 'UDT_M_341')`
+  if (marketName) {
+    skuParams.push(marketName)
+    skuFilterSql += ` AND (market_restriction IS NULL OR market_restriction = $${skuParams.length})`
+  } else {
+    skuFilterSql += ' AND market_restriction IS NULL'
   }
 
   const skuList = await pg.query(`

@@ -111,7 +111,7 @@ Page({
         name: 'clientApi',
         data: {
           action: 'product.shopInit',
-          payload: { storeName: this.data.boundStoreName },
+          payload: {},
         },
       }) as any;
 
@@ -219,7 +219,7 @@ Page({
         name: 'clientApi',
         data: {
           action: 'product.spuList',
-          payload: { category, storeName: this.data.boundStoreName },
+          payload: { category },
         },
       }) as any;
 

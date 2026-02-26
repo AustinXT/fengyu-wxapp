@@ -1,0 +1,1 @@
+ALTER TABLE "product_spu_sku_map" ADD COLUMN "market_restriction" text;

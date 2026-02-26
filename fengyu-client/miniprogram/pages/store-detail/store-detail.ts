@@ -62,8 +62,8 @@ Page({
     if (this.data.isCurrent) return;
     const storeName = this.data.storeName;
     try {
-      await callClientApi('auth.bindStore', { storeName });
-      app.setStore(storeName);
+      const data = await callClientApi('auth.bindStore', { storeName });
+      app.setStore(storeName, data?.boundMarketName || '');
       this.setData({ isCurrent: true });
       Toast.success('门店已切换');
       setTimeout(() => wx.navigateBack(), 1200);
