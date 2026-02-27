@@ -22,6 +22,11 @@ const PAY_TYPE_LABEL: Record<string, string> = {
   offline: '线下收款',
 };
 
+const ORDER_SOURCE_LABEL: Record<string, string> = {
+  client: '顾客下单',
+  staff: '员工开单',
+};
+
 Page({
   data: {
     loading: false,
@@ -62,15 +67,19 @@ Page({
         order: {
           orderNo: o.order_no,
           status: o.status,
+          storeName: o.store_name || '',
           orderType: o.order_type,
           orderTypeLabel: ORDER_TYPE_LABEL[o.order_type] || o.order_type,
+          orderSourceLabel: ORDER_SOURCE_LABEL[o.order_source] || o.order_source || '—',
           payType: o.payment_method,
           payTypeLabel: PAY_TYPE_LABEL[o.payment_method] || o.payment_method || '—',
           customerName: o.customer_name || '',
           customerPhone: o.client_phone || '',
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
+          preferredStaffName: o.preferred_staff_name || '',
           createdByName: o.opened_by || '—',
           confirmedBy: o.offline_confirmed_by,
+          confirmedAt: o.offline_confirmed_at,
           createdAt: o.created_at,
           paidAt: o.paid_at,
           totalAmount: o.totalAmount || o.total_amount,

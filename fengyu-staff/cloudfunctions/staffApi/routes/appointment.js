@@ -7,7 +7,47 @@
  */
 
 const pg = require('../db/pg')
+const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
+
+/**
+ * 格式化时间为北京时间可读格式：M月D日 HH:mm
+ */
+function formatDateTime(date) {
+  if (!date) return ''
+  const d = new Date(date)
+  if (isNaN(d.getTime())) return String(date)
+  const offset = 8 * 60 * 60 * 1000
+  const beijing = new Date(d.getTime() + offset)
+  const m = beijing.getUTCMonth() + 1
+  const day = beijing.getUTCDate()
+  const h = String(beijing.getUTCHours()).padStart(2, '0')
+  const min = String(beijing.getUTCMinutes()).padStart(2, '0')
+  return `${m}月${day}日 ${h}:${min}`
+}
+
+/**
+ * 批量查询 WorkFine 顾客姓名（按手机号）
+ */
+async function batchLookupCustomerNames(phones) {
+  if (!phones || phones.length === 0) return {}
+  try {
+    const esc = v => String(v).replace(/'/g, "''")
+    const inClause = phones.map(p => `'${esc(p)}'`).join(',')
+    const rows = await mssql.query(`
+      SELECT UDF_S_1476 AS name, UDF_S_1478 AS phone
+      FROM UDT_S_311
+      WHERE UDF_S_1478 IN (${inClause})
+    `)
+    const map = {}
+    for (const r of rows) {
+      if (r.name && r.phone) map[r.phone.trim()] = r.name.trim()
+    }
+    return map
+  } catch (_) {
+    return {}
+  }
+}
 
 // 预约状态映射：中文 → 英文（前端使用英文状态键）
 const STATUS_CN_TO_EN = {
@@ -93,13 +133,17 @@ async function list(ctx) {
     LIMIT $2 OFFSET $3
   `, params)
 
+  // 批量查询 WorkFine 顾客真实姓名
+  const phones = [...new Set(appointments.map(a => a.customer_phone).filter(Boolean))]
+  const phoneToName = await batchLookupCustomerNames(phones)
+
   ctx.result = appointments.map(a => ({
     id: a.appointment_id,
-    customerName: a.customer_name,
+    customerName: phoneToName[a.customer_phone] || a.customer_name,
     customerPhone: a.customer_phone || '',
     clientUserId: a.client_user_id,
     staffName: a.staff_name,
-    appointmentTime: a.appointment_time,
+    appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
     serviceItemName: a.service_name || a.sku_display_name || '',
@@ -151,13 +195,17 @@ async function detail(ctx) {
 
   const a = appointments[0]
 
+  // 查询 WorkFine 顾客真实姓名
+  const phone = a.customer_phone || ''
+  const phoneToName = await batchLookupCustomerNames(phone ? [phone] : [])
+
   ctx.result = {
     id: a.appointment_id,
-    customerName: a.customer_name,
-    customerPhone: a.customer_phone || '',
+    customerName: phoneToName[phone] || a.customer_name,
+    customerPhone: phone,
     clientUserId: a.client_user_id,
     staffName: a.staff_name,
-    appointmentTime: a.appointment_time,
+    appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
     serviceItemName: a.service_name || a.sku_display_name || '',

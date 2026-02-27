@@ -542,6 +542,17 @@ async function detail(ctx) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
+  // 解析指定美容师姓名
+  if (order.preferred_staff_wf_id) {
+    const pool = await mssql.getPool()
+    const staffResult = await pool.request()
+      .input('id', order.preferred_staff_wf_id)
+      .query(`SELECT UDF_S_1155 AS name FROM UDT_S_287 WHERE UDF_S_1147 = @id`)
+    if (staffResult.recordset.length > 0) {
+      order.preferred_staff_name = (staffResult.recordset[0].name || '').trim()
+    }
+  }
+
   const items = await pg.query(`
     SELECT
       oi.item_flow_no, oi.sku_id, oi.session_count, oi.remaining_sessions,
