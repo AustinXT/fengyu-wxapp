@@ -4,10 +4,10 @@ description: >
   用于编写微信小程序 Page/Component、开发 CloudBase 云函数（Action 路由）、
   集成微信认证与错误处理。适用于所有编码实现任务，不含 UI 设计和 Schema 设计。
 metadata:
-  title: 微信小程序编码规范
   description_zh: 微信小程序 Page/Component 开发规范、CloudBase 云函数 Action 路由模板、TypeScript 规范、认证集成与错误处理
-  version: 1.0.0
+  version: 1.0.2
   author: nvoyager
+  title: 微信小程序编码规范
 ---
 
 ## 如何使用此技能

@@ -7,9 +7,8 @@ description: >-
   isolation, and icon resource management. Invoke when building, reviewing, or
   refactoring any miniprogram page or component.
 metadata:
-  title: 微信小程序 UI 设计
   author: nvoyager
-  version: 1.0.0
+  version: 1.0.2
   description_zh: 微信小程序原生 UI 设计与实现指南，覆盖设计思维、750rpx 布局、WXSS 规范、Vant Weapp 集成、组件模式与图标资源管理。
 ---
 

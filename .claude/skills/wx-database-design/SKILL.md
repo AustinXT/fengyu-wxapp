@@ -7,9 +7,9 @@ description: |
   Use when designing database schemas, writing queries, or managing migrations.
   当用户需要设计表结构、编写数据库查询、配置安全规则、执行数据迁移时激活。
 metadata:
-  title: 微信小程序数据库设计
   author: nvoyager
-  version: 1.0.0
+  title: 微信小程序数据库设计
+  version: 1.0.2
   description_zh: 微信小程序三种数据库选型与操作指南
 ---
 

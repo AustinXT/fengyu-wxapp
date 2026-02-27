@@ -1,5 +1,5 @@
 ---
-name: implement-feature
+name: wx-implement-feature
 description: |
   适用于全栈功能开发工作流。从项目需求文档出发，依次完成数据库设计、
   Schema 迁移、云函数 API 开发、小程序前端页面实现、部署验证的完整链路。
@@ -8,8 +8,8 @@ argument-hint: '[功能名称或需求描述]'
 user-invocable: true
 metadata:
   author: nvoyager
-  version: 2.0.0
-  title: 全栈功能开发
+  title: 微信小程序全栈功能开发
+  version: 1.0.1
   description_zh: 从需求到上线的全栈功能开发工作流
 ---
 

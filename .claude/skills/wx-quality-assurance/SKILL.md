@@ -5,9 +5,9 @@ description: |
   部署验证、开发者工具调试、性能优化与安全测试清单。
   当用户进行测试编写、质量检查、性能优化、安全审查时使用。
 metadata:
-  title: 微信小程序质量保障
   author: nvoyager
-  version: 1.0.0
+  title: 微信小程序质量保障
+  version: 1.0.2
   description_zh: 微信小程序 + CloudBase 项目的测试、调试、性能和安全质量保障指南
 ---
 

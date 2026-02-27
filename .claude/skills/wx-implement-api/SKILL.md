@@ -1,5 +1,5 @@
 ---
-name: implement-api
+name: wx-implement-api
 description: |
   适用于后端 API 全流程开发工作流。从需求文档出发，完成 Drizzle Schema 设计、
   数据库迁移、云函数路由开发、PG 查询编写、部署与 invokeFunction 验证。
@@ -8,8 +8,8 @@ argument-hint: '[API 名称或功能描述]'
 user-invocable: true
 metadata:
   author: nvoyager
-  version: 2.0.0
-  title: 后端 API 全流程
+  title: 微信小程序后端 API 全流程
+  version: 1.0.1
   description_zh: 从 Schema 设计到部署验证的后端 API 完整开发工作流
 ---
 

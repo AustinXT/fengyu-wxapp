@@ -8,7 +8,7 @@ argument-hint: '[数据范围：minimal/standard/full]'
 user-invocable: true
 metadata:
   author: nvoyager
-  version: 2.0.0
+  version: 1.0.0
   title: 测试数据初始化
   description_zh: 基于 Drizzle Schema 的标准化测试数据初始化工作流
 ---

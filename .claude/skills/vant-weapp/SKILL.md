@@ -6,8 +6,8 @@ description: >
   组件开发小程序页面时激活。 请勿用于纯逻辑/后端开发（请使用 wx-coding 技能）。
 metadata:
   author: nvoyager
-  version: 1.0.0
   title: Vant Weapp 模式驱动实战指南
+  version: 1.0.2
   description_zh: Vant Weapp 微信小程序 UI 组件库复合模式指南，涵盖 Popup 选择器、Tab 列表、事件类型速查与常见陷阱。
 triggers:
   keywords:

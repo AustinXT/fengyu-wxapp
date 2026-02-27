@@ -1,16 +1,22 @@
 ---
 name: cloudbase-deploy
-description: |
-  Deploys CloudBase cloud functions using the cloudbase-mcp MCP server (preferred),
+description: >
+  Deploys CloudBase cloud functions using the cloudbase-mcp MCP server
+  (preferred),
+
   or tcb CLI as fallback when MCP is unavailable.
+
   Use when user says "部署云函数", "重新上传云函数", "部署 cloudfunctions", "部署到云服务",
+
   "使用 MCP 部署", "tcb 部署", or requests deploying / redeploying any cloud function.
-  Also use for updating cloud function environment variables or invoking a function action to verify.
+
+  Also use for updating cloud function environment variables or invoking a
+  function action to verify.
 alwaysApply: false
 metadata:
   author: nvoyager
-  version: 1.1.0
   title: CloudBase 云函数部署
+  version: 1.0.1
   description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数（首选），MCP 不可用时回退到 tcb CLI
 ---
 

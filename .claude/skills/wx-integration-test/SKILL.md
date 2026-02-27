@@ -1,5 +1,5 @@
 ---
-name: integration-test
+name: wx-integration-test
 description: |
   微信小程序 + CloudBase 项目的端到端集成测试框架。通过 invokeFunction 编排
   云函数调用序列，覆盖完整业务链路，自动准备测试数据、执行测试、验证结果。
@@ -8,8 +8,8 @@ argument-hint: '[业务流程名称或 action 列表]'
 user-invocable: true
 metadata:
   author: nvoyager
-  version: 2.0.0
-  title: 集成测试框架
+  title: 微信小程序集成测试框架
+  version: 1.0.1
   description_zh: 微信小程序 + CloudBase 项目通用端到端集成测试工作流
 ---
 

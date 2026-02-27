@@ -1,5 +1,5 @@
 ---
-name: release-check
+name: wx-release-check
 description: |
   适用于发版检查工作流。检查所有待提交变更、部署已修改的云函数、
   执行冒烟测试、对比需求文档检查完成度、生成进度报告、最终提交并打 tag。
@@ -9,8 +9,8 @@ user-invocable: true
 disable-model-invocation: true
 metadata:
   author: nvoyager
-  version: 2.0.0
-  title: 发版检查
+  title: 微信小程序发版检查
+  version: 1.0.1
   description_zh: 从变更检查到提交打 tag 的完整发版工作流（通用版）
 ---
 

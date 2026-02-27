@@ -1,5 +1,5 @@
 ---
-name: debug-production
+name: wx-debug-production
 description: |
   适用于线上排障工作流。从错误现象出发，通过 MCP 工具查询云函数日志、分析错误堆栈、
   定位根因、修复代码、重新部署、回归验证的完整闭环。
@@ -8,8 +8,8 @@ argument-hint: '[错误描述或 action 名称]'
 user-invocable: true
 metadata:
   author: nvoyager
-  version: 1.0.0
-  title: 线上排障
+  title: 微信小程序线上排障
+  version: 1.0.1
   description_zh: 从错误现象到修复验证的线上问题排查完整闭环
 ---
 
