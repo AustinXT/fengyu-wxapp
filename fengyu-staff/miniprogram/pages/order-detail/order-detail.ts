@@ -12,9 +12,9 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 const ORDER_TYPE_LABEL: Record<string, string> = {
-  normal: '正常单',
-  promotion: '促销方案',
-  experience: '体验单',
+  正式: '正常单',
+  促销方案: '促销方案',
+  体验: '体验单',
 };
 
 const PAY_TYPE_LABEL: Record<string, string> = {
@@ -28,26 +28,56 @@ Page({
     order: null as any,
     isManager: false,
     statusClass: '',
+    _orderNo: '',
   },
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
     if (options.id) {
+      this.setData({ _orderNo: options.id });
       this.loadDetail(options.id);
     }
   },
 
-  async loadDetail(orderId: string) {
+  async loadDetail(orderNo: string) {
     this.setData({ loading: true });
     try {
-      const order = await callStaffApi<any>('order.detail', { orderId });
+      const res = await callStaffApi<any>('order.detail', { orderNo });
+      const o = res.order || {};
+      const items = (res.items || []).map((it: any) => ({
+        itemFlowNo: it.item_flow_no,
+        itemName: it.spu_name || it.sku_display_name || '—',
+        spec: it.sku_display_name || '',
+        totalPrice: it.receivable,
+        sessionCount: it.session_count,
+        remainingSessions: it.remaining_sessions,
+      }));
+      const allocation = (res.allocations || []).map((a: any) => ({
+        staffName: a.employeeId,
+        department: '',
+        amount: a.totalAmount,
+        ratio: `${Number(a.allocationRatio) * 100}%`,
+      }));
       this.setData({
         order: {
-          ...order,
-          orderTypeLabel: ORDER_TYPE_LABEL[order.orderType] || order.orderType,
-          payTypeLabel: PAY_TYPE_LABEL[order.payType] || order.payType || '—',
+          orderNo: o.order_no,
+          status: o.status,
+          orderType: o.order_type,
+          orderTypeLabel: ORDER_TYPE_LABEL[o.order_type] || o.order_type,
+          payType: o.payment_method,
+          payTypeLabel: PAY_TYPE_LABEL[o.payment_method] || o.payment_method || '—',
+          customerName: o.customer_name || '',
+          customerPhone: o.client_phone || '',
+          customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
+          createdByName: o.opened_by || '—',
+          confirmedBy: o.offline_confirmed_by,
+          createdAt: o.created_at,
+          paidAt: o.paid_at,
+          totalAmount: o.totalAmount || o.total_amount,
+          items,
+          allocation,
         },
-        statusClass: STATUS_CLASS[order.status] || 'pending',
+        statusClass: STATUS_CLASS[o.status] || 'pending',
       });
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
@@ -57,12 +87,12 @@ Page({
   },
 
   onReAllocation() {
-    const id = this.data.order?.id;
-    wx.navigateTo({ url: `/pages/revenue-allocation/revenue-allocation?orderId=${id}` });
+    const orderNo = this.data._orderNo;
+    wx.navigateTo({ url: `/pages/revenue-allocation/revenue-allocation?orderNo=${orderNo}` });
   },
 
   onResetFailed() {
-    const id = this.data.order?.id;
+    const orderNo = this.data._orderNo;
     wx.showModal({
       title: '重置支付',
       content: '确认将此订单重置为"待支付"状态？',
@@ -70,9 +100,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.resetFailed', { orderId: id });
+          await callStaffApi('order.resetFailed', { orderNo });
           wx.showToast({ title: '已重置', icon: 'success' });
-          this.loadDetail(id);
+          this.loadDetail(orderNo);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -81,7 +111,7 @@ Page({
   },
 
   async onConfirmOffline() {
-    const id = this.data.order?.id;
+    const orderNo = this.data._orderNo;
     wx.showModal({
       title: '确认线下收款',
       content: '确认已收到顾客的现金/转账付款？',
@@ -89,9 +119,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderId: id });
+          await callStaffApi('order.confirmOffline', { orderNo });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadDetail(id);
+          this.loadDetail(orderNo);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }

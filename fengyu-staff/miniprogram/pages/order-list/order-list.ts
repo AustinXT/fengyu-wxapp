@@ -65,20 +65,21 @@ Page({
     this.setData({ loading: true });
     try {
       const tabStatus = this.data.tabActive === '全部' ? undefined : this.data.tabActive;
-      const rawList = await callStaffApi<any[]>('order.list', {
+      const res = await callStaffApi<{ orders: any[]; page: number; pageSize: number }>('order.list', {
         status: tabStatus,
       });
-      const mapped: OrderItem[] = (rawList || []).map(r => ({
-        id: r.id,
-        orderNo: r.orderNo,
-        customerName: r.customerName,
-        customerPhoneMasked: r.customerPhoneMasked,
+      const rows = res?.orders || [];
+      const mapped: OrderItem[] = rows.map(r => ({
+        id: r.order_no,
+        orderNo: r.order_no,
+        customerName: r.customer_name || '',
+        customerPhoneMasked: r.client_phone || '',
         status: r.status,
-        orderType: r.orderType,
-        payType: r.payType,
-        totalAmount: r.totalAmount,
-        createdAt: r.createdAt,
-        paidAt: r.paidAt,
+        orderType: r.order_type,
+        payType: r.payment_method,
+        totalAmount: r.total_amount,
+        createdAt: r.created_at,
+        paidAt: r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
       }));
       this.setData({ list: mapped });
@@ -105,7 +106,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderId: id });
+          await callStaffApi('order.confirmOffline', { orderNo: id });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadList();
         } catch (err: any) {
