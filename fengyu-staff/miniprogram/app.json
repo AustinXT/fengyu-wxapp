@@ -1,5 +1,6 @@
 {
   "pages": [
+    "pages/login/login",
     "pages/workbench/workbench",
     "pages/order-create/order-create",
     "pages/service/service",

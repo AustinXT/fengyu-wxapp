@@ -12,6 +12,8 @@ App<IAppOption>({
     phone: '' as string,
   },
 
+  _loginReady: undefined as unknown as Promise<void>,
+
   onLaunch() {
     wx.cloud.init({ traceUser: true });
     this.restoreFromCache();
@@ -27,9 +29,10 @@ App<IAppOption>({
         boundStoreId: 'store-001',
       });
       console.log('[Mock] 使用模拟员工数据，跳过 auth.login');
+      this._loginReady = Promise.resolve();
       return;
     }
-    this.syncLoginState();
+    this._loginReady = this.syncLoginState();
   },
 
   restoreFromCache() {
@@ -101,5 +104,16 @@ App<IAppOption>({
       this.globalData.boundStoreId = info.boundStoreId;
       wx.setStorageSync('boundStoreId', info.boundStoreId);
     }
+  },
+
+  resetStaffInfo() {
+    this.globalData.userId = '';
+    this.globalData.staffWfId = '';
+    this.globalData.staffName = '';
+    this.globalData.role = '';
+    this.globalData.phone = '';
+    this.globalData.boundStoreName = '';
+    this.globalData.boundStoreId = '';
+    wx.clearStorageSync();
   },
 });

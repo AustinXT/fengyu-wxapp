@@ -59,7 +59,11 @@ Page({
   },
 
   onShow() {
-    const { staffWfId, staffName, role, boundStoreName } = app.globalData;
+    if (!app.globalData.staffWfId) {
+      wx.reLaunch({ url: '/pages/login/login' })
+      return
+    }
+    const { staffName, role, boundStoreName } = app.globalData;
     const isManager = role === 'manager';
     this.setData({
       storeName: boundStoreName,
@@ -67,9 +71,7 @@ Page({
       role,
       isManager,
     });
-    if (staffWfId) {
-      this.loadWorkbench();
-    }
+    this.loadWorkbench();
   },
 
   onPullDownRefresh() {

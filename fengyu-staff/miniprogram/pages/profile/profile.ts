@@ -1,5 +1,6 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi } from '../../utils/cloud';
+import { bindPhone } from '../../utils/auth';
 
 const app = getApp<IAppOption>();
 
@@ -17,12 +18,24 @@ Page({
   },
 
   onShow() {
+    if (!app.globalData.staffWfId) {
+      wx.reLaunch({ url: '/pages/login/login' })
+      return
+    }
     const { staffName, role, staffWfId, phone, boundStoreName } = app.globalData;
     this.setData({ staffName, role, staffWfId, phone, boundStoreName });
   },
 
-  onBindPhone() {
-    wx.showToast({ title: '请通过「绑定手机号」按钮授权', icon: 'none' });
+  async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent) {
+    if (!e.detail.cloudID) return
+    try {
+      await bindPhone(e.detail.cloudID)
+      const { phone, staffWfId } = app.globalData
+      this.setData({ phone, staffWfId })
+      wx.showToast({ title: '绑定成功', icon: 'success' })
+    } catch (err: any) {
+      wx.showToast({ title: err.message || '绑定失败', icon: 'none' })
+    }
   },
 
   async onBindStore() {
@@ -78,16 +91,8 @@ Page({
       content: '确认退出当前账号？',
       success: (res) => {
         if (res.confirm) {
-          wx.clearStorageSync();
-          app.setStaffInfo({
-            userId: '', staffWfId: '', staffName: '',
-            role: '', boundStoreName: '', boundStoreId: '', phone: ''
-          });
-          this.setData({
-            staffName: '', role: '', staffWfId: '', phone: '',
-            boundStoreName: '', storeList: [], storeColumns: [],
-          });
-          wx.showToast({ title: '已退出', icon: 'success' });
+          app.resetStaffInfo();
+          wx.reLaunch({ url: '/pages/login/login' });
         }
       }
     });

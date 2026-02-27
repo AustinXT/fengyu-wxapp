@@ -17,4 +17,7 @@ interface IAppOption {
     boundStoreName?: string;
     boundStoreId?: string;
   }): void;
+  resetStaffInfo(): void;
+  syncLoginState(): Promise<void>;
+  _loginReady: Promise<void>;
 }

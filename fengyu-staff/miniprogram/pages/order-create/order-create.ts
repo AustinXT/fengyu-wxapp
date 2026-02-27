@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
+const app = getApp<IAppOption>();
 const BIG_CATEGORIES = ['生美', '非生美', '院装产品'];
 
 interface CartItem {
@@ -61,6 +62,10 @@ Page({
   _spuCache: {} as Record<string, any[]>,
 
   onShow() {
+    if (!app.globalData.staffWfId) {
+      wx.reLaunch({ url: '/pages/login/login' })
+      return
+    }
     this.setData({ isManager: isManager() });
     if (this._allCategories.length === 0) {
       this.loadShopInit();

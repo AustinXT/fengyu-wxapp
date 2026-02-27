@@ -38,6 +38,10 @@ Page({
   onLoad() {},
 
   onShow() {
+    if (!app.globalData.staffWfId) {
+      wx.reLaunch({ url: '/pages/login/login' })
+      return
+    }
     this.setData({ isManager: isManager() });
     this.loadList();
   },
