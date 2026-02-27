@@ -31,6 +31,12 @@ export const serviceOrders = pgTable(
     assignedStaffWfId: text('assigned_staff_wf_id').notNull(),
     remark: text('remark'),
     /**
+     * 关联 appointments.appointment_id（可选）
+     * 有预约时填入，关联后预约详情页可跳转查看服务单
+     * 一条预约对应一张服务单，不可重复创建
+     */
+    appointmentId: text('appointment_id'),
+    /**
      * 关联 client_wechat_users.user_id；
      * 员工开单时顾客可能未注册客户端小程序，允许为 null。
      */

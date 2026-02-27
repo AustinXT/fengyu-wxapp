@@ -1,4 +1,5 @@
 import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+
 import { appointmentStatusEnum } from "./enums";
 import { clientWechatUsers } from "./user";
 import { orderItems } from "./order";
@@ -33,6 +34,10 @@ export const appointments = pgTable(
     appointmentTime: timestamp("appointment_time").notNull(),
     notes: text("notes"),
     cancelledReason: text("cancelled_reason"),
+    /**
+     * 顾客到店签到时间（员工端点击"顾客已到店"时记录，不改变预约状态）
+     */
+    checkinAt: timestamp("checkin_at"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },

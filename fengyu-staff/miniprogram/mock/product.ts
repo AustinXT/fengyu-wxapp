@@ -1,12 +1,12 @@
 // mock/product.ts — 商品相关 mock
 
 const MOCK_CATEGORIES = [
-  { id: 'cat-01', name: '蜜语生玑', spuCount: 5 },
-  { id: 'cat-02', name: '安吉丽美颜之爱', spuCount: 4 },
-  { id: 'cat-03', name: '光感白皙', spuCount: 3 },
-  { id: 'cat-04', name: '眉眼', spuCount: 6 },
-  { id: 'cat-05', name: '身体护理', spuCount: 4 },
-  { id: 'cat-06', name: '院装产品', spuCount: 8 },
+  { id: 'cat-01', name: '蜜语生玑', big_category: '生美', category_order: 1 },
+  { id: 'cat-02', name: '安吉丽美颜之爱', big_category: '生美', category_order: 2 },
+  { id: 'cat-03', name: '光感白皙', big_category: '生美', category_order: 3 },
+  { id: 'cat-04', name: '眉眼', big_category: '非生美', category_order: 4 },
+  { id: 'cat-05', name: '身体护理', big_category: '非生美', category_order: 5 },
+  { id: 'cat-06', name: '院装产品', big_category: '院装产品', category_order: 6 },
 ]
 
 const MOCK_SPUS: Record<string, any[]> = {
@@ -18,6 +18,8 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '疗程卡',
       businessType: '生美',
       priceFrom: 3800,
+      cover_image: '',
+      is_recommend: true,
       skus: [
         { skuId: 'sku-001', specName: '10次卡', price: 3800, sessionCount: 10, workfineItemId: 'WF-1001' },
         { skuId: 'sku-002', specName: '20次卡', price: 6800, sessionCount: 20, workfineItemId: 'WF-1002' },
@@ -31,6 +33,8 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '疗程卡',
       businessType: '生美',
       priceFrom: 4200,
+      cover_image: '',
+      is_recommend: false,
       skus: [
         { skuId: 'sku-004', specName: '10次卡', price: 4200, sessionCount: 10, workfineItemId: 'WF-1004' },
         { skuId: 'sku-005', specName: '单品', price: 520, sessionCount: 1, workfineItemId: 'WF-1005' },
@@ -45,9 +49,41 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '疗程卡',
       businessType: '生美',
       priceFrom: 3600,
+      cover_image: '',
+      is_recommend: true,
       skus: [
         { skuId: 'sku-006', specName: '10次卡', price: 3600, sessionCount: 10, workfineItemId: 'WF-2001' },
         { skuId: 'sku-007', specName: '单品', price: 450, sessionCount: 1, workfineItemId: 'WF-2002' },
+      ],
+    },
+  ],
+  'cat-03': [
+    {
+      spuId: 'spu-006',
+      spuName: '光感白皙美白疗程',
+      categoryName: '光感白皙',
+      productType: '疗程卡',
+      businessType: '生美',
+      priceFrom: 3200,
+      cover_image: '',
+      is_recommend: false,
+      skus: [
+        { skuId: 'sku-011', specName: '10次卡', price: 3200, sessionCount: 10, workfineItemId: 'WF-4001' },
+        { skuId: 'sku-012', specName: '单品', price: 420, sessionCount: 1, workfineItemId: 'WF-4002' },
+      ],
+    },
+    {
+      spuId: 'spu-007',
+      spuName: '光感净肤焕白精华',
+      categoryName: '光感白皙',
+      productType: '疗程卡',
+      businessType: '生美',
+      priceFrom: 2800,
+      cover_image: '',
+      is_recommend: true,
+      skus: [
+        { skuId: 'sku-013', specName: '10次卡', price: 2800, sessionCount: 10, workfineItemId: 'WF-4003' },
+        { skuId: 'sku-014', specName: '20次卡', price: 4800, sessionCount: 20, workfineItemId: 'WF-4004' },
       ],
     },
   ],
@@ -59,6 +95,8 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '单品',
       businessType: '非生美',
       priceFrom: 1200,
+      cover_image: '',
+      is_recommend: false,
       skus: [
         { skuId: 'sku-008', specName: '单品', price: 1200, sessionCount: 1, workfineItemId: 'WF-3001' },
       ],
@@ -70,9 +108,42 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '疗程卡',
       businessType: '非生美',
       priceFrom: 2800,
+      cover_image: '',
+      is_recommend: true,
       skus: [
         { skuId: 'sku-009', specName: '10次卡', price: 2800, sessionCount: 10, workfineItemId: 'WF-3002' },
         { skuId: 'sku-010', specName: '20次卡', price: 4800, sessionCount: 20, workfineItemId: 'WF-3003' },
+      ],
+    },
+  ],
+  'cat-05': [
+    {
+      spuId: 'spu-008',
+      spuName: '全身精油SPA疗程',
+      categoryName: '身体护理',
+      productType: '疗程卡',
+      businessType: '非生美',
+      priceFrom: 2600,
+      cover_image: '',
+      is_recommend: true,
+      skus: [
+        { skuId: 'sku-015', specName: '10次卡', price: 2600, sessionCount: 10, workfineItemId: 'WF-5001' },
+        { skuId: 'sku-016', specName: '单品', price: 380, sessionCount: 1, workfineItemId: 'WF-5002' },
+      ],
+    },
+    {
+      spuId: 'spu-009',
+      spuName: '经络疏通养护',
+      categoryName: '身体护理',
+      productType: '疗程卡',
+      businessType: '非生美',
+      priceFrom: 1800,
+      cover_image: '',
+      is_recommend: false,
+      skus: [
+        { skuId: 'sku-017', specName: '10次卡', price: 1800, sessionCount: 10, workfineItemId: 'WF-5003' },
+        { skuId: 'sku-018', specName: '20次卡', price: 3200, sessionCount: 20, workfineItemId: 'WF-5004' },
+        { skuId: 'sku-019', specName: '单品', price: 260, sessionCount: 1, workfineItemId: 'WF-5005' },
       ],
     },
   ],
@@ -84,6 +155,8 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '院装产品',
       businessType: '院装',
       priceFrom: 680,
+      cover_image: '',
+      is_recommend: false,
       skus: [
         { skuId: 'sku-020', specName: '50ml', price: 680, sessionCount: 0, workfineItemId: 'WF-P001' },
         { skuId: 'sku-021', specName: '100ml', price: 1180, sessionCount: 0, workfineItemId: 'WF-P002' },
@@ -96,6 +169,8 @@ const MOCK_SPUS: Record<string, any[]> = {
       productType: '院装产品',
       businessType: '院装',
       priceFrom: 520,
+      cover_image: '',
+      is_recommend: true,
       skus: [
         { skuId: 'sku-022', specName: '30g', price: 520, sessionCount: 0, workfineItemId: 'WF-P003' },
       ],
@@ -142,6 +217,14 @@ const MOCK_PROMO_PLANS = [
 ]
 
 export const productHandlers: Record<string, (payload: Record<string, any>) => any> = {
+  'product.shopInit': () => {
+    const firstCat = MOCK_CATEGORIES[0]
+    return {
+      categories: MOCK_CATEGORIES,
+      spuList: firstCat ? (MOCK_SPUS[firstCat.id] || []) : [],
+    }
+  },
+
   'product.categories': () => MOCK_CATEGORIES,
 
   'product.spuList': (payload) => {

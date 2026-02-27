@@ -50,6 +50,13 @@
       "when": 1772112160028,
       "tag": "0006_narrow_nocturne",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1772180161573,
+      "tag": "0007_burly_falcon",
+      "breakpoints": true
     }
   ]
 }

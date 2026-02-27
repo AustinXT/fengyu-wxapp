@@ -31,14 +31,14 @@
       {
         "pagePath": "pages/order-create/order-create",
         "text": "开单",
-        "iconPath": "images/icons/tab-order.png",
-        "selectedIconPath": "images/icons/tab-order-active.png"
+        "iconPath": "images/icons/tab-create-order.png",
+        "selectedIconPath": "images/icons/tab-create-order-active.png"
       },
       {
         "pagePath": "pages/service/service",
         "text": "护理",
-        "iconPath": "images/icons/tab-appointment.png",
-        "selectedIconPath": "images/icons/tab-appointment-active.png"
+        "iconPath": "images/icons/tab-service.png",
+        "selectedIconPath": "images/icons/tab-service-active.png"
       },
       {
         "pagePath": "pages/profile/profile",

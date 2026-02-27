@@ -2,6 +2,8 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
+const BIG_CATEGORIES = ['生美', '非生美', '院装产品'];
+
 interface CartItem {
   spuId: string;
   skuId: string;
@@ -19,7 +21,9 @@ interface CartItem {
 Page({
   data: {
     isManager: false,
-    // 商品目录
+    // 商品目录（三级：大类 → 分类 → SPU）
+    bigCategories: BIG_CATEGORIES,
+    activeBigCategoryIndex: 0,
     catalogLoading: false,
     categories: [] as any[],
     activeCategoryIndex: 0,
@@ -51,10 +55,15 @@ Page({
     submitting: false,
   },
 
+  // 所有分类（未过滤）
+  _allCategories: [] as any[],
+  // SPU 缓存：按 categoryId 缓存已加载的 SPU 列表
+  _spuCache: {} as Record<string, any[]>,
+
   onShow() {
     this.setData({ isManager: isManager() });
-    if (this.data.categories.length === 0) {
-      this.loadCategories();
+    if (this._allCategories.length === 0) {
+      this.loadShopInit();
     }
     try {
       const recent = wx.getStorageSync('recentCustomers') || [];
@@ -62,13 +71,40 @@ Page({
     } catch (_) {}
   },
 
-  async loadCategories() {
+  // ===== 商品目录（三级导航 + 缓存） =====
+
+  async loadShopInit() {
     this.setData({ catalogLoading: true });
     try {
-      const cats = await callStaffApi<any[]>('product.categories');
-      this.setData({ categories: cats || [], catalogLoading: false });
-      if (cats && cats.length > 0) {
-        this.loadSpuList(cats[0].id);
+      const data = await callStaffApi<any>('product.shopInit');
+      const categories: any[] = data.categories || [];
+      const spuList: any[] = data.spuList || [];
+
+      this._allCategories = categories;
+      if (categories.length > 0) {
+        this._spuCache[categories[0].id] = spuList;
+      }
+
+      // 按当前大类筛选侧边栏
+      const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
+      const filtered = categories.filter((c: any) => c.big_category === activeBig);
+
+      // 判断首个筛选分类是否有缓存
+      let displayList = spuList;
+      if (filtered.length > 0 && filtered[0].id !== categories[0]?.id) {
+        displayList = [];
+      }
+
+      this.setData({
+        categories: filtered,
+        activeCategoryIndex: 0,
+        spuList: displayList,
+        catalogLoading: false,
+      });
+
+      // 首个大类分类与全局首个分类不同，需单独加载
+      if (filtered.length > 0 && displayList.length === 0) {
+        this.loadSpuList(filtered[0].id);
       }
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
@@ -76,33 +112,64 @@ Page({
     }
   },
 
-  async loadSpuList(categoryId: string) {
-    try {
-      const spus = await callStaffApi<any[]>('product.spuList', { categoryId });
-      this.setData({ spuList: spus || [] });
-    } catch (_) {
-      this.setData({ spuList: [] });
-    }
-  },
+  onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.index;
+    if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
 
-  async loadPromoPlans() {
-    this.setData({ promoPlansLoading: true });
-    try {
-      const plans = await callStaffApi<any[]>('product.promotionPlans');
-      this.setData({ promoPlans: plans || [] });
-    } catch (_) {
-      this.setData({ promoPlans: [] });
-    } finally {
-      this.setData({ promoPlansLoading: false });
+    const activeBig = BIG_CATEGORIES[index];
+    const filtered = this._allCategories.filter((c: any) => c.big_category === activeBig);
+
+    this.setData({
+      activeBigCategoryIndex: index,
+      categories: filtered,
+      activeCategoryIndex: 0,
+      spuList: [],
+    });
+
+    if (filtered.length > 0) {
+      const cached = this._spuCache[filtered[0].id];
+      if (cached) {
+        this.setData({ spuList: cached });
+      } else {
+        this.loadSpuList(filtered[0].id);
+      }
     }
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = e.detail.index as number;
-    this.setData({ activeCategoryIndex: index });
-    const cat = this.data.categories[index];
-    if (cat) this.loadSpuList(cat.id);
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
+    if (typeof index !== 'number') return;
+    const { categories } = this.data;
+    if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
+
+    const cat = categories[index];
+    if (!cat) return;
+
+    // 缓存命中：直接替换，不清空不闪烁
+    const cached = this._spuCache[cat.id];
+    if (cached) {
+      this.setData({ activeCategoryIndex: index, spuList: cached });
+      return;
+    }
+
+    // 未命中：清空列表显示骨架屏，发起请求
+    this.setData({ activeCategoryIndex: index, spuList: [] });
+    this.loadSpuList(cat.id);
   },
+
+  async loadSpuList(categoryId: string) {
+    this.setData({ catalogLoading: true });
+    try {
+      const spus = await callStaffApi<any[]>('product.spuList', { categoryId });
+      const list = spus || [];
+      this._spuCache[categoryId] = list;
+      this.setData({ spuList: list, catalogLoading: false });
+    } catch (_) {
+      this.setData({ spuList: [], catalogLoading: false });
+    }
+  },
+
+  // ===== SKU 选择 =====
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const spu = e.currentTarget.dataset.spu as any;
@@ -138,6 +205,8 @@ Page({
     this.setData({ showSkuPopup: false, currentSpu: null });
   },
 
+  // ===== 购物车 =====
+
   onCartItemRemove(e: WechatMiniprogram.TouchEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
     const cart = this.data.cart.filter(c => c.skuId !== skuId);
@@ -158,6 +227,8 @@ Page({
     const total = cart.reduce((s, c) => s + c.price * c.quantity, 0);
     this.setData({ cart, cartCount: count, cartTotal: total.toFixed(2) });
   },
+
+  // ===== 结算面板 =====
 
   onOpenCheckout() {
     if (this.data.cart.length === 0) {
@@ -271,6 +342,18 @@ Page({
   },
 
   // 促销方案弹层
+  async loadPromoPlans() {
+    this.setData({ promoPlansLoading: true });
+    try {
+      const plans = await callStaffApi<any[]>('product.promotionPlans');
+      this.setData({ promoPlans: plans || [] });
+    } catch (_) {
+      this.setData({ promoPlans: [] });
+    } finally {
+      this.setData({ promoPlansLoading: false });
+    }
+  },
+
   onPromoListClose() {
     this.setData({ showPromoList: false });
     if (!this.data.selectedPlan) {

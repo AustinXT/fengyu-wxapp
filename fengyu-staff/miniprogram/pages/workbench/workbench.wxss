@@ -137,10 +137,6 @@
   line-height: 1;
 }
 
-.price-row--monthly .price-value--monthly {
-  font-size: 36rpx;
-}
-
 .commission-stats {
   display: flex;
   align-items: center;

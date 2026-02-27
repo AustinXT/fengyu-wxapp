@@ -41,9 +41,9 @@
           <!-- 右列：本月累计 -->
           <view class="commission-col commission-col--right">
             <text class="commission-col-label">本月累计</text>
-            <view class="price-row price-row--monthly">
-              <text class="price-unit price-unit--monthly">¥ </text>
-              <text class="price-value price-value--monthly">{{monthlyCommission}}</text>
+            <view class="price-row">
+              <text class="price-unit">¥ </text>
+              <text class="price-value">{{monthlyCommission}}</text>
             </view>
             <view class="commission-stats">
               <text class="commission-stat">订单 {{monthlyOrderCount}}</text>

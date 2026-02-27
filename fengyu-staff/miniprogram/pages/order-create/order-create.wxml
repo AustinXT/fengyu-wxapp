@@ -1,48 +1,95 @@
 <!-- pages/order-create/order-create.wxml — 开单 -->
 <view class="container order-create-page">
 
-  <!-- 主视图：左侧分类 + 右侧 SPU -->
-  <view class="catalog-layout">
-    <!-- 左侧分类侧边栏 -->
-    <van-sidebar class="category-sidebar" active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
-      <van-sidebar-item
-        wx:for="{{categories}}"
-        wx:key="id"
-        title="{{item.name}}"
-      />
-    </van-sidebar>
+  <!-- 顶部大类分类横向导航 -->
+  <van-tabs
+    active="{{activeBigCategoryIndex}}"
+    bind:change="onBigCategoryChange"
+    color="#8B6A3E"
+    title-active-color="#8B6A3E"
+    line-width="40rpx"
+  >
+    <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
+  </van-tabs>
 
-    <!-- 右侧 SPU 列表 -->
-    <scroll-view class="spu-list" scroll-y>
-      <view wx:if="{{catalogLoading}}" class="loading-wrap">
-        <van-loading type="spinner" color="#8B6A3E" />
+  <!-- 分类 + 商品主区域 -->
+  <view class="catalog-layout">
+    <!-- 左侧：分类侧边栏 -->
+    <scroll-view class="sidebar-scroll" scroll-y>
+      <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
+        <van-sidebar-item
+          wx:for="{{categories}}"
+          wx:key="id"
+          title="{{item.name}}"
+        />
+      </van-sidebar>
+    </scroll-view>
+
+    <!-- 右侧：商品列表 -->
+    <scroll-view class="product-scroll" scroll-y>
+      <!-- 骨架屏 -->
+      <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
+        <van-skeleton title avatar row="3" />
+        <van-skeleton title avatar row="3" style="margin-top:24rpx" />
       </view>
 
-      <view wx:elif="{{spuList.length === 0}}" class="empty-wrap">
+      <!-- 空态 -->
+      <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
         <van-empty description="暂无商品" />
       </view>
+      <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
+        <van-empty description="该分类暂无商品" />
+      </view>
 
+      <!-- SPU 卡片列表 -->
       <view wx:else>
-        <view
-          class="spu-card"
-          wx:for="{{spuList}}"
-          wx:key="spuId"
-          bindtap="onSpuTap"
-          data-spu="{{item}}"
-        >
-          <view class="spu-info">
-            <text class="spu-name">{{item.spuName}}</text>
-            <view class="spu-meta">
-              <van-tag plain type="warning">{{item.businessType}}</van-tag>
-              <text class="spu-price">¥ 起 {{item.priceFrom}}</text>
+        <view class="spu-list-inner">
+          <view
+            class="spu-card"
+            wx:for="{{spuList}}"
+            wx:key="spuId"
+            bindtap="onSpuTap"
+            data-spu="{{item}}"
+          >
+            <!-- 商品封面 -->
+            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+              <van-icon name="photo-o" size="64rpx" color="#C4975A" />
             </view>
-          </view>
-          <view class="spu-add">
-            <van-icon name="add-o" size="48rpx" color="#8B6A3E" />
+            <image
+              wx:else
+              class="spu-cover"
+              src="{{item.cover_image}}"
+              mode="aspectFill"
+              lazy-load
+            />
+
+            <!-- 商品信息 -->
+            <view class="spu-body">
+              <!-- 标签行 -->
+              <view class="spu-tags">
+                <van-tag wx:if="{{item.is_recommend}}" color="#8B6A3E">推荐</van-tag>
+                <van-tag plain type="warning">{{item.businessType}}</van-tag>
+              </view>
+
+              <!-- 商品名 -->
+              <text class="spu-name">{{item.spuName}}</text>
+
+              <!-- 底部：价格 + 按钮 -->
+              <view class="spu-footer">
+                <view class="price-group">
+                  <text class="price-symbol">¥</text>
+                  <text class="price-integer">{{item.priceFrom}}</text>
+                  <text class="price-start">起</text>
+                </view>
+                <view class="spu-add-btn">
+                  <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+                </view>
+              </view>
+            </view>
           </view>
         </view>
 
-        <!-- 购物车已选项目 -->
+        <!-- 购物车已选项目（内联） -->
         <view wx:if="{{cart.length > 0}}" class="cart-items-inline">
           <text class="cart-inline-title">已添加项目</text>
           <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
