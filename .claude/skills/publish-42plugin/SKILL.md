@@ -20,9 +20,9 @@ metadata:
 ## 用法
 
 ```bash
-/publish-42plugin-skills                          # 发布当前项目所有技能
-/publish-42plugin-skills wx-implement-api         # 发布指定技能
-/publish-42plugin-skills wx-implement-api wxapp   # 指定技能和套包
+/publish-42plugin    # 发布当前项目所有技能
+/publish-42plugin wx-implement-api    # 发布指定技能
+/publish-42plugin wx-implement-api wxapp    # 指定技能和套包
 ```
 
 ## 何时使用
