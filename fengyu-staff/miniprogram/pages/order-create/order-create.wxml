@@ -66,9 +66,8 @@
             <!-- 商品信息 -->
             <view class="spu-body">
               <!-- 标签行 -->
-              <view class="spu-tags">
-                <van-tag wx:if="{{item.is_recommend}}" color="#8B6A3E">推荐</van-tag>
-                <van-tag plain type="warning">{{item.businessType}}</van-tag>
+              <view class="spu-tags" wx:if="{{item.is_recommend}}">
+                <van-tag color="#8B6A3E">推荐</van-tag>
               </view>
 
               <!-- 商品名 -->

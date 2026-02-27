@@ -63,7 +63,7 @@
     <view class="section-card">
       <view class="section-header">
         <view class="section-header-left">
-          <text class="section-title">本月业绩</text>
+          <text class="section-title">本月</text>
           <view class="cal-total">
             <text class="cal-total-amount">¥ {{monthlyCommission}}</text>
             <text class="cal-total-detail">订单{{monthlyOrderCount}} · 服务{{monthlyServiceCount}}</text>
