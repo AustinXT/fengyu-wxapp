@@ -21,6 +21,9 @@ const routes = {
   // 员工
   'staff.list':           () => require('./routes/staff').list,
   'staff.departments':    () => require('./routes/staff').departments,
+  'staff.todayCommission': () => require('./routes/staff').todayCommission,
+  'staff.monthlyCalendar': () => require('./routes/staff').monthlyCalendar,
+  'staff.todoList':       () => require('./routes/staff').todoList,
 
   // 顾客档案
   'customer.search':      () => require('./routes/customer').search,

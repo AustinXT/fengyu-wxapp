@@ -1,13 +1,8 @@
 {
   "mcpServers": {
-    "cloudbase": {
+    "cloudbase-mcp": {
       "command": "npx",
-      "args": ["@cloudbase/cloudbase-mcp@latest"],
-      "env": {
-        "TENCENTCLOUD_SECRETID": "${TENCENTCLOUD_SECRETID}",
-        "TENCENTCLOUD_SECRETKEY": "${TENCENTCLOUD_SECRETKEY}",
-        "CLOUDBASE_ENV_ID": "${CLOUDBASE_ENV_ID}"
-      }
+      "args": ["-y", "@cloudbase/cloudbase-mcp@latest"]
     }
   }
 }
