@@ -51,6 +51,8 @@ Page({
 })
 ```
 
+> **Mock 模式**：当后端 API 尚未就绪时，可在 callApi 内部添加 mock 拦截，脱离后端独立开发前端。详见 [mock-data-patterns.md](mock-data-patterns.md)。
+
 ## 下拉刷新
 
 ```json
@@ -391,13 +393,13 @@ const appInfo = wx.getAppBaseInfo()      // SDK 版本
 
 ## Per-Page Inline callApi
 
-本项目中，每个页面定义自己的 `callClientApi` / `callStaffApi` 内联函数，而非从 `utils/` 导入公共封装。这是有意为之的设计选择：
+本项目中，每个页面定义自己的 `callApi` 内联函数，而非从 `utils/` 导入公共封装。这是有意为之的设计选择：
 
 ```typescript
 // 每个页面顶部定义
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
+async function callApi(action: string, payload: Record<string, any> = {}) {
   const res = await wx.cloud.callFunction({
-    name: 'clientApi',
+    name: 'myApi',
     data: { action, payload }
   }) as any
   const err = { code: res.result?.code, message: res.result?.message }

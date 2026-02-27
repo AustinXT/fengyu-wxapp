@@ -5,7 +5,7 @@ description: >
   列表、Radio/Checkbox-in-Cell 等），包含 TypeScript 事件类型 速查和关键错误对比。当用户请求使用 Vant
   组件开发小程序页面时激活。 请勿用于纯逻辑/后端开发（请使用 wx-coding 技能）。
 metadata:
-  author: opc
+  author: nvoyager
   version: 1.0.0
   title: Vant Weapp 模式驱动实战指南
   description_zh: Vant Weapp 微信小程序 UI 组件库复合模式指南，涵盖 Popup 选择器、Tab 列表、事件类型速查与常见陷阱。
@@ -47,7 +47,7 @@ Vant Weapp 是有赞开源的微信小程序 UI 组件库。本技能以**复合
 
 ## 不适用场景
 
-- 纯原生组件开发 → 参考 `wechat-coding`
+- 纯原生组件开发 → 参考 `wx-coding`
 - 使用其他 UI 库（WeUI 等）
 - UI 设计规范 → 参考 `wx-ui-design`
 

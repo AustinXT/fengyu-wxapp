@@ -233,12 +233,12 @@ module.exports = { query, transaction }
 - 延迟初始化 — 仅在首次查询时创建，避免冷启动时无用连接
 - `finally { client.release() }` — 任何情况下必须归还连接
 
-## MSSQL 连接预热
+## 外部数据库连接预热
 
-WorkFine 使用 SQL Server，首次查询需建立连接（冷启动延迟 1-3s）。在模块顶层 fire-and-forget 预热：
+如项目需要连接外部数据库（如 SQL Server、MySQL 等），首次查询需建立连接（冷启动延迟 1-3s）。在模块顶层 fire-and-forget 预热：
 
 ```javascript
-// db/mssql.js 模块顶层
+// db/external.js 模块顶层
 const mssql = require('mssql')
 
 let pool = null
@@ -246,10 +246,10 @@ let pool = null
 function getPool() {
   if (!pool) {
     pool = new mssql.ConnectionPool({
-      server: process.env.WF_HOST,
-      database: process.env.WF_DATABASE,
-      user: process.env.WF_USER,
-      password: process.env.WF_PASSWORD,
+      server: process.env.EXTERNAL_DB_HOST,
+      database: process.env.EXTERNAL_DB_NAME,
+      user: process.env.EXTERNAL_DB_USER,
+      password: process.env.EXTERNAL_DB_PASS,
       options: { encrypt: false, trustServerCertificate: true },
       connectionTimeout: 5000,
       requestTimeout: 10000,
@@ -283,14 +283,14 @@ module.exports = { auth, invalidateAuthCache }
 **必须调用 `invalidateAuthCache(OPENID)` 的时机：**
 - `auth.bindPhone` — 绑定手机号后
 - `auth.bindStore` — 绑定门店后
-- 任何修改用户表（`client_wechat_users` / `staff_wechat_users`）的写操作
+- 任何修改用户表的写操作
 
 ```javascript
 // routes/auth.js — bindPhone 示例
 exports.bindPhone = async (ctx) => {
   await auth(ctx, async () => {
     // ... 绑定逻辑 ...
-    await pg.query('UPDATE client_wechat_users SET phone = $1 WHERE openid = $2', [phone, OPENID])
+    await pg.query('UPDATE users SET phone = $1 WHERE openid = $2', [phone, OPENID])
 
     // ✅ 写操作后立即清除缓存
     invalidateAuthCache(OPENID)
@@ -302,7 +302,7 @@ exports.bindPhone = async (ctx) => {
 
 ## N+1 查询预防
 
-循环中逐条查询外部数据（WorkFine 或 PG）是常见性能问题。用批量 IN 查询 + Map 分组替代。
+循环中逐条查询数据库是常见性能问题。用批量 IN 查询 + Map 分组替代。
 
 ```javascript
 // ❌ N+1：循环中逐条查询

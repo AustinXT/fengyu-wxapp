@@ -7,7 +7,7 @@ description: |
 argument-hint: '[错误描述或 action 名称]'
 user-invocable: true
 metadata:
-  author: fengyu
+  author: nvoyager
   version: 1.0.0
   title: 线上排障
   description_zh: 从错误现象到修复验证的线上问题排查完整闭环
@@ -15,7 +15,7 @@ metadata:
 
 # 线上排障工作流
 
-从错误现象到修复验证的完整排查闭环。
+从错误现象到修复验证的完整排查闭环。适用于任何基于微信小程序 + 腾讯云开发（CloudBase）的项目。
 
 ## 何时使用
 
@@ -28,7 +28,7 @@ metadata:
 
 ```bash
 /debug-production order.create 返回 -400
-/debug-production staffApi 登录接口报错
+/debug-production <functionName> 登录接口报错
 ```
 
 ## 不适用
@@ -56,19 +56,14 @@ metadata:
 
 ### 1.2 定位代码位置
 
-根据 action 名称定位源码：
+根据 action 名称定位源码文件。云函数通常位于 `cloudfunctions/<functionName>/` 目录下，
+路由文件通常按模块组织在 `routes/` 目录中。
 
-| Action 前缀 | 路由文件 | 云函数 |
-|---|---|---|
-| `auth.*` | `routes/auth.js` | clientApi/staffApi |
-| `store.*` | `routes/store.js` | clientApi/staffApi |
-| `product.*` | `routes/product.js` | clientApi/staffApi |
-| `order.*` | `routes/order.js` | clientApi/staffApi |
-| `appointment.*` | `routes/appointment.js` | clientApi/staffApi |
-| `service.*` | `routes/service.js` | clientApi/staffApi |
-| `staff.*` | `routes/staff.js` | clientApi/staffApi |
-| `allocation.*` | `routes/allocation.js` | staffApi |
-| `customer.*` | `routes/customer.js` | staffApi |
+定位步骤：
+
+1. 从 action 名称中提取模块前缀（如 `order.create` 的模块为 `order`）
+2. 在云函数目录中查找对应路由文件（如 `routes/order.js` 或 `routes/order.ts`）
+3. 在路由文件中定位具体方法
 
 阅读对应路由文件和中间件代码。
 
@@ -84,7 +79,7 @@ metadata:
 {
   "tool": "getFunctionLogs",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi 或 staffApi",
+  "functionName": "<functionName>",
   "startTime": "错误发生前的时间戳",
   "endTime": "当前时间戳"
 }
@@ -111,7 +106,7 @@ metadata:
 重点关注：
 - `[action] Error:` 开头的错误日志
 - SQL 查询错误（`syntax error`、`relation does not exist`、`column not found`）
-- 连接错误（`ETIMEOUT`、`ECONNREFUSED`、`ELOGIN`）
+- 连接错误（`ETIMEOUT`、`ECONNREFUSED`、`ECONNRESET`）
 - 权限错误（`UNAUTHORIZED`、`PHONE_REQUIRED`、`PERMISSION_DENIED`）
 - 参数错误（`INVALID_PARAMS`、`undefined`、`null`）
 
@@ -121,7 +116,7 @@ metadata:
 
 ### 3.0 首要排查：是否已部署？
 
-> **⚠️ 最高频误判：代码已修改但行为未变 = 未重新部署云函数**
+> **最高频误判：代码已修改但行为未变 = 未重新部署云函数**
 >
 > 在深入日志和代码分析前，先确认本次修改是否已部署到云端。
 > 使用 `getFunctionDetail` 查看最后部署时间，或直接重新部署一次排除此因素。
@@ -133,22 +128,22 @@ metadata:
 | **SQL 语法错误** | `syntax error at or near` | 拼写错误、缺少引号、参数占位符错误 |
 | **表/列不存在** | `relation "xxx" does not exist` | Schema 迁移未执行、列名拼写错误 |
 | **连接超时** | `ETIMEOUT`、`ECONNREFUSED` | 数据库地址错误、网络不通、连接池耗尽 |
-| **认证失败** | `ELOGIN`、`Login failed` | 环境变量中密码错误或缺失 |
-| **权限不足** | `code: -401` / `-403` | 用户未绑定手机号、非店长操作了店长接口 |
+| **认证失败** | `Login failed`、连接被拒 | 环境变量中密码错误或缺失 |
+| **权限不足** | `code: -401` / `-403` | 用户未绑定手机号、角色权限不匹配 |
 | **参数缺失** | `code: -400` | 前端传参不完整、字段名不匹配 |
-| **并发冲突** | 序号重复、次数超扣 | Advisory lock 未生效、原子扣减逻辑错误 |
-| **WorkFine 查询失败** | `Invalid column name` | SQL Server 字段名变更、表名错误 |
+| **并发冲突** | 序号重复、次数超扣 | 锁机制未生效、原子扣减逻辑错误 |
+| **外部数据源查询失败** | 连接错误、字段不匹配 | 外部数据库结构变更、连接配置过期 |
 | **部署版本不一致** | 代码已修改但行为未变 | 云函数未重新部署 |
 
 ### 3.2 检查关联文件
 
 根据错误类型检查：
 
-- **数据库问题** → 检查 `db/schema/` 和 `db/migrations/`
+- **数据库问题** → 检查数据库 schema 定义和迁移文件
 - **环境变量问题** → 通过 MCP `getFunctionConfig` 查看
-- **认证问题** → 检查 `middleware/auth.js`
-- **参数问题** → 检查 `middleware/validate.js` 和对应路由
-- **WorkFine 问题** → 参照 `.42cog/spec/workfine_database.md`
+- **认证问题** → 检查认证中间件（如 `middleware/auth.*`）
+- **参数问题** → 检查参数校验中间件和对应路由处理函数
+- **外部数据源问题** → 参照项目文档中的外部数据源说明
 
 ---
 
@@ -158,14 +153,14 @@ metadata:
 
 根据根因修改代码，注意：
 
-- **遵守 real.md 约束**（WorkFine 只读、原子扣减、幂等等）
+- **遵守项目既有的架构规范和约束**（只读数据源不可写、原子操作、幂等性等）
 - **保持向后兼容**（不破坏现有前端调用）
 - **修复后增加防御性检查**（避免同类问题再次出现）
 
 ### 4.2 本地验证
 
 检查代码修改：
-- JavaScript 语法无误
+- JavaScript/TypeScript 语法无误
 - SQL 查询参数占位符正确（`$1, $2` 顺序一致）
 - 新增/修改的导出函数名与路由表一致
 
@@ -178,7 +173,7 @@ metadata:
 使用 `cloudbase-deploy` 技能：
 
 ```text
-"部署 clientApi" 或 "部署 staffApi"
+"部署 <functionName>"
 ```
 
 ### 5.2 环境变量修复（如需要）
@@ -201,9 +196,9 @@ metadata:
 {
   "tool": "invokeFunction",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi",
+  "functionName": "<functionName>",
   "params": {
-    "action": "module.method",
+    "action": "<moduleName>.<methodName>",
     "payload": { /* 原始出错参数 */ }
   }
 }
@@ -231,7 +226,7 @@ metadata:
 根因分析：[根本原因]
 修复方案：[修改了什么]
 修改文件：
-  - path/to/file.js（修改描述）
+  - path/to/file（修改描述）
 部署状态：已部署
 验证结果：通过
 ```

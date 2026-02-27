@@ -8,15 +8,15 @@ argument-hint: '[版本说明(可选)]'
 user-invocable: true
 disable-model-invocation: true
 metadata:
-  author: fengyu
-  version: 1.0.0
+  author: nvoyager
+  version: 2.0.0
   title: 发版检查
-  description_zh: 从变更检查到提交打 tag 的完整发版工作流
+  description_zh: 从变更检查到提交打 tag 的完整发版工作流（通用版）
 ---
 
 # 发版检查工作流
 
-从变更检查到提交打 tag 的完整发版流程。
+从变更检查到提交打 tag 的完整发版流程。适用于任何微信小程序 + CloudBase 项目。
 
 ## 何时使用
 
@@ -51,35 +51,37 @@ git diff --cached --stat
 
 ### 1.2 分类变更
 
-将所有变更文件分类：
+将所有变更文件按以下类别分类：
 
 ```text
 数据库变更：
-  - db/schema/xxx.ts
-  - db/migrations/xxxx.sql
+  - db/schema/...
+  - db/migrations/...
 
 云函数变更（需要部署）：
-  - fengyu-client/cloudfunctions/clientApi/...
-  - fengyu-staff/cloudfunctions/staffApi/...
+  - <project>/cloudfunctions/<functionName>/...
 
 前端页面变更：
-  - fengyu-client/miniprogram/pages/...
-  - fengyu-staff/miniprogram/pages/...
+  - <project>/miniprogram/pages/...
+  - <project>/miniprogram/components/...
 
 配置变更：
   - app.json / project.config.json / cloudbaserc.json
 
 文档变更：
   - .42cog/spec/...
-  - notes/...
+  - docs/...
 ```
+
+> **发现路径**：通过 `git diff --stat` 输出自动识别项目名和云函数名，
+> 无需硬编码路径。
 
 ### 1.3 关键检查点
 
 - [ ] 是否有未执行的数据库迁移？（`db/migrations/` 有新文件但未 migrate）
-- [ ] 是否有新路由未注册？（routes/ 有新导出但 index.js 未添加）
+- [ ] 是否有新路由未注册？（routes/ 有新导出但 index 未添加）
 - [ ] 是否有新页面未注册？（pages/ 有新目录但 app.json 未添加）
-- [ ] 是否有 `.js` 文件出现在 miniprogram/？（严禁，仅允许 `.ts`）
+- [ ] 是否有违反项目代码规范的文件？（如禁止 `.js` 则搜索 `.js` 文件）
 - [ ] `cloudbaserc.json` 中 `installDependency` 是否为 `false`？（必须为 false，由云端自动安装依赖）
 - [ ] `.cloudbaseignore` 是否排除测试文件（`__tests__/`、`*.test.*`）但包含 `node_modules`？
 - [ ] 是否有遗留的 `console.log` 调试语句？（搜索 `console.log` 排除结构化日志）
@@ -109,20 +111,20 @@ cd db && npm run db:migrate
 
 ### 3.1 识别需要部署的云函数
 
-检查变更文件列表，确定哪些云函数有代码变更：
+从 Step 1.2 的变更分类中，提取所有 `cloudfunctions/` 路径下有变更的云函数：
 
-| 变更路径 | 需要部署的云函数 |
-|---|---|
-| `fengyu-client/cloudfunctions/clientApi/**` | clientApi |
-| `fengyu-staff/cloudfunctions/staffApi/**` | staffApi |
+```text
+扫描规则：<project>/cloudfunctions/<functionName>/** 有变更 → 需要部署 <functionName>
+```
+
+列出所有需要部署的云函数及其所属项目。
 
 ### 3.2 部署
 
 对每个有变更的云函数执行部署（使用 `cloudbase-deploy` 技能）：
 
 ```text
-"部署 clientApi"
-"部署 staffApi"
+"部署 <functionName>"
 ```
 
 ### 3.3 环境变量检查
@@ -136,25 +138,18 @@ cd db && npm run db:migrate
 
 ## Step 4: 冒烟测试
 
-### 4.1 测试关键路径
+### 4.1 识别需要测试的 action
 
-对每个修改过的 API action 执行 invokeFunction 验证：
+从变更的云函数代码中提取所有修改过的 action（路由方法），形成测试清单：
 
-**clientApi 核心路径：**
 ```text
-auth.login          → 用户登录
-product.categories  → 商品分类
-product.spuList     → 商品列表
-order.create        → 创建订单（复杂，慎测）
+测试清单：
+  <functionName>:
+    - module.method1  → 描述
+    - module.method2  → 描述
 ```
 
-**staffApi 核心路径：**
-```text
-auth.login          → 员工登录
-store.list          → 门店列表
-staff.list          → 员工列表
-order.list          → 订单列表
-```
+> **优先级**：认证相关 > 核心业务流程 > 查询接口 > 辅助接口
 
 ### 4.2 测试模板
 
@@ -162,7 +157,7 @@ order.list          → 订单列表
 {
   "tool": "invokeFunction",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi",
+  "functionName": "<functionName>",
   "params": {
     "action": "module.method",
     "payload": {}
@@ -176,9 +171,9 @@ order.list          → 订单列表
 
 ```text
 测试结果：
-  [PASS] auth.login → { code: 0 }
-  [PASS] product.categories → { code: 0, data: [...] }
-  [FAIL] order.create → { code: -400, message: "..." }
+  [PASS] <functionName> / module.method → { code: 0 }
+  [PASS] <functionName> / module.method → { code: 0, data: [...] }
+  [FAIL] <functionName> / module.method → { code: -400, message: "..." }
 ```
 
 如有失败项，切换到 `debug-production` 流程排查。
@@ -187,9 +182,10 @@ order.list          → 订单列表
 
 ## Step 5: 需求完成度检查
 
-### 5.1 读取需求文档
+### 5.1 定位需求文档
 
-读取 `.42cog/spec/` 下对应的需求文档。
+在项目中查找需求文档（常见位置：`.42cog/spec/`、`docs/`、项目根目录的 `*.md`）。
+如果项目 `CLAUDE.md` 中指定了需求文档路径，优先使用。
 
 ### 5.2 逐项对比
 
@@ -198,20 +194,14 @@ order.list          → 订单列表
 ```text
 需求完成度报告：
 
-[客户端] client_pr.md
-  [x] 服务/产品浏览 — 已实现（shop 页面 + product API）
-  [x] 购物车 — 已实现（cart 页面 + utils/cart.ts）
-  [x] 下单支付 — 已实现（checkout 页面 + order API）
-  [ ] 微信支付回调 — 待实现（当前为 Mock）
-  [x] 预约 — 已实现（appointment 页面 + API）
+[模块A] <文档名>
+  [x] 功能点1 — 已实现（实现位置）
+  [x] 功能点2 — 已实现（实现位置）
+  [ ] 功能点3 — 待实现（说明原因）
 
-[员工端] staff_pr.md
-  [x] 订单管理 — 已实现
-  [ ] 营业报表 — 未开始
-
-[后端] backend_pr.md
-  [x] 订单流水号生成 — 已实现
-  [ ] 支付通知回调 — 待实现
+[模块B] <文档名>
+  [x] 功能点1 — 已实现
+  [ ] 功能点2 — 未开始
 ```
 
 ### 5.3 标注差距
@@ -241,7 +231,7 @@ order.list          → 订单列表
 `git-commit` 技能会自动：
 - 执行 `git add`（添加相关文件）
 - 生成智能提交信息
-- 创建 42 进制版本 tag
+- 创建版本 tag
 - 推送代码和 tag 到远程
 
 ---
@@ -259,16 +249,15 @@ order.list          → 订单列表
   - [fix] 修复描述
 
 部署状态：
-  - clientApi: 已部署
-  - staffApi: 已部署 / 无变更
+  - <functionName>: 已部署 / 无变更
+  - ...
 
 冒烟测试：
   - X/Y 通过
 
 需求完成度：
-  - 客户端：XX%
-  - 员工端：XX%
-  - 后端：XX%
+  - 模块A：XX%
+  - 模块B：XX%
 
 未完成项：
   - [功能名] — 原因/计划

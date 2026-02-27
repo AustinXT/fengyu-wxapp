@@ -8,7 +8,7 @@ description: |
   Also use for updating cloud function environment variables or invoking a function action to verify.
 alwaysApply: false
 metadata:
-  author: opc
+  author: nvoyager
   version: 1.1.0
   title: CloudBase 云函数部署
   description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数（首选），MCP 不可用时回退到 tcb CLI
@@ -26,7 +26,7 @@ metadata:
 - 部署后需要调用某个 action 验证是否生效
 
 **不适用于：**
-- CloudRun 容器服务（另见 `cloudrun-development`）
+- CloudRun 容器服务
 - 仅修改小程序前端代码（无需部署云函数）
 
 ---
@@ -112,14 +112,15 @@ functions/               # 自定义目录
 3. 调用 updateFunctionConfig 写入完整合并后的列表
 ```
 
-常见环境变量示例（SQL Server 场景）：
+常见环境变量示例（数据库连接场景）：
 ```
 # 示例格式，替换为实际值，不要硬编码在源代码中
-WF_SERVER=YOUR_DB_HOST
-WF_PORT=1433
-WF_DATABASE=YOUR_DB_NAME
-WF_USER=YOUR_DB_USER
-WF_PASSWORD=YOUR_DB_PASSWORD
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+DB_HOST=your-db-host
+DB_PORT=5432
+DB_NAME=your-database
+DB_USER=your-username
+DB_PASSWORD=your-password
 ```
 
 **错误示例（避免）：** 直接 `updateFunctionConfig` 只传新变量 → 会清空其他已有变量
@@ -234,10 +235,10 @@ tcb fn log <functionName> --envId <envId>
 
 | 错误 | 原因 | 解决方法 |
 |------|------|---------|
-| `ETIMEOUT: connect ECONNREFUSED` | 数据库 IP/端口错误 | 检查 `WF_SERVER` 和 `WF_PORT` 环境变量 |
-| `ELOGIN: Login failed` | 密码错误或 `WF_PASSWORD` 为空 | 更新环境变量，确认无硬编码 fallback |
+| `ETIMEOUT` / `ECONNREFUSED` | 数据库 IP/端口不可达 | 检查 `DB_HOST` 和 `DB_PORT` 环境变量，确认数据库安全组已放通云函数 IP |
+| `ECONNRESET` / `PROTOCOL_CONNECTION_LOST` | 数据库连接被中断 | 检查数据库连接超时设置和连接池配置 |
+| `Authentication failed` / `Login failed` | 数据库凭证错误 | 检查 `DB_USER` 和 `DB_PASSWORD` 环境变量 |
 | `errCode: -601034 没有权限` | 跨环境调用未授权 | 在微信云开发控制台开启「环境共享」 |
-| `Invalid column name` | SQL 字段名错误 | 检查 SQL 查询中的列名是否与数据库匹配 |
 | 函数不存在 | 首次部署使用了 `updateFunctionCode` | 改用 `createFunction` 初始化 |
 
 ---

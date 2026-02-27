@@ -3,7 +3,7 @@ name: wx-system-architecture
 description: 用于规划微信小程序 + CloudBase 系统架构。覆盖 CloudBase 服务拓扑、双线程运行时模型、分包性能策略、安全架构与核心架构决策规则。在进行架构设计、技术选型或项目初始化时使用。
 metadata:
   title: 微信小程序系统架构设计
-  author: 42ailab
+  author: nvoyager
   version: 2.1.0
   description_zh: 微信小程序 + CloudBase 系统架构规划指南
 ---

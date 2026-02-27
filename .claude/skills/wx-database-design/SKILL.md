@@ -8,7 +8,7 @@ description: |
   当用户需要设计表结构、编写数据库查询、配置安全规则、执行数据迁移时激活。
 metadata:
   title: 微信小程序数据库设计
-  author: fengyu
+  author: nvoyager
   version: 1.0.0
   description_zh: 微信小程序三种数据库选型与操作指南
 ---
@@ -109,8 +109,8 @@ export const orders = pgTable(
   {
     orderNo: text('order_no').primaryKey(),
     status: orderStatusEnum('status').notNull().default('待支付'),
-    storeName: text('store_name').notNull(),
-    clientUserId: text('client_user_id'),
+    userId: text('user_id').notNull(),
+    remark: text('remark'),
     totalAmount: numeric('total_amount', { precision: 12, scale: 2 }).notNull(),
     paidAt: timestamp('paid_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -119,11 +119,11 @@ export const orders = pgTable(
   },
   (table) => [
     // 普通索引
-    index('idx_orders_store_status').on(table.storeName, table.status),
+    index('idx_orders_user_status').on(table.userId, table.status),
     // 部分唯一索引（条件唯一）
-    uniqueIndex('uq_orders_client_pending')
-      .on(table.clientUserId)
-      .where(sql`status = '待支付' AND client_user_id IS NOT NULL`),
+    uniqueIndex('uq_orders_user_pending')
+      .on(table.userId)
+      .where(sql`status = '待支付' AND user_id IS NOT NULL`),
   ],
 )
 ```
@@ -140,12 +140,12 @@ export type NewOrder = typeof orders.$inferInsert  // 插入参数类型
 
 ```typescript
 export const orderItems = pgTable('order_items', {
-  itemFlowNo: text('item_flow_no').primaryKey(),
+  id: text('id').primaryKey(),
   orderNo: text('order_no')
     .notNull()
     .references(() => orders.orderNo),  // 外键引用
-  skuId: text('sku_id')
-    .references(() => productSpuSkuMap.skuId),  // 可选外键
+  productId: text('product_id')
+    .references(() => products.id),      // 可选外键
 })
 ```
 
@@ -194,21 +194,24 @@ export const db = drizzle(pool, { schema })
 - 设置 `idleTimeoutMillis` 避免僵尸连接
 - 连接字符串通过环境变量传入，不硬编码
 
-## 只读外部数据库（如 SQL Server / WorkFine）
+## 只读外部数据库
+
+如需连接只读外部数据库（SQL Server、MySQL 等），通过环境变量配置连接信息：
 
 ```typescript
+// 示例：连接只读 SQL Server
 import sql from 'mssql'
 
 const pool = new sql.ConnectionPool({
-  server: process.env.WF_HOST!,
-  database: process.env.WF_DB!,
-  user: process.env.WF_USER!,
-  password: process.env.WF_PASS!,
+  server: process.env.READONLY_DB_HOST!,
+  database: process.env.READONLY_DB_NAME!,
+  user: process.env.READONLY_DB_USER!,
+  password: process.env.READONLY_DB_PASS!,
   options: { encrypt: false, trustServerCertificate: true },
 })
 
 // 只读查询，不写入
-export async function queryWorkFine<T>(query: string): Promise<T[]> {
+export async function queryExternal<T>(query: string): Promise<T[]> {
   const conn = await pool.connect()
   try {
     const result = await conn.request().query(query)
@@ -218,6 +221,8 @@ export async function queryWorkFine<T>(query: string): Promise<T[]> {
   }
 }
 ```
+
+> MySQL 等其他数据库同理，替换对应驱动即可（如 `mysql2`）。
 
 详见 [Drizzle ORM 完整参考](references/drizzle-orm.md)
 
@@ -242,7 +247,7 @@ const _ = db.command
 ## 集合命名规范
 
 - 使用 **camelCase**（如 `orders`、`serviceRecords`）
-- 建议添加项目前缀（如 `fy_orders`），避免与其他项目冲突
+- 建议添加项目前缀（如 `app_orders`），避免与其他项目冲突
 
 ## 类型定义
 
@@ -427,12 +432,12 @@ const result = await app.models.orders.list({
 1. **类型定义先行**：Drizzle 用 schema + `$inferSelect`；NoSQL 用 TypeScript interface
 2. **安全规则前置**：NoSQL/MySQL 编码前配置好安全规则
 3. **读多冗余**：常读字段（如顾客姓名）冗余存储，减少关联查询
-4. **写多引用**：营业额分配等关系通过 ID 引用，不冗余
+4. **写多引用**：关联关系通过 ID 引用，不冗余
 5. **索引覆盖**：所有 `WHERE` 条件和 `ORDER BY` 字段必须建索引
-6. **事务保护**：涉及金额、库存、次卡核销等操作使用事务
+6. **事务保护**：涉及金额、库存、余额等操作使用事务
 7. **原子更新**：并发扣减用 `UPDATE ... SET remaining = remaining - n WHERE remaining >= n`，禁止先 SELECT 再 UPDATE
 8. **枚举一致**：数据库枚举值与前端展示文案保持一致，减少映射逻辑
-9. **快照字段**：订单中的价格、门店名等使用快照，防止源数据变更影响历史记录
+9. **快照字段**：订单中的价格、商品名等使用快照，防止源数据变更影响历史记录
 10. **软删除**：重要业务数据用 `is_void` / `deleted_at` 标记，不物理删除
 
 ---

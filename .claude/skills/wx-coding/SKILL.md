@@ -7,7 +7,7 @@ metadata:
   title: 微信小程序编码规范
   description_zh: 微信小程序 Page/Component 开发规范、CloudBase 云函数 Action 路由模板、TypeScript 规范、认证集成与错误处理
   version: 1.0.0
-  author: opc
+  author: nvoyager
 ---
 
 ## 如何使用此技能
@@ -21,26 +21,15 @@ metadata:
 ├─ 数据库变更 → 使用 wx-database-design 技能
 ├─ UI / 样式 → 使用 wx-ui-design 技能
 ├─ 认证相关 → §认证集成
+├─ Mock 模式开发 → §Mock 数据开发模式 + references/mock-data-patterns.md
 ├─ 错误排查 → §常见陷阱速查 + references/pitfalls.md
 └─ 部署上线 → 使用 cloudbase-deploy 技能
 ```
 
-> 编码前请先了解 `.42cog/real.md`（业务约束）和 `.42cog/cog.md`（认知模型）。
-
 ## 何时使用 / 不适用
 
-**使用场景：**
-- 编写小程序页面逻辑（Page / Component）
-- 开发 CloudBase 云函数
-- 集成微信认证（OPENID / UNIONID）
-- 调用 wx.cloud API（数据库、存储、敏感数据）
-- 错误处理与调试
-
-**不适用：**
-- UI 设计和布局 → `wx-ui-design`
-- 数据库表结构设计 → `wx-database-design`
-- 系统架构规划 → `wx-system-architecture`
-- Vant 组件使用 → `vant-weapp`
+**使用：** Page/Component 编写、CloudBase 云函数、微信认证、wx.cloud API、错误处理。
+**不适用：** UI → `wx-ui-design` | DB 设计 → `wx-database-design` | 架构 → `wx-system-architecture` | Vant → `vant-weapp`
 
 ---
 
@@ -415,6 +404,14 @@ if (OPENID !== event.resourceOwnerId) {
 
 ---
 
+## Mock 数据开发模式
+
+后端 API 未就绪或无法连接云开发环境时，在 `callApi` 顶部添加 2 行 mock 拦截代码，让前端独立开发。`MOCK_ENABLED = false` 时零运行时开销，支持部分 mock（部分 action 走 mock，其余走真实 API）。
+
+> 完整模板（目录结构、dev-config、mock-api、handler 规范、app.ts 处理、生产安全自检）→ [references/mock-data-patterns.md](references/mock-data-patterns.md)
+
+---
+
 ## 错误处理与响应格式
 
 ### 标准响应结构
@@ -486,6 +483,7 @@ try {
 |---|---|
 | [cloud-function-patterns.md](references/cloud-function-patterns.md) | Action 路由模板、中间件链、连接池、定时触发器、结构化日志 |
 | [frontend-patterns.md](references/frontend-patterns.md) | callApi 封装、下拉刷新、无限滚动、EventChannel、CloudID、WXS、AI 模型 |
+| [mock-data-patterns.md](references/mock-data-patterns.md) | Mock 拦截架构、dev-config 开关、mock-api 调度器、handler 编写规范、生产安全 |
 | [pitfalls.md](references/pitfalls.md) | 平台/性能/云函数陷阱的 ❌/✅ 代码对比 + 交付自检清单 |
 
 ### 关联技能

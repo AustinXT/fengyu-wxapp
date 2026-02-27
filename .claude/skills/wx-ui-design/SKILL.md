@@ -8,12 +8,10 @@ description: >-
   refactoring any miniprogram page or component.
 metadata:
   title: 微信小程序 UI 设计
-  author: opc
+  author: nvoyager
   version: 1.0.0
   description_zh: 微信小程序原生 UI 设计与实现指南，覆盖设计思维、750rpx 布局、WXSS 规范、Vant Weapp 集成、组件模式与图标资源管理。
 ---
-
-> 设计前请先了解 `.42cog/real.md`（业务约束）和 `.42cog/cog.md`（认知模型）。
 
 ## 何时使用此技能
 

@@ -152,8 +152,8 @@ export const orderItems = pgTable(
 ```typescript
 import { unique } from 'drizzle-orm/pg-core'
 
-export const revenueAllocations = pgTable(
-  'revenue_allocations',
+export const taskAssignments = pgTable(
+  'task_assignments',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     orderNo: text('order_no').notNull().references(() => orders.orderNo),
@@ -161,7 +161,7 @@ export const revenueAllocations = pgTable(
   },
   (table) => [
     // 复合唯一
-    unique('uq_rev_alloc_order_emp').on(table.orderNo, table.employeeId),
+    unique('uq_task_assign_order_emp').on(table.orderNo, table.employeeId),
   ],
 )
 ```
@@ -192,22 +192,22 @@ import { eq, and, or, gt, gte, lt, lte, ne, inArray, isNull, desc, asc, sql } fr
 // INSERT
 const [newOrder] = await db.insert(orders)
   .values({
-    orderNo: 'FY-XSD-WX-250226001',
+    orderNo: 'ORD-WX-250226001',
     status: '待支付',
-    storeName: '朝阳店',
+    storeName: '示例门店',
     totalAmount: '1280.00',
   })
   .returning()
 
 // SELECT 单条
 const order = await db.query.orders.findFirst({
-  where: eq(orders.orderNo, 'FY-XSD-WX-250226001'),
+  where: eq(orders.orderNo, 'ORD-WX-250226001'),
 })
 
 // SELECT 多条 + 条件
 const pendingOrders = await db.query.orders.findMany({
   where: and(
-    eq(orders.storeName, '朝阳店'),
+    eq(orders.storeName, '示例门店'),
     eq(orders.status, '待支付'),
   ),
   orderBy: [desc(orders.createdAt)],
@@ -217,17 +217,17 @@ const pendingOrders = await db.query.orders.findMany({
 // UPDATE
 await db.update(orders)
   .set({ status: '已支付', paidAt: new Date() })
-  .where(eq(orders.orderNo, 'FY-XSD-WX-250226001'))
+  .where(eq(orders.orderNo, 'ORD-WX-250226001'))
 
 // DELETE
 await db.delete(orders)
-  .where(eq(orders.orderNo, 'FY-XSD-WX-250226001'))
+  .where(eq(orders.orderNo, 'ORD-WX-250226001'))
 ```
 
 ### 原子更新（并发安全）
 
 ```typescript
-// 疗程卡扣减 — 原子操作，禁止先 SELECT 再 UPDATE
+// 库存扣减 — 原子操作，禁止先 SELECT 再 UPDATE
 const result = await db.update(orderItems)
   .set({
     remainingSessions: sql`remaining_sessions - 1`,

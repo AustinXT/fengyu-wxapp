@@ -2,20 +2,20 @@
 name: implement-api
 description: |
   适用于后端 API 全流程开发工作流。从需求文档出发，完成 Drizzle Schema 设计、
-  数据库迁移、云函数路由开发、PG/WorkFine 查询编写、部署与 invokeFunction 验证。
+  数据库迁移、云函数路由开发、PG 查询编写、部署与 invokeFunction 验证。
   当用户说"加个接口"、"实现后端 API"、"写云函数"时激活。
 argument-hint: '[API 名称或功能描述]'
 user-invocable: true
 metadata:
-  author: fengyu
-  version: 1.0.0
+  author: nvoyager
+  version: 2.0.0
   title: 后端 API 全流程
   description_zh: 从 Schema 设计到部署验证的后端 API 完整开发工作流
 ---
 
 # 后端 API 全流程开发
 
-从需求理解到 API 部署验证的完整后端开发流程。
+从需求理解到 API 部署验证的完整后端开发流程。适用于任何微信小程序 + 腾讯云开发（CloudBase）项目。
 
 ## 何时使用
 
@@ -26,7 +26,7 @@ metadata:
 ## 使用方法
 
 ```bash
-/implement-api 添加客户搜索接口
+/implement-api 添加用户搜索接口
 /implement-api 实现订单退款 API
 ```
 
@@ -40,27 +40,29 @@ metadata:
 
 ## Step 1: 需求理解
 
-### 1.1 定位需求文档
+### 1.1 阅读项目需求文档
+
+定位并阅读项目中的需求文档，通常位于：
 
 ```text
-.42cog/spec/backend_pr.md    # 后端需求
-.42cog/spec/client_pr.md     # 客户端需求（了解前端如何调用）
-.42cog/spec/staff_pr.md      # 员工端需求
-.42cog/cog.md                # 认知模型（实体关系）
-.42cog/real.md               # 现实约束（必读）
+.42cog/spec/   # 需求文档目录（常见命名：backend_pr.md, client_pr.md 等）
+CLAUDE.md      # 项目说明与规范
+README.md      # 项目概览
 ```
+
+> 根据实际项目结构，找到对应的需求文档与约束说明。
 
 ### 1.2 确认 API 设计
 
 输出并确认：
 
 ```text
-目标端：[ ] clientApi  [ ] staffApi
+目标云函数：<functionName>（如 myApi / adminApi / 其他）
 Action 名称：module.method
 请求参数：{ param1: type, param2: type }
 返回数据：{ field1: type, field2: type }
-权限要求：[ ] 无  [ ] 需要手机号  [ ] 需要店长角色
-数据源：[ ] PG  [ ] WorkFine(只读)  [ ] 两者
+权限要求：[ ] 无  [ ] 需要手机号  [ ] 需要特定角色
+数据源：[ ] PostgreSQL  [ ] 其他外部数据源
 是否需要 Schema 变更：[ ] 是  [ ] 否
 ```
 
@@ -70,16 +72,16 @@ Action 名称：module.method
 
 ### 2.1 检查现有 Schema
 
-```text
-db/schema/
-├── index.ts          # 导出索引
-├── enums.ts          # pgEnum 枚举定义
-├── order.ts          # orders, order_items
-├── product.ts        # product_spu, product_spu_sku_map
-├── user.ts           # client_wechat_users, staff_wechat_users
-├── service.ts        # service_orders, service_items
-└── appointment.ts    # appointments
+查看 `db/schema/` 目录下已有的 Schema 文件，了解现有数据模型：
+
+```bash
+ls db/schema/
 ```
+
+重点关注：
+- `index.ts` — 导出索引，新表需在此导出
+- `enums.ts` — pgEnum 枚举定义
+- 其他业务表文件 — 了解已有字段和关联关系
 
 ### 2.2 编写 Schema
 
@@ -127,10 +129,22 @@ cd db && npm run db:push       # 开发（直接推送，不生成迁移文件�
 
 ### 3.1 定位目标文件
 
-| 端 | 路由目录 | 入口文件 |
-|---|---|---|
-| clientApi | `fengyu-client/cloudfunctions/clientApi/routes/` | `index.js` |
-| staffApi | `fengyu-staff/cloudfunctions/staffApi/routes/` | `index.js` |
+云函数路由目录的通用结构：
+
+```text
+<project>/cloudfunctions/<functionName>/
+├── index.js          # 入口文件（路由分发）
+├── routes/           # 路由 Handler 目录
+│   ├── module1.js
+│   └── module2.js
+├── db/
+│   └── pg.js         # PostgreSQL 连接
+└── middleware/
+    ├── auth.js       # 认证中间件
+    └── validate.js   # 参数校验中间件
+```
+
+> 根据实际项目结构定位对应的云函数目录和路由文件。
 
 ### 3.2 编写 Handler
 
@@ -156,7 +170,6 @@ exports.method = async (ctx) => {
   const userId = ctx.auth.userId
 
   // === 3. 数据查询 ===
-  // PG 查询
   const { rows } = await pg.query(`
     SELECT id, field1, field2
     FROM table_name
@@ -169,66 +182,7 @@ exports.method = async (ctx) => {
 }
 ```
 
-### 3.3 WorkFine 查询模式（如需要）
-
-**必须遵守：WorkFine 只读，严禁写入（real.md 第 1 条）。**
-
-```javascript
-const mssql = require('../db/mssql')
-
-async function queryWorkFine(storeWfId) {
-  const pool = await mssql.getPool()
-  const result = await pool.request()
-    .input('storeId', mssql.NVarChar, storeWfId)
-    .query(`
-      SELECT UDF_S_xxx AS fieldName
-      FROM UDT_M_xxx
-      WHERE UDF_S_yyy = @storeId
-        AND UDF_S_zzz <> '是'
-    `)
-  return result.recordset
-}
-```
-
-常用 WorkFine 表（详见 `.42cog/spec/workfine_database.md`）：
-- `UDT_M_219` — 门店列表
-- `UDT_S_287` — 员工档案
-- `UDT_S_311` — 客户档案
-- `UDT_M_1281` — 可售项目（全国）
-- `UDT_M_1383` — 门店自定义项目
-- `UDT_M_341` — 院装产品
-
-### 3.3.1 MSSQL 连接预热 + WorkFine 价格缓存
-
-**连接预热：** 在 `db/mssql.js` 模块顶层 fire-and-forget 预热，减少首次查询延迟：
-
-```javascript
-getPool().catch(() => {})  // 模块加载时即开始连接
-```
-
-**WorkFine 价格缓存：** 对不频繁变动的 WorkFine 数据（如项目价格列表），使用 5 分钟 TTL Map 缓存，避免每次请求都查 SQL Server：
-
-```javascript
-const priceCache = new Map()  // key → { data, expireAt }
-const PRICE_CACHE_TTL = 5 * 60 * 1000  // 5 分钟
-
-async function getCachedPrices(storeWfId) {
-  const cacheKey = `prices_${storeWfId}`
-  const cached = priceCache.get(cacheKey)
-  if (cached && cached.expireAt > Date.now()) return cached.data
-
-  const pool = await mssql.getPool()
-  const result = await pool.request()
-    .input('storeId', mssql.NVarChar, storeWfId)
-    .query('SELECT ... FROM UDT_M_1281 WHERE ...')
-  const data = result.recordset
-
-  priceCache.set(cacheKey, { data, expireAt: Date.now() + PRICE_CACHE_TTL })
-  return data
-}
-```
-
-### 3.4 事务模式（如需要）
+### 3.3 事务模式（如需要）
 
 ```javascript
 await pg.transaction(async (client) => {
@@ -247,6 +201,28 @@ await pg.transaction(async (client) => {
   // 返回结果
   return { orderNo }
 })
+```
+
+### 3.4 外部数据源查询（如需要）
+
+如项目需要查询外部数据库（如 SQL Server、MySQL 等只读数据源），遵循以下原则：
+
+- **只读访问**：外部数据源仅用于读取，严禁写入
+- **连接池复用**：模块级别维护连接池，避免每次请求新建连接
+- **缓存策略**：对不频繁变动的外部数据，使用 TTL Map 缓存减少查询压力
+
+```javascript
+const cache = new Map()  // key -> { data, expireAt }
+const CACHE_TTL = 5 * 60 * 1000  // 5 分钟
+
+async function getCachedData(key, queryFn) {
+  const cached = cache.get(key)
+  if (cached && cached.expireAt > Date.now()) return cached.data
+
+  const data = await queryFn()
+  cache.set(key, { data, expireAt: Date.now() + CACHE_TTL })
+  return data
+}
 ```
 
 ---
@@ -276,7 +252,7 @@ const routes = {
 使用 `cloudbase-deploy` 技能触发部署：
 
 ```text
-"部署 clientApi" 或 "部署 staffApi"
+"部署 <functionName>"
 ```
 
 对应 MCP 工具：
@@ -284,8 +260,8 @@ const routes = {
 {
   "tool": "updateFunctionCode",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi",
-  "functionRootPath": "/absolute/path/to/fengyu-client/cloudfunctions"
+  "functionName": "<functionName>",
+  "functionRootPath": "/absolute/path/to/<project>/cloudfunctions"
 }
 ```
 
@@ -310,7 +286,7 @@ const routes = {
 {
   "tool": "invokeFunction",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi",
+  "functionName": "<functionName>",
   "params": {
     "action": "module.method",
     "payload": { "param1": "testValue" }
@@ -322,9 +298,10 @@ const routes = {
 
 - [ ] 返回 `{ code: 0, message: "success", data: ... }`
 - [ ] 参数校验：缺少必填参数时返回 `{ code: -400 }`
-- [ ] 权限校验：无手机号时返回 `{ code: -403, message: "PHONE_REQUIRED:..." }`
+- [ ] 权限校验：无权限时返回对应错误码
 - [ ] 数据正确性：返回数据与预期结构一致
-- [ ] real.md 约束：WorkFine 无写入，权限校验到位，幂等安全
+- [ ] 外部数据源仅读取、无写入操作
+- [ ] 幂等安全：重复调用不产生副作用
 
 ### 6.2.1 错误码映射表
 
@@ -347,7 +324,7 @@ const routes = {
 {
   "tool": "getFunctionLogs",
   "envId": "<ENV_ID>",
-  "functionName": "clientApi",
+  "functionName": "<functionName>",
   "startTime": "最近时间",
   "endTime": "当前时间"
 }
@@ -375,8 +352,8 @@ const routes = {
 修改文件：
   - db/schema/xxx.ts
   - db/migrations/xxxx.sql
-  - cloudfunctions/.../routes/xxx.js
-  - cloudfunctions/.../index.js
+  - cloudfunctions/<functionName>/routes/xxx.js
+  - cloudfunctions/<functionName>/index.js
 
 部署状态：已部署 / 待部署
 验证结果：通过 / 需处理

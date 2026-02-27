@@ -35,8 +35,7 @@ fengyu-wxapp/
 │   ├── schema/
 │   ├── migrations/
 │   └── drizzle.config.ts
-├── notes/                     # 业务需求文档
-└── .42cog/                    # 架构规范文档
+└── .42cog/                    # 规范文档与需求文档
 ```
 
 ## 数据库命令（db/）
@@ -74,5 +73,5 @@ npm run db:studio     # Drizzle Studio
 
 - `.42cog/spec/system_architecture.md` - 系统架构规范
 - `db/schema/*.ts` - 数据库 schemas
-- `notes/backend_pr.md` - 后端需求
-- `notes/client_pr.md` - 客户端需求
+- `.42cog/spec/backend_pr.md` - 后端需求
+- `.42cog/spec/client_pr.md` - 客户端需求
