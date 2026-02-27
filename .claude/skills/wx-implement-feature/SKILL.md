@@ -1,5 +1,6 @@
 ---
 name: wx-implement-feature
+title: 微信小程序新特性开发
 description: |
   适用于全栈功能开发工作流。从项目需求文档出发，依次完成数据库设计、
   Schema 迁移、云函数 API 开发、小程序前端页面实现、部署验证的完整链路。
@@ -9,7 +10,7 @@ user-invocable: true
 metadata:
   author: nvoyager
   title: 微信小程序新特性开发
-  version: 1.0.2
+  version: 1.0.4
   description_zh: 从需求到上线的全栈功能开发工作流
 ---
 
