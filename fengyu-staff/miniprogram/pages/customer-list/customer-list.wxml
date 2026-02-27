@@ -3,7 +3,7 @@
 
   <van-search
     value="{{searchKeyword}}"
-    placeholder="输入手机号搜索顾客"
+    placeholder="搜索姓名或手机号"
     bind:search="onSearch"
     bind:change="onSearchChange"
     use-action-slot
@@ -33,9 +33,7 @@
     </van-cell-group>
   </view>
 
-  <view wx:else class="hint-wrap">
-    <text class="hint-text">输入完整手机号搜索顾客档案</text>
-  </view>
+  <view wx:else />
 
   <view class="safe-area-bottom" />
 </view>

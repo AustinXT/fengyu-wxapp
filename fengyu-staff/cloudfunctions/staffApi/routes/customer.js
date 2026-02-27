@@ -26,24 +26,25 @@ async function search(ctx) {
 
   const { keyword, phone } = ctx.event.payload || {}
 
-  if (!keyword && !phone) {
-    throw new Error('INVALID_PARAMS: 搜索关键词不能为空')
-  }
-
   const esc = (v) => String(v).replace(/'/g, "''")
   const isManagerRole = ctx.auth.position === '门店经理'
 
   let searchCondition
+  let limit = 20
   if (phone) {
     // 精确匹配手机号
     searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`
-  } else {
+  } else if (keyword && keyword.trim()) {
     const k = esc(keyword.trim())
     searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%')`
+  } else {
+    // 无搜索条件 → 返回本门店默认顾客
+    searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`
+    limit = 10
   }
 
   const customerRows = await mssql.query(`
-    SELECT TOP 20
+    SELECT TOP ${limit}
       UDF_S_1475 AS customer_no,
       UDF_S_1476 AS name,
       UDF_S_1478 AS phone,

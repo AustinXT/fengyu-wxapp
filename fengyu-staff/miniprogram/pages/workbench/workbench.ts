@@ -245,10 +245,10 @@ Page({
   },
 
   async onCustomerSearch() {
-    const phone = this.data.searchKeyword.trim();
-    if (!phone) return;
+    const keyword = this.data.searchKeyword.trim();
+    if (!keyword) return;
     try {
-      const data = await callStaffApi<any[]>('customer.search', { phone });
+      const data = await callStaffApi<any[]>('customer.search', { keyword });
       this.setData({ customerResults: data || [] });
       if (!data || data.length === 0) {
         wx.showToast({ title: '未找到该顾客', icon: 'none' });

@@ -21,11 +21,15 @@ Page({
   async loadAll(clientId: string) {
     this.setData({ loading: true });
     try {
-      const [customer, orders] = await Promise.all([
-        callStaffApi<any>('customer.detail', { id: clientId }),
-        callStaffApi<any[]>('customer.paidOrders', { clientUserId: clientId }),
-      ]);
-      this.setData({ customer, orders: orders || [] });
+      // 先加载详情，从返回值中取 clientUserId / phone
+      const customer = await callStaffApi<any>('customer.detail', { id: clientId });
+      let orders: any[] = [];
+      if (customer.clientUserId) {
+        orders = await callStaffApi<any[]>('customer.paidOrders', { clientUserId: customer.clientUserId }) || [];
+      } else if (customer.phone) {
+        orders = await callStaffApi<any[]>('customer.paidOrders', { clientPhone: customer.phone }) || [];
+      }
+      this.setData({ customer, orders });
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
     } finally {
@@ -34,8 +38,16 @@ Page({
   },
 
   onNewService() {
-    const id = this.data.customer?.id;
-    wx.navigateTo({ url: `/pages/service-create/service-create?clientUserId=${id}` });
+    const customer = this.data.customer;
+    if (!customer) return;
+    // 优先传 PG clientUserId，否则传 phone
+    if (customer.clientUserId) {
+      wx.navigateTo({ url: `/pages/service-create/service-create?clientUserId=${customer.clientUserId}` });
+    } else if (customer.phone) {
+      wx.navigateTo({ url: `/pages/service-create/service-create?clientPhone=${customer.phone}` });
+    } else {
+      wx.showToast({ title: '顾客未注册，无法创建服务单', icon: 'none' });
+    }
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {

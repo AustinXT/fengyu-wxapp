@@ -141,7 +141,7 @@
       <text class="section-desc">搜索顾客查看档案、疗程卡及预约信息</text>
       <van-search
         value="{{searchKeyword}}"
-        placeholder="输入手机号搜索顾客"
+        placeholder="搜索姓名或手机号"
         bind:search="onCustomerSearch"
         bind:change="onSearchChange"
         use-action-slot
