@@ -4,6 +4,7 @@
  * staff.departments — 部门列表（含可分配员工）
  */
 
+const pg = require('../db/pg')
 const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
 

@@ -118,8 +118,8 @@
           <van-icon slot="icon" name="gold-coin-o" size="40rpx" color="#8B6A3E" class="cell-icon" />
         </van-cell>
         <van-cell
-          wx:if="{{isManager && pendingCreateOrderCount > 0}}"
-          title="开单待确认"
+          wx:if="{{isManager}}"
+          title="待确认订单"
           value="{{pendingCreateOrderCount}}条"
           is-link
           bind:click="goOrderListCreate"

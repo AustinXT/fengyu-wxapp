@@ -6,7 +6,7 @@
       "env": {
         "TENCENTCLOUD_SECRETID": "${TENCENTCLOUD_SECRETID}",
         "TENCENTCLOUD_SECRETKEY": "${TENCENTCLOUD_SECRETKEY}",
-        "CLOUDBASE_ENV_ID": "cloud1-3gpht4b01ff88838"
+        "CLOUDBASE_ENV_ID": "${CLOUDBASE_ENV_ID}"
       }
     }
   }

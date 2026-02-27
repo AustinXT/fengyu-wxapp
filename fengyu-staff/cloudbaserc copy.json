@@ -1,0 +1,19 @@
+{
+  "envId": "cloud1-9g3ydpg512eecc99",
+  "version": "2.0",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "staffApi",
+      "timeout": 30,
+      "path": "/cloudfunctions/staffApi",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp",
+        "MSSQL_CONNECTION_STRING": "Server=111.229.31.128,1433;Database=wkdb_20220804_86cd3292;User Id=Sa;Password=oHx#+Q;TrustServerCertificate=True"
+      },
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
+    }
+  ]
+}
