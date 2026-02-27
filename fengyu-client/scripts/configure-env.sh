@@ -8,6 +8,21 @@ echo ""
 echo "此脚本将配置 clientApi 云函数的环境变量"
 echo ""
 
+# 加载 .env 文件（脚本位于 scripts/，.env 在上一级 fengyu-client/）
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/../.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+    echo "✓ 已加载 .env 文件"
+else
+    echo "警告: 未找到 .env 文件 ($ENV_FILE)"
+    echo "请在 fengyu-client/ 目录下创建 .env 文件，参考 .env.example"
+fi
+echo ""
+
 # 检查腾讯云凭证
 if [ -z "$TENCENTCLOUD_SECRETID" ] || [ -z "$TENCENTCLOUD_SECRETKEY" ]; then
     echo "错误: 未找到腾讯云凭证环境变量"

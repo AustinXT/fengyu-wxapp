@@ -37,17 +37,21 @@ async function updateFunctionEnv() {
     const existingEnv = currentConfig.Environment || {};
     const existingVars = existingEnv.Variables || [];
 
+    // 从环境变量读取数据库连接串（由 configure-env.sh 从 .env 加载）
+    const pgConnStr = process.env.PG_CONNECTION_STRING;
+    const mssqlConnStr = process.env.MSSQL_CONNECTION_STRING;
+
+    if (!pgConnStr || !mssqlConnStr) {
+      console.error("错误: 未找到数据库连接串");
+      console.error("  缺少: " + (!pgConnStr ? "PG_CONNECTION_STRING " : "") + (!mssqlConnStr ? "MSSQL_CONNECTION_STRING" : ""));
+      console.error("请确认 fengyu-client/.env 文件存在且包含上述变量");
+      process.exit(1);
+    }
+
     // 新的环境变量
     const newVars = [
-      {
-        Key: "PG_CONNECTION_STRING",
-        Value: "postgresql://fengyu:fengyu123@47.113.202.7:5432/fengyu_wxapp",
-      },
-      {
-        Key: "MSSQL_CONNECTION_STRING",
-        Value:
-          "Server=111.229.31.128,1433;Database=wkdb_20220804_86cd3292;User Id=Sa;Password=oHx#+Q;TrustServerCertificate=True",
-      },
+      { Key: "PG_CONNECTION_STRING", Value: pgConnStr },
+      { Key: "MSSQL_CONNECTION_STRING", Value: mssqlConnStr },
     ];
 
     // 合并：保留旧的，添加/更新新的
