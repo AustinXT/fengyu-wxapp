@@ -1,4 +1,86 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-detail/order-detail.wxss */
-.page-content {
-  padding: 48rpx 24rpx;
+/* pages/order-detail/order-detail.wxss */
+
+.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
+.empty-wrap { padding: 80rpx 0; }
+
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20rpx 32rpx;
 }
+.status-banner--pending  { background: #FFF3E0; color: #D4820A; }
+.status-banner--success  { background: #E8F5E9; color: #3D8A5A; }
+.status-banner--done     { background: #F0F0F0; color: #888888; }
+.status-banner--error    { background: #FFEBEE; color: #D94040; }
+.status-text { font-size: 28rpx; font-weight: 600; }
+.order-no-top { font-size: 22rpx; opacity: 0.75; font-family: monospace; }
+
+.card-group { margin: 24rpx 0; }
+
+.items-card {
+  background: #FFFFFF;
+  padding: 28rpx 32rpx;
+}
+.items-title {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #666;
+  margin-bottom: 20rpx;
+}
+
+.order-item {
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #F0EDE9;
+}
+.order-item:last-child { border-bottom: none; }
+
+.item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 8rpx;
+}
+.item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
+.item-spec {
+  font-size: 22rpx; color: #666;
+  background: #F5F2EE; padding: 2rpx 10rpx; border-radius: 6rpx;
+}
+
+.item-price-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+.item-price { font-size: 26rpx; color: #8B6A3E; font-weight: 600; }
+.item-sessions { font-size: 22rpx; color: #999; }
+.item-flow-no { font-size: 20rpx; color: #BBB; font-family: monospace; display: block; margin-top: 4rpx; }
+
+.total-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 20rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx solid #E5DDD5;
+}
+.total-label { font-size: 26rpx; color: #666; }
+.total-amount { font-size: 40rpx; font-weight: 700; color: #8B6A3E; }
+
+.alloc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid #F0EDE9;
+}
+.alloc-row:last-of-type { border-bottom: none; }
+.alloc-staff { font-size: 26rpx; color: #2D2017; }
+.alloc-right { display: flex; align-items: baseline; }
+.alloc-amount { font-size: 28rpx; font-weight: 600; color: #8B6A3E; }
+.alloc-ratio { font-size: 22rpx; color: #999; }
+
+.re-alloc-btn { margin-top: 20rpx; text-align: right; }
+
+.action-bar { padding: 32rpx; }

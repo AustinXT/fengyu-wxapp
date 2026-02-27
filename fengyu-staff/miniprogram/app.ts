@@ -1,4 +1,6 @@
 // app.ts — 凤御员工端小程序
+import { MOCK_ENABLED } from './utils/dev-config'
+
 App<IAppOption>({
   globalData: {
     userId: '' as string,
@@ -13,6 +15,20 @@ App<IAppOption>({
   onLaunch() {
     wx.cloud.init({ traceUser: true });
     this.restoreFromCache();
+    if (MOCK_ENABLED) {
+      // Mock 模式：使用模拟用户数据，跳过真实 auth.login
+      this.setStaffInfo({
+        userId: 'mock-staff-001',
+        staffWfId: 'WF-00001',
+        staffName: '王店长',
+        role: 'manager',
+        phone: '13800000001',
+        boundStoreName: '南商市场·凤御旗舰店',
+        boundStoreId: 'store-001',
+      });
+      console.log('[Mock] 使用模拟员工数据，跳过 auth.login');
+      return;
+    }
     this.syncLoginState();
   },
 

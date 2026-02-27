@@ -4,41 +4,57 @@ page {
                'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: 28rpx;
   line-height: 1.5;
-  color: #1A1A1A;
-  background-color: #FAFAFA;
+  color: #2D2017;
+  background-color: #F5F2EE;
 
-  /* ===== 业务 CSS 变量（黑金主题） ===== */
-  --color-primary:        #D4A76A;
-  --color-primary-light:  #F5EDE0;
-  --color-primary-dark:   #B8935A;
-  --color-success:        #52C41A;
-  --color-warning:        #FAAD14;
-  --color-error:          #FF4D4F;
-  --color-text-primary:   #1A1A1A;
+  /* ===== 品牌色（棕金系） ===== */
+  --color-primary:       #8B6A3E;
+  --color-primary-light: #C4975A;
+  --color-primary-dark:  #5C4427;
+  --color-accent:        #3D8A5A;
+
+  /* ===== 语义色 ===== */
+  --color-success:  #3D8A5A;
+  --color-warning:  #D4820A;
+  --color-error:    #D94040;
+  --color-info:     #5E8BB3;
+
+  /* ===== 状态徽章背景（低饱和） ===== */
+  --color-badge-pending:   #FFF3E0;
+  --color-badge-confirmed: #E8F5E9;
+  --color-badge-progress:  #E3F0FF;
+  --color-badge-done:      #F0F0F0;
+  --color-badge-error:     #FFEBEE;
+
+  /* ===== 中性色 ===== */
+  --color-text-primary:   #2D2017;
   --color-text-secondary: #666666;
   --color-text-hint:      #999999;
-  --color-border:         #E8E8E8;
-  --color-bg-page:        #FAFAFA;
+  --color-border:         #E5DDD5;
+  --color-bg-page:        #F5F2EE;
   --color-bg-card:        #FFFFFF;
-  --color-brand-black:    #000000;
-  --color-brand-gold:     #D4A76A;
 
-  /* ===== Vant 主题覆盖（黑金主题） ===== */
-  --button-primary-background-color: #D4A76A;
-  --button-primary-border-color:     #D4A76A;
+  /* ===== 间距 ===== */
+  --spacing-page:  32rpx;
+  --spacing-card:  24rpx;
+  --spacing-tight: 16rpx;
+
+  /* ===== Vant 主题覆盖 ===== */
+  --button-primary-background-color: #8B6A3E;
+  --button-primary-border-color:     #8B6A3E;
   --button-primary-color:            #FFFFFF;
   --button-border-radius:            44rpx;
-  --tab-active-color:                #D4A76A;
-  --tabs-bottom-bar-color:           #D4A76A;
-  --tag-primary-background-color:    #D4A76A;
-  --checkbox-checked-icon-color:     #D4A76A;
-  --radio-checked-icon-color:        #D4A76A;
-  --search-action-color:             #D4A76A;
+  --tab-active-color:                #8B6A3E;
+  --tabs-bottom-bar-color:           #8B6A3E;
+  --tag-primary-background-color:    #8B6A3E;
+  --checkbox-checked-icon-color:     #8B6A3E;
+  --radio-checked-icon-color:        #8B6A3E;
+  --search-action-color:             #8B6A3E;
   --cell-right-icon-color:           #999999;
-  --loading-color:                   #D4A76A;
+  --loading-color:                   #8B6A3E;
   --empty-image-size:                200rpx;
-  --sidebar-active-color:            #D4A76A;
-  --sidebar-selected-color:          #D4A76A;
+  --sidebar-active-color:            #8B6A3E;
+  --sidebar-selected-color:          #8B6A3E;
 }
 
 /* ===== 安全区 ===== */
@@ -58,9 +74,24 @@ page {
   background-color: var(--color-border);
 }
 
-/* ===== 状态标签色 ===== */
+/* ===== 状态标签（全局通用） ===== */
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4rpx 16rpx;
+  border-radius: 24rpx;
+  font-size: 22rpx;
+  font-weight: 500;
+}
+.status-tag--pending  { background: var(--color-badge-pending);  color: #D4820A; }
+.status-tag--success  { background: var(--color-badge-confirmed); color: #3D8A5A; }
+.status-tag--progress { background: var(--color-badge-progress);  color: #5E8BB3; }
+.status-tag--done     { background: var(--color-badge-done);      color: #888888; }
+.status-tag--error    { background: var(--color-badge-error);     color: #D94040; }
+
+/* ===== 旧版状态色（兼容） ===== */
 .status-pending    { color: #D48806; }
-.status-confirm    { color: #B8935A; }
+.status-confirm    { color: #8B6A3E; }
 .status-paid       { color: #389E0D; }
 .status-completed  { color: #8C8C8C; }
 .status-failed     { color: #CF1322; }
@@ -74,24 +105,21 @@ page {
   gap: 2rpx;
   color: var(--color-primary);
 }
-
 .price-symbol  { font-size: 22rpx; font-weight: 600; }
 .price-integer { font-size: 40rpx; font-weight: 700; }
 
-/* ===== 品牌黑金渐变 ===== */
+/* ===== 品牌渐变 ===== */
 .brand-gradient {
-  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
+  background: linear-gradient(135deg, #2D2017 0%, #5C4427 100%);
 }
 
-.text-gold { color: var(--color-brand-gold); }
+.text-primary { color: var(--color-primary); }
 
 .card-dark {
-  background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%);
+  background: linear-gradient(135deg, #8B6A3E 0%, #C4975A 100%);
   color: #FFFFFF;
 }
 
-.card-dark .card-title { color: var(--color-brand-gold); }
-
 /* ===== 角色标签 ===== */
-.role-manager   { color: #D4A76A; }
-.role-beautician { color: #096DD9; }
+.role-manager   { color: #C4975A; }
+.role-beautician { color: #3D8A5A; }

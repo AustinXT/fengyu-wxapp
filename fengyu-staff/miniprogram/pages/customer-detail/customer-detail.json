@@ -1,6 +1,12 @@
 {
-  "navigationBarTitleText": "顾客详情",
+  "navigationBarTitleText": "顾客档案",
   "usingComponents": {
+    "van-cell": "@vant/weapp/cell/index",
+    "van-cell-group": "@vant/weapp/cell-group/index",
+    "van-tag": "@vant/weapp/tag/index",
+    "van-icon": "@vant/weapp/icon/index",
+    "van-button": "@vant/weapp/button/index",
+    "van-loading": "@vant/weapp/loading/index",
     "van-empty": "@vant/weapp/empty/index"
   }
 }

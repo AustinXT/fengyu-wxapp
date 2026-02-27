@@ -37,8 +37,8 @@
 
 5. 布局策略：
    - 工作台：垂直分区（分成卡 → 日历 → 代办列表），明确的区块边界
-   - 开单：左侧分类导航 + 右侧内容区双栏布局（复用客户端模式）
-   - 预约：单列 Tab 列表，时间轴感
+   - 开单：直接展示商品目录（左侧分类 + 右侧SPU），结算时选顾客和开单类型
+   - 护理：护理单管理（开护理单 + 状态筛选列表）
    - 全局：32rpx 页面边距，卡片圆角 16rpx，紧凑行高 88~96rpx
 ```
 
@@ -108,10 +108,10 @@ page {
         "selectedIconPath": "images/icons/tab-order-active.png"
       },
       {
-        "pagePath": "pages/appointment/appointment",
-        "text": "预约",
-        "iconPath": "images/icons/tab-appointment.png",
-        "selectedIconPath": "images/icons/tab-appointment-active.png"
+        "pagePath": "pages/service/service",
+        "text": "护理",
+        "iconPath": "images/icons/tab-service.png",
+        "selectedIconPath": "images/icons/tab-service-active.png"
       },
       {
         "pagePath": "pages/profile/profile",
@@ -201,17 +201,34 @@ page {
 
 ```xml
 <view class="commission-card">
-  <view class="commission-header">
-    <text class="commission-label">今日分成（营业额分配）</text>
-    <text class="commission-date">{{today}}</text>
-  </view>
-  <view class="commission-amount">
-    <text class="commission-unit">¥ </text>
-    <text class="commission-value">{{todayCommission}}</text>
-  </view>
-  <view class="commission-monthly">
-    <text>本月累计  ¥ {{monthlyCommission}}</text>
-    <van-icon name="arrow" color="rgba(255,255,255,0.75)" />
+  <!-- 两列布局：今日分成 | 本月累计 -->
+  <view class="commission-columns">
+    <!-- 左列：今日分成 -->
+    <view class="commission-col commission-col--today">
+      <text class="commission-col-label">今日分成（营业额分配）</text>
+      <view class="commission-amount">
+        <text class="commission-unit">¥ </text>
+        <text class="commission-value">{{todayCommission}}</text>
+      </view>
+      <view class="commission-stats">
+        <text class="commission-stat">订单数 {{todayOrderCount}}</text>
+        <text class="commission-stat">服务单数 {{todayServiceCount}}</text>
+      </view>
+    </view>
+    <!-- 分隔线 -->
+    <view class="commission-divider" />
+    <!-- 右列：本月累计（数据来自 staff.monthlyCalendar） -->
+    <view class="commission-col commission-col--monthly">
+      <text class="commission-col-label">本月累计</text>
+      <view class="commission-amount commission-amount--monthly">
+        <text class="commission-unit">¥ </text>
+        <text class="commission-value commission-value--monthly">{{monthlyCommission}}</text>
+      </view>
+      <view class="commission-stats">
+        <text class="commission-stat">订单数 {{monthlyOrderCount}}</text>
+        <text class="commission-stat">服务单数 {{monthlyServiceCount}}</text>
+      </view>
+    </view>
   </view>
   <!-- 仅店长可见 -->
   <view class="store-revenue" wx:if="{{isManager}}">
@@ -228,7 +245,7 @@ page {
 
 **数据来源**：`revenue_allocations` 中当月按 `staff_wf_id = 当前员工` 过滤的每日分配金额汇总（`SUM(total_amount)`）。展示员工本人每天的业绩，而非顾客消费记录。
 
-**API**：调用 `staff.monthlyCalendar`，参数 `{ yearMonth: 'YYYY-MM' }`，返回 `{ dailyData: [{date, amount}], totalAmount }`。
+**API**：调用 `staff.monthlyCalendar`，参数 `{ yearMonth: 'YYYY-MM' }`，返回 `{ dailyData: [{date, amount, orderCount, serviceCount}], totalAmount, totalOrderCount, totalServiceCount }`。其中 `totalAmount` 及汇总计数用于分成卡片右列「本月累计」展示，**不在日历下方单独展示**。
 
 #### 1.3.1 日历组件布局
 
@@ -277,7 +294,7 @@ page {
 │  待处理事项                                     │
 │ ─────────────────────────────────────────────  │
 │  [💰] 待确认收款  1条（仅店长）             >  │
-│  [💰] 待开单      1条（仅店长）             >  │
+│  [💰] 开单待确认  1条（仅店长）             >  │
 │  [🗓] 预约待确认  3条                       >  │
 │  [💆] 服务单待推进  2条                     >  │
 └───────────────────────────────────────────────┘
@@ -296,6 +313,8 @@ page {
 <view class="todo-section">
   <text class="section-title">待处理事项</text>
   <van-cell-group>
+    <!-- 预约待确认：点击跳转预约列表（按"待确认"筛选）；
+         预约 Tab 已并入护理 Tab，预约入口仅保留此代办条目 -->
     <van-cell
       title="预约待确认"
       value="{{pendingAppointments}}条"
@@ -322,9 +341,24 @@ page {
     >
       <van-icon slot="icon" name="gold-coin-o" size="40rpx" color="#8B6A3E" />
     </van-cell>
+    <van-cell
+      wx:if="{{isManager}}"
+      title="开单待确认"
+      value="{{pendingCreateOrders}}条"
+      is-link
+      bind:click="goOrderListPendingCreate"
+    >
+      <van-icon slot="icon" name="records" size="40rpx" color="#8B6A3E" />
+    </van-cell>
   </van-cell-group>
 </view>
 ```
+
+**跳转逻辑：**
+- 预约待确认 → `pages/appointment/appointment?tab=pending`（预约列表页，待确认筛选）
+- 服务单待推进 → `pages/service/service`（护理 Tab）
+- 待确认收款 → `pages/order-list/order-list?status=pendingOffline`
+- 开单待确认 → `pages/order-list/order-list?status=pendingCreate`
 
 ---
 
@@ -360,98 +394,19 @@ page {
 
 ### 页面功能
 
-复用客户端商品浏览三层结构，延伸为完整开单流程：
+Tab 页直接展示商品目录（左侧分类 + 右侧 SPU，与客户端「服务」Tab 同款双栏布局），员工边与顾客沟通边选择商品。选好后通过底部操作栏点击「下单」，弹出结算面板，依次完成顾客确认、开单类型、订单确认、营业额分配，最终生成收款二维码。
 
 ```text
-选择顾客 → 选择开单类型 → 添加商品（左栏分类 + 右栏SPU）→ 选择SKU规格 →
-确认订单行 → 营业额分配 → 生成二维码 → 等待支付
+[商品目录主视图] ──点击"下单"──→ [结算面板 Step 0~4] ──→ [订单二维码页]
 ```
 
 ---
 
-### 2.1 页面状态机
-
-```text
-step 0: 选择顾客
-step 1: 选择开单类型（商品目录 / 促销方案 / 体验单）
-step 2: 选择商品（左侧分类 + 右侧SPU列表）
-step 3: 确认订单行（价格汇总 + 可修改数量）
-step 4: 营业额分配
-step 5: 生成订单二维码（展示支付状态）
-```
-
-页面顶部 `van-steps` 步骤条 显示当前进度（仅 step 0~4，生成二维码为独立页面）。
-
----
-
-### 2.2 Step 0 — 选择顾客
-
-```text
-┌───────────────────────────────────────────────┐
-│  ← 开单  [步骤: 选择顾客]                       │
-│                                               │
-│  手机号（必填）：                               │
-│  ┌──────────────────────────────────────┐     │
-│  │  138 8888 0000                        │     │
-│  └──────────────────────────────────────┘     │
-│                                               │
-│  [查询]                                        │
-│                                               │
-│  ── 查询结果 ──────────────────────────────    │
-│  顾客姓名：张美玲                               │
-│  会员等级：VIP                                  │
-│  所属美容师：李芳芳                              │
-│  状态：已注册客户端小程序 ✓                       │
-│                                               │
-│  ──────────────────────── [确认选择此顾客]       │
-└───────────────────────────────────────────────┘
-```
-
-**交互逻辑：**
-- 输入手机号（11位）后点击"查询"，调用 `customer.search`
-- 已注册客户端：显示顾客完整信息（店长可见手机号，美容师仅见脱敏）
-- 未注册客户端：提示"该手机号未注册客户端小程序，订单将以手机号作为临时标识，顾客绑定后自动关联"，仍可继续开单
-- 找不到 WorkFine 档案：提示"WorkFine 无此顾客档案，请确认手机号或联系店长"
-
-**数据说明**：
-- 查询来源：`client_wechat_users.phone`（判断是否注册）+ WorkFine `UDT_S_311.UDF_S_1478`（顾客档案）
-
----
-
-### 2.3 Step 1 — 选择开单类型
-
-```text
-┌───────────────────────────────────────────────┐
-│  ← 开单  [步骤: 选择类型]                       │
-│                                               │
-│  顾客：张美玲  138****8888                      │
-│                                               │
-│  选择开单模式：                                 │
-│                                               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │  商品目录  │  │  促销方案  │  │  体验单   │    │
-│  │ 选择服务  │  │  套餐开单  │  │ 自定义价 │    │
-│  └──────────┘  └──────────┘  └──────────┘    │
-└───────────────────────────────────────────────┘
-```
-
-**三种模式说明：**
-
-| 模式 | 说明 | 数据来源 |
-|------|------|------|
-| 商品目录 | 从 SPU/SKU 三层结构选择（疗程卡、单品、院装产品） | PG `product_spu` + WorkFine 实时价格 |
-| 促销方案 | 选择一个促销方案，项目自动填入，不可增删 | WorkFine `UDT_S_1459 / UDT_M_1460` |
-| 体验单 | **仅店长**，自定义金额，用于首次体验/引流 | 商品库选择 + 店长自定义金额 |
-
----
-
-### 2.4 Step 2A — 选择商品（商品目录模式）
-
-**布局**：左右双栏，与客户端 product-list 页复用相同结构。
+### 2.1 页面主视图（商品目录 + 底部操作栏）
 
 ```text
 ┌─────────────────────────────────────────────────────┐
-│  ← 开单  添加商品                         [已选 2 项] │
+│  ← 开单                                  [促销方案 ↗] │
 ├───────────────┬─────────────────────────────────────┤
 │ 蜜语生玑       │  蜜语生玑精华护理疗程                  │
 │ 安吉丽美颜之爱  │  ¥ 起 3,800   生美  [+ 添加]         │
@@ -463,22 +418,116 @@ step 5: 生成订单二维码（展示支付状态）
 │               │  蜜语精华护理疗程 x1   ¥ 3,800   [×] │
 │               │  明眸祛皱  x1          ¥ 1,200   [×] │
 └───────────────┴─────────────────────────────────────┘
-│              合计  ¥ 5,000           [下一步：营业额分配] │
-└───────────────────────────────────────────────────────┘
+│ [促销方案快捷入口]    已选 2 项 ¥5,000.00    [下单]  │
+└─────────────────────────────────────────────────────┘
 ```
 
 **交互细节：**
 - 点击 SPU 卡片 → 弹出 SKU 规格面板（`van-popup position="bottom"`）
 - SKU 规格面板展示：规格名（"10次卡"/"20次卡"）+ 价格 + 次数（疗程卡显示）
-- 同一 SPU 可多次添加不同 SKU
-- 底部汇总行固定吸底，显示已选项目数 + 合计金额
-- 院装产品添加时无需选次数规格（直接添加，quantity 可调整）
+- 同一 SPU 可多次添加不同 SKU；院装产品直接添加，quantity 可调整
+- 右上角「促销方案 ↗」= 快捷跳转促销方案选择流程（同底部快捷入口）
+- 底部操作栏固定吸底：左侧「促销方案快捷入口」按钮，右侧显示「已选 N 项 ¥X,XXX」+ **「下单」**按钮
+- 点击「下单」弹出结算面板（`van-popup position="bottom" round`）
 
-**体验单模式额外显示**：SKU 规格面板内，金额字段可编辑（`<input type="digit">`），店长自定义价格。
+**体验单模式额外说明**：SKU 规格面板内，金额字段可编辑（`<input type="digit">`），仅店长可使用自定义价格。
 
 ---
 
-### 2.5 Step 2B — 选择促销方案
+### 2.2 结算面板 — Step 0：选择顾客
+
+```text
+┌───────────────────────────────────────────────┐
+│  结算面板  [●○○○○] 选择顾客                     │
+│                                               │
+│  最近选择：                                    │
+│  [头像] 张美玲  138****8888           [选择 >]  │
+│  [头像] 王芳    139****5555           [选择 >]  │
+│  [头像] 李晓华  136****2233           [选择 >]  │
+│                                               │
+│  ┌──────────────────────────────────────┐     │
+│  │  🔍 输入手机号搜索顾客...              │     │
+│  └──────────────────────────────────────┘     │
+│                                               │
+│  ── 搜索结果 ──────────────────────────────    │
+│  顾客姓名：张美玲                               │
+│  会员等级：VIP  ·  138 8888 0000（店长）        │
+│  所属美容师：李芳芳                              │
+│                                               │
+│  ──────────────────────── [确认选择此顾客]       │
+└───────────────────────────────────────────────┘
+```
+
+**交互逻辑：**
+- 默认展示最近 3~5 位选择过的顾客（从本地 `wx.getStorageSync('recentCustomers')` 读取），点击「选择」直接确认
+- 搜索框支持手机号（11位）输入，调用 `customer.search`；搜索结果与最近记录并列展示
+- 已注册客户端：显示顾客信息（店长可见完整手机号，美容师脱敏）
+- 未注册客户端：提示"该手机号未注册客户端小程序，订单将以手机号作为临时标识，顾客绑定后自动关联"，仍可继续开单
+- 找不到 WorkFine 档案：提示"WorkFine 无此顾客档案，请确认手机号或联系店长"
+- 确认顾客后，将顾客信息写入 `recentCustomers`（最多保留 5 条，按最近时间排序）
+
+**数据说明**：
+- 查询来源：`client_wechat_users.phone`（判断是否注册）+ WorkFine `UDT_S_311.UDF_S_1478`（顾客档案）
+
+---
+
+### 2.3 结算面板 — Step 1：选择开单类型
+
+```text
+┌───────────────────────────────────────────────┐
+│  结算面板  [●●○○○] 选择开单类型                  │
+│                                               │
+│  顾客：张美玲  138****8888                      │
+│                                               │
+│  选择开单模式：                                 │
+│                                               │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
+│  │  正常单   │  │  促销方案  │  │  体验单   │    │
+│  │ SPU/SKU  │  │  套餐开单  │  │ 仅店长   │    │
+│  └──────────┘  └──────────┘  └──────────┘    │
+└───────────────────────────────────────────────┘
+```
+
+**三种开单类型说明：**
+
+| 类型 | 说明 | 商品来源 | 权限 |
+|------|------|------|------|
+| 正常单 | 从商品目录已选项目出单，可增删 | PG `product_spu` + WorkFine 实时价格 | 全员 |
+| 促销方案 | 选择一个促销方案，项目自动填入，不可增删；`order_type` 绑定 `promotion_plan_id` | WorkFine `UDT_S_1459 / UDT_M_1460` | 全员 |
+| 体验单 | 自定义金额，用于首次体验/引流 | 商品库选择 + 店长自定义金额 | 仅店长 |
+
+选择「促销方案」后继续弹出方案列表（见 2.5），选定方案后商品行替换为方案内容。
+
+---
+
+### 2.4 结算面板 — Step 2：确认订单明细
+
+```text
+┌───────────────────────────────────────────────┐
+│  结算面板  [●●●○○] 确认订单明细                  │
+│                                               │
+│  顾客：张美玲  ·  正常单                        │
+│  ─────────────────────────────────────────    │
+│  蜜语精华护理疗程  10次卡  x1        ¥ 3,800   │
+│  明眸祛皱疗程      单品    x1        ¥ 1,200   │
+│  ─────────────────────────────────────────    │
+│  合计：¥ 5,000.00                             │
+│                                               │
+│  备注（选填）：______________________           │
+│                                               │
+│  [← 返回修改商品]               [下一步 →]     │
+└───────────────────────────────────────────────┘
+```
+
+**交互逻辑：**
+- 列表展示主视图已选商品行（可点击「返回修改商品」回到主视图调整）
+- 数量可在此页微调（`+/-`），单价不可修改（体验单除外）
+- 备注为选填，最多 100 字
+- 点击「下一步」进入营业额分配
+
+---
+
+### 2.5 促销方案选择（Step 1 促销方案模式）
 
 ```text
 ┌───────────────────────────────────────────────┐
@@ -499,7 +548,7 @@ step 5: 生成订单二维码（展示支付状态）
 
 ---
 
-### 2.6 Step 3 — 营业额分配（revenue-allocation）
+### 2.6 结算面板 — Step 3：营业额分配（revenue-allocation）
 
 **文件路径**：`pages/revenue-allocation/revenue-allocation.*`（独立页面，从订单详情也可访问）
 
@@ -546,7 +595,7 @@ step 5: 生成订单二维码（展示支付状态）
 
 ---
 
-### 2.7 Step 4 — 生成订单二维码（order-qrcode）
+### 2.7 结算面板 — Step 4：生成订单二维码（order-qrcode）
 
 **文件路径**：`pages/order-qrcode/order-qrcode.*`
 
@@ -585,105 +634,96 @@ step 5: 生成订单二维码（展示支付状态）
 
 ---
 
-## 三、预约（appointment）
+## 三、护理（service）
 
-**文件路径**：`pages/appointment/appointment.*`
+**文件路径**：`pages/service/service.*`
 
 ### 页面功能
 
-管理顾客发起的预约请求，推进预约从待确认 → 已确认 → 到店 → 服务单的完整流程。
+护理 Tab 是美容师日常操作的核心入口，提供护理单的创建与状态管理，涵盖从「待服务」到「已完成」的完整服务流程。
+
+> **预约管理说明**：预约列表不再独立占用 Tab，预约相关操作通过工作台代办区「预约待确认」条目进入，或从顾客档案页访问。
 
 ---
 
-### 3.1 预约列表页
+### 3.1 护理单列表
 
 ```text
 ┌───────────────────────────────────────────────┐
-│  预约管理                                       │
-│  ┌────────┬────────┬────────┬────────┐         │
-│  │ 全部 3 │待确认 2│已确认 1│已完成  │         │
-│  └────────┴────────┴────────┴────────┘         │
-│                                               │
-│  ─ 今天 2026-02-27 ─────────────────────      │
+│  护理                                          │
+│  ┌──────────┬──────────┬──────────┐           │
+│  │ 待服务 2  │ 服务中 1  │ 已完成    │           │
+│  └──────────┴──────────┴──────────┘           │
 │                                               │
 │  ┌─────────────────────────────────────────┐  │
-│  │  [待确认]                                │  │
-│  │  张美玲  蜜语精华护理疗程                  │  │
-│  │  预约时间：14:00              李芳芳       │  │
-│  │  备注：希望下午时段            [确认预约]   │  │
+│  │  [待服务]  HLD-WX-260227001              │  │
+│  │  张美玲    蜜语精华护理疗程（10次卡）       │  │
+│  │  服务时间：今天 14:00                     │  │
+│  │  剩余次数：8 / 10                         │  │
+│  │                           [开始服务]      │  │
 │  └─────────────────────────────────────────┘  │
 │                                               │
 │  ┌─────────────────────────────────────────┐  │
-│  │  [已确认]                                │  │
-│  │  王芳    明眸祛皱疗程                     │  │
-│  │  预约时间：16:30              李芳芳       │  │
-│  │                               [顾客到店]  │  │
+│  │  [服务中]  HLD-WX-260227002              │  │
+│  │  王芳      明眸祛皱疗程                    │  │
+│  │  开始时间：13:05（进行中 42分钟）           │  │
+│  │                           [确认完成]      │  │
 │  └─────────────────────────────────────────┘  │
 │                                               │
-│  ─ 明天 2026-02-28 ─────────────────────      │
-│  ...                                          │
+│                               [+ 新建护理单]   │
 └───────────────────────────────────────────────┘
 ```
 
-**筛选 Tab**：`van-tabs` 横向 Tab，按预约状态筛选：
-- 全部（含全状态）
-- 待确认（显示数量徽章）
-- 已确认
-- 已完成 / 已取消 / 已关闭（合并为"历史"Tab）
+**Tab 筛选：**
+- 待服务（显示数量徽章）
+- 服务中（显示数量徽章）
+- 已完成
 
 **权限规则：**
-- 店长：可见本店所有预约
-- 美容师：仅可见 `staff_wf_id = 当前员工` 的预约
+- 美容师：仅可见 `assigned_staff_wf_id = 当前员工` 的护理单
+- 店长：可见本店全部护理单（额外 Tab 或筛选入口）
+
+**FAB 按钮**：右下角固定「+ 新建护理单」按钮 → 跳转 `service-create` 页（见规范 5.4）
 
 **列表卡片字段：**
-- 顾客姓名 + 脱敏手机号（店长可见完整）
-- 预约项目名称（`appointment.notes` 中顾客填写的备注，如有）
-- 预约时间（精确到分钟）
-- 美容师姓名
-- 状态徽章（`--color-badge-*` 配色）
-- 操作按钮（根据当前状态）
+- 护理单编号（`service_orders.service_no`）
+- 顾客姓名 + 脱敏手机号
+- 服务项目名称 + 规格（疗程卡显示剩余次数）
+- 预计服务时间 / 开始时间
+- 状态徽章 + 操作按钮
 
 **操作按钮状态矩阵：**
 
-| 预约状态 | 可用操作 |
-|----------|---------|
-| 待确认 | [确认预约] |
-| 已确认 | [顾客到店]（记录签到时间，不改变预约状态） |
-| 已确认 + 已签到 | [创建服务单]（跳转 service-create，传入 appointment_id） |
+| 状态 | 可用操作 |
+|------|---------|
+| 待服务 | [开始服务] → 调用 `service.start` |
+| 服务中 | [确认完成] → 弹窗确认 → 调用 `service.complete` |
+| 已完成 | [查看详情] → `service-detail` |
 
 ---
 
-### 3.2 预约详情页（appointment-detail）
+### 3.2 新建护理单（快捷入口）
 
-**文件路径**：`pages/appointment-detail/appointment-detail.*`
+点击 FAB「+ 新建护理单」→ 跳转 `pages/service-create/service-create`，规范详见 **5.4 创建服务单**。
 
-```text
-┌───────────────────────────────────────────────┐
-│  ← 预约详情                     [待确认] 状态   │
-│  ─────────────────────────────────────────    │
-│  顾客  张美玲    138****8888（店长可见完整号）    │
-│  项目  蜜语精华护理疗程                         │
-│  时间  2026-02-27  14:00                       │
-│  美容师  李芳芳                                 │
-│  备注  希望下午时段，皮肤较敏感                   │
-│  创建时间  2026-02-25 10:30                    │
-│                                               │
-│  ─────────────────────────────────────────    │
-│  操作记录                                      │
-│  ● 顾客发起预约  02-25 10:30                   │
-│  ● 签到时间  —（未到店）                        │
-│                                               │
-│             [确认预约]     [拒绝]              │
-└───────────────────────────────────────────────┘
-```
-
-**状态推进按钮：**
-- 待确认：[确认预约] 调用 `appointment.confirm`
-- 已确认：[顾客到店] 调用 `appointment.checkin`（记录到店时间）
-- 已签到：[创建服务单] 跳转 `service-create` 页，`appointment_id` 作为参数
-- 已完成：页面底部显示关联服务单号，可点击查看
+**触发场景：**
+- 护理 Tab FAB 按钮（无关联预约，无 `appointment_id`）
+- 预约详情页「创建服务单」按钮（携带 `appointment_id`）
+- 顾客档案页「新建服务单」按钮（无 `appointment_id`）
 
 ---
+
+### 3.3 预约管理（非 Tab 子页面）
+
+预约相关页面保留为非 Tab 子页面，入口如下：
+
+| 入口 | 目标页面 |
+|------|---------|
+| 工作台代办「预约待确认 N条」 | `pages/appointment/appointment?tab=pending` |
+| 顾客档案页「预约记录」 | `pages/appointment-detail/appointment-detail` |
+| 护理单详情「关联预约」 | `pages/appointment-detail/appointment-detail` |
+
+**预约列表页**（`pages/appointment/appointment`）与**预约详情页**（`pages/appointment-detail/appointment-detail`）规范保持不变，详见原预约规范（文档内 5.x 子页面，或独立子文档）。
 
 ## 四、我的（profile）
 
@@ -733,7 +773,7 @@ step 5: 生成订单二维码（展示支付状态）
 | 入口 | 跳转目标 | 权限 |
 |------|---------|------|
 | 所属门店 | 门店选择弹出层（`van-picker`） | 全员（切换门店） |
-| 服务单管理 | `service-list` | 全员 |
+| 服务单管理 | `pages/service/service`（护理 Tab） | 全员 |
 | 订单记录 | `order-list` | 店长（美容师不展示） |
 | 顾客档案 | `customer-list` | 全员（美容师仅见相关顾客） |
 
@@ -822,7 +862,9 @@ step 5: 生成订单二维码（展示支付状态）
 
 ### 5.2 服务单列表（service-list）
 
-**文件路径**：`pages/service-list/service-list.*`
+> **注**：护理单列表现已作为独立 Tab 页实现，文件路径已更新为 `pages/service/service.*`（见 **三、护理**）。本节 WXML/布局规范作为设计参考保留。
+
+**文件路径**：`pages/service/service.*`（护理 Tab 主页）
 
 ```text
 ┌───────────────────────────────────────────────┐
@@ -1100,11 +1142,11 @@ properties: {
 | 订单列表 | `pages/order-list/order-list` | — | 仅店长 |
 | 订单详情 | `pages/order-detail/order-detail` | — | 仅店长 |
 | 营业额分配 | `pages/revenue-allocation/revenue-allocation` | — | 仅店长 |
-| 预约 | `pages/appointment/appointment` | ✓ | 全员 |
-| 预约详情 | `pages/appointment-detail/appointment-detail` | — | 全员（权限过滤） |
-| 服务单列表 | `pages/service-list/service-list` | — | 全员 |
+| 护理 | `pages/service/service` | ✓ | 全员 |
 | 服务单详情 | `pages/service-detail/service-detail` | — | 全员（权限过滤） |
 | 创建服务单 | `pages/service-create/service-create` | — | 全员（权限过滤） |
+| 预约列表 | `pages/appointment/appointment` | — | 全员（权限过滤） |
+| 预约详情 | `pages/appointment-detail/appointment-detail` | — | 全员（权限过滤） |
 | 顾客列表 | `pages/customer-list/customer-list` | — | 全员（权限过滤） |
 | 顾客档案 | `pages/customer-detail/customer-detail` | — | 全员（权限过滤） |
 | 我的 | `pages/profile/profile` | ✓ | 全员 |

@@ -1,4 +1,5 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/customer-list/customer-list.wxss */
-.page-content {
-  padding: 48rpx 24rpx;
-}
+/* pages/customer-list/customer-list.wxss */
+.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
+.empty-wrap { padding: 80rpx 0; }
+.hint-wrap { padding: 80rpx 32rpx; text-align: center; }
+.hint-text { font-size: 26rpx; color: #999; }

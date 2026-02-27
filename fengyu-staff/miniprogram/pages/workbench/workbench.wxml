@@ -1,55 +1,66 @@
 <!-- pages/workbench/workbench.wxml — 工作台 -->
 <view class="container">
 
-  <!-- 顶部员工信息 -->
-  <view class="header brand-gradient">
-    <view class="header-store">
-      <text class="header-store-name">{{storeName || '未绑定门店'}}</text>
-      <text class="header-role {{role === 'manager' ? 'role-manager' : 'role-beautician'}}">
-        {{role === 'manager' ? '店长' : '美容师'}}
-      </text>
+  <!-- 页面头部 -->
+  <view class="page-header brand-gradient">
+    <view class="store-info">
+      <text class="store-name">{{storeName || '未绑定门店'}}</text>
+      <view class="role-badge role-badge--{{role}}">
+        <text class="role-text">{{role === 'manager' ? '店长' : '美容师'}}</text>
+      </view>
     </view>
-    <view class="header-staff">
-      <text class="header-staff-name">{{staffName || '未登录'}}</text>
-    </view>
+    <van-icon name="replay" size="40rpx" color="#C4975A" bind:click="onRefresh" />
   </view>
 
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="loading-wrap">
-    <van-loading type="spinner" color="#D4A76A" />
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
 
   <block wx:else>
 
-    <!-- 1. 今日分成 -->
-    <view class="section">
-      <view class="section-header">
-        <text class="section-title">我的今日分成</text>
-        <text class="section-date">{{today}}</text>
-      </view>
-      <view class="commission-card card-dark">
-        <view class="commission-main">
-          <text class="commission-label">今日业绩</text>
-          <view class="price-group">
-            <text class="price-symbol">¥</text>
-            <text class="price-integer">{{todayCommission}}</text>
+    <!-- 1. 分成卡片（两列） -->
+    <view class="section-wrap">
+      <view class="commission-card">
+        <view class="commission-columns">
+          <!-- 左列：今日分成 -->
+          <view class="commission-col">
+            <text class="commission-col-label">今日分成（营业额）</text>
+            <view class="price-row">
+              <text class="price-unit">¥ </text>
+              <text class="price-value">{{todayCommission}}</text>
+            </view>
+            <view class="commission-stats">
+              <text class="commission-stat">订单 {{todayOrderCount}}</text>
+              <text class="commission-stat-sep">·</text>
+              <text class="commission-stat">服务单 {{todayServiceCount}}</text>
+            </view>
+          </view>
+          <!-- 分隔线 -->
+          <view class="commission-divider" />
+          <!-- 右列：本月累计 -->
+          <view class="commission-col commission-col--right">
+            <text class="commission-col-label">本月累计</text>
+            <view class="price-row price-row--monthly">
+              <text class="price-unit price-unit--monthly">¥ </text>
+              <text class="price-value price-value--monthly">{{monthlyCommission}}</text>
+            </view>
+            <view class="commission-stats">
+              <text class="commission-stat">订单 {{monthlyOrderCount}}</text>
+              <text class="commission-stat-sep">·</text>
+              <text class="commission-stat">服务单 {{monthlyServiceCount}}</text>
+            </view>
           </view>
         </view>
-        <view class="commission-detail">
-          <view class="commission-item">
-            <text class="commission-item-label">订单数</text>
-            <text class="commission-item-value">{{todayOrderCount}}</text>
-          </view>
-          <view class="commission-item">
-            <text class="commission-item-label">服务单</text>
-            <text class="commission-item-value">{{todayServiceCount}}</text>
-          </view>
+        <!-- 仅店长：门店今日营收 -->
+        <view class="store-revenue" wx:if="{{isManager}}">
+          <text class="store-revenue-text">门店今日营收  ¥ {{storeTodayRevenue}}</text>
         </view>
       </view>
     </view>
 
     <!-- 2. 本月业绩日历 -->
-    <view class="section">
+    <view class="section-card">
       <view class="section-header">
         <text class="section-title">本月业绩</text>
         <view class="month-nav">
@@ -57,10 +68,6 @@
           <text class="month-label">{{monthLabel}}</text>
           <van-icon name="arrow" size="32rpx" color="#8B6A3E" bindtap="onNextMonth" />
         </view>
-      </view>
-      <view class="month-total">
-        <text class="month-total-label">本月累计</text>
-        <text class="month-total-value">¥ {{monthlyTotal}}</text>
       </view>
       <!-- 星期标题 -->
       <view class="cal-weekdays">
@@ -79,77 +86,87 @@
       </view>
     </view>
 
-    <!-- 3. 代办/消息 -->
-    <view class="section">
+    <!-- 3. 代办事项 -->
+    <view class="section-card">
       <view class="section-header">
-        <text class="section-title">代办 / 消息</text>
-        <text class="todo-badge" wx:if="{{todoList.length > 0}}">{{todoList.length}}</text>
+        <text class="section-title">待处理事项</text>
       </view>
-
-      <view wx:if="{{todoList.length === 0}}" class="empty-todo">
-        <van-empty description="暂无待处理事项" />
-      </view>
-
-      <view wx:else class="todo-list">
-        <view
-          class="todo-item"
-          wx:for="{{todoList}}"
-          wx:key="id"
-          bindtap="onTodoTap"
-          data-item="{{item}}"
+      <van-cell-group>
+        <van-cell
+          title="预约待确认"
+          value="{{pendingAppointmentCount}}条"
+          is-link
+          bind:click="goAppointments"
         >
-          <view class="todo-icon {{item.type === 'appointment' ? 'todo-icon-appt' : 'todo-icon-service'}}">
-            <van-icon name="{{item.type === 'appointment' ? 'calendar-o' : 'todo-list-o'}}" size="36rpx" />
-          </view>
-          <view class="todo-content">
-            <text class="todo-title">{{item.title}}</text>
-            <text class="todo-desc">{{item.desc}}</text>
-          </view>
-          <van-icon name="arrow" color="#999" />
-        </view>
-      </view>
+          <van-icon slot="icon" name="clock-o" size="40rpx" color="#D4820A" class="cell-icon" />
+        </van-cell>
+        <van-cell
+          title="服务单待推进"
+          value="{{pendingServiceCount}}条"
+          is-link
+          bind:click="goServiceList"
+        >
+          <van-icon slot="icon" name="flower-o" size="40rpx" color="#3D8A5A" class="cell-icon" />
+        </van-cell>
+        <van-cell
+          wx:if="{{isManager}}"
+          title="待确认收款"
+          value="{{pendingOfflineOrderCount}}条"
+          is-link
+          bind:click="goOrderListOffline"
+        >
+          <van-icon slot="icon" name="gold-coin-o" size="40rpx" color="#8B6A3E" class="cell-icon" />
+        </van-cell>
+        <van-cell
+          wx:if="{{isManager && pendingCreateOrderCount > 0}}"
+          title="开单待确认"
+          value="{{pendingCreateOrderCount}}条"
+          is-link
+          bind:click="goOrderListCreate"
+        >
+          <van-icon slot="icon" name="records" size="40rpx" color="#8B6A3E" class="cell-icon" />
+        </van-cell>
+      </van-cell-group>
     </view>
 
-    <!-- 4. 顾客服务搜索入口 -->
-    <view class="section">
+    <!-- 4. 顾客档案搜索 -->
+    <view class="section-card">
       <view class="section-header">
         <text class="section-title">顾客档案</text>
         <text class="section-more" bindtap="onViewCustomerList">全部 ›</text>
       </view>
-      <view class="section-desc">
-        <text class="section-desc-text">搜索顾客查看档案、疗程卡及预约信息</text>
-      </view>
-      <view class="search-bar">
-        <van-search
-          value="{{searchKeyword}}"
-          placeholder="输入手机号搜索顾客"
-          bind:search="onCustomerSearch"
-          bind:change="onSearchChange"
-          use-action-slot
-        >
-          <view slot="action" bindtap="onCustomerSearch">搜索</view>
-        </van-search>
-      </view>
+      <text class="section-desc">搜索顾客查看档案、疗程卡及预约信息</text>
+      <van-search
+        value="{{searchKeyword}}"
+        placeholder="输入手机号搜索顾客"
+        bind:search="onCustomerSearch"
+        bind:change="onSearchChange"
+        use-action-slot
+      >
+        <view slot="action" bindtap="onCustomerSearch">搜索</view>
+      </van-search>
 
-      <view wx:if="{{recentCustomers.length === 0}}" class="empty-customers">
-        <text class="empty-text">搜索后可查看顾客档案、疗程卡及预约</text>
-      </view>
-
-      <view wx:else class="customer-list">
+      <view wx:if="{{customerResults.length > 0}}" class="customer-results">
         <van-cell-group>
           <van-cell
-            wx:for="{{recentCustomers}}"
+            wx:for="{{customerResults}}"
             wx:key="id"
             title="{{item.name || item.phone}}"
-            label="{{item.phone}}"
+            label="{{item.phoneMasked || item.phone}}"
             is-link
             bindtap="onCustomerTap"
             data-id="{{item.id}}"
-            data-phone="{{item.phone}}"
           />
         </van-cell-group>
       </view>
+
+      <view wx:elif="{{searchKeyword}}" class="empty-hint">
+        <text class="empty-hint-text">无搜索结果</text>
+      </view>
     </view>
+
+    <!-- 底部安全区 -->
+    <view class="safe-area-bottom" />
 
   </block>
 

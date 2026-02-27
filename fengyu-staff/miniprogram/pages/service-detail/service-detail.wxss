@@ -1,4 +1,56 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/service-detail/service-detail.wxss */
-.page-content {
-  padding: 48rpx 24rpx;
+/* pages/service-detail/service-detail.wxss */
+
+.loading-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 120rpx 0;
+}
+
+.empty-wrap { padding: 80rpx 0; }
+
+.status-banner {
+  padding: 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.status-banner--pending { background: #FFF3E0; }
+.status-banner--progress { background: #E3F0FF; }
+.status-banner--done { background: #F0F0F0; }
+
+.status-label { font-size: 36rpx; font-weight: 700; }
+.status-banner--pending .status-label { color: #D4820A; }
+.status-banner--progress .status-label { color: #5E8BB3; }
+.status-banner--done .status-label { color: #888888; }
+
+.service-no { font-size: 24rpx; color: #666666; font-family: monospace; }
+
+.section-group { margin-top: 24rpx; }
+
+.section-title-row {
+  padding: 16rpx 32rpx 8rpx;
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #F5F2EE;
+}
+.section-title { font-size: 26rpx; color: #8B6A3E; font-weight: 600; }
+
+.item-row {
+  background: #FFFFFF;
+  padding: 20rpx 32rpx;
+  border-bottom: 1rpx solid #F5F2EE;
+}
+.item-row:last-child { border-bottom: none; }
+
+.item-name { font-size: 30rpx; color: #2D2017; font-weight: 500; display: block; margin-bottom: 8rpx; }
+.item-meta { display: flex; align-items: center; gap: 16rpx; margin-bottom: 8rpx; }
+.item-spec { font-size: 24rpx; color: #666666; background: #F5F2EE; padding: 2rpx 12rpx; border-radius: 8rpx; }
+.item-sessions { font-size: 24rpx; color: #8B6A3E; }
+.item-flow-no { font-size: 22rpx; color: #BBBBBB; font-family: monospace; display: block; }
+
+.cell-icon { margin-right: 12rpx; }
+
+.action-bar {
+  padding: 32rpx;
+  background: #FFFFFF;
+  margin-top: 24rpx;
 }

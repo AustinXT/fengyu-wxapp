@@ -1,6 +1,69 @@
-<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/service-detail/service-detail.wxml -->
+<!-- pages/service-detail/service-detail.wxml -->
 <view class="container">
-  <view class="page-content">
-    <van-empty description="��开发中）" />
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
+
+  <view wx:elif="{{!detail}}" class="empty-wrap">
+    <van-empty description="服务单不存在" />
+  </view>
+
+  <block wx:else>
+    <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : 'done'}}">
+      <text class="status-label">{{detail.status}}</text>
+      <text class="service-no">{{detail.serviceNo}}</text>
+    </view>
+
+    <van-cell-group title="基本信息" class="section-group">
+      <van-cell title="顾客" value="{{detail.customerName}}" />
+      <van-cell title="手机号" value="{{detail.customerPhone}}" />
+      <van-cell title="服务人员" value="{{detail.staffName}}" />
+      <van-cell title="预计时间" value="{{detail.serviceTime}}" wx:if="{{detail.status === '待服务'}}" />
+      <van-cell title="开始时间" value="{{detail.startTime || '—'}}" wx:if="{{detail.status !== '待服务'}}" />
+      <van-cell title="完成时间" value="{{detail.completedTime || '—'}}" wx:if="{{detail.status === '已完成'}}" />
+    </van-cell-group>
+
+    <view class="section-group">
+      <view class="section-title-row">
+        <text class="section-title">核销明细</text>
+      </view>
+      <view class="item-row" wx:for="{{detail.items}}" wx:key="itemFlowNo">
+        <view class="item-info">
+          <text class="item-name">{{item.itemName}}</text>
+          <view class="item-meta">
+            <text class="item-spec">{{item.spec}}</text>
+            <text class="item-sessions" wx:if="{{item.totalSessions > 1}}">
+              本次核销 {{item.sessionCount}} 次 · 剩余 {{item.remainingSessions}}/{{item.totalSessions}}
+            </text>
+          </view>
+          <text class="item-flow-no">流水号：{{item.itemFlowNo}}</text>
+        </view>
+      </view>
+    </view>
+
+    <van-cell-group title="关联信息" class="section-group" wx:if="{{detail.appointmentId || detail.remark}}">
+      <van-cell wx:if="{{detail.appointmentId}}" title="关联预约" is-link bind:click="onViewAppointment">
+        <van-icon slot="icon" name="calendar-o" class="cell-icon" />
+      </van-cell>
+      <van-cell wx:if="{{detail.remark}}" title="备注" value="{{detail.remark}}" />
+    </van-cell-group>
+
+    <view class="action-bar">
+      <van-button
+        wx:if="{{detail.status === '待服务'}}"
+        type="primary" block
+        custom-style="background: #8B6A3E; border-color: #8B6A3E; border-radius: 48rpx;"
+        bind:click="onStartService"
+      >开始服务</van-button>
+      <van-button
+        wx:elif="{{detail.status === '服务中'}}"
+        type="primary" block
+        custom-style="background: #3D8A5A; border-color: #3D8A5A; border-radius: 48rpx;"
+        bind:click="onCompleteService"
+      >确认完成</van-button>
+    </view>
+
+    <view class="safe-area-bottom" />
+  </block>
 </view>

@@ -1,6 +1,9 @@
 {
   "navigationBarTitleText": "订单二维码",
   "usingComponents": {
+    "van-icon": "@vant/weapp/icon/index",
+    "van-button": "@vant/weapp/button/index",
+    "van-loading": "@vant/weapp/loading/index",
     "van-empty": "@vant/weapp/empty/index"
   }
 }

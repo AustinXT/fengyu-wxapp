@@ -1,4 +1,28 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/appointment-detail/appointment-detail.wxss */
-.page-content {
-  padding: 48rpx 24rpx;
+/* pages/appointment-detail/appointment-detail.wxss */
+
+.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
+.empty-wrap { padding: 80rpx 0; }
+
+.status-banner {
+  padding: 24rpx 32rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+  text-align: center;
+}
+.status-banner--pending  { background: #FFF3E0; color: #D4820A; }
+.status-banner--success  { background: #E8F5E9; color: #3D8A5A; }
+.status-banner--progress { background: #E3F0FF; color: #5E8BB3; }
+.status-banner--done     { background: #F0F0F0; color: #888888; }
+.status-banner--error    { background: #FFEBEE; color: #D94040; }
+
+.card-group { margin: 24rpx 0; }
+
+.action-bar {
+  padding: 32rpx;
+  padding-bottom: 0;
+}
+
+.action-row {
+  display: flex;
+  gap: 24rpx;
 }

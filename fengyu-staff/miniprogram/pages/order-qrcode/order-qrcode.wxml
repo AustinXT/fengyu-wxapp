@@ -1,6 +1,96 @@
-<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-qrcode/order-qrcode.wxml -->
-<view class="container">
-  <view class="page-content">
-    <van-empty description="��开发中）" />
+<!-- pages/order-qrcode/order-qrcode.wxml -->
+<view class="container qrcode-page">
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading && !orderNo}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
+
+  <block wx:else>
+    <!-- 顾客 + 金额 -->
+    <view class="order-summary">
+      <text class="summary-customer">{{customerName}}</text>
+      <text class="summary-amount">¥{{totalAmount}}</text>
+    </view>
+
+    <!-- 状态区域 -->
+    <view class="status-area">
+      <!-- 待扫码：显示二维码 -->
+      <block wx:if="{{status === '待扫码'}}">
+        <view class="status-badge status-badge--pending">待扫码</view>
+        <view class="qrcode-wrap">
+          <image
+            wx:if="{{qrcodeUrl}}"
+            class="qrcode-img"
+            src="{{qrcodeUrl}}"
+            mode="aspectFit"
+          />
+          <view wx:else class="qrcode-placeholder">
+            <van-loading type="spinner" color="#8B6A3E" />
+            <text class="placeholder-text">生成二维码中...</text>
+          </view>
+        </view>
+        <text class="hint-text">请顾客用微信扫码完成支付</text>
+      </block>
+
+      <!-- 支付中：二维码灰显 -->
+      <block wx:elif="{{status === '支付中'}}">
+        <view class="status-badge status-badge--progress">支付中</view>
+        <view class="qrcode-wrap qrcode-wrap--dimmed">
+          <image class="qrcode-img" src="{{qrcodeUrl}}" mode="aspectFit" />
+          <view class="qrcode-overlay">
+            <van-loading type="spinner" color="#FFFFFF" />
+          </view>
+        </view>
+        <text class="hint-text">顾客正在选择支付方式...</text>
+      </block>
+
+      <!-- 待确认收款（线下）-->
+      <block wx:elif="{{status === '待确认收款'}}">
+        <view class="status-badge status-badge--warning">待确认收款</view>
+        <view class="success-icon-area">
+          <van-icon name="cash-on-deliver" size="120rpx" color="#D4820A" />
+        </view>
+        <text class="hint-text">顾客已选择线下付款，请确认收款</text>
+      </block>
+
+      <!-- 已支付成功 -->
+      <block wx:elif="{{status === '已支付'}}">
+        <view class="status-badge status-badge--success">已支付</view>
+        <view class="success-icon-area">
+          <van-icon name="success" size="120rpx" color="#3D8A5A" />
+        </view>
+        <text class="success-amount">¥{{totalAmount}} 已支付</text>
+      </block>
+
+      <!-- 已关闭 -->
+      <block wx:else>
+        <view class="status-badge status-badge--done">{{status}}</view>
+        <view class="success-icon-area">
+          <van-icon name="close" size="120rpx" color="#888888" />
+        </view>
+      </block>
+    </view>
+
+    <!-- 订单号 -->
+    <text class="order-no">{{orderNo}}</text>
+
+    <!-- 操作按钮（仅店长） -->
+    <view wx:if="{{isManager}}" class="action-bar">
+      <van-button
+        wx:if="{{status === '待确认收款'}}"
+        block type="primary"
+        custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+        bind:click="onConfirmOffline"
+      >确认线下收款</van-button>
+      <van-button
+        wx:if="{{status !== '已支付' && status !== '已关闭'}}"
+        block plain
+        custom-style="color:#D94040;border-color:#D94040;border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onCloseOrder"
+      >关闭订单</van-button>
+    </view>
+  </block>
+
+  <view class="safe-area-bottom" />
 </view>

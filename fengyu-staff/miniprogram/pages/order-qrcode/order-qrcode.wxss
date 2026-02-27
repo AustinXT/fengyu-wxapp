@@ -1,4 +1,109 @@
-/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-qrcode/order-qrcode.wxss */
-.page-content {
-  padding: 48rpx 24rpx;
+/* pages/order-qrcode/order-qrcode.wxss */
+
+.qrcode-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100vh;
+  background: #F5F2EE;
+}
+
+.loading-wrap { display: flex; justify-content: center; padding: 200rpx 0; width: 100%; }
+
+.order-summary {
+  width: 100%;
+  padding: 40rpx 32rpx 24rpx;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.summary-customer { font-size: 36rpx; font-weight: 600; color: #2D2017; }
+.summary-amount { font-size: 44rpx; font-weight: 700; color: #8B6A3E; }
+
+.status-area {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16rpx 32rpx;
+}
+
+.status-badge {
+  display: inline-flex;
+  padding: 8rpx 32rpx;
+  border-radius: 32rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+  margin-bottom: 40rpx;
+}
+.status-badge--pending  { background: #FFF3E0; color: #D4820A; }
+.status-badge--progress { background: #E3F0FF; color: #5E8BB3; }
+.status-badge--warning  { background: #FFF3E0; color: #D4820A; }
+.status-badge--success  { background: #E8F5E9; color: #3D8A5A; }
+.status-badge--done     { background: #F0F0F0; color: #888888; }
+
+.qrcode-wrap {
+  position: relative;
+  width: 480rpx;
+  height: 480rpx;
+  border-radius: 24rpx;
+  overflow: hidden;
+  background: #FFFFFF;
+  box-shadow: 0 4rpx 24rpx rgba(0,0,0,0.1);
+}
+.qrcode-wrap--dimmed .qrcode-img { opacity: 0.3; }
+.qrcode-img { width: 100%; height: 100%; }
+.qrcode-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20rpx;
+}
+.placeholder-text { font-size: 24rpx; color: #999; }
+.qrcode-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.3);
+}
+
+.success-icon-area {
+  padding: 40rpx 0;
+  display: flex;
+  justify-content: center;
+}
+
+.hint-text {
+  display: block;
+  font-size: 26rpx;
+  color: #666;
+  text-align: center;
+  margin-top: 24rpx;
+}
+
+.success-amount {
+  display: block;
+  font-size: 44rpx;
+  font-weight: 700;
+  color: #3D8A5A;
+  text-align: center;
+}
+
+.order-no {
+  display: block;
+  font-size: 22rpx;
+  color: #BBB;
+  font-family: monospace;
+  text-align: center;
+  margin-top: 24rpx;
+}
+
+.action-bar {
+  width: 100%;
+  padding: 40rpx 32rpx 0;
 }

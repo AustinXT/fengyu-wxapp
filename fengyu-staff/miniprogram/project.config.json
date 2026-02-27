@@ -35,7 +35,8 @@
   "packOptions": {
     "ignore": [
       { "type": "file", "value": "README.md" },
-      { "type": "folder", "value": ".git" }
+      { "type": "folder", "value": ".git" },
+      { "type": "folder", "value": "mock" }
     ],
     "include": []
   },

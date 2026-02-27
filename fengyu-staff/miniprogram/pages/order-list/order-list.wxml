@@ -1,6 +1,50 @@
-<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-list/order-list.wxml -->
+<!-- pages/order-list/order-list.wxml -->
 <view class="container">
-  <view class="page-content">
-    <van-empty description="��开发中）" />
+  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#8B6A3E" sticky>
+    <van-tab name="全部" title="全部" />
+    <van-tab name="待支付" title="待支付" />
+    <van-tab name="待确认收款" title="待确认" />
+    <van-tab name="已支付" title="已支付" />
+  </van-tabs>
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
+
+  <view wx:elif="{{list.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无订单" />
+  </view>
+
+  <view wx:else class="list-wrap">
+    <view class="order-card" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
+      <view class="order-header">
+        <text class="order-no">{{item.orderNo}}</text>
+        <view class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</view>
+      </view>
+      <view class="order-customer">
+        <text class="customer-name">{{item.customerName}}</text>
+        <text class="customer-phone">{{item.customerPhoneMasked}}</text>
+      </view>
+      <view class="order-meta">
+        <text class="order-type-label">{{item.orderType === 'normal' ? '正式单' : item.orderType === 'experience' ? '体验单' : '促销方案'}}</text>
+        <text class="order-pay-type" wx:if="{{item.payType}}">{{item.payType === 'wechat' ? '微信支付' : '线下付款'}}</text>
+        <text class="order-time">{{item.paidAt || item.createdAt}}</text>
+      </view>
+      <view class="order-footer">
+        <text class="order-amount">¥ {{item.totalAmount}}</text>
+        <view class="order-actions" catchtap="noop">
+          <van-button
+            wx:if="{{item.status === '待确认收款'}}"
+            type="primary" size="small"
+            custom-style="background:#8B6A3E;border-color:#8B6A3E;"
+            catchtap="onConfirmOffline"
+            data-id="{{item.id}}"
+          >确认收款</van-button>
+          <van-button size="small" plain catchtap="onItemTap" data-id="{{item.id}}">详情</van-button>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <view class="safe-area-bottom" />
 </view>

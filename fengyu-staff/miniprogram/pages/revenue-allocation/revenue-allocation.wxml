@@ -1,6 +1,118 @@
-<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/revenue-allocation/revenue-allocation.wxml -->
+<!-- pages/revenue-allocation/revenue-allocation.wxml -->
 <view class="container">
-  <view class="page-content">
-    <van-empty description="��开发中）" />
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
+
+  <block wx:else>
+    <!-- 订单信息头 -->
+    <view class="order-header">
+      <text class="order-no">{{orderNo}}</text>
+      <view class="amount-row">
+        <text class="amount-label">实收金额</text>
+        <text class="amount-value">¥{{totalAmountStr}}</text>
+      </view>
+    </view>
+
+    <!-- 锁定提示 -->
+    <view wx:if="{{isLocked}}" class="lock-notice">
+      <van-icon name="lock" size="28rpx" color="#999" />
+      <text class="lock-text">分配已锁定，如需修改请关单后重新开单</text>
+    </view>
+
+    <!-- 分配行列表 -->
+    <view class="alloc-list">
+      <view class="alloc-row" wx:for="{{rows}}" wx:key="index">
+        <view class="row-header">
+          <text class="row-label">美容师 {{index + 1}}</text>
+          <van-icon
+            wx:if="{{!isLocked && rows.length > 1}}"
+            name="delete-o"
+            size="36rpx"
+            color="#D94040"
+            data-index="{{index}}"
+            bindtap="onRemoveRow"
+          />
+        </view>
+
+        <!-- 选择员工 -->
+        <view class="staff-selector {{isLocked ? 'staff-selector--disabled' : ''}}"
+          data-index="{{index}}"
+          bindtap="onTapStaff"
+        >
+          <view wx:if="{{item.staffName}}" class="staff-selected">
+            <text class="staff-name">{{item.staffName}}</text>
+            <text class="staff-dept">{{item.department}}</text>
+          </view>
+          <text wx:else class="staff-placeholder">点击选择员工</text>
+          <van-icon wx:if="{{!isLocked}}" name="arrow" size="28rpx" color="#999" />
+        </view>
+
+        <!-- 金额输入 -->
+        <view class="amount-input-wrap">
+          <text class="currency-symbol">¥</text>
+          <input
+            class="amount-input"
+            type="digit"
+            value="{{item.amount}}"
+            placeholder="输入分配金额"
+            disabled="{{isLocked}}"
+            data-index="{{index}}"
+            bindinput="onAmountChange"
+          />
+        </view>
+      </view>
+    </view>
+
+    <!-- 添加行按钮 -->
+    <view wx:if="{{!isLocked && rows.length < 4}}" class="add-row-btn" bindtap="onAddRow">
+      <van-icon name="plus" size="28rpx" color="#8B6A3E" />
+      <text class="add-row-text">添加员工</text>
+    </view>
+
+    <!-- 预设比例（2位员工时显示） -->
+    <view wx:if="{{!isLocked && rows.length >= 2}}" class="preset-section">
+      <text class="preset-label">快捷比例（前两位员工）</text>
+      <view class="preset-btns">
+        <view class="preset-btn" data-ratio="3:7" bindtap="onPresetRatio">3:7</view>
+        <view class="preset-btn" data-ratio="4:6" bindtap="onPresetRatio">4:6</view>
+        <view class="preset-btn" data-ratio="5:5" bindtap="onPresetRatio">5:5</view>
+        <view class="preset-btn" data-ratio="2:8" bindtap="onPresetRatio">2:8</view>
+      </view>
+    </view>
+
+    <!-- 合计提示 -->
+    <view class="total-summary {{isOverBudget ? 'total-summary--error' : ''}}">
+      <text class="total-summary-label">本次分配合计</text>
+      <text class="total-summary-value">¥{{totalAllocated}}</text>
+      <text class="total-summary-limit"> / 上限 ¥{{totalAmountStr}}</text>
+      <van-icon wx:if="{{!isOverBudget && totalAllocated !== '0.00'}}" name="success" size="28rpx" color="#3D8A5A" />
+      <text wx:if="{{isOverBudget}}" class="over-budget-text">超出上限</text>
+    </view>
+
+    <!-- 保存按钮 -->
+    <view wx:if="{{!isLocked}}" class="action-bar">
+      <van-button
+        type="primary"
+        block
+        loading="{{submitting}}"
+        custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+        bind:click="onSave"
+      >保存分配方案</van-button>
+    </view>
+  </block>
+
+  <!-- 员工选择弹出层 -->
+  <van-popup show="{{showPicker}}" position="bottom" bind:close="onPickerCancel">
+    <van-picker
+      title="选择员工"
+      show-toolbar
+      columns="{{staffColumns}}"
+      bind:confirm="onPickerConfirm"
+      bind:cancel="onPickerCancel"
+    />
+  </van-popup>
+
+  <view class="safe-area-bottom" />
 </view>

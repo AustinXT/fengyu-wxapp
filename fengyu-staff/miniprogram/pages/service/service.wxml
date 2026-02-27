@@ -1,0 +1,107 @@
+<!-- pages/service/service.wxml — 护理 Tab -->
+<view class="container">
+
+  <!-- Tab 筛选 -->
+  <van-tabs
+    active="{{tabActive}}"
+    bind:change="onTabChange"
+    color="#8B6A3E"
+    title-active-color="#8B6A3E"
+    title-inactive-color="#666666"
+    sticky
+  >
+    <van-tab name="待服务" title="待服务" />
+    <van-tab name="服务中" title="服务中" />
+    <van-tab name="已完成" title="已完成" />
+  </van-tabs>
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{list.length === 0}}" class="empty-wrap">
+    <van-empty description="暂无{{tabActive}}的护理单" />
+  </view>
+
+  <!-- 护理单列表 -->
+  <view wx:else class="list-wrap">
+    <view
+      class="service-card"
+      wx:for="{{list}}"
+      wx:key="id"
+      bindtap="onItemTap"
+      data-id="{{item.id}}"
+    >
+      <!-- 卡片头：编号 + 状态 -->
+      <view class="card-header">
+        <text class="service-no">{{item.serviceNo}}</text>
+        <view class="status-tag status-tag--{{item.status === '待服务' ? 'pending' : item.status === '服务中' ? 'progress' : 'done'}}">
+          {{item.status}}
+        </view>
+      </view>
+
+      <!-- 顾客信息 -->
+      <view class="card-customer">
+        <van-icon name="manager-o" size="28rpx" color="#8B6A3E" />
+        <text class="customer-name">{{item.customerName}}</text>
+        <text class="customer-phone">{{item.customerPhone}}</text>
+      </view>
+
+      <!-- 服务项目 -->
+      <view
+        class="card-item"
+        wx:for="{{item.items}}"
+        wx:for-item="si"
+        wx:key="itemFlowNo"
+      >
+        <text class="item-name">{{si.itemName}}</text>
+        <text class="item-spec">{{si.spec}}</text>
+        <text class="item-sessions" wx:if="{{si.totalSessions > 1}}">剩余 {{si.remainingSessions}}/{{si.totalSessions}} 次</text>
+      </view>
+
+      <!-- 时间信息 -->
+      <view class="card-time">
+        <van-icon name="clock-o" size="26rpx" color="#999" />
+        <text class="time-text" wx:if="{{item.status === '待服务'}}">预计 {{item.serviceTime}}</text>
+        <text class="time-text" wx:elif="{{item.status === '服务中'}}">开始 {{item.startTime}}（进行中）</text>
+        <text class="time-text" wx:else>完成 {{item.completedTime}}</text>
+      </view>
+
+      <!-- 操作按钮（阻止事件冒泡到卡片tap） -->
+      <view class="card-actions" catchtap="noop">
+        <van-button
+          wx:if="{{item.status === '待服务'}}"
+          type="primary"
+          size="small"
+          custom-style="background: #8B6A3E; border-color: #8B6A3E;"
+          catchtap="onStartService"
+          data-id="{{item.id}}"
+        >开始服务</van-button>
+        <van-button
+          wx:elif="{{item.status === '服务中'}}"
+          type="primary"
+          size="small"
+          custom-style="background: #3D8A5A; border-color: #3D8A5A;"
+          catchtap="onCompleteService"
+          data-id="{{item.id}}"
+        >确认完成</van-button>
+        <van-button
+          wx:else
+          size="small"
+          plain
+          catchtap="onItemTap"
+          data-id="{{item.id}}"
+        >查看详情</van-button>
+      </view>
+    </view>
+  </view>
+
+  <!-- FAB: 新建护理单 -->
+  <view class="fab" bindtap="onNewService">
+    <van-icon name="plus" size="44rpx" color="#FFFFFF" />
+  </view>
+
+  <view class="safe-area-bottom" />
+</view>

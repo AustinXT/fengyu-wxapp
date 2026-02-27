@@ -1,5 +1,5 @@
 {
-  "navigationBarTitleText": "订单记录",
+  "navigationBarTitleText": "护理",
   "enablePullDownRefresh": true,
   "usingComponents": {
     "van-tabs": "@vant/weapp/tabs/index",

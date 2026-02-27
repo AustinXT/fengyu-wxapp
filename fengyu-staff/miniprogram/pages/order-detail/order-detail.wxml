@@ -1,6 +1,100 @@
-<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-detail/order-detail.wxml -->
+<!-- pages/order-detail/order-detail.wxml -->
 <view class="container">
-  <view class="page-content">
-    <van-empty description="��开发中）" />
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
   </view>
+
+  <view wx:elif="{{!order}}" class="empty-wrap">
+    <van-empty description="订单不存在" />
+  </view>
+
+  <block wx:else>
+    <!-- 状态条 -->
+    <view class="status-banner status-banner--{{statusClass}}">
+      <text class="status-text">{{order.status}}</text>
+      <text class="order-no-top">{{order.orderNo}}</text>
+    </view>
+
+    <!-- 顾客信息 -->
+    <van-cell-group title="顾客信息" class="card-group">
+      <van-cell title="顾客姓名" value="{{order.customerName}}" />
+      <van-cell title="手机号" value="{{isManager ? order.customerPhone : order.customerPhoneMasked}}" />
+    </van-cell-group>
+
+    <!-- 订单信息 -->
+    <van-cell-group title="订单信息" class="card-group">
+      <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
+      <van-cell title="下单人" value="{{order.createdByName || '—'}}" />
+      <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
+      <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
+      <van-cell title="创建时间" value="{{order.createdAt}}" />
+      <van-cell wx:if="{{order.paidAt}}" title="支付时间" value="{{order.paidAt}}" />
+      <van-cell wx:if="{{order.remark}}" title="备注" value="{{order.remark}}" />
+    </van-cell-group>
+
+    <!-- 订单明细 -->
+    <view class="card-group items-card">
+      <text class="items-title">订单明细</text>
+      <view class="order-item" wx:for="{{order.items}}" wx:key="itemFlowNo">
+        <view class="item-name-row">
+          <text class="item-name">{{item.itemName}}</text>
+          <text class="item-spec">{{item.spec}}</text>
+        </view>
+        <view class="item-price-row">
+          <text class="item-price">实收 ¥{{item.totalPrice}}</text>
+          <text wx:if="{{item.sessionCount > 1}}" class="item-sessions">
+            剩余 {{item.remainingSessions}} / {{item.sessionCount}} 次
+          </text>
+        </view>
+        <text class="item-flow-no">{{item.itemFlowNo}}</text>
+      </view>
+      <view class="total-row">
+        <text class="total-label">合计</text>
+        <text class="total-amount">¥{{order.totalAmount}}</text>
+      </view>
+    </view>
+
+    <!-- 营业额分配（仅店长可见） -->
+    <view wx:if="{{isManager && order.allocation.length > 0}}" class="card-group items-card">
+      <text class="items-title">营业额分配</text>
+      <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="staffName">
+        <text class="alloc-staff">{{item.staffName}}（{{item.department}}）</text>
+        <view class="alloc-right">
+          <text class="alloc-amount">¥{{item.amount}}</text>
+          <text class="alloc-ratio"> · {{item.ratio}}</text>
+        </view>
+      </view>
+      <view wx:if="{{order.status === '待支付'}}" class="re-alloc-btn">
+        <van-button size="small" plain type="primary" bind:click="onReAllocation"
+          custom-style="color:#8B6A3E;border-color:#8B6A3E;">重新分配</van-button>
+      </view>
+    </view>
+
+    <!-- 无分配时入口（仅店长） -->
+    <view wx:if="{{isManager && order.allocation.length === 0}}" class="card-group items-card">
+      <van-button block plain type="primary"
+        custom-style="color:#8B6A3E;border-color:#8B6A3E;"
+        bind:click="onReAllocation"
+      >营业额分配</van-button>
+    </view>
+
+    <!-- 操作按钮 -->
+    <view class="action-bar">
+      <van-button
+        wx:if="{{isManager && order.status === '待确认收款'}}"
+        block type="primary"
+        custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+        bind:click="onConfirmOffline"
+      >确认线下收款</van-button>
+      <van-button
+        wx:if="{{isManager && order.status === '支付失败'}}"
+        block type="warning"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onResetFailed"
+      >重置支付失败</van-button>
+    </view>
+  </block>
+
+  <view class="safe-area-bottom" />
 </view>

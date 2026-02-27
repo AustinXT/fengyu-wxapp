@@ -18,30 +18,33 @@ Page({
     storeName: '',
     staffName: '',
     role: '' as 'manager' | 'beautician' | '',
+    isManager: false,
     today: '',
+    // 今日分成
     todayCommission: '0.00',
     todayOrderCount: 0,
     todayServiceCount: 0,
+    storeTodayRevenue: '0.00',
+    // 本月累计
+    monthlyCommission: '0.00',
+    monthlyOrderCount: 0,
+    monthlyServiceCount: 0,
     // 月度业绩日历
     currentMonth: '',
     monthLabel: '',
-    monthlyTotal: '0.00',
     calendarDays: [] as CalendarDay[],
-    // 代办事项
-    todoList: [] as Array<{
-      id: string;
-      type: 'appointment' | 'service';
-      title: string;
-      desc: string;
-      targetPage: string;
-      params: string;
-    }>,
+    // 代办事项计数
+    pendingAppointmentCount: 0,
+    pendingServiceCount: 0,
+    pendingOfflineOrderCount: 0,
+    pendingCreateOrderCount: 0,
     // 顾客搜索
     searchKeyword: '',
-    recentCustomers: [] as Array<{
+    customerResults: [] as Array<{
       id: string;
       name: string;
       phone: string;
+      phoneMasked: string;
     }>,
   },
 
@@ -56,15 +59,21 @@ Page({
   },
 
   onShow() {
-    const { userId, staffWfId, staffName, role, boundStoreName } = app.globalData;
+    const { staffWfId, staffName, role, boundStoreName } = app.globalData;
+    const isManager = role === 'manager';
     this.setData({
       storeName: boundStoreName,
       staffName,
       role,
+      isManager,
     });
-    if (userId && staffWfId) {
+    if (staffWfId) {
       this.loadWorkbench();
     }
+  },
+
+  onPullDownRefresh() {
+    this.loadWorkbench().finally(() => wx.stopPullDownRefresh());
   },
 
   setTodayDate() {
@@ -85,10 +94,10 @@ Page({
       await Promise.all([
         this.loadTodayCommission(),
         this.loadMonthlyCalendar(),
-        this.loadTodoList(),
+        this.loadTodoSummary(),
       ]);
     } catch (err) {
-      console.error('[workbench] loadWorkbench error:', err);
+      console.error('[workbench] error:', err);
     } finally {
       this.setData({ loading: false });
     }
@@ -100,15 +109,15 @@ Page({
         todayAmount: string;
         orderCount: number;
         serviceCount: number;
+        storeTodayRevenue?: string;
       }>('staff.todayCommission');
       this.setData({
         todayCommission: data.todayAmount || '0.00',
         todayOrderCount: data.orderCount || 0,
         todayServiceCount: data.serviceCount || 0,
+        storeTodayRevenue: data.storeTodayRevenue || '0.00',
       });
-    } catch (_) {
-      // 接口未实现时静默
-    }
+    } catch (_) {}
   },
 
   async loadMonthlyCalendar() {
@@ -116,14 +125,20 @@ Page({
       const data = await callStaffApi<{
         dailyData: Array<{ date: string; amount: number }>;
         totalAmount: number;
+        totalOrderCount?: number;
+        totalServiceCount?: number;
       }>('staff.monthlyCalendar', { yearMonth: this.data.currentMonth });
       const days = this.buildCalendarDays(this.data.currentMonth, data.dailyData || []);
-      const total = data.totalAmount > 0
-        ? (data.totalAmount / 100).toFixed(2)
+      const monthlyCommission = data.totalAmount > 0
+        ? data.totalAmount.toFixed(2)
         : '0.00';
-      this.setData({ calendarDays: days, monthlyTotal: total });
+      this.setData({
+        calendarDays: days,
+        monthlyCommission,
+        monthlyOrderCount: data.totalOrderCount || 0,
+        monthlyServiceCount: data.totalServiceCount || 0,
+      });
     } catch (_) {
-      // API 未实现时显示空日历
       const days = this.buildCalendarDays(this.data.currentMonth, []);
       this.setData({ calendarDays: days });
     }
@@ -133,17 +148,15 @@ Page({
     const [y, m] = yearMonth.split('-').map(Number);
     const now = new Date();
     const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const firstDow = new Date(y, m - 1, 1).getDay(); // 0=周日
+    const firstDow = new Date(y, m - 1, 1).getDay();
     const daysInMonth = new Date(y, m, 0).getDate();
     const dataMap: Record<string, number> = {};
     dailyData.forEach(d => { dataMap[d.date] = d.amount; });
 
     const days: CalendarDay[] = [];
-    // 空格填充（月初前的空白）
     for (let i = 0; i < firstDow; i++) {
       days.push({ isEmpty: true, day: 0, date: '', hasData: false, amountLabel: '', isToday: false });
     }
-    // 实际日期
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const amount = dataMap[dateStr] || 0;
@@ -176,7 +189,7 @@ Page({
     const [y, m] = this.data.currentMonth.split('-').map(Number);
     const now = new Date();
     const curY = now.getFullYear(), curM = now.getMonth() + 1;
-    if (y > curY || (y === curY && m >= curM)) return; // 不超过当月
+    if (y > curY || (y === curY && m >= curM)) return;
     let ny = y, nm = m + 1;
     if (nm > 12) { ny += 1; nm = 1; }
     const ym = `${ny}-${String(nm).padStart(2, '0')}`;
@@ -184,44 +197,41 @@ Page({
     this.loadMonthlyCalendar();
   },
 
-  async loadTodoList() {
+  async loadTodoSummary() {
     try {
       const data = await callStaffApi<{
-        pendingAppointments: Array<{ id: string; customerName: string; appointmentTime: string }>;
-        pendingServices: Array<{ id: string; customerName: string; serviceNo: string }>;
+        pendingAppointmentCount: number;
+        pendingServiceCount: number;
+        pendingOfflineOrderCount?: number;
+        pendingCreateOrderCount?: number;
       }>('staff.todoList');
-
-      const todoList: typeof this.data.todoList = [];
-
-      (data.pendingAppointments || []).forEach(a => {
-        todoList.push({
-          id: `appt-${a.id}`,
-          type: 'appointment',
-          title: `待确认预约：${a.customerName}`,
-          desc: a.appointmentTime,
-          targetPage: '/pages/appointment-detail/appointment-detail',
-          params: `id=${a.id}`,
-        });
+      this.setData({
+        pendingAppointmentCount: data.pendingAppointmentCount || 0,
+        pendingServiceCount: data.pendingServiceCount || 0,
+        pendingOfflineOrderCount: data.pendingOfflineOrderCount || 0,
+        pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
       });
-
-      (data.pendingServices || []).forEach(s => {
-        todoList.push({
-          id: `svc-${s.id}`,
-          type: 'service',
-          title: `待服务：${s.customerName}`,
-          desc: s.serviceNo,
-          targetPage: '/pages/service-detail/service-detail',
-          params: `id=${s.id}`,
-        });
-      });
-
-      this.setData({ todoList });
     } catch (_) {}
   },
 
-  onTodoTap(e: WechatMiniprogram.TouchEvent) {
-    const item = e.currentTarget.dataset.item as typeof this.data.todoList[0];
-    wx.navigateTo({ url: `${item.targetPage}?${item.params}` });
+  onRefresh() {
+    this.loadWorkbench();
+  },
+
+  goAppointments() {
+    wx.navigateTo({ url: '/pages/appointment/appointment?tab=pending' });
+  },
+
+  goServiceList() {
+    wx.switchTab({ url: '/pages/service/service' });
+  },
+
+  goOrderListOffline() {
+    wx.navigateTo({ url: '/pages/order-list/order-list?status=pendingOffline' });
+  },
+
+  goOrderListCreate() {
+    wx.navigateTo({ url: '/pages/order-list/order-list?status=pendingCreate' });
   },
 
   onViewCustomerList() {
@@ -236,11 +246,8 @@ Page({
     const phone = this.data.searchKeyword.trim();
     if (!phone) return;
     try {
-      const data = await callStaffApi<Array<{ id: string; name: string; phone: string }>>(
-        'customer.search',
-        { phone }
-      );
-      this.setData({ recentCustomers: data || [] });
+      const data = await callStaffApi<any[]>('customer.search', { phone });
+      this.setData({ customerResults: data || [] });
       if (!data || data.length === 0) {
         wx.showToast({ title: '未找到该顾客', icon: 'none' });
       }
@@ -250,7 +257,7 @@ Page({
   },
 
   onCustomerTap(e: WechatMiniprogram.TouchEvent) {
-    const { id, phone } = e.currentTarget.dataset as { id: string; phone: string };
-    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?id=${id}&phone=${phone}` });
+    const { id } = e.currentTarget.dataset as { id: string };
+    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?id=${id}` });
   },
 });

@@ -2,8 +2,9 @@
   "pages": [
     "pages/workbench/workbench",
     "pages/order-create/order-create",
-    "pages/appointment/appointment",
+    "pages/service/service",
     "pages/profile/profile",
+    "pages/appointment/appointment",
     "pages/order-qrcode/order-qrcode",
     "pages/order-list/order-list",
     "pages/order-detail/order-detail",
@@ -17,7 +18,7 @@
   ],
   "tabBar": {
     "color": "#999999",
-    "selectedColor": "#D4A76A",
+    "selectedColor": "#8B6A3E",
     "backgroundColor": "#FFFFFF",
     "borderStyle": "white",
     "list": [
@@ -34,8 +35,8 @@
         "selectedIconPath": "images/icons/tab-order-active.png"
       },
       {
-        "pagePath": "pages/appointment/appointment",
-        "text": "预约",
+        "pagePath": "pages/service/service",
+        "text": "护理",
         "iconPath": "images/icons/tab-appointment.png",
         "selectedIconPath": "images/icons/tab-appointment-active.png"
       },
@@ -49,10 +50,10 @@
   },
   "window": {
     "backgroundTextStyle": "light",
-    "navigationBarBackgroundColor": "#000000",
+    "navigationBarBackgroundColor": "#2D2017",
     "navigationBarTitleText": "凤御·员工端",
     "navigationBarTextStyle": "white",
-    "backgroundColor": "#000000"
+    "backgroundColor": "#F5F2EE"
   },
   "sitemapLocation": "sitemap.json",
   "lazyCodeLoading": "requiredComponents",
