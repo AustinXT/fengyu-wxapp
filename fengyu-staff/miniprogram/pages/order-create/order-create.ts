@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
-const BIG_CATEGORIES = ['生美', '非生美', '院装产品'];
+const BIG_CATEGORIES = ['促销方案', '生美', '非生美', '院装产品'];
 
 interface CartItem {
   spuId: string;
@@ -15,8 +15,6 @@ interface CartItem {
   sessionCount: number;
   productType: string;
   workfineItemId: string;
-  isGift?: boolean;       // 促销方案赠品
-  isPromoPlan?: boolean;  // 来自促销方案，数量锁定
 }
 
 Page({
@@ -33,9 +31,6 @@ Page({
     cart: [] as CartItem[],
     cartCount: 0,
     cartTotal: '0.00',
-    // SKU 选择弹层
-    showSkuPopup: false,
-    currentSpu: null as any,
     // 结算底部弹层
     showCheckout: false,
     checkoutStep: 0,   // 0=选顾客 1=选类型 2=确认
@@ -45,12 +40,7 @@ Page({
     customerInfo: null as null | { id: string; name: string; phone: string; phoneMasked?: string },
     recentCustomers: [] as any[],
     // Step 1: 开单类型
-    orderType: 'normal' as 'normal' | 'experience' | 'promotion',
-    // 促销方案
-    showPromoList: false,
-    promoPlansLoading: false,
-    promoPlans: [] as any[],
-    selectedPlan: null as any,
+    orderType: 'normal' as 'normal' | 'experience',
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
@@ -74,6 +64,33 @@ Page({
       const recent = wx.getStorageSync('recentCustomers') || [];
       this.setData({ recentCustomers: recent });
     } catch (_) {}
+
+    // 从商品详情页返回：检查 pendingCartItem
+    const pending = app.globalData.pendingCartItem;
+    if (pending) {
+      app.globalData.pendingCartItem = null;
+      const cart = [...this.data.cart];
+      const existing = cart.findIndex(c => c.skuId === pending.skuId);
+      if (existing >= 0) {
+        cart[existing].quantity += pending.quantity;
+      } else {
+        cart.push({
+          spuId: pending.spuId,
+          skuId: pending.skuId,
+          spuName: pending.spuName,
+          specName: pending.specName,
+          price: pending.price,
+          quantity: pending.quantity,
+          sessionCount: pending.sessionCount || 0,
+          productType: pending.productType,
+          workfineItemId: pending.workfineItemId,
+        });
+      }
+      this.updateCart(cart);
+      if (pending.directCheckout) {
+        this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'normal' });
+      }
+    }
   },
 
   // ===== 商品目录（三级导航 + 缓存） =====
@@ -174,40 +191,12 @@ Page({
     }
   },
 
-  // ===== SKU 选择 =====
+  // ===== SPU 点击 → 跳转详情页 =====
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const spu = e.currentTarget.dataset.spu as any;
-    this.setData({ showSkuPopup: true, currentSpu: spu });
-  },
-
-  onSkuPopupClose() {
-    this.setData({ showSkuPopup: false, currentSpu: null });
-  },
-
-  onAddSku(e: WechatMiniprogram.TouchEvent) {
-    const sku = e.currentTarget.dataset.sku as any;
-    const spu = this.data.currentSpu;
-    if (!spu || !sku) return;
-    const cart = [...this.data.cart];
-    const existing = cart.findIndex(c => c.skuId === sku.skuId && !c.isPromoPlan);
-    if (existing >= 0) {
-      cart[existing].quantity += 1;
-    } else {
-      cart.push({
-        spuId: spu.spuId,
-        skuId: sku.skuId,
-        spuName: spu.spuName,
-        specName: sku.specName,
-        price: sku.price,
-        quantity: 1,
-        sessionCount: sku.sessionCount || 0,
-        productType: spu.productType,
-        workfineItemId: sku.workfineItemId,
-      });
-    }
-    this.updateCart(cart);
-    this.setData({ showSkuPopup: false, currentSpu: null });
+    if (!spu?.spuId) return;
+    wx.navigateTo({ url: `/pages/product-detail/product-detail?spuId=${spu.spuId}` });
   },
 
   // ===== 购物车 =====
@@ -240,26 +229,7 @@ Page({
       wx.showToast({ title: '请先添加商品', icon: 'none' });
       return;
     }
-    this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'normal', selectedPlan: null });
-  },
-
-  onOpenPromoShortcut() {
-    const { cart } = this.data;
-    const hasNonPromo = cart.some(c => !c.isPromoPlan);
-    if (hasNonPromo) {
-      wx.showModal({
-        title: '切换促销方案',
-        content: '切换促销方案将清空当前已选商品，是否继续？',
-        success: (res) => {
-          if (res.confirm) {
-            this.updateCart([]);
-            this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'promotion', selectedPlan: null });
-          }
-        },
-      });
-    } else {
-      this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'promotion', selectedPlan: null });
-    }
+    this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'normal' });
   },
 
   onCloseCheckout() {
@@ -305,85 +275,19 @@ Page({
       return;
     }
     this.setData({ checkoutStep: 1 });
-    // 若已选促销方案模式，自动打开方案列表
-    if (this.data.orderType === 'promotion') {
-      this.loadPromoPlans();
-      this.setData({ showPromoList: true });
-    }
   },
 
   // Step 1: 选开单类型
   onSelectOrderType(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as 'normal' | 'experience' | 'promotion';
+    const type = e.currentTarget.dataset.type as 'normal' | 'experience';
     if (type === 'experience' && !this.data.isManager) return;
     this.setData({ orderType: type });
-    if (type === 'promotion') {
-      // 切换到促销方案时清空现有购物车并加载方案列表
-      if (this.data.cart.some(c => !c.isPromoPlan)) {
-        this.updateCart([]);
-      }
-      this.setData({ selectedPlan: null, showPromoList: true });
-      this.loadPromoPlans();
-    } else {
-      // 切换到其他类型时清除促销方案选中状态
-      if (this.data.cart.some(c => c.isPromoPlan)) {
-        this.updateCart([]);
-      }
-      this.setData({ selectedPlan: null });
-    }
   },
 
   onStep1Back() { this.setData({ checkoutStep: 0 }); },
 
   onStep1Next() {
-    const { orderType, selectedPlan } = this.data;
-    if (orderType === 'promotion' && !selectedPlan) {
-      wx.showToast({ title: '请先选择促销方案', icon: 'none' });
-      this.setData({ showPromoList: true });
-      this.loadPromoPlans();
-      return;
-    }
     this.setData({ checkoutStep: 2 });
-  },
-
-  // 促销方案弹层
-  async loadPromoPlans() {
-    this.setData({ promoPlansLoading: true });
-    try {
-      const plans = await callStaffApi<any[]>('product.promotionPlans');
-      this.setData({ promoPlans: plans || [] });
-    } catch (_) {
-      this.setData({ promoPlans: [] });
-    } finally {
-      this.setData({ promoPlansLoading: false });
-    }
-  },
-
-  onPromoListClose() {
-    this.setData({ showPromoList: false });
-    if (!this.data.selectedPlan) {
-      this.setData({ orderType: 'normal' });
-    }
-  },
-
-  onSelectPromoPlan(e: WechatMiniprogram.TouchEvent) {
-    const plan = e.currentTarget.dataset.plan as any;
-    // 用促销方案项目替换购物车
-    const cartItems: CartItem[] = plan.items.map((item: any) => ({
-      spuId: item.skuId,
-      skuId: item.skuId,
-      spuName: item.itemName,
-      specName: item.specName,
-      price: item.promoPrice,
-      quantity: 1,
-      sessionCount: item.sessionCount || 0,
-      productType: item.productType || '疗程卡',
-      workfineItemId: item.workfineItemId,
-      isGift: item.isGift || false,
-      isPromoPlan: true,
-    }));
-    this.updateCart(cartItems);
-    this.setData({ selectedPlan: plan, showPromoList: false });
   },
 
   // Step 2: 确认订单
@@ -394,7 +298,7 @@ Page({
   onStep2Back() { this.setData({ checkoutStep: 1 }); },
 
   async onSubmitOrder() {
-    const { customerInfo, orderType, cart, remark, selectedPlan } = this.data;
+    const { customerInfo, orderType, cart, remark } = this.data;
     if (!customerInfo) return;
     this.setData({ submitting: true });
     try {
@@ -403,7 +307,6 @@ Page({
         customerPhone: customerInfo.phone,
         customerName: customerInfo.name || customerInfo.phone,
         orderType,
-        promotionPlanId: orderType === 'promotion' && selectedPlan ? selectedPlan.id : null,
         items: cart.map(c => ({
           skuId: c.skuId,
           workfineItemId: c.workfineItemId,
@@ -411,13 +314,12 @@ Page({
           specName: c.specName,
           quantity: c.quantity,
           unitPrice: c.price,
-          isGift: c.isGift || false,
         })),
         remark,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
-      this.setData({ showCheckout: false, selectedPlan: null, orderType: 'normal' });
+      this.setData({ showCheckout: false, orderType: 'normal' });
       wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?orderId=${res.orderId}` });
     } catch (err: any) {
       wx.showToast({ title: err.message || '开单失败', icon: 'none' });

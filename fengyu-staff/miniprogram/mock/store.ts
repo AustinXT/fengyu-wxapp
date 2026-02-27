@@ -10,7 +10,7 @@ const MOCK_STAFF = [
   {
     staffWfId: 'WF-00001',
     staffName: '王店长',
-    role: 'manager',
+    position: '门店经理',
     department: '管理部',
     storeId: 'store-001',
     isAllocatable: true,
@@ -19,7 +19,7 @@ const MOCK_STAFF = [
   {
     staffWfId: 'WF-00002',
     staffName: '李芳芳',
-    role: 'beautician',
+    position: '美容师',
     department: '美容部',
     storeId: 'store-001',
     isAllocatable: true,
@@ -28,7 +28,7 @@ const MOCK_STAFF = [
   {
     staffWfId: 'WF-00003',
     staffName: '王晓梅',
-    role: 'beautician',
+    position: '美容师',
     department: '美容部',
     storeId: 'store-001',
     isAllocatable: true,
@@ -37,7 +37,7 @@ const MOCK_STAFF = [
   {
     staffWfId: 'WF-00004',
     staffName: '刘美华',
-    role: 'beautician',
+    position: '美容师',
     department: '推广部',
     storeId: 'store-001',
     isAllocatable: true,

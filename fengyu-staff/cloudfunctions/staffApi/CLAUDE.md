@@ -55,9 +55,9 @@ wx.cloud.callFunction({
 
 - 通过 `cloud.getWXContext()` 获取 OPENID
 - auth 中间件查询 `staff_wechat_users` 表，再从 WorkFine `UDT_S_287` 查询角色
-- ctx.auth = `{ userId, openid, phone, staffWfId, role, storeName, marketName, department }`
-- `role = 'manager'` 当 WorkFine 职位 = '门店经理'，否则 `role = 'beautician'`
-- `requireManager()` 中间件：仅店长可执行的操作使用
+- ctx.auth = `{ userId, openid, phone, staffWfId, position, storeName, marketName, department }`
+- `position` 为 WorkFine 原始职位值（如 `'门店经理'`、`'美容师'`）
+- `requireManager()` 中间件：判断 `position === '门店经理'`
 - `requireStaffBound()` 中间件：需要绑定手机号且关联员工档案
 
 ## 数据库

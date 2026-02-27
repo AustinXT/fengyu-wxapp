@@ -16,8 +16,8 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 /**
  * 认证中间件
  * 将员工信息注入到 ctx.auth
- * ctx.auth = { userId, openid, phone, staffWfId, role, storeName, marketName, department }
- * role: 'manager' | 'beautician'
+ * ctx.auth = { userId, openid, phone, staffWfId, position, storeName, marketName, department }
+ * position: WorkFine 原始职位值（如 '门店经理'、'美容师'）
  */
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
@@ -52,14 +52,14 @@ async function auth(ctx, next) {
       openid: effectiveOpenid,
       phone: null,
       staffWfId: null,
-      role: null,
+      position: null,
       storeName: null,
       marketName: null,
       department: null
     }
   } else {
     const user = users[0]
-    let role = null
+    let position = null
     let storeName = null
     let marketName = null
     let department = null
@@ -82,7 +82,7 @@ async function auth(ctx, next) {
 
         if (staffRows.length > 0) {
           const s = staffRows[0]
-          role = s.position === '门店经理' ? 'manager' : 'beautician'
+          position = s.position ? s.position.trim() : null
           storeName = s.store_name ? s.store_name.trim() : null
           marketName = s.market_name ? s.market_name.trim() : null
           department = s.dept ? s.dept.trim() : null
@@ -97,7 +97,7 @@ async function auth(ctx, next) {
       openid: effectiveOpenid,
       phone: user.phone,
       staffWfId: user.staff_wf_id,
-      role,
+      position,
       storeName,
       marketName,
       department
@@ -142,7 +142,7 @@ function requireManager() {
     if (!ctx.auth.staffWfId) {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
-    if (ctx.auth.role !== 'manager') {
+    if (ctx.auth.position !== '门店经理') {
       throw new Error('PERMISSION_DENIED: 仅店长可执行此操作')
     }
     await next()

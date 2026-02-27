@@ -150,8 +150,8 @@ async function departments(ctx) {
 async function todayCommission(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeName, role } = ctx.auth
-  const isManager = role === 'manager'
+  const { staffWfId, storeName, position } = ctx.auth
+  const isManager = position === '门店经理'
 
   const now = new Date()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
@@ -286,8 +286,8 @@ async function monthlyCalendar(ctx) {
 async function todoList(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { staffWfId, storeName, role } = ctx.auth
-  const isManager = role === 'manager'
+  const { staffWfId, storeName, position } = ctx.auth
+  const isManager = position === '门店经理'
 
   // 待确认预约
   let appointmentCount

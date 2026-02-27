@@ -26,8 +26,7 @@ async function _queryCategoryRows() {
       p.big_category,
       MIN(p.sort_order) AS category_order
     FROM product_spu p
-    WHERE p.big_category != '促销方案'
-      AND EXISTS (
+    WHERE EXISTS (
         SELECT 1 FROM product_spu_sku_map m
         WHERE m.spu_id = p.spu_id AND m.is_active = true
       )
@@ -54,7 +53,6 @@ async function _queryFormattedSpuList(category, bigCategory) {
       SELECT 1 FROM product_spu_sku_map m
       WHERE m.spu_id = p.spu_id AND m.is_active = true
     )
-    AND p.big_category != '促销方案'
   `
 
   if (category) {
@@ -452,4 +450,73 @@ async function enrichSkuWithWorkfinePrice(skuList) {
   }))
 }
 
-module.exports = { shopInit, categories, spuList, skuDetail, promotionList, promotionPlans }
+/**
+ * SPU 详情（单个商品详情页）
+ * 含 WorkFine 实时价格，促销方案反查方案编号
+ */
+async function spuDetail(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { spuId } = ctx.event.payload || {}
+  if (!spuId) {
+    throw new Error('INVALID_PARAMS: 缺少 spuId 参数')
+  }
+
+  // 查询单个 SPU
+  const spuRows = await pg.query(`
+    SELECT spu_id, name, category, big_category, cover_image, description, sort_order
+    FROM product_spu
+    WHERE spu_id = $1
+  `, [spuId])
+
+  if (spuRows.length === 0) {
+    throw new Error('INVALID_PARAMS: 商品不存在')
+  }
+
+  const spu = spuRows[0]
+
+  // 查询该 SPU 的 SKU 列表（员工端无 market_restriction 过滤）
+  const skuList = await pg.query(`
+    SELECT sku_id, workfine_item_id, workfine_source, product_type, sku_display_name, sort_order
+    FROM product_spu_sku_map
+    WHERE spu_id = $1 AND is_active = true
+    ORDER BY sort_order ASC
+  `, [spuId])
+
+  // 从 WorkFine 读取价格信息
+  const skuWithPrice = await enrichSkuWithWorkfinePrice(skuList)
+
+  // 促销方案：从 WorkFine 反查方案编号
+  let promotionSchemeId = null
+  let promotionSchemeName = null
+  if (spu.big_category === '促销方案' && skuWithPrice.length > 0) {
+    const firstItemId = skuWithPrice[0].workfine_item_id
+    const esc = (v) => String(v).replace(/'/g, "''")
+    try {
+      const schemeRows = await mssql.query(`
+        SELECT s.UDF_S_17159 AS scheme_id, s.UDF_S_17175 AS scheme_name
+        FROM UDT_S_1459 s
+        INNER JOIN UDT_M_1460 m ON m.RID = s.RID
+        WHERE m.UDF_M_17163 = '${esc(firstItemId)}'
+      `)
+      if (schemeRows.length > 0) {
+        promotionSchemeId = schemeRows[0].scheme_id
+        promotionSchemeName = schemeRows[0].scheme_name
+      }
+    } catch {
+      // 方案编号查询失败不阻塞主流程
+    }
+  }
+
+  ctx.result = {
+    spu: {
+      ...spu,
+      skuList: skuWithPrice,
+      priceFrom: skuWithPrice.length > 0 ? Math.min(...skuWithPrice.map(s => s.originalPrice || 0)) : null,
+      promotionSchemeId,
+      promotionSchemeName
+    }
+  }
+}
+
+module.exports = { shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans }

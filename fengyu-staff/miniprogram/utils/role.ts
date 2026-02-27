@@ -1,11 +1,12 @@
 // utils/role.ts — 角色判断
 
 export function isManager(): boolean {
-  return getApp<IAppOption>().globalData.role === 'manager';
+  return getApp<IAppOption>().globalData.position === '门店经理';
 }
 
 export function isBeautician(): boolean {
-  return getApp<IAppOption>().globalData.role === 'beautician';
+  const position = getApp<IAppOption>().globalData.position;
+  return position !== '门店经理' && position !== '';
 }
 
 export function requireManager(tipMsg = '该操作仅限店长'): boolean {

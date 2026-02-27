@@ -7,10 +7,10 @@
     <view class="profile-info">
       <text class="profile-name">{{staffName || '未登录'}}</text>
       <view class="profile-meta">
-        <van-tag color="#D4A76A" text-color="#FFFFFF">
-          {{role === 'manager' ? '店长' : role === 'beautician' ? '美容师' : '未绑定'}}
-        </van-tag>
         <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
+        <van-tag color="#D4A76A" text-color="#FFFFFF">
+          {{position || '未绑定'}}
+        </van-tag>
       </view>
     </view>
   </view>

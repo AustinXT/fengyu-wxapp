@@ -39,7 +39,7 @@ async function login(ctx) {
       phone: null,
       staffWfId: null,
       staffName: null,
-      role: null,
+      position: null,
       storeName: null,
       boundStoreName: null,
       boundStoreId: null
@@ -52,8 +52,8 @@ async function login(ctx) {
       [now, user.user_id]
     )
 
-    // 如果已绑定员工档案，从 WorkFine 查角色信息
-    let role = null
+    // 如果已绑定员工档案，从 WorkFine 查职位信息
+    let position = null
     let staffName = null
     let storeName = null
     let marketName = null
@@ -74,7 +74,7 @@ async function login(ctx) {
 
         if (staffRows.length > 0) {
           staffName = staffRows[0].name ? staffRows[0].name.trim() : null
-          role = staffRows[0].position === '门店经理' ? 'manager' : 'beautician'
+          position = staffRows[0].position ? staffRows[0].position.trim() : null
           storeName = staffRows[0].store_name ? staffRows[0].store_name.trim() : null
           marketName = staffRows[0].market_name ? staffRows[0].market_name.trim() : null
         }
@@ -89,7 +89,7 @@ async function login(ctx) {
       phone: user.phone,
       staffWfId: user.staff_wf_id,
       staffName,
-      role,
+      position,
       storeName,
       marketName,
       boundStoreName: storeName,
@@ -170,14 +170,14 @@ async function bindPhone(ctx) {
   `)
 
   let staffWfId = users[0].staff_wf_id
-  let role = null
+  let position = null
   let storeName = null
   let marketName = null
 
   if (staffRows.length > 0) {
     const s = staffRows[0]
     staffWfId = s.staff_wf_id
-    role = s.position === '门店经理' ? 'manager' : 'beautician'
+    position = s.position ? s.position.trim() : null
     storeName = s.store_name ? s.store_name.trim() : null
     marketName = s.market_name ? s.market_name.trim() : null
   }
@@ -202,7 +202,7 @@ async function bindPhone(ctx) {
     userId,
     phone: phoneNumber,
     staffWfId,
-    role,
+    position,
     storeName,
     marketName
   }

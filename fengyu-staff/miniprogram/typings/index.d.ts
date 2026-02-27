@@ -3,16 +3,28 @@ interface IAppOption {
     userId: string;
     staffWfId: string;
     staffName: string;
-    role: 'manager' | 'beautician' | '';
+    position: string;
     boundStoreName: string;
     boundStoreId: string;
     phone: string;
+    pendingCartItem?: {
+      spuId: string;
+      skuId: string;
+      spuName: string;
+      specName: string;
+      price: number;
+      quantity: number;
+      sessionCount: number;
+      productType: string;
+      workfineItemId: string;
+      directCheckout?: boolean;
+    } | null;
   };
   setStaffInfo(info: {
     userId?: string;
     staffWfId?: string;
     staffName?: string;
-    role?: 'manager' | 'beautician' | '';
+    position?: string;
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;

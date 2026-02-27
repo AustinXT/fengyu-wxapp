@@ -6,7 +6,7 @@ App<IAppOption>({
     userId: '' as string,
     staffWfId: '' as string,
     staffName: '' as string,
-    role: '' as 'manager' | 'beautician' | '',
+    position: '' as string,
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     phone: '' as string,
@@ -23,7 +23,7 @@ App<IAppOption>({
         userId: 'mock-staff-001',
         staffWfId: 'WF-00001',
         staffName: '王店长',
-        role: 'manager',
+        position: '门店经理',
         phone: '13800000001',
         boundStoreName: '南商市场·凤御旗舰店',
         boundStoreId: 'store-001',
@@ -40,13 +40,15 @@ App<IAppOption>({
     const staffWfId = wx.getStorageSync('staffWfId');
     const staffName = wx.getStorageSync('staffName');
     const role = wx.getStorageSync('role');
+    const position = wx.getStorageSync('position');
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
     if (userId) this.globalData.userId = userId;
     if (staffWfId) this.globalData.staffWfId = staffWfId;
     if (staffName) this.globalData.staffName = staffName;
-    if (role) this.globalData.role = role;
+    if (role) this.globalData.position = role; // 兼容旧缓存
+    if (position) this.globalData.position = position;
     if (phone) this.globalData.phone = phone;
     if (boundStoreName) this.globalData.boundStoreName = boundStoreName;
     if (boundStoreId) this.globalData.boundStoreId = boundStoreId;
@@ -59,8 +61,8 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { userId, staffWfId, staffName, role, phone, boundStoreName, boundStoreId } = res.result.data;
-        this.setStaffInfo({ userId, staffWfId, staffName, role, phone, boundStoreName, boundStoreId });
+        const { userId, staffWfId, staffName, position, phone, boundStoreName, boundStoreId } = res.result.data;
+        this.setStaffInfo({ userId, staffWfId, staffName, position, phone, boundStoreName, boundStoreId });
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
@@ -71,7 +73,7 @@ App<IAppOption>({
     userId?: string;
     staffWfId?: string;
     staffName?: string;
-    role?: 'manager' | 'beautician' | '';
+    position?: string;
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;
@@ -88,9 +90,9 @@ App<IAppOption>({
       this.globalData.staffName = info.staffName;
       wx.setStorageSync('staffName', info.staffName);
     }
-    if (info.role) {
-      this.globalData.role = info.role;
-      wx.setStorageSync('role', info.role);
+    if (info.position) {
+      this.globalData.position = info.position;
+      wx.setStorageSync('position', info.position);
     }
     if (info.phone) {
       this.globalData.phone = info.phone;
@@ -110,7 +112,7 @@ App<IAppOption>({
     this.globalData.userId = '';
     this.globalData.staffWfId = '';
     this.globalData.staffName = '';
-    this.globalData.role = '';
+    this.globalData.position = '';
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';

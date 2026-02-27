@@ -233,7 +233,7 @@ async function qrcode(ctx) {
   const order = orders[0]
 
   // 仅本店员工可查看（店长或开单员工）
-  if (ctx.auth.role !== 'manager' && order.store_name !== ctx.auth.storeName) {
+  if (ctx.auth.position !== '门店经理' && order.store_name !== ctx.auth.storeName) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -491,7 +491,7 @@ async function list(ctx) {
   }
 
   // 美容师只能看到指定自己的订单
-  if (ctx.auth.role !== 'manager') {
+  if (ctx.auth.position !== '门店经理') {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND o.preferred_staff_wf_id = $${params.length}`
   }
@@ -538,7 +538,7 @@ async function detail(ctx) {
   const order = orders[0]
 
   // 美容师只能看指定自己的订单
-  if (ctx.auth.role !== 'manager' && order.preferred_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && order.preferred_staff_wf_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 

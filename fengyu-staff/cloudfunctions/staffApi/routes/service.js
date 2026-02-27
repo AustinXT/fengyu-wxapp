@@ -62,7 +62,7 @@ async function create(ctx) {
   }
 
   // 权限：店长可为任何员工创建，美容师只能指定自己
-  if (ctx.auth.role !== 'manager' && resolvedStaffWfId !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && resolvedStaffWfId !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
 
@@ -225,7 +225,7 @@ async function start(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验
-  if (ctx.auth.role !== 'manager' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -274,7 +274,7 @@ async function complete(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验
-  if (ctx.auth.role !== 'manager' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -385,7 +385,7 @@ async function list(ctx) {
     whereExtra += ` AND so.status = $${params.length}`
   }
 
-  if (ctx.auth.role !== 'manager') {
+  if (ctx.auth.position !== '门店经理') {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND so.assigned_staff_wf_id = $${params.length}`
   }
@@ -522,7 +522,7 @@ async function detail(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验：美容师只能看分配给自己的
-  if (ctx.auth.role !== 'manager' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 

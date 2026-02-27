@@ -17,7 +17,7 @@ Page({
     loading: false,
     storeName: '',
     staffName: '',
-    role: '' as 'manager' | 'beautician' | '',
+    position: '',
     isManager: false,
     today: '',
     // 今日分成
@@ -63,12 +63,12 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, role, boundStoreName } = app.globalData;
-    const isManager = role === 'manager';
+    const { staffName, position, boundStoreName } = app.globalData;
+    const isManager = position === '门店经理';
     this.setData({
       storeName: boundStoreName,
       staffName,
-      role,
+      position,
       isManager,
     });
     this.loadWorkbench();

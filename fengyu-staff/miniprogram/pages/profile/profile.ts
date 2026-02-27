@@ -7,7 +7,7 @@ const app = getApp<IAppOption>();
 Page({
   data: {
     staffName: '',
-    role: '' as 'manager' | 'beautician' | '',
+    position: '',
     staffWfId: '',
     phone: '',
     boundStoreName: '',
@@ -22,8 +22,8 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, role, staffWfId, phone, boundStoreName } = app.globalData;
-    this.setData({ staffName, role, staffWfId, phone, boundStoreName });
+    const { staffName, position, staffWfId, phone, boundStoreName } = app.globalData;
+    this.setData({ staffName, position, staffWfId, phone, boundStoreName });
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent) {

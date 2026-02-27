@@ -31,7 +31,7 @@ async function search(ctx) {
   }
 
   const esc = (v) => String(v).replace(/'/g, "''")
-  const isManagerRole = ctx.auth.role === 'manager'
+  const isManagerRole = ctx.auth.position === '门店经理'
 
   let searchCondition
   if (phone) {
@@ -201,7 +201,7 @@ async function detail(ctx) {
   }
 
   const esc = (v) => String(v).replace(/'/g, "''")
-  const isManagerRole = ctx.auth.role === 'manager'
+  const isManagerRole = ctx.auth.position === '门店经理'
 
   // 从 WorkFine 查询顾客基本信息
   const customerRows = await mssql.query(`

@@ -1,17 +1,6 @@
 <!-- pages/workbench/workbench.wxml — 工作台 -->
 <view class="container">
 
-  <!-- 页面头部 -->
-  <view class="page-header brand-gradient">
-    <view class="store-info">
-      <text class="store-name">{{storeName || '未绑定门店'}}</text>
-      <view class="role-badge role-badge--{{role}}">
-        <text class="role-text">{{role === 'manager' ? '店长' : '美容师'}}</text>
-      </view>
-    </view>
-    <van-icon name="replay" size="40rpx" color="#C4975A" bind:click="onRefresh" />
-  </view>
-
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="loading-wrap">
     <van-loading type="spinner" color="#8B6A3E" />
@@ -22,6 +11,14 @@
     <!-- 1. 分成卡片（两列） -->
     <view class="section-wrap">
       <view class="commission-card">
+        <!-- 员工信息行 -->
+        <view class="commission-staff-row">
+          <text class="commission-staff-name">{{staffName}}</text>
+          <text class="commission-store-name">{{storeName || '未绑定门店'}}</text>
+          <view class="role-badge role-badge--{{isManager ? 'manager' : 'beautician'}}">
+            <text class="role-text">{{position || '未绑定'}}</text>
+          </view>
+        </view>
         <view class="commission-columns">
           <!-- 左列：今日分成 -->
           <view class="commission-col">

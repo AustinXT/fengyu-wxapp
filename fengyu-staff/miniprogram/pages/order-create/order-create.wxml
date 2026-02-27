@@ -94,21 +94,18 @@
           <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
             <view class="cart-item-info">
               <text class="cart-item-name">{{item.spuName}}</text>
-              <text class="cart-item-spec">{{item.specName}}{{item.isGift ? ' · 赠品' : ''}}</text>
+              <text class="cart-item-spec">{{item.specName}}</text>
             </view>
             <view class="cart-item-right">
               <text class="cart-item-price">¥{{item.price}}</text>
               <van-stepper
-                wx:if="{{!item.isPromoPlan}}"
                 value="{{item.quantity}}"
                 min="1"
                 max="10"
                 data-sku-id="{{item.skuId}}"
                 bind:change="onCartQtyChange"
               />
-              <text wx:else class="cart-item-qty-lock">x{{item.quantity}}</text>
               <van-icon
-                wx:if="{{!item.isPromoPlan}}"
                 name="delete-o" size="36rpx" color="#D94040"
                 data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
               />
@@ -121,12 +118,6 @@
 
   <!-- 底部操作栏 -->
   <view class="bottom-bar" wx:if="{{categories.length > 0}}">
-    <view class="bottom-bar-left">
-      <view class="promo-shortcut" catchtap="onOpenPromoShortcut">
-        <van-icon name="gift-o" size="28rpx" color="#8B6A3E" />
-        <text class="promo-shortcut-text">促销方案</text>
-      </view>
-    </view>
     <view class="bottom-bar-mid">
       <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
@@ -139,40 +130,6 @@
       bind:click="onOpenCheckout"
     >下单</van-button>
   </view>
-
-  <!-- SKU 选择弹层 -->
-  <van-popup
-    show="{{showSkuPopup}}"
-    position="bottom"
-    round
-    bind:close="onSkuPopupClose"
-  >
-    <view class="sku-popup" wx:if="{{currentSpu}}">
-      <view class="sku-popup-header">
-        <text class="sku-popup-name">{{currentSpu.spuName}}</text>
-        <van-icon name="cross" size="36rpx" color="#999" bindtap="onSkuPopupClose" />
-      </view>
-      <view class="sku-list">
-        <view
-          class="sku-item"
-          wx:for="{{currentSpu.skus}}"
-          wx:key="skuId"
-          bindtap="onAddSku"
-          data-sku="{{item}}"
-        >
-          <view class="sku-item-info">
-            <text class="sku-spec">{{item.specName}}</text>
-            <text class="sku-sessions" wx:if="{{item.sessionCount > 0}}">{{item.sessionCount}} 次</text>
-          </view>
-          <view class="sku-item-right">
-            <text class="sku-price">¥{{item.price}}</text>
-            <van-icon name="add-o" size="40rpx" color="#8B6A3E" />
-          </view>
-        </view>
-      </view>
-      <view class="safe-area-bottom" />
-    </view>
-  </van-popup>
 
   <!-- 结算面板弹层 -->
   <van-popup
@@ -242,7 +199,6 @@
       <view wx:if="{{checkoutStep === 1}}" class="checkout-body">
         <text class="checkout-customer-label">顾客：{{customerInfo.name || customerInfo.phone}}</text>
         <text class="section-label">选择开单模式</text>
-        <!-- 三种类型卡片 -->
         <view class="order-type-cards">
           <view
             class="order-type-card {{orderType === 'normal' ? 'order-type-card--active' : ''}}"
@@ -254,16 +210,6 @@
             <text class="order-type-card-desc">SPU / SKU</text>
           </view>
           <view
-            class="order-type-card {{orderType === 'promotion' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="promotion"
-          >
-            <van-icon name="gift-o" size="48rpx" color="{{orderType === 'promotion' ? '#8B6A3E' : '#999'}}" />
-            <text class="order-type-card-name">促销方案</text>
-            <text class="order-type-card-desc">套餐开单</text>
-            <text wx:if="{{orderType === 'promotion' && selectedPlan}}" class="order-type-card-plan">{{selectedPlan.name}}</text>
-          </view>
-          <view
             class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'experience' ? 'order-type-card--active' : ''}}"
             bindtap="onSelectOrderType"
             data-type="experience"
@@ -272,12 +218,6 @@
             <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">体验单</text>
             <text class="order-type-card-desc">仅店长</text>
           </view>
-        </view>
-        <!-- 促销方案已选提示 -->
-        <view wx:if="{{orderType === 'promotion' && selectedPlan}}" class="promo-selected-hint">
-          <van-icon name="success" size="28rpx" color="#3D8A5A" />
-          <text class="promo-selected-hint-text">已选：{{selectedPlan.name}}（促销价 ¥{{selectedPlan.promoPrice}}）</text>
-          <text class="promo-reselect" bindtap="onSelectOrderType" data-type="promotion">重选</text>
         </view>
         <view class="checkout-footer checkout-footer--row">
           <van-button size="small" plain bind:click="onStep1Back">返回</van-button>
@@ -293,24 +233,17 @@
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
           顾客：{{customerInfo.name || customerInfo.phone}} ·
-          {{orderType === 'normal' ? '正常单' : (orderType === 'promotion' ? '促销方案' : '体验单')}}
+          {{orderType === 'normal' ? '正常单' : '体验单'}}
         </text>
-        <!-- 促销方案标题 -->
-        <view wx:if="{{orderType === 'promotion' && selectedPlan}}" class="promo-order-banner">
-          <van-icon name="gift-o" size="32rpx" color="#8B6A3E" />
-          <text class="promo-order-banner-name">{{selectedPlan.name}}</text>
-        </view>
         <view class="confirm-items">
           <view class="confirm-item" wx:for="{{cart}}" wx:key="skuId">
             <view class="confirm-item-left">
               <text class="confirm-item-name">{{item.spuName}}</text>
-              <text class="confirm-item-spec">{{item.specName}}{{item.isGift ? ' · 赠品' : ''}}</text>
+              <text class="confirm-item-spec">{{item.specName}}</text>
             </view>
             <view class="confirm-item-right">
               <text class="confirm-item-qty">x{{item.quantity}}</text>
-              <text class="confirm-item-price {{item.isGift ? 'confirm-item-price--gift' : ''}}">
-                {{item.isGift ? '赠' : ('¥' + item.price * item.quantity)}}
-              </text>
+              <text class="confirm-item-price">¥{{item.price * item.quantity}}</text>
             </view>
           </view>
           <view class="confirm-total-row">
@@ -336,63 +269,6 @@
           >确认开单</van-button>
         </view>
       </view>
-    </view>
-  </van-popup>
-
-  <!-- 促销方案列表弹层 -->
-  <van-popup
-    show="{{showPromoList}}"
-    position="bottom"
-    round
-    safe-area-inset-bottom
-    bind:close="onPromoListClose"
-  >
-    <view class="promo-list-panel">
-      <view class="promo-list-header">
-        <text class="promo-list-title">选择促销方案</text>
-        <van-icon name="cross" size="36rpx" color="#999" bindtap="onPromoListClose" />
-      </view>
-      <view wx:if="{{promoPlansLoading}}" class="loading-wrap">
-        <van-loading type="spinner" color="#8B6A3E" />
-      </view>
-      <view wx:elif="{{promoPlans.length === 0}}" class="empty-wrap">
-        <van-empty description="暂无有效促销方案" />
-      </view>
-      <scroll-view wx:else scroll-y style="max-height:60vh;">
-        <view
-          class="promo-plan-card"
-          wx:for="{{promoPlans}}"
-          wx:key="id"
-        >
-          <view class="promo-plan-info">
-            <view class="promo-plan-name-row">
-              <text class="promo-plan-name">{{item.name}}</text>
-              <text class="promo-plan-valid">有效期至 {{item.validUntil}}</text>
-            </view>
-            <view class="promo-plan-price-row">
-              <text class="promo-plan-orig">原价 ¥{{item.originalPrice}}</text>
-              <van-icon name="arrow" size="24rpx" color="#999" />
-              <text class="promo-plan-promo">促销价 ¥{{item.promoPrice}}</text>
-            </view>
-            <!-- 方案内项目预览 -->
-            <view class="promo-plan-items">
-              <text
-                class="promo-plan-item-tag {{pitem.isGift ? 'promo-plan-item-tag--gift' : ''}}"
-                wx:for="{{item.items}}"
-                wx:for-item="pitem"
-                wx:key="itemId"
-              >{{pitem.itemName}}{{pitem.isGift ? '(赠)' : ''}}</text>
-            </view>
-          </view>
-          <van-button
-            size="small"
-            type="primary"
-            custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:32rpx;flex-shrink:0;"
-            data-plan="{{item}}"
-            bind:click="onSelectPromoPlan"
-          >选择</van-button>
-        </view>
-      </scroll-view>
     </view>
   </van-popup>
 
