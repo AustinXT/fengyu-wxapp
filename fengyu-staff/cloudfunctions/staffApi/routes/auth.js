@@ -38,8 +38,11 @@ async function login(ctx) {
       userId,
       phone: null,
       staffWfId: null,
+      staffName: null,
       role: null,
-      storeName: null
+      storeName: null,
+      boundStoreName: null,
+      boundStoreId: null
     }
   } else {
     // 老用户，更新最后登录时间
@@ -51,6 +54,7 @@ async function login(ctx) {
 
     // 如果已绑定员工档案，从 WorkFine 查角色信息
     let role = null
+    let staffName = null
     let storeName = null
     let marketName = null
 
@@ -59,6 +63,7 @@ async function login(ctx) {
       try {
         const staffRows = await mssql.query(`
           SELECT
+            UDF_S_1155 AS name,
             UDF_S_1161 AS position,
             UDF_S_1163 AS store_name,
             UDF_S_1160 AS market_name
@@ -68,6 +73,7 @@ async function login(ctx) {
         `)
 
         if (staffRows.length > 0) {
+          staffName = staffRows[0].name ? staffRows[0].name.trim() : null
           role = staffRows[0].position === '门店经理' ? 'manager' : 'beautician'
           storeName = staffRows[0].store_name ? staffRows[0].store_name.trim() : null
           marketName = staffRows[0].market_name ? staffRows[0].market_name.trim() : null
@@ -82,9 +88,12 @@ async function login(ctx) {
       userId: user.user_id,
       phone: user.phone,
       staffWfId: user.staff_wf_id,
+      staffName,
       role,
       storeName,
-      marketName
+      marketName,
+      boundStoreName: storeName,
+      boundStoreId: storeName
     }
   }
 }

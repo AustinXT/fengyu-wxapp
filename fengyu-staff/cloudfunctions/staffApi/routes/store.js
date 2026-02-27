@@ -21,14 +21,11 @@ async function list(ctx) {
     ORDER BY UDF_M_437, UDF_M_438
   `)
 
-  ctx.result = {
-    stores: storeRows.map(r => ({
-      marketName: r.market_name ? r.market_name.trim() : '',
-      storeName: r.store_name ? r.store_name.trim() : '',
-      openDate: r.open_date,
-      bedCount: r.bed_count
-    }))
-  }
+  ctx.result = storeRows.map(r => ({
+    storeId: r.store_name ? r.store_name.trim() : '',
+    storeName: r.store_name ? r.store_name.trim() : '',
+    marketName: r.market_name ? r.market_name.trim() : '',
+  }))
 }
 
 module.exports = { list }

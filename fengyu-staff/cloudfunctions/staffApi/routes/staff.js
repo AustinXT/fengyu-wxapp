@@ -339,4 +339,37 @@ async function todoList(ctx) {
   ctx.result = result
 }
 
-module.exports = { list, departments, todayCommission, monthlyCalendar, todoList }
+/**
+ * 切换工作门店
+ * 仅做门店存在性校验，返回门店名称供前端本地存储
+ */
+async function bindStore(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { storeId } = ctx.event.payload || {}
+  if (!storeId) {
+    throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
+  }
+
+  // 查 WorkFine UDT_M_219 验证门店存在
+  const esc = (v) => String(v).replace(/'/g, "''")
+  const storeRows = await mssql.query(`
+    SELECT UDF_M_438 AS store_name
+    FROM UDT_M_219
+    WHERE UDF_M_438 = '${esc(storeId)}'
+      AND (UDF_M_11956 IS NULL OR UDF_M_11956 != '是')
+  `)
+
+  if (storeRows.length === 0) {
+    throw new Error('INVALID_PARAMS: 门店不存在或已关闭')
+  }
+
+  const storeName = storeRows[0].store_name ? storeRows[0].store_name.trim() : storeId
+
+  ctx.result = {
+    success: true,
+    storeName
+  }
+}
+
+module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore }

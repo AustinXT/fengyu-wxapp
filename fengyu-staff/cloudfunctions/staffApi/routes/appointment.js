@@ -1,6 +1,7 @@
 /**
  * 预约模块路由（员工端）
  * appointment.list — 预约列表
+ * appointment.detail — 预约详情
  * appointment.confirm — 确认预约
  * appointment.checkin — 顾客到店签到
  */
@@ -8,29 +9,54 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 
+// 预约状态映射：中文 → 英文（前端使用英文状态键）
+const STATUS_CN_TO_EN = {
+  '待确认': 'pending',
+  '已确认': 'confirmed',
+  '已完成': 'completed',
+  '已取消': 'cancelled',
+  '已关闭': 'closed',
+}
+const STATUS_EN_TO_CN = {}
+for (const [cn, en] of Object.entries(STATUS_CN_TO_EN)) {
+  STATUS_EN_TO_CN[en] = cn
+}
+
 /**
  * 预约列表
  * 店长：查看本店所有预约
  * 美容师：查看预约美容师为自己的预约
  *
  * payload: {
- *   status: string | null,  // 筛选状态：'待确认'|'已确认'|null(全部)
+ *   status: string | null,  // 筛选状态：'pending'|'confirmed'|null(全部)
+ *   todayOnly: boolean,     // 仅今日预约
  *   page: number,
  *   pageSize: number
  * }
+ *
+ * 返回平铺数组，状态为英文键
  */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { status, page = 1, pageSize = 50 } = ctx.event.payload || {}
+  const { status, todayOnly, page = 1, pageSize = 50 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
   const params = [ctx.auth.storeName, pageSize, offset]
   let whereExtra = ''
 
-  if (status) {
-    params.push(status)
+  if (status && status !== 'all') {
+    // 将前端英文状态映射为中文
+    const cnStatus = STATUS_EN_TO_CN[status] || status
+    params.push(cnStatus)
     whereExtra += ` AND a.status = $${params.length}`
+  }
+
+  // 今日预约筛选
+  if (todayOnly) {
+    const today = new Date().toISOString().slice(0, 10)
+    params.push(today)
+    whereExtra += ` AND DATE(a.appointment_time) = $${params.length}::date`
   }
 
   // 美容师只看指定自己的预约
@@ -54,24 +80,90 @@ async function list(ctx) {
       a.created_at,
       oi.order_no,
       COALESCE(p.name, '到店预约') AS service_name,
-      m.sku_display_name
+      m.sku_display_name,
+      wu.phone AS customer_phone
     FROM appointments a
     LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
     LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
     LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
     WHERE a.store_name = $1
     ${whereExtra}
     ORDER BY a.appointment_time ASC
     LIMIT $2 OFFSET $3
   `, params)
 
+  ctx.result = appointments.map(a => ({
+    id: a.appointment_id,
+    customerName: a.customer_name,
+    customerPhone: a.customer_phone || '',
+    clientUserId: a.client_user_id,
+    staffName: a.staff_name,
+    appointmentTime: a.appointment_time,
+    status: STATUS_CN_TO_EN[a.status] || a.status,
+    statusText: a.status,
+    serviceItemName: a.service_name || a.sku_display_name || '',
+    remark: a.notes || '',
+    checkinAt: a.checkin_at,
+  }))
+}
+
+/**
+ * 预约详情
+ * 含关联的服务单信息
+ */
+async function detail(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { id } = ctx.event.payload || {}
+  if (!id) {
+    throw new Error('INVALID_PARAMS: 缺少 id 参数')
+  }
+
+  const appointments = await pg.query(`
+    SELECT
+      a.appointment_id,
+      a.status,
+      a.client_user_id,
+      a.customer_name,
+      a.staff_wf_id,
+      a.staff_name,
+      a.appointment_time,
+      a.notes,
+      a.item_flow_no,
+      a.checkin_at,
+      COALESCE(p.name, '到店预约') AS service_name,
+      m.sku_display_name,
+      wu.phone AS customer_phone,
+      so.service_order_no AS service_order_id
+    FROM appointments a
+    LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
+    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
+    LEFT JOIN service_orders so ON so.appointment_id = a.appointment_id
+    WHERE a.appointment_id = $1 AND a.store_name = $2
+  `, [id, ctx.auth.storeName])
+
+  if (appointments.length === 0) {
+    throw new Error('INVALID_PARAMS: 预约不存在或不属于本门店')
+  }
+
+  const a = appointments[0]
+
   ctx.result = {
-    appointments: appointments.map(a => ({
-      ...a,
-      checkinAt: a.checkin_at
-    })),
-    page,
-    pageSize
+    id: a.appointment_id,
+    customerName: a.customer_name,
+    customerPhone: a.customer_phone || '',
+    clientUserId: a.client_user_id,
+    staffName: a.staff_name,
+    appointmentTime: a.appointment_time,
+    status: STATUS_CN_TO_EN[a.status] || a.status,
+    statusText: a.status,
+    serviceItemName: a.service_name || a.sku_display_name || '',
+    remark: a.notes || '',
+    serviceOrderId: a.service_order_id || null,
+    checkinAt: a.checkin_at,
   }
 }
 
@@ -164,4 +256,4 @@ async function checkin(ctx) {
   }
 }
 
-module.exports = { list, confirm, checkin }
+module.exports = { list, detail, confirm, checkin }

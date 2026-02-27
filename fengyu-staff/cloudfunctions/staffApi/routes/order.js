@@ -58,7 +58,9 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeName')
   }
 
-  const orderType = orderTypeParam || '正式'
+  // 映射前端 orderType（normal/experience/promotion）→ 后端中文值
+  const ORDER_TYPE_MAP = { normal: '正式', experience: '体验', promotion: '促销方案' }
+  const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '正式'
   if (!['正式', '体验', '促销方案'].includes(orderType)) {
     throw new Error('INVALID_PARAMS: orderType 值不合法')
   }

@@ -165,6 +165,29 @@
 }
 
 /* ===== 月度业绩日历 ===== */
+.section-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+}
+
+.cal-total {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+
+.cal-total-amount {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #8B6A3E;
+}
+
+.cal-total-detail {
+  font-size: 22rpx;
+  color: #999999;
+}
+
 .month-nav {
   display: flex;
   align-items: center;
@@ -199,7 +222,7 @@
 
 .cal-day {
   width: 14.2857%;
-  height: 80rpx;
+  height: 92rpx;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -225,9 +248,9 @@
 }
 
 .cal-day-amount {
-  font-size: 18rpx;
+  font-size: 20rpx;
   color: #C4975A;
-  margin-top: 2rpx;
+  margin-top: 4rpx;
   line-height: 1;
 }
 

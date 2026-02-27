@@ -1,9 +1,11 @@
 /**
  * 商品模块路由（员工端）
+ * product.shopInit — 开单页初始化（合并接口）
  * product.categories — 品项分类列表
  * product.spuList — SPU 列表（含 SKU 价格）
  * product.skuDetail — SKU 详情
- * product.promotionList — 促销方案列表
+ * product.promotionList — 促销方案列表（原始格式）
+ * product.promotionPlans — 促销方案列表（前端适配格式）
  */
 
 const pg = require('../db/pg')
@@ -14,14 +16,11 @@ const { requireStaffBound } = require('../middleware/auth')
 const PRICE_CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 const priceCache = new Map()
 
-/**
- * 品项分类列表
- * 从 product_spu 动态派生（含有效 SKU 的分类）
- */
-async function categories(ctx) {
-  await requireStaffBound()(ctx, async () => {})
+// ===== 公共查询辅助 =====
 
-  const rows = await pg.query(`
+/** 查询分类原始行 */
+async function _queryCategoryRows() {
+  return pg.query(`
     SELECT
       p.category,
       p.big_category,
@@ -35,18 +34,20 @@ async function categories(ctx) {
     GROUP BY p.category, p.big_category
     ORDER BY MIN(p.sort_order) ASC
   `)
-
-  ctx.result = { categories: rows }
 }
 
-/**
- * SPU 列表（按品项分类），含 WorkFine 实时价格
- */
-async function spuList(ctx) {
-  await requireStaffBound()(ctx, async () => {})
+/** 格式化分类行 → 前端格式 */
+function _formatCategory(r) {
+  return {
+    id: r.category,
+    name: r.category,
+    big_category: r.big_category,
+    category_order: r.category_order
+  }
+}
 
-  const { category, bigCategory } = ctx.event.payload || {}
-
+/** 查询 SPU 列表并格式化为前端格式 */
+async function _queryFormattedSpuList(category, bigCategory) {
   const params = []
   let whereClause = `
     WHERE EXISTS (
@@ -94,16 +95,65 @@ async function spuList(ctx) {
     skuBySpu[sku.spu_id].push(sku)
   }
 
-  ctx.result = {
-    spuList: spuRows.map(spu => {
-      const skus = skuBySpu[spu.spu_id] || []
-      return {
-        ...spu,
-        skuList: skus,
-        priceFrom: skus.length > 0 ? Math.min(...skus.map(s => Number(s.originalPrice) || 0)) : null
-      }
-    })
+  return spuRows.map(spu => {
+    const skus = skuBySpu[spu.spu_id] || []
+    return {
+      spuId: spu.spu_id,
+      spuName: spu.name,
+      categoryName: spu.category,
+      productType: spu.big_category,
+      priceFrom: skus.length > 0 ? Math.min(...skus.map(s => Number(s.originalPrice) || 0)) : null,
+      cover_image: spu.cover_image,
+      skus: skus.map(s => ({
+        skuId: s.sku_id,
+        specName: s.sku_display_name || s.itemName || '',
+        price: Number(s.originalPrice) || 0,
+        sessionCount: s.sessionCount != null ? Number(s.sessionCount) : 0,
+        workfineItemId: s.workfine_item_id,
+      }))
+    }
+  })
+}
+
+// ===== 路由处理器 =====
+
+/**
+ * 开单页初始化（合并接口）
+ * 一次返回 categories + 第一个分类的 spuList
+ */
+async function shopInit(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const catRows = await _queryCategoryRows()
+  const categories = catRows.map(_formatCategory)
+
+  let spuList = []
+  if (categories.length > 0) {
+    spuList = await _queryFormattedSpuList(categories[0].id, null)
   }
+
+  ctx.result = { categories, spuList }
+}
+
+/**
+ * 品项分类列表
+ * 从 product_spu 动态派生（含有效 SKU 的分类）
+ */
+async function categories(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const rows = await _queryCategoryRows()
+  ctx.result = rows.map(_formatCategory)
+}
+
+/**
+ * SPU 列表（按品项分类），含 WorkFine 实时价格
+ */
+async function spuList(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+  const { category, bigCategory, categoryId } = ctx.event.payload || {}
+  // 兼容前端 categoryId（映射为 category 名称，因 id = name）
+  const resolvedCategory = categoryId || category
+  ctx.result = await _queryFormattedSpuList(resolvedCategory, bigCategory)
 }
 
 /**
@@ -137,7 +187,7 @@ async function skuDetail(ctx) {
 }
 
 /**
- * 促销方案列表
+ * 促销方案列表（原始格式）
  * 从 WorkFine UDT_S_1459 查询有效促销方案
  * 包含方案内所有项目（UDT_M_1460）
  */
@@ -229,6 +279,7 @@ async function promotionList(ctx) {
       productType: r.product_type,
       category: r.category,
       itemName: r.item_name,
+      specName: skuMap[r.workfine_item_id]?.sku_display_name || '',
       sessionCount: r.session_count,
       listPrice: r.list_price,
       promoPrice: r.is_gift === '是' ? 0 : (r.promo_price || 0),
@@ -247,6 +298,33 @@ async function promotionList(ctx) {
       items: schemeMap[s.scheme_id] || []
     }))
   }
+}
+
+/**
+ * 促销方案列表（前端适配格式）
+ * 复用 promotionList 逻辑，转换字段名
+ */
+async function promotionPlans(ctx) {
+  await promotionList(ctx)
+  const schemes = (ctx.result && ctx.result.schemes) || []
+
+  ctx.result = schemes.map(s => ({
+    id: s.schemeId,
+    name: s.schemeName,
+    promoPrice: s.totalPrice,
+    startDate: s.startDate,
+    endDate: s.endDate,
+    items: (s.items || []).map(item => ({
+      skuId: item.skuId,
+      itemName: item.itemName,
+      specName: item.specName || '',
+      promoPrice: item.promoPrice,
+      isGift: item.isGift,
+      workfineItemId: item.workfineItemId,
+      sessionCount: item.sessionCount,
+      productType: item.productType,
+    }))
+  }))
 }
 
 /**
@@ -374,4 +452,4 @@ async function enrichSkuWithWorkfinePrice(skuList) {
   }))
 }
 
-module.exports = { categories, spuList, skuDetail, promotionList }
+module.exports = { shopInit, categories, spuList, skuDetail, promotionList, promotionPlans }

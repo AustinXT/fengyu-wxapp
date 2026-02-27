@@ -24,16 +24,21 @@ const routes = {
   'staff.todayCommission': () => require('./routes/staff').todayCommission,
   'staff.monthlyCalendar': () => require('./routes/staff').monthlyCalendar,
   'staff.todoList':       () => require('./routes/staff').todoList,
+  'staff.bindStore':      () => require('./routes/staff').bindStore,
 
   // 顾客档案
   'customer.search':      () => require('./routes/customer').search,
   'customer.calendar':    () => require('./routes/customer').calendar,
+  'customer.detail':      () => require('./routes/customer').detail,
+  'customer.paidOrders':  () => require('./routes/customer').paidOrders,
 
   // 商品
+  'product.shopInit':     () => require('./routes/product').shopInit,
   'product.categories':   () => require('./routes/product').categories,
   'product.skuDetail':    () => require('./routes/product').skuDetail,
   'product.spuList':      () => require('./routes/product').spuList,
   'product.promotionList': () => require('./routes/product').promotionList,
+  'product.promotionPlans': () => require('./routes/product').promotionPlans,
 
   // 订单
   'order.create':         () => require('./routes/order').create,
@@ -52,12 +57,14 @@ const routes = {
   'appointment.list':     () => require('./routes/appointment').list,
   'appointment.confirm':  () => require('./routes/appointment').confirm,
   'appointment.checkin':  () => require('./routes/appointment').checkin,
+  'appointment.detail':   () => require('./routes/appointment').detail,
 
   // 服务单
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,
   'service.complete':     () => require('./routes/service').complete,
   'service.list':         () => require('./routes/service').list,
+  'service.detail':       () => require('./routes/service').detail,
 }
 
 /**

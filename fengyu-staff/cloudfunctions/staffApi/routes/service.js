@@ -4,9 +4,11 @@
  * service.start — 开始服务（待服务 → 服务中）
  * service.complete — 完成服务（服务中 → 已完成，扣减次数）
  * service.list — 服务单列表
+ * service.detail — 服务单详情
  */
 
 const pg = require('../db/pg')
+const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
 
 /**
@@ -42,18 +44,25 @@ async function create(ctx) {
     items
   } = payload
 
-  if (!serviceDate) {
-    throw new Error('INVALID_PARAMS: 缺少 serviceDate')
-  }
-  if (!assignedStaffWfId) {
-    throw new Error('INVALID_PARAMS: 缺少 assignedStaffWfId')
-  }
-  if (!items || !Array.isArray(items) || items.length === 0) {
+  // 兼容前端简化参数：从 items 中提取 sessionCount 作为 sessionUsed
+  const normalizedItems = (items || []).map(item => ({
+    itemFlowNo: item.itemFlowNo,
+    sessionUsed: item.sessionUsed || item.sessionCount || 1,
+    employeeId: item.employeeId,
+  }))
+
+  // 自动推导 serviceDate：未传则用今天
+  const resolvedServiceDate = serviceDate || new Date().toISOString().slice(0, 10)
+
+  // 自动推导 assignedStaffWfId：未传则用当前员工
+  const resolvedStaffWfId = assignedStaffWfId || ctx.auth.staffWfId
+
+  if (!normalizedItems || normalizedItems.length === 0) {
     throw new Error('INVALID_PARAMS: 服务明细不能为空')
   }
 
   // 权限：店长可为任何员工创建，美容师只能指定自己
-  if (ctx.auth.role !== 'manager' && assignedStaffWfId !== ctx.auth.staffWfId) {
+  if (ctx.auth.role !== 'manager' && resolvedStaffWfId !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 美容师只能创建分配给自己的服务单')
   }
 
@@ -77,7 +86,7 @@ async function create(ctx) {
   }
 
   // 验证订单行权限：每条 item_flow_no 必须来自已支付订单
-  for (const item of items) {
+  for (const item of normalizedItems) {
     if (!item.itemFlowNo) {
       throw new Error('INVALID_PARAMS: 服务明细缺少 itemFlowNo')
     }
@@ -148,9 +157,9 @@ async function create(ctx) {
         serviceOrderNo,
         ctx.auth.marketName || '',
         ctx.auth.storeName,
-        serviceDate,
+        resolvedServiceDate,
         serviceDuration || null,
-        assignedStaffWfId,
+        resolvedStaffWfId,
         remark || '',
         resolvedClientUserId,
         appointmentId || null,
@@ -159,7 +168,7 @@ async function create(ctx) {
     )
 
     // 创建服务明细
-    for (const item of items) {
+    for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
       const skuRows = await client.query(
         'SELECT sku_id FROM order_items WHERE item_flow_no = $1',
@@ -177,7 +186,7 @@ async function create(ctx) {
           serviceOrderNo,
           skuId,
           item.sessionUsed,
-          item.employeeId || assignedStaffWfId
+          item.employeeId || resolvedStaffWfId
         ]
       )
     }
@@ -197,7 +206,9 @@ async function create(ctx) {
 async function start(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { serviceOrderNo } = ctx.event.payload || {}
+  // 兼容前端字段名：serviceOrderId 或 serviceOrderNo
+  const payload = ctx.event.payload || {}
+  const serviceOrderNo = payload.serviceOrderNo || payload.serviceOrderId
   if (!serviceOrderNo) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderNo')
   }
@@ -244,7 +255,9 @@ async function start(ctx) {
 async function complete(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { serviceOrderNo } = ctx.event.payload || {}
+  // 兼容前端字段名：serviceOrderId 或 serviceOrderNo
+  const payload = ctx.event.payload || {}
+  const serviceOrderNo = payload.serviceOrderNo || payload.serviceOrderId
   if (!serviceOrderNo) {
     throw new Error('INVALID_PARAMS: 缺少 serviceOrderNo')
   }
@@ -355,6 +368,8 @@ async function complete(ctx) {
  * 服务单列表
  * 店长：查看本店所有服务单
  * 美容师：只看分配给自己的服务单
+ *
+ * 返回平铺数组，字段映射 camelCase
  */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -421,13 +436,170 @@ async function list(ctx) {
     })
   }
 
+  // 批量查询员工姓名（从 WorkFine）
+  const staffWfIds = [...new Set(serviceOrders.map(s => s.assigned_staff_wf_id).filter(Boolean))]
+  let staffNameMap = {}
+  if (staffWfIds.length > 0) {
+    const esc = (v) => String(v).replace(/'/g, "''")
+    const idList = staffWfIds.map(id => `'${esc(id)}'`).join(',')
+    try {
+      const staffRows = await mssql.query(`
+        SELECT UDF_S_1147 AS staff_wf_id, UDF_S_1155 AS name
+        FROM UDT_S_287
+        WHERE UDF_S_1147 IN (${idList})
+      `)
+      for (const r of staffRows) {
+        staffNameMap[r.staff_wf_id] = r.name ? r.name.trim() : ''
+      }
+    } catch (_) {}
+  }
+
+  // 批量查询顾客姓名（从 PG orders 或 client_wechat_users）
+  const clientUserIds = [...new Set(serviceOrders.map(s => s.client_user_id).filter(Boolean))]
+  let customerNameMap = {}
+  if (clientUserIds.length > 0) {
+    const nameRows = await pg.query(`
+      SELECT DISTINCT ON (o.client_user_id)
+        o.client_user_id, o.customer_name
+      FROM orders o
+      WHERE o.client_user_id = ANY($1)
+      ORDER BY o.client_user_id, o.created_at DESC
+    `, [clientUserIds])
+    for (const r of nameRows) {
+      customerNameMap[r.client_user_id] = r.customer_name
+    }
+  }
+
+  ctx.result = serviceOrders.map(so => ({
+    id: so.service_order_no,
+    serviceNo: so.service_order_no,
+    customerName: customerNameMap[so.client_user_id] || '',
+    customerPhone: so.client_phone || '',
+    staffName: staffNameMap[so.assigned_staff_wf_id] || '',
+    assignedStaffWfId: so.assigned_staff_wf_id,
+    status: so.status,
+    serviceTime: so.service_date,
+    appointmentId: so.appointment_id,
+    remark: so.remark || '',
+    items: itemsMap[so.service_order_no] || [],
+  }))
+}
+
+/**
+ * 服务单详情
+ * 含服务明细（订单行名称 + 剩余次数）
+ */
+async function detail(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { id } = ctx.event.payload || {}
+  if (!id) {
+    throw new Error('INVALID_PARAMS: 缺少 id 参数')
+  }
+
+  const serviceOrders = await pg.query(`
+    SELECT
+      so.service_order_no,
+      so.status,
+      so.service_date,
+      so.service_duration,
+      so.assigned_staff_wf_id,
+      so.client_user_id,
+      so.appointment_id,
+      so.remark,
+      so.created_at,
+      so.updated_at,
+      wu.phone AS client_phone
+    FROM service_orders so
+    LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
+    WHERE so.service_order_no = $1 AND so.store_name = $2
+  `, [id, ctx.auth.storeName])
+
+  if (serviceOrders.length === 0) {
+    throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
+  }
+
+  const so = serviceOrders[0]
+
+  // 权限校验：美容师只能看分配给自己的
+  if (ctx.auth.role !== 'manager' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+    throw new Error('PERMISSION_DENIED: 无权查看该服务单')
+  }
+
+  // 查询服务明细 + 订单行信息
+  const items = await pg.query(`
+    SELECT
+      si.item_flow_no,
+      si.session_used,
+      oi.session_count,
+      oi.remaining_sessions,
+      m.sku_display_name,
+      m.product_type,
+      p.name AS spu_name
+    FROM service_items si
+    LEFT JOIN order_items oi ON si.item_flow_no = oi.item_flow_no
+    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    WHERE si.service_order_no = $1
+  `, [id])
+
+  // 查询员工姓名
+  let staffName = ''
+  if (so.assigned_staff_wf_id) {
+    const esc = (v) => String(v).replace(/'/g, "''")
+    try {
+      const staffRows = await mssql.query(`
+        SELECT UDF_S_1155 AS name FROM UDT_S_287
+        WHERE UDF_S_1147 = '${esc(so.assigned_staff_wf_id)}'
+      `)
+      if (staffRows.length > 0) {
+        staffName = staffRows[0].name ? staffRows[0].name.trim() : ''
+      }
+    } catch (_) {}
+  }
+
+  // 查询顾客姓名
+  let customerName = ''
+  if (so.client_user_id) {
+    const nameRows = await pg.query(`
+      SELECT customer_name FROM orders
+      WHERE client_user_id = $1
+      ORDER BY created_at DESC LIMIT 1
+    `, [so.client_user_id])
+    if (nameRows.length > 0) customerName = nameRows[0].customer_name || ''
+  }
+
+  // 推导 startTime / completedTime
+  // service_orders 无 start_time / completed_time 列，用 status + updated_at 近似
+  let startTime = null
+  let completedTime = null
+  if (so.status === '服务中' || so.status === '已完成') {
+    startTime = so.updated_at // 近似
+  }
+  if (so.status === '已完成') {
+    completedTime = so.updated_at
+  }
+
   ctx.result = {
-    serviceOrders: serviceOrders.map(so => ({
-      ...so,
-      items: itemsMap[so.service_order_no] || []
-    })),
-    page,
-    pageSize
+    id: so.service_order_no,
+    serviceNo: so.service_order_no,
+    customerName,
+    customerPhone: so.client_phone || '',
+    staffName,
+    status: so.status,
+    serviceTime: so.service_date,
+    startTime,
+    completedTime,
+    appointmentId: so.appointment_id,
+    remark: so.remark || '',
+    items: items.map(i => ({
+      itemFlowNo: i.item_flow_no,
+      itemName: i.spu_name || '',
+      spec: i.sku_display_name || '',
+      sessionCount: i.session_used,
+      remainingSessions: i.remaining_sessions,
+      totalSessions: i.session_count,
+    }))
   }
 }
 
@@ -455,4 +627,4 @@ function generateServiceItemId() {
   return 'si_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-module.exports = { create, start, complete, list }
+module.exports = { create, start, complete, list, detail }

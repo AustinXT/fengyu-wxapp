@@ -62,7 +62,13 @@
     <!-- 2. 本月业绩日历 -->
     <view class="section-card">
       <view class="section-header">
-        <text class="section-title">本月业绩</text>
+        <view class="section-header-left">
+          <text class="section-title">本月业绩</text>
+          <view class="cal-total">
+            <text class="cal-total-amount">¥ {{monthlyCommission}}</text>
+            <text class="cal-total-detail">订单{{monthlyOrderCount}} · 服务{{monthlyServiceCount}}</text>
+          </view>
+        </view>
         <view class="month-nav">
           <van-icon name="arrow-left" size="32rpx" color="#8B6A3E" bindtap="onPrevMonth" />
           <text class="month-label">{{monthLabel}}</text>
