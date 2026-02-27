@@ -9,7 +9,7 @@ user-invocable: true
 metadata:
   author: nvoyager
   title: 微信小程序线上排障
-  version: 1.0.1
+  version: 1.0.2
   description_zh: 从错误现象到修复验证的线上问题排查完整闭环
 ---
 

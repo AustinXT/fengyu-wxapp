@@ -8,8 +8,8 @@ argument-hint: '[功能名称或需求描述]'
 user-invocable: true
 metadata:
   author: nvoyager
-  title: 微信小程序全栈功能开发
-  version: 1.0.1
+  title: 微信小程序新特性开发
+  version: 1.0.2
   description_zh: 从需求到上线的全栈功能开发工作流
 ---
 

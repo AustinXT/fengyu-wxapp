@@ -9,7 +9,7 @@ user-invocable: true
 metadata:
   author: nvoyager
   title: 微信小程序集成测试框架
-  version: 1.0.1
+  version: 1.0.2
   description_zh: 微信小程序 + CloudBase 项目通用端到端集成测试工作流
 ---
 

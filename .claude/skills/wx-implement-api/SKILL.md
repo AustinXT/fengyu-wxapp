@@ -9,7 +9,7 @@ user-invocable: true
 metadata:
   author: nvoyager
   title: 微信小程序后端 API 全流程
-  version: 1.0.1
+  version: 1.0.2
   description_zh: 从 Schema 设计到部署验证的后端 API 完整开发工作流
 ---
 
