@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "顾客详情",
+  "usingComponents": {
+    "van-empty": "@vant/weapp/empty/index"
+  }
+}

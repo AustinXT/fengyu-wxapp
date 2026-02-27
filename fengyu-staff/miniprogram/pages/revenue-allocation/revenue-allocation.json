@@ -1,0 +1,6 @@
+{
+  "navigationBarTitleText": "营业额分配",
+  "usingComponents": {
+    "van-empty": "@vant/weapp/empty/index"
+  }
+}

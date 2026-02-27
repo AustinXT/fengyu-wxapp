@@ -1,0 +1,281 @@
+/* pages/workbench/workbench.wxss */
+.header {
+  padding: 48rpx 32rpx 36rpx;
+  color: #FFFFFF;
+}
+
+.header-store {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin-bottom: 8rpx;
+}
+
+.header-store-name {
+  font-size: 32rpx;
+  font-weight: 600;
+}
+
+.header-role {
+  font-size: 22rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 20rpx;
+  background: rgba(255,255,255,0.15);
+}
+
+.header-staff-name {
+  font-size: 26rpx;
+  color: rgba(255,255,255,0.7);
+}
+
+.loading-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 120rpx 0;
+}
+
+/* ===== 通用 section ===== */
+.section {
+  margin: 24rpx 24rpx 0;
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+  padding: 24rpx;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #1A1A1A;
+}
+
+.section-date {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.section-more {
+  font-size: 24rpx;
+  color: #D4A76A;
+}
+
+/* ===== 今日分成卡片 ===== */
+.commission-card {
+  border-radius: 12rpx;
+  padding: 28rpx;
+  color: #FFFFFF;
+}
+
+.commission-main {
+  margin-bottom: 20rpx;
+}
+
+.commission-label {
+  font-size: 24rpx;
+  color: rgba(255,255,255,0.7);
+  display: block;
+  margin-bottom: 8rpx;
+}
+
+.commission-detail {
+  display: flex;
+  gap: 48rpx;
+  padding-top: 16rpx;
+  border-top: 1px solid rgba(255,255,255,0.15);
+}
+
+.commission-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
+.commission-item-label {
+  font-size: 22rpx;
+  color: rgba(255,255,255,0.6);
+}
+
+.commission-item-value {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #D4A76A;
+}
+
+/* ===== 本月业绩日历 ===== */
+.month-nav {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.month-label {
+  font-size: 26rpx;
+  color: #666666;
+  min-width: 120rpx;
+  text-align: center;
+}
+
+.month-total {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+  margin-bottom: 20rpx;
+}
+
+.month-total-label {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.month-total-value {
+  font-size: 36rpx;
+  font-weight: 600;
+  color: #8B6A3E;
+}
+
+.cal-weekdays {
+  display: flex;
+  margin-bottom: 8rpx;
+}
+
+.cal-wd {
+  flex: 1;
+  text-align: center;
+  font-size: 22rpx;
+  color: #999999;
+}
+
+.cal-days {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.cal-day {
+  width: 14.2857%;
+  height: 80rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.cal-day-empty {}
+
+.cal-day-num {
+  font-size: 28rpx;
+  color: #2D2017;
+  line-height: 1;
+}
+
+.cal-day-today .cal-day-num {
+  color: #FFFFFF;
+  background: #8B6A3E;
+  border-radius: 50%;
+  width: 48rpx;
+  height: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+}
+
+.cal-day-amount {
+  font-size: 18rpx;
+  color: #C4975A;
+  margin-top: 2rpx;
+  line-height: 1;
+}
+
+.cal-day-today .cal-day-amount {
+  color: #D4A76A;
+}
+
+/* ===== 顾客档案描述 ===== */
+.section-desc {
+  margin-bottom: 8rpx;
+}
+
+.section-desc-text {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* ===== 代办 ===== */
+.todo-badge {
+  background: #FF4D4F;
+  color: #FFFFFF;
+  font-size: 22rpx;
+  padding: 2rpx 10rpx;
+  border-radius: 20rpx;
+  min-width: 32rpx;
+  text-align: center;
+}
+
+.todo-list {}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  padding: 20rpx 0;
+  border-bottom: 1px solid #F0F0F0;
+}
+
+.todo-item:last-child {
+  border-bottom: none;
+}
+
+.todo-icon {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.todo-icon-appt { background: #E6F7FF; color: #1890FF; }
+.todo-icon-service { background: #F6FFED; color: #52C41A; }
+
+.todo-content {
+  flex: 1;
+}
+
+.todo-title {
+  font-size: 28rpx;
+  color: #1A1A1A;
+  display: block;
+  margin-bottom: 4rpx;
+}
+
+.todo-desc {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.empty-todo {
+  padding: 20rpx 0;
+}
+
+/* ===== 搜索栏 ===== */
+.search-bar {
+  margin-bottom: 12rpx;
+}
+
+.empty-customers {
+  padding: 20rpx 0;
+  text-align: center;
+}
+
+.empty-text {
+  font-size: 26rpx;
+  color: #999999;
+}

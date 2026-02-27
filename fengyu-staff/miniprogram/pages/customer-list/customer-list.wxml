@@ -1,0 +1,6 @@
+<!-- /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/customer-list/customer-list.wxml -->
+<view class="container">
+  <view class="page-content">
+    <van-empty description="��开发中）" />
+  </view>
+</view>

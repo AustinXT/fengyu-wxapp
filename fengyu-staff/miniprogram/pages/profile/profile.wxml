@@ -1,0 +1,71 @@
+<!-- pages/profile/profile.wxml — 我的 -->
+<view class="container">
+  <view class="profile-header brand-gradient">
+    <view class="avatar-wrap">
+      <van-icon name="manager" size="80rpx" color="#D4A76A" />
+    </view>
+    <view class="profile-info">
+      <text class="profile-name">{{staffName || '未登录'}}</text>
+      <view class="profile-meta">
+        <van-tag color="#D4A76A" text-color="#FFFFFF">
+          {{role === 'manager' ? '店长' : role === 'beautician' ? '美容师' : '未绑定'}}
+        </van-tag>
+        <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 手机号绑定 -->
+  <view class="section-card" wx:if="{{!phone}}">
+    <view class="bind-tip">
+      <van-icon name="warning-o" color="#FAAD14" size="32rpx" />
+      <text class="bind-tip-text">请先绑定手机号，才能关联员工档案</text>
+    </view>
+    <van-button type="primary" block bindtap="onBindPhone">绑定手机号</van-button>
+  </view>
+
+  <view class="section-card" wx:if="{{phone}}">
+    <van-cell-group>
+      <van-cell title="手机号" value="{{phone}}" icon="phone-o" />
+      <van-cell title="员工编号" value="{{staffWfId || '未关联'}}" icon="manager-o" />
+      <van-cell
+        title="所属门店"
+        value="{{boundStoreName || '请选择门店'}}"
+        icon="shop-o"
+        is-link
+        bindtap="onBindStore"
+      />
+    </van-cell-group>
+  </view>
+
+  <!-- 快捷功能 -->
+  <view class="section-card">
+    <van-cell-group title="工作功能">
+      <van-cell title="订单列表" icon="orders-o" is-link bindtap="onNavOrders" />
+      <van-cell title="服务单列表" icon="todo-list-o" is-link bindtap="onNavServices" />
+      <van-cell title="顾客档案" icon="friends-o" is-link bindtap="onNavCustomers" />
+    </van-cell-group>
+  </view>
+
+  <view class="section-card">
+    <van-cell-group title="其他">
+      <van-cell title="退出登录" icon="revoke" bindtap="onLogout" />
+    </van-cell-group>
+  </view>
+</view>
+
+<!-- 门店选择弹出层 -->
+<van-popup
+  show="{{showStorePicker}}"
+  round
+  position="bottom"
+  bind:close="onStorePickerClose"
+>
+  <van-picker
+    title="选择门店"
+    show-toolbar
+    columns="{{storeColumns}}"
+    bind:confirm="onStoreConfirm"
+    bind:cancel="onStorePickerClose"
+  />
+</van-popup>

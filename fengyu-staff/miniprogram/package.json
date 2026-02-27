@@ -1,0 +1,13 @@
+{
+  "name": "fengyu-staff-miniprogram",
+  "version": "1.0.0",
+  "description": "凤御员工端小程序",
+  "main": "index.js",
+  "type": "commonjs",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vant/weapp": "^1.11.7"
+  }
+}

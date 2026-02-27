@@ -1,0 +1,97 @@
+/* app.wxss — 凤御员工端全局样式 */
+page {
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue',
+               'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 28rpx;
+  line-height: 1.5;
+  color: #1A1A1A;
+  background-color: #FAFAFA;
+
+  /* ===== 业务 CSS 变量（黑金主题） ===== */
+  --color-primary:        #D4A76A;
+  --color-primary-light:  #F5EDE0;
+  --color-primary-dark:   #B8935A;
+  --color-success:        #52C41A;
+  --color-warning:        #FAAD14;
+  --color-error:          #FF4D4F;
+  --color-text-primary:   #1A1A1A;
+  --color-text-secondary: #666666;
+  --color-text-hint:      #999999;
+  --color-border:         #E8E8E8;
+  --color-bg-page:        #FAFAFA;
+  --color-bg-card:        #FFFFFF;
+  --color-brand-black:    #000000;
+  --color-brand-gold:     #D4A76A;
+
+  /* ===== Vant 主题覆盖（黑金主题） ===== */
+  --button-primary-background-color: #D4A76A;
+  --button-primary-border-color:     #D4A76A;
+  --button-primary-color:            #FFFFFF;
+  --button-border-radius:            44rpx;
+  --tab-active-color:                #D4A76A;
+  --tabs-bottom-bar-color:           #D4A76A;
+  --tag-primary-background-color:    #D4A76A;
+  --checkbox-checked-icon-color:     #D4A76A;
+  --radio-checked-icon-color:        #D4A76A;
+  --search-action-color:             #D4A76A;
+  --cell-right-icon-color:           #999999;
+  --loading-color:                   #D4A76A;
+  --empty-image-size:                200rpx;
+  --sidebar-active-color:            #D4A76A;
+  --sidebar-selected-color:          #D4A76A;
+}
+
+/* ===== 安全区 ===== */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ===== 页面容器 ===== */
+.container {
+  min-height: 100vh;
+  background-color: var(--color-bg-page);
+}
+
+/* ===== 分割线 ===== */
+.divider {
+  height: 1px;
+  background-color: var(--color-border);
+}
+
+/* ===== 状态标签色 ===== */
+.status-pending    { color: #D48806; }
+.status-confirm    { color: #B8935A; }
+.status-paid       { color: #389E0D; }
+.status-completed  { color: #8C8C8C; }
+.status-failed     { color: #CF1322; }
+.status-closed     { color: #8C8C8C; }
+.status-serving    { color: #096DD9; }
+
+/* ===== 价格组合 ===== */
+.price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 2rpx;
+  color: var(--color-primary);
+}
+
+.price-symbol  { font-size: 22rpx; font-weight: 600; }
+.price-integer { font-size: 40rpx; font-weight: 700; }
+
+/* ===== 品牌黑金渐变 ===== */
+.brand-gradient {
+  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
+}
+
+.text-gold { color: var(--color-brand-gold); }
+
+.card-dark {
+  background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%);
+  color: #FFFFFF;
+}
+
+.card-dark .card-title { color: var(--color-brand-gold); }
+
+/* ===== 角色标签 ===== */
+.role-manager   { color: #D4A76A; }
+.role-beautician { color: #096DD9; }

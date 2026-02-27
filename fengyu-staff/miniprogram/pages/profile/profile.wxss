@@ -1,0 +1,57 @@
+/* pages/profile/profile.wxss */
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: 28rpx;
+  padding: 48rpx 32rpx;
+  color: #FFFFFF;
+}
+
+.avatar-wrap {
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.profile-name {
+  font-size: 36rpx;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 12rpx;
+}
+
+.profile-meta {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.profile-store {
+  font-size: 24rpx;
+  color: rgba(255,255,255,0.7);
+}
+
+.section-card {
+  margin: 24rpx 24rpx 0;
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+  padding: 20rpx;
+}
+
+.bind-tip {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 16rpx 0 24rpx;
+}
+
+.bind-tip-text {
+  font-size: 26rpx;
+  color: #D48806;
+}

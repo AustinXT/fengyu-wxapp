@@ -1,0 +1,116 @@
+/* pages/order-create/order-create.wxss */
+/* ===== 审批提示条 ===== */
+.approval-notice {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  background: #FFF8E6;
+  padding: 20rpx 32rpx;
+  border-bottom: 1px solid #FFE4A0;
+}
+
+.approval-notice-text {
+  font-size: 26rpx;
+  color: #D4820A;
+}
+
+/* ===== 步骤条 ===== */
+.steps-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32rpx 24rpx;
+  background: #FFFFFF;
+  gap: 0;
+}
+
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.step-dot {
+  width: 48rpx;
+  height: 48rpx;
+  border-radius: 50%;
+  background: #E8E8E8;
+  color: #999999;
+  font-size: 24rpx;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.step-active .step-dot {
+  background: #D4A76A;
+  color: #FFFFFF;
+}
+
+.step-label {
+  font-size: 22rpx;
+  color: #999999;
+}
+
+.step-active .step-label {
+  color: #D4A76A;
+  font-weight: 500;
+}
+
+.step-line {
+  width: 60rpx;
+  height: 2rpx;
+  background: #E8E8E8;
+  margin: 0 4rpx;
+  margin-bottom: 24rpx;
+}
+
+/* ===== 步骤面板 ===== */
+.step-panel {
+  padding: 24rpx;
+}
+
+.panel-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #1A1A1A;
+  margin-bottom: 8rpx;
+}
+
+.panel-desc {
+  font-size: 24rpx;
+  color: #999999;
+  margin-bottom: 24rpx;
+}
+
+.input-group {
+  background: #FFFFFF;
+  border-radius: 12rpx;
+  overflow: hidden;
+  margin-bottom: 24rpx;
+}
+
+.customer-found {
+  margin-bottom: 24rpx;
+}
+
+.order-type-section {
+  margin-bottom: 32rpx;
+}
+
+.order-type-section .panel-title {
+  font-size: 28rpx;
+  margin-bottom: 12rpx;
+}
+
+.step-actions {
+  padding: 24rpx 0;
+}
+
+.step-actions-row {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 24rpx;
+}

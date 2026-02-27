@@ -1,0 +1,156 @@
+<!-- pages/workbench/workbench.wxml — 工作台 -->
+<view class="container">
+
+  <!-- 顶部员工信息 -->
+  <view class="header brand-gradient">
+    <view class="header-store">
+      <text class="header-store-name">{{storeName || '未绑定门店'}}</text>
+      <text class="header-role {{role === 'manager' ? 'role-manager' : 'role-beautician'}}">
+        {{role === 'manager' ? '店长' : '美容师'}}
+      </text>
+    </view>
+    <view class="header-staff">
+      <text class="header-staff-name">{{staffName || '未登录'}}</text>
+    </view>
+  </view>
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#D4A76A" />
+  </view>
+
+  <block wx:else>
+
+    <!-- 1. 今日分成 -->
+    <view class="section">
+      <view class="section-header">
+        <text class="section-title">我的今日分成</text>
+        <text class="section-date">{{today}}</text>
+      </view>
+      <view class="commission-card card-dark">
+        <view class="commission-main">
+          <text class="commission-label">今日业绩</text>
+          <view class="price-group">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{todayCommission}}</text>
+          </view>
+        </view>
+        <view class="commission-detail">
+          <view class="commission-item">
+            <text class="commission-item-label">订单数</text>
+            <text class="commission-item-value">{{todayOrderCount}}</text>
+          </view>
+          <view class="commission-item">
+            <text class="commission-item-label">服务单</text>
+            <text class="commission-item-value">{{todayServiceCount}}</text>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 2. 本月业绩日历 -->
+    <view class="section">
+      <view class="section-header">
+        <text class="section-title">本月业绩</text>
+        <view class="month-nav">
+          <van-icon name="arrow-left" size="32rpx" color="#8B6A3E" bindtap="onPrevMonth" />
+          <text class="month-label">{{monthLabel}}</text>
+          <van-icon name="arrow" size="32rpx" color="#8B6A3E" bindtap="onNextMonth" />
+        </view>
+      </view>
+      <view class="month-total">
+        <text class="month-total-label">本月累计</text>
+        <text class="month-total-value">¥ {{monthlyTotal}}</text>
+      </view>
+      <!-- 星期标题 -->
+      <view class="cal-weekdays">
+        <text class="cal-wd" wx:for="{{['日','一','二','三','四','五','六']}}" wx:key="*this">{{item}}</text>
+      </view>
+      <!-- 日历格子 -->
+      <view class="cal-days">
+        <view
+          class="cal-day {{item.isEmpty ? 'cal-day-empty' : ''}} {{item.isToday ? 'cal-day-today' : ''}} {{item.hasData ? 'cal-day-has-data' : ''}}"
+          wx:for="{{calendarDays}}"
+          wx:key="index"
+        >
+          <text class="cal-day-num" wx:if="{{!item.isEmpty}}">{{item.day}}</text>
+          <text class="cal-day-amount" wx:if="{{item.hasData}}">{{item.amountLabel}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 3. 代办/消息 -->
+    <view class="section">
+      <view class="section-header">
+        <text class="section-title">代办 / 消息</text>
+        <text class="todo-badge" wx:if="{{todoList.length > 0}}">{{todoList.length}}</text>
+      </view>
+
+      <view wx:if="{{todoList.length === 0}}" class="empty-todo">
+        <van-empty description="暂无待处理事项" />
+      </view>
+
+      <view wx:else class="todo-list">
+        <view
+          class="todo-item"
+          wx:for="{{todoList}}"
+          wx:key="id"
+          bindtap="onTodoTap"
+          data-item="{{item}}"
+        >
+          <view class="todo-icon {{item.type === 'appointment' ? 'todo-icon-appt' : 'todo-icon-service'}}">
+            <van-icon name="{{item.type === 'appointment' ? 'calendar-o' : 'todo-list-o'}}" size="36rpx" />
+          </view>
+          <view class="todo-content">
+            <text class="todo-title">{{item.title}}</text>
+            <text class="todo-desc">{{item.desc}}</text>
+          </view>
+          <van-icon name="arrow" color="#999" />
+        </view>
+      </view>
+    </view>
+
+    <!-- 4. 顾客服务搜索入口 -->
+    <view class="section">
+      <view class="section-header">
+        <text class="section-title">顾客档案</text>
+        <text class="section-more" bindtap="onViewCustomerList">全部 ›</text>
+      </view>
+      <view class="section-desc">
+        <text class="section-desc-text">搜索顾客查看档案、疗程卡及预约信息</text>
+      </view>
+      <view class="search-bar">
+        <van-search
+          value="{{searchKeyword}}"
+          placeholder="输入手机号搜索顾客"
+          bind:search="onCustomerSearch"
+          bind:change="onSearchChange"
+          use-action-slot
+        >
+          <view slot="action" bindtap="onCustomerSearch">搜索</view>
+        </van-search>
+      </view>
+
+      <view wx:if="{{recentCustomers.length === 0}}" class="empty-customers">
+        <text class="empty-text">搜索后可查看顾客档案、疗程卡及预约</text>
+      </view>
+
+      <view wx:else class="customer-list">
+        <van-cell-group>
+          <van-cell
+            wx:for="{{recentCustomers}}"
+            wx:key="id"
+            title="{{item.name || item.phone}}"
+            label="{{item.phone}}"
+            is-link
+            bindtap="onCustomerTap"
+            data-id="{{item.id}}"
+            data-phone="{{item.phone}}"
+          />
+        </van-cell-group>
+      </view>
+    </view>
+
+  </block>
+
+</view>

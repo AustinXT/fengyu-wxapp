@@ -1,0 +1,4 @@
+/* /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/pages/order-qrcode/order-qrcode.wxss */
+.page-content {
+  padding: 48rpx 24rpx;
+}

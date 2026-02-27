@@ -1,0 +1,60 @@
+{
+  "pages": [
+    "pages/workbench/workbench",
+    "pages/order-create/order-create",
+    "pages/appointment/appointment",
+    "pages/profile/profile",
+    "pages/order-qrcode/order-qrcode",
+    "pages/order-list/order-list",
+    "pages/order-detail/order-detail",
+    "pages/revenue-allocation/revenue-allocation",
+    "pages/customer-list/customer-list",
+    "pages/customer-detail/customer-detail",
+    "pages/service-list/service-list",
+    "pages/service-detail/service-detail",
+    "pages/service-create/service-create",
+    "pages/appointment-detail/appointment-detail"
+  ],
+  "tabBar": {
+    "color": "#999999",
+    "selectedColor": "#D4A76A",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/workbench/workbench",
+        "text": "工作台",
+        "iconPath": "images/icons/tab-workbench.png",
+        "selectedIconPath": "images/icons/tab-workbench-active.png"
+      },
+      {
+        "pagePath": "pages/order-create/order-create",
+        "text": "开单",
+        "iconPath": "images/icons/tab-order.png",
+        "selectedIconPath": "images/icons/tab-order-active.png"
+      },
+      {
+        "pagePath": "pages/appointment/appointment",
+        "text": "预约",
+        "iconPath": "images/icons/tab-appointment.png",
+        "selectedIconPath": "images/icons/tab-appointment-active.png"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的",
+        "iconPath": "images/icons/tab-profile.png",
+        "selectedIconPath": "images/icons/tab-profile-active.png"
+      }
+    ]
+  },
+  "window": {
+    "backgroundTextStyle": "light",
+    "navigationBarBackgroundColor": "#000000",
+    "navigationBarTitleText": "凤御·员工端",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#000000"
+  },
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents",
+  "usingComponents": {}
+}
