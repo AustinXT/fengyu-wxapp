@@ -19,6 +19,13 @@ interface IAppOption {
       workfineItemId: string;
       directCheckout?: boolean;
     } | null;
+    _serviceCreatePreload?: {
+      customer: { id: string; name: string; phone: string; clientUserId?: string };
+      items: Array<{
+        itemFlowNo: string; itemName: string; spec: string;
+        orderNo: string; sessionCount: number; remainingSessions: number;
+      }>;
+    } | null;
   };
   setStaffInfo(info: {
     userId?: string;

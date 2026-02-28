@@ -44,39 +44,70 @@
       <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
     </van-cell-group>
 
-    <!-- 已支付订单（疗程卡余量）-->
-    <view class="card-group items-card">
-      <view class="items-header">
-        <text class="items-title">疗程卡余量</text>
-        <van-button
-          size="mini"
-          type="primary"
-          custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:32rpx;"
-          bind:click="onNewService"
-        >新建护理单</van-button>
-      </view>
+    <!-- 疗程卡余量 -->
+    <view class="section-header">
+      <text class="section-title">疗程卡余量</text>
+      <text wx:if="{{selectedCount > 0}}" class="section-hint">已选 {{selectedCount}} 项</text>
+    </view>
 
-      <view wx:if="{{orders.length === 0}}" class="empty-tip">
-        <text class="empty-tip-text">暂无可核销疗程</text>
-      </view>
+    <view wx:if="{{treatmentCards.length === 0}}" class="empty-tip">
+      <text class="empty-tip-text">暂无可核销疗程</text>
+    </view>
 
-      <view wx:else>
-        <view wx:for="{{orders}}" wx:key="orderId" class="order-group">
-          <view class="order-header" bindtap="onOrderTap" data-id="{{item.orderId}}">
-            <text class="order-no">{{item.orderNo}}</text>
-            <text class="order-date">{{item.paidAt}}</text>
-            <van-icon name="arrow" size="28rpx" color="#999" />
+    <view wx:else class="card-list">
+      <view
+        wx:for="{{treatmentCards}}"
+        wx:key="itemFlowNo"
+        class="treatment-card {{item.selected ? 'treatment-card--selected' : ''}}"
+        bindtap="onToggleCard"
+        data-index="{{index}}"
+      >
+        <view class="tc-row">
+          <van-checkbox
+            value="{{item.selected}}"
+            shape="square"
+            checked-color="#8B6A3E"
+            custom-class="tc-checkbox"
+          />
+          <view class="tc-info">
+            <text class="tc-name">{{item.itemName}}</text>
+            <view class="tc-meta">
+              <text class="tc-spec">{{item.spec}}</text>
+              <text class="tc-order">{{item.orderNo}}</text>
+            </view>
+            <text class="tc-sessions">剩余 {{item.remainingSessions}}/{{item.totalSessions}} 次</text>
           </view>
-          <view class="order-item" wx:for="{{item.items}}" wx:for-item="si" wx:key="itemFlowNo">
-            <text class="item-name">{{si.itemName}}</text>
-            <text class="item-spec">{{si.spec}}</text>
-            <text class="item-sessions">剩余 {{si.remainingSessions}} 次</text>
-          </view>
+        </view>
+        <view wx:if="{{item.selected}}" class="tc-stepper-row" catchtap="preventBubble">
+          <text class="tc-stepper-label">本次核销</text>
+          <van-stepper
+            value="{{item.sessionCount}}"
+            min="{{1}}"
+            max="{{item.remainingSessions}}"
+            input-width="60rpx"
+            button-size="48rpx"
+            bind:change="onStepperChange"
+            data-index="{{index}}"
+          />
+          <text class="tc-stepper-unit">次</text>
         </view>
       </view>
     </view>
 
+    <!-- 底部占位 -->
+    <view wx:if="{{selectedCount > 0}}" class="bottom-bar-spacer" />
   </block>
 
+  <view class="safe-area-bottom" />
+</view>
+
+<!-- 底部操作栏 -->
+<view wx:if="{{selectedCount > 0}}" class="bottom-action-bar">
+  <van-button
+    type="primary"
+    block
+    custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+    bind:click="onCreateService"
+  >创建护理单 ({{selectedCount}})</van-button>
   <view class="safe-area-bottom" />
 </view>

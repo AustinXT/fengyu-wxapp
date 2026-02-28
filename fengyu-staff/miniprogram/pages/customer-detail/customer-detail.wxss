@@ -58,49 +58,110 @@
 
 .card-group { margin: 24rpx 0; }
 
-.items-card {
-  background: #FFFFFF;
-  padding: 28rpx 32rpx;
-  margin: 24rpx 0;
-}
-.items-header {
+/* 疗程卡区块 */
+.section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20rpx;
+  padding: 28rpx 32rpx 12rpx;
 }
-.items-title {
+.section-title {
   font-size: 28rpx;
   font-weight: 600;
   color: #2D2017;
 }
+.section-hint {
+  font-size: 24rpx;
+  color: #8B6A3E;
+  font-weight: 500;
+}
 
-.empty-tip { padding: 24rpx 0; }
+.empty-tip { padding: 24rpx 32rpx; }
 .empty-tip-text { font-size: 26rpx; color: #999; }
 
-.order-group { margin-bottom: 24rpx; }
-.order-group:last-child { margin-bottom: 0; }
+.card-list { padding: 0 24rpx 24rpx; }
 
-.order-header {
+/* 疗程卡片 */
+.treatment-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  border: 2rpx solid transparent;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.treatment-card--selected {
+  border-color: #C4975A;
+  background: #FDF8F1;
+}
+
+.tc-row {
   display: flex;
-  align-items: center;
-  gap: 12rpx;
-  padding: 8rpx 0 12rpx;
-  border-bottom: 1rpx solid #F0EDE9;
+  align-items: flex-start;
+  gap: 16rpx;
+}
+.tc-checkbox { flex-shrink: 0; margin-top: 4rpx; }
+.tc-info { flex: 1; min-width: 0; }
+.tc-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #2D2017;
   margin-bottom: 8rpx;
+  display: block;
 }
-.order-no { font-size: 22rpx; color: #666; font-family: monospace; flex: 1; }
-.order-date { font-size: 22rpx; color: #999; }
-
-.order-item {
+.tc-meta {
   display: flex;
   align-items: center;
   gap: 12rpx;
-  padding: 10rpx 0;
+  margin-bottom: 6rpx;
 }
-.item-name { font-size: 26rpx; color: #2D2017; flex: 1; }
-.item-spec {
-  font-size: 22rpx; color: #666;
-  background: #F5F2EE; padding: 2rpx 10rpx; border-radius: 6rpx;
+.tc-spec {
+  font-size: 22rpx;
+  color: #666;
+  background: #F5F2EE;
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
 }
-.item-sessions { font-size: 22rpx; color: #8B6A3E; font-weight: 600; white-space: nowrap; }
+.tc-order {
+  font-size: 20rpx;
+  color: #999;
+  font-family: monospace;
+}
+.tc-sessions {
+  font-size: 22rpx;
+  color: #8B6A3E;
+  font-weight: 600;
+}
+
+/* stepper 行 */
+.tc-stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-top: 16rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid #F0EDE9;
+}
+.tc-stepper-label {
+  font-size: 24rpx;
+  color: #666;
+}
+.tc-stepper-unit {
+  font-size: 24rpx;
+  color: #666;
+}
+
+/* 底部操作栏 */
+.bottom-action-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #FFFFFF;
+  padding: 16rpx 32rpx;
+  box-shadow: 0 -2rpx 12rpx rgba(0,0,0,0.06);
+  z-index: 100;
+}
+.bottom-bar-spacer {
+  height: 140rpx;
+}

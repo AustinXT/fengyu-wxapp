@@ -32,7 +32,7 @@ Page({
     selectedCustomer: null as null | { id: string; name: string; phone: string; clientUserId?: string },
     // 订单选择
     paidOrders: [] as PaidOrder[],
-    selectedItems: [] as Array<{ itemFlowNo: string; itemName: string; spec: string; orderNo: string }>,
+    selectedItems: [] as Array<{ itemFlowNo: string; itemName: string; spec: string; orderNo: string; sessionCount: number }>,
     selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 flowNo 集合，供 WXML 使用
     // 服务人员
     staffName: '',
@@ -43,6 +43,31 @@ Page({
   onLoad(options) {
     const { staffName } = app.globalData;
     this.setData({ staffName });
+
+    if (options.preloaded === '1') {
+      const preload = app.globalData._serviceCreatePreload;
+      app.globalData._serviceCreatePreload = null;
+      if (preload) {
+        const selectedItems = preload.items.map(i => ({
+          itemFlowNo: i.itemFlowNo,
+          itemName: i.itemName,
+          spec: i.spec,
+          orderNo: i.orderNo,
+          sessionCount: i.sessionCount,
+        }));
+        const flowNos: Record<string, boolean> = {};
+        selectedItems.forEach(s => { flowNos[s.itemFlowNo] = true; });
+        this.setData({
+          selectedCustomer: preload.customer,
+          selectedItems,
+          selectedFlowNos: flowNos,
+        });
+        if (preload.customer.clientUserId || preload.customer.id) {
+          this.loadPaidOrders(preload.customer.clientUserId || preload.customer.id);
+        }
+        return;
+      }
+    }
 
     if (options.appointmentId) {
       this.setData({ appointmentId: options.appointmentId });
@@ -120,7 +145,7 @@ Page({
     if (idx >= 0) {
       selected.splice(idx, 1);
     } else {
-      selected.push({ itemFlowNo: flowNo, itemName, spec, orderNo });
+      selected.push({ itemFlowNo: flowNo, itemName, spec, orderNo, sessionCount: 1 });
     }
     const flowNos: Record<string, boolean> = {};
     selected.forEach(s => { flowNos[s.itemFlowNo] = true; });
@@ -155,7 +180,7 @@ Page({
         appointmentId: appointmentId || null,
         items: selectedItems.map(i => ({
           itemFlowNo: i.itemFlowNo,
-          sessionCount: 1,
+          sessionCount: i.sessionCount,
         })),
         staffName,
         remark,

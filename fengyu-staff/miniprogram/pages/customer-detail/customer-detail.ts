@@ -2,13 +2,28 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
+const app = getApp<IAppOption>();
+
+interface TreatmentCard {
+  itemFlowNo: string;
+  itemName: string;
+  spec: string;
+  remainingSessions: number;
+  totalSessions: number;
+  orderNo: string;
+  paidAt: string;
+  selected: boolean;
+  sessionCount: number;
+}
+
 Page({
   data: {
     loading: false,
     customer: null as any,
-    orders: [] as any[],
+    treatmentCards: [] as TreatmentCard[],
     appointments: [] as any[],
     isManager: false,
+    selectedCount: 0,
   },
 
   onLoad(options: Record<string, string>) {
@@ -30,7 +45,26 @@ Page({
       } else if (customer.phone) {
         orders = await callStaffApi<any[]>('customer.paidOrders', { clientPhone: customer.phone }) || [];
       }
-      this.setData({ customer, orders });
+      // 扁平化：将按订单分组的 items 展开为独立卡片
+      const treatmentCards: TreatmentCard[] = [];
+      for (const order of orders) {
+        for (const item of order.items) {
+          if (item.remainingSessions > 0) {
+            treatmentCards.push({
+              itemFlowNo: item.itemFlowNo,
+              itemName: item.itemName,
+              spec: item.spec,
+              remainingSessions: item.remainingSessions,
+              totalSessions: item.totalSessions,
+              orderNo: order.orderNo,
+              paidAt: order.paidAt,
+              selected: false,
+              sessionCount: 1,
+            });
+          }
+        }
+      }
+      this.setData({ customer, treatmentCards, selectedCount: 0 });
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
     } finally {
@@ -38,17 +72,52 @@ Page({
     }
   },
 
-  onNewService() {
-    const customer = this.data.customer;
-    if (!customer) return;
-    // 优先传 PG clientUserId，否则传 phone
-    if (customer.clientUserId) {
-      wx.navigateTo({ url: `/pages/service-create/service-create?clientUserId=${customer.clientUserId}` });
-    } else if (customer.phone) {
-      wx.navigateTo({ url: `/pages/service-create/service-create?clientPhone=${customer.phone}` });
-    } else {
-      wx.showToast({ title: '顾客未注册，无法创建服务单', icon: 'none' });
+  onToggleCard(e: WechatMiniprogram.TouchEvent) {
+    const index = e.currentTarget.dataset.index as number;
+    const card = this.data.treatmentCards[index];
+    const newSelected = !card.selected;
+    const update: Record<string, any> = {
+      [`treatmentCards[${index}].selected`]: newSelected,
+    };
+    if (!newSelected) {
+      update[`treatmentCards[${index}].sessionCount`] = 1;
     }
+    update.selectedCount = this.data.selectedCount + (newSelected ? 1 : -1);
+    this.setData(update);
+  },
+
+  onStepperChange(e: WechatMiniprogram.CustomEvent) {
+    const index = e.currentTarget.dataset.index as number;
+    this.setData({ [`treatmentCards[${index}].sessionCount`]: e.detail });
+  },
+
+  preventBubble() {},
+
+  onCreateService() {
+    const { customer, treatmentCards } = this.data;
+    if (!customer) return;
+
+    const selected = treatmentCards.filter(c => c.selected);
+    if (selected.length === 0) return;
+
+    app.globalData._serviceCreatePreload = {
+      customer: {
+        id: customer.clientUserId || customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        clientUserId: customer.clientUserId,
+      },
+      items: selected.map(c => ({
+        itemFlowNo: c.itemFlowNo,
+        itemName: c.itemName,
+        spec: c.spec,
+        orderNo: c.orderNo,
+        sessionCount: c.sessionCount,
+        remainingSessions: c.remainingSessions,
+      })),
+    };
+
+    wx.navigateTo({ url: '/pages/service-create/service-create?preloaded=1' });
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
