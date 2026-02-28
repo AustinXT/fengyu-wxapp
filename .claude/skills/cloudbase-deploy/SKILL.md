@@ -188,10 +188,12 @@ exports.main = async (event, context) => {
 # 安装 CLI（如未安装）
 npm i -g @cloudbase/cli
 
-# 确认登录状态（cloud1-xxx 环境属于微信账号体系，需用微信账号登录）
+# 默认登录方式：使用腾讯云 API 密钥登录
+tcb login --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY"
+
+# 确认登录状态
 tcb fn list -e <envId>
-# 若报"无权限"或"环境不存在"，需切换账号：
-tcb logout && tcb login
+# 若报"无权限"或"环境不存在"，检查密钥是否正确或环境归属
 ```
 
 ### 首次部署（函数不存在）
@@ -232,7 +234,7 @@ tcb fn log <functionName> --envId <envId>
 | 问题 | 原因 | 解决方法 |
 |------|------|---------|
 | 云端 `npm install` 失败，函数状态 "Creation failed" | 网络或依赖兼容性问题 | 本地先 `npm install`，在 `cloudbaserc.json` 中设置 `autoInstallDependencies: false`，连同 `node_modules` 一起上传 |
-| 无权限 / 环境不存在 | `cloud1-xxx` 属于微信账号，当前登录的是腾讯云账号 | `tcb logout && tcb login` 切换到微信账号 |
+| 无权限 / 环境不存在 | 密钥无效或环境归属不匹配 | `tcb logout && tcb login --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY"` 重新登录 |
 | 部署到了错误的环境 | 未指定 `--envId` 时用了 CLI 默认环境 | 始终显式传 `--envId <envId>` |
 
 ---

@@ -32,15 +32,15 @@ async function search(ctx) {
   let searchCondition
   let limit = 20
   if (phone) {
-    // 精确匹配手机号
+    // 精确匹配手机号（开单/创服务单使用，仅需 1 条）
     searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`
+    limit = 1
   } else if (keyword && keyword.trim()) {
     const k = esc(keyword.trim())
-    searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%')`
+    searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%') AND UDF_S_6443 = '${esc(ctx.auth.storeName)}'`
   } else {
     // 无搜索条件 → 返回本门店默认顾客
     searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`
-    limit = 10
   }
 
   const customerRows = await mssql.query(`
