@@ -52,7 +52,8 @@ Page({
   },
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
-    const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?id=${id}` });
+    const { id, clientUserId } = e.currentTarget.dataset;
+    const params = id ? `id=${id}` : `clientUserId=${clientUserId}`;
+    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?${params}` });
   },
 });

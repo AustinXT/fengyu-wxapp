@@ -1,6 +1,6 @@
 // pages/order-qrcode/order-qrcode.ts
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, getStaffWfId } from '../../utils/role';
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -15,13 +15,18 @@ Page({
     retryCount: 0,
     status: '待扫码',    // '待扫码' | '待确认收款' | '已支付' | '已关闭'
     isManager: false,
+    isCreator: false,
   },
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
     const orderNo = options.orderNo || '';
     if (orderNo) {
-      this.setData({ orderNo });
+      this.setData({
+        orderNo,
+        customerName: options.customerName ? decodeURIComponent(options.customerName) : '',
+        totalAmount: options.totalAmount || '',
+      });
       this.loadQrcode(orderNo);
     }
   },
@@ -42,6 +47,7 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<any>('order.qrcode', { orderNo });
+      const isCreator = data.openedBy === getStaffWfId();
 
       // 后端返回了 qrcodeError 说明小程序码生成失败
       if (data.qrcodeError && !data.qrcodeUrl) {
@@ -54,6 +60,7 @@ Page({
           qrcodeError: data.qrcodeError,
           retryCount,
           status: data.qrCodeStatus || '待扫码',
+          isCreator,
           loading: false,
         });
         // 连续 3 次失败后停止轮询，等用户手动重试
@@ -71,6 +78,7 @@ Page({
         qrcodeError: '',
         retryCount: 0,
         status: data.qrCodeStatus || '待扫码',
+        isCreator,
         loading: false,
       });
     } catch (err: any) {
@@ -121,11 +129,12 @@ Page({
   },
 
   onCloseOrder() {
-    if (!this.data.isManager) return;
+    if (!this.data.isManager && !this.data.isCreator) return;
     wx.showModal({
       title: '关闭订单',
       content: '确认关闭该订单？关闭后不可恢复。',
       confirmText: '确认关闭',
+      confirmColor: '#D94040',
       success: async (res) => {
         if (!res.confirm) return;
         try {

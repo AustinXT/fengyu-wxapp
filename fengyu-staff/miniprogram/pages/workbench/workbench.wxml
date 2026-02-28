@@ -153,12 +153,13 @@
         <van-cell-group>
           <van-cell
             wx:for="{{customerResults}}"
-            wx:key="id"
+            wx:key="index"
             title="{{item.name || item.phone}}"
             label="{{item.phoneMasked || item.phone}}"
             is-link
             bindtap="onCustomerTap"
             data-id="{{item.id}}"
+            data-client-user-id="{{item.clientUserId}}"
           />
         </van-cell-group>
       </view>

@@ -55,7 +55,7 @@ npm run db:studio     # Drizzle Studio
 | auth | login, bindPhone |
 | store | list |
 | staff | list, departments |
-| customer | search, calendar |
+| customer | search, calendar, detail, paidOrders |
 | product | categories, skuDetail |
 | order | create, qrcode, confirmOffline, close, resetFailed, list, detail |
 | allocation | save, delete |

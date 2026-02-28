@@ -23,11 +23,12 @@
     <van-cell-group>
       <van-cell
         wx:for="{{results}}"
-        wx:key="id"
+        wx:key="index"
         title="{{item.name}}"
         label="{{item.phoneMasked || item.phone}}"
         is-link
         data-id="{{item.id}}"
+        data-client-user-id="{{item.clientUserId}}"
         bindtap="onItemTap"
       />
     </van-cell-group>

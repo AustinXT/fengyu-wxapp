@@ -84,16 +84,16 @@
     <!-- 订单号 -->
     <text class="order-no">{{orderNo}}</text>
 
-    <!-- 操作按钮（仅店长） -->
-    <view wx:if="{{isManager}}" class="action-bar">
+    <!-- 操作按钮 -->
+    <view class="action-bar">
       <van-button
-        wx:if="{{status === '待确认收款'}}"
+        wx:if="{{isManager && status === '待确认收款'}}"
         block type="primary"
         custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button
-        wx:if="{{status !== '已支付' && status !== '已关闭'}}"
+        wx:if="{{(isManager || isCreator) && status !== '已支付' && status !== '已关闭'}}"
         block plain
         custom-style="color:#D94040;border-color:#D94040;border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCloseOrder"

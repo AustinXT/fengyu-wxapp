@@ -1,6 +1,6 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
-import { isManager } from '../../utils/role';
+import { isManager, getStaffWfId } from '../../utils/role';
 
 const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
@@ -40,6 +40,7 @@ Page({
     loading: false,
     order: null as any,
     isManager: false,
+    isCreator: false,
     statusClass: '',
     _orderNo: '',
   },
@@ -93,6 +94,7 @@ Page({
           items,
           allocation,
         },
+        isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
       });
     } catch (err: any) {
@@ -143,5 +145,31 @@ Page({
         }
       },
     });
+  },
+
+  onCloseOrder() {
+    const orderNo = this.data._orderNo;
+    wx.showModal({
+      title: '取消订单',
+      content: '确认取消该订单？取消后不可恢复。',
+      confirmText: '确认取消',
+      confirmColor: '#D94040',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('order.close', { orderNo });
+          wx.showToast({ title: '订单已取消', icon: 'success' });
+          this.loadDetail(orderNo);
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      },
+    });
+  },
+
+  onShowQrcode() {
+    const o = this.data.order;
+    const params = `orderNo=${o.orderNo}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
+    wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?${params}` });
   },
 });

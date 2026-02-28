@@ -293,6 +293,7 @@ async function qrcode(ctx) {
     customerName: order.customer_name,
     paymentMethod: order.payment_method,
     paidAt: order.paid_at,
+    openedBy: order.opened_by,
     totalAmount,
     items: items.map(i => ({
       itemFlowNo: i.item_flow_no,
@@ -411,12 +412,13 @@ async function confirmOffline(ctx) {
 }
 
 /**
- * 关闭订单（店长专用）
- * 仅允许关闭"待支付"状态的订单
+ * 关闭订单
+ * 店长：可关闭"待支付/待确认收款/支付失败"的订单
+ * 开单员工：可关闭自己开的"待支付"订单
  * 同时将分配记录标记为无效
  */
 async function close(ctx) {
-  await requireManager()(ctx, async () => {})
+  await requireStaffBound()(ctx, async () => {})
 
   const { orderNo } = ctx.event.payload || {}
   if (!orderNo) {
@@ -433,9 +435,21 @@ async function close(ctx) {
   }
 
   const order = orders[0]
+  const isManagerRole = ctx.auth.position === '门店经理'
+  const isCreator = order.opened_by === ctx.auth.staffWfId
 
-  if (!['待支付', '待确认收款', '支付失败'].includes(order.status)) {
-    throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
+  if (isManagerRole) {
+    // 店长：待支付/待确认收款/支付失败 均可关闭
+    if (!['待支付', '待确认收款', '支付失败'].includes(order.status)) {
+      throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
+    }
+  } else if (isCreator) {
+    // 开单员工：仅限关闭自己开的待支付订单
+    if (order.status !== '待支付') {
+      throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许取消`)
+    }
+  } else {
+    throw new Error('PERMISSION_DENIED: 无权操作该订单')
   }
 
   const now = new Date()

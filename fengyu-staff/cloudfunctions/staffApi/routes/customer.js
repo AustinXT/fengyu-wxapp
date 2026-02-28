@@ -1,8 +1,8 @@
 /**
  * 顾客档案模块路由（员工端）
- * customer.search — 搜索顾客
+ * customer.search — 搜索顾客（双源并集：WorkFine + PG）
  * customer.calendar — 顾客消费日历
- * customer.detail — 顾客档案详情
+ * customer.detail — 顾客档案详情（支持 PG-only 顾客）
  * customer.paidOrders — 顾客已支付订单（含明细）
  */
 
@@ -11,15 +11,16 @@ const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
 
 /**
- * 搜索顾客
- * 从 WorkFine UDT_S_311 按姓名或手机号搜索
+ * 搜索顾客（双源并集）
+ * 数据来源 = WorkFine UDT_S_311 ∪ PG client_wechat_users，手机号去重
  * 美容师不可查看完整手机号
  *
- * 支持两种搜索模式：
+ * 支持三种搜索模式：
  *   - phone 参数：精确匹配手机号（开单页使用）
  *   - keyword 参数：模糊搜索姓名/手机号（顾客列表使用）
+ *   - 无参数：返回本门店默认顾客
  *
- * 返回平铺数组，含 id（WorkFine 顾客编号）和 clientUserId（PG 用户 ID）
+ * 返回平铺数组，含 id（WorkFine 顾客编号）、clientUserId（PG 用户 ID）、source 字段
  */
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -29,17 +30,16 @@ async function search(ctx) {
   const esc = (v) => String(v).replace(/'/g, "''")
   const isManagerRole = ctx.auth.position === '门店经理'
 
+  // Step 1: 查 WorkFine UDT_S_311
   let searchCondition
   let limit = 20
   if (phone) {
-    // 精确匹配手机号（开单/创服务单使用，仅需 1 条）
     searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`
     limit = 1
   } else if (keyword && keyword.trim()) {
     const k = esc(keyword.trim())
     searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%') AND UDF_S_6443 = '${esc(ctx.auth.storeName)}'`
   } else {
-    // 无搜索条件 → 返回本门店默认顾客
     searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`
   }
 
@@ -57,34 +57,85 @@ async function search(ctx) {
     ORDER BY UDF_S_1474 DESC
   `)
 
-  // 批量查询 PG client_wechat_users，获取 clientUserId
-  const phones = customerRows.map(r => r.phone).filter(Boolean)
-  let clientUserMap = {}
-  if (phones.length > 0) {
-    const clientUsers = await pg.query(
-      'SELECT user_id, phone FROM client_wechat_users WHERE phone = ANY($1)',
-      [phones]
+  // Step 2: 查 PG client_wechat_users
+  let pgUsers = []
+  if (phone) {
+    pgUsers = await pg.query(
+      'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE phone = $1',
+      [phone.trim()]
     )
-    for (const u of clientUsers) {
-      clientUserMap[u.phone] = u.user_id
+  } else if (keyword && keyword.trim()) {
+    pgUsers = await pg.query(
+      'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE phone LIKE $1 AND bound_store_name = $2 LIMIT $3',
+      [`%${keyword.trim()}%`, ctx.auth.storeName, limit]
+    )
+  } else {
+    pgUsers = await pg.query(
+      'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE bound_store_name = $1 LIMIT $2',
+      [ctx.auth.storeName, limit]
+    )
+  }
+
+  // 构建 PG clientUserId 映射（用于 WorkFine 结果补充）
+  const pgUserMap = {}
+  for (const u of pgUsers) {
+    if (u.phone) pgUserMap[u.phone] = u.user_id
+  }
+
+  // Step 3: 用 WorkFine phones 集合去重，找出仅存在于 PG 的顾客
+  const wfPhones = new Set(customerRows.map(r => (r.phone || '').trim()).filter(Boolean))
+  const pgOnlyUsers = pgUsers.filter(u => u.phone && !wfPhones.has(u.phone))
+
+  // Step 4: 为 PG-only 顾客补充姓名（从 orders.customer_name 取最近的）
+  const pgNameMap = {}
+  if (pgOnlyUsers.length > 0) {
+    const pgOnlyPhones = pgOnlyUsers.map(u => u.phone)
+    const nameRows = await pg.query(`
+      SELECT DISTINCT ON (client_phone) client_phone, customer_name
+      FROM orders WHERE client_phone = ANY($1)
+      ORDER BY client_phone, created_at DESC
+    `, [pgOnlyPhones])
+    for (const r of nameRows) {
+      pgNameMap[r.client_phone] = r.customer_name
     }
   }
 
-  ctx.result = customerRows.map(r => ({
-    id: r.customer_no,
-    clientUserId: clientUserMap[r.phone] || null,
-    customerNo: r.customer_no,
-    name: r.name ? r.name.trim() : '',
-    // 美容师只能看到手机号后4位
-    phone: isManagerRole
-      ? (r.phone || '')
-      : maskPhone(r.phone),
-    phoneMasked: maskPhone(r.phone),
-    memberLevel: r.member_level,
-    storeName: r.store_name ? r.store_name.trim() : '',
-    mainStaffId: r.main_staff_id,
-    registerDate: r.register_date
+  // Step 5: 合并结果
+  // WorkFine 结果 → 附加 clientUserId + source
+  const wfResults = customerRows.map(r => {
+    const p = (r.phone || '').trim()
+    const clientUserId = pgUserMap[p] || null
+    return {
+      id: r.customer_no,
+      clientUserId,
+      customerNo: r.customer_no,
+      name: r.name ? r.name.trim() : '',
+      phone: isManagerRole ? (r.phone || '') : maskPhone(r.phone),
+      phoneMasked: maskPhone(r.phone),
+      memberLevel: r.member_level,
+      storeName: r.store_name ? r.store_name.trim() : '',
+      mainStaffId: r.main_staff_id,
+      registerDate: r.register_date,
+      source: clientUserId ? 'both' : 'workfine'
+    }
+  })
+
+  // PG-only 结果 → 构造兼容格式
+  const pgOnlyResults = pgOnlyUsers.map(u => ({
+    id: null,
+    clientUserId: u.user_id,
+    customerNo: null,
+    name: pgNameMap[u.phone] || '',
+    phone: isManagerRole ? u.phone : maskPhone(u.phone),
+    phoneMasked: maskPhone(u.phone),
+    memberLevel: null,
+    storeName: u.bound_store_name || '',
+    mainStaffId: null,
+    registerDate: null,
+    source: 'miniprogram'
   }))
+
+  ctx.result = [...wfResults, ...pgOnlyResults]
 }
 
 /**
@@ -188,67 +239,168 @@ async function calendar(ctx) {
 }
 
 /**
- * 顾客档案详情
- * 从 WorkFine UDT_S_311 查顾客基本信息
- * 从 PG client_wechat_users 查注册状态
+ * 顾客档案详情（支持双源）
+ * 优先用 id 查 WorkFine，id 为空时用 phone 查
+ * 先查 WorkFine，再查 PG client_wechat_users
  * 从 PG orders 统计消费金额
  */
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { id } = ctx.event.payload || {}
-  if (!id) {
-    throw new Error('INVALID_PARAMS: 缺少 id 参数')
+  const { id, phone: queryPhone, clientUserId: queryClientUserId } = ctx.event.payload || {}
+  if (!id && !queryPhone && !queryClientUserId) {
+    throw new Error('INVALID_PARAMS: 缺少 id、phone 或 clientUserId 参数')
   }
 
   const esc = (v) => String(v).replace(/'/g, "''")
   const isManagerRole = ctx.auth.position === '门店经理'
 
-  // 从 WorkFine 查询顾客基本信息
-  const customerRows = await mssql.query(`
-    SELECT TOP 1
-      UDF_S_1475 AS customer_no,
-      UDF_S_1476 AS name,
-      UDF_S_1478 AS phone,
-      UDF_S_1477 AS member_level,
-      UDF_S_6443 AS store_name,
-      UDF_S_6444 AS main_staff_id
-    FROM UDT_S_311
-    WHERE UDF_S_1475 = '${esc(id)}'
-  `)
-
-  if (customerRows.length === 0) {
-    throw new Error('INVALID_PARAMS: 顾客不存在')
+  // 如果传了 clientUserId 但没有 id/phone，先从 PG 查出 phone 再尝试 WorkFine
+  let resolvedPhone = queryPhone
+  let resolvedClientUserId = queryClientUserId
+  if (!id && !queryPhone && queryClientUserId) {
+    const pgRows = await pg.query(
+      'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE user_id = $1 LIMIT 1',
+      [queryClientUserId]
+    )
+    if (pgRows.length === 0) {
+      throw new Error('INVALID_PARAMS: 顾客不存在')
+    }
+    resolvedPhone = pgRows[0].phone
   }
 
-  const c = customerRows[0]
-  const phone = c.phone || ''
+  // 尝试从 WorkFine 查询顾客基本信息
+  let customerRows = []
+  if (id) {
+    customerRows = await mssql.query(`
+      SELECT TOP 1
+        UDF_S_1475 AS customer_no,
+        UDF_S_1476 AS name,
+        UDF_S_1478 AS phone,
+        UDF_S_1477 AS member_level,
+        UDF_S_6443 AS store_name,
+        UDF_S_6444 AS main_staff_id
+      FROM UDT_S_311
+      WHERE UDF_S_1475 = '${esc(id)}'
+    `)
+  } else if (resolvedPhone) {
+    customerRows = await mssql.query(`
+      SELECT TOP 1
+        UDF_S_1475 AS customer_no,
+        UDF_S_1476 AS name,
+        UDF_S_1478 AS phone,
+        UDF_S_1477 AS member_level,
+        UDF_S_6443 AS store_name,
+        UDF_S_6444 AS main_staff_id
+      FROM UDT_S_311
+      WHERE UDF_S_1478 = '${esc(resolvedPhone.trim())}'
+    `)
+  }
 
-  // 从 PG 查顾客是否已注册小程序
-  let clientUserId = null
-  if (phone) {
-    const clientUsers = await pg.query(
-      'SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+  // WorkFine 有记录 → 走原有逻辑
+  if (customerRows.length > 0) {
+    const c = customerRows[0]
+    const phone = c.phone || ''
+
+    // 从 PG 查顾客是否已注册小程序
+    let clientUserId = resolvedClientUserId || null
+    if (!clientUserId && phone) {
+      const clientUsers = await pg.query(
+        'SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+        [phone]
+      )
+      if (clientUsers.length > 0) clientUserId = clientUsers[0].user_id
+    }
+
+    // 查指定美容师名称
+    let preferredStaffName = null
+    if (c.main_staff_id) {
+      try {
+        const staffRows = await mssql.query(`
+          SELECT UDF_S_1155 AS name FROM UDT_S_287
+          WHERE UDF_S_1147 = '${esc(c.main_staff_id)}'
+        `)
+        if (staffRows.length > 0) {
+          preferredStaffName = staffRows[0].name ? staffRows[0].name.trim() : null
+        }
+      } catch (_) {}
+    }
+
+    // 消费统计
+    const { totalConsumption, yearConsumption } = await getConsumptionStats(clientUserId, phone)
+
+    ctx.result = {
+      id: c.customer_no,
+      clientUserId,
+      name: c.name ? c.name.trim() : '',
+      phone: isManagerRole ? phone : maskPhone(phone),
+      phoneMasked: maskPhone(phone),
+      memberLevel: c.member_level,
+      preferredStaffName,
+      skinType: null,
+      focusAreas: null,
+      totalConsumption,
+      yearConsumption,
+      source: clientUserId ? 'both' : 'workfine'
+    }
+    return
+  }
+
+  // WorkFine 无记录 → 查 PG client_wechat_users（PG-only 顾客）
+  // 如果已通过 clientUserId 查过 PG，直接用缓存的结果
+  let pgUser = null
+  if (resolvedPhone && queryClientUserId) {
+    // 已经从 clientUserId 查出了 phone，直接构造
+    pgUser = { user_id: queryClientUserId, phone: resolvedPhone }
+  } else {
+    const phone = resolvedPhone ? resolvedPhone.trim() : ''
+    if (!phone) {
+      throw new Error('INVALID_PARAMS: 顾客不存在')
+    }
+    const pgUsers = await pg.query(
+      'SELECT user_id, phone, bound_store_name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
       [phone]
     )
-    if (clientUsers.length > 0) clientUserId = clientUsers[0].user_id
+    if (pgUsers.length === 0) {
+      throw new Error('INVALID_PARAMS: 顾客不存在')
+    }
+    pgUser = pgUsers[0]
   }
 
-  // 查指定美容师名称
-  let preferredStaffName = null
-  if (c.main_staff_id) {
-    try {
-      const staffRows = await mssql.query(`
-        SELECT UDF_S_1155 AS name FROM UDT_S_287
-        WHERE UDF_S_1147 = '${esc(c.main_staff_id)}'
-      `)
-      if (staffRows.length > 0) {
-        preferredStaffName = staffRows[0].name ? staffRows[0].name.trim() : null
-      }
-    } catch (_) {}
-  }
+  const phone = pgUser.phone || ''
 
-  // 从 PG 查累计消费 + 年度消费
+  // 从 orders 获取姓名
+  const nameRows = await pg.query(`
+    SELECT customer_name FROM orders
+    WHERE client_phone = $1 AND customer_name IS NOT NULL AND customer_name != ''
+    ORDER BY created_at DESC LIMIT 1
+  `, [phone])
+  const name = nameRows.length > 0 ? nameRows[0].customer_name : ''
+
+  // 消费统计
+  const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id, phone)
+
+  ctx.result = {
+    id: null,
+    clientUserId: pgUser.user_id,
+    name,
+    phone: isManagerRole ? phone : maskPhone(phone),
+    phoneMasked: maskPhone(phone),
+    memberLevel: null,
+    preferredStaffName: null,
+    skinType: null,
+    focusAreas: null,
+    totalConsumption,
+    yearConsumption,
+    source: 'miniprogram'
+  }
+}
+
+/**
+ * 查询消费统计（累计 + 年度）
+ * 优先用 clientUserId 查，否则用 phone 查
+ */
+async function getConsumptionStats(clientUserId, phone) {
   let totalConsumption = 0
   let yearConsumption = 0
 
@@ -284,19 +436,7 @@ async function detail(ctx) {
     yearConsumption = Number(yearRows[0].total)
   }
 
-  ctx.result = {
-    id: c.customer_no,
-    clientUserId,
-    name: c.name ? c.name.trim() : '',
-    phone: isManagerRole ? phone : maskPhone(phone),
-    phoneMasked: maskPhone(phone),
-    memberLevel: c.member_level,
-    preferredStaffName,
-    skinType: null,
-    focusAreas: null,
-    totalConsumption,
-    yearConsumption,
-  }
+  return { totalConsumption, yearConsumption }
 }
 
 /**

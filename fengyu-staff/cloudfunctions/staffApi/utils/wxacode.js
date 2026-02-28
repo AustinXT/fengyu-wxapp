@@ -118,6 +118,7 @@ function requestWxacode(token, scene, page) {
   const body = JSON.stringify({
     scene,
     page,
+    check_path: false,
     env_version: WXACODE_ENV_VERSION,
     width: 430,
     auto_color: false,

@@ -322,14 +322,14 @@ async function todoList(ctx) {
     pendingServiceCount: Number(serviceCount[0].cnt),
   }
 
-  // 店长专属：待确认收款 + 待支付订单
+  // 店长专属：待确认收款 + 待支付订单（排除员工开单）
   if (isManager) {
     const offlineRows = await pg.query(
       `SELECT COUNT(*) AS cnt FROM orders WHERE store_name = $1 AND status = '待确认收款'`,
       [storeName]
     )
     const createRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM orders WHERE store_name = $1 AND status = '待支付'`,
+      `SELECT COUNT(*) AS cnt FROM orders WHERE store_name = $1 AND status = '待支付' AND order_source != 'staff'`,
       [storeName]
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)

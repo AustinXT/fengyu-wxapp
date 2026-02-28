@@ -14,15 +14,16 @@ Page({
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
     if (options.id) {
-      this.loadAll(options.id);
+      this.loadAll({ id: options.id });
+    } else if (options.clientUserId) {
+      this.loadAll({ clientUserId: options.clientUserId });
     }
   },
 
-  async loadAll(clientId: string) {
+  async loadAll(query: { id?: string; clientUserId?: string }) {
     this.setData({ loading: true });
     try {
-      // 先加载详情，从返回值中取 clientUserId / phone
-      const customer = await callStaffApi<any>('customer.detail', { id: clientId });
+      const customer = await callStaffApi<any>('customer.detail', query);
       let orders: any[] = [];
       if (customer.clientUserId) {
         orders = await callStaffApi<any[]>('customer.paidOrders', { clientUserId: customer.clientUserId }) || [];

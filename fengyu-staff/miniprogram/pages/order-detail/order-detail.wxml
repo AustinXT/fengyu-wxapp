@@ -92,6 +92,18 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onResetFailed"
       >重置支付失败</van-button>
+      <van-button
+        wx:if="{{(isManager || isCreator) && order.status === '待支付'}}"
+        block plain type="primary"
+        custom-style="color:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onShowQrcode"
+      >查看收款码</van-button>
+      <van-button
+        wx:if="{{(isManager || isCreator) && order.status === '待支付'}}"
+        block plain type="danger"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onCloseOrder"
+      >取消订单</van-button>
     </view>
   </block>
 
