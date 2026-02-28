@@ -194,7 +194,6 @@ Page({
   },
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
-    e.stopPropagation();
     const { orderNo } = e.currentTarget.dataset as { orderNo: string };
     wx.navigateTo({ url: `/pages/appointment-create/appointment-create?orderNo=${orderNo}` });
   },
