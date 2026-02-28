@@ -25,6 +25,15 @@
             src="{{qrcodeUrl}}"
             mode="aspectFit"
           />
+          <view wx:elif="{{qrcodeError}}" class="qrcode-placeholder qrcode-error">
+            <van-icon name="warning-o" size="80rpx" color="#D94040" />
+            <text class="error-text">{{qrcodeError}}</text>
+            <van-button
+              size="small" plain
+              custom-style="color:#8B6A3E;border-color:#8B6A3E;margin-top:24rpx;"
+              bind:click="onRetryQrcode"
+            >重新生成</van-button>
+          </view>
           <view wx:else class="qrcode-placeholder">
             <van-loading type="spinner" color="#8B6A3E" />
             <text class="placeholder-text">生成二维码中...</text>

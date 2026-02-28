@@ -63,6 +63,8 @@
   gap: 20rpx;
 }
 .placeholder-text { font-size: 24rpx; color: #999; }
+.qrcode-error { gap: 16rpx; }
+.error-text { font-size: 24rpx; color: #D94040; text-align: center; padding: 0 24rpx; }
 .qrcode-overlay {
   position: absolute;
   inset: 0;

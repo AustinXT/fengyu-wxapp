@@ -267,6 +267,7 @@ async function qrcode(ctx) {
 
   // 仅待支付订单生成小程序码（带缓存）
   let qrcodeUrl = ''
+  let qrcodeError = ''
   if (order.status === '待支付') {
     if (qrcodeCache.has(orderNo)) {
       qrcodeUrl = qrcodeCache.get(orderNo)
@@ -278,7 +279,7 @@ async function qrcode(ctx) {
         qrcodeCache.set(orderNo, qrcodeUrl)
       } catch (err) {
         console.error('[order.qrcode] 生成小程序码失败:', err)
-        // 不抛错，返回空 URL，前端可提示
+        qrcodeError = err.message || '生成小程序码失败'
       }
     }
   }
@@ -299,7 +300,8 @@ async function qrcode(ctx) {
       skuDisplayName: i.sku_display_name,
       receivable: i.receivable
     })),
-    qrcodeUrl
+    qrcodeUrl,
+    qrcodeError
   }
 }
 

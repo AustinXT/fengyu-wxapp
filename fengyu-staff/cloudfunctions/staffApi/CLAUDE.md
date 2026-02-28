@@ -119,3 +119,6 @@ npm install                    # 安装依赖
 
 - `PG_CONNECTION_STRING` - PostgreSQL 连接串
 - `MSSQL_CONNECTION_STRING` - SQL Server 连接串（可选，不设则用默认配置）
+- `CLIENT_APPID` - 客户端小程序 AppID（默认 `wx811eb4ded3dfba3f`）
+- `CLIENT_SECRET` - 客户端小程序 AppSecret（必填，用于生成小程序码）
+- `WXACODE_ENV_VERSION` - 小程序码版本：`release`（正式）/ `trial`（体验）/ `develop`（开发），默认 `release`

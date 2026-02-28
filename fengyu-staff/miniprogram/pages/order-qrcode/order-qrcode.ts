@@ -11,6 +11,8 @@ Page({
     customerName: '',
     totalAmount: '',
     qrcodeUrl: '',
+    qrcodeError: '',
+    retryCount: 0,
     status: '待扫码',    // '待扫码' | '待确认收款' | '已支付' | '已关闭'
     isManager: false,
   },
@@ -40,11 +42,34 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<any>('order.qrcode', { orderNo });
+
+      // 后端返回了 qrcodeError 说明小程序码生成失败
+      if (data.qrcodeError && !data.qrcodeUrl) {
+        const retryCount = this.data.retryCount + 1;
+        this.setData({
+          orderNo: data.orderNo || '',
+          customerName: data.customerName || '',
+          totalAmount: data.totalAmount || '',
+          qrcodeUrl: '',
+          qrcodeError: data.qrcodeError,
+          retryCount,
+          status: data.qrCodeStatus || '待扫码',
+          loading: false,
+        });
+        // 连续 3 次失败后停止轮询，等用户手动重试
+        if (retryCount >= 3) {
+          this.stopPolling();
+        }
+        return;
+      }
+
       this.setData({
         orderNo: data.orderNo || '',
         customerName: data.customerName || '',
         totalAmount: data.totalAmount || '',
         qrcodeUrl: data.qrcodeUrl || '',
+        qrcodeError: '',
+        retryCount: 0,
         status: data.qrCodeStatus || '待扫码',
         loading: false,
       });
@@ -68,6 +93,12 @@ Page({
       clearInterval(pollTimer);
       pollTimer = null;
     }
+  },
+
+  onRetryQrcode() {
+    this.setData({ qrcodeError: '', retryCount: 0 });
+    this.loadQrcode(this.data.orderNo);
+    this.startPolling();
   },
 
   onConfirmOffline() {

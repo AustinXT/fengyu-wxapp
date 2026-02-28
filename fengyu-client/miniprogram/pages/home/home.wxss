@@ -206,7 +206,7 @@
 
 .tc-list {
   display: flex;
-  gap: 16rpx;
+  gap: 24rpx;
   padding-bottom: 8rpx;
 }
 
@@ -325,15 +325,16 @@
 .hot-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 16rpx;
+  gap: 24rpx;
 }
 
 .hot-item {
-  width: calc(50% - 8rpx);
+  width: 339rpx;
   background: #FFFFFF;
   border-radius: 12rpx;
   overflow: hidden;
   padding-bottom: 16rpx;
+  box-sizing: border-box;
 }
 
 .hot-cover {
