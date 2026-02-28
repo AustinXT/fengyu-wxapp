@@ -27,6 +27,14 @@ const ORDER_SOURCE_LABEL: Record<string, string> = {
   staff: '员工开单',
 };
 
+function formatTime(v: any): string {
+  if (!v) return ''
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return String(v)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 Page({
   data: {
     loading: false,
@@ -77,11 +85,10 @@ Page({
           customerPhone: o.client_phone || '',
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           preferredStaffName: o.preferred_staff_name || '',
-          createdByName: o.opened_by || '—',
           confirmedBy: o.offline_confirmed_by,
-          confirmedAt: o.offline_confirmed_at,
-          createdAt: o.created_at,
-          paidAt: o.paid_at,
+          confirmedAt: formatTime(o.offline_confirmed_at),
+          createdAt: formatTime(o.created_at),
+          paidAt: formatTime(o.paid_at),
           totalAmount: o.totalAmount || o.total_amount,
           items,
           allocation,

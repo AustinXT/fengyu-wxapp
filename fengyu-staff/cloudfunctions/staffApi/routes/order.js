@@ -306,7 +306,10 @@ async function confirmOffline(ctx) {
 
   const order = orders[0]
 
-  if (order.status !== '待确认收款') {
+  if (order.status === '待支付' && order.payment_method !== 'offline') {
+    throw new Error(`INVALID_PARAMS: 非线下支付订单不可直接确认收款`)
+  }
+  if (!['待确认收款', '待支付'].includes(order.status)) {
     throw new Error(`INVALID_PARAMS: 订单当前状态为"${order.status}"，不可确认收款`)
   }
 
@@ -540,6 +543,30 @@ async function detail(ctx) {
   // 美容师只能看指定自己的订单
   if (ctx.auth.position !== '门店经理' && order.preferred_staff_wf_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
+  }
+
+  // 兜底补充顾客信息（兼容历史订单）
+  if (!order.client_phone && order.client_user_id) {
+    const clientRows = await pg.query(
+      'SELECT phone FROM client_wechat_users WHERE user_id = $1 LIMIT 1',
+      [order.client_user_id]
+    )
+    if (clientRows.length > 0 && clientRows[0].phone) {
+      order.client_phone = clientRows[0].phone
+    }
+  }
+  if (!order.customer_name && order.client_phone) {
+    try {
+      const pool = await mssql.getPool()
+      const nameResult = await pool.request()
+        .input('phone', order.client_phone)
+        .query('SELECT TOP 1 UDF_S_1476 AS name FROM UDT_S_311 WHERE UDF_S_1478 = @phone')
+      if (nameResult.recordset.length > 0 && nameResult.recordset[0].name) {
+        order.customer_name = nameResult.recordset[0].name.trim()
+      }
+    } catch (_) {
+      // WorkFine 查询失败不阻塞详情展示
+    }
   }
 
   // 解析指定美容师姓名

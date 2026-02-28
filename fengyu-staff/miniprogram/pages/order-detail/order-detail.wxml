@@ -18,13 +18,12 @@
 
     <!-- 订单信息 -->
     <van-cell-group title="订单信息" class="card-group">
-      <van-cell title="顾客姓名" value="{{order.customerName || '—'}}" />
+      <van-cell title="下单人" value="{{order.customerName || '—'}}" />
       <van-cell title="手机号" value="{{isManager ? order.customerPhone : order.customerPhoneMasked}}" />
       <van-cell title="所属门店" value="{{order.storeName || '—'}}" />
       <van-cell title="订单来源" value="{{order.orderSourceLabel}}" />
       <van-cell title="下单方式" value="{{order.orderTypeLabel}}" />
       <van-cell wx:if="{{order.preferredStaffName}}" title="指定美容师" value="{{order.preferredStaffName}}" />
-      <van-cell title="下单人" value="{{order.createdByName || '—'}}" />
       <van-cell title="支付方式" value="{{order.payTypeLabel}}" />
       <van-cell wx:if="{{order.confirmedBy}}" title="确认人" value="{{order.confirmedBy}}" />
       <van-cell wx:if="{{order.confirmedAt}}" title="确认时间" value="{{order.confirmedAt}}" />
@@ -55,8 +54,8 @@
       </view>
     </view>
 
-    <!-- 营业额分配（仅店长可见） -->
-    <view wx:if="{{isManager && order.allocation.length > 0}}" class="card-group items-card">
+    <!-- 营业额分配（仅店长 + 已支付/已完成可见） -->
+    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length > 0}}" class="card-group items-card">
       <text class="items-title">营业额分配</text>
       <view class="alloc-row" wx:for="{{order.allocation}}" wx:key="staffName">
         <text class="alloc-staff">{{item.staffName}}（{{item.department}}）</text>
@@ -65,14 +64,14 @@
           <text class="alloc-ratio"> · {{item.ratio}}</text>
         </view>
       </view>
-      <view wx:if="{{order.status === '待支付'}}" class="re-alloc-btn">
+      <view class="re-alloc-btn">
         <van-button size="small" plain type="primary" bind:click="onReAllocation"
           custom-style="color:#8B6A3E;border-color:#8B6A3E;">重新分配</van-button>
       </view>
     </view>
 
-    <!-- 无分配时入口（仅店长） -->
-    <view wx:if="{{isManager && order.allocation.length === 0}}" class="card-group items-card">
+    <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
+    <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
       <van-button block plain type="primary"
         custom-style="color:#8B6A3E;border-color:#8B6A3E;"
         bind:click="onReAllocation"
@@ -82,7 +81,7 @@
     <!-- 操作按钮 -->
     <view class="action-bar">
       <van-button
-        wx:if="{{isManager && order.status === '待确认收款'}}"
+        wx:if="{{isManager && (order.status === '待确认收款' || (order.status === '待支付' && order.payType === 'offline'))}}"
         block type="primary"
         custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
         bind:click="onConfirmOffline"

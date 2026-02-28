@@ -102,14 +102,32 @@ async function create(ctx) {
     const orderType = orderTypeParam === 'promo' ? '促销方案' : '正式'
     const promotionSchemeId = promoSchemeId || null
 
+    // 从 WorkFine 查询顾客姓名（按手机号）
+    let customerName = null
+    if (ctx.auth.phone) {
+      try {
+        const esc = v => String(v).replace(/'/g, "''")
+        const nameRows = await mssql.query(`
+          SELECT TOP 1 UDF_S_1476 AS name FROM UDT_S_311
+          WHERE UDF_S_1478 = '${esc(ctx.auth.phone)}'
+        `)
+        if (nameRows.length > 0 && nameRows[0].name) {
+          customerName = nameRows[0].name.trim()
+        }
+      } catch (_) {
+        // WorkFine 查询失败不阻塞下单
+      }
+    }
+
     // 创建订单主表
     await client.query(
       `INSERT INTO orders (
         order_no, status, order_type, market_name, store_name,
-        order_datetime, client_user_id, payment_method, order_source,
+        order_datetime, client_user_id, client_phone, customer_name,
+        payment_method, order_source,
         preferred_staff_wf_id, created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, 'client', $8, $5, $5)`,
-      [orderNo, orderType, marketName, storeName, now, userId, paymentMethod, preferredStaffWfId || null]
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'client', $10, $5, $5)`,
+      [orderNo, orderType, marketName, storeName, now, userId, ctx.auth.phone || null, customerName, paymentMethod, preferredStaffWfId || null]
     )
 
     // 创建订单明细（流水号递增）
