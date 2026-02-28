@@ -1,13 +1,27 @@
 // pages/scan-pay/scan-pay.ts
 import Toast from '@vant/weapp/toast/toast';
 
+async function callClientApi(action: string, payload: Record<string, any> = {}) {
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: { action, payload }
+  }) as any;
+  if (res.result?.code !== 0) {
+    const msg = (res.result?.message || '请求失败').replace(/^[A-Z_]+:\s*/, '');
+    throw new Error(msg);
+  }
+  return res.result.data;
+}
+
 Page({
   data: {
     order: null as any,
+    items: [] as any[],
     orderNo: '',
     paymentMethod: 'wechat' as 'wechat' | 'offline',
     isLoading: true,
     errorMsg: '',
+    statusMsg: '',
     submitting: false,
   },
 
@@ -15,7 +29,6 @@ Page({
     const { scene, orderNo } = options as { scene?: string; orderNo?: string };
     let targetOrderNo = orderNo;
     if (scene) {
-      // 扫码进入，scene 是二维码参数
       targetOrderNo = decodeURIComponent(scene);
     }
     if (!targetOrderNo) {
@@ -27,21 +40,22 @@ Page({
   },
 
   async loadOrder(orderNo: string) {
-    this.setData({ isLoading: true, errorMsg: '' });
+    this.setData({ isLoading: true, errorMsg: '', statusMsg: '' });
     try {
-      const res = await wx.cloud.callFunction({ name: 'getOrderDetail', data: { orderNo } }) as any;
-      const order = res.result?.data;
-      if (!order) {
-        this.setData({ errorMsg: '订单不存在或已被删除' });
+      const data = await callClientApi('order.scanDetail', { orderNo });
+
+      // 非待支付订单：显示状态提示
+      if (data.statusMsg) {
+        this.setData({ statusMsg: data.statusMsg });
         return;
       }
-      if (order.status !== '待支付') {
-        this.setData({ errorMsg: `订单状态为「${order.status}」，无需再次付款` });
-        return;
-      }
-      this.setData({ order });
-    } catch {
-      this.setData({ errorMsg: '加载订单信息失败，请稍后重试' });
+
+      this.setData({
+        order: data.order,
+        items: data.items || [],
+      });
+    } catch (err: any) {
+      this.setData({ errorMsg: err.message || '加载订单信息失败，请稍后重试' });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -68,10 +82,7 @@ Page({
       const { orderNo, paymentMethod } = this.data;
 
       if (paymentMethod === 'offline') {
-        await wx.cloud.callFunction({
-          name: 'submitOfflinePayment',
-          data: { orderNo },
-        });
+        await callClientApi('order.offlinePay', { orderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => {
           wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
@@ -80,18 +91,15 @@ Page({
       }
 
       // 微信支付
-      const res = await wx.cloud.callFunction({
-        name: 'createWechatPayment',
-        data: { orderNo },
-      }) as any;
-      const payParams = res.result?.data || {};
+      const data = await callClientApi('order.pay', { orderNo });
+      const payParams = data.paymentParams || {};
       await wx.requestPayment(payParams);
       Toast.success('支付成功');
       setTimeout(() => {
         wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
       }, 1200);
     } catch (err: any) {
-      Toast.fail(err?.errMsg || '支付失败，请重试');
+      Toast.fail(err?.message || err?.errMsg || '支付失败，请重试');
     } finally {
       this.setData({ submitting: false });
     }

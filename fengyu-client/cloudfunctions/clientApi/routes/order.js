@@ -9,6 +9,77 @@ const { requireFields } = require('../middleware/validate')
 const { requirePhone } = require('../middleware/auth')
 
 /**
+ * 扫码查看订单详情（员工开单订单专用）
+ * 不要求 client_user_id 匹配，仅限 order_source = 'staff' 的订单
+ */
+async function scanDetail(ctx) {
+  const { orderNo } = ctx.event.payload || {}
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+  }
+
+  const orders = await pg.query(
+    "SELECT * FROM orders WHERE order_no = $1 AND order_source = 'staff'",
+    [orderNo]
+  )
+
+  if (orders.length === 0) {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
+  const order = orders[0]
+
+  // 非待支付状态返回提示
+  if (order.status !== '待支付') {
+    const statusMsgMap = {
+      '已支付': '该订单已完成支付',
+      '已完成': '该订单已完成',
+      '待确认收款': '该订单正在等待店长确认收款',
+      '已关闭': '该订单已关闭',
+      '支付失败': '该订单支付失败，请联系店员'
+    }
+    ctx.result = {
+      orderNo: order.order_no,
+      status: order.status,
+      statusMsg: statusMsgMap[order.status] || `订单状态为「${order.status}」`
+    }
+    return
+  }
+
+  // 查询商品明细
+  const items = await pg.query(`
+    SELECT
+      oi.item_flow_no, oi.unit_price, oi.quantity, oi.receivable,
+      p.name AS spu_name, m.sku_display_name
+    FROM order_items oi
+    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    WHERE oi.order_no = $1
+    ORDER BY oi.item_flow_no
+  `, [orderNo])
+
+  const totalAmount = items.reduce((sum, i) => sum + Number(i.receivable || 0), 0)
+
+  ctx.result = {
+    order: {
+      orderNo: order.order_no,
+      status: order.status,
+      storeName: order.store_name,
+      orderType: order.order_type,
+      totalAmount
+    },
+    items: items.map(i => ({
+      itemFlowNo: i.item_flow_no,
+      spuName: i.spu_name,
+      skuDisplayName: i.sku_display_name,
+      unitPrice: i.unit_price,
+      quantity: i.quantity,
+      receivable: i.receivable
+    }))
+  }
+}
+
+/**
  * 顾客自助下单
  * 创建订单 + 订单明细
  */
@@ -169,10 +240,10 @@ async function pay(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
   }
 
-  // 查询订单
+  // 查询订单（不限定 client_user_id）
   const orders = await pg.query(
-    'SELECT * FROM orders WHERE order_no = $1 AND client_user_id = $2',
-    [orderNo, userId]
+    'SELECT * FROM orders WHERE order_no = $1',
+    [orderNo]
   )
 
   if (orders.length === 0) {
@@ -181,12 +252,33 @@ async function pay(ctx) {
 
   const order = orders[0]
 
+  // 权限：已绑定用户 → 校验一致；未绑定 → 仅允许员工开单订单
+  if (order.client_user_id) {
+    if (order.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+  } else if (order.order_source !== 'staff') {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
-  if (order.payment_method !== 'wechat') {
-    throw new Error('INVALID_PARAMS: 该订单不是微信支付方式')
+  const now = new Date()
+
+  // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
+  if (!order.client_user_id && order.order_source === 'staff') {
+    await pg.query(
+      'UPDATE orders SET client_user_id = $1, payment_method = $2, updated_at = $3 WHERE order_no = $4',
+      [userId, 'wechat', now, orderNo]
+    )
+  } else {
+    // 更新支付方式为微信支付
+    await pg.query(
+      "UPDATE orders SET payment_method = 'wechat', updated_at = $1 WHERE order_no = $2",
+      [now, orderNo]
+    )
   }
 
   // 计算总金额
@@ -223,10 +315,10 @@ async function offlinePay(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
   }
 
-  // 查询订单
+  // 查询订单（不限定 client_user_id）
   const orders = await pg.query(
-    'SELECT * FROM orders WHERE order_no = $1 AND client_user_id = $2',
-    [orderNo, userId]
+    'SELECT * FROM orders WHERE order_no = $1',
+    [orderNo]
   )
 
   if (orders.length === 0) {
@@ -235,19 +327,24 @@ async function offlinePay(ctx) {
 
   const order = orders[0]
 
+  // 权限：已绑定用户 → 校验一致；未绑定 → 仅允许员工开单订单
+  if (order.client_user_id) {
+    if (order.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+  } else if (order.order_source !== 'staff') {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许付款')
   }
 
-  if (order.payment_method !== 'offline') {
-    throw new Error('INVALID_PARAMS: 该订单不是线下付款方式')
-  }
-
-  // 更新订单状态
+  // 更新订单状态 + 自动绑定 + 设置支付方式
   const now = new Date()
   await pg.query(
-    "UPDATE orders SET status = '待确认收款', updated_at = $1 WHERE order_no = $2",
-    [now, orderNo]
+    "UPDATE orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = 'offline', updated_at = $2 WHERE order_no = $3",
+    [userId, now, orderNo]
   )
 
   ctx.result = {
@@ -615,5 +712,6 @@ module.exports = {
   list,
   detail,
   cancel,
-  appointableItems
+  appointableItems,
+  scanDetail
 }

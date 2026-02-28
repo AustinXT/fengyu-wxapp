@@ -156,6 +156,24 @@ Page({
     wx.navigateTo({ url: '/pages/store-select/store-select' });
   },
 
+  onScanPay() {
+    wx.scanCode({
+      onlyFromCamera: false,
+      success: (res) => {
+        // 小程序码扫描结果在 res.path 中（含 scene 参数）
+        if (res.path) {
+          wx.navigateTo({ url: '/' + res.path });
+        } else if (res.result) {
+          // 普通二维码，result 可能是 orderNo
+          wx.navigateTo({ url: `/pages/scan-pay/scan-pay?orderNo=${encodeURIComponent(res.result)}` });
+        }
+      },
+      fail: () => {
+        // 用户取消扫码，不提示
+      },
+    });
+  },
+
   onBannerChange(e: WechatMiniprogram.CustomEvent<number>) {
     this.setData({ currentBanner: e.detail.current });
   },

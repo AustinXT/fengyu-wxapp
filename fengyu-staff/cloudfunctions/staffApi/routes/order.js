@@ -12,6 +12,10 @@
 const pg = require('../db/pg')
 const mssql = require('../db/mssql')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
+const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
+
+// 模块级缓存：orderNo → qrcodeUrl，避免轮询时重复生成
+const qrcodeCache = new Map()
 
 /**
  * 员工开单（店长专用）
@@ -252,13 +256,31 @@ async function qrcode(ctx) {
   // 推导二维码显示状态
   let qrCodeStatus
   if (['已支付', '已完成'].includes(order.status)) {
-    qrCodeStatus = '已付款'
+    qrCodeStatus = '已支付'
   } else if (order.status === '待确认收款') {
-    qrCodeStatus = '已扫码待付款'
+    qrCodeStatus = '待确认收款'
   } else if (order.status === '待支付') {
     qrCodeStatus = '待扫码'
   } else {
     qrCodeStatus = order.status // 支付失败/已关闭
+  }
+
+  // 仅待支付订单生成小程序码（带缓存）
+  let qrcodeUrl = ''
+  if (order.status === '待支付') {
+    if (qrcodeCache.has(orderNo)) {
+      qrcodeUrl = qrcodeCache.get(orderNo)
+    } else {
+      try {
+        const buffer = await generateWxacode(orderNo, 'pages/scan-pay/scan-pay')
+        const cloudPath = `wxacode/order/${orderNo}.png`
+        qrcodeUrl = await uploadToCloudStorage(buffer, cloudPath)
+        qrcodeCache.set(orderNo, qrcodeUrl)
+      } catch (err) {
+        console.error('[order.qrcode] 生成小程序码失败:', err)
+        // 不抛错，返回空 URL，前端可提示
+      }
+    }
   }
 
   ctx.result = {
@@ -277,8 +299,7 @@ async function qrcode(ctx) {
       skuDisplayName: i.sku_display_name,
       receivable: i.receivable
     })),
-    // 前端可用此路径生成小程序码（指向客户端小程序支付页）
-    qrPath: `/pages/payment/payment?orderNo=${orderNo}`
+    qrcodeUrl
   }
 }
 

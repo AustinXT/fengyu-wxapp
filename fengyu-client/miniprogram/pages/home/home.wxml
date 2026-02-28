@@ -8,9 +8,14 @@
     <view class="header-brand">
       <image class="brand-logo" src="/images/logo.png" mode="aspectFit" />
     </view>
-    <view class="header-store" bindtap="onSelectStore">
-      <text class="store-name">{{boundStoreName || '选择门店'}}</text>
-      <van-icon name="arrow" size="28rpx" color="#D4A76A" />
+    <view class="header-right">
+      <view class="header-store" bindtap="onSelectStore">
+        <text class="store-name">{{boundStoreName || '选择门店'}}</text>
+        <van-icon name="arrow" size="28rpx" color="#D4A76A" />
+      </view>
+      <view class="header-scan" bindtap="onScanPay">
+        <van-icon name="scan" size="44rpx" color="#D4A76A" />
+      </view>
     </view>
   </view>
 

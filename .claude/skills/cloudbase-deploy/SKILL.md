@@ -187,12 +187,41 @@ exports.main = async (event, context) => {
 ```bash
 # 安装 CLI（如未安装）
 npm i -g @cloudbase/cli
+```
 
-# 默认登录方式：使用腾讯云 API 密钥登录
+### 多账号部署场景
+
+当项目有**多个 CloudBase 环境**（如 staffApi 和 clientApi 部署到不同环境）时，需要**先登出再登录**切换账号：
+
+```bash
+# 1. 先登出当前账号（关键步骤！）
+tcb logout
+
+# 2. 使用目标环境的凭据登录（从项目 .env 读取）
 tcb login --apiKeyId "$TENCENTCLOUD_SECRETID" --apiKey "$TENCENTCLOUD_SECRETKEY"
 
-# 确认登录状态
-tcb fn list -e <envId>
+# 3. 验证登录到了正确的环境
+tcb env list
+```
+
+**如何查找正确的环境：**
+- 从目标项目的 `.env` 文件读取 `CLOUDBASE_ENV_ID` 和 API 凭据
+- 执行 `tcb env list` 确认环境存在
+- 如果显示的环境与预期不符 = 账号登录错误，必须先 `tcb logout` 再重新登录
+
+**典型项目结构示例：**
+```
+fengyu-wxapp/
+├── fengyu-staff/.env     # staffApi 环境：cloud1-9g3ydpg512eecc99
+├── fengyu-client/.env    # clientApi 环境：cloud1-3gpht4b01ff88838
+```
+
+### 确认登录状态
+
+```bash
+# 列出可用的环境（必须先 logout 再 login，否则可能显示旧账号的环境）
+tcb env list
+
 # 若报"无权限"或"环境不存在"，检查密钥是否正确或环境归属
 ```
 
@@ -248,6 +277,7 @@ tcb fn log <functionName> --envId <envId>
 | `Authentication failed` / `Login failed` | 数据库凭证错误 | 检查 `DB_USER` 和 `DB_PASSWORD` 环境变量 |
 | `errCode: -601034 没有权限` | 跨环境调用未授权 | 在微信云开发控制台开启「环境共享」 |
 | 函数不存在 | 首次部署使用了 `updateFunctionCode` | 改用 `createFunction` 初始化 |
+| 环境 ID 不匹配 | 登录了错误的账号或未先 logout | `tcb logout && tcb login` 重新登录，用 `tcb env list` 确认 |
 
 ---
 

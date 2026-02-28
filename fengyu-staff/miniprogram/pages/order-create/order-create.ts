@@ -321,7 +321,7 @@ Page({
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal' });
-      wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?orderId=${res.orderId}` });
+      wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?orderNo=${res.orderNo}` });
     } catch (err: any) {
       wx.showToast({ title: err.message || '开单失败', icon: 'none' });
     } finally {

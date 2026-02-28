@@ -7,21 +7,20 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 Page({
   data: {
     loading: false,
-    orderId: '',
     orderNo: '',
     customerName: '',
     totalAmount: '',
     qrcodeUrl: '',
-    status: '待扫码',    // '待扫码' | '支付中' | '已支付' | '待确认收款' | '已关闭'
+    status: '待扫码',    // '待扫码' | '待确认收款' | '已支付' | '已关闭'
     isManager: false,
   },
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
-    const orderId = options.orderId || '';
-    if (orderId) {
-      this.setData({ orderId });
-      this.loadQrcode(orderId);
+    const orderNo = options.orderNo || '';
+    if (orderNo) {
+      this.setData({ orderNo });
+      this.loadQrcode(orderNo);
     }
   },
 
@@ -37,16 +36,16 @@ Page({
     this.stopPolling();
   },
 
-  async loadQrcode(orderId: string) {
+  async loadQrcode(orderNo: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('order.qrcode', { orderId });
+      const data = await callStaffApi<any>('order.qrcode', { orderNo });
       this.setData({
         orderNo: data.orderNo || '',
         customerName: data.customerName || '',
-        totalAmount: data.totalAmount || data.amount || '',
+        totalAmount: data.totalAmount || '',
         qrcodeUrl: data.qrcodeUrl || '',
-        status: data.status || '待扫码',
+        status: data.qrCodeStatus || '待扫码',
         loading: false,
       });
     } catch (err: any) {
@@ -58,8 +57,8 @@ Page({
   startPolling() {
     this.stopPolling();
     pollTimer = setInterval(() => {
-      if (this.data.orderId && (this.data.status === '待扫码' || this.data.status === '支付中')) {
-        this.loadQrcode(this.data.orderId);
+      if (this.data.orderNo && (this.data.status === '待扫码' || this.data.status === '待确认收款')) {
+        this.loadQrcode(this.data.orderNo);
       }
     }, 3000);
   },
@@ -80,9 +79,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderId: this.data.orderId });
+          await callStaffApi('order.confirmOffline', { orderNo: this.data.orderNo });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadQrcode(this.data.orderId);
+          this.loadQrcode(this.data.orderNo);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -99,7 +98,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.close', { orderId: this.data.orderId });
+          await callStaffApi('order.close', { orderNo: this.data.orderNo });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.stopPolling();
           setTimeout(() => wx.navigateBack(), 1500);

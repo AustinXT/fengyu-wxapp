@@ -31,6 +31,7 @@ const routes = {
   'order.detail': () => require('./routes/order').detail,
   'order.cancel': () => require('./routes/order').cancel,
   'order.appointableItems': () => require('./routes/order').appointableItems,
+  'order.scanDetail': () => require('./routes/order').scanDetail,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,

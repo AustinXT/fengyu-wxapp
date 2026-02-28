@@ -18,27 +18,35 @@
     <van-button type="default" size="normal" round bindtap="onBackHome">返回首页</van-button>
   </view>
 
+  <!-- 非待支付状态提示 -->
+  <view wx:elif="{{statusMsg}}" class="error-wrap">
+    <van-icon name="info-o" size="120rpx" color="#C9986A" />
+    <text class="error-title">订单提示</text>
+    <text class="error-desc">{{statusMsg}}</text>
+    <van-button type="default" size="normal" round bindtap="onBackHome">返回首页</van-button>
+  </view>
+
   <!-- 订单展示 -->
   <view wx:elif="{{order}}" class="order-wrap">
 
     <!-- 门店 + 状态 -->
     <view class="order-header">
-      <text class="order-store">{{order.store_name}}</text>
+      <text class="order-store">{{order.storeName}}</text>
       <van-tag type="primary">{{order.status}}</van-tag>
     </view>
 
     <!-- 商品明细 -->
     <view class="items-section">
       <view
-        wx:for="{{order.items}}"
-        wx:key="item_flow_no"
+        wx:for="{{items}}"
+        wx:key="itemFlowNo"
         class="order-item"
       >
         <view class="item-left">
-          <text class="item-name">{{item.spu_name}}</text>
-          <text class="item-spec">{{item.sku_display_name}}</text>
+          <text class="item-name">{{item.spuName}}</text>
+          <text class="item-spec">{{item.skuDisplayName}}</text>
         </view>
-        <text class="item-price">¥{{item.unit_price}}</text>
+        <text class="item-price">¥{{item.unitPrice}}</text>
       </view>
     </view>
 
@@ -47,7 +55,7 @@
       <text class="total-label">合计</text>
       <view class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{order.total_amount}}</text>
+        <text class="total-value">{{order.totalAmount}}</text>
       </view>
     </view>
 
@@ -67,7 +75,7 @@
 
     <!-- 底部确认 -->
     <van-submit-bar
-      price="{{order.total_amount * 100}}"
+      price="{{order.totalAmount * 100}}"
       button-text="{{paymentMethod === 'wechat' ? '微信支付' : '确认付款'}}"
       loading="{{submitting}}"
       bind:submit="onSubmit"
