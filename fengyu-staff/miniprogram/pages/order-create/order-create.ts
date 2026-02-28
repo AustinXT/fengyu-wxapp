@@ -292,7 +292,7 @@ Page({
 
   // Step 2: 确认订单
   onRemarkChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ remark: e.detail.value });
+    this.setData({ remark: e.detail ?? '' });
   },
 
   onStep2Back() { this.setData({ checkoutStep: 1 }); },
@@ -304,8 +304,9 @@ Page({
     try {
       const res = await callStaffApi<any>('order.create', {
         clientUserId: customerInfo.id || null,
-        customerPhone: customerInfo.phone,
-        customerName: customerInfo.name || customerInfo.phone,
+        clientPhone: customerInfo.phone,
+        clientName: customerInfo.name || customerInfo.phone,
+        paymentMethod: 'wechat',
         orderType,
         items: cart.map(c => ({
           skuId: c.skuId,
