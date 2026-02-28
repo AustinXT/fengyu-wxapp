@@ -18,8 +18,12 @@
   <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
     <view class="appt-item" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="appt-header">
-        <text class="appt-customer">{{item.customerName || item.customerPhone}}</text>
+        <text class="appt-customer">{{item.customerName || '未知顾客'}}</text>
         <van-tag type="{{item.statusType}}" plain>{{item.statusText}}</van-tag>
+      </view>
+      <view class="appt-info" wx:if="{{item.customerPhone}}">
+        <van-icon name="phone-o" size="28rpx" color="#999" />
+        <text class="appt-phone">{{item.customerPhone}}</text>
       </view>
       <view class="appt-info">
         <van-icon name="underway-o" size="28rpx" color="#999" />

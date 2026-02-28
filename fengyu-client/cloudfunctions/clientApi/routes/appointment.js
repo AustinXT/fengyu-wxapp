@@ -91,6 +91,23 @@ async function create(ctx) {
   const marketName = orderItem?.market_name || userMarketName
   const storeName = orderItem?.store_name || userStoreName
 
+  // 从 WorkFine 查顾客真实姓名
+  let customerName = ''
+  const userPhone = users[0]?.phone
+  if (userPhone) {
+    try {
+      const esc = v => String(v).replace(/'/g, "''")
+      const nameRows = await mssql.query(`
+        SELECT TOP 1 UDF_S_1476 AS name FROM UDT_S_311
+        WHERE UDF_S_1478 = '${esc(userPhone)}'
+      `)
+      if (nameRows.length > 0 && nameRows[0].name) {
+        customerName = nameRows[0].name.trim()
+      }
+    } catch (_) {}
+  }
+  if (!customerName) customerName = userPhone || ''
+
   // 创建预约
   const appointmentId = generateAppointmentId()
   const now = new Date()
@@ -103,7 +120,7 @@ async function create(ctx) {
     ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
   `, [
     appointmentId, marketName, storeName,
-    userId, users[0]?.phone || '', staffWfId || '', inputStaffName || '',
+    userId, customerName, staffWfId || '', inputStaffName || '',
     parsedTime, notes || '', itemFlowNo || null, now
   ])
 
