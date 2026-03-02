@@ -8,7 +8,7 @@ interface ServiceDetail {
   customerName: string;
   customerPhone: string;
   staffName: string;
-  status: '待服务' | '服务中' | '已完成';
+  status: '待服务' | '服务中' | '已完成' | '已取消';
   serviceTime: string;
   startTime: string | null;
   completedTime: string | null;
@@ -81,6 +81,27 @@ Page({
         try {
           await callStaffApi('service.complete', { serviceOrderId: detail.id });
           wx.showToast({ title: '服务已完成', icon: 'success' });
+          this.loadDetail(detail.id);
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      }
+    });
+  },
+
+  onCancelService() {
+    const { detail } = this.data;
+    if (!detail) return;
+    wx.showModal({
+      title: '取消服务单',
+      content: '确认取消该服务单？不会扣减疗程次数。',
+      confirmText: '确认取消',
+      confirmColor: '#E53935',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('service.cancel', { serviceOrderId: detail.id });
+          wx.showToast({ title: '服务单已取消', icon: 'success' });
           this.loadDetail(detail.id);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });

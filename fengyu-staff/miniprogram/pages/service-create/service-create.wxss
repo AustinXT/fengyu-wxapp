@@ -60,6 +60,17 @@
   display: flex;
   flex-direction: column;
   gap: 4rpx;
+  flex: 1;
+}
+
+.customer-change {
+  font-size: 24rpx;
+  color: #8B6A3E;
+  flex-shrink: 0;
+}
+
+.customer-results {
+  margin-top: 8rpx;
 }
 
 .customer-name {
@@ -115,17 +126,20 @@
   color: #999999;
 }
 
+.order-item-wrap {
+  border-top: 1rpx solid #F5F2EE;
+  background: #FFFFFF;
+}
+
+.order-item-wrap.order-item--selected {
+  background: #FFF8F0;
+}
+
 .order-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 20rpx 24rpx;
-  border-top: 1rpx solid #F5F2EE;
-  background: #FFFFFF;
-}
-
-.order-item--selected {
-  background: #FFF8F0;
 }
 
 .order-item-info {
@@ -158,6 +172,25 @@
   font-size: 24rpx;
   color: #8B6A3E;
   font-weight: 500;
+}
+
+/* ===== stepper 行 ===== */
+.tc-stepper-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 12rpx 24rpx;
+  border-top: 1rpx solid #F0EDE9;
+}
+
+.tc-stepper-label {
+  font-size: 24rpx;
+  color: #666;
+}
+
+.tc-stepper-unit {
+  font-size: 24rpx;
+  color: #666;
 }
 
 /* ===== 已选汇总 ===== */

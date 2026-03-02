@@ -57,6 +57,20 @@
       "when": 1772180161573,
       "tag": "0007_burly_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1772258968431,
+      "tag": "0008_free_next_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1772347434748,
+      "tag": "0009_nosy_mandarin",
+      "breakpoints": true
     }
   ]
 }

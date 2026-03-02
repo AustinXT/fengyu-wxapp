@@ -10,9 +10,9 @@
     title-inactive-color="#666666"
     sticky
   >
-    <van-tab name="待服务" title="待服务" />
-    <van-tab name="服务中" title="服务中" />
-    <van-tab name="已完成" title="已完成" />
+    <van-tab name="pending" title="待服务" />
+    <van-tab name="processing" title="服务中" />
+    <van-tab name="completed" title="已完成" />
   </van-tabs>
 
   <!-- 加载中 -->

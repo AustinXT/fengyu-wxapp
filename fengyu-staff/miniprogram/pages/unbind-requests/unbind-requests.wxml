@@ -1,0 +1,69 @@
+<!-- pages/unbind-requests/unbind-requests.wxml — 顾客解绑申请审批 -->
+<view class="container">
+
+  <!-- 加载态 -->
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#8B6A3E" />
+  </view>
+
+  <block wx:else>
+    <!-- 空态 -->
+    <view wx:if="{{requests.length === 0}}" class="empty-wrap">
+      <van-empty description="暂无待审批的解绑申请" />
+    </view>
+
+    <!-- 申请列表 -->
+    <view wx:else class="list">
+      <van-cell-group
+        wx:for="{{requests}}"
+        wx:key="requestId"
+        class="request-card"
+        inset
+      >
+        <van-cell title="顾客手机" value="{{item.phoneMasked}}" />
+        <van-cell title="当前门店" value="{{item.fromStoreName}}" />
+        <van-cell wx:if="{{item.note}}" title="备注" value="{{item.note}}" />
+        <van-cell title="申请时间" value="{{item.createdAt}}" />
+        <view class="action-row">
+          <van-button
+            type="primary"
+            size="small"
+            color="#3D8A5A"
+            bindtap="onApprove"
+            data-request-id="{{item.requestId}}"
+          >通过</van-button>
+          <van-button
+            type="danger"
+            size="small"
+            plain
+            bindtap="onReject"
+            data-request-id="{{item.requestId}}"
+          >拒绝</van-button>
+        </view>
+      </van-cell-group>
+    </view>
+  </block>
+
+  <view class="safe-area-bottom" />
+</view>
+
+<!-- 拒绝原因弹窗 -->
+<van-dialog
+  show="{{ showRejectDialog }}"
+  title="拒绝申请"
+  show-cancel-button
+  confirm-button-text="确认拒绝"
+  bind:confirm="onRejectDialogConfirm"
+  bind:cancel="onRejectDialogCancel"
+>
+  <view class="dialog-body">
+    <van-field
+      value="{{ rejectReason }}"
+      placeholder="拒绝原因（选填）"
+      bind:input="onRejectReasonInput"
+      type="textarea"
+      autosize
+      border="{{ false }}"
+    />
+  </view>
+</van-dialog>

@@ -16,7 +16,8 @@
     "pages/service-detail/service-detail",
     "pages/service-create/service-create",
     "pages/appointment-detail/appointment-detail",
-    "pages/product-detail/product-detail"
+    "pages/product-detail/product-detail",
+    "pages/unbind-requests/unbind-requests"
   ],
   "tabBar": {
     "color": "#999999",

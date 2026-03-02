@@ -334,6 +334,12 @@ async function todoList(ctx) {
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)
     result.pendingCreateOrderCount = Number(createRows[0].cnt)
+
+    const unbindRows = await pg.query(
+      `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_name = $1 AND status = 'pending'`,
+      [storeName]
+    )
+    result.pendingUnbindCount = Number(unbindRows[0].cnt)
   }
 
   ctx.result = result

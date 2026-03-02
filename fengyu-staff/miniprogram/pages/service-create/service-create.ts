@@ -29,11 +29,13 @@ Page({
     appointmentInfo: null as null | { id: string; customerName: string; appointmentTime: string; serviceItemName: string },
     // 顾客信息
     customerSearch: '',
+    customerResults: [] as Array<{ id: string; name: string; phone: string; phoneMasked?: string; clientUserId?: string }>,
     selectedCustomer: null as null | { id: string; name: string; phone: string; clientUserId?: string },
     // 订单选择
     paidOrders: [] as PaidOrder[],
     selectedItems: [] as Array<{ itemFlowNo: string; itemName: string; spec: string; orderNo: string; sessionCount: number }>,
     selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 flowNo 集合，供 WXML 使用
+    selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
     // 服务人员
     staffName: '',
     // 备注
@@ -56,11 +58,13 @@ Page({
           sessionCount: i.sessionCount,
         }));
         const flowNos: Record<string, boolean> = {};
-        selectedItems.forEach(s => { flowNos[s.itemFlowNo] = true; });
+        const sessionCounts: Record<string, number> = {};
+        selectedItems.forEach(s => { flowNos[s.itemFlowNo] = true; sessionCounts[s.itemFlowNo] = s.sessionCount; });
         this.setData({
           selectedCustomer: preload.customer,
           selectedItems,
           selectedFlowNos: flowNos,
+          selectedSessionCounts: sessionCounts,
         });
         if (preload.customer.clientUserId || preload.customer.id) {
           this.loadPaidOrders(preload.customer.clientUserId || preload.customer.id);
@@ -100,28 +104,50 @@ Page({
   },
 
   async onSearchCustomer() {
-    const phone = this.data.customerSearch.trim();
-    if (!phone || phone.length < 11) {
-      wx.showToast({ title: '请输入完整手机号', icon: 'none' });
+    const keyword = this.data.customerSearch.trim();
+    if (!keyword) {
+      wx.showToast({ title: '请输入搜索关键词', icon: 'none' });
       return;
     }
     this.setData({ loading: true });
     try {
-      const results = await callStaffApi<any[]>('customer.search', { phone });
+      const results = await callStaffApi<any[]>('customer.search', { keyword });
+      this.setData({ customerResults: results || [] });
       if (!results || results.length === 0) {
         wx.showToast({ title: '未找到该顾客', icon: 'none' });
-        return;
-      }
-      const customer = results[0];
-      this.setData({ selectedCustomer: customer });
-      if (customer.clientUserId || customer.id) {
-        this.loadPaidOrders(customer.clientUserId || customer.id);
       }
     } catch (err: any) {
       wx.showToast({ title: err.message || '搜索失败', icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
+  },
+
+  onCustomerTap(e: WechatMiniprogram.TouchEvent) {
+    const idx = e.currentTarget.dataset.index as number;
+    const customer = this.data.customerResults[idx];
+    if (!customer) return;
+    this.setData({
+      selectedCustomer: customer,
+      customerResults: [],
+      customerSearch: '',
+    });
+    const userId = customer.clientUserId || customer.id;
+    if (userId) {
+      this.loadPaidOrders(userId);
+    }
+  },
+
+  onClearCustomer() {
+    this.setData({
+      selectedCustomer: null,
+      customerSearch: '',
+      customerResults: [],
+      paidOrders: [],
+      selectedItems: [],
+      selectedFlowNos: {},
+      selectedSessionCounts: {},
+    });
   },
 
   async loadPaidOrders(clientUserId: string) {
@@ -148,13 +174,28 @@ Page({
       selected.push({ itemFlowNo: flowNo, itemName, spec, orderNo, sessionCount: 1 });
     }
     const flowNos: Record<string, boolean> = {};
-    selected.forEach(s => { flowNos[s.itemFlowNo] = true; });
-    this.setData({ selectedItems: selected, selectedFlowNos: flowNos });
+    const sessionCounts: Record<string, number> = {};
+    selected.forEach(s => { flowNos[s.itemFlowNo] = true; sessionCounts[s.itemFlowNo] = s.sessionCount; });
+    this.setData({ selectedItems: selected, selectedFlowNos: flowNos, selectedSessionCounts: sessionCounts });
   },
 
   isItemSelected(flowNo: string): boolean {
     return this.data.selectedItems.some(s => s.itemFlowNo === flowNo);
   },
+
+  onSessionStepperChange(e: WechatMiniprogram.CustomEvent) {
+    const flowNo = e.currentTarget.dataset.flowNo as string;
+    const value = e.detail as number;
+    const selected = [...this.data.selectedItems];
+    const idx = selected.findIndex(s => s.itemFlowNo === flowNo);
+    if (idx >= 0) {
+      selected[idx] = { ...selected[idx], sessionCount: value };
+      const sessionCounts = { ...this.data.selectedSessionCounts, [flowNo]: value };
+      this.setData({ selectedItems: selected, selectedSessionCounts: sessionCounts });
+    }
+  },
+
+  preventBubble() {},
 
   onRemarkChange(e: WechatMiniprogram.CustomEvent) {
     this.setData({ remark: e.detail.value });

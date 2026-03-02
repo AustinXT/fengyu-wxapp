@@ -38,6 +38,7 @@ Page({
     pendingServiceCount: 0,
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
+    pendingUnbindCount: 0,
     // 顾客搜索
     searchKeyword: '',
     customerResults: [] as Array<{
@@ -206,12 +207,14 @@ Page({
         pendingServiceCount: number;
         pendingOfflineOrderCount?: number;
         pendingCreateOrderCount?: number;
+        pendingUnbindCount?: number;
       }>('staff.todoList');
       this.setData({
         pendingAppointmentCount: data.pendingAppointmentCount || 0,
         pendingServiceCount: data.pendingServiceCount || 0,
         pendingOfflineOrderCount: data.pendingOfflineOrderCount || 0,
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
+        pendingUnbindCount: data.pendingUnbindCount || 0,
       });
     } catch (_) {}
   },
@@ -234,6 +237,10 @@ Page({
 
   goOrderListCreate() {
     wx.navigateTo({ url: '/pages/order-list/order-list?status=pendingCreate' });
+  },
+
+  goUnbindRequests() {
+    wx.navigateTo({ url: '/pages/unbind-requests/unbind-requests' });
   },
 
   onViewCustomerList() {

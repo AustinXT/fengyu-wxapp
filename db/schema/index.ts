@@ -15,3 +15,6 @@ export * from './appointment'
 
 // 实体五：护理单 + 护理明细
 export * from './service'
+
+// 实体六：门店解绑申请
+export * from './store-unbind'

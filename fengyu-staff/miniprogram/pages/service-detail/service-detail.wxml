@@ -10,7 +10,7 @@
   </view>
 
   <block wx:else>
-    <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : 'done'}}">
+    <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : detail.status === '已取消' ? 'cancelled' : 'done'}}">
       <text class="status-label">{{detail.status}}</text>
       <text class="service-no">{{detail.serviceNo}}</text>
     </view>
@@ -62,6 +62,12 @@
         custom-style="background: #3D8A5A; border-color: #3D8A5A; border-radius: 48rpx;"
         bind:click="onCompleteService"
       >确认完成</van-button>
+      <van-button
+        wx:if="{{detail.status === '待服务' || detail.status === '服务中'}}"
+        type="danger" block plain
+        custom-style="border-radius: 48rpx; margin-top: 20rpx;"
+        bind:click="onCancelService"
+      >取消服务单</van-button>
     </view>
 
     <view class="safe-area-bottom" />

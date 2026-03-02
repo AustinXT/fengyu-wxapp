@@ -141,6 +141,28 @@ async function create(ctx) {
     }
   }
 
+  // 若仍无 clientUserId，尝试从订单行反查
+  if (!resolvedClientUserId && normalizedItems.length > 0) {
+    const orderRow = await pg.query(
+      'SELECT o.client_user_id FROM order_items oi INNER JOIN orders o ON oi.order_no = o.order_no WHERE oi.item_flow_no = $1',
+      [normalizedItems[0].itemFlowNo]
+    )
+    if (orderRow.length > 0 && orderRow[0].client_user_id) {
+      resolvedClientUserId = orderRow[0].client_user_id
+    }
+  }
+
+  // 校验：同一顾客只能有一个进行中的护理单（待服务/服务中）
+  if (resolvedClientUserId) {
+    const activeSo = await pg.query(
+      "SELECT service_order_no FROM service_orders WHERE client_user_id = $1 AND status IN ('待服务', '服务中') LIMIT 1",
+      [resolvedClientUserId]
+    )
+    if (activeSo.length > 0) {
+      throw new Error(`INVALID_PARAMS: 该顾客已有进行中的护理单（${activeSo[0].service_order_no}），请先完成后再创建新的护理单`)
+    }
+  }
+
   // 生成服务单号
   const serviceOrderNo = await generateServiceOrderNo()
   const now = new Date()
@@ -603,6 +625,53 @@ async function detail(ctx) {
   }
 }
 
+/**
+ * 取消服务单（待服务/服务中 → 已取消）
+ * 权限：店长或 assigned_staff_wf_id 匹配的员工
+ * 注意：不扣减次数（次数只在 complete 时扣）
+ */
+async function cancel(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const payload = ctx.event.payload || {}
+  const serviceOrderNo = payload.serviceOrderNo || payload.serviceOrderId
+  if (!serviceOrderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 serviceOrderNo')
+  }
+
+  const serviceOrders = await pg.query(
+    'SELECT * FROM service_orders WHERE service_order_no = $1 AND store_name = $2',
+    [serviceOrderNo, ctx.auth.storeName]
+  )
+
+  if (serviceOrders.length === 0) {
+    throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
+  }
+
+  const so = serviceOrders[0]
+
+  // 权限校验
+  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+    throw new Error('PERMISSION_DENIED: 无权操作该服务单')
+  }
+
+  if (!['待服务', '服务中'].includes(so.status)) {
+    throw new Error(`INVALID_PARAMS: 服务单当前状态为"${so.status}"，不可取消`)
+  }
+
+  const now = new Date()
+  await pg.query(
+    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_no = $2",
+    [now, serviceOrderNo]
+  )
+
+  ctx.result = {
+    serviceOrderNo,
+    status: '已取消',
+    message: '服务单已取消'
+  }
+}
+
 // ========== 辅助函数 ==========
 
 async function generateServiceOrderNo() {
@@ -627,4 +696,4 @@ function generateServiceItemId() {
   return 'si_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-module.exports = { create, start, complete, list, detail }
+module.exports = { create, start, complete, cancel, list, detail }

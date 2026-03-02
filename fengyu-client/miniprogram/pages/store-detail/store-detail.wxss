@@ -3,7 +3,7 @@
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
-  padding-bottom: 140rpx;
+  padding-bottom: 200rpx;
 }
 
 .skeleton-wrap {
@@ -34,6 +34,24 @@
   color: var(--color-text-primary);
 }
 
+/* 审批中提示 */
+.review-notice {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin: 24rpx 32rpx 0;
+  padding: 20rpx 24rpx;
+  background: #FFFBE6;
+  border-radius: 12rpx;
+  border: 1rpx solid #FFE58F;
+}
+
+.review-notice-text {
+  font-size: 26rpx;
+  color: #D48806;
+  flex: 1;
+}
+
 .bottom-space {
   height: 60rpx;
 }
@@ -48,3 +66,9 @@
   background: var(--color-bg-card);
   box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
 }
+
+/* 解绑备注弹窗 */
+.dialog-body {
+  padding: 16rpx 0;
+}
+

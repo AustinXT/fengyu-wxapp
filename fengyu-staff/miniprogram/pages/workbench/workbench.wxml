@@ -129,6 +129,15 @@
         >
           <van-icon slot="icon" name="records" size="40rpx" color="#8B6A3E" class="cell-icon" />
         </van-cell>
+        <van-cell
+          wx:if="{{isManager}}"
+          title="待审批解绑申请"
+          value="{{pendingUnbindCount}}条"
+          is-link
+          bind:click="goUnbindRequests"
+        >
+          <van-icon slot="icon" name="exchange" size="40rpx" color="#8B6A3E" class="cell-icon" />
+        </van-cell>
       </van-cell-group>
     </view>
 

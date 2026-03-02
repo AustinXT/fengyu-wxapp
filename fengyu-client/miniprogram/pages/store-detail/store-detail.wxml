@@ -20,7 +20,7 @@
       <van-icon name="shop-o" size="56px" color="var(--color-brand)" />
       <view class="hero-info">
         <view class="hero-name">{{store.store_name}}</view>
-        <van-tag wx:if="{{isCurrent}}" type="primary" round>当前门店</van-tag>
+        <van-tag wx:if="{{bindState === 'is-current' || bindState === 'is-current-reviewing'}}" type="primary" round>当前门店</van-tag>
       </view>
     </view>
 
@@ -33,6 +33,12 @@
       <van-cell title="在职员工" value="{{store.staff_count ? store.staff_count + '人' : '—'}}" />
       <van-cell title="服务顾客" value="{{store.customer_count ? store.customer_count + '人' : '—'}}" />
     </van-cell-group>
+
+    <!-- 审批中提示 -->
+    <view wx:if="{{bindState === 'is-current-reviewing'}}" class="review-notice">
+      <van-icon name="info-o" size="32rpx" color="#D48806" />
+      <text class="review-notice-text">解绑申请审批中，请等待店长处理</text>
+    </view>
   </view>
 
   <!-- 底部占位 -->
@@ -41,14 +47,67 @@
 
 <!-- 底部固定操作栏 -->
 <view wx:if="{{!isLoading && store}}" class="bottom-bar safe-area-bottom">
+
+  <!-- 无绑定：直接绑定 -->
   <van-button
+    wx:if="{{bindState === 'no-binding'}}"
     type="primary"
     block
     round
     color="var(--color-brand)"
-    disabled="{{isCurrent}}"
-    bindtap="onSelectStore"
-  >
-    {{isCurrent ? '已选择此门店' : '选择此门店'}}
-  </van-button>
+    bindtap="onBindStore"
+  >绑定此门店</van-button>
+
+  <!-- 当前门店，无申请：申请解绑 -->
+  <van-button
+    wx:elif="{{bindState === 'is-current'}}"
+    type="default"
+    block
+    round
+    bindtap="onRequestUnbind"
+  >申请解绑此门店</van-button>
+
+  <!-- 当前门店，审批中 -->
+  <block wx:elif="{{bindState === 'is-current-reviewing'}}">
+    <van-button type="default" block round disabled>解绑申请审批中</van-button>
+    <van-button
+      type="danger"
+      block
+      round
+      plain
+      style="margin-top:16rpx"
+      bindtap="onCancelUnbindRequest"
+    >取消申请</van-button>
+  </block>
+
+  <!-- 已绑定其他门店：禁用 -->
+  <van-button
+    wx:elif="{{bindState === 'other-bound'}}"
+    type="default"
+    block
+    round
+    disabled
+  >已绑定「{{boundStoreName}}」，请先解绑</van-button>
+
 </view>
+
+<!-- 解绑备注弹窗 -->
+<van-dialog
+  show="{{ showUnbindDialog }}"
+  title="申请解绑门店"
+  show-cancel-button
+  confirm-button-text="提交申请"
+  bind:confirm="onUnbindDialogConfirm"
+  bind:cancel="onUnbindDialogCancel"
+>
+  <view class="dialog-body">
+    <van-field
+      value="{{ unbindNote }}"
+      placeholder="备注（选填）"
+      bind:input="onUnbindNoteInput"
+      type="textarea"
+      autosize
+      border="{{ false }}"
+    />
+  </view>
+</van-dialog>

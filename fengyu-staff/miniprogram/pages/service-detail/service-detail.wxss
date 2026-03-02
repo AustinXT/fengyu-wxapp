@@ -17,11 +17,13 @@
 .status-banner--pending { background: #FFF3E0; }
 .status-banner--progress { background: #E3F0FF; }
 .status-banner--done { background: #F0F0F0; }
+.status-banner--cancelled { background: #FDECEA; }
 
 .status-label { font-size: 36rpx; font-weight: 700; }
 .status-banner--pending .status-label { color: #D4820A; }
 .status-banner--progress .status-label { color: #5E8BB3; }
 .status-banner--done .status-label { color: #888888; }
+.status-banner--cancelled .status-label { color: #E53935; }
 
 .service-no { font-size: 24rpx; color: #666666; font-family: monospace; }
 

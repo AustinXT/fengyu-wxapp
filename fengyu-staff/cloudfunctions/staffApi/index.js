@@ -16,7 +16,10 @@ const routes = {
   'auth.bindPhone':       () => require('./routes/auth').bindPhone,
 
   // 门店
-  'store.list':           () => require('./routes/store').list,
+  'store.list':            () => require('./routes/store').list,
+  'store.unbindRequests':  () => require('./routes/store').unbindRequests,
+  'store.approveUnbind':   () => require('./routes/store').approveUnbind,
+  'store.rejectUnbind':    () => require('./routes/store').rejectUnbind,
 
   // 员工
   'staff.list':           () => require('./routes/staff').list,
@@ -64,6 +67,7 @@ const routes = {
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,
   'service.complete':     () => require('./routes/service').complete,
+  'service.cancel':       () => require('./routes/service').cancel,
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,
 }

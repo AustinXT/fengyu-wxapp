@@ -25,11 +25,11 @@ interface ServiceItem {
 Page({
   data: {
     loading: false,
-    tabActive: '待服务',
+    tabActive: 'pending',
     tabs: [
-      { name: '待服务', label: '待服务', badge: 0 },
-      { name: '服务中', label: '服务中', badge: 0 },
-      { name: '已完成', label: '已完成', badge: 0 },
+      { name: 'pending', label: '待服务', badge: 0 },
+      { name: 'processing', label: '服务中', badge: 0 },
+      { name: 'completed', label: '已完成', badge: 0 },
     ],
     list: [] as ServiceItem[],
     isManager: false,
@@ -51,15 +51,22 @@ Page({
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ tabActive: e.detail.name });
+    const name = e.detail.name as string;
+    this.setData({ tabActive: name });
     this.loadList();
   },
 
   async loadList() {
     this.setData({ loading: true });
     try {
+      const statusMap: Record<string, string> = {
+        pending: '待服务',
+        processing: '服务中',
+        completed: '已完成',
+      };
+      const status = statusMap[this.data.tabActive] || this.data.tabActive;
       const list = await callStaffApi<ServiceItem[]>('service.list', {
-        status: this.data.tabActive,
+        status,
       });
       this.setData({ list: list || [] });
     } catch (err: any) {
