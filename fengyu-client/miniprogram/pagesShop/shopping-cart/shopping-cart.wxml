@@ -1,0 +1,96 @@
+<!-- pagesShop/shopping-cart/shopping-cart.wxml — 购物车 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 空购物车 -->
+  <view wx:if="{{isEmpty}}" class="empty-wrap">
+    <van-empty description="购物车是空的" />
+    <view class="empty-action">
+      <van-button round type="danger" size="small" bindtap="goShopping">去逛逛</van-button>
+    </view>
+  </view>
+
+  <!-- 购物车列表 -->
+  <view wx:else class="cart-content">
+    <scroll-view class="cart-list" scroll-y>
+      <view
+        wx:for="{{cartItems}}"
+        wx:key="skuId"
+        class="cart-item"
+      >
+        <!-- 勾选框 -->
+        <view class="cart-item-check" catchtap="onToggleItem" data-index="{{index}}">
+          <van-checkbox value="{{item.checked}}" checked-color="#C0322A" />
+        </view>
+
+        <!-- 商品信息 -->
+        <view class="cart-item-main" bindtap="onItemTap" data-spu-id="{{item.spuId}}">
+          <!-- 封面 -->
+          <image
+            wx:if="{{item.coverImage}}"
+            class="cart-item-cover"
+            src="{{item.coverImage}}"
+            mode="aspectFill"
+          />
+          <view wx:else class="cart-item-cover cover-placeholder">
+            <van-icon name="photo-o" size="40rpx" color="#CCC" />
+          </view>
+
+          <!-- 详情 -->
+          <view class="cart-item-info">
+            <text class="cart-item-name">{{item.spuName}}</text>
+            <text class="cart-item-sku">{{item.skuDisplayName}}</text>
+            <view class="cart-item-bottom">
+              <view class="cart-item-price-wrap">
+                <text class="cart-item-price-symbol">¥</text>
+                <text class="cart-item-price-value">{{item.price}}</text>
+              </view>
+              <view catchtap="">
+                <van-stepper
+                  value="{{item.quantity}}"
+                  min="1"
+                  max="99"
+                  bind:change="onQuantityChange"
+                  data-index="{{index}}"
+                  input-width="36px"
+                  button-size="24px"
+                />
+              </view>
+            </view>
+          </view>
+        </view>
+
+        <!-- 删除按钮 -->
+        <view class="cart-item-delete" catchtap="onDeleteItem" data-index="{{index}}">
+          <van-icon name="delete-o" size="36rpx" color="#C0322A" />
+        </view>
+      </view>
+    </scroll-view>
+
+    <!-- 底部结算栏 -->
+    <view class="cart-bottom">
+      <view class="cart-bottom-left" bindtap="onToggleAll">
+        <van-checkbox value="{{allChecked}}" checked-color="#C0322A" />
+        <text class="check-all-text">全选</text>
+      </view>
+      <view class="cart-bottom-right">
+        <view class="cart-total">
+          <text class="total-label">合计：</text>
+          <text class="total-symbol">¥</text>
+          <text class="total-price">{{totalPrice}}</text>
+        </view>
+        <view
+          class="checkout-btn {{totalCount === 0 ? 'checkout-btn--disabled' : ''}}"
+          bindtap="onCheckout"
+        >
+          <text class="checkout-btn-text">结算({{totalCount}})</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 底部安全区 -->
+    <view class="safe-area-bottom"></view>
+  </view>
+
+</view>

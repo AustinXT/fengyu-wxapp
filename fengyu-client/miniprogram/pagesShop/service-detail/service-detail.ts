@@ -193,7 +193,7 @@ Page({
   },
 
   onCartTap() {
-    wx.navigateTo({ url: '/pages/cart/cart' });
+    wx.navigateTo({ url: '/pagesShop/shopping-cart/shopping-cart' });
   },
 
   onSubmit() {

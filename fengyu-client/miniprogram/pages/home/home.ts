@@ -1,6 +1,6 @@
 // pages/home/home.ts
 import Toast from "@vant/weapp/toast/toast";
-import { addToCart, getCartCount, clearCart } from "../../utils/cart";
+import { getCartCount, clearCart } from "../../utils/cart";
 
 const app = getApp<IAppOption>();
 
@@ -33,6 +33,14 @@ interface SpuItem {
   skuList?: any[];
 }
 
+interface SidebarItem {
+  id: string;
+  type: "title" | "category";
+  label: string;
+  categoryKey?: string;
+  bigCategory?: string;
+}
+
 const BIG_CATEGORIES = ["福利活动", "护理项目", "家居产品"];
 
 // 数据库 big_category 与前端显示的映射
@@ -51,42 +59,45 @@ function getDisplayBigCategory(dbValue: string): string {
 Page({
   data: {
     searchValue: "",
+    isSearching: false,
+    searchResults: [] as SpuItem[],
+    searchLoading: false,
     boundStoreName: "",
     banners: [
-      // 轮播图1：jolyvia 品牌宣传
       { id: "1", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner1.jpg`, link: "" },
-      // 轮播图2：jolyvia 品牌宣传
       { id: "2", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner2.jpg`, link: "" },
-      // 轮播图3：jolyvia 品牌宣传
       { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
-      // 轮播图4：jolyvia 品牌宣传
       { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
-      // 轮播图5：jolyvia 品牌宣传
       { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
     ] as Banner[],
     currentBanner: 0,
 
-    // 分类相关
-    bigCategories: BIG_CATEGORIES,
-    activeBigCategoryIndex: 1, // 默认选中"护理项目"
-    categories: [] as Category[],
-    activeCategoryIndex: 0,
+    // 侧边栏（统一展示所有分类，按大分类分组）
+    sidebarItems: [] as SidebarItem[],
+    activeCategoryKey: "",
+    activeBigCategoryIndex: -1, // 宫格高亮
+    sidebarScrollIntoView: "",
+
     spuList: [] as SpuItem[],
     isLoading: false,
     cartCount: 0,
   },
 
-  // 所有分类（未过滤）
+  // 所有分类（已映射 big_category）
   _allCategories: [] as Category[],
 
   // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
   _spuCache: {} as Record<string, SpuItem[]>,
 
+  // 所有分类 key 的有序列表（用于自动切换下一个分类）
+  _allCategoryKeys: [] as string[],
+
+  // 防止 scrolltolower 连续触发
+  _isLoadingNext: false,
+
   onLoad() {
     const storeName = app.globalData.boundStoreName || "";
-    this.setData({
-      boundStoreName: storeName,
-    });
+    this.setData({ boundStoreName: storeName });
     this.loadShopInit();
     this.updateCartCount();
   },
@@ -98,12 +109,17 @@ Page({
       clearCart();
       this._spuCache = {};
       this._allCategories = [];
+      this._allCategoryKeys = [];
       this.setData({
         boundStoreName: storeName,
-        activeBigCategoryIndex: 0,
-        activeCategoryIndex: 0,
+        sidebarItems: [],
+        activeCategoryKey: "",
+        activeBigCategoryIndex: -1,
         spuList: [],
         cartCount: 0,
+        isSearching: false,
+        searchResults: [],
+        searchValue: "",
       });
       this.loadShopInit();
     } else {
@@ -119,26 +135,79 @@ Page({
     wx.stopPullDownRefresh();
   },
 
-  // ===== 事件处理 =====
-
-  onSelectStore() {
-    wx.navigateTo({ url: "/pagesStore/store-select/store-select" });
-  },
-
-  onSearchChange(e: WechatMiniprogram.CustomEvent<string>) {
-    const value = e.detail;
-    this.setData({ searchValue: value });
-  },
+  // ===== 搜索 =====
 
   onSearchInput(e: WechatMiniprogram.InputEvent) {
     this.setData({ searchValue: e.detail.value });
   },
 
-  onSearchSubmit() {
+  async onSearchSubmit() {
     const value = this.data.searchValue.trim();
-    if (value) {
-      wx.showToast({ title: "搜索功能开发中", icon: "none" });
+    if (!value) {
+      // 清空搜索 → 退出搜索模式
+      if (this.data.isSearching) {
+        this.setData({ isSearching: false, searchResults: [] });
+      }
+      return;
     }
+
+    this.setData({ isSearching: true, searchLoading: true, searchResults: [] });
+
+    // 加载所有未缓存的分类 SPU
+    await this.loadAllSpus();
+
+    // 跨分类搜索，按名称匹配，去重
+    const keyword = value.toLowerCase();
+    const seen = new Set<string>();
+    const results: SpuItem[] = [];
+
+    for (const key of this._allCategoryKeys) {
+      const cached = this._spuCache[key] || [];
+      for (const spu of cached) {
+        if (!seen.has(spu.spu_id) && spu.name.toLowerCase().includes(keyword)) {
+          seen.add(spu.spu_id);
+          results.push(spu);
+        }
+      }
+    }
+
+    this.setData({ searchResults: results, searchLoading: false });
+  },
+
+  onSearchClear() {
+    this.setData({ isSearching: false, searchResults: [], searchValue: "" });
+  },
+
+  async loadAllSpus() {
+    const uncached = this._allCategoryKeys.filter((key) => !this._spuCache[key]);
+    if (uncached.length === 0) return;
+
+    await Promise.all(
+      uncached.map(async (category) => {
+        try {
+          const res = (await wx.cloud.callFunction({
+            name: "clientApi",
+            data: { action: "product.spuList", payload: { category } },
+          })) as any;
+
+          if (res.result?.code === 0) {
+            const spuList = (res.result.data?.spuList || []).map((spu: any) => ({
+              ...spu,
+              min_price: spu.priceFrom || "0",
+            }));
+            this._spuCache[category] = spuList;
+          }
+        } catch (err) {
+          console.error("loadAllSpus error:", category, err);
+        }
+      })
+    );
+  },
+
+  // ===== 事件处理 =====
+
+  onSelectStore() {
+    wx.navigateTo({ url: "/pagesStore/store-select/store-select" });
   },
 
   onScanPay() {
@@ -168,22 +237,19 @@ Page({
     }
   },
 
-  // 宫格按钮点击处理
+  // 宫格按钮点击 → 滚动到对应大分类区域
   onGridTap(e: WechatMiniprogram.TouchEvent) {
     const { type } = e.currentTarget.dataset as { type: string };
 
     switch (type) {
       case "promotion":
-        // 切换到"促销方案"分类
-        this.switchBigCategory(0);
+        this.scrollToBigCategory("福利活动");
         break;
       case "service":
-        // 切换到"护理项目"分类
-        this.switchBigCategory(1);
+        this.scrollToBigCategory("护理项目");
         break;
       case "product":
-        // 切换到"家居产品"分类
-        this.switchBigCategory(2);
+        this.scrollToBigCategory("家居产品");
         break;
       case "coupon":
         wx.showToast({ title: "优惠券功能开发中", icon: "none" });
@@ -196,44 +262,82 @@ Page({
     }
   },
 
-  // 切换大分类
-  switchBigCategory(index: number) {
-    if (index === this.data.activeBigCategoryIndex) return;
+  scrollToBigCategory(bigCategory: string) {
+    // 退出搜索模式
+    if (this.data.isSearching) {
+      this.setData({ isSearching: false, searchResults: [], searchValue: "" });
+    }
 
-    const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter((c) => c.big_category === activeBig);
-    const categoriesWithIndex = filtered.map((c, i) => ({ ...c, _index: i }));
+    // 找到该大分类的 title 项
+    const titleItem = this.data.sidebarItems.find((i) => i.type === "title" && i.label === bigCategory);
+    if (!titleItem) return;
 
-    this.setData({
-      activeBigCategoryIndex: index,
-      categories: categoriesWithIndex,
-      activeCategoryIndex: 0,
-      spuList: [],
-    });
+    // 找到该大分类下的第一个子分类
+    const firstCat = this.data.sidebarItems.find((i) => i.type === "category" && i.bigCategory === bigCategory);
+    if (!firstCat?.categoryKey) return;
 
-    if (filtered.length > 0) {
-      const firstCategory = filtered[0].category;
-      const cached = this._spuCache[firstCategory];
-      if (cached) {
-        this.setData({ spuList: cached });
-      } else {
-        this.loadSpuList(firstCategory);
-      }
+    // 先清空 scroll-into-view 再设置，确保相同值也能触发滚动
+    this.setData({ sidebarScrollIntoView: "" });
+    setTimeout(() => {
+      this.setData({ sidebarScrollIntoView: titleItem.id });
+    }, 50);
+    this.switchToCategory(firstCat.categoryKey);
+  },
+
+  // 侧边栏分类点击
+  onSidebarCategoryTap(e: WechatMiniprogram.TouchEvent) {
+    const { key } = e.currentTarget.dataset as { key: string };
+    if (key && key !== this.data.activeCategoryKey) {
+      this.switchToCategory(key);
     }
   },
 
-  // ===== 分类和商品列表逻辑 =====
+  switchToCategory(categoryKey: string) {
+    const catItem = this.data.sidebarItems.find((i) => i.categoryKey === categoryKey);
+    if (!catItem) return;
 
-  // 使用 shopInit 合并接口一次性加载分类 + 第一个分类的 SPU 列表
+    const bigCatIndex = catItem.bigCategory ? BIG_CATEGORIES.indexOf(catItem.bigCategory) : -1;
+    const cached = this._spuCache[categoryKey];
+
+    this.setData({
+      activeCategoryKey: categoryKey,
+      activeBigCategoryIndex: bigCatIndex,
+      sidebarScrollIntoView: catItem.id,
+      spuList: cached || [],
+    });
+
+    if (!cached) {
+      this.loadSpuList(categoryKey);
+    }
+  },
+
+  // 商品列表滚动到底 → 自动切换到下一个分类
+  onScrollToLower() {
+    if (this._isLoadingNext) return;
+
+    const { activeCategoryKey } = this.data;
+    const currentIndex = this._allCategoryKeys.indexOf(activeCategoryKey);
+
+    if (currentIndex < 0 || currentIndex >= this._allCategoryKeys.length - 1) return;
+
+    const nextKey = this._allCategoryKeys[currentIndex + 1];
+    this._isLoadingNext = true;
+    this.switchToCategory(nextKey);
+
+    // 防止连续触发
+    setTimeout(() => {
+      this._isLoadingNext = false;
+    }, 500);
+  },
+
+  // ===== 数据加载 =====
+
   async loadShopInit() {
     try {
       this.setData({ isLoading: true });
       const res = (await wx.cloud.callFunction({
         name: "clientApi",
-        data: {
-          action: "product.shopInit",
-          payload: {},
-        },
+        data: { action: "product.shopInit", payload: {} },
       })) as any;
 
       if (res.result?.code !== 0) {
@@ -253,36 +357,36 @@ Page({
         this._spuCache[categories[0].category] = listWithPrice;
       }
 
-      // 保存全部分类，按当前大类筛选侧边栏
-      // 注意：将数据库返回的 big_category 转换为前端显示的名称
-      const categoriesWithBigCategory = categories.map((c: any) => ({
+      // 将数据库 big_category 转换为前端显示名称
+      const mappedCategories = categories.map((c: any) => ({
         ...c,
         big_category: getDisplayBigCategory(c.big_category),
       }));
-      this._allCategories = categoriesWithBigCategory;
-      const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
-      const filtered = categoriesWithBigCategory.filter((c) => c.big_category === activeBig);
-      const categoriesWithIndex = filtered.map((c, i) => ({
-        ...c,
-        _index: i,
-      }));
+      this._allCategories = mappedCategories;
 
-      // 判断第一个筛选后的分类是否有缓存
+      // 构建侧边栏
+      this.buildSidebarItems();
+
+      // 设置初始分类和商品
+      const firstKey = this._allCategoryKeys[0] || "";
+      const firstBigCat = this.data.sidebarItems.find((i) => i.categoryKey === firstKey)?.bigCategory;
+      const bigCatIndex = firstBigCat ? BIG_CATEGORIES.indexOf(firstBigCat) : -1;
+
+      // 检查缓存是否匹配第一个可见分类
       let displayList = listWithPrice;
-      if (filtered.length > 0 && filtered[0].category !== categories[0]?.category) {
-        // 首个大类分类与全局首个分类不同，需单独加载
-        displayList = [];
+      if (firstKey && firstKey !== categories[0]?.category) {
+        displayList = this._spuCache[firstKey] || [];
       }
 
       this.setData({
-        categories: categoriesWithIndex,
-        activeCategoryIndex: 0,
+        activeCategoryKey: firstKey,
+        activeBigCategoryIndex: bigCatIndex,
         spuList: displayList,
       });
 
-      // 如需单独加载首个大类的 SPU
-      if (filtered.length > 0 && displayList.length === 0) {
-        this.loadSpuList(filtered[0].category);
+      // 如需单独加载首个分类的 SPU
+      if (firstKey && displayList.length === 0 && !this._spuCache[firstKey]) {
+        this.loadSpuList(firstKey);
       }
     } catch (err: any) {
       console.error("loadShopInit error:", err);
@@ -292,50 +396,37 @@ Page({
     }
   },
 
-  onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = typeof e.detail === "number" ? e.detail : (e.detail as any)?.index;
-    if (typeof index !== "number" || index === this.data.activeBigCategoryIndex) return;
+  buildSidebarItems() {
+    const items: SidebarItem[] = [];
+    const allCategoryKeys: string[] = [];
+    let idx = 0;
 
-    const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter((c) => c.big_category === activeBig);
-    const categoriesWithIndex = filtered.map((c, i) => ({ ...c, _index: i }));
+    for (const bigCat of BIG_CATEGORIES) {
+      const cats = this._allCategories.filter((c) => c.big_category === bigCat);
+      if (cats.length === 0) continue;
 
-    this.setData({
-      activeBigCategoryIndex: index,
-      categories: categoriesWithIndex,
-      activeCategoryIndex: 0,
-      spuList: [],
-    });
+      items.push({
+        id: `sid-${idx}`,
+        type: "title",
+        label: bigCat,
+      });
+      idx++;
 
-    if (filtered.length > 0) {
-      const firstCategory = filtered[0].category;
-      const cached = this._spuCache[firstCategory];
-      if (cached) {
-        this.setData({ spuList: cached });
-      } else {
-        this.loadSpuList(firstCategory);
+      for (const cat of cats) {
+        items.push({
+          id: `sid-${idx}`,
+          type: "category",
+          label: cat.category,
+          categoryKey: cat.category,
+          bigCategory: bigCat,
+        });
+        allCategoryKeys.push(cat.category);
+        idx++;
       }
     }
-  },
 
-  onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
-    const index = typeof e.detail === "number" ? e.detail : (e.detail as any)?.key;
-    if (typeof index !== "number") return;
-    const { categories } = this.data;
-    if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
-
-    const category = index < categories.length ? categories[index].category : "院装产品";
-
-    // 先查缓存：命中则直接替换，不清空不闪烁
-    const cached = this._spuCache[category];
-    if (cached) {
-      this.setData({ activeCategoryIndex: index, spuList: cached });
-      return;
-    }
-
-    // 未命中缓存：清空列表显示骨架屏，发起请求
-    this.setData({ activeCategoryIndex: index, spuList: [] });
-    this.loadSpuList(category);
+    this._allCategoryKeys = allCategoryKeys;
+    this.setData({ sidebarItems: items });
   },
 
   async loadSpuList(category: string) {
@@ -343,10 +434,7 @@ Page({
     try {
       const res = (await wx.cloud.callFunction({
         name: "clientApi",
-        data: {
-          action: "product.spuList",
-          payload: { category },
-        },
+        data: { action: "product.spuList", payload: { category } },
       })) as any;
 
       if (res.result?.code !== 0) {
@@ -362,7 +450,10 @@ Page({
       // 写入缓存
       this._spuCache[category] = listWithPrice;
 
-      this.setData({ spuList: listWithPrice });
+      // 仅在仍在查看该分类时更新
+      if (this.data.activeCategoryKey === category) {
+        this.setData({ spuList: listWithPrice });
+      }
     } catch (err: any) {
       console.error("loadSpuList error:", err);
       Toast.fail(err?.message || "加载商品失败");
@@ -371,45 +462,20 @@ Page({
     }
   },
 
+  // 点击商品卡片 → 跳转详情
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const { spuId } = e.currentTarget.dataset as { spuId: string };
     wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
   },
 
-  // 点击"加入购物车"按钮
-  async onAddToCart(e: WechatMiniprogram.TouchEvent) {
-    e.stopPropagation(); // 阻止冒泡，避免触发卡片点击
+  // 「购买」按钮 → 跳转详情页
+  onBuyTap(e: WechatMiniprogram.TouchEvent) {
     const { spuId } = e.currentTarget.dataset as { spuId: string };
-    const spu = this.data.spuList.find((s) => s.spu_id === spuId);
-    if (!spu) return;
-
-    // 获取第一个 SKU 作为默认添加到购物车的商品
-    const skuList = spu.skuList || [];
-    if (skuList.length === 0) {
-      Toast("暂无可购规格");
-      return;
-    }
-
-    // 使用最低价的 SKU
-    const sku = skuList[0];
-
-    addToCart({
-      skuId: sku.sku_id,
-      spuId: spu.spu_id,
-      spuName: spu.name,
-      skuDisplayName: sku.sku_display_name,
-      coverImage: spu.cover_image,
-      price: sku.originalPrice || 0,
-      bigCategory: spu.big_category,
-      productType: sku.product_type,
-    });
-
-    this.updateCartCount();
-    Toast.success("已加入购物车");
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
   },
 
-  // 点击底部购物车栏
+  // 购物车 FAB → 跳转购物车页面
   onCartTap() {
-    wx.navigateTo({ url: "/pages/cart/cart" });
+    wx.navigateTo({ url: "/pagesShop/shopping-cart/shopping-cart" });
   },
 });

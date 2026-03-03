@@ -1,0 +1,7 @@
+*.md
+test_*.js
+test_cases.json
+.env*
+.npmrc
+cloudbaserc.json
+*.zip

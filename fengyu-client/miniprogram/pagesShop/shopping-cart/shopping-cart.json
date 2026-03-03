@@ -1,0 +1,11 @@
+{
+  "navigationBarTitleText": "购物车",
+  "usingComponents": {
+    "van-icon": "@vant/weapp/icon/index",
+    "van-stepper": "@vant/weapp/stepper/index",
+    "van-checkbox": "@vant/weapp/checkbox/index",
+    "van-empty": "@vant/weapp/empty/index",
+    "van-toast": "@vant/weapp/toast/index",
+    "van-button": "@vant/weapp/button/index"
+  }
+}

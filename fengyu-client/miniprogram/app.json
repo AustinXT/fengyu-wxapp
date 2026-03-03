@@ -11,7 +11,8 @@
       "name": "shop",
       "pages": [
         "shop/shop",
-        "service-detail/service-detail"
+        "service-detail/service-detail",
+        "shopping-cart/shopping-cart"
       ]
     },
     {

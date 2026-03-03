@@ -3,7 +3,7 @@
 
 <view class="container">
 
-  <!-- 自定义导航栏（固定 + 占位一体） -->
+  <!-- 自定义导航栏 -->
   <nav-bar />
 
   <!-- 搜索栏 + 门店选择 + 扫码 -->
@@ -17,6 +17,8 @@
           placeholder-style="color:#BBBBBB;font-size:26rpx;"
           value="{{searchValue}}"
           bindinput="onSearchInput"
+          bindconfirm="onSearchSubmit"
+          confirm-type="search"
         />
         <view class="search-btn" bindtap="onSearchSubmit">
           <text class="search-btn-text">搜索</text>
@@ -34,8 +36,8 @@
     </view>
   </view>
 
-  <!-- 页面主体滚动区 -->
-  <scroll-view class="page-body" scroll-y>
+  <!-- 顶部区域：轮播图 + 功能宫格 -->
+  <view class="top-section">
 
     <!-- ===== 1. 轮播图 ===== -->
     <view class="section-banner">
@@ -92,95 +94,154 @@
       </view>
     </view>
 
-    <!-- ===== 3. 服务列表区域 ===== -->
-    <view class="section-catalog">
+  </view>
 
-      <!-- 分类 + 商品主区域 -->
-      <view class="catalog">
+  <!-- ===== 3. 商品目录区域（独立滚动） ===== -->
+  <view class="section-catalog">
 
-        <!-- 左侧：Vant Sidebar -->
-        <scroll-view class="sidebar-scroll" scroll-y>
-          <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
-            <van-sidebar-item
-              wx:for="{{categories}}"
-              wx:key="_index"
-              title="{{item.category}}"
-            />
-          </van-sidebar>
-        </scroll-view>
-
-        <!-- 右侧：商品列表 -->
-        <scroll-view class="product-scroll" scroll-y>
-
-          <!-- 骨架屏 -->
-          <view wx:if="{{isLoading}}" class="skeleton-wrap">
-            <van-skeleton title avatar row="3" />
-            <van-skeleton title avatar row="3" style="margin-top:24rpx" />
-          </view>
-
-          <!-- 空态 -->
-          <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
-            <van-empty description="暂无服务项目" />
-          </view>
-          <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
-            <van-empty description="该分类暂无服务项目" />
-          </view>
-
-          <!-- SPU 卡片列表 -->
-          <view wx:else class="spu-list">
-            <view
-              wx:for="{{spuList}}"
-              wx:key="spu_id"
-              class="spu-card"
-              bindtap="onSpuTap"
-              data-spu-id="{{item.spu_id}}"
-            >
-              <!-- 左侧封面 -->
-              <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-                <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+    <!-- 搜索结果模式 -->
+    <view wx:if="{{isSearching}}" class="search-results-area">
+      <view class="search-results-header">
+        <text class="search-results-title">搜索结果</text>
+        <view class="search-results-close" bindtap="onSearchClear">
+          <van-icon name="cross" size="28rpx" color="#999" />
+          <text class="search-results-close-text">返回</text>
+        </view>
+      </view>
+      <scroll-view class="search-results-scroll" scroll-y>
+        <van-loading wx:if="{{searchLoading}}" size="24px" vertical style="padding: 80rpx 0;">搜索中...</van-loading>
+        <van-empty wx:elif="{{searchResults.length === 0}}" description="未找到相关商品" />
+        <view wx:else class="spu-list">
+          <view
+            wx:for="{{searchResults}}"
+            wx:key="spu_id"
+            class="spu-card"
+            bindtap="onSpuTap"
+            data-spu-id="{{item.spu_id}}"
+          >
+            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            </view>
+            <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
+            <view class="spu-body">
+              <view class="spu-tags" wx:if="{{item.is_recommend}}">
+                <van-tag color="#C0322A">推荐</van-tag>
               </view>
-              <image
-                wx:else
-                class="spu-cover"
-                src="{{item.cover_image}}"
-                mode="aspectFill"
-                lazy-load
-              />
-
-              <!-- 右侧信息 -->
-              <view class="spu-body">
-                <!-- 标签行 -->
-                <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                  <van-tag color="#C0322A">推荐</van-tag>
+              <text class="spu-name">{{item.name}}</text>
+              <view class="spu-footer">
+                <view class="price-group">
+                  <text class="price-symbol">¥</text>
+                  <text class="price-integer">{{item.min_price}}</text>
+                  <text class="price-start">起</text>
                 </view>
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-spu-id="{{item.spu_id}}">
+                  <text class="spu-buy-text">购买</text>
+                </view>
+              </view>
+            </view>
+          </view>
+        </view>
+      </scroll-view>
+    </view>
 
-                <!-- 商品名 -->
-                <text class="spu-name">{{item.name}}</text>
+    <!-- 正常浏览模式 -->
+    <view wx:else class="catalog">
 
-                <!-- 底部：价格 + 按钮 -->
-                <view class="spu-footer">
-                  <view class="price-group">
-                    <text class="price-symbol">¥</text>
-                    <text class="price-integer">{{item.min_price}}</text>
-                    <text class="price-start">起</text>
-                  </view>
-                  <view class="spu-buy-btn" catchtap="onAddToCart" data-spu-id="{{item.spu_id}}">
-                    <text class="spu-buy-text">购买</text>
-                  </view>
+      <!-- 左侧：自定义分类侧边栏（一级分类作为标题，二级分类可点击） -->
+      <scroll-view class="sidebar-scroll" scroll-y scroll-into-view="{{sidebarScrollIntoView}}">
+        <view
+          wx:for="{{sidebarItems}}"
+          wx:key="id"
+          id="{{item.id}}"
+        >
+          <!-- 一级分类标题（不可点击） -->
+          <view wx:if="{{item.type === 'title'}}" class="sidebar-title">
+            <text class="sidebar-title-text">{{item.label}}</text>
+          </view>
+          <!-- 二级分类项（可点击） -->
+          <view
+            wx:else
+            class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
+            bindtap="onSidebarCategoryTap"
+            data-key="{{item.categoryKey}}"
+          >
+            <text class="sidebar-item-text">{{item.label}}</text>
+          </view>
+        </view>
+      </scroll-view>
+
+      <!-- 右侧：商品列表（独立滚动，触底自动切换下一分类） -->
+      <scroll-view class="product-scroll" scroll-y bindscrolltolower="onScrollToLower" lower-threshold="100">
+
+        <!-- 骨架屏 -->
+        <view wx:if="{{isLoading && spuList.length === 0}}" class="skeleton-wrap">
+          <van-skeleton title avatar row="3" />
+          <van-skeleton title avatar row="3" style="margin-top:24rpx" />
+        </view>
+
+        <!-- 空态 -->
+        <view wx:elif="{{spuList.length === 0 && sidebarItems.length === 0}}">
+          <van-empty description="暂无服务项目" />
+        </view>
+        <view wx:elif="{{spuList.length === 0 && sidebarItems.length > 0}}">
+          <van-empty description="该分类暂无服务项目" />
+        </view>
+
+        <!-- SPU 卡片列表 -->
+        <view wx:else class="spu-list">
+          <view
+            wx:for="{{spuList}}"
+            wx:key="spu_id"
+            class="spu-card"
+            bindtap="onSpuTap"
+            data-spu-id="{{item.spu_id}}"
+          >
+            <!-- 左侧封面 -->
+            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+              <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
+            </view>
+            <image
+              wx:else
+              class="spu-cover"
+              src="{{item.cover_image}}"
+              mode="aspectFill"
+              lazy-load
+            />
+
+            <!-- 右侧信息 -->
+            <view class="spu-body">
+              <!-- 标签行 -->
+              <view class="spu-tags" wx:if="{{item.is_recommend}}">
+                <van-tag color="#C0322A">推荐</van-tag>
+              </view>
+
+              <!-- 商品名 -->
+              <text class="spu-name">{{item.name}}</text>
+
+              <!-- 底部：价格 + 按钮 -->
+              <view class="spu-footer">
+                <view class="price-group">
+                  <text class="price-symbol">¥</text>
+                  <text class="price-integer">{{item.min_price}}</text>
+                  <text class="price-start">起</text>
+                </view>
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-spu-id="{{item.spu_id}}">
+                  <text class="spu-buy-text">购买</text>
                 </view>
               </view>
             </view>
           </view>
 
-        </scroll-view>
-      </view>
+          <!-- 加载提示 -->
+          <view wx:if="{{isLoading}}" class="load-more-hint">
+            <van-loading size="20px" />
+          </view>
+        </view>
 
+      </scroll-view>
     </view>
 
-    <!-- 底部安全区 -->
-    <view class="safe-area-bottom"></view>
-
-  </scroll-view>
+  </view>
 
   <!-- 右下角悬浮购物车按钮 -->
   <view class="cart-fab" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
