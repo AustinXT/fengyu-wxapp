@@ -49,14 +49,16 @@
 <view wx:if="{{!isLoading && store}}" class="bottom-bar safe-area-bottom">
 
   <!-- 无绑定：直接绑定 -->
-  <van-button
-    wx:if="{{bindState === 'no-binding'}}"
-    type="primary"
-    block
-    round
-    color="var(--color-brand)"
-    bindtap="onBindStore"
-  >绑定此门店</van-button>
+  <block wx:if="{{bindState === 'no-binding'}}">
+    <view class="bind-hint">绑定门店后可享受预约、购买等服务</view>
+    <van-button
+      type="primary"
+      block
+      round
+      color="#C0322A"
+      bindtap="onBindStore"
+    >绑定此门店</van-button>
+  </block>
 
   <!-- 当前门店，无申请：申请解绑 -->
   <van-button

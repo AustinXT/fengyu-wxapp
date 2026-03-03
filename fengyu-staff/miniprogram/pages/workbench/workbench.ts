@@ -216,7 +216,7 @@ Page({
   },
 
   goAppointments() {
-    wx.navigateTo({ url: '/pages/appointment/appointment?tab=pending' });
+    wx.navigateTo({ url: '/packageService/appointment/appointment?tab=pending' });
   },
 
   goServiceList() {
@@ -224,14 +224,14 @@ Page({
   },
 
   goOrderListOffline() {
-    wx.navigateTo({ url: '/pages/order-list/order-list?status=pendingOffline' });
+    wx.navigateTo({ url: '/packageOrder/order-list/order-list?status=pendingOffline' });
   },
 
   goOrderListCreate() {
-    wx.navigateTo({ url: '/pages/order-list/order-list?status=pendingCreate' });
+    wx.navigateTo({ url: '/packageOrder/order-list/order-list?status=pendingCreate' });
   },
 
   goUnbindRequests() {
-    wx.navigateTo({ url: '/pages/unbind-requests/unbind-requests' });
+    wx.navigateTo({ url: '/packageService/unbind-requests/unbind-requests' });
   },
 });

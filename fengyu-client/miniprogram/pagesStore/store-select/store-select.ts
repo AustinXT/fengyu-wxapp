@@ -121,11 +121,11 @@ Page({
   async onStoreTap(e: WechatMiniprogram.TouchEvent) {
     const { storeName } = e.currentTarget.dataset as { storeName: string };
     wx.navigateTo({
-      url: `/pages/store-detail/store-detail?storeName=${encodeURIComponent(storeName)}`
+      url: `/pagesStore/store-detail/store-detail?storeName=${encodeURIComponent(storeName)}`
     });
   },
 
   onShareAppMessage() {
-    return { title: '凤御美容 — 选择门店', path: '/pages/store-select/store-select' };
+    return { title: '凤御美容 — 选择门店', path: '/pagesStore/store-select/store-select' };
   },
 });

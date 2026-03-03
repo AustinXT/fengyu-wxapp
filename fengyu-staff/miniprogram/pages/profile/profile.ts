@@ -74,11 +74,11 @@ Page({
   },
 
   onNavOrders() {
-    wx.navigateTo({ url: '/pages/order-list/order-list' });
+    wx.navigateTo({ url: '/packageOrder/order-list/order-list' });
   },
 
   onNavServices() {
-    wx.navigateTo({ url: '/pages/service-list/service-list' });
+    wx.navigateTo({ url: '/packageService/service-list/service-list' });
   },
 
   onNavCustomers() {

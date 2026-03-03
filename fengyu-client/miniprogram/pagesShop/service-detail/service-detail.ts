@@ -202,7 +202,7 @@ Page({
       Toast('请先选择规格');
       return;
     }
-    let url = `/pages/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
+    let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
     // 促销方案传入 scheme 信息
     if (spu.big_category === '促销方案' && spu.promotionSchemeId) {
       url += `&orderType=promo&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;

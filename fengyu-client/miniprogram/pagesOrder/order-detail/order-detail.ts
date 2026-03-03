@@ -83,7 +83,7 @@ Page({
 
   onPay() {
     const { order_no } = this.data.order;
-    wx.navigateTo({ url: `/pages/checkout/checkout?orderNo=${order_no}` });
+    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?orderNo=${order_no}` });
   },
 
   async onCancel() {
@@ -111,10 +111,10 @@ Page({
 
   onCreateAppointment() {
     const { order_no } = this.data.order;
-    wx.navigateTo({ url: `/pages/appointment-create/appointment-create?orderNo=${order_no}` });
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?orderNo=${order_no}` });
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pages/orders/orders' };
+    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
   },
 });

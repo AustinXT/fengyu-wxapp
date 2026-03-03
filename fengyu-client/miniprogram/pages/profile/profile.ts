@@ -31,11 +31,11 @@ Page({
   },
 
   onOrders() {
-    wx.navigateTo({ url: '/pages/orders/orders' });
+    wx.navigateTo({ url: '/pagesOrder/orders/orders' });
   },
 
   onTreatmentCards() {
-    wx.navigateTo({ url: '/pages/treatment-cards/treatment-cards' });
+    wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
   },
 
   onBindPhone() {
@@ -109,7 +109,7 @@ Page({
   },
 
   onSwitchStore() {
-    wx.navigateTo({ url: '/pages/store-select/store-select' });
+    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
   },
 
   onShareAppMessage() {

@@ -79,7 +79,7 @@ Page({
   },
 
   onCreateAppointment() {
-    wx.navigateTo({ url: '/pages/appointment-create/appointment-create' });
+    wx.navigateTo({ url: '/pagesAppointment/appointment-create/appointment-create' });
   },
 
   onCancelAppt(e: WechatMiniprogram.TouchEvent) {

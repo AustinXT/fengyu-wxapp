@@ -89,7 +89,7 @@ Page({
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/pages/service-detail/service-detail?id=${id}` });
+    wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${id}` });
   },
 
   async onStartService(e: WechatMiniprogram.TouchEvent) {
@@ -123,7 +123,7 @@ Page({
   },
 
   onNewService() {
-    wx.navigateTo({ url: '/pages/service-create/service-create' });
+    wx.navigateTo({ url: '/packageService/service-create/service-create' });
   },
 
   noop() {},

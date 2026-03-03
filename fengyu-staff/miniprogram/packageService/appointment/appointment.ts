@@ -83,7 +83,7 @@ Page({
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id;
-    wx.navigateTo({ url: `/pages/appointment-detail/appointment-detail?id=${id}` });
+    wx.navigateTo({ url: `/packageService/appointment-detail/appointment-detail?id=${id}` });
   },
 
   async onConfirmAppt(e: WechatMiniprogram.TouchEvent) {
@@ -110,6 +110,6 @@ Page({
 
   onCreateService(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/pages/service-create/service-create?appointmentId=${id}` });
+    wx.navigateTo({ url: `/packageService/service-create/service-create?appointmentId=${id}` });
   },
 });

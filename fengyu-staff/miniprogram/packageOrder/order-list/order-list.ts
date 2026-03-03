@@ -92,7 +92,7 @@ Page({
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/pages/order-detail/order-detail?id=${id}` });
+    wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 
   noop() {},

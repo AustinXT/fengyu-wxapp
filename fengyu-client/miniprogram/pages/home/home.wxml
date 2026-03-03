@@ -167,22 +167,17 @@
         </scroll-view>
       </view>
 
-      <!-- 底部悬浮购物车栏 -->
-      <view class="cart-bar" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
-        <view class="cart-icon-wrap">
-          <van-icon name="shopping-cart-o" size="44rpx" color="#C0322A" />
-          <view class="cart-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>
-        </view>
-        <view class="cart-info">
-          <text class="cart-tip">购物车</text>
-        </view>
-        <van-button type="warning" size="small" round>去结算</van-button>
-      </view>
     </view>
 
     <!-- 底部安全区 -->
     <view class="safe-area-bottom"></view>
 
   </scroll-view>
+
+  <!-- 右下角悬浮购物车按钮 -->
+  <view class="cart-fab" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
+    <van-icon name="shopping-cart-o" size="48rpx" color="#FFFFFF" />
+    <view class="cart-fab-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>
+  </view>
 
 </view>

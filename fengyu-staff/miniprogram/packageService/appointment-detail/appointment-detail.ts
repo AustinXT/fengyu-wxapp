@@ -76,13 +76,13 @@ Page({
 
   onCreateService() {
     const id = this.data.appt?.id;
-    wx.navigateTo({ url: `/pages/service-create/service-create?appointmentId=${id}` });
+    wx.navigateTo({ url: `/packageService/service-create/service-create?appointmentId=${id}` });
   },
 
   onViewServiceOrder() {
     const svcId = this.data.appt?.serviceOrderId;
     if (svcId) {
-      wx.navigateTo({ url: `/pages/service-detail/service-detail?id=${svcId}` });
+      wx.navigateTo({ url: `/packageService/service-detail/service-detail?id=${svcId}` });
     }
   },
 });

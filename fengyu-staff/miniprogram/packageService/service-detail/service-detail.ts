@@ -114,7 +114,7 @@ Page({
     const { detail } = this.data;
     if (detail?.appointmentId) {
       wx.navigateTo({
-        url: `/pages/appointment-detail/appointment-detail?id=${detail.appointmentId}`
+        url: `/packageService/appointment-detail/appointment-detail?id=${detail.appointmentId}`
       });
     }
   },

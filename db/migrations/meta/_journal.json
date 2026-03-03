@@ -71,6 +71,13 @@
       "when": 1772347434748,
       "tag": "0009_nosy_mandarin",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1772516907613,
+      "tag": "0010_dizzy_ego",
+      "breakpoints": true
     }
   ]
 }

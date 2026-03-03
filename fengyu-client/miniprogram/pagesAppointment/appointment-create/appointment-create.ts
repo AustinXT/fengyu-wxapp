@@ -178,7 +178,7 @@ Page({
   },
 
   onGoOrders() {
-    wx.switchTab({ url: '/pages/orders/orders' });
+    wx.navigateTo({ url: '/pagesOrder/orders/orders' });
   },
 
   async onSubmit() {

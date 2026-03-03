@@ -59,22 +59,26 @@ function mapProductType(productTypeRaw) {
 
 // 映射大分类
 function mapBigCategory(bigCategoryRaw, source) {
-  if (source === 'UDT_M_341') return '院装产品'
+  if (source === 'UDT_M_341') return '家居产品'
 
   const trimmed = bigCategoryRaw ? bigCategoryRaw.trim() : ''
 
   // 处理无效值：空字符串、"是"等
   if (!trimmed || trimmed === '是' || trimmed === '否') {
-    return '非生美'
+    return '护理项目'
   }
 
-  // 只接受有效的枚举值
-  if (trimmed === '生美' || trimmed === '非生美') {
-    return trimmed
+  // 旧值映射到新值
+  if (trimmed === '生美' || trimmed === '非生美' || trimmed === '护理项目') {
+    return '护理项目'
+  }
+
+  if (trimmed === '院装产品' || trimmed === '家居产品') {
+    return '家居产品'
   }
 
   // 默认值
-  return '非生美'
+  return '护理项目'
 }
 
 // 查询 WorkFine 数据

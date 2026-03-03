@@ -117,11 +117,11 @@ Page({
       })),
     };
 
-    wx.navigateTo({ url: '/pages/service-create/service-create?preloaded=1' });
+    wx.navigateTo({ url: '/packageService/service-create/service-create?preloaded=1' });
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/pages/order-detail/order-detail?id=${id}` });
+    wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },
 });

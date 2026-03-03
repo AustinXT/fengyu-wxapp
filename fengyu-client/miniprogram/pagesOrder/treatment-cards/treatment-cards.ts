@@ -63,12 +63,12 @@ Page({
 
   onCardTap(e: WechatMiniprogram.TouchEvent) {
     const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
+    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
   },
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
     e.stopPropagation();
     const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pages/appointment-create/appointment-create?orderNo=${orderNo}` });
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?orderNo=${orderNo}` });
   },
 });

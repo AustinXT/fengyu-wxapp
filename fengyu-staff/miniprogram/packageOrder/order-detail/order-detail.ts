@@ -106,7 +106,7 @@ Page({
 
   onReAllocation() {
     const orderNo = this.data._orderNo;
-    wx.navigateTo({ url: `/pages/revenue-allocation/revenue-allocation?orderNo=${orderNo}` });
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${orderNo}` });
   },
 
   onResetFailed() {
@@ -170,6 +170,6 @@ Page({
   onShowQrcode() {
     const o = this.data.order;
     const params = `orderNo=${o.orderNo}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
-    wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?${params}` });
+    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 });

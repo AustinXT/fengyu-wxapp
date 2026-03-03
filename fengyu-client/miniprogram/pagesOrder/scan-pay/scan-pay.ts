@@ -85,7 +85,7 @@ Page({
         await callClientApi('order.offlinePay', { orderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => {
-          wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
         }, 1500);
         return;
       }
@@ -96,7 +96,7 @@ Page({
       await wx.requestPayment(payParams);
       Toast.success('支付成功');
       setTimeout(() => {
-        wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
       }, 1200);
     } catch (err: any) {
       Toast.fail(err?.message || err?.errMsg || '支付失败，请重试');

@@ -1,6 +1,6 @@
 import { pgEnum } from 'drizzle-orm/pg-core'
 
-export const bigCategoryEnum = pgEnum('big_category', ['促销方案', '生美', '非生美', '院装产品'])
+export const bigCategoryEnum = pgEnum('big_category', ['促销方案', '护理项目', '家居产品', '充值卡'])
 
 export const workfineSourceEnum = pgEnum('workfine_source', [
   'UDT_M_1281',

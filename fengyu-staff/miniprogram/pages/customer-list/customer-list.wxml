@@ -1,6 +1,38 @@
 <!-- pages/customer-list/customer-list.wxml -->
 <view class="container">
 
+  <!-- 客户分类统计卡片 -->
+  <view class="stats-section">
+    <view class="stats-row">
+      <view class="stat-card stat-active">
+        <view class="stat-count">2</view>
+        <view class="stat-label">活跃客户</view>
+      </view>
+      <view class="stat-card stat-warning">
+        <view class="stat-count">3</view>
+        <view class="stat-label">即将流失客户</view>
+      </view>
+      <view class="stat-card stat-lost">
+        <view class="stat-count">0</view>
+        <view class="stat-label">流失客户</view>
+      </view>
+    </view>
+    <view class="stats-row">
+      <view class="stat-card stat-sleep">
+        <view class="stat-count">2</view>
+        <view class="stat-label">沉睡客户</view>
+      </view>
+      <view class="stat-card stat-birthday">
+        <view class="stat-count">0</view>
+        <view class="stat-label">本月生日客户</view>
+      </view>
+      <view class="stat-card stat-birthday-next">
+        <view class="stat-count">0</view>
+        <view class="stat-label">下月生日客户</view>
+      </view>
+    </view>
+  </view>
+
   <van-search
     value="{{searchKeyword}}"
     placeholder="搜索姓名或手机号"

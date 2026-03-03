@@ -5,7 +5,7 @@ import { addToCart, getCartCount, clearCart } from '../../utils/cart';
 const app = getApp<IAppOption>();
 
 // CloudBase CDN 基础 URL
-const CDN_BASE = 'https://cloud1-3gpht4b01ff88838.tcb.qcloud.la/fengyu-client';
+const CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/fengyu-client';
 
 interface Banner {
   id: string;
@@ -118,7 +118,7 @@ Page({
   // ===== 事件处理 =====
 
   onSelectStore() {
-    wx.navigateTo({ url: '/pages/store-select/store-select' });
+    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent<string>) {
@@ -138,7 +138,7 @@ Page({
         if (res.path) {
           wx.navigateTo({ url: '/' + res.path });
         } else if (res.result) {
-          wx.navigateTo({ url: `/pages/scan-pay/scan-pay?orderNo=${encodeURIComponent(res.result)}` });
+          wx.navigateTo({ url: `/pagesOrder/scan-pay/scan-pay?orderNo=${encodeURIComponent(res.result)}` });
         }
       },
       fail: () => {
@@ -179,7 +179,7 @@ Page({
         wx.showToast({ title: '优惠券功能开发中', icon: 'none' });
         break;
       case 'treatment':
-        wx.navigateTo({ url: '/pages/treatment-cards/treatment-cards' });
+        wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
         break;
       default:
         break;
@@ -363,7 +363,7 @@ Page({
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const { spuId } = e.currentTarget.dataset as { spuId: string };
-    wx.navigateTo({ url: `/pages/service-detail/service-detail?spuId=${spuId}` });
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
   },
 
   // 点击"加入购物车"按钮

@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
-const BIG_CATEGORIES = ['促销方案', '生美', '非生美', '院装产品'];
+const BIG_CATEGORIES = ['促销方案', '护理项目', '家居产品', '充值卡'];
 
 interface CartItem {
   spuId: string;
@@ -196,7 +196,7 @@ Page({
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const spu = e.currentTarget.dataset.spu as any;
     if (!spu?.spuId) return;
-    wx.navigateTo({ url: `/pages/product-detail/product-detail?spuId=${spu.spuId}` });
+    wx.navigateTo({ url: `/packageService/product-detail/product-detail?spuId=${spu.spuId}` });
   },
 
   // ===== 购物车 =====
@@ -321,7 +321,7 @@ Page({
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal' });
-      wx.navigateTo({ url: `/pages/order-qrcode/order-qrcode?orderNo=${res.orderNo}` });
+      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.orderNo}` });
     } catch (err: any) {
       wx.showToast({ title: err.message || '开单失败', icon: 'none' });
     } finally {

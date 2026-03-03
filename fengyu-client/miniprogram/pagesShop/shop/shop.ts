@@ -59,7 +59,7 @@ Page({
   },
 
   onSelectStore() {
-    wx.navigateTo({ url: '/pages/store-select/store-select' });
+    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
   },
 
   updateCartCount() {
@@ -247,6 +247,6 @@ Page({
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
     const { spuId } = e.currentTarget.dataset as { spuId: string };
-    wx.navigateTo({ url: `/pages/service-detail/service-detail?spuId=${spuId}` });
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
   },
 });

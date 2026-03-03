@@ -105,7 +105,7 @@ Page({
     }));
 
     wx.setStorageSync("checkoutItems", checkoutItems);
-    wx.navigateTo({ url: "/pages/checkout/checkout?fromCart=1" });
+    wx.navigateTo({ url: "/pagesOrder/checkout/checkout?fromCart=1" });
   },
 
   onShareAppMessage() {

@@ -164,7 +164,7 @@ Page({
   onShareAppMessage() {
     return {
       title: `凤御美容 — ${this.data.storeName}`,
-      path: `/pages/store-detail/store-detail?storeName=${encodeURIComponent(this.data.storeName)}`
+      path: `/pagesStore/store-detail/store-detail?storeName=${encodeURIComponent(this.data.storeName)}`
     };
   },
 });

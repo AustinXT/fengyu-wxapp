@@ -54,6 +54,6 @@ Page({
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const { id, clientUserId } = e.currentTarget.dataset;
     const params = id ? `id=${id}` : `clientUserId=${clientUserId}`;
-    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?${params}` });
+    wx.navigateTo({ url: `/packageCustomer/customer-detail/customer-detail?${params}` });
   },
 });

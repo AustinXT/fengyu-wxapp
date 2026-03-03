@@ -70,16 +70,16 @@ Page({
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
     const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` });
+    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
   },
 
   onPayTap(e: WechatMiniprogram.TouchEvent) {
     e.stopPropagation();
     const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pages/checkout/checkout?orderNo=${orderNo}` });
+    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?orderNo=${orderNo}` });
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pages/orders/orders' };
+    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
   },
 });

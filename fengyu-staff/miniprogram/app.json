@@ -4,20 +4,37 @@
     "pages/workbench/workbench",
     "pages/order-create/order-create",
     "pages/service/service",
-    "pages/profile/profile",
-    "pages/appointment/appointment",
-    "pages/order-qrcode/order-qrcode",
-    "pages/order-list/order-list",
-    "pages/order-detail/order-detail",
-    "pages/revenue-allocation/revenue-allocation",
     "pages/customer-list/customer-list",
-    "pages/customer-detail/customer-detail",
-    "pages/service-list/service-list",
-    "pages/service-detail/service-detail",
-    "pages/service-create/service-create",
-    "pages/appointment-detail/appointment-detail",
-    "pages/product-detail/product-detail",
-    "pages/unbind-requests/unbind-requests"
+    "pages/profile/profile"
+  ],
+  "subPackages": [
+    {
+      "root": "packageOrder",
+      "pages": [
+        "order-qrcode/order-qrcode",
+        "order-list/order-list",
+        "order-detail/order-detail",
+        "revenue-allocation/revenue-allocation"
+      ]
+    },
+    {
+      "root": "packageCustomer",
+      "pages": [
+        "customer-detail/customer-detail"
+      ]
+    },
+    {
+      "root": "packageService",
+      "pages": [
+        "service-list/service-list",
+        "service-detail/service-detail",
+        "service-create/service-create",
+        "appointment/appointment",
+        "appointment-detail/appointment-detail",
+        "product-detail/product-detail",
+        "unbind-requests/unbind-requests"
+      ]
+    }
   ],
   "tabBar": {
     "color": "#999999",

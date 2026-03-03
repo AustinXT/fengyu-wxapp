@@ -263,7 +263,7 @@ Page({
       if (this.data.paymentMethod === 'offline') {
         if (this.data.fromCart) clearCart();
         Toast.success('已提交，等待店长确认收款');
-        setTimeout(() => wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` }), 1500);
+        setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` }), 1500);
       } else {
         await this.doWechatPay(orderNo);
         if (this.data.fromCart) clearCart();
@@ -328,7 +328,7 @@ Page({
     const paymentParams = data?.paymentParams || {};
     await wx.requestPayment(paymentParams);
     Toast.success('支付成功');
-    setTimeout(() => wx.redirectTo({ url: `/pages/order-detail/order-detail?orderNo=${orderNo}` }), 1200);
+    setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` }), 1200);
   },
 
   onShareAppMessage() {
