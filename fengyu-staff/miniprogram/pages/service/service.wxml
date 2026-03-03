@@ -5,8 +5,8 @@
   <van-tabs
     active="{{tabActive}}"
     bind:change="onTabChange"
-    color="#8B6A3E"
-    title-active-color="#8B6A3E"
+    color="#C0322A"
+    title-active-color="#C0322A"
     title-inactive-color="#666666"
     sticky
   >
@@ -17,7 +17,7 @@
 
   <!-- 加载中 -->
   <view wx:if="{{loading}}" class="loading-wrap">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <!-- 空态 -->
@@ -44,7 +44,7 @@
 
       <!-- 顾客信息 -->
       <view class="card-customer">
-        <van-icon name="manager-o" size="28rpx" color="#8B6A3E" />
+        <van-icon name="manager-o" size="28rpx" color="#C0322A" />
         <text class="customer-name">{{item.customerName}}</text>
         <text class="customer-phone">{{item.customerPhone}}</text>
       </view>
@@ -75,7 +75,7 @@
           wx:if="{{item.status === '待服务'}}"
           type="primary"
           size="small"
-          custom-style="background: #8B6A3E; border-color: #8B6A3E;"
+          custom-style="background: #C0322A; border-color: #C0322A;"
           catchtap="onStartService"
           data-id="{{item.id}}"
         >开始服务</van-button>

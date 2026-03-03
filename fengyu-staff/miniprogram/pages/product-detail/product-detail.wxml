@@ -12,7 +12,7 @@
       mode="aspectFill"
     />
     <view wx:else class="cover-placeholder">
-      <van-icon name="photo-o" size="80rpx" color="#C4975A" />
+      <van-icon name="photo-o" size="80rpx" color="#C0322A" />
     </view>
   </view>
 

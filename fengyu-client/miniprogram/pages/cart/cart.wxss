@@ -103,7 +103,7 @@
 .item-price {
   font-size: 30rpx;
   font-weight: 600;
-  color: #D4A76A;
+  color: #C0322A;
 }
 
 /* ===== 左滑删除 ===== */
@@ -147,5 +147,5 @@
 .checkout-total {
   font-size: 36rpx;
   font-weight: 700;
-  color: #D4A76A;
+  color: #C0322A;
 }

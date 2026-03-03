@@ -1,6 +1,6 @@
 <!-- pages/service-list/service-list.wxml -->
 <view class="container">
   <view style="display:flex;justify-content:center;padding:120rpx 0;">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 </view>

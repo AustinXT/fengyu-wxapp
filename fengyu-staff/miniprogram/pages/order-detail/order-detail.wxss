@@ -53,7 +53,7 @@
   align-items: center;
   gap: 16rpx;
 }
-.item-price { font-size: 26rpx; color: #8B6A3E; font-weight: 600; }
+.item-price { font-size: 26rpx; color: #C0322A; font-weight: 600; }
 .item-sessions { font-size: 22rpx; color: #999; }
 .item-flow-no { font-size: 20rpx; color: #BBB; font-family: monospace; display: block; margin-top: 4rpx; }
 
@@ -66,7 +66,7 @@
   border-top: 1rpx solid #E5DDD5;
 }
 .total-label { font-size: 26rpx; color: #666; }
-.total-amount { font-size: 40rpx; font-weight: 700; color: #8B6A3E; }
+.total-amount { font-size: 40rpx; font-weight: 700; color: #C0322A; }
 
 .alloc-row {
   display: flex;
@@ -78,7 +78,7 @@
 .alloc-row:last-of-type { border-bottom: none; }
 .alloc-staff { font-size: 26rpx; color: #2D2017; }
 .alloc-right { display: flex; align-items: baseline; }
-.alloc-amount { font-size: 28rpx; font-weight: 600; color: #8B6A3E; }
+.alloc-amount { font-size: 28rpx; font-weight: 600; color: #C0322A; }
 .alloc-ratio { font-size: 22rpx; color: #999; }
 
 .re-alloc-btn { margin-top: 20rpx; text-align: right; }

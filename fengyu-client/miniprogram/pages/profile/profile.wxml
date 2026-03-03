@@ -6,7 +6,7 @@
   <!-- 用户信息卡 -->
   <view class="user-card">
     <view class="user-avatar-wrap">
-      <van-icon name="contact" size="88rpx" color="#C9986A" />
+      <van-icon name="contact" size="88rpx" color="#C0322A" />
     </view>
     <view class="user-info">
       <text class="user-phone">{{maskedPhone || '未绑定手机号'}}</text>

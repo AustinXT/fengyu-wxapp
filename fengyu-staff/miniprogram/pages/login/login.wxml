@@ -2,13 +2,13 @@
 <view class="login-container brand-gradient">
   <!-- 品牌 Logo 区 -->
   <view class="login-brand">
-    <van-icon name="manager-o" size="120rpx" color="#C4975A" />
+    <van-icon name="manager-o" size="120rpx" color="#C0322A" />
     <text class="login-title">凤御·员工端</text>
     <text class="login-subtitle">请绑定手机号以验证员工身份</text>
   </view>
 
   <!-- 加载状态 -->
-  <van-loading wx:if="{{checking}}" color="#C4975A" />
+  <van-loading wx:if="{{checking}}" color="#C0322A" />
 
   <!-- 绑定按钮 -->
   <block wx:elif="{{!checking}}">

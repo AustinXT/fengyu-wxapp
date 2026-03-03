@@ -12,7 +12,7 @@
   </van-search>
 
   <view wx:if="{{loading}}" class="loading-wrap">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <view wx:elif="{{searched && results.length === 0}}" class="empty-wrap">

@@ -18,7 +18,7 @@
       <van-checkbox
         value="{{allSelected}}"
         shape="round"
-        checked-color="#D4A76A"
+        checked-color="#C0322A"
         bind:change="onToggleAll"
       >
         全选
@@ -37,13 +37,13 @@
           <van-checkbox
             value="{{item.selected}}"
             shape="round"
-            checked-color="#D4A76A"
+            checked-color="#C0322A"
             data-sku-id="{{item.skuId}}"
             bind:change="onItemSelectChange"
           />
           <!-- 商品图 -->
           <view class="item-cover cover-placeholder" wx:if="{{!item.coverImage}}">
-            <van-icon name="photo-o" size="48rpx" color="#D4A76A" />
+            <van-icon name="photo-o" size="48rpx" color="#C0322A" />
           </view>
           <image
             wx:else

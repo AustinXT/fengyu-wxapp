@@ -7,11 +7,11 @@ page {
   color: #1A1A1A;
   background-color: #FAFAFA;
 
-  /* ===== 业务 CSS 变量（黑金主题） ===== */
-  --color-primary:        #D4A76A;  /* 香槟金 - Logo 主色 */
-  --color-primary-light:  #F5EDE0;  /* 金色浅底 */
-  --color-primary-dark:   #B8935A;  /* 金色深 */
-  --color-accent:         #D4A76A;  /* 强调色 */
+  /* ===== 业务 CSS 变量（白红主题） ===== */
+  --color-primary:        #C0322A;  /* 中国红 - 品牌主色 */
+  --color-primary-light:  #FFF0EE;  /* 红色浅底 */
+  --color-primary-dark:   #9B1E14;  /* 深红 */
+  --color-accent:         #C0322A;  /* 强调色 */
   --color-success:        #52C41A;
   --color-warning:        #FAAD14;
   --color-error:          #FF4D4F;
@@ -22,29 +22,29 @@ page {
   --color-bg-page:        #FAFAFA;  /* 页面背景 - 浅灰白 */
   --color-bg-card:        #FFFFFF;  /* 卡片背景 */
 
-  /* 品牌黑金专属 */
-  --color-brand-black:    #000000;  /* Logo 背景黑 */
-  --color-brand-gold:     #D4A76A;  /* Logo 金色 */
+  /* 品牌白红专属 */
+  --color-brand-black:    #FFFFFF;  /* 品牌背景白 */
+  --color-brand-gold:     #C0322A;  /* 品牌红 */
 
-  /* ===== Vant 主题覆盖（黑金主题） ===== */
-  --button-primary-background-color: #D4A76A;
-  --button-primary-border-color:     #D4A76A;
+  /* ===== Vant 主题覆盖（白红主题） ===== */
+  --button-primary-background-color: #C0322A;
+  --button-primary-border-color:     #C0322A;
   --button-primary-color:            #FFFFFF;
   --button-border-radius:            44rpx;
-  --sidebar-active-color:            #D4A76A;
-  --sidebar-selected-color:          #D4A76A;
+  --sidebar-active-color:            #C0322A;
+  --sidebar-selected-color:          #C0322A;
   --sidebar-selected-font-weight:    600;
   --sidebar-width:                   160rpx;
-  --tab-active-color:                #D4A76A;
-  --tabs-bottom-bar-color:           #D4A76A;
-  --tag-primary-background-color:    #D4A76A;
-  --checkbox-checked-icon-color:     #D4A76A;
-  --radio-checked-icon-color:        #D4A76A;
-  --search-action-color:             #D4A76A;
+  --tab-active-color:                #C0322A;
+  --tabs-bottom-bar-color:           #C0322A;
+  --tag-primary-background-color:    #C0322A;
+  --checkbox-checked-icon-color:     #C0322A;
+  --radio-checked-icon-color:        #C0322A;
+  --search-action-color:             #C0322A;
   --cell-right-icon-color:           #999999;
-  --submit-bar-button-background:    #D4A76A;
+  --submit-bar-button-background:    #C0322A;
   --submit-bar-button-color:         #FFFFFF;
-  --loading-color:                   #D4A76A;
+  --loading-color:                   #C0322A;
   --empty-image-size:                200rpx;
 }
 
@@ -67,7 +67,7 @@ page {
 
 /* ===== 状态标签色 ===== */
 .status-pending    { color: #D48806; }
-.status-confirm    { color: #B8935A; }
+.status-confirm    { color: #C0322A; }
 .status-paid       { color: #389E0D; }
 .status-completed  { color: #8C8C8C; }
 .status-failed     { color: #CF1322; }
@@ -88,15 +88,15 @@ page {
 
 /* ===== 商品封面占位 ===== */
 .cover-placeholder {
-  background: linear-gradient(135deg, #F5EDE0 0%, #E8D8C0 100%);
+  background: linear-gradient(135deg, #FFF0EE 0%, #FDDAD8 100%);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-/* ===== 品牌黑金渐变背景 ===== */
+/* ===== 品牌红色渐变背景 ===== */
 .brand-gradient {
-  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
 }
 
 /* ===== 金色文字 ===== */
@@ -106,10 +106,12 @@ page {
 
 /* ===== 黑金卡片 ===== */
 .card-dark {
-  background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%);
-  color: #FFFFFF;
+  background: #FFFFFF;
+  border-top: 4rpx solid #C0322A;
+  box-shadow: 0 4rpx 20rpx rgba(0,0,0,0.08);
+  color: #1A1A1A;
 }
 
 .card-dark .card-title {
-  color: var(--color-brand-gold);
+  color: #C0322A;
 }

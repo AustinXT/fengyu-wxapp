@@ -39,14 +39,6 @@ Page({
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
     pendingUnbindCount: 0,
-    // 顾客搜索
-    searchKeyword: '',
-    customerResults: [] as Array<{
-      id: string;
-      name: string;
-      phone: string;
-      phoneMasked: string;
-    }>,
   },
 
   onLoad() {
@@ -241,33 +233,5 @@ Page({
 
   goUnbindRequests() {
     wx.navigateTo({ url: '/pages/unbind-requests/unbind-requests' });
-  },
-
-  onViewCustomerList() {
-    wx.navigateTo({ url: '/pages/customer-list/customer-list' });
-  },
-
-  onSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ searchKeyword: e.detail });
-  },
-
-  async onCustomerSearch() {
-    const keyword = this.data.searchKeyword.trim();
-    if (!keyword) return;
-    try {
-      const data = await callStaffApi<any[]>('customer.search', { keyword });
-      this.setData({ customerResults: data || [] });
-      if (!data || data.length === 0) {
-        wx.showToast({ title: '未找到该顾客', icon: 'none' });
-      }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '搜索失败', icon: 'none' });
-    }
-  },
-
-  onCustomerTap(e: WechatMiniprogram.TouchEvent) {
-    const { id, clientUserId } = e.currentTarget.dataset;
-    const params = id ? `id=${id}` : `clientUserId=${clientUserId}`;
-    wx.navigateTo({ url: `/pages/customer-detail/customer-detail?${params}` });
   },
 });

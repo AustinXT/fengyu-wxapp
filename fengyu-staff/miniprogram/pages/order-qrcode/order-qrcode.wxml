@@ -3,7 +3,7 @@
 
   <!-- 加载中 -->
   <view wx:if="{{loading && !orderNo}}" class="loading-wrap">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <block wx:else>
@@ -30,12 +30,12 @@
             <text class="error-text">{{qrcodeError}}</text>
             <van-button
               size="small" plain
-              custom-style="color:#8B6A3E;border-color:#8B6A3E;margin-top:24rpx;"
+              custom-style="color:#C0322A;border-color:#C0322A;margin-top:24rpx;"
               bind:click="onRetryQrcode"
             >重新生成</van-button>
           </view>
           <view wx:else class="qrcode-placeholder">
-            <van-loading type="spinner" color="#8B6A3E" />
+            <van-loading type="spinner" color="#C0322A" />
             <text class="placeholder-text">生成二维码中...</text>
           </view>
         </view>
@@ -89,7 +89,7 @@
       <van-button
         wx:if="{{isManager && status === '待确认收款'}}"
         block type="primary"
-        custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+        custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button

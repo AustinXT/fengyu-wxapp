@@ -21,7 +21,7 @@
   ],
   "tabBar": {
     "color": "#999999",
-    "selectedColor": "#8B6A3E",
+    "selectedColor": "#C0322A",
     "backgroundColor": "#FFFFFF",
     "borderStyle": "white",
     "list": [
@@ -44,6 +44,12 @@
         "selectedIconPath": "images/icons/tab-service-active.png"
       },
       {
+        "pagePath": "pages/customer-list/customer-list",
+        "text": "顾客",
+        "iconPath": "images/icons/tab-customer.png",
+        "selectedIconPath": "images/icons/tab-customer-active.png"
+      },
+      {
         "pagePath": "pages/profile/profile",
         "text": "我的",
         "iconPath": "images/icons/tab-profile.png",
@@ -53,10 +59,10 @@
   },
   "window": {
     "backgroundTextStyle": "light",
-    "navigationBarBackgroundColor": "#2D2017",
+    "navigationBarBackgroundColor": "#FFFFFF",
     "navigationBarTitleText": "凤御·员工端",
-    "navigationBarTextStyle": "white",
-    "backgroundColor": "#F5F2EE"
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#FFFFFF"
   },
   "sitemapLocation": "sitemap.json",
   "lazyCodeLoading": "requiredComponents",

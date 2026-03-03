@@ -2,7 +2,7 @@
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <block wx:else>
@@ -67,7 +67,7 @@
 
     <!-- 添加行按钮 -->
     <view wx:if="{{!isLocked && rows.length < 4}}" class="add-row-btn" bindtap="onAddRow">
-      <van-icon name="plus" size="28rpx" color="#8B6A3E" />
+      <van-icon name="plus" size="28rpx" color="#C0322A" />
       <text class="add-row-text">添加员工</text>
     </view>
 
@@ -97,7 +97,7 @@
         type="primary"
         block
         loading="{{submitting}}"
-        custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+        custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
         bind:click="onSave"
       >保存分配方案</van-button>
     </view>

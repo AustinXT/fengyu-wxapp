@@ -3,18 +3,25 @@
 
 <view class="container">
 
-  <!-- 顶部品牌区（黑金主题） -->
+  <!-- 搜索栏 + 门店选择 + 扫码 -->
   <view class="header">
-    <view class="header-brand">
-      <image class="brand-logo" src="/images/logo.png" mode="aspectFit" />
+    <view class="header-left">
+      <van-search
+        class="header-search"
+        value="{{searchValue}}"
+        placeholder="搜索服务、项目、产品"
+        shape="round"
+        background="#F5F5F5"
+        bind:change="onSearchChange"
+      />
     </view>
     <view class="header-right">
       <view class="header-store" bindtap="onSelectStore">
         <text class="store-name">{{boundStoreName || '选择门店'}}</text>
-        <van-icon name="arrow" size="28rpx" color="#D4A76A" />
+        <van-icon name="arrow" size="28rpx" color="#666666" />
       </view>
       <view class="header-scan" bindtap="onScanPay">
-        <van-icon name="scan" size="44rpx" color="#D4A76A" />
+        <van-icon name="scan" size="44rpx" color="#C0322A" />
       </view>
     </view>
   </view>
@@ -22,7 +29,7 @@
   <!-- 页面主体滚动区 -->
   <scroll-view class="page-body" scroll-y>
 
-    <!-- ===== 1. 广告轮播图 ===== -->
+    <!-- ===== 1. 轮播图 ===== -->
     <view class="section-banner">
       <swiper
         class="banner-swiper"
@@ -34,113 +41,147 @@
         bindchange="onBannerChange"
       >
         <swiper-item wx:for="{{banners}}" wx:key="id">
-          <view class="banner-item" style="background: {{item.bgColor}};" bindtap="onBannerTap" data-url="{{item.link}}">
-            <text class="banner-title">{{item.title}}</text>
-            <text class="banner-desc">{{item.desc}}</text>
+          <view class="banner-item" style="background: {{item.bgColor}};">
+            <image wx:if="{{item.image}}" class="banner-image" src="{{item.image}}" mode="aspectFill" />
           </view>
         </swiper-item>
       </swiper>
-      <!-- 轮播指示点 -->
-      <view class="banner-dots">
-        <view wx:for="{{banners}}" wx:key="id" class="banner-dot {{currentBanner === index ? 'active' : ''}}"></view>
+    </view>
+
+    <!-- ===== 2. 功能模块宫格区（5个一排） ===== -->
+    <view class="section-grid">
+      <view class="grid-row grid-row-5">
+        <view class="grid-item {{activeBigCategoryIndex === 0 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="promotion">
+          <view class="grid-icon-wrap">
+            <van-icon name="gift-o" size="44rpx" color="{{activeBigCategoryIndex === 0 ? '#C0322A' : '#666666'}}" />
+          </view>
+          <text class="grid-label {{activeBigCategoryIndex === 0 ? 'grid-label-active' : ''}}">促销方案</text>
+        </view>
+        <view class="grid-item {{activeBigCategoryIndex === 1 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="service">
+          <view class="grid-icon-wrap">
+            <van-icon name="flower-o" size="44rpx" color="{{activeBigCategoryIndex === 1 ? '#C0322A' : '#666666'}}" />
+          </view>
+          <text class="grid-label {{activeBigCategoryIndex === 1 ? 'grid-label-active' : ''}}">护理项目</text>
+        </view>
+        <view class="grid-item {{activeBigCategoryIndex === 2 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="product">
+          <view class="grid-icon-wrap">
+            <van-icon name="bag-o" size="44rpx" color="{{activeBigCategoryIndex === 2 ? '#C0322A' : '#666666'}}" />
+          </view>
+          <text class="grid-label {{activeBigCategoryIndex === 2 ? 'grid-label-active' : ''}}">家居产品</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="coupon">
+          <view class="grid-icon-wrap">
+            <van-icon name="coupon-o" size="44rpx" color="#666666" />
+          </view>
+          <text class="grid-label">我的券</text>
+        </view>
+        <view class="grid-item" bindtap="onGridTap" data-type="treatment">
+          <view class="grid-icon-wrap">
+            <van-icon name="calendar-o" size="44rpx" color="#666666" />
+          </view>
+          <text class="grid-label">我的疗程</text>
+        </view>
       </view>
     </view>
 
-    <!-- ===== 2. 用户信息 + 疗程卡 ===== -->
-    <view class="section-treatment-cards">
-    <view class="section-header">
-        <text class="section-title">我的疗程卡</text>
-        <text class="section-more" bindtap="onViewAllCards">查看全部</text>
-    </view>
+    <!-- ===== 3. 服务列表区域 ===== -->
+    <view class="section-catalog">
 
-    <!-- 未登录 -->
-    <view wx:if="{{!isLoggedIn}}" class="tc-login-prompt" bindtap="onLoginTap">
-        <van-icon name="user-o" size="48rpx" color="#D4A76A" />
-        <text class="login-text">登录后查看您的疗程卡</text>
-        <van-button type="primary" size="small" round>立即登录</van-button>
-    </view>
+      <!-- 分类 + 商品主区域 -->
+      <view class="catalog">
 
-    <!-- 已登录，无疗程卡 -->
-    <view wx:elif="{{tcCards.length === 0 && !tcLoading}}" class="tc-empty">
-        <text class="tc-empty-text">暂无疗程卡</text>
-        <text class="tc-empty-hint">选购服务后即可查看</text>
-        <van-button type="primary" size="small" round bindtap="onBrowseServices">去选购</van-button>
-    </view>
+        <!-- 左侧：Vant Sidebar -->
+        <scroll-view class="sidebar-scroll" scroll-y>
+          <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
+            <van-sidebar-item
+              wx:for="{{categories}}"
+              wx:key="_index"
+              title="{{item.category}}"
+            />
+          </van-sidebar>
+        </scroll-view>
 
-    <!-- 疗程卡横向滚动 -->
-    <scroll-view wx:elif="{{tcCards.length > 0}}" class="tc-scroll" scroll-x="{{true}}">
-        <view class="tc-list">
-        <view
-            wx:for="{{tcCards}}"
-            wx:key="itemFlowNo"
-            class="tc-card"
-            bindtap="onCardTap"
-            data-order-no="{{item.orderNo}}"
-        >
-            <view class="tc-card__name">{{item.spuName}}</view>
-            <view class="tc-card__sku">{{item.skuDisplayName}}</view>
-            <view class="tc-card__progress">
-            <van-progress percentage="{{item.percent}}" stroke-width="6rpx" color="#D4A76A" track-color="#F0F0F0" show-pivot="{{false}}" />
-            <text class="tc-card__progress-text">剩余 {{item.remainingSessions}}/{{item.sessionCount}} 次</text>
+        <!-- 右侧：商品列表 -->
+        <scroll-view class="product-scroll" scroll-y>
+
+          <!-- 骨架屏 -->
+          <view wx:if="{{isLoading}}" class="skeleton-wrap">
+            <van-skeleton title avatar row="3" />
+            <van-skeleton title avatar row="3" style="margin-top:24rpx" />
+          </view>
+
+          <!-- 空态 -->
+          <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
+            <van-empty description="暂无服务项目" />
+          </view>
+          <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
+            <van-empty description="该分类暂无服务项目" />
+          </view>
+
+          <!-- SPU 卡片列表 -->
+          <view wx:else class="spu-list">
+            <view
+              wx:for="{{spuList}}"
+              wx:key="spu_id"
+              class="spu-card"
+              bindtap="onSpuTap"
+              data-spu-id="{{item.spu_id}}"
+            >
+              <!-- 商品封面 -->
+              <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+                <van-icon name="photo-o" size="64rpx" color="#CCCCCC" />
+              </view>
+              <image
+                wx:else
+                class="spu-cover"
+                src="{{item.cover_image}}"
+                mode="aspectFill"
+                lazy-load
+              />
+
+              <!-- 商品信息 -->
+              <view class="spu-body">
+                <!-- 标签行 -->
+                <view class="spu-tags" wx:if="{{item.is_recommend}}">
+                  <van-tag color="#C0322A">推荐</van-tag>
+                </view>
+
+                <!-- 商品名 -->
+                <text class="spu-name">{{item.name}}</text>
+
+                <!-- 底部：价格 + 按钮 -->
+                <view class="spu-footer">
+                  <view class="price-group">
+                    <text class="price-symbol">¥</text>
+                    <text class="price-integer">{{item.min_price}}</text>
+                    <text class="price-start">起</text>
+                  </view>
+                  <view class="spu-add-btn" catchtap="onAddToCart" data-spu-id="{{item.spu_id}}">
+                    <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+                  </view>
+                </view>
+              </view>
             </view>
-            <view class="tc-card__book-btn" catchtap="onBookTap" data-order-no="{{item.orderNo}}">预约</view>
+          </view>
+
+        </scroll-view>
+      </view>
+
+      <!-- 底部悬浮购物车栏 -->
+      <view class="cart-bar" bindtap="onCartTap" wx:if="{{cartCount > 0}}">
+        <view class="cart-icon-wrap">
+          <van-icon name="shopping-cart-o" size="44rpx" color="#C0322A" />
+          <view class="cart-badge">{{cartCount > 99 ? '99+' : cartCount}}</view>
         </view>
+        <view class="cart-info">
+          <text class="cart-tip">购物车</text>
         </view>
-    </scroll-view>
+        <van-button type="warning" size="small" round>去结算</van-button>
+      </view>
     </view>
 
-    <!-- ===== 3. 两个大按钮 ===== -->
-    <view class="section-actions">
-    <view class="action-btn action-btn__service" bindtap="onBrowseServices">
-        <van-icon name="shop-o" size="56rpx" color="#FFFFFF" />
-        <text class="action-btn__text">浏览服务</text>
-        <text class="action-btn__subtext">查看门店服务项目</text>
-    </view>
-    <view class="action-btn action-btn__appointment" bindtap="onBookAppointment">
-        <van-icon name="calendar-o" size="56rpx" color="#FFFFFF" />
-        <text class="action-btn__text">预约护理</text>
-        <text class="action-btn__subtext">预约到店服务时间</text>
-    </view>
-    </view>
-
-    <!-- ===== 4. 热门服务推荐 ===== -->
-    <view class="section-hot">
-    <view class="section-header">
-        <text class="section-title">热门推荐</text>
-        <text class="section-more" bindtap="onViewAllServices">查看更多</text>
-    </view>
-
-    <view wx:if="{{hotLoading}}" class="hot-loading">
-        <view class="hot-skeleton" wx:for="{{3}}" wx:key="*this"></view>
-    </view>
-
-    <view wx:elif="{{hotList.length === 0}}" class="hot-empty">
-        <van-empty description="暂无推荐" />
-    </view>
-
-    <view wx:else class="hot-grid">
-        <view
-        wx:for="{{hotList}}"
-        wx:key="spu_id"
-        class="hot-item"
-        bindtap="onSpuTap"
-        data-spu-id="{{item.spu_id}}"
-        >
-        <view class="hot-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-            <van-icon name="photo-o" size="48rpx" color="#D4A76A" />
-        </view>
-        <image wx:else class="hot-cover" src="{{item.cover_image}}" mode="aspectFill" />
-        <view class="hot-name">{{item.name}}</view>
-        <view class="hot-price">
-            <text class="price-symbol">¥</text>
-            <text class="price-integer">{{item.priceFrom}}</text>
-        </view>
-        </view>
-    </view>
-
-      <!-- 底部安全区 -->
-      <view class="safe-area-bottom"></view>
-    </view>
+    <!-- 底部安全区 -->
+    <view class="safe-area-bottom"></view>
 
   </scroll-view>
 

@@ -57,7 +57,8 @@
     "ignore": [
       { "type": "file", "value": "README.md" },
       { "type": "file", "value": ".eslintrc.js" },
-      { "type": "folder", "value": ".git" }
+      { "type": "folder", "value": ".git" },
+      { "type": "folder", "value": "node_modules" }
     ]
   }
 }

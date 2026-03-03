@@ -9,8 +9,8 @@
     active="{{activeTab}}"
     bind:change="onTabChange"
     sticky
-    color="#C9986A"
-    title-active-color="#C9986A"
+    color="#C0322A"
+    title-active-color="#C0322A"
     title-inactive-color="#7A6553"
   >
     <van-tab title="全部"   name="all" />

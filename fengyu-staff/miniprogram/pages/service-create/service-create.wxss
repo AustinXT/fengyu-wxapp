@@ -30,7 +30,7 @@
 
 .appt-item {
   font-size: 24rpx;
-  color: #8B6A3E;
+  color: #C0322A;
 }
 
 /* ===== 通用 section ===== */
@@ -65,7 +65,7 @@
 
 .customer-change {
   font-size: 24rpx;
-  color: #8B6A3E;
+  color: #C0322A;
   flex-shrink: 0;
 }
 
@@ -170,7 +170,7 @@
 
 .order-item-sessions {
   font-size: 24rpx;
-  color: #8B6A3E;
+  color: #C0322A;
   font-weight: 500;
 }
 

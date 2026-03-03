@@ -1,23 +1,49 @@
 {
   "pages": [
     "pages/home/home",
-    "pages/shop/shop",
     "pages/appointment/appointment",
-    "pages/orders/orders",
-    "pages/profile/profile",
-    "pages/store-select/store-select",
-    "pages/store-detail/store-detail",
-    "pages/service-detail/service-detail",
-    "pages/checkout/checkout",
-    "pages/order-detail/order-detail",
-    "pages/appointment-create/appointment-create",
-    "pages/scan-pay/scan-pay",
     "pages/cart/cart",
-    "pages/treatment-cards/treatment-cards"
+    "pages/profile/profile"
+  ],
+  "subpackages": [
+    {
+      "root": "pagesShop",
+      "name": "shop",
+      "pages": [
+        "shop/shop",
+        "service-detail/service-detail"
+      ]
+    },
+    {
+      "root": "pagesOrder",
+      "name": "order",
+      "pages": [
+        "orders/orders",
+        "checkout/checkout",
+        "order-detail/order-detail",
+        "scan-pay/scan-pay",
+        "treatment-cards/treatment-cards"
+      ]
+    },
+    {
+      "root": "pagesStore",
+      "name": "store",
+      "pages": [
+        "store-select/store-select",
+        "store-detail/store-detail"
+      ]
+    },
+    {
+      "root": "pagesAppointment",
+      "name": "appointment-sub",
+      "pages": [
+        "appointment-create/appointment-create"
+      ]
+    }
   ],
   "tabBar": {
     "color": "#999999",
-    "selectedColor": "#D4A76A",
+    "selectedColor": "#C0322A",
     "backgroundColor": "#FFFFFF",
     "borderStyle": "white",
     "list": [
@@ -28,16 +54,16 @@
         "selectedIconPath": "images/icons/tab-home-active.png"
       },
       {
-        "pagePath": "pages/shop/shop",
-        "text": "服务",
-        "iconPath": "images/icons/tab-orders.png",
-        "selectedIconPath": "images/icons/tab-orders-active.png"
-      },
-      {
         "pagePath": "pages/appointment/appointment",
         "text": "预约",
         "iconPath": "images/icons/tab-calendar.png",
         "selectedIconPath": "images/icons/tab-calendar-active.png"
+      },
+      {
+        "pagePath": "pages/cart/cart",
+        "text": "购物车",
+        "iconPath": "images/icons/tab-orders.png",
+        "selectedIconPath": "images/icons/tab-orders-active.png"
       },
       {
         "pagePath": "pages/profile/profile",
@@ -47,12 +73,19 @@
       }
     ]
   },
+  "permission": {
+    "scope.userLocation": {
+      "desc": "用于定位您所在城市，展示附近门店"
+    }
+  },
+  "requiredPrivateInfos": [
+    "getLocation"
+  ],
   "window": {
     "backgroundTextStyle": "light",
-    "navigationBarBackgroundColor": "#000000",
-    "navigationBarTitleText": "凤御",
-    "navigationBarTextStyle": "white",
-    "backgroundColor": "#000000"
+    "navigationBarBackgroundColor": "#FFFFFF",
+    "navigationBarTitleImage": "images/logo.webp",
+    "navigationBarTextStyle": "black"
   },
   "sitemapLocation": "sitemap.json",
   "lazyCodeLoading": "requiredComponents",

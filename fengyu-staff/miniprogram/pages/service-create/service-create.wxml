@@ -4,7 +4,7 @@
   <!-- 关联预约（可选） -->
   <view wx:if="{{appointmentInfo}}" class="appt-banner">
     <view class="appt-info">
-      <van-icon name="calendar-o" size="32rpx" color="#8B6A3E" />
+      <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
       <view class="appt-detail">
         <text class="appt-time">{{appointmentInfo.appointmentTime}}</text>
         <text class="appt-item">{{appointmentInfo.serviceItemName}}</text>
@@ -17,7 +17,7 @@
   <view class="section-card">
     <text class="section-title">选择顾客</text>
     <view wx:if="{{selectedCustomer}}" class="customer-selected">
-      <van-icon name="manager-o" size="36rpx" color="#8B6A3E" />
+      <van-icon name="manager-o" size="36rpx" color="#C0322A" />
       <view class="customer-info">
         <text class="customer-name">{{selectedCustomer.name || '未知'}}</text>
         <text class="customer-phone">{{selectedCustomer.phone}}</text>
@@ -56,7 +56,7 @@
     <text class="section-title">选择核销项目</text>
 
     <view wx:if="{{loading}}" class="loading-wrap">
-      <van-loading type="spinner" color="#8B6A3E" />
+      <van-loading type="spinner" color="#C0322A" />
     </view>
 
     <view wx:elif="{{paidOrders.length === 0}}" class="empty-tip">
@@ -91,7 +91,7 @@
             <van-icon
               name="{{selectedFlowNos[si.itemFlowNo] ? 'success' : 'circle'}}"
               size="40rpx"
-              color="{{selectedFlowNos[si.itemFlowNo] ? '#8B6A3E' : '#CCCCCC'}}"
+              color="{{selectedFlowNos[si.itemFlowNo] ? '#C0322A' : '#CCCCCC'}}"
             />
           </view>
           <view wx:if="{{selectedFlowNos[si.itemFlowNo]}}" class="tc-stepper-row" catchtap="preventBubble">
@@ -142,7 +142,7 @@
       type="primary"
       block
       loading="{{submitting}}"
-      custom-style="background: #8B6A3E; border-color: #8B6A3E; border-radius: 48rpx;"
+      custom-style="background: #C0322A; border-color: #C0322A; border-radius: 48rpx;"
       bind:click="onSubmit"
     >提交服务单</van-button>
   </view>

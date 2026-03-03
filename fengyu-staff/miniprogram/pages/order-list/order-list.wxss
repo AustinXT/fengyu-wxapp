@@ -53,5 +53,5 @@
 .order-footer {
   display: flex; align-items: center; justify-content: space-between;
 }
-.order-amount { font-size: 36rpx; font-weight: 700; color: #8B6A3E; }
+.order-amount { font-size: 36rpx; font-weight: 700; color: #C0322A; }
 .order-actions { display: flex; gap: 16rpx; }

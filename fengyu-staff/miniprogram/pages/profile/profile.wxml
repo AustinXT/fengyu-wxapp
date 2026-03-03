@@ -2,13 +2,13 @@
 <view class="container">
   <view class="profile-header brand-gradient">
     <view class="avatar-wrap">
-      <van-icon name="manager" size="80rpx" color="#D4A76A" />
+      <van-icon name="manager" size="80rpx" color="#BBBBBB" />
     </view>
     <view class="profile-info">
       <text class="profile-name">{{staffName || '未登录'}}</text>
       <view class="profile-meta">
         <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
-        <van-tag color="#D4A76A" text-color="#FFFFFF">
+        <van-tag color="#C0322A" text-color="#FFFFFF">
           {{position || '未绑定'}}
         </van-tag>
       </view>

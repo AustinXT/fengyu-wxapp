@@ -34,7 +34,7 @@
   background: #FFFFFF;
   border-bottom: 1rpx solid #F5F2EE;
 }
-.section-title { font-size: 26rpx; color: #8B6A3E; font-weight: 600; }
+.section-title { font-size: 26rpx; color: #C0322A; font-weight: 600; }
 
 .item-row {
   background: #FFFFFF;
@@ -46,7 +46,7 @@
 .item-name { font-size: 30rpx; color: #2D2017; font-weight: 500; display: block; margin-bottom: 8rpx; }
 .item-meta { display: flex; align-items: center; gap: 16rpx; margin-bottom: 8rpx; }
 .item-spec { font-size: 24rpx; color: #666666; background: #F5F2EE; padding: 2rpx 12rpx; border-radius: 8rpx; }
-.item-sessions { font-size: 24rpx; color: #8B6A3E; }
+.item-sessions { font-size: 24rpx; color: #C0322A; }
 .item-flow-no { font-size: 22rpx; color: #BBBBBB; font-family: monospace; display: block; }
 
 .cell-icon { margin-right: 12rpx; }

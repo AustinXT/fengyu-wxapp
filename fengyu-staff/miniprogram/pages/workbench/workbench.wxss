@@ -16,7 +16,7 @@
 
 .commission-store-name {
   font-size: 24rpx;
-  color: rgba(255,255,255,0.75);
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .role-badge {
@@ -26,15 +26,15 @@
 }
 
 .role-badge--manager {
-  background: rgba(255,255,255,0.2);
+  background: rgba(255, 255, 255, 0.2);
   color: #FFFFFF;
-  border: 1rpx solid rgba(255,255,255,0.4);
+  border: 1rpx solid rgba(255, 255, 255, 0.4);
 }
 
 .role-badge--beautician {
-  background: rgba(255,255,255,0.2);
+  background: rgba(255, 255, 255, 0.2);
   color: #FFFFFF;
-  border: 1rpx solid rgba(255,255,255,0.4);
+  border: 1rpx solid rgba(255, 255, 255, 0.4);
 }
 
 /* ===== 加载 ===== */
@@ -67,12 +67,12 @@
 .section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: #2D2017;
+  color: #1A1A1A;
 }
 
 .section-more {
   font-size: 24rpx;
-  color: #8B6A3E;
+  color: #C0322A;
 }
 
 .section-desc {
@@ -84,9 +84,10 @@
 
 /* ===== 分成卡片 ===== */
 .commission-card {
-  background: linear-gradient(135deg, #8B6A3E 0%, #C4975A 100%);
+  background: #C0322A;
   border-radius: 20rpx;
   padding: 32rpx;
+  box-shadow: 0 4rpx 20rpx rgba(192, 50, 42, 0.35);
   color: #FFFFFF;
 }
 
@@ -105,13 +106,13 @@
 
 .commission-divider {
   width: 1rpx;
-  background: rgba(255,255,255,0.25);
+  background: rgba(255, 255, 255, 0.3);
   margin: 0 24rpx;
 }
 
 .commission-col-label {
   font-size: 22rpx;
-  color: rgba(255,255,255,0.75);
+  color: rgba(255, 255, 255, 0.75);
   display: block;
   margin-bottom: 12rpx;
 }
@@ -143,23 +144,23 @@
 
 .commission-stat {
   font-size: 22rpx;
-  color: rgba(255,255,255,0.7);
+  color: rgba(255, 255, 255, 0.75);
 }
 
 .commission-stat-sep {
   font-size: 20rpx;
-  color: rgba(255,255,255,0.4);
+  color: rgba(255, 255, 255, 0.3);
 }
 
 .store-revenue {
   margin-top: 20rpx;
   padding-top: 16rpx;
-  border-top: 1rpx solid rgba(255,255,255,0.2);
+  border-top: 1rpx solid rgba(255, 255, 255, 0.25);
 }
 
 .store-revenue-text {
   font-size: 22rpx;
-  color: rgba(255,255,255,0.65);
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* ===== 月度业绩日历 ===== */
@@ -178,7 +179,7 @@
 .cal-total-amount {
   font-size: 32rpx;
   font-weight: 700;
-  color: #8B6A3E;
+  color: #C0322A;
 }
 
 .cal-total-detail {
@@ -229,13 +230,13 @@
 
 .cal-day-num {
   font-size: 26rpx;
-  color: #2D2017;
+  color: #1A1A1A;
   line-height: 1;
 }
 
 .cal-day-today .cal-day-num {
   color: #FFFFFF;
-  background: #8B6A3E;
+  background: #C0322A;
   border-radius: 50%;
   width: 48rpx;
   height: 48rpx;
@@ -247,7 +248,7 @@
 
 .cal-day-amount {
   font-size: 20rpx;
-  color: #C4975A;
+  color: #C0322A;
   margin-top: 4rpx;
   line-height: 1;
 }
@@ -255,19 +256,4 @@
 /* ===== 代办图标 ===== */
 .cell-icon {
   margin-right: 12rpx;
-}
-
-/* ===== 搜索结果 ===== */
-.customer-results {
-  margin-top: 8rpx;
-}
-
-.empty-hint {
-  padding: 24rpx 0;
-  text-align: center;
-}
-
-.empty-hint-text {
-  font-size: 26rpx;
-  color: #999999;
 }

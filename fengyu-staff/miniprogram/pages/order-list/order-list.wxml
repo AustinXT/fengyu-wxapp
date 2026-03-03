@@ -1,6 +1,6 @@
 <!-- pages/order-list/order-list.wxml -->
 <view class="container">
-  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#8B6A3E" sticky>
+  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky>
     <van-tab name="全部" title="全部" />
     <van-tab name="待支付" title="待支付" />
     <van-tab name="待确认收款" title="待确认" />
@@ -8,7 +8,7 @@
   </van-tabs>
 
   <view wx:if="{{loading}}" class="loading-wrap">
-    <van-loading type="spinner" color="#8B6A3E" />
+    <van-loading type="spinner" color="#C0322A" />
   </view>
 
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
@@ -36,7 +36,7 @@
           <van-button
             wx:if="{{item.status === '待确认收款'}}"
             type="primary" size="small"
-            custom-style="background:#8B6A3E;border-color:#8B6A3E;"
+            custom-style="background:#C0322A;border-color:#C0322A;"
             catchtap="onConfirmOffline"
             data-id="{{item.id}}"
           >确认收款</van-button>

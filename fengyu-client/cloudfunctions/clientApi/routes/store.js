@@ -21,8 +21,23 @@ function formatOpenDate(date) {
 /**
  * 门店列表
  * 从 WorkFine UDT_M_219 查询,排除已停止营业的门店及市场/管理中心
+ * @param {string} ctx.event.payload.city - 可选，按城市筛选（对应 market 字段）
  */
 async function list(ctx) {
+  const { city } = ctx.event.payload || {}
+
+  let whereClause = `
+    WHERE UDF_M_11956 != '是'
+      AND UDF_M_437 NOT IN ('市场', '管理中心')
+      AND UDF_M_438 NOT LIKE '%市场'
+      AND UDF_M_438 NOT LIKE '%管理中心'
+  `
+
+  // 如果传入 city 参数，按城市筛选（对应 market 字段，如"南昌市场"）
+  if (city) {
+    whereClause += ` AND UDF_M_437 LIKE '${city}%'`
+  }
+
   const querySql = `
     SELECT
       UDF_M_437 AS market_name,
@@ -31,10 +46,7 @@ async function list(ctx) {
       UDF_M_8590 AS available_beds,
       UDF_M_12033 AS store_region
     FROM UDT_M_219
-    WHERE UDF_M_11956 != '是'
-      AND UDF_M_437 NOT IN ('市场', '管理中心')
-      AND UDF_M_438 NOT LIKE '%市场'
-      AND UDF_M_438 NOT LIKE '%管理中心'
+    ${whereClause}
     ORDER BY UDF_M_437, UDF_M_438
   `
 

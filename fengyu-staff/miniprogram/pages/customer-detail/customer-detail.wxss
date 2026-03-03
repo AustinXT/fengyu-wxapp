@@ -5,9 +5,10 @@
 
 /* 头部信息卡 */
 .profile-card {
-  background: linear-gradient(135deg, #8B6A3E 0%, #C4975A 100%);
-  color: #FFFFFF;
+  background: #FFFFFF;
+  color: #1A1A1A;
   padding: 40rpx 32rpx 32rpx;
+  border-bottom: 3rpx solid #C0322A;
 }
 
 .profile-header {
@@ -21,7 +22,8 @@
   width: 112rpx;
   height: 112rpx;
   border-radius: 56rpx;
-  background: rgba(255,255,255,0.2);
+  background: #FFF0EE;
+  border: 2rpx solid rgba(192, 50, 42, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -33,28 +35,29 @@
   gap: 12rpx;
   margin-bottom: 8rpx;
 }
-.profile-name { font-size: 40rpx; font-weight: 700; }
+.profile-name { font-size: 40rpx; font-weight: 700; color: #1A1A1A; }
 .vip-badge {
   font-size: 20rpx;
   font-weight: 600;
   padding: 4rpx 12rpx;
   border-radius: 16rpx;
-  background: rgba(255,255,255,0.3);
-  color: #FFFFFF;
+  background: #FFF0EE;
+  color: #C0322A;
+  border: 1rpx solid rgba(192, 50, 42, 0.3);
 }
-.profile-phone { font-size: 26rpx; opacity: 0.85; }
+.profile-phone { font-size: 26rpx; color: #666666; }
 
 .profile-stats {
   display: flex;
   align-items: center;
-  background: rgba(0,0,0,0.15);
+  background: #FAFAFA;
   border-radius: 16rpx;
   padding: 20rpx;
 }
 .stat-item { flex: 1; text-align: center; }
-.stat-label { display: block; font-size: 22rpx; opacity: 0.75; margin-bottom: 4rpx; }
-.stat-value { font-size: 32rpx; font-weight: 700; }
-.stat-divider { width: 1rpx; height: 48rpx; background: rgba(255,255,255,0.3); }
+.stat-label { display: block; font-size: 22rpx; color: #999999; margin-bottom: 4rpx; }
+.stat-value { font-size: 32rpx; font-weight: 700; color: #C0322A; }
+.stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
 .card-group { margin: 24rpx 0; }
 
@@ -68,11 +71,11 @@
 .section-title {
   font-size: 28rpx;
   font-weight: 600;
-  color: #2D2017;
+  color: #1A1A1A;
 }
 .section-hint {
   font-size: 24rpx;
-  color: #8B6A3E;
+  color: #C0322A;
   font-weight: 500;
 }
 
@@ -91,8 +94,8 @@
   transition: border-color 0.2s, background-color 0.2s;
 }
 .treatment-card--selected {
-  border-color: #C4975A;
-  background: #FDF8F1;
+  border-color: #C0322A;
+  background: #FFF0EE;
 }
 
 .tc-row {
@@ -105,7 +108,7 @@
 .tc-name {
   font-size: 28rpx;
   font-weight: 600;
-  color: #2D2017;
+  color: #1A1A1A;
   margin-bottom: 8rpx;
   display: block;
 }
@@ -118,7 +121,7 @@
 .tc-spec {
   font-size: 22rpx;
   color: #666;
-  background: #F5F2EE;
+  background: #F5F5F5;
   padding: 2rpx 10rpx;
   border-radius: 6rpx;
 }
@@ -129,7 +132,7 @@
 }
 .tc-sessions {
   font-size: 22rpx;
-  color: #8B6A3E;
+  color: #C0322A;
   font-weight: 600;
 }
 

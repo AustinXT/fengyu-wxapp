@@ -1,0 +1,155 @@
+/* pages/shop/shop.wxss */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== 分类+内容双栏 ===== */
+.catalog {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 左侧分类滚动区 */
+.sidebar-scroll {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: #F5F5F5;
+  overflow: hidden;
+}
+
+/* Vant Sidebar 覆盖 */
+.sidebar-scroll .van-sidebar {
+  width: 100%;
+  background: transparent;
+}
+
+/* 右侧商品滚动区 */
+.product-scroll {
+  flex: 1;
+  padding: 16rpx;
+  overflow: hidden;
+  background: var(--color-bg-page);
+}
+
+/* ===== 骨架屏 ===== */
+.skeleton-wrap {
+  padding: 16rpx;
+}
+
+/* ===== SPU 卡片列表 ===== */
+.spu-list {
+  padding-bottom: 32rpx;
+}
+
+.spu-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+  margin-bottom: 16rpx;
+}
+
+.spu-cover {
+  width: 100%;
+  height: 220rpx;
+  display: block;
+}
+
+.spu-body {
+  padding: 18rpx 20rpx 16rpx;
+}
+
+.spu-tags {
+  display: flex;
+  gap: 8rpx;
+  margin-bottom: 12rpx;
+  flex-wrap: wrap;
+}
+
+.spu-name {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+  margin-bottom: 16rpx;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.spu-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.spu-add-btn {
+  width: 56rpx;
+  height: 56rpx;
+  background: #C0322A;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ===== 底部悬浮购物车栏 ===== */
+.cart-bar {
+  position: fixed;
+  bottom: 40rpx;
+  left: 24rpx;
+  right: 24rpx;
+  height: 100rpx;
+  background: #C0322A;
+  border-radius: 50rpx;
+  display: flex;
+  align-items: center;
+  padding: 0 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(192, 50, 42, 0.35);
+  z-index: 100;
+}
+
+.cart-icon-wrap {
+  position: relative;
+  width: 72rpx;
+  height: 72rpx;
+  background: #FFFFFF;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 20rpx;
+}
+
+.cart-badge {
+  position: absolute;
+  top: -8rpx;
+  right: -8rpx;
+  min-width: 36rpx;
+  height: 36rpx;
+  padding: 0 8rpx;
+  background: #FF4D4F;
+  border-radius: 18rpx;
+  font-size: 22rpx;
+  color: #FFFFFF;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cart-info {
+  flex: 1;
+}
+
+.cart-tip {
+  font-size: 28rpx;
+  color: #FFFFFF;
+  font-weight: 500;
+}

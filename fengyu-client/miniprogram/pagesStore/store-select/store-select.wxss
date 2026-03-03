@@ -1,0 +1,42 @@
+/* pages/store-select/store-select.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+.location-bar {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 32rpx;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
+  background: #fff;
+}
+
+.location-bar text {
+  margin-left: 8rpx;
+}
+
+.skeleton-wrap {
+  padding: 24rpx;
+}
+
+.empty-wrap {
+  padding-top: 80rpx;
+}
+
+.market-group {
+  margin-bottom: 8rpx;
+}
+
+.market-title {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  padding: 20rpx 32rpx 10rpx;
+  letter-spacing: 1rpx;
+}
+
+.bottom-space {
+  height: 60rpx;
+}

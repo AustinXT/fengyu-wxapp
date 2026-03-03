@@ -247,13 +247,12 @@ async function syncToPostgreSQL(pgPool, spuList, skuList, dryRun = false) {
     await client.query('BEGIN')
 
     if (!dryRun) {
-      // 清空现有数据
-      await client.query('DELETE FROM product_spu_sku_map')
-      await client.query('DELETE FROM product_spu')
-      console.log('✓ 已清空现有数据')
+      // 禁用外键约束检查（临时）
+      await client.query('SET CONSTRAINTS ALL DEFERRED')
+      console.log('✓ 已禁用外键约束检查')
     }
 
-    // 插入 SPU
+    // 插入 SPU（使用 ON CONFLICT DO UPDATE 实现增量更新）
     let spuInserted = 0
     for (const spu of spuList) {
       if (dryRun) {
@@ -271,7 +270,7 @@ async function syncToPostgreSQL(pgPool, spuList, skuList, dryRun = false) {
       }
       spuInserted++
     }
-    console.log(`✓ SPU: ${dryRun ? '将插入' : '已插入'} ${spuInserted} 条`)
+    console.log(`✓ SPU: ${dryRun ? '将插入' : '已插入/更新'} ${spuInserted} 条`)
 
     // 插入 SKU 映射
     let skuInserted = 0

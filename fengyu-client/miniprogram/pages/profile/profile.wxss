@@ -5,20 +5,22 @@
   background: var(--color-bg-page);
 }
 
-/* ===== 用户信息卡（黑金主题） ===== */
+/* ===== 用户信息卡（白红主题） ===== */
 .user-card {
-  background: linear-gradient(135deg, #000000 0%, #1A1A1A 100%);
+  background: #FFFFFF;
   padding: 60rpx 40rpx 48rpx;
   display: flex;
   align-items: center;
   gap: 32rpx;
+  border-bottom: 3rpx solid #C0322A;
+  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.06);
 }
 
 .user-avatar-wrap {
   width: 120rpx;
   height: 120rpx;
-  background: rgba(212, 167, 106, 0.2);
-  border: 2rpx solid rgba(212, 167, 106, 0.4);
+  background: #FFF0EE;
+  border: 2rpx solid rgba(192, 50, 42, 0.3);
   border-radius: 60rpx;
   display: flex;
   align-items: center;
@@ -34,7 +36,7 @@
   display: block;
   font-size: 34rpx;
   font-weight: 600;
-  color: #D4A76A;
+  color: #C0322A;
   margin-bottom: 12rpx;
 }
 
@@ -46,7 +48,7 @@
 
 .user-store {
   font-size: 24rpx;
-  color: rgba(212, 167, 106, 0.8);
+  color: #666666;
 }
 
 /* ===== 区块标题 ===== */

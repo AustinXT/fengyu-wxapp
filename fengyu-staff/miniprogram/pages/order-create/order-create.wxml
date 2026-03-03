@@ -5,8 +5,8 @@
   <van-tabs
     active="{{activeBigCategoryIndex}}"
     bind:change="onBigCategoryChange"
-    color="#8B6A3E"
-    title-active-color="#8B6A3E"
+    color="#C0322A"
+    title-active-color="#C0322A"
     line-width="40rpx"
   >
     <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
@@ -53,7 +53,7 @@
           >
             <!-- 商品封面 -->
             <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="64rpx" color="#C4975A" />
+              <van-icon name="photo-o" size="64rpx" color="#C0322A" />
             </view>
             <image
               wx:else
@@ -67,7 +67,7 @@
             <view class="spu-body">
               <!-- 标签行 -->
               <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                <van-tag color="#8B6A3E">推荐</van-tag>
+                <van-tag color="#C0322A">推荐</van-tag>
               </view>
 
               <!-- 商品名 -->
@@ -126,7 +126,7 @@
       type="primary"
       size="small"
       disabled="{{cartCount === 0}}"
-      custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:40rpx;padding:0 40rpx;"
+      custom-style="background:#C0322A;border-color:#C0322A;border-radius:40rpx;padding:0 40rpx;"
       bind:click="onOpenCheckout"
     >下单</van-button>
   </view>
@@ -189,7 +189,7 @@
             type="primary"
             block
             loading="{{customerSearching}}"
-            custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:48rpx;"
+            custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
             bind:click="onStep0Next"
           >下一步</van-button>
         </view>
@@ -205,7 +205,7 @@
             bindtap="onSelectOrderType"
             data-type="normal"
           >
-            <van-icon name="orders-o" size="48rpx" color="{{orderType === 'normal' ? '#8B6A3E' : '#999'}}" />
+            <van-icon name="orders-o" size="48rpx" color="{{orderType === 'normal' ? '#C0322A' : '#999'}}" />
             <text class="order-type-card-name">正常单</text>
             <text class="order-type-card-desc">SPU / SKU</text>
           </view>
@@ -214,7 +214,7 @@
             bindtap="onSelectOrderType"
             data-type="experience"
           >
-            <van-icon name="smile-o" size="48rpx" color="{{orderType === 'experience' ? '#8B6A3E' : (isManager ? '#999' : '#CCC')}}" />
+            <van-icon name="smile-o" size="48rpx" color="{{orderType === 'experience' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
             <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">体验单</text>
             <text class="order-type-card-desc">仅店长</text>
           </view>
@@ -223,7 +223,7 @@
           <van-button size="small" plain bind:click="onStep1Back">返回</van-button>
           <van-button
             size="small" type="primary"
-            custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:40rpx;"
+            custom-style="background:#C0322A;border-color:#C0322A;border-radius:40rpx;"
             bind:click="onStep1Next"
           >下一步</van-button>
         </view>
@@ -264,7 +264,7 @@
           <van-button
             size="small" type="primary"
             loading="{{submitting}}"
-            custom-style="background:#8B6A3E;border-color:#8B6A3E;border-radius:40rpx;"
+            custom-style="background:#C0322A;border-color:#C0322A;border-radius:40rpx;"
             bind:click="onSubmitOrder"
           >确认开单</van-button>
         </view>
