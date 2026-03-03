@@ -1,38 +1,30 @@
 /**
- * 定位工具函数
- * 使用 wx.chooseLocation() 获取用户选择的位置，直接返回城市名
- */
-
-/**
- * 打开地图让用户选择位置
- * @returns Promise<{ latitude: number, longitude: number, city: string }>
- */
-export function chooseLocation(): Promise<{ latitude: number; longitude: number; city: string }> {
-  return new Promise((resolve, reject) => {
-    wx.chooseLocation({
-      success(res) {
-        resolve({
-          latitude: res.latitude,
-          longitude: res.longitude,
-          city: res.city || '',
-        });
-      },
-      fail(err) {
-        reject(err);
-      },
-    });
-  });
-}
-
-/**
- * 综合定位函数：获取用户当前城市
- * @returns Promise<string> 城市名
- * @throws 用户取消或拒绝时抛出错误
+ * 自动定位：获取当前城市名（地级市，不含"市"字）
+ * 流程：wx.getLocation() → store.geocode 云函数 → 城市名
+ * @returns Promise<string> 城市名，如 "南昌"
+ * @throws 用户拒绝或定位失败时抛出错误
  */
 export async function getCurrentCity(): Promise<string> {
-  const location = await chooseLocation();
-  if (!location.city) {
-    throw new Error('未获取到城市信息');
-  }
-  return location.city;
+  // 1. 获取 GPS 坐标
+  const location = await new Promise<{ latitude: number; longitude: number }>((resolve, reject) => {
+    wx.getLocation({
+      type: 'gcj02',
+      success: (res) => resolve({ latitude: res.latitude, longitude: res.longitude }),
+      fail: reject,
+    });
+  });
+
+  // 2. 调用云函数逆地理编码
+  const res = await wx.cloud.callFunction({
+    name: 'clientApi',
+    data: {
+      action: 'store.geocode',
+      payload: { latitude: location.latitude, longitude: location.longitude },
+    },
+  }) as any;
+
+  if (res.result?.code !== 0) throw new Error(res.result?.message || '解析城市失败');
+  const city: string = res.result.data?.city || '';
+  if (!city) throw new Error('未获取到城市信息');
+  return city;
 }

@@ -207,10 +207,42 @@ async function cancelUnbindRequest(ctx) {
   ctx.result = { success: true }
 }
 
+/**
+ * 逆地理编码：将经纬度转换为城市名
+ * payload: { latitude, longitude }
+ * 通过腾讯地图 WebService API 在云函数侧发请求（无域名限制）
+ */
+async function geocode(ctx) {
+  const { latitude, longitude } = ctx.event.payload || {}
+  if (!latitude || !longitude) throw new Error('INVALID_PARAMS: 缺少坐标')
+
+  const key = process.env.TMAP_KEY
+  const url = `https://apis.map.qq.com/ws/geocoder/v1/?location=${latitude},${longitude}&key=${key}&get_poi=0`
+
+  const https = require('https')
+  const body = await new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = ''
+      res.on('data', (chunk) => data += chunk)
+      res.on('end', () => resolve(data))
+    }).on('error', reject)
+  })
+
+  const json = JSON.parse(body)
+  if (json.status !== 0) throw new Error('INVALID_PARAMS: 逆地理编码失败')
+
+  const city = json.result?.address_component?.city || ''
+  // 去掉末尾的"市"字，得到纯城市名如"南昌"
+  const cityName = city.replace(/市$/, '')
+
+  ctx.result = { city: cityName }
+}
+
 module.exports = {
   list,
   detail,
   requestUnbind,
   getUnbindRequest,
   cancelUnbindRequest,
+  geocode,
 }

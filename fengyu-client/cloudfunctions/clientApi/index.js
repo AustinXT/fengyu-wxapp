@@ -19,6 +19,7 @@ const routes = {
   'store.requestUnbind': () => require('./routes/store').requestUnbind,
   'store.getUnbindRequest': () => require('./routes/store').getUnbindRequest,
   'store.cancelUnbindRequest': () => require('./routes/store').cancelUnbindRequest,
+  'store.geocode': () => require('./routes/store').geocode,
   'product.categories': () => require('./routes/product').categories,
   'product.spuList': () => require('./routes/product').spuList,
   'product.skuDetail': () => require('./routes/product').skuDetail,

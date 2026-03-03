@@ -1,14 +1,5 @@
 {
-  "navigationBarTitleText": "购物车",
+  "navigationBarTitleText": "凤御馆",
   "enablePullDownRefresh": false,
-  "usingComponents": {
-    "van-icon": "@vant/weapp/icon/index",
-    "van-button": "@vant/weapp/button/index",
-    "van-checkbox": "@vant/weapp/checkbox/index",
-    "van-stepper": "@vant/weapp/stepper/index",
-    "van-empty": "@vant/weapp/empty/index",
-    "van-submit-bar": "@vant/weapp/submit-bar/index",
-    "van-swipe-cell": "@vant/weapp/swipe-cell/index",
-    "van-toast": "@vant/weapp/toast/index"
-  }
+  "usingComponents": {}
 }

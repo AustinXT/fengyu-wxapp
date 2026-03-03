@@ -61,9 +61,9 @@
       },
       {
         "pagePath": "pages/cart/cart",
-        "text": "购物车",
-        "iconPath": "images/icons/tab-orders.png",
-        "selectedIconPath": "images/icons/tab-orders-active.png"
+        "text": "凤御馆",
+        "iconPath": "images/icons/tab-intro.png",
+        "selectedIconPath": "images/icons/tab-intro-active.png"
       },
       {
         "pagePath": "pages/profile/profile",
