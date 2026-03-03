@@ -6,14 +6,30 @@ App<IAppOption>({
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     boundMarketName: '' as string,
+    statusBarHeight: 44,
+    navBarContentHeight: 44,
+    navBarHeight: 88,
   },
 
   onLaunch() {
     wx.cloud.init({ traceUser: true });
+    // 计算导航栏高度（需在 UI 渲染前完成）
+    this.initNavBarInfo();
     // 先从本地缓存恢复（快速展示）
     this.restoreFromCache();
     // 再从服务器同步最新数据（含 boundStoreName）
     this.syncLoginState();
+  },
+
+  initNavBarInfo() {
+    const systemInfo = wx.getSystemInfoSync();
+    const menuButton = wx.getMenuButtonBoundingClientRect();
+    const statusBarHeight = systemInfo.statusBarHeight || 44;
+    // 标题行高度 = 胶囊上下对称留白 * 2 + 胶囊高度
+    const contentHeight = menuButton.height + (menuButton.top - statusBarHeight) * 2;
+    this.globalData.statusBarHeight = statusBarHeight;
+    this.globalData.navBarContentHeight = contentHeight;
+    this.globalData.navBarHeight = statusBarHeight + contentHeight;
   },
 
   restoreFromCache() {

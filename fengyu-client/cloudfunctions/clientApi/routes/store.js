@@ -217,7 +217,16 @@ async function geocode(ctx) {
   if (!latitude || !longitude) throw new Error('INVALID_PARAMS: 缺少坐标')
 
   const key = process.env.TMAP_KEY
-  const url = `https://apis.map.qq.com/ws/geocoder/v1/?location=${latitude},${longitude}&key=${key}&get_poi=0`
+  const secret = process.env.TMAP_SECRET
+
+  // 腾讯地图签名算法：参数按参数名字母升序排列后拼接 MD5
+  // get_poi < key < location
+  const query = `get_poi=0&key=${key}&location=${latitude},${longitude}`
+  const path = '/ws/geocoder/v1/'
+  const crypto = require('crypto')
+  const sig = crypto.createHash('md5').update(`${path}?${query}${secret}`).digest('hex')
+
+  const url = `https://apis.map.qq.com${path}?${query}&sig=${sig}`
 
   const https = require('https')
   const body = await new Promise((resolve, reject) => {

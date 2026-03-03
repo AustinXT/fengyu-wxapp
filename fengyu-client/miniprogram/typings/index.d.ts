@@ -5,6 +5,9 @@ interface IAppOption {
     boundStoreName: string;
     boundStoreId: string;
     boundMarketName: string;
+    statusBarHeight: number;
+    navBarContentHeight: number;
+    navBarHeight: number;
   };
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;

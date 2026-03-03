@@ -41,6 +41,9 @@ Page({
     selectedStore: '',
     isLoading: false,
     currentCity: '',
+    locationFailed: false,
+    // 'search': 定位失败，提示搜索；'minlen': 输入不足2字符；'': 正常
+    showHint: '' as '' | 'search' | 'minlen',
   },
 
   onLoad() {
@@ -56,7 +59,8 @@ Page({
       this.setData({ currentCity: city });
     } catch (err: any) {
       console.log('[loadStoresWithLocation] 定位失败或被拒绝:', err);
-      // 用户拒绝定位或定位失败，不提示，降级显示全部门店
+      // 定位失败：标记状态，预加载全量门店供搜索使用
+      this.setData({ locationFailed: true, showHint: 'search' });
     }
     this.loadStores(city);
   },
@@ -75,7 +79,19 @@ Page({
         (s as any).region = (s as any).store_region || '';
       });
       console.log('[loadStores] stores count:', stores.length);
+
+      // 按城市筛选后无门店：提示并停止，不降级显示全部
+      if (city && stores.length === 0) {
+        Toast.fail(`${city}暂无门店`);
+        this.setData({ allStores: [], groupedStores: [] });
+        return;
+      }
+
       this.setData({ allStores: stores });
+
+      // 定位失败时预加载全量门店供搜索，但不展示列表
+      if (this.data.locationFailed) return;
+
       this.buildGroups(stores);
     } catch (err: any) {
       console.error('[loadStores] error:', err);
@@ -106,12 +122,26 @@ Page({
   onSearch(e: WechatMiniprogram.CustomEvent<string>) {
     const keyword = (e.detail as string).trim();
     this.setData({ keyword });
-    const filtered = keyword
-      ? this.data.allStores.filter(s =>
-          s.store_name.includes(keyword) || s.region?.includes(keyword)
-        )
-      : this.data.allStores;
-    this.buildGroups(filtered);
+
+    if (keyword.length >= 2) {
+      const filtered = this.data.allStores.filter(s =>
+        s.store_name.includes(keyword) || s.region?.includes(keyword)
+      );
+      this.setData({ showHint: '' });
+      this.buildGroups(filtered);
+    } else if (keyword.length === 0) {
+      if (this.data.locationFailed) {
+        // 定位失败：清空搜索恢复提示
+        this.setData({ groupedStores: [], showHint: 'search' });
+      } else {
+        // 定位成功：清空搜索恢复城市门店
+        this.setData({ showHint: '' });
+        this.buildGroups(this.data.allStores);
+      }
+    } else {
+      // 1 个字符：提示需要至少2个字符
+      this.setData({ groupedStores: [], showHint: 'minlen' });
+    }
   },
 
   onShow() {

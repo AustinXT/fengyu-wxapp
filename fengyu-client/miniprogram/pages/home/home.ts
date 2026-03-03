@@ -1,11 +1,11 @@
 // pages/home/home.ts
-import Toast from '@vant/weapp/toast/toast';
-import { addToCart, getCartCount, clearCart } from '../../utils/cart';
+import Toast from "@vant/weapp/toast/toast";
+import { addToCart, getCartCount, clearCart } from "../../utils/cart";
 
 const app = getApp<IAppOption>();
 
 // CloudBase CDN 基础 URL
-const CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/fengyu-client';
+const CDN_BASE = "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la/fengyu-client";
 
 interface Banner {
   id: string;
@@ -16,7 +16,11 @@ interface Banner {
   link: string;
 }
 
-interface Category { category: string; category_order: number; big_category: string; }
+interface Category {
+  category: string;
+  category_order: number;
+  big_category: string;
+}
 
 interface SpuItem {
   spu_id: string;
@@ -29,36 +33,36 @@ interface SpuItem {
   skuList?: any[];
 }
 
-const BIG_CATEGORIES = ['促销方案', '护理项目', '家居产品'];
+const BIG_CATEGORIES = ["福利活动", "护理项目", "家居产品"];
 
 // 数据库 big_category 与前端显示的映射
 const BIG_CATEGORY_MAP: Record<string, string> = {
-  '促销方案': '促销方案',
-  '生美': '护理项目',
-  '非生美': '护理项目',
-  '院装产品': '家居产品',
-}
+  促销方案: "福利活动",
+  生美: "护理项目",
+  非生美: "护理项目",
+  院装产品: "家居产品",
+};
 
 // 获取前端显示的大分类名称
 function getDisplayBigCategory(dbValue: string): string {
-  return BIG_CATEGORY_MAP[dbValue] || dbValue
+  return BIG_CATEGORY_MAP[dbValue] || dbValue;
 }
 
 Page({
   data: {
-    searchValue: '',
-    boundStoreName: '',
+    searchValue: "",
+    boundStoreName: "",
     banners: [
       // 轮播图1：jolyvia 品牌宣传
-      { id: '1', title: '', desc: '', bgColor: '', image: `${CDN_BASE}/banner/banner1.jpg`, link: '' },
+      { id: "1", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner1.jpg`, link: "" },
       // 轮播图2：jolyvia 品牌宣传
-      { id: '2', title: '', desc: '', bgColor: '', image: `${CDN_BASE}/banner/banner2.jpg`, link: '' },
+      { id: "2", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner2.jpg`, link: "" },
       // 轮播图3：jolyvia 品牌宣传
-      { id: '3', title: '', desc: '', bgColor: '', image: `${CDN_BASE}/banner/banner3.jpg`, link: '' },
+      { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
       // 轮播图4：jolyvia 品牌宣传
-      { id: '4', title: '', desc: '', bgColor: '', image: `${CDN_BASE}/banner/banner4.jpg`, link: '' },
+      { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
       // 轮播图5：jolyvia 品牌宣传
-      { id: '5', title: '', desc: '', bgColor: '', image: `${CDN_BASE}/banner/banner5.jpg`, link: '' },
+      { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
     ] as Banner[],
     currentBanner: 0,
 
@@ -79,7 +83,7 @@ Page({
   _spuCache: {} as Record<string, SpuItem[]>,
 
   onLoad() {
-    const storeName = app.globalData.boundStoreName || '';
+    const storeName = app.globalData.boundStoreName || "";
     this.setData({
       boundStoreName: storeName,
     });
@@ -88,7 +92,7 @@ Page({
   },
 
   onShow() {
-    const storeName = app.globalData.boundStoreName || '';
+    const storeName = app.globalData.boundStoreName || "";
     if (storeName !== this.data.boundStoreName) {
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
@@ -99,7 +103,7 @@ Page({
         activeBigCategoryIndex: 0,
         activeCategoryIndex: 0,
         spuList: [],
-        cartCount: 0
+        cartCount: 0,
       });
       this.loadShopInit();
     } else {
@@ -118,16 +122,22 @@ Page({
   // ===== 事件处理 =====
 
   onSelectStore() {
-    wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+    wx.navigateTo({ url: "/pagesStore/store-select/store-select" });
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent<string>) {
     const value = e.detail;
     this.setData({ searchValue: value });
+  },
 
-    // TODO: 实现搜索功能，根据关键词过滤 spuList
-    if (value.trim()) {
-      wx.showToast({ title: '搜索功能开发中', icon: 'none' });
+  onSearchInput(e: WechatMiniprogram.InputEvent) {
+    this.setData({ searchValue: e.detail.value });
+  },
+
+  onSearchSubmit() {
+    const value = this.data.searchValue.trim();
+    if (value) {
+      wx.showToast({ title: "搜索功能开发中", icon: "none" });
     }
   },
 
@@ -136,7 +146,7 @@ Page({
       onlyFromCamera: false,
       success: (res) => {
         if (res.path) {
-          wx.navigateTo({ url: '/' + res.path });
+          wx.navigateTo({ url: "/" + res.path });
         } else if (res.result) {
           wx.navigateTo({ url: `/pagesOrder/scan-pay/scan-pay?orderNo=${encodeURIComponent(res.result)}` });
         }
@@ -163,23 +173,23 @@ Page({
     const { type } = e.currentTarget.dataset as { type: string };
 
     switch (type) {
-      case 'promotion':
+      case "promotion":
         // 切换到"促销方案"分类
         this.switchBigCategory(0);
         break;
-      case 'service':
+      case "service":
         // 切换到"护理项目"分类
         this.switchBigCategory(1);
         break;
-      case 'product':
+      case "product":
         // 切换到"家居产品"分类
         this.switchBigCategory(2);
         break;
-      case 'coupon':
-        wx.showToast({ title: '优惠券功能开发中', icon: 'none' });
+      case "coupon":
+        wx.showToast({ title: "优惠券功能开发中", icon: "none" });
         break;
-      case 'treatment':
-        wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
+      case "treatment":
+        wx.navigateTo({ url: "/pagesOrder/treatment-cards/treatment-cards" });
         break;
       default:
         break;
@@ -191,7 +201,7 @@ Page({
     if (index === this.data.activeBigCategoryIndex) return;
 
     const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter(c => c.big_category === activeBig);
+    const filtered = this._allCategories.filter((c) => c.big_category === activeBig);
     const categoriesWithIndex = filtered.map((c, i) => ({ ...c, _index: i }));
 
     this.setData({
@@ -218,16 +228,16 @@ Page({
   async loadShopInit() {
     try {
       this.setData({ isLoading: true });
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
+      const res = (await wx.cloud.callFunction({
+        name: "clientApi",
         data: {
-          action: 'product.shopInit',
+          action: "product.shopInit",
           payload: {},
         },
-      }) as any;
+      })) as any;
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '加载失败');
+        throw new Error(res.result?.message || "加载失败");
       }
 
       const categories: Category[] = res.result.data?.categories || [];
@@ -235,7 +245,7 @@ Page({
 
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || '0',
+        min_price: spu.priceFrom || "0",
       }));
 
       // 缓存 shopInit 返回的 SPU 列表（对应全局第一个分类）
@@ -248,10 +258,10 @@ Page({
       const categoriesWithBigCategory = categories.map((c: any) => ({
         ...c,
         big_category: getDisplayBigCategory(c.big_category),
-      }))
+      }));
       this._allCategories = categoriesWithBigCategory;
       const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
-      const filtered = categoriesWithBigCategory.filter(c => c.big_category === activeBig);
+      const filtered = categoriesWithBigCategory.filter((c) => c.big_category === activeBig);
       const categoriesWithIndex = filtered.map((c, i) => ({
         ...c,
         _index: i,
@@ -275,19 +285,19 @@ Page({
         this.loadSpuList(filtered[0].category);
       }
     } catch (err: any) {
-      console.error('loadShopInit error:', err);
-      Toast.fail(err?.message || '加载失败');
+      console.error("loadShopInit error:", err);
+      Toast.fail(err?.message || "加载失败");
     } finally {
       this.setData({ isLoading: false });
     }
   },
 
   onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.index;
-    if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
+    const index = typeof e.detail === "number" ? e.detail : (e.detail as any)?.index;
+    if (typeof index !== "number" || index === this.data.activeBigCategoryIndex) return;
 
     const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter(c => c.big_category === activeBig);
+    const filtered = this._allCategories.filter((c) => c.big_category === activeBig);
     const categoriesWithIndex = filtered.map((c, i) => ({ ...c, _index: i }));
 
     this.setData({
@@ -309,12 +319,12 @@ Page({
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
-    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
-    if (typeof index !== 'number') return;
+    const index = typeof e.detail === "number" ? e.detail : (e.detail as any)?.key;
+    if (typeof index !== "number") return;
     const { categories } = this.data;
     if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
 
-    const category = index < categories.length ? categories[index].category : '院装产品';
+    const category = index < categories.length ? categories[index].category : "院装产品";
 
     // 先查缓存：命中则直接替换，不清空不闪烁
     const cached = this._spuCache[category];
@@ -331,22 +341,22 @@ Page({
   async loadSpuList(category: string) {
     this.setData({ isLoading: true });
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
+      const res = (await wx.cloud.callFunction({
+        name: "clientApi",
         data: {
-          action: 'product.spuList',
+          action: "product.spuList",
           payload: { category },
         },
-      }) as any;
+      })) as any;
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '加载商品失败');
+        throw new Error(res.result?.message || "加载商品失败");
       }
 
       const spuList: SpuItem[] = res.result.data?.spuList || [];
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
-        min_price: spu.priceFrom || '0',
+        min_price: spu.priceFrom || "0",
       }));
 
       // 写入缓存
@@ -354,8 +364,8 @@ Page({
 
       this.setData({ spuList: listWithPrice });
     } catch (err: any) {
-      console.error('loadSpuList error:', err);
-      Toast.fail(err?.message || '加载商品失败');
+      console.error("loadSpuList error:", err);
+      Toast.fail(err?.message || "加载商品失败");
     } finally {
       this.setData({ isLoading: false });
     }
@@ -370,13 +380,13 @@ Page({
   async onAddToCart(e: WechatMiniprogram.TouchEvent) {
     e.stopPropagation(); // 阻止冒泡，避免触发卡片点击
     const { spuId } = e.currentTarget.dataset as { spuId: string };
-    const spu = this.data.spuList.find(s => s.spu_id === spuId);
+    const spu = this.data.spuList.find((s) => s.spu_id === spuId);
     if (!spu) return;
 
     // 获取第一个 SKU 作为默认添加到购物车的商品
     const skuList = spu.skuList || [];
     if (skuList.length === 0) {
-      Toast('暂无可购规格');
+      Toast("暂无可购规格");
       return;
     }
 
@@ -395,11 +405,11 @@ Page({
     });
 
     this.updateCartCount();
-    Toast.success('已加入购物车');
+    Toast.success("已加入购物车");
   },
 
   // 点击底部购物车栏
   onCartTap() {
-    wx.navigateTo({ url: '/pages/cart/cart' });
+    wx.navigateTo({ url: "/pages/cart/cart" });
   },
 });

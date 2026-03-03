@@ -3,17 +3,25 @@
 
 <view class="container">
 
+  <!-- 自定义导航栏（固定 + 占位一体） -->
+  <nav-bar />
+
   <!-- 搜索栏 + 门店选择 + 扫码 -->
   <view class="header">
     <view class="header-left">
-      <van-search
-        class="header-search"
-        value="{{searchValue}}"
-        placeholder="搜索服务、项目、产品"
-        shape="round"
-        background="#F5F5F5"
-        bind:change="onSearchChange"
-      />
+      <view class="search-bar">
+        <van-icon name="search" size="32rpx" color="#999" />
+        <input
+          class="search-input"
+          placeholder="搜索服务、产品"
+          placeholder-style="color:#BBBBBB;font-size:26rpx;"
+          value="{{searchValue}}"
+          bindinput="onSearchInput"
+        />
+        <view class="search-btn" bindtap="onSearchSubmit">
+          <text class="search-btn-text">搜索</text>
+        </view>
+      </view>
     </view>
     <view class="header-right">
       <view class="header-store" bindtap="onSelectStore">
@@ -21,7 +29,7 @@
         <van-icon name="arrow" size="28rpx" color="#666666" />
       </view>
       <view class="header-scan" bindtap="onScanPay">
-        <van-icon name="scan" size="44rpx" color="#C0322A" />
+        <van-icon name="scan" size="36rpx" color="#C0322A" />
       </view>
     </view>
   </view>
@@ -53,31 +61,31 @@
       <view class="grid-row grid-row-5">
         <view class="grid-item {{activeBigCategoryIndex === 0 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="promotion">
           <view class="grid-icon-wrap">
-            <van-icon name="gift-o" size="44rpx" color="{{activeBigCategoryIndex === 0 ? '#C0322A' : '#666666'}}" />
+            <van-icon name="gift" size="44rpx" color="#C0322A" />
           </view>
-          <text class="grid-label {{activeBigCategoryIndex === 0 ? 'grid-label-active' : ''}}">促销方案</text>
+          <text class="grid-label {{activeBigCategoryIndex === 0 ? 'grid-label-active' : ''}}">福利活动</text>
         </view>
         <view class="grid-item {{activeBigCategoryIndex === 1 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="service">
           <view class="grid-icon-wrap">
-            <van-icon name="flower-o" size="44rpx" color="{{activeBigCategoryIndex === 1 ? '#C0322A' : '#666666'}}" />
+            <image class="grid-icon-img" src="/images/icons/grid-flower.png" mode="aspectFit" />
           </view>
           <text class="grid-label {{activeBigCategoryIndex === 1 ? 'grid-label-active' : ''}}">护理项目</text>
         </view>
         <view class="grid-item {{activeBigCategoryIndex === 2 ? 'grid-item-active' : ''}}" bindtap="onGridTap" data-type="product">
           <view class="grid-icon-wrap">
-            <van-icon name="bag-o" size="44rpx" color="{{activeBigCategoryIndex === 2 ? '#C0322A' : '#666666'}}" />
+            <van-icon name="bag" size="44rpx" color="#C0322A" />
           </view>
           <text class="grid-label {{activeBigCategoryIndex === 2 ? 'grid-label-active' : ''}}">家居产品</text>
         </view>
         <view class="grid-item" bindtap="onGridTap" data-type="coupon">
           <view class="grid-icon-wrap">
-            <van-icon name="coupon-o" size="44rpx" color="#666666" />
+            <van-icon name="coupon" size="44rpx" color="#C0322A" />
           </view>
           <text class="grid-label">我的券</text>
         </view>
         <view class="grid-item" bindtap="onGridTap" data-type="treatment">
           <view class="grid-icon-wrap">
-            <van-icon name="calendar-o" size="44rpx" color="#666666" />
+            <image class="grid-icon-img" src="/images/icons/grid-calendar.png" mode="aspectFit" />
           </view>
           <text class="grid-label">我的疗程</text>
         </view>
@@ -127,9 +135,9 @@
               bindtap="onSpuTap"
               data-spu-id="{{item.spu_id}}"
             >
-              <!-- 商品封面 -->
+              <!-- 左侧封面 -->
               <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-                <van-icon name="photo-o" size="64rpx" color="#CCCCCC" />
+                <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
               </view>
               <image
                 wx:else
@@ -139,7 +147,7 @@
                 lazy-load
               />
 
-              <!-- 商品信息 -->
+              <!-- 右侧信息 -->
               <view class="spu-body">
                 <!-- 标签行 -->
                 <view class="spu-tags" wx:if="{{item.is_recommend}}">
@@ -156,8 +164,8 @@
                     <text class="price-integer">{{item.min_price}}</text>
                     <text class="price-start">起</text>
                   </view>
-                  <view class="spu-add-btn" catchtap="onAddToCart" data-spu-id="{{item.spu_id}}">
-                    <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+                  <view class="spu-buy-btn" catchtap="onAddToCart" data-spu-id="{{item.spu_id}}">
+                    <text class="spu-buy-text">购买</text>
                   </view>
                 </view>
               </view>

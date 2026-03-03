@@ -1,0 +1,53 @@
+/* components/nav-bar/nav-bar.wxss */
+
+:host {
+  display: block;
+}
+
+.nav-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 999;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.06);
+}
+
+.nav-content {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+/* 返回按钮：左侧绝对定位，不压缩中央区域 */
+.nav-back {
+  position: absolute;
+  left: 16rpx;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72rpx;
+  height: 72rpx;
+}
+
+/* 中心区域 */
+.nav-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nav-logo {
+  height: 60rpx;
+  width: 180rpx;
+}
+
+.nav-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  color: #333333;
+  letter-spacing: 1rpx;
+}

@@ -21,12 +21,42 @@
   margin-right: 16rpx;
 }
 
-.header-search {
-  background: #F5F5F5 !important;
+/* 自定义搜索栏 */
+.search-bar {
+  display: flex;
+  align-items: center;
+  height: 64rpx;
+  background: #F5F5F5;
+  border-radius: 32rpx;
+  border: 1rpx solid #E8E8E8;
+  padding: 0 20rpx;
+  gap: 12rpx;
+  overflow: hidden;
 }
 
-.header-search .van-search__content {
-  background: #F5F5F5 !important;
+.search-input {
+  flex: 1;
+  font-size: 26rpx;
+  color: #333;
+  line-height: 64rpx;
+  height: 64rpx;
+}
+
+.search-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 48rpx;
+  padding: 0 20rpx;
+  background: #C0322A;
+  border-radius: 24rpx;
+  flex-shrink: 0;
+}
+
+.search-btn-text {
+  font-size: 24rpx;
+  color: #FFF;
+  font-weight: 500;
 }
 
 .header-right {
@@ -50,8 +80,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 72rpx;
-  height: 72rpx;
+  width: 60rpx;
+  height: 60rpx;
   background: #FFF0EE;
   border: 1rpx solid rgba(192, 50, 42, 0.2);
   border-radius: 50%;
@@ -65,7 +95,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100rpx;
+  max-width: 200rpx;
 }
 
 /* ===== 页面主体滚动区 ===== */
@@ -77,11 +107,11 @@
 
 /* ===== 1. 轮播图 ===== */
 .section-banner {
-  padding: 24rpx;
+  padding: 16rpx 16rpx 12rpx;
 }
 
 .banner-swiper {
-  height: 300rpx;
+  height: 260rpx;
   border-radius: 16rpx;
   overflow: hidden;
 }
@@ -101,7 +131,7 @@
 
 /* ===== 2. 功能模块宫格区（5个一排） ===== */
 .section-grid {
-  padding: 24rpx;
+  padding: 0 16rpx 12rpx;
 }
 
 .grid-row-5 {
@@ -111,7 +141,7 @@
 
 .grid-row-5 .grid-item {
   flex: 1;
-  padding: 24rpx 8rpx;
+  padding: 16rpx 8rpx;
 }
 
 .grid-item {
@@ -119,7 +149,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 32rpx 16rpx;
+  padding: 20rpx 16rpx;
   background: #FFFFFF;
   border-radius: 16rpx;
   box-sizing: border-box;
@@ -137,10 +167,15 @@
   height: 72rpx;
   background: #FFF0EE;
   border-radius: 50%;
-  margin-bottom: 12rpx;
+  margin-bottom: 8rpx;
 }
 
 .grid-icon {
+  width: 44rpx;
+  height: 44rpx;
+}
+
+.grid-icon-img {
   width: 44rpx;
   height: 44rpx;
 }
@@ -189,7 +224,7 @@
 /* 右侧商品滚动区 */
 .product-scroll {
   flex: 1;
-  padding: 16rpx;
+  padding: 0 16rpx 16rpx;
   overflow: hidden;
   background: var(--color-bg-page);
 }
@@ -205,36 +240,52 @@
 }
 
 .spu-card {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
   background: #FFFFFF;
-  border-radius: 16rpx;
+  border-radius: 12rpx;
   overflow: hidden;
-  margin-bottom: 16rpx;
+  margin-bottom: 12rpx;
 }
 
 .spu-cover {
-  width: 100%;
-  height: 220rpx;
+  width: 160rpx;
+  height: 160rpx;
+  flex-shrink: 0;
   display: block;
 }
 
+.cover-placeholder {
+  width: 160rpx;
+  height: 160rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #F5F5F5;
+}
+
 .spu-body {
-  padding: 18rpx 20rpx 16rpx;
+  flex: 1;
+  padding: 16rpx 16rpx 14rpx;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 160rpx;
 }
 
 .spu-tags {
   display: flex;
   gap: 8rpx;
-  margin-bottom: 12rpx;
+  margin-bottom: 8rpx;
   flex-wrap: wrap;
 }
 
 .spu-name {
-  display: block;
-  font-size: 28rpx;
+  font-size: 26rpx;
   font-weight: 600;
   color: var(--color-text-primary);
-  line-height: 1.45;
-  margin-bottom: 16rpx;
+  line-height: 1.4;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -247,15 +298,22 @@
   justify-content: space-between;
 }
 
-.spu-add-btn {
-  width: 56rpx;
-  height: 56rpx;
-  background: #C0322A;
-  border-radius: 50%;
+.spu-buy-btn {
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 48rpx;
+  padding: 0 20rpx;
+  background: #C0322A;
+  border-radius: 24rpx;
   flex-shrink: 0;
+}
+
+.spu-buy-text {
+  font-size: 24rpx;
+  color: #FFFFFF;
+  font-weight: 600;
+  letter-spacing: 2rpx;
 }
 
 /* ===== 右下角悬浮购物车按钮 ===== */

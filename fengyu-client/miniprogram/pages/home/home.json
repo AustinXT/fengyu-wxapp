@@ -1,15 +1,15 @@
 {
-  "navigationBarTitleText": "",
+  "navigationStyle": "custom",
   "enablePullDownRefresh": true,
   "usingComponents": {
+    "nav-bar": "../../components/nav-bar/nav-bar",
     "van-icon": "@vant/weapp/icon/index",
     "van-button": "@vant/weapp/button/index",
     "van-empty": "@vant/weapp/empty/index",
     "van-toast": "@vant/weapp/toast/index",
     "van-tag": "@vant/weapp/tag/index",
-"van-sidebar": "@vant/weapp/sidebar/index",
+    "van-sidebar": "@vant/weapp/sidebar/index",
     "van-sidebar-item": "@vant/weapp/sidebar-item/index",
-    "van-skeleton": "@vant/weapp/skeleton/index",
-    "van-search": "@vant/weapp/search/index"
+    "van-skeleton": "@vant/weapp/skeleton/index"
   }
 }

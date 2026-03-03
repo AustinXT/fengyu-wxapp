@@ -34,7 +34,8 @@ page {
   --sidebar-active-color:            #C0322A;
   --sidebar-selected-color:          #C0322A;
   --sidebar-selected-font-weight:    600;
-  --sidebar-width:                   160rpx;
+  --sidebar-width:                   180rpx;
+  --sidebar-padding:                 12rpx 24rpx 12rpx 16rpx;
   --tab-active-color:                #C0322A;
   --tabs-bottom-bar-color:           #C0322A;
   --tag-primary-background-color:    #C0322A;

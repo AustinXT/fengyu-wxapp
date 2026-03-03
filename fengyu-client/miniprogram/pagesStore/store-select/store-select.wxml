@@ -22,6 +22,16 @@
     <van-skeleton title row="3" style="margin-top:24rpx" />
   </view>
 
+  <!-- 提示：定位失败，请搜索 -->
+  <view wx:elif="{{showHint === 'search'}}" class="empty-wrap">
+    <van-empty image="search" description="无法定位，请搜索门店名称" />
+  </view>
+
+  <!-- 提示：搜索字符不足 -->
+  <view wx:elif="{{showHint === 'minlen'}}" class="empty-wrap">
+    <van-empty image="search" description="请至少输入2个字符" />
+  </view>
+
   <!-- 空态 -->
   <view wx:elif="{{groupedStores.length === 0}}" class="empty-wrap">
     <van-empty description="未找到门店" />
