@@ -123,6 +123,14 @@ async function create(ctx) {
       const quantity = item.quantity || 1
       const saleAmount = unitPrice * quantity
 
+      // 优惠金额（前端按行传入总优惠）
+      const discount = Number(item.discount) || 0
+      if (discount < 0 || discount > saleAmount) {
+        throw new Error('INVALID_PARAMS: 优惠金额不合法')
+      }
+      const unitDiscount = quantity > 0 ? discount / quantity : 0
+      const receivable = saleAmount - discount
+
       return {
         skuId: item.skuId,
         productType: sku.product_type,
@@ -130,9 +138,9 @@ async function create(ctx) {
         remainingSessions: sessionCount,
         unitPrice,
         quantity,
-        unitDiscount: 0,
+        unitDiscount,
         saleAmount,
-        receivable: saleAmount,
+        receivable,
         received: 0
       }
     })

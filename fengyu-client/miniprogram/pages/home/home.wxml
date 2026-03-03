@@ -161,7 +161,7 @@
           <!-- 二级分类项（可点击） -->
           <view
             wx:else
-            class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
+            class="sidebar-item {{activeCategoryKey === item.categoryKey && activeBigCategory === item.bigCategory ? 'sidebar-item--active' : ''}}"
             bindtap="onSidebarCategoryTap"
             data-key="{{item.categoryKey}}"
           >
@@ -237,6 +237,9 @@
             <van-loading size="20px" />
           </view>
         </view>
+
+        <!-- 底部留白，确保单个商品也能触发滚动切换下一分类 -->
+        <view class="scroll-bottom-spacer" wx:if="{{spuList.length > 0}}" />
 
       </scroll-view>
     </view>

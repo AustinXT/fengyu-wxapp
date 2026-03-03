@@ -191,17 +191,36 @@
   padding: 16rpx;
   margin-bottom: 16rpx;
 }
-.confirm-item {
+.confirm-item-block {
+  padding: 12rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+}
+.confirm-item-block:last-child { border-bottom: none; }
+.confirm-item-header {
+  margin-bottom: 8rpx;
+}
+.confirm-item-name { font-size: 26rpx; color: var(--color-text-primary); font-weight: 600; }
+.confirm-item-spec { font-size: 22rpx; color: var(--color-text-secondary); display: block; margin-top: 2rpx; }
+.confirm-item-row {
   display: flex;
   align-items: center;
-  padding: 8rpx 0;
+  justify-content: space-between;
+  padding: 4rpx 0;
 }
-.confirm-item-left { flex: 1; }
-.confirm-item-name { font-size: 26rpx; color: var(--color-text-primary); }
-.confirm-item-spec { font-size: 22rpx; color: var(--color-text-secondary); display: block; }
-.confirm-item-right { text-align: right; }
-.confirm-item-qty { font-size: 22rpx; color: var(--color-text-hint); display: block; }
-.confirm-item-price { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
+.confirm-item-label { font-size: 24rpx; color: var(--color-text-hint); }
+.confirm-item-value { font-size: 24rpx; color: var(--color-text-secondary); }
+.confirm-discount-input-wrap {
+  display: flex;
+  align-items: center;
+  background: #FFFFFF;
+  border: 1rpx solid var(--color-border);
+  border-radius: 8rpx;
+  padding: 4rpx 12rpx;
+  width: 200rpx;
+}
+.confirm-discount-prefix { font-size: 24rpx; color: var(--color-text-hint); margin-right: 4rpx; }
+.confirm-discount-input { flex: 1; font-size: 24rpx; color: var(--color-text-primary); height: 48rpx; }
+.confirm-item-receivable { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
 .confirm-total-row {
   display: flex;
   align-items: center;

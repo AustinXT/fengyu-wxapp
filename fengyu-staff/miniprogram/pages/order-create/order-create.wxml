@@ -97,7 +97,7 @@
               <text class="cart-item-spec">{{item.specName}}</text>
             </view>
             <view class="cart-item-right">
-              <text class="cart-item-price">¥{{item.price}}</text>
+              <text class="cart-item-price">¥{{item.price * item.quantity - item.discount}}</text>
               <van-stepper
                 value="{{item.quantity}}"
                 min="1"
@@ -236,14 +236,32 @@
           {{orderType === 'normal' ? '正常单' : '体验单'}}
         </text>
         <view class="confirm-items">
-          <view class="confirm-item" wx:for="{{cart}}" wx:key="skuId">
-            <view class="confirm-item-left">
+          <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
+            <view class="confirm-item-header">
               <text class="confirm-item-name">{{item.spuName}}</text>
               <text class="confirm-item-spec">{{item.specName}}</text>
             </view>
-            <view class="confirm-item-right">
-              <text class="confirm-item-qty">x{{item.quantity}}</text>
-              <text class="confirm-item-price">¥{{item.price * item.quantity}}</text>
+            <view class="confirm-item-row">
+              <text class="confirm-item-label">售价</text>
+              <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.price * item.quantity}}</text>
+            </view>
+            <view class="confirm-item-row">
+              <text class="confirm-item-label">优惠</text>
+              <view class="confirm-discount-input-wrap">
+                <text class="confirm-discount-prefix">¥</text>
+                <input
+                  class="confirm-discount-input"
+                  type="digit"
+                  value="{{item.discount || ''}}"
+                  placeholder="0"
+                  data-sku-id="{{item.skuId}}"
+                  bindblur="onDiscountChange"
+                />
+              </view>
+            </view>
+            <view class="confirm-item-row">
+              <text class="confirm-item-label">实付</text>
+              <text class="confirm-item-receivable">¥{{item.price * item.quantity - item.discount}}</text>
             </view>
           </view>
           <view class="confirm-total-row">

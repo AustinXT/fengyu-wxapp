@@ -411,6 +411,11 @@
   letter-spacing: 2rpx;
 }
 
+/* ===== 底部留白（保证可滚动触发下一分类） ===== */
+.scroll-bottom-spacer {
+  height: 60vh;
+}
+
 /* ===== 加载提示 ===== */
 .load-more-hint {
   display: flex;

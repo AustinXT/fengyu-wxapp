@@ -12,6 +12,7 @@ interface CartItem {
   specName: string;
   price: number;
   quantity: number;
+  discount: number;
   sessionCount: number;
   productType: string;
   workfineItemId: string;
@@ -81,6 +82,7 @@ Page({
           specName: pending.specName,
           price: pending.price,
           quantity: pending.quantity,
+          discount: 0,
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId,
@@ -141,21 +143,25 @@ Page({
     const activeBig = BIG_CATEGORIES[index];
     const filtered = this._allCategories.filter((c: any) => c.big_category === activeBig);
 
+    // 先重置 activeCategoryIndex 为 -1，强制 van-sidebar 刷新选中态
     this.setData({
       activeBigCategoryIndex: index,
       categories: filtered,
-      activeCategoryIndex: 0,
+      activeCategoryIndex: -1,
       spuList: [],
-    });
+    }, () => {
+      // categories 渲染完成后，再设置正确的选中索引
+      this.setData({ activeCategoryIndex: 0 });
 
-    if (filtered.length > 0) {
-      const cached = this._spuCache[filtered[0].id];
-      if (cached) {
-        this.setData({ spuList: cached });
-      } else {
-        this.loadSpuList(filtered[0].id);
+      if (filtered.length > 0) {
+        const cached = this._spuCache[filtered[0].id];
+        if (cached) {
+          this.setData({ spuList: cached });
+        } else {
+          this.loadSpuList(filtered[0].id);
+        }
       }
-    }
+    });
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent) {
@@ -216,9 +222,21 @@ Page({
     this.updateCart(cart);
   },
 
+  onDiscountChange(e: WechatMiniprogram.CustomEvent) {
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const val = parseFloat(e.detail.value) || 0;
+    const cart = [...this.data.cart];
+    const idx = cart.findIndex(c => c.skuId === skuId);
+    if (idx >= 0) {
+      const max = cart[idx].price * cart[idx].quantity;
+      cart[idx].discount = val < 0 ? 0 : val > max ? max : val;
+    }
+    this.updateCart(cart);
+  },
+
   updateCart(cart: CartItem[]) {
     const count = cart.reduce((s, c) => s + c.quantity, 0);
-    const total = cart.reduce((s, c) => s + c.price * c.quantity, 0);
+    const total = cart.reduce((s, c) => s + c.price * c.quantity - c.discount, 0);
     this.setData({ cart, cartCount: count, cartTotal: total.toFixed(2) });
   },
 
@@ -315,6 +333,7 @@ Page({
           specName: c.specName,
           quantity: c.quantity,
           unitPrice: c.price,
+          discount: c.discount,
         })),
         remark,
       });

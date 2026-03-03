@@ -76,6 +76,7 @@ Page({
     sidebarItems: [] as SidebarItem[],
     activeCategoryKey: "",
     activeBigCategoryIndex: -1, // 宫格高亮
+    activeBigCategory: "", // 当前选中的大分类名称（用于侧边栏去重高亮）
     sidebarScrollIntoView: "",
 
     spuList: [] as SpuItem[],
@@ -115,6 +116,7 @@ Page({
         sidebarItems: [],
         activeCategoryKey: "",
         activeBigCategoryIndex: -1,
+        activeBigCategory: "",
         spuList: [],
         cartCount: 0,
         isSearching: false,
@@ -302,6 +304,7 @@ Page({
     this.setData({
       activeCategoryKey: categoryKey,
       activeBigCategoryIndex: bigCatIndex,
+      activeBigCategory: catItem.bigCategory || "",
       sidebarScrollIntoView: catItem.id,
       spuList: cached || [],
     });
@@ -381,6 +384,7 @@ Page({
       this.setData({
         activeCategoryKey: firstKey,
         activeBigCategoryIndex: bigCatIndex,
+        activeBigCategory: firstBigCat || "",
         spuList: displayList,
       });
 
