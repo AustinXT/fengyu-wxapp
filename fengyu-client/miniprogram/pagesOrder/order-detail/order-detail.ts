@@ -67,11 +67,19 @@ Page({
             i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
           );
 
+      // 格式化支付到期时间
+      let expireTimeFmt = '';
+      if (order.status === '待支付' && order.expire_at) {
+        const ed = new Date(order.expire_at);
+        expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
+      }
+
       this.setData({
         order: {
           ...order,
           items,
           order_time_fmt: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
+          expire_time_fmt: expireTimeFmt,
         },
         statusIcon: iconMeta.icon,
         statusIconColor: iconMeta.color,

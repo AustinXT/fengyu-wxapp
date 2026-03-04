@@ -701,16 +701,16 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
   let sql = ''
 
   if (workfineSource === 'UDT_M_1281') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, UDF_M_18635 AS sales_category
+    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, NULL AS sales_category
            FROM UDT_M_1281 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_1383') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, UDF_M_18635 AS sales_category
+    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, NULL AS sales_category
            FROM UDT_M_1383 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_341') {
-    sql = `SELECT UDF_M_1875 AS original_price, NULL AS session_count, UDF_M_18635 AS sales_category
+    sql = `SELECT UDF_M_1875 AS original_price, NULL AS session_count, NULL AS sales_category
            FROM UDT_M_341 WHERE UDF_M_1870 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_1460') {
-    sql = `SELECT UDF_M_17171 AS original_price, UDF_M_17167 AS session_count, UDF_M_18635 AS sales_category
+    sql = `SELECT UDF_M_17171 AS original_price, UDF_M_17167 AS session_count, NULL AS sales_category
            FROM UDT_M_1460 WHERE UDF_M_17163 = '${esc(workfineItemId)}'`
   } else {
     throw new Error(`INVALID_PARAMS: 未知 workfine_source: ${workfineSource}`)

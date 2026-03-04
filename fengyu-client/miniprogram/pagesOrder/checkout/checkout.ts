@@ -137,10 +137,15 @@ Page({
       const items = data?.items || [];
       const firstItem = items[0] || {};
       this.setData({
-        spuName: firstItem.spu_name || '',
-        skuDisplayName: firstItem.sku_display_name || '',
-        unitPrice: order.receivable || '0.00',
+        spuName: items.length > 1
+          ? `${items.length} 件商品`
+          : (firstItem.spu_name || ''),
+        skuDisplayName: items.length > 1
+          ? items.map((i: any) => i.spu_name).join('、')
+          : (firstItem.sku_display_name || ''),
+        unitPrice: String(order.total_amount || '0.00'),
         storeName: order.store_name || '',
+        quantity: 1,
       });
     } catch {
       Toast.fail('加载订单信息失败');

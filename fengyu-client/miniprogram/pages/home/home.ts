@@ -185,11 +185,12 @@ Page({
     if (uncached.length === 0) return;
 
     await Promise.all(
-      uncached.map(async (category) => {
+      uncached.map(async (key) => {
+        const actualCategory = key.includes("::") ? key.split("::")[1] : key;
         try {
           const res = (await wx.cloud.callFunction({
             name: "clientApi",
-            data: { action: "product.spuList", payload: { category } },
+            data: { action: "product.spuList", payload: { category: actualCategory } },
           })) as any;
 
           if (res.result?.code === 0) {
@@ -197,10 +198,10 @@ Page({
               ...spu,
               min_price: spu.priceFrom || "0",
             }));
-            this._spuCache[category] = spuList;
+            this._spuCache[key] = spuList;
           }
         } catch (err) {
-          console.error("loadAllSpus error:", category, err);
+          console.error("loadAllSpus error:", key, err);
         }
       })
     );
@@ -356,15 +357,16 @@ Page({
       }));
 
       // 缓存 shopInit 返回的 SPU 列表（对应全局第一个分类）
-      if (categories.length > 0) {
-        this._spuCache[categories[0].category] = listWithPrice;
-      }
-
       // 将数据库 big_category 转换为前端显示名称
       const mappedCategories = categories.map((c: any) => ({
         ...c,
         big_category: getDisplayBigCategory(c.big_category),
       }));
+      if (categories.length > 0) {
+        const firstCompositeKey = `${mappedCategories[0].big_category}::${categories[0].category}`;
+        this._spuCache[firstCompositeKey] = listWithPrice;
+      }
+
       this._allCategories = mappedCategories;
 
       // 构建侧边栏
@@ -376,8 +378,11 @@ Page({
       const bigCatIndex = firstBigCat ? BIG_CATEGORIES.indexOf(firstBigCat) : -1;
 
       // 检查缓存是否匹配第一个可见分类
+      const firstCompositeKeyCheck = categories.length > 0
+        ? `${mappedCategories[0].big_category}::${categories[0].category}`
+        : "";
       let displayList = listWithPrice;
-      if (firstKey && firstKey !== categories[0]?.category) {
+      if (firstKey && firstKey !== firstCompositeKeyCheck) {
         displayList = this._spuCache[firstKey] || [];
       }
 
@@ -417,14 +422,15 @@ Page({
       idx++;
 
       for (const cat of cats) {
+        const compositeKey = `${bigCat}::${cat.category}`;
         items.push({
           id: `sid-${idx}`,
           type: "category",
           label: cat.category,
-          categoryKey: cat.category,
+          categoryKey: compositeKey,
           bigCategory: bigCat,
         });
-        allCategoryKeys.push(cat.category);
+        allCategoryKeys.push(compositeKey);
         idx++;
       }
     }
@@ -433,12 +439,13 @@ Page({
     this.setData({ sidebarItems: items });
   },
 
-  async loadSpuList(category: string) {
+  async loadSpuList(categoryKey: string) {
     this.setData({ isLoading: true });
+    const actualCategory = categoryKey.includes("::") ? categoryKey.split("::")[1] : categoryKey;
     try {
       const res = (await wx.cloud.callFunction({
         name: "clientApi",
-        data: { action: "product.spuList", payload: { category } },
+        data: { action: "product.spuList", payload: { category: actualCategory } },
       })) as any;
 
       if (res.result?.code !== 0) {
@@ -452,10 +459,10 @@ Page({
       }));
 
       // 写入缓存
-      this._spuCache[category] = listWithPrice;
+      this._spuCache[categoryKey] = listWithPrice;
 
       // 仅在仍在查看该分类时更新
-      if (this.data.activeCategoryKey === category) {
+      if (this.data.activeCategoryKey === categoryKey) {
         this.setData({ spuList: listWithPrice });
       }
     } catch (err: any) {

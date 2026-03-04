@@ -66,36 +66,25 @@ Page({
 
   async loadAppointableItems(filterOrderNo?: string) {
     try {
-      // 获取用户所有已支付订单
-      const data = await callClientApi('order.list', { status: '已支付' });
-      const orders = data?.orders || [];
-
-      // 从订单详情中筛选有剩余次数的项目
-      const appointableItems = [];
+      const data = await callClientApi('order.appointableItems');
+      const orders: any[] = data?.orders || [];
+      const items: any[] = [];
       for (const order of orders) {
-        const detailData = await callClientApi('order.detail', { orderNo: order.order_no });
-        const items = detailData?.items || [];
-        for (const item of items) {
-          // 非院装产品且剩余次数 > 0
-          if (item.product_type !== '院装产品' && (item.remaining_sessions ?? 0) > 0) {
-            appointableItems.push({
-              ...item,
-              order_no: order.order_no,
-              order_datetime: order.order_datetime,
-              store_name: order.store_name,
-              // 如果有筛选，按订单号过滤
-              hidden: filterOrderNo && order.order_no !== filterOrderNo
-            });
-          }
+        if (filterOrderNo && order.orderNo !== filterOrderNo) continue;
+        for (const item of order.items) {
+          items.push({
+            item_flow_no: item.itemFlowNo,
+            spu_name: item.spuName,
+            sku_display_name: item.skuDisplayName,
+            remaining_sessions: item.remainingSessions,
+            session_count: item.sessionCount,
+            product_type: item.productType,
+            order_no: order.orderNo,
+            store_name: order.storeName,
+          });
         }
       }
-
-      // 过滤隐藏项并返回
-      const filtered = filterOrderNo
-        ? appointableItems.filter((item: any) => !item.hidden)
-        : appointableItems;
-
-      this.setData({ appointableItems: filtered });
+      this.setData({ appointableItems: items });
     } catch {
       Toast.fail('加载可预约项目失败');
     }

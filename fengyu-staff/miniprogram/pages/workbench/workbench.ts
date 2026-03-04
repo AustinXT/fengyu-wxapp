@@ -86,6 +86,13 @@ Page({
 
   async loadWorkbench() {
     this.setData({ loading: true });
+    // 超时保护：10 秒后自动关闭 loading
+    const timer = setTimeout(() => {
+      if (this.data.loading) {
+        this.setData({ loading: false });
+        console.warn('[workbench] loading timeout, force reset');
+      }
+    }, 10000);
     try {
       await Promise.all([
         this.loadTodayCommission(),
@@ -94,7 +101,9 @@ Page({
       ]);
     } catch (err) {
       console.error('[workbench] error:', err);
+      wx.showToast({ title: '加载失败，请下拉刷新', icon: 'none' });
     } finally {
+      clearTimeout(timer);
       this.setData({ loading: false });
     }
   },

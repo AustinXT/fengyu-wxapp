@@ -532,11 +532,29 @@ async function detail(ctx) {
     expireAt = new Date(new Date(order.order_datetime).getTime() + 10 * 60 * 1000).toISOString()
   }
 
+  // 查询指定美容师姓名
+  let preferredStaffName = null
+  if (order.preferred_staff_wf_id) {
+    try {
+      const staffRows = await mssql.query(`
+        SELECT UDF_S_1155 AS name
+        FROM UDT_S_287
+        WHERE UDF_S_1147 = '${order.preferred_staff_wf_id.replace(/'/g, "''")}'
+      `)
+      if (staffRows.length > 0) {
+        preferredStaffName = staffRows[0].name
+      }
+    } catch (e) {
+      // WorkFine 查询失败不阻塞主流程
+    }
+  }
+
   ctx.result = {
     order: {
       ...order,
       total_amount: totalAmount,
-      expire_at: expireAt
+      expire_at: expireAt,
+      preferred_staff_name: preferredStaffName
     },
     items
   }
@@ -796,7 +814,7 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
       SELECT
         UDF_M_14508 AS original_price,
         UDF_M_14506 AS session_count,
-        UDF_M_18635 AS sales_category
+        NULL AS sales_category
       FROM UDT_M_1281
       WHERE UDF_M_14503 = '${workfineItemId}'
     `
@@ -805,7 +823,7 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
       SELECT
         UDF_M_14508 AS original_price,
         UDF_M_14506 AS session_count,
-        UDF_M_18635 AS sales_category
+        NULL AS sales_category
       FROM UDT_M_1383
       WHERE UDF_M_14503 = '${workfineItemId}'
     `
@@ -814,7 +832,7 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
       SELECT
         UDF_M_1875 AS original_price,
         NULL AS session_count,
-        UDF_M_18635 AS sales_category
+        NULL AS sales_category
       FROM UDT_M_341
       WHERE UDF_M_1870 = '${workfineItemId}'
     `
