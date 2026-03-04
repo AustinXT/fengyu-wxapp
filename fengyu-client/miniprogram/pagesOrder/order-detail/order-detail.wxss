@@ -32,6 +32,12 @@
   color: var(--color-text-hint);
 }
 
+.status-hint-countdown {
+  font-size: 26rpx;
+  color: #FF4D4F;
+  font-weight: 600;
+}
+
 /* ===== 订单信息-购买产品 ===== */
 .cell-products {
   display: flex;

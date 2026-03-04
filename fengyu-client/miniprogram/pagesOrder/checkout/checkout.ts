@@ -1,5 +1,6 @@
 // pages/checkout/checkout.ts
 import Toast from '@vant/weapp/toast/toast';
+import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 
 const app = getApp<IAppOption>();
@@ -27,6 +28,7 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
   if (res.result?.code !== 0) {
     const err: any = new Error(res.result?.message || '请求失败');
     err.code = res.result?.code;
+    err.data = res.result?.data;
     throw err;
   }
   return res.result.data;
@@ -285,6 +287,17 @@ Page({
     } catch (err: any) {
       if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
         this.setData({ showPhoneBind: true });
+      } else if (err?.data?.pendingOrderNo) {
+        Dialog.confirm({
+          title: '您有待支付订单',
+          message: '请先完成支付或取消订单后再下单',
+          confirmButtonText: '去支付',
+          cancelButtonText: '我知道了',
+        }).then(() => {
+          wx.navigateTo({
+            url: `/pagesOrder/order-detail/order-detail?orderNo=${err.data.pendingOrderNo}`,
+          });
+        }).catch(() => {});
       } else {
         Toast.fail(err?.message || '下单失败，请重试');
       }

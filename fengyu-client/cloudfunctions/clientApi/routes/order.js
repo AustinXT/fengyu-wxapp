@@ -105,13 +105,23 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 参数不完整')
   }
 
+  // 先清理过期的待支付订单（10分钟超时）
+  await pg.query(
+    `UPDATE orders SET status = '已关闭', updated_at = NOW()
+     WHERE client_user_id = $1 AND status = '待支付'
+     AND order_datetime < NOW() - INTERVAL '10 minutes'`,
+    [userId]
+  )
+
   // 检查是否已有待支付订单(部分唯一索引约束)
   const existingOrders = await pg.query(
     "SELECT order_no FROM orders WHERE client_user_id = $1 AND status = '待支付'",
     [userId]
   )
   if (existingOrders.length > 0) {
-    throw new Error('INVALID_PARAMS: 您已有待支付订单,请先完成支付或取消订单')
+    const err = new Error('INVALID_PARAMS: 您已有待支付订单，请先完成支付或取消订单')
+    err.data = { pendingOrderNo: existingOrders[0].order_no }
+    throw err
   }
 
   // 生成订单号（在事务外先生成，订单号无唯一约束冲突风险因为有用户级唯一检查）
@@ -266,6 +276,16 @@ async function pay(ctx) {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
+  // 10分钟超时检查
+  const orderTime = new Date(order.order_datetime)
+  if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
+    await pg.query(
+      "UPDATE orders SET status = '已关闭', updated_at = NOW() WHERE order_no = $1",
+      [orderNo]
+    )
+    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+  }
+
   const now = new Date()
 
   // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
@@ -345,6 +365,16 @@ async function offlinePay(ctx) {
     throw new Error('INVALID_PARAMS: 订单状态不允许付款')
   }
 
+  // 10分钟超时检查
+  const orderTimeOffline = new Date(order.order_datetime)
+  if (Date.now() - orderTimeOffline.getTime() > 10 * 60 * 1000) {
+    await pg.query(
+      "UPDATE orders SET status = '已关闭', updated_at = NOW() WHERE order_no = $1",
+      [orderNo]
+    )
+    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+  }
+
   // 更新订单状态 + 自动绑定 + 设置支付方式
   const now = new Date()
   await pg.query(
@@ -366,6 +396,14 @@ async function offlinePay(ctx) {
 async function list(ctx) {
   const { userId } = ctx.auth
   const { status } = ctx.event.payload || {}
+
+  // 懒清理过期的待支付订单（10分钟超时）
+  await pg.query(
+    `UPDATE orders SET status = '已关闭', updated_at = NOW()
+     WHERE client_user_id = $1 AND status = '待支付'
+     AND order_datetime < NOW() - INTERVAL '10 minutes'`,
+    [userId]
+  )
 
   // 构造查询条件
   let whereClause = 'WHERE o.client_user_id = $1'
@@ -488,10 +526,17 @@ async function detail(ctx) {
   // 计算总金额
   const totalAmount = items.reduce((sum, item) => sum + Number(item.receivable || 0), 0)
 
+  // 待支付订单返回过期时间
+  let expireAt = null
+  if (order.status === '待支付') {
+    expireAt = new Date(new Date(order.order_datetime).getTime() + 10 * 60 * 1000).toISOString()
+  }
+
   ctx.result = {
     order: {
       ...order,
-      total_amount: totalAmount
+      total_amount: totalAmount,
+      expire_at: expireAt
     },
     items
   }
@@ -654,6 +699,16 @@ async function alipayPay(ctx) {
 
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
+  }
+
+  // 10分钟超时检查
+  const orderTimeAlipay = new Date(order.order_datetime)
+  if (Date.now() - orderTimeAlipay.getTime() > 10 * 60 * 1000) {
+    await pg.query(
+      "UPDATE orders SET status = '已关闭', updated_at = NOW() WHERE order_no = $1",
+      [orderNo]
+    )
+    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
   }
 
   // 计算总金额

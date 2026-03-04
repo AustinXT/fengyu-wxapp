@@ -8,6 +8,7 @@
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
     <text class="status-label">{{order.status}}</text>
     <text class="status-hint" wx:if="{{order.status === '待确认收款'}}">请等待店长确认收款</text>
+    <text class="status-hint-countdown" wx:elif="{{order.status === '待支付' && countdown}}">剩余 {{countdown}} 支付</text>
     <text class="status-hint" wx:elif="{{order.status === '待支付'}}">请完成支付</text>
   </view>
 

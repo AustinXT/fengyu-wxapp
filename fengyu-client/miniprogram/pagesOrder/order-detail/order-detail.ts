@@ -29,7 +29,10 @@ Page({
     statusIconColor: '#FAAD14',
     hasAppointableItems: false,
     isLoading: true,
+    countdown: '',
   },
+
+  _countdownTimer: null as any,
 
   onLoad(options) {
     const { orderNo } = options as { orderNo: string };
@@ -74,10 +77,53 @@ Page({
         statusIconColor: iconMeta.color,
         hasAppointableItems,
       });
+
+      // 启动倒计时
+      this.startCountdown(order);
     } catch {
       Toast.fail('加载失败');
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  startCountdown(order: any) {
+    // 清理旧定时器
+    if (this._countdownTimer) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
+    }
+
+    if (order.status !== '待支付' || !order.expire_at) {
+      this.setData({ countdown: '' });
+      return;
+    }
+
+    const tick = () => {
+      const remaining = new Date(order.expire_at).getTime() - Date.now();
+      if (remaining <= 0) {
+        clearInterval(this._countdownTimer);
+        this._countdownTimer = null;
+        this.setData({ countdown: '' });
+        // 超时刷新页面
+        this.loadDetail(order.order_no);
+        return;
+      }
+      const mins = Math.floor(remaining / 60000);
+      const secs = Math.floor((remaining % 60000) / 1000);
+      this.setData({
+        countdown: `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`,
+      });
+    };
+
+    tick();
+    this._countdownTimer = setInterval(tick, 1000);
+  },
+
+  onUnload() {
+    if (this._countdownTimer) {
+      clearInterval(this._countdownTimer);
+      this._countdownTimer = null;
     }
   },
 

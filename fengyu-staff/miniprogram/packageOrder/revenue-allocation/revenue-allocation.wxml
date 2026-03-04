@@ -1,4 +1,9 @@
 <!-- packageOrder/revenue-allocation/revenue-allocation.wxml — 提成分配 -->
+<wxs module="fmt">
+module.exports.pct = function(rate) {
+  return (rate * 100).toFixed(1);
+}
+</wxs>
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -40,7 +45,7 @@
         <view class="dept-row" wx:if="{{line.itemFlowNo === item.item_flow_no}}">
           <view class="dept-label-row">
             <text class="dept-name">{{line.department}}</text>
-            <text class="rate-badge">{{(line.commissionRate * 100).toFixed(1)}}%</text>
+            <text class="rate-badge">{{fmt.pct(line.commissionRate)}}%</text>
           </view>
           <view class="dept-input-row">
             <!-- 员工选择 -->

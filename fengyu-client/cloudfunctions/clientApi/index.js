@@ -94,7 +94,7 @@ exports.main = async (event, context) => {
     return {
       code,
       message: errorMessage,
-      data: null
+      data: error.data || null
     }
   }
 }
