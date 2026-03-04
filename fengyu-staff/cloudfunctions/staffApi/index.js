@@ -54,8 +54,10 @@ const routes = {
   'order.detail':         () => require('./routes/order').detail,
 
   // 营业额分配
-  'allocation.save':      () => require('./routes/allocation').save,
-  'allocation.delete':    () => require('./routes/allocation').deleteAllocation,
+  'allocation.save':         () => require('./routes/allocation').save,
+  'allocation.delete':       () => require('./routes/allocation').deleteAllocation,
+  'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
+  'allocation.pendingList':  () => require('./routes/allocation').pendingList,
 
   // 预约
   'appointment.list':     () => require('./routes/appointment').list,

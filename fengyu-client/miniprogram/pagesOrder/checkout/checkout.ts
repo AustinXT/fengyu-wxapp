@@ -41,7 +41,7 @@ Page({
     staffWfId: '',
     staffName: '',
     storeName: '',
-    paymentMethod: 'wechat' as 'wechat' | 'offline',
+    paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
     agreed: false,
     submitting: false,
     // 若从员工端扫码进入，持有已有 orderNo
@@ -51,6 +51,11 @@ Page({
     cartItems: [] as CheckoutItem[],
     totalPrice: '0.00',
     quantity: 1,
+    // 支付宝二维码弹窗
+    showAlipayQr: false,
+    alipayQrUrl: '',
+    alipayAmount: '0.00',
+    alipayOrderNo: '',
     // 手机号绑定弹窗
     showPhoneBind: false,
     // 美容师选择
@@ -194,11 +199,11 @@ Page({
   },
 
   onPayMethodChange(e: WechatMiniprogram.CustomEvent<string>) {
-    this.setData({ paymentMethod: e.detail as 'wechat' | 'offline' });
+    this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'offline' };
+    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'alipay' | 'offline' };
     this.setData({ paymentMethod: method });
   },
 
@@ -224,6 +229,12 @@ Page({
         await callClientApi('order.offlinePay', { orderNo: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.navigateBack(), 1500);
+        return;
+      }
+
+      if (this.data.existingOrderNo && this.data.paymentMethod === 'alipay') {
+        // 扫码 + 支付宝
+        await this.doAlipayPay(this.data.existingOrderNo);
         return;
       }
 
@@ -264,6 +275,9 @@ Page({
         if (this.data.fromCart) clearCart();
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` }), 1500);
+      } else if (this.data.paymentMethod === 'alipay') {
+        if (this.data.fromCart) clearCart();
+        await this.doAlipayPay(orderNo);
       } else {
         await this.doWechatPay(orderNo);
         if (this.data.fromCart) clearCart();
@@ -321,6 +335,27 @@ Page({
       wx.hideLoading();
       Toast.fail(err.message || '绑定失败，请重试');
     }
+  },
+
+  async doAlipayPay(orderNo: string) {
+    const data = await callClientApi('order.alipayPay', { orderNo });
+    this.setData({
+      showAlipayQr: true,
+      alipayQrUrl: data?.qrCodeUrl || '',
+      alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
+      alipayOrderNo: orderNo,
+    });
+  },
+
+  onAlipayDone() {
+    const orderNo = this.data.alipayOrderNo;
+    this.setData({ showAlipayQr: false });
+    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+  },
+
+  onAlipayClose() {
+    // 关闭弹窗但不跳转，用户可能还想选其他支付方式
+    this.setData({ showAlipayQr: false });
   },
 
   async doWechatPay(orderNo: string) {

@@ -30,6 +30,7 @@ const routes = {
   'staff.default': () => require('./routes/staff').defaultStaff,
   'order.create': () => require('./routes/order').create,
   'order.pay': () => require('./routes/order').pay,
+  'order.alipayPay': () => require('./routes/order').alipayPay,
   'order.offlinePay': () => require('./routes/order').offlinePay,
   'order.list': () => require('./routes/order').list,
   'order.detail': () => require('./routes/order').detail,

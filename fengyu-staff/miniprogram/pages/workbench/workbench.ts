@@ -39,6 +39,7 @@ Page({
     pendingOfflineOrderCount: 0,
     pendingCreateOrderCount: 0,
     pendingUnbindCount: 0,
+    pendingAllocationCount: 0,
   },
 
   onLoad() {
@@ -200,6 +201,7 @@ Page({
         pendingOfflineOrderCount?: number;
         pendingCreateOrderCount?: number;
         pendingUnbindCount?: number;
+        pendingAllocationCount?: number;
       }>('staff.todoList');
       this.setData({
         pendingAppointmentCount: data.pendingAppointmentCount || 0,
@@ -207,6 +209,7 @@ Page({
         pendingOfflineOrderCount: data.pendingOfflineOrderCount || 0,
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
         pendingUnbindCount: data.pendingUnbindCount || 0,
+        pendingAllocationCount: data.pendingAllocationCount || 0,
       });
     } catch (_) {}
   },
@@ -233,5 +236,9 @@ Page({
 
   goUnbindRequests() {
     wx.navigateTo({ url: '/packageService/unbind-requests/unbind-requests' });
+  },
+
+  goAllocationList() {
+    wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 });

@@ -1,0 +1,40 @@
+/* packageOrder/allocation-list/allocation-list.wxss */
+
+.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
+.loading-more { display: flex; justify-content: center; padding: 32rpx 0; }
+
+.order-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  margin: 24rpx 32rpx 0;
+  padding: 24rpx;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+.order-no { font-size: 22rpx; color: #999; font-family: monospace; }
+
+.card-body { margin-bottom: 16rpx; }
+
+.info-row {
+  display: flex;
+  align-items: center;
+  padding: 6rpx 0;
+}
+.info-label { font-size: 24rpx; color: #999; width: 120rpx; }
+.info-value { font-size: 26rpx; color: #2D2017; flex: 1; }
+.info-value.amount { font-weight: 700; color: #C0322A; font-size: 30rpx; }
+
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8rpx;
+  border-top: 1rpx solid #F0F0F0;
+  padding-top: 16rpx;
+}
+.action-hint { font-size: 24rpx; color: #D4820A; }

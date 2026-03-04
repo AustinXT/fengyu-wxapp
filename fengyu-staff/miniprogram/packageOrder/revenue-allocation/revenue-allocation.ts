@@ -1,31 +1,69 @@
-// pages/revenue-allocation/revenue-allocation.ts
+// packageOrder/revenue-allocation/revenue-allocation.ts — 提成分配（支付后）
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 
-interface AllocationRow {
+interface OrderItem {
+  item_flow_no: string;
+  spu_name: string;
+  sku_display_name: string;
+  receivable: string;
+  sales_category: string | null;
+  product_type: string;
+}
+
+interface RateRow {
+  department: string;
+  amountMin: number;
+  amountMax: number;
+  orderRates: Record<string, number>;
+  serviceRates: Record<string, number>;
+}
+
+interface DeptStaff {
+  department: string;
+  staffList: Array<{ staffWfId: string; staffName: string; }>;
+}
+
+interface DeptApiResponse {
+  departments: Array<{
+    departmentName: string;
+    members: Array<{ staffWfId: string; name: string; position: string; department: string }>;
+  }>;
+}
+
+/** 每个 item × department 的分配行 */
+interface AllocLine {
+  itemFlowNo: string;
+  department: string;
   staffWfId: string;
   staffName: string;
-  department: string;
-  amount: string;
+  salesCategory: string;
+  commissionRate: number;
+  amount: string; // 可手动覆盖
+  autoAmount: string; // 自动计算值
 }
 
 Page({
   data: {
     loading: false,
     submitting: false,
-    orderId: '',
     orderNo: '',
+    order: null as any,
+    items: [] as OrderItem[],
     totalAmount: 0,
-    totalAmountStr: '0.00',
-    orderStatus: '',
-    staffList: [] as any[],
-    staffColumns: [] as string[],
-    rows: [] as AllocationRow[],
+    deptStaffList: [] as DeptStaff[],
+    rates: [] as RateRow[],
+    allocLines: [] as AllocLine[],
+    // 汇总
+    summary: [] as Array<{ staffName: string; department: string; total: string }>,
+    grandTotal: '0.00',
+    // 已分配状态
+    isAllocated: false,
+    // 员工选择器
     showPicker: false,
-    editingRowIndex: -1,
-    totalAllocated: '0.00',
-    isOverBudget: false,
-    isLocked: false,   // 顾客扫码后锁定
+    pickerLineIndex: -1,
+    pickerColumns: [] as string[],
+    pickerStaffList: [] as Array<{ staffWfId: string; staffName: string }>,
   },
 
   onLoad(options: Record<string, string>) {
@@ -33,153 +71,264 @@ Page({
       wx.navigateBack();
       return;
     }
-    if (options.orderId) {
-      this.setData({ orderId: options.orderId });
-      this.init(options.orderId);
+    const orderNo = options.orderNo || options.orderId;
+    if (orderNo) {
+      this.setData({ orderNo });
+      this.init(orderNo);
     }
   },
 
-  async init(orderId: string) {
+  async init(orderNo: string) {
     this.setData({ loading: true });
     try {
-      const [order, staffList] = await Promise.all([
-        callStaffApi<any>('order.detail', { orderId }),
-        callStaffApi<any[]>('staff.list', { isAllocatable: true }),
+      const [orderData, deptResponse] = await Promise.all([
+        callStaffApi<any>('order.detail', { orderNo }),
+        callStaffApi<DeptApiResponse>('staff.departments'),
       ]);
-      const totalAmount = parseFloat(order.totalAmount) || 0;
-      // 扫码后（非待支付、非待确认收款）锁定分配
-      const isLocked = !['待支付', '待确认收款'].includes(order.status);
-      // 从已有分配初始化行
-      const rows: AllocationRow[] = (order.allocation || []).map((a: any) => ({
-        staffWfId: a.staffWfId || '',
-        staffName: a.staffName,
-        department: a.department,
-        amount: a.amount,
+
+      const order = orderData.order;
+      const items: OrderItem[] = orderData.items || [];
+      const totalAmount = Number(order.totalAmount) || 0;
+      const isAllocated = order.allocation_status === 'allocated';
+
+      // 按部门分组员工
+      const deptStaffList: DeptStaff[] = (deptResponse.departments || []).map((d: any) => ({
+        department: d.departmentName,
+        staffList: (d.members || []).map((s: any) => ({
+          staffWfId: s.staffWfId,
+          staffName: s.name || '',
+        })),
       }));
+
+      // 尝试获取提成比例
+      let rates: RateRow[] = [];
+      try {
+        const rateData = await callStaffApi<{ rates: RateRow[] }>('allocation.rates', {
+          marketName: order.market_name,
+        });
+        rates = rateData.rates || [];
+      } catch (_) {
+        console.warn('[allocation] 获取提成比例失败，使用手动模式');
+      }
+
       this.setData({
-        orderNo: order.orderNo,
+        order,
+        items,
         totalAmount,
-        totalAmountStr: order.totalAmount,
-        orderStatus: order.status,
-        staffList: staffList || [],
-        staffColumns: (staffList || []).map((s: any) => `${s.staffName}（${s.department}）`),
-        rows: rows.length > 0 ? rows : [{ staffWfId: '', staffName: '', department: '', amount: '' }],
-        isLocked,
+        deptStaffList,
+        rates,
+        isAllocated,
         loading: false,
       });
-      this.computeTotals();
+
+      // 如果已有分配记录，恢复
+      if (isAllocated && orderData.allocations && orderData.allocations.length > 0) {
+        this.restoreAllocations(orderData.allocations, items);
+      } else {
+        // 自动生成分配行
+        this.generateAllocLines(items, rates, totalAmount);
+      }
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
       this.setData({ loading: false });
     }
   },
 
-  computeTotals() {
-    const rows = this.data.rows;
-    let total = 0;
-    rows.forEach(r => { total += parseFloat(r.amount) || 0; });
+  /** 从已有分配记录恢复 */
+  restoreAllocations(allocations: any[], items: OrderItem[]) {
+    const lines: AllocLine[] = [];
+    for (const alloc of allocations) {
+      if (alloc.isVoid) continue;
+      for (const ai of (alloc.items || [])) {
+        lines.push({
+          itemFlowNo: ai.itemFlowNo || '',
+          department: alloc.department || '',
+          staffWfId: alloc.employeeId || '',
+          staffName: '', // 会在下面补充
+          salesCategory: ai.category || '',
+          commissionRate: Number(ai.commissionRate) || 0,
+          amount: String(Number(ai.amount).toFixed(2)),
+          autoAmount: String(Number(ai.amount).toFixed(2)),
+        });
+      }
+    }
+    // 补充员工姓名
+    const staffMap = new Map<string, string>();
+    this.data.deptStaffList.forEach(d => {
+      d.staffList.forEach(s => staffMap.set(s.staffWfId, s.staffName));
+    });
+    lines.forEach(l => {
+      l.staffName = staffMap.get(l.staffWfId) || l.staffWfId;
+    });
+    this.setData({ allocLines: lines });
+    this.computeSummary();
+  },
+
+  /** 根据 items × rates 自动生成分配行 */
+  generateAllocLines(items: OrderItem[], rates: RateRow[], totalAmount: number) {
+    const lines: AllocLine[] = [];
+
+    for (const item of items) {
+      const salesCat = item.sales_category || '自采自销';
+      const receivable = Number(item.receivable) || 0;
+
+      // 每个部门查找对应的提成比例
+      const seenDepts = new Set<string>();
+      for (const rate of rates) {
+        const dept = rate.department;
+        // 推广部有梯度：按订单总金额匹配区间
+        if (dept === '推广部') {
+          if (totalAmount < rate.amountMin || totalAmount > rate.amountMax) continue;
+        }
+        if (seenDepts.has(dept)) continue;
+
+        const commRate = rate.orderRates[salesCat] || 0;
+        if (commRate <= 0) continue; // 提成为0的不显示
+
+        seenDepts.add(dept);
+        const amount = (receivable * commRate).toFixed(2);
+
+        lines.push({
+          itemFlowNo: item.item_flow_no,
+          department: dept,
+          staffWfId: '',
+          staffName: '',
+          salesCategory: salesCat,
+          commissionRate: commRate,
+          amount,
+          autoAmount: amount,
+        });
+      }
+    }
+
+    this.setData({ allocLines: lines });
+    this.computeSummary();
+  },
+
+  computeSummary() {
+    const lines = this.data.allocLines;
+    // 按 staffWfId+department 聚合
+    const map = new Map<string, { staffName: string; department: string; total: number }>();
+    let grand = 0;
+    for (const l of lines) {
+      const amt = parseFloat(l.amount) || 0;
+      grand += amt;
+      if (l.staffWfId) {
+        const key = `${l.staffWfId}_${l.department}`;
+        const existing = map.get(key);
+        if (existing) {
+          existing.total += amt;
+        } else {
+          map.set(key, { staffName: l.staffName, department: l.department, total: amt });
+        }
+      }
+    }
+    const summary = Array.from(map.values()).map(s => ({
+      staffName: s.staffName,
+      department: s.department,
+      total: s.total.toFixed(2),
+    }));
     this.setData({
-      totalAllocated: total.toFixed(2),
-      isOverBudget: total > this.data.totalAmount + 0.01, // 允许0.01分误差
+      summary,
+      grandTotal: grand.toFixed(2),
     });
   },
 
-  onAddRow() {
-    if (this.data.isLocked) return;
-    if (this.data.rows.length >= 4) {
-      wx.showToast({ title: '最多添加4位员工', icon: 'none' });
-      return;
-    }
-    const rows = [...this.data.rows, { staffWfId: '', staffName: '', department: '', amount: '' }];
-    this.setData({ rows });
-  },
-
-  onRemoveRow(e: WechatMiniprogram.TouchEvent) {
-    const index = e.currentTarget.dataset.index as number;
-    const rows = this.data.rows.filter((_, i) => i !== index);
-    this.setData({ rows: rows.length > 0 ? rows : [{ staffWfId: '', staffName: '', department: '', amount: '' }] });
-    this.computeTotals();
+  /** 获取某行对应的 item 显示名 */
+  getItemName(itemFlowNo: string): string {
+    const item = this.data.items.find(i => i.item_flow_no === itemFlowNo);
+    return item ? (item.spu_name || item.sku_display_name || itemFlowNo) : itemFlowNo;
   },
 
   onTapStaff(e: WechatMiniprogram.TouchEvent) {
-    if (this.data.isLocked) return;
     const index = e.currentTarget.dataset.index as number;
-    this.setData({ showPicker: true, editingRowIndex: index });
+    const line = this.data.allocLines[index];
+    if (!line) return;
+
+    // 找到该部门的员工列表
+    const dept = this.data.deptStaffList.find(d => d.department === line.department);
+    const staffList = dept ? dept.staffList : [];
+
+    this.setData({
+      showPicker: true,
+      pickerLineIndex: index,
+      pickerColumns: staffList.map(s => s.staffName),
+      pickerStaffList: staffList,
+    });
   },
 
   onPickerConfirm(e: WechatMiniprogram.CustomEvent) {
     const pickerIndex = e.detail.index as number;
-    const staff = this.data.staffList[pickerIndex];
+    const staff = this.data.pickerStaffList[pickerIndex];
     if (!staff) return;
-    const rows = [...this.data.rows];
-    rows[this.data.editingRowIndex] = {
-      ...rows[this.data.editingRowIndex],
+    const lines = [...this.data.allocLines];
+    lines[this.data.pickerLineIndex] = {
+      ...lines[this.data.pickerLineIndex],
       staffWfId: staff.staffWfId,
       staffName: staff.staffName,
-      department: staff.department,
     };
-    this.setData({ rows, showPicker: false, editingRowIndex: -1 });
+    this.setData({ allocLines: lines, showPicker: false, pickerLineIndex: -1 });
+    this.computeSummary();
   },
 
   onPickerCancel() {
-    this.setData({ showPicker: false, editingRowIndex: -1 });
+    this.setData({ showPicker: false, pickerLineIndex: -1 });
   },
 
   onAmountChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.currentTarget.dataset.index as number;
-    const rows = [...this.data.rows];
-    rows[index] = { ...rows[index], amount: e.detail.value };
-    this.setData({ rows });
-    this.computeTotals();
-  },
-
-  onPresetRatio(e: WechatMiniprogram.TouchEvent) {
-    const { ratio } = e.currentTarget.dataset as { ratio: string };
-    const rows = this.data.rows;
-    if (rows.length < 2) {
-      wx.showToast({ title: '请先添加两位员工', icon: 'none' });
-      return;
-    }
-    const parts = ratio.split(':').map(Number);
-    const sum = parts.reduce((a, b) => a + b, 0);
-    const total = this.data.totalAmount;
-    const newRows = [...rows];
-    let remaining = total;
-    parts.forEach((p, i) => {
-      if (i === parts.length - 1) {
-        newRows[i] = { ...newRows[i], amount: remaining.toFixed(2) };
-      } else {
-        const amt = parseFloat((total * p / sum).toFixed(2));
-        remaining -= amt;
-        newRows[i] = { ...newRows[i], amount: amt.toFixed(2) };
-      }
-    });
-    this.setData({ rows: newRows });
-    this.computeTotals();
+    const lines = [...this.data.allocLines];
+    lines[index] = { ...lines[index], amount: e.detail.value };
+    this.setData({ allocLines: lines });
+    this.computeSummary();
   },
 
   async onSave() {
-    const { rows, orderId, isOverBudget, totalAmount } = this.data;
-    const hasEmpty = rows.some(r => !r.staffWfId || !r.amount);
-    if (hasEmpty) {
-      wx.showToast({ title: '请完整填写员工和金额', icon: 'none' });
+    const { allocLines, orderNo } = this.data;
+
+    // 校验：每行都要选员工
+    const incomplete = allocLines.some(l => !l.staffWfId);
+    if (incomplete) {
+      wx.showToast({ title: '请为每一项选择员工', icon: 'none' });
       return;
     }
-    if (isOverBudget) {
-      wx.showToast({ title: `分配总额不能超过实收 ¥${totalAmount.toFixed(2)}`, icon: 'none' });
-      return;
+
+    // 组装 payload：按 employeeId + department 聚合
+    const allocMap = new Map<string, {
+      employeeId: string;
+      department: string;
+      items: Array<{
+        itemFlowNo: string;
+        salesCategory: string;
+        commissionRate: number;
+        amount: number;
+      }>;
+    }>();
+
+    for (const line of allocLines) {
+      const key = `${line.staffWfId}_${line.department}`;
+      let entry = allocMap.get(key);
+      if (!entry) {
+        entry = {
+          employeeId: line.staffWfId,
+          department: line.department,
+          items: [],
+        };
+        allocMap.set(key, entry);
+      }
+      entry.items.push({
+        itemFlowNo: line.itemFlowNo,
+        salesCategory: line.salesCategory,
+        commissionRate: line.commissionRate,
+        amount: parseFloat(line.amount) || 0,
+      });
     }
+
+    const allocations = Array.from(allocMap.values());
+
     this.setData({ submitting: true });
     try {
-      await callStaffApi('allocation.save', {
-        orderId,
-        items: rows.map(r => ({
-          staffWfId: r.staffWfId,
-          staffName: r.staffName,
-          department: r.department,
-          amount: parseFloat(r.amount),
-        })),
-      });
+      await callStaffApi('allocation.save', { orderNo, allocations });
       wx.showToast({ title: '分配已保存', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
     } catch (err: any) {

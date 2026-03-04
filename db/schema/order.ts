@@ -13,7 +13,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
-import { orderSourceEnum, orderStatusEnum, orderTypeEnum, paymentMethodEnum } from './enums'
+import { orderSourceEnum, orderStatusEnum, orderTypeEnum, paymentMethodEnum, salesCategoryEnum } from './enums'
 import { productSpuSkuMap } from './product'
 
 /**
@@ -65,8 +65,12 @@ export const orders = pgTable(
      * 线下付款时为 null。
      */
     wechatTransactionId: text('wechat_transaction_id').unique(),
+    /** 支付宝交易号，支付宝回调写入，用于对账。线下/微信支付时为 null。 */
+    alipayTransactionId: text('alipay_transaction_id').unique(),
     offlineConfirmedBy: text('offline_confirmed_by'),
     offlineConfirmedAt: timestamp('offline_confirmed_at'),
+    /** 提成分配状态：null（待支付阶段）→ 'pending'（已支付待分配）→ 'allocated'（已分配） */
+    allocationStatus: text('allocation_status'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -118,6 +122,8 @@ export const orderItems = pgTable(
     expireDate: date('expire_date'),
     remark: text('remark'),
     promotionSchemeId: text('promotion_scheme_id'),
+    /** 销售分类快照，开单时从 WorkFine UDF_M_18635 读取 */
+    salesCategory: salesCategoryEnum('sales_category'),
   },
   (table) => [
     index('idx_order_items_order_no').on(table.orderNo),
@@ -139,6 +145,8 @@ export const revenueAllocations = pgTable(
       .references(() => orders.orderNo),
     /** 关联 WorkFine UDT_S_287.UDF_S_1147 */
     employeeId: text('employee_id').notNull(),
+    /** 员工所属部门快照（美容部/推广部/养生部等） */
+    department: text('department'),
     /** 占比，如 0.3；跨部门或单人时为 1.0 */
     allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 2 }).notNull(),
     /** 等于 revenue_allocation_items.amount 之和 */
@@ -164,9 +172,13 @@ export const revenueAllocationItems = pgTable('revenue_allocation_items', {
   allocationId: bigint('allocation_id', { mode: 'number' })
     .notNull()
     .references(() => revenueAllocations.id),
-  /** 业绩分类名称，如"眉眼"、"唇"、"祛斑点痣"、"单品" */
+  /** 关联 order_items.item_flow_no，历史数据为 null */
+  itemFlowNo: text('item_flow_no').references(() => orderItems.itemFlowNo),
+  /** 业绩分类名称（销售分类），如"自采自销"、"他销自耗" */
   performanceCategory: text('performance_category').notNull(),
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  /** 提成比例快照，审计用 */
+  commissionRate: numeric('commission_rate', { precision: 5, scale: 4 }),
 })
 
 export type Order = typeof orders.$inferSelect

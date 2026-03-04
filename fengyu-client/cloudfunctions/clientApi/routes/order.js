@@ -144,7 +144,8 @@ async function create(ctx) {
       saleAmount,
       receivable: saleAmount,
       received: 0,
-      productType: skuInfo.product_type
+      productType: skuInfo.product_type,
+      salesCategory: workfinePrice.salesCategory || null
     }
   })
 
@@ -209,13 +210,13 @@ async function create(ctx) {
         `INSERT INTO order_items (
           item_flow_no, order_no, sku_id, session_count, remaining_sessions,
           unit_price, quantity, unit_discount, sale_amount, receivable, received,
-          promotion_scheme_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          promotion_scheme_id, sales_category
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           itemFlowNo, orderNo, d.skuId, d.sessionCount,
           d.remainingSessions, d.unitPrice, d.quantity,
           d.unitDiscount, d.saleAmount, d.receivable, d.received,
-          promotionSchemeId
+          promotionSchemeId, d.salesCategory || null
         ]
       )
     }
@@ -288,11 +289,15 @@ async function pay(ctx) {
   )
   const totalAmount = items[0].total || 0
 
-  // TODO: 调用微信支付统一下单接口,生成预支付参数
-  // 这里返回模拟数据,实际需要对接微信支付
+  // TODO: 接入真实微信支付统一下单接口
+  // 需要配置：商户号(mchId)、APIv3 密钥、证书
+  // 调用 wx.requestPayment 所需参数由统一下单接口返回
+  // 重要：支付回调成功时需同步设 allocation_status = 'pending'
   ctx.result = {
     orderNo,
     totalAmount,
+    paymentMethod: 'wechat',
+    mockMode: true,
     paymentParams: {
       timeStamp: String(Math.floor(Date.now() / 1000)),
       nonceStr: Math.random().toString(36).substr(2),
@@ -614,6 +619,70 @@ async function appointableItems(ctx) {
   }
 }
 
+/**
+ * 发起支付宝支付
+ * 生成支付宝收款二维码链接，用户截图后在支付宝扫码支付
+ * 流程与线下付款类似：待支付 → 待确认收款 → 已支付（店长确认）
+ */
+async function alipayPay(ctx) {
+  const { userId } = ctx.auth
+  const { orderNo } = ctx.event.payload || {}
+
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+  }
+
+  const orders = await pg.query(
+    'SELECT * FROM orders WHERE order_no = $1',
+    [orderNo]
+  )
+
+  if (orders.length === 0) {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
+  const order = orders[0]
+
+  // 权限：已绑定用户 → 校验一致；未绑定 → 仅允许员工开单订单
+  if (order.client_user_id) {
+    if (order.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+  } else if (order.order_source !== 'staff') {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+
+  if (order.status !== '待支付') {
+    throw new Error('INVALID_PARAMS: 订单状态不允许支付')
+  }
+
+  // 计算总金额
+  const items = await pg.query(
+    'SELECT SUM(receivable) AS total FROM order_items WHERE order_no = $1',
+    [orderNo]
+  )
+  const totalAmount = Number(items[0].total || 0)
+
+  // 更新支付方式 + 状态 → 待确认收款（与线下付款类似，需店长确认）
+  const now = new Date()
+  await pg.query(
+    "UPDATE orders SET status = '待确认收款', payment_method = 'alipay', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE order_no = $3",
+    [userId, now, orderNo]
+  )
+
+  // TODO: 接入真实支付宝当面付 API 生成收款二维码
+  // 需要配置：支付宝应用 ID、应用私钥、支付宝公钥
+  // 调用 alipay.trade.precreate 接口获取 qr_code
+  ctx.result = {
+    orderNo,
+    totalAmount,
+    mockMode: true,
+    // mock 二维码 URL，真实接入时替换为 alipay.trade.precreate 返回的 qr_code
+    qrCodeUrl: `https://qr.alipay.com/mock_${orderNo}`,
+    status: '待确认收款'
+  }
+}
+
 // ========== 辅助函数 ==========
 
 /**
@@ -671,7 +740,8 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
     sql = `
       SELECT
         UDF_M_14508 AS original_price,
-        UDF_M_14506 AS session_count
+        UDF_M_14506 AS session_count,
+        UDF_M_18635 AS sales_category
       FROM UDT_M_1281
       WHERE UDF_M_14503 = '${workfineItemId}'
     `
@@ -679,7 +749,8 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
     sql = `
       SELECT
         UDF_M_14508 AS original_price,
-        UDF_M_14506 AS session_count
+        UDF_M_14506 AS session_count,
+        UDF_M_18635 AS sales_category
       FROM UDT_M_1383
       WHERE UDF_M_14503 = '${workfineItemId}'
     `
@@ -687,7 +758,8 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
     sql = `
       SELECT
         UDF_M_1875 AS original_price,
-        NULL AS session_count
+        NULL AS session_count,
+        UDF_M_18635 AS sales_category
       FROM UDT_M_341
       WHERE UDF_M_1870 = '${workfineItemId}'
     `
@@ -701,13 +773,15 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
 
   return {
     originalPrice: result[0].original_price,
-    sessionCount: result[0].session_count
+    sessionCount: result[0].session_count,
+    salesCategory: result[0].sales_category ? String(result[0].sales_category).trim() : null
   }
 }
 
 module.exports = {
   create,
   pay,
+  alipayPay,
   offlinePay,
   list,
   detail,

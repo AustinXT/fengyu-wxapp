@@ -131,6 +131,15 @@
         </van-cell>
         <van-cell
           wx:if="{{isManager}}"
+          title="待提成分配"
+          value="{{pendingAllocationCount}}条"
+          is-link
+          bind:click="goAllocationList"
+        >
+          <van-icon slot="icon" name="balance-o" size="40rpx" color="#D4820A" class="cell-icon" />
+        </van-cell>
+        <van-cell
+          wx:if="{{isManager}}"
           title="待审批解绑申请"
           value="{{pendingUnbindCount}}条"
           is-link

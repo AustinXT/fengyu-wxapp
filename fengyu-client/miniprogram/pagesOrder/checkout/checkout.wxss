@@ -72,6 +72,64 @@
   border: none;
 }
 
+/* ===== 支付宝二维码弹窗 ===== */
+.pay-icon {
+  width: 40rpx;
+  height: 40rpx;
+  margin-right: 16rpx;
+}
+
+.alipay-qr-popup {
+  padding: 48rpx 40rpx calc(48rpx + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.alipay-qr-popup__title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 32rpx;
+}
+
+.alipay-qr-popup__image {
+  width: 400rpx;
+  height: 400rpx;
+  border-radius: 16rpx;
+  background: #f5f5f5;
+  margin-bottom: 24rpx;
+}
+
+.alipay-qr-popup__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  margin-bottom: 16rpx;
+}
+
+.alipay-qr-popup__symbol {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__price {
+  font-size: 52rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.alipay-qr-popup__tips {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 40rpx;
+}
+
+.alipay-qr-popup__btn {
+  width: 100% !important;
+}
+
 /* ===== 美容师选择 Popup ===== */
 .staff-popup {
   padding-bottom: env(safe-area-inset-bottom);

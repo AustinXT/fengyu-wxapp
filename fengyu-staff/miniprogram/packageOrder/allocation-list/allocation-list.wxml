@@ -1,0 +1,48 @@
+<!-- packageOrder/allocation-list/allocation-list.wxml — 待分配订单列表 -->
+<view class="container">
+
+  <view wx:if="{{loading && orders.length === 0}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <van-empty wx:elif="{{!loading && orders.length === 0}}" description="暂无待分配订单" />
+
+  <block wx:else>
+    <view
+      class="order-card"
+      wx:for="{{orders}}"
+      wx:key="order_no"
+      data-order-no="{{item.order_no}}"
+      bindtap="onTapOrder"
+    >
+      <view class="card-header">
+        <text class="order-no">{{item.order_no}}</text>
+        <van-tag color="#D4820A" plain>待分配</van-tag>
+      </view>
+      <view class="card-body">
+        <view class="info-row">
+          <text class="info-label">顾客</text>
+          <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">金额</text>
+          <text class="info-value amount">¥{{item.total_amount}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">支付时间</text>
+          <text class="info-value">{{item.paid_at}}</text>
+        </view>
+      </view>
+      <view class="card-footer">
+        <text class="action-hint">点击分配提成</text>
+        <van-icon name="arrow" size="28rpx" color="#999" />
+      </view>
+    </view>
+  </block>
+
+  <view wx:if="{{loading && orders.length > 0}}" class="loading-more">
+    <van-loading size="24px" color="#999">加载中...</van-loading>
+  </view>
+
+  <view class="safe-area-bottom" />
+</view>

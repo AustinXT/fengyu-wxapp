@@ -110,6 +110,7 @@ async function create(ctx) {
       // 体验单允许自定义价格，其他从 WorkFine 读取
       let unitPrice
       let sessionCount = null
+      let salesCategory = null
 
       if (orderType === '体验' && item.customPrice !== undefined) {
         unitPrice = Number(item.customPrice)
@@ -118,6 +119,7 @@ async function create(ctx) {
         const wfData = await getWorkfinePrice(sku.workfine_item_id, sku.workfine_source)
         unitPrice = wfData.originalPrice
         sessionCount = wfData.sessionCount
+        salesCategory = wfData.salesCategory || null
       }
 
       const quantity = item.quantity || 1
@@ -141,7 +143,8 @@ async function create(ctx) {
         unitDiscount,
         saleAmount,
         receivable,
-        received: 0
+        received: 0,
+        salesCategory
       }
     })
   )
@@ -195,12 +198,14 @@ async function create(ctx) {
       await client.query(
         `INSERT INTO order_items (
           item_flow_no, order_no, sku_id, session_count, remaining_sessions,
-          unit_price, quantity, unit_discount, sale_amount, receivable, received
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          unit_price, quantity, unit_discount, sale_amount, receivable, received,
+          sales_category
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           itemFlowNo, orderNo, d.skuId, sc, rs,
           d.unitPrice, d.quantity, d.unitDiscount,
-          d.saleAmount, d.receivable, d.received
+          d.saleAmount, d.receivable, d.received,
+          d.salesCategory || null
         ]
       )
     }
@@ -359,11 +364,12 @@ async function confirmOffline(ctx) {
   const totalReceived = items.reduce((s, i) => s + Number(i.receivable || 0), 0)
 
   await pg.transaction(async (client) => {
-    // 更新订单状态
+    // 更新订单状态 + 设置 allocation_status = 'pending'（待店长分配）
     await client.query(
       `UPDATE orders
        SET status = '已支付', paid_at = $1, updated_at = $1,
-           offline_confirmed_by = $2, offline_confirmed_at = $1
+           offline_confirmed_by = $2, offline_confirmed_at = $1,
+           allocation_status = 'pending'
        WHERE order_no = $3`,
       [now, ctx.auth.staffWfId, orderNo]
     )
@@ -385,29 +391,6 @@ async function confirmOffline(ctx) {
          AND oi.expire_date IS NULL`,
       [now, orderNo]
     )
-
-    // 自动营业额分配（顾客指定了美容师且无分配记录时）
-    if (order.preferred_staff_wf_id) {
-      const existAlloc = await client.query(
-        'SELECT id FROM revenue_allocations WHERE order_no = $1 AND is_void = false LIMIT 1',
-        [orderNo]
-      )
-      if (existAlloc.rows.length === 0) {
-        const allocId = await client.query(
-          `INSERT INTO revenue_allocations
-             (order_no, employee_id, allocation_ratio, total_amount, is_void, created_at, updated_at)
-           VALUES ($1, $2, 1.0, $3, false, $4, $4)
-           RETURNING id`,
-          [orderNo, order.preferred_staff_wf_id, totalReceived, now]
-        )
-        // 插入默认分类明细（单品分类）
-        await client.query(
-          `INSERT INTO revenue_allocation_items (allocation_id, performance_category, amount)
-           VALUES ($1, '单品', $2)`,
-          [allocId.rows[0].id, totalReceived]
-        )
-      }
-    }
   })
 
   ctx.result = {
@@ -629,7 +612,7 @@ async function detail(ctx) {
     SELECT
       oi.item_flow_no, oi.sku_id, oi.session_count, oi.remaining_sessions,
       oi.unit_price, oi.quantity, oi.sale_amount, oi.receivable, oi.received,
-      oi.expire_date, oi.remark,
+      oi.expire_date, oi.remark, oi.sales_category,
       p.name AS spu_name, m.sku_display_name, m.product_type
     FROM order_items oi
     LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
@@ -643,8 +626,9 @@ async function detail(ctx) {
   // 营业额分配
   const allocations = await pg.query(`
     SELECT
-      ra.id, ra.employee_id, ra.allocation_ratio, ra.total_amount, ra.is_void,
-      rai.performance_category, rai.amount AS category_amount
+      ra.id, ra.employee_id, ra.department, ra.allocation_ratio, ra.total_amount, ra.is_void,
+      rai.item_flow_no, rai.performance_category, rai.amount AS category_amount,
+      rai.commission_rate
     FROM revenue_allocations ra
     LEFT JOIN revenue_allocation_items rai ON rai.allocation_id = ra.id
     WHERE ra.order_no = $1
@@ -658,6 +642,7 @@ async function detail(ctx) {
       allocMap[r.id] = {
         id: r.id,
         employeeId: r.employee_id,
+        department: r.department,
         allocationRatio: r.allocation_ratio,
         totalAmount: r.total_amount,
         isVoid: r.is_void,
@@ -666,8 +651,10 @@ async function detail(ctx) {
     }
     if (r.performance_category) {
       allocMap[r.id].items.push({
+        itemFlowNo: r.item_flow_no,
         category: r.performance_category,
-        amount: r.category_amount
+        amount: r.category_amount,
+        commissionRate: r.commission_rate,
       })
     }
   }
@@ -714,16 +701,16 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
   let sql = ''
 
   if (workfineSource === 'UDT_M_1281') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count
+    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, UDF_M_18635 AS sales_category
            FROM UDT_M_1281 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_1383') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count
+    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, UDF_M_18635 AS sales_category
            FROM UDT_M_1383 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_341') {
-    sql = `SELECT UDF_M_1875 AS original_price, NULL AS session_count
+    sql = `SELECT UDF_M_1875 AS original_price, NULL AS session_count, UDF_M_18635 AS sales_category
            FROM UDT_M_341 WHERE UDF_M_1870 = '${esc(workfineItemId)}'`
   } else if (workfineSource === 'UDT_M_1460') {
-    sql = `SELECT UDF_M_17171 AS original_price, UDF_M_17167 AS session_count
+    sql = `SELECT UDF_M_17171 AS original_price, UDF_M_17167 AS session_count, UDF_M_18635 AS sales_category
            FROM UDT_M_1460 WHERE UDF_M_17163 = '${esc(workfineItemId)}'`
   } else {
     throw new Error(`INVALID_PARAMS: 未知 workfine_source: ${workfineSource}`)
@@ -737,7 +724,8 @@ async function getWorkfinePrice(workfineItemId, workfineSource) {
 
   return {
     originalPrice: result[0].original_price,
-    sessionCount: result[0].session_count
+    sessionCount: result[0].session_count,
+    salesCategory: result[0].sales_category ? String(result[0].sales_category).trim() : null
   }
 }
 

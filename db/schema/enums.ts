@@ -22,7 +22,7 @@ export const orderStatusEnum = pgEnum('order_status', [
 
 export const orderTypeEnum = pgEnum('order_type', ['正式', '体验', '促销方案'])
 
-export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'offline'])
+export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'alipay', 'offline'])
 
 export const orderSourceEnum = pgEnum('order_source', ['client', 'staff'])
 
@@ -38,4 +38,8 @@ export const appointmentStatusEnum = pgEnum('appointment_status', [
 
 export const storeUnbindRequestStatusEnum = pgEnum('store_unbind_request_status', [
   'pending', 'approved', 'rejected', 'cancelled'
+])
+
+export const salesCategoryEnum = pgEnum('sales_category', [
+  '自采自销', '他销自耗', '他销他耗', '生态合作'
 ])
