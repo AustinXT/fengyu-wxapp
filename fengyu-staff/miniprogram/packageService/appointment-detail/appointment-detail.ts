@@ -79,6 +79,10 @@ Page({
     wx.navigateTo({ url: `/packageService/service-create/service-create?appointmentId=${id}` });
   },
 
+  onBackToWorkbench() {
+    wx.switchTab({ url: '/pages/workbench/workbench' });
+  },
+
   onViewServiceOrder() {
     const svcId = this.data.appt?.serviceOrderId;
     if (svcId) {

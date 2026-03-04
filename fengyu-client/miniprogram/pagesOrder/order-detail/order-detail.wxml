@@ -108,6 +108,18 @@
       size="large"
       bindtap="onCreateAppointment"
     >发起预约</van-button>
+
+    <!-- 终态：返回首页 -->
+    <van-button
+      wx:if="{{order.status === '已完成' || order.status === '已关闭' || order.status === '支付失败' || order.status === '待确认收款' || (order.status === '已支付' && !hasAppointableItems)}}"
+      type="primary"
+      block
+      round
+      plain
+      size="large"
+      custom-style="color:#C0322A;border-color:#C0322A;"
+      bindtap="onBackToHome"
+    >返回首页</van-button>
   </view>
 
 </view>

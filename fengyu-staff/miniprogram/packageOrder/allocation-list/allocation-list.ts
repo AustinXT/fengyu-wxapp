@@ -8,6 +8,8 @@ interface PendingOrder {
   total_amount: string;
   paid_at: string;
   order_type: string;
+  order_source: 'client' | 'staff';
+  preferred_staff_wf_id: string | null;
 }
 
 Page({

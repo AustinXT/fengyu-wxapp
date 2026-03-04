@@ -609,8 +609,14 @@ async function cancel(ctx) {
  */
 async function appointableItems(ctx) {
   const { userId } = ctx.auth
+  const { includeInactive } = ctx.event.payload || {}
 
-  // 查询已支付订单中有剩余次数的项目
+  // 查询已支付订单中的项目(疗程卡/单品)
+  // includeInactive: 同时返回已用完/已过期的项目（用于"我的疗程卡"页面）
+  const activeFilter = includeInactive
+    ? ''
+    : 'AND oi.remaining_sessions > 0 AND (oi.expire_date IS NULL OR oi.expire_date > CURRENT_DATE)'
+
   const items = await pg.query(`
     SELECT
       o.order_no,
@@ -639,8 +645,7 @@ async function appointableItems(ctx) {
     LEFT JOIN product_spu p ON m.spu_id = p.spu_id
     WHERE o.client_user_id = $1
       AND o.status = '已支付'
-      AND oi.remaining_sessions > 0
-      AND (oi.expire_date IS NULL OR oi.expire_date > CURRENT_DATE)
+      ${activeFilter}
       AND m.product_type IN ('疗程卡', '单品')
     ORDER BY o.paid_at DESC, oi.item_flow_no
   `, [userId])
@@ -658,6 +663,8 @@ async function appointableItems(ctx) {
         items: []
       })
     }
+    const isActive = item.remaining_sessions > 0
+      && (!item.expire_date || new Date(item.expire_date) > new Date())
     orderMap.get(item.order_no).items.push({
       itemFlowNo: item.item_flow_no,
       skuId: item.sku_id,
@@ -673,7 +680,8 @@ async function appointableItems(ctx) {
       saleAmount: item.sale_amount,
       expireDate: item.expire_date,
       workfineItemId: item.workfine_item_id,
-      workfineSource: item.workfine_source
+      workfineSource: item.workfine_source,
+      active: isActive
     })
   }
 

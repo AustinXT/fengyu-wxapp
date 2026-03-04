@@ -86,7 +86,7 @@ Page({
       if (status === '已支付') {
         this.stopPolling();
         wx.showToast({ title: '支付成功', icon: 'success' });
-        setTimeout(() => wx.switchTab({ url: '/pages/index/index' }), 1500);
+        setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 1500);
       }
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });

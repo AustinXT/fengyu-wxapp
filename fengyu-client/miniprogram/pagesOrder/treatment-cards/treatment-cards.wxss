@@ -27,6 +27,10 @@
   padding: 28rpx;
 }
 
+.tc-card--inactive {
+  opacity: 0.6;
+}
+
 /* 头部 */
 .tc-card__header {
   margin-bottom: 24rpx;
@@ -70,6 +74,10 @@
   transition: width 0.3s ease;
 }
 
+.progress-bar__fill--inactive {
+  background: #CCCCCC;
+}
+
 .progress-info {
   display: flex;
   justify-content: space-between;
@@ -90,6 +98,11 @@
   font-size: 28rpx;
   font-weight: 700;
   color: var(--color-primary);
+}
+
+.progress-remain__num--inactive {
+  color: #999;
+  font-weight: 400;
 }
 
 /* 底部 */
@@ -128,4 +141,11 @@
   color: #FFFFFF;
   background: var(--color-primary);
   border-radius: 32rpx;
+}
+
+/* 已失效文字 */
+.tc-card__status-text {
+  flex-shrink: 0;
+  font-size: 24rpx;
+  color: #999;
 }

@@ -19,7 +19,7 @@
     <view
       wx:for="{{cards}}"
       wx:key="itemFlowNo"
-      class="tc-card"
+      class="tc-card {{item.active ? '' : 'tc-card--inactive'}}"
       bindtap="onCardTap"
       data-order-no="{{item.orderNo}}"
     >
@@ -28,7 +28,12 @@
         <view class="tc-card__title-row">
           <text class="tc-card__name">{{item.spuName}}</text>
           <van-tag
-            wx:if="{{item.productType === '疗程卡'}}"
+            wx:if="{{!item.active}}"
+            color="#F5F5F5"
+            text-color="#999"
+          >已失效</van-tag>
+          <van-tag
+            wx:elif="{{item.productType === '疗程卡'}}"
             color="#FFF7ED"
             text-color="#C0322A"
           >疗程卡</van-tag>
@@ -44,11 +49,11 @@
       <!-- 进度区 -->
       <view class="tc-card__progress">
         <view class="progress-bar">
-          <view class="progress-bar__fill" style="width: {{item.percent}}%"></view>
+          <view class="progress-bar__fill {{item.active ? '' : 'progress-bar__fill--inactive'}}" style="width: {{item.percent}}%"></view>
         </view>
         <view class="progress-info">
           <text class="progress-used">已用 {{item.sessionCount - item.remainingSessions}} 次</text>
-          <text class="progress-remain">剩余 <text class="progress-remain__num">{{item.remainingSessions}}</text>/{{item.sessionCount}} 次</text>
+          <text class="progress-remain">剩余 <text class="progress-remain__num {{item.active ? '' : 'progress-remain__num--inactive'}}">{{item.remainingSessions}}</text>/{{item.sessionCount}} 次</text>
         </view>
       </view>
 
@@ -65,10 +70,12 @@
           </view>
         </view>
         <view
+          wx:if="{{item.active}}"
           class="tc-card__book-btn"
           catchtap="onBookTap"
           data-order-no="{{item.orderNo}}"
         >预约</view>
+        <view wx:else class="tc-card__status-text">已失效</view>
       </view>
     </view>
   </view>

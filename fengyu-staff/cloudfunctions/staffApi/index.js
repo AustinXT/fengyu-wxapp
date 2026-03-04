@@ -58,6 +58,7 @@ const routes = {
   'allocation.delete':       () => require('./routes/allocation').deleteAllocation,
   'allocation.rates':        () => require('./routes/allocation').getCommissionRates,
   'allocation.pendingList':  () => require('./routes/allocation').pendingList,
+  'allocation.suggest':      () => require('./routes/allocation').suggest,
 
   // 预约
   'appointment.list':     () => require('./routes/appointment').list,

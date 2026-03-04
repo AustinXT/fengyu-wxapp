@@ -1,6 +1,6 @@
 // pages/store-select/store-select.ts
 import Toast from '@vant/weapp/toast/toast';
-import { getCurrentCity } from '../../utils/location';
+import { getCurrentCity } from '../utils/location';
 
 const app = getApp<IAppOption>();
 

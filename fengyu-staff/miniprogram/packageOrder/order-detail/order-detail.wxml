@@ -104,6 +104,13 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCloseOrder"
       >取消订单</van-button>
+      <!-- 终态：返回工作台 -->
+      <van-button
+        wx:if="{{order.status === '已关闭' || (!isManager && (order.status === '已完成' || order.status === '已支付'))}}"
+        block plain round
+        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onBackToWorkbench"
+      >返回工作台</van-button>
     </view>
   </block>
 

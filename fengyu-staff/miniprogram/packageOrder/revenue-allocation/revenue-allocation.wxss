@@ -16,6 +16,24 @@
 .amount-label { font-size: 26rpx; color: #666; }
 .amount-value { font-size: 48rpx; font-weight: 700; color: #C0322A; }
 
+/* 上下文提示区 */
+.context-hints {
+  margin: 0 32rpx 24rpx;
+}
+.hint-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 12rpx;
+  margin-bottom: 12rpx;
+}
+.hint-item:last-child { margin-bottom: 0; }
+.hint-item--success { background: #E8F5E9; }
+.hint-item--warn { background: #FFF3E0; }
+.hint-item--new { background: #F3E5F5; }
+.hint-text { font-size: 24rpx; color: #333; line-height: 1.5; flex: 1; }
+
 /* 状态提示 */
 .status-notice {
   display: flex;
@@ -47,47 +65,54 @@
 .item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
 .item-amount { font-size: 28rpx; font-weight: 700; color: #C0322A; white-space: nowrap; margin-left: 16rpx; }
 
-/* 部门分配行 */
-.dept-row {
-  margin-bottom: 16rpx;
+/* 人员行 */
+.person-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 16rpx;
+  margin-bottom: 12rpx;
   background: #FAFAFA;
   border-radius: 12rpx;
 }
-.dept-label-row {
+.person-info {
   display: flex;
   align-items: center;
   gap: 12rpx;
-  margin-bottom: 12rpx;
+  flex: 1;
+  min-width: 0;
 }
-.dept-name { font-size: 26rpx; font-weight: 600; color: #2D2017; }
+.person-name {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: #2D2017;
+  flex-shrink: 0;
+}
 .rate-badge {
   font-size: 22rpx;
   color: #D4820A;
   background: #FFF8E1;
   padding: 4rpx 12rpx;
   border-radius: 8rpx;
+  flex-shrink: 0;
 }
-
-.dept-input-row {
+.person-actions {
   display: flex;
   align-items: center;
-  gap: 16rpx;
+  gap: 12rpx;
+  flex-shrink: 0;
 }
-
-.staff-selector {
+.remove-btn {
   display: flex;
   align-items: center;
-  gap: 8rpx;
-  background: #FFFFFF;
-  border: 1rpx solid #E0E0E0;
-  border-radius: 12rpx;
-  padding: 16rpx 20rpx;
-  flex: 1;
+  justify-content: center;
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 28rpx;
+  background: #F5F5F5;
 }
-.staff-name-text { font-size: 26rpx; color: #2D2017; flex: 1; }
-.staff-placeholder { font-size: 26rpx; color: #BBB; flex: 1; }
 
+/* 金额输入 */
 .amount-input-wrap {
   display: flex;
   align-items: center;
@@ -95,15 +120,74 @@
   border: 1rpx solid #E0E0E0;
   border-radius: 12rpx;
   padding: 0 16rpx;
-  height: 72rpx;
-  width: 240rpx;
+  height: 64rpx;
+  width: 200rpx;
 }
 .currency-symbol { font-size: 26rpx; color: #C0322A; font-weight: 600; margin-right: 4rpx; }
 .amount-input {
   flex: 1;
-  height: 72rpx;
+  height: 64rpx;
   font-size: 28rpx;
   font-weight: 600;
+  color: #2D2017;
+}
+
+/* 添加人员按钮 */
+.add-person-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 20rpx;
+  border: 2rpx dashed #E0E0E0;
+  border-radius: 12rpx;
+  margin-top: 4rpx;
+}
+.add-person-text {
+  font-size: 26rpx;
+  color: #C0322A;
+}
+
+/* 选人弹窗 */
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 28rpx 32rpx 20rpx;
+  border-bottom: 1rpx solid #F0F0F0;
+}
+.picker-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #2D2017;
+}
+.picker-scroll {
+  height: 720rpx;
+  padding: 0 32rpx;
+}
+.picker-group {
+  margin-bottom: 16rpx;
+}
+.picker-group-title {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: #999;
+  padding: 20rpx 0 12rpx;
+  position: sticky;
+  top: 0;
+  background: #FFFFFF;
+}
+.picker-member {
+  display: flex;
+  align-items: center;
+  padding: 24rpx 16rpx;
+  border-bottom: 1rpx solid #F5F5F5;
+}
+.picker-member:active {
+  background: #F5F5F5;
+}
+.picker-member-name {
+  font-size: 28rpx;
   color: #2D2017;
 }
 

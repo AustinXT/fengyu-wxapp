@@ -33,7 +33,7 @@ Page({
   async loadCards() {
     this.setData({ isLoading: true });
     try {
-      const data = await callClientApi('order.appointableItems');
+      const data = await callClientApi('order.appointableItems', { includeInactive: true });
       const orders: any[] = data?.orders || [];
 
       // 展平为卡片列表
@@ -52,6 +52,12 @@ Page({
           });
         }
       }
+
+      // 有余额的排前面，失效的排后面
+      cards.sort((a, b) => {
+        if (a.active !== b.active) return a.active ? -1 : 1;
+        return 0;
+      });
 
       this.setData({ cards });
     } catch {

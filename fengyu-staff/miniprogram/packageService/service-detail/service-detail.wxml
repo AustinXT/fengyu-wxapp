@@ -68,6 +68,13 @@
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"
         bind:click="onCancelService"
       >取消服务单</van-button>
+      <!-- 终态：返回工作台 -->
+      <van-button
+        wx:if="{{detail.status === '已完成' || detail.status === '已取消'}}"
+        type="primary" block plain
+        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:20rpx;"
+        bind:click="onBackToWorkbench"
+      >返回工作台</van-button>
     </view>
 
     <view class="safe-area-bottom" />

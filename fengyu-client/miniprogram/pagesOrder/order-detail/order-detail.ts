@@ -163,6 +163,10 @@ Page({
     }
   },
 
+  onBackToHome() {
+    wx.switchTab({ url: '/pages/home/home' });
+  },
+
   onCreateAppointment() {
     const { order_no } = this.data.order;
     wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?orderNo=${order_no}` });

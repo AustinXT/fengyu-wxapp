@@ -167,6 +167,10 @@ Page({
     });
   },
 
+  onBackToWorkbench() {
+    wx.switchTab({ url: '/pages/workbench/workbench' });
+  },
+
   onShowQrcode() {
     const o = this.data.order;
     const params = `orderNo=${o.orderNo}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;

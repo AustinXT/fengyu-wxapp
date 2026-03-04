@@ -17,6 +17,7 @@
   margin-bottom: 16rpx;
 }
 .order-no { font-size: 22rpx; color: #999; font-family: monospace; }
+.tag-group { display: flex; align-items: center; gap: 8rpx; flex-shrink: 0; }
 
 .card-body { margin-bottom: 16rpx; }
 

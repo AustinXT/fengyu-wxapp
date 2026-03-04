@@ -82,6 +82,7 @@ Page({
           await callStaffApi('service.complete', { serviceOrderId: detail.id });
           wx.showToast({ title: '服务已完成', icon: 'success' });
           this.loadDetail(detail.id);
+          setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -103,11 +104,16 @@ Page({
           await callStaffApi('service.cancel', { serviceOrderId: detail.id });
           wx.showToast({ title: '服务单已取消', icon: 'success' });
           this.loadDetail(detail.id);
+          setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
       }
     });
+  },
+
+  onBackToWorkbench() {
+    wx.switchTab({ url: '/pages/workbench/workbench' });
   },
 
   onViewAppointment() {

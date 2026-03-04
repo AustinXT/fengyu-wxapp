@@ -24,50 +24,77 @@ module.exports.pct = function(rate) {
       </view>
     </view>
 
+    <!-- 上下文提示区 -->
+    <view class="context-hints">
+      <view wx:if="{{beauticianInfo}}" class="hint-item hint-item--success">
+        <van-icon name="contact" size="28rpx" color="#3D8A5A" />
+        <text class="hint-text">指定美容师：{{beauticianInfo.name}}（{{beauticianInfo.resolvedDept || '部门未知'}}）</text>
+      </view>
+
+      <view wx:if="{{deptAnomalous}}" class="hint-item hint-item--warn">
+        <van-icon name="warning-o" size="28rpx" color="#E65100" />
+        <text class="hint-text">美容师部门异常：主部门"{{beauticianInfo.primaryDept}}"、副部门"{{beauticianInfo.secondaryDept}}"均非美容部/养生部</text>
+      </view>
+
+      <view wx:if="{{isNewCustomer}}" class="hint-item hint-item--new">
+        <van-icon name="new-arrival-o" size="28rpx" color="#7B1FA2" />
+        <text class="hint-text">新顾客（首单）</text>
+      </view>
+    </view>
+
     <!-- 已分配提示 -->
     <view wx:if="{{isAllocated}}" class="status-notice status-notice--allocated">
       <van-icon name="passed" size="28rpx" color="#3D8A5A" />
       <text class="status-text">该订单已分配，可修改后重新保存</text>
     </view>
 
-    <!-- 按订单项分组的分配行 -->
-    <view class="alloc-section" wx:for="{{items}}" wx:for-item="item" wx:key="item_flow_no">
+    <!-- 按订单项分组 -->
+    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="item_flow_no">
+      <!-- item 标题 -->
       <view class="item-header">
         <view class="item-name-row">
-          <text class="item-name">{{item.spu_name || item.sku_display_name}}</text>
-          <van-tag wx:if="{{item.sales_category}}" plain color="#666" size="medium">{{item.sales_category}}</van-tag>
+          <text class="item-name">{{dItem.spu_name || dItem.sku_display_name}}</text>
+          <van-tag wx:if="{{dItem.sales_category}}" plain color="#666" size="medium">{{dItem.sales_category}}</van-tag>
         </view>
-        <text class="item-amount">¥{{item.receivable}}</text>
+        <text class="item-amount">¥{{dItem.receivable}}</text>
       </view>
 
-      <!-- 该 item 的各部门分配行 -->
-      <block wx:for="{{allocLines}}" wx:for-item="line" wx:for-index="lineIdx" wx:key="lineIdx">
-        <view class="dept-row" wx:if="{{line.itemFlowNo === item.item_flow_no}}">
-          <view class="dept-label-row">
-            <text class="dept-name">{{line.department}}</text>
-            <text class="rate-badge">{{fmt.pct(line.commissionRate)}}%</text>
+      <!-- 已分配人员列表 -->
+      <view
+        class="person-row"
+        wx:for="{{dItem.allocLines}}"
+        wx:for-item="line"
+        wx:for-index="lineIdx"
+        wx:key="lineIdx"
+      >
+        <view class="person-info">
+          <text class="person-name">{{line.staffName}}</text>
+          <van-tag color="#1976D2" plain size="medium">{{line.department}}</van-tag>
+          <text wx:if="{{line.commissionRate > 0}}" class="rate-badge">{{fmt.pct(line.commissionRate)}}%</text>
+        </view>
+        <view class="person-actions">
+          <view class="amount-input-wrap">
+            <text class="currency-symbol">¥</text>
+            <input
+              class="amount-input"
+              type="digit"
+              value="{{line.amount}}"
+              data-item-idx="{{itemIdx}}"
+              data-line-idx="{{lineIdx}}"
+              bindinput="onAmountChange"
+            />
           </view>
-          <view class="dept-input-row">
-            <!-- 员工选择 -->
-            <view class="staff-selector" data-index="{{lineIdx}}" bindtap="onTapStaff">
-              <text wx:if="{{line.staffName}}" class="staff-name-text">{{line.staffName}}</text>
-              <text wx:else class="staff-placeholder">选员工</text>
-              <van-icon name="arrow-down" size="24rpx" color="#999" />
-            </view>
-            <!-- 金额 -->
-            <view class="amount-input-wrap">
-              <text class="currency-symbol">¥</text>
-              <input
-                class="amount-input"
-                type="digit"
-                value="{{line.amount}}"
-                data-index="{{lineIdx}}"
-                bindinput="onAmountChange"
-              />
-            </view>
+          <view class="remove-btn" data-item-idx="{{itemIdx}}" data-line-idx="{{lineIdx}}" bindtap="onRemovePerson">
+            <van-icon name="cross" size="28rpx" color="#999" />
           </view>
         </view>
-      </block>
+      </view>
+
+      <!-- 添加人员按钮 -->
+      <view class="add-person-btn" data-item-flow-no="{{dItem.item_flow_no}}" bindtap="onAddPerson">
+        <van-icon name="plus" size="28rpx" color="#C0322A" />
+        <text class="add-person-text">添加人员</text>
+      </view>
     </view>
 
     <!-- 汇总 -->
@@ -83,8 +110,15 @@ module.exports.pct = function(rate) {
       </view>
     </view>
 
-    <!-- 保存按钮 -->
+    <!-- 操作按钮 -->
     <view class="action-bar">
+      <van-button
+        plain
+        block
+        loading="{{submitting}}"
+        custom-style="border-color:#999;color:#666;border-radius:48rpx;margin-bottom:20rpx;"
+        bind:click="onSkipAllocation"
+      >标记为无需分配</van-button>
       <van-button
         type="primary"
         block
@@ -95,15 +129,30 @@ module.exports.pct = function(rate) {
     </view>
   </block>
 
-  <!-- 员工选择弹出层 -->
-  <van-popup show="{{showPicker}}" position="bottom" bind:close="onPickerCancel">
-    <van-picker
-      title="选择员工"
-      show-toolbar
-      columns="{{pickerColumns}}"
-      bind:confirm="onPickerConfirm"
-      bind:cancel="onPickerCancel"
-    />
+  <!-- 选人弹窗 -->
+  <van-popup show="{{pickerVisible}}" position="bottom" round bind:close="onPickerClose">
+    <view class="picker-header">
+      <text class="picker-title">选择员工</text>
+      <view bindtap="onPickerClose">
+        <van-icon name="cross" size="36rpx" color="#999" />
+      </view>
+    </view>
+    <scroll-view class="picker-scroll" scroll-y>
+      <view class="picker-group" wx:for="{{pickerGroups}}" wx:for-item="group" wx:key="department">
+        <view class="picker-group-title">{{group.department}}</view>
+        <view
+          class="picker-member"
+          wx:for="{{group.members}}"
+          wx:for-item="member"
+          wx:key="staffWfId"
+          data-staff-wf-id="{{member.staffWfId}}"
+          data-department="{{group.department}}"
+          bindtap="onStaffSelected"
+        >
+          <text class="picker-member-name">{{member.staffName}}</text>
+        </view>
+      </view>
+    </scroll-view>
   </van-popup>
 
   <view class="safe-area-bottom" />

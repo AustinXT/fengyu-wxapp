@@ -54,6 +54,13 @@
           bind:click="onCreateService"
         >创建护理单</van-button>
       </view>
+      <!-- 终态：返回工作台 -->
+      <van-button
+        wx:if="{{appt.status === 'completed' || appt.status === 'cancelled' || appt.status === 'closed'}}"
+        type="primary" block plain
+        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:20rpx;"
+        bind:click="onBackToWorkbench"
+      >返回工作台</van-button>
     </view>
   </block>
 

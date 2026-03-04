@@ -286,7 +286,7 @@ async function qrcode(ctx) {
       qrcodeUrl = qrcodeCache.get(orderNo)
     } else {
       try {
-        const buffer = await generateWxacode(orderNo, 'pages/scan-pay/scan-pay')
+        const buffer = await generateWxacode(orderNo, 'pagesOrder/scan-pay/scan-pay')
         const cloudPath = `wxacode/order/${orderNo}.png`
         qrcodeUrl = await uploadToCloudStorage(buffer, cloudPath)
         qrcodeCache.set(orderNo, qrcodeUrl)

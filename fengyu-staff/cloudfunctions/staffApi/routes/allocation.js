@@ -38,8 +38,8 @@ async function save(ctx) {
   if (!orderNo) {
     throw new Error('INVALID_PARAMS: 缺少 orderNo')
   }
-  if (!allocations || !Array.isArray(allocations) || allocations.length === 0) {
-    throw new Error('INVALID_PARAMS: 分配记录不能为空')
+  if (!Array.isArray(allocations)) {
+    throw new Error('INVALID_PARAMS: allocations 必须为数组')
   }
 
   // 查询订单
@@ -60,6 +60,31 @@ async function save(ctx) {
   }
   if (!['pending', 'allocated'].includes(order.allocation_status)) {
     throw new Error('PERMISSION_DENIED: 订单分配状态异常')
+  }
+
+  // 空分配：标记为无需分配
+  if (allocations.length === 0) {
+    const now = new Date()
+    await pg.transaction(async (client) => {
+      // 删除原有分配记录
+      const existingAllocs = await client.query(
+        'SELECT id FROM revenue_allocations WHERE order_no = $1 AND is_void = false',
+        [orderNo]
+      )
+      for (const ea of existingAllocs.rows) {
+        await client.query('DELETE FROM revenue_allocation_items WHERE allocation_id = $1', [ea.id])
+      }
+      await client.query(
+        'DELETE FROM revenue_allocations WHERE order_no = $1 AND is_void = false',
+        [orderNo]
+      )
+      await client.query(
+        "UPDATE orders SET allocation_status = 'allocated', updated_at = $1 WHERE order_no = $2",
+        [now, orderNo]
+      )
+    })
+    ctx.result = { orderNo, message: '已标记为无需分配', allocationCount: 0 }
+    return
   }
 
   // 查询实收金额（receivable 合计）
@@ -289,6 +314,7 @@ async function pendingList(ctx) {
     SELECT
       o.order_no, o.status, o.order_type, o.client_phone, o.customer_name,
       o.payment_method, o.paid_at, o.created_at, o.allocation_status,
+      o.order_source, o.preferred_staff_wf_id,
       COALESCE((
         SELECT SUM(oi.receivable) FROM order_items oi WHERE oi.order_no = o.order_no
       ), 0) AS total_amount
@@ -303,4 +329,193 @@ async function pendingList(ctx) {
   ctx.result = { orders, page, pageSize }
 }
 
-module.exports = { save, deleteAllocation, getCommissionRates, pendingList }
+/**
+ * 查询员工部门归属（美容部/养生部判定）
+ * 优先使用主部门 UDF_S_1513，兜底第二部门 UDF_S_12921
+ */
+async function resolveStaffDepartment(staffWfId) {
+  const pool = await mssql.getPool()
+  const result = await pool.request()
+    .input('id', staffWfId)
+    .query(`
+      SELECT UDF_S_1147 AS staffWfId, UDF_S_1155 AS name,
+             UDF_S_1513 AS primaryDept, UDF_S_12921 AS secondaryDept
+      FROM UDT_S_287
+      WHERE UDF_S_1147 = @id
+    `)
+
+  if (result.recordset.length === 0) return null
+
+  const row = result.recordset[0]
+  const primary = (row.primaryDept || '').trim()
+  const secondary = (row.secondaryDept || '').trim()
+  const validDepts = ['美容部', '养生部']
+
+  let resolvedDept = null
+  if (validDepts.includes(primary)) {
+    resolvedDept = primary
+  } else if (validDepts.includes(secondary)) {
+    resolvedDept = secondary
+  }
+
+  return {
+    staffWfId: (row.staffWfId || '').trim(),
+    name: (row.name || '').trim(),
+    primaryDept: primary,
+    secondaryDept: secondary,
+    resolvedDept,
+  }
+}
+
+/**
+ * 检查是否为新顾客（跨所有门店，无历史已支付订单）
+ */
+async function checkNewCustomer(clientPhone, currentOrderNo) {
+  if (!clientPhone) return false
+  const rows = await pg.query(
+    "SELECT COUNT(*)::int AS cnt FROM orders WHERE client_phone = $1 AND status = '已支付' AND order_no != $2",
+    [clientPhone, currentOrderNo]
+  )
+  return rows[0].cnt === 0
+}
+
+/**
+ * 获取分配建议
+ * payload: { orderNo }
+ * 返回自动填充的分配行 + 上下文信息
+ */
+async function suggest(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { orderNo } = ctx.event.payload || {}
+  if (!orderNo) {
+    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  }
+
+  // 1. 加载订单
+  const orders = await pg.query(
+    `SELECT order_no, status, allocation_status, store_name, market_name,
+            order_source, preferred_staff_wf_id, client_phone, customer_name
+     FROM orders WHERE order_no = $1 AND store_name = $2`,
+    [orderNo, ctx.auth.storeName]
+  )
+  if (orders.length === 0) {
+    throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
+  }
+  const order = orders[0]
+
+  // 2. 解析指定美容师
+  let beauticianInfo = null
+  let deptAnomalous = false
+  if (order.preferred_staff_wf_id) {
+    beauticianInfo = await resolveStaffDepartment(order.preferred_staff_wf_id)
+    if (beauticianInfo && !beauticianInfo.resolvedDept) {
+      deptAnomalous = true
+    }
+  }
+
+  // 3. 检查新顾客
+  const isNewCustomer = await checkNewCustomer(order.client_phone, orderNo)
+
+  // 4. 美容部/养生部提成始终可选
+  const beauticianRequired = false
+
+  // 5. 加载订单项
+  const items = await pg.query(`
+    SELECT oi.item_flow_no, oi.receivable, oi.sales_category,
+           p.name AS spu_name, m.sku_display_name, m.product_type
+    FROM order_items oi
+    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
+    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    WHERE oi.order_no = $1
+    ORDER BY oi.item_flow_no
+  `, [orderNo])
+
+  const totalAmount = items.reduce((s, i) => s + Number(i.receivable || 0), 0)
+
+  // 6. 加载提成比例
+  let rates = []
+  try {
+    const pool = await mssql.getPool()
+    const masterResult = await pool.request()
+      .input('market', order.market_name)
+      .query('SELECT RID FROM UDT_S_1962 WHERE UDF_S_18660 = @market')
+
+    if (masterResult.recordset.length > 0) {
+      const rid = masterResult.recordset[0].RID
+      const detailResult = await pool.request()
+        .input('rid', rid)
+        .query(`
+          SELECT
+            UDF_M_18649 AS department, UDF_M_18650 AS amount_min, UDF_M_18651 AS amount_max,
+            UDF_M_18652 AS order_self_sell, UDF_M_18653 AS order_other_sell_self_use,
+            UDF_M_18654 AS order_other_sell_other_use, UDF_M_18655 AS order_eco_coop,
+            UDF_M_18656 AS service_self_sell, UDF_M_18657 AS service_other_sell_self_use,
+            UDF_M_18658 AS service_other_sell_other_use, UDF_M_18659 AS service_eco_coop
+          FROM UDT_M_1964 WHERE RID = @rid
+          ORDER BY UDF_M_18649, UDF_M_18650
+        `)
+
+      rates = detailResult.recordset.map(r => ({
+        department: (r.department || '').trim(),
+        amountMin: r.amount_min != null ? Number(r.amount_min) : -9999.9,
+        amountMax: r.amount_max != null ? Number(r.amount_max) : 10000000,
+        orderRates: {
+          '自采自销': Number(r.order_self_sell) || 0,
+          '他销自耗': Number(r.order_other_sell_self_use) || 0,
+          '他销他耗': Number(r.order_other_sell_other_use) || 0,
+          '生态合作': Number(r.order_eco_coop) || 0,
+        },
+      }))
+    }
+  } catch (_) {
+    console.warn('[allocation.suggest] 获取提成比例失败')
+  }
+
+  // 7. 提取美容部/养生部提成比例（按 salesCategory），供前端选人后动态计算
+  const beautyDepts = ['美容部', '养生部']
+  const beautyRates = {} // { '美容部': { '自采自销': 0.15, ... }, '养生部': { ... } }
+  for (const rate of rates) {
+    if (beautyDepts.includes(rate.department) && !beautyRates[rate.department]) {
+      beautyRates[rate.department] = rate.orderRates
+    }
+  }
+
+  // 8. 生成分配行（仅在有指定美容师且部门已解析时预填）
+  const allocLines = []
+  if (beauticianInfo && beauticianInfo.resolvedDept && beautyRates[beauticianInfo.resolvedDept]) {
+    const dept = beauticianInfo.resolvedDept
+    for (const item of items) {
+      const salesCat = item.sales_category || '自采自销'
+      const receivable = Number(item.receivable) || 0
+      const commRate = beautyRates[dept][salesCat] || 0
+      const amount = (receivable * commRate).toFixed(2)
+      allocLines.push({
+        itemFlowNo: item.item_flow_no,
+        department: dept,
+        staffWfId: beauticianInfo.staffWfId,
+        staffName: beauticianInfo.name,
+        salesCategory: salesCat,
+        commissionRate: commRate,
+        amount,
+        autoAmount: amount,
+        autoFilled: true,
+      })
+    }
+  }
+
+  ctx.result = {
+    isNewCustomer,
+    beauticianInfo,
+    deptAnomalous,
+    beauticianRequired,
+    orderSource: order.order_source,
+    beautyRates,
+    allocLines,
+    items,
+    totalAmount,
+    rates,
+  }
+}
+
+module.exports = { save, deleteAllocation, getCommissionRates, pendingList, suggest }

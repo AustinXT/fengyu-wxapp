@@ -1,7 +1,5 @@
 // pages/product-detail/product-detail.ts — 商品详情
 import { callStaffApi } from '../../utils/cloud';
-import Toast from '@vant/weapp/toast/toast';
-
 const app = getApp<IAppOption>();
 
 interface Spu {
@@ -75,7 +73,7 @@ Page({
       });
       wx.setNavigationBarTitle({ title: spu.name || '商品详情' });
     } catch {
-      Toast.fail('加载失败');
+      wx.showToast({ title: '加载失败', icon: 'none' });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -111,7 +109,7 @@ Page({
   onAddToCart() {
     const { selectedSku } = this.data;
     if (!selectedSku) {
-      Toast('请先选择规格');
+      wx.showToast({ title: '请先选择规格', icon: 'none' });
       return;
     }
     const item = this._buildCartItem(false);
@@ -123,7 +121,7 @@ Page({
   onSubmit() {
     const { selectedSku } = this.data;
     if (!selectedSku) {
-      Toast('请先选择规格');
+      wx.showToast({ title: '请先选择规格', icon: 'none' });
       return;
     }
     const item = this._buildCartItem(true);

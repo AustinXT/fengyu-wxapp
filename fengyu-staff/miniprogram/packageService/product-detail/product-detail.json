@@ -4,7 +4,6 @@
     "van-icon": "@vant/weapp/icon/index",
     "van-tag": "@vant/weapp/tag/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
-    "van-stepper": "@vant/weapp/stepper/index",
-    "van-toast": "@vant/weapp/toast/index"
+    "van-stepper": "@vant/weapp/stepper/index"
   }
 }
