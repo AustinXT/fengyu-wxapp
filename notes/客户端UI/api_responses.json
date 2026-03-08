@@ -1,0 +1,5699 @@
+[
+  {
+    "url": "https://mastergo.com/api/v1/config",
+    "body": {
+      "code": "OK",
+      "data": "{\"androidVersion\":\"1.1.5-a\",\"aphone\":\"https://static.mastergo.com/plugins/downloads/android/MasterGo-1.1.6.apk\",\"appUpdateAt\":\"2025年12月15日\",\"appVersion\":\"1.1.6/1.1.6\",\"bannerList\":[],\"businessId\":\"d3f0636e4e144d5fbd7c80a542596830\",\"communityUrl\":\"https://mastergo.com/community\",\"compResource\":\"https://comp-resource.mastergo.com\",\"customDomain\":\"\",\"electronCompatibility\":{\"linux\":{\"arm64\":{},\"loong64\":{},\"x64\":{},\"x86_64\":{}},\"mac\":{\"arm64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x86_64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"}},\"win\":{\"arm\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"arm64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x86\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"}}},\"electronMac\":\"1.10.6\",\"electronMacM1\":\"1.10.6\",\"electronWindow\":\"1.10.6\",\"env\":\"prod\",\"fontAgentMac\":\"1.0.3\",\"fontAgentWindow\":\"1.0.3\",\"fontCoverResource\":\"https://fontcover.mastergo.com\",\"fontFileResource\":\"https://fontfile.mastergo.com\",\"fontMac\":\"0.6.5\",\"fontWindow\":\"0.6.5\",\"forceUpdate\":\"1.4.98\",\"hotDocsList\":[{\"cover\":\"58134925766817/a02eca2d-c418-4d29-bd32-7a8958d43533/1649833998052.png\",\"docType\":8,\"id\":\"58134925766817\",\"name\":\"原型总览\"},{\"cover\":\"58134321786827/5471e457-c0e9-4e05-8ba2-fb67c3cddd22/1649780512551.png\",\"docType\":8,\"id\":\"58134321786827\",\"name\":\"团队管理指南\"},{\"cover\":\"58134565056527/d4579a5e-5314-4f6e-8aa4-003ef6492240/1649780673420.png\",\"docType\":8,\"id\":\"58134565056527\",\"name\":\"跟随视角\"},{\"cover\":\"33645444377496/33645444377497/520fb82a248bb18556829d2b70cf3f83.png\",\"docType\":8,\"id\":\"48214902913976\",\"name\":\"iPhone \\u0026 iPad 设备模型\"},{\"cover\":\"52676295997883/5b71e14b-2c25-4a52-8d96-0844efb56a24/1644629918067.png\",\"docType\":8,\"id\":\"52676295997883\",\"name\":\"TDesign for web\"},{\"cover\":\"33915245080454/33915333160841/d0fee11c9386e78f1d33cea3f5dbd783.png\",\"docType\":8,\"id\":\"46249618809444\",\"name\":\"WeUI 基础组件库\"},{\"cover\":\"33915245080454/33915333160841/fafaa92653bc4471fe4d0f6f40045adb.png\",\"docType\":8,\"id\":\"46250096961398\",\"name\":\"Element UI Kit v2.0\"}],\"imageResource\":\"https://image-resource.mastergo.com/\",\"imageResourceUpload\":\"https://image-resource-nc.mastergo.com\",\"initStoreTimeout\":60000,\"iphone\":\"https://apps.apple.com/cn/app/id1605515537?platform=iphone\",\"layerPropertyErrorRate\":60,\"loginTheme\":\"MasterGo\",\"masterkitPrereleaseVersion\":\"v2.32.3-ab.7\",\"maxUnresolvedCommentsNum\":250,\"mirror\":{\"login\":[],\"register\":[]},\"msaaAutoOnRule\":[{\"os\":[\"windows\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\"]},{\"os\":[\"mac\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\",\"nvidia\"]}],\"newNavOldUser\":1690214399000,\"pluginUrl\":\"https://mastergo.com/community/plugin\",\"productNumber\":\"YD00502987485782\",\"resourcesAniDuration\":10,\"studentResource\":\"https://general-resource.mastergo.com/\",\"systemUpdateTime\":\"\",\"useDynamicDomain\":0,\"useRelativeDomain\":false,\"websocketHost\":\"ws.mastergo.com\"}",
+      "meta": {
+        "time": 1771312045662771,
+        "trace": "e23b8baf57883313"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/store/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "f204726063ed4a9d90fe4aea38436546"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "a78fcd60bf664af9b80fa777cf3a3e4f"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448?pageName=file",
+    "body": {
+      "code": "NotAllowAnonymousAccess",
+      "data": null,
+      "meta": {
+        "msg": "document not public",
+        "time": 1771312052131195,
+        "trace": "af23b6f01d087d8f"
+      }
+    },
+    "status": 403
+  },
+  {
+    "url": "https://mastergo.com/ai/api/mg/prices",
+    "body": {
+      "code": "UnAuthorized",
+      "data": null,
+      "meta": {
+        "time": 1771312052233,
+        "trace_id": "",
+        "request_id": "ba40e49405a2d437d8537bfd99c3c930",
+        "message": "please login first",
+        "detail": {}
+      }
+    },
+    "status": 401
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/store/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "11e5fd30053e4163bbdfccf3f19101d1"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/signin/captcha?identity=",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": "fc8822d0925233a51453007ec7e74595",
+        "image": "iVBORw0KGgoAAAANSUhEUgAAAPAAAABQCAMAAAAQlwhOAAAAP1BMVEUAAABfbmVufXR6iYAPHhVldGtAT0YcKyJwf3aLmpEfLiUqOTA0Qzp1hHuAj4Z7ioFjcmkJGA8EEwoMGxISIRj3+JUQAAAAAXRSTlMAQObYZgAABP5JREFUeJzsWwlu4zoMJdOiSOOZAoHvf9ePH1sSVy2OZKcTsxhg4kXk4/JEqg38LsGjDdhZEN8O8dEGnHLKKdtlmqajTdhVpunNEP82wMj2FBSfK+TlAP+1L//8/Dzw0aYBV2nD/Gp4/5qIf/4XWMBFyEhk/2bio9M6doQfgHGJcACHXHaG/PGREH99ffVefgXMQozhZ5qmFfOewvB2R4xrgCEhC4FdaAgJ5Hvj4s/W9BDAS8rGpF7wLlm8AE6uuN/bEOdY7Hq9lhfoD5jULcS0jim8bjTpWr8IX6+1iBtVZkUQUsIcrkS8hMD7UFgl4L4iycikJ+Ss1YvCjgBM4xauWIjpgyHpn9d+QIC14XrLFR1Y8MmvOcphZhrhlJcQ5TYce5HjIVdYoGIlb6uqNl0A8d+TJj8hiFBsAnVyGg9on6DUE15GxO+DIIeuQWwq9AnJtg5lgY6wVIWx34bv7xzigc4IeaYqLqpO/nA3GFQzYqHKaYTVY4avugkBYyNGNKhGPShflg5KV+WHeZ4RxM/AiSOWL4KjiTmEvyeQcMRmjMRbC955RiGDI8w7PyNyy3ygdxgKY/WYddt+aZUH4N0jzC1CfjvO9WDsqAFu9AkAeLliIt45wqrUUOUlP7nhpqezDqRwPPrzQixr2MmPLqLYVjIPJLzAaRpINJC/7IfI7LJUuYzblJz91Pg/3GzfYPJKTH+/BiXbRyMg38Z1E7U0CuKJH263m96KeIvI4uspBAOy5cmBJexFWNh9M+Yj1jSEtfwKDssakB0buou1NM1LFIxt2RHPqtbnJdNrpRZk9UQTjlqxMKCbmbaJ93tCzDenjF6w+jBlwQhxONPWa9qYAIeUqCLZTBqMHB2dfpftquyOXiICRpLSNQYXuHyMlGq4xg4eYHNKatA+NsIWn7Ialneya9FBslp9y/Vw25nFqnU6M1xlDa99NJsgqi2xKzkDOGopU72j0K9hZbjcpZCPjkTq9dtF5Re3UNUeZb+G/QgjabMl3FbCsY6VrKjHUYVE2GrMy9nlTPzg0bQOp0DbFuJsUSUQSBqh7OJF7WbrkaNpMvtGa5BPiG1xth5mYxkrnuJq5QdzIdZn7ymYwCZFiWDtuooGxoVNA4DuJFWLUQMrtfk03ZKuz2zIxtlK3TLAo1KlzKfpoufEsg4D2yY4v8ZBd2Ip6c5idqmOvLLpbK3aQyhDjKFJha1zE/ovKyciappW57TVWm2dpnncgE2NhVyzqndlRzXxifY9lnaBWqW2DtlrHabE7OEp8k+RptP8s9EA28/ZjqHIO23qzX5YImanHpja12067ZDmTOgQX67d6igM1RTv5oIyrb+U9178s0md1m+dOxF9tKmg8X1qSpWIL5eLv8kHvH/6ICatqTQJ6a+CaT5voyy+PE/rC6czpH4OFtThnee5Ur3cCwg5AQFMd4kmjFKn2n0IZsqUbQW8/DauQn2AQdM3jQJELfb6Y6PABKwPZyMYMDfXrVoLmE2YZNQUVYvt3WxeJ4p+hp0MbXFwNWAgWKxDC5bBffACmSr4nsDc3EgXtXiJBQjIjon6hdTV6ORVrONx2kXVdOhhK1Uy7xKwQxWv6hk17vEXY2Y1Ddf6kInasPMfxwnO2EXnod+dCRm1q6cP/q5QE9DPcXa8pHx+vh3iow045V+UF/tK5HB5uS+9jpYT8D8v74b3lFNO2VX+CwAA//8xPxSq+0tAYwAAAABJRU5ErkJggg=="
+      },
+      "meta": {
+        "time": 1771312052236062,
+        "trace": "4c05bd2d9eec8f52"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/mgelves/api/v1/user/settings",
+    "body": {
+      "code": "UnAuthorized",
+      "meta": {
+        "trace_id": "25570724005a02e1",
+        "time": 1771312053
+      }
+    },
+    "status": 401
+  },
+  {
+    "url": "https://mastergo.com/api/v1/public/key",
+    "body": {
+      "code": "OK",
+      "data": {
+        "publicKey": "-----BEGIN RSA PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC5s/wWVl0pW51YB4IiPb3GxSbidO247OIIdZoEb7UEcfWqlmixlmXlTuxTvt1KTvR4RK3T5zWf1oEdltyIYaI1Q5PGqMcZyfpvdTuluQdaP5Aj+mBHhpwaqhF4a4FSfama+xapTu/Ra4OJU06iKLMP5WU3CHtbTmPzc/WJx969SwIDAQAB\n-----END RSA PUBLIC KEY-----"
+      },
+      "meta": {
+        "time": 1771312062539030,
+        "trace": "6cde6449521e1cb6"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/signin",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 164256024256328,
+        "createAt": "2025-06-27T00:59:11.824392Z",
+        "updateAt": "2026-01-27T11:06:56.204464Z",
+        "name": "Winster1984",
+        "job": "manager",
+        "email": null,
+        "emailCheck": false,
+        "phoneNumber": "15858234551",
+        "phoneCheck": true,
+        "avatar": "",
+        "notifyType": "all",
+        "notifySwitch": 7,
+        "wechatNickname": "",
+        "source": "wechat_subscribe",
+        "userType": 1,
+        "role": "",
+        "userState": 1,
+        "isReg": false,
+        "ext": 2,
+        "nicknameInTeam": "",
+        "joinAt": "0001-01-01T00:00:00Z",
+        "authPhoneNumber": "15858234551",
+        "reset_password_at": "2026-01-27T11:03:13.222875Z",
+        "isDeprecated": 0,
+        "sessionID": "0c4164a9-65bd-4954-b8f4-b362f09502ac",
+        "forceAuthPhone": true
+      },
+      "meta": {
+        "time": 1771312062636031,
+        "trace": "bdc2f4632dcf8266"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "_id": "685decf3aa776af50e33a5e6",
+        "user_id": 164256024256328,
+        "color_schema": "light",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "deleted_at": null,
+        "guide_status": 0,
+        "close_preset": false,
+        "presets": [
+          {
+            "library_id": "67d7f622f99dbd251e4cc30a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f63504a2708bd3ff3017",
+            "status": true
+          },
+          {
+            "library_id": "67d7f796f99dbd251e4cc653",
+            "status": true
+          },
+          {
+            "library_id": "67d7f7a72927cd589bb9425a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f9073d48583e8a125b19",
+            "status": true
+          },
+          {
+            "library_id": "624681676eca511784423302",
+            "status": true
+          },
+          {
+            "library_id": "649d6850f3bf6d4849645daa",
+            "status": false
+          },
+          {
+            "library_id": "67d793ead9deb1ff3db29261",
+            "status": true
+          },
+          {
+            "library_id": "68ba42a1a5a9fa74f0f0ffa7",
+            "status": true
+          },
+          {
+            "library_id": "68ba3876bfd29d127dbbe612",
+            "status": true
+          }
+        ],
+        "badgesList": null,
+        "mobile_to_pc": 0,
+        "projectViewMode": 0,
+        "leftbarClosedTeamIdList": null,
+        "openLastClosedDocRule": 0,
+        "homeSortRule": "",
+        "homeListMode": 0,
+        "draftBoxSortRule": "",
+        "draftBoxListMode": 0,
+        "sharedSortRule": "",
+        "sharedListMode": 0,
+        "recommend_bar_close_time": 0,
+        "navTheme": 0,
+        "enableChangeProfile": true,
+        "slicePack": false,
+        "hasSetPassword": true,
+        "containerSizeTitle": "",
+        "isPenetratedContainer": 0,
+        "authApps": null,
+        "signAuthApps": null,
+        "onlyScrollScaleCanvas": false,
+        "rightClickMoveCanvas": false,
+        "fileDefaultIcc": "srgb",
+        "emptySlotPrompt": false,
+        "dotGranularity": 0,
+        "fontCollect": false,
+        "collect": {
+          "fonts": null
+        },
+        "lockGuide": false,
+        "creditDeductionType": 0,
+        "closeAIEntry": false,
+        "aiAgent": null,
+        "permissions": {
+          "benchUseAI": false
+        }
+      },
+      "meta": {
+        "time": 1771312062693229,
+        "trace": "e6e9f20e7a22ca50"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/organizations",
+    "body": {
+      "code": "OK",
+      "data": {
+        "list": [
+          {
+            "abbr": "",
+            "accessOrg": true,
+            "allowPublicDocs": false,
+            "allowPublicEmail": false,
+            "bindOrgEmail": 0,
+            "description": "",
+            "id": 0,
+            "logo": "",
+            "name": "",
+            "openOrgStructure": false,
+            "openOrganizationSpace": 0,
+            "openSharingTimeLimit": 0,
+            "orgDomain": "",
+            "orgStructure": "",
+            "orgStructureName": "",
+            "organizationEmail": "",
+            "organizationLogin": 0,
+            "ownerName": "",
+            "ownerid": 0,
+            "permissionRule": null,
+            "permissions": null,
+            "role": "",
+            "seatType": "",
+            "status": 0,
+            "teamJoinApproval": false,
+            "time": "0001-01-01T00:00:00Z",
+            "unbindEmail": 0
+          }
+        ]
+      },
+      "meta": {
+        "time": 1771312062759923,
+        "trace": "f72274eb6a5ce0e2"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 164256024256328,
+        "name": "Winster1984",
+        "job": "manager",
+        "email": "",
+        "phoneNumber": "15858234551",
+        "phoneCheck": true,
+        "notifyType": "all",
+        "notifySwitch": 7,
+        "createdAt": "2025-06-27T00:59:11.824392Z",
+        "embedSess": "35ab822a-8d06-4d22-984b-8526d4ef7c40",
+        "userState": 1,
+        "source": "wechat_subscribe",
+        "ext": 2,
+        "ssologin": false,
+        "authType": 0,
+        "isPriMappingUser": false,
+        "privateUserId": 0,
+        "authPhoneNumber": "15858234551",
+        "forceAuthPhone": true,
+        "resetPasswordAt": "2026-01-27T11:03:13.222875Z",
+        "device": {
+          "deviceId": "",
+          "type": 1,
+          "os": "Mac OS X",
+          "osVersion": "10.15.7",
+          "browser": "Chrome",
+          "browserVersion": "145.0.0.0"
+        },
+        "loginSource": 0,
+        "teamId": 0
+      },
+      "meta": {
+        "time": 1771312063032497,
+        "trace": "5e97f3d1a00ff1b4"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/config",
+    "body": {
+      "code": "OK",
+      "data": "{\"androidVersion\":\"1.1.5-a\",\"aphone\":\"https://static.mastergo.com/plugins/downloads/android/MasterGo-1.1.6.apk\",\"appUpdateAt\":\"2025年12月15日\",\"appVersion\":\"1.1.6/1.1.6\",\"bannerList\":[],\"businessId\":\"d3f0636e4e144d5fbd7c80a542596830\",\"communityUrl\":\"https://mastergo.com/community\",\"compResource\":\"https://comp-resource.mastergo.com\",\"customDomain\":\"\",\"electronCompatibility\":{\"linux\":{\"arm64\":{},\"loong64\":{},\"x64\":{},\"x86_64\":{}},\"mac\":{\"arm64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x86_64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"}},\"win\":{\"arm\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"arm64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x86\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"}}},\"electronMac\":\"1.10.6\",\"electronMacM1\":\"1.10.6\",\"electronWindow\":\"1.10.6\",\"env\":\"prod\",\"fontAgentMac\":\"1.0.3\",\"fontAgentWindow\":\"1.0.3\",\"fontCoverResource\":\"https://fontcover.mastergo.com\",\"fontFileResource\":\"https://fontfile.mastergo.com\",\"fontMac\":\"0.6.5\",\"fontWindow\":\"0.6.5\",\"forceUpdate\":\"1.4.98\",\"hotDocsList\":[{\"cover\":\"58134925766817/a02eca2d-c418-4d29-bd32-7a8958d43533/1649833998052.png\",\"docType\":8,\"id\":\"58134925766817\",\"name\":\"原型总览\"},{\"cover\":\"58134321786827/5471e457-c0e9-4e05-8ba2-fb67c3cddd22/1649780512551.png\",\"docType\":8,\"id\":\"58134321786827\",\"name\":\"团队管理指南\"},{\"cover\":\"58134565056527/d4579a5e-5314-4f6e-8aa4-003ef6492240/1649780673420.png\",\"docType\":8,\"id\":\"58134565056527\",\"name\":\"跟随视角\"},{\"cover\":\"33645444377496/33645444377497/520fb82a248bb18556829d2b70cf3f83.png\",\"docType\":8,\"id\":\"48214902913976\",\"name\":\"iPhone \\u0026 iPad 设备模型\"},{\"cover\":\"52676295997883/5b71e14b-2c25-4a52-8d96-0844efb56a24/1644629918067.png\",\"docType\":8,\"id\":\"52676295997883\",\"name\":\"TDesign for web\"},{\"cover\":\"33915245080454/33915333160841/d0fee11c9386e78f1d33cea3f5dbd783.png\",\"docType\":8,\"id\":\"46249618809444\",\"name\":\"WeUI 基础组件库\"},{\"cover\":\"33915245080454/33915333160841/fafaa92653bc4471fe4d0f6f40045adb.png\",\"docType\":8,\"id\":\"46250096961398\",\"name\":\"Element UI Kit v2.0\"}],\"imageResource\":\"https://image-resource.mastergo.com/\",\"imageResourceUpload\":\"https://image-resource-nc.mastergo.com\",\"initStoreTimeout\":60000,\"iphone\":\"https://apps.apple.com/cn/app/id1605515537?platform=iphone\",\"layerPropertyErrorRate\":60,\"loginTheme\":\"MasterGo\",\"masterkitPrereleaseVersion\":\"v2.32.3-ab.7\",\"maxUnresolvedCommentsNum\":250,\"mirror\":{\"login\":[],\"register\":[]},\"msaaAutoOnRule\":[{\"os\":[\"windows\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\"]},{\"os\":[\"mac\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\",\"nvidia\"]}],\"newNavOldUser\":1690214399000,\"pluginUrl\":\"https://mastergo.com/community/plugin\",\"productNumber\":\"YD00502987485782\",\"resourcesAniDuration\":10,\"studentResource\":\"https://general-resource.mastergo.com/\",\"systemUpdateTime\":\"\",\"useDynamicDomain\":0,\"useRelativeDomain\":false,\"websocketHost\":\"ws.mastergo.com\"}",
+      "meta": {
+        "time": 1771312063037953,
+        "trace": "99dfc98340d2a08b"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "_id": "685decf3aa776af50e33a5e6",
+        "user_id": 164256024256328,
+        "color_schema": "light",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "deleted_at": null,
+        "guide_status": 0,
+        "close_preset": false,
+        "presets": [
+          {
+            "library_id": "67d7f622f99dbd251e4cc30a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f63504a2708bd3ff3017",
+            "status": true
+          },
+          {
+            "library_id": "67d7f796f99dbd251e4cc653",
+            "status": true
+          },
+          {
+            "library_id": "67d7f7a72927cd589bb9425a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f9073d48583e8a125b19",
+            "status": true
+          },
+          {
+            "library_id": "624681676eca511784423302",
+            "status": true
+          },
+          {
+            "library_id": "649d6850f3bf6d4849645daa",
+            "status": false
+          },
+          {
+            "library_id": "67d793ead9deb1ff3db29261",
+            "status": true
+          },
+          {
+            "library_id": "68ba42a1a5a9fa74f0f0ffa7",
+            "status": true
+          },
+          {
+            "library_id": "68ba3876bfd29d127dbbe612",
+            "status": true
+          }
+        ],
+        "badgesList": null,
+        "mobile_to_pc": 0,
+        "projectViewMode": 0,
+        "leftbarClosedTeamIdList": null,
+        "openLastClosedDocRule": 0,
+        "homeSortRule": "",
+        "homeListMode": 0,
+        "draftBoxSortRule": "",
+        "draftBoxListMode": 0,
+        "sharedSortRule": "",
+        "sharedListMode": 0,
+        "recommend_bar_close_time": 0,
+        "navTheme": 0,
+        "enableChangeProfile": true,
+        "slicePack": false,
+        "hasSetPassword": true,
+        "containerSizeTitle": "",
+        "isPenetratedContainer": 0,
+        "authApps": null,
+        "signAuthApps": null,
+        "onlyScrollScaleCanvas": false,
+        "rightClickMoveCanvas": false,
+        "fileDefaultIcc": "srgb",
+        "emptySlotPrompt": false,
+        "dotGranularity": 0,
+        "fontCollect": false,
+        "collect": {
+          "fonts": null
+        },
+        "lockGuide": false,
+        "creditDeductionType": 0,
+        "closeAIEntry": false,
+        "aiAgent": null,
+        "permissions": {
+          "benchUseAI": false
+        }
+      },
+      "meta": {
+        "time": 1771312063309857,
+        "trace": "90a931a29bd3815e"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/toggles",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "name": "web.slimClearDuplicateOpen",
+          "toggle": true
+        },
+        {
+          "name": "web.mgAgentEnableSelectModel",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnablePublishTemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.snippetGenPlugin",
+          "toggle": false
+        },
+        {
+          "name": "web.fontEventLoader",
+          "toggle": false
+        },
+        {
+          "name": "web.turtleDefault",
+          "toggle": true
+        },
+        {
+          "name": "web.dsl",
+          "toggle": false
+        },
+        {
+          "name": "web.encodeNewLineCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.ttcSlice",
+          "toggle": false
+        },
+        {
+          "name": "web.webGpu",
+          "toggle": false
+        },
+        {
+          "name": "web.virtualPageShow",
+          "toggle": false
+        },
+        {
+          "name": "web.devMode",
+          "toggle": true
+        },
+        {
+          "name": "web.videoImportAuth",
+          "toggle": true
+        },
+        {
+          "name": "web.exportToLanhu",
+          "toggle": false
+        },
+        {
+          "name": "web.emergencyNoticeLayerProperty",
+          "toggle": true
+        },
+        {
+          "name": "web.figmaTeam",
+          "toggle": false
+        },
+        {
+          "name": "web.orgUpgrade",
+          "toggle": false
+        },
+        {
+          "name": "web.imageGC",
+          "toggle": false
+        },
+        {
+          "name": "web.exportPDF",
+          "toggle": true
+        },
+        {
+          "name": "web.exportMG",
+          "toggle": true
+        },
+        {
+          "name": "web.freeMem",
+          "toggle": true
+        },
+        {
+          "name": "web.disableMasterkitVersion",
+          "toggle": false
+        },
+        {
+          "name": "web.disabledWasmSimdMode",
+          "toggle": false
+        },
+        {
+          "name": "web.imageResoureThemeLoadOptimize",
+          "toggle": true
+        },
+        {
+          "name": "web.resourceUse",
+          "toggle": true
+        },
+        {
+          "name": "web.DSM",
+          "toggle": false
+        },
+        {
+          "name": "web.userFeedbackForAIT2UI",
+          "toggle": true
+        },
+        {
+          "name": "web.v2OfAIT2UI",
+          "toggle": true
+        },
+        {
+          "name": "web.canPublishTeamLibComponentForAIT2UI",
+          "toggle": false
+        },
+        {
+          "name": "web.canSetTeamLibComponentToPublicForAIT2UIV2",
+          "toggle": false
+        },
+        {
+          "name": "web.canUploadT2UITemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.fileChunkMode",
+          "toggle": true
+        },
+        {
+          "name": "web.fontKernCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.d2cPanel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableLigaOrCalt",
+          "toggle": false
+        },
+        {
+          "name": "web.seatManageOne",
+          "toggle": false
+        },
+        {
+          "name": "web.textFallBackCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textArabicCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.d2cGenericModel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableOrderedListOptCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.annualReport",
+          "toggle": true
+        },
+        {
+          "name": "web.newMaskTypeCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.enableGoogleFonts",
+          "toggle": true
+        },
+        {
+          "name": "web.disabledLibrary",
+          "toggle": false
+        },
+        {
+          "name": "web.iconExport",
+          "toggle": false
+        },
+        {
+          "name": "web.orgTrial",
+          "toggle": false
+        },
+        {
+          "name": "web.textSleepCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.backgroundSaturation",
+          "toggle": true
+        },
+        {
+          "name": "web.upgradeAnnouncement",
+          "toggle": false
+        },
+        {
+          "name": "web.upgradeClientVersion",
+          "toggle": true
+        },
+        {
+          "name": "web.prototypeCreation",
+          "toggle": true
+        },
+        {
+          "name": "web.enableCommunity",
+          "toggle": false
+        },
+        {
+          "name": "web.loginRestrictions",
+          "toggle": true
+        },
+        {
+          "name": "web.helpsettings",
+          "toggle": false
+        },
+        {
+          "name": "web.useWssV2",
+          "toggle": false
+        },
+        {
+          "name": "web.styleListV2",
+          "toggle": false
+        },
+        {
+          "name": "web.newTeamLibDialog",
+          "toggle": true
+        },
+        {
+          "name": "web.showDevBarWithEmpty",
+          "toggle": false
+        },
+        {
+          "name": "web.unitConvertion",
+          "toggle": false
+        },
+        {
+          "name": "web.newFontPlugin",
+          "toggle": true
+        },
+        {
+          "name": "web.buttonOptimize",
+          "toggle": false
+        },
+        {
+          "name": "web.interactionToggle",
+          "toggle": true
+        },
+        {
+          "name": "web.enableOpenHiddenLayer",
+          "toggle": false
+        },
+        {
+          "name": "web.devbench",
+          "toggle": true
+        },
+        {
+          "name": "web.enableSafeSetting",
+          "toggle": true
+        },
+        {
+          "name": "web.enableWecomLogin",
+          "toggle": false
+        },
+        {
+          "name": "web.enableNewAIEntry",
+          "toggle": true
+        },
+        {
+          "name": "web.enableAISelectPrompt",
+          "toggle": true
+        },
+        {
+          "name": "web.enableCacheStealthy",
+          "toggle": true
+        },
+        {
+          "name": "web.enableImportServer",
+          "toggle": false
+        },
+        {
+          "name": "web.unSafeSandBox",
+          "toggle": false
+        },
+        {
+          "name": "web.variableFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.enableImportByCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.recycleBinClear",
+          "toggle": false
+        },
+        {
+          "name": "web.enableComponentRelevancy",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeDevModeAnnotation",
+          "toggle": false
+        },
+        {
+          "name": "web.oldAiFeatureOffline",
+          "toggle": true
+        },
+        {
+          "name": "web.rateLock",
+          "toggle": true
+        },
+        {
+          "name": "web.compSwitchCompatibleDirtyData",
+          "toggle": false
+        },
+        {
+          "name": "web.annualReportBanner",
+          "toggle": true
+        },
+        {
+          "name": "web.ai_input_max_length",
+          "toggle": false
+        },
+        {
+          "name": "web.plugin_add_DetailInfo",
+          "toggle": false
+        },
+        {
+          "name": "web.checkInstanceNew",
+          "toggle": true
+        }
+      ],
+      "meta": {
+        "time": 1771312063304899,
+        "trace": "110de40b37f9adaa"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/organizations",
+    "body": {
+      "code": "OK",
+      "data": {
+        "list": [
+          {
+            "abbr": "",
+            "accessOrg": true,
+            "allowPublicDocs": false,
+            "allowPublicEmail": false,
+            "bindOrgEmail": 0,
+            "description": "",
+            "id": 0,
+            "logo": "",
+            "name": "",
+            "openOrgStructure": false,
+            "openOrganizationSpace": 0,
+            "openSharingTimeLimit": 0,
+            "orgDomain": "",
+            "orgStructure": "",
+            "orgStructureName": "",
+            "organizationEmail": "",
+            "organizationLogin": 0,
+            "ownerName": "",
+            "ownerid": 0,
+            "permissionRule": null,
+            "permissions": null,
+            "role": "",
+            "seatType": "",
+            "status": 0,
+            "teamJoinApproval": false,
+            "time": "0001-01-01T00:00:00Z",
+            "unbindEmail": 0
+          }
+        ]
+      },
+      "meta": {
+        "time": 1771312063308269,
+        "trace": "dcf4ea843bd390c5"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/experiment/var/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "web.masterkitVersion": {
+          "name": "web.masterkitVersion",
+          "value": "default"
+        }
+      },
+      "meta": {
+        "time": 1771312063486830,
+        "trace": "8ec2124bac41b14f"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/store/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "e10cd833e4d44d64a991218a56d50f95"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/toggles",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "name": "web.dsmAiDesc",
+          "toggle": false
+        },
+        {
+          "name": "web.slimClearDuplicateOpen",
+          "toggle": true
+        },
+        {
+          "name": "web.enableVscodePluginShow",
+          "toggle": true
+        },
+        {
+          "name": "web.turtleDefault",
+          "toggle": true
+        },
+        {
+          "name": "web.fontEventLoader",
+          "toggle": false
+        },
+        {
+          "name": "web.dsl",
+          "toggle": false
+        },
+        {
+          "name": "web.encodeNewLineCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.iconExport",
+          "toggle": false
+        },
+        {
+          "name": "web.devMode",
+          "toggle": true
+        },
+        {
+          "name": "web.videoImportAuth",
+          "toggle": true
+        },
+        {
+          "name": "web.DSM",
+          "toggle": false
+        },
+        {
+          "name": "web.d2cPanel",
+          "toggle": false
+        },
+        {
+          "name": "web.textFallBackCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textArabicCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textSleepCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeCreation",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialDev",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrototype",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrivate",
+          "toggle": false
+        },
+        {
+          "name": "web.teamToggleTest",
+          "toggle": false
+        },
+        {
+          "name": "web.newTeamLibDialog",
+          "toggle": true
+        },
+        {
+          "name": "web.enableForceOpen",
+          "toggle": false
+        },
+        {
+          "name": "web.devbench",
+          "toggle": true
+        },
+        {
+          "name": "web.enableWecomLogin",
+          "toggle": false
+        },
+        {
+          "name": "web.enableDevpluginClose",
+          "toggle": false
+        },
+        {
+          "name": "web.enableTeamFont",
+          "toggle": false
+        },
+        {
+          "name": "web.variableFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnableSelectModel",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnablePublishTemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.vscodeDevModePanel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableCopyDevLink",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CPROAI",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeDevModeAnnotation",
+          "toggle": false
+        },
+        {
+          "name": "web.rateLock",
+          "toggle": true
+        },
+        {
+          "name": "web.ai_input_max_length",
+          "toggle": false
+        },
+        {
+          "name": "web.checkInstanceNew",
+          "toggle": true
+        }
+      ],
+      "meta": {
+        "time": 1771312063488484,
+        "trace": "898f794cd3336a4e"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/mgelves/api/v1/user/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "created_at": "0001-01-01T00:00:00Z",
+        "file_type_modes": {
+          "design": {
+            "mode_id": "684be5c82c41d300a90533c5",
+            "mode_type": "agent"
+          },
+          "prototype": {
+            "mode_id": "6894901312dd9b959454f2c3",
+            "mode_type": "agent"
+          }
+        },
+        "id": "",
+        "layout": "right",
+        "mode_id": "684be5c82c41d300a90533c5",
+        "mode_type": "agent",
+        "model_id": "12",
+        "private_user_id": 0,
+        "tool_auto_run": false,
+        "updated_at": "0001-01-01T00:00:00Z",
+        "user_id": 164256024256328
+      },
+      "meta": {
+        "trace_id": "487772106acc7017",
+        "time": 1771312063
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/recommended-tips?sceneId[]=8",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "order": 0,
+          "title": "客户案例：汽车之家设计系统的年轻蜕变",
+          "url": "https://mastergo.com/activityBanner/22?type=customer"
+        },
+        {
+          "order": 1,
+          "title": "客户案例：MasterGo为AR独角兽Rokid保驾护航",
+          "url": "https://mastergo.com/activityBanner/24?type=customer"
+        },
+        {
+          "order": 2,
+          "title": "客户案例：新东方的MasterGo体验 -更安全、更高效",
+          "url": "https://mastergo.com/activityBanner/16?type=customer"
+        },
+        {
+          "order": 3,
+          "title": "客户案例：为北森设计团队节省5000工时",
+          "url": "https://mastergo.com/activityBanner/26?type=customer"
+        },
+        {
+          "order": 4,
+          "title": "客户案例：私有化部署给深信服带来的“稳”与“快”",
+          "url": "https://mastergo.com/activityBanner/25?type=customer"
+        },
+        {
+          "order": 5,
+          "title": "客户案例：顺丰同城如何打破效率天花板",
+          "url": "https://mastergo.com/activityBanner/17?type=customer"
+        },
+        {
+          "order": 6,
+          "title": "客户案例：自如设计团队，70人的高效协同",
+          "url": "https://mastergo.com/activityBanner/23?type=customer"
+        },
+        {
+          "order": 7,
+          "title": "客户案例：企查查节省 80% 的设计时间",
+          "url": "https://mastergo.com/activityBanner/21?type=customer"
+        },
+        {
+          "order": 8,
+          "title": "客户案例：德邦快递的效率 “三级跳”",
+          "url": "https://mastergo.com/activityBanner/20?type=customer"
+        },
+        {
+          "order": 9,
+          "title": "客户案例：MasterGo 成为美团核心设计效能工具",
+          "url": "https://mastergo.com/blog/61?MasterGo%20%E6%88%90%E7%BE%8E%E5%9B%A2%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%95%88%E8%83%BD%E5%B7%A5%E5%85%B7%EF%BC%8C%E5%85%B1%E5%88%9B%E8%AE%A1%E5%88%92%E5%86%8D%E8%BF%9B%E4%B8%80%E6%AD%A5"
+        },
+        {
+          "order": 10,
+          "title": "MasterGo 助力小鹏汽车 DIC 设计中台",
+          "url": "https://mastergo.com/activityBanner/27?type=customer"
+        },
+        {
+          "order": 11,
+          "title": "MasterGo 助推小桔能源跑出协作加速度",
+          "url": "https://mastergo.com/activityBanner/19?type=customer"
+        },
+        {
+          "order": 12,
+          "title": "智己汽车携手 MasterGo：顺应趋势，智在协同",
+          "url": "https://mastergo.com/activityBanner/18?type=customer"
+        },
+        {
+          "order": 13,
+          "title": "海典软件用 MasterGo 加速医药行业数字化创新",
+          "url": "https://mastergo.com/activityBanner/15?type=customer"
+        },
+        {
+          "order": 14,
+          "title": "如何在 MasterGo 上开展新项目？",
+          "url": "https://mastergo.com/blog/59?%E5%A6%82%E4%BD%95%E5%9C%A8%20MasterGo%20%E4%B8%8A%E5%BC%80%E5%B1%95%E4%B8%80%E4%B8%AA%E6%96%B0%E9%A1%B9%E7%9B%AE"
+        },
+        {
+          "order": 15,
+          "title": "团队资产/个人文件的高效管理",
+          "url": "https://mastergo.com/blog/57?%E6%8F%AD%E7%A7%98%E5%9B%A2%E9%98%9F%E8%B5%84%E4%BA%A7%E7%AE%A1%E7%90%86%EF%BC%8C%E4%B8%80%E6%96%87%E6%95%99%E4%BD%A0%E5%AE%9E%E8%B7%B5%E5%87%BA%E5%9C%88%EF%BC%81"
+        },
+        {
+          "order": 16,
+          "title": "一文搞懂沟通神奇，看看评论功能的应用指南！",
+          "url": "https://mastergo.com/blog/67?%E4%B8%80%E6%96%87%E6%90%9E%E6%87%82%E6%B2%9F%E9%80%9A%E7%A5%9E%E5%A5%87%EF%BC%8C%E7%9C%8B%E7%9C%8B%E8%AF%84%E8%AE%BA%E5%8A%9F%E8%83%BD%E7%9A%84%E5%BA%94%E7%94%A8%E6%8C%87%E5%8D%97%EF%BC%81"
+        },
+        {
+          "order": 17,
+          "title": "高效管理文件的 3 个小诀窍",
+          "url": "https://mastergo.com/tutorials/85?%E9%AB%98%E6%95%88%E7%AE%A1%E7%90%86%E6%96%87%E4%BB%B6%E7%9A%84%203%20%E4%B8%AA%E5%B0%8F%E6%8A%80%E5%B7%A7"
+        },
+        {
+          "order": 18,
+          "title": "需要更改绑定的邮箱/手机号？",
+          "url": "https://mastergo.com/help/common-problem/account-binding"
+        },
+        {
+          "order": 19,
+          "title": "MasterGo 客户端，性能表现更佳",
+          "url": "https://mastergo.com/resource"
+        }
+      ],
+      "meta": {
+        "time": 1771312063811690,
+        "trace": "459ce1513cc50e78"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448/sections",
+    "body": {
+      "code": "OK",
+      "data": {
+        "list": []
+      },
+      "meta": {
+        "time": 1771312063827697,
+        "trace": "2b2077129969ce54"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user/teams",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 164256024256331,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2025-06-27T00:59:11.843766Z",
+          "name": "个人空间",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": true,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256336,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "草稿箱",
+              "isPersonal": true,
+              "teamId": 164256024256331,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 0,
+          "packageLevel": 1,
+          "isPublic": false,
+          "isMyProject": false,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 164256024256333,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2026-01-27T11:04:57.238315Z",
+          "name": "Winster Shao的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256338,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "团队项目",
+              "isPersonal": false,
+              "teamId": 164256024256333,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 56587529025055,
+          "createAt": "2022-03-26T14:34:33.804579Z",
+          "updateAt": "2025-08-28T06:06:43.009044Z",
+          "name": "qhw_david的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164167889623181,
+              "createAt": "2025-06-26T01:38:19.422592Z",
+              "updateAt": "2025-06-26T01:38:19.422592Z",
+              "name": "美业服务小程序",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            },
+            {
+              "id": 165361442256752,
+              "createAt": "2025-07-09T05:49:20.332761Z",
+              "updateAt": "2025-07-09T05:49:20.332761Z",
+              "name": "制证辅助系统",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a1",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a1",
+          "roleName": "member",
+          "publicTeamRole": "",
+          "creatorId": 56587529025053,
+          "ownerId": 64694782072613,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "service": {
+            "devSeatCount": 0,
+            "editorSeatCount": 3,
+            "latestStage": {
+              "startTime": "2025-06-26",
+              "endTime": "2025-07-25",
+              "package_level": 11,
+              "seatNum": 0,
+              "status": 4
+            },
+            "maxDevSeatCount": 0,
+            "maxEditorSeatCount": 1,
+            "maxPrototypeSeatCount": 0,
+            "maxSeatCount": 1,
+            "nextStage": null,
+            "packageLevel": 1,
+            "prototypeSeatCount": 0,
+            "remainingTime": -206,
+            "seatCountPayed": 999,
+            "serviceDeadline": "2025-07-25",
+            "serviceStartTime": "2025-06-26",
+            "status": 5,
+            "trialDeadline": "2025-07-25"
+          },
+          "teamClosed": false
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 1000,
+          "total": 3
+        },
+        "time": 1771312063836378,
+        "trace": "be5a8c6a7e5d19c5"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448?pageName=file",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 164168609343448,
+        "createAt": "2025-06-26T01:49:46.977622Z",
+        "updateAt": "2026-01-29T10:43:58.200597Z",
+        "name": "用户端",
+        "projectId": 164167889623181,
+        "teamId": 56587529025055,
+        "deleteUserId": 0,
+        "isPublic": false,
+        "allowCopy": true,
+        "allowCopyRole": "member",
+        "cover": "56587529025055/164167889623181/18C07DD8CA4D4621.png",
+        "coverBgColor": "",
+        "creator": 164167542344540,
+        "owner": 164167542344540,
+        "updateUserId": 164167542344540,
+        "docType": 0,
+        "originDoc": 0,
+        "publicFileRole": "",
+        "components": "",
+        "styles": "",
+        "allowOnlookerCopy": false,
+        "roleName": "onlooker",
+        "fileKey": "6147e038-d2df-4830-aa17-a3831191abf7",
+        "accessId": 508,
+        "containerId": "",
+        "batchVersion": 0,
+        "ext": 0,
+        "recycleBinTeamId": 0,
+        "fileMode": 1,
+        "hidePartner": false,
+        "inviteTeam": false,
+        "content_comderation": null,
+        "isSecret": false,
+        "isTeamLib": false,
+        "projectGroupTagId": 0,
+        "srcProjectGroupTagId": 0,
+        "visitControl": 1,
+        "visitControlPerm": "view",
+        "PublishTeamLibraryRole": "",
+        "UpdateTeamLibraryRole": "",
+        "highLightWord": "",
+        "ownerName": "谢飞静",
+        "ownerAvatar": "https://static-legacy.dingtalk.com/media/lADPD26eRiBsHUXNAbDNAbA_432_432.jpg",
+        "docRole": "onlooker",
+        "teamRole": "member",
+        "documentPermission": "",
+        "team": {
+          "id": 56587529025055,
+          "isPersonal": false,
+          "organizationId": 0,
+          "ownerId": 64694782072613,
+          "packageLevel": 1,
+          "roleName": "member",
+          "seatType": "view",
+          "service": {
+            "devSeatCount": 0,
+            "editorSeatCount": 3,
+            "latestStage": {
+              "startTime": "2025-06-26",
+              "endTime": "2025-07-25",
+              "package_level": 11,
+              "seatNum": 0,
+              "status": 4
+            },
+            "maxDevSeatCount": 0,
+            "maxEditorSeatCount": 1,
+            "maxPrototypeSeatCount": 0,
+            "maxSeatCount": 1,
+            "nextStage": null,
+            "packageLevel": 1,
+            "prototypeSeatCount": 0,
+            "remainingTime": -206,
+            "seatCountPayed": 999,
+            "serviceDeadline": "2025-07-25",
+            "serviceStartTime": "2025-06-26",
+            "status": 5,
+            "trialDeadline": "2025-07-25"
+          }
+        },
+        "project": {
+          "id": 164167889623181,
+          "name": "美业服务小程序",
+          "permissions": {
+            "read": true
+          }
+        },
+        "permissions": {
+          "apply-doc-edit": true,
+          "apply-history-version": false,
+          "apply-seat": true,
+          "comment": true,
+          "copy": false,
+          "create-doc": false,
+          "create-history-version": false,
+          "delete": false,
+          "delete-comment": false,
+          "delete-history-version": false,
+          "deliverable-plugin": true,
+          "edit": false,
+          "edit-copy-role": false,
+          "edit-without-seat": false,
+          "export-cut-diagram": true,
+          "export-doc": false,
+          "export-pdf-cutout": true,
+          "get-team-library": false,
+          "get-visitor-list": false,
+          "import-doc": true,
+          "invite-member": [
+            "member"
+          ],
+          "invite-permission": [
+            "view"
+          ],
+          "modify-comment": false,
+          "publish-scope": null,
+          "publish-to-team-library": false,
+          "read": true,
+          "rename": false,
+          "rename-history-version": false,
+          "set-hide-partner": false,
+          "set-public": false,
+          "set-public-role": false,
+          "set-visit-control": false,
+          "share-doc": true,
+          "show-dimension": true,
+          "transfer": false,
+          "use-ai": false,
+          "use-dev-mode": false,
+          "use-mg-agent": false
+        },
+        "rights": {
+          "cloudFont": false,
+          "controlOfTeamLibrary": false,
+          "customPresetContainer": false,
+          "exportMgBeta": false,
+          "exportSketch": false,
+          "fontComm": true,
+          "fontGoogle": true,
+          "fontLocal": true,
+          "fontOfficial": true,
+          "fontTeamOrg": false,
+          "fontThird": true,
+          "fontVar": true,
+          "opentypeFont": false,
+          "researchMode": false,
+          "standardizedCuttingDiagrams": false,
+          "useDesignSystemOutOfBox": false,
+          "varAxisFont": false
+        },
+        "docPageMax": 3,
+        "isFreeUse": false
+      },
+      "meta": {
+        "time": 1771312063898066,
+        "trace": "64ea06b7e23d2650"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/document/setting?docId=164168609343448",
+    "body": {
+      "code": "OK",
+      "data": {
+        "canvasIcc": "srgb",
+        "displayPhysicalUnit": 1,
+        "readImgColorIcc": true
+      },
+      "meta": {
+        "time": 1771312064004045,
+        "trace": "4d8eff6d376ecca8"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/documents/164168609343448/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": "685decfbaa776af50e33b53c",
+        "document_id": 164168609343448,
+        "user_id": 164256024256328,
+        "settings": {
+          "activeDevMode": false,
+          "colorBottomType": "rgb",
+          "colorTopType": "hex",
+          "customColors": "",
+          "displayPhysicalUnit": 1,
+          "emptySlotPrompt": false,
+          "fileId": 164168609343448,
+          "rulerVisible": false
+        },
+        "updated_at": "2026-02-17T05:54:37.877Z"
+      },
+      "meta": {
+        "time": 1771312064005549,
+        "trace": "4425ebdd752fcee9"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/document/team/library/permissions?documentID=164168609343448",
+    "body": {
+      "code": "OK",
+      "data": {
+        "guide": false,
+        "permissions": {
+          "operation-library-update": false,
+          "org-publish-to-team-library": false,
+          "org-update-to-team-library": false,
+          "publish-to-team-library": false
+        }
+      },
+      "meta": {
+        "time": 1771312064026194,
+        "trace": "e239cf6f376f0e67"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/teams/56587529025055?useDocumentPermission=true",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 56587529025055,
+        "createAt": "2022-03-26T14:34:33.804579Z",
+        "updateAt": "2025-08-28T06:06:43.009044Z",
+        "name": "qhw_david的团队",
+        "description": null,
+        "siteLink": null,
+        "isPersonal": false,
+        "logo": "",
+        "projects": null,
+        "teamIndex": 0,
+        "teamFracDex": "",
+        "roleName": "member",
+        "publicTeamRole": "",
+        "creatorId": 56587529025053,
+        "ownerId": 64694782072613,
+        "organizationId": 0,
+        "sourceId": "",
+        "sourceType": "",
+        "ext": 3,
+        "packageLevel": 1,
+        "isPublic": true,
+        "isMyProject": true,
+        "isDingTeam": false,
+        "isHidden": false,
+        "hiddenAndOnlyMemberVisit": false,
+        "teamClosed": false,
+        "counter": {
+          "member": {
+            "editorNum": 3,
+            "devNum": 0,
+            "prototypeNum": 0
+          },
+          "visitor": {
+            "editorNum": 0,
+            "devNum": 0,
+            "prototypeNum": 0
+          }
+        },
+        "canSetPermissions": [],
+        "isInTeam": true,
+        "pluginSetting": false,
+        "seatType": "view",
+        "service": {
+          "devSeatCount": 0,
+          "editorSeatCount": 3,
+          "latestStage": {
+            "startTime": "2025-06-26",
+            "endTime": "2025-07-25",
+            "package_level": 11,
+            "seatNum": 0,
+            "status": 4
+          },
+          "maxDevSeatCount": 0,
+          "maxEditorSeatCount": 1,
+          "maxPrototypeSeatCount": 0,
+          "maxSeatCount": 1,
+          "nextStage": null,
+          "packageLevel": 1,
+          "prototypeSeatCount": 0,
+          "remainingTime": -206,
+          "seatCountPayed": 1,
+          "serviceDeadline": "2025-07-25",
+          "serviceStartTime": "2025-06-26",
+          "status": 5,
+          "trialDeadline": "2025-07-25"
+        }
+      },
+      "meta": {
+        "time": 1771312064036626,
+        "trace": "8bd65d8b92ab13ed"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/documents/164168609343448/settings",
+    "body": {
+      "code": "OK",
+      "meta": {
+        "time": 1771312064091669,
+        "trace": "458422b6115a65d0"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "877aed8dff79475383b67f11af8de74a"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/toggles",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "name": "web.dsmAiDesc",
+          "toggle": false
+        },
+        {
+          "name": "web.slimClearDuplicateOpen",
+          "toggle": true
+        },
+        {
+          "name": "web.enableVscodePluginShow",
+          "toggle": true
+        },
+        {
+          "name": "web.turtleDefault",
+          "toggle": true
+        },
+        {
+          "name": "web.fontEventLoader",
+          "toggle": false
+        },
+        {
+          "name": "web.dsl",
+          "toggle": false
+        },
+        {
+          "name": "web.encodeNewLineCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.iconExport",
+          "toggle": false
+        },
+        {
+          "name": "web.devMode",
+          "toggle": true
+        },
+        {
+          "name": "web.videoImportAuth",
+          "toggle": true
+        },
+        {
+          "name": "web.DSM",
+          "toggle": false
+        },
+        {
+          "name": "web.d2cPanel",
+          "toggle": false
+        },
+        {
+          "name": "web.textFallBackCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textArabicCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textSleepCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeCreation",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialDev",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrototype",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrivate",
+          "toggle": false
+        },
+        {
+          "name": "web.teamToggleTest",
+          "toggle": false
+        },
+        {
+          "name": "web.newTeamLibDialog",
+          "toggle": true
+        },
+        {
+          "name": "web.enableForceOpen",
+          "toggle": false
+        },
+        {
+          "name": "web.devbench",
+          "toggle": true
+        },
+        {
+          "name": "web.enableWecomLogin",
+          "toggle": false
+        },
+        {
+          "name": "web.enableDevpluginClose",
+          "toggle": false
+        },
+        {
+          "name": "web.enableTeamFont",
+          "toggle": false
+        },
+        {
+          "name": "web.variableFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnableSelectModel",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnablePublishTemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.vscodeDevModePanel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableCopyDevLink",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CPROAI",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeDevModeAnnotation",
+          "toggle": false
+        },
+        {
+          "name": "web.rateLock",
+          "toggle": false
+        },
+        {
+          "name": "web.ai_input_max_length",
+          "toggle": false
+        },
+        {
+          "name": "web.checkInstanceNew",
+          "toggle": true
+        }
+      ],
+      "meta": {
+        "time": 1771312064261040,
+        "trace": "55bda0994af9abe8"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/order/alert?entity_id=56587529025055&entity_type=team",
+    "body": {
+      "code": "OK",
+      "data": {},
+      "meta": {
+        "time": 1771312064510271,
+        "trace": "afd131fedefd01b2"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/applies/available?orgId=0&position=doc&entityId=164168609343448",
+    "body": {
+      "code": "OK",
+      "data": {
+        "access": {
+          "status": "none"
+        },
+        "seat": {
+          "status": "none"
+        }
+      },
+      "meta": {
+        "time": 1771312065006776,
+        "trace": "5dab81de0f15710a"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/documents/164168609343448/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": "685decfbaa776af50e33b53c",
+        "document_id": 164168609343448,
+        "user_id": 164256024256328,
+        "settings": {
+          "activeDevMode": false,
+          "colorBottomType": "rgb",
+          "colorTopType": "hex",
+          "customColors": "",
+          "displayPhysicalUnit": 1,
+          "emptySlotPrompt": false,
+          "fileId": 164168609343448,
+          "rulerVisible": false
+        },
+        "updated_at": "2026-02-17T07:07:44.089Z"
+      },
+      "meta": {
+        "time": 1771312065072406,
+        "trace": "64e0f54663c4b762"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/experiment/swh/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "web.resourcePublish": false
+      },
+      "meta": {
+        "time": 1771312068424671,
+        "trace": "2e86fca7ff0a4891"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/experiment/swh/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "web.resourceUsePopup": false
+      },
+      "meta": {
+        "time": 1771312068425842,
+        "trace": "ec8510a089dcf63f"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/ai/api/mg/prices",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "priceId": "1f5a3060-9a91-48d8-8833-b04dd300da34",
+          "version": 70,
+          "interval": "monthly",
+          "currency": "cny",
+          "credits": 5000,
+          "project_count": 0
+        },
+        {
+          "priceId": "315728c4-f3b5-4dba-bae5-9bb44e5ac070",
+          "version": 80,
+          "interval": "monthly",
+          "currency": "cny",
+          "credits": 11000,
+          "project_count": 0
+        },
+        {
+          "priceId": "a4cfc259-2722-4c81-a99e-8ba7d3036b68",
+          "version": 60,
+          "interval": "monthly",
+          "currency": "cny",
+          "credits": 1000,
+          "project_count": 0
+        }
+      ],
+      "meta": {
+        "time": 1771312068433,
+        "trace_id": "",
+        "request_id": "9aec95982c3a6d39f0cd2967a6d48180",
+        "message": "",
+        "detail": null
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/experiment/var/device",
+    "body": {
+      "code": "OK",
+      "data": {
+        "web.anonymousFileLogin": {
+          "name": "web.anonymousFileLogin",
+          "value": "force"
+        }
+      },
+      "meta": {
+        "time": 1771312068434020,
+        "trace": "87f46acfe52c8158"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/font-libraries/document?documentId=164168609343448",
+    "body": {
+      "code": "OK",
+      "data": [],
+      "meta": {
+        "time": 1771312068444594,
+        "trace": "aed955ce749d9456"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/ai/api/v4/account/credit-pool",
+    "body": {
+      "code": "OK",
+      "data": {
+        "credits": [
+          {
+            "entity_id": 164256024256328,
+            "entity_type": "user",
+            "total_credit": 0,
+            "usage_credit": 0,
+            "credit_deduction_type": 0,
+            "details": [],
+            "credit_rules": [
+              {
+                "model": 0,
+                "rule": {
+                  "Create": 25,
+                  "Edit": 10
+                }
+              },
+              {
+                "model": 1,
+                "rule": {
+                  "Create": 5,
+                  "Edit": 2
+                }
+              }
+            ]
+          }
+        ],
+        "deduct_type_enable": false
+      },
+      "meta": {
+        "time": 1771312068454,
+        "trace_id": "",
+        "request_id": "670a1edcf80cceb0dbd0c73edfa9d5bf",
+        "message": "",
+        "detail": null
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/teams/56587529025055/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": "685c9ffcaa776af50e0db89b",
+        "team_id": 56587529025055,
+        "settings": {},
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "2025-06-26T01:18:52.76Z"
+      },
+      "meta": {
+        "time": 1771312068679359,
+        "trace": "fca5dbaa9c0f6eb3"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448/library",
+    "body": {
+      "code": "OK",
+      "data": null,
+      "meta": {
+        "time": 1771312068679796,
+        "trace": "3f016b8c6cf66c50"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/preset-libraries?teamId=56587529025055&fileMode=1",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": "68ba3876bfd29d127dbbe612",
+          "created_at": "2025-09-05T01:10:14.301Z",
+          "updated_at": "2025-10-22T09:04:36.057Z",
+          "deleted_at": null,
+          "description": "",
+          "document_id": 170598424868578,
+          "organization_id": 80324999957405,
+          "team_id": 167705318096295,
+          "toMultiTeamIDs": [
+            167705318096295
+          ],
+          "project_id": 170598362957279,
+          "document_name": "Ant Design For AI",
+          "version": 5,
+          "creator_id": 70062158811195,
+          "details": null,
+          "isGlobal": true,
+          "defaultSubscribe": true,
+          "subscribe": true,
+          "team_name": "",
+          "project_name": "",
+          "dsmSettings": null,
+          "componentCount": 901,
+          "styleCount": 271,
+          "collectionCount": 0,
+          "cover": "167705318096295/170598362957279/FBCE15101E530A61.png",
+          "modeCount": 0
+        },
+        {
+          "id": "68ba42a1a5a9fa74f0f0ffa7",
+          "created_at": "2025-09-05T01:53:37.295Z",
+          "updated_at": "2025-09-05T03:37:10.128Z",
+          "deleted_at": null,
+          "description": "",
+          "document_id": 170601172976103,
+          "organization_id": 80324999957405,
+          "team_id": 0,
+          "toMultiTeamIDs": null,
+          "project_id": 170598362957279,
+          "document_name": "MasterGo Design For AI",
+          "version": 2,
+          "creator_id": 85988371629308,
+          "details": null,
+          "isGlobal": true,
+          "defaultSubscribe": true,
+          "subscribe": true,
+          "team_name": "",
+          "project_name": "",
+          "dsmSettings": null,
+          "componentCount": 795,
+          "styleCount": 119,
+          "collectionCount": 1,
+          "cover": "167705318096295/170598362957279/F97F3CE99B27659A.png",
+          "modeCount": 1
+        }
+      ],
+      "meta": {
+        "time": 1771312068684461,
+        "trace": "c829e101e15ebb95"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/comments?documentID=164168609343448&status=0",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": "68afefbe4040644cd429467e",
+          "serial": 1,
+          "type": 0,
+          "userID": 64694782072613,
+          "documentID": 164168609343448,
+          "content": "这里干什么的？是什么作用？",
+          "location": {
+            "pageID": "3:9191",
+            "x": -22,
+            "y": -43,
+            "layerID": "93:2334",
+            "relativeX": 85,
+            "relativeY": 62,
+            "rect": null
+          },
+          "mention": [],
+          "teamMention": [],
+          "status": 0,
+          "isDelete": 0,
+          "isRead": 0,
+          "createdAt": "2025-08-28T05:57:18.842Z",
+          "updatedAt": "2025-08-28T05:57:18.842Z",
+          "emoticons": [],
+          "images": [],
+          "callBackFunc": null,
+          "callBackParams": null,
+          "hasEdite": false
+        }
+      ],
+      "meta": {
+        "time": 1771312068714819,
+        "trace": "02f18d6013f54647"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/comments/documents/164168609343448",
+    "body": {
+      "code": "OK",
+      "data": [],
+      "meta": {
+        "time": 1771312068825793,
+        "trace": "fe55ce36d2f89cf4"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user-infos",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 64694782072613,
+          "name": "grasfish",
+          "avatar": "",
+          "nicknameInTeam": ""
+        }
+      ],
+      "meta": {
+        "time": 1771312068913425,
+        "trace": "710c701c826cde39"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/team-members?teamId=56587529025055",
+    "body": {
+      "code": "OK",
+      "data": {
+        "applyList": [],
+        "confirmList": [],
+        "counter": {
+          "member": 17
+        },
+        "createAt": "2022-03-26T14:34:33.804579Z",
+        "creatorId": 56587529025053,
+        "description": null,
+        "ext": 3,
+        "hiddenAndOnlyMemberVisit": false,
+        "id": 56587529025055,
+        "isDingTeam": false,
+        "isHidden": false,
+        "isMyProject": true,
+        "isPersonal": false,
+        "isPublic": true,
+        "logo": "",
+        "name": "qhw_david的团队",
+        "organizationId": 0,
+        "ownerId": 64694782072613,
+        "packageLevel": 1,
+        "projects": null,
+        "publicTeamRole": "",
+        "rights": {
+          "allowTransferTeamOwner": true
+        },
+        "roleName": "",
+        "siteLink": null,
+        "sourceId": "",
+        "sourceType": "",
+        "teamClosed": false,
+        "teamFracDex": "",
+        "teamIndex": 0,
+        "updateAt": "2025-08-28T06:06:43.009044Z",
+        "users": [
+          {
+            "id": 167067457538557,
+            "createAt": "2025-07-28T01:45:43.531199Z",
+            "updateAt": "2025-07-28T01:45:59.16695Z",
+            "name": "136****6903",
+            "job": "",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": "13617216903",
+            "phoneCheck": true,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 0,
+            "nicknameInTeam": "",
+            "joinAt": "2025-07-28T01:46:03.343071Z",
+            "authPhoneNumber": "13617216903",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 85922696035999,
+            "createAt": "2023-02-13T09:44:28.097904Z",
+            "updateAt": "2025-11-12T11:05:44.830742Z",
+            "name": "158****6106",
+            "job": "ui",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": "15812106106",
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "lanhu_sync",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-11-12T11:05:39.957554Z",
+            "authPhoneNumber": "15812106106",
+            "reset_password_at": "2025-11-12T11:05:30.865914Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 64694782072613,
+            "createAt": "2022-06-24T02:15:52.375615Z",
+            "updateAt": "2025-06-04T02:12:11.073396Z",
+            "name": "grasfish",
+            "job": "developer",
+            "email": "grasfish@163.com",
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "lanhu_sync",
+            "userType": 1,
+            "role": "owner",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-04T07:25:12.503436Z",
+            "authPhoneNumber": "18787359457",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "edit",
+            "orgStructure": ""
+          },
+          {
+            "id": 56587529025053,
+            "createAt": "2022-03-26T14:34:33.800752Z",
+            "updateAt": "2023-12-13T07:52:33.716485Z",
+            "name": "qhw_david",
+            "job": "developer",
+            "email": "qhw_david@hotmail.com",
+            "emailCheck": false,
+            "phoneNumber": "18313929091",
+            "phoneCheck": false,
+            "avatar": "https://thirdwx.qlogo.cn/mmopen/55GO4WpyhGLjxWKuwX3icWCHBz5n0jPWDFgtUaRVAamqG5hyTHFox2VOGJdXlGM0Z3zic0JsUMwOeunzl86zibCUM1YpINJhH8E/132",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "lanhu_oauth",
+            "userType": 1,
+            "role": "admin",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2022-03-26T14:34:33.793927Z",
+            "authPhoneNumber": "18313929091",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 176799121751237,
+            "createAt": "2025-11-12T11:46:21.02888Z",
+            "updateAt": "2026-02-10T13:03:43.55072Z",
+            "name": "qianbs",
+            "job": "other",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-11-12T11:46:28.891046Z",
+            "authPhoneNumber": "18388372787",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 167723289234479,
+            "createAt": "2025-08-04T07:29:53.88512Z",
+            "updateAt": "2025-08-05T08:21:20.914017Z",
+            "name": "qianbs",
+            "job": "ui",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": "18388372787",
+            "phoneCheck": true,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 0,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-04T07:30:19.388052Z",
+            "authPhoneNumber": "18388372787",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 110080970019007,
+            "createAt": "2023-11-07T01:29:53.129804Z",
+            "updateAt": "2025-06-06T02:38:34.948736Z",
+            "name": "wo",
+            "job": "developer",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-04T07:25:04.73516Z",
+            "authPhoneNumber": "15122977670",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 164435452047021,
+            "createAt": "2025-06-29T00:31:07.758297Z",
+            "updateAt": "2025-06-29T00:32:20.834503Z",
+            "name": "Daniel",
+            "job": "manager",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-06-29T00:32:33.01959Z",
+            "authPhoneNumber": "15925691805",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 164256024256328,
+            "createAt": "2025-06-27T00:59:11.824392Z",
+            "updateAt": "2026-01-27T11:06:56.204464Z",
+            "name": "Winster1984",
+            "job": "manager",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": "15858234551",
+            "phoneCheck": true,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-06-27T00:59:34.252679Z",
+            "authPhoneNumber": "15858234551",
+            "reset_password_at": "2026-01-27T11:03:13.222875Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": true,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 167817917392098,
+            "createAt": "2025-08-05T08:33:57.409777Z",
+            "updateAt": "2025-08-25T08:38:45.495863Z",
+            "name": "晶娇",
+            "job": "ui",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_h5",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-05T08:34:11.020117Z",
+            "authPhoneNumber": null,
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 124040320912984,
+            "createAt": "2024-04-09T03:27:48.204947Z",
+            "updateAt": "2025-08-04T07:26:09.743257Z",
+            "name": "李蒋平",
+            "job": "developer",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-04T07:26:56.702724Z",
+            "authPhoneNumber": null,
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 177073643936478,
+            "createAt": "2025-11-15T12:29:46.577444Z",
+            "updateAt": "2025-11-17T02:11:06.997157Z",
+            "name": "黎硕",
+            "job": "other",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_h5",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-11-15T12:29:50.421434Z",
+            "authPhoneNumber": null,
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 88478866761172,
+            "createAt": "2023-03-13T14:53:42.557927Z",
+            "updateAt": "2023-03-14T01:23:18.423258Z",
+            "name": "鲁伯特之泪",
+            "job": "developer",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-08-04T08:25:16.654509Z",
+            "authPhoneNumber": null,
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 111464036470515,
+            "createAt": "2023-11-22T07:53:08.103585Z",
+            "updateAt": "2025-06-26T13:04:45.305384Z",
+            "name": "我来瞅瞅",
+            "job": "other",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-06-26T13:06:49.153382Z",
+            "authPhoneNumber": "13888499617",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 164167542344540,
+            "createAt": "2025-06-26T01:32:48.639286Z",
+            "updateAt": "2025-06-26T01:34:55.11111Z",
+            "name": "谢飞静",
+            "job": "developer",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "https://static-legacy.dingtalk.com/media/lADPD26eRiBsHUXNAbDNAbA_432_432.jpg",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "dingtalk_oauth",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-06-26T01:39:27.055429Z",
+            "authPhoneNumber": "18288669724",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "edit",
+            "setEditPermissionAt": "2025-06-26T01:43:03+08:00",
+            "orgStructure": ""
+          },
+          {
+            "id": 94613103469753,
+            "createAt": "2023-05-20T07:54:46.43819Z",
+            "updateAt": "2025-06-04T02:14:40.406709Z",
+            "name": "杨杨杨",
+            "job": "other",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-06-26T13:02:31.921779Z",
+            "authPhoneNumber": "13518787830",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "orgStructure": ""
+          },
+          {
+            "id": 89061217946608,
+            "createAt": "2023-03-20T01:09:56.831632Z",
+            "updateAt": "2025-06-30T08:21:04.802162Z",
+            "name": "赵书源",
+            "job": "ui",
+            "email": null,
+            "emailCheck": false,
+            "phoneNumber": null,
+            "phoneCheck": false,
+            "avatar": "",
+            "notifyType": "all",
+            "notifySwitch": 7,
+            "wechatNickname": "",
+            "source": "wechat_subscribe",
+            "userType": 1,
+            "role": "member",
+            "userState": 0,
+            "isReg": false,
+            "ext": 2,
+            "nicknameInTeam": "",
+            "joinAt": "2025-07-14T07:53:49.721634Z",
+            "authPhoneNumber": "18208897159",
+            "reset_password_at": "0001-01-01T00:00:00Z",
+            "isDeprecated": 0,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "edit",
+            "setEditPermissionAt": "2025-07-14T08:12:19+08:00",
+            "orgStructure": ""
+          }
+        ]
+      },
+      "meta": {
+        "time": 1771312068995105,
+        "trace": "3993d87bd2d5879e"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/project/document-member?documentId=164168609343448&teamId=56587529025055&projectId=164167889623181",
+    "body": {
+      "code": "OK",
+      "data": {
+        "IsPublic": false,
+        "allowCopy": true,
+        "allowCopyRole": "member",
+        "confirmList": [],
+        "cover": "56587529025055/164167889623181/18C07DD8CA4D4621.png",
+        "createAt": "2025-06-26T01:49:46.977622Z",
+        "creatorID": 164167542344540,
+        "fileMode": 1,
+        "highLightWord": "",
+        "id": 164168609343448,
+        "isShared": false,
+        "isTeamLib": false,
+        "members": [
+          {
+            "id": 183571454821191,
+            "name": "weixin_75935207",
+            "avatar": "",
+            "email": null,
+            "job": "",
+            "role": "member",
+            "documentRole": "member",
+            "createAt": "2026-01-26T05:49:41.816626Z",
+            "updateAt": "2026-02-11T05:54:17.905803Z",
+            "isInTeam": false,
+            "permissions": {
+              "canSetRoles": [],
+              "canSetDocPermissions": [],
+              "deleteMember": false,
+              "renameMember": false,
+              "edit": false
+            },
+            "documentPermission": "view",
+            "teamDocPermission": "view",
+            "extraEditor": false
+          }
+        ],
+        "name": "用户端",
+        "owner": {
+          "id": 164167542344540,
+          "name": "谢飞静",
+          "avatar": "https://static-legacy.dingtalk.com/media/lADPD26eRiBsHUXNAbDNAbA_432_432.jpg",
+          "email": null,
+          "job": "owner",
+          "role": "",
+          "documentRole": "owner",
+          "createAt": "2025-06-26T01:32:48.639286Z",
+          "updateAt": "2025-06-26T01:34:55.11111Z",
+          "isInTeam": false,
+          "permissions": {
+            "canSetRoles": null,
+            "canSetDocPermissions": null,
+            "deleteMember": false,
+            "renameMember": false,
+            "edit": false
+          },
+          "documentPermission": "",
+          "extraEditor": false
+        },
+        "ownerAvatar": null,
+        "ownerName": null,
+        "ownerNickname": null,
+        "permissions": null,
+        "project": null,
+        "projectId": 164167889623181,
+        "roleName": "onlooker",
+        "teamId": 56587529025055,
+        "updateAt": "2026-01-29T10:43:58.200597Z",
+        "updateUserName": "谢飞静"
+      },
+      "meta": {
+        "time": 1771312069031502,
+        "trace": "5484ed94d3b575e9"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "4fa37c3a50374fdb9f0ffea5ebff99e7"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "3af9081eeb10433aab2ee53253670d93"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "81aa24b361964b48a6cc6c50bd86d6ca"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "edc154a7a2df42f5a09f8c4fce40fc11"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "3467e5ed6b16473ab89f071b420b1da9"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "2d168d785c0c499591342b4c424e0c71"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "e8000f2920d74845b27c4f6183dcad82"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "8db97b3d26a041278dd44c18d6b49577"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "9bf2d78006d549f2be805a7d27baeda3"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "dd227d68cb71426db564d2a162d3aaf8"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "6320f54e91714ae08a6a1cf7de32cedb"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "ec394551751b4607aa826122b4464962"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "0dc3ab5506ab45519c2880dab0dc94d3"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "5baa8dd99005400dbf7fa4c41dcbcf9b"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "89356882fca24b6f94799153ec29440d"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "fb228535412144f8915b9af395e788ee"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "ad822dd6239649989f8b241742f83be1"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "a635717203364329be6b7c0d1a53bef4"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "6c81debad62b42049478360800f155db"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "bace1533bf7b459381adc411962be4c3"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 164256024256328,
+        "name": "Winster1984",
+        "job": "manager",
+        "email": "",
+        "phoneNumber": "15858234551",
+        "phoneCheck": true,
+        "notifyType": "all",
+        "notifySwitch": 7,
+        "createdAt": "2025-06-27T00:59:11.824392Z",
+        "embedSess": "35ab822a-8d06-4d22-984b-8526d4ef7c40",
+        "userState": 1,
+        "source": "wechat_subscribe",
+        "ext": 2,
+        "ssologin": false,
+        "authType": 0,
+        "isPriMappingUser": false,
+        "privateUserId": 0,
+        "authPhoneNumber": "15858234551",
+        "forceAuthPhone": true,
+        "resetPasswordAt": "2026-01-27T11:03:13.222875Z",
+        "device": {
+          "deviceId": "",
+          "type": 1,
+          "os": "Mac OS X",
+          "osVersion": "10.15.7",
+          "browser": "Chrome",
+          "browserVersion": "145.0.0.0"
+        },
+        "loginSource": 0,
+        "teamId": 0
+      },
+      "meta": {
+        "time": 1771312159472569,
+        "trace": "10a006a3a3814375"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/config",
+    "body": {
+      "code": "OK",
+      "data": "{\"androidVersion\":\"1.1.5-a\",\"aphone\":\"https://static.mastergo.com/plugins/downloads/android/MasterGo-1.1.6.apk\",\"appUpdateAt\":\"2025年12月15日\",\"appVersion\":\"1.1.6/1.1.6\",\"bannerList\":[],\"businessId\":\"d3f0636e4e144d5fbd7c80a542596830\",\"communityUrl\":\"https://mastergo.com/community\",\"compResource\":\"https://comp-resource.mastergo.com\",\"customDomain\":\"\",\"electronCompatibility\":{\"linux\":{\"arm64\":{},\"loong64\":{},\"x64\":{},\"x86_64\":{}},\"mac\":{\"arm64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"},\"x86_64\":{\"10.15.8\":\"1.6.4\",\"11\":\"1.10.6\",\"12\":\"1.10.6\",\"13\":\"1.10.6\",\"13.12\":\"1.10.6\",\"14\":\"1.10.6\"}},\"win\":{\"arm\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"arm64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x64\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"},\"x86\":{\"10\":\"1.10.6\",\"11\":\"1.10.6\",\"7\":\"1.6.4\",\"8\":\"1.6.4\",\"8.1\":\"1.6.4\"}}},\"electronMac\":\"1.10.6\",\"electronMacM1\":\"1.10.6\",\"electronWindow\":\"1.10.6\",\"env\":\"prod\",\"fontAgentMac\":\"1.0.3\",\"fontAgentWindow\":\"1.0.3\",\"fontCoverResource\":\"https://fontcover.mastergo.com\",\"fontFileResource\":\"https://fontfile.mastergo.com\",\"fontMac\":\"0.6.5\",\"fontWindow\":\"0.6.5\",\"forceUpdate\":\"1.4.98\",\"hotDocsList\":[{\"cover\":\"58134925766817/a02eca2d-c418-4d29-bd32-7a8958d43533/1649833998052.png\",\"docType\":8,\"id\":\"58134925766817\",\"name\":\"原型总览\"},{\"cover\":\"58134321786827/5471e457-c0e9-4e05-8ba2-fb67c3cddd22/1649780512551.png\",\"docType\":8,\"id\":\"58134321786827\",\"name\":\"团队管理指南\"},{\"cover\":\"58134565056527/d4579a5e-5314-4f6e-8aa4-003ef6492240/1649780673420.png\",\"docType\":8,\"id\":\"58134565056527\",\"name\":\"跟随视角\"},{\"cover\":\"33645444377496/33645444377497/520fb82a248bb18556829d2b70cf3f83.png\",\"docType\":8,\"id\":\"48214902913976\",\"name\":\"iPhone \\u0026 iPad 设备模型\"},{\"cover\":\"52676295997883/5b71e14b-2c25-4a52-8d96-0844efb56a24/1644629918067.png\",\"docType\":8,\"id\":\"52676295997883\",\"name\":\"TDesign for web\"},{\"cover\":\"33915245080454/33915333160841/d0fee11c9386e78f1d33cea3f5dbd783.png\",\"docType\":8,\"id\":\"46249618809444\",\"name\":\"WeUI 基础组件库\"},{\"cover\":\"33915245080454/33915333160841/fafaa92653bc4471fe4d0f6f40045adb.png\",\"docType\":8,\"id\":\"46250096961398\",\"name\":\"Element UI Kit v2.0\"}],\"imageResource\":\"https://image-resource.mastergo.com/\",\"imageResourceUpload\":\"https://image-resource-nc.mastergo.com\",\"initStoreTimeout\":60000,\"iphone\":\"https://apps.apple.com/cn/app/id1605515537?platform=iphone\",\"layerPropertyErrorRate\":60,\"loginTheme\":\"MasterGo\",\"masterkitPrereleaseVersion\":\"v2.32.3-ab.7\",\"maxUnresolvedCommentsNum\":250,\"mirror\":{\"login\":[],\"register\":[]},\"msaaAutoOnRule\":[{\"os\":[\"windows\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\"]},{\"os\":[\"mac\"],\"webglInfoBlackList\":[\"swiftshader\",\"intel\",\"unknow\",\"radeon(tm)\",\"nvidia\"]}],\"newNavOldUser\":1690214399000,\"pluginUrl\":\"https://mastergo.com/community/plugin\",\"productNumber\":\"YD00502987485782\",\"resourcesAniDuration\":10,\"studentResource\":\"https://general-resource.mastergo.com/\",\"systemUpdateTime\":\"\",\"useDynamicDomain\":0,\"useRelativeDomain\":false,\"websocketHost\":\"ws.mastergo.com\"}",
+      "meta": {
+        "time": 1771312159477703,
+        "trace": "4a2aac5f065ca8fe"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/document/setting?docId=164168609343448",
+    "body": {
+      "code": "OK",
+      "data": {
+        "canvasIcc": "srgb",
+        "displayPhysicalUnit": 1,
+        "readImgColorIcc": true
+      },
+      "meta": {
+        "time": 1771312159527955,
+        "trace": "187ba7a57f5cfdeb"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448?pageName=file",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": 164168609343448,
+        "createAt": "2025-06-26T01:49:46.977622Z",
+        "updateAt": "2026-01-29T10:43:58.200597Z",
+        "name": "用户端",
+        "projectId": 164167889623181,
+        "teamId": 56587529025055,
+        "deleteUserId": 0,
+        "isPublic": false,
+        "allowCopy": true,
+        "allowCopyRole": "member",
+        "cover": "56587529025055/164167889623181/18C07DD8CA4D4621.png",
+        "coverBgColor": "",
+        "creator": 164167542344540,
+        "owner": 164167542344540,
+        "updateUserId": 164167542344540,
+        "docType": 0,
+        "originDoc": 0,
+        "publicFileRole": "",
+        "components": "",
+        "styles": "",
+        "allowOnlookerCopy": false,
+        "roleName": "onlooker",
+        "fileKey": "6147e038-d2df-4830-aa17-a3831191abf7",
+        "accessId": 509,
+        "containerId": "",
+        "batchVersion": 0,
+        "ext": 0,
+        "recycleBinTeamId": 0,
+        "fileMode": 1,
+        "hidePartner": false,
+        "inviteTeam": false,
+        "content_comderation": null,
+        "isSecret": false,
+        "isTeamLib": false,
+        "projectGroupTagId": 0,
+        "srcProjectGroupTagId": 0,
+        "visitControl": 1,
+        "visitControlPerm": "view",
+        "PublishTeamLibraryRole": "",
+        "UpdateTeamLibraryRole": "",
+        "highLightWord": "",
+        "ownerName": "谢飞静",
+        "ownerAvatar": "https://static-legacy.dingtalk.com/media/lADPD26eRiBsHUXNAbDNAbA_432_432.jpg",
+        "docRole": "onlooker",
+        "teamRole": "member",
+        "documentPermission": "",
+        "team": {
+          "id": 56587529025055,
+          "isPersonal": false,
+          "organizationId": 0,
+          "ownerId": 64694782072613,
+          "packageLevel": 1,
+          "roleName": "member",
+          "seatType": "view",
+          "service": {
+            "devSeatCount": 0,
+            "editorSeatCount": 3,
+            "latestStage": {
+              "startTime": "2025-06-26",
+              "endTime": "2025-07-25",
+              "package_level": 11,
+              "seatNum": 0,
+              "status": 4
+            },
+            "maxDevSeatCount": 0,
+            "maxEditorSeatCount": 1,
+            "maxPrototypeSeatCount": 0,
+            "maxSeatCount": 1,
+            "nextStage": null,
+            "packageLevel": 1,
+            "prototypeSeatCount": 0,
+            "remainingTime": -206,
+            "seatCountPayed": 999,
+            "serviceDeadline": "2025-07-25",
+            "serviceStartTime": "2025-06-26",
+            "status": 5,
+            "trialDeadline": "2025-07-25"
+          }
+        },
+        "project": {
+          "id": 164167889623181,
+          "name": "美业服务小程序",
+          "permissions": {
+            "read": true
+          }
+        },
+        "permissions": {
+          "apply-doc-edit": true,
+          "apply-history-version": false,
+          "apply-seat": true,
+          "comment": true,
+          "copy": false,
+          "create-doc": false,
+          "create-history-version": false,
+          "delete": false,
+          "delete-comment": false,
+          "delete-history-version": false,
+          "deliverable-plugin": true,
+          "edit": false,
+          "edit-copy-role": false,
+          "edit-without-seat": false,
+          "export-cut-diagram": true,
+          "export-doc": false,
+          "export-pdf-cutout": true,
+          "get-team-library": false,
+          "get-visitor-list": false,
+          "import-doc": true,
+          "invite-member": [
+            "member"
+          ],
+          "invite-permission": [
+            "view"
+          ],
+          "modify-comment": false,
+          "publish-scope": null,
+          "publish-to-team-library": false,
+          "read": true,
+          "rename": false,
+          "rename-history-version": false,
+          "set-hide-partner": false,
+          "set-public": false,
+          "set-public-role": false,
+          "set-visit-control": false,
+          "share-doc": true,
+          "show-dimension": true,
+          "transfer": false,
+          "use-ai": false,
+          "use-dev-mode": false,
+          "use-mg-agent": false
+        },
+        "rights": {
+          "cloudFont": false,
+          "controlOfTeamLibrary": false,
+          "customPresetContainer": false,
+          "exportMgBeta": false,
+          "exportSketch": false,
+          "fontComm": true,
+          "fontGoogle": true,
+          "fontLocal": true,
+          "fontOfficial": true,
+          "fontTeamOrg": false,
+          "fontThird": true,
+          "fontVar": true,
+          "opentypeFont": false,
+          "researchMode": false,
+          "standardizedCuttingDiagrams": false,
+          "useDesignSystemOutOfBox": false,
+          "varAxisFont": false
+        },
+        "docPageMax": 3,
+        "isFreeUse": false
+      },
+      "meta": {
+        "time": 1771312159569967,
+        "trace": "38cbae40d2b1d040"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/toggles",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "name": "web.slimClearDuplicateOpen",
+          "toggle": true
+        },
+        {
+          "name": "web.mgAgentEnableSelectModel",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnablePublishTemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.snippetGenPlugin",
+          "toggle": false
+        },
+        {
+          "name": "web.fontEventLoader",
+          "toggle": false
+        },
+        {
+          "name": "web.turtleDefault",
+          "toggle": true
+        },
+        {
+          "name": "web.dsl",
+          "toggle": false
+        },
+        {
+          "name": "web.encodeNewLineCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.ttcSlice",
+          "toggle": false
+        },
+        {
+          "name": "web.webGpu",
+          "toggle": false
+        },
+        {
+          "name": "web.virtualPageShow",
+          "toggle": false
+        },
+        {
+          "name": "web.devMode",
+          "toggle": true
+        },
+        {
+          "name": "web.videoImportAuth",
+          "toggle": true
+        },
+        {
+          "name": "web.exportToLanhu",
+          "toggle": false
+        },
+        {
+          "name": "web.emergencyNoticeLayerProperty",
+          "toggle": true
+        },
+        {
+          "name": "web.figmaTeam",
+          "toggle": false
+        },
+        {
+          "name": "web.orgUpgrade",
+          "toggle": false
+        },
+        {
+          "name": "web.imageGC",
+          "toggle": false
+        },
+        {
+          "name": "web.exportPDF",
+          "toggle": true
+        },
+        {
+          "name": "web.exportMG",
+          "toggle": true
+        },
+        {
+          "name": "web.freeMem",
+          "toggle": true
+        },
+        {
+          "name": "web.disableMasterkitVersion",
+          "toggle": false
+        },
+        {
+          "name": "web.disabledWasmSimdMode",
+          "toggle": false
+        },
+        {
+          "name": "web.imageResoureThemeLoadOptimize",
+          "toggle": true
+        },
+        {
+          "name": "web.resourceUse",
+          "toggle": true
+        },
+        {
+          "name": "web.DSM",
+          "toggle": false
+        },
+        {
+          "name": "web.userFeedbackForAIT2UI",
+          "toggle": true
+        },
+        {
+          "name": "web.v2OfAIT2UI",
+          "toggle": true
+        },
+        {
+          "name": "web.canPublishTeamLibComponentForAIT2UI",
+          "toggle": false
+        },
+        {
+          "name": "web.canSetTeamLibComponentToPublicForAIT2UIV2",
+          "toggle": false
+        },
+        {
+          "name": "web.canUploadT2UITemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.fileChunkMode",
+          "toggle": true
+        },
+        {
+          "name": "web.fontKernCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.d2cPanel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableLigaOrCalt",
+          "toggle": false
+        },
+        {
+          "name": "web.seatManageOne",
+          "toggle": false
+        },
+        {
+          "name": "web.textFallBackCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textArabicCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.d2cGenericModel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableOrderedListOptCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.annualReport",
+          "toggle": true
+        },
+        {
+          "name": "web.newMaskTypeCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.enableGoogleFonts",
+          "toggle": true
+        },
+        {
+          "name": "web.disabledLibrary",
+          "toggle": false
+        },
+        {
+          "name": "web.iconExport",
+          "toggle": false
+        },
+        {
+          "name": "web.orgTrial",
+          "toggle": false
+        },
+        {
+          "name": "web.textSleepCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.backgroundSaturation",
+          "toggle": true
+        },
+        {
+          "name": "web.upgradeAnnouncement",
+          "toggle": false
+        },
+        {
+          "name": "web.upgradeClientVersion",
+          "toggle": true
+        },
+        {
+          "name": "web.prototypeCreation",
+          "toggle": true
+        },
+        {
+          "name": "web.enableCommunity",
+          "toggle": false
+        },
+        {
+          "name": "web.loginRestrictions",
+          "toggle": true
+        },
+        {
+          "name": "web.helpsettings",
+          "toggle": false
+        },
+        {
+          "name": "web.useWssV2",
+          "toggle": false
+        },
+        {
+          "name": "web.styleListV2",
+          "toggle": false
+        },
+        {
+          "name": "web.newTeamLibDialog",
+          "toggle": true
+        },
+        {
+          "name": "web.showDevBarWithEmpty",
+          "toggle": false
+        },
+        {
+          "name": "web.unitConvertion",
+          "toggle": false
+        },
+        {
+          "name": "web.newFontPlugin",
+          "toggle": true
+        },
+        {
+          "name": "web.buttonOptimize",
+          "toggle": false
+        },
+        {
+          "name": "web.interactionToggle",
+          "toggle": true
+        },
+        {
+          "name": "web.enableOpenHiddenLayer",
+          "toggle": false
+        },
+        {
+          "name": "web.devbench",
+          "toggle": true
+        },
+        {
+          "name": "web.enableSafeSetting",
+          "toggle": true
+        },
+        {
+          "name": "web.enableWecomLogin",
+          "toggle": false
+        },
+        {
+          "name": "web.enableNewAIEntry",
+          "toggle": true
+        },
+        {
+          "name": "web.enableAISelectPrompt",
+          "toggle": true
+        },
+        {
+          "name": "web.enableCacheStealthy",
+          "toggle": true
+        },
+        {
+          "name": "web.enableImportServer",
+          "toggle": false
+        },
+        {
+          "name": "web.unSafeSandBox",
+          "toggle": false
+        },
+        {
+          "name": "web.variableFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.enableImportByCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.recycleBinClear",
+          "toggle": false
+        },
+        {
+          "name": "web.enableComponentRelevancy",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeDevModeAnnotation",
+          "toggle": false
+        },
+        {
+          "name": "web.oldAiFeatureOffline",
+          "toggle": true
+        },
+        {
+          "name": "web.rateLock",
+          "toggle": true
+        },
+        {
+          "name": "web.compSwitchCompatibleDirtyData",
+          "toggle": false
+        },
+        {
+          "name": "web.annualReportBanner",
+          "toggle": true
+        },
+        {
+          "name": "web.ai_input_max_length",
+          "toggle": false
+        },
+        {
+          "name": "web.plugin_add_DetailInfo",
+          "toggle": false
+        },
+        {
+          "name": "web.checkInstanceNew",
+          "toggle": true
+        }
+      ],
+      "meta": {
+        "time": 1771312159693952,
+        "trace": "9c647f5197dbc1cc"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "_id": "685decf3aa776af50e33a5e6",
+        "user_id": 164256024256328,
+        "color_schema": "light",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "deleted_at": null,
+        "guide_status": 0,
+        "close_preset": false,
+        "presets": [
+          {
+            "library_id": "67d7f622f99dbd251e4cc30a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f63504a2708bd3ff3017",
+            "status": true
+          },
+          {
+            "library_id": "67d7f796f99dbd251e4cc653",
+            "status": true
+          },
+          {
+            "library_id": "67d7f7a72927cd589bb9425a",
+            "status": true
+          },
+          {
+            "library_id": "67d7f9073d48583e8a125b19",
+            "status": true
+          },
+          {
+            "library_id": "624681676eca511784423302",
+            "status": true
+          },
+          {
+            "library_id": "649d6850f3bf6d4849645daa",
+            "status": false
+          },
+          {
+            "library_id": "67d793ead9deb1ff3db29261",
+            "status": true
+          },
+          {
+            "library_id": "68ba42a1a5a9fa74f0f0ffa7",
+            "status": true
+          },
+          {
+            "library_id": "68ba3876bfd29d127dbbe612",
+            "status": true
+          }
+        ],
+        "badgesList": null,
+        "mobile_to_pc": 0,
+        "projectViewMode": 0,
+        "leftbarClosedTeamIdList": null,
+        "openLastClosedDocRule": 0,
+        "homeSortRule": "",
+        "homeListMode": 0,
+        "draftBoxSortRule": "",
+        "draftBoxListMode": 0,
+        "sharedSortRule": "",
+        "sharedListMode": 0,
+        "recommend_bar_close_time": 0,
+        "navTheme": 0,
+        "enableChangeProfile": true,
+        "slicePack": false,
+        "hasSetPassword": true,
+        "containerSizeTitle": "",
+        "isPenetratedContainer": 0,
+        "authApps": null,
+        "signAuthApps": null,
+        "onlyScrollScaleCanvas": false,
+        "rightClickMoveCanvas": false,
+        "fileDefaultIcc": "srgb",
+        "emptySlotPrompt": false,
+        "dotGranularity": 0,
+        "fontCollect": false,
+        "collect": {
+          "fonts": null
+        },
+        "lockGuide": false,
+        "creditDeductionType": 0,
+        "closeAIEntry": false,
+        "aiAgent": null,
+        "permissions": {
+          "benchUseAI": false
+        }
+      },
+      "meta": {
+        "time": 1771312159703145,
+        "trace": "1cc3095714fda249"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/organizations",
+    "body": {
+      "code": "OK",
+      "data": {
+        "list": [
+          {
+            "abbr": "",
+            "accessOrg": true,
+            "allowPublicDocs": false,
+            "allowPublicEmail": false,
+            "bindOrgEmail": 0,
+            "description": "",
+            "id": 0,
+            "logo": "",
+            "name": "",
+            "openOrgStructure": false,
+            "openOrganizationSpace": 0,
+            "openSharingTimeLimit": 0,
+            "orgDomain": "",
+            "orgStructure": "",
+            "orgStructureName": "",
+            "organizationEmail": "",
+            "organizationLogin": 0,
+            "ownerName": "",
+            "ownerid": 0,
+            "permissionRule": null,
+            "permissions": null,
+            "role": "",
+            "seatType": "",
+            "status": 0,
+            "teamJoinApproval": false,
+            "time": "0001-01-01T00:00:00Z",
+            "unbindEmail": 0
+          }
+        ]
+      },
+      "meta": {
+        "time": 1771312159697784,
+        "trace": "5a1a14dc7644d331"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/toggles",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "name": "web.dsmAiDesc",
+          "toggle": false
+        },
+        {
+          "name": "web.slimClearDuplicateOpen",
+          "toggle": true
+        },
+        {
+          "name": "web.enableVscodePluginShow",
+          "toggle": true
+        },
+        {
+          "name": "web.turtleDefault",
+          "toggle": true
+        },
+        {
+          "name": "web.fontEventLoader",
+          "toggle": false
+        },
+        {
+          "name": "web.dsl",
+          "toggle": false
+        },
+        {
+          "name": "web.encodeNewLineCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.iconExport",
+          "toggle": false
+        },
+        {
+          "name": "web.devMode",
+          "toggle": true
+        },
+        {
+          "name": "web.videoImportAuth",
+          "toggle": true
+        },
+        {
+          "name": "web.DSM",
+          "toggle": false
+        },
+        {
+          "name": "web.d2cPanel",
+          "toggle": false
+        },
+        {
+          "name": "web.textFallBackCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textArabicCpp",
+          "toggle": true
+        },
+        {
+          "name": "web.textSleepCpp",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeCreation",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialDev",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrototype",
+          "toggle": true
+        },
+        {
+          "name": "web.commercialPrivate",
+          "toggle": false
+        },
+        {
+          "name": "web.teamToggleTest",
+          "toggle": false
+        },
+        {
+          "name": "web.newTeamLibDialog",
+          "toggle": true
+        },
+        {
+          "name": "web.enableForceOpen",
+          "toggle": false
+        },
+        {
+          "name": "web.devbench",
+          "toggle": true
+        },
+        {
+          "name": "web.enableWecomLogin",
+          "toggle": false
+        },
+        {
+          "name": "web.enableDevpluginClose",
+          "toggle": false
+        },
+        {
+          "name": "web.enableTeamFont",
+          "toggle": false
+        },
+        {
+          "name": "web.variableFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnableSelectModel",
+          "toggle": false
+        },
+        {
+          "name": "web.mgAgentEnablePublishTemplate",
+          "toggle": false
+        },
+        {
+          "name": "web.vscodeDevModePanel",
+          "toggle": false
+        },
+        {
+          "name": "web.enableCopyDevLink",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CFeature",
+          "toggle": false
+        },
+        {
+          "name": "web.enableD2CPROAI",
+          "toggle": false
+        },
+        {
+          "name": "web.prototypeDevModeAnnotation",
+          "toggle": false
+        },
+        {
+          "name": "web.rateLock",
+          "toggle": true
+        },
+        {
+          "name": "web.ai_input_max_length",
+          "toggle": false
+        },
+        {
+          "name": "web.checkInstanceNew",
+          "toggle": true
+        }
+      ],
+      "meta": {
+        "time": 1771312160045257,
+        "trace": "94a3daa15136e4f4"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/store/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "53f18157941f4863ba10a9d2846f799c"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {},
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "adf80a664ef0418aa886b7a58e251b26"
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/mgelves/api/v1/user/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "created_at": "0001-01-01T00:00:00Z",
+        "file_type_modes": {
+          "design": {
+            "mode_id": "684be5c82c41d300a90533c5",
+            "mode_type": "agent"
+          },
+          "prototype": {
+            "mode_id": "6894901312dd9b959454f2c3",
+            "mode_type": "agent"
+          }
+        },
+        "id": "",
+        "layout": "right",
+        "mode_id": "684be5c82c41d300a90533c5",
+        "mode_type": "agent",
+        "model_id": "12",
+        "private_user_id": 0,
+        "tool_auto_run": false,
+        "updated_at": "0001-01-01T00:00:00Z",
+        "user_id": 164256024256328
+      },
+      "meta": {
+        "trace_id": "6bc9331e686749ed",
+        "time": 1771312160
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448/automatic/plugin?mode=canvas",
+    "body": {
+      "code": "OK",
+      "data": {
+        "plugin": {
+          "plugin_id": 0,
+          "plugin_type": 0,
+          "plugin_version": 0,
+          "plugin_url": "",
+          "plugin_logo": "",
+          "plugin_name": "",
+          "plugin_html": "",
+          "plugin_desc": "",
+          "plugin_cover_url": "",
+          "plugin_framerate_url": "",
+          "plugin_manifest": "",
+          "plugin_cata": "",
+          "editor_type": "",
+          "contact": "",
+          "remark_switch": false,
+          "audit_comment": "",
+          "author_id": 0,
+          "author_name": "",
+          "author_avatar": "",
+          "display_mode": 0,
+          "like_cnt": 0,
+          "install_cnt": 0,
+          "view_cnt": 0,
+          "audit_time": "0001-01-01T00:00:00Z",
+          "create_time": "0001-01-01T00:00:00Z",
+          "update_time": "0001-01-01T00:00:00Z",
+          "capabilities": ""
+        },
+        "pluginEnableClose": 0,
+        "valid": false
+      },
+      "meta": {
+        "time": 1771312160874585,
+        "trace": "785a3541e0717e63"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/recommended-tips?sceneId[]=8",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "order": 0,
+          "title": "客户案例：汽车之家设计系统的年轻蜕变",
+          "url": "https://mastergo.com/activityBanner/22?type=customer"
+        },
+        {
+          "order": 1,
+          "title": "客户案例：MasterGo为AR独角兽Rokid保驾护航",
+          "url": "https://mastergo.com/activityBanner/24?type=customer"
+        },
+        {
+          "order": 2,
+          "title": "客户案例：新东方的MasterGo体验 -更安全、更高效",
+          "url": "https://mastergo.com/activityBanner/16?type=customer"
+        },
+        {
+          "order": 3,
+          "title": "客户案例：为北森设计团队节省5000工时",
+          "url": "https://mastergo.com/activityBanner/26?type=customer"
+        },
+        {
+          "order": 4,
+          "title": "客户案例：私有化部署给深信服带来的“稳”与“快”",
+          "url": "https://mastergo.com/activityBanner/25?type=customer"
+        },
+        {
+          "order": 5,
+          "title": "客户案例：顺丰同城如何打破效率天花板",
+          "url": "https://mastergo.com/activityBanner/17?type=customer"
+        },
+        {
+          "order": 6,
+          "title": "客户案例：自如设计团队，70人的高效协同",
+          "url": "https://mastergo.com/activityBanner/23?type=customer"
+        },
+        {
+          "order": 7,
+          "title": "客户案例：企查查节省 80% 的设计时间",
+          "url": "https://mastergo.com/activityBanner/21?type=customer"
+        },
+        {
+          "order": 8,
+          "title": "客户案例：德邦快递的效率 “三级跳”",
+          "url": "https://mastergo.com/activityBanner/20?type=customer"
+        },
+        {
+          "order": 9,
+          "title": "客户案例：MasterGo 成为美团核心设计效能工具",
+          "url": "https://mastergo.com/blog/61?MasterGo%20%E6%88%90%E7%BE%8E%E5%9B%A2%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%95%88%E8%83%BD%E5%B7%A5%E5%85%B7%EF%BC%8C%E5%85%B1%E5%88%9B%E8%AE%A1%E5%88%92%E5%86%8D%E8%BF%9B%E4%B8%80%E6%AD%A5"
+        },
+        {
+          "order": 10,
+          "title": "MasterGo 助力小鹏汽车 DIC 设计中台",
+          "url": "https://mastergo.com/activityBanner/27?type=customer"
+        },
+        {
+          "order": 11,
+          "title": "MasterGo 助推小桔能源跑出协作加速度",
+          "url": "https://mastergo.com/activityBanner/19?type=customer"
+        },
+        {
+          "order": 12,
+          "title": "智己汽车携手 MasterGo：顺应趋势，智在协同",
+          "url": "https://mastergo.com/activityBanner/18?type=customer"
+        },
+        {
+          "order": 13,
+          "title": "海典软件用 MasterGo 加速医药行业数字化创新",
+          "url": "https://mastergo.com/activityBanner/15?type=customer"
+        },
+        {
+          "order": 14,
+          "title": "如何在 MasterGo 上开展新项目？",
+          "url": "https://mastergo.com/blog/59?%E5%A6%82%E4%BD%95%E5%9C%A8%20MasterGo%20%E4%B8%8A%E5%BC%80%E5%B1%95%E4%B8%80%E4%B8%AA%E6%96%B0%E9%A1%B9%E7%9B%AE"
+        },
+        {
+          "order": 15,
+          "title": "团队资产/个人文件的高效管理",
+          "url": "https://mastergo.com/blog/57?%E6%8F%AD%E7%A7%98%E5%9B%A2%E9%98%9F%E8%B5%84%E4%BA%A7%E7%AE%A1%E7%90%86%EF%BC%8C%E4%B8%80%E6%96%87%E6%95%99%E4%BD%A0%E5%AE%9E%E8%B7%B5%E5%87%BA%E5%9C%88%EF%BC%81"
+        },
+        {
+          "order": 16,
+          "title": "一文搞懂沟通神奇，看看评论功能的应用指南！",
+          "url": "https://mastergo.com/blog/67?%E4%B8%80%E6%96%87%E6%90%9E%E6%87%82%E6%B2%9F%E9%80%9A%E7%A5%9E%E5%A5%87%EF%BC%8C%E7%9C%8B%E7%9C%8B%E8%AF%84%E8%AE%BA%E5%8A%9F%E8%83%BD%E7%9A%84%E5%BA%94%E7%94%A8%E6%8C%87%E5%8D%97%EF%BC%81"
+        },
+        {
+          "order": 17,
+          "title": "高效管理文件的 3 个小诀窍",
+          "url": "https://mastergo.com/tutorials/85?%E9%AB%98%E6%95%88%E7%AE%A1%E7%90%86%E6%96%87%E4%BB%B6%E7%9A%84%203%20%E4%B8%AA%E5%B0%8F%E6%8A%80%E5%B7%A7"
+        },
+        {
+          "order": 18,
+          "title": "需要更改绑定的邮箱/手机号？",
+          "url": "https://mastergo.com/help/common-problem/account-binding"
+        },
+        {
+          "order": 19,
+          "title": "MasterGo 客户端，性能表现更佳",
+          "url": "https://mastergo.com/resource"
+        }
+      ],
+      "meta": {
+        "time": 1771312160881574,
+        "trace": "0dfbf41cd177ae2b"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/documents/164168609343448/sections",
+    "body": {
+      "code": "OK",
+      "data": {
+        "list": []
+      },
+      "meta": {
+        "time": 1771312160898990,
+        "trace": "70b6ab9aa4756a44"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user/teams",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 164256024256331,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2025-06-27T00:59:11.843766Z",
+          "name": "个人空间",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": true,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256336,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "草稿箱",
+              "isPersonal": true,
+              "teamId": 164256024256331,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 0,
+          "packageLevel": 1,
+          "isPublic": false,
+          "isMyProject": false,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 164256024256333,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2026-01-27T11:04:57.238315Z",
+          "name": "Winster Shao的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256338,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "团队项目",
+              "isPersonal": false,
+              "teamId": 164256024256333,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 56587529025055,
+          "createAt": "2022-03-26T14:34:33.804579Z",
+          "updateAt": "2025-08-28T06:06:43.009044Z",
+          "name": "qhw_david的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164167889623181,
+              "createAt": "2025-06-26T01:38:19.422592Z",
+              "updateAt": "2025-06-26T01:38:19.422592Z",
+              "name": "美业服务小程序",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            },
+            {
+              "id": 165361442256752,
+              "createAt": "2025-07-09T05:49:20.332761Z",
+              "updateAt": "2025-07-09T05:49:20.332761Z",
+              "name": "制证辅助系统",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a1",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a1",
+          "roleName": "member",
+          "publicTeamRole": "",
+          "creatorId": 56587529025053,
+          "ownerId": 64694782072613,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "read": true
+          },
+          "service": {
+            "devSeatCount": 0,
+            "editorSeatCount": 0,
+            "latestStage": {
+              "startTime": "2025-06-26",
+              "endTime": "2025-07-25",
+              "package_level": 11,
+              "seatNum": 0,
+              "status": 4
+            },
+            "maxDevSeatCount": 0,
+            "maxEditorSeatCount": 1,
+            "maxPrototypeSeatCount": 0,
+            "maxSeatCount": 1,
+            "nextStage": null,
+            "packageLevel": 1,
+            "prototypeSeatCount": 0,
+            "remainingTime": -206,
+            "seatCountPayed": 999,
+            "serviceDeadline": "2025-07-25",
+            "serviceStartTime": "2025-06-26",
+            "status": 5,
+            "trialDeadline": "2025-07-25"
+          },
+          "teamClosed": false
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 1000,
+          "total": 3
+        },
+        "time": 1771312160903824,
+        "trace": "98d70e4e5757f270"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/documents/164168609343448/settings",
+    "body": {
+      "code": "OK",
+      "data": {
+        "id": "685decfbaa776af50e33b53c",
+        "document_id": 164168609343448,
+        "user_id": 164256024256328,
+        "settings": {
+          "activeDevMode": false,
+          "colorBottomType": "rgb",
+          "colorTopType": "hex",
+          "customColors": "",
+          "displayPhysicalUnit": 1,
+          "emptySlotPrompt": false,
+          "fileId": 164168609343448,
+          "rulerVisible": false
+        },
+        "updated_at": "2026-02-17T07:07:44.089Z"
+      },
+      "meta": {
+        "time": 1771312160921919,
+        "trace": "96ea95896e1e7fa1"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/experiment/var/user",
+    "body": {
+      "code": "OK",
+      "data": {
+        "web.onboardingPortraitTours": {
+          "name": "web.onboardingPortraitTours",
+          "value": "portraitTours"
+        }
+      },
+      "meta": {
+        "time": 1771312161081942,
+        "trace": "32e184802b50b406"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/org/api/apply-status?email=",
+    "body": {
+      "code": "OK",
+      "meta": {
+        "msg": "",
+        "time": 1771312161082633,
+        "trace": "bf0122eb41fc35a8"
+      },
+      "data": {
+        "logo": "",
+        "org_abbr": "",
+        "status": 0
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/annual-report/entity-banner?organizationId=0",
+    "body": {
+      "code": "OK",
+      "data": {
+        "showBanner": false
+      },
+      "meta": {
+        "time": 1771312161084779,
+        "trace": "a2870df26fe8d6ab"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/notify/unread-count",
+    "body": {
+      "code": "OK",
+      "data": {
+        "total": 0,
+        "document": 0,
+        "team": 0,
+        "community": 0,
+        "system": 0,
+        "pending": 0,
+        "comments": 0,
+        "other": 0
+      },
+      "meta": {
+        "time": 1771312161086607,
+        "trace": "da878047dd885298"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/user/teams",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 164256024256331,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2025-06-27T00:59:11.843766Z",
+          "name": "个人空间",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": true,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256336,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "草稿箱",
+              "isPersonal": true,
+              "teamId": 164256024256331,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "create-doc": true,
+                "create-prototype-doc": true,
+                "move-in": true,
+                "move-out": true,
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 0,
+          "packageLevel": 1,
+          "isPublic": false,
+          "isMyProject": false,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "create-proj": true,
+            "delete": true,
+            "edit": true,
+            "leave": false,
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 164256024256333,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2026-01-27T11:04:57.238315Z",
+          "name": "Winster Shao的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164256024256338,
+              "createAt": "2025-06-27T00:59:11.836599Z",
+              "updateAt": "2025-06-27T00:59:11.836599Z",
+              "name": "团队项目",
+              "isPersonal": false,
+              "teamId": 164256024256333,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "create-doc": true,
+                "create-prototype-doc": true,
+                "move-in": true,
+                "move-out": true,
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a0",
+          "roleName": "owner",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "create-proj": true,
+            "delete": true,
+            "edit": true,
+            "leave": false,
+            "read": true
+          },
+          "teamClosed": false
+        },
+        {
+          "id": 56587529025055,
+          "createAt": "2022-03-26T14:34:33.804579Z",
+          "updateAt": "2025-08-28T06:06:43.009044Z",
+          "name": "qhw_david的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": [
+            {
+              "id": 164167889623181,
+              "createAt": "2025-06-26T01:38:19.422592Z",
+              "updateAt": "2025-06-26T01:38:19.422592Z",
+              "name": "美业服务小程序",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a0",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "create-doc": false,
+                "create-prototype-doc": false,
+                "move-in": false,
+                "move-out": false,
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            },
+            {
+              "id": 165361442256752,
+              "createAt": "2025-07-09T05:49:20.332761Z",
+              "updateAt": "2025-07-09T05:49:20.332761Z",
+              "name": "制证辅助系统",
+              "isPersonal": false,
+              "teamId": 56587529025055,
+              "documents": null,
+              "projectIndex": 0,
+              "projectFracDex": "a1",
+              "visitControl": 1,
+              "isPublic": 0,
+              "shareCode": "",
+              "permissions": {
+                "create-doc": false,
+                "create-prototype-doc": false,
+                "move-in": false,
+                "move-out": false,
+                "read": true
+              },
+              "groups": null,
+              "isFreeUse": false
+            }
+          ],
+          "teamIndex": 0,
+          "teamFracDex": "a1",
+          "roleName": "member",
+          "publicTeamRole": "",
+          "creatorId": 56587529025053,
+          "ownerId": 64694782072613,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "isExternal": false,
+          "permissions": {
+            "create-proj": false,
+            "delete": false,
+            "edit": false,
+            "leave": true,
+            "read": true
+          },
+          "service": {
+            "devSeatCount": 0,
+            "editorSeatCount": 0,
+            "latestStage": {
+              "startTime": "2025-06-26",
+              "endTime": "2025-07-25",
+              "package_level": 11,
+              "seatNum": 0,
+              "status": 4
+            },
+            "maxDevSeatCount": 0,
+            "maxEditorSeatCount": 1,
+            "maxPrototypeSeatCount": 0,
+            "maxSeatCount": 1,
+            "nextStage": null,
+            "packageLevel": 1,
+            "prototypeSeatCount": 0,
+            "remainingTime": -206,
+            "seatCountPayed": 999,
+            "serviceDeadline": "2025-07-25",
+            "serviceStartTime": "2025-06-26",
+            "status": 5,
+            "trialDeadline": "2025-07-25"
+          },
+          "teamClosed": false
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 1000,
+          "total": 3
+        },
+        "time": 1771312161112789,
+        "trace": "b380302d06f9655e"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/users/shared",
+    "body": {
+      "code": "OK",
+      "data": [],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 200,
+          "total": 0
+        },
+        "time": 1771312161126035,
+        "trace": "fd303b72bda6c323"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/search/user/teams",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 56587529025055,
+          "createAt": "2022-03-26T14:34:33.804579Z",
+          "updateAt": "2025-08-28T06:06:43.009044Z",
+          "name": "qhw_david的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": null,
+          "teamIndex": 0,
+          "teamFracDex": "",
+          "roleName": "",
+          "publicTeamRole": "",
+          "creatorId": 56587529025053,
+          "ownerId": 64694782072613,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "teamClosed": false
+        },
+        {
+          "id": 164256024256333,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2026-01-27T11:04:57.238315Z",
+          "name": "Winster Shao的团队",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": false,
+          "logo": "",
+          "projects": null,
+          "teamIndex": 0,
+          "teamFracDex": "",
+          "roleName": "",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 3,
+          "packageLevel": 1,
+          "isPublic": true,
+          "isMyProject": true,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "teamClosed": false
+        },
+        {
+          "id": 164256024256331,
+          "createAt": "2025-06-27T00:59:11.830476Z",
+          "updateAt": "2025-06-27T00:59:11.843766Z",
+          "name": "个人空间",
+          "description": null,
+          "siteLink": null,
+          "isPersonal": true,
+          "logo": "",
+          "projects": null,
+          "teamIndex": 0,
+          "teamFracDex": "",
+          "roleName": "",
+          "publicTeamRole": "",
+          "creatorId": 164256024256328,
+          "ownerId": 164256024256328,
+          "organizationId": 0,
+          "sourceId": "",
+          "sourceType": "",
+          "ext": 0,
+          "packageLevel": 1,
+          "isPublic": false,
+          "isMyProject": false,
+          "isDingTeam": false,
+          "isHidden": false,
+          "hiddenAndOnlyMemberVisit": false,
+          "teamClosed": false
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 20,
+          "total": 3
+        },
+        "time": 1771312163124792,
+        "trace": "f85f0a67ace6c661"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/search/org/users",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 167067457538557,
+          "createAt": "2025-07-28T01:45:43.531199Z",
+          "updateAt": "2025-07-28T01:45:59.16695Z",
+          "name": "136****6903",
+          "job": "",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": "13617216903",
+          "phoneCheck": true,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 0,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "13617216903",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 85922696035999,
+          "createAt": "2023-02-13T09:44:28.097904Z",
+          "updateAt": "2025-11-12T11:05:44.830742Z",
+          "name": "158****6106",
+          "job": "ui",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": "15812106106",
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "lanhu_sync",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "15812106106",
+          "reset_password_at": "2025-11-12T11:05:30.865914Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 164435452047021,
+          "createAt": "2025-06-29T00:31:07.758297Z",
+          "updateAt": "2025-06-29T00:32:20.834503Z",
+          "name": "Daniel",
+          "job": "manager",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "15925691805",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 64694782072613,
+          "createAt": "2022-06-24T02:15:52.375615Z",
+          "updateAt": "2025-06-04T02:12:11.073396Z",
+          "name": "grasfish",
+          "job": "developer",
+          "email": "grasfish@163.com",
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "lanhu_sync",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18787359457",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 56587529025053,
+          "createAt": "2022-03-26T14:34:33.800752Z",
+          "updateAt": "2023-12-13T07:52:33.716485Z",
+          "name": "qhw_david",
+          "job": "developer",
+          "email": "qhw_david@hotmail.com",
+          "emailCheck": false,
+          "phoneNumber": "18313929091",
+          "phoneCheck": false,
+          "avatar": "https://thirdwx.qlogo.cn/mmopen/55GO4WpyhGLjxWKuwX3icWCHBz5n0jPWDFgtUaRVAamqG5hyTHFox2VOGJdXlGM0Z3zic0JsUMwOeunzl86zibCUM1YpINJhH8E/132",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "lanhu_oauth",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18313929091",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 176799121751237,
+          "createAt": "2025-11-12T11:46:21.02888Z",
+          "updateAt": "2026-02-10T13:03:43.55072Z",
+          "name": "qianbs",
+          "job": "other",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18388372787",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 167723289234479,
+          "createAt": "2025-08-04T07:29:53.88512Z",
+          "updateAt": "2025-08-05T08:21:20.914017Z",
+          "name": "qianbs",
+          "job": "ui",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": "18388372787",
+          "phoneCheck": true,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 0,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18388372787",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 164256024256328,
+          "createAt": "2025-06-27T00:59:11.824392Z",
+          "updateAt": "2026-01-27T11:06:56.204464Z",
+          "name": "Winster1984",
+          "job": "manager",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": "15858234551",
+          "phoneCheck": true,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "15858234551",
+          "reset_password_at": "2026-01-27T11:03:13.222875Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 110080970019007,
+          "createAt": "2023-11-07T01:29:53.129804Z",
+          "updateAt": "2025-06-06T02:38:34.948736Z",
+          "name": "wo",
+          "job": "developer",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "15122977670",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 167817917392098,
+          "createAt": "2025-08-05T08:33:57.409777Z",
+          "updateAt": "2025-08-25T08:38:45.495863Z",
+          "name": "晶娇",
+          "job": "ui",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_h5",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": null,
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 177073643936478,
+          "createAt": "2025-11-15T12:29:46.577444Z",
+          "updateAt": "2025-11-17T02:11:06.997157Z",
+          "name": "黎硕",
+          "job": "other",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_h5",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": null,
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 124040320912984,
+          "createAt": "2024-04-09T03:27:48.204947Z",
+          "updateAt": "2025-08-04T07:26:09.743257Z",
+          "name": "李蒋平",
+          "job": "developer",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": null,
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 88478866761172,
+          "createAt": "2023-03-13T14:53:42.557927Z",
+          "updateAt": "2023-03-14T01:23:18.423258Z",
+          "name": "鲁伯特之泪",
+          "job": "developer",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": null,
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 111464036470515,
+          "createAt": "2023-11-22T07:53:08.103585Z",
+          "updateAt": "2025-06-26T13:04:45.305384Z",
+          "name": "我来瞅瞅",
+          "job": "other",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "13888499617",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 164167542344540,
+          "createAt": "2025-06-26T01:32:48.639286Z",
+          "updateAt": "2025-06-26T01:34:55.11111Z",
+          "name": "谢飞静",
+          "job": "developer",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "https://static-legacy.dingtalk.com/media/lADPD26eRiBsHUXNAbDNAbA_432_432.jpg",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "dingtalk_oauth",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18288669724",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 94613103469753,
+          "createAt": "2023-05-20T07:54:46.43819Z",
+          "updateAt": "2025-06-04T02:14:40.406709Z",
+          "name": "杨杨杨",
+          "job": "other",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "13518787830",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        },
+        {
+          "id": 89061217946608,
+          "createAt": "2023-03-20T01:09:56.831632Z",
+          "updateAt": "2025-06-30T08:21:04.802162Z",
+          "name": "赵书源",
+          "job": "ui",
+          "email": null,
+          "emailCheck": false,
+          "phoneNumber": null,
+          "phoneCheck": false,
+          "avatar": "",
+          "notifyType": "all",
+          "notifySwitch": 7,
+          "wechatNickname": "",
+          "source": "wechat_subscribe",
+          "userType": 1,
+          "role": "",
+          "userState": 0,
+          "isReg": false,
+          "ext": 2,
+          "nicknameInTeam": "",
+          "joinAt": "0001-01-01T00:00:00Z",
+          "authPhoneNumber": "18208897159",
+          "reset_password_at": "0001-01-01T00:00:00Z",
+          "isDeprecated": 0
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 20,
+          "total": 17
+        },
+        "time": 1771312163204472,
+        "trace": "4f0be5846c302521"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://mastergo.com/api/v1/search/user/projects",
+    "body": {
+      "code": "OK",
+      "data": [
+        {
+          "id": 164256024256336,
+          "createAt": "2025-06-27T00:59:11.836599Z",
+          "updateAt": "2025-06-27T00:59:11.836599Z",
+          "name": "草稿箱",
+          "isPersonal": true,
+          "teamId": 164256024256331,
+          "documents": null,
+          "projectIndex": 0,
+          "projectFracDex": "",
+          "visitControl": 1,
+          "isPublic": 0,
+          "shareCode": "",
+          "groups": null,
+          "isFreeUse": false,
+          "organizationId": 0
+        },
+        {
+          "id": 164167889623181,
+          "createAt": "2025-06-26T01:38:19.422592Z",
+          "updateAt": "2025-06-26T01:38:19.422592Z",
+          "name": "美业服务小程序",
+          "isPersonal": false,
+          "teamId": 56587529025055,
+          "documents": null,
+          "projectIndex": 0,
+          "projectFracDex": "",
+          "visitControl": 1,
+          "isPublic": 0,
+          "shareCode": "",
+          "groups": null,
+          "isFreeUse": false,
+          "organizationId": 0
+        },
+        {
+          "id": 164256024256338,
+          "createAt": "2025-06-27T00:59:11.836599Z",
+          "updateAt": "2025-06-27T00:59:11.836599Z",
+          "name": "团队项目",
+          "isPersonal": false,
+          "teamId": 164256024256333,
+          "documents": null,
+          "projectIndex": 0,
+          "projectFracDex": "",
+          "visitControl": 1,
+          "isPublic": 0,
+          "shareCode": "",
+          "groups": null,
+          "isFreeUse": false,
+          "organizationId": 0
+        },
+        {
+          "id": 165361442256752,
+          "createAt": "2025-07-09T05:49:20.332761Z",
+          "updateAt": "2025-07-09T05:49:20.332761Z",
+          "name": "制证辅助系统",
+          "isPersonal": false,
+          "teamId": 56587529025055,
+          "documents": null,
+          "projectIndex": 0,
+          "projectFracDex": "",
+          "visitControl": 1,
+          "isPublic": 0,
+          "shareCode": "",
+          "groups": null,
+          "isFreeUse": false,
+          "organizationId": 0
+        }
+      ],
+      "meta": {
+        "page": {
+          "offset": 0,
+          "number": 1,
+          "size": 20,
+          "total": 4
+        },
+        "time": 1771312163206318,
+        "trace": "7249c3cd1e3c1e66"
+      }
+    },
+    "status": 200
+  },
+  {
+    "url": "https://sentry.mastergo.com/api/3/envelope/?sentry_key=da5223068af34280a39c0ffdd8c30ada&sentry_version=7",
+    "body": {
+      "id": "dd78d0d2e44b4e85a35325955ca70d8c"
+    },
+    "status": 200
+  }
+]

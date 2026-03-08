@@ -1,0 +1,272 @@
+[
+  {
+    "text": "页面",
+    "class": "page_name",
+    "tag": "DIV",
+    "x": 54,
+    "y": 58.203125,
+    "w": 186,
+    "h": 21.59375,
+    "depth": 2
+  },
+  {
+    "text": "登录",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 96,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "首页",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 126,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "产品",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 156,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "购买",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 186,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "产品",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 216,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "预约",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 246,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "技师",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 276,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "预约填写",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 306,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "护理",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 336,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "购买",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 366,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "护理项目",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 396,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "附近",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 426,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "门店详情",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 456,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "凤御馆",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 486,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "附近门店",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 516,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "我的",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 84,
+    "y": 546,
+    "w": 216,
+    "h": 18,
+    "depth": 4
+  },
+  {
+    "text": "积分",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 576,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "在线客服",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 606,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "订单中心-待服务",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 636,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "订单中心-已服务",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 666,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "订单中心-待付款",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 696,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "评价",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 726,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "消息",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 756,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "个人信息",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 786,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "优惠券",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 816,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  },
+  {
+    "text": "个人中心",
+    "class": "master-tree-item__content",
+    "tag": "DIV",
+    "x": 102,
+    "y": 846,
+    "w": 198,
+    "h": 18,
+    "depth": 5
+  }
+]
