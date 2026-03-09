@@ -1,8 +1,10 @@
 .DS_Store
-sources/
 node_modules/
 miniprogram_npm/
 project.private.config.json
+secrets/
+sources/*
+!sources/README.md
 
 # PostgreSQL & Docker
 db/.env
