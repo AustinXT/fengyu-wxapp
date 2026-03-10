@@ -138,7 +138,7 @@ npm install
     MSSQL_SERVER: '47.96.87.33',
     MSSQL_PORT: '1433',
     MSSQL_USER: 'SD',
-    MSSQL_PASSWORD: 'Se4Qimoh',
+    MSSQL_PASSWORD: '',
     MSSQL_DATABASE: 'wkdb_20220804_86cd3292'
   }
 }
