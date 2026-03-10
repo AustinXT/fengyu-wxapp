@@ -9,7 +9,7 @@
       "path": "/cloudfunctions/clientApi",
       "envVariables": {
         "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp",
-        "MSSQL_CONNECTION_STRING": "Server=111.229.31.128,1433;Database=wkdb_20220804_86cd3292;User Id=Sa;Password=oHx#+Q;TrustServerCertificate=True",
+        "MSSQL_CONNECTION_STRING": "Server=47.96.87.33,1433;Database=wkdb_20220804_86cd3292;User Id=SD;Password=Se4Qimoh;TrustServerCertificate=True",
         "TMAP_KEY": "SGWBZ-H4UO5-KFFII-IRE76-4SWAT-Y4BSZ",
         "TMAP_SECRET": "TVfPuDAooqCxOL7WRSXFOzae40mtsuAZ"
       },

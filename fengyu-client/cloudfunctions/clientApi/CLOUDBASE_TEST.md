@@ -250,10 +250,10 @@ SELECT UDF_M_438, UDF_M_11956 FROM UDT_M_219;
 - 环境变量: `PG_CONNECTION_STRING`
 
 ### WorkFine MSSQL (业务主数据,只读)
-- 服务器: `111.229.31.128:1433`
+- 服务器: `47.96.87.33:1433`
 - 数据库: `wkdb_20220804_86cd3292`
-- 用户名: `Sa`
-- 密码: `oHx#+Q`
+- 用户名: `SD`
+- 密码: `Se4Qimoh`
 - 环境变量: `MSSQL_CONNECTION_STRING` 或分离的环境变量
 
 ---

@@ -18,10 +18,10 @@ function connectPool() {
   }
 
   return sql.connect({
-    user: process.env.MSSQL_USER || 'Sa',
-    password: process.env.MSSQL_PASSWORD || 'oHx#+Q',
+    user: process.env.MSSQL_USER || 'SD',
+    password: process.env.MSSQL_PASSWORD || 'Se4Qimoh',
     database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
-    server: process.env.MSSQL_SERVER || '111.229.31.128',
+    server: process.env.MSSQL_SERVER || '47.96.87.33',
     port: parseInt(process.env.MSSQL_PORT) || 1433,
     options: {
       encrypt: false,

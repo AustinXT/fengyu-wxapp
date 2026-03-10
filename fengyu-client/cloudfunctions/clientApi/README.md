@@ -135,10 +135,10 @@ npm install
   name: 'clientApi',
   envVariables: {
     PG_CONNECTION_STRING: 'postgresql://...',
-    MSSQL_SERVER: '111.229.31.128',
+    MSSQL_SERVER: '47.96.87.33',
     MSSQL_PORT: '1433',
-    MSSQL_USER: 'Sa',
-    MSSQL_PASSWORD: 'oHx#+Q',
+    MSSQL_USER: 'SD',
+    MSSQL_PASSWORD: 'Se4Qimoh',
     MSSQL_DATABASE: 'wkdb_20220804_86cd3292'
   }
 }
