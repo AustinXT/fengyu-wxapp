@@ -55,19 +55,18 @@ CloudBase 云函数（Node.js）
 | # | 数据域 | PG 表 | 数据来源 | 说明 |
 |---|--------|-------|----------|------|
 | 1 | 门店信息 | `stores` | 同步自 WorkFine | 所有业务查询走 PG |
-| 2 | 部门/职位 | `departments` / `positions` | 同步自 WorkFine | 角色判定、分配使用 PG |
-| 3 | 员工信息 | `employees` | 同步自 WorkFine | 角色判定、营业额分配使用 PG |
-| 4 | 顾客档案 | `customers` | 同步自 WorkFine | 顾客搜索、档案查看使用 PG |
-| 5 | 品项分类 | `product_categories` | PG 读写 | 初始导入后员工手动管理 |
-| 6 | 商品 | `products` | PG 读写 | 初始导入后员工日常维护 |
-| 7 | 商品规格 | `product_skus` | PG 读写 | 价格/次数自包含 |
-| 8 | 提成比例矩阵 | `commission_rate_matrix` | 同步自 WorkFine | — |
-| 9 | 订单/销售明细 | `orders` / `order_items` | PG 读写 | — |
-| 10 | 营业额分配 | `revenue_allocations` / `revenue_allocation_items` | PG 读写 | — |
-| 11 | 护理单/核销 | `service_orders` / `service_items` | PG 读写 | — |
-| 12 | 微信用户 | `client_wechat_users` / `staff_wechat_users` | PG 读写 | 两端独立 |
-| 13 | 预约 | `appointments` | PG 读写 | — |
-| 14 | 权限角色分配 | `permission_roles` | PG 读写 | — |
+| 2 | 员工信息 | `employees` | 同步自 WorkFine | 角色判定、营业额分配使用 PG |
+| 3 | 顾客档案 | `customers` | 同步自 WorkFine | 顾客搜索、档案查看使用 PG |
+| 4 | 品项分类 | `product_categories` | PG 读写 | 初始导入后员工手动管理 |
+| 5 | 商品 | `products` | PG 读写 | 初始导入后员工日常维护 |
+| 6 | 商品规格 | `product_skus` | PG 读写 | 价格/次数自包含 |
+| 7 | 提成比例矩阵 | `commission_rate_matrix` | 同步自 WorkFine | — |
+| 8 | 订单/销售明细 | `orders` / `order_items` | PG 读写 | — |
+| 9 | 营业额分配 | `revenue_allocations` / `revenue_allocation_items` | PG 读写 | — |
+| 10 | 护理单/核销 | `service_orders` / `service_items` | PG 读写 | — |
+| 11 | 微信用户 | `client_wechat_users` / `staff_wechat_users` | PG 读写 | 两端独立 |
+| 12 | 预约 | `appointments` | PG 读写 | — |
+| 13 | 权限角色分配 | `permission_roles` | PG 读写 | — |
 
 > 同步机制详见 `workfine-sync.spec.md`。
 
@@ -83,18 +82,31 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 门店名称（唯一索引），业务主键，贯穿所有业务表 |
 | `market_name` | string | 所属市场（如"南商市场"） |
 | `opening_date` | date \| null | 开业时间 |
-| `total_investment` | decimal \| null | 总投资款 |
 | `bed_count` | integer \| null | 可用床位数 |
 | `scope_level` | text | 域级别：`global` / `market` / `store`，NOT NULL DEFAULT 'store' |
 | `is_closed` | boolean | 是否停止营业，NOT NULL DEFAULT false |
-| `closed_date` | date \| null | 关店日期 |
-| `region` | string \| null | 门店所属区域（地理分类） |
-| `wf_department_id` | string \| null | WorkFine 部门 ID 关联标识 |
-| `synced_at` | timestamp | 最近一次同步时间 |
+| `cover_image` | text \| null | 门头封面图 URL |
+| `images` | text[] \| null | 店内环境图 URL 数组 |
+| `district` | text \| null | 省市区（如"江西省南昌市青山湖区"） |
+| `street_address` | text \| null | 街道门牌号（如"北京东路999号"） |
+| `latitude` | numeric(10,7) \| null | 纬度 |
+| `longitude` | numeric(10,7) \| null | 经度 |
+| `phone` | text \| null | 联系电话 |
+| `business_hours` | text \| null | 营业时间（如 "09:00-21:00"） |
+| `description` | text \| null | 门店简介 |
+| `announcement` | text \| null | 门店公告（临时通知） |
+| `parking_info` | text \| null | 停车/交通信息 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
 > 现有业务表（orders、service_orders、appointments 等）的 `store_name` / `market_name` 字段保持文本存储（快照语义），不设 FK 约束。`stores` 表作为权威查找表，应用层通过 `store_name` 查询。
+>
+> **顾客向字段**（`cover_image` ~ `parking_info`）：
+> - 由员工端手动维护，不参与 WorkFine 同步
+> - 图片 URL 指向 CloudBase 云存储（`cloud://` 协议或 CDN 地址）
+> - 经纬度用于 `wx.openLocation` 地图展示和客户端距离排序（Haversine 公式，无需 PostGIS）
+> - `district` + `street_address` 拼接为完整地址展示
+> - `scope_level` 为 `global` / `market` 的虚拟条目，顾客向字段保持 NULL
 >
 > **scope_level 虚拟条目**:
 > - 1 条 **global** 行：`store_name='总部', market_name=NULL, scope_level='global'`
@@ -103,32 +115,7 @@ CloudBase 云函数（Node.js）
 >
 > 虚拟条目由同步脚本自动生成：遍历现有门店的 `market_name` 去重后插入 market 行；global 行固定一条。虚拟条目的 `is_closed = false`，不参与门店业务查询（业务查询只查 `scope_level = 'store'`），仅作为 `permission_roles.scope_id` 的 FK 目标。
 
-### 4.2 departments（部门）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `department_id` | string | 主键，UUID |
-| `department_name` | string | 部门名称（唯一索引），如"美容部"、"推广部"、"养生部" |
-| `department_code` | string \| null | 部门编码 |
-| `synced_at` | timestamp | 最近一次同步时间 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-### 4.3 positions（职位）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `position_id` | string | 主键，UUID |
-| `position_name` | string | 职位名称，如"门店经理"、"美容师"、"督导" |
-| `department_name` | string | 所属部门名称，关联 `departments.department_name` |
-| `rank_order` | integer \| null | 排序序号（用于职级显示） |
-| `synced_at` | timestamp | 最近一次同步时间 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-> UNIQUE 约束：`(position_name, department_name)`
-
-### 4.4 employees（员工）
+### 4.2 employees（员工）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -159,7 +146,7 @@ CloudBase 云函数（Node.js）
 >
 > 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_no`。
 
-### 4.5 customers（顾客档案）
+### 4.3 customers（顾客档案）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -193,7 +180,7 @@ CloudBase 云函数（Node.js）
 
 > **与 client_wechat_users 的关系**: `client_wechat_users.customer_no` → `customers.customer_no`（通过手机号自动关联）。顾客绑定手机号时，系统查询 `customers.phone` 匹配，将 `customer_no` 写入 `client_wechat_users`。并非所有顾客都会注册小程序，也非所有小程序用户都有档案，两表为可选关联。
 
-### 4.6 product_categories（品项分类）
+### 4.4 product_categories（品项分类）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -207,7 +194,7 @@ CloudBase 云函数（Node.js）
 
 > `category_name` 不设唯一约束，允许不同 `product_kind` 下同名分类。
 
-### 4.7 products（商品主表）
+### 4.5 products（商品主表）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -240,7 +227,7 @@ CloudBase 云函数（Node.js）
 > - `sales_category` 在商品层（非 SKU 层）
 > - `detail_images` 用 PostgreSQL text 数组存储多张详情图
 
-### 4.8 product_skus（商品规格）
+### 4.6 product_skus（商品规格）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -276,7 +263,7 @@ CloudBase 云函数（Node.js）
 >        { sku_id: 'S002', spec_name: '科颜美精华 单次', price: 0, is_bundle_sku: true }  ← 赠品
 > ```
 
-### 4.9 commission_rate_matrix（提成比例矩阵）
+### 4.7 commission_rate_matrix（提成比例矩阵）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -293,7 +280,7 @@ CloudBase 云函数（Node.js）
 
 > UNIQUE 约束：`(market_name, department_name, sales_category, amount_tier_min)`
 
-### 4.10 orders（订单主表）
+### 4.8 orders（订单主表）
 
 > **设计说明：为何需要 `order_items`？**
 > 一笔销售单可包含多个项目（疗程卡、单品、院装产品可混购），且疗程卡需要**独立追踪剩余次数与到期日**，并作为护理单核销的引用锚点。
@@ -327,7 +314,7 @@ CloudBase 云函数（Node.js）
 > - `UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`
 > - `UNIQUE (client_phone, store_name) WHERE status = '待支付' AND client_user_id IS NULL`
 
-### 4.11 order_items（销售明细）
+### 4.9 order_items（销售明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -347,7 +334,7 @@ CloudBase 云函数（Node.js）
 | `promotion_scheme_id` | string \| null | 促销方案编号 |
 | `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
 
-### 4.12 revenue_allocations（营业额分配）
+### 4.10 revenue_allocations（营业额分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -364,7 +351,7 @@ CloudBase 云函数（Node.js）
 
 > UNIQUE 约束：`(order_no, employee_id)`
 
-### 4.13 revenue_allocation_items（业绩分类明细）
+### 4.11 revenue_allocation_items（业绩分类明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -375,7 +362,7 @@ CloudBase 云函数（Node.js）
 | `amount` | decimal | 该分类的分配金额 |
 | `commission_rate` | decimal \| null | 提成比例快照 |
 
-### 4.14 service_orders（护理单主表）
+### 4.12 service_orders（护理单主表）
 
 > 与订单的关联通过 `service_items.item_flow_no → order_items.item_flow_no` 实现，主表不存 `order_no`，支持同一次到店跨多笔订单核销。
 
@@ -394,7 +381,7 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.15 service_items（护理明细）
+### 4.13 service_items（护理明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -405,7 +392,7 @@ CloudBase 云函数（Node.js）
 | `session_used` | integer | 本次划卡次数 |
 | `employee_id` | string | 服务美容师，关联 `employees.employee_no` |
 
-### 4.16 client_wechat_users（客户端微信用户）
+### 4.14 client_wechat_users（客户端微信用户）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -422,7 +409,7 @@ CloudBase 云函数（Node.js）
 
 > 绑定手机号时系统查询 `customers.phone` 匹配，将 `customer_no` 写入。后续可通过此字段直接获取顾客档案详情。
 
-### 4.17 staff_wechat_users（员工端微信用户）
+### 4.15 staff_wechat_users（员工端微信用户）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -435,7 +422,7 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.18 appointments（预约）
+### 4.16 appointments（预约）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -455,7 +442,7 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.19 permission_roles（权限角色分配）
+### 4.17 permission_roles（权限角色分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -508,7 +495,7 @@ CloudBase 云函数（Node.js）
 ### 5.2 职能线（部门 × 职位）
 
 ```
-部门（PG departments 表）
+部门（employees.department_name 字段值）
 ├── 美容部 → 门店经理、美容师、实习美容师 …
 ├── 推广部 → 推广经理、推广师 …
 ├── 养生部 → 养生师 …
@@ -820,8 +807,6 @@ PG 实体（同步实体以 ★ 标注）
 
 ★ stores (门店, scope_level: global/market/store) ←── store_name ──→ 被 orders/service_orders/appointments 等引用（快照）
 │   └── store_id ←── permission_roles.scope_id（域目标）
-★ departments (部门) ←── department_name ──→ 被 employees/revenue_allocations 引用
-★ positions (职位) ←── (position_name, department_name) ──→ 被 employees 引用
 ★ employees (员工) ←── employee_no ──→ 被以下字段引用：
 │   ├── staff_wechat_users.staff_wf_id
 │   ├── orders.preferred_staff_wf_id / opened_by
