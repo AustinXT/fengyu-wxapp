@@ -1,6 +1,6 @@
 # 凤御双美容院 — 后端服务产品需求规格书
 
-> **文档版本**: 2.0.0
+> **文档版本**: 2.1.0
 > **范围**: 后端服务（CloudBase 云函数 + 双数据库）
 > **约束文档**: `.42cog/real.md` v2.0.0 | `.42cog/cog.md` v2.0.0
 > **端 spec 引用**: `client.pr.spec.md` v1.0.0 | `staff.pr.spec.md` v1.0.0
@@ -25,7 +25,7 @@
 | SQL Server 驱动 | `mssql`（node-mssql）npm 包，仅同步模块使用 |
 | 支付 | 微信支付多商户模式（特约商户）+ 线下付款标记 |
 | 实时通信 | WebSocket 或小程序订阅消息 |
-| 权限 | 基于角色的访问控制（店长/美容师），微信 openid 关联 |
+| 权限 | RBAC + Scope（3角色×3域），PG stores(scope_level) + permission_roles 表驱动，微信 openid 关联 |
 
 ---
 
@@ -67,12 +67,11 @@ CloudBase 云函数（Node.js）
 | 2 | **部门/职位** | PG `departments` / `positions` | **PG 实体 + WorkFine 同步** | 从员工数据和 UDT_S_211/UDT_M_212 同步；角色判定、分配使用 PG |
 | 3 | **员工信息** | PG `employees` | **PG 实体 + WorkFine 同步** | 从 UDT_S_287 定期同步；角色判定、营业额分配、服务单分配使用 PG |
 | 4 | **顾客档案** | PG `customers` | **PG 实体 + WorkFine 同步** | 从 UDT_S_311 定期同步；顾客搜索、档案查看使用 PG |
-| 5 | **品项分类** | PG `product_categories` | **PG 实体 + WorkFine 同步** | 从 UDT_M_229 同步；品项分类参考数据 |
-| 6 | **可售项目** | PG `catalog_items` | **PG 实体 + WorkFine 同步** | 从 UDT_M_1281 + UDT_M_1383 统一同步；SKU 价格/次数从 PG 查询 |
-| 7 | **院装产品** | PG `material_products` | **PG 实体 + WorkFine 同步** | 从 UDT_M_341 同步；SKU 价格从 PG 查询 |
-| 8 | **促销方案** | PG `promotion_schemes` / `promotion_scheme_items` | **PG 实体 + WorkFine 同步** | 从 UDT_S_1459 + UDT_M_1460 同步 |
+| 5 | **品项分类** | PG `product_categories` | PG 读写 | 初始数据从 UDT_M_229 一次性导入；后续员工手动管理 |
+| 6 | **商品** | PG `products` | PG 读写 | 初始数据从 WorkFine 一次性导入；后续员工日常维护 |
+| 7 | **商品规格** | PG `product_skus` | PG 读写 | 价格/次数自包含，初始数据从 WorkFine 导入 |
+| 8 | ~~促销方案~~ | ~~`promotion_schemes` / `promotion_scheme_items`~~ | **已废弃** | 被 `products`（is_bundle=true）+ `product_skus`（is_bundle_sku=true）替代 |
 | 9 | **提成比例矩阵** | PG `commission_rate_matrix` | **PG 实体 + WorkFine 同步** | 从 UDT_S_1962 + UDT_M_1964 同步 |
-| 10 | SPU 商品元数据 | PG `product_spu` / `product_spu_sku_map` | PG 读写 | 运营维护 |
 | 11 | 订单/销售明细 | PG `orders` / `order_items` | PG 读写 | 参考 WorkFine UDT_S_209 结构 |
 | 12 | 营业额分配 | PG `revenue_allocations` / `revenue_allocation_items` | PG 读写 | 参考 WorkFine UDT_M_217 结构 |
 | 13 | 护理单/核销 | PG `service_orders` / `service_items` | PG 读写 | 参考 WorkFine UDT_S_259 结构 |
@@ -83,7 +82,7 @@ CloudBase 云函数（Node.js）
 
 **同步方向**: WorkFine（上游权威源） → PG（本地工作副本），单向只读同步。
 
-**同步范围**: **全部 WorkFine 数据域**（门店、部门/职位、员工、顾客、品项分类、可售项目、院装产品、促销方案、提成比例矩阵）。
+**同步范围**: **组织与人员域**（门店、部门/职位、员工、顾客、提成比例矩阵）。商品域（品项分类、商品、商品规格）从 WorkFine 一次性导入后由员工手动维护，不再定期同步。
 
 **同步机制**:
 
@@ -99,11 +98,9 @@ CloudBase 云函数（Node.js）
 3. `positions`（职位）— 依赖 departments
 4. `employees`（员工）— 依赖 stores、departments
 5. `customers`（顾客档案）— 依赖 stores
-6. `product_categories`（品项分类）— 无依赖
-7. `catalog_items`（可售项目 + 门店自定义）— 依赖 product_categories
-8. `material_products`（院装产品）— 无依赖
-9. `promotion_schemes` + `promotion_scheme_items`（促销方案）— 依赖 catalog_items
-10. `commission_rate_matrix`（提成比例）— 依赖 departments
+6. `commission_rate_matrix`（提成比例）— 依赖 departments
+
+> **商品域不参与定期同步**: `product_categories`、`products`、`product_skus` 从 WorkFine 一次性导入后由员工手动维护。
 
 **同步规则**:
 - 以 WorkFine 主键（员工编号/顾客编号/门店名）为匹配键，存在则更新，不存在则插入（UPSERT）
@@ -114,12 +111,13 @@ CloudBase 云函数（Node.js）
 
 ### 3.4 架构收益
 
-全部数据域同步到 PG 后的关键收益：
+全部数据域迁移到 PG 后的关键收益：
 - **运行时零 MSSQL 依赖**: clientApi / staffApi 业务请求 100% 走 PG，不再运行时连接 SQL Server
 - **WorkFine 故障不影响业务**: MSSQL 不可用时，仅同步模块受影响，所有在线查询正常
 - **查询性能提升**: PG 本地查询取代远程 MSSQL 查询，可建索引优化
 - **取消价格缓存**: 不再需要 5 分钟 TTL 模块级缓存（原为减轻 MSSQL 压力）
 - **MSSQL 连接池仅限同步**: 同步时按需建立，业务函数不维护常驻连接
+- **商品数据自包含**: 价格/次数直接存在 PG 商品表中，无需运行时 JOIN 或查询 WorkFine
 
 ---
 
@@ -129,19 +127,15 @@ CloudBase 云函数（Node.js）
 
 | 实体 | PG 表 | 来源 | 关键字段 |
 |------|-------|------|----------|
-| **门店** | `stores` | WorkFine 同步 | store_name (UNIQUE), market_name, bed_count, is_closed |
+| **门店** | `stores` | WorkFine 同步 | store_name (UNIQUE), market_name, bed_count, is_closed, scope_level |
 | **部门** | `departments` | WorkFine 同步 | department_name (UNIQUE), department_code |
 | **职位** | `positions` | WorkFine 同步 | position_name, department_name |
 | **员工** | `employees` | WorkFine 同步 | employee_no (PK), name, phone, store_name, position_name, is_resigned |
 | **顾客档案** | `customers` | WorkFine 同步 | customer_no (PK), name, phone, store_name, member_level |
-| **品项分类** | `product_categories` | WorkFine 同步 | category_name (UNIQUE), big_category, sort_order |
-| **可售项目** | `catalog_items` | WorkFine 同步 | item_no (PK), category, price, session_count, source |
-| **院装产品** | `material_products` | WorkFine 同步 | product_no (PK), name, retail_price, spec |
-| **促销方案** | `promotion_schemes` | WorkFine 同步 | scheme_no (PK), scheme_name, scheme_price |
-| **促销方案明细** | `promotion_scheme_items` | WorkFine 同步 | id, scheme_no, item_no, promotion_price |
+| **品项分类** | `product_categories` | PG 原生（一次性导入） | category_id, category_name, product_kind, is_valid |
+| **商品** | `products` | PG 原生（一次性导入） | product_id, name, product_kind, category_id, price, is_bundle |
+| **商品规格** | `product_skus` | PG 原生（一次性导入） | sku_id, product_id, product_type, price, session_count |
 | **提成比例矩阵** | `commission_rate_matrix` | WorkFine 同步 | id, market_name, department_name, commission_rate |
-| SPU 商品 | `product_spu` | PG 原生 | spu_id, name, category, big_category |
-| SKU↔WorkFine 映射 | `product_spu_sku_map` | PG 原生 | sku_id, spu_id, workfine_item_id |
 | 订单 | `orders` | PG 原生 | order_no, status, client_user_id, customer_no |
 | 订单明细 | `order_items` | PG 原生 | item_flow_no, order_no, sku_id, remaining_sessions |
 | 营业额分配 | `revenue_allocations` | PG 原生 | id, order_no, employee_id |
@@ -151,6 +145,7 @@ CloudBase 云函数（Node.js）
 | 客户端微信用户 | `client_wechat_users` | PG 原生 | user_id, openid, phone, customer_no |
 | 员工端微信用户 | `staff_wechat_users` | PG 原生 | user_id, openid, phone, staff_wf_id |
 | 预约 | `appointments` | PG 原生 | appointment_id, status, client_user_id |
+| **权限角色分配** | `permission_roles` | PG 原生 | staff_id (UNIQUE), role, scope_id → stores.store_id |
 
 ### 4.2 stores（门店，同步自 WorkFine UDT_M_219）
 
@@ -162,6 +157,7 @@ CloudBase 云函数（Node.js）
 | `opening_date` | date \| null | 开业时间 |
 | `total_investment` | decimal \| null | 总投资款 |
 | `bed_count` | integer \| null | 可用床位数 |
+| `scope_level` | text | 域级别：`global` / `market` / `store`，NOT NULL DEFAULT 'store' |
 | `is_closed` | boolean | 是否停止营业，NOT NULL DEFAULT false |
 | `closed_date` | date \| null | 关店日期 |
 | `region` | string \| null | 门店所属区域（地理分类） |
@@ -173,6 +169,13 @@ CloudBase 云函数（Node.js）
 > **WorkFine 映射**: `store_name` ← `UDT_M_219.UDF_M_438`，`market_name` ← `UDT_M_219.UDF_M_437`，`is_closed` ← `UDF_M_11956 = '是'`。
 >
 > 现有业务表（orders、service_orders、appointments 等）的 `store_name` / `market_name` 字段保持文本存储（快照语义），不设 FK 约束。`stores` 表作为权威查找表，应用层通过 `store_name` 查询。
+>
+> **scope_level 虚拟条目**（v2.0 新增）：
+> - 1 条 **global** 行：`store_name='总部', market_name=NULL, scope_level='global'`
+> - ~20 条 **market** 行：`store_name=市场名, market_name=市场名, scope_level='market'`（如 `store_name='南昌市场', market_name='南昌市场'`）
+> - 现有 ~100 条门店行保持 `scope_level='store'`（默认值，无需修改）
+>
+> 虚拟条目由同步脚本自动生成：遍历现有门店的 `market_name` 去重后插入 market 行；global 行固定一条。虚拟条目的 `is_closed = false`，不参与门店业务查询（业务查询只查 `scope_level = 'store'`），仅作为 `permission_roles.scope_id` 的 FK 目标。
 
 ### 4.3 departments（部门，同步自 WorkFine 员工数据 + UDT_S_211）
 
@@ -232,7 +235,7 @@ CloudBase 云函数（Node.js）
 >
 > **身份证号**（UDF_S_1154）为高敏 PII，不同步到 PG；需要时从 WorkFine 实时查询。
 >
-> **角色判定**: `position_name = '门店经理'` → 店长；其他 → 美容师。此判定现从 PG `employees` 表执行，不再实时查询 WorkFine。
+> **角色判定**（v2.0 变更）: 改为查询 `permission_roles` 表（JOIN `stores` ON `scope_id`），获取 `role` 和 `scope_level`。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_name` 匹配 `stores.store_id`）。不再使用 `position_name = '门店经理'` 硬编码判定。
 >
 > 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_no`。
 
@@ -274,125 +277,101 @@ CloudBase 云函数（Node.js）
 >
 > **顾客消费明细子表**（UDT_M_312）和**护理明细子表**（UDT_M_331）为 WorkFine 内部汇总视图，不同步到 PG；小程序消费数据从 PG 订单/护理单表查询。
 
-### 4.7 product_categories（品项分类，同步自 WorkFine UDT_M_229）
+### 4.7 product_categories（品项分类）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `category_id` | string | 主键，UUID |
-| `category_name` | string | 品项类型名称（唯一索引），如"蜜语生玑"、"科颜美" |
-| `big_category` | string | 一级分类：`生美` / `非生美` |
+| `category_id` | text | 主键，UUID |
+| `category_name` | text | 分类名（如"蜜语生玑"、"科颜美"），**不唯一** |
+| `product_kind` | product_kind enum | 所属商品类型：`福利活动` / `护理项目` / `家居产品` / `充值卡` |
 | `sort_order` | integer | 排序序号 |
-| `is_active` | boolean | 是否可用，NOT NULL DEFAULT true |
-| `synced_at` | timestamp | 最近一次同步时间 |
+| `is_valid` | boolean | 是否有效，NOT NULL DEFAULT true |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **WorkFine 映射**: `category_name` ← `UDT_M_229.UDF_M_522`，`big_category` ← `UDF_M_17416`，`sort_order` ← `UDF_M_521`，`is_active` ← `UDF_M_15996 = '是'`。
+> 初始数据从 WorkFine UDT_M_229 一次性导入；后续员工可手动管理。
 >
-> 当前可用品项分类 21 种（详见附录 A.3.5）。`product_spu.category` 字段值来源于此表。
+> `category_name` 不设唯一约束，允许不同 `product_kind` 下同名分类。
+>
+> **枚举变更**: `big_category`（`生美` / `非生美`）已废弃，替换为 `product_kind`（`福利活动` / `护理项目` / `家居产品` / `充值卡`）。`workfine_source` 枚举已废弃。
+>
+> **WorkFine 导入参考**: `category_name` ← `UDT_M_229.UDF_M_522`，`sort_order` ← `UDF_M_521`，`is_valid` ← `UDF_M_15996 = '是'`。导入时根据业务含义映射 `product_kind`。
 
-### 4.8 catalog_items（可售项目，统一同步自 WorkFine UDT_M_1281 + UDT_M_1383）
+### 4.8 products（商品主表，替代原 `product_spu`）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `item_no` | string | 主键，疗程项目编号（WorkFine UDF_M_14503） |
-| `source` | enum | `national`（全国可售，UDT_M_1281）/ `store_custom`（门店自定义，UDT_M_1383） |
-| `product_type` | string | 产品库类型：`疗程卡` / `单品` / `自定义-疗程` / `自定义-单品` |
-| `category` | string | 品项分类（如"蜜语生玑"），对应 `product_categories.category_name` |
-| `item_name` | string | 项目名称 |
-| `session_count` | integer \| null | 疗程服务次数 |
-| `unit` | string \| null | 计量单位 |
-| `price` | decimal | 原价（即开单价格），**开单时从此字段快照到 order_items.unit_price** |
-| `sub_category` | string \| null | 品项细分（三级） |
-| `is_beauty` | string \| null | 是否生美：`生美` / `非生美` |
-| `signature_tag` | string \| null | 招牌定位（仅全国项目） |
-| `is_active` | boolean | 是否可用/启用，NOT NULL DEFAULT true |
-| `effective_start` | date \| null | 版本生效日期（从目录主表 UDT_S_1280/1382 继承） |
-| `effective_end` | date \| null | 版本失效日期 |
-| `applicable_scope` | string \| null | 适用市场/门店范围（仅门店自定义项目） |
-| `synced_at` | timestamp | 最近一次同步时间 |
+| `product_id` | text | 主键，UUID |
+| `product_kind` | product_kind enum | 福利活动 / 护理项目 / 家居产品 / 充值卡 |
+| `category_id` | text | FK → `product_categories.category_id` |
+| `name` | text | 商品名称 |
+| `cover_image` | text | 封面图 URL |
+| `detail_images` | text[] | 详情图片 URL 列表（PostgreSQL 数组） |
+| `description` | text | 商品描述 |
+| `is_shengmei` | boolean | 是否生美（护理项目使用，其他为 null） |
+| `is_bundle` | boolean | 是否套餐（套餐的 SKU 是其组成部分），NOT NULL DEFAULT false |
+| `price` | numeric(12,2) | 标价/原价 |
+| `special_price` | numeric(12,2) \| null | 特价/促销价（null=无特价） |
+| `sales_category` | sales_category enum | 销售分类（自采自销 / 他销自耗 / 他销他耗 / 生态合作） |
+| `manage_scope` | text \| null | 管理范围（null=总部管理；值为门店/市场标识，限定谁可编辑此商品） |
+| `market_scope` | text \| null | 可见范围（null=全部可见；值为门店/市场标识，限定谁可看到/购买此商品） |
+| `sort_order` | integer | 排序权重 |
+| `valid_start` | date \| null | 有效期开始（null=立即生效） |
+| `valid_end` | date \| null | 有效期结束（null=永久有效） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **WorkFine 映射**: `item_no` ← `UDF_M_14503`，`item_name` ← `UDF_M_14505`，`price` ← `UDF_M_14508`，`session_count` ← `UDF_M_14506`，`is_beauty` ← `UDF_M_17783`（全国）/ `UDF_M_17784`（自定义）。
+> **关键设计决策**:
+> - `valid_start` + `valid_end` 替代 `is_active`，通过日期控制上下架
+> - `is_bundle=true` 时，其关联的 `product_skus` 记录是套餐组成部分（替代原 `promotion_schemes`）
+> - `price` + `special_price` 在商品层提供标价和特价
+> - `manage_scope` 替代原 `product_origin`，表示谁可管理此商品
+> - `market_scope` 替代原 `market_restriction`，门店/市场级可见性限制
+> - `sales_category` 从 SKU 层上提到商品层
+> - `detail_images` 用 PostgreSQL text 数组存储多张详情图
 >
-> 统一 UDT_M_1281 和 UDT_M_1383 到一张表，通过 `source` 字段区分。版本有效期从对应主表（UDT_S_1280 / UDT_S_1382）平铺到 item 行。
->
-> `product_spu_sku_map.workfine_item_id`（source = UDT_M_1281 或 UDT_M_1383）引用此表 `item_no`。
->
-> 产品库 = "疗程卡" / "自定义-疗程" → 进入核销流程；产品库 = "单品" / "自定义-单品" → 支付即结束。
+> **初始数据来源**: 从 WorkFine `catalog_items`（UDT_M_1281 + UDT_M_1383）、`material_products`（UDT_M_341）、`promotion_schemes`（UDT_S_1459）一次性导入，后续由员工手动维护。
 
-### 4.9 material_products（院装产品，同步自 WorkFine UDT_M_341）
+### 4.9 product_skus（商品规格，替代原 `product_spu_sku_map`）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `product_no` | string | 主键，商品编号（WorkFine UDF_M_1870） |
-| `name` | string | 产品名称 |
-| `spec` | string \| null | 规格（如"285ml/瓶"） |
-| `brand` | string \| null | 品牌简称 |
-| `series` | string \| null | 产品系列 |
-| `supplier` | string \| null | 供货商 |
-| `management_center` | string \| null | 所属管理中心 |
-| `retail_price` | decimal \| null | 顾客零售价，**开单时快照到 order_items.unit_price** |
-| `accounting_price` | decimal \| null | 内部核算基准价 |
-| `store_discount` | decimal \| null | 分院进货折扣率 |
-| `store_price` | decimal \| null | 分院实际采购价 |
-| `market_discount` | decimal \| null | 市场进货折扣率 |
-| `market_price` | decimal \| null | 市场进货价 |
-| `employee_discount` | string \| null | 员工内购折扣描述 |
-| `employee_price` | decimal \| null | 员工内购价格 |
-| `company_price` | decimal \| null | 公司进货价 |
-| `is_orderable` | boolean | 是否可报货，NOT NULL DEFAULT true |
-| `synced_at` | timestamp | 最近一次同步时间 |
+| `sku_id` | text | 主键，保留现有 sku_id 值确保 FK 连续 |
+| `product_id` | text | FK → `products.product_id` |
+| `product_type` | product_type enum | 疗程卡 / 单品 / 院装产品；决定核销流程 |
+| `spec_name` | text | 规格名（如"10次卡"、"285ml/瓶"、"单次体验"） |
+| `price` | numeric(12,2) | 标价/零售价（套餐组件中为 0 表示赠品），**开单时快照到 order_items.unit_price** |
+| `special_price` | numeric(12,2) \| null | 特价/促销价（null=无特价） |
+| `session_count` | integer \| null | 疗程次数：疗程卡≥2，单品=1，院装产品=null |
+| `is_bundle_sku` | boolean | 是否为套餐的组成部分，NOT NULL DEFAULT false |
+| `sort_order` | integer | 排序序号 |
+| `is_active` | boolean | 是否上架，NOT NULL DEFAULT true |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **WorkFine 映射**: `product_no` ← `UDF_M_1870`，`name` ← `UDF_M_1871`，`retail_price` ← `UDF_M_1875`。完整映射见附录 A.3.1。
+> **索引**: `(product_id)`
 >
-> `product_spu_sku_map.workfine_item_id`（source = UDT_M_341）引用此表 `product_no`。
-
-### 4.10 promotion_schemes（促销方案，同步自 WorkFine UDT_S_1459）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `scheme_no` | string | 主键，促销单编号（WorkFine UDF_S_17159） |
-| `scheme_name` | string | 促销方案名称 |
-| `start_date` | date | 起始时间 |
-| `end_date` | date | 结束时间 |
-| `cash_coupon_amount` | decimal \| null | 附带现金券金额 |
-| `scheme_price` | decimal | 促销方案售价 |
-| `applicable_scope` | string \| null | 适用市场/门店范围 |
-| `synced_at` | timestamp | 最近一次同步时间 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-> **WorkFine 映射**: `scheme_no` ← `UDF_S_17159`，`scheme_name` ← `UDF_S_17175`，`scheme_price` ← `UDF_S_17193`，`applicable_scope` ← `UDF_S_17793`。
-
-### 4.11 promotion_scheme_items（促销方案明细，同步自 WorkFine UDT_M_1460）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | bigint | 主键，自增 |
-| `scheme_no` | string | 关联 `promotion_schemes.scheme_no` |
-| `item_no` | string | 疗程项目编号，关联 `catalog_items.item_no` |
-| `product_type` | string | 产品库类型：`疗程卡` / `单品` |
-| `category` | string \| null | 品项分类 |
-| `item_name` | string | 项目名称 |
-| `unit` | string \| null | 计量单位 |
-| `session_count` | integer \| null | 疗程服务次数 |
-| `original_price` | decimal | 原始标准售价 |
-| `discount_amount` | decimal | 折扣金额 |
-| `promotion_price` | decimal | 促销后实际售价 |
-| `is_gift` | boolean | 是否赠送，NOT NULL DEFAULT false |
-| `synced_at` | timestamp | 最近一次同步时间 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-> **WorkFine 映射**: `item_no` ← `UDF_M_17163`，`promotion_price` ← `UDF_M_17171`，`is_gift` ← `UDF_M_17174 = '是'`。
+> **核心变化**:
+> - 价格、次数**直接存在 SKU 表中**，不再运行时查 MSSQL
+> - `special_price` 支持 SKU 级别的促销/特价
+> - 删除 `workfine_item_id` / `workfine_source` — 不保留 WorkFine 溯源字段
+> - 删除 `brand` / `series` / `specification` / `employee_price` — 简化
+> - 删除 `market_restriction` / `sales_category` / `item_origin` — 上提到 `products` 表
+> - 套餐赠品：`price = 0` 即为赠品，无需 `is_gift` 字段
+> - 套餐总价 = 所有 `is_bundle_sku=true` 的 SKU 的 `price` 之和
+> - 产品类型 = `疗程卡` → 进入核销流程；`单品` → 支付即结束；`院装产品` → 支付即结束
 >
-> `product_spu_sku_map.workfine_item_id`（source = UDT_M_1460）引用此表中的 `item_no`。
+> **FK 引用**: `order_items.sku_id` → `product_skus.sku_id`；`service_items.sku_id` → `product_skus.sku_id`
+>
+> **套餐示例**:
+> ```
+> products: { product_id: 'P001', name: '春季焕肤套餐', is_bundle: true, product_kind: '福利活动' }
+>   └─ product_skus:
+>        { sku_id: 'S001', spec_name: '蜜语生玑 10次卡', price: 1999, is_bundle_sku: true }
+>        { sku_id: 'S002', spec_name: '科颜美精华 单次', price: 0, is_bundle_sku: true }  ← 赠品
+> ```
 
-### 4.12 commission_rate_matrix（提成比例矩阵，同步自 WorkFine UDT_S_1962 + UDT_M_1964）
+### 4.10 commission_rate_matrix（提成比例矩阵，同步自 WorkFine UDT_S_1962 + UDT_M_1964）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -411,38 +390,7 @@ CloudBase 云函数（Node.js）
 >
 > UNIQUE 约束：`(market_name, department_name, sales_category, amount_tier_min)`
 
-### 4.13 product_spu（SPU 商品概念表）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `spu_id` | string | 主键，UUID |
-| `name` | string | 商品名称（如"蜜语生玑精华护理疗程"） |
-| `category` | string | 品项分类（如"蜜语生玑"），对应 UDT_M_229.UDF_M_522；作为左侧选择器的一级导航节点 |
-| `big_category` | enum | `促销方案` / `护理项目` / `家居产品` / `充值卡` |
-| `cover_image` | string | 封面图 URL |
-| `description` | string | 商品描述（选填） |
-| `sort_order` | integer | 排序权重 |
-
-> SPU 是否展示由 SKU 的 `is_active` 派生。左侧品项分类从 `product_spu` 动态派生。
-
-### 4.14 product_spu_sku_map（SPU↔产品映射表）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `sku_id` | string | 主键，UUID |
-| `spu_id` | string | 关联 product_spu.spu_id |
-| `workfine_item_id` | string | 产品编号：`catalog_items.item_no` 或 `material_products.product_no`（字段名保留 workfine 前缀以兼容已有代码） |
-| `workfine_source` | enum | 标识产品来源表：`UDT_M_1281` / `UDT_M_1383` → 查 `catalog_items`；`UDT_M_1460` → 查 `promotion_scheme_items`；`UDT_M_341` → 查 `material_products` |
-| `product_type` | enum | `疗程卡` / `单品` / `院装产品`；决定核销流程 |
-| `sku_display_name` | string | 规格展示名（如"10次卡"、"285ml/瓶"） |
-| `sort_order` | integer | 规格排序 |
-| `is_active` | boolean | 该 SKU 是否上架 |
-
-> UNIQUE 约束：`(spu_id, workfine_item_id, workfine_source)`
->
-> **v2.0 变更**: SKU 的价格、疗程服务次数等字段现从 PG 同步实体查询（`catalog_items.price` / `catalog_items.session_count` / `material_products.retail_price`），不再运行时连接 WorkFine。`workfine_source` 值保留原枚举名以兼容，运行时映射到对应 PG 表。
-
-### 4.15 orders（订单主表，对应 WorkFine UDT_S_209）
+### 4.11 orders（订单主表，对应 WorkFine UDT_S_209）
 
 > **设计说明：为何需要 `order_items`？**
 > 一笔销售单可包含多个项目（疗程卡、单品、院装产品可混购），且疗程卡需要**独立追踪剩余次数与到期日**，并作为护理单核销的引用锚点。
@@ -478,13 +426,13 @@ CloudBase 云函数（Node.js）
 >
 > **v2.0 变更**: 新增 `customer_no` 字段，开单时系统通过 `client_phone` 查询 `customers.phone` 自动匹配填入；顾客端自助下单时通过 `client_wechat_users.customer_no` 获取。
 
-### 4.16 order_items（销售明细，对应 WorkFine UDT_M_213）
+### 4.12 order_items（销售明细，对应 WorkFine UDT_M_213）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `item_flow_no` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
 | `order_no` | string | 关联 `orders.order_no` |
-| `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
+| `sku_id` | string \| null | 关联 `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数：疗程卡≥2，单品=1，院装产品=null |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
 | `unit_price` | decimal | 原价快照（开单时持久化） |
@@ -498,7 +446,7 @@ CloudBase 云函数（Node.js）
 | `promotion_scheme_id` | string \| null | 促销方案编号 |
 | `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
 
-### 4.17 revenue_allocations（营业额分配，对应 WorkFine UDT_M_217）
+### 4.13 revenue_allocations（营业额分配，对应 WorkFine UDT_M_217）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -515,7 +463,7 @@ CloudBase 云函数（Node.js）
 
 > UNIQUE 约束：`(order_no, employee_id)`
 
-### 4.18 revenue_allocation_items（业绩分类明细）
+### 4.14 revenue_allocation_items（业绩分类明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -526,7 +474,7 @@ CloudBase 云函数（Node.js）
 | `amount` | decimal | 该分类的分配金额 |
 | `commission_rate` | decimal \| null | 提成比例快照 |
 
-### 4.19 service_orders（护理单主表，对应 WorkFine UDT_S_259）
+### 4.15 service_orders（护理单主表，对应 WorkFine UDT_S_259）
 
 > 与订单的关联通过 `service_items.item_flow_no → order_items.item_flow_no` 实现，主表不存 `order_no`，支持同一次到店跨多笔订单核销。
 
@@ -545,18 +493,18 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.20 service_items（护理明细，对应 WorkFine UDT_M_260）
+### 4.16 service_items（护理明细，对应 WorkFine UDT_M_260）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_item_id` | string | 主键，UUID |
 | `item_flow_no` | string | 关联 `order_items.item_flow_no`（核销锚点） |
 | `service_order_no` | string | 关联 `service_orders.service_order_no` |
-| `sku_id` | string \| null | 关联 `product_spu_sku_map.sku_id` |
+| `sku_id` | string \| null | 关联 `product_skus.sku_id` |
 | `session_used` | integer | 本次划卡次数 |
 | `employee_id` | string | 服务美容师，关联 `employees.employee_no` |
 
-### 4.21 client_wechat_users（客户端微信用户）
+### 4.17 client_wechat_users（客户端微信用户）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -573,7 +521,7 @@ CloudBase 云函数（Node.js）
 
 > **v2.0 变更**: 新增 `customer_no` 字段。绑定手机号时系统查询 `customers.phone` 匹配，将 `customer_no` 写入。后续可通过此字段直接获取顾客档案详情，无需实时查询 WorkFine。
 
-### 4.22 staff_wechat_users（员工端微信用户）
+### 4.18 staff_wechat_users（员工端微信用户）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -586,7 +534,7 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.23 appointments（预约）
+### 4.19 appointments（预约）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -606,44 +554,199 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
+### 4.20 permission_roles（权限角色分配，PG 原生）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | serial | 主键，自增 |
+| `staff_id` | text NOT NULL | 员工编号，FK → `employees.employee_no` |
+| `role` | text NOT NULL | 角色：`manager` / `finance` / `staff` |
+| `scope_id` | text NOT NULL | FK → `stores.store_id`（指向 global/market/store 级别的条目） |
+| `created_at` | timestamp | NOT NULL DEFAULT now() |
+| `updated_at` | timestamp | NOT NULL DEFAULT now() |
+| `deleted_at` | timestamp \| null | 软删除标记 |
+| `created_by` | text \| null | 创建者（同步脚本标记 `'sync'`，手动标记操作人员工编号） |
+| `updated_by` | text \| null | 最后修改者 |
+
+> **约束**:
+> - `UNIQUE(staff_id) WHERE deleted_at IS NULL`（部分唯一索引，一人一角色）
+> - `FK(staff_id)` → `employees(employee_no)`
+> - `FK(scope_id)` → `stores(store_id)`
+>
+> **数据量**: ~2000 行（在职员工各一行）
+>
+> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `department_name` + `position_name` 规则自动推导 `role` + `scope_id`，`created_by = 'sync'`。推导规则示例：
+> - `position_name = '门店经理'` → `role=manager, scope_id=员工所在门店`
+> - `department_name = '财智部'` → `role=finance, scope_id=员工所在门店`
+> - `position_name = '市场总监'` 或 `position_name = '片区经理'` → `role=manager, scope_id=员工所属市场`
+> - 其他 → `role=staff, scope_id=员工所在门店`
+>
+> **默认降级**: 未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`
+>
+> **软删除**: `deleted_at IS NOT NULL` 的记录不参与权限查询。手动撤销权限时标记 `deleted_at` 而非物理删除，保留审计痕迹。
+
 ---
 
 ## 5. 组织架构
 
+组织架构为**矩阵结构**，每个员工同时归属两个维度：
+
+### 5.1 地理线（scope 域来源）
+
 ```
-品牌总部
-└── 市场（如南商市场）
-    ├── 部门（美容部、推广部等）→ PG departments 表
-    └── 门店 → PG stores 表
-        ├── 门店经理（店长）→ PG employees 表，position_name = '门店经理'
-        └── 美容师 → PG employees 表
+品牌总部 ──────────── stores (scope_level='global', store_name='总部')
+├── 南昌市场 ──────── stores (scope_level='market', store_name='南昌市场')
+│   ├── 南昌A店 ──── stores (scope_level='store')
+│   ├── 南昌B店 ──── stores (scope_level='store')
+│   └── ...
+├── 南商市场 ──────── stores (scope_level='market', store_name='南商市场')
+│   └── ...
+└── ...（~20 个市场，~100 家门店）
 ```
 
-- 门店经理（店长）直属**美容部**
-- 其他部门（推广部等）从门店所属**市场**的 `employees` 表查询
+### 5.2 职能线（部门 × 职位）
+
+```
+部门（PG departments 表）
+├── 美容部 → 门店经理、美容师、实习美容师 …
+├── 推广部 → 推广经理、推广师 …
+├── 养生部 → 养生师 …
+├── 财智部 → 财务主管、会计 …
+├── 市场管理中心 → 市场总监、片区经理 …
+└── ...
+```
+
+### 5.3 矩阵交叉
+
+- 每个员工在 `employees` 表中有 `store_name`（地理归属）和 `department_name` + `position_name`（职能归属）
+- 权限由 `permission_roles` 表决定：`role`（能做什么）× `scope_id`（看到哪些数据）
+- 域类型与组织层级关系：
+  - `global`：总部人员 → 全局数据
+  - `market`：市场管理中心人员 → 该市场下所有门店数据
+  - `store`：门店人员 → 仅本门店数据
 - 跨部门营业额分配时，各部门可各按实收金额分配
 - 组织架构数据（门店、部门、员工）全部从 PG 查询，不再实时读取 WorkFine
 
 ---
 
-## 6. 权限与角色
+## 6. 权限与角色（RBAC + Scope）
 
-| 角色 | 权限范围 |
-|------|----------|
-| 店长（门店经理） | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号、创建体验单、触发数据同步 |
-| 美容师 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
-| 顾客（客户端） | 自助下单、发起微信支付/选择线下付款、查看自己的订单与预约 |
+### 6.1 核心模型
 
-- 权限校验以登录用户的 `staff_wf_id` 在 PG `employees` 表中的 `position_name` 为依据，由云函数中间件统一拦截
-- 角色判定：`employees.position_name = '门店经理'` → 店长；其他 → 美容师
-- 服务单状态推进：仅**店长**或 `service_orders.assigned_staff_wf_id` 匹配的服务人员可操作
-- 门店数据隔离：所有 PG 查询以 `store_name` 过滤，禁止跨门店访问
+权限 = **Role**（角色，能做什么）× **Scope**（域，看到哪些数据）× **Resource**（资源，操作对象）
+
+- **Role** 存储在 `permission_roles.role`
+- **Scope** 存储在 `permission_roles.scope_id` → `stores.store_id`（通过 `stores.scope_level` 区分域级别）
+- **Resource** 由各 API 路由硬编码声明
+
+### 6.2 角色定义
+
+| 角色 | 标识 | 说明 | 能力 |
+|------|------|------|------|
+| 经理 | `manager` | 门店经理/市场总监/片区经理 | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号、创建体验单、触发数据同步 |
+| 财务 | `finance` | 财智部人员 | 查看营业额、查看订单列表/详情、查看顾客消费汇总；**不可开单**、**不可操作服务单** |
+| 员工 | `staff` | 美容师、推广师等一线员工 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
+
+> 顾客（客户端）不属于 RBAC 体系，其权限仍为：自助下单、发起微信支付/选择线下付款、查看自己的订单与预约。
+
+### 6.3 域定义
+
+| 域级别 | `scope_level` | 数据边界 | 典型角色 |
+|--------|---------------|----------|----------|
+| 全局 | `global` | 所有门店数据，无过滤 | 总部管理人员 |
+| 市场 | `market` | 该市场下所有门店数据（`WHERE market_name = ?`） | 市场总监、片区经理、市场财务 |
+| 门店 | `store` | 仅本门店数据（`WHERE store_name = ?`） | 门店经理、美容师、门店财务 |
+
+域级别存储在 `stores.scope_level` 字段中，与 `permission_roles.scope_id` 通过 FK 关联。
+
+### 6.4 权限矩阵
+
+| Resource | Action | manager | finance | staff |
+|----------|--------|---------|---------|-------|
+| 订单 | create（开单） | ✅ | ❌ | ❌ |
+| 订单 | list / detail | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
+| 订单 | confirmOffline | ✅ scope 内 | ❌ | ❌ |
+| 订单 | close / resetFailed | ✅ scope 内 | ❌ | ❌ |
+| 营业额分配 | save / delete | ✅ scope 内 | ❌ | ❌ |
+| 营业额分配 | view（查看） | ✅ scope 内 | ✅ scope 内 | ❌ |
+| 服务单 | create / start / complete | ✅ scope 内 | ❌ | ✅ 仅 assigned_staff |
+| 服务单 | list / detail | ✅ scope 内 | ❌ | ✅ 仅 assigned_staff |
+| 预约 | list / confirm / checkin | ✅ scope 内 | ❌ | ✅ scope 内（仅本门店） |
+| 顾客 | search / detail | ✅ scope 内（完整手机号） | ✅ scope 内（完整手机号） | ✅ scope 内（脱敏手机号） |
+| 顾客 | calendar（消费日历） | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
+| 员工 | list / departments | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
+| 同步 | full（触发全量同步） | ✅ | ❌ | ❌ |
+
+### 6.5 角色+域查询
+
+登录时从 `permission_roles` JOIN `stores` 查询角色和域：
+
+```sql
+SELECT pr.role, s.scope_level, s.store_id, s.store_name, s.market_name
+FROM permission_roles pr
+JOIN stores s ON pr.scope_id = s.store_id
+WHERE pr.staff_id = $1 AND pr.deleted_at IS NULL
+```
+
+**无记录时降级**：查询 `employees` 获取 `store_name`，匹配 `stores.store_id`，降级为 `role=staff, scope_level=store`。
+
+### 6.6 auth 上下文结构
+
+`ctx.auth` 保留现有字段，新增 `role` + `scope`：
+
+```js
+ctx.auth = {
+  // 现有字段（保留）
+  userId,        // staff_wechat_users.user_id
+  openid,        // 微信 openid
+  phone,         // 绑定手机号
+  staffWfId,     // employees.employee_no
+  position,      // employees.position_name（保留兼容）
+  storeName,     // employees.store_name
+  marketName,    // employees.market_name
+  department,    // employees.department_name
+  // v2.0 新增
+  role,          // 'manager' | 'finance' | 'staff'
+  scope: {
+    level,       // 'global' | 'market' | 'store'
+    storeId,     // stores.store_id（scope 指向的条目）
+    storeName,   // scope 条目的 store_name
+    marketName,  // scope 条目的 market_name（global 时为 null）
+  }
+}
+```
+
+### 6.7 域过滤 SQL 模式
+
+所有涉及门店数据的查询统一通过 `buildScopeWhere()` 生成过滤条件：
+
+```js
+function buildScopeWhere(scope, alias = '') {
+  const prefix = alias ? `${alias}.` : '';
+  switch (scope.level) {
+    case 'global':
+      return { where: '', params: [] }; // 无过滤
+    case 'market':
+      return { where: `AND ${prefix}market_name = $N`, params: [scope.marketName] };
+    case 'store':
+      return { where: `AND ${prefix}store_name = $N`, params: [scope.storeName] };
+  }
+}
+```
+
+> `$N` 为参数占位符序号，由调用方动态替换。
+
+### 6.8 代理经理/实习经理处理
+
+- 代理经理（position_name 包含"代理"）、实习经理：同步脚本默认推导为 `role=staff`
+- 如需赋予经理权限，由上级通过 `permission_roles` 表手动升级为 `role=manager`
+- 手动分配的记录 `created_by` 标记为操作人员工编号（区别于同步脚本的 `'sync'`）
 
 ---
 
 ## 7. 核心业务规则
 
-1. 只有**店长（门店经理）**可开单，普通美容师无开单权限
+1. 只有 **role=manager** 可开单，finance 和 staff 无开单权限
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 2 倍）；**MVP 阶段不支持优惠/折扣，应收金额 = 实收金额**
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
@@ -759,7 +862,7 @@ allocated → pending          （店长删除重新分配）
 | auth | login, bindPhone | 员工登录、手机号绑定（**v2.0: 改为匹配 PG employees 表**） | 需适配 |
 | store | list, unbindRequests, approveUnbind, rejectUnbind | 门店（**v2.0: 改为查 PG stores 表**） | 需适配 |
 | staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore | 员工（**v2.0: 改为查 PG employees/departments 表**） | 需适配 |
-| product | shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans | 商品浏览（**v2.0: 改为查 PG catalog_items/material_products/promotion_schemes**） | 需适配 |
+| product | shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans | 商品浏览（**v2.0: 改为查 PG products/product_skus**） | 需适配 |
 | customer | search, calendar, detail, paidOrders | 顾客档案（**v2.0: 改为查 PG customers 表**） | 需适配 |
 | order | create, qrcode, confirmOffline, close, resetFailed, list, detail | 订单全流程（含 customer_no 写入） | 已实现（需补 customer_no） |
 | allocation | save, deleteAllocation, getCommissionRates, pendingList, suggest | 营业额分配（**v2.0: 员工查 PG，提成比例查 PG commission_rate_matrix**） | 需适配 |
@@ -785,7 +888,7 @@ allocated → pending          （店长删除重新分配）
 | 价格快照不可变 | 开单时写入 `unit_price`，后续价格变动不影响历史订单 |
 | 支付幂等 | 微信回调、线下确认、服务完成接口均需幂等 |
 | 状态单向推进 | 唯一例外：店长可重置 `支付失败` → `待支付` |
-| 门店数据隔离 | 所有 PG 查询以 `store_name` 过滤，禁止跨门店访问 |
+| 域数据隔离 | 所有 PG 查询以 scope 过滤（global 无过滤 / market 按 `market_name` / store 按 `store_name`），由 `buildScopeWhere()` 统一生成 |
 | 订单号唯一生成 | advisory lock 防流水号并发冲突 |
 | 待支付订单唯一 | 部分唯一索引 + 应用层校验 |
 | 事务处理 | 服务单完成、订单创建、分配保存均使用 PostgreSQL transaction |
@@ -937,70 +1040,97 @@ UDT_S_311（顾客档案主表）
 
 #### A.2.2 职位部门对应表 — UDT_S_211 / UDT_M_212（Form 211）
 
-> **字段详情待补充**：现有文档未记录具体字段，需查询 WorkFine 实际表结构后补充。初期从员工数据派生部门和职位。
+**UDT_S_211（部门主表）**:
 
-### A.3 产品与服务（同步至 PG，运行时从 PG 查询）
+| WorkFine 字段 | 含义 | 类型 | → PG `departments` 字段 |
+|---------------|------|------|------------------------|
+| UDF_S_1183 | **部门编号** | 文本 | `department_code` |
+| UDF_S_1184 | 部门名称 | 文本 | `department_name` (UNIQUE) |
+| UDF_S_14284 | 级别 | 文本 | — 参考（排序） |
 
-#### A.3.1 院装产品（UDT_S_340 主表 + UDT_M_341 子表）→ PG `material_products`
+**UDT_M_212（职位子表）**:
+
+| WorkFine 字段 | 含义 | 类型 | → PG `positions` 字段 |
+|---------------|------|------|----------------------|
+| UDF_M_386 | **职位编号** | 文本 | — 参考 |
+| UDF_M_387 | 所属部门名称 | 文本 | `department_name` |
+| UDF_M_388 | 职位名称 | 文本 | `position_name` |
+| UDF_M_2820 | 部门编号 | 文本 | — 关联 UDT_S_211.UDF_S_1183 |
+| UDF_M_9180 | 级别 | 文本 | `rank_order`（转换为排序序号） |
+| UDF_M_13712 | 是否参与提成 | 文本 | — 参考（提成计算） |
+
+> 同步方式：departments 从 UDT_S_211 直接同步（以 `UDF_S_1184` 为匹配键）；positions 从 UDT_M_212 直接同步（以 `(UDF_M_388, UDF_M_387)` 为匹配键）。
+
+### A.3 产品与服务（一次性导入至 PG，运行时从 PG 查询）
+
+> **v2.1 变更**: 商品域不再定期同步，而是从 WorkFine 一次性导入后由员工手动维护。以下 WorkFine 表结构仅作为导入脚本的参考。
+> 原 `catalog_items`、`material_products`、`promotion_schemes`、`promotion_scheme_items` 表已废弃，统一合并为 `products` + `product_skus` 两张表。
+
+#### A.3.1 院装产品（UDT_S_340 主表 + UDT_M_341 子表）→ PG `products` + `product_skus`
 
 院装产品供应商档案（19 条），子表为产品明细（1,940 条）。
 
 **UDT_M_341 关键字段**:
 
-| 字段名 | 含义 | 类型 | → PG `material_products` 字段 |
+| 字段名 | 含义 | 类型 | → PG 导入目标 |
 |--------|------|------|------|
-| UDF_M_1870 | **商品编号** | 文本 | `product_no` (UNIQUE) |
-| UDF_M_1871 | 名称 | 文本 | `name` |
-| UDF_M_1872 | 规格 | 文本 | `spec` |
-| UDF_M_12636 | 品牌 | 文本 | `brand` |
-| UDF_M_1874 | 产品系列 | 文本 | `series` |
-| UDF_M_1875 | 顾客零售价 | 金额 | `retail_price` |
-| UDF_M_1876 | 核算价 | 金额 | `cost_price` |
-| UDF_M_7494 | 是否可报货 | 文本 | `is_orderable`（'是' → true） |
+| UDF_M_1870 | **商品编号** | 文本 | 导入参考（不保留在 PG 中） |
+| UDF_M_1871 | 名称 | 文本 | `products.name` |
+| UDF_M_1872 | 规格 | 文本 | `product_skus.spec_name` |
+| UDF_M_12636 | 品牌 | 文本 | — 不保留 |
+| UDF_M_1874 | 产品系列 | 文本 | — 不保留 |
+| UDF_M_1875 | 顾客零售价 | 金额 | `product_skus.price` |
+| UDF_M_1876 | 核算价 | 金额 | — 不保留 |
+| UDF_M_7494 | 是否可报货 | 文本 | `product_skus.is_active`（'是' → true） |
 
-#### A.3.2 可售项目（UDT_S_1280 主表 + UDT_M_1281 子表）→ PG `catalog_items` (source='national')
+> 导入时：每条院装产品生成一条 `products`（product_kind='家居产品'）+ 一条 `product_skus`（product_type='院装产品'）。
+
+#### A.3.2 可售项目（UDT_S_1280 主表 + UDT_M_1281 子表）→ PG `products` + `product_skus`
 
 面向顾客的服务项目/疗程卡目录，按有效期版本管理。主表 16 条，子表 481 条。
 
 **UDT_M_1281 关键字段**:
 
-| 字段名 | 含义 | 类型 | → PG `catalog_items` 字段 |
+| 字段名 | 含义 | 类型 | → PG 导入目标 |
 |--------|------|------|------|
-| UDF_M_14503 | **疗程项目编号** | 文本 | `item_no` (UNIQUE per source) |
-| UDF_M_14502 | 产品库 | 文本 | `product_type`（疗程卡/单品） |
-| UDF_M_14504 | 品项分类 | 文本 | `category_name` |
-| UDF_M_14505 | 项目名称 | 文本 | `name` |
-| UDF_M_14506 | 疗程服务次数 | 整数 | `session_count` |
-| UDF_M_14508 | 原价 | 金额 | `price` |
-| UDF_M_17783 | 是否生美 | 文本 | `is_beauty`（'生美' → true） |
-| UDF_M_17477 | 招牌定位 | 文本 | `position_tag` |
+| UDF_M_14503 | **疗程项目编号** | 文本 | 导入参考（不保留在 PG 中） |
+| UDF_M_14502 | 产品库 | 文本 | `product_skus.product_type`（疗程卡/单品） |
+| UDF_M_14504 | 品项分类 | 文本 | → 匹配 `product_categories.category_name` → `products.category_id` |
+| UDF_M_14505 | 项目名称 | 文本 | `products.name` |
+| UDF_M_14506 | 疗程服务次数 | 整数 | `product_skus.session_count` |
+| UDF_M_14508 | 原价 | 金额 | `product_skus.price` / `products.price` |
+| UDF_M_17783 | 是否生美 | 文本 | `products.is_shengmei`（'生美' → true） |
+| UDF_M_17477 | 招牌定位 | 文本 | — 参考 |
 
-> 产品库 = "疗程卡" → 核销流程；产品库 = "单品" → 支付即结束。
+> 产品库 = "疗程卡" → product_type='疗程卡'，核销流程；产品库 = "单品" → product_type='单品'，支付即结束。
+> 导入时：同一品项分类+项目名称可合并为一条 `products`，不同规格（次数/价格）各生成一条 `product_skus`。
 
-#### A.3.3 门店自定义项目（UDT_S_1382 主表 + UDT_M_1383 子表）→ PG `catalog_items` (source='store_custom')
+#### A.3.3 门店自定义项目（UDT_S_1382 主表 + UDT_M_1383 子表）→ PG `products` + `product_skus`
 
-主表 35 条，子表 401 条。字段与 UDT_M_1281 高度一致，增加市场/门店范围字段。同步至 `catalog_items` 表，`source = 'store_custom'`，额外写入 `store_name` / `market_name` 范围字段。
+主表 35 条，子表 401 条。字段与 UDT_M_1281 高度一致，增加市场/门店范围字段。导入至 `products` + `product_skus`，`products.manage_scope` / `products.market_scope` 写入门店/市场范围。
 
-#### A.3.4 促销方案（UDT_S_1459 主表 + UDT_M_1460 子表）→ PG `promotion_schemes` / `promotion_scheme_items`
+#### A.3.4 促销方案（UDT_S_1459 主表 + UDT_M_1460 子表）→ PG `products` (is_bundle=true) + `product_skus` (is_bundle_sku=true)
 
 主表 56 条，子表 285 条。
 
-**UDT_S_1459 关键字段** → PG `promotion_schemes`:
+**UDT_S_1459 关键字段** → PG `products`:
 
-| WorkFine 字段 | 含义 | → PG 字段 |
+| WorkFine 字段 | 含义 | → PG 导入目标 |
 |---------------|------|-----------|
-| UDF_S_17159 | 促销单编号 | `scheme_no` (UNIQUE) |
-| UDF_S_17175 | 方案名 | `name` |
-| UDF_S_17193 | 方案售价 | `total_price` |
-| UDF_S_17793 | 促销范围 | `scope` |
+| UDF_S_17159 | 促销单编号 | 导入参考（不保留在 PG 中） |
+| UDF_S_17175 | 方案名 | `products.name` |
+| UDF_S_17193 | 方案售价 | `products.price` |
+| UDF_S_17793 | 促销范围 | `products.market_scope` |
 
-**UDT_M_1460 关键字段** → PG `promotion_scheme_items`:
+**UDT_M_1460 关键字段** → PG `product_skus`:
 
-| WorkFine 字段 | 含义 | → PG 字段 |
+| WorkFine 字段 | 含义 | → PG 导入目标 |
 |---------------|------|-----------|
-| UDF_M_17163 | 疗程项目编号（关联 UDT_M_1281） | `item_no` |
-| UDF_M_17171 | 促销售价 | `promo_price` |
-| UDF_M_17174 | 是否赠送 | `is_gift`（'是' → true） |
+| UDF_M_17163 | 疗程项目编号（关联 UDT_M_1281） | 导入参考（匹配已导入的 SKU） |
+| UDF_M_17171 | 促销售价 | `product_skus.price` |
+| UDF_M_17174 | 是否赠送 | `product_skus.price = 0`（赠品） |
+
+> 导入时：每条促销方案生成一条 `products`（is_bundle=true, product_kind='福利活动'），方案明细各生成一条 `product_skus`（is_bundle_sku=true）。赠品项的 `price = 0`。
 
 #### A.3.5 品项分类（UDT_S_228 主表 + UDT_M_229 子表）→ PG `product_categories`
 
@@ -1009,9 +1139,13 @@ UDT_S_311（顾客档案主表）
 | 字段名 | 含义 | → PG `product_categories` 字段 |
 |--------|------|------|
 | UDF_M_521 | 序号 | `sort_order` |
-| UDF_M_522 | 项目类型 | `category_name` (UNIQUE) |
-| UDF_M_15996 | 是否可用 | `is_active`（'是' → true） |
-| UDF_M_17416 | 大分类 | `big_category` |
+| UDF_M_522 | 项目类型 | `category_name` |
+| UDF_M_15996 | 是否可用 | `is_valid`（'是' → true） |
+| UDF_M_17416 | 大分类 | → 导入时根据业务含义映射为 `product_kind` 枚举 |
+
+> **枚举映射参考**: 原 `big_category` 的 `生美` / `非生美` 不再使用，导入时根据实际业务含义映射为 `product_kind`（`福利活动` / `护理项目` / `家居产品` / `充值卡`）。
+>
+> **注意**: `category_name` 不再设唯一约束，允许不同 `product_kind` 下同名分类。
 
 **当前可用品项分类（21 种）**: 缦之羽、蜜语生玑、中华神灸、歆笙泰妍、圣源养心、悠妃曼、美芯、安吉丽美颜之爱、科颜美、诺纤金、自定义-生美、自定义-单品、自定义-KS、自定义-SM、自定义-YM、娇莉芙-生美、娇莉芙-家居产品、娇莉芙-招牌、娇莉芙-王牌、娇莉芙-改变、娇莉芙-对外合作。
 
@@ -1141,7 +1275,8 @@ UDT_S_218（市场门店对应表主表）— 字段待补充
 ```
 PG 实体（v2.0 新增同步实体以 ★ 标注）
 
-★ stores (门店) ←── store_name ──→ 被 orders/service_orders/appointments 等引用（快照）
+★ stores (门店, scope_level: global/market/store) ←── store_name ──→ 被 orders/service_orders/appointments 等引用（快照）
+│   └── store_id ←── permission_roles.scope_id（域目标）
 ★ departments (部门) ←── department_name ──→ 被 employees/revenue_allocations 引用
 ★ positions (职位) ←── (position_name, department_name) ──→ 被 employees 引用
 ★ employees (员工) ←── employee_no ──→ 被以下字段引用：
@@ -1151,6 +1286,9 @@ PG 实体（v2.0 新增同步实体以 ★ 标注）
 │   ├── service_items.employee_id
 │   ├── revenue_allocations.employee_id
 │   └── appointments.staff_wf_id
+permission_roles (权限角色分配)
+│   ├── staff_id ──→ employees.employee_no
+│   └── scope_id ──→ stores.store_id（global/market/store 级别条目）
 ★ customers (顾客档案) ←── customer_no ──→ 被以下字段引用：
 │   ├── client_wechat_users.customer_no
 │   └── orders.customer_no
@@ -1161,7 +1299,8 @@ client_wechat_users (客户端微信用户)
 │   ├── user_id ──→ service_orders.client_user_id
 │   └── customer_no ──→ customers.customer_no（手机号匹配）
 
-product_spu ──→ product_spu_sku_map (1:N)
+product_categories ──→ products (1:N, via category_id)
+products ──→ product_skus (1:N, via product_id)
                     │
                     └── sku_id ──→ order_items.sku_id / service_items.sku_id
 
@@ -1179,21 +1318,24 @@ revenue_allocations ──→ revenue_allocation_items (1:N)
 ### WorkFine → PG 同步交叉引用（运行时 100% PG，WorkFine 仅同步源）
 
 ```
-WorkFine → PG 同步（全部数据域）:
+WorkFine → PG 定期同步（组织与人员域）:
   UDT_M_219 (门店)            ──sync──→ PG stores
   UDT_S_287 (员工)            ──sync──→ PG employees
   UDT_S_311 (顾客)            ──sync──→ PG customers
   UDT_S_211/UDT_M_212 (职位部门)──sync──→ PG departments / positions
-  UDT_M_229 (品项分类)         ──sync──→ PG product_categories
-  UDT_M_1281 (可售项目)        ──sync──→ PG catalog_items (source='national')
-  UDT_M_1383 (门店自定义)       ──sync──→ PG catalog_items (source='store_custom')
-  UDT_M_341 (院装产品)         ──sync──→ PG material_products
-  UDT_S_1459/UDT_M_1460 (促销) ──sync──→ PG promotion_schemes / promotion_scheme_items
   UDT_S_1962/UDT_M_1964 (提成) ──sync──→ PG commission_rate_matrix
 
+WorkFine → PG 一次性导入（商品域，后续手动维护）:
+  UDT_M_229 (品项分类)         ──import──→ PG product_categories
+  UDT_M_1281 + UDT_M_1383 (可售项目) ──import──→ PG products + product_skus
+  UDT_M_341 (院装产品)         ──import──→ PG products + product_skus
+  UDT_S_1459 + UDT_M_1460 (促销) ──import──→ PG products (is_bundle=true) + product_skus (is_bundle_sku=true)
+
 PG 内部引用:
-  product_spu_sku_map.workfine_item_id → catalog_items.item_no / material_products.product_no
-  promotion_scheme_items.item_no → catalog_items.item_no
+  products.category_id → product_categories.category_id
+  product_skus.product_id → products.product_id
+  order_items.sku_id → product_skus.sku_id
+  service_items.sku_id → product_skus.sku_id
 ```
 
 ---
@@ -1207,12 +1349,12 @@ PG 内部引用:
 | UDT_S_209 分院销售单 | 62,119 | 所有历史销售单 |
 | UDT_S_311 顾客档案 | 51,117 | 全部顾客（→ PG customers 同步量） |
 | UDT_S_287 人事档案 | 2,846 | 含在职 + 离职（→ PG employees 同步量） |
-| UDT_M_341 产品明细 | 1,940 | → PG material_products 同步量 |
-| UDT_M_1281 可售项目 | 481 | → PG catalog_items (source='national') 同步量 |
-| UDT_M_1383 门店自定义项目 | 401 | → PG catalog_items (source='store_custom') 同步量 |
-| UDT_S_1459 促销方案主表 | 56 | → PG promotion_schemes 同步量 |
-| UDT_M_1460 促销方案明细 | 285 | → PG promotion_scheme_items 同步量 |
-| UDT_M_229 品项分类 | 38 | → PG product_categories 同步量（21 种当前可用） |
+| UDT_M_341 产品明细 | 1,940 | → PG products + product_skus 一次性导入量 |
+| UDT_M_1281 可售项目 | 481 | → PG products + product_skus 一次性导入量 |
+| UDT_M_1383 门店自定义项目 | 401 | → PG products + product_skus 一次性导入量 |
+| UDT_S_1459 促销方案主表 | 56 | → PG products (is_bundle=true) 一次性导入量 |
+| UDT_M_1460 促销方案明细 | 285 | → PG product_skus (is_bundle_sku=true) 一次性导入量 |
+| UDT_M_229 品项分类 | 38 | → PG product_categories 一次性导入量（21 种当前可用） |
 | UDT_M_219 门店列表 | ~100 | → PG stores 同步量（估计） |
 | UDT_S_1962 + UDT_M_1964 提成比例矩阵 | 待查 | → PG commission_rate_matrix 同步量 |
 
@@ -1224,9 +1366,7 @@ PG 内部引用:
 
 | 表 | Form ID | 说明 | 影响 |
 |----|---------|------|------|
-| UDT_S_211 | 211 | 职位部门对应表主表 | departments / positions 表同步 |
-| UDT_M_212 | 211 | 职位部门对应表子表 | 同上 |
 | UDT_S_218 | 216 | 市场门店对应表主表 | stores 表同步（市场级字段） |
-| UDT_S_228 | 222 | 品相类型主表 | product_categories 同步（主表关系） |
+| UDT_S_228 | 222 | 品相类型主表 | product_categories 一次性导入（主表关系） |
 | UDT_S_1962 | — | 提成比例矩阵主表 | commission_rate_matrix 同步 |
 | UDT_M_1964 | — | 提成比例矩阵子表 | 同上，具体字段待查询 WorkFine |
