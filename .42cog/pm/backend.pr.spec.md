@@ -6,7 +6,9 @@
 > **端 spec 引用**: `client.pr.spec.md` v1.0.0 | `staff.pr.spec.md` v1.0.0
 > **日期**: 2026-03-10
 >
-> **v2.0 重大架构变更**: **WorkFine 全部数据域建立 PG 实体，定期从 WorkFine 同步**。运行时业务查询 100% 走 PG，WorkFine SQL Server 仅作为同步源，不参与在线请求链路。
+> **v2.0 重大架构变更**: **WorkFine 全部数据域建立 PG 实体**。运行时业务查询 100% 走 PG，WorkFine SQL Server 仅作为同步源，不参与在线请求链路。
+>
+> **v2.1 商品表重构**: 废弃 `catalog_items`、`material_products`、`promotion_schemes`、`promotion_scheme_items`、`product_spu`、`product_spu_sku_map` 六张表，替换为 `product_categories` + `products` + `product_skus` 三张自包含表。枚举 `big_category` → `product_kind`，`workfine_source` 废弃。商品域从 WorkFine 一次性导入后由员工手动维护，不再定期同步。
 
 ---
 
