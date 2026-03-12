@@ -14,7 +14,7 @@
 **目标用户**: 凤御双美容院的门店员工（店长、美容师）、市场管理层和总部管理层
 
 **核心价值**:
-1. 店长快速开单（正式/体验/促销方案），扫码收款，完成营业额分配
+1. 店长快速开单（正式/体验/福利活动），扫码收款，完成营业额分配
 2. 管理预约、推进服务单、完成疗程核销
 3. 查看顾客档案与消费日历，掌握经营数据
 
@@ -31,7 +31,7 @@
 ### 旅程 A：员工开单 → 扫码收款
 
 ```
-搜索顾客 → 选择开单模式（商品目录/促销方案/体验单）→ 添加项目 → 营业额分配 → 生成二维码 → 顾客扫码支付 / 确认线下收款
+搜索顾客 → 选择开单模式（商品目录/福利活动/体验单）→ 添加项目 → 营业额分配 → 生成二维码 → 顾客扫码支付 / 确认线下收款
 ```
 
 ### 旅程 B：顾客端下单后员工端联动
@@ -124,13 +124,13 @@
 |------|-----------|------|
 | 正式订单 | `正式` | 从商品目录选择 SPU/SKU，按 WorkFine 实时价格开单 |
 | 体验单 | `体验` | 首次体验/引流，店长可自定义金额，走相同支付流程 |
-| 促销方案 | `促销方案` | 从 WorkFine 促销方案选择，方案内项目不可增删，单独成单 |
+| 福利活动 | `福利活动` | 从 WorkFine 福利活动选择，方案内项目不可增删，单独成单 |
 
 **项目选择（四级导航）**:
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | 大类切换：`促销方案 | 护理项目 | 家居产品 | 充值卡`（`BIG_CATEGORIES`） | 固定常量 |
+| 顶部 Tab | 大类切换：`福利活动 | 护理项目 | 家居产品 | 充值卡`（`BIG_CATEGORIES`） | 固定常量 |
 | 左侧分类 | 品项分类选择器 | PG `product_spu.category` 动态派生（仅含有效 SKU 的分类），院装产品固定追加末尾 |
 | 右侧列表 | SPU 卡片列表 | PG `product_spu` + `product_spu_sku_map`（is_active 过滤），按 categoryId 缓存已加载列表 |
 | 商品详情 | SKU 规格选择 | WorkFine 实时读取价格/次数（疗程卡→`UDT_M_1281/1383`，院装→`UDT_M_341`） |
@@ -674,7 +674,7 @@
 
 **补充说明**:
 - 体验单（`order_type = 体验`）与正式订单走相同状态机
-- 促销方案订单（`order_type = 促销方案`）走相同状态机
+- 福利活动订单（`order_type = 福利活动`）走相同状态机
 - 订单关闭时，对应营业额分配记录标记为无效（`is_void = true`）
 - 订单支付成功后 `allocation_status` 设为 `pending`
 
@@ -804,7 +804,7 @@ TabBar
 |--------|--------------|---------|------|
 | 组织架构 | `UDT_M_219` | `org_nodes` + `stores` | 门店选择、组织层级 |
 | 员工档案 | `UDT_S_287` | `employees` | 角色判定、营业额分配 |
-| 顾客档案 | `UDT_S_311` | `customers` | 顾客搜索、档案查看 |
+| 顾客档案 | `UDT_S_311` | `client_wechat_users`（档案字段） | 顾客搜索、档案查看 |
 | 提成比例矩阵 | `UDT_S_1962` + `UDT_M_1964` | `commission_rate_matrix` | 营业额分配 |
 
 ### 读写（PG 自托管数据库）
@@ -865,7 +865,7 @@ TabBar
 | AC-12 | 美容师不可查看顾客完整手机号 | 美容师查询 → 返回脱敏手机号 |
 | AC-13 | 服务单完成后 `remaining_sessions` 正确扣减 | 从 3 → 服务一次 → 变为 2 |
 | AC-14 | 体验单走与正式订单相同的支付和分配流程 | 创建体验单 → 支付 → 分配 → 服务 |
-| AC-15 | 促销方案订单内项目不可增删 | 选择方案后尝试修改 → 不允许 |
+| AC-15 | 福利活动订单内项目不可增删 | 选择方案后尝试修改 → 不允许 |
 | AC-16 | 预约确认后 `已确认`，签到记录 `checkin_at` 但不改状态 | 签到后检查状态仍为已确认 |
 
 ### P1 重要功能
@@ -922,14 +922,14 @@ TabBar
 | product | categories | 品项分类列表 | order-create | 已实现 |
 | product | spuList | SPU 商品列表 | order-create | 已实现 |
 | product | skuDetail | SKU 详情（含实时价格） | product-detail | 已实现 |
-| product | spuDetail | SPU 详情（含 SKU 列表、促销方案反查） | product-detail | 已实现 |
-| product | promotionList | 促销方案列表（原始格式） | order-create | 已实现 |
-| product | promotionPlans | 促销方案列表（前端适配格式） | order-create | 已实现 |
+| product | spuDetail | SPU 详情（含 SKU 列表、福利活动反查） | product-detail | 已实现 |
+| product | promotionList | 福利活动列表（原始格式） | order-create | 已实现 |
+| product | promotionPlans | 福利活动列表（前端适配格式） | order-create | 已实现 |
 | customer | search | 顾客搜索（双源并集） | order-create, customer-list | 已实现 |
 | customer | calendar | 消费日历 | customer-detail | 已实现 |
 | customer | detail | 顾客详情（双源） | customer-detail | 已实现 |
 | customer | paidOrders | 已支付订单（用于核销选择） | customer-detail | 已实现 |
-| order | create | 员工开单（正式/体验/促销方案） | order-create | 已实现 |
+| order | create | 员工开单（正式/体验/福利活动） | order-create | 已实现 |
 | order | qrcode | 订单二维码状态 | order-qrcode | 已实现 |
 | order | confirmOffline | 确认线下收款 | order-detail, order-list | 已实现 |
 | order | close | 关闭订单 | order-detail | 已实现 |

@@ -38,7 +38,7 @@
 |------|--------|--------------|-----------|------|
 | **定期同步** | 组织架构 | UDT_M_219 | `org_nodes` + `stores` | 每日全量同步（先建 org_nodes 层级，再同步 stores 详情） |
 | **定期同步** | 员工信息 | UDT_S_287 | `employees` | 每日全量同步 |
-| **定期同步** | 顾客档案 | UDT_S_311 | `customers` | 每日全量同步 |
+| **定期同步** | 顾客档案 | UDT_S_311 | `client_wechat_users`（档案字段） | 每日全量同步（UPSERT by phone） |
 | **定期同步** | 提成比例矩阵 | UDT_S_1962 + UDT_M_1964 | `commission_rate_matrix` | 每日全量同步 |
 | **一次性导入** | 品项分类 | UDT_M_229 | `product_categories` | 导入后手动维护 |
 | **一次性导入** | 可售项目 | UDT_M_1281 + UDT_M_1383 | `products` + `product_skus` | 导入后手动维护 |
@@ -79,7 +79,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 1. org_nodes（组织架构树）— 无依赖
 2. stores（门店详情）— 依赖 org_nodes
 3. employees（员工）— 依赖 stores
-4. customers（顾客档案）— 依赖 stores
+4. client_wechat_users（顾客档案字段）— 依赖 stores
 5. commission_rate_matrix（提成比例）— 无依赖
 ```
 
@@ -113,7 +113,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | `position_name = '门店经理'` | `manager` | 员工所在门店对应的 org_nodes 节点 |
 | `org_node_name = '财智部'`（通过 org_node_id JOIN org_nodes） | `finance` | 员工所在门店对应的 org_nodes 节点 |
 | `position_name = '市场总监'` 或 `'片区经理'` | `manager` | 员工所属市场对应的 org_nodes 节点 |
-| 其他 | `staff` | 员工所在门店对应的 org_nodes 节点 |
+| 其他 | `employee` | 员工所在门店对应的 org_nodes 节点 |
 
 - `created_by = 'sync'` 标记为同步脚本自动创建
 - 代理经理（position_name 包含"代理"）默认推导为 `role=staff`，需手动升级
@@ -198,9 +198,11 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 - 在职员工: `WHERE UDF_S_1624 = '否'` → PG: `WHERE is_resigned = false`
 - 门店经理: `WHERE UDF_S_1161 = '门店经理'` → PG: `WHERE position_name = '门店经理'`
 
-### 6.3 顾客档案（UDT_S_311 → PG `customers`）
+### 6.3 顾客档案（UDT_S_311 → PG `client_wechat_users` 档案字段）
 
 **来源**: Form 295，数据量 51,117 条
+
+> **合并说明**: 原独立 `customers` 表已合并至 `client_wechat_users`。同步时以 `phone` 为匹配键 UPSERT，若已有微信用户行则更新档案字段，否则新建行（`openid = null`）。
 
 #### 表间关联
 
@@ -212,11 +214,11 @@ UDT_S_311（顾客档案主表）
 
 #### 字段映射
 
-| WorkFine 字段 | 含义 | 类型 | → PG `customers` 字段 |
-|---------------|------|------|----------------------|
-| UDF_S_1475 | **顾客编号** | 文本 | `customer_id` (PK) |
+| WorkFine 字段 | 含义 | 类型 | → PG `client_wechat_users` 字段 |
+|---------------|------|------|-------------------------------|
+| UDF_S_1475 | **顾客编号** | 文本 | `customer_id` (UNIQUE) |
 | UDF_S_1476 | 顾客姓名 | 文本 | `name` |
-| UDF_S_1478 | 手机号码 | 手机 | `phone` (UNIQUE) |
+| UDF_S_1478 | 手机号码 | 手机 | `phone` (UNIQUE，UPSERT 匹配键) |
 | UDF_S_1480 | 年龄 | 整数 | `age` |
 | UDF_S_6443 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
 | UDF_S_6486 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
@@ -236,9 +238,13 @@ UDT_S_311（顾客档案主表）
 
 **不再同步的字段**: UDF_S_18105（会员分类标签）、UDF_S_1486（是否共享）、UDF_S_1717（累计消费金额）、UDF_S_1718（单笔最高金额）、UDF_S_17850（未到店时间间隔）、UDF_S_17758～UDF_S_17858（年度消费档位/累计消费）
 
-**匹配键**: `UDF_S_1475`（顾客编号）→ `customer_id`
+**UPSERT 策略**:
+- **匹配键**: `phone`（手机号）
+- **冲突处理**: `ON CONFLICT (phone) DO UPDATE SET customer_id = ..., name = ..., ...`（仅更新档案字段，不覆盖微信身份字段 `openid`、`session_key`、`last_login_at`）
+- **无 phone 匹配时**: 新建行，`user_id` 系统生成，`openid = null`
+- **注意**: 同步不修改 `bound_store_name`（顾客主动绑定的门店），仅更新 `store_id`（归属门店）
 
-**store_id 映射**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。`market_name` 不再冗余存储，需要时 JOIN stores 获取。
+**store_id 映射**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。
 
 #### 顾客消费明细子表 — UDT_M_312（不同步）
 
@@ -376,7 +382,7 @@ UDT_S_311（顾客档案主表）
 WorkFine → PG 定期同步（组织与人员域）:
   UDT_M_219 (门店)            ──sync──→ PG org_nodes + stores
   UDT_S_287 (员工)            ──sync──→ PG employees
-  UDT_S_311 (顾客)            ──sync──→ PG customers
+  UDT_S_311 (顾客)            ──sync──→ PG client_wechat_users（档案字段）
   UDT_S_1962/UDT_M_1964 (提成) ──sync──→ PG commission_rate_matrix
 
 WorkFine → PG 一次性导入（商品域，后续手动维护）:
@@ -486,7 +492,7 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 
 | 表 | 记录数 | 同步/导入目标 |
 |----|--------|------|
-| UDT_S_311 顾客档案 | 51,117 | → PG customers 同步量 |
+| UDT_S_311 顾客档案 | 51,117 | → PG client_wechat_users 同步量 |
 | UDT_S_287 人事档案 | 2,846 | → PG employees 同步量 |
 | UDT_M_219 门店列表 | ~100 | → PG stores 同步量 |
 | UDT_S_1962 + UDT_M_1964 提成比例矩阵 | 待查 | → PG commission_rate_matrix 同步量 |

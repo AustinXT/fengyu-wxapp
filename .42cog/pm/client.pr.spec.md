@@ -85,7 +85,7 @@
 | ID | 需求 | 说明 |
 |----|------|------|
 | STORE-01 | 门店列表 | 按市场分组展示营业中的门店（排除 `UDF_M_11956 = '是'`，排除"市场"和"管理中心"）；支持按城市筛选 |
-| STORE-02 | 门店详情 | 展示门店名称、所属市场、可用床位、开业时间、`staff_count`（在职员工数）、`customer_count`（顾客数） |
+| STORE-02 | 门店详情 | 展示门店名称、所属市场、可用床位、开业时间、`employee_count`（在职员工数）、`customer_count`（顾客数） |
 | STORE-03 | 绑定门店 | 首次使用时选择绑定门店，后续默认展示该门店商品/美容师 |
 | STORE-04 | 更换门店 | 支持申请解绑当前门店（解绑流程：发起申请 → 查看申请状态 → 可取消申请） |
 | STORE-05 | 地理定位 | `store.geocode`（腾讯地图 API 逆地理编码，去掉"市"字后缀）→ 获取用户所在城市，辅助推荐就近门店 |
@@ -143,7 +143,6 @@
 **扫码入口**: `wx.scanCode()` → 解析二维码内容 → path 型直接 `navigateTo` / 纯文本 orderNo 型跳转 scan-pay 页面
 
 **分类层级说明**:
-- `big_category` 映射：`促销方案 → 福利活动`、`生美/非生美 → 护理项目`、`院装产品 → 家居产品`
 - 左侧栏显示 big_category 标题（不可点击）+ 下级 `category` 子分类（可点击切换）
 - 仅显示含有效 SKU 的分类
 
@@ -190,8 +189,8 @@ ORDER BY category_order ASC;
 - 美容师选择 Popup：底部弹出列表，含"不指定"选项 + 门店美容师列表（姓名 + 职位）
 - **操作栏（sticky）**:
   - 常规商品：左侧价格 `¥{price} ×{qty}` + 购物车 FAB（带 badge）+ "加入购物车"按钮 + "立即下单"按钮
-  - 促销方案商品（`big_category = '促销方案'`）：隐藏购物车按钮和"加入购物车"，仅显示全宽"立即下单"
-- 促销方案商品详情页额外展示 `promotionSchemeId`（关联 WorkFine `UDT_S_1459` + `UDT_M_1460`）
+  - 福利活动商品（`big_category = '福利活动'`）：隐藏购物车按钮和"加入购物车"，仅显示全宽"立即下单"
+- 福利活动商品详情页额外展示 `promotionSchemeId`（关联 WorkFine `UDT_S_1459` + `UDT_M_1460`）
 
 **购物车机制（localStorage）**:
 - `utils/cart.ts` 提供：`addToCart` / `removeFromCart` / `updateQuantity` / `clearCart` / `getCartCount` / `getCartTotal`
@@ -206,7 +205,7 @@ ORDER BY category_order ASC;
 | 可售服务项目（全国） | `UDT_M_1281`（481 条） | `product_spu` + `product_spu_sku_map` |
 | 门店自定义项目 | `UDT_M_1383`（401 条） | 同上 |
 | 院装产品 | `UDT_M_341`（1,940 条） | 同上 |
-| 促销方案 | `UDT_M_1460`（方案项目） | 同上 |
+| 福利活动 | `UDT_M_1460`（方案项目） | 同上 |
 
 - SPU 元数据（名称、图片、描述、分类、排序）存 PG `product_spu`
 - SKU↔WorkFine 映射存 PG `product_spu_sku_map`（含 `market_restriction` 市场限定字段）
@@ -222,9 +221,9 @@ ORDER BY category_order ASC;
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STAFF-01 | 美容师列表 | 按绑定门店过滤在职美容部员工（`department = '美容部'` OR `position = '美容师'`） |
-| STAFF-02 | 默认美容师 | 顾客档案中的主美容师（`UDT_S_311.UDF_S_6444`），预约/下单时默认填充 |
-| STAFF-03 | 选择非必须 | 下单时可不指定美容师（"不指定"选项） |
+| EMPLOYEE-01 | 美容师列表 | 按绑定门店过滤在职美容部员工（`department = '美容部'` OR `position = '美容师'`） |
+| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`UDT_S_311.UDF_S_6444`），预约/下单时默认填充 |
+| EMPLOYEE-03 | 选择非必须 | 下单时可不指定美容师（"不指定"选项） |
 
 **当前实现（Popup 交互）**:
 - 美容师选择以底部 Popup 弹窗实现，出现在商品详情页、结算页、创建预约页
@@ -241,7 +240,7 @@ ORDER BY category_order ASC;
 
 **数据来源**: WorkFine `UDT_S_287`（只读）
 
-**API**: `staff.list`（返回 staff_id, name, store_name, position, department, phone）/ `staff.default`（返回 mainStaffId, mainStaffName, mainStaffPosition）
+**API**: `employee.list`（返回 employee_id, name, store_name, position, department, phone）/ `employee.default`（返回 mainEmployeeId, mainEmployeeName, mainEmployeePosition）
 
 ---
 
@@ -253,11 +252,11 @@ ORDER BY category_order ASC;
 
 | 模式 | 触发方式 | 数据来源 |
 |------|----------|----------|
-| 单品直接下单 | 商品详情页"立即下单" → URL 带 `skuId` + `quantity` + `staffWfId` 等参数 | `product.skuDetail(skuId)` 获取价格 |
+| 单品直接下单 | 商品详情页"立即下单" → URL 带 `skuId` + `quantity` + `EmployeeId` 等参数 | `product.skuDetail(skuId)` 获取价格 |
 | 购物车结算 | 购物车页"结算" → URL 带 `fromCart=1` | 读取 `localStorage['checkoutItems']`，多商品显示"N 件商品" |
 | 恢复支付 | 订单详情页"去支付" → URL 带 `orderNo` | `order.detail(orderNo)` 加载已有订单 |
 
-**促销方案下单**: `orderType=promo` + `promotionSchemeId`，促销方案不进购物车
+**福利活动下单**: `orderType=promo` + `promotionSchemeId`，福利活动不进购物车
 
 **订单确认页 UI（screen_011）**:
 - 服务信息：SPU 名称 + SKU 规格名
@@ -516,7 +515,7 @@ ORDER BY category_order ASC;
 
 | 券种 | 本质 | 说明 |
 |------|------|------|
-| 现金券 | 直接抵扣金额 | 从促销方案附带赠送 |
+| 现金券 | 直接抵扣金额 | 从福利活动附带赠送 |
 | 项目券 | 限定范围的现金券 | 限定在特定品项分类中使用 |
 | 折扣券 | 乘法计算 | 逻辑最复杂，后续迭代 |
 
@@ -879,7 +878,7 @@ TabBar
 | auth | bindPhone | 绑定手机号（CloudID 解密 + 历史订单补全） |
 | auth | bindStore | 绑定门店（含市场名自动提取） |
 | store | list | 门店列表（按市场分组，支持城市筛选） |
-| store | detail | 门店详情（含 staff_count、customer_count） |
+| store | detail | 门店详情（含 employee_count、customer_count） |
 | store | requestUnbind | 申请解绑门店 |
 | store | getUnbindRequest | 查询解绑申请状态 |
 | store | cancelUnbindRequest | 取消解绑申请 |
@@ -887,11 +886,11 @@ TabBar
 | product | categories | 品项分类列表（仅含有效 SKU 的分类） |
 | product | spuList | SPU 商品列表（含 SKU 价格，市场限定过滤） |
 | product | skuDetail | SKU 详情（WorkFine 价格，5 分钟缓存） |
-| product | spuDetail | SPU 详情（促销方案含 promotionSchemeId） |
-| product | hotList | 热门商品（排除院装产品和促销方案） |
+| product | spuDetail | SPU 详情（福利活动含 promotionSchemeId） |
+| product | hotList | 热门商品（排除院装产品和福利活动） |
 | product | shopInit | 商城初始化数据（分类 + 首分类 SPU 列表） |
-| staff | list | 美容师列表（按门店过滤） |
-| staff | default | 默认美容师（顾客档案主美容师） |
+| employee | list | 美容师列表（按门店过滤） |
+| employee | default | 默认美容师（顾客档案主美容师） |
 | order | create | 创建订单（需手机号，10 分钟超时，advisory lock 防并发） |
 | order | pay | 微信支付（当前 mock 模式） |
 | order | alipayPay | 支付宝支付（当前 mock 模式） |

@@ -34,7 +34,7 @@
 <商品目录>
 - **SPU（product_spu）**：商品概念层，如"蜜语生玑精华护理疗程"
   - 唯一编码：spu_id
-  - 大分类（bigCategory）：`促销方案` | `护理项目` | `家居产品` | `充值卡`
+  - 大分类（bigCategory）：`福利活动` | `护理项目` | `家居产品` | `充值卡`
   - 品项分类（category）：如"蜜语生玑"，作为商品列表左侧一级导航
   - 是否展示由关联 SKU 的 is_active 派生，无独立开关
 
@@ -49,7 +49,7 @@
 - **订单主表（orders）**：交易记录，一切后续流程的源头
   - 唯一编码：order_no，格式 `FY-XSD-WX-{YYMMDD}{4位序号}`（advisory lock 防并发）
   - 状态（orderStatus）：`待支付` → `待确认收款` → `已支付` → `已完成`；异常分支 `支付失败`（可由店长重置为 `待支付`）；终态 `已关闭`
-  - 类型（orderType）：`正式`（WorkFine 价格）| `体验`（店长自定义价格）| `促销方案`（绑定方案 ID，项目自动填入不可增删）
+  - 类型（orderType）：`正式`（WorkFine 价格）| `体验`（店长自定义价格）| `福利活动`（绑定方案 ID，项目自动填入不可增删）
   - 来源（orderSource）：`client`（顾客自助下单）| `staff`（员工开单 → 生成二维码 → 顾客扫码支付同一笔订单）
   - 支付方式（paymentMethod）：`wechat` | `alipay` | `offline`
   - 待支付订单唯一约束：已注册顾客全局唯一，未注册顾客按 (client_phone, store_name) 唯一
