@@ -207,7 +207,7 @@ async function create(ctx) {
         order_no, status, order_type, market_name, store_name,
         order_datetime, client_user_id, client_phone, customer_name,
         payment_method, order_source,
-        preferred_staff_wf_id, created_at, updated_at
+        preferred_employee_id, created_at, updated_at
       ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'client', $10, $5, $5)`,
       [orderNo, orderType, marketName, storeName, now, userId, ctx.auth.phone || null, customerName, paymentMethod, preferredStaffWfId || null]
     )
@@ -423,7 +423,7 @@ async function list(ctx) {
       o.store_name,
       o.order_datetime,
       o.payment_method,
-      o.preferred_staff_wf_id,
+      o.preferred_employee_id,
       o.created_at,
       COALESCE((
         SELECT SUM(oi.receivable)
@@ -534,12 +534,12 @@ async function detail(ctx) {
 
   // 查询指定美容师姓名
   let preferredStaffName = null
-  if (order.preferred_staff_wf_id) {
+  if (order.preferred_employee_id) {
     try {
       const staffRows = await mssql.query(`
         SELECT UDF_S_1155 AS name
         FROM UDT_S_287
-        WHERE UDF_S_1147 = '${order.preferred_staff_wf_id.replace(/'/g, "''")}'
+        WHERE UDF_S_1147 = '${order.preferred_employee_id.replace(/'/g, "''")}'
       `)
       if (staffRows.length > 0) {
         preferredStaffName = staffRows[0].name
@@ -623,7 +623,7 @@ async function appointableItems(ctx) {
       o.status AS order_status,
       o.store_name,
       o.market_name,
-      o.preferred_staff_wf_id,
+      o.preferred_employee_id,
       oi.item_flow_no,
       oi.sku_id,
       oi.session_count,
@@ -659,7 +659,7 @@ async function appointableItems(ctx) {
         orderStatus: item.order_status,
         storeName: item.store_name,
         marketName: item.market_name,
-        preferredStaffWfId: item.preferred_staff_wf_id,
+        preferredStaffWfId: item.preferred_employee_id,
         items: []
       })
     }

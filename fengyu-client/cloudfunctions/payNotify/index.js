@@ -50,7 +50,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_staff_wf_id FROM orders WHERE order_no = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id FROM orders WHERE order_no = $1',
       [orderNo]
     )
 
@@ -102,7 +102,7 @@ exports.main = async (event) => {
       )
 
       // 3. 自动创建业绩分配（如有指定美容师）
-      if (order.preferred_staff_wf_id) {
+      if (order.preferred_employee_id) {
         // 计算订单总金额
         const totalResult = await client.query(
           'SELECT COALESCE(SUM(receivable), 0) AS total FROM order_items WHERE order_no = $1',
@@ -115,7 +115,7 @@ exports.main = async (event) => {
           `INSERT INTO revenue_allocations (order_no, employee_id, allocation_ratio, total_amount, created_at, updated_at)
            VALUES ($1, $2, 1.00, $3, $4, $4)
            ON CONFLICT (order_no, employee_id) DO NOTHING`,
-          [orderNo, order.preferred_staff_wf_id, totalAmount, now]
+          [orderNo, order.preferred_employee_id, totalAmount, now]
         )
       }
 

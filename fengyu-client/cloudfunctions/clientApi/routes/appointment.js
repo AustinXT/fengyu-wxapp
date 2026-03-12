@@ -115,7 +115,7 @@ async function create(ctx) {
   await pg.query(`
     INSERT INTO appointments (
       appointment_id, status, market_name, store_name,
-      client_user_id, customer_name, staff_wf_id, staff_name,
+      client_user_id, customer_name, employee_id, staff_name,
       appointment_time, notes, item_flow_no, created_at, updated_at
     ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
   `, [
@@ -153,7 +153,7 @@ async function list(ctx) {
       a.appointment_id,
       a.status,
       a.store_name,
-      a.staff_wf_id,
+      a.employee_id,
       a.staff_name,
       a.appointment_time,
       a.notes,

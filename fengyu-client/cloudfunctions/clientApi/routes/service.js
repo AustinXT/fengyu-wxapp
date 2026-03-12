@@ -26,7 +26,7 @@ async function detail(ctx) {
       store_name,
       service_date,
       service_duration,
-      assigned_staff_wf_id,
+      assigned_employee_id,
       remark,
       created_at,
       updated_at
