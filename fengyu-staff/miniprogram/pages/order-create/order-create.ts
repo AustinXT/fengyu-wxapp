@@ -45,6 +45,12 @@ Page({
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
+    // 优惠券
+    selectedCoupon: null as null | { couponId: string; name: string; discount: number },
+    couponDiscount: 0,
+    showCouponPopup: false,
+    availableCoupons: [] as any[],
+    couponsLoading: false,
   },
 
   // 所有分类（未过滤）
@@ -315,6 +321,51 @@ Page({
 
   onStep2Back() { this.setData({ checkoutStep: 1 }); },
 
+  // ===== 优惠券选择 =====
+
+  async onSelectCoupon() {
+    const { customerInfo, cart } = this.data;
+    if (!customerInfo?.phone) return;
+
+    this.setData({ showCouponPopup: true, couponsLoading: true });
+    try {
+      const items = cart.map(c => ({
+        skuId: c.skuId,
+        quantity: c.quantity,
+        amount: c.price * c.quantity - c.discount,
+      }));
+      const data = await callStaffApi<any>('coupon.available', {
+        clientPhone: customerInfo.phone,
+        items,
+      });
+      this.setData({ availableCoupons: data?.coupons || [] });
+    } catch {
+      this.setData({ availableCoupons: [] });
+    } finally {
+      this.setData({ couponsLoading: false });
+    }
+  },
+
+  onCloseCouponPopup() {
+    this.setData({ showCouponPopup: false });
+  },
+
+  onCouponPick(e: WechatMiniprogram.TouchEvent) {
+    const { couponId, name, discount } = e.currentTarget.dataset as {
+      couponId: string; name: string; discount: number;
+    };
+    const d = Number(discount) || 0;
+    this.setData({
+      selectedCoupon: { couponId, name, discount: d },
+      couponDiscount: d,
+      showCouponPopup: false,
+    });
+  },
+
+  onClearCoupon() {
+    this.setData({ selectedCoupon: null, couponDiscount: 0, showCouponPopup: false });
+  },
+
   async onSubmitOrder() {
     const { customerInfo, orderType, cart, remark } = this.data;
     if (!customerInfo) return;
@@ -336,10 +387,11 @@ Page({
           discount: c.discount,
         })),
         remark,
+        couponId: this.data.selectedCoupon?.couponId || undefined,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
-      this.setData({ showCheckout: false, orderType: 'normal' });
+      this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
       wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.orderNo}` });
     } catch (err: any) {
       wx.showToast({ title: err.message || '开单失败', icon: 'none' });

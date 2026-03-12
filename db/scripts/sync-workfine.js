@@ -1,0 +1,1025 @@
+#!/usr/bin/env node
+/**
+ * WorkFine → PostgreSQL 全量同步脚本
+ *
+ * 使用方法：
+ *   node scripts/sync-workfine.js              # 全量同步 + 一次性导入
+ *   node scripts/sync-workfine.js --sync-only   # 仅定期同步域（org/stores/employees/customers）
+ *   node scripts/sync-workfine.js --import-only  # 仅一次性导入域（品项分类/商品）
+ *   node scripts/sync-workfine.js --dry-run      # 预览模式
+ *
+ * 同步顺序（存在依赖）：
+ *   1. org_nodes（组织架构树）— 无依赖
+ *   2. stores（门店详情）— 依赖 org_nodes
+ *   3. employees（员工）— 依赖 stores + org_nodes
+ *   4. permission_roles（权限自动推导）— 依赖 employees + org_nodes
+ *   5. client_wechat_users（顾客档案）— 依赖 stores
+ *   6. product_categories（品项分类）— 无依赖（一次性导入）
+ *   7. products + product_skus（商品）— 依赖 product_categories（一次性导入）
+ */
+
+const mssql = require('mssql')
+const { Pool } = require('pg')
+const crypto = require('crypto')
+
+// ─── 配置 ────────────────────────────────────────────────
+
+const MSSQL_CONFIG = {
+  user: process.env.MSSQL_USER || 'SD',
+  password: process.env.MSSQL_PASSWORD || 'Se4Qimoh',
+  database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
+  server: process.env.MSSQL_SERVER || '47.96.87.33',
+  port: parseInt(process.env.MSSQL_PORT) || 1433,
+  pool: { max: 5, min: 1, idleTimeoutMillis: 30000 },
+  options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
+}
+
+const PG_CONFIG = {
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  max: 5,
+}
+
+// ─── 工具函数 ──────────────────────────────────────────────
+
+/** 确定性 ID（相同输入 → 相同输出） */
+function hashId(...parts) {
+  return crypto.createHash('sha256').update(parts.join(':')).digest('hex').substring(0, 16)
+}
+
+/** 生成 UUID */
+function uuid() {
+  return crypto.randomUUID()
+}
+
+/** 文本 '是'/'否' → boolean */
+function toBool(val) {
+  if (val === null || val === undefined) return false
+  return String(val).trim() === '是'
+}
+
+/** RTRIM + null 处理 */
+function trim(val) {
+  if (val === null || val === undefined) return null
+  const s = String(val).trim()
+  return s === '' ? null : s
+}
+
+/** 日期格式化（MSSQL Date → YYYY-MM-DD 字符串） */
+function toDateStr(val) {
+  if (!val) return null
+  if (val instanceof Date) {
+    const y = val.getFullYear()
+    const m = String(val.getMonth() + 1).padStart(2, '0')
+    const d = String(val.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  return String(val).substring(0, 10)
+}
+
+function log(domain, msg) {
+  console.log(`[${domain}] ${msg}`)
+}
+
+// ─── 1. 同步 org_nodes + stores ──────────────────────────────
+
+async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
+  log('ORG+STORES', '开始同步...')
+
+  // 查询 WorkFine 门店数据
+  const { recordset: rows } = await mssqlPool.request().query(`
+    SELECT
+      RTRIM(UDF_M_437) AS market_name,
+      RTRIM(UDF_M_438) AS store_name,
+      UDF_M_1777       AS opening_date,
+      UDF_M_8590       AS bed_count,
+      RTRIM(UDF_M_11956) AS is_closed_raw
+    FROM UDT_M_219
+    WHERE UDF_M_438 IS NOT NULL AND RTRIM(UDF_M_438) != ''
+  `)
+  log('ORG+STORES', `WorkFine 查询到 ${rows.length} 条门店记录`)
+
+  if (dryRun) {
+    rows.forEach(r => console.log(`  [DRY] store=${r.store_name}, market=${r.market_name}`))
+    return
+  }
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 1. UPSERT 总部节点
+    const hqId = hashId('org', 'headquarters', '总部')
+    await client.query(`
+      INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+      VALUES ($1, '总部', 'headquarters', NULL, 0, true)
+      ON CONFLICT (id) DO UPDATE SET name = '总部', updated_at = now()
+    `, [hqId])
+
+    // 2. 收集唯一市场
+    const markets = [...new Set(rows.map(r => trim(r.market_name)).filter(Boolean))]
+    const marketIdMap = {} // marketName → orgNodeId
+
+    for (let i = 0; i < markets.length; i++) {
+      const marketId = hashId('org', 'market', markets[i])
+      marketIdMap[markets[i]] = marketId
+      await client.query(`
+        INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+        VALUES ($1, $2, 'market', $3, $4, true)
+        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
+      `, [marketId, markets[i], hqId, i])
+    }
+    log('ORG+STORES', `UPSERT ${markets.length} 个市场节点`)
+
+    // 3. 为每个门店 UPSERT org_nodes(type='store') + stores
+    let storeCount = 0
+    for (const row of rows) {
+      const storeName = trim(row.store_name)
+      const marketName = trim(row.market_name)
+      if (!storeName) continue
+
+      const storeOrgNodeId = hashId('org', 'store', storeName)
+      const parentMarketId = marketName ? marketIdMap[marketName] : hqId
+
+      // org_nodes store 节点
+      await client.query(`
+        INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+        VALUES ($1, $2, 'store', $3, 0, true)
+        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
+      `, [storeOrgNodeId, storeName, parentMarketId])
+
+      // stores 详情
+      const storeId = hashId('store', storeName)
+      const isClosed = toBool(row.is_closed_raw)
+      await client.query(`
+        INSERT INTO stores (store_id, store_name, org_node_id, opening_date, bed_count, is_closed)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (store_id) DO UPDATE SET
+          store_name = EXCLUDED.store_name,
+          org_node_id = EXCLUDED.org_node_id,
+          opening_date = EXCLUDED.opening_date,
+          bed_count = EXCLUDED.bed_count,
+          is_closed = EXCLUDED.is_closed,
+          updated_at = now()
+      `, [storeId, storeName, storeOrgNodeId, toDateStr(row.opening_date), row.bed_count || null, isClosed])
+
+      storeCount++
+    }
+
+    await client.query('COMMIT')
+    log('ORG+STORES', `完成：1 总部 + ${markets.length} 市场 + ${storeCount} 门店`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ─── 2. 同步 employees ──────────────────────────────────────
+
+async function syncEmployees(mssqlPool, pgPool, dryRun) {
+  log('EMPLOYEES', '开始同步...')
+
+  const { recordset: rows } = await mssqlPool.request().query(`
+    SELECT
+      RTRIM(UDF_S_1147) AS employee_id,
+      RTRIM(UDF_S_1155) AS name,
+      RTRIM(UDF_S_1148) AS gender,
+      RTRIM(UDF_S_1152) AS phone,
+      RTRIM(UDF_S_1154) AS id_card,
+      RTRIM(UDF_S_1163) AS store_name,
+      RTRIM(UDF_S_1513) AS dept_name,
+      RTRIM(UDF_S_1161) AS position_name,
+      UDF_S_1149        AS birthday,
+      RTRIM(UDF_S_1624) AS is_resigned_raw
+    FROM UDT_S_287
+    WHERE UDF_S_1147 IS NOT NULL AND RTRIM(UDF_S_1147) != ''
+  `)
+  log('EMPLOYEES', `WorkFine 查询到 ${rows.length} 条员工记录`)
+
+  if (dryRun) {
+    log('EMPLOYEES', `[DRY] 将同步 ${rows.length} 条`)
+    return
+  }
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 预加载 stores lookup (store_name → store_id)
+    const storesRes = await client.query('SELECT store_id, store_name FROM stores')
+    const storeMap = {}
+    storesRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
+
+    // 收集并创建部门节点
+    const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = 'headquarters' LIMIT 1")
+    const hqId = hqRes.rows[0]?.id
+    const deptNames = [...new Set(rows.map(r => trim(r.dept_name)).filter(Boolean))]
+    const deptMap = {} // deptName → orgNodeId
+
+    if (hqId) {
+      for (const deptName of deptNames) {
+        const deptId = hashId('org', 'department', deptName)
+        await client.query(`
+          INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+          VALUES ($1, $2, 'department', $3, 0, true)
+          ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+        `, [deptId, deptName, hqId])
+        deptMap[deptName] = deptId
+      }
+      log('EMPLOYEES', `UPSERT ${deptNames.length} 个部门节点`)
+    }
+
+    // UPSERT employees
+    let count = 0
+    for (const row of rows) {
+      const empId = trim(row.employee_id)
+      if (!empId) continue
+
+      const storeName = trim(row.store_name)
+      const storeId = storeName ? (storeMap[storeName] || null) : null
+      const deptName = trim(row.dept_name)
+      const orgNodeId = deptName ? (deptMap[deptName] || null) : null
+
+      await client.query(`
+        INSERT INTO employees (employee_id, name, gender, phone, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (employee_id) DO UPDATE SET
+          name = EXCLUDED.name,
+          gender = EXCLUDED.gender,
+          phone = EXCLUDED.phone,
+          id_card = EXCLUDED.id_card,
+          store_id = EXCLUDED.store_id,
+          org_node_id = EXCLUDED.org_node_id,
+          position_name = EXCLUDED.position_name,
+          birthday = EXCLUDED.birthday,
+          is_resigned = EXCLUDED.is_resigned,
+          updated_at = now()
+      `, [
+        empId,
+        trim(row.name) || empId,
+        trim(row.gender),
+        trim(row.phone),
+        trim(row.id_card),
+        storeId,
+        orgNodeId,
+        trim(row.position_name),
+        toDateStr(row.birthday),
+        toBool(row.is_resigned_raw),
+      ])
+      count++
+    }
+
+    await client.query('COMMIT')
+    log('EMPLOYEES', `完成：UPSERT ${count} 条员工`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ─── 3. 自动推导 permission_roles ──────────────────────────────
+
+async function syncPermissionRoles(pgPool, dryRun) {
+  log('PERMISSIONS', '开始自动推导...')
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 查询在职员工 + store org_node + department name
+    const { rows: emps } = await client.query(`
+      SELECT
+        e.employee_id,
+        e.position_name,
+        e.store_id,
+        s.org_node_id AS store_org_node_id,
+        dept.name     AS dept_name,
+        parent_store.parent_id AS market_org_node_id
+      FROM employees e
+      LEFT JOIN stores s ON e.store_id = s.store_id
+      LEFT JOIN org_nodes dept ON e.org_node_id = dept.id
+      LEFT JOIN org_nodes parent_store ON s.org_node_id = parent_store.id
+      WHERE e.is_resigned = false
+    `)
+    log('PERMISSIONS', `在职员工 ${emps.length} 人`)
+
+    if (dryRun) {
+      log('PERMISSIONS', '[DRY] 将为在职员工推导权限')
+      await client.query('ROLLBACK')
+      client.release()
+      return
+    }
+
+    let count = 0
+    for (const emp of emps) {
+      const pos = (emp.position_name || '').trim()
+      const dept = (emp.dept_name || '').trim()
+      const storeScope = emp.store_org_node_id
+      const marketScope = emp.market_org_node_id
+
+      if (!storeScope) continue // 无门店归属的员工跳过
+
+      let role = 'staff'
+      let scopeId = storeScope
+
+      // 代理经理 → 默认 staff
+      if (pos.includes('代理')) {
+        role = 'staff'
+      } else if (pos === '门店经理') {
+        role = 'manager'
+      } else if (pos === '市场总监' || pos === '片区经理') {
+        role = 'manager'
+        scopeId = marketScope || storeScope
+      } else if (dept === '财智部') {
+        role = 'finance'
+      }
+
+      // UPSERT（仅 sync 创建的记录）
+      await client.query(`
+        INSERT INTO permission_roles (employee_id, role, scope_id, is_void, created_by, updated_by)
+        VALUES ($1, $2, $3, false, 'sync', 'sync')
+        ON CONFLICT (employee_id, role, scope_id) WHERE is_void = false
+        DO UPDATE SET updated_by = 'sync', updated_at = now()
+          WHERE permission_roles.created_by = 'sync'
+      `, [emp.employee_id, role, scopeId])
+      count++
+    }
+
+    await client.query('COMMIT')
+    log('PERMISSIONS', `完成：推导 ${count} 条权限记录`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ─── 4. 同步顾客档案（批量优化版） ───────────────────────────────
+
+async function syncCustomers(mssqlPool, pgPool, dryRun) {
+  log('CUSTOMERS', '开始同步...')
+
+  const { recordset: rows } = await mssqlPool.request().query(`
+    SELECT
+      RTRIM(UDF_S_1475) AS customer_id,
+      RTRIM(UDF_S_1476) AS name,
+      RTRIM(UDF_S_1478) AS phone,
+      RTRIM(UDF_S_6443) AS store_name,
+      RTRIM(UDF_S_6444) AS primary_beautician,
+      RTRIM(UDF_S_1477) AS member_level,
+      RTRIM(UDF_S_6446) AS customer_source,
+      RTRIM(UDF_S_1712) AS category,
+      UDF_S_1479        AS birthday,
+      RTRIM(UDF_S_1481) AS occupation,
+      RTRIM(UDF_S_1482) AS is_married_raw,
+      RTRIM(UDF_S_6445) AS wechat_name,
+      UDF_S_1474        AS registered_at,
+      RTRIM(UDF_S_6447) AS skin_type,
+      RTRIM(UDF_S_6448) AS improvement_focus,
+      RTRIM(UDF_S_19093) AS skin_issue,
+      RTRIM(UDF_S_19094) AS wellness_preference
+    FROM UDT_S_311
+    WHERE UDF_S_1475 IS NOT NULL AND RTRIM(UDF_S_1475) != ''
+  `)
+  log('CUSTOMERS', `WorkFine 查询到 ${rows.length} 条顾客记录`)
+
+  if (dryRun) {
+    log('CUSTOMERS', `[DRY] 将同步 ${rows.length} 条`)
+    return
+  }
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 预加载 stores lookup
+    const storesRes = await client.query('SELECT store_id, store_name FROM stores')
+    const storeMap = {}
+    storesRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
+
+    // 1. 创建临时 staging 表
+    await client.query(`
+      CREATE TEMP TABLE _cust_staging (
+        user_id text NOT NULL,
+        customer_id text,
+        phone text,
+        name text,
+        store_id text,
+        primary_beautician text,
+        member_level text,
+        customer_source text,
+        category text,
+        birthday date,
+        occupation text,
+        is_married boolean,
+        wechat_name text,
+        registered_at date,
+        skin_type text,
+        improvement_focus text,
+        skin_issue text,
+        wellness_preference text
+      )
+    `)
+
+    // 2. 批量插入到 staging 表（每批 500 行）
+    const BATCH = 500
+    let skipped = 0
+    const staged = []
+
+    for (const row of rows) {
+      const phone = trim(row.phone)
+      const customerId = trim(row.customer_id)
+      if (!phone && !customerId) { skipped++; continue }
+
+      const storeName = trim(row.store_name)
+      staged.push([
+        uuid(), customerId, phone,
+        trim(row.name),
+        storeName ? (storeMap[storeName] || null) : null,
+        trim(row.primary_beautician), trim(row.member_level),
+        trim(row.customer_source), trim(row.category),
+        toDateStr(row.birthday), trim(row.occupation),
+        toBool(row.is_married_raw), trim(row.wechat_name),
+        toDateStr(row.registered_at), trim(row.skin_type),
+        trim(row.improvement_focus), trim(row.skin_issue),
+        trim(row.wellness_preference),
+      ])
+    }
+    log('CUSTOMERS', `准备写入 ${staged.length} 条 staging 数据，跳过 ${skipped} 条`)
+
+    for (let i = 0; i < staged.length; i += BATCH) {
+      const batch = staged.slice(i, i + BATCH)
+      const placeholders = []
+      const values = []
+      let paramIdx = 1
+
+      for (const row of batch) {
+        const ph = []
+        for (const val of row) {
+          ph.push(`$${paramIdx++}`)
+          values.push(val)
+        }
+        placeholders.push(`(${ph.join(',')})`)
+      }
+
+      await client.query(`
+        INSERT INTO _cust_staging (user_id, customer_id, phone, name, store_id,
+          primary_beautician, member_level, customer_source, category,
+          birthday, occupation, is_married, wechat_name, registered_at,
+          skin_type, improvement_focus, skin_issue, wellness_preference)
+        VALUES ${placeholders.join(',')}
+      `, values)
+
+      if ((i + BATCH) % 5000 === 0 || i + BATCH >= staged.length) {
+        log('CUSTOMERS', `staging 进度: ${Math.min(i + BATCH, staged.length)}/${staged.length}`)
+      }
+    }
+
+    // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
+    const upsertByPhone = await client.query(`
+      INSERT INTO client_wechat_users (
+        user_id, phone, customer_id, name, store_id, primary_beautician,
+        member_level, customer_source, category, birthday, occupation, is_married,
+        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+      )
+      SELECT user_id, phone, customer_id, name, store_id, primary_beautician,
+        member_level, customer_source, category, birthday, occupation, is_married,
+        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+      FROM (
+        SELECT DISTINCT ON (phone) *
+        FROM _cust_staging
+        WHERE phone IS NOT NULL
+        ORDER BY phone, customer_id NULLS LAST
+      ) deduped
+      ON CONFLICT (phone) WHERE phone IS NOT NULL
+      DO UPDATE SET
+        customer_id = EXCLUDED.customer_id,
+        name = EXCLUDED.name,
+        store_id = EXCLUDED.store_id,
+        primary_beautician = EXCLUDED.primary_beautician,
+        member_level = EXCLUDED.member_level,
+        customer_source = EXCLUDED.customer_source,
+        category = EXCLUDED.category,
+        birthday = EXCLUDED.birthday,
+        occupation = EXCLUDED.occupation,
+        is_married = EXCLUDED.is_married,
+        wechat_name = EXCLUDED.wechat_name,
+        registered_at = EXCLUDED.registered_at,
+        skin_type = EXCLUDED.skin_type,
+        improvement_focus = EXCLUDED.improvement_focus,
+        skin_issue = EXCLUDED.skin_issue,
+        wellness_preference = EXCLUDED.wellness_preference,
+        updated_at = now()
+    `)
+    log('CUSTOMERS', `UPSERT by phone: ${upsertByPhone.rowCount} 条`)
+
+    // 3b. 无手机号但有 customer_id：UPDATE 已存在的行（去重）
+    const updateByCustId = await client.query(`
+      UPDATE client_wechat_users c SET
+        name = s.name, store_id = s.store_id, primary_beautician = s.primary_beautician,
+        member_level = s.member_level, customer_source = s.customer_source,
+        category = s.category, birthday = s.birthday, occupation = s.occupation,
+        is_married = s.is_married, wechat_name = s.wechat_name, registered_at = s.registered_at,
+        skin_type = s.skin_type, improvement_focus = s.improvement_focus,
+        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        updated_at = now()
+      FROM (
+        SELECT DISTINCT ON (customer_id) *
+        FROM _cust_staging
+        WHERE phone IS NULL AND customer_id IS NOT NULL
+        ORDER BY customer_id
+      ) s
+      WHERE c.customer_id = s.customer_id
+    `)
+    log('CUSTOMERS', `UPDATE by customer_id (无手机号): ${updateByCustId.rowCount} 条`)
+
+    // 3c. 无手机号有 customer_id 但不存在：INSERT 新行（去重）
+    const insertNew = await client.query(`
+      INSERT INTO client_wechat_users (
+        user_id, customer_id, name, store_id, primary_beautician,
+        member_level, customer_source, category, birthday, occupation, is_married,
+        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+      )
+      SELECT s.user_id, s.customer_id, s.name, s.store_id, s.primary_beautician,
+        s.member_level, s.customer_source, s.category, s.birthday, s.occupation, s.is_married,
+        s.wechat_name, s.registered_at, s.skin_type, s.improvement_focus, s.skin_issue, s.wellness_preference
+      FROM (
+        SELECT DISTINCT ON (customer_id) *
+        FROM _cust_staging
+        WHERE phone IS NULL AND customer_id IS NOT NULL
+        ORDER BY customer_id
+      ) s
+      WHERE NOT EXISTS (SELECT 1 FROM client_wechat_users c WHERE c.customer_id = s.customer_id)
+    `)
+    log('CUSTOMERS', `INSERT 新顾客 (无手机号): ${insertNew.rowCount} 条`)
+
+    await client.query('DROP TABLE _cust_staging')
+    await client.query('COMMIT')
+    log('CUSTOMERS', `完成：共处理 ${upsertByPhone.rowCount + updateByCustId.rowCount + insertNew.rowCount} 条，跳过 ${skipped} 条`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ─── 5. 导入品项分类 ─────────────────────────────────────────
+
+async function importProductCategories(mssqlPool, pgPool, dryRun) {
+  log('CATEGORIES', '开始导入品项分类...')
+
+  const { recordset: rows } = await mssqlPool.request().query(`
+    SELECT
+      UDF_M_521       AS sort_order,
+      RTRIM(UDF_M_522) AS category_name,
+      RTRIM(UDF_M_15996) AS is_valid_raw,
+      RTRIM(UDF_M_17416) AS big_category_raw
+    FROM UDT_M_229
+    WHERE UDF_M_522 IS NOT NULL AND RTRIM(UDF_M_522) != ''
+  `)
+  log('CATEGORIES', `WorkFine 查询到 ${rows.length} 条`)
+
+  if (dryRun) {
+    rows.forEach(r => console.log(`  [DRY] ${r.category_name} (${r.big_category_raw})`))
+    return
+  }
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    let count = 0
+    for (const row of rows) {
+      const name = trim(row.category_name)
+      if (!name) continue
+
+      const productKind = mapProductKind(trim(row.big_category_raw))
+      const catId = hashId('cat', name, productKind)
+
+      await client.query(`
+        INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (category_id) DO UPDATE SET
+          category_name = EXCLUDED.category_name,
+          product_kind = EXCLUDED.product_kind,
+          sort_order = EXCLUDED.sort_order,
+          is_valid = EXCLUDED.is_valid,
+          updated_at = now()
+      `, [catId, name, productKind, row.sort_order || 0, toBool(row.is_valid_raw)])
+      count++
+    }
+
+    await client.query('COMMIT')
+    log('CATEGORIES', `完成：UPSERT ${count} 条品项分类`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+/** 映射 big_category_raw → product_kind 枚举 */
+function mapProductKind(raw) {
+  if (!raw) return '护理项目'
+  if (raw.includes('充值')) return '充值卡'
+  if (raw.includes('家居') || raw.includes('院装')) return '家居产品'
+  if (raw.includes('福利') || raw.includes('促销') || raw.includes('活动')) return '福利活动'
+  return '护理项目'
+}
+
+/** 映射产品类型 */
+function mapProductType(raw) {
+  if (!raw) return '院装产品'
+  if (raw.includes('疗程')) return '疗程卡'
+  if (raw.includes('单品')) return '单品'
+  return '疗程卡'
+}
+
+// ─── 6. 导入商品 + 规格 ─────────────────────────────────────
+
+async function importProducts(mssqlPool, pgPool, dryRun) {
+  log('PRODUCTS', '开始导入商品...')
+
+  // 6a. 查询各数据源
+  const queries = {
+    UDT_M_1281: `
+      SELECT
+        RTRIM(UDF_M_14503) AS wf_item_id,
+        RTRIM(UDF_M_14505) AS name,
+        RTRIM(UDF_M_14504) AS category_name,
+        RTRIM(UDF_M_17783) AS is_shengmei_raw,
+        UDF_M_14506 AS session_count,
+        UDF_M_14508 AS price,
+        RTRIM(UDF_M_14502) AS product_type_raw,
+        NULL AS market_scope,
+        NULL AS manage_scope
+      FROM UDT_M_1281
+      WHERE UDF_M_14508 > 0 AND UDF_M_14503 IS NOT NULL AND UDF_M_14505 IS NOT NULL
+    `,
+    UDT_M_1383: `
+      SELECT
+        RTRIM(m.UDF_M_14503) AS wf_item_id,
+        RTRIM(m.UDF_M_14505) AS name,
+        RTRIM(m.UDF_M_14504) AS category_name,
+        RTRIM(m.UDF_M_17784) AS is_shengmei_raw,
+        m.UDF_M_14506 AS session_count,
+        m.UDF_M_14508 AS price,
+        RTRIM(m.UDF_M_14502) AS product_type_raw,
+        RTRIM(s.UDF_S_15997) AS market_scope,
+        RTRIM(s.UDF_S_15997) AS manage_scope
+      FROM UDT_M_1383 m
+      INNER JOIN UDT_S_1382 s ON m.RID = s.RID
+      WHERE m.UDF_M_17415 = '是' AND m.UDF_M_14503 IS NOT NULL AND m.UDF_M_14505 IS NOT NULL
+    `,
+    UDT_M_341: `
+      SELECT
+        RTRIM(UDF_M_1870) AS wf_item_id,
+        RTRIM(UDF_M_1871) AS name,
+        RTRIM(UDF_M_1872) AS spec_name,
+        RTRIM(UDF_M_1874) AS category_name,
+        UDF_M_1875 AS price,
+        RTRIM(UDF_M_7494) AS is_active_raw
+      FROM UDT_M_341
+      WHERE UDF_M_7494 = '是' AND UDF_M_1870 IS NOT NULL AND UDF_M_1871 IS NOT NULL
+    `,
+  }
+
+  const wfData = {}
+  for (const [source, query] of Object.entries(queries)) {
+    try {
+      const { recordset } = await mssqlPool.request().query(query)
+      wfData[source] = recordset
+      log('PRODUCTS', `${source}: ${recordset.length} 条`)
+    } catch (err) {
+      log('PRODUCTS', `${source} 查询失败: ${err.message}`)
+      wfData[source] = []
+    }
+  }
+
+  // 促销方案
+  try {
+    const { recordset } = await mssqlPool.request().query(`
+      SELECT
+        s.RID,
+        RTRIM(s.UDF_S_17159) AS scheme_id,
+        RTRIM(s.UDF_S_17175) AS scheme_name,
+        s.UDF_S_17193        AS scheme_price,
+        RTRIM(s.UDF_S_17793) AS market_scope,
+        RTRIM(m.UDF_M_17163) AS wf_item_id,
+        RTRIM(m.UDF_M_17165) AS item_name,
+        m.UDF_M_17171        AS item_price,
+        RTRIM(m.UDF_M_17174) AS is_gift_raw,
+        m.UDF_M_17167        AS session_count,
+        RTRIM(m.UDF_M_17162) AS product_type_raw
+      FROM UDT_S_1459 s
+      INNER JOIN UDT_M_1460 m ON m.RID = s.RID
+      WHERE s.UDF_S_17175 IS NOT NULL AND m.UDF_M_17163 IS NOT NULL
+    `)
+    wfData.PROMOTIONS = recordset
+    log('PRODUCTS', `促销方案: ${recordset.length} 条明细`)
+  } catch (err) {
+    log('PRODUCTS', `促销方案查询失败: ${err.message}`)
+    wfData.PROMOTIONS = []
+  }
+
+  if (dryRun) {
+    log('PRODUCTS', '[DRY] 预览模式，不写入')
+    return
+  }
+
+  const client = await pgPool.connect()
+  try {
+    await client.query('BEGIN')
+
+    // 预加载品项分类 lookup
+    const catRes = await client.query('SELECT category_id, category_name, product_kind FROM product_categories')
+    const catMap = {} // categoryName → { category_id, product_kind }
+    catRes.rows.forEach(r => { catMap[r.category_name] = { id: r.category_id, kind: r.product_kind } })
+
+    // 找到或创建默认分类（无法匹配时使用）
+    let defaultCatId = catMap['其他']?.id
+    if (!defaultCatId) {
+      defaultCatId = hashId('cat', '其他', '护理项目')
+      await client.query(`
+        INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
+        VALUES ($1, '其他', '护理项目', 999, true)
+        ON CONFLICT (category_id) DO NOTHING
+      `, [defaultCatId])
+      catMap['其他'] = { id: defaultCatId, kind: '护理项目' }
+    }
+
+    let productCount = 0, skuCount = 0
+
+    // ── 6b. 可售项目（UDT_M_1281 + UDT_M_1383）──
+    const serviceItems = [...(wfData.UDT_M_1281 || []), ...(wfData.UDT_M_1383 || [])]
+
+    // 按 (category_name, name) 分组 → 一条 product，不同规格各生成一条 sku
+    const productGroups = new Map() // key → { rows, category_name, name, ... }
+
+    for (const row of serviceItems) {
+      const name = trim(row.name)
+      const catName = trim(row.category_name) || '其他'
+      const key = `${catName}||${name}`
+
+      if (!productGroups.has(key)) {
+        productGroups.set(key, {
+          name,
+          categoryName: catName,
+          isShengmei: trim(row.is_shengmei_raw) === '生美',
+          marketScope: trim(row.market_scope),
+          manageScope: trim(row.manage_scope),
+          skus: [],
+        })
+      }
+      productGroups.get(key).skus.push(row)
+    }
+
+    for (const [key, group] of productGroups) {
+      const cat = catMap[group.categoryName] || catMap['其他']
+      const catId = cat.id
+      const productId = hashId('product', key)
+
+      // 计算标价（取 SKU 最低价）
+      const prices = group.skus.map(s => parseFloat(s.price) || 0).filter(p => p > 0)
+      const minPrice = prices.length > 0 ? Math.min(...prices) : 0
+
+      await client.query(`
+        INSERT INTO products (product_id, category_id, name, is_shengmei, is_bundle, price, sales_category,
+          manage_scope, market_scope, sort_order)
+        VALUES ($1, $2, $3, $4, false, $5, '自采自销', $6, $7, 0)
+        ON CONFLICT (product_id) DO UPDATE SET
+          category_id = EXCLUDED.category_id, name = EXCLUDED.name,
+          is_shengmei = EXCLUDED.is_shengmei, price = EXCLUDED.price,
+          manage_scope = EXCLUDED.manage_scope, market_scope = EXCLUDED.market_scope,
+          updated_at = now()
+      `, [productId, catId, group.name, group.isShengmei, minPrice, group.manageScope, group.marketScope])
+      productCount++
+
+      // 创建 SKU
+      for (const sku of group.skus) {
+        const productType = mapProductType(trim(sku.product_type_raw))
+        const sessionCount = productType === '单品' ? 1 : (parseInt(sku.session_count) || null)
+        const specName = sessionCount && sessionCount > 1 ? `${sessionCount}次卡` : (productType === '单品' ? '单次体验' : '疗程卡')
+        const skuId = hashId('sku', productId, trim(sku.wf_item_id))
+
+        await client.query(`
+          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count, sort_order, service_fee)
+          VALUES ($1, $2, $3, $4, $5, $6, 0, 0)
+          ON CONFLICT (sku_id) DO UPDATE SET
+            product_type = EXCLUDED.product_type, spec_name = EXCLUDED.spec_name,
+            price = EXCLUDED.price, session_count = EXCLUDED.session_count, updated_at = now()
+        `, [skuId, productId, productType, specName, parseFloat(sku.price) || 0, sessionCount])
+        skuCount++
+      }
+    }
+
+    // ── 6c. 院装产品（UDT_M_341）── 每条 1:1 product + sku
+    const homeCatId = catMap['家居产品']?.id || defaultCatId
+    for (const row of (wfData.UDT_M_341 || [])) {
+      const name = trim(row.name)
+      if (!name) continue
+
+      const catName = trim(row.category_name) || '家居产品'
+      const cat = catMap[catName] || { id: homeCatId }
+      const productId = hashId('product', 'home', trim(row.wf_item_id))
+
+      await client.query(`
+        INSERT INTO products (product_id, category_id, name, is_bundle, price, sales_category, sort_order)
+        VALUES ($1, $2, $3, false, $4, '自采自销', 0)
+        ON CONFLICT (product_id) DO UPDATE SET
+          name = EXCLUDED.name, price = EXCLUDED.price, updated_at = now()
+      `, [productId, cat.id, name, parseFloat(row.price) || 0])
+      productCount++
+
+      const specName = trim(row.spec_name) || '院装'
+      const skuId = hashId('sku', productId, trim(row.wf_item_id))
+      await client.query(`
+        INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, sort_order, service_fee)
+        VALUES ($1, $2, '院装产品', $3, $4, 0, 0)
+        ON CONFLICT (sku_id) DO UPDATE SET
+          spec_name = EXCLUDED.spec_name, price = EXCLUDED.price, updated_at = now()
+      `, [skuId, productId, specName, parseFloat(row.price) || 0])
+      skuCount++
+    }
+
+    // ── 6d. 促销方案 → products (is_bundle=true) + product_skus (is_bundle_sku=true) ──
+    const promoGroups = new Map() // scheme_id → { name, price, market_scope, items[] }
+    for (const row of (wfData.PROMOTIONS || [])) {
+      const schemeId = trim(row.scheme_id)
+      if (!schemeId) continue
+
+      if (!promoGroups.has(schemeId)) {
+        promoGroups.set(schemeId, {
+          name: trim(row.scheme_name) || schemeId,
+          price: parseFloat(row.scheme_price) || 0,
+          marketScope: trim(row.market_scope),
+          items: [],
+        })
+      }
+      promoGroups.get(schemeId).items.push(row)
+    }
+
+    // 找到或创建福利活动分类
+    let promoCatId = null
+    for (const [, v] of Object.entries(catMap)) {
+      if (v.kind === '福利活动') { promoCatId = v.id; break }
+    }
+    if (!promoCatId) {
+      promoCatId = hashId('cat', '福利活动', '福利活动')
+      await client.query(`
+        INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
+        VALUES ($1, '福利活动', '福利活动', 0, true)
+        ON CONFLICT (category_id) DO NOTHING
+      `, [promoCatId])
+    }
+
+    for (const [schemeId, promo] of promoGroups) {
+      const productId = hashId('product', 'promo', schemeId)
+
+      await client.query(`
+        INSERT INTO products (product_id, category_id, name, is_bundle, price, market_scope, sales_category, sort_order)
+        VALUES ($1, $2, $3, true, $4, $5, '自采自销', 0)
+        ON CONFLICT (product_id) DO UPDATE SET
+          name = EXCLUDED.name, price = EXCLUDED.price, market_scope = EXCLUDED.market_scope, updated_at = now()
+      `, [productId, promoCatId, promo.name, promo.price, promo.marketScope])
+      productCount++
+
+      for (const item of promo.items) {
+        const isGift = toBool(item.is_gift_raw)
+        const itemPrice = isGift ? 0 : (parseFloat(item.item_price) || 0)
+        const productType = mapProductType(trim(item.product_type_raw))
+        const sessionCount = productType === '单品' ? 1 : (parseInt(item.session_count) || null)
+        const specName = trim(item.item_name) || '促销项'
+        const skuId = hashId('sku', productId, trim(item.wf_item_id))
+
+        await client.query(`
+          INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, session_count,
+            is_bundle_sku, sort_order, service_fee)
+          VALUES ($1, $2, $3, $4, $5, $6, true, 0, 0)
+          ON CONFLICT (sku_id) DO UPDATE SET
+            spec_name = EXCLUDED.spec_name, price = EXCLUDED.price,
+            session_count = EXCLUDED.session_count, updated_at = now()
+        `, [skuId, productId, productType, specName, itemPrice, sessionCount])
+        skuCount++
+      }
+    }
+
+    await client.query('COMMIT')
+    log('PRODUCTS', `完成：${productCount} 条商品, ${skuCount} 条规格`)
+  } catch (err) {
+    await client.query('ROLLBACK')
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
+// ─── 验证 ──────────────────────────────────────────────────
+
+async function verify(pgPool) {
+  console.log('\n=== 数据验证 ===')
+  const tables = [
+    'org_nodes', 'stores', 'employees', 'permission_roles',
+    'client_wechat_users', 'product_categories', 'products', 'product_skus',
+  ]
+  for (const t of tables) {
+    const { rows } = await pgPool.query(`SELECT count(*) AS cnt FROM ${t}`)
+    console.log(`  ${t}: ${rows[0].cnt} 条`)
+  }
+
+  // org_nodes 按类型
+  const { rows: orgTypes } = await pgPool.query(
+    "SELECT type, count(*) AS cnt FROM org_nodes GROUP BY type ORDER BY type"
+  )
+  console.log('\n  org_nodes 按类型:')
+  orgTypes.forEach(r => console.log(`    ${r.type}: ${r.cnt}`))
+
+  // employees 在职/离职
+  const { rows: empStatus } = await pgPool.query(
+    "SELECT is_resigned, count(*) AS cnt FROM employees GROUP BY is_resigned"
+  )
+  console.log('\n  employees 状态:')
+  empStatus.forEach(r => console.log(`    ${r.is_resigned ? '离职' : '在职'}: ${r.cnt}`))
+
+  // permission_roles 按角色
+  const { rows: roles } = await pgPool.query(
+    "SELECT role, count(*) AS cnt FROM permission_roles WHERE is_void = false GROUP BY role ORDER BY role"
+  )
+  console.log('\n  permission_roles 按角色:')
+  roles.forEach(r => console.log(`    ${r.role}: ${r.cnt}`))
+
+  // product_categories 按 product_kind
+  const { rows: catKinds } = await pgPool.query(
+    "SELECT product_kind, count(*) AS cnt FROM product_categories GROUP BY product_kind ORDER BY product_kind"
+  )
+  console.log('\n  product_categories 按类型:')
+  catKinds.forEach(r => console.log(`    ${r.product_kind}: ${r.cnt}`))
+
+  // product_skus 按 product_type
+  const { rows: skuTypes } = await pgPool.query(
+    "SELECT product_type, count(*) AS cnt FROM product_skus GROUP BY product_type ORDER BY product_type"
+  )
+  console.log('\n  product_skus 按类型:')
+  skuTypes.forEach(r => console.log(`    ${r.product_type}: ${r.cnt}`))
+}
+
+// ─── 主函数 ─────────────────────────────────────────────────
+
+async function main() {
+  const args = process.argv.slice(2)
+  const dryRun = args.includes('--dry-run')
+  const syncOnly = args.includes('--sync-only')
+  const importOnly = args.includes('--import-only')
+
+  console.log('=== WorkFine → PostgreSQL 同步脚本 ===')
+  console.log(`模式: ${dryRun ? 'DRY-RUN' : '正式执行'} ${syncOnly ? '(仅同步域)' : ''} ${importOnly ? '(仅导入域)' : ''}\n`)
+
+  let mssqlPool = null
+  let pgPool = null
+
+  try {
+    // 连接
+    console.log('连接 WorkFine SQL Server...')
+    mssqlPool = await mssql.connect(MSSQL_CONFIG)
+    console.log('✓ MSSQL 连接成功')
+
+    pgPool = new Pool(PG_CONFIG)
+    await pgPool.query('SELECT 1')
+    console.log('✓ PostgreSQL 连接成功\n')
+
+    // 定期同步域
+    if (!importOnly) {
+      await syncOrgNodesAndStores(mssqlPool, pgPool, dryRun)
+      await syncEmployees(mssqlPool, pgPool, dryRun)
+      await syncPermissionRoles(pgPool, dryRun)
+      await syncCustomers(mssqlPool, pgPool, dryRun)
+    }
+
+    // 一次性导入域
+    if (!syncOnly) {
+      await importProductCategories(mssqlPool, pgPool, dryRun)
+      await importProducts(mssqlPool, pgPool, dryRun)
+    }
+
+    // 验证
+    if (!dryRun) {
+      await verify(pgPool)
+    }
+
+    console.log('\n✓ 全部完成!')
+  } catch (err) {
+    console.error('\n✗ 同步失败:', err)
+    process.exit(1)
+  } finally {
+    if (mssqlPool) await mssqlPool.close()
+    if (pgPool) await pgPool.end()
+  }
+}
+
+main()

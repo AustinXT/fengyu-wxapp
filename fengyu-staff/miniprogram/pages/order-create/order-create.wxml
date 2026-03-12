@@ -269,6 +269,23 @@
             <text class="confirm-total-amount">¥{{cartTotal}}</text>
           </view>
         </view>
+        <!-- 优惠券选择 -->
+        <view class="confirm-coupon-row" bindtap="onSelectCoupon">
+          <text class="confirm-item-label">顾客优惠券</text>
+          <view class="confirm-coupon-value">
+            <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
+            <text wx:else class="confirm-coupon-hint">去选择</text>
+            <van-icon name="arrow" size="28rpx" color="#999" />
+          </view>
+        </view>
+        <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
+          <text>{{selectedCoupon.name}}</text>
+        </view>
+        <!-- 券后合计 -->
+        <view wx:if="{{couponDiscount > 0}}" class="confirm-total-row">
+          <text class="confirm-total-label">券后合计</text>
+          <text class="confirm-total-amount confirm-total-amount--coupon">¥{{(cartTotal * 1 - couponDiscount).toFixed(2)}}</text>
+        </view>
         <van-field
           label="备注"
           placeholder="选填，最多100字"
@@ -286,6 +303,49 @@
             bind:click="onSubmitOrder"
           >确认开单</van-button>
         </view>
+      </view>
+    </view>
+  </van-popup>
+
+  <!-- 优惠券选择 Popup -->
+  <van-popup
+    show="{{showCouponPopup}}"
+    position="bottom"
+    round
+    closeable
+    bind:close="onCloseCouponPopup"
+  >
+    <view class="coupon-popup">
+      <view class="coupon-popup__title">选择顾客优惠券</view>
+      <view wx:if="{{couponsLoading}}" class="coupon-popup__loading">
+        <van-loading size="48rpx" />
+      </view>
+      <view wx:elif="{{availableCoupons.length === 0}}" class="coupon-popup__empty">
+        <text>该顾客暂无可用优惠券</text>
+      </view>
+      <scroll-view wx:else scroll-y class="coupon-popup__list">
+        <view
+          wx:for="{{availableCoupons}}"
+          wx:key="couponId"
+          class="coupon-popup__item {{selectedCoupon.couponId === item.couponId ? 'coupon-popup__item--active' : ''}}"
+          bindtap="onCouponPick"
+          data-coupon-id="{{item.couponId}}"
+          data-name="{{item.name}}"
+          data-discount="{{item.discount}}"
+        >
+          <view class="coupon-popup__item-left">
+            <text class="coupon-popup__item-discount">¥{{item.discount}}</text>
+            <text class="coupon-popup__item-type">{{item.couponType}}</text>
+          </view>
+          <view class="coupon-popup__item-right">
+            <text class="coupon-popup__item-name">{{item.name}}</text>
+            <text class="coupon-popup__item-expire">有效期至 {{item.expireAt}}</text>
+          </view>
+          <van-icon wx:if="{{selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
+        </view>
+      </scroll-view>
+      <view class="coupon-popup__footer">
+        <van-button wx:if="{{selectedCoupon}}" plain size="small" bindtap="onClearCoupon">不使用优惠券</van-button>
       </view>
     </view>
   </van-popup>
