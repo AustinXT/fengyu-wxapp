@@ -172,7 +172,7 @@ async function create(ctx) {
     await client.query(
       `INSERT INTO service_orders (
         service_order_no, status, market_name, store_name,
-        service_date, service_duration, assigned_staff_wf_id,
+        service_date, service_duration, assigned_employee_id,
         remark, client_user_id, appointment_id, created_at, updated_at
       ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
       [
@@ -223,7 +223,7 @@ async function create(ctx) {
 
 /**
  * 开始服务（待服务 → 服务中）
- * 权限：店长或 assigned_staff_wf_id 匹配的员工
+ * 权限：店长或 assigned_employee_id 匹配的员工
  */
 async function start(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -247,7 +247,7 @@ async function start(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验
-  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -296,7 +296,7 @@ async function complete(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验
-  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 
@@ -409,7 +409,7 @@ async function list(ctx) {
 
   if (ctx.auth.position !== '门店经理') {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND so.assigned_staff_wf_id = $${params.length}`
+    whereExtra += ` AND so.assigned_employee_id = $${params.length}`
   }
 
   const serviceOrders = await pg.query(`
@@ -418,7 +418,7 @@ async function list(ctx) {
       so.status,
       so.service_date,
       so.service_duration,
-      so.assigned_staff_wf_id,
+      so.assigned_employee_id,
       so.client_user_id,
       so.appointment_id,
       so.remark,
@@ -459,19 +459,19 @@ async function list(ctx) {
   }
 
   // 批量查询员工姓名（从 WorkFine）
-  const staffWfIds = [...new Set(serviceOrders.map(s => s.assigned_staff_wf_id).filter(Boolean))]
+  const staffWfIds = [...new Set(serviceOrders.map(s => s.assigned_employee_id).filter(Boolean))]
   let staffNameMap = {}
   if (staffWfIds.length > 0) {
     const esc = (v) => String(v).replace(/'/g, "''")
     const idList = staffWfIds.map(id => `'${esc(id)}'`).join(',')
     try {
       const staffRows = await mssql.query(`
-        SELECT UDF_S_1147 AS staff_wf_id, UDF_S_1155 AS name
+        SELECT UDF_S_1147 AS employee_id, UDF_S_1155 AS name
         FROM UDT_S_287
         WHERE UDF_S_1147 IN (${idList})
       `)
       for (const r of staffRows) {
-        staffNameMap[r.staff_wf_id] = r.name ? r.name.trim() : ''
+        staffNameMap[r.employee_id] = r.name ? r.name.trim() : ''
       }
     } catch (_) {}
   }
@@ -497,8 +497,8 @@ async function list(ctx) {
     serviceNo: so.service_order_no,
     customerName: customerNameMap[so.client_user_id] || '',
     customerPhone: so.client_phone || '',
-    staffName: staffNameMap[so.assigned_staff_wf_id] || '',
-    assignedStaffWfId: so.assigned_staff_wf_id,
+    staffName: staffNameMap[so.assigned_employee_id] || '',
+    assignedStaffWfId: so.assigned_employee_id,
     status: so.status,
     serviceTime: so.service_date,
     appointmentId: so.appointment_id,
@@ -525,7 +525,7 @@ async function detail(ctx) {
       so.status,
       so.service_date,
       so.service_duration,
-      so.assigned_staff_wf_id,
+      so.assigned_employee_id,
       so.client_user_id,
       so.appointment_id,
       so.remark,
@@ -544,7 +544,7 @@ async function detail(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验：美容师只能看分配给自己的
-  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该服务单')
   }
 
@@ -567,12 +567,12 @@ async function detail(ctx) {
 
   // 查询员工姓名
   let staffName = ''
-  if (so.assigned_staff_wf_id) {
+  if (so.assigned_employee_id) {
     const esc = (v) => String(v).replace(/'/g, "''")
     try {
       const staffRows = await mssql.query(`
         SELECT UDF_S_1155 AS name FROM UDT_S_287
-        WHERE UDF_S_1147 = '${esc(so.assigned_staff_wf_id)}'
+        WHERE UDF_S_1147 = '${esc(so.assigned_employee_id)}'
       `)
       if (staffRows.length > 0) {
         staffName = staffRows[0].name ? staffRows[0].name.trim() : ''
@@ -627,7 +627,7 @@ async function detail(ctx) {
 
 /**
  * 取消服务单（待服务/服务中 → 已取消）
- * 权限：店长或 assigned_staff_wf_id 匹配的员工
+ * 权限：店长或 assigned_employee_id 匹配的员工
  * 注意：不扣减次数（次数只在 complete 时扣）
  */
 async function cancel(ctx) {
@@ -651,7 +651,7 @@ async function cancel(ctx) {
   const so = serviceOrders[0]
 
   // 权限校验
-  if (ctx.auth.position !== '门店经理' && so.assigned_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && so.assigned_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该服务单')
   }
 

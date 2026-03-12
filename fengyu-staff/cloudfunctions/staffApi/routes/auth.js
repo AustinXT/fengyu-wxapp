@@ -18,7 +18,7 @@ async function login(ctx) {
   const { OPENID } = cloud.getWXContext()
 
   const users = await pg.query(
-    'SELECT user_id, phone, staff_wf_id, last_login_at FROM staff_wechat_users WHERE openid = $1',
+    'SELECT user_id, phone, employee_id, last_login_at FROM staff_wechat_users WHERE openid = $1',
     [OPENID]
   )
 
@@ -58,7 +58,7 @@ async function login(ctx) {
     let storeName = null
     let marketName = null
 
-    if (user.staff_wf_id) {
+    if (user.employee_id) {
       const esc = (v) => String(v).replace(/'/g, "''")
       try {
         const staffRows = await mssql.query(`
@@ -68,7 +68,7 @@ async function login(ctx) {
             UDF_S_1163 AS store_name,
             UDF_S_1160 AS market_name
           FROM UDT_S_287
-          WHERE UDF_S_1147 = '${esc(user.staff_wf_id)}'
+          WHERE UDF_S_1147 = '${esc(user.employee_id)}'
             AND UDF_S_1624 NOT IN ('是', '离职')
         `)
 
@@ -87,7 +87,7 @@ async function login(ctx) {
       isNewUser: false,
       userId: user.user_id,
       phone: user.phone,
-      staffWfId: user.staff_wf_id,
+      staffWfId: user.employee_id,
       staffName,
       position,
       storeName,
@@ -134,7 +134,7 @@ async function bindPhone(ctx) {
 
   // 查询当前用户
   const users = await pg.query(
-    'SELECT user_id, phone, staff_wf_id FROM staff_wechat_users WHERE openid = $1',
+    'SELECT user_id, phone, employee_id FROM staff_wechat_users WHERE openid = $1',
     [OPENID]
   )
 
@@ -157,7 +157,7 @@ async function bindPhone(ctx) {
   const esc = (v) => String(v).replace(/'/g, "''")
   const staffRows = await mssql.query(`
     SELECT
-      UDF_S_1147 AS staff_wf_id,
+      UDF_S_1147 AS employee_id,
       UDF_S_1155 AS name,
       UDF_S_1161 AS position,
       UDF_S_1513 AS department,
@@ -169,14 +169,14 @@ async function bindPhone(ctx) {
     ORDER BY UDF_S_1147 DESC
   `)
 
-  let staffWfId = users[0].staff_wf_id
+  let staffWfId = users[0].employee_id
   let position = null
   let storeName = null
   let marketName = null
 
   if (staffRows.length > 0) {
     const s = staffRows[0]
-    staffWfId = s.staff_wf_id
+    staffWfId = s.employee_id
     position = s.position ? s.position.trim() : null
     storeName = s.store_name ? s.store_name.trim() : null
     marketName = s.market_name ? s.market_name.trim() : null
@@ -190,7 +190,7 @@ async function bindPhone(ctx) {
 
   // 更新手机号和员工档案关联
   await pg.query(
-    'UPDATE staff_wechat_users SET phone = $1, staff_wf_id = $2, updated_at = $3 WHERE user_id = $4',
+    'UPDATE staff_wechat_users SET phone = $1, employee_id = $2, updated_at = $3 WHERE user_id = $4',
     [phoneNumber, staffWfId, now, userId]
   )
 

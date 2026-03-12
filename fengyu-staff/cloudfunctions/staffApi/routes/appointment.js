@@ -102,7 +102,7 @@ async function list(ctx) {
   // 美容师只看指定自己的预约
   if (ctx.auth.position !== '门店经理') {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND a.staff_wf_id = $${params.length}`
+    whereExtra += ` AND a.employee_id = $${params.length}`
   }
 
   const appointments = await pg.query(`
@@ -111,7 +111,7 @@ async function list(ctx) {
       a.status,
       a.client_user_id,
       a.customer_name,
-      a.staff_wf_id,
+      a.employee_id,
       a.staff_name,
       a.appointment_time,
       a.notes,
@@ -170,7 +170,7 @@ async function detail(ctx) {
       a.status,
       a.client_user_id,
       a.customer_name,
-      a.staff_wf_id,
+      a.employee_id,
       a.staff_name,
       a.appointment_time,
       a.notes,
@@ -239,7 +239,7 @@ async function confirm(ctx) {
   const appt = appointments[0]
 
   // 权限：店长或被预约美容师
-  if (ctx.auth.position !== '门店经理' && appt.staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权确认该预约')
   }
 
@@ -283,7 +283,7 @@ async function checkin(ctx) {
 
   const appt = appointments[0]
 
-  if (ctx.auth.position !== '门店经理' && appt.staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该预约')
   }
 

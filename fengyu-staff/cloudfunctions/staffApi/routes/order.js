@@ -175,7 +175,7 @@ async function create(ctx) {
         order_no, status, order_type, market_name, store_name,
         order_datetime, client_user_id, client_phone, customer_name,
         payment_method, order_source, opened_by,
-        preferred_staff_wf_id, created_at, updated_at
+        preferred_employee_id, created_at, updated_at
       ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'staff', $10, $11, $5, $5)`,
       [
         orderNo, orderType, marketName || '', storeName, now,
@@ -505,7 +505,7 @@ async function resetFailed(ctx) {
 /**
  * 订单列表
  * 店长：查看本店所有订单
- * 美容师：查看与自己相关的订单（preferred_staff_wf_id 匹配）
+ * 美容师：查看与自己相关的订单（preferred_employee_id 匹配）
  */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -524,13 +524,13 @@ async function list(ctx) {
   // 美容师只能看到指定自己的订单
   if (ctx.auth.position !== '门店经理') {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND o.preferred_staff_wf_id = $${params.length}`
+    whereExtra += ` AND o.preferred_employee_id = $${params.length}`
   }
 
   const orders = await pg.query(`
     SELECT
       o.order_no, o.status, o.order_type, o.client_phone, o.customer_name,
-      o.payment_method, o.order_source, o.preferred_staff_wf_id,
+      o.payment_method, o.order_source, o.preferred_employee_id,
       o.paid_at, o.created_at, o.opened_by,
       COALESCE((
         SELECT SUM(oi.receivable) FROM order_items oi WHERE oi.order_no = o.order_no
@@ -569,7 +569,7 @@ async function detail(ctx) {
   const order = orders[0]
 
   // 美容师只能看指定自己的订单
-  if (ctx.auth.position !== '门店经理' && order.preferred_staff_wf_id !== ctx.auth.staffWfId) {
+  if (ctx.auth.position !== '门店经理' && order.preferred_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -598,10 +598,10 @@ async function detail(ctx) {
   }
 
   // 解析指定美容师姓名
-  if (order.preferred_staff_wf_id) {
+  if (order.preferred_employee_id) {
     const pool = await mssql.getPool()
     const staffResult = await pool.request()
-      .input('id', order.preferred_staff_wf_id)
+      .input('id', order.preferred_employee_id)
       .query(`SELECT UDF_S_1155 AS name FROM UDT_S_287 WHERE UDF_S_1147 = @id`)
     if (staffResult.recordset.length > 0) {
       order.preferred_staff_name = (staffResult.recordset[0].name || '').trim()

@@ -39,7 +39,7 @@ async function auth(ctx, next) {
 
   // 查询员工用户
   const users = await pg.query(
-    'SELECT user_id, phone, staff_wf_id, last_login_at FROM staff_wechat_users WHERE openid = $1',
+    'SELECT user_id, phone, employee_id, last_login_at FROM staff_wechat_users WHERE openid = $1',
     [effectiveOpenid]
   )
 
@@ -65,7 +65,7 @@ async function auth(ctx, next) {
     let department = null
 
     // 从 WorkFine 查询角色和门店信息
-    if (user.staff_wf_id) {
+    if (user.employee_id) {
       try {
         const esc = (v) => String(v).replace(/'/g, "''")
         const staffRows = await mssql.query(`
@@ -76,7 +76,7 @@ async function auth(ctx, next) {
             UDF_S_1163 AS store_name,
             UDF_S_1160 AS market_name
           FROM UDT_S_287
-          WHERE UDF_S_1147 = '${esc(user.staff_wf_id)}'
+          WHERE UDF_S_1147 = '${esc(user.employee_id)}'
             AND UDF_S_1624 NOT IN ('是', '离职')
         `)
 
@@ -96,7 +96,7 @@ async function auth(ctx, next) {
       userId: user.user_id,
       openid: effectiveOpenid,
       phone: user.phone,
-      staffWfId: user.staff_wf_id,
+      staffWfId: user.employee_id,
       position,
       storeName,
       marketName,

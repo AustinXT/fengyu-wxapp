@@ -28,7 +28,7 @@ async function list(ctx) {
 
   const staffRows = await mssql.query(`
     SELECT
-      UDF_S_1147 AS staff_wf_id,
+      UDF_S_1147 AS employee_id,
       UDF_S_1155 AS name,
       UDF_S_1161 AS position,
       UDF_S_1513 AS department,
@@ -42,7 +42,7 @@ async function list(ctx) {
 
   ctx.result = {
     staffList: staffRows.map(r => ({
-      staffWfId: r.staff_wf_id,
+      staffWfId: r.employee_id,
       name: r.name ? r.name.trim() : '',
       position: r.position ? r.position.trim() : '',
       department: r.department ? r.department.trim() : '',
@@ -73,7 +73,7 @@ async function departments(ctx) {
   // 查询美容部（含店长）
   const beautyRows = await mssql.query(`
     SELECT
-      UDF_S_1147 AS staff_wf_id,
+      UDF_S_1147 AS employee_id,
       UDF_S_1155 AS name,
       UDF_S_1161 AS position,
       UDF_S_1513 AS department
@@ -92,7 +92,7 @@ async function departments(ctx) {
   if (marketName) {
     otherDeptRows = await mssql.query(`
       SELECT
-        UDF_S_1147 AS staff_wf_id,
+        UDF_S_1147 AS employee_id,
         UDF_S_1155 AS name,
         UDF_S_1161 AS position,
         UDF_S_1513 AS department,
@@ -113,7 +113,7 @@ async function departments(ctx) {
   // 美容部
   if (beautyRows.length > 0) {
     deptMap['美容部'] = beautyRows.map(r => ({
-      staffWfId: r.staff_wf_id,
+      staffWfId: r.employee_id,
       name: r.name ? r.name.trim() : '',
       position: r.position ? r.position.trim() : '',
       department: '美容部'
@@ -125,7 +125,7 @@ async function departments(ctx) {
     const dept = r.department ? r.department.trim() : '其他'
     if (!deptMap[dept]) deptMap[dept] = []
     deptMap[dept].push({
-      staffWfId: r.staff_wf_id,
+      staffWfId: r.employee_id,
       name: r.name ? r.name.trim() : '',
       position: r.position ? r.position.trim() : '',
       department: dept,
@@ -177,7 +177,7 @@ async function todayCommission(ctx) {
   const serviceRows = await pg.query(`
     SELECT COUNT(*) AS service_count
     FROM service_orders
-    WHERE assigned_staff_wf_id = $1
+    WHERE assigned_employee_id = $1
       AND service_date = $2
   `, [staffWfId, todayStr])
 
@@ -260,7 +260,7 @@ async function monthlyCalendar(ctx) {
   const svcRows = await pg.query(`
     SELECT COUNT(*) AS total_service_count
     FROM service_orders
-    WHERE assigned_staff_wf_id = $1
+    WHERE assigned_employee_id = $1
       AND service_date >= $2
       AND service_date < $3
   `, [staffWfId, monthStartStr, monthEndStr])
@@ -298,7 +298,7 @@ async function todoList(ctx) {
     )
   } else {
     appointmentCount = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM appointments WHERE staff_wf_id = $1 AND status = '待确认'`,
+      `SELECT COUNT(*) AS cnt FROM appointments WHERE employee_id = $1 AND status = '待确认'`,
       [staffWfId]
     )
   }
@@ -312,7 +312,7 @@ async function todoList(ctx) {
     )
   } else {
     serviceCount = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM service_orders WHERE assigned_staff_wf_id = $1 AND status IN ('待服务', '服务中')`,
+      `SELECT COUNT(*) AS cnt FROM service_orders WHERE assigned_employee_id = $1 AND status IN ('待服务', '服务中')`,
       [staffWfId]
     )
   }

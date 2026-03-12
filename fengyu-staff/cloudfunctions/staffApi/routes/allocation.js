@@ -314,7 +314,7 @@ async function pendingList(ctx) {
     SELECT
       o.order_no, o.status, o.order_type, o.client_phone, o.customer_name,
       o.payment_method, o.paid_at, o.created_at, o.allocation_status,
-      o.order_source, o.preferred_staff_wf_id,
+      o.order_source, o.preferred_employee_id,
       COALESCE((
         SELECT SUM(oi.receivable) FROM order_items oi WHERE oi.order_no = o.order_no
       ), 0) AS total_amount
@@ -395,7 +395,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT order_no, status, allocation_status, store_name, market_name,
-            order_source, preferred_staff_wf_id, client_phone, customer_name
+            order_source, preferred_employee_id, client_phone, customer_name
      FROM orders WHERE order_no = $1 AND store_name = $2`,
     [orderNo, ctx.auth.storeName]
   )
@@ -407,8 +407,8 @@ async function suggest(ctx) {
   // 2. 解析指定美容师
   let beauticianInfo = null
   let deptAnomalous = false
-  if (order.preferred_staff_wf_id) {
-    beauticianInfo = await resolveStaffDepartment(order.preferred_staff_wf_id)
+  if (order.preferred_employee_id) {
+    beauticianInfo = await resolveStaffDepartment(order.preferred_employee_id)
     if (beauticianInfo && !beauticianInfo.resolvedDept) {
       deptAnomalous = true
     }
