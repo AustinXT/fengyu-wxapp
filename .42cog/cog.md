@@ -2,7 +2,7 @@
 
 <meta>
   <document-id>fengyu-wxapp-cog</document-id>
-  <version>3.0.0</version>
+  <version>3.1.0</version>
   <project>fengyu-wxapp</project>
   <type>认知模型</type>
   <created>2026-02-25</created>
@@ -17,8 +17,9 @@
 <cog>
 本系统的核心业务流为：
   门店（组织归属）→ 商品目录（卖什么）→ 订单（交易记录）→ 履约/服务单（到店核销）→ 营业额分配（分账）
-辅助流程：预约（到店时间协调）、门店解绑（组织变更）
-核心角色：顾客（买方）、店长（卖方管理者）、美容师（卖方执行者）
+辅助流程：预约（到店时间协调）、门店解绑（组织变更）、操作日志（审计追踪）
+核心角色：顾客（买方）、manager（经营管理）、finance（财务只读）、hr（员工管理）、product（商品管理）、staff（一线执行）
+四种单据统一模型：销售单、回款单、转换单、退款单通过 `sale_order_type` 区分，回款/转换/退款通过 `ref_sale_order_id` 引用原销售单
 </cog>
 
 <门店>
@@ -29,6 +30,8 @@
   - 数据源：PG `org_nodes`（层级树）+ `stores`（门店详情，1:1 扩展 org_nodes type='store' 节点）；初始数据同步自 WorkFine，运行时 100% PG
   - 业务表（sale_orders/service_orders/appointments）通过 `store_id` FK 关联 `stores`
   - 市场名通过 JOIN `org_nodes` 树获取（stores.org_node_id → org_nodes.parent_id → market 节点），`market_name` 快照用于区域级数据汇总
+  - 门店解绑流程：顾客发起解绑申请（`store_unbind_requests`，状态 pending → approved/rejected/cancelled）→ 店长审批 → approved 后清除 `client_wechat_users.bound_store_id`
+  - 门店详情扩展字段：封面图、环境图、地理坐标（经纬度）、营业时间、停车信息等（由员工端手动维护）
 </门店>
 
 <商品目录>
@@ -54,6 +57,8 @@
   - 支付方式（payment_method）：`wechat` | `alipay` | `offline`
   - 待支付订单唯一约束：已注册顾客全局唯一，未注册顾客按 (client_phone, store_id) 唯一
   - 四种单据统一模型：销售单、回款单、转换单、退款单通过 `sale_order_type` 区分，回款/转换/退款通过 `ref_sale_order_id` 引用原销售单
+  - 10 分钟订单超时：`expire_at = created_at + 10min`，过期订单在 `order.list`/`order.create`/`order.pay` 时懒清理
+  - 单号格式按类型区分前缀：销售 `FY-XSD-WX-`、回款 `FY-HKD-WX-`、转换 `FY-ABZH-WX-`、退款 `FY-TKD-WX-`
 
 - **销售明细（sale_items）**：SKU 维度的购买行，是核销锚点
   - 唯一编码：sale_item_id，格式 `XSLSH-WX-{YYYYMMDD}{4位序号}`
@@ -93,9 +98,30 @@
 - **员工（staff_wechat_users）**：
   - 唯一编码：user_id（UUID），openid（员工端 appid 下唯一）
   - employee_id：绑定手机号后自动关联 PG employees 员工档案
-  - 角色由 RBAC `permission_roles` 表决定（`position_name` 作降级路径）
+  - 角色由 RBAC `permission_roles` 表决定（`employee_id + role + scope_id`），无记录时降级为 `role=staff, scope=员工所在门店`
+  - 登录时聚合所有角色→ `ctx.auth.roles[]` + `scopeStoreIds` + `permissions.actions[]`，前端存储 `permissions` 控制 UI 可见性
   - 两端 openid 完全独立（不同 appid），用户表不共享
 </用户>
+
+<权限>
+- **权限角色分配（permission_roles）**：RBAC + Scope 模型
+  - 唯一编码：`(employee_id, role, scope_id) WHERE is_void = false`（部分唯一索引）
+  - 5 角色：`manager`（经营管理）| `finance`（财务只读）| `hr`（员工管理）| `product`（商品管理）| `staff`（一线执行）
+  - 3 域级别（scope_id FK → org_nodes）：`headquarters`（全局无过滤）| `market`（市场区域）| `store`（单门店）
+  - 12 功能模块（`PERMISSION_MATRIX` 代码常量）：workbench / sale_order / allocation / service / appointment / customer / product / employee / finance / store / permission / sync
+  - 一人多角色 + 一角色多域：同一员工可有多条记录
+  - 软删除：`is_void = true` + `voided_at`，保留审计痕迹
+  - 初始数据由同步脚本从 `employees.org_node_id` + `position_name` 自动推导；`hr`/`product` 角色仅手动分配
+  - 提成比例矩阵（`commission_rate_matrix`）：org_id × order_type × role_type × sales_category × 金额阶段 → commission_rate
+</权限>
+
+<操作日志>
+- **操作日志（operation_logs）**：审计追踪，只写不改
+  - 记录关键变更：订单创建/收款/关闭、营业额分配、服务单全流程、预约确认/签到、权限变更
+  - `action` 格式与云函数 action 路由一致（如 `sale_order.create`）
+  - `detail` jsonb 存储变更前后数据
+  - `operator_user_id` FK → `staff_wechat_users`（基于微信登录态）
+</操作日志>
 
 <营业额分配>
 - **分配表（sale_allocations）**：sale_item 级业绩归属（单表，无明细子表）
@@ -128,10 +154,17 @@
 - 商品 → 规格：1:N（products.product_id ← product_skus.product_id）
 - 顾客 → 订单：1:N（UNIQUE 约束限制同时只有一笔待支付）
 - 订单 → 销售明细：1:N（一笔订单多个 SKU 行，sale_items.sale_order_id FK）
+- 订单 → 订单：N:1（ref_sale_order_id，回款/转换/退款 → 原销售单）
+- 销售明细 → 销售明细：N:1（ref_sale_item_id，convert_out/refund_out → 原购买行）
 - 销售明细 → 服务明细：1:N（一个 sale_item_id 可被多次核销，每次对应一条 service_items）
 - 订单 ↔ 服务单：N:N（通过 service_items.sale_item_id 间接关联）
 - 销售明细 → 营业额分配：1:N（sale_allocations.sale_item_id FK，UNIQUE(sale_item_id, employee_id) WHERE is_void = false）
+- 员工 → 权限角色：1:N（permission_roles.employee_id FK → employees）
+- 权限角色 → 组织节点：N:1（permission_roles.scope_id FK → org_nodes.id）
 - 员工 → 服务单：1:N（assigned_employee_id）
 - 预约 → 服务单：1:1（可选关联，service_orders.appointment_id）
 - 预约 → 销售明细：N:1（可选，appointments.sale_item_id FK → sale_items）
+- 顾客 → 门店解绑申请：1:N（store_unbind_requests.user_id FK → client_wechat_users）
+- 门店 → 门店解绑申请：1:N（store_unbind_requests.from_store_id FK → stores）
+- 提成矩阵 → 组织节点：N:1（commission_rate_matrix.org_id FK → org_nodes.id，市场级别）
 </rel>
