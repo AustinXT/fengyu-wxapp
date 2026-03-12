@@ -26,7 +26,7 @@
 | 数据库 | PostgreSQL 自托管（读写，全部业务数据） |
 | 支付 | 微信支付多商户模式（特约商户）+ 线下付款标记 |
 | 实时通信 | WebSocket 或小程序订阅消息 |
-| 权限 | RBAC + Scope（3角色×3域），PG org_nodes（组织架构树）+ permission_roles 表驱动，微信 openid 关联 |
+| 权限 | RBAC + Scope（5角色×3域×12模块），三层架构：employees（身份层）+ permission_roles（授权层）+ PERMISSION_MATRIX 代码常量（能力层），微信 openid 关联 |
 
 ---
 
@@ -184,7 +184,7 @@ CloudBase 云函数（Node.js）
 >
 > **skills**: 技能标签数组，不来自 WorkFine 同步，由员工端手动维护。
 >
-> **角色判定**: 查询 `permission_roles` 表（JOIN `stores` ON `scope_id`），获取 `role` 和 `scope_level`。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。
+> **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。详见 §6.7。
 >
 > 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_id`。
 
@@ -492,7 +492,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `id` | serial | 主键，自增 |
 | `staff_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
-| `role` | text NOT NULL | 角色：`manager` / `finance` / `staff` |
+| `role` | text NOT NULL | 角色：`manager` / `finance` / `hr` / `product` / `staff` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
 | `updated_at` | timestamp | NOT NULL DEFAULT now() |
@@ -501,21 +501,22 @@ CloudBase 云函数（Node.js）
 | `updated_by` | text \| null | 最后修改者 |
 
 > **约束**:
-> - `UNIQUE(staff_id) WHERE deleted_at IS NULL`（部分唯一索引，一人一角色）
+> - `UNIQUE(staff_id, role, scope_id) WHERE deleted_at IS NULL`（部分唯一索引，同人同角色同域不重复）
 > - `FK(staff_id)` → `employees(employee_id)`
 > - `FK(scope_id)` → `org_nodes(id)`
 >
-> **数据量**: ~2000 行（在职员工各一行）
+> **一人多角色 + 一角色多域**:
+> - 同一员工可同时拥有多个角色（如 manager + hr），每个角色一条记录
+> - 同一角色可分配到多个域（如 manager 同时管两家门店），每个 scope_id 一条记录
+> - 示例：员工 E1 同时管理南昌A店和南昌B店 → 两条记录 `(E1, manager, store_A_id)` + `(E1, manager, store_B_id)`
 >
-> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name`（通过 org_node_id JOIN org_nodes 获取）+ `position_name` 规则自动推导 `role` + `scope_id`，`created_by = 'sync'`。推导规则示例：
-> - `position_name = '门店经理'` → `role=manager, scope_id=员工所在门店`
-> - `org_node_name = '财智部'` → `role=finance, scope_id=员工所在门店`
-> - `position_name = '市场总监'` 或 `position_name = '片区经理'` → `role=manager, scope_id=员工所属市场`
-> - 其他 → `role=staff, scope_id=员工所在门店`
+> **数据量**: ~2000+ 行（在职员工各至少一行，多角色/多域员工有多行）
+>
+> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name` + `position_name` 规则自动推导，详见 §6.10 同步推导规则。`hr` 和 `product` 角色不参与自动推导，仅通过管理后台手动分配。
 >
 > **默认降级**: 未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`
 >
-> **软删除**: `deleted_at IS NOT NULL` 的记录不参与权限查询。手动撤销权限时标记 `deleted_at` 而非物理删除，保留审计痕迹。
+> **软删除**: `deleted_at IS NOT NULL` 的记录不参与权限查询。手动撤销权限时标记 `deleted_at` 而非物理删除，保留审计痕迹。同步脚本不覆盖 `created_by != 'sync'` 的手动分配记录。
 
 ### 4.19 operation_logs（操作日志）
 
@@ -524,7 +525,7 @@ CloudBase 云函数（Node.js）
 | `id` | bigserial | 主键，自增 |
 | `operator_user_id` | text | 操作人，FK → `staff_wechat_users.user_id`，NOT NULL |
 | `operator_name` | text | 操作人姓名快照，NOT NULL |
-| `operator_role` | text \| null | 操作人角色快照（`manager` / `finance` / `staff`） |
+| `operator_role` | text \| null | 操作人角色快照（`manager` / `finance` / `hr` / `product` / `staff`，多角色时取最高权限角色） |
 | `org_node_id` | text \| null | 操作人所属组织节点，FK → `org_nodes.id` |
 | `org_node_name` | text \| null | 操作人所属组织节点名称快照 |
 | `action` | text | 操作动作，格式 `module.method`（如 `order.create`、`service.complete`），NOT NULL |
@@ -624,23 +625,37 @@ CloudBase 云函数（Node.js）
 
 ## 6. 权限与角色（RBAC + Scope）
 
-### 6.1 核心模型
+### 6.1 核心模型（三层架构）
 
-权限 = **Role**（角色，能做什么）× **Scope**（域，看到哪些数据）× **Resource**（资源，操作对象）
+权限 = **Role**（功能角色）× **Scope**（物理域）× **Module**（功能模块）
 
-- **Role** 存储在 `permission_roles.role`
-- **Scope** 存储在 `permission_roles.scope_id` → `org_nodes.id`（通过 `org_nodes.type` 区分域级别：headquarters/market/store）
-- **Resource** 由各 API 路由硬编码声明
+三层架构（同 AWS IAM / K8s RBAC 行业最佳实践）：
+
+| 层级 | 载体 | 职责 | 变更方式 |
+|------|------|------|----------|
+| **身份层** | `employees` 表 | "这人是谁" — WorkFine 同步 | 同步脚本 |
+| **授权层** | `permission_roles` 表 | "谁有什么角色" — 应用管理 | API / 同步推导 |
+| **能力层** | `PERMISSION_MATRIX` 代码常量 | "角色能做什么" — 5角色 × 12模块 | 代码发布 |
+
+> FK 方向：`permission_roles.staff_id → employees.employee_id`（标准一对多，FK 在"多"侧）。一人可有多条 permission_roles 记录（一人多角色 + 一角色多域）。
+>
+> 顾客（客户端）不属于 RBAC 体系，其权限仍为：自助下单、发起微信支付/选择线下付款、查看自己的订单与预约。
 
 ### 6.2 角色定义
 
-| 角色 | 标识 | 说明 | 能力 |
-|------|------|------|------|
-| 经理 | `manager` | 门店经理/市场总监/片区经理 | 开单、确认线下收款、重置支付失败订单、查看/分配营业额、推进服务单状态、查看完整顾客手机号、创建体验单、触发数据同步 |
-| 财务 | `finance` | 财智部人员 | 查看营业额、查看订单列表/详情、查看顾客消费汇总；**不可开单**、**不可操作服务单** |
-| 员工 | `staff` | 美容师、推广师等一线员工 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
+| 角色 | 标识 | 典型人员 | 核心能力 |
+|------|------|----------|----------|
+| 经理 | `manager` | 门店经理、市场总监、片区经理 | 开单、确认收款、营业额分配、服务单全流程、完整顾客数据、触发同步、scope 内权限分配 |
+| 财务 | `finance` | 财智部人员 | 财务看板、订单只读、营业额查看、完整顾客数据；**不可**开单/操作服务单 |
+| 人事 | `hr` | 人事行政人员 | 员工管理（增删改查）、scope 内权限分配、门店管理、完整顾客数据；**不可**开单/操作服务单 |
+| 品项 | `product` | 品项管理人员 | 商品增删改查；**不可**开单/操作服务单/查看顾客 |
+| 员工 | `staff` | 美容师、推广师等一线 | 自己相关的服务单和预约、脱敏顾客数据、本店员工/商品只读；**不可**开单 |
 
-> 顾客（客户端）不属于 RBAC 体系，其权限仍为：自助下单、发起微信支付/选择线下付款、查看自己的订单与预约。
+> **一人多角色**：同一员工可同时拥有多个角色（如既是 manager 又是 hr），每个 `(staff_id, role, scope_id)` 组合一条记录。
+>
+> **一角色多域**：同一员工的同一角色可分配到多个域（如 manager 同时管理两家门店），每个 scope_id 一条记录。示例：`(E1, manager, store_A_id)` + `(E1, manager, store_B_id)`。
+>
+> **向后兼容**：保留 `employees.position_name` 字段和现有 `isManager()` 辅助函数，渐进迁移到新权限体系。
 
 ### 6.3 域定义
 
@@ -652,27 +667,141 @@ CloudBase 云函数（Node.js）
 
 域级别由 `org_nodes.type` 决定，`permission_roles.scope_id` FK → `org_nodes.id`。
 
-### 6.4 权限矩阵
+### 6.4 功能模块定义
 
-| Resource | Action | manager | finance | staff |
-|----------|--------|---------|---------|-------|
-| 订单 | create（开单） | ✅ | ❌ | ❌ |
-| 订单 | list / detail | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
-| 订单 | confirmOffline | ✅ scope 内 | ❌ | ❌ |
-| 订单 | close / resetFailed | ✅ scope 内 | ❌ | ❌ |
-| 营业额分配 | save / delete | ✅ scope 内 | ❌ | ❌ |
-| 营业额分配 | view（查看） | ✅ scope 内 | ✅ scope 内 | ❌ |
-| 服务单 | create / start / complete | ✅ scope 内 | ❌ | ✅ 仅 assigned_staff |
-| 服务单 | list / detail | ✅ scope 内 | ❌ | ✅ 仅 assigned_staff |
-| 预约 | list / confirm / checkin | ✅ scope 内 | ❌ | ✅ scope 内（仅本门店） |
-| 顾客 | search / detail | ✅ scope 内（完整手机号） | ✅ scope 内（完整手机号） | ✅ scope 内（脱敏手机号） |
-| 顾客 | calendar（消费日历） | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
-| 员工 | list / departments | ✅ scope 内 | ✅ scope 内 | ✅ scope 内（仅本门店） |
-| 同步 | full（触发全量同步） | ✅ | ❌ | ❌ |
+| 模块代码 | 模块名称 | 说明 |
+|----------|----------|------|
+| `workbench` | 工作台 | 今日分成、月度日历、待办/消息 |
+| `order` | 订单 | 开单、订单列表/详情、确认收款、关闭、重置 |
+| `allocation` | 营业额分配 | 分配保存/删除、提成比例、待分配列表 |
+| `service` | 护理服务 | 服务单创建/开始/完成/取消/列表 |
+| `appointment` | 预约 | 预约列表/确认/签到 |
+| `customer` | 顾客 | 顾客搜索/详情/日历/消费记录 |
+| `product` | 商品 | 品项分类/商品/SKU 的增删改查 |
+| `employee` | 员工 | 员工列表/详情/管理 |
+| `finance` | 财务看板 | 营业额统计、财务报表 |
+| `store` | 门店 | 门店列表/详情/管理 |
+| `permission` | 权限 | 权限角色的查看/分配/撤销 |
+| `sync` | 数据同步 | WorkFine → PG 全量/增量同步 |
 
-### 6.5 角色+域查询
+### 6.5 权限矩阵
 
-登录时从 `permission_roles` JOIN `org_nodes` 查询角色和域：
+> 矩阵定义为代码常量 `PERMISSION_MATRIX`，规模为 5 角色 × 12 模块，变更需代码审查和发布，不入数据库。
+
+#### 6.5.1 完整矩阵
+
+| 模块 | 操作 | manager | finance | hr | product | staff |
+|------|------|---------|---------|-----|---------|-------|
+| **workbench** | dashboard | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - | ✅ 本门店 |
+| **order** | create | ✅ | - | - | - | - |
+| **order** | list, detail | ✅ scope 内 | ✅ scope 内 | - | - | ✅ 本门店（自己相关） |
+| **order** | confirmOffline | ✅ scope 内 | - | - | - | - |
+| **order** | close, resetFailed | ✅ scope 内 | - | - | - | - |
+| **allocation** | save, delete | ✅ scope 内 | - | - | - | - |
+| **allocation** | list, detail | ✅ scope 内 | ✅ scope 内 | - | - | - |
+| **service** | create, start, complete, cancel | ✅ scope 内 | - | - | - | ✅ 仅 assigned_staff |
+| **service** | list, detail | ✅ scope 内 | - | - | - | ✅ 仅 assigned_staff |
+| **appointment** | list, detail | ✅ scope 内 | - | - | - | ✅ 本门店（自己相关） |
+| **appointment** | confirm, checkin | ✅ scope 内 | - | - | - | ✅ 本门店（自己相关） |
+| **customer** | search, detail | ✅ scope 内（完整数据） | ✅ scope 内（完整数据） | ✅ scope 内（完整数据） | - | ✅ 本门店（脱敏手机号） |
+| **customer** | calendar, paidOrders | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - | ✅ 本门店 |
+| **product** | read（categories, list, detail） | ✅ | - | - | ✅ | ✅ |
+| **product** | write（create, update, delete） | - | - | - | ✅ | - |
+| **employee** | list, detail | ✅ scope 内 | - | ✅ scope 内 | - | ✅ 本门店 |
+| **employee** | create, update, delete | - | - | ✅ scope 内 | - | - |
+| **finance** | dashboard, reports | ✅ scope 内 | ✅ scope 内 | - | - | - |
+| **store** | list | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - | ✅ 本门店 |
+| **store** | manage（update, config） | ✅ 本门店 | - | ✅ scope 内 | - | - |
+| **permission** | list | ✅ scope 内 | - | ✅ scope 内 | - | - |
+| **permission** | assign, revoke | ✅ scope 内 | - | ✅ scope 内 | - | - |
+| **sync** | trigger | ✅ | - | ✅ | - | - |
+
+> **`-`** 表示无权限（API 返回 -403）。
+>
+> **scope 内**：数据范围受 `permission_roles.scope_id` 限定。一人多域时取所有域的并集（如同时管理 store_A 和 store_B，则可查看两家门店的数据）。
+>
+> **本门店**：staff 角色固定为其 `employees.store_id` 对应的门店，不可跨门店。
+>
+> **自己相关**：staff 角色仅能查看/操作 `assigned_staff_wf_id` / `staff_wf_id` / `preferred_staff_wf_id` 指向自己的记录。
+>
+> **脱敏手机号**：staff 角色查看顾客时，手机号中间 4 位替换为 `****`（如 `138****5678`）。
+
+#### 6.5.2 权限矩阵代码结构
+
+```js
+// staffApi/config/permissions.js
+const PERMISSION_MATRIX = {
+  order: {
+    create:         ['manager'],
+    list:           ['manager', 'finance', 'staff'],
+    detail:         ['manager', 'finance', 'staff'],
+    confirmOffline: ['manager'],
+    close:          ['manager'],
+    resetFailed:    ['manager'],
+  },
+  allocation: {
+    save:           ['manager'],
+    delete:         ['manager'],
+    list:           ['manager', 'finance'],
+    detail:         ['manager', 'finance'],
+  },
+  service: {
+    create:         ['manager', 'staff'],
+    start:          ['manager', 'staff'],
+    complete:       ['manager', 'staff'],
+    cancel:         ['manager', 'staff'],
+    list:           ['manager', 'staff'],
+    detail:         ['manager', 'staff'],
+  },
+  appointment: {
+    list:           ['manager', 'staff'],
+    detail:         ['manager', 'staff'],
+    confirm:        ['manager', 'staff'],
+    checkin:        ['manager', 'staff'],
+  },
+  customer: {
+    search:         ['manager', 'finance', 'hr', 'staff'],
+    detail:         ['manager', 'finance', 'hr', 'staff'],
+    calendar:       ['manager', 'finance', 'hr', 'staff'],
+    paidOrders:     ['manager', 'finance', 'hr', 'staff'],
+  },
+  product: {
+    categories:     ['manager', 'product', 'staff'],
+    list:           ['manager', 'product', 'staff'],
+    detail:         ['manager', 'product', 'staff'],
+    create:         ['product'],
+    update:         ['product'],
+    delete:         ['product'],
+  },
+  employee: {
+    list:           ['manager', 'hr', 'staff'],
+    detail:         ['manager', 'hr', 'staff'],
+    create:         ['hr'],
+    update:         ['hr'],
+    delete:         ['hr'],
+  },
+  finance: {
+    dashboard:      ['manager', 'finance'],
+    reports:        ['manager', 'finance'],
+  },
+  store: {
+    list:           ['manager', 'finance', 'hr', 'staff'],
+    manage:         ['manager', 'hr'],
+  },
+  permission: {
+    list:           ['manager', 'hr'],
+    assign:         ['manager', 'hr'],
+    revoke:         ['manager', 'hr'],
+  },
+  sync: {
+    trigger:        ['manager', 'hr'],
+  },
+};
+```
+
+### 6.6 角色+域查询
+
+登录时从 `permission_roles` JOIN `org_nodes` 查询所有角色和域：
 
 ```sql
 SELECT pr.role, o.type AS scope_type, o.id AS scope_id, o.name AS scope_name, o.parent_name
@@ -683,64 +812,235 @@ WHERE pr.staff_id = $1 AND pr.deleted_at IS NULL
 
 **无记录时降级**：查询 `employees` 获取 `store_id`，降级为 `role=staff, scope_type=store`。
 
-### 6.6 auth 上下文结构
+### 6.7 auth 上下文结构
 
-`ctx.auth` 保留现有字段，新增 `role` + `scope`：
+`ctx.auth` 保留现有字段，新增多角色权限结构：
 
 ```js
 ctx.auth = {
-  // 现有字段（保留）
-  userId,        // staff_wechat_users.user_id
-  openid,        // 微信 openid
-  phone,         // 绑定手机号
-  staffWfId,     // employees.employee_id
-  position,      // employees.position_name（保留兼容）
-  storeName,     // employees.store_id → JOIN stores 获取
-  marketName,    // employees.store_id → JOIN stores 获取
+  // 现有字段（保留兼容）
+  userId,           // staff_wechat_users.user_id
+  openid,           // 微信 openid
+  phone,            // 绑定手机号
+  staffWfId,        // employees.employee_id
+  position,         // employees.position_name（保留兼容）
+  storeName,        // employees.store_id → JOIN stores 获取
+  marketName,       // employees.store_id → JOIN stores 获取
   departmentNodeId, // employees.org_node_id
-  departmentName,   // employees.org_node_name（冗余，从 org_node_id 获取）
-  // 新增
-  role,          // 'manager' | 'finance' | 'staff'
-  scope: {
-    type,        // 'headquarters' | 'market' | 'store'（org_nodes.type）
-    nodeId,      // org_nodes.id（scope 指向的节点）
-    nodeName,    // org_nodes.name（scope 节点名称）
-    marketName,  // 市场名（headquarters 时为 null，store 时为 org_nodes.parent_name）
-  }
-}
+  departmentName,   // employees.org_node_name
+
+  // 新增：多角色权限
+  roles: [
+    // 一人可有多条记录（多角色 + 一角色多域）
+    {
+      role,          // 'manager' | 'finance' | 'hr' | 'product' | 'staff'
+      scope: {
+        type,        // 'headquarters' | 'market' | 'store'
+        nodeId,      // org_nodes.id
+        nodeName,    // org_nodes.name
+        marketName,  // store 时为 org_nodes.parent_name，headquarters 时为 null
+      },
+    },
+    // ...可能多条
+  ],
+
+  // 便捷字段（从 roles[] 聚合）
+  permissions: {
+    actions: [],     // 扁平数组，如 ['order:create', 'order:list', 'customer:search', ...]
+  },
+
+  // 便捷方法
+  hasPermission(module, action),  // 检查 actions[] 是否包含 `${module}:${action}`
+  getMaxScope(),                  // 返回最高级别的 scope（headquarters > market > store）
+  getScopeNodes(role),            // 返回指定角色的所有 scope 节点（一角色多域场景）
+  isManager(),                    // roles 中是否包含 manager 角色（保留兼容）
+};
 ```
 
-### 6.7 域过滤 SQL 模式
+> **登录时权限聚合逻辑**：
+> 1. 查询 `permission_roles`（`WHERE staff_id = ? AND deleted_at IS NULL`）
+> 2. 对每条记录，从 `PERMISSION_MATRIX` 查找该 role 允许的所有 `module:action`
+> 3. 合并去重得到 `permissions.actions[]`
+> 4. 无记录时降级：`role=staff, scope=员工所在门店`
+>
+> **一角色多域的 scope 聚合**：`getMaxScope()` 返回最高级别（headquarters > market > store）。如果同级别有多个节点（如两家门店），域过滤使用 `IN` 条件而非 `=`。
+
+### 6.8 域过滤与行级过滤
+
+#### 6.8.1 域过滤（buildScopeWhere）
 
 所有涉及门店数据的查询统一通过 `buildScopeWhere()` 生成过滤条件：
 
 ```js
-function buildScopeWhere(scope, alias = '') {
+function buildScopeWhere(auth, alias = '') {
   const prefix = alias ? `${alias}.` : '';
-  switch (scope.type) {
-    case 'headquarters':
-      return { where: '', params: [] }; // 无过滤
-    case 'market':
-      return { where: `AND ${prefix}market_name = $N`, params: [scope.marketName] };
-    case 'store':
-      return { where: `AND ${prefix}store_name = $N`, params: [scope.nodeName] };
+  // 收集所有 scope 节点，按类型聚合
+  const scopes = auth.roles.map(r => r.scope);
+
+  // 如果包含 headquarters 级别，无过滤
+  if (scopes.some(s => s.type === 'headquarters')) {
+    return { where: '', params: [] };
+  }
+
+  // 收集所有 market 和 store 名称
+  const markets = [...new Set(scopes.filter(s => s.type === 'market').map(s => s.nodeName))];
+  const stores = [...new Set(scopes.filter(s => s.type === 'store').map(s => s.nodeName))];
+
+  // 合并：market 下的门店通过 market_name 过滤，直接分配的门店通过 store_name 过滤
+  const conditions = [];
+  const params = [];
+  if (markets.length) {
+    conditions.push(`${prefix}market_name IN (${markets.map((_, i) => `$${i + 1}`).join(',')})`);
+    params.push(...markets);
+  }
+  if (stores.length) {
+    const offset = params.length;
+    conditions.push(`${prefix}store_name IN (${stores.map((_, i) => `$${offset + i + 1}`).join(',')})`);
+    params.push(...stores);
+  }
+  return { where: `AND (${conditions.join(' OR ')})`, params };
+}
+```
+
+> 参数占位符序号由调用方动态替换（示例中 `$1, $2...` 为简化写法）。
+
+#### 6.8.2 行级过滤（buildStaffFilter）
+
+staff 角色需要额外的行级过滤，仅查看/操作自己相关的记录：
+
+```js
+function buildStaffFilter(auth, staffColumn, alias = '') {
+  const prefix = alias ? `${alias}.` : '';
+  // 有管理角色（manager/finance/hr）的员工不限制行级
+  if (auth.roles.some(r => ['manager', 'finance', 'hr'].includes(r.role))) {
+    return { where: '', params: [] };
+  }
+  return { where: `AND ${prefix}${staffColumn} = $N`, params: [auth.staffWfId] };
+}
+```
+
+> **典型组合用法**：
+> - 服务单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'assigned_staff_wf_id')`
+> - 预约列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'staff_wf_id')`
+> - 订单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'preferred_staff_wf_id')`
+
+### 6.9 前端权限下发
+
+#### 6.9.1 login 返回结构
+
+auth.login 返回中新增 `permissions` 字段：
+
+```js
+{
+  code: 0,
+  data: {
+    // ...现有字段
+    permissions: {
+      roles: [
+        { role: 'manager', scopeType: 'store', scopeName: '南昌A店' },
+        { role: 'manager', scopeType: 'store', scopeName: '南昌B店' },
+        { role: 'hr', scopeType: 'market', scopeName: '南昌市场' },
+      ],
+      actions: [
+        'order:create', 'order:list', 'order:detail', 'order:confirmOffline',
+        'order:close', 'order:resetFailed',
+        'allocation:save', 'allocation:delete', 'allocation:list',
+        'service:create', 'service:start', 'service:complete',
+        'customer:search', 'customer:detail',
+        'employee:list', 'employee:create', 'employee:update',
+        'permission:list', 'permission:assign', 'permission:revoke',
+        // ...
+      ],
+    },
   }
 }
 ```
 
-> `$N` 为参数占位符序号，由调用方动态替换。
+#### 6.9.2 前端存储与检查
 
-### 6.8 代理经理/实习经理处理
+```ts
+// app.ts globalData
+globalData: {
+  permissions: {
+    roles: Array<{ role: string; scopeType: string; scopeName: string }>;
+    actions: string[];  // 扁平数组
+  }
+}
 
-- 代理经理（position_name 包含"代理"）、实习经理：同步脚本默认推导为 `role=staff`
-- 如需赋予经理权限，由上级通过 `permission_roles` 表手动升级为 `role=manager`
-- 手动分配的记录 `created_by` 标记为操作人员工编号（区别于同步脚本的 `'sync'`）
+// 权限检查工具函数
+function hasPermission(module: string, action: string): boolean {
+  const app = getApp();
+  return app.globalData.permissions?.actions?.includes(`${module}:${action}`) ?? false;
+}
+
+// 页面中使用
+if (hasPermission('order', 'create')) {
+  // 显示开单按钮
+}
+```
+
+### 6.10 API 权限声明
+
+每个 staffApi 路由声明其所需的 `[module, action]`，中间件据此校验：
+
+```js
+// staffApi/routes/order.js
+module.exports = {
+  create:         { permission: ['order', 'create'], handler: createOrder },
+  list:           { permission: ['order', 'list'], handler: listOrders },
+  detail:         { permission: ['order', 'detail'], handler: getOrderDetail },
+  confirmOffline: { permission: ['order', 'confirmOffline'], handler: confirmOffline },
+  close:          { permission: ['order', 'close'], handler: closeOrder },
+  resetFailed:    { permission: ['order', 'resetFailed'], handler: resetFailed },
+};
+```
+
+中间件校验流程：
+
+```
+请求进入 → 解析 action → 查找路由声明的 [module, action]
+  → 检查 ctx.auth.hasPermission(module, action)
+    → 通过：继续执行 handler
+    → 拒绝：返回 { code: -403, message: '无权限' }
+```
+
+> **auth/login** 和 **auth/bindPhone** 不需要权限校验（登录前无权限上下文）。
+
+### 6.11 同步推导规则
+
+同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name` + `position_name` 自动推导 `permission_roles` 记录，`created_by = 'sync'`：
+
+| # | 条件 | 推导结果 | 说明 |
+|---|------|----------|------|
+| 1 | `position_name = '门店经理'` | `role=manager, scope=员工所在门店` | 门店级管理者 |
+| 2 | `position_name IN ('市场总监', '片区经理')` | `role=manager, scope=员工所属市场` | 市场级管理者 |
+| 3 | `org_node_name = '财智部'` | `role=finance, scope=员工所在门店`（如部门挂在市场级则 `scope=该市场`） | 财务人员 |
+| 4 | `position_name LIKE '%代理%'` 或 `LIKE '%实习%'` | `role=staff, scope=员工所在门店` | 代理/实习经理默认不授管理权限 |
+| 5 | 其他 | `role=staff, scope=员工所在门店` | 默认降级为一线员工 |
+
+> **hr 和 product 角色不参与自动推导**：WorkFine 中无对应部门/职位标识，仅通过管理后台手动分配。
+>
+> **手动分配保护**：同步时跳过 `created_by != 'sync'` 的记录，确保手动分配的权限不被覆盖。
+>
+> **默认降级**：未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`。
+>
+> **代理经理/实习经理**：同步脚本默认推导为 `role=staff`；如需赋予经理权限，由上级通过管理后台手动升级。
+
+### 6.12 权限管理 API
+
+| 接口 | 权限要求 | 说明 |
+|------|----------|------|
+| `permission.list` | manager / hr（scope 内） | 查看 scope 内员工的权限角色列表 |
+| `permission.assign` | manager / hr（scope 内） | 为员工分配角色，被分配的 scope_id 必须在操作者 scope 范围内 |
+| `permission.revoke` | manager / hr（scope 内） | 撤销员工角色（软删除，`deleted_at` 标记） |
+
+> **scope 传递约束**：分配权限时，被分配的 `scope_id` 必须在操作者 scope 范围内。门店经理只能分配本门店权限，市场总监可分配该市场下所有门店的权限。一角色多域场景下，操作者的所有 scope 节点均为有效范围。
 
 ---
 
 ## 7. 核心业务规则
 
-1. 只有 **role=manager** 可开单，finance 和 staff 无开单权限
+1. 只有 **role=manager** 可开单，其他角色（finance/hr/product/staff）均无开单权限
 2. **营业额分配**：同部门总额 ≤ 实收；跨部门各按实收金额分配（总额可达实收 2 倍）；**MVP 阶段不支持优惠/折扣，应收金额 = 实收金额**
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
@@ -849,18 +1149,26 @@ allocated → pending          （店长删除重新分配）
 
 ### 11.2 staffApi（员工端）
 
-| 模块 | 接口 | 说明 | 实现状态 |
-|------|------|------|---------|
-| auth | login, bindPhone | 员工登录、手机号绑定 | 需适配 |
-| store | list, unbindRequests, approveUnbind, rejectUnbind | 门店 | 需适配 |
-| staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore | 员工 | 需适配 |
-| product | shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans | 商品浏览 | 需适配 |
-| customer | search, calendar, detail, paidOrders | 顾客档案 | 需适配 |
-| order | create, qrcode, confirmOffline, close, resetFailed, list, detail | 订单全流程（含 customer_id 写入） | 已实现（需补 customer_id） |
-| allocation | save, deleteAllocation, getCommissionRates, pendingList, suggest | 营业额分配 | 需适配 |
-| appointment | list, detail, confirm, checkin | 预约管理 | 已实现 |
-| service | create, start, complete, cancel, list, detail | 服务单全流程 | 已实现 |
-| **sync** | **full** | **WorkFine → PG 全量同步（店长权限）** | 待实现 |
+| 模块 | 接口 | 说明 | 权限要求 | 实现状态 |
+|------|------|------|----------|---------|
+| auth | login, bindPhone | 员工登录、手机号绑定 | 无（登录前） | 需适配 |
+| store | list | 门店列表 | `store:list` | 需适配 |
+| store | unbindRequests, approveUnbind, rejectUnbind | 门店解绑审批 | `store:manage` | 需适配 |
+| staff | list, departments | 员工列表 | `employee:list` | 需适配 |
+| staff | todayCommission, monthlyCalendar, todoList, bindStore | 工作台数据 | `workbench:dashboard` | 需适配 |
+| product | shopInit, categories, spuList, skuDetail, spuDetail | 商品浏览 | `product:read` | 需适配 |
+| product | promotionList, promotionPlans | 促销方案 | `product:read` | 需适配 |
+| customer | search, calendar, detail, paidOrders | 顾客档案 | `customer:*` | 需适配 |
+| order | create, qrcode | 开单 | `order:create` | 已实现（需补 customer_id） |
+| order | confirmOffline | 确认线下收款 | `order:confirmOffline` | 已实现 |
+| order | close, resetFailed | 订单关闭/重置 | `order:close` / `order:resetFailed` | 已实现 |
+| order | list, detail | 订单查询 | `order:list` / `order:detail` | 已实现 |
+| allocation | save, deleteAllocation | 营业额分配操作 | `allocation:save` / `allocation:delete` | 需适配 |
+| allocation | getCommissionRates, pendingList, suggest | 分配辅助查询 | `allocation:list` | 需适配 |
+| appointment | list, detail, confirm, checkin | 预约管理 | `appointment:*` | 已实现 |
+| service | create, start, complete, cancel, list, detail | 服务单全流程 | `service:*` | 已实现 |
+| **sync** | **full** | **WorkFine → PG 全量同步** | `sync:trigger` | 待实现 |
+| **permission** | **list, assign, revoke** | **权限角色管理** | `permission:*` | 待实现 |
 
 ### 11.3 跨端接口
 
@@ -880,7 +1188,7 @@ allocated → pending          （店长删除重新分配）
 | 价格快照不可变 | 开单时写入 `unit_price`，后续价格变动不影响历史订单 |
 | 支付幂等 | 微信回调、线下确认、服务完成接口均需幂等 |
 | 状态单向推进 | 唯一例外：店长可重置 `支付失败` → `待支付` |
-| 域数据隔离 | 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），由 `buildScopeWhere()` 统一生成 |
+| 域数据隔离 | 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），由 `buildScopeWhere()` 统一生成；一角色多域时取并集（`IN` 条件）；staff 角色额外叠加 `buildStaffFilter()` 行级过滤 |
 | 订单号唯一生成 | advisory lock 防流水号并发冲突 |
 | 待支付订单唯一 | 部分唯一索引 + 应用层校验 |
 | 事务处理 | 服务单完成、订单创建、分配保存均使用 PostgreSQL transaction |
@@ -926,8 +1234,9 @@ PG 实体（同步实体以 ★ 标注）
 │   ├── service_items.employee_id
 │   ├── revenue_allocations.employee_id
 │   └── appointments.staff_wf_id
-permission_roles (权限角色分配)
+permission_roles (权限角色分配，一人多角色+一角色多域)
 │   ├── staff_id ──→ employees.employee_id
+│   ├── role ──→ manager / finance / hr / product / staff
 │   └── scope_id ──→ org_nodes.id（headquarters/market/store 级别节点）
 ★ customers (顾客档案) ←── customer_id ──→ 被以下字段引用：
 │   ├── client_wechat_users.customer_id
