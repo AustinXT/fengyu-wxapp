@@ -134,10 +134,10 @@
       <!-- 美容师列表 -->
       <view
         wx:for="{{staffList}}"
-        wx:key="staff_wf_id"
-        class="staff-item {{staffWfId === item.staff_wf_id ? 'staff-item--active' : ''}}"
+        wx:key="employee_id"
+        class="staff-item {{staffWfId === item.employee_id ? 'staff-item--active' : ''}}"
         bindtap="onStaffSelect"
-        data-wf-id="{{item.staff_wf_id}}"
+        data-wf-id="{{item.employee_id}}"
         data-name="{{item.name}}"
       >
         <view class="staff-avatar">

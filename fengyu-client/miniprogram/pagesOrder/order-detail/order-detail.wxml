@@ -23,7 +23,7 @@
     <van-cell
       title="指定美容师"
       value="{{order.preferred_staff_name || '未指定'}}"
-      wx:if="{{order.preferred_staff_wf_id}}"
+      wx:if="{{order.preferred_employee_id}}"
     />
     <van-cell title="购买产品" label=" ">
       <view slot="right-icon" class="cell-products">

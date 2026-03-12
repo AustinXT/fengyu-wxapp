@@ -9,7 +9,7 @@ interface PendingOrder {
   paid_at: string;
   order_type: string;
   order_source: 'client' | 'staff';
-  preferred_staff_wf_id: string | null;
+  preferred_employee_id: string | null;
 }
 
 Page({

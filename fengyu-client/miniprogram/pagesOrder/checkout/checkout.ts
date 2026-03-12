@@ -14,7 +14,7 @@ interface CheckoutItem {
 }
 
 interface Staff {
-  staff_wf_id: string;
+  employee_id: string;
   name: string;
   position: string;
 }
@@ -158,7 +158,7 @@ Page({
       if (!storeName) return;
       const data = await callClientApi('staff.list', { storeName });
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
-        staff_wf_id: s.staff_id,
+        employee_id: s.staff_id,
         name: s.name,
         position: s.position
       }));

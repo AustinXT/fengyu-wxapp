@@ -134,10 +134,10 @@
         <van-loading wx:if="{{staffListLoading && staffList.length === 0}}" size="24px" vertical style="padding: 40rpx 0;">加载中...</van-loading>
         <view
           wx:for="{{staffList}}"
-          wx:key="staff_wf_id"
-          class="staff-item {{selectedStaffWfId === item.staff_wf_id ? 'staff-item--active' : ''}}"
+          wx:key="employee_id"
+          class="staff-item {{selectedStaffWfId === item.employee_id ? 'staff-item--active' : ''}}"
           bindtap="onStaffSelect"
-          data-wf-id="{{item.staff_wf_id}}"
+          data-wf-id="{{item.employee_id}}"
           data-name="{{item.name}}"
         >
           <view class="staff-avatar">
