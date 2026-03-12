@@ -111,7 +111,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | 推导规则 | role | scope_id（→ org_nodes.id） |
 |----------|------|----------|
 | `position_name = '门店经理'` | `manager` | 员工所在门店对应的 org_nodes 节点 |
-| `department_name = '财智部'` | `finance` | 员工所在门店对应的 org_nodes 节点 |
+| `org_node_name = '财智部'`（通过 org_node_id JOIN org_nodes） | `finance` | 员工所在门店对应的 org_nodes 节点 |
 | `position_name = '市场总监'` 或 `'片区经理'` | `manager` | 员工所属市场对应的 org_nodes 节点 |
 | 其他 | `staff` | 员工所在门店对应的 org_nodes 节点 |
 
@@ -173,21 +173,24 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 | WorkFine 字段 | 含义 | 类型 | → PG `employees` 字段 |
 |---------------|------|------|----------------------|
-| UDF_S_1147 | **员工编号** | 文本 | `employee_no` (PK) |
+| UDF_S_1147 | **员工编号** | 文本 | `employee_id` (PK) |
 | UDF_S_1155 | 姓名 | 文本 | `name` |
 | UDF_S_1148 | 性别 | 文本 | `gender` |
 | UDF_S_1152 | 手机号码 | 手机 | `phone` |
 | UDF_S_1154 | 身份证号码 | 身份证 | `id_card`（高敏 PII，需评估加密方案） |
 | UDF_S_1163 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
 | UDF_S_1160 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
-| UDF_S_1513 | 职能部门 | 文本 | `department_name` |
+| UDF_S_1513 | 职能部门 | 文本 | → 查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`；同时冗余写入 `org_node_name`（部门名）和 `org_parent_node_name`（部门父节点名） |
 | UDF_S_1161 | 工作职位 | 文本 | `position_name` |
+| UDF_S_1149 | 出生日期 | 日期 | `birthday` |
 | UDF_S_1624 | 是否离职 | 文本 | `is_resigned`（'是' → true） |
 | UDF_S_1150 | 年龄 | 整数 | — 不同步（非核心） |
 
-**不再同步的字段**: UDF_S_1164（第二工作职位）、UDF_S_12921（第二部门）、UDF_S_10085/UDF_S_10086（职级）、UDF_S_1149（出生日期）、UDF_S_1159（试用开始时间）、UDF_S_1162（转正日期）、UDF_S_1626（离职日期）
+**不再同步的字段**: UDF_S_1164（第二工作职位）、UDF_S_12921（第二部门）、UDF_S_10085/UDF_S_10086（职级）、UDF_S_1159（试用开始时间）、UDF_S_1162（转正日期）、UDF_S_1626（离职日期）
 
-**匹配键**: `UDF_S_1147`（员工编号）→ `employee_no`
+**手动维护字段（不来自 WorkFine）**: `skills`（技能标签数组），由员工端手动编辑，同步时不覆盖
+
+**匹配键**: `UDF_S_1147`（员工编号）→ `employee_id`
 
 **store_id 映射**: 同步脚本读取 UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
 
@@ -211,7 +214,7 @@ UDT_S_311（顾客档案主表）
 
 | WorkFine 字段 | 含义 | 类型 | → PG `customers` 字段 |
 |---------------|------|------|----------------------|
-| UDF_S_1475 | **顾客编号** | 文本 | `customer_no` (PK) |
+| UDF_S_1475 | **顾客编号** | 文本 | `customer_id` (PK) |
 | UDF_S_1476 | 顾客姓名 | 文本 | `name` |
 | UDF_S_1478 | 手机号码 | 手机 | `phone` (UNIQUE) |
 | UDF_S_1480 | 年龄 | 整数 | `age` |
@@ -233,7 +236,7 @@ UDT_S_311（顾客档案主表）
 
 **不再同步的字段**: UDF_S_18105（会员分类标签）、UDF_S_1486（是否共享）、UDF_S_1717（累计消费金额）、UDF_S_1718（单笔最高金额）、UDF_S_17850（未到店时间间隔）、UDF_S_17758～UDF_S_17858（年度消费档位/累计消费）
 
-**匹配键**: `UDF_S_1475`（顾客编号）→ `customer_no`
+**匹配键**: `UDF_S_1475`（顾客编号）→ `customer_id`
 
 **store_id 映射**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。`market_name` 不再冗余存储，需要时 JOIN stores 获取。
 

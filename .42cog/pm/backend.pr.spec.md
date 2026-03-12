@@ -154,36 +154,45 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `employee_no` | string | 主键，员工编号（格式 `FY-{YYMMDD}{序号}`） |
+| `employee_id` | string | 主键，员工编号（格式 `FY-{YYMMDD}{序号}`） |
 | `name` | string | 姓名 |
 | `gender` | string \| null | 性别 |
 | `phone` | string \| null | 手机号码 |
-| `id_card` | string \| null | 身份证号码（高敏 PII，需评估加密方案） |
+| `id_card` | string \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密） |
 | `store_id` | string \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
-| `department_name` | string \| null | 职能部门（如"美容部"、"推广部"） |
+| `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
+| `org_node_name` | text \| null | 冗余部门节点名称（如"美容部"、"推广部"） |
+| `org_parent_node_name` | text \| null | 冗余部门父节点名称（如"南昌A店"、"南昌市场"） |
 | `position_name` | string \| null | 工作职位（如"门店经理"、"美容师"） |
+| `birthday` | date \| null | 出生日期 |
+| `skills` | text[] \| null | 技能标签数组（如 ['面部护理','身体护理']） |
 | `is_resigned` | boolean | 是否离职，NOT NULL DEFAULT false |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
 
-> **字段分层**（11 个业务字段）:
-> - **Layer 1 — 身份与认证**: `employee_no`, `name`, `gender`, `phone`, `id_card`
-> - **Layer 2 — 组织归属**: `store_id`（FK → stores），`department_name`, `position_name`
+> **字段分层**（15 个业务字段）:
+> - **Layer 1 — 身份与认证**: `employee_id`, `name`, `gender`, `phone`, `id_card`
+> - **Layer 2 — 组织归属**: `store_id`（FK → stores），`org_node_id`（FK → org_nodes，部门节点），`org_node_name`, `org_parent_node_name`, `position_name`
 > - **Layer 3 — 人事状态**: `is_resigned`
+> - **Layer 4 — 个人档案**: `birthday`, `skills`
 >
 > **store_id**: 同步脚本读取 WorkFine UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
 >
-> **id_card**（UDF_S_1154）：高敏 PII 字段，存储时需评估加密方案。
+> **org_node_id**: 同步脚本读取 WorkFine UDF_S_1513（职能部门），查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`。`org_node_name` 冗余存储部门名称，`org_parent_node_name` 冗余存储部门父节点名称，避免列表查询时 JOIN。
+>
+> **id_card**（UDF_S_1154）：高敏 PII 字段，AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密。
+>
+> **skills**: 技能标签数组，不来自 WorkFine 同步，由员工端手动维护。
 >
 > **角色判定**: 查询 `permission_roles` 表（JOIN `stores` ON `scope_id`），获取 `role` 和 `scope_level`。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。
 >
-> 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_no`。
+> 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_id`。
 
 ### 4.4 customers（顾客档案）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `customer_no` | string | 主键，顾客编号（格式 `FYGK-{YYYYMMDD}{序号}`） |
+| `customer_id` | string | 主键，顾客编号（格式 `FYGK-{YYYYMMDD}{序号}`） |
 | `name` | string | 顾客姓名 |
 | `phone` | string \| null | 手机号码（唯一索引） |
 | `age` | integer \| null | 年龄 |
@@ -205,7 +214,7 @@ CloudBase 云函数（Node.js）
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
 
 > **字段分层**（21 个业务字段）:
-> - **Layer 1 — 身份与关联**: `customer_no`, `name`, `phone`, `age`
+> - **Layer 1 — 身份与关联**: `customer_id`, `name`, `phone`, `age`
 > - **Layer 2 — 组织归属**: `store_id`（FK → stores），`primary_beautician`
 > - **Layer 3 — 会员与分类**: `member_level`, `customer_source`, `category`
 > - **Layer 4 — 个人档案**: `birthday`, `occupation`, `is_married`, `wechat_name`, `registered_at`
@@ -213,7 +222,7 @@ CloudBase 云函数（Node.js）
 >
 > **store_id**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。`market_name` 不再冗余存储，需要时 JOIN stores 获取。
 >
-> **与 client_wechat_users 的关系**: `client_wechat_users.customer_no` → `customers.customer_no`（通过手机号自动关联）。顾客绑定手机号时，系统查询 `customers.phone` 匹配，将 `customer_no` 写入 `client_wechat_users`。并非所有顾客都会注册小程序，也非所有小程序用户都有档案，两表为可选关联。
+> **与 client_wechat_users 的关系**: `client_wechat_users.customer_id` → `customers.customer_id`（通过手机号自动关联）。顾客绑定手机号时，系统查询 `customers.phone` 匹配，将 `customer_id` 写入 `client_wechat_users`。并非所有顾客都会注册小程序，也非所有小程序用户都有档案，两表为可选关联。
 
 ### 4.5 product_categories（品项分类）
 
@@ -331,11 +340,11 @@ CloudBase 云函数（Node.js）
 | `client_user_id` | string \| null | 关联 `client_wechat_users.user_id`；员工开单时顾客未注册则为 null |
 | `client_phone` | string \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | string \| null | 顾客姓名快照 |
-| `customer_no` | string \| null | 关联 `customers.customer_no`；开单时通过手机号匹配自动填入 |
+| `customer_id` | string \| null | 关联 `customers.customer_id`；开单时通过手机号匹配自动填入 |
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
 | `order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
-| `opened_by` | string \| null | 开单人员工编号，关联 `employees.employee_no` |
-| `preferred_staff_wf_id` | string \| null | 顾客指定美容师，关联 `employees.employee_no` |
+| `opened_by` | string \| null | 开单人员工编号，关联 `employees.employee_id` |
+| `preferred_staff_wf_id` | string \| null | 顾客指定美容师，关联 `employees.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
 | `wechat_transaction_id` | string \| null | 微信支付流水号（唯一索引） |
 | `alipay_transaction_id` | string \| null | 支付宝交易号（唯一索引） |
@@ -375,7 +384,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `id` | bigint | 主键，自增 |
 | `order_no` | string | 关联 `orders.order_no` |
-| `employee_id` | string | 员工编号，关联 `employees.employee_no` |
+| `employee_id` | string | 员工编号，关联 `employees.employee_id` |
 | `department` | string \| null | 员工所属部门快照 |
 | `allocation_ratio` | decimal | 占比 |
 | `total_amount` | decimal | 该员工最终分配金额 |
@@ -409,7 +418,7 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店（快照） |
 | `service_date` | date | 护理服务日期 |
 | `service_duration` | integer | 服务时长（分钟） |
-| `assigned_staff_wf_id` | string | 主责服务人员，关联 `employees.employee_no` |
+| `assigned_staff_wf_id` | string | 主责服务人员，关联 `employees.employee_id` |
 | `remark` | string | 备注 |
 | `appointment_id` | string \| null | 关联 `appointments.appointment_id` |
 | `client_user_id` | string \| null | 关联 `client_wechat_users.user_id` |
@@ -425,7 +434,7 @@ CloudBase 云函数（Node.js）
 | `service_order_no` | string | 关联 `service_orders.service_order_no` |
 | `sku_id` | string \| null | 关联 `product_skus.sku_id` |
 | `session_used` | integer | 本次划卡次数 |
-| `employee_id` | string | 服务美容师，关联 `employees.employee_no` |
+| `employee_id` | string | 服务美容师，关联 `employees.employee_id` |
 
 ### 4.15 client_wechat_users（客户端微信用户）
 
@@ -435,14 +444,14 @@ CloudBase 云函数（Node.js）
 | `openid` | string | 微信 openid（客户端 appid 下，唯一索引） |
 | `session_key` | string | 微信 session_key |
 | `phone` | string | 绑定手机号（唯一索引） |
-| `customer_no` | string \| null | 关联 `customers.customer_no`，手机号匹配后自动填入 |
+| `customer_id` | string \| null | 关联 `customers.customer_id`，手机号匹配后自动填入 |
 | `bound_store_name` | string | 绑定门店名 |
 | `bound_market_name` | string | 绑定市场名 |
 | `last_login_at` | timestamp | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> 绑定手机号时系统查询 `customers.phone` 匹配，将 `customer_no` 写入。后续可通过此字段直接获取顾客档案详情。
+> 绑定手机号时系统查询 `customers.phone` 匹配，将 `customer_id` 写入。后续可通过此字段直接获取顾客档案详情。
 
 ### 4.16 staff_wechat_users（员工端微信用户）
 
@@ -452,7 +461,7 @@ CloudBase 云函数（Node.js）
 | `openid` | string | 微信 openid（员工端 appid 下，唯一索引） |
 | `session_key` | string | 微信 session_key |
 | `phone` | string | 绑定手机号 |
-| `staff_wf_id` | string | 关联 `employees.employee_no`（手机号自动匹配后填入，可为 null） |
+| `staff_wf_id` | string | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
 | `last_login_at` | timestamp | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -467,7 +476,7 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id` |
 | `customer_name` | string | 顾客姓名（冗余存储） |
-| `staff_wf_id` | string | 预约美容师，关联 `employees.employee_no` |
+| `staff_wf_id` | string | 预约美容师，关联 `employees.employee_id` |
 | `staff_name` | string | 美容师姓名（冗余存储） |
 | `item_flow_no` | string \| null | 关联 `order_items.item_flow_no`（可选） |
 | `appointment_time` | datetime | 预约到店时间 |
@@ -482,7 +491,7 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | serial | 主键，自增 |
-| `staff_id` | text NOT NULL | 员工编号，FK → `employees.employee_no` |
+| `staff_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
 | `role` | text NOT NULL | 角色：`manager` / `finance` / `staff` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
@@ -493,14 +502,14 @@ CloudBase 云函数（Node.js）
 
 > **约束**:
 > - `UNIQUE(staff_id) WHERE deleted_at IS NULL`（部分唯一索引，一人一角色）
-> - `FK(staff_id)` → `employees(employee_no)`
+> - `FK(staff_id)` → `employees(employee_id)`
 > - `FK(scope_id)` → `org_nodes(id)`
 >
 > **数据量**: ~2000 行（在职员工各一行）
 >
-> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `department_name` + `position_name` 规则自动推导 `role` + `scope_id`，`created_by = 'sync'`。推导规则示例：
+> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name`（通过 org_node_id JOIN org_nodes 获取）+ `position_name` 规则自动推导 `role` + `scope_id`，`created_by = 'sync'`。推导规则示例：
 > - `position_name = '门店经理'` → `role=manager, scope_id=员工所在门店`
-> - `department_name = '财智部'` → `role=finance, scope_id=员工所在门店`
+> - `org_node_name = '财智部'` → `role=finance, scope_id=员工所在门店`
 > - `position_name = '市场总监'` 或 `position_name = '片区经理'` → `role=manager, scope_id=员工所属市场`
 > - 其他 → `role=staff, scope_id=员工所在门店`
 >
@@ -592,7 +601,7 @@ CloudBase 云函数（Node.js）
 ### 5.2 职能线（部门 × 职位）
 
 ```
-部门（employees.department_name 字段值）
+部门（employees.org_node_id → org_nodes(type='department')）
 ├── 美容部 → 门店经理、美容师、实习美容师 …
 ├── 推广部 → 推广经理、推广师 …
 ├── 养生部 → 养生师 …
@@ -603,7 +612,7 @@ CloudBase 云函数（Node.js）
 
 ### 5.3 矩阵交叉
 
-- 每个员工在 `employees` 表中有 `store_id`（地理归属，FK → stores）和 `department_name` + `position_name`（职能归属）
+- 每个员工在 `employees` 表中有 `store_id`（地理归属，FK → stores）和 `org_node_id` + `position_name`（职能归属，org_node_id FK → org_nodes type='department'）
 - 权限由 `permission_roles` 表决定：`role`（能做什么）× `scope_id`（看到哪些数据，FK → org_nodes）
 - 域类型与 org_nodes 节点类型关系：
   - `headquarters`：总部人员 → 全局数据
@@ -684,11 +693,12 @@ ctx.auth = {
   userId,        // staff_wechat_users.user_id
   openid,        // 微信 openid
   phone,         // 绑定手机号
-  staffWfId,     // employees.employee_no
+  staffWfId,     // employees.employee_id
   position,      // employees.position_name（保留兼容）
   storeName,     // employees.store_id → JOIN stores 获取
   marketName,    // employees.store_id → JOIN stores 获取
-  department,    // employees.department_name
+  departmentNodeId, // employees.org_node_id
+  departmentName,   // employees.org_node_name（冗余，从 org_node_id 获取）
   // 新增
   role,          // 'manager' | 'finance' | 'staff'
   scope: {
@@ -747,8 +757,8 @@ function buildScopeWhere(scope, alias = '') {
     - 已指定美容师：系统自动以该美容师为唯一被分配人创建分配记录
     - 未指定美容师：不创建分配记录
 15. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定
-16. **手机号补全机制**：顾客绑定手机号时，批量补全 `orders.client_user_id`；同时查询 `customers.phone` 自动关联 `customer_no`
-17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone` 和 `customers.phone`，填入 `client_user_id` 和 `customer_no`
+16. **手机号补全机制**：顾客绑定手机号时，批量补全 `orders.client_user_id`；同时查询 `customers.phone` 自动关联 `customer_id`
+17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone` 和 `customers.phone`，填入 `client_user_id` 和 `customer_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **数据同步不影响业务**：WorkFine → PG 同步使用 UPSERT，不锁表不中断在线查询
 
@@ -829,11 +839,11 @@ allocated → pending          （店长删除重新分配）
 
 | 模块 | 接口 | 说明 | 实现状态 |
 |------|------|------|---------|
-| auth | login, bindPhone, bindStore | 微信登录、手机号绑定（含 customer_no 自动关联）、门店绑定 | 已实现（需补 customer_no） |
+| auth | login, bindPhone, bindStore | 微信登录、手机号绑定（含 customer_id 自动关联）、门店绑定 | 已实现（需补 customer_id） |
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode | 门店 CRUD + 解绑 + 定位 | 需适配 |
 | product | categories, spuList, skuDetail, spuDetail, hotList, shopInit | 商品浏览 | 已实现 |
 | staff | list, default | 美容师列表 | 需适配 |
-| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（含 customer_no 写入） | 已实现（需补 customer_no） |
+| order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（含 customer_id 写入） | 已实现（需补 customer_id） |
 | appointment | create, list, cancel | 预约管理 | 已实现 |
 | service | detail | 服务单只读 | 已实现 |
 
@@ -846,7 +856,7 @@ allocated → pending          （店长删除重新分配）
 | staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore | 员工 | 需适配 |
 | product | shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans | 商品浏览 | 需适配 |
 | customer | search, calendar, detail, paidOrders | 顾客档案 | 需适配 |
-| order | create, qrcode, confirmOffline, close, resetFailed, list, detail | 订单全流程（含 customer_no 写入） | 已实现（需补 customer_no） |
+| order | create, qrcode, confirmOffline, close, resetFailed, list, detail | 订单全流程（含 customer_id 写入） | 已实现（需补 customer_id） |
 | allocation | save, deleteAllocation, getCommissionRates, pendingList, suggest | 营业额分配 | 需适配 |
 | appointment | list, detail, confirm, checkin | 预约管理 | 已实现 |
 | service | create, start, complete, cancel, list, detail | 服务单全流程 | 已实现 |
@@ -893,7 +903,7 @@ allocated → pending          （店长删除重新分配）
 | AC-07 | 员工端门店列表、员工列表、顾客搜索均从 PG 查询，响应时间 < 500ms | 接口计时 |
 | AC-08 | WorkFine 连接断开时，门店/员工/顾客查询不受影响（使用 PG 已同步数据） | 断开 MSSQL → 验证查询正常 |
 | AC-09 | 手动触发全量同步后，新增/变更的门店/员工/顾客数据在 PG 中更新 | 在 WorkFine 修改 → 触发同步 → 验证 PG |
-| AC-10 | 小程序中完成开单后，PG orders 表中 customer_no 正确关联 | 开单 → 查询 orders.customer_no |
+| AC-10 | 小程序中完成开单后，PG orders 表中 customer_id 正确关联 | 开单 → 查询 orders.customer_id |
 
 ---
 
@@ -908,7 +918,8 @@ PG 实体（同步实体以 ★ 标注）
 │              ←── stores.org_node_id（1:1 扩展）
 ★ stores (门店详情) ←── store_name ──→ 被 orders/service_orders/appointments 等引用（快照）
 │   └── org_node_id ──→ org_nodes.id（关联 type='store' 节点）
-★ employees (员工) ←── employee_no ──→ 被以下字段引用：
+★ employees (员工) ←── employee_id ──→ 被以下字段引用：
+│   ├── org_node_id ──→ org_nodes.id（关联 type='department' 部门节点）
 │   ├── staff_wechat_users.staff_wf_id
 │   ├── orders.preferred_staff_wf_id / opened_by
 │   ├── service_orders.assigned_staff_wf_id
@@ -916,17 +927,17 @@ PG 实体（同步实体以 ★ 标注）
 │   ├── revenue_allocations.employee_id
 │   └── appointments.staff_wf_id
 permission_roles (权限角色分配)
-│   ├── staff_id ──→ employees.employee_no
+│   ├── staff_id ──→ employees.employee_id
 │   └── scope_id ──→ org_nodes.id（headquarters/market/store 级别节点）
-★ customers (顾客档案) ←── customer_no ──→ 被以下字段引用：
-│   ├── client_wechat_users.customer_no
-│   └── orders.customer_no
+★ customers (顾客档案) ←── customer_id ──→ 被以下字段引用：
+│   ├── client_wechat_users.customer_id
+│   └── orders.customer_id
 
 client_wechat_users (客户端微信用户)
 │   ├── user_id ──→ orders.client_user_id
 │   ├── user_id ──→ appointments.client_user_id
 │   ├── user_id ──→ service_orders.client_user_id
-│   └── customer_no ──→ customers.customer_no（手机号匹配）
+│   └── customer_id ──→ customers.customer_id（手机号匹配）
 
 product_categories ──→ products (1:N, via category_id)
 products ──→ product_skus (1:N, via product_id)
@@ -935,7 +946,7 @@ products ──→ product_skus (1:N, via product_id)
 
 orders ──→ order_items (1:N)
 │   ├── order_no ──→ revenue_allocations (1:N)
-│   └── customer_no ──→ customers
+│   └── customer_id ──→ customers
 order_items ──→ service_items (1:N, 通过 item_flow_no)
 
 service_orders ──→ service_items (1:N)
