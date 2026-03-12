@@ -1,6 +1,6 @@
 # 凤御双美容院 — 后端服务产品需求规格书
 
-> **文档版本**: 3.0.0
+> **文档版本**: 3.1.0
 > **范围**: 后端服务（CloudBase 云函数 + PostgreSQL 数据库）
 > **约束文档**: `.42cog/real.md` v2.0.0 | `.42cog/cog.md` v2.0.0
 > **端 spec 引用**: `client.pr.spec.md` v1.0.0 | `staff.pr.spec.md` v1.0.0
@@ -61,8 +61,8 @@ CloudBase 云函数（Node.js）
 | 5 | 商品 | `products` | PG 读写 | 初始导入后员工日常维护 |
 | 6 | 商品规格 | `product_skus` | PG 读写 | 价格/次数自包含 |
 | 7 | 提成比例矩阵 | `commission_rate_matrix` | 同步自 WorkFine | — |
-| 8 | 订单/销售明细 | `sale_orders` / `sale_items` | PG 读写 | — |
-| 9 | 营业额分配 | `sale_allocations` | PG 读写 | — |
+| 8 | 订单/销售明细 | `sale_orders` / `sale_items` | PG 读写 | 覆盖销售单、回款单、转换单、退款单四种单据 |
+| 9 | 营业额分配 | `sale_allocations` | PG 读写 | 退款业绩为负数，转换/回款保持正数 |
 | 10 | 护理单/核销 | `service_orders` / `service_items` | PG 读写 | — |
 | 11 | 顾客（含微信用户） | `client_wechat_users` | PG 读写 + 同步自 WorkFine | 微信身份 + 顾客档案合一 |
 | 12 | 员工端微信用户 | `staff_wechat_users` | PG 读写 | 员工端独立 |
@@ -296,21 +296,24 @@ CloudBase 云函数（Node.js）
 
 > **设计说明：为何需要 `sale_items`？**
 > 一笔销售单可包含多个项目（疗程卡、单品、院装产品可混购），且疗程卡需要**独立追踪剩余次数与到期日**，并作为护理单核销的引用锚点。
+>
+> **四种单据统一模型**：sale_orders + sale_items + sale_allocations 覆盖**销售单、回款单、转换单、退款单**四种业务单据，通过 `sale_order_type` 区分。回款/转换/退款单通过 `ref_sale_order_id` 引用原销售单。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sale_order_id` | varchar(30) | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
-| `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
-| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐`（当 `products.is_bundle=true` 时自动设为组合套餐） |
+| `sale_order_id` | varchar(30) | 主键，单号格式见下表 |
+| `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` / `待审批`（退款审批用） |
+| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐` / `回款` / `转换` / `退款` |
+| `ref_sale_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；回款/转换/退款引用的原销售单，销售单为 null |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `sale_order_datetime` | timestamp | 销售日期时间 |
 | `client_user_id` | text \| null | FK → `client_wechat_users.user_id`；员工开单时通过手机号匹配填入，顾客无记录则为 null |
 | `client_phone` | varchar(20) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
-| `total_amount` | numeric(10,2) | 订单总金额（= Σ sale_items.received），创建时写入，NOT NULL |
-| `payment_method` | enum | `wechat` / `alipay` / `offline` |
-| `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
+| `total_amount` | numeric(10,2) | 订单总金额（= Σ sale_items.received）；**退款为负数**，转换=补差价，回款=本次回款金额，NOT NULL |
+| `payment_method` | enum | `wechat` / `alipay` / `offline`（回款支付方式与销售单一致） |
+| `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单）；回款/转换/退款仅 `staff` |
 | `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `employees.employee_id` |
 | `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `employees.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
@@ -322,42 +325,61 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
+> **单号格式表**：
+>
+> | sale_order_type | 前缀 | 示例 |
+> |-----------------|------|------|
+> | 正式/体验/组合套餐 | `FY-XSD-WX-` | `FY-XSD-WX-260313-0001` |
+> | 回款 | `FY-HKD-WX-` | `FY-HKD-WX-260313-0001` |
+> | 转换 | `FY-ABZH-WX-` | `FY-ABZH-WX-260313-0001` |
+> | 退款 | `FY-TKD-WX-` | `FY-TKD-WX-260313-0001` |
+>
 > **索引与约束**：
 > - `UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`
 > - `UNIQUE (client_phone, store_id) WHERE status = '待支付' AND client_user_id IS NULL`
 > - `INDEX(store_id, status)` — 按门店+状态查询
+> - `INDEX(ref_sale_order_id)` — 回款/转换/退款关联查询
 
 ### 4.9 sale_items（销售明细）
+
+> **复用说明**：sale_items 同时用于销售、回款、转换、退款四种单据的明细行。`item_direction` 标识行的方向语义：
+> - `purchase`（默认）：正常购买行
+> - `convert_out`：转换退出行，`quantity` = 退次数，`received` = 负退消耗金额
+> - `convert_in`：转换转入行，创建新的 sale_item（新疗程卡/商品）
+> - `refund_out`：退款退出行，`quantity` = 退次数，`received` = 负退消耗金额
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_item_id` | varchar(30) | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
 | `sale_order_id` | varchar(30) | FK → `sale_orders.sale_order_id`，NOT NULL |
+| `item_direction` | enum | 行方向：`purchase`（默认）/ `convert_out` / `convert_in` / `refund_out` |
+| `ref_sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`；convert_out/refund_out 引用原购买行，其他为 null |
 | `sku_id` | text \| null | FK → `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数：疗程卡≥2，单品=1，院装产品=null |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
 | `unit_price` | numeric(10,2) | 原价快照（开单时持久化） |
-| `quantity` | integer | 销售数量 |
+| `quantity` | integer | 销售数量（convert_out/refund_out 行为退次数） |
 | `unit_real_price` | numeric(10,2) | 优惠后单价金额 |
 | `sale_amount` | numeric(10,2) | 优惠后销售金额 |
-| `received` | numeric(10,2) | 实收金额 |
+| `received` | numeric(10,2) | 实收金额（convert_out/refund_out 行为负数） |
 | `expire_date` | date \| null | 到期日（疗程卡/单品适用，院装产品为 null） |
 | `remark` | text | 备注 |
 | `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **索引**: `INDEX(sale_order_id)`, `INDEX(sku_id)`
+> **索引**: `INDEX(sale_order_id)`, `INDEX(sku_id)`, `INDEX(ref_sale_item_id)`
 >
 > **CHECK 约束**:
 > - `CHECK(unit_price >= 0)`
 > - `CHECK(unit_real_price >= 0)`
-> - `CHECK(sale_amount >= 0)`
-> - `CHECK(received >= 0)`
 > - `CHECK(remaining_sessions IS NULL OR remaining_sessions >= 0)`
 > - `CHECK(quantity > 0)`
+> - 注：`sale_amount` 和 `received` 允许负值（退款/转换退出行）
 
 ### 4.10 sale_allocations（营业额分配）
+
+> **多单据复用**：sale_allocations 同时用于销售、回款、转换、退款四种单据的业绩分配。**退款业绩 `total_amount` 为负数**，转换/回款业绩保持正数。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -365,7 +387,7 @@ CloudBase 云函数（Node.js）
 | `sale_item_id` | varchar(30) | FK → `sale_items.sale_item_id`，NOT NULL |
 | `employee_id` | varchar(30) | 员工编号，FK → `employees.employee_id` |
 | `allocation_ratio` | numeric(5,2) | 提成比例快照 |
-| `total_amount` | numeric(10,2) | 该员工最终分配金额 |
+| `total_amount` | numeric(10,2) | 该员工最终分配金额（退款为负数） |
 | `is_void` | boolean | 是否已作废，NOT NULL DEFAULT false |
 | `voided_at` | timestamp | 作废时间 |
 | `created_at` | timestamp | 记录创建时间 |
@@ -1075,6 +1097,26 @@ module.exports = {
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`（= `user_id`）
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **数据同步不影响业务**：WorkFine → PG 同步使用 UPSERT，不锁表不中断在线查询
+20. **回款规则**：
+    - `ref_sale_order_id` 必填，指向原销售单
+    - 回款时原子累加原 `sale_item.received`（`UPDATE sale_items SET received = received + $amount WHERE sale_item_id = $ref RETURNING received`）
+    - 支持分多次回款（N:1 关系，同一原单可被多次回款）
+    - 支付方式与销售单一致（wechat/alipay/offline）
+    - 仅员工端操作（`sale_order_source = 'staff'`）
+21. **转换规则**：
+    - `ref_sale_order_id` 必填，指向原销售单
+    - 转换单内包含 `convert_out` 行（原项目退出）和 `convert_in` 行（新项目转入），单事务内完成
+    - `convert_out` 行原子扣减原 sale_item 的 `remaining_sessions`
+    - `convert_in` 行创建新的 sale_item（新疗程卡/商品），`item_direction = 'convert_in'`
+    - `total_amount` = 补差价金额（转入 - 转出）
+22. **退款规则**：
+    - `ref_sale_order_id` 必填，指向原销售单
+    - 创建时状态为 `待审批`，需店长审批后才执行退款操作
+    - 店长审批通过后原子扣减原 sale_item 的 `remaining_sessions`
+    - `total_amount` 为负数
+    - `refund_out` 行中 `quantity` = 退次数，`received` = 负退消耗金额
+    - handling_fee（仅个别退款单有值）存入 `remark` 字段
+23. **回款/转换/退款仅员工端操作**，不支持顾客端发起
 
 ---
 
@@ -1119,6 +1161,15 @@ null → pending               （订单支付成功）
 pending → allocated          （店长完成分配）
 allocated → pending          （店长删除重新分配）
 ```
+
+### 8.5 退款审批状态机
+
+```text
+待审批 → 已审批（已支付）     （店长审批通过，触发 remaining_sessions 原子扣减 + 退款业绩记录）
+待审批 → 已关闭              （店长驳回退款申请）
+```
+
+> 退款单创建时 `status = '待审批'`，审批通过后流转为 `已支付`（复用已有状态表示退款已生效），同时原子扣减原 sale_item 的 remaining_sessions。
 
 ---
 
@@ -1168,6 +1219,10 @@ allocated → pending          （店长删除重新分配）
 | allocation | getCommissionRates, pendingList, suggest | 分配辅助查询 | `allocation:list` | 需适配 |
 | appointment | list, detail, confirm, checkin | 预约管理 | `appointment:*` | 已实现 |
 | service | create, start, complete, cancel, list, detail | 服务单全流程 | `service:*` | 已实现 |
+| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | `sale_order:create` | 待实现 |
+| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | `sale_order:create` | 待实现 |
+| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | `sale_order:create` | 待实现 |
+| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | `sale_order:approveRefund` | 待实现 |
 | **sync** | **full** | **WorkFine → PG 全量同步** | `sync:trigger` | 待实现 |
 | **permission** | **list, assign, revoke** | **权限角色管理** | `permission:*` | 待实现 |
 
@@ -1252,9 +1307,11 @@ products ──→ product_skus (1:N, via product_id)
                     └── sku_id ──→ sale_items.sku_id
 
 sale_orders ──→ sale_items (1:N)
-│   └── client_user_id ──→ client_wechat_users.user_id
+│   ├── client_user_id ──→ client_wechat_users.user_id
+│   └── ref_sale_order_id ──→ sale_orders.sale_order_id（回款/转换/退款引用原单，自引用）
 sale_items ──→ sale_allocations (1:N, 通过 sale_item_id)
 sale_items ──→ service_items (1:N, 通过 sale_item_id)
+sale_items.ref_sale_item_id ──→ sale_items.sale_item_id（convert_out/refund_out 引用原购买行，自引用）
 
 service_orders ──→ service_items (1:N)
 │   └── appointment_id ──→ appointments (1:1, 可选)
@@ -1267,3 +1324,4 @@ operation_logs (操作日志，只写)
 store_unbind_requests (门店解绑申请)
 │   └── user_id ──→ client_wechat_users.user_id
 ```
+

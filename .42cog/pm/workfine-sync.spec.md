@@ -1,9 +1,9 @@
 # 凤御双美容院 — WorkFine → PG 迁移与同步方案
 
-> **文档版本**: 1.0.0
+> **文档版本**: 1.1.0
 > **范围**: WorkFine SQL Server → PostgreSQL 数据迁移、定期同步、一次性导入
-> **关联文档**: `backend.pr.spec.md` v3.0.0（PG 数据模型定义）
-> **日期**: 2026-03-11
+> **关联文档**: `backend.pr.spec.md` v3.1.0（PG 数据模型定义）
+> **日期**: 2026-03-13
 >
 > **核心原则**: 运行时业务查询 100% 走 PG，WorkFine SQL Server 仅作为同步源，不参与在线请求链路。
 
@@ -51,7 +51,7 @@
 |-------------|------|------|
 | UDT_M_312 | 顾客消费明细子表 | WorkFine 内部汇总视图，小程序从 PG 订单表查询 |
 | UDT_M_331 | 顾客护理明细子表 | 同上，从 PG 护理单表查询 |
-| UDT_S_209 / UDT_M_213 | 分院销售单 | PG 已建立原生订单表，WorkFine 仅历史查阅 |
+| UDT_S_209 / UDT_M_213 | 分院销售单（含销售/回款/转换/退款四种单据） | PG 已建立原生 sale_orders/sale_items 表，WorkFine 仅历史查阅 |
 | UDT_S_259 / UDT_M_260 | 售后护理单 | PG 已建立原生护理单表 |
 | UDT_S_762 / UDT_M_763 | 售前护理单 | 同上 |
 | UDT_M_217 | 营业额分配明细 | PG 已建立原生分配表 |
@@ -485,6 +485,96 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 | 主要顾客类型 | 售前一次（87%） | 售后（96%） |
 | 明细流水号前缀 | `TKKLS-`（拓客卡） | `XSLSH-`（销售流水号） |
 | 是否关联销售单 | 否 | 是（核销疗程卡） |
+
+### 9.8 四种单据在 WorkFine 中的存储方式与 PG 映射
+
+> WorkFine 中**销售单、回款、转换单、退款**均存储在同一组表（UDT_S_209 主表 + UDT_M_213 明细 + UDT_M_217 分配 + UDT_M_1259 收款），通过**单号前缀**和**字段值**区分单据类型。PG 中统一映射到 `sale_orders` + `sale_items` + `sale_allocations`，通过 `sale_order_type` 枚举区分。
+
+#### WorkFine 单据类型识别规则
+
+| 单据类型 | WorkFine 单号前缀（UDF_S_372） | UDF_S_13710（销售类型） | 其他特征 |
+|----------|-------------------------------|------------------------|----------|
+| 销售单 | `FY-XSD{YYMMDD}{序号}` | `全额销售` | `UDF_S_4729`（欠款）= 0 |
+| 回款 | `FY-XSD{YYMMDD}{序号}`（同销售单） | `回单销售` | `UDF_S_4729`（欠款）> 0 → 后续有回款记录 |
+| 转换单 | `FY-ABZH{YYMMDD}{序号}` | — | 明细含 A 表（转出）和 B 表（转入）两组行 |
+| 退款单 | `FY-TKD{YYMMDD}{序号}` | — | 明细中 `UDF_M_399`（实收）为负数 |
+
+> **注意**：WorkFine 中回款不是独立单据，而是同一笔销售单分多次收款（`UDF_M_4937` 已付款次数 > 1）。PG 设计中将回款拆为独立 `sale_orders`（type='回款'），通过 `ref_sale_order_id` 引用原单。
+
+#### 主表 UDT_S_209 → PG sale_orders 映射
+
+| WorkFine 字段 | PG sale_orders 字段 | 映射说明 |
+|---------------|--------------------|---------|
+| `UDF_S_372`（销售单号） | `sale_order_id` | PG 中加 `-WX-` 后缀区分来源：`FY-XSD-WX-`/`FY-HKD-WX-`/`FY-ABZH-WX-`/`FY-TKD-WX-` |
+| `UDF_S_350`（日期） | `sale_order_datetime` | — |
+| `UDF_S_348`（市场） | `market_name` | 快照 |
+| `UDF_S_349`（门店） | `store_id` | 通过 `stores.store_name` 查找得到 store_id |
+| `UDF_S_1485`（顾客编号） | `client_user_id` | 通过 `client_wechat_users.customer_id` 查找得到 user_id |
+| `UDF_S_370`（顾客姓名） | `customer_name` | 快照 |
+| `UDF_S_507`（收款合计） | `total_amount` | 退款单为负数 |
+| `UDF_S_13710`（销售类型） | `sale_order_type` | `全额销售` → `正式`，`回单销售` → 原单 `正式` + 生成 `回款` 子单 |
+| `UDF_S_4729`（本单欠款合计） | — | 用于判断是否有后续回款 |
+| `UDF_S_844`（本单业绩） | — | 业绩由 sale_allocations 承载 |
+| `UDF_S_371`（业绩类型） | — | WorkFine 业务分类，PG 不直接使用 |
+| `UDF_S_17178`（促销方案选取） | — | PG 通过 `sale_items.sku_id` 关联商品/套餐 |
+
+#### 明细子表 UDT_M_213 → PG sale_items 映射
+
+| WorkFine 字段 | PG sale_items 字段 | 映射说明 |
+|---------------|-------------------|---------|
+| `UDF_M_852`（销售流水号） | `sale_item_id` | PG 加 `-WX-` 后缀：`XSLSH-WX-{YYYYMMDD}{序号}` |
+| `UDF_M_14495`（疗程项目编号） | `sku_id` | 通过 `product_skus` 匹配 |
+| `UDF_M_4728`（产品类型） | — | 辅助推断 `session_count`（疗程卡≥2，单品=1） |
+| `UDF_M_394`（疗程服务次数） | `session_count` / `remaining_sessions` | 初始 remaining_sessions = session_count |
+| `UDF_M_4949`（原价） | `unit_price` | — |
+| `UDF_M_14494`（销售数量） | `quantity` | — |
+| `UDF_M_396`（单价优惠） | `unit_real_price` | unit_real_price = unit_price - 优惠 |
+| `UDF_M_395`（销售金额） | `sale_amount` | — |
+| `UDF_M_399`（实收金额） | `received` | 退款行为负数 |
+| `UDF_M_400`（顾客欠款） | — | 用于回款逻辑：欠款 > 0 则后续需回款 |
+| `UDF_M_7122`（有效日期） | `expire_date` | — |
+| `UDF_M_16124`（备注） | `remark` | — |
+| `UDF_M_4939`（赠送） | — | '是' → `received = 0` |
+| — | `item_direction` | PG 新增字段，WorkFine 中无对应，根据单据类型推导 |
+| — | `ref_sale_item_id` | PG 新增字段，WorkFine 中无对应，转换/退款时引用原购买行 |
+
+#### 分配子表 UDT_M_217 → PG sale_allocations 映射
+
+| WorkFine 字段 | PG sale_allocations 字段 | 映射说明 |
+|---------------|-------------------------|---------|
+| `UDF_M_2316`（员工编号） | `employee_id` | — |
+| `UDF_M_13715`（核算金额） | `total_amount` | 退款业绩为负数 |
+| `UDF_M_420`~`UDF_M_423`（分类业绩） | — | WorkFine 按项目类型细分为多列，PG 不拆分（由 sale_item_id 关联即可区分） |
+
+#### 转换单明细的特殊映射
+
+WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（转出）和 B 表（转入）两组行：
+
+| WorkFine 行类型 | PG item_direction | 映射逻辑 |
+|----------------|-------------------|----------|
+| A 表行（转出项目） | `convert_out` | `quantity` = 退次数，`received` = 负退消耗金额，`ref_sale_item_id` = 原购买行 |
+| B 表行（转入项目） | `convert_in` | 新的 sale_item，正常金额，`session_count`/`remaining_sessions` 为新项目次数 |
+
+> **区分 A/B 表行**：WorkFine 中 A 表行的 `UDF_M_399`（实收）通常为负值或零，B 表行为正值。具体区分逻辑需在迁移脚本中根据实际数据校验。
+
+#### 退款单明细的特殊映射
+
+| WorkFine 字段 | PG 字段 | 映射逻辑 |
+|---------------|---------|----------|
+| `UDF_M_399`（实收，负数） | `sale_items.received` | 负数直接映射 |
+| `UDF_M_394`（退款次数） | `sale_items.quantity` | 退次数 |
+| — | `sale_items.item_direction` | 固定为 `refund_out` |
+| — | `sale_items.ref_sale_item_id` | 通过 `UDF_M_852` 流水号格式或业务逻辑匹配原购买行 |
+| 手续费（如有） | `sale_items.remark` | handling_fee 存入备注 |
+
+#### PG sale_order_type 推导逻辑汇总
+
+```
+if 单号前缀 = 'FY-TKD'    → sale_order_type = '退款'
+if 单号前缀 = 'FY-ABZH'   → sale_order_type = '转换'
+if UDF_S_13710 = '回单销售' → 原单 sale_order_type = '正式'，另生成 sale_order_type = '回款' 子单
+if UDF_S_13710 = '全额销售' → sale_order_type = '正式'（或根据促销方案判断 '体验'/'组合套餐'）
+```
 
 ---
 
