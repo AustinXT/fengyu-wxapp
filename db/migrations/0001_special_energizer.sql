@@ -1,1 +1,0 @@
-ALTER TABLE "client_wechat_users" ADD COLUMN "bound_market_name" text;

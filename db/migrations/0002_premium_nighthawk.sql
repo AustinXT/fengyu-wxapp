@@ -1,2 +1,0 @@
-ALTER TABLE "appointments" ADD COLUMN "item_flow_no" text;--> statement-breakpoint
-ALTER TABLE "appointments" ADD CONSTRAINT "appointments_item_flow_no_order_items_item_flow_no_fk" FOREIGN KEY ("item_flow_no") REFERENCES "public"."order_items"("item_flow_no") ON DELETE no action ON UPDATE no action;

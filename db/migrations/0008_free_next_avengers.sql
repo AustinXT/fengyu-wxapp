@@ -1,1 +1,0 @@
-ALTER TYPE "public"."service_order_status" ADD VALUE '已取消';
