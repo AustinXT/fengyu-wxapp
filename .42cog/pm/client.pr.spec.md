@@ -62,7 +62,7 @@
 |----|------|------|
 | AUTH-01 | 微信静默登录 | `app.onLaunch()` 自动调用 `auth.login`（静默获取 openid）；新用户自动创建 `client_wechat_users` 记录（`user_id` 格式：`user_{timestamp}_{random}`）；先从 localStorage 恢复状态（快速），再与服务端同步（权威来源） |
 | AUTH-02 | 手机号绑定 | 个人中心 `open-type="getPhoneNumber"` 按钮 → `wx.cloud.CloudID(cloudID)` → 云函数自动解密手机号；触发历史订单补全机制（按手机号匹配 `client_user_id IS NULL` 的订单），返回 `updatedOrdersCount`（已同步订单数量）；手机号已被其他用户绑定时返回 `INVALID_PARAMS: 该手机号已被其他用户绑定` |
-| AUTH-03 | 门店绑定 | 从门店列表选择绑定默认门店，写入 `bound_store_name` + `bound_market_name`（从 WorkFine 自动提取） |
+| AUTH-03 | 门店绑定 | 从门店列表选择绑定默认门店，写入 `bound_store_name` + `bound_market_name`（从 PG `stores.market_name` 提取） |
 
 **实际认证流程**:
 1. `app.onLaunch()` → `syncLoginState()` → `auth.login`（静默，无用户交互）
@@ -84,7 +84,7 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STORE-01 | 门店列表 | 按市场分组展示营业中的门店（排除 `UDF_M_11956 = '是'`，排除"市场"和"管理中心"）；支持按城市筛选 |
+| STORE-01 | 门店列表 | 按市场分组展示营业中的门店；支持按城市筛选 |
 | STORE-02 | 门店详情 | 展示门店名称、所属市场、可用床位、开业时间、`employee_count`（在职员工数）、`customer_count`（顾客数） |
 | STORE-03 | 绑定门店 | 首次使用时选择绑定门店，后续默认展示该门店商品/美容师 |
 | STORE-04 | 更换门店 | 支持申请解绑当前门店（解绑流程：发起申请 → 查看申请状态 → 可取消申请） |
@@ -108,7 +108,7 @@
 - 门店选择：下拉单选
 - 底部"确定"按钮
 
-**数据来源**: WorkFine `UDT_M_219`（只读）
+**数据来源**: PG `stores` + `org_nodes`
 
 **API**: `store.list` / `store.detail` / `store.requestUnbind` / `store.getUnbindRequest` / `store.cancelUnbindRequest` / `store.geocode`
 
@@ -143,7 +143,7 @@
 **扫码入口**: `wx.scanCode()` → 解析二维码内容 → path 型直接 `navigateTo` / 纯文本 orderNo 型跳转 scan-pay 页面
 
 **分类层级说明**:
-- 左侧栏显示 big_category 标题（不可点击）+ 下级 `category` 子分类（可点击切换）
+- 左侧栏显示 product_kind 标题（不可点击）+ 下级分类子分类（可点击切换）
 - 仅显示含有效 SKU 的分类
 
 **SPU 列表加载**: 按分类分页加载（scroll-to-lower 触发，500ms 防抖），带 `_spuCache` 模块级缓存；搜索时预加载所有未缓存分类后按名称过滤
@@ -162,35 +162,35 @@
 
 | 层级 | 页面 | 说明 |
 |------|------|------|
-| 一级 | 左侧品项分类选择器 | 从 `product_spu.category` 动态派生，仅显示含有效 SKU 的分类；院装产品固定追加在末尾 |
+| 一级 | 左侧品项分类选择器 | PG `product_categories`，仅显示含有效 SKU 的分类；院装产品固定追加在末尾 |
 | 二级 | 右侧 SPU 卡片列表 | 同一商品不同规格合并为一张卡，展示封面图、名称、价格起步、生美/非生美标签 |
 | 三级 | 商品详情页（SKU 规格选择） | 展示全部 SKU 规格选项（规格名 + 价格 + 疗程服务次数），选择后可下单 |
 
 **分类查询逻辑**:
 ```sql
-SELECT p.category, MIN(p.sort_order) AS category_order
-FROM product_spu p
-WHERE p.big_category != '院装产品'
+SELECT c.id, c.name, c.sort_order
+FROM product_categories c
+WHERE c.product_kind != '院装产品'
   AND EXISTS (
-    SELECT 1 FROM product_spu_sku_map m
-    WHERE m.spu_id = p.spu_id AND m.is_active = true
+    SELECT 1 FROM product_skus s
+    JOIN products p ON s.product_id = p.id
+    WHERE p.category_id = c.id AND s.is_active = true
   )
-GROUP BY p.category
-ORDER BY category_order ASC;
+ORDER BY c.sort_order ASC;
 -- 院装产品节点固定追加在末尾
 ```
 
 **商品详情页 UI（service-detail）**:
 - 封面图（全宽）或占位图标
-- 商品名称、描述、分类标签（按 big_category 着色：紫/主色/青/橙）
+- 商品名称、描述、分类标签（按 product_kind 着色：紫/主色/青/橙）
 - 价格显示：`¥{selectedSku.price}` + `/ {session_count} 次`（疗程卡类）
 - SKU 规格选择：药丸形按钮网格（规格名 + 价格 + 次数），选中高亮，切换时重置数量为 1
 - 数量调节器：min 1, max 99，仅 SKU 选中后显示
 - 美容师选择 Popup：底部弹出列表，含"不指定"选项 + 门店美容师列表（姓名 + 职位）
 - **操作栏（sticky）**:
   - 常规商品：左侧价格 `¥{price} ×{qty}` + 购物车 FAB（带 badge）+ "加入购物车"按钮 + "立即下单"按钮
-  - 福利活动商品（`big_category = '福利活动'`）：隐藏购物车按钮和"加入购物车"，仅显示全宽"立即下单"
-- 福利活动商品详情页额外展示 `promotionSchemeId`（关联 WorkFine `UDT_S_1459` + `UDT_M_1460`）
+  - 福利活动商品（`product_kind = '福利活动'`）：隐藏购物车按钮和"加入购物车"，仅显示全宽"立即下单"
+- 福利活动商品详情页额外展示关联的福利活动信息
 
 **购物车机制（localStorage）**:
 - `utils/cart.ts` 提供：`addToCart` / `removeFromCart` / `updateQuantity` / `clearCart` / `getCartCount` / `getCartTotal`
@@ -198,18 +198,11 @@ ORDER BY category_order ASC;
 - 购物车页面（`pagesShop/shopping-cart`）：全选/单选 checkbox、数量 stepper（min 1, max 99）、删除、总价计算（仅已勾选项）、"结算(n)"按钮 → 存 `checkoutItems` 到 localStorage → 跳转 `checkout?fromCart=1`
 - 空状态：居中 van-empty + "去逛逛"按钮
 
-**商品数据来源**:
+**商品数据来源**: PG `products` + `product_skus` + `product_categories`
 
-| 商品类型 | WorkFine 表 | PG 表 |
-|----------|------------|-------|
-| 可售服务项目（全国） | `UDT_M_1281`（481 条） | `product_spu` + `product_spu_sku_map` |
-| 门店自定义项目 | `UDT_M_1383`（401 条） | 同上 |
-| 院装产品 | `UDT_M_341`（1,940 条） | 同上 |
-| 福利活动 | `UDT_M_1460`（方案项目） | 同上 |
-
-- SPU 元数据（名称、图片、描述、分类、排序）存 PG `product_spu`
-- SKU↔WorkFine 映射存 PG `product_spu_sku_map`（含 `market_restriction` 市场限定字段）
-- SKU 价格/次数运行时从 WorkFine 读取，带 5 分钟模块级缓存（Map 结构，key: `{workfine_source}:{workfine_item_id}`）
+- 商品元数据（名称、图片、描述、分类、排序）存 PG `products`
+- 商品规格（价格、次数、有效期）存 PG `product_skus`（含 `market_restriction` 市场限定字段）
+- 价格/次数从 PG `product_skus` 直接读取，无需外部缓存
 
 **API**: `product.categories` / `product.spuList` / `product.skuDetail` / `product.spuDetail` / `product.hotList` / `product.shopInit`
 
@@ -222,7 +215,7 @@ ORDER BY category_order ASC;
 | ID | 需求 | 说明 |
 |----|------|------|
 | EMPLOYEE-01 | 美容师列表 | 按绑定门店过滤在职美容部员工（`department = '美容部'` OR `position = '美容师'`） |
-| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`UDT_S_311.UDF_S_6444`），预约/下单时默认填充 |
+| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`client_wechat_users.main_employee_id`），预约/下单时默认填充 |
 | EMPLOYEE-03 | 选择非必须 | 下单时可不指定美容师（"不指定"选项） |
 
 **当前实现（Popup 交互）**:
@@ -236,9 +229,9 @@ ORDER BY category_order ASC;
 
 > 设计稿描述了独立技师列表页（screen_008），当前以 Popup 弹窗实现作为过渡方案。
 
-**查询条件**: 在职（`UDF_S_1624 = '否'`）+ 属于已选门店 + 美容部员工（`department = '美容部'` OR `position = '美容师'`）
+**查询条件**: PG `employees.is_resigned = false` + 属于已选门店 + 美容部员工（`department = '美容部'` OR `position = '美容师'`）
 
-**数据来源**: WorkFine `UDT_S_287`（只读）
+**数据来源**: PG `employees`
 
 **API**: `employee.list`（返回 employee_id, name, store_name, position, department, phone）/ `employee.default`（返回 mainEmployeeId, mainEmployeeName, mainEmployeePosition）
 
@@ -284,11 +277,11 @@ ORDER BY category_order ASC;
 
 **核心规则**:
 - 提交防重：前端防连点 + 后端幂等（部分唯一索引 `UNIQUE (client_user_id) WHERE status = '待支付'`）
-- 价格快照：开单时从 WorkFine 读取 SKU 价格写入 `order_items.unit_price`，后续不可变
+- 价格快照：开单时从 PG `product_skus` 读取价格写入 `sale_items.unit_price`，后续不可变
 - 订单进入 `已支付` 后，若指定了美容师，系统自动创建营业额分配记录
 - 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`
 - 明细行流水号格式：`XSLSH-WX-{YYYYMMDD}{4位序号}`（advisory lock 防并发）
-- 顾客姓名回填：从 `UDT_S_311` 按手机号查询 `UDF_S_1476`
+- 顾客姓名回填：从 PG `client_wechat_users` 按手机号查询 `name`
 
 **订单状态集**: `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭`
 
@@ -303,7 +296,7 @@ ORDER BY category_order ASC;
 **订单列表页 UI（screen_020/021/022）**:
 - Tab 筛选栏：全部 / 待支付 / 已支付 / 已完成
 - 订单卡片：
-  - 头部行：订单号（左）+ 体验单显示"体验"标签（`order_type === '体验'`）+ 状态标签（右，带颜色：待支付/橙、待确认/棕、已支付/绿、已完成/灰、支付失败/红、已关闭/灰）
+  - 头部行：订单号（左）+ 体验单显示"体验"标签（`sale_order_type === '体验'`）+ 状态标签（右，带颜色：待支付/橙、待确认/棕、已支付/绿、已完成/灰、支付失败/红、已关闭/灰）
   - 商品行：`{spu_name} · {sku_display_name} ×{qty}` + `剩余{remaining_sessions}次`（疗程卡类）
   - 底部：下单日期（左，`YYYY-M-D` 格式）+ "合计 ¥{total_amount}"（右）
   - 待支付订单显示"去支付"按钮
@@ -368,7 +361,7 @@ ORDER BY category_order ASC;
 - Tab 筛选：全部 / 待确认 / 已确认 / 已取消
 - 卡片 UI：头部（服务名 + 状态标签，按状态着色）+ 单元格（预约时间 `M月D日 H:MM` / 美容师 / 来源订单）
 - 操作：待确认/已确认状态显示"取消预约"按钮
-- 预约列表 LEFT JOIN `order_items` + product 获取 `service_name`、`sku_display_name`
+- 预约列表 LEFT JOIN `sale_items` + product 获取 `service_name`、`sku_display_name`
 
 **取消预约**: 顾客可取消 `待确认` 或 `已确认` 状态的预约，可填写取消原因
 
@@ -412,7 +405,7 @@ ORDER BY category_order ASC;
 1. 员工端开单后生成二维码
 2. 顾客微信扫码 → 打开客户端小程序
 3. QR code 解析：path 型（直接 `navigateTo`）vs 纯文本 orderNo 型（跳转 scan-pay 页面）
-4. 自动加载订单信息（`order.scanDetail`，仅限 `order_source='staff'` 的订单）
+4. 自动加载订单信息（`order.scanDetail`，仅限 `sale_order_source='staff'` 的订单）
 5. 展示订单详情 → 确认付款
 6. 选择支付方式 → 完成支付
 
@@ -688,7 +681,7 @@ ORDER BY category_order ASC;
 
 **补充说明**:
 - `待确认收款`：仅用于线下付款的中间状态
-- 体验单（`order_type = 体验`）与正式订单走相同的状态机
+- 体验单（`sale_order_type = 体验`）与正式订单走相同的状态机
 - 订单关闭/支付失败时，对应的营业额分配记录标记为无效（`is_void = true`）
 
 ### 4.2 预约状态机
@@ -786,28 +779,17 @@ TabBar
 
 ## 6. 数据来源对照
 
-### 只读查询（WorkFine SQL Server）
-
-| 数据域 | WorkFine 表 | 用途 |
-|--------|------------|------|
-| 门店列表 | `UDT_M_219` | 门店选择与绑定 |
-| 美容师列表 | `UDT_S_287` | 美容师浏览与选择 |
-| 顾客档案 | `UDT_S_311` | 主美容师、顾客来源等参考信息 |
-| 可售项目（全国） | `UDT_M_1281` | SKU 价格/次数实时读取 |
-| 门店自定义项目 | `UDT_M_1383` | SKU 价格/次数实时读取 |
-| 院装产品 | `UDT_M_341` | SKU 价格实时读取 |
-| 品项分类 | `UDT_M_229` | 分类目录参考 |
-
 ### 读写（PG 自托管数据库）
 
 | 数据域 | PG 表 | 用途 |
 |--------|------|------|
 | 微信用户 | `client_wechat_users` | 顾客身份 |
-| 商品 SPU | `product_spu` | 商品元数据（名称、图片、分类、排序） |
-| SKU 映射 | `product_spu_sku_map` | SPU↔WorkFine 项目编号映射 |
-| 订单主表 | `orders` | 订单 CRUD |
-| 订单明细 | `order_items` | 商品行、剩余次数、价格快照 |
-| 营业额分配 | `revenue_allocations` + `revenue_allocation_items` | 自动/手动分配（顾客端只读） |
+| 商品分类 | `product_categories` | 品项分类 |
+| 商品主表 | `products` | 商品元数据（名称、图片、分类、排序） |
+| 商品规格 | `product_skus` | 价格、次数、有效期 |
+| 订单主表 | `sale_orders` | 订单 CRUD |
+| 订单明细 | `sale_items` | 商品行、剩余次数、价格快照 |
+| 营业额分配 | `sale_allocations` + `sale_allocation_items` | 自动/手动分配（顾客端只读） |
 | 预约 | `appointments` | 预约 CRUD |
 | 服务单 | `service_orders` + `service_items` | 顾客端只读查看 |
 
@@ -835,7 +817,7 @@ TabBar
 | AC-01 | 微信登录后自动创建用户记录，获取 openid | 查看 `client_wechat_users` 表 |
 | AC-02 | 手机号绑定后，历史订单（`client_user_id IS NULL` + 手机号匹配）自动关联 | 员工先开单 → 顾客后注册 → 检查订单可见性 |
 | AC-03 | 商品列表仅展示含有效 SKU 的 SPU | 将 SKU 全部设为 `is_active = false` → SPU 不应展示 |
-| AC-04 | SKU 价格从 WorkFine 实时读取，与设计端一致 | 修改 WorkFine 价格 → 刷新后价格更新（5 分钟缓存窗口内） |
+| AC-04 | SKU 价格从 PG `product_skus` 读取，与管理端一致 | 修改商品价格 → 刷新后更新 |
 | AC-05 | 同一顾客不能创建第二笔待支付订单 | 连续提交两笔订单 → 第二笔被拒绝 |
 | AC-06 | 微信支付成功后订单状态变为 `已支付` | 支付流程端到端测试 |
 | AC-07 | 线下付款提交后状态变为 `待确认收款`，店长确认后变为 `已支付` | 线下付款端到端测试 |
@@ -885,7 +867,7 @@ TabBar
 | store | geocode | 逆地理编码（腾讯地图 API） |
 | product | categories | 品项分类列表（仅含有效 SKU 的分类） |
 | product | spuList | SPU 商品列表（含 SKU 价格，市场限定过滤） |
-| product | skuDetail | SKU 详情（WorkFine 价格，5 分钟缓存） |
+| product | skuDetail | SKU 详情（PG 价格） |
 | product | spuDetail | SPU 详情（福利活动含 promotionSchemeId） |
 | product | hotList | 热门商品（排除院装产品和福利活动） |
 | product | shopInit | 商城初始化数据（分类 + 首分类 SPU 列表） |

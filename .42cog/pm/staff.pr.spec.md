@@ -70,15 +70,15 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 WorkFine 查询职位信息（店长/美容师） |
-| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 WorkFine `UDT_S_287` 员工档案（`employee_id`）；清除认证缓存 |
+| AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 PG `employees` 查询职位信息（店长/美容师） |
+| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 PG `employees` 员工档案（`employee_id`）；清除认证缓存 |
 
 **角色判定**:
-- `UDT_S_287.UDF_S_1161 = '门店经理'` → 店长
+- PG `employees.position_name = '门店经理'` 或 `permission_roles.role = 'manager'` → 店长
 - 其他职位 → 美容师
 
 **约束**:
-- 员工必须在 WorkFine 有在职档案才能完成绑定
+- 员工必须在 PG `employees` 有在职档案才能完成绑定
 - 两端 appid 不同，openid 相互独立（员工端 vs 客户端）
 
 **API**: `auth.login` / `auth.bindPhone`
@@ -91,7 +91,7 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STORE-01 | 门店列表 | 从 PG `stores` 查询营业中门店（数据同步自 WorkFine） |
+| STORE-01 | 门店列表 | 从 PG `stores` + `org_nodes` 查询营业中门店 |
 | STORE-02 | 切换工作门店 | 验证门店存在性，返回门店名供前端本地存储 |
 | STORE-03 | 解绑申请审批 | 店长审批顾客的门店解绑申请（approve/reject） |
 
@@ -101,7 +101,7 @@
 - 快捷导航：订单列表、服务单列表、顾客列表（3 个 Cell 入口）
 - 退出登录：确认弹窗 → `app.resetEmployeeInfo()` 清除全部缓存 → `reLaunch` 跳转登录页
 
-**数据来源**: PG `stores`（同步自 WorkFine）+ PG `store_unbind_requests`（读写）
+**数据来源**: PG `stores` + `org_nodes` + PG `store_unbind_requests`（读写）
 
 **API**: `store.list` / `employee.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
 
@@ -120,25 +120,24 @@
 
 **三种开单模式**:
 
-| 模式 | order_type | 说明 |
+| 模式 | sale_order_type | 说明 |
 |------|-----------|------|
-| 正式订单 | `正式` | 从商品目录选择 SPU/SKU，按 WorkFine 实时价格开单 |
+| 正式订单 | `正式` | 从商品目录选择 SPU/SKU，按 PG `product_skus.price` 开单 |
 | 体验单 | `体验` | 首次体验/引流，店长可自定义金额，走相同支付流程 |
-| 福利活动 | `福利活动` | 从 WorkFine 福利活动选择，方案内项目不可增删，单独成单 |
+| 福利活动 | `福利活动` | 从 PG `products`（`product_kind = '福利活动'`）选择，方案内项目不可增删，单独成单 |
 
 **项目选择（四级导航）**:
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | 大类切换：`福利活动 | 护理项目 | 家居产品 | 充值卡`（`BIG_CATEGORIES`） | 固定常量 |
-| 左侧分类 | 品项分类选择器 | PG `product_spu.category` 动态派生（仅含有效 SKU 的分类），院装产品固定追加末尾 |
-| 右侧列表 | SPU 卡片列表 | PG `product_spu` + `product_spu_sku_map`（is_active 过滤），按 categoryId 缓存已加载列表 |
-| 商品详情 | SKU 规格选择 | WorkFine 实时读取价格/次数（疗程卡→`UDT_M_1281/1383`，院装→`UDT_M_341`） |
+| 顶部 Tab | 大类切换：`福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind` 枚举） | 固定常量 |
+| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU 的分类），院装产品固定追加末尾 |
+| 右侧列表 | SPU 卡片列表 | PG `products` + `product_skus`（is_active 过滤），按 categoryId 缓存已加载列表 |
+| 商品详情 | SKU 规格选择 | PG `product_skus.price` / `session_count` |
 
 **促销方案项目**:
-- 方案列表：WorkFine `UDT_S_1459`
-- 方案详情：WorkFine `UDT_M_1460`（促销售价 `UDF_M_17171`，赠品价格为 0）
-- SKU 解析：`UDF_M_17163` → PG `product_spu_sku_map`
+- 方案列表：PG `products`（`product_kind = '福利活动'`）
+- 方案详情：PG `product_skus`（价格/次数自包含，赠品价格为 0）
 
 **购物车交互**:
 - 购物车支持**逐项优惠**（per-item discount）：每个 SKU 可单独设置 discount 金额
@@ -157,7 +156,7 @@
 **核心规则**:
 - 顾客手机号为必填项，自动查询是否已注册客户端小程序
 - 已注册 → 直接关联 `client_user_id`；未注册 → 手机号临时标识，待绑定后自动关联
-- 价格快照：开单时写入 `order_items.unit_price`，后续不可变
+- 价格快照：开单时写入 `sale_items.unit_price`，后续不可变
 - 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`，advisory lock 防并发
 - 商品行流水号格式：`XSLSH-WX-{YYMMDD}{4位序号}`
 - 门店未配置店长时，前端提示"请先配置门店店长"
@@ -174,7 +173,7 @@
 
 **基本规则**:
 - 先选择部门，再选择该部门下可分配业绩的员工
-- 可分配业绩的员工由 WorkFine `UDT_S_287` 中字段控制
+- 可分配业绩的员工由 PG `employees` 中字段控制
 
 **分配规则**:
 
@@ -187,11 +186,11 @@
 
 **销售分类（sales_category）**: 自采自销 / 他销自耗 / 他销他耗 / 生态合作
 
-**提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 提成比例（从 WorkFine `UDT_S_1962/UDT_M_1964` 查询）
+**提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 提成比例（从 PG `commission_rate_matrix` 查询）
 
 **"无需分配"标记**: `onSkipAllocation()` — 以空 allocations 数组调用 `allocation.save`，将订单标记为已处理
 
-**恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `revenue_allocation_items` 恢复 displayItems，回填部门/员工/金额
+**恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `sale_allocation_items` 恢复 displayItems，回填部门/员工/金额
 
 **三接口并行初始化**: `Promise.all([allocation.suggest, employee.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
 
@@ -210,10 +209,10 @@
 | 顾客端下单（未指定美容师） | 支付后 allocation_status = pending，店长手动分配 |
 
 **数据来源**:
-- 部门列表：WorkFine `UDT_S_287.UDF_S_1513`
-- 可分配员工：WorkFine `UDT_S_287`（按门店+部门筛选）
-- 提成矩阵：WorkFine `UDT_S_1962/UDT_M_1964`
-- 分配记录：PG `revenue_allocations` + `revenue_allocation_items`
+- 部门列表：PG `employees` + `org_nodes`
+- 可分配员工：PG `employees`（按门店+部门筛选）
+- 提成矩阵：PG `commission_rate_matrix`
+- 分配记录：PG `sale_allocations` + `sale_allocation_items`
 
 **API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `employee.departments`
 
@@ -266,17 +265,17 @@
 **实现状态**: 已实现
 
 **顾客搜索**:
-- 双源并集：WorkFine `UDT_S_311` ∪ PG `client_wechat_users`
+- PG `client_wechat_users` 单源查询
 - 美容师看脱敏手机号（138****8888）
 
 **顾客详情**:
 - 基本信息（姓名、手机号、会员等级、绑定门店）
 - 消费统计（累计消费 + 年度消费）
-- 支持 WorkFine/PG 双源查询
-- 支持双入参：`id`（WorkFine 顾客编号）或 `clientUserId`（PG 用户 ID），内部自动互查
+- PG `client_wechat_users` 单源查询
+- 支持双入参：`id`（顾客编号）或 `clientUserId`（PG 用户 ID）
 
 **疗程卡列表**:
-- 从已支付订单 `order_items` 扁平化展示，每项含 `remainingSessions/totalSessions`
+- 从已支付订单 `sale_items` 扁平化展示，每项含 `remainingSessions/totalSessions`
 - 显示格式：项目名 + 规格 + `剩余 N/M 次`
 - 顾客可勾选疗程卡，批量创建服务单 → 通过 `app.globalData._serviceCreatePreload` 预加载到 service-create 页面
 
@@ -288,9 +287,8 @@
 - 同一订单仅计入一次（幂等）
 
 **数据来源**:
-- 顾客基本信息：WorkFine `UDT_S_311`（只读）
-- 日历消费数据：PG `orders`（WHERE status = '已支付'，按 paid_at 聚合）
-- 微信用户：PG `client_wechat_users`
+- 顾客基本信息：PG `client_wechat_users`
+- 日历消费数据：PG `sale_orders`（WHERE status = '已支付'，按 paid_at 聚合）
 
 **API**: `customer.search` / `customer.detail` / `customer.calendar` / `customer.paidOrders`
 
@@ -410,9 +408,9 @@
 | EMPLOYEE-01 | 员工列表 | 按门店查询在职员工；美容师看不到手机号 |
 | EMPLOYEE-02 | 部门列表 | 按部门分组返回员工，用于营业额分配 |
 
-**查询条件**: 在职（`UDF_S_1624 = '否'`）+ 属于已选门店
+**查询条件**: PG `employees.is_resigned = false` + 属于已选门店
 
-**数据来源**: WorkFine `UDT_S_287`（只读）
+**数据来源**: PG `employees`
 
 **API**: `employee.list` / `employee.departments`
 
@@ -428,7 +426,7 @@
 | 美容师 | 本人相关数据 | 确认预约（分配给自己的）、创建/推进服务单（自己的）、查看脱敏手机号 |
 
 **角色判定**: PG `permission_roles.role` + `org_nodes.type`（从 org_nodes 获取域级别），降级时由 `employees.position_name` 推导
-**门店归属**: PG `employees.store_id` → `stores`（同步自 WorkFine）
+**门店归属**: PG `employees.store_id` → `stores`
 **门店数据隔离**: 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），`buildScopeWhere()` 统一生成
 
 ---
@@ -447,8 +445,8 @@
 |------|------|----------|
 | 客流 | 服务单数量，一人一天算一次 | PG `service_orders` |
 | 客量 | 按日期+顾客去重，一人一月算一次 | PG `service_orders` |
-| 新会员 | 首次消费达 1980 元 | PG `orders` |
-| 业绩 | 收款金额汇总（不限付款方式） | PG `orders`（已支付） |
+| 新会员 | 首次消费达 1980 元 | PG `sale_orders` |
+| 业绩 | 收款金额汇总（不限付款方式） | PG `sale_orders`（已支付） |
 | 消耗 | 服务单划卡单价汇总 | PG `service_items` |
 
 **角色视角**:
@@ -468,7 +466,7 @@
 
 **说明**:
 - 员工/家属半价消费，需打标记以便数据分析时剔除
-- 新增 `order_type = '内部'` 枚举
+- 新增 `sale_order_type = '内部'` 枚举
 - 走与正式订单相同的支付和分配流程
 - 数据看板统计时可选剔除内部单
 
@@ -488,12 +486,12 @@
 
 | Tab | 内容 | 数据来源 |
 |-----|------|----------|
-| 详情 | 基本信息 + 消费汇总 | WorkFine + PG |
-| 日历 | 消费日期标记（已实现） | PG `orders` |
-| 购买记录 | 购买商品/服务列表 | PG `order_items` |
+| 详情 | 基本信息 + 消费汇总 | PG |
+| 日历 | 消费日期标记（已实现） | PG `sale_orders` |
+| 购买记录 | 购买商品/服务列表 | PG `sale_items` |
 | 赠送记录 | 赠送项目/优惠记录 | 待定 |
 | 退换记录 | 退换货/退款记录 | 待定 |
-| 持卡汇总 | 疗程卡/储值卡余次 | PG `order_items`（remaining_sessions） |
+| 持卡汇总 | 疗程卡/储值卡余次 | PG `sale_items`（remaining_sessions） |
 | 跟踪 | 客户跟踪记录 | 待定（新表） |
 | 回访 | 回访记录与跟进 | 待定（新表） |
 | 问卷 | 满意度/需求问卷 | 待定（新表） |
@@ -521,9 +519,9 @@
 - 两个维度独立计算、独立累计，同一笔订单可同时产生销售提成和服务提成
 - 销售提成归属：按营业额分配时指定的员工（美容师、养生师均可参与分配）
 - 服务提成归属：实际执行服务的美容师
-- 提成比例均从 WorkFine `UDT_S_1962/UDT_M_1964` 矩阵查询
+- 提成比例均从 PG `commission_rate_matrix` 查询
 
-**依赖**: 提成比例矩阵（WorkFine `UDT_S_1962/UDT_M_1964`）已实现查询接口
+**依赖**: 提成比例矩阵（PG `commission_rate_matrix`）已实现查询接口
 
 ---
 
@@ -673,8 +671,8 @@
 **订单状态集**: `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭`
 
 **补充说明**:
-- 体验单（`order_type = 体验`）与正式订单走相同状态机
-- 福利活动订单（`order_type = 福利活动`）走相同状态机
+- 体验单（`sale_order_type = 体验`）与正式订单走相同状态机
+- 福利活动订单（`sale_order_type = 福利活动`）走相同状态机
 - 订单关闭时，对应营业额分配记录标记为无效（`is_void = true`）
 - 订单支付成功后 `allocation_status` 设为 `pending`
 
@@ -708,7 +706,7 @@
 
 **扣减规则**:
 - 仅在 `服务中 → 已完成` 时扣减 `session_used` 次
-- 原子操作：`UPDATE order_items SET remaining_sessions = remaining_sessions - n WHERE item_flow_no = $1 AND remaining_sessions >= n`
+- 原子操作：`UPDATE sale_items SET remaining_sessions = remaining_sessions - n WHERE sale_item_id = $1 AND remaining_sessions >= n`
 - 检查 `rowCount` 判断成功，若为 0 则余次不足
 - 重复完成同一服务单，后端幂等返回成功（已完成状态直接返回）
 
@@ -796,17 +794,6 @@ TabBar
 
 ## 6. 数据来源对照
 
-### 只读查询（WorkFine SQL Server）— 仅同步模块使用，运行时 100% PG
-
-> **运行时零 MSSQL 依赖**: 以下 WorkFine 表仅供同步模块连接，业务请求链路不连接 SQL Server。同步后数据存储在对应的 PG 表中。
-
-| 数据域 | WorkFine 源表 | → PG 表 | 用途 |
-|--------|--------------|---------|------|
-| 组织架构 | `UDT_M_219` | `org_nodes` + `stores` | 门店选择、组织层级 |
-| 员工档案 | `UDT_S_287` | `employees` | 角色判定、营业额分配 |
-| 顾客档案 | `UDT_S_311` | `client_wechat_users`（档案字段） | 顾客搜索、档案查看 |
-| 提成比例矩阵 | `UDT_S_1962` + `UDT_M_1964` | `commission_rate_matrix` | 营业额分配 |
-
 ### 读写（PG 自托管数据库）
 
 | 数据域 | PG 表 | 关键字段 | 用途 |
@@ -815,14 +802,15 @@ TabBar
 | 门店详情 | `stores` | store_id, store_name, org_node_id, market_name | 门店业务信息 |
 | 员工微信用户 | `staff_wechat_users` | openid, phone, employee_id | 员工身份 |
 | 顾客微信用户 | `client_wechat_users` | openid, phone, bound_store_name | 顾客身份关联 |
-| 商品 SPU | `product_spu` | name, category, big_category, cover_image | 商品元数据 |
-| SKU 映射 | `product_spu_sku_map` | spu_id, workfine_item_id, workfine_source, product_type | SPU↔WorkFine 映射 |
-| 订单主表 | `orders` | order_no, status, order_type, allocation_status | 订单 CRUD |
-| 订单明细 | `order_items` | item_flow_no, sku_id, unit_price, remaining_sessions | 商品行、价格快照、剩余次数 |
-| 营业额分配 | `revenue_allocations` + `revenue_allocation_items` | employee_id, department, amount, commission_rate | 分配记录 |
+| 商品分类 | `product_categories` | name, product_kind, sort_order | 品项分类 |
+| 商品主表 | `products` | name, category_id, product_kind, cover_image | 商品元数据 |
+| 商品规格 | `product_skus` | product_id, price, session_count, is_active | 商品规格 |
+| 订单主表 | `sale_orders` | sale_order_id, status, sale_sale_order_type, allocation_status | 订单 CRUD |
+| 订单明细 | `sale_items` | sale_item_id, sku_id, unit_price, remaining_sessions | 商品行、价格快照、剩余次数 |
+| 营业额分配 | `sale_allocations` + `sale_allocation_items` | employee_id, department, amount, commission_rate | 分配记录 |
 | 权限角色 | `permission_roles` | employee_id, role, scope_id → org_nodes.id | RBAC 权限 |
 | 预约 | `appointments` | status, client_user_id, employee_id, checkin_at | 预约 CRUD |
-| 服务单 | `service_orders` + `service_items` | service_order_no, status, appointment_id, session_used | 服务单核销 |
+| 服务单 | `service_orders` + `service_items` | service_order_id, status, appointment_id, session_used | 服务单核销 |
 | 解绑申请 | `store_unbind_requests` | status, user_id, from_store_name | 门店解绑审批 |
 | 操作日志 | `operation_logs` | operator_user_id, org_node_id, action, target_type, target_id | 审计追踪（只写） |
 
@@ -840,8 +828,7 @@ TabBar
 | 订单号唯一生成 | advisory lock 防流水号并发冲突 |
 | 待支付订单唯一 | 同一顾客同时只能有一笔待支付订单（数据库部分唯一索引 + 应用层校验） |
 | 事务处理 | 服务单完成、订单创建、分配保存均使用 PostgreSQL transaction |
-| 价格缓存 | WorkFine 价格查询 5 分钟 TTL 模块级缓存，减少 SQL Server 压力 |
-| 连接池限制 | PG max 5, MSSQL max 5 min 1，均为懒初始化 |
+| 连接池限制 | PG max 5，懒初始化 |
 
 ---
 
@@ -852,16 +839,16 @@ TabBar
 | ID | 标准 | 验证方式 |
 |----|------|----------|
 | AC-01 | 员工微信登录后自动创建 `staff_wechat_users` 记录 | 查看数据库表 |
-| AC-02 | 手机号绑定后自动关联 WorkFine 员工档案（`employee_id`） | 绑定后查询 employee_id 非空 |
+| AC-02 | 手机号绑定后自动关联 PG 员工档案（`employee_id`） | 绑定后查询 employee_id 非空 |
 | AC-03 | 仅店长可进入开单流程，美容师角色被拒绝 | 美容师点击开单 → 提示无权限 |
 | AC-04 | 开单后 PG 订单表能查到同一笔记录 | 开单 → 查询 orders 表 |
-| AC-05 | SKU 价格从 WorkFine 实时读取，与管理端一致 | 修改 WorkFine 价格 → 刷新后更新 |
+| AC-05 | SKU 价格从 PG `product_skus` 读取，与管理端一致 | 修改商品价格 → 刷新后更新 |
 | AC-06 | 店长确认线下收款后订单状态变为 `已支付` | 确认收款 → 检查状态 |
 | AC-07 | 订单进入 `已支付` 后，顾客日历在 **5 秒内** 出现消费标记 | 支付 → 5 秒内刷新日历 |
 | AC-08 | WebSocket 断开时，轮询在 **30 秒内** 保证一致性 | 断网恢复后 30 秒内数据同步 |
 | AC-09 | 同一订单日历仅计入一次（幂等） | 重复确认 → 日历不重复标记 |
 | AC-10 | 同一服务单重复完成不产生重复扣次 | 连续点击完成 → 仅扣一次 |
-| AC-11 | 营业额分配保存后 PG 分配表能查到分配明细 | 分配 → 查询 revenue_allocations |
+| AC-11 | 营业额分配保存后 PG 分配表能查到分配明细 | 分配 → 查询 sale_allocations |
 | AC-12 | 美容师不可查看顾客完整手机号 | 美容师查询 → 返回脱敏手机号 |
 | AC-13 | 服务单完成后 `remaining_sessions` 正确扣减 | 从 3 → 服务一次 → 变为 2 |
 | AC-14 | 体验单走与正式订单相同的支付和分配流程 | 创建体验单 → 支付 → 分配 → 服务 |
@@ -898,7 +885,7 @@ TabBar
 | 消息中心 | 依赖消息推送基础设施（P2） |
 | 数据中心完整报表 | 简单指标小程序展示（P1），复杂分析跳转决策系统 |
 | 商品管理 | 当前由运营控制台维护（P2） |
-| 用户体系迁移 | 未来所有档案在小程序管理，不再依赖 WorkFine（远期规划） |
+| 用户体系迁移 | 未来所有档案在小程序管理，不再依赖外部系统（远期规划） |
 
 ---
 
@@ -907,7 +894,7 @@ TabBar
 | 模块 | 接口 | 说明 | 前端调用页面 | 实现状态 |
 |------|------|------|-------------|---------|
 | auth | login | 员工微信登录 | app.ts (onLaunch) | 已实现 |
-| auth | bindPhone | 绑定手机号 → 关联 WorkFine 员工档案 | login | 已实现 |
+| auth | bindPhone | 绑定手机号 → 关联 PG 员工档案 | login | 已实现 |
 | store | list | 门店列表 | profile (Picker) | 已实现 |
 | store | unbindRequests | 待审批解绑申请列表 | unbind-requests | 已实现 |
 | store | approveUnbind | 审批通过解绑 | unbind-requests | 已实现 |
@@ -925,9 +912,9 @@ TabBar
 | product | spuDetail | SPU 详情（含 SKU 列表、福利活动反查） | product-detail | 已实现 |
 | product | promotionList | 福利活动列表（原始格式） | order-create | 已实现 |
 | product | promotionPlans | 福利活动列表（前端适配格式） | order-create | 已实现 |
-| customer | search | 顾客搜索（双源并集） | order-create, customer-list | 已实现 |
+| customer | search | 顾客搜索 | order-create, customer-list | 已实现 |
 | customer | calendar | 消费日历 | customer-detail | 已实现 |
-| customer | detail | 顾客详情（双源） | customer-detail | 已实现 |
+| customer | detail | 顾客详情 | customer-detail | 已实现 |
 | customer | paidOrders | 已支付订单（用于核销选择） | customer-detail | 已实现 |
 | order | create | 员工开单（正式/体验/福利活动） | order-create | 已实现 |
 | order | qrcode | 订单二维码状态 | order-qrcode | 已实现 |
@@ -990,7 +977,7 @@ callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | userId | string | PG staff_wechat_users.id |
-| EmployeeId | string | WorkFine 员工档案 ID |
+| EmployeeId | string | PG 员工档案 ID |
 | employeeName | string | 员工姓名 |
 | position | string | 职位（'门店经理' / 其他） |
 | boundStoreName | string | 当前绑定门店名 |

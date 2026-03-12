@@ -62,14 +62,14 @@ CloudBase 云函数（Node.js）
 | 6 | 商品规格 | `product_skus` | PG 读写 | 价格/次数自包含 |
 | 7 | 提成比例矩阵 | `commission_rate_matrix` | 同步自 WorkFine | — |
 | 8 | 订单/销售明细 | `sale_orders` / `sale_items` | PG 读写 | — |
-| 9 | 营业额分配 | `sale_allocations` / `sale_allocation_items` | PG 读写 | — |
+| 9 | 营业额分配 | `sale_allocations` | PG 读写 | — |
 | 10 | 护理单/核销 | `service_orders` / `service_items` | PG 读写 | — |
 | 11 | 顾客（含微信用户） | `client_wechat_users` | PG 读写 + 同步自 WorkFine | 微信身份 + 顾客档案合一 |
-| 11 | 员工端微信用户 | `staff_wechat_users` | PG 读写 | 员工端独立 |
-| 12 | 预约 | `appointments` | PG 读写 | — |
-| 13 | 权限角色分配 | `permission_roles` | PG 读写 | — |
-| 14 | 操作日志 | `operation_logs` | PG 写入 | 审计追踪，记录后台关键变更 |
-| 15 | 门店解绑申请 | `store_unbind_requests` | PG 读写 | 顾客申请解绑门店，店长审批 |
+| 12 | 员工端微信用户 | `staff_wechat_users` | PG 读写 | 员工端独立 |
+| 13 | 预约 | `appointments` | PG 读写 | — |
+| 14 | 权限角色分配 | `permission_roles` | PG 读写 | — |
+| 15 | 操作日志 | `operation_logs` | PG 写入 | 审计追踪，记录后台关键变更 |
+| 16 | 门店解绑申请 | `store_unbind_requests` | PG 读写 | 顾客申请解绑门店，店长审批 |
 
 > 同步机制详见 `workfine-sync.spec.md`。
 
@@ -261,11 +261,11 @@ CloudBase 云函数（Node.js）
 > - 套餐总价 = 所有 `is_bundle_sku=true` 的 SKU 的 `price` 之和
 > - 产品类型 = `疗程卡` → 进入核销流程；`单品` → 支付即结束；`院装产品` → 支付即结束
 >
-> **FK 引用**: `sale_items.sku_id` → `product_skus.sku_id`；`service_items.sku_id` → `product_skus.sku_id`
+> **FK 引用**: `sale_items.sku_id` → `product_skus.sku_id`
 >
 > **套餐示例**:
 > ```
-> products: { product_id: 'P001', name: '春季焕肤套餐', is_bundle: true, product_kind: '福利活动' }
+> products: { product_id: 'P001', name: '春季焕肤套餐', is_bundle: true }
 >   └─ product_skus:
 >        { sku_id: 'S001', spec_name: '蜜语生玑 10次卡', price: 1999, is_bundle_sku: true }
 >        { sku_id: 'S002', spec_name: '科颜美精华 单次', price: 0, is_bundle_sku: true }  ← 赠品
@@ -298,14 +298,14 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
-| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `福利活动` |
+| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐` |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_name` | varchar(100) | 所属门店（快照） |
 | `sale_order_datetime` | timestamp | 销售日期时间 |
 | `client_user_id` | text \| null | 关联 `client_wechat_users.user_id`；员工开单时顾客未注册则为 null |
 | `client_phone` | varchar(20) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
-| `customer_id` | varchar(30) \| null | WorkFine 顾客编号（来自 `client_wechat_users.customer_id`）；开单时通过手机号匹配自动填入 |
+| `customer_id` | varchar(30) \| null | WorkFine 顾客编号（来自 `client_wechat_users.user_id`）；开单时通过手机号匹配自动填入 |
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
 | `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
 | `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `employees.employee_id` |
@@ -434,21 +434,21 @@ CloudBase 云函数（Node.js）
 
 > **字段分层**:
 > - **Layer 1 — 微信身份**: `user_id`, `openid`, `session_key`, `phone`, `last_login_at`
-> - **Layer 2 — WorkFine 档案**: `customer_id`, `name`, `age`, `registered_at`
+> - **Layer 2 — WorkFine 档案**: `name`, `age`, `registered_at`
 > - **Layer 3 — 组织归属**: `store_id`（FK → stores），`bound_store_name`, `bound_market_name`, `primary_beautician`
 > - **Layer 4 — 会员与分类**: `member_level`, `customer_source`, `category`
 > - **Layer 5 — 个人档案**: `birthday`, `occupation`, `is_married`, `wechat_name`
 > - **Layer 6 — 美容档案**: `skin_type`, `improvement_focus`, `skin_issue`, `wellness_preference`
 >
-> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(customer_id) WHERE customer_id IS NOT NULL`、`INDEX(store_id)`
+> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`INDEX(store_id)`
 >
 > **store_id vs bound_store_name**: `store_id` 来自 WorkFine 同步（顾客归属门店），`bound_store_name` 是顾客在小程序中主动绑定的门店。两者可不同。
 >
 > **行创建与合并**:
 > - **微信登录创建**：仅填充 `user_id`、`openid`，其余为 null
-> - **WorkFine 同步创建**：填充 `user_id`（系统生成）、`customer_id`、`name`、`phone` 等档案字段，`openid = null`
+> - **WorkFine 同步创建**：填充 `user_id`（格式 FYGK-{YYYYMMDD}{序号}）、`name`、`phone` 等档案字段，`openid = null`
 > - **合并时机**：微信用户绑定手机号时，若 `phone` 匹配到已有同步行，则将微信身份字段（`openid`、`session_key`）写入该行，原微信登录行删除（或合并）
-> - 并非所有顾客都会注册小程序（`openid = null`），也非所有小程序用户都有 WorkFine 档案（`customer_id = null`）
+> - 并非所有顾客都会注册小程序（`openid = null`），也非所有小程序用户都有 WorkFine 档案（仅有微信登录创建的行无档案字段）
 
 ### 4.14 staff_wechat_users（员工端微信用户）
 
@@ -773,7 +773,7 @@ const PERMISSION_MATRIX = {
     update:         ['product'],
     delete:         ['product'],
   },
-  staff: {
+  employee: {
     list:           ['manager', 'hr', 'staff'],
     detail:         ['manager', 'hr', 'staff'],
     create:         ['hr'],
@@ -1057,8 +1057,8 @@ module.exports = {
     - 已指定美容师：系统自动以该美容师为唯一被分配人创建分配记录
     - 未指定美容师：不创建分配记录
 15. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定
-16. **手机号补全机制**：顾客绑定手机号时，批量补全 `sale_orders.client_user_id`；若该行有 `customer_id`（WorkFine 同步），同步写入 `sale_orders.customer_id`
-17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id` 和 `customer_id`（若有）
+16. **手机号补全机制**：顾客绑定手机号时，批量补全 `sale_orders.client_user_id`；同步写入 `sale_orders.customer_id`（来自匹配到的 `client_wechat_users.user_id`）
+17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id` 和 `customer_id`（来自 `user_id`）
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **数据同步不影响业务**：WorkFine → PG 同步使用 UPSERT，不锁表不中断在线查询
 
@@ -1120,9 +1120,9 @@ allocated → pending          （店长删除重新分配）
 
 ---
 
-## 11. 核心接口列表
+## 10. 核心接口列表
 
-### 11.1 clientApi（顾客端）
+### 10.1 clientApi（顾客端）
 
 | 模块 | 接口 | 说明 | 实现状态 |
 |------|------|------|---------|
@@ -1130,11 +1130,11 @@ allocated → pending          （店长删除重新分配）
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode | 门店 CRUD + 解绑 + 定位 | 需适配 |
 | product | categories, spuList, skuDetail, spuDetail, hotList, shopInit | 商品浏览 | 已实现 |
 | employee | list, default | 美容师列表 | 需适配 |
-| sale_order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（customer_id 从 client_wechat_users 读取） | 已实现（需适配合并） |
+| sale_order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（customer_id 从 client_wechat_users.user_id 读取） | 已实现（需适配合并） |
 | appointment | create, list, cancel | 预约管理 | 已实现 |
 | service | detail | 服务单只读 | 已实现 |
 
-### 11.2 staffApi（员工端）
+### 10.2 staffApi（员工端）
 
 | 模块 | 接口 | 说明 | 权限要求 | 实现状态 |
 |------|------|------|----------|---------|
@@ -1157,7 +1157,7 @@ allocated → pending          （店长删除重新分配）
 | **sync** | **full** | **WorkFine → PG 全量同步** | `sync:trigger` | 待实现 |
 | **permission** | **list, assign, revoke** | **权限角色管理** | `permission:*` | 待实现 |
 
-### 11.3 跨端接口
+### 10.3 跨端接口
 
 | 接口 | 说明 |
 |------|------|
@@ -1167,7 +1167,7 @@ allocated → pending          （店长删除重新分配）
 
 ---
 
-## 12. 环境约束
+## 11. 环境约束
 
 | 约束 | 描述 |
 |------|------|
@@ -1185,7 +1185,7 @@ allocated → pending          （店长删除重新分配）
 
 ---
 
-## 13. MVP 验收标准
+## 12. MVP 验收标准
 
 | ID | 标准 | 验证方式 |
 |----|------|----------|
@@ -1198,7 +1198,7 @@ allocated → pending          （店长删除重新分配）
 | AC-07 | 员工端门店列表、员工列表、顾客搜索均从 PG 查询，响应时间 < 500ms | 接口计时 |
 | AC-08 | WorkFine 连接断开时，门店/员工/顾客查询不受影响（使用 PG 已同步数据） | 断开 MSSQL → 验证查询正常 |
 | AC-09 | 手动触发全量同步后，新增/变更的门店/员工/顾客数据在 PG 中更新 | 在 WorkFine 修改 → 触发同步 → 验证 PG |
-| AC-10 | 小程序中完成开单后，PG sale_orders 表中 customer_id 正确填入（来自 client_wechat_users.customer_id） | 开单 → 查询 sale_orders.customer_id |
+| AC-10 | 小程序中完成开单后，PG sale_orders 表中 customer_id 正确填入（来自 client_wechat_users.user_id） | 开单 → 查询 sale_orders.customer_id |
 
 ---
 
@@ -1229,7 +1229,7 @@ client_wechat_users (顾客 / 客户端微信用户，含 WorkFine 同步档案)
 │   ├── user_id ──→ sale_orders.client_user_id
 │   ├── user_id ──→ appointments.client_user_id
 │   ├── user_id ──→ service_orders.client_user_id
-│   ├── customer_id ──→ sale_orders.customer_id（WorkFine 顾客编号）
+│   ├── user_id ──→ sale_orders.customer_id（顾客编号）
 │   └── store_id ──→ stores.store_id（同步归属门店）
 
 product_categories ──→ products (1:N, via category_id)
@@ -1239,13 +1239,11 @@ products ──→ product_skus (1:N, via product_id)
 
 sale_orders ──→ sale_items (1:N)
 │   ├── sale_order_id ──→ sale_allocations (1:N)
-│   └── customer_id ──→ client_wechat_users.customer_id
+│   └── customer_id ──→ client_wechat_users.user_id
 sale_items ──→ service_items (1:N, 通过 sale_item_id)
 
 service_orders ──→ service_items (1:N)
 │   └── appointment_id ──→ appointments (1:1, 可选)
-
-sale_allocations ──→ sale_allocation_items (1:N)
 
 operation_logs (操作日志，只写)
 │   ├── operator_user_id ──→ staff_wechat_users.user_id
