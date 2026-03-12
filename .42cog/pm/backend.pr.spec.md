@@ -85,7 +85,6 @@ CloudBase 云函数（Node.js）
 | `name` | text | 节点名称，NOT NULL |
 | `type` | org_node_type enum | `headquarters` / `market` / `store` / `department`，NOT NULL |
 | `parent_id` | text \| null | FK → `org_nodes.id`（NULL = 根节点） |
-| `parent_name` | text \| null | 冗余父节点名称，避免查询时 JOIN 自身 |
 | `sort_order` | integer | 排序序号，NOT NULL DEFAULT 0 |
 | `is_active` | boolean | 是否启用，NOT NULL DEFAULT true |
 | `created_at` | timestamp | 记录创建时间 |
@@ -108,7 +107,7 @@ CloudBase 云函数（Node.js）
 > **关键设计**:
 > - 纯粹的组织架构树（邻接表），与门店业务详情分离
 > - `department` 可挂在任意层级（总部/市场/门店），而非扁平关联
-> - `parent_name` 冗余存储，避免列表查询时自 JOIN
+> - 父节点名称通过 JOIN `parent_id` 获取，不冗余存储
 > - `permission_roles.scope_id` → FK `org_nodes.id`，替代原 `stores.scope_level` 方案
 
 ### 4.2 stores（门店详情）
@@ -116,9 +115,8 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `store_id` | text | 主键，UUID |
-| `store_name` | text | 门店名称（唯一索引），业务主键，贯穿所有业务表 |
+| `store_name` | text | 门店名称（唯一索引），展示用；业务表通过 `store_id` FK 关联 |
 | `org_node_id` | text \| null | FK → `org_nodes.id`（关联 type='store' 的节点） |
-| `market_name` | text | 所属市场（冗余，同步时写入），NOT NULL |
 | `opening_date` | date \| null | 开业时间 |
 | `bed_count` | integer \| null | 可用床位数 |
 | `is_closed` | boolean | 是否停止营业，NOT NULL DEFAULT false |
@@ -136,11 +134,9 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **索引**: `INDEX(org_node_id)`, `INDEX(market_name)`
+> **索引**: `INDEX(org_node_id)`
 >
-> 现有业务表（sale_orders、service_orders、appointments 等）的 `store_name` / `market_name` 字段保持文本存储（快照语义），不设 FK 约束。`stores` 表作为门店权威查找表，应用层通过 `store_name` 查询。
->
-> **`market_name` 冗余保留**: 避免每次 JOIN org_nodes 查父节点名称，且兼容现有订单快照写入逻辑。同步时从 org_nodes 父节点（type='market'）写入。
+> 业务表（sale_orders、service_orders、appointments 等）通过 `store_id` FK 关联 stores，市场名称通过 JOIN `org_nodes` 树获取（stores.org_node_id → org_nodes.parent_id → market 节点）。
 >
 > **顾客向字段**（`cover_image` ~ `parking_info`）：
 > - 由员工端手动维护，不参与 WorkFine 同步
@@ -161,8 +157,6 @@ CloudBase 云函数（Node.js）
 | `id_card` | varchar(200) \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密） |
 | `store_id` | text \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
 | `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
-| `org_node_name` | varchar(100) \| null | 冗余部门节点名称（如"美容部"、"推广部"） |
-| `org_parent_node_name` | varchar(100) \| null | 冗余部门父节点名称（如"南昌A店"、"南昌市场"） |
 | `position_name` | varchar(50) \| null | 工作职位（如"门店经理"、"美容师"） |
 | `birthday` | date \| null | 出生日期 |
 | `skills` | text[] \| null | 技能标签数组（如 ['面部护理','身体护理']） |
@@ -170,15 +164,17 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
 
-> **字段分层**（15 个业务字段）:
+> **索引**: `INDEX(store_id, is_resigned)`, `INDEX(phone)`
+>
+> **字段分层**（11 个业务字段）:
 > - **Layer 1 — 身份与认证**: `employee_id`, `name`, `gender`, `phone`, `id_card`
-> - **Layer 2 — 组织归属**: `store_id`（FK → stores），`org_node_id`（FK → org_nodes，部门节点），`org_node_name`, `org_parent_node_name`, `position_name`
+> - **Layer 2 — 组织归属**: `store_id`（FK → stores），`org_node_id`（FK → org_nodes，部门节点），`position_name`
 > - **Layer 3 — 人事状态**: `is_resigned`
 > - **Layer 4 — 个人档案**: `birthday`, `skills`
 >
 > **store_id**: 同步脚本读取 WorkFine UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
 >
-> **org_node_id**: 同步脚本读取 WorkFine UDF_S_1513（职能部门），查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`。`org_node_name` 冗余存储部门名称，`org_parent_node_name` 冗余存储部门父节点名称，避免列表查询时 JOIN。
+> **org_node_id**: 同步脚本读取 WorkFine UDF_S_1513（职能部门），查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`。部门名称和父节点名称通过 JOIN `org_nodes` 获取，不冗余存储。
 >
 > **id_card**（UDF_S_1154）：高敏 PII 字段，AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密。
 >
@@ -186,7 +182,7 @@ CloudBase 云函数（Node.js）
 >
 > **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。详见 §6.7。
 >
-> 现有业务表中引用员工编号的字段（`sale_orders.preferred_employee_id`、`sale_orders.opened_by`、`service_orders.assigned_employee_id`、`sale_allocations.employee_id`、`service_items.employee_id`、`appointments.employee_id`、`staff_wechat_users.employee_id`）值即为 `employees.employee_id`。
+> **FK 引用汇总**: `sale_orders.opened_by`、`sale_orders.preferred_employee_id`、`service_orders.assigned_employee_id`、`sale_allocations.employee_id`、`service_items.employee_id`、`appointments.employee_id`、`staff_wechat_users.employee_id`、`store_unbind_requests.reviewed_by` 均引用 `employees.employee_id`。
 
 ### 4.4 product_categories（品项分类）
 
@@ -212,10 +208,10 @@ CloudBase 云函数（Node.js）
 | `cover_image` | text | 封面图 URL |
 | `detail_images` | text[] | 详情图片 URL 列表（PostgreSQL 数组） |
 | `description` | text | 商品描述 |
-| `is_shengmei` | boolean | 是否生美（护理项目使用，其他为 null） |
+| `is_shengmei` | boolean \| null | 是否生美（护理项目使用，其他为 null） |
 | `is_bundle` | boolean | 是否套餐（套餐的 SKU 是其组成部分），NOT NULL DEFAULT false |
-| `price` | numeric(12,2) | 标价/原价（is_bundle=true 时 = Σ(product_skus.price)；否则 = min(product_skus.price)。展示用标价，交易以 SKU 价格为准） |
-| `special_price` | numeric(12,2) \| null | 特价/促销价（null=无特价） |
+| `price` | numeric(10,2) | 标价/原价（is_bundle=true 时 = Σ(product_skus.price)；否则 = min(product_skus.price)。展示用标价，交易以 SKU 价格为准） |
+| `special_price` | numeric(10,2) \| null | 特价/促销价（null=无特价） |
 | `sales_category` | sales_category enum | 销售分类（自采自销 / 他销自耗 / 他销他耗 / 生态合作） |
 | `manage_scope` | text \| null | 管理范围（null=总部管理；值为门店/市场标识，限定谁可编辑此商品） |
 | `market_scope` | text \| null | 可见范围（null=全部可见；值为门店/市场标识，限定谁可看到/购买此商品） |
@@ -233,6 +229,8 @@ CloudBase 云函数（Node.js）
 > - `market_scope` 门店/市场级可见性限制
 > - `sales_category` 在商品层（非 SKU 层）
 > - `detail_images` 用 PostgreSQL text 数组存储多张详情图
+>
+> **有效期叠加规则**: `products.valid_start/valid_end` 控制整个商品的上下架；`product_skus.valid_start/valid_end` 控制单个规格的上下架。查询时**两层同时校验**：商品有效 AND 规格有效才展示。任一层过期即不可购买。
 
 ### 4.6 product_skus（商品规格）
 
@@ -242,13 +240,14 @@ CloudBase 云函数（Node.js）
 | `product_id` | text | FK → `products.product_id` |
 | `product_type` | product_type enum | 疗程卡 / 单品 / 院装产品；决定核销流程 |
 | `spec_name` | text | 规格名（如"10次卡"、"285ml/瓶"、"单次体验"） |
-| `price` | numeric(12,2) | 标价/零售价（套餐组件中为 0 表示赠品），**开单时快照到 sale_items.unit_price** |
-| `special_price` | numeric(12,2) \| null | 会员价（null=无会员价） |
+| `price` | numeric(10,2) | 标价/零售价（套餐组件中为 0 表示赠品），**开单时快照到 sale_items.unit_price** |
+| `special_price` | numeric(10,2) \| null | 会员价（null=无会员价） |
 | `session_count` | integer \| null | 疗程次数：疗程卡≥2，单品=1，院装产品=null |
 | `is_bundle_sku` | boolean | 是否为套餐的组成部分，NOT NULL DEFAULT false |
 | `sort_order` | integer | 排序序号 |
-| `service_fee` | numeric(12,2) | 手工费，NOT NULL DEFAULT 0 |
-| `is_active` | boolean | 是否上架，NOT NULL DEFAULT true |
+| `service_fee` | numeric(10,2) | 手工费，NOT NULL DEFAULT 0 |
+| `valid_start` | date \| null | 有效期开始（null=立即生效） |
+| `valid_end` | date \| null | 有效期结束（null=永久有效） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -260,6 +259,11 @@ CloudBase 云函数（Node.js）
 > - 套餐赠品：`price = 0` 即为赠品
 > - 套餐总价 = 所有 `is_bundle_sku=true` 的 SKU 的 `price` 之和
 > - 产品类型 = `疗程卡` → 进入核销流程；`单品` → 支付即结束；`院装产品` → 支付即结束
+>
+> **CHECK 约束**:
+> - `CHECK(price >= 0)`
+> - `CHECK(service_fee >= 0)`
+> - `CHECK(session_count IS NULL OR session_count >= 1)`
 >
 > **FK 引用**: `sale_items.sku_id` → `product_skus.sku_id`
 >
@@ -276,14 +280,13 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigserial | 主键，自增 |
-| `org_id` | text | FK → `org_nodes.id`（市场节点） |
-| `market_name` | varchar(100) | 适用市场 |
+| `org_id` | text | FK → `org_nodes.id`（市场节点），市场名称通过 JOIN org_nodes 获取 |
 | `order_type` | varchar(20) | 类型，"sale"、"service" |
 | `role_type` | varchar(20) | 角色分类，"技师"、"推广" |
 | `sales_category` | varchar(20) | 销售分类（如"自采自销"、"他销自耗"、"他销他耗"、"生态合作"） |
-| `amount_tier_min` | decimal | 金额阶段下限（含） |
-| `amount_tier_max` | decimal \| null | 金额阶段上限（不含；null 表示无上限） |
-| `commission_rate` | decimal | 提成比例（如 0.08 = 8%） |
+| `amount_tier_min` | numeric(10,2) | 金额阶段下限（含） |
+| `amount_tier_max` | numeric(10,2) \| null | 金额阶段上限（不含；null 表示无上限） |
+| `commission_rate` | numeric(5,4) | 提成比例（如 0.08 = 8%） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -298,14 +301,14 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
-| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐` |
+| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐`（当 `products.is_bundle=true` 时自动设为组合套餐） |
 | `market_name` | varchar(100) | 所属市场（快照） |
-| `store_name` | varchar(100) | 所属门店（快照） |
+| `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `sale_order_datetime` | timestamp | 销售日期时间 |
-| `client_user_id` | text \| null | 关联 `client_wechat_users.user_id`；员工开单时顾客未注册则为 null |
+| `client_user_id` | text \| null | FK → `client_wechat_users.user_id`；员工开单时通过手机号匹配填入，顾客无记录则为 null |
 | `client_phone` | varchar(20) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
-| `customer_id` | varchar(30) \| null | WorkFine 顾客编号（来自 `client_wechat_users.user_id`）；开单时通过手机号匹配自动填入 |
+| `total_amount` | numeric(10,2) | 订单总金额（= Σ sale_items.received），创建时写入，NOT NULL |
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
 | `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
 | `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `employees.employee_id` |
@@ -315,54 +318,60 @@ CloudBase 云函数（Node.js）
 | `alipay_transaction_id` | varchar(64) \| null | 支付宝交易号（唯一索引） |
 | `offline_confirmed_by` | varchar(30) \| null | 线下收款确认人员工编号，FK → `employees.employee_id` |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
-| `allocation_status` | varchar(20) \| null | 提成分配状态：null → 'pending' → 'allocated' |
+| `allocation_status` | allocation_status enum \| null | 提成分配状态：null → `pending` → `allocated` |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **部分唯一索引**：
+> **索引与约束**：
 > - `UNIQUE (client_user_id) WHERE status = '待支付' AND client_user_id IS NOT NULL`
-> - `UNIQUE (client_phone, store_name) WHERE status = '待支付' AND client_user_id IS NULL`
+> - `UNIQUE (client_phone, store_id) WHERE status = '待支付' AND client_user_id IS NULL`
+> - `INDEX(store_id, status)` — 按门店+状态查询
 
 ### 4.9 sale_items（销售明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_item_id` | varchar(30) | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
-| `sale_order_id` | varchar(30) | 关联 `sale_orders.sale_order_id` |
-| `sku_id` | text \| null | 关联 `product_skus.sku_id` |
+| `sale_order_id` | varchar(30) | FK → `sale_orders.sale_order_id`，NOT NULL |
+| `sku_id` | text \| null | FK → `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数：疗程卡≥2，单品=1，院装产品=null |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
-| `unit_price` | decimal | 原价快照（开单时持久化） |
+| `unit_price` | numeric(10,2) | 原价快照（开单时持久化） |
 | `quantity` | integer | 销售数量 |
-| `unit_real_price` | decimal | 优惠后单价金额 |
-| `sale_amount` | decimal | 优惠后销售金额 |
-| `received` | decimal | 实收金额 |
+| `unit_real_price` | numeric(10,2) | 优惠后单价金额 |
+| `sale_amount` | numeric(10,2) | 优惠后销售金额 |
+| `received` | numeric(10,2) | 实收金额 |
 | `expire_date` | date \| null | 到期日（疗程卡/单品适用，院装产品为 null） |
 | `remark` | text | 备注 |
 | `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **索引**: `INDEX(sku_id)`
+> **索引**: `INDEX(sale_order_id)`, `INDEX(sku_id)`
+>
+> **CHECK 约束**:
+> - `CHECK(unit_price >= 0)`
+> - `CHECK(unit_real_price >= 0)`
+> - `CHECK(sale_amount >= 0)`
+> - `CHECK(received >= 0)`
+> - `CHECK(remaining_sessions IS NULL OR remaining_sessions >= 0)`
+> - `CHECK(quantity > 0)`
 
 ### 4.10 sale_allocations（营业额分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
-| `sale_order_id` | varchar(30) | 关联 `sale_orders.sale_order_id` |
-| `sale_item_id` | varchar(30) | 关联 `sale_items.sale_item_id`，NOT NULL |
+| `sale_item_id` | varchar(30) | FK → `sale_items.sale_item_id`，NOT NULL |
 | `employee_id` | varchar(30) | 员工编号，FK → `employees.employee_id` |
-| `market_name` | varchar(100) | 所属市场（快照） |
-| `store_name` | varchar(100) | 所属门店（快照） |
-| `allocation_ratio` | decimal | 提成比例快照 |
-| `total_amount` | decimal | 该员工最终分配金额 |
+| `allocation_ratio` | numeric(5,2) | 提成比例快照 |
+| `total_amount` | numeric(10,2) | 该员工最终分配金额 |
 | `is_void` | boolean | 是否已作废，NOT NULL DEFAULT false |
 | `voided_at` | timestamp | 作废时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **约束**: `UNIQUE(sale_item_id, employee_id)`
+> **约束**: `UNIQUE(sale_item_id, employee_id) WHERE is_void = false`（部分唯一索引，作废后可重新分配）
 >
 > **索引**: `INDEX(employee_id)`
 
@@ -375,23 +384,25 @@ CloudBase 云函数（Node.js）
 | `service_order_id` | varchar(30) | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
 | `status` | enum | `待服务` / `服务中` / `已完成` / `已取消` |
 | `market_name` | varchar(100) | 所属市场（快照） |
-| `store_name` | varchar(100) | 所属门店（快照） |
+| `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `service_date` | date | 护理服务日期 |
 | `assigned_employee_id` | varchar(30) | 主责服务人员，FK → `employees.employee_id` |
 | `remark` | text | 备注 |
-| `appointment_id` | text \| null | 关联 `appointments.appointment_id` |
-| `client_user_id` | text \| null | 关联 `client_wechat_users.user_id` |
+| `appointment_id` | text \| null | FK → `appointments.appointment_id` |
+| `client_user_id` | text \| null | FK → `client_wechat_users.user_id` |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
+
+> **索引**: `INDEX(store_id, service_date)`, `INDEX(assigned_employee_id)`, `INDEX(client_user_id)`
 
 ### 4.12 service_items（护理明细）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `service_item_id` | text | 主键，UUID |
-| `sale_item_id` | varchar(30) | 关联 `sale_items.sale_item_id`（核销锚点） |
-| `unit_real_price` | decimal | sale_items.unit_real_price快照 |
-| `service_order_id` | varchar(30) | 关联 `service_orders.service_order_id` |
+| `sale_item_id` | varchar(30) | FK → `sale_items.sale_item_id`（核销锚点），NOT NULL |
+| `unit_real_price` | numeric(10,2) | sale_items.unit_real_price 快照 |
+| `service_order_id` | varchar(30) | FK → `service_orders.service_order_id`，NOT NULL |
 | `session_used` | integer | 本次划卡次数 |
 | `employee_id` | varchar(30) | 服务美容师，FK → `employees.employee_id` |
 | `service_duration` | integer | 服务时长（分钟） |
@@ -406,15 +417,13 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `user_id` | text | 主键，WorkFine 顾客编号（格式 `FYGK-{YYYYMMDD}{序号}`），唯一索引；同步写入 |
+| `user_id` | text | 主键，格式 `FYGK-{YYYYMMDD}{序号}`；微信登录或 WorkFine 同步均按此格式生成 |
 | `openid` | varchar(64) \| null | 微信 openid（客户端 appid 下，唯一索引）；仅 WorkFine 同步创建的行为 null |
 | `session_key` | varchar(128) \| null | 微信 session_key |
 | `phone` | varchar(20) \| null | 手机号码（唯一索引）；微信登录后绑定，或 WorkFine 同步写入 |
 | `name` | varchar(50) \| null | 顾客姓名（同步写入或手动维护） |
-| `age` | integer \| null | 年龄 |
 | `store_id` | text \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
-| `bound_store_name` | varchar(100) \| null | 绑定门店名（顾客端主动绑定） |
-| `bound_market_name` | varchar(100) \| null | 绑定市场名（顾客端主动绑定） |
+| `bound_store_id` | text \| null | FK → `stores.store_id`（顾客端主动绑定的门店） |
 | `primary_beautician` | varchar(50) \| null | 所属美容师姓名（营业额分配默认人员） |
 | `member_level` | varchar(20) \| null | 会员等级（普通 / VIP 等） |
 | `customer_source` | varchar(50) \| null | 顾客来源（售前 / 拓客 / 推荐等） |
@@ -434,19 +443,19 @@ CloudBase 云函数（Node.js）
 
 > **字段分层**:
 > - **Layer 1 — 微信身份**: `user_id`, `openid`, `session_key`, `phone`, `last_login_at`
-> - **Layer 2 — WorkFine 档案**: `name`, `age`, `registered_at`
-> - **Layer 3 — 组织归属**: `store_id`（FK → stores），`bound_store_name`, `bound_market_name`, `primary_beautician`
+> - **Layer 2 — WorkFine 档案**: `name`, `registered_at`
+> - **Layer 3 — 组织归属**: `store_id`（FK → stores），`bound_store_id`（FK → stores），`primary_beautician`
 > - **Layer 4 — 会员与分类**: `member_level`, `customer_source`, `category`
 > - **Layer 5 — 个人档案**: `birthday`, `occupation`, `is_married`, `wechat_name`
 > - **Layer 6 — 美容档案**: `skin_type`, `improvement_focus`, `skin_issue`, `wellness_preference`
 >
-> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`INDEX(store_id)`
+> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`INDEX(store_id)`、`INDEX(bound_store_id)`
 >
-> **store_id vs bound_store_name**: `store_id` 来自 WorkFine 同步（顾客归属门店），`bound_store_name` 是顾客在小程序中主动绑定的门店。两者可不同。
+> **store_id vs bound_store_id**: `store_id` 来自 WorkFine 同步（顾客归属门店），`bound_store_id` 是顾客在小程序中主动绑定的门店。两者可不同。市场名称通过 `bound_store_id` JOIN stores → org_nodes 树获取。
 >
 > **行创建与合并**:
-> - **微信登录创建**：仅填充 `user_id`、`openid`，其余为 null
-> - **WorkFine 同步创建**：填充 `user_id`（格式 FYGK-{YYYYMMDD}{序号}）、`name`、`phone` 等档案字段，`openid = null`
+> - **微信登录创建**：生成 `user_id`（格式 `FYGK-{YYYYMMDD}{序号}`），填充 `openid`，其余为 null
+> - **WorkFine 同步创建**：生成 `user_id`（同格式），填充 `name`、`phone` 等档案字段，`openid = null`
 > - **合并时机**：微信用户绑定手机号时，若 `phone` 匹配到已有同步行，则将微信身份字段（`openid`、`session_key`）写入该行，原微信登录行删除（或合并）
 > - 并非所有顾客都会注册小程序（`openid = null`），也非所有小程序用户都有 WorkFine 档案（仅有微信登录创建的行无档案字段）
 
@@ -457,11 +466,13 @@ CloudBase 云函数（Node.js）
 | `user_id` | text | 主键，系统自生成 |
 | `openid` | varchar(64) | 微信 openid（员工端 appid 下，唯一索引） |
 | `session_key` | varchar(128) | 微信 session_key |
-| `phone` | varchar(20) | 绑定手机号 |
-| `employee_id` | varchar(30) | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
+| `phone` | varchar(20) \| null | 绑定手机号（绑定前为 null） |
+| `employee_id` | varchar(30) \| null | FK → `employees.employee_id`（手机号自动匹配后填入） |
 | `last_login_at` | timestamp | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
+
+> **索引**: `UNIQUE(openid)`, `INDEX(phone)`, `UNIQUE(employee_id) WHERE employee_id IS NOT NULL`
 
 ### 4.15 appointments（预约）
 
@@ -469,13 +480,13 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `appointment_id` | text | 主键，系统自生成 |
 | `status` | enum | `待确认` / `已确认` / `已完成` / `已取消` / `已关闭` |
-| `market_name` | varchar(100) | 所属市场 |
-| `store_name` | varchar(100) | 所属门店 |
-| `client_user_id` | text | 关联 `client_wechat_users.user_id` |
+| `market_name` | varchar(100) | 所属市场（快照） |
+| `store_id` | text | FK → `stores.store_id`，NOT NULL |
+| `client_user_id` | text | FK → `client_wechat_users.user_id`，NOT NULL |
 | `customer_name` | varchar(50) | 顾客姓名（冗余存储） |
 | `employee_id` | varchar(30) | 预约美容师，FK → `employees.employee_id` |
 | `employee_name` | varchar(50) | 美容师姓名（冗余存储） |
-| `sale_item_id` | varchar(30) \| null | 关联 `sale_items.sale_item_id`（可选） |
+| `sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`（可选） |
 | `appointment_time` | timestamp | 预约到店时间 |
 | `checkin_at` | timestamp \| null | 到店签到时间（不改状态） |
 | `notes` | text | 备注 |
@@ -483,14 +494,14 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> **索引**: `INDEX(store_name)`
+> **索引**: `INDEX(store_id)`, `INDEX(client_user_id)`, `INDEX(employee_id, appointment_time)`
 
 ### 4.16 permission_roles（权限角色分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigserial | 主键，自增 |
-| `employee_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
+| `employee_id` | varchar(30) NOT NULL | 员工编号，FK → `employees.employee_id` |
 | `role` | text NOT NULL | 角色：`manager` / `finance` / `hr` / `product` / `staff` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
@@ -512,7 +523,7 @@ CloudBase 云函数（Node.js）
 >
 > **数据量**: ~2000+ 行（在职员工各至少一行，多角色/多域员工有多行）
 >
-> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name` + `position_name` 规则自动推导，详见 §6.10 同步推导规则。`hr` 和 `product` 角色不参与自动推导，仅通过管理后台手动分配。
+> **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_id`（JOIN `org_nodes.name`）+ `position_name` 规则自动推导，详见 §6.10 同步推导规则。`hr` 和 `product` 角色不参与自动推导，仅通过管理后台手动分配。
 >
 > **默认降级**: 未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`
 >
@@ -561,10 +572,10 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `request_id` | text | 主键，系统自生成 |
 | `user_id` | text | 申请人 `client_wechat_users.user_id`，NOT NULL |
-| `from_store_name` | text | 原绑定门店名，NOT NULL |
+| `from_store_id` | text | 原绑定门店，FK → `stores.store_id`，NOT NULL |
 | `status` | enum | `pending` / `approved` / `rejected` / `cancelled`，NOT NULL DEFAULT `pending` |
 | `note` | text \| null | 申请备注 |
-| `reviewed_by` | text \| null | 审批人（员工编号或 userId） |
+| `reviewed_by` | varchar(30) \| null | 审批人，FK → `employees.employee_id` |
 | `reviewed_at` | timestamp \| null | 审批时间 |
 | `reject_reason` | text \| null | 拒绝原因 |
 | `created_at` | timestamp | 记录创建时间，NOT NULL DEFAULT now() |
@@ -572,7 +583,7 @@ CloudBase 云函数（Node.js）
 
 > **业务说明**:
 > - 顾客在客户端发起门店解绑申请，店长在员工端审批
-> - `approved` 后由应用层清除 `client_wechat_users.bound_store_name`
+> - `approved` 后由应用层清除 `client_wechat_users.bound_store_id`
 > - `cancelled` 表示顾客主动撤销申请
 
 ---
@@ -662,8 +673,8 @@ CloudBase 云函数（Node.js）
 | 域级别 | `org_nodes.type` | 数据边界 | 典型角色 |
 |--------|------------------|----------|----------|
 | 全局 | `headquarters` | 所有门店数据，无过滤 | 总部管理人员 |
-| 市场 | `market` | 该市场下所有门店数据（`WHERE market_name = ?`） | 市场总监、片区经理、市场财务 |
-| 门店 | `store` | 仅本门店数据（`WHERE store_name = ?`） | 门店经理、美容师、门店财务 |
+| 市场 | `market` | 该市场下所有门店数据（通过 org_nodes 树查找市场节点下所有 store 节点对应的 `store_id`，`WHERE store_id IN (?)`） | 市场总监、片区经理、市场财务 |
+| 门店 | `store` | 仅本门店数据（`WHERE store_id = ?`） | 门店经理、美容师、门店财务 |
 
 域级别由 `org_nodes.type` 决定，`permission_roles.scope_id` FK → `org_nodes.id`。
 
@@ -731,6 +742,9 @@ CloudBase 云函数（Node.js）
 ```js
 // staffApi/config/permissions.js
 const PERMISSION_MATRIX = {
+  workbench: {
+    dashboard:      ['manager', 'finance', 'hr', 'staff'],
+  },
   sale_order: {
     create:         ['manager'],
     list:           ['manager', 'finance', 'staff'],
@@ -804,9 +818,11 @@ const PERMISSION_MATRIX = {
 登录时从 `permission_roles` JOIN `org_nodes` 查询所有角色和域：
 
 ```sql
-SELECT pr.role, o.type AS scope_type, o.id AS scope_id, o.name AS scope_name, o.parent_name
+SELECT pr.role, o.type AS scope_type, o.id AS scope_id, o.name AS scope_name,
+       p.name AS parent_name
 FROM permission_roles pr
 JOIN org_nodes o ON pr.scope_id = o.id
+LEFT JOIN org_nodes p ON o.parent_id = p.id
 WHERE pr.employee_id = $1 AND pr.is_void = false
 ```
 
@@ -827,7 +843,7 @@ ctx.auth = {
   storeName,        // employees.store_id → JOIN stores 获取
   marketName,       // employees.store_id → JOIN stores 获取
   departmentNodeId, // employees.org_node_id
-  departmentName,   // employees.org_node_name
+  departmentName,   // employees.org_node_id → JOIN org_nodes.name 获取
 
   // 新增：多角色权限
   roles: [
@@ -838,7 +854,7 @@ ctx.auth = {
         type,        // 'headquarters' | 'market' | 'store'
         nodeId,      // org_nodes.id
         nodeName,    // org_nodes.name
-        marketName,  // store 时为 org_nodes.parent_name，headquarters 时为 null
+        marketName,  // store 时通过 JOIN 父节点获取，headquarters 时为 null
       },
     },
     // ...可能多条

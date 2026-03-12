@@ -157,8 +157,7 @@
 - 顾客手机号为必填项，自动查询是否已注册客户端小程序
 - 已注册 → 直接关联 `client_user_id`；未注册 → 手机号临时标识，待绑定后自动关联
 - 价格快照：开单时写入 `sale_items.unit_price`，后续不可变
-- 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`，advisory lock 防并发
-- 商品行流水号格式：`XSLSH-WX-{YYMMDD}{4位序号}`
+- 订单号/流水号格式见 `backend.pr.spec.md` §4.8/§4.9
 - 门店未配置店长时，前端提示"请先配置门店店长"
 
 **API**: `order.create` / `product.shopInit` / `product.categories` / `product.spuList` / `product.skuDetail` / `product.spuDetail` / `product.promotionList` / `product.promotionPlans`
@@ -350,11 +349,10 @@
 | 取消服务 | 待服务/服务中 → 已取消 | 不扣减次数 |
 
 **核销规则**:
-- 仅在 `已完成` 时扣减次数：`UPDATE ... SET remaining_sessions = remaining_sessions - n WHERE remaining_sessions >= n`
-- 重复完成不重复扣次（幂等）
+- 仅在 `已完成` 时扣减次数（原子扣减 + 幂等），详细 SQL 见 `backend.pr.spec.md` §5.3
 - 若扣次后该订单行 `remaining_sessions` 归零，自动关闭该行的 `待确认/已确认` 预约
 
-**服务单号格式**: `HLD-WX-{YYMMDD}{4位序号}`
+**服务单号格式**: 见 `backend.pr.spec.md` §4.11
 
 **护理 Tab 页面**（service.ts）:
 - 3 Tab：**待服务 / 服务中 / 已完成**
@@ -655,68 +653,8 @@
 
 ## 4. 状态机
 
-### 4.1 订单状态机
-
-```text
-待支付 → 已支付              （微信/支付宝支付回调成功）
-待支付 → 待确认收款          （顾客选择线下付款提交）
-待支付 → 支付失败            （支付超时/失败）
-待支付 → 已关闭              （店长关闭 或 开单员工关闭自己的待支付订单）
-待确认收款 → 已支付          （店长确认线下收款）
-待确认收款 → 已关闭          （店长手动关闭）
-支付失败 → 待支付            （店长手动重置，允许重新付款）
-已支付 → 已完成              （所有疗程卡/单品行 remaining_sessions 归零；院装产品支付即完成）
-```
-
-**订单状态集**: `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭`
-
-**补充说明**:
-- 体验单（`sale_order_type = 体验`）与正式订单走相同状态机
-- 福利活动订单（`sale_order_type = 福利活动`）走相同状态机
-- 订单关闭时，对应营业额分配记录标记为无效（`is_void = true`）
-- 订单支付成功后 `allocation_status` 设为 `pending`
-
-### 4.2 预约状态机
-
-```text
-待确认 → 已确认              （员工确认预约）
-待确认 → 已取消              （顾客取消）
-已确认 → 已取消              （顾客取消）
-已确认 → 已完成              （关联服务单完成后自动流转）
-待确认 → 已关闭              （超期未到店 或 该订单行剩余次数归零）
-已确认 → 已关闭              （超期未到店 或 该订单行剩余次数归零）
-```
-
-**`已关闭`触发条件**（二选一）:
-1. 定时任务：预约时间超过 1 天未到店（`appointment_time < NOW() - INTERVAL '1 day'`）
-2. 服务完成：该订单行 `remaining_sessions` 归零时，关联的 `待确认/已确认` 预约自动关闭
-
-**取消规则**: `已取消` 可重新发起新预约；`已关闭` 不可重新发起
-
-**到店签到**: 仅记录 `checkin_at` 时间，不改变预约状态
-
-### 4.3 服务单状态机
-
-```text
-待服务 → 服务中              （开始服务）
-服务中 → 已完成              （完成服务，原子扣减次数）
-待服务 → 已取消              （取消服务单，不扣次）
-服务中 → 已取消              （取消服务单，不扣次）
-```
-
-**扣减规则**:
-- 仅在 `服务中 → 已完成` 时扣减 `session_used` 次
-- 原子操作：`UPDATE sale_items SET remaining_sessions = remaining_sessions - n WHERE sale_item_id = $1 AND remaining_sessions >= n`
-- 检查 `rowCount` 判断成功，若为 0 则余次不足
-- 重复完成同一服务单，后端幂等返回成功（已完成状态直接返回）
-
-### 4.4 营业额分配状态机
-
-```text
-null → pending               （订单支付成功，allocation_status 初始化）
-pending → allocated          （店长完成分配）
-allocated → pending          （店长删除分配记录，重新分配）
-```
+> 订单、预约、服务单、营业额分配状态机定义见 `backend.pr.spec.md` §5。
+> 员工端特有交互规则（如可编辑窗口、操作权限矩阵）见本文 §3.4/§3.5。
 
 ---
 
@@ -794,41 +732,13 @@ TabBar
 
 ## 6. 数据来源对照
 
-### 读写（PG 自托管数据库）
-
-| 数据域 | PG 表 | 关键字段 | 用途 |
-|--------|------|----------|------|
-| 组织架构 | `org_nodes` | id, name, type, parent_id, parent_name | 组织层级树、权限域目标 |
-| 门店详情 | `stores` | store_id, store_name, org_node_id, market_name | 门店业务信息 |
-| 员工微信用户 | `staff_wechat_users` | openid, phone, employee_id | 员工身份 |
-| 顾客微信用户 | `client_wechat_users` | openid, phone, bound_store_name | 顾客身份关联 |
-| 商品分类 | `product_categories` | name, product_kind, sort_order | 品项分类 |
-| 商品主表 | `products` | name, category_id, product_kind, cover_image | 商品元数据 |
-| 商品规格 | `product_skus` | product_id, price, session_count, is_active | 商品规格 |
-| 订单主表 | `sale_orders` | sale_order_id, status, sale_sale_order_type, allocation_status | 订单 CRUD |
-| 订单明细 | `sale_items` | sale_item_id, sku_id, unit_price, remaining_sessions | 商品行、价格快照、剩余次数 |
-| 营业额分配 | `sale_allocations` + `sale_allocation_items` | employee_id, department, amount, commission_rate | 分配记录 |
-| 权限角色 | `permission_roles` | employee_id, role, scope_id → org_nodes.id | RBAC 权限 |
-| 预约 | `appointments` | status, client_user_id, employee_id, checkin_at | 预约 CRUD |
-| 服务单 | `service_orders` + `service_items` | service_order_id, status, appointment_id, session_used | 服务单核销 |
-| 解绑申请 | `store_unbind_requests` | status, user_id, from_store_name | 门店解绑审批 |
-| 操作日志 | `operation_logs` | operator_user_id, org_node_id, action, target_type, target_id | 审计追踪（只写） |
+> 完整数据模型见 `backend.pr.spec.md` §4。员工端涉及的 PG 表：org_nodes, stores, staff_wechat_users, client_wechat_users, product_categories, products, product_skus, sale_orders, sale_items, sale_allocations, permission_roles, appointments, service_orders, service_items, store_unbind_requests, operation_logs。
 
 ---
 
-## 7. 环境约束（引用 real.md）
+## 7. 环境约束
 
-| 约束 | 描述 |
-|------|------|
-| 疗程次数原子扣减 | `UPDATE ... SET remaining_sessions = remaining_sessions - n WHERE remaining_sessions >= n`，禁止先 SELECT 后 UPDATE |
-| 价格快照不可变 | 开单时写入 `unit_price`，后续价格变动不影响历史订单 |
-| 支付幂等 | 微信回调、线下确认、服务完成接口均需幂等，不得重复入账或扣次 |
-| 状态单向推进 | 订单/服务单/预约状态只能沿状态机正向流转；唯一例外：店长可重置 `支付失败` → `待支付` |
-| 域数据隔离 | 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），由 `buildScopeWhere()` 统一生成 |
-| 订单号唯一生成 | advisory lock 防流水号并发冲突 |
-| 待支付订单唯一 | 同一顾客同时只能有一笔待支付订单（数据库部分唯一索引 + 应用层校验） |
-| 事务处理 | 服务单完成、订单创建、分配保存均使用 PostgreSQL transaction |
-| 连接池限制 | PG max 5，懒初始化 |
+> 见 `backend.pr.spec.md` §7（原子扣减、价格快照、支付幂等、状态单向推进、域数据隔离、连接池限制等）。
 
 ---
 

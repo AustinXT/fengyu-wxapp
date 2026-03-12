@@ -166,19 +166,7 @@
 | 二级 | 右侧 SPU 卡片列表 | 同一商品不同规格合并为一张卡，展示封面图、名称、价格起步、生美/非生美标签 |
 | 三级 | 商品详情页（SKU 规格选择） | 展示全部 SKU 规格选项（规格名 + 价格 + 疗程服务次数），选择后可下单 |
 
-**分类查询逻辑**:
-```sql
-SELECT c.id, c.name, c.sort_order
-FROM product_categories c
-WHERE c.product_kind != '院装产品'
-  AND EXISTS (
-    SELECT 1 FROM product_skus s
-    JOIN products p ON s.product_id = p.id
-    WHERE p.category_id = c.id AND s.is_active = true
-  )
-ORDER BY c.sort_order ASC;
--- 院装产品节点固定追加在末尾
-```
+**分类查询逻辑**: 见 `backend.pr.spec.md` §4.4
 
 **商品详情页 UI（service-detail）**:
 - 封面图（全宽）或占位图标
@@ -276,11 +264,10 @@ ORDER BY c.sort_order ASC;
 - 创建新订单时同时清理该用户旧的过期待支付订单
 
 **核心规则**:
-- 提交防重：前端防连点 + 后端幂等（部分唯一索引 `UNIQUE (client_user_id) WHERE status = '待支付'`）
+- 提交防重：前端防连点 + 后端幂等（约束见 `backend.pr.spec.md` §4.8）
 - 价格快照：开单时从 PG `product_skus` 读取价格写入 `sale_items.unit_price`，后续不可变
 - 订单进入 `已支付` 后，若指定了美容师，系统自动创建营业额分配记录
-- 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`
-- 明细行流水号格式：`XSLSH-WX-{YYYYMMDD}{4位序号}`（advisory lock 防并发）
+- 订单号/流水号格式见 `backend.pr.spec.md` §4.8/§4.9
 - 顾客姓名回填：从 PG `client_wechat_users` 按手机号查询 `name`
 
 **订单状态集**: `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭`
@@ -667,48 +654,8 @@ ORDER BY c.sort_order ASC;
 
 ## 4. 状态机
 
-### 4.1 订单状态机
-
-```text
-待支付 → 已支付              （微信/支付宝支付回调成功）
-待支付 → 待确认收款          （顾客选择线下付款提交）
-待支付 → 支付失败            （支付超时/失败）
-待支付 → 已关闭              （顾客取消或手动关闭）
-待确认收款 → 已支付          （店长确认线下收款）
-支付失败 → 待支付            （店长手动重置，允许重新付款）
-已支付 → 已完成              （所有疗程卡/单品行 remaining_sessions 归零；院装产品支付即完成）
-```
-
-**补充说明**:
-- `待确认收款`：仅用于线下付款的中间状态
-- 体验单（`sale_order_type = 体验`）与正式订单走相同的状态机
-- 订单关闭/支付失败时，对应的营业额分配记录标记为无效（`is_void = true`）
-
-### 4.2 预约状态机
-
-```text
-待确认 → 已确认              （员工确认预约）
-待确认 → 已取消              （顾客取消）
-已确认 → 已取消              （顾客取消）
-已确认 → 已完成              （关联的服务单完成后自动流转）
-待确认 → 已关闭              （超期未到店 或 该订单行剩余次数归零）
-已确认 → 已关闭              （超期未到店 或 该订单行剩余次数归零）
-```
-
-**`已关闭`触发条件**（二选一）:
-1. 定时任务：预约时间超过 1 天未到店（`appointment_time < NOW() - INTERVAL '1 day'`）
-2. 服务完成：该订单行 `remaining_sessions` 归零时，关联的 `待确认`/`已确认` 预约自动关闭
-
-**取消规则**: `已取消`状态可重新发起新预约；`已关闭`状态不可重新发起。
-
-### 4.3 服务单状态机（顾客端只读）
-
-```text
-待服务 → 服务中 → 已完成
-```
-
-- 状态推进由员工端操作，顾客端仅查看
-- 仅在 `服务中 → 已完成` 时扣减次数，幂等处理
+> 订单、预约、服务单状态机定义见 `backend.pr.spec.md` §5。
+> 顾客端仅可执行：取消订单（待支付→已关闭）、取消预约（待确认/已确认→已取消）、服务单只读。
 
 ---
 
@@ -779,32 +726,13 @@ TabBar
 
 ## 6. 数据来源对照
 
-### 读写（PG 自托管数据库）
-
-| 数据域 | PG 表 | 用途 |
-|--------|------|------|
-| 微信用户 | `client_wechat_users` | 顾客身份 |
-| 商品分类 | `product_categories` | 品项分类 |
-| 商品主表 | `products` | 商品元数据（名称、图片、分类、排序） |
-| 商品规格 | `product_skus` | 价格、次数、有效期 |
-| 订单主表 | `sale_orders` | 订单 CRUD |
-| 订单明细 | `sale_items` | 商品行、剩余次数、价格快照 |
-| 营业额分配 | `sale_allocations` + `sale_allocation_items` | 自动/手动分配（顾客端只读） |
-| 预约 | `appointments` | 预约 CRUD |
-| 服务单 | `service_orders` + `service_items` | 顾客端只读查看 |
+> 完整数据模型见 `backend.pr.spec.md` §4。客户端涉及的 PG 表：client_wechat_users, product_categories, products, product_skus, sale_orders, sale_items, sale_allocations, appointments, service_orders, service_items。
 
 ---
 
-## 7. 环境约束（引用 real.md）
+## 7. 环境约束
 
-| 约束 | 描述 |
-|------|------|
-| 疗程次数原子扣减 | `UPDATE ... SET remaining_sessions = remaining_sessions - n WHERE remaining_sessions >= n`，禁止先 SELECT 后 UPDATE |
-| 价格快照不可变 | 开单时写入 `unit_price`，后续价格变动不影响历史订单 |
-| 支付幂等 | 微信回调、线下确认、服务完成接口均需幂等，不得重复入账或扣次 |
-| 状态单向推进 | 订单/服务单/预约状态只能沿状态机正向流转；唯一例外：店长可重置 `支付失败` → `待支付` |
-| 门店数据隔离 | 所有 PG 查询以 `ctx.auth.userId` 或 `ctx.auth.storeName` 过滤，禁止跨用户/跨门店访问 |
-| 待支付订单唯一 | 同一顾客同时只能有一笔待支付订单（数据库部分唯一索引 + 应用层校验） |
+> 见 `backend.pr.spec.md` §7。
 
 ---
 
