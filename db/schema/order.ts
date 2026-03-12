@@ -57,7 +57,7 @@ export const orders = pgTable(
     /** 开单人员工编号，客户端自助时为 null */
     openedBy: text('opened_by'),
     /** 顾客指定美容师，关联 WorkFine UDT_S_287.UDF_S_1147，未指定为 null */
-    preferredStaffWfId: text('preferred_staff_wf_id'),
+    preferredStaffWfId: text('preferred_employee_id'),
     paidAt: timestamp('paid_at'),
     /**
      * 微信支付回调返回的流水号（transaction_id）。

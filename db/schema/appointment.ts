@@ -26,7 +26,7 @@ export const appointments = pgTable(
     /** 顾客姓名，冗余存储 */
     customerName: text("customer_name").notNull(),
     /** 关联 WorkFine UDT_S_287.UDF_S_1147 */
-    staffWfId: text("staff_wf_id").notNull(),
+    staffWfId: text("employee_id").notNull(),
     /** 美容师姓名，冗余存储 */
     staffName: text("staff_name").notNull(),
     /** 关联 order_items.item_flow_no，可选（允许不关联具体项目） */

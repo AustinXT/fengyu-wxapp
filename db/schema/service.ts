@@ -10,7 +10,7 @@ import { clientWechatUsers } from './user'
  * 与订单的关联通过 service_items.item_flow_no → order_items.item_flow_no 实现，
  * 主表不存 order_no，支持同一次到店跨多笔订单核销（orders ↔ service_orders 为 N:N）。
  * 状态流转：待服务 -> 服务中 -> 已完成
- *   - 仅店长或 assigned_staff_wf_id 匹配的服务人员可推进状态
+ *   - 仅店长或 assigned_employee_id 匹配的服务人员可推进状态
  *   - 仅在 服务中->已完成 时扣减 session_used 次，且不得小于 0
  *   - 重复点击完成时后端按同一服务单 ID 幂等处理，不得重复扣次
  */
@@ -28,7 +28,7 @@ export const serviceOrders = pgTable(
     /** 服务时长（分钟） */
     serviceDuration: integer('service_duration'),
     /** 主责服务人员，关联 WorkFine UDT_S_287.UDF_S_1147，用于状态推进权限校验 */
-    assignedStaffWfId: text('assigned_staff_wf_id').notNull(),
+    assignedStaffWfId: text('assigned_employee_id').notNull(),
     remark: text('remark'),
     /**
      * 关联 appointments.appointment_id（可选）

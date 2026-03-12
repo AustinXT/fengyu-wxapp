@@ -256,8 +256,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "staff_wf_id": {
-          "name": "staff_wf_id",
+        "employee_id": {
+          "name": "employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -294,11 +294,11 @@
             "openid"
           ]
         },
-        "staff_wechat_users_staff_wf_id_unique": {
-          "name": "staff_wechat_users_staff_wf_id_unique",
+        "staff_wechat_users_employee_id_unique": {
+          "name": "staff_wechat_users_employee_id_unique",
           "nullsNotDistinct": false,
           "columns": [
-            "staff_wf_id"
+            "employee_id"
           ]
         }
       },
@@ -524,8 +524,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "preferred_staff_wf_id": {
-          "name": "preferred_staff_wf_id",
+        "preferred_employee_id": {
+          "name": "preferred_employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -862,8 +862,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "staff_wf_id": {
-          "name": "staff_wf_id",
+        "employee_id": {
+          "name": "employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -927,7 +927,7 @@
           "name": "idx_appts_staff_time",
           "columns": [
             {
-              "expression": "staff_wf_id",
+              "expression": "employee_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1097,8 +1097,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "assigned_staff_wf_id": {
-          "name": "assigned_staff_wf_id",
+        "assigned_employee_id": {
+          "name": "assigned_employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1156,7 +1156,7 @@
           "name": "idx_svc_orders_assigned_staff",
           "columns": [
             {
-              "expression": "assigned_staff_wf_id",
+              "expression": "assigned_employee_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

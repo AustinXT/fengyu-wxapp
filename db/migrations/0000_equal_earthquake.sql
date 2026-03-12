@@ -47,12 +47,12 @@ CREATE TABLE "staff_wechat_users" (
 	"openid" text NOT NULL,
 	"session_key" text,
 	"phone" text,
-	"staff_wf_id" text,
+	"employee_id" text,
 	"last_login_at" timestamp,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL,
 	CONSTRAINT "staff_wechat_users_openid_unique" UNIQUE("openid"),
-	CONSTRAINT "staff_wechat_users_staff_wf_id_unique" UNIQUE("staff_wf_id")
+	CONSTRAINT "staff_wechat_users_employee_id_unique" UNIQUE("employee_id")
 );
 --> statement-breakpoint
 CREATE TABLE "order_items" (
@@ -84,7 +84,7 @@ CREATE TABLE "orders" (
 	"payment_method" "payment_method" NOT NULL,
 	"order_source" "order_source" NOT NULL,
 	"opened_by" text,
-	"preferred_staff_wf_id" text,
+	"preferred_employee_id" text,
 	"paid_at" timestamp,
 	"wechat_transaction_id" text,
 	"offline_confirmed_by" text,
@@ -121,7 +121,7 @@ CREATE TABLE "appointments" (
 	"store_name" text NOT NULL,
 	"client_user_id" text NOT NULL,
 	"customer_name" text NOT NULL,
-	"staff_wf_id" text NOT NULL,
+	"employee_id" text NOT NULL,
 	"staff_name" text NOT NULL,
 	"appointment_time" timestamp NOT NULL,
 	"notes" text,
@@ -146,7 +146,7 @@ CREATE TABLE "service_orders" (
 	"store_name" text NOT NULL,
 	"service_date" date NOT NULL,
 	"service_duration" integer,
-	"assigned_staff_wf_id" text NOT NULL,
+	"assigned_employee_id" text NOT NULL,
 	"remark" text,
 	"client_user_id" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
@@ -170,6 +170,6 @@ CREATE INDEX "idx_orders_client_user_id" ON "orders" USING btree ("client_user_i
 CREATE INDEX "idx_orders_store_status" ON "orders" USING btree ("store_name","status");--> statement-breakpoint
 CREATE INDEX "idx_rev_alloc_order_no" ON "revenue_allocations" USING btree ("order_no");--> statement-breakpoint
 CREATE INDEX "idx_appts_client_user_id" ON "appointments" USING btree ("client_user_id");--> statement-breakpoint
-CREATE INDEX "idx_appts_staff_time" ON "appointments" USING btree ("staff_wf_id","appointment_time");--> statement-breakpoint
+CREATE INDEX "idx_appts_staff_time" ON "appointments" USING btree ("employee_id","appointment_time");--> statement-breakpoint
 CREATE INDEX "idx_svc_orders_store_date" ON "service_orders" USING btree ("store_name","service_date");--> statement-breakpoint
-CREATE INDEX "idx_svc_orders_assigned_staff" ON "service_orders" USING btree ("assigned_staff_wf_id");
+CREATE INDEX "idx_svc_orders_assigned_staff" ON "service_orders" USING btree ("assigned_employee_id");

@@ -130,12 +130,8 @@
           "name": "product_spu_sku_map_spu_id_product_spu_spu_id_fk",
           "tableFrom": "product_spu_sku_map",
           "tableTo": "product_spu",
-          "columnsFrom": [
-            "spu_id"
-          ],
-          "columnsTo": [
-            "spu_id"
-          ],
+          "columnsFrom": ["spu_id"],
+          "columnsTo": ["spu_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -145,11 +141,7 @@
         "uq_spu_workfine": {
           "name": "uq_spu_workfine",
           "nullsNotDistinct": false,
-          "columns": [
-            "spu_id",
-            "workfine_item_id",
-            "workfine_source"
-          ]
+          "columns": ["spu_id", "workfine_item_id", "workfine_source"]
         }
       },
       "policies": {},
@@ -224,16 +216,12 @@
         "client_wechat_users_openid_unique": {
           "name": "client_wechat_users_openid_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "openid"
-          ]
+          "columns": ["openid"]
         },
         "client_wechat_users_phone_unique": {
           "name": "client_wechat_users_phone_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "phone"
-          ]
+          "columns": ["phone"]
         }
       },
       "policies": {},
@@ -268,8 +256,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "staff_wf_id": {
-          "name": "staff_wf_id",
+        "employee_id": {
+          "name": "employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -302,16 +290,12 @@
         "staff_wechat_users_openid_unique": {
           "name": "staff_wechat_users_openid_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "openid"
-          ]
+          "columns": ["openid"]
         },
-        "staff_wechat_users_staff_wf_id_unique": {
-          "name": "staff_wechat_users_staff_wf_id_unique",
+        "staff_wechat_users_employee_id_unique": {
+          "name": "staff_wechat_users_employee_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "staff_wf_id"
-          ]
+          "columns": ["employee_id"]
         }
       },
       "policies": {},
@@ -431,12 +415,8 @@
           "name": "order_items_order_no_orders_order_no_fk",
           "tableFrom": "order_items",
           "tableTo": "orders",
-          "columnsFrom": [
-            "order_no"
-          ],
-          "columnsTo": [
-            "order_no"
-          ],
+          "columnsFrom": ["order_no"],
+          "columnsTo": ["order_no"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -444,12 +424,8 @@
           "name": "order_items_sku_id_product_spu_sku_map_sku_id_fk",
           "tableFrom": "order_items",
           "tableTo": "product_spu_sku_map",
-          "columnsFrom": [
-            "sku_id"
-          ],
-          "columnsTo": [
-            "sku_id"
-          ],
+          "columnsFrom": ["sku_id"],
+          "columnsTo": ["sku_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -542,8 +518,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "preferred_staff_wf_id": {
-          "name": "preferred_staff_wf_id",
+        "preferred_employee_id": {
+          "name": "preferred_employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -669,9 +645,7 @@
         "orders_wechat_transaction_id_unique": {
           "name": "orders_wechat_transaction_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "wechat_transaction_id"
-          ]
+          "columns": ["wechat_transaction_id"]
         }
       },
       "policies": {},
@@ -713,12 +687,8 @@
           "name": "revenue_allocation_items_allocation_id_revenue_allocations_id_fk",
           "tableFrom": "revenue_allocation_items",
           "tableTo": "revenue_allocations",
-          "columnsFrom": [
-            "allocation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["allocation_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -813,12 +783,8 @@
           "name": "revenue_allocations_order_no_orders_order_no_fk",
           "tableFrom": "revenue_allocations",
           "tableTo": "orders",
-          "columnsFrom": [
-            "order_no"
-          ],
-          "columnsTo": [
-            "order_no"
-          ],
+          "columnsFrom": ["order_no"],
+          "columnsTo": ["order_no"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -828,10 +794,7 @@
         "uq_rev_alloc_order_emp": {
           "name": "uq_rev_alloc_order_emp",
           "nullsNotDistinct": false,
-          "columns": [
-            "order_no",
-            "employee_id"
-          ]
+          "columns": ["order_no", "employee_id"]
         }
       },
       "policies": {},
@@ -880,8 +843,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "staff_wf_id": {
-          "name": "staff_wf_id",
+        "employee_id": {
+          "name": "employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -951,7 +914,7 @@
           "name": "idx_appts_staff_time",
           "columns": [
             {
-              "expression": "staff_wf_id",
+              "expression": "employee_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -974,12 +937,8 @@
           "name": "appointments_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "appointments",
           "tableTo": "client_wechat_users",
-          "columnsFrom": [
-            "client_user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["client_user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -987,12 +946,8 @@
           "name": "appointments_item_flow_no_order_items_item_flow_no_fk",
           "tableFrom": "appointments",
           "tableTo": "order_items",
-          "columnsFrom": [
-            "item_flow_no"
-          ],
-          "columnsTo": [
-            "item_flow_no"
-          ],
+          "columnsFrom": ["item_flow_no"],
+          "columnsTo": ["item_flow_no"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1050,12 +1005,8 @@
           "name": "service_items_item_flow_no_order_items_item_flow_no_fk",
           "tableFrom": "service_items",
           "tableTo": "order_items",
-          "columnsFrom": [
-            "item_flow_no"
-          ],
-          "columnsTo": [
-            "item_flow_no"
-          ],
+          "columnsFrom": ["item_flow_no"],
+          "columnsTo": ["item_flow_no"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1063,12 +1014,8 @@
           "name": "service_items_service_order_no_service_orders_service_order_no_fk",
           "tableFrom": "service_items",
           "tableTo": "service_orders",
-          "columnsFrom": [
-            "service_order_no"
-          ],
-          "columnsTo": [
-            "service_order_no"
-          ],
+          "columnsFrom": ["service_order_no"],
+          "columnsTo": ["service_order_no"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1076,12 +1023,8 @@
           "name": "service_items_sku_id_product_spu_sku_map_sku_id_fk",
           "tableFrom": "service_items",
           "tableTo": "product_spu_sku_map",
-          "columnsFrom": [
-            "sku_id"
-          ],
-          "columnsTo": [
-            "sku_id"
-          ],
+          "columnsFrom": ["sku_id"],
+          "columnsTo": ["sku_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1134,8 +1077,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "assigned_staff_wf_id": {
-          "name": "assigned_staff_wf_id",
+        "assigned_employee_id": {
+          "name": "assigned_employee_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -1193,7 +1136,7 @@
           "name": "idx_svc_orders_assigned_staff",
           "columns": [
             {
-              "expression": "assigned_staff_wf_id",
+              "expression": "assigned_employee_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1210,12 +1153,8 @@
           "name": "service_orders_client_user_id_client_wechat_users_user_id_fk",
           "tableFrom": "service_orders",
           "tableTo": "client_wechat_users",
-          "columnsFrom": [
-            "client_user_id"
-          ],
-          "columnsTo": [
-            "user_id"
-          ],
+          "columnsFrom": ["client_user_id"],
+          "columnsTo": ["user_id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1231,88 +1170,47 @@
     "public.appointment_status": {
       "name": "appointment_status",
       "schema": "public",
-      "values": [
-        "待确认",
-        "已确认",
-        "已完成",
-        "已取消",
-        "已关闭"
-      ]
+      "values": ["待确认", "已确认", "已完成", "已取消", "已关闭"]
     },
     "public.big_category": {
       "name": "big_category",
       "schema": "public",
-      "values": [
-        "促销方案",
-        "生美",
-        "非生美",
-        "院装产品"
-      ]
+      "values": ["促销方案", "生美", "非生美", "院装产品"]
     },
     "public.order_source": {
       "name": "order_source",
       "schema": "public",
-      "values": [
-        "client",
-        "staff"
-      ]
+      "values": ["client", "staff"]
     },
     "public.order_status": {
       "name": "order_status",
       "schema": "public",
-      "values": [
-        "待支付",
-        "待确认收款",
-        "已支付",
-        "已完成",
-        "支付失败",
-        "已关闭"
-      ]
+      "values": ["待支付", "待确认收款", "已支付", "已完成", "支付失败", "已关闭"]
     },
     "public.order_type": {
       "name": "order_type",
       "schema": "public",
-      "values": [
-        "正式",
-        "体验",
-        "促销方案"
-      ]
+      "values": ["正式", "体验", "促销方案"]
     },
     "public.payment_method": {
       "name": "payment_method",
       "schema": "public",
-      "values": [
-        "wechat",
-        "offline"
-      ]
+      "values": ["wechat", "offline"]
     },
     "public.product_type": {
       "name": "product_type",
       "schema": "public",
-      "values": [
-        "疗程卡",
-        "单品",
-        "院装产品"
-      ]
+      "values": ["疗程卡", "单品", "院装产品"]
     },
     "public.service_order_status": {
       "name": "service_order_status",
       "schema": "public",
-      "values": [
-        "待服务",
-        "服务中",
-        "已完成"
-      ]
+      "values": ["待服务", "服务中", "已完成"]
     },
     "public.workfine_source": {
       "name": "workfine_source",
       "schema": "public",
-      "values": [
-        "UDT_M_1281",
-        "UDT_M_1383",
-        "UDT_M_1460",
-        "UDT_M_341"
-      ]
+      "values": ["UDT_M_1281", "UDT_M_1383", "UDT_M_1460", "UDT_M_341"]
     }
   },
   "schemas": {},

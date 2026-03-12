@@ -38,7 +38,7 @@ export const staffWechatUsers = pgTable('staff_wechat_users', {
    * 关联 WorkFine UDT_S_287.UDF_S_1147，绑定手机号后自动匹配，可为 null。
    * 唯一约束：一个员工编号只能绑定一个微信账号。
    */
-  staffWfId: text('staff_wf_id').unique(),
+  staffWfId: text('employee_id').unique(),
   lastLoginAt: timestamp('last_login_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
