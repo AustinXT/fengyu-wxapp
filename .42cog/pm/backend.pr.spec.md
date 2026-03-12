@@ -303,7 +303,7 @@ CloudBase 云函数（Node.js）
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，单号格式见下表 |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` / `待审批`（退款审批用） |
-| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `组合套餐` / `回款` / `转换` / `退款` |
+| `sale_order_type` | enum | 订单类型：`正式` / `体验` / `内部` / `组合套餐` / `回款` / `转换` / `退款` |
 | `ref_sale_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；回款/转换/退款引用的原销售单，销售单为 null |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
@@ -329,7 +329,7 @@ CloudBase 云函数（Node.js）
 >
 > | sale_order_type | 前缀 | 示例 |
 > |-----------------|------|------|
-> | 正式/体验/组合套餐 | `FY-XSD-WX-` | `FY-XSD-WX-260313-0001` |
+> | 正式/体验/内部/组合套餐 | `FY-XSD-WX-` | `FY-XSD-WX-260313-0001` |
 > | 回款 | `FY-HKD-WX-` | `FY-HKD-WX-260313-0001` |
 > | 转换 | `FY-ABZH-WX-` | `FY-ABZH-WX-260313-0001` |
 > | 退款 | `FY-TKD-WX-` | `FY-TKD-WX-260313-0001` |
@@ -1088,35 +1088,37 @@ module.exports = {
 10. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`）
 11. **疗程卡并发扣减**：使用原子 UPDATE（`rowCount` 校验），禁止先 SELECT 后 UPDATE
 12. **护理单来源约束**：`service_items.sale_item_id` 必须关联已支付订单的 `sale_items` 行
-13. **体验/引流服务**需先创建体验单（`sale_order_type = 体验`），支付确认后再创建护理单；**先服务后付款不在 MVP 范围**
-14. **顾客端自助下单的营业额分配**：
+13. **体验/引流服务**需先创建体验单（`sale_order_type = 体验`），支付确认后再创建护理单；体验单仅可选择体验卡商品（`product_kind = '福利活动'` 中的体验类项目），不计入正式业绩统计，需在报表中打标记区分；体验单面向潜在客户（散客到店），由店长创建并指定归属美容师；**先服务后付款不在 MVP 范围**
+14. **开单流程分级选择**：开单时先选大类（销售单 / 回款单 / 转换单），选销售单后再选子类型（普通单 / 体验单 / 内部单）；大类决定单据模板和流程差异，子类型决定商品范围和统计口径
+15. **内部单规则**：`sale_order_type = '内部'`，员工/家属消费统一按半价计算（`unit_price = product_skus.price × 0.5`），需打标记以便数据分析时剔除；内部单不算顾客数（客流/客量统计排除）、不计入会员等级升级消费额；走与正式订单相同的支付和营业额分配流程
+16. **顾客端自助下单的营业额分配**：
     - 已指定美容师：系统自动以该美容师为唯一被分配人创建分配记录
     - 未指定美容师：不创建分配记录
-15. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定
-16. **手机号补全机制**：顾客绑定手机号时，批量补全 `sale_orders.client_user_id`（匹配到的 `client_wechat_users.user_id`）
-17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`（= `user_id`）
-18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
-19. **数据同步不影响业务**：WorkFine → PG 同步使用 UPSERT，不锁表不中断在线查询
-20. **回款规则**：
+17. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定
+18. **手机号补全机制**：顾客绑定手机号时，批量补全 `sale_orders.client_user_id`（匹配到的 `client_wechat_users.user_id`）
+19. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`（= `user_id`）
+20. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
+21. **数据同步不影响业务**：WorkFine → PG 同步使用 UPSERT，不锁表不中断在线查询
+22. **回款规则**：
     - `ref_sale_order_id` 必填，指向原销售单
     - 回款时原子累加原 `sale_item.received`（`UPDATE sale_items SET received = received + $amount WHERE sale_item_id = $ref RETURNING received`）
     - 支持分多次回款（N:1 关系，同一原单可被多次回款）
     - 支付方式与销售单一致（wechat/alipay/offline）
     - 仅员工端操作（`sale_order_source = 'staff'`）
-21. **转换规则**：
+23. **转换规则**：
     - `ref_sale_order_id` 必填，指向原销售单
     - 转换单内包含 `convert_out` 行（原项目退出）和 `convert_in` 行（新项目转入），单事务内完成
     - `convert_out` 行原子扣减原 sale_item 的 `remaining_sessions`
     - `convert_in` 行创建新的 sale_item（新疗程卡/商品），`item_direction = 'convert_in'`
     - `total_amount` = 补差价金额（转入 - 转出）
-22. **退款规则**：
+24. **退款规则**：
     - `ref_sale_order_id` 必填，指向原销售单
     - 创建时状态为 `待审批`，需店长审批后才执行退款操作
     - 店长审批通过后原子扣减原 sale_item 的 `remaining_sessions`
     - `total_amount` 为负数
     - `refund_out` 行中 `quantity` = 退次数，`received` = 负退消耗金额
     - handling_fee（仅个别退款单有值）存入 `remark` 字段
-23. **回款/转换/退款仅员工端操作**，不支持顾客端发起
+25. **回款/转换/退款仅员工端操作**，不支持顾客端发起
 
 ---
 
