@@ -66,6 +66,12 @@ Page({
     // 促销方案
     orderType: 'normal' as string,
     promotionSchemeId: '',
+    // 优惠券
+    selectedCoupon: null as null | { couponId: string; name: string; discount: number },
+    couponDiscount: 0,
+    showCouponPopup: false,
+    availableCoupons: [] as any[],
+    couponsLoading: false,
   },
 
   onLoad(options) {
@@ -201,6 +207,63 @@ Page({
     });
   },
 
+  // ===== 优惠券选择 =====
+
+  async onSelectCoupon() {
+    // 已有订单（扫码场景）不支持选券
+    if (this.data.existingOrderNo) return;
+
+    this.setData({ showCouponPopup: true, couponsLoading: true });
+    try {
+      // 构建 items 参数
+      let items: { skuId: string; quantity: number; amount: number }[];
+      if (this.data.fromCart) {
+        items = this.data.cartItems.map(i => ({
+          skuId: i.skuId,
+          quantity: i.quantity,
+          amount: i.price * i.quantity,
+        }));
+      } else {
+        const price = Number(this.data.unitPrice) || 0;
+        items = [{ skuId: this.data.skuId, quantity: this.data.quantity, amount: price * this.data.quantity }];
+      }
+
+      const data = await callClientApi('coupon.available', {
+        storeName: this.data.storeName,
+        items,
+      });
+      this.setData({ availableCoupons: data?.coupons || [] });
+    } catch {
+      this.setData({ availableCoupons: [] });
+    } finally {
+      this.setData({ couponsLoading: false });
+    }
+  },
+
+  onCloseCouponPopup() {
+    this.setData({ showCouponPopup: false });
+  },
+
+  onCouponPick(e: WechatMiniprogram.TouchEvent) {
+    const { couponId, name, discount } = e.currentTarget.dataset as {
+      couponId: string; name: string; discount: number;
+    };
+    const d = Number(discount) || 0;
+    this.setData({
+      selectedCoupon: { couponId, name, discount: d },
+      couponDiscount: d,
+      showCouponPopup: false,
+    });
+  },
+
+  onClearCoupon() {
+    this.setData({
+      selectedCoupon: null,
+      couponDiscount: 0,
+      showCouponPopup: false,
+    });
+  },
+
   onAgreementChange(e: WechatMiniprogram.CustomEvent<boolean>) {
     this.setData({ agreed: e.detail });
   },
@@ -273,6 +336,7 @@ Page({
         paymentMethod: this.data.paymentMethod,
         orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
         promotionSchemeId: this.data.promotionSchemeId || undefined,
+        couponId: this.data.selectedCoupon?.couponId || undefined,
       });
 
       const { orderNo } = data || {};

@@ -1,5 +1,10 @@
 /* pages/order-detail/order-detail.wxss */
 
+.coupon-discount-value {
+  color: #C0322A !important;
+  font-weight: 600;
+}
+
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);

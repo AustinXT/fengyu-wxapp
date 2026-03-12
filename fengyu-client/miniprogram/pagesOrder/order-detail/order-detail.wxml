@@ -67,8 +67,18 @@
 
   <!-- 金额汇总 -->
   <van-cell-group title="金额明细" inset>
-    <van-cell title="商品总价" value="¥{{order.total_amount}}" />
-    <van-cell title="优惠" value="- ¥0.00" />
+    <van-cell
+      title="商品总价"
+      value="¥{{order.coupon_discount > 0 ? (order.total_amount + order.coupon_discount * 1) : order.total_amount}}"
+    />
+    <van-cell
+      wx:if="{{order.coupon_id}}"
+      title="优惠券"
+      label="{{order.coupon_name || ''}}"
+      value="-¥{{order.coupon_discount}}"
+      value-class="coupon-discount-value"
+    />
+    <van-cell wx:else title="优惠" value="- ¥0.00" />
     <van-cell title="实付" class="total-cell">
       <view slot="right-icon" class="total-price-wrap">
         <text class="total-symbol">¥</text>

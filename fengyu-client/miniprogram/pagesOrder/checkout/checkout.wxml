@@ -55,11 +55,20 @@
   <van-cell-group title="价格明细" inset>
     <van-cell title="服务单价" value="¥{{unitPrice}}" />
     <van-cell wx:if="{{!fromCart && quantity > 1}}" title="数量" value="x{{quantity}}" />
-    <van-cell title="优惠" value="- ¥0.00" />
+    <!-- 优惠券选择（扫码场景不展示） -->
+    <van-cell
+      wx:if="{{!existingOrderNo}}"
+      title="优惠券"
+      is-link
+      bindtap="onSelectCoupon"
+      value="{{selectedCoupon ? '-¥' + couponDiscount : '去选择'}}"
+      value-class="{{selectedCoupon ? 'coupon-selected-value' : 'coupon-unselected-value'}}"
+    />
+    <van-cell wx:else title="优惠" value="- ¥0.00" />
     <van-cell title="实付" class="total-row">
       <view slot="right-icon" class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{fromCart ? totalPrice : (unitPrice * quantity)}}</text>
+        <text class="total-value">{{(fromCart ? totalPrice : (unitPrice * quantity)) - couponDiscount}}</text>
       </view>
     </van-cell>
   </van-cell-group>
@@ -67,7 +76,7 @@
   <!-- 底部提交 -->
   <van-submit-bar
     wx:if="{{!showPhoneBind}}"
-    price="{{(fromCart ? totalPrice : unitPrice * quantity) * 100}}"
+    price="{{((fromCart ? totalPrice : unitPrice * quantity) - couponDiscount) * 100}}"
     button-text="{{paymentMethod === 'wechat' ? '微信支付' : paymentMethod === 'alipay' ? '支付宝付款' : '提交订单'}}"
     loading="{{submitting}}"
     disabled="{{!agreed || submitting}}"
@@ -105,6 +114,50 @@
     </view>
     <view class="alipay-qr-popup__tips">长按保存图片，打开支付宝扫码支付</view>
     <van-button type="primary" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
+  </view>
+</van-popup>
+
+<!-- 优惠券选择 Popup -->
+<van-popup
+  show="{{showCouponPopup}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onCloseCouponPopup"
+>
+  <view class="coupon-popup">
+    <view class="coupon-popup__title">选择优惠券</view>
+    <view wx:if="{{couponsLoading}}" class="coupon-popup__loading">
+      <van-loading size="48rpx" />
+    </view>
+    <view wx:elif="{{availableCoupons.length === 0}}" class="coupon-popup__empty">
+      <text>暂无可用优惠券</text>
+    </view>
+    <scroll-view wx:else scroll-y class="coupon-popup__list">
+      <view
+        wx:for="{{availableCoupons}}"
+        wx:key="couponId"
+        class="coupon-popup__item {{selectedCoupon.couponId === item.couponId ? 'coupon-popup__item--active' : ''}}"
+        bindtap="onCouponPick"
+        data-coupon-id="{{item.couponId}}"
+        data-name="{{item.name}}"
+        data-discount="{{item.discount}}"
+      >
+        <view class="coupon-popup__item-left">
+          <text class="coupon-popup__item-discount">¥{{item.discount}}</text>
+          <text class="coupon-popup__item-type">{{item.couponType}}</text>
+        </view>
+        <view class="coupon-popup__item-right">
+          <text class="coupon-popup__item-name">{{item.name}}</text>
+          <text class="coupon-popup__item-desc">{{item.description || ''}}</text>
+          <text class="coupon-popup__item-expire">有效期至 {{item.expireAt}}</text>
+        </view>
+        <van-icon wx:if="{{selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
+      </view>
+    </scroll-view>
+    <view class="coupon-popup__footer">
+      <van-button wx:if="{{selectedCoupon}}" plain size="small" bindtap="onClearCoupon">不使用优惠券</van-button>
+    </view>
   </view>
 </van-popup>
 

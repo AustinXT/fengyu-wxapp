@@ -130,6 +130,108 @@
   width: 100% !important;
 }
 
+/* ===== 优惠券选择 ===== */
+.coupon-selected-value {
+  color: #C0322A !important;
+  font-weight: 600;
+}
+
+.coupon-unselected-value {
+  color: var(--color-text-hint) !important;
+}
+
+.coupon-popup {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.coupon-popup__title {
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 32rpx 0 20rpx;
+}
+
+.coupon-popup__loading,
+.coupon-popup__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300rpx;
+  color: var(--color-text-hint);
+  font-size: 28rpx;
+}
+
+.coupon-popup__list {
+  max-height: 600rpx;
+  padding: 0 24rpx;
+}
+
+.coupon-popup__item {
+  display: flex;
+  align-items: center;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  background: #FAFAFA;
+  border-radius: 12rpx;
+  border: 2rpx solid transparent;
+}
+
+.coupon-popup__item--active {
+  border-color: #C0322A;
+  background: #FFF5F5;
+}
+
+.coupon-popup__item-left {
+  width: 140rpx;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+}
+
+.coupon-popup__item-discount {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: #C0322A;
+}
+
+.coupon-popup__item-type {
+  font-size: 20rpx;
+  color: #C0322A;
+}
+
+.coupon-popup__item-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  margin-left: 16rpx;
+}
+
+.coupon-popup__item-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.coupon-popup__item-desc {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-popup__item-expire {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.coupon-popup__footer {
+  display: flex;
+  justify-content: center;
+  padding: 20rpx 24rpx;
+}
+
 /* ===== 美容师选择 Popup ===== */
 .staff-popup {
   padding-bottom: env(safe-area-inset-bottom);
