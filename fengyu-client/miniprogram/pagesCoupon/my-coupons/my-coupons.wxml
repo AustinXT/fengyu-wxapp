@@ -1,0 +1,40 @@
+<!-- pagesCoupon/my-coupons/my-coupons.wxml -->
+<van-toast id="van-toast" />
+
+<van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" line-width="60rpx">
+  <van-tab title="未使用" />
+  <van-tab title="已使用" />
+  <van-tab title="已过期" />
+</van-tabs>
+
+<view class="coupon-list" wx:if="{{coupons.length > 0}}">
+  <view
+    wx:for="{{coupons}}"
+    wx:key="couponId"
+    class="coupon-card {{item.status !== '未使用' ? 'coupon-card--disabled' : ''}}"
+  >
+    <view class="coupon-card__left">
+      <text class="coupon-card__amount">{{item.discountLabel}}</text>
+      <text class="coupon-card__type">{{item.couponType}}</text>
+    </view>
+    <view class="coupon-card__right">
+      <text class="coupon-card__name">{{item.name}}</text>
+      <text class="coupon-card__scope" wx:if="{{item.applicableStoreNames}}">
+        限：{{item.applicableStoreNames.join('、')}}
+      </text>
+      <text class="coupon-card__scope" wx:else>全部门店可用</text>
+      <text class="coupon-card__expire">
+        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAt ? item.usedAt.slice(0,10) : '-'}} 使用</block>
+        <block wx:else>有效期至 {{item.expireAtFmt}}</block>
+      </text>
+      <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
+      <van-tag wx:if="{{Number(item.minSpend) > 0}}" plain color="#C9986A" custom-class="coupon-card__tag">
+        满{{item.minSpend}}可用
+      </van-tag>
+    </view>
+    <view class="coupon-card__stamp" wx:if="{{item.status === '已使用'}}">已使用</view>
+    <view class="coupon-card__stamp coupon-card__stamp--expired" wx:elif="{{item.status === '已过期'}}">已过期</view>
+  </view>
+</view>
+
+<van-empty wx:elif="{{!isLoading}}" description="暂无优惠券" />

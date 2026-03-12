@@ -40,6 +40,13 @@
       "pages": [
         "appointment-create/appointment-create"
       ]
+    },
+    {
+      "root": "pagesCoupon",
+      "name": "coupon",
+      "pages": [
+        "my-coupons/my-coupons"
+      ]
     }
   ],
   "tabBar": {

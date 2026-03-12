@@ -255,7 +255,7 @@ Page({
         this.scrollToBigCategory("家居产品");
         break;
       case "coupon":
-        wx.showToast({ title: "优惠券功能开发中", icon: "none" });
+        wx.navigateTo({ url: "/pagesCoupon/my-coupons/my-coupons" });
         break;
       case "treatment":
         wx.navigateTo({ url: "/pagesOrder/treatment-cards/treatment-cards" });
