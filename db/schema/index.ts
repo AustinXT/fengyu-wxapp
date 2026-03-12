@@ -33,3 +33,6 @@ export * from './store-unbind'
 
 // 操作日志
 export * from './operation-log'
+
+// 优惠券（券模板 + 用户券实例）
+export * from './coupon'

@@ -46,6 +46,10 @@ export const salesCategoryEnum = pgEnum('sales_category', [
   '自采自销', '他销自耗', '他销他耗', '生态合作',
 ])
 
+export const couponTypeEnum = pgEnum('coupon_type', ['现金券', '项目券', '折扣券'])
+
+export const couponStatusEnum = pgEnum('coupon_status', ['未使用', '已使用', '已过期'])
+
 export const orgNodeTypeEnum = pgEnum('org_node_type', [
   'headquarters',  // 总部（根节点，仅一个）
   'market',        // 市场

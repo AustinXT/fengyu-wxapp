@@ -48,7 +48,7 @@ export const saleOrders = pgTable(
       .references(() => stores.storeId),
     saleOrderDatetime: timestamp('sale_order_datetime').notNull(),
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
-    clientPhone: varchar('client_phone', { length: 20 }),
+    clientPhone: varchar('client_phone', { length: 30 }),
     customerName: varchar('customer_name', { length: 50 }),
     /** 订单总金额；退款为负数，转换=补差价，回款=本次回款金额 */
     totalAmount: numeric('total_amount', { precision: 10, scale: 2 }).notNull(),
@@ -62,6 +62,10 @@ export const saleOrders = pgTable(
     offlineConfirmedBy: varchar('offline_confirmed_by', { length: 30 }).references(() => employees.employeeId),
     offlineConfirmedAt: timestamp('offline_confirmed_at'),
     allocationStatus: allocationStatusEnum('allocation_status'),
+    /** 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护，不设反向 FK 避免循环引用） */
+    couponId: text('coupon_id'),
+    /** 券抵扣总金额 */
+    couponDiscount: numeric('coupon_discount', { precision: 10, scale: 2 }).default('0'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },

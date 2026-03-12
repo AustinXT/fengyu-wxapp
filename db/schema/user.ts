@@ -17,7 +17,9 @@ export const clientWechatUsers = pgTable(
     /** 微信 openid（客户端 appid 下）；仅 WorkFine 同步创建的行为 null */
     openid: varchar('openid', { length: 64 }),
     sessionKey: varchar('session_key', { length: 128 }),
-    phone: varchar('phone', { length: 20 }),
+    phone: varchar('phone', { length: 30 }),
+    /** WorkFine 顾客编号（UDF_S_1475），同步匹配用 */
+    customerId: varchar('customer_id', { length: 30 }),
     // Layer 2 — WorkFine 档案
     name: varchar('name', { length: 50 }),
     registeredAt: date('registered_at'),
@@ -48,6 +50,7 @@ export const clientWechatUsers = pgTable(
   (table) => [
     uniqueIndex('uq_client_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
+    uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
     index('idx_client_users_store_id').on(table.storeId),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
   ],
@@ -62,7 +65,7 @@ export const staffWechatUsers = pgTable(
     userId: text('user_id').primaryKey(),
     openid: varchar('openid', { length: 64 }).notNull().unique(),
     sessionKey: varchar('session_key', { length: 128 }),
-    phone: varchar('phone', { length: 20 }),
+    phone: varchar('phone', { length: 30 }),
     /** 手机号自动匹配后填入，FK → employees */
     employeeId: varchar('employee_id', { length: 30 }).references(() => employees.employeeId),
     lastLoginAt: timestamp('last_login_at'),
