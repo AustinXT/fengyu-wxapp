@@ -12,7 +12,7 @@
 ## 1. 概述
 
 本文档定义 WorkFine（万应低代码平台）数据库到 PostgreSQL 的数据迁移与同步方案。涵盖：
-- **组织与人员域**（门店、部门/职位、员工、顾客、提成比例矩阵）— 定期同步
+- **组织与人员域**（门店、员工、顾客、提成比例矩阵）— 定期同步
 - **商品域**（品项分类、商品、商品规格）— 一次性导入，后续手动维护
 
 ---
@@ -36,9 +36,7 @@
 
 | 类别 | 数据域 | WorkFine 源表 | PG 目标表 | 策略 |
 |------|--------|--------------|-----------|------|
-| **定期同步** | 门店信息 | UDT_M_219 | `stores` | 每日全量同步 |
-| **定期同步** | 部门 | UDT_S_211 | `departments` | 每日全量同步 |
-| **定期同步** | 职位 | UDT_M_212 | `positions` | 每日全量同步 |
+| **定期同步** | 组织架构 | UDT_M_219 | `org_nodes` + `stores` | 每日全量同步（先建 org_nodes 层级，再同步 stores 详情） |
 | **定期同步** | 员工信息 | UDT_S_287 | `employees` | 每日全量同步 |
 | **定期同步** | 顾客档案 | UDT_S_311 | `customers` | 每日全量同步 |
 | **定期同步** | 提成比例矩阵 | UDT_S_1962 + UDT_M_1964 | `commission_rate_matrix` | 每日全量同步 |
@@ -73,17 +71,16 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 |----------|------|
 | 定时全量同步 | 每日凌晨自动执行一次全量同步（覆盖所有域） |
 | 手动触发 | 员工端管理 API `sync.full`，店长权限，按需触发全量同步 |
-| 冷启动预检 | 云函数冷启动时检查 `synced_at`，若超过 24 小时则触发增量同步 |
+| 冷启动预检 | 云函数冷启动时检查 `updated_at`，若超过 24 小时则触发增量同步 |
 
 ### 4.3 同步顺序（存在依赖）
 
 ```
-1. stores（门店）— 无依赖
-2. departments（部门）— 无依赖
-3. positions（职位）— 依赖 departments
-4. employees（员工）— 依赖 stores、departments
-5. customers（顾客档案）— 依赖 stores
-6. commission_rate_matrix（提成比例）— 依赖 departments
+1. org_nodes（组织架构树）— 无依赖
+2. stores（门店详情）— 依赖 org_nodes
+3. employees（员工）— 依赖 stores
+4. customers（顾客档案）— 依赖 stores
+5. commission_rate_matrix（提成比例）— 无依赖
 ```
 
 ### 4.4 同步规则
@@ -93,28 +90,30 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | 匹配键 | 以 WorkFine 主键（员工编号/顾客编号/门店名）为匹配键 |
 | UPSERT | 存在则更新，不存在则插入（`INSERT ... ON CONFLICT ... DO UPDATE`） |
 | 不物理删除 | PG 侧不删除 WorkFine 中已不存在的记录（软标记：员工 `is_resigned = true`，门店 `is_closed = true`） |
-| 时间戳 | 每条同步记录写入 `synced_at` 时间戳 |
+| 时间戳 | UPSERT 时自动更新 `updated_at` 时间戳 |
 | 事务 | 每个域的同步在独立事务中执行，单域失败不影响其他域 |
 | 不锁表 | 使用 UPSERT 而非 DELETE + INSERT，同步期间不影响业务读取 |
 | 错误处理 | 失败时回滚并记录错误日志 |
 
-### 4.5 stores 同步附加逻辑：scope_level 虚拟条目
+### 4.5 org_nodes 同步附加逻辑：组织架构树生成
 
-同步脚本在完成 stores 基础同步后，自动生成虚拟条目：
-1. 遍历现有门店的 `market_name` 去重，为每个市场插入一条 `scope_level='market'` 的行
-2. 固定插入一条 `scope_level='global'` 的行（`store_name='总部'`）
-3. 虚拟条目 `is_closed = false`，仅作为 `permission_roles.scope_id` 的 FK 目标
+同步脚本在读取 WorkFine 门店数据后，自动构建 org_nodes 层级树：
+1. UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL`
+2. 遍历现有门店的 `market_name` 去重，为每个市场 UPSERT 一条 `type='market'` 节点（`parent_id` 指向总部）
+3. 为每个门店 UPSERT 一条 `type='store'` 节点（`parent_id` 指向所属市场节点，`parent_name` 写入市场名）
+4. org_nodes 节点作为 `permission_roles.scope_id` 的 FK 目标（替代原 stores 虚拟条目方案）
+5. stores 表仅存 `type='store'` 的门店业务详情，通过 `org_node_id` 关联对应 org_nodes 节点
 
 ### 4.6 permission_roles 自动推导
 
 员工同步完成后，同步脚本遍历 `employees`（`is_resigned = false`），自动推导权限角色：
 
-| 推导规则 | role | scope_id |
+| 推导规则 | role | scope_id（→ org_nodes.id） |
 |----------|------|----------|
-| `position_name = '门店经理'` | `manager` | 员工所在门店 |
-| `department_name = '财智部'` | `finance` | 员工所在门店 |
-| `position_name = '市场总监'` 或 `'片区经理'` | `manager` | 员工所属市场 |
-| 其他 | `staff` | 员工所在门店 |
+| `position_name = '门店经理'` | `manager` | 员工所在门店对应的 org_nodes 节点 |
+| `department_name = '财智部'` | `finance` | 员工所在门店对应的 org_nodes 节点 |
+| `position_name = '市场总监'` 或 `'片区经理'` | `manager` | 员工所属市场对应的 org_nodes 节点 |
+| 其他 | `staff` | 员工所在门店对应的 org_nodes 节点 |
 
 - `created_by = 'sync'` 标记为同步脚本自动创建
 - 代理经理（position_name 包含"代理"）默认推导为 `role=staff`，需手动升级
@@ -139,50 +138,36 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 ## 6. WorkFine → PG 字段映射（定期同步域）
 
-### 6.1 门店（UDT_M_219 → PG `stores`）
+### 6.1 门店（UDT_M_219 → PG `org_nodes` + `stores`）
 
 **来源**: Form 216，UDT_S_218（市场门店对应表主表）→ UDT_M_219（门店列表子表，一对多）
 
+**同步流程**: 先构建 org_nodes 层级树，再同步 stores 详情。
+
+#### org_nodes 层级构建
+
+| 步骤 | org_nodes 操作 |
+|------|---------------|
+| 1 | UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL` |
+| 2 | 遍历 `UDF_M_437`（市场）去重，UPSERT `type='market'` 节点，`parent_id` → 总部，`parent_name='总部'` |
+| 3 | 为每个门店 UPSERT `type='store'` 节点，`parent_id` → 所属市场节点，`parent_name` → 市场名 |
+
+#### stores 字段映射
+
 | WorkFine 字段 | 含义 | 类型 | → PG `stores` 字段 |
 |---------------|------|------|-------------------|
-| UDF_M_437 | 市场 | 文本 | `market_name` |
+| UDF_M_437 | 市场 | 文本 | `market_name`（冗余） |
 | UDF_M_438 | **门店** | 文本 | `store_name` (UNIQUE) |
 | UDF_M_1777 | 开业时间 | 日期 | `opening_date` |
-| UDF_M_1778 | 总投资款 | 金额 | `total_investment` |
-| UDF_M_3683 | 部门ID | 文本 | `wf_department_id` |
 | UDF_M_8590 | 可用床位 | 整数 | `bed_count` |
 | UDF_M_11956 | 是否停止营业 | 文本 | `is_closed`（'是' → true） |
-| UDF_M_11957 | 关闭日期 | 日期 | `closed_date` |
-| UDF_M_12033 | 门店所属区域 | 文本 | `region` |
+| — | 关联 org_nodes | — | `org_node_id`（查找对应 type='store' 的 org_nodes.id 写入） |
 
 **匹配键**: `UDF_M_438`（门店名）→ `store_name`
 
 **常用查询条件**: `WHERE UDF_M_11956 != '是'` → PG: `WHERE is_closed = false`
 
-### 6.2 部门（UDT_S_211 → PG `departments`）
-
-| WorkFine 字段 | 含义 | 类型 | → PG `departments` 字段 |
-|---------------|------|------|------------------------|
-| UDF_S_1183 | **部门编号** | 文本 | `department_code` |
-| UDF_S_1184 | 部门名称 | 文本 | `department_name` (UNIQUE) |
-| UDF_S_14284 | 级别 | 文本 | — 参考（排序） |
-
-**匹配键**: `UDF_S_1184`（部门名称）→ `department_name`
-
-### 6.3 职位（UDT_M_212 → PG `positions`）
-
-| WorkFine 字段 | 含义 | 类型 | → PG `positions` 字段 |
-|---------------|------|------|----------------------|
-| UDF_M_386 | **职位编号** | 文本 | — 参考 |
-| UDF_M_387 | 所属部门名称 | 文本 | `department_name` |
-| UDF_M_388 | 职位名称 | 文本 | `position_name` |
-| UDF_M_2820 | 部门编号 | 文本 | — 关联 UDT_S_211.UDF_S_1183 |
-| UDF_M_9180 | 级别 | 文本 | `rank_order`（转换为排序序号） |
-| UDF_M_13712 | 是否参与提成 | 文本 | — 参考（提成计算） |
-
-**匹配键**: `(UDF_M_388, UDF_M_387)`（职位名称 + 部门名称）→ `(position_name, department_name)`
-
-### 6.4 员工（UDT_S_287 → PG `employees`）
+### 6.2 员工（UDT_S_287 → PG `employees`）
 
 **来源**: Form 264，数据量 2,846 条（含在职 + 离职）
 
@@ -192,29 +177,25 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | UDF_S_1155 | 姓名 | 文本 | `name` |
 | UDF_S_1148 | 性别 | 文本 | `gender` |
 | UDF_S_1152 | 手机号码 | 手机 | `phone` |
-| UDF_S_1163 | 所属分院 | 文本 | `store_name` |
-| UDF_S_1160 | 所属市场 | 文本 | `market_name` |
-| UDF_S_1161 | 工作职位 | 文本 | `position_name` |
+| UDF_S_1154 | 身份证号码 | 身份证 | `id_card`（高敏 PII，需评估加密方案） |
+| UDF_S_1163 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
+| UDF_S_1160 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
 | UDF_S_1513 | 职能部门 | 文本 | `department_name` |
-| UDF_S_1164 | 第二工作职位 | 文本 | `position2_name` |
-| UDF_S_12921 | 第二部门 | 文本 | `department2_name` |
-| UDF_S_10085 | 职级1 | 文本 | `rank1` |
-| UDF_S_10086 | 职级2 | 文本 | `rank2` |
+| UDF_S_1161 | 工作职位 | 文本 | `position_name` |
 | UDF_S_1624 | 是否离职 | 文本 | `is_resigned`（'是' → true） |
-| UDF_S_1149 | 出生日期 | 日期 | `birth_date` |
-| UDF_S_1159 | 试用开始时间 | 日期 | `probation_start_date` |
-| UDF_S_1162 | 转正日期 | 日期 | `regular_date` |
-| UDF_S_1626 | 离职日期 | 日期 | `resigned_date` |
-| UDF_S_1154 | 身份证号码 | 身份证 | — **不同步**（高敏 PII） |
-| UDF_S_1150 | 年龄 | 整数 | — 不同步（可从 birth_date 计算） |
+| UDF_S_1150 | 年龄 | 整数 | — 不同步（非核心） |
+
+**不再同步的字段**: UDF_S_1164（第二工作职位）、UDF_S_12921（第二部门）、UDF_S_10085/UDF_S_10086（职级）、UDF_S_1149（出生日期）、UDF_S_1159（试用开始时间）、UDF_S_1162（转正日期）、UDF_S_1626（离职日期）
 
 **匹配键**: `UDF_S_1147`（员工编号）→ `employee_no`
+
+**store_id 映射**: 同步脚本读取 UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
 
 **常用查询条件**:
 - 在职员工: `WHERE UDF_S_1624 = '否'` → PG: `WHERE is_resigned = false`
 - 门店经理: `WHERE UDF_S_1161 = '门店经理'` → PG: `WHERE position_name = '门店经理'`
 
-### 6.5 顾客档案（UDT_S_311 → PG `customers`）
+### 6.3 顾客档案（UDT_S_311 → PG `customers`）
 
 **来源**: Form 295，数据量 51,117 条
 
@@ -232,36 +213,29 @@ UDT_S_311（顾客档案主表）
 |---------------|------|------|----------------------|
 | UDF_S_1475 | **顾客编号** | 文本 | `customer_no` (PK) |
 | UDF_S_1476 | 顾客姓名 | 文本 | `name` |
-| UDF_S_1478 | 手机号码 | 手机 | `phone` |
-| UDF_S_1479 | 生日 | 日期 | `birthday` |
+| UDF_S_1478 | 手机号码 | 手机 | `phone` (UNIQUE) |
 | UDF_S_1480 | 年龄 | 整数 | `age` |
-| UDF_S_6443 | 所属分院 | 文本 | `store_name` |
-| UDF_S_6486 | 所属市场 | 文本 | `market_name` |
-| UDF_S_1477 | 会员等级 | 文本 | `member_level` |
-| UDF_S_18105 | 会员分类标签 | 文本 | `member_tag` |
-| UDF_S_6446 | 顾客来源 | 文本 | `customer_source` |
+| UDF_S_6443 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
+| UDF_S_6486 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
 | UDF_S_6444 | 所属美容师 | 文本 | `primary_beautician` |
+| UDF_S_1477 | 会员等级 | 文本 | `member_level` |
+| UDF_S_6446 | 顾客来源 | 文本 | `customer_source` |
+| UDF_S_1712 | 顾客分类 | 文本 | `category` |
+| UDF_S_1479 | 生日 | 日期 | `birthday` |
+| UDF_S_1481 | 职业 | 文本 | `occupation` |
+| UDF_S_1482 | 是否已婚 | 文本 | `is_married` |
+| UDF_S_6445 | 微信名 | 文本 | `wechat_name` |
+| UDF_S_1474 | 登记时间 | 日期 | `registered_at` |
 | UDF_S_6447 | 肤质类型 | 文本 | `skin_type` |
 | UDF_S_6448 | 改善重点 | 文本 | `improvement_focus` |
 | UDF_S_19093 | 皮肤问题 | 文本 | `skin_issue` |
 | UDF_S_19094 | 接受养生方式 | 文本 | `wellness_preference` |
-| UDF_S_1481 | 职业 | 文本 | `occupation` |
-| UDF_S_1482 | 是否已婚 | 文本 | `is_married` |
-| UDF_S_1486 | 是否共享 | 文本 | `is_shared` |
-| UDF_S_1712 | 顾客分类 | 文本 | `category` |
-| UDF_S_6445 | 微信名 | 文本 | `wechat_name` |
-| UDF_S_1474 | 登记时间 | 日期 | `registered_at` |
-| UDF_S_1717 | 累计消费金额 | 金额 | `total_consumption` |
-| UDF_S_1718 | 单笔最高金额 | 金额 | `max_single_consumption` |
-| UDF_S_17850 | 未到店时间间隔 | 文本 | `days_since_last_visit` |
-| UDF_S_17758 | 本年度总消费档位 | 文本 | — 不同步 |
-| UDF_S_17759 | 本年度生美消费档位 | 文本 | — 不同步 |
-| UDF_S_18104 | 2022年累计消费 | 金额 | — 不同步 |
-| UDF_S_17856 | 2023年累计消费 | 金额 | — 不同步 |
-| UDF_S_17857 | 2024年累计消费 | 金额 | — 不同步 |
-| UDF_S_17858 | 2025年累计消费 | 金额 | — 不同步 |
+
+**不再同步的字段**: UDF_S_18105（会员分类标签）、UDF_S_1486（是否共享）、UDF_S_1717（累计消费金额）、UDF_S_1718（单笔最高金额）、UDF_S_17850（未到店时间间隔）、UDF_S_17758～UDF_S_17858（年度消费档位/累计消费）
 
 **匹配键**: `UDF_S_1475`（顾客编号）→ `customer_no`
+
+**store_id 映射**: 同步脚本读取 UDF_S_6443（所属分院），查找 stores.store_id 写入。`market_name` 不再冗余存储，需要时 JOIN stores 获取。
 
 #### 顾客消费明细子表 — UDT_M_312（不同步）
 
@@ -298,7 +272,7 @@ UDT_S_311（顾客档案主表）
 | UDF_M_1756 | 员工姓名 | 文本 | — |
 | UDF_M_1757 | 服务费 | 金额 | — |
 
-### 6.6 提成比例矩阵（UDT_S_1962 + UDT_M_1964 → PG `commission_rate_matrix`）
+### 6.4 提成比例矩阵（UDT_S_1962 + UDT_M_1964 → PG `commission_rate_matrix`）
 
 > **WorkFine 字段详情待补充**: UDT_S_1962 + UDT_M_1964 的具体字段未记录，PG 设计基于已知维度（市场、部门、销售分类、金额阶段、比例）。待 WorkFine 表结构补充后调整映射。
 
@@ -397,10 +371,9 @@ UDT_S_311（顾客档案主表）
 
 ```
 WorkFine → PG 定期同步（组织与人员域）:
-  UDT_M_219 (门店)            ──sync──→ PG stores
+  UDT_M_219 (门店)            ──sync──→ PG org_nodes + stores
   UDT_S_287 (员工)            ──sync──→ PG employees
   UDT_S_311 (顾客)            ──sync──→ PG customers
-  UDT_S_211/UDT_M_212 (职位部门)──sync──→ PG departments / positions
   UDT_S_1962/UDT_M_1964 (提成) ──sync──→ PG commission_rate_matrix
 
 WorkFine → PG 一次性导入（商品域，后续手动维护）:

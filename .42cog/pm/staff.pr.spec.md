@@ -91,7 +91,7 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STORE-01 | 门店列表 | 从 WorkFine `UDT_M_219` 查询营业中门店 |
+| STORE-01 | 门店列表 | 从 PG `stores` 查询营业中门店（数据同步自 WorkFine） |
 | STORE-02 | 切换工作门店 | 验证门店存在性，返回门店名供前端本地存储 |
 | STORE-03 | 解绑申请审批 | 店长审批顾客的门店解绑申请（approve/reject） |
 
@@ -101,7 +101,7 @@
 - 快捷导航：订单列表、服务单列表、顾客列表（3 个 Cell 入口）
 - 退出登录：确认弹窗 → `app.resetStaffInfo()` 清除全部缓存 → `reLaunch` 跳转登录页
 
-**数据来源**: WorkFine `UDT_M_219`（只读）+ PG `store_unbind_requests`（读写）
+**数据来源**: PG `stores`（同步自 WorkFine）+ PG `store_unbind_requests`（读写）
 
 **API**: `store.list` / `staff.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
 
@@ -427,9 +427,9 @@
 | 店长（门店经理） | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、确认预约、创建/推进服务单、审批解绑 |
 | 美容师 | 本人相关数据 | 确认预约（分配给自己的）、创建/推进服务单（自己的）、查看脱敏手机号 |
 
-**角色判定**: WorkFine `UDT_S_287.UDF_S_1161`（工作职位）
-**门店归属**: WorkFine `UDT_S_287.UDF_S_1163`（所属分院）
-**门店数据隔离**: 所有 PG 查询以 `store_name` 过滤，禁止跨门店访问
+**角色判定**: PG `permission_roles.role` + `org_nodes.type`（从 org_nodes 获取域级别），降级时由 `employees.position_name` 推导
+**门店归属**: PG `employees.store_id` → `stores`（同步自 WorkFine）
+**门店数据隔离**: 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），`buildScopeWhere()` 统一生成
 
 ---
 
@@ -796,24 +796,23 @@ TabBar
 
 ## 6. 数据来源对照
 
-### 只读查询（WorkFine SQL Server）
+### 只读查询（WorkFine SQL Server）— 仅同步模块使用，运行时 100% PG
 
-| 数据域 | WorkFine 表 | 关键字段 | 用途 |
-|--------|------------|----------|------|
-| 门店列表 | `UDT_M_219` | 门店名称、所属市场、状态 | 门店选择 |
-| 员工档案 | `UDT_S_287` | 姓名、职位、门店、部门、是否可分配业绩 | 角色判定、营业额分配 |
-| 顾客档案 | `UDT_S_311` | 姓名、手机号、会员等级、主美容师、顾客来源 | 顾客搜索、档案查看 |
-| 可售项目（全国） | `UDT_M_1281` | 项目编号、名称、价格、次数、生美/非生美 | SKU 价格/次数实时读取 |
-| 门店自定义项目 | `UDT_M_1383` | 同上 | 同上 |
-| 院装产品 | `UDT_M_341` | 商品编号、名称、价格 | SKU 价格实时读取 |
-| 促销方案 | `UDT_S_1459` + `UDT_M_1460` | 方案名称、项目列表、促销售价 | 促销方案开单 |
-| 提成比例矩阵 | `UDT_S_1962` + `UDT_M_1964` | 市场、部门、销售分类、金额阶段、比例 | 营业额分配 |
-| 品项分类 | `UDT_M_229` | 分类名称 | 参考（实际从 PG 派生） |
+> **运行时零 MSSQL 依赖**: 以下 WorkFine 表仅供同步模块连接，业务请求链路不连接 SQL Server。同步后数据存储在对应的 PG 表中。
+
+| 数据域 | WorkFine 源表 | → PG 表 | 用途 |
+|--------|--------------|---------|------|
+| 组织架构 | `UDT_M_219` | `org_nodes` + `stores` | 门店选择、组织层级 |
+| 员工档案 | `UDT_S_287` | `employees` | 角色判定、营业额分配 |
+| 顾客档案 | `UDT_S_311` | `customers` | 顾客搜索、档案查看 |
+| 提成比例矩阵 | `UDT_S_1962` + `UDT_M_1964` | `commission_rate_matrix` | 营业额分配 |
 
 ### 读写（PG 自托管数据库）
 
 | 数据域 | PG 表 | 关键字段 | 用途 |
 |--------|------|----------|------|
+| 组织架构 | `org_nodes` | id, name, type, parent_id, parent_name | 组织层级树、权限域目标 |
+| 门店详情 | `stores` | store_id, store_name, org_node_id, market_name | 门店业务信息 |
 | 员工微信用户 | `staff_wechat_users` | openid, phone, staff_wf_id | 员工身份 |
 | 顾客微信用户 | `client_wechat_users` | openid, phone, bound_store_name | 顾客身份关联 |
 | 商品 SPU | `product_spu` | name, category, big_category, cover_image | 商品元数据 |
@@ -821,9 +820,11 @@ TabBar
 | 订单主表 | `orders` | order_no, status, order_type, allocation_status | 订单 CRUD |
 | 订单明细 | `order_items` | item_flow_no, sku_id, unit_price, remaining_sessions | 商品行、价格快照、剩余次数 |
 | 营业额分配 | `revenue_allocations` + `revenue_allocation_items` | employee_id, department, amount, commission_rate | 分配记录 |
+| 权限角色 | `permission_roles` | staff_id, role, scope_id → org_nodes.id | RBAC 权限 |
 | 预约 | `appointments` | status, client_user_id, staff_wf_id, checkin_at | 预约 CRUD |
 | 服务单 | `service_orders` + `service_items` | service_order_no, status, appointment_id, session_used | 服务单核销 |
 | 解绑申请 | `store_unbind_requests` | status, user_id, from_store_name | 门店解绑审批 |
+| 操作日志 | `operation_logs` | operator_user_id, org_node_id, action, target_type, target_id | 审计追踪（只写） |
 
 ---
 
@@ -835,7 +836,7 @@ TabBar
 | 价格快照不可变 | 开单时写入 `unit_price`，后续价格变动不影响历史订单 |
 | 支付幂等 | 微信回调、线下确认、服务完成接口均需幂等，不得重复入账或扣次 |
 | 状态单向推进 | 订单/服务单/预约状态只能沿状态机正向流转；唯一例外：店长可重置 `支付失败` → `待支付` |
-| 门店数据隔离 | 所有 PG 查询以 `store_name` 过滤，禁止跨门店访问 |
+| 域数据隔离 | 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），由 `buildScopeWhere()` 统一生成 |
 | 订单号唯一生成 | advisory lock 防流水号并发冲突 |
 | 待支付订单唯一 | 同一顾客同时只能有一笔待支付订单（数据库部分唯一索引 + 应用层校验） |
 | 事务处理 | 服务单完成、订单创建、分配保存均使用 PostgreSQL transaction |
