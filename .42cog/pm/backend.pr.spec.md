@@ -861,6 +861,7 @@ ctx.auth = {
   ],
 
   // 便捷字段（从 roles[] 聚合）
+  scopeStoreIds: [], // 所有可访问门店的 store_id（登录时预解析：store 类型直接取，market 类型展开其下所有门店）
   permissions: {
     actions: [],     // 扁平数组，如 ['sale_order:create', 'sale_order:list', 'customer:search', ...]
   },
@@ -890,34 +891,31 @@ ctx.auth = {
 ```js
 function buildScopeWhere(auth, alias = '') {
   const prefix = alias ? `${alias}.` : '';
-  // 收集所有 scope 节点，按类型聚合
-  const scopes = auth.roles.map(r => r.scope);
 
-  // 如果包含 headquarters 级别，无过滤
-  if (scopes.some(s => s.type === 'headquarters')) {
+  // headquarters 级别无过滤
+  if (auth.roles.some(r => r.scope.type === 'headquarters')) {
     return { where: '', params: [] };
   }
 
-  // 收集所有 market 和 store 名称
-  const markets = [...new Set(scopes.filter(s => s.type === 'market').map(s => s.nodeName))];
-  const stores = [...new Set(scopes.filter(s => s.type === 'store').map(s => s.nodeName))];
+  // 使用登录时预解析的 scopeStoreIds（含 market 展开 + store 直接取）
+  const storeIds = auth.scopeStoreIds;
+  if (!storeIds.length) {
+    return { where: 'AND FALSE', params: [] };
+  }
 
-  // 合并：market 下的门店通过 market_name 过滤，直接分配的门店通过 store_name 过滤
-  const conditions = [];
-  const params = [];
-  if (markets.length) {
-    conditions.push(`${prefix}market_name IN (${markets.map((_, i) => `$${i + 1}`).join(',')})`);
-    params.push(...markets);
-  }
-  if (stores.length) {
-    const offset = params.length;
-    conditions.push(`${prefix}store_name IN (${stores.map((_, i) => `$${offset + i + 1}`).join(',')})`);
-    params.push(...stores);
-  }
-  return { where: `AND (${conditions.join(' OR ')})`, params };
+  const placeholders = storeIds.map((_, i) => `$${i + 1}`).join(',');
+  return {
+    where: `AND ${prefix}store_id IN (${placeholders})`,
+    params: storeIds,
+  };
 }
 ```
 
+> **scopeStoreIds 预解析**（登录时一次性计算）：
+> - `store` 类型 scope：通过 `org_nodes.id` 查找 `stores.org_node_id` 得到 `store_id`
+> - `market` 类型 scope：查找该 market 节点下所有 `type='store'` 子节点，再查找对应的 `stores.store_id`
+> - 结果去重后存入 `auth.scopeStoreIds`
+>
 > 参数占位符序号由调用方动态替换（示例中 `$1, $2...` 为简化写法）。
 
 #### 6.8.2 行级过滤（buildStaffFilter）
@@ -1024,7 +1022,7 @@ module.exports = {
 
 ### 6.11 同步推导规则
 
-同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_name` + `position_name` 自动推导 `permission_roles` 记录，`created_by = 'sync'`：
+同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_id`（JOIN `org_nodes.name` 获取部门名称）+ `position_name` 自动推导 `permission_roles` 记录，`created_by = 'sync'`：
 
 | # | 条件 | 推导结果 | 说明 |
 |---|------|----------|------|
