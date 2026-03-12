@@ -98,7 +98,8 @@ async function create(ctx) {
     preferredStaffWfId, // 可选,指定美容师
     paymentMethod, // 'wechat' | 'offline'
     orderType: orderTypeParam, // 可选, 'promo' | undefined
-    promotionSchemeId: promoSchemeId // 可选, 促销方案编号
+    promotionSchemeId: promoSchemeId, // 可选, 促销方案编号
+    couponId: inputCouponId // 可选, 优惠券ID
   } = payload
 
   if (!storeName || !marketName || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
@@ -159,6 +160,86 @@ async function create(ctx) {
     }
   })
 
+  // ========== 优惠券处理 ==========
+  let couponDiscount = 0
+  let couponInfo = null
+  if (inputCouponId) {
+    // 验证券有效性
+    const couponRows = await pg.query(
+      `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
+              ct.coupon_type, ct.discount_value, ct.min_spend,
+              ct.applicable_category_ids, ct.applicable_store_ids
+       FROM user_coupons uc
+       JOIN coupon_templates ct ON uc.template_id = ct.template_id
+       WHERE uc.coupon_id = $1 AND uc.user_id = $2
+         AND uc.status = '未使用' AND uc.expire_at > NOW()
+         AND ct.is_active = true`,
+      [inputCouponId, userId]
+    )
+    if (couponRows.length === 0) {
+      throw new Error('INVALID_PARAMS: 优惠券已失效')
+    }
+    couponInfo = couponRows[0]
+
+    // 门店匹配
+    if (couponInfo.applicable_store_ids && couponInfo.applicable_store_ids.length > 0) {
+      const storeRows = await pg.query(
+        'SELECT store_id FROM stores WHERE store_name = $1 LIMIT 1',
+        [storeName]
+      )
+      const storeId = storeRows.length > 0 ? storeRows[0].store_id : null
+      if (!storeId || !couponInfo.applicable_store_ids.includes(storeId)) {
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于此门店')
+      }
+    }
+
+    // 品项分类匹配
+    const skuIdList = itemsData.map(d => d.skuId)
+    const skuCats = await pg.query(
+      `SELECT ps.sku_id, p.category_id
+       FROM product_skus ps JOIN products p ON ps.product_id = p.product_id
+       WHERE ps.sku_id = ANY($1)`,
+      [skuIdList]
+    )
+    const catMap = new Map()
+    for (const r of skuCats) catMap.set(r.sku_id, r.category_id)
+
+    let eligibleItems
+    if (couponInfo.applicable_category_ids && couponInfo.applicable_category_ids.length > 0) {
+      eligibleItems = itemsData.filter(d =>
+        couponInfo.applicable_category_ids.includes(catMap.get(d.skuId))
+      )
+    } else {
+      eligibleItems = itemsData
+    }
+    if (eligibleItems.length === 0) {
+      throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
+    }
+
+    const eligibleTotal = eligibleItems.reduce((s, d) => s + d.saleAmount, 0)
+    const minSpend = Number(couponInfo.min_spend) || 0
+    if (eligibleTotal < minSpend) {
+      throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
+    }
+
+    // 计算抵扣金额
+    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
+      couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
+    }
+    couponDiscount = Math.round(couponDiscount * 100) / 100
+
+    // 按比例分摊到各行的 receivable
+    for (const item of eligibleItems) {
+      const share = couponDiscount * (item.saleAmount / eligibleTotal)
+      const roundedShare = Math.round(share * 100) / 100
+      item.receivable -= roundedShare
+      item.receivable = Math.round(item.receivable * 100) / 100
+    }
+
+    totalAmount = itemsData.reduce((s, d) => s + d.receivable, 0)
+    totalAmount = Math.round(totalAmount * 100) / 100
+  }
+
   // 使用事务创建订单（流水号在事务内原子生成）
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复流水号
@@ -201,15 +282,30 @@ async function create(ctx) {
       }
     }
 
+    // 原子 claim 优惠券（在事务内防并发重用）
+    if (inputCouponId) {
+      const claimResult = await client.query(
+        `UPDATE user_coupons
+         SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
+         WHERE coupon_id = $2 AND user_id = $3
+           AND status = '未使用' AND expire_at > NOW()`,
+        [orderNo, inputCouponId, userId]
+      )
+      if (claimResult.rowCount !== 1) {
+        throw new Error('INVALID_PARAMS: 优惠券已失效')
+      }
+    }
+
     // 创建订单主表
     await client.query(
       `INSERT INTO orders (
         order_no, status, order_type, market_name, store_name,
         order_datetime, client_user_id, client_phone, customer_name,
         payment_method, order_source,
-        preferred_employee_id, created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'client', $10, $5, $5)`,
-      [orderNo, orderType, marketName, storeName, now, userId, ctx.auth.phone || null, customerName, paymentMethod, preferredStaffWfId || null]
+        preferred_employee_id, coupon_id, coupon_discount,
+        created_at, updated_at
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'client', $10, $11, $12, $5, $5)`,
+      [orderNo, orderType, marketName, storeName, now, userId, ctx.auth.phone || null, customerName, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
     )
 
     // 创建订单明细（流水号递增）
@@ -549,12 +645,25 @@ async function detail(ctx) {
     }
   }
 
+  // 查询券名称
+  let couponName = null
+  if (order.coupon_id) {
+    const couponRows = await pg.query(
+      `SELECT ct.name FROM user_coupons uc
+       JOIN coupon_templates ct ON uc.template_id = ct.template_id
+       WHERE uc.coupon_id = $1`,
+      [order.coupon_id]
+    )
+    if (couponRows.length > 0) couponName = couponRows[0].name
+  }
+
   ctx.result = {
     order: {
       ...order,
       total_amount: totalAmount,
       expire_at: expireAt,
-      preferred_staff_name: preferredStaffName
+      preferred_staff_name: preferredStaffName,
+      coupon_name: couponName,
     },
     items
   }
@@ -588,12 +697,21 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 当前订单状态不允许取消')
   }
 
-  // 更新订单状态为已关闭
+  // 更新订单状态为已关闭 + 释放优惠券
   const now = new Date()
-  await pg.query(
-    "UPDATE orders SET status = '已关闭', updated_at = $1 WHERE order_no = $2",
-    [now, orderNo]
-  )
+  await pg.transaction(async (client) => {
+    await client.query(
+      "UPDATE orders SET status = '已关闭', updated_at = $1 WHERE order_no = $2",
+      [now, orderNo]
+    )
+    // 释放关联的优惠券
+    await client.query(
+      `UPDATE user_coupons
+       SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+       WHERE used_sale_order_id = $1`,
+      [orderNo]
+    )
+  })
 
   ctx.result = {
     orderNo,

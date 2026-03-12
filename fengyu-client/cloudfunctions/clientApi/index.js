@@ -40,7 +40,9 @@ const routes = {
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,
-  'service.detail': () => require('./routes/service').detail
+  'service.detail': () => require('./routes/service').detail,
+  'coupon.list': () => require('./routes/coupon').list,
+  'coupon.available': () => require('./routes/coupon').available
 }
 
 /**
