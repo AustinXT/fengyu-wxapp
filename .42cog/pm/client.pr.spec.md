@@ -60,9 +60,9 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| AUTH-01 | 微信静默登录 | `app.onLaunch()` 自动调用 `auth.login`（静默获取 openid）；新用户自动创建 `client_wechat_users` 记录（`user_id` 格式：`user_{timestamp}_{random}`）；先从 localStorage 恢复状态（快速），再与服务端同步（权威来源） |
+| AUTH-01 | 微信静默登录 | `app.onLaunch()` 自动调用 `auth.login`（静默获取 openid）；新用户自动创建 `client_wechat_users` 记录（`user_id` 格式：`FYGK-{YYYYMMDD}{序号}`）；先从 localStorage 恢复状态（快速），再与服务端同步（权威来源） |
 | AUTH-02 | 手机号绑定 | 个人中心 `open-type="getPhoneNumber"` 按钮 → `wx.cloud.CloudID(cloudID)` → 云函数自动解密手机号；触发历史订单补全机制（按手机号匹配 `client_user_id IS NULL` 的订单），返回 `updatedOrdersCount`（已同步订单数量）；手机号已被其他用户绑定时返回 `INVALID_PARAMS: 该手机号已被其他用户绑定` |
-| AUTH-03 | 门店绑定 | 从门店列表选择绑定默认门店，写入 `bound_store_name` + `bound_market_name`（从 PG `stores.market_name` 提取） |
+| AUTH-03 | 门店绑定 | 从门店列表选择绑定默认门店，写入 `bound_store_id`（FK → stores）；市场名通过 JOIN `stores` → `org_nodes` 树获取 |
 
 **实际认证流程**:
 1. `app.onLaunch()` → `syncLoginState()` → `auth.login`（静默，无用户交互）
@@ -203,7 +203,7 @@
 | ID | 需求 | 说明 |
 |----|------|------|
 | EMPLOYEE-01 | 美容师列表 | 按绑定门店过滤在职美容部员工（`department = '美容部'` OR `position = '美容师'`） |
-| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`client_wechat_users.main_employee_id`），预约/下单时默认填充 |
+| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`client_wechat_users.primary_beautician`，文本字段非 FK），预约/下单时默认填充 |
 | EMPLOYEE-03 | 选择非必须 | 下单时可不指定美容师（"不指定"选项） |
 
 **当前实现（Popup 交互）**:
@@ -237,7 +237,7 @@
 | 购物车结算 | 购物车页"结算" → URL 带 `fromCart=1` | 读取 `localStorage['checkoutItems']`，多商品显示"N 件商品" |
 | 恢复支付 | 订单详情页"去支付" → URL 带 `orderNo` | `order.detail(orderNo)` 加载已有订单 |
 
-**福利活动下单**: `orderType=promo` + `promotionSchemeId`，福利活动不进购物车
+**福利活动下单**: `sale_order_type='福利活动'` + `promotionSchemeId`，福利活动不进购物车
 
 **订单确认页 UI（screen_011）**:
 - 服务信息：SPU 名称 + SKU 规格名

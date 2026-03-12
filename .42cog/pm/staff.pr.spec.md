@@ -14,7 +14,7 @@
 **目标用户**: 凤御双美容院的门店员工（店长、美容师）、市场管理层和总部管理层
 
 **核心价值**:
-1. 店长快速开单（正式/体验/福利活动），扫码收款，完成营业额分配
+1. 店长快速开单（普通/体验/福利活动），扫码收款，完成营业额分配
 2. 管理预约、推进服务单、完成疗程核销
 3. 查看顾客档案与消费日历，掌握经营数据
 
@@ -122,8 +122,8 @@
 
 | 大类 | 子类型 | sale_order_type | 说明 |
 |------|--------|-----------|------|
-| 销售单 | 普通单 | `正式` | 从商品目录选择 SPU/SKU，按 PG `product_skus.price` 开单 |
-| 销售单 | 体验单 | `体验` | 面向潜在客户（散客），限选体验卡商品，不计入正式业绩，需打标记 |
+| 销售单 | 普通单 | `普通` | 从商品目录选择 SPU/SKU，按 PG `product_skus.price` 开单 |
+| 销售单 | 体验单 | `体验` | 面向潜在客户（散客），限选体验卡商品，不计入普通业绩，需打标记 |
 | 销售单 | 内部单 | `内部` | 员工/家属消费，统一半价（`price × 0.5`），需打标记，不算顾客数、不计入会员等级 |
 | 销售单 | 福利活动 | `福利活动` | 从 PG `products`（`product_kind = '福利活动'`）选择，方案内项目不可增删，单独成单 |
 | 回款单 | — | `回款` | 选客户 → 查看欠款 → 录入回款（P2） |
@@ -192,7 +192,7 @@
 
 **"无需分配"标记**: `onSkipAllocation()` — 以空 allocations 数组调用 `allocation.save`，将订单标记为已处理
 
-**恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `sale_allocation_items` 恢复 displayItems，回填部门/员工/金额
+**恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `sale_allocations` 恢复 displayItems，回填部门/员工/金额
 
 **三接口并行初始化**: `Promise.all([allocation.suggest, employee.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
 
@@ -214,7 +214,7 @@
 - 部门列表：PG `employees` + `org_nodes`
 - 可分配员工：PG `employees`（按门店+部门筛选）
 - 提成矩阵：PG `commission_rate_matrix`
-- 分配记录：PG `sale_allocations` + `sale_allocation_items`
+- 分配记录：PG `sale_allocations`（单表，sale_item 级粒度）
 
 **API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `employee.departments`
 
@@ -468,7 +468,7 @@
 **说明**:
 - 员工/家属半价消费，统一按 `product_skus.price × 0.5` 计算 `unit_price`
 - 新增 `sale_order_type = '内部'` 枚举
-- 走与正式订单相同的支付和营业额分配流程
+- 走与普通订单相同的支付和营业额分配流程
 - 需打标记（`sale_order_type = '内部'`），数据看板统计时可选剔除内部单
 - **不算顾客数**：客流/客量统计排除内部单对应的顾客
 - **不计入会员等级**：内部单消费额不纳入会员等级升级的累计消费
@@ -767,7 +767,7 @@ TabBar
 | AC-11 | 营业额分配保存后 PG 分配表能查到分配明细 | 分配 → 查询 sale_allocations |
 | AC-12 | 美容师不可查看顾客完整手机号 | 美容师查询 → 返回脱敏手机号 |
 | AC-13 | 服务单完成后 `remaining_sessions` 正确扣减 | 从 3 → 服务一次 → 变为 2 |
-| AC-14 | 体验单走与正式订单相同的支付和分配流程 | 创建体验单 → 支付 → 分配 → 服务 |
+| AC-14 | 体验单走与普通订单相同的支付和分配流程 | 创建体验单 → 支付 → 分配 → 服务 |
 | AC-15 | 福利活动订单内项目不可增删 | 选择方案后尝试修改 → 不允许 |
 | AC-16 | 预约确认后 `已确认`，签到记录 `checkin_at` 但不改状态 | 签到后检查状态仍为已确认 |
 
@@ -832,7 +832,7 @@ TabBar
 | customer | calendar | 消费日历 | customer-detail | 已实现 |
 | customer | detail | 顾客详情 | customer-detail | 已实现 |
 | customer | paidOrders | 已支付订单（用于核销选择） | customer-detail | 已实现 |
-| order | create | 员工开单（正式/体验/福利活动） | order-create | 已实现 |
+| order | create | 员工开单（普通/体验/福利活动） | order-create | 已实现 |
 | order | qrcode | 订单二维码状态 | order-qrcode | 已实现 |
 | order | confirmOffline | 确认线下收款 | order-detail, order-list | 已实现 |
 | order | close | 关闭订单 | order-detail | 已实现 |
