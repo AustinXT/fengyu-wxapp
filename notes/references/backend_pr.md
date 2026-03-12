@@ -139,7 +139,7 @@ CloudBase 云函数（Node.js）
 | `payment_method` | enum | 收款方式：`wechat`（微信支付）/ `offline`（线下收款）|
 | `order_source` | enum | 下单端：`client`（客户端自助）/ `staff`（员工端开单） |
 | `opened_by` | string | 开单人员工编号（员工端开单时填入，客户端自助时为 null） |
-| `preferred_staff_wf_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（未指定时为 null） |
+| `preferred_employee_id` | string | 顾客指定美容师员工编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（未指定时为 null） |
 | `paid_at` | timestamp | 支付完成时间 |
 | `offline_confirmed_by` | string | 线下收款确认人员工编号 |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
@@ -209,7 +209,7 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店（快照，与 orders 一致） |
 | `service_date` | date | 护理服务日期 |
 | `service_duration` | integer | 服务时长（分钟） |
-| `assigned_staff_wf_id` | string | 分配的主责服务人员编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（用于服务单状态推进权限校验） |
+| `assigned_employee_id` | string | 分配的主责服务人员编号，关联 WorkFine `UDT_S_287.UDF_S_1147`（用于服务单状态推进权限校验） |
 | `remark` | string | 备注 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（服务顾客的微信用户 ID） |
 | `created_at` | timestamp | 记录创建时间 |
@@ -253,7 +253,7 @@ CloudBase 云函数（Node.js）
 | `openid` | string | 微信 openid（员工端 appid 下，唯一索引） |
 | `session_key` | string | 微信 session_key（加密存储） |
 | `phone` | string | 绑定手机号（明文，与 WorkFine 员工手机核对） |
-| `staff_wf_id` | string | 关联 WorkFine `UDT_S_287.UDF_S_1147`（根据手机号自动绑定员工档案后，可为 null） |
+| `employee_id` | string | 关联 WorkFine `UDT_S_287.UDF_S_1147`（根据手机号自动绑定员工档案后，可为 null） |
 | `last_login_at` | timestamp | 最近一次登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -272,7 +272,7 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id`（预约顾客的微信用户 ID） |
 | `customer_name` | string | 顾客姓名（冗余存储） |
-| `staff_wf_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
+| `employee_id` | string | 预约美容师编号，关联 WorkFine `UDT_S_287.UDF_S_1147` |
 | `staff_name` | string | 预约美容师姓名（冗余存储） |
 | `appointment_time` | datetime | 预约到店时间 |
 | `notes` | string | 备注 |
@@ -327,8 +327,8 @@ CloudBase 云函数（Node.js）
 | 美容师 | 查看自己负责的服务单、推进被分配给自己的服务单状态；**不可开单**、**不可查看完整手机号** |
 | 顾客（客户端） | 自助下单、发起微信支付/选择线下付款、查看自己的订单与预约 |
 
-- 权限校验以登录用户的 `staff_wf_id` 在 WorkFine 中的职位/部门数据为依据，由云函数中间件统一拦截
-- 服务单状态推进：仅**店长**或**`service_orders.assigned_staff_wf_id` 匹配的服务人员**可操作
+- 权限校验以登录用户的 `employee_id` 在 WorkFine 中的职位/部门数据为依据，由云函数中间件统一拦截
+- 服务单状态推进：仅**店长**或**`service_orders.assigned_employee_id` 匹配的服务人员**可操作
 
 ---
 
@@ -350,8 +350,8 @@ CloudBase 云函数（Node.js）
 11. **护理单来源约束**：护理单明细（`service_items`）中每条 `item_flow_no` 必须关联一条已支付订单的 `order_items` 行；约束在明细层执行，主表（`service_orders`）不存 `order_no`，允许同一次到店跨多笔订单核销。
 12. **体验/引流服务**需先由店长创建体验单（`order_type = 体验`，价格由店长自定义），支付确认后再从该体验单创建护理单；体验单走与正式订单相同的支付流程和状态机。**先服务后付款不在 MVP 范围**：护理单必须在订单进入已支付后才可创建，不支持先到店服务后补单付款的场景。
 13. **顾客端自助下单的营业额分配**：
-   - 已指定美容师（`preferred_staff_wf_id` 不为 null）：订单进入已支付时，系统自动以该美容师为唯一被分配人创建分配记录（`allocation_ratio = 1.0`，`total_amount = received`），无需店长手动操作；店长可在订单详情页查看分配结果
-   - 未指定美容师（`preferred_staff_wf_id` 为 null）：不创建分配记录，订单详情页不出现营业额分配入口
+   - 已指定美容师（`preferred_employee_id` 不为 null）：订单进入已支付时，系统自动以该美容师为唯一被分配人创建分配记录（`allocation_ratio = 1.0`，`total_amount = received`），无需店长手动操作；店长可在订单详情页查看分配结果
+   - 未指定美容师（`preferred_employee_id` 为 null）：不创建分配记录，订单详情页不出现营业额分配入口
 14. **营业额分配锁定规则**：分配记录在订单处于 `待支付` 且顾客尚未扫码（二维码显示状态为"待扫码"）时可被删除并重建（即"修改"）；顾客扫码后（二维码显示状态变为"已扫码待付款"或之后）分配方案立即锁定，不得修改；如需变更，须将订单置为 `已关闭` 并由店长重新开单。
 15. **手机号补全机制**：顾客端小程序首次登录并完成手机号绑定时，系统查询 `orders` 表中 `client_phone = 绑定手机号 AND client_user_id IS NULL` 的记录，批量将 `client_user_id` 更新为当前用户的 `user_id`，使历史体验单（及正式订单）在顾客端可见。此操作在绑定手机号的云函数中同步执行。
 16. **员工开单顾客身份验证**：员工端开单时，顾客手机号为**必填项**。系统在提交开单时通过手机号查询 `client_wechat_users.phone`：若已注册客户端，将对应 `user_id` 直接写入 `orders.client_user_id`，订单在顾客端立即可见；若未注册，`client_user_id` 为 null，待顾客完成手机号绑定后通过第 15 条补全机制自动关联。

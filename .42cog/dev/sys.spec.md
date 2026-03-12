@@ -113,7 +113,7 @@ fengyu-client/
 │   ├── components/
 │   │   ├── product-card/         # SPU 卡片（含生美/非生美标签）
 │   │   ├── sku-selector/         # SKU 规格面板
-│   │   ├── staff-picker/         # 美容师选择器
+│   │   ├── employee-picker/         # 美容师选择器
 │   │   ├── order-status-tag/     # 订单状态标签
 │   │   └── session-badge/        # 剩余次数徽章
 │   ├── utils/
@@ -128,7 +128,7 @@ fengyu-client/
 │       │   ├── auth.js           # 登录、手机号绑定
 │       │   ├── store.js          # 门店列表
 │       │   ├── product.js        # 商品列表/详情（PG + WorkFine）
-│       │   ├── staff.js          # 美容师列表（WorkFine 只读）
+│       │   ├── employee.js          # 美容师列表（WorkFine 只读）
 │       │   ├── order.js          # 下单、查询、状态
 │       │   ├── appointment.js    # 预约 CRUD
 │       │   └── service.js        # 服务单查询
@@ -171,7 +171,7 @@ fengyu-staff/
 │   │   └── session-counter/      # 疗程次数计数器
 │   ├── utils/
 │   │   ├── cloud.ts
-│   │   ├── auth.ts               # 员工端登录 + 手机号绑定 + staff_wf_id 关联
+│   │   ├── auth.ts               # 员工端登录 + 手机号绑定 + employee_id 关联
 │   │   ├── realtime.ts           # WebSocket + 轮询降级封装
 │   │   └── role.ts               # 角色判断（店长 / 美容师）
 │   └── models/
@@ -182,14 +182,14 @@ fengyu-staff/
 │       │   ├── auth.js           # 员工登录、手机号绑定
 │       │   ├── store.js          # 门店数据（WorkFine 只读）
 │       │   ├── product.js        # 商品列表/详情（PG + WorkFine）
-│       │   ├── staff.js          # 员工档案（WorkFine 只读）
+│       │   ├── employee.js          # 员工档案（WorkFine 只读）
 │       │   ├── customer.js       # 顾客档案 + 日历数据
 │       │   ├── order.js          # 开单、确认收款、关单
 │       │   ├── allocation.js     # 营业额分配
 │       │   ├── appointment.js    # 预约管理
 │       │   └── service.js        # 服务单 CRUD + 完成核销
 │       ├── middleware/
-│       │   ├── auth.js           # OPENID → staff_user_id + staff_wf_id
+│       │   ├── auth.js           # OPENID → staff_user_id + employee_id
 │       │   ├── role.js           # 角色权限校验（店长/美容师）
 │       │   └── validate.js
 │       ├── db/
@@ -214,7 +214,7 @@ fengyu-staff/
 | 品项分类目录 | Workfine SQL Server | 只读 | UDT_M_229，21 种可用分类 |
 | 顾客档案（历史数据） | Workfine SQL Server | 只读 | UDT_S_311，不建立 PG 实体 |
 | 微信用户（顾客端） | PG 自托管 | 读写 | `client_wechat_users`，openid/手机号/绑定门店 |
-| 微信用户（员工端） | PG 自托管 | 读写 | `staff_wechat_users`，openid/手机号/staff_wf_id |
+| 微信用户（员工端） | PG 自托管 | 读写 | `staff_wechat_users`，openid/手机号/employee_id |
 | SPU 商品元数据 | PG 自托管 | 读写 | `product_spu`，名称/封面/描述/排序，运营维护 |
 | SKU↔WorkFine 映射 | PG 自托管 | 读写 | `product_spu_sku_map`，is_active/product_type |
 | 订单（主表+明细） | PG 自托管 | 读写 | `orders` + `order_items`，含剩余次数 |
@@ -229,7 +229,7 @@ client_wechat_users ──1:N──> orders ──1:N──> order_items
                                                   │
                      staff_wechat_users             │ item_flow_no（核销锚点）
                             │                      ├──1:N──> appointments
-                            │ staff_wf_id           └──1:N──> service_items
+                            │ employee_id           └──1:N──> service_items
                             ▼                                      │
                        WorkFine                                    ▼
                       UDT_S_287                            service_orders
@@ -284,7 +284,7 @@ wx.cloud.callFunction({
 | `product.categories` | 品项分类列表（有效 SPU 派生） | R | — |
 | `product.spuList` | SPU 列表（含 SKU is_active 状态） | R | R（价格） |
 | `product.skuDetail` | SKU 详情（价格/次数从 WorkFine 实时读取） | R | R |
-| `staff.list` | 美容师列表（按门店过滤在职） | — | R |
+| `employee.list` | 美容师列表（按门店过滤在职） | — | R |
 | `order.create` | 顾客自助下单 | W | — |
 | `order.pay` | 发起微信支付（返回预支付参数） | R | — |
 | `order.offlinePay` | 选择线下付款（进入待确认收款） | W | — |
@@ -300,10 +300,10 @@ wx.cloud.callFunction({
 | action | 说明 | PG | WorkFine |
 |--------|------|----|---------|
 | `auth.login` | 员工端登录，写入/更新 staff_wechat_users | W | — |
-| `auth.bindPhone` | 绑定手机号 + 匹配 staff_wf_id | W | R |
+| `auth.bindPhone` | 绑定手机号 + 匹配 employee_id | W | R |
 | `store.list` | 门店列表 | — | R |
-| `staff.list` | 本店员工列表 | — | R |
-| `staff.departments` | 部门下可分配业绩员工 | — | R |
+| `employee.list` | 本店员工列表 | — | R |
+| `employee.departments` | 部门下可分配业绩员工 | — | R |
 | `customer.search` | 按手机号查询顾客（WorkFine 档案 + client_wechat_users） | R | R |
 | `customer.calendar` | 顾客日历数据（已支付订单按日汇总） | R | — |
 | `product.categories` | 品项分类 + SPU 列表 | R | R |
@@ -334,7 +334,7 @@ wx.cloud.callFunction({
 | 更新订单状态 | `待支付 → 已支付`，写入 paid_at |
 | 单品到期日 | 单品 order_items 写入 expire_date = paid_at + 1 year |
 | 院装产品完成 | 院装 order_items 对应的 orders 置为 `已支付`（支付即交付）|
-| 自动分配业绩 | 若 preferred_staff_wf_id 不为 null，自动创建 revenue_allocations |
+| 自动分配业绩 | 若 preferred_employee_id 不为 null，自动创建 revenue_allocations |
 | 实时推送 | 通知员工端 WebSocket 客户端 |
 
 ---
@@ -395,9 +395,9 @@ const { OPENID } = cloud.getWXContext()
 ```javascript
 // staffApi middleware/role.js
 async function requireManager(ctx) {
-  const { staff_wf_id } = ctx.staffUser  // 从 staff_wechat_users 获取
+  const { employee_id } = ctx.staffUser  // 从 staff_wechat_users 获取
   // 查询 WorkFine UDT_S_287.UDF_S_1161 = '门店经理'
-  const isManager = await queryWorkfineRole(staff_wf_id)
+  const isManager = await queryWorkfineRole(employee_id)
   if (!isManager) throw new Error('PERMISSION_DENIED')
 }
 ```
@@ -405,7 +405,7 @@ async function requireManager(ctx) {
 ### 6.4 数据隔离规则
 
 - 员工端只能访问**本店**数据（`store_name` 与登录员工档案 `UDF_S_1163` 匹配）
-- 美容师只能操作 `assigned_staff_wf_id = self.staff_wf_id` 的服务单
+- 美容师只能操作 `assigned_employee_id = self.employee_id` 的服务单
 - 所有写操作在云函数中完成，前端不直接写 PG
 
 ---

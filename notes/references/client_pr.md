@@ -220,7 +220,7 @@
 
 | 数据 | 存储位置 | 说明 |
 |------|---------|------|
-| 预约记录 | PG `appointments` | 创建/读取/更新预约；关联 client_user_id、staff_wf_id、item_flow_no |
+| 预约记录 | PG `appointments` | 创建/读取/更新预约；关联 client_user_id、employee_id、item_flow_no |
 | 可预约订单行（剩余次数余额） | PG `order_items` | 过滤 remaining_sessions > 0 且非院装产品的已支付订单行 |
 | 主美容师（默认显示） | WorkFine `UDT_S_311.UDF_S_6444` | 顾客档案中的主美容师姓名，预约时默认填充 |
 | 美容师列表（可选指定） | WorkFine `UDT_S_287` | 同 2.3，按门店过滤在职美容师 |

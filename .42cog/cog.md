@@ -88,7 +88,7 @@
 
 - **员工（staff_wechat_users）**：
   - 唯一编码：user_id（UUID），openid（员工端 appid 下唯一）
-  - staff_wf_id：绑定手机号后自动关联 WorkFine 员工档案
+  - employee_id：绑定手机号后自动关联 WorkFine 员工档案
   - 角色从 WorkFine 实时查询：`门店经理`（店长）| 其他（美容师）
   - 两端 openid 完全独立（不同 appid），用户表不共享
 </用户>
@@ -107,7 +107,7 @@
 - **部门分配规则**：
   - 同部门：分配总额 <= 实收金额
   - 跨部门：各部门独立计算，总额可达实收 2 倍
-  - 指定美容师自动分配：支付回调时自动创建 100% 分配给 preferred_staff_wf_id
+  - 指定美容师自动分配：支付回调时自动创建 100% 分配给 preferred_employee_id
 </营业额分配>
 
 <预约>
@@ -130,6 +130,6 @@
 - 订单 ↔ 服务单：N:N（通过 service_items.item_flow_no 间接关联）
 - 订单 → 营业额分配：1:N（order_no + employee_id 唯一）
 - 分配 → 分配明细：1:N（按销售分类拆分）
-- 员工 → 服务单：1:N（assigned_staff_wf_id）
+- 员工 → 服务单：1:N（assigned_employee_id）
 - 预约 → 服务单：1:1（可选关联，appointment_id）
 </rel>

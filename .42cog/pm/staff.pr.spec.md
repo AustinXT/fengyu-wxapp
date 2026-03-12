@@ -71,7 +71,7 @@
 | ID | 需求 | 说明 |
 |----|------|------|
 | AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 WorkFine 查询职位信息（店长/美容师） |
-| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 WorkFine `UDT_S_287` 员工档案（`staff_wf_id`）；清除认证缓存 |
+| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 WorkFine `UDT_S_287` 员工档案（`employee_id`）；清除认证缓存 |
 
 **角色判定**:
 - `UDT_S_287.UDF_S_1161 = '门店经理'` → 店长
@@ -99,11 +99,11 @@
 - 门店切换：使用 Picker 组件（仅首次点击时加载门店列表，后续使用缓存）
 - 手机号重新绑定按钮
 - 快捷导航：订单列表、服务单列表、顾客列表（3 个 Cell 入口）
-- 退出登录：确认弹窗 → `app.resetStaffInfo()` 清除全部缓存 → `reLaunch` 跳转登录页
+- 退出登录：确认弹窗 → `app.resetEmployeeInfo()` 清除全部缓存 → `reLaunch` 跳转登录页
 
 **数据来源**: PG `stores`（同步自 WorkFine）+ PG `store_unbind_requests`（读写）
 
-**API**: `store.list` / `staff.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
+**API**: `store.list` / `employee.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
 
 ---
 
@@ -182,7 +182,7 @@
 |------|------|
 | 同部门分配 | 多名员工参与时，分配总额 ≤ 实收金额 |
 | 跨部门分配 | 各部门可各按实收金额分配（总额可达实收 N 倍） |
-| 默认候选人 | 订单指定的美容师（`preferred_staff_wf_id`） |
+| 默认候选人 | 订单指定的美容师（`preferred_employee_id`） |
 | 未指定美容师 | 店长从全体可分配员工中手动选择 |
 
 **销售分类（sales_category）**: 自采自销 / 他销自耗 / 他销他耗 / 生态合作
@@ -193,7 +193,7 @@
 
 **恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `revenue_allocation_items` 恢复 displayItems，回填部门/员工/金额
 
-**三接口并行初始化**: `Promise.all([allocation.suggest, staff.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
+**三接口并行初始化**: `Promise.all([allocation.suggest, employee.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
 
 **提成比例查询**: `lookupRate(dept, salesCategory, totalAmount)` — 美容部/养生部直接查 `beautyRates`，其他部门按 `rates` 数组的 amountRange 匹配
 
@@ -215,7 +215,7 @@
 - 提成矩阵：WorkFine `UDT_S_1962/UDT_M_1964`
 - 分配记录：PG `revenue_allocations` + `revenue_allocation_items`
 
-**API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `staff.departments`
+**API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `employee.departments`
 
 ---
 
@@ -225,7 +225,7 @@
 
 **订单列表**:
 - 店长：查看本店所有订单
-- 美容师：仅查看 `preferred_staff_wf_id` 匹配的订单
+- 美容师：仅查看 `preferred_employee_id` 匹配的订单
 - Tab 筛选（7 个）：**全部 / 待支付 / 待确认收款 / 已支付 / 已完成 / 支付失败 / 已关闭**
 - 支持 `presetStatus` 参数：从工作台待办可直接跳转到指定状态 Tab（如 `pendingOffline` → 待确认收款，`pendingCreate` → 待支付）
 - 列表内嵌快捷操作按钮（如"确认线下收款"可在列表中直接执行）
@@ -245,7 +245,7 @@
 
 **订单详情页**:
 - 基本信息：订单号、状态、顾客、门店、商品明细（名称/数量/单价/销售金额）、营业额分配信息、剩余次数
-- `isCreator` 判定：`opened_by === getStaffWfId()` 确定当前员工是否为开单人
+- `isCreator` 判定：`opened_by === getEmployeeId()` 确定当前员工是否为开单人
 
 **操作按钮矩阵**（均含确认弹窗，提示操作不可恢复）:
 
@@ -397,7 +397,7 @@
 | 5 | 待提成分配 | 仅店长 | allocation-list |
 | 6 | 待审批解绑申请 | 仅店长 | unbind-requests |
 
-**API**: `staff.todayCommission` / `staff.monthlyCalendar` / `staff.todoList`
+**API**: `employee.todayCommission` / `employee.monthlyCalendar` / `employee.todoList`
 
 ---
 
@@ -407,14 +407,14 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STAFF-01 | 员工列表 | 按门店查询在职员工；美容师看不到手机号 |
-| STAFF-02 | 部门列表 | 按部门分组返回员工，用于营业额分配 |
+| EMPLOYEE-01 | 员工列表 | 按门店查询在职员工；美容师看不到手机号 |
+| EMPLOYEE-02 | 部门列表 | 按部门分组返回员工，用于营业额分配 |
 
 **查询条件**: 在职（`UDF_S_1624 = '否'`）+ 属于已选门店
 
 **数据来源**: WorkFine `UDT_S_287`（只读）
 
-**API**: `staff.list` / `staff.departments`
+**API**: `employee.list` / `employee.departments`
 
 ---
 
@@ -813,15 +813,15 @@ TabBar
 |--------|------|----------|------|
 | 组织架构 | `org_nodes` | id, name, type, parent_id, parent_name | 组织层级树、权限域目标 |
 | 门店详情 | `stores` | store_id, store_name, org_node_id, market_name | 门店业务信息 |
-| 员工微信用户 | `staff_wechat_users` | openid, phone, staff_wf_id | 员工身份 |
+| 员工微信用户 | `staff_wechat_users` | openid, phone, employee_id | 员工身份 |
 | 顾客微信用户 | `client_wechat_users` | openid, phone, bound_store_name | 顾客身份关联 |
 | 商品 SPU | `product_spu` | name, category, big_category, cover_image | 商品元数据 |
 | SKU 映射 | `product_spu_sku_map` | spu_id, workfine_item_id, workfine_source, product_type | SPU↔WorkFine 映射 |
 | 订单主表 | `orders` | order_no, status, order_type, allocation_status | 订单 CRUD |
 | 订单明细 | `order_items` | item_flow_no, sku_id, unit_price, remaining_sessions | 商品行、价格快照、剩余次数 |
 | 营业额分配 | `revenue_allocations` + `revenue_allocation_items` | employee_id, department, amount, commission_rate | 分配记录 |
-| 权限角色 | `permission_roles` | staff_id, role, scope_id → org_nodes.id | RBAC 权限 |
-| 预约 | `appointments` | status, client_user_id, staff_wf_id, checkin_at | 预约 CRUD |
+| 权限角色 | `permission_roles` | employee_id, role, scope_id → org_nodes.id | RBAC 权限 |
+| 预约 | `appointments` | status, client_user_id, employee_id, checkin_at | 预约 CRUD |
 | 服务单 | `service_orders` + `service_items` | service_order_no, status, appointment_id, session_used | 服务单核销 |
 | 解绑申请 | `store_unbind_requests` | status, user_id, from_store_name | 门店解绑审批 |
 | 操作日志 | `operation_logs` | operator_user_id, org_node_id, action, target_type, target_id | 审计追踪（只写） |
@@ -852,7 +852,7 @@ TabBar
 | ID | 标准 | 验证方式 |
 |----|------|----------|
 | AC-01 | 员工微信登录后自动创建 `staff_wechat_users` 记录 | 查看数据库表 |
-| AC-02 | 手机号绑定后自动关联 WorkFine 员工档案（`staff_wf_id`） | 绑定后查询 staff_wf_id 非空 |
+| AC-02 | 手机号绑定后自动关联 WorkFine 员工档案（`employee_id`） | 绑定后查询 employee_id 非空 |
 | AC-03 | 仅店长可进入开单流程，美容师角色被拒绝 | 美容师点击开单 → 提示无权限 |
 | AC-04 | 开单后 PG 订单表能查到同一笔记录 | 开单 → 查询 orders 表 |
 | AC-05 | SKU 价格从 WorkFine 实时读取，与管理端一致 | 修改 WorkFine 价格 → 刷新后更新 |
@@ -902,7 +902,7 @@ TabBar
 
 ---
 
-## 10. staffApi 接口汇总
+## 10. employeeApi 接口汇总
 
 | 模块 | 接口 | 说明 | 前端调用页面 | 实现状态 |
 |------|------|------|-------------|---------|
@@ -912,12 +912,12 @@ TabBar
 | store | unbindRequests | 待审批解绑申请列表 | unbind-requests | 已实现 |
 | store | approveUnbind | 审批通过解绑 | unbind-requests | 已实现 |
 | store | rejectUnbind | 拒绝解绑申请 | unbind-requests | 已实现 |
-| staff | list | 员工列表 | — | 已实现 |
-| staff | departments | 部门列表（含员工分组） | revenue-allocation | 已实现 |
-| staff | todayCommission | 今日分成 | workbench | 已实现 |
-| staff | monthlyCalendar | 月度业绩日历 | workbench | 已实现 |
-| staff | todoList | 待处理事项 | workbench | 已实现 |
-| staff | bindStore | 切换工作门店 | profile | 已实现 |
+| employee | list | 员工列表 | — | 已实现 |
+| employee | departments | 部门列表（含员工分组） | revenue-allocation | 已实现 |
+| employee | todayCommission | 今日分成 | workbench | 已实现 |
+| employee | monthlyCalendar | 月度业绩日历 | workbench | 已实现 |
+| employee | todoList | 待处理事项 | workbench | 已实现 |
+| employee | bindStore | 切换工作门店 | profile | 已实现 |
 | product | shopInit | 开单页初始化（分类+首个分类SPU） | order-create | 已实现 |
 | product | categories | 品项分类列表 | order-create | 已实现 |
 | product | spuList | SPU 商品列表 | order-create | 已实现 |
@@ -981,7 +981,7 @@ callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
 | `isManager()` | 判断当前员工是否为店长（`position === '门店经理'`） |
 | `isBeautician()` | 判断是否为美容师 |
 | `requireManager(tipMsg?)` | 非店长时 Toast 提示并返回 `false` |
-| `getStaffWfId()` | 返回 `app.globalData.staffWfId` |
+| `getStaffId()` | 返回 `app.globalData.staffId` |
 
 ### 11.4 全局状态
 
@@ -990,8 +990,8 @@ callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | userId | string | PG staff_wechat_users.id |
-| staffWfId | string | WorkFine 员工档案 ID |
-| staffName | string | 员工姓名 |
+| EmployeeId | string | WorkFine 员工档案 ID |
+| employeeName | string | 员工姓名 |
 | position | string | 职位（'门店经理' / 其他） |
 | boundStoreName | string | 当前绑定门店名 |
 | boundStoreId | string | 门店 ID |
@@ -1001,4 +1001,4 @@ callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
 
 - `restoreFromCache()`：应用启动时从 wx.storage 恢复全局状态（兼容 legacy `role` → `position` 字段）
 - `syncLoginState()`：`onLaunch` 调用 `auth.login` 同步最新状态到 globalData
-- `resetStaffInfo()`：退出登录时清除所有字段 + `wx.clearStorageSync()`
+- `resetEmployeeInfo()`：退出登录时清除所有字段 + `wx.clearStorageSync()`

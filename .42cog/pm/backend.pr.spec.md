@@ -186,7 +186,7 @@ CloudBase 云函数（Node.js）
 >
 > **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。详见 §6.7。
 >
-> 现有业务表中引用员工编号的字段（`orders.preferred_staff_wf_id`、`orders.opened_by`、`service_orders.assigned_staff_wf_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.staff_wf_id`、`staff_wechat_users.staff_wf_id`）值即为 `employees.employee_id`。
+> 现有业务表中引用员工编号的字段（`orders.preferred_employee_id`、`orders.opened_by`、`service_orders.assigned_employee_id`、`revenue_allocations.employee_id`、`service_items.employee_id`、`appointments.employee_id`、`staff_wechat_users.employee_id`）值即为 `employees.employee_id`。
 
 ### 4.4 customers（顾客档案）
 
@@ -284,6 +284,8 @@ CloudBase 云函数（Node.js）
 | `session_count` | integer \| null | 疗程次数：疗程卡≥2，单品=1，院装产品=null |
 | `is_bundle_sku` | boolean | 是否为套餐的组成部分，NOT NULL DEFAULT false |
 | `sort_order` | integer | 排序序号 |
+| `service_fee` | numeric(12,2) | 服务费，NOT NULL DEFAULT 0 |
+| `service_commission_rate` | numeric(5,4) | 服务提成比例（如 0.08 = 8%），NOT NULL DEFAULT 0 |
 | `is_active` | boolean | 是否上架，NOT NULL DEFAULT true |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -291,7 +293,7 @@ CloudBase 云函数（Node.js）
 > **索引**: `(product_id)`
 >
 > **核心设计**:
-> - 价格、次数**直接存在 SKU 表中**，运行时无外部查询
+> - 价格、次数、服务费、提成比例**直接存在 SKU 表中**，运行时无外部查询
 > - `special_price` 支持 SKU 级别的促销/特价
 > - 套餐赠品：`price = 0` 即为赠品
 > - 套餐总价 = 所有 `is_bundle_sku=true` 的 SKU 的 `price` 之和
@@ -344,7 +346,7 @@ CloudBase 云函数（Node.js）
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
 | `order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
 | `opened_by` | string \| null | 开单人员工编号，关联 `employees.employee_id` |
-| `preferred_staff_wf_id` | string \| null | 顾客指定美容师，关联 `employees.employee_id` |
+| `preferred_employee_id` | string \| null | 顾客指定美容师，关联 `employees.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
 | `wechat_transaction_id` | string \| null | 微信支付流水号（唯一索引） |
 | `alipay_transaction_id` | string \| null | 支付宝交易号（唯一索引） |
@@ -418,7 +420,7 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店（快照） |
 | `service_date` | date | 护理服务日期 |
 | `service_duration` | integer | 服务时长（分钟） |
-| `assigned_staff_wf_id` | string | 主责服务人员，关联 `employees.employee_id` |
+| `assigned_employee_id` | string | 主责服务人员，关联 `employees.employee_id` |
 | `remark` | string | 备注 |
 | `appointment_id` | string \| null | 关联 `appointments.appointment_id` |
 | `client_user_id` | string \| null | 关联 `client_wechat_users.user_id` |
@@ -461,7 +463,7 @@ CloudBase 云函数（Node.js）
 | `openid` | string | 微信 openid（员工端 appid 下，唯一索引） |
 | `session_key` | string | 微信 session_key |
 | `phone` | string | 绑定手机号 |
-| `staff_wf_id` | string | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
+| `employee_id` | string | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
 | `last_login_at` | timestamp | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -476,8 +478,8 @@ CloudBase 云函数（Node.js）
 | `store_name` | string | 所属门店 |
 | `client_user_id` | string | 关联 `client_wechat_users.user_id` |
 | `customer_name` | string | 顾客姓名（冗余存储） |
-| `staff_wf_id` | string | 预约美容师，关联 `employees.employee_id` |
-| `staff_name` | string | 美容师姓名（冗余存储） |
+| `employee_id` | string | 预约美容师，关联 `employees.employee_id` |
+| `employee_name` | string | 美容师姓名（冗余存储） |
 | `item_flow_no` | string \| null | 关联 `order_items.item_flow_no`（可选） |
 | `appointment_time` | datetime | 预约到店时间 |
 | `checkin_at` | timestamp \| null | 到店签到时间（不改状态） |
@@ -491,7 +493,7 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | serial | 主键，自增 |
-| `staff_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
+| `employee_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
 | `role` | text NOT NULL | 角色：`manager` / `finance` / `hr` / `product` / `staff` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
@@ -501,8 +503,8 @@ CloudBase 云函数（Node.js）
 | `updated_by` | text \| null | 最后修改者 |
 
 > **约束**:
-> - `UNIQUE(staff_id, role, scope_id) WHERE deleted_at IS NULL`（部分唯一索引，同人同角色同域不重复）
-> - `FK(staff_id)` → `employees(employee_id)`
+> - `UNIQUE(employee_id, role, scope_id) WHERE deleted_at IS NULL`（部分唯一索引，同人同角色同域不重复）
+> - `FK(employee_id)` → `employees(employee_id)`
 > - `FK(scope_id)` → `org_nodes(id)`
 >
 > **一人多角色 + 一角色多域**:
@@ -637,7 +639,7 @@ CloudBase 云函数（Node.js）
 | **授权层** | `permission_roles` 表 | "谁有什么角色" — 应用管理 | API / 同步推导 |
 | **能力层** | `PERMISSION_MATRIX` 代码常量 | "角色能做什么" — 5角色 × 12模块 | 代码发布 |
 
-> FK 方向：`permission_roles.staff_id → employees.employee_id`（标准一对多，FK 在"多"侧）。一人可有多条 permission_roles 记录（一人多角色 + 一角色多域）。
+> FK 方向：`permission_roles.employee_id → employees.employee_id`（标准一对多，FK 在"多"侧）。一人可有多条 permission_roles 记录（一人多角色 + 一角色多域）。
 >
 > 顾客（客户端）不属于 RBAC 体系，其权限仍为：自助下单、发起微信支付/选择线下付款、查看自己的订单与预约。
 
@@ -651,7 +653,7 @@ CloudBase 云函数（Node.js）
 | 品项 | `product` | 品项管理人员 | 商品增删改查；**不可**开单/操作服务单/查看顾客 |
 | 员工 | `staff` | 美容师、推广师等一线 | 自己相关的服务单和预约、脱敏顾客数据、本店员工/商品只读；**不可**开单 |
 
-> **一人多角色**：同一员工可同时拥有多个角色（如既是 manager 又是 hr），每个 `(staff_id, role, scope_id)` 组合一条记录。
+> **一人多角色**：同一员工可同时拥有多个角色（如既是 manager 又是 hr），每个 `(employee_id, role, scope_id)` 组合一条记录。
 >
 > **一角色多域**：同一员工的同一角色可分配到多个域（如 manager 同时管理两家门店），每个 scope_id 一条记录。示例：`(E1, manager, store_A_id)` + `(E1, manager, store_B_id)`。
 >
@@ -722,7 +724,7 @@ CloudBase 云函数（Node.js）
 >
 > **本门店**：staff 角色固定为其 `employees.store_id` 对应的门店，不可跨门店。
 >
-> **自己相关**：staff 角色仅能查看/操作 `assigned_staff_wf_id` / `staff_wf_id` / `preferred_staff_wf_id` 指向自己的记录。
+> **自己相关**：staff 角色仅能查看/操作 `assigned_employee_id` / `employee_id` / `preferred_employee_id` 指向自己的记录。
 >
 > **脱敏手机号**：staff 角色查看顾客时，手机号中间 4 位替换为 `****`（如 `138****5678`）。
 
@@ -773,7 +775,7 @@ const PERMISSION_MATRIX = {
     update:         ['product'],
     delete:         ['product'],
   },
-  employee: {
+  staff: {
     list:           ['manager', 'hr', 'staff'],
     detail:         ['manager', 'hr', 'staff'],
     create:         ['hr'],
@@ -807,7 +809,7 @@ const PERMISSION_MATRIX = {
 SELECT pr.role, o.type AS scope_type, o.id AS scope_id, o.name AS scope_name, o.parent_name
 FROM permission_roles pr
 JOIN org_nodes o ON pr.scope_id = o.id
-WHERE pr.staff_id = $1 AND pr.deleted_at IS NULL
+WHERE pr.employee_id = $1 AND pr.deleted_at IS NULL
 ```
 
 **无记录时降级**：查询 `employees` 获取 `store_id`，降级为 `role=staff, scope_type=store`。
@@ -822,7 +824,7 @@ ctx.auth = {
   userId,           // staff_wechat_users.user_id
   openid,           // 微信 openid
   phone,            // 绑定手机号
-  staffWfId,        // employees.employee_id
+  employeeId,        // employees.employee_id
   position,         // employees.position_name（保留兼容）
   storeName,        // employees.store_id → JOIN stores 获取
   marketName,       // employees.store_id → JOIN stores 获取
@@ -858,7 +860,7 @@ ctx.auth = {
 ```
 
 > **登录时权限聚合逻辑**：
-> 1. 查询 `permission_roles`（`WHERE staff_id = ? AND deleted_at IS NULL`）
+> 1. 查询 `permission_roles`（`WHERE employee_id = ? AND deleted_at IS NULL`）
 > 2. 对每条记录，从 `PERMISSION_MATRIX` 查找该 role 允许的所有 `module:action`
 > 3. 合并去重得到 `permissions.actions[]`
 > 4. 无记录时降级：`role=staff, scope=员工所在门店`
@@ -915,14 +917,14 @@ function buildStaffFilter(auth, staffColumn, alias = '') {
   if (auth.roles.some(r => ['manager', 'finance', 'hr'].includes(r.role))) {
     return { where: '', params: [] };
   }
-  return { where: `AND ${prefix}${staffColumn} = $N`, params: [auth.staffWfId] };
+  return { where: `AND ${prefix}${staffColumn} = $N`, params: [auth.employeeId] };
 }
 ```
 
 > **典型组合用法**：
-> - 服务单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'assigned_staff_wf_id')`
-> - 预约列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'staff_wf_id')`
-> - 订单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'preferred_staff_wf_id')`
+> - 服务单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'assigned_employee_id')`
+> - 预约列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'employee_id')`
+> - 订单列表：`buildScopeWhere(auth) + buildStaffFilter(auth, 'preferred_employee_id')`
 
 ### 6.9 前端权限下发
 
@@ -1142,7 +1144,7 @@ allocated → pending          （店长删除重新分配）
 | auth | login, bindPhone, bindStore | 微信登录、手机号绑定（含 customer_id 自动关联）、门店绑定 | 已实现（需补 customer_id） |
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode | 门店 CRUD + 解绑 + 定位 | 需适配 |
 | product | categories, spuList, skuDetail, spuDetail, hotList, shopInit | 商品浏览 | 已实现 |
-| staff | list, default | 美容师列表 | 需适配 |
+| employee | list, default | 美容师列表 | 需适配 |
 | order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（含 customer_id 写入） | 已实现（需补 customer_id） |
 | appointment | create, list, cancel | 预约管理 | 已实现 |
 | service | detail | 服务单只读 | 已实现 |
@@ -1154,8 +1156,8 @@ allocated → pending          （店长删除重新分配）
 | auth | login, bindPhone | 员工登录、手机号绑定 | 无（登录前） | 需适配 |
 | store | list | 门店列表 | `store:list` | 需适配 |
 | store | unbindRequests, approveUnbind, rejectUnbind | 门店解绑审批 | `store:manage` | 需适配 |
-| staff | list, departments | 员工列表 | `employee:list` | 需适配 |
-| staff | todayCommission, monthlyCalendar, todoList, bindStore | 工作台数据 | `workbench:dashboard` | 需适配 |
+| employee | list, departments | 员工列表 | `employee:list` | 需适配 |
+| employee | todayCommission, monthlyCalendar, todoList, bindStore | 工作台数据 | `workbench:dashboard` | 需适配 |
 | product | shopInit, categories, spuList, skuDetail, spuDetail | 商品浏览 | `product:read` | 需适配 |
 | product | promotionList, promotionPlans | 促销方案 | `product:read` | 需适配 |
 | customer | search, calendar, detail, paidOrders | 顾客档案 | `customer:*` | 需适配 |
@@ -1228,14 +1230,14 @@ PG 实体（同步实体以 ★ 标注）
 │   └── org_node_id ──→ org_nodes.id（关联 type='store' 节点）
 ★ employees (员工) ←── employee_id ──→ 被以下字段引用：
 │   ├── org_node_id ──→ org_nodes.id（关联 type='department' 部门节点）
-│   ├── staff_wechat_users.staff_wf_id
-│   ├── orders.preferred_staff_wf_id / opened_by
-│   ├── service_orders.assigned_staff_wf_id
+│   ├── staff_wechat_users.employee_id
+│   ├── orders.preferred_employee_id / opened_by
+│   ├── service_orders.assigned_employee_id
 │   ├── service_items.employee_id
 │   ├── revenue_allocations.employee_id
-│   └── appointments.staff_wf_id
+│   └── appointments.employee_id
 permission_roles (权限角色分配，一人多角色+一角色多域)
-│   ├── staff_id ──→ employees.employee_id
+│   ├── employee_id ──→ employees.employee_id
 │   ├── role ──→ manager / finance / hr / product / staff
 │   └── scope_id ──→ org_nodes.id（headquarters/market/store 级别节点）
 ★ customers (顾客档案) ←── customer_id ──→ 被以下字段引用：
