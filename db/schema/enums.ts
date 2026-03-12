@@ -43,3 +43,10 @@ export const storeUnbindRequestStatusEnum = pgEnum('store_unbind_request_status'
 export const salesCategoryEnum = pgEnum('sales_category', [
   '自采自销', '他销自耗', '他销他耗', '生态合作'
 ])
+
+export const orgNodeTypeEnum = pgEnum('org_node_type', [
+  'headquarters',  // 总部（根节点，仅一个）
+  'market',        // 市场
+  'store',         // 门店
+  'department',    // 部门（可挂在任意层级）
+])

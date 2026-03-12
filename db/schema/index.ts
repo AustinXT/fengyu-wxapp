@@ -18,3 +18,9 @@ export * from './service'
 
 // 实体六：门店解绑申请
 export * from './store-unbind'
+
+// 实体七：操作日志
+export * from './operation-log'
+
+// 实体八：组织架构与门店
+export * from './org'
