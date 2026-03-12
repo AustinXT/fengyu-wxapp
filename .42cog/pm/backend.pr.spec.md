@@ -154,16 +154,16 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `employee_id` | string | 主键，员工编号（格式 `FY-{YYMMDD}{序号}`） |
-| `name` | string | 姓名 |
-| `gender` | string \| null | 性别 |
-| `phone` | string \| null | 手机号码 |
-| `id_card` | string \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密） |
-| `store_id` | string \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
+| `employee_id` | varchar(30) | 主键，员工编号（格式 `FY-{YYMMDD}{序号}`） |
+| `name` | varchar(50) | 姓名 |
+| `gender` | varchar(20) \| null | 性别 |
+| `phone` | varchar(20) \| null | 手机号码 |
+| `id_card` | varchar(200) \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密） |
+| `store_id` | text \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
 | `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
-| `org_node_name` | text \| null | 冗余部门节点名称（如"美容部"、"推广部"） |
-| `org_parent_node_name` | text \| null | 冗余部门父节点名称（如"南昌A店"、"南昌市场"） |
-| `position_name` | string \| null | 工作职位（如"门店经理"、"美容师"） |
+| `org_node_name` | varchar(100) \| null | 冗余部门节点名称（如"美容部"、"推广部"） |
+| `org_parent_node_name` | varchar(100) \| null | 冗余部门父节点名称（如"南昌A店"、"南昌市场"） |
+| `position_name` | varchar(50) \| null | 工作职位（如"门店经理"、"美容师"） |
 | `birthday` | date \| null | 出生日期 |
 | `skills` | text[] \| null | 技能标签数组（如 ['面部护理','身体护理']） |
 | `is_resigned` | boolean | 是否离职，NOT NULL DEFAULT false |
@@ -207,7 +207,6 @@ CloudBase 云函数（Node.js）
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `product_id` | text | 主键，UUID |
-| `product_kind` | product_kind enum | 福利活动 / 护理项目 / 家居产品 / 充值卡 |
 | `category_id` | text | FK → `product_categories.category_id` |
 | `name` | text | 商品名称 |
 | `cover_image` | text | 封面图 URL |
@@ -215,7 +214,7 @@ CloudBase 云函数（Node.js）
 | `description` | text | 商品描述 |
 | `is_shengmei` | boolean | 是否生美（护理项目使用，其他为 null） |
 | `is_bundle` | boolean | 是否套餐（套餐的 SKU 是其组成部分），NOT NULL DEFAULT false |
-| `price` | numeric(12,2) | 标价/原价 |
+| `price` | numeric(12,2) | 标价/原价（is_bundle=true 时 = Σ(product_skus.price)；否则 = min(product_skus.price)。展示用标价，交易以 SKU 价格为准） |
 | `special_price` | numeric(12,2) \| null | 特价/促销价（null=无特价） |
 | `sales_category` | sales_category enum | 销售分类（自采自销 / 他销自耗 / 他销他耗 / 生态合作） |
 | `manage_scope` | text \| null | 管理范围（null=总部管理；值为门店/市场标识，限定谁可编辑此商品） |
@@ -276,12 +275,12 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | bigint | 主键，自增 |
-| `org_id` | bigint | 市场 ID，关联 `org_nodes.id` |
-| `market_name` | string | 适用市场 |
-| `order_type` | string | 类型，"sale"、"service" |
-| `role_type` | string | 角色分类，"技师"、"推广" |
-| `sales_category` | string | 销售分类（如"自采自销"、"他销自耗"、"他销他耗"、"生态合作"） |
+| `id` | bigserial | 主键，自增 |
+| `org_id` | text | FK → `org_nodes.id`（市场节点） |
+| `market_name` | varchar(100) | 适用市场 |
+| `order_type` | varchar(20) | 类型，"sale"、"service" |
+| `role_type` | varchar(20) | 角色分类，"技师"、"推广" |
+| `sales_category` | varchar(20) | 销售分类（如"自采自销"、"他销自耗"、"他销他耗"、"生态合作"） |
 | `amount_tier_min` | decimal | 金额阶段下限（含） |
 | `amount_tier_max` | decimal \| null | 金额阶段上限（不含；null 表示无上限） |
 | `commission_rate` | decimal | 提成比例（如 0.08 = 8%） |
@@ -297,27 +296,26 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sale_order_id` | string | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
+| `sale_order_id` | varchar(30) | 主键，销售单号，格式 `FY-XSD-WX-{YYMMDD}{序号}` |
 | `status` | enum | 订单状态：`待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` |
 | `sale_order_type` | enum | 订单类型：`正式` / `体验` / `福利活动` |
-| `org_node_id` | string | 关联 `org_nodes.org_node_id` |
-| `market_name` | string | 所属市场（快照） |
-| `store_name` | string | 所属门店（快照） |
-| `sale_order_datetime` | datetime | 销售日期时间 |
-| `client_user_id` | string \| null | 关联 `client_wechat_users.user_id`；员工开单时顾客未注册则为 null |
-| `client_phone` | string \| null | 顾客手机号快照；员工开单时必填 |
-| `customer_name` | string \| null | 顾客姓名快照 |
-| `customer_id` | string \| null | WorkFine 顾客编号（来自 `client_wechat_users.customer_id`）；开单时通过手机号匹配自动填入 |
+| `market_name` | varchar(100) | 所属市场（快照） |
+| `store_name` | varchar(100) | 所属门店（快照） |
+| `sale_order_datetime` | timestamp | 销售日期时间 |
+| `client_user_id` | text \| null | 关联 `client_wechat_users.user_id`；员工开单时顾客未注册则为 null |
+| `client_phone` | varchar(20) \| null | 顾客手机号快照；员工开单时必填 |
+| `customer_name` | varchar(50) \| null | 顾客姓名快照 |
+| `customer_id` | varchar(30) \| null | WorkFine 顾客编号（来自 `client_wechat_users.customer_id`）；开单时通过手机号匹配自动填入 |
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
 | `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单） |
-| `opened_by` | string \| null | 开单人员工编号，关联 `employees.employee_id` |
-| `preferred_employee_id` | string \| null | 顾客指定美容师，关联 `employees.employee_id` |
+| `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `employees.employee_id` |
+| `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `employees.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
-| `wechat_transaction_id` | string \| null | 微信支付流水号（唯一索引） |
-| `alipay_transaction_id` | string \| null | 支付宝交易号（唯一索引） |
-| `offline_confirmed_by` | string \| null | 线下收款确认人员工编号 |
+| `wechat_transaction_id` | varchar(64) \| null | 微信支付流水号（唯一索引） |
+| `alipay_transaction_id` | varchar(64) \| null | 支付宝交易号（唯一索引） |
+| `offline_confirmed_by` | varchar(30) \| null | 线下收款确认人员工编号，FK → `employees.employee_id` |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
-| `allocation_status` | string \| null | 提成分配状态：null → 'pending' → 'allocated' |
+| `allocation_status` | varchar(20) \| null | 提成分配状态：null → 'pending' → 'allocated' |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -329,31 +327,34 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `sale_item_id` | string | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
-| `sale_order_id` | string | 关联 `sale_orders.sale_order_id` |
-| `sku_id` | string \| null | 关联 `product_skus.sku_id` |
+| `sale_item_id` | varchar(30) | 主键，销售流水号，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
+| `sale_order_id` | varchar(30) | 关联 `sale_orders.sale_order_id` |
+| `sku_id` | text \| null | 关联 `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数：疗程卡≥2，单品=1，院装产品=null |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
 | `unit_price` | decimal | 原价快照（开单时持久化） |
 | `quantity` | integer | 销售数量 |
-| `unit_discount` | decimal | 单价优惠金额 |
+| `unit_real_price` | decimal | 优惠后单价金额 |
 | `sale_amount` | decimal | 优惠后销售金额 |
 | `received` | decimal | 实收金额 |
 | `expire_date` | date \| null | 到期日（疗程卡/单品适用，院装产品为 null） |
-| `remark` | string | 备注 |
+| `remark` | text | 备注 |
 | `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
+
+> **索引**: `INDEX(sku_id)`
 
 ### 4.10 sale_allocations（营业额分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigint | 主键，自增 |
-| `sale_order_id` | string | 关联 `sale_orders.sale_order_id` |
-| `sale_item_id` | string \| null | 关联 `sale_items.sale_item_id` |
-| `employee_id` | string | 员工编号，关联 `employees.employee_id` |
-| `org_node_id` | string | 关联 `org_nodes.org_node_id` |
-| `market_name` | string | 所属市场（快照） |
-| `store_name` | string | 所属门店（快照） |
+| `sale_order_id` | varchar(30) | 关联 `sale_orders.sale_order_id` |
+| `sale_item_id` | varchar(30) | 关联 `sale_items.sale_item_id`，NOT NULL |
+| `employee_id` | varchar(30) | 员工编号，FK → `employees.employee_id` |
+| `market_name` | varchar(100) | 所属市场（快照） |
+| `store_name` | varchar(100) | 所属门店（快照） |
 | `allocation_ratio` | decimal | 提成比例快照 |
 | `total_amount` | decimal | 该员工最终分配金额 |
 | `is_void` | boolean | 是否已作废，NOT NULL DEFAULT false |
@@ -361,7 +362,9 @@ CloudBase 云函数（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-> UNIQUE 约束：`(sale_item_id, employee_id)`
+> **约束**: `UNIQUE(sale_item_id, employee_id)`
+>
+> **索引**: `INDEX(employee_id)`
 
 ### 4.11 service_orders（护理单主表）
 
@@ -369,16 +372,15 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `service_order_id` | string | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
+| `service_order_id` | varchar(30) | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
 | `status` | enum | `待服务` / `服务中` / `已完成` / `已取消` |
-| `org_node_id` | string | 关联 `org_nodes.org_node_id` |
-| `market_name` | string | 所属市场（快照） |
-| `store_name` | string | 所属门店（快照） |
+| `market_name` | varchar(100) | 所属市场（快照） |
+| `store_name` | varchar(100) | 所属门店（快照） |
 | `service_date` | date | 护理服务日期 |
-| `assigned_employee_id` | string | 主责服务人员，关联 `employees.employee_id` |
-| `remark` | string | 备注 |
-| `appointment_id` | string \| null | 关联 `appointments.appointment_id` |
-| `client_user_id` | string \| null | 关联 `client_wechat_users.user_id` |
+| `assigned_employee_id` | varchar(30) | 主责服务人员，FK → `employees.employee_id` |
+| `remark` | text | 备注 |
+| `appointment_id` | text \| null | 关联 `appointments.appointment_id` |
+| `client_user_id` | text \| null | 关联 `client_wechat_users.user_id` |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
@@ -386,14 +388,17 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `service_item_id` | string | 主键，UUID |
-| `sale_item_id` | string | 关联 `sale_items.sale_item_id`（核销锚点） |
-| `sale_amount` | decimal | 优惠后销售金额 |
-| `service_order_id` | string | 关联 `service_orders.service_order_id` |
+| `service_item_id` | text | 主键，UUID |
+| `sale_item_id` | varchar(30) | 关联 `sale_items.sale_item_id`（核销锚点） |
+| `unit_real_price` | decimal | sale_items.unit_real_price快照 |
+| `service_order_id` | varchar(30) | 关联 `service_orders.service_order_id` |
 | `session_used` | integer | 本次划卡次数 |
-| `employee_id` | string | 服务美容师，关联 `employees.employee_id` |
+| `employee_id` | varchar(30) | 服务美容师，FK → `employees.employee_id` |
 | `service_duration` | integer | 服务时长（分钟） |
+| `created_at` | timestamp | 记录创建时间 |
+| `updated_at` | timestamp | 记录更新时间 |
 
+> **索引**: `INDEX(service_order_id)`
 
 ### 4.13 client_wechat_users（顾客 / 客户端微信用户）
 
@@ -401,29 +406,28 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `user_id` | string | 主键，系统自生成 |
-| `openid` | string \| null | 微信 openid（客户端 appid 下，唯一索引）；仅 WorkFine 同步创建的行为 null |
-| `session_key` | string \| null | 微信 session_key |
-| `phone` | string \| null | 手机号码（唯一索引）；微信登录后绑定，或 WorkFine 同步写入 |
-| `customer_id` | string \| null | WorkFine 顾客编号（格式 `FYGK-{YYYYMMDD}{序号}`），唯一索引；同步写入 |
-| `name` | string \| null | 顾客姓名（同步写入或手动维护） |
+| `user_id` | text | 主键，WorkFine 顾客编号（格式 `FYGK-{YYYYMMDD}{序号}`），唯一索引；同步写入 |
+| `openid` | varchar(64) \| null | 微信 openid（客户端 appid 下，唯一索引）；仅 WorkFine 同步创建的行为 null |
+| `session_key` | varchar(128) \| null | 微信 session_key |
+| `phone` | varchar(20) \| null | 手机号码（唯一索引）；微信登录后绑定，或 WorkFine 同步写入 |
+| `name` | varchar(50) \| null | 顾客姓名（同步写入或手动维护） |
 | `age` | integer \| null | 年龄 |
-| `store_id` | string \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
-| `bound_store_name` | string \| null | 绑定门店名（顾客端主动绑定） |
-| `bound_market_name` | string \| null | 绑定市场名（顾客端主动绑定） |
-| `primary_beautician` | string \| null | 所属美容师姓名（营业额分配默认人员） |
-| `member_level` | string \| null | 会员等级（普通 / VIP 等） |
-| `customer_source` | string \| null | 顾客来源（售前 / 拓客 / 推荐等） |
-| `category` | string \| null | 顾客分类 |
+| `store_id` | text \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
+| `bound_store_name` | varchar(100) \| null | 绑定门店名（顾客端主动绑定） |
+| `bound_market_name` | varchar(100) \| null | 绑定市场名（顾客端主动绑定） |
+| `primary_beautician` | varchar(50) \| null | 所属美容师姓名（营业额分配默认人员） |
+| `member_level` | varchar(20) \| null | 会员等级（普通 / VIP 等） |
+| `customer_source` | varchar(50) \| null | 顾客来源（售前 / 拓客 / 推荐等） |
+| `category` | varchar(50) \| null | 顾客分类 |
 | `birthday` | date \| null | 生日 |
-| `occupation` | string \| null | 职业 |
-| `is_married` | string \| null | 是否已婚 |
-| `wechat_name` | string \| null | 微信名 |
+| `occupation` | varchar(50) \| null | 职业 |
+| `is_married` | boolean \| null | 是否已婚 |
+| `wechat_name` | varchar(50) \| null | 微信名 |
 | `registered_at` | date \| null | 首次登记时间（WorkFine 同步） |
-| `skin_type` | string \| null | 肤质类型 |
-| `improvement_focus` | string \| null | 改善重点 |
-| `skin_issue` | string \| null | 皮肤问题 |
-| `wellness_preference` | string \| null | 接受养生方式 |
+| `skin_type` | varchar(50) \| null | 肤质类型 |
+| `improvement_focus` | varchar(200) \| null | 改善重点 |
+| `skin_issue` | varchar(200) \| null | 皮肤问题 |
+| `wellness_preference` | varchar(200) \| null | 接受养生方式 |
 | `last_login_at` | timestamp \| null | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
@@ -436,7 +440,7 @@ CloudBase 云函数（Node.js）
 > - **Layer 5 — 个人档案**: `birthday`, `occupation`, `is_married`, `wechat_name`
 > - **Layer 6 — 美容档案**: `skin_type`, `improvement_focus`, `skin_issue`, `wellness_preference`
 >
-> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(customer_id) WHERE customer_id IS NOT NULL`
+> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(customer_id) WHERE customer_id IS NOT NULL`、`INDEX(store_id)`
 >
 > **store_id vs bound_store_name**: `store_id` 来自 WorkFine 同步（顾客归属门店），`bound_store_name` 是顾客在小程序中主动绑定的门店。两者可不同。
 >
@@ -450,11 +454,11 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `user_id` | string | 主键，系统自生成 |
-| `openid` | string | 微信 openid（员工端 appid 下，唯一索引） |
-| `session_key` | string | 微信 session_key |
-| `phone` | string | 绑定手机号 |
-| `employee_id` | string | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
+| `user_id` | text | 主键，系统自生成 |
+| `openid` | varchar(64) | 微信 openid（员工端 appid 下，唯一索引） |
+| `session_key` | varchar(128) | 微信 session_key |
+| `phone` | varchar(20) | 绑定手机号 |
+| `employee_id` | varchar(30) | 关联 `employees.employee_id`（手机号自动匹配后填入，可为 null） |
 | `last_login_at` | timestamp | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -463,38 +467,41 @@ CloudBase 云函数（Node.js）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `appointment_id` | string | 主键，系统自生成 |
+| `appointment_id` | text | 主键，系统自生成 |
 | `status` | enum | `待确认` / `已确认` / `已完成` / `已取消` / `已关闭` |
-| `market_name` | string | 所属市场 |
-| `store_name` | string | 所属门店 |
-| `client_user_id` | string | 关联 `client_wechat_users.user_id` |
-| `customer_name` | string | 顾客姓名（冗余存储） |
-| `employee_id` | string | 预约美容师，关联 `employees.employee_id` |
-| `employee_name` | string | 美容师姓名（冗余存储） |
-| `sale_item_id` | string \| null | 关联 `sale_items.sale_item_id`（可选） |
-| `appointment_time` | datetime | 预约到店时间 |
+| `market_name` | varchar(100) | 所属市场 |
+| `store_name` | varchar(100) | 所属门店 |
+| `client_user_id` | text | 关联 `client_wechat_users.user_id` |
+| `customer_name` | varchar(50) | 顾客姓名（冗余存储） |
+| `employee_id` | varchar(30) | 预约美容师，FK → `employees.employee_id` |
+| `employee_name` | varchar(50) | 美容师姓名（冗余存储） |
+| `sale_item_id` | varchar(30) \| null | 关联 `sale_items.sale_item_id`（可选） |
+| `appointment_time` | timestamp | 预约到店时间 |
 | `checkin_at` | timestamp \| null | 到店签到时间（不改状态） |
-| `notes` | string | 备注 |
-| `cancelled_reason` | string | 取消原因 |
+| `notes` | text | 备注 |
+| `cancelled_reason` | text | 取消原因 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
+
+> **索引**: `INDEX(store_name)`
 
 ### 4.16 permission_roles（权限角色分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | serial | 主键，自增 |
+| `id` | bigserial | 主键，自增 |
 | `employee_id` | text NOT NULL | 员工编号，FK → `employees.employee_id` |
 | `role` | text NOT NULL | 角色：`manager` / `finance` / `hr` / `product` / `staff` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
 | `updated_at` | timestamp | NOT NULL DEFAULT now() |
-| `deleted_at` | timestamp \| null | 软删除标记 |
+| `is_void` | boolean | 软删除标记，NOT NULL DEFAULT false |
+| `voided_at` | timestamp \| null | 作废时间 |
 | `created_by` | text \| null | 创建者（同步脚本标记 `'sync'`，手动标记操作人员工编号） |
 | `updated_by` | text \| null | 最后修改者 |
 
 > **约束**:
-> - `UNIQUE(employee_id, role, scope_id) WHERE deleted_at IS NULL`（部分唯一索引，同人同角色同域不重复）
+> - `UNIQUE(employee_id, role, scope_id) WHERE is_void = false`（部分唯一索引，同人同角色同域不重复）
 > - `FK(employee_id)` → `employees(employee_id)`
 > - `FK(scope_id)` → `org_nodes(id)`
 >
@@ -509,7 +516,7 @@ CloudBase 云函数（Node.js）
 >
 > **默认降级**: 未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`
 >
-> **软删除**: `deleted_at IS NOT NULL` 的记录不参与权限查询。手动撤销权限时标记 `deleted_at` 而非物理删除，保留审计痕迹。同步脚本不覆盖 `created_by != 'sync'` 的手动分配记录。
+> **软删除**: `is_void = true` 的记录不参与权限查询。手动撤销权限时标记 `is_void = true` + `voided_at` 而非物理删除，保留审计痕迹。同步脚本不覆盖 `created_by != 'sync'` 的手动分配记录。
 
 ### 4.17 operation_logs（操作日志）
 
@@ -800,7 +807,7 @@ const PERMISSION_MATRIX = {
 SELECT pr.role, o.type AS scope_type, o.id AS scope_id, o.name AS scope_name, o.parent_name
 FROM permission_roles pr
 JOIN org_nodes o ON pr.scope_id = o.id
-WHERE pr.employee_id = $1 AND pr.deleted_at IS NULL
+WHERE pr.employee_id = $1 AND pr.is_void = false
 ```
 
 **无记录时降级**：查询 `employees` 获取 `store_id`，降级为 `role=staff, scope_type=store`。
@@ -851,7 +858,7 @@ ctx.auth = {
 ```
 
 > **登录时权限聚合逻辑**：
-> 1. 查询 `permission_roles`（`WHERE employee_id = ? AND deleted_at IS NULL`）
+> 1. 查询 `permission_roles`（`WHERE employee_id = ? AND is_void = false`）
 > 2. 对每条记录，从 `PERMISSION_MATRIX` 查找该 role 允许的所有 `module:action`
 > 3. 合并去重得到 `permissions.actions[]`
 > 4. 无记录时降级：`role=staff, scope=员工所在门店`
@@ -1025,7 +1032,7 @@ module.exports = {
 |------|----------|------|
 | `permission.list` | manager / hr（scope 内） | 查看 scope 内员工的权限角色列表 |
 | `permission.assign` | manager / hr（scope 内） | 为员工分配角色，被分配的 scope_id 必须在操作者 scope 范围内 |
-| `permission.revoke` | manager / hr（scope 内） | 撤销员工角色（软删除，`deleted_at` 标记） |
+| `permission.revoke` | manager / hr（scope 内） | 撤销员工角色（软删除，`is_void = true` + `voided_at` 标记） |
 
 > **scope 传递约束**：分配权限时，被分配的 `scope_id` 必须在操作者 scope 范围内。门店经理只能分配本门店权限，市场总监可分配该市场下所有门店的权限。一角色多域场景下，操作者的所有 scope 节点均为有效范围。
 
