@@ -1,26 +1,35 @@
 // 枚举
 export * from './enums'
 
-// 实体一：SPU 商品 & SKU 映射
+// 组织架构与门店
+export * from './org'
+
+// 员工
+export * from './employee'
+
+// 商品（品项分类 + 商品 + 规格）
 export * from './product'
 
-// 实体二：微信用户（客户端 + 员工端）
+// 微信用户（客户端 + 员工端）
 export * from './user'
 
-// 实体三：订单 + 销售明细 + 营业额分配
+// 订单 + 销售明细 + 营业额分配
 export * from './order'
 
-// 实体四：预约
+// 预约
 export * from './appointment'
 
-// 实体五：护理单 + 护理明细
+// 护理单 + 护理明细
 export * from './service'
 
-// 实体六：门店解绑申请
+// 权限角色分配
+export * from './permission'
+
+// 提成比例矩阵
+export * from './commission'
+
+// 门店解绑申请
 export * from './store-unbind'
 
-// 实体七：操作日志
+// 操作日志
 export * from './operation-log'
-
-// 实体八：组织架构与门店
-export * from './org'

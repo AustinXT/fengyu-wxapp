@@ -1,64 +1,94 @@
-import { boolean, integer, pgTable, text, unique } from 'drizzle-orm/pg-core'
-import { bigCategoryEnum, productTypeEnum, workfineSourceEnum } from './enums'
+import { boolean, check, date, index, integer, numeric, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import { productKindEnum, productTypeEnum, salesCategoryEnum } from './enums'
 
 /**
- * 实体一：SPU 商品概念表
+ * 品项分类
  *
- * 是否展示由关联 SKU 的 is_active 状态决定：
- * 至少一个 is_active=true 的 SKU 存在时才展示该 SPU。
- * 左侧分类选择器从本表动态派生，不查询 WorkFine UDT_M_229。
+ * category_name 不设唯一约束，允许不同 product_kind 下同名分类。
  */
-export const productSpu = pgTable('product_spu', {
-  spuId: text('spu_id').primaryKey(),
-  /** 商品名称，如"蜜语生玑精华护理疗程" */
-  name: text('name').notNull(),
-  /** 品项分类，如"蜜语生玑"，对应 UDT_M_229.UDF_M_522，作为左侧一级导航节点 */
-  category: text('category').notNull(),
-  /**
-   * 生美/非生美：服务项目类 SPU 标签，来自 UDT_M_1281/1383；
-   * 院装产品：标识院装产品类 SPU，对应 UDT_M_341 数据源
-   */
-  bigCategory: bigCategoryEnum('big_category').notNull(),
-  coverImage: text('cover_image'),
-  description: text('description'),
-  /** 排序权重，分类顺序由该分类下 sort_order 最小的 SPU 决定 */
+export const productCategories = pgTable('product_categories', {
+  categoryId: text('category_id').primaryKey(),
+  categoryName: text('category_name').notNull(),
+  productKind: productKindEnum('product_kind').notNull(),
   sortOrder: integer('sort_order').notNull().default(0),
+  isValid: boolean('is_valid').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 })
 
 /**
- * 实体一：SKU↔WorkFine 映射表
+ * 商品主表
  *
- * 价格、疗程服务次数等字段运行时从 WorkFine 实时读取，不存入 PG。
- * UNIQUE(spu_id, workfine_item_id, workfine_source)
+ * valid_start + valid_end 替代 is_active，通过日期控制上下架。
+ * is_bundle=true 时，其关联的 product_skus 记录是套餐组成部分。
  */
-export const productSpuSkuMap = pgTable(
-  'product_spu_sku_map',
+export const products = pgTable('products', {
+  productId: text('product_id').primaryKey(),
+  categoryId: text('category_id')
+    .notNull()
+    .references(() => productCategories.categoryId),
+  name: text('name').notNull(),
+  coverImage: text('cover_image'),
+  detailImages: text('detail_images').array(),
+  description: text('description'),
+  /** 是否生美（护理项目使用，其他为 null） */
+  isShengmei: boolean('is_shengmei'),
+  isBundle: boolean('is_bundle').notNull().default(false),
+  /** 标价/原价（展示用，交易以 SKU 价格为准） */
+  price: numeric('price', { precision: 10, scale: 2 }).notNull(),
+  specialPrice: numeric('special_price', { precision: 10, scale: 2 }),
+  salesCategory: salesCategoryEnum('sales_category'),
+  /** 管理范围（null=总部管理） */
+  manageScope: text('manage_scope'),
+  /** 可见范围（null=全部可见） */
+  marketScope: text('market_scope'),
+  sortOrder: integer('sort_order').notNull().default(0),
+  validStart: date('valid_start'),
+  validEnd: date('valid_end'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+})
+
+/**
+ * 商品规格
+ *
+ * 价格、次数、服务费直接存在 SKU 表中，运行时无外部查询。
+ * 有效期与商品层叠加校验：商品有效 AND 规格有效才展示。
+ */
+export const productSkus = pgTable(
+  'product_skus',
   {
     skuId: text('sku_id').primaryKey(),
-    spuId: text('spu_id')
+    productId: text('product_id')
       .notNull()
-      .references(() => productSpu.spuId),
-    /** WorkFine 疗程项目编号（UDT_M_1281/1383.UDF_M_14503）或商品编号（UDT_M_341.UDF_M_1870） */
-    workfineItemId: text('workfine_item_id').notNull(),
-    workfineSource: workfineSourceEnum('workfine_source').notNull(),
-    /**
-     * 疗程卡：session_count≥2，多次核销；
-     * 单品：session_count=1，一次核销；
-     * 院装产品：支付即完成，不走到店服务流程
-     */
+      .references(() => products.productId),
     productType: productTypeEnum('product_type').notNull(),
-    /** 规格展示名，如"10次卡"、"285ml/瓶" */
-    skuDisplayName: text('sku_display_name').notNull(),
+    specName: text('spec_name').notNull(),
+    /** 标价/零售价（开单时快照到 sale_items.unit_price） */
+    price: numeric('price', { precision: 10, scale: 2 }).notNull(),
+    specialPrice: numeric('special_price', { precision: 10, scale: 2 }),
+    /** 疗程次数：疗程卡≥2，单品=1，院装产品=null */
+    sessionCount: integer('session_count'),
+    isBundleSku: boolean('is_bundle_sku').notNull().default(false),
     sortOrder: integer('sort_order').notNull().default(0),
-    /** SPU 展示状态由所有 SKU 的 is_active 派生 */
-    isActive: boolean('is_active').notNull().default(true),
-    /** 市场限制：为 null 表示全国可见，有值则仅对应市场用户可见 */
-    marketRestriction: text('market_restriction'),
+    serviceFee: numeric('service_fee', { precision: 10, scale: 2 }).notNull().default('0'),
+    validStart: date('valid_start'),
+    validEnd: date('valid_end'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
-  (table) => [unique('uq_spu_workfine').on(table.spuId, table.workfineItemId, table.workfineSource)],
+  (table) => [
+    index('idx_product_skus_product_id').on(table.productId),
+    check('chk_sku_price', sql`${table.price} >= 0`),
+    check('chk_sku_service_fee', sql`${table.serviceFee} >= 0`),
+    check('chk_sku_session_count', sql`${table.sessionCount} IS NULL OR ${table.sessionCount} >= 1`),
+  ],
 )
 
-export type ProductSpu = typeof productSpu.$inferSelect
-export type NewProductSpu = typeof productSpu.$inferInsert
-export type ProductSpuSkuMap = typeof productSpuSkuMap.$inferSelect
-export type NewProductSpuSkuMap = typeof productSpuSkuMap.$inferInsert
+export type ProductCategory = typeof productCategories.$inferSelect
+export type NewProductCategory = typeof productCategories.$inferInsert
+export type Product = typeof products.$inferSelect
+export type NewProduct = typeof products.$inferInsert
+export type ProductSku = typeof productSkus.$inferSelect
+export type NewProductSku = typeof productSkus.$inferInsert

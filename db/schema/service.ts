@@ -1,73 +1,73 @@
-import { date, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
 import { serviceOrderStatusEnum } from './enums'
-import { orderItems } from './order'
-import { productSpuSkuMap } from './product'
+import { stores } from './org'
+import { saleItems } from './order'
 import { clientWechatUsers } from './user'
+import { employees } from './employee'
+import { appointments } from './appointment'
 
 /**
- * 实体三：护理单主表（对应 WorkFine UDT_S_259）
+ * 护理单主表
  *
- * 与订单的关联通过 service_items.item_flow_no → order_items.item_flow_no 实现，
- * 主表不存 order_no，支持同一次到店跨多笔订单核销（orders ↔ service_orders 为 N:N）。
+ * 与订单的关联通过 service_items.sale_item_id → sale_items.sale_item_id 实现，
+ * 主表不存 sale_order_id，支持同一次到店跨多笔订单核销。
  * 状态流转：待服务 -> 服务中 -> 已完成
- *   - 仅店长或 assigned_employee_id 匹配的服务人员可推进状态
- *   - 仅在 服务中->已完成 时扣减 session_used 次，且不得小于 0
- *   - 重复点击完成时后端按同一服务单 ID 幂等处理，不得重复扣次
  */
 export const serviceOrders = pgTable(
   'service_orders',
   {
-    /** 主键，护理单编号，格式 HLD-WX-{YYMMDD}{序号} */
-    serviceOrderNo: text('service_order_no').primaryKey(),
+    serviceOrderId: varchar('service_order_id', { length: 30 }).primaryKey(),
     status: serviceOrderStatusEnum('status').notNull().default('待服务'),
-    /** 所属市场快照 */
-    marketName: text('market_name').notNull(),
-    /** 所属门店快照 */
-    storeName: text('store_name').notNull(),
+    /** 所属市场（快照） */
+    marketName: varchar('market_name', { length: 100 }).notNull(),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.storeId),
     serviceDate: date('service_date').notNull(),
-    /** 服务时长（分钟） */
-    serviceDuration: integer('service_duration'),
-    /** 主责服务人员，关联 WorkFine UDT_S_287.UDF_S_1147，用于状态推进权限校验 */
-    assignedStaffWfId: text('assigned_employee_id').notNull(),
+    assignedEmployeeId: varchar('assigned_employee_id', { length: 30 })
+      .notNull()
+      .references(() => employees.employeeId),
     remark: text('remark'),
-    /**
-     * 关联 appointments.appointment_id（可选）
-     * 有预约时填入，关联后预约详情页可跳转查看服务单
-     * 一条预约对应一张服务单，不可重复创建
-     */
-    appointmentId: text('appointment_id'),
-    /**
-     * 关联 client_wechat_users.user_id；
-     * 员工开单时顾客可能未注册客户端小程序，允许为 null。
-     */
+    appointmentId: text('appointment_id').references(() => appointments.appointmentId),
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
     createdAt: timestamp('created_at').notNull().defaultNow(),
-    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (table) => [
-    index('idx_svc_orders_store_date').on(table.storeName, table.serviceDate),
-    index('idx_svc_orders_assigned_staff').on(table.assignedStaffWfId),
+    index('idx_svc_orders_store_date').on(table.storeId, table.serviceDate),
+    index('idx_svc_orders_assigned_employee').on(table.assignedEmployeeId),
+    index('idx_svc_orders_client_user_id').on(table.clientUserId),
   ],
 )
 
 /**
- * 实体三：护理明细（对应 WorkFine UDT_M_260）
+ * 护理明细
  */
-export const serviceItems = pgTable('service_items', {
-  serviceItemId: text('service_item_id').primaryKey(),
-  /** 关联 order_items.item_flow_no，核销锚点 */
-  itemFlowNo: text('item_flow_no')
-    .notNull()
-    .references(() => orderItems.itemFlowNo),
-  serviceOrderNo: text('service_order_no')
-    .notNull()
-    .references(() => serviceOrders.serviceOrderNo),
-  skuId: text('sku_id').references(() => productSpuSkuMap.skuId),
-  /** 本次划卡次数 */
-  sessionUsed: integer('session_used').notNull(),
-  /** 服务美容师，关联 WorkFine UDT_S_287.UDF_S_1147 */
-  employeeId: text('employee_id').notNull(),
-})
+export const serviceItems = pgTable(
+  'service_items',
+  {
+    serviceItemId: text('service_item_id').primaryKey(),
+    saleItemId: varchar('sale_item_id', { length: 30 })
+      .notNull()
+      .references(() => saleItems.saleItemId),
+    /** sale_items.unit_real_price 快照 */
+    unitRealPrice: numeric('unit_real_price', { precision: 10, scale: 2 }),
+    serviceOrderId: varchar('service_order_id', { length: 30 })
+      .notNull()
+      .references(() => serviceOrders.serviceOrderId),
+    sessionUsed: integer('session_used').notNull(),
+    employeeId: varchar('employee_id', { length: 30 })
+      .notNull()
+      .references(() => employees.employeeId),
+    /** 服务时长（分钟） */
+    serviceDuration: integer('service_duration'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index('idx_svc_items_order_id').on(table.serviceOrderId),
+  ],
+)
 
 export type ServiceOrder = typeof serviceOrders.$inferSelect
 export type NewServiceOrder = typeof serviceOrders.$inferInsert

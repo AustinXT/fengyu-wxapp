@@ -11,6 +11,8 @@ import { orgNodeTypeEnum } from './enums'
  * | market        | headquarters                             |
  * | store         | market                                   |
  * | department    | headquarters / market / store（不能挂 department） |
+ *
+ * 父节点名称通过 JOIN parent_id 获取，不冗余存储。
  */
 export const orgNodes = pgTable(
   'org_nodes',
@@ -19,8 +21,6 @@ export const orgNodes = pgTable(
     name: text('name').notNull(),
     type: orgNodeTypeEnum('type').notNull(),
     parentId: text('parent_id').references((): any => orgNodes.id),
-    /** 冗余父节点名称，避免查询时 JOIN 自身 */
-    parentName: text('parent_name'),
     sortOrder: integer('sort_order').notNull().default(0),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -36,8 +36,7 @@ export const orgNodes = pgTable(
 /**
  * 门店详情（1:1 扩展 org_nodes type='store' 的节点）
  *
- * store_name UNIQUE 继续作为业务主键，现有 orders.store_name 等快照字段不变。
- * market_name 冗余保留：避免每次 JOIN 查父节点，兼容现有订单快照写入逻辑。
+ * 业务表通过 store_id FK 关联 stores，市场名称通过 JOIN org_nodes 树获取。
  */
 export const stores = pgTable(
   'stores',
@@ -45,7 +44,6 @@ export const stores = pgTable(
     storeId: text('store_id').primaryKey(),
     storeName: text('store_name').unique().notNull(),
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
-    marketName: text('market_name').notNull(),
     openingDate: date('opening_date'),
     bedCount: integer('bed_count'),
     isClosed: boolean('is_closed').notNull().default(false),
@@ -66,7 +64,6 @@ export const stores = pgTable(
   },
   (table) => [
     index('idx_stores_org_node_id').on(table.orgNodeId),
-    index('idx_stores_market_name').on(table.marketName),
   ],
 )
 

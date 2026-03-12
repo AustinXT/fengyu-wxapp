@@ -1,13 +1,6 @@
 import { pgEnum } from 'drizzle-orm/pg-core'
 
-export const bigCategoryEnum = pgEnum('big_category', ['促销方案', '护理项目', '家居产品', '充值卡'])
-
-export const workfineSourceEnum = pgEnum('workfine_source', [
-  'UDT_M_1281',
-  'UDT_M_1383',
-  'UDT_M_1460',
-  'UDT_M_341',
-])
+export const productKindEnum = pgEnum('product_kind', ['福利活动', '护理项目', '家居产品', '充值卡'])
 
 export const productTypeEnum = pgEnum('product_type', ['疗程卡', '单品', '院装产品'])
 
@@ -18,9 +11,18 @@ export const orderStatusEnum = pgEnum('order_status', [
   '已完成',
   '支付失败',
   '已关闭',
+  '待审批',
 ])
 
-export const orderTypeEnum = pgEnum('order_type', ['正式', '体验', '促销方案'])
+export const saleOrderTypeEnum = pgEnum('sale_order_type', [
+  '正式', '体验', '内部', '组合套餐', '回款', '转换', '退款',
+])
+
+export const allocationStatusEnum = pgEnum('allocation_status', ['pending', 'allocated'])
+
+export const itemDirectionEnum = pgEnum('item_direction', [
+  'purchase', 'convert_out', 'convert_in', 'refund_out',
+])
 
 export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'alipay', 'offline'])
 
@@ -37,11 +39,11 @@ export const appointmentStatusEnum = pgEnum('appointment_status', [
 ])
 
 export const storeUnbindRequestStatusEnum = pgEnum('store_unbind_request_status', [
-  'pending', 'approved', 'rejected', 'cancelled'
+  'pending', 'approved', 'rejected', 'cancelled',
 ])
 
 export const salesCategoryEnum = pgEnum('sales_category', [
-  '自采自销', '他销自耗', '他销他耗', '生态合作'
+  '自采自销', '他销自耗', '他销他耗', '生态合作',
 ])
 
 export const orgNodeTypeEnum = pgEnum('org_node_type', [

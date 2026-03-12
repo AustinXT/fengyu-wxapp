@@ -1,11 +1,12 @@
-import { index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
-
-import { appointmentStatusEnum } from "./enums";
-import { clientWechatUsers } from "./user";
-import { orderItems } from "./order";
+import { index, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { appointmentStatusEnum } from './enums'
+import { stores } from './org'
+import { clientWechatUsers } from './user'
+import { saleItems } from './order'
+import { employees } from './employee'
 
 /**
- * 实体五：预约
+ * 预约
  *
  * 状态流转：
  *   待确认 -> 已确认 -> 已完成（到店核销完成后自动流转）
@@ -14,38 +15,36 @@ import { orderItems } from "./order";
  *   待确认/已确认 -> 已关闭（超过预约时间一天未到店）
  */
 export const appointments = pgTable(
-  "appointments",
+  'appointments',
   {
-    appointmentId: text("appointment_id").primaryKey(),
-    status: appointmentStatusEnum("status").notNull().default("待确认"),
-    marketName: text("market_name").notNull(),
-    storeName: text("store_name").notNull(),
-    clientUserId: text("client_user_id")
+    appointmentId: text('appointment_id').primaryKey(),
+    status: appointmentStatusEnum('status').notNull().default('待确认'),
+    marketName: varchar('market_name', { length: 100 }).notNull(),
+    storeId: text('store_id')
+      .notNull()
+      .references(() => stores.storeId),
+    clientUserId: text('client_user_id')
       .notNull()
       .references(() => clientWechatUsers.userId),
-    /** 顾客姓名，冗余存储 */
-    customerName: text("customer_name").notNull(),
-    /** 关联 WorkFine UDT_S_287.UDF_S_1147 */
-    staffWfId: text("employee_id").notNull(),
-    /** 美容师姓名，冗余存储 */
-    staffName: text("staff_name").notNull(),
-    /** 关联 order_items.item_flow_no，可选（允许不关联具体项目） */
-    itemFlowNo: text("item_flow_no").references(() => orderItems.itemFlowNo),
-    appointmentTime: timestamp("appointment_time").notNull(),
-    notes: text("notes"),
-    cancelledReason: text("cancelled_reason"),
-    /**
-     * 顾客到店签到时间（员工端点击"顾客已到店"时记录，不改变预约状态）
-     */
-    checkinAt: timestamp("checkin_at"),
-    createdAt: timestamp("created_at").notNull().defaultNow(),
-    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+    customerName: varchar('customer_name', { length: 50 }).notNull(),
+    employeeId: varchar('employee_id', { length: 30 })
+      .notNull()
+      .references(() => employees.employeeId),
+    employeeName: varchar('employee_name', { length: 50 }).notNull(),
+    saleItemId: varchar('sale_item_id', { length: 30 }).references(() => saleItems.saleItemId),
+    appointmentTime: timestamp('appointment_time').notNull(),
+    checkinAt: timestamp('checkin_at'),
+    notes: text('notes'),
+    cancelledReason: text('cancelled_reason'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
   (table) => [
-    index("idx_appts_client_user_id").on(table.clientUserId),
-    index("idx_appts_staff_time").on(table.staffWfId, table.appointmentTime),
+    index('idx_appts_store_id').on(table.storeId),
+    index('idx_appts_client_user_id').on(table.clientUserId),
+    index('idx_appts_employee_time').on(table.employeeId, table.appointmentTime),
   ],
-);
+)
 
-export type Appointment = typeof appointments.$inferSelect;
-export type NewAppointment = typeof appointments.$inferInsert;
+export type Appointment = typeof appointments.$inferSelect
+export type NewAppointment = typeof appointments.$inferInsert
