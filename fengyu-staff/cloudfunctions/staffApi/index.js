@@ -66,6 +66,9 @@ const routes = {
   'appointment.checkin':  () => require('./routes/appointment').checkin,
   'appointment.detail':   () => require('./routes/appointment').detail,
 
+  // 优惠券
+  'coupon.available':     () => require('./routes/coupon').available,
+
   // 服务单
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,
