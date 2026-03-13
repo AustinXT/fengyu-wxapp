@@ -175,9 +175,9 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **操作对象**: `client_wechat_users` | 权限：manager/customer_mgr（读写）, finance（只读）
 
-**可编辑字段**: name, store_id, bound_employee_id, member_level, customer_source, category, birthday, occupation, is_married, wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
+**可编辑字段**: name, bound_store_id, bound_employee_id, member_level, customer_source, category, birthday, occupation, is_married, wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
 
-**不可编辑**: user_id, openid, session_key, phone, bound_store_id, registered_at, last_login_at, created_at, updated_at
+**不可编辑**: user_id, openid, session_key, phone, last_login_at, created_at, updated_at
 
 **约束**: phone 唯一；新增须填 phone（系统生成 user_id）
 
@@ -209,13 +209,13 @@ adminApi 独立实现 staffApi 同等业务操作（开单、订单管理、营�
 
 #### AFF-14 优惠券管理
 
-**操作对象**: `coupon_templates` + `coupon_instances`（待建） | 权限：admin, product
+**操作对象**: `coupon_templates` + `user_coupons` | 权限：admin, product
 
 **券种**: 现金券（固定金额抵扣）| 项目券（绑定 product/category）| 折扣券（百分比，如 0.85）
 
-**模板字段**: name, coupon_type, value, min_spend, product_id/category_id, total_count, valid_days, valid_start, valid_end, is_active
+**模板字段**: name, coupon_type, discount_value, min_spend, applicable_product_ids, applicable_category_ids, total_count, valid_days, validity_mode, valid_from, valid_to, is_active
 
-**约束**: 折扣券 value ∈ (0,1)；现金券 value > 0；已用不可撤回；停用模板不影响已发放券；核销在开单时扣减
+**约束**: 折扣券 discount_value ∈ (0,1)；现金券 discount_value > 0；已用不可撤回；停用模板不影响已发放券；核销在开单时扣减
 
 ### 4.3 潜在可供性
 

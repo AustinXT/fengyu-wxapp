@@ -191,7 +191,7 @@
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
 | `total_amount` | numeric(10,2) | 订单总金额（退款为负数），NOT NULL |
 | `payment_method` | enum | `wechat` / `alipay` / `offline` |
-| `sale_order_source` | enum | `client` / `staff`；回款/转换/退款仅 `staff` |
+| `sale_order_source` | enum | `client` / `staff` / `admin`；回款/转换/退款仅 `staff` 或 `admin` |
 | `opened_by` | varchar(30) \| null | 开单人，FK → `staff_wechat_users.employee_id` |
 | `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `staff_wechat_users.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
@@ -341,7 +341,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `employee_id` | varchar(30) NOT NULL | FK → `staff_wechat_users.employee_id` |
-| `role` | text NOT NULL | `manager` / `finance` / `hr` / `product` / `staff` / `customer_mgr` |
+| `role` | text NOT NULL | `admin` / `manager` / `finance` / `hr` / `product` / `staff` / `customer_mgr` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（headquarters/market/store 级别） |
 | `is_void` | boolean | 软删除标记，NOT NULL DEFAULT false |
 | `voided_at` | timestamp \| null | 作废时间 |
@@ -368,7 +368,7 @@
 | `target_type` | text | 目标实体类型，NOT NULL |
 | `target_id` | text | 目标实体主键，NOT NULL |
 | `detail` | jsonb \| null | 变更前后数据等结构化信息 |
-| `source` | text \| null | 来源：`staffApi` / `clientApi` |
+| `source` | text \| null | 来源：`staffApi` / `clientApi` / `adminApi` |
 
 > 只写不改（仅 INSERT）。**索引**: `(operator_user_id)`、`(target_type, target_id)`、`(action)`、`(created_at)`。
 > **记录时机**：订单创建/确认/关闭/重置、分配保存/删除、服务单全流程、预约确认/签到、权限变更。
@@ -390,7 +390,7 @@
 
 ### 2.18 coupon_templates（券模板）
 
-> 定义券的规则。发放量由管理端控制，模板本身不含数量限制。
+> 定义券的规则（类型、面额、适用范围、有效期、发放总量等）。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -400,6 +400,8 @@
 | `discount_value` | numeric(10,2) | 现金券/项目券=抵扣金额；折扣券=折扣率（0.85=85折），NOT NULL |
 | `min_spend` | numeric(10,2) | 满减门槛（0=无门槛），DEFAULT 0 |
 | `max_discount` | numeric(10,2) \| null | 折扣券封顶金额 |
+| `total_count` | integer \| null | 发放总量限制（null=不限量） |
+| `applicable_product_ids` | text[] \| null | 适用商品ID数组（→ products.product_id），NULL=全部 |
 | `applicable_category_ids` | text[] \| null | 适用品项分类ID数组，NULL=全部 |
 | `applicable_store_ids` | text[] \| null | 适用门店ID数组，NULL=全部 |
 | `validity_mode` | text | `fixed`（固定区间）/ `days`（领取后N天），DEFAULT 'fixed' |
@@ -423,6 +425,21 @@
 | `used_at` | timestamp \| null | 使用时间 |
 
 > **索引**: `INDEX(user_id, status)`、`INDEX(used_sale_order_id)`、`INDEX(expire_at)`
+
+### 2.20 admin_passwords（管理后台登录密码）
+
+> 仅持有此表记录的员工可通过手机号+密码登录管理后台。staff 不可登录。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigserial | 主键 |
+| `employee_id` | varchar(30) | FK → `staff_wechat_users.employee_id`，UNIQUE，NOT NULL |
+| `password_hash` | text | bcrypt（cost ≥ 12），NOT NULL |
+| `must_change` | boolean | 首次登录强制改密，NOT NULL DEFAULT true |
+| `last_changed_at` | timestamp \| null | 最近修改密码时间 |
+| `created_at` / `updated_at` | timestamp | 时间戳 |
+
+> **约束**: `UNIQUE(employee_id)`。认证流程详见 `admin.pr.spec.md` §2.3。
 
 ---
 
