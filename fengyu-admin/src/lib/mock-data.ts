@@ -1063,7 +1063,7 @@ export const MOCK_ORDERS: SaleOrder[] = [
     createdAt: '2026-03-12T15:00:00Z',
     updatedAt: '2026-03-12T15:05:00Z',
     storeName: '南昌旗舰店',
-    openedByName: null,
+    openedByName: undefined,
     items: MOCK_SALE_ITEMS.filter(i => i.saleOrderId === 'FY-XSD-WX-260312-0004'),
   },
   {
