@@ -6,6 +6,11 @@ secrets/
 sources/*
 !sources/README.md
 
+# Next.js (fengyu-admin)
+.next/
+next-env.d.ts
+*.tsbuildinfo
+
 # PostgreSQL & Docker
 db/.env
 *.sql.backup
