@@ -9,6 +9,7 @@ export async function syncLogin(): Promise<void> {
     staffWfId: string;
     staffName: string;
     position: string;
+    roles: string[];
     phone: string;
     boundStoreName: string;
     boundStoreId: string;

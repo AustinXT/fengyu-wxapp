@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 
 interface PendingOrder {
-  order_no: string;
+  sale_order_id: string;
   customer_name: string;
   client_phone: string;
   total_amount: string;
@@ -70,9 +70,9 @@ Page({
   },
 
   onTapOrder(e: WechatMiniprogram.TouchEvent) {
-    const orderNo = e.currentTarget.dataset.orderNo as string;
+    const saleOrderId = e.currentTarget.dataset.saleOrderId as string;
     wx.navigateTo({
-      url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${orderNo}`,
+      url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${saleOrderId}`,
     });
   },
 

@@ -3,7 +3,7 @@
 const MOCK_ORDERS = [
   {
     id: 'order-001',
-    orderNo: 'FY-XSD-WX-260205001',
+    saleOrderId: 'FY-XSD-WX-260205001',
     customerName: '张美玲',
     customerPhone: '13888880000',
     customerPhoneMasked: '138****8000',
@@ -21,7 +21,7 @@ const MOCK_ORDERS = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260205001',
+        saleItemId: 'XSLSH-WX-20260205001',
         itemName: '蜜语精华护理疗程',
         spec: '10次卡',
         unitPrice: '3800.00',
@@ -31,7 +31,7 @@ const MOCK_ORDERS = [
         remainingSessions: 8,
       },
       {
-        itemFlowNo: 'XSLSH-WX-20260205002',
+        saleItemId: 'XSLSH-WX-20260205002',
         itemName: '安吉丽眼部护理',
         spec: '单品',
         unitPrice: '1200.00',
@@ -48,7 +48,7 @@ const MOCK_ORDERS = [
   },
   {
     id: 'order-002',
-    orderNo: 'FY-XSD-WX-260227001',
+    saleOrderId: 'FY-XSD-WX-260227001',
     customerName: '王芳',
     customerPhone: '13955550000',
     customerPhoneMasked: '139****5000',
@@ -66,7 +66,7 @@ const MOCK_ORDERS = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260210001',
+        saleItemId: 'XSLSH-WX-20260210001',
         itemName: '明眸祛皱疗程',
         spec: '单品',
         unitPrice: '3200.00',
@@ -80,7 +80,7 @@ const MOCK_ORDERS = [
   },
   {
     id: 'order-003',
-    orderNo: 'FY-XSD-WX-260220001',
+    saleOrderId: 'FY-XSD-WX-260220001',
     customerName: '李晓华',
     customerPhone: '13622230000',
     customerPhoneMasked: '136****3000',
@@ -98,7 +98,7 @@ const MOCK_ORDERS = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260220001',
+        saleItemId: 'XSLSH-WX-20260220001',
         itemName: '光感白皙嫩肤疗程',
         spec: '5次卡',
         unitPrice: '2800.00',
@@ -130,12 +130,12 @@ export const orderHandlers: Record<string, (payload: Record<string, any>) => any
   },
 
   'order.detail': (payload) => {
-    return MOCK_ORDERS.find(o => o.id === payload.orderId || o.orderNo === payload.orderNo) || MOCK_ORDERS[0]
+    return MOCK_ORDERS.find(o => o.id === payload.orderId || o.saleOrderId === payload.saleOrderId) || MOCK_ORDERS[0]
   },
 
   'order.create': (payload) => ({
     orderId: 'order-new-001',
-    orderNo: 'FY-XSD-WX-260227099',
+    saleOrderId: 'FY-XSD-WX-260227099',
     status: '待支付',
     ...payload,
   }),
@@ -144,7 +144,7 @@ export const orderHandlers: Record<string, (payload: Record<string, any>) => any
     const order = MOCK_ORDERS.find(o => o.id === payload.orderId) || MOCK_ORDERS[1]
     return {
       orderId: order.id,
-      orderNo: order.orderNo,
+      saleOrderId: order.saleOrderId,
       customerName: order.customerName,
       totalAmount: order.totalAmount,
       status: qrcodeStatus,
@@ -153,7 +153,7 @@ export const orderHandlers: Record<string, (payload: Record<string, any>) => any
   },
 
   'order.confirmOffline': (payload) => {
-    const order = MOCK_ORDERS.find(o => o.id === payload.orderId || o.orderNo === payload.orderNo)
+    const order = MOCK_ORDERS.find(o => o.id === payload.orderId || o.saleOrderId === payload.saleOrderId)
     if (order) {
       order.status = '已支付'
       order.paidAt = new Date().toISOString().slice(0, 16).replace('T', ' ')

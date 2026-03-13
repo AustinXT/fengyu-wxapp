@@ -4,7 +4,7 @@ import { isManager } from '../../utils/role';
 
 interface ServiceDetail {
   id: string;
-  serviceNo: string;
+  serviceOrderId: string;
   customerName: string;
   customerPhone: string;
   staffName: string;
@@ -15,7 +15,7 @@ interface ServiceDetail {
   appointmentId: string | null;
   remark: string;
   items: Array<{
-    itemFlowNo: string;
+    saleItemId: string;
     itemName: string;
     spec: string;
     sessionCount: number;

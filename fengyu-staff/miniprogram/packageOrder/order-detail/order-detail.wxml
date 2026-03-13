@@ -13,7 +13,7 @@
     <!-- 状态条 -->
     <view class="status-banner status-banner--{{statusClass}}">
       <text class="status-text">{{order.status}}</text>
-      <text class="order-no-top">{{order.orderNo}}</text>
+      <text class="order-no-top">{{order.saleOrderId}}</text>
     </view>
 
     <!-- 订单信息 -->
@@ -35,7 +35,7 @@
     <!-- 订单明细 -->
     <view class="card-group items-card">
       <text class="items-title">订单明细</text>
-      <view class="order-item" wx:for="{{order.items}}" wx:key="itemFlowNo">
+      <view class="order-item" wx:for="{{order.items}}" wx:key="saleItemId">
         <view class="item-name-row">
           <text class="item-name">{{item.itemName}}</text>
           <text class="item-spec">{{item.spec}}</text>
@@ -46,7 +46,7 @@
             剩余 {{item.remainingSessions}} / {{item.sessionCount}} 次
           </text>
         </view>
-        <text class="item-flow-no">{{item.itemFlowNo}}</text>
+        <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>
       <view class="total-row">
         <text class="total-label">合计</text>

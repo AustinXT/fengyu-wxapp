@@ -5,12 +5,12 @@ import { isManager } from '../../utils/role';
 const app = getApp<IAppOption>();
 
 interface TreatmentCard {
-  itemFlowNo: string;
+  saleItemId: string;
   itemName: string;
   spec: string;
   remainingSessions: number;
   totalSessions: number;
-  orderNo: string;
+  saleOrderId: string;
   paidAt: string;
   selected: boolean;
   sessionCount: number;
@@ -51,12 +51,12 @@ Page({
         for (const item of order.items) {
           if (item.remainingSessions > 0) {
             treatmentCards.push({
-              itemFlowNo: item.itemFlowNo,
+              saleItemId: item.saleItemId,
               itemName: item.itemName,
               spec: item.spec,
               remainingSessions: item.remainingSessions,
               totalSessions: item.totalSessions,
-              orderNo: order.orderNo,
+              saleOrderId: order.saleOrderId,
               paidAt: order.paidAt,
               selected: false,
               sessionCount: 1,
@@ -108,10 +108,10 @@ Page({
         clientUserId: customer.clientUserId,
       },
       items: selected.map(c => ({
-        itemFlowNo: c.itemFlowNo,
+        saleItemId: c.saleItemId,
         itemName: c.itemName,
         spec: c.spec,
-        orderNo: c.orderNo,
+        saleOrderId: c.saleOrderId,
         sessionCount: c.sessionCount,
         remainingSessions: c.remainingSessions,
       })),

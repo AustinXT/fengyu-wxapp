@@ -42,24 +42,24 @@ Page({
     isManager: false,
     isCreator: false,
     statusClass: '',
-    _orderNo: '',
+    _saleOrderId: '',
   },
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
     if (options.id) {
-      this.setData({ _orderNo: options.id });
+      this.setData({ _saleOrderId: options.id });
       this.loadDetail(options.id);
     }
   },
 
-  async loadDetail(orderNo: string) {
+  async loadDetail(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const res = await callStaffApi<any>('order.detail', { orderNo });
+      const res = await callStaffApi<any>('order.detail', { orderNo: saleOrderId });
       const o = res.order || {};
       const items = (res.items || []).map((it: any) => ({
-        itemFlowNo: it.item_flow_no,
+        saleItemId: it.sale_item_id,
         itemName: it.spu_name || it.sku_display_name || '—',
         spec: it.sku_display_name || '',
         totalPrice: it.receivable,
@@ -74,7 +74,7 @@ Page({
       }));
       this.setData({
         order: {
-          orderNo: o.order_no,
+          saleOrderId: o.sale_order_id,
           status: o.status,
           storeName: o.store_name || '',
           orderType: o.order_type,
@@ -105,12 +105,12 @@ Page({
   },
 
   onReAllocation() {
-    const orderNo = this.data._orderNo;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${orderNo}` });
+    const saleOrderId = this.data._saleOrderId;
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${saleOrderId}` });
   },
 
   onResetFailed() {
-    const orderNo = this.data._orderNo;
+    const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '重置支付',
       content: '确认将此订单重置为"待支付"状态？',
@@ -118,9 +118,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.resetFailed', { orderNo });
+          await callStaffApi('order.resetFailed', { orderNo: saleOrderId });
           wx.showToast({ title: '已重置', icon: 'success' });
-          this.loadDetail(orderNo);
+          this.loadDetail(saleOrderId);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -129,7 +129,7 @@ Page({
   },
 
   async onConfirmOffline() {
-    const orderNo = this.data._orderNo;
+    const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '确认线下收款',
       content: '确认已收到顾客的现金/转账付款？',
@@ -137,9 +137,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderNo });
+          await callStaffApi('order.confirmOffline', { orderNo: saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadDetail(orderNo);
+          this.loadDetail(saleOrderId);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -148,7 +148,7 @@ Page({
   },
 
   onCloseOrder() {
-    const orderNo = this.data._orderNo;
+    const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '取消订单',
       content: '确认取消该订单？取消后不可恢复。',
@@ -157,9 +157,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.close', { orderNo });
+          await callStaffApi('order.close', { orderNo: saleOrderId });
           wx.showToast({ title: '订单已取消', icon: 'success' });
-          this.loadDetail(orderNo);
+          this.loadDetail(saleOrderId);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -173,7 +173,7 @@ Page({
 
   onShowQrcode() {
     const o = this.data.order;
-    const params = `orderNo=${o.orderNo}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
+    const params = `orderNo=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 });

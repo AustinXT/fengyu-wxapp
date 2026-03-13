@@ -3,7 +3,7 @@
 const MOCK_SERVICES = [
   {
     id: 'svc-001',
-    serviceNo: 'HLD-WX-260227001',
+    serviceOrderId: 'HLD-WX-260227001',
     customerName: '张美玲',
     customerPhone: '138****8000',
     staffName: '李芳芳',
@@ -16,7 +16,7 @@ const MOCK_SERVICES = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260205001',
+        saleItemId: 'XSLSH-WX-20260205001',
         itemName: '蜜语精华护理疗程',
         spec: '10次卡',
         sessionCount: 1,
@@ -27,7 +27,7 @@ const MOCK_SERVICES = [
   },
   {
     id: 'svc-002',
-    serviceNo: 'HLD-WX-260227002',
+    serviceOrderId: 'HLD-WX-260227002',
     customerName: '王芳',
     customerPhone: '139****5000',
     staffName: '李芳芳',
@@ -40,7 +40,7 @@ const MOCK_SERVICES = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260210001',
+        saleItemId: 'XSLSH-WX-20260210001',
         itemName: '明眸祛皱疗程',
         spec: '单品',
         sessionCount: 1,
@@ -51,7 +51,7 @@ const MOCK_SERVICES = [
   },
   {
     id: 'svc-003',
-    serviceNo: 'HLD-WX-260226001',
+    serviceOrderId: 'HLD-WX-260226001',
     customerName: '李晓华',
     customerPhone: '136****3000',
     staffName: '李芳芳',
@@ -64,7 +64,7 @@ const MOCK_SERVICES = [
     remark: '顾客反馈良好',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260120001',
+        saleItemId: 'XSLSH-WX-20260120001',
         itemName: '眉眼提升疗程',
         spec: '20次卡',
         sessionCount: 1,
@@ -75,7 +75,7 @@ const MOCK_SERVICES = [
   },
   {
     id: 'svc-004',
-    serviceNo: 'HLD-WX-260225001',
+    serviceOrderId: 'HLD-WX-260225001',
     customerName: '张美玲',
     customerPhone: '138****8000',
     staffName: '李芳芳',
@@ -88,7 +88,7 @@ const MOCK_SERVICES = [
     remark: '',
     items: [
       {
-        itemFlowNo: 'XSLSH-WX-20260205001',
+        saleItemId: 'XSLSH-WX-20260205001',
         itemName: '蜜语精华护理疗程',
         spec: '10次卡',
         sessionCount: 1,
@@ -132,7 +132,7 @@ export const serviceHandlers: Record<string, (payload: Record<string, any>) => a
 
   'service.create': (payload) => ({
     id: 'svc-new-001',
-    serviceNo: 'HLD-WX-260227099',
+    serviceOrderId: 'HLD-WX-260227099',
     status: '待服务',
     ...payload,
   }),

@@ -6,7 +6,7 @@ type OrderStatus = '全部' | '待支付' | '待确认收款' | '已支付' | '�
 
 interface OrderItem {
   id: string;
-  orderNo: string;
+  saleOrderId: string;
   customerName: string;
   customerPhoneMasked: string;
   status: OrderStatus;
@@ -70,8 +70,8 @@ Page({
       });
       const rows = res?.orders || [];
       const mapped: OrderItem[] = rows.map(r => ({
-        id: r.order_no,
-        orderNo: r.order_no,
+        id: r.sale_order_id,
+        saleOrderId: r.sale_order_id,
         customerName: r.customer_name || '',
         customerPhoneMasked: r.client_phone || '',
         status: r.status,

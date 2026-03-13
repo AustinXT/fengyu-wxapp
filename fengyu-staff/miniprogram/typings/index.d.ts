@@ -3,6 +3,7 @@ interface IAppOption {
     staffWfId: string;
     staffName: string;
     position: string;
+    roles: string[];
     boundStoreName: string;
     boundStoreId: string;
     phone: string;
@@ -15,14 +16,13 @@ interface IAppOption {
       quantity: number;
       sessionCount: number;
       productType: string;
-      workfineItemId: string;
       directCheckout?: boolean;
     } | null;
     _serviceCreatePreload?: {
       customer: { id: string; name: string; phone: string; clientUserId?: string };
       items: Array<{
-        itemFlowNo: string; itemName: string; spec: string;
-        orderNo: string; sessionCount: number; remainingSessions: number;
+        saleItemId: string; itemName: string; spec: string;
+        saleOrderId: string; sessionCount: number; remainingSessions: number;
       }>;
     } | null;
   };
@@ -30,6 +30,7 @@ interface IAppOption {
     staffWfId?: string;
     staffName?: string;
     position?: string;
+    roles?: string[];
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;

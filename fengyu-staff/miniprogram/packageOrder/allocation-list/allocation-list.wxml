@@ -11,12 +11,12 @@
     <view
       class="order-card"
       wx:for="{{orders}}"
-      wx:key="order_no"
-      data-order-no="{{item.order_no}}"
+      wx:key="sale_order_id"
+      data-sale-order-id="{{item.sale_order_id}}"
       bindtap="onTapOrder"
     >
       <view class="card-header">
-        <text class="order-no">{{item.order_no}}</text>
+        <text class="order-no">{{item.sale_order_id}}</text>
         <view class="tag-group">
           <van-tag wx:if="{{item.order_source === 'client'}}" color="#1976D2" plain>客户自助</van-tag>
           <van-tag wx:if="{{item.preferred_employee_id}}" color="#7B1FA2" plain>已指定美容师</van-tag>

@@ -12,7 +12,7 @@
   <block wx:else>
     <view class="status-banner status-banner--{{detail.status === '待服务' ? 'pending' : detail.status === '服务中' ? 'progress' : detail.status === '已取消' ? 'cancelled' : 'done'}}">
       <text class="status-label">{{detail.status}}</text>
-      <text class="service-no">{{detail.serviceNo}}</text>
+      <text class="service-no">{{detail.serviceOrderId}}</text>
     </view>
 
     <van-cell-group title="基本信息" class="section-group">
@@ -28,7 +28,7 @@
       <view class="section-title-row">
         <text class="section-title">核销明细</text>
       </view>
-      <view class="item-row" wx:for="{{detail.items}}" wx:key="itemFlowNo">
+      <view class="item-row" wx:for="{{detail.items}}" wx:key="saleItemId">
         <view class="item-info">
           <text class="item-name">{{item.itemName}}</text>
           <view class="item-meta">
@@ -37,7 +37,7 @@
               本次核销 {{item.sessionCount}} 次 · 剩余 {{item.remainingSessions}}/{{item.totalSessions}}
             </text>
           </view>
-          <text class="item-flow-no">流水号：{{item.itemFlowNo}}</text>
+          <text class="item-flow-no">流水号：{{item.saleItemId}}</text>
         </view>
       </view>
     </view>

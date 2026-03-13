@@ -1,5 +1,6 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
+import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
@@ -58,12 +59,11 @@ Page({
       return
     }
     const { staffName, position, boundStoreName } = app.globalData;
-    const isManager = position === '门店经理';
     this.setData({
       storeName: boundStoreName,
       staffName,
       position,
-      isManager,
+      isManager: isManager(),
     });
     this.loadWorkbench();
   },

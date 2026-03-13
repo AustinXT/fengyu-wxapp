@@ -7,7 +7,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 Page({
   data: {
     loading: false,
-    orderNo: '',
+    saleOrderId: '',
     customerName: '',
     totalAmount: '',
     qrcodeUrl: '',
@@ -20,14 +20,14 @@ Page({
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
-    const orderNo = options.orderNo || '';
-    if (orderNo) {
+    const saleOrderId = options.orderNo || '';
+    if (saleOrderId) {
       this.setData({
-        orderNo,
+        saleOrderId,
         customerName: options.customerName ? decodeURIComponent(options.customerName) : '',
         totalAmount: options.totalAmount || '',
       });
-      this.loadQrcode(orderNo);
+      this.loadQrcode(saleOrderId);
     }
   },
 
@@ -43,17 +43,17 @@ Page({
     this.stopPolling();
   },
 
-  async loadQrcode(orderNo: string) {
+  async loadQrcode(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('order.qrcode', { orderNo });
+      const data = await callStaffApi<any>('order.qrcode', { orderNo: saleOrderId });
       const isCreator = data.openedBy === getStaffWfId();
 
       // 后端返回了 qrcodeError 说明小程序码生成失败
       if (data.qrcodeError && !data.qrcodeUrl) {
         const retryCount = this.data.retryCount + 1;
         this.setData({
-          orderNo: data.orderNo || '',
+          saleOrderId: data.saleOrderId || '',
           customerName: data.customerName || '',
           totalAmount: data.totalAmount || '',
           qrcodeUrl: '',
@@ -72,7 +72,7 @@ Page({
 
       const status = data.qrCodeStatus || '待扫码';
       this.setData({
-        orderNo: data.orderNo || '',
+        saleOrderId: data.saleOrderId || '',
         customerName: data.customerName || '',
         totalAmount: data.totalAmount || '',
         qrcodeUrl: data.qrcodeUrl || '',
@@ -97,8 +97,8 @@ Page({
   startPolling() {
     this.stopPolling();
     pollTimer = setInterval(() => {
-      if (this.data.orderNo && (this.data.status === '待扫码' || this.data.status === '待确认收款')) {
-        this.loadQrcode(this.data.orderNo);
+      if (this.data.saleOrderId && (this.data.status === '待扫码' || this.data.status === '待确认收款')) {
+        this.loadQrcode(this.data.saleOrderId);
       }
     }, 3000);
   },
@@ -112,7 +112,7 @@ Page({
 
   onRetryQrcode() {
     this.setData({ qrcodeError: '', retryCount: 0 });
-    this.loadQrcode(this.data.orderNo);
+    this.loadQrcode(this.data.saleOrderId);
     this.startPolling();
   },
 
@@ -125,9 +125,9 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderNo: this.data.orderNo });
+          await callStaffApi('order.confirmOffline', { orderNo: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadQrcode(this.data.orderNo);
+          this.loadQrcode(this.data.saleOrderId);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -145,7 +145,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.close', { orderNo: this.data.orderNo });
+          await callStaffApi('order.close', { orderNo: this.data.saleOrderId });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.stopPolling();
           setTimeout(() => wx.navigateBack(), 1500);

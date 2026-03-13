@@ -57,7 +57,7 @@
     <view wx:else class="card-list">
       <view
         wx:for="{{treatmentCards}}"
-        wx:key="itemFlowNo"
+        wx:key="saleItemId"
         class="treatment-card {{item.selected ? 'treatment-card--selected' : ''}}"
         bindtap="onToggleCard"
         data-index="{{index}}"
@@ -73,7 +73,7 @@
             <text class="tc-name">{{item.itemName}}</text>
             <view class="tc-meta">
               <text class="tc-spec">{{item.spec}}</text>
-              <text class="tc-order">{{item.orderNo}}</text>
+              <text class="tc-order">{{item.saleOrderId}}</text>
             </view>
             <text class="tc-sessions">剩余 {{item.remainingSessions}}/{{item.totalSessions}} 次</text>
           </view>

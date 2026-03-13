@@ -2,7 +2,7 @@
 <view class="container qrcode-page">
 
   <!-- 加载中 -->
-  <view wx:if="{{loading && !orderNo}}" class="loading-wrap">
+  <view wx:if="{{loading && !saleOrderId}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
@@ -83,7 +83,7 @@
     </view>
 
     <!-- 订单号 -->
-    <text class="order-no">{{orderNo}}</text>
+    <text class="order-no">{{saleOrderId}}</text>
 
     <!-- 操作按钮 -->
     <view class="action-bar">

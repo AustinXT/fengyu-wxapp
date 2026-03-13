@@ -18,7 +18,7 @@
   <view wx:else class="list-wrap">
     <view class="order-card" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="order-header">
-        <text class="order-no">{{item.orderNo}}</text>
+        <text class="order-no">{{item.saleOrderId}}</text>
         <view class="status-tag status-tag--{{item.statusClass}}">{{item.status}}</view>
       </view>
       <view class="order-customer">

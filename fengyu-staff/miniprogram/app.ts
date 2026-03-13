@@ -6,6 +6,7 @@ App<IAppOption>({
     staffWfId: '' as string,
     staffName: '' as string,
     position: '' as string,
+    roles: [] as string[],
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     phone: '' as string,
@@ -22,6 +23,7 @@ App<IAppOption>({
         staffWfId: 'WF-00001',
         staffName: '王店长',
         position: '门店经理',
+        roles: ['manager'],
         phone: '13800000001',
         boundStoreName: '南商市场·凤御旗舰店',
         boundStoreId: 'store-001',
@@ -38,6 +40,7 @@ App<IAppOption>({
     const staffName = wx.getStorageSync('staffName');
     const role = wx.getStorageSync('role');
     const position = wx.getStorageSync('position');
+    const roles = wx.getStorageSync('roles');
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
@@ -45,6 +48,7 @@ App<IAppOption>({
     if (staffName) this.globalData.staffName = staffName;
     if (role) this.globalData.position = role; // 兼容旧缓存
     if (position) this.globalData.position = position;
+    if (roles) this.globalData.roles = roles;
     if (phone) this.globalData.phone = phone;
     if (boundStoreName) this.globalData.boundStoreName = boundStoreName;
     if (boundStoreId) this.globalData.boundStoreId = boundStoreId;
@@ -57,8 +61,8 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { staffWfId, staffName, position, phone, boundStoreName, boundStoreId } = res.result.data;
-        this.setStaffInfo({ staffWfId, staffName, position, phone, boundStoreName, boundStoreId });
+        const { staffWfId, staffName, position, roles, phone, boundStoreName, boundStoreId } = res.result.data;
+        this.setStaffInfo({ staffWfId, staffName, position, roles, phone, boundStoreName, boundStoreId });
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
@@ -69,6 +73,7 @@ App<IAppOption>({
     staffWfId?: string;
     staffName?: string;
     position?: string;
+    roles?: string[];
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;
@@ -84,6 +89,10 @@ App<IAppOption>({
     if (info.position) {
       this.globalData.position = info.position;
       wx.setStorageSync('position', info.position);
+    }
+    if (info.roles) {
+      this.globalData.roles = info.roles;
+      wx.setStorageSync('roles', info.roles);
     }
     if (info.phone) {
       this.globalData.phone = info.phone;
@@ -103,6 +112,7 @@ App<IAppOption>({
     this.globalData.staffWfId = '';
     this.globalData.staffName = '';
     this.globalData.position = '';
+    this.globalData.roles = [];
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';

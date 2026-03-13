@@ -392,7 +392,7 @@ Page({
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
-      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.orderNo}` });
+      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.saleOrderId}` });
     } catch (err: any) {
       wx.showToast({ title: err.message || '开单失败', icon: 'none' });
     } finally {

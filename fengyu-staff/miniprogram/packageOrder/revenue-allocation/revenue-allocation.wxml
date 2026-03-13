@@ -13,7 +13,7 @@ module.exports.pct = function(rate) {
   <block wx:else>
     <!-- 订单摘要 -->
     <view class="order-header">
-      <text class="order-no">{{orderNo}}</text>
+      <text class="order-no">{{saleOrderId}}</text>
       <view class="header-info">
         <text class="customer-name">{{order.customer_name || '未知顾客'}}</text>
         <text class="paid-at" wx:if="{{order.paid_at}}">支付于 {{order.paid_at}}</text>
@@ -49,7 +49,7 @@ module.exports.pct = function(rate) {
     </view>
 
     <!-- 按订单项分组 -->
-    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="item_flow_no">
+    <view class="alloc-section" wx:for="{{displayItems}}" wx:for-item="dItem" wx:for-index="itemIdx" wx:key="sale_item_id">
       <!-- item 标题 -->
       <view class="item-header">
         <view class="item-name-row">
@@ -91,7 +91,7 @@ module.exports.pct = function(rate) {
       </view>
 
       <!-- 添加人员按钮 -->
-      <view class="add-person-btn" data-item-flow-no="{{dItem.item_flow_no}}" bindtap="onAddPerson">
+      <view class="add-person-btn" data-sale-item-id="{{dItem.sale_item_id}}" bindtap="onAddPerson">
         <van-icon name="plus" size="28rpx" color="#C0322A" />
         <text class="add-person-text">添加人员</text>
       </view>

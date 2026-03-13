@@ -6,7 +6,7 @@ const app = getApp<IAppOption>();
 
 interface ServiceItem {
   id: string;
-  serviceNo: string;
+  serviceOrderId: string;
   customerName: string;
   customerPhone: string;
   staffName: string;

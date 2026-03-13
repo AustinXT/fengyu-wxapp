@@ -47,12 +47,12 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
   'client-001': [
     {
       orderId: 'order-001',
-      orderNo: 'FY-XSD-WX-260205001',
+      saleOrderId: 'FY-XSD-WX-260205001',
       status: '已支付',
       paidAt: '2026-02-05',
       items: [
         {
-          itemFlowNo: 'XSLSH-WX-20260205001',
+          saleItemId: 'XSLSH-WX-20260205001',
           itemName: '蜜语精华护理疗程',
           spec: '10次卡',
           sessionCount: 10,
@@ -60,7 +60,7 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
           productType: '疗程卡',
         },
         {
-          itemFlowNo: 'XSLSH-WX-20260205002',
+          saleItemId: 'XSLSH-WX-20260205002',
           itemName: '安吉丽眼部护理',
           spec: '单品',
           sessionCount: 1,
@@ -71,12 +71,12 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
     },
     {
       orderId: 'order-002',
-      orderNo: 'FY-XSD-WX-260120001',
+      saleOrderId: 'FY-XSD-WX-260120001',
       status: '已支付',
       paidAt: '2026-01-20',
       items: [
         {
-          itemFlowNo: 'XSLSH-WX-20260120001',
+          saleItemId: 'XSLSH-WX-20260120001',
           itemName: '眉眼提升疗程',
           spec: '20次卡',
           sessionCount: 20,
@@ -89,12 +89,12 @@ const MOCK_CUSTOMER_ORDERS: Record<string, any[]> = {
   'client-002': [
     {
       orderId: 'order-003',
-      orderNo: 'FY-XSD-WX-260210001',
+      saleOrderId: 'FY-XSD-WX-260210001',
       status: '已支付',
       paidAt: '2026-02-10',
       items: [
         {
-          itemFlowNo: 'XSLSH-WX-20260210001',
+          saleItemId: 'XSLSH-WX-20260210001',
           itemName: '明眸祛皱疗程',
           spec: '单品',
           sessionCount: 1,

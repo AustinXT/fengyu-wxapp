@@ -3,7 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
 
 interface OrderItem {
-  item_flow_no: string;
+  sale_item_id: string;
   spu_name: string;
   sku_display_name: string;
   receivable: string;
@@ -41,7 +41,7 @@ interface StaffInfo {
 
 /** 每个 item × person 的分配行 */
 interface AllocLine {
-  itemFlowNo: string;
+  saleItemId: string;
   department: string;
   staffWfId: string;
   staffName: string;
@@ -54,7 +54,7 @@ interface AllocLine {
 
 /** 展示用：item + 内嵌分配行 */
 interface DisplayItem {
-  item_flow_no: string;
+  sale_item_id: string;
   spu_name: string;
   sku_display_name: string;
   receivable: string;
@@ -72,7 +72,7 @@ Page({
   data: {
     loading: false,
     submitting: false,
-    orderNo: '',
+    saleOrderId: '',
     order: null as any,
     items: [] as OrderItem[],
     totalAmount: 0,
@@ -86,7 +86,7 @@ Page({
     displayItems: [] as DisplayItem[],
     // 选人弹窗
     pickerVisible: false,
-    pickerItemFlowNo: '',
+    pickerSaleItemId: '',
     // 汇总
     summary: [] as Array<{ staffName: string; department: string; total: string }>,
     grandTotal: '0.00',
@@ -104,20 +104,20 @@ Page({
       wx.navigateBack();
       return;
     }
-    const orderNo = options.orderNo || options.orderId;
-    if (orderNo) {
-      this.setData({ orderNo });
-      this.init(orderNo);
+    const saleOrderId = options.orderNo || options.orderId;
+    if (saleOrderId) {
+      this.setData({ saleOrderId });
+      this.init(saleOrderId);
     }
   },
 
-  async init(orderNo: string) {
+  async init(saleOrderId: string) {
     this.setData({ loading: true });
     try {
       const [suggestData, deptResponse, orderData] = await Promise.all([
-        callStaffApi<any>('allocation.suggest', { orderNo }),
+        callStaffApi<any>('allocation.suggest', { orderNo: saleOrderId }),
         callStaffApi<DeptApiResponse>('staff.departments'),
-        callStaffApi<any>('order.detail', { orderNo }),
+        callStaffApi<any>('order.detail', { orderNo: saleOrderId }),
       ]);
 
       const order = orderData.order;
@@ -150,12 +150,12 @@ Page({
 
       // 构建 displayItems
       const displayItems: DisplayItem[] = items.map(item => ({
-        item_flow_no: item.item_flow_no,
+        sale_item_id: item.sale_item_id,
         spu_name: item.spu_name,
         sku_display_name: item.sku_display_name,
         receivable: item.receivable,
         sales_category: item.sales_category,
-        allocLines: suggestLines.filter(l => l.itemFlowNo === item.item_flow_no),
+        allocLines: suggestLines.filter(l => l.saleItemId === item.sale_item_id),
       }));
 
       this.setData({
@@ -207,18 +207,18 @@ Page({
 
   /** 打开选人弹窗 */
   onAddPerson(e: WechatMiniprogram.TouchEvent) {
-    const itemFlowNo = e.currentTarget.dataset.itemFlowNo as string;
-    this.setData({ pickerVisible: true, pickerItemFlowNo: itemFlowNo });
+    const saleItemId = e.currentTarget.dataset.saleItemId as string;
+    this.setData({ pickerVisible: true, pickerSaleItemId: saleItemId });
   },
 
   /** 选中员工 */
   onStaffSelected(e: WechatMiniprogram.TouchEvent) {
     const staffWfId = e.currentTarget.dataset.staffWfId as string;
     const department = e.currentTarget.dataset.department as string;
-    const { pickerItemFlowNo, displayItems, allStaffList } = this.data;
+    const { pickerSaleItemId, displayItems, allStaffList } = this.data;
 
     // 查找 displayItem
-    const diIdx = displayItems.findIndex(d => d.item_flow_no === pickerItemFlowNo);
+    const diIdx = displayItems.findIndex(d => d.sale_item_id === pickerSaleItemId);
     if (diIdx < 0) return;
 
     const di = displayItems[diIdx];
@@ -234,7 +234,7 @@ Page({
     if (!staff) return;
 
     // 查找对应 item
-    const item = this.data.items.find(i => i.item_flow_no === pickerItemFlowNo);
+    const item = this.data.items.find(i => i.sale_item_id === pickerSaleItemId);
     if (!item) return;
 
     const salesCat = item.sales_category || '自采自销';
@@ -242,7 +242,7 @@ Page({
     const { commissionRate, amount } = this.lookupRate(department, salesCat, receivable);
 
     const newLine: AllocLine = {
-      itemFlowNo: pickerItemFlowNo,
+      saleItemId: pickerSaleItemId,
       department,
       staffWfId: staff.staffWfId,
       staffName: staff.staffName,
@@ -259,7 +259,7 @@ Page({
     this.setData({
       [path]: updatedLines,
       pickerVisible: false,
-      pickerItemFlowNo: '',
+      pickerSaleItemId: '',
     });
     this.computeSummary();
   },
@@ -278,7 +278,7 @@ Page({
 
   /** 关闭选人弹窗 */
   onPickerClose() {
-    this.setData({ pickerVisible: false, pickerItemFlowNo: '' });
+    this.setData({ pickerVisible: false, pickerSaleItemId: '' });
   },
 
   onAmountChange(e: WechatMiniprogram.CustomEvent) {
@@ -295,14 +295,14 @@ Page({
     const staffMap = new Map<string, string>();
     this.data.allStaffList.forEach(s => staffMap.set(s.staffWfId, s.staffName));
 
-    // 按 itemFlowNo 收集分配行
+    // 按 saleItemId 收集分配行
     const linesMap = new Map<string, AllocLine[]>();
     for (const alloc of allocations) {
       if (alloc.isVoid) continue;
       for (const ai of (alloc.items || [])) {
-        const flowNo = ai.itemFlowNo || '';
+        const saleItemId = ai.saleItemId || '';
         const line: AllocLine = {
-          itemFlowNo: flowNo,
+          saleItemId,
           department: alloc.department || '',
           staffWfId: alloc.employeeId || '',
           staffName: staffMap.get(alloc.employeeId) || alloc.employeeId || '',
@@ -312,19 +312,19 @@ Page({
           autoAmount: String(Number(ai.amount).toFixed(2)),
           autoFilled: false,
         };
-        if (!linesMap.has(flowNo)) linesMap.set(flowNo, []);
-        linesMap.get(flowNo)!.push(line);
+        if (!linesMap.has(saleItemId)) linesMap.set(saleItemId, []);
+        linesMap.get(saleItemId)!.push(line);
       }
     }
 
     // 重建 displayItems
     const displayItems: DisplayItem[] = items.map(item => ({
-      item_flow_no: item.item_flow_no,
+      sale_item_id: item.sale_item_id,
       spu_name: item.spu_name,
       sku_display_name: item.sku_display_name,
       receivable: item.receivable,
       sales_category: item.sales_category,
-      allocLines: linesMap.get(item.item_flow_no) || [],
+      allocLines: linesMap.get(item.sale_item_id) || [],
     }));
 
     this.setData({ displayItems });
@@ -371,7 +371,7 @@ Page({
     this.setData({ submitting: true });
     try {
       await callStaffApi('allocation.save', {
-        orderNo: this.data.orderNo,
+        orderNo: this.data.saleOrderId,
         allocations: [],
       });
       wx.showToast({ title: '已标记为无需分配', icon: 'success' });
@@ -384,7 +384,7 @@ Page({
   },
 
   async onSave() {
-    const { displayItems, orderNo } = this.data;
+    const { displayItems, saleOrderId } = this.data;
 
     // 从 displayItems 扁平化收集所有有效行
     const effectiveLines: AllocLine[] = [];
@@ -406,7 +406,7 @@ Page({
       employeeId: string;
       department: string;
       items: Array<{
-        itemFlowNo: string;
+        saleItemId: string;
         salesCategory: string;
         commissionRate: number;
         amount: number;
@@ -425,7 +425,7 @@ Page({
         allocMap.set(key, entry);
       }
       entry.items.push({
-        itemFlowNo: line.itemFlowNo,
+        saleItemId: line.saleItemId,
         salesCategory: line.salesCategory,
         commissionRate: line.commissionRate,
         amount: parseFloat(line.amount) || 0,
@@ -436,7 +436,7 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      await callStaffApi('allocation.save', { orderNo, allocations });
+      await callStaffApi('allocation.save', { orderNo: saleOrderId, allocations });
       wx.showToast({ title: '分配已保存', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
     } catch (err: any) {

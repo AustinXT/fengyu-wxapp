@@ -4,7 +4,7 @@ import { callStaffApi } from '../../utils/cloud';
 const app = getApp<IAppOption>();
 
 interface PaidOrderItem {
-  itemFlowNo: string;
+  saleItemId: string;
   itemName: string;
   spec: string;
   sessionCount: number;
@@ -15,7 +15,7 @@ interface PaidOrderItem {
 
 interface PaidOrder {
   orderId: string;
-  orderNo: string;
+  saleOrderId: string;
   paidAt: string;
   items: PaidOrderItem[];
 }
@@ -33,8 +33,8 @@ Page({
     selectedCustomer: null as null | { id: string; name: string; phone: string; clientUserId?: string },
     // 订单选择
     paidOrders: [] as PaidOrder[],
-    selectedItems: [] as Array<{ itemFlowNo: string; itemName: string; spec: string; orderNo: string; sessionCount: number }>,
-    selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 flowNo 集合，供 WXML 使用
+    selectedItems: [] as Array<{ saleItemId: string; itemName: string; spec: string; saleOrderId: string; sessionCount: number }>,
+    selectedFlowNos: {} as Record<string, boolean>, // 预计算的选中 saleItemId 集合，供 WXML 使用
     selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
     // 服务人员
     staffName: '',
@@ -51,15 +51,15 @@ Page({
       app.globalData._serviceCreatePreload = null;
       if (preload) {
         const selectedItems = preload.items.map(i => ({
-          itemFlowNo: i.itemFlowNo,
+          saleItemId: i.saleItemId,
           itemName: i.itemName,
           spec: i.spec,
-          orderNo: i.orderNo,
+          saleOrderId: i.saleOrderId,
           sessionCount: i.sessionCount,
         }));
         const flowNos: Record<string, boolean> = {};
         const sessionCounts: Record<string, number> = {};
-        selectedItems.forEach(s => { flowNos[s.itemFlowNo] = true; sessionCounts[s.itemFlowNo] = s.sessionCount; });
+        selectedItems.forEach(s => { flowNos[s.saleItemId] = true; sessionCounts[s.saleItemId] = s.sessionCount; });
         this.setData({
           selectedCustomer: preload.customer,
           selectedItems,
@@ -163,34 +163,34 @@ Page({
   },
 
   onToggleItem(e: WechatMiniprogram.TouchEvent) {
-    const { flowNo, itemName, spec, orderNo } = e.currentTarget.dataset as {
-      flowNo: string; itemName: string; spec: string; orderNo: string;
+    const { saleItemId, itemName, spec, saleOrderId } = e.currentTarget.dataset as {
+      saleItemId: string; itemName: string; spec: string; saleOrderId: string;
     };
     const selected = [...this.data.selectedItems];
-    const idx = selected.findIndex(s => s.itemFlowNo === flowNo);
+    const idx = selected.findIndex(s => s.saleItemId === saleItemId);
     if (idx >= 0) {
       selected.splice(idx, 1);
     } else {
-      selected.push({ itemFlowNo: flowNo, itemName, spec, orderNo, sessionCount: 1 });
+      selected.push({ saleItemId, itemName, spec, saleOrderId, sessionCount: 1 });
     }
     const flowNos: Record<string, boolean> = {};
     const sessionCounts: Record<string, number> = {};
-    selected.forEach(s => { flowNos[s.itemFlowNo] = true; sessionCounts[s.itemFlowNo] = s.sessionCount; });
+    selected.forEach(s => { flowNos[s.saleItemId] = true; sessionCounts[s.saleItemId] = s.sessionCount; });
     this.setData({ selectedItems: selected, selectedFlowNos: flowNos, selectedSessionCounts: sessionCounts });
   },
 
   isItemSelected(flowNo: string): boolean {
-    return this.data.selectedItems.some(s => s.itemFlowNo === flowNo);
+    return this.data.selectedItems.some(s => s.saleItemId === flowNo);
   },
 
   onSessionStepperChange(e: WechatMiniprogram.CustomEvent) {
-    const flowNo = e.currentTarget.dataset.flowNo as string;
+    const saleItemId = e.currentTarget.dataset.saleItemId as string;
     const value = e.detail as number;
     const selected = [...this.data.selectedItems];
-    const idx = selected.findIndex(s => s.itemFlowNo === flowNo);
+    const idx = selected.findIndex(s => s.saleItemId === saleItemId);
     if (idx >= 0) {
       selected[idx] = { ...selected[idx], sessionCount: value };
-      const sessionCounts = { ...this.data.selectedSessionCounts, [flowNo]: value };
+      const sessionCounts = { ...this.data.selectedSessionCounts, [saleItemId]: value };
       this.setData({ selectedItems: selected, selectedSessionCounts: sessionCounts });
     }
   },
@@ -220,7 +220,7 @@ Page({
         customerName: selectedCustomer.name,
         appointmentId: appointmentId || null,
         items: selectedItems.map(i => ({
-          itemFlowNo: i.itemFlowNo,
+          saleItemId: i.saleItemId,
           sessionCount: i.sessionCount,
         })),
         staffName,
