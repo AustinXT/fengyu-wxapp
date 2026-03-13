@@ -4,9 +4,6 @@ export * from './enums'
 // 组织架构与门店
 export * from './org'
 
-// 员工
-export * from './employee'
-
 // 商品（品项分类 + 商品 + 规格）
 export * from './product'
 

@@ -1,7 +1,6 @@
 import { boolean, date, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
-import { stores } from './org'
-import { employees } from './employee'
+import { stores, orgNodes } from './org'
 
 /**
  * 顾客 / 客户端微信用户（合并原 customers + client_wechat_users）
@@ -54,26 +53,44 @@ export const clientWechatUsers = pgTable(
 )
 
 /**
- * 员工端微信用户
+ * 员工端微信用户（合并原 employees + staff_wechat_users）
+ *
+ * 行可由 (a) 微信登录创建，或 (b) WorkFine 同步创建。通过 phone 匹配合并行。
+ * openid 可为 null（仅 WorkFine 同步创建的员工）。
  */
 export const staffWechatUsers = pgTable(
   'staff_wechat_users',
   {
     userId: text('user_id').primaryKey(),
-    openid: varchar('openid', { length: 64 }).notNull().unique(),
+    /** 微信 openid（员工端 appid 下）；仅 WorkFine 同步创建的行为 null */
+    openid: varchar('openid', { length: 64 }),
     sessionKey: varchar('session_key', { length: 128 }),
     phone: varchar('phone', { length: 30 }),
-    /** 手机号自动匹配后填入，FK → employees */
-    employeeId: varchar('employee_id', { length: 30 }).references(() => employees.employeeId),
+    /** 员工编号（WorkFine UDF_S_1147），唯一，供其他表 FK 引用 */
+    employeeId: varchar('employee_id', { length: 30 }).unique(),
+    // Layer 2 — WorkFine 档案
+    name: varchar('name', { length: 50 }),
+    gender: varchar('gender', { length: 20 }),
+    /** 身份证号码（AES-256-GCM 加密存储） */
+    idCard: varchar('id_card', { length: 200 }),
+    // Layer 3 — 组织归属
+    storeId: text('store_id').references(() => stores.storeId),
+    /** 指向 type='department' 的部门节点 */
+    orgNodeId: text('org_node_id').references(() => orgNodes.id),
+    positionName: varchar('position_name', { length: 50 }),
+    // Layer 4 — 个人档案
+    birthday: date('birthday'),
+    /** 技能标签数组，由员工端手动维护 */
+    skills: text('skills').array(),
+    isResigned: boolean('is_resigned').notNull().default(false),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (table) => [
-    index('idx_staff_users_phone').on(table.phone),
-    uniqueIndex('uq_staff_users_employee_id')
-      .on(table.employeeId)
-      .where(sql`employee_id IS NOT NULL`),
+    uniqueIndex('uq_staff_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
+    uniqueIndex('uq_staff_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
+    index('idx_staff_users_store_resigned').on(table.storeId, table.isResigned),
   ],
 )
 

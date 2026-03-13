@@ -11,9 +11,8 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 | 模块 | 表 | 说明 |
 |------|-----|------|
 | org | org_nodes, stores | 组织架构树（邻接表）+ 门店详情 |
-| employee | employees | 员工档案（WorkFine 同步） |
 | product | product_categories, products, product_skus | 品项分类 + 商品 + 规格 |
-| user | client_wechat_users, staff_wechat_users | 微信用户（客户端 + 员工端） |
+| user | client_wechat_users, staff_wechat_users | 微信用户（客户端含顾客档案 + 员工端含员工档案） |
 | order | sale_orders, sale_items, sale_allocations | 订单 + 销售明细 + 营业额分配 |
 | appointment | appointments | 预约记录 |
 | service | service_orders, service_items | 护理单 + 护理明细 |

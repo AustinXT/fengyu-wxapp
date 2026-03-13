@@ -1,7 +1,7 @@
 import { boolean, bigserial, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
-import { employees } from './employee'
 import { orgNodes } from './org'
+import { staffWechatUsers } from './user'
 
 /**
  * 权限角色分配
@@ -16,7 +16,7 @@ export const permissionRoles = pgTable(
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
-      .references(() => employees.employeeId),
+      .references(() => staffWechatUsers.employeeId),
     /** 角色：manager / finance / hr / product / staff */
     role: text('role').notNull(),
     /** 指向 headquarters/market/store 级别的节点 */

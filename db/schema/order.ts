@@ -24,8 +24,7 @@ import {
 } from './enums'
 import { stores } from './org'
 import { productSkus } from './product'
-import { employees } from './employee'
-import { clientWechatUsers } from './user'
+import { clientWechatUsers, staffWechatUsers } from './user'
 
 /**
  * 订单主表（四种单据统一模型）
@@ -54,12 +53,12 @@ export const saleOrders = pgTable(
     totalAmount: numeric('total_amount', { precision: 10, scale: 2 }).notNull(),
     paymentMethod: paymentMethodEnum('payment_method').notNull(),
     saleOrderSource: orderSourceEnum('sale_order_source').notNull(),
-    openedBy: varchar('opened_by', { length: 30 }).references(() => employees.employeeId),
-    preferredEmployeeId: varchar('preferred_employee_id', { length: 30 }).references(() => employees.employeeId),
+    openedBy: varchar('opened_by', { length: 30 }).references(() => staffWechatUsers.employeeId),
+    preferredEmployeeId: varchar('preferred_employee_id', { length: 30 }).references(() => staffWechatUsers.employeeId),
     paidAt: timestamp('paid_at'),
     wechatTransactionId: varchar('wechat_transaction_id', { length: 64 }).unique(),
     alipayTransactionId: varchar('alipay_transaction_id', { length: 64 }).unique(),
-    offlineConfirmedBy: varchar('offline_confirmed_by', { length: 30 }).references(() => employees.employeeId),
+    offlineConfirmedBy: varchar('offline_confirmed_by', { length: 30 }).references(() => staffWechatUsers.employeeId),
     offlineConfirmedAt: timestamp('offline_confirmed_at'),
     allocationStatus: allocationStatusEnum('allocation_status'),
     /** 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护，不设反向 FK 避免循环引用） */
@@ -141,7 +140,7 @@ export const saleAllocations = pgTable(
       .references(() => saleItems.saleItemId),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
-      .references(() => employees.employeeId),
+      .references(() => staffWechatUsers.employeeId),
     allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 2 }).notNull(),
     /** 该员工最终分配金额（退款为负数） */
     totalAmount: numeric('total_amount', { precision: 10, scale: 2 }).notNull(),

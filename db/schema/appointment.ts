@@ -1,9 +1,8 @@
 import { index, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
 import { appointmentStatusEnum } from './enums'
 import { stores } from './org'
-import { clientWechatUsers } from './user'
+import { clientWechatUsers, staffWechatUsers } from './user'
 import { saleItems } from './order'
-import { employees } from './employee'
 
 /**
  * 预约
@@ -29,7 +28,7 @@ export const appointments = pgTable(
     customerName: varchar('customer_name', { length: 50 }).notNull(),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
-      .references(() => employees.employeeId),
+      .references(() => staffWechatUsers.employeeId),
     employeeName: varchar('employee_name', { length: 50 }).notNull(),
     saleItemId: varchar('sale_item_id', { length: 30 }).references(() => saleItems.saleItemId),
     appointmentTime: timestamp('appointment_time').notNull(),

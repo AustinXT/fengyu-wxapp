@@ -2,8 +2,7 @@ import { date, index, integer, numeric, pgTable, text, timestamp, varchar } from
 import { serviceOrderStatusEnum } from './enums'
 import { stores } from './org'
 import { saleItems } from './order'
-import { clientWechatUsers } from './user'
-import { employees } from './employee'
+import { clientWechatUsers, staffWechatUsers } from './user'
 import { appointments } from './appointment'
 
 /**
@@ -26,7 +25,7 @@ export const serviceOrders = pgTable(
     serviceDate: date('service_date').notNull(),
     assignedEmployeeId: varchar('assigned_employee_id', { length: 30 })
       .notNull()
-      .references(() => employees.employeeId),
+      .references(() => staffWechatUsers.employeeId),
     remark: text('remark'),
     appointmentId: text('appointment_id').references(() => appointments.appointmentId),
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
@@ -58,7 +57,7 @@ export const serviceItems = pgTable(
     sessionUsed: integer('session_used').notNull(),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
-      .references(() => employees.employeeId),
+      .references(() => staffWechatUsers.employeeId),
     /** 服务时长（分钟） */
     serviceDuration: integer('service_duration'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
