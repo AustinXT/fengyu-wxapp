@@ -7,8 +7,6 @@
   <van-tabs
     active="{{activeBigCategoryIndex}}"
     bind:change="onBigCategoryChange"
-    color="#C0322A"
-    title-active-color="#C0322A"
     line-width="40rpx"
   >
     <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />

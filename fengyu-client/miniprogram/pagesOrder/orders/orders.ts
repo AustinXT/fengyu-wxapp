@@ -2,12 +2,12 @@
 import Toast from '@vant/weapp/toast/toast';
 
 const STATUS_CLASS: Record<string, string> = {
-  '待支付':     'status-class-pending',
-  '待确认收款': 'status-class-confirm',
-  '已支付':     'status-class-paid',
-  '已完成':     'status-class-done',
-  '支付失败':   'status-class-failed',
-  '已关闭':     'status-class-closed',
+  '待支付':     'status-pending',
+  '待确认收款': 'status-confirm',
+  '已支付':     'status-paid',
+  '已完成':     'status-completed',
+  '支付失败':   'status-failed',
+  '已关闭':     'status-closed',
 };
 
 // 调用 clientApi 云函数

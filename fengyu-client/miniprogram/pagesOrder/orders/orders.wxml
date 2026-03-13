@@ -7,8 +7,6 @@
     active="{{activeTab}}"
     bind:change="onTabChange"
     sticky
-    color="#C0322A"
-    title-active-color="#C0322A"
     title-inactive-color="#7A6553"
     swipeable
   >

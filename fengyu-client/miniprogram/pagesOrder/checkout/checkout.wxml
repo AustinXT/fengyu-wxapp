@@ -23,7 +23,6 @@
         <van-checkbox
           value="{{agreed}}"
           shape="round"
-          checked-color="#C0322A"
           bind:change="onAgreementChange"
         >
           <text class="agreement-text">我已阅读并同意</text>
@@ -38,15 +37,15 @@
     <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
       <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="wechat">
         <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
-        <van-radio slot="right-icon" name="wechat" checked-color="#C0322A" />
+        <van-radio slot="right-icon" name="wechat" />
       </van-cell>
       <van-cell title="支付宝" label="使用支付宝扫码付款" clickable bindtap="onPayMethodTap" data-method="alipay">
         <image slot="icon" src="/images/alipay-icon.png" class="pay-icon" mode="aspectFit" />
-        <van-radio slot="right-icon" name="alipay" checked-color="#C0322A" />
+        <van-radio slot="right-icon" name="alipay" />
       </van-cell>
       <van-cell title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="offline">
         <van-icon slot="icon" name="balance-o" size="40rpx" color="#C0322A" style="margin-right:16rpx" />
-        <van-radio slot="right-icon" name="offline" checked-color="#C0322A" />
+        <van-radio slot="right-icon" name="offline" />
       </van-cell>
     </van-radio-group>
   </van-cell-group>

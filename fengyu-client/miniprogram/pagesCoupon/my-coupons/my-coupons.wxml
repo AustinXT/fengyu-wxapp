@@ -1,7 +1,7 @@
 <!-- pagesCoupon/my-coupons/my-coupons.wxml -->
 <van-toast id="van-toast" />
 
-<van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" line-width="60rpx">
+<van-tabs active="{{activeTab}}" bind:change="onTabChange" line-width="60rpx">
   <van-tab title="未使用" />
   <van-tab title="已使用" />
   <van-tab title="已过期" />

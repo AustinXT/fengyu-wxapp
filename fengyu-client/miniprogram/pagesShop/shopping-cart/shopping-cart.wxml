@@ -21,7 +21,7 @@
       >
         <!-- 勾选框 -->
         <view class="cart-item-check" catchtap="onToggleItem" data-index="{{index}}">
-          <van-checkbox value="{{item.checked}}" checked-color="#C0322A" />
+          <van-checkbox value="{{item.checked}}" />
         </view>
 
         <!-- 商品信息 -->
@@ -71,7 +71,7 @@
     <!-- 底部结算栏 -->
     <view class="cart-bottom">
       <view class="cart-bottom-left" bindtap="onToggleAll">
-        <van-checkbox value="{{allChecked}}" checked-color="#C0322A" />
+        <van-checkbox value="{{allChecked}}" />
         <text class="check-all-text">全选</text>
       </view>
       <view class="cart-bottom-right">
