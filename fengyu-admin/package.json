@@ -7,7 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:seed": "bun run src/db/seed.ts"
+    "db:seed": "bun run src/db/seed.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:visual": "playwright test e2e/visual",
+    "test:visual:update": "playwright test e2e/visual --update-snapshots",
+    "test:all": "vitest run && playwright test"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
@@ -24,14 +32,23 @@
     "zustand": "^5.0.5"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.58.2",
+    "@tailwindcss/postcss": "^4.1.7",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/node": "^22.15.21",
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
-    "typescript": "^5.8.3",
-    "@tailwindcss/postcss": "^4.1.7",
-    "tailwindcss": "^4.1.7",
+    "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/coverage-v8": "^4.1.0",
     "eslint": "^9.27.0",
     "eslint-config-next": "^15.3.2",
-    "@eslint/eslintrc": "^3"
+    "happy-dom": "^20.8.4",
+    "tailwindcss": "^4.1.7",
+    "typescript": "^5.8.3",
+    "vite-tsconfig-paths": "^6.1.1",
+    "vitest": "^4.1.0"
   }
 }
