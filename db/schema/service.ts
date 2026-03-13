@@ -1,5 +1,5 @@
 import { date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
-import { serviceOrderStatusEnum } from './enums'
+import { serviceOrderStatusEnum, serviceOrderTypeEnum } from './enums'
 import { stores } from './org'
 import { saleItems } from './order'
 import { clientWechatUsers, staffWechatUsers } from './user'
@@ -17,6 +17,7 @@ export const serviceOrders = pgTable(
   {
     serviceOrderId: varchar('service_order_id', { length: 30 }).primaryKey(),
     status: serviceOrderStatusEnum('status').notNull().default('待服务'),
+    serviceOrderType: serviceOrderTypeEnum('service_order_type').notNull().default('普通'),
     /** 所属市场（快照） */
     marketName: varchar('market_name', { length: 100 }).notNull(),
     storeId: text('store_id')

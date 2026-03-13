@@ -18,14 +18,13 @@ export const appointments = pgTable(
   {
     appointmentId: text('appointment_id').primaryKey(),
     status: appointmentStatusEnum('status').notNull().default('待确认'),
-    marketName: varchar('market_name', { length: 100 }).notNull(),
     storeId: text('store_id')
       .notNull()
       .references(() => stores.storeId),
     clientUserId: text('client_user_id')
       .notNull()
       .references(() => clientWechatUsers.userId),
-    customerName: varchar('customer_name', { length: 50 }).notNull(),
+    clientName: varchar('client_name', { length: 50 }).notNull(),
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
       .references(() => staffWechatUsers.employeeId),

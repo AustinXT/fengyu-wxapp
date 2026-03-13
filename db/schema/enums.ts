@@ -30,6 +30,8 @@ export const orderSourceEnum = pgEnum('order_source', ['client', 'staff'])
 
 export const serviceOrderStatusEnum = pgEnum('service_order_status', ['待服务', '服务中', '已完成', '已取消'])
 
+export const serviceOrderTypeEnum = pgEnum('service_order_type', ['普通', '体验'])
+
 export const appointmentStatusEnum = pgEnum('appointment_status', [
   '待确认',
   '已确认',
