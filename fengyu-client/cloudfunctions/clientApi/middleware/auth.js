@@ -34,9 +34,16 @@ async function auth(ctx, next) {
     return await next()
   }
 
-  // 查询用户
+  // 查询用户（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    'SELECT user_id, phone, bound_store_name, bound_market_name FROM client_wechat_users WHERE openid = $1',
+    `SELECT u.user_id, u.phone, u.bound_store_id,
+            s.store_name AS bound_store_name,
+            pm.name AS bound_market_name
+     FROM client_wechat_users u
+     LEFT JOIN stores s ON u.bound_store_id = s.store_id
+     LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+     LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+     WHERE u.openid = $1`,
     [effectiveOpenid]
   )
 
@@ -45,6 +52,7 @@ async function auth(ctx, next) {
       isOpenid: true,
       userId: null,
       phone: null,
+      boundStoreId: null,
       boundStoreName: null,
       boundMarketName: null
     }
@@ -53,6 +61,7 @@ async function auth(ctx, next) {
       isOpenid: true,
       userId: users[0].user_id,
       phone: users[0].phone,
+      boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
     }

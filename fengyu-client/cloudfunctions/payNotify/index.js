@@ -3,11 +3,6 @@
  *
  * 处理微信支付异步通知，更新订单状态。
  * 当前为 mock 结构，接入真实商户号后替换签名验证和解密逻辑。
- *
- * 接入真实微信支付时需要：
- * 1. 配置环境变量：MCH_ID, API_V3_KEY, CERT_SERIAL_NO
- * 2. 上传商户证书
- * 3. 替换 TODO 标记处的 mock 实现
  */
 
 const cloud = require('wx-server-sdk')
@@ -29,17 +24,11 @@ function getPg() {
 
 /**
  * 云函数入口
- * 微信支付回调会以 HTTP 方式调用此函数
  */
 exports.main = async (event) => {
   console.log('[payNotify] received event:', JSON.stringify(event))
 
   try {
-    // TODO: 真实接入时，解析微信支付回调 XML/JSON 数据
-    // const { resource } = event
-    // 1. 使用 APIv3 密钥解密 resource.ciphertext
-    // 2. 获取 transaction_id, out_trade_no(orderNo), trade_state
-
     // ========== Mock 模式：手动触发测试 ==========
     const { orderNo, transactionId } = event
     if (!orderNo) {
@@ -50,7 +39,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id FROM orders WHERE order_no = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount FROM sale_orders WHERE sale_order_id = $1',
       [orderNo]
     )
 
@@ -83,40 +72,41 @@ exports.main = async (event) => {
 
       // 1. 更新订单状态 → 已支付
       await client.query(
-        `UPDATE orders
+        `UPDATE sale_orders
          SET status = '已支付', paid_at = $1, wechat_transaction_id = $2, updated_at = $1
-         WHERE order_no = $3 AND status = '待支付'`,
+         WHERE sale_order_id = $3 AND status = '待支付'`,
         [now, txnId, orderNo]
       )
 
       // 2. 设置单品到期日（paid_at + 1 year）
       await client.query(
-        `UPDATE order_items oi
+        `UPDATE sale_items
          SET expire_date = ($1::date + interval '1 year')::date
-         FROM product_spu_sku_map m
-         WHERE oi.order_no = $2
-           AND oi.sku_id = m.sku_id
-           AND m.product_type = '单品'
-           AND oi.expire_date IS NULL`,
+         WHERE sale_order_id = $2
+           AND product_type = '单品'
+           AND expire_date IS NULL`,
         [now, orderNo]
       )
 
       // 3. 自动创建业绩分配（如有指定美容师）
       if (order.preferred_employee_id) {
-        // 计算订单总金额
-        const totalResult = await client.query(
-          'SELECT COALESCE(SUM(receivable), 0) AS total FROM order_items WHERE order_no = $1',
+        const totalAmount = order.total_amount
+
+        // 查询该订单的所有明细
+        const itemsResult = await client.query(
+          'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
           [orderNo]
         )
-        const totalAmount = totalResult.rows[0].total
 
-        // 插入默认分配（100% 给指定美容师）
-        await client.query(
-          `INSERT INTO revenue_allocations (order_no, employee_id, allocation_ratio, total_amount, created_at, updated_at)
-           VALUES ($1, $2, 1.00, $3, $4, $4)
-           ON CONFLICT (order_no, employee_id) DO NOTHING`,
-          [orderNo, order.preferred_employee_id, totalAmount, now]
-        )
+        // 为每个明细行创建分配记录（100% 给指定美容师）
+        for (const item of itemsResult.rows) {
+          await client.query(
+            `INSERT INTO sale_allocations (sale_item_id, employee_id, allocation_ratio, total_amount, created_at, updated_at)
+             VALUES ($1, $2, 1.00, $3, $4, $4)
+             ON CONFLICT DO NOTHING`,
+            [item.sale_item_id, order.preferred_employee_id, item.received, now]
+          )
+        }
       }
 
       await client.query('COMMIT')
@@ -128,7 +118,6 @@ exports.main = async (event) => {
       client.release()
     }
 
-    // 返回成功响应给微信支付平台
     return { code: 'SUCCESS', message: '成功' }
   } catch (err) {
     console.error('[payNotify] Error:', err)

@@ -6,7 +6,6 @@ const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireFields } = require('../middleware/validate')
 const { invalidateAuthCache } = require('../middleware/auth')
 
@@ -17,9 +16,16 @@ const { invalidateAuthCache } = require('../middleware/auth')
 async function login(ctx) {
   const { OPENID } = cloud.getWXContext()
 
-  // 检查用户是否存在
+  // 检查用户是否存在（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    'SELECT user_id, phone, bound_store_name, bound_market_name, last_login_at FROM client_wechat_users WHERE openid = $1',
+    `SELECT u.user_id, u.phone, u.bound_store_id,
+            s.store_name AS bound_store_name,
+            pm.name AS bound_market_name
+     FROM client_wechat_users u
+     LEFT JOIN stores s ON u.bound_store_id = s.store_id
+     LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+     LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+     WHERE u.openid = $1`,
     [OPENID]
   )
 
@@ -38,6 +44,7 @@ async function login(ctx) {
       isNewUser: true,
       userId,
       phone: null,
+      boundStoreId: null,
       boundStoreName: null,
       boundMarketName: null
     }
@@ -52,6 +59,7 @@ async function login(ctx) {
       isNewUser: false,
       userId: users[0].user_id,
       phone: users[0].phone,
+      boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
     }
@@ -69,7 +77,6 @@ async function bindPhone(ctx) {
   const { OPENID } = cloud.getWXContext()
   const { phoneNumber: directPhone } = ctx.event.payload
   // CloudID 必须在 event 顶层才能被微信平台自动解密
-  // 解密后结构: { cloudID: "原始值", data: { phoneNumber, purePhoneNumber, countryCode, watermark } }
   const phoneData = ctx.event.phoneData
 
   let phoneNumber = null
@@ -87,7 +94,6 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: CloudID 未被解密，请检查是否放在 data 顶层')
     }
 
-    // 优先使用 purePhoneNumber（纯数字），其次 phoneNumber（带区号）
     phoneNumber = resolved.purePhoneNumber || resolved.phoneNumber
 
     if (!phoneNumber) {
@@ -138,7 +144,7 @@ async function bindPhone(ctx) {
 
   // 补全历史订单的 client_user_id
   const updateResult = await pg.query(
-    `UPDATE orders
+    `UPDATE sale_orders
      SET client_user_id = $1, updated_at = $2
      WHERE client_phone = $3 AND client_user_id IS NULL`,
     [userId, now, phoneNumber]
@@ -161,15 +167,15 @@ function generateUserId() {
 
 /**
  * 更新用户绑定门店
- * 验证门店是否有效(从 UDT_M_219 查询)
+ * 从 PG stores + org_nodes 验证门店有效性
  */
 async function bindStore(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { storeName } = ctx.event.payload
+  const { storeId } = ctx.event.payload
 
   // 参数校验
-  if (!storeName) {
-    throw new Error('INVALID_PARAMS: 缺少 storeName 参数')
+  if (!storeId) {
+    throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
   // 查询当前用户
@@ -182,33 +188,37 @@ async function bindStore(ctx) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
 
-  // 验证门店是否存在(从 WorkFine UDT_M_219 查询)，同时获取市场名
-  const storeCheck = await mssql.query(`
-    SELECT UDF_M_438 AS store_name, UDF_M_437 AS market_name
-    FROM UDT_M_219
-    WHERE UDF_M_438 = '${storeName.replace(/'/g, "''")}'
-      AND (UDF_M_11956 IS NULL OR UDF_M_11956 != '是')
-  `)
+  // 验证门店是否存在（从 PG stores + org_nodes 查询）
+  const storeCheck = await pg.query(
+    `SELECT s.store_id, s.store_name, pm.name AS market_name
+     FROM stores s
+     LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+     LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+     WHERE s.store_id = $1 AND s.is_closed = false`,
+    [storeId]
+  )
 
   if (storeCheck.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在或已停业')
   }
 
-  const marketName = storeCheck[0].market_name ? storeCheck[0].market_name.trim() : null
+  const storeName = storeCheck[0].store_name
+  const marketName = storeCheck[0].market_name || null
   const now = new Date()
 
-  // 更新绑定门店和市场名
+  // 更新绑定门店
   await pg.query(
-    'UPDATE client_wechat_users SET bound_store_name = $1, bound_market_name = $2, updated_at = $3 WHERE user_id = $4',
-    [storeName, marketName, now, users[0].user_id]
+    'UPDATE client_wechat_users SET bound_store_id = $1, updated_at = $2 WHERE user_id = $3',
+    [storeId, now, users[0].user_id]
   )
 
-  // 清除认证缓存，确保后续请求读到最新的 boundMarketName
+  // 清除认证缓存，确保后续请求读到最新的 boundStoreId
   invalidateAuthCache(OPENID)
 
   ctx.result = {
     success: true,
     userId: users[0].user_id,
+    boundStoreId: storeId,
     boundStoreName: storeName,
     boundMarketName: marketName
   }

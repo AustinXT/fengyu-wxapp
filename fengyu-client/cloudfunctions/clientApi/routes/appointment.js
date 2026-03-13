@@ -4,7 +4,6 @@
  */
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireFields } = require('../middleware/validate')
 const { requirePhone } = require('../middleware/auth')
 
@@ -20,7 +19,7 @@ async function create(ctx) {
   const payload = ctx.event.payload
 
   const {
-    itemFlowNo, // 销售流水号,对应 order_items.item_flow_no（可选）
+    saleItemId, // 销售明细ID,对应 sale_items.sale_item_id（可选）
     staffWfId, // 预约美容师(可选)
     staffName: inputStaffName, // 美容师姓名(前端传入)
     appointmentTime, // 预约到店时间
@@ -31,35 +30,36 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少预约时间')
   }
 
-  // 解析前端传入的时段字符串，如 "2026-02-26 上午 11:00-13:00"
-  // 提取日期和开始时间，转为合法 timestamp
+  // 解析前端传入的时段字符串
   const parsedTime = parseAppointmentTime(appointmentTime)
 
   // 查询顾客信息
   const users = await pg.query(
-    'SELECT phone, bound_store_name, bound_market_name FROM client_wechat_users WHERE user_id = $1',
+    `SELECT u.phone, u.name, u.bound_store_id,
+            s.store_name AS bound_store_name
+     FROM client_wechat_users u
+     LEFT JOIN stores s ON u.bound_store_id = s.store_id
+     WHERE u.user_id = $1`,
     [userId]
   )
 
-  const userStoreName = users[0]?.bound_store_name || ''
-  const userMarketName = users[0]?.bound_market_name || ''
+  const userStoreId = users[0]?.bound_store_id || ''
 
   let orderItem = null
 
-  if (itemFlowNo) {
+  if (saleItemId) {
     // 关联疗程卡：验证权限和剩余次数
     const orderItems = await pg.query(`
       SELECT
-        oi.item_flow_no,
-        oi.order_no,
-        oi.remaining_sessions,
+        si.sale_item_id,
+        si.sale_order_id,
+        si.remaining_sessions,
         o.client_user_id,
-        o.store_name,
-        o.market_name
-      FROM order_items oi
-      LEFT JOIN orders o ON oi.order_no = o.order_no
-      WHERE oi.item_flow_no = $1
-    `, [itemFlowNo])
+        o.store_id
+      FROM sale_items si
+      LEFT JOIN sale_orders o ON si.sale_order_id = o.sale_order_id
+      WHERE si.sale_item_id = $1
+    `, [saleItemId])
 
     if (orderItems.length === 0) {
       throw new Error('INVALID_PARAMS: 订单明细不存在')
@@ -78,8 +78,8 @@ async function create(ctx) {
     // 检查是否已有待确认或已确认的预约
     const existingAppointments = await pg.query(
       `SELECT appointment_id FROM appointments
-       WHERE item_flow_no = $1 AND status IN ('待确认', '已确认')`,
-      [itemFlowNo]
+       WHERE sale_item_id = $1 AND status IN ('待确认', '已确认')`,
+      [saleItemId]
     )
 
     if (existingAppointments.length > 0) {
@@ -88,25 +88,11 @@ async function create(ctx) {
   }
 
   // 门店信息：优先从订单取，否则从用户绑定门店取
-  const marketName = orderItem?.market_name || userMarketName
-  const storeName = orderItem?.store_name || userStoreName
+  const storeId = orderItem?.store_id || userStoreId
 
-  // 从 WorkFine 查顾客真实姓名
-  let customerName = ''
-  const userPhone = users[0]?.phone
-  if (userPhone) {
-    try {
-      const esc = v => String(v).replace(/'/g, "''")
-      const nameRows = await mssql.query(`
-        SELECT TOP 1 UDF_S_1476 AS name FROM UDT_S_311
-        WHERE UDF_S_1478 = '${esc(userPhone)}'
-      `)
-      if (nameRows.length > 0 && nameRows[0].name) {
-        customerName = nameRows[0].name.trim()
-      }
-    } catch (_) {}
-  }
-  if (!customerName) customerName = userPhone || ''
+  // 顾客姓名从 client_wechat_users
+  let clientName = users[0]?.name || ''
+  if (!clientName) clientName = users[0]?.phone || ''
 
   // 创建预约
   const appointmentId = generateAppointmentId()
@@ -114,14 +100,14 @@ async function create(ctx) {
 
   await pg.query(`
     INSERT INTO appointments (
-      appointment_id, status, market_name, store_name,
-      client_user_id, customer_name, employee_id, staff_name,
-      appointment_time, notes, item_flow_no, created_at, updated_at
-    ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      appointment_id, status, store_id,
+      client_user_id, client_name, employee_id, employee_name,
+      appointment_time, notes, sale_item_id, created_at, updated_at
+    ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
   `, [
-    appointmentId, marketName, storeName,
-    userId, customerName, staffWfId || '', inputStaffName || '',
-    parsedTime, notes || '', itemFlowNo || null, now
+    appointmentId, storeId,
+    userId, clientName, staffWfId || '', inputStaffName || '',
+    parsedTime, notes || '', saleItemId || null, now
   ])
 
   ctx.result = {
@@ -139,7 +125,6 @@ async function list(ctx) {
   const { userId } = ctx.auth
   const { status } = ctx.event.payload || {}
 
-  // 构造查询条件
   let whereClause = 'WHERE a.client_user_id = $1'
   const params = [userId]
 
@@ -152,28 +137,26 @@ async function list(ctx) {
     SELECT
       a.appointment_id,
       a.status,
-      a.store_name,
+      a.store_id,
+      s.store_name,
       a.employee_id,
-      a.staff_name,
+      a.employee_name,
       a.appointment_time,
       a.notes,
-      a.item_flow_no,
+      a.sale_item_id,
       a.created_at,
-      oi.order_no,
-      COALESCE(p.name, '到店预约') AS service_name,
-      m.sku_display_name
+      si.sale_order_id,
+      COALESCE(si.product_name, '到店预约') AS service_name,
+      si.sku_spec_name
     FROM appointments a
-    LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
-    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
+    LEFT JOIN stores s ON a.store_id = s.store_id
     ${whereClause}
     ORDER BY a.appointment_time DESC
     LIMIT 100
   `, params)
 
-  ctx.result = {
-    appointments
-  }
+  ctx.result = { appointments }
 }
 
 /**
@@ -188,7 +171,6 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 appointmentId 参数')
   }
 
-  // 查询预约
   const appointments = await pg.query(
     'SELECT * FROM appointments WHERE appointment_id = $1 AND client_user_id = $2',
     [appointmentId, userId]
@@ -204,7 +186,6 @@ async function cancel(ctx) {
     throw new Error('INVALID_PARAMS: 预约状态不允许取消')
   }
 
-  // 更新预约状态
   const now = new Date()
   await pg.query(
     `UPDATE appointments
@@ -222,11 +203,8 @@ async function cancel(ctx) {
 
 /**
  * 解析前端时段字符串为 Date 对象
- * 输入格式: "2026-02-26 上午 11:00-13:00" 或 "2026-02-26 下午 15:00-17:00"
- * 提取日期 + 时段开始时间，返回 Date
  */
 function parseAppointmentTime(timeStr) {
-  // 匹配日期和开始时间: "YYYY-MM-DD ... HH:MM-HH:MM"
   const match = timeStr.match(/^(\d{4}-\d{2}-\d{2})\s+.*?(\d{2}:\d{2})-\d{2}:\d{2}$/)
   if (!match) {
     throw new Error('INVALID_PARAMS: 预约时间格式不正确')
@@ -238,9 +216,6 @@ function parseAppointmentTime(timeStr) {
   return date
 }
 
-/**
- * 生成预约 ID(UUID)
- */
 function generateAppointmentId() {
   return 'apt_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }

@@ -1,15 +1,143 @@
 /**
  * 门店模块路由
- * 从 WorkFine 查询门店列表(只读)
+ * 从 PG stores + org_nodes 查询门店数据
  */
 
-const mssql = require('../db/mssql')
-const sql = require('mssql')
 const pg = require('../db/pg')
 const crypto = require('crypto')
 
 /**
- * 格式化开业时间: datetime → "yyyy年M月"
+ * 门店列表
+ * 从 PG stores + org_nodes 查询，排除已停业的门店
+ * @param {string} ctx.event.payload.city - 可选，按城市（市场名）筛选
+ */
+async function list(ctx) {
+  const { city } = ctx.event.payload || {}
+
+  const params = []
+  let whereClause = 'WHERE s.is_closed = false'
+
+  // 如果传入 city 参数，按市场名筛选
+  if (city) {
+    params.push(`${city}%`)
+    whereClause += ` AND pm.name LIKE $${params.length}`
+  }
+
+  const stores = await pg.query(`
+    SELECT
+      pm.name AS market_name,
+      s.store_name,
+      s.store_id,
+      s.opening_date AS open_date,
+      s.bed_count AS available_beds,
+      s.district AS store_region,
+      s.cover_image,
+      s.street_address,
+      s.latitude,
+      s.longitude,
+      s.phone,
+      s.business_hours,
+      s.description,
+      s.announcement,
+      s.parking_info
+    FROM stores s
+    LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+    LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+    ${whereClause}
+    ORDER BY pm.name, s.store_name
+  `, params)
+
+  // 格式化开业时间
+  stores.forEach(s => {
+    s.open_date = formatOpenDate(s.open_date)
+  })
+
+  ctx.result = { stores }
+}
+
+/**
+ * 门店详情
+ * 按 storeId 查询单条门店记录，并行查询员工数和顾客数
+ */
+async function detail(ctx) {
+  const { storeId, storeName } = ctx.event.payload || {}
+  if (!storeId && !storeName) {
+    throw new Error('INVALID_PARAMS: 缺少 storeId 或 storeName')
+  }
+
+  // 支持按 storeId 或 storeName 查询
+  const storeFilter = storeId
+    ? { sql: 's.store_id = $1', param: storeId }
+    : { sql: 's.store_name = $1', param: storeName }
+
+  // 并行查询：门店基本信息、在职员工数、顾客数
+  const [storeResult, staffResult, customerResult] = await Promise.all([
+    pg.query(`
+      SELECT
+        s.store_id,
+        pm.name AS market_name,
+        s.store_name,
+        s.opening_date AS open_date,
+        s.bed_count AS available_beds,
+        s.district AS store_region,
+        s.cover_image,
+        s.street_address,
+        s.latitude,
+        s.longitude,
+        s.phone,
+        s.business_hours,
+        s.description,
+        s.announcement,
+        s.parking_info
+      FROM stores s
+      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+      WHERE ${storeFilter.sql} AND s.is_closed = false
+      LIMIT 1
+    `, [storeFilter.param]),
+    pg.query(`
+      SELECT COUNT(*)::int AS staff_count
+      FROM staff_wechat_users
+      WHERE store_id = $1 AND is_resigned = false
+    `, [storeId || '__placeholder__']),
+    pg.query(`
+      SELECT COUNT(*)::int AS customer_count
+      FROM client_wechat_users
+      WHERE bound_store_id = $1
+    `, [storeId || '__placeholder__'])
+  ])
+
+  if (storeResult.length === 0) {
+    throw new Error('INVALID_PARAMS: 门店不存在')
+  }
+
+  const store = storeResult[0]
+  store.open_date = formatOpenDate(store.open_date)
+
+  // 用实际 storeId 重新查询计数（如果是按 storeName 查的）
+  if (!storeId && store.store_id) {
+    const [staffCount, customerCount] = await Promise.all([
+      pg.query(
+        'SELECT COUNT(*)::int AS staff_count FROM staff_wechat_users WHERE store_id = $1 AND is_resigned = false',
+        [store.store_id]
+      ),
+      pg.query(
+        'SELECT COUNT(*)::int AS customer_count FROM client_wechat_users WHERE bound_store_id = $1',
+        [store.store_id]
+      )
+    ])
+    store.staff_count = staffCount[0]?.staff_count || 0
+    store.customer_count = customerCount[0]?.customer_count || 0
+  } else {
+    store.staff_count = staffResult[0]?.staff_count || 0
+    store.customer_count = customerResult[0]?.customer_count || 0
+  }
+
+  ctx.result = { store }
+}
+
+/**
+ * 格式化开业时间: date → "yyyy年M月"
  */
 function formatOpenDate(date) {
   if (!date) return ''
@@ -19,115 +147,14 @@ function formatOpenDate(date) {
 }
 
 /**
- * 门店列表
- * 从 WorkFine UDT_M_219 查询,排除已停止营业的门店及市场/管理中心
- * @param {string} ctx.event.payload.city - 可选，按城市筛选（对应 market 字段）
- */
-async function list(ctx) {
-  const { city } = ctx.event.payload || {}
-
-  let whereClause = `
-    WHERE UDF_M_11956 != '是'
-      AND UDF_M_437 NOT IN ('市场', '管理中心')
-      AND UDF_M_438 NOT LIKE '%市场'
-      AND UDF_M_438 NOT LIKE '%管理中心'
-  `
-
-  // 如果传入 city 参数，按城市筛选（对应 market 字段，如"南昌市场"）
-  if (city) {
-    whereClause += ` AND UDF_M_437 LIKE '${city}%'`
-  }
-
-  const querySql = `
-    SELECT
-      UDF_M_437 AS market_name,
-      UDF_M_438 AS store_name,
-      UDF_M_1777 AS open_date,
-      UDF_M_8590 AS available_beds,
-      UDF_M_12033 AS store_region
-    FROM UDT_M_219
-    ${whereClause}
-    ORDER BY UDF_M_437, UDF_M_438
-  `
-
-  const stores = await mssql.query(querySql)
-
-  stores.forEach(s => {
-    s.open_date = formatOpenDate(s.open_date)
-  })
-
-  ctx.result = {
-    stores
-  }
-}
-
-/**
- * 门店详情
- * 按 storeName 查询单条门店记录，并行查询员工数和顾客数
- */
-async function detail(ctx) {
-  const { storeName } = ctx.event.payload || {}
-  if (!storeName) {
-    throw new Error('INVALID_PARAMS: 缺少 storeName')
-  }
-
-  const pool = await mssql.getPool()
-
-  // 并行查询：门店基本信息、在职员工数、顾客数
-  const [storeResult, staffResult, customerResult] = await Promise.all([
-    pool.request()
-      .input('storeName', sql.NVarChar, storeName)
-      .query(`
-        SELECT TOP 1
-          UDF_M_437 AS market_name,
-          UDF_M_438 AS store_name,
-          UDF_M_1777 AS open_date,
-          UDF_M_8590 AS available_beds,
-          UDF_M_12033 AS store_region
-        FROM UDT_M_219
-        WHERE UDF_M_11956 != '是'
-          AND UDF_M_438 = @storeName
-      `),
-    pool.request()
-      .input('storeName', sql.NVarChar, storeName)
-      .query(`
-        SELECT COUNT(*) AS staff_count
-        FROM UDT_S_287
-        WHERE UDF_S_1163 = @storeName
-          AND UDF_S_1624 = '否'
-      `),
-    pool.request()
-      .input('storeName', sql.NVarChar, storeName)
-      .query(`
-        SELECT COUNT(*) AS customer_count
-        FROM UDT_S_311
-        WHERE UDF_S_6443 = @storeName
-      `)
-  ])
-
-  if (!storeResult.recordset || storeResult.recordset.length === 0) {
-    throw new Error('INVALID_PARAMS: 门店不存在')
-  }
-
-  const store = storeResult.recordset[0]
-  store.open_date = formatOpenDate(store.open_date)
-  store.staff_count = staffResult.recordset[0]?.staff_count || 0
-  store.customer_count = customerResult.recordset[0]?.customer_count || 0
-
-  ctx.result = {
-    store
-  }
-}
-
-/**
  * 申请解绑门店
  * 向当前绑定门店的店长提交解绑申请
  * payload: { note? }
  */
 async function requestUnbind(ctx) {
-  const { userId, boundStoreName } = ctx.auth
+  const { userId, boundStoreId, boundStoreName } = ctx.auth
   if (!userId) throw new Error('UNAUTHORIZED: 未登录')
-  if (!boundStoreName) throw new Error('INVALID_PARAMS: 当前未绑定任何门店')
+  if (!boundStoreId) throw new Error('INVALID_PARAMS: 当前未绑定任何门店')
 
   const { note } = ctx.event.payload || {}
 
@@ -144,7 +171,7 @@ async function requestUnbind(ctx) {
   await pg.query(
     `INSERT INTO store_unbind_requests (request_id, user_id, from_store_name, status, note)
      VALUES ($1, $2, $3, 'pending', $4)`,
-    [requestId, userId, boundStoreName, note || null]
+    [requestId, userId, boundStoreName || '', note || null]
   )
 
   ctx.result = { requestId }
@@ -210,7 +237,6 @@ async function cancelUnbindRequest(ctx) {
 /**
  * 逆地理编码：将经纬度转换为城市名
  * payload: { latitude, longitude }
- * 通过腾讯地图 WebService API 在云函数侧发请求（无域名限制）
  */
 async function geocode(ctx) {
   const { latitude, longitude } = ctx.event.payload || {}
@@ -219,11 +245,8 @@ async function geocode(ctx) {
   const key = process.env.TMAP_KEY
   const secret = process.env.TMAP_SECRET
 
-  // 腾讯地图签名算法：参数按参数名字母升序排列后拼接 MD5
-  // get_poi < key < location
   const query = `get_poi=0&key=${key}&location=${latitude},${longitude}`
   const path = '/ws/geocoder/v1/'
-  const crypto = require('crypto')
   const sig = crypto.createHash('md5').update(`${path}?${query}${secret}`).digest('hex')
 
   const url = `https://apis.map.qq.com${path}?${query}&sig=${sig}`
@@ -241,7 +264,6 @@ async function geocode(ctx) {
   if (json.status !== 0) throw new Error('INVALID_PARAMS: 逆地理编码失败')
 
   const city = json.result?.address_component?.city || ''
-  // 去掉末尾的"市"字，得到纯城市名如"南昌"
   const cityName = city.replace(/市$/, '')
 
   ctx.result = { city: cityName }
