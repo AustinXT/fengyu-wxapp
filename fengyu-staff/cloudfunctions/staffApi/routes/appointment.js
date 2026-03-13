@@ -7,7 +7,6 @@
  */
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
 
 /**
@@ -26,30 +25,7 @@ function formatDateTime(date) {
   return `${m}月${day}日 ${h}:${min}`
 }
 
-/**
- * 批量查询 WorkFine 顾客姓名（按手机号）
- */
-async function batchLookupCustomerNames(phones) {
-  if (!phones || phones.length === 0) return {}
-  try {
-    const esc = v => String(v).replace(/'/g, "''")
-    const inClause = phones.map(p => `'${esc(p)}'`).join(',')
-    const rows = await mssql.query(`
-      SELECT UDF_S_1476 AS name, UDF_S_1478 AS phone
-      FROM UDT_S_311
-      WHERE UDF_S_1478 IN (${inClause})
-    `)
-    const map = {}
-    for (const r of rows) {
-      if (r.name && r.phone) map[r.phone.trim()] = r.name.trim()
-    }
-    return map
-  } catch (_) {
-    return {}
-  }
-}
-
-// 预约状态映射：中文 → 英文（前端使用英文状态键）
+// 预约状态映射
 const STATUS_CN_TO_EN = {
   '待确认': 'pending',
   '已确认': 'confirmed',
@@ -64,17 +40,6 @@ for (const [cn, en] of Object.entries(STATUS_CN_TO_EN)) {
 
 /**
  * 预约列表
- * 店长：查看本店所有预约
- * 美容师：查看预约美容师为自己的预约
- *
- * payload: {
- *   status: string | null,  // 筛选状态：'pending'|'confirmed'|null(全部)
- *   todayOnly: boolean,     // 仅今日预约
- *   page: number,
- *   pageSize: number
- * }
- *
- * 返回平铺数组，状态为英文键
  */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -82,17 +47,15 @@ async function list(ctx) {
   const { status, todayOnly, page = 1, pageSize = 50 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeName, pageSize, offset]
+  const params = [ctx.auth.storeId, pageSize, offset]
   let whereExtra = ''
 
   if (status && status !== 'all') {
-    // 将前端英文状态映射为中文
     const cnStatus = STATUS_EN_TO_CN[status] || status
     params.push(cnStatus)
     whereExtra += ` AND a.status = $${params.length}`
   }
 
-  // 今日预约筛选
   if (todayOnly) {
     const today = new Date().toISOString().slice(0, 10)
     params.push(today)
@@ -100,7 +63,7 @@ async function list(ctx) {
   }
 
   // 美容师只看指定自己的预约
-  if (ctx.auth.position !== '门店经理') {
+  if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND a.employee_id = $${params.length}`
   }
@@ -110,43 +73,37 @@ async function list(ctx) {
       a.appointment_id,
       a.status,
       a.client_user_id,
-      a.customer_name,
+      a.client_name,
       a.employee_id,
-      a.staff_name,
+      a.employee_name,
       a.appointment_time,
       a.notes,
-      a.item_flow_no,
+      a.sale_item_id,
       a.checkin_at,
       a.created_at,
-      oi.order_no,
-      COALESCE(p.name, '到店预约') AS service_name,
-      m.sku_display_name,
+      si.sale_order_id,
+      COALESCE(si.product_name, '到店预约') AS service_name,
+      si.sku_spec_name,
       wu.phone AS customer_phone
     FROM appointments a
-    LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
-    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
-    WHERE a.store_name = $1
+    WHERE a.store_id = $1
     ${whereExtra}
     ORDER BY a.appointment_time ASC
     LIMIT $2 OFFSET $3
   `, params)
 
-  // 批量查询 WorkFine 顾客真实姓名
-  const phones = [...new Set(appointments.map(a => a.customer_phone).filter(Boolean))]
-  const phoneToName = await batchLookupCustomerNames(phones)
-
   ctx.result = appointments.map(a => ({
     id: a.appointment_id,
-    customerName: phoneToName[a.customer_phone] || a.customer_name,
+    customerName: a.client_name,
     customerPhone: a.customer_phone || '',
     clientUserId: a.client_user_id,
-    staffName: a.staff_name,
+    staffName: a.employee_name,
     appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
-    serviceItemName: a.service_name || a.sku_display_name || '',
+    serviceItemName: a.service_name || a.sku_spec_name || '',
     remark: a.notes || '',
     checkinAt: a.checkin_at,
   }))
@@ -154,7 +111,6 @@ async function list(ctx) {
 
 /**
  * 预约详情
- * 含关联的服务单信息
  */
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -169,25 +125,23 @@ async function detail(ctx) {
       a.appointment_id,
       a.status,
       a.client_user_id,
-      a.customer_name,
+      a.client_name,
       a.employee_id,
-      a.staff_name,
+      a.employee_name,
       a.appointment_time,
       a.notes,
-      a.item_flow_no,
+      a.sale_item_id,
       a.checkin_at,
-      COALESCE(p.name, '到店预约') AS service_name,
-      m.sku_display_name,
+      COALESCE(si.product_name, '到店预约') AS service_name,
+      si.sku_spec_name,
       wu.phone AS customer_phone,
-      so.service_order_no AS service_order_id
+      so.service_order_id AS service_order_id
     FROM appointments a
-    LEFT JOIN order_items oi ON a.item_flow_no = oi.item_flow_no
-    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
+    LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
     LEFT JOIN service_orders so ON so.appointment_id = a.appointment_id
-    WHERE a.appointment_id = $1 AND a.store_name = $2
-  `, [id, ctx.auth.storeName])
+    WHERE a.appointment_id = $1 AND a.store_id = $2
+  `, [id, ctx.auth.storeId])
 
   if (appointments.length === 0) {
     throw new Error('INVALID_PARAMS: 预约不存在或不属于本门店')
@@ -195,20 +149,16 @@ async function detail(ctx) {
 
   const a = appointments[0]
 
-  // 查询 WorkFine 顾客真实姓名
-  const phone = a.customer_phone || ''
-  const phoneToName = await batchLookupCustomerNames(phone ? [phone] : [])
-
   ctx.result = {
     id: a.appointment_id,
-    customerName: phoneToName[phone] || a.customer_name,
-    customerPhone: phone,
+    customerName: a.client_name,
+    customerPhone: a.customer_phone || '',
     clientUserId: a.client_user_id,
-    staffName: a.staff_name,
+    staffName: a.employee_name,
     appointmentTime: formatDateTime(a.appointment_time),
     status: STATUS_CN_TO_EN[a.status] || a.status,
     statusText: a.status,
-    serviceItemName: a.service_name || a.sku_display_name || '',
+    serviceItemName: a.service_name || a.sku_spec_name || '',
     remark: a.notes || '',
     serviceOrderId: a.service_order_id || null,
     checkinAt: a.checkin_at,
@@ -217,7 +167,6 @@ async function detail(ctx) {
 
 /**
  * 确认预约
- * 店长或被预约美容师可确认
  */
 async function confirm(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -228,8 +177,8 @@ async function confirm(ctx) {
   }
 
   const appointments = await pg.query(
-    'SELECT * FROM appointments WHERE appointment_id = $1 AND store_name = $2',
-    [appointmentId, ctx.auth.storeName]
+    'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
+    [appointmentId, ctx.auth.storeId]
   )
 
   if (appointments.length === 0) {
@@ -238,8 +187,7 @@ async function confirm(ctx) {
 
   const appt = appointments[0]
 
-  // 权限：店长或被预约美容师
-  if (ctx.auth.position !== '门店经理' && appt.employee_id !== ctx.auth.staffWfId) {
+  if (!ctx.auth.roles.includes('manager') && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权确认该预约')
   }
 
@@ -249,7 +197,7 @@ async function confirm(ctx) {
 
   const now = new Date()
   await pg.query(
-    "UPDATE appointments SET status = '已确认', updated_at = $1 WHERE appointment_id = $2",
+    "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2",
     [now, appointmentId]
   )
 
@@ -262,7 +210,6 @@ async function confirm(ctx) {
 
 /**
  * 顾客到店签到
- * 记录到店时间，不改变预约状态
  */
 async function checkin(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -273,8 +220,8 @@ async function checkin(ctx) {
   }
 
   const appointments = await pg.query(
-    'SELECT * FROM appointments WHERE appointment_id = $1 AND store_name = $2',
-    [appointmentId, ctx.auth.storeName]
+    'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
+    [appointmentId, ctx.auth.storeId]
   )
 
   if (appointments.length === 0) {
@@ -283,7 +230,7 @@ async function checkin(ctx) {
 
   const appt = appointments[0]
 
-  if (ctx.auth.position !== '门店经理' && appt.employee_id !== ctx.auth.staffWfId) {
+  if (!ctx.auth.roles.includes('manager') && appt.employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权操作该预约')
   }
 

@@ -1,7 +1,7 @@
 /**
  * 员工认证中间件
  * 从 cloud.getWXContext() 获取 OPENID，查询 staff_wechat_users 获取员工信息
- * 所有数据来自 PG（员工档案已合并到 staff_wechat_users）
+ * 权限角色从 permission_roles 表读取
  */
 
 const cloud = require('wx-server-sdk')
@@ -15,8 +15,7 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 /**
  * 认证中间件
  * 将员工信息注入到 ctx.auth
- * ctx.auth = { openid, phone, staffWfId, position, storeName, marketName, department }
- * position: staff_wechat_users.position_name（如 '门店经理'、'美容师'）
+ * ctx.auth = { openid, phone, staffWfId, storeId, roles, position, storeName, marketName, department }
  */
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
@@ -43,6 +42,7 @@ async function auth(ctx, next) {
       u.phone,
       u.name,
       u.position_name,
+      u.store_id,
       u.is_resigned,
       s.store_name,
       m.name AS market_name,
@@ -63,6 +63,8 @@ async function auth(ctx, next) {
       openid: effectiveOpenid,
       phone: null,
       staffWfId: null,
+      storeId: null,
+      roles: [],
       position: null,
       storeName: null,
       marketName: null,
@@ -73,10 +75,22 @@ async function auth(ctx, next) {
     // 离职员工视为未关联
     const isActive = user.employee_id && !user.is_resigned
 
+    // 查询权限角色
+    let roles = []
+    if (isActive) {
+      const roleRows = await pg.query(
+        'SELECT role FROM permission_roles WHERE employee_id = $1 AND is_void = false',
+        [user.employee_id]
+      )
+      roles = roleRows.map(r => r.role)
+    }
+
     authData = {
       openid: effectiveOpenid,
       phone: user.phone,
       staffWfId: isActive ? user.employee_id : null,
+      storeId: isActive ? user.store_id : null,
+      roles,
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,
       marketName: isActive ? user.market_name : null,
@@ -115,14 +129,14 @@ function requireStaffBound() {
 }
 
 /**
- * 要求角色为店长（门店经理）
+ * 要求角色为店长（manager）
  */
 function requireManager() {
   return async (ctx, next) => {
     if (!ctx.auth.staffWfId) {
       throw new Error('UNAUTHORIZED: 员工档案未关联')
     }
-    if (ctx.auth.position !== '门店经理') {
+    if (!ctx.auth.roles.includes('manager')) {
       throw new Error('PERMISSION_DENIED: 仅店长可执行此操作')
     }
     await next()

@@ -42,9 +42,21 @@ async function generateEmployeeId(client) {
 }
 
 /**
+ * 查询员工权限角色
+ */
+async function queryRoles(employeeId) {
+  if (!employeeId) return []
+  const roleRows = await pg.query(
+    'SELECT role FROM permission_roles WHERE employee_id = $1 AND is_void = false',
+    [employeeId]
+  )
+  return roleRows.map(r => r.role)
+}
+
+/**
  * 员工微信登录
  * 按 openid 查询 staff_wechat_users：
- *   - 找到 → 返回员工信息
+ *   - 找到 → 返回员工信息 + roles
  *   - 未找到 → 返回 isNewUser:true（需 bindPhone 建档或关联）
  */
 async function login(ctx) {
@@ -70,6 +82,7 @@ async function login(ctx) {
       staffWfId: null,
       staffName: null,
       position: null,
+      roles: [],
       boundStoreName: null,
       boundStoreId: null,
     }
@@ -83,6 +96,7 @@ async function login(ctx) {
   )
 
   const isActive = user.employee_id && !user.is_resigned
+  const roles = isActive ? await queryRoles(user.employee_id) : []
 
   ctx.result = {
     isNewUser: false,
@@ -90,6 +104,7 @@ async function login(ctx) {
     staffWfId: isActive ? user.employee_id : null,
     staffName: isActive ? user.name : null,
     position: isActive ? user.position_name : null,
+    roles,
     boundStoreName: isActive ? user.store_name : null,
     boundStoreId: isActive ? user.store_id : null,
   }
@@ -162,12 +177,15 @@ async function bindPhone(ctx) {
 
     invalidateAuthCache(OPENID)
 
+    const roles = await queryRoles(emp.employee_id)
+
     ctx.result = {
       success: true,
       phone: phoneNumber,
       staffWfId: emp.employee_id,
       staffName: emp.name,
       position: emp.position_name,
+      roles,
       boundStoreName: emp.store_name,
       boundStoreId: emp.store_id,
     }
@@ -195,6 +213,7 @@ async function bindPhone(ctx) {
     staffWfId: employeeId,
     staffName: null,
     position: null,
+    roles: [],
     boundStoreName: null,
     boundStoreId: null,
   }

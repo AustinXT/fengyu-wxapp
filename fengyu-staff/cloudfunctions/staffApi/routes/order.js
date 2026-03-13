@@ -7,27 +7,27 @@
  * order.resetFailed — 重置支付失败订单（店长专用）
  * order.list — 订单列表
  * order.detail — 订单详情
+ *
+ * 数据全部来自 PG（sale_orders / sale_items / products / product_skus），零 WorkFine 依赖。
  */
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 
-// 模块级缓存：orderNo → qrcodeUrl，避免轮询时重复生成
+// 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
 
 /**
  * 员工开单（店长专用）
  * payload: {
- *   clientPhone: string,       // 顾客手机号（必填）
- *   clientName: string,        // 顾客姓名（必填）
- *   storeName: string,         // 开单门店（可选，默认用当前员工门店）
- *   marketName: string,        // 市场（可选）
+ *   clientPhone: string,
+ *   clientName: string,
  *   orderType: '普通'|'体验'|'福利活动',
- *   items: [{ skuId, quantity, customPrice? }],
+ *   items: [{ skuId, quantity, customPrice?, discount? }],
  *   paymentMethod: 'wechat'|'offline',
- *   preferredStaffWfId: string // 指定美容师（可选）
+ *   preferredStaffWfId: string,
+ *   couponId: string
  * }
  */
 async function create(ctx) {
@@ -41,11 +41,11 @@ async function create(ctx) {
     paymentMethod,
     orderType: orderTypeParam,
     preferredStaffWfId,
-    couponId: inputCouponId // 可选, 顾客优惠券ID
+    couponId: inputCouponId
   } = payload
 
-  let storeName = payload.storeName || ctx.auth.storeName
-  let marketName = payload.marketName || ctx.auth.marketName
+  const storeId = ctx.auth.storeId
+  const marketName = ctx.auth.marketName || ''
 
   if (!clientPhone) {
     throw new Error('INVALID_PARAMS: 顾客手机号为必填项')
@@ -59,28 +59,28 @@ async function create(ctx) {
   if (!paymentMethod) {
     throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
   }
-  if (!storeName) {
-    throw new Error('INVALID_PARAMS: 缺少 storeName')
+  if (!storeId) {
+    throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
-  // 映射前端 orderType（normal/experience/promotion）→ 后端中文值
+  // 映射前端 orderType
   const ORDER_TYPE_MAP = { normal: '普通', experience: '体验', promotion: '福利活动' }
   const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '普通'
   if (!['普通', '体验', '福利活动'].includes(orderType)) {
     throw new Error('INVALID_PARAMS: orderType 值不合法')
   }
 
-  // 查询顾客是否已注册客户端小程序（按手机号）
+  // 查询顾客是否已注册客户端小程序
   const clientUsers = await pg.query(
     'SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
   const clientUserId = clientUsers.length > 0 ? clientUsers[0].user_id : null
 
-  // 检查是否已有待支付订单（同门店 + 同手机号）
+  // 检查是否已有待支付订单
   if (clientUserId) {
     const existing = await pg.query(
-      "SELECT order_no FROM orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
+      "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
       [clientUserId]
     )
     if (existing.length > 0) {
@@ -88,19 +88,23 @@ async function create(ctx) {
     }
   } else {
     const existing = await pg.query(
-      "SELECT order_no FROM orders WHERE client_phone = $1 AND store_name = $2 AND status = '待支付' LIMIT 1",
-      [clientPhone, storeName]
+      "SELECT sale_order_id FROM sale_orders WHERE client_phone = $1 AND store_id = $2 AND status = '待支付' LIMIT 1",
+      [clientPhone, storeId]
     )
     if (existing.length > 0) {
       throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
     }
   }
 
-  // 获取 SKU 信息 + WorkFine 价格（并行）
+  // 获取 SKU 信息 + 价格（全部从 PG product_skus 读取）
   const itemDataList = await Promise.all(
     items.map(async (item) => {
       const skuRows = await pg.query(
-        'SELECT sku_id, workfine_item_id, workfine_source, product_type FROM product_spu_sku_map WHERE sku_id = $1',
+        `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.session_count,
+                p.name AS product_name, p.sales_category
+         FROM product_skus s
+         JOIN products p ON s.product_id = p.product_id
+         WHERE s.sku_id = $1`,
         [item.skuId]
       )
       if (skuRows.length === 0) {
@@ -108,43 +112,41 @@ async function create(ctx) {
       }
       const sku = skuRows[0]
 
-      // 体验单允许自定义价格，其他从 WorkFine 读取
       let unitPrice
       let sessionCount = null
-      let salesCategory = null
+      let salesCategory = sku.sales_category || null
 
       if (orderType === '体验' && item.customPrice !== undefined) {
         unitPrice = Number(item.customPrice)
-        sessionCount = 1 // 体验单按单品处理，1次
+        sessionCount = 1
       } else {
-        const wfData = await getWorkfinePrice(sku.workfine_item_id, sku.workfine_source)
-        unitPrice = wfData.originalPrice
-        sessionCount = wfData.sessionCount
-        salesCategory = wfData.salesCategory || null
+        unitPrice = Number(sku.price)
+        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       }
 
       const quantity = item.quantity || 1
       const saleAmount = unitPrice * quantity
 
-      // 优惠金额（前端按行传入总优惠）
+      // 优惠金额
       const discount = Number(item.discount) || 0
       if (discount < 0 || discount > saleAmount) {
         throw new Error('INVALID_PARAMS: 优惠金额不合法')
       }
-      const unitDiscount = quantity > 0 ? discount / quantity : 0
-      const receivable = saleAmount - discount
+      const unitRealPrice = quantity > 0 ? (unitPrice - discount / quantity) : unitPrice
+      const received = saleAmount - discount
 
       return {
         skuId: item.skuId,
+        productName: sku.product_name,
+        skuSpecName: sku.spec_name,
         productType: sku.product_type,
         sessionCount,
         remainingSessions: sessionCount,
         unitPrice,
         quantity,
-        unitDiscount,
+        unitRealPrice,
         saleAmount,
-        receivable,
-        received: 0,
+        received,
         salesCategory
       }
     })
@@ -172,12 +174,7 @@ async function create(ctx) {
 
     // 门店匹配
     if (couponInfo.applicable_store_ids && couponInfo.applicable_store_ids.length > 0) {
-      const storeRows = await pg.query(
-        'SELECT store_id FROM stores WHERE store_name = $1 LIMIT 1',
-        [storeName]
-      )
-      const sid = storeRows.length > 0 ? storeRows[0].store_id : null
-      if (!sid || !couponInfo.applicable_store_ids.includes(sid)) {
+      if (!storeId || !couponInfo.applicable_store_ids.includes(storeId)) {
         throw new Error('INVALID_PARAMS: 该优惠券不适用于此门店')
       }
     }
@@ -205,7 +202,7 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
     }
 
-    const eligibleTotal = eligibleItems.reduce((s, d) => s + d.receivable, 0)
+    const eligibleTotal = eligibleItems.reduce((s, d) => s + d.received, 0)
     const minSpend = Number(couponInfo.min_spend) || 0
     if (eligibleTotal < minSpend) {
       throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
@@ -216,33 +213,36 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 分摊到各行 receivable
+    // 分摊到各行 received
     for (const item of eligibleItems) {
-      const share = couponDiscount * (item.receivable / eligibleTotal)
+      const share = couponDiscount * (item.received / eligibleTotal)
       const roundedShare = Math.round(share * 100) / 100
-      item.receivable -= roundedShare
-      item.receivable = Math.round(item.receivable * 100) / 100
+      item.received -= roundedShare
+      item.received = Math.round(item.received * 100) / 100
+      // 同步更新 unitRealPrice
+      item.unitRealPrice = item.quantity > 0 ? item.received / item.quantity : 0
     }
   }
 
   const now = new Date()
-  const orderNo = await generateOrderNo(storeName)
+  const saleOrderId = await generateOrderNo()
+  const totalAmount = itemDataList.reduce((sum, d) => sum + d.received, 0)
 
   await pg.transaction(async (client) => {
     // Advisory lock 防并发流水号冲突
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['item_flow_no_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
 
     const today = now
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
     const maxResult = await client.query(
-      `SELECT item_flow_no FROM order_items
-       WHERE item_flow_no LIKE $1
-       ORDER BY item_flow_no DESC LIMIT 1`,
+      `SELECT sale_item_id FROM sale_items
+       WHERE sale_item_id LIKE $1
+       ORDER BY sale_item_id DESC LIMIT 1`,
       [`XSLSH-WX-${dateStr}%`]
     )
     let seq = 1
     if (maxResult.rows.length > 0) {
-      seq = parseInt(maxResult.rows[0].item_flow_no.slice(-4)) + 1
+      seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
     // 原子 claim 优惠券
@@ -252,7 +252,7 @@ async function create(ctx) {
          SET status = '已使用', used_sale_order_id = $1, used_at = NOW()
          WHERE coupon_id = $2 AND user_id = $3
            AND status = '未使用' AND expire_at > NOW()`,
-        [orderNo, inputCouponId, clientUserId]
+        [saleOrderId, inputCouponId, clientUserId]
       )
       if (claimResult.rowCount !== 1) {
         throw new Error('INVALID_PARAMS: 优惠券已失效')
@@ -261,16 +261,16 @@ async function create(ctx) {
 
     // 创建订单主表
     await client.query(
-      `INSERT INTO orders (
-        order_no, status, order_type, market_name, store_name,
-        order_datetime, client_user_id, client_phone, customer_name,
-        payment_method, order_source, opened_by,
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, market_name, store_id,
+        sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
+        payment_method, sale_order_source, opened_by,
         preferred_employee_id, coupon_id, coupon_discount,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, 'staff', $10, $11, $12, $13, $5, $5)`,
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $14, $5, $5)`,
       [
-        orderNo, orderType, marketName || '', storeName, now,
-        clientUserId, clientPhone, clientName,
+        saleOrderId, orderType, marketName, storeId, now,
+        totalAmount, clientUserId, clientPhone, clientName,
         paymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
         inputCouponId || null, couponDiscount
@@ -279,34 +279,35 @@ async function create(ctx) {
 
     // 创建订单明细
     for (let i = 0; i < itemDataList.length; i++) {
-      const itemFlowNo = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
 
       // 院装产品无 session_count
-      const productType = d.productType
-      const sc = productType === '院装产品' ? null : d.sessionCount
-      const rs = productType === '院装产品' ? null : d.remainingSessions
+      const sc = d.productType === '院装产品' ? null : d.sessionCount
+      const rs = d.productType === '院装产品' ? null : d.remainingSessions
 
       await client.query(
-        `INSERT INTO order_items (
-          item_flow_no, order_no, sku_id, session_count, remaining_sessions,
-          unit_price, quantity, unit_discount, sale_amount, receivable, received,
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, item_direction, sku_id,
+          product_name, sku_spec_name, product_type,
+          session_count, remaining_sessions,
+          unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        ) VALUES ($1, $2, 'purchase', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
-          itemFlowNo, orderNo, d.skuId, sc, rs,
-          d.unitPrice, d.quantity, d.unitDiscount,
-          d.saleAmount, d.receivable, d.received,
+          saleItemId, saleOrderId, d.skuId,
+          d.productName, d.skuSpecName, d.productType,
+          sc, rs,
+          d.unitPrice, d.quantity, d.unitRealPrice,
+          d.saleAmount, d.received,
           d.salesCategory || null
         ]
       )
     }
   })
 
-  const totalAmount = itemDataList.reduce((sum, d) => sum + d.receivable, 0)
-
   ctx.result = {
-    orderNo,
+    saleOrderId,
     totalAmount,
     couponDiscount,
     status: '待支付',
@@ -317,23 +318,22 @@ async function create(ctx) {
 
 /**
  * 订单二维码状态
- * 返回订单信息和当前状态，供前端展示二维码
- * 二维码内容由前端生成（encode 订单号 + 小程序路径）
  */
 async function qrcode(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
   const orders = await pg.query(
-    `SELECT o.order_no, o.status, o.order_type, o.client_phone, o.customer_name,
-            o.payment_method, o.paid_at, o.store_name, o.opened_by
-     FROM orders o
-     WHERE o.order_no = $1`,
-    [orderNo]
+    `SELECT o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
+            o.payment_method, o.paid_at, o.store_id, o.opened_by
+     FROM sale_orders o
+     WHERE o.sale_order_id = $1`,
+    [saleOrderId]
   )
 
   if (orders.length === 0) {
@@ -342,22 +342,19 @@ async function qrcode(ctx) {
 
   const order = orders[0]
 
-  // 仅本店员工可查看（店长或开单员工）
-  if (ctx.auth.position !== '门店经理' && order.store_name !== ctx.auth.storeName) {
+  // 仅本店员工可查看
+  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.storeId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
   const items = await pg.query(`
     SELECT
-      oi.item_flow_no, oi.receivable,
-      p.name AS spu_name, m.sku_display_name
-    FROM order_items oi
-    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
-    WHERE oi.order_no = $1
-  `, [orderNo])
+      si.sale_item_id, si.received, si.product_name, si.sku_spec_name
+    FROM sale_items si
+    WHERE si.sale_order_id = $1
+  `, [saleOrderId])
 
-  const totalAmount = items.reduce((s, i) => s + Number(i.receivable || 0), 0)
+  const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
   // 推导二维码显示状态
   let qrCodeStatus
@@ -368,21 +365,21 @@ async function qrcode(ctx) {
   } else if (order.status === '待支付') {
     qrCodeStatus = '待扫码'
   } else {
-    qrCodeStatus = order.status // 支付失败/已关闭
+    qrCodeStatus = order.status
   }
 
   // 仅待支付订单生成小程序码（带缓存）
   let qrcodeUrl = ''
   let qrcodeError = ''
   if (order.status === '待支付') {
-    if (qrcodeCache.has(orderNo)) {
-      qrcodeUrl = qrcodeCache.get(orderNo)
+    if (qrcodeCache.has(saleOrderId)) {
+      qrcodeUrl = qrcodeCache.get(saleOrderId)
     } else {
       try {
-        const buffer = await generateWxacode(orderNo, 'pagesOrder/scan-pay/scan-pay')
-        const cloudPath = `wxacode/order/${orderNo}.png`
+        const buffer = await generateWxacode(saleOrderId, 'pagesOrder/scan-pay/scan-pay')
+        const cloudPath = `wxacode/order/${saleOrderId}.png`
         qrcodeUrl = await uploadToCloudStorage(buffer, cloudPath)
-        qrcodeCache.set(orderNo, qrcodeUrl)
+        qrcodeCache.set(saleOrderId, qrcodeUrl)
       } catch (err) {
         console.error('[order.qrcode] 生成小程序码失败:', err)
         qrcodeError = err.message || '生成小程序码失败'
@@ -391,10 +388,10 @@ async function qrcode(ctx) {
   }
 
   ctx.result = {
-    orderNo: order.order_no,
+    saleOrderId: order.sale_order_id,
     status: order.status,
     qrCodeStatus,
-    orderType: order.order_type,
+    orderType: order.sale_order_type,
     clientPhone: order.client_phone,
     customerName: order.customer_name,
     paymentMethod: order.payment_method,
@@ -402,10 +399,10 @@ async function qrcode(ctx) {
     openedBy: order.opened_by,
     totalAmount,
     items: items.map(i => ({
-      itemFlowNo: i.item_flow_no,
-      spuName: i.spu_name,
-      skuDisplayName: i.sku_display_name,
-      receivable: i.receivable
+      saleItemId: i.sale_item_id,
+      productName: i.product_name,
+      skuSpecName: i.sku_spec_name,
+      received: i.received
     })),
     qrcodeUrl,
     qrcodeError
@@ -414,20 +411,19 @@ async function qrcode(ctx) {
 
 /**
  * 确认线下收款（店长专用）
- * 将订单从"待确认收款"更新为"已支付"
- * 并触发：院装产品行直接完成 + 自动营业额分配（若有指定美容师）
  */
 async function confirmOffline(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
   const orders = await pg.query(
-    "SELECT * FROM orders WHERE order_no = $1 AND store_name = $2",
-    [orderNo, ctx.auth.storeName]
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
+    [saleOrderId, ctx.auth.storeId]
   )
 
   if (orders.length === 0) {
@@ -445,49 +441,40 @@ async function confirmOffline(ctx) {
 
   const now = new Date()
 
-  // 查询订单明细，用于计算实收金额
+  // 查询订单明细
   const items = await pg.query(
-    `SELECT oi.item_flow_no, oi.sku_id, oi.receivable, m.product_type
-     FROM order_items oi
-     LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-     WHERE oi.order_no = $1`,
-    [orderNo]
+    `SELECT si.sale_item_id, si.sku_id, si.received, si.product_type
+     FROM sale_items si
+     WHERE si.sale_order_id = $1`,
+    [saleOrderId]
   )
 
-  const totalReceived = items.reduce((s, i) => s + Number(i.receivable || 0), 0)
+  const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
   await pg.transaction(async (client) => {
-    // 更新订单状态 + 设置 allocation_status = 'pending'（待店长分配）
+    // 更新订单状态
     await client.query(
-      `UPDATE orders
+      `UPDATE sale_orders
        SET status = '已支付', paid_at = $1, updated_at = $1,
            offline_confirmed_by = $2, offline_confirmed_at = $1,
            allocation_status = 'pending'
-       WHERE order_no = $3`,
-      [now, ctx.auth.staffWfId, orderNo]
-    )
-
-    // 更新实收金额
-    await client.query(
-      `UPDATE order_items SET received = receivable WHERE order_no = $1`,
-      [orderNo]
+       WHERE sale_order_id = $3`,
+      [now, ctx.auth.staffWfId, saleOrderId]
     )
 
     // 单品到期日写入（paid_at + 1年）
     await client.query(
-      `UPDATE order_items oi
+      `UPDATE sale_items
        SET expire_date = ($1::date + INTERVAL '1 year')
-       FROM product_spu_sku_map m
-       WHERE oi.sku_id = m.sku_id
-         AND m.product_type = '单品'
-         AND oi.order_no = $2
-         AND oi.expire_date IS NULL`,
-      [now, orderNo]
+       WHERE sale_order_id = $2
+         AND product_type = '单品'
+         AND expire_date IS NULL`,
+      [now, saleOrderId]
     )
   })
 
   ctx.result = {
-    orderNo,
+    saleOrderId,
     status: '已支付',
     paidAt: now,
     totalReceived,
@@ -497,21 +484,19 @@ async function confirmOffline(ctx) {
 
 /**
  * 关闭订单
- * 店长：可关闭"待支付/待确认收款/支付失败"的订单
- * 开单员工：可关闭自己开的"待支付"订单
- * 同时将分配记录标记为无效
  */
 async function close(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
   const orders = await pg.query(
-    "SELECT * FROM orders WHERE order_no = $1 AND store_name = $2",
-    [orderNo, ctx.auth.storeName]
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
+    [saleOrderId, ctx.auth.storeId]
   )
 
   if (orders.length === 0) {
@@ -519,16 +504,14 @@ async function close(ctx) {
   }
 
   const order = orders[0]
-  const isManagerRole = ctx.auth.position === '门店经理'
+  const isManagerRole = ctx.auth.roles.includes('manager')
   const isCreator = order.opened_by === ctx.auth.staffWfId
 
   if (isManagerRole) {
-    // 店长：待支付/待确认收款/支付失败 均可关闭
     if (!['待支付', '待确认收款', '支付失败'].includes(order.status)) {
       throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许关闭`)
     }
   } else if (isCreator) {
-    // 开单员工：仅限关闭自己开的待支付订单
     if (order.status !== '待支付') {
       throw new Error(`INVALID_PARAMS: 订单当前状态"${order.status}"不允许取消`)
     }
@@ -540,25 +523,32 @@ async function close(ctx) {
 
   await pg.transaction(async (client) => {
     await client.query(
-      "UPDATE orders SET status = '已关闭', updated_at = $1 WHERE order_no = $2",
-      [now, orderNo]
+      "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2",
+      [now, saleOrderId]
     )
     // 作废营业额分配
-    await client.query(
-      "UPDATE revenue_allocations SET is_void = true, voided_at = $1, updated_at = $1 WHERE order_no = $2 AND is_void = false",
-      [now, orderNo]
+    const saleItemIds = await client.query(
+      'SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1',
+      [saleOrderId]
     )
+    if (saleItemIds.rows.length > 0) {
+      const ids = saleItemIds.rows.map(r => r.sale_item_id)
+      await client.query(
+        "UPDATE sale_allocations SET is_void = true, voided_at = $1, updated_at = $1 WHERE sale_item_id = ANY($2) AND is_void = false",
+        [now, ids]
+      )
+    }
     // 释放关联的优惠券
     await client.query(
       `UPDATE user_coupons
        SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
        WHERE used_sale_order_id = $1`,
-      [orderNo]
+      [saleOrderId]
     )
   })
 
   ctx.result = {
-    orderNo,
+    saleOrderId,
     status: '已关闭',
     message: '订单已关闭'
   }
@@ -566,19 +556,19 @@ async function close(ctx) {
 
 /**
  * 重置支付失败订单（店长专用）
- * 将"支付失败"订单重置为"待支付"，允许重新付款
  */
 async function resetFailed(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
   const orders = await pg.query(
-    "SELECT * FROM orders WHERE order_no = $1 AND store_name = $2",
-    [orderNo, ctx.auth.storeName]
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
+    [saleOrderId, ctx.auth.storeId]
   )
 
   if (orders.length === 0) {
@@ -591,12 +581,12 @@ async function resetFailed(ctx) {
 
   const now = new Date()
   await pg.query(
-    "UPDATE orders SET status = '待支付', updated_at = $1 WHERE order_no = $2",
-    [now, orderNo]
+    "UPDATE sale_orders SET status = '待支付', updated_at = $1 WHERE sale_order_id = $2",
+    [now, saleOrderId]
   )
 
   ctx.result = {
-    orderNo,
+    saleOrderId,
     status: '待支付',
     message: '订单已重置，顾客可重新发起付款'
   }
@@ -604,8 +594,6 @@ async function resetFailed(ctx) {
 
 /**
  * 订单列表
- * 店长：查看本店所有订单
- * 美容师：查看与自己相关的订单（preferred_employee_id 匹配）
  */
 async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -613,7 +601,7 @@ async function list(ctx) {
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeName, pageSize, offset]
+  const params = [ctx.auth.storeId, pageSize, offset]
   let whereExtra = ''
 
   if (status) {
@@ -622,21 +610,18 @@ async function list(ctx) {
   }
 
   // 美容师只能看到指定自己的订单
-  if (ctx.auth.position !== '门店经理') {
+  if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
     whereExtra += ` AND o.preferred_employee_id = $${params.length}`
   }
 
   const orders = await pg.query(`
     SELECT
-      o.order_no, o.status, o.order_type, o.client_phone, o.customer_name,
-      o.payment_method, o.order_source, o.preferred_employee_id,
-      o.paid_at, o.created_at, o.opened_by,
-      COALESCE((
-        SELECT SUM(oi.receivable) FROM order_items oi WHERE oi.order_no = o.order_no
-      ), 0) AS total_amount
-    FROM orders o
-    WHERE o.store_name = $1
+      o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
+      o.payment_method, o.sale_order_source, o.preferred_employee_id,
+      o.paid_at, o.created_at, o.opened_by, o.total_amount
+    FROM sale_orders o
+    WHERE o.store_id = $1
     ${whereExtra}
     ORDER BY o.created_at DESC
     LIMIT $2 OFFSET $3
@@ -647,19 +632,19 @@ async function list(ctx) {
 
 /**
  * 订单详情
- * 含明细、营业额分配信息
  */
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo')
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
   const orders = await pg.query(
-    'SELECT * FROM orders WHERE order_no = $1 AND store_name = $2',
-    [orderNo, ctx.auth.storeName]
+    'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
+    [saleOrderId, ctx.auth.storeId]
   )
 
   if (orders.length === 0) {
@@ -669,11 +654,11 @@ async function detail(ctx) {
   const order = orders[0]
 
   // 美容师只能看指定自己的订单
-  if (ctx.auth.position !== '门店经理' && order.preferred_employee_id !== ctx.auth.staffWfId) {
+  if (!ctx.auth.roles.includes('manager') && order.preferred_employee_id !== ctx.auth.staffWfId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
-  // 兜底补充顾客信息（兼容历史订单）
+  // 兜底补充顾客信息
   if (!order.client_phone && order.client_user_id) {
     const clientRows = await pg.query(
       'SELECT phone FROM client_wechat_users WHERE user_id = $1 LIMIT 1',
@@ -684,80 +669,47 @@ async function detail(ctx) {
     }
   }
   if (!order.customer_name && order.client_phone) {
-    try {
-      const pool = await mssql.getPool()
-      const nameResult = await pool.request()
-        .input('phone', order.client_phone)
-        .query('SELECT TOP 1 UDF_S_1476 AS name FROM UDT_S_311 WHERE UDF_S_1478 = @phone')
-      if (nameResult.recordset.length > 0 && nameResult.recordset[0].name) {
-        order.customer_name = nameResult.recordset[0].name.trim()
-      }
-    } catch (_) {
-      // WorkFine 查询失败不阻塞详情展示
+    const nameRows = await pg.query(
+      'SELECT name FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+      [order.client_phone]
+    )
+    if (nameRows.length > 0 && nameRows[0].name) {
+      order.customer_name = nameRows[0].name
     }
   }
 
   // 解析指定美容师姓名
   if (order.preferred_employee_id) {
-    const pool = await mssql.getPool()
-    const staffResult = await pool.request()
-      .input('id', order.preferred_employee_id)
-      .query(`SELECT UDF_S_1155 AS name FROM UDT_S_287 WHERE UDF_S_1147 = @id`)
-    if (staffResult.recordset.length > 0) {
-      order.preferred_staff_name = (staffResult.recordset[0].name || '').trim()
+    const staffRows = await pg.query(
+      'SELECT name FROM staff_wechat_users WHERE employee_id = $1',
+      [order.preferred_employee_id]
+    )
+    if (staffRows.length > 0) {
+      order.preferred_staff_name = (staffRows[0].name || '').trim()
     }
   }
 
   const items = await pg.query(`
     SELECT
-      oi.item_flow_no, oi.sku_id, oi.session_count, oi.remaining_sessions,
-      oi.unit_price, oi.quantity, oi.sale_amount, oi.receivable, oi.received,
-      oi.expire_date, oi.remark, oi.sales_category,
-      p.name AS spu_name, m.sku_display_name, m.product_type
-    FROM order_items oi
-    LEFT JOIN product_spu_sku_map m ON oi.sku_id = m.sku_id
-    LEFT JOIN product_spu p ON m.spu_id = p.spu_id
-    WHERE oi.order_no = $1
-    ORDER BY oi.item_flow_no
-  `, [orderNo])
+      si.sale_item_id, si.sku_id, si.session_count, si.remaining_sessions,
+      si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
+      si.expire_date, si.remark, si.sales_category,
+      si.product_name, si.sku_spec_name, si.product_type
+    FROM sale_items si
+    WHERE si.sale_order_id = $1
+    ORDER BY si.sale_item_id
+  `, [saleOrderId])
 
-  const totalAmount = items.reduce((s, i) => s + Number(i.receivable || 0), 0)
-
-  // 营业额分配
+  // 营业额分配（sale_allocations 为扁平结构，每行一条分配）
   const allocations = await pg.query(`
     SELECT
-      ra.id, ra.employee_id, ra.department, ra.allocation_ratio, ra.total_amount, ra.is_void,
-      rai.item_flow_no, rai.performance_category, rai.amount AS category_amount,
-      rai.commission_rate
-    FROM revenue_allocations ra
-    LEFT JOIN revenue_allocation_items rai ON rai.allocation_id = ra.id
-    WHERE ra.order_no = $1
-    ORDER BY ra.id, rai.id
-  `, [orderNo])
-
-  // 按分配记录分组
-  const allocMap = {}
-  for (const r of allocations) {
-    if (!allocMap[r.id]) {
-      allocMap[r.id] = {
-        id: r.id,
-        employeeId: r.employee_id,
-        department: r.department,
-        allocationRatio: r.allocation_ratio,
-        totalAmount: r.total_amount,
-        isVoid: r.is_void,
-        items: []
-      }
-    }
-    if (r.performance_category) {
-      allocMap[r.id].items.push({
-        itemFlowNo: r.item_flow_no,
-        category: r.performance_category,
-        amount: r.category_amount,
-        commissionRate: r.commission_rate,
-      })
-    }
-  }
+      sa.id, sa.sale_item_id, sa.employee_id, sa.department_name,
+      sa.allocation_ratio, sa.total_amount, sa.is_void
+    FROM sale_allocations sa
+    JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
+    WHERE si.sale_order_id = $1
+    ORDER BY sa.id
+  `, [saleOrderId])
 
   // 查询券名称
   let couponName = null
@@ -772,9 +724,9 @@ async function detail(ctx) {
   }
 
   ctx.result = {
-    order: { ...order, totalAmount, coupon_name: couponName },
+    order: { ...order, coupon_name: couponName },
     items,
-    allocations: Object.values(allocMap)
+    allocations
   }
 }
 
@@ -783,62 +735,22 @@ async function detail(ctx) {
 /**
  * 生成订单号：FY-XSD-WX-{YYMMDD}{4位序号}
  */
-async function generateOrderNo(storeName) {
+async function generateOrderNo() {
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   const result = await pg.query(`
-    SELECT order_no FROM orders
-    WHERE order_no LIKE 'FY-XSD-WX-${dateStr}%'
-    ORDER BY order_no DESC LIMIT 1
+    SELECT sale_order_id FROM sale_orders
+    WHERE sale_order_id LIKE 'FY-XSD-WX-${dateStr}%'
+    ORDER BY sale_order_id DESC LIMIT 1
   `)
 
   let seq = 1
   if (result.length > 0) {
-    seq = parseInt(result[0].order_no.slice(-4)) + 1
+    seq = parseInt(result[0].sale_order_id.slice(-4)) + 1
   }
 
   return `FY-XSD-WX-${dateStr}${String(seq).padStart(4, '0')}`
-}
-
-/**
- * 从 WorkFine 读取价格/次数（单条查询，开单时使用）
- */
-async function getWorkfinePrice(workfineItemId, workfineSource) {
-  if (!workfineItemId || !workfineSource) {
-    throw new Error(`INVALID_PARAMS: WorkFine 参数缺失`)
-  }
-
-  const esc = (v) => String(v).replace(/'/g, "''")
-  let sql = ''
-
-  if (workfineSource === 'UDT_M_1281') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, NULL AS sales_category
-           FROM UDT_M_1281 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
-  } else if (workfineSource === 'UDT_M_1383') {
-    sql = `SELECT UDF_M_14508 AS original_price, UDF_M_14506 AS session_count, NULL AS sales_category
-           FROM UDT_M_1383 WHERE UDF_M_14503 = '${esc(workfineItemId)}'`
-  } else if (workfineSource === 'UDT_M_341') {
-    sql = `SELECT UDF_M_1875 AS original_price, NULL AS session_count, NULL AS sales_category
-           FROM UDT_M_341 WHERE UDF_M_1870 = '${esc(workfineItemId)}'`
-  } else if (workfineSource === 'UDT_M_1460') {
-    sql = `SELECT UDF_M_17171 AS original_price, UDF_M_17167 AS session_count, NULL AS sales_category
-           FROM UDT_M_1460 WHERE UDF_M_17163 = '${esc(workfineItemId)}'`
-  } else {
-    throw new Error(`INVALID_PARAMS: 未知 workfine_source: ${workfineSource}`)
-  }
-
-  const result = await mssql.query(sql)
-
-  if (result.length === 0) {
-    throw new Error(`INVALID_PARAMS: WorkFine 项目 ${workfineItemId} 不存在`)
-  }
-
-  return {
-    originalPrice: result[0].original_price,
-    sessionCount: result[0].session_count,
-    salesCategory: result[0].sales_category ? String(result[0].sales_category).trim() : null
-  }
 }
 
 module.exports = {
