@@ -32,7 +32,7 @@ export const operationLogs = pgTable(
     targetId: text('target_id').notNull(),
     /** 操作详情，存放变更前后数据、备注等结构化信息 */
     detail: jsonb('detail'),
-    /** 来源：staffApi / clientApi */
+    /** 来源：staffApi / clientApi / adminApi */
     source: text('source'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },

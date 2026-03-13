@@ -7,7 +7,6 @@ import { saleOrders } from './order'
  * 券模板
  *
  * 定义券的规则（类型、面额、适用范围、有效期等）。
- * 发放量由管理端控制，模板本身不含数量限制。
  */
 export const couponTemplates = pgTable('coupon_templates', {
   templateId: text('template_id').primaryKey(),
@@ -19,6 +18,10 @@ export const couponTemplates = pgTable('coupon_templates', {
   minSpend: numeric('min_spend', { precision: 10, scale: 2 }).default('0'),
   /** 折扣券封顶金额（V2） */
   maxDiscount: numeric('max_discount', { precision: 10, scale: 2 }),
+  /** 发放总量限制（null=不限量） */
+  totalCount: integer('total_count'),
+  /** 适用商品ID数组（→ products.product_id），NULL=全部 */
+  applicableProductIds: text('applicable_product_ids').array(),
   /** 适用品项分类ID数组（→ product_categories.category_id），NULL=全部 */
   applicableCategoryIds: text('applicable_category_ids').array(),
   /** 适用门店ID数组（→ stores.store_id），NULL=全部门店 */

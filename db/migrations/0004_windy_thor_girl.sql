@@ -1,4 +1,4 @@
--- Phase A: 扩展 staff_wechat_users 表（添加 employees 字段）
+-- Phase A: 扩展 staff_wechat_users 表（添加 employees 字段）+ 允许 openid 为 null
 ALTER TABLE "staff_wechat_users" ADD COLUMN "name" varchar(50);--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD COLUMN "gender" varchar(20);--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD COLUMN "id_card" varchar(200);--> statement-breakpoint
@@ -8,6 +8,7 @@ ALTER TABLE "staff_wechat_users" ADD COLUMN "position_name" varchar(50);--> stat
 ALTER TABLE "staff_wechat_users" ADD COLUMN "birthday" date;--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD COLUMN "skills" text[];--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD COLUMN "is_resigned" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "staff_wechat_users" ALTER COLUMN "openid" DROP NOT NULL;--> statement-breakpoint
 
 -- Phase B: 数据回填 — employees → staff_wechat_users
 -- B1. 已有微信绑定的员工（phone 匹配）：回填档案字段
@@ -54,6 +55,18 @@ WHERE NOT EXISTS (
      OR (u.phone IS NOT NULL AND u.phone = e.phone)
 );--> statement-breakpoint
 
+-- B3. 去重手机号：同一 phone 保留最优行（在职优先、最新 employee_id），其余置 NULL
+WITH ranked AS (
+  SELECT user_id, phone,
+    ROW_NUMBER() OVER (PARTITION BY phone ORDER BY is_resigned ASC, employee_id DESC) AS rn
+  FROM staff_wechat_users
+  WHERE phone IS NOT NULL
+)
+UPDATE staff_wechat_users u
+SET phone = NULL
+FROM ranked r
+WHERE u.user_id = r.user_id AND r.rn > 1;--> statement-breakpoint
+
 -- Phase C: 删除旧 FK 约束（从 employees）
 ALTER TABLE "staff_wechat_users" DROP CONSTRAINT IF EXISTS "staff_wechat_users_employee_id_employees_employee_id_fk";--> statement-breakpoint
 ALTER TABLE "sale_allocations" DROP CONSTRAINT "sale_allocations_employee_id_employees_employee_id_fk";--> statement-breakpoint
@@ -74,9 +87,9 @@ DROP TABLE "employees" CASCADE;--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" DROP CONSTRAINT "staff_wechat_users_openid_unique";--> statement-breakpoint
 DROP INDEX IF EXISTS "idx_staff_users_phone";--> statement-breakpoint
 DROP INDEX IF EXISTS "uq_staff_users_employee_id";--> statement-breakpoint
-ALTER TABLE "staff_wechat_users" ALTER COLUMN "openid" DROP NOT NULL;--> statement-breakpoint
 
--- Phase F: 添加新 FK 约束和索引
+-- Phase F: 添加新约束和索引（UNIQUE 必须在 FK 之前）
+ALTER TABLE "staff_wechat_users" ADD CONSTRAINT "staff_wechat_users_employee_id_unique" UNIQUE("employee_id");--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD CONSTRAINT "staff_wechat_users_store_id_stores_store_id_fk" FOREIGN KEY ("store_id") REFERENCES "public"."stores"("store_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "staff_wechat_users" ADD CONSTRAINT "staff_wechat_users_org_node_id_org_nodes_id_fk" FOREIGN KEY ("org_node_id") REFERENCES "public"."org_nodes"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "sale_allocations" ADD CONSTRAINT "sale_allocations_employee_id_staff_wechat_users_employee_id_fk" FOREIGN KEY ("employee_id") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -90,5 +103,4 @@ ALTER TABLE "permission_roles" ADD CONSTRAINT "permission_roles_employee_id_staf
 ALTER TABLE "store_unbind_requests" ADD CONSTRAINT "store_unbind_requests_reviewed_by_staff_wechat_users_employee_id_fk" FOREIGN KEY ("reviewed_by") REFERENCES "public"."staff_wechat_users"("employee_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_staff_users_openid" ON "staff_wechat_users" USING btree ("openid") WHERE openid IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "uq_staff_users_phone" ON "staff_wechat_users" USING btree ("phone") WHERE phone IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "idx_staff_users_store_resigned" ON "staff_wechat_users" USING btree ("store_id","is_resigned");--> statement-breakpoint
-ALTER TABLE "staff_wechat_users" ADD CONSTRAINT "staff_wechat_users_employee_id_unique" UNIQUE("employee_id");
+CREATE INDEX "idx_staff_users_store_resigned" ON "staff_wechat_users" USING btree ("store_id","is_resigned");

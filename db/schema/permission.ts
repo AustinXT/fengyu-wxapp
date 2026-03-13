@@ -17,7 +17,7 @@ export const permissionRoles = pgTable(
     employeeId: varchar('employee_id', { length: 30 })
       .notNull()
       .references(() => staffWechatUsers.employeeId),
-    /** 角色：manager / finance / hr / product / staff / customer_mgr */
+    /** 角色：admin / manager / finance / hr / product / staff / customer_mgr */
     role: text('role').notNull(),
     /** 指向 headquarters/market/store 级别的节点 */
     scopeId: text('scope_id')

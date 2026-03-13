@@ -26,7 +26,7 @@ export const itemDirectionEnum = pgEnum('item_direction', [
 
 export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'alipay', 'offline'])
 
-export const orderSourceEnum = pgEnum('order_source', ['client', 'staff'])
+export const orderSourceEnum = pgEnum('order_source', ['client', 'staff', 'admin'])
 
 export const serviceOrderStatusEnum = pgEnum('service_order_status', ['待服务', '服务中', '已完成', '已取消'])
 
