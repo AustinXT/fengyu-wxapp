@@ -4,8 +4,11 @@ description: 生成 sys.spec.md 系统架构规格书，只记录 AI 从代码�
 metadata:
   title: 系统架构规格书
   summary: 生成精简的系统架构规格书，聚焦代码无法推断的 WHY
+  description_zh: >-
+    生成 sys.spec.md 系统架构规格书，只记录 AI
+    从代码中推断不出的架构决策和约束机制。聚焦架构拓扑、决策理由、集成边界、约束保障、跨模块业务流和权限模型。
   author: voyager
-  version: 2.0.0
+  version: 1.0.1
 depends:
   - real.md
   - cog.md
