@@ -13,8 +13,8 @@ PostgreSQL + Drizzle ORM，通过 Docker Compose 管理本地开发环境。
 ## 快速开始
 
 ```bash
-# 1. 启动数据库
-docker compose up -d
+# 1. 启动数据库（从 monorepo 根目录）
+docker compose -f docker/docker-compose.yml up -d
 
 # 2. 推送 schema（首次或 schema 变更后）
 cd db && npm run db:push
@@ -28,7 +28,7 @@ npm run db:studio
 ```bash
 cd db
 npm run db:generate   # 生成迁移文件（schema 变更后）
-npm run db:migrate    # 执行迁移
+npm run db:migrate    # 执行迁移（生产环境）
 npm run db:push       # 推送 schema（开发环境）
 npm run db:studio     # 可视化管理工具
 ```
@@ -36,12 +36,11 @@ npm run db:studio     # 可视化管理工具
 ## Docker 管理
 
 ```bash
-docker compose ps               # 查看状态
-docker compose logs -f postgres # 查看日志
-docker compose stop             # 停止
-docker compose restart          # 重启
-docker compose down             # 删除容器（保留数据）
-docker compose down -v          # 删除容器和数据（谨慎！）
+docker compose -f docker/docker-compose.yml ps        # 查看状态
+docker compose -f docker/docker-compose.yml logs -f    # 查看日志
+docker compose -f docker/docker-compose.yml stop       # 停止
+docker compose -f docker/docker-compose.yml down       # 删除容器（保留数据）
+docker compose -f docker/docker-compose.yml down -v    # 删除容器和数据（谨慎！）
 ```
 
 ## 常用操作
@@ -63,21 +62,32 @@ cat backup.sql | docker exec -i fengyu-postgres psql -U fengyu fengyu
 ./scripts/verify-db.sh
 ```
 
-## 当前 Schema（11 张表）
+## 当前 Schema
 
 | 表名 | 说明 |
 |------|------|
-| product_spu | SPU 商品主表 |
-| product_spu_sku_map | SKU 映射表 |
-| client_wechat_users | 客户端微信用户 |
+| org_nodes | 组织架构树（邻接表） |
+| stores | 门店详情（扩展 org_nodes） |
+| employees | 员工档案 |
+| product_categories | 品项分类 |
+| products | 商品主表 |
+| product_skus | 商品规格 |
+| client_wechat_users | 顾客端微信用户 + 档案 |
 | staff_wechat_users | 员工端微信用户 |
-| orders | 订单主表 |
-| order_items | 销售明细 |
-| revenue_allocations | 营业额分配 |
-| revenue_allocation_items | 业绩分类明细 |
+| sale_orders | 订单主表 |
+| sale_items | 销售明细 |
+| sale_allocations | 营业额分配 |
 | appointments | 预约表 |
 | service_orders | 护理单 |
 | service_items | 护理明细 |
+| permission_roles | 权限角色分配 |
+| commission_rate_matrix | 提成比例矩阵 |
+| coupon_templates | 优惠券模板 |
+| user_coupons | 用户优惠券实例 |
+| store_unbind_requests | 门店解绑申请 |
+| operation_logs | 操作审计日志 |
+
+详细 schema 定义见 `schema/*.ts`，统一导出自 `schema/index.ts`。
 
 ## 故障排查
 
@@ -89,8 +99,8 @@ brew services stop postgresql@14
 
 **容器无法启动**
 ```bash
-docker compose logs postgres
-docker compose down -v && docker compose up -d
+docker compose -f docker/docker-compose.yml logs
+docker compose -f docker/docker-compose.yml down -v && docker compose -f docker/docker-compose.yml up -d
 ```
 
 **Schema 推送失败**
@@ -102,6 +112,5 @@ npx drizzle-kit push --force
 
 ## 相关文档
 
-- [`POSTGRES_SETUP.md`](./POSTGRES_SETUP.md) - 完整部署指南（含阿里云服务器部署）
-- [`DATABASE_INIT.md`](./DATABASE_INIT.md) - 数据库初始化详细步骤
-- [`scripts/`](./scripts/) - 部署与验证脚本
+- [`CLAUDE.md`](./CLAUDE.md) — Schema 模块说明、同步脚本、架构关系
+- [`scripts/`](./scripts/) — 部署、同步与验证脚本

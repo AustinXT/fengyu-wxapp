@@ -1,34 +1,8 @@
-# 顾客端小程序（miniprogram）
+# CLAUDE.md
 
-凤御双美容院顾客端前端，原生微信小程序 + Vant Weapp + TypeScript。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this directory.
 
-## 目录结构
-
-```
-miniprogram/
-├── app.ts / app.json / app.wxss   # 应用入口、路由配置、全局样式
-├── pages/                          # 14 个页面
-│   ├── home/                       # 首页：轮播、疗程卡、热门服务
-│   ├── shop/                       # 服务目录：分类侧边栏 + 商品网格
-│   ├── appointment/                # 预约列表：按状态 Tab 筛选
-│   ├── appointment-create/         # 创建预约：日历、时段、美容师选择
-│   ├── orders/                     # 订单列表：按状态 Tab 筛选
-│   ├── order-detail/               # 订单详情：状态、明细、操作按钮
-│   ├── cart/                       # 购物车：多选、数量调整、结算
-│   ├── checkout/                   # 下单：支付方式、手机绑定、美容师选择
-│   ├── service-detail/             # 服务详情：SKU 选择、数量、加入购物车
-│   ├── profile/                    # 个人中心：手机号、绑定门店、快捷入口
-│   ├── store-select/               # 门店选择：按区域分组、搜索
-│   ├── store-detail/               # 门店详情：信息展示、绑定/切换
-│   ├── treatment-cards/            # 疗程卡列表
-│   └── scan-pay/                   # 扫码支付
-├── utils/
-│   └── cart.ts                     # 购物车工具（localStorage 持久化）
-├── typings/
-│   └── index.d.ts                  # 全局 TS 类型（IAppOption）
-├── images/                         # logo + Tab 图标
-└── miniprogram_npm/                # Vant Weapp 组件
-```
+顾客端小程序前端，原生微信小程序 + Vant Weapp + TypeScript。
 
 ## TypeScript 规范（重要）
 
@@ -36,17 +10,26 @@ miniprogram/
 
 - `project.config.json` 已配置 `"useCompilerPlugins": ["typescript"]`
 - 微信开发者工具优先使用 `.js`，若存在同名 `.js` 会忽略 `.ts`
-- 所有页面逻辑必须写在 `.ts` 中
 - `tsconfig.json`：strict 模式，target ES2017，CommonJS 模块
 
 ## Tab 页面
 
-| Tab | 页面 | 图标 |
+| Tab | 页面 | 说明 |
 |-----|------|------|
-| 首页 | pages/home/home | home |
-| 服务 | pages/shop/shop | shop |
-| 预约 | pages/appointment/appointment | calendar |
-| 我的 | pages/profile/profile | user |
+| 首页 | pages/home/home | 轮播、疗程卡、热门服务 |
+| 预约 | pages/appointment/appointment | 预约列表，按状态 Tab 筛选 |
+| 凤御馆 | pages/cart/cart | 购物车入口 |
+| 我的 | pages/profile/profile | 个人中心、手机绑定、门店绑定 |
+
+## 分包
+
+| 分包 | 页面 |
+|------|------|
+| pagesShop | shop（服务目录）, service-detail（SKU 选择）, shopping-cart |
+| pagesOrder | orders（订单列表）, checkout（下单结算）, order-detail, scan-pay, treatment-cards |
+| pagesStore | store-select（门店选择）, store-detail |
+| pagesAppointment | appointment-create（创建预约） |
+| pagesCoupon | my-coupons（我的优惠券） |
 
 ## API 调用模式
 
@@ -129,16 +112,7 @@ getCartTotal(): number                       // 总价
 
 ## Vant Weapp 组件
 
-版本 `^1.11.7`，常用组件：
-
-- 布局：`van-cell`、`van-cell-group`、`van-popup`
-- 表单：`van-field`、`van-radio`、`van-checkbox`、`van-stepper`、`van-picker`
-- 反馈：`van-toast`、`van-dialog`、`van-loading`、`van-empty`
-- 导航：`van-tabs`、`van-tab`、`van-icon`
-- 展示：`van-tag`、`van-skeleton`、`van-progress`、`van-calendar`
-- 操作：`van-button`、`van-submit-bar`、`van-swipe-cell`、`van-search`
-
-每个页面 `.json` 中按需注册：
+版本 `^1.11.7`，每个页面 `.json` 中按需注册：
 ```json
 {
   "usingComponents": {
@@ -147,21 +121,12 @@ getCartTotal(): number                       // 总价
 }
 ```
 
-## 导航模式
-
-```typescript
-wx.navigateTo({ url: '...' })   // 压栈（可返回）
-wx.switchTab({ url: '...' })    // 切换 Tab（替换栈）
-wx.redirectTo({ url: '...' })   // 替换当前页（支付后跳转）
-wx.navigateBack()               // 返回上一页
-```
-
 ## 关键数据流
 
 ### 加购 → 结算
 ```
-shop → cart.addToCart() → localStorage
-cart → setStorage('checkoutItems') → navigateTo checkout
+pagesShop/shop → cart.addToCart() → localStorage
+pages/cart → setStorage('checkoutItems') → navigateTo pagesOrder/checkout
 checkout → callClientApi('order.create') → order.pay → wx.requestPayment
 ```
 
