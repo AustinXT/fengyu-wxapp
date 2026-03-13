@@ -30,6 +30,10 @@ export const serviceOrders = pgTable(
     remark: text('remark'),
     appointmentId: text('appointment_id').references(() => appointments.appointmentId),
     clientUserId: text('client_user_id').references(() => clientWechatUsers.userId),
+    /** 服务开始时间（状态转为"服务中"时记录） */
+    startedAt: timestamp('started_at'),
+    /** 服务完成时间（状态转为"已完成"时记录） */
+    completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },

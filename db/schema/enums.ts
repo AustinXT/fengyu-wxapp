@@ -58,3 +58,9 @@ export const orgNodeTypeEnum = pgEnum('org_node_type', [
   'store',         // 门店
   'department',    // 部门（可挂在任意层级）
 ])
+
+export const pointTransactionTypeEnum = pgEnum('point_transaction_type', ['earn', 'redeem'])
+
+export const messageRecipientTypeEnum = pgEnum('message_recipient_type', ['client', 'staff'])
+
+export const cardTransactionTypeEnum = pgEnum('card_transaction_type', ['topup', 'deduct'])

@@ -31,6 +31,8 @@ export const appointments = pgTable(
     employeeName: varchar('employee_name', { length: 50 }).notNull(),
     saleItemId: varchar('sale_item_id', { length: 30 }).references(() => saleItems.saleItemId),
     appointmentTime: timestamp('appointment_time').notNull(),
+    /** 确认时间（员工确认预约时记录） */
+    confirmedAt: timestamp('confirmed_at'),
     checkinAt: timestamp('checkin_at'),
     notes: text('notes'),
     cancelledReason: text('cancelled_reason'),

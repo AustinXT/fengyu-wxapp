@@ -36,3 +36,18 @@ export * from './coupon'
 
 // 管理后台登录密码
 export * from './admin-auth'
+
+// 积分系统（会员等级 + 积分余额 + 积分流水）
+export * from './points'
+
+// 消息中心
+export * from './message'
+
+// 充值卡 + 充值卡流水
+export * from './prepaid-card'
+
+// 服务提成
+export * from './service-commission'
+
+// 提货记录
+export * from './pickup'

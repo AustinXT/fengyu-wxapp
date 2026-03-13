@@ -1,4 +1,4 @@
-import { boolean, date, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { boolean, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { stores, orgNodes } from './org'
 
@@ -21,6 +21,9 @@ export const clientWechatUsers = pgTable(
     customerId: varchar('customer_id', { length: 30 }),
     // Layer 2 — WorkFine 档案
     name: varchar('name', { length: 50 }),
+    gender: varchar('gender', { length: 10 }),
+    /** 头像 URL（顾客端个人中心设置） */
+    avatarUrl: text('avatar_url'),
     // Layer 3 — 组织归属
     /** 顾客绑定的门店（同步写入 or 顾客端主动绑定） */
     boundStoreId: text('bound_store_id').references(() => stores.storeId),
@@ -29,6 +32,8 @@ export const clientWechatUsers = pgTable(
     // Layer 4 — 会员与分类
     memberLevel: varchar('member_level', { length: 20 }),
     customerSource: varchar('customer_source', { length: 50 }),
+    /** 推荐人（美容师员工ID） */
+    promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
     category: varchar('category', { length: 50 }),
     // Layer 5 — 个人档案
     birthday: date('birthday'),
@@ -40,6 +45,7 @@ export const clientWechatUsers = pgTable(
     improvementFocus: varchar('improvement_focus', { length: 200 }),
     skinIssue: varchar('skin_issue', { length: 200 }),
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
+    notes: text('notes'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
