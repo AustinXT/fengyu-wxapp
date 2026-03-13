@@ -38,6 +38,19 @@ function serializeCustomer(row: {
   }
 }
 
+export async function searchCustomerByPhone(phone: string): Promise<Customer | null> {
+  const rows = await db
+    .select()
+    .from(clientWechatUsers)
+    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
+    .where(eq(clientWechatUsers.phone, phone))
+    .limit(1)
+
+  if (rows.length === 0) return null
+  return serializeCustomer(rows[0])
+}
+
 export async function getCustomers(): Promise<Customer[]> {
   const rows = await db
     .select()

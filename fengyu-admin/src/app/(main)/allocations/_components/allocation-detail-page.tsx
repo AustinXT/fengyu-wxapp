@@ -1,13 +1,16 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { batchSaveAllocations } from "@/actions/allocations"
 import type { SaleOrder, SaleAllocation, Employee } from "@/lib/types"
 
 interface AllocationRow {
@@ -236,14 +239,46 @@ export default function AllocationDetailPageClient({
 
           <Separator />
 
-          <div className="flex justify-end gap-3">
-            <Link href="/allocations">
-              <Button variant="outline">取消</Button>
-            </Link>
-            <Button onClick={() => alert("保存分配成功（Mock）")}>保存分配</Button>
-          </div>
+          <SaveButton orderId={order.saleOrderId} rows={rows} departments={departments} />
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+function SaveButton({ orderId, rows, departments }: { orderId: string; rows: AllocationRow[]; departments: { id: string; name: string }[] }) {
+  const [pending, startTransition] = useTransition()
+  const router = useRouter()
+
+  const handleSave = () => {
+    const validRows = rows.filter((r) => r.saleItemId && r.employeeId && r.amount)
+    if (validRows.length === 0 && rows.length > 0) {
+      toast.error('请填写完整的分配信息')
+      return
+    }
+    startTransition(async () => {
+      const res = await batchSaveAllocations(orderId, validRows.map((r) => ({
+        saleItemId: r.saleItemId,
+        employeeId: r.employeeId,
+        allocationRatio: (Number(r.ratio) / 100).toFixed(2),
+        totalAmount: Number(r.amount).toFixed(2),
+        departmentName: departments.find((d) => d.id === r.departmentId)?.name,
+      })))
+      if (res.success) {
+        toast.success(res.message)
+        router.push('/allocations')
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  return (
+    <div className="flex justify-end gap-3">
+      <Link href="/allocations">
+        <Button variant="outline">取消</Button>
+      </Link>
+      <Button onClick={handleSave} loading={pending}>保存分配</Button>
     </div>
   )
 }

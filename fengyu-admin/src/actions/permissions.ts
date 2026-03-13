@@ -5,6 +5,7 @@ import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
 import { eq, and } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 
 export async function getRoles(): Promise<PermissionRole[]> {
@@ -45,18 +46,22 @@ export async function assignRole(data: {
   role: string
   scopeId: string
   createdBy: string
-}) {
+}): Promise<{ success: boolean; message: string }> {
   await db.insert(permissionRoles).values({
     employeeId: data.employeeId,
     role: data.role,
     scopeId: data.scopeId,
     createdBy: data.createdBy,
   })
+  revalidatePath('/permissions')
+  return { success: true, message: '角色分配成功' }
 }
 
-export async function revokeRole(id: number) {
+export async function revokeRole(id: number): Promise<{ success: boolean; message: string }> {
   await db
     .update(permissionRoles)
     .set({ isVoid: true, voidedAt: new Date() })
     .where(eq(permissionRoles.id, id))
+  revalidatePath('/permissions')
+  return { success: true, message: '角色已撤销' }
 }

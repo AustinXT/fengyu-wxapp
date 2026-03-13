@@ -27,21 +27,16 @@ function formatDateTime(dt: string | null) {
   })
 }
 
-// Mock operation logs for now
-const MOCK_OPERATION_LOGS: OperationLog[] = []
-
 export default function OrderDetailPageClient({
   order,
   allocations,
+  logs,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
+  logs: OperationLog[]
 }) {
   const items = order.items || []
-
-  const logs = MOCK_OPERATION_LOGS.filter(
-    (l) => l.targetId === order.saleOrderId && l.targetType === "sale_order"
-  ).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
 
   return (
     <div className="space-y-6">

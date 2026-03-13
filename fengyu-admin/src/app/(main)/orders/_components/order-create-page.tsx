@@ -2,11 +2,15 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { searchCustomerByPhone } from "@/actions/customers"
+import { createOrder } from "@/actions/orders"
+import { getSession } from "@/lib/auth"
 import type { ProductCategory, Product, ProductSku, Store, Employee, Customer } from "@/lib/types"
 
 interface CartItem {
@@ -61,13 +65,34 @@ export default function OrderCreatePageClient({
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categories[0]?.categoryId || "")
   const [cart, setCart] = useState<CartItem[]>([])
-  const [orderType, setOrderType] = useState("普通")
+  const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
   const [paymentMethod, setPaymentMethod] = useState("wechat")
+  const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
+  const [searching, setSearching] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [createdOrderId, setCreatedOrderId] = useState<string>("")
+  const [searchDone, setSearchDone] = useState(false)
 
-  const searchCustomer = () => {
-    // Customer search remains client-side mock for now
-    setSelectedCustomer(null)
-    alert("顾客搜索功能即将上线")
+  const searchCustomer = async () => {
+    if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
+      toast.error("请输入正确的手机号")
+      return
+    }
+    setSearching(true)
+    setSearchDone(false)
+    try {
+      const result = await searchCustomerByPhone(phone.trim())
+      setSelectedCustomer(result)
+      setSearchDone(true)
+      if (!result) {
+        toast.info("未找到该手机号对应的顾客，可直接使用手机号开单")
+      }
+    } catch {
+      toast.error("搜索失败，请稍后重试")
+    } finally {
+      setSearching(false)
+    }
   }
 
   const categoryProducts = products.filter((p) => p.categoryId === selectedCategoryId)
@@ -116,7 +141,7 @@ export default function OrderCreatePageClient({
                 onChange={(e) => setPhone(e.target.value)}
                 className="w-64"
               />
-              <Button onClick={searchCustomer}>搜索</Button>
+              <Button onClick={searchCustomer} loading={searching}>搜索</Button>
             </div>
             {selectedCustomer && (
               <Card className="bg-[#FAFAFA]">
@@ -124,7 +149,7 @@ export default function OrderCreatePageClient({
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                     <div>
                       <span className="text-[#999999]">姓名</span>
-                      <p className="font-medium">{selectedCustomer.name}</p>
+                      <p className="font-medium">{selectedCustomer.name || "-"}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">手机</span>
@@ -142,11 +167,16 @@ export default function OrderCreatePageClient({
                 </CardContent>
               </Card>
             )}
-            {phone && !selectedCustomer && (
-              <p className="text-sm text-[#D94040]">未找到该手机号对应的顾客</p>
+            {searchDone && !selectedCustomer && (
+              <Card className="bg-[#FFF8E6] border-[#D4820A]">
+                <CardContent className="p-4 text-sm">
+                  <p className="text-[#D4820A] font-medium">未找到已注册顾客</p>
+                  <p className="text-[#999999] mt-1">将使用手机号 {phone} 开单，顾客后续注册绑定手机号后历史订单会自动关联</p>
+                </CardContent>
+              </Card>
             )}
             <div className="flex justify-end">
-              <Button onClick={() => setStep(1)} disabled={!selectedCustomer}>下一步</Button>
+              <Button onClick={() => setStep(1)} disabled={!searchDone && !selectedCustomer}>下一步</Button>
             </div>
           </CardContent>
         </Card>
@@ -277,11 +307,11 @@ export default function OrderCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
-                <p className="font-medium">{selectedCustomer?.name}</p>
+                <p className="font-medium">{selectedCustomer?.name || phone}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">订单类型</label>
-                <Select className="mt-1" value={orderType} onChange={(e) => setOrderType(e.target.value)}>
+                <Select className="mt-1" value={orderType} onChange={(e) => setOrderType(e.target.value as '普通' | '体验' | '内部' | '福利活动')}>
                   <option value="普通">普通</option>
                   <option value="体验">体验</option>
                   <option value="内部">内部</option>
@@ -294,6 +324,23 @@ export default function OrderCreatePageClient({
                   <option value="wechat">微信支付</option>
                   <option value="alipay">支付宝</option>
                   <option value="offline">线下支付</option>
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">门店</label>
+                <Select className="mt-1" value={selectedStoreId} onChange={(e) => setSelectedStoreId(e.target.value)}>
+                  {stores.map((s) => (
+                    <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
+                  ))}
+                </Select>
+              </div>
+              <div>
+                <label className="text-sm text-[#999999]">指定美容师（可选）</label>
+                <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
+                  <option value="">不指定</option>
+                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId)).map((e) => (
+                    <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                  ))}
                 </Select>
               </div>
             </div>
@@ -319,7 +366,46 @@ export default function OrderCreatePageClient({
 
             <div className="flex justify-between">
               <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
-              <Button onClick={() => setStep(3)}>提交订单</Button>
+              <Button loading={submitting} onClick={async () => {
+                if (!selectedStoreId) { toast.error("请选择门店"); return }
+                setSubmitting(true)
+                try {
+                  const session = getSession()
+                  const store = stores.find((s) => s.storeId === selectedStoreId)
+                  const res = await createOrder({
+                    storeId: selectedStoreId,
+                    marketName: store?.marketName || "未知市场",
+                    clientUserId: selectedCustomer?.userId || null,
+                    clientPhone: selectedCustomer?.phone || phone,
+                    customerName: selectedCustomer?.name || phone,
+                    paymentMethod: paymentMethod as 'wechat' | 'alipay' | 'offline',
+                    saleOrderType: orderType,
+                    openedBy: session.employeeId,
+                    preferredEmployeeId: selectedEmployeeId || undefined,
+                    items: cart.map((item) => ({
+                      skuId: item.sku.skuId,
+                      productName: item.product.name,
+                      skuSpecName: item.sku.specName,
+                      productType: item.sku.productType as '疗程卡' | '单品' | '院装产品',
+                      sessionCount: item.sku.sessionCount,
+                      unitPrice: item.sku.price,
+                      unitRealPrice: item.sku.specialPrice || item.sku.price,
+                      quantity: item.quantity,
+                    })),
+                  })
+                  if (res.success) {
+                    toast.success(res.message)
+                    setCreatedOrderId(res.saleOrderId || "")
+                    setStep(3)
+                  } else {
+                    toast.error(res.message)
+                  }
+                } catch {
+                  toast.error("创建订单失败，请稍后重试")
+                } finally {
+                  setSubmitting(false)
+                }
+              }}>提交订单</Button>
             </div>
           </CardContent>
         </Card>
@@ -335,12 +421,23 @@ export default function OrderCreatePageClient({
               </div>
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">订单创建成功</h2>
-            <p className="text-sm text-[#999999]">订单已提交，等待顾客支付</p>
+            {createdOrderId && (
+              <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
+            )}
+            <p className="text-sm text-[#999999]">
+              {paymentMethod === 'offline' ? '线下支付订单，请到订单列表确认收款' : '订单已提交，等待顾客支付'}
+            </p>
             <div className="flex justify-center gap-3 pt-4">
-              <Link href="/orders">
-                <Button variant="outline">返回订单列表</Button>
-              </Link>
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone("") }}>
+              {createdOrderId ? (
+                <Link href={`/orders/${createdOrderId}`}>
+                  <Button variant="outline">查看订单</Button>
+                </Link>
+              ) : (
+                <Link href="/orders">
+                  <Button variant="outline">返回订单列表</Button>
+                </Link>
+              )}
+              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false) }}>
                 继续开单
               </Button>
             </div>

@@ -3,7 +3,8 @@
 import { db } from '@/db'
 import { appointments } from '@db/appointment'
 import { stores } from '@db/org'
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
 
 export async function getAppointments(): Promise<Appointment[]> {
@@ -37,16 +38,30 @@ export async function getAppointments(): Promise<Appointment[]> {
   })
 }
 
-export async function confirmAppointment(appointmentId: string) {
-  await db
+/** C4: 确认预约 — WHERE status = '待确认' */
+export async function confirmAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
+  const result = await db
     .update(appointments)
     .set({ status: '已确认' })
-    .where(eq(appointments.appointmentId, appointmentId))
+    .where(and(eq(appointments.appointmentId, appointmentId), eq(appointments.status, '待确认')))
+
+  if ((result as any).rowCount === 0) {
+    return { success: false, message: '预约状态已变更，无法确认' }
+  }
+  revalidatePath('/appointments')
+  return { success: true, message: '预约已确认' }
 }
 
-export async function checkinAppointment(appointmentId: string) {
-  await db
+/** 签到 — 仅记录时间，不改状态 */
+export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
+  const result = await db
     .update(appointments)
     .set({ checkinAt: new Date() })
-    .where(eq(appointments.appointmentId, appointmentId))
+    .where(and(eq(appointments.appointmentId, appointmentId), eq(appointments.status, '已确认')))
+
+  if ((result as any).rowCount === 0) {
+    return { success: false, message: '预约状态已变更，无法签到' }
+  }
+  revalidatePath('/appointments')
+  return { success: true, message: '签到成功' }
 }

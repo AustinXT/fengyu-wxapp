@@ -5,6 +5,7 @@ import { saleAllocations, saleItems } from '@db/order'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
 import { eq, and, sql } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { SaleAllocation } from '@/lib/types'
 
 export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllocation[]> {
@@ -49,18 +50,67 @@ export async function saveAllocation(data: {
   employeeId: string
   allocationRatio: string
   totalAmount: string
-}) {
+  departmentName?: string
+}): Promise<{ success: boolean; message: string }> {
   await db.insert(saleAllocations).values({
     saleItemId: data.saleItemId,
     employeeId: data.employeeId,
     allocationRatio: data.allocationRatio,
     totalAmount: data.totalAmount,
+    departmentName: data.departmentName || null,
   })
+  revalidatePath('/allocations')
+  return { success: true, message: '分配已保存' }
 }
 
-export async function deleteAllocation(id: number) {
+export async function deleteAllocation(id: number): Promise<{ success: boolean; message: string }> {
   await db
     .update(saleAllocations)
     .set({ isVoid: true, voidedAt: new Date() })
     .where(eq(saleAllocations.id, id))
+  revalidatePath('/allocations')
+  return { success: true, message: '分配已删除' }
+}
+
+/** 批量保存分配（先作废旧的，再插入新的） */
+export async function batchSaveAllocations(
+  saleOrderId: string,
+  allocations: Array<{
+    saleItemId: string
+    employeeId: string
+    allocationRatio: string
+    totalAmount: string
+    departmentName?: string
+  }>
+): Promise<{ success: boolean; message: string }> {
+  // Void existing allocations for this order's items
+  await db.execute(sql`
+    UPDATE sale_allocations SET is_void = true, voided_at = NOW()
+    WHERE sale_item_id IN (
+      SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+    ) AND is_void = false
+  `)
+
+  // Insert new allocations
+  if (allocations.length > 0) {
+    await db.insert(saleAllocations).values(
+      allocations.map((a) => ({
+        saleItemId: a.saleItemId,
+        employeeId: a.employeeId,
+        allocationRatio: a.allocationRatio,
+        totalAmount: a.totalAmount,
+        departmentName: a.departmentName || null,
+      }))
+    )
+  }
+
+  // Update order allocation status
+  const { saleOrders } = await import('@db/order')
+  await db
+    .update(saleOrders)
+    .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+
+  revalidatePath('/allocations')
+  return { success: true, message: '分配保存成功' }
 }

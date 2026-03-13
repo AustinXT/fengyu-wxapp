@@ -1,12 +1,15 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
+import { confirmOfflinePayment, closeOrder, resetOrderFailed } from "@/actions/orders"
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types"
 
 const paymentMethodMap: Record<string, string> = {
@@ -27,22 +30,57 @@ function formatTime(dt: string) {
 }
 
 function OrderActions({ order }: { order: SaleOrder }) {
-  const handleAction = (action: string) => {
-    alert(`执行操作: ${action} - 订单 ${order.saleOrderId}`)
+  const [pending, startTransition] = useTransition()
+  const router = useRouter()
+
+  const handleConfirm = () => {
+    startTransition(async () => {
+      const res = await confirmOfflinePayment(order.saleOrderId)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  const handleClose = () => {
+    startTransition(async () => {
+      const res = await closeOrder(order.saleOrderId)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  const handleReset = () => {
+    startTransition(async () => {
+      const res = await resetOrderFailed(order.saleOrderId)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    })
   }
 
   return (
     <div className="flex gap-1">
       {order.status === "待确认收款" && (
-        <Button size="sm" variant="outline" onClick={() => handleAction("确认收款")}>确认收款</Button>
+        <Button size="sm" variant="outline" onClick={handleConfirm} disabled={pending}>确认收款</Button>
       )}
       {order.status === "待支付" && (
-        <Button size="sm" variant="outline" onClick={() => handleAction("关闭订单")}>关闭订单</Button>
+        <Button size="sm" variant="outline" onClick={handleClose} disabled={pending}>关闭订单</Button>
       )}
       {order.status === "支付失败" && (
         <>
-          <Button size="sm" variant="outline" onClick={() => handleAction("重置")}>重置</Button>
-          <Button size="sm" variant="outline" onClick={() => handleAction("关闭")}>关闭</Button>
+          <Button size="sm" variant="outline" onClick={handleReset} disabled={pending}>重置</Button>
+          <Button size="sm" variant="outline" onClick={handleClose} disabled={pending}>关闭</Button>
         </>
       )}
     </div>

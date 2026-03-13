@@ -1,12 +1,15 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useTransition } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
+import { startServiceOrder, completeServiceOrder, cancelServiceOrder } from "@/actions/services"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
 function formatDate(dt: string) {
@@ -14,20 +17,31 @@ function formatDate(dt: string) {
 }
 
 function ServiceActions({ so }: { so: ServiceOrder }) {
-  const handleAction = (action: string) => {
-    alert(`执行操作: ${action} - 服务单 ${so.serviceOrderId}`)
+  const [pending, startTransition] = useTransition()
+  const router = useRouter()
+
+  const handleAction = (actionFn: (id: string) => Promise<{ success: boolean; message: string }>) => {
+    startTransition(async () => {
+      const res = await actionFn(so.serviceOrderId)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    })
   }
 
   return (
     <div className="flex gap-1">
       {so.status === "待服务" && (
         <>
-          <Button size="sm" variant="outline" onClick={() => handleAction("开始服务")}>开始服务</Button>
-          <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => handleAction("取消")}>取消</Button>
+          <Button size="sm" variant="outline" onClick={() => handleAction(startServiceOrder)} disabled={pending}>开始服务</Button>
+          <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => handleAction(cancelServiceOrder)} disabled={pending}>取消</Button>
         </>
       )}
       {so.status === "服务中" && (
-        <Button size="sm" variant="outline" onClick={() => handleAction("完成服务")}>完成服务</Button>
+        <Button size="sm" variant="outline" onClick={() => handleAction(completeServiceOrder)} disabled={pending}>完成服务</Button>
       )}
     </div>
   )

@@ -1,9 +1,13 @@
 "use client"
 
+import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { confirmAppointment, checkinAppointment } from "@/actions/appointments"
 import type { Appointment } from "@/lib/types"
 
 function formatDateTime(dt: string | null) {
@@ -22,8 +26,25 @@ function isToday(dt: string) {
 }
 
 function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
-  const handleAction = (action: string, appt: Appointment) => {
-    alert(`执行操作: ${action} - 预约 ${appt.appointmentId}`)
+  const router = useRouter()
+  const [pendingId, setPendingId] = useState<string | null>(null)
+
+  const handleAction = async (action: 'confirm' | 'checkin', appt: Appointment) => {
+    setPendingId(appt.appointmentId)
+    try {
+      const actionFn = action === 'confirm' ? confirmAppointment : checkinAppointment
+      const res = await actionFn(appt.appointmentId)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error('操作失败，请稍后重试')
+    } finally {
+      setPendingId(null)
+    }
   }
 
   return (
@@ -53,10 +74,10 @@ function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
               <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{appt.notes || "-"}</td>
               <td className="px-4 py-3">
                 {appt.status === "待确认" && (
-                  <Button size="sm" variant="outline" onClick={() => handleAction("确认", appt)}>确认</Button>
+                  <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
                 )}
                 {appt.status === "已确认" && (
-                  <Button size="sm" variant="outline" onClick={() => handleAction("签到", appt)}>签到</Button>
+                  <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
                 )}
               </td>
             </tr>

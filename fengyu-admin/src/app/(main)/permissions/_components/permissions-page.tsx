@@ -8,7 +8,9 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
-import type { PermissionRole, Employee, RoleType } from "@/lib/types"
+import { assignRole } from "@/actions/permissions"
+import { getSession } from "@/lib/auth"
+import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
 const roleLabels: Record<RoleType, string> = {
   admin: "系统管理员",
@@ -35,14 +37,17 @@ const allRoles: RoleType[] = ["admin", "manager", "finance", "hr", "product", "c
 interface PermissionsPageProps {
   roles: PermissionRole[]
   employees: Employee[]
+  orgNodes: OrgNode[]
 }
 
-export default function PermissionsPage({ roles, employees }: PermissionsPageProps) {
+export default function PermissionsPage({ roles, employees, orgNodes }: PermissionsPageProps) {
   const [selectedRole, setSelectedRole] = useState<RoleType>("admin")
   const [employeeSearch, setEmployeeSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignEmployeeId, setAssignEmployeeId] = useState("")
-  const [assignRole, setAssignRole] = useState<RoleType>("staff")
+  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("staff")
+  const [assignScopeId, setAssignScopeId] = useState("")
+  const [assigning, setAssigning] = useState(false)
 
   const activeRoles = roles.filter((r) => !r.isVoid)
 
@@ -234,18 +239,62 @@ export default function PermissionsPage({ roles, employees }: PermissionsPagePro
             <label className="text-sm text-[#999999]">角色</label>
             <Select
               className="mt-1"
-              value={assignRole}
-              onChange={(e) => setAssignRole(e.target.value as RoleType)}
+              value={assignRoleValue}
+              onChange={(e) => setAssignRoleValue(e.target.value as RoleType)}
             >
-              {allRoles.map((r) => (
+              {allRoles.filter((r) => r !== 'staff').map((r) => (
                 <option key={r} value={r}>{roleLabels[r]}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-[#999999]">权限范围</label>
+            <Select
+              className="mt-1"
+              value={assignScopeId}
+              onChange={(e) => setAssignScopeId(e.target.value)}
+            >
+              <option value="">选择组织节点</option>
+              {orgNodes.filter((n) => n.isActive).map((n) => (
+                <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
               ))}
             </Select>
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-          <Button onClick={() => { alert("分配成功（Mock）"); setDialogOpen(false) }}>确认分配</Button>
+          <Button
+            loading={assigning}
+            disabled={!assignEmployeeId || !assignScopeId}
+            onClick={async () => {
+              if (!assignEmployeeId || !assignScopeId) return
+              setAssigning(true)
+              try {
+                const session = getSession()
+                const res = await assignRole({
+                  employeeId: assignEmployeeId,
+                  role: assignRoleValue,
+                  scopeId: assignScopeId,
+                  createdBy: session.employeeId,
+                })
+                if (res.success) {
+                  const { toast } = await import('sonner')
+                  toast.success(res.message)
+                  setDialogOpen(false)
+                  setAssignEmployeeId("")
+                  setAssignScopeId("")
+                  window.location.reload()
+                }
+              } catch {
+                const { toast } = await import('sonner')
+                toast.error('分配失败，请稍后重试')
+              } finally {
+                setAssigning(false)
+              }
+            }}
+          >
+            确认分配
+          </Button>
         </DialogFooter>
       </Dialog>
     </div>
