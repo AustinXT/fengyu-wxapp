@@ -2,7 +2,7 @@
 
 > **文档版本**: 1.1.0
 > **范围**: WorkFine SQL Server → PostgreSQL 数据迁移、定期同步、一次性导入
-> **关联文档**: `backend.pr.spec.md` v3.1.0（PG 数据模型定义）
+> **关联文档**: `backend.pr.spec.md` v3.2.0（PG 数据模型定义）
 > **日期**: 2026-03-13
 >
 > **核心原则**: 运行时业务查询 100% 走 PG，WorkFine SQL Server 仅作为同步源，不参与在线请求链路。
@@ -512,7 +512,7 @@ WorkFine → PG 一次性导入（商品域，后续手动维护）:
 | `UDF_S_1485`（顾客编号） | `client_user_id` | 通过 `client_wechat_users.customer_id` 查找得到 user_id |
 | `UDF_S_370`（顾客姓名） | `customer_name` | 快照 |
 | `UDF_S_507`（收款合计） | `total_amount` | 退款单为负数 |
-| `UDF_S_13710`（销售类型） | `sale_order_type` | `全额销售` → `正式`，`回单销售` → 原单 `正式` + 生成 `回款` 子单 |
+| `UDF_S_13710`（销售类型） | `sale_order_type` | `全额销售` → `普通`，`回单销售` → 原单 `普通` + 生成 `回款` 子单 |
 | `UDF_S_4729`（本单欠款合计） | — | 用于判断是否有后续回款 |
 | `UDF_S_844`（本单业绩） | — | 业绩由 sale_allocations 承载 |
 | `UDF_S_371`（业绩类型） | — | WorkFine 业务分类，PG 不直接使用 |
@@ -572,8 +572,8 @@ WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（�
 ```
 if 单号前缀 = 'FY-TKD'    → sale_order_type = '退款'
 if 单号前缀 = 'FY-ABZH'   → sale_order_type = '转换'
-if UDF_S_13710 = '回单销售' → 原单 sale_order_type = '正式'，另生成 sale_order_type = '回款' 子单
-if UDF_S_13710 = '全额销售' → sale_order_type = '正式'（或根据促销方案判断 '体验'/'组合套餐'）
+if UDF_S_13710 = '回单销售' → 原单 sale_order_type = '普通'，另生成 sale_order_type = '回款' 子单
+if UDF_S_13710 = '全额销售' → sale_order_type = '普通'（或根据促销方案判断 '体验'/'福利活动'）
 ```
 
 ---
@@ -608,3 +608,15 @@ if UDF_S_13710 = '全额销售' → sale_order_type = '正式'（或根据促销
 | UDT_S_228 | 222 | 品相类型主表 | product_categories 一次性导入（主表关系） |
 | UDT_S_1962 | — | 提成比例矩阵主表 | commission_rate_matrix 同步 |
 | UDT_M_1964 | — | 提成比例矩阵子表 | 同上，具体字段待查询 WorkFine |
+
+---
+
+## 12. 验收标准
+
+| ID | 标准 | 验证方式 |
+|----|------|----------|
+| SYNC-AC-01 | 全量同步后，PG stores/employees/client_wechat_users 表数据与 WorkFine 源数据关键字段一致 | 同步后对比 WorkFine 与 PG 记录数和关键字段 |
+| SYNC-AC-02 | WorkFine 连接断开时，同步模块报错但不影响在线业务查询 | 断开 MSSQL → 触发同步（应报错）→ 验证 clientApi/staffApi 查询正常 |
+| SYNC-AC-03 | 手动触发全量同步后，WorkFine 中新增/变更的门店/员工/顾客数据在 PG 中正确更新 | 在 WorkFine 修改数据 → 触发 `sync.full` → 查询 PG 验证 |
+| SYNC-AC-04 | 同步使用 UPSERT，不锁表不中断在线查询 | 同步期间并发执行业务 API → 验证无阻塞 |
+| SYNC-AC-05 | 单域同步失败不影响其他域（事务隔离） | 模拟某域数据异常 → 验证其他域正常同步 |
