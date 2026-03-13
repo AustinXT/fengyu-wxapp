@@ -92,12 +92,12 @@
   - 唯一编码：user_id，格式 `FYGK-{YYYYMMDD}{序号}`；openid（客户端 appid 下唯一，仅 WorkFine 同步创建的行为 null）
   - phone：绑定手机号后与顾客档案关联（合并行）
   - bound_store_id：FK → stores，顾客端主动绑定的门店
-  - primary_beautician：所属美容师姓名（文本字段，非 FK）
+  - bound_employee_id：所属美容师（varchar(50)，营业额分配默认人员）
   - 手机号补全机制：员工以手机号开单 → 顾客后续注册绑定手机号 → 历史订单自动关联 client_user_id
 
 - **员工（staff_wechat_users）**：
   - 唯一编码：user_id（UUID），openid（员工端 appid 下唯一）
-  - employee_id：绑定手机号后自动关联 PG employees 员工档案
+  - employee_id：绑定手机号后自动关联 PG staff_wechat_users 员工档案
   - 角色由 RBAC `permission_roles` 表决定（`employee_id + role + scope_id`），无记录时降级为 `role=staff, scope=员工所在门店`
   - 登录时聚合所有角色→ `ctx.auth.roles[]` + `scopeStoreIds` + `permissions.actions[]`，前端存储 `permissions` 控制 UI 可见性
   - 两端 openid 完全独立（不同 appid），用户表不共享
@@ -106,9 +106,9 @@
 <权限>
 - **权限角色分配（permission_roles）**：RBAC + Scope 模型
   - 唯一编码：`(employee_id, role, scope_id) WHERE is_void = false`（部分唯一索引）
-  - 5 角色：`manager`（经营管理）| `finance`（财务只读）| `hr`（员工管理）| `product`（商品管理）| `staff`（一线执行）
+  - 6 角色：`manager`（经营管理）| `finance`（财务只读）| `hr`（员工管理）| `product`（商品管理）| `staff`（一线执行）| `customer_mgr`（顾客管理）
   - 3 域级别（scope_id FK → org_nodes）：`headquarters`（全局无过滤）| `market`（市场区域）| `store`（单门店）
-  - 12 功能模块（`PERMISSION_MATRIX` 代码常量）：workbench / sale_order / allocation / service / appointment / customer / product / employee / finance / store / permission / sync
+  - 11 功能模块（`PERMISSION_MATRIX` 代码常量）：workbench / sale_order / allocation / service / appointment / customer / product / employee / finance / store / permission；adminApi 专属 sync 模块不计入 staffApi 模块数
   - 一人多角色 + 一角色多域：同一员工可有多条记录
   - 软删除：`is_void = true` + `voided_at`，保留审计痕迹
   - 初始数据由同步脚本从 `employees.org_node_id` + `position_name` 自动推导；`hr`/`product` 角色仅手动分配
@@ -148,7 +148,7 @@
 
 <rel>
 - org_nodes → stores：1:1（org_nodes type='store' ↔ stores.org_node_id）
-- 门店 → 员工：1:N（employees.store_id FK → stores）
+- 门店 → 员工：1:N（staff_wechat_users.store_id FK → stores）
 - 门店 → 订单：1:N（sale_orders.store_id FK → stores）
 - 门店 → 服务单：1:N（service_orders.store_id FK → stores）
 - 商品 → 规格：1:N（products.product_id ← product_skus.product_id）
@@ -159,7 +159,7 @@
 - 销售明细 → 服务明细：1:N（一个 sale_item_id 可被多次核销，每次对应一条 service_items）
 - 订单 ↔ 服务单：N:N（通过 service_items.sale_item_id 间接关联）
 - 销售明细 → 营业额分配：1:N（sale_allocations.sale_item_id FK，UNIQUE(sale_item_id, employee_id) WHERE is_void = false）
-- 员工 → 权限角色：1:N（permission_roles.employee_id FK → employees）
+- 员工 → 权限角色：1:N（permission_roles.employee_id FK → staff_wechat_users）
 - 权限角色 → 组织节点：N:1（permission_roles.scope_id FK → org_nodes.id）
 - 员工 → 服务单：1:N（assigned_employee_id）
 - 预约 → 服务单：1:1（可选关联，service_orders.appointment_id）

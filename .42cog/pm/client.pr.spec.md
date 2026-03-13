@@ -3,7 +3,7 @@
 > **文档版本**: 1.0.0
 > **端口**: 客户端小程序（C端，appid: wx811eb4ded3dfba3f）
 > **角色**: 顾客
-> **约束文档**: `.42cog/real.md` v2.0.0 | `.42cog/cog.md` v2.0.0
+> **约束文档**: `.42cog/real.md` v3.1.0 | `.42cog/cog.md` v3.1.0
 > **参考设计稿**: `notes/客户端UI/`（MasterGo 原型，27 页截图）
 > **日期**: 2026-03-09
 
@@ -218,7 +218,7 @@
 | ID | 需求 | 说明 |
 |----|------|------|
 | EMPLOYEE-01 | 美容师列表 | 按绑定门店过滤在职美容部员工（`department = '美容部'` OR `position = '美容师'`） |
-| EMPLOYEE-02 | 默认美容师 | 顾客档案中的主美容师（`client_wechat_users.primary_beautician`，文本字段非 FK），预约/下单时默认填充 |
+| EMPLOYEE-02 | 默认美容师 | 顾客档案中的所属美容师（`client_wechat_users.bound_employee_id`），预约/下单时默认填充 |
 | EMPLOYEE-03 | 选择非必须 | 下单时可不指定美容师（"不指定"选项） |
 
 **当前实现（Popup 交互）**:
@@ -232,11 +232,11 @@
 
 > 设计稿描述了独立技师列表页（screen_008），当前以 Popup 弹窗实现作为过渡方案。
 
-**查询条件**: PG `employees.is_resigned = false` + 属于已选门店 + 美容部员工（`department = '美容部'` OR `position = '美容师'`）
+**查询条件**: PG `staff_wechat_users.is_resigned = false` + 属于已选门店 + 美容部员工（`department = '美容部'` OR `position = '美容师'`）
 
-**数据来源**: PG `employees`
+**数据来源**: PG `staff_wechat_users`
 
-**API**: `employee.list`（返回 employee_id, name, store_name, position, department, phone）/ `employee.default`（返回 mainEmployeeId, mainEmployeeName, mainEmployeePosition）
+**API**: `staff.list`（返回 employee_id, name, store_name, position, department, phone）/ `staff.default`（返回 mainEmployeeId, mainEmployeeName, mainEmployeePosition）
 
 ---
 

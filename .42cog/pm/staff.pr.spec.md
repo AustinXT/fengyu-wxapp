@@ -2,7 +2,7 @@
 
 > **文档版本**: 1.0.0
 > **端口**: 员工端小程序（B端，appid: wxe3f5d9ee6a94d22d）
-> **约束文档**: `.42cog/real.md` v2.0.0 | `.42cog/cog.md` v2.0.0
+> **约束文档**: `.42cog/real.md` v3.1.0 | `.42cog/cog.md` v3.1.0
 > **日期**: 2026-03-09
 
 ---
@@ -73,15 +73,15 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 PG `employees` 查询职位信息（店长/美容师） |
-| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 PG `employees` 员工档案（`employee_id`）；清除认证缓存 |
+| AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 PG `staff_wechat_users` 查询职位信息（店长/美容师） |
+| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 PG `staff_wechat_users` 员工档案（`employee_id`）；清除认证缓存 |
 
 **角色判定**:
-- PG `employees.position_name = '门店经理'` 或 `permission_roles.role = 'manager'` → 店长
+- PG `staff_wechat_users.position_name = '门店经理'` 或 `permission_roles.role = 'manager'` → 店长
 - 其他职位 → 美容师
 
 **约束**:
-- 员工必须在 PG `employees` 有在职档案才能完成绑定
+- 员工必须在 PG `staff_wechat_users` 有在职档案才能完成绑定
 - 两端 appid 不同，openid 相互独立（员工端 vs 客户端）
 
 **API**: `auth.login` / `auth.bindPhone`
@@ -106,7 +106,7 @@
 
 **数据来源**: PG `stores` + `org_nodes` + PG `store_unbind_requests`（读写）
 
-**API**: `store.list` / `employee.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
+**API**: `store.list` / `staff.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
 
 ---
 
@@ -178,7 +178,7 @@
 
 **基本规则**:
 - 先选择部门，再选择该部门下可分配业绩的员工
-- 可分配业绩的员工由 PG `employees` 中字段控制
+- 可分配业绩的员工由 PG `staff_wechat_users` 中字段控制
 
 **分配规则**:
 
@@ -197,7 +197,7 @@
 
 **恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `sale_allocations` 恢复 displayItems，回填部门/员工/金额
 
-**三接口并行初始化**: `Promise.all([allocation.suggest, employee.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
+**三接口并行初始化**: `Promise.all([allocation.suggest, staff.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
 
 **提成比例查询**: `lookupRate(dept, salesCategory, totalAmount)` — 美容部/养生部直接查 `beautyRates`，其他部门按 `rates` 数组的 amountRange 匹配
 
@@ -214,12 +214,12 @@
 | 顾客端下单（未指定美容师） | 支付后 allocation_status = pending，店长手动分配 |
 
 **数据来源**:
-- 部门列表：PG `employees` + `org_nodes`
-- 可分配员工：PG `employees`（按门店+部门筛选）
+- 部门列表：PG `staff_wechat_users` + `org_nodes`
+- 可分配员工：PG `staff_wechat_users`（按门店+部门筛选）
 - 提成矩阵：PG `commission_rate_matrix`
 - 分配记录：PG `sale_allocations`（单表，sale_item 级粒度）
 
-**API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `employee.departments`
+**API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `staff.departments`
 
 ---
 
@@ -399,7 +399,7 @@
 | 5 | 待提成分配 | 仅店长 | allocation-list |
 | 6 | 待审批解绑申请 | 仅店长 | unbind-requests |
 
-**API**: `employee.todayCommission` / `employee.monthlyCalendar` / `employee.todoList`
+**API**: `staff.todayCommission` / `staff.monthlyCalendar` / `staff.todoList`
 
 ---
 
@@ -412,11 +412,11 @@
 | EMPLOYEE-01 | 员工列表 | 按门店查询在职员工；美容师看不到手机号 |
 | EMPLOYEE-02 | 部门列表 | 按部门分组返回员工，用于营业额分配 |
 
-**查询条件**: PG `employees.is_resigned = false` + 属于已选门店
+**查询条件**: PG `staff_wechat_users.is_resigned = false` + 属于已选门店
 
-**数据来源**: PG `employees`
+**数据来源**: PG `staff_wechat_users`
 
-**API**: `employee.list` / `employee.departments`
+**API**: `staff.list` / `staff.departments`
 
 ---
 
@@ -429,8 +429,8 @@
 | 店长（门店经理） | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、确认预约、创建/推进服务单、审批解绑 |
 | 美容师 | 本人相关数据 | 确认预约（分配给自己的）、创建/推进服务单（自己的）、查看脱敏手机号 |
 
-**角色判定**: PG `permission_roles.role` + `org_nodes.type`（从 org_nodes 获取域级别），降级时由 `employees.position_name` 推导
-**门店归属**: PG `employees.store_id` → `stores`
+**角色判定**: PG `permission_roles.role` + `org_nodes.type`（从 org_nodes 获取域级别），降级时由 `staff_wechat_users.position_name` 推导
+**门店归属**: PG `staff_wechat_users.store_id` → `stores`
 **门店数据隔离**: 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），`buildScopeWhere()` 统一生成
 
 ---
@@ -760,12 +760,12 @@ TabBar
 | store | unbindRequests | 待审批解绑申请列表 | `store:manage` | unbind-requests | 已实现 |
 | store | approveUnbind | 审批通过解绑 | `store:manage` | unbind-requests | 已实现 |
 | store | rejectUnbind | 拒绝解绑申请 | `store:manage` | unbind-requests | 已实现 |
-| employee | list | 员工列表 | `employee:list` | — | 已实现 |
-| employee | departments | 部门列表（含员工分组） | `employee:list` | revenue-allocation | 已实现 |
-| employee | todayCommission | 今日分成 | `workbench:dashboard` | workbench | 已实现 |
-| employee | monthlyCalendar | 月度业绩日历 | `workbench:dashboard` | workbench | 已实现 |
-| employee | todoList | 待处理事项 | `workbench:dashboard` | workbench | 已实现 |
-| employee | bindStore | 切换工作门店 | `workbench:dashboard` | profile | 已实现 |
+| staff | list | 员工列表 | `employee:list` | — | 已实现 |
+| staff | departments | 部门列表（含员工分组） | `employee:list` | revenue-allocation | 已实现 |
+| staff | todayCommission | 今日分成 | `workbench:dashboard` | workbench | 已实现 |
+| staff | monthlyCalendar | 月度业绩日历 | `workbench:dashboard` | workbench | 已实现 |
+| staff | todoList | 待处理事项 | `workbench:dashboard` | workbench | 已实现 |
+| staff | bindStore | 切换工作门店 | `workbench:dashboard` | profile | 已实现 |
 | product | shopInit | 开单页初始化（分类+首个分类SPU） | `product:categories` | order-create | 已实现 |
 | product | categories | 品项分类列表 | `product:categories` | order-create | 已实现 |
 | product | spuList | SPU 商品列表 | `product:list` | order-create | 已实现 |
@@ -906,3 +906,5 @@ module.exports = {
 ```
 
 > **auth/login** 和 **auth/bindPhone** 不需要权限校验（登录前无权限上下文）。
+>
+> **API 路由模块 vs 权限模块的映射关系**：API action 路由模块名（如 `order`、`staff`）与权限声明中的 permission 模块名（如 `sale_order`、`employee`）是不同概念。路由模块名对应 `staffApi/routes/` 下的文件名，权限模块名对应 `PERMISSION_MATRIX` 中定义的模块代码（见 `backend.pr.spec.md` §6.4）。例如：`order.create` 路由对应权限 `['sale_order', 'create']`，`staff.list` 路由对应权限 `['employee', 'list']`。

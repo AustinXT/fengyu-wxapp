@@ -167,11 +167,11 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 **常用查询条件**: `WHERE UDF_M_11956 != '是'` → PG: `WHERE is_closed = false`
 
-### 6.2 员工（UDT_S_287 → PG `employees`）
+### 6.2 员工（UDT_S_287 → PG `staff_wechat_users`）
 
 **来源**: Form 264，数据量 2,846 条（含在职 + 离职）
 
-| WorkFine 字段 | 含义 | 类型 | → PG `employees` 字段 |
+| WorkFine 字段 | 含义 | 类型 | → PG `staff_wechat_users` 字段 |
 |---------------|------|------|----------------------|
 | UDF_S_1147 | **员工编号** | 文本 | `employee_id` (PK) |
 | UDF_S_1155 | 姓名 | 文本 | `name` |
@@ -192,7 +192,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 **匹配键**: `UDF_S_1147`（员工编号）→ `employee_id`
 
-**store_id 映射**: 同步脚本读取 UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
+**store_id 映射**: 同步脚本读取 UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 staff_wechat_users，需要时通过 JOIN stores 获取。
 
 **常用查询条件**:
 - 在职员工: `WHERE UDF_S_1624 = '否'` → PG: `WHERE is_resigned = false`
@@ -222,7 +222,7 @@ UDT_S_311（顾客档案主表）
 | UDF_S_1480 | 年龄 | 整数 | `age` |
 | UDF_S_6443 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
 | UDF_S_6486 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
-| UDF_S_6444 | 所属美容师 | 文本 | `primary_beautician` |
+| UDF_S_6444 | 所属美容师 | 文本 | `bound_employee_id` |
 | UDF_S_1477 | 会员等级 | 文本 | `member_level` |
 | UDF_S_6446 | 顾客来源 | 文本 | `customer_source` |
 | UDF_S_1712 | 顾客分类 | 文本 | `category` |

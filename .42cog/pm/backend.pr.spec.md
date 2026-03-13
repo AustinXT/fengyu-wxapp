@@ -343,6 +343,8 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 > - `UNIQUE (client_phone, store_id) WHERE status = '待支付' AND client_user_id IS NULL`
 > - `INDEX(store_id, status)` — 按门店+状态查询
 > - `INDEX(ref_sale_order_id)` — 回款/转换/退款关联查询
+>
+> **`expire_at` 为应用层计算字段**：`expire_at = created_at + interval '10 minutes'`，不存储在表中。订单超时判断在 `order.list`/`order.create`/`order.pay` 时通过 SQL 条件 `created_at + interval '10 minutes' < NOW()` 懒清理。
 
 ### 4.9 sale_items（销售明细）
 
@@ -701,6 +703,8 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | 员工 | `staff` | 美容师、推广师等一线 | 自己相关的服务单和预约、脱敏顾客数据、本店员工/商品只读；**不可**开单/维护顾客档案 |
 | 顾客管理 | `customer_mgr` | 顾客管理专员、前台 | 顾客查询（完整不脱敏）、顾客档案维护（update/create）、消费记录查看；**不可**开单/操作服务单/权限管理。需叠加基础角色使用 |
 
+> **admin 角色**：超级管理员，仅在管理后台使用，定义见 `admin.pr.spec.md` §2.1。admin 不参与同步推导，仅通过管理后台手动分配，scope 固定为 headquarters。staffApi 的 PERMISSION_MATRIX 不含 admin 角色。
+>
 > **一人多角色**：同一员工可同时拥有多个角色（如既是 manager 又是 hr），每个 `(employee_id, role, scope_id)` 组合一条记录。
 >
 > **一角色多域**：同一员工的同一角色可分配到多个域（如 manager 同时管理两家门店），每个 scope_id 一条记录。示例：`(E1, manager, store_A_id)` + `(E1, manager, store_B_id)`。

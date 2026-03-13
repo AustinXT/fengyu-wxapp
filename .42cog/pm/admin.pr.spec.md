@@ -2,8 +2,8 @@
 
 > **文档版本**: 1.0.0
 > **端口**: 管理后台（Web端，面向内部管理人员）
-> **约束文档**: `.42cog/real.md` v3.0.0 | `.42cog/cog.md` v3.0.0
-> **依赖文档**: `backend.pr.spec.md` v3.1.0 | `staff.pr.spec.md` v1.0.0
+> **约束文档**: `.42cog/real.md` v3.1.0 | `.42cog/cog.md` v3.1.0
+> **依赖文档**: `backend.pr.spec.md` v3.3.0 | `staff.pr.spec.md` v1.0.0
 > **日期**: 2026-03-13
 
 ---
@@ -109,7 +109,7 @@
 
 | 方式 | 说明 |
 |------|------|
-| 手机号 + 密码 | 通过手机号匹配 PG `employees.phone`，校验密码哈希（`admin_passwords` 表），获取 `employee_id`，再查 `permission_roles` 获取角色 |
+| 手机号 + 密码 | 通过手机号匹配 PG `staff_wechat_users.phone`，校验密码哈希（`admin_passwords` 表），获取 `employee_id`，再查 `permission_roles` 获取角色 |
 
 **密码管理**:
 - 密码存储：bcrypt 哈希（cost factor ≥ 12），存入 PG `admin_passwords` 表
@@ -122,7 +122,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigserial | 主键 |
-| `employee_id` | varchar(30) | FK → `employees.employee_id`，UNIQUE |
+| `employee_id` | varchar(30) | FK → `staff_wechat_users.employee_id`，UNIQUE |
 | `password_hash` | text | bcrypt 哈希，NOT NULL |
 | `must_change` | boolean | 是否需要首次修改密码，NOT NULL DEFAULT true |
 | `last_changed_at` | timestamp | 最近修改密码时间 |
@@ -266,9 +266,9 @@
 #### AFF-03 员工档案管理
 
 **级别**: 主要
-**启用的行动**: 查看/新增/编辑/离职 `employees`
+**启用的行动**: 查看/新增/编辑/离职 `staff_wechat_users`
 
-**操作对象**: PG `employees` 表
+**操作对象**: PG `staff_wechat_users` 表
 
 **功能规格**:
 
@@ -416,7 +416,7 @@
 |------|------|
 | name | 顾客姓名 |
 | store_id | 归属门店（下拉选择） |
-| primary_beautician | 所属美容师 |
+| bound_employee_id | 所属美容师 |
 | member_level | 会员等级 |
 | customer_source | 顾客来源 |
 | category | 顾客分类 |
@@ -877,7 +877,7 @@ adminApi 是管理后台的专属后端服务，与小程序端的 clientApi/sta
 
 ### 9.2 认证
 
-- 认证方式：手机号 + 密码 → 校验 `admin_passwords` 密码哈希 → 查 PG `employees` → 查 `permission_roles` → 签发 JWT
+- 认证方式：手机号 + 密码 → 校验 `admin_passwords` 密码哈希 → 查 PG `staff_wechat_users` → 查 `permission_roles` → 签发 JWT
 - 每次请求在 Header 携带 JWT（`Authorization: Bearer <token>`），adminApi 中间件校验并构造 `ctx.auth`
 - `ctx.auth` 结构参照 staffApi 设计（包含 `roles[]`、`scopeStoreIds`、`permissions.actions[]`），便于权限校验逻辑一致
 
