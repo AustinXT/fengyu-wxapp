@@ -4,8 +4,11 @@
   "description": "员工端统一云函数入口",
   "main": "index.js",
   "dependencies": {
-    "wx-server-sdk": "latest",
+    "mssql": "^10.0.1",
     "pg": "^8.11.3",
-    "mssql": "^10.0.1"
+    "wx-server-sdk": "latest"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }
