@@ -11,8 +11,8 @@
  * 同步顺序（存在依赖）：
  *   1. org_nodes（组织架构树）— 无依赖
  *   2. stores（门店详情）— 依赖 org_nodes
- *   3. employees（员工）— 依赖 stores + org_nodes
- *   4. permission_roles（权限自动推导）— 依赖 employees + org_nodes
+ *   3. staff_wechat_users（员工）— 依赖 stores + org_nodes
+ *   4. permission_roles（权限自动推导）— 依赖 staff_wechat_users + org_nodes
  *   5. client_wechat_users（顾客档案）— 依赖 stores
  *   6. product_categories（品项分类）— 无依赖（一次性导入）
  *   7. products + product_skus（商品）— 依赖 product_categories（一次性导入）
@@ -175,7 +175,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
   }
 }
 
-// ─── 2. 同步 employees ──────────────────────────────────────
+// ─── 2. 同步员工 → staff_wechat_users ──────────────────────────
 
 async function syncEmployees(mssqlPool, pgPool, dryRun) {
   log('EMPLOYEES', '开始同步...')
@@ -230,7 +230,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       log('EMPLOYEES', `UPSERT ${deptNames.length} 个部门节点`)
     }
 
-    // UPSERT employees
+    // UPSERT staff_wechat_users（以 employee_id 为冲突键，openid 可为 null）
     let count = 0
     for (const row of rows) {
       const empId = trim(row.employee_id)
@@ -242,12 +242,12 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const orgNodeId = deptName ? (deptMap[deptName] || null) : null
 
       await client.query(`
-        INSERT INTO employees (employee_id, name, gender, phone, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO staff_wechat_users (user_id, employee_id, phone, name, gender, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         ON CONFLICT (employee_id) DO UPDATE SET
           name = EXCLUDED.name,
           gender = EXCLUDED.gender,
-          phone = EXCLUDED.phone,
+          phone = COALESCE(staff_wechat_users.phone, EXCLUDED.phone),
           id_card = EXCLUDED.id_card,
           store_id = EXCLUDED.store_id,
           org_node_id = EXCLUDED.org_node_id,
@@ -256,10 +256,11 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
           is_resigned = EXCLUDED.is_resigned,
           updated_at = now()
       `, [
+        'emp_' + empId,
         empId,
+        trim(row.phone),
         trim(row.name) || empId,
         trim(row.gender),
-        trim(row.phone),
         trim(row.id_card),
         storeId,
         orgNodeId,
@@ -298,11 +299,11 @@ async function syncPermissionRoles(pgPool, dryRun) {
         s.org_node_id AS store_org_node_id,
         dept.name     AS dept_name,
         parent_store.parent_id AS market_org_node_id
-      FROM employees e
+      FROM staff_wechat_users e
       LEFT JOIN stores s ON e.store_id = s.store_id
       LEFT JOIN org_nodes dept ON e.org_node_id = dept.id
       LEFT JOIN org_nodes parent_store ON s.org_node_id = parent_store.id
-      WHERE e.is_resigned = false
+      WHERE e.is_resigned = false AND e.employee_id IS NOT NULL
     `)
     log('PERMISSIONS', `在职员工 ${emps.length} 人`)
 
@@ -922,7 +923,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 async function verify(pgPool) {
   console.log('\n=== 数据验证 ===')
   const tables = [
-    'org_nodes', 'stores', 'employees', 'permission_roles',
+    'org_nodes', 'stores', 'staff_wechat_users', 'permission_roles',
     'client_wechat_users', 'product_categories', 'products', 'product_skus',
   ]
   for (const t of tables) {
@@ -937,11 +938,11 @@ async function verify(pgPool) {
   console.log('\n  org_nodes 按类型:')
   orgTypes.forEach(r => console.log(`    ${r.type}: ${r.cnt}`))
 
-  // employees 在职/离职
+  // staff_wechat_users 在职/离职（含员工编号的行）
   const { rows: empStatus } = await pgPool.query(
-    "SELECT is_resigned, count(*) AS cnt FROM employees GROUP BY is_resigned"
+    "SELECT is_resigned, count(*) AS cnt FROM staff_wechat_users WHERE employee_id IS NOT NULL GROUP BY is_resigned"
   )
-  console.log('\n  employees 状态:')
+  console.log('\n  staff_wechat_users 员工状态:')
   empStatus.forEach(r => console.log(`    ${r.is_resigned ? '离职' : '在职'}: ${r.cnt}`))
 
   // permission_roles 按角色
