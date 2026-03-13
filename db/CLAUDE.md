@@ -21,6 +21,11 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 | coupon | coupon_templates, user_coupons | 优惠券模板 + 用户券实例 |
 | store-unbind | store_unbind_requests | 门店解绑申请 |
 | operation-log | operation_logs | 操作审计日志 |
+| points | member_levels, customer_points, point_transactions | 积分系统 |
+| message | messages | 消息中心 |
+| prepaid-card | prepaid_cards, card_transactions | 充值卡 + 流水 |
+| service-commission | service_commissions | 服务提成（手工费/卡数提成） |
+| pickup | pickup_records | 院装产品提货记录 |
 | enums | — | TypeScript 枚举定义 |
 
 ## 命令
@@ -56,6 +61,6 @@ docker exec -it fengyu-postgres psql -U fengyu -d fengyu
 
 同步以 phone 为匹配键 UPSERT，运行时需 `MSSQL_CONNECTION_STRING` 和 `DATABASE_URL` 环境变量。
 
-## 云函数与 Drizzle 的关系
+## 与云函数的关系
 
-云函数（clientApi/staffApi）使用原生 `pg` 库直接写 SQL，**不引入 Drizzle**。Drizzle 仅用于此目录的 schema 管理和迁移生成。两者共享同一个 PostgreSQL 数据库，schema 定义是权威来源。
+Drizzle 仅用于此目录的 schema 管理和迁移生成。两者共享同一个 PostgreSQL 数据库，此处的 schema 定义是权威来源。

@@ -73,13 +73,12 @@ bun run lint          # ESLint
 4. CloudBase 云存储图片上传
 5. 替换 mock 数据为真实 DB 查询
 
-## 品牌色
+## 状态色
 
-- 主色：`#C0322A`（中国红）
-- 状态色：待处理 `#D4820A` / 成功 `#3D8A5A` / 进行中 `#5E8BB3` / 完结 `#888888` / 错误 `#D94040`
+待处理 `#D4820A` / 成功 `#3D8A5A` / 进行中 `#5E8BB3` / 完结 `#888888` / 错误 `#D94040`
 
 ## 规范文档
 
-- `.42cog/pm/admin.pr.spec.md` — 产品需求规格书
-- `.42cog/dev/admin.sys.spec.md` — 系统架构规格书
-- `.42cog/design/admin.ui.spec.md` — UI 设计规格书
+- `.42cog/pm/admin.pr.spec.md` — 产品需求
+- `.42cog/dev/admin.sys.spec.md` — 系统架构
+- `.42cog/design/admin.ui.spec.md` — UI 设计

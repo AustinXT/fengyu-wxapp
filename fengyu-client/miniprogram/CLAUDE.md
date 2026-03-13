@@ -4,12 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 顾客端小程序前端，原生微信小程序 + Vant Weapp + TypeScript。
 
-## TypeScript 规范（重要）
-
-**仅允许 `.ts` 文件，禁止 `.js`。**
+## TypeScript 配置
 
 - `project.config.json` 已配置 `"useCompilerPlugins": ["typescript"]`
-- 微信开发者工具优先使用 `.js`，若存在同名 `.js` 会忽略 `.ts`
+- 微信开发者工具优先使用 `.js`，若存在同名 `.js` 会忽略 `.ts`（确保不残留 .js）
 - `tsconfig.json`：strict 模式，target ES2017，CommonJS 模块
 
 ## Tab 页面

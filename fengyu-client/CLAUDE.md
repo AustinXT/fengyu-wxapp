@@ -36,6 +36,12 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 - `PG_CONNECTION_STRING` — PostgreSQL 连接串
 - `TMAP_KEY` / `TMAP_SECRET` — 腾讯地图 API（门店定位/逆地理编码）
 
+## 规范文档
+
+- `.42cog/pm/client.pr.spec.md` — 产品需求
+- `.42cog/dev/client.sys.spec.md` — 系统架构
+- `.42cog/design/client.ui.spec.md` — UI 设计
+
 ## 子目录文档
 
 - `miniprogram/CLAUDE.md` — 前端详细文档（页面结构、状态管理、UI 主题）
