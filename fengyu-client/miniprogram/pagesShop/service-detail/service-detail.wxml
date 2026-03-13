@@ -19,10 +19,10 @@
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#722ED1" wx:if="{{spu.big_category === '促销方案'}}">促销方案</van-tag>
-      <van-tag type="primary" wx:elif="{{spu.big_category === '生美'}}">生美</van-tag>
-      <van-tag color="#006D75" wx:elif="{{spu.big_category === '非生美'}}">非生美</van-tag>
-      <van-tag color="#D46B08" wx:elif="{{spu.big_category === '院装产品'}}">院装产品</van-tag>
+      <van-tag color="#722ED1" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
+      <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
+      <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
+      <van-tag color="#006D75" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
@@ -51,7 +51,7 @@
         bindtap="onSkuTap"
         data-sku-id="{{item.sku_id}}"
       >
-        <text class="sku-display-name">{{item.sku_display_name}}</text>
+        <text class="sku-display-name">{{item.spec_name}}</text>
         <text class="sku-price">¥{{item.price}}</text>
         <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
       </view>
@@ -95,15 +95,15 @@
     </view>
 
     <!-- 购物车图标：促销方案不显示 -->
-    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{spu.big_category !== '促销方案'}}">
+    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{spu.product_kind !== '福利活动'}}">
       <van-icon name="shopping-cart-o" size="48rpx" />
       <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
     </view>
 
     <!-- 按钮区 -->
     <view class="action-bar__btns">
-      <view wx:if="{{spu.big_category !== '促销方案'}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
-      <view class="action-bar__btn action-bar__btn--buy {{spu.big_category === '促销方案' ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+      <view wx:if="{{spu.product_kind !== '福利活动'}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
+      <view class="action-bar__btn action-bar__btn--buy {{spu.product_kind === '福利活动' ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
     </view>
   </view>
 

@@ -45,7 +45,7 @@ Page({
             : 0;
           cards.push({
             ...item,
-            orderNo: order.orderNo,
+            saleOrderId: order.saleOrderId,
             storeName: order.storeName,
             percent,
             expireFmt: item.expireDate ? item.expireDate.slice(0, 10) : '',
@@ -68,13 +68,13 @@ Page({
   },
 
   onCardTap(e: WechatMiniprogram.TouchEvent) {
-    const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
     e.stopPropagation();
-    const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?orderNo=${orderNo}` });
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${saleOrderId}` });
   },
 });

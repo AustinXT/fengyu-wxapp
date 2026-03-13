@@ -17,16 +17,17 @@ interface Banner {
 }
 
 interface Category {
-  category: string;
+  category_id: string;
+  category_name: string;
   category_order: number;
-  big_category: string;
+  product_kind: string;
 }
 
 interface SpuItem {
-  spu_id: string;
+  product_id: string;
   name: string;
-  category: string;
-  big_category: string;
+  category_name: string;
+  product_kind: string;
   cover_image: string;
   min_price: string;
   is_recommend: boolean;
@@ -41,20 +42,7 @@ interface SidebarItem {
   bigCategory?: string;
 }
 
-const BIG_CATEGORIES = ["福利活动", "护理项目", "家居产品"];
-
-// 数据库 big_category 与前端显示的映射
-const BIG_CATEGORY_MAP: Record<string, string> = {
-  促销方案: "福利活动",
-  生美: "护理项目",
-  非生美: "护理项目",
-  院装产品: "家居产品",
-};
-
-// 获取前端显示的大分类名称
-function getDisplayBigCategory(dbValue: string): string {
-  return BIG_CATEGORY_MAP[dbValue] || dbValue;
-}
+const BIG_CATEGORIES = ["福利活动", "护理项目", "家居产品", "充值卡"];
 
 Page({
   data: {
@@ -84,7 +72,7 @@ Page({
     cartCount: 0,
   },
 
-  // 所有分类（已映射 big_category）
+  // 所有分类
   _allCategories: [] as Category[],
 
   // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
@@ -166,8 +154,8 @@ Page({
     for (const key of this._allCategoryKeys) {
       const cached = this._spuCache[key] || [];
       for (const spu of cached) {
-        if (!seen.has(spu.spu_id) && spu.name.toLowerCase().includes(keyword)) {
-          seen.add(spu.spu_id);
+        if (!seen.has(spu.product_id) && spu.name.toLowerCase().includes(keyword)) {
+          seen.add(spu.product_id);
           results.push(spu);
         }
       }
@@ -220,7 +208,7 @@ Page({
         if (res.path) {
           wx.navigateTo({ url: "/" + res.path });
         } else if (res.result) {
-          wx.navigateTo({ url: `/pagesOrder/scan-pay/scan-pay?orderNo=${encodeURIComponent(res.result)}` });
+          wx.navigateTo({ url: `/pagesOrder/scan-pay/scan-pay?saleOrderId=${encodeURIComponent(res.result)}` });
         }
       },
       fail: () => {
@@ -357,17 +345,12 @@ Page({
       }));
 
       // 缓存 shopInit 返回的 SPU 列表（对应全局第一个分类）
-      // 将数据库 big_category 转换为前端显示名称
-      const mappedCategories = categories.map((c: any) => ({
-        ...c,
-        big_category: getDisplayBigCategory(c.big_category),
-      }));
       if (categories.length > 0) {
-        const firstCompositeKey = `${mappedCategories[0].big_category}::${categories[0].category}`;
+        const firstCompositeKey = `${categories[0].product_kind}::${categories[0].category_name}`;
         this._spuCache[firstCompositeKey] = listWithPrice;
       }
 
-      this._allCategories = mappedCategories;
+      this._allCategories = categories;
 
       // 构建侧边栏
       this.buildSidebarItems();
@@ -379,7 +362,7 @@ Page({
 
       // 检查缓存是否匹配第一个可见分类
       const firstCompositeKeyCheck = categories.length > 0
-        ? `${mappedCategories[0].big_category}::${categories[0].category}`
+        ? `${categories[0].product_kind}::${categories[0].category_name}`
         : "";
       let displayList = listWithPrice;
       if (firstKey && firstKey !== firstCompositeKeyCheck) {
@@ -411,7 +394,7 @@ Page({
     let idx = 0;
 
     for (const bigCat of BIG_CATEGORIES) {
-      const cats = this._allCategories.filter((c) => c.big_category === bigCat);
+      const cats = this._allCategories.filter((c) => c.product_kind === bigCat);
       if (cats.length === 0) continue;
 
       items.push({
@@ -422,11 +405,11 @@ Page({
       idx++;
 
       for (const cat of cats) {
-        const compositeKey = `${bigCat}::${cat.category}`;
+        const compositeKey = `${bigCat}::${cat.category_name}`;
         items.push({
           id: `sid-${idx}`,
           type: "category",
-          label: cat.category,
+          label: cat.category_name,
           categoryKey: compositeKey,
           bigCategory: bigCat,
         });
@@ -475,14 +458,14 @@ Page({
 
   // 点击商品卡片 → 跳转详情
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
-    const { spuId } = e.currentTarget.dataset as { spuId: string };
-    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
+    const { productId } = e.currentTarget.dataset as { productId: string };
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?productId=${productId}` });
   },
 
   // 「购买」按钮 → 跳转详情页
   onBuyTap(e: WechatMiniprogram.TouchEvent) {
-    const { spuId } = e.currentTarget.dataset as { spuId: string };
-    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
+    const { productId } = e.currentTarget.dataset as { productId: string };
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?productId=${productId}` });
   },
 
   // 购物车 FAB → 跳转购物车页面

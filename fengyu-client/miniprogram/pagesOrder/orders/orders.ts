@@ -53,7 +53,7 @@ Page({
       const data = await callClientApi('order.list', payload);
       const raw: any[] = data?.orders || [];
       const list = raw.map(item => {
-        const d = new Date(item.order_datetime);
+        const d = new Date(item.sale_order_datetime);
         return {
           ...item,
           statusClass: STATUS_CLASS[item.status] || 'status-class-done',
@@ -69,14 +69,14 @@ Page({
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
-    const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onPayTap(e: WechatMiniprogram.TouchEvent) {
     e.stopPropagation();
-    const { orderNo } = e.currentTarget.dataset as { orderNo: string };
-    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?orderNo=${orderNo}` });
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
   },
 
   onShareAppMessage() {

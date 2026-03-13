@@ -35,30 +35,31 @@ Page({
   _countdownTimer: null as any,
 
   onLoad(options) {
-    const { orderNo } = options as { orderNo: string };
-    if (orderNo) this.loadDetail(orderNo);
+    const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
+    const id = saleOrderId || orderNo;
+    if (id) this.loadDetail(id);
   },
 
   onShow() {
     // 从预约页返回时刷新剩余次数
-    if (this.data.order?.order_no) {
-      this.loadDetail(this.data.order.order_no);
+    if (this.data.order?.sale_order_id) {
+      this.loadDetail(this.data.order.sale_order_id);
     }
   },
 
   onPullDownRefresh() {
-    if (this.data.order?.order_no) {
-      this.loadDetail(this.data.order.order_no).finally(() => wx.stopPullDownRefresh());
+    if (this.data.order?.sale_order_id) {
+      this.loadDetail(this.data.order.sale_order_id).finally(() => wx.stopPullDownRefresh());
     }
   },
 
-  async loadDetail(orderNo: string) {
+  async loadDetail(saleOrderId: string) {
     this.setData({ isLoading: true });
     try {
-      const data = await callClientApi('order.detail', { orderNo });
+      const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
-      const d = new Date(order.order_datetime);
+      const d = new Date(order.sale_order_datetime);
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
@@ -114,7 +115,7 @@ Page({
         this._countdownTimer = null;
         this.setData({ countdown: '' });
         // 超时刷新页面
-        this.loadDetail(order.order_no);
+        this.loadDetail(order.sale_order_id);
         return;
       }
       const mins = Math.floor(remaining / 60000);
@@ -136,12 +137,12 @@ Page({
   },
 
   onPay() {
-    const { order_no } = this.data.order;
-    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?orderNo=${order_no}` });
+    const { sale_order_id } = this.data.order;
+    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${sale_order_id}` });
   },
 
   async onCancel() {
-    const { order_no } = this.data.order;
+    const { sale_order_id } = this.data.order;
     try {
       await wx.showModal({
         title: '确认取消',
@@ -153,9 +154,9 @@ Page({
       });
 
       Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
-      await callClientApi('order.cancel', { orderNo: order_no });
+      await callClientApi('order.cancel', { saleOrderId: sale_order_id });
       Toast.success('订单已取消');
-      this.loadDetail(order_no);
+      this.loadDetail(sale_order_id);
     } catch (err: any) {
       if (err.message !== 'USER_CANCELLED') {
         Toast.fail(err.message || '取消失败');
@@ -168,8 +169,8 @@ Page({
   },
 
   onCreateAppointment() {
-    const { order_no } = this.data.order;
-    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?orderNo=${order_no}` });
+    const { sale_order_id } = this.data.order;
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${sale_order_id}` });
   },
 
   onShareAppMessage() {

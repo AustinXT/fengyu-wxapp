@@ -15,29 +15,29 @@
         label="仅预约到店时间"
         clickable
         bind:click="onClearItem"
-        class="{{!selectedItemFlowNo ? 'item-selected' : ''}}"
+        class="{{!selectedSaleItemId ? 'item-selected' : ''}}"
       >
         <van-icon
           slot="right-icon"
-          name="{{!selectedItemFlowNo ? 'success' : 'circle'}}"
-          color="{{!selectedItemFlowNo ? '#C0322A' : '#DCDCDC'}}"
+          name="{{!selectedSaleItemId ? 'success' : 'circle'}}"
+          color="{{!selectedSaleItemId ? '#C0322A' : '#DCDCDC'}}"
           size="40rpx"
         />
       </van-cell>
       <van-cell
         wx:for="{{appointableItems}}"
-        wx:key="item_flow_no"
-        title="{{item.spu_name}}"
-        label="{{item.sku_display_name}} · 剩余 {{item.remaining_sessions}} 次"
+        wx:key="sale_item_id"
+        title="{{item.product_name}}"
+        label="{{item.sku_spec_name}} · 剩余 {{item.remaining_sessions}} 次"
         clickable
         bind:click="onSelectItem"
         data-item="{{item}}"
-        class="{{selectedItemFlowNo === item.item_flow_no ? 'item-selected' : ''}}"
+        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}}"
       >
         <van-icon
           slot="right-icon"
-          name="{{selectedItemFlowNo === item.item_flow_no ? 'success' : 'circle'}}"
-          color="{{selectedItemFlowNo === item.item_flow_no ? '#C0322A' : '#DCDCDC'}}"
+          name="{{selectedSaleItemId === item.sale_item_id ? 'success' : 'circle'}}"
+          color="{{selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC'}}"
           size="40rpx"
         />
       </van-cell>

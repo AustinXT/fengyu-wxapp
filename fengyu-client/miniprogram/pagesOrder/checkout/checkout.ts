@@ -75,17 +75,18 @@ Page({
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, fromCart, quantity, orderType, promotionSchemeId } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, promotionSchemeId } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
     this.loadStaffList();
     this.loadDefaultStaff();
 
-    if (orderNo) {
+    const existingId = saleOrderId || orderNo;
+    if (existingId) {
       // 场景 B：扫码收款，订单已存在
-      this.setData({ existingOrderNo: orderNo });
-      this.loadExistingOrder(orderNo);
+      this.setData({ existingOrderNo: existingId });
+      this.loadExistingOrder(existingId);
     } else if (fromCart === '1') {
       // 场景 C：购物车批量下单
       const checkoutItems: CheckoutItem[] = wx.getStorageSync('checkoutItems') || [];
@@ -127,7 +128,7 @@ Page({
       const sku = data?.sku;
       const unitPrice = sku?.originalPrice || 0;
       this.setData({
-        skuDisplayName: sku?.sku_display_name || '',
+        skuDisplayName: sku?.spec_name || '',
         unitPrice: String(unitPrice),
         totalPrice: (unitPrice * quantity).toFixed(2),
       });
@@ -136,19 +137,19 @@ Page({
     }
   },
 
-  async loadExistingOrder(orderNo: string) {
+  async loadExistingOrder(saleOrderId: string) {
     try {
-      const data = await callClientApi('order.detail', { orderNo });
+      const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
       const firstItem = items[0] || {};
       this.setData({
         spuName: items.length > 1
           ? `${items.length} 件商品`
-          : (firstItem.spu_name || ''),
+          : (firstItem.product_name || ''),
         skuDisplayName: items.length > 1
-          ? items.map((i: any) => i.spu_name).join('、')
-          : (firstItem.sku_display_name || ''),
+          ? items.map((i: any) => i.product_name).join('、')
+          : (firstItem.sku_spec_name || ''),
         unitPrice: String(order.total_amount || '0.00'),
         storeName: order.store_name || '',
         quantity: 1,
@@ -160,9 +161,9 @@ Page({
 
   async loadStaffList() {
     try {
-      const storeName = app.globalData.boundStoreName;
-      if (!storeName) return;
-      const data = await callClientApi('staff.list', { storeName });
+      const storeId = app.globalData.boundStoreId;
+      if (!storeId) return;
+      const data = await callClientApi('staff.list', { storeId });
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         employee_id: s.staff_id,
         name: s.name,
@@ -229,7 +230,7 @@ Page({
       }
 
       const data = await callClientApi('coupon.available', {
-        storeName: this.data.storeName,
+        storeId: app.globalData.boundStoreId,
         items,
       });
       this.setData({ availableCoupons: data?.coupons || [] });
@@ -296,7 +297,7 @@ Page({
     try {
       if (this.data.existingOrderNo && this.data.paymentMethod === 'offline') {
         // 扫码 + 线下付款
-        await callClientApi('order.offlinePay', { orderNo: this.data.existingOrderNo });
+        await callClientApi('order.offlinePay', { saleOrderId: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.navigateBack(), 1500);
         return;
@@ -315,10 +316,7 @@ Page({
       }
 
       // 自助下单
-      // 需要先获取门店的市场名称
-      const storeList = await callClientApi('store.list');
-      const store = storeList?.stores?.find((s: any) => s.store_name === this.data.storeName);
-      const marketName = store?.market_name || '';
+      const storeId = app.globalData.boundStoreId;
 
       // 构建订单项
       let items: { skuId: string; quantity: number }[];
@@ -329,8 +327,7 @@ Page({
       }
 
       const data = await callClientApi('order.create', {
-        storeName: this.data.storeName,
-        marketName,
+        storeId,
         items,
         preferredStaffWfId: this.data.staffWfId || null,
         paymentMethod: this.data.paymentMethod,
@@ -339,24 +336,25 @@ Page({
         couponId: this.data.selectedCoupon?.couponId || undefined,
       });
 
-      const { orderNo } = data || {};
-      if (!orderNo) throw new Error('创建订单失败');
+      const saleOrderId = data?.saleOrderId || data?.orderNo;
+      if (!saleOrderId) throw new Error('创建订单失败');
 
       if (this.data.paymentMethod === 'offline') {
         if (this.data.fromCart) clearCart();
         Toast.success('已提交，等待店长确认收款');
-        setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` }), 1500);
+        setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1500);
       } else if (this.data.paymentMethod === 'alipay') {
         if (this.data.fromCart) clearCart();
-        await this.doAlipayPay(orderNo);
+        await this.doAlipayPay(saleOrderId);
       } else {
-        await this.doWechatPay(orderNo);
+        await this.doWechatPay(saleOrderId);
         if (this.data.fromCart) clearCart();
       }
     } catch (err: any) {
       if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
         this.setData({ showPhoneBind: true });
-      } else if (err?.data?.pendingOrderNo) {
+      } else if (err?.data?.pendingSaleOrderId || err?.data?.pendingOrderNo) {
+        const pendingId = err.data.pendingSaleOrderId || err.data.pendingOrderNo;
         Dialog.confirm({
           title: '您有待支付订单',
           message: '请先完成支付或取消订单后再下单',
@@ -364,7 +362,7 @@ Page({
           cancelButtonText: '我知道了',
         }).then(() => {
           wx.navigateTo({
-            url: `/pagesOrder/order-detail/order-detail?orderNo=${err.data.pendingOrderNo}`,
+            url: `/pagesOrder/order-detail/order-detail?saleOrderId=${pendingId}`,
           });
         }).catch(() => {});
       } else {
@@ -419,20 +417,20 @@ Page({
     }
   },
 
-  async doAlipayPay(orderNo: string) {
-    const data = await callClientApi('order.alipayPay', { orderNo });
+  async doAlipayPay(saleOrderId: string) {
+    const data = await callClientApi('order.alipayPay', { saleOrderId });
     this.setData({
       showAlipayQr: true,
       alipayQrUrl: data?.qrCodeUrl || '',
       alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
-      alipayOrderNo: orderNo,
+      alipayOrderNo: saleOrderId,
     });
   },
 
   onAlipayDone() {
-    const orderNo = this.data.alipayOrderNo;
+    const saleOrderId = this.data.alipayOrderNo;
     this.setData({ showAlipayQr: false });
-    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onAlipayClose() {
@@ -440,12 +438,12 @@ Page({
     this.setData({ showAlipayQr: false });
   },
 
-  async doWechatPay(orderNo: string) {
-    const data = await callClientApi('order.pay', { orderNo });
+  async doWechatPay(saleOrderId: string) {
+    const data = await callClientApi('order.pay', { saleOrderId });
     const paymentParams = data?.paymentParams || {};
     await wx.requestPayment(paymentParams);
     Toast.success('支付成功');
-    setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` }), 1200);
+    setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
   },
 
   onShareAppMessage() {

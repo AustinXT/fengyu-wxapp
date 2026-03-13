@@ -99,7 +99,7 @@ Page({
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
     const { spuId } = e.currentTarget.dataset as { spuId: string };
-    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?spuId=${spuId}` });
+    wx.navigateTo({ url: `/pagesShop/service-detail/service-detail?productId=${spuId}` });
   },
 
   onCheckout() {

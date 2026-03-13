@@ -18,15 +18,15 @@
   <view wx:else class="list-wrap">
     <view
       wx:for="{{cards}}"
-      wx:key="itemFlowNo"
+      wx:key="saleItemId"
       class="tc-card {{item.active ? '' : 'tc-card--inactive'}}"
       bindtap="onCardTap"
-      data-order-no="{{item.orderNo}}"
+      data-sale-order-id="{{item.saleOrderId}}"
     >
       <!-- 头部：项目名 + 类型标签 -->
       <view class="tc-card__header">
         <view class="tc-card__title-row">
-          <text class="tc-card__name">{{item.spuName}}</text>
+          <text class="tc-card__name">{{item.productName}}</text>
           <van-tag
             wx:if="{{!item.active}}"
             color="#F5F5F5"
@@ -43,7 +43,7 @@
             text-color="#389E0D"
           >单品</van-tag>
         </view>
-        <text class="tc-card__sku">{{item.skuDisplayName}}</text>
+        <text class="tc-card__sku">{{item.skuSpecName}}</text>
       </view>
 
       <!-- 进度区 -->
@@ -73,7 +73,7 @@
           wx:if="{{item.active}}"
           class="tc-card__book-btn"
           catchtap="onBookTap"
-          data-order-no="{{item.orderNo}}"
+          data-sale-order-id="{{item.saleOrderId}}"
         >预约</view>
         <view wx:else class="tc-card__status-text">已失效</view>
       </view>

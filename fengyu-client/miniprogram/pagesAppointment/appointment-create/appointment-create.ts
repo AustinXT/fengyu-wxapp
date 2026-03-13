@@ -27,8 +27,8 @@ Page({
   data: {
     // 可预约项目列表（从订单列表中筛选已支付且有剩余次数的订单项）
     appointableItems: [] as any[],
-    selectedItemFlowNo: '',
-    selectedItemOrderNo: '',
+    selectedSaleItemId: '',
+    selectedSaleOrderId: '',
 
     // 时间
     appointmentDate: '',
@@ -58,28 +58,28 @@ Page({
       minDate: now,
       maxDate: now + 90 * 24 * 60 * 60 * 1000,
     });
-    const { orderNo } = options as { orderNo?: string };
-    this.loadAppointableItems(orderNo);
+    const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
+    this.loadAppointableItems(saleOrderId || orderNo);
     this.loadStaffList();
     this.loadDefaultStaff();
   },
 
-  async loadAppointableItems(filterOrderNo?: string) {
+  async loadAppointableItems(filterSaleOrderId?: string) {
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
       const items: any[] = [];
       for (const order of orders) {
-        if (filterOrderNo && order.orderNo !== filterOrderNo) continue;
+        if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of order.items) {
           items.push({
-            item_flow_no: item.itemFlowNo,
-            spu_name: item.spuName,
-            sku_display_name: item.skuDisplayName,
+            sale_item_id: item.saleItemId,
+            product_name: item.productName,
+            sku_spec_name: item.skuSpecName,
             remaining_sessions: item.remainingSessions,
             session_count: item.sessionCount,
             product_type: item.productType,
-            order_no: order.orderNo,
+            sale_order_id: order.saleOrderId,
             store_name: order.storeName,
           });
         }
@@ -92,9 +92,9 @@ Page({
 
   async loadStaffList() {
     try {
-      const storeName = app.globalData.boundStoreName;
-      if (!storeName) return;
-      const data = await callClientApi('staff.list', { storeName });
+      const storeId = app.globalData.boundStoreId;
+      if (!storeId) return;
+      const data = await callClientApi('staff.list', { storeId });
       this.setData({ staffList: data?.staffList || [] });
     } catch {
       // 静默失败，美容师列表不影响预约
@@ -114,13 +114,13 @@ Page({
   onSelectItem(e: WechatMiniprogram.TouchEvent) {
     const item = e.currentTarget.dataset.item as any;
     this.setData({
-      selectedItemFlowNo: item.item_flow_no,
-      selectedItemOrderNo: item.order_no,
+      selectedSaleItemId: item.sale_item_id,
+      selectedSaleOrderId: item.sale_order_id,
     });
   },
 
   onClearItem() {
-    this.setData({ selectedItemFlowNo: '', selectedItemOrderNo: '' });
+    this.setData({ selectedSaleItemId: '', selectedSaleOrderId: '' });
   },
 
   onShowDatePicker() {
@@ -171,7 +171,7 @@ Page({
   },
 
   async onSubmit() {
-    const { selectedItemFlowNo, appointmentDate, appointmentTimeSlot, selectedStaffWfId, selectedStaffName, notes } = this.data;
+    const { selectedSaleItemId, appointmentDate, appointmentTimeSlot, selectedStaffWfId, selectedStaffName, notes } = this.data;
     if (!appointmentDate || !appointmentTimeSlot) {
       Toast('请选择预约日期和时段');
       return;
@@ -180,7 +180,7 @@ Page({
     this.setData({ submitting: true });
     try {
       await callClientApi('appointment.create', {
-        itemFlowNo: selectedItemFlowNo || null,
+        saleItemId: selectedSaleItemId || null,
         appointmentTime: `${appointmentDate} ${appointmentTimeSlot}`,
         staffWfId: selectedStaffWfId || null,
         staffName: selectedStaffName || null,

@@ -31,24 +31,24 @@
   <view wx:else class="list-wrap">
     <view
       wx:for="{{list}}"
-      wx:key="order_no"
+      wx:key="sale_order_id"
       class="order-card"
       bindtap="onOrderTap"
-      data-order-no="{{item.order_no}}"
+      data-sale-order-id="{{item.sale_order_id}}"
     >
       <!-- 卡片头 -->
       <view class="order-card__header">
         <view class="order-no-row">
-          <text class="order-no">{{item.order_no}}</text>
-          <van-tag wx:if="{{item.order_type === '体验'}}" color="#F9F0FF" text-color="#722ED1">体验</van-tag>
+          <text class="order-no">{{item.sale_order_id}}</text>
+          <van-tag wx:if="{{item.sale_order_type === '体验'}}" color="#F9F0FF" text-color="#722ED1">体验</van-tag>
         </view>
         <text class="order-status {{item.statusClass}}">{{item.status}}</text>
       </view>
 
       <!-- 商品明细摘要 -->
       <view class="order-items">
-        <view wx:for="{{item.items}}" wx:key="item_flow_no" wx:for-item="oi" class="order-item-row">
-          <text class="oi-name">{{oi.spu_name}} · {{oi.sku_display_name}}</text>
+        <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
+          <text class="oi-name">{{oi.product_name}} · {{oi.sku_spec_name}}</text>
           <view class="oi-right">
             <text class="oi-qty">×{{oi.quantity}}</text>
             <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
@@ -69,7 +69,7 @@
 
       <!-- 待支付操作 -->
       <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
-        <van-button size="small" plain round bindtap="onPayTap" data-order-no="{{item.order_no}}" catch:tap="onPayTap" data-order-no="{{item.order_no}}">去支付</van-button>
+        <van-button size="small" plain round bindtap="onPayTap" data-sale-order-id="{{item.sale_order_id}}" catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
       </view>
 
     </view>

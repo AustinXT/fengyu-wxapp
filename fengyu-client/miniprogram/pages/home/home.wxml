@@ -114,10 +114,10 @@
         <view wx:else class="spu-list">
           <view
             wx:for="{{searchResults}}"
-            wx:key="spu_id"
+            wx:key="product_id"
             class="spu-card"
             bindtap="onSpuTap"
-            data-spu-id="{{item.spu_id}}"
+            data-product-id="{{item.product_id}}"
           >
             <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
               <van-icon name="photo-o" size="48rpx" color="#CCCCCC" />
@@ -134,7 +134,7 @@
                   <text class="price-integer">{{item.min_price}}</text>
                   <text class="price-start">起</text>
                 </view>
-                <view class="spu-buy-btn" catchtap="onBuyTap" data-spu-id="{{item.spu_id}}">
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
                   <text class="spu-buy-text">购买</text>
                 </view>
               </view>
@@ -191,10 +191,10 @@
         <view wx:else class="spu-list">
           <view
             wx:for="{{spuList}}"
-            wx:key="spu_id"
+            wx:key="product_id"
             class="spu-card"
             bindtap="onSpuTap"
-            data-spu-id="{{item.spu_id}}"
+            data-product-id="{{item.product_id}}"
           >
             <!-- 左侧封面 -->
             <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
@@ -225,7 +225,7 @@
                   <text class="price-integer">{{item.min_price}}</text>
                   <text class="price-start">起</text>
                 </view>
-                <view class="spu-buy-btn" catchtap="onBuyTap" data-spu-id="{{item.spu_id}}">
+                <view class="spu-buy-btn" catchtap="onBuyTap" data-product-id="{{item.product_id}}">
                   <text class="spu-buy-text">购买</text>
                 </view>
               </view>

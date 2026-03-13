@@ -39,12 +39,12 @@
     <view class="items-section">
       <view
         wx:for="{{items}}"
-        wx:key="itemFlowNo"
+        wx:key="saleItemId"
         class="order-item"
       >
         <view class="item-left">
-          <text class="item-name">{{item.spuName}}</text>
-          <text class="item-spec">{{item.skuDisplayName}}</text>
+          <text class="item-name">{{item.productName}}</text>
+          <text class="item-spec">{{item.skuSpecName}}</text>
         </view>
         <text class="item-price">¥{{item.unitPrice}}</text>
       </view>

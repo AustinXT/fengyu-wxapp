@@ -21,7 +21,7 @@
         <van-sidebar-item
           wx:for="{{categories}}"
           wx:key="_index"
-          title="{{item.category}}"
+          title="{{item.category_name}}"
         />
       </van-sidebar>
     </scroll-view>
@@ -47,10 +47,10 @@
       <view wx:else class="spu-list">
         <view
           wx:for="{{spuList}}"
-          wx:key="spu_id"
+          wx:key="product_id"
           class="spu-card"
           bindtap="onSpuTap"
-          data-spu-id="{{item.spu_id}}"
+          data-product-id="{{item.product_id}}"
         >
           <!-- 商品封面 -->
           <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">

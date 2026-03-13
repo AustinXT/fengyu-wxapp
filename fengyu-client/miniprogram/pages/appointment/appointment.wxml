@@ -53,8 +53,8 @@
       <!-- 详情行 -->
       <van-cell-group border="{{false}}">
         <van-cell title="预约时间" value="{{item.appointment_time_fmt}}" />
-        <van-cell title="美容师"   value="{{item.staff_name || '未指定'}}" />
-        <van-cell title="来源订单" value="{{item.order_no}}" />
+        <van-cell title="美容师"   value="{{item.employee_name || '未指定'}}" />
+        <van-cell title="来源订单" value="{{item.sale_order_id}}" />
       </van-cell-group>
 
       <!-- 操作按钮 -->

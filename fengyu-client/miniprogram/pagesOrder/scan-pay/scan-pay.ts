@@ -26,8 +26,8 @@ Page({
   },
 
   onLoad(options) {
-    const { scene, orderNo } = options as { scene?: string; orderNo?: string };
-    let targetOrderNo = orderNo;
+    const { scene, orderNo, saleOrderId } = options as { scene?: string; orderNo?: string; saleOrderId?: string };
+    let targetOrderNo = saleOrderId || orderNo;
     if (scene) {
       targetOrderNo = decodeURIComponent(scene);
     }
@@ -39,10 +39,10 @@ Page({
     this.loadOrder(targetOrderNo);
   },
 
-  async loadOrder(orderNo: string) {
+  async loadOrder(saleOrderId: string) {
     this.setData({ isLoading: true, errorMsg: '', statusMsg: '' });
     try {
-      const data = await callClientApi('order.scanDetail', { orderNo });
+      const data = await callClientApi('order.scanDetail', { saleOrderId });
 
       // 非待支付订单：显示状态提示
       if (data.statusMsg) {
@@ -82,21 +82,21 @@ Page({
       const { orderNo, paymentMethod } = this.data;
 
       if (paymentMethod === 'offline') {
-        await callClientApi('order.offlinePay', { orderNo });
+        await callClientApi('order.offlinePay', { saleOrderId: orderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => {
-          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
         }, 1500);
         return;
       }
 
       // 微信支付
-      const data = await callClientApi('order.pay', { orderNo });
+      const data = await callClientApi('order.pay', { saleOrderId: orderNo });
       const payParams = data.paymentParams || {};
       await wx.requestPayment(payParams);
       Toast.success('支付成功');
       setTimeout(() => {
-        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?orderNo=${orderNo}` });
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
       }, 1200);
     } catch (err: any) {
       Toast.fail(err?.message || err?.errMsg || '支付失败，请重试');
