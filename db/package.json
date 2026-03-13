@@ -10,7 +10,7 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
-    "drizzle-orm": "^0.40.0",
+    "drizzle-orm": "^0.45.1",
     "mssql": "^12.2.0",
     "pg": "^8.18.0",
     "postgres": "^3.4.5"
