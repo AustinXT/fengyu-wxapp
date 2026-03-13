@@ -527,7 +527,7 @@ ctx.auth = {
 login 返回中包含 `permissions` 字段：
 - `permissions.roles[]`：每条含 `role`、`scopeType`、`scopeName`
 - `permissions.actions[]`：扁平数组，如 `['sale_order:create', 'customer:search', ...]`
-- 前端据此控制 UI 可见性，详见 `staff.pr.spec.md` §11.6/§11.7
+- 前端据此控制 UI 可见性，详见 `staff.pr.spec.md` §3.11
 
 > 同步推导规则详见 `workfine-sync.spec.md` §4.6。
 
@@ -637,7 +637,7 @@ allocated → pending          （店长删除重新分配）
 
 ## 7. MVP 验收标准
 
-> 员工端日历相关验收标准（AC-01~AC-03）已移至 `staff.pr.spec.md` §8。
+> 员工端日历相关验收标准（AC-01~AC-03）已移至 `staff.pr.spec.md` §7。
 
 | ID | 标准 | 验证方式 |
 |----|------|----------|

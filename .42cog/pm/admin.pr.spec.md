@@ -47,7 +47,7 @@
 
 ### 2.2 扩展权限矩阵
 
-在 `backend.pr.spec.md` §6.5 基础上新增 admin/customer_mgr 列和管理后台专属模块：
+在 `backend.pr.spec.md` §3.1 基础上新增 admin/customer_mgr 列和管理后台专属模块：
 
 | 模块 | 操作 | admin | manager | finance | hr | product | customer_mgr |
 |------|------|-------|---------|---------|-----|---------|-------------|
@@ -127,7 +127,7 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **可编辑字段**: name, type, parent_id, sort_order, is_active
 
-**层级约束**: 引用 `backend.pr.spec.md` §4.1（headquarters→market→store→department，department 不可嵌套）
+**层级约束**: 引用 `backend.pr.spec.md` §2.1（headquarters→market→store→department，department 不可嵌套）
 
 #### AFF-02 门店信息管理
 
@@ -235,7 +235,7 @@ P1 | 权限：manager, finance（scope 内）| 指标同 `staff.pr.spec.md` §3.
 
 P2 | 权限：manager, finance（scope 内）| 模块：客户回店率、品项占比、经营动线、人效分析、排行榜
 
-> 从 staff.pr.spec.md §3.22 迁入，员工端仅保留简单看板。
+> 从员工端迁入，员工端仅保留简单看板（§3.12）。
 
 ---
 
