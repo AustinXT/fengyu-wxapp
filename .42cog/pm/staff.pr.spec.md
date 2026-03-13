@@ -813,88 +813,61 @@ TabBar
 
 ---
 
-## 10. employeeApi 接口汇总
+## 10. staffApi 接口汇总
 
-| 模块 | 接口 | 说明 | 前端调用页面 | 实现状态 |
-|------|------|------|-------------|---------|
-| auth | login | 员工微信登录 | app.ts (onLaunch) | 已实现 |
-| auth | bindPhone | 绑定手机号 → 关联 PG 员工档案 | login | 已实现 |
-| store | list | 门店列表 | profile (Picker) | 已实现 |
-| store | unbindRequests | 待审批解绑申请列表 | unbind-requests | 已实现 |
-| store | approveUnbind | 审批通过解绑 | unbind-requests | 已实现 |
-| store | rejectUnbind | 拒绝解绑申请 | unbind-requests | 已实现 |
-| employee | list | 员工列表 | — | 已实现 |
-| employee | departments | 部门列表（含员工分组） | revenue-allocation | 已实现 |
-| employee | todayCommission | 今日分成 | workbench | 已实现 |
-| employee | monthlyCalendar | 月度业绩日历 | workbench | 已实现 |
-| employee | todoList | 待处理事项 | workbench | 已实现 |
-| employee | bindStore | 切换工作门店 | profile | 已实现 |
-| product | shopInit | 开单页初始化（分类+首个分类SPU） | order-create | 已实现 |
-| product | categories | 品项分类列表 | order-create | 已实现 |
-| product | spuList | SPU 商品列表 | order-create | 已实现 |
-| product | skuDetail | SKU 详情（含实时价格） | product-detail | 已实现 |
-| product | spuDetail | SPU 详情（含 SKU 列表、福利活动反查） | product-detail | 已实现 |
-| product | promotionList | 福利活动列表（原始格式） | order-create | 已实现 |
-| product | promotionPlans | 福利活动列表（前端适配格式） | order-create | 已实现 |
-| customer | search | 顾客搜索 | order-create, customer-list | 已实现 |
-| customer | calendar | 消费日历 | customer-detail | 已实现 |
-| customer | detail | 顾客详情 | customer-detail | 已实现 |
-| customer | paidOrders | 已支付订单（用于核销选择） | customer-detail | 已实现 |
-| order | create | 员工开单（普通/体验/福利活动） | order-create | 已实现 |
-| order | qrcode | 订单二维码状态 | order-qrcode | 已实现 |
-| order | confirmOffline | 确认线下收款 | order-detail, order-list | 已实现 |
-| order | close | 关闭订单 | order-detail | 已实现 |
-| order | resetFailed | 重置支付失败 | order-detail | 已实现 |
-| order | list | 订单列表 | order-list | 已实现 |
-| order | detail | 订单详情 | order-detail, revenue-allocation | 已实现 |
-| allocation | save | 保存营业额分配 | revenue-allocation | 已实现 |
-| allocation | deleteAllocation | 删除分配记录 | revenue-allocation | 已实现 |
-| allocation | getCommissionRates | 获取提成比例矩阵 | revenue-allocation | 已实现 |
-| allocation | pendingList | 待分配订单列表 | allocation-list | 已实现 |
-| allocation | suggest | 分配建议（自动填充） | revenue-allocation | 已实现 |
-| appointment | list | 预约列表 | appointment | 已实现 |
-| appointment | detail | 预约详情 | appointment-detail | 已实现 |
-| appointment | confirm | 确认预约 | appointment-detail | 已实现 |
-| appointment | checkin | 到店签到 | appointment-detail | 已实现 |
-| service | create | 创建服务单 | service-create | 已实现 |
-| service | start | 开始服务 | service, service-detail | 已实现 |
-| service | complete | 完成服务（原子扣减） | service, service-detail | 已实现 |
-| service | cancel | 取消服务单 | service-detail | 已实现 |
-| service | list | 服务单列表 | service | 已实现 |
-| service | detail | 服务单详情 | service-detail | 已实现 |
-| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | — | 待实现 |
-| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | — | 待实现 |
-| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | — | 待实现 |
-| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | — | 待实现 |
-| sync | full | WorkFine → PG 全量同步 | — | 待实现 |
-| permission | list, assign, revoke | 权限角色管理 | — | 待实现 |
-
-### 10.1 staffApi 权限要求对照
-
-| 模块 | 接口 | 权限要求 | 适配状态 |
-|------|------|----------|---------|
-| auth | login, bindPhone | 无（登录前） | 需适配 |
-| store | list | `store:list` | 需适配 |
-| store | unbindRequests, approveUnbind, rejectUnbind | `store:manage` | 需适配 |
-| employee | list, departments | `employee:list` | 需适配 |
-| employee | todayCommission, monthlyCalendar, todoList, bindStore | `workbench:dashboard` | 需适配 |
-| product | shopInit, categories, spuList, skuDetail, spuDetail | `product:categories` / `product:list` / `product:detail` | 需适配 |
-| product | promotionList, promotionPlans | `product:list` | 需适配 |
-| customer | search, calendar, detail, paidOrders | `customer:*` | 需适配 |
-| sale_order | create, qrcode | `sale_order:create` | 已实现（需适配） |
-| sale_order | confirmOffline | `sale_order:confirmOffline` | 已实现 |
-| sale_order | close, resetFailed | `sale_order:close` / `sale_order:resetFailed` | 已实现 |
-| sale_order | list, detail | `sale_order:list` / `sale_order:detail` | 已实现 |
-| allocation | save, deleteAllocation | `allocation:save` / `allocation:delete` | 需适配 |
-| allocation | getCommissionRates, pendingList, suggest | `allocation:list` | 需适配 |
-| appointment | list, detail, confirm, checkin | `appointment:*` | 已实现 |
-| service | create, start, complete, cancel, list, detail | `service:*` | 已实现 |
-| sale_order | createPayment | `sale_order:create` | 待实现 |
-| sale_order | createConversion | `sale_order:create` | 待实现 |
-| sale_order | createRefund | `sale_order:create` | 待实现 |
-| sale_order | approveRefund | `sale_order:approveRefund` | 待实现 |
-| sync | full | `sync:trigger` | 待实现 |
-| permission | list, assign, revoke | `permission:*` | 待实现 |
+| 模块 | 接口 | 说明 | 权限要求 | 前端调用页面 | 实现状态 |
+|------|------|------|----------|-------------|---------|
+| auth | login | 员工微信登录 | 无（登录前） | app.ts (onLaunch) | 已实现 |
+| auth | bindPhone | 绑定手机号 → 关联 PG 员工档案 | 无（登录前） | login | 已实现 |
+| store | list | 门店列表 | `store:list` | profile (Picker) | 已实现 |
+| store | unbindRequests | 待审批解绑申请列表 | `store:manage` | unbind-requests | 已实现 |
+| store | approveUnbind | 审批通过解绑 | `store:manage` | unbind-requests | 已实现 |
+| store | rejectUnbind | 拒绝解绑申请 | `store:manage` | unbind-requests | 已实现 |
+| employee | list | 员工列表 | `employee:list` | — | 已实现 |
+| employee | departments | 部门列表（含员工分组） | `employee:list` | revenue-allocation | 已实现 |
+| employee | todayCommission | 今日分成 | `workbench:dashboard` | workbench | 已实现 |
+| employee | monthlyCalendar | 月度业绩日历 | `workbench:dashboard` | workbench | 已实现 |
+| employee | todoList | 待处理事项 | `workbench:dashboard` | workbench | 已实现 |
+| employee | bindStore | 切换工作门店 | `workbench:dashboard` | profile | 已实现 |
+| product | shopInit | 开单页初始化（分类+首个分类SPU） | `product:categories` | order-create | 已实现 |
+| product | categories | 品项分类列表 | `product:categories` | order-create | 已实现 |
+| product | spuList | SPU 商品列表 | `product:list` | order-create | 已实现 |
+| product | skuDetail | SKU 详情（含实时价格） | `product:detail` | product-detail | 已实现 |
+| product | spuDetail | SPU 详情（含 SKU 列表、福利活动反查） | `product:detail` | product-detail | 已实现 |
+| product | promotionList | 福利活动列表（原始格式） | `product:list` | order-create | 已实现 |
+| product | promotionPlans | 福利活动列表（前端适配格式） | `product:list` | order-create | 已实现 |
+| customer | search | 顾客搜索 | `customer:*` | order-create, customer-list | 已实现 |
+| customer | calendar | 消费日历 | `customer:*` | customer-detail | 已实现 |
+| customer | detail | 顾客详情 | `customer:*` | customer-detail | 已实现 |
+| customer | paidOrders | 已支付订单（用于核销选择） | `customer:*` | customer-detail | 已实现 |
+| order | create | 员工开单（普通/体验/福利活动） | `sale_order:create` | order-create | 已实现 |
+| order | qrcode | 订单二维码状态 | `sale_order:create` | order-qrcode | 已实现 |
+| order | confirmOffline | 确认线下收款 | `sale_order:confirmOffline` | order-detail, order-list | 已实现 |
+| order | close | 关闭订单 | `sale_order:close` | order-detail | 已实现 |
+| order | resetFailed | 重置支付失败 | `sale_order:resetFailed` | order-detail | 已实现 |
+| order | list | 订单列表 | `sale_order:list` | order-list | 已实现 |
+| order | detail | 订单详情 | `sale_order:detail` | order-detail, revenue-allocation | 已实现 |
+| allocation | save | 保存营业额分配 | `allocation:save` | revenue-allocation | 已实现 |
+| allocation | deleteAllocation | 删除分配记录 | `allocation:delete` | revenue-allocation | 已实现 |
+| allocation | getCommissionRates | 获取提成比例矩阵 | `allocation:list` | revenue-allocation | 已实现 |
+| allocation | pendingList | 待分配订单列表 | `allocation:list` | allocation-list | 已实现 |
+| allocation | suggest | 分配建议（自动填充） | `allocation:list` | revenue-allocation | 已实现 |
+| appointment | list | 预约列表 | `appointment:*` | appointment | 已实现 |
+| appointment | detail | 预约详情 | `appointment:*` | appointment-detail | 已实现 |
+| appointment | confirm | 确认预约 | `appointment:*` | appointment-detail | 已实现 |
+| appointment | checkin | 到店签到 | `appointment:*` | appointment-detail | 已实现 |
+| service | create | 创建服务单 | `service:*` | service-create | 已实现 |
+| service | start | 开始服务 | `service:*` | service, service-detail | 已实现 |
+| service | complete | 完成服务（原子扣减） | `service:*` | service, service-detail | 已实现 |
+| service | cancel | 取消服务单 | `service:*` | service-detail | 已实现 |
+| service | list | 服务单列表 | `service:*` | service | 已实现 |
+| service | detail | 服务单详情 | `service:*` | service-detail | 已实现 |
+| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | `sale_order:create` | — | 待实现 |
+| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | `sale_order:create` | — | 待实现 |
+| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | `sale_order:create` | — | 待实现 |
+| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | `sale_order:approveRefund` | — | 待实现 |
+| sync | full | WorkFine → PG 全量同步 | `sync:trigger` | — | 待实现 |
+| permission | list, assign, revoke | 权限角色管理 | `permission:*` | — | 待实现 |
 
 ---
 

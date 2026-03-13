@@ -1,21 +1,17 @@
 # 凤御双美容院 — 后端服务产品需求规格书
 
 > **文档版本**: 3.1.0
-> **范围**: 后端服务（CloudBase 云函数 + PostgreSQL 数据库）
-> **约束文档**: `.42cog/real.md` v2.0.0 | `.42cog/cog.md` v2.0.0
-> **端 spec 引用**: `client.pr.spec.md` v1.0.0 | `staff.pr.spec.md` v1.0.0
-> **同步方案**: `workfine-sync.spec.md` v1.0.0
+> **范围**: 后端服务
+> **约束文档**: `.42cog/real.md` | `.42cog/cog.md`
 > **日期**: 2026-03-11
 >
 > **运行时架构**: 所有业务查询 100% 走 PG，WorkFine SQL Server 不参与在线请求链路。WorkFine 迁移与同步方案见 `workfine-sync.spec.md`。
->
-> **商品表设计**: `product_categories` + `products` + `product_skus` 三张自包含表。枚举 `product_kind`（福利活动/护理项目/家居产品/充值卡）。商品数据初始导入后由员工手动维护。
 
 ---
 
 ## 1. 概述
 
-**定位**: 凤御双美容院微信小程序生态系统的统一后端服务层，为顾客端（C端）和员工端（B端）提供 API 网关、业务逻辑、数据持久化和跨端协调。
+**定位**: 凤御双美容院微信小程序生态系统的统一后端服务层，为顾客端（C端）、员工端（B端）和管理后台提供 API 网关、业务逻辑、数据持久化和跨端协调。
 
 **技术栈**:
 
@@ -37,7 +33,6 @@
     ↓
 CloudBase 云函数（Node.js）
     └── PG 自托管数据库（业务数据 + 全部实体）
-          ↑ 运行时：所有业务查询 100% 走 PG
 ```
 
 **云函数网关模式**: 每个云函数是单入口 action 路由网关：`{ action: 'module.method', payload: {} }`。路由懒加载 `require('./routes/' + module)`。
@@ -159,26 +154,18 @@ CloudBase 云函数（Node.js）
 | `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
 | `position_name` | varchar(50) \| null | 工作职位（如"门店经理"、"美容师"） |
 | `birthday` | date \| null | 出生日期 |
-| `skills` | text[] \| null | 技能标签数组（如 ['面部护理','身体护理']） |
+| `skills` | text[] \| null | 技能标签数组（如 ['美容师','推广', '养生师']） |
 | `is_resigned` | boolean | 是否离职，NOT NULL DEFAULT false |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
 
 > **索引**: `INDEX(store_id, is_resigned)`, `INDEX(phone)`
 >
-> **字段分层**（11 个业务字段）:
-> - **Layer 1 — 身份与认证**: `employee_id`, `name`, `gender`, `phone`, `id_card`
-> - **Layer 2 — 组织归属**: `store_id`（FK → stores），`org_node_id`（FK → org_nodes，部门节点），`position_name`
-> - **Layer 3 — 人事状态**: `is_resigned`
-> - **Layer 4 — 个人档案**: `birthday`, `skills`
->
 > **store_id**: 同步脚本读取 WorkFine UDF_S_1163（所属分院），通过 `store_name` 查找 PG stores 表得到 `store_id` 写入。`market_name` 不再冗余存储于 employees，需要时通过 JOIN stores 获取。
 >
 > **org_node_id**: 同步脚本读取 WorkFine UDF_S_1513（职能部门），查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`。部门名称和父节点名称通过 JOIN `org_nodes` 获取，不冗余存储。
 >
 > **id_card**（UDF_S_1154）：高敏 PII 字段，AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密。
->
-> **skills**: 技能标签数组，不来自 WorkFine 同步，由员工端手动维护。
 >
 > **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。详见 §6.7。
 >
@@ -547,7 +534,7 @@ CloudBase 云函数（Node.js）
 >
 > **初始数据**: 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_id`（JOIN `org_nodes.name`）+ `position_name` 规则自动推导，详见 §6.10 同步推导规则。`hr` 和 `product` 角色不参与自动推导，仅通过管理后台手动分配。
 >
-> **默认降级**: 未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`
+> **默认降级**: 详见 §6.6。
 >
 > **软删除**: `is_void = true` 的记录不参与权限查询。手动撤销权限时标记 `is_void = true` + `voided_at` 而非物理删除，保留审计痕迹。同步脚本不覆盖 `created_by != 'sync'` 的手动分配记录。
 
@@ -687,8 +674,6 @@ CloudBase 云函数（Node.js）
 > **一人多角色**：同一员工可同时拥有多个角色（如既是 manager 又是 hr），每个 `(employee_id, role, scope_id)` 组合一条记录。
 >
 > **一角色多域**：同一员工的同一角色可分配到多个域（如 manager 同时管理两家门店），每个 scope_id 一条记录。示例：`(E1, manager, store_A_id)` + `(E1, manager, store_B_id)`。
->
-> **向后兼容**：保留 `employees.position_name` 字段和现有 `isManager()` 辅助函数，渐进迁移到新权限体系。
 
 ### 6.3 域定义
 
@@ -759,81 +744,7 @@ CloudBase 云函数（Node.js）
 >
 > **脱敏手机号**：staff 角色查看顾客时，手机号中间 4 位替换为 `****`（如 `138****5678`）。
 
-#### 6.5.2 权限矩阵代码结构
-
-```js
-// staffApi/config/permissions.js
-const PERMISSION_MATRIX = {
-  workbench: {
-    dashboard:      ['manager', 'finance', 'hr', 'staff'],
-  },
-  sale_order: {
-    create:         ['manager'],
-    list:           ['manager', 'finance', 'staff'],
-    detail:         ['manager', 'finance', 'staff'],
-    confirmOffline: ['manager'],
-    close:          ['manager'],
-    resetFailed:    ['manager'],
-  },
-  allocation: {
-    save:           ['manager'],
-    delete:         ['manager'],
-    list:           ['manager', 'finance'],
-    detail:         ['manager', 'finance'],
-  },
-  service: {
-    create:         ['manager', 'staff'],
-    start:          ['manager', 'staff'],
-    complete:       ['manager', 'staff'],
-    cancel:         ['manager', 'staff'],
-    list:           ['manager', 'staff'],
-    detail:         ['manager', 'staff'],
-  },
-  appointment: {
-    list:           ['manager', 'staff'],
-    detail:         ['manager', 'staff'],
-    confirm:        ['manager', 'staff'],
-    checkin:        ['manager', 'staff'],
-  },
-  customer: {
-    search:         ['manager', 'finance', 'hr', 'staff'],
-    detail:         ['manager', 'finance', 'hr', 'staff'],
-    calendar:       ['manager', 'finance', 'hr', 'staff'],
-    paidOrders:     ['manager', 'finance', 'hr', 'staff'],
-  },
-  product: {
-    categories:     ['manager', 'product', 'staff'],
-    list:           ['manager', 'product', 'staff'],
-    detail:         ['manager', 'product', 'staff'],
-    create:         ['product'],
-    update:         ['product'],
-    delete:         ['product'],
-  },
-  employee: {
-    list:           ['manager', 'hr', 'staff'],
-    detail:         ['manager', 'hr', 'staff'],
-    create:         ['hr'],
-    update:         ['hr'],
-    delete:         ['hr'],
-  },
-  finance: {
-    dashboard:      ['manager', 'finance'],
-    reports:        ['manager', 'finance'],
-  },
-  store: {
-    list:           ['manager', 'finance', 'hr', 'staff'],
-    manage:         ['manager', 'hr'],
-  },
-  permission: {
-    list:           ['manager', 'hr'],
-    assign:         ['manager', 'hr'],
-    revoke:         ['manager', 'hr'],
-  },
-  sync: {
-    trigger:        ['manager', 'hr'],
-  },
-};
-```
+> 实现时按上表生成代码常量 `PERMISSION_MATRIX`（`staffApi/config/permissions.js`），键为 `module.action`，值为允许的角色数组。
 
 ### 6.6 角色+域查询
 
@@ -900,7 +811,7 @@ ctx.auth = {
 > 1. 查询 `permission_roles`（`WHERE employee_id = ? AND is_void = false`）
 > 2. 对每条记录，从 `PERMISSION_MATRIX` 查找该 role 允许的所有 `module:action`
 > 3. 合并去重得到 `permissions.actions[]`
-> 4. 无记录时降级：`role=staff, scope=员工所在门店`
+> 4. 无记录时降级（详见 §6.6）
 >
 > **一角色多域的 scope 聚合**：`getMaxScope()` 返回最高级别（headquarters > market > store）。如果同级别有多个节点（如两家门店），域过滤使用 `IN` 条件而非 `=`。
 
@@ -1010,7 +921,7 @@ auth.login 返回中新增 `permissions` 字段：
 >
 > **手动分配保护**：同步时跳过 `created_by != 'sync'` 的记录，确保手动分配的权限不被覆盖。
 >
-> **默认降级**：未匹配规则或无 `permission_roles` 记录的员工 → `role=staff, scope=其所在门店`。
+> **默认降级**：详见 §6.6。
 >
 > **代理经理/实习经理**：同步脚本默认推导为 `role=staff`；如需赋予经理权限，由上级通过管理后台手动升级。
 
@@ -1033,7 +944,7 @@ auth.login 返回中新增 `permissions` 字段：
 3. **美容师选择非必须**：顾客下单时可不指定美容师
 4. **日历入账口径**：仅 `已支付` 订单计入当日消费
 5. **混购完成规则**：订单包含多类项目时，`已完成` 以**所有疗程卡行与单品行的 remaining_sessions 全部归零**为触发条件；院装产品行支付即视为该行已交付
-6. **幂等要求**：支付回调、服务完成两类接口必须幂等
+6. **幂等要求**：详见 §11 "支付幂等"
 7. **线下付款口径**（仅 MVP）：顾客端选择线下付款先进入 `待确认收款`，店长确认后才计为 `已支付`
 8. 支付成功触发条件统一为**订单进入已支付**
 9. 订单在员工端开单时即写入数据库（状态 `待支付`），客户扫码后无需重复创建

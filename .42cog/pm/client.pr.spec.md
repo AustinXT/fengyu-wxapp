@@ -270,7 +270,7 @@
 - 订单号/流水号格式见 `backend.pr.spec.md` §4.8/§4.9
 - 顾客姓名回填：从 PG `client_wechat_users` 按手机号查询 `name`
 
-**订单状态集**: `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭`
+**订单状态集**: 见 `backend.pr.spec.md` §8 订单状态机。
 
 **API**: `order.create` / `order.pay` / `order.alipayPay` / `order.offlinePay`
 
@@ -688,7 +688,7 @@ TabBar
 │   ├── 门店选择器 → 门店列表 (store-select) → 门店详情 (store-detail)
 │   ├── 扫码入口 → wx.scanCode → scan-pay（orderNo 型）或 navigateTo（path 型）
 │   ├── Banner → 活动详情
-│   ├── 福利活动 / 护理项目 / 家居产品 → 滚动到对应分类
+│   ├── 福利活动 / 护理项目 / 家居产品 / 充值卡 → 滚动到对应分类
 │   ├── 我的券 → Toast "开发中" (P1)
 │   ├── 我的疗程 → 疗程卡列表 (treatment-cards)
 │   ├── 商品卡片 → 商品详情 (service-detail) → 加入购物车 / 立即下单 → 结算 (checkout)
