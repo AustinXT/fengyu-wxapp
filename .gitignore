@@ -11,6 +11,12 @@ sources/*
 next-env.d.ts
 *.tsbuildinfo
 
+# Testing
+coverage/
+playwright-report/
+test-results/
+.auth/
+
 # PostgreSQL & Docker
 db/.env
 *.sql.backup
