@@ -16,3 +16,4 @@ db/.env
 *.sql.backup
 postgres_data/
 .env
+.env.local

@@ -99,16 +99,25 @@ getCartTotal(): number                       // 总价
 
 ## UI 主题
 
-黑金奢华风格，通过 CSS 变量覆盖 Vant 默认主题：
+白红主题（中国红），通过 CSS 变量覆盖 Vant 默认主题：
 
-| 用途 | 颜色 |
-|------|------|
-| 主色（金） | `#D4A76A` |
-| 品牌黑 | `#000000` |
-| 正文 | `#1A1A1A` |
-| 背景 | `#FAFAFA` |
+| 用途 | 变量 | 色值 |
+|------|------|------|
+| 品牌主色 | `--color-primary` | `#C0322A` |
+| 红色浅底 | `--color-primary-light` | `#FFF0EE` |
+| 深红 | `--color-primary-dark` | `#9B1E14` |
+| 主文字 | `--color-text-primary` | `#1A1A1A` |
+| 标题文字 | `--color-text-title` | `#333333` |
+| 副文字 | `--color-text-secondary` | `#666666` |
+| 提示文字 | `--color-text-hint` | `#999999` |
+| 页面背景 | `--color-bg-page` | `#FAFAFA` |
+| 卡片背景 | `--color-bg-card` | `#FFFFFF` |
+| 区块背景 | `--color-bg-section` | `#F5F5F5` |
+| 边框 | `--color-border` | `#E8E8E8` |
 
-在 `app.wxss` 中统一设置 `--button-primary-background-color`、`--tab-active-color` 等变量。
+状态色：`--color-status-pending`(橙) / `--color-status-confirm`(金棕) / `--color-status-paid`(绿) / `--color-status-done`(灰) / `--color-status-failed`(红) / `--color-status-serving`(蓝)
+
+在 `app.wxss` 中统一设置 Vant 覆盖变量和全局复用样式（`.status-*`、`.staff-*`、`.price-group` 等）。
 
 ## Vant Weapp 组件
 

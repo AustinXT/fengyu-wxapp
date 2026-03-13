@@ -310,7 +310,7 @@
 | `name` | varchar(50) \| null | 顾客姓名 |
 | `bound_store_id` | text \| null | FK → `stores.store_id`（顾客端主动绑定的门店） |
 | `bound_employee_id` | varchar(50) \| null | 所属美容师 |
-| *档案字段* | *各类型* | `member_level`、`customer_source`、`category`、`birthday`、`occupation`、`is_married`、`wechat_name`、`skin_type`、`improvement_focus`、`skin_issue`、`wellness_preference`（均 nullable） |
+| *档案字段* | *各类型* | `gender`、`member_level`、`customer_source`、`category`、`birthday`、`occupation`、`is_married`、`wechat_name`、`skin_type`、`improvement_focus`、`skin_issue`、`wellness_preference`、`notes`（均 nullable） |
 | `last_login_at` | timestamp \| null | 最近登录时间 |
 
 > **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(customer_id) WHERE customer_id IS NOT NULL`、`INDEX(bound_store_id)`
