@@ -7,8 +7,8 @@ description: >
 metadata:
   title: 微信小程序编码规范
   description_zh: 微信小程序编码约束、CloudBase 云函数模式、认证集成与错误处理
-  version: 2.0.0
   author: nvoyager
+  version: 1.0.3
 ---
 
 ## 何时使用 / 不适用
