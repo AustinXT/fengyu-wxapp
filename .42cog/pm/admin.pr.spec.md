@@ -18,11 +18,12 @@
 
 | 智能体 | 行动能力 |
 |--------|----------|
-| admin（超级管理员） | 全部操作 + 系统配置 + 数据同步 + 权限管理（不受 scope 限制） |
-| manager（经理） | 员工端全部能力 + Web端数据管理（受 scope 限制） |
-| finance（财务） | 财务看板 + 订单/分配只读 + 顾客数据 |
-| hr（人事） | 员工管理 + 权限分配 + 门店管理 |
-| product（品项） | 商品 CRUD + 分类管理 |
+| admin（超级管理员） | 基础数据 CRUD + 系统配置 + 数据同步 + 权限管理（不受 scope 限制）；**不碰业务数据和顾客** |
+| manager（经理） | 业务操作（开单/收款/分配/服务/预约）+ 顾客数据（读+写）+ 经营看板（受 scope 限制） |
+| finance（财务） | 财务看板 + 订单/分配只读 + 顾客消费只读 + 数据中心 |
+| hr（人事） | 员工管理 + 权限分配 + 组织架构/门店管理 |
+| product（品项） | 商品 CRUD + 分类管理 + 优惠券管理 |
+| customer_mgr（顾客管理） | 顾客查询（完整）+ 档案维护 + 消费记录（受 scope 限制） |
 | staff（员工） | 仅可通过员工端小程序操作，不登录管理后台 |
 
 **核心可供性**:
@@ -46,48 +47,61 @@
 
 ### 2.1 admin 角色定义
 
-管理后台在员工端 5 角色基础上新增 `admin` 角色：
+管理后台在员工端 6 角色基础上新增 `admin` 角色：
 
 | 角色 | 标识 | 典型人员 | 核心能力 |
 |------|------|----------|----------|
-| **超级管理员** | `admin` | 系统运维人员、总部 IT | 全局全权限，不受 scope 限制；可管理 admin 角色分配；可配置系统参数 |
-| 经理 | `manager` | 门店经理、市场总监 | 同员工端 + Web 端数据管理（受 scope 限制） |
-| 财务 | `finance` | 财智部人员 | 财务看板、订单只读、营业额查看 |
-| 人事 | `hr` | 人事行政人员 | 员工管理、权限分配、门店管理 |
-| 品项 | `product` | 品项管理人员 | 商品增删改查 |
+| **超级管理员** | `admin` | 系统运维人员、总部 IT | 基础数据 CRUD（组织/门店/员工/商品/提成）+ 系统配置 + 数据同步 + 操作日志 + admin 权限分配；**不碰业务数据（订单/分配/服务单/预约）和顾客数据** |
+| 经理 | `manager` | 门店经理、市场总监 | 业务操作（开单/收款/分配/服务/预约）+ 顾客数据（读+写）+ 经营看板/数据中心（受 scope 限制）；**不碰权限管理/员工CRUD/商品CRUD/同步/配置** |
+| 财务 | `finance` | 财智部人员 | 订单只读、分配只读、顾客消费只读、财务看板、数据中心；**不可做任何写操作** |
+| 人事 | `hr` | 人事行政人员 | 员工管理（CRUD）、组织架构/门店管理、权限分配（scope 内）；**不碰业务数据/顾客/商品** |
+| 品项 | `product` | 品项管理人员 | 商品/分类/SKU/优惠券 CRUD；**不碰业务数据/顾客/人员** |
+| 顾客管理 | `customer_mgr` | 顾客管理专员、前台 | 顾客查询（完整不脱敏）、档案维护、消费记录（受 scope 限制）；需叠加基础角色使用 |
 
-> **staff 角色不可登录管理后台**。admin 角色不参与同步推导，仅通过管理后台手动分配。
+> **staff 角色不可登录管理后台**。`customer_mgr` 角色可登录管理后台（仅看到顾客管理菜单）。admin 角色不参与同步推导，仅通过管理后台手动分配。
 
 ### 2.2 扩展权限矩阵
 
-在 `backend.pr.spec.md` §6.5 的 PERMISSION_MATRIX 基础上，新增 admin 列和管理后台专属模块：
+在 `backend.pr.spec.md` §6.5 的 PERMISSION_MATRIX 基础上，新增 admin 列、customer_mgr 列和管理后台专属模块：
 
-| 模块 | 操作 | admin | manager | finance | hr | product |
-|------|------|-------|---------|---------|-----|---------|
-| **org** | list, detail | ✅ | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - |
-| **org** | create, update, delete | ✅ | - | - | ✅ scope 内 | - |
-| **store** | list | ✅ | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - |
-| **store** | create, update, delete | ✅ | ✅ 本门店 | - | ✅ scope 内 | - |
-| **employee** | list, detail | ✅ | ✅ scope 内 | - | ✅ scope 内 | - |
-| **employee** | create, update, delete | ✅ | - | - | ✅ scope 内 | - |
-| **product** | list, detail | ✅ | ✅ | - | - | ✅ |
-| **product** | create, update, delete | ✅ | - | - | - | ✅ |
-| **commission** | list, detail | ✅ | ✅ scope 内 | ✅ scope 内 | - | - |
-| **commission** | create, update, delete | ✅ | - | - | - | - |
-| **customer** | list, detail | ✅ | ✅ scope 内 | ✅ scope 内 | ✅ scope 内 | - |
-| **customer** | update | ✅ | ✅ scope 内 | - | - | - |
-| **permission** | list | ✅ | ✅ scope 内 | - | ✅ scope 内 | - |
-| **permission** | assign, revoke | ✅ | ✅ scope 内 | - | ✅ scope 内 | - |
-| **permission** | assign_admin | ✅ | - | - | - | - |
-| **sale_order** | 全部操作 | ✅ | ✅ scope 内 | 只读 | - | - |
-| **allocation** | 全部操作 | ✅ | ✅ scope 内 | 只读 | - | - |
-| **service** | 全部操作 | ✅ | ✅ scope 内 | - | - | - |
-| **appointment** | 全部操作 | ✅ | ✅ scope 内 | - | - | - |
-| **sync** | trigger | ✅ | ✅ | - | ✅ | - |
-| **operation_log** | list | ✅ | ✅ scope 内 | - | - | - |
-| **system** | config | ✅ | - | - | - | - |
+| 模块 | 操作 | admin | manager | finance | hr | product | customer_mgr |
+|------|------|-------|---------|---------|-----|---------|-------------|
+| **org** | list, detail | ✅ | - | - | ✅ scope 内 | - | - |
+| **org** | create, update, delete | ✅ | - | - | ✅ scope 内 | - | - |
+| **store** | list, detail | ✅ | ✅ scope 内† | ✅ scope 内† | ✅ scope 内 | - | - |
+| **store** | create, update, delete | ✅ | - | - | ✅ scope 内 | - | - |
+| **employee** | list, detail | ✅ | ✅ scope 内† | - | ✅ scope 内 | - | - |
+| **employee** | create, update, delete | ✅ | - | - | ✅ scope 内 | - | - |
+| **product** | list, detail | ✅ | - | - | - | ✅ | - |
+| **product** | create, update, delete | ✅ | - | - | - | ✅ | - |
+| **commission** | list, detail | ✅ | - | - | - | - | - |
+| **commission** | create, update, delete | ✅ | - | - | - | - | - |
+| **customer** | list, detail | - | ✅ scope 内 | ✅ scope 内（只读） | - | - | ✅ scope 内 |
+| **customer** | update, create | - | ✅ scope 内 | - | - | - | ✅ scope 内 |
+| **coupon** | list, detail | ✅ | - | - | - | ✅ | - |
+| **coupon** | create, update, delete | ✅ | - | - | - | ✅ | - |
+| **permission** | list | ✅ | - | - | ✅ scope 内 | - | - |
+| **permission** | assign, revoke | ✅ | - | - | ✅ scope 内 | - | - |
+| **permission** | assign_admin | ✅ | - | - | - | - | - |
+| **sale_order** | create | - | ✅ scope 内 | - | - | - | - |
+| **sale_order** | list, detail | - | ✅ scope 内 | ✅ scope 内（只读） | - | - | - |
+| **sale_order** | confirmOffline, close, resetFailed | - | ✅ scope 内 | - | - | - | - |
+| **allocation** | save, delete | - | ✅ scope 内 | - | - | - | - |
+| **allocation** | list, detail | - | ✅ scope 内 | ✅ scope 内（只读） | - | - | - |
+| **service** | 全部操作 | - | ✅ scope 内 | - | - | - | - |
+| **appointment** | 全部操作 | - | ✅ scope 内 | - | - | - | - |
+| **sync** | trigger, status, log | ✅ | - | - | - | - | - |
+| **operation_log** | list | ✅ | - | - | - | - | - |
+| **system** | config | ✅ | - | - | - | - | - |
+| **data_center** | dashboard, reports | - | ✅ scope 内 | ✅ scope 内 | - | - | - |
 
 > **admin 不受 scope 限制**：admin 角色查询数据时 `buildScopeWhere()` 返回空条件（等同 headquarters），其他角色沿用现有 scope 过滤逻辑。
+>
+> **admin 不碰业务数据和顾客**：admin 不可访问订单/分配/服务单/预约/顾客相关接口，这些是 manager 的专属职权。
+>
+> **customer_mgr**：独立的顾客管理角色，需叠加基础角色使用（如 staff + customer_mgr）。
+>
+> **†标记**：manager/finance 对 employee.list 和 store.list 的权限为 API 级别（嵌入在开单/分配等业务流程中调用），无独立菜单入口。
 
 ### 2.3 登录认证
 
@@ -116,7 +130,7 @@
 | `updated_at` | timestamp | 更新时间 |
 
 **登录约束**:
-- `staff` 角色的员工不可登录管理后台（返回"无管理后台访问权限"）
+- `staff` 角色的员工不可登录管理后台（返回"无管理后台访问权限"）；`customer_mgr` 角色可登录管理后台
 - 仅 `admin_passwords` 表中有记录的员工可登录（无记录 → "未开通管理后台权限"）
 - 登录后返回与员工端相同的 `permissions` 结构（`roles[]` + `actions[]`）
 - `must_change = true` 时强制跳转修改密码页面，修改后才能进入主界面
@@ -200,7 +214,7 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 树形查看 | 以树形结构展示 headquarters → market → store → department 层级 | admin, manager, hr, finance |
+| 树形查看 | 以树形结构展示 headquarters → market → store → department 层级 | admin, hr |
 | 新增节点 | 填写 name、type、parent_id、sort_order | admin, hr |
 | 编辑节点 | 修改 name、sort_order、is_active | admin, hr |
 | 删除节点 | 软删除（`is_active = false`）；有子节点时禁止删除 | admin, hr |
@@ -229,9 +243,9 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 列表查看 | 表格展示门店列表，含名称/地址/营业状态/床位数 | admin, manager, hr, finance |
+| 列表查看 | 表格展示门店列表，含名称/地址/营业状态/床位数 | admin, hr |
 | 新增门店 | 创建 stores 记录 + 对应 org_nodes（type='store'）记录 | admin, hr |
-| 编辑门店 | 修改门店详情字段（地址、经纬度、营业时间、封面图、环境图、停车信息等） | admin, manager（本门店）, hr |
+| 编辑门店 | 修改门店详情字段（地址、经纬度、营业时间、封面图、环境图、停车信息等） | admin, hr |
 | 关闭门店 | 设置 `is_closed = true`（不物理删除） | admin, hr |
 
 **填报字段分组**:
@@ -260,7 +274,7 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 列表查看 | 表格展示员工列表，支持按门店/部门/在职状态筛选 | admin, manager, hr |
+| 列表查看 | 表格展示员工列表，支持按门店/部门/在职状态筛选 | admin, hr |
 | 新增员工 | 填写员工基本信息，指定门店和部门 | admin, hr |
 | 编辑员工 | 修改员工信息（门店/部门调动、职位变更、技能标签等） | admin, hr |
 | 标记离职 | `is_resigned = true`（不物理删除）；同步作废其 permission_roles 记录 | admin, hr |
@@ -356,7 +370,7 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 矩阵查看 | 按市场分组展示提成比例矩阵，支持按 order_type/role_type/sales_category 筛选 | admin, manager, finance |
+| 矩阵查看 | 按市场分组展示提成比例矩阵，支持按 order_type/role_type/sales_category 筛选 | admin |
 | 新增规则 | 选择市场 → 填写 order_type, role_type, sales_category, 金额阶段, commission_rate | admin |
 | 编辑规则 | 修改 commission_rate 或金额阶段范围 | admin |
 | 删除规则 | 物理删除（提成矩阵行无历史引用问题，已分配的快照在 sale_allocations 中） | admin |
@@ -391,10 +405,10 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 列表查看 | 表格展示顾客列表，支持按门店/会员等级/顾客分类筛选 | admin, manager, finance, hr |
-| 详情查看 | 顾客完整档案 + 消费统计 + 疗程卡余次 | admin, manager, finance, hr |
-| 编辑档案 | 修改美容档案字段（手动维护部分） | admin, manager |
-| 新增顾客 | 手动创建顾客记录（phone 为必填，生成 user_id） | admin, manager |
+| 列表查看 | 表格展示顾客列表，支持按门店/会员等级/顾客分类筛选 | manager, finance（只读）, customer_mgr |
+| 详情查看 | 顾客完整档案 + 消费统计 + 疗程卡余次 | manager, finance（只读）, customer_mgr |
+| 编辑档案 | 修改美容档案字段（手动维护部分） | manager, customer_mgr |
+| 新增顾客 | 手动创建顾客记录（phone 为必填，生成 user_id） | manager, customer_mgr |
 
 **可编辑字段**（非微信身份层、非系统自动字段）:
 
@@ -439,13 +453,13 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 权限查看 | 在员工详情页展示该员工的所有角色 + scope 组合 | admin, manager, hr |
-| 分配角色 | 选择 role + scope_id → 创建 permission_roles 记录 | admin, manager, hr |
-| 撤销角色 | 软删除（`is_void = true, voided_at`） | admin, manager, hr |
-| 批量查看 | 按角色/门店筛选，展示权限分配总览 | admin, manager, hr |
+| 权限查看 | 在员工详情页展示该员工的所有角色 + scope 组合 | admin, hr |
+| 分配角色 | 选择 role + scope_id → 创建 permission_roles 记录 | admin, hr |
+| 撤销角色 | 软删除（`is_void = true, voided_at`） | admin, hr |
+| 批量查看 | 按角色/门店筛选，展示权限分配总览 | admin, hr |
 
 **scope 传递约束**:
-- manager / hr 分配权限时，被分配的 `scope_id` 必须在操作者 scope 范围内
+- hr 分配权限时，被分配的 `scope_id` 必须在操作者 scope 范围内
 - 只有 admin 可分配/撤销 admin 角色
 - admin 不受 scope 限制
 
@@ -515,8 +529,8 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 触发全量同步 | 手动触发 WorkFine → PG 全量同步（org_nodes, stores, employees, client_wechat_users, commission_rate_matrix） | admin, manager, hr |
-| 同步状态 | 展示最近同步时间、同步结果（成功/失败/部分失败）、影响行数 | admin, manager, hr |
+| 触发全量同步 | 手动触发 WorkFine → PG 全量同步（org_nodes, stores, employees, client_wechat_users, commission_rate_matrix） | admin |
+| 同步状态 | 展示最近同步时间、同步结果（成功/失败/部分失败）、影响行数 | admin |
 | 同步日志 | 查看同步详细日志（新增/更新/跳过的记录） | admin |
 
 **约束**:
@@ -544,7 +558,7 @@
 
 **展示字段**: 时间、操作人、角色、动作、目标、详情（JSON 可展开）
 
-**权限**: admin 查看全部；manager 查看 scope 内（按 org_node_id 过滤）
+**权限**: 仅 admin
 
 ---
 
@@ -607,7 +621,6 @@
 **核心指标**: 同 `staff.pr.spec.md` §3.12（权威定义），此处不再重复。
 
 **角色视角**:
-- admin：全局数据，可按市场/门店下钻
 - manager：scope 内数据
 - finance：scope 内数据
 
@@ -622,9 +635,9 @@
 
 | 操作 | 说明 | 权限 |
 |------|------|------|
-| 列表 | 展示待审批的解绑申请 | admin, manager |
-| 审批通过 | `approved` → 清除 `client_wechat_users.bound_store_id` | admin, manager |
-| 拒绝 | `rejected` + 填写拒绝原因 | admin, manager |
+| 列表 | 展示待审批的解绑申请 | manager |
+| 审批通过 | `approved` → 清除 `client_wechat_users.bound_store_id` | manager |
+| 拒绝 | `rejected` + 填写拒绝原因 | manager |
 
 ---
 
@@ -662,11 +675,10 @@
 **排行榜**: 门店排名、员工排名
 
 **角色视角**:
-- admin：全局数据，可按市场/门店下钻
 - manager：scope 内数据
 - finance：scope 内数据
 
-**权限**: admin, manager, finance
+**权限**: manager, finance
 
 ---
 
@@ -737,26 +749,26 @@
 
 ### 5.2 左侧菜单可见性
 
-| 菜单 | admin | manager | finance | hr | product |
-|------|-------|---------|---------|-----|---------|
-| 工作台 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 订单管理 | ✅ | ✅ | ✅（只读） | - | - |
-| 营业额分配 | ✅ | ✅ | ✅（只读） | - | - |
-| 服务单管理 | ✅ | ✅ | - | - | - |
-| 预约管理 | ✅ | ✅ | - | - | - |
-| 开单 | ✅ | ✅ | - | - | - |
-| 组织架构 | ✅ | ✅（只读） | ✅（只读） | ✅ | - |
-| 门店管理 | ✅ | ✅ | ✅（只读） | ✅ | - |
-| 员工管理 | ✅ | ✅（只读） | - | ✅ | - |
-| 商品管理 | ✅ | - | - | - | ✅ |
-| 提成矩阵 | ✅ | ✅（只读） | ✅（只读） | - | - |
-| 顾客管理 | ✅ | ✅ | ✅（只读） | ✅（只读） | - |
-| 优惠券管理 | ✅ | - | - | - | ✅ |
-| 数据中心 | ✅ | ✅ | ✅ | - | - |
-| 权限管理 | ✅ | ✅ | - | ✅ | - |
-| 数据同步 | ✅ | ✅ | - | ✅ | - |
-| 操作日志 | ✅ | ✅ | - | - | - |
-| 系统配置 | ✅ | - | - | - | - |
+| 菜单 | admin | manager | finance | hr | product | customer_mgr |
+|------|-------|---------|---------|-----|---------|-------------|
+| 工作台 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 开单 | - | ✅ | - | - | - | - |
+| 订单管理 | - | ✅ | ✅（只读） | - | - | - |
+| 营业额分配 | - | ✅ | ✅（只读） | - | - | - |
+| 服务单管理 | - | ✅ | - | - | - | - |
+| 预约管理 | - | ✅ | - | - | - | - |
+| 组织架构 | ✅ | - | - | ✅ | - | - |
+| 门店管理 | ✅ | - | - | ✅ | - | - |
+| 员工管理 | ✅ | - | - | ✅ | - | - |
+| 商品管理 | ✅ | - | - | - | ✅ | - |
+| 提成矩阵 | ✅ | - | - | - | - | - |
+| 顾客管理 | - | ✅ | ✅（只读） | - | - | ✅ |
+| 优惠券管理 | ✅ | - | - | - | ✅ | - |
+| 数据中心 | - | ✅ | ✅ | - | - | - |
+| 权限管理 | ✅ | - | - | ✅ | - | - |
+| 数据同步 | ✅ | - | - | - | - | - |
+| 操作日志 | ✅ | - | - | - | - | - |
+| 系统配置 | ✅ | - | - | - | - | - |
 
 ---
 
