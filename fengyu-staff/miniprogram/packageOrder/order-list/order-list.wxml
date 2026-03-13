@@ -26,7 +26,7 @@
         <text class="customer-phone">{{item.customerPhoneMasked}}</text>
       </view>
       <view class="order-meta">
-        <text class="order-type-label">{{item.orderType === 'normal' ? '正式单' : item.orderType === 'experience' ? '体验单' : '促销方案'}}</text>
+        <text class="order-type-label">{{item.orderType === '普通' ? '普通单' : item.orderType === '体验' ? '体验单' : item.orderType === '福利活动' ? '福利活动' : item.orderType}}</text>
         <text class="order-pay-type" wx:if="{{item.payType}}">{{item.payType === 'wechat' ? '微信支付' : '线下付款'}}</text>
         <text class="order-time">{{item.paidAt || item.createdAt}}</text>
       </view>

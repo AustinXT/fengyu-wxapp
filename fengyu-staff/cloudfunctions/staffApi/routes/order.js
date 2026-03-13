@@ -24,7 +24,7 @@ const qrcodeCache = new Map()
  *   clientName: string,        // 顾客姓名（必填）
  *   storeName: string,         // 开单门店（可选，默认用当前员工门店）
  *   marketName: string,        // 市场（可选）
- *   orderType: '正式'|'体验'|'促销方案',
+ *   orderType: '普通'|'体验'|'福利活动',
  *   items: [{ skuId, quantity, customPrice? }],
  *   paymentMethod: 'wechat'|'offline',
  *   preferredStaffWfId: string // 指定美容师（可选）
@@ -64,9 +64,9 @@ async function create(ctx) {
   }
 
   // 映射前端 orderType（normal/experience/promotion）→ 后端中文值
-  const ORDER_TYPE_MAP = { normal: '正式', experience: '体验', promotion: '促销方案' }
-  const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '正式'
-  if (!['正式', '体验', '促销方案'].includes(orderType)) {
+  const ORDER_TYPE_MAP = { normal: '普通', experience: '体验', promotion: '福利活动' }
+  const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '普通'
+  if (!['普通', '体验', '福利活动'].includes(orderType)) {
     throw new Error('INVALID_PARAMS: orderType 值不合法')
   }
 

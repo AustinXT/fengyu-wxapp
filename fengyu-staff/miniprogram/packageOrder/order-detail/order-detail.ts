@@ -12,8 +12,8 @@ const STATUS_CLASS: Record<string, string> = {
 };
 
 const ORDER_TYPE_LABEL: Record<string, string> = {
-  正式: '正常单',
-  促销方案: '促销方案',
+  普通: '普通单',
+  福利活动: '福利活动',
   体验: '体验单',
 };
 

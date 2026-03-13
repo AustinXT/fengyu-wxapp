@@ -262,7 +262,7 @@ async function create(ctx) {
     }
 
     // 确定订单类型
-    const orderType = orderTypeParam === 'promo' ? '促销方案' : '正式'
+    const orderType = orderTypeParam === 'promo' ? '福利活动' : '普通'
     const promotionSchemeId = promoSchemeId || null
 
     // 从 WorkFine 查询顾客姓名（按手机号）
