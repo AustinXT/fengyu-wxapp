@@ -16,7 +16,9 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./src/*"],
-      "@db/*": ["../db/schema/*"]
+      "@db/*": ["../db/schema/*"],
+      "drizzle-orm": ["./node_modules/drizzle-orm"],
+      "drizzle-orm/*": ["./node_modules/drizzle-orm/*"]
     },
     "baseUrl": "."
   },
