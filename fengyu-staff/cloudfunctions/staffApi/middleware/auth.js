@@ -1,13 +1,12 @@
 /**
  * 员工认证中间件
  * 从 cloud.getWXContext() 获取 OPENID，查询 staff_wechat_users 获取员工信息
- * 并从 WorkFine 获取角色（店长/美容师）
+ * 所有数据来自 PG（员工档案已合并到 staff_wechat_users）
  */
 
 const cloud = require('wx-server-sdk')
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 
 // 员工信息缓存：OPENID → { data, ts }
 const AUTH_CACHE = new Map()
@@ -17,7 +16,7 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
  * 认证中间件
  * 将员工信息注入到 ctx.auth
  * ctx.auth = { userId, openid, phone, staffWfId, position, storeName, marketName, department }
- * position: WorkFine 原始职位值（如 '门店经理'、'美容师'）
+ * position: staff_wechat_users.position_name（如 '门店经理'、'美容师'）
  */
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
@@ -37,11 +36,25 @@ async function auth(ctx, next) {
     return await next()
   }
 
-  // 查询员工用户
-  const users = await pg.query(
-    'SELECT user_id, phone, employee_id, last_login_at FROM staff_wechat_users WHERE openid = $1',
-    [effectiveOpenid]
-  )
+  // 查询员工用户（JOIN 获取门店名、市场名、部门名）
+  const users = await pg.query(`
+    SELECT
+      u.user_id,
+      u.phone,
+      u.employee_id,
+      u.name,
+      u.position_name,
+      u.is_resigned,
+      s.store_name,
+      m.name AS market_name,
+      d.name AS department
+    FROM staff_wechat_users u
+    LEFT JOIN stores s ON u.store_id = s.store_id
+    LEFT JOIN org_nodes so ON s.org_node_id = so.id
+    LEFT JOIN org_nodes m ON so.parent_id = m.id
+    LEFT JOIN org_nodes d ON u.org_node_id = d.id
+    WHERE u.openid = $1
+  `, [effectiveOpenid])
 
   let authData
 
@@ -59,48 +72,18 @@ async function auth(ctx, next) {
     }
   } else {
     const user = users[0]
-    let position = null
-    let storeName = null
-    let marketName = null
-    let department = null
-
-    // 从 WorkFine 查询角色和门店信息
-    if (user.employee_id) {
-      try {
-        const esc = (v) => String(v).replace(/'/g, "''")
-        const staffRows = await mssql.query(`
-          SELECT
-            UDF_S_1147 AS staff_id,
-            UDF_S_1161 AS position,
-            UDF_S_1513 AS dept,
-            UDF_S_1163 AS store_name,
-            UDF_S_1160 AS market_name
-          FROM UDT_S_287
-          WHERE UDF_S_1147 = '${esc(user.employee_id)}'
-            AND UDF_S_1624 NOT IN ('是', '离职')
-        `)
-
-        if (staffRows.length > 0) {
-          const s = staffRows[0]
-          position = s.position ? s.position.trim() : null
-          storeName = s.store_name ? s.store_name.trim() : null
-          marketName = s.market_name ? s.market_name.trim() : null
-          department = s.dept ? s.dept.trim() : null
-        }
-      } catch (e) {
-        console.error('[auth] WorkFine lookup failed:', e.message)
-      }
-    }
+    // 离职员工视为未关联
+    const isActive = user.employee_id && !user.is_resigned
 
     authData = {
       userId: user.user_id,
       openid: effectiveOpenid,
       phone: user.phone,
-      staffWfId: user.employee_id,
-      position,
-      storeName,
-      marketName,
-      department
+      staffWfId: isActive ? user.employee_id : null,
+      position: isActive ? user.position_name : null,
+      storeName: isActive ? user.store_name : null,
+      marketName: isActive ? user.market_name : null,
+      department: isActive ? user.department : null
     }
   }
 

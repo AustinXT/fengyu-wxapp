@@ -5,12 +5,11 @@
  */
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireStaffBound } = require('../middleware/auth')
 
 /**
  * 员工列表
- * 从 WorkFine UDT_S_287 查询指定门店的在职员工
+ * 从 PG staff_wechat_users 查询指定门店的在职员工
  * 美容师不可看到客户完整手机号，此接口不返回手机号
  */
 async function list(ctx) {
@@ -24,30 +23,33 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeName 参数')
   }
 
-  const esc = (v) => String(v).replace(/'/g, "''")
-
-  const staffRows = await mssql.query(`
+  const staffRows = await pg.query(`
     SELECT
-      UDF_S_1147 AS employee_id,
-      UDF_S_1155 AS name,
-      UDF_S_1161 AS position,
-      UDF_S_1513 AS department,
-      UDF_S_1163 AS store_name,
-      UDF_S_1160 AS market_name
-    FROM UDT_S_287
-    WHERE UDF_S_1624 NOT IN ('是', '离职')
-      AND UDF_S_1163 = '${esc(targetStore)}'
-    ORDER BY UDF_S_1513, UDF_S_1155
-  `)
+      u.employee_id,
+      u.name,
+      u.position_name AS position,
+      d.name AS department,
+      s.store_name,
+      m.name AS market_name
+    FROM staff_wechat_users u
+    LEFT JOIN stores s ON u.store_id = s.store_id
+    LEFT JOIN org_nodes so ON s.org_node_id = so.id
+    LEFT JOIN org_nodes m ON so.parent_id = m.id
+    LEFT JOIN org_nodes d ON u.org_node_id = d.id
+    WHERE u.is_resigned = false
+      AND s.store_name = $1
+      AND u.employee_id IS NOT NULL
+    ORDER BY d.name, u.name
+  `, [targetStore])
 
   ctx.result = {
     staffList: staffRows.map(r => ({
       staffWfId: r.employee_id,
-      name: r.name ? r.name.trim() : '',
-      position: r.position ? r.position.trim() : '',
-      department: r.department ? r.department.trim() : '',
-      storeName: r.store_name ? r.store_name.trim() : '',
-      marketName: r.market_name ? r.market_name.trim() : '',
+      name: r.name || '',
+      position: r.position || '',
+      department: r.department || '',
+      storeName: r.store_name || '',
+      marketName: r.market_name || '',
       isManager: r.position === '门店经理'
     }))
   }
@@ -68,43 +70,48 @@ async function departments(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeName 参数')
   }
 
-  const esc = (v) => String(v).replace(/'/g, "''")
-
-  // 查询美容部（含店长）
-  const beautyRows = await mssql.query(`
+  // 查询美容部（含店长）— 按门店筛选
+  const beautyRows = await pg.query(`
     SELECT
-      UDF_S_1147 AS employee_id,
-      UDF_S_1155 AS name,
-      UDF_S_1161 AS position,
-      UDF_S_1513 AS department
-    FROM UDT_S_287
-    WHERE UDF_S_1624 NOT IN ('是', '离职')
-      AND UDF_S_1163 = '${esc(targetStore)}'
-      AND UDF_S_1513 = '美容部'
-    ORDER BY UDF_S_1155
-  `)
+      u.employee_id,
+      u.name,
+      u.position_name AS position,
+      d.name AS department
+    FROM staff_wechat_users u
+    LEFT JOIN stores s ON u.store_id = s.store_id
+    LEFT JOIN org_nodes d ON u.org_node_id = d.id
+    WHERE u.is_resigned = false
+      AND s.store_name = $1
+      AND d.name = '美容部'
+      AND u.employee_id IS NOT NULL
+    ORDER BY u.name
+  `, [targetStore])
 
   // 查询其他部门（推广部等，按市场查询）
-  // 推广部等从市场维度查询，不限门店
   const marketName = ctx.auth.marketName
   let otherDeptRows = []
 
   if (marketName) {
-    otherDeptRows = await mssql.query(`
+    otherDeptRows = await pg.query(`
       SELECT
-        UDF_S_1147 AS employee_id,
-        UDF_S_1155 AS name,
-        UDF_S_1161 AS position,
-        UDF_S_1513 AS department,
-        UDF_S_1163 AS store_name
-      FROM UDT_S_287
-      WHERE UDF_S_1624 NOT IN ('是', '离职')
-        AND UDF_S_1160 = '${esc(marketName)}'
-        AND UDF_S_1513 != '美容部'
-        AND UDF_S_1513 IS NOT NULL
-        AND UDF_S_1513 != ''
-      ORDER BY UDF_S_1513, UDF_S_1155
-    `)
+        u.employee_id,
+        u.name,
+        u.position_name AS position,
+        d.name AS department,
+        s.store_name
+      FROM staff_wechat_users u
+      LEFT JOIN stores s ON u.store_id = s.store_id
+      LEFT JOIN org_nodes so ON s.org_node_id = so.id
+      LEFT JOIN org_nodes m ON so.parent_id = m.id
+      LEFT JOIN org_nodes d ON u.org_node_id = d.id
+      WHERE u.is_resigned = false
+        AND m.name = $1
+        AND d.name IS NOT NULL
+        AND d.name != '美容部'
+        AND d.name != ''
+        AND u.employee_id IS NOT NULL
+      ORDER BY d.name, u.name
+    `, [marketName])
   }
 
   // 按部门分组
@@ -114,22 +121,22 @@ async function departments(ctx) {
   if (beautyRows.length > 0) {
     deptMap['美容部'] = beautyRows.map(r => ({
       staffWfId: r.employee_id,
-      name: r.name ? r.name.trim() : '',
-      position: r.position ? r.position.trim() : '',
+      name: r.name || '',
+      position: r.position || '',
       department: '美容部'
     }))
   }
 
   // 其他部门
   for (const r of otherDeptRows) {
-    const dept = r.department ? r.department.trim() : '其他'
+    const dept = r.department || '其他'
     if (!deptMap[dept]) deptMap[dept] = []
     deptMap[dept].push({
       staffWfId: r.employee_id,
-      name: r.name ? r.name.trim() : '',
-      position: r.position ? r.position.trim() : '',
+      name: r.name || '',
+      position: r.position || '',
       department: dept,
-      storeName: r.store_name ? r.store_name.trim() : ''
+      storeName: r.store_name || ''
     })
   }
 
@@ -354,7 +361,7 @@ async function todoList(ctx) {
 
 /**
  * 切换工作门店
- * 仅做门店存在性校验，返回门店名称供前端本地存储
+ * 仅做门店存在性校验（从 PG stores 表），返回门店名称供前端本地存储
  */
 async function bindStore(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -364,20 +371,17 @@ async function bindStore(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
-  // 查 WorkFine UDT_M_219 验证门店存在
-  const esc = (v) => String(v).replace(/'/g, "''")
-  const storeRows = await mssql.query(`
-    SELECT UDF_M_438 AS store_name
-    FROM UDT_M_219
-    WHERE UDF_M_438 = '${esc(storeId)}'
-      AND (UDF_M_11956 IS NULL OR UDF_M_11956 != '是')
-  `)
+  // 从 PG stores 表验证门店存在
+  const storeRows = await pg.query(
+    'SELECT store_name FROM stores WHERE store_name = $1 AND is_closed = false',
+    [storeId]
+  )
 
   if (storeRows.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在或已关闭')
   }
 
-  const storeName = storeRows[0].store_name ? storeRows[0].store_name.trim() : storeId
+  const storeName = storeRows[0].store_name
 
   ctx.result = {
     success: true,
