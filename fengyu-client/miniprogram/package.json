@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": [],
   "author": "",
@@ -12,5 +13,8 @@
   "type": "commonjs",
   "dependencies": {
     "@vant/weapp": "^1.11.7"
+  },
+  "devDependencies": {
+    "vitest": "^3.1.1"
   }
 }

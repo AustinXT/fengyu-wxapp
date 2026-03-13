@@ -1,0 +1,249 @@
+/**
+ * 预约路由测试
+ * 覆盖：create（正常/重复预约/余次=0 拒绝）、list、cancel（状态校验）
+ */
+
+vi.mock('../../db/pg', () => require('../mocks/pg'))
+vi.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
+vi.mock('../../middleware/auth', async (importOriginal) => {
+  const original = await importOriginal()
+  return {
+    ...original,
+    requirePhone: original.requirePhone,
+    invalidateAuthCache: original.invalidateAuthCache,
+  }
+})
+
+const pg = require('../../db/pg')
+const { createBoundCtx, createCtx } = require('../helpers')
+
+let routes
+beforeEach(() => {
+  vi.clearAllMocks()
+  routes = require('../../routes/appointment')
+})
+
+describe('appointment.create', () => {
+  test('正常创建预约（关联疗程卡）', async () => {
+    // 查顾客信息
+    pg.query.mockResolvedValueOnce([{
+      phone: '13800001111',
+      name: '张三',
+      bound_store_id: 'store-001',
+      bound_store_name: '凤御测试店',
+    }])
+    // 查 sale_item
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001',
+      sale_order_id: 'FY-001',
+      remaining_sessions: 5,
+      client_user_id: 'user-001',
+      store_id: 'store-001',
+    }])
+    // 查重复预约
+    pg.query.mockResolvedValueOnce([])
+    // INSERT appointment
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({
+      saleItemId: 'SI-001',
+      appointmentTime: '2025-03-20 上午 10:00-12:00',
+    })
+    await routes.create(ctx)
+
+    expect(ctx.result.appointmentId).toMatch(/^apt_/)
+    expect(ctx.result.status).toBe('待确认')
+  })
+
+  test('创建到店预约（无关联疗程卡）', async () => {
+    // 查顾客信息
+    pg.query.mockResolvedValueOnce([{
+      phone: '138',
+      name: '张三',
+      bound_store_id: 'store-001',
+      bound_store_name: '测试店',
+    }])
+    // INSERT appointment
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({
+      appointmentTime: '2025-03-20 上午 10:00-12:00',
+    })
+    await routes.create(ctx)
+
+    expect(ctx.result.appointmentId).toBeTruthy()
+  })
+
+  test('剩余次数为 0 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{
+      phone: '138', name: '张三', bound_store_id: 's1', bound_store_name: 'S1',
+    }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001',
+      remaining_sessions: 0,
+      client_user_id: 'user-001',
+      store_id: 's1',
+    }])
+
+    const ctx = createBoundCtx({
+      saleItemId: 'SI-001',
+      appointmentTime: '2025-03-20 上午 10:00-12:00',
+    })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*剩余次数不足/)
+  })
+
+  test('已有未完成预约 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{
+      phone: '138', name: '张三', bound_store_id: 's1', bound_store_name: 'S1',
+    }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001',
+      remaining_sessions: 5,
+      client_user_id: 'user-001',
+      store_id: 's1',
+    }])
+    // 存在待确认预约
+    pg.query.mockResolvedValueOnce([{ appointment_id: 'apt-existing' }])
+
+    const ctx = createBoundCtx({
+      saleItemId: 'SI-001',
+      appointmentTime: '2025-03-20 上午 10:00-12:00',
+    })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*已有待确认/)
+  })
+
+  test('无手机号 → PHONE_REQUIRED', async () => {
+    const ctx = createCtx({
+      payload: { appointmentTime: '2025-03-20 上午 10:00-12:00' },
+      auth: { phone: null },
+    })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/PHONE_REQUIRED/)
+  })
+
+  test('缺少预约时间 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({})
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*预约时间/)
+  })
+
+  test('预约时间格式不正确 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{
+      phone: '138', name: '张三', bound_store_id: 's1', bound_store_name: 'S1',
+    }])
+
+    const ctx = createBoundCtx({ appointmentTime: 'invalid-format' })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*格式不正确/)
+  })
+
+  test('非本人订单 → PERMISSION_DENIED', async () => {
+    pg.query.mockResolvedValueOnce([{
+      phone: '138', name: '张三', bound_store_id: 's1', bound_store_name: 'S1',
+    }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001',
+      remaining_sessions: 5,
+      client_user_id: 'other-user',
+      store_id: 's1',
+    }])
+
+    const ctx = createBoundCtx({
+      saleItemId: 'SI-001',
+      appointmentTime: '2025-03-20 上午 10:00-12:00',
+    })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+describe('appointment.list', () => {
+  test('返回用户预约列表', async () => {
+    pg.query.mockResolvedValueOnce([
+      {
+        appointment_id: 'apt-1',
+        status: '待确认',
+        store_id: 's1',
+        store_name: '测试店',
+        employee_name: '李四',
+        appointment_time: '2025-03-20T10:00:00Z',
+        service_name: '护理A',
+      },
+    ])
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    expect(ctx.result.appointments).toHaveLength(1)
+  })
+
+  test('按状态筛选', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ status: '已确认' })
+    await routes.list(ctx)
+
+    expect(pg.query.mock.calls[0][0]).toContain('a.status = $')
+    expect(pg.query.mock.calls[0][1]).toContain('已确认')
+  })
+})
+
+describe('appointment.cancel', () => {
+  test('正常取消待确认预约', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'apt-1',
+        status: '待确认',
+        client_user_id: 'user-001',
+      }])
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ appointmentId: 'apt-1' })
+    await routes.cancel(ctx)
+
+    expect(ctx.result.status).toBe('已取消')
+  })
+
+  test('正常取消已确认预约', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'apt-1',
+        status: '已确认',
+        client_user_id: 'user-001',
+      }])
+      .mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ appointmentId: 'apt-1' })
+    await routes.cancel(ctx)
+
+    expect(ctx.result.status).toBe('已取消')
+  })
+
+  test('已完成预约不允许取消', async () => {
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'apt-1',
+      status: '已完成',
+      client_user_id: 'user-001',
+    }])
+
+    const ctx = createBoundCtx({ appointmentId: 'apt-1' })
+    await expect(routes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不允许取消/)
+  })
+
+  test('缺少 appointmentId → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({})
+    await expect(routes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*appointmentId/)
+  })
+
+  test('预约不存在 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ appointmentId: 'nonexistent' })
+    await expect(routes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*预约不存在/)
+  })
+})
