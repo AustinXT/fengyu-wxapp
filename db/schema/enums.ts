@@ -15,7 +15,7 @@ export const orderStatusEnum = pgEnum('order_status', [
 ])
 
 export const saleOrderTypeEnum = pgEnum('sale_order_type', [
-  '正式', '体验', '内部', '组合套餐', '回款', '转换', '退款',
+  '普通', '体验', '内部', '福利活动', '回款', '转换', '退款',
 ])
 
 export const allocationStatusEnum = pgEnum('allocation_status', ['pending', 'allocated'])

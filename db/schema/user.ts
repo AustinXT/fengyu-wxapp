@@ -22,13 +22,11 @@ export const clientWechatUsers = pgTable(
     customerId: varchar('customer_id', { length: 30 }),
     // Layer 2 — WorkFine 档案
     name: varchar('name', { length: 50 }),
-    registeredAt: date('registered_at'),
     // Layer 3 — 组织归属
-    /** 同步时通过 store_name 匹配写入 */
-    storeId: text('store_id').references(() => stores.storeId),
-    /** 顾客端主动绑定的门店 */
+    /** 顾客绑定的门店（同步写入 or 顾客端主动绑定） */
     boundStoreId: text('bound_store_id').references(() => stores.storeId),
-    primaryBeautician: varchar('primary_beautician', { length: 50 }),
+    /** 绑定美容师（同步写入 or 营业额分配默认人员） */
+    boundEmployeeId: varchar('bound_employee_id', { length: 50 }),
     // Layer 4 — 会员与分类
     memberLevel: varchar('member_level', { length: 20 }),
     customerSource: varchar('customer_source', { length: 50 }),
@@ -51,7 +49,6 @@ export const clientWechatUsers = pgTable(
     uniqueIndex('uq_client_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
-    index('idx_client_users_store_id').on(table.storeId),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
   ],
 )

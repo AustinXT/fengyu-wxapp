@@ -18,7 +18,7 @@ export const storeUnbindRequests = pgTable('store_unbind_requests', {
   reviewedAt:   timestamp('reviewed_at'),
   rejectReason: text('reject_reason'),
   createdAt:    timestamp('created_at').notNull().defaultNow(),
-  updatedAt:    timestamp('updated_at').notNull().defaultNow(),
+  updatedAt:    timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 })
 
 export type StoreUnbindRequest = typeof storeUnbindRequests.$inferSelect

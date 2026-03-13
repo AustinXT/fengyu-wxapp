@@ -15,6 +15,20 @@
       "when": 1773348845274,
       "tag": "0001_wonderful_jasper_sitwell",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1773561600000,
+      "tag": "0002_rename_sale_order_type_values",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1773395779355,
+      "tag": "0003_futuristic_logan",
+      "breakpoints": true
     }
   ]
 }

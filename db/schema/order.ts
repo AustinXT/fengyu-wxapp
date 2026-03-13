@@ -38,7 +38,7 @@ export const saleOrders = pgTable(
   {
     saleOrderId: varchar('sale_order_id', { length: 30 }).primaryKey(),
     status: orderStatusEnum('status').notNull().default('待支付'),
-    saleOrderType: saleOrderTypeEnum('sale_order_type').notNull().default('正式'),
+    saleOrderType: saleOrderTypeEnum('sale_order_type').notNull().default('普通'),
     /** 回款/转换/退款引用的原销售单，销售单为 null */
     refSaleOrderId: varchar('ref_sale_order_id', { length: 30 }).references((): any => saleOrders.saleOrderId),
     /** 所属市场（快照） */
