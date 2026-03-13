@@ -64,6 +64,13 @@ function trim(val) {
   return s === '' ? null : s
 }
 
+/** 中国手机号校验：11位数字、1开头，不符合则返回 null */
+function validPhone(val) {
+  if (!val) return null
+  const s = String(val).trim()
+  return /^1\d{10}$/.test(s) ? s : null
+}
+
 /** 日期格式化（MSSQL Date → YYYY-MM-DD 字符串） */
 function toDateStr(val) {
   if (!val) return null
@@ -230,6 +237,48 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       log('EMPLOYEES', `UPSERT ${deptNames.length} 个部门节点`)
     }
 
+    // 处理手机号去重：同一手机号多条记录，在职优先保留一条，其余设为 null
+    // 同时过滤占位符手机号（如全 1、全 0）
+    const empPhones = {} // employee_id → phone（最终分配）
+
+    for (const row of rows) {
+      const empId = trim(row.employee_id)
+      if (!empId) continue
+      empPhones[empId] = validPhone(row.phone)
+    }
+
+    // 手机号去重：在职优先，先到先得
+    const phoneCount = {}
+    for (const row of rows) {
+      const empId = trim(row.employee_id)
+      if (!empId) continue
+      const phone = empPhones[empId]
+      if (!phone) continue
+      if (!phoneCount[phone]) phoneCount[phone] = []
+      phoneCount[phone].push({ empId, isResigned: toBool(row.is_resigned_raw) })
+    }
+    let dupPhoneCleared = 0
+    for (const [phone, emps] of Object.entries(phoneCount)) {
+      if (emps.length <= 1) continue
+      // 在职优先，其次按 employee_id 字典序
+      emps.sort((a, b) => {
+        if (a.isResigned !== b.isResigned) return a.isResigned ? 1 : -1
+        return a.empId.localeCompare(b.empId)
+      })
+      // 仅第一条保留手机号
+      for (let i = 1; i < emps.length; i++) {
+        empPhones[emps[i].empId] = null
+        dupPhoneCleared++
+      }
+    }
+    if (dupPhoneCleared > 0) {
+      log('EMPLOYEES', `手机号去重：${dupPhoneCleared} 条重复手机号已清除`)
+    }
+
+    // 先清空所有员工手机号，避免 UPSERT 时触发 phone 唯一约束冲突
+    // （因为同步重新分配手机号，旧数据可能占位）
+    await client.query("UPDATE staff_wechat_users SET phone = NULL WHERE phone IS NOT NULL")
+
     // UPSERT staff_wechat_users（以 employee_id 为冲突键，openid 可为 null）
     let count = 0
     for (const row of rows) {
@@ -240,6 +289,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const storeId = storeName ? (storeMap[storeName] || null) : null
       const deptName = trim(row.dept_name)
       const orgNodeId = deptName ? (deptMap[deptName] || null) : null
+      const phone = empPhones[empId]
 
       await client.query(`
         INSERT INTO staff_wechat_users (employee_id, phone, name, gender, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
@@ -247,7 +297,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
         ON CONFLICT (employee_id) DO UPDATE SET
           name = EXCLUDED.name,
           gender = EXCLUDED.gender,
-          phone = COALESCE(staff_wechat_users.phone, EXCLUDED.phone),
+          phone = EXCLUDED.phone,
           id_card = EXCLUDED.id_card,
           store_id = EXCLUDED.store_id,
           org_node_id = EXCLUDED.org_node_id,
@@ -257,7 +307,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
           updated_at = now()
       `, [
         empId,
-        trim(row.phone),
+        phone,
         trim(row.name) || empId,
         trim(row.gender),
         trim(row.id_card),
@@ -309,7 +359,6 @@ async function syncPermissionRoles(pgPool, dryRun) {
     if (dryRun) {
       log('PERMISSIONS', '[DRY] 将为在职员工推导权限')
       await client.query('ROLLBACK')
-      client.release()
       return
     }
 
@@ -429,7 +478,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const staged = []
 
     for (const row of rows) {
-      const phone = trim(row.phone)
+      const phone = validPhone(row.phone)
       const customerId = trim(row.customer_id)
       if (!phone && !customerId) { skipped++; continue }
 
