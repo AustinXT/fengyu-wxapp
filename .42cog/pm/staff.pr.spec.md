@@ -750,6 +750,14 @@ TabBar
 
 ## 8. 验收标准
 
+### P0 核心功能（跨端验收，源自 backend.pr.spec.md）
+
+| ID | 标准 | 验证方式 |
+|----|------|----------|
+| AC-X01 | 订单进入 `已支付` 后，员工端顾客日历在 **5 秒内**出现当日消费标记 | 支付 → 5 秒内刷新日历 |
+| AC-X02 | WebSocket 断开情况下，员工端在 **30 秒内**通过轮询看到同一笔消费 | 断网恢复后 30 秒内数据同步 |
+| AC-X03 | 同一笔订单无论重复提交多少次，在日历中仅计入一次 | 重复确认 → 日历不重复标记 |
+
 ### P0 核心功能
 
 | ID | 标准 | 验证方式 |
@@ -854,6 +862,39 @@ TabBar
 | service | cancel | 取消服务单 | service-detail | 已实现 |
 | service | list | 服务单列表 | service | 已实现 |
 | service | detail | 服务单详情 | service-detail | 已实现 |
+| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | — | 待实现 |
+| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | — | 待实现 |
+| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | — | 待实现 |
+| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | — | 待实现 |
+| sync | full | WorkFine → PG 全量同步 | — | 待实现 |
+| permission | list, assign, revoke | 权限角色管理 | — | 待实现 |
+
+### 10.1 staffApi 权限要求对照
+
+| 模块 | 接口 | 权限要求 | 适配状态 |
+|------|------|----------|---------|
+| auth | login, bindPhone | 无（登录前） | 需适配 |
+| store | list | `store:list` | 需适配 |
+| store | unbindRequests, approveUnbind, rejectUnbind | `store:manage` | 需适配 |
+| employee | list, departments | `employee:list` | 需适配 |
+| employee | todayCommission, monthlyCalendar, todoList, bindStore | `workbench:dashboard` | 需适配 |
+| product | shopInit, categories, spuList, skuDetail, spuDetail | `product:categories` / `product:list` / `product:detail` | 需适配 |
+| product | promotionList, promotionPlans | `product:list` | 需适配 |
+| customer | search, calendar, detail, paidOrders | `customer:*` | 需适配 |
+| sale_order | create, qrcode | `sale_order:create` | 已实现（需适配） |
+| sale_order | confirmOffline | `sale_order:confirmOffline` | 已实现 |
+| sale_order | close, resetFailed | `sale_order:close` / `sale_order:resetFailed` | 已实现 |
+| sale_order | list, detail | `sale_order:list` / `sale_order:detail` | 已实现 |
+| allocation | save, deleteAllocation | `allocation:save` / `allocation:delete` | 需适配 |
+| allocation | getCommissionRates, pendingList, suggest | `allocation:list` | 需适配 |
+| appointment | list, detail, confirm, checkin | `appointment:*` | 已实现 |
+| service | create, start, complete, cancel, list, detail | `service:*` | 已实现 |
+| sale_order | createPayment | `sale_order:create` | 待实现 |
+| sale_order | createConversion | `sale_order:create` | 待实现 |
+| sale_order | createRefund | `sale_order:create` | 待实现 |
+| sale_order | approveRefund | `sale_order:approveRefund` | 待实现 |
+| sync | full | `sync:trigger` | 待实现 |
+| permission | list, assign, revoke | `permission:*` | 待实现 |
 
 ---
 
@@ -905,3 +946,53 @@ callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
 - `restoreFromCache()`：应用启动时从 wx.storage 恢复全局状态（兼容 legacy `role` → `position` 字段）
 - `syncLoginState()`：`onLaunch` 调用 `auth.login` 同步最新状态到 globalData
 - `resetEmployeeInfo()`：退出登录时清除所有字段 + `wx.clearStorageSync()`
+
+### 11.6 前端权限存储与检查
+
+```ts
+// app.ts globalData
+globalData: {
+  permissions: {
+    roles: Array<{ role: string; scopeType: string; scopeName: string }>;
+    actions: string[];  // 扁平数组
+  }
+}
+
+// 权限检查工具函数
+function hasPermission(module: string, action: string): boolean {
+  const app = getApp();
+  return app.globalData.permissions?.actions?.includes(`${module}:${action}`) ?? false;
+}
+
+// 页面中使用
+if (hasPermission('sale_order', 'create')) {
+  // 显示开单按钮
+}
+```
+
+### 11.7 staffApi 路由权限声明
+
+每个 staffApi 路由声明其所需的 `[module, action]`，中间件据此校验：
+
+```js
+// staffApi/routes/sale_order.js
+module.exports = {
+  create:         { permission: ['sale_order', 'create'], handler: createSaleOrder },
+  list:           { permission: ['sale_order', 'list'], handler: listSaleOrders },
+  detail:         { permission: ['sale_order', 'detail'], handler: getSaleOrderDetail },
+  confirmOffline: { permission: ['sale_order', 'confirmOffline'], handler: confirmOffline },
+  close:          { permission: ['sale_order', 'close'], handler: closeSaleOrder },
+  resetFailed:    { permission: ['sale_order', 'resetFailed'], handler: resetFailed },
+};
+```
+
+中间件校验流程：
+
+```
+请求进入 → 解析 action → 查找路由声明的 [module, action]
+  → 检查 ctx.auth.hasPermission(module, action)
+    → 通过：继续执行 handler
+    → 拒绝：返回 { code: -403, message: '无权限' }
+```
+
+> **auth/login** 和 **auth/bindPhone** 不需要权限校验（登录前无权限上下文）。

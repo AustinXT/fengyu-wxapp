@@ -992,57 +992,9 @@ auth.login 返回中新增 `permissions` 字段：
 }
 ```
 
-#### 6.9.2 前端存储与检查
+> §6.9.2 前端权限存储与检查、§6.10 staffApi 路由权限声明，详见 `staff.pr.spec.md` §11.6/§11.7。
 
-```ts
-// app.ts globalData
-globalData: {
-  permissions: {
-    roles: Array<{ role: string; scopeType: string; scopeName: string }>;
-    actions: string[];  // 扁平数组
-  }
-}
-
-// 权限检查工具函数
-function hasPermission(module: string, action: string): boolean {
-  const app = getApp();
-  return app.globalData.permissions?.actions?.includes(`${module}:${action}`) ?? false;
-}
-
-// 页面中使用
-if (hasPermission('sale_order', 'create')) {
-  // 显示开单按钮
-}
-```
-
-### 6.10 API 权限声明
-
-每个 staffApi 路由声明其所需的 `[module, action]`，中间件据此校验：
-
-```js
-// staffApi/routes/sale_order.js
-module.exports = {
-  create:         { permission: ['sale_order', 'create'], handler: createSaleOrder },
-  list:           { permission: ['sale_order', 'list'], handler: listSaleOrders },
-  detail:         { permission: ['sale_order', 'detail'], handler: getsaleSaleOrderDetail },
-  confirmOffline: { permission: ['sale_order', 'confirmOffline'], handler: confirmOffline },
-  close:          { permission: ['sale_order', 'close'], handler: closesaleSaleOrder },
-  resetFailed:    { permission: ['sale_order', 'resetFailed'], handler: resetFailed },
-};
-```
-
-中间件校验流程：
-
-```
-请求进入 → 解析 action → 查找路由声明的 [module, action]
-  → 检查 ctx.auth.hasPermission(module, action)
-    → 通过：继续执行 handler
-    → 拒绝：返回 { code: -403, message: '无权限' }
-```
-
-> **auth/login** 和 **auth/bindPhone** 不需要权限校验（登录前无权限上下文）。
-
-### 6.11 同步推导规则
+### 6.10 同步推导规则（原 §6.11）
 
 同步脚本遍历 `employees`（`is_resigned = false`），根据 `org_node_id`（JOIN `org_nodes.name` 获取部门名称）+ `position_name` 自动推导 `permission_roles` 记录，`created_by = 'sync'`：
 
@@ -1062,7 +1014,7 @@ module.exports = {
 >
 > **代理经理/实习经理**：同步脚本默认推导为 `role=staff`；如需赋予经理权限，由上级通过管理后台手动升级。
 
-### 6.12 权限管理 API
+### 6.11 权限管理 API
 
 | 接口 | 权限要求 | 说明 |
 |------|----------|------|
@@ -1189,46 +1141,11 @@ allocated → pending          （店长删除重新分配）
 
 ## 10. 核心接口列表
 
-### 10.1 clientApi（顾客端）
+> clientApi 接口详见 `client.pr.spec.md` §10。
+> staffApi 接口详见 `staff.pr.spec.md` §10。
+> adminApi 接口详见 `admin.pr.spec.md` §9.4。
 
-| 模块 | 接口 | 说明 | 实现状态 |
-|------|------|------|---------|
-| auth | login, bindPhone, bindStore | 微信登录、手机号绑定（含档案行合并）、门店绑定 | 已实现（需适配合并） |
-| store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode | 门店 CRUD + 解绑 + 定位 | 需适配 |
-| product | categories, spuList, skuDetail, spuDetail, hotList, shopInit | 商品浏览 | 已实现 |
-| employee | list, default | 美容师列表 | 需适配 |
-| sale_order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail | 订单全流程（client_user_id 关联 client_wechat_users.user_id） | 已实现（需适配合并） |
-| appointment | create, list, cancel | 预约管理 | 已实现 |
-| service | detail | 服务单只读 | 已实现 |
-
-### 10.2 staffApi（员工端）
-
-| 模块 | 接口 | 说明 | 权限要求 | 实现状态 |
-|------|------|------|----------|---------|
-| auth | login, bindPhone | 员工登录、手机号绑定 | 无（登录前） | 需适配 |
-| store | list | 门店列表 | `store:list` | 需适配 |
-| store | unbindRequests, approveUnbind, rejectUnbind | 门店解绑审批 | `store:manage` | 需适配 |
-| employee | list, departments | 员工列表 | `employee:list` | 需适配 |
-| employee | todayCommission, monthlyCalendar, todoList, bindStore | 工作台数据 | `workbench:dashboard` | 需适配 |
-| product | shopInit, categories, spuList, skuDetail, spuDetail | 商品浏览 | `product:categories` / `product:list` / `product:detail` | 需适配 |
-| product | promotionList, promotionPlans | 福利活动 | `product:list` | 需适配 |
-| customer | search, calendar, detail, paidOrders | 顾客档案 | `customer:*` | 需适配 |
-| sale_order | create, qrcode | 开单 | `sale_order:create` | 已实现（需适配合并） |
-| sale_order | confirmOffline | 确认线下收款 | `sale_order:confirmOffline` | 已实现 |
-| sale_order | close, resetFailed | 订单关闭/重置 | `sale_order:close` / `sale_order:resetFailed` | 已实现 |
-| sale_order | list, detail | 订单查询 | `sale_order:list` / `sale_order:detail` | 已实现 |
-| allocation | save, deleteAllocation | 营业额分配操作 | `allocation:save` / `allocation:delete` | 需适配 |
-| allocation | getCommissionRates, pendingList, suggest | 分配辅助查询 | `allocation:list` | 需适配 |
-| appointment | list, detail, confirm, checkin | 预约管理 | `appointment:*` | 已实现 |
-| service | create, start, complete, cancel, list, detail | 服务单全流程 | `service:*` | 已实现 |
-| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | `sale_order:create` | 待实现 |
-| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | `sale_order:create` | 待实现 |
-| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | `sale_order:create` | 待实现 |
-| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | `sale_order:approveRefund` | 待实现 |
-| **sync** | **full** | **WorkFine → PG 全量同步** | `sync:trigger` | 待实现 |
-| **permission** | **list, assign, revoke** | **权限角色管理** | `permission:*` | 待实现 |
-
-### 10.3 跨端接口
+### 10.1 跨端接口
 
 | 接口 | 说明 |
 |------|------|
@@ -1258,18 +1175,17 @@ allocated → pending          （店长删除重新分配）
 
 ## 12. MVP 验收标准
 
+> 员工端日历相关验收标准（AC-01~AC-03）已移至 `staff.pr.spec.md` §8。
+
 | ID | 标准 | 验证方式 |
 |----|------|----------|
-| AC-01 | 订单进入 `已支付` 后，员工端顾客日历在 **5 秒内**出现当日消费标记 | 支付 → 5 秒内刷新日历 |
-| AC-02 | WebSocket 断开情况下，员工端在 **30 秒内**通过轮询看到同一笔消费 | 断网恢复后 30 秒内数据同步 |
-| AC-03 | 同一笔订单无论重复提交多少次，在日历中仅计入一次 | 重复确认 → 日历不重复标记 |
-| AC-04 | 同一服务单重复点击"完成服务"不产生重复扣次 | 连续点击完成 → 仅扣一次 |
-| AC-05 | 角色越权操作应被拒绝 | 越权操作 → 返回 -403 |
-| AC-06 | PG stores/employees/client_wechat_users 表数据与 WorkFine 源数据一致 | 同步后对比关键字段 |
-| AC-07 | 员工端门店列表、员工列表、顾客搜索均从 PG 查询，响应时间 < 500ms | 接口计时 |
-| AC-08 | WorkFine 连接断开时，门店/员工/顾客查询不受影响（使用 PG 已同步数据） | 断开 MSSQL → 验证查询正常 |
-| AC-09 | 手动触发全量同步后，新增/变更的门店/员工/顾客数据在 PG 中更新 | 在 WorkFine 修改 → 触发同步 → 验证 PG |
-| AC-10 | 小程序中完成开单后，PG sale_orders 表中 client_user_id 正确填入（关联 client_wechat_users.user_id） | 开单 → 查询 sale_orders.client_user_id |
+| AC-01 | 同一服务单重复点击"完成服务"不产生重复扣次 | 连续点击完成 → 仅扣一次 |
+| AC-02 | 角色越权操作应被拒绝 | 越权操作 → 返回 -403 |
+| AC-03 | PG stores/employees/client_wechat_users 表数据与 WorkFine 源数据一致 | 同步后对比关键字段 |
+| AC-04 | 各端门店列表、员工列表、顾客搜索均从 PG 查询，响应时间 < 500ms | 接口计时 |
+| AC-05 | WorkFine 连接断开时，门店/员工/顾客查询不受影响（使用 PG 已同步数据） | 断开 MSSQL → 验证查询正常 |
+| AC-06 | 手动触发全量同步后，新增/变更的门店/员工/顾客数据在 PG 中更新 | 在 WorkFine 修改 → 触发同步 → 验证 PG |
+| AC-07 | 小程序中完成开单后，PG sale_orders 表中 client_user_id 正确填入（关联 client_wechat_users.user_id） | 开单 → 查询 sale_orders.client_user_id |
 
 ---
 
@@ -1326,4 +1242,3 @@ operation_logs (操作日志，只写)
 store_unbind_requests (门店解绑申请)
 │   └── user_id ──→ client_wechat_users.user_id
 ```
-

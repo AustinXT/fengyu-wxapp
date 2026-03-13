@@ -782,35 +782,35 @@ TabBar
 
 ## 10. clientApi 接口汇总
 
-| 模块 | 接口 | 说明 |
-|------|------|------|
-| auth | login | 微信静默登录（自动创建用户记录） |
-| auth | bindPhone | 绑定手机号（CloudID 解密 + 历史订单补全） |
-| auth | bindStore | 绑定门店（含市场名自动提取） |
-| store | list | 门店列表（按市场分组，支持城市筛选） |
-| store | detail | 门店详情（含 employee_count、customer_count） |
-| store | requestUnbind | 申请解绑门店 |
-| store | getUnbindRequest | 查询解绑申请状态 |
-| store | cancelUnbindRequest | 取消解绑申请 |
-| store | geocode | 逆地理编码（腾讯地图 API） |
-| product | categories | 品项分类列表（仅含有效 SKU 的分类） |
-| product | spuList | SPU 商品列表（含 SKU 价格，市场限定过滤） |
-| product | skuDetail | SKU 详情（PG 价格） |
-| product | spuDetail | SPU 详情（福利活动含 promotionSchemeId） |
-| product | hotList | 热门商品（排除院装产品和福利活动） |
-| product | shopInit | 商城初始化数据（分类 + 首分类 SPU 列表） |
-| employee | list | 美容师列表（按门店过滤） |
-| employee | default | 默认美容师（顾客档案主美容师） |
-| order | create | 创建订单（需手机号，10 分钟超时，advisory lock 防并发） |
-| order | pay | 微信支付（当前 mock 模式） |
-| order | alipayPay | 支付宝支付（当前 mock 模式） |
-| order | offlinePay | 线下付款提交 |
-| order | list | 订单列表（带懒清理过期订单） |
-| order | detail | 订单详情（含 expireAt 计算） |
-| order | cancel | 取消订单 |
-| order | appointableItems | 可预约项目（支持 includeInactive） |
-| order | scanDetail | 扫码订单详情（公开接口，仅 staff 订单） |
-| appointment | create | 创建预约（支持不关联疗程卡） |
-| appointment | list | 预约列表（LEFT JOIN 获取服务名） |
-| appointment | cancel | 取消预约（支持取消原因） |
-| service | detail | 服务单详情（只读） |
+| 模块 | 接口 | 说明 | 适配状态 |
+|------|------|------|---------|
+| auth | login | 微信静默登录（自动创建用户记录） | 已实现（需适配合并） |
+| auth | bindPhone | 绑定手机号（CloudID 解密 + 历史订单补全） | 已实现（需适配合并） |
+| auth | bindStore | 绑定门店（含市场名自动提取） | 已实现（需适配合并） |
+| store | list | 门店列表（按市场分组，支持城市筛选） | 需适配 |
+| store | detail | 门店详情（含 employee_count、customer_count） | 需适配 |
+| store | requestUnbind | 申请解绑门店 | 需适配 |
+| store | getUnbindRequest | 查询解绑申请状态 | 需适配 |
+| store | cancelUnbindRequest | 取消解绑申请 | 需适配 |
+| store | geocode | 逆地理编码（腾讯地图 API） | 需适配 |
+| product | categories | 品项分类列表（仅含有效 SKU 的分类） | 已实现 |
+| product | spuList | SPU 商品列表（含 SKU 价格，市场限定过滤） | 已实现 |
+| product | skuDetail | SKU 详情（PG 价格） | 已实现 |
+| product | spuDetail | SPU 详情（福利活动含 promotionSchemeId） | 已实现 |
+| product | hotList | 热门商品（排除院装产品和福利活动） | 已实现 |
+| product | shopInit | 商城初始化数据（分类 + 首分类 SPU 列表） | 已实现 |
+| employee | list | 美容师列表（按门店过滤） | 需适配 |
+| employee | default | 默认美容师（顾客档案主美容师） | 需适配 |
+| order | create | 创建订单（需手机号，10 分钟超时，advisory lock 防并发，client_user_id 关联 client_wechat_users.user_id） | 已实现（需适配合并） |
+| order | pay | 微信支付（当前 mock 模式） | 已实现（需适配合并） |
+| order | alipayPay | 支付宝支付（当前 mock 模式） | 已实现（需适配合并） |
+| order | offlinePay | 线下付款提交 | 已实现（需适配合并） |
+| order | list | 订单列表（带懒清理过期订单） | 已实现（需适配合并） |
+| order | detail | 订单详情（含 expireAt 计算） | 已实现（需适配合并） |
+| order | cancel | 取消订单 | 已实现（需适配合并） |
+| order | appointableItems | 可预约项目（支持 includeInactive） | 已实现 |
+| order | scanDetail | 扫码订单详情（公开接口，仅 staff 订单） | 已实现 |
+| appointment | create | 创建预约（支持不关联疗程卡） | 已实现 |
+| appointment | list | 预约列表（LEFT JOIN 获取服务名） | 已实现 |
+| appointment | cancel | 取消预约（支持取消原因） | 已实现 |
+| service | detail | 服务单详情（只读） | 已实现 |
