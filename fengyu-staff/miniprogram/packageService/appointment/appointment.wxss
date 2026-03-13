@@ -1,13 +1,4 @@
 /* pages/appointment/appointment.wxss */
-.loading-wrap {
-  display: flex;
-  justify-content: center;
-  padding: 80rpx 0;
-}
-
-.empty-wrap {
-  padding: 80rpx 0;
-}
 
 .list-scroll {
   height: calc(100vh - 100rpx);

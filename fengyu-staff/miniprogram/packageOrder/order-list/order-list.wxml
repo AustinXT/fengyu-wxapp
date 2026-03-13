@@ -36,7 +36,7 @@
           <van-button
             wx:if="{{item.status === '待确认收款'}}"
             type="primary" size="small"
-            custom-style="background:#C0322A;border-color:#C0322A;"
+            custom-class="btn-primary-brand"
             catchtap="onConfirmOffline"
             data-id="{{item.id}}"
           >确认收款</van-button>

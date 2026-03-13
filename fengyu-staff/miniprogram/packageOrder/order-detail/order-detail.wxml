@@ -66,14 +66,14 @@
       </view>
       <view class="re-alloc-btn">
         <van-button size="small" plain type="primary" bind:click="onReAllocation"
-          custom-style="color:#C0322A;border-color:#C0322A;">重新分配</van-button>
+          custom-class="btn-outline-brand">重新分配</van-button>
       </view>
     </view>
 
     <!-- 无分配时入口（仅店长 + 已支付/已完成） -->
     <view wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.allocation.length === 0}}" class="card-group items-card">
       <van-button block plain type="primary"
-        custom-style="color:#C0322A;border-color:#C0322A;"
+        custom-class="btn-outline-brand"
         bind:click="onReAllocation"
       >营业额分配</van-button>
     </view>
@@ -83,7 +83,8 @@
       <van-button
         wx:if="{{isManager && (order.status === '待确认收款' || (order.status === '待支付' && order.payType === 'offline'))}}"
         block type="primary"
-        custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button
@@ -95,7 +96,8 @@
       <van-button
         wx:if="{{(isManager || isCreator) && order.status === '待支付'}}"
         block plain type="primary"
-        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:24rpx;"
+        custom-class="btn-outline-brand"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onShowQrcode"
       >查看收款码</van-button>
       <van-button
@@ -108,7 +110,8 @@
       <van-button
         wx:if="{{order.status === '已关闭' || (!isManager && (order.status === '已完成' || order.status === '已支付'))}}"
         block plain round
-        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:24rpx;"
+        custom-class="btn-outline-brand"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onBackToWorkbench"
       >返回工作台</van-button>
     </view>

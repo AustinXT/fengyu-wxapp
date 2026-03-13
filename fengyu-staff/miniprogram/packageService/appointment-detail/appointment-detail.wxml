@@ -37,7 +37,8 @@
         wx:if="{{appt.status === 'pending'}}"
         type="primary"
         block
-        custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;"
         bind:click="onConfirm"
       >确认预约</van-button>
 
@@ -50,7 +51,8 @@
         >顾客已到店</van-button>
         <van-button
           type="primary"
-          custom-style="flex:1;background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
+          custom-class="btn-primary-brand"
+          custom-style="flex:1;border-radius:48rpx;"
           bind:click="onCreateService"
         >创建护理单</van-button>
       </view>
@@ -58,7 +60,8 @@
       <van-button
         wx:if="{{appt.status === 'completed' || appt.status === 'cancelled' || appt.status === 'closed'}}"
         type="primary" block plain
-        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:20rpx;"
+        custom-class="btn-outline-brand"
+        custom-style="border-radius:48rpx;margin-top:20rpx;"
         bind:click="onBackToWorkbench"
       >返回工作台</van-button>
     </view>

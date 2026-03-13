@@ -41,8 +41,6 @@
   padding: 16rpx;
 }
 
-.loading-wrap { display: flex; justify-content: center; padding: 80rpx 0; }
-.empty-wrap { padding: 60rpx 0; }
 
 /* ===== SPU 卡片列表（图文卡片） ===== */
 .spu-list-inner {
@@ -144,11 +142,13 @@
 .cart-item-right { display: flex; align-items: center; gap: 12rpx; }
 .cart-item-price { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
 
-/* ===== 底部操作栏 ===== */
+/* ===== 底部操作栏（flex 布局内，非固定定位） ===== */
 .bottom-bar {
+  position: static;
   display: flex;
   align-items: center;
   padding: 16rpx 24rpx;
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   background: #FFFFFF;
   border-top: 1rpx solid var(--color-border);
   gap: 12rpx;

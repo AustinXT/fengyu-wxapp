@@ -55,3 +55,41 @@
   padding: 16rpx 24rpx;
   border-radius: 12rpx;
 }
+
+/* ===== 品牌 logo ===== */
+.login-logo {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 32rpx;
+}
+
+/* ===== 分割线 ===== */
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 24rpx;
+  margin: 48rpx 0;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 24rpx;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ===== 手机号绑定按钮 ===== */
+.login-phone-btn {
+  width: 100%;
+  height: 88rpx;
+  line-height: 88rpx;
+  border-radius: 44rpx;
+  background: transparent;
+  color: #FFFFFF;
+  font-size: 30rpx;
+  border: 2rpx solid rgba(255, 255, 255, 0.4);
+  margin-top: 24rpx;
+}

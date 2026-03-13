@@ -1,7 +1,5 @@
 /* pages/customer-detail/customer-detail.wxss */
 
-.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
-.empty-wrap { padding: 80rpx 0; }
 
 /* 头部信息卡 */
 .profile-card {
@@ -59,7 +57,6 @@
 .stat-value { font-size: 32rpx; font-weight: 700; color: #C0322A; }
 .stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
-.card-group { margin: 24rpx 0; }
 
 /* 疗程卡区块 */
 .section-header {

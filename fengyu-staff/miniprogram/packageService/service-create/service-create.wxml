@@ -142,7 +142,8 @@
       type="primary"
       block
       loading="{{submitting}}"
-      custom-style="background: #C0322A; border-color: #C0322A; border-radius: 48rpx;"
+      custom-class="btn-primary-brand"
+      custom-style="border-radius: 48rpx;"
       bind:click="onSubmit"
     >提交服务单</van-button>
   </view>

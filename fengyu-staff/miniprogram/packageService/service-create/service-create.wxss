@@ -84,12 +84,6 @@
   color: #999999;
 }
 
-/* ===== 加载 ===== */
-.loading-wrap {
-  display: flex;
-  justify-content: center;
-  padding: 48rpx 0;
-}
 
 .empty-tip {
   display: flex;

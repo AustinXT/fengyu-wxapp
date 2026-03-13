@@ -125,3 +125,132 @@ page {
 /* ===== 角色标签 ===== */
 .role-manager   { color: #C0322A; }
 .role-beautician { color: #3D8A5A; }
+
+/* ===== 三态容器（§3.3） ===== */
+.loading-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 120rpx 0;
+}
+
+.empty-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 80rpx 0;
+}
+
+/* ===== 卡片布局（§3.5） ===== */
+.section-card {
+  margin: 24rpx 32rpx 0;
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+  padding: 24rpx;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+
+.section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #1A1A1A;
+}
+
+/* ===== 底部固定栏 + safe-area（§3.4） ===== */
+.bottom-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 16rpx 24rpx;
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
+  background: #FFFFFF;
+  border-top: 1px solid var(--color-border);
+  z-index: 100;
+}
+
+.bottom-placeholder {
+  height: calc(120rpx + env(safe-area-inset-bottom));
+}
+
+/* ===== 操作按钮容器 ===== */
+.action-bar {
+  padding: 32rpx;
+}
+
+.action-row {
+  display: flex;
+  gap: 24rpx;
+}
+
+/* ===== 详情页状态条 ===== */
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 32rpx;
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.status-banner--pending   { background: var(--color-badge-pending);   color: #D4820A; }
+.status-banner--success   { background: var(--color-badge-confirmed); color: #3D8A5A; }
+.status-banner--progress  { background: var(--color-badge-progress);  color: #5E8BB3; }
+.status-banner--done      { background: var(--color-badge-done);      color: #888888; }
+.status-banner--cancelled { background: var(--color-badge-error);     color: #D94040; }
+.status-banner--error     { background: var(--color-badge-error);     color: #D94040; }
+
+/* ===== van-cell-group 卡片包装 ===== */
+.card-group {
+  margin: 24rpx 0;
+}
+
+/* ===== FAB 浮动按钮（§4.4） ===== */
+.fab {
+  position: fixed;
+  right: 48rpx;
+  bottom: calc(160rpx + env(safe-area-inset-bottom));
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8rpx 24rpx rgba(192, 50, 42, 0.45);
+}
+
+/* ===== 列表容器 ===== */
+.list-wrap {
+  padding: 24rpx 32rpx;
+}
+
+/* ===== van-cell 左侧图标 ===== */
+.cell-icon {
+  margin-right: 12rpx;
+}
+
+/* ===== 品牌按钮（替代 custom-style 硬编码色值） ===== */
+.btn-primary-brand {
+  background: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: #FFFFFF !important;
+}
+
+.btn-outline-brand {
+  color: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+}
+
+.btn-success {
+  background: var(--color-success) !important;
+  border-color: var(--color-success) !important;
+  color: #FFFFFF !important;
+}

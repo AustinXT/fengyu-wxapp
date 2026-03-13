@@ -30,7 +30,8 @@
             <text class="error-text">{{qrcodeError}}</text>
             <van-button
               size="small" plain
-              custom-style="color:#C0322A;border-color:#C0322A;margin-top:24rpx;"
+              custom-class="btn-outline-brand"
+              custom-style="margin-top:24rpx;"
               bind:click="onRetryQrcode"
             >重新生成</van-button>
           </view>
@@ -89,7 +90,8 @@
       <van-button
         wx:if="{{isManager && status === '待确认收款'}}"
         block type="primary"
-        custom-style="background:#C0322A;border-color:#C0322A;border-radius:48rpx;"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button

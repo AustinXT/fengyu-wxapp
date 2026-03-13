@@ -1,14 +1,5 @@
 /* pages/service/service.wxss — 护理 Tab */
 
-.loading-wrap {
-  display: flex;
-  justify-content: center;
-  padding: 120rpx 0;
-}
-
-.empty-wrap {
-  padding: 80rpx 0;
-}
 
 /* ===== 列表 ===== */
 .list-wrap {
@@ -38,30 +29,6 @@
   font-family: monospace;
 }
 
-/* ===== 状态徽章 ===== */
-.status-tag {
-  display: inline-flex;
-  align-items: center;
-  padding: 4rpx 16rpx;
-  border-radius: 24rpx;
-  font-size: 22rpx;
-  font-weight: 500;
-}
-
-.status-tag--pending {
-  background: #FFF3E0;
-  color: #D4820A;
-}
-
-.status-tag--progress {
-  background: #E3F0FF;
-  color: #5E8BB3;
-}
-
-.status-tag--done {
-  background: #F0F0F0;
-  color: #888888;
-}
 
 /* ===== 顾客信息 ===== */
 .card-customer {
@@ -137,17 +104,3 @@
   margin-top: 4rpx;
 }
 
-/* ===== FAB ===== */
-.fab {
-  position: fixed;
-  right: 48rpx;
-  bottom: calc(160rpx + env(safe-area-inset-bottom));
-  width: 112rpx;
-  height: 112rpx;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #C0322A 0%, #C0322A 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 8rpx 24rpx rgba(139, 106, 62, 0.45);
-}

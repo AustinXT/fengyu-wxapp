@@ -1,6 +1,5 @@
 /* packageOrder/revenue-allocation/revenue-allocation.wxss */
 
-.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
 
 /* 订单头部 */
 .order-header {

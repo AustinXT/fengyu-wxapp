@@ -53,13 +53,15 @@
       <van-button
         wx:if="{{detail.status === '待服务'}}"
         type="primary" block
-        custom-style="background: #C0322A; border-color: #C0322A; border-radius: 48rpx;"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius: 48rpx;"
         bind:click="onStartService"
       >开始服务</van-button>
       <van-button
         wx:elif="{{detail.status === '服务中'}}"
         type="primary" block
-        custom-style="background: #3D8A5A; border-color: #3D8A5A; border-radius: 48rpx;"
+        custom-class="btn-success"
+        custom-style="border-radius: 48rpx;"
         bind:click="onCompleteService"
       >确认完成</van-button>
       <van-button
@@ -72,7 +74,8 @@
       <van-button
         wx:if="{{detail.status === '已完成' || detail.status === '已取消'}}"
         type="primary" block plain
-        custom-style="color:#C0322A;border-color:#C0322A;border-radius:48rpx;margin-top:20rpx;"
+        custom-class="btn-outline-brand"
+        custom-style="border-radius:48rpx;margin-top:20rpx;"
         bind:click="onBackToWorkbench"
       >返回工作台</van-button>
     </view>

@@ -1,8 +1,5 @@
 /* pages/order-list/order-list.wxss */
 
-.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
-.empty-wrap { padding: 80rpx 0; }
-
 .list-wrap {
   padding: 24rpx 32rpx;
   padding-bottom: 120rpx;
@@ -25,15 +22,6 @@
 
 .order-no { font-size: 24rpx; color: #666; font-family: monospace; }
 
-.status-tag {
-  display: inline-flex; align-items: center;
-  padding: 4rpx 16rpx; border-radius: 24rpx;
-  font-size: 22rpx; font-weight: 500;
-}
-.status-tag--pending { background: #FFF3E0; color: #D4820A; }
-.status-tag--success { background: #E8F5E9; color: #3D8A5A; }
-.status-tag--done { background: #F0F0F0; color: #888; }
-.status-tag--error { background: #FFEBEE; color: #D94040; }
 
 .order-customer {
   display: flex; align-items: center; gap: 16rpx; margin-bottom: 12rpx;

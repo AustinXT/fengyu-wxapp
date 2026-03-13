@@ -1,7 +1,5 @@
 /* pages/order-detail/order-detail.wxss */
 
-.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
-.empty-wrap { padding: 80rpx 0; }
 
 .status-banner {
   display: flex;
@@ -9,14 +7,9 @@
   justify-content: space-between;
   padding: 20rpx 32rpx;
 }
-.status-banner--pending  { background: #FFF3E0; color: #D4820A; }
-.status-banner--success  { background: #E8F5E9; color: #3D8A5A; }
-.status-banner--done     { background: #F0F0F0; color: #888888; }
-.status-banner--error    { background: #FFEBEE; color: #D94040; }
 .status-text { font-size: 28rpx; font-weight: 600; }
 .order-no-top { font-size: 22rpx; opacity: 0.75; font-family: monospace; }
 
-.card-group { margin: 24rpx 0; }
 
 .items-card {
   background: #FFFFFF;
@@ -83,4 +76,3 @@
 
 .re-alloc-btn { margin-top: 20rpx; text-align: right; }
 
-.action-bar { padding: 32rpx; }

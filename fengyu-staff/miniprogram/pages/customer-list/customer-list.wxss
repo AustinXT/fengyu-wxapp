@@ -1,6 +1,4 @@
 /* pages/customer-list/customer-list.wxss */
-.loading-wrap { display: flex; justify-content: center; padding: 120rpx 0; }
-.empty-wrap { padding: 80rpx 0; }
 .hint-wrap { padding: 80rpx 32rpx; text-align: center; }
 .hint-text { font-size: 26rpx; color: #999; }
 
@@ -38,3 +36,94 @@
 .stat-sleep .stat-count { color: #9b9b9b; }
 .stat-birthday .stat-count { color: #C0322A; }
 .stat-birthday-next .stat-count { color: #a06abf; }
+
+/* ===== 标签筛选行 ===== */
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  padding: 16rpx 24rpx;
+}
+
+/* ===== 顾客卡片 ===== */
+.customer-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 28rpx;
+  margin: 0 24rpx 20rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0,0,0,0.06);
+  display: flex;
+  align-items: flex-start;
+  gap: 20rpx;
+}
+
+.customer-avatar {
+  width: 80rpx;
+  height: 80rpx;
+  border-radius: 50%;
+  background: var(--color-primary-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.customer-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.customer-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-bottom: 8rpx;
+}
+
+.customer-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.customer-phone {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  display: block;
+  margin-bottom: 6rpx;
+}
+
+.customer-store {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  display: block;
+  margin-bottom: 6rpx;
+}
+
+.customer-recent {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 分类徽章 ===== */
+.tier-badge {
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: 16rpx;
+}
+
+.tier-badge--fan {
+  background: #F0F0F0;
+  color: #888888;
+}
+
+.tier-badge--iron {
+  background: #FFF3E0;
+  color: #D4820A;
+}
+
+.tier-badge--diamond {
+  background: #1A1A1A;
+  color: #FFD700;
+}

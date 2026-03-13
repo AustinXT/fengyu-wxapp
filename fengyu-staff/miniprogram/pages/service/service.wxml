@@ -75,7 +75,7 @@
           wx:if="{{item.status === '待服务'}}"
           type="primary"
           size="small"
-          custom-style="background: #C0322A; border-color: #C0322A;"
+          custom-class="btn-primary-brand"
           catchtap="onStartService"
           data-id="{{item.id}}"
         >开始服务</van-button>
@@ -83,7 +83,7 @@
           wx:elif="{{item.status === '服务中'}}"
           type="primary"
           size="small"
-          custom-style="background: #3D8A5A; border-color: #3D8A5A;"
+          custom-class="btn-success"
           catchtap="onCompleteService"
           data-id="{{item.id}}"
         >确认完成</van-button>
