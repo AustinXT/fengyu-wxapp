@@ -369,7 +369,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       RTRIM(UDF_S_1476) AS name,
       RTRIM(UDF_S_1478) AS phone,
       RTRIM(UDF_S_6443) AS store_name,
-      RTRIM(UDF_S_6444) AS primary_beautician,
+      RTRIM(UDF_S_6444) AS bound_employee_id,
       RTRIM(UDF_S_1477) AS member_level,
       RTRIM(UDF_S_6446) AS customer_source,
       RTRIM(UDF_S_1712) AS category,
@@ -377,7 +377,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       RTRIM(UDF_S_1481) AS occupation,
       RTRIM(UDF_S_1482) AS is_married_raw,
       RTRIM(UDF_S_6445) AS wechat_name,
-      UDF_S_1474        AS registered_at,
       RTRIM(UDF_S_6447) AS skin_type,
       RTRIM(UDF_S_6448) AS improvement_focus,
       RTRIM(UDF_S_19093) AS skin_issue,
@@ -408,8 +407,8 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         customer_id text,
         phone text,
         name text,
-        store_id text,
-        primary_beautician text,
+        bound_store_id text,
+        bound_employee_id text,
         member_level text,
         customer_source text,
         category text,
@@ -417,7 +416,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         occupation text,
         is_married boolean,
         wechat_name text,
-        registered_at date,
         skin_type text,
         improvement_focus text,
         skin_issue text,
@@ -440,11 +438,11 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         uuid(), customerId, phone,
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
-        trim(row.primary_beautician), trim(row.member_level),
+        trim(row.bound_employee_id), trim(row.member_level),
         trim(row.customer_source), trim(row.category),
         toDateStr(row.birthday), trim(row.occupation),
         toBool(row.is_married_raw), trim(row.wechat_name),
-        toDateStr(row.registered_at), trim(row.skin_type),
+        trim(row.skin_type),
         trim(row.improvement_focus), trim(row.skin_issue),
         trim(row.wellness_preference),
       ])
@@ -467,9 +465,9 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       }
 
       await client.query(`
-        INSERT INTO _cust_staging (user_id, customer_id, phone, name, store_id,
-          primary_beautician, member_level, customer_source, category,
-          birthday, occupation, is_married, wechat_name, registered_at,
+        INSERT INTO _cust_staging (user_id, customer_id, phone, name, bound_store_id,
+          bound_employee_id, member_level, customer_source, category,
+          birthday, occupation, is_married, wechat_name,
           skin_type, improvement_focus, skin_issue, wellness_preference)
         VALUES ${placeholders.join(',')}
       `, values)
@@ -482,13 +480,13 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
     const upsertByPhone = await client.query(`
       INSERT INTO client_wechat_users (
-        user_id, phone, customer_id, name, store_id, primary_beautician,
+        user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
         member_level, customer_source, category, birthday, occupation, is_married,
-        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+        wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
-      SELECT user_id, phone, customer_id, name, store_id, primary_beautician,
+      SELECT user_id, phone, customer_id, name, bound_store_id, bound_employee_id,
         member_level, customer_source, category, birthday, occupation, is_married,
-        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+        wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       FROM (
         SELECT DISTINCT ON (phone) *
         FROM _cust_staging
@@ -499,8 +497,8 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       DO UPDATE SET
         customer_id = EXCLUDED.customer_id,
         name = EXCLUDED.name,
-        store_id = EXCLUDED.store_id,
-        primary_beautician = EXCLUDED.primary_beautician,
+        bound_store_id = EXCLUDED.bound_store_id,
+        bound_employee_id = EXCLUDED.bound_employee_id,
         member_level = EXCLUDED.member_level,
         customer_source = EXCLUDED.customer_source,
         category = EXCLUDED.category,
@@ -508,7 +506,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         occupation = EXCLUDED.occupation,
         is_married = EXCLUDED.is_married,
         wechat_name = EXCLUDED.wechat_name,
-        registered_at = EXCLUDED.registered_at,
         skin_type = EXCLUDED.skin_type,
         improvement_focus = EXCLUDED.improvement_focus,
         skin_issue = EXCLUDED.skin_issue,
@@ -520,10 +517,10 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     // 3b. 无手机号但有 customer_id：UPDATE 已存在的行（去重）
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
-        name = s.name, store_id = s.store_id, primary_beautician = s.primary_beautician,
+        name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
         member_level = s.member_level, customer_source = s.customer_source,
         category = s.category, birthday = s.birthday, occupation = s.occupation,
-        is_married = s.is_married, wechat_name = s.wechat_name, registered_at = s.registered_at,
+        is_married = s.is_married, wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
         skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
         updated_at = now()
@@ -540,13 +537,13 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     // 3c. 无手机号有 customer_id 但不存在：INSERT 新行（去重）
     const insertNew = await client.query(`
       INSERT INTO client_wechat_users (
-        user_id, customer_id, name, store_id, primary_beautician,
+        user_id, customer_id, name, bound_store_id, bound_employee_id,
         member_level, customer_source, category, birthday, occupation, is_married,
-        wechat_name, registered_at, skin_type, improvement_focus, skin_issue, wellness_preference
+        wechat_name, skin_type, improvement_focus, skin_issue, wellness_preference
       )
-      SELECT s.user_id, s.customer_id, s.name, s.store_id, s.primary_beautician,
+      SELECT s.user_id, s.customer_id, s.name, s.bound_store_id, s.bound_employee_id,
         s.member_level, s.customer_source, s.category, s.birthday, s.occupation, s.is_married,
-        s.wechat_name, s.registered_at, s.skin_type, s.improvement_focus, s.skin_issue, s.wellness_preference
+        s.wechat_name, s.skin_type, s.improvement_focus, s.skin_issue, s.wellness_preference
       FROM (
         SELECT DISTINCT ON (customer_id) *
         FROM _cust_staging
