@@ -42,6 +42,7 @@ Page({
   data: {
     store: null as StoreInfo | null,
     isLoading: true,
+    storeId: '',
     storeName: '',
     bindState: 'no-binding' as BindState,
     boundStoreName: '',
@@ -52,21 +53,23 @@ Page({
     submittingUnbind: false,
   },
 
-  onLoad(options: { storeName?: string }) {
+  onLoad(options: { storeId?: string; storeName?: string }) {
+    const storeId = decodeURIComponent(options.storeId || '');
     const storeName = decodeURIComponent(options.storeName || '');
-    if (!storeName) {
+    if (!storeId && !storeName) {
       Toast.fail('缺少门店参数');
       return;
     }
-    this.setData({ storeName });
-    this.loadAll(storeName);
+    this.setData({ storeId, storeName });
+    this.loadAll(storeId, storeName);
   },
 
-  async loadAll(storeName: string) {
+  async loadAll(storeId: string, storeName: string) {
     this.setData({ isLoading: true });
     try {
+      const detailPayload = storeId ? { storeId } : { storeName };
       const [detailData, unbindData] = await Promise.all([
-        callClientApi('store.detail', { storeName }),
+        callClientApi('store.detail', detailPayload),
         callClientApi('store.getUnbindRequest'),
       ]);
       const pendingRequest: UnbindRequest | null = unbindData?.request || null;
@@ -96,10 +99,10 @@ Page({
 
   // 直接绑定（首次绑定）
   async onBindStore() {
-    const storeName = this.data.storeName;
+    const { storeId, storeName } = this.data;
     try {
-      const data = await callClientApi('auth.bindStore', { storeName });
-      app.setStore(storeName, data?.boundMarketName || '');
+      const data = await callClientApi('auth.bindStore', { storeId });
+      app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
       this.setData({ bindState: 'is-current', boundStoreName: storeName });
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);

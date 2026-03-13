@@ -5,6 +5,7 @@ import { getCurrentCity } from '../utils/location';
 const app = getApp<IAppOption>();
 
 interface Store {
+  store_id: string;
   store_name: string;
   market: string;
   market_name?: string;
@@ -149,9 +150,9 @@ Page({
   },
 
   async onStoreTap(e: WechatMiniprogram.TouchEvent) {
-    const { storeName } = e.currentTarget.dataset as { storeName: string };
+    const { storeId, storeName } = e.currentTarget.dataset as { storeId: string; storeName: string };
     wx.navigateTo({
-      url: `/pagesStore/store-detail/store-detail?storeName=${encodeURIComponent(storeName)}`
+      url: `/pagesStore/store-detail/store-detail?storeId=${encodeURIComponent(storeId)}&storeName=${encodeURIComponent(storeName)}`
     });
   },
 

@@ -5,9 +5,9 @@ import { addToCart, getCartCount } from '../../utils/cart';
 const app = getApp<IAppOption>();
 
 interface Spu {
-  spu_id: string;
+  product_id: string;
   name: string;
-  big_category: string;
+  product_kind: string;
   cover_image: string;
   description: string;
   promotionSchemeId: string;
@@ -15,7 +15,7 @@ interface Spu {
 
 interface Sku {
   sku_id: string;
-  sku_display_name: string;
+  spec_name: string;
   price: number;
   session_count: number | null;
   product_type: string;
@@ -56,12 +56,13 @@ Page({
   },
 
   onLoad(options) {
-    const { spuId } = options as { spuId: string };
-    if (!spuId) {
+    const { productId, spuId } = options as { productId?: string; spuId?: string };
+    const id = productId || spuId;
+    if (!id) {
       wx.navigateBack();
       return;
     }
-    this.loadDetail(spuId);
+    this.loadDetail(id);
     this.loadStaffList();
     this.loadDefaultStaff();
   },
@@ -70,9 +71,9 @@ Page({
     this.setData({ cartCount: getCartCount() });
   },
 
-  async loadDetail(spuId: string) {
+  async loadDetail(productId: string) {
     try {
-      const data = await callClientApi('product.spuDetail', { spuId });
+      const data = await callClientApi('product.spuDetail', { productId });
       const spu = data?.spu;
 
       if (!spu) {
@@ -81,16 +82,16 @@ Page({
 
       this.setData({
         spu: {
-          spu_id: spu.spu_id,
+          product_id: spu.product_id,
           name: spu.name,
-          big_category: spu.big_category,
+          product_kind: spu.product_kind,
           cover_image: spu.cover_image,
           description: spu.description || '',
           promotionSchemeId: spu.promotionSchemeId || ''
         },
         skuList: (spu.skuList || []).map((sku: any) => ({
           sku_id: sku.sku_id,
-          sku_display_name: sku.sku_display_name,
+          spec_name: sku.spec_name,
           price: sku.originalPrice || 0,
           session_count: sku.sessionCount,
           product_type: sku.product_type
@@ -120,11 +121,11 @@ Page({
 
   async loadStaffList() {
     // 优先用 globalData，其次用本地缓存
-    const storeName = app.globalData.boundStoreName || wx.getStorageSync('boundStoreName');
-    if (!storeName) return;
+    const storeId = app.globalData.boundStoreId || wx.getStorageSync('boundStoreId');
+    if (!storeId) return;
     this.setData({ staffListLoading: true });
     try {
-      const data = await callClientApi('staff.list', { storeName });
+      const data = await callClientApi('staff.list', { storeId });
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         employee_id: s.staff_id,
         staff_id: s.staff_id,
@@ -179,12 +180,12 @@ Page({
 
     addToCart({
       skuId: selectedSku.sku_id,
-      spuId: spu.spu_id,
+      spuId: spu.product_id,
       spuName: spu.name,
-      skuDisplayName: selectedSku.sku_display_name,
+      skuDisplayName: selectedSku.spec_name,
       coverImage: spu.cover_image,
       price: selectedSku.price,
-      bigCategory: spu.big_category,
+      bigCategory: spu.product_kind,
       productType: selectedSku.product_type,
     }, quantity);
 
@@ -204,7 +205,7 @@ Page({
     }
     let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
     // 促销方案传入 scheme 信息
-    if (spu.big_category === '促销方案' && spu.promotionSchemeId) {
+    if (spu.product_kind === '福利活动' && spu.promotionSchemeId) {
       url += `&orderType=promo&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
     }
     wx.navigateTo({ url });

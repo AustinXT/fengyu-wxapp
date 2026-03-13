@@ -54,6 +54,7 @@
           label="{{store.region}}"
           is-link
           bindtap="onStoreTap"
+          data-store-id="{{store.store_id}}"
           data-store-name="{{store.store_name}}"
           right-icon="{{selectedStore === store.store_name ? 'success' : 'arrow'}}"
         />

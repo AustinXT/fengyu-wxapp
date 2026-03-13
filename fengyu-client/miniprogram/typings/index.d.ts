@@ -11,6 +11,6 @@ interface IAppOption {
   };
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;
-  setUserInfo(info: { userId: string; boundStoreName?: string }): void;
-  setStore(storeName: string, marketName?: string): void;
+  setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }): void;
+  setStore(storeId: string, storeName: string, marketName?: string): void;
 }

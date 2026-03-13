@@ -34,10 +34,14 @@ App<IAppOption>({
 
   restoreFromCache() {
     const userId = wx.getStorageSync('userId');
+    const boundStoreId = wx.getStorageSync('boundStoreId');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundMarketName = wx.getStorageSync('boundMarketName');
     if (userId) {
       this.globalData.userId = userId;
+    }
+    if (boundStoreId) {
+      this.globalData.boundStoreId = boundStoreId;
     }
     if (boundStoreName) {
       this.globalData.boundStoreName = boundStoreName;
@@ -54,7 +58,7 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { userId, phone, boundStoreName, boundMarketName } = res.result.data;
+        const { userId, phone, boundStoreId, boundStoreName, boundMarketName } = res.result.data;
         if (userId) {
           this.globalData.userId = userId;
           wx.setStorageSync('userId', userId);
@@ -63,6 +67,10 @@ App<IAppOption>({
           wx.setStorageSync('phone', phone);
         }
         // 同步服务器端绑定的门店（核心：即使本地缓存被清除也能恢复）
+        if (boundStoreId) {
+          this.globalData.boundStoreId = boundStoreId;
+          wx.setStorageSync('boundStoreId', boundStoreId);
+        }
         if (boundStoreName) {
           this.globalData.boundStoreName = boundStoreName;
           wx.setStorageSync('boundStoreName', boundStoreName);
@@ -78,16 +86,22 @@ App<IAppOption>({
     }
   },
 
-  setUserInfo(info: { userId: string; boundStoreName?: string }) {
+  setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }) {
     this.globalData.userId = info.userId;
     wx.setStorageSync('userId', info.userId);
+    if (info.boundStoreId) {
+      this.globalData.boundStoreId = info.boundStoreId;
+      wx.setStorageSync('boundStoreId', info.boundStoreId);
+    }
     if (info.boundStoreName) {
       this.globalData.boundStoreName = info.boundStoreName;
       wx.setStorageSync('boundStoreName', info.boundStoreName);
     }
   },
 
-  setStore(storeName: string, marketName?: string) {
+  setStore(storeId: string, storeName: string, marketName?: string) {
+    this.globalData.boundStoreId = storeId;
+    wx.setStorageSync('boundStoreId', storeId);
     this.globalData.boundStoreName = storeName;
     wx.setStorageSync('boundStoreName', storeName);
     if (marketName !== undefined) {
