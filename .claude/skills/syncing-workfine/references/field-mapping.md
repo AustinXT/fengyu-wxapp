@@ -9,6 +9,7 @@
 | UDF_M_1777 | 开业时间 | stores.opening_date | 日期 |
 | UDF_M_8590 | 可用床位 | stores.bed_count | 整数 |
 | UDF_M_11956 | 是否停止营业 | stores.is_closed | '是' → true |
+| — | 关联 org_nodes | stores.org_node_id | 查找对应 type='store' 的 org_nodes.id 写入 |
 
 ## 2. 员工（UDT_S_287 → employees）
 
@@ -24,6 +25,10 @@
 | UDF_S_1161 | 工作职位 | position_name | |
 | UDF_S_1149 | 出生日期 | birthday | |
 | UDF_S_1624 | 是否离职 | is_resigned | '是' → true |
+
+**不同步的字段：** UDF_S_1164（第二工作职位）、UDF_S_12921（第二部门）、UDF_S_10085/UDF_S_10086（职级）、UDF_S_1159（试用开始时间）、UDF_S_1162（转正日期）、UDF_S_1626（离职日期）、UDF_S_1150（年龄，非核心）。
+
+**手动维护字段（同步不覆盖）：** `skills`（技能标签数组），由员工端手动编辑。
 
 ## 3. 顾客档案（UDT_S_311 → client_wechat_users）
 
@@ -47,8 +52,18 @@
 | UDF_S_19093 | 皮肤问题 | skin_issue | 200 |
 | UDF_S_19094 | 接受养生方式 | wellness_preference | 200 |
 
-**UPSERT 策略：** 有 phone → UPSERT by phone；无 phone 有 customer_id → UPSERT by customer_id；都无 → 跳过。
+**UPSERT 三步策略：**
+1. 有 phone → `ON CONFLICT (phone) DO UPDATE`（匹配已绑定手机的微信用户或已导入顾客）
+2. 无 phone、有 customer_id → `UPDATE ... WHERE customer_id = $1`（更新已有 customer_id 的行）；若无匹配行 → INSERT（openid = null）
+3. 无 phone 且无 customer_id → 跳过
+
 **不覆盖字段：** openid, session_key, last_login_at, bound_store_id（微信身份字段）。
+
+**`bound_store_id` vs `store_id` 区分：** `store_id` 是 WorkFine 同步写入的归属门店（UDF_S_6443）；`bound_store_id` 是顾客在小程序中主动绑定的门店，同步不修改。
+
+**age 字段状态：** spec 中有 UDF_S_1480（年龄）→ `age` 映射，但当前 PG schema 无 `age` 列，暂不同步。
+
+**不同步的字段：** UDF_S_18105（会员分类标签）、UDF_S_1486（是否共享）、UDF_S_1717（累计消费金额）、UDF_S_1718（单笔最高金额）、UDF_S_17850（未到店时间间隔）、UDF_S_17758～UDF_S_17858（年度消费档位/累计消费）。
 
 ## 4. 品项分类（UDT_M_229 → product_categories）
 

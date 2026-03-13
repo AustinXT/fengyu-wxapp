@@ -6,7 +6,7 @@ description: |
   不适用于：实时数据流、写入 WorkFine、商品手动维护后的重新导入。
 metadata:
   author: 42ailab
-  version: '1.0'
+  version: '1.1'
   title: WorkFine 数据同步
   description_zh: WorkFine SQL Server → PostgreSQL 全量/增量数据同步工作流
 user-invocable: true
@@ -169,6 +169,28 @@ const { recordset } = await mssqlPool.request().query(`
 | 权限推导 | 员工同步后自动推导 permission_roles，`created_by='sync'` 标记 |
 | 手动数据不覆盖 | permission_roles `created_by != 'sync'` 的行不被覆盖 |
 | 微信身份不覆盖 | 顾客 UPSERT 不触碰 openid/session_key/last_login_at/bound_store_id |
+| 事务隔离 | 每个域的同步在独立事务中执行，单域失败不影响其他域 |
+| 不锁表 | 使用 UPSERT 而非 DELETE + INSERT，同步期间不影响业务读取 |
+| 匹配键策略 | 员工→employee_id，顾客→phone（三步降级），门店→store_name |
+
+### 顾客 UPSERT 三步降级策略
+
+顾客数据量大（~5.7 万条），匹配逻辑比其他域复杂：
+
+1. **有 phone** → `ON CONFLICT (phone) DO UPDATE`：匹配已绑定手机的微信用户或已导入顾客行
+2. **无 phone、有 customer_id** → 先尝试 `UPDATE ... WHERE customer_id = $1`
+3. **UPDATE 无匹配** → `INSERT`（openid = null，纯 WorkFine 顾客档案）
+4. **无 phone 且无 customer_id** → 跳过该行
+
+**注意：** 同步只更新 `store_id`（WorkFine 归属门店），不修改 `bound_store_id`（顾客主动绑定的门店）。
+
+### 手动维护字段（同步不覆盖）
+
+以下字段由业务端手动管理，同步脚本 UPSERT 时必须排除在 SET 子句之外：
+
+- `employees.skills`：技能标签数组，员工端手动编辑
+- `client_wechat_users.openid/session_key/last_login_at/bound_store_id`：微信身份字段
+- `permission_roles` 中 `created_by != 'sync'` 的行：手动分配的权限
 
 ## 不适用
 
@@ -177,6 +199,20 @@ const { recordset } = await mssqlPool.request().query(`
 - 商品首次导入后的重新覆盖（手动维护优先）
 - commission_rate_matrix 同步（WorkFine 字段待补充）
 - WorkFine 历史销售单/护理单迁移（见 spec §9，独立任务）
+
+## 禁止同步的 WorkFine 表
+
+以下 WorkFine 表**不应被同步脚本读取或导入**，PG 已有原生替代：
+
+| WorkFine 表 | 说明 | 不同步原因 |
+|-------------|------|-----------|
+| UDT_M_312 | 顾客消费明细子表 | PG 从订单表查询 |
+| UDT_M_331 | 顾客护理明细子表 | PG 从护理单表查询 |
+| UDT_S_209 / UDT_M_213 | 分院销售单（含销售/回款/转换/退款） | PG 已有原生 sale_orders/sale_items |
+| UDT_S_259 / UDT_M_260 | 售后护理单 | PG 已有原生护理单表 |
+| UDT_S_762 / UDT_M_763 | 售前护理单 | 同上 |
+| UDT_M_217 | 营业额分配明细 | PG 已有原生分配表 |
+| UDT_M_1259 | 收款方式明细 | PG 订单表已包含支付信息 |
 
 ## 资源
 
