@@ -88,15 +88,14 @@ AI框架：Vercel AI SDK，参考：https://ai-sdk.dev
 
 注意，生成时参考：
 
-.42cog/meta.md
 .42cog/real.md
 .42cog/cog/cog.md
 
 还需要同步参考：
 
-.42cog/spec/pm/pr.spec.md
-.42cog/spec/pm/userstory.spec.md
-.42cog/spec/dev/sys.spec.md
+.42cog/pm/admin.pr.spec.md
+.42cog/dev/admin.sys.spec.md
+.42cog/pm/backend.pr.spec.md
 
 如有必要，请开多个task加速执行任务。注意：
 
