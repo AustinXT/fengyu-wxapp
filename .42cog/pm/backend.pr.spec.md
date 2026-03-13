@@ -1,6 +1,6 @@
 # 凤御双美容院 — 后端服务产品需求规格书
 
-> **文档版本**: 3.2.0
+> **文档版本**: 3.3.0
 > **范围**: 后端服务
 > **约束文档**: `.42cog/real.md` | `.42cog/cog.md`
 > **日期**: 2026-03-13
@@ -22,7 +22,7 @@
 | 数据库 | PostgreSQL 自托管（读写，全部业务数据） |
 | 支付 | 微信支付多商户模式（特约商户）+ 线下付款标记 |
 | 实时通信 | WebSocket 或小程序订阅消息 |
-| 权限 | RBAC + Scope（6角色×3域×11模块），三层架构：employees（身份层）+ permission_roles（授权层）+ PERMISSION_MATRIX 代码常量（能力层），微信 openid 关联 |
+| 权限 | RBAC + Scope（6角色×3域×11模块），三层架构：staff_wechat_users（身份层）+ permission_roles（授权层）+ PERMISSION_MATRIX 代码常量（能力层），微信 openid 关联 |
 
 ---
 
@@ -53,7 +53,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 |---|--------|-------|------|
 | 1 | 组织架构 | `org_nodes` | 层级树（总部/市场/门店/部门），邻接表 |
 | 2 | 门店详情 | `stores` | 门店业务信息，1:1 扩展 org_nodes type='store' 节点 |
-| 3 | 员工信息 | `employees` | 角色判定、营业额分配 |
+| 3 | 员工（含微信用户） | `staff_wechat_users` | 微信身份 + 员工档案合一，角色判定、营业额分配 |
 | 4 | 品项分类 | `product_categories` | 初始导入后员工手动管理 |
 | 5 | 商品 | `products` | 初始导入后员工日常维护 |
 | 6 | 商品规格 | `product_skus` | 价格/次数自包含 |
@@ -64,13 +64,12 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | 11 | 护理单主表 | `service_orders` | 到店护理服务记录 |
 | 12 | 护理明细 | `service_items` | 单次服务项目、划卡次数 |
 | 13 | 顾客（含微信用户） | `client_wechat_users` | 微信身份 + 顾客档案合一 |
-| 14 | 员工端微信用户 | `staff_wechat_users` | 员工端独立 |
-| 15 | 预约 | `appointments` | — |
-| 16 | 权限角色分配 | `permission_roles` | — |
-| 17 | 操作日志 | `operation_logs` | 审计追踪，记录后台关键变更 |
-| 18 | 门店解绑申请 | `store_unbind_requests` | 顾客申请解绑门店，店长审批 |
-| 19 | 券模板 | `coupon_templates` | 券规则定义（类型、面额、适用范围、有效期） |
-| 20 | 用户券实例 | `user_coupons` | 已发放的券实例，生命周期管理 |
+| 14 | 预约 | `appointments` | — |
+| 15 | 权限角色分配 | `permission_roles` | — |
+| 16 | 操作日志 | `operation_logs` | 审计追踪，记录后台关键变更 |
+| 17 | 门店解绑申请 | `store_unbind_requests` | 顾客申请解绑门店，店长审批 |
+| 18 | 券模板 | `coupon_templates` | 券规则定义（类型、面额、适用范围、有效期） |
+| 19 | 用户券实例 | `user_coupons` | 已发放的券实例，生命周期管理 |
 
 > 同步机制详见 `workfine-sync.spec.md`。
 
@@ -147,14 +146,19 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 >
 > **与 org_nodes 的关系**: stores 是 org_nodes（type='store'）的 1:1 扩展表，stores 持有 FK 指向 org_nodes。org_nodes 表达层级关系，stores 存储门店业务详情。
 
-### 4.3 employees（员工）
+### 4.3 staff_wechat_users（员工 / 员工端微信用户）
+
+> **设计说明**: 微信身份与员工档案合一。行可由 (a) 微信登录创建，或 (b) WorkFine 同步创建。通过 `phone` 匹配合并行。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `employee_id` | varchar(30) | 主键，员工编号（格式 `FY-{YYMMDD}{序号}`） |
-| `name` | varchar(50) | 姓名 |
+| `user_id` | text | 主键，系统自生成；同步创建时格式 `emp_{employee_id}` |
+| `openid` | varchar(64) \| null | 微信 openid（员工端 appid 下，唯一索引）；仅同步创建的行为 null |
+| `session_key` | varchar(128) \| null | 微信 session_key |
+| `phone` | varchar(30) \| null | 绑定手机号（唯一索引）；微信登录后绑定，或同步写入 |
+| `employee_id` | varchar(30) \| null | 员工编号（唯一索引），同步匹配用，供其他表 FK 引用 |
+| `name` | varchar(50) \| null | 姓名 |
 | `gender` | varchar(20) \| null | 性别 |
-| `phone` | varchar(20) \| null | 手机号码 |
 | `id_card` | varchar(200) \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量，写入时加密，读取时解密） |
 | `store_id` | text \| null | FK → `stores.store_id`（同步时通过 store_name 匹配写入） |
 | `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
@@ -162,18 +166,25 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `birthday` | date \| null | 出生日期 |
 | `skills` | text[] \| null | 技能标签数组（如 ['美容师','推广', '养生师']） |
 | `is_resigned` | boolean | 是否离职，NOT NULL DEFAULT false |
+| `last_login_at` | timestamp \| null | 最近登录时间 |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间（同步时更新，兼作新鲜度判断） |
 
-> **索引**: `INDEX(store_id, is_resigned)`, `INDEX(phone)`
+> **索引**: `UNIQUE(openid) WHERE openid IS NOT NULL`、`UNIQUE(phone) WHERE phone IS NOT NULL`、`UNIQUE(employee_id)`、`INDEX(store_id, is_resigned)`
+>
+> **行创建与合并**:
+> - **微信登录创建**：生成 `user_id`，填充 `openid`，其余为 null
+> - **同步创建**：生成 `user_id`（格式 `emp_{employee_id}`），填充 `employee_id`、`name`、`phone` 等档案字段，`openid = null`
+> - **合并时机**：微信用户绑定手机号时，若 `phone` 匹配到已有同步行，则将微信身份字段（`openid`、`session_key`）写入该行，原微信登录行删除（或合并）
+> - 并非所有员工都会登录小程序（`openid = null`），也非所有小程序用户都有档案（仅有微信登录创建的行无档案字段）
 >
 > **store_id**: `market_name` 不冗余存储，需要时通过 JOIN stores 获取。
 >
 > **org_node_id**: 部门名称和父节点名称通过 JOIN `org_nodes` 获取，不冗余存储。
 >
-> **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `employees.store_id` 关联 `stores`）。详见 §6.7。
+> **角色判定**: 查询 `permission_roles` 表（JOIN `org_nodes` ON `scope_id`），获取所有 `role` + `scope` 组合（一人可有多条记录）。无 `permission_roles` 记录时降级为 `role=staff, scope=员工所在门店`（通过 `staff_wechat_users.store_id` 关联 `stores`）。详见 §6.7。
 >
-> **FK 引用汇总**: `sale_orders.opened_by`、`sale_orders.preferred_employee_id`、`service_orders.assigned_employee_id`、`sale_allocations.employee_id`、`service_items.employee_id`、`appointments.employee_id`、`staff_wechat_users.employee_id`、`store_unbind_requests.reviewed_by` 均引用 `employees.employee_id`。
+> **FK 引用汇总**: `sale_orders.opened_by`、`sale_orders.preferred_employee_id`、`sale_orders.offline_confirmed_by`、`service_orders.assigned_employee_id`、`sale_allocations.employee_id`、`service_items.employee_id`、`appointments.employee_id`、`permission_roles.employee_id`、`store_unbind_requests.reviewed_by` 均引用 `staff_wechat_users.employee_id`。
 
 ### 4.4 product_categories（品项分类）
 
@@ -305,12 +316,12 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `total_amount` | numeric(10,2) | 订单总金额（= Σ sale_items.received）；**退款为负数**，转换=补差价，回款=本次回款金额，NOT NULL |
 | `payment_method` | enum | `wechat` / `alipay` / `offline`（回款支付方式与销售单一致） |
 | `sale_order_source` | enum | `client`（客户端自助）/ `staff`（员工端开单）；回款/转换/退款仅 `staff` |
-| `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `employees.employee_id` |
-| `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `employees.employee_id` |
+| `opened_by` | varchar(30) \| null | 开单人员工编号，FK → `staff_wechat_users.employee_id` |
+| `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `staff_wechat_users.employee_id` |
 | `paid_at` | timestamp | 支付完成时间 |
 | `wechat_transaction_id` | varchar(64) \| null | 微信支付流水号（唯一索引） |
 | `alipay_transaction_id` | varchar(64) \| null | 支付宝交易号（唯一索引） |
-| `offline_confirmed_by` | varchar(30) \| null | 线下收款确认人员工编号，FK → `employees.employee_id` |
+| `offline_confirmed_by` | varchar(30) \| null | 线下收款确认人员工编号，FK → `staff_wechat_users.employee_id` |
 | `offline_confirmed_at` | timestamp | 线下收款确认时间 |
 | `allocation_status` | allocation_status enum \| null | 提成分配状态：null → `pending` → `allocated` |
 | `coupon_id` | text \| null | 使用的券实例ID（关系由 user_coupons.used_sale_order_id 维护） |
@@ -378,7 +389,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 |------|------|------|
 | `id` | bigint | 主键，自增 |
 | `sale_item_id` | varchar(30) | FK → `sale_items.sale_item_id`，NOT NULL |
-| `employee_id` | varchar(30) | 员工编号，FK → `employees.employee_id` |
+| `employee_id` | varchar(30) | 员工编号，FK → `staff_wechat_users.employee_id` |
 | `allocation_ratio` | numeric(5,2) | 提成比例快照 |
 | `total_amount` | numeric(10,2) | 该员工最终分配金额（退款为负数） |
 | `is_void` | boolean | 是否已作废，NOT NULL DEFAULT false |
@@ -402,7 +413,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `service_date` | date | 护理服务日期 |
-| `assigned_employee_id` | varchar(30) | 主责服务人员，FK → `employees.employee_id` |
+| `assigned_employee_id` | varchar(30) | 主责服务人员，FK → `staff_wechat_users.employee_id` |
 | `remark` | text | 备注 |
 | `appointment_id` | text \| null | FK → `appointments.appointment_id` |
 | `client_user_id` | text \| null | FK → `client_wechat_users.user_id` |
@@ -420,7 +431,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `unit_real_price` | numeric(10,2) | sale_items.unit_real_price 快照 |
 | `service_order_id` | varchar(30) | FK → `service_orders.service_order_id`，NOT NULL |
 | `session_used` | integer | 本次划卡次数 |
-| `employee_id` | varchar(30) | 服务美容师，FK → `employees.employee_id` |
+| `employee_id` | varchar(30) | 服务美容师，FK → `staff_wechat_users.employee_id` |
 | `service_duration` | integer | 服务时长（分钟） |
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
@@ -464,22 +475,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 > - **合并时机**：微信用户绑定手机号时，若 `phone` 匹配到已有同步行，则将微信身份字段（`openid`、`session_key`）写入该行，原微信登录行删除（或合并）
 > - 并非所有顾客都会注册小程序（`openid = null`），也非所有小程序用户都有档案（仅有微信登录创建的行无档案字段）
 
-### 4.14 staff_wechat_users（员工端微信用户）
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `user_id` | text | 主键，系统自生成 |
-| `openid` | varchar(64) | 微信 openid（员工端 appid 下，唯一索引） |
-| `session_key` | varchar(128) | 微信 session_key |
-| `phone` | varchar(30) \| null | 绑定手机号（绑定前为 null） |
-| `employee_id` | varchar(30) \| null | FK → `employees.employee_id`（手机号自动匹配后填入） |
-| `last_login_at` | timestamp | 最近登录时间 |
-| `created_at` | timestamp | 记录创建时间 |
-| `updated_at` | timestamp | 记录更新时间 |
-
-> **索引**: `UNIQUE(openid)`, `INDEX(phone)`, `UNIQUE(employee_id) WHERE employee_id IS NOT NULL`
-
-### 4.15 appointments（预约）
+### 4.14 appointments（预约）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -488,7 +484,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `client_user_id` | text | FK → `client_wechat_users.user_id`，NOT NULL |
 | `client_name` | varchar(50) | 顾客姓名（冗余存储） |
-| `employee_id` | varchar(30) | 预约美容师，FK → `employees.employee_id` |
+| `employee_id` | varchar(30) | 预约美容师，FK → `staff_wechat_users.employee_id` |
 | `employee_name` | varchar(50) | 美容师姓名（冗余存储） |
 | `sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`（可选） |
 | `appointment_time` | timestamp | 预约到店时间 |
@@ -500,12 +496,12 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 
 > **索引**: `INDEX(store_id)`, `INDEX(client_user_id)`, `INDEX(employee_id, appointment_time)`
 
-### 4.16 permission_roles（权限角色分配）
+### 4.15 permission_roles（权限角色分配）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | bigserial | 主键，自增 |
-| `employee_id` | varchar(30) NOT NULL | 员工编号，FK → `employees.employee_id` |
+| `employee_id` | varchar(30) NOT NULL | 员工编号，FK → `staff_wechat_users.employee_id` |
 | `role` | text NOT NULL | 角色：`manager` / `finance` / `hr` / `product` / `staff` / `customer_mgr` |
 | `scope_id` | text NOT NULL | FK → `org_nodes.id`（指向 headquarters/market/store 级别的节点） |
 | `created_at` | timestamp | NOT NULL DEFAULT now() |
@@ -517,7 +513,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 
 > **约束**:
 > - `UNIQUE(employee_id, role, scope_id) WHERE is_void = false`（部分唯一索引，同人同角色同域不重复）
-> - `FK(employee_id)` → `employees(employee_id)`
+> - `FK(employee_id)` → `staff_wechat_users(employee_id)`
 > - `FK(scope_id)` → `org_nodes(id)`
 >
 > **一人多角色 + 一角色多域**:
@@ -531,7 +527,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 >
 > **软删除**: `is_void = true` 的记录不参与权限查询。手动撤销权限时标记 `is_void = true` + `voided_at` 而非物理删除，保留审计痕迹。
 
-### 4.17 operation_logs（操作日志）
+### 4.16 operation_logs（操作日志）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -552,7 +548,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 > - 只写不改：日志表仅 INSERT，不支持 UPDATE / DELETE
 > - `action` 格式与云函数 action 路由一致，便于关联和检索
 > - `detail` 使用 jsonb 存储，结构由各操作自行定义（如 `{ before: {...}, after: {...}, reason: "..." }`）
-> - `operator_user_id` 关联 `staff_wechat_users`（而非 `employees`），因为操作发生时用户身份基于微信登录态
+> - `operator_user_id` 关联 `staff_wechat_users`，因为操作发生时用户身份基于微信登录态
 > - 无 `updated_at`，日志不可修改
 >
 > **索引**:
@@ -568,7 +564,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 > - 预约：确认、签到
 > - 权限：角色变更
 
-### 4.18 store_unbind_requests（门店解绑申请）
+### 4.17 store_unbind_requests（门店解绑申请）
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -577,7 +573,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `from_store_id` | text | 原绑定门店，FK → `stores.store_id`，NOT NULL |
 | `status` | enum | `pending` / `approved` / `rejected` / `cancelled`，NOT NULL DEFAULT `pending` |
 | `note` | text \| null | 申请备注 |
-| `reviewed_by` | varchar(30) \| null | 审批人，FK → `employees.employee_id` |
+| `reviewed_by` | varchar(30) \| null | 审批人，FK → `staff_wechat_users.employee_id` |
 | `reviewed_at` | timestamp \| null | 审批时间 |
 | `reject_reason` | text \| null | 拒绝原因 |
 | `created_at` | timestamp | 记录创建时间，NOT NULL DEFAULT now() |
@@ -588,7 +584,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 > - `approved` 后由应用层清除 `client_wechat_users.bound_store_id`
 > - `cancelled` 表示顾客主动撤销申请
 
-### 4.19 coupon_templates（券模板）
+### 4.18 coupon_templates（券模板）
 
 > 定义券的规则（类型、面额、适用范围、有效期等）。发放量由管理端控制，模板本身不含数量限制。
 
@@ -611,7 +607,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 | `created_at` | timestamp | 记录创建时间 |
 | `updated_at` | timestamp | 记录更新时间 |
 
-### 4.20 user_coupons（用户券实例）
+### 4.19 user_coupons（用户券实例）
 
 > 每张实际发给用户的券。status 枚举管理生命周期。下单时通过原子 UPDATE + rowCount 校验防止重用。
 
@@ -655,7 +651,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 ### 5.2 职能线（部门 × 职位）
 
 ```
-部门（employees.org_node_id → org_nodes(type='department')）
+部门（staff_wechat_users.org_node_id → org_nodes(type='department')）
 ├── 美容部 → 门店经理、美容师、实习美容师 …
 ├── 推广部 → 推广经理、推广师 …
 ├── 养生部 → 养生师 …
@@ -666,7 +662,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 
 ### 5.3 矩阵交叉
 
-- 每个员工在 `employees` 表中有 `store_id`（地理归属，FK → stores）和 `org_node_id` + `position_name`（职能归属，org_node_id FK → org_nodes type='department'）
+- 每个员工在 `staff_wechat_users` 表中有 `store_id`（地理归属，FK → stores）和 `org_node_id` + `position_name`（职能归属，org_node_id FK → org_nodes type='department'）
 - 权限由 `permission_roles` 表决定：`role`（能做什么）× `scope_id`（看到哪些数据，FK → org_nodes）
 - 域类型与 org_nodes 节点类型关系：
   - `headquarters`：总部人员 → 全局数据
@@ -686,11 +682,11 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 
 | 层级 | 载体 | 职责 | 变更方式 |
 |------|------|------|----------|
-| **身份层** | `employees` 表 | "这人是谁" — WorkFine 同步 | 同步脚本 |
+| **身份层** | `staff_wechat_users` 表 | "这人是谁" — 微信登录 + WorkFine 同步 | 微信登录 / 同步脚本 |
 | **授权层** | `permission_roles` 表 | "谁有什么角色" — 应用管理 | API / 同步推导 |
 | **能力层** | `PERMISSION_MATRIX` 代码常量 | "角色能做什么" — 6角色 × 11模块 | 代码发布 |
 
-> FK 方向：`permission_roles.employee_id → employees.employee_id`（标准一对多，FK 在"多"侧）。一人可有多条 permission_roles 记录（一人多角色 + 一角色多域）。
+> FK 方向：`permission_roles.employee_id → staff_wechat_users.employee_id`（标准一对多，FK 在"多"侧）。一人可有多条 permission_roles 记录（一人多角色 + 一角色多域）。
 >
 > 顾客（客户端）不属于 RBAC 体系，其权限仍为：自助下单、发起微信支付/选择线下付款、查看自己的订单与预约。
 
@@ -773,7 +769,7 @@ CloudBase 云函数（Node.js）    adminApi（Node.js）
 >
 > **scope 内**：数据范围受 `permission_roles.scope_id` 限定。一人多域时取所有域的并集（如同时管理 store_A 和 store_B，则可查看两家门店的数据）。
 >
-> **本门店**：staff 角色固定为其 `employees.store_id` 对应的门店，不可跨门店。
+> **本门店**：staff 角色固定为其 `staff_wechat_users.store_id` 对应的门店，不可跨门店。
 >
 > **自己相关**：staff 角色仅能查看/操作 `assigned_employee_id` / `employee_id` / `preferred_employee_id` 指向自己的记录。
 >
@@ -796,7 +792,7 @@ LEFT JOIN org_nodes p ON o.parent_id = p.id
 WHERE pr.employee_id = $1 AND pr.is_void = false
 ```
 
-**无记录时降级**：查询 `employees` 获取 `store_id`，降级为 `role=staff, scope_type=store`。
+**无记录时降级**：查询 `staff_wechat_users` 获取 `store_id`，降级为 `role=staff, scope_type=store`。
 
 ### 6.7 auth 上下文结构
 
@@ -808,12 +804,12 @@ ctx.auth = {
   userId,           // staff_wechat_users.user_id
   openid,           // 微信 openid
   phone,            // 绑定手机号
-  employeeId,        // employees.employee_id
-  position,         // employees.position_name（保留兼容）
-  storeName,        // employees.store_id → JOIN stores 获取
-  marketName,       // employees.store_id → JOIN stores 获取
-  departmentNodeId, // employees.org_node_id
-  departmentName,   // employees.org_node_id → JOIN org_nodes.name 获取
+  employeeId,        // staff_wechat_users.employee_id
+  position,         // staff_wechat_users.position_name（保留兼容）
+  storeName,        // staff_wechat_users.store_id → JOIN stores 获取
+  marketName,       // staff_wechat_users.store_id → JOIN stores 获取
+  departmentNodeId, // staff_wechat_users.org_node_id
+  departmentName,   // staff_wechat_users.org_node_id → JOIN org_nodes.name 获取
 
   // 新增：多角色权限
   roles: [
@@ -1113,7 +1109,7 @@ allocated → pending          （店长删除重新分配）
 |----|------|----------|
 | AC-01 | 同一服务单重复点击"完成服务"不产生重复扣次 | 连续点击完成 → 仅扣一次 |
 | AC-02 | 角色越权操作应被拒绝 | 越权操作 → 返回 -403 |
-| AC-03 | PG stores/employees/client_wechat_users 表数据完整且关键字段一致 | 查询 PG 验证数据完整性 |
+| AC-03 | PG stores/staff_wechat_users/client_wechat_users 表数据完整且关键字段一致 | 查询 PG 验证数据完整性 |
 | AC-04 | 各端门店列表、员工列表、顾客搜索均从 PG 查询，响应时间 < 500ms | 接口计时 |
 | AC-05 | 外部数据源不可用时，门店/员工/顾客查询不受影响（PG 数据自包含） | 断开外部连接 → 验证查询正常 |
 | AC-06 | 数据同步后，新增/变更的门店/员工/顾客数据在 PG 中正确更新 | 修改源数据 → 触发同步 → 验证 PG |
@@ -1132,16 +1128,20 @@ org_nodes (组织架构树, type: headquarters/market/store/department)
 │              ←── stores.org_node_id（1:1 扩展）
 stores (门店详情) ←── store_id ──→ 被 sale_orders/service_orders/appointments 等 FK 引用
 │   └── org_node_id ──→ org_nodes.id（关联 type='store' 节点）
-employees (员工) ←── employee_id ──→ 被以下字段引用：
-│   ├── org_node_id ──→ org_nodes.id（关联 type='department' 部门节点）
-│   ├── staff_wechat_users.employee_id
-│   ├── sale_orders.preferred_employee_id / opened_by
-│   ├── service_orders.assigned_employee_id
-│   ├── service_items.employee_id
-│   ├── sale_allocations.employee_id
-│   └── appointments.employee_id
+staff_wechat_users (员工 / 员工端微信用户，微信身份 + 员工档案合一)
+│   ├── openid ── 微信 openid（可为 null，仅同步创建）
+│   ├── employee_id（唯一）←── 被以下字段 FK 引用：
+│   │   ├── sale_orders.preferred_employee_id / opened_by / offline_confirmed_by
+│   │   ├── service_orders.assigned_employee_id
+│   │   ├── service_items.employee_id
+│   │   ├── sale_allocations.employee_id
+│   │   ├── appointments.employee_id
+│   │   ├── permission_roles.employee_id
+│   │   └── store_unbind_requests.reviewed_by
+│   ├── store_id ──→ stores.store_id（地理归属）
+│   └── org_node_id ──→ org_nodes.id（关联 type='department' 部门节点）
 permission_roles (权限角色分配，一人多角色+一角色多域)
-│   ├── employee_id ──→ employees.employee_id
+│   ├── employee_id ──→ staff_wechat_users.employee_id
 │   ├── role ──→ manager / finance / hr / product / staff / customer_mgr
 │   └── scope_id ──→ org_nodes.id（headquarters/market/store 级别节点）
 client_wechat_users (顾客 / 客户端微信用户)
