@@ -1,6 +1,6 @@
 # 凤御双美容院 — 员工端小程序产品需求规格书
 
-> **文档版本**: 1.0.0
+> **文档版本**: 2.0.0
 > **端口**: 员工端小程序（B端，appid: wxe3f5d9ee6a94d22d）
 > **约束文档**: `.42cog/real.md` v3.1.0 | `.42cog/cog.md` v3.1.0
 > **日期**: 2026-03-09
@@ -11,12 +11,7 @@
 
 **名称**: 凤御美业员工端小程序
 **标语**: 门店经营与服务管理一站式工作平台
-**目标用户**: 凤御双美容院的门店员工（店长、美容师）、市场管理层和总部管理层
-
-**核心价值**:
-1. 店长快速开单（普通/体验/福利活动），扫码收款，完成营业额分配
-2. 管理预约、推进服务单、完成疗程核销
-3. 查看顾客档案与消费日历，掌握经营数据
+**目标用户**: 门店员工（店长、美容师）、市场管理层、总部管理层
 
 **色彩方案**（白红主题）:
 - 主色：中国红 `#C0322A`（品牌色，按钮/Tab/高亮/FAB 等全局主色）
@@ -31,35 +26,11 @@
 
 ## 2. 核心用户旅程
 
-### 旅程 A：员工开单 → 扫码收款
-
-```
-搜索顾客 → 选择大类（销售单/回款单/转换单）→ 销售单选子类型（普通单/体验单/内部单）→ 添加项目 → 营业额分配 → 生成二维码 → 顾客扫码支付 / 确认线下收款
-```
-
-### 旅程 B：顾客端下单后员工端联动
-
-```
-收到顾客线下付款申请 → 确认线下收款 → 进入顾客档案日历 → 查看实时消费标记
-```
-
-### 旅程 C：预约 → 到店签到 → 服务完成
-
-```
-收到预约通知 → 确认预约 → 顾客到店签到 → 创建服务单（关联预约）→ 开始服务 → 完成服务（扣减次数）
-```
-
-### 旅程 D：散客到店 → 创建体验单 → 服务
-
-```
-潜在客户到店（无订单）→ 店长选销售单→体验单 → 限选体验卡商品 → 支付确认 → 指定归属美容师 → 营业额分配 → 创建护理单 → 完成服务
-```
-
-### 旅程 E：营业额分配
-
-```
-订单支付完成 → 进入分配页面 → 选择部门/员工 → 按提成比例分配 → 保存（锁定后不可修改）
-```
+- **A 员工开单**: 搜索顾客 → 选大类/子类型 → 四级导航选项目 → 购物车 → 结算弹层（选顾客→确认）→ 二维码 → 顾客扫码支付/确认线下收款
+- **B 顾客端联动**: 收到线下付款申请 → 确认收款 → 顾客日历实时标记
+- **C 预约→服务**: 确认预约 → 到店签到 → 创建服务单（关联预约）→ 开始 → 完成（扣次）
+- **D 散客体验**: 潜在客户到店 → 体验单（限选体验卡）→ 支付 → 分配 → 服务
+- **E 营业额分配**: 订单已支付 → 选部门/员工 → 按提成比例分配 → 保存（锁定后不可修改）
 
 ---
 
@@ -73,16 +44,12 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| AUTH-01 | 微信登录 | 调用 `wx.login` → 换取 openid；自动创建 `staff_wechat_users` 记录；从 PG `staff_wechat_users` 查询职位信息（店长/美容师） |
-| AUTH-02 | 手机号绑定 | 通过 `getPhoneNumber` 获取手机号；自动关联 PG `staff_wechat_users` 员工档案（`employee_id`）；清除认证缓存 |
+| AUTH-01 | 微信登录 | `wx.login` → openid；自动创建 `staff_wechat_users` 记录；查询职位 |
+| AUTH-02 | 手机号绑定 | `getPhoneNumber` → 自动关联 PG 员工档案（`employee_id`）；清除认证缓存 |
 
-**角色判定**:
-- PG `staff_wechat_users.position_name = '门店经理'` 或 `permission_roles.role = 'manager'` → 店长
-- 其他职位 → 美容师
+**角色判定**: `position_name = '门店经理'` 或 `permission_roles.role = 'manager'` → 店长；其他 → 美容师
 
-**约束**:
-- 员工必须在 PG `staff_wechat_users` 有在职档案才能完成绑定
-- 两端 appid 不同，openid 相互独立（员工端 vs 客户端）
+**约束**: 员工必须有在职档案才能绑定；两端 appid 不同，openid 独立
 
 **API**: `auth.login` / `auth.bindPhone`
 
@@ -94,17 +61,11 @@
 
 | ID | 需求 | 说明 |
 |----|------|------|
-| STORE-01 | 门店列表 | 从 PG `stores` + `org_nodes` 查询营业中门店 |
-| STORE-02 | 切换工作门店 | 验证门店存在性，返回门店名供前端本地存储 |
-| STORE-03 | 解绑申请审批 | 店长审批顾客的门店解绑申请（approve/reject） |
+| STORE-01 | 门店列表 | PG `stores` + `org_nodes` 营业中门店 |
+| STORE-02 | 切换工作门店 | 验证门店存在性，返回门店名 |
+| STORE-03 | 解绑申请审批 | 店长审批顾客门店解绑（approve/reject） |
 
-**个人中心页面**（profile.ts）:
-- 门店切换：使用 Picker 组件（仅首次点击时加载门店列表，后续使用缓存）
-- 手机号重新绑定按钮
-- 快捷导航：订单列表、服务单列表、顾客列表（3 个 Cell 入口）
-- 退出登录：确认弹窗 → `app.resetEmployeeInfo()` 清除全部缓存 → `reLaunch` 跳转登录页
-
-**数据来源**: PG `stores` + `org_nodes` + PG `store_unbind_requests`（读写）
+**个人中心**: 门店切换（Picker，首次加载后缓存）、手机号重绑、快捷导航（订单/服务单/顾客列表）、退出登录
 
 **API**: `store.list` / `staff.bindStore` / `store.unbindRequests` / `store.approveUnbind` / `store.rejectUnbind`
 
@@ -112,23 +73,16 @@
 
 #### 3.3 开单（核心流程）
 
-**实现状态**: 已实现
-
-**权限**: 仅店长（门店经理）可开单
-
-**开单流程**:
-```
-选择大类（销售单/回款单/转换单）→ 销售单选子类型（普通单/体验单/内部单）→ 选择项目（四级导航：大类→分类→SPU→SKU）→ 加入购物车 → 结算弹层（选顾客→确认）→ 生成订单二维码 → 顾客扫码支付 / 确认线下收款
-```
+**实现状态**: 已实现 | **权限**: 仅店长
 
 **大类 → 子类型结构**:
 
 | 大类 | 子类型 | sale_order_type | 说明 |
 |------|--------|-----------|------|
-| 销售单 | 普通单 | `普通` | 从商品目录选择 SPU/SKU，按 PG `product_skus.price` 开单 |
-| 销售单 | 体验单 | `体验` | 面向潜在客户（散客），限选体验卡商品，不计入普通业绩，需打标记 |
-| 销售单 | 内部单 | `内部` | 员工/家属消费，统一半价（`price × 0.5`），需打标记，不算顾客数、不计入会员等级 |
-| 销售单 | 福利活动 | `福利活动` | 从 PG `products`（`product_kind = '福利活动'`）选择，方案内项目不可增删，单独成单 |
+| 销售单 | 普通单 | `普通` | 按 `product_skus.price` 开单 |
+| 销售单 | 体验单 | `体验` | 限选体验卡商品，不计入普通业绩 |
+| 销售单 | 内部单 | `内部` | 员工/家属半价（`price × 0.5`），不算顾客数、不计入会员等级 |
+| 销售单 | 福利活动 | `福利活动` | `product_kind = '福利活动'`，方案内项目不可增删，单独成单 |
 | 回款单 | — | `回款` | 选客户 → 查看欠款 → 录入回款（P2） |
 | 转换单 | — | `转换` | A→B 项目转换 + 差价处理（P2） |
 
@@ -136,35 +90,21 @@
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | 大类切换：`福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind` 枚举） | 固定常量 |
-| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU 的分类），院装产品固定追加末尾 |
-| 右侧列表 | SPU 卡片列表 | PG `products` + `product_skus`（is_active 过滤），按 categoryId 缓存已加载列表 |
-| 商品详情 | SKU 规格选择 | PG `product_skus.price` / `session_count` |
+| 顶部 Tab | `福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind`） | 固定常量 |
+| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），院装产品固定追加末尾 |
+| 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
+| 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |
 
-**促销方案项目**:
-- 方案列表：PG `products`（`product_kind = '福利活动'`）
-- 方案详情：PG `product_skus`（价格/次数自包含，赠品价格为 0）
+**购物车规则**:
+- 支持**逐项优惠**（per-item discount），上限 `discount ≤ price × quantity`
+- 两种加入：**加入购物车**（继续选购）/ **直接结算**（`directCheckout` → 自动弹结算弹层）
 
-**购物车交互**:
-- 购物车支持**逐项优惠**（per-item discount）：每个 SKU 可单独设置 discount 金额
-- discount 上限校验：`discount ≤ price × quantity`
-- 从 product-detail 返回时通过 `app.globalData.pendingCartItem` 传递新项目
-- 两种加入方式：**加入购物车**（继续选购）/ **直接结算**（`directCheckout` flag → 自动弹出结算弹层）
-
-**结算流程（3 步弹层）**:
-
-| Step | 内容 | 说明 |
-|------|------|------|
-| Step 0 | 选择顾客 | 手机号搜索 + 最近顾客列表（localStorage 存储最多 5 个） |
-| Step 1 | 确认单据类型 | 由前置大类→子类型选择决定，展示当前类型标签（普通单/体验单/内部单/福利活动） |
-| Step 2 | 确认 + 备注 | 核对商品清单 → 提交后跳转二维码页 |
+**结算 3 步弹层**: Step 0 选顾客（手机号搜索 + 最近 5 个） → Step 1 确认单据类型 → Step 2 确认+备注 → 提交后跳转二维码页
 
 **核心规则**:
-- 顾客手机号为必填项，自动查询是否已注册客户端小程序
-- 已注册 → 直接关联 `client_user_id`；未注册 → 手机号临时标识，待绑定后自动关联
-- 价格快照：开单时写入 `sale_items.unit_price`，后续不可变
-- 订单号/流水号格式见 `backend.pr.spec.md` §4.8/§4.9
-- 门店未配置店长时，前端提示"请先配置门店店长"
+- 顾客手机号必填；已注册→关联 `client_user_id`，未注册→手机号临时标识，待绑定后自动关联
+- 价格快照开单时写入，后续不可变
+- 订单号/流水号格式见 `backend.pr.spec.md` §2.8/§2.9
 
 **API**: `order.create` / `product.shopInit` / `product.categories` / `product.spuList` / `product.skuDetail` / `product.spuDetail` / `product.promotionList` / `product.promotionPlans`
 
@@ -172,38 +112,28 @@
 
 #### 3.4 营业额分配
 
-**实现状态**: 已实现
-
-**权限**: 仅店长
-
-**基本规则**:
-- 先选择部门，再选择该部门下可分配业绩的员工
-- 可分配业绩的员工由 PG `staff_wechat_users` 中字段控制
+**实现状态**: 已实现 | **权限**: 仅店长
 
 **分配规则**:
 
 | 场景 | 规则 |
 |------|------|
 | 同部门分配 | 多名员工参与时，分配总额 ≤ 实收金额 |
-| 跨部门分配 | 各部门可各按实收金额分配（总额可达实收 N 倍） |
+| 跨部门分配 | 各部门独立计算（总额可达实收 N 倍） |
 | 默认候选人 | 订单指定的美容师（`preferred_employee_id`） |
 | 未指定美容师 | 店长从全体可分配员工中手动选择 |
 
 **销售分类（sales_category）**: 自采自销 / 他销自耗 / 他销他耗 / 生态合作
 
-**提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 提成比例（从 PG `commission_rate_matrix` 查询）
+**提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 比例（PG `commission_rate_matrix`）
 
-**"无需分配"标记**: `onSkipAllocation()` — 以空 allocations 数组调用 `allocation.save`，将订单标记为已处理
+**"无需分配"标记**: 以空 allocations 数组调用 `allocation.save`，标记为已处理
 
-**恢复已有分配**: `restoreAllocations()` — 编辑已分配订单时，从已有 `sale_allocations` 恢复 displayItems，回填部门/员工/金额
-
-**三接口并行初始化**: `Promise.all([allocation.suggest, staff.departments, order.detail])` → 首次加载时并行获取建议分配、部门列表、订单详情
-
-**提成比例查询**: `lookupRate(dept, salesCategory, totalAmount)` — 美容部/养生部直接查 `beautyRates`，其他部门按 `rates` 数组的 amountRange 匹配
+**恢复已有分配**: 编辑时从 `sale_allocations` 恢复，回填部门/员工/金额
 
 **可编辑窗口**:
-- 开单后、顾客扫码前（二维码状态"待扫码"）→ 可修改
-- 顾客扫码后 → 立即锁定，如需修改须作废订单重新开单
+- 开单后、顾客扫码前 → 可修改
+- 顾客扫码后 → 立即锁定，修改须作废重开
 
 **分配流程差异**:
 
@@ -211,13 +141,7 @@
 |------|----------|
 | 员工端开单 | 开单流程中手动分配 |
 | 顾客端下单（指定美容师） | 支付后系统自动创建分配记录 |
-| 顾客端下单（未指定美容师） | 支付后 allocation_status = pending，店长手动分配 |
-
-**数据来源**:
-- 部门列表：PG `staff_wechat_users` + `org_nodes`
-- 可分配员工：PG `staff_wechat_users`（按门店+部门筛选）
-- 提成矩阵：PG `commission_rate_matrix`
-- 分配记录：PG `sale_allocations`（单表，sale_item 级粒度）
+| 顾客端下单（未指定美容师） | allocation_status = pending，店长手动分配 |
 
 **API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `staff.departments`
 
@@ -227,14 +151,11 @@
 
 **实现状态**: 已实现
 
-**订单列表**:
-- 店长：查看本店所有订单
-- 美容师：仅查看 `preferred_employee_id` 匹配的订单
-- Tab 筛选（7 个）：**全部 / 待支付 / 待确认收款 / 已支付 / 已完成 / 支付失败 / 已关闭**
-- 支持 `presetStatus` 参数：从工作台待办可直接跳转到指定状态 Tab（如 `pendingOffline` → 待确认收款，`pendingCreate` → 待支付）
-- 列表内嵌快捷操作按钮（如"确认线下收款"可在列表中直接执行）
+**可见范围**: 店长看本店全部；美容师仅看 `preferred_employee_id` 匹配的订单
+**Tab 筛选（7 个）**: 全部 / 待支付 / 待确认收款 / 已支付 / 已完成 / 支付失败 / 已关闭
+**支持 `presetStatus` 参数**: 从工作台待办直接跳转指定 Tab
 
-**各状态可执行操作**:
+**各状态操作矩阵**:
 
 | 状态 | 店长操作 | 美容师操作 |
 |------|---------|-----------|
@@ -242,24 +163,17 @@
 | 待确认收款 | 确认线下收款、关闭订单 | 查看 |
 | 已支付 | 查看详情、营业额分配、创建服务单 | 查看详情 |
 | 支付失败 | 重置为待支付 | — |
-| 已完成 | 查看详情 | 查看详情 |
-| 已关闭 | 查看详情 | 查看详情 |
+| 已完成/已关闭 | 查看详情 | 查看详情 |
 
-**二维码状态展示**: 待扫码 / 已扫码待付款 / 已付款
+**操作按钮**（均含确认弹窗）:
 
-**订单详情页**:
-- 基本信息：订单号、状态、顾客、门店、商品明细（名称/数量/单价/销售金额）、营业额分配信息、剩余次数
-- `isCreator` 判定：`opened_by === getEmployeeId()` 确定当前员工是否为开单人
-
-**操作按钮矩阵**（均含确认弹窗，提示操作不可恢复）:
-
-| 操作 | 方法 | 可见条件 | 弹窗提示 |
-|------|------|----------|----------|
-| 查看二维码 | `onShowQrcode()` | 待支付 | — |
-| 确认线下收款 | `onConfirmOffline()` | 待确认收款 + 店长 | 确认弹窗 |
-| 关闭订单 | `onCloseOrder()` | 待支付/待确认收款 + 店长 | "关闭后不可恢复" |
-| 重置支付失败 | `onResetFailed()` | 支付失败 + 店长 | 确认弹窗 |
-| 营业额分配 | `onReAllocation()` | 已支付 + 店长 | 跳转 revenue-allocation 页 |
+| 操作 | 可见条件 |
+|------|----------|
+| 查看二维码 | 待支付 |
+| 确认线下收款 | 待确认收款 + 店长 |
+| 关闭订单 | 待支付/待确认收款 + 店长 |
+| 重置支付失败 | 支付失败 + 店长 |
+| 营业额分配 | 已支付 + 店长 |
 
 **API**: `order.list` / `order.detail` / `order.qrcode` / `order.confirmOffline` / `order.close` / `order.resetFailed`
 
@@ -269,31 +183,16 @@
 
 **实现状态**: 已实现
 
-**顾客搜索**:
-- PG `client_wechat_users` 单源查询
-- 美容师看脱敏手机号（138****8888）
+**顾客搜索**: PG `client_wechat_users` 单源；美容师看脱敏手机号
 
-**顾客详情**:
-- 基本信息（姓名、手机号、会员等级、绑定门店）
-- 消费统计（累计消费 + 年度消费）
-- PG `client_wechat_users` 单源查询
-- 支持双入参：`id`（顾客编号）或 `clientUserId`（PG 用户 ID）
+**顾客详情**: 基本信息 + 消费统计；支持双入参（`id` / `clientUserId`）
 
-**疗程卡列表**:
-- 从已支付订单 `sale_items` 扁平化展示，每项含 `remainingSessions/totalSessions`
-- 显示格式：项目名 + 规格 + `剩余 N/M 次`
-- 顾客可勾选疗程卡，批量创建服务单 → 通过 `app.globalData._serviceCreatePreload` 预加载到 service-create 页面
+**疗程卡列表**: 从已支付 `sale_items` 展示 `剩余 N/M 次`；可勾选批量创建服务单（通过 `globalData._serviceCreatePreload` 预加载）
 
 **消费日历**:
-- 按日展示已支付订单金额（仅 `paid_at` 入账）
-- 同一天多笔订单按日汇总，可展开查看明细
-- **实时性要求**：订单进入 `已支付` 后 **5 秒内** 日历出现消费标记
-- WebSocket 断开时，轮询在 **30 秒内** 保证一致性
+- 按日展示已支付订单金额（仅 `paid_at` 入账），同日多笔汇总可展开
+- **实时性**: 订单已支付后 **5 秒内** 日历出现标记；WebSocket 断开时轮询 **30 秒内** 保证一致
 - 同一订单仅计入一次（幂等）
-
-**数据来源**:
-- 顾客基本信息：PG `client_wechat_users`
-- 日历消费数据：PG `sale_orders`（WHERE status = '已支付'，按 paid_at 聚合）
 
 **API**: `customer.search` / `customer.detail` / `customer.calendar` / `customer.paidOrders`
 
@@ -303,12 +202,9 @@
 
 **实现状态**: 已实现
 
-**预约列表**:
-- 店长：查看本店全部预约
-- 美容师：仅查看指定给自己的预约
-- Tab 筛选（4 个）：**待确认 / 已确认 / 今日到店 / 全部**
-- 支持分页加载：`page` + `pageSize=20`，滚动触底自动加载下一页
-- 从预约详情可直接跳转创建服务单（带 `appointmentId` 参数预加载）
+**可见范围**: 店长看本店全部；美容师仅看指定给自己的
+**Tab 筛选（4 个）**: 待确认 / 已确认 / 今日到店 / 全部
+**分页**: `page` + `pageSize=20`，滚动触底加载
 
 **操作权限**:
 
@@ -317,16 +213,9 @@
 | 确认预约 | 店长 或 被预约美容师 | 待确认 → 已确认 |
 | 到店签到 | 店长 或 被预约美容师 | 仅记录 `checkin_at`，不改状态 |
 
-**消息提醒**（P1）:
-
-| 触发事件 | 通知对象 | 通知内容 |
-|---------|---------|---------|
-| 顾客发起预约 | 被预约美容师 | "顾客 {name} 预约了 {time}，请及时确认" |
-| 顾客到店签到 | 被预约美容师 | "顾客 {name} 已到店，请准备服务" |
-
-> MVP 阶段通知方式待定（小程序订阅消息 / WebSocket / 轮询兜底），归入 P1 实现。
-
-**预约详情**: 预约 ID、门店、时间、美容师、顾客、关联项目、关联服务单
+**消息提醒**（P1，方式待定）:
+- 顾客发起预约 → 通知被预约美容师
+- 顾客到店签到 → 通知被预约美容师
 
 **API**: `appointment.list` / `appointment.detail` / `appointment.confirm` / `appointment.checkin`
 
@@ -336,38 +225,20 @@
 
 **实现状态**: 已实现
 
-**创建服务单**:
-- 从已支付订单行中选择项目进行核销
-- 支持关联预约（可选，`appointment_id`）
-- 一条预约对应一张服务单，不可重复创建
-- 无预约时 `appointment_id` 留空
-
-**创建权限**:
-- 店长：可代为创建（指定服务美容师）
-- 美容师：仅创建自己负责的服务单
+**创建**: 从已支付订单行选择项目核销；可选关联预约（一预约一服务单，不可重复）
+**创建权限**: 店长可代创建（指定美容师）；美容师仅创建自己的
 
 **状态推进**:
 
 | 操作 | 状态变化 | 说明 |
 |------|---------|------|
 | 开始服务 | 待服务 → 服务中 | — |
-| 完成服务 | 服务中 → 已完成 | 原子扣减 `remaining_sessions`，幂等处理 |
-| 取消服务 | 待服务/服务中 → 已取消 | 不扣减次数 |
+| 完成服务 | 服务中 → 已完成 | 原子扣减 `remaining_sessions`，幂等 |
+| 取消服务 | 待服务/服务中 → 已取消 | 不扣次数 |
 
-**核销规则**:
-- 仅在 `已完成` 时扣减次数（原子扣减 + 幂等），详细 SQL 见 `backend.pr.spec.md` §8.2
-- 若扣次后该订单行 `remaining_sessions` 归零，自动关闭该行的 `待确认/已确认` 预约
+**核销规则**: 仅"已完成"时扣减（原子+幂等，SQL 见 `backend.pr.spec.md` §5.2）；归零自动关闭关联的待确认/已确认预约
 
-**服务单号格式**: 见 `backend.pr.spec.md` §4.11
-
-**护理 Tab 页面**（service.ts）:
-- 3 Tab：**待服务 / 服务中 / 已完成**
-- 卡片展示：服务单编号 + 状态标签 + 顾客信息 + 服务项目列表（含剩余次数 `剩余 N/M 次`）+ 时间信息（按状态不同显示预计/开始/完成时间）
-- 内嵌快捷操作按钮：待服务→"开始服务"、服务中→"确认完成"
-- 完成服务需 Modal 确认："确认完成后将扣减1次疗程次数，操作不可撤销"
-- **FAB 悬浮按钮**：右下角 "+" 按钮 → 跳转 service-create 创建服务单页面
-
-**数据来源**: PG `service_orders` + `service_items`（读写）
+**护理 Tab**: 3 Tab（待服务/服务中/已完成），卡片含快捷操作，FAB "+" 创建服务单，完成需确认弹窗（扣减不可撤销）
 
 **API**: `service.create` / `service.start` / `service.complete` / `service.cancel` / `service.list` / `service.detail`
 
@@ -377,16 +248,9 @@
 
 **实现状态**: 已实现
 
-**工作台首页 UI 结构**:
+**分成卡片结构**: 三行布局（今日分成 | 本月累计 | 上月累计），含订单数/服务单数；上月含业绩+提成+客流；点击金额→跳转提成明细页（§3.15）。店长额外显示门店今日营收。
 
-| 区域 | 内容 | 说明 |
-|------|------|------|
-| 员工信息行 | 姓名 + 门店 + 角色 badge | 顶部展示 |
-| 分成卡片 | 三行布局：今日分成 \| 本月累计 \| 上月累计 | 今日/本月含订单数和服务单数；上月含业绩+提成+服务单数+客流；点击金额→跳转提成明细页（§3.15） |
-| 店长额外行 | 门店今日营收金额 | 仅 `isManager` 可见 |
-| 月度业绩日历 | 7×6 网格 + 月份导航 | 禁止选未来月份；金额 ≥1000 显示为 `k` 格式 |
-| 待办事项 | 6 种待办类型（见下方） | 角色差异控制可见性 |
-| 顾客搜索 | 快捷搜索入口 | — |
+**月度业绩日历**: 7×6 网格 + 月份导航；禁止选未来月份；金额 ≥1000 显示为 `k` 格式
 
 **待办事项（6 种类型）**:
 
@@ -412,10 +276,6 @@
 | EMPLOYEE-01 | 员工列表 | 按门店查询在职员工；美容师看不到手机号 |
 | EMPLOYEE-02 | 部门列表 | 按部门分组返回员工，用于营业额分配 |
 
-**查询条件**: PG `staff_wechat_users.is_resigned = false` + 属于已选门店
-
-**数据来源**: PG `staff_wechat_users`
-
 **API**: `staff.list` / `staff.departments`
 
 ---
@@ -424,14 +284,14 @@
 
 **实现状态**: 已实现
 
-| 角色 | 数据访问范围 | 操作权限 |
-|------|-------------|---------|
-| 店长（门店经理） | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、确认预约、创建/推进服务单、审批解绑 |
-| 美容师 | 本人相关数据 | 确认预约（分配给自己的）、创建/推进服务单（自己的）、查看脱敏手机号 |
+> 权限矩阵完整定义见 `backend.pr.spec.md` §3.1。以下为员工端特有行为差异：
 
-**角色判定**: PG `permission_roles.role` + `org_nodes.type`（从 org_nodes 获取域级别），降级时由 `staff_wechat_users.position_name` 推导
-**门店归属**: PG `staff_wechat_users.store_id` → `stores`
-**门店数据隔离**: 所有 PG 查询以 scope 过滤（headquarters 无过滤 / market 按 `market_name` / store 按 `store_name`），`buildScopeWhere()` 统一生成
+| 角色 | 数据可见范围 | 员工端特有行为 |
+|------|-------------|---------------|
+| 店长 | 本店所有数据 | 开单、营业额分配、确认收款、关闭/重置订单、审批解绑 |
+| 美容师 | 本人相关数据 | 确认预约（仅自己的）、推进服务单（仅自己的）、查看脱敏手机号 |
+
+**门店数据隔离**: `buildScopeWhere()` 按域级别过滤（headquarters 无过滤 / market 按区域 / store 按门店）
 
 ---
 
@@ -441,8 +301,6 @@
 
 **实现状态**: 未实现
 
-**来源**: 会议纪要 2026-03-04 — 简单指标在小程序展示，复杂分析跳转决策分析系统
-
 **核心指标**:
 
 | 指标 | 定义 | 数据来源 |
@@ -450,15 +308,10 @@
 | 客流 | 服务单数量，一人一天算一次 | PG `service_orders` |
 | 客量 | 按日期+顾客去重，一人一月算一次 | PG `service_orders` |
 | 新会员 | 首次消费达 1980 元 | PG `sale_orders` |
-| 业绩 | 收款金额汇总（不限付款方式） | PG `sale_orders`（已支付） |
+| 业绩 | 收款金额汇总 | PG `sale_orders`（已支付） |
 | 消耗 | 服务单划卡单价汇总 | PG `service_items` |
 
-**角色视角**:
-- 美容师：仅看自己数据
-- 店长：看整店数据，拿整店业绩
-- 区域总监（未来）：默认看区域数据，可筛选具体门店
-
-**UI**: 核心指标大数字 + 折线图趋势 + 详情列表
+**角色视角**: 美容师仅看自己；店长看整店；区域总监（未来）默认看区域
 
 ---
 
@@ -466,16 +319,10 @@
 
 **实现状态**: 未实现
 
-**来源**: 会议纪要 2026-03-04 — 销售单下新增内部单
-
-**说明**:
-- 员工/家属半价消费，统一按 `product_skus.price × 0.5` 计算 `unit_price`
-- 新增 `sale_order_type = '内部'` 枚举
-- 走与普通订单相同的支付和营业额分配流程
-- 需打标记（`sale_order_type = '内部'`），数据看板统计时可选剔除内部单
-- **不算顾客数**：客流/客量统计排除内部单对应的顾客
-- **不计入会员等级**：内部单消费额不纳入会员等级升级的累计消费
-- 审批流程：MVP 阶段无额外审批，店长直接开单；后续可按需增加审批节点
+- `sale_order_type = '内部'`，统一 `price × 0.5`
+- 走普通支付和分配流程，需打标记
+- **不算顾客数**（客流/客量排除）、**不计入会员等级**升级消费
+- MVP 无额外审批，店长直接开单
 
 ---
 
@@ -483,215 +330,99 @@
 
 **实现状态**: 未实现
 
-**顾客列表增强**:
-- 统计栏：全部 / 会员客 / 流量客（计数）
-- 快捷标签筛选：活跃客户、即将流失、流失客户、沉睡客户、本月/下月生日客户
-- 下拉筛选器：建档、等级
-- 悬浮按钮：客户分配（店长权限）
-
-**顾客档案多 Tab**（6 个 Tab）:
-
-| Tab | 内容 | 数据来源 |
-|-----|------|----------|
-| 详情 | 基本信息 + 消费汇总 | PG |
-| 日历 | 消费日期标记（已实现） | PG `sale_orders` |
-| 购买记录 | 购买商品/服务列表 | PG `sale_items` |
-| 赠送记录 | 赠送项目/优惠记录 | 待定 |
-| 退换记录 | 退换货/退款记录 | 待定 |
-| 持卡汇总 | 疗程卡/储值卡余次 | PG `sale_items`（remaining_sessions） |
-
-**顾客分类**（会议纪要）: 粉丝/铁粉/黑钻，按年度消费金额滚动计算等级
+- 列表增强：统计栏（全部/会员客/流量客）+ 标签筛选（活跃/即将流失/流失/沉睡/生日）+ 客户分配（店长）
+- 档案多 Tab（6 个）：详情 | 日历（已实现）| 购买记录 | 赠送记录 | 退换记录 | 持卡汇总
+- 顾客分类：粉丝/铁粉/黑钻，按年度消费金额滚动计算
 
 ---
 
 #### 3.15 提成展示增强
 
-**实现状态**: 部分实现（基础分成金额已有，详细提成计算未实现）
+**实现状态**: 部分实现
 
-> **入口**: 工作台分成卡片金额点击下钻，非独立 Tab 或导航入口。
+> **入口**: 工作台分成卡片金额点击下钻。
 
-**提成项目卡片**:
-- 卡数提成 / 手工费 / 自销实耗提成 / 自销业绩提成 / 他销业绩提成 / 退款扣提成
-- 分类 Tab：合计 / 销售 / 服务 / 他销他耗 / 生态合作
-- 明细列表：项目名称、时间、提成金额、业绩金额、顾客、员工、门店
+**提成项目卡片**: 卡数提成 / 手工费 / 自销实耗提成 / 自销业绩提成 / 他销业绩提成 / 退款扣提成
+**分类 Tab**: 合计 / 销售 / 服务 / 他销他耗 / 生态合作
 
-**双维度提成模型**（来源：`03-开单与营业额分配.md §二`）:
+**双维度提成模型**:
 
-| 维度 | 触发时机 | 计算基数 | 说明 |
-|------|---------|---------|------|
-| 销售提成 | 订单支付成功时 | 订单营业额分配金额 | 美容师/养生师均可参与，按顾客填写或指定的美容师分配 |
-| 服务提成 | 服务单完成时 | 服务项目实际单价（划卡单价） | 谁做的拿服务提成（手工费），按实际执行服务的美容师计算 |
+| 维度 | 触发时机 | 计算基数 |
+|------|---------|---------|
+| 销售提成 | 订单支付成功 | 营业额分配金额 |
+| 服务提成 | 服务单完成 | 划卡单价 |
 
-- 两个维度独立计算、独立累计，同一笔订单可同时产生销售提成和服务提成
-- 销售提成归属：按营业额分配时指定的员工（美容师、养生师均可参与分配）
-- 服务提成归属：实际执行服务的美容师
-- 提成比例均从 PG `commission_rate_matrix` 查询
-
-**依赖**: 提成比例矩阵（PG `commission_rate_matrix`）已实现查询接口
+- 两维度独立计算、独立累计；销售提成归分配指定员工，服务提成归实际执行美容师
+- 比例均从 PG `commission_rate_matrix` 查询
 
 ---
 
 ### P2 — 增强功能（Future）
 
 #### 3.16 转换单
-
-**说明**: 将顾客已购项目（A）转换为其他项目（B），处理差价
-**复杂度**: 涉及 A 表（转出）和 B 表（转入）双向项目选择、差价计算、折旧费
-**待确认需求**: 可用数量 vs 剩余次数 vs 剩余未消耗的区别、协商金额含义（批注 #7）
-
----
+A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、协商金额含义。
 
 #### 3.17 退款单
-
-**说明**: 处理顾客退款，区分全退/部分退（按件数）/部分退（按金额）
-**复杂度**: 金额折算扣费、退业绩联动、退提成计算
-**待确认需求**: 退款次数定义、折算扣费比例规则（批注 #9）
-**依赖**: 微信支付退款接口
-
----
+全退/部分退（按件数/按金额），涉及退业绩、退提成。待确认：退款次数定义、折算扣费比例。依赖微信支付退款接口。
 
 #### 3.18 回款单
-
-**说明**: 处理顾客未付尾款/欠款清算
-**流程**: 选客户 → 查看欠款列表 → 选择回款项目 → 录入回款信息 → 营业额分配
-
----
+未付尾款/欠款清算：选客户 → 查看欠款 → 选回款项目 → 录入 → 营业额分配。
 
 #### 3.19 取货单
-
-**说明**: 实物商品（院装产品）分次提货
-**流程**: 选客户 → 选已购实物商品 → 选择取货数量（≤ 剩余未取）→ 确认
-
----
+院装产品分次提货：选已购实物 → 选数量（≤ 剩余未取）→ 确认。
 
 #### 3.20 消息中心
-
-**实现状态**: 未实现
-
-**说明**: 待办事项管理 + 系统通知，两个子 Tab 切换
-
-**Tab 结构**:
-
-| Tab | 内容 | 说明 |
-|-----|------|------|
-| 代办 | 6 种待办类型 + 按类型筛选 + 已处理/未处理切换 | 待办类型同工作台 §3.9（预约待确认、服务单待推进、待确认收款、待确认订单、待提成分配、待审批解绑） |
-| 通知 | 公告列表/详情 + 订单状态变更 + 系统通知 | 公告支持富文本详情页 |
-
-**代办 Tab 交互**:
-- 顶部切换：未处理（默认）/ 已处理
-- 类型筛选器：全部 / 按 6 种类型分别筛选
-- 卡片样式：类型图标 + 摘要文本 + 时间 + 操作按钮（同工作台待办卡片跳转目标）
-- 标记已处理：操作完成后自动标记，或手动标记为已处理
-
-**通知 Tab 交互**:
-- 列表按时间倒序
-- 未读角标（红点）
-- 点击通知跳转对应页面（如订单详情）
-
-**依赖**: 消息推送基础设施（订阅消息/WebSocket/轮询兜底）
+代办 Tab（6 种待办，同 §3.9，含已处理/未处理切换 + 类型筛选）| 通知 Tab（公告 + 订单状态变更 + 系统通知，未读角标）。依赖消息推送基础设施。
 
 ---
 
 ## 4. 状态机
 
-> 订单、预约、服务单、营业额分配状态机定义见 `backend.pr.spec.md` §8。
-> 员工端特有交互规则（如可编辑窗口、操作权限矩阵）见本文 §3.4/§3.5。
+> 订单、预约、服务单、营业额分配状态机定义见 `backend.pr.spec.md` §5。
+> 员工端特有交互规则（可编辑窗口、操作权限矩阵）见本文 §3.4/§3.5。
 
 ---
 
 ## 5. 页面结构与导航地图
 
-### 5.1 TabBar（实际实现）
+### 5.1 TabBar
 
-| Tab | 页面路径 | 图标 | 说明 |
-|-----|----------|------|------|
-| 工作台 | `pages/workbench/workbench` | tab-workbench | 员工信息、分成卡片、月度日历、6种待办、顾客搜索 |
-| 开单 | `pages/order-create/order-create` | tab-create-order | 四级导航选品 + 购物车 + 3步结算弹层（仅店长） |
-| 护理 | `pages/service/service` | tab-service | 3 Tab 服务单列表 + FAB 新建 |
-| 顾客 | `pages/customer-list/customer-list` | tab-customer | 顾客搜索/列表 |
-| 我的 | `pages/profile/profile` | tab-profile | 员工信息 |
+| Tab | 页面路径 | 说明 |
+|-----|----------|------|
+| 工作台 | `pages/workbench/workbench` | 分成卡片、月度日历、6种待办、顾客搜索 |
+| 开单 | `pages/order-create/order-create` | 四级导航 + 购物车 + 结算弹层（仅店长） |
+| 护理 | `pages/service/service` | 3 Tab 服务单 + FAB 新建 |
+| 顾客 | `pages/customer-list/customer-list` | 搜索/列表 |
+| 我的 | `pages/profile/profile` | 员工信息 |
 
-> **设计稿 vs 实现**: 设计稿为 4 Tab（我的/工作台/消息/数据中心），实际实现为 5 Tab。开单/护理/顾客是高频操作，提升为独立 Tab 更合理。消息中心（代办+通知两个子 Tab）归入 P2，数据中心移至管理后台。
+> 设计稿 4 Tab → 实际 5 Tab。开单/护理/顾客是高频操作，提升为独立 Tab。消息中心归 P2，数据中心移至管理后台。
 
 ### 5.2 分包结构
 
 | 分包 | 页面 | 说明 |
 |------|------|------|
-| 主包 | login, workbench, order-create, service, customer-list, profile | TabBar 页面 + 登录页 |
+| 主包 | login, workbench, order-create, service, customer-list, profile | TabBar + 登录页 |
 | packageOrder | order-qrcode, order-list, order-detail, revenue-allocation, allocation-list | 订单与分配 |
 | packageCustomer | customer-detail | 顾客详情 |
 | packageService | service-list, service-detail, service-create, appointment, appointment-detail, product-detail, unbind-requests | 护理与预约 |
 
-### 5.3 导航地图
+### 5.3 核心导航流
 
-```
-TabBar
-├── 工作台 (workbench)
-│   ├── 今日分成 → 月度业绩日历（7×6 网格）
-│   ├── 待办事项
-│   │   ├── 预约待确认 → 预约详情 (appointment-detail)
-│   │   ├── 服务单待推进 → 服务单详情 (service-detail)
-│   │   ├── 待确认收款 → 订单列表 (order-list, presetStatus=pendingOffline)
-│   │   ├── 待确认订单 → 订单列表 (order-list, presetStatus=pendingCreate)
-│   │   ├── 待提成分配 → 分配列表 (allocation-list) → 营业额分配 (revenue-allocation)
-│   │   └── 待审批解绑 → 解绑申请 (unbind-requests)
-│   └── 顾客搜索 → 顾客详情 (customer-detail)
-│       ├── 消费日历
-│       ├── 已支付订单
-│       └── 选中疗程卡 → 创建服务单 (service-create, preloaded)
-├── 开单 (order-create)
-│   ├── 四级导航：大类 Tab → 左侧分类 → 右侧 SPU → 商品详情 (product-detail)
-│   ├── 商品详情返回 → pendingCartItem → 加入购物车 / 直接结算
-│   ├── 结算弹层 3 步（选顾客 → 选类型 → 确认）
-│   └── 提交后 → 订单二维码 (order-qrcode)
-├── 护理 (service) — 3 Tab: 待服务/服务中/已完成
-│   ├── 卡片内嵌快捷操作（开始服务/确认完成）
-│   ├── 点击卡片 → 服务单详情 (service-detail)
-│   └── FAB "+" → 创建服务单 (service-create)
-├── 顾客 (customer-list) → 顾客详情 (customer-detail)
-│   ├── 消费日历
-│   ├── 已支付订单 → 创建服务单
-│   └── 解绑申请审批 (unbind-requests)（店长）
-├── 预约 (appointment) — 从护理 Tab 或工作台进入
-│   ├── 4 Tab: 待确认/已确认/今日到店/全部
-│   └── 预约详情 (appointment-detail)
-│       ├── 确认预约 / 到店签到
-│       └── 创建服务单 (service-create, appointmentId)
-└── 我的 (profile)
-    ├── 员工信息 + 角色 badge
-    ├── 门店切换（Picker）
-    ├── 快捷导航：订单列表 / 服务单列表 / 顾客列表
-    ├── 订单列表 (order-list) → 订单详情 (order-detail)
-    │   ├── 二维码 (order-qrcode)
-    │   ├── 营业额分配 (revenue-allocation)
-    │   └── 分配列表 (allocation-list)
-    ├── 手机号重新绑定
-    └── 退出登录
-```
+- 工作台 → 待办 → 各详情页；分成卡片 → 月度日历；顾客搜索 → 详情 → 日历/疗程卡 → 创建服务单
+- 开单 → 四级导航 → 商品详情 → 购物车 → 结算弹层 → 二维码
+- 护理 → 3 Tab + FAB → 服务单详情/创建；预约从护理/工作台进入 → 确认/签到/创建服务单
+- 顾客列表 → 详情 → 消费日历/创建服务单/解绑审批
+- 我的 → 门店切换/手机号重绑/退出；快捷导航 → 订单列表 → 详情/分配
 
 ---
 
-## 6. 数据来源对照
+## 6. 约束与数据模型
 
-> 完整数据模型见 `backend.pr.spec.md` §4。员工端涉及的 PG 表：org_nodes, stores, staff_wechat_users, client_wechat_users, product_categories, products, product_skus, sale_orders, sale_items, sale_allocations, permission_roles, appointments, service_orders, service_items, store_unbind_requests, operation_logs。
-
----
-
-## 7. 环境约束
-
-> 见 `backend.pr.spec.md` §11（原子扣减、价格快照、支付幂等、状态单向推进、域数据隔离、连接池限制等）。
+> 数据模型见 `backend.pr.spec.md` §2；环境约束见 `real.md`。
 
 ---
 
-## 8. 验收标准
-
-### P0 核心功能（跨端验收，源自 backend.pr.spec.md）
-
-| ID | 标准 | 验证方式 |
-|----|------|----------|
-| AC-X01 | 订单进入 `已支付` 后，员工端顾客日历在 **5 秒内**出现当日消费标记 | 支付 → 5 秒内刷新日历 |
-| AC-X02 | WebSocket 断开情况下，员工端在 **30 秒内**通过轮询看到同一笔消费 | 断网恢复后 30 秒内数据同步 |
-| AC-X03 | 同一笔订单无论重复提交多少次，在日历中仅计入一次 | 重复确认 → 日历不重复标记 |
+## 7. 验收标准
 
 ### P0 核心功能
 
@@ -699,212 +430,48 @@ TabBar
 |----|------|----------|
 | AC-01 | 员工微信登录后自动创建 `staff_wechat_users` 记录 | 查看数据库表 |
 | AC-02 | 手机号绑定后自动关联 PG 员工档案（`employee_id`） | 绑定后查询 employee_id 非空 |
-| AC-03 | 仅店长可进入开单流程，美容师角色被拒绝 | 美容师点击开单 → 提示无权限 |
-| AC-04 | 开单后 PG 订单表能查到同一笔记录 | 开单 → 查询 orders 表 |
-| AC-05 | SKU 价格从 PG `product_skus` 读取，与管理端一致 | 修改商品价格 → 刷新后更新 |
-| AC-06 | 店长确认线下收款后订单状态变为 `已支付` | 确认收款 → 检查状态 |
-| AC-07 | 订单进入 `已支付` 后，顾客日历在 **5 秒内** 出现消费标记 | 支付 → 5 秒内刷新日历 |
-| AC-08 | WebSocket 断开时，轮询在 **30 秒内** 保证一致性 | 断网恢复后 30 秒内数据同步 |
-| AC-09 | 同一订单日历仅计入一次（幂等） | 重复确认 → 日历不重复标记 |
-| AC-10 | 同一服务单重复完成不产生重复扣次 | 连续点击完成 → 仅扣一次 |
-| AC-11 | 营业额分配保存后 PG 分配表能查到分配明细 | 分配 → 查询 sale_allocations |
-| AC-12 | 美容师不可查看顾客完整手机号 | 美容师查询 → 返回脱敏手机号 |
-| AC-13 | 服务单完成后 `remaining_sessions` 正确扣减 | 从 3 → 服务一次 → 变为 2 |
-| AC-14 | 体验单走与普通订单相同的支付和分配流程 | 创建体验单 → 支付 → 分配 → 服务 |
-| AC-15 | 福利活动订单内项目不可增删 | 选择方案后尝试修改 → 不允许 |
-| AC-16 | 预约确认后 `已确认`，签到记录 `checkin_at` 但不改状态 | 签到后检查状态仍为已确认 |
+| AC-03 | 仅店长可进入开单流程，美容师被拒绝 | 美容师点开单 → 提示无权限 |
+| AC-04 | 开单后 PG 订单表能查到记录 | 开单 → 查询 |
+| AC-05 | SKU 价格从 PG `product_skus` 读取 | 修改价格 → 刷新后更新 |
+| AC-06 | 确认线下收款后状态变为 `已支付` | 确认 → 检查状态 |
+| AC-07 | 订单已支付后，日历 **5 秒内** 出现消费标记 | 支付 → 刷新日历 |
+| AC-08 | WebSocket 断开时，轮询 **30 秒内** 保证一致 | 断网恢复后同步 |
+| AC-09 | 同一订单日历仅计入一次（幂等） | 重复确认 → 不重复标记 |
+| AC-10 | 同一服务单重复完成不产生重复扣次 | 连续点击 → 仅扣一次 |
+| AC-11 | 分配保存后 PG 可查到分配明细 | 分配 → 查询 |
+| AC-12 | 美容师不可查看完整手机号 | 查询 → 返回脱敏 |
+| AC-13 | 服务完成后 `remaining_sessions` 正确扣减 | 3 → 服务一次 → 2 |
+| AC-14 | 体验单走完整支付+分配+服务流程 | 创建 → 支付 → 分配 → 服务 |
+| AC-15 | 福利活动订单内项目不可增删 | 选方案后修改 → 不允许 |
+| AC-16 | 签到记录 `checkin_at` 但不改状态 | 签到后状态仍为已确认 |
 
 ### P1 重要功能
 
 | ID | 标准 | 验证方式 |
 |----|------|----------|
-| AC-17 | 数据看板核心指标与 PG 数据一致 | 对比数据库聚合值 |
-| AC-18 | 内部单可标记且可从统计中剔除；内部单不算顾客数（客流/客量排除）、不计入会员等级升级消费额 | 创建内部单 → 验证半价 → 统计筛选排除 → 会员等级不变 |
-| AC-19 | 顾客列表支持标签筛选 | 选择标签 → 过滤结果正确 |
+| AC-17 | 数据看板指标与 PG 数据一致 | 对比聚合值 |
+| AC-18 | 内部单标记+统计可剔除+不算顾客数+不计会员等级 | 创建 → 验证半价 → 排除验证 |
+| AC-19 | 顾客列表支持标签筛选 | 选标签 → 结果正确 |
 
 ---
 
-## 9. 不包含功能（明确排除）
+## 8. 不包含功能（明确排除）
 
 | 功能 | 排除原因 |
 |------|----------|
-| 转换单/退款单/回款单/取货单 | 复杂度高，归入 P2，待需求确认后实现 |
-| 充值卡金营业额分配 | 充值卡金相关流程未建立 |
-| 跨店服务 | 跨店申请审批流程未设计 |
-| PC 管理后台 | 独立项目，不在小程序范围 |
-| 服务号提醒 | 依赖微信服务号，独立对接 |
+| 转换单/退款单/回款单/取货单 | P2，待需求确认 |
+| 充值卡金营业额分配 | 流程未建立 |
+| 跨店服务 | 审批流程未设计 |
+| PC 管理后台 | 独立项目 |
+| 服务号提醒 | 依赖微信服务号 |
 | 客户反馈处理 | 依赖反馈系统（P2） |
-| 报货流程 | 门店消耗品报货，待定 |
-| 复杂提成计算 | 阶梯提成等复杂规则待确认（P1/P2） |
-| 细粒度权限配置 | MVP 仅区分店长/美容师。以下细粒度规则暂不实现：项目部门人员按品项类别查看对应顾客档案；按数据维度（如门店/区域）限定可见范围 |
+| 报货流程 | 待定 |
+| 复杂提成计算 | 阶梯提成规则待确认 |
+| 细粒度权限配置 | MVP 仅店长/美容师 |
 | 授权员工开单 | MVP 仅店长可开单 |
-| 商品管理 | 移至管理后台（admin AFF-04） |
-| 优惠券管理 | 移至管理后台（admin AFF-14） |
-| 数据中心（完整报表） | 移至管理后台（admin AFF-15）；小程序端仅展示简单指标（P1 §3.12） |
-| 排班管理 | 依赖排班数据，暂不实现 |
-| 甘特图预约视图 | 高复杂度 UI，暂不实现 |
-| 库存管理 | 暂不实现 |
-| 日报审批 | 暂不实现 |
-| 个人中心增强 | 当前实现已满足需求，增强功能暂不实现 |
-| 用户体系迁移 | 未来所有档案在小程序管理，不再依赖外部系统（远期规划） |
-
----
-
-## 10. staffApi 接口汇总
-
-| 模块 | 接口 | 说明 | 权限要求 | 前端调用页面 | 实现状态 |
-|------|------|------|----------|-------------|---------|
-| auth | login | 员工微信登录 | 无（登录前） | app.ts (onLaunch) | 已实现 |
-| auth | bindPhone | 绑定手机号 → 关联 PG 员工档案 | 无（登录前） | login | 已实现 |
-| store | list | 门店列表 | `store:list` | profile (Picker) | 已实现 |
-| store | unbindRequests | 待审批解绑申请列表 | `store:manage` | unbind-requests | 已实现 |
-| store | approveUnbind | 审批通过解绑 | `store:manage` | unbind-requests | 已实现 |
-| store | rejectUnbind | 拒绝解绑申请 | `store:manage` | unbind-requests | 已实现 |
-| staff | list | 员工列表 | `employee:list` | — | 已实现 |
-| staff | departments | 部门列表（含员工分组） | `employee:list` | revenue-allocation | 已实现 |
-| staff | todayCommission | 今日分成 | `workbench:dashboard` | workbench | 已实现 |
-| staff | monthlyCalendar | 月度业绩日历 | `workbench:dashboard` | workbench | 已实现 |
-| staff | todoList | 待处理事项 | `workbench:dashboard` | workbench | 已实现 |
-| staff | bindStore | 切换工作门店 | `workbench:dashboard` | profile | 已实现 |
-| product | shopInit | 开单页初始化（分类+首个分类SPU） | `product:categories` | order-create | 已实现 |
-| product | categories | 品项分类列表 | `product:categories` | order-create | 已实现 |
-| product | spuList | SPU 商品列表 | `product:list` | order-create | 已实现 |
-| product | skuDetail | SKU 详情（含实时价格） | `product:detail` | product-detail | 已实现 |
-| product | spuDetail | SPU 详情（含 SKU 列表、福利活动反查） | `product:detail` | product-detail | 已实现 |
-| product | promotionList | 福利活动列表（原始格式） | `product:list` | order-create | 已实现 |
-| product | promotionPlans | 福利活动列表（前端适配格式） | `product:list` | order-create | 已实现 |
-| customer | search | 顾客搜索 | `customer:*` | order-create, customer-list | 已实现 |
-| customer | calendar | 消费日历 | `customer:*` | customer-detail | 已实现 |
-| customer | detail | 顾客详情 | `customer:*` | customer-detail | 已实现 |
-| customer | paidOrders | 已支付订单（用于核销选择） | `customer:*` | customer-detail | 已实现 |
-| order | create | 员工开单（普通/体验/福利活动） | `sale_order:create` | order-create | 已实现 |
-| order | qrcode | 订单二维码状态 | `sale_order:create` | order-qrcode | 已实现 |
-| order | confirmOffline | 确认线下收款 | `sale_order:confirmOffline` | order-detail, order-list | 已实现 |
-| order | close | 关闭订单 | `sale_order:close` | order-detail | 已实现 |
-| order | resetFailed | 重置支付失败 | `sale_order:resetFailed` | order-detail | 已实现 |
-| order | list | 订单列表 | `sale_order:list` | order-list | 已实现 |
-| order | detail | 订单详情 | `sale_order:detail` | order-detail, revenue-allocation | 已实现 |
-| allocation | save | 保存营业额分配 | `allocation:save` | revenue-allocation | 已实现 |
-| allocation | deleteAllocation | 删除分配记录 | `allocation:delete` | revenue-allocation | 已实现 |
-| allocation | getCommissionRates | 获取提成比例矩阵 | `allocation:list` | revenue-allocation | 已实现 |
-| allocation | pendingList | 待分配订单列表 | `allocation:list` | allocation-list | 已实现 |
-| allocation | suggest | 分配建议（自动填充） | `allocation:list` | revenue-allocation | 已实现 |
-| appointment | list | 预约列表 | `appointment:*` | appointment | 已实现 |
-| appointment | detail | 预约详情 | `appointment:*` | appointment-detail | 已实现 |
-| appointment | confirm | 确认预约 | `appointment:*` | appointment-detail | 已实现 |
-| appointment | checkin | 到店签到 | `appointment:*` | appointment-detail | 已实现 |
-| service | create | 创建服务单 | `service:*` | service-create | 已实现 |
-| service | start | 开始服务 | `service:*` | service, service-detail | 已实现 |
-| service | complete | 完成服务（原子扣减） | `service:*` | service, service-detail | 已实现 |
-| service | cancel | 取消服务单 | `service:*` | service-detail | 已实现 |
-| service | list | 服务单列表 | `service:*` | service | 已实现 |
-| service | detail | 服务单详情 | `service:*` | service-detail | 已实现 |
-| sale_order | createPayment | 创建回款单（引用原销售单，原子累加 received） | `sale_order:create` | — | 待实现 |
-| sale_order | createConversion | 创建转换单（convert_out + convert_in，单事务） | `sale_order:create` | — | 待实现 |
-| sale_order | createRefund | 创建退款单（状态=待审批，待店长审批） | `sale_order:create` | — | 待实现 |
-| sale_order | approveRefund | 审批退款单（店长审批，触发 remaining_sessions 扣减） | `sale_order:approveRefund` | — | 待实现 |
-| sync | full | WorkFine → PG 全量同步 | `sync:trigger` | — | 待实现 |
-| permission | list, assign, revoke | 权限角色管理 | `permission:*` | — | 待实现 |
-
----
-
-## 11. 前端实现基础设施
-
-### 11.1 API 封装
-
-统一入口 `utils/cloud.ts`：
-```typescript
-callStaffApi<T>(action: string, payload?: Record<string, any>): Promise<T>
-```
-- 调用 `wx.cloud.callFunction('staffApi', { action, payload })`
-- 自动检查 `result.code !== 0` 抛出异常
-- 返回 `result.data as T`
-
-### 11.2 Mock 模式
-
-`utils/dev-config.ts` 提供 `MOCK_ENABLED` 开关（默认 `false`）：
-- 开启时 `callStaffApi` 优先走 `mockCallApi` 拦截
-- 发版前必须确认为 `false`
-
-### 11.3 角色工具函数
-
-`utils/role.ts` 导出：
-
-| 函数 | 作用 |
-|------|------|
-| `isManager()` | 判断当前员工是否为店长（`position === '门店经理'`） |
-| `isBeautician()` | 判断是否为美容师 |
-| `requireManager(tipMsg?)` | 非店长时 Toast 提示并返回 `false` |
-| `getStaffId()` | 返回 `app.globalData.staffId` |
-
-### 11.4 全局状态
-
-`app.globalData` 结构：
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| userId | string | PG staff_wechat_users.id |
-| EmployeeId | string | PG 员工档案 ID |
-| employeeName | string | 员工姓名 |
-| position | string | 职位（'门店经理' / 其他） |
-| boundStoreName | string | 当前绑定门店名 |
-| boundStoreId | string | 门店 ID |
-| phone | string | 手机号 |
-
-### 11.5 登录与缓存
-
-- `restoreFromCache()`：应用启动时从 wx.storage 恢复全局状态（兼容 legacy `role` → `position` 字段）
-- `syncLoginState()`：`onLaunch` 调用 `auth.login` 同步最新状态到 globalData
-- `resetEmployeeInfo()`：退出登录时清除所有字段 + `wx.clearStorageSync()`
-
-### 11.6 前端权限存储与检查
-
-```ts
-// app.ts globalData
-globalData: {
-  permissions: {
-    roles: Array<{ role: string; scopeType: string; scopeName: string }>;
-    actions: string[];  // 扁平数组
-  }
-}
-
-// 权限检查工具函数
-function hasPermission(module: string, action: string): boolean {
-  const app = getApp();
-  return app.globalData.permissions?.actions?.includes(`${module}:${action}`) ?? false;
-}
-
-// 页面中使用
-if (hasPermission('sale_order', 'create')) {
-  // 显示开单按钮
-}
-```
-
-### 11.7 staffApi 路由权限声明
-
-每个 staffApi 路由声明其所需的 `[module, action]`，中间件据此校验：
-
-```js
-// staffApi/routes/sale_order.js
-module.exports = {
-  create:         { permission: ['sale_order', 'create'], handler: createSaleOrder },
-  list:           { permission: ['sale_order', 'list'], handler: listSaleOrders },
-  detail:         { permission: ['sale_order', 'detail'], handler: getSaleOrderDetail },
-  confirmOffline: { permission: ['sale_order', 'confirmOffline'], handler: confirmOffline },
-  close:          { permission: ['sale_order', 'close'], handler: closeSaleOrder },
-  resetFailed:    { permission: ['sale_order', 'resetFailed'], handler: resetFailed },
-};
-```
-
-中间件校验流程：
-
-```
-请求进入 → 解析 action → 查找路由声明的 [module, action]
-  → 检查 ctx.auth.hasPermission(module, action)
-    → 通过：继续执行 handler
-    → 拒绝：返回 { code: -403, message: '无权限' }
-```
-
-> **auth/login** 和 **auth/bindPhone** 不需要权限校验（登录前无权限上下文）。
->
-> **API 路由模块 vs 权限模块的映射关系**：API action 路由模块名（如 `order`、`staff`）与权限声明中的 permission 模块名（如 `sale_order`、`employee`）是不同概念。路由模块名对应 `staffApi/routes/` 下的文件名，权限模块名对应 `PERMISSION_MATRIX` 中定义的模块代码（见 `backend.pr.spec.md` §6.4）。例如：`order.create` 路由对应权限 `['sale_order', 'create']`，`staff.list` 路由对应权限 `['employee', 'list']`。
+| 商品管理 | 移至管理后台 |
+| 优惠券管理 | 移至管理后台 |
+| 数据中心（完整报表） | 移至管理后台；小程序仅简单指标（P1 §3.12） |
+| 排班/甘特图/库存/日报审批 | 暂不实现 |
+| 个人中心增强 | 当前满足需求 |
+| 用户体系迁移 | 远期规划 |
