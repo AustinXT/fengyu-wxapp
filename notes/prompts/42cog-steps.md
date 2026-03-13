@@ -89,7 +89,7 @@ AI框架：Vercel AI SDK，参考：https://ai-sdk.dev
 注意，生成时参考：
 
 .42cog/real.md
-.42cog/cog/cog.md
+.42cog/cog.md
 
 还需要同步参考：
 
