@@ -15,7 +15,7 @@ page {
   margin-bottom: 24rpx;
   overflow: hidden;
   position: relative;
-  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-card);
 }
 
 .coupon-card--disabled {
@@ -29,7 +29,7 @@ page {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #C0322A 0%, #D4A76A 100%);
+  background: linear-gradient(135deg, var(--color-primary) 0%, #D4A76A 100%);
   color: #fff;
   padding: 32rpx 16rpx;
 }
@@ -90,8 +90,8 @@ page {
   right: 20rpx;
   top: 20rpx;
   font-size: 24rpx;
-  color: #C0322A;
-  border: 2rpx solid #C0322A;
+  color: var(--color-primary);
+  border: 2rpx solid var(--color-primary);
   border-radius: 8rpx;
   padding: 4rpx 12rpx;
   transform: rotate(15deg);
@@ -99,6 +99,6 @@ page {
 }
 
 .coupon-card__stamp--expired {
-  color: #999;
-  border-color: #999;
+  color: var(--color-text-hint);
+  border-color: var(--color-text-hint);
 }

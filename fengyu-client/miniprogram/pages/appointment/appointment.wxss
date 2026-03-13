@@ -29,7 +29,7 @@
 
 /* ===== 预约卡片 ===== */
 .appt-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 20rpx;
   overflow: hidden;
   margin-bottom: 20rpx;

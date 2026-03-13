@@ -7,19 +7,19 @@
 
 /* ===== 用户信息卡（白红主题） ===== */
 .user-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   padding: 60rpx 40rpx 48rpx;
   display: flex;
   align-items: center;
   gap: 32rpx;
-  border-bottom: 3rpx solid #C0322A;
-  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.06);
+  border-bottom: 3rpx solid var(--color-primary);
+  box-shadow: var(--shadow-card);
 }
 
 .user-avatar-wrap {
   width: 120rpx;
   height: 120rpx;
-  background: #FFF0EE;
+  background: var(--color-primary-light);
   border: 2rpx solid rgba(192, 50, 42, 0.3);
   border-radius: 60rpx;
   display: flex;
@@ -36,7 +36,7 @@
   display: block;
   font-size: 34rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
   margin-bottom: 12rpx;
 }
 
@@ -48,7 +48,7 @@
 
 .user-store {
   font-size: 24rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
 }
 
 /* ===== 区块标题 ===== */

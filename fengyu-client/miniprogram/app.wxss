@@ -11,7 +11,8 @@ page {
   --color-primary:        #C0322A;  /* 中国红 - 品牌主色 */
   --color-primary-light:  #FFF0EE;  /* 红色浅底 */
   --color-primary-dark:   #9B1E14;  /* 深红 */
-  --color-accent:         #C0322A;  /* 强调色 */
+  --color-bg-section:     #F5F5F5;  /* 区块背景 */
+  --color-text-title:     #333333;  /* 标题文字 */
   --color-success:        #52C41A;
   --color-warning:        #FAAD14;
   --color-error:          #FF4D4F;
@@ -22,30 +23,39 @@ page {
   --color-bg-page:        #FAFAFA;  /* 页面背景 - 浅灰白 */
   --color-bg-card:        #FFFFFF;  /* 卡片背景 */
 
-  /* 品牌白红专属 */
-  --color-brand-black:    #FFFFFF;  /* 品牌背景白 */
-  --color-brand-gold:     #C0322A;  /* 品牌红 */
+  /* 状态色 */
+  --color-status-pending:  #D48806;
+  --color-status-confirm:  #C9986A;
+  --color-status-paid:     #389E0D;
+  --color-status-done:     #8C8C8C;
+  --color-status-failed:   #CF1322;
+  --color-status-serving:  #096DD9;
+
+  /* 阴影 */
+  --shadow-card:      0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+  --shadow-elevated:  0 4rpx 20rpx rgba(0, 0, 0, 0.08);
+  --shadow-float:     0 8rpx 24rpx rgba(0, 0, 0, 0.12);
 
   /* ===== Vant 主题覆盖（白红主题） ===== */
-  --button-primary-background-color: #C0322A;
-  --button-primary-border-color:     #C0322A;
+  --button-primary-background-color: var(--color-primary);
+  --button-primary-border-color:     var(--color-primary);
   --button-primary-color:            #FFFFFF;
   --button-border-radius:            44rpx;
-  --sidebar-active-color:            #C0322A;
-  --sidebar-selected-color:          #C0322A;
+  --sidebar-active-color:            var(--color-primary);
+  --sidebar-selected-color:          var(--color-primary);
   --sidebar-selected-font-weight:    600;
   --sidebar-width:                   180rpx;
   --sidebar-padding:                 12rpx 24rpx 12rpx 16rpx;
-  --tab-active-color:                #C0322A;
-  --tabs-bottom-bar-color:           #C0322A;
-  --tag-primary-background-color:    #C0322A;
-  --checkbox-checked-icon-color:     #C0322A;
-  --radio-checked-icon-color:        #C0322A;
-  --search-action-color:             #C0322A;
-  --cell-right-icon-color:           #999999;
-  --submit-bar-button-background:    #C0322A;
+  --tab-active-color:                var(--color-primary);
+  --tabs-bottom-bar-color:           var(--color-primary);
+  --tag-primary-background-color:    var(--color-primary);
+  --checkbox-checked-icon-color:     var(--color-primary);
+  --radio-checked-icon-color:        var(--color-primary);
+  --search-action-color:             var(--color-primary);
+  --cell-right-icon-color:           var(--color-text-hint);
+  --submit-bar-button-background:    var(--color-primary);
   --submit-bar-button-color:         #FFFFFF;
-  --loading-color:                   #C0322A;
+  --loading-color:                   var(--color-primary);
   --empty-image-size:                200rpx;
 }
 
@@ -67,13 +77,13 @@ page {
 }
 
 /* ===== 状态标签色 ===== */
-.status-pending    { color: #D48806; }
-.status-confirm    { color: #C0322A; }
-.status-paid       { color: #389E0D; }
-.status-completed  { color: #8C8C8C; }
-.status-failed     { color: #CF1322; }
-.status-closed     { color: #8C8C8C; }
-.status-serving    { color: #096DD9; }
+.status-pending    { color: var(--color-status-pending); }
+.status-confirm    { color: var(--color-status-confirm); }
+.status-paid       { color: var(--color-status-paid); }
+.status-completed  { color: var(--color-status-done); }
+.status-failed     { color: var(--color-status-failed); }
+.status-closed     { color: var(--color-status-done); }
+.status-serving    { color: var(--color-status-serving); }
 
 /* ===== 价格组合 ===== */
 .price-group {
@@ -89,7 +99,7 @@ page {
 
 /* ===== 商品封面占位 ===== */
 .cover-placeholder {
-  background: linear-gradient(135deg, #FFF0EE 0%, #FDDAD8 100%);
+  background: linear-gradient(135deg, var(--color-primary-light) 0%, #FDDAD8 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -97,22 +107,89 @@ page {
 
 /* ===== 品牌红色渐变背景 ===== */
 .brand-gradient {
-  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
 }
 
-/* ===== 金色文字 ===== */
+/* ===== 品牌红色文字 ===== */
 .text-gold {
-  color: var(--color-brand-gold);
+  color: var(--color-primary);
 }
 
-/* ===== 黑金卡片 ===== */
+/* ===== 强调卡片 ===== */
 .card-dark {
-  background: #FFFFFF;
-  border-top: 4rpx solid #C0322A;
-  box-shadow: 0 4rpx 20rpx rgba(0,0,0,0.08);
-  color: #1A1A1A;
+  background: var(--color-bg-card);
+  border-top: 4rpx solid var(--color-primary);
+  box-shadow: var(--shadow-elevated);
+  color: var(--color-text-primary);
 }
 
 .card-dark .card-title {
-  color: #C0322A;
+  color: var(--color-primary);
+}
+
+/* ===== 美容师选择 Popup（全局复用） ===== */
+.staff-popup {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.staff-popup__title {
+  text-align: center;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: 32rpx 0 20rpx;
+}
+
+.staff-list {
+  display: flex;
+  overflow-x: auto;
+  padding: 16rpx 24rpx 40rpx;
+  gap: 24rpx;
+}
+
+.staff-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10rpx;
+  flex-shrink: 0;
+  padding: 16rpx;
+  border-radius: 16rpx;
+  border: 2px solid transparent;
+  min-width: 120rpx;
+}
+
+.staff-item--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+}
+
+.staff-avatar {
+  width: 96rpx;
+  height: 96rpx;
+  background: var(--color-primary-light);
+  border-radius: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.staff-name {
+  font-size: 26rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.staff-title,
+.staff-role {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}
+
+.staff-empty {
+  width: 100%;
+  text-align: center;
+  padding: 40rpx 0;
+  font-size: 26rpx;
+  color: var(--color-text-hint);
 }

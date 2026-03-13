@@ -20,7 +20,7 @@
 
 /* ===== 疗程卡卡片 ===== */
 .tc-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 20rpx;
   overflow: hidden;
   margin-bottom: 20rpx;
@@ -61,7 +61,7 @@
 
 .progress-bar {
   height: 12rpx;
-  background: #F0F0F0;
+  background: var(--color-border);
   border-radius: 6rpx;
   overflow: hidden;
   margin-bottom: 12rpx;
@@ -69,7 +69,7 @@
 
 .progress-bar__fill {
   height: 100%;
-  background: linear-gradient(90deg, #C0322A 0%, #9B1E14 100%);
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   border-radius: 6rpx;
   transition: width 0.3s ease;
 }
@@ -101,7 +101,7 @@
 }
 
 .progress-remain__num--inactive {
-  color: #999;
+  color: var(--color-text-hint);
   font-weight: 400;
 }
 
@@ -147,5 +147,5 @@
 .tc-card__status-text {
   flex-shrink: 0;
   font-size: 24rpx;
-  color: #999;
+  color: var(--color-text-hint);
 }

@@ -48,6 +48,6 @@
 .nav-title {
   font-size: 34rpx;
   font-weight: 600;
-  color: #333333;
+  color: var(--color-text-title);
   letter-spacing: 1rpx;
 }

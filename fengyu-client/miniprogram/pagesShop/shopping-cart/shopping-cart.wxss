@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #F5F5F5;
+  background: var(--color-bg-section);
 }
 
 /* ===== 空购物车 ===== */
@@ -37,7 +37,7 @@
 .cart-item {
   display: flex;
   align-items: center;
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 12rpx;
   padding: 16rpx;
   margin-bottom: 16rpx;
@@ -65,7 +65,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #F5F5F5;
+  background: var(--color-bg-section);
 }
 
 .cart-item-info {
@@ -80,7 +80,7 @@
 .cart-item-name {
   font-size: 26rpx;
   font-weight: 600;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -88,7 +88,7 @@
 
 .cart-item-sku {
   font-size: 22rpx;
-  color: #999;
+  color: var(--color-text-hint);
   margin-top: 4rpx;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -109,13 +109,13 @@
 
 .cart-item-price-symbol {
   font-size: 22rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
 }
 
 .cart-item-price-value {
   font-size: 30rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 700;
 }
 
@@ -132,8 +132,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 16rpx 24rpx;
-  background: #FFFFFF;
-  border-top: 1rpx solid #F0F0F0;
+  background: var(--color-bg-card);
+  border-top: 1rpx solid var(--color-border);
   flex-shrink: 0;
 }
 
@@ -145,7 +145,7 @@
 
 .check-all-text {
   font-size: 26rpx;
-  color: #333;
+  color: var(--color-text-title);
 }
 
 .cart-bottom-right {
@@ -161,18 +161,18 @@
 
 .total-label {
   font-size: 24rpx;
-  color: #666;
+  color: var(--color-text-secondary);
 }
 
 .total-symbol {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
 }
 
 .total-price {
   font-size: 34rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 700;
 }
 
@@ -182,7 +182,7 @@
   justify-content: center;
   height: 64rpx;
   padding: 0 32rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 32rpx;
 }
 
@@ -193,7 +193,7 @@
 
 .checkout-btn-text {
   font-size: 26rpx;
-  color: #FFFFFF;
+  color: var(--color-bg-card);
   font-weight: 600;
 }
 

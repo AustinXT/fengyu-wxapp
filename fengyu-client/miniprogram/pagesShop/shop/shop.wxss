@@ -18,7 +18,7 @@
 .sidebar-scroll {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  background: #F5F5F5;
+  background: var(--color-bg-section);
   overflow: hidden;
 }
 
@@ -47,7 +47,7 @@
 }
 
 .spu-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 16rpx;
   overflow: hidden;
   margin-bottom: 16rpx;
@@ -92,7 +92,7 @@
 .spu-add-btn {
   width: 56rpx;
   height: 56rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -103,11 +103,11 @@
 /* ===== 底部悬浮购物车栏 ===== */
 .cart-bar {
   position: fixed;
-  bottom: 40rpx;
+  bottom: calc(env(safe-area-inset-bottom) + 40rpx);
   left: 24rpx;
   right: 24rpx;
   height: 100rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 50rpx;
   display: flex;
   align-items: center;
@@ -120,7 +120,7 @@
   position: relative;
   width: 72rpx;
   height: 72rpx;
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -135,10 +135,10 @@
   min-width: 36rpx;
   height: 36rpx;
   padding: 0 8rpx;
-  background: #FF4D4F;
+  background: var(--color-error);
   border-radius: 18rpx;
   font-size: 22rpx;
-  color: #FFFFFF;
+  color: var(--color-bg-card);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -150,6 +150,6 @@
 
 .cart-tip {
   font-size: 28rpx;
-  color: #FFFFFF;
+  color: var(--color-bg-card);
   font-weight: 500;
 }

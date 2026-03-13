@@ -97,7 +97,7 @@
   width: 400rpx;
   height: 400rpx;
   border-radius: 16rpx;
-  background: #f5f5f5;
+  background: var(--color-bg-section);
   margin-bottom: 24rpx;
 }
 
@@ -132,7 +132,7 @@
 
 /* ===== 优惠券选择 ===== */
 .coupon-selected-value {
-  color: #C0322A !important;
+  color: var(--color-primary) !important;
   font-weight: 600;
 }
 
@@ -172,14 +172,14 @@
   align-items: center;
   padding: 24rpx;
   margin-bottom: 16rpx;
-  background: #FAFAFA;
+  background: var(--color-bg-page);
   border-radius: 12rpx;
   border: 2rpx solid transparent;
 }
 
 .coupon-popup__item--active {
-  border-color: #C0322A;
-  background: #FFF5F5;
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
 }
 
 .coupon-popup__item-left {
@@ -194,12 +194,12 @@
 .coupon-popup__item-discount {
   font-size: 36rpx;
   font-weight: 700;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .coupon-popup__item-type {
   font-size: 20rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .coupon-popup__item-right {
@@ -232,60 +232,4 @@
   padding: 20rpx 24rpx;
 }
 
-/* ===== 美容师选择 Popup ===== */
-.staff-popup {
-  padding-bottom: env(safe-area-inset-bottom);
-}
-
-.staff-popup__title {
-  text-align: center;
-  font-size: 32rpx;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  padding: 32rpx 0 20rpx;
-}
-
-.staff-list {
-  display: flex;
-  overflow-x: auto;
-  padding: 16rpx 24rpx 40rpx;
-  gap: 24rpx;
-}
-
-.staff-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10rpx;
-  flex-shrink: 0;
-  padding: 16rpx;
-  border-radius: 16rpx;
-  border: 2px solid transparent;
-  min-width: 120rpx;
-}
-
-.staff-item--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-light);
-}
-
-.staff-avatar {
-  width: 96rpx;
-  height: 96rpx;
-  background: #F0EBE4;
-  border-radius: 48rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.staff-name {
-  font-size: 26rpx;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.staff-title {
-  font-size: 20rpx;
-  color: var(--color-text-hint);
-}
+/* 美容师选择 Popup — 复用 app.wxss 全局 .staff-* 样式 */

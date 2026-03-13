@@ -20,7 +20,7 @@
 
 /* ===== 订单卡片 ===== */
 .order-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 20rpx;
   overflow: hidden;
   margin-bottom: 20rpx;
@@ -50,13 +50,7 @@
   font-weight: 600;
 }
 
-/* 状态颜色 */
-.status-class-pending  { color: #D48806; }
-.status-class-confirm  { color: #A0785A; }
-.status-class-paid     { color: #389E0D; }
-.status-class-done     { color: #8C8C8C; }
-.status-class-failed   { color: #CF1322; }
-.status-class-closed   { color: #8C8C8C; }
+/* 状态颜色 — 复用 app.wxss .status-* 全局类 */
 
 /* ===== 商品明细 ===== */
 .order-items {
@@ -68,7 +62,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 8rpx 0;
-  border-bottom: 1px solid #F5F0EB;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .order-item-row:last-child {

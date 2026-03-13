@@ -1,7 +1,7 @@
 /* pages/order-detail/order-detail.wxss */
 
 .coupon-discount-value {
-  color: #C0322A !important;
+  color: var(--color-primary) !important;
   font-weight: 600;
 }
 
@@ -17,7 +17,7 @@
 
 /* ===== 状态大图区 ===== */
 .status-hero {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   padding: 48rpx 40rpx;
   display: flex;
   flex-direction: column;
@@ -39,7 +39,7 @@
 
 .status-hint-countdown {
   font-size: 26rpx;
-  color: #FF4D4F;
+  color: var(--color-error);
   font-weight: 600;
 }
 
@@ -70,7 +70,7 @@
 }
 
 .items-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   border-radius: 16rpx;
   overflow: hidden;
 }

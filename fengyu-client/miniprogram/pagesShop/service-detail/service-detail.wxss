@@ -26,7 +26,7 @@
 .cover-placeholder {
   width: 100%;
   height: 480rpx;
-  background: linear-gradient(135deg, #FFF0EE 0%, #FDDAD8 100%);
+  background: linear-gradient(135deg, var(--color-primary-light) 0%, #FDDAD8 100%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -34,7 +34,7 @@
 
 /* ===== 信息卡 ===== */
 .info-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   padding: 28rpx 32rpx;
   margin-bottom: 16rpx;
 }
@@ -81,7 +81,7 @@
 
 /* ===== SKU 选择 ===== */
 .sku-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   padding: 28rpx 32rpx;
   margin-bottom: 16rpx;
 }
@@ -104,7 +104,7 @@
   padding: 16rpx 24rpx;
   border-radius: 12rpx;
   border: 1px solid var(--color-border);
-  background: #FAFAFA;
+  background: var(--color-bg-page);
   display: flex;
   flex-direction: column;
   gap: 6rpx;
@@ -139,7 +139,7 @@
 
 /* ===== 购买数量 ===== */
 .quantity-card {
-  background: #FFFFFF;
+  background: var(--color-bg-card);
   padding: 24rpx 32rpx;
   margin-bottom: 16rpx;
   display: flex;
@@ -151,72 +151,6 @@
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);
-}
-
-/* ===== 美容师 Popup ===== */
-.staff-popup {
-  padding-bottom: env(safe-area-inset-bottom);
-}
-
-.staff-popup__title {
-  text-align: center;
-  font-size: 32rpx;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  padding: 32rpx 0 20rpx;
-}
-
-.staff-list {
-  display: flex;
-  overflow-x: auto;
-  padding: 16rpx 24rpx 40rpx;
-  gap: 24rpx;
-}
-
-.staff-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10rpx;
-  flex-shrink: 0;
-  padding: 16rpx;
-  border-radius: 16rpx;
-  border: 2px solid transparent;
-  min-width: 120rpx;
-}
-
-.staff-item--active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-light);
-}
-
-.staff-avatar {
-  width: 96rpx;
-  height: 96rpx;
-  background: #FFF0EE;
-  border-radius: 48rpx;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.staff-name {
-  font-size: 26rpx;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.staff-title {
-  font-size: 20rpx;
-  color: var(--color-text-hint);
-}
-
-.staff-empty {
-  width: 100%;
-  text-align: center;
-  padding: 40rpx 0;
-  font-size: 26rpx;
-  color: var(--color-text-hint);
 }
 
 /* ===== 底部操作栏 ===== */
@@ -285,7 +219,7 @@
   line-height: 32rpx;
   padding: 0 8rpx;
   border-radius: 16rpx;
-  background: #ee0a24;
+  background: var(--color-error);
   color: #fff;
   font-size: 20rpx;
   text-align: center;

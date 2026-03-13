@@ -48,7 +48,7 @@
 
 .review-notice-text {
   font-size: 26rpx;
-  color: #D48806;
+  color: var(--color-status-pending);
   flex: 1;
 }
 
