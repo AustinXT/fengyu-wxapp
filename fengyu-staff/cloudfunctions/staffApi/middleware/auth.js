@@ -15,7 +15,7 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 /**
  * 认证中间件
  * 将员工信息注入到 ctx.auth
- * ctx.auth = { userId, openid, phone, staffWfId, position, storeName, marketName, department }
+ * ctx.auth = { openid, phone, staffWfId, position, storeName, marketName, department }
  * position: staff_wechat_users.position_name（如 '门店经理'、'美容师'）
  */
 async function auth(ctx, next) {
@@ -39,9 +39,8 @@ async function auth(ctx, next) {
   // 查询员工用户（JOIN 获取门店名、市场名、部门名）
   const users = await pg.query(`
     SELECT
-      u.user_id,
-      u.phone,
       u.employee_id,
+      u.phone,
       u.name,
       u.position_name,
       u.is_resigned,
@@ -59,9 +58,8 @@ async function auth(ctx, next) {
   let authData
 
   if (users.length === 0) {
-    // 未注册的员工
+    // 未注册的员工（openid 尚未绑定到任何同步行）
     authData = {
-      userId: null,
       openid: effectiveOpenid,
       phone: null,
       staffWfId: null,
@@ -76,7 +74,6 @@ async function auth(ctx, next) {
     const isActive = user.employee_id && !user.is_resigned
 
     authData = {
-      userId: user.user_id,
       openid: effectiveOpenid,
       phone: user.phone,
       staffWfId: isActive ? user.employee_id : null,

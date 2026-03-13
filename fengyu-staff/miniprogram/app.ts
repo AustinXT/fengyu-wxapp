@@ -3,7 +3,6 @@ import { MOCK_ENABLED } from './utils/dev-config'
 
 App<IAppOption>({
   globalData: {
-    userId: '' as string,
     staffWfId: '' as string,
     staffName: '' as string,
     position: '' as string,
@@ -20,7 +19,6 @@ App<IAppOption>({
     if (MOCK_ENABLED) {
       // Mock 模式：使用模拟用户数据，跳过真实 auth.login
       this.setStaffInfo({
-        userId: 'mock-staff-001',
         staffWfId: 'WF-00001',
         staffName: '王店长',
         position: '门店经理',
@@ -36,7 +34,6 @@ App<IAppOption>({
   },
 
   restoreFromCache() {
-    const userId = wx.getStorageSync('userId');
     const staffWfId = wx.getStorageSync('staffWfId');
     const staffName = wx.getStorageSync('staffName');
     const role = wx.getStorageSync('role');
@@ -44,7 +41,6 @@ App<IAppOption>({
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
-    if (userId) this.globalData.userId = userId;
     if (staffWfId) this.globalData.staffWfId = staffWfId;
     if (staffName) this.globalData.staffName = staffName;
     if (role) this.globalData.position = role; // 兼容旧缓存
@@ -61,8 +57,8 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { userId, staffWfId, staffName, position, phone, boundStoreName, boundStoreId } = res.result.data;
-        this.setStaffInfo({ userId, staffWfId, staffName, position, phone, boundStoreName, boundStoreId });
+        const { staffWfId, staffName, position, phone, boundStoreName, boundStoreId } = res.result.data;
+        this.setStaffInfo({ staffWfId, staffName, position, phone, boundStoreName, boundStoreId });
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
@@ -70,7 +66,6 @@ App<IAppOption>({
   },
 
   setStaffInfo(info: {
-    userId?: string;
     staffWfId?: string;
     staffName?: string;
     position?: string;
@@ -78,10 +73,6 @@ App<IAppOption>({
     boundStoreName?: string;
     boundStoreId?: string;
   }) {
-    if (info.userId) {
-      this.globalData.userId = info.userId;
-      wx.setStorageSync('userId', info.userId);
-    }
     if (info.staffWfId) {
       this.globalData.staffWfId = info.staffWfId;
       wx.setStorageSync('staffWfId', info.staffWfId);
@@ -109,7 +100,6 @@ App<IAppOption>({
   },
 
   resetStaffInfo() {
-    this.globalData.userId = '';
     this.globalData.staffWfId = '';
     this.globalData.staffName = '';
     this.globalData.position = '';

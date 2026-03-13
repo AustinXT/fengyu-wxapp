@@ -1,6 +1,5 @@
 interface IAppOption {
   globalData: {
-    userId: string;
     staffWfId: string;
     staffName: string;
     position: string;
@@ -28,7 +27,6 @@ interface IAppOption {
     } | null;
   };
   setStaffInfo(info: {
-    userId?: string;
     staffWfId?: string;
     staffName?: string;
     position?: string;

@@ -242,8 +242,8 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const orgNodeId = deptName ? (deptMap[deptName] || null) : null
 
       await client.query(`
-        INSERT INTO staff_wechat_users (user_id, employee_id, phone, name, gender, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        INSERT INTO staff_wechat_users (employee_id, phone, name, gender, id_card, store_id, org_node_id, position_name, birthday, is_resigned)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (employee_id) DO UPDATE SET
           name = EXCLUDED.name,
           gender = EXCLUDED.gender,
@@ -256,7 +256,6 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
           is_resigned = EXCLUDED.is_resigned,
           updated_at = now()
       `, [
-        'emp_' + empId,
         empId,
         trim(row.phone),
         trim(row.name) || empId,

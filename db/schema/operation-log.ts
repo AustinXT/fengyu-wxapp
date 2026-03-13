@@ -1,4 +1,4 @@
-import { bigserial, index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { bigserial, index, jsonb, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
 import { staffWechatUsers } from './user'
 import { orgNodes } from './org'
 
@@ -12,10 +12,10 @@ export const operationLogs = pgTable(
   'operation_logs',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    /** 操作人 userId，关联 staff_wechat_users */
-    operatorUserId: text('operator_user_id')
+    /** 操作人员工编号，关联 staff_wechat_users */
+    operatorEmployeeId: varchar('operator_employee_id', { length: 30 })
       .notNull()
-      .references(() => staffWechatUsers.userId),
+      .references(() => staffWechatUsers.employeeId),
     /** 操作人姓名快照 */
     operatorName: text('operator_name').notNull(),
     /** 操作人角色快照（manager / beautician） */
@@ -37,7 +37,7 @@ export const operationLogs = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
-    index('idx_op_logs_operator').on(table.operatorUserId),
+    index('idx_op_logs_operator').on(table.operatorEmployeeId),
     index('idx_op_logs_target').on(table.targetType, table.targetId),
     index('idx_op_logs_action').on(table.action),
     index('idx_op_logs_created_at').on(table.createdAt),

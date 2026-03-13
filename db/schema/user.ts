@@ -55,19 +55,19 @@ export const clientWechatUsers = pgTable(
 /**
  * 员工端微信用户（合并原 employees + staff_wechat_users）
  *
- * 行可由 (a) 微信登录创建，或 (b) WorkFine 同步创建。通过 phone 匹配合并行。
+ * 行仅由 WorkFine 同步创建（employee_id 为 PK）。
+ * 微信登录不建行；绑定手机号时按 phone 找到同步行，写入 openid。
  * openid 可为 null（仅 WorkFine 同步创建的员工）。
  */
 export const staffWechatUsers = pgTable(
   'staff_wechat_users',
   {
-    userId: text('user_id').primaryKey(),
+    /** 员工编号（WorkFine UDF_S_1147），主键，供其他表 FK 引用 */
+    employeeId: varchar('employee_id', { length: 30 }).primaryKey(),
     /** 微信 openid（员工端 appid 下）；仅 WorkFine 同步创建的行为 null */
     openid: varchar('openid', { length: 64 }),
     sessionKey: varchar('session_key', { length: 128 }),
     phone: varchar('phone', { length: 30 }),
-    /** 员工编号（WorkFine UDF_S_1147），唯一，供其他表 FK 引用 */
-    employeeId: varchar('employee_id', { length: 30 }).unique(),
     // Layer 2 — WorkFine 档案
     name: varchar('name', { length: 50 }),
     gender: varchar('gender', { length: 20 }),

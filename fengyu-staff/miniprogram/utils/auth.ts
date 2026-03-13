@@ -6,7 +6,6 @@ import { callStaffApi } from './cloud';
 export async function syncLogin(): Promise<void> {
   const app = getApp<IAppOption>();
   const data = await callStaffApi<{
-    userId: string;
     staffWfId: string;
     staffName: string;
     position: string;

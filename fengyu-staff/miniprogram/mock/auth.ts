@@ -3,7 +3,6 @@ import type { } from '../typings/index'
 
 export const authHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'auth.login': () => ({
-    userId: 'mock-staff-001',
     staffWfId: 'WF-00001',
     staffName: '王店长',
     position: '门店经理',
@@ -13,7 +12,6 @@ export const authHandlers: Record<string, (payload: Record<string, any>) => any>
   }),
 
   'auth.bindPhone': (payload) => ({
-    userId: 'mock-staff-001',
     staffWfId: 'WF-00001',
     staffName: '王店长',
     position: '门店经理',

@@ -1,6 +1,9 @@
 /**
  * 认证模块路由（员工端）
  * auth.login, auth.bindPhone
+ *
+ * employee_id（WorkFine 同步）是 staff_wechat_users 的唯一主键。
+ * 微信登录不建行；绑定手机号时按 phone 找到同步行，写入 openid。
  */
 
 const cloud = require('wx-server-sdk')
@@ -11,14 +14,17 @@ const { invalidateAuthCache } = require('../middleware/auth')
 
 /**
  * 员工微信登录
- * 写入/更新 staff_wechat_users
+ * 按 openid 查询 staff_wechat_users：
+ *   - 找到 → 返回员工信息
+ *   - 未找到 → 返回 isNewUser:true（不建行，等 bindPhone 写入 openid）
  */
 async function login(ctx) {
   const { OPENID } = cloud.getWXContext()
 
   const users = await pg.query(`
     SELECT
-      u.user_id, u.phone, u.employee_id, u.name, u.position_name, u.is_resigned,
+      u.employee_id, u.phone, u.name, u.position_name, u.is_resigned,
+      u.store_id,
       s.store_name,
       m.name AS market_name
     FROM staff_wechat_users u
@@ -28,58 +34,44 @@ async function login(ctx) {
     WHERE u.openid = $1
   `, [OPENID])
 
-  const now = new Date()
-
   if (users.length === 0) {
-    // 新员工用户，创建记录
-    const userId = generateUserId()
-    await pg.query(
-      `INSERT INTO staff_wechat_users (user_id, openid, created_at, updated_at, last_login_at)
-       VALUES ($1, $2, $3, $3, $3)`,
-      [userId, OPENID, now]
-    )
-
+    // openid 尚未绑定到任何同步行，需先 bindPhone
     ctx.result = {
       isNewUser: true,
-      userId,
       phone: null,
       staffWfId: null,
       staffName: null,
       position: null,
-      storeName: null,
-      marketName: null,
       boundStoreName: null,
-      boundStoreId: null
+      boundStoreId: null,
     }
-  } else {
-    // 老用户，更新最后登录时间
-    const user = users[0]
-    await pg.query(
-      'UPDATE staff_wechat_users SET last_login_at = $1, updated_at = $1 WHERE user_id = $2',
-      [now, user.user_id]
-    )
+    return
+  }
 
-    const isActive = user.employee_id && !user.is_resigned
+  // 老用户，更新最后登录时间
+  const user = users[0]
+  await pg.query(
+    'UPDATE staff_wechat_users SET last_login_at = $1, updated_at = $1 WHERE employee_id = $2',
+    [new Date(), user.employee_id]
+  )
 
-    ctx.result = {
-      isNewUser: false,
-      userId: user.user_id,
-      phone: user.phone,
-      staffWfId: isActive ? user.employee_id : null,
-      staffName: isActive ? user.name : null,
-      position: isActive ? user.position_name : null,
-      storeName: isActive ? user.store_name : null,
-      marketName: isActive ? user.market_name : null,
-      boundStoreName: isActive ? user.store_name : null,
-      boundStoreId: isActive ? user.store_name : null
-    }
+  const isActive = user.employee_id && !user.is_resigned
+
+  ctx.result = {
+    isNewUser: false,
+    phone: user.phone,
+    staffWfId: isActive ? user.employee_id : null,
+    staffName: isActive ? user.name : null,
+    position: isActive ? user.position_name : null,
+    boundStoreName: isActive ? user.store_name : null,
+    boundStoreId: isActive ? user.store_id : null,
   }
 }
 
 /**
  * 绑定手机号
  * 支持 CloudID 方式（推荐）或直接传入手机号
- * 绑定后从 staff_wechat_users 自动关联员工档案
+ * 按手机号找到同步创建的在职行 → 写入 openid
  */
 async function bindPhone(ctx) {
   const { OPENID } = cloud.getWXContext()
@@ -110,82 +102,37 @@ async function bindPhone(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
   }
 
-  // 查询当前用户
-  const users = await pg.query(
-    'SELECT user_id, phone, employee_id FROM staff_wechat_users WHERE openid = $1',
-    [OPENID]
-  )
-
-  if (users.length === 0) {
-    throw new Error('UNAUTHORIZED: 用户不存在，请先登录')
-  }
-
-  const currentUser = users[0]
-
-  // 从 PG 按手机号查找在职员工档案（可能是同步创建的无 openid 行）
+  // 按手机号查找在职员工同步行
   const empRows = await pg.query(`
     SELECT
-      u.user_id, u.employee_id, u.name, u.position_name,
+      u.employee_id, u.openid, u.name, u.position_name,
+      u.store_id,
       s.store_name,
       m.name AS market_name
     FROM staff_wechat_users u
     LEFT JOIN stores s ON u.store_id = s.store_id
     LEFT JOIN org_nodes so ON s.org_node_id = so.id
     LEFT JOIN org_nodes m ON so.parent_id = m.id
-    WHERE u.phone = $1 AND u.is_resigned = false AND u.employee_id IS NOT NULL
+    WHERE u.phone = $1 AND u.is_resigned = false
     ORDER BY u.employee_id DESC
     LIMIT 1
   `, [phoneNumber])
 
-  let staffWfId = currentUser.employee_id
-  let position = null
-  let storeName = null
-  let marketName = null
-
-  if (empRows.length > 0) {
-    const emp = empRows[0]
-    staffWfId = emp.employee_id
-    position = emp.position_name
-    storeName = emp.store_name
-    marketName = emp.market_name
-
-    if (emp.user_id !== currentUser.user_id) {
-      // 找到的是另一行（同步创建的无 openid 行）：合并 — 把 openid/session_key 写到已有行，删除当前行
-      await pg.query(
-        `UPDATE staff_wechat_users SET openid = $1, session_key = (
-           SELECT session_key FROM staff_wechat_users WHERE user_id = $2
-         ), last_login_at = now(), updated_at = now()
-         WHERE user_id = $3`,
-        [OPENID, currentUser.user_id, emp.user_id]
-      )
-      await pg.query('DELETE FROM staff_wechat_users WHERE user_id = $1', [currentUser.user_id])
-
-      // 清除认证缓存
-      invalidateAuthCache(OPENID)
-
-      ctx.result = {
-        success: true,
-        userId: emp.user_id,
-        phone: phoneNumber,
-        staffWfId,
-        position,
-        storeName,
-        marketName
-      }
-      return
-    }
-  }
-
-  if (!staffWfId) {
+  if (empRows.length === 0) {
     throw new Error('INVALID_PARAMS: 未找到对应员工档案，请确认手机号是否正确或联系管理员')
   }
 
-  const now = new Date()
+  const emp = empRows[0]
 
-  // 更新手机号和员工档案关联
+  // 如果该行已被另一个 openid 绑定，说明手机号已被占用
+  if (emp.openid && emp.openid !== OPENID) {
+    throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
+  }
+
+  // 写入 openid 到同步行
   await pg.query(
-    'UPDATE staff_wechat_users SET phone = $1, employee_id = $2, updated_at = $3 WHERE user_id = $4',
-    [phoneNumber, staffWfId, now, currentUser.user_id]
+    'UPDATE staff_wechat_users SET openid = $1, last_login_at = now(), updated_at = now() WHERE employee_id = $2',
+    [OPENID, emp.employee_id]
   )
 
   // 清除认证缓存
@@ -193,17 +140,13 @@ async function bindPhone(ctx) {
 
   ctx.result = {
     success: true,
-    userId: currentUser.user_id,
     phone: phoneNumber,
-    staffWfId,
-    position,
-    storeName,
-    marketName
+    staffWfId: emp.employee_id,
+    staffName: emp.name,
+    position: emp.position_name,
+    boundStoreName: emp.store_name,
+    boundStoreId: emp.store_id,
   }
-}
-
-function generateUserId() {
-  return 'staff_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
 module.exports = {
