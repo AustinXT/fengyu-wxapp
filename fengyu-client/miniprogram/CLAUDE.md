@@ -23,11 +23,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 分包 | 页面 |
 |------|------|
-| pagesShop | shop（服务目录）, service-detail（SKU 选择）, shopping-cart |
+| pagesShop | shop（服务目录）, service-detail（SKU 选择）, shopping-cart, staff-detail（美容师详情） |
 | pagesOrder | orders（订单列表）, checkout（下单结算）, order-detail, scan-pay, treatment-cards, service-records（服务记录） |
 | pagesStore | store-select（门店选择）, store-detail |
 | pagesAppointment | appointment-create（创建预约） |
-| pagesProfile | profile-edit（个人资料编辑） |
+| pagesProfile | profile-edit（个人资料编辑）, points（积分）, messages（消息中心）, prepaid-cards（充值卡） |
 | pagesCoupon | my-coupons（我的优惠券） |
 
 ## API 调用模式

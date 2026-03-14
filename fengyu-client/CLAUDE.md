@@ -22,14 +22,17 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 
 | 模块 | 接口 |
 |------|------|
-| auth | login, bindPhone, bindStore, updateProfile |
+| auth | login, bindPhone, bindStore（含来源渠道）, updateProfile |
 | store | list, detail, requestUnbind, getUnbindRequest, cancelUnbindRequest, geocode |
 | product | categories, spuList, skuDetail, spuDetail, hotList, shopInit |
-| staff | list, default |
+| staff | list, default, detail |
 | order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail |
 | appointment | create, list, cancel |
 | service | detail, list |
 | coupon | list, available |
+| points | balance, history |
+| message | list, read, unreadCount |
+| card | list, history |
 
 ## 环境变量（云函数）
 

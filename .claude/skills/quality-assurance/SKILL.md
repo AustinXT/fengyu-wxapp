@@ -17,7 +17,7 @@ metadata:
 
 **不适用：**
 - 微信小程序测试 → `wx-quality-assurance`
-- CloudBase 云函数测试 → `wx-integration-test`
+- CloudBase 云函数测试 → `wx-quality-assurance`
 - UI 设计 → 各端 UI 技能
 
 ---
@@ -580,6 +580,6 @@ jobs:
 | 技能 | 用途 |
 |---|---|
 | `wx-quality-assurance` | 微信小程序 + CloudBase 项目的质量保障 |
-| `wx-integration-test` | 微信小程序端到端集成测试 |
+
 | `seed-data` | 测试数据初始化（Drizzle + PostgreSQL） |
 | `coding` | 编码约束检查 |
