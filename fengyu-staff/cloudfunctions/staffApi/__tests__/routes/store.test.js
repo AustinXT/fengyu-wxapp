@@ -3,18 +3,15 @@
  * 覆盖：list / unbindRequests / approveUnbind / rejectUnbind
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx, createCtx } = require('../helpers')
 const storeRoutes = require('../../routes/store')
 
 describe('store.list', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('返回所有营业中门店', async () => {
@@ -44,7 +41,7 @@ describe('store.list', () => {
 
 describe('store.unbindRequests', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长查看待审批解绑申请', async () => {
@@ -77,7 +74,7 @@ describe('store.unbindRequests', () => {
 
 describe('store.approveUnbind', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('审批通过解绑申请', async () => {
@@ -125,7 +122,7 @@ describe('store.approveUnbind', () => {
 
 describe('store.rejectUnbind', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('拒绝解绑申请', async () => {

@@ -84,7 +84,7 @@ function createUnboundCtx(payload = {}) {
  * 支持链式 mockResolvedValueOnce
  */
 function createMockTransactionClient(queryResults = []) {
-  const mockQuery = jest.fn()
+  const mockQuery = vi.fn()
   for (const result of queryResults) {
     mockQuery.mockResolvedValueOnce(result)
   }
@@ -101,7 +101,7 @@ function resetPgMock(pg) {
   pg.query.mockReset().mockImplementation(async () => [])
   pg.transaction.mockReset().mockImplementation(async (cb) => {
     const client = {
-      query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
     }
     return await cb(client)
   })

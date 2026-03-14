@@ -3,18 +3,12 @@
  * 覆盖：shopInit / categories / spuList / skuDetail / spuDetail
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
-const { createCtx, resetPgMock } = require('../helpers')
+const pg = globalThis.__mocks__.pg
+const { createCtx } = require('../helpers')
 const productRoutes = require('../../routes/product')
 
-beforeEach(() => {
-  resetPgMock(pg)
-})
 
 // ============================================================
 // product.categories

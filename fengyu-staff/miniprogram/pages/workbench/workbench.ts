@@ -1,7 +1,8 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { buildCalendarDays, formatMonthLabel, type CalendarDay } from '../../utils/calendar';
+import { buildCalendarDays, formatMonthLabel } from '../../utils/calendar';
+import type { CalendarDay } from '../../utils/calendar';
 
 const app = getApp<IAppOption>();
 

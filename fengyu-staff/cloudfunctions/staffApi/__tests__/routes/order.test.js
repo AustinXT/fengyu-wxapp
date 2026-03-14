@@ -8,18 +8,15 @@
  *   - 美容师行级过滤
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
-jest.mock('../../utils/wxacode', () => require('../mocks/wxacode'))
 
 
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
 
 describe('order.create', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长开单成功 — 普通订单', async () => {
@@ -52,7 +49,7 @@ describe('order.create', () => {
     // transaction mock
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
       }
       return await cb(client)
     })
@@ -230,7 +227,7 @@ describe('order.create', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
       }
       return await cb(client)
     })
@@ -243,7 +240,7 @@ describe('order.create', () => {
 
 describe('order.confirmOffline', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长确认线下收款成功', async () => {
@@ -262,7 +259,7 @@ describe('order.confirmOffline', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
       }
       return await cb(client)
     })
@@ -312,7 +309,7 @@ describe('order.confirmOffline', () => {
 
 describe('order.close', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长可关闭待支付订单', async () => {
@@ -327,7 +324,7 @@ describe('order.close', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn()
+        query: vi.fn()
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-1' }] })
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
@@ -353,7 +350,7 @@ describe('order.close', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
       }
       return await cb(client)
     })
@@ -388,7 +385,7 @@ describe('order.close', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
       }
       return await cb(client)
     })
@@ -421,7 +418,7 @@ describe('order.close', () => {
       opened_by: 'emp-001',
     }])
 
-    const clientQueryMock = jest.fn()
+    const clientQueryMock = vi.fn()
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE sale_orders
       .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-1' }, { sale_item_id: 'item-2' }] }) // SELECT sale_items
       .mockResolvedValueOnce({ rows: [], rowCount: 2 }) // UPDATE sale_allocations
@@ -448,7 +445,7 @@ describe('order.close', () => {
 
 describe('order.resetFailed', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长重置支付失败订单为待支付', async () => {
@@ -490,7 +487,7 @@ describe('order.resetFailed', () => {
 
 describe('order.list', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长查看所有订单', async () => {
@@ -504,9 +501,9 @@ describe('order.list', () => {
     await orderRoutes.list(ctx)
 
     expect(ctx.result.orders).toHaveLength(2)
-    // 不应有 preferred_employee_id 过滤
+    // 不应有 preferred_employee_id WHERE 过滤（SELECT 列包含该字段是正常的）
     const sql = pg.query.mock.calls[0][0]
-    expect(sql).not.toContain('preferred_employee_id')
+    expect(sql).not.toContain('AND o.preferred_employee_id')
   })
 
   test('美容师只看指定自己的订单', async () => {
@@ -538,7 +535,7 @@ describe('order.list', () => {
 
 describe('order.detail', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长查看订单详情', async () => {

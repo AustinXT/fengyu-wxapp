@@ -2,17 +2,17 @@
  * mssql mock — WorkFine SQL Server 连接模拟
  */
 const mockRequest = {
-  input: jest.fn().mockReturnThis(),
-  query: jest.fn(async () => ({ recordset: [] })),
+  input: vi.fn().mockReturnThis(),
+  query: vi.fn(async () => ({ recordset: [] })),
 }
 
 const mockPool = {
-  request: jest.fn(() => mockRequest),
+  request: vi.fn(() => mockRequest),
 }
 
 module.exports = {
-  query: jest.fn(async () => []),
-  getPool: jest.fn(async () => mockPool),
+  query: vi.fn(async () => []),
+  getPool: vi.fn(async () => mockPool),
   _mockRequest: mockRequest,
   _mockPool: mockPool,
 }

@@ -8,18 +8,15 @@
  *   - saleItemId 必须属于该订单
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const allocationRoutes = require('../../routes/allocation')
 
 describe('allocation.save', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('保存提成分配成功', async () => {
@@ -49,7 +46,7 @@ describe('allocation.save', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
       }
       return await cb(client)
     })
@@ -80,7 +77,7 @@ describe('allocation.save', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
       }
       return await cb(client)
     })
@@ -175,7 +172,7 @@ describe('allocation.save', () => {
 
 describe('allocation.deleteAllocation', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('删除分配记录 — 重置为 pending', async () => {
@@ -189,7 +186,7 @@ describe('allocation.deleteAllocation', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn()
+        query: vi.fn()
           .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-1' }] })
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
@@ -225,7 +222,7 @@ describe('allocation.deleteAllocation', () => {
 
 describe('allocation.pendingList', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('返回待分配订单列表', async () => {

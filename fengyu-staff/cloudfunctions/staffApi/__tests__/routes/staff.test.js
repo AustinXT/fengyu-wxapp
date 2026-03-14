@@ -3,18 +3,12 @@
  * 覆盖：list / departments / todayCommission / monthlyCalendar / todoList / bindStore
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
-const { createManagerCtx, createBeauticianCtx, createCtx, resetPgMock } = require('../helpers')
+const pg = globalThis.__mocks__.pg
+const { createManagerCtx, createBeauticianCtx, createCtx } = require('../helpers')
 const staffRoutes = require('../../routes/staff')
 
-beforeEach(() => {
-  resetPgMock(pg)
-})
 
 // ============================================================
 // staff.list

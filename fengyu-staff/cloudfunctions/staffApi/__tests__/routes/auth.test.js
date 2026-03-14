@@ -3,18 +3,15 @@
  * 覆盖：login / bindPhone
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const cloud = require('wx-server-sdk')
-const pg = require('../../db/pg')
+const cloud = globalThis.__mocks__.cloud
+const pg = globalThis.__mocks__.pg
 const authRoutes = require('../../routes/auth')
 
 describe('auth.login', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-001' })
   })
 
@@ -109,7 +106,7 @@ describe('auth.login', () => {
 
 describe('auth.bindPhone', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     cloud.getWXContext.mockReturnValue({ OPENID: 'new-staff-openid' })
   })
 
@@ -177,7 +174,7 @@ describe('auth.bindPhone', () => {
     // transaction mock
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn()
+        query: vi.fn()
           .mockResolvedValueOnce({ rows: [] }) // advisory lock
           .mockResolvedValueOnce({ rows: [] }) // SELECT max employee_id
           .mockResolvedValueOnce({ rows: [] }), // INSERT

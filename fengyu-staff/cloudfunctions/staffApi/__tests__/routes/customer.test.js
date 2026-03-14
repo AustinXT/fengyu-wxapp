@@ -4,18 +4,14 @@
  * 双源架构：WorkFine (MSSQL) + PG，手机号去重，非店长脱敏
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
-const mssql = require('../../db/mssql')
-const { createManagerCtx, createBeauticianCtx, resetPgMock } = require('../helpers')
+const pg = globalThis.__mocks__.pg
+const mssql = globalThis.__mocks__.mssql
+const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const customerRoutes = require('../../routes/customer')
 
 beforeEach(() => {
-  resetPgMock(pg)
   mssql.query.mockReset().mockResolvedValue([])
 })
 

@@ -3,18 +3,12 @@
  * 覆盖：available（顾客可用券查询）
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('../../db/mssql', () => require('../mocks/mssql'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
-const { createManagerCtx, resetPgMock } = require('../helpers')
+const pg = globalThis.__mocks__.pg
+const { createManagerCtx } = require('../helpers')
 const couponRoutes = require('../../routes/coupon')
 
-beforeEach(() => {
-  resetPgMock(pg)
-})
 
 // 通用测试数据
 const baseItems = [

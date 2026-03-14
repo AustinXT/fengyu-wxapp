@@ -3,17 +3,15 @@
  * 覆盖：auth / requireStaffBound / requireManager / invalidateAuthCache
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const cloud = require('wx-server-sdk')
-const pg = require('../../db/pg')
+const cloud = globalThis.__mocks__.cloud
+const pg = globalThis.__mocks__.pg
 const { auth, requireStaffBound, requireManager, invalidateAuthCache } = require('../../middleware/auth')
 
 describe('auth 中间件', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     // 清除模块内部缓存（通过 invalidateAuthCache 间接实现）
     invalidateAuthCache('test-openid-001')
     invalidateAuthCache('staff-openid-001')
@@ -156,7 +154,7 @@ describe('auth 中间件', () => {
     await auth(ctx1, async () => {})
     expect(pg.query).toHaveBeenCalledTimes(2) // staff + roles
 
-    jest.clearAllMocks()
+    vi.clearAllMocks()
 
     // 第二次调用应命中缓存
     const ctx2 = { event: {}, context: {}, auth: {}, result: null }
@@ -238,7 +236,7 @@ describe('invalidateAuthCache', () => {
     const ctx1 = { event: {}, context: {}, auth: {}, result: null }
     await auth(ctx1, async () => {})
 
-    jest.clearAllMocks()
+    vi.clearAllMocks()
 
     // 清除缓存
     invalidateAuthCache('cache-test-openid')

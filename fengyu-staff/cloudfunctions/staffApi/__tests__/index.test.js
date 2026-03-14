@@ -3,12 +3,10 @@
  * 覆盖：路由分发、错误码映射、缺少 action 处理
  */
 
-jest.mock('../db/pg', () => require('./mocks/pg'))
-jest.mock('wx-server-sdk', () => require('./mocks/wx-server-sdk'))
 
 const path = require('path')
-const cloud = require('wx-server-sdk')
-const pg = require('../db/pg')
+const cloud = globalThis.__mocks__.cloud
+const pg = globalThis.__mocks__.pg
 const staffApiDir = path.resolve(__dirname, '..')
 
 function clearStaffApiCache() {
@@ -23,7 +21,7 @@ describe('staffApi 入口', () => {
   let main
 
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
     clearStaffApiCache()
     main = require('../index').main
 
@@ -85,9 +83,10 @@ describe('staffApi 入口', () => {
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
-    jest.clearAllMocks()
-    cloud.getWXContext.mockReturnValue({ OPENID: 'beautician-openid' })
+    // 使用 allocation.pendingList（仅店长）测试权限拒绝映射
+    // 先用美容师身份 mock auth
     pg.query
+      .mockReset()
       .mockResolvedValueOnce([{
         employee_id: 'emp-b',
         phone: '139',
@@ -100,12 +99,13 @@ describe('staffApi 入口', () => {
         department: '美容部',
       }])
       .mockResolvedValueOnce([]) // 无 manager 角色
+      .mockResolvedValue([])
 
     clearStaffApiCache()
     const mainFresh = require('../index').main
     const result = await mainFresh({
-      action: 'order.create',
-      payload: { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku1' }], paymentMethod: 'offline' },
+      action: 'allocation.pendingList',
+      payload: { page: 1 },
     }, {})
     expect(result.code).toBe(-403)
     expect(result.message).toContain('PERMISSION_DENIED')

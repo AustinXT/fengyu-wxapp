@@ -7,17 +7,15 @@
  *   - 美容师只看/操作指定自己的预约
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const appointmentRoutes = require('../../routes/appointment')
 
 describe('appointment.confirm', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('确认待确认预约', async () => {
@@ -104,7 +102,7 @@ describe('appointment.confirm', () => {
 
 describe('appointment.checkin', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('签到成功 — 仅记录时间不改状态', async () => {
@@ -176,7 +174,7 @@ describe('appointment.checkin', () => {
 
 describe('appointment.list', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长查看所有预约', async () => {
@@ -246,7 +244,7 @@ describe('appointment.list', () => {
 
 describe('appointment.detail', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('返回完整预约详情', async () => {

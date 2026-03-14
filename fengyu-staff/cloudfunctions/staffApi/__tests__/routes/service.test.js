@@ -8,17 +8,15 @@
  *   - 美容师只能操作分配给自己的服务单
  */
 
-jest.mock('../../db/pg', () => require('../mocks/pg'))
-jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
 
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const serviceRoutes = require('../../routes/service')
 
 describe('service.create', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('店长为美容师创建服务单', async () => {
@@ -46,7 +44,7 @@ describe('service.create', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
       }
       return await cb(client)
     })
@@ -188,7 +186,7 @@ describe('service.create', () => {
 
 describe('service.start', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('开始服务成功', async () => {
@@ -239,7 +237,7 @@ describe('service.start', () => {
 
 describe('service.complete', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('完成服务 — 原子扣减次数', async () => {
@@ -259,7 +257,7 @@ describe('service.complete', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn()
+        query: vi.fn()
           // 原子扣减
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
           // 查询扣减后剩余次数
@@ -325,7 +323,7 @@ describe('service.complete', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: jest.fn()
+        query: vi.fn()
           // rowCount = 0 → 原子扣减失败
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           // 检查剩余次数
@@ -353,7 +351,7 @@ describe('service.complete', () => {
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
       ])
 
-    const clientQueryMock = jest.fn()
+    const clientQueryMock = vi.fn()
       // 原子扣减成功
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
       // 剩余次数归零
@@ -382,7 +380,7 @@ describe('service.complete', () => {
 
 describe('service.cancel', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('取消待服务的服务单（不扣次数）', async () => {
@@ -451,7 +449,7 @@ describe('service.cancel', () => {
 
 describe('service.list', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('美容师只看分配给自己的服务单', async () => {
@@ -480,7 +478,7 @@ describe('service.list', () => {
 
 describe('service.detail', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   test('查看服务单详情', async () => {
