@@ -91,7 +91,55 @@ async function defaultStaff(ctx) {
   }
 }
 
+/**
+ * 美容师详情
+ * 包含服务次数和忙碌状态
+ */
+async function detail(ctx) {
+  const { employeeId } = ctx.event.payload || {}
+  if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
+
+  // Basic info
+  const staffRows = await pg.query(`
+    SELECT s.employee_id, s.name, s.position_name, s.skills, s.gender,
+           s.store_id, st.store_name
+    FROM staff_wechat_users s
+    LEFT JOIN stores st ON s.store_id = st.store_id
+    WHERE s.employee_id = $1 AND s.is_resigned = false
+  `, [employeeId])
+
+  if (staffRows.length === 0) throw new Error('INVALID_PARAMS: 美容师不存在')
+
+  const staff = staffRows[0]
+
+  // Service count (completed services)
+  const countRows = await pg.query(
+    "SELECT COUNT(*)::int AS count FROM service_orders WHERE assigned_employee_id = $1 AND status = '已完成'",
+    [employeeId]
+  )
+
+  // Today's active appointments (for busy status)
+  const todayRows = await pg.query(
+    "SELECT COUNT(*)::int AS count FROM appointments WHERE employee_id = $1 AND appointment_time::date = CURRENT_DATE AND status IN ('待确认', '已确认')",
+    [employeeId]
+  )
+
+  ctx.result = {
+    employeeId: staff.employee_id,
+    name: staff.name,
+    position: staff.position_name,
+    skills: staff.skills || [],
+    gender: staff.gender,
+    storeId: staff.store_id,
+    storeName: staff.store_name,
+    serviceCount: countRows[0]?.count || 0,
+    isBusy: (todayRows[0]?.count || 0) > 0,
+    todayAppointments: todayRows[0]?.count || 0,
+  }
+}
+
 module.exports = {
   list,
-  defaultStaff
+  defaultStaff,
+  detail
 }

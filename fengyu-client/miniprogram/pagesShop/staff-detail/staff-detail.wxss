@@ -1,0 +1,134 @@
+/* pagesShop/staff-detail/staff-detail.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 200rpx;
+}
+
+.skeleton-wrap {
+  padding: 24rpx;
+}
+
+.empty-wrap {
+  padding-top: 80rpx;
+}
+
+/* 头部信息 */
+.staff-header {
+  display: flex;
+  align-items: center;
+  padding: 48rpx 32rpx 32rpx;
+  gap: 28rpx;
+  background: var(--color-bg-card);
+}
+
+.staff-avatar {
+  width: 160rpx;
+  height: 160rpx;
+  background: var(--color-primary-light);
+  border-radius: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.staff-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+}
+
+.staff-name-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+}
+
+.staff-name {
+  font-size: 40rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.staff-position {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+
+/* 区块 */
+.section {
+  margin-top: 24rpx;
+  background: var(--color-bg-card);
+  padding: 32rpx;
+}
+
+.section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 24rpx;
+}
+
+/* 技能标签 */
+.skills-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+}
+
+.skill-tag {
+  margin: 0 !important;
+}
+
+/* 服务数据 */
+.stats-card {
+  display: flex;
+  align-items: center;
+  background: var(--color-bg-section);
+  border-radius: 16rpx;
+  padding: 32rpx 0;
+}
+
+.stat-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.stat-value {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.stat-label {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.stat-divider {
+  width: 1rpx;
+  height: 60rpx;
+  background: var(--color-border);
+}
+
+/* 底部占位 */
+.bottom-space {
+  height: 60rpx;
+}
+
+/* 底部固定按钮 */
+.bottom-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16rpx 32rpx;
+  background: var(--color-bg-card);
+  box-shadow: 0 -2rpx 12rpx rgba(0, 0, 0, 0.06);
+}

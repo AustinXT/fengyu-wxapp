@@ -113,3 +113,45 @@
     />
   </view>
 </van-dialog>
+
+<!-- 来源渠道弹窗 -->
+<van-popup
+  show="{{ showSourcePopup }}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onSourcePopupClose"
+>
+  <view class="source-popup">
+    <view class="source-popup-title">请选择来源渠道</view>
+    <van-radio-group value="{{ sourceChannel }}" bind:change="onSourceChannelChange">
+      <view class="source-radio-list">
+        <van-radio
+          wx:for="{{sourceChannels}}"
+          wx:key="*this"
+          name="{{item}}"
+          checked-color="#C0322A"
+          custom-class="source-radio-item"
+        >{{item}}</van-radio>
+      </view>
+    </van-radio-group>
+    <view class="source-promoter">
+      <van-field
+        value="{{ promoterName }}"
+        label="推荐人"
+        placeholder="推荐人姓名（选填）"
+        bind:input="onPromoterNameInput"
+        border="{{ false }}"
+      />
+    </view>
+    <view class="source-popup-actions">
+      <van-button
+        type="primary"
+        block
+        round
+        color="#C0322A"
+        bindtap="onConfirmBind"
+      >确认绑定</van-button>
+    </view>
+  </view>
+</van-popup>

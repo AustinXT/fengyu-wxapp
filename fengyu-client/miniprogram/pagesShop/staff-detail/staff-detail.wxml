@@ -1,0 +1,93 @@
+<!-- pagesShop/staff-detail/staff-detail.wxml — 美容师详情 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载骨架 -->
+  <view wx:if="{{isLoading}}" class="skeleton-wrap">
+    <van-skeleton title row="4" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{!staff}}" class="empty-wrap">
+    <van-empty description="美容师信息不存在" />
+  </view>
+
+  <!-- 美容师详情 -->
+  <view wx:else>
+
+    <!-- 头部信息 -->
+    <view class="staff-header">
+      <view class="staff-avatar">
+        <van-icon name="manager" size="64px" color="var(--color-primary)" />
+      </view>
+      <view class="staff-info">
+        <view class="staff-name-row">
+          <text class="staff-name">{{staff.name}}</text>
+          <text class="staff-position" wx:if="{{staff.positionName}}">{{staff.positionName}}</text>
+        </view>
+        <van-tag
+          wx:if="{{staff.isBusy}}"
+          color="#FAAD14"
+          plain
+          round
+          size="medium"
+        >忙碌</van-tag>
+        <van-tag
+          wx:else
+          color="#52C41A"
+          plain
+          round
+          size="medium"
+        >空闲</van-tag>
+      </view>
+    </view>
+
+    <!-- 擅长项目 -->
+    <view class="section" wx:if="{{staff.skills && staff.skills.length > 0}}">
+      <view class="section-title">擅长项目</view>
+      <view class="skills-wrap">
+        <van-tag
+          wx:for="{{staff.skills}}"
+          wx:key="*this"
+          plain
+          round
+          color="var(--color-primary)"
+          size="medium"
+          custom-class="skill-tag"
+        >{{item}}</van-tag>
+      </view>
+    </view>
+
+    <!-- 服务数据 -->
+    <view class="section">
+      <view class="section-title">服务数据</view>
+      <view class="stats-card">
+        <view class="stat-item">
+          <text class="stat-value">{{staff.serviceCount || 0}}</text>
+          <text class="stat-label">累计服务（次）</text>
+        </view>
+        <view class="stat-divider" />
+        <view class="stat-item">
+          <text class="stat-value">{{staff.todayAppointments || 0}}</text>
+          <text class="stat-label">今日预约（位）</text>
+        </view>
+      </view>
+    </view>
+
+  </view>
+
+  <!-- 底部占位 -->
+  <view class="bottom-space" />
+</view>
+
+<!-- 底部固定按钮 -->
+<view wx:if="{{!isLoading && staff}}" class="bottom-bar safe-area-bottom">
+  <van-button
+    type="primary"
+    block
+    round
+    color="#C0322A"
+    bindtap="onBookAppointment"
+  >预约此美容师</van-button>
+</view>

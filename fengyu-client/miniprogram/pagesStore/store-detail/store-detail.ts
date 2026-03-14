@@ -51,6 +51,11 @@ Page({
     showUnbindDialog: false,
     unbindNote: '',
     submittingUnbind: false,
+    // 来源渠道弹窗
+    showSourcePopup: false,
+    sourceChannel: '',
+    promoterName: '',
+    sourceChannels: ['推广部', '老带新', '美团', '抖音', '转让店', '自进', '内部地推', '第三方拓客'],
   },
 
   onLoad(options: { storeId?: string; storeName?: string }) {
@@ -97,13 +102,38 @@ Page({
     return 'other-bound';
   },
 
-  // 直接绑定（首次绑定）
-  async onBindStore() {
-    const { storeId, storeName } = this.data;
+  // 绑定门店 — 先弹出来源渠道选择
+  onBindStore() {
+    this.setData({ showSourcePopup: true, sourceChannel: '', promoterName: '' });
+  },
+
+  onSourcePopupClose() {
+    this.setData({ showSourcePopup: false });
+  },
+
+  onSourceChannelChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ sourceChannel: e.detail });
+  },
+
+  onPromoterNameInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    this.setData({ promoterName: e.detail.value });
+  },
+
+  // 确认绑定（含来源渠道）
+  async onConfirmBind() {
+    const { storeId, storeName, sourceChannel, promoterName } = this.data;
+    if (!sourceChannel) {
+      Toast('请选择来源渠道');
+      return;
+    }
     try {
-      const data = await callClientApi('auth.bindStore', { storeId });
+      const data = await callClientApi('auth.bindStore', {
+        storeId,
+        sourceChannel,
+        promoterName: promoterName || undefined,
+      });
       app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
-      this.setData({ bindState: 'is-current', boundStoreName: storeName });
+      this.setData({ bindState: 'is-current', boundStoreName: storeName, showSourcePopup: false });
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
