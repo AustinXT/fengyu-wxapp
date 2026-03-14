@@ -12,14 +12,18 @@ const { requirePhone } = require('../middleware/auth')
  * 不要求 client_user_id 匹配，仅限 sale_order_source = 'staff' 的订单
  */
 async function scanDetail(ctx) {
-  const { orderNo } = ctx.event.payload || {}
-  if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+  const { orderNo, saleOrderId } = ctx.event.payload || {}
+  const targetOrderId = saleOrderId || orderNo
+  if (!targetOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND sale_order_source = 'staff'",
-    [orderNo]
+    `SELECT o.*, s.store_name
+     FROM sale_orders o
+     LEFT JOIN stores s ON o.store_id = s.store_id
+     WHERE o.sale_order_id = $1 AND o.sale_order_source = 'staff'`,
+    [targetOrderId]
   )
 
   if (orders.length === 0) {
@@ -53,13 +57,14 @@ async function scanDetail(ctx) {
     FROM sale_items si
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
-  `, [orderNo])
+  `, [targetOrderId])
 
   ctx.result = {
     order: {
       orderNo: order.sale_order_id,
       status: order.status,
       storeId: order.store_id,
+      storeName: order.store_name || '',
       orderType: order.sale_order_type,
       totalAmount: order.total_amount
     },
@@ -131,8 +136,6 @@ async function create(ctx) {
     throw err
   }
 
-  // 生成订单号
-  const orderNo = await generateOrderNo()
   const now = new Date()
 
   // 查询 SKU 信息（价格/次数直接从 PG product_skus 读取）
@@ -271,10 +274,25 @@ async function create(ctx) {
     }
   }
 
-  // 使用事务创建订单（流水号在事务内原子生成）
+  // 使用事务创建订单（订单号+流水号在事务内原子生成）
+  let orderNo
   await pg.transaction(async (client) => {
-    // 获取 advisory lock 防止并发生成重复流水号
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+    // 获取 advisory lock 防止并发生成重复序号
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+
+    // 生成订单号（在事务+锁内，防并发重复）
+    const dateStrOrder = now.toISOString().slice(2, 10).replace(/-/g, '')
+    const orderSeqResult = await client.query(
+      `SELECT sale_order_id FROM sale_orders
+       WHERE sale_order_id LIKE $1
+       ORDER BY sale_order_id DESC LIMIT 1`,
+      [`FY-XSD-WX-${dateStrOrder}%`]
+    )
+    let orderSeq = 1
+    if (orderSeqResult.rows.length > 0) {
+      orderSeq = parseInt(orderSeqResult.rows[0].sale_order_id.slice(-4)) + 1
+    }
+    orderNo = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
     // 在事务内查询今日最大序号
     const today = new Date()
@@ -346,6 +364,7 @@ async function create(ctx) {
 
   ctx.result = {
     orderNo,
+    saleOrderId: orderNo,
     totalAmount,
     status: '待支付'
   }
@@ -356,10 +375,11 @@ async function create(ctx) {
  */
 async function pay(ctx) {
   const { userId } = ctx.auth
-  const { orderNo } = ctx.event.payload || {}
+  const payload = ctx.event.payload || {}
+  const orderNo = payload.saleOrderId || payload.orderNo
 
   if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(
@@ -434,10 +454,11 @@ async function pay(ctx) {
  */
 async function offlinePay(ctx) {
   const { userId } = ctx.auth
-  const { orderNo } = ctx.event.payload || {}
+  const payloadOff = ctx.event.payload || {}
+  const orderNo = payloadOff.saleOrderId || payloadOff.orderNo
 
   if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(
@@ -567,10 +588,11 @@ async function list(ctx) {
  */
 async function detail(ctx) {
   const { userId } = ctx.auth
-  const { orderNo } = ctx.event.payload || {}
+  const payloadDtl = ctx.event.payload || {}
+  const orderNo = payloadDtl.saleOrderId || payloadDtl.orderNo
 
   if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(
@@ -654,10 +676,11 @@ async function detail(ctx) {
  */
 async function cancel(ctx) {
   const { userId } = ctx.auth
-  const { orderNo } = ctx.event.payload || {}
+  const payloadCnl = ctx.event.payload || {}
+  const orderNo = payloadCnl.saleOrderId || payloadCnl.orderNo
 
   if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(
@@ -780,10 +803,11 @@ async function appointableItems(ctx) {
  */
 async function alipayPay(ctx) {
   const { userId } = ctx.auth
-  const { orderNo } = ctx.event.payload || {}
+  const payloadAli = ctx.event.payload || {}
+  const orderNo = payloadAli.saleOrderId || payloadAli.orderNo
 
   if (!orderNo) {
-    throw new Error('INVALID_PARAMS: 缺少 orderNo 参数')
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
 
   const orders = await pg.query(

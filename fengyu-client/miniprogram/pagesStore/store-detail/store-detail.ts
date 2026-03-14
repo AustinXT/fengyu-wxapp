@@ -136,7 +136,7 @@ Page({
       const data = await callClientApi('auth.bindStore', {
         storeId,
         sourceChannel,
-        promoterName: promoterName || undefined,
+        promoterEmployeeId: promoterName || undefined,
       });
       app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
       this.setData({ bindState: 'is-current', boundStoreName: storeName, showSourcePopup: false });

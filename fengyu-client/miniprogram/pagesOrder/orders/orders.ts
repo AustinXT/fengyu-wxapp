@@ -29,7 +29,11 @@ Page({
     isLoading: false,
   },
 
-  onLoad() {
+  onLoad(options) {
+    const { status } = options as { status?: string };
+    if (status) {
+      this.setData({ activeTab: status });
+    }
     this.loadOrders();
   },
 
@@ -53,7 +57,7 @@ Page({
       const data = await callClientApi('order.list', payload);
       const raw: any[] = data?.orders || [];
       const list = raw.map(item => {
-        const d = new Date(item.sale_order_datetime);
+        const d = new Date(String(item.sale_order_datetime).replace(/-/g, '/'));
         return {
           ...item,
           statusClass: STATUS_CLASS[item.status] || 'status-class-done',
@@ -74,7 +78,7 @@ Page({
   },
 
   onPayTap(e: WechatMiniprogram.TouchEvent) {
-    (e as any).stopPropagation();
+    // catch:tap in WXML prevents bubbling; no JS stopPropagation needed
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
   },

@@ -59,7 +59,7 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
-      const d = new Date(order.sale_order_datetime);
+      const d = new Date(String(order.sale_order_datetime).replace(/-/g, '/'));
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
@@ -71,7 +71,7 @@ Page({
       // 格式化支付到期时间
       let expireTimeFmt = '';
       if (order.status === '待支付' && order.expire_at) {
-        const ed = new Date(order.expire_at);
+        const ed = new Date(String(order.expire_at).replace(/-/g, '/'));
         expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
       }
 
@@ -109,7 +109,7 @@ Page({
     }
 
     const tick = () => {
-      const remaining = new Date(order.expire_at).getTime() - Date.now();
+      const remaining = new Date(String(order.expire_at).replace(/-/g, '/')).getTime() - Date.now();
       if (remaining <= 0) {
         clearInterval(this._countdownTimer);
         this._countdownTimer = null;
@@ -137,11 +137,13 @@ Page({
   },
 
   onPay() {
+    if (!this.data.order?.sale_order_id) return;
     const { sale_order_id } = this.data.order;
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${sale_order_id}` });
   },
 
   async onCancel() {
+    if (!this.data.order?.sale_order_id) return;
     const { sale_order_id } = this.data.order;
     try {
       await wx.showModal({
@@ -169,6 +171,7 @@ Page({
   },
 
   onCreateAppointment() {
+    if (!this.data.order?.sale_order_id) return;
     const { sale_order_id } = this.data.order;
     wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${sale_order_id}` });
   },

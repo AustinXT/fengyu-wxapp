@@ -46,6 +46,7 @@ const routes = {
   'service.list': () => require('./routes/service').list,
   'coupon.list': () => require('./routes/coupon').list,
   'coupon.available': () => require('./routes/coupon').available,
+  'coupon.redeem': () => require('./routes/coupon').redeem,
   'points.balance': () => require('./routes/points').balance,
   'points.history': () => require('./routes/points').history,
   'message.list': () => require('./routes/message').list,
@@ -101,6 +102,7 @@ exports.main = async (event, context) => {
                   errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
                   errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
+                  errorMessage.startsWith('NOT_FOUND') ? -404 :
                   -1
 
     return {

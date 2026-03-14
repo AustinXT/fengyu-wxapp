@@ -43,6 +43,27 @@
     </view>
   </view>
 
+  <!-- 我的订单快捷入口 -->
+  <view class="section-title">我的订单</view>
+  <view class="order-shortcuts">
+    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="待支付">
+      <van-icon name="clock-o" size="44rpx" color="#FAAD14" />
+      <text class="order-shortcut-label">待支付</text>
+    </view>
+    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="已支付">
+      <van-icon name="passed" size="44rpx" color="#52C41A" />
+      <text class="order-shortcut-label">已支付</text>
+    </view>
+    <view class="order-shortcut-item" bindtap="onOrdersByStatus" data-status="已完成">
+      <van-icon name="success" size="44rpx" color="#8C8C8C" />
+      <text class="order-shortcut-label">已完成</text>
+    </view>
+    <view class="order-shortcut-item" bindtap="onOrders">
+      <van-icon name="orders-o" size="44rpx" color="#C0322A" />
+      <text class="order-shortcut-label">全部</text>
+    </view>
+  </view>
+
   <!-- 我的服务 -->
   <view class="section-title">我的服务</view>
   <van-cell-group inset>
@@ -111,6 +132,13 @@
       icon="info-o"
       is-link
       bindtap="onAbout"
+    />
+    <van-cell
+      title="客服热线"
+      icon="phone-o"
+      is-link
+      value="400-000-0000"
+      bindtap="onCallService"
     />
     <van-cell title="版本" icon="setting-o" value="v1.0.0" />
   </van-cell-group>

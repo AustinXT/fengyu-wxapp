@@ -33,6 +33,7 @@ Page({
     // 时间
     appointmentDate: '',
     appointmentTimeSlot: '',
+    _timeSlotDisplay: '',
     minDate: 0,
     maxDate: 0,
 
@@ -95,7 +96,12 @@ Page({
       const storeId = app.globalData.boundStoreId;
       if (!storeId) return;
       const data = await callClientApi('staff.list', { storeId });
-      this.setData({ staffList: data?.staffList || [] });
+      const staffList = (data?.staffList || []).map((s: any) => ({
+        employee_id: s.staff_id,
+        name: s.name,
+        position: s.position,
+      }));
+      this.setData({ staffList });
     } catch {
       // 静默失败，美容师列表不影响预约
     }
@@ -153,7 +159,11 @@ Page({
     const { index } = e.detail;
     const slot = TIME_SLOTS[index];
     if (slot) {
-      this.setData({ appointmentTimeSlot: slot.text, showTimePicker: false });
+      this.setData({
+        appointmentTimeSlot: slot.value,        // "HH:MM-HH:MM" 供提交
+        _timeSlotDisplay: slot.text,            // 中文展示
+        showTimePicker: false,
+      });
     }
   },
 

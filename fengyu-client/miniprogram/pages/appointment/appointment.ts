@@ -59,7 +59,7 @@ Page({
       const raw: any[] = data?.appointments || [];
       const list = raw.map(item => {
         const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
-        const d = new Date(item.appointment_time);
+        const d = new Date(String(item.appointment_time).replace(/-/g, '/'));
         return {
           ...item,
           status_label:     meta.label,

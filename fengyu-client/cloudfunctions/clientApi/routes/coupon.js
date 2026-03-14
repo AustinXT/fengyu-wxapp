@@ -208,4 +208,97 @@ async function available(ctx) {
   ctx.result = { coupons: result }
 }
 
-module.exports = { list, available }
+/**
+ * 兑换优惠券
+ * payload: { code: string }
+ */
+async function redeem(ctx) {
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+  const { code } = ctx.event.payload || {}
+
+  if (!code || typeof code !== 'string' || code.trim().length === 0) {
+    throw new Error('INVALID_PARAMS: 请输入兑换码')
+  }
+
+  const trimmedCode = code.trim().toUpperCase()
+
+  // 查找兑换码对应的券模板
+  const templates = await pg.query(
+    `SELECT template_id, name, coupon_type, discount_value, min_spend,
+            max_discount, applicable_category_ids, applicable_store_ids,
+            valid_days, expire_at AS template_expire_at, max_claims, claimed_count,
+            description, is_active
+     FROM coupon_templates
+     WHERE redeem_code = $1`,
+    [trimmedCode]
+  )
+
+  if (templates.length === 0) {
+    throw new Error('INVALID_PARAMS: 兑换码无效')
+  }
+
+  const tpl = templates[0]
+
+  if (!tpl.is_active) {
+    throw new Error('INVALID_PARAMS: 该兑换码已失效')
+  }
+
+  // 检查模板级过期
+  if (tpl.template_expire_at && new Date(tpl.template_expire_at) < new Date()) {
+    throw new Error('INVALID_PARAMS: 该兑换码已过期')
+  }
+
+  // 检查领取上限
+  if (tpl.max_claims && tpl.claimed_count >= tpl.max_claims) {
+    throw new Error('INVALID_PARAMS: 该兑换码已被领完')
+  }
+
+  // 检查用户是否已兑换过
+  const existing = await pg.query(
+    'SELECT coupon_id FROM user_coupons WHERE user_id = $1 AND template_id = $2',
+    [userId, tpl.template_id]
+  )
+  if (existing.length > 0) {
+    throw new Error('INVALID_PARAMS: 您已兑换过该优惠券')
+  }
+
+  // 计算过期时间
+  const now = new Date()
+  let expireAt
+  if (tpl.valid_days) {
+    expireAt = new Date(now.getTime() + tpl.valid_days * 24 * 60 * 60 * 1000)
+  } else if (tpl.template_expire_at) {
+    expireAt = new Date(tpl.template_expire_at)
+  } else {
+    // 默认 30 天有效
+    expireAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
+  }
+
+  // 生成券 ID
+  const couponId = 'cpn_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 6)
+
+  // 事务：创建用户券 + 递增 claimed_count
+  await pg.transaction(async (client) => {
+    await client.query(
+      `INSERT INTO user_coupons (coupon_id, user_id, template_id, status, expire_at, created_at)
+       VALUES ($1, $2, $3, '未使用', $4, $5)`,
+      [couponId, userId, tpl.template_id, expireAt, now]
+    )
+    await client.query(
+      'UPDATE coupon_templates SET claimed_count = claimed_count + 1 WHERE template_id = $1',
+      [tpl.template_id]
+    )
+  })
+
+  ctx.result = {
+    couponId,
+    name: tpl.name,
+    couponType: tpl.coupon_type,
+    discountValue: tpl.discount_value,
+    expireAt,
+  }
+}
+
+module.exports = { list, available, redeem }

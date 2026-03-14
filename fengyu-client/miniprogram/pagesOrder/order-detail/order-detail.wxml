@@ -18,7 +18,7 @@
   <van-cell-group title="订单信息" inset>
     <van-cell title="订单编号" value="{{order.sale_order_id}}" />
     <van-cell title="下单时间" value="{{order.order_time_fmt}}" />
-    <van-cell title="支付方式" value="{{order.payment_method === 'wechat' ? '微信支付' : '线下付款'}}" />
+    <van-cell title="支付方式" value="{{order.payment_method === 'wechat' ? '微信支付' : order.payment_method === 'alipay' ? '支付宝' : '线下付款'}}" />
     <van-cell title="门店" value="{{order.store_name}}" />
     <van-cell
       title="指定美容师"

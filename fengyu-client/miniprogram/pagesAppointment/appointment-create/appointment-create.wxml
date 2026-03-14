@@ -54,7 +54,7 @@
     />
     <van-cell
       title="到店时段"
-      value="{{appointmentTimeSlot || '请填写'}}"
+      value="{{_timeSlotDisplay || '请选择'}}"
       is-link
       bindtap="onShowTimePicker"
     />
@@ -92,7 +92,7 @@
       round
       size="large"
       loading="{{submitting}}"
-      disabled="{{!appointmentDate || !appointmentTimeSlot || submitting}}"
+      disabled="{{!appointmentDate || !_timeSlotDisplay || submitting}}"
       bindtap="onSubmit"
     >提交预约申请</van-button>
   </view>

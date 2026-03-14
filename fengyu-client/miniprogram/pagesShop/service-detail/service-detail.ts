@@ -204,9 +204,12 @@ Page({
       return;
     }
     let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
-    // 促销方案传入 scheme 信息
-    if (spu.product_kind === '福利活动' && spu.promotionSchemeId) {
-      url += `&orderType=promo&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
+    // 福利活动使用特殊订单类型 + promotionSchemeId
+    if (spu.product_kind === '福利活动') {
+      url += '&orderType=promo';
+      if (spu.promotionSchemeId) {
+        url += `&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
+      }
     }
     wx.navigateTo({ url });
   },

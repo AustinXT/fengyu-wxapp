@@ -46,6 +46,11 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/orders/orders' });
   },
 
+  onOrdersByStatus(e: WechatMiniprogram.TouchEvent) {
+    const { status } = e.currentTarget.dataset as { status: string };
+    wx.navigateTo({ url: `/pagesOrder/orders/orders?status=${encodeURIComponent(status)}` });
+  },
+
   onTreatmentCards() {
     wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
   },
@@ -164,6 +169,13 @@ Page({
 
   onAbout() {
     wx.switchTab({ url: '/pages/cart/cart' });
+  },
+
+  onCallService() {
+    wx.makePhoneCall({
+      phoneNumber: '400-000-0000',
+      fail: () => {},
+    });
   },
 
   onShareAppMessage() {
