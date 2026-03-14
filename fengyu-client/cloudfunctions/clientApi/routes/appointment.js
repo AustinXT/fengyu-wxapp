@@ -88,6 +88,9 @@ async function create(ctx) {
 
   // 门店信息：优先从订单取，否则从用户绑定门店取
   const storeId = orderItem?.store_id || userStoreId
+  if (!storeId) {
+    throw new Error('INVALID_PARAMS: 请先绑定门店后再预约')
+  }
 
   // 顾客姓名从 client_wechat_users
   let clientName = users[0]?.name || ''
