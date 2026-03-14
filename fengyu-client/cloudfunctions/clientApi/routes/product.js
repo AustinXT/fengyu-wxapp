@@ -230,7 +230,7 @@ async function hotList(ctx) {
     JOIN product_categories c ON p.category_id = c.category_id
     WHERE ${PRODUCT_VALID_FILTER}
       ${marketFilter}
-      AND c.product_kind NOT IN ('家居产品')
+      AND c.product_kind NOT IN ('福利活动')
       AND EXISTS (
         SELECT 1 FROM product_skus sk
         WHERE sk.product_id = p.product_id AND ${SKU_VALID_FILTER}

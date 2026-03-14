@@ -85,9 +85,12 @@ Page({
       ]);
       const pendingRequest: UnbindRequest | null = unbindData?.request || null;
       const boundStoreName = app.globalData.boundStoreName || '';
-      const bindState = this.computeBindState(storeName, boundStoreName, pendingRequest);
+      // 从 API 返回的 store 获取真实 storeId
+      const realStoreId = detailData?.store?.store_id || storeId;
+      const bindState = this.computeBindState(realStoreId, pendingRequest);
       this.setData({
         store: detailData?.store || null,
+        storeId: realStoreId,
         pendingRequest,
         boundStoreName,
         bindState,
@@ -100,9 +103,10 @@ Page({
     }
   },
 
-  computeBindState(storeName: string, boundStoreName: string, pendingRequest: UnbindRequest | null): BindState {
-    if (!boundStoreName) return 'no-binding';
-    if (boundStoreName === storeName) {
+  computeBindState(storeId: string, pendingRequest: UnbindRequest | null): BindState {
+    const boundStoreId = app.globalData.boundStoreId;
+    if (!boundStoreId) return 'no-binding';
+    if (boundStoreId === storeId) {
       return pendingRequest ? 'is-current-reviewing' : 'is-current';
     }
     return 'other-bound';

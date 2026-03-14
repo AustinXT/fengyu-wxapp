@@ -54,7 +54,7 @@ module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
           <view wx:else class="tx-list">
             <view class="tx-item" wx:for="{{transactions}}" wx:for-item="tx" wx:key="id">
               <view class="tx-info">
-                <text class="tx-desc">{{tx.description}}</text>
+                <text class="tx-desc">{{tx.type || '消费'}}</text>
                 <text class="tx-date">{{tx.displayDate}}</text>
               </view>
               <text class="tx-amount {{tx.isPositive ? 'tx-positive' : 'tx-negative'}}">{{tx.displayAmount}}</text>

@@ -39,7 +39,7 @@ Page({
     spuName: '',
     skuId: '',
     skuDisplayName: '',
-    unitPrice: '0.00',
+    unitPrice: 0,
     staffWfId: '',
     staffName: '',
     storeName: '',
@@ -51,7 +51,7 @@ Page({
     // 购物车批量下单
     fromCart: false,
     cartItems: [] as CheckoutItem[],
-    totalPrice: '0.00',
+    totalPrice: 0,
     quantity: 1,
     // 支付宝二维码弹窗
     showAlipayQr: false,
@@ -95,14 +95,14 @@ Page({
         setTimeout(() => wx.navigateBack(), 1000);
         return;
       }
-      const total = checkoutItems.reduce((s, i) => s + i.price * i.quantity, 0);
+      const total = Math.round(checkoutItems.reduce((s, i) => s + i.price * i.quantity, 0) * 100) / 100;
       this.setData({
         fromCart: true,
         cartItems: checkoutItems,
         spuName: checkoutItems.length === 1 ? checkoutItems[0].spuName : `${checkoutItems.length} 件商品`,
         skuDisplayName: checkoutItems.length === 1 ? checkoutItems[0].skuDisplayName : checkoutItems.map(i => i.spuName).join('、'),
-        unitPrice: total.toFixed(2),
-        totalPrice: total.toFixed(2),
+        unitPrice: total,
+        totalPrice: total,
         storeName,
       });
     } else {
@@ -129,8 +129,8 @@ Page({
       const unitPrice = Number(sku?.special_price || sku?.price || 0);
       this.setData({
         skuDisplayName: sku?.spec_name || '',
-        unitPrice: String(unitPrice),
-        totalPrice: (unitPrice * quantity).toFixed(2),
+        unitPrice,
+        totalPrice: Math.round(unitPrice * quantity * 100) / 100,
       });
     } catch {
       Toast.fail('加载价格失败');
@@ -150,7 +150,7 @@ Page({
         skuDisplayName: items.length > 1
           ? items.map((i: any) => i.product_name).join('、')
           : (firstItem.sku_spec_name || ''),
-        unitPrice: String(order.total_amount || '0.00'),
+        unitPrice: Number(order.total_amount || 0),
         storeName: order.store_name || '',
         quantity: 1,
       });

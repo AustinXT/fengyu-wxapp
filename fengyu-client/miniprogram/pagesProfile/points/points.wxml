@@ -14,7 +14,7 @@
       <text class="vip-balance-value">{{balance}}</text>
     </view>
     <view class="vip-next-level" wx:if="{{nextLevel}}">
-      <text class="vip-next-text">距离{{nextLevel.name}}还需 {{nextLevel.pointsNeeded}} 积分</text>
+      <text class="vip-next-text">距离{{nextLevel.name}}还需 {{nextLevel.minPoints - balance}} 积分</text>
     </view>
   </view>
 
@@ -42,7 +42,7 @@
           <van-icon name="{{item.isEarn ? 'plus' : 'minus'}}" size="28rpx" color="#FFFFFF" />
         </view>
         <view class="record-info">
-          <text class="record-desc">{{item.description}}</text>
+          <text class="record-desc">{{item.type || '积分变动'}}</text>
           <text class="record-date">{{item.displayDate}}</text>
         </view>
         <text class="record-amount {{item.isEarn ? 'amount-earn' : 'amount-redeem'}}">{{item.displayAmount}}</text>

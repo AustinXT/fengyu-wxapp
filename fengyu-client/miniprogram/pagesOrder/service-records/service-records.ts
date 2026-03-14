@@ -116,8 +116,8 @@ function getStatusColor(status: string): string {
 
 function calcDuration(record: any): string {
   if (record.started_at && record.completed_at) {
-    const start = new Date(record.started_at).getTime();
-    const end = new Date(record.completed_at).getTime();
+    const start = new Date(String(record.started_at).replace(/-/g, '/')).getTime();
+    const end = new Date(String(record.completed_at).replace(/-/g, '/')).getTime();
     const mins = Math.round((end - start) / 60000);
     if (mins > 0) return `${mins}分钟`;
   }

@@ -861,32 +861,6 @@ async function alipayPay(ctx) {
   }
 }
 
-// ========== 辅助函数 ==========
-
-/**
- * 生成订单号
- * 格式: FY-XSD-WX-{YYMMDD}{序号}
- */
-async function generateOrderNo() {
-  const today = new Date()
-  const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
-
-  const result = await pg.query(`
-    SELECT sale_order_id FROM sale_orders
-    WHERE sale_order_id LIKE 'FY-XSD-WX-${dateStr}%'
-    ORDER BY sale_order_id DESC
-    LIMIT 1
-  `)
-
-  let seq = 1
-  if (result.length > 0) {
-    const lastNo = result[0].sale_order_id
-    seq = parseInt(lastNo.slice(-4)) + 1
-  }
-
-  return `FY-XSD-WX-${dateStr}${String(seq).padStart(4, '0')}`
-}
-
 module.exports = {
   create,
   pay,

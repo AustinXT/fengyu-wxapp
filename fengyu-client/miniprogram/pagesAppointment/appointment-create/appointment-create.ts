@@ -18,7 +18,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }
@@ -51,6 +53,7 @@ Page({
     showStaffPopup: false,
     timeSlots: TIME_SLOTS,
     submitting: false,
+    showPhoneBind: false,
   },
 
   onLoad(options) {
@@ -59,10 +62,21 @@ Page({
       minDate: now,
       maxDate: now + 90 * 24 * 60 * 60 * 1000,
     });
-    const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
+    const { saleOrderId, orderNo, employeeId, employeeName } = options as {
+      saleOrderId?: string; orderNo?: string;
+      employeeId?: string; employeeName?: string;
+    };
     this.loadAppointableItems(saleOrderId || orderNo);
     this.loadStaffList();
-    this.loadDefaultStaff();
+    // 如果从美容师详情页传入了 employeeId，优先使用
+    if (employeeId) {
+      this.setData({
+        selectedStaffWfId: employeeId,
+        selectedStaffName: employeeName ? decodeURIComponent(employeeName) : '',
+      });
+    } else {
+      this.loadDefaultStaff();
+    }
   },
 
   async loadAppointableItems(filterSaleOrderId?: string) {
@@ -205,6 +219,10 @@ Page({
         wx.switchTab({ url: '/pages/appointment/appointment' });
       }, 1500);
     } catch (err: any) {
+      if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
+        this.setData({ showPhoneBind: true });
+        return;
+      }
       Toast.fail(err?.message || '提交失败，请重试');
     } finally {
       this.setData({ submitting: false });

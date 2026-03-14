@@ -18,7 +18,15 @@ async function list(ctx) {
     ORDER BY pc.created_at DESC
   `, [userId])
 
-  ctx.result = { cards }
+  ctx.result = {
+    cards: cards.map(c => ({
+      cardId: c.card_id,
+      balance: c.balance,
+      storeId: c.store_id,
+      storeName: c.store_name,
+      createdAt: c.created_at,
+    }))
+  }
 }
 
 /**
@@ -46,7 +54,15 @@ async function history(ctx) {
     LIMIT $2 OFFSET $3
   `, [cardId, pageSize, offset])
 
-  ctx.result = { records }
+  ctx.result = {
+    records: records.map(r => ({
+      id: r.id,
+      type: r.type,
+      amount: r.amount,
+      refOrderId: r.ref_order_id,
+      createdAt: r.created_at,
+    }))
+  }
 }
 
 module.exports = { list, history }

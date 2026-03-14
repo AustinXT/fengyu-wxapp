@@ -24,7 +24,7 @@
       <view class="staff-info">
         <view class="staff-name-row">
           <text class="staff-name">{{staff.name}}</text>
-          <text class="staff-position" wx:if="{{staff.positionName}}">{{staff.positionName}}</text>
+          <text class="staff-position" wx:if="{{staff.position}}">{{staff.position}}</text>
         </view>
         <van-tag
           wx:if="{{staff.isBusy}}"

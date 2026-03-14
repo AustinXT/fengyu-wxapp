@@ -61,7 +61,15 @@ async function history(ctx) {
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
 
-  ctx.result = { records }
+  ctx.result = {
+    records: records.map(r => ({
+      id: r.id,
+      type: r.type,
+      amount: r.amount,
+      refOrderId: r.ref_order_id,
+      createdAt: r.created_at,
+    }))
+  }
 }
 
 module.exports = { balance, history }

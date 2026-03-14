@@ -20,7 +20,18 @@ async function list(ctx) {
     LIMIT $2 OFFSET $3
   `, [userId, pageSize, offset])
 
-  ctx.result = { records }
+  ctx.result = {
+    records: records.map(r => ({
+      id: r.id,
+      title: r.title,
+      body: r.body,
+      type: r.message_type,
+      isRead: r.is_read,
+      refEntity: r.ref_entity_type,
+      refId: r.ref_entity_id,
+      createdAt: r.created_at,
+    }))
+  }
 }
 
 /**
