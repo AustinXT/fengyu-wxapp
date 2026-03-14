@@ -218,6 +218,49 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
 }
 
 /**
+ * 管理员为其他员工重置密码（创建或覆盖 admin_passwords）
+ */
+export async function resetEmployeePassword(
+  employeeId: string,
+  newPassword: string
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSessionFromCookie()
+  if (!session) {
+    return { success: false, message: '未登录' }
+  }
+
+  // 仅 admin 可重置他人密码
+  const isAdmin = session.roles.some(r => r.role === 'admin')
+  if (!isAdmin) {
+    return { success: false, message: '仅系统管理员可重置密码' }
+  }
+
+  const passwordHash = await hash(newPassword, 12)
+
+  // UPSERT: 若无记录则创建，有则更新
+  const existing = await db
+    .select({ id: adminPasswords.id })
+    .from(adminPasswords)
+    .where(eq(adminPasswords.employeeId, employeeId))
+    .limit(1)
+
+  if (existing.length > 0) {
+    await db
+      .update(adminPasswords)
+      .set({ passwordHash, mustChange: true, lastChangedAt: new Date() })
+      .where(eq(adminPasswords.employeeId, employeeId))
+  } else {
+    await db.insert(adminPasswords).values({
+      employeeId,
+      passwordHash,
+      mustChange: true,
+    })
+  }
+
+  return { success: true, message: '密码重置成功，用户首次登录需修改密码' }
+}
+
+/**
  * 检查 mustChange 标记（middleware 用）
  */
 export async function checkMustChange(): Promise<boolean> {

@@ -11,28 +11,24 @@ import type { AuthSession, RoleType } from './types'
  */
 export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   admin: [
+    // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
     'org:list', 'org:create', 'org:update', 'org:delete',
     'store:list', 'store:create', 'store:update',
     'employee:list', 'employee:create', 'employee:update',
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
-    'customer:list', 'customer:update', 'customer:create',
     'coupon:list', 'coupon:create', 'coupon:update',
+    // 系统管理（权限/同步/日志/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-    'sale_order:list', 'sale_order:create', 'sale_order:update',
-    'allocation:list', 'allocation:save',
-    'service:list', 'service:create', 'service:update',
-    'appointment:list', 'appointment:confirm', 'appointment:checkin',
     'sync:trigger', 'sync:status',
     'operation_log:list',
     'system:config',
-    'data_center:dashboard',
-    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
+    // admin 不碰业务数据（订单/分配/服务/预约）和顾客
   ],
   manager: [
     'store:list',
     'employee:list',
-    'customer:list', 'customer:update',
+    'customer:list', 'customer:update', 'customer:create',
     'sale_order:list', 'sale_order:create', 'sale_order:update',
     'allocation:list', 'allocation:save',
     'service:list', 'service:create', 'service:update',
@@ -138,7 +134,7 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
   if (ids.length === 0) {
     return sql`FALSE`
   }
-  return sql.raw(`${storeIdColumn} IN (${ids.map(id => `'${id}'`).join(',')})`)
+  return sql.raw(`${storeIdColumn} IN (${ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`)
 }
 
 /**

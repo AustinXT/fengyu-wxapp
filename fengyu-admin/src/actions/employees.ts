@@ -3,7 +3,8 @@
 import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { permissionRoles } from '@db/permission'
+import { eq, and } from 'drizzle-orm'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -117,6 +118,17 @@ export async function updateEmployee(
   requirePermission(session, 'employee:update')
 
   await db.update(staffWechatUsers).set(data).where(eq(staffWechatUsers.employeeId, employeeId))
+
+  // 标记离职时同步作废所有有效的 permission_roles
+  if (data.isResigned === true) {
+    await db
+      .update(permissionRoles)
+      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
+      .where(and(
+        eq(permissionRoles.employeeId, employeeId),
+        eq(permissionRoles.isVoid, false),
+      ))
+  }
 
   await logOperation(session, 'employee.update', 'employee', employeeId, data)
 }

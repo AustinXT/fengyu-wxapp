@@ -138,3 +138,20 @@ export async function updateTemplate(
 
   await logOperation(session, 'coupon.update', 'coupon_template', templateId, data)
 }
+
+export async function toggleTemplateActive(
+  templateId: string,
+  isActive: boolean
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:update')
+
+  await db
+    .update(couponTemplates)
+    .set({ isActive })
+    .where(eq(couponTemplates.templateId, templateId))
+
+  const action = isActive ? '启用' : '停用'
+  await logOperation(session, `coupon.${action}`, 'coupon_template', templateId, { isActive })
+  return { success: true, message: `优惠券模板已${action}` }
+}

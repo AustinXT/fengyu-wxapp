@@ -16,6 +16,7 @@ import { getRoleLabel } from "@/lib/auth"
 import { formatDate } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole } from "@/actions/permissions"
+import { resetEmployeePassword } from "@/actions/auth"
 import type { Employee, PermissionRole, Store, OrgNode, RoleType } from "@/lib/types"
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr"]
@@ -140,23 +141,34 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
     }
   }
 
-  function handleResetPassword() {
+  async function handleResetPassword() {
     const newPwd = newPwdRef.current?.value ?? ""
     const confirmPwd = confirmPwdRef.current?.value ?? ""
     if (!newPwd || !confirmPwd) {
       toast.error("请输入密码")
       return
     }
-    if (newPwd.length < 8) {
-      toast.error("密码长度不能少于 8 位")
+    if (newPwd.length < 8 || !/[a-zA-Z]/.test(newPwd) || !/\d/.test(newPwd)) {
+      toast.error("密码至少 8 位，须包含字母和数字")
       return
     }
     if (newPwd !== confirmPwd) {
       toast.error("两次输入的密码不一致")
       return
     }
-    toast.success("密码重置成功")
-    setShowPwdForm(false)
+    try {
+      const res = await resetEmployeePassword(employee.employeeId, newPwd)
+      if (res.success) {
+        toast.success(res.message)
+        setShowPwdForm(false)
+        if (newPwdRef.current) newPwdRef.current.value = ""
+        if (confirmPwdRef.current) confirmPwdRef.current.value = ""
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("密码重置失败，请稍后重试")
+    }
   }
 
   const roleColumns: Column<PermissionRole>[] = [

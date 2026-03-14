@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { toggleTemplateActive } from "@/actions/coupons"
 
 const PAGE_SIZE = 10
 
@@ -124,11 +125,28 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
               详情
             </Button>
           </Link>
-          <Link href={`/coupons/${row.templateId}`}>
-            <Button variant="link" size="sm" className="h-auto p-0">
-              编辑
-            </Button>
-          </Link>
+          <Button
+            variant="link"
+            size="sm"
+            className={`h-auto p-0 ${row.isActive ? 'text-[var(--destructive)]' : 'text-[#3D8A5A]'}`}
+            onClick={async () => {
+              const action = row.isActive ? '停用' : '启用'
+              if (!confirm(`确定要${action}「${row.name}」吗？`)) return
+              try {
+                const res = await toggleTemplateActive(row.templateId, !row.isActive)
+                if (res.success) {
+                  const { toast } = await import('sonner')
+                  toast.success(res.message)
+                  window.location.reload()
+                }
+              } catch {
+                const { toast } = await import('sonner')
+                toast.error(`${action}失败`)
+              }
+            }}
+          >
+            {row.isActive ? '停用' : '启用'}
+          </Button>
         </div>
       ),
     },

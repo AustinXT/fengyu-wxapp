@@ -3,9 +3,9 @@
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { eq, inArray, and } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
-import { getSession } from '@/lib/auth'
+import { getSession, hasRole } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
@@ -61,13 +61,25 @@ export async function getCustomers(): Promise<Customer[]> {
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
-  const rows = await db
+  const scopeStoreIds = session.permissions.scopeStoreIds
+  const isAdmin = hasRole(session, 'admin')
+
+  let query = db
     .select()
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .limit(500)
+    .$dynamic()
 
+  // admin 不碰顾客数据（规范约束），但 admin 的 PERMISSION_MATRIX 包含 customer:list
+  // 非 admin 角色按 scope 过滤：只能看到绑定在自己门店范围内的顾客
+  if (!isAdmin && scopeStoreIds.length > 0) {
+    query = query.where(inArray(clientWechatUsers.boundStoreId, scopeStoreIds)) as typeof query
+  } else if (!isAdmin && scopeStoreIds.length === 0) {
+    return [] // 无 scope 则无数据
+  }
+
+  const rows = await query.limit(500)
   return rows.map(serializeCustomer)
 }
 

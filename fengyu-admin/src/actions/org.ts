@@ -66,11 +66,24 @@ export async function updateOrgNode(
   await logOperation(session, 'org.update', 'org_node', id, data)
 }
 
-export async function deleteOrgNode(id: string) {
+export async function deleteOrgNode(id: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:delete')
 
-  await db.delete(orgNodes).where(eq(orgNodes.id, id))
+  // 检查是否有子节点
+  const children = await db
+    .select({ id: orgNodes.id })
+    .from(orgNodes)
+    .where(eq(orgNodes.parentId, id))
+    .limit(1)
+
+  if (children.length > 0) {
+    return { success: false, message: '该节点下存在子节点，无法删除' }
+  }
+
+  // 软删除：设 isActive = false
+  await db.update(orgNodes).set({ isActive: false }).where(eq(orgNodes.id, id))
 
   await logOperation(session, 'org.delete', 'org_node', id)
+  return { success: true, message: '节点已停用' }
 }

@@ -8,7 +8,7 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
-import { assignRole } from "@/actions/permissions"
+import { assignRole, revokeRole } from "@/actions/permissions"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
 const roleLabels: Record<RoleType, string> = {
@@ -129,6 +129,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                         <th className="px-4 py-3 text-left font-medium text-gray-500">权限范围</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">授权来源</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">授权时间</th>
+                        <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -141,11 +142,34 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                           <td className="px-4 py-3 text-[#999999]">
                             {new Date(pr.createdAt).toLocaleDateString("zh-CN")}
                           </td>
+                          <td className="px-4 py-3">
+                            <Button
+                              variant="link"
+                              size="sm"
+                              className="h-auto p-0 text-[var(--destructive)]"
+                              onClick={async () => {
+                                if (!confirm(`确定要撤销 ${pr.employeeName} 的 ${roleLabels[pr.role as RoleType]} 角色吗？`)) return
+                                try {
+                                  const res = await revokeRole(pr.id)
+                                  if (res.success) {
+                                    const { toast } = await import('sonner')
+                                    toast.success(res.message)
+                                    window.location.reload()
+                                  }
+                                } catch {
+                                  const { toast } = await import('sonner')
+                                  toast.error('撤销失败，请稍后重试')
+                                }
+                              }}
+                            >
+                              撤销
+                            </Button>
+                          </td>
                         </tr>
                       ))}
                       {employeesForRole.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-4 py-12 text-center text-[#999999]">该角色暂无成员</td>
+                          <td colSpan={6} className="px-4 py-12 text-center text-[#999999]">该角色暂无成员</td>
                         </tr>
                       )}
                     </tbody>

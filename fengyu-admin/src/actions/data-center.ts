@@ -13,24 +13,67 @@ export interface DateFilter {
   endDate?: string    // YYYY-MM-DD
 }
 
-function buildScopeFilter(scopeStoreIds: string[], storeCol = 'store_id'): string {
-  if (scopeStoreIds.length === 0) return `AND FALSE`
-  return `AND ${storeCol} IN (${scopeStoreIds.map(id => `'${id}'`).join(',')})`
+// 校验日期格式，防止 SQL 注入
+function isValidDate(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s)
 }
 
-function buildWhere(f: DateFilter, dateCol: string, scopeStoreIds: string[], storeCol = 'store_id') {
+// 校验 storeId 格式（字母数字和连字符）
+function isValidStoreId(s: string): boolean {
+  return /^[\w-]+$/.test(s)
+}
+
+// 使用 $N 参数化构建安全 SQL
+function buildSafeParams(
+  f: DateFilter,
+  scopeStoreIds: string[],
+  storeCol: string,
+  dateCol: string,
+  startIdx = 1
+): { clauses: string; params: unknown[]; nextIdx: number } {
   const clauses: string[] = []
-  // Scope filter (always applied)
+  const params: unknown[] = []
+  let idx = startIdx
+
   if (scopeStoreIds.length === 0) {
     clauses.push('FALSE')
   } else {
-    clauses.push(`${storeCol} IN (${scopeStoreIds.map(id => `'${id}'`).join(',')})`)
+    const placeholders = scopeStoreIds.map((id, i) => {
+      params.push(id)
+      return `$${idx + i}`
+    })
+    clauses.push(`${storeCol} IN (${placeholders.join(',')})`)
+    idx += scopeStoreIds.length
   }
-  // User-selected filters
-  if (f.storeId) clauses.push(`${storeCol} = '${f.storeId}'`)
-  if (f.startDate) clauses.push(`${dateCol} >= '${f.startDate}'`)
-  if (f.endDate) clauses.push(`${dateCol} <= '${f.endDate}'`)
-  return clauses.length ? `AND ${clauses.join(' AND ')}` : ''
+
+  if (f.storeId && isValidStoreId(f.storeId)) {
+    clauses.push(`${storeCol} = $${idx}`)
+    params.push(f.storeId)
+    idx++
+  }
+  if (f.startDate && isValidDate(f.startDate)) {
+    clauses.push(`${dateCol} >= $${idx}`)
+    params.push(f.startDate)
+    idx++
+  }
+  if (f.endDate && isValidDate(f.endDate)) {
+    clauses.push(`${dateCol} <= $${idx}`)
+    params.push(f.endDate)
+    idx++
+  }
+
+  return {
+    clauses: clauses.length ? `AND ${clauses.join(' AND ')}` : '',
+    params,
+    nextIdx: idx,
+  }
+}
+
+// 简化版：仅 scope 过滤（无日期）
+function buildScopeFilter(scopeStoreIds: string[], storeCol = 'store_id'): string {
+  if (scopeStoreIds.length === 0) return `AND FALSE`
+  // scopeStoreIds 来自数据库查询结果（可信来源），直接拼接安全
+  return `AND ${storeCol} IN (${scopeStoreIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
 }
 
 // ─── Tab 1: 客户回店率 ─────────────────────────────────────
@@ -56,9 +99,9 @@ export async function getReturnRateByMonth(filter: DateFilter = {}): Promise<Ret
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = buildScopeFilter(scopeIds)
-  const storeClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const rows = await db.execute(sql.raw(`
     WITH monthly AS (
@@ -106,10 +149,10 @@ export async function getReturnRateByStore(filter: DateFilter = {}): Promise<Sto
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
-  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const rows = await db.execute(sql.raw(`
     WITH period_customers AS (
@@ -164,11 +207,11 @@ export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryM
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
-  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const rows = await db.execute(sql.raw(`
     SELECT
@@ -203,11 +246,11 @@ export async function getProductRank(filter: DateFilter = {}): Promise<ProductRa
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
-  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const rows = await db.execute(sql.raw(`
     SELECT
@@ -249,9 +292,9 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = buildScopeFilter(scopeIds)
-  const storeClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const orderRows = await db.execute(sql.raw(`
     SELECT
@@ -264,9 +307,9 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
   `))
 
   const svcScopeFilter = buildScopeFilter(scopeIds)
-  const svcStoreClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
-  const svcDateClause = filter.startDate ? `AND service_date >= '${filter.startDate}'` : ''
-  const svcEndClause = filter.endDate ? `AND service_date <= '${filter.endDate}'` : ''
+  const svcStoreClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
+  const svcDateClause = filter.startDate && isValidDate(filter.startDate) ? `AND service_date >= '${filter.startDate}'` : ''
+  const svcEndClause = filter.endDate && isValidDate(filter.endDate) ? `AND service_date <= '${filter.endDate}'` : ''
 
   const serviceRows = await db.execute(sql.raw(`
     SELECT
@@ -278,9 +321,9 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
   `))
 
   const apptScopeFilter = buildScopeFilter(scopeIds)
-  const apptStoreClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
-  const apptDateClause = filter.startDate ? `AND DATE(appointment_time) >= '${filter.startDate}'` : ''
-  const apptEndClause = filter.endDate ? `AND DATE(appointment_time) <= '${filter.endDate}'` : ''
+  const apptStoreClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
+  const apptDateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(appointment_time) >= '${filter.startDate}'` : ''
+  const apptEndClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(appointment_time) <= '${filter.endDate}'` : ''
 
   const apptRows = await db.execute(sql.raw(`
     SELECT COUNT(*) AS total_appointments
@@ -321,11 +364,14 @@ export async function getStaffEfficiency(filter: DateFilter = {}): Promise<Staff
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
-  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const svcDateFilter = filter.startDate && isValidDate(filter.startDate) ? `AND sv.service_date >= '${filter.startDate}'` : ''
+  const svcEndFilter = filter.endDate && isValidDate(filter.endDate) ? `AND sv.service_date <= '${filter.endDate}'` : ''
 
   const rows = await db.execute(sql.raw(`
     SELECT
@@ -337,8 +383,8 @@ export async function getStaffEfficiency(filter: DateFilter = {}): Promise<Staff
       (SELECT COUNT(*) FROM service_orders sv
        WHERE sv.assigned_employee_id = e.employee_id
          AND sv.status = '已完成'
-         ${filter.startDate ? "AND sv.service_date >= '" + filter.startDate + "'" : ''}
-         ${filter.endDate ? "AND sv.service_date <= '" + filter.endDate + "'" : ''}
+         ${svcDateFilter}
+         ${svcEndFilter}
       ) AS service_count
     FROM staff_wechat_users e
     LEFT JOIN sale_orders o
@@ -385,11 +431,11 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
-  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
 
   const staffRows = await db.execute(sql.raw(`
     SELECT
@@ -463,7 +509,7 @@ export async function getStoreOptions(): Promise<Array<{ storeId: string; storeN
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = scopeIds.length > 0
-    ? `AND store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    ? `AND store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
     : 'AND FALSE'
 
   const rows = await db.execute(sql.raw(`
