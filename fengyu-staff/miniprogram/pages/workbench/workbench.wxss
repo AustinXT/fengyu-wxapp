@@ -1,5 +1,10 @@
 /* pages/workbench/workbench.wxss */
 
+/* ===== 顾客搜索入口 ===== */
+.search-section {
+  margin: 0 24rpx 16rpx;
+}
+
 /* ===== 分成卡片：员工信息行 ===== */
 .commission-staff-row {
   display: flex;
