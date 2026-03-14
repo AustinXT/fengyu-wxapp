@@ -296,9 +296,7 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = buildScopeFilter(scopeIds)
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+  const orderInlineFilter = buildInlineFilter(filter)
 
   const orderRows = await db.execute(sql.raw(`
     SELECT
@@ -307,13 +305,11 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
       COUNT(DISTINCT client_user_id) AS unique_customers
     FROM sale_orders
     WHERE status != '已关闭'
-      ${scopeFilter} ${inlineFilter}
+      ${scopeFilter} ${orderInlineFilter}
   `))
 
   const svcScopeFilter = buildScopeFilter(scopeIds)
-  const svcStoreClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
-  const svcDateClause = filter.startDate && isValidDate(filter.startDate) ? `AND service_date >= '${filter.startDate}'` : ''
-  const svcEndClause = filter.endDate && isValidDate(filter.endDate) ? `AND service_date <= '${filter.endDate}'` : ''
+  const svcInlineFilter = buildInlineFilter(filter, 'store_id', 'service_date')
 
   const serviceRows = await db.execute(sql.raw(`
     SELECT
@@ -321,7 +317,7 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
       COUNT(CASE WHEN status = '已完成' THEN 1 END) AS completed_services
     FROM service_orders
     WHERE 1=1
-      ${svcScopeFilter} ${svcStoreClause} ${svcDateClause} ${svcEndClause}
+      ${svcScopeFilter} ${svcInlineFilter}
   `))
 
   const apptScopeFilter = buildScopeFilter(scopeIds)

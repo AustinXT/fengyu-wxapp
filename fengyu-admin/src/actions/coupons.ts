@@ -79,6 +79,27 @@ export async function createTemplate(data: {
   const session = await getSession()
   requirePermission(session, 'coupon:create')
 
+  // 校验券种类型
+  const VALID_COUPON_TYPES = ['现金券', '项目券', '折扣券']
+  if (!VALID_COUPON_TYPES.includes(data.couponType)) {
+    throw new Error(`INVALID_PARAMS: 无效的券种类型: ${data.couponType}`)
+  }
+
+  // 校验 discountValue
+  const dv = Number(data.discountValue)
+  if (isNaN(dv) || dv <= 0) {
+    throw new Error('INVALID_PARAMS: 优惠值必须为正数')
+  }
+  // 折扣券的 discountValue 必须在 (0, 1) 之间
+  if (data.couponType === '折扣券' && (dv <= 0 || dv >= 1)) {
+    throw new Error('INVALID_PARAMS: 折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）')
+  }
+
+  // 校验有效期顺序
+  if (data.validFrom && data.validTo && new Date(data.validFrom) > new Date(data.validTo)) {
+    throw new Error('INVALID_PARAMS: 有效期开始日期不能晚于结束日期')
+  }
+
   await db.insert(couponTemplates).values({
     templateId: data.templateId,
     name: data.name,
