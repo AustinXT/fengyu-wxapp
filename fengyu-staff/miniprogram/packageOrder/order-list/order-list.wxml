@@ -10,15 +10,15 @@
     <van-tab name="已关闭" title="已关闭" />
   </van-tabs>
 
-  <view wx:if="{{loading}}" class="loading-wrap">
+  <view wx:if="{{loading && list.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <view wx:elif="{{list.length === 0}}" class="empty-wrap">
+  <view wx:elif="{{!loading && list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无订单" />
   </view>
 
-  <view wx:else class="list-wrap">
+  <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
     <view class="order-card" wx:for="{{list}}" wx:key="id" bindtap="onItemTap" data-id="{{item.id}}">
       <view class="order-header">
         <text class="order-no">{{item.saleOrderId}}</text>
@@ -71,7 +71,13 @@
         </view>
       </view>
     </view>
-  </view>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading type="spinner" size="24rpx" color="#C0322A">加载中...</van-loading>
+    </view>
+    <view wx:if="{{!hasMore && list.length > 0}}" class="no-more">
+      <text class="no-more-text">没有更多了</text>
+    </view>
+  </scroll-view>
 
   <view class="safe-area-bottom" />
 </view>

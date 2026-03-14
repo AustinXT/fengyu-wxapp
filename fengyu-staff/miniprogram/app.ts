@@ -98,13 +98,14 @@ App<IAppOption>({
       this.globalData.phone = info.phone;
       wx.setStorageSync('phone', info.phone);
     }
-    if (info.boundStoreName) {
-      this.globalData.boundStoreName = info.boundStoreName;
-      wx.setStorageSync('boundStoreName', info.boundStoreName);
+    // 门店信息允许清空（解绑时为 null/空）
+    if ('boundStoreName' in info) {
+      this.globalData.boundStoreName = info.boundStoreName || '';
+      wx.setStorageSync('boundStoreName', info.boundStoreName || '');
     }
-    if (info.boundStoreId) {
-      this.globalData.boundStoreId = info.boundStoreId;
-      wx.setStorageSync('boundStoreId', info.boundStoreId);
+    if ('boundStoreId' in info) {
+      this.globalData.boundStoreId = info.boundStoreId || '';
+      wx.setStorageSync('boundStoreId', info.boundStoreId || '');
     }
   },
 
@@ -116,6 +117,9 @@ App<IAppOption>({
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';
+    // 清除临时页面状态
+    (this.globalData as any).pendingCartItem = null;
+    (this.globalData as any)._serviceCreatePreload = null;
     wx.clearStorageSync();
   },
 });

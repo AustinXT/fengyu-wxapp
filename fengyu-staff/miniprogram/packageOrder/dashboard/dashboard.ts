@@ -23,6 +23,13 @@ Page({
     this.setRange('today');
   },
 
+  onShow() {
+    // 回到页面时用当前选中的时间范围刷新
+    if (this.data.rangeType) {
+      this.setRange(this.data.rangeType);
+    }
+  },
+
   setRange(type: RangeType) {
     const now = new Date();
     let start: string, end: string, display: string;

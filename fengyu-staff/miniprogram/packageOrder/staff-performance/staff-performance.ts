@@ -35,6 +35,8 @@ Page({
     hasMore: false,
   },
 
+  _loaded: false,
+
   onLoad() {
     const mgr = isManager();
     this.setData({
@@ -43,6 +45,13 @@ Page({
     });
     if (mgr) this.loadStaffList();
     this.setRange('today');
+    this._loaded = true;
+  },
+
+  onShow() {
+    if (this._loaded && this.data.startDate) {
+      this.loadData(true);
+    }
   },
 
   async loadStaffList() {

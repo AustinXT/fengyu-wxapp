@@ -12,6 +12,7 @@ const STATUS_MAP: Record<string, { text: string; cls: string }> = {
 Page({
   data: {
     loading: false,
+    submitting: false,
     appt: null as any,
     statusText: '',
     statusCls: '',
@@ -44,19 +45,22 @@ Page({
 
   onConfirm() {
     const id = this.data.appt?.id;
-    if (!id) return;
+    if (!id || this.data.submitting) return;
     wx.showModal({
       title: '确认预约',
       content: '确认该顾客的预约请求？',
       confirmText: '确认',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('appointment.confirm', { appointmentId: id });
           wx.showToast({ title: '已确认预约', icon: 'success' });
           this.loadDetail(id);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
@@ -64,13 +68,16 @@ Page({
 
   async onCheckin() {
     const id = this.data.appt?.id;
-    if (!id) return;
+    if (!id || this.data.submitting) return;
+    this.setData({ submitting: true });
     try {
       await callStaffApi('appointment.checkin', { appointmentId: id });
       wx.showToast({ title: '顾客到店已记录', icon: 'success' });
       this.loadDetail(id);
     } catch (err: any) {
       wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
     }
   },
 

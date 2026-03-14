@@ -54,7 +54,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 通过 `utils/cloud.ts` 封装 CloudBase 调用，统一调用 staffApi 云函数。
 
-## 共享组件
+## 分包补充
 
-- `components/calendar-view/` — 日历视图组件
-- `components/role-guard/` — 角色权限守卫组件
+- `packageOrder` 还包含 `dashboard`（数据看板）、`staff-performance`（绩效明细）

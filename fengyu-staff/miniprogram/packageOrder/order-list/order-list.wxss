@@ -1,8 +1,10 @@
 /* pages/order-list/order-list.wxss */
 
-.list-wrap {
+.list-scroll {
+  height: calc(100vh - 88rpx);
   padding: 24rpx 32rpx;
   padding-bottom: 120rpx;
+  box-sizing: border-box;
 }
 
 .order-card {
@@ -43,3 +45,13 @@
 }
 .order-amount { font-size: 36rpx; font-weight: 700; color: #C0322A; }
 .order-actions { display: flex; gap: 16rpx; }
+
+.loading-more {
+  display: flex; justify-content: center; padding: 24rpx 0;
+}
+.no-more {
+  text-align: center; padding: 24rpx 0;
+}
+.no-more-text {
+  font-size: 24rpx; color: #999;
+}

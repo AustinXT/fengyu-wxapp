@@ -242,14 +242,13 @@ Page({
     this.setData({ submitting: true });
     try {
       await callStaffApi('service.create', {
-        clientUserId: selectedCustomer.id,
-        customerName: selectedCustomer.name,
+        clientUserId: selectedCustomer.clientUserId || selectedCustomer.id,
+        clientPhone: selectedCustomer.phone,
         appointmentId: appointmentId || null,
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
-          sessionCount: i.sessionCount,
+          sessionUsed: i.sessionCount,
         })),
-        staffName,
         remark,
       });
       wx.showToast({ title: '服务单已创建', icon: 'success' });

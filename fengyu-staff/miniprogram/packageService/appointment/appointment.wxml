@@ -39,9 +39,10 @@
         </van-button>
       </view>
       <view class="appt-actions" wx:if="{{item.status === 'confirmed'}}">
-        <van-button size="small" type="warning" plain catchtap="onCheckin" data-id="{{item.id}}">
+        <van-button wx:if="{{!item.checkinAt}}" size="small" type="warning" plain catchtap="onCheckin" data-id="{{item.id}}">
           顾客已到店
         </van-button>
+        <van-tag wx:if="{{item.checkinAt}}" type="success" plain class="checkin-tag">已签到</van-tag>
         <van-button size="small" type="primary" catchtap="onCreateService" data-id="{{item.id}}">
           创建服务单
         </van-button>

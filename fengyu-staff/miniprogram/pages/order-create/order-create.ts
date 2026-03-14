@@ -418,8 +418,8 @@ Page({
   },
 
   async onSubmitOrder() {
-    const { customerInfo, orderType, cart, remark } = this.data;
-    if (!customerInfo) return;
+    const { customerInfo, orderType, cart, remark, submitting } = this.data;
+    if (!customerInfo || submitting) return;
     this.setData({ submitting: true });
     try {
       const res = await callStaffApi<any>('order.create', {

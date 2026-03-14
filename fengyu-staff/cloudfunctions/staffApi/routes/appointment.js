@@ -243,6 +243,16 @@ async function checkin(ctx) {
     throw new Error(`INVALID_PARAMS: 预约状态"${appt.status}"不支持签到`)
   }
 
+  // 防止重复签到覆盖原始时间
+  if (appt.checkin_at) {
+    ctx.result = {
+      appointmentId,
+      checkinAt: appt.checkin_at,
+      message: '顾客已签到（幂等）'
+    }
+    return
+  }
+
   const now = new Date()
   await pg.query(
     'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',

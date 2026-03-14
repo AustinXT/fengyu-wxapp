@@ -655,18 +655,23 @@ async function generateServiceOrderId() {
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
-  const result = await pg.query(`
-    SELECT service_order_id FROM service_orders
-    WHERE service_order_id LIKE 'HLD-WX-${dateStr}%'
-    ORDER BY service_order_id DESC LIMIT 1
-  `)
+  // 使用 advisory lock 防止并发生成重复 ID
+  const lockKey = Buffer.from('svc_order_id').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
+  const result = await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
+    const rows = await client.query(`
+      SELECT service_order_id FROM service_orders
+      WHERE service_order_id LIKE 'HLD-WX-${dateStr}%'
+      ORDER BY service_order_id DESC LIMIT 1
+    `)
+    let seq = 1
+    if (rows.rows.length > 0) {
+      seq = parseInt(rows.rows[0].service_order_id.slice(-4)) + 1
+    }
+    return `HLD-WX-${dateStr}${String(seq).padStart(4, '0')}`
+  })
 
-  let seq = 1
-  if (result.length > 0) {
-    seq = parseInt(result[0].service_order_id.slice(-4)) + 1
-  }
-
-  return `HLD-WX-${dateStr}${String(seq).padStart(4, '0')}`
+  return result
 }
 
 function generateServiceItemId() {

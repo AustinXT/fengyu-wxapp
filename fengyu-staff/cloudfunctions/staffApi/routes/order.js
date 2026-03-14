@@ -483,7 +483,7 @@ async function confirmOffline(ctx) {
       `UPDATE sale_orders
        SET status = '已支付', paid_at = $1, updated_at = $1,
            offline_confirmed_by = $2, offline_confirmed_at = $1,
-           allocation_status = 'pending'
+           allocation_status = CASE WHEN allocation_status = 'allocated' THEN 'allocated' ELSE 'pending' END
        WHERE sale_order_id = $3`,
       [now, ctx.auth.staffWfId, saleOrderId]
     )
@@ -531,7 +531,7 @@ async function close(ctx) {
 
   const order = orders[0]
   const isManagerRole = ctx.auth.roles.includes('manager')
-  const isCreator = order.opened_by === ctx.auth.staffWfId
+  const isCreator = order.opened_by && order.opened_by === ctx.auth.staffWfId
 
   if (isManagerRole) {
     if (!['待支付', '待确认收款', '支付失败'].includes(order.status)) {
@@ -1288,18 +1288,23 @@ async function generateOrderNo(prefix) {
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   const likePattern = `${prefix}${dateStr}%`
-  const result = await pg.query(`
-    SELECT sale_order_id FROM sale_orders
-    WHERE sale_order_id LIKE $1
-    ORDER BY sale_order_id DESC LIMIT 1
-  `, [likePattern])
+  // 使用 advisory lock 防止并发生成重复订单号
+  const lockKey = Buffer.from('order_no_gen').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
+  const result = await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
+    const rows = await client.query(`
+      SELECT sale_order_id FROM sale_orders
+      WHERE sale_order_id LIKE $1
+      ORDER BY sale_order_id DESC LIMIT 1
+    `, [likePattern])
+    let seq = 1
+    if (rows.rows.length > 0) {
+      seq = parseInt(rows.rows[0].sale_order_id.slice(-4)) + 1
+    }
+    return `${prefix}${dateStr}${String(seq).padStart(4, '0')}`
+  })
 
-  let seq = 1
-  if (result.length > 0) {
-    seq = parseInt(result[0].sale_order_id.slice(-4)) + 1
-  }
-
-  return `${prefix}${dateStr}${String(seq).padStart(4, '0')}`
+  return result
 }
 
 module.exports = {

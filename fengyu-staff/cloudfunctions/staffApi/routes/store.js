@@ -88,19 +88,19 @@ async function approveUnbind(ctx) {
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== 'pending') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
-  // 解绑顾客门店
-  await pg.query(
-    `UPDATE client_wechat_users SET bound_store_id = NULL WHERE user_id = $1`,
-    [req.user_id]
-  )
-
-  // 更新申请状态
-  await pg.query(
-    `UPDATE store_unbind_requests
-     SET status = 'approved', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
-     WHERE request_id = $2`,
-    [staffWfId, requestId]
-  )
+  // 事务：解绑顾客门店 + 更新申请状态
+  await pg.transaction(async (client) => {
+    await client.query(
+      `UPDATE client_wechat_users SET bound_store_id = NULL WHERE user_id = $1`,
+      [req.user_id]
+    )
+    await client.query(
+      `UPDATE store_unbind_requests
+       SET status = 'approved', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
+       WHERE request_id = $2`,
+      [staffWfId, requestId]
+    )
+  })
 
   ctx.result = { success: true }
 }

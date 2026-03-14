@@ -351,6 +351,7 @@ Page({
   },
 
   async onSave() {
+    if (this.data.submitting) return;
     const { displayItems, saleOrderId } = this.data;
 
     // 从 displayItems 扁平化收集所有有效行

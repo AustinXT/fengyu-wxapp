@@ -25,11 +25,9 @@ Page({
   },
 
   onShow() {
-    // 从分配页返回时刷新
-    if (this.data.orders.length > 0) {
-      this.setData({ page: 1, orders: [], hasMore: true });
-      this.loadOrders();
-    }
+    // 从分配页返回时始终刷新
+    this.setData({ page: 1, orders: [], hasMore: true });
+    this.loadOrders();
   },
 
   onPullDownRefresh() {
@@ -53,9 +51,13 @@ Page({
         pageSize: number;
       }>('allocation.pendingList', { page: this.data.page, pageSize: 20 });
 
+      const formatted = (data.orders || []).map(o => ({
+        ...o,
+        paid_at_display: this.formatTime(o.paid_at),
+      }));
       const orders = this.data.page === 1
-        ? data.orders
-        : [...this.data.orders, ...data.orders];
+        ? formatted
+        : [...this.data.orders, ...formatted];
 
       this.setData({
         orders,
@@ -78,7 +80,7 @@ Page({
 
   formatTime(dateStr: string): string {
     if (!dateStr) return '';
-    const d = new Date(dateStr);
+    const d = new Date(dateStr.replace(/-/g, '/'));
     const m = d.getMonth() + 1;
     const day = d.getDate();
     const h = String(d.getHours()).padStart(2, '0');

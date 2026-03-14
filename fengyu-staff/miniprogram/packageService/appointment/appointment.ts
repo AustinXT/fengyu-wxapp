@@ -12,6 +12,7 @@ interface ApptItem {
   status: ApptStatus;
   statusText: string;
   statusType: string;
+  checkinAt: string | null;
 }
 
 const STATUS_MAP: Record<ApptStatus, { text: string; type: string }> = {
@@ -65,6 +66,7 @@ Page({
         status: r.status as ApptStatus,
         statusText: STATUS_MAP[r.status as ApptStatus]?.text || r.status,
         statusType: STATUS_MAP[r.status as ApptStatus]?.type || 'default',
+        checkinAt: r.checkinAt || null,
       }));
       this.setData({
         list: [...this.data.list, ...mapped],

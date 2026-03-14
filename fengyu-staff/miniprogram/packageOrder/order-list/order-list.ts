@@ -33,9 +33,13 @@ Page({
     isManager: false,
     tabActive: '全部',
     list: [] as OrderItem[],
+    page: 1,
+    hasMore: true,
     // 来自代办区的预设过滤
     presetStatus: '',
   },
+
+  _loaded: false,
 
   onLoad(options) {
     this.setData({ isManager: isManager() });
@@ -47,24 +51,40 @@ Page({
       const tab = statusMap[options.status] || '全部';
       this.setData({ tabActive: tab, presetStatus: options.status });
     }
-    this.loadList();
+    this.resetAndLoad();
+    this._loaded = true;
+  },
+
+  onShow() {
+    // 首次由 onLoad 加载，后续 navigateBack 回来时刷新
+    if (this._loaded) {
+      this.resetAndLoad();
+    }
   },
 
   onPullDownRefresh() {
-    this.loadList().finally(() => wx.stopPullDownRefresh());
+    this.resetAndLoad().finally(() => wx.stopPullDownRefresh());
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     this.setData({ tabActive: e.detail.name });
-    this.loadList();
+    this.resetAndLoad();
+  },
+
+  resetAndLoad() {
+    this.setData({ list: [], page: 1, hasMore: true });
+    return this.loadList();
   },
 
   async loadList() {
+    if (this.data.loading || !this.data.hasMore) return;
     this.setData({ loading: true });
     try {
       const tabStatus = this.data.tabActive === '全部' ? undefined : this.data.tabActive;
       const res = await callStaffApi<{ orders: any[]; page: number; pageSize: number }>('order.list', {
         status: tabStatus,
+        page: this.data.page,
+        pageSize: 20,
       });
       const rows = res?.orders || [];
       const mapped: OrderItem[] = rows.map(r => ({
@@ -80,12 +100,20 @@ Page({
         paidAt: r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
       }));
-      this.setData({ list: mapped });
+      this.setData({
+        list: [...this.data.list, ...mapped],
+        hasMore: mapped.length === 20,
+        page: this.data.page + 1,
+      });
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
+  },
+
+  onLoadMore() {
+    this.loadList();
   },
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
@@ -106,7 +134,7 @@ Page({
         try {
           await callStaffApi('order.confirmOffline', { orderNo: id });
           wx.showToast({ title: '收款已确认', icon: 'success' });
-          this.loadList();
+          this.resetAndLoad();
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -131,7 +159,7 @@ Page({
         try {
           await callStaffApi('order.close', { orderNo: id });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
-          this.loadList();
+          this.resetAndLoad();
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }
@@ -150,7 +178,7 @@ Page({
         try {
           await callStaffApi('order.resetFailed', { orderNo: id });
           wx.showToast({ title: '已重置为待支付', icon: 'success' });
-          this.loadList();
+          this.resetAndLoad();
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
         }

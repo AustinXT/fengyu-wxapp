@@ -34,7 +34,7 @@
         </view>
         <view class="info-row">
           <text class="info-label">支付时间</text>
-          <text class="info-value">{{item.paid_at}}</text>
+          <text class="info-value">{{item.paid_at_display || item.paid_at}}</text>
         </view>
       </view>
       <view class="card-footer">

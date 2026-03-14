@@ -349,7 +349,7 @@
         <view
           wx:for="{{availableCoupons}}"
           wx:key="couponId"
-          class="coupon-popup__item {{selectedCoupon.couponId === item.couponId ? 'coupon-popup__item--active' : ''}}"
+          class="coupon-popup__item {{selectedCoupon && selectedCoupon.couponId === item.couponId ? 'coupon-popup__item--active' : ''}}"
           bindtap="onCouponPick"
           data-coupon-id="{{item.couponId}}"
           data-name="{{item.name}}"
@@ -363,7 +363,7 @@
             <text class="coupon-popup__item-name">{{item.name}}</text>
             <text class="coupon-popup__item-expire">有效期至 {{item.expireAt}}</text>
           </view>
-          <van-icon wx:if="{{selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
+          <van-icon wx:if="{{selectedCoupon && selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
         </view>
       </scroll-view>
       <view class="coupon-popup__footer">

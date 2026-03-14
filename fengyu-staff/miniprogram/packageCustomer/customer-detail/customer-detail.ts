@@ -47,6 +47,7 @@ Page({
   },
 
   _query: null as any,
+  _loaded: false,
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
@@ -62,6 +63,18 @@ Page({
       this._query = { clientUserId: options.clientUserId };
     }
     this.loadCustomer();
+    this._loaded = true;
+  },
+
+  onShow() {
+    if (this._loaded && this._query) {
+      this.loadCustomer();
+      // 刷新已加载的 tab 数据（疗程卡次数可能因服务单完成而变化）
+      if (this.data.cardsLoaded) {
+        this.setData({ cardsLoaded: false });
+        this.loadTreatmentCards();
+      }
+    }
   },
 
   async loadCustomer() {

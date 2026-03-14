@@ -28,7 +28,11 @@ Page({
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<{ requests: UnbindRequest[] }>('store.unbindRequests');
-      this.setData({ requests: (data as any).requests || [] });
+      const requests = ((data as any).requests || []).map((r: UnbindRequest) => ({
+        ...r,
+        createdAt: this.formatDate(r.createdAt),
+      }));
+      this.setData({ requests });
     } catch (err: any) {
       wx.showToast({ title: err.message || '加载失败', icon: 'none' });
     } finally {
@@ -88,7 +92,7 @@ Page({
 
   formatDate(dateStr: string): string {
     if (!dateStr) return '';
-    const d = new Date(dateStr);
+    const d = new Date(dateStr.replace(/-/g, '/'));
     return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   },
 });
