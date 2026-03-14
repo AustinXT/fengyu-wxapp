@@ -5,9 +5,9 @@ import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '..
 
 interface OrderItem {
   sale_item_id: string;
-  spu_name: string;
-  sku_display_name: string;
-  receivable: string;
+  product_name: string;
+  sku_spec_name: string;
+  received: string;
   sales_category: string | null;
   product_type: string;
 }
@@ -56,9 +56,9 @@ interface AllocLine {
 /** 展示用：item + 内嵌分配行 */
 interface DisplayItem {
   sale_item_id: string;
-  spu_name: string;
-  sku_display_name: string;
-  receivable: string;
+  product_name: string;
+  sku_spec_name: string;
+  received: string;
   sales_category: string | null;
   allocLines: AllocLine[];
 }
@@ -152,9 +152,9 @@ Page({
       // 构建 displayItems
       const displayItems: DisplayItem[] = items.map(item => ({
         sale_item_id: item.sale_item_id,
-        spu_name: item.spu_name,
-        sku_display_name: item.sku_display_name,
-        receivable: item.receivable,
+        product_name: item.product_name,
+        sku_spec_name: item.sku_spec_name,
+        received: item.received,
         sales_category: item.sales_category,
         allocLines: suggestLines.filter(l => l.saleItemId === item.sale_item_id),
       }));
@@ -188,8 +188,8 @@ Page({
   },
 
   /** 根据部门+销售分类查提成比例并计算金额 */
-  lookupRate(dept: string, salesCat: string, receivable: number): { commissionRate: number; amount: string } {
-    return _lookupRate(dept, salesCat, receivable, this.data.beautyRates, this.data.rates, this.data.totalAmount);
+  lookupRate(dept: string, salesCat: string, received: number): { commissionRate: number; amount: string } {
+    return _lookupRate(dept, salesCat, received, this.data.beautyRates, this.data.rates, this.data.totalAmount);
   },
 
   /** 打开选人弹窗 */
@@ -225,8 +225,8 @@ Page({
     if (!item) return;
 
     const salesCat = item.sales_category || '自采自销';
-    const receivable = Number(item.receivable) || 0;
-    const { commissionRate, amount } = this.lookupRate(department, salesCat, receivable);
+    const received = Number(item.received) || 0;
+    const { commissionRate, amount } = this.lookupRate(department, salesCat, received);
 
     const newLine: AllocLine = {
       saleItemId: pickerSaleItemId,
@@ -307,9 +307,9 @@ Page({
     // 重建 displayItems
     const displayItems: DisplayItem[] = items.map(item => ({
       sale_item_id: item.sale_item_id,
-      spu_name: item.spu_name,
-      sku_display_name: item.sku_display_name,
-      receivable: item.receivable,
+      product_name: item.product_name,
+      sku_spec_name: item.sku_spec_name,
+      received: item.received,
       sales_category: item.sales_category,
       allocLines: linesMap.get(item.sale_item_id) || [],
     }));

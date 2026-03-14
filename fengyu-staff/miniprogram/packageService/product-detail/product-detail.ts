@@ -3,22 +3,20 @@ import { callStaffApi } from '../../utils/cloud';
 const app = getApp<IAppOption>();
 
 interface Spu {
-  spu_id: string;
+  product_id: string;
   name: string;
-  big_category: string;
+  product_kind: string;
   cover_image: string;
   description: string;
-  promotionSchemeId: string;
-  promotionSchemeName: string;
+  is_bundle: boolean;
 }
 
 interface Sku {
   sku_id: string;
-  sku_display_name: string;
+  spec_name: string;
   price: number;
   session_count: number | null;
   product_type: string;
-  workfine_item_id: string;
 }
 
 Page({
@@ -49,26 +47,24 @@ Page({
         throw new Error('商品不存在');
       }
 
-      const isPromo = spu.big_category === '促销方案';
+      const isPromo = spu.product_kind === '福利活动';
 
       this.setData({
         spu: {
-          spu_id: spu.spu_id,
+          product_id: spu.product_id,
           name: spu.name,
-          big_category: spu.big_category,
+          product_kind: spu.product_kind,
           cover_image: spu.cover_image,
           description: spu.description || '',
-          promotionSchemeId: spu.promotionSchemeId || '',
-          promotionSchemeName: spu.promotionSchemeName || '',
+          is_bundle: spu.is_bundle || false,
         },
         isPromo,
         skuList: (spu.skuList || []).map((sku: any) => ({
           sku_id: sku.sku_id,
-          sku_display_name: sku.sku_display_name || sku.itemName || '',
-          price: Number(sku.originalPrice) || 0,
-          session_count: sku.sessionCount != null ? Number(sku.sessionCount) : null,
+          spec_name: sku.spec_name || '',
+          price: Number(sku.special_price || sku.price) || 0,
+          session_count: sku.session_count != null ? Number(sku.session_count) : null,
           product_type: sku.product_type,
-          workfine_item_id: sku.workfine_item_id,
         })),
       });
       wx.setNavigationBarTitle({ title: spu.name || '商品详情' });
@@ -93,15 +89,15 @@ Page({
     const { selectedSku, spu, quantity } = this.data;
     if (!selectedSku) return null;
     return {
-      spuId: spu.spu_id,
+      spuId: spu.product_id,
       skuId: selectedSku.sku_id,
       spuName: spu.name,
-      specName: selectedSku.sku_display_name,
+      specName: selectedSku.spec_name,
       price: selectedSku.price,
       quantity,
       sessionCount: selectedSku.session_count || 0,
-      productType: selectedSku.product_type || spu.big_category,
-      workfineItemId: selectedSku.workfine_item_id,
+      productType: selectedSku.product_type || spu.product_kind,
+      workfineItemId: '',
       directCheckout,
     };
   },

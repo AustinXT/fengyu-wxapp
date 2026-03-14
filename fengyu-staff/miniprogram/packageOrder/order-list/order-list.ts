@@ -73,7 +73,7 @@ Page({
         customerName: r.customer_name || '',
         customerPhoneMasked: r.client_phone || '',
         status: r.status,
-        orderType: r.order_type,
+        orderType: r.sale_order_type,
         payType: r.payment_method,
         totalAmount: r.total_amount,
         createdAt: r.created_at,

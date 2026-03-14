@@ -101,9 +101,11 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.session_count,
-                p.name AS product_name, p.sales_category
+                p.name AS product_name, p.sales_category,
+                pc.product_kind
          FROM product_skus s
          JOIN products p ON s.product_id = p.product_id
+         LEFT JOIN product_categories pc ON p.category_id = pc.category_id
          WHERE s.sku_id = $1`,
         [item.skuId]
       )
@@ -144,6 +146,7 @@ async function create(ctx) {
         productName: sku.product_name,
         skuSpecName: sku.spec_name,
         productType: sku.product_type,
+        productKind: sku.product_kind,
         sessionCount,
         remainingSessions: sessionCount,
         unitPrice,
@@ -155,6 +158,14 @@ async function create(ctx) {
       }
     })
   )
+
+  // ========== 福利活动订单验证 ==========
+  if (orderType === '福利活动') {
+    const nonPromoItems = itemDataList.filter(d => d.productKind !== '福利活动')
+    if (nonPromoItems.length > 0) {
+      throw new Error('INVALID_PARAMS: 福利活动订单只能包含福利活动类型的商品')
+    }
+  }
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
@@ -217,11 +228,18 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 分摊到各行 received
-    for (const item of eligibleItems) {
-      const share = couponDiscount * (item.received / eligibleTotal)
-      const roundedShare = Math.round(share * 100) / 100
-      item.received -= roundedShare
+    // 分摊到各行 received（最后一项补差，避免分分钱精度丢失）
+    let distributedTotal = 0
+    for (let i = 0; i < eligibleItems.length; i++) {
+      const item = eligibleItems[i]
+      let share
+      if (i === eligibleItems.length - 1) {
+        share = couponDiscount - distributedTotal
+      } else {
+        share = Math.round(couponDiscount * (item.received / eligibleTotal) * 100) / 100
+        distributedTotal += share
+      }
+      item.received -= share
       item.received = Math.round(item.received * 100) / 100
       // 同步更新 unitRealPrice
       item.unitRealPrice = item.quantity > 0 ? item.received / item.quantity : 0
@@ -708,9 +726,11 @@ async function detail(ctx) {
   const allocations = await pg.query(`
     SELECT
       sa.id, sa.sale_item_id, sa.employee_id, sa.department_name,
-      sa.allocation_ratio, sa.total_amount, sa.is_void
+      sa.allocation_ratio, sa.total_amount, sa.is_void,
+      sw.name AS employee_name
     FROM sale_allocations sa
     JOIN sale_items si ON sa.sale_item_id = si.sale_item_id
+    LEFT JOIN staff_wechat_users sw ON sa.employee_id = sw.employee_id
     WHERE si.sale_order_id = $1
     ORDER BY sa.id
   `, [saleOrderId])
@@ -1263,11 +1283,12 @@ async function generateOrderNo(prefix) {
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
+  const likePattern = `${prefix}${dateStr}%`
   const result = await pg.query(`
     SELECT sale_order_id FROM sale_orders
-    WHERE sale_order_id LIKE '${prefix}${dateStr}%'
+    WHERE sale_order_id LIKE $1
     ORDER BY sale_order_id DESC LIMIT 1
-  `)
+  `, [likePattern])
 
   let seq = 1
   if (result.length > 0) {

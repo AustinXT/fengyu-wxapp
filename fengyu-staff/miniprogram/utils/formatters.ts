@@ -7,12 +7,17 @@ export const STATUS_CLASS: Record<string, string> = {
   '已完成': 'done',
   '支付失败': 'error',
   '已关闭': 'done',
+  '待审批': 'pending',
 }
 
 export const ORDER_TYPE_LABEL: Record<string, string> = {
   普通: '普通单',
   福利活动: '福利活动',
   体验: '体验单',
+  内部: '内部单',
+  回款: '回款单',
+  转换: '转换单',
+  退款: '退款单',
 }
 
 /**

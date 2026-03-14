@@ -28,12 +28,18 @@ const routes = {
   'staff.monthlyCalendar': () => require('./routes/staff').monthlyCalendar,
   'staff.todoList':       () => require('./routes/staff').todoList,
   'staff.bindStore':      () => require('./routes/staff').bindStore,
+  'staff.performanceDetail': () => require('./routes/staff').performanceDetail,
+  'staff.dashboard':      () => require('./routes/staff').dashboard,
 
   // 顾客档案
   'customer.search':      () => require('./routes/customer').search,
   'customer.calendar':    () => require('./routes/customer').calendar,
   'customer.detail':      () => require('./routes/customer').detail,
   'customer.paidOrders':  () => require('./routes/customer').paidOrders,
+  'customer.stats':       () => require('./routes/customer').stats,
+  'customer.listByTag':   () => require('./routes/customer').listByTag,
+  'customer.giftHistory': () => require('./routes/customer').giftHistory,
+  'customer.refundHistory': () => require('./routes/customer').refundHistory,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,
@@ -52,6 +58,12 @@ const routes = {
   'order.resetFailed':    () => require('./routes/order').resetFailed,
   'order.list':           () => require('./routes/order').list,
   'order.detail':         () => require('./routes/order').detail,
+  'order.createRefund':   () => require('./routes/order').createRefund,
+  'order.approveRefund':  () => require('./routes/order').approveRefund,
+  'order.rejectRefund':   () => require('./routes/order').rejectRefund,
+  'order.createRepayment': () => require('./routes/order').createRepayment,
+  'order.createConversion': () => require('./routes/order').createConversion,
+  'order.createPickup':   () => require('./routes/order').createPickup,
 
   // 营业额分配
   'allocation.save':         () => require('./routes/allocation').save,
@@ -123,6 +135,7 @@ exports.main = async (event, context) => {
                   errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
                   errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
+                  errorMessage.startsWith('NOT_FOUND') ? -404 :
                   -1
 
     return {

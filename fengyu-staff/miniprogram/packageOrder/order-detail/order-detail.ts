@@ -42,17 +42,17 @@ Page({
       const o = res.order || {};
       const items = (res.items || []).map((it: any) => ({
         saleItemId: it.sale_item_id,
-        itemName: it.spu_name || it.sku_display_name || '—',
-        spec: it.sku_display_name || '',
-        totalPrice: it.receivable,
+        itemName: it.product_name || it.sku_spec_name || '—',
+        spec: it.sku_spec_name || '',
+        totalPrice: it.received || it.sale_amount,
         sessionCount: it.session_count,
         remainingSessions: it.remaining_sessions,
       }));
       const allocation = (res.allocations || []).map((a: any) => ({
-        staffName: a.employeeId,
-        department: '',
-        amount: a.totalAmount,
-        ratio: `${Number(a.allocationRatio) * 100}%`,
+        staffName: a.employee_name || a.employee_id,
+        department: a.department_name || '',
+        amount: a.total_amount,
+        ratio: `${Number(a.allocation_ratio) * 100}%`,
       }));
       this.setData({
         order: {

@@ -19,10 +19,10 @@
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#722ED1" wx:if="{{spu.big_category === '促销方案'}}">促销方案</van-tag>
-      <van-tag type="primary" wx:elif="{{spu.big_category === '生美'}}">生美</van-tag>
-      <van-tag color="#006D75" wx:elif="{{spu.big_category === '非生美'}}">非生美</van-tag>
-      <van-tag color="#D46B08" wx:elif="{{spu.big_category === '院装产品'}}">院装产品</van-tag>
+      <van-tag color="#C0322A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
+      <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
+      <van-tag color="#006D75" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
+      <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
@@ -51,7 +51,7 @@
         bindtap="onSkuTap"
         data-sku-id="{{item.sku_id}}"
       >
-        <text class="sku-display-name">{{item.sku_display_name}}</text>
+        <text class="sku-display-name">{{item.spec_name}}</text>
         <text class="sku-price">¥{{item.price}}</text>
         <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
       </view>
