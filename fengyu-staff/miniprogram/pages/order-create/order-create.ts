@@ -49,6 +49,7 @@ Page({
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
+    couponTotal: '',
     showCouponPopup: false,
     availableCoupons: [] as any[],
     couponsLoading: false,
@@ -243,7 +244,11 @@ Page({
 
   updateCart(cart: CartItem[]) {
     const { count, total } = calcCartTotal(cart);
-    this.setData({ cart, cartCount: count, cartTotal: total });
+    const updates: Record<string, any> = { cart, cartCount: count, cartTotal: total };
+    if (this.data.couponDiscount > 0) {
+      updates.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
+    }
+    this.setData(updates);
   },
 
   // ===== 结算面板 =====
@@ -355,15 +360,17 @@ Page({
       couponId: string; name: string; discount: number;
     };
     const d = Number(discount) || 0;
+    const couponTotal = (parseFloat(this.data.cartTotal) - d).toFixed(2);
     this.setData({
       selectedCoupon: { couponId, name, discount: d },
       couponDiscount: d,
+      couponTotal,
       showCouponPopup: false,
     });
   },
 
   onClearCoupon() {
-    this.setData({ selectedCoupon: null, couponDiscount: 0, showCouponPopup: false });
+    this.setData({ selectedCoupon: null, couponDiscount: 0, couponTotal: '', showCouponPopup: false });
   },
 
   async onSubmitOrder() {
