@@ -70,42 +70,30 @@ async function detail(ctx) {
     ? { sql: 's.store_id = $1', param: storeId }
     : { sql: 's.store_name = $1', param: storeName }
 
-  // 并行查询：门店基本信息、在职员工数、顾客数
-  const [storeResult, staffResult, customerResult] = await Promise.all([
-    pg.query(`
-      SELECT
-        s.store_id,
-        pm.name AS market_name,
-        s.store_name,
-        s.opening_date AS open_date,
-        s.bed_count AS available_beds,
-        s.district AS store_region,
-        s.cover_image,
-        s.street_address,
-        s.latitude,
-        s.longitude,
-        s.phone,
-        s.business_hours,
-        s.description,
-        s.announcement,
-        s.parking_info
-      FROM stores s
-      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
-      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
-      WHERE ${storeFilter.sql} AND s.is_closed = false
-      LIMIT 1
-    `, [storeFilter.param]),
-    pg.query(`
-      SELECT COUNT(*)::int AS staff_count
-      FROM staff_wechat_users
-      WHERE store_id = $1 AND is_resigned = false
-    `, [storeId || '__placeholder__']),
-    pg.query(`
-      SELECT COUNT(*)::int AS customer_count
-      FROM client_wechat_users
-      WHERE bound_store_id = $1
-    `, [storeId || '__placeholder__'])
-  ])
+  // 先查门店基本信息
+  const storeResult = await pg.query(`
+    SELECT
+      s.store_id,
+      pm.name AS market_name,
+      s.store_name,
+      s.opening_date AS open_date,
+      s.bed_count AS available_beds,
+      s.district AS store_region,
+      s.cover_image,
+      s.street_address,
+      s.latitude,
+      s.longitude,
+      s.phone,
+      s.business_hours,
+      s.description,
+      s.announcement,
+      s.parking_info
+    FROM stores s
+    LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
+    LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
+    WHERE ${storeFilter.sql} AND s.is_closed = false
+    LIMIT 1
+  `, [storeFilter.param])
 
   if (storeResult.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在')
@@ -114,24 +102,20 @@ async function detail(ctx) {
   const store = storeResult[0]
   store.open_date = formatOpenDate(store.open_date)
 
-  // 用实际 storeId 重新查询计数（如果是按 storeName 查的）
-  if (!storeId && store.store_id) {
-    const [staffCount, customerCount] = await Promise.all([
-      pg.query(
-        'SELECT COUNT(*)::int AS staff_count FROM staff_wechat_users WHERE store_id = $1 AND is_resigned = false',
-        [store.store_id]
-      ),
-      pg.query(
-        'SELECT COUNT(*)::int AS customer_count FROM client_wechat_users WHERE bound_store_id = $1',
-        [store.store_id]
-      )
-    ])
-    store.staff_count = staffCount[0]?.staff_count || 0
-    store.customer_count = customerCount[0]?.customer_count || 0
-  } else {
-    store.staff_count = staffResult[0]?.staff_count || 0
-    store.customer_count = customerResult[0]?.customer_count || 0
-  }
+  // 用确定的 store_id 并行查询员工数和顾客数
+  const actualStoreId = store.store_id
+  const [staffResult, customerResult] = await Promise.all([
+    pg.query(
+      'SELECT COUNT(*)::int AS staff_count FROM staff_wechat_users WHERE store_id = $1 AND is_resigned = false',
+      [actualStoreId]
+    ),
+    pg.query(
+      'SELECT COUNT(*)::int AS customer_count FROM client_wechat_users WHERE bound_store_id = $1',
+      [actualStoreId]
+    )
+  ])
+  store.staff_count = staffResult[0]?.staff_count || 0
+  store.customer_count = customerResult[0]?.customer_count || 0
 
   ctx.result = { store }
 }

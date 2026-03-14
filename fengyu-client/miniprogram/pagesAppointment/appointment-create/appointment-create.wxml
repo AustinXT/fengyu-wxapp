@@ -124,6 +124,21 @@
     />
   </van-popup>
 
+  <!-- 手机号绑定 Overlay -->
+  <van-overlay show="{{showPhoneBind}}" bind:click="onClosePhoneBind">
+    <view class="phone-bind-overlay" catchtap="onClosePhoneBind">
+      <view class="phone-bind-card">
+        <text class="phone-bind-title">需要绑定手机号</text>
+        <text class="phone-bind-desc">预约前请先绑定您的手机号</text>
+        <button
+          class="phone-bind-btn"
+          open-type="getPhoneNumber"
+          bindgetphonenumber="onGetPhoneNumber"
+        >授权手机号</button>
+      </view>
+    </view>
+  </van-overlay>
+
   <!-- 美容师选择 Popup -->
   <van-popup
     show="{{showStaffPopup}}"

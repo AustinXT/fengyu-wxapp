@@ -1,12 +1,8 @@
 // pages/profile/profile.ts
 import Toast from '@vant/weapp/toast/toast';
+import { maskPhone } from '../../utils/format';
 
 const app = getApp<IAppOption>();
-
-function maskPhone(phone: string): string {
-  if (!phone || phone.length < 7) return phone;
-  return phone.slice(0, 3) + '****' + phone.slice(-4);
-}
 
 Page({
   data: {

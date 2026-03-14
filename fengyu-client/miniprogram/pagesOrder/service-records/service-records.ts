@@ -1,5 +1,6 @@
 // pagesOrder/service-records/service-records.ts
 import Toast from '@vant/weapp/toast/toast';
+import { formatDate } from '../../utils/format';
 
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
   const res = await wx.cloud.callFunction({
@@ -96,14 +97,6 @@ Page({
   },
 });
 
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr.replace(/-/g, '/'));
-  const m = d.getMonth() + 1;
-  const day = d.getDate();
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
 function getStatusColor(status: string): string {
   switch (status) {
     case '待服务': return '#D48806';
@@ -116,8 +109,10 @@ function getStatusColor(status: string): string {
 
 function calcDuration(record: any): string {
   if (record.started_at && record.completed_at) {
-    const start = new Date(String(record.started_at).replace(/-/g, '/')).getTime();
-    const end = new Date(String(record.completed_at).replace(/-/g, '/')).getTime();
+    const rawStart = String(record.started_at);
+    const start = new Date(rawStart.includes('T') ? rawStart : rawStart.replace(/-/g, '/')).getTime();
+    const rawEnd = String(record.completed_at);
+    const end = new Date(rawEnd.includes('T') ? rawEnd : rawEnd.replace(/-/g, '/')).getTime();
     const mins = Math.round((end - start) / 60000);
     if (mins > 0) return `${mins}分钟`;
   }

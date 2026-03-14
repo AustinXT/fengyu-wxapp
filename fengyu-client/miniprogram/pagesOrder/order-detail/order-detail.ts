@@ -17,7 +17,10 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    err.data = res.result?.data;
+    throw err;
   }
   return res.result.data;
 }
@@ -59,7 +62,8 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
-      const d = new Date(String(order.sale_order_datetime).replace(/-/g, '/'));
+      const rawDt = String(order.sale_order_datetime);
+      const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
@@ -71,7 +75,8 @@ Page({
       // 格式化支付到期时间
       let expireTimeFmt = '';
       if (order.status === '待支付' && order.expire_at) {
-        const ed = new Date(String(order.expire_at).replace(/-/g, '/'));
+        const rawExp = String(order.expire_at);
+        const ed = new Date(rawExp.includes('T') ? rawExp : rawExp.replace(/-/g, '/'));
         expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
       }
 
@@ -109,7 +114,8 @@ Page({
     }
 
     const tick = () => {
-      const remaining = new Date(String(order.expire_at).replace(/-/g, '/')).getTime() - Date.now();
+      const rawExpire = String(order.expire_at);
+      const remaining = new Date(rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/')).getTime() - Date.now();
       if (remaining <= 0) {
         clearInterval(this._countdownTimer);
         this._countdownTimer = null;

@@ -22,14 +22,14 @@ interface StoreGroup {
 
 // 调用 clientApi 云函数
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  console.log('[callClientApi] action:', action, 'payload:', payload);
   const res = await wx.cloud.callFunction({
     name: 'clientApi',
     data: { action, payload }
   }) as any;
-  console.log('[callClientApi] result:', JSON.stringify(res));
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }

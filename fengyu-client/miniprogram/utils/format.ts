@@ -12,7 +12,9 @@ export function maskPhone(phone: string): string {
 /** ISO 日期 → "YYYY-MM-DD" */
 export function formatDate(dateStr: string): string {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  // iOS: "2025-03-14" 需替换为 "/", 但 "2025-03-14T..." ISO 格式本身安全
+  const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
+  const d = new Date(safe);
   if (isNaN(d.getTime())) return '';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
@@ -78,7 +80,8 @@ export function getStatusClass(status: string): string {
 /** 订单时间格式化："2025-3-14" */
 export function formatOrderDate(dateStr: string): string {
   if (!dateStr) return '';
-  const d = new Date(dateStr);
+  const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
+  const d = new Date(safe);
   if (isNaN(d.getTime())) return '';
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }

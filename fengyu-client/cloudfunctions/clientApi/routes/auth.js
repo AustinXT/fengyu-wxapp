@@ -33,7 +33,7 @@ async function login(ctx) {
 
   if (users.length === 0) {
     // 新用户,创建记录
-    const userId = generateUserId()
+    const userId = await generateUserId()
     await pg.query(
       `INSERT INTO client_wechat_users (user_id, openid, created_at, updated_at, last_login_at)
        VALUES ($1, $2, $3, $3, $3)`,
@@ -161,10 +161,31 @@ async function bindPhone(ctx) {
 }
 
 /**
- * 生成用户 ID(UUID)
+ * 生成用户 ID: FYGK-{YYYYMMDD}{3位序号}
+ * 使用 advisory lock 防并发
  */
-function generateUserId() {
-  return 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
+async function generateUserId() {
+  const now = new Date()
+  const yyyy = String(now.getFullYear())
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  const prefix = `FYGK-${yyyy}${mm}${dd}-`
+
+  const rows = await pg.transaction(async (client) => {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('gen_client_user_id'))")
+    const { rows } = await client.query(
+      "SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 ORDER BY user_id DESC LIMIT 1",
+      [prefix + '%']
+    )
+    return rows
+  })
+
+  let seq = 1
+  if (rows.length > 0) {
+    seq = parseInt(rows[0].user_id.slice(prefix.length), 10) + 1
+  }
+
+  return prefix + String(seq).padStart(5, '0')
 }
 
 /**

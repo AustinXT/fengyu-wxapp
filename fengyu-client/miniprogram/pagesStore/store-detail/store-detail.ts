@@ -39,7 +39,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }

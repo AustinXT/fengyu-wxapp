@@ -1,5 +1,6 @@
 // pagesProfile/profile-edit/profile-edit.ts
 import Toast from '@vant/weapp/toast/toast';
+import { maskPhone } from '../../utils/format';
 
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
   const res = await wx.cloud.callFunction({
@@ -12,11 +13,6 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     throw err;
   }
   return res.result.data;
-}
-
-function maskPhone(phone: string): string {
-  if (!phone || phone.length < 7) return phone;
-  return phone.slice(0, 3) + '****' + phone.slice(-4);
 }
 
 Page({

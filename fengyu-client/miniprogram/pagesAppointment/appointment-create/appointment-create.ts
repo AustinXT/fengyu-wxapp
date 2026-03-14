@@ -229,6 +229,43 @@ Page({
     }
   },
 
+  onClosePhoneBind() {
+    this.setData({ showPhoneBind: false });
+  },
+
+  async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
+    const { cloudID, errMsg } = e.detail;
+    if (!cloudID) {
+      if (errMsg?.includes('auth deny')) {
+        Toast('您拒绝了授权');
+      }
+      return;
+    }
+    try {
+      wx.showLoading({ title: '绑定中...', mask: true });
+      const res = await wx.cloud.callFunction({
+        name: 'clientApi',
+        data: {
+          action: 'auth.bindPhone',
+          payload: {},
+          phoneData: wx.cloud.CloudID(cloudID as string)
+        }
+      }) as any;
+      wx.hideLoading();
+      if (res.result?.code !== 0) {
+        throw new Error(res.result?.message || '绑定失败');
+      }
+      wx.setStorageSync('phone', res.result.data.phone);
+      this.setData({ showPhoneBind: false });
+      Toast.success('绑定成功');
+      // 绑定成功后自动重新提交预约
+      setTimeout(() => this.onSubmit(), 800);
+    } catch (err: any) {
+      wx.hideLoading();
+      Toast.fail(err.message || '绑定失败，请重试');
+    }
+  },
+
   onShareAppMessage() {
     return { title: '凤御预约', path: '/pages/appointment/appointment' };
   },

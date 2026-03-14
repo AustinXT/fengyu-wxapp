@@ -282,6 +282,16 @@ async function spuDetail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 productId 参数')
   }
 
+  // 构建 market_scope 过滤
+  const params = [productId]
+  let marketFilter
+  if (marketName) {
+    params.push(marketName)
+    marketFilter = `AND (p.market_scope IS NULL OR p.market_scope = $${params.length})`
+  } else {
+    marketFilter = 'AND p.market_scope IS NULL'
+  }
+
   // 查询商品
   const productRows = await pg.query(`
     SELECT
@@ -292,8 +302,8 @@ async function spuDetail(ctx) {
       p.sales_category
     FROM products p
     JOIN product_categories c ON p.category_id = c.category_id
-    WHERE p.product_id = $1
-  `, [productId])
+    WHERE p.product_id = $1 ${marketFilter}
+  `, params)
 
   if (productRows.length === 0) {
     throw new Error('INVALID_PARAMS: 商品不存在')

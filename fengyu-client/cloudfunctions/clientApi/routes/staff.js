@@ -112,17 +112,17 @@ async function detail(ctx) {
 
   const staff = staffRows[0]
 
-  // Service count (completed services)
-  const countRows = await pg.query(
-    "SELECT COUNT(*)::int AS count FROM service_orders WHERE assigned_employee_id = $1 AND status = '已完成'",
-    [employeeId]
-  )
-
-  // Today's active appointments (for busy status)
-  const todayRows = await pg.query(
-    "SELECT COUNT(*)::int AS count FROM appointments WHERE employee_id = $1 AND appointment_time::date = CURRENT_DATE AND status IN ('待确认', '已确认')",
-    [employeeId]
-  )
+  // Service count + today's active appointments (parallel)
+  const [countRows, todayRows] = await Promise.all([
+    pg.query(
+      "SELECT COUNT(*)::int AS count FROM service_orders WHERE assigned_employee_id = $1 AND status = '已完成'",
+      [employeeId]
+    ),
+    pg.query(
+      "SELECT COUNT(*)::int AS count FROM appointments WHERE employee_id = $1 AND appointment_time::date = CURRENT_DATE AND status IN ('待确认', '已确认')",
+      [employeeId]
+    ),
+  ])
 
   ctx.result = {
     employeeId: staff.employee_id,

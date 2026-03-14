@@ -17,7 +17,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }
@@ -59,14 +61,15 @@ Page({
       const raw: any[] = data?.appointments || [];
       const list = raw.map(item => {
         const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
-        const d = new Date(String(item.appointment_time).replace(/-/g, '/'));
+        const rawTime = String(item.appointment_time);
+        const d = new Date(rawTime.includes('T') ? rawTime : rawTime.replace(/-/g, '/'));
         return {
           ...item,
           status_label:     meta.label,
           statusType:       meta.type,
           statusColor:      meta.color,
           statusTextColor:  meta.textColor,
-          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`,
+          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
         };
       });
       this.setData({ list });

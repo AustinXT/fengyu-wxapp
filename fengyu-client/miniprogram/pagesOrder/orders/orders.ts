@@ -1,14 +1,6 @@
 // pages/orders/orders.ts
 import Toast from '@vant/weapp/toast/toast';
-
-const STATUS_CLASS: Record<string, string> = {
-  '待支付':     'status-pending',
-  '待确认收款': 'status-confirm',
-  '已支付':     'status-paid',
-  '已完成':     'status-completed',
-  '支付失败':   'status-failed',
-  '已关闭':     'status-closed',
-};
+import { getStatusClass } from '../../utils/format';
 
 // 调用 clientApi 云函数
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
@@ -17,7 +9,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }
@@ -55,12 +49,13 @@ Page({
     try {
       const payload = this.data.activeTab === 'all' ? {} : { status: this.data.activeTab };
       const data = await callClientApi('order.list', payload);
-      const raw: any[] = data?.orders || [];
-      const list = raw.map(item => {
-        const d = new Date(String(item.sale_order_datetime).replace(/-/g, '/'));
+      const orders: any[] = data?.orders || [];
+      const list = orders.map(item => {
+        const rawDt = String(item.sale_order_datetime);
+        const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
         return {
           ...item,
-          statusClass: STATUS_CLASS[item.status] || 'status-class-done',
+          statusClass: getStatusClass(item.status),
           order_time_fmt: `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`,
         };
       });

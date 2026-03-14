@@ -8,7 +8,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
   }) as any;
   if (res.result?.code !== 0) {
     const msg = (res.result?.message || '请求失败').replace(/^[A-Z_]+:\s*/, '');
-    throw new Error(msg);
+    const err: any = new Error(msg);
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }

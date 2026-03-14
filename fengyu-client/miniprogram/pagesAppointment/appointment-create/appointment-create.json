@@ -12,6 +12,7 @@
     "van-popup": "@vant/weapp/popup/index",
     "van-picker": "@vant/weapp/picker/index",
     "van-calendar": "@vant/weapp/calendar/index",
-    "van-toast": "@vant/weapp/toast/index"
+    "van-toast": "@vant/weapp/toast/index",
+    "van-overlay": "@vant/weapp/overlay/index"
   }
 }

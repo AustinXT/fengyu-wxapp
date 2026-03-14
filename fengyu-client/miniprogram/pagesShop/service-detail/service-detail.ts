@@ -35,7 +35,9 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     data: { action, payload }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
+    const err: any = new Error(res.result?.message || '请求失败');
+    err.code = res.result?.code;
+    throw err;
   }
   return res.result.data;
 }
@@ -175,6 +177,11 @@ Page({
     const { selectedSku, spu, quantity } = this.data;
     if (!selectedSku) {
       Toast('请先选择规格');
+      return;
+    }
+    // 福利活动不进购物车，仅直接下单
+    if (spu.product_kind === '福利活动') {
+      this.onSubmit();
       return;
     }
 

@@ -1,5 +1,6 @@
 // pagesCoupon/my-coupons/my-coupons.ts
 import Toast from '@vant/weapp/toast/toast';
+import { formatDate, formatDiscount } from '../../utils/format';
 
 async function callClientApi(action: string, payload: Record<string, any> = {}) {
   const res = await wx.cloud.callFunction({
@@ -75,26 +76,9 @@ Page({
       this.setData({ redeemCode: '', activeTab: 0 });
       this.loadCoupons();
     } catch (err: any) {
-      if (err.message?.includes('未知的 action')) {
-        Toast('兑换功能开发中');
-      } else {
-        Toast.fail(err.message || '兑换失败');
-      }
+      Toast.fail(err.message || '兑换失败');
     } finally {
       this.setData({ redeeming: false });
     }
   },
 });
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(String(dateStr).replace(/-/g, '/'));
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function formatDiscount(coupon: any): string {
-  if (coupon.couponType === '折扣券') {
-    return `${Math.round(Number(coupon.discountValue) * 10)}折`;
-  }
-  return `¥${Number(coupon.discountValue).toFixed(0)}`;
-}

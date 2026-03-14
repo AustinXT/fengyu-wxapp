@@ -353,8 +353,8 @@ Page({
     } catch (err: any) {
       if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
         this.setData({ showPhoneBind: true });
-      } else if (err?.data?.pendingSaleOrderId || err?.data?.pendingOrderNo) {
-        const pendingId = err.data.pendingSaleOrderId || err.data.pendingOrderNo;
+      } else if (err?.data?.pendingOrderNo) {
+        const pendingId = err.data.pendingOrderNo;
         Dialog.confirm({
           title: '您有待支付订单',
           message: '请先完成支付或取消订单后再下单',

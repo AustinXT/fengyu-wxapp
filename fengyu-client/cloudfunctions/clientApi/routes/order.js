@@ -250,11 +250,19 @@ async function create(ctx) {
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 
-    // 按比例分摊到各行的 received
-    for (const item of eligibleItems) {
-      const share = couponDiscount * (item.saleAmount / eligibleTotal)
-      const roundedShare = Math.round(share * 100) / 100
-      item.received -= roundedShare
+    // 按比例分摊到各行的 received（尾差修正：最后一项吸收舍入误差）
+    let distributedDiscount = 0
+    for (let i = 0; i < eligibleItems.length; i++) {
+      const item = eligibleItems[i]
+      let share
+      if (i === eligibleItems.length - 1) {
+        // 最后一项吸收尾差
+        share = couponDiscount - distributedDiscount
+      } else {
+        share = Math.round(couponDiscount * (item.saleAmount / eligibleTotal) * 100) / 100
+        distributedDiscount += share
+      }
+      item.received -= share
       item.received = Math.round(item.received * 100) / 100
     }
 
@@ -636,29 +644,21 @@ async function detail(ctx) {
     expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
   }
 
-  // 查询指定美容师姓名（从 PG staff_wechat_users）
-  let preferredStaffName = null
-  if (order.preferred_employee_id) {
-    const staffRows = await pg.query(
-      'SELECT name FROM staff_wechat_users WHERE employee_id = $1',
-      [order.preferred_employee_id]
-    )
-    if (staffRows.length > 0) {
-      preferredStaffName = staffRows[0].name
-    }
-  }
-
-  // 查询券名称
-  let couponName = null
-  if (order.coupon_id) {
-    const couponRows = await pg.query(
-      `SELECT ct.name FROM user_coupons uc
-       JOIN coupon_templates ct ON uc.template_id = ct.template_id
-       WHERE uc.coupon_id = $1`,
-      [order.coupon_id]
-    )
-    if (couponRows.length > 0) couponName = couponRows[0].name
-  }
+  // 并行查询美容师姓名和券名称
+  const [preferredStaffName, couponName] = await Promise.all([
+    order.preferred_employee_id
+      ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
+          .then(rows => rows.length > 0 ? rows[0].name : null)
+      : Promise.resolve(null),
+    order.coupon_id
+      ? pg.query(
+          `SELECT ct.name FROM user_coupons uc
+           JOIN coupon_templates ct ON uc.template_id = ct.template_id
+           WHERE uc.coupon_id = $1`,
+          [order.coupon_id]
+        ).then(rows => rows.length > 0 ? rows[0].name : null)
+      : Promise.resolve(null)
+  ])
 
   ctx.result = {
     order: {
