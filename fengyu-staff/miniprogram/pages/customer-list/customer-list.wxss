@@ -37,6 +37,19 @@
 .stat-birthday .stat-count { color: #C0322A; }
 .stat-birthday-next .stat-count { color: #a06abf; }
 
+/* 选中态 */
+.stat-card--selected {
+  border: 2rpx solid var(--color-primary);
+  background: var(--color-primary-light) !important;
+}
+
+/* 加载更多 */
+.loading-more {
+  display: flex;
+  justify-content: center;
+  padding: 24rpx;
+}
+
 /* ===== 标签筛选行 ===== */
 .tag-filter {
   display: flex;

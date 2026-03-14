@@ -1,4 +1,4 @@
-// pages/customer-detail/customer-detail.ts
+// packageCustomer/customer-detail/customer-detail.ts — 6-Tab 顾客详情
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
@@ -20,37 +20,167 @@ Page({
   data: {
     loading: false,
     customer: null as any,
-    treatmentCards: [] as TreatmentCard[],
-    appointments: [] as any[],
     isManager: false,
+    activeTab: 0,
+    // Tab 0: 详情（客户信息）
+    // Tab 1: 日历
+    calendarYear: 0,
+    calendarMonth: 0,
+    calendarDays: [] as any[],
+    calendarSummary: [] as any[],
+    calendarOrders: [] as any[],
+    selectedDate: '',
+    calendarLoaded: false,
+    // Tab 2: 购买记录
+    purchaseOrders: [] as any[],
+    purchaseLoaded: false,
+    // Tab 3: 持卡汇总
+    treatmentCards: [] as TreatmentCard[],
+    cardsLoaded: false,
     selectedCount: 0,
   },
 
+  _query: null as any,
+
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
+    const now = new Date();
+    this.setData({
+      calendarYear: now.getFullYear(),
+      calendarMonth: now.getMonth() + 1,
+    });
+
     if (options.id) {
-      this.loadAll({ id: options.id });
+      this._query = { id: options.id };
     } else if (options.clientUserId) {
-      this.loadAll({ clientUserId: options.clientUserId });
+      this._query = { clientUserId: options.clientUserId };
+    }
+    this.loadCustomer();
+  },
+
+  async loadCustomer() {
+    if (!this._query) return;
+    this.setData({ loading: true });
+    try {
+      const customer = await callStaffApi<any>('customer.detail', this._query);
+      this.setData({ customer });
+    } catch (err: any) {
+      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } finally {
+      this.setData({ loading: false });
     }
   },
 
-  async loadAll(query: { id?: string; clientUserId?: string }) {
-    this.setData({ loading: true });
+  onTabChange(e: WechatMiniprogram.CustomEvent) {
+    const index = e.detail.index as number;
+    this.setData({ activeTab: index });
+    if (index === 1 && !this.data.calendarLoaded) {
+      this.loadCalendar();
+    } else if (index === 2 && !this.data.purchaseLoaded) {
+      this.loadPurchaseHistory();
+    } else if (index === 3 && !this.data.cardsLoaded) {
+      this.loadTreatmentCards();
+    }
+  },
+
+  // ===== Tab 1: 日历 =====
+  async loadCalendar() {
+    const { customer, calendarYear, calendarMonth } = this.data;
+    if (!customer) return;
     try {
-      const customer = await callStaffApi<any>('customer.detail', query);
-      let orders: any[] = [];
-      if (customer.clientUserId) {
-        orders = await callStaffApi<any[]>('customer.paidOrders', { clientUserId: customer.clientUserId }) || [];
-      } else if (customer.phone) {
-        orders = await callStaffApi<any[]>('customer.paidOrders', { clientPhone: customer.phone }) || [];
-      }
-      // 扁平化：将按订单分组的 items 展开为独立卡片
-      const treatmentCards: TreatmentCard[] = [];
+      const params: any = { year: calendarYear, month: calendarMonth };
+      if (customer.clientUserId) params.clientUserId = customer.clientUserId;
+      else params.clientPhone = customer.phone;
+      const data = await callStaffApi<any>('customer.calendar', params);
+      const days = this.buildCalendarDays(calendarYear, calendarMonth, data.dailySummary || []);
+      this.setData({
+        calendarDays: days,
+        calendarSummary: data.dailySummary || [],
+        calendarOrders: data.orders || [],
+        calendarLoaded: true,
+      });
+    } catch (_) {}
+  },
+
+  buildCalendarDays(year: number, month: number, summary: any[]) {
+    const firstDay = new Date(year, month - 1, 1).getDay();
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const summaryMap: Record<string, any> = {};
+    for (const s of summary) {
+      const d = String(s.date).slice(0, 10);
+      summaryMap[d] = s;
+    }
+    const days: any[] = [];
+    for (let i = 0; i < firstDay; i++) days.push({ day: 0 });
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const s = summaryMap[dateStr];
+      days.push({
+        day: d,
+        date: dateStr,
+        amount: s ? s.totalReceived : 0,
+        hasData: !!s,
+      });
+    }
+    return days;
+  },
+
+  onCalendarPrev() {
+    let { calendarYear, calendarMonth } = this.data;
+    calendarMonth--;
+    if (calendarMonth < 1) { calendarMonth = 12; calendarYear--; }
+    this.setData({ calendarYear, calendarMonth, calendarLoaded: false, selectedDate: '' });
+    this.loadCalendar();
+  },
+
+  onCalendarNext() {
+    let { calendarYear, calendarMonth } = this.data;
+    const now = new Date();
+    if (calendarYear === now.getFullYear() && calendarMonth >= now.getMonth() + 1) return;
+    calendarMonth++;
+    if (calendarMonth > 12) { calendarMonth = 1; calendarYear++; }
+    this.setData({ calendarYear, calendarMonth, calendarLoaded: false, selectedDate: '' });
+    this.loadCalendar();
+  },
+
+  onCalendarDateTap(e: WechatMiniprogram.TouchEvent) {
+    const date = e.currentTarget.dataset.date as string;
+    if (!date) return;
+    this.setData({ selectedDate: this.data.selectedDate === date ? '' : date });
+  },
+
+  // ===== Tab 2: 购买记录 =====
+  async loadPurchaseHistory() {
+    const { customer } = this.data;
+    if (!customer) return;
+    try {
+      const params: any = {};
+      if (customer.clientUserId) params.clientUserId = customer.clientUserId;
+      else params.clientPhone = customer.phone;
+      const orders = await callStaffApi<any[]>('customer.paidOrders', params) || [];
+      this.setData({ purchaseOrders: orders, purchaseLoaded: true });
+    } catch (_) {}
+  },
+
+  onPurchaseOrderTap(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
+  },
+
+  // ===== Tab 3: 持卡汇总 =====
+  async loadTreatmentCards() {
+    const { customer } = this.data;
+    if (!customer) return;
+    try {
+      const params: any = {};
+      if (customer.clientUserId) params.clientUserId = customer.clientUserId;
+      else params.clientPhone = customer.phone;
+      const orders = await callStaffApi<any[]>('customer.paidOrders', params) || [];
+      const cards: TreatmentCard[] = [];
       for (const order of orders) {
         for (const item of order.items) {
           if (item.remainingSessions > 0) {
-            treatmentCards.push({
+            cards.push({
               saleItemId: item.saleItemId,
               itemName: item.itemName,
               spec: item.spec,
@@ -64,12 +194,8 @@ Page({
           }
         }
       }
-      this.setData({ customer, treatmentCards, selectedCount: 0 });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
-    } finally {
-      this.setData({ loading: false });
-    }
+      this.setData({ treatmentCards: cards, cardsLoaded: true, selectedCount: 0 });
+    } catch (_) {}
   },
 
   onToggleCard(e: WechatMiniprogram.TouchEvent) {
@@ -96,10 +222,8 @@ Page({
   onCreateService() {
     const { customer, treatmentCards } = this.data;
     if (!customer) return;
-
     const selected = treatmentCards.filter(c => c.selected);
     if (selected.length === 0) return;
-
     app.globalData._serviceCreatePreload = {
       customer: {
         id: customer.clientUserId || customer.id,
@@ -116,7 +240,6 @@ Page({
         remainingSessions: c.remainingSessions,
       })),
     };
-
     wx.navigateTo({ url: '/packageService/service-create/service-create?preloaded=1' });
   },
 

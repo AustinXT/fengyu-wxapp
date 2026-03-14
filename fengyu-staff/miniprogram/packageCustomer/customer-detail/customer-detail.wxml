@@ -1,4 +1,4 @@
-<!-- pages/customer-detail/customer-detail.wxml -->
+<!-- packageCustomer/customer-detail/customer-detail.wxml — 6-Tab 顾客详情 -->
 <view class="container">
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -10,7 +10,7 @@
   </view>
 
   <block wx:else>
-    <!-- 基本信息卡片 -->
+    <!-- 头部信息卡 -->
     <view class="profile-card">
       <view class="profile-header">
         <view class="profile-avatar">
@@ -37,75 +37,147 @@
       </view>
     </view>
 
-    <!-- 客户档案详情 -->
-    <van-cell-group title="客户信息" class="card-group">
-      <van-cell wx:if="{{customer.preferredStaffName}}" title="指定美容师" value="{{customer.preferredStaffName}}" />
-      <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
-      <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
-    </van-cell-group>
+    <!-- 6-Tab 导航 -->
+    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" scrollable line-width="40rpx">
+      <van-tab title="详情">
+        <view class="tab-content">
+          <van-cell-group class="card-group">
+            <van-cell wx:if="{{customer.preferredStaffName}}" title="指定美容师" value="{{customer.preferredStaffName}}" />
+            <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
+            <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
+            <van-cell title="数据来源" value="{{customer.source === 'both' ? 'WorkFine + 小程序' : customer.source === 'workfine' ? 'WorkFine' : '小程序'}}" />
+          </van-cell-group>
+        </view>
+      </van-tab>
 
-    <!-- 疗程卡余量 -->
-    <view class="section-header">
-      <text class="section-title">疗程卡余量</text>
-      <text wx:if="{{selectedCount > 0}}" class="section-hint">已选 {{selectedCount}} 项</text>
-    </view>
-
-    <view wx:if="{{treatmentCards.length === 0}}" class="empty-tip">
-      <text class="empty-tip-text">暂无可核销疗程</text>
-    </view>
-
-    <view wx:else class="card-list">
-      <view
-        wx:for="{{treatmentCards}}"
-        wx:key="saleItemId"
-        class="treatment-card {{item.selected ? 'treatment-card--selected' : ''}}"
-        bindtap="onToggleCard"
-        data-index="{{index}}"
-      >
-        <view class="tc-row">
-          <van-checkbox
-            value="{{item.selected}}"
-            shape="square"
-            checked-color="#C0322A"
-            custom-class="tc-checkbox"
-          />
-          <view class="tc-info">
-            <text class="tc-name">{{item.itemName}}</text>
-            <view class="tc-meta">
-              <text class="tc-spec">{{item.spec}}</text>
-              <text class="tc-order">{{item.saleOrderId}}</text>
+      <van-tab title="日历">
+        <view class="tab-content">
+          <!-- 月份导航 -->
+          <view class="calendar-nav">
+            <van-icon name="arrow-left" size="40rpx" bindtap="onCalendarPrev" />
+            <text class="calendar-month-label">{{calendarYear}}年{{calendarMonth}}月</text>
+            <van-icon name="arrow" size="40rpx" bindtap="onCalendarNext" />
+          </view>
+          <!-- 星期头 -->
+          <view class="calendar-week-header">
+            <text wx:for="{{['日','一','二','三','四','五','六']}}" wx:key="*this" class="calendar-week-cell">{{item}}</text>
+          </view>
+          <!-- 日历网格 -->
+          <view class="calendar-grid">
+            <view
+              wx:for="{{calendarDays}}" wx:key="index"
+              class="calendar-cell {{item.hasData ? 'calendar-cell--has-data' : ''}} {{item.date === selectedDate ? 'calendar-cell--selected' : ''}}"
+              bindtap="onCalendarDateTap"
+              data-date="{{item.date}}"
+            >
+              <text wx:if="{{item.day > 0}}" class="calendar-day">{{item.day}}</text>
+              <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amount >= 1000 ? (item.amount / 1000).toFixed(1) + 'k' : item.amount}}</text>
             </view>
-            <text class="tc-sessions">剩余 {{item.remainingSessions}}/{{item.totalSessions}} 次</text>
+          </view>
+          <!-- 选中日期的订单列表 -->
+          <view wx:if="{{selectedDate}}" class="calendar-orders">
+            <text class="calendar-orders-title">{{selectedDate}} 消费记录</text>
+            <view wx:for="{{calendarOrders}}" wx:key="saleOrderId">
+              <van-cell
+                wx:if="{{item.payDate === selectedDate}}"
+                title="{{item.saleOrderId}}"
+                value="¥{{item.totalReceived}}"
+                label="{{item.orderType}}"
+                is-link
+                data-id="{{item.saleOrderId}}"
+                bindtap="onOrderTap"
+              />
+            </view>
           </view>
         </view>
-        <view wx:if="{{item.selected}}" class="tc-stepper-row" catchtap="preventBubble">
-          <text class="tc-stepper-label">本次核销</text>
-          <van-stepper
-            value="{{item.sessionCount}}"
-            min="{{1}}"
-            max="{{item.remainingSessions}}"
-            input-width="60rpx"
-            button-size="48rpx"
-            bind:change="onStepperChange"
-            data-index="{{index}}"
-          />
-          <text class="tc-stepper-unit">次</text>
-        </view>
-      </view>
-    </view>
+      </van-tab>
 
-    <!-- 底部占位 -->
-    <view wx:if="{{selectedCount > 0}}" class="bottom-bar-spacer" />
+      <van-tab title="购买记录">
+        <view class="tab-content">
+          <view wx:if="{{!purchaseLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{purchaseOrders.length === 0}}" description="暂无购买记录" />
+          <view wx:else>
+            <view class="purchase-card" wx:for="{{purchaseOrders}}" wx:key="saleOrderId">
+              <view class="purchase-header">
+                <text class="purchase-order-no">{{item.saleOrderId}}</text>
+                <text class="status-tag status-tag--success">已支付</text>
+              </view>
+              <view class="purchase-items">
+                <view wx:for="{{item.items}}" wx:for-item="si" wx:key="saleItemId" class="purchase-item-row">
+                  <text class="purchase-item-name">{{si.itemName}}</text>
+                  <text class="purchase-item-spec">{{si.spec}}</text>
+                </view>
+              </view>
+              <view class="purchase-footer" bindtap="onPurchaseOrderTap" data-id="{{item.saleOrderId}}">
+                <text class="purchase-time">{{item.paidAt}}</text>
+                <text class="purchase-link">查看详情 ›</text>
+              </view>
+            </view>
+          </view>
+        </view>
+      </van-tab>
+
+      <van-tab title="持卡汇总">
+        <view class="tab-content">
+          <view wx:if="{{!cardsLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{treatmentCards.length === 0}}" description="暂无可核销疗程" />
+          <view wx:else class="card-list">
+            <view
+              wx:for="{{treatmentCards}}" wx:key="saleItemId"
+              class="treatment-card {{item.selected ? 'treatment-card--selected' : ''}}"
+              bindtap="onToggleCard" data-index="{{index}}"
+            >
+              <view class="tc-row">
+                <van-checkbox value="{{item.selected}}" shape="square" checked-color="#C0322A" custom-class="tc-checkbox" />
+                <view class="tc-info">
+                  <text class="tc-name">{{item.itemName}}</text>
+                  <view class="tc-meta">
+                    <text class="tc-spec">{{item.spec}}</text>
+                    <text class="tc-order">{{item.saleOrderId}}</text>
+                  </view>
+                  <text class="tc-sessions">剩余 {{item.remainingSessions}}/{{item.totalSessions}} 次</text>
+                </view>
+              </view>
+              <view wx:if="{{item.selected}}" class="tc-stepper-row" catchtap="preventBubble">
+                <text class="tc-stepper-label">本次核销</text>
+                <van-stepper
+                  value="{{item.sessionCount}}" min="{{1}}" max="{{item.remainingSessions}}"
+                  input-width="60rpx" button-size="48rpx"
+                  bind:change="onStepperChange" data-index="{{index}}"
+                />
+                <text class="tc-stepper-unit">次</text>
+              </view>
+            </view>
+          </view>
+          <view wx:if="{{selectedCount > 0}}" class="bottom-bar-spacer" />
+        </view>
+      </van-tab>
+
+      <van-tab title="赠送记录">
+        <view class="tab-content">
+          <van-empty description="暂无赠送记录" />
+        </view>
+      </van-tab>
+
+      <van-tab title="退换记录">
+        <view class="tab-content">
+          <van-empty description="暂无退换记录" />
+        </view>
+      </van-tab>
+    </van-tabs>
   </block>
 
   <view class="safe-area-bottom" />
 </view>
 
-<!-- 底部操作栏 -->
+<!-- 底部操作栏（持卡汇总选中时） -->
 <view wx:if="{{selectedCount > 0}}" class="bottom-action-bar">
   <van-button
-    type="primary"
-    block
+    type="primary" block
     custom-class="btn-primary-brand"
     custom-style="border-radius:48rpx;"
     bind:click="onCreateService"

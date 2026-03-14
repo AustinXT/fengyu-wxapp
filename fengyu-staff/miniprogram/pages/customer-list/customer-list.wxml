@@ -4,31 +4,31 @@
   <!-- 客户分类统计卡片 -->
   <view class="stats-section">
     <view class="stats-row">
-      <view class="stat-card stat-active">
-        <view class="stat-count">2</view>
+      <view class="stat-card stat-active {{activeTag === 'active' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="active">
+        <view class="stat-count">{{stats.active}}</view>
         <view class="stat-label">活跃客户</view>
       </view>
-      <view class="stat-card stat-warning">
-        <view class="stat-count">3</view>
-        <view class="stat-label">即将流失客户</view>
+      <view class="stat-card stat-warning {{activeTag === 'atRisk' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="atRisk">
+        <view class="stat-count">{{stats.atRisk}}</view>
+        <view class="stat-label">即将流失</view>
       </view>
-      <view class="stat-card stat-lost">
-        <view class="stat-count">0</view>
+      <view class="stat-card stat-lost {{activeTag === 'lost' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="lost">
+        <view class="stat-count">{{stats.lost}}</view>
         <view class="stat-label">流失客户</view>
       </view>
     </view>
     <view class="stats-row">
-      <view class="stat-card stat-sleep">
-        <view class="stat-count">2</view>
+      <view class="stat-card stat-sleep {{activeTag === 'sleeping' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="sleeping">
+        <view class="stat-count">{{stats.sleeping}}</view>
         <view class="stat-label">沉睡客户</view>
       </view>
-      <view class="stat-card stat-birthday">
-        <view class="stat-count">0</view>
-        <view class="stat-label">本月生日客户</view>
+      <view class="stat-card stat-birthday {{activeTag === 'birthday' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="birthday">
+        <view class="stat-count">{{stats.birthday}}</view>
+        <view class="stat-label">本月生日</view>
       </view>
-      <view class="stat-card stat-birthday-next">
-        <view class="stat-count">0</view>
-        <view class="stat-label">下月生日客户</view>
+      <view class="stat-card stat-birthday-next {{activeTag === 'birthdayNext' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="birthdayNext">
+        <view class="stat-count">{{stats.birthdayNext}}</view>
+        <view class="stat-label">下月生日</view>
       </view>
     </view>
   </view>
@@ -43,12 +43,12 @@
     <view slot="action" bindtap="onSearch">搜索</view>
   </van-search>
 
-  <view wx:if="{{loading}}" class="loading-wrap">
+  <view wx:if="{{loading && results.length === 0}}" class="loading-wrap">
     <van-loading type="spinner" color="#C0322A" />
   </view>
 
-  <view wx:elif="{{searched && results.length === 0}}" class="empty-wrap">
-    <van-empty description="未找到该顾客" />
+  <view wx:elif="{{(searched || activeTag) && results.length === 0}}" class="empty-wrap">
+    <van-empty description="{{activeTag ? '该分类暂无顾客' : '未找到该顾客'}}" />
   </view>
 
   <view wx:elif="{{results.length > 0}}">
@@ -64,6 +64,9 @@
         bindtap="onItemTap"
       />
     </van-cell-group>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24rpx" />
+    </view>
   </view>
 
   <view wx:else />

@@ -1,5 +1,4 @@
-/* pages/customer-detail/customer-detail.wxss */
-
+/* packageCustomer/customer-detail/customer-detail.wxss */
 
 /* 头部信息卡 */
 .profile-card {
@@ -57,8 +56,136 @@
 .stat-value { font-size: 32rpx; font-weight: 700; color: #C0322A; }
 .stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
+/* Tab 内容区 */
+.tab-content {
+  padding: 16rpx 0;
+  min-height: 400rpx;
+}
 
-/* 疗程卡区块 */
+/* ===== 日历样式 ===== */
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32rpx;
+  padding: 16rpx 0 24rpx;
+}
+.calendar-month-label {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.calendar-week-header {
+  display: flex;
+  padding: 0 16rpx;
+}
+.calendar-week-cell {
+  flex: 1;
+  text-align: center;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  padding: 8rpx 0;
+}
+.calendar-grid {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 16rpx;
+}
+.calendar-cell {
+  width: 14.2857%;
+  height: 92rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+.calendar-day {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+.calendar-amount {
+  font-size: 18rpx;
+  color: #C0322A;
+  font-weight: 500;
+  margin-top: 2rpx;
+}
+.calendar-cell--has-data .calendar-day {
+  color: #C0322A;
+  font-weight: 600;
+}
+.calendar-cell--selected {
+  background: #FFF0EE;
+  border-radius: 8rpx;
+}
+
+.calendar-orders {
+  padding: 16rpx 24rpx;
+}
+.calendar-orders-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  display: block;
+  margin-bottom: 12rpx;
+}
+
+/* ===== 购买记录 ===== */
+.purchase-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin: 0 24rpx 16rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0,0,0,0.06);
+}
+.purchase-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+.purchase-order-no {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  font-family: monospace;
+}
+.purchase-items {
+  margin-bottom: 12rpx;
+}
+.purchase-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 6rpx 0;
+}
+.purchase-item-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+.purchase-item-spec {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  background: #F5F2EE;
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+}
+.purchase-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 12rpx;
+  border-top: 1rpx solid #F0EDE9;
+}
+.purchase-time {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+.purchase-link {
+  font-size: 24rpx;
+  color: #C0322A;
+}
+
+/* ===== 持卡汇总（复用原有疗程卡样式） ===== */
 .section-header {
   display: flex;
   align-items: center;
@@ -76,12 +203,8 @@
   font-weight: 500;
 }
 
-.empty-tip { padding: 24rpx 32rpx; }
-.empty-tip-text { font-size: 26rpx; color: #999; }
-
 .card-list { padding: 0 24rpx 24rpx; }
 
-/* 疗程卡片 */
 .treatment-card {
   background: #FFFFFF;
   border-radius: 16rpx;
@@ -133,7 +256,6 @@
   font-weight: 600;
 }
 
-/* stepper 行 */
 .tc-stepper-row {
   display: flex;
   align-items: center;
@@ -142,14 +264,8 @@
   padding-top: 16rpx;
   border-top: 1rpx solid #F0EDE9;
 }
-.tc-stepper-label {
-  font-size: 24rpx;
-  color: #666;
-}
-.tc-stepper-unit {
-  font-size: 24rpx;
-  color: #666;
-}
+.tc-stepper-label { font-size: 24rpx; color: #666; }
+.tc-stepper-unit { font-size: 24rpx; color: #666; }
 
 /* 底部操作栏 */
 .bottom-action-bar {

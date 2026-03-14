@@ -507,4 +507,127 @@ function maskPhone(phone) {
   return "*".repeat(p.length - 4) + p.slice(-4);
 }
 
-module.exports = { search, calendar, detail, paidOrders };
+/**
+ * 顾客分类统计（基于最近服务日期 + 生日）
+ * 返回各状态的顾客数量
+ */
+async function stats(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const storeId = ctx.auth.storeId
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const currentMonth = now.getMonth() + 1
+  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
+
+  // 查询所有绑定到本店的顾客及其最近服务日期
+  const rows = await pg.query(`
+    SELECT
+      c.user_id,
+      c.birthday,
+      MAX(so.service_date) AS last_service_date
+    FROM client_wechat_users c
+    LEFT JOIN service_orders so
+      ON so.client_user_id = c.user_id
+      AND so.status = '已完成'
+      AND so.store_id = $1
+    WHERE c.bound_store_id = $1
+    GROUP BY c.user_id, c.birthday
+  `, [storeId])
+
+  let active = 0, atRisk = 0, lost = 0, sleeping = 0, birthday = 0, birthdayNext = 0
+
+  for (const r of rows) {
+    // 活跃度分类
+    if (r.last_service_date) {
+      const diffDays = Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
+      if (diffDays <= 30) active++
+      else if (diffDays <= 60) atRisk++
+      else if (diffDays <= 90) lost++
+      else sleeping++
+    } else {
+      sleeping++
+    }
+    // 生日
+    if (r.birthday) {
+      const bMonth = new Date(r.birthday).getMonth() + 1
+      if (bMonth === currentMonth) birthday++
+      if (bMonth === nextMonth) birthdayNext++
+    }
+  }
+
+  ctx.result = { active, atRisk, lost, sleeping, birthday, birthdayNext, total: rows.length }
+}
+
+/**
+ * 按标签筛选顾客列表
+ * tag: active | atRisk | lost | sleeping | birthday | birthdayNext
+ */
+async function listByTag(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { tag, page = 1, pageSize = 20 } = ctx.event.payload || {}
+  if (!tag) {
+    throw new Error('INVALID_PARAMS: 缺少 tag 参数')
+  }
+
+  const storeId = ctx.auth.storeId
+  const isManagerRole = ctx.auth.roles.includes('manager')
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const currentMonth = now.getMonth() + 1
+  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
+
+  // 查询所有绑定本店的顾客及其最近服务日期
+  const allRows = await pg.query(`
+    SELECT
+      c.user_id, c.name, c.phone, c.birthday, c.member_level,
+      MAX(so.service_date) AS last_service_date
+    FROM client_wechat_users c
+    LEFT JOIN service_orders so
+      ON so.client_user_id = c.user_id
+      AND so.status = '已完成'
+      AND so.store_id = $1
+    WHERE c.bound_store_id = $1
+    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
+  `, [storeId])
+
+  // 按 tag 过滤
+  const filtered = allRows.filter(r => {
+    if (tag === 'birthday') {
+      return r.birthday && (new Date(r.birthday).getMonth() + 1) === currentMonth
+    }
+    if (tag === 'birthdayNext') {
+      return r.birthday && (new Date(r.birthday).getMonth() + 1) === nextMonth
+    }
+    const diffDays = r.last_service_date
+      ? Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
+      : Infinity
+    if (tag === 'active') return diffDays <= 30
+    if (tag === 'atRisk') return diffDays > 30 && diffDays <= 60
+    if (tag === 'lost') return diffDays > 60 && diffDays <= 90
+    if (tag === 'sleeping') return diffDays > 90
+    return true
+  })
+
+  // 分页
+  const offset = (page - 1) * pageSize
+  const paged = filtered.slice(offset, offset + pageSize)
+
+  ctx.result = {
+    total: filtered.length,
+    customers: paged.map(r => ({
+      id: null,
+      clientUserId: r.user_id,
+      name: r.name || '',
+      phone: isManagerRole ? (r.phone || '') : maskPhone(r.phone),
+      phoneMasked: maskPhone(r.phone),
+      memberLevel: r.member_level,
+      lastServiceDate: r.last_service_date,
+      birthday: r.birthday,
+      source: 'miniprogram',
+    }))
+  }
+}
+
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag };
