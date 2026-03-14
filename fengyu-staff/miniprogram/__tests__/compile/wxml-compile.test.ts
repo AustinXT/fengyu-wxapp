@@ -7,6 +7,7 @@
  * 3. 同一标签重复属性
  * 4. 组件注册路径可达性（JSON 中声明的路径确实存在）
  * 5. 导航目标有效性（navigateTo 指向 app.json 中存在的页面）
+ * 6. mustache 表达式合法性（WXML 不支持方法调用，如 .toFixed()）
  */
 import fs from 'fs'
 import path from 'path'
@@ -246,6 +247,65 @@ function extractNavigationTargets(
 }
 
 // ——————————————————————————————————————
+// 6. mustache 表达式合法性
+// ——————————————————————————————————————
+
+/** 提取文件中声明的 WXS 模块名（<wxs module="xxx">） */
+function extractWxsModules(content: string): Set<string> {
+  const modules = new Set<string>()
+  const re = /<wxs\s[^>]*?module\s*=\s*["'](\w+)["'][^>]*?\/?>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(content)) !== null) {
+    modules.add(m[1])
+  }
+  return modules
+}
+
+/**
+ * 检测 mustache 表达式中的非法方法调用。
+ *
+ * WXML 的 {{ }} 仅支持属性访问和算术/逻辑/三元运算，
+ * 不支持 .toFixed()、.toString()、.map() 等 JS 方法调用。
+ * 唯一合法的 "调用" 是 WXS 模块函数：{{module.func(arg)}}。
+ */
+function checkMustacheExpressions(content: string): string[] {
+  const errors: string[] = []
+  const wxsModules = extractWxsModules(content)
+
+  // 去注释 + 去 WXS 块（WXS 块内是合法 JS，不参与检查）
+  const cleaned = content
+    .replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/<wxs[^>]*>[\s\S]*?<\/wxs>/g, m => m.replace(/[^\n]/g, ' '))
+
+  const mustacheRe = /\{\{([\s\S]*?)\}\}/g
+  let m: RegExpExecArray | null
+
+  while ((m = mustacheRe.exec(cleaned)) !== null) {
+    const expr = m[1]
+    const line = lineAt(cleaned, m.index)
+
+    // 检测 .identifier( 模式
+    // (\w+)? 捕获 . 前面的标识符（若有），用于判断是否为 WXS 模块调用
+    const methodRe = /(\w+)?\.([a-zA-Z_]\w*)\s*\(/g
+    let mc: RegExpExecArray | null
+
+    while ((mc = methodRe.exec(expr)) !== null) {
+      const preceding = mc[1] // . 前面的标识符
+      const methodName = mc[2]
+
+      // WXS 模块调用: fmt.pct(...) — 合法，跳过
+      if (preceding && wxsModules.has(preceding)) continue
+
+      errors.push(
+        `第 ${line} 行: WXML 表达式不支持方法调用 ".${methodName}()"，请用 WXS 或在 JS 中预计算`
+      )
+    }
+  }
+
+  return errors
+}
+
+// ——————————————————————————————————————
 // 测试套件
 // ——————————————————————————————————————
 
@@ -311,6 +371,25 @@ describe('组件路径可达性', () => {
       const errors = checkComponentPaths(jsonPath)
       if (errors.length > 0) {
         throw new Error(`组件路径不可达:\n${errors.join('\n')}`)
+      }
+    })
+  }
+})
+
+describe('mustache 表达式合法性', () => {
+  const pages = getAllPages()
+
+  for (const page of pages) {
+    const wxmlPath = path.join(ROOT, page + '.wxml')
+    if (!fs.existsSync(wxmlPath)) continue
+
+    test(`${page} — 无非法方法调用`, () => {
+      const content = fs.readFileSync(wxmlPath, 'utf-8')
+      const errors = checkMustacheExpressions(content)
+      if (errors.length > 0) {
+        throw new Error(
+          `mustache 表达式错误（WXML 不支持 JS 方法调用）:\n${errors.join('\n')}`
+        )
       }
     })
   }
