@@ -118,7 +118,7 @@ Page({
   },
 
   onSourceChannelChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ sourceChannel: e.detail });
+    this.setData({ sourceChannel: String(e.detail) });
   },
 
   onPromoterNameInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {

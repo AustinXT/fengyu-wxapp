@@ -1,4 +1,8 @@
 <!-- pagesCoupon/my-coupons/my-coupons.wxml -->
+<wxs module="fmt">
+module.exports.join = function(arr, sep) { return arr ? arr.join(sep) : '' }
+module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) : '' }
+</wxs>
 <van-toast id="van-toast" />
 
 <!-- 兑换码 -->
@@ -42,11 +46,11 @@
     <view class="coupon-card__right">
       <text class="coupon-card__name">{{item.name}}</text>
       <text class="coupon-card__scope" wx:if="{{item.applicableStoreNames}}">
-        限：{{item.applicableStoreNames.join('、')}}
+        限：{{fmt.join(item.applicableStoreNames, '、')}}
       </text>
       <text class="coupon-card__scope" wx:else>全部门店可用</text>
       <text class="coupon-card__expire">
-        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAt ? item.usedAt.slice(0,10) : '-'}} 使用</block>
+        <block wx:if="{{item.status === '已使用'}}">已于 {{item.usedAt ? fmt.slice(item.usedAt, 0, 10) : '-'}} 使用</block>
         <block wx:else>有效期至 {{item.expireAtFmt}}</block>
       </text>
       <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>

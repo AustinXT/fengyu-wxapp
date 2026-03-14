@@ -69,7 +69,7 @@
 
       <!-- 待支付操作 -->
       <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
-        <van-button size="small" plain round bindtap="onPayTap" data-sale-order-id="{{item.sale_order_id}}" catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
+        <van-button size="small" plain round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
       </view>
 
     </view>

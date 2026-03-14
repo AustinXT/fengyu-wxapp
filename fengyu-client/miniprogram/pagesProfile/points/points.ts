@@ -106,3 +106,5 @@ Page({
     this.loadHistory();
   },
 });
+
+export {};

@@ -1,4 +1,7 @@
 <!-- pagesProfile/prepaid-cards/prepaid-cards.wxml — 充值卡 -->
+<wxs module="fmt">
+module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
+</wxs>
 <van-toast id="van-toast" />
 
 <view class="container">
@@ -13,7 +16,7 @@
     <!-- 总余额 -->
     <view class="balance-header brand-gradient">
       <text class="balance-label">充值卡总余额（元）</text>
-      <text class="balance-value">{{totalBalance.toFixed(2)}}</text>
+      <text class="balance-value">{{fmt.fixed2(totalBalance)}}</text>
     </view>
 
     <!-- 空态 -->
@@ -34,7 +37,7 @@
             <text class="card-id">卡号: {{item.cardId}}</text>
           </view>
           <view class="card-balance-wrap">
-            <text class="card-balance-value">{{item.balance.toFixed(2)}}</text>
+            <text class="card-balance-value">{{fmt.fixed2(item.balance)}}</text>
             <text class="card-balance-label">余额（元）</text>
           </view>
           <van-icon name="{{selectedCardId === item.cardId ? 'arrow-up' : 'arrow-down'}}" size="28rpx" color="var(--color-text-hint)" />
