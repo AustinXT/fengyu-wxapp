@@ -116,8 +116,8 @@ Page({
     this.setData({ showUnbindDialog: true, unbindNote: '' });
   },
 
-  onUnbindNoteInput(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ unbindNote: e.detail });
+  onUnbindNoteInput(e: WechatMiniprogram.CustomEvent<{ value: string }>) {
+    this.setData({ unbindNote: e.detail.value });
   },
 
   onUnbindDialogCancel() {

@@ -73,7 +73,7 @@ Page({
     this.calcTotal();
   },
 
-  onQuantityChange(e: WechatMiniprogram.CustomEvent<number>) {
+  onQuantityChange(e: WxEvent<number>) {
     const { index } = e.currentTarget.dataset as { index: number };
     const quantity = e.detail;
     const item = this.data.cartItems[index];

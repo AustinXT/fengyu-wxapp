@@ -68,7 +68,7 @@ Page({
 
   // 点击"加入购物车"按钮
   async onAddToCart(e: WechatMiniprogram.TouchEvent) {
-    e.stopPropagation(); // 阻止冒泡，避免触发卡片点击
+    (e as any).stopPropagation(); // 阻止冒泡，避免触发卡片点击
     const { productId } = e.currentTarget.dataset as { productId: string };
     const spu = this.data.spuList.find(s => s.product_id === productId);
     if (!spu) return;
@@ -192,7 +192,7 @@ Page({
     }
   },
 
-  onCategoryChange(e: WechatMiniprogram.CustomEvent<number>) {
+  onCategoryChange(e: WxEvent<number>) {
     const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
     if (typeof index !== 'number') return;
     const { categories } = this.data;

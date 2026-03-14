@@ -4,18 +4,19 @@
     "target": "ES2017",
     "module": "CommonJS",
     "moduleResolution": "Node",
-    "lib": ["ES2017"],
+    "lib": ["ES2018"],
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "typeRoots": ["./typings"]
+    "typeRoots": ["./typings", "./node_modules/miniprogram-api-typings"]
   },
   "include": [
     "./**/*.ts"
   ],
   "exclude": [
     "node_modules",
-    "miniprogram_npm"
+    "miniprogram_npm",
+    "__tests__"
   ]
 }

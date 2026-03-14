@@ -120,7 +120,7 @@ Page({
     this.setData({ groupedStores });
   },
 
-  onSearch(e: WechatMiniprogram.CustomEvent<string>) {
+  onSearch(e: WxEvent<string>) {
     const keyword = (e.detail as string).trim();
     this.setData({ keyword });
 

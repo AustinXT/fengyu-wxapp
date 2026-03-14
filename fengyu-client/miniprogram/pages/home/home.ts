@@ -217,7 +217,7 @@ Page({
     });
   },
 
-  onBannerChange(e: WechatMiniprogram.CustomEvent<number>) {
+  onBannerChange(e: WechatMiniprogram.CustomEvent<{ current: number }>) {
     this.setData({ currentBanner: e.detail.current });
   },
 

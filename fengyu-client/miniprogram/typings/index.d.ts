@@ -9,6 +9,7 @@ interface IAppOption {
     navBarContentHeight: number;
     navBarHeight: number;
   };
+  initNavBarInfo(): void;
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;
   setUserInfo(info: { userId: string; boundStoreId?: string; boundStoreName?: string }): void;

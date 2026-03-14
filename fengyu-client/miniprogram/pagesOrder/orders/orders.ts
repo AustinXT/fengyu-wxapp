@@ -74,7 +74,7 @@ Page({
   },
 
   onPayTap(e: WechatMiniprogram.TouchEvent) {
-    e.stopPropagation();
+    (e as any).stopPropagation();
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
   },

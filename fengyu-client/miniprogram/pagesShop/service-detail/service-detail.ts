@@ -146,7 +146,7 @@ Page({
     this.setData({ selectedSku: sku, quantity: 1 });
   },
 
-  onQuantityChange(e: WechatMiniprogram.CustomEvent<number>) {
+  onQuantityChange(e: WxEvent<number>) {
     this.setData({ quantity: e.detail });
   },
 

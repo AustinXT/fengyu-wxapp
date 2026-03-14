@@ -265,11 +265,11 @@ Page({
     });
   },
 
-  onAgreementChange(e: WechatMiniprogram.CustomEvent<boolean>) {
+  onAgreementChange(e: WxEvent<boolean>) {
     this.setData({ agreed: e.detail });
   },
 
-  onPayMethodChange(e: WechatMiniprogram.CustomEvent<string>) {
+  onPayMethodChange(e: WxEvent<string>) {
     this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
   },
 

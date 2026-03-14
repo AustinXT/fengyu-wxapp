@@ -61,7 +61,7 @@ Page({
     }
   },
 
-  onPayMethodChange(e: WechatMiniprogram.CustomEvent<string>) {
+  onPayMethodChange(e: WxEvent<string>) {
     this.setData({ paymentMethod: e.detail as 'wechat' | 'offline' });
   },
 
