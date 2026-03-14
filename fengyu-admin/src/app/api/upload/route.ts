@@ -1,10 +1,27 @@
 import { NextRequest, NextResponse } from "next/server"
+import { jwtVerify } from "jose"
 import { uploadFile } from "@/lib/cloudbase"
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
 const MAX_SIZE = 5 * 1024 * 1024 // 5MB
 
+const JWT_SECRET = new TextEncoder().encode(
+  process.env.JWT_SECRET || 'fengyu-admin-jwt-secret-dev-only'
+)
+const COOKIE_NAME = 'fy-admin-token'
+
 export async function POST(req: NextRequest) {
+  // 认证校验
+  const token = req.cookies.get(COOKIE_NAME)?.value
+  if (!token) {
+    return NextResponse.json({ error: "未授权" }, { status: 401 })
+  }
+  try {
+    await jwtVerify(token, JWT_SECRET)
+  } catch {
+    return NextResponse.json({ error: "令牌无效或已过期" }, { status: 401 })
+  }
+
   try {
     const formData = await req.formData()
     const file = formData.get("file") as File | null

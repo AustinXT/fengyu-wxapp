@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { stores, orgNodes } from '@db/org'
 import { eq, sql } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -124,6 +125,7 @@ export async function createStore(data: {
   })
 
   await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
+  revalidatePath('/stores')
   return { success: true, message: '门店创建成功' }
 }
 
@@ -154,4 +156,5 @@ export async function updateStore(
   await db.update(stores).set(data).where(eq(stores.storeId, storeId))
 
   await logOperation(session, 'store.update', 'store', storeId, data)
+  revalidatePath('/stores')
 }

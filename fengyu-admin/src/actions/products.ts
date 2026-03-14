@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { productCategories, products, productSkus } from '@db/product'
 import { eq, sql } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { ProductCategory, Product, ProductSku } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -202,6 +203,7 @@ export async function createProduct(data: {
   })
 
   await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
+  revalidatePath('/products')
 }
 
 export async function updateProduct(
@@ -236,6 +238,7 @@ export async function updateProduct(
     .where(eq(products.productId, productId))
 
   await logOperation(session, 'product.update', 'product', productId, data)
+  revalidatePath('/products')
 }
 
 export async function createCategory(data: {
@@ -254,6 +257,8 @@ export async function createCategory(data: {
   })
 
   await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
+  revalidatePath('/products')
+  revalidatePath('/products/categories')
 }
 
 export async function updateCategory(
@@ -277,6 +282,8 @@ export async function updateCategory(
     .where(eq(productCategories.categoryId, categoryId))
 
   await logOperation(session, 'category.update', 'product_category', categoryId, data)
+  revalidatePath('/products')
+  revalidatePath('/products/categories')
 }
 
 export async function createSku(data: {
@@ -302,6 +309,7 @@ export async function createSku(data: {
   })
 
   await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
+  revalidatePath('/products')
 }
 
 export async function updateSku(
@@ -331,6 +339,7 @@ export async function updateSku(
     .where(eq(productSkus.skuId, skuId))
 
   await logOperation(session, 'sku.update', 'product_sku', skuId, data)
+  revalidatePath('/products')
 }
 
 export async function deleteSku(skuId: string) {
@@ -340,4 +349,5 @@ export async function deleteSku(skuId: string) {
   await db.delete(productSkus).where(eq(productSkus.skuId, skuId))
 
   await logOperation(session, 'sku.delete', 'product_sku', skuId)
+  revalidatePath('/products')
 }

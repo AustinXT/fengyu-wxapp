@@ -3,6 +3,7 @@
 import { db } from '@/db'
 import { orgNodes } from '@db/org'
 import { eq, asc } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -46,6 +47,7 @@ export async function createOrgNode(data: {
   })
 
   await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
+  revalidatePath('/org')
 }
 
 export async function updateOrgNode(
@@ -64,6 +66,7 @@ export async function updateOrgNode(
   await db.update(orgNodes).set(data).where(eq(orgNodes.id, id))
 
   await logOperation(session, 'org.update', 'org_node', id, data)
+  revalidatePath('/org')
 }
 
 export async function deleteOrgNode(id: string): Promise<{ success: boolean; message: string }> {
@@ -85,5 +88,6 @@ export async function deleteOrgNode(id: string): Promise<{ success: boolean; mes
   await db.update(orgNodes).set({ isActive: false }).where(eq(orgNodes.id, id))
 
   await logOperation(session, 'org.delete', 'org_node', id)
+  revalidatePath('/org')
   return { success: true, message: '节点已停用' }
 }

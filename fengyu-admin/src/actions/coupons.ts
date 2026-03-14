@@ -2,9 +2,9 @@
 
 import { db } from '@/db'
 import { couponTemplates } from '@db/coupon'
-import { eq } from 'drizzle-orm'
+import { eq, desc } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { CouponTemplate } from '@/lib/types'
-import { desc } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
@@ -99,6 +99,7 @@ export async function createTemplate(data: {
   })
 
   await logOperation(session, 'coupon.create', 'coupon_template', data.templateId, { name: data.name })
+  revalidatePath('/coupons')
 }
 
 export async function updateTemplate(
@@ -137,6 +138,7 @@ export async function updateTemplate(
     .where(eq(couponTemplates.templateId, templateId))
 
   await logOperation(session, 'coupon.update', 'coupon_template', templateId, data)
+  revalidatePath('/coupons')
 }
 
 export async function toggleTemplateActive(
@@ -153,5 +155,6 @@ export async function toggleTemplateActive(
 
   const action = isActive ? '启用' : '停用'
   await logOperation(session, `coupon.${action}`, 'coupon_template', templateId, { isActive })
+  revalidatePath('/coupons')
   return { success: true, message: `优惠券模板已${action}` }
 }

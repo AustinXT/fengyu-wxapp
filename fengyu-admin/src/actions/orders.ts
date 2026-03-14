@@ -249,6 +249,9 @@ export async function createOrder(data: {
     FROM lock
   `)
   const saleOrderId = (idRows as any[])[0]?.id as string
+  if (!saleOrderId) {
+    return { success: false, message: '订单号生成失败，请重试' }
+  }
 
   // Calculate total
   const totalAmount = data.items.reduce((sum, item) => {

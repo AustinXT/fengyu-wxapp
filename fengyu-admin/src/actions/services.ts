@@ -244,6 +244,9 @@ export async function createServiceOrder(data: {
     FROM lock
   `)
   const serviceOrderId = (idRows as any[])[0]?.id as string
+  if (!serviceOrderId) {
+    return { success: false, message: '服务单号生成失败，请重试' }
+  }
 
   await db.insert(serviceOrders).values({
     serviceOrderId,

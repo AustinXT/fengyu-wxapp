@@ -94,6 +94,8 @@ export async function triggerSync(
 
     await logOperation(session, action, 'sync', type, { status: '成功', duration })
 
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/sync')
     return { success: true, message: `${type === 'full' ? '全量' : '增量'}同步完成（${duration}）` }
   } catch (err) {
     const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`

@@ -29,14 +29,15 @@ const db = drizzle(client)
 // Seed Data (from mock-data.ts, adapted for DB columns)
 // ---------------------------------------------------------------------------
 
+// 注意：不插入 headquarters / market 节点，这些由 sync-workfine.js 同步创建。
+// Seed 仅插入测试门店和部门节点，挂在 sync 创建的市场节点下。
+// sync HQ: 16d1184b46db099a (总部)
+// sync 南昌市场: 6707cc8b88579108 / sync 九江市场: dad2db0b1249daca
 const ORG_NODES = [
-  { id: 'org-hq', name: '凤御总部', type: 'headquarters' as const, parentId: null, sortOrder: 0, isActive: true },
-  { id: 'org-market-nc', name: '南昌市场', type: 'market' as const, parentId: 'org-hq', sortOrder: 1, isActive: true },
-  { id: 'org-market-jj', name: '九江市场', type: 'market' as const, parentId: 'org-hq', sortOrder: 2, isActive: true },
-  { id: 'org-store-nc01', name: '南昌旗舰店', type: 'store' as const, parentId: 'org-market-nc', sortOrder: 1, isActive: true },
-  { id: 'org-store-nc02', name: '青山湖店', type: 'store' as const, parentId: 'org-market-nc', sortOrder: 2, isActive: true },
-  { id: 'org-store-jj01', name: '九江旗舰店', type: 'store' as const, parentId: 'org-market-jj', sortOrder: 1, isActive: true },
-  { id: 'org-store-gqc01', name: '共青城店', type: 'store' as const, parentId: 'org-market-jj', sortOrder: 2, isActive: true },
+  { id: 'org-store-nc01', name: '南昌旗舰店', type: 'store' as const, parentId: '6707cc8b88579108', sortOrder: 1, isActive: true },
+  { id: 'org-store-nc02', name: '青山湖店', type: 'store' as const, parentId: '6707cc8b88579108', sortOrder: 2, isActive: true },
+  { id: 'org-store-jj01', name: '九江旗舰店', type: 'store' as const, parentId: 'dad2db0b1249daca', sortOrder: 1, isActive: true },
+  { id: 'org-store-gqc01', name: '共青城店', type: 'store' as const, parentId: 'dad2db0b1249daca', sortOrder: 2, isActive: true },
   { id: 'org-dept-nc01-beauty', name: '美容部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 1, isActive: true },
   { id: 'org-dept-nc01-wellness', name: '养生部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 2, isActive: true },
   { id: 'org-dept-nc01-promo', name: '推广部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 3, isActive: true },
@@ -179,43 +180,43 @@ const SALE_ORDERS = [
 ]
 
 const SALE_ITEMS = [
-  { saleItemId: 'FY-XSD-WX-260310-0001-01', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-02', sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260310-0001-02', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-002-01', sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260311-0002-01', saleOrderId: 'FY-XSD-WX-260311-0002', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-003-02', sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260312-0003-01', saleOrderId: 'FY-XSD-WX-260312-0003', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-004-01', sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260312-0004-01', saleOrderId: 'FY-XSD-WX-260312-0004', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-008-02', sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260313-0005-01', saleOrderId: 'FY-XSD-WX-260313-0005', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-005-01', sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'FY-XSD-WX-260313-0006-01', saleOrderId: 'FY-XSD-WX-260313-0006', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-01', sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603100001', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-02', productName: '蜜语水润嫩肤护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603100002', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-002-01', productName: '科颜美逆龄焕肤', skuSpecName: '单次', productType: '单品' as const, sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603110001', saleOrderId: 'FY-XSD-WX-260311-0002', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-003-02', productName: '经络疏通养生护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603120001', saleOrderId: 'FY-XSD-WX-260312-0003', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-004-01', productName: '新客首次体验套餐', skuSpecName: '面部深层清洁', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603120002', saleOrderId: 'FY-XSD-WX-260312-0004', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-008-02', productName: '光子嫩肤仪器护理', skuSpecName: '5次卡', productType: '疗程卡' as const, sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603130001', saleOrderId: 'FY-XSD-WX-260313-0005', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-005-01', productName: '凤御玻尿酸精华液', skuSpecName: '30ml', productType: '单品' as const, sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', skuSpecName: '单次体验', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
 ]
 
 const SALE_ALLOCATIONS = [
-  { saleItemId: 'FY-XSD-WX-260310-0001-01', employeeId: 'FY-260101-0002', allocationRatio: '0.80', totalAmount: '1440.00', isVoid: false },
-  { saleItemId: 'FY-XSD-WX-260310-0001-01', employeeId: 'FY-260101-0004', allocationRatio: '0.20', totalAmount: '360.00', isVoid: false },
-  { saleItemId: 'FY-XSD-WX-260310-0001-02', employeeId: 'FY-260101-0002', allocationRatio: '1.00', totalAmount: '499.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0002', allocationRatio: '0.80', totalAmount: '1440.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0004', allocationRatio: '0.20', totalAmount: '360.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100002', employeeId: 'FY-260101-0002', allocationRatio: '1.00', totalAmount: '499.00', isVoid: false },
 ]
 
 const APPOINTMENTS = [
-  { appointmentId: 'appt-001', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'FY-XSD-WX-260310-0001-01', appointmentTime: new Date('2026-03-11T10:00:00Z'), checkinAt: new Date('2026-03-11T09:55:00Z'), notes: '蜜语嫩肤第1次' },
-  { appointmentId: 'appt-002', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'FY-XSD-WX-260310-0001-01', appointmentTime: new Date('2026-03-12T14:00:00Z'), checkinAt: new Date('2026-03-12T13:50:00Z'), notes: '蜜语嫩肤第2次' },
-  { appointmentId: 'appt-003', status: '待确认' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250205-0002', clientName: '杨雪', employeeId: 'FY-260101-0009', employeeName: '吴燕', saleItemId: 'FY-XSD-WX-260312-0004-01', appointmentTime: new Date('2026-03-14T10:00:00Z'), checkinAt: null, notes: '光子嫩肤第1次' },
-  { appointmentId: 'appt-004', status: '已确认' as const, storeId: 'store-jj01', clientUserId: 'FYGK-20250415-0004', clientName: '徐敏', employeeId: 'FY-260201-0007', employeeName: '周霞', saleItemId: 'FY-XSD-WX-260311-0002-01', appointmentTime: new Date('2026-03-13T14:00:00Z'), checkinAt: null, notes: '经络疏通第1次' },
+  { appointmentId: 'appt-001', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'XSLSH-WX-202603100001', appointmentTime: new Date('2026-03-11T10:00:00Z'), checkinAt: new Date('2026-03-11T09:55:00Z'), notes: '蜜语嫩肤第1次' },
+  { appointmentId: 'appt-002', status: '已完成' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250120-0001', clientName: '林美', employeeId: 'FY-260101-0002', employeeName: '刘芳', saleItemId: 'XSLSH-WX-202603100001', appointmentTime: new Date('2026-03-12T14:00:00Z'), checkinAt: new Date('2026-03-12T13:50:00Z'), notes: '蜜语嫩肤第2次' },
+  { appointmentId: 'appt-003', status: '待确认' as const, storeId: 'store-nc01', clientUserId: 'FYGK-20250205-0002', clientName: '杨雪', employeeId: 'FY-260101-0009', employeeName: '吴燕', saleItemId: 'XSLSH-WX-202603120002', appointmentTime: new Date('2026-03-14T10:00:00Z'), checkinAt: null, notes: '光子嫩肤第1次' },
+  { appointmentId: 'appt-004', status: '已确认' as const, storeId: 'store-jj01', clientUserId: 'FYGK-20250415-0004', clientName: '徐敏', employeeId: 'FY-260201-0007', employeeName: '周霞', saleItemId: 'XSLSH-WX-202603110001', appointmentTime: new Date('2026-03-13T14:00:00Z'), checkinAt: null, notes: '经络疏通第1次' },
   { appointmentId: 'appt-005', status: '已取消' as const, storeId: 'store-gqc01', clientUserId: 'FYGK-20250620-0005', clientName: '宋茜', employeeId: 'FY-260601-0008', employeeName: '黄敏', saleItemId: null, appointmentTime: new Date('2026-03-12T15:00:00Z'), checkinAt: null, notes: '临时有事取消' },
 ]
 
 const SERVICE_ORDERS = [
-  { serviceOrderId: 'FY-FWD-260311-0001', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-11', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-001', clientUserId: 'FYGK-20250120-0001' },
-  { serviceOrderId: 'FY-FWD-260312-0002', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-12', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-002', clientUserId: 'FYGK-20250120-0001' },
-  { serviceOrderId: 'FY-FWD-260313-0003', status: '待服务' as const, serviceOrderType: '普通' as const, marketName: '九江市场', storeId: 'store-jj01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260201-0007', remark: '顾客要求使用温和型产品', appointmentId: 'appt-004', clientUserId: 'FYGK-20250415-0004' },
-  { serviceOrderId: 'FY-FWD-260313-0004', status: '服务中' as const, serviceOrderType: '体验' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260101-0009', remark: null, appointmentId: null, clientUserId: 'FYGK-20250205-0002' },
+  { serviceOrderId: 'HLD-WX-2603110001', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-11', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-001', clientUserId: 'FYGK-20250120-0001' },
+  { serviceOrderId: 'HLD-WX-2603120001', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-12', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-002', clientUserId: 'FYGK-20250120-0001' },
+  { serviceOrderId: 'HLD-WX-2603130001', status: '待服务' as const, serviceOrderType: '普通' as const, marketName: '九江市场', storeId: 'store-jj01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260201-0007', remark: '顾客要求使用温和型产品', appointmentId: 'appt-004', clientUserId: 'FYGK-20250415-0004' },
+  { serviceOrderId: 'HLD-WX-2603130002', status: '服务中' as const, serviceOrderType: '体验' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260101-0009', remark: null, appointmentId: null, clientUserId: 'FYGK-20250205-0002' },
 ]
 
 const SERVICE_ITEMS = [
-  { serviceItemId: 'svc-item-001', serviceOrderId: 'FY-FWD-260311-0001', saleItemId: 'FY-XSD-WX-260310-0001-01', sessionUsed: 1, employeeId: 'FY-260101-0002', serviceDuration: 90, unitRealPrice: '1800.00' },
-  { serviceItemId: 'svc-item-002', serviceOrderId: 'FY-FWD-260312-0002', saleItemId: 'FY-XSD-WX-260310-0001-01', sessionUsed: 1, employeeId: 'FY-260101-0002', serviceDuration: 90, unitRealPrice: '1800.00' },
+  { serviceItemId: 'svc-item-001', serviceOrderId: 'HLD-WX-2603110001', saleItemId: 'XSLSH-WX-202603100001', sessionUsed: 1, employeeId: 'FY-260101-0002', serviceDuration: 90, unitRealPrice: '1800.00' },
+  { serviceItemId: 'svc-item-002', serviceOrderId: 'HLD-WX-2603120001', saleItemId: 'XSLSH-WX-202603100001', sessionUsed: 1, employeeId: 'FY-260101-0002', serviceDuration: 90, unitRealPrice: '1800.00' },
 ]
 
 const PERMISSION_ROLES = [
-  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: 'org-hq', isVoid: false, createdBy: 'system' },
+  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'system' },
   { employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
   { employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', isVoid: false, createdBy: 'sync' },
   { employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
@@ -225,18 +226,18 @@ const PERMISSION_ROLES = [
   { employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
   { employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
   { employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: 'org-hq', isVoid: false, createdBy: 'FY-260101-0001' },
+  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'FY-260101-0001' },
   { employeeId: 'FY-260101-0010', role: 'staff', scopeId: 'org-store-nc02', isVoid: true, createdBy: 'sync' },
 ]
 
 const COMMISSION_RATES = [
-  { orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: 'org-market-nc', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
-  { orgId: 'org-market-nc', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
-  { orgId: 'org-market-jj', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'org-market-jj', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
+  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
+  { orgId: '6707cc8b88579108', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
 ]
 
 const COUPON_TEMPLATES = [
@@ -246,14 +247,14 @@ const COUPON_TEMPLATES = [
 ]
 
 const OPERATION_LOGS = [
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: 'org-hq', orgNodeName: '凤御总部', action: 'employee.create', targetType: 'employee', targetId: 'FY-260101-0009', detail: { name: '吴燕', phone: '13800138008', storeId: 'store-nc01', positionName: '美容师' }, source: 'adminApi', createdAt: new Date('2025-04-01T09:00:00Z') },
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: 'org-hq', orgNodeName: '凤御总部', action: 'product.create', targetType: 'product', targetId: 'prod-008', detail: { name: '光子嫩肤仪器护理', categoryId: 'cat-hr-03', price: '880.00' }, source: 'adminApi', createdAt: new Date('2025-06-01T10:00:00Z') },
+  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'employee.create', targetType: 'employee', targetId: 'FY-260101-0009', detail: { name: '吴燕', phone: '13800138008', storeId: 'store-nc01', positionName: '美容师' }, source: 'adminApi', createdAt: new Date('2025-04-01T09:00:00Z') },
+  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'product.create', targetType: 'product', targetId: 'prod-008', detail: { name: '光子嫩肤仪器护理', categoryId: 'cat-hr-03', price: '880.00' }, source: 'adminApi', createdAt: new Date('2025-06-01T10:00:00Z') },
   { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'manager', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'order.create', targetType: 'sale_order', targetId: 'FY-XSD-WX-260310-0001', detail: { customerName: '林美', totalAmount: '2299.00', itemCount: 2 }, source: 'staffApi', createdAt: new Date('2026-03-10T10:30:00Z') },
   { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'manager', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'allocation.save', targetType: 'sale_order', targetId: 'FY-XSD-WX-260310-0001', detail: { allocations: [{ employeeId: 'FY-260101-0002', ratio: 0.8 }, { employeeId: 'FY-260101-0004', ratio: 0.2 }] }, source: 'staffApi', createdAt: new Date('2026-03-10T11:00:00Z') },
   { operatorEmployeeId: 'FY-260201-0006', operatorName: '孙浩', operatorRole: 'manager', orgNodeId: 'org-store-jj01', orgNodeName: '九江旗舰店', action: 'order.confirmOffline', targetType: 'sale_order', targetId: 'FY-XSD-WX-260311-0002', detail: { previousStatus: '待确认收款', newStatus: '已支付' }, source: 'staffApi', createdAt: new Date('2026-03-11T14:10:00Z') },
-  { operatorEmployeeId: 'FY-260101-0002', operatorName: '刘芳', operatorRole: 'staff', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'service.complete', targetType: 'service_order', targetId: 'FY-FWD-260311-0001', detail: { remainingSessions: { before: 10, after: 9 } }, source: 'staffApi', createdAt: new Date('2026-03-11T11:30:00Z') },
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: 'org-hq', orgNodeName: '凤御总部', action: 'permission.assign', targetType: 'permission_role', targetId: '11', detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: 'org-hq' }, source: 'adminApi', createdAt: new Date('2025-02-01T10:00:00Z') },
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: 'org-hq', orgNodeName: '凤御总部', action: 'sync.trigger', targetType: 'system', targetId: 'workfine-sync', detail: { type: 'full', modules: ['org_nodes', 'stores', 'employees', 'customers', 'commission'] }, source: 'adminApi', createdAt: new Date('2026-03-13T08:00:00Z') },
+  { operatorEmployeeId: 'FY-260101-0002', operatorName: '刘芳', operatorRole: 'staff', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'service.complete', targetType: 'service_order', targetId: 'HLD-WX-2603110001', detail: { remainingSessions: { before: 10, after: 9 } }, source: 'staffApi', createdAt: new Date('2026-03-11T11:30:00Z') },
+  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'permission.assign', targetType: 'permission_role', targetId: '11', detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a' }, source: 'adminApi', createdAt: new Date('2025-02-01T10:00:00Z') },
+  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'sync.trigger', targetType: 'system', targetId: 'workfine-sync', detail: { type: 'full', modules: ['org_nodes', 'stores', 'employees', 'customers', 'commission'] }, source: 'adminApi', createdAt: new Date('2026-03-13T08:00:00Z') },
 ]
 
 // ---------------------------------------------------------------------------

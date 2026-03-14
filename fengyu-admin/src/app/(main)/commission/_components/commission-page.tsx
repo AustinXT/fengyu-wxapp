@@ -22,8 +22,8 @@ import { formatCurrency } from "@/lib/utils"
 import { createRate, updateRate, deleteRate } from "@/actions/commission"
 
 const MARKET_TABS = [
-  { orgId: "org-market-nc", label: "南昌市场" },
-  { orgId: "org-market-jj", label: "九江市场" },
+  { orgId: "6707cc8b88579108", label: "南昌市场" },
+  { orgId: "dad2db0b1249daca", label: "九江市场" },
 ]
 
 const ORDER_TYPE_OPTIONS = ["sale", "service"]

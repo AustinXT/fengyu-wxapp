@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, inArray, and } from 'drizzle-orm'
+import { eq, inArray, and, desc } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -124,18 +124,32 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
     .where(eq(saleOrders.clientUserId, userId))
     .orderBy(desc(saleOrders.saleOrderDatetime))
 
+  // 批量查询所有订单的明细（避免 N+1）
+  const orderIds = rows.map(r => r.order.saleOrderId)
+  const allItemRows = orderIds.length > 0
+    ? await db
+        .select({
+          item: saleItems,
+          skuName: productSkus.specName,
+          productName: products.name,
+        })
+        .from(saleItems)
+        .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
+        .leftJoin(products, eq(productSkus.productId, products.productId))
+        .where(inArray(saleItems.saleOrderId, orderIds))
+    : []
+
+  // 按订单 ID 分组
+  const itemsByOrderId = new Map<string, typeof allItemRows>()
+  for (const ir of allItemRows) {
+    const oid = ir.item.saleOrderId
+    if (!itemsByOrderId.has(oid)) itemsByOrderId.set(oid, [])
+    itemsByOrderId.get(oid)!.push(ir)
+  }
+
   const orders: SaleOrder[] = []
   for (const r of rows) {
-    const itemRows = await db
-      .select({
-        item: saleItems,
-        skuName: productSkus.specName,
-        productName: products.name,
-      })
-      .from(saleItems)
-      .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-      .leftJoin(products, eq(productSkus.productId, products.productId))
-      .where(eq(saleItems.saleOrderId, r.order.saleOrderId))
+    const itemRows = itemsByOrderId.get(r.order.saleOrderId) ?? []
 
     orders.push({
       saleOrderId: r.order.saleOrderId,
@@ -256,6 +270,9 @@ export async function updateCustomer(
     .where(eq(clientWechatUsers.userId, userId))
 
   await logOperation(session, 'customer.update', 'customer', userId, data)
+
+  const { revalidatePath } = await import('next/cache')
+  revalidatePath('/customers')
 }
 
 export async function createCustomer(data: {
@@ -291,5 +308,8 @@ export async function createCustomer(data: {
   })
 
   await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
+
+  const { revalidatePath } = await import('next/cache')
+  revalidatePath('/customers')
   return { success: true, message: '顾客创建成功', userId }
 }

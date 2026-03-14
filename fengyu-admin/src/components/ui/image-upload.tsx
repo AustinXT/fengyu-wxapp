@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
+import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
 const CDN_BASE =
@@ -62,7 +63,7 @@ export function ImageUpload({
 
       const filesToUpload = Array.from(files)
       if (multiple && urls.length + filesToUpload.length > max) {
-        alert(`最多上传 ${max} 张图片`)
+        toast.error(`最多上传 ${max} 张图片`)
         return
       }
 
@@ -81,7 +82,7 @@ export function ImageUpload({
           const res = await fetch("/api/upload", { method: "POST", body: fd })
           const data = await res.json()
           if (!res.ok) {
-            alert(data.error || "上传失败")
+            toast.error(data.error || "上传失败")
             continue
           }
           // Append cache-buster for exactKey uploads

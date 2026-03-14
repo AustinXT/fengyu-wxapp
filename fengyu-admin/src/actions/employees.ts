@@ -5,6 +5,7 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
 import { eq, and, sql } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -83,7 +84,9 @@ async function generateEmployeeId(): Promise<string> {
       ) AS id
     FROM lock
   `)
-  return (idRows as any[])[0]?.id as string
+  const id = (idRows as any[])[0]?.id as string
+  if (!id) throw new Error('员工编号生成失败')
+  return id
 }
 
 export async function createEmployee(data: {
@@ -117,6 +120,7 @@ export async function createEmployee(data: {
   })
 
   await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
+  revalidatePath('/employees')
   return { success: true, message: '员工创建成功', employeeId }
 }
 
@@ -152,4 +156,5 @@ export async function updateEmployee(
   }
 
   await logOperation(session, 'employee.update', 'employee', employeeId, data)
+  revalidatePath('/employees')
 }

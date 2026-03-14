@@ -71,9 +71,6 @@ export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
           aria-label="通知"
         >
           <Bell className="size-5" />
-          <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[var(--primary)] px-1 text-[10px] font-medium text-white">
-            3
-          </span>
         </button>
 
         {/* User avatar dropdown */}

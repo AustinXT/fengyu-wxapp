@@ -4,6 +4,7 @@ import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
 import { eq } from 'drizzle-orm'
+import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -71,6 +72,7 @@ export async function createRate(data: {
   await logOperation(session, 'commission.create', 'commission_rate', data.orgId, {
     orderType: data.orderType, roleType: data.roleType,
   })
+  revalidatePath('/commission')
 }
 
 export async function updateRate(
@@ -94,6 +96,7 @@ export async function updateRate(
     .where(eq(commissionRateMatrix.id, id))
 
   await logOperation(session, 'commission.update', 'commission_rate', String(id), data)
+  revalidatePath('/commission')
 }
 
 export async function deleteRate(id: number) {
@@ -105,4 +108,5 @@ export async function deleteRate(id: number) {
     .where(eq(commissionRateMatrix.id, id))
 
   await logOperation(session, 'commission.delete', 'commission_rate', String(id))
+  revalidatePath('/commission')
 }

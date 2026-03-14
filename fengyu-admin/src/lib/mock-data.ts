@@ -23,20 +23,20 @@ import type {
 // ---------------------------------------------------------------------------
 
 export const MOCK_ORG_NODES: OrgNode[] = [
-  // headquarters
-  { id: 'org-hq', name: '凤御总部', type: 'headquarters', parentId: null, sortOrder: 0, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
+  // headquarters (sync-workfine.js 创建)
+  { id: '16d1184b46db099a', name: '总部', type: 'headquarters', parentId: null, sortOrder: 0, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
 
-  // markets
-  { id: 'org-market-nc', name: '南昌市场', type: 'market', parentId: 'org-hq', sortOrder: 1, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
-  { id: 'org-market-jj', name: '九江市场', type: 'market', parentId: 'org-hq', sortOrder: 2, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
+  // markets (sync-workfine.js 创建)
+  { id: '6707cc8b88579108', name: '南昌市场', type: 'market', parentId: '16d1184b46db099a', sortOrder: 1, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
+  { id: 'dad2db0b1249daca', name: '九江市场', type: 'market', parentId: '16d1184b46db099a', sortOrder: 2, isActive: true, createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z' },
 
   // stores — Nanchang
-  { id: 'org-store-nc01', name: '南昌旗舰店', type: 'store', parentId: 'org-market-nc', sortOrder: 1, isActive: true, createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z' },
-  { id: 'org-store-nc02', name: '青山湖店', type: 'store', parentId: 'org-market-nc', sortOrder: 2, isActive: true, createdAt: '2025-03-01T00:00:00Z', updatedAt: '2025-03-01T00:00:00Z' },
+  { id: 'org-store-nc01', name: '南昌旗舰店', type: 'store', parentId: '6707cc8b88579108', sortOrder: 1, isActive: true, createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z' },
+  { id: 'org-store-nc02', name: '青山湖店', type: 'store', parentId: '6707cc8b88579108', sortOrder: 2, isActive: true, createdAt: '2025-03-01T00:00:00Z', updatedAt: '2025-03-01T00:00:00Z' },
 
   // stores — Jiujiang
-  { id: 'org-store-jj01', name: '九江旗舰店', type: 'store', parentId: 'org-market-jj', sortOrder: 1, isActive: true, createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-02-01T00:00:00Z' },
-  { id: 'org-store-gqc01', name: '共青城店', type: 'store', parentId: 'org-market-jj', sortOrder: 2, isActive: true, createdAt: '2025-06-01T00:00:00Z', updatedAt: '2025-06-01T00:00:00Z' },
+  { id: 'org-store-jj01', name: '九江旗舰店', type: 'store', parentId: 'dad2db0b1249daca', sortOrder: 1, isActive: true, createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-02-01T00:00:00Z' },
+  { id: 'org-store-gqc01', name: '共青城店', type: 'store', parentId: 'dad2db0b1249daca', sortOrder: 2, isActive: true, createdAt: '2025-06-01T00:00:00Z', updatedAt: '2025-06-01T00:00:00Z' },
 
   // departments — NC01
   { id: 'org-dept-nc01-beauty', name: '美容部', type: 'department', parentId: 'org-store-nc01', sortOrder: 1, isActive: true, createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z' },
@@ -803,7 +803,7 @@ export const MOCK_PRODUCT_SKUS: ProductSku[] = [
 const MOCK_SALE_ITEMS: SaleItem[] = [
   // Order 1 items
   {
-    saleItemId: 'FY-XSD-WX-260310-0001-01',
+    saleItemId: 'XSLSH-WX-202603100001',
     saleOrderId: 'FY-XSD-WX-260310-0001',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -824,7 +824,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
     productName: '蜜语水润嫩肤护理',
   },
   {
-    saleItemId: 'FY-XSD-WX-260310-0001-02',
+    saleItemId: 'XSLSH-WX-202603100002',
     saleOrderId: 'FY-XSD-WX-260310-0001',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -847,7 +847,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
 
   // Order 2 items
   {
-    saleItemId: 'FY-XSD-WX-260311-0002-01',
+    saleItemId: 'XSLSH-WX-202603110001',
     saleOrderId: 'FY-XSD-WX-260311-0002',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -870,7 +870,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
 
   // Order 3 items
   {
-    saleItemId: 'FY-XSD-WX-260312-0003-01',
+    saleItemId: 'XSLSH-WX-202603120001',
     saleOrderId: 'FY-XSD-WX-260312-0003',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -893,7 +893,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
 
   // Order 4 items
   {
-    saleItemId: 'FY-XSD-WX-260312-0004-01',
+    saleItemId: 'XSLSH-WX-202603120002',
     saleOrderId: 'FY-XSD-WX-260312-0004',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -916,7 +916,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
 
   // Order 5 items
   {
-    saleItemId: 'FY-XSD-WX-260313-0005-01',
+    saleItemId: 'XSLSH-WX-202603130001',
     saleOrderId: 'FY-XSD-WX-260313-0005',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -939,7 +939,7 @@ const MOCK_SALE_ITEMS: SaleItem[] = [
 
   // Order 6 items
   {
-    saleItemId: 'FY-XSD-WX-260313-0006-01',
+    saleItemId: 'XSLSH-WX-202603130002',
     saleOrderId: 'FY-XSD-WX-260313-0006',
     itemDirection: 'purchase',
     refSaleItemId: null,
@@ -1129,7 +1129,7 @@ export { MOCK_SALE_ITEMS }
 export const MOCK_SALE_ALLOCATIONS: SaleAllocation[] = [
   {
     id: 1,
-    saleItemId: 'FY-XSD-WX-260310-0001-01',
+    saleItemId: 'XSLSH-WX-202603100001',
     employeeId: 'FY-260101-0002',
     allocationRatio: '0.80',
     totalAmount: '1440.00',
@@ -1141,7 +1141,7 @@ export const MOCK_SALE_ALLOCATIONS: SaleAllocation[] = [
   },
   {
     id: 2,
-    saleItemId: 'FY-XSD-WX-260310-0001-01',
+    saleItemId: 'XSLSH-WX-202603100001',
     employeeId: 'FY-260101-0004',
     allocationRatio: '0.20',
     totalAmount: '360.00',
@@ -1153,7 +1153,7 @@ export const MOCK_SALE_ALLOCATIONS: SaleAllocation[] = [
   },
   {
     id: 3,
-    saleItemId: 'FY-XSD-WX-260310-0001-02',
+    saleItemId: 'XSLSH-WX-202603100002',
     employeeId: 'FY-260101-0002',
     allocationRatio: '1.00',
     totalAmount: '499.00',
@@ -1171,7 +1171,7 @@ export const MOCK_SALE_ALLOCATIONS: SaleAllocation[] = [
 
 export const MOCK_SERVICE_ORDERS: ServiceOrder[] = [
   {
-    serviceOrderId: 'FY-FWD-260311-0001',
+    serviceOrderId: 'HLD-WX-2603110001',
     status: '已完成',
     serviceOrderType: '普通',
     marketName: '南昌市场',
@@ -1188,7 +1188,7 @@ export const MOCK_SERVICE_ORDERS: ServiceOrder[] = [
     customerName: '林美',
   },
   {
-    serviceOrderId: 'FY-FWD-260312-0002',
+    serviceOrderId: 'HLD-WX-2603120001',
     status: '已完成',
     serviceOrderType: '普通',
     marketName: '南昌市场',
@@ -1205,7 +1205,7 @@ export const MOCK_SERVICE_ORDERS: ServiceOrder[] = [
     customerName: '林美',
   },
   {
-    serviceOrderId: 'FY-FWD-260313-0003',
+    serviceOrderId: 'HLD-WX-2603130001',
     status: '待服务',
     serviceOrderType: '普通',
     marketName: '九江市场',
@@ -1222,7 +1222,7 @@ export const MOCK_SERVICE_ORDERS: ServiceOrder[] = [
     customerName: '徐敏',
   },
   {
-    serviceOrderId: 'FY-FWD-260313-0004',
+    serviceOrderId: 'HLD-WX-2603130002',
     status: '服务中',
     serviceOrderType: '体验',
     marketName: '南昌市场',
@@ -1253,7 +1253,7 @@ export const MOCK_APPOINTMENTS: Appointment[] = [
     clientName: '林美',
     employeeId: 'FY-260101-0002',
     employeeName: '刘芳',
-    saleItemId: 'FY-XSD-WX-260310-0001-01',
+    saleItemId: 'XSLSH-WX-202603100001',
     appointmentTime: '2026-03-11T10:00:00Z',
     checkinAt: '2026-03-11T09:55:00Z',
     notes: '蜜语嫩肤第1次',
@@ -1269,7 +1269,7 @@ export const MOCK_APPOINTMENTS: Appointment[] = [
     clientName: '林美',
     employeeId: 'FY-260101-0002',
     employeeName: '刘芳',
-    saleItemId: 'FY-XSD-WX-260310-0001-01',
+    saleItemId: 'XSLSH-WX-202603100001',
     appointmentTime: '2026-03-12T14:00:00Z',
     checkinAt: '2026-03-12T13:50:00Z',
     notes: '蜜语嫩肤第2次',
@@ -1285,7 +1285,7 @@ export const MOCK_APPOINTMENTS: Appointment[] = [
     clientName: '杨雪',
     employeeId: 'FY-260101-0009',
     employeeName: '吴燕',
-    saleItemId: 'FY-XSD-WX-260312-0004-01',
+    saleItemId: 'XSLSH-WX-202603120002',
     appointmentTime: '2026-03-14T10:00:00Z',
     checkinAt: null,
     notes: '光子嫩肤第1次',
@@ -1301,7 +1301,7 @@ export const MOCK_APPOINTMENTS: Appointment[] = [
     clientName: '徐敏',
     employeeId: 'FY-260201-0007',
     employeeName: '周霞',
-    saleItemId: 'FY-XSD-WX-260311-0002-01',
+    saleItemId: 'XSLSH-WX-202603110001',
     appointmentTime: '2026-03-13T14:00:00Z',
     checkinAt: null,
     notes: '经络疏通第1次',
@@ -1332,7 +1332,7 @@ export const MOCK_APPOINTMENTS: Appointment[] = [
 // ---------------------------------------------------------------------------
 
 export const MOCK_PERMISSION_ROLES: PermissionRole[] = [
-  { id: 1, employeeId: 'FY-260101-0001', role: 'admin', scopeId: 'org-hq', isVoid: false, createdBy: 'system', createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z', employeeName: '张明', scopeName: '凤御总部' },
+  { id: 1, employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'system', createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z', employeeName: '张明', scopeName: '凤御总部' },
   { id: 2, employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync', createdAt: '2025-01-15T00:00:00Z', updatedAt: '2025-01-15T00:00:00Z', employeeName: '张明', scopeName: '南昌旗舰店' },
   { id: 3, employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', isVoid: false, createdBy: 'sync', createdAt: '2025-03-01T00:00:00Z', updatedAt: '2025-03-01T00:00:00Z', employeeName: '赵玲', scopeName: '青山湖店' },
   { id: 4, employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync', createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-02-01T00:00:00Z', employeeName: '孙浩', scopeName: '九江旗舰店' },
@@ -1342,7 +1342,7 @@ export const MOCK_PERMISSION_ROLES: PermissionRole[] = [
   { id: 8, employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync', createdAt: '2025-03-01T00:00:00Z', updatedAt: '2025-03-01T00:00:00Z', employeeName: '陈伟', scopeName: '南昌旗舰店' },
   { id: 9, employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync', createdAt: '2025-02-15T00:00:00Z', updatedAt: '2025-02-15T00:00:00Z', employeeName: '周霞', scopeName: '九江旗舰店' },
   { id: 10, employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync', createdAt: '2025-04-01T00:00:00Z', updatedAt: '2025-04-01T00:00:00Z', employeeName: '吴燕', scopeName: '南昌旗舰店' },
-  { id: 11, employeeId: 'FY-260101-0001', role: 'hr', scopeId: 'org-hq', isVoid: false, createdBy: 'FY-260101-0001', createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-02-01T00:00:00Z', employeeName: '张明', scopeName: '凤御总部' },
+  { id: 11, employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'FY-260101-0001', createdAt: '2025-02-01T00:00:00Z', updatedAt: '2025-02-01T00:00:00Z', employeeName: '张明', scopeName: '凤御总部' },
   { id: 12, employeeId: 'FY-260101-0010', role: 'staff', scopeId: 'org-store-nc02', isVoid: true, createdBy: 'sync', createdAt: '2025-05-01T00:00:00Z', updatedAt: '2026-02-01T00:00:00Z', employeeName: '郑强', scopeName: '青山湖店' },
 ]
 
@@ -1351,13 +1351,13 @@ export const MOCK_PERMISSION_ROLES: PermissionRole[] = [
 // ---------------------------------------------------------------------------
 
 export const MOCK_COMMISSION_RATES: CommissionRate[] = [
-  { id: 1, orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 2, orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 3, orgId: 'org-market-nc', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 4, orgId: 'org-market-nc', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 5, orgId: 'org-market-jj', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
-  { id: 6, orgId: 'org-market-jj', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
-  { id: 7, orgId: 'org-market-nc', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 1, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 2, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 3, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 4, orgId: '6707cc8b88579108', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 5, orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
+  { id: 6, orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
+  { id: 7, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1437,7 @@ export const MOCK_OPERATION_LOGS: OperationLog[] = [
     operatorEmployeeId: 'FY-260101-0001',
     operatorName: '张明',
     operatorRole: 'admin',
-    orgNodeId: 'org-hq',
+    orgNodeId: '16d1184b46db099a',
     orgNodeName: '凤御总部',
     action: 'employee.create',
     targetType: 'employee',
@@ -1451,7 +1451,7 @@ export const MOCK_OPERATION_LOGS: OperationLog[] = [
     operatorEmployeeId: 'FY-260101-0001',
     operatorName: '张明',
     operatorRole: 'admin',
-    orgNodeId: 'org-hq',
+    orgNodeId: '16d1184b46db099a',
     orgNodeName: '凤御总部',
     action: 'product.create',
     targetType: 'product',
@@ -1511,7 +1511,7 @@ export const MOCK_OPERATION_LOGS: OperationLog[] = [
     orgNodeName: '南昌旗舰店',
     action: 'service.complete',
     targetType: 'service_order',
-    targetId: 'FY-FWD-260311-0001',
+    targetId: 'HLD-WX-2603110001',
     detail: { remainingSessions: { before: 10, after: 9 } },
     source: 'staffApi',
     createdAt: '2026-03-11T11:30:00Z',
@@ -1521,12 +1521,12 @@ export const MOCK_OPERATION_LOGS: OperationLog[] = [
     operatorEmployeeId: 'FY-260101-0001',
     operatorName: '张明',
     operatorRole: 'admin',
-    orgNodeId: 'org-hq',
+    orgNodeId: '16d1184b46db099a',
     orgNodeName: '凤御总部',
     action: 'permission.assign',
     targetType: 'permission_role',
     targetId: '11',
-    detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: 'org-hq' },
+    detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a' },
     source: 'adminApi',
     createdAt: '2025-02-01T10:00:00Z',
   },
@@ -1535,7 +1535,7 @@ export const MOCK_OPERATION_LOGS: OperationLog[] = [
     operatorEmployeeId: 'FY-260101-0001',
     operatorName: '张明',
     operatorRole: 'admin',
-    orgNodeId: 'org-hq',
+    orgNodeId: '16d1184b46db099a',
     orgNodeName: '凤御总部',
     action: 'sync.trigger',
     targetType: 'system',

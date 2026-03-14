@@ -69,6 +69,8 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
 
     await logOperation(session, 'system.saveConfig', 'system_config', 'all', settings as unknown as Record<string, unknown>)
 
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/settings')
     return { success: true, message: '配置保存成功' }
   } catch (err) {
     console.error('Save settings error:', err)
