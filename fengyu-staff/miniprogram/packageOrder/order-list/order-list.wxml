@@ -1,10 +1,13 @@
 <!-- pages/order-list/order-list.wxml -->
 <view class="container">
-  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky>
+  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
     <van-tab name="全部" title="全部" />
     <van-tab name="待支付" title="待支付" />
     <van-tab name="待确认收款" title="待确认" />
     <van-tab name="已支付" title="已支付" />
+    <van-tab name="已完成" title="已完成" />
+    <van-tab name="支付失败" title="支付失败" />
+    <van-tab name="已关闭" title="已关闭" />
   </van-tabs>
 
   <view wx:if="{{loading}}" class="loading-wrap">
@@ -34,7 +37,7 @@
         <text class="order-amount">¥ {{item.totalAmount}}</text>
         <view class="order-actions" catchtap="noop">
           <van-button
-            wx:if="{{item.status === '待确认收款'}}"
+            wx:if="{{item.status === '待确认收款' && isManager}}"
             type="primary" size="small"
             custom-class="btn-primary-brand"
             catchtap="onConfirmOffline"

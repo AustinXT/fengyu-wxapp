@@ -84,7 +84,7 @@ Page({
   },
 
   onNavCustomers() {
-    wx.navigateTo({ url: '/pages/customer-list/customer-list' });
+    wx.switchTab({ url: '/pages/customer-list/customer-list' });
   },
 
   onNavDashboard() {

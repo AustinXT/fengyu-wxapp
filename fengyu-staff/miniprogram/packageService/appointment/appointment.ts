@@ -49,9 +49,10 @@ Page({
     if (this.data.loading || !this.data.hasMore) return;
     this.setData({ loading: true });
     try {
+      const tab = this.data.tabActive;
       const rawList = await callStaffApi<any[]>('appointment.list', {
-        status: this.data.tabActive === 'all' ? undefined : this.data.tabActive,
-        todayOnly: this.data.tabActive === 'today',
+        status: (tab === 'all' || tab === 'today') ? undefined : tab,
+        todayOnly: tab === 'today',
         page: this.data.page,
         pageSize: 20,
       });

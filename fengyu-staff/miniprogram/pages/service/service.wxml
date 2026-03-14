@@ -22,7 +22,7 @@
 
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
-    <van-empty description="暂无{{tabActive}}的护理单" />
+    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : '已完成'}}的护理单" />
   </view>
 
   <!-- 护理单列表 -->

@@ -1,6 +1,6 @@
-// pages/order-list/order-list.ts — 订单列表（仅店长）
+// pages/order-list/order-list.ts — 订单列表
 import { callStaffApi } from '../../utils/cloud';
-import { requireManager } from '../../utils/role';
+import { isManager } from '../../utils/role';
 
 type OrderStatus = '全部' | '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭';
 
@@ -30,6 +30,7 @@ const STATUS_CLASS: Record<string, string> = {
 Page({
   data: {
     loading: false,
+    isManager: false,
     tabActive: '全部',
     list: [] as OrderItem[],
     // 来自代办区的预设过滤
@@ -37,10 +38,7 @@ Page({
   },
 
   onLoad(options) {
-    if (!requireManager()) {
-      wx.navigateBack();
-      return;
-    }
+    this.setData({ isManager: isManager() });
     if (options.status) {
       const statusMap: Record<string, OrderStatus> = {
         pendingOffline: '待确认收款',

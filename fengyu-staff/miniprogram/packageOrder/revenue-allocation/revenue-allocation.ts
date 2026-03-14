@@ -116,9 +116,9 @@ Page({
     this.setData({ loading: true });
     try {
       const [suggestData, deptResponse, orderData] = await Promise.all([
-        callStaffApi<any>('allocation.suggest', { orderNo: saleOrderId }),
+        callStaffApi<any>('allocation.suggest', { saleOrderId }),
         callStaffApi<DeptApiResponse>('staff.departments'),
-        callStaffApi<any>('order.detail', { orderNo: saleOrderId }),
+        callStaffApi<any>('order.detail', { saleOrderId }),
       ]);
 
       const order = orderData.order;
@@ -337,7 +337,7 @@ Page({
     this.setData({ submitting: true });
     try {
       await callStaffApi('allocation.save', {
-        orderNo: this.data.saleOrderId,
+        saleOrderId: this.data.saleOrderId,
         allocations: [],
       });
       wx.showToast({ title: '已标记为无需分配', icon: 'success' });
@@ -402,7 +402,7 @@ Page({
 
     this.setData({ submitting: true });
     try {
-      await callStaffApi('allocation.save', { orderNo: saleOrderId, allocations });
+      await callStaffApi('allocation.save', { saleOrderId, allocations });
       wx.showToast({ title: '分配已保存', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
     } catch (err: any) {

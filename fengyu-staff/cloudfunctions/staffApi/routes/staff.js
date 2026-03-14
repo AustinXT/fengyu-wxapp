@@ -178,10 +178,41 @@ async function todayCommission(ctx) {
       AND service_date = $2
   `, [staffWfId, todayStr])
 
+  // 上月时间范围
+  const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 1)
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+
+  // 上月分成金额 + 订单数
+  const lastMonthCommRows = await pg.query(`
+    SELECT
+      COALESCE(SUM(sa.total_amount::numeric), 0) AS amount,
+      COUNT(DISTINCT si.sale_order_id) AS order_count
+    FROM sale_allocations sa
+    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE sa.employee_id = $1
+      AND sa.is_void = false
+      AND o.status = '已支付'
+      AND o.paid_at >= $2
+      AND o.paid_at < $3
+  `, [staffWfId, lastMonthStart, lastMonthEnd])
+
+  // 上月服务单数
+  const lastMonthSvcRows = await pg.query(`
+    SELECT COUNT(*) AS service_count
+    FROM service_orders
+    WHERE assigned_employee_id = $1
+      AND service_date >= $2
+      AND service_date < $3
+  `, [staffWfId, lastMonthStart.toISOString().slice(0, 10), lastMonthEnd.toISOString().slice(0, 10)])
+
   const result = {
     todayAmount: Number(commissionRows[0].today_amount).toFixed(2),
     orderCount: Number(commissionRows[0].order_count),
     serviceCount: Number(serviceRows[0].service_count),
+    lastMonthAmount: Number(lastMonthCommRows[0].amount).toFixed(2),
+    lastMonthOrderCount: Number(lastMonthCommRows[0].order_count),
+    lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
   // 店长：门店今日总营收

@@ -22,7 +22,7 @@
         <view class="commission-columns">
           <!-- 左列：今日分成 -->
           <view class="commission-col" bindtap="goPerformance">
-            <text class="commission-col-label">今日分成（营业额）</text>
+            <text class="commission-col-label">今日分成</text>
             <view class="price-row">
               <text class="price-unit">¥ </text>
               <text class="price-value">{{todayCommission}}</text>
@@ -30,13 +30,13 @@
             <view class="commission-stats">
               <text class="commission-stat">订单 {{todayOrderCount}}</text>
               <text class="commission-stat-sep">·</text>
-              <text class="commission-stat">服务单 {{todayServiceCount}}</text>
+              <text class="commission-stat">服务 {{todayServiceCount}}</text>
             </view>
           </view>
           <!-- 分隔线 -->
           <view class="commission-divider" />
-          <!-- 右列：本月累计 -->
-          <view class="commission-col commission-col--right" bindtap="goPerformance">
+          <!-- 中列：本月累计 -->
+          <view class="commission-col" bindtap="goPerformance">
             <text class="commission-col-label">本月累计</text>
             <view class="price-row">
               <text class="price-unit">¥ </text>
@@ -45,7 +45,22 @@
             <view class="commission-stats">
               <text class="commission-stat">订单 {{monthlyOrderCount}}</text>
               <text class="commission-stat-sep">·</text>
-              <text class="commission-stat">服务单 {{monthlyServiceCount}}</text>
+              <text class="commission-stat">服务 {{monthlyServiceCount}}</text>
+            </view>
+          </view>
+          <!-- 分隔线 -->
+          <view class="commission-divider" />
+          <!-- 右列：上月累计 -->
+          <view class="commission-col" bindtap="goPerformance">
+            <text class="commission-col-label">上月累计</text>
+            <view class="price-row">
+              <text class="price-unit">¥ </text>
+              <text class="price-value">{{lastMonthCommission}}</text>
+            </view>
+            <view class="commission-stats">
+              <text class="commission-stat">订单 {{lastMonthOrderCount}}</text>
+              <text class="commission-stat-sep">·</text>
+              <text class="commission-stat">服务 {{lastMonthServiceCount}}</text>
             </view>
           </view>
         </view>

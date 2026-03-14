@@ -23,6 +23,10 @@ Page({
     monthlyCommission: '0.00',
     monthlyOrderCount: 0,
     monthlyServiceCount: 0,
+    // 上月累计
+    lastMonthCommission: '0.00',
+    lastMonthOrderCount: 0,
+    lastMonthServiceCount: 0,
     // 月度业绩日历
     currentMonth: '',
     monthLabel: '',
@@ -103,12 +107,18 @@ Page({
         orderCount: number;
         serviceCount: number;
         storeTodayRevenue?: string;
+        lastMonthAmount?: string;
+        lastMonthOrderCount?: number;
+        lastMonthServiceCount?: number;
       }>('staff.todayCommission');
       this.setData({
         todayCommission: data.todayAmount || '0.00',
         todayOrderCount: data.orderCount || 0,
         todayServiceCount: data.serviceCount || 0,
         storeTodayRevenue: data.storeTodayRevenue || '0.00',
+        lastMonthCommission: data.lastMonthAmount || '0.00',
+        lastMonthOrderCount: data.lastMonthOrderCount || 0,
+        lastMonthServiceCount: data.lastMonthServiceCount || 0,
       });
     } catch (_) {}
   },

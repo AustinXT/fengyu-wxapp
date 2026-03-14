@@ -4,7 +4,7 @@ import { isManager } from '../../utils/role';
 import { calcCartTotal } from '../../utils/cart-calc';
 
 const app = getApp<IAppOption>();
-const BIG_CATEGORIES = ['促销方案', '护理项目', '家居产品', '充值卡'];
+const BIG_CATEGORIES = ['福利活动', '护理项目', '家居产品', '充值卡'];
 
 interface CartItem {
   spuId: string;
@@ -119,7 +119,7 @@ Page({
 
       // 按当前大类筛选侧边栏
       const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
-      const filtered = categories.filter((c: any) => c.big_category === activeBig);
+      const filtered = categories.filter((c: any) => c.productKind === activeBig);
 
       // 判断首个筛选分类是否有缓存
       let displayList = spuList;
@@ -149,7 +149,7 @@ Page({
     if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
 
     const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter((c: any) => c.big_category === activeBig);
+    const filtered = this._allCategories.filter((c: any) => c.productKind === activeBig);
 
     // 先重置 activeCategoryIndex 为 -1，强制 van-sidebar 刷新选中态
     this.setData({
