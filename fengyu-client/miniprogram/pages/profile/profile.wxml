@@ -6,7 +6,8 @@
   <!-- 头部卡片（品牌渐变） -->
   <view class="user-header brand-gradient" bindtap="onEditProfile">
     <view class="user-avatar-wrap">
-      <van-icon name="contact" size="88rpx" color="#FFFFFF" />
+      <image wx:if="{{avatarUrl}}" src="{{avatarUrl}}" class="user-avatar-img" mode="aspectFill" />
+      <van-icon wx:else name="contact" size="88rpx" color="#FFFFFF" />
     </view>
     <view class="user-info">
       <text class="user-name">{{userName || '点击设置昵称'}}</text>

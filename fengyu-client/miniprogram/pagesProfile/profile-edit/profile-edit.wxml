@@ -5,10 +5,12 @@
 <view class="container">
 
   <!-- 头像区域 -->
-  <view class="avatar-section">
+  <view class="avatar-section" bindtap="onChooseAvatar">
     <view class="avatar-circle">
-      <van-icon name="contact" size="96rpx" color="#C0322A" />
+      <image wx:if="{{avatarUrl}}" src="{{avatarUrl}}" class="avatar-image" mode="aspectFill" />
+      <van-icon wx:else name="contact" size="96rpx" color="#C0322A" />
     </view>
+    <text class="avatar-hint">点击更换头像</text>
   </view>
 
   <!-- 基本信息 -->

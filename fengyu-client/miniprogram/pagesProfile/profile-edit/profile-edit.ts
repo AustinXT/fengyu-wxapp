@@ -25,6 +25,7 @@ Page({
     maskedPhone: '',
     userId: '',
     boundStoreName: '',
+    avatarUrl: '',
     isEditing: false,
     editName: '',
     submitting: false,
@@ -37,7 +38,41 @@ Page({
       maskedPhone: maskPhone(wx.getStorageSync('phone') || ''),
       userId: wx.getStorageSync('userId') || '',
       boundStoreName: app.globalData.boundStoreName || '',
+      avatarUrl: wx.getStorageSync('avatarUrl') || '',
     });
+  },
+
+  async onChooseAvatar() {
+    try {
+      const res = await wx.chooseMedia({
+        count: 1,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+        sizeType: ['compressed'],
+      });
+      const tempFilePath = res.tempFiles[0].tempFilePath;
+      if (!tempFilePath) return;
+
+      wx.showLoading({ title: '上传中...', mask: true });
+      const ext = tempFilePath.split('.').pop() || 'jpg';
+      const cloudPath = `avatars/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+      const uploadRes = await wx.cloud.uploadFile({
+        cloudPath,
+        filePath: tempFilePath,
+      });
+      const fileID = uploadRes.fileID;
+
+      await callClientApi('auth.updateProfile', { avatarUrl: fileID });
+      wx.setStorageSync('avatarUrl', fileID);
+      this.setData({ avatarUrl: fileID });
+      wx.hideLoading();
+      Toast.success('头像已更新');
+    } catch (err: any) {
+      wx.hideLoading();
+      if (err.errMsg?.includes('chooseMedia:fail cancel')) return;
+      Toast.fail(err.message || '上传失败');
+    }
   },
 
   onEditName() {

@@ -13,6 +13,7 @@ Page({
     userName: '',
     maskedPhone: '',
     boundStoreName: '',
+    avatarUrl: '',
     unreadCount: 0,
   },
 
@@ -28,10 +29,12 @@ Page({
   refreshData() {
     const phone = wx.getStorageSync('phone') as string || '';
     const userName = wx.getStorageSync('userName') as string || '';
+    const avatarUrl = wx.getStorageSync('avatarUrl') as string || '';
     this.setData({
       userName,
       maskedPhone: maskPhone(phone),
       boundStoreName: app.globalData.boundStoreName,
+      avatarUrl,
     });
   },
 

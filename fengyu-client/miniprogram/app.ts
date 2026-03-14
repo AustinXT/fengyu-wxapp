@@ -69,6 +69,9 @@ App<IAppOption>({
         if (res.result.data.name) {
           wx.setStorageSync('userName', res.result.data.name);
         }
+        if (res.result.data.avatarUrl) {
+          wx.setStorageSync('avatarUrl', res.result.data.avatarUrl);
+        }
         // 同步服务器端绑定的门店（核心：即使本地缓存被清除也能恢复）
         if (boundStoreId) {
           this.globalData.boundStoreId = boundStoreId;

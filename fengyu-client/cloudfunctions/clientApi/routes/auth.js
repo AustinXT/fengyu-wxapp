@@ -18,7 +18,7 @@ async function login(ctx) {
 
   // 检查用户是否存在（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    `SELECT u.user_id, u.phone, u.name, u.bound_store_id,
+    `SELECT u.user_id, u.phone, u.name, u.avatar_url, u.bound_store_id,
             s.store_name AS bound_store_name,
             pm.name AS bound_market_name
      FROM client_wechat_users u
@@ -60,6 +60,7 @@ async function login(ctx) {
       userId: users[0].user_id,
       phone: users[0].phone,
       name: users[0].name,
+      avatarUrl: users[0].avatar_url,
       boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
@@ -241,13 +242,12 @@ async function bindStore(ctx) {
  */
 async function updateProfile(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { name } = ctx.event.payload || {}
+  const { name, avatarUrl } = ctx.event.payload || {}
 
-  if (!name || typeof name !== 'string' || name.trim().length === 0) {
-    throw new Error('INVALID_PARAMS: 名称不能为空')
+  if (!name && !avatarUrl) {
+    throw new Error('INVALID_PARAMS: 至少提供 name 或 avatarUrl')
   }
 
-  const trimmedName = name.trim().substring(0, 50)
   const now = new Date()
 
   const users = await pg.query(
@@ -259,17 +259,32 @@ async function updateProfile(ctx) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
 
+  const setClauses = ['updated_at = $1']
+  const params = [now]
+  const result = {}
+
+  if (name && typeof name === 'string' && name.trim().length > 0) {
+    const trimmedName = name.trim().substring(0, 50)
+    params.push(trimmedName)
+    setClauses.push(`name = $${params.length}`)
+    result.name = trimmedName
+  }
+
+  if (avatarUrl && typeof avatarUrl === 'string') {
+    params.push(avatarUrl.substring(0, 500))
+    setClauses.push(`avatar_url = $${params.length}`)
+    result.avatarUrl = avatarUrl
+  }
+
+  params.push(users[0].user_id)
   await pg.query(
-    'UPDATE client_wechat_users SET name = $1, updated_at = $2 WHERE user_id = $3',
-    [trimmedName, now, users[0].user_id]
+    `UPDATE client_wechat_users SET ${setClauses.join(', ')} WHERE user_id = $${params.length}`,
+    params
   )
 
   invalidateAuthCache(OPENID)
 
-  ctx.result = {
-    success: true,
-    name: trimmedName
-  }
+  ctx.result = { success: true, ...result }
 }
 
 module.exports = {
