@@ -149,6 +149,11 @@ async function detail(ctx) {
 
   const a = appointments[0]
 
+  // 美容师只能查看指定自己的预约
+  if (!ctx.auth.roles.includes('manager') && a.employee_id !== ctx.auth.staffWfId) {
+    throw new Error('PERMISSION_DENIED: 无权查看该预约')
+  }
+
   ctx.result = {
     id: a.appointment_id,
     customerName: a.client_name,

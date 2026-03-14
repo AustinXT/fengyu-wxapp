@@ -32,8 +32,8 @@ Page({
     if (!e.detail.cloudID) return
     try {
       await bindPhone(e.detail.cloudID)
-      const { phone, staffWfId } = app.globalData
-      this.setData({ phone, staffWfId })
+      const { phone, staffWfId, staffName, position, boundStoreName } = app.globalData
+      this.setData({ phone, staffWfId, staffName, position, boundStoreName, isManager: isManager() })
       wx.showToast({ title: '绑定成功', icon: 'success' })
     } catch (err: any) {
       wx.showToast({ title: err.message || '绑定失败', icon: 'none' })

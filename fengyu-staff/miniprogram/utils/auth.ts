@@ -19,7 +19,7 @@ export async function syncLogin(): Promise<void> {
 
 /** 绑定手机号（CloudID 安全解密方式） */
 export async function bindPhone(cloudID: string): Promise<void> {
-  await wx.cloud.callFunction({
+  const res = await wx.cloud.callFunction({
     name: 'staffApi',
     data: {
       action: 'auth.bindPhone',
@@ -27,5 +27,8 @@ export async function bindPhone(cloudID: string): Promise<void> {
       phoneData: wx.cloud.CloudID(cloudID)
     }
   }) as any;
+  if (res.result?.code !== 0) {
+    throw new Error(res.result?.message || '手机号绑定失败');
+  }
   await syncLogin();
 }

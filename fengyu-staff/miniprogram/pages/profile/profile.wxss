@@ -73,6 +73,17 @@
   border: none;
 }
 
+/* ===== 重新绑定按钮 ===== */
+.rebind-btn {
+  font-size: 22rpx;
+  color: #C0322A;
+  border-color: #C0322A;
+  padding: 0 16rpx;
+  line-height: 48rpx;
+  height: 48rpx;
+  background: transparent;
+}
+
 /* ===== 角色标签 ===== */
 .role-badge {
   padding: 4rpx 16rpx;

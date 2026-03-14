@@ -37,12 +37,36 @@
         <text class="order-amount">¥ {{item.totalAmount}}</text>
         <view class="order-actions" catchtap="noop">
           <van-button
+            wx:if="{{item.status === '待支付'}}"
+            size="small" plain
+            catchtap="onViewQrcode"
+            data-id="{{item.id}}"
+          >查看二维码</van-button>
+          <van-button
             wx:if="{{item.status === '待确认收款' && isManager}}"
             type="primary" size="small"
             custom-class="btn-primary-brand"
             catchtap="onConfirmOffline"
             data-id="{{item.id}}"
           >确认收款</van-button>
+          <van-button
+            wx:if="{{(item.status === '待支付' || item.status === '待确认收款') && isManager}}"
+            size="small" plain type="danger"
+            catchtap="onCloseOrder"
+            data-id="{{item.id}}"
+          >关闭订单</van-button>
+          <van-button
+            wx:if="{{item.status === '支付失败' && isManager}}"
+            size="small" plain
+            catchtap="onResetFailed"
+            data-id="{{item.id}}"
+          >重置支付</van-button>
+          <van-button
+            wx:if="{{item.status === '已支付' && isManager}}"
+            size="small" plain type="primary"
+            catchtap="onAllocate"
+            data-id="{{item.id}}"
+          >营业额分配</van-button>
           <van-button size="small" plain catchtap="onItemTap" data-id="{{item.id}}">详情</van-button>
         </view>
       </view>

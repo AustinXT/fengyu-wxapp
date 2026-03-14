@@ -29,7 +29,10 @@
 
   <view class="section-card" wx:if="{{phone}}">
     <van-cell-group>
-      <van-cell title="手机号" value="{{phone}}" icon="phone-o" />
+      <van-cell title="手机号" value="{{phone}}" icon="phone-o">
+        <button slot="right-icon" open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber"
+                class="rebind-btn" size="mini" plain>重新绑定</button>
+      </van-cell>
       <van-cell title="员工编号" value="{{staffWfId || '未关联'}}" icon="manager-o" />
       <van-cell
         title="所属门店"

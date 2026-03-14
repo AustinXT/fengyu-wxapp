@@ -394,6 +394,8 @@ async function list(ctx) {
       so.client_user_id,
       so.appointment_id,
       so.remark,
+      so.started_at,
+      so.completed_at,
       so.created_at,
       wu.phone AS client_phone
     FROM service_orders so
@@ -413,6 +415,8 @@ async function list(ctx) {
         si.service_order_id,
         COALESCE(sli.product_name, '') AS product_name,
         sli.sku_spec_name,
+        sli.remaining_sessions,
+        sli.session_count,
         si.service_duration
       FROM service_items si
       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
@@ -424,8 +428,10 @@ async function list(ctx) {
   for (const i of itemsSummary) {
     if (!itemsMap[i.service_order_id]) itemsMap[i.service_order_id] = []
     itemsMap[i.service_order_id].push({
-      spuName: i.product_name,
-      skuDisplayName: i.sku_spec_name
+      itemName: i.product_name,
+      spec: i.sku_spec_name || '',
+      remainingSessions: i.remaining_sessions,
+      totalSessions: i.session_count,
     })
   }
 
@@ -480,6 +486,8 @@ async function list(ctx) {
     assignedStaffWfId: so.assigned_employee_id,
     status: so.status,
     serviceTime: so.service_date,
+    startTime: so.started_at,
+    completedTime: so.completed_at,
     appointmentId: so.appointment_id,
     remark: so.remark || '',
     items: itemsMap[so.service_order_id] || [],

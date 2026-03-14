@@ -113,4 +113,53 @@ Page({
       }
     });
   },
+
+  onViewQrcode(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${id}` });
+  },
+
+  onCloseOrder(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.showModal({
+      title: '关闭订单',
+      content: '确定要关闭该订单吗？关闭后不可恢复。',
+      confirmText: '确认关闭',
+      confirmColor: '#D94040',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('order.close', { orderNo: id });
+          wx.showToast({ title: '订单已关闭', icon: 'success' });
+          this.loadList();
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      }
+    });
+  },
+
+  onResetFailed(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.showModal({
+      title: '重置支付状态',
+      content: '确定将该订单重置为待支付状态？',
+      confirmText: '确认重置',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('order.resetFailed', { orderNo: id });
+          wx.showToast({ title: '已重置为待支付', icon: 'success' });
+          this.loadList();
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      }
+    });
+  },
+
+  onAllocate(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${id}` });
+  },
 });

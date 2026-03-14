@@ -229,6 +229,15 @@
             <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">内部单</text>
             <text class="order-type-card-desc">员工半价</text>
           </view>
+          <view
+            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'promotion' ? 'order-type-card--active' : ''}}"
+            bindtap="onSelectOrderType"
+            data-type="promotion"
+          >
+            <van-icon name="gift-o" size="48rpx" color="{{orderType === 'promotion' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
+            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">福利活动</text>
+            <text class="order-type-card-desc">活动方案</text>
+          </view>
         </view>
         <view class="checkout-footer checkout-footer--row">
           <van-button size="small" plain bind:click="onStep1Back">返回</van-button>
@@ -245,7 +254,7 @@
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
           顾客：{{customerInfo.name || customerInfo.phone}} ·
-          {{orderType === 'normal' ? '正常单' : orderType === 'experience' ? '体验单' : '内部单'}}
+          {{orderType === 'normal' ? '正常单' : orderType === 'experience' ? '体验单' : orderType === 'internal' ? '内部单' : '福利活动'}}
         </text>
         <view class="confirm-items">
           <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">

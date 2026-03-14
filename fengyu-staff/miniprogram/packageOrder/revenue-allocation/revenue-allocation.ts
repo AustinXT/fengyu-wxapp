@@ -276,32 +276,33 @@ Page({
     this.computeSummary();
   },
 
-  /** 从已有分配记录恢复到 displayItems */
+  /** 从已有分配记录恢复到 displayItems（云函数返回扁平结构） */
   restoreAllocations(allocations: any[], items: OrderItem[]) {
     // 构建员工名映射
     const staffMap = new Map<string, string>();
     this.data.allStaffList.forEach(s => staffMap.set(s.staffWfId, s.staffName));
 
-    // 按 saleItemId 收集分配行
+    // 云函数返回扁平结构：每行 = { sale_item_id, employee_id, department_name, allocation_ratio, total_amount, is_void }
     const linesMap = new Map<string, AllocLine[]>();
     for (const alloc of allocations) {
-      if (alloc.isVoid) continue;
-      for (const ai of (alloc.items || [])) {
-        const saleItemId = ai.saleItemId || '';
-        const line: AllocLine = {
-          saleItemId,
-          department: alloc.department || '',
-          staffWfId: alloc.employeeId || '',
-          staffName: staffMap.get(alloc.employeeId) || alloc.employeeId || '',
-          salesCategory: ai.category || '',
-          commissionRate: Number(ai.commissionRate) || 0,
-          amount: String(Number(ai.amount).toFixed(2)),
-          autoAmount: String(Number(ai.amount).toFixed(2)),
-          autoFilled: false,
-        };
-        if (!linesMap.has(saleItemId)) linesMap.set(saleItemId, []);
-        linesMap.get(saleItemId)!.push(line);
-      }
+      if (alloc.is_void || alloc.isVoid) continue;
+      const saleItemId = alloc.sale_item_id || alloc.saleItemId || '';
+      const employeeId = alloc.employee_id || alloc.employeeId || '';
+      const dept = alloc.department_name || alloc.department || '';
+      const amount = Number(alloc.total_amount || alloc.amount || 0).toFixed(2);
+      const line: AllocLine = {
+        saleItemId,
+        department: dept,
+        staffWfId: employeeId,
+        staffName: staffMap.get(employeeId) || alloc.employee_name || employeeId || '',
+        salesCategory: alloc.sales_category || '',
+        commissionRate: Number(alloc.allocation_ratio || alloc.commissionRate) || 0,
+        amount,
+        autoAmount: amount,
+        autoFilled: false,
+      };
+      if (!linesMap.has(saleItemId)) linesMap.set(saleItemId, []);
+      linesMap.get(saleItemId)!.push(line);
     }
 
     // 重建 displayItems
@@ -367,38 +368,14 @@ Page({
       return;
     }
 
-    // 按 employeeId + department 聚合（payload 格式不变）
-    const allocMap = new Map<string, {
-      employeeId: string;
-      department: string;
-      items: Array<{
-        saleItemId: string;
-        salesCategory: string;
-        commissionRate: number;
-        amount: number;
-      }>;
-    }>();
-
-    for (const line of effectiveLines) {
-      const key = `${line.staffWfId}_${line.department}`;
-      let entry = allocMap.get(key);
-      if (!entry) {
-        entry = {
-          employeeId: line.staffWfId,
-          department: line.department,
-          items: [],
-        };
-        allocMap.set(key, entry);
-      }
-      entry.items.push({
-        saleItemId: line.saleItemId,
-        salesCategory: line.salesCategory,
-        commissionRate: line.commissionRate,
-        amount: parseFloat(line.amount) || 0,
-      });
-    }
-
-    const allocations = Array.from(allocMap.values());
+    // 扁平化为云函数期望的格式：每行 = 一条 sale_item + 一个员工
+    const allocations = effectiveLines.map(line => ({
+      saleItemId: line.saleItemId,
+      employeeId: line.staffWfId,
+      departmentName: line.department,
+      allocationRatio: line.commissionRate,
+      totalAmount: parseFloat(line.amount) || 0,
+    }));
 
     this.setData({ submitting: true });
     try {

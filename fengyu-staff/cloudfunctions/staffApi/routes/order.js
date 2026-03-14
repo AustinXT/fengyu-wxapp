@@ -100,7 +100,7 @@ async function create(ctx) {
   const itemDataList = await Promise.all(
     items.map(async (item) => {
       const skuRows = await pg.query(
-        `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.session_count,
+        `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
                 p.name AS product_name, p.sales_category,
                 pc.product_kind
          FROM product_skus s
@@ -117,16 +117,18 @@ async function create(ctx) {
       let unitPrice
       let sessionCount = null
       let salesCategory = sku.sales_category || null
+      // 优先使用特价（special_price），没有则用标准价
+      const basePrice = Number(sku.special_price || sku.price)
 
       if (orderType === '体验' && item.customPrice !== undefined) {
         unitPrice = Number(item.customPrice)
         sessionCount = 1
       } else if (orderType === '内部') {
         // 内部单（员工消费）统一半价
-        unitPrice = Math.round(Number(sku.price) * 50) / 100
+        unitPrice = Math.round(basePrice * 50) / 100
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       } else {
-        unitPrice = Number(sku.price)
+        unitPrice = basePrice
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       }
 
