@@ -892,12 +892,26 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
     }
 
     // ── 6c. 院装产品（UDT_M_341）── 每条 1:1 product + sku
-    const homeCatId = catMap['家居产品']?.id || defaultCatId
+    // 优先找 product_kind='家居产品' 的分类，按名称匹配；无匹配则用 '美容耗材' 兜底
+    let homeCatId = null
+    for (const [, v] of Object.entries(catMap)) {
+      if (v.kind === '家居产品') { homeCatId = v.id; break }
+    }
+    if (!homeCatId) {
+      homeCatId = hashId('cat', '美容耗材', '家居产品')
+      await client.query(`
+        INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
+        VALUES ($1, '美容耗材', '家居产品', 10, true)
+        ON CONFLICT (category_id) DO NOTHING
+      `, [homeCatId])
+      catMap['美容耗材'] = { id: homeCatId, kind: '家居产品' }
+    }
     for (const row of (wfData.UDT_M_341 || [])) {
       const name = trim(row.name)
       if (!name) continue
 
-      const catName = trim(row.category_name) || '家居产品'
+      const catName = trim(row.category_name) || '美容耗材'
+      // 优先按名称匹配已有分类，否则用 家居产品 类下的兜底分类
       const cat = catMap[catName] || { id: homeCatId }
       const productId = hashId('product', 'home', trim(row.wf_item_id))
 
