@@ -1,6 +1,28 @@
 <!-- pagesCoupon/my-coupons/my-coupons.wxml -->
 <van-toast id="van-toast" />
 
+<!-- 兑换码 -->
+<view class="redeem-section">
+  <view class="redeem-row">
+    <input
+      class="redeem-input"
+      placeholder="输入兑换码"
+      value="{{redeemCode}}"
+      bindinput="onRedeemInput"
+      confirm-type="done"
+      bindconfirm="onRedeem"
+    />
+    <van-button
+      type="primary"
+      size="small"
+      custom-class="redeem-btn"
+      loading="{{redeeming}}"
+      disabled="{{!redeemCode || redeeming}}"
+      bindtap="onRedeem"
+    >兑换</van-button>
+  </view>
+</view>
+
 <van-tabs active="{{activeTab}}" bind:change="onTabChange" line-width="60rpx">
   <van-tab title="未使用" />
   <van-tab title="已使用" />

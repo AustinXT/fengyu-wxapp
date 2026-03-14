@@ -1,0 +1,65 @@
+<!-- pagesOrder/service-records/service-records.wxml -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载态 -->
+  <view wx:if="{{isLoading && records.length === 0}}" class="loading-wrap">
+    <van-loading size="48rpx" color="#C0322A">加载中...</van-loading>
+  </view>
+
+  <!-- 空态 -->
+  <van-empty
+    wx:elif="{{!isLoading && records.length === 0}}"
+    description="暂无服务记录"
+  />
+
+  <!-- 数据态 -->
+  <view wx:else class="record-list">
+    <view
+      wx:for="{{records}}"
+      wx:key="service_order_id"
+      class="record-card"
+      bindtap="onTapRecord"
+      data-id="{{item.service_order_id}}"
+    >
+      <!-- 头部：状态 + 日期 -->
+      <view class="record-header">
+        <van-tag
+          plain
+          color="{{item.statusColor}}"
+          custom-class="record-status-tag"
+        >{{item.status}}</van-tag>
+        <text class="record-date">{{item.dateFmt}}</text>
+      </view>
+
+      <!-- 项目名称 -->
+      <view class="record-title">{{item.itemSummary || '服务项目'}}</view>
+
+      <!-- 详情行 -->
+      <view class="record-details">
+        <view class="record-detail-item" wx:if="{{item.store_name}}">
+          <van-icon name="location-o" size="24rpx" color="#999" />
+          <text>{{item.store_name}}</text>
+        </view>
+        <view class="record-detail-item" wx:if="{{item.employee_name}}">
+          <van-icon name="contact" size="24rpx" color="#999" />
+          <text>{{item.employee_name}}</text>
+        </view>
+        <view class="record-detail-item" wx:if="{{item.durationFmt}}">
+          <van-icon name="clock-o" size="24rpx" color="#999" />
+          <text>{{item.durationFmt}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 底部加载更多 -->
+    <view wx:if="{{isLoading && records.length > 0}}" class="loading-more">
+      <van-loading size="36rpx" color="#999">加载中...</van-loading>
+    </view>
+    <view wx:elif="{{!hasMore && records.length > 0}}" class="no-more">
+      <text>没有更多了</text>
+    </view>
+  </view>
+
+</view>

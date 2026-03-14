@@ -1,0 +1,11 @@
+{
+  "navigationBarTitleText": "服务记录",
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "van-empty": "@vant/weapp/empty/index",
+    "van-icon": "@vant/weapp/icon/index",
+    "van-toast": "@vant/weapp/toast/index",
+    "van-loading": "@vant/weapp/loading/index",
+    "van-tag": "@vant/weapp/tag/index"
+  }
+}

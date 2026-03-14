@@ -70,6 +70,69 @@ async function detail(ctx) {
   }
 }
 
+/**
+ * 服务记录列表
+ * payload: { page?: number, pageSize?: number }
+ */
+async function list(ctx) {
+  const { userId } = ctx.auth
+  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
+
+  const offset = (page - 1) * pageSize
+
+  const records = await pg.query(`
+    SELECT
+      so.service_order_id,
+      so.status,
+      so.service_date,
+      so.store_id,
+      s.store_name,
+      so.assigned_employee_id,
+      sw.name AS employee_name,
+      so.started_at,
+      so.completed_at,
+      so.created_at
+    FROM service_orders so
+    LEFT JOIN stores s ON so.store_id = s.store_id
+    LEFT JOIN staff_wechat_users sw ON so.assigned_employee_id = sw.employee_id
+    WHERE so.client_user_id = $1
+    ORDER BY so.created_at DESC
+    LIMIT $2 OFFSET $3
+  `, [userId, pageSize, offset])
+
+  // 批量查询服务明细
+  if (records.length > 0) {
+    const orderIds = records.map(r => r.service_order_id)
+    const items = await pg.query(`
+      SELECT
+        si.service_order_id,
+        si.service_item_id,
+        si.session_used,
+        si.service_duration,
+        si.unit_real_price,
+        sal.product_name,
+        sal.sku_spec_name
+      FROM service_items si
+      LEFT JOIN sale_items sal ON si.sale_item_id = sal.sale_item_id
+      WHERE si.service_order_id = ANY($1)
+      ORDER BY si.service_item_id
+    `, [orderIds])
+
+    const itemMap = {}
+    for (const item of items) {
+      if (!itemMap[item.service_order_id]) itemMap[item.service_order_id] = []
+      itemMap[item.service_order_id].push(item)
+    }
+
+    for (const record of records) {
+      record.items = itemMap[record.service_order_id] || []
+    }
+  }
+
+  ctx.result = { records }
+}
+
 module.exports = {
-  detail
+  detail,
+  list
 }

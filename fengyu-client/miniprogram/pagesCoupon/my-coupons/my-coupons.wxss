@@ -4,6 +4,32 @@ page {
   background: var(--color-bg-page);
 }
 
+/* ===== 兑换码区域 ===== */
+.redeem-section {
+  padding: 24rpx 24rpx 0;
+}
+
+.redeem-row {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  background: var(--color-bg-card);
+  border-radius: 16rpx;
+  padding: 16rpx 20rpx;
+  box-shadow: var(--shadow-card);
+}
+
+.redeem-input {
+  flex: 1;
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  height: 56rpx;
+}
+
+.redeem-btn {
+  flex-shrink: 0;
+}
+
 .coupon-list {
   padding: 24rpx;
 }
