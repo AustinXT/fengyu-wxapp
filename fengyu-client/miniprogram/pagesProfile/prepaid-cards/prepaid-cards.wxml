@@ -1,0 +1,71 @@
+<!-- pagesProfile/prepaid-cards/prepaid-cards.wxml — 充值卡 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载骨架 -->
+  <view wx:if="{{isLoading}}" class="skeleton-wrap">
+    <van-skeleton title row="4" />
+  </view>
+
+  <block wx:else>
+
+    <!-- 总余额 -->
+    <view class="balance-header brand-gradient">
+      <text class="balance-label">充值卡总余额（元）</text>
+      <text class="balance-value">{{totalBalance.toFixed(2)}}</text>
+    </view>
+
+    <!-- 空态 -->
+    <van-empty wx:if="{{cards.length === 0}}" description="暂无充值卡" />
+
+    <!-- 卡片列表 -->
+    <view wx:else class="card-list">
+      <view
+        class="card-item {{selectedCardId === item.cardId ? 'card-active' : ''}}"
+        wx:for="{{cards}}"
+        wx:key="cardId"
+        bindtap="onSelectCard"
+        data-card-id="{{item.cardId}}"
+      >
+        <view class="card-main">
+          <view class="card-info">
+            <text class="card-store">{{item.storeName || '通用卡'}}</text>
+            <text class="card-id">卡号: {{item.cardId}}</text>
+          </view>
+          <view class="card-balance-wrap">
+            <text class="card-balance-value">{{item.balance.toFixed(2)}}</text>
+            <text class="card-balance-label">余额（元）</text>
+          </view>
+          <van-icon name="{{selectedCardId === item.cardId ? 'arrow-up' : 'arrow-down'}}" size="28rpx" color="var(--color-text-hint)" />
+        </view>
+
+        <!-- 展开的消费明细 -->
+        <view wx:if="{{selectedCardId === item.cardId}}" class="tx-section">
+          <view wx:if="{{txLoading}}" class="tx-loading">
+            <text class="loading-text">加载中...</text>
+          </view>
+          <view wx:elif="{{transactions.length === 0}}" class="tx-empty">
+            <text class="loading-text">暂无消费记录</text>
+          </view>
+          <view wx:else class="tx-list">
+            <view class="tx-item" wx:for="{{transactions}}" wx:for-item="tx" wx:key="id">
+              <view class="tx-info">
+                <text class="tx-desc">{{tx.description}}</text>
+                <text class="tx-date">{{tx.displayDate}}</text>
+              </view>
+              <text class="tx-amount {{tx.isPositive ? 'tx-positive' : 'tx-negative'}}">{{tx.displayAmount}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 底部提示 -->
+      <view class="footer-note">
+        <text class="footer-note-text">仅显示最近半年消费明细</text>
+      </view>
+    </view>
+
+  </block>
+
+</view>

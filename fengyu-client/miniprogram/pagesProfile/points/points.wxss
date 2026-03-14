@@ -1,0 +1,141 @@
+/* pagesProfile/points/points.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+/* VIP 卡片 */
+.vip-card {
+  margin: 24rpx 32rpx;
+  border-radius: 20rpx;
+  padding: 40rpx 36rpx;
+  color: #FFFFFF;
+}
+
+.vip-level-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 28rpx;
+}
+
+.vip-level-text {
+  font-size: 28rpx;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.vip-balance-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+
+.vip-balance-label {
+  font-size: 26rpx;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.vip-balance-value {
+  font-size: 56rpx;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+.vip-next-level {
+  margin-top: 8rpx;
+}
+
+.vip-next-text {
+  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* 积分记录 */
+.history-section {
+  background: var(--color-bg-card);
+  margin-top: 24rpx;
+  padding-bottom: 24rpx;
+}
+
+.skeleton-wrap {
+  padding: 24rpx 32rpx;
+}
+
+/* 记录列表 */
+.record-list {
+  padding: 0 32rpx;
+}
+
+.record-item {
+  display: flex;
+  align-items: center;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+  gap: 20rpx;
+}
+
+.record-item:last-child {
+  border-bottom: none;
+}
+
+.record-icon-wrap {
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 32rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.record-icon-earn {
+  background: #52C41A;
+}
+
+.record-icon-redeem {
+  background: #FAAD14;
+}
+
+.record-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6rpx;
+}
+
+.record-desc {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+}
+
+.record-date {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.record-amount {
+  font-size: 32rpx;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.amount-earn {
+  color: #52C41A;
+}
+
+.amount-redeem {
+  color: var(--color-text-secondary);
+}
+
+/* 加载更多 */
+.loading-more {
+  text-align: center;
+  padding: 24rpx 0;
+}
+
+.loading-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}

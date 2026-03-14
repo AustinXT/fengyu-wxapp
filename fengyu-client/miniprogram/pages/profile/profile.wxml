@@ -25,15 +25,18 @@
       <van-icon name="coupon-o" size="48rpx" color="#C0322A" />
       <text class="grid-label">优惠券</text>
     </view>
-    <view class="grid-item" bindtap="onComingSoon" data-name="积分">
+    <view class="grid-item" bindtap="onPoints">
       <van-icon name="gem-o" size="48rpx" color="#D4820A" />
       <text class="grid-label">积分</text>
     </view>
-    <view class="grid-item" bindtap="onComingSoon" data-name="消息">
-      <van-icon name="envelop-o" size="48rpx" color="#096DD9" />
+    <view class="grid-item" bindtap="onMessages">
+      <view class="grid-icon-wrap">
+        <van-icon name="envelop-o" size="48rpx" color="#096DD9" />
+        <view wx:if="{{unreadCount > 0}}" class="grid-badge">{{unreadCount > 99 ? '99+' : unreadCount}}</view>
+      </view>
       <text class="grid-label">消息</text>
     </view>
-    <view class="grid-item" bindtap="onComingSoon" data-name="充值卡">
+    <view class="grid-item" bindtap="onPrepaidCards">
       <van-icon name="balance-o" size="48rpx" color="#52C41A" />
       <text class="grid-label">充值卡</text>
     </view>

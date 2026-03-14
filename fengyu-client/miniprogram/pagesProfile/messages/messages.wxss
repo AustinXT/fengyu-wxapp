@@ -1,0 +1,103 @@
+/* pagesProfile/messages/messages.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+.skeleton-wrap {
+  padding: 24rpx 32rpx;
+}
+
+/* 消息列表 */
+.message-list {
+  padding: 0 32rpx;
+}
+
+.message-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 28rpx 0;
+  border-bottom: 1rpx solid var(--color-border);
+  gap: 20rpx;
+  position: relative;
+}
+
+.message-item:last-child {
+  border-bottom: none;
+}
+
+.message-unread {
+  background: rgba(192, 50, 42, 0.02);
+}
+
+.message-icon-wrap {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 36rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.message-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.message-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8rpx;
+}
+
+.message-title {
+  font-size: 30rpx;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.message-time {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  flex-shrink: 0;
+  margin-left: 16rpx;
+}
+
+.message-body {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.5;
+}
+
+.unread-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 8rpx;
+  background: #C0322A;
+  position: absolute;
+  top: 32rpx;
+  right: 0;
+  flex-shrink: 0;
+}
+
+/* 加载更多 */
+.loading-more {
+  text-align: center;
+  padding: 24rpx 0;
+}
+
+.loading-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}

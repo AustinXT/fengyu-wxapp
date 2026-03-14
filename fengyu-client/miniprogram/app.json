@@ -12,7 +12,8 @@
       "pages": [
         "shop/shop",
         "service-detail/service-detail",
-        "shopping-cart/shopping-cart"
+        "shopping-cart/shopping-cart",
+        "staff-detail/staff-detail"
       ]
     },
     {
@@ -46,7 +47,10 @@
       "root": "pagesProfile",
       "name": "profile",
       "pages": [
-        "profile-edit/profile-edit"
+        "profile-edit/profile-edit",
+        "points/points",
+        "messages/messages",
+        "prepaid-cards/prepaid-cards"
       ]
     },
     {

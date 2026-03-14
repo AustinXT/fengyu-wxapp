@@ -29,6 +29,7 @@ const routes = {
   'product.shopInit': () => require('./routes/product').shopInit,
   'staff.list': () => require('./routes/staff').list,
   'staff.default': () => require('./routes/staff').defaultStaff,
+  'staff.detail': () => require('./routes/staff').detail,
   'order.create': () => require('./routes/order').create,
   'order.pay': () => require('./routes/order').pay,
   'order.alipayPay': () => require('./routes/order').alipayPay,
@@ -44,7 +45,14 @@ const routes = {
   'service.detail': () => require('./routes/service').detail,
   'service.list': () => require('./routes/service').list,
   'coupon.list': () => require('./routes/coupon').list,
-  'coupon.available': () => require('./routes/coupon').available
+  'coupon.available': () => require('./routes/coupon').available,
+  'points.balance': () => require('./routes/points').balance,
+  'points.history': () => require('./routes/points').history,
+  'message.list': () => require('./routes/message').list,
+  'message.read': () => require('./routes/message').read,
+  'message.unreadCount': () => require('./routes/message').unreadCount,
+  'card.list': () => require('./routes/card').list,
+  'card.history': () => require('./routes/card').history
 }
 
 /**

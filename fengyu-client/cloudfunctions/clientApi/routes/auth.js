@@ -172,7 +172,7 @@ function generateUserId() {
  */
 async function bindStore(ctx) {
   const { OPENID } = cloud.getWXContext()
-  const { storeId } = ctx.event.payload
+  const { storeId, sourceChannel, promoterEmployeeId } = ctx.event.payload
 
   // 参数校验
   if (!storeId) {
@@ -207,10 +207,21 @@ async function bindStore(ctx) {
   const marketName = storeCheck[0].market_name || null
   const now = new Date()
 
-  // 更新绑定门店
+  // 更新绑定门店（含可选的来源渠道和推荐人）
+  const setClauses = ['bound_store_id = $1', 'updated_at = $2']
+  const params = [storeId, now]
+  if (sourceChannel) {
+    params.push(sourceChannel)
+    setClauses.push(`customer_source = $${params.length}`)
+  }
+  if (promoterEmployeeId) {
+    params.push(promoterEmployeeId)
+    setClauses.push(`promoter_employee_id = $${params.length}`)
+  }
+  params.push(users[0].user_id)
   await pg.query(
-    'UPDATE client_wechat_users SET bound_store_id = $1, updated_at = $2 WHERE user_id = $3',
-    [storeId, now, users[0].user_id]
+    `UPDATE client_wechat_users SET ${setClauses.join(', ')} WHERE user_id = $${params.length}`,
+    params
   )
 
   // 清除认证缓存，确保后续请求读到最新的 boundStoreId

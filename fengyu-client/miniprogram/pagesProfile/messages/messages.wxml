@@ -1,0 +1,47 @@
+<!-- pagesProfile/messages/messages.wxml — 消息中心 -->
+<van-toast id="van-toast" />
+
+<view class="container">
+
+  <!-- 加载骨架 -->
+  <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">
+    <van-skeleton title row="2" />
+    <van-skeleton title row="2" />
+    <van-skeleton title row="2" />
+  </view>
+
+  <!-- 空态 -->
+  <van-empty wx:elif="{{!isLoading && records.length === 0}}" description="暂无消息" />
+
+  <!-- 消息列表 -->
+  <view wx:else class="message-list">
+    <view
+      class="message-item {{!item.isRead ? 'message-unread' : ''}}"
+      wx:for="{{records}}"
+      wx:key="id"
+      bindtap="onTapMessage"
+      data-index="{{index}}"
+    >
+      <view class="message-icon-wrap" style="background:{{item.dotColor}}">
+        <van-icon name="{{item.iconName}}" size="32rpx" color="#FFFFFF" />
+      </view>
+      <view class="message-content">
+        <view class="message-title-row">
+          <text class="message-title">{{item.title}}</text>
+          <text class="message-time">{{item.displayTime}}</text>
+        </view>
+        <text class="message-body">{{item.body}}</text>
+      </view>
+      <view wx:if="{{!item.isRead}}" class="unread-dot" />
+    </view>
+  </view>
+
+  <!-- 加载更多 -->
+  <view wx:if="{{isLoading && records.length > 0}}" class="loading-more">
+    <text class="loading-text">加载中...</text>
+  </view>
+  <view wx:elif="{{!hasMore && records.length > 0}}" class="loading-more">
+    <text class="loading-text">没有更多了</text>
+  </view>
+
+</view>

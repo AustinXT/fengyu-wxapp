@@ -13,6 +13,7 @@ Page({
     userName: '',
     maskedPhone: '',
     boundStoreName: '',
+    unreadCount: 0,
   },
 
   onLoad() {
@@ -21,6 +22,7 @@ Page({
 
   onShow() {
     this.refreshData();
+    this.loadUnreadCount();
   },
 
   refreshData() {
@@ -57,9 +59,30 @@ Page({
     wx.navigateTo({ url: '/pagesOrder/service-records/service-records' });
   },
 
-  onComingSoon(e: WechatMiniprogram.TouchEvent) {
-    const name = e.currentTarget.dataset.name || '';
-    Toast(`${name}功能开发中`);
+  async loadUnreadCount() {
+    try {
+      const res = await wx.cloud.callFunction({
+        name: 'clientApi',
+        data: { action: 'message.unreadCount', payload: {} }
+      }) as any;
+      if (res.result?.code === 0) {
+        this.setData({ unreadCount: res.result.data?.count || 0 });
+      }
+    } catch (_err) {
+      // silently fail for unread count
+    }
+  },
+
+  onPoints() {
+    wx.navigateTo({ url: '/pagesProfile/points/points' });
+  },
+
+  onMessages() {
+    wx.navigateTo({ url: '/pagesProfile/messages/messages' });
+  },
+
+  onPrepaidCards() {
+    wx.navigateTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
   },
 
   onBindPhone() {
