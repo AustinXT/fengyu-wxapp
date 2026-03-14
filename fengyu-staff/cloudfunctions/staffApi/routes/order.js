@@ -64,9 +64,9 @@ async function create(ctx) {
   }
 
   // 映射前端 orderType
-  const ORDER_TYPE_MAP = { normal: '普通', experience: '体验', promotion: '福利活动' }
+  const ORDER_TYPE_MAP = { normal: '普通', experience: '体验', promotion: '福利活动', internal: '内部' }
   const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '普通'
-  if (!['普通', '体验', '福利活动'].includes(orderType)) {
+  if (!['普通', '体验', '福利活动', '内部'].includes(orderType)) {
     throw new Error('INVALID_PARAMS: orderType 值不合法')
   }
 
@@ -119,6 +119,10 @@ async function create(ctx) {
       if (orderType === '体验' && item.customPrice !== undefined) {
         unitPrice = Number(item.customPrice)
         sessionCount = 1
+      } else if (orderType === '内部') {
+        // 内部单（员工消费）统一半价
+        unitPrice = Math.round(Number(sku.price) * 50) / 100
+        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       } else {
         unitPrice = Number(sku.price)
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null

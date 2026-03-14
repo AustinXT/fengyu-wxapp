@@ -21,7 +21,7 @@
         </view>
         <view class="commission-columns">
           <!-- 左列：今日分成 -->
-          <view class="commission-col">
+          <view class="commission-col" bindtap="goPerformance">
             <text class="commission-col-label">今日分成（营业额）</text>
             <view class="price-row">
               <text class="price-unit">¥ </text>
@@ -36,7 +36,7 @@
           <!-- 分隔线 -->
           <view class="commission-divider" />
           <!-- 右列：本月累计 -->
-          <view class="commission-col commission-col--right">
+          <view class="commission-col commission-col--right" bindtap="goPerformance">
             <text class="commission-col-label">本月累计</text>
             <view class="price-row">
               <text class="price-unit">¥ </text>

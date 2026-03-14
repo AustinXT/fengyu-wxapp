@@ -42,7 +42,7 @@ Page({
     customerInfo: null as null | { id: string; name: string; phone: string; phoneMasked?: string },
     recentCustomers: [] as any[],
     // Step 1: 开单类型
-    orderType: 'normal' as 'normal' | 'experience',
+    orderType: 'normal' as 'normal' | 'experience' | 'internal',
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
@@ -308,8 +308,8 @@ Page({
 
   // Step 1: 选开单类型
   onSelectOrderType(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as 'normal' | 'experience';
-    if (type === 'experience' && !this.data.isManager) return;
+    const type = e.currentTarget.dataset.type as 'normal' | 'experience' | 'internal';
+    if ((type === 'experience' || type === 'internal') && !this.data.isManager) return;
     this.setData({ orderType: type });
   },
 

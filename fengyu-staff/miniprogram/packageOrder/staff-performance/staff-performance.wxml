@@ -1,0 +1,101 @@
+<!-- packageOrder/staff-performance/staff-performance.wxml — 员工绩效 -->
+<view class="container perf-page">
+
+  <!-- 员工信息 + 日期 -->
+  <view class="perf-header">
+    <view class="perf-staff-row">
+      <view class="perf-avatar">
+        <van-icon name="manager" size="48rpx" color="#C0322A" />
+      </view>
+      <text class="perf-staff-name">{{staffName}}</text>
+    </view>
+    <text class="perf-date-display">{{displayDate}}</text>
+    <view class="perf-range-btns">
+      <view class="range-btn {{rangeType === 'today' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="today">今日</view>
+      <view class="range-btn {{rangeType === 'week' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="week">本周</view>
+      <view class="range-btn {{rangeType === 'month' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="month">本月</view>
+      <view class="range-btn {{rangeType === 'custom' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="custom">上月</view>
+    </view>
+  </view>
+
+  <!-- 提成汇总卡片 -->
+  <view class="perf-summary-card">
+    <view class="summary-row">
+      <view class="summary-item">
+        <text class="summary-label">销售提成</text>
+        <view class="price-group">
+          <text class="price-symbol">¥</text>
+          <text class="price-integer">{{totalSalesAlloc}}</text>
+        </view>
+      </view>
+      <view class="summary-divider" />
+      <view class="summary-item">
+        <text class="summary-label">服务提成</text>
+        <view class="price-group">
+          <text class="price-symbol">¥</text>
+          <text class="price-integer">{{totalServiceFee}}</text>
+        </view>
+      </view>
+      <view class="summary-divider" />
+      <view class="summary-item summary-item--total">
+        <text class="summary-label">合计</text>
+        <view class="price-group">
+          <text class="price-symbol">¥</text>
+          <text class="price-integer">{{totalCommission}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 分类 Tab -->
+  <van-tabs active="{{activeCategoryTab}}" bind:change="onCategoryTabChange" color="#C0322A" line-width="40rpx">
+    <van-tab wx:for="{{categoryOptions}}" wx:key="*this" title="{{item}}" />
+  </van-tabs>
+
+  <!-- 明细列表 -->
+  <view wx:if="{{loading && items.length === 0}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <van-empty wx:elif="{{!loading && items.length === 0}}" description="暂无提成记录" />
+
+  <view wx:else class="perf-list">
+    <view class="perf-item" wx:for="{{items}}" wx:key="index">
+      <view class="perf-item-header">
+        <text class="perf-item-name">{{item.productName}}</text>
+        <text class="perf-item-type-tag {{item.type === 'sale' ? 'type-tag--sale' : 'type-tag--service'}}">
+          {{item.type === 'sale' ? '销售' : '服务'}}
+        </text>
+      </view>
+      <view class="perf-item-row">
+        <text class="perf-item-label">提成</text>
+        <text class="perf-item-amount">¥{{item.amount}}</text>
+      </view>
+      <view wx:if="{{item.type === 'sale'}}" class="perf-item-row">
+        <text class="perf-item-label">业绩</text>
+        <text class="perf-item-value">¥{{item.businessAmount}}</text>
+      </view>
+      <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
+        <text class="perf-item-label">划卡单价</text>
+        <text class="perf-item-value">¥{{item.servicePrice}} × {{item.sessionUsed}}次</text>
+      </view>
+      <view class="perf-item-row">
+        <text class="perf-item-label">顾客</text>
+        <text class="perf-item-value">{{item.customerName || '-'}}</text>
+      </view>
+      <view class="perf-item-footer">
+        <text class="perf-item-date">{{item.date}}</text>
+        <text wx:if="{{item.salesCategory}}" class="perf-item-category">{{item.salesCategory}}</text>
+      </view>
+    </view>
+
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24rpx" />
+    </view>
+    <view wx:elif="{{!hasMore && items.length > 0}}" class="no-more">
+      <text class="no-more-text">已加载全部</text>
+    </view>
+  </view>
+
+  <view class="safe-area-bottom" />
+</view>

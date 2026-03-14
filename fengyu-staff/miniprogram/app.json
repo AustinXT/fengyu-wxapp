@@ -15,7 +15,9 @@
         "order-list/order-list",
         "order-detail/order-detail",
         "revenue-allocation/revenue-allocation",
-        "allocation-list/allocation-list"
+        "allocation-list/allocation-list",
+        "staff-performance/staff-performance",
+        "dashboard/dashboard"
       ]
     },
     {

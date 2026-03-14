@@ -373,4 +373,278 @@ async function bindStore(ctx) {
   }
 }
 
-module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore }
+/**
+ * 员工绩效明细
+ * 返回指定时段的分配明细 + 服务提成明细
+ * payload: { startDate, endDate, employeeId? (店长可查他人), salesCategory?, page, pageSize }
+ */
+async function performanceDetail(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const isManager = ctx.auth.roles.includes('manager')
+
+  // 美容师只能查自己
+  const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
+
+  if (!startDate || !endDate) {
+    throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')
+  }
+
+  const start = new Date(startDate.replace(/-/g, '/'))
+  const end = new Date(endDate.replace(/-/g, '/'))
+  end.setDate(end.getDate() + 1)
+
+  // 销售提成明细（基于 sale_allocations）
+  const allocParams = [targetEmployeeId, start, end]
+  let allocWhere = ''
+  if (salesCategory) {
+    allocParams.push(salesCategory)
+    allocWhere = ` AND si.sales_category = $${allocParams.length}`
+  }
+
+  const allocRows = await pg.query(`
+    SELECT
+      sa.total_amount AS alloc_amount,
+      sa.allocation_ratio,
+      sa.department_name,
+      si.product_name,
+      si.sku_spec_name,
+      si.sales_category,
+      si.unit_real_price,
+      si.received,
+      o.sale_order_id,
+      o.customer_name,
+      o.client_phone,
+      o.paid_at,
+      o.store_id
+    FROM sale_allocations sa
+    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE sa.employee_id = $1
+      AND sa.is_void = false
+      AND o.status = '已支付'
+      AND o.paid_at >= $2
+      AND o.paid_at < $3
+      ${allocWhere}
+    ORDER BY o.paid_at DESC
+  `, allocParams)
+
+  // 服务提成明细（基于 service_items）
+  const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
+  let svcWhere = ''
+  if (salesCategory) {
+    svcParams.push(salesCategory)
+    svcWhere = ` AND si.sales_category = $${svcParams.length}`
+  }
+
+  const svcRows = await pg.query(`
+    SELECT
+      sit.unit_real_price AS service_price,
+      sit.session_used,
+      si.product_name,
+      si.sku_spec_name,
+      si.sales_category,
+      so.service_order_id,
+      so.service_date,
+      so.store_id,
+      cu.name AS customer_name,
+      cu.phone AS client_phone
+    FROM service_items sit
+    JOIN service_orders so ON so.service_order_id = sit.service_order_id
+    JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+    LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
+    WHERE sit.employee_id = $1
+      AND so.status = '已完成'
+      AND so.service_date >= $2
+      AND so.service_date <= $3
+      ${svcWhere}
+    ORDER BY so.service_date DESC
+  `, svcParams)
+
+  // 汇总
+  let totalSalesAlloc = 0
+  let totalServiceFee = 0
+  const categorySummary = {}
+
+  for (const r of allocRows) {
+    totalSalesAlloc += Number(r.alloc_amount)
+    const cat = r.sales_category || '未分类'
+    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
+    categorySummary[cat].sales += Number(r.alloc_amount)
+  }
+
+  for (const r of svcRows) {
+    const fee = Number(r.service_price) * (r.session_used || 1)
+    totalServiceFee += fee
+    const cat = r.sales_category || '未分类'
+    if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
+    categorySummary[cat].service += fee
+  }
+
+  // 合并为时间线，分页
+  const allItems = [
+    ...allocRows.map(r => ({
+      type: 'sale',
+      productName: r.product_name,
+      specName: r.sku_spec_name,
+      salesCategory: r.sales_category,
+      amount: Number(r.alloc_amount),
+      ratio: r.allocation_ratio,
+      businessAmount: Number(r.received),
+      customerName: r.customer_name,
+      clientPhone: r.client_phone,
+      orderId: r.sale_order_id,
+      date: r.paid_at,
+      department: r.department_name,
+    })),
+    ...svcRows.map(r => ({
+      type: 'service',
+      productName: r.product_name,
+      specName: r.sku_spec_name,
+      salesCategory: r.sales_category,
+      amount: Number(r.service_price) * (r.session_used || 1),
+      sessionUsed: r.session_used,
+      servicePrice: Number(r.service_price),
+      customerName: r.customer_name,
+      clientPhone: r.client_phone,
+      orderId: r.service_order_id,
+      date: r.service_date,
+    })),
+  ].sort((a, b) => new Date(b.date) - new Date(a.date))
+
+  const offset = (page - 1) * pageSize
+  const paged = allItems.slice(offset, offset + pageSize)
+
+  ctx.result = {
+    totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
+    totalServiceFee: Math.round(totalServiceFee * 100) / 100,
+    totalCommission: Math.round((totalSalesAlloc + totalServiceFee) * 100) / 100,
+    categorySummary,
+    items: paged,
+    total: allItems.length,
+    page,
+    pageSize,
+  }
+}
+
+/**
+ * 数据看板（简单指标）
+ * 返回客流/客量/新会员/业绩/消耗
+ * payload: { startDate, endDate }
+ */
+async function dashboard(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { startDate, endDate } = ctx.event.payload || {}
+  const isManagerRole = ctx.auth.roles.includes('manager')
+  const storeId = ctx.auth.storeId
+  const employeeId = ctx.auth.staffWfId
+
+  if (!startDate || !endDate) {
+    throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')
+  }
+
+  const start = startDate
+  const end = endDate
+
+  // 域过滤：美容师仅看自己，店长看整店
+  let scopeFilter, scopeParams
+
+  if (isManagerRole) {
+    scopeFilter = 'so.store_id = $1'
+    scopeParams = [storeId]
+  } else {
+    scopeFilter = 'so.assigned_employee_id = $1'
+    scopeParams = [employeeId]
+  }
+
+  // 1. 客流：服务单数量（一人一天算一次）
+  const footfallRows = await pg.query(`
+    SELECT COUNT(DISTINCT (so.client_user_id, so.service_date)) AS footfall
+    FROM service_orders so
+    WHERE ${scopeFilter}
+      AND so.status = '已完成'
+      AND so.service_date >= $${scopeParams.length + 1}
+      AND so.service_date <= $${scopeParams.length + 2}
+  `, [...scopeParams, start, end])
+
+  // 2. 客量：按月+顾客去重（一人一月算一次）
+  const headcountRows = await pg.query(`
+    SELECT COUNT(DISTINCT so.client_user_id) AS headcount
+    FROM service_orders so
+    WHERE ${scopeFilter}
+      AND so.status = '已完成'
+      AND so.service_date >= $${scopeParams.length + 1}
+      AND so.service_date <= $${scopeParams.length + 2}
+      AND so.client_user_id IS NOT NULL
+  `, [...scopeParams, start, end])
+
+  // 3. 业绩：收款金额汇总（已支付）
+  let revFilter, revParams
+  if (isManagerRole) {
+    revFilter = 'o.store_id = $1'
+    revParams = [storeId]
+  } else {
+    revFilter = 'o.preferred_employee_id = $1'
+    revParams = [employeeId]
+  }
+
+  const revenueRows = await pg.query(`
+    SELECT COALESCE(SUM(si.received::numeric), 0) AS revenue
+    FROM sale_orders o
+    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    WHERE ${revFilter}
+      AND o.status = '已支付'
+      AND o.paid_at >= $${revParams.length + 1}::date
+      AND o.paid_at < ($${revParams.length + 2}::date + INTERVAL '1 day')
+  `, [...revParams, start, end])
+
+  // 4. 消耗：服务单划卡单价汇总
+  const consumeRows = await pg.query(`
+    SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS consume
+    FROM service_items sit
+    JOIN service_orders so ON so.service_order_id = sit.service_order_id
+    WHERE ${scopeFilter}
+      AND so.status = '已完成'
+      AND so.service_date >= $${scopeParams.length + 1}
+      AND so.service_date <= $${scopeParams.length + 2}
+  `, [...scopeParams, start, end])
+
+  // 5. 新会员：首次消费达 1980 元（简化统计）
+  let newMemberFilter, newMemberParams
+  if (isManagerRole) {
+    newMemberFilter = 'o.store_id = $1'
+    newMemberParams = [storeId]
+  } else {
+    newMemberFilter = 'o.preferred_employee_id = $1'
+    newMemberParams = [employeeId]
+  }
+
+  const newMemberRows = await pg.query(`
+    SELECT COUNT(DISTINCT o.client_user_id) AS new_members
+    FROM sale_orders o
+    WHERE ${newMemberFilter}
+      AND o.status = '已支付'
+      AND o.paid_at >= $${newMemberParams.length + 1}::date
+      AND o.paid_at < ($${newMemberParams.length + 2}::date + INTERVAL '1 day')
+      AND o.total_amount >= 1980
+      AND o.client_user_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM sale_orders o2
+        WHERE o2.client_user_id = o.client_user_id
+          AND o2.status = '已支付'
+          AND o2.paid_at < $${newMemberParams.length + 1}::date
+      )
+  `, [...newMemberParams, start, end])
+
+  ctx.result = {
+    footfall: Number(footfallRows[0].footfall),
+    headcount: Number(headcountRows[0].headcount),
+    revenue: Math.round(Number(revenueRows[0].revenue) * 100) / 100,
+    consume: Math.round(Number(consumeRows[0].consume) * 100) / 100,
+    newMembers: Number(newMemberRows[0].new_members),
+  }
+}
+
+module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard }

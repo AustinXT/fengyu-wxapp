@@ -85,6 +85,14 @@ Page({
     wx.navigateTo({ url: '/pages/customer-list/customer-list' });
   },
 
+  onNavDashboard() {
+    wx.navigateTo({ url: '/packageOrder/dashboard/dashboard' });
+  },
+
+  onNavPerformance() {
+    wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
+  },
+
   onLogout() {
     wx.showModal({
       title: '退出登录',

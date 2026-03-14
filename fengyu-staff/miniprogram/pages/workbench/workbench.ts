@@ -206,4 +206,8 @@ Page({
   goAllocationList() {
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
+
+  goPerformance() {
+    wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
+  },
 });

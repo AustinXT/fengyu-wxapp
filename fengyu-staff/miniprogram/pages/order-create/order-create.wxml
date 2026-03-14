@@ -209,7 +209,7 @@
           >
             <van-icon name="orders-o" size="48rpx" color="{{orderType === 'normal' ? '#C0322A' : '#999'}}" />
             <text class="order-type-card-name">正常单</text>
-            <text class="order-type-card-desc">SPU / SKU</text>
+            <text class="order-type-card-desc">标准价格</text>
           </view>
           <view
             class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'experience' ? 'order-type-card--active' : ''}}"
@@ -219,6 +219,15 @@
             <van-icon name="smile-o" size="48rpx" color="{{orderType === 'experience' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
             <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">体验单</text>
             <text class="order-type-card-desc">仅店长</text>
+          </view>
+          <view
+            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'internal' ? 'order-type-card--active' : ''}}"
+            bindtap="onSelectOrderType"
+            data-type="internal"
+          >
+            <van-icon name="friends-o" size="48rpx" color="{{orderType === 'internal' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
+            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">内部单</text>
+            <text class="order-type-card-desc">员工半价</text>
           </view>
         </view>
         <view class="checkout-footer checkout-footer--row">
@@ -236,7 +245,7 @@
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
           顾客：{{customerInfo.name || customerInfo.phone}} ·
-          {{orderType === 'normal' ? '正常单' : '体验单'}}
+          {{orderType === 'normal' ? '正常单' : orderType === 'experience' ? '体验单' : '内部单'}}
         </text>
         <view class="confirm-items">
           <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">

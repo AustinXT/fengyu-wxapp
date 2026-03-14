@@ -1,0 +1,146 @@
+/* packageOrder/dashboard/dashboard.wxss */
+
+.dashboard-page {
+  background: var(--color-bg-page);
+}
+
+.dash-header {
+  background: #FFFFFF;
+  padding: 24rpx 32rpx;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.dash-date {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 16rpx;
+}
+
+.dash-range-btns {
+  display: flex;
+  gap: 12rpx;
+}
+
+.range-btn {
+  flex: 1;
+  text-align: center;
+  font-size: 24rpx;
+  padding: 12rpx 0;
+  border-radius: 32rpx;
+  background: #F5F5F5;
+  color: var(--color-text-secondary);
+}
+
+.range-btn--active {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+/* 指标卡片 */
+.dash-metrics {
+  padding: 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.metric-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 28rpx 24rpx;
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0,0,0,0.04);
+}
+
+.metric-card--large {
+  padding: 36rpx 28rpx;
+}
+
+.metric-icon-wrap {
+  width: 80rpx;
+  height: 80rpx;
+  border-radius: 20rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.metric-card--large .metric-icon-wrap {
+  width: 96rpx;
+  height: 96rpx;
+}
+
+.metric-icon--primary { background: linear-gradient(135deg, #C0322A, #9B1E14); }
+.metric-icon--blue { background: linear-gradient(135deg, #5E8BB3, #3D6A8E); }
+.metric-icon--green { background: linear-gradient(135deg, #3D8A5A, #2A6B42); }
+.metric-icon--orange { background: linear-gradient(135deg, #D4820A, #B06B00); }
+.metric-icon--purple { background: linear-gradient(135deg, #8B5CF6, #6D28D9); }
+
+.metric-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.metric-label {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 4rpx;
+}
+
+.metric-card--large .metric-label {
+  font-size: 32rpx;
+}
+
+.metric-desc {
+  display: block;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.metric-value-wrap {
+  display: flex;
+  align-items: baseline;
+  flex-shrink: 0;
+}
+
+.metric-unit {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+  margin-right: 2rpx;
+}
+
+.metric-value {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.metric-card--large .metric-value {
+  font-size: 48rpx;
+}
+
+.metric-count {
+  font-size: 44rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+
+.dash-note {
+  text-align: center;
+  padding: 32rpx;
+}
+
+.dash-note-text {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
