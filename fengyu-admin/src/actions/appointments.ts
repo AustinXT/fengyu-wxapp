@@ -46,18 +46,23 @@ export async function getAppointments(): Promise<Appointment[]> {
   })
 }
 
-/** C4: 确认预约 — WHERE status = '待确认' */
+/** C4: 确认预约 — WHERE status = '待确认' + scope 校验 */
 export async function confirmAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ status: '已确认' })
-    .where(and(eq(appointments.appointmentId, appointmentId), eq(appointments.status, '待确认')))
+    .where(and(
+      eq(appointments.appointmentId, appointmentId),
+      eq(appointments.status, '待确认'),
+      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
+    ))
 
   if ((result as any).rowCount === 0) {
-    return { success: false, message: '预约状态已变更，无法确认' }
+    return { success: false, message: '预约状态已变更或无权操作' }
   }
 
   await logOperation(session, 'appointment.confirm', 'appointment', appointmentId)
@@ -66,18 +71,23 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   return { success: true, message: '预约已确认' }
 }
 
-/** 签到 — 仅记录时间，不改状态 */
+/** 签到 — 仅记录时间，不改状态 + scope 校验 */
 export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'appointment:checkin')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ checkinAt: new Date() })
-    .where(and(eq(appointments.appointmentId, appointmentId), eq(appointments.status, '已确认')))
+    .where(and(
+      eq(appointments.appointmentId, appointmentId),
+      eq(appointments.status, '已确认'),
+      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
+    ))
 
   if ((result as any).rowCount === 0) {
-    return { success: false, message: '预约状态已变更，无法签到' }
+    return { success: false, message: '预约状态已变更或无权操作' }
   }
 
   await logOperation(session, 'appointment.checkin', 'appointment', appointmentId)
@@ -86,21 +96,23 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
   return { success: true, message: '签到成功' }
 }
 
-/** 取消预约 — WHERE status IN ('待确认', '已确认') */
+/** 取消预约 — WHERE status IN ('待确认', '已确认') + scope 校验 */
 export async function cancelAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ status: '已取消' })
     .where(and(
       eq(appointments.appointmentId, appointmentId),
       sql`${appointments.status} IN ('待确认', '已确认')`,
+      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
     ))
 
   if ((result as any).rowCount === 0) {
-    return { success: false, message: '预约状态已变更，无法取消' }
+    return { success: false, message: '预约状态已变更或无权操作' }
   }
 
   await logOperation(session, 'appointment.cancel', 'appointment', appointmentId)

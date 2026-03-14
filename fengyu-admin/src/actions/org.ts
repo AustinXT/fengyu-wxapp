@@ -1,13 +1,17 @@
 'use server'
 
 import { db } from '@/db'
-import { orgNodes } from '@db/org'
-import { eq, asc } from 'drizzle-orm'
+import { orgNodes, stores } from '@db/org'
+import { staffWechatUsers } from '@db/user'
+import { permissionRoles } from '@db/permission'
+import { eq, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+
+const VALID_NODE_TYPES = ['headquarters', 'market', 'store', 'department'] as const
 
 export async function getOrgNodes(): Promise<OrgNode[]> {
   const session = await getSession()
@@ -33,9 +37,34 @@ export async function createOrgNode(data: {
   parentId: string | null
   sortOrder: number
   isActive: boolean
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:create')
+
+  // 校验 type 是否有效
+  if (!VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
+    return { success: false, message: `无效的节点类型: ${data.type}` }
+  }
+
+  // 校验层级约束：department 不可嵌套
+  if (data.parentId) {
+    const [parent] = await db
+      .select({ type: orgNodes.type })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, data.parentId))
+      .limit(1)
+    if (!parent) {
+      return { success: false, message: '父节点不存在' }
+    }
+    // department 下不能再建 department
+    if (parent.type === 'department' && data.type === 'department') {
+      return { success: false, message: '部门不可嵌套' }
+    }
+    // store 下只能建 department
+    if (parent.type === 'store' && data.type !== 'department') {
+      return { success: false, message: '门店节点下只能创建部门' }
+    }
+  }
 
   await db.insert(orgNodes).values({
     id: data.id,
@@ -48,6 +77,7 @@ export async function createOrgNode(data: {
 
   await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
   revalidatePath('/org')
+  return { success: true, message: '节点创建成功' }
 }
 
 export async function updateOrgNode(
@@ -59,14 +89,20 @@ export async function updateOrgNode(
     sortOrder: number
     isActive: boolean
   }>
-) {
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:update')
+
+  // 校验 type 是否有效
+  if (data.type && !VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
+    return { success: false, message: `无效的节点类型: ${data.type}` }
+  }
 
   await db.update(orgNodes).set(data).where(eq(orgNodes.id, id))
 
   await logOperation(session, 'org.update', 'org_node', id, data)
   revalidatePath('/org')
+  return { success: true, message: '节点已更新' }
 }
 
 export async function deleteOrgNode(id: string): Promise<{ success: boolean; message: string }> {
@@ -82,6 +118,36 @@ export async function deleteOrgNode(id: string): Promise<{ success: boolean; mes
 
   if (children.length > 0) {
     return { success: false, message: '该节点下存在子节点，无法删除' }
+  }
+
+  // 检查是否有员工绑定到此节点
+  const [empRef] = await db
+    .select({ employeeId: staffWechatUsers.employeeId })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.orgNodeId, id))
+    .limit(1)
+  if (empRef) {
+    return { success: false, message: '该节点下仍有员工，请先移除员工归属后再删除' }
+  }
+
+  // 检查是否有门店绑定到此节点
+  const [storeRef] = await db
+    .select({ storeId: stores.storeId })
+    .from(stores)
+    .where(eq(stores.orgNodeId, id))
+    .limit(1)
+  if (storeRef) {
+    return { success: false, message: '该节点关联了门店，请先移除门店后再删除' }
+  }
+
+  // 检查是否有权限角色以此节点为 scope
+  const [roleRef] = await db
+    .select({ id: permissionRoles.id })
+    .from(permissionRoles)
+    .where(eq(permissionRoles.scopeId, id))
+    .limit(1)
+  if (roleRef) {
+    return { success: false, message: '该节点被权限角色引用，请先移除关联权限后再删除' }
   }
 
   // 软删除：设 isActive = false

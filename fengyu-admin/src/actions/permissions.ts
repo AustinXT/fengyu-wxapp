@@ -15,6 +15,7 @@ export async function getRoles(): Promise<PermissionRole[]> {
   const session = await getSession()
   requirePermission(session, 'permission:list')
 
+  // 默认只返回有效（未撤销）的记录
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -31,6 +32,7 @@ export async function getRoles(): Promise<PermissionRole[]> {
     .from(permissionRoles)
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
+    .where(eq(permissionRoles.isVoid, false))
     .orderBy(permissionRoles.id)
 
   return rows.map((r) => ({
@@ -69,6 +71,22 @@ export async function assignRole(data: {
     }
   }
 
+  // 检查是否已存在相同的活跃角色记录，避免重复分配
+  const [existing] = await db
+    .select({ id: permissionRoles.id })
+    .from(permissionRoles)
+    .where(and(
+      eq(permissionRoles.employeeId, data.employeeId),
+      eq(permissionRoles.role, data.role),
+      eq(permissionRoles.scopeId, data.scopeId),
+      eq(permissionRoles.isVoid, false),
+    ))
+    .limit(1)
+
+  if (existing) {
+    return { success: false, message: '该员工已拥有相同的角色和权限范围' }
+  }
+
   await db.insert(permissionRoles).values({
     employeeId: data.employeeId,
     role: data.role,
@@ -90,7 +108,7 @@ export async function revokeRole(id: number): Promise<{ success: boolean; messag
 
   // 查询要撤销的角色记录
   const [target] = await db
-    .select({ role: permissionRoles.role, isVoid: permissionRoles.isVoid })
+    .select({ role: permissionRoles.role, isVoid: permissionRoles.isVoid, scopeId: permissionRoles.scopeId })
     .from(permissionRoles)
     .where(eq(permissionRoles.id, id))
     .limit(1)
@@ -105,6 +123,14 @@ export async function revokeRole(id: number): Promise<{ success: boolean; messag
   // 只有 admin 才能撤销 admin 角色
   if (target.role === 'admin' && !hasRole(session, 'admin')) {
     return { success: false, message: '只有系统管理员才能撤销 admin 角色' }
+  }
+
+  // 非 admin 用户不能撤销超出自身 scope 的角色
+  if (!hasRole(session, 'admin')) {
+    const userScopeIds = session.roles.map(r => r.scopeId)
+    if (!userScopeIds.includes(target.scopeId)) {
+      return { success: false, message: '不能撤销超出自身权限范围的角色' }
+    }
   }
 
   await db

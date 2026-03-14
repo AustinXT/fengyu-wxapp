@@ -4,10 +4,10 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { getSession } from '@/lib/auth'
+import { getSession, hasRole } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
@@ -42,13 +42,24 @@ export async function getEmployees(): Promise<Employee[]> {
   const session = await getSession()
   requirePermission(session, 'employee:list')
 
-  const rows = await db
+  const isAdmin = hasRole(session, 'admin')
+  const scopeIds = session.permissions.scopeStoreIds
+
+  let query = db
     .select()
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
-    .limit(500)
+    .$dynamic()
 
+  // admin 可看所有，hr 等角色按 scope 过滤
+  if (!isAdmin && scopeIds.length > 0) {
+    query = query.where(inArray(staffWechatUsers.storeId, scopeIds)) as typeof query
+  } else if (!isAdmin && scopeIds.length === 0) {
+    return []
+  }
+
+  const rows = await query.limit(500)
   return rows.map(rowToEmployee)
 }
 
@@ -103,6 +114,18 @@ export async function createEmployee(data: {
   const session = await getSession()
   requirePermission(session, 'employee:create')
 
+  // 校验手机号唯一性
+  if (data.phone) {
+    const [existing] = await db
+      .select({ employeeId: staffWechatUsers.employeeId })
+      .from(staffWechatUsers)
+      .where(eq(staffWechatUsers.phone, data.phone))
+      .limit(1)
+    if (existing) {
+      return { success: false, message: '该手机号已被其他员工使用' }
+    }
+  }
+
   const employeeId = await generateEmployeeId()
 
   await db.insert(staffWechatUsers).values({
@@ -138,9 +161,21 @@ export async function updateEmployee(
     skills: string[] | null
     isResigned: boolean
   }>
-) {
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'employee:update')
+
+  // 校验手机号唯一性（如果更新了手机号）
+  if (data.phone) {
+    const [existing] = await db
+      .select({ employeeId: staffWechatUsers.employeeId })
+      .from(staffWechatUsers)
+      .where(and(eq(staffWechatUsers.phone, data.phone), sql`${staffWechatUsers.employeeId} != ${employeeId}`))
+      .limit(1)
+    if (existing) {
+      return { success: false, message: '该手机号已被其他员工使用' }
+    }
+  }
 
   await db.update(staffWechatUsers).set(data).where(eq(staffWechatUsers.employeeId, employeeId))
 
@@ -157,4 +192,5 @@ export async function updateEmployee(
 
   await logOperation(session, 'employee.update', 'employee', employeeId, data)
   revalidatePath('/employees')
+  return { success: true, message: '员工信息已更新' }
 }

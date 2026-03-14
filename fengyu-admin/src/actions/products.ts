@@ -193,9 +193,36 @@ export async function createProduct(data: {
   sortOrder?: number
   validStart?: string | null
   validEnd?: string | null
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
+
+  // 价格校验
+  const price = Number(data.price)
+  if (isNaN(price) || price < 0) {
+    return { success: false, message: '价格必须为非负数' }
+  }
+  if (data.specialPrice) {
+    const sp = Number(data.specialPrice)
+    if (isNaN(sp) || sp < 0) {
+      return { success: false, message: '特价必须为非负数' }
+    }
+  }
+
+  // 校验分类存在
+  const [cat] = await db
+    .select({ categoryId: productCategories.categoryId })
+    .from(productCategories)
+    .where(eq(productCategories.categoryId, data.categoryId))
+    .limit(1)
+  if (!cat) {
+    return { success: false, message: '商品分类不存在' }
+  }
+
+  // 有效期校验
+  if (data.validStart && data.validEnd && data.validStart > data.validEnd) {
+    return { success: false, message: '有效期开始日期不能晚于结束日期' }
+  }
 
   await db.insert(products).values({
     ...data,
@@ -204,6 +231,7 @@ export async function createProduct(data: {
 
   await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
   revalidatePath('/products')
+  return { success: true, message: '商品创建成功' }
 }
 
 export async function updateProduct(
@@ -286,6 +314,8 @@ export async function updateCategory(
   revalidatePath('/products/categories')
 }
 
+const VALID_PRODUCT_TYPES = ['疗程卡', '单品', '院装产品'] as const
+
 export async function createSku(data: {
   skuId: string
   productId: string
@@ -299,9 +329,38 @@ export async function createSku(data: {
   serviceFee?: string
   validStart?: string | null
   validEnd?: string | null
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
+
+  // 校验 productType
+  if (!VALID_PRODUCT_TYPES.includes(data.productType as typeof VALID_PRODUCT_TYPES[number])) {
+    return { success: false, message: `无效的产品类型: ${data.productType}` }
+  }
+
+  // 价格校验
+  const price = Number(data.price)
+  if (isNaN(price) || price < 0) {
+    return { success: false, message: '价格必须为非负数' }
+  }
+  if (data.serviceFee) {
+    const fee = Number(data.serviceFee)
+    if (isNaN(fee) || fee < 0) {
+      return { success: false, message: '服务费必须为非负数' }
+    }
+  }
+
+  // 疗程卡必须有 sessionCount >= 1
+  if (data.productType === '疗程卡') {
+    if (!data.sessionCount || data.sessionCount < 1) {
+      return { success: false, message: '疗程卡的次数必须 >= 1' }
+    }
+  }
+
+  // 有效期校验
+  if (data.validStart && data.validEnd && data.validStart > data.validEnd) {
+    return { success: false, message: '有效期开始日期不能晚于结束日期' }
+  }
 
   await db.insert(productSkus).values({
     ...data,
@@ -310,6 +369,7 @@ export async function createSku(data: {
 
   await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
   revalidatePath('/products')
+  return { success: true, message: 'SKU 创建成功' }
 }
 
 export async function updateSku(
@@ -342,12 +402,24 @@ export async function updateSku(
   revalidatePath('/products')
 }
 
-export async function deleteSku(skuId: string) {
+export async function deleteSku(skuId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
+
+  // 检查是否有订单明细引用此 SKU（有 FK 引用则禁止物理删除）
+  const { saleItems } = await import('@db/order')
+  const [ref] = await db
+    .select({ saleItemId: saleItems.saleItemId })
+    .from(saleItems)
+    .where(eq(saleItems.skuId, skuId))
+    .limit(1)
+  if (ref) {
+    return { success: false, message: '该 SKU 已被订单引用，无法删除。可通过设置有效期下架' }
+  }
 
   await db.delete(productSkus).where(eq(productSkus.skuId, skuId))
 
   await logOperation(session, 'sku.delete', 'product_sku', skuId)
   revalidatePath('/products')
+  return { success: true, message: 'SKU 已删除' }
 }

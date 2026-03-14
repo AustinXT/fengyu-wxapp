@@ -151,11 +151,12 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
   }
 }
 
-/** C4: 确认线下收款 — WHERE status = '待确认收款' 保障幂等 */
+/** C4: 确认线下收款 — WHERE status = '待确认收款' + scope 保障幂等 */
 export async function confirmOfflinePayment(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({
@@ -164,7 +165,11 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
       offlineConfirmedBy: session.employeeId,
       offlineConfirmedAt: new Date(),
     })
-    .where(and(eq(saleOrders.saleOrderId, saleOrderId), eq(saleOrders.status, '待确认收款')))
+    .where(and(
+      eq(saleOrders.saleOrderId, saleOrderId),
+      eq(saleOrders.status, '待确认收款'),
+      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
+    ))
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法确认收款' }
@@ -190,12 +195,14 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({ status: '已关闭' })
     .where(and(
       eq(saleOrders.saleOrderId, saleOrderId),
       or(eq(saleOrders.status, '待支付'), eq(saleOrders.status, '支付失败')),
+      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
     ))
 
   if ((result as any).rowCount === 0) {
@@ -222,10 +229,15 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({ status: '待支付' })
-    .where(and(eq(saleOrders.saleOrderId, saleOrderId), eq(saleOrders.status, '支付失败')))
+    .where(and(
+      eq(saleOrders.saleOrderId, saleOrderId),
+      eq(saleOrders.status, '支付失败'),
+      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
+    ))
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法重置' }
@@ -263,6 +275,12 @@ export async function createOrder(data: {
 }): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:create')
+
+  // 校验 storeId 在用户 scope 内
+  const scopeIds = session.permissions.scopeStoreIds
+  if (scopeIds.length > 0 && !scopeIds.includes(data.storeId)) {
+    return { success: false, message: '无权在该门店创建订单' }
+  }
 
   // Generate order ID with advisory lock to prevent concurrent duplicates
   const idRows = await db.execute(sql`

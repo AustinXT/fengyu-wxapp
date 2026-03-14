@@ -39,10 +39,18 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
   const conditions = []
 
   if (filter?.operatorName) {
-    conditions.push(like(operationLogs.operatorName, `%${filter.operatorName}%`))
+    // 转义 SQL LIKE 特殊字符
+    const escapedName = filter.operatorName.replace(/[%_]/g, '\\$&')
+    conditions.push(like(operationLogs.operatorName, `%${escapedName}%`))
   }
   if (filter?.action) {
-    conditions.push(like(operationLogs.action, `%${filter.action}%`))
+    // action 格式为 module.method，支持精确匹配和前缀匹配
+    if (filter.action.includes('.')) {
+      conditions.push(eq(operationLogs.action, filter.action))
+    } else {
+      const escapedAction = filter.action.replace(/[%_]/g, '\\$&')
+      conditions.push(like(operationLogs.action, `${escapedAction}.%`))
+    }
   }
   if (filter?.targetType) {
     conditions.push(eq(operationLogs.targetType, filter.targetType))

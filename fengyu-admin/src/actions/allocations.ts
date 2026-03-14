@@ -1,17 +1,46 @@
 'use server'
 
 import { db } from '@/db'
-import { saleAllocations } from '@db/order'
-import { eq, sql } from 'drizzle-orm'
+import { saleAllocations, saleOrders, saleItems } from '@db/order'
+import { eq, sql, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
+/** 校验订单是否在用户 scope 内 */
+async function verifyOrderScope(saleOrderId: string, scopeIds: string[]): Promise<boolean> {
+  if (scopeIds.length === 0) return false
+  const [order] = await db
+    .select({ storeId: saleOrders.storeId })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
+  return !!order && scopeIds.includes(order.storeId)
+}
+
+/** 校验 saleItemId 对应的订单是否在用户 scope 内 */
+async function verifySaleItemScope(saleItemId: string, scopeIds: string[]): Promise<boolean> {
+  if (scopeIds.length === 0) return false
+  const [item] = await db
+    .select({ saleOrderId: saleItems.saleOrderId })
+    .from(saleItems)
+    .where(eq(saleItems.saleItemId, saleItemId))
+    .limit(1)
+  if (!item) return false
+  return verifyOrderScope(item.saleOrderId, scopeIds)
+}
+
 export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllocation[]> {
   const session = await getSession()
   requirePermission(session, 'allocation:list')
+
+  // 校验订单 scope
+  const scopeIds = session.permissions.scopeStoreIds
+  if (!(await verifyOrderScope(saleOrderId, scopeIds))) {
+    return []
+  }
 
   const rows = await db.execute(sql`
     SELECT
@@ -58,6 +87,12 @@ export async function saveAllocation(data: {
   const session = await getSession()
   requirePermission(session, 'allocation:save')
 
+  // 校验 saleItemId 对应的订单在 scope 内
+  const scopeIds = session.permissions.scopeStoreIds
+  if (!(await verifySaleItemScope(data.saleItemId, scopeIds))) {
+    return { success: false, message: '无权操作该订单的分配' }
+  }
+
   await db.insert(saleAllocations).values({
     saleItemId: data.saleItemId,
     employeeId: data.employeeId,
@@ -103,6 +138,12 @@ export async function batchSaveAllocations(
   const session = await getSession()
   requirePermission(session, 'allocation:save')
 
+  // 校验订单 scope
+  const scopeIds = session.permissions.scopeStoreIds
+  if (!(await verifyOrderScope(saleOrderId, scopeIds))) {
+    return { success: false, message: '无权操作该订单的分配' }
+  }
+
   // Void existing allocations for this order's items
   await db.execute(sql`
     UPDATE sale_allocations SET is_void = true, voided_at = NOW()
@@ -125,7 +166,6 @@ export async function batchSaveAllocations(
   }
 
   // Update order allocation status
-  const { saleOrders } = await import('@db/order')
   await db
     .update(saleOrders)
     .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })

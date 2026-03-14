@@ -399,6 +399,7 @@ export default function OrderCreatePageClient({
                       unitPrice: item.sku.price,
                       unitRealPrice: item.sku.specialPrice || item.sku.price,
                       quantity: item.quantity,
+                      salesCategory: item.product.salesCategory || null,
                     })),
                   })
                   if (res.success) {

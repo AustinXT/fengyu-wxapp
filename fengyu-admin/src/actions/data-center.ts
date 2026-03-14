@@ -69,11 +69,28 @@ function buildSafeParams(
   }
 }
 
-// 简化版：仅 scope 过滤（无日期）
+// 简化版：仅 scope 过滤（无日期）— 使用白名单列名 + 安全拼接
 function buildScopeFilter(scopeStoreIds: string[], storeCol = 'store_id'): string {
   if (scopeStoreIds.length === 0) return `AND FALSE`
-  // scopeStoreIds 来自数据库查询结果（可信来源），直接拼接安全
-  return `AND ${storeCol} IN (${scopeStoreIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
+  // scopeStoreIds 来自数据库查询结果（可信来源），额外做字符白名单校验
+  const safeIds = scopeStoreIds.filter(id => /^[\w-]+$/.test(id))
+  if (safeIds.length === 0) return `AND FALSE`
+  return `AND ${storeCol} IN (${safeIds.map(id => `'${id}'`).join(',')})`
+}
+
+// 构建安全的过滤子句（inline filter params）
+function buildInlineFilter(filter: DateFilter, storeCol = 'store_id', dateCol = 'sale_order_datetime'): string {
+  const parts: string[] = []
+  if (filter.storeId && isValidStoreId(filter.storeId)) {
+    parts.push(`AND ${storeCol} = '${filter.storeId}'`)
+  }
+  if (filter.startDate && isValidDate(filter.startDate)) {
+    parts.push(`AND DATE(${dateCol}) >= '${filter.startDate}'`)
+  }
+  if (filter.endDate && isValidDate(filter.endDate)) {
+    parts.push(`AND DATE(${dateCol}) <= '${filter.endDate}'`)
+  }
+  return parts.join(' ')
 }
 
 // ─── Tab 1: 客户回店率 ─────────────────────────────────────
@@ -99,9 +116,7 @@ export async function getReturnRateByMonth(filter: DateFilter = {}): Promise<Ret
 
   const scopeIds = session.permissions.scopeStoreIds
   const scopeFilter = buildScopeFilter(scopeIds)
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+  const inlineFilter = buildInlineFilter(filter)
 
   const rows = await db.execute(sql.raw(`
     WITH monthly AS (
@@ -111,7 +126,7 @@ export async function getReturnRateByMonth(filter: DateFilter = {}): Promise<Ret
       FROM sale_orders
       WHERE status NOT IN ('已关闭', '支付失败')
         AND client_user_id IS NOT NULL
-        ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+        ${scopeFilter} ${inlineFilter}
       GROUP BY 1, 2
     ),
     with_prev AS (
@@ -148,11 +163,8 @@ export async function getReturnRateByStore(filter: DateFilter = {}): Promise<Sto
   requirePermission(session, 'data_center:dashboard')
 
   const scopeIds = session.permissions.scopeStoreIds
-  const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
-    : 'AND FALSE'
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const scopeFilter = buildScopeFilter(scopeIds, 'o.store_id')
+  const inlineFilter = buildInlineFilter(filter, 'o.store_id', 'o.sale_order_datetime')
 
   const rows = await db.execute(sql.raw(`
     WITH period_customers AS (
@@ -160,7 +172,7 @@ export async function getReturnRateByStore(filter: DateFilter = {}): Promise<Sto
       FROM sale_orders o
       WHERE status NOT IN ('已关闭', '支付失败')
         AND client_user_id IS NOT NULL
-        ${scopeFilter} ${dateClause} ${endClause}
+        ${scopeFilter} ${inlineFilter}
       GROUP BY store_id, client_user_id
     )
     SELECT
@@ -206,12 +218,8 @@ export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryM
   requirePermission(session, 'data_center:dashboard')
 
   const scopeIds = session.permissions.scopeStoreIds
-  const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
-    : 'AND FALSE'
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const scopeFilter = buildScopeFilter(scopeIds, 'o.store_id')
+  const inlineFilter = buildInlineFilter(filter, 'o.store_id', 'o.sale_order_datetime')
 
   const rows = await db.execute(sql.raw(`
     SELECT
@@ -225,7 +233,7 @@ export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryM
     LEFT JOIN product_categories pc ON pc.category_id = p.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
       AND si.item_direction = 'purchase'
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     GROUP BY pc.product_kind
     ORDER BY total_amount DESC
   `))
@@ -245,12 +253,8 @@ export async function getProductRank(filter: DateFilter = {}): Promise<ProductRa
   requirePermission(session, 'data_center:dashboard')
 
   const scopeIds = session.permissions.scopeStoreIds
-  const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
-    : 'AND FALSE'
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const scopeFilter = buildScopeFilter(scopeIds, 'o.store_id')
+  const inlineFilter = buildInlineFilter(filter, 'o.store_id', 'o.sale_order_datetime')
 
   const rows = await db.execute(sql.raw(`
     SELECT
@@ -265,7 +269,7 @@ export async function getProductRank(filter: DateFilter = {}): Promise<ProductRa
     LEFT JOIN product_categories pc ON pc.category_id = p.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
       AND si.item_direction = 'purchase'
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     GROUP BY si.product_name, pc.product_kind
     ORDER BY total_amount DESC
     LIMIT 20
@@ -303,7 +307,7 @@ export async function getOperationsFunnel(filter: DateFilter = {}): Promise<Funn
       COUNT(DISTINCT client_user_id) AS unique_customers
     FROM sale_orders
     WHERE status != '已关闭'
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
   `))
 
   const svcScopeFilter = buildScopeFilter(scopeIds)
@@ -363,12 +367,8 @@ export async function getStaffEfficiency(filter: DateFilter = {}): Promise<Staff
   requirePermission(session, 'data_center:dashboard')
 
   const scopeIds = session.permissions.scopeStoreIds
-  const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
-    : 'AND FALSE'
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const scopeFilter = buildScopeFilter(scopeIds, 'o.store_id')
+  const inlineFilter = buildInlineFilter(filter, 'o.store_id', 'o.sale_order_datetime')
 
   const svcDateFilter = filter.startDate && isValidDate(filter.startDate) ? `AND sv.service_date >= '${filter.startDate}'` : ''
   const svcEndFilter = filter.endDate && isValidDate(filter.endDate) ? `AND sv.service_date <= '${filter.endDate}'` : ''
@@ -390,7 +390,7 @@ export async function getStaffEfficiency(filter: DateFilter = {}): Promise<Staff
     LEFT JOIN sale_orders o
       ON o.opened_by = e.employee_id
       AND o.status IN ('已支付', '已完成')
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     LEFT JOIN stores s ON s.store_id = e.store_id
     WHERE e.is_resigned = false
     GROUP BY e.employee_id, e.name, s.store_name
@@ -430,12 +430,8 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
   requirePermission(session, 'data_center:dashboard')
 
   const scopeIds = session.permissions.scopeStoreIds
-  const scopeFilter = scopeIds.length > 0
-    ? `AND o.store_id IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
-    : 'AND FALSE'
-  const storeClause = filter.storeId && isValidStoreId(filter.storeId) ? `AND o.store_id = '${filter.storeId}'` : ''
-  const dateClause = filter.startDate && isValidDate(filter.startDate) ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
-  const endClause = filter.endDate && isValidDate(filter.endDate) ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+  const scopeFilter = buildScopeFilter(scopeIds, 'o.store_id')
+  const inlineFilter = buildInlineFilter(filter, 'o.store_id', 'o.sale_order_datetime')
 
   const staffRows = await db.execute(sql.raw(`
     SELECT
@@ -447,7 +443,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
     LEFT JOIN stores s ON s.store_id = e.store_id
     WHERE o.status IN ('已支付', '已完成')
       AND o.opened_by IS NOT NULL
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     GROUP BY e.name, o.opened_by, s.store_name
     ORDER BY value DESC
     LIMIT 10
@@ -465,7 +461,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
     LEFT JOIN product_categories pc ON pc.category_id = p.category_id
     WHERE o.status IN ('已支付', '已完成')
       AND si.item_direction = 'purchase'
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     GROUP BY si.product_name, pc.product_kind
     ORDER BY value DESC
     LIMIT 10
@@ -480,7 +476,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
     LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
     WHERE o.status IN ('已支付', '已完成')
       AND o.client_user_id IS NOT NULL
-      ${scopeFilter} ${storeClause} ${dateClause} ${endClause}
+      ${scopeFilter} ${inlineFilter}
     GROUP BY c.name, o.client_phone, c.member_level
     ORDER BY value DESC
     LIMIT 10
