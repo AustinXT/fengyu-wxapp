@@ -202,3 +202,318 @@ describe('customer.paidOrders', () => {
     expect(ctx.result[0].saleOrderId).toBe('SO-003')
   })
 })
+
+// ============================================================
+// customer.stats
+// ============================================================
+describe('customer.stats', () => {
+  test('正确分类顾客活跃度和生日', async () => {
+    const now = new Date()
+    const today = now.toISOString().slice(0, 10)
+    const currentMonth = now.getMonth() + 1
+    const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
+
+    const ctx = createManagerCtx({})
+
+    // 构造不同活跃度的顾客
+    const daysAgo = (n) => {
+      const d = new Date(now)
+      d.setDate(d.getDate() - n)
+      return d.toISOString().slice(0, 10)
+    }
+
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', birthday: `2000-${String(currentMonth).padStart(2, '0')}-15`, last_service_date: daysAgo(10) },  // active + birthday
+        { user_id: 'u2', birthday: `2000-${String(nextMonth).padStart(2, '0')}-20`, last_service_date: daysAgo(40) },    // atRisk + birthdayNext
+        { user_id: 'u3', birthday: null, last_service_date: daysAgo(70) },        // lost
+        { user_id: 'u4', birthday: null, last_service_date: daysAgo(100) },       // sleeping
+        { user_id: 'u5', birthday: null, last_service_date: null },               // sleeping (无服务记录)
+      ])
+      .mockResolvedValueOnce([{ cnt: '3' }]) // memberCount
+
+    await customerRoutes.stats(ctx)
+
+    expect(ctx.result.active).toBe(1)
+    expect(ctx.result.atRisk).toBe(1)
+    expect(ctx.result.lost).toBe(1)
+    expect(ctx.result.sleeping).toBe(2)
+    expect(ctx.result.birthday).toBe(1)
+    expect(ctx.result.birthdayNext).toBe(1)
+    expect(ctx.result.total).toBe(5)
+    expect(ctx.result.memberCount).toBe(3)
+    expect(ctx.result.flowCount).toBe(2)
+  })
+
+  test('空门店返回全零统计', async () => {
+    const ctx = createManagerCtx({})
+
+    pg.query
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ cnt: '0' }])
+
+    await customerRoutes.stats(ctx)
+
+    expect(ctx.result.active).toBe(0)
+    expect(ctx.result.atRisk).toBe(0)
+    expect(ctx.result.lost).toBe(0)
+    expect(ctx.result.sleeping).toBe(0)
+    expect(ctx.result.total).toBe(0)
+    expect(ctx.result.memberCount).toBe(0)
+    expect(ctx.result.flowCount).toBe(0)
+  })
+})
+
+// ============================================================
+// customer.listByTag
+// ============================================================
+describe('customer.listByTag', () => {
+  test('按 active 标签筛选', async () => {
+    const now = new Date()
+    const daysAgo = (n) => {
+      const d = new Date(now)
+      d.setDate(d.getDate() - n)
+      return d.toISOString().slice(0, 10)
+    }
+
+    const ctx = createManagerCtx({ tag: 'active', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '活跃客', phone: '13800001111', birthday: null, member_level: 'VIP', last_service_date: daysAgo(5), year_consumption: '25000' },
+      { user_id: 'u2', name: '流失客', phone: '13900002222', birthday: null, member_level: null, last_service_date: daysAgo(80), year_consumption: '0' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.total).toBe(1)
+    expect(ctx.result.customers).toHaveLength(1)
+    expect(ctx.result.customers[0].name).toBe('活跃客')
+    expect(ctx.result.customers[0].tier).toBe('diamond') // 25000 >= 20000
+  })
+
+  test('按 sleeping 标签筛选（含无服务记录）', async () => {
+    const ctx = createManagerCtx({ tag: 'sleeping', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '沉睡客', phone: '13800001111', birthday: null, member_level: null, last_service_date: null, year_consumption: '0' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.total).toBe(1)
+    expect(ctx.result.customers[0].tier).toBeNull() // 0 消费无 tier
+  })
+
+  test('按 birthday 标签筛选当月生日', async () => {
+    const now = new Date()
+    const currentMonth = now.getMonth() + 1
+    const ctx = createManagerCtx({ tag: 'birthday', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '生日客', phone: '13800001111', birthday: `1990-${String(currentMonth).padStart(2, '0')}-15`, member_level: 'VIP', last_service_date: null, year_consumption: '6000' },
+      { user_id: 'u2', name: '非生日客', phone: '13900002222', birthday: '1990-01-01', member_level: null, last_service_date: null, year_consumption: '100' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    // 只有当月生日的被筛选出来
+    const hasBirthday = ctx.result.customers.some(c => c.name === '生日客')
+    expect(hasBirthday).toBe(true)
+    // 6000 >= 5000 → iron
+    const birthdayCustomer = ctx.result.customers.find(c => c.name === '生日客')
+    expect(birthdayCustomer.tier).toBe('iron')
+  })
+
+  test('美容师看到脱敏手机号', async () => {
+    const ctx = createBeauticianCtx({ tag: 'active', page: 1, pageSize: 10 })
+    const now = new Date()
+    const d = new Date(now)
+    d.setDate(d.getDate() - 5)
+
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '客户', phone: '13800001111', birthday: null, member_level: null, last_service_date: d.toISOString().slice(0, 10), year_consumption: '0' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.customers[0].phone).not.toBe('13800001111')
+    expect(ctx.result.customers[0].phoneMasked).toBe('*******1111')
+  })
+
+  test('分页功能正确', async () => {
+    const now = new Date()
+    const daysAgo = (n) => {
+      const d = new Date(now)
+      d.setDate(d.getDate() - n)
+      return d.toISOString().slice(0, 10)
+    }
+
+    const ctx = createManagerCtx({ tag: 'active', page: 2, pageSize: 1 })
+
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '客A', phone: '13800001111', birthday: null, member_level: null, last_service_date: daysAgo(5), year_consumption: '0' },
+      { user_id: 'u2', name: '客B', phone: '13900002222', birthday: null, member_level: null, last_service_date: daysAgo(10), year_consumption: '0' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.total).toBe(2)
+    expect(ctx.result.customers).toHaveLength(1)
+    expect(ctx.result.customers[0].name).toBe('客B')
+  })
+
+  test('缺少 tag 参数时拒绝', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+    await expect(customerRoutes.listByTag(ctx)).rejects.toThrow(/INVALID_PARAMS.*tag/)
+  })
+
+  test('tier 分级正确：fan', async () => {
+    const now = new Date()
+    const d = new Date(now)
+    d.setDate(d.getDate() - 5)
+
+    const ctx = createManagerCtx({ tag: 'active', page: 1 })
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', name: '粉丝客', phone: '138', birthday: null, member_level: null, last_service_date: d.toISOString().slice(0, 10), year_consumption: '100' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+    expect(ctx.result.customers[0].tier).toBe('fan') // 0 < 100 < 5000
+  })
+})
+
+// ============================================================
+// customer.refundHistory
+// ============================================================
+describe('customer.refundHistory', () => {
+  test('返回退款和转换订单及明细', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+
+    // 退换订单
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'REF-001', status: '已完成', sale_order_type: '退款',
+        total_amount: '500', refund_reason: '质量问题', handling_fee: '50',
+        ref_sale_order_id: 'FY-001', approved_by: 'emp-001', approved_at: '2024-06-20',
+        rejected_reason: null, created_at: '2024-06-15', paid_at: null,
+      },
+      {
+        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换',
+        total_amount: '300', refund_reason: '更换项目', handling_fee: null,
+        ref_sale_order_id: 'FY-002', approved_by: 'emp-001', approved_at: '2024-06-22',
+        rejected_reason: null, created_at: '2024-06-18', paid_at: null,
+      },
+    ])
+    // 明细
+    pg.query.mockResolvedValueOnce([
+      { sale_order_id: 'REF-001', sale_item_id: 'refitem-1', item_direction: 'refund', product_name: '面部护理', sku_spec_name: '基础款', quantity: 1, received: '500' },
+      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: 'purchase', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
+    ])
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toHaveLength(2)
+    expect(ctx.result[0].saleOrderId).toBe('REF-001')
+    expect(ctx.result[0].type).toBe('退款')
+    expect(ctx.result[0].handlingFee).toBe(50)
+    expect(ctx.result[0].items).toHaveLength(1)
+    expect(ctx.result[1].type).toBe('转换')
+    expect(ctx.result[1].handlingFee).toBeNull()
+  })
+
+  test('按 clientPhone 查询', async () => {
+    const ctx = createManagerCtx({ clientPhone: '13800001111' })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toEqual([])
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('client_phone')
+  })
+
+  test('缺少标识参数时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.refundHistory(ctx)).rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
+  })
+
+  test('无退换记录返回空数组', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-clean' })
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.refundHistory(ctx)
+    expect(ctx.result).toEqual([])
+  })
+})
+
+// ============================================================
+// customer.giftHistory
+// ============================================================
+describe('customer.giftHistory', () => {
+  test('返回福利活动订单和赠品明细', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+
+    // 福利活动订单
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'PROMO-001', status: '已支付', sale_order_type: '福利活动',
+        total_amount: '0', created_at: '2024-06-01', paid_at: '2024-06-01',
+      },
+    ])
+    // 赠品明细（received=0 的行）
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_item_id: 'gift-001', sale_order_id: 'FY-001', product_name: '赠送面膜',
+        sku_spec_name: '体验装', quantity: 1, session_count: 3, remaining_sessions: 3,
+        received: '0', created_at: '2024-06-05', paid_at: '2024-06-05',
+      },
+    ])
+    // 福利活动订单的明细
+    pg.query.mockResolvedValueOnce([
+      {
+        sale_order_id: 'PROMO-001', sale_item_id: 'promo-item-1',
+        product_name: '活动面部护理', sku_spec_name: '体验版',
+        quantity: 1, session_count: 5, remaining_sessions: 5, received: '0',
+      },
+    ])
+
+    await customerRoutes.giftHistory(ctx)
+
+    expect(ctx.result.promoOrders).toHaveLength(1)
+    expect(ctx.result.promoOrders[0].saleOrderId).toBe('PROMO-001')
+    expect(ctx.result.promoOrders[0].items).toHaveLength(1)
+    expect(ctx.result.promoOrders[0].items[0].productName).toBe('活动面部护理')
+    expect(ctx.result.giftItems).toHaveLength(1)
+    expect(ctx.result.giftItems[0].productName).toBe('赠送面膜')
+  })
+
+  test('无福利活动时 promoOrders 为空', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+
+    pg.query.mockResolvedValueOnce([]) // 无福利活动
+    pg.query.mockResolvedValueOnce([]) // 无赠品
+
+    await customerRoutes.giftHistory(ctx)
+
+    expect(ctx.result.promoOrders).toEqual([])
+    expect(ctx.result.giftItems).toEqual([])
+  })
+
+  test('按 clientPhone 查询', async () => {
+    const ctx = createManagerCtx({ clientPhone: '13800001111' })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.giftHistory(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('client_phone')
+  })
+
+  test('缺少标识参数时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.giftHistory(ctx)).rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
+  })
+})

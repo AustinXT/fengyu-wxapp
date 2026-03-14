@@ -237,3 +237,294 @@ describe('staff.bindStore', () => {
     await expect(staffRoutes.bindStore(ctx)).rejects.toThrow(/INVALID_PARAMS.*storeId/)
   })
 })
+
+// ============================================================
+// staff.performanceDetail
+// ============================================================
+describe('staff.performanceDetail', () => {
+  test('返回销售+服务提成明细和汇总', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    // allocRows (销售分配)
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
+        product_name: '面部护理', sku_spec_name: '基础款', sales_category: '自采自销',
+        unit_real_price: '1000', received: '1000',
+        sale_order_id: 'FY-001', customer_name: '张三', client_phone: '138',
+        paid_at: '2024-06-15', store_id: 'store-001',
+      },
+    ])
+    // svcRows (服务提成)
+    pg.query.mockResolvedValueOnce([
+      {
+        service_price: '100', session_used: 2,
+        product_name: '身体护理', sku_spec_name: '高级款', sales_category: '自采自销',
+        service_order_id: 'SVC-001', service_date: '2024-06-20',
+        store_id: 'store-001', customer_name: '李四', client_phone: '139',
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalSalesAlloc).toBe(300)
+    expect(ctx.result.totalServiceFee).toBe(200) // 100 * 2
+    expect(ctx.result.totalCommission).toBe(500)
+    expect(ctx.result.items).toHaveLength(2)
+    expect(ctx.result.categorySummary['自采自销'].sales).toBe(300)
+    expect(ctx.result.categorySummary['自采自销'].service).toBe(200)
+  })
+
+  test('filterType=sale 只返回销售明细', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      filterType: 'sale',
+    })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '500', allocation_ratio: 0.5, department_name: '美容部',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        unit_real_price: '1000', received: '1000',
+        sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
+        paid_at: '2024-06-10', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        service_price: '80', session_used: 1,
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        service_order_id: 'SVC-001', service_date: '2024-06-20',
+        store_id: 'store-001', customer_name: 'C2', client_phone: '139',
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // filterType=sale 只包含 sale 类型
+    expect(ctx.result.items.every(i => i.type === 'sale')).toBe(true)
+    expect(ctx.result.items).toHaveLength(1)
+  })
+
+  test('filterType=service 只返回服务明细', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      filterType: 'service',
+    })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        unit_real_price: '1000', received: '1000',
+        sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
+        paid_at: '2024-06-10', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([
+      {
+        service_price: '100', session_used: 1,
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        service_order_id: 'SVC-001', service_date: '2024-06-20',
+        store_id: 'store-001', customer_name: 'C2', client_phone: '139',
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.items.every(i => i.type === 'service')).toBe(true)
+    expect(ctx.result.items).toHaveLength(1)
+  })
+
+  test('美容师只能查自己的绩效', async () => {
+    const ctx = createBeauticianCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      employeeId: 'emp-other', // 尝试查他人
+    })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 应使用美容师自己的 staffWfId，不是 emp-other
+    expect(pg.query.mock.calls[0][1][0]).toBe('emp-beautician-001')
+  })
+
+  test('店长可查询他人绩效', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      employeeId: 'emp-target',
+    })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(pg.query.mock.calls[0][1][0]).toBe('emp-target')
+  })
+
+  test('缺少日期参数时拒绝', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01' })
+    await expect(staffRoutes.performanceDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*endDate/)
+  })
+
+  test('salesCategory 过滤生效', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      salesCategory: '他销自耗',
+    })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // SQL 应包含 salesCategory 过滤
+    const allocSql = pg.query.mock.calls[0][0]
+    expect(allocSql).toContain('sales_category')
+    expect(pg.query.mock.calls[0][1]).toContain('他销自耗')
+  })
+
+  test('分页功能正确', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+      page: 2,
+      pageSize: 1,
+    })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '100', allocation_ratio: 0.1, department_name: '美容部',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        unit_real_price: '1000', received: '1000',
+        sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
+        paid_at: '2024-06-10', store_id: 'store-001',
+      },
+      {
+        alloc_amount: '200', allocation_ratio: 0.2, department_name: '美容部',
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        unit_real_price: '1000', received: '1000',
+        sale_order_id: 'FY-002', customer_name: 'C2', client_phone: '139',
+        paid_at: '2024-06-05', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.total).toBe(2)
+    expect(ctx.result.page).toBe(2)
+  })
+
+  test('空结果返回零值', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalSalesAlloc).toBe(0)
+    expect(ctx.result.totalServiceFee).toBe(0)
+    expect(ctx.result.totalCommission).toBe(0)
+    expect(ctx.result.items).toEqual([])
+    expect(ctx.result.categorySummary).toEqual({})
+  })
+})
+
+// ============================================================
+// staff.dashboard
+// ============================================================
+describe('staff.dashboard', () => {
+  test('店长查看整店数据看板', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ footfall: '15' }])     // 客流
+      .mockResolvedValueOnce([{ headcount: '10' }])    // 客量
+      .mockResolvedValueOnce([{ revenue: '50000.50' }]) // 业绩
+      .mockResolvedValueOnce([{ consume: '30000.00' }]) // 消耗
+      .mockResolvedValueOnce([{ new_members: '3' }])   // 新会员
+
+    await staffRoutes.dashboard(ctx)
+
+    expect(ctx.result.footfall).toBe(15)
+    expect(ctx.result.headcount).toBe(10)
+    expect(ctx.result.revenue).toBe(50000.5)
+    expect(ctx.result.consume).toBe(30000)
+    expect(ctx.result.newMembers).toBe(3)
+
+    // 店长使用 store_id 过滤
+    const footfallSql = pg.query.mock.calls[0][0]
+    expect(footfallSql).toContain('so.store_id')
+  })
+
+  test('美容师只看自己的数据', async () => {
+    const ctx = createBeauticianCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ footfall: '5' }])
+      .mockResolvedValueOnce([{ headcount: '3' }])
+      .mockResolvedValueOnce([{ revenue: '8000.00' }])
+      .mockResolvedValueOnce([{ consume: '5000.00' }])
+      .mockResolvedValueOnce([{ new_members: '1' }])
+
+    await staffRoutes.dashboard(ctx)
+
+    expect(ctx.result.footfall).toBe(5)
+    expect(ctx.result.revenue).toBe(8000)
+    expect(ctx.result.newMembers).toBe(1)
+
+    // 美容师使用 assigned_employee_id 过滤
+    const footfallSql = pg.query.mock.calls[0][0]
+    expect(footfallSql).toContain('assigned_employee_id')
+  })
+
+  test('缺少日期参数时拒绝', async () => {
+    const ctx = createManagerCtx({ startDate: '2024-06-01' })
+    await expect(staffRoutes.dashboard(ctx)).rejects.toThrow(/INVALID_PARAMS.*endDate/)
+  })
+
+  test('全零数据正确返回', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ footfall: '0' }])
+      .mockResolvedValueOnce([{ headcount: '0' }])
+      .mockResolvedValueOnce([{ revenue: '0' }])
+      .mockResolvedValueOnce([{ consume: '0' }])
+      .mockResolvedValueOnce([{ new_members: '0' }])
+
+    await staffRoutes.dashboard(ctx)
+
+    expect(ctx.result.footfall).toBe(0)
+    expect(ctx.result.headcount).toBe(0)
+    expect(ctx.result.revenue).toBe(0)
+    expect(ctx.result.consume).toBe(0)
+    expect(ctx.result.newMembers).toBe(0)
+  })
+})

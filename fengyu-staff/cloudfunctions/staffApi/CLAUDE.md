@@ -19,8 +19,8 @@ staffApi/
 ├── routes/
 │   ├── auth.js       # login, bindPhone
 │   ├── store.js      # list, unbindRequests, approveUnbind, rejectUnbind
-│   ├── staff.js      # list, departments, todayCommission, monthlyCalendar, todoList, bindStore
-│   ├── customer.js   # search, calendar, detail, paidOrders
+│   ├── staff.js      # list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard
+│   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory
 │   ├── product.js    # shopInit, categories, skuDetail, spuList, spuDetail, promotionList, promotionPlans
 │   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail
 │   ├── allocation.js # save, delete, rates, pendingList, suggest

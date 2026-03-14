@@ -14,6 +14,7 @@
     "wx-server-sdk": "latest"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.0",
     "jest": "^30.3.0",
     "vitest": "^4.1.0"
   }
