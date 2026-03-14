@@ -11,6 +11,12 @@ interface StoreInfo {
   available_beds: number;
   staff_count: number;
   customer_count: number;
+  cover_image: string;
+  street_address: string;
+  phone: string;
+  business_hours: string;
+  parking_info: string;
+  description: string;
 }
 
 interface UnbindRequest {
@@ -191,6 +197,28 @@ Page({
       Toast.success('申请已取消');
     } catch (err: any) {
       Toast.fail('取消失败: ' + (err?.message || '未知错误'));
+    }
+  },
+
+  onCallPhone() {
+    const phone = (this.data.store as any)?.phone;
+    if (phone) {
+      wx.makePhoneCall({ phoneNumber: phone });
+    }
+  },
+
+  onOpenMap() {
+    const store = this.data.store as any;
+    if (store?.latitude && store?.longitude) {
+      wx.openLocation({
+        latitude: Number(store.latitude),
+        longitude: Number(store.longitude),
+        name: store.store_name || '',
+        address: store.street_address || '',
+      });
+    } else if (store?.street_address) {
+      wx.setClipboardData({ data: store.street_address });
+      Toast('地址已复制');
     }
   },
 
