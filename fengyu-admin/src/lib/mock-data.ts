@@ -1554,7 +1554,9 @@ export const MOCK_DASHBOARD_STATS: DashboardStats = {
   todayVisitors: 18,
   todayRevenue: 12580,
   pendingOrders: 2,
+  pendingAllocations: 3,
   pendingAppointments: 3,
+  activeServices: 2,
   yesterdayVisitors: 15,
   yesterdayRevenue: 9860,
 }

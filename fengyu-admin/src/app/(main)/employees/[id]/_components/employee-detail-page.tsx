@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
 import { formatDate } from "@/lib/utils"
@@ -43,6 +44,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
   // Edit info state
   const [isEditing, setIsEditing] = useState(false)
+  const [resignDialogOpen, setResignDialogOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: employee.name ?? "",
@@ -224,6 +226,11 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
         >
           {employee.isResigned ? "已离职" : "在职"}
         </Badge>
+        {!employee.isResigned && (
+          <Button variant="ghost" size="sm" className="text-[#D94040] ml-auto" onClick={() => setResignDialogOpen(true)}>
+            标记离职
+          </Button>
+        )}
       </div>
 
       <Tabs defaultValue="info">
@@ -521,6 +528,27 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
           </Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 离职确认 */}
+      <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>
+        <AlertDialogTitle>确认标记离职？</AlertDialogTitle>
+        <AlertDialogDescription>
+          将标记「{employee.name}」为已离职，并自动作废其所有有效权限角色。此操作不可撤销。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setResignDialogOpen(false)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={async () => {
+            try {
+              await updateEmployee(employee.employeeId, { isResigned: true })
+              toast.success('已标记离职')
+              setResignDialogOpen(false)
+              router.refresh()
+            } catch {
+              toast.error('操作失败')
+            }
+          }}>确认离职</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

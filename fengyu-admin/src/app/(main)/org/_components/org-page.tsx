@@ -12,7 +12,8 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatDateTime } from "@/lib/utils"
-import { createOrgNode, updateOrgNode } from "@/actions/org"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
+import { createOrgNode, updateOrgNode, deleteOrgNode } from "@/actions/org"
 
 const TYPE_ICON: Record<OrgNode["type"], string> = {
   headquarters: "\u{1F3E2}",
@@ -120,6 +121,9 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => new Set(orgNodes.map((n) => n.id))
   )
+
+  // Delete state
+  const [deleteTarget, setDeleteTarget] = useState<OrgNode | null>(null)
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -288,6 +292,11 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
                     编辑
                   </Button>
                   <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
+                  {selectedNode.isActive && selectedNode.type !== 'headquarters' && (
+                    <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setDeleteTarget(selectedNode)}>
+                      停用
+                    </Button>
+                  )}
                 </div>
               </CardHeader>
               <CardContent>
@@ -452,6 +461,33 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           </Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 停用确认 */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认停用节点？</AlertDialogTitle>
+        <AlertDialogDescription>
+          将停用「{deleteTarget?.name}」节点。如果该节点下存在子节点，停用操作会被拒绝。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={async () => {
+            if (!deleteTarget) return
+            try {
+              const res = await deleteOrgNode(deleteTarget.id)
+              if (res.success) {
+                toast.success(res.message)
+                setDeleteTarget(null)
+                setSelectedId(null)
+                router.refresh()
+              } else {
+                toast.error(res.message)
+              }
+            } catch {
+              toast.error('操作失败')
+            }
+          }}>确认停用</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

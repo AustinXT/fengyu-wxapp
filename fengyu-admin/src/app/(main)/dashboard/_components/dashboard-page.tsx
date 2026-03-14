@@ -80,10 +80,11 @@ export default function DashboardPage({ stats }: Props) {
   ]
 
   const todoItems = [
-    { text: `${stats.pendingOrders} 笔订单待分配`, href: "/allocations" },
-    { text: `${stats.pendingAppointments} 条预约待确认`, href: "/appointments" },
-    { text: "2 个服务单进行中", href: "/services" },
-  ]
+    { text: `${stats.pendingAllocations} 笔订单待分配`, href: "/allocations", count: stats.pendingAllocations },
+    { text: `${stats.pendingOrders} 笔订单待处理`, href: "/orders", count: stats.pendingOrders },
+    { text: `${stats.pendingAppointments} 条预约待确认`, href: "/appointments", count: stats.pendingAppointments },
+    { text: `${stats.activeServices} 个服务单进行中`, href: "/services", count: stats.activeServices },
+  ].filter(item => item.count > 0)
 
   const shortcuts = [
     { label: "开单", href: "/orders/create" },

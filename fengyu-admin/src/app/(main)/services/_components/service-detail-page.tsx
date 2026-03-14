@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { ServiceOrder } from "@/lib/types"
+import type { ServiceItemDetail } from "@/actions/services"
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "-"
@@ -15,8 +16,10 @@ function formatDateTime(dt: string | null) {
 
 export default function ServiceDetailPageClient({
   serviceOrder,
+  serviceItems,
 }: {
   serviceOrder: ServiceOrder
+  serviceItems: ServiceItemDetail[]
 }) {
   return (
     <div className="space-y-6">
@@ -84,7 +87,7 @@ export default function ServiceDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 服务明细 - placeholder for future service items integration */}
+      {/* 服务明细 */}
       <Card>
         <CardHeader>
           <CardTitle>关联服务明细</CardTitle>
@@ -94,17 +97,35 @@ export default function ServiceDetailPageClient({
             <table className="w-full text-sm">
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">关联明细</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">划卡次数</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">剩余次数</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">剩余/总次数</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">操作人</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-[#999999]">暂无关联明细</td>
-                </tr>
+                {serviceItems.length > 0 ? serviceItems.map((item) => (
+                  <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
+                    <td className="px-4 py-3 font-medium">{item.productName || "-"}</td>
+                    <td className="px-4 py-3">{item.skuName || "-"}</td>
+                    <td className="px-4 py-3 text-right">
+                      {item.unitRealPrice ? `¥${Number(item.unitRealPrice).toLocaleString()}` : "-"}
+                    </td>
+                    <td className="px-4 py-3 text-right">{item.sessionUsed}</td>
+                    <td className="px-4 py-3 text-right">
+                      {item.sessionCount !== null
+                        ? `${item.remainingSessions ?? 0}/${item.sessionCount}`
+                        : "-"}
+                    </td>
+                    <td className="px-4 py-3">{item.employeeName || "-"}</td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-[#999999]">暂无关联明细</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

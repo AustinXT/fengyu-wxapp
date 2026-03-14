@@ -1,7 +1,8 @@
 'use server'
 
 import { db } from '@/db'
-import { serviceOrders } from '@db/service'
+import { serviceOrders, serviceItems } from '@db/service'
+import { saleItems } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { eq, desc, and, sql, inArray } from 'drizzle-orm'
@@ -79,6 +80,52 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
 
   if (rows.length === 0) return null
   return serializeServiceOrder(rows[0])
+}
+
+export interface ServiceItemDetail {
+  serviceItemId: string
+  saleItemId: string
+  sessionUsed: number
+  unitRealPrice: string | null
+  employeeName: string | null
+  productName: string | null
+  skuName: string | null
+  remainingSessions: number | null
+  sessionCount: number | null
+}
+
+export async function getServiceItems(serviceOrderId: string): Promise<ServiceItemDetail[]> {
+  const session = await getSession()
+  requirePermission(session, 'service:list')
+
+  const rows = await db.execute(sql`
+    SELECT
+      si.service_item_id,
+      si.sale_item_id,
+      si.session_used,
+      si.unit_real_price,
+      e.name AS employee_name,
+      sli.product_name,
+      sli.sku_spec_name AS sku_name,
+      sli.remaining_sessions,
+      sli.session_count
+    FROM service_items si
+    LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
+    LEFT JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
+    WHERE si.service_order_id = ${serviceOrderId}
+  `)
+
+  return (rows as any[]).map((r: any) => ({
+    serviceItemId: r.service_item_id,
+    saleItemId: r.sale_item_id,
+    sessionUsed: Number(r.session_used),
+    unitRealPrice: r.unit_real_price,
+    employeeName: r.employee_name,
+    productName: r.product_name,
+    skuName: r.sku_name,
+    remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
+    sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+  }))
 }
 
 /** C4: 开始服务 — WHERE status = '待服务' */
@@ -160,4 +207,83 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
+}
+
+/** 管理后台创建服务单 */
+export async function createServiceOrder(data: {
+  storeId: string
+  marketName: string
+  clientUserId: string
+  assignedEmployeeId: string
+  serviceDate: string
+  serviceOrderType?: '普通' | '体验'
+  appointmentId?: string | null
+  remark?: string | null
+  items: Array<{
+    saleItemId: string
+    sessionUsed: number
+  }>
+}): Promise<{ success: boolean; message: string; serviceOrderId?: string }> {
+  const session = await getSession()
+  requirePermission(session, 'service:create')
+
+  // 生成服务单号
+  const idRows = await db.execute(sql`
+    WITH lock AS (
+      SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
+    )
+    SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
+      LPAD(
+        (SELECT COALESCE(MAX(
+          CAST(NULLIF(SUBSTRING(service_order_id FROM '.{4}$'), '') AS INTEGER)
+        ), 0) + 1
+        FROM service_orders
+        WHERE service_order_id LIKE 'FY-FW-' || to_char(NOW(), 'YYMMDD') || '%'
+        )::TEXT, 4, '0'
+      ) AS id
+    FROM lock
+  `)
+  const serviceOrderId = (idRows as any[])[0]?.id as string
+
+  await db.insert(serviceOrders).values({
+    serviceOrderId,
+    status: '待服务',
+    serviceOrderType: data.serviceOrderType || '普通',
+    marketName: data.marketName,
+    storeId: data.storeId,
+    serviceDate: data.serviceDate,
+    assignedEmployeeId: data.assignedEmployeeId,
+    clientUserId: data.clientUserId,
+    appointmentId: data.appointmentId || null,
+    remark: data.remark || null,
+  })
+
+  // 插入服务明细
+  for (let i = 0; i < data.items.length; i++) {
+    const item = data.items[i]
+    const serviceItemId = `${serviceOrderId}-${String(i + 1).padStart(2, '0')}`
+
+    // 查询关联的销售明细以快照 unit_real_price 和 service_duration
+    const [saleItem] = await db
+      .select({ unitRealPrice: saleItems.unitRealPrice })
+      .from(saleItems)
+      .where(eq(saleItems.saleItemId, item.saleItemId))
+      .limit(1)
+
+    await db.insert(serviceItems).values({
+      serviceItemId,
+      serviceOrderId,
+      saleItemId: item.saleItemId,
+      sessionUsed: item.sessionUsed,
+      unitRealPrice: saleItem?.unitRealPrice || '0',
+      employeeId: data.assignedEmployeeId,
+    })
+  }
+
+  await logOperation(session, 'service.create', 'service_order', serviceOrderId, {
+    storeId: data.storeId, itemCount: data.items.length,
+  })
+
+  revalidatePath('/services')
+  return { success: true, message: '服务单创建成功', serviceOrderId }
 }

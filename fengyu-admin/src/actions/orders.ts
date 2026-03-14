@@ -232,9 +232,12 @@ export async function createOrder(data: {
   const session = await getSession()
   requirePermission(session, 'sale_order:create')
 
-  // Generate order ID with advisory lock
-  const [{ id: saleOrderId }] = await db.execute<{ id: string }>(sql`
-    SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '-' ||
+  // Generate order ID with advisory lock to prevent concurrent duplicates
+  const idRows = await db.execute(sql`
+    WITH lock AS (
+      SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+    )
+    SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
       LPAD(
         (SELECT COALESCE(MAX(
           CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
@@ -243,7 +246,9 @@ export async function createOrder(data: {
         WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
         )::TEXT, 4, '0'
       ) AS id
+    FROM lock
   `)
+  const saleOrderId = (idRows as any[])[0]?.id as string
 
   // Calculate total
   const totalAmount = data.items.reduce((sum, item) => {

@@ -8,23 +8,61 @@ import { Select } from "@/components/ui/select"
 import type { OperationLog } from "@/lib/types"
 
 const actionLabels: Record<string, string> = {
-  "employee.create": "创建员工",
-  "product.create": "创建商品",
-  "order.create": "创建订单",
-  "order.confirmOffline": "确认线下收款",
-  "allocation.save": "保存分配",
-  "service.complete": "完成服务",
-  "permission.assign": "分配权限",
-  "sync.trigger": "触发同步",
+  // 组织
+  "org.create": "创建组织节点", "org.update": "编辑组织节点", "org.delete": "停用组织节点",
+  // 门店
+  "store.create": "创建门店", "store.update": "编辑门店",
+  // 员工
+  "employee.create": "创建员工", "employee.update": "编辑员工",
+  // 商品
+  "product.create": "创建商品", "product.update": "编辑商品",
+  "category.create": "创建分类", "category.update": "编辑分类",
+  "sku.create": "创建规格", "sku.update": "编辑规格", "sku.delete": "删除规格",
+  // 订单
+  "order.create": "创建订单", "order.confirmPayment": "确认收款",
+  "order.close": "关闭订单", "order.resetFailed": "重置支付失败",
+  // 分配
+  "allocation.save": "保存分配", "allocation.delete": "删除分配", "allocation.batchSave": "批量保存分配",
+  // 服务
+  "service.create": "创建服务单", "service.start": "开始服务",
+  "service.complete": "完成服务", "service.cancel": "取消服务",
+  // 预约
+  "appointment.confirm": "确认预约", "appointment.checkin": "预约签到", "appointment.cancel": "取消预约",
+  // 权限
+  "permission.assign": "分配角色", "permission.revoke": "撤销角色",
+  // 顾客
+  "customer.create": "创建顾客", "customer.update": "编辑顾客档案",
+  // 优惠券
+  "coupon.create": "创建优惠券", "coupon.update": "编辑优惠券",
+  "coupon.启用": "启用优惠券", "coupon.停用": "停用优惠券",
+  // 提成
+  "commission.create": "创建提成规则", "commission.update": "编辑提成规则", "commission.delete": "删除提成规则",
+  // 解绑
+  "store_unbind.approve": "通过解绑申请", "store_unbind.reject": "拒绝解绑申请",
+  // 同步
+  "sync.full": "全量同步", "sync.incremental": "增量同步",
+  // 系统
+  "system.saveConfig": "保存系统配置",
 }
 
 const targetTypeLabels: Record<string, string> = {
   employee: "员工",
   product: "商品",
+  product_category: "品项分类",
+  product_sku: "商品规格",
   sale_order: "订单",
+  sale_allocation: "营业额分配",
   service_order: "服务单",
-  permission_role: "权限",
-  system: "系统",
+  appointment: "预约",
+  permission_role: "权限角色",
+  customer: "顾客",
+  coupon_template: "优惠券模板",
+  commission_rate: "提成规则",
+  org_node: "组织节点",
+  store: "门店",
+  store_unbind_request: "解绑申请",
+  sync: "数据同步",
+  system_config: "系统配置",
 }
 
 function formatDateTime(dt: string) {
@@ -41,12 +79,17 @@ interface Props {
 export default function LogsPage({ logs }: Props) {
   const [operatorSearch, setOperatorSearch] = useState("")
   const [actionFilter, setActionFilter] = useState("")
+  const [targetTypeFilter, setTargetTypeFilter] = useState("")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const uniqueActions = useMemo(() => {
     return Array.from(new Set(logs.map((l) => l.action)))
+  }, [logs])
+
+  const uniqueTargetTypes = useMemo(() => {
+    return Array.from(new Set(logs.map((l) => l.targetType)))
   }, [logs])
 
   const filtered = useMemo(() => {
@@ -61,6 +104,7 @@ export default function LogsPage({ logs }: Props) {
             return false
         }
         if (actionFilter && log.action !== actionFilter) return false
+        if (targetTypeFilter && log.targetType !== targetTypeFilter) return false
         if (dateFrom) {
           const from = new Date(dateFrom)
           if (new Date(log.createdAt) < from) return false
@@ -72,7 +116,7 @@ export default function LogsPage({ logs }: Props) {
         return true
       })
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-  }, [operatorSearch, actionFilter, dateFrom, dateTo, logs])
+  }, [operatorSearch, actionFilter, targetTypeFilter, dateFrom, dateTo, logs])
 
   return (
     <div className="space-y-4">
@@ -92,6 +136,12 @@ export default function LogsPage({ logs }: Props) {
               <option value="">全部操作类型</option>
               {uniqueActions.map((a) => (
                 <option key={a} value={a}>{actionLabels[a] || a}</option>
+              ))}
+            </Select>
+            <Select className="w-40" value={targetTypeFilter} onChange={(e) => setTargetTypeFilter(e.target.value)}>
+              <option value="">全部目标类型</option>
+              {uniqueTargetTypes.map((t) => (
+                <option key={t} value={t}>{targetTypeLabels[t] || t}</option>
               ))}
             </Select>
             <div className="flex items-center gap-2">

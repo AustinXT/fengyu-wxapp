@@ -263,12 +263,23 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
             <Select
               className="mt-1"
               value={assignRoleValue}
-              onChange={(e) => setAssignRoleValue(e.target.value as RoleType)}
+              onChange={(e) => {
+                const role = e.target.value as RoleType
+                setAssignRoleValue(role)
+                // admin 角色 scope 固定为 headquarters
+                if (role === 'admin') {
+                  const hq = orgNodes.find(n => n.type === 'headquarters')
+                  if (hq) setAssignScopeId(hq.id)
+                }
+              }}
             >
               {allRoles.filter((r) => r !== 'staff').map((r) => (
                 <option key={r} value={r}>{roleLabels[r]}</option>
               ))}
             </Select>
+            {assignRoleValue === 'admin' && (
+              <p className="text-xs text-[#D4820A] mt-1">系统管理员 scope 固定为总部级别，不受范围限制</p>
+            )}
           </div>
           <div>
             <label className="text-sm text-[#999999]">权限范围</label>
@@ -291,6 +302,13 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
             disabled={!assignEmployeeId || !assignScopeId}
             onClick={async () => {
               if (!assignEmployeeId || !assignScopeId) return
+              // admin 角色需要二次确认
+              if (assignRoleValue === 'admin') {
+                const confirmed = window.confirm(
+                  '即将分配【系统管理员】角色，该角色拥有最高权限（不受 scope 限制），请确认此操作。'
+                )
+                if (!confirmed) return
+              }
               setAssigning(true)
               try {
                 const res = await assignRole({
@@ -305,6 +323,9 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                   setAssignEmployeeId("")
                   setAssignScopeId("")
                   window.location.reload()
+                } else {
+                  const { toast } = await import('sonner')
+                  toast.error(res.message)
                 }
               } catch {
                 const { toast } = await import('sonner')

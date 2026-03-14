@@ -7,7 +7,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { StatusBadge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { confirmAppointment, checkinAppointment } from "@/actions/appointments"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
+import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
 import type { Appointment } from "@/lib/types"
 
 function formatDateTime(dt: string | null) {
@@ -28,12 +29,13 @@ function isToday(dt: string) {
 function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
   const router = useRouter()
   const [pendingId, setPendingId] = useState<string | null>(null)
+  const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null)
 
-  const handleAction = async (action: 'confirm' | 'checkin', appt: Appointment) => {
+  const handleAction = async (action: 'confirm' | 'checkin' | 'cancel', appt: Appointment) => {
     setPendingId(appt.appointmentId)
     try {
-      const actionFn = action === 'confirm' ? confirmAppointment : checkinAppointment
-      const res = await actionFn(appt.appointmentId)
+      const actionMap = { confirm: confirmAppointment, checkin: checkinAppointment, cancel: cancelAppointment }
+      const res = await actionMap[action](appt.appointmentId)
       if (res.success) {
         toast.success(res.message)
         router.refresh()
@@ -48,6 +50,7 @@ function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
   }
 
   return (
+    <>
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 sticky top-0">
@@ -73,12 +76,20 @@ function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
               <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
               <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{appt.notes || "-"}</td>
               <td className="px-4 py-3">
-                {appt.status === "待确认" && (
-                  <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
-                )}
-                {appt.status === "已确认" && (
-                  <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
-                )}
+                <div className="flex gap-1">
+                  {appt.status === "待确认" && (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
+                      <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                    </>
+                  )}
+                  {appt.status === "已确认" && (
+                    <>
+                      <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
+                      <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                    </>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -90,6 +101,18 @@ function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
         </tbody>
       </table>
     </div>
+
+    <AlertDialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
+      <AlertDialogTitle>确认取消预约？</AlertDialogTitle>
+      <AlertDialogDescription>
+        {cancelTarget?.status === '已确认' ? '该预约已确认，' : ''}取消后不可恢复。
+      </AlertDialogDescription>
+      <AlertDialogFooter>
+        <AlertDialogCancel onClick={() => setCancelTarget(null)}>返回</AlertDialogCancel>
+        <AlertDialogAction onClick={() => cancelTarget && handleAction("cancel", cancelTarget)}>确认取消</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialog>
+    </>
   )
 }
 

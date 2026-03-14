@@ -10,15 +10,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import type { Store, OrgNode } from "@/lib/types"
 
-function generateEmployeeId(): string {
-  const now = new Date()
-  const yy = String(now.getFullYear()).slice(2)
-  const mm = String(now.getMonth() + 1).padStart(2, "0")
-  const dd = String(now.getDate()).padStart(2, "0")
-  const seq = String(Math.floor(Math.random() * 10000)).padStart(4, "0")
-  return `FY-${yy}${mm}${dd}-${seq}`
-}
-
 interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
@@ -55,27 +46,24 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
 
     setSaving(true)
     try {
-      const employeeId = generateEmployeeId()
       const skillsArr = form.skills
         .split(/[,，]/)
         .map((s) => s.trim())
         .filter(Boolean)
 
-      await createEmployee({
-        employeeId,
-        name: form.name.trim() || null,
+      const result = await createEmployee({
+        name: form.name.trim(),
+        phone: form.phone.trim(),
         gender: form.gender || null,
-        phone: form.phone.trim() || null,
         idCard: form.idCard.trim() || null,
         storeId: form.storeId || null,
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName.trim() || null,
         birthday: form.birthday || null,
         skills: skillsArr.length > 0 ? skillsArr : null,
-        isResigned: false,
       })
 
-      toast.success("员工创建成功")
+      toast.success(result.message)
       router.push("/employees")
       router.refresh()
     } catch {

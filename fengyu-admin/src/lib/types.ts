@@ -336,7 +336,9 @@ export interface DashboardStats {
   todayVisitors: number
   todayRevenue: number
   pendingOrders: number
+  pendingAllocations: number
   pendingAppointments: number
+  activeServices: number
   yesterdayVisitors: number
   yesterdayRevenue: number
 }

@@ -259,18 +259,37 @@ export async function updateCustomer(
 }
 
 export async function createCustomer(data: {
-  userId: string
   phone: string
   name: string
-}) {
+  boundStoreId?: string | null
+  boundEmployeeId?: string | null
+}): Promise<{ success: boolean; message: string; userId?: string }> {
   const session = await getSession()
   requirePermission(session, 'customer:create')
 
+  // 检查手机号是否已存在
+  const existing = await db
+    .select({ userId: clientWechatUsers.userId })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.phone, data.phone))
+    .limit(1)
+
+  if (existing.length > 0) {
+    return { success: false, message: '该手机号已存在顾客记录' }
+  }
+
+  // 服务端生成 userId
+  const { randomBytes } = await import('crypto')
+  const userId = `FYGK-${randomBytes(6).toString('hex')}`
+
   await db.insert(clientWechatUsers).values({
-    userId: data.userId,
+    userId,
     phone: data.phone,
     name: data.name,
+    boundStoreId: data.boundStoreId ?? null,
+    boundEmployeeId: data.boundEmployeeId ?? null,
   })
 
-  await logOperation(session, 'customer.create', 'customer', data.userId, { name: data.name })
+  await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
+  return { success: true, message: '顾客创建成功', userId }
 }

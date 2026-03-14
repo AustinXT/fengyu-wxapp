@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { startServiceOrder, completeServiceOrder, cancelServiceOrder } from "@/actions/services"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
@@ -19,8 +20,10 @@ function formatDate(dt: string) {
 function ServiceActions({ so }: { so: ServiceOrder }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const [confirmDialog, setConfirmDialog] = useState<'cancel' | 'complete' | null>(null)
 
   const handleAction = (actionFn: (id: string) => Promise<{ success: boolean; message: string }>) => {
+    setConfirmDialog(null)
     startTransition(async () => {
       const res = await actionFn(so.serviceOrderId)
       if (res.success) {
@@ -33,17 +36,37 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
   }
 
   return (
-    <div className="flex gap-1">
-      {so.status === "待服务" && (
-        <>
-          <Button size="sm" variant="outline" onClick={() => handleAction(startServiceOrder)} disabled={pending}>开始服务</Button>
-          <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => handleAction(cancelServiceOrder)} disabled={pending}>取消</Button>
-        </>
-      )}
-      {so.status === "服务中" && (
-        <Button size="sm" variant="outline" onClick={() => handleAction(completeServiceOrder)} disabled={pending}>完成服务</Button>
-      )}
-    </div>
+    <>
+      <div className="flex gap-1">
+        {so.status === "待服务" && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => handleAction(startServiceOrder)} disabled={pending}>开始服务</Button>
+            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setConfirmDialog('cancel')} disabled={pending}>取消</Button>
+          </>
+        )}
+        {so.status === "服务中" && (
+          <Button size="sm" variant="outline" onClick={() => setConfirmDialog('complete')} disabled={pending}>完成服务</Button>
+        )}
+      </div>
+
+      <AlertDialog open={confirmDialog === 'cancel'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>确认取消服务单？</AlertDialogTitle>
+        <AlertDialogDescription>取消后服务单将标记为已取消，不扣减次数。此操作不可撤销。</AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(cancelServiceOrder)}>确认取消</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === 'complete'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>确认完成服务？</AlertDialogTitle>
+        <AlertDialogDescription>完成后将扣减关联销售明细的剩余次数。此操作不可撤销。</AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(completeServiceOrder)}>确认完成</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+    </>
   )
 }
 

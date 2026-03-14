@@ -11,10 +11,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 
 export default function StoreEditPage({ store }: { store: Store }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
 
@@ -55,6 +57,14 @@ export default function StoreEditPage({ store }: { store: Store }) {
         <h1 className="text-2xl font-bold text-[var(--foreground)]">
           编辑门店 - {store.storeName}
         </h1>
+        {!store.isClosed && (
+          <Button type="button" variant="ghost" size="sm" className="text-[#D94040] ml-auto" onClick={() => setCloseDialogOpen(true)}>
+            关闭门店
+          </Button>
+        )}
+        {store.isClosed && (
+          <span className="ml-auto text-sm text-[#888888] bg-[#F5F5F5] px-3 py-1 rounded">已关闭</span>
+        )}
       </div>
 
       {/* 基本信息 */}
@@ -181,6 +191,27 @@ export default function StoreEditPage({ store }: { store: Store }) {
           {saving ? "保存中..." : "保存"}
         </Button>
       </div>
+
+      {/* 关闭门店确认 */}
+      <AlertDialog open={closeDialogOpen} onOpenChange={setCloseDialogOpen}>
+        <AlertDialogTitle>确认关闭门店？</AlertDialogTitle>
+        <AlertDialogDescription>
+          关闭「{store.storeName}」后，该门店将不再对顾客展示。此操作可通过重新编辑恢复。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setCloseDialogOpen(false)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={async () => {
+            try {
+              await updateStore(store.storeId, { isClosed: true })
+              toast.success('门店已关闭')
+              setCloseDialogOpen(false)
+              router.refresh()
+            } catch {
+              toast.error('操作失败')
+            }
+          }}>确认关闭</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </form>
   )
 }

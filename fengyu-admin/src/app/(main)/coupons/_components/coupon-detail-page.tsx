@@ -128,6 +128,15 @@ export default function CouponDetailPage({ template }: Props) {
       toast.error("请输入面值/折扣")
       return
     }
+    const dv = Number(editDiscountValue)
+    if (isNaN(dv) || dv <= 0) {
+      toast.error("面值/折扣必须大于 0")
+      return
+    }
+    if (editCouponType === "折扣券" && dv >= 1) {
+      toast.error("折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）")
+      return
+    }
 
     setSaving(true)
     try {

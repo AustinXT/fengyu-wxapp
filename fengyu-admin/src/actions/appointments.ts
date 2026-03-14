@@ -85,3 +85,26 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
   revalidatePath('/appointments')
   return { success: true, message: '签到成功' }
 }
+
+/** 取消预约 — WHERE status IN ('待确认', '已确认') */
+export async function cancelAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'appointment:confirm')
+
+  const result = await db
+    .update(appointments)
+    .set({ status: '已取消' })
+    .where(and(
+      eq(appointments.appointmentId, appointmentId),
+      sql`${appointments.status} IN ('待确认', '已确认')`,
+    ))
+
+  if ((result as any).rowCount === 0) {
+    return { success: false, message: '预约状态已变更，无法取消' }
+  }
+
+  await logOperation(session, 'appointment.cancel', 'appointment', appointmentId)
+
+  revalidatePath('/appointments')
+  return { success: true, message: '预约已取消' }
+}

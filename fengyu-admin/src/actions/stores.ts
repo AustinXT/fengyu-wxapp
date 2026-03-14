@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { stores, orgNodes } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -73,7 +73,7 @@ export async function getStoreById(storeId: string): Promise<Store | null> {
 export async function createStore(data: {
   storeId: string
   storeName: string
-  orgNodeId?: string | null
+  marketId: string  // 所属市场的 org_node id（必填）
   openingDate?: string | null
   bedCount?: number | null
   isClosed?: boolean
@@ -88,14 +88,25 @@ export async function createStore(data: {
   description?: string | null
   announcement?: string | null
   parkingInfo?: string | null
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'store:create')
+
+  // 同时创建 org_node（type=store）和 stores 记录
+  const orgNodeId = `store-${data.storeId}`
+  await db.insert(orgNodes).values({
+    id: orgNodeId,
+    name: data.storeName,
+    type: 'store',
+    parentId: data.marketId,
+    sortOrder: 0,
+    isActive: true,
+  })
 
   await db.insert(stores).values({
     storeId: data.storeId,
     storeName: data.storeName,
-    orgNodeId: data.orgNodeId ?? null,
+    orgNodeId,
     openingDate: data.openingDate ?? null,
     bedCount: data.bedCount ?? null,
     isClosed: data.isClosed ?? false,
@@ -112,7 +123,8 @@ export async function createStore(data: {
     parkingInfo: data.parkingInfo ?? null,
   })
 
-  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName })
+  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
+  return { success: true, message: '门店创建成功' }
 }
 
 export async function updateStore(

@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -66,10 +66,29 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
   return rowToEmployee(rows[0])
 }
 
+/** 自动生成 employee_id：FY-{YYMMDD}{3位序号} */
+async function generateEmployeeId(): Promise<string> {
+  const idRows = await db.execute(sql`
+    WITH lock AS (
+      SELECT pg_advisory_xact_lock(hashtext('employee_id_gen'))
+    )
+    SELECT 'FY-' || to_char(NOW(), 'YYMMDD') ||
+      LPAD(
+        (SELECT COALESCE(MAX(
+          CAST(NULLIF(SUBSTRING(employee_id FROM '.{3}$'), '') AS INTEGER)
+        ), 0) + 1
+        FROM staff_wechat_users
+        WHERE employee_id LIKE 'FY-' || to_char(NOW(), 'YYMMDD') || '%'
+        )::TEXT, 3, '0'
+      ) AS id
+    FROM lock
+  `)
+  return (idRows as any[])[0]?.id as string
+}
+
 export async function createEmployee(data: {
-  employeeId: string
-  phone?: string | null
-  name?: string | null
+  phone: string
+  name: string
   gender?: string | null
   idCard?: string | null
   storeId?: string | null
@@ -77,15 +96,16 @@ export async function createEmployee(data: {
   positionName?: string | null
   birthday?: string | null
   skills?: string[] | null
-  isResigned?: boolean
-}) {
+}): Promise<{ success: boolean; message: string; employeeId?: string }> {
   const session = await getSession()
   requirePermission(session, 'employee:create')
 
+  const employeeId = await generateEmployeeId()
+
   await db.insert(staffWechatUsers).values({
-    employeeId: data.employeeId,
-    phone: data.phone ?? null,
-    name: data.name ?? null,
+    employeeId,
+    phone: data.phone,
+    name: data.name,
     gender: data.gender ?? null,
     idCard: data.idCard ?? null,
     storeId: data.storeId ?? null,
@@ -93,10 +113,11 @@ export async function createEmployee(data: {
     positionName: data.positionName ?? null,
     birthday: data.birthday ?? null,
     skills: data.skills ?? null,
-    isResigned: data.isResigned ?? false,
+    isResigned: false,
   })
 
-  await logOperation(session, 'employee.create', 'employee', data.employeeId, { name: data.name })
+  await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
+  return { success: true, message: '员工创建成功', employeeId }
 }
 
 export async function updateEmployee(

@@ -26,15 +26,6 @@ const MEMBER_LEVEL_COLORS: Record<string, string> = {
 
 const MEMBER_LEVELS = ["钻石", "金卡", "银卡", "新客"]
 
-function generateUserId(): string {
-  const now = new Date()
-  const yyyy = String(now.getFullYear())
-  const mm = String(now.getMonth() + 1).padStart(2, "0")
-  const dd = String(now.getDate()).padStart(2, "0")
-  const seq = String(Math.floor(Math.random() * 10000)).padStart(4, "0")
-  return `FYGK-${yyyy}${mm}${dd}${seq}`
-}
-
 interface CustomersPageProps {
   customers: Customer[]
   stores: Store[]
@@ -89,13 +80,15 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
 
     setCreating(true)
     try {
-      const userId = generateUserId()
-      await createCustomer({
-        userId,
+      const result = await createCustomer({
         phone: newPhone.trim(),
         name: newName.trim(),
       })
-      toast.success("顾客创建成功")
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      toast.success(result.message)
       setDialogOpen(false)
       setNewPhone("")
       setNewName("")

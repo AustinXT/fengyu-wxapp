@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { OrgNode } from "@/lib/types"
 import { createStore } from "@/actions/stores"
-import { createOrgNode } from "@/actions/org"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -36,22 +35,12 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
     setSaving(true)
     try {
       const storeId = `store-${Date.now()}`
-      const orgNodeId = `org-store-${Date.now()}`
 
-      // Create an org node of type 'store' under the selected market
-      await createOrgNode({
-        id: orgNodeId,
-        name: storeName,
-        type: "store",
-        parentId: marketId,
-        sortOrder: 0,
-        isActive: true,
-      })
-
-      await createStore({
+      // createStore 内部会自动创建对应的 org_node (type=store)
+      const result = await createStore({
         storeId,
         storeName,
-        orgNodeId,
+        marketId,
         openingDate: (formData.get("openingDate") as string) || null,
         bedCount: formData.get("bedCount") ? Number(formData.get("bedCount")) : null,
         phone: (formData.get("phone") as string) || null,
@@ -67,7 +56,7 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         images: storeImages.length > 0 ? storeImages : null,
       })
 
-      toast.success("创建成功")
+      toast.success(result.message)
       router.push("/stores")
     } catch {
       toast.error("创建失败")
