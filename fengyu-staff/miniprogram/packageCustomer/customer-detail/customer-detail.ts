@@ -125,10 +125,12 @@ Page({
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const s = summaryMap[dateStr];
+      const amount = s ? s.totalReceived : 0;
       days.push({
         day: d,
         date: dateStr,
-        amount: s ? s.totalReceived : 0,
+        amount,
+        amountLabel: amount >= 1000 ? (amount / 1000).toFixed(1) + 'k' : String(amount),
         hasData: !!s,
       });
     }

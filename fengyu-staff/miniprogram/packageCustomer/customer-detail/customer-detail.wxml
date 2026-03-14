@@ -71,7 +71,7 @@
               data-date="{{item.date}}"
             >
               <text wx:if="{{item.day > 0}}" class="calendar-day">{{item.day}}</text>
-              <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amount >= 1000 ? (item.amount / 1000).toFixed(1) + 'k' : item.amount}}</text>
+              <text wx:if="{{item.hasData}}" class="calendar-amount">{{item.amountLabel}}</text>
             </view>
           </view>
           <!-- 选中日期的订单列表 -->
