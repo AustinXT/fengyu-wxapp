@@ -169,6 +169,7 @@ export interface SaleOrder {
   allocationStatus: AllocationStatus | null
   couponId: string | null
   couponDiscount: string | null
+  remark: string | null
   createdAt: string
   updatedAt: string
   // joined

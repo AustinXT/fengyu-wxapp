@@ -54,6 +54,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     allocationStatus: r.order.allocationStatus as SaleOrder['allocationStatus'],
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
+    remark: r.order.remark,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -65,6 +66,8 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
   const session = await getSession()
   requirePermission(session, 'sale_order:list')
 
+  const scopeIds = session.permissions.scopeStoreIds
+
   const rows = await db
     .select({
       order: saleOrders,
@@ -74,7 +77,11 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .where(
+      scopeIds.length > 0
+        ? and(eq(saleOrders.saleOrderId, saleOrderId), inArray(saleOrders.storeId, scopeIds))
+        : and(eq(saleOrders.saleOrderId, saleOrderId), sql`FALSE`)
+    )
     .limit(1)
 
   if (rows.length === 0) return null
@@ -135,6 +142,7 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     allocationStatus: r.order.allocationStatus as SaleOrder['allocationStatus'],
     couponId: r.order.couponId,
     couponDiscount: r.order.couponDiscount,
+    remark: r.order.remark,
     createdAt: r.order.createdAt.toISOString(),
     updatedAt: r.order.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -150,12 +158,26 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
 
   const result = await db
     .update(saleOrders)
-    .set({ status: '已支付', paidAt: new Date() })
+    .set({
+      status: '已支付',
+      paidAt: new Date(),
+      offlineConfirmedBy: session.employeeId,
+      offlineConfirmedAt: new Date(),
+    })
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), eq(saleOrders.status, '待确认收款')))
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法确认收款' }
   }
+
+  // 设置单品到期日（支付成功后 1 年）
+  await db.execute(sql`
+    UPDATE sale_items
+    SET expire_date = (NOW() + INTERVAL '1 year')::date,
+        updated_at = NOW()
+    WHERE sale_order_id = ${saleOrderId}
+      AND expire_date IS NULL
+  `)
 
   await logOperation(session, 'order.confirmPayment', 'sale_order', saleOrderId)
 
@@ -163,7 +185,7 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
   return { success: true, message: '确认收款成功' }
 }
 
-/** C4: 关闭订单 — 仅待支付/支付失败可关闭 */
+/** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
 export async function closeOrder(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
@@ -180,9 +202,18 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
     return { success: false, message: '订单状态已变更，无法关闭' }
   }
 
+  // 作废关联的分配记录（规范：订单关闭时作废分配）
+  await db.execute(sql`
+    UPDATE sale_allocations SET is_void = true, voided_at = NOW()
+    WHERE sale_item_id IN (
+      SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+    ) AND is_void = false
+  `)
+
   await logOperation(session, 'order.close', 'sale_order', saleOrderId)
 
   revalidatePath('/orders')
+  revalidatePath('/allocations')
   return { success: true, message: '订单已关闭' }
 }
 
@@ -217,6 +248,7 @@ export async function createOrder(data: {
   saleOrderType: '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
   openedBy?: string
   preferredEmployeeId?: string
+  remark?: string | null
   items: Array<{
     skuId: string
     productName: string
@@ -278,6 +310,7 @@ export async function createOrder(data: {
     openedBy: data.openedBy || session.employeeId,
     preferredEmployeeId: data.preferredEmployeeId || null,
     allocationStatus: 'pending',
+    remark: data.remark || null,
   })
 
   // Insert sale items

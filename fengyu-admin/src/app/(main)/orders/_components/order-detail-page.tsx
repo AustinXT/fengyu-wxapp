@@ -101,6 +101,12 @@ export default function OrderDetailPageClient({
               <span className="text-[#999999]">订单金额</span>
               <p className="font-bold text-lg mt-1 text-[var(--primary)]">¥{Number(order.totalAmount).toLocaleString()}</p>
             </div>
+            {order.remark && (
+              <div className="col-span-2 md:col-span-3">
+                <span className="text-[#999999]">备注</span>
+                <p className="font-medium mt-1">{order.remark}</p>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

@@ -6,19 +6,26 @@ import type { DashboardStats } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 
-function buildScopeFilter(scopeIds: string[], col = 'store_id'): string {
-  if (scopeIds.length === 0) return 'AND FALSE'
-  return `AND ${col} IN (${scopeIds.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`
+const ZERO_STATS: DashboardStats = {
+  todayVisitors: 0, todayRevenue: 0, pendingOrders: 0,
+  pendingAllocations: 0, pendingAppointments: 0, activeServices: 0,
+  yesterdayVisitors: 0, yesterdayRevenue: 0,
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const session = await getSession()
-  requirePermission(session, 'data_center:dashboard')
+  requirePermission(session, 'dashboard:view')
+
+  // 非业务角色（无 data_center:dashboard 权限）返回零值
+  if (!session.permissions.actions.includes('data_center:dashboard')) {
+    return ZERO_STATS
+  }
 
   const scopeIds = session.permissions.scopeStoreIds
-  const storeFilter = buildScopeFilter(scopeIds)
+  if (scopeIds.length === 0) return ZERO_STATS
 
-  const orderStats = await db.execute(sql.raw(`
+  // 使用参数化查询，避免 SQL 注入
+  const orderStats = await db.execute(sql`
     SELECT
       COUNT(DISTINCT CASE
         WHEN DATE(sale_order_datetime) = CURRENT_DATE
@@ -47,20 +54,20 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         THEN total_amount
       END), 0) AS yesterday_revenue
     FROM sale_orders
-    WHERE 1=1 ${storeFilter}
-  `))
+    WHERE store_id = ANY(${scopeIds})
+  `)
 
-  const appointmentStats = await db.execute(sql.raw(`
+  const appointmentStats = await db.execute(sql`
     SELECT COUNT(*) AS pending_appointments
     FROM appointments
-    WHERE status = '待确认' ${storeFilter}
-  `))
+    WHERE status = '待确认' AND store_id = ANY(${scopeIds})
+  `)
 
-  const serviceStats = await db.execute(sql.raw(`
+  const serviceStats = await db.execute(sql`
     SELECT COUNT(*) AS active_services
     FROM service_orders
-    WHERE status = '服务中' ${storeFilter}
-  `))
+    WHERE status = '服务中' AND store_id = ANY(${scopeIds})
+  `)
 
   const row = (orderStats as any[])[0] ?? {}
   const apptRow = (appointmentStats as any[])[0] ?? {}

@@ -66,7 +66,8 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
 
 export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]> {
   const session = await getSession()
-  requirePermission(session, 'operation_log:list')
+  // 查看订单操作日志只需订单查看权限（不需要全局操作日志权限）
+  requirePermission(session, 'sale_order:list')
 
   const rows = await db
     .select()

@@ -11,6 +11,7 @@ import type { AuthSession, RoleType } from './types'
  */
 export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   admin: [
+    'dashboard:view',
     // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
     'org:list', 'org:create', 'org:update', 'org:delete',
     'store:list', 'store:create', 'store:update',
@@ -26,6 +27,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // admin 不碰业务数据（订单/分配/服务/预约）和顾客
   ],
   manager: [
+    'dashboard:view',
     'store:list',
     'employee:list',
     'customer:list', 'customer:update', 'customer:create',
@@ -37,22 +39,26 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
   ],
   finance: [
+    'dashboard:view',
     'sale_order:list',
     'allocation:list',
     'customer:list',
     'data_center:dashboard',
   ],
   hr: [
+    'dashboard:view',
     'org:list', 'org:create', 'org:update',
     'store:list', 'store:create', 'store:update',
     'employee:list', 'employee:create', 'employee:update',
     'permission:list', 'permission:assign', 'permission:revoke',
   ],
   product: [
+    'dashboard:view',
     'product:list', 'product:create', 'product:update',
     'coupon:list', 'coupon:create', 'coupon:update',
   ],
   customer_mgr: [
+    'dashboard:view',
     'customer:list', 'customer:update', 'customer:create',
   ],
   staff: [],
@@ -134,7 +140,8 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
   if (ids.length === 0) {
     return sql`FALSE`
   }
-  return sql.raw(`${storeIdColumn} IN (${ids.map(id => `'${id.replace(/'/g, "''")}'`).join(',')})`)
+  // 使用参数化查询避免 SQL 注入
+  return sql`${sql.raw(storeIdColumn)} = ANY(${ids})`
 }
 
 /**

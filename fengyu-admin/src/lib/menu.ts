@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ScrollText,
   Settings,
+  Unlink,
   type LucideIcon,
 } from 'lucide-react'
 import type { AuthSession, RoleType } from './types'
@@ -49,6 +50,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: '营业额分配', icon: PieChart, href: '/allocations', requiredRoles: ['manager'], readonlyRoles: ['finance'] },
       { label: '服务单管理', icon: Stethoscope, href: '/services', requiredRoles: ['manager'] },
       { label: '预约管理', icon: CalendarCheck, href: '/appointments', requiredRoles: ['manager'] },
+      { label: '门店解绑', icon: Unlink, href: '/store-unbind', requiredRoles: ['manager'] },
     ],
   },
   {

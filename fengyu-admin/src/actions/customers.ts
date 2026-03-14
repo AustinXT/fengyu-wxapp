@@ -87,12 +87,22 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
+  const scopeStoreIds = session.permissions.scopeStoreIds
+  const isAdminOnly = hasRole(session, 'admin') && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
+
+  // admin 不碰顾客数据
+  if (isAdminOnly) return null
+
   const rows = await db
     .select()
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .where(eq(clientWechatUsers.userId, userId))
+    .where(
+      scopeStoreIds.length > 0
+        ? and(eq(clientWechatUsers.userId, userId), inArray(clientWechatUsers.boundStoreId, scopeStoreIds))
+        : eq(clientWechatUsers.userId, userId)
+    )
     .limit(1)
 
   if (rows.length === 0) return null
@@ -171,6 +181,7 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
       allocationStatus: r.order.allocationStatus as SaleOrder['allocationStatus'],
       couponId: r.order.couponId,
       couponDiscount: r.order.couponDiscount,
+      remark: r.order.remark,
       createdAt: r.order.createdAt.toISOString(),
       updatedAt: r.order.updatedAt.toISOString(),
       storeName: r.storeName ?? undefined,

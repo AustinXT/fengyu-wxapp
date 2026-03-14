@@ -1,9 +1,9 @@
-import { getRates } from '@/actions/commission'
+import { getRates, getMarkets } from '@/actions/commission'
 import CommissionPage from './_components/commission-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const rates = await getRates()
-  return <CommissionPage rates={rates} />
+  const [rates, markets] = await Promise.all([getRates(), getMarkets()])
+  return <CommissionPage rates={rates} markets={markets} />
 }

@@ -19,15 +19,11 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { formatCurrency } from "@/lib/utils"
-import { createRate, updateRate, deleteRate } from "@/actions/commission"
+import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions/commission"
 
-const MARKET_TABS = [
-  { orgId: "6707cc8b88579108", label: "南昌市场" },
-  { orgId: "dad2db0b1249daca", label: "九江市场" },
-]
-
-const ORDER_TYPE_OPTIONS = ["sale", "service"]
-const ROLE_TYPE_OPTIONS = ["technician", "promoter"]
+const ORDER_TYPE_OPTIONS = ["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"]
+const ROLE_TYPE_OPTIONS = ["美容师", "推广师", "顾问"]
+const SALES_CATEGORY_OPTIONS = ["自采自销", "他销自耗", "他销他耗", "生态合作"]
 
 interface RateFormData {
   orgId: string
@@ -51,11 +47,13 @@ const emptyForm = (defaultOrgId: string): RateFormData => ({
 
 interface CommissionPageProps {
   rates: CommissionRate[]
+  markets: MarketOption[]
 }
 
-export default function CommissionPage({ rates }: CommissionPageProps) {
+export default function CommissionPage({ rates, markets }: CommissionPageProps) {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState(MARKET_TABS[0].orgId)
+  const defaultOrgId = markets.length > 0 ? markets[0].orgId : ""
+  const [activeTab, setActiveTab] = useState(defaultOrgId)
   const [orderTypeFilter, setOrderTypeFilter] = useState("")
   const [roleTypeFilter, setRoleTypeFilter] = useState("")
   const [salesCategoryFilter, setSalesCategoryFilter] = useState("")
@@ -63,7 +61,7 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingRate, setEditingRate] = useState<CommissionRate | null>(null)
-  const [form, setForm] = useState<RateFormData>(emptyForm(MARKET_TABS[0].orgId))
+  const [form, setForm] = useState<RateFormData>(emptyForm(defaultOrgId))
   const [saving, setSaving] = useState(false)
 
   // Delete confirmation state
@@ -291,16 +289,19 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
         </Select>
       </div>
 
-      <Tabs defaultValue={MARKET_TABS[0].orgId} onValueChange={setActiveTab}>
+      {markets.length === 0 ? (
+        <p className="text-sm text-[#999999] py-8 text-center">暂无市场节点，请先在组织架构中创建市场</p>
+      ) : (
+      <Tabs defaultValue={defaultOrgId} onValueChange={setActiveTab}>
         <TabsList>
-          {MARKET_TABS.map((tab) => (
+          {markets.map((tab) => (
             <TabsTrigger key={tab.orgId} value={tab.orgId}>
-              {tab.label}
+              {tab.name}
             </TabsTrigger>
           ))}
         </TabsList>
 
-        {MARKET_TABS.map((tab) => (
+        {markets.map((tab) => (
           <TabsContent key={tab.orgId} value={tab.orgId}>
             <DataTable
               columns={columns}
@@ -310,6 +311,7 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
           </TabsContent>
         ))}
       </Tabs>
+      )}
 
       {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -323,9 +325,9 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
               value={form.orgId}
               onChange={(e) => setForm({ ...form, orgId: e.target.value })}
             >
-              {MARKET_TABS.map((tab) => (
+              {markets.map((tab) => (
                 <option key={tab.orgId} value={tab.orgId}>
-                  {tab.label}
+                  {tab.name}
                 </option>
               ))}
             </Select>
@@ -358,11 +360,15 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
           </div>
           <div className="space-y-2">
             <label className="text-sm font-medium">销售分类 *</label>
-            <Input
+            <Select
               value={form.salesCategory}
               onChange={(e) => setForm({ ...form, salesCategory: e.target.value })}
-              placeholder="请输入销售分类"
-            />
+            >
+              <option value="">请选择销售分类</option>
+              {SALES_CATEGORY_OPTIONS.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </Select>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">

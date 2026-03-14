@@ -64,6 +64,7 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
   const session = await getSession()
   requirePermission(session, 'service:list')
 
+  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -75,7 +76,11 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
     .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .where(
+      scopeIds.length > 0
+        ? and(eq(serviceOrders.serviceOrderId, serviceOrderId), inArray(serviceOrders.storeId, scopeIds))
+        : and(eq(serviceOrders.serviceOrderId, serviceOrderId), sql`FALSE`)
+    )
     .limit(1)
 
   if (rows.length === 0) return null
@@ -248,6 +253,28 @@ export async function createServiceOrder(data: {
     return { success: false, message: '服务单号生成失败，请重试' }
   }
 
+  // 先校验所有明细的剩余次数，避免校验失败时留下孤儿服务单
+  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
+  for (const item of data.items) {
+    const [saleItem] = await db
+      .select({
+        remainingSessions: saleItems.remainingSessions,
+        unitRealPrice: saleItems.unitRealPrice,
+      })
+      .from(saleItems)
+      .where(eq(saleItems.saleItemId, item.saleItemId))
+      .limit(1)
+
+    if (!saleItem) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 不存在` }
+    }
+    if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
+    }
+    saleItemSnapshots.push({ saleItemId: item.saleItemId, unitRealPrice: saleItem.unitRealPrice })
+  }
+
+  // 校验通过后再插入服务单
   await db.insert(serviceOrders).values({
     serviceOrderId,
     status: '待服务',
@@ -261,24 +288,18 @@ export async function createServiceOrder(data: {
     remark: data.remark || null,
   })
 
-  // 插入服务明细
+  // 插入服务明细（使用预先查询的快照数据，避免重复查询）
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
     const serviceItemId = `${serviceOrderId}-${String(i + 1).padStart(2, '0')}`
-
-    // 查询关联的销售明细以快照 unit_real_price 和 service_duration
-    const [saleItem] = await db
-      .select({ unitRealPrice: saleItems.unitRealPrice })
-      .from(saleItems)
-      .where(eq(saleItems.saleItemId, item.saleItemId))
-      .limit(1)
+    const snapshot = saleItemSnapshots[i]
 
     await db.insert(serviceItems).values({
       serviceItemId,
       serviceOrderId,
       saleItemId: item.saleItemId,
       sessionUsed: item.sessionUsed,
-      unitRealPrice: saleItem?.unitRealPrice || '0',
+      unitRealPrice: snapshot.unitRealPrice || '0',
       employeeId: data.assignedEmployeeId,
     })
   }

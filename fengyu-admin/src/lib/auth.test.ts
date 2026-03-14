@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { hasPermission, hasRole, getRoleLabel, MOCK_SESSION } from './auth'
+import { hasPermission, hasRole, getRoleLabel } from './auth'
+import { PERMISSION_MATRIX, computeActions } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂
@@ -30,10 +31,14 @@ describe('hasPermission', () => {
     expect(hasPermission(session, 'org:list')).toBe(false)
   })
 
-  it('MOCK_SESSION 拥有 admin 全部权限', () => {
-    expect(hasPermission(MOCK_SESSION, 'org:list')).toBe(true)
-    expect(hasPermission(MOCK_SESSION, 'permission:assign_admin')).toBe(true)
-    expect(hasPermission(MOCK_SESSION, 'sync:trigger')).toBe(true)
+  it('admin session 拥有 admin 全部权限', () => {
+    const adminSession = makeSession(
+      [{ role: 'admin', scopeId: 'hq', scopeType: 'headquarters' }],
+      computeActions([{ role: 'admin' }])
+    )
+    expect(hasPermission(adminSession, 'org:list')).toBe(true)
+    expect(hasPermission(adminSession, 'permission:assign_admin')).toBe(true)
+    expect(hasPermission(adminSession, 'sync:trigger')).toBe(true)
   })
 })
 

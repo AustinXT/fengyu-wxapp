@@ -10,6 +10,24 @@ import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
+export interface MarketOption {
+  orgId: string
+  name: string
+}
+
+export async function getMarkets(): Promise<MarketOption[]> {
+  const session = await getSession()
+  requirePermission(session, 'commission:list')
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name })
+    .from(orgNodes)
+    .where(eq(orgNodes.type, 'market'))
+    .orderBy(orgNodes.sortOrder)
+
+  return rows.map((r) => ({ orgId: r.id, name: r.name }))
+}
+
 export async function getRates(): Promise<CommissionRate[]> {
   const session = await getSession()
   requirePermission(session, 'commission:list')

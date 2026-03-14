@@ -88,12 +88,33 @@ export async function revokeRole(id: number): Promise<{ success: boolean; messag
   const session = await getSession()
   requirePermission(session, 'permission:revoke')
 
+  // 查询要撤销的角色记录
+  const [target] = await db
+    .select({ role: permissionRoles.role, isVoid: permissionRoles.isVoid })
+    .from(permissionRoles)
+    .where(eq(permissionRoles.id, id))
+    .limit(1)
+
+  if (!target) {
+    return { success: false, message: '角色记录不存在' }
+  }
+  if (target.isVoid) {
+    return { success: false, message: '该角色已被撤销' }
+  }
+
+  // 只有 admin 才能撤销 admin 角色
+  if (target.role === 'admin' && !hasRole(session, 'admin')) {
+    return { success: false, message: '只有系统管理员才能撤销 admin 角色' }
+  }
+
   await db
     .update(permissionRoles)
     .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
     .where(eq(permissionRoles.id, id))
 
-  await logOperation(session, 'permission.revoke', 'permission_role', String(id))
+  await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
+    role: target.role,
+  })
 
   revalidatePath('/permissions')
   return { success: true, message: '角色已撤销' }

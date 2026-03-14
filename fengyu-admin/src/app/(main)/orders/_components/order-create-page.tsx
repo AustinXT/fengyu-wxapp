@@ -69,6 +69,7 @@ export default function OrderCreatePageClient({
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [searching, setSearching] = useState(false)
+  const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [createdOrderId, setCreatedOrderId] = useState<string>("")
   const [searchDone, setSearchDone] = useState(false)
@@ -342,6 +343,15 @@ export default function OrderCreatePageClient({
                   ))}
                 </Select>
               </div>
+              <div className="col-span-2 md:col-span-3">
+                <label className="text-sm text-[#999999]">备注（可选）</label>
+                <Input
+                  className="mt-1"
+                  placeholder="订单备注"
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                />
+              </div>
             </div>
 
             <Separator />
@@ -379,6 +389,7 @@ export default function OrderCreatePageClient({
                     paymentMethod: paymentMethod as 'wechat' | 'alipay' | 'offline',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
+                    remark: remark.trim() || null,
                     items: cart.map((item) => ({
                       skuId: item.sku.skuId,
                       productName: item.product.name,
