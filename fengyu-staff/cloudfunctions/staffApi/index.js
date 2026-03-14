@@ -131,7 +131,14 @@ exports.main = async (event, context) => {
   } catch (error) {
     console.error(`[${action}] Error:`, error)
 
+    // 解析错误类型——仅透传已知前缀的业务错误，其余一律返回通用提示
     const errorMessage = error.message || '服务器内部错误'
+    const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
+    const errorType = errorTypeMatch ? errorTypeMatch[1] : null
+    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND']
+    const isKnown = errorType && knownTypes.includes(errorType)
+    const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
+
     const code = errorMessage.startsWith('UNAUTHORIZED') ? -401 :
                   errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
@@ -141,7 +148,8 @@ exports.main = async (event, context) => {
 
     return {
       code,
-      message: errorMessage,
+      message: displayMessage,
+      errorType: isKnown ? errorType : null,
       data: null
     }
   }

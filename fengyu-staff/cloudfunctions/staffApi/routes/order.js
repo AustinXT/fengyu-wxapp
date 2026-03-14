@@ -408,7 +408,7 @@ async function qrcode(ctx) {
         qrcodeCache.set(saleOrderId, qrcodeUrl)
       } catch (err) {
         console.error('[order.qrcode] 生成小程序码失败:', err)
-        qrcodeError = err.message || '生成小程序码失败'
+        qrcodeError = '生成小程序码失败'
       }
     }
   }
