@@ -46,9 +46,31 @@ function hashId(...parts) {
   return crypto.createHash('sha256').update(parts.join(':')).digest('hex').substring(0, 16)
 }
 
-/** 生成 UUID */
-function uuid() {
-  return crypto.randomUUID()
+/**
+ * 创建顾客 user_id 序列生成器：FYGK-{YYYYMMDD}-{5位序号}
+ * 在事务内调用 init() 查询当日最大序号，后续调用 next() 递增
+ */
+function createClientIdGenerator() {
+  let seq = 0
+  let prefix = ''
+  return {
+    async init(client) {
+      const now = new Date()
+      const yyyy = String(now.getFullYear())
+      const mm = String(now.getMonth() + 1).padStart(2, '0')
+      const dd = String(now.getDate()).padStart(2, '0')
+      prefix = `FYGK-${yyyy}${mm}${dd}-`
+      const { rows } = await client.query(
+        "SELECT user_id FROM client_wechat_users WHERE user_id LIKE $1 ORDER BY user_id DESC LIMIT 1",
+        [prefix + '%']
+      )
+      seq = rows.length > 0 ? parseInt(rows[0].user_id.slice(prefix.length), 10) : 0
+    },
+    next() {
+      seq++
+      return prefix + String(seq).padStart(5, '0')
+    },
+  }
 }
 
 /** 文本 '是'/'否' → boolean */
@@ -477,6 +499,10 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     let skipped = 0
     const staged = []
 
+    // 初始化顾客 ID 生成器（FYGK-{YYYYMMDD}-{4位序号}）
+    const idGen = createClientIdGenerator()
+    await idGen.init(client)
+
     for (const row of rows) {
       const phone = validPhone(row.phone)
       const customerId = trim(row.customer_id)
@@ -484,7 +510,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
 
       const storeName = trim(row.store_name)
       staged.push([
-        uuid(), customerId, phone,
+        idGen.next(), customerId, phone,
         trim(row.name),
         storeName ? (storeMap[storeName] || null) : null,
         trim(row.bound_employee_id), trim(row.member_level),
