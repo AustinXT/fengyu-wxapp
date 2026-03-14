@@ -678,4 +678,35 @@ function generateServiceItemId() {
   return 'si_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)
 }
 
-module.exports = { create, start, complete, cancel, list, detail }
+/**
+ * 服务单各状态计数（轻量级，供前端 Tab badge 使用）
+ */
+async function counts(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const params = [ctx.auth.storeId]
+  let scopeFilter = 'so.store_id = $1'
+
+  if (!ctx.auth.roles.includes('manager')) {
+    params.push(ctx.auth.staffWfId)
+    scopeFilter += ` AND so.assigned_employee_id = $${params.length}`
+  }
+
+  const rows = await pg.query(`
+    SELECT so.status, COUNT(*)::int AS cnt
+    FROM service_orders so
+    WHERE ${scopeFilter}
+      AND so.status IN ('待服务', '服务中')
+    GROUP BY so.status
+  `, params)
+
+  const countMap = {}
+  for (const r of rows) countMap[r.status] = r.cnt
+
+  ctx.result = {
+    pending: countMap['待服务'] || 0,
+    processing: countMap['服务中'] || 0,
+  }
+}
+
+module.exports = { create, start, complete, cancel, list, detail, counts }

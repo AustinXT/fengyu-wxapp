@@ -80,7 +80,7 @@ Page({
   },
 
   onNavServices() {
-    wx.navigateTo({ url: '/packageService/service-list/service-list' });
+    wx.switchTab({ url: '/pages/service/service' });
   },
 
   onNavCustomers() {

@@ -32,8 +32,20 @@ Page({
     hasMore: true,
   },
 
+  _inited: false,
+
+  onLoad(options: Record<string, string>) {
+    if (options.tab) {
+      this.setData({ tabActive: options.tab });
+    }
+  },
+
   onShow() {
     this.resetAndLoad();
+  },
+
+  onPullDownRefresh() {
+    this.resetAndLoad().then(() => wx.stopPullDownRefresh()).catch(() => wx.stopPullDownRefresh());
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
@@ -41,9 +53,9 @@ Page({
     this.resetAndLoad();
   },
 
-  resetAndLoad() {
+  resetAndLoad(): Promise<void> {
     this.setData({ list: [], page: 1, hasMore: true });
-    this.loadList();
+    return this.loadList();
   },
 
   async loadList() {

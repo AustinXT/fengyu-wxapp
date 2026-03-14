@@ -88,6 +88,7 @@ const routes = {
   'service.cancel':       () => require('./routes/service').cancel,
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,
+  'service.counts':       () => require('./routes/service').counts,
 }
 
 /**

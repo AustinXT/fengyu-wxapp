@@ -104,7 +104,16 @@
       </view>
     </view>
 
-    <!-- 3. 代办事项 -->
+    <!-- 3. 顾客快速搜索 -->
+    <view class="search-section" bindtap="goCustomerList">
+      <van-search
+        disabled
+        placeholder="搜索顾客姓名/手机号"
+        shape="round"
+      />
+    </view>
+
+    <!-- 4. 代办事项 -->
     <view class="section-card">
       <view class="section-header">
         <text class="section-title">待处理事项</text>

@@ -124,7 +124,12 @@
   <!-- 服务人员 + 备注 -->
   <view class="section-card">
     <van-cell-group>
-      <van-cell title="服务人员" value="{{staffName}}" />
+      <van-cell
+        title="服务人员"
+        value="{{staffName}}"
+        is-link="{{isManager}}"
+        bindtap="{{isManager ? 'onShowStaffPicker' : ''}}"
+      />
       <van-field
         label="备注"
         placeholder="选填，最多100字"
@@ -149,4 +154,20 @@
   </view>
 
   <view class="safe-area-bottom" />
+
+  <!-- 店长选择服务人员 -->
+  <van-popup
+    show="{{showStaffPicker}}"
+    round
+    position="bottom"
+    bind:close="onStaffPickerClose"
+  >
+    <van-picker
+      title="选择服务人员"
+      show-toolbar
+      columns="{{staffColumns}}"
+      bind:confirm="onStaffConfirm"
+      bind:cancel="onStaffPickerClose"
+    />
+  </van-popup>
 </view>

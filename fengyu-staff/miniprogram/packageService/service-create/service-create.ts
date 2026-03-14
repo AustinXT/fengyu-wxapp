@@ -1,5 +1,6 @@
 // pages/service-create/service-create.ts — 创建服务单
 import { callStaffApi } from '../../utils/cloud';
+import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
@@ -38,13 +39,22 @@ Page({
     selectedSessionCounts: {} as Record<string, number>, // 预计算的选中 sessionCount，供 stepper 使用
     // 服务人员
     staffName: '',
+    isManager: false,
+    showStaffPicker: false,
+    staffList: [] as Array<{ staffWfId: string; name: string; department: string }>,
+    staffColumns: [] as string[],
+    assignedStaffWfId: '' as string,
     // 备注
     remark: '',
   },
 
   onLoad(options) {
-    const { staffName } = app.globalData;
-    this.setData({ staffName });
+    const { staffName, staffWfId } = app.globalData;
+    const mgr = isManager();
+    this.setData({ staffName, isManager: mgr, assignedStaffWfId: staffWfId });
+    if (mgr) {
+      this.loadStaffList();
+    }
 
     if (options.preloaded === '1') {
       const preload = app.globalData._serviceCreatePreload;
@@ -245,6 +255,7 @@ Page({
         clientUserId: selectedCustomer.clientUserId || selectedCustomer.id,
         clientPhone: selectedCustomer.phone,
         appointmentId: appointmentId || null,
+        assignedStaffWfId: this.data.assignedStaffWfId || undefined,
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
           sessionUsed: i.sessionCount,
@@ -262,5 +273,38 @@ Page({
 
   onRemoveAppointment() {
     this.setData({ appointmentId: '', appointmentInfo: null });
+  },
+
+  // ===== 店长选择服务人员 =====
+  async loadStaffList() {
+    try {
+      const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string }> }>('staff.list');
+      const list = data?.staffList || [];
+      this.setData({
+        staffList: list,
+        staffColumns: list.map(s => `${s.name}（${s.department || '未分组'}）`),
+      });
+    } catch (_) {}
+  },
+
+  onShowStaffPicker() {
+    this.setData({ showStaffPicker: true });
+  },
+
+  onStaffPickerClose() {
+    this.setData({ showStaffPicker: false });
+  },
+
+  onStaffConfirm(e: WechatMiniprogram.CustomEvent) {
+    const pickedLabel = e.detail.value as string;
+    const idx = this.data.staffColumns.indexOf(pickedLabel);
+    const staff = this.data.staffList[idx];
+    if (staff) {
+      this.setData({
+        assignedStaffWfId: staff.staffWfId,
+        staffName: staff.name,
+        showStaffPicker: false,
+      });
+    }
   },
 });

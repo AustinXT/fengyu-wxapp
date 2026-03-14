@@ -10,8 +10,8 @@
     title-inactive-color="#666666"
     sticky
   >
-    <van-tab name="pending" title="待服务" />
-    <van-tab name="processing" title="服务中" />
+    <van-tab name="pending" title="待服务{{tabs[0].badge > 0 ? '(' + tabs[0].badge + ')' : ''}}" />
+    <van-tab name="processing" title="服务中{{tabs[1].badge > 0 ? '(' + tabs[1].badge + ')' : ''}}" />
     <van-tab name="completed" title="已完成" />
   </van-tabs>
 

@@ -220,4 +220,8 @@ Page({
   goPerformance() {
     wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
   },
+
+  goCustomerList() {
+    wx.switchTab({ url: '/pages/customer-list/customer-list' });
+  },
 });
