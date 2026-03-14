@@ -85,8 +85,8 @@ Page({
     this.setData({ selectedSku: sku, quantity: 1 });
   },
 
-  onQuantityChange(e: WechatMiniprogram.CustomEvent<number>) {
-    this.setData({ quantity: e.detail });
+  onQuantityChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ quantity: e.detail as unknown as number });
   },
 
   _buildCartItem(directCheckout: boolean) {

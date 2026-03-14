@@ -1,6 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { calcCartTotal } from '../../utils/cart-calc';
 
 const app = getApp<IAppOption>();
 const BIG_CATEGORIES = ['促销方案', '护理项目', '家居产品', '充值卡'];
@@ -91,7 +92,7 @@ Page({
           discount: 0,
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
-          workfineItemId: pending.workfineItemId,
+          workfineItemId: pending.workfineItemId || '',
         });
       }
       this.updateCart(cart);
@@ -221,7 +222,7 @@ Page({
 
   onCartQtyChange(e: WechatMiniprogram.CustomEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
-    const qty = parseInt(e.detail) || 1;
+    const qty = parseInt(e.detail as unknown as string) || 1;
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx >= 0) cart[idx].quantity = qty;
@@ -241,9 +242,8 @@ Page({
   },
 
   updateCart(cart: CartItem[]) {
-    const count = cart.reduce((s, c) => s + c.quantity, 0);
-    const total = cart.reduce((s, c) => s + c.price * c.quantity - c.discount, 0);
-    this.setData({ cart, cartCount: count, cartTotal: total.toFixed(2) });
+    const { count, total } = calcCartTotal(cart);
+    this.setData({ cart, cartCount: count, cartTotal: total });
   },
 
   // ===== 结算面板 =====
@@ -262,7 +262,7 @@ Page({
 
   // Step 0: 选顾客
   onCustomerPhoneChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ customerPhone: e.detail, customerInfo: null });
+    this.setData({ customerPhone: e.detail as unknown as string, customerInfo: null });
   },
 
   async onSearchCustomer() {
@@ -316,7 +316,7 @@ Page({
 
   // Step 2: 确认订单
   onRemarkChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ remark: e.detail ?? '' });
+    this.setData({ remark: (e.detail as unknown as string) ?? '' });
   },
 
   onStep2Back() { this.setData({ checkoutStep: 1 }); },

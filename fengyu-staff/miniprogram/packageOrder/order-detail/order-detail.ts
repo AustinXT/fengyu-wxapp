@@ -1,21 +1,7 @@
 // pages/order-detail/order-detail.ts
 import { callStaffApi } from '../../utils/cloud';
 import { isManager, getStaffWfId } from '../../utils/role';
-
-const STATUS_CLASS: Record<string, string> = {
-  '待支付': 'pending',
-  '待确认收款': 'pending',
-  '已支付': 'success',
-  '已完成': 'done',
-  '支付失败': 'error',
-  '已关闭': 'done',
-};
-
-const ORDER_TYPE_LABEL: Record<string, string> = {
-  普通: '普通单',
-  福利活动: '福利活动',
-  体验: '体验单',
-};
+import { STATUS_CLASS, ORDER_TYPE_LABEL, formatDateTime } from '../../utils/formatters';
 
 const PAY_TYPE_LABEL: Record<string, string> = {
   wechat: '微信支付',
@@ -26,14 +12,6 @@ const ORDER_SOURCE_LABEL: Record<string, string> = {
   client: '顾客下单',
   staff: '员工开单',
 };
-
-function formatTime(v: any): string {
-  if (!v) return ''
-  const d = new Date(v)
-  if (isNaN(d.getTime())) return String(v)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
 
 Page({
   data: {
@@ -87,9 +65,9 @@ Page({
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           preferredStaffName: o.preferred_staff_name || '',
           confirmedBy: o.offline_confirmed_by,
-          confirmedAt: formatTime(o.offline_confirmed_at),
-          createdAt: formatTime(o.created_at),
-          paidAt: formatTime(o.paid_at),
+          confirmedAt: formatDateTime(o.offline_confirmed_at),
+          createdAt: formatDateTime(o.created_at),
+          paidAt: formatDateTime(o.paid_at),
           totalAmount: o.totalAmount || o.total_amount,
           items,
           allocation,

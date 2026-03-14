@@ -61,7 +61,7 @@ Page({
   },
 
   onRejectReasonInput(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ rejectReason: e.detail });
+    this.setData({ rejectReason: e.detail as unknown as string });
   },
 
   onRejectDialogCancel() {

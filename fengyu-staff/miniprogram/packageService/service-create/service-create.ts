@@ -100,7 +100,7 @@ Page({
   },
 
   onCustomerSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ customerSearch: e.detail });
+    this.setData({ customerSearch: e.detail as unknown as string });
   },
 
   async onSearchCustomer() {
@@ -185,7 +185,7 @@ Page({
 
   onSessionStepperChange(e: WechatMiniprogram.CustomEvent) {
     const saleItemId = e.currentTarget.dataset.saleItemId as string;
-    const value = e.detail as number;
+    const value = e.detail as unknown as number;
     const selected = [...this.data.selectedItems];
     const idx = selected.findIndex(s => s.saleItemId === saleItemId);
     if (idx >= 0) {

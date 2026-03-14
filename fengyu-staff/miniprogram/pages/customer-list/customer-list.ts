@@ -28,7 +28,7 @@ Page({
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ searchKeyword: e.detail });
+    this.setData({ searchKeyword: e.detail as unknown as string });
     if (!e.detail.trim()) {
       this.loadDefaultList();
     }

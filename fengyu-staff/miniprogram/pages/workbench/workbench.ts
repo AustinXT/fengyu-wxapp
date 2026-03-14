@@ -1,17 +1,9 @@
 // pages/workbench/workbench.ts — 工作台
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { buildCalendarDays, formatMonthLabel, type CalendarDay } from '../../utils/calendar';
 
 const app = getApp<IAppOption>();
-
-interface CalendarDay {
-  day: number;
-  date: string;
-  hasData: boolean;
-  amountLabel: string;
-  isToday: boolean;
-  isEmpty: boolean;
-}
 
 Page({
   data: {
@@ -49,7 +41,7 @@ Page({
     const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
     this.setData({
       currentMonth: ym,
-      monthLabel: this.formatMonthLabel(ym),
+      monthLabel: formatMonthLabel(ym),
     });
   },
 
@@ -77,11 +69,6 @@ Page({
     const m = now.getMonth() + 1;
     const d = now.getDate();
     this.setData({ today: `${m}月${d}日` });
-  },
-
-  formatMonthLabel(ym: string): string {
-    const [y, m] = ym.split('-');
-    return `${y}年${parseInt(m)}月`;
   },
 
   async loadWorkbench() {
@@ -133,7 +120,7 @@ Page({
         totalOrderCount?: number;
         totalServiceCount?: number;
       }>('staff.monthlyCalendar', { yearMonth: this.data.currentMonth });
-      const days = this.buildCalendarDays(this.data.currentMonth, data.dailyData || []);
+      const days = buildCalendarDays(this.data.currentMonth, data.dailyData || []);
       const monthlyCommission = data.totalAmount > 0
         ? data.totalAmount.toFixed(2)
         : '0.00';
@@ -144,41 +131,9 @@ Page({
         monthlyServiceCount: data.totalServiceCount || 0,
       });
     } catch (_) {
-      const days = this.buildCalendarDays(this.data.currentMonth, []);
+      const days = buildCalendarDays(this.data.currentMonth, []);
       this.setData({ calendarDays: days });
     }
-  },
-
-  buildCalendarDays(yearMonth: string, dailyData: Array<{ date: string; amount: number }>): CalendarDay[] {
-    const [y, m] = yearMonth.split('-').map(Number);
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const firstDow = new Date(y, m - 1, 1).getDay();
-    const daysInMonth = new Date(y, m, 0).getDate();
-    const dataMap: Record<string, number> = {};
-    dailyData.forEach(d => { dataMap[d.date] = d.amount; });
-
-    const days: CalendarDay[] = [];
-    for (let i = 0; i < firstDow; i++) {
-      days.push({ isEmpty: true, day: 0, date: '', hasData: false, amountLabel: '', isToday: false });
-    }
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-      const amount = dataMap[dateStr] || 0;
-      let amountLabel = '';
-      if (amount > 0) {
-        amountLabel = amount >= 1000 ? `${(amount / 1000).toFixed(1)}k` : String(amount);
-      }
-      days.push({
-        isEmpty: false,
-        day: d,
-        date: dateStr,
-        hasData: amount > 0,
-        amountLabel,
-        isToday: dateStr === todayStr,
-      });
-    }
-    return days;
   },
 
   onPrevMonth() {
@@ -186,7 +141,7 @@ Page({
     let ny = y, nm = m - 1;
     if (nm < 1) { ny -= 1; nm = 12; }
     const ym = `${ny}-${String(nm).padStart(2, '0')}`;
-    this.setData({ currentMonth: ym, monthLabel: this.formatMonthLabel(ym) });
+    this.setData({ currentMonth: ym, monthLabel: formatMonthLabel(ym) });
     this.loadMonthlyCalendar();
   },
 
@@ -198,7 +153,7 @@ Page({
     let ny = y, nm = m + 1;
     if (nm > 12) { ny += 1; nm = 1; }
     const ym = `${ny}-${String(nm).padStart(2, '0')}`;
-    this.setData({ currentMonth: ym, monthLabel: this.formatMonthLabel(ym) });
+    this.setData({ currentMonth: ym, monthLabel: formatMonthLabel(ym) });
     this.loadMonthlyCalendar();
   },
 

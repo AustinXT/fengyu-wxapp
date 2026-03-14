@@ -1,5 +1,4 @@
 // mock/auth.ts — 认证相关 mock
-import type { } from '../typings/index'
 
 export const authHandlers: Record<string, (payload: Record<string, any>) => any> = {
   'auth.login': () => ({

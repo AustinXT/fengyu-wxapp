@@ -1,6 +1,7 @@
 // pages/service/service.ts — 护理 Tab
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
+import { getElapsedTime as _getElapsedTime, formatTime as _formatTime } from '../../utils/formatters';
 
 const app = getApp<IAppOption>();
 
@@ -77,14 +78,7 @@ Page({
   },
 
   getElapsedTime(startTime: string | null): string {
-    if (!startTime) return '';
-    const start = new Date(startTime.replace(/-/g, '/'));
-    const now = new Date();
-    const diffMin = Math.floor((now.getTime() - start.getTime()) / 60000);
-    if (diffMin < 60) return `进行中 ${diffMin}分钟`;
-    const h = Math.floor(diffMin / 60);
-    const min = diffMin % 60;
-    return `进行中 ${h}小时${min > 0 ? min + '分钟' : ''}`;
+    return _getElapsedTime(startTime);
   },
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {
@@ -129,8 +123,6 @@ Page({
   noop() {},
 
   formatTime(timeStr: string | null): string {
-    if (!timeStr) return '';
-    // 仅取时分部分
-    return timeStr.slice(11, 16) || timeStr;
+    return _formatTime(timeStr);
   },
 });

@@ -1,6 +1,7 @@
 // packageOrder/revenue-allocation/revenue-allocation.ts — 提成分配（支付后）
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
+import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../../utils/allocation-calc';
 
 interface OrderItem {
   sale_item_id: string;
@@ -188,21 +189,7 @@ Page({
 
   /** 根据部门+销售分类查提成比例并计算金额 */
   lookupRate(dept: string, salesCat: string, receivable: number): { commissionRate: number; amount: string } {
-    const beautyDepts = ['美容部', '养生部'];
-    if (beautyDepts.includes(dept)) {
-      const beautyRates = this.data.beautyRates;
-      const commRate = (beautyRates[dept] && beautyRates[dept][salesCat]) || 0;
-      return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) };
-    }
-    // 其他部门：从 rates 数组中按 department + amountRange 匹配
-    const totalAmount = this.data.totalAmount;
-    for (const rate of this.data.rates) {
-      if (rate.department === dept && totalAmount >= rate.amountMin && totalAmount <= rate.amountMax) {
-        const commRate = rate.orderRates[salesCat] || 0;
-        return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) };
-      }
-    }
-    return { commissionRate: 0, amount: '0.00' };
+    return _lookupRate(dept, salesCat, receivable, this.data.beautyRates, this.data.rates, this.data.totalAmount);
   },
 
   /** 打开选人弹窗 */
@@ -332,29 +319,8 @@ Page({
   },
 
   computeSummary() {
-    const map = new Map<string, { staffName: string; department: string; total: number }>();
-    let grand = 0;
-    for (const di of this.data.displayItems) {
-      for (const l of di.allocLines) {
-        const amt = parseFloat(l.amount) || 0;
-        grand += amt;
-        if (l.staffWfId) {
-          const key = `${l.staffWfId}_${l.department}`;
-          const existing = map.get(key);
-          if (existing) {
-            existing.total += amt;
-          } else {
-            map.set(key, { staffName: l.staffName, department: l.department, total: amt });
-          }
-        }
-      }
-    }
-    const summary = Array.from(map.values()).map(s => ({
-      staffName: s.staffName,
-      department: s.department,
-      total: s.total.toFixed(2),
-    }));
-    this.setData({ summary, grandTotal: grand.toFixed(2) });
+    const { summary, grandTotal } = _computeSummary(this.data.displayItems);
+    this.setData({ summary, grandTotal });
   },
 
   /** 标记为无需分配 */

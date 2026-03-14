@@ -9,5 +9,18 @@
   "license": "ISC",
   "dependencies": {
     "@vant/weapp": "^1.11.7"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "jest --config e2e/jest.config.js"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0",
+    "miniprogram-api-typings": "^5.1.2",
+    "miniprogram-automator": "^0.12.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.1"
   }
 }

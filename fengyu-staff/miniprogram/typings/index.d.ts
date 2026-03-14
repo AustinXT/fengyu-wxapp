@@ -16,6 +16,7 @@ interface IAppOption {
       quantity: number;
       sessionCount: number;
       productType: string;
+      workfineItemId?: string;
       directCheckout?: boolean;
     } | null;
     _serviceCreatePreload?: {
@@ -36,6 +37,7 @@ interface IAppOption {
     boundStoreId?: string;
   }): void;
   resetStaffInfo(): void;
+  restoreFromCache(): void;
   syncLoginState(): Promise<void>;
   _loginReady: Promise<void>;
 }
