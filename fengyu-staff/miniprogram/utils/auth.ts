@@ -1,6 +1,6 @@
 // utils/auth.ts — 员工端登录与手机号绑定
 
-import { callStaffApi } from './cloud';
+import { callStaffApi, sanitizeErrorMessage } from './cloud';
 
 /** 调用 auth.login，同步员工信息到 globalData */
 export async function syncLogin(): Promise<void> {
@@ -28,7 +28,7 @@ export async function bindPhone(cloudID: string): Promise<void> {
     }
   }) as any;
   if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '手机号绑定失败');
+    throw new Error(sanitizeErrorMessage(res.result?.message, '手机号绑定失败'));
   }
   await syncLogin();
 }
