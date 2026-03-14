@@ -96,13 +96,9 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
             <p className="text-xs text-[#999999]">待支付订单超过此时间自动关闭</p>
           </div>
 
-          <Separator />
-
-          <div className="flex justify-end">
-            <Button onClick={handleSave} loading={saving}>保存</Button>
-          </div>
         </CardContent>
       </Card>
+
       {/* 首页轮播图 */}
       <Card className="max-w-2xl">
         <CardHeader>
@@ -141,6 +137,10 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
           />
         </CardContent>
       </Card>
+
+      <div className="flex justify-end max-w-2xl">
+        <Button onClick={handleSave} loading={saving}>保存</Button>
+      </div>
     </div>
   )
 }

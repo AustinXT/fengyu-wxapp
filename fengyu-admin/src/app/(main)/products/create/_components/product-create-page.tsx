@@ -175,7 +175,7 @@ export default function ProductCreatePageClient({
               <ImageUpload
                 value={coverImage}
                 onChange={(v) => setCoverImage(v as string)}
-                path={`admin-uploads/products/new`}
+                path="product-covers"
               />
             </div>
             <div className="col-span-2 space-y-2">
@@ -183,7 +183,7 @@ export default function ProductCreatePageClient({
               <ImageUpload
                 value={detailImages}
                 onChange={(v) => setDetailImages(v as string[])}
-                path={`admin-uploads/products/new`}
+                path="product-details"
                 multiple
                 max={9}
               />

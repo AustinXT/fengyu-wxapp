@@ -154,7 +154,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
               <ImageUpload
                 value={coverImage}
                 onChange={(v) => setCoverImage(v as string)}
-                path={`admin-uploads/stores/${store.storeId}`}
+                path="store-covers"
               />
             </div>
             <div className="col-span-2 space-y-2">
@@ -162,7 +162,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
               <ImageUpload
                 value={storeImages}
                 onChange={(v) => setStoreImages(v as string[])}
-                path={`admin-uploads/stores/${store.storeId}`}
+                path="store-images"
                 multiple
                 max={9}
               />
