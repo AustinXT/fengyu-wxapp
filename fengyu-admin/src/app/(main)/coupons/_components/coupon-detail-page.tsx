@@ -30,32 +30,7 @@ interface IssuedCoupon {
   usedAt: string | null
 }
 
-const MOCK_ISSUED_COUPONS: IssuedCoupon[] = [
-  {
-    couponId: "c-001",
-    customerName: "林美",
-    phone: "139****9001",
-    status: "已使用",
-    issuedAt: "2026-02-01T10:00:00Z",
-    usedAt: "2026-02-15T14:30:00Z",
-  },
-  {
-    couponId: "c-002",
-    customerName: "杨雪",
-    phone: "139****9002",
-    status: "未使用",
-    issuedAt: "2026-03-01T09:00:00Z",
-    usedAt: null,
-  },
-  {
-    couponId: "c-003",
-    customerName: "何丽",
-    phone: "139****9003",
-    status: "已过期",
-    issuedAt: "2026-01-15T11:00:00Z",
-    usedAt: null,
-  },
-]
+// 已发放记录从 props 传入（由 server action 查询 user_coupons 表）
 
 const ISSUED_STATUS_COLORS: Record<string, string> = {
   "已使用": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
@@ -164,14 +139,24 @@ export default function CouponDetailPage({ template }: Props) {
     }
   }
 
-  function handleSearchCustomer() {
+  async function handleSearchCustomer() {
     if (!issuePhone.trim()) {
       toast.error("请输入手机号")
       return
     }
-    // Simulate search - in real implementation this would call a server action
-    setIssueCustomerName("模拟顾客")
-    setIssueSearched(true)
+    try {
+      const { searchCustomerByPhone } = await import("@/actions/customers")
+      const customer = await searchCustomerByPhone(issuePhone.trim())
+      if (customer) {
+        setIssueCustomerName(customer.name || "未知姓名")
+      } else {
+        setIssueCustomerName("")
+        toast.info("未找到该手机号对应的顾客")
+      }
+      setIssueSearched(true)
+    } catch {
+      toast.error("搜索失败")
+    }
   }
 
   function handleIssueCoupon() {
@@ -461,7 +446,7 @@ export default function CouponDetailPage({ template }: Props) {
         <CardContent>
           <DataTable
             columns={issuedColumns}
-            data={MOCK_ISSUED_COUPONS}
+            data={[] as IssuedCoupon[]}
             emptyText="暂无已发放记录"
           />
         </CardContent>

@@ -256,6 +256,26 @@ function SaveButton({ orderId, rows, departments }: { orderId: string; rows: All
       toast.error('请填写完整的分配信息')
       return
     }
+
+    // 校验：同一 saleItemId + employeeId 不能重复
+    const seen = new Set<string>()
+    for (const r of validRows) {
+      const key = `${r.saleItemId}|${r.employeeId}`
+      if (seen.has(key)) {
+        toast.error('同一明细行不能分配给同一员工多次，请合并或删除重复行')
+        return
+      }
+      seen.add(key)
+    }
+
+    // 校验：分配金额不能为负数
+    for (const r of validRows) {
+      if (Number(r.amount) <= 0) {
+        toast.error('分配金额必须大于 0')
+        return
+      }
+    }
+
     startTransition(async () => {
       const res = await batchSaveAllocations(orderId, validRows.map((r) => ({
         saleItemId: r.saleItemId,
