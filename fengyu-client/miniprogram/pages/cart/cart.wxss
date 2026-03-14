@@ -2,10 +2,11 @@
 
 .container {
   min-height: 100vh;
-  background: #000;
+  background: #fff;
 }
 
-.intro-image {
+.strip-image {
   width: 100%;
   display: block;
+  vertical-align: top;
 }

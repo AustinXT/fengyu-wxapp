@@ -1,4 +1,12 @@
 <!-- pages/cart/cart.wxml — 凤御馆宣传页 -->
 <view class="container">
-  <image class="intro-image" src="{{introUrl}}" mode="widthFix" />
+  <image
+    wx:for="{{strips}}"
+    wx:key="index"
+    class="strip-image"
+    src="{{item.url}}"
+    mode="widthFix"
+    lazy-load
+    style="height:{{item.heightRpx}}rpx"
+  />
 </view>
