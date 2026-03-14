@@ -28,5 +28,16 @@ export async function uploadFile(
   if (!result.fileID) {
     throw new Error("上传失败")
   }
+
+  // 获取实际可访问的临时下载 URL（CDN 签名链接）
+  const urlResult = await app.getTempFileURL({
+    fileList: [result.fileID],
+  })
+  const fileItem = urlResult.fileList?.[0]
+  if (fileItem?.tempFileURL) {
+    return fileItem.tempFileURL
+  }
+
+  // fallback: 拼接 CDN 基础 URL
   return `${CDN_BASE}/${cloudPath}`
 }
