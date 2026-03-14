@@ -20,9 +20,14 @@ Page({
     totalSalesAlloc: '0.00',
     totalServiceFee: '0.00',
     totalCommission: '0.00',
-    // 分类 Tab
+    // 分类 Tab（5 个子分类）
     activeCategoryTab: 0,
-    categoryOptions: ['合计', '销售', '服务'],
+    categoryOptions: ['合计', '销售', '服务', '他销他耗', '生态合作'],
+    // 员工筛选（仅店长）
+    staffList: [] as Array<{ staffWfId: string; name: string }>,
+    selectedStaffIndex: 0,
+    staffColumns: [] as string[],
+    showStaffPicker: false,
     // 明细列表
     items: [] as any[],
     total: 0,
@@ -31,11 +36,49 @@ Page({
   },
 
   onLoad() {
+    const mgr = isManager();
     this.setData({
-      isManager: isManager(),
+      isManager: mgr,
       staffName: app.globalData.staffName || '',
     });
+    if (mgr) this.loadStaffList();
     this.setRange('today');
+  },
+
+  async loadStaffList() {
+    try {
+      const data = await callStaffApi<any>('staff.list');
+      const list = (data.staffList || []) as Array<{ staffWfId: string; name: string }>;
+      const self = app.globalData.staffName || '';
+      // 自己放首位
+      const columns = [self + '（我）', ...list.filter(s => s.staffWfId !== app.globalData.staffWfId).map(s => s.name)];
+      const allStaff = [
+        { staffWfId: app.globalData.staffWfId || '', name: self },
+        ...list.filter(s => s.staffWfId !== app.globalData.staffWfId),
+      ];
+      this.setData({ staffList: allStaff, staffColumns: columns });
+    } catch (_) {}
+  },
+
+  onShowStaffPicker() {
+    this.setData({ showStaffPicker: true });
+  },
+
+  onStaffPickerClose() {
+    this.setData({ showStaffPicker: false });
+  },
+
+  onStaffConfirm(e: WechatMiniprogram.CustomEvent) {
+    const picked = e.detail.index as number;
+    const staff = this.data.staffList[picked];
+    if (!staff) return;
+    this.setData({
+      showStaffPicker: false,
+      selectedStaffIndex: picked,
+      staffName: staff.name,
+      page: 1,
+    });
+    this.loadData(true);
   },
 
   // ===== 时间范围切换 =====
@@ -101,16 +144,24 @@ Page({
     if (this.data.loading) return;
     this.setData({ loading: true });
     try {
-      const { activeCategoryTab } = this.data;
-      // 分类映射
+      const { activeCategoryTab, staffList, selectedStaffIndex, isManager: isMgr } = this.data;
+      // 分类映射：合计/销售/服务/他销他耗/生态合作
       let salesCategory: string | undefined;
-      if (activeCategoryTab === 1) salesCategory = '自采自销';
-      else if (activeCategoryTab === 2) salesCategory = '他销自耗';
+      let filterType: string | undefined;
+      if (activeCategoryTab === 1) filterType = 'sale';
+      else if (activeCategoryTab === 2) filterType = 'service';
+      else if (activeCategoryTab === 3) salesCategory = '他销他耗';
+      else if (activeCategoryTab === 4) salesCategory = '生态合作';
+
+      // 店长可查看指定员工
+      const employeeId = (isMgr && staffList.length > 0) ? staffList[selectedStaffIndex]?.staffWfId : undefined;
 
       const res = await callStaffApi<any>('staff.performanceDetail', {
         startDate: this.data.startDate,
         endDate: this.data.endDate,
         salesCategory,
+        filterType,
+        employeeId,
         page: this.data.page,
         pageSize: 20,
       });

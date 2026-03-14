@@ -32,6 +32,21 @@
   font-size: 32rpx;
   font-weight: 600;
   color: var(--color-text-primary);
+  flex: 1;
+}
+
+.perf-staff-switch {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  padding: 8rpx 16rpx;
+  border-radius: 24rpx;
+  background: var(--color-primary-light);
+}
+
+.perf-switch-text {
+  font-size: 22rpx;
+  color: var(--color-primary);
 }
 
 .perf-date-display {

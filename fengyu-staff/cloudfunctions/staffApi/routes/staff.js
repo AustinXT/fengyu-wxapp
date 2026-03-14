@@ -381,7 +381,7 @@ async function bindStore(ctx) {
 async function performanceDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, page = 1, pageSize = 20 } = ctx.event.payload || {}
+  const { startDate, endDate, employeeId: queryEmployeeId, salesCategory, filterType, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const isManager = ctx.auth.roles.includes('manager')
 
   // 美容师只能查自己
@@ -482,36 +482,42 @@ async function performanceDetail(ctx) {
     categorySummary[cat].service += fee
   }
 
-  // 合并为时间线，分页
-  const allItems = [
-    ...allocRows.map(r => ({
-      type: 'sale',
-      productName: r.product_name,
-      specName: r.sku_spec_name,
-      salesCategory: r.sales_category,
-      amount: Number(r.alloc_amount),
-      ratio: r.allocation_ratio,
-      businessAmount: Number(r.received),
-      customerName: r.customer_name,
-      clientPhone: r.client_phone,
-      orderId: r.sale_order_id,
-      date: r.paid_at,
-      department: r.department_name,
-    })),
-    ...svcRows.map(r => ({
-      type: 'service',
-      productName: r.product_name,
-      specName: r.sku_spec_name,
-      salesCategory: r.sales_category,
-      amount: Number(r.service_price) * (r.session_used || 1),
-      sessionUsed: r.session_used,
-      servicePrice: Number(r.service_price),
-      customerName: r.customer_name,
-      clientPhone: r.client_phone,
-      orderId: r.service_order_id,
-      date: r.service_date,
-    })),
-  ].sort((a, b) => new Date(b.date) - new Date(a.date))
+  // 合并为时间线，按 filterType 过滤，分页
+  const saleItems = allocRows.map(r => ({
+    type: 'sale',
+    productName: r.product_name,
+    specName: r.sku_spec_name,
+    salesCategory: r.sales_category,
+    amount: Number(r.alloc_amount),
+    ratio: r.allocation_ratio,
+    businessAmount: Number(r.received),
+    customerName: r.customer_name,
+    clientPhone: r.client_phone,
+    orderId: r.sale_order_id,
+    date: r.paid_at,
+    department: r.department_name,
+  }))
+
+  const serviceItems = svcRows.map(r => ({
+    type: 'service',
+    productName: r.product_name,
+    specName: r.sku_spec_name,
+    salesCategory: r.sales_category,
+    amount: Number(r.service_price) * (r.session_used || 1),
+    sessionUsed: r.session_used,
+    servicePrice: Number(r.service_price),
+    customerName: r.customer_name,
+    clientPhone: r.client_phone,
+    orderId: r.service_order_id,
+    date: r.service_date,
+  }))
+
+  let allItems
+  if (filterType === 'sale') allItems = saleItems
+  else if (filterType === 'service') allItems = serviceItems
+  else allItems = [...saleItems, ...serviceItems]
+
+  allItems.sort((a, b) => new Date(b.date) - new Date(a.date))
 
   const offset = (page - 1) * pageSize
   const paged = allItems.slice(offset, offset + pageSize)

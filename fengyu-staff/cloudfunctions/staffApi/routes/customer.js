@@ -556,7 +556,19 @@ async function stats(ctx) {
     }
   }
 
-  ctx.result = { active, atRisk, lost, sleeping, birthday, birthdayNext, total: rows.length }
+  // 会员客/流量客统计
+  const memberRows = await pg.query(`
+    SELECT COUNT(*) AS cnt FROM client_wechat_users
+    WHERE bound_store_id = $1 AND customer_id IS NOT NULL
+  `, [storeId])
+  const memberCount = Number(memberRows[0].cnt)
+
+  ctx.result = {
+    active, atRisk, lost, sleeping, birthday, birthdayNext,
+    total: rows.length,
+    memberCount,
+    flowCount: rows.length - memberCount,
+  }
 }
 
 /**
@@ -578,19 +590,28 @@ async function listByTag(ctx) {
   const currentMonth = now.getMonth() + 1
   const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
 
-  // 查询所有绑定本店的顾客及其最近服务日期
+  // 查询所有绑定本店的顾客及其最近服务日期 + 年消费金额
+  const yearStart = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10)
   const allRows = await pg.query(`
     SELECT
       c.user_id, c.name, c.phone, c.birthday, c.member_level,
-      MAX(so.service_date) AS last_service_date
+      MAX(so.service_date) AS last_service_date,
+      COALESCE(annual.year_total, 0) AS year_consumption
     FROM client_wechat_users c
     LEFT JOIN service_orders so
       ON so.client_user_id = c.user_id
       AND so.status = '已完成'
       AND so.store_id = $1
+    LEFT JOIN (
+      SELECT o.client_user_id, SUM(si.received::numeric) AS year_total
+      FROM sale_orders o
+      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+      WHERE o.status = '已支付' AND o.paid_at >= $2::date
+      GROUP BY o.client_user_id
+    ) annual ON annual.client_user_id = c.user_id
     WHERE c.bound_store_id = $1
-    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level
-  `, [storeId])
+    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level, annual.year_total
+  `, [storeId, yearStart])
 
   // 按 tag 过滤
   const filtered = allRows.filter(r => {
@@ -616,17 +637,21 @@ async function listByTag(ctx) {
 
   ctx.result = {
     total: filtered.length,
-    customers: paged.map(r => ({
-      id: null,
-      clientUserId: r.user_id,
-      name: r.name || '',
-      phone: isManagerRole ? (r.phone || '') : maskPhone(r.phone),
-      phoneMasked: maskPhone(r.phone),
-      memberLevel: r.member_level,
-      lastServiceDate: r.last_service_date,
-      birthday: r.birthday,
-      source: 'miniprogram',
-    }))
+    customers: paged.map(r => {
+      const yearTotal = Number(r.year_consumption) || 0
+      return {
+        id: null,
+        clientUserId: r.user_id,
+        name: r.name || '',
+        phone: isManagerRole ? (r.phone || '') : maskPhone(r.phone),
+        phoneMasked: maskPhone(r.phone),
+        memberLevel: r.member_level,
+        lastServiceDate: r.last_service_date,
+        birthday: r.birthday,
+        tier: yearTotal >= 20000 ? 'diamond' : yearTotal >= 5000 ? 'iron' : yearTotal > 0 ? 'fan' : null,
+        source: 'miniprogram',
+      }
+    })
   }
 }
 

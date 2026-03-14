@@ -1,6 +1,7 @@
 // pages/profile/profile.ts — 我的
 import { callStaffApi } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
+import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
@@ -11,6 +12,7 @@ Page({
     staffWfId: '',
     phone: '',
     boundStoreName: '',
+    isManager: false,
     // 门店绑定
     showStorePicker: false,
     storeList: [] as Array<{ storeId: string; storeName: string }>,
@@ -23,7 +25,7 @@ Page({
       return
     }
     const { staffName, position, staffWfId, phone, boundStoreName } = app.globalData;
-    this.setData({ staffName, position, staffWfId, phone, boundStoreName });
+    this.setData({ staffName, position, staffWfId, phone, boundStoreName, isManager: isManager() });
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent) {
@@ -91,6 +93,14 @@ Page({
 
   onNavPerformance() {
     wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
+  },
+
+  onNavAppointments() {
+    wx.navigateTo({ url: '/packageService/appointment/appointment' });
+  },
+
+  onNavAllocationList() {
+    wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 
   onLogout() {

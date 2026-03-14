@@ -8,6 +8,10 @@
         <van-icon name="manager" size="48rpx" color="#C0322A" />
       </view>
       <text class="perf-staff-name">{{staffName}}</text>
+      <view wx:if="{{isManager && staffColumns.length > 1}}" class="perf-staff-switch" bindtap="onShowStaffPicker">
+        <text class="perf-switch-text">切换员工</text>
+        <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
+      </view>
     </view>
     <text class="perf-date-display">{{displayDate}}</text>
     <view class="perf-range-btns">
@@ -99,3 +103,20 @@
 
   <view class="safe-area-bottom" />
 </view>
+
+<!-- 员工选择弹出层 -->
+<van-popup
+  show="{{showStaffPicker}}"
+  round
+  position="bottom"
+  bind:close="onStaffPickerClose"
+>
+  <van-picker
+    title="选择员工"
+    show-toolbar
+    columns="{{staffColumns}}"
+    default-index="{{selectedStaffIndex}}"
+    bind:confirm="onStaffConfirm"
+    bind:cancel="onStaffPickerClose"
+  />
+</van-popup>
