@@ -72,20 +72,13 @@ App<IAppOption>({
         if (res.result.data.avatarUrl) {
           wx.setStorageSync('avatarUrl', res.result.data.avatarUrl);
         }
-        // 同步服务器端绑定的门店（核心：即使本地缓存被清除也能恢复）
-        if (boundStoreId) {
-          this.globalData.boundStoreId = boundStoreId;
-          wx.setStorageSync('boundStoreId', boundStoreId);
-        }
-        if (boundStoreName) {
-          this.globalData.boundStoreName = boundStoreName;
-          wx.setStorageSync('boundStoreName', boundStoreName);
-        }
-        // 同步市场名
-        if (boundMarketName) {
-          this.globalData.boundMarketName = boundMarketName;
-          wx.setStorageSync('boundMarketName', boundMarketName);
-        }
+        // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
+        this.globalData.boundStoreId = boundStoreId || '';
+        wx.setStorageSync('boundStoreId', boundStoreId || '');
+        this.globalData.boundStoreName = boundStoreName || '';
+        wx.setStorageSync('boundStoreName', boundStoreName || '');
+        this.globalData.boundMarketName = boundMarketName || '';
+        wx.setStorageSync('boundMarketName', boundMarketName || '');
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);

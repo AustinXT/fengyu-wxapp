@@ -30,6 +30,13 @@ Page({
     this.loadCoupons();
   },
 
+  onShow() {
+    // navigateBack 返回时刷新券状态（使用后状态可能变化）
+    if (this.data.coupons.length > 0) {
+      this.loadCoupons();
+    }
+  },
+
   onPullDownRefresh() {
     this.loadCoupons().finally(() => wx.stopPullDownRefresh());
   },

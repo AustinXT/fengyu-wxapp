@@ -19,9 +19,12 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
 
-  // 测试模式: 支持通过 testOpenid 参数进行测试
-  const testOpenid = ctx.event.payload?._testOpenid || ctx.event._testOpenid
-  const effectiveOpenid = testOpenid || OPENID
+  // 测试模式: 仅在显式开启时允许通过 _testOpenid 参数覆盖（生产环境不设此变量）
+  let effectiveOpenid = OPENID
+  if (process.env.ALLOW_TEST_OPENID === 'true') {
+    const testOpenid = ctx.event.payload?._testOpenid || ctx.event._testOpenid
+    if (testOpenid) effectiveOpenid = testOpenid
+  }
 
   if (!effectiveOpenid) {
     throw new Error('UNAUTHORIZED: 无法获取用户身份')

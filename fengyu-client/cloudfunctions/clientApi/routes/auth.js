@@ -6,7 +6,6 @@ const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
-const { requireFields } = require('../middleware/validate')
 const { invalidateAuthCache } = require('../middleware/auth')
 
 /**
@@ -39,6 +38,9 @@ async function login(ctx) {
        VALUES ($1, $2, $3, $3, $3)`,
       [userId, OPENID, now]
     )
+
+    // 清除认证缓存，确保后续请求获取到新建的 userId
+    invalidateAuthCache(OPENID)
 
     ctx.result = {
       isNewUser: true,

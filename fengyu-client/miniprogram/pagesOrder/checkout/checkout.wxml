@@ -1,4 +1,15 @@
 <!-- pages/checkout/checkout.wxml — 下单确认 + 支付 -->
+<wxs module="price">
+module.exports.fmt = function(val) {
+  return (Math.round(val * 100) / 100).toFixed(2)
+}
+module.exports.cents = function(val) {
+  return Math.round(val * 100)
+}
+module.exports.date = function(s) {
+  return s ? s.slice(0, 10) : ''
+}
+</wxs>
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
@@ -67,7 +78,7 @@
     <van-cell title="实付" class="total-row">
       <view slot="right-icon" class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{(fromCart ? totalPrice : (unitPrice * quantity)) - couponDiscount}}</text>
+        <text class="total-value">{{price.fmt((fromCart ? totalPrice : (unitPrice * quantity)) - couponDiscount)}}</text>
       </view>
     </van-cell>
   </van-cell-group>
@@ -75,7 +86,7 @@
   <!-- 底部提交 -->
   <van-submit-bar
     wx:if="{{!showPhoneBind}}"
-    price="{{((fromCart ? totalPrice : unitPrice * quantity) - couponDiscount) * 100}}"
+    price="{{price.cents((fromCart ? totalPrice : unitPrice * quantity) - couponDiscount)}}"
     button-text="{{paymentMethod === 'wechat' ? '微信支付' : paymentMethod === 'alipay' ? '支付宝付款' : '提交订单'}}"
     loading="{{submitting}}"
     disabled="{{!agreed || submitting}}"
@@ -149,7 +160,7 @@
         <view class="coupon-popup__item-right">
           <text class="coupon-popup__item-name">{{item.name}}</text>
           <text class="coupon-popup__item-desc">{{item.description || ''}}</text>
-          <text class="coupon-popup__item-expire">有效期至 {{item.expireAt}}</text>
+          <text class="coupon-popup__item-expire">有效期至 {{price.date(item.expireAt)}}</text>
         </view>
         <van-icon wx:if="{{selectedCoupon.couponId === item.couponId}}" name="success" color="#C0322A" size="40rpx" />
       </view>

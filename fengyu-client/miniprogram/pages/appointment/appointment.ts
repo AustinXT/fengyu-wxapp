@@ -69,7 +69,7 @@ Page({
           statusType:       meta.type,
           statusColor:      meta.color,
           statusTextColor:  meta.textColor,
-          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
+          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}-${String(d.getHours() + 2).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
         };
       });
       this.setData({ list });

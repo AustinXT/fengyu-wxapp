@@ -4,8 +4,43 @@
  */
 
 const pg = require('../db/pg')
-const { requireFields } = require('../middleware/validate')
 const { requirePhone } = require('../middleware/auth')
+
+/**
+ * 关闭过期订单并释放关联优惠券（原子操作）
+ * @param {string} orderNo - 订单号
+ */
+async function closeExpiredOrder(orderNo) {
+  await pg.transaction(async (client) => {
+    const result = await client.query(
+      "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付'",
+      [orderNo]
+    )
+    if (result.rowCount > 0) {
+      await client.query(
+        `UPDATE user_coupons SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+         WHERE used_sale_order_id = $1`,
+        [orderNo]
+      )
+    }
+  })
+}
+
+/**
+ * 批量关闭用户过期订单并释放优惠券
+ * @param {string} userId - 用户ID
+ */
+async function closeExpiredOrdersByUser(userId) {
+  const expired = await pg.query(
+    `SELECT sale_order_id FROM sale_orders
+     WHERE client_user_id = $1 AND status = '待支付'
+     AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
+    [userId]
+  )
+  for (const row of expired) {
+    await closeExpiredOrder(row.sale_order_id)
+  }
+}
 
 /**
  * 扫码查看订单详情（员工开单订单专用）
@@ -117,13 +152,8 @@ async function create(ctx) {
   }
   const marketName = storeRows[0].market_name || ''
 
-  // 先清理过期的待支付订单（10分钟超时）
-  await pg.query(
-    `UPDATE sale_orders SET status = '已关闭', updated_at = NOW()
-     WHERE client_user_id = $1 AND status = '待支付'
-     AND sale_order_datetime < NOW() - INTERVAL '10 minutes'`,
-    [userId]
-  )
+  // 先清理过期的待支付订单（10分钟超时，同时释放优惠券）
+  await closeExpiredOrdersByUser(userId)
 
   // 检查是否已有待支付订单(部分唯一索引约束)
   const existingOrders = await pg.query(
@@ -615,7 +645,19 @@ async function detail(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  const order = orders[0]
+  let order = orders[0]
+
+  // 懒清理过期的待支付订单（防止前端倒计时到 0 后无限重载）
+  if (order.status === '待支付') {
+    const orderTime = new Date(order.sale_order_datetime)
+    if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
+      await pg.query(
+        "UPDATE sale_orders SET status = '已关闭', updated_at = NOW() WHERE sale_order_id = $1 AND status = '待支付'",
+        [orderNo]
+      )
+      order.status = '已关闭'
+    }
+  }
 
   // 查询订单明细（使用快照字段）
   const items = await pg.query(`

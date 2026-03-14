@@ -26,7 +26,14 @@ export interface Cart {
 export function getCart(): Cart {
   try {
     const data = wx.getStorageSync(CART_KEY);
-    return data || { items: [], updatedAt: Date.now() };
+    if (!data || !Array.isArray(data.items)) {
+      return { items: [], updatedAt: Date.now() };
+    }
+    // 过滤掉损坏的条目（缺少必须字段）
+    data.items = data.items.filter(
+      (i: any) => i && typeof i.skuId === 'string' && typeof i.price === 'number' && typeof i.quantity === 'number'
+    );
+    return data;
   } catch {
     return { items: [], updatedAt: Date.now() };
   }

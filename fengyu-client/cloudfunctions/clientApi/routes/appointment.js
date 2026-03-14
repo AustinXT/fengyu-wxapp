@@ -4,7 +4,6 @@
  */
 
 const pg = require('../db/pg')
-const { requireFields } = require('../middleware/validate')
 const { requirePhone } = require('../middleware/auth')
 
 /**

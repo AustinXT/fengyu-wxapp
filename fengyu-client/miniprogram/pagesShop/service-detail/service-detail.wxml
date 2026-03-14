@@ -1,4 +1,9 @@
 <!-- pages/service-detail/service-detail.wxml — 商品详情 + SKU 选择 -->
+<wxs module="price">
+module.exports.fmt = function(val) {
+  return (Math.round(val * 100) / 100).toFixed(2)
+}
+</wxs>
 <van-toast id="van-toast" />
 
 <view class="container" wx:if="{{!isLoading}}">
@@ -87,7 +92,7 @@
     <!-- 价格区 -->
     <view class="action-bar__price" wx:if="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
-      <text class="action-bar__price-value">{{selectedSku.price * quantity}}</text>
+      <text class="action-bar__price-value">{{price.fmt(selectedSku.price * quantity)}}</text>
       <text class="action-bar__price-qty" wx:if="{{quantity > 1}}"> x{{quantity}}</text>
     </view>
     <view class="action-bar__price" wx:else>
