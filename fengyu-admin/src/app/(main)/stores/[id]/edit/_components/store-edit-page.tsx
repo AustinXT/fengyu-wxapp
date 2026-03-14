@@ -10,15 +10,17 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { ImageUpload } from "@/components/ui/image-upload"
 
 export default function StoreEditPage({ store }: { store: Store }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
+  const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
 
   const handleSave = async (formData: FormData) => {
     setSaving(true)
     try {
-      const imagesRaw = (formData.get("images") as string).trim()
       await updateStore(store.storeId, {
         storeName: formData.get("storeName") as string,
         phone: (formData.get("phone") as string) || null,
@@ -32,8 +34,8 @@ export default function StoreEditPage({ store }: { store: Store }) {
         parkingInfo: (formData.get("parkingInfo") as string) || null,
         description: (formData.get("description") as string) || null,
         announcement: (formData.get("announcement") as string) || null,
-        coverImage: (formData.get("coverImage") as string) || null,
-        images: imagesRaw ? imagesRaw.split(",").map((s) => s.trim()).filter(Boolean) : null,
+        coverImage: coverImage || null,
+        images: storeImages.length > 0 ? storeImages : null,
       })
       toast.success("保存成功")
       router.push("/stores")
@@ -147,16 +149,22 @@ export default function StoreEditPage({ store }: { store: Store }) {
                 defaultValue={store.announcement ?? ""}
               />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">封面图</label>
-              <Input name="coverImage" defaultValue={store.coverImage ?? ""} placeholder="图片 URL" />
+              <ImageUpload
+                value={coverImage}
+                onChange={(v) => setCoverImage(v as string)}
+                path={`admin-uploads/stores/${store.storeId}`}
+              />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">门店图片</label>
-              <Input
-                name="images"
-                defaultValue={store.images?.join(", ") ?? ""}
-                placeholder="多张图片 URL，逗号分隔"
+              <ImageUpload
+                value={storeImages}
+                onChange={(v) => setStoreImages(v as string[])}
+                path={`admin-uploads/stores/${store.storeId}`}
+                multiple
+                max={9}
               />
             </div>
           </div>

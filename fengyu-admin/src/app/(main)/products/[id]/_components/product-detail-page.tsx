@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { ImageUpload } from "@/components/ui/image-upload"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Sheet, SheetHeader, SheetTitle, SheetClose, SheetContent, SheetFooter } from "@/components/ui/sheet"
 import {
@@ -33,6 +34,8 @@ export default function ProductDetailPageClient({
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [coverImage, setCoverImage] = useState(product.coverImage ?? "")
+  const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? [])
 
   // SKU Sheet state
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -70,11 +73,6 @@ export default function ProductDetailPageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const salesCategory = (fd.get("salesCategory") as string) || null
     const description = (fd.get("description") as string).trim() || null
-    const coverImage = (fd.get("coverImage") as string).trim() || null
-    const detailImagesRaw = (fd.get("detailImages") as string).trim()
-    const detailImages = detailImagesRaw
-      ? detailImagesRaw.split(",").map((s) => s.trim()).filter(Boolean)
-      : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const validStart = (fd.get("validStart") as string) || null
     const validEnd = (fd.get("validEnd") as string) || null
@@ -84,8 +82,8 @@ export default function ProductDetailPageClient({
       await updateProduct(product.productId, {
         categoryId,
         name,
-        coverImage,
-        detailImages,
+        coverImage: coverImage || null,
+        detailImages: detailImages.length > 0 ? detailImages : null,
         description,
         price,
         specialPrice,
@@ -344,16 +342,22 @@ export default function ProductDetailPageClient({
                   defaultValue={product.description ?? ""}
                 />
               </div>
-              <div className="space-y-2">
+              <div className="col-span-2 space-y-2">
                 <label className="text-sm font-medium">封面图</label>
-                <Input name="coverImage" defaultValue={product.coverImage ?? ""} placeholder="图片 URL" />
+                <ImageUpload
+                  value={coverImage}
+                  onChange={(v) => setCoverImage(v as string)}
+                  path={`admin-uploads/products/${product.productId}`}
+                />
               </div>
-              <div className="space-y-2">
+              <div className="col-span-2 space-y-2">
                 <label className="text-sm font-medium">详情图</label>
-                <Input
-                  name="detailImages"
-                  defaultValue={product.detailImages?.join(", ") ?? ""}
-                  placeholder="多张图片 URL，逗号分隔"
+                <ImageUpload
+                  value={detailImages}
+                  onChange={(v) => setDetailImages(v as string[])}
+                  path={`admin-uploads/products/${product.productId}`}
+                  multiple
+                  max={9}
                 />
               </div>
               <div className="space-y-2">
