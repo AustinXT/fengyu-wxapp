@@ -51,3 +51,6 @@ export * from './service-commission'
 
 // 提货记录
 export * from './pickup'
+
+// 系统配置
+export * from './system-config'

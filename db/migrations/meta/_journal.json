@@ -50,6 +50,34 @@
       "when": 1773410087395,
       "tag": "0006_lying_invisible_woman",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1773500000000,
+      "tag": "0007_merge_staff_employee_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773600000000,
+      "tag": "0008_add_client_gender_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1773700000000,
+      "tag": "0009_add_client_avatar_url",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1773800000000,
+      "tag": "0010_add_sale_orders_remark",
+      "breakpoints": true
     }
   ]
 }
