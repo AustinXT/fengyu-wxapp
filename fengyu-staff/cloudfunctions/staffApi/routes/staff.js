@@ -618,24 +618,32 @@ async function dashboard(ctx) {
   `, [...scopeParams, start, end])
 
   // 3. 业绩：收款金额汇总（已支付）
-  let revFilter, revParams
+  let revenueRows
   if (isManagerRole) {
-    revFilter = 'o.store_id = $1'
-    revParams = [storeId]
+    // 店长看整店业绩
+    revenueRows = await pg.query(`
+      SELECT COALESCE(SUM(si.received::numeric), 0) AS revenue
+      FROM sale_orders o
+      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+      WHERE o.store_id = $1
+        AND o.status = '已支付'
+        AND o.paid_at >= $2::date
+        AND o.paid_at < ($3::date + INTERVAL '1 day')
+    `, [storeId, start, end])
   } else {
-    revFilter = 'o.preferred_employee_id = $1'
-    revParams = [employeeId]
+    // 美容师看基于 sale_allocations 的分配业绩
+    revenueRows = await pg.query(`
+      SELECT COALESCE(SUM(sa.total_amount::numeric), 0) AS revenue
+      FROM sale_allocations sa
+      JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+      JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+      WHERE sa.employee_id = $1
+        AND sa.is_void = false
+        AND o.status = '已支付'
+        AND o.paid_at >= $2::date
+        AND o.paid_at < ($3::date + INTERVAL '1 day')
+    `, [employeeId, start, end])
   }
-
-  const revenueRows = await pg.query(`
-    SELECT COALESCE(SUM(si.received::numeric), 0) AS revenue
-    FROM sale_orders o
-    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-    WHERE ${revFilter}
-      AND o.status = '已支付'
-      AND o.paid_at >= $${revParams.length + 1}::date
-      AND o.paid_at < ($${revParams.length + 2}::date + INTERVAL '1 day')
-  `, [...revParams, start, end])
 
   // 4. 消耗：服务单划卡单价汇总
   const consumeRows = await pg.query(`

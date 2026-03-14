@@ -27,6 +27,7 @@ interface ServiceDetail {
 Page({
   data: {
     loading: true,
+    submitting: false,
     detail: null as ServiceDetail | null,
     isManager: false,
   },
@@ -59,25 +60,29 @@ Page({
 
   async onStartService() {
     const { detail } = this.data;
-    if (!detail) return;
+    if (!detail || this.data.submitting) return;
+    this.setData({ submitting: true });
     try {
       await callStaffApi('service.start', { serviceOrderId: detail.id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
       this.loadDetail(detail.id);
     } catch (err: any) {
       wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
     }
   },
 
   onCompleteService() {
     const { detail } = this.data;
-    if (!detail) return;
+    if (!detail || this.data.submitting) return;
     wx.showModal({
       title: '确认完成服务',
       content: '确认完成后将扣减1次疗程次数，操作不可撤销',
       confirmText: '确认完成',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('service.complete', { serviceOrderId: detail.id });
           wx.showToast({ title: '服务已完成', icon: 'success' });
@@ -85,6 +90,8 @@ Page({
           setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       }
     });
@@ -92,7 +99,7 @@ Page({
 
   onCancelService() {
     const { detail } = this.data;
-    if (!detail) return;
+    if (!detail || this.data.submitting) return;
     wx.showModal({
       title: '取消服务单',
       content: '确认取消该服务单？不会扣减疗程次数。',
@@ -100,6 +107,7 @@ Page({
       confirmColor: '#E53935',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('service.cancel', { serviceOrderId: detail.id });
           wx.showToast({ title: '服务单已取消', icon: 'success' });
@@ -107,6 +115,8 @@ Page({
           setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
         } catch (err: any) {
           wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       }
     });

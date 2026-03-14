@@ -76,6 +76,32 @@ Page({
     if (options.appointmentId) {
       this.setData({ appointmentId: options.appointmentId });
       this.loadAppointmentInfo(options.appointmentId);
+    } else if (options.saleOrderId) {
+      this.loadOrderInfo(options.saleOrderId);
+    }
+  },
+
+  async loadOrderInfo(saleOrderId: string) {
+    this.setData({ loading: true });
+    try {
+      const data = await callStaffApi<any>('order.detail', { saleOrderId });
+      if (data?.order) {
+        const order = data.order;
+        const customer = {
+          id: order.client_user_id || '',
+          clientUserId: order.client_user_id || '',
+          name: order.customer_name || '',
+          phone: order.client_phone || '',
+        };
+        this.setData({ selectedCustomer: customer });
+        if (customer.clientUserId || customer.id) {
+          await this.loadPaidOrders(customer.clientUserId || customer.id);
+        }
+      }
+    } catch (err: any) {
+      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } finally {
+      this.setData({ loading: false });
     }
   },
 

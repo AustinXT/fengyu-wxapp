@@ -151,6 +151,11 @@ Page({
     });
   },
 
+  onCreateService() {
+    const saleOrderId = this.data._saleOrderId;
+    wx.navigateTo({ url: `/packageService/service-create/service-create?saleOrderId=${saleOrderId}` });
+  },
+
   onBackToWorkbench() {
     wx.switchTab({ url: '/pages/workbench/workbench' });
   },

@@ -78,12 +78,10 @@ Page({
     const pending = app.globalData.pendingCartItem;
     if (pending) {
       app.globalData.pendingCartItem = null;
-      const cart = [...this.data.cart];
-      const existing = cart.findIndex(c => c.skuId === pending.skuId);
-      if (existing >= 0) {
-        cart[existing].quantity += pending.quantity;
-      } else {
-        cart.push({
+
+      // 福利活动商品不加入购物车，只能直接下单（清空购物车后单独放入）
+      if (pending.productType === '福利活动') {
+        const cart: CartItem[] = [{
           spuId: pending.spuId,
           skuId: pending.skuId,
           spuName: pending.spuName,
@@ -94,11 +92,38 @@ Page({
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId || '',
-        });
+        }];
+        this.updateCart(cart);
+      } else {
+        const cart = [...this.data.cart];
+        // 购物车中有福利活动商品时不允许混入其他商品
+        if (cart.some(c => c.productType === '福利活动')) {
+          wx.showToast({ title: '福利活动订单需单独下单', icon: 'none' });
+          return;
+        }
+        const existing = cart.findIndex(c => c.skuId === pending.skuId);
+        if (existing >= 0) {
+          cart[existing].quantity += pending.quantity;
+        } else {
+          cart.push({
+            spuId: pending.spuId,
+            skuId: pending.skuId,
+            spuName: pending.spuName,
+            specName: pending.specName,
+            price: pending.price,
+            quantity: pending.quantity,
+            discount: 0,
+            sessionCount: pending.sessionCount || 0,
+            productType: pending.productType,
+            workfineItemId: pending.workfineItemId || '',
+          });
+        }
+        this.updateCart(cart);
       }
-      this.updateCart(cart);
       if (pending.directCheckout) {
-        this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'normal' });
+        // 福利活动商品直接下单时自动设置类型
+        const autoType = pending.productType === '福利活动' ? 'promotion' : 'normal';
+        this.setData({ showCheckout: true, checkoutStep: 0, orderType: autoType as any });
       }
     }
   },
@@ -217,6 +242,11 @@ Page({
 
   onCartItemRemove(e: WechatMiniprogram.TouchEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
+    const item = this.data.cart.find(c => c.skuId === skuId);
+    if (item?.productType === '福利活动') {
+      wx.showToast({ title: '福利活动项目不可删除', icon: 'none' });
+      return;
+    }
     const cart = this.data.cart.filter(c => c.skuId !== skuId);
     this.updateCart(cart);
   },
@@ -226,7 +256,13 @@ Page({
     const qty = parseInt(e.detail as unknown as string) || 1;
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
-    if (idx >= 0) cart[idx].quantity = qty;
+    if (idx >= 0) {
+      if (cart[idx].productType === '福利活动') {
+        wx.showToast({ title: '福利活动项目不可修改数量', icon: 'none' });
+        return;
+      }
+      cart[idx].quantity = qty;
+    }
     this.updateCart(cart);
   },
 
@@ -303,7 +339,12 @@ Page({
       wx.showToast({ title: '请先选择顾客', icon: 'none' });
       return;
     }
-    this.setData({ checkoutStep: 1 });
+    // 福利活动类型已锁定，跳过类型选择直接到确认步骤
+    if (this.data.orderType === 'promotion') {
+      this.setData({ checkoutStep: 2 });
+    } else {
+      this.setData({ checkoutStep: 1 });
+    }
   },
 
   // Step 1: 选开单类型
@@ -324,7 +365,10 @@ Page({
     this.setData({ remark: (e.detail as unknown as string) ?? '' });
   },
 
-  onStep2Back() { this.setData({ checkoutStep: 1 }); },
+  onStep2Back() {
+    // 福利活动跳过类型选择，直接返回到选顾客
+    this.setData({ checkoutStep: this.data.orderType === 'promotion' ? 0 : 1 });
+  },
 
   // ===== 优惠券选择 =====
 

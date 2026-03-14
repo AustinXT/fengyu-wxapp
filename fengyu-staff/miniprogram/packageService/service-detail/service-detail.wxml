@@ -53,6 +53,8 @@
       <van-button
         wx:if="{{detail.status === '待服务'}}"
         type="primary" block
+        disabled="{{submitting}}"
+        loading="{{submitting}}"
         custom-class="btn-primary-brand"
         custom-style="border-radius: 48rpx;"
         bind:click="onStartService"
@@ -60,6 +62,8 @@
       <van-button
         wx:elif="{{detail.status === '服务中'}}"
         type="primary" block
+        disabled="{{submitting}}"
+        loading="{{submitting}}"
         custom-class="btn-success"
         custom-style="border-radius: 48rpx;"
         bind:click="onCompleteService"
@@ -67,6 +71,7 @@
       <van-button
         wx:if="{{detail.status === '待服务' || detail.status === '服务中'}}"
         type="danger" block plain
+        disabled="{{submitting}}"
         custom-style="border-radius: 48rpx; margin-top: 20rpx;"
         bind:click="onCancelService"
       >取消服务单</van-button>

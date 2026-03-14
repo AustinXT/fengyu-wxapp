@@ -41,7 +41,8 @@ async function create(ctx) {
     paymentMethod,
     orderType: orderTypeParam,
     preferredStaffWfId,
-    couponId: inputCouponId
+    couponId: inputCouponId,
+    remark: orderRemark
   } = payload
 
   const storeId = ctx.auth.storeId
@@ -289,15 +290,16 @@ async function create(ctx) {
         sale_order_id, status, sale_order_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, sale_order_source, opened_by,
-        preferred_employee_id, coupon_id, coupon_discount,
+        preferred_employee_id, coupon_id, coupon_discount, remark,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $14, $5, $5)`,
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $14, $15, $5, $5)`,
       [
         saleOrderId, orderType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
         paymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
-        inputCouponId || null, couponDiscount
+        inputCouponId || null, couponDiscount,
+        orderRemark || null
       ]
     )
 

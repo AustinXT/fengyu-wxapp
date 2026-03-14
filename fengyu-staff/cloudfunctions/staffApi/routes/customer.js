@@ -132,7 +132,50 @@ async function search(ctx) {
     source: "miniprogram",
   }));
 
-  ctx.result = [...wfResults, ...pgOnlyResults];
+  // Step 6: 补充 tier（年度消费分级）和 lastServiceDate
+  const allResults = [...wfResults, ...pgOnlyResults];
+  const allClientUserIds = allResults.map(r => r.clientUserId).filter(Boolean);
+
+  if (allClientUserIds.length > 0) {
+    // 年度消费总额 → tier
+    const yearStart = new Date().getFullYear() + '-01-01';
+    const spendRows = await pg.query(`
+      SELECT o.client_user_id,
+             COALESCE(SUM(o.total_amount::numeric), 0) AS annual_spend
+      FROM sale_orders o
+      WHERE o.client_user_id = ANY($1)
+        AND o.status = '已支付'
+        AND o.paid_at >= $2::date
+      GROUP BY o.client_user_id
+    `, [allClientUserIds, yearStart]);
+    const spendMap = {};
+    for (const r of spendRows) {
+      const amt = Number(r.annual_spend);
+      spendMap[r.client_user_id] = amt >= 20000 ? 'diamond' : amt >= 5000 ? 'iron' : amt > 0 ? 'fan' : null;
+    }
+
+    // 最近服务日期
+    const svcDateRows = await pg.query(`
+      SELECT DISTINCT ON (so.client_user_id)
+             so.client_user_id, so.service_date
+      FROM service_orders so
+      WHERE so.client_user_id = ANY($1) AND so.status = '已完成'
+      ORDER BY so.client_user_id, so.service_date DESC
+    `, [allClientUserIds]);
+    const svcDateMap = {};
+    for (const r of svcDateRows) {
+      svcDateMap[r.client_user_id] = r.service_date;
+    }
+
+    for (const item of allResults) {
+      if (item.clientUserId) {
+        item.tier = spendMap[item.clientUserId] || null;
+        item.lastServiceDate = svcDateMap[item.clientUserId] || null;
+      }
+    }
+  }
+
+  ctx.result = allResults;
 }
 
 /**
