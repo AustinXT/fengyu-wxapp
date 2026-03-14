@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "jest --config e2e/jest.config.js"
+    "test:compile": "vitest run __tests__/compile",
+    "test:e2e": "jest --config e2e/jest.config.js",
+    "check-wxml": "node scripts/check-wxml-bindings.js"
   },
   "devDependencies": {
     "jest": "^30.3.0",
