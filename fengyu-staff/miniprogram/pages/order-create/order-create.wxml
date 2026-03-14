@@ -307,6 +307,13 @@
           <text class="confirm-total-label">券后合计</text>
           <text class="confirm-total-amount confirm-total-amount--coupon">¥{{couponTotal}}</text>
         </view>
+        <!-- 指定美容师（可选，用于默认分配） -->
+        <van-cell
+          title="指定美容师"
+          value="{{preferredStaffName || '不指定'}}"
+          is-link
+          bindtap="onSelectPreferredStaff"
+        />
         <van-field
           label="备注"
           placeholder="选填，最多100字"
@@ -327,6 +334,22 @@
         </view>
       </view>
     </view>
+  </van-popup>
+
+  <!-- 美容师选择 Popup -->
+  <van-popup
+    show="{{showStaffPicker}}"
+    round
+    position="bottom"
+    bind:close="onStaffPickerClose"
+  >
+    <van-picker
+      title="指定美容师"
+      show-toolbar
+      columns="{{staffPickerColumns}}"
+      bind:confirm="onPreferredStaffConfirm"
+      bind:cancel="onStaffPickerClose"
+    />
   </van-popup>
 
   <!-- 优惠券选择 Popup -->

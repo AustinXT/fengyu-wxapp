@@ -16,6 +16,7 @@
     "van-sidebar-item": "@vant/weapp/sidebar-item/index",
     "van-search": "@vant/weapp/search/index",
     "van-stepper": "@vant/weapp/stepper/index",
-    "van-skeleton": "@vant/weapp/skeleton/index"
+    "van-skeleton": "@vant/weapp/skeleton/index",
+    "van-picker": "@vant/weapp/picker/index"
   }
 }

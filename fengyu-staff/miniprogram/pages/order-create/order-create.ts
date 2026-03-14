@@ -53,6 +53,12 @@ Page({
     showCouponPopup: false,
     availableCoupons: [] as any[],
     couponsLoading: false,
+    // 指定美容师（可选，用于默认分配）
+    preferredStaffWfId: '' as string,
+    preferredStaffName: '',
+    showStaffPicker: false,
+    staffListForPicker: [] as Array<{ staffWfId: string; name: string; department: string }>,
+    staffPickerColumns: [] as string[],
   },
 
   // 所有分类（未过滤）
@@ -417,6 +423,45 @@ Page({
     this.setData({ selectedCoupon: null, couponDiscount: 0, couponTotal: '', showCouponPopup: false });
   },
 
+  // ===== 指定美容师 =====
+
+  async onSelectPreferredStaff() {
+    if (this.data.staffListForPicker.length === 0) {
+      try {
+        const data = await callStaffApi<{ staffList: Array<{ staffWfId: string; name: string; department: string }> }>('staff.list');
+        const list = data?.staffList || [];
+        this.setData({
+          staffListForPicker: list,
+          staffPickerColumns: ['不指定', ...list.map(s => `${s.name}（${s.department || '未分组'}）`)],
+        });
+      } catch {
+        return;
+      }
+    }
+    this.setData({ showStaffPicker: true });
+  },
+
+  onStaffPickerClose() {
+    this.setData({ showStaffPicker: false });
+  },
+
+  onPreferredStaffConfirm(e: WechatMiniprogram.CustomEvent) {
+    const picked = e.detail.value as string;
+    if (picked === '不指定') {
+      this.setData({ preferredStaffWfId: '', preferredStaffName: '', showStaffPicker: false });
+      return;
+    }
+    const idx = this.data.staffPickerColumns.indexOf(picked) - 1; // offset by "不指定"
+    const staff = this.data.staffListForPicker[idx];
+    if (staff) {
+      this.setData({
+        preferredStaffWfId: staff.staffWfId,
+        preferredStaffName: staff.name,
+        showStaffPicker: false,
+      });
+    }
+  },
+
   async onSubmitOrder() {
     const { customerInfo, orderType, cart, remark, submitting } = this.data;
     if (!customerInfo || submitting) return;
@@ -439,6 +484,7 @@ Page({
         })),
         remark,
         couponId: this.data.selectedCoupon?.couponId || undefined,
+        preferredStaffWfId: this.data.preferredStaffWfId || undefined,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
