@@ -57,6 +57,7 @@ export async function getCustomers(): Promise<Customer[]> {
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
+    .limit(500)
 
   return rows.map(serializeCustomer)
 }

@@ -137,6 +137,7 @@ export async function getAllSkus(): Promise<ProductSku[]> {
     .select()
     .from(productSkus)
     .orderBy(productSkus.sortOrder)
+    .limit(1000)
 
   return rows.map((s) => ({
     skuId: s.skuId,

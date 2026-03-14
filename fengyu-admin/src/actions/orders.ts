@@ -24,6 +24,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .orderBy(desc(saleOrders.saleOrderDatetime))
+    .limit(500)
 
   return rows.map((r) => ({
     saleOrderId: r.order.saleOrderId,

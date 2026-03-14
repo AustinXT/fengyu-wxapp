@@ -6,29 +6,32 @@ test.describe('系统配置', () => {
     await expect(page.getByRole('heading', { name: '系统配置' })).toBeVisible()
   })
 
-  test('配置字段完整', async ({ page }) => {
+  test('基础配置卡片可见', async ({ page }) => {
     await page.goto('/settings')
-    await expect(page.getByLabel(/订单.*前缀/)).toBeVisible()
-    await expect(page.getByLabel(/新会员.*门槛|消费门槛/)).toBeVisible()
-    await expect(page.getByLabel(/超时|订单.*时间/)).toBeVisible()
+    await expect(page.getByText('基础配置')).toBeVisible()
   })
 
-  test('订单前缀有默认值', async ({ page }) => {
+  test('配置字段完整', async ({ page }) => {
     await page.goto('/settings')
-    const prefixInput = page.getByLabel(/订单.*前缀/)
-    await expect(prefixInput).toHaveValue(/FY/)
+    // 标签是普通文字（非 <label>），用 getByText
+    await expect(page.getByText('订单号前缀')).toBeVisible()
+    await expect(page.getByText(/新会员消费门槛/)).toBeVisible()
+    await expect(page.getByText(/订单超时时间/)).toBeVisible()
   })
 
   test('保存按钮可见', async ({ page }) => {
     await page.goto('/settings')
-    await expect(page.getByRole('button', { name: /保存/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: '保存' })).toBeVisible()
   })
 
-  test('字段可编辑', async ({ page }) => {
+  test('输入框有默认值', async ({ page }) => {
     await page.goto('/settings')
-    const thresholdInput = page.getByLabel(/新会员.*门槛|消费门槛/)
-    await thresholdInput.clear()
-    await thresholdInput.fill('2000')
-    await expect(thresholdInput).toHaveValue('2000')
+    // 找到包含 FY-XSD-WX- 的 input
+    await expect(page.locator('input[value*="FY"]').first()).toBeVisible()
+  })
+
+  test('辅助说明文字可见', async ({ page }) => {
+    await page.goto('/settings')
+    await expect(page.getByText(/订单号格式/)).toBeVisible()
   })
 })

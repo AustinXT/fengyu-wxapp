@@ -2,7 +2,6 @@ import { test, expect } from '@playwright/test'
 
 test.describe('视觉回归', () => {
   test('登录页', async ({ page }) => {
-    // 登录页不需要认证 state
     await page.goto('/login')
     await expect(page.getByText('凤御美业管理后台')).toBeVisible()
     await expect(page).toHaveScreenshot('login.png', {

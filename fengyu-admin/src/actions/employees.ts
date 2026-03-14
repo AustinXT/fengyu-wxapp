@@ -39,6 +39,7 @@ export async function getEmployees(): Promise<Employee[]> {
     .from(staffWechatUsers)
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+    .limit(500)
 
   return rows.map(rowToEmployee)
 }

@@ -14,16 +14,18 @@ test.describe('预约管理', () => {
     await expect(page.getByRole('tab', { name: /全部/ })).toBeVisible()
   })
 
-  test('Tab 切换正常', async ({ page }) => {
+  test('Tab 可切换', async ({ page }) => {
     await page.goto('/appointments')
-    await page.getByRole('tab', { name: /已确认/ }).click()
-    await expect(page.getByRole('tab', { name: /已确认/ })).toHaveAttribute('data-state', 'active')
+    const confirmedTab = page.getByRole('tab', { name: /已确认/ })
+    await confirmedTab.click()
+    await expect(confirmedTab).toHaveAttribute('aria-selected', 'true')
   })
 
-  test('全部 Tab 显示表格', async ({ page }) => {
+  test('表格列头完整', async ({ page }) => {
     await page.goto('/appointments')
     await page.getByRole('tab', { name: /全部/ }).click()
     await expect(page.getByRole('columnheader', { name: '状态' })).toBeVisible()
     await expect(page.getByRole('columnheader', { name: '顾客' })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '预约时间' })).toBeVisible()
   })
 })
