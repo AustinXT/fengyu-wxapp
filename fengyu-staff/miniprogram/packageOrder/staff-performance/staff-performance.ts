@@ -4,7 +4,7 @@ import { isManager } from '../../utils/role';
 
 const app = getApp<IAppOption>();
 
-type RangeType = 'today' | 'week' | 'month' | 'custom';
+type RangeType = 'today' | 'month' | 'lastMonth';
 
 Page({
   data: {
@@ -98,21 +98,18 @@ Page({
     if (type === 'today') {
       start = end = this.formatDate(now);
       display = start;
-    } else if (type === 'week') {
-      const day = now.getDay();
-      const mondayOffset = day === 0 ? -6 : 1 - day;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + mondayOffset);
-      start = this.formatDate(monday);
-      end = this.formatDate(now);
-      display = `${start} ~ ${end}`;
     } else if (type === 'month') {
       const first = new Date(now.getFullYear(), now.getMonth(), 1);
       start = this.formatDate(first);
       end = this.formatDate(now);
       display = `${now.getFullYear()}年${now.getMonth() + 1}月`;
     } else {
-      return; // custom handled separately
+      // lastMonth
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      start = this.formatDate(lastMonth);
+      end = this.formatDate(lastMonthEnd);
+      display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
     }
 
     this.setData({ rangeType: type, startDate: start, endDate: end, displayDate: display, page: 1 });
@@ -120,25 +117,7 @@ Page({
   },
 
   onRangeTap(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as RangeType;
-    if (type === 'custom') {
-      // 简化处理：custom 改为上月
-      const now = new Date();
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
-      const start = this.formatDate(lastMonth);
-      const end = this.formatDate(lastMonthEnd);
-      this.setData({
-        rangeType: 'custom',
-        startDate: start,
-        endDate: end,
-        displayDate: `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`,
-        page: 1,
-      });
-      this.loadData(true);
-      return;
-    }
-    this.setRange(type);
+    this.setRange(e.currentTarget.dataset.type as RangeType);
   },
 
   // ===== 分类 Tab 切换 =====

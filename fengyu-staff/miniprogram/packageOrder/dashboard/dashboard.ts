@@ -2,7 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
-type RangeType = 'today' | 'week' | 'month';
+type RangeType = 'today' | 'month' | 'lastMonth';
 
 Page({
   data: {
@@ -37,19 +37,18 @@ Page({
     if (type === 'today') {
       start = end = this.fmt(now);
       display = `今日 ${start}`;
-    } else if (type === 'week') {
-      const day = now.getDay();
-      const offset = day === 0 ? -6 : 1 - day;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + offset);
-      start = this.fmt(monday);
-      end = this.fmt(now);
-      display = `本周 ${start} ~ ${end}`;
-    } else {
+    } else if (type === 'month') {
       const first = new Date(now.getFullYear(), now.getMonth(), 1);
       start = this.fmt(first);
       end = this.fmt(now);
       display = `${now.getFullYear()}年${now.getMonth() + 1}月`;
+    } else {
+      // lastMonth
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      start = this.fmt(lastMonth);
+      end = this.fmt(lastMonthEnd);
+      display = `${lastMonth.getFullYear()}年${lastMonth.getMonth() + 1}月`;
     }
 
     this.setData({ rangeType: type, displayDate: display });

@@ -16,9 +16,8 @@
     <text class="perf-date-display">{{displayDate}}</text>
     <view class="perf-range-btns">
       <view class="range-btn {{rangeType === 'today' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="today">今日</view>
-      <view class="range-btn {{rangeType === 'week' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="week">本周</view>
       <view class="range-btn {{rangeType === 'month' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="month">本月</view>
-      <view class="range-btn {{rangeType === 'custom' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="custom">上月</view>
+      <view class="range-btn {{rangeType === 'lastMonth' ? 'range-btn--active' : ''}}" bindtap="onRangeTap" data-type="lastMonth">上月</view>
     </view>
   </view>
 
