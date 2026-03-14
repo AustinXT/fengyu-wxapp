@@ -1,5 +1,6 @@
 {
   "devDependencies": {
+    "miniprogram-automator": "^0.12.1",
     "tencentcloud-sdk-nodejs": "^4.1.186",
     "tencentcloud-sdk-nodejs-scf": "^4.1.168"
   }
