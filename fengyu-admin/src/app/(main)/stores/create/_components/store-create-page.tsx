@@ -12,10 +12,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { ImageUpload } from "@/components/ui/image-upload"
 
 export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [coverImage, setCoverImage] = useState("")
+  const [storeImages, setStoreImages] = useState<string[]>([])
 
   const handleSave = async (formData: FormData) => {
     const storeName = (formData.get("storeName") as string).trim()
@@ -45,7 +48,6 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         isActive: true,
       })
 
-      const imagesRaw = (formData.get("images") as string).trim()
       await createStore({
         storeId,
         storeName,
@@ -61,8 +63,8 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         parkingInfo: (formData.get("parkingInfo") as string) || null,
         description: (formData.get("description") as string) || null,
         announcement: (formData.get("announcement") as string) || null,
-        coverImage: (formData.get("coverImage") as string) || null,
-        images: imagesRaw ? imagesRaw.split(",").map((s) => s.trim()).filter(Boolean) : null,
+        coverImage: coverImage || null,
+        images: storeImages.length > 0 ? storeImages : null,
       })
 
       toast.success("创建成功")
@@ -172,13 +174,23 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
               <label className="text-sm font-medium">公告</label>
               <Textarea name="announcement" className="min-h-[60px]" />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">封面图</label>
-              <Input name="coverImage" placeholder="图片 URL" />
+              <ImageUpload
+                value={coverImage}
+                onChange={(v) => setCoverImage(v as string)}
+                path="admin-uploads/stores/new"
+              />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">门店图片</label>
-              <Input name="images" placeholder="多张图片 URL，逗号分隔" />
+              <ImageUpload
+                value={storeImages}
+                onChange={(v) => setStoreImages(v as string[])}
+                path="admin-uploads/stores/new"
+                multiple
+                max={9}
+              />
             </div>
           </div>
         </CardContent>

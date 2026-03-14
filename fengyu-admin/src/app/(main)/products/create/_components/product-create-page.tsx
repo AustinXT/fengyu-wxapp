@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { ImageUpload } from "@/components/ui/image-upload"
 
 export default function ProductCreatePageClient({
   categories,
@@ -18,6 +19,8 @@ export default function ProductCreatePageClient({
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [coverImage, setCoverImage] = useState("")
+  const [detailImages, setDetailImages] = useState<string[]>([])
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -45,11 +48,6 @@ export default function ProductCreatePageClient({
     const salesCategory = (fd.get("salesCategory") as string) || null
     const isBundle = fd.get("isBundle") === "true"
     const description = (fd.get("description") as string).trim() || null
-    const coverImage = (fd.get("coverImage") as string).trim() || null
-    const detailImagesRaw = (fd.get("detailImages") as string).trim()
-    const detailImages = detailImagesRaw
-      ? detailImagesRaw.split(",").map((s) => s.trim()).filter(Boolean)
-      : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const validStart = (fd.get("validStart") as string) || null
     const validEnd = (fd.get("validEnd") as string) || null
@@ -62,8 +60,8 @@ export default function ProductCreatePageClient({
         productId,
         categoryId,
         name,
-        coverImage,
-        detailImages,
+        coverImage: coverImage || null,
+        detailImages: detailImages.length > 0 ? detailImages : null,
         description,
         isBundle,
         price,
@@ -172,13 +170,23 @@ export default function ProductCreatePageClient({
                 placeholder="请输入商品描述"
               />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">封面图</label>
-              <Input name="coverImage" placeholder="图片 URL" />
+              <ImageUpload
+                value={coverImage}
+                onChange={(v) => setCoverImage(v as string)}
+                path={`admin-uploads/products/new`}
+              />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">详情图</label>
-              <Input name="detailImages" placeholder="多张图片 URL，逗号分隔" />
+              <ImageUpload
+                value={detailImages}
+                onChange={(v) => setDetailImages(v as string[])}
+                path={`admin-uploads/products/new`}
+                multiple
+                max={9}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">排序</label>
