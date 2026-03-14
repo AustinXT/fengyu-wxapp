@@ -45,6 +45,7 @@ Page({
     }
     this.setData({ isManager: isManager() });
     this.loadList();
+    this.loadTabCounts();
   },
 
   onPullDownRefresh() {
@@ -114,6 +115,21 @@ Page({
         }
       }
     });
+  },
+
+  async loadTabCounts() {
+    try {
+      const [pending, processing, completed] = await Promise.all([
+        callStaffApi<ServiceItem[]>('service.list', { status: '待服务' }),
+        callStaffApi<ServiceItem[]>('service.list', { status: '服务中' }),
+        callStaffApi<ServiceItem[]>('service.list', { status: '已完成' }),
+      ]);
+      this.setData({
+        'tabs[0].badge': (pending || []).length || 0,
+        'tabs[1].badge': (processing || []).length || 0,
+        'tabs[2].badge': 0, // 已完成不显示 badge
+      });
+    } catch (_) {}
   },
 
   onNewService() {

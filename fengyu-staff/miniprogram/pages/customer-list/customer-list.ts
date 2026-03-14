@@ -3,6 +3,8 @@ import { callStaffApi } from '../../utils/cloud';
 
 type TagType = 'active' | 'atRisk' | 'lost' | 'sleeping' | 'birthday' | 'birthdayNext';
 
+const app = getApp<IAppOption>();
+
 Page({
   data: {
     searchKeyword: '',
@@ -26,9 +28,23 @@ Page({
   },
 
   onShow() {
+    if (!app.globalData.staffWfId) {
+      wx.reLaunch({ url: '/pages/login/login' });
+      return;
+    }
     this.loadStats();
     if (!this.data.activeTag && !this.data.searched) {
       this.loadDefaultList();
+    }
+  },
+
+  onPullDownRefresh() {
+    const done = () => wx.stopPullDownRefresh();
+    this.loadStats();
+    if (this.data.activeTag) {
+      this.loadByTag(this.data.activeTag as TagType, 1, true).finally(done);
+    } else {
+      this.loadDefaultList().finally(done);
     }
   },
 
@@ -39,7 +55,7 @@ Page({
     } catch (_) {}
   },
 
-  async loadDefaultList() {
+  async loadDefaultList(): Promise<void> {
     this.setData({ loading: true });
     try {
       const data = await callStaffApi<any[]>('customer.search', {});
