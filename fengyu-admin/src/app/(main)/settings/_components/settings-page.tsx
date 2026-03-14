@@ -6,7 +6,10 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
+import { ImageUpload } from "@/components/ui/image-upload"
 import { saveSettings } from "@/actions/settings"
+
+const CDN_BASE = "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
 
 interface SettingsPageProps {
   initialSettings: {
@@ -21,6 +24,16 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
   const [newMemberThreshold, setNewMemberThreshold] = useState(initialSettings.newMemberThreshold)
   const [orderTimeout, setOrderTimeout] = useState(initialSettings.orderTimeout)
   const [saving, setSaving] = useState(false)
+
+  // Banner images: use CDN URL with cache-buster for preview
+  const [bannerImages, setBannerImages] = useState<(string | null)[]>(
+    Array.from({ length: 5 }, (_, i) =>
+      `${CDN_BASE}/fengyu-client/banner/banner${i + 1}.jpg`
+    )
+  )
+  const [fengyuguanImage, setFengyuguanImage] = useState(
+    `${CDN_BASE}/images/fengyuguan.jpg`
+  )
 
   const handleSave = async () => {
     setSaving(true)
@@ -88,6 +101,44 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
           <div className="flex justify-end">
             <Button onClick={handleSave} loading={saving}>保存</Button>
           </div>
+        </CardContent>
+      </Card>
+      {/* 首页轮播图 */}
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle>首页轮播图</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-[#999999]">上传后将直接覆盖小程序首页对应轮播位的图片</p>
+          {bannerImages.map((url, i) => (
+            <div key={i} className="space-y-2">
+              <label className="text-sm font-medium">轮播图 {i + 1}</label>
+              <ImageUpload
+                value={url ?? ""}
+                onChange={(v) => {
+                  const next = [...bannerImages]
+                  next[i] = v as string
+                  setBannerImages(next)
+                }}
+                exactKey={`fengyu-client/banner/banner${i + 1}.jpg`}
+              />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* 凤御馆宣传图 */}
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle>凤御馆宣传图</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-[#999999]">上传后将直接覆盖小程序凤御馆页面的宣传图</p>
+          <ImageUpload
+            value={fengyuguanImage}
+            onChange={(v) => setFengyuguanImage(v as string)}
+            exactKey="images/fengyuguan.jpg"
+          />
         </CardContent>
       </Card>
     </div>
