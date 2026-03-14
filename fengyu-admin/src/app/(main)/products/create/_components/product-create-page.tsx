@@ -1,7 +1,10 @@
 "use client"
 
+import { useState } from "react"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
+import { createProduct } from "@/actions/products"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -14,11 +17,75 @@ export default function ProductCreatePageClient({
   categories: ProductCategory[]
 }) {
   const router = useRouter()
+  const [saving, setSaving] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = e.currentTarget
+    const fd = new FormData(form)
+
+    const name = (fd.get("name") as string).trim()
+    const categoryId = fd.get("categoryId") as string
+    const price = (fd.get("price") as string).trim()
+
+    if (!name) {
+      toast.error("请输入商品名称")
+      return
+    }
+    if (!categoryId) {
+      toast.error("请选择品项分类")
+      return
+    }
+    if (!price) {
+      toast.error("请输入标价")
+      return
+    }
+
+    const specialPrice = (fd.get("specialPrice") as string).trim() || null
+    const salesCategory = (fd.get("salesCategory") as string) || null
+    const isBundle = fd.get("isBundle") === "true"
+    const description = (fd.get("description") as string).trim() || null
+    const coverImage = (fd.get("coverImage") as string).trim() || null
+    const detailImagesRaw = (fd.get("detailImages") as string).trim()
+    const detailImages = detailImagesRaw
+      ? detailImagesRaw.split(",").map((s) => s.trim()).filter(Boolean)
+      : null
+    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
+    const validStart = (fd.get("validStart") as string) || null
+    const validEnd = (fd.get("validEnd") as string) || null
+
+    const productId = `prod-${Date.now()}`
+
+    setSaving(true)
+    try {
+      await createProduct({
+        productId,
+        categoryId,
+        name,
+        coverImage,
+        detailImages,
+        description,
+        isBundle,
+        price,
+        specialPrice,
+        salesCategory,
+        sortOrder,
+        validStart,
+        validEnd,
+      })
+      toast.success("商品创建成功")
+      router.push("/products")
+    } catch {
+      toast.error("创建失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <div className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4">
       <div className="flex items-center gap-3">
-        <Button variant="outline" size="sm" onClick={() => router.back()}>
+        <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
         </Button>
         <h1 className="text-2xl font-bold text-[var(--foreground)]">新增商品</h1>
@@ -33,11 +100,11 @@ export default function ProductCreatePageClient({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">商品名称</label>
-              <Input placeholder="请输入商品名称" />
+              <Input name="name" placeholder="请输入商品名称" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">品项分类</label>
-              <Select defaultValue="">
+              <Select name="categoryId" defaultValue="">
                 <option value="" disabled>
                   请选择分类
                 </option>
@@ -50,7 +117,7 @@ export default function ProductCreatePageClient({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">销售分类</label>
-              <Select defaultValue="">
+              <Select name="salesCategory" defaultValue="">
                 <option value="" disabled>
                   请选择
                 </option>
@@ -62,7 +129,7 @@ export default function ProductCreatePageClient({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">是否套餐</label>
-              <Select defaultValue="false">
+              <Select name="isBundle" defaultValue="false">
                 <option value="false">否</option>
                 <option value="true">是</option>
               </Select>
@@ -80,11 +147,11 @@ export default function ProductCreatePageClient({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">标价</label>
-              <Input type="number" placeholder="0.00" />
+              <Input name="price" type="number" placeholder="0.00" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">特价</label>
-              <Input type="number" placeholder="不填则无特价" />
+              <Input name="specialPrice" type="number" placeholder="不填则无特价" />
             </div>
           </div>
         </CardContent>
@@ -100,21 +167,22 @@ export default function ProductCreatePageClient({
             <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">商品描述</label>
               <textarea
+                name="description"
                 className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 min-h-[80px]"
                 placeholder="请输入商品描述"
               />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">封面图</label>
-              <Input placeholder="图片 URL" />
+              <Input name="coverImage" placeholder="图片 URL" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">详情图</label>
-              <Input placeholder="多张图片 URL，逗号分隔" />
+              <Input name="detailImages" placeholder="多张图片 URL，逗号分隔" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">排序</label>
-              <Input type="number" defaultValue={0} />
+              <Input name="sortOrder" type="number" defaultValue={0} />
             </div>
           </div>
         </CardContent>
@@ -129,11 +197,11 @@ export default function ProductCreatePageClient({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">生效日期</label>
-              <Input type="date" />
+              <Input name="validStart" type="date" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">截止日期</label>
-              <Input type="date" />
+              <Input name="validEnd" type="date" />
             </div>
           </div>
         </CardContent>
@@ -142,11 +210,11 @@ export default function ProductCreatePageClient({
       <Separator />
 
       <div className="flex justify-end gap-3">
-        <Button variant="outline" onClick={() => router.back()}>
+        <Button type="button" variant="outline" onClick={() => router.back()}>
           取消
         </Button>
-        <Button>创建商品</Button>
+        <Button type="submit" loading={saving}>创建商品</Button>
       </div>
-    </div>
+    </form>
   )
 }

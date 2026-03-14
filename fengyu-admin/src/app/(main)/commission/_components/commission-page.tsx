@@ -1,26 +1,74 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import type { CommissionRate } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
+import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 import { formatCurrency } from "@/lib/utils"
+import { createRate, updateRate, deleteRate } from "@/actions/commission"
 
 const MARKET_TABS = [
   { orgId: "org-market-nc", label: "南昌市场" },
   { orgId: "org-market-jj", label: "九江市场" },
 ]
 
+const ORDER_TYPE_OPTIONS = ["sale", "service"]
+const ROLE_TYPE_OPTIONS = ["technician", "promoter"]
+
+interface RateFormData {
+  orgId: string
+  orderType: string
+  roleType: string
+  salesCategory: string
+  amountTierMin: string
+  amountTierMax: string
+  commissionRate: string
+}
+
+const emptyForm = (defaultOrgId: string): RateFormData => ({
+  orgId: defaultOrgId,
+  orderType: ORDER_TYPE_OPTIONS[0],
+  roleType: ROLE_TYPE_OPTIONS[0],
+  salesCategory: "",
+  amountTierMin: "0",
+  amountTierMax: "",
+  commissionRate: "",
+})
+
 interface CommissionPageProps {
   rates: CommissionRate[]
 }
 
 export default function CommissionPage({ rates }: CommissionPageProps) {
+  const router = useRouter()
+  const [activeTab, setActiveTab] = useState(MARKET_TABS[0].orgId)
   const [orderTypeFilter, setOrderTypeFilter] = useState("")
   const [roleTypeFilter, setRoleTypeFilter] = useState("")
   const [salesCategoryFilter, setSalesCategoryFilter] = useState("")
+
+  // Dialog state
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingRate, setEditingRate] = useState<CommissionRate | null>(null)
+  const [form, setForm] = useState<RateFormData>(emptyForm(MARKET_TABS[0].orgId))
+  const [saving, setSaving] = useState(false)
+
+  // Delete confirmation state
+  const [deleteTarget, setDeleteTarget] = useState<CommissionRate | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const orderTypes = useMemo(
     () => [...new Set(rates.map((r) => r.orderType))],
@@ -42,6 +90,105 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
     if (salesCategoryFilter)
       result = result.filter((r) => r.salesCategory === salesCategoryFilter)
     return result
+  }
+
+  const openAddDialog = () => {
+    setEditingRate(null)
+    setForm(emptyForm(activeTab))
+    setDialogOpen(true)
+  }
+
+  const openEditDialog = (row: CommissionRate) => {
+    setEditingRate(row)
+    setForm({
+      orgId: row.orgId,
+      orderType: row.orderType,
+      roleType: row.roleType,
+      salesCategory: row.salesCategory,
+      amountTierMin: row.amountTierMin,
+      amountTierMax: row.amountTierMax ?? "",
+      commissionRate: row.commissionRate,
+    })
+    setDialogOpen(true)
+  }
+
+  const handleSubmit = async () => {
+    if (!form.salesCategory.trim()) {
+      toast.error("请输入销售分类")
+      return
+    }
+    const rate = parseFloat(form.commissionRate)
+    if (isNaN(rate) || rate < 0 || rate > 1) {
+      toast.error("提成比例须为 0~1 之间的数值")
+      return
+    }
+    const min = parseFloat(form.amountTierMin)
+    if (isNaN(min) || min < 0) {
+      toast.error("金额下限须为非负数")
+      return
+    }
+    const maxStr = form.amountTierMax.trim()
+    if (maxStr !== "") {
+      const max = parseFloat(maxStr)
+      if (isNaN(max) || max < 0) {
+        toast.error("金额上限须为非负数")
+        return
+      }
+      if (max <= min) {
+        toast.error("金额上限须大于下限")
+        return
+      }
+    }
+
+    setSaving(true)
+    try {
+      if (editingRate) {
+        await updateRate(editingRate.id, {
+          orgId: form.orgId,
+          orderType: form.orderType,
+          roleType: form.roleType,
+          salesCategory: form.salesCategory.trim(),
+          amountTierMin: form.amountTierMin,
+          amountTierMax: maxStr || null,
+          commissionRate: form.commissionRate,
+        })
+        toast.success("规则已更新")
+      } else {
+        await createRate({
+          orgId: form.orgId,
+          orderType: form.orderType,
+          roleType: form.roleType,
+          salesCategory: form.salesCategory.trim(),
+          amountTierMin: form.amountTierMin,
+          amountTierMax: maxStr || null,
+          commissionRate: form.commissionRate,
+        })
+        toast.success("规则已创建")
+      }
+      setDialogOpen(false)
+      router.refresh()
+    } catch (err) {
+      toast.error(editingRate ? "更新失败" : "创建失败")
+      console.error(err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      await deleteRate(deleteTarget.id)
+      toast.success("规则已删除")
+      setDeleteTarget(null)
+      router.refresh()
+    } catch (err) {
+      toast.error("删除失败")
+      console.error(err)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const columns: Column<CommissionRate>[] = [
@@ -70,12 +217,17 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
     {
       key: "actions",
       header: "操作",
-      cell: () => (
+      cell: (row) => (
         <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0">
+          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
-          <Button variant="link" size="sm" className="h-auto p-0 text-[var(--destructive)]">
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-[var(--destructive)]"
+            onClick={() => setDeleteTarget(row)}
+          >
             删除
           </Button>
         </div>
@@ -83,11 +235,21 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
     },
   ]
 
+  // Collect unique values for select options (merge defaults + existing data)
+  const allOrderTypes = useMemo(
+    () => [...new Set([...ORDER_TYPE_OPTIONS, ...orderTypes])],
+    [orderTypes]
+  )
+  const allRoleTypes = useMemo(
+    () => [...new Set([...ROLE_TYPE_OPTIONS, ...roleTypes])],
+    [roleTypes]
+  )
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">提成矩阵</h1>
-        <Button>新增规则</Button>
+        <Button onClick={openAddDialog}>新增规则</Button>
       </div>
 
       <div className="flex items-center gap-3">
@@ -129,7 +291,7 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
         </Select>
       </div>
 
-      <Tabs defaultValue={MARKET_TABS[0].orgId}>
+      <Tabs defaultValue={MARKET_TABS[0].orgId} onValueChange={setActiveTab}>
         <TabsList>
           {MARKET_TABS.map((tab) => (
             <TabsTrigger key={tab.orgId} value={tab.orgId}>
@@ -148,6 +310,119 @@ export default function CommissionPage({ rates }: CommissionPageProps) {
           </TabsContent>
         ))}
       </Tabs>
+
+      {/* Add/Edit Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>{editingRate ? "编辑规则" : "新增规则"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">所属市场 *</label>
+            <Select
+              value={form.orgId}
+              onChange={(e) => setForm({ ...form, orgId: e.target.value })}
+            >
+              {MARKET_TABS.map((tab) => (
+                <option key={tab.orgId} value={tab.orgId}>
+                  {tab.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">订单类型 *</label>
+            <Select
+              value={form.orderType}
+              onChange={(e) => setForm({ ...form, orderType: e.target.value })}
+            >
+              {allOrderTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">角色类型 *</label>
+            <Select
+              value={form.roleType}
+              onChange={(e) => setForm({ ...form, roleType: e.target.value })}
+            >
+              {allRoleTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">销售分类 *</label>
+            <Input
+              value={form.salesCategory}
+              onChange={(e) => setForm({ ...form, salesCategory: e.target.value })}
+              placeholder="请输入销售分类"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">金额下限 *</label>
+              <Input
+                type="number"
+                min={0}
+                value={form.amountTierMin}
+                onChange={(e) => setForm({ ...form, amountTierMin: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">金额上限</label>
+              <Input
+                type="number"
+                min={0}
+                value={form.amountTierMax}
+                onChange={(e) => setForm({ ...form, amountTierMax: e.target.value })}
+                placeholder="留空表示无上限"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">提成比例 * (0~1)</label>
+            <Input
+              type="number"
+              min={0}
+              max={1}
+              step={0.01}
+              value={form.commissionRate}
+              onChange={(e) => setForm({ ...form, commissionRate: e.target.value })}
+              placeholder="例如 0.15 表示 15%"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDialogOpen(false)} disabled={saving}>
+            取消
+          </Button>
+          <Button onClick={handleSubmit} disabled={saving}>
+            {saving ? "保存中..." : "保存"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认删除</AlertDialogTitle>
+        <AlertDialogDescription>
+          确定要删除该提成规则吗？此操作不可撤销。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+            {deleting ? "删除中..." : "确认删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

@@ -106,7 +106,9 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">员工管理</h1>
-        <Button>新增员工</Button>
+        <Link href="/employees/create">
+          <Button>新增员工</Button>
+        </Link>
       </div>
 
       <div className="flex items-center gap-3">

@@ -1,12 +1,18 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import type { OrgNode } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
+import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatDateTime } from "@/lib/utils"
+import { createOrgNode, updateOrgNode } from "@/actions/org"
 
 const TYPE_ICON: Record<OrgNode["type"], string> = {
   headquarters: "\u{1F3E2}",
@@ -20,6 +26,30 @@ const TYPE_LABEL: Record<OrgNode["type"], string> = {
   market: "市场",
   store: "门店",
   department: "部门",
+}
+
+const TYPE_OPTIONS: { value: OrgNode["type"]; label: string }[] = [
+  { value: "headquarters", label: "总部" },
+  { value: "market", label: "市场" },
+  { value: "store", label: "门店" },
+  { value: "department", label: "部门" },
+]
+
+function validateType(
+  type: OrgNode["type"],
+  parentNode: OrgNode | null,
+  orgNodes: OrgNode[],
+  editingNodeId: string | null
+): string | null {
+  if (type === "headquarters" && orgNodes.some((n) => n.type === "headquarters" && n.id !== editingNodeId))
+    return "只能有一个总部"
+  if (type === "market" && parentNode?.type !== "headquarters")
+    return "市场只能在总部下"
+  if (type === "store" && parentNode?.type !== "market")
+    return "门店只能在市场下"
+  if (type === "department" && parentNode?.type === "department")
+    return "部门不能嵌套"
+  return null
 }
 
 interface TreeNodeProps {
@@ -85,10 +115,22 @@ function TreeNode({ node, children, allNodes, depth, selectedId, expandedIds, on
 }
 
 export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
+  const router = useRouter()
   const [selectedId, setSelectedId] = useState<string | null>(orgNodes[0]?.id ?? null)
   const [expandedIds, setExpandedIds] = useState<Set<string>>(
     () => new Set(orgNodes.map((n) => n.id))
   )
+
+  // Dialog state
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogMode, setDialogMode] = useState<"create" | "edit">("create")
+  const [dialogParentId, setDialogParentId] = useState<string | null>(null)
+  const [editingNode, setEditingNode] = useState<OrgNode | null>(null)
+  const [formName, setFormName] = useState("")
+  const [formType, setFormType] = useState<OrgNode["type"]>("department")
+  const [formSortOrder, setFormSortOrder] = useState(0)
+  const [formIsActive, setFormIsActive] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
 
   const rootNodes = useMemo(
     () =>
@@ -110,6 +152,83 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
         : null,
     [selectedNode, orgNodes]
   )
+
+  const dialogParentNode = useMemo(
+    () => (dialogParentId ? orgNodes.find((n) => n.id === dialogParentId) ?? null : null),
+    [dialogParentId, orgNodes]
+  )
+
+  const openCreateDialog = (parentId: string | null) => {
+    setDialogMode("create")
+    setDialogParentId(parentId)
+    setEditingNode(null)
+    setFormName("")
+    setFormType("department")
+    setFormSortOrder(0)
+    setFormIsActive(true)
+    setDialogOpen(true)
+  }
+
+  const openEditDialog = (node: OrgNode) => {
+    setDialogMode("edit")
+    setDialogParentId(node.parentId)
+    setEditingNode(node)
+    setFormName(node.name)
+    setFormType(node.type)
+    setFormSortOrder(node.sortOrder)
+    setFormIsActive(node.isActive)
+    setDialogOpen(true)
+  }
+
+  const handleSubmit = async () => {
+    if (!formName.trim()) {
+      toast.error("请输入节点名称")
+      return
+    }
+
+    const error = validateType(formType, dialogParentNode, orgNodes, editingNode?.id ?? null)
+    if (error) {
+      toast.error(error)
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      if (dialogMode === "create") {
+        const newId = `org-${formType}-${Date.now()}`
+        await createOrgNode({
+          id: newId,
+          name: formName.trim(),
+          type: formType,
+          parentId: dialogParentId,
+          sortOrder: formSortOrder,
+          isActive: formIsActive,
+        })
+        toast.success("节点创建成功")
+        setDialogOpen(false)
+        router.refresh()
+        // Expand parent so new node is visible, then select the new node
+        if (dialogParentId) {
+          setExpandedIds((prev) => new Set([...prev, dialogParentId]))
+        }
+        setSelectedId(newId)
+      } else if (editingNode) {
+        await updateOrgNode(editingNode.id, {
+          name: formName.trim(),
+          type: formType,
+          sortOrder: formSortOrder,
+          isActive: formIsActive,
+        })
+        toast.success("节点更新成功")
+        setDialogOpen(false)
+        router.refresh()
+      }
+    } catch {
+      toast.error(dialogMode === "create" ? "创建失败，请稍后重试" : "更新失败，请稍后重试")
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   const handleToggle = (id: string) => {
     setExpandedIds((prev) => {
@@ -152,7 +271,7 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           </CardContent>
           <Separator />
           <div className="p-4">
-            <Button variant="outline" className="w-full" size="sm">
+            <Button variant="outline" className="w-full" size="sm" onClick={() => openCreateDialog(null)}>
               新增根节点
             </Button>
           </div>
@@ -165,10 +284,10 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
                 <CardTitle className="text-base">节点详情</CardTitle>
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm">
+                  <Button variant="outline" size="sm" onClick={() => openEditDialog(selectedNode)}>
                     编辑
                   </Button>
-                  <Button size="sm">新增子节点</Button>
+                  <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
                 </div>
               </CardHeader>
               <CardContent>
@@ -263,6 +382,76 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           )}
         </Card>
       </div>
+
+      {/* 新增/编辑 Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogClose onOpenChange={setDialogOpen} />
+        <DialogHeader>
+          <DialogTitle>{dialogMode === "create" ? "新增节点" : "编辑节点"}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-4">
+          <div>
+            <label className="text-sm text-[var(--muted-foreground)]">上级节点</label>
+            <div className="mt-1 text-sm font-medium px-3 py-2 rounded-[var(--radius)] border border-[var(--input)] bg-[var(--muted)] text-[var(--muted-foreground)]">
+              {dialogParentNode ? dialogParentNode.name : "（无）"}
+            </div>
+          </div>
+          <div>
+            <label className="text-sm text-[var(--muted-foreground)]">
+              节点名称 <span className="text-[#D94040]">*</span>
+            </label>
+            <Input
+              className="mt-1"
+              placeholder="请输入节点名称"
+              value={formName}
+              onChange={(e) => setFormName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-sm text-[var(--muted-foreground)]">
+              节点类型 <span className="text-[#D94040]">*</span>
+            </label>
+            <Select
+              className="mt-1"
+              value={formType}
+              onChange={(e) => setFormType(e.target.value as OrgNode["type"])}
+            >
+              {TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-[var(--muted-foreground)]">排序</label>
+            <Input
+              className="mt-1"
+              type="number"
+              value={formSortOrder}
+              onChange={(e) => setFormSortOrder(Number(e.target.value) || 0)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              id="org-is-active"
+              type="checkbox"
+              className="h-4 w-4 rounded border-[var(--input)] accent-[var(--primary)]"
+              checked={formIsActive}
+              onChange={(e) => setFormIsActive(e.target.checked)}
+            />
+            <label htmlFor="org-is-active" className="text-sm text-[var(--foreground)] cursor-pointer">
+              启用
+            </label>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
+          <Button loading={submitting} onClick={handleSubmit}>
+            {dialogMode === "create" ? "创建" : "保存"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   )
 }

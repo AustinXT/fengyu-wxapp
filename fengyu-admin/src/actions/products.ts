@@ -240,3 +240,51 @@ export async function updateCategory(
     })
     .where(eq(productCategories.categoryId, categoryId))
 }
+
+export async function createSku(data: {
+  skuId: string
+  productId: string
+  productType: string
+  specName: string
+  price: string
+  specialPrice?: string | null
+  sessionCount?: number | null
+  isBundleSku?: boolean
+  sortOrder?: number
+  serviceFee?: string
+  validStart?: string | null
+  validEnd?: string | null
+}) {
+  await db.insert(productSkus).values({
+    ...data,
+    productType: data.productType as typeof productSkus.$inferInsert['productType'],
+  })
+}
+
+export async function updateSku(
+  skuId: string,
+  data: Partial<{
+    productType: string
+    specName: string
+    price: string
+    specialPrice: string | null
+    sessionCount: number | null
+    isBundleSku: boolean
+    sortOrder: number
+    serviceFee: string
+    validStart: string | null
+    validEnd: string | null
+  }>
+) {
+  await db
+    .update(productSkus)
+    .set({
+      ...data,
+      productType: data.productType as typeof productSkus.$inferInsert['productType'],
+    })
+    .where(eq(productSkus.skuId, skuId))
+}
+
+export async function deleteSku(skuId: string) {
+  await db.delete(productSkus).where(eq(productSkus.skuId, skuId))
+}

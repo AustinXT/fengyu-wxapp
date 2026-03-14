@@ -124,9 +124,11 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
               详情
             </Button>
           </Link>
-          <Button variant="link" size="sm" className="h-auto p-0">
-            编辑
-          </Button>
+          <Link href={`/coupons/${row.templateId}`}>
+            <Button variant="link" size="sm" className="h-auto p-0">
+              编辑
+            </Button>
+          </Link>
         </div>
       ),
     },

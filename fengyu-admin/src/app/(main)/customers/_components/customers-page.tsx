@@ -2,6 +2,8 @@
 
 import { useState, useMemo } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import type { Customer, Store } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,7 +11,9 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { formatPhone } from "@/lib/utils"
+import { createCustomer } from "@/actions/customers"
 
 const PAGE_SIZE = 10
 
@@ -22,16 +26,32 @@ const MEMBER_LEVEL_COLORS: Record<string, string> = {
 
 const MEMBER_LEVELS = ["钻石", "金卡", "银卡", "新客"]
 
+function generateUserId(): string {
+  const now = new Date()
+  const yyyy = String(now.getFullYear())
+  const mm = String(now.getMonth() + 1).padStart(2, "0")
+  const dd = String(now.getDate()).padStart(2, "0")
+  const seq = String(Math.floor(Math.random() * 10000)).padStart(4, "0")
+  return `FYGK-${yyyy}${mm}${dd}${seq}`
+}
+
 interface CustomersPageProps {
   customers: Customer[]
   stores: Store[]
 }
 
 export default function CustomersPage({ customers, stores }: CustomersPageProps) {
+  const router = useRouter()
   const [search, setSearch] = useState("")
   const [storeFilter, setStoreFilter] = useState("")
   const [levelFilter, setLevelFilter] = useState("")
   const [page, setPage] = useState(1)
+
+  // Create dialog state
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [newPhone, setNewPhone] = useState("")
+  const [newName, setNewName] = useState("")
 
   const filtered = useMemo(() => {
     let result = customers
@@ -56,6 +76,36 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
     () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
     [filtered, page]
   )
+
+  async function handleCreate() {
+    if (!newPhone.trim()) {
+      toast.error("请输入手机号")
+      return
+    }
+    if (!newName.trim()) {
+      toast.error("请输入姓名")
+      return
+    }
+
+    setCreating(true)
+    try {
+      const userId = generateUserId()
+      await createCustomer({
+        userId,
+        phone: newPhone.trim(),
+        name: newName.trim(),
+      })
+      toast.success("顾客创建成功")
+      setDialogOpen(false)
+      setNewPhone("")
+      setNewName("")
+      router.refresh()
+    } catch {
+      toast.error("创建失败，请稍后重试")
+    } finally {
+      setCreating(false)
+    }
+  }
 
   const columns: Column<Customer>[] = [
     {
@@ -115,7 +165,7 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">顾客管理</h1>
-        <Button>新增顾客</Button>
+        <Button onClick={() => setDialogOpen(true)}>新增顾客</Button>
       </div>
 
       <div className="flex items-center gap-3">
@@ -168,6 +218,50 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
         page={page}
         onPageChange={setPage}
       />
+
+      {/* 新增顾客 Dialog */}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogClose onOpenChange={setDialogOpen} />
+        <DialogHeader>
+          <DialogTitle>新增顾客</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-4">
+          <div>
+            <label className="text-sm text-[#999999]">
+              手机号 <span className="text-[#D94040]">*</span>
+            </label>
+            <Input
+              className="mt-1"
+              value={newPhone}
+              onChange={(e) => setNewPhone(e.target.value)}
+              placeholder="请输入手机号"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-[#999999]">
+              姓名 <span className="text-[#D94040]">*</span>
+            </label>
+            <Input
+              className="mt-1"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="请输入姓名"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setDialogOpen(false)}>
+            取消
+          </Button>
+          <Button
+            loading={creating}
+            disabled={!newPhone.trim() || !newName.trim()}
+            onClick={handleCreate}
+          >
+            确认创建
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   )
 }

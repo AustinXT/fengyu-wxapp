@@ -1,25 +1,106 @@
 "use client"
 
-import { useMemo } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import type { Customer, SaleOrder, Appointment, SaleItem } from "@/lib/types"
+import { toast } from "sonner"
+import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { StatusBadge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
+import { updateCustomer } from "@/actions/customers"
 
 interface CustomerDetailPageProps {
   customer: Customer
   orders: SaleOrder[]
   appointments: Appointment[]
+  stores: Store[]
+  employees: Employee[]
 }
 
-export default function CustomerDetailPage({ customer, orders, appointments }: CustomerDetailPageProps) {
+export default function CustomerDetailPage({ customer, orders, appointments, stores, employees }: CustomerDetailPageProps) {
   const router = useRouter()
+
+  // Edit state
+  const [isEditing, setIsEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    name: customer.name ?? "",
+    boundStoreId: customer.boundStoreId ?? "",
+    boundEmployeeId: customer.boundEmployeeId ?? "",
+    memberLevel: customer.memberLevel ?? "",
+    customerSource: customer.customerSource ?? "",
+    category: customer.category ?? "",
+    birthday: customer.birthday ?? "",
+    occupation: customer.occupation ?? "",
+    isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
+    skinType: customer.skinType ?? "",
+    improvementFocus: customer.improvementFocus ?? "",
+    skinIssue: customer.skinIssue ?? "",
+    wellnessPreference: customer.wellnessPreference ?? "",
+  })
+
+  function handleFormChange(field: string, value: string) {
+    setForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  function handleCancelEdit() {
+    setForm({
+      name: customer.name ?? "",
+      boundStoreId: customer.boundStoreId ?? "",
+      boundEmployeeId: customer.boundEmployeeId ?? "",
+      memberLevel: customer.memberLevel ?? "",
+      customerSource: customer.customerSource ?? "",
+      category: customer.category ?? "",
+      birthday: customer.birthday ?? "",
+      occupation: customer.occupation ?? "",
+      isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
+      skinType: customer.skinType ?? "",
+      improvementFocus: customer.improvementFocus ?? "",
+      skinIssue: customer.skinIssue ?? "",
+      wellnessPreference: customer.wellnessPreference ?? "",
+    })
+    setIsEditing(false)
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await updateCustomer(customer.userId, {
+        name: form.name || null,
+        boundStoreId: form.boundStoreId || null,
+        boundEmployeeId: form.boundEmployeeId || null,
+        memberLevel: form.memberLevel || null,
+        customerSource: form.customerSource || null,
+        category: form.category || null,
+        birthday: form.birthday || null,
+        occupation: form.occupation || null,
+        isMarried: form.isMarried === "true" ? true : form.isMarried === "false" ? false : null,
+        skinType: form.skinType || null,
+        improvementFocus: form.improvementFocus || null,
+        skinIssue: form.skinIssue || null,
+        wellnessPreference: form.wellnessPreference || null,
+      })
+      toast.success("保存成功")
+      setIsEditing(false)
+      router.refresh()
+    } catch {
+      toast.error("保存失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Employees filtered by selected store for convenience
+  const storeEmployees = useMemo(() => {
+    if (!form.boundStoreId) return employees.filter((e) => !e.isResigned)
+    return employees.filter((e) => !e.isResigned && e.storeId === form.boundStoreId)
+  }, [employees, form.boundStoreId])
 
   const activeSaleItems = useMemo(() => {
     const allItems: SaleItem[] = []
@@ -142,67 +223,207 @@ export default function CustomerDetailPage({ customer, orders, appointments }: C
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">基本档案</CardTitle>
-              <Button variant="outline" size="sm">
-                编辑
-              </Button>
+              {isEditing ? (
+                <div className="flex gap-2">
+                  <Button size="sm" loading={saving} onClick={handleSave}>
+                    保存
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleCancelEdit} disabled={saving}>
+                    取消
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+                  编辑
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium">姓名</label>
-                  <Input defaultValue={customer.name ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.name}
+                      onChange={(e) => handleFormChange("name", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.name ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">手机号</label>
-                  <Input defaultValue={customer.phone ?? ""} />
+                  <Input value={customer.phone ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">微信昵称</label>
-                  <Input defaultValue={customer.wechatName ?? ""} />
+                  <Input value={customer.wechatName ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">归属门店</label>
-                  <Input value={customer.storeName ?? ""} disabled />
+                  {isEditing ? (
+                    <Select
+                      value={form.boundStoreId}
+                      onChange={(e) => handleFormChange("boundStoreId", e.target.value)}
+                    >
+                      <option value="">请选择门店</option>
+                      {stores.map((s) => (
+                        <option key={s.storeId} value={s.storeId}>
+                          {s.storeName}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Input value={customer.storeName ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">所属美容师</label>
-                  <Input value={customer.employeeName ?? ""} disabled />
+                  {isEditing ? (
+                    <Select
+                      value={form.boundEmployeeId}
+                      onChange={(e) => handleFormChange("boundEmployeeId", e.target.value)}
+                    >
+                      <option value="">请选择美容师</option>
+                      {storeEmployees.map((emp) => (
+                        <option key={emp.employeeId} value={emp.employeeId}>
+                          {emp.name} ({emp.positionName ?? "—"})
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Input value={customer.employeeName ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">会员等级</label>
-                  <Input defaultValue={customer.memberLevel ?? ""} />
+                  {isEditing ? (
+                    <Select
+                      value={form.memberLevel}
+                      onChange={(e) => handleFormChange("memberLevel", e.target.value)}
+                    >
+                      <option value="">请选择</option>
+                      <option value="钻石">钻石</option>
+                      <option value="金卡">金卡</option>
+                      <option value="银卡">银卡</option>
+                      <option value="新客">新客</option>
+                    </Select>
+                  ) : (
+                    <Input value={customer.memberLevel ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">顾客分类</label>
-                  <Input defaultValue={customer.category ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.category}
+                      onChange={(e) => handleFormChange("category", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.category ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">顾客来源</label>
-                  <Input defaultValue={customer.customerSource ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.customerSource}
+                      onChange={(e) => handleFormChange("customerSource", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.customerSource ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">生日</label>
-                  <Input type="date" defaultValue={customer.birthday ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      type="date"
+                      value={form.birthday}
+                      onChange={(e) => handleFormChange("birthday", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.birthday ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">职业</label>
-                  <Input defaultValue={customer.occupation ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.occupation}
+                      onChange={(e) => handleFormChange("occupation", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.occupation ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">婚姻状况</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.isMarried}
+                      onChange={(e) => handleFormChange("isMarried", e.target.value)}
+                    >
+                      <option value="">未填写</option>
+                      <option value="true">已婚</option>
+                      <option value="false">未婚</option>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={
+                        customer.isMarried === true
+                          ? "已婚"
+                          : customer.isMarried === false
+                            ? "未婚"
+                            : ""
+                      }
+                      disabled
+                    />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">肤质</label>
-                  <Input defaultValue={customer.skinType ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.skinType}
+                      onChange={(e) => handleFormChange("skinType", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.skinType ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">改善重点</label>
-                  <Input defaultValue={customer.improvementFocus ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.improvementFocus}
+                      onChange={(e) => handleFormChange("improvementFocus", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.improvementFocus ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">肌肤问题</label>
-                  <Input defaultValue={customer.skinIssue ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.skinIssue}
+                      onChange={(e) => handleFormChange("skinIssue", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.skinIssue ?? ""} disabled />
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">养生偏好</label>
-                  <Input defaultValue={customer.wellnessPreference ?? ""} />
+                  {isEditing ? (
+                    <Input
+                      value={form.wellnessPreference}
+                      onChange={(e) => handleFormChange("wellnessPreference", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={customer.wellnessPreference ?? ""} disabled />
+                  )}
                 </div>
               </div>
             </CardContent>

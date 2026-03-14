@@ -222,3 +222,15 @@ export async function updateCustomer(
     .set(data)
     .where(eq(clientWechatUsers.userId, userId))
 }
+
+export async function createCustomer(data: {
+  userId: string
+  phone: string
+  name: string
+}) {
+  await db.insert(clientWechatUsers).values({
+    userId: data.userId,
+    phone: data.phone,
+    name: data.name,
+  })
+}

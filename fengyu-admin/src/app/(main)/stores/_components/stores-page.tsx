@@ -79,7 +79,7 @@ export default function StoresPage({ stores }: { stores: Store[] }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">门店管理</h1>
-        <Button>新增门店</Button>
+        <Link href="/stores/create"><Button>新增门店</Button></Link>
       </div>
 
       <div className="flex items-center gap-3">
