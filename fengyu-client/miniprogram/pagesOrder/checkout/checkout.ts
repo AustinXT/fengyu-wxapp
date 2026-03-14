@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
+import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -17,22 +18,6 @@ interface Staff {
   employee_id: string;
   name: string;
   position: string;
-}
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    err.data = res.result?.data;
-    err.errorType = res.result?.errorType;
-    throw err;
-  }
-  return res.result.data;
 }
 
 Page({
@@ -403,7 +388,7 @@ Page({
       wx.hideLoading();
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '绑定失败');
+        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
       }
 
       wx.setStorageSync('phone', res.result.data.phone);

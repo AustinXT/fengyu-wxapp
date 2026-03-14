@@ -1,5 +1,6 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
+import { callClientApi } from '../../utils/cloud';
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
@@ -9,21 +10,6 @@ const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '支付失败':   { icon: 'close',     color: '#FF4D4F' },
   '已关闭':     { icon: 'close',     color: '#8C8C8C' },
 };
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    err.data = res.result?.data;
-    throw err;
-  }
-  return res.result.data;
-}
 
 Page({
   data: {

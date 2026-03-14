@@ -1,19 +1,7 @@
 // pagesCoupon/my-coupons/my-coupons.ts
 import Toast from '@vant/weapp/toast/toast';
 import { formatDate, formatDiscount } from '../../utils/format';
-
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
-}
+import { callClientApi } from '../../utils/cloud';
 
 const TAB_STATUS = ['未使用', '已使用', '已过期'];
 

@@ -1,5 +1,6 @@
 // pages/appointment-create/appointment-create.ts
 import Toast from '@vant/weapp/toast/toast';
+import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -10,21 +11,6 @@ const TIME_SLOTS = [
   { text: '下午 15:00-17:00', value: '15:00-17:00' },
   { text: '下午 17:00-19:00', value: '17:00-19:00' },
 ];
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    err.errorType = res.result?.errorType;
-    throw err;
-  }
-  return res.result.data;
-}
 
 Page({
   data: {
@@ -254,7 +240,7 @@ Page({
       }) as any;
       wx.hideLoading();
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '绑定失败');
+        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
       }
       wx.setStorageSync('phone', res.result.data.phone);
       this.setData({ showPhoneBind: false });

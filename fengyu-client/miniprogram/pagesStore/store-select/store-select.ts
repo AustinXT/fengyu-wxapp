@@ -1,6 +1,7 @@
 // pages/store-select/store-select.ts
 import Toast from '@vant/weapp/toast/toast';
 import { getCurrentCity } from '../utils/location';
+import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -18,20 +19,6 @@ interface Store {
 interface StoreGroup {
   market: string;
   stores: Store[];
-}
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
 }
 
 Page({
@@ -100,7 +87,7 @@ Page({
       if (err.errMsg?.includes('auth deny') || err.errMsg?.includes('authorize')) {
         Toast.fail('需要定位权限才能显示附近门店');
       } else {
-        Toast.fail('加载门店失败: ' + (err?.message || '未知错误'));
+        Toast.fail(err?.message || '加载门店失败');
       }
     } finally {
       this.setData({ isLoading: false });

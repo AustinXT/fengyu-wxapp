@@ -1,17 +1,5 @@
 // pagesProfile/prepaid-cards/prepaid-cards.ts
-
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
-}
+import { callClientApi } from '../../utils/cloud';
 
 function formatDate(dateStr: string): string {
   if (!dateStr) return '';

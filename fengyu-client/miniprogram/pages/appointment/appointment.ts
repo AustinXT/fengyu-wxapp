@@ -1,6 +1,7 @@
 // pages/appointment/appointment.ts
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
+import { callClientApi } from '../../utils/cloud';
 
 const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
   '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
@@ -9,20 +10,6 @@ const STATUS_MAP: Record<string, { label: string; type: string; color: string; t
   '已取消': { label: '已取消', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
   '已关闭': { label: '已关闭', type: 'default',  color: '#F5F5F5', textColor: '#8C8C8C' },
 };
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
-}
 
 // Tab name → 数据库 status 映射
 const TAB_STATUS_MAP: Record<string, string> = {

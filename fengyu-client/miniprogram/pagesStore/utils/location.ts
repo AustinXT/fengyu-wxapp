@@ -23,7 +23,7 @@ export async function getCurrentCity(): Promise<string> {
     },
   }) as any;
 
-  if (res.result?.code !== 0) throw new Error(res.result?.message || '解析城市失败');
+  if (res.result?.code !== 0) throw new Error('解析城市失败');
   const city: string = res.result.data?.city || '';
   if (!city) throw new Error('未获取到城市信息');
   return city;

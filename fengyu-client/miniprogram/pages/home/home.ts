@@ -1,6 +1,7 @@
 // pages/home/home.ts
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
+import { sanitizeErrorMessage } from "../../utils/cloud";
 
 const app = getApp<IAppOption>();
 
@@ -347,7 +348,7 @@ Page({
       })) as any;
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || "加载失败");
+        throw new Error(sanitizeErrorMessage(res.result?.message, "加载失败"));
       }
 
       const categories: Category[] = res.result.data?.categories || [];
@@ -450,7 +451,7 @@ Page({
       })) as any;
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || "加载商品失败");
+        throw new Error(sanitizeErrorMessage(res.result?.message, "加载商品失败"));
       }
 
       const spuList: SpuItem[] = res.result.data?.spuList || [];

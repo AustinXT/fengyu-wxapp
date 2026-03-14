@@ -1,6 +1,7 @@
 // pages/service-detail/service-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount } from '../../utils/cart';
+import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -26,20 +27,6 @@ interface Staff {
   staff_id: string;
   name: string;
   position: string;
-}
-
-// 调用 clientApi 云函数
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
 }
 
 Page({

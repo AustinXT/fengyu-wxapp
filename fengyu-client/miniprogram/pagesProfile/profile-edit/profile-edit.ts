@@ -1,19 +1,7 @@
 // pagesProfile/profile-edit/profile-edit.ts
 import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
-
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
-}
+import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
 
 Page({
   data: {
@@ -136,7 +124,7 @@ Page({
       wx.hideLoading();
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '绑定失败');
+        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
       }
 
       const { phone } = res.result.data;

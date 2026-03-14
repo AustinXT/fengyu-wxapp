@@ -1,5 +1,6 @@
 // pages/store-detail/store-detail.ts
 import Toast from '@vant/weapp/toast/toast';
+import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -32,19 +33,6 @@ interface UnbindRequest {
 //   'is-current-reviewing'— 当前门店，有 pending 申请
 //   'other-bound'         — 已绑定其他门店
 type BindState = 'no-binding' | 'is-current' | 'is-current-reviewing' | 'other-bound';
-
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    const err: any = new Error(res.result?.message || '请求失败');
-    err.code = res.result?.code;
-    throw err;
-  }
-  return res.result.data;
-}
 
 Page({
   data: {
@@ -149,7 +137,7 @@ Page({
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
     } catch (err: any) {
-      Toast.fail('绑定失败: ' + (err?.message || '未知错误'));
+      Toast.fail(err?.message || '绑定失败');
     }
   },
 
@@ -202,7 +190,7 @@ Page({
       });
       Toast.success('申请已取消');
     } catch (err: any) {
-      Toast.fail('取消失败: ' + (err?.message || '未知错误'));
+      Toast.fail(err?.message || '取消失败');
     }
   },
 

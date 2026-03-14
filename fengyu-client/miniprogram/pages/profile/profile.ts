@@ -1,6 +1,7 @@
 // pages/profile/profile.ts
 import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
+import { sanitizeErrorMessage } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -127,7 +128,7 @@ Page({
       wx.hideLoading();
 
       if (res.result?.code !== 0) {
-        throw new Error(res.result?.message || '绑定失败');
+        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
       }
 
       const { phone } = res.result.data;
