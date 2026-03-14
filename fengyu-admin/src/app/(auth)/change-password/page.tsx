@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { changePassword } from "@/actions/auth"
 
 const PASSWORD_REGEX = /^(?=.*[a-zA-Z])(?=.*\d).{8,}$/
 
@@ -41,8 +42,12 @@ export default function ChangePasswordPage() {
 
     setLoading(true)
     try {
-      // TODO: Replace with real change-password API call
-      await new Promise((resolve) => setTimeout(resolve, 800))
+      const result = await changePassword(newPassword)
+
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
 
       toast.success("密码修改成功")
       router.push("/dashboard")

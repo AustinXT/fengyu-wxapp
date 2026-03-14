@@ -10,7 +10,6 @@ import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { searchCustomerByPhone } from "@/actions/customers"
 import { createOrder } from "@/actions/orders"
-import { getSession } from "@/lib/auth"
 import type { ProductCategory, Product, ProductSku, Store, Employee, Customer } from "@/lib/types"
 
 interface CartItem {
@@ -370,7 +369,6 @@ export default function OrderCreatePageClient({
                 if (!selectedStoreId) { toast.error("请选择门店"); return }
                 setSubmitting(true)
                 try {
-                  const session = getSession()
                   const store = stores.find((s) => s.storeId === selectedStoreId)
                   const res = await createOrder({
                     storeId: selectedStoreId,
@@ -380,7 +378,6 @@ export default function OrderCreatePageClient({
                     customerName: selectedCustomer?.name || phone,
                     paymentMethod: paymentMethod as 'wechat' | 'alipay' | 'offline',
                     saleOrderType: orderType,
-                    openedBy: session.employeeId,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     items: cart.map((item) => ({
                       skuId: item.sku.skuId,

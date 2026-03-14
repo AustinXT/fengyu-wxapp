@@ -4,8 +4,14 @@ import { db } from '@/db'
 import { productCategories, products, productSkus } from '@db/product'
 import { eq, sql } from 'drizzle-orm'
 import type { ProductCategory, Product, ProductSku } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getCategories(): Promise<ProductCategory[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
   const rows = await db
     .select()
     .from(productCategories)
@@ -23,6 +29,9 @@ export async function getCategories(): Promise<ProductCategory[]> {
 }
 
 export async function getProducts(): Promise<Product[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
   const skuCountSq = db
     .select({
       productId: productSkus.productId,
@@ -69,6 +78,9 @@ export async function getProducts(): Promise<Product[]> {
 }
 
 export async function getProductById(productId: string): Promise<Product | null> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
   const rows = await db
     .select({
       product: products,
@@ -108,6 +120,9 @@ export async function getProductById(productId: string): Promise<Product | null>
 }
 
 export async function getSkusByProductId(productId: string): Promise<ProductSku[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
   const rows = await db
     .select()
     .from(productSkus)
@@ -133,6 +148,9 @@ export async function getSkusByProductId(productId: string): Promise<ProductSku[
 }
 
 export async function getAllSkus(): Promise<ProductSku[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
   const rows = await db
     .select()
     .from(productSkus)
@@ -175,10 +193,15 @@ export async function createProduct(data: {
   validStart?: string | null
   validEnd?: string | null
 }) {
+  const session = await getSession()
+  requirePermission(session, 'product:create')
+
   await db.insert(products).values({
     ...data,
     salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
   })
+
+  await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
 }
 
 export async function updateProduct(
@@ -201,6 +224,9 @@ export async function updateProduct(
     validEnd: string | null
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
   await db
     .update(products)
     .set({
@@ -208,6 +234,8 @@ export async function updateProduct(
       salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
     })
     .where(eq(products.productId, productId))
+
+  await logOperation(session, 'product.update', 'product', productId, data)
 }
 
 export async function createCategory(data: {
@@ -217,10 +245,15 @@ export async function createCategory(data: {
   sortOrder?: number
   isValid?: boolean
 }) {
+  const session = await getSession()
+  requirePermission(session, 'product:create')
+
   await db.insert(productCategories).values({
     ...data,
     productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
   })
+
+  await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
 }
 
 export async function updateCategory(
@@ -232,6 +265,9 @@ export async function updateCategory(
     isValid: boolean
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
   await db
     .update(productCategories)
     .set({
@@ -239,6 +275,8 @@ export async function updateCategory(
       productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
     })
     .where(eq(productCategories.categoryId, categoryId))
+
+  await logOperation(session, 'category.update', 'product_category', categoryId, data)
 }
 
 export async function createSku(data: {
@@ -255,10 +293,15 @@ export async function createSku(data: {
   validStart?: string | null
   validEnd?: string | null
 }) {
+  const session = await getSession()
+  requirePermission(session, 'product:create')
+
   await db.insert(productSkus).values({
     ...data,
     productType: data.productType as typeof productSkus.$inferInsert['productType'],
   })
+
+  await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
 }
 
 export async function updateSku(
@@ -276,6 +319,9 @@ export async function updateSku(
     validEnd: string | null
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
   await db
     .update(productSkus)
     .set({
@@ -283,8 +329,15 @@ export async function updateSku(
       productType: data.productType as typeof productSkus.$inferInsert['productType'],
     })
     .where(eq(productSkus.skuId, skuId))
+
+  await logOperation(session, 'sku.update', 'product_sku', skuId, data)
 }
 
 export async function deleteSku(skuId: string) {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
   await db.delete(productSkus).where(eq(productSkus.skuId, skuId))
+
+  await logOperation(session, 'sku.delete', 'product_sku', skuId)
 }

@@ -2,22 +2,24 @@
 
 import { useState, useRef, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { Menu, PanelLeftClose, Bell, LogOut, KeyRound, User } from "lucide-react"
+import { Menu, PanelLeftClose, Bell, LogOut, KeyRound } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAuth, getRoleLabel } from "@/lib/auth"
+import { getRoleLabel } from "@/lib/auth"
+import { logout } from "@/actions/auth"
+import type { AuthSession } from "@/lib/types"
 
 interface TopbarProps {
   collapsed: boolean
   onToggle: () => void
+  session: AuthSession
 }
 
-export function Topbar({ collapsed, onToggle }: TopbarProps) {
-  const auth = useAuth()
+export function Topbar({ collapsed, onToggle, session }: TopbarProps) {
   const router = useRouter()
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
 
-  const primaryRole = auth.roles[0]
+  const primaryRole = session.roles[0]
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -32,9 +34,9 @@ export function Topbar({ collapsed, onToggle }: TopbarProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside)
   }, [dropdownOpen])
 
-  function handleLogout() {
+  async function handleLogout() {
     setDropdownOpen(false)
-    // TODO: Clear auth cookie / session
+    await logout()
     router.push("/login")
   }
 
@@ -81,9 +83,9 @@ export function Topbar({ collapsed, onToggle }: TopbarProps) {
             className="flex items-center gap-2 rounded-[var(--radius)] px-2 py-1.5 text-sm transition-colors hover:bg-[var(--muted)]"
           >
             <div className="flex size-8 items-center justify-center rounded-full bg-[var(--primary)] text-xs font-medium text-white">
-              {auth.name.charAt(0)}
+              {session.name.charAt(0)}
             </div>
-            <span className="hidden text-[var(--foreground)] sm:inline">{auth.name}</span>
+            <span className="hidden text-[var(--foreground)] sm:inline">{session.name}</span>
           </button>
 
           {/* Dropdown menu */}
@@ -92,7 +94,7 @@ export function Topbar({ collapsed, onToggle }: TopbarProps) {
               {/* User info header */}
               <div className="border-b border-[var(--border)] px-4 py-3">
                 <div className="text-sm font-medium text-[var(--foreground)]">
-                  {auth.name}
+                  {session.name}
                 </div>
                 <div className="mt-0.5 text-xs text-[#999999]">
                   {primaryRole ? getRoleLabel(primaryRole.role) : "未分配角色"}

@@ -5,6 +5,9 @@ import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { eq } from 'drizzle-orm'
 import type { Employee } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 function rowToEmployee(row: {
   staff_wechat_users: typeof staffWechatUsers.$inferSelect
@@ -34,6 +37,9 @@ function rowToEmployee(row: {
 }
 
 export async function getEmployees(): Promise<Employee[]> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
   const rows = await db
     .select()
     .from(staffWechatUsers)
@@ -45,6 +51,9 @@ export async function getEmployees(): Promise<Employee[]> {
 }
 
 export async function getEmployeeById(employeeId: string): Promise<Employee | null> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
   const rows = await db
     .select()
     .from(staffWechatUsers)
@@ -69,6 +78,9 @@ export async function createEmployee(data: {
   skills?: string[] | null
   isResigned?: boolean
 }) {
+  const session = await getSession()
+  requirePermission(session, 'employee:create')
+
   await db.insert(staffWechatUsers).values({
     employeeId: data.employeeId,
     phone: data.phone ?? null,
@@ -82,6 +94,8 @@ export async function createEmployee(data: {
     skills: data.skills ?? null,
     isResigned: data.isResigned ?? false,
   })
+
+  await logOperation(session, 'employee.create', 'employee', data.employeeId, { name: data.name })
 }
 
 export async function updateEmployee(
@@ -99,5 +113,10 @@ export async function updateEmployee(
     isResigned: boolean
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'employee:update')
+
   await db.update(staffWechatUsers).set(data).where(eq(staffWechatUsers.employeeId, employeeId))
+
+  await logOperation(session, 'employee.update', 'employee', employeeId, data)
 }

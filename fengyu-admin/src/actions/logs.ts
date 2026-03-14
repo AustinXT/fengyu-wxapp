@@ -4,8 +4,13 @@ import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
 import { desc, eq, and } from 'drizzle-orm'
 import type { OperationLog } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
 
 export async function getLogs(): Promise<OperationLog[]> {
+  const session = await getSession()
+  requirePermission(session, 'operation_log:list')
+
   const rows = await db
     .select()
     .from(operationLogs)
@@ -28,6 +33,9 @@ export async function getLogs(): Promise<OperationLog[]> {
 }
 
 export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]> {
+  const session = await getSession()
+  requirePermission(session, 'operation_log:list')
+
   const rows = await db
     .select()
     .from(operationLogs)

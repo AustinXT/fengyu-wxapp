@@ -1,15 +1,18 @@
 'use server'
 
 import { db } from '@/db'
-import { saleAllocations, saleItems } from '@db/order'
-import { staffWechatUsers } from '@db/user'
-import { orgNodes } from '@db/org'
-import { eq, and, sql } from 'drizzle-orm'
+import { saleAllocations } from '@db/order'
+import { eq, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllocation[]> {
-  // Use a raw SQL subquery approach to avoid dual drizzle-orm type conflicts with inArray
+  const session = await getSession()
+  requirePermission(session, 'allocation:list')
+
   const rows = await db.execute(sql`
     SELECT
       sa.id,
@@ -52,6 +55,9 @@ export async function saveAllocation(data: {
   totalAmount: string
   departmentName?: string
 }): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'allocation:save')
+
   await db.insert(saleAllocations).values({
     saleItemId: data.saleItemId,
     employeeId: data.employeeId,
@@ -59,15 +65,26 @@ export async function saveAllocation(data: {
     totalAmount: data.totalAmount,
     departmentName: data.departmentName || null,
   })
+
+  await logOperation(session, 'allocation.save', 'sale_allocation', data.saleItemId, {
+    employeeId: data.employeeId, totalAmount: data.totalAmount,
+  })
+
   revalidatePath('/allocations')
   return { success: true, message: '分配已保存' }
 }
 
 export async function deleteAllocation(id: number): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'allocation:save')
+
   await db
     .update(saleAllocations)
     .set({ isVoid: true, voidedAt: new Date() })
     .where(eq(saleAllocations.id, id))
+
+  await logOperation(session, 'allocation.delete', 'sale_allocation', String(id))
+
   revalidatePath('/allocations')
   return { success: true, message: '分配已删除' }
 }
@@ -83,6 +100,9 @@ export async function batchSaveAllocations(
     departmentName?: string
   }>
 ): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'allocation:save')
+
   // Void existing allocations for this order's items
   await db.execute(sql`
     UPDATE sale_allocations SET is_void = true, voided_at = NOW()
@@ -110,6 +130,10 @@ export async function batchSaveAllocations(
     .update(saleOrders)
     .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })
     .where(eq(saleOrders.saleOrderId, saleOrderId))
+
+  await logOperation(session, 'allocation.batchSave', 'sale_order', saleOrderId, {
+    allocationCount: allocations.length,
+  })
 
   revalidatePath('/allocations')
   return { success: true, message: '分配保存成功' }

@@ -9,7 +9,6 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { assignRole } from "@/actions/permissions"
-import { getSession } from "@/lib/auth"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
 const roleLabels: Record<RoleType, string> = {
@@ -270,12 +269,10 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
               if (!assignEmployeeId || !assignScopeId) return
               setAssigning(true)
               try {
-                const session = getSession()
                 const res = await assignRole({
                   employeeId: assignEmployeeId,
                   role: assignRoleValue,
                   scopeId: assignScopeId,
-                  createdBy: session.employeeId,
                 })
                 if (res.success) {
                   const { toast } = await import('sonner')

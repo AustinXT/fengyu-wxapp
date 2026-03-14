@@ -4,9 +4,12 @@ import { db } from '@/db'
 import { serviceOrders } from '@db/service'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { eq, desc, and, sql } from 'drizzle-orm'
+import { eq, desc, and, sql, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -35,6 +38,10 @@ function serializeServiceOrder(r: {
 }
 
 export async function getServiceOrders(): Promise<ServiceOrder[]> {
+  const session = await getSession()
+  requirePermission(session, 'service:list')
+
+  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -46,12 +53,16 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(scopeIds.length > 0 ? inArray(serviceOrders.storeId, scopeIds) : sql`FALSE`)
     .orderBy(desc(serviceOrders.createdAt))
 
   return rows.map(serializeServiceOrder)
 }
 
 export async function getServiceOrderById(serviceOrderId: string): Promise<ServiceOrder | null> {
+  const session = await getSession()
+  requirePermission(session, 'service:list')
+
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -72,6 +83,9 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
 
 /** C4: 开始服务 — WHERE status = '待服务' */
 export async function startServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'service:update')
+
   const result = await db
     .update(serviceOrders)
     .set({ status: '服务中', startedAt: new Date() })
@@ -80,16 +94,20 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
   if ((result as any).rowCount === 0) {
     return { success: false, message: '服务单状态已变更，无法开始' }
   }
+
+  await logOperation(session, 'service.start', 'service_order', serviceOrderId)
+
   revalidatePath('/services')
   return { success: true, message: '服务已开始' }
 }
 
 /**
  * C1+C4: 完成服务 — 原子扣减 remaining_sessions + 状态推进
- * 使用事务保证一致性
  */
 export async function completeServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  // Use raw SQL transaction for atomic decrement (C1)
+  const session = await getSession()
+  requirePermission(session, 'service:update')
+
   const result = await db.execute(sql`
     WITH status_check AS (
       UPDATE service_orders
@@ -117,12 +135,18 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
   if (!row || Number(row.status_updated) === 0) {
     return { success: false, message: '服务单状态已变更，无法完成' }
   }
+
+  await logOperation(session, 'service.complete', 'service_order', serviceOrderId)
+
   revalidatePath('/services')
   return { success: true, message: '服务已完成' }
 }
 
 /** C4: 取消服务 — WHERE status = '待服务'，不扣次数 */
 export async function cancelServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'service:update')
+
   const result = await db
     .update(serviceOrders)
     .set({ status: '已取消' })
@@ -131,6 +155,9 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
   if ((result as any).rowCount === 0) {
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
+
+  await logOperation(session, 'service.cancel', 'service_order', serviceOrderId)
+
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
 }

@@ -5,6 +5,9 @@ import { couponTemplates } from '@db/coupon'
 import { eq } from 'drizzle-orm'
 import type { CouponTemplate } from '@/lib/types'
 import { desc } from 'drizzle-orm'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 function serializeTemplate(r: typeof couponTemplates.$inferSelect): CouponTemplate {
   return {
@@ -30,6 +33,9 @@ function serializeTemplate(r: typeof couponTemplates.$inferSelect): CouponTempla
 }
 
 export async function getTemplates(): Promise<CouponTemplate[]> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:list')
+
   const rows = await db
     .select()
     .from(couponTemplates)
@@ -39,6 +45,9 @@ export async function getTemplates(): Promise<CouponTemplate[]> {
 }
 
 export async function getTemplateById(templateId: string): Promise<CouponTemplate | null> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:list')
+
   const rows = await db
     .select()
     .from(couponTemplates)
@@ -67,6 +76,9 @@ export async function createTemplate(data: {
   description?: string | null
   isActive?: boolean
 }) {
+  const session = await getSession()
+  requirePermission(session, 'coupon:create')
+
   await db.insert(couponTemplates).values({
     templateId: data.templateId,
     name: data.name,
@@ -85,6 +97,8 @@ export async function createTemplate(data: {
     description: data.description ?? null,
     isActive: data.isActive ?? true,
   })
+
+  await logOperation(session, 'coupon.create', 'coupon_template', data.templateId, { name: data.name })
 }
 
 export async function updateTemplate(
@@ -107,6 +121,9 @@ export async function updateTemplate(
     isActive?: boolean
   }
 ) {
+  const session = await getSession()
+  requirePermission(session, 'coupon:update')
+
   const updateData: Record<string, unknown> = { ...data }
   if (data.validFrom !== undefined) {
     updateData.validFrom = data.validFrom ? new Date(data.validFrom) : null
@@ -118,4 +135,6 @@ export async function updateTemplate(
     .update(couponTemplates)
     .set(updateData)
     .where(eq(couponTemplates.templateId, templateId))
+
+  await logOperation(session, 'coupon.update', 'coupon_template', templateId, data)
 }

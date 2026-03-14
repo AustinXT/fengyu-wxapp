@@ -5,8 +5,14 @@ import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
 import { eq } from 'drizzle-orm'
 import type { CommissionRate } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getRates(): Promise<CommissionRate[]> {
+  const session = await getSession()
+  requirePermission(session, 'commission:list')
+
   const rows = await db
     .select({
       id: commissionRateMatrix.id,
@@ -49,6 +55,9 @@ export async function createRate(data: {
   amountTierMax?: string | null
   commissionRate: string
 }) {
+  const session = await getSession()
+  requirePermission(session, 'commission:create')
+
   await db.insert(commissionRateMatrix).values({
     orgId: data.orgId,
     orderType: data.orderType,
@@ -57,6 +66,10 @@ export async function createRate(data: {
     amountTierMin: data.amountTierMin,
     amountTierMax: data.amountTierMax ?? null,
     commissionRate: data.commissionRate,
+  })
+
+  await logOperation(session, 'commission.create', 'commission_rate', data.orgId, {
+    orderType: data.orderType, roleType: data.roleType,
   })
 }
 
@@ -72,14 +85,24 @@ export async function updateRate(
     commissionRate?: string
   }
 ) {
+  const session = await getSession()
+  requirePermission(session, 'commission:update')
+
   await db
     .update(commissionRateMatrix)
     .set(data)
     .where(eq(commissionRateMatrix.id, id))
+
+  await logOperation(session, 'commission.update', 'commission_rate', String(id), data)
 }
 
 export async function deleteRate(id: number) {
+  const session = await getSession()
+  requirePermission(session, 'commission:delete')
+
   await db
     .delete(commissionRateMatrix)
     .where(eq(commissionRateMatrix.id, id))
+
+  await logOperation(session, 'commission.delete', 'commission_rate', String(id))
 }

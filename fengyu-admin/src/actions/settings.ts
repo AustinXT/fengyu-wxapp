@@ -2,6 +2,9 @@
 
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 interface SystemSettings {
   orderPrefix: string
@@ -15,11 +18,10 @@ const DEFAULT_SETTINGS: SystemSettings = {
   orderTimeout: '10',
 }
 
-/**
- * 获取系统配置
- * 从 system_configs 表读取（如果表不存在则返回默认值）
- */
 export async function getSettings(): Promise<SystemSettings> {
+  const session = await getSession()
+  requirePermission(session, 'system:config')
+
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
@@ -34,18 +36,15 @@ export async function getSettings(): Promise<SystemSettings> {
     }
     return settings
   } catch {
-    // Table might not exist yet, return defaults
     return DEFAULT_SETTINGS
   }
 }
 
-/**
- * 保存系统配置
- * UPSERT 到 system_configs 表
- */
 export async function saveSettings(settings: SystemSettings): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'system:config')
+
   try {
-    // Ensure table exists
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS system_configs (
         key TEXT PRIMARY KEY,
@@ -54,7 +53,6 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       )
     `)
 
-    // Upsert each setting
     const entries = [
       { key: 'order_prefix', value: settings.orderPrefix },
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
@@ -68,6 +66,8 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
         ON CONFLICT (key) DO UPDATE SET value = ${entry.value}, updated_at = NOW()
       `)
     }
+
+    await logOperation(session, 'system.saveConfig', 'system_config', 'all', settings as unknown as Record<string, unknown>)
 
     return { success: true, message: '配置保存成功' }
   } catch (err) {

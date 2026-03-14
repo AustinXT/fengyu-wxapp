@@ -7,8 +7,14 @@ import { orgNodes } from '@db/org'
 import { eq, and } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
+import { getSession, hasRole } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getRoles(): Promise<PermissionRole[]> {
+  const session = await getSession()
+  requirePermission(session, 'permission:list')
+
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -45,23 +51,50 @@ export async function assignRole(data: {
   employeeId: string
   role: string
   scopeId: string
-  createdBy: string
 }): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+
+  // admin 角色只有 admin 可分配
+  if (data.role === 'admin') {
+    requirePermission(session, 'permission:assign_admin')
+  } else {
+    requirePermission(session, 'permission:assign')
+  }
+
+  // 非 admin 用户不能分配超出自身 scope 的权限
+  if (!hasRole(session, 'admin')) {
+    const userScopeIds = session.roles.map(r => r.scopeId)
+    if (!userScopeIds.includes(data.scopeId)) {
+      return { success: false, message: '不能分配超出自身权限范围的角色' }
+    }
+  }
+
   await db.insert(permissionRoles).values({
     employeeId: data.employeeId,
     role: data.role,
     scopeId: data.scopeId,
-    createdBy: data.createdBy,
+    createdBy: session.employeeId,
   })
+
+  await logOperation(session, 'permission.assign', 'permission_role', data.employeeId, {
+    role: data.role, scopeId: data.scopeId,
+  })
+
   revalidatePath('/permissions')
   return { success: true, message: '角色分配成功' }
 }
 
 export async function revokeRole(id: number): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'permission:revoke')
+
   await db
     .update(permissionRoles)
-    .set({ isVoid: true, voidedAt: new Date() })
+    .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
     .where(eq(permissionRoles.id, id))
+
+  await logOperation(session, 'permission.revoke', 'permission_role', String(id))
+
   revalidatePath('/permissions')
   return { success: true, message: '角色已撤销' }
 }

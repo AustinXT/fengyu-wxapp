@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { login } from "@/actions/auth"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -32,18 +33,21 @@ export default function LoginPage() {
 
     setLoading(true)
     try {
-      // TODO: Replace with real auth API call
-      // Mock: any phone + password "admin123" succeeds
-      await new Promise((resolve) => setTimeout(resolve, 800))
+      const result = await login(phone, password)
 
-      if (password !== "admin123") {
-        setError("手机号或密码错误")
-        toast.error("登录失败，请检查手机号和密码")
+      if (!result.success) {
+        setError(result.message)
+        toast.error(result.message)
         return
       }
 
       toast.success("登录成功")
-      router.push("/dashboard")
+
+      if (result.mustChange) {
+        router.push("/change-password")
+      } else {
+        router.push("/dashboard")
+      }
     } catch {
       setError("网络异常，请稍后重试")
       toast.error("网络异常，请稍后重试")

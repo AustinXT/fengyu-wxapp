@@ -6,14 +6,21 @@ import { stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { products } from '@db/product'
-import { eq, desc, and, or, sql } from 'drizzle-orm'
+import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SaleOrder, SaleItem } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 const opener = alias(staffWechatUsers, 'opener')
 
 export async function getOrders(): Promise<SaleOrder[]> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:list')
+
+  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       order: saleOrders,
@@ -23,6 +30,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .where(scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`)
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(500)
 
@@ -54,6 +62,9 @@ export async function getOrders(): Promise<SaleOrder[]> {
 }
 
 export async function getOrderById(saleOrderId: string): Promise<SaleOrder | null> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:list')
+
   const rows = await db
     .select({
       order: saleOrders,
@@ -134,6 +145,9 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
 
 /** C4: 确认线下收款 — WHERE status = '待确认收款' 保障幂等 */
 export async function confirmOfflinePayment(saleOrderId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:update')
+
   const result = await db
     .update(saleOrders)
     .set({ status: '已支付', paidAt: new Date() })
@@ -142,12 +156,18 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法确认收款' }
   }
+
+  await logOperation(session, 'order.confirmPayment', 'sale_order', saleOrderId)
+
   revalidatePath('/orders')
   return { success: true, message: '确认收款成功' }
 }
 
 /** C4: 关闭订单 — 仅待支付/支付失败可关闭 */
 export async function closeOrder(saleOrderId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:update')
+
   const result = await db
     .update(saleOrders)
     .set({ status: '已关闭' })
@@ -159,12 +179,18 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法关闭' }
   }
+
+  await logOperation(session, 'order.close', 'sale_order', saleOrderId)
+
   revalidatePath('/orders')
   return { success: true, message: '订单已关闭' }
 }
 
 /** C4: 重置支付失败 → 待支付（仅店长） */
 export async function resetOrderFailed(saleOrderId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:update')
+
   const result = await db
     .update(saleOrders)
     .set({ status: '待支付' })
@@ -173,6 +199,9 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '订单状态已变更，无法重置' }
   }
+
+  await logOperation(session, 'order.resetFailed', 'sale_order', saleOrderId)
+
   revalidatePath('/orders')
   return { success: true, message: '已重置为待支付' }
 }
@@ -186,7 +215,7 @@ export async function createOrder(data: {
   customerName: string
   paymentMethod: 'wechat' | 'alipay' | 'offline'
   saleOrderType: '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
-  openedBy: string
+  openedBy?: string
   preferredEmployeeId?: string
   items: Array<{
     skuId: string
@@ -200,6 +229,9 @@ export async function createOrder(data: {
     salesCategory?: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
 }): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:create')
+
   // Generate order ID with advisory lock
   const [{ id: saleOrderId }] = await db.execute<{ id: string }>(sql`
     SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '-' ||
@@ -235,7 +267,7 @@ export async function createOrder(data: {
     totalAmount: totalAmount.toFixed(2),
     paymentMethod: data.paymentMethod,
     saleOrderSource: 'admin',
-    openedBy: data.openedBy,
+    openedBy: data.openedBy || session.employeeId,
     preferredEmployeeId: data.preferredEmployeeId || null,
     allocationStatus: 'pending',
   })
@@ -264,6 +296,10 @@ export async function createOrder(data: {
       salesCategory: item.salesCategory || null,
     })
   }
+
+  await logOperation(session, 'order.create', 'sale_order', saleOrderId, {
+    storeId: data.storeId, totalAmount: totalAmount.toFixed(2), itemCount: data.items.length,
+  })
 
   revalidatePath('/orders')
   return { success: true, message: '订单创建成功', saleOrderId }

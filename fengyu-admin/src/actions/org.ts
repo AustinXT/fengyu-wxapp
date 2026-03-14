@@ -4,8 +4,14 @@ import { db } from '@/db'
 import { orgNodes } from '@db/org'
 import { eq, asc } from 'drizzle-orm'
 import type { OrgNode } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getOrgNodes(): Promise<OrgNode[]> {
+  const session = await getSession()
+  requirePermission(session, 'org:list')
+
   const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
@@ -27,6 +33,9 @@ export async function createOrgNode(data: {
   sortOrder: number
   isActive: boolean
 }) {
+  const session = await getSession()
+  requirePermission(session, 'org:create')
+
   await db.insert(orgNodes).values({
     id: data.id,
     name: data.name,
@@ -35,6 +44,8 @@ export async function createOrgNode(data: {
     sortOrder: data.sortOrder,
     isActive: data.isActive,
   })
+
+  await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
 }
 
 export async function updateOrgNode(
@@ -47,9 +58,19 @@ export async function updateOrgNode(
     isActive: boolean
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'org:update')
+
   await db.update(orgNodes).set(data).where(eq(orgNodes.id, id))
+
+  await logOperation(session, 'org.update', 'org_node', id, data)
 }
 
 export async function deleteOrgNode(id: string) {
+  const session = await getSession()
+  requirePermission(session, 'org:delete')
+
   await db.delete(orgNodes).where(eq(orgNodes.id, id))
+
+  await logOperation(session, 'org.delete', 'org_node', id)
 }

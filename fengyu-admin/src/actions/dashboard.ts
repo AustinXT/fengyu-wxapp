@@ -1,14 +1,21 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders } from '@db/order'
-import { appointments } from '@db/appointment'
-import { sql, eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
 import type { DashboardStats } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
 
 export async function getDashboardStats(): Promise<DashboardStats> {
-  // Single aggregation query for sale_orders metrics
-  const orderStats = await db.execute(sql`
+  const session = await getSession()
+  requirePermission(session, 'data_center:dashboard')
+
+  const scopeIds = session.permissions.scopeStoreIds
+  const storeFilter = scopeIds.length > 0
+    ? `AND store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    : 'AND FALSE'
+
+  const orderStats = await db.execute(sql.raw(`
     SELECT
       COUNT(DISTINCT CASE
         WHEN DATE(sale_order_datetime) = CURRENT_DATE
@@ -33,17 +40,21 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         THEN total_amount
       END), 0) AS yesterday_revenue
     FROM sale_orders
-  `)
+    WHERE 1=1 ${storeFilter}
+  `))
 
-  // Separate query for pending appointments
-  const appointmentStats = await db.execute(sql`
+  const apptStoreFilter = scopeIds.length > 0
+    ? `AND store_id IN (${scopeIds.map(id => `'${id}'`).join(',')})`
+    : 'AND FALSE'
+
+  const appointmentStats = await db.execute(sql.raw(`
     SELECT COUNT(*) AS pending_appointments
     FROM appointments
-    WHERE status = '待确认'
-  `)
+    WHERE status = '待确认' ${apptStoreFilter}
+  `))
 
-  const row = orderStats[0] ?? {}
-  const apptRow = appointmentStats[0] ?? {}
+  const row = (orderStats as any[])[0] ?? {}
+  const apptRow = (appointmentStats as any[])[0] ?? {}
 
   return {
     todayVisitors: Number(row.today_visitors ?? 0),

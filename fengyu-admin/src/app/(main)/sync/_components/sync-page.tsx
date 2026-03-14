@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import type { SyncHistoryEntry } from "@/actions/sync"
+import { triggerSync } from "@/actions/sync"
 
 const syncStatusMap: Record<string, string> = {
   "成功": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
@@ -19,17 +20,23 @@ export default function SyncPageClient({ history }: { history: SyncHistoryEntry[
   const [syncing, setSyncing] = useState(false)
   const router = useRouter()
 
-  const handleSync = async (type: string) => {
+  const handleSync = async (type: 'full' | 'incremental') => {
     setSyncing(true)
-    toast.info(`${type}已触发，同步功能需要连接 WorkFine 服务器`)
-    // Sync requires WorkFine MSSQL connection, which is only available
-    // through db/scripts/sync-workfine.js. The admin panel can trigger
-    // it via a background process in production.
-    setTimeout(() => {
+    toast.info(`${type === 'full' ? '全量' : '增量'}同步已触发...`)
+
+    try {
+      const result = await triggerSync(type)
+      if (result.success) {
+        toast.success(result.message)
+      } else {
+        toast.error(result.message)
+      }
+    } catch {
+      toast.error('同步请求失败，请稍后重试')
+    } finally {
       setSyncing(false)
-      toast.warning(`${type}需通过服务器端脚本执行，请联系管理员运行 sync-workfine.js`)
       router.refresh()
-    }, 1000)
+    }
   }
 
   const lastSync = history[0]
@@ -59,7 +66,7 @@ export default function SyncPageClient({ history }: { history: SyncHistoryEntry[
             </div>
             <div className="flex gap-3">
               <Button
-                onClick={() => handleSync("全量同步")}
+                onClick={() => handleSync("full")}
                 loading={syncing}
                 disabled={syncing}
               >
@@ -67,7 +74,7 @@ export default function SyncPageClient({ history }: { history: SyncHistoryEntry[
               </Button>
               <Button
                 variant="outline"
-                onClick={() => handleSync("增量同步")}
+                onClick={() => handleSync("incremental")}
                 loading={syncing}
                 disabled={syncing}
               >
@@ -75,16 +82,6 @@ export default function SyncPageClient({ history }: { history: SyncHistoryEntry[
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* 同步提示 */}
-      <Card className="border-[#D4820A] bg-[#FFF8E6]">
-        <CardContent className="p-4">
-          <p className="text-sm text-[#D4820A]">
-            数据同步功能依赖 WorkFine SQL Server 连接，需通过服务器端脚本 <code className="font-mono bg-white/50 px-1 rounded">db/scripts/sync-workfine.js</code> 执行。
-            管理后台可查看同步历史记录。
-          </p>
         </CardContent>
       </Card>
 

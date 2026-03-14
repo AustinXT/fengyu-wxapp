@@ -5,19 +5,20 @@ import { usePathname } from "next/navigation"
 import { ChevronsLeft, ChevronsRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getVisibleMenuGroups } from "@/lib/menu"
-import { useAuth, getRoleLabel } from "@/lib/auth"
+import { getRoleLabel } from "@/lib/auth"
+import type { AuthSession } from "@/lib/types"
 
 interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
+  session: AuthSession
 }
 
-export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
   const pathname = usePathname()
-  const auth = useAuth()
 
-  const primaryRole = auth.roles[0]
-  const menuGroups = getVisibleMenuGroups(auth)
+  const primaryRole = session.roles[0]
+  const menuGroups = getVisibleMenuGroups(session)
 
   function isActive(href: string): boolean {
     // Exact match for top-level routes
@@ -99,7 +100,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {!collapsed && (
         <div className="border-t border-[var(--border)] px-4 py-3">
           <div className="truncate text-sm font-medium text-[var(--foreground)]">
-            {auth.name}
+            {session.name}
           </div>
           <div className="truncate text-xs text-[#999999]">
             {primaryRole ? getRoleLabel(primaryRole.role) : "未分配角色"}

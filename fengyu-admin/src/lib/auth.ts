@@ -1,54 +1,15 @@
+import { getSessionFromCookie } from '@/actions/auth'
 import type { AuthSession, RoleType } from './types'
 
 export type { AuthSession }
-
 export type AuthRole = AuthSession['roles'][number]
 
-// Mock admin session
-export const MOCK_SESSION: AuthSession = {
-  employeeId: 'FY-260101-0001',
-  name: '张明',
-  phone: '13800138000',
-  roles: [
-    { role: 'admin', scopeId: 'org-hq', scopeType: 'headquarters' },
-    { role: 'manager', scopeId: 'org-store-nc01', scopeType: 'store' },
-    { role: 'hr', scopeId: 'org-hq', scopeType: 'headquarters' },
-  ],
-  permissions: {
-    actions: [
-      'org:list', 'org:create', 'org:update', 'org:delete',
-      'store:list', 'store:create', 'store:update',
-      'employee:list', 'employee:create', 'employee:update',
-      'product:list', 'product:create', 'product:update',
-      'commission:list', 'commission:create', 'commission:update', 'commission:delete',
-      'customer:list', 'customer:update',
-      'coupon:list', 'coupon:create', 'coupon:update',
-      'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-      'sale_order:list', 'sale_order:create', 'sale_order:update',
-      'allocation:list', 'allocation:save',
-      'service:list', 'service:create', 'service:update',
-      'appointment:list', 'appointment:confirm', 'appointment:checkin',
-      'sync:trigger', 'sync:status',
-      'operation_log:list',
-      'system:config',
-      'data_center:dashboard',
-    ],
-    scopeStoreIds: ['store-nc01', 'store-nc02', 'store-jj01', 'store-gqc01'],
-  },
-}
-
 /**
- * Get the current auth session.
- * In development, returns a mock session.
- * In production, this will read from JWT cookie / server context.
+ * Get the current auth session from JWT cookie → DB lookup.
+ * Returns null if not authenticated.
  */
-export function getSession(): AuthSession {
-  return MOCK_SESSION
-}
-
-/** Alias kept for components already using useAuth() */
-export function useAuth(): AuthSession {
-  return MOCK_SESSION
+export async function getSession(): Promise<AuthSession | null> {
+  return getSessionFromCookie()
 }
 
 /**

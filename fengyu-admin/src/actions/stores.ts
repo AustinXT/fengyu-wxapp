@@ -5,6 +5,9 @@ import { stores, orgNodes } from '@db/org'
 import { eq } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -40,6 +43,9 @@ function rowToStore(row: {
 }
 
 export async function getStores(): Promise<Store[]> {
+  const session = await getSession()
+  requirePermission(session, 'store:list')
+
   const rows = await db
     .select()
     .from(stores)
@@ -50,6 +56,9 @@ export async function getStores(): Promise<Store[]> {
 }
 
 export async function getStoreById(storeId: string): Promise<Store | null> {
+  const session = await getSession()
+  requirePermission(session, 'store:list')
+
   const rows = await db
     .select()
     .from(stores)
@@ -80,6 +89,9 @@ export async function createStore(data: {
   announcement?: string | null
   parkingInfo?: string | null
 }) {
+  const session = await getSession()
+  requirePermission(session, 'store:create')
+
   await db.insert(stores).values({
     storeId: data.storeId,
     storeName: data.storeName,
@@ -99,6 +111,8 @@ export async function createStore(data: {
     announcement: data.announcement ?? null,
     parkingInfo: data.parkingInfo ?? null,
   })
+
+  await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName })
 }
 
 export async function updateStore(
@@ -122,5 +136,10 @@ export async function updateStore(
     parkingInfo: string | null
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'store:update')
+
   await db.update(stores).set(data).where(eq(stores.storeId, storeId))
+
+  await logOperation(session, 'store.update', 'store', storeId, data)
 }

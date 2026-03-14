@@ -5,6 +5,9 @@ import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
 import { eq } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 function serializeCustomer(row: {
   client_wechat_users: typeof clientWechatUsers.$inferSelect
@@ -39,6 +42,9 @@ function serializeCustomer(row: {
 }
 
 export async function searchCustomerByPhone(phone: string): Promise<Customer | null> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
   const rows = await db
     .select()
     .from(clientWechatUsers)
@@ -52,6 +58,9 @@ export async function searchCustomerByPhone(phone: string): Promise<Customer | n
 }
 
 export async function getCustomers(): Promise<Customer[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
   const rows = await db
     .select()
     .from(clientWechatUsers)
@@ -63,6 +72,9 @@ export async function getCustomers(): Promise<Customer[]> {
 }
 
 export async function getCustomerById(userId: string): Promise<Customer | null> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
   const rows = await db
     .select()
     .from(clientWechatUsers)
@@ -76,6 +88,9 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
 }
 
 export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers } = await import('@db/user')
@@ -162,6 +177,9 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
 }
 
 export async function getCustomerAppointments(userId: string): Promise<Appointment[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
   const { appointments } = await import('@db/appointment')
   const { stores } = await import('@db/org')
   const { desc } = await import('drizzle-orm')
@@ -217,10 +235,15 @@ export async function updateCustomer(
     boundEmployeeId: string | null
   }>
 ) {
+  const session = await getSession()
+  requirePermission(session, 'customer:update')
+
   await db
     .update(clientWechatUsers)
     .set(data)
     .where(eq(clientWechatUsers.userId, userId))
+
+  await logOperation(session, 'customer.update', 'customer', userId, data)
 }
 
 export async function createCustomer(data: {
@@ -228,9 +251,14 @@ export async function createCustomer(data: {
   phone: string
   name: string
 }) {
+  const session = await getSession()
+  requirePermission(session, 'customer:create')
+
   await db.insert(clientWechatUsers).values({
     userId: data.userId,
     phone: data.phone,
     name: data.name,
   })
+
+  await logOperation(session, 'customer.create', 'customer', data.userId, { name: data.name })
 }

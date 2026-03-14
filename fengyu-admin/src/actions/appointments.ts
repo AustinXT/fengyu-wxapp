@@ -3,11 +3,18 @@
 import { db } from '@/db'
 import { appointments } from '@db/appointment'
 import { stores } from '@db/org'
-import { eq, desc, and } from 'drizzle-orm'
+import { eq, desc, and, inArray, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
+import { getSession } from '@/lib/auth'
+import { requirePermission } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export async function getAppointments(): Promise<Appointment[]> {
+  const session = await getSession()
+  requirePermission(session, 'appointment:list')
+
+  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       appointment: appointments,
@@ -15,6 +22,7 @@ export async function getAppointments(): Promise<Appointment[]> {
     })
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
+    .where(scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`)
     .orderBy(desc(appointments.appointmentTime))
 
   return rows.map((r) => {
@@ -40,6 +48,9 @@ export async function getAppointments(): Promise<Appointment[]> {
 
 /** C4: 确认预约 — WHERE status = '待确认' */
 export async function confirmAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'appointment:confirm')
+
   const result = await db
     .update(appointments)
     .set({ status: '已确认' })
@@ -48,12 +59,18 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   if ((result as any).rowCount === 0) {
     return { success: false, message: '预约状态已变更，无法确认' }
   }
+
+  await logOperation(session, 'appointment.confirm', 'appointment', appointmentId)
+
   revalidatePath('/appointments')
   return { success: true, message: '预约已确认' }
 }
 
 /** 签到 — 仅记录时间，不改状态 */
 export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'appointment:checkin')
+
   const result = await db
     .update(appointments)
     .set({ checkinAt: new Date() })
@@ -62,6 +79,9 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
   if ((result as any).rowCount === 0) {
     return { success: false, message: '预约状态已变更，无法签到' }
   }
+
+  await logOperation(session, 'appointment.checkin', 'appointment', appointmentId)
+
   revalidatePath('/appointments')
   return { success: true, message: '签到成功' }
 }

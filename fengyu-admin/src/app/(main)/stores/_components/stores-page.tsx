@@ -2,19 +2,41 @@
 
 import { useState, useMemo } from "react"
 import Link from "next/link"
+import { toast } from "sonner"
 import type { Store } from "@/lib/types"
+import type { UnbindRequest } from "@/actions/store-unbind"
+import { approveUnbind, rejectUnbind } from "@/actions/store-unbind"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { useRouter } from "next/navigation"
 
 const PAGE_SIZE = 10
 
-export default function StoresPage({ stores }: { stores: Store[] }) {
+const unbindStatusMap: Record<string, { label: string; className: string }> = {
+  pending: { label: "待审批", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
+  approved: { label: "已通过", className: "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]" },
+  rejected: { label: "已拒绝", className: "border-[#D94040] text-[#D94040] bg-[#FFF0F0]" },
+}
+
+export default function StoresPage({
+  stores,
+  unbindRequests,
+}: {
+  stores: Store[]
+  unbindRequests: UnbindRequest[]
+}) {
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
+  const [tab, setTab] = useState<"stores" | "unbind">("stores")
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const router = useRouter()
 
+  const pendingCount = unbindRequests.filter((r) => r.status === "pending").length
+
+  // ── 门店列表 ──
   const filtered = useMemo(() => {
     let result = stores
     if (search.trim()) {
@@ -75,6 +97,44 @@ export default function StoresPage({ stores }: { stores: Store[] }) {
     },
   ]
 
+  // ── 解绑请求操作 ──
+  async function handleApprove(requestId: string) {
+    setActionLoading(requestId)
+    try {
+      const result = await approveUnbind(requestId)
+      if (result.success) {
+        toast.success(result.message)
+        router.refresh()
+      } else {
+        toast.error(result.message)
+      }
+    } catch {
+      toast.error("操作失败")
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  async function handleReject(requestId: string) {
+    const reason = window.prompt("请输入拒绝原因")
+    if (!reason) return
+
+    setActionLoading(requestId)
+    try {
+      const result = await rejectUnbind(requestId, reason)
+      if (result.success) {
+        toast.success(result.message)
+        router.refresh()
+      } else {
+        toast.error(result.message)
+      }
+    } catch {
+      toast.error("操作失败")
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -82,26 +142,130 @@ export default function StoresPage({ stores }: { stores: Store[] }) {
         <Link href="/stores/create"><Button>新增门店</Button></Link>
       </div>
 
-      <div className="flex items-center gap-3">
-        <Input
-          placeholder="搜索门店名称 / 电话"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(1)
-          }}
-          className="max-w-xs"
-        />
+      {/* Tab 切换 */}
+      <div className="flex gap-1 border-b border-[var(--border)]">
+        <button
+          onClick={() => setTab("stores")}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
+            tab === "stores"
+              ? "border-[var(--primary)] text-[var(--primary)]"
+              : "border-transparent text-[#999999] hover:text-[var(--foreground)]"
+          }`}
+        >
+          门店列表
+        </button>
+        <button
+          onClick={() => setTab("unbind")}
+          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-1.5 ${
+            tab === "unbind"
+              ? "border-[var(--primary)] text-[var(--primary)]"
+              : "border-transparent text-[#999999] hover:text-[var(--foreground)]"
+          }`}
+        >
+          解绑申请
+          {pendingCount > 0 && (
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--primary)] px-1.5 text-[10px] font-medium text-white">
+              {pendingCount}
+            </span>
+          )}
+        </button>
       </div>
 
-      <DataTable columns={columns} data={paged} />
+      {tab === "stores" && (
+        <>
+          <div className="flex items-center gap-3">
+            <Input
+              placeholder="搜索门店名称 / 电话"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value)
+                setPage(1)
+              }}
+              className="max-w-xs"
+            />
+          </div>
 
-      <Pagination
-        total={filtered.length}
-        pageSize={PAGE_SIZE}
-        page={page}
-        onPageChange={setPage}
-      />
+          <DataTable columns={columns} data={paged} />
+
+          <Pagination
+            total={filtered.length}
+            pageSize={PAGE_SIZE}
+            page={page}
+            onPageChange={setPage}
+          />
+        </>
+      )}
+
+      {tab === "unbind" && (
+        <div className="rounded-lg border border-[var(--border)] bg-white">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">手机号</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">原绑定门店</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">申请时间</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {unbindRequests.length > 0 ? unbindRequests.map((r) => {
+                  const statusInfo = unbindStatusMap[r.status] || { label: r.status, className: "" }
+                  return (
+                    <tr key={r.requestId} className="hover:bg-[#FFF0EE] transition-colors">
+                      <td className="px-4 py-3">{r.customerName ?? "—"}</td>
+                      <td className="px-4 py-3 text-[#999999]">{r.customerPhone ?? "—"}</td>
+                      <td className="px-4 py-3">{r.fromStoreName ?? r.fromStoreId}</td>
+                      <td className="px-4 py-3 text-[#999999] max-w-[200px] truncate">
+                        {r.note || (r.rejectReason ? `拒绝：${r.rejectReason}` : "—")}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant="outline" className={statusInfo.className}>
+                          {statusInfo.label}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-[#999999]">
+                        {new Date(r.createdAt).toLocaleString("zh-CN")}
+                      </td>
+                      <td className="px-4 py-3">
+                        {r.status === "pending" ? (
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => handleApprove(r.requestId)}
+                              loading={actionLoading === r.requestId}
+                              disabled={actionLoading !== null}
+                            >
+                              通过
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleReject(r.requestId)}
+                              disabled={actionLoading !== null}
+                            >
+                              拒绝
+                            </Button>
+                          </div>
+                        ) : (
+                          <span className="text-[#999999]">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                }) : (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">暂无解绑申请</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

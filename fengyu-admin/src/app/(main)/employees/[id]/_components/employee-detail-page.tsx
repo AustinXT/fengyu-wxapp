@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { Separator } from "@/components/ui/separator"
-import { getRoleLabel, getSession } from "@/lib/auth"
+import { getRoleLabel } from "@/lib/auth"
 import { formatDate } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole } from "@/actions/permissions"
@@ -122,12 +122,10 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
     if (!assignScopeId) return
     setAssigning(true)
     try {
-      const session = getSession()
       const res = await assignRole({
         employeeId: employee.employeeId,
         role: assignRoleValue,
         scopeId: assignScopeId,
-        createdBy: session.employeeId,
       })
       if (res.success) {
         toast.success(res.message)

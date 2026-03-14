@@ -1,0 +1,156 @@
+import { db } from '@/db'
+import { orgNodes, stores } from '@db/org'
+import { eq, and, sql, inArray } from 'drizzle-orm'
+import type { AuthSession, RoleType } from './types'
+
+/**
+ * PERMISSION_MATRIX: role → actions[]
+ *
+ * 每个角色的默认权限动作列表。
+ * admin 拥有所有权限；其他角色按职能分配。
+ */
+export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
+  admin: [
+    'org:list', 'org:create', 'org:update', 'org:delete',
+    'store:list', 'store:create', 'store:update',
+    'employee:list', 'employee:create', 'employee:update',
+    'product:list', 'product:create', 'product:update',
+    'commission:list', 'commission:create', 'commission:update', 'commission:delete',
+    'customer:list', 'customer:update', 'customer:create',
+    'coupon:list', 'coupon:create', 'coupon:update',
+    'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
+    'sale_order:list', 'sale_order:create', 'sale_order:update',
+    'allocation:list', 'allocation:save',
+    'service:list', 'service:create', 'service:update',
+    'appointment:list', 'appointment:confirm', 'appointment:checkin',
+    'sync:trigger', 'sync:status',
+    'operation_log:list',
+    'system:config',
+    'data_center:dashboard',
+    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
+  ],
+  manager: [
+    'store:list',
+    'employee:list',
+    'customer:list', 'customer:update',
+    'sale_order:list', 'sale_order:create', 'sale_order:update',
+    'allocation:list', 'allocation:save',
+    'service:list', 'service:create', 'service:update',
+    'appointment:list', 'appointment:confirm', 'appointment:checkin',
+    'data_center:dashboard',
+    'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
+  ],
+  finance: [
+    'sale_order:list',
+    'allocation:list',
+    'customer:list',
+    'data_center:dashboard',
+  ],
+  hr: [
+    'org:list', 'org:create', 'org:update',
+    'store:list', 'store:create', 'store:update',
+    'employee:list', 'employee:create', 'employee:update',
+    'permission:list', 'permission:assign', 'permission:revoke',
+  ],
+  product: [
+    'product:list', 'product:create', 'product:update',
+    'coupon:list', 'coupon:create', 'coupon:update',
+  ],
+  customer_mgr: [
+    'customer:list', 'customer:update', 'customer:create',
+  ],
+  staff: [],
+}
+
+/**
+ * 根据角色数组计算合并后的 actions 集合
+ */
+export function computeActions(roles: Array<{ role: RoleType }>): string[] {
+  const actionSet = new Set<string>()
+  for (const { role } of roles) {
+    const actions = PERMISSION_MATRIX[role]
+    if (actions) {
+      for (const a of actions) actionSet.add(a)
+    }
+  }
+  return Array.from(actionSet)
+}
+
+/**
+ * 根据角色的 scope 展开为门店 ID 列表
+ *
+ * - headquarters scope → 所有门店
+ * - market scope → 该市场下所有门店
+ * - store scope → 该门店自身（通过 orgNode → store 关联）
+ */
+export async function expandScopeStoreIds(
+  roles: AuthSession['roles']
+): Promise<string[]> {
+  const storeIds = new Set<string>()
+
+  for (const r of roles) {
+    if (r.scopeType === 'headquarters') {
+      // 总部权限：返回所有门店
+      const allStores = await db
+        .select({ storeId: stores.storeId })
+        .from(stores)
+      for (const s of allStores) storeIds.add(s.storeId)
+      return Array.from(storeIds) // 总部已包含全部
+    }
+
+    if (r.scopeType === 'market') {
+      // 市场权限：该市场节点下的所有 store 节点 → stores
+      const storeNodes = await db
+        .select({ id: orgNodes.id })
+        .from(orgNodes)
+        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, 'store')))
+      if (storeNodes.length > 0) {
+        const storeNodeIds = storeNodes.map(n => n.id)
+        const marketStores = await db
+          .select({ storeId: stores.storeId })
+          .from(stores)
+          .where(inArray(stores.orgNodeId, storeNodeIds))
+        for (const s of marketStores) storeIds.add(s.storeId)
+      }
+    }
+
+    if (r.scopeType === 'store') {
+      // 门店权限：通过 scopeId（orgNode id）找 store
+      const storeRows = await db
+        .select({ storeId: stores.storeId })
+        .from(stores)
+        .where(eq(stores.orgNodeId, r.scopeId))
+      for (const s of storeRows) storeIds.add(s.storeId)
+    }
+  }
+
+  return Array.from(storeIds)
+}
+
+/**
+ * 构建 store_id 范围 SQL 条件
+ *
+ * 返回 SQL 条件片段，约束查询只返回用户权限范围内门店的数据。
+ * 使用时：`.where(and(existingConditions, buildScopeWhere(session, 'column_name')))`
+ */
+export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id') {
+  const ids = session.permissions.scopeStoreIds
+  if (ids.length === 0) {
+    return sql`FALSE`
+  }
+  return sql.raw(`${storeIdColumn} IN (${ids.map(id => `'${id}'`).join(',')})`)
+}
+
+/**
+ * 权限校验：检查当前 session 是否拥有指定 action
+ *
+ * 如果权限不足，抛出 Error（由 server action 边界捕获）
+ */
+export function requirePermission(session: AuthSession | null, action: string): asserts session is AuthSession {
+  if (!session) {
+    throw new Error('UNAUTHORIZED: 未登录')
+  }
+  if (!session.permissions.actions.includes(action)) {
+    throw new Error(`PERMISSION_DENIED: 无权执行 ${action}`)
+  }
+}
