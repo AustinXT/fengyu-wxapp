@@ -630,4 +630,168 @@ async function listByTag(ctx) {
   }
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag };
+/**
+ * 退换记录（退款单 + 转换单）
+ */
+async function refundHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+
+  let whereClause, params
+  if (clientUserId) {
+    whereClause = "o.client_user_id = $1"
+    params = [clientUserId]
+  } else {
+    whereClause = "o.client_phone = $1"
+    params = [clientPhone]
+  }
+
+  const orders = await pg.query(`
+    SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
+           o.refund_reason, o.handling_fee, o.ref_sale_order_id,
+           o.approved_by, o.approved_at, o.rejected_reason,
+           o.created_at, o.paid_at
+    FROM sale_orders o
+    WHERE ${whereClause}
+      AND o.sale_order_type IN ('退款', '转换')
+    ORDER BY o.created_at DESC
+  `, params)
+
+  if (orders.length === 0) {
+    ctx.result = []
+    return
+  }
+
+  const orderIds = orders.map(o => o.sale_order_id)
+  const items = await pg.query(
+    `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
+            si.product_name, si.sku_spec_name, si.quantity, si.received
+     FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+    [orderIds]
+  )
+
+  const itemsByOrder = {}
+  for (const i of items) {
+    if (!itemsByOrder[i.sale_order_id]) itemsByOrder[i.sale_order_id] = []
+    itemsByOrder[i.sale_order_id].push({
+      saleItemId: i.sale_item_id,
+      direction: i.item_direction,
+      productName: i.product_name,
+      specName: i.sku_spec_name,
+      quantity: i.quantity,
+      received: Number(i.received),
+    })
+  }
+
+  ctx.result = orders.map(o => ({
+    saleOrderId: o.sale_order_id,
+    type: o.sale_order_type,
+    status: o.status,
+    totalAmount: Number(o.total_amount),
+    refundReason: o.refund_reason,
+    handlingFee: o.handling_fee ? Number(o.handling_fee) : null,
+    refOrderId: o.ref_sale_order_id,
+    createdAt: o.created_at,
+    paidAt: o.paid_at,
+    approvedAt: o.approved_at,
+    rejectedReason: o.rejected_reason,
+    items: itemsByOrder[o.sale_order_id] || [],
+  }))
+}
+
+/**
+ * 赠送记录（套餐内赠品 + 福利活动）
+ * 逻辑：从已支付订单中提取 received=0 或 is_bundle_sku=true+price=0 的明细行
+ *       以及 sale_order_type='福利活动' 的全部订单
+ */
+async function giftHistory(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
+
+  let whereClause, params
+  if (clientUserId) {
+    whereClause = "o.client_user_id = $1"
+    params = [clientUserId]
+  } else {
+    whereClause = "o.client_phone = $1"
+    params = [clientPhone]
+  }
+
+  // 福利活动订单（整单视为赠送/活动）
+  const promoOrders = await pg.query(`
+    SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
+           o.created_at, o.paid_at
+    FROM sale_orders o
+    WHERE ${whereClause}
+      AND o.sale_order_type = '福利活动'
+      AND o.status IN ('已支付', '已完成')
+    ORDER BY o.created_at DESC
+  `, params)
+
+  // 套餐内赠品（received=0 的明细行，排除福利活动）
+  const giftItems = await pg.query(`
+    SELECT si.sale_item_id, si.sale_order_id, si.product_name, si.sku_spec_name,
+           si.quantity, si.session_count, si.remaining_sessions,
+           si.received, o.created_at, o.paid_at
+    FROM sale_items si
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE ${whereClause.replace('o.', 'o.')}
+      AND o.status IN ('已支付', '已完成')
+      AND o.sale_order_type NOT IN ('福利活动', '退款', '转换', '回款')
+      AND si.item_direction = 'purchase'
+      AND si.received::numeric = 0
+    ORDER BY o.created_at DESC
+  `, params)
+
+  // 福利活动订单的明细
+  const promoOrderIds = promoOrders.map(o => o.sale_order_id)
+  let promoItems = []
+  if (promoOrderIds.length > 0) {
+    promoItems = await pg.query(
+      `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.sku_spec_name,
+              si.quantity, si.session_count, si.remaining_sessions, si.received
+       FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+      [promoOrderIds]
+    )
+  }
+
+  const promoItemsByOrder = {}
+  for (const i of promoItems) {
+    if (!promoItemsByOrder[i.sale_order_id]) promoItemsByOrder[i.sale_order_id] = []
+    promoItemsByOrder[i.sale_order_id].push({
+      productName: i.product_name,
+      specName: i.sku_spec_name,
+      quantity: i.quantity,
+      sessionCount: i.session_count,
+      remainingSessions: i.remaining_sessions,
+    })
+  }
+
+  ctx.result = {
+    promoOrders: promoOrders.map(o => ({
+      saleOrderId: o.sale_order_id,
+      type: o.sale_order_type,
+      status: o.status,
+      totalAmount: Number(o.total_amount),
+      createdAt: o.created_at,
+      paidAt: o.paid_at,
+      items: promoItemsByOrder[o.sale_order_id] || [],
+    })),
+    giftItems: giftItems.map(i => ({
+      saleItemId: i.sale_item_id,
+      saleOrderId: i.sale_order_id,
+      productName: i.product_name,
+      specName: i.sku_spec_name,
+      quantity: i.quantity,
+      sessionCount: i.session_count,
+      remainingSessions: i.remaining_sessions,
+      createdAt: i.created_at,
+    })),
+  }
+}
+
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory };

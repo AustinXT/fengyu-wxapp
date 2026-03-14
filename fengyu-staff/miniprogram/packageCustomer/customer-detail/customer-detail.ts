@@ -38,6 +38,12 @@ Page({
     treatmentCards: [] as TreatmentCard[],
     cardsLoaded: false,
     selectedCount: 0,
+    // Tab 4: 赠送记录
+    giftData: null as any,
+    giftLoaded: false,
+    // Tab 5: 退换记录
+    refundRecords: [] as any[],
+    refundLoaded: false,
   },
 
   _query: null as any,
@@ -80,6 +86,10 @@ Page({
       this.loadPurchaseHistory();
     } else if (index === 3 && !this.data.cardsLoaded) {
       this.loadTreatmentCards();
+    } else if (index === 4 && !this.data.giftLoaded) {
+      this.loadGiftHistory();
+    } else if (index === 5 && !this.data.refundLoaded) {
+      this.loadRefundHistory();
     }
   },
 
@@ -244,6 +254,41 @@ Page({
   },
 
   onOrderTap(e: WechatMiniprogram.TouchEvent) {
+    const id = e.currentTarget.dataset.id as string;
+    wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
+  },
+
+  // ===== Tab 4: 赠送记录 =====
+  async loadGiftHistory() {
+    const { customer } = this.data;
+    if (!customer) return;
+    try {
+      const params: any = {};
+      if (customer.clientUserId) params.clientUserId = customer.clientUserId;
+      else params.clientPhone = customer.phone;
+      const data = await callStaffApi<any>('customer.giftHistory', params);
+      this.setData({ giftData: data, giftLoaded: true });
+    } catch (_) {
+      this.setData({ giftData: { promoOrders: [], giftItems: [] }, giftLoaded: true });
+    }
+  },
+
+  // ===== Tab 5: 退换记录 =====
+  async loadRefundHistory() {
+    const { customer } = this.data;
+    if (!customer) return;
+    try {
+      const params: any = {};
+      if (customer.clientUserId) params.clientUserId = customer.clientUserId;
+      else params.clientPhone = customer.phone;
+      const records = await callStaffApi<any[]>('customer.refundHistory', params) || [];
+      this.setData({ refundRecords: records, refundLoaded: true });
+    } catch (_) {
+      this.setData({ refundRecords: [], refundLoaded: true });
+    }
+  },
+
+  onRefundOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
   },

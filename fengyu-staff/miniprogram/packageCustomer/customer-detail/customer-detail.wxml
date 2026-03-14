@@ -159,13 +159,84 @@
 
       <van-tab title="赠送记录">
         <view class="tab-content">
-          <van-empty description="暂无赠送记录" />
+          <view wx:if="{{!giftLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <view wx:elif="{{giftData && (giftData.promoOrders.length > 0 || giftData.giftItems.length > 0)}}">
+            <!-- 福利活动订单 -->
+            <view wx:if="{{giftData.promoOrders.length > 0}}">
+              <text class="gift-section-title">福利活动</text>
+              <view class="gift-card" wx:for="{{giftData.promoOrders}}" wx:key="saleOrderId">
+                <view class="gift-card-header">
+                  <text class="gift-order-no">{{item.saleOrderId}}</text>
+                  <text class="status-tag status-tag--success">{{item.status}}</text>
+                </view>
+                <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
+                  <text class="gift-item-name">{{gi.productName}}</text>
+                  <text class="gift-item-spec">{{gi.specName}}</text>
+                  <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.remainingSessions}}/{{gi.sessionCount}}</text>
+                </view>
+                <text class="gift-card-time">{{item.paidAt}}</text>
+              </view>
+            </view>
+            <!-- 套餐赠品 -->
+            <view wx:if="{{giftData.giftItems.length > 0}}">
+              <text class="gift-section-title">套餐赠品</text>
+              <view class="gift-card" wx:for="{{giftData.giftItems}}" wx:key="saleItemId">
+                <view class="gift-item-row">
+                  <text class="gift-item-name">{{item.productName}}</text>
+                  <text class="gift-item-spec">{{item.specName}}</text>
+                </view>
+                <view wx:if="{{item.sessionCount}}" class="gift-item-row">
+                  <text class="gift-item-sessions">剩余 {{item.remainingSessions}}/{{item.sessionCount}} 次</text>
+                </view>
+                <text class="gift-card-time">{{item.createdAt}}</text>
+              </view>
+            </view>
+          </view>
+          <van-empty wx:else description="暂无赠送记录" />
         </view>
       </van-tab>
 
       <van-tab title="退换记录">
         <view class="tab-content">
-          <van-empty description="暂无退换记录" />
+          <view wx:if="{{!refundLoaded}}" class="loading-wrap">
+            <van-loading type="spinner" color="#C0322A" />
+          </view>
+          <van-empty wx:elif="{{refundRecords.length === 0}}" description="暂无退换记录" />
+          <view wx:else>
+            <view class="refund-card" wx:for="{{refundRecords}}" wx:key="saleOrderId">
+              <view class="refund-card-header">
+                <text class="refund-order-no">{{item.saleOrderId}}</text>
+                <text class="refund-type-tag {{item.type === '退款' ? 'refund-type--refund' : 'refund-type--convert'}}">
+                  {{item.type}}
+                </text>
+                <text class="status-tag status-tag--{{item.status === '待审批' ? 'pending' : item.status === '已支付' ? 'success' : 'done'}}">
+                  {{item.status}}
+                </text>
+              </view>
+              <view wx:if="{{item.refundReason}}" class="refund-reason">
+                <text class="refund-reason-label">原因：</text>
+                <text>{{item.refundReason}}</text>
+              </view>
+              <view class="refund-items">
+                <view wx:for="{{item.items}}" wx:for-item="ri" wx:key="saleItemId" class="refund-item-row">
+                  <text class="refund-item-direction {{ri.direction === 'refund_out' || ri.direction === 'convert_out' ? 'direction--out' : 'direction--in'}}">
+                    {{ri.direction === 'refund_out' ? '退出' : ri.direction === 'convert_out' ? '转出' : ri.direction === 'convert_in' ? '转入' : '购买'}}
+                  </text>
+                  <text class="refund-item-name">{{ri.productName}}</text>
+                  <text class="refund-item-amount">¥{{ri.received}}</text>
+                </view>
+              </view>
+              <view class="refund-card-footer">
+                <text class="refund-card-time">{{item.createdAt}}</text>
+                <text class="refund-total">合计 ¥{{item.totalAmount}}</text>
+              </view>
+              <view class="refund-link" bindtap="onRefundOrderTap" data-id="{{item.saleOrderId}}">
+                <text class="purchase-link">查看详情 ›</text>
+              </view>
+            </view>
+          </view>
         </view>
       </van-tab>
     </van-tabs>

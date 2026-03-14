@@ -734,18 +734,538 @@ async function detail(ctx) {
   }
 }
 
+// ========== P2: 退款单 ==========
+
+/**
+ * 创建退款单（店长专用）
+ * payload: {
+ *   refSaleOrderId: string,   // 原销售单号
+ *   items: [{ saleItemId, refundQuantity, refundReason? }],
+ *   refundReason: string,
+ *   handlingFee?: number
+ * }
+ * 退款单创建后状态为 '待审批'
+ */
+async function createRefund(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
+  const storeId = ctx.auth.storeId
+  const marketName = ctx.auth.marketName || ''
+
+  if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
+  if (!items || !Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 退款明细不能为空')
+  if (!refundReason) throw new Error('INVALID_PARAMS: 退款原因不能为空')
+
+  // 查原单
+  const origOrders = await pg.query(
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND status IN ('已支付', '已完成')",
+    [refSaleOrderId, storeId]
+  )
+  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或状态不允许退款')
+  const origOrder = origOrders[0]
+
+  // 查原单明细
+  const origItems = await pg.query(
+    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = 'purchase'",
+    [refSaleOrderId]
+  )
+  const origItemMap = {}
+  for (const i of origItems) origItemMap[i.sale_item_id] = i
+
+  // 构建退款明细
+  const refundItems = []
+  let totalRefund = 0
+  for (const req of items) {
+    const orig = origItemMap[req.saleItemId]
+    if (!orig) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
+    const qty = req.refundQuantity || orig.quantity
+    const unitRealPrice = Number(orig.unit_real_price)
+    const refundAmount = unitRealPrice * qty
+    totalRefund += refundAmount
+    refundItems.push({
+      refSaleItemId: req.saleItemId,
+      skuId: orig.sku_id,
+      productName: orig.product_name,
+      skuSpecName: orig.sku_spec_name,
+      productType: orig.product_type,
+      sessionCount: orig.session_count,
+      unitPrice: Number(orig.unit_price),
+      quantity: qty,
+      unitRealPrice,
+      refundAmount,
+      salesCategory: orig.sales_category,
+    })
+  }
+
+  const fee = Number(handlingFee) || 0
+  const totalAmount = -(totalRefund - fee)  // 负数
+
+  const now = new Date()
+  const refundOrderId = await generateOrderNo('FY-TKD-WX-')
+
+  await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await client.query(
+      `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1 ORDER BY sale_item_id DESC LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (maxResult.rows.length > 0) seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+
+    // 创建退款订单
+    await client.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        market_name, store_id, sale_order_datetime,
+        client_user_id, client_phone, customer_name,
+        total_amount, payment_method, sale_order_source, opened_by,
+        refund_reason, handling_fee, created_at, updated_at
+      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $5, $5)`,
+      [
+        refundOrderId, refSaleOrderId, marketName, storeId, now,
+        origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
+        totalAmount, origOrder.payment_method, ctx.auth.staffWfId,
+        refundReason, fee || null
+      ]
+    )
+
+    // 创建退款明细行
+    for (let i = 0; i < refundItems.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const d = refundItems[i]
+      await client.query(
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sku_id, product_name, sku_spec_name, product_type,
+          session_count, unit_price, quantity,
+          unit_real_price, sale_amount, received, sales_category
+        ) VALUES ($1, $2, 'refund_out', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          saleItemId, refundOrderId, d.refSaleItemId,
+          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.sessionCount, d.unitPrice, d.quantity,
+          d.unitRealPrice, -(d.refundAmount), -(d.refundAmount),
+          d.salesCategory
+        ]
+      )
+    }
+  })
+
+  ctx.result = { saleOrderId: refundOrderId, status: '待审批', totalAmount, message: '退款单已创建' }
+}
+
+/**
+ * 审批退款单（店长专用）
+ */
+async function approveRefund(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { saleOrderId } = ctx.event.payload || {}
+  if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+
+  const orders = await pg.query(
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款' AND status = '待审批'",
+    [saleOrderId, ctx.auth.storeId]
+  )
+  if (orders.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许审批')
+
+  const now = new Date()
+
+  // 查退款明细（refund_out 行），原子扣减原购买行 remaining_sessions
+  const refundItems = await pg.query(
+    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = 'refund_out'",
+    [saleOrderId]
+  )
+
+  await pg.transaction(async (client) => {
+    // 扣减原购买行次数
+    for (const ri of refundItems) {
+      if (ri.ref_sale_item_id && ri.session_count) {
+        const result = await client.query(
+          `UPDATE sale_items SET remaining_sessions = remaining_sessions - $1, updated_at = $2
+           WHERE sale_item_id = $3 AND remaining_sessions >= $1`,
+          [ri.quantity, now, ri.ref_sale_item_id]
+        )
+        if (result.rowCount === 0) {
+          throw new Error('INVALID_PARAMS: 剩余次数不足，无法退款')
+        }
+      }
+    }
+
+    // 更新退款单状态
+    await client.query(
+      `UPDATE sale_orders SET status = '已支付', paid_at = $1, approved_by = $2, approved_at = $1,
+       allocation_status = 'pending', updated_at = $1
+       WHERE sale_order_id = $3`,
+      [now, ctx.auth.staffWfId, saleOrderId]
+    )
+  })
+
+  ctx.result = { saleOrderId, status: '已支付', message: '退款已审批通过' }
+}
+
+/**
+ * 驳回退款单（店长专用）
+ */
+async function rejectRefund(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { saleOrderId, rejectedReason } = ctx.event.payload || {}
+  if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+
+  const now = new Date()
+  const result = await pg.query(
+    `UPDATE sale_orders SET status = '已关闭', rejected_reason = $1, approved_by = $2, approved_at = $3, updated_at = $3
+     WHERE sale_order_id = $4 AND store_id = $5 AND sale_order_type = '退款' AND status = '待审批'`,
+    [rejectedReason || '', ctx.auth.staffWfId, now, saleOrderId, ctx.auth.storeId]
+  )
+  if (result.rowCount === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许驳回')
+
+  ctx.result = { saleOrderId, status: '已关闭', message: '退款已驳回' }
+}
+
+// ========== P2: 回款单 ==========
+
+/**
+ * 创建回款单（店长专用）
+ * payload: {
+ *   refSaleOrderId: string,     // 原销售单号
+ *   items: [{ saleItemId, repayAmount }],  // 需回款的明细行
+ *   paymentMethod: 'wechat'|'offline'
+ * }
+ */
+async function createRepayment(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { refSaleOrderId, items, paymentMethod } = ctx.event.payload || {}
+  const storeId = ctx.auth.storeId
+  const marketName = ctx.auth.marketName || ''
+
+  if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
+  if (!items || items.length === 0) throw new Error('INVALID_PARAMS: 回款明细不能为空')
+
+  const origOrders = await pg.query(
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
+    [refSaleOrderId, storeId]
+  )
+  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在')
+  const origOrder = origOrders[0]
+
+  let totalRepay = 0
+  const repayItems = []
+  for (const req of items) {
+    const origItem = await pg.query("SELECT * FROM sale_items WHERE sale_item_id = $1", [req.saleItemId])
+    if (origItem.length === 0) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
+    const oi = origItem[0]
+    const amount = Number(req.repayAmount) || 0
+    if (amount <= 0) throw new Error('INVALID_PARAMS: 回款金额必须大于0')
+    totalRepay += amount
+    repayItems.push({
+      refSaleItemId: req.saleItemId,
+      skuId: oi.sku_id,
+      productName: oi.product_name,
+      skuSpecName: oi.sku_spec_name,
+      productType: oi.product_type,
+      unitPrice: amount,
+      amount,
+      salesCategory: oi.sales_category,
+    })
+  }
+
+  const now = new Date()
+  const repayOrderId = await generateOrderNo('FY-HKD-WX-')
+
+  await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await client.query(
+      `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1 ORDER BY sale_item_id DESC LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (maxResult.rows.length > 0) seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+
+    await client.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        market_name, store_id, sale_order_datetime,
+        client_user_id, client_phone, customer_name,
+        total_amount, payment_method, sale_order_source, opened_by,
+        allocation_status, created_at, updated_at
+      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, 'pending', $5, $5)`,
+      [
+        repayOrderId, refSaleOrderId, marketName, storeId, now,
+        origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
+        totalRepay, paymentMethod || 'offline', ctx.auth.staffWfId
+      ]
+    )
+
+    for (let i = 0; i < repayItems.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const d = repayItems[i]
+      await client.query(
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sku_id, product_name, sku_spec_name, product_type,
+          unit_price, quantity, unit_real_price, sale_amount, received, sales_category
+        ) VALUES ($1, $2, 'purchase', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9)`,
+        [
+          saleItemId, repayOrderId, d.refSaleItemId,
+          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.amount, d.salesCategory
+        ]
+      )
+
+      // 原子累加原明细行的 received
+      await client.query(
+        `UPDATE sale_items SET received = received::numeric + $1, updated_at = $2 WHERE sale_item_id = $3`,
+        [d.amount, now, d.refSaleItemId]
+      )
+    }
+  })
+
+  ctx.result = { saleOrderId: repayOrderId, status: '待支付', totalAmount: totalRepay, message: '回款单已创建' }
+}
+
+// ========== P2: 转换单 ==========
+
+/**
+ * 创建转换单（店长专用）
+ * payload: {
+ *   refSaleOrderId: string,
+ *   convertOutItems: [{ saleItemId, convertQuantity }],
+ *   convertInItems: [{ skuId, quantity }],
+ * }
+ */
+async function createConversion(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { refSaleOrderId, convertOutItems, convertInItems } = ctx.event.payload || {}
+  const storeId = ctx.auth.storeId
+  const marketName = ctx.auth.marketName || ''
+
+  if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
+  if (!convertOutItems?.length) throw new Error('INVALID_PARAMS: 转出项目不能为空')
+  if (!convertInItems?.length) throw new Error('INVALID_PARAMS: 转入项目不能为空')
+
+  const origOrders = await pg.query(
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND status IN ('已支付', '已完成')",
+    [refSaleOrderId, storeId]
+  )
+  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或状态不允许转换')
+  const origOrder = origOrders[0]
+
+  // 计算转出金额
+  let totalOut = 0
+  const outItems = []
+  for (const req of convertOutItems) {
+    const origItem = await pg.query(
+      "SELECT * FROM sale_items WHERE sale_item_id = $1 AND sale_order_id = $2 AND item_direction = 'purchase'",
+      [req.saleItemId, refSaleOrderId]
+    )
+    if (origItem.length === 0) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
+    const oi = origItem[0]
+    const qty = req.convertQuantity || oi.quantity
+    const amount = Number(oi.unit_real_price) * qty
+    totalOut += amount
+    outItems.push({
+      refSaleItemId: req.saleItemId,
+      skuId: oi.sku_id,
+      productName: oi.product_name,
+      skuSpecName: oi.sku_spec_name,
+      productType: oi.product_type,
+      sessionCount: oi.session_count,
+      unitPrice: Number(oi.unit_price),
+      unitRealPrice: Number(oi.unit_real_price),
+      quantity: qty,
+      amount,
+      salesCategory: oi.sales_category,
+    })
+  }
+
+  // 计算转入金额
+  let totalIn = 0
+  const inItems = []
+  for (const req of convertInItems) {
+    const skuRows = await pg.query(
+      `SELECT s.*, p.name AS product_name, p.sales_category
+       FROM product_skus s JOIN products p ON s.product_id = p.product_id
+       WHERE s.sku_id = $1`,
+      [req.skuId]
+    )
+    if (skuRows.length === 0) throw new Error(`INVALID_PARAMS: SKU ${req.skuId} 不存在`)
+    const sku = skuRows[0]
+    const qty = req.quantity || 1
+    const amount = Number(sku.price) * qty
+    totalIn += amount
+    inItems.push({
+      skuId: req.skuId,
+      productName: sku.product_name,
+      skuSpecName: sku.spec_name,
+      productType: sku.product_type,
+      sessionCount: sku.session_count != null ? Number(sku.session_count) : null,
+      unitPrice: Number(sku.price),
+      quantity: qty,
+      amount,
+      salesCategory: sku.sales_category,
+    })
+  }
+
+  const priceDiff = totalIn - totalOut  // 正=补差价，负=退差价
+  const now = new Date()
+  const convOrderId = await generateOrderNo('FY-ABZH-WX-')
+
+  await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await client.query(
+      `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1 ORDER BY sale_item_id DESC LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (maxResult.rows.length > 0) seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+
+    // 创建转换订单
+    await client.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        market_name, store_id, sale_order_datetime,
+        client_user_id, client_phone, customer_name,
+        total_amount, payment_method, sale_order_source, opened_by,
+        allocation_status, created_at, updated_at
+      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, 'offline', 'staff', $10, 'pending', $5, $5)`,
+      [
+        convOrderId, refSaleOrderId, marketName, storeId, now,
+        origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
+        priceDiff, ctx.auth.staffWfId
+      ]
+    )
+
+    // convert_out 行（负数）+ 原子扣减原行次数
+    for (let i = 0; i < outItems.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
+      seq++
+      const d = outItems[i]
+      await client.query(
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sku_id, product_name, sku_spec_name, product_type,
+          session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category
+        ) VALUES ($1, $2, 'convert_out', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        [
+          saleItemId, convOrderId, d.refSaleItemId,
+          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
+          -(d.amount), -(d.amount), d.salesCategory
+        ]
+      )
+      // 原子扣减
+      if (d.sessionCount) {
+        const res = await client.query(
+          `UPDATE sale_items SET remaining_sessions = remaining_sessions - $1, updated_at = $2
+           WHERE sale_item_id = $3 AND remaining_sessions >= $1`,
+          [d.quantity, now, d.refSaleItemId]
+        )
+        if (res.rowCount === 0) throw new Error('INVALID_PARAMS: 剩余次数不足，无法转换')
+      }
+    }
+
+    // convert_in 行（正数）
+    for (let i = 0; i < inItems.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
+      seq++
+      const d = inItems[i]
+      await client.query(
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, item_direction,
+          sku_id, product_name, sku_spec_name, product_type,
+          session_count, remaining_sessions,
+          unit_price, quantity, unit_real_price, sale_amount, received, sales_category
+        ) VALUES ($1, $2, 'convert_in', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11)`,
+        [
+          saleItemId, convOrderId,
+          d.skuId, d.productName, d.skuSpecName, d.productType,
+          d.sessionCount,
+          d.unitPrice, d.quantity, d.amount, d.salesCategory
+        ]
+      )
+    }
+  })
+
+  ctx.result = { saleOrderId: convOrderId, status: '已支付', priceDiff, message: '转换单已创建' }
+}
+
+// ========== P2: 取货单 ==========
+
+/**
+ * 创建取货记录（院装产品提货）
+ * payload: { saleItemId, pickupQuantity, remark? }
+ */
+async function createPickup(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { saleItemId, pickupQuantity, remark } = ctx.event.payload || {}
+  if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
+  if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
+
+  // 原子累加 picked_up_quantity
+  const result = await pg.query(
+    `UPDATE sale_items
+     SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
+     WHERE sale_item_id = $2
+       AND product_type = '院装产品'
+       AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
+     RETURNING sale_item_id, quantity, picked_up_quantity`,
+    [pickupQuantity, saleItemId]
+  )
+
+  if (result.rowCount === 0) throw new Error('INVALID_PARAMS: 取货数量超出可提货数量或商品类型不正确')
+
+  // 查顾客信息
+  const itemRows = await pg.query(
+    `SELECT si.sale_order_id, o.client_user_id
+     FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+     WHERE si.sale_item_id = $1`,
+    [saleItemId]
+  )
+  const clientUserId = itemRows.length > 0 ? itemRows[0].client_user_id : null
+
+  // 插入提货记录
+  await pg.query(
+    `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [saleItemId, pickupQuantity, ctx.auth.storeId, clientUserId, ctx.auth.staffWfId, remark || null]
+  )
+
+  const updated = result.rows ? result.rows[0] : result[0]
+  ctx.result = {
+    saleItemId,
+    pickedUp: updated.picked_up_quantity,
+    total: updated.quantity,
+    remaining: updated.quantity - updated.picked_up_quantity,
+    message: '取货成功',
+  }
+}
+
 // ========== 辅助函数 ==========
 
 /**
- * 生成订单号：FY-XSD-WX-{YYMMDD}{4位序号}
+ * 生成订单号
+ * @param prefix 前缀，如 'FY-XSD-WX-', 'FY-TKD-WX-' 等
  */
-async function generateOrderNo() {
+async function generateOrderNo(prefix) {
+  if (!prefix) prefix = 'FY-XSD-WX-'
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   const result = await pg.query(`
     SELECT sale_order_id FROM sale_orders
-    WHERE sale_order_id LIKE 'FY-XSD-WX-${dateStr}%'
+    WHERE sale_order_id LIKE '${prefix}${dateStr}%'
     ORDER BY sale_order_id DESC LIMIT 1
   `)
 
@@ -754,7 +1274,7 @@ async function generateOrderNo() {
     seq = parseInt(result[0].sale_order_id.slice(-4)) + 1
   }
 
-  return `FY-XSD-WX-${dateStr}${String(seq).padStart(4, '0')}`
+  return `${prefix}${dateStr}${String(seq).padStart(4, '0')}`
 }
 
 module.exports = {
@@ -764,5 +1284,11 @@ module.exports = {
   close,
   resetFailed,
   list,
-  detail
+  detail,
+  createRefund,
+  approveRefund,
+  rejectRefund,
+  createRepayment,
+  createConversion,
+  createPickup,
 }

@@ -21,6 +21,10 @@ Page({
     isCreator: false,
     statusClass: '',
     _saleOrderId: '',
+    // P2: 退款
+    showRefundDialog: false,
+    refundReason: '',
+    submitting: false,
   },
 
   onLoad(options: Record<string, string>) {
@@ -55,9 +59,11 @@ Page({
           saleOrderId: o.sale_order_id,
           status: o.status,
           storeName: o.store_name || '',
-          orderType: o.order_type,
-          orderTypeLabel: ORDER_TYPE_LABEL[o.order_type] || o.order_type,
-          orderSourceLabel: ORDER_SOURCE_LABEL[o.order_source] || o.order_source || '—',
+          orderType: o.sale_order_type || o.order_type,
+          orderTypeLabel: ORDER_TYPE_LABEL[o.sale_order_type || o.order_type] || o.sale_order_type || o.order_type,
+          orderSourceLabel: ORDER_SOURCE_LABEL[o.sale_order_source || o.order_source] || o.sale_order_source || o.order_source || '—',
+          refundReason: o.refund_reason || '',
+          refOrderId: o.ref_sale_order_id || '',
           payType: o.payment_method,
           payTypeLabel: PAY_TYPE_LABEL[o.payment_method] || o.payment_method || '—',
           customerName: o.customer_name || '',
@@ -153,5 +159,85 @@ Page({
     const o = this.data.order;
     const params = `orderNo=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
+  },
+
+  // ===== P2: 退款 =====
+  onCreateRefund() {
+    const o = this.data.order;
+    if (!o) return;
+    this.setData({ showRefundDialog: true, refundReason: '' });
+  },
+
+  onRefundReasonChange(e: WechatMiniprogram.CustomEvent) {
+    this.setData({ refundReason: (e.detail as unknown as string) || '' });
+  },
+
+  async onConfirmRefund() {
+    const { order, refundReason, submitting } = this.data;
+    if (submitting || !order) return;
+    if (!refundReason?.trim()) {
+      wx.showToast({ title: '请填写退款原因', icon: 'none' });
+      return;
+    }
+    this.setData({ submitting: true });
+    try {
+      // 默认全部项目退款
+      const items = order.items.map((it: any) => ({ saleItemId: it.saleItemId }));
+      await callStaffApi('order.createRefund', {
+        refSaleOrderId: order.saleOrderId,
+        items,
+        refundReason: refundReason.trim(),
+      });
+      this.setData({ showRefundDialog: false });
+      wx.showToast({ title: '退款单已创建', icon: 'success' });
+      this.loadDetail(this.data._saleOrderId);
+    } catch (err: any) {
+      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
+    }
+  },
+
+  onCancelRefund() {
+    this.setData({ showRefundDialog: false });
+  },
+
+  // ===== P2: 审批退款 =====
+  onApproveRefund() {
+    wx.showModal({
+      title: '审批退款',
+      content: '确认通过此退款申请？审批后将扣减对应次数。',
+      confirmText: '通过',
+      confirmColor: '#C0322A',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('order.approveRefund', { saleOrderId: this.data._saleOrderId });
+          wx.showToast({ title: '退款已审批', icon: 'success' });
+          this.loadDetail(this.data._saleOrderId);
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      },
+    });
+  },
+
+  onRejectRefund() {
+    wx.showModal({
+      title: '驳回退款',
+      content: '确认驳回此退款申请？',
+      confirmText: '驳回',
+      confirmColor: '#D94040',
+      success: async (res) => {
+        if (!res.confirm) return;
+        try {
+          await callStaffApi('order.rejectRefund', { saleOrderId: this.data._saleOrderId });
+          wx.showToast({ title: '退款已驳回', icon: 'success' });
+          this.loadDetail(this.data._saleOrderId);
+        } catch (err: any) {
+          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        }
+      },
+    });
   },
 });

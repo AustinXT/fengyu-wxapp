@@ -106,6 +106,29 @@
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCloseOrder"
       >取消订单</van-button>
+      <!-- P2: 退款按钮（已支付/已完成 + 店长 + 非退款/转换/回款单） -->
+      <van-button
+        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType !== '退款' && order.orderType !== '转换' && order.orderType !== '回款'}}"
+        block plain type="danger"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onCreateRefund"
+      >申请退款</van-button>
+
+      <!-- P2: 退款审批按钮（待审批 + 退款单 + 店长） -->
+      <van-button
+        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款'}}"
+        block type="primary"
+        custom-class="btn-primary-brand"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onApproveRefund"
+      >通过退款</van-button>
+      <van-button
+        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款'}}"
+        block plain type="danger"
+        custom-style="border-radius:48rpx;margin-top:24rpx;"
+        bind:click="onRejectRefund"
+      >驳回退款</van-button>
+
       <!-- 终态：返回工作台 -->
       <van-button
         wx:if="{{order.status === '已关闭' || (!isManager && (order.status === '已完成' || order.status === '已支付'))}}"
@@ -116,6 +139,30 @@
       >返回工作台</van-button>
     </view>
   </block>
+
+  <!-- P2: 退款原因对话框 -->
+  <van-dialog
+    use-slot
+    title="申请退款"
+    show="{{showRefundDialog}}"
+    show-cancel-button
+    confirm-button-color="#C0322A"
+    bind:confirm="onConfirmRefund"
+    bind:cancel="onCancelRefund"
+    confirm-button-text="提交"
+  >
+    <view style="padding: 16rpx 24rpx;">
+      <van-field
+        label="退款原因"
+        placeholder="请填写退款原因"
+        type="textarea"
+        maxlength="200"
+        autosize
+        value="{{refundReason}}"
+        bind:change="onRefundReasonChange"
+      />
+    </view>
+  </van-dialog>
 
   <view class="safe-area-bottom" />
 </view>
