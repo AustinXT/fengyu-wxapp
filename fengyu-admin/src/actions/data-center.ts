@@ -1,0 +1,410 @@
+'use server'
+
+import { db } from '@/db'
+import { sql } from 'drizzle-orm'
+
+// ─── 公共类型 ───────────────────────────────────────────────
+
+export interface DateFilter {
+  storeId?: string
+  startDate?: string  // YYYY-MM-DD
+  endDate?: string    // YYYY-MM-DD
+}
+
+function buildWhere(f: DateFilter, dateCol: string) {
+  const clauses: string[] = []
+  if (f.storeId) clauses.push(`store_id = '${f.storeId}'`)
+  if (f.startDate) clauses.push(`${dateCol} >= '${f.startDate}'`)
+  if (f.endDate) clauses.push(`${dateCol} <= '${f.endDate}'`)
+  return clauses.length ? `AND ${clauses.join(' AND ')}` : ''
+}
+
+// ─── Tab 1: 客户回店率 ─────────────────────────────────────
+
+export interface ReturnRateRow {
+  month: string
+  totalCustomers: number
+  returningCustomers: number
+  returnRate: number
+}
+
+export interface StoreReturnRate {
+  storeId: string
+  storeName: string
+  totalCustomers: number
+  returningCustomers: number
+  returnRate: number
+}
+
+export async function getReturnRateByMonth(filter: DateFilter = {}): Promise<ReturnRateRow[]> {
+  const storeClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const rows = await db.execute(sql.raw(`
+    WITH monthly AS (
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', sale_order_datetime), 'YYYY-MM') AS month,
+        client_user_id
+      FROM sale_orders
+      WHERE status NOT IN ('已关闭', '支付失败')
+        AND client_user_id IS NOT NULL
+        ${storeClause} ${dateClause} ${endClause}
+      GROUP BY 1, 2
+    ),
+    with_prev AS (
+      SELECT
+        m.month,
+        m.client_user_id,
+        CASE WHEN p.client_user_id IS NOT NULL THEN 1 ELSE 0 END AS is_return
+      FROM monthly m
+      LEFT JOIN monthly p
+        ON m.client_user_id = p.client_user_id
+        AND p.month = TO_CHAR(DATE_TRUNC('month', TO_DATE(m.month, 'YYYY-MM') - INTERVAL '1 month'), 'YYYY-MM')
+    )
+    SELECT
+      month,
+      COUNT(DISTINCT client_user_id) AS total_customers,
+      COUNT(DISTINCT CASE WHEN is_return = 1 THEN client_user_id END) AS returning_customers
+    FROM with_prev
+    GROUP BY month
+    ORDER BY month
+  `))
+
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    month: String(r.month),
+    totalCustomers: Number(r.total_customers),
+    returningCustomers: Number(r.returning_customers),
+    returnRate: Number(r.total_customers) > 0
+      ? Math.round(Number(r.returning_customers) / Number(r.total_customers) * 1000) / 10
+      : 0,
+  }))
+}
+
+export async function getReturnRateByStore(filter: DateFilter = {}): Promise<StoreReturnRate[]> {
+  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const rows = await db.execute(sql.raw(`
+    WITH period_customers AS (
+      SELECT store_id, client_user_id, COUNT(*) AS visit_count
+      FROM sale_orders o
+      WHERE status NOT IN ('已关闭', '支付失败')
+        AND client_user_id IS NOT NULL
+        ${dateClause} ${endClause}
+      GROUP BY store_id, client_user_id
+    )
+    SELECT
+      pc.store_id,
+      COALESCE(s.store_name, pc.store_id) AS store_name,
+      COUNT(*) AS total_customers,
+      COUNT(CASE WHEN pc.visit_count > 1 THEN 1 END) AS returning_customers
+    FROM period_customers pc
+    LEFT JOIN stores s ON s.store_id = pc.store_id
+    GROUP BY pc.store_id, s.store_name
+    ORDER BY total_customers DESC
+  `))
+
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    storeId: String(r.store_id),
+    storeName: String(r.store_name),
+    totalCustomers: Number(r.total_customers),
+    returningCustomers: Number(r.returning_customers),
+    returnRate: Number(r.total_customers) > 0
+      ? Math.round(Number(r.returning_customers) / Number(r.total_customers) * 1000) / 10
+      : 0,
+  }))
+}
+
+// ─── Tab 2: 品项占比 ────────────────────────────────────────
+
+export interface CategoryMixRow {
+  productKind: string
+  orderCount: number
+  totalAmount: number
+  percentage: number
+}
+
+export interface ProductRankRow {
+  productName: string
+  productKind: string
+  orderCount: number
+  totalAmount: number
+}
+
+export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryMixRow[]> {
+  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const rows = await db.execute(sql.raw(`
+    SELECT
+      COALESCE(pc.product_kind, '未分类') AS product_kind,
+      COUNT(DISTINCT o.sale_order_id) AS order_count,
+      COALESCE(SUM(si.sale_amount), 0) AS total_amount
+    FROM sale_items si
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN products p ON p.product_id = ps.product_id
+    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    WHERE o.status NOT IN ('已关闭', '支付失败')
+      AND si.item_direction = 'purchase'
+      ${storeClause} ${dateClause} ${endClause}
+    GROUP BY pc.product_kind
+    ORDER BY total_amount DESC
+  `))
+
+  const total = (rows as Array<Record<string, unknown>>).reduce((s, r) => s + Number(r.total_amount), 0)
+
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    productKind: String(r.product_kind),
+    orderCount: Number(r.order_count),
+    totalAmount: Number(r.total_amount),
+    percentage: total > 0 ? Math.round(Number(r.total_amount) / total * 1000) / 10 : 0,
+  }))
+}
+
+export async function getProductRank(filter: DateFilter = {}): Promise<ProductRankRow[]> {
+  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const rows = await db.execute(sql.raw(`
+    SELECT
+      COALESCE(si.product_name, '未知商品') AS product_name,
+      COALESCE(pc.product_kind, '未分类') AS product_kind,
+      SUM(si.quantity) AS order_count,
+      COALESCE(SUM(si.sale_amount), 0) AS total_amount
+    FROM sale_items si
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN products p ON p.product_id = ps.product_id
+    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    WHERE o.status NOT IN ('已关闭', '支付失败')
+      AND si.item_direction = 'purchase'
+      ${storeClause} ${dateClause} ${endClause}
+    GROUP BY si.product_name, pc.product_kind
+    ORDER BY total_amount DESC
+    LIMIT 20
+  `))
+
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    productName: String(r.product_name),
+    productKind: String(r.product_kind),
+    orderCount: Number(r.order_count),
+    totalAmount: Number(r.total_amount),
+  }))
+}
+
+// ─── Tab 3: 经营动线 ────────────────────────────────────────
+
+export interface FunnelRow {
+  stage: string
+  count: number
+}
+
+export async function getOperationsFunnel(filter: DateFilter = {}): Promise<FunnelRow[]> {
+  const storeClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const orderRows = await db.execute(sql.raw(`
+    SELECT
+      COUNT(*) AS total_orders,
+      COUNT(CASE WHEN status IN ('已支付', '已完成') THEN 1 END) AS paid_orders,
+      COUNT(DISTINCT client_user_id) AS unique_customers
+    FROM sale_orders
+    WHERE status != '已关闭'
+      ${storeClause} ${dateClause} ${endClause}
+  `))
+
+  const svcStoreClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
+  const svcDateClause = filter.startDate ? `AND service_date >= '${filter.startDate}'` : ''
+  const svcEndClause = filter.endDate ? `AND service_date <= '${filter.endDate}'` : ''
+
+  const serviceRows = await db.execute(sql.raw(`
+    SELECT
+      COUNT(*) AS total_services,
+      COUNT(CASE WHEN status = '已完成' THEN 1 END) AS completed_services
+    FROM service_orders
+    WHERE 1=1
+      ${svcStoreClause} ${svcDateClause} ${svcEndClause}
+  `))
+
+  const apptStoreClause = filter.storeId ? `AND store_id = '${filter.storeId}'` : ''
+  const apptDateClause = filter.startDate ? `AND DATE(appointment_time) >= '${filter.startDate}'` : ''
+  const apptEndClause = filter.endDate ? `AND DATE(appointment_time) <= '${filter.endDate}'` : ''
+
+  const apptRows = await db.execute(sql.raw(`
+    SELECT COUNT(*) AS total_appointments
+    FROM appointments
+    WHERE status NOT IN ('已取消', '已关闭')
+      ${apptStoreClause} ${apptDateClause} ${apptEndClause}
+  `))
+
+  const o = (orderRows as Array<Record<string, unknown>>)[0] ?? {}
+  const s = (serviceRows as Array<Record<string, unknown>>)[0] ?? {}
+  const a = (apptRows as Array<Record<string, unknown>>)[0] ?? {}
+
+  return [
+    { stage: '到店顾客', count: Number(o.unique_customers ?? 0) },
+    { stage: '创建订单', count: Number(o.total_orders ?? 0) },
+    { stage: '成功支付', count: Number(o.paid_orders ?? 0) },
+    { stage: '预约服务', count: Number(a.total_appointments ?? 0) },
+    { stage: '开始服务', count: Number(s.total_services ?? 0) },
+    { stage: '完成服务', count: Number(s.completed_services ?? 0) },
+  ]
+}
+
+// ─── Tab 4: 人效分析 ────────────────────────────────────────
+
+export interface StaffEfficiencyRow {
+  employeeId: string
+  employeeName: string
+  storeName: string
+  orderCount: number
+  totalRevenue: number
+  avgTransaction: number
+  serviceCount: number
+}
+
+export async function getStaffEfficiency(filter: DateFilter = {}): Promise<StaffEfficiencyRow[]> {
+  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  const rows = await db.execute(sql.raw(`
+    SELECT
+      e.employee_id,
+      COALESCE(e.name, e.employee_id) AS employee_name,
+      COALESCE(s.store_name, '') AS store_name,
+      COUNT(DISTINCT o.sale_order_id) AS order_count,
+      COALESCE(SUM(o.total_amount), 0) AS total_revenue,
+      (SELECT COUNT(*) FROM service_orders sv
+       WHERE sv.assigned_employee_id = e.employee_id
+         AND sv.status = '已完成'
+         ${filter.startDate ? "AND sv.service_date >= '" + filter.startDate + "'" : ''}
+         ${filter.endDate ? "AND sv.service_date <= '" + filter.endDate + "'" : ''}
+      ) AS service_count
+    FROM staff_wechat_users e
+    LEFT JOIN sale_orders o
+      ON o.opened_by = e.employee_id
+      AND o.status IN ('已支付', '已完成')
+      ${storeClause} ${dateClause} ${endClause}
+    LEFT JOIN stores s ON s.store_id = e.store_id
+    WHERE e.is_resigned = false
+    GROUP BY e.employee_id, e.name, s.store_name
+    HAVING COUNT(DISTINCT o.sale_order_id) > 0
+    ORDER BY total_revenue DESC
+    LIMIT 50
+  `))
+
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    employeeId: String(r.employee_id),
+    employeeName: String(r.employee_name),
+    storeName: String(r.store_name),
+    orderCount: Number(r.order_count),
+    totalRevenue: Number(r.total_revenue),
+    avgTransaction: Number(r.order_count) > 0
+      ? Math.round(Number(r.total_revenue) / Number(r.order_count) * 100) / 100
+      : 0,
+    serviceCount: Number(r.service_count),
+  }))
+}
+
+// ─── Tab 5: 排行榜 ──────────────────────────────────────────
+
+export interface RankingRow {
+  rank: number
+  name: string
+  subtitle: string
+  value: number
+}
+
+export async function getRankings(filter: DateFilter = {}): Promise<{
+  staffByRevenue: RankingRow[]
+  productsByRevenue: RankingRow[]
+  customersBySpend: RankingRow[]
+}> {
+  const storeClause = filter.storeId ? `AND o.store_id = '${filter.storeId}'` : ''
+  const dateClause = filter.startDate ? `AND DATE(o.sale_order_datetime) >= '${filter.startDate}'` : ''
+  const endClause = filter.endDate ? `AND DATE(o.sale_order_datetime) <= '${filter.endDate}'` : ''
+
+  // Top staff by revenue
+  const staffRows = await db.execute(sql.raw(`
+    SELECT
+      COALESCE(e.name, o.opened_by) AS name,
+      COALESCE(s.store_name, '') AS subtitle,
+      COALESCE(SUM(o.total_amount), 0) AS value
+    FROM sale_orders o
+    LEFT JOIN staff_wechat_users e ON e.employee_id = o.opened_by
+    LEFT JOIN stores s ON s.store_id = e.store_id
+    WHERE o.status IN ('已支付', '已完成')
+      AND o.opened_by IS NOT NULL
+      ${storeClause} ${dateClause} ${endClause}
+    GROUP BY e.name, o.opened_by, s.store_name
+    ORDER BY value DESC
+    LIMIT 10
+  `))
+
+  // Top products by revenue
+  const productRows = await db.execute(sql.raw(`
+    SELECT
+      COALESCE(si.product_name, '未知商品') AS name,
+      COALESCE(pc.product_kind, '未分类') AS subtitle,
+      COALESCE(SUM(si.sale_amount), 0) AS value
+    FROM sale_items si
+    JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
+    LEFT JOIN products p ON p.product_id = ps.product_id
+    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    WHERE o.status IN ('已支付', '已完成')
+      AND si.item_direction = 'purchase'
+      ${storeClause} ${dateClause} ${endClause}
+    GROUP BY si.product_name, pc.product_kind
+    ORDER BY value DESC
+    LIMIT 10
+  `))
+
+  // Top customers by spend
+  const customerRows = await db.execute(sql.raw(`
+    SELECT
+      COALESCE(c.name, o.client_phone, '未知顾客') AS name,
+      COALESCE(c.member_level, '新客') AS subtitle,
+      COALESCE(SUM(o.total_amount), 0) AS value
+    FROM sale_orders o
+    LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id
+    WHERE o.status IN ('已支付', '已完成')
+      AND o.client_user_id IS NOT NULL
+      ${storeClause} ${dateClause} ${endClause}
+    GROUP BY c.name, o.client_phone, c.member_level
+    ORDER BY value DESC
+    LIMIT 10
+  `))
+
+  const toRankings = (rows: unknown[]) =>
+    (rows as Array<Record<string, unknown>>).map((r, i) => ({
+      rank: i + 1,
+      name: String(r.name),
+      subtitle: String(r.subtitle),
+      value: Number(r.value),
+    }))
+
+  return {
+    staffByRevenue: toRankings(staffRows),
+    productsByRevenue: toRankings(productRows),
+    customersBySpend: toRankings(customerRows),
+  }
+}
+
+// ─── 门店列表（筛选器用） ─────────────────────────────────────
+
+export async function getStoreOptions(): Promise<Array<{ storeId: string; storeName: string }>> {
+  const rows = await db.execute(sql`
+    SELECT store_id, store_name FROM stores WHERE is_closed = false ORDER BY store_name
+  `)
+  return (rows as Array<Record<string, unknown>>).map(r => ({
+    storeId: String(r.store_id),
+    storeName: String(r.store_name),
+  }))
+}
