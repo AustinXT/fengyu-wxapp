@@ -98,6 +98,10 @@ exports.main = async (event, context) => {
 
     // 解析错误类型
     const errorMessage = error.message || '服务器内部错误'
+    const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
+    const errorType = errorTypeMatch ? errorTypeMatch[1] : null
+    const displayMessage = errorType ? errorMessage.slice(errorTypeMatch[0].length) : errorMessage
+
     const code = errorMessage.startsWith('UNAUTHORIZED') ? -401 :
                   errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
@@ -107,7 +111,8 @@ exports.main = async (event, context) => {
 
     return {
       code,
-      message: errorMessage,
+      message: displayMessage,
+      errorType,
       data: error.data || null
     }
   }

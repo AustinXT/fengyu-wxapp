@@ -29,6 +29,7 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
     const err: any = new Error(res.result?.message || '请求失败');
     err.code = res.result?.code;
     err.data = res.result?.data;
+    err.errorType = res.result?.errorType;
     throw err;
   }
   return res.result.data;
@@ -351,7 +352,7 @@ Page({
         if (this.data.fromCart) clearCart();
       }
     } catch (err: any) {
-      if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
+      if (err?.errorType === 'PHONE_REQUIRED') {
         this.setData({ showPhoneBind: true });
       } else if (err?.data?.pendingOrderNo) {
         const pendingId = err.data.pendingOrderNo;

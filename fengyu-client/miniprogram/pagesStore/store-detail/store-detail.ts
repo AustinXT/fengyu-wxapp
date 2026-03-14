@@ -184,7 +184,7 @@ Page({
       });
       Toast.success('解绑申请已提交');
     } catch (err: any) {
-      Toast.fail(err?.message?.replace('INVALID_PARAMS: ', '') || '提交失败');
+      Toast.fail(err?.message || '提交失败');
     } finally {
       this.setData({ submittingUnbind: false });
     }

@@ -20,6 +20,7 @@ async function callClientApi(action: string, payload: Record<string, any> = {}) 
   if (res.result?.code !== 0) {
     const err: any = new Error(res.result?.message || '请求失败');
     err.code = res.result?.code;
+    err.errorType = res.result?.errorType;
     throw err;
   }
   return res.result.data;
@@ -219,7 +220,7 @@ Page({
         wx.switchTab({ url: '/pages/appointment/appointment' });
       }, 1500);
     } catch (err: any) {
-      if (err?.code === -403 && err?.message?.includes('PHONE_REQUIRED')) {
+      if (err?.errorType === 'PHONE_REQUIRED') {
         this.setData({ showPhoneBind: true });
         return;
       }

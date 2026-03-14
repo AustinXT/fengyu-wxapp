@@ -100,7 +100,7 @@ Page({
 
   // 点击底部购物车栏
   onCartTap() {
-    wx.navigateTo({ url: '/pages/cart/cart' });
+    wx.navigateTo({ url: '/pagesShop/shopping-cart/shopping-cart' });
   },
 
   // 使用 shopInit 合并接口一次性加载分类 + 第一个分类的 SPU 列表
