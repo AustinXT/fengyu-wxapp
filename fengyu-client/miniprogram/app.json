@@ -23,7 +23,8 @@
         "checkout/checkout",
         "order-detail/order-detail",
         "scan-pay/scan-pay",
-        "treatment-cards/treatment-cards"
+        "treatment-cards/treatment-cards",
+        "service-records/service-records"
       ]
     },
     {
@@ -39,6 +40,13 @@
       "name": "appointment-sub",
       "pages": [
         "appointment-create/appointment-create"
+      ]
+    },
+    {
+      "root": "pagesProfile",
+      "name": "profile",
+      "pages": [
+        "profile-edit/profile-edit"
       ]
     },
     {

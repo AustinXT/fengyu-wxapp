@@ -18,7 +18,7 @@ async function login(ctx) {
 
   // 检查用户是否存在（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    `SELECT u.user_id, u.phone, u.bound_store_id,
+    `SELECT u.user_id, u.phone, u.name, u.bound_store_id,
             s.store_name AS bound_store_name,
             pm.name AS bound_market_name
      FROM client_wechat_users u
@@ -59,6 +59,7 @@ async function login(ctx) {
       isNewUser: false,
       userId: users[0].user_id,
       phone: users[0].phone,
+      name: users[0].name,
       boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
@@ -224,8 +225,45 @@ async function bindStore(ctx) {
   }
 }
 
+/**
+ * 更新用户资料（昵称）
+ */
+async function updateProfile(ctx) {
+  const { OPENID } = cloud.getWXContext()
+  const { name } = ctx.event.payload || {}
+
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    throw new Error('INVALID_PARAMS: 名称不能为空')
+  }
+
+  const trimmedName = name.trim().substring(0, 50)
+  const now = new Date()
+
+  const users = await pg.query(
+    'SELECT user_id FROM client_wechat_users WHERE openid = $1',
+    [OPENID]
+  )
+
+  if (users.length === 0) {
+    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
+  }
+
+  await pg.query(
+    'UPDATE client_wechat_users SET name = $1, updated_at = $2 WHERE user_id = $3',
+    [trimmedName, now, users[0].user_id]
+  )
+
+  invalidateAuthCache(OPENID)
+
+  ctx.result = {
+    success: true,
+    name: trimmedName
+  }
+}
+
 module.exports = {
   login,
   bindPhone,
-  bindStore
+  bindStore,
+  updateProfile
 }

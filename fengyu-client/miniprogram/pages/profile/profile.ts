@@ -10,6 +10,7 @@ function maskPhone(phone: string): string {
 
 Page({
   data: {
+    userName: '',
     maskedPhone: '',
     boundStoreName: '',
   },
@@ -24,10 +25,16 @@ Page({
 
   refreshData() {
     const phone = wx.getStorageSync('phone') as string || '';
+    const userName = wx.getStorageSync('userName') as string || '';
     this.setData({
+      userName,
       maskedPhone: maskPhone(phone),
       boundStoreName: app.globalData.boundStoreName,
     });
+  },
+
+  onEditProfile() {
+    wx.navigateTo({ url: '/pagesProfile/profile-edit/profile-edit' });
   },
 
   onOrders() {
@@ -36,6 +43,23 @@ Page({
 
   onTreatmentCards() {
     wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
+  },
+
+  onAppointments() {
+    wx.switchTab({ url: '/pages/appointment/appointment' });
+  },
+
+  onCoupons() {
+    wx.navigateTo({ url: '/pagesCoupon/my-coupons/my-coupons' });
+  },
+
+  onServiceRecords() {
+    wx.navigateTo({ url: '/pagesOrder/service-records/service-records' });
+  },
+
+  onComingSoon(e: WechatMiniprogram.TouchEvent) {
+    const name = e.currentTarget.dataset.name || '';
+    Toast(`${name}功能开发中`);
   },
 
   onBindPhone() {
@@ -110,6 +134,10 @@ Page({
 
   onSwitchStore() {
     wx.navigateTo({ url: '/pagesStore/store-select/store-select' });
+  },
+
+  onAbout() {
+    wx.switchTab({ url: '/pages/cart/cart' });
   },
 
   onShareAppMessage() {

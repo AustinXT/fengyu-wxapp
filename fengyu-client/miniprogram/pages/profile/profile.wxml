@@ -3,22 +3,44 @@
 
 <view class="container">
 
-  <!-- 用户信息卡 -->
-  <view class="user-card">
+  <!-- 头部卡片（品牌渐变） -->
+  <view class="user-header brand-gradient" bindtap="onEditProfile">
     <view class="user-avatar-wrap">
-      <van-icon name="contact" size="88rpx" color="#C0322A" />
+      <van-icon name="contact" size="88rpx" color="#FFFFFF" />
     </view>
     <view class="user-info">
-      <text class="user-phone">{{maskedPhone || '未绑定手机号'}}</text>
+      <text class="user-name">{{userName || '点击设置昵称'}}</text>
+      <text class="user-phone" wx:if="{{maskedPhone}}">{{maskedPhone}}</text>
       <view class="user-store-row" wx:if="{{boundStoreName}}">
-        <van-icon name="location-o" size="24rpx" color="#B09880" />
+        <van-icon name="location-o" size="22rpx" color="rgba(255,255,255,0.8)" />
         <text class="user-store">{{boundStoreName}}</text>
       </view>
     </view>
+    <van-icon name="arrow" size="32rpx" color="rgba(255,255,255,0.6)" />
   </view>
 
-  <!-- 快捷入口 -->
-  <view class="section-title">快速操作</view>
+  <!-- 四宫格快捷入口 -->
+  <view class="grid-section">
+    <view class="grid-item" bindtap="onCoupons">
+      <van-icon name="coupon-o" size="48rpx" color="#C0322A" />
+      <text class="grid-label">优惠券</text>
+    </view>
+    <view class="grid-item" bindtap="onComingSoon" data-name="积分">
+      <van-icon name="gem-o" size="48rpx" color="#D4820A" />
+      <text class="grid-label">积分</text>
+    </view>
+    <view class="grid-item" bindtap="onComingSoon" data-name="消息">
+      <van-icon name="envelop-o" size="48rpx" color="#096DD9" />
+      <text class="grid-label">消息</text>
+    </view>
+    <view class="grid-item" bindtap="onComingSoon" data-name="充值卡">
+      <van-icon name="balance-o" size="48rpx" color="#52C41A" />
+      <text class="grid-label">充值卡</text>
+    </view>
+  </view>
+
+  <!-- 我的服务 -->
+  <view class="section-title">我的服务</view>
   <van-cell-group inset>
     <van-cell
       title="我的订单"
@@ -32,9 +54,27 @@
       is-link
       bindtap="onTreatmentCards"
     />
+    <van-cell
+      title="我的预约"
+      icon="calendar-o"
+      is-link
+      bindtap="onAppointments"
+    />
+    <van-cell
+      title="我的优惠券"
+      icon="coupon-o"
+      is-link
+      bindtap="onCoupons"
+    />
+    <van-cell
+      title="服务记录"
+      icon="records"
+      is-link
+      bindtap="onServiceRecords"
+    />
   </van-cell-group>
 
-  <!-- 设置 -->
+  <!-- 账户设置 -->
   <view class="section-title" style="margin-top:32rpx">账户设置</view>
   <van-cell-group inset>
     <!-- 使用 button + getPhoneNumber 获取手机号 -->
@@ -62,7 +102,13 @@
   <!-- 关于 -->
   <view class="section-title" style="margin-top:32rpx">关于</view>
   <van-cell-group inset>
-    <van-cell title="凤御美容" icon="info-o" value="v1.0.0" />
+    <van-cell
+      title="关于凤御"
+      icon="info-o"
+      is-link
+      bindtap="onAbout"
+    />
+    <van-cell title="版本" icon="setting-o" value="v1.0.0" />
   </van-cell-group>
 
   <view class="bottom-space" />

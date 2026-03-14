@@ -1,0 +1,97 @@
+/* pagesProfile/profile-edit/profile-edit.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+}
+
+/* ===== 头像区域 ===== */
+.avatar-section {
+  display: flex;
+  justify-content: center;
+  padding: 60rpx 0 40rpx;
+}
+
+.avatar-circle {
+  width: 160rpx;
+  height: 160rpx;
+  background: var(--color-primary-light);
+  border: 3rpx solid rgba(192, 50, 42, 0.2);
+  border-radius: 80rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== 编辑昵称行 ===== */
+.edit-name-row {
+  display: flex;
+  align-items: center;
+  padding: 20rpx 32rpx;
+  background: var(--color-bg-card);
+  gap: 16rpx;
+}
+
+.edit-name-label {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+  width: 120rpx;
+}
+
+.edit-name-input {
+  flex: 1;
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  height: 48rpx;
+  border-bottom: 2rpx solid var(--color-primary);
+  padding: 0 8rpx;
+}
+
+.edit-name-actions {
+  display: flex;
+  gap: 16rpx;
+  flex-shrink: 0;
+}
+
+.edit-btn {
+  font-size: 26rpx;
+  padding: 8rpx 20rpx;
+  border-radius: 8rpx;
+}
+
+.edit-btn--cancel {
+  color: var(--color-text-hint);
+}
+
+.edit-btn--save {
+  color: #FFFFFF;
+  background: var(--color-primary);
+}
+
+/* ===== 区块标题 ===== */
+.section-title {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  padding: 32rpx 32rpx 12rpx;
+  letter-spacing: 1rpx;
+}
+
+/* ===== 手机号绑定按钮 ===== */
+.phone-bind-btn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  line-height: normal;
+  text-align: left;
+}
+
+.phone-bind-btn::after {
+  border: none;
+}
+
+/* ===== 信息组间距 ===== */
+.info-group {
+  margin-top: 0 !important;
+}

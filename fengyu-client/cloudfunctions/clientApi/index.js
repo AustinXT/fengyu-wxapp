@@ -14,6 +14,7 @@ const routes = {
   'auth.login': () => require('./routes/auth').login,
   'auth.bindPhone': () => require('./routes/auth').bindPhone,
   'auth.bindStore': () => require('./routes/auth').bindStore,
+  'auth.updateProfile': () => require('./routes/auth').updateProfile,
   'store.list': () => require('./routes/store').list,
   'store.detail': () => require('./routes/store').detail,
   'store.requestUnbind': () => require('./routes/store').requestUnbind,
@@ -41,6 +42,7 @@ const routes = {
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,
   'service.detail': () => require('./routes/service').detail,
+  'service.list': () => require('./routes/service').list,
   'coupon.list': () => require('./routes/coupon').list,
   'coupon.available': () => require('./routes/coupon').available
 }

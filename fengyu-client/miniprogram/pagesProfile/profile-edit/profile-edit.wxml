@@ -1,0 +1,69 @@
+<!-- pagesProfile/profile-edit/profile-edit.wxml -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 头像区域 -->
+  <view class="avatar-section">
+    <view class="avatar-circle">
+      <van-icon name="contact" size="96rpx" color="#C0322A" />
+    </view>
+  </view>
+
+  <!-- 基本信息 -->
+  <van-cell-group inset custom-class="info-group">
+    <!-- 昵称（可编辑） -->
+    <view wx:if="{{!isEditing}}">
+      <van-cell
+        title="昵称"
+        value="{{userName || '未设置'}}"
+        is-link
+        bindtap="onEditName"
+      />
+    </view>
+    <view wx:else class="edit-name-row">
+      <view class="edit-name-label">昵称</view>
+      <input
+        class="edit-name-input"
+        value="{{editName}}"
+        placeholder="请输入昵称"
+        maxlength="{{20}}"
+        focus="{{true}}"
+        bindinput="onNameInput"
+        bindconfirm="onSaveName"
+      />
+      <view class="edit-name-actions">
+        <text class="edit-btn edit-btn--cancel" bindtap="onCancelEdit">取消</text>
+        <text class="edit-btn edit-btn--save" bindtap="onSaveName">保存</text>
+      </view>
+    </view>
+
+    <!-- 手机号（换绑） -->
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >
+      <van-cell
+        title="手机号"
+        value="{{maskedPhone || '未绑定'}}"
+        is-link
+      />
+    </button>
+  </van-cell-group>
+
+  <!-- 只读信息 -->
+  <view class="section-title">账户信息</view>
+  <van-cell-group inset custom-class="info-group">
+    <van-cell
+      title="用户编号"
+      value="{{userId}}"
+    />
+    <van-cell
+      title="注册门店"
+      value="{{boundStoreName || '未绑定'}}"
+    />
+  </van-cell-group>
+
+</view>

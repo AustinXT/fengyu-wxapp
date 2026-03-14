@@ -66,6 +66,9 @@ App<IAppOption>({
         if (phone) {
           wx.setStorageSync('phone', phone);
         }
+        if (res.result.data.name) {
+          wx.setStorageSync('userName', res.result.data.name);
+        }
         // 同步服务器端绑定的门店（核心：即使本地缓存被清除也能恢复）
         if (boundStoreId) {
           this.globalData.boundStoreId = boundStoreId;
