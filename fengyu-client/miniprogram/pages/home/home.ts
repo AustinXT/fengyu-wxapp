@@ -168,17 +168,25 @@ Page({
     this.setData({ isSearching: false, searchResults: [], searchValue: "" });
   },
 
+  // 根据 compositeKey 查找 category_id
+  _findCategoryId(compositeKey: string): string | undefined {
+    const categoryName = compositeKey.includes("::") ? compositeKey.split("::")[1] : compositeKey;
+    const cat = this._allCategories.find((c) => c.category_name === categoryName);
+    return cat?.category_id;
+  },
+
   async loadAllSpus() {
     const uncached = this._allCategoryKeys.filter((key) => !this._spuCache[key]);
     if (uncached.length === 0) return;
 
     await Promise.all(
       uncached.map(async (key) => {
-        const actualCategory = key.includes("::") ? key.split("::")[1] : key;
+        const categoryId = this._findCategoryId(key);
+        if (!categoryId) return;
         try {
           const res = (await wx.cloud.callFunction({
             name: "clientApi",
-            data: { action: "product.spuList", payload: { category: actualCategory } },
+            data: { action: "product.spuList", payload: { categoryId } },
           })) as any;
 
           if (res.result?.code === 0) {
@@ -224,7 +232,13 @@ Page({
   onBannerTap(e: WechatMiniprogram.TouchEvent) {
     const url = e.currentTarget.dataset.url;
     if (url) {
-      // TODO: 处理跳转
+      wx.navigateTo({
+        url,
+        fail: () => {
+          // Tab 页或无效路径时尝试 switchTab
+          wx.switchTab({ url, fail: () => {} });
+        },
+      });
     }
   },
 
@@ -424,11 +438,15 @@ Page({
 
   async loadSpuList(categoryKey: string) {
     this.setData({ isLoading: true });
-    const actualCategory = categoryKey.includes("::") ? categoryKey.split("::")[1] : categoryKey;
+    const categoryId = this._findCategoryId(categoryKey);
+    if (!categoryId) {
+      this.setData({ isLoading: false });
+      return;
+    }
     try {
       const res = (await wx.cloud.callFunction({
         name: "clientApi",
-        data: { action: "product.spuList", payload: { category: actualCategory } },
+        data: { action: "product.spuList", payload: { categoryId } },
       })) as any;
 
       if (res.result?.code !== 0) {

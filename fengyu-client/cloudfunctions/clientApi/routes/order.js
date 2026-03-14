@@ -743,7 +743,7 @@ async function appointableItems(ctx) {
   for (const item of items) {
     if (!orderMap.has(item.sale_order_id)) {
       orderMap.set(item.sale_order_id, {
-        orderNo: item.sale_order_id,
+        saleOrderId: item.sale_order_id,
         orderStatus: item.order_status,
         storeId: item.store_id,
         storeName: item.store_name,

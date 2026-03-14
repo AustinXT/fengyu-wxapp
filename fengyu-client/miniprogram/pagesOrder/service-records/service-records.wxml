@@ -20,8 +20,6 @@
       wx:for="{{records}}"
       wx:key="service_order_id"
       class="record-card"
-      bindtap="onTapRecord"
-      data-id="{{item.service_order_id}}"
     >
       <!-- 头部：状态 + 日期 -->
       <view class="record-header">

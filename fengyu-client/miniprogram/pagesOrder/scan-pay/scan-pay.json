@@ -13,6 +13,7 @@
     "van-submit-bar": "@vant/weapp/submit-bar/index",
     "van-button": "@vant/weapp/button/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-dialog": "@vant/weapp/dialog/index"
+    "van-dialog": "@vant/weapp/dialog/index",
+    "van-popup": "@vant/weapp/popup/index"
   }
 }

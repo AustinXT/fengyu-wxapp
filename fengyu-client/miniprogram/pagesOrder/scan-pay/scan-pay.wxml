@@ -66,6 +66,10 @@
           <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
           <van-radio slot="right-icon" name="wechat" />
         </van-cell>
+        <van-cell title="支付宝" label="使用支付宝扫码付款" clickable bindtap="onPayMethodTap" data-method="alipay">
+          <image slot="icon" src="/images/alipay-icon.png" class="pay-icon" mode="aspectFit" />
+          <van-radio slot="right-icon" name="alipay" />
+        </van-cell>
         <van-cell title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="offline">
           <van-icon slot="icon" name="balance-o" size="40rpx" color="#C0322A" style="margin-right:16rpx" />
           <van-radio slot="right-icon" name="offline" />
@@ -76,7 +80,7 @@
     <!-- 底部确认 -->
     <van-submit-bar
       price="{{order.totalAmount * 100}}"
-      button-text="{{paymentMethod === 'wechat' ? '微信支付' : '确认付款'}}"
+      button-text="{{paymentMethod === 'wechat' ? '微信支付' : paymentMethod === 'alipay' ? '支付宝付款' : '确认付款'}}"
       loading="{{submitting}}"
       bind:submit="onSubmit"
       safe-area-inset-bottom
@@ -85,3 +89,23 @@
   </view>
 
 </view>
+
+<!-- 支付宝二维码弹窗 -->
+<van-popup
+  show="{{showAlipayQr}}"
+  round
+  closeable
+  close-on-click-overlay="{{false}}"
+  bind:close="onAlipayClose"
+>
+  <view class="alipay-qr-popup">
+    <view class="alipay-qr-popup__title">请使用支付宝扫码付款</view>
+    <image src="{{alipayQrUrl}}" mode="widthFix" class="alipay-qr-popup__image" />
+    <view class="alipay-qr-popup__amount">
+      <text class="alipay-qr-popup__symbol">¥</text>
+      <text class="alipay-qr-popup__price">{{alipayAmount}}</text>
+    </view>
+    <view class="alipay-qr-popup__tips">长按保存图片，打开支付宝扫码支付</view>
+    <van-button type="primary" block round custom-class="alipay-qr-popup__btn" bindtap="onAlipayDone">我已完成支付</van-button>
+  </view>
+</van-popup>

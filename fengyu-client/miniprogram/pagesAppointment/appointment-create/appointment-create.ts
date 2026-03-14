@@ -102,12 +102,16 @@ Page({
   },
 
   async loadDefaultStaff() {
-    // TODO: 云函数需要新增获取默认美容师接口
-    // 临时实现：尝试从用户信息中获取（如果后端有存储）
     try {
-      // 暂时不做处理，等待后端接口
+      const data = await callClientApi('staff.default', {});
+      if (data?.mainStaffId) {
+        this.setData({
+          selectedStaffWfId: data.mainStaffId,
+          selectedStaffName: data.mainStaffName || '',
+        });
+      }
     } catch {
-      // 静默失败
+      // 获取默认美容师失败不影响预约流程
     }
   },
 

@@ -91,16 +91,8 @@ Page({
     }
   },
 
-  onTapRecord(e: WechatMiniprogram.TouchEvent) {
-    const { id } = e.currentTarget.dataset;
-    if (id) {
-      wx.navigateTo({
-        url: `/pagesShop/service-detail/service-detail?serviceOrderId=${id}`,
-        fail: () => {
-          // 如果 service-detail 页不支持这个参数，忽略
-        }
-      });
-    }
+  onTapRecord(_e: WechatMiniprogram.TouchEvent) {
+    // 服务记录为只读卡片，详情信息已在列表中展示
   },
 });
 

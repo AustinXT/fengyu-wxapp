@@ -89,7 +89,7 @@ Page({
       spuName: spu.name,
       skuDisplayName: sku.spec_name,
       coverImage: spu.cover_image,
-      price: sku.originalPrice || 0,
+      price: Number(sku.special_price || sku.price || 0),
       bigCategory: spu.product_kind,
       productType: sku.product_type,
     });
@@ -214,12 +214,18 @@ Page({
 
   async loadSpuList(category: string) {
     this.setData({ isLoading: true });
+    // 根据分类名查找 categoryId 传给云函数
+    const catObj = this._allCategories.find(c => c.category_name === category);
+    if (!catObj) {
+      this.setData({ isLoading: false });
+      return;
+    }
     try {
       const res = await wx.cloud.callFunction({
         name: 'clientApi',
         data: {
           action: 'product.spuList',
-          payload: { category },
+          payload: { categoryId: catObj.category_id },
         },
       }) as any;
 

@@ -18,11 +18,15 @@ Page({
     order: null as any,
     items: [] as any[],
     orderNo: '',
-    paymentMethod: 'wechat' as 'wechat' | 'offline',
+    paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
     isLoading: true,
     errorMsg: '',
     statusMsg: '',
     submitting: false,
+    // 支付宝二维码弹窗
+    showAlipayQr: false,
+    alipayQrUrl: '',
+    alipayAmount: '0.00',
   },
 
   onLoad(options) {
@@ -62,11 +66,11 @@ Page({
   },
 
   onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as 'wechat' | 'offline' });
+    this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'offline' };
+    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'alipay' | 'offline' };
     this.setData({ paymentMethod: method });
   },
 
@@ -90,6 +94,16 @@ Page({
         return;
       }
 
+      if (paymentMethod === 'alipay') {
+        const data = await callClientApi('order.alipayPay', { saleOrderId: orderNo });
+        this.setData({
+          showAlipayQr: true,
+          alipayQrUrl: data?.qrCodeUrl || '',
+          alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
+        });
+        return;
+      }
+
       // 微信支付
       const data = await callClientApi('order.pay', { saleOrderId: orderNo });
       const payParams = data.paymentParams || {};
@@ -103,6 +117,15 @@ Page({
     } finally {
       this.setData({ submitting: false });
     }
+  },
+
+  onAlipayDone() {
+    this.setData({ showAlipayQr: false });
+    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}` });
+  },
+
+  onAlipayClose() {
+    this.setData({ showAlipayQr: false });
   },
 
   onShareAppMessage() {

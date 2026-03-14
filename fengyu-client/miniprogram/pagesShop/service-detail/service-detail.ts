@@ -92,8 +92,8 @@ Page({
         skuList: (spu.skuList || []).map((sku: any) => ({
           sku_id: sku.sku_id,
           spec_name: sku.spec_name,
-          price: sku.originalPrice || 0,
-          session_count: sku.sessionCount,
+          price: Number(sku.special_price || sku.price || 0),
+          session_count: sku.session_count,
           product_type: sku.product_type
         }))
       });

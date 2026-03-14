@@ -126,7 +126,7 @@ Page({
     try {
       const data = await callClientApi('product.skuDetail', { skuId });
       const sku = data?.sku;
-      const unitPrice = sku?.originalPrice || 0;
+      const unitPrice = Number(sku?.special_price || sku?.price || 0);
       this.setData({
         skuDisplayName: sku?.spec_name || '',
         unitPrice: String(unitPrice),
