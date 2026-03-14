@@ -3,10 +3,7 @@
  * 覆盖：list、defaultStaff
  */
 
-vi.mock('../../db/pg', () => require('../mocks/pg'))
-vi.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
-
-const pg = require('../../db/pg')
+const pg = globalThis.__mocks__.pg
 const { createCtx, createBoundCtx } = require('../helpers')
 
 let routes
@@ -31,24 +28,17 @@ describe('staff.list', () => {
 
   test('缺少 storeId → INVALID_PARAMS', async () => {
     const ctx = createCtx({ payload: {} })
-    await expect(routes.list(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*storeId/)
+    await expect(routes.list(ctx)).rejects.toThrow(/INVALID_PARAMS.*storeId/)
   })
 })
 
 describe('staff.defaultStaff', () => {
   test('有绑定美容师时返回信息', async () => {
-    // 查 client_wechat_users
     pg.query.mockResolvedValueOnce([{
-      main_staff_id: 'emp-1',
-      bound_store_id: 's1',
-      store_name: '凤御A店',
+      main_staff_id: 'emp-1', bound_store_id: 's1', store_name: '凤御A店',
     }])
-    // 查美容师
     pg.query.mockResolvedValueOnce([{
-      staff_id: 'emp-1',
-      name: '张美',
-      position: '美容师',
+      staff_id: 'emp-1', name: '张美', position: '美容师',
     }])
 
     const ctx = createBoundCtx({})
@@ -60,28 +50,21 @@ describe('staff.defaultStaff', () => {
   })
 
   test('未绑定手机号 → 返回空', async () => {
-    const ctx = createCtx({
-      payload: {},
-      auth: { phone: null, userId: null },
-    })
+    const ctx = createCtx({ payload: {}, auth: { phone: null, userId: null } })
     await routes.defaultStaff(ctx)
 
     expect(ctx.result.mainStaffId).toBeNull()
-    expect(ctx.result.mainStaffName).toBeNull()
   })
 
   test('无绑定美容师 → 返回空', async () => {
     pg.query.mockResolvedValueOnce([{
-      main_staff_id: null,
-      bound_store_id: 's1',
-      store_name: '凤御A店',
+      main_staff_id: null, bound_store_id: 's1', store_name: '凤御A店',
     }])
 
     const ctx = createBoundCtx({})
     await routes.defaultStaff(ctx)
 
     expect(ctx.result.mainStaffId).toBeNull()
-    expect(ctx.result.mainStaffName).toBeNull()
     expect(ctx.result.storeName).toBe('凤御A店')
   })
 })

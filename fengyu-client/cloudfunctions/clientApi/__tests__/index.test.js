@@ -3,19 +3,27 @@
  * 覆盖：路由分发、缺少 action、未知 action、错误码映射（-401/-403/-400/-1）
  */
 
-vi.mock('../db/pg', () => require('./mocks/pg'))
-vi.mock('wx-server-sdk', () => require('./mocks/wx-server-sdk'))
+const path = require('path')
+const pg = globalThis.__mocks__.pg
+const cloud = globalThis.__mocks__.cloud
 
-const cloud = require('wx-server-sdk')
-const pg = require('../db/pg')
+const clientApiDir = path.resolve(__dirname, '..')
+
+/** 仅清除 routes/middleware/index 缓存，保留 db/pg 和 node_modules 的 mock */
+function clearClientApiCache() {
+  Object.keys(require.cache).forEach(key => {
+    if (key.startsWith(clientApiDir) && !key.includes('node_modules') && !key.includes('__tests__') && !key.includes('/db/')) {
+      delete require.cache[key]
+    }
+  })
+}
 
 describe('clientApi 入口', () => {
   let main
 
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.resetModules()
-    // 重新 require 以清除懒加载缓存
+    clearClientApiCache()
     main = require('../index').main
 
     // 默认：auth 中间件查到已绑定用户
@@ -42,7 +50,6 @@ describe('clientApi 入口', () => {
   })
 
   test('成功路由返回 code: 0 + data', async () => {
-    // store.list 查门店列表
     pg.query.mockResolvedValueOnce([
       { store_id: 's1', store_name: '店A', market_name: '市场A' },
     ])
@@ -57,7 +64,7 @@ describe('clientApi 入口', () => {
     vi.clearAllMocks()
     cloud.getWXContext.mockReturnValue({ OPENID: '' })
 
-    vi.resetModules()
+    clearClientApiCache()
     const mainFresh = require('../index').main
 
     const result = await mainFresh({ action: 'store.list', payload: {} }, {})
@@ -66,7 +73,6 @@ describe('clientApi 入口', () => {
   })
 
   test('INVALID_PARAMS 错误映射为 code: -400', async () => {
-    // product.skuDetail 缺少 skuId
     const result = await main({
       action: 'product.skuDetail',
       payload: {},
@@ -77,9 +83,11 @@ describe('clientApi 入口', () => {
   })
 
   test('PHONE_REQUIRED 错误映射为 code: -403', async () => {
-    vi.clearAllMocks()
+    // 覆盖 auth 返回：用户存在但未绑定手机号
+    // beforeEach 已消费第一个 mockResolvedValueOnce（返回有手机号的用户）
+    // 需要清缓存+重设 mock 让 auth 中间件获得无手机号的用户
+    pg.query.mockReset().mockResolvedValue([])
     cloud.getWXContext.mockReturnValue({ OPENID: 'new-user-openid' })
-    // 用户存在但未绑定手机号
     pg.query.mockResolvedValueOnce([{
       user_id: 'user-new',
       phone: null,
@@ -88,10 +96,9 @@ describe('clientApi 入口', () => {
       bound_market_name: null,
     }])
 
-    vi.resetModules()
+    clearClientApiCache()
     const mainFresh = require('../index').main
 
-    // order.create 需要手机号
     const result = await mainFresh({
       action: 'order.create',
       payload: { storeId: 's1', items: [{ skuId: 'sku1' }], paymentMethod: 'wechat' },
@@ -102,13 +109,12 @@ describe('clientApi 入口', () => {
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
-    // store.cancelUnbindRequest — 不属于该用户的申请
-    pg.query
-      // cancelUnbindRequest 内部查 request
-      .mockResolvedValueOnce([{
-        user_id: 'other-user',
-        status: 'pending',
-      }])
+    // auth middleware 已在 beforeEach 中设好 mock
+    // cancelUnbindRequest 内部: 查 request → user_id 不匹配
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'other-user',
+      status: 'pending',
+    }])
 
     const result = await main({
       action: 'store.cancelUnbindRequest',

@@ -3,11 +3,8 @@
  * 覆盖：detail
  */
 
-vi.mock('../../db/pg', () => require('../mocks/pg'))
-vi.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
-
-const pg = require('../../db/pg')
-const { createBoundCtx, createCtx } = require('../helpers')
+const pg = globalThis.__mocks__.pg
+const { createBoundCtx } = require('../helpers')
 
 let routes
 beforeEach(() => {
@@ -17,23 +14,14 @@ beforeEach(() => {
 
 describe('service.detail', () => {
   test('返回服务单详情及明细', async () => {
-    // 查服务单
     pg.query.mockResolvedValueOnce([{
-      service_order_id: 'SVC-001',
-      status: '进行中',
-      service_order_type: '护理',
-      store_id: 's1',
-      store_name: '凤御A店',
-      assigned_employee_id: 'emp-1',
+      service_order_id: 'SVC-001', status: '进行中',
+      service_order_type: '护理', store_id: 's1', store_name: '凤御A店',
     }])
-    // 查服务明细
     pg.query.mockResolvedValueOnce([{
-      service_item_id: 'SVI-001',
-      sale_item_id: 'SI-001',
-      session_used: 1,
-      employee_id: 'emp-1',
-      product_name: '美白护理',
-      sku_spec_name: '10次卡',
+      service_item_id: 'SVI-001', sale_item_id: 'SI-001',
+      session_used: 1, employee_id: 'emp-1',
+      product_name: '美白护理', sku_spec_name: '10次卡',
     }])
 
     const ctx = createBoundCtx({ serviceOrderId: 'SVC-001' })
@@ -46,23 +34,17 @@ describe('service.detail', () => {
 
   test('缺少 serviceOrderId → INVALID_PARAMS', async () => {
     const ctx = createBoundCtx({})
-    await expect(routes.detail(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
+    await expect(routes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
   })
 
   test('服务单不存在 → INVALID_PARAMS', async () => {
     pg.query.mockResolvedValueOnce([])
-
     const ctx = createBoundCtx({ serviceOrderId: 'nonexistent' })
-    await expect(routes.detail(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*服务单不存在/)
+    await expect(routes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS.*服务单不存在/)
   })
 
   test('兼容旧参数名 serviceOrderNo', async () => {
-    pg.query.mockResolvedValueOnce([{
-      service_order_id: 'SVC-001',
-      status: '已完成',
-    }])
+    pg.query.mockResolvedValueOnce([{ service_order_id: 'SVC-001', status: '已完成' }])
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ serviceOrderNo: 'SVC-001' })

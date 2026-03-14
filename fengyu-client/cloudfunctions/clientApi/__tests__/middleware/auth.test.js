@@ -3,21 +3,24 @@
  * 覆盖：auth / requirePhone / invalidateAuthCache / 缓存 TTL / 缓存淘汰
  */
 
-vi.mock('../../db/pg', () => require('../mocks/pg'))
-vi.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
+const pg = globalThis.__mocks__.pg
+const cloud = globalThis.__mocks__.cloud
 
-const cloud = require('wx-server-sdk')
-const pg = require('../../db/pg')
-const { auth, requirePhone, invalidateAuthCache } = require('../../middleware/auth')
+// 每次重新加载 auth 模块以清除内部缓存
+function loadAuth() {
+  delete require.cache[require.resolve('../../middleware/auth')]
+  return require('../../middleware/auth')
+}
 
 describe('auth 中间件', () => {
+  let auth, requirePhone, invalidateAuthCache
+
   beforeEach(() => {
     vi.clearAllMocks()
-    // 清除模块内部缓存
-    invalidateAuthCache('test-openid-001')
-    invalidateAuthCache('new-user-openid')
-    invalidateAuthCache('cached-openid')
-    invalidateAuthCache('')
+    const mod = loadAuth()
+    auth = mod.auth
+    requirePhone = mod.requirePhone
+    invalidateAuthCache = mod.invalidateAuthCache
   })
 
   test('有效 openid 填充 ctx.auth（已注册用户）', async () => {
@@ -56,8 +59,6 @@ describe('auth 中间件', () => {
     expect(ctx.auth.phone).toBeNull()
     expect(ctx.auth.boundStoreId).toBeNull()
     expect(ctx.auth.isOpenid).toBe(true)
-
-    invalidateAuthCache('new-user-openid')
   })
 
   test('无 OPENID 抛出 UNAUTHORIZED', async () => {
@@ -86,13 +87,10 @@ describe('auth 中间件', () => {
     }
     await auth(ctx, async () => {})
 
-    // 查询用的是 test-override-openid
     expect(pg.query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE u.openid = $1'),
       ['test-override-openid']
     )
-
-    invalidateAuthCache('test-override-openid')
   })
 
   test('缓存命中时不查询数据库', async () => {
@@ -111,49 +109,39 @@ describe('auth 中间件', () => {
 
     vi.clearAllMocks()
 
-    // 第二次调用应命中缓存
     const ctx2 = { event: {}, context: {}, auth: {}, result: null }
     await auth(ctx2, async () => {})
     expect(pg.query).not.toHaveBeenCalled()
     expect(ctx2.auth.userId).toBe('user-cached')
-
-    invalidateAuthCache('cached-openid')
   })
 
   test('缓存淘汰：超过 200 条清理最早一半', async () => {
-    // 填满 201 个缓存条目
     for (let i = 0; i < 201; i++) {
-      const openid = `flood-openid-${i}`
-      cloud.getWXContext.mockReturnValue({ OPENID: openid })
+      cloud.getWXContext.mockReturnValue({ OPENID: `flood-${i}` })
       pg.query.mockResolvedValueOnce([{
-        user_id: `user-${i}`,
-        phone: null,
-        bound_store_id: null,
-        bound_store_name: null,
-        bound_market_name: null,
+        user_id: `u-${i}`, phone: null,
+        bound_store_id: null, bound_store_name: null, bound_market_name: null,
       }])
       const ctx = { event: {}, context: {}, auth: {}, result: null }
       await auth(ctx, async () => {})
     }
 
-    // 验证第一个被淘汰了（需要重新查询）
     vi.clearAllMocks()
-    cloud.getWXContext.mockReturnValue({ OPENID: 'flood-openid-0' })
+    cloud.getWXContext.mockReturnValue({ OPENID: 'flood-0' })
     pg.query.mockResolvedValueOnce([])
 
     const ctx = { event: {}, context: {}, auth: {}, result: null }
     await auth(ctx, async () => {})
-    // 应重新查询
     expect(pg.query).toHaveBeenCalled()
-
-    // 清理
-    for (let i = 0; i < 201; i++) {
-      invalidateAuthCache(`flood-openid-${i}`)
-    }
   })
 })
 
 describe('requirePhone', () => {
+  let requirePhone
+  beforeEach(() => {
+    requirePhone = loadAuth().requirePhone
+  })
+
   test('有手机号通过', async () => {
     const ctx = { auth: { phone: '13800001111' } }
     let called = false
@@ -170,30 +158,23 @@ describe('requirePhone', () => {
 
 describe('invalidateAuthCache', () => {
   test('清除缓存后重新查询数据库', async () => {
-    cloud.getWXContext.mockReturnValue({ OPENID: 'cache-test-openid' })
+    const { auth, invalidateAuthCache } = loadAuth()
+
+    cloud.getWXContext.mockReturnValue({ OPENID: 'cache-test' })
     pg.query.mockResolvedValueOnce([{
-      user_id: 'user-c',
-      phone: '138',
-      bound_store_id: 's1',
-      bound_store_name: 'S1',
-      bound_market_name: 'M1',
+      user_id: 'u-c', phone: '138',
+      bound_store_id: 's1', bound_store_name: 'S1', bound_market_name: 'M1',
     }])
 
     const ctx1 = { event: {}, context: {}, auth: {}, result: null }
     await auth(ctx1, async () => {})
 
     vi.clearAllMocks()
+    invalidateAuthCache('cache-test')
 
-    // 清除缓存
-    invalidateAuthCache('cache-test-openid')
-
-    // 重新设置 mock — 更新了 phone
     pg.query.mockResolvedValueOnce([{
-      user_id: 'user-c',
-      phone: '13900009999',
-      bound_store_id: 's1',
-      bound_store_name: 'S1',
-      bound_market_name: 'M1',
+      user_id: 'u-c', phone: '13900009999',
+      bound_store_id: 's1', bound_store_name: 'S1', bound_market_name: 'M1',
     }])
 
     const ctx2 = { event: {}, context: {}, auth: {}, result: null }
@@ -201,7 +182,5 @@ describe('invalidateAuthCache', () => {
 
     expect(pg.query).toHaveBeenCalled()
     expect(ctx2.auth.phone).toBe('13900009999')
-
-    invalidateAuthCache('cache-test-openid')
   })
 })
