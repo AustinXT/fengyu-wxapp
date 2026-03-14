@@ -88,9 +88,24 @@ function createMockTransactionClient(queryResults = []) {
   for (const result of queryResults) {
     mockQuery.mockResolvedValueOnce(result)
   }
-  // 默认返回空行
   mockQuery.mockResolvedValue({ rows: [], rowCount: 0 })
   return { query: mockQuery }
+}
+
+/**
+ * 重置 pg mock 到干净状态
+ * vi.clearAllMocks 不会清除 mockResolvedValueOnce 队列，
+ * 必须用 mockReset + 重建默认实现
+ */
+function resetPgMock(pg) {
+  pg.query.mockReset().mockImplementation(async () => [])
+  pg.transaction.mockReset().mockImplementation(async (cb) => {
+    const client = {
+      query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    }
+    return await cb(client)
+  })
+  pg.getPool.mockReset().mockReturnValue({})
 }
 
 module.exports = {
@@ -99,4 +114,5 @@ module.exports = {
   createBeauticianCtx,
   createUnboundCtx,
   createMockTransactionClient,
+  resetPgMock,
 }

@@ -12,6 +12,7 @@ jest.mock('../../db/pg', () => require('../mocks/pg'))
 jest.mock('../../db/mssql', () => require('../mocks/mssql'))
 jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
+
 const pg = require('../../db/pg')
 const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const allocationRoutes = require('../../routes/allocation')

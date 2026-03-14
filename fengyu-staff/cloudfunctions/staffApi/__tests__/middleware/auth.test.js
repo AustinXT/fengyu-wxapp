@@ -6,6 +6,7 @@
 jest.mock('../../db/pg', () => require('../mocks/pg'))
 jest.mock('wx-server-sdk', () => require('../mocks/wx-server-sdk'))
 
+
 const cloud = require('wx-server-sdk')
 const pg = require('../../db/pg')
 const { auth, requireStaffBound, requireManager, invalidateAuthCache } = require('../../middleware/auth')

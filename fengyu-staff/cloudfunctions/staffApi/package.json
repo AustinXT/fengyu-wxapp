@@ -3,12 +3,18 @@
   "version": "1.0.0",
   "description": "员工端统一云函数入口",
   "main": "index.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
   "dependencies": {
     "mssql": "^10.0.1",
     "pg": "^8.11.3",
     "wx-server-sdk": "latest"
   },
   "devDependencies": {
-    "jest": "^30.3.0"
+    "jest": "^30.3.0",
+    "vitest": "^4.1.0"
   }
 }

@@ -6,18 +6,26 @@
 jest.mock('../db/pg', () => require('./mocks/pg'))
 jest.mock('wx-server-sdk', () => require('./mocks/wx-server-sdk'))
 
+const path = require('path')
 const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
+const staffApiDir = path.resolve(__dirname, '..')
+
+function clearStaffApiCache() {
+  Object.keys(require.cache).forEach(key => {
+    if (key.startsWith(staffApiDir) && !key.includes('node_modules') && !key.includes('__tests__') && !key.includes('/db/')) {
+      delete require.cache[key]
+    }
+  })
+}
 
 describe('staffApi 入口', () => {
   let main
 
   beforeEach(() => {
     jest.clearAllMocks()
-    // 每次重新 require 以清除缓存
-    jest.isolateModules(() => {
-      main = require('../index').main
-    })
+    clearStaffApiCache()
+    main = require('../index').main
 
     // 默认：auth 中间件需要 staff 行，设置为已绑定员工
     cloud.getWXContext.mockReturnValue({ OPENID: 'test-openid-001' })
@@ -49,11 +57,9 @@ describe('staffApi 入口', () => {
   })
 
   test('成功路由返回 code: 0 + data', async () => {
-    // store.list 不需要 staffBound，直接返回门店列表
     pg.query.mockResolvedValueOnce([
       { store_id: 's1', store_name: '店A', market_name: '市场A' },
     ])
-
     const result = await main({ action: 'store.list', payload: {} }, {})
     expect(result.code).toBe(0)
     expect(result.message).toBe('success')
@@ -61,33 +67,24 @@ describe('staffApi 入口', () => {
   })
 
   test('UNAUTHORIZED 错误映射为 code: -401', async () => {
-    // 模拟 auth 中间件抛出 UNAUTHORIZED（空 OPENID）
     cloud.getWXContext.mockReturnValue({ OPENID: '' })
-
-    // 重新 require 以使用新的 mock
-    let mainFresh
-    jest.isolateModules(() => {
-      mainFresh = require('../index').main
-    })
-
+    clearStaffApiCache()
+    const mainFresh = require('../index').main
     const result = await mainFresh({ action: 'store.list', payload: {} }, {})
     expect(result.code).toBe(-401)
     expect(result.message).toContain('UNAUTHORIZED')
   })
 
   test('INVALID_PARAMS 错误映射为 code: -400', async () => {
-    // order.create 缺少必填参数
     const result = await main({
       action: 'order.create',
       payload: {},
     }, {})
-
     expect(result.code).toBe(-400)
     expect(result.message).toContain('INVALID_PARAMS')
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
-    // 使用美容师角色调用 requireManager 的接口
     jest.clearAllMocks()
     cloud.getWXContext.mockReturnValue({ OPENID: 'beautician-openid' })
     pg.query
@@ -104,16 +101,12 @@ describe('staffApi 入口', () => {
       }])
       .mockResolvedValueOnce([]) // 无 manager 角色
 
-    let mainFresh
-    jest.isolateModules(() => {
-      mainFresh = require('../index').main
-    })
-
+    clearStaffApiCache()
+    const mainFresh = require('../index').main
     const result = await mainFresh({
       action: 'order.create',
       payload: { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku1' }], paymentMethod: 'offline' },
     }, {})
-
     expect(result.code).toBe(-403)
     expect(result.message).toContain('PERMISSION_DENIED')
   })
