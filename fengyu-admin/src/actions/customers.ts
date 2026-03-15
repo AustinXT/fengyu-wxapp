@@ -3,10 +3,10 @@
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, inArray, and, desc } from 'drizzle-orm'
+import { eq, and, desc, inArray } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function serializeCustomer(row: {
@@ -61,25 +61,16 @@ export async function getCustomers(): Promise<Customer[]> {
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
-  const scopeStoreIds = session.permissions.scopeStoreIds
-  const isAdmin = hasRole(session, 'admin')
-
-  let query = db
+  // admin 不碰顾客数据（规范约束），但 scopeCondition 会返回 undefined（无过滤）
+  // 非 admin 角色按 boundStoreId scope 过滤
+  const rows = await db
     .select()
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .$dynamic()
+    .where(scopeCondition(session, clientWechatUsers.boundStoreId))
+    .limit(500)
 
-  // admin 不碰顾客数据（规范约束），但 admin 的 PERMISSION_MATRIX 包含 customer:list
-  // 非 admin 角色按 scope 过滤：只能看到绑定在自己门店范围内的顾客
-  if (!isAdmin && scopeStoreIds.length > 0) {
-    query = query.where(inArray(clientWechatUsers.boundStoreId, scopeStoreIds)) as typeof query
-  } else if (!isAdmin && scopeStoreIds.length === 0) {
-    return [] // 无 scope 则无数据
-  }
-
-  const rows = await query.limit(500)
   return rows.map(serializeCustomer)
 }
 
@@ -87,10 +78,8 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
-  const scopeStoreIds = session.permissions.scopeStoreIds
-  const isAdminOnly = hasRole(session, 'admin') && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
-
-  // admin 不碰顾客数据
+  // admin 纯角色不碰顾客数据（admin+manager 双角色可访问）
+  const isAdminOnly = isAdminScope(session) && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
   if (isAdminOnly) return null
 
   const rows = await db
@@ -98,11 +87,7 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .where(
-      scopeStoreIds.length > 0
-        ? and(eq(clientWechatUsers.userId, userId), inArray(clientWechatUsers.boundStoreId, scopeStoreIds))
-        : eq(clientWechatUsers.userId, userId)
-    )
+    .where(and(eq(clientWechatUsers.userId, userId), scopeCondition(session, clientWechatUsers.boundStoreId)))
     .limit(1)
 
   if (rows.length === 0) return null
@@ -270,20 +255,31 @@ export async function updateCustomer(
     wellnessPreference: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'customer:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(clientWechatUsers.userId, userId), eq(clientWechatUsers.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(clientWechatUsers.userId, userId)
+
+  const result = await db
     .update(clientWechatUsers)
     .set(data)
-    .where(eq(clientWechatUsers.userId, userId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'customer.update', 'customer', userId, data)
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
+  return { success: true, message: '顾客信息已更新' }
 }
 
 export async function createCustomer(data: {

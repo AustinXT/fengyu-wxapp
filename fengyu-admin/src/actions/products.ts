@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { productCategories, products, productSkus } from '@db/product'
-import { eq, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ProductCategory, Product, ProductSku } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -252,21 +252,32 @@ export async function updateProduct(
     sortOrder: number
     validStart: string | null
     validEnd: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(products.productId, productId), eq(products.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(products.productId, productId)
+
+  const result = await db
     .update(products)
     .set({
       ...data,
       salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
     })
-    .where(eq(products.productId, productId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'product.update', 'product', productId, data)
   revalidatePath('/products')
+  return { success: true, message: '商品信息已更新' }
 }
 
 export async function createCategory(data: {
@@ -275,7 +286,7 @@ export async function createCategory(data: {
   productKind: string
   sortOrder?: number
   isValid?: boolean
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
 
@@ -287,6 +298,7 @@ export async function createCategory(data: {
   await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
   revalidatePath('/products')
   revalidatePath('/products/categories')
+  return { success: true, message: '分类创建成功' }
 }
 
 export async function updateCategory(
@@ -296,22 +308,33 @@ export async function updateCategory(
     productKind: string
     sortOrder: number
     isValid: boolean
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(productCategories.categoryId, categoryId), eq(productCategories.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(productCategories.categoryId, categoryId)
+
+  const result = await db
     .update(productCategories)
     .set({
       ...data,
       productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
     })
-    .where(eq(productCategories.categoryId, categoryId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'category.update', 'product_category', categoryId, data)
   revalidatePath('/products')
   revalidatePath('/products/categories')
+  return { success: true, message: '分类已更新' }
 }
 
 const VALID_PRODUCT_TYPES = ['疗程卡', '单品', '院装产品'] as const
@@ -385,21 +408,32 @@ export async function updateSku(
     serviceFee: string
     validStart: string | null
     validEnd: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(productSkus.skuId, skuId), eq(productSkus.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(productSkus.skuId, skuId)
+
+  const result = await db
     .update(productSkus)
     .set({
       ...data,
       productType: data.productType as typeof productSkus.$inferInsert['productType'],
     })
-    .where(eq(productSkus.skuId, skuId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'sku.update', 'product_sku', skuId, data)
   revalidatePath('/products')
+  return { success: true, message: '规格已更新' }
 }
 
 export async function deleteSku(skuId: string): Promise<{ success: boolean; message: string }> {

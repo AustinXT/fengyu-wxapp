@@ -4,10 +4,10 @@ import { db } from '@/db'
 import { storeUnbindRequests } from '@db/store-unbind'
 import { clientWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, desc, inArray, sql } from 'drizzle-orm'
+import { eq, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 export interface UnbindRequest {
@@ -27,7 +27,6 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
   const session = await getSession()
   requirePermission(session, 'store_unbind:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       request: storeUnbindRequests,
@@ -38,7 +37,7 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
     .from(storeUnbindRequests)
     .leftJoin(clientWechatUsers, eq(storeUnbindRequests.userId, clientWechatUsers.userId))
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
-    .where(scopeIds.length > 0 ? inArray(storeUnbindRequests.fromStoreId, scopeIds) : sql`FALSE`)
+    .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
     .orderBy(desc(storeUnbindRequests.createdAt))
 
   return rows.map((r) => ({
@@ -59,8 +58,6 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
   const session = await getSession()
   requirePermission(session, 'store_unbind:approve')
 
-  const scopeIds = session.permissions.scopeStoreIds
-
   // 查找请求并校验 scope
   const [request] = await db
     .select()
@@ -74,7 +71,7 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
   if (request.status !== 'pending') {
     return { success: false, message: '该申请已处理' }
   }
-  if (scopeIds.length > 0 && !scopeIds.includes(request.fromStoreId)) {
+  if (!isInScope(session, request.fromStoreId)) {
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
@@ -109,8 +106,6 @@ export async function rejectUnbind(
   const session = await getSession()
   requirePermission(session, 'store_unbind:reject')
 
-  const scopeIds = session.permissions.scopeStoreIds
-
   const [request] = await db
     .select()
     .from(storeUnbindRequests)
@@ -123,7 +118,7 @@ export async function rejectUnbind(
   if (request.status !== 'pending') {
     return { success: false, message: '该申请已处理' }
   }
-  if (scopeIds.length > 0 && !scopeIds.includes(request.fromStoreId)) {
+  if (!isInScope(session, request.fromStoreId)) {
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 

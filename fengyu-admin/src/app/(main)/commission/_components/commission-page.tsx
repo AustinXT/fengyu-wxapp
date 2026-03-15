@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { CommissionRate } from "@/lib/types"
@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatCurrency } from "@/lib/utils"
 import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions/commission"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const ORDER_TYPE_OPTIONS = ["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"]
 const ROLE_TYPE_OPTIONS = ["美容师", "推广师", "顾问"]
@@ -52,11 +53,13 @@ interface CommissionPageProps {
 
 export default function CommissionPage({ rates, markets }: CommissionPageProps) {
   const router = useRouter()
+  const { get, set } = useUrlFilters()
   const defaultOrgId = markets.length > 0 ? markets[0].orgId : ""
-  const [activeTab, setActiveTab] = useState(defaultOrgId)
-  const [orderTypeFilter, setOrderTypeFilter] = useState("")
-  const [roleTypeFilter, setRoleTypeFilter] = useState("")
-  const [salesCategoryFilter, setSalesCategoryFilter] = useState("")
+  const activeTab = get("market") || defaultOrgId
+  const setActiveTab = useCallback((v: string) => set("market", v === defaultOrgId ? "" : v), [set, defaultOrgId])
+  const orderTypeFilter = get("orderType")
+  const roleTypeFilter = get("roleType")
+  const salesCategoryFilter = get("salesCategory")
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -141,7 +144,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
     setSaving(true)
     try {
       if (editingRate) {
-        await updateRate(editingRate.id, {
+        const rateResult = await updateRate(editingRate.id, {
           orgId: form.orgId,
           orderType: form.orderType,
           roleType: form.roleType,
@@ -149,10 +152,15 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
           amountTierMin: form.amountTierMin,
           amountTierMax: maxStr || null,
           commissionRate: form.commissionRate,
-        })
+        }, editingRate.updatedAt)
+        if (!rateResult.success) {
+          toast.error(rateResult.message)
+          if (rateResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("规则已更新")
       } else {
-        await createRate({
+        const createResult = await createRate({
           orgId: form.orgId,
           orderType: form.orderType,
           roleType: form.roleType,
@@ -161,6 +169,10 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
           amountTierMax: maxStr || null,
           commissionRate: form.commissionRate,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("规则已创建")
       }
       setDialogOpen(false)
@@ -177,7 +189,11 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
     if (!deleteTarget) return
     setDeleting(true)
     try {
-      await deleteRate(deleteTarget.id)
+      const delResult = await deleteRate(deleteTarget.id)
+      if (!delResult.success) {
+        toast.error(delResult.message)
+        return
+      }
       toast.success("规则已删除")
       setDeleteTarget(null)
       router.refresh()
@@ -253,7 +269,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
       <div className="flex items-center gap-3">
         <Select
           value={orderTypeFilter}
-          onChange={(e) => setOrderTypeFilter(e.target.value)}
+          onChange={(e) => set("orderType", e.target.value)}
           className="w-32"
         >
           <option value="">全部订单类型</option>
@@ -265,7 +281,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
         </Select>
         <Select
           value={roleTypeFilter}
-          onChange={(e) => setRoleTypeFilter(e.target.value)}
+          onChange={(e) => set("roleType", e.target.value)}
           className="w-32"
         >
           <option value="">全部角色</option>
@@ -277,7 +293,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
         </Select>
         <Select
           value={salesCategoryFilter}
-          onChange={(e) => setSalesCategoryFilter(e.target.value)}
+          onChange={(e) => set("salesCategory", e.target.value)}
           className="w-32"
         >
           <option value="">全部销售分类</option>
@@ -292,7 +308,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
       {markets.length === 0 ? (
         <p className="text-sm text-[#999999] py-8 text-center">暂无市场节点，请先在组织架构中创建市场</p>
       ) : (
-      <Tabs defaultValue={defaultOrgId} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           {markets.map((tab) => (
             <TabsTrigger key={tab.orgId} value={tab.orgId}>

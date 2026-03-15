@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -24,6 +25,8 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
   const [newMemberThreshold, setNewMemberThreshold] = useState(initialSettings.newMemberThreshold)
   const [orderTimeout, setOrderTimeout] = useState(initialSettings.orderTimeout)
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
 
   // Banner images: use CDN URL with cache-buster for preview
   const [bannerImages, setBannerImages] = useState<(string | null)[]>(
@@ -40,6 +43,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
     try {
       const res = await saveSettings({ orderPrefix, newMemberThreshold, orderTimeout })
       if (res.success) {
+        setFormDirty(false)
         toast.success(res.message)
       } else {
         toast.error(res.message)
@@ -52,7 +56,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" onInput={() => setFormDirty(true)}>
       <h1 className="text-2xl font-bold text-[var(--foreground)]">系统配置</h1>
 
       <Card className="max-w-2xl">

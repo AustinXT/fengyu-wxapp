@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useTransition } from "react"
+import { useState, useMemo, useTransition, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { confirmOfflinePayment, closeOrder, resetOrderFailed } from "@/actions/orders"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types"
 
 const paymentMethodMap: Record<string, string> = {
@@ -94,10 +95,22 @@ export default function OrdersPageClient({
   orders: SaleOrder[]
   stores: Store[]
 }) {
-  const [statusFilter, setStatusFilter] = useState<string>("")
-  const [typeFilter, setTypeFilter] = useState<string>("")
-  const [storeFilter, setStoreFilter] = useState<string>("")
-  const [search, setSearch] = useState("")
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => set("q", value), 300)
+  }, [set, debounceRef])
+
+  const statusFilter = get("status")
+  const typeFilter = get("type")
+  const storeFilter = get("store")
+  const search = get("q")
 
   const filtered = useMemo(() => {
     return orders.filter((o) => {
@@ -126,23 +139,23 @@ export default function OrdersPageClient({
         </Link>
       </div>
 
-      {/* Filters */}
+      {/* Filters — URL-driven */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <Select className="w-40" value={statusFilter} onChange={(e) => set("status", e.target.value)}>
               <option value="">全部状态</option>
               {(["待支付", "待确认收款", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </Select>
-            <Select className="w-40" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+            <Select className="w-40" value={typeFilter} onChange={(e) => set("type", e.target.value)}>
               <option value="">全部类型</option>
               {(["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)}>
+            <Select className="w-40" value={storeFilter} onChange={(e) => set("store", e.target.value)}>
               <option value="">全部门店</option>
               {stores.map((s) => (
                 <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
@@ -151,8 +164,8 @@ export default function OrdersPageClient({
             <Input
               className="w-56"
               placeholder="搜索订单号/顾客/手机号"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
             />
           </div>
         </CardContent>

@@ -6,12 +6,12 @@ import { stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { products } from '@db/product'
-import { eq, desc, and, or, sql, inArray } from 'drizzle-orm'
+import { eq, desc, and, or, sql } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SaleOrder, SaleItem } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 const opener = alias(staffWechatUsers, 'opener')
@@ -20,7 +20,6 @@ export async function getOrders(): Promise<SaleOrder[]> {
   const session = await getSession()
   requirePermission(session, 'sale_order:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       order: saleOrders,
@@ -30,7 +29,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-    .where(scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`)
+    .where(scopeCondition(session, saleOrders.storeId))
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(500)
 
@@ -66,8 +65,6 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
   const session = await getSession()
   requirePermission(session, 'sale_order:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
-
   const rows = await db
     .select({
       order: saleOrders,
@@ -77,11 +74,7 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     .from(saleOrders)
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-    .where(
-      scopeIds.length > 0
-        ? and(eq(saleOrders.saleOrderId, saleOrderId), inArray(saleOrders.storeId, scopeIds))
-        : and(eq(saleOrders.saleOrderId, saleOrderId), sql`FALSE`)
-    )
+    .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
     .limit(1)
 
   if (rows.length === 0) return null
@@ -156,7 +149,6 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({
@@ -168,7 +160,7 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
     .where(and(
       eq(saleOrders.saleOrderId, saleOrderId),
       eq(saleOrders.status, '待确认收款'),
-      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, saleOrders.storeId),
     ))
 
   if ((result as any).rowCount === 0) {
@@ -195,14 +187,13 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({ status: '已关闭' })
     .where(and(
       eq(saleOrders.saleOrderId, saleOrderId),
       or(eq(saleOrders.status, '待支付'), eq(saleOrders.status, '支付失败')),
-      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, saleOrders.storeId),
     ))
 
   if ((result as any).rowCount === 0) {
@@ -229,14 +220,13 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(saleOrders)
     .set({ status: '待支付' })
     .where(and(
       eq(saleOrders.saleOrderId, saleOrderId),
       eq(saleOrders.status, '支付失败'),
-      scopeIds.length > 0 ? inArray(saleOrders.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, saleOrders.storeId),
     ))
 
   if ((result as any).rowCount === 0) {
@@ -277,84 +267,82 @@ export async function createOrder(data: {
   requirePermission(session, 'sale_order:create')
 
   // 校验 storeId 在用户 scope 内
-  const scopeIds = session.permissions.scopeStoreIds
-  if (scopeIds.length > 0 && !scopeIds.includes(data.storeId)) {
+  if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
 
-  // Generate order ID with advisory lock to prevent concurrent duplicates
-  const idRows = await db.execute(sql`
-    WITH lock AS (
-      SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
-    )
-    SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
-      LPAD(
-        (SELECT COALESCE(MAX(
-          CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
-        ), 0) + 1
-        FROM sale_orders
-        WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
-        )::TEXT, 4, '0'
-      ) AS id
-    FROM lock
-  `)
-  const saleOrderId = (idRows as any[])[0]?.id as string
-  if (!saleOrderId) {
-    return { success: false, message: '订单号生成失败，请重试' }
-  }
-
-  // Calculate total
+  // 计算总金额（事务外，纯计算）
   const totalAmount = data.items.reduce((sum, item) => {
     return sum + Number(item.unitRealPrice) * item.quantity
   }, 0)
-
-  // Determine initial status
   const initialStatus = data.paymentMethod === 'offline' ? '待确认收款' : '待支付'
 
-  // Insert order
-  await db.insert(saleOrders).values({
-    saleOrderId,
-    status: initialStatus,
-    saleOrderType: data.saleOrderType,
-    marketName: data.marketName,
-    storeId: data.storeId,
-    saleOrderDatetime: new Date(),
-    clientUserId: data.clientUserId,
-    clientPhone: data.clientPhone,
-    customerName: data.customerName,
-    totalAmount: totalAmount.toFixed(2),
-    paymentMethod: data.paymentMethod,
-    saleOrderSource: 'admin',
-    openedBy: data.openedBy || session.employeeId,
-    preferredEmployeeId: data.preferredEmployeeId || null,
-    allocationStatus: 'pending',
-    remark: data.remark || null,
-  })
+  // 事务：ID 生成 + 订单 + 明细，原子提交或全部回滚
+  const saleOrderId = await db.transaction(async (tx) => {
+    // advisory lock 在事务内持有，直到 commit 才释放
+    const idRows = await tx.execute(sql`
+      WITH lock AS (
+        SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+      )
+      SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+        LPAD(
+          (SELECT COALESCE(MAX(
+            CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+          ), 0) + 1
+          FROM sale_orders
+          WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+          )::TEXT, 4, '0'
+        ) AS id
+      FROM lock
+    `)
+    const id = (idRows as any[])[0]?.id as string
+    if (!id) throw new Error('订单号生成失败')
 
-  // Insert sale items
-  for (let i = 0; i < data.items.length; i++) {
-    const item = data.items[i]
-    const saleItemId = `${saleOrderId}-${String(i + 1).padStart(2, '0')}`
-    const saleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
-
-    await db.insert(saleItems).values({
-      saleItemId,
-      saleOrderId,
-      itemDirection: 'purchase',
-      skuId: item.skuId,
-      productName: item.productName,
-      skuSpecName: item.skuSpecName,
-      productType: item.productType,
-      sessionCount: item.sessionCount,
-      remainingSessions: item.sessionCount,
-      unitPrice: item.unitPrice,
-      quantity: item.quantity,
-      unitRealPrice: item.unitRealPrice,
-      saleAmount,
-      received: saleAmount,
-      salesCategory: item.salesCategory || null,
+    await tx.insert(saleOrders).values({
+      saleOrderId: id,
+      status: initialStatus,
+      saleOrderType: data.saleOrderType,
+      marketName: data.marketName,
+      storeId: data.storeId,
+      saleOrderDatetime: new Date(),
+      clientUserId: data.clientUserId,
+      clientPhone: data.clientPhone,
+      customerName: data.customerName,
+      totalAmount: totalAmount.toFixed(2),
+      paymentMethod: data.paymentMethod,
+      saleOrderSource: 'admin',
+      openedBy: data.openedBy || session.employeeId,
+      preferredEmployeeId: data.preferredEmployeeId || null,
+      allocationStatus: 'pending',
+      remark: data.remark || null,
     })
-  }
+
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i]
+      const saleItemId = `${id}-${String(i + 1).padStart(2, '0')}`
+      const saleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
+
+      await tx.insert(saleItems).values({
+        saleItemId,
+        saleOrderId: id,
+        itemDirection: 'purchase',
+        skuId: item.skuId,
+        productName: item.productName,
+        skuSpecName: item.skuSpecName,
+        productType: item.productType,
+        sessionCount: item.sessionCount,
+        remainingSessions: item.sessionCount,
+        unitPrice: item.unitPrice,
+        quantity: item.quantity,
+        unitRealPrice: item.unitRealPrice,
+        saleAmount,
+        received: saleAmount,
+        salesCategory: item.salesCategory || null,
+      })
+    }
+
+    return id
+  })
 
   await logOperation(session, 'order.create', 'sale_order', saleOrderId, {
     storeId: data.storeId, totalAmount: totalAmount.toFixed(2), itemCount: data.items.length,

@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
-import { eq, asc, sql } from 'drizzle-orm'
+import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -88,7 +88,9 @@ export async function updateOrgNode(
     parentId: string | null
     sortOrder: number
     isActive: boolean
-  }>
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:update')
@@ -98,7 +100,15 @@ export async function updateOrgNode(
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
-  await db.update(orgNodes).set(data).where(eq(orgNodes.id, id))
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(orgNodes.id, id)
+
+  const result = await db.update(orgNodes).set(data).where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'org.update', 'org_node', id, data)
   revalidatePath('/org')

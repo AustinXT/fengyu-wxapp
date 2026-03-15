@@ -200,7 +200,7 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
     try {
       if (dialogMode === "create") {
         const newId = `org-${formType}-${Date.now()}`
-        await createOrgNode({
+        const createResult = await createOrgNode({
           id: newId,
           name: formName.trim(),
           type: formType,
@@ -208,6 +208,10 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           sortOrder: formSortOrder,
           isActive: formIsActive,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("节点创建成功")
         setDialogOpen(false)
         router.refresh()
@@ -217,12 +221,17 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
         }
         setSelectedId(newId)
       } else if (editingNode) {
-        await updateOrgNode(editingNode.id, {
+        const orgResult = await updateOrgNode(editingNode.id, {
           name: formName.trim(),
           type: formType,
           sortOrder: formSortOrder,
           isActive: formIsActive,
-        })
+        }, editingNode.updatedAt)
+        if (!orgResult.success) {
+          toast.error(orgResult.message)
+          if (orgResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("节点更新成功")
         setDialogOpen(false)
         router.refresh()

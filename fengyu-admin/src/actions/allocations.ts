@@ -4,13 +4,15 @@ import { db } from '@/db'
 import { saleAllocations, saleOrders, saleItems } from '@db/order'
 import { eq, sql, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { SaleAllocation } from '@/lib/types'
+import type { SaleAllocation, AuthSession } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, isAdminScope, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
-/** 校验订单是否在用户 scope 内 */
-async function verifyOrderScope(saleOrderId: string, scopeIds: string[]): Promise<boolean> {
+/** 校验订单是否在用户 scope 内（admin 始终通过） */
+async function verifyOrderScope(saleOrderId: string, session: AuthSession): Promise<boolean> {
+  if (isAdminScope(session)) return true
+  const scopeIds = session.permissions.scopeStoreIds
   if (scopeIds.length === 0) return false
   const [order] = await db
     .select({ storeId: saleOrders.storeId })
@@ -21,7 +23,9 @@ async function verifyOrderScope(saleOrderId: string, scopeIds: string[]): Promis
 }
 
 /** 校验 saleItemId 对应的订单是否在用户 scope 内 */
-async function verifySaleItemScope(saleItemId: string, scopeIds: string[]): Promise<boolean> {
+async function verifySaleItemScope(saleItemId: string, session: AuthSession): Promise<boolean> {
+  if (isAdminScope(session)) return true
+  const scopeIds = session.permissions.scopeStoreIds
   if (scopeIds.length === 0) return false
   const [item] = await db
     .select({ saleOrderId: saleItems.saleOrderId })
@@ -29,7 +33,7 @@ async function verifySaleItemScope(saleItemId: string, scopeIds: string[]): Prom
     .where(eq(saleItems.saleItemId, saleItemId))
     .limit(1)
   if (!item) return false
-  return verifyOrderScope(item.saleOrderId, scopeIds)
+  return verifyOrderScope(item.saleOrderId, session)
 }
 
 export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllocation[]> {
@@ -37,8 +41,7 @@ export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllo
   requirePermission(session, 'allocation:list')
 
   // 校验订单 scope
-  const scopeIds = session.permissions.scopeStoreIds
-  if (!(await verifyOrderScope(saleOrderId, scopeIds))) {
+  if (!(await verifyOrderScope(saleOrderId, session))) {
     return []
   }
 
@@ -88,8 +91,7 @@ export async function saveAllocation(data: {
   requirePermission(session, 'allocation:save')
 
   // 校验 saleItemId 对应的订单在 scope 内
-  const scopeIds = session.permissions.scopeStoreIds
-  if (!(await verifySaleItemScope(data.saleItemId, scopeIds))) {
+  if (!(await verifySaleItemScope(data.saleItemId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
   }
 
@@ -139,37 +141,36 @@ export async function batchSaveAllocations(
   requirePermission(session, 'allocation:save')
 
   // 校验订单 scope
-  const scopeIds = session.permissions.scopeStoreIds
-  if (!(await verifyOrderScope(saleOrderId, scopeIds))) {
+  if (!(await verifyOrderScope(saleOrderId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
   }
 
-  // Void existing allocations for this order's items
-  await db.execute(sql`
-    UPDATE sale_allocations SET is_void = true, voided_at = NOW()
-    WHERE sale_item_id IN (
-      SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
-    ) AND is_void = false
-  `)
+  // 事务：作废旧分配 + 插入新分配 + 更新订单状态，原子提交
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE sale_allocations SET is_void = true, voided_at = NOW()
+      WHERE sale_item_id IN (
+        SELECT sale_item_id FROM sale_items WHERE sale_order_id = ${saleOrderId}
+      ) AND is_void = false
+    `)
 
-  // Insert new allocations
-  if (allocations.length > 0) {
-    await db.insert(saleAllocations).values(
-      allocations.map((a) => ({
-        saleItemId: a.saleItemId,
-        employeeId: a.employeeId,
-        allocationRatio: a.allocationRatio,
-        totalAmount: a.totalAmount,
-        departmentName: a.departmentName || null,
-      }))
-    )
-  }
+    if (allocations.length > 0) {
+      await tx.insert(saleAllocations).values(
+        allocations.map((a) => ({
+          saleItemId: a.saleItemId,
+          employeeId: a.employeeId,
+          allocationRatio: a.allocationRatio,
+          totalAmount: a.totalAmount,
+          departmentName: a.departmentName || null,
+        }))
+      )
+    }
 
-  // Update order allocation status
-  await db
-    .update(saleOrders)
-    .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })
-    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    await tx
+      .update(saleOrders)
+      .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })
+      .where(eq(saleOrders.saleOrderId, saleOrderId))
+  })
 
   await logOperation(session, 'allocation.batchSave', 'sale_order', saleOrderId, {
     allocationCount: allocations.length,

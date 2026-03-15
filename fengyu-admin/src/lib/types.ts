@@ -342,4 +342,13 @@ export interface DashboardStats {
   activeServices: number
   yesterdayVisitors: number
   yesterdayRevenue: number
+  /** 角色上下文：决定前端展示哪种看板 */
+  roleContext: 'business' | 'admin' | 'hr' | 'product'
+  /** admin/hr 角色的系统概览指标 */
+  adminStats?: {
+    totalStores: number
+    totalEmployees: number
+    totalProducts: number
+    totalCustomers: number
+  }
 }

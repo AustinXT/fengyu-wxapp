@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { stores, orgNodes } from '@db/org'
-import { eq, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
@@ -93,35 +93,37 @@ export async function createStore(data: {
   const session = await getSession()
   requirePermission(session, 'store:create')
 
-  // 同时创建 org_node（type=store）和 stores 记录
+  // 事务：org_node + stores 原子创建，失败则全部回滚
   const orgNodeId = `store-${data.storeId}`
-  await db.insert(orgNodes).values({
-    id: orgNodeId,
-    name: data.storeName,
-    type: 'store',
-    parentId: data.marketId,
-    sortOrder: 0,
-    isActive: true,
-  })
+  await db.transaction(async (tx) => {
+    await tx.insert(orgNodes).values({
+      id: orgNodeId,
+      name: data.storeName,
+      type: 'store',
+      parentId: data.marketId,
+      sortOrder: 0,
+      isActive: true,
+    })
 
-  await db.insert(stores).values({
-    storeId: data.storeId,
-    storeName: data.storeName,
-    orgNodeId,
-    openingDate: data.openingDate ?? null,
-    bedCount: data.bedCount ?? null,
-    isClosed: data.isClosed ?? false,
-    coverImage: data.coverImage ?? null,
-    images: data.images ?? null,
-    district: data.district ?? null,
-    streetAddress: data.streetAddress ?? null,
-    latitude: data.latitude ?? null,
-    longitude: data.longitude ?? null,
-    phone: data.phone ?? null,
-    businessHours: data.businessHours ?? null,
-    description: data.description ?? null,
-    announcement: data.announcement ?? null,
-    parkingInfo: data.parkingInfo ?? null,
+    await tx.insert(stores).values({
+      storeId: data.storeId,
+      storeName: data.storeName,
+      orgNodeId,
+      openingDate: data.openingDate ?? null,
+      bedCount: data.bedCount ?? null,
+      isClosed: data.isClosed ?? false,
+      coverImage: data.coverImage ?? null,
+      images: data.images ?? null,
+      district: data.district ?? null,
+      streetAddress: data.streetAddress ?? null,
+      latitude: data.latitude ?? null,
+      longitude: data.longitude ?? null,
+      phone: data.phone ?? null,
+      businessHours: data.businessHours ?? null,
+      description: data.description ?? null,
+      announcement: data.announcement ?? null,
+      parkingInfo: data.parkingInfo ?? null,
+    })
   })
 
   await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
@@ -148,13 +150,25 @@ export async function updateStore(
     description: string | null
     announcement: string | null
     parkingInfo: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'store:update')
 
-  await db.update(stores).set(data).where(eq(stores.storeId, storeId))
+  // 乐观锁：WHERE store_id = $1 AND updated_at = $2
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(stores.storeId, storeId), eq(stores.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(stores.storeId, storeId)
+
+  const result = await db.update(stores).set(data).where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'store.update', 'store', storeId, data)
   revalidatePath('/stores')
+  return { success: true, message: '门店信息已更新' }
 }

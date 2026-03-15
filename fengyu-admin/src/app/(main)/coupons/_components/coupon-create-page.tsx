@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -14,6 +15,8 @@ import type { CouponType } from "@/lib/types"
 export default function CouponCreatePage() {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [name, setName] = useState("")
   const [couponType, setCouponType] = useState<CouponType | "">("")
   const [discountValue, setDiscountValue] = useState("")
@@ -52,7 +55,7 @@ export default function CouponCreatePage() {
     setSaving(true)
     try {
       const templateId = `tpl-${Date.now()}`
-      await createTemplate({
+      const result = await createTemplate({
         templateId,
         name: name.trim(),
         couponType,
@@ -67,6 +70,11 @@ export default function CouponCreatePage() {
         description: description.trim() || null,
         isActive: true,
       })
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success("优惠券创建成功")
       router.push("/coupons")
       router.refresh()
@@ -78,7 +86,7 @@ export default function CouponCreatePage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" onInput={() => setFormDirty(true)}>
       <div className="flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回

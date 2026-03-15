@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { OrgNode } from "@/lib/types"
 import { createStore } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
@@ -16,6 +17,8 @@ import { ImageUpload } from "@/components/ui/image-upload"
 export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [coverImage, setCoverImage] = useState("")
   const [storeImages, setStoreImages] = useState<string[]>([])
 
@@ -56,6 +59,11 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         images: storeImages.length > 0 ? storeImages : null,
       })
 
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success(result.message)
       router.push("/stores")
     } catch {
@@ -66,7 +74,7 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
   }
 
   return (
-    <form action={handleSave} className="space-y-4">
+    <form action={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
       <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回

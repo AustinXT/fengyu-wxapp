@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { getProducts, getCategories } from '@/actions/products'
 import ProductsPageClient from './_components/products-page'
 
@@ -9,5 +10,9 @@ export default async function ProductsPage() {
     getCategories(),
   ])
 
-  return <ProductsPageClient products={products} categories={categories} />
+  return (
+    <Suspense>
+      <ProductsPageClient products={products} categories={categories} />
+    </Suspense>
+  )
 }

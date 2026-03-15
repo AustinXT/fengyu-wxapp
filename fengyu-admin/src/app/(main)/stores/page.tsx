@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { getStores } from '@/actions/stores'
 import { getUnbindRequests } from '@/actions/store-unbind'
 import StoresPage from './_components/stores-page'
@@ -9,5 +10,9 @@ export default async function Page() {
     getStores(),
     getUnbindRequests().catch(() => []),
   ])
-  return <StoresPage stores={stores} unbindRequests={unbindRequests} />
+  return (
+    <Suspense>
+      <StoresPage stores={stores} unbindRequests={unbindRequests} />
+    </Suspense>
+  )
 }

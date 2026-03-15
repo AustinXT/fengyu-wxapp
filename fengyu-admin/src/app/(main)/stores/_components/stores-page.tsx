@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 import type { Store } from "@/lib/types"
@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { useRouter } from "next/navigation"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE = 10
 
@@ -28,9 +29,21 @@ export default function StoresPage({
   stores: Store[]
   unbindRequests: UnbindRequest[]
 }) {
-  const [search, setSearch] = useState("")
-  const [page, setPage] = useState(1)
-  const [tab, setTab] = useState<"stores" | "unbind">("stores")
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
+  }, [set, debounceRef])
+
+  const search = get("q")
+  const page = Number(get("page", "1"))
+  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
+  const tab = (get("tab") || "stores") as "stores" | "unbind"
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const router = useRouter()
 
@@ -145,7 +158,7 @@ export default function StoresPage({
       {/* Tab 切换 */}
       <div className="flex gap-1 border-b border-[var(--border)]">
         <button
-          onClick={() => setTab("stores")}
+          onClick={() => set("tab", "")}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
             tab === "stores"
               ? "border-[var(--primary)] text-[var(--primary)]"
@@ -155,7 +168,7 @@ export default function StoresPage({
           门店列表
         </button>
         <button
-          onClick={() => setTab("unbind")}
+          onClick={() => set("tab", "unbind")}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-1.5 ${
             tab === "unbind"
               ? "border-[var(--primary)] text-[var(--primary)]"
@@ -176,11 +189,8 @@ export default function StoresPage({
           <div className="flex items-center gap-3">
             <Input
               placeholder="搜索门店名称 / 电话"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value)
-                setPage(1)
-              }}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="max-w-xs"
             />
           </div>

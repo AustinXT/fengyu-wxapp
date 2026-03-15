@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -52,6 +53,7 @@ export default function CouponDetailPage({ template }: Props) {
 
   // Edit mode state
   const [editing, setEditing] = useState(false)
+  useUnsavedChanges(editing)
   const [saving, setSaving] = useState(false)
   const [editName, setEditName] = useState(template.name)
   const [editCouponType, setEditCouponType] = useState<CouponType>(template.couponType)
@@ -115,7 +117,7 @@ export default function CouponDetailPage({ template }: Props) {
 
     setSaving(true)
     try {
-      await updateTemplate(template.templateId, {
+      const tplResult = await updateTemplate(template.templateId, {
         name: editName.trim(),
         couponType: editCouponType,
         discountValue: editDiscountValue,
@@ -128,7 +130,12 @@ export default function CouponDetailPage({ template }: Props) {
         validDays: editValidityMode === "days" && editValidDays ? parseInt(editValidDays, 10) : null,
         description: editDescription.trim() || null,
         isActive: editIsActive,
-      })
+      }, template.updatedAt)
+      if (!tplResult.success) {
+        toast.error(tplResult.message)
+        if (tplResult.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
       toast.success("保存成功")
       setEditing(false)
       router.refresh()

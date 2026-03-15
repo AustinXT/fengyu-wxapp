@@ -3,18 +3,17 @@
 import { db } from '@/db'
 import { appointments } from '@db/appointment'
 import { stores } from '@db/org'
-import { eq, desc, and, inArray, sql } from 'drizzle-orm'
+import { eq, desc, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 export async function getAppointments(): Promise<Appointment[]> {
   const session = await getSession()
   requirePermission(session, 'appointment:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       appointment: appointments,
@@ -22,7 +21,7 @@ export async function getAppointments(): Promise<Appointment[]> {
     })
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
-    .where(scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`)
+    .where(scopeCondition(session, appointments.storeId))
     .orderBy(desc(appointments.appointmentTime))
 
   return rows.map((r) => {
@@ -51,14 +50,13 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ status: '已确认' })
     .where(and(
       eq(appointments.appointmentId, appointmentId),
       eq(appointments.status, '待确认'),
-      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, appointments.storeId),
     ))
 
   if ((result as any).rowCount === 0) {
@@ -76,14 +74,13 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'appointment:checkin')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ checkinAt: new Date() })
     .where(and(
       eq(appointments.appointmentId, appointmentId),
       eq(appointments.status, '已确认'),
-      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, appointments.storeId),
     ))
 
   if ((result as any).rowCount === 0) {
@@ -101,14 +98,13 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const result = await db
     .update(appointments)
     .set({ status: '已取消' })
     .where(and(
       eq(appointments.appointmentId, appointmentId),
       sql`${appointments.status} IN ('待确认', '已确认')`,
-      scopeIds.length > 0 ? inArray(appointments.storeId, scopeIds) : sql`FALSE`,
+      scopeCondition(session, appointments.storeId),
     ))
 
   if ((result as any).rowCount === 0) {

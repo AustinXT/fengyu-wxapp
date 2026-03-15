@@ -3,6 +3,7 @@
 import { useState, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -44,6 +45,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
   // Edit info state
   const [isEditing, setIsEditing] = useState(false)
+  useUnsavedChanges(isEditing)
   const [resignDialogOpen, setResignDialogOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
@@ -100,7 +102,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
         .split(/[,，]/)
         .map((s) => s.trim())
         .filter(Boolean)
-      await updateEmployee(employee.employeeId, {
+      const result = await updateEmployee(employee.employeeId, {
         name: form.name || null,
         gender: form.gender || null,
         phone: form.phone || null,
@@ -110,7 +112,12 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
         positionName: form.positionName || null,
         birthday: form.birthday || null,
         skills: skillsArr.length > 0 ? skillsArr : null,
-      })
+      }, employee.updatedAt)
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes('已被其他人修改')) router.refresh()
+        return
+      }
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()
@@ -539,7 +546,12 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
           <AlertDialogCancel onClick={() => setResignDialogOpen(false)}>取消</AlertDialogCancel>
           <AlertDialogAction onClick={async () => {
             try {
-              await updateEmployee(employee.employeeId, { isResigned: true })
+              const result = await updateEmployee(employee.employeeId, { isResigned: true }, employee.updatedAt)
+              if (!result.success) {
+                toast.error(result.message)
+                if (result.message.includes('已被其他人修改')) router.refresh()
+                return
+              }
               toast.success('已标记离职')
               setResignDialogOpen(false)
               router.refresh()

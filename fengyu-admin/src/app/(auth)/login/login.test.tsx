@@ -16,11 +16,19 @@ vi.mock('sonner', () => ({
   },
 }))
 
+// Mock login server action
+const mockLogin = vi.fn()
+vi.mock('@/actions/auth', () => ({
+  login: (...args: unknown[]) => mockLogin(...args),
+}))
+
 import LoginPage from './page'
 
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 默认 login 返回失败（模拟手机号或密码错误）
+    mockLogin.mockResolvedValue({ success: false, message: '手机号或密码错误' })
   })
 
   it('渲染标题和表单元素', () => {
@@ -67,13 +75,27 @@ describe('LoginPage', () => {
   })
 
   it('正确密码跳转到 /dashboard', async () => {
+    mockLogin.mockResolvedValue({ success: true, message: '登录成功', mustChange: false })
     const user = userEvent.setup()
     render(<LoginPage />)
     await user.type(screen.getByLabelText('手机号'), '13800138000')
     await user.type(screen.getByLabelText('密码'), 'admin123')
     await user.click(screen.getByRole('button', { name: /登 录/ }))
     await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith('13800138000', 'admin123')
       expect(mockPush).toHaveBeenCalledWith('/dashboard')
+    })
+  })
+
+  it('mustChange=true 跳转到 /change-password', async () => {
+    mockLogin.mockResolvedValue({ success: true, message: '登录成功', mustChange: true })
+    const user = userEvent.setup()
+    render(<LoginPage />)
+    await user.type(screen.getByLabelText('手机号'), '13800138000')
+    await user.type(screen.getByLabelText('密码'), 'admin123')
+    await user.click(screen.getByRole('button', { name: /登 录/ }))
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith('/change-password')
     })
   })
 

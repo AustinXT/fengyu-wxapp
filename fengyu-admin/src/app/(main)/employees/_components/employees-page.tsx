@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import type { Employee, Store } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -10,14 +10,27 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatPhone } from "@/lib/utils"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE = 10
 
 export default function EmployeesPage({ employees, stores }: { employees: Employee[]; stores: Store[] }) {
-  const [search, setSearch] = useState("")
-  const [storeFilter, setStoreFilter] = useState("")
-  const [statusFilter, setStatusFilter] = useState("")
-  const [page, setPage] = useState(1)
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => set("q", value), 300)
+  }, [set, debounceRef])
+
+  const search = get("q")
+  const storeFilter = get("store")
+  const statusFilter = get("status")
+  const page = Number(get("page")) || 1
 
   const filtered = useMemo(() => {
     let result = employees
@@ -114,10 +127,7 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
       <div className="flex items-center gap-3">
         <Select
           value={storeFilter}
-          onChange={(e) => {
-            setStoreFilter(e.target.value)
-            setPage(1)
-          }}
+          onChange={(e) => set("store", e.target.value)}
           className="w-40"
         >
           <option value="">全部门店</option>
@@ -129,10 +139,7 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
         </Select>
         <Select
           value={statusFilter}
-          onChange={(e) => {
-            setStatusFilter(e.target.value)
-            setPage(1)
-          }}
+          onChange={(e) => set("status", e.target.value)}
           className="w-32"
         >
           <option value="">全部状态</option>
@@ -141,11 +148,8 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
         </Select>
         <Input
           placeholder="搜索编号 / 姓名 / 手机号"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(1)
-          }}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
       </div>
@@ -156,7 +160,7 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
         total={filtered.length}
         pageSize={PAGE_SIZE}
         page={page}
-        onPageChange={setPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
       />
     </div>
   )

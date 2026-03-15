@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
 import { createProduct } from "@/actions/products"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -21,6 +22,8 @@ export default function ProductCreatePageClient({
   const [saving, setSaving] = useState(false)
   const [coverImage, setCoverImage] = useState("")
   const [detailImages, setDetailImages] = useState<string[]>([])
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -56,7 +59,7 @@ export default function ProductCreatePageClient({
 
     setSaving(true)
     try {
-      await createProduct({
+      const result = await createProduct({
         productId,
         categoryId,
         name,
@@ -71,6 +74,11 @@ export default function ProductCreatePageClient({
         validStart,
         validEnd,
       })
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success("商品创建成功")
       router.push("/products")
     } catch {
@@ -81,7 +89,7 @@ export default function ProductCreatePageClient({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} onInput={() => setFormDirty(true)} className="space-y-4">
       <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回

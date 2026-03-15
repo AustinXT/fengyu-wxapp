@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
-import { eq } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -73,7 +73,7 @@ export async function createRate(data: {
   amountTierMin: string
   amountTierMax?: string | null
   commissionRate: string
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'commission:create')
 
@@ -91,6 +91,7 @@ export async function createRate(data: {
     orderType: data.orderType, roleType: data.roleType,
   })
   revalidatePath('/commission')
+  return { success: true, message: '提成规则创建成功' }
 }
 
 export async function updateRate(
@@ -103,21 +104,32 @@ export async function updateRate(
     amountTierMin?: string
     amountTierMax?: string | null
     commissionRate?: string
-  }
-) {
+  },
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'commission:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(commissionRateMatrix.id, id), eq(commissionRateMatrix.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(commissionRateMatrix.id, id)
+
+  const result = await db
     .update(commissionRateMatrix)
     .set(data)
-    .where(eq(commissionRateMatrix.id, id))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'commission.update', 'commission_rate', String(id), data)
   revalidatePath('/commission')
+  return { success: true, message: '提成规则已更新' }
 }
 
-export async function deleteRate(id: number) {
+export async function deleteRate(id: number): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'commission:delete')
 
@@ -127,4 +139,5 @@ export async function deleteRate(id: number) {
 
   await logOperation(session, 'commission.delete', 'commission_rate', String(id))
   revalidatePath('/commission')
+  return { success: true, message: '提成规则已删除' }
 }

@@ -5,11 +5,11 @@ import { serviceOrders, serviceItems } from '@db/service'
 import { saleItems } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { eq, desc, and, sql, inArray } from 'drizzle-orm'
+import { eq, desc, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function serializeServiceOrder(r: {
@@ -42,7 +42,6 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
   const session = await getSession()
   requirePermission(session, 'service:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -54,7 +53,7 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-    .where(scopeIds.length > 0 ? inArray(serviceOrders.storeId, scopeIds) : sql`FALSE`)
+    .where(scopeCondition(session, serviceOrders.storeId))
     .orderBy(desc(serviceOrders.createdAt))
 
   return rows.map(serializeServiceOrder)
@@ -64,7 +63,6 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
   const session = await getSession()
   requirePermission(session, 'service:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -76,11 +74,7 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
     .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
-    .where(
-      scopeIds.length > 0
-        ? and(eq(serviceOrders.serviceOrderId, serviceOrderId), inArray(serviceOrders.storeId, scopeIds))
-        : and(eq(serviceOrders.serviceOrderId, serviceOrderId), sql`FALSE`)
-    )
+    .where(and(eq(serviceOrders.serviceOrderId, serviceOrderId), scopeCondition(session, serviceOrders.storeId)))
     .limit(1)
 
   if (rows.length === 0) return null
@@ -232,28 +226,7 @@ export async function createServiceOrder(data: {
   const session = await getSession()
   requirePermission(session, 'service:create')
 
-  // 生成服务单号
-  const idRows = await db.execute(sql`
-    WITH lock AS (
-      SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
-    )
-    SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
-      LPAD(
-        (SELECT COALESCE(MAX(
-          CAST(NULLIF(SUBSTRING(service_order_id FROM '.{4}$'), '') AS INTEGER)
-        ), 0) + 1
-        FROM service_orders
-        WHERE service_order_id LIKE 'FY-FW-' || to_char(NOW(), 'YYMMDD') || '%'
-        )::TEXT, 4, '0'
-      ) AS id
-    FROM lock
-  `)
-  const serviceOrderId = (idRows as any[])[0]?.id as string
-  if (!serviceOrderId) {
-    return { success: false, message: '服务单号生成失败，请重试' }
-  }
-
-  // 先校验所有明细的剩余次数，避免校验失败时留下孤儿服务单
+  // 先校验剩余次数（事务外，只读查询）
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
@@ -274,35 +247,56 @@ export async function createServiceOrder(data: {
     saleItemSnapshots.push({ saleItemId: item.saleItemId, unitRealPrice: saleItem.unitRealPrice })
   }
 
-  // 校验通过后再插入服务单
-  await db.insert(serviceOrders).values({
-    serviceOrderId,
-    status: '待服务',
-    serviceOrderType: data.serviceOrderType || '普通',
-    marketName: data.marketName,
-    storeId: data.storeId,
-    serviceDate: data.serviceDate,
-    assignedEmployeeId: data.assignedEmployeeId,
-    clientUserId: data.clientUserId,
-    appointmentId: data.appointmentId || null,
-    remark: data.remark || null,
-  })
+  // 事务：ID 生成 + 服务单 + 服务明细，原子提交
+  const serviceOrderId = await db.transaction(async (tx) => {
+    const idRows = await tx.execute(sql`
+      WITH lock AS (
+        SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
+      )
+      SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
+        LPAD(
+          (SELECT COALESCE(MAX(
+            CAST(NULLIF(SUBSTRING(service_order_id FROM '.{4}$'), '') AS INTEGER)
+          ), 0) + 1
+          FROM service_orders
+          WHERE service_order_id LIKE 'FY-FW-' || to_char(NOW(), 'YYMMDD') || '%'
+          )::TEXT, 4, '0'
+        ) AS id
+      FROM lock
+    `)
+    const id = (idRows as any[])[0]?.id as string
+    if (!id) throw new Error('服务单号生成失败')
 
-  // 插入服务明细（使用预先查询的快照数据，避免重复查询）
-  for (let i = 0; i < data.items.length; i++) {
-    const item = data.items[i]
-    const serviceItemId = `${serviceOrderId}-${String(i + 1).padStart(2, '0')}`
-    const snapshot = saleItemSnapshots[i]
-
-    await db.insert(serviceItems).values({
-      serviceItemId,
-      serviceOrderId,
-      saleItemId: item.saleItemId,
-      sessionUsed: item.sessionUsed,
-      unitRealPrice: snapshot.unitRealPrice || '0',
-      employeeId: data.assignedEmployeeId,
+    await tx.insert(serviceOrders).values({
+      serviceOrderId: id,
+      status: '待服务',
+      serviceOrderType: data.serviceOrderType || '普通',
+      marketName: data.marketName,
+      storeId: data.storeId,
+      serviceDate: data.serviceDate,
+      assignedEmployeeId: data.assignedEmployeeId,
+      clientUserId: data.clientUserId,
+      appointmentId: data.appointmentId || null,
+      remark: data.remark || null,
     })
-  }
+
+    for (let i = 0; i < data.items.length; i++) {
+      const item = data.items[i]
+      const serviceItemId = `${id}-${String(i + 1).padStart(2, '0')}`
+      const snapshot = saleItemSnapshots[i]
+
+      await tx.insert(serviceItems).values({
+        serviceItemId,
+        serviceOrderId: id,
+        saleItemId: item.saleItemId,
+        sessionUsed: item.sessionUsed,
+        unitRealPrice: snapshot.unitRealPrice || '0',
+        employeeId: data.assignedEmployeeId,
+      })
+    }
+
+    return id
+  })
 
   await logOperation(session, 'service.create', 'service_order', serviceOrderId, {
     storeId: data.storeId, itemCount: data.items.length,

@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Product, ProductSku, ProductCategory } from "@/lib/types"
 import { updateProduct, createSku, updateSku, deleteSku } from "@/actions/products"
 import { Button } from "@/components/ui/button"
@@ -34,6 +35,8 @@ export default function ProductDetailPageClient({
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [coverImage, setCoverImage] = useState(product.coverImage ?? "")
   const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? [])
 
@@ -79,7 +82,7 @@ export default function ProductDetailPageClient({
 
     setSaving(true)
     try {
-      await updateProduct(product.productId, {
+      const result = await updateProduct(product.productId, {
         categoryId,
         name,
         coverImage: coverImage || null,
@@ -91,7 +94,13 @@ export default function ProductDetailPageClient({
         sortOrder,
         validStart,
         validEnd,
-      })
+      }, product.updatedAt)
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
+      setFormDirty(false)
       toast.success("保存成功")
       router.refresh()
     } catch {
@@ -147,7 +156,7 @@ export default function ProductDetailPageClient({
     setSkuSaving(true)
     try {
       if (editingSku) {
-        await updateSku(editingSku.skuId, {
+        const skuResult = await updateSku(editingSku.skuId, {
           specName,
           productType,
           price,
@@ -156,11 +165,16 @@ export default function ProductDetailPageClient({
           serviceFee,
           sortOrder,
           isBundleSku,
-        })
+        }, editingSku.updatedAt)
+        if (!skuResult.success) {
+          toast.error(skuResult.message)
+          if (skuResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("规格更新成功")
       } else {
         const skuId = `sku-${Date.now()}`
-        await createSku({
+        const createResult = await createSku({
           skuId,
           productId: product.productId,
           specName,
@@ -172,6 +186,10 @@ export default function ProductDetailPageClient({
           sortOrder,
           isBundleSku,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("规格创建成功")
       }
       setSheetOpen(false)
@@ -193,7 +211,11 @@ export default function ProductDetailPageClient({
     if (!deletingSkuId) return
     setDeleting(true)
     try {
-      await deleteSku(deletingSkuId)
+      const delResult = await deleteSku(deletingSkuId)
+      if (!delResult.success) {
+        toast.error(delResult.message)
+        return
+      }
       toast.success("规格已删除")
       setDeleteDialogOpen(false)
       setDeletingSkuId(null)
@@ -254,7 +276,7 @@ export default function ProductDetailPageClient({
 
   return (
     <div className="space-y-4">
-      <form onSubmit={handleSave} className="space-y-4">
+      <form onSubmit={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
         <div className="flex items-center gap-3">
           <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
             &larr; 返回

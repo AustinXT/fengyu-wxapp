@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { couponTemplates } from '@db/coupon'
-import { eq, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CouponTemplate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -75,29 +75,29 @@ export async function createTemplate(data: {
   validDays?: number | null
   description?: string | null
   isActive?: boolean
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'coupon:create')
 
   // 校验券种类型
   const VALID_COUPON_TYPES = ['现金券', '项目券', '折扣券']
   if (!VALID_COUPON_TYPES.includes(data.couponType)) {
-    throw new Error(`INVALID_PARAMS: 无效的券种类型: ${data.couponType}`)
+    return { success: false, message: `无效的券种类型: ${data.couponType}` }
   }
 
   // 校验 discountValue
   const dv = Number(data.discountValue)
   if (isNaN(dv) || dv <= 0) {
-    throw new Error('INVALID_PARAMS: 优惠值必须为正数')
+    return { success: false, message: '优惠值必须为正数' }
   }
   // 折扣券的 discountValue 必须在 (0, 1) 之间
   if (data.couponType === '折扣券' && (dv <= 0 || dv >= 1)) {
-    throw new Error('INVALID_PARAMS: 折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）')
+    return { success: false, message: '折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）' }
   }
 
   // 校验有效期顺序
   if (data.validFrom && data.validTo && new Date(data.validFrom) > new Date(data.validTo)) {
-    throw new Error('INVALID_PARAMS: 有效期开始日期不能晚于结束日期')
+    return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
   await db.insert(couponTemplates).values({
@@ -121,6 +121,7 @@ export async function createTemplate(data: {
 
   await logOperation(session, 'coupon.create', 'coupon_template', data.templateId, { name: data.name })
   revalidatePath('/coupons')
+  return { success: true, message: '优惠券模板创建成功' }
 }
 
 export async function updateTemplate(
@@ -141,8 +142,10 @@ export async function updateTemplate(
     validDays?: number | null
     description?: string | null
     isActive?: boolean
-  }
-) {
+  },
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'coupon:update')
 
@@ -153,13 +156,23 @@ export async function updateTemplate(
   if (data.validTo !== undefined) {
     updateData.validTo = data.validTo ? new Date(data.validTo) : null
   }
-  await db
+
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(couponTemplates.templateId, templateId), eq(couponTemplates.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(couponTemplates.templateId, templateId)
+
+  const result = await db
     .update(couponTemplates)
     .set(updateData)
-    .where(eq(couponTemplates.templateId, templateId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'coupon.update', 'coupon_template', templateId, data)
   revalidatePath('/coupons')
+  return { success: true, message: '优惠券模板已更新' }
 }
 
 export async function toggleTemplateActive(

@@ -1,9 +1,10 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { Customer, Store } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -33,10 +34,21 @@ interface CustomersPageProps {
 
 export default function CustomersPage({ customers, stores }: CustomersPageProps) {
   const router = useRouter()
-  const [search, setSearch] = useState("")
-  const [storeFilter, setStoreFilter] = useState("")
-  const [levelFilter, setLevelFilter] = useState("")
-  const [page, setPage] = useState(1)
+  const { get, set } = useUrlFilters()
+  const storeFilter = get("store")
+  const levelFilter = get("level")
+  const search = get("q")
+  const page = Number(get("page", "1"))
+  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
+
+  // 搜索防抖
+  const [searchInput, setSearchInput] = useState(search)
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
+  }, [set, setPage, debounceRef])
 
   // Create dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -164,10 +176,7 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
       <div className="flex items-center gap-3">
         <Select
           value={storeFilter}
-          onChange={(e) => {
-            setStoreFilter(e.target.value)
-            setPage(1)
-          }}
+          onChange={(e) => { set("store", e.target.value); setPage(1) }}
           className="w-40"
         >
           <option value="">全部门店</option>
@@ -179,10 +188,7 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
         </Select>
         <Select
           value={levelFilter}
-          onChange={(e) => {
-            setLevelFilter(e.target.value)
-            setPage(1)
-          }}
+          onChange={(e) => { set("level", e.target.value); setPage(1) }}
           className="w-32"
         >
           <option value="">全部等级</option>
@@ -194,11 +200,8 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
         </Select>
         <Input
           placeholder="搜索姓名 / 手机号"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(1)
-          }}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
       </div>

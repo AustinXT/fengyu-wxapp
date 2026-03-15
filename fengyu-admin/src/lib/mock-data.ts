@@ -1565,4 +1565,5 @@ export const MOCK_DASHBOARD_STATS: DashboardStats = {
   activeServices: 2,
   yesterdayVisitors: 15,
   yesterdayRevenue: 9860,
+  roleContext: 'business',
 }

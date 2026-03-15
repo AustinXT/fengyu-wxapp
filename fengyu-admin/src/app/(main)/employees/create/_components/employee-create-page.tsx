@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -18,6 +19,8 @@ interface Props {
 export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [form, setForm] = useState({
     name: "",
     gender: "",
@@ -31,6 +34,7 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
   })
 
   function handleChange(field: string, value: string) {
+    setFormDirty(true)
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -63,6 +67,11 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
         skills: skillsArr.length > 0 ? skillsArr : null,
       })
 
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success(result.message)
       router.push("/employees")
       router.refresh()

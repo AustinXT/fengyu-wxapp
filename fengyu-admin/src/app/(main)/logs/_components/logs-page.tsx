@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
 
 const actionLabels: Record<string, string> = {
@@ -77,11 +78,23 @@ interface Props {
 }
 
 export default function LogsPage({ logs }: Props) {
-  const [operatorSearch, setOperatorSearch] = useState("")
-  const [actionFilter, setActionFilter] = useState("")
-  const [targetTypeFilter, setTargetTypeFilter] = useState("")
-  const [dateFrom, setDateFrom] = useState("")
-  const [dateTo, setDateTo] = useState("")
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => set("q", value), 300)
+  }, [set, debounceRef])
+
+  const operatorSearch = get("q")
+  const actionFilter = get("action")
+  const targetTypeFilter = get("target")
+  const dateFrom = get("from")
+  const dateTo = get("to")
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const uniqueActions = useMemo(() => {
@@ -129,16 +142,16 @@ export default function LogsPage({ logs }: Props) {
             <Input
               className="w-48"
               placeholder="搜索操作人"
-              value={operatorSearch}
-              onChange={(e) => setOperatorSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
             />
-            <Select className="w-44" value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
+            <Select className="w-44" value={actionFilter} onChange={(e) => set("action", e.target.value)}>
               <option value="">全部操作类型</option>
               {uniqueActions.map((a) => (
                 <option key={a} value={a}>{actionLabels[a] || a}</option>
               ))}
             </Select>
-            <Select className="w-40" value={targetTypeFilter} onChange={(e) => setTargetTypeFilter(e.target.value)}>
+            <Select className="w-40" value={targetTypeFilter} onChange={(e) => set("target", e.target.value)}>
               <option value="">全部目标类型</option>
               {uniqueTargetTypes.map((t) => (
                 <option key={t} value={t}>{targetTypeLabels[t] || t}</option>
@@ -149,14 +162,14 @@ export default function LogsPage({ logs }: Props) {
                 type="date"
                 className="w-40"
                 value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
+                onChange={(e) => set("from", e.target.value)}
               />
               <span className="text-[#999999]">-</span>
               <Input
                 type="date"
                 className="w-40"
                 value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
+                onChange={(e) => set("to", e.target.value)}
               />
             </div>
           </div>

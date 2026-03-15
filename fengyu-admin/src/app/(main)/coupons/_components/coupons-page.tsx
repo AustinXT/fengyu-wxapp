@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import type { CouponTemplate, CouponType } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -10,6 +10,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { toggleTemplateActive } from "@/actions/coupons"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE = 10
 
@@ -41,8 +42,20 @@ interface CouponsPageProps {
 }
 
 export default function CouponsPage({ templates }: CouponsPageProps) {
-  const [search, setSearch] = useState("")
-  const [page, setPage] = useState(1)
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
+  }, [set, debounceRef])
+
+  const search = get("q")
+  const page = Number(get("page", "1"))
+  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
 
   const filtered = useMemo(() => {
     if (!search.trim()) return templates
@@ -164,11 +177,8 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
       <div className="flex items-center gap-3">
         <Input
           placeholder="搜索券名称"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(1)
-          }}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
       </div>

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useTransition } from "react"
+import { useState, useMemo, useTransition, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -11,6 +11,7 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { startServiceOrder, completeServiceOrder, cancelServiceOrder } from "@/actions/services"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
 
 function formatDate(dt: string) {
@@ -77,9 +78,21 @@ export default function ServicesPageClient({
   serviceOrders: ServiceOrder[]
   stores: Store[]
 }) {
-  const [statusFilter, setStatusFilter] = useState<string>("")
-  const [storeFilter, setStoreFilter] = useState<string>("")
-  const [search, setSearch] = useState("")
+  const { get, set } = useUrlFilters()
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => set("q", value), 300)
+  }, [set, debounceRef])
+
+  const statusFilter = get("status")
+  const storeFilter = get("store")
+  const search = get("q")
 
   const filtered = useMemo(() => {
     return serviceOrders.filter((s) => {
@@ -106,13 +119,13 @@ export default function ServicesPageClient({
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <Select className="w-40" value={statusFilter} onChange={(e) => set("status", e.target.value)}>
               <option value="">全部状态</option>
               {(["待服务", "服务中", "已完成", "已取消"] as ServiceOrderStatus[]).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => setStoreFilter(e.target.value)}>
+            <Select className="w-40" value={storeFilter} onChange={(e) => set("store", e.target.value)}>
               <option value="">全部门店</option>
               {stores.map((s) => (
                 <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
@@ -121,8 +134,8 @@ export default function ServicesPageClient({
             <Input
               className="w-56"
               placeholder="搜索服务单号/顾客/美容师"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
             />
           </div>
         </CardContent>
