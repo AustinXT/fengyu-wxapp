@@ -1,9 +1,15 @@
 // pages/customer-list/customer-list.ts
 import { callStaffApi } from '../../utils/cloud';
+import { isManager } from '../../utils/role';
 
 type TagType = 'active' | 'atRisk' | 'lost' | 'sleeping' | 'birthday' | 'birthdayNext';
 
 const app = getApp<IAppOption>();
+
+interface StaffAction {
+  name: string;
+  employeeId: string;
+}
 
 type CustomerType = 'all' | 'member' | 'flow';
 
@@ -62,6 +68,11 @@ Page({
     activeTag: '' as '' | TagType,
     tagPage: 1,
     tagHasMore: false,
+    // 客户分配
+    isManager: false,
+    showAssignSheet: false,
+    staffActions: [] as StaffAction[],
+    assignTarget: { clientUserId: '', name: '' },
   },
 
   onShow() {
@@ -69,6 +80,7 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' });
       return;
     }
+    this.setData({ isManager: isManager() });
     this.loadStats();
     if (!this.data.activeTag && !this.data.searched) {
       this.loadDefaultList();
@@ -182,5 +194,48 @@ Page({
     const { id, clientUserId } = e.currentTarget.dataset;
     const params = id ? `id=${id}` : `clientUserId=${clientUserId}`;
     wx.navigateTo({ url: `/packageCustomer/customer-detail/customer-detail?${params}` });
+  },
+
+  // ===== 客户分配（仅店长，长按触发） =====
+  async onLongPressAssign(e: WechatMiniprogram.TouchEvent) {
+    const { clientUserId, name } = e.currentTarget.dataset;
+    if (!clientUserId) return;
+
+    // 懒加载员工列表
+    if (this.data.staffActions.length === 0) {
+      try {
+        const staff = await callStaffApi<Array<{ employeeId: string; name: string }>>('staff.list');
+        this.setData({
+          staffActions: (staff || []).map(s => ({ name: s.name, employeeId: s.employeeId })),
+        });
+      } catch (_) {
+        wx.showToast({ title: '获取员工列表失败', icon: 'none' });
+        return;
+      }
+    }
+
+    this.setData({
+      assignTarget: { clientUserId, name: name || '该顾客' },
+      showAssignSheet: true,
+    });
+  },
+
+  onAssignClose() {
+    this.setData({ showAssignSheet: false });
+  },
+
+  async onAssignSelect(e: WechatMiniprogram.CustomEvent) {
+    const action = e.detail as StaffAction;
+    this.setData({ showAssignSheet: false });
+    try {
+      const result = await callStaffApi<{ message: string; employeeName: string }>(
+        'customer.assign',
+        { clientUserId: this.data.assignTarget.clientUserId, employeeId: action.employeeId },
+      );
+      wx.showToast({ title: `已分配给${result.employeeName}`, icon: 'success' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '分配失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    }
   },
 });

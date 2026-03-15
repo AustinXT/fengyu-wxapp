@@ -459,3 +459,10 @@
   text-align: right;
   padding-top: 8rpx;
 }
+
+/* ===== 备注编辑 ===== */
+.notes-save-wrap {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8rpx 32rpx 16rpx;
+}

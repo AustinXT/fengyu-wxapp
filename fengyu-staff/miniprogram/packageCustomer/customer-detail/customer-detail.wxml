@@ -42,10 +42,29 @@
       <van-tab title="详情">
         <view class="tab-content">
           <van-cell-group class="card-group">
+            <van-cell title="客户姓名" value="{{customer.name || '—'}}" />
+            <van-cell wx:if="{{customer.gender}}" title="客户性别" value="{{customer.gender}}" />
+            <van-cell title="手机号" value="{{isManager ? customer.phone : customer.phoneMasked}}" />
+            <van-cell wx:if="{{customer.storeName}}" title="注册门店" value="{{customer.storeName}}" />
             <van-cell wx:if="{{customer.preferredStaffName}}" title="指定美容师" value="{{customer.preferredStaffName}}" />
+            <van-cell wx:if="{{customer.topProductName}}" title="常购商品" value="{{customer.topProductName}}" />
+            <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
+            <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
+            <van-cell title="消费金额" value="¥{{customer.totalConsumption}}" />
             <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
             <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
-            <van-cell title="数据来源" value="{{customer.source === 'both' ? 'WorkFine + 小程序' : customer.source === 'workfine' ? 'WorkFine' : '小程序'}}" />
+            <van-field
+              label="备注"
+              type="textarea"
+              placeholder="请输入备注内容"
+              autosize="{{ {minHeight: 60} }}"
+              value="{{notesValue}}"
+              bind:change="onNotesChange"
+              border="{{false}}"
+            />
+            <view wx:if="{{notesDirty}}" class="notes-save-wrap">
+              <van-button size="small" type="primary" loading="{{notesSaving}}" bindtap="onSaveNotes">保存备注</van-button>
+            </view>
           </van-cell-group>
         </view>
       </van-tab>

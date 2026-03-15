@@ -1,18 +1,19 @@
 /**
  * 顾客档案模块路由（员工端）
- * customer.search — 搜索顾客（双源并集：WorkFine + PG）
+ * customer.search — 搜索顾客（PG 单源）
  * customer.calendar — 顾客消费日历
- * customer.detail — 顾客档案详情（支持 PG-only 顾客）
+ * customer.detail — 顾客档案详情
  * customer.paidOrders — 顾客已支付订单（含明细）
+ *
+ * 运行时 100% PG，零 MSSQL 依赖。WorkFine 数据通过同步模块写入 client_wechat_users。
  */
 
 const pg = require("../db/pg");
-const mssql = require("../db/mssql");
-const { requireStaffBound } = require("../middleware/auth");
+const { requireStaffBound, requireManager } = require("../middleware/auth");
 
 /**
- * 搜索顾客（双源并集）
- * 数据来源 = WorkFine UDT_S_311 ∪ PG client_wechat_users，手机号去重
+ * 搜索顾客（PG 单源）
+ * 数据来源 = PG client_wechat_users（含 WorkFine 同步数据）
  */
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
@@ -22,135 +23,63 @@ async function search(ctx) {
   const isManagerRole = ctx.auth.roles.includes("manager");
 
   // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
-  const pgTypeFilter = customerType === 'member'
-    ? ' AND customer_id IS NOT NULL'
+  const typeFilter = customerType === 'member'
+    ? ' AND c.customer_id IS NOT NULL'
     : customerType === 'flow'
-    ? ' AND customer_id IS NULL'
+    ? ' AND c.customer_id IS NULL'
     : '';
 
-  // Step 1: 查 WorkFine UDT_S_311（流量客模式跳过 WorkFine）
-  let customerRows = [];
-  if (customerType !== 'flow') {
-    let searchCondition;
-    const mssqlParams = {};
-    let limit = 20;
-    if (phone) {
-      searchCondition = "UDF_S_1478 = @phone";
-      mssqlParams.phone = phone.trim();
-      limit = 1;
-    } else if (keyword && keyword.trim()) {
-      searchCondition = "(UDF_S_1476 LIKE @keyword OR UDF_S_1478 LIKE @keyword) AND UDF_S_6443 = @storeName";
-      mssqlParams.keyword = `%${keyword.trim()}%`;
-      mssqlParams.storeName = ctx.auth.storeName;
-    } else {
-      searchCondition = "UDF_S_6443 = @storeName";
-      mssqlParams.storeName = ctx.auth.storeName;
-    }
-    mssqlParams.limit = limit;
-
-    customerRows = await mssql.query(`
-      SELECT TOP (@limit)
-        UDF_S_1475 AS customer_id,
-        UDF_S_1476 AS name,
-        UDF_S_1478 AS phone,
-        UDF_S_1477 AS member_level,
-        UDF_S_6443 AS store_name,
-        UDF_S_6444 AS main_staff_id,
-        UDF_S_1474 AS register_date
-      FROM UDT_S_311
-      WHERE ${searchCondition}
-      ORDER BY UDF_S_1474 DESC
-    `, mssqlParams);
-  }
-
-  // Step 2: 查 PG client_wechat_users
   const limit = 20;
-  let pgUsers = [];
+  let rows = [];
+
   if (phone) {
-    pgUsers = await pg.query(
-      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE phone = $1${pgTypeFilter}`,
+    rows = await pg.query(
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+              c.bound_store_id, s.store_name
+       FROM client_wechat_users c
+       LEFT JOIN stores s ON s.store_id = c.bound_store_id
+       WHERE c.phone = $1${typeFilter}`,
       [phone.trim()],
     );
   } else if (keyword && keyword.trim()) {
-    pgUsers = await pg.query(
-      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE (phone LIKE $1 OR name LIKE $1) AND bound_store_id = $2${pgTypeFilter} LIMIT $3`,
+    rows = await pg.query(
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+              c.bound_store_id, s.store_name
+       FROM client_wechat_users c
+       LEFT JOIN stores s ON s.store_id = c.bound_store_id
+       WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${typeFilter}
+       LIMIT $3`,
       [`%${keyword.trim()}%`, ctx.auth.storeId, limit],
     );
   } else {
-    pgUsers = await pg.query(
-      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE bound_store_id = $1${pgTypeFilter} LIMIT $2`,
+    rows = await pg.query(
+      `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+              c.bound_store_id, s.store_name
+       FROM client_wechat_users c
+       LEFT JOIN stores s ON s.store_id = c.bound_store_id
+       WHERE c.bound_store_id = $1${typeFilter}
+       LIMIT $2`,
       [ctx.auth.storeId, limit],
     );
   }
 
-  // 构建 PG clientUserId 映射
-  const pgUserMap = {};
-  for (const u of pgUsers) {
-    if (u.phone) pgUserMap[u.phone] = u.user_id;
-  }
-
-  // Step 3: 用 WorkFine phones 集合去重
-  const wfPhones = new Set(customerRows.map((r) => (r.phone || "").trim()).filter(Boolean));
-  const pgOnlyUsers = pgUsers.filter((u) => u.phone && !wfPhones.has(u.phone));
-
-  // Step 4: PG-only 顾客姓名（client_wechat_users.name 或 sale_orders.customer_name）
-  const pgNameMap = {};
-  if (pgOnlyUsers.length > 0) {
-    for (const u of pgOnlyUsers) {
-      if (u.name) {
-        pgNameMap[u.phone] = u.name;
-      }
-    }
-    const phonesWithoutName = pgOnlyUsers.filter((u) => !u.name).map((u) => u.phone);
-    if (phonesWithoutName.length > 0) {
-      const nameRows = await pg.query(
-        `SELECT DISTINCT ON (client_phone) client_phone, customer_name
-         FROM sale_orders WHERE client_phone = ANY($1)
-         ORDER BY client_phone, created_at DESC`,
-        [phonesWithoutName],
-      );
-      for (const r of nameRows) {
-        if (!pgNameMap[r.client_phone]) pgNameMap[r.client_phone] = r.customer_name;
-      }
-    }
-  }
-
-  // Step 5: 合并结果
-  const wfResults = customerRows.map((r) => {
-    const p = (r.phone || "").trim();
-    const clientUserId = pgUserMap[p] || null;
-    return {
-      id: r.customer_id,
-      clientUserId,
-      customerNo: r.customer_id,
-      name: r.name ? r.name.trim() : "",
-      phone: isManagerRole ? r.phone || "" : maskPhone(r.phone),
-      phoneMasked: maskPhone(r.phone),
-      memberLevel: r.member_level,
-      storeName: r.store_name ? r.store_name.trim() : "",
-      mainStaffId: r.main_staff_id,
-      registerDate: r.register_date,
-      source: clientUserId ? "both" : "workfine",
-    };
-  });
-
-  const pgOnlyResults = pgOnlyUsers.map((u) => ({
-    id: null,
-    clientUserId: u.user_id,
-    customerNo: null,
-    name: pgNameMap[u.phone] || u.name || "",
-    phone: isManagerRole ? u.phone : maskPhone(u.phone),
-    phoneMasked: maskPhone(u.phone),
-    memberLevel: null,
-    storeName: "",
-    mainStaffId: null,
-    registerDate: null,
-    source: "miniprogram",
+  const results = rows.map((r) => ({
+    id: r.customer_id || null,
+    clientUserId: r.user_id,
+    customerNo: r.customer_id || null,
+    name: r.name ? r.name.trim() : "",
+    phone: isManagerRole ? (r.phone || "") : maskPhone(r.phone),
+    phoneMasked: maskPhone(r.phone),
+    memberLevel: r.member_level || null,
+    storeName: r.store_name ? r.store_name.trim() : "",
+    tier: null,
+    lastServiceDate: null,
+    lastPurchaseName: null,
+    source: r.customer_id ? "both" : "miniprogram",
   }));
 
-  // Step 6: 补充 tier（年度消费分级）和 lastServiceDate
-  const allResults = [...wfResults, ...pgOnlyResults];
-  const allClientUserIds = allResults.map(r => r.clientUserId).filter(Boolean);
+  // 补充 tier（年度消费分级）、lastServiceDate、lastPurchaseName
+  const allClientUserIds = results.map(r => r.clientUserId).filter(Boolean);
 
   if (allClientUserIds.length > 0) {
     // 年度消费总额 → tier
@@ -199,7 +128,7 @@ async function search(ctx) {
       lastPurchaseMap[r.client_user_id] = r.last_product_name;
     }
 
-    for (const item of allResults) {
+    for (const item of results) {
       if (item.clientUserId) {
         item.tier = spendMap[item.clientUserId] || null;
         item.lastServiceDate = svcDateMap[item.clientUserId] || null;
@@ -208,7 +137,7 @@ async function search(ctx) {
     }
   }
 
-  ctx.result = allResults;
+  ctx.result = results;
 }
 
 /**
@@ -308,7 +237,7 @@ async function calendar(ctx) {
 }
 
 /**
- * 顾客档案详情（支持双源）
+ * 顾客档案详情（PG 单源）
  */
 async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {});
@@ -320,112 +249,48 @@ async function detail(ctx) {
 
   const isManagerRole = ctx.auth.roles.includes("manager");
 
-  let resolvedPhone = queryPhone;
-  let resolvedClientUserId = queryClientUserId;
-  if (!id && !queryPhone && queryClientUserId) {
-    const pgRows = await pg.query(
-      "SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE user_id = $1 LIMIT 1",
+  const selectCols = `c.user_id, c.phone, c.name, c.customer_id, c.member_level,
+    c.bound_employee_id, c.skin_type, c.improvement_focus, c.gender, c.notes,
+    c.bound_store_id, s.store_name`;
+
+  const fromClause = `FROM client_wechat_users c
+    LEFT JOIN stores s ON s.store_id = c.bound_store_id`;
+
+  // 按优先级依次查找：customer_id → user_id → phone
+  let pgUser = null;
+  if (id) {
+    const rows = await pg.query(
+      `SELECT ${selectCols} ${fromClause} WHERE c.customer_id = $1 LIMIT 1`,
+      [id],
+    );
+    if (rows.length > 0) pgUser = rows[0];
+  }
+
+  if (!pgUser && queryClientUserId) {
+    const rows = await pg.query(
+      `SELECT ${selectCols} ${fromClause} WHERE c.user_id = $1 LIMIT 1`,
       [queryClientUserId],
     );
-    if (pgRows.length === 0) {
-      throw new Error("INVALID_PARAMS: 顾客不存在");
-    }
-    resolvedPhone = pgRows[0].phone;
+    if (rows.length > 0) pgUser = rows[0];
   }
 
-  // 尝试从 WorkFine 查询
-  let customerRows = [];
-  if (id) {
-    customerRows = await mssql.query(`
-      SELECT TOP (1)
-        UDF_S_1475 AS customer_id,
-        UDF_S_1476 AS name,
-        UDF_S_1478 AS phone,
-        UDF_S_1477 AS member_level,
-        UDF_S_6443 AS store_name,
-        UDF_S_6444 AS main_staff_id
-      FROM UDT_S_311
-      WHERE UDF_S_1475 = @id
-    `, { id });
-  } else if (resolvedPhone) {
-    customerRows = await mssql.query(`
-      SELECT TOP (1)
-        UDF_S_1475 AS customer_id,
-        UDF_S_1476 AS name,
-        UDF_S_1478 AS phone,
-        UDF_S_1477 AS member_level,
-        UDF_S_6443 AS store_name,
-        UDF_S_6444 AS main_staff_id
-      FROM UDT_S_311
-      WHERE UDF_S_1478 = @phone
-    `, { phone: resolvedPhone.trim() });
-  }
-
-  if (customerRows.length > 0) {
-    const c = customerRows[0];
-    const phone = c.phone || "";
-
-    let clientUserId = resolvedClientUserId || null;
-    if (!clientUserId && phone) {
-      const clientUsers = await pg.query("SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1", [phone]);
-      if (clientUsers.length > 0) clientUserId = clientUsers[0].user_id;
-    }
-
-    // 查指定美容师名称（从 PG）
-    let preferredStaffName = null;
-    if (c.main_staff_id) {
-      const staffRows = await pg.query(
-        "SELECT name FROM staff_wechat_users WHERE employee_id = $1",
-        [c.main_staff_id],
-      );
-      if (staffRows.length > 0) {
-        preferredStaffName = staffRows[0].name || null;
-      }
-    }
-
-    const { totalConsumption, yearConsumption } = await getConsumptionStats(clientUserId, phone);
-
-    ctx.result = {
-      id: c.customer_id,
-      clientUserId,
-      name: c.name ? c.name.trim() : "",
-      phone: isManagerRole ? phone : maskPhone(phone),
-      phoneMasked: maskPhone(phone),
-      memberLevel: c.member_level,
-      preferredStaffName,
-      skinType: null,
-      focusAreas: null,
-      totalConsumption,
-      yearConsumption,
-      source: clientUserId ? "both" : "workfine",
-    };
-    return;
-  }
-
-  // WorkFine 无记录 → 查 PG
-  let pgUser = null;
-  if (resolvedPhone && queryClientUserId) {
-    pgUser = { user_id: queryClientUserId, phone: resolvedPhone };
-  } else {
-    const phone = resolvedPhone ? resolvedPhone.trim() : "";
-    if (!phone) {
-      throw new Error("INVALID_PARAMS: 顾客不存在");
-    }
-    const pgUsers = await pg.query(
-      "SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE phone = $1 LIMIT 1",
-      [phone],
+  if (!pgUser && queryPhone && queryPhone.trim()) {
+    const rows = await pg.query(
+      `SELECT ${selectCols} ${fromClause} WHERE c.phone = $1 LIMIT 1`,
+      [queryPhone.trim()],
     );
-    if (pgUsers.length === 0) {
-      throw new Error("INVALID_PARAMS: 顾客不存在");
-    }
-    pgUser = pgUsers[0];
+    if (rows.length > 0) pgUser = rows[0];
+  }
+
+  if (!pgUser) {
+    throw new Error("INVALID_PARAMS: 顾客不存在");
   }
 
   const phone = pgUser.phone || "";
 
-  // 从 client_wechat_users 或 sale_orders 获取姓名
+  // 姓名回退：client_wechat_users.name → sale_orders.customer_name
   let name = pgUser.name || "";
-  if (!name) {
+  if (!name && phone) {
     const nameRows = await pg.query(
       `SELECT customer_name FROM sale_orders
        WHERE client_phone = $1 AND customer_name IS NOT NULL AND customer_name != ''
@@ -435,68 +300,115 @@ async function detail(ctx) {
     if (nameRows.length > 0) name = nameRows[0].customer_name;
   }
 
-  const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id, phone);
+  // 指定美容师名称
+  let preferredStaffName = null;
+  if (pgUser.bound_employee_id) {
+    const staffRows = await pg.query(
+      "SELECT name FROM staff_wechat_users WHERE employee_id = $1",
+      [pgUser.bound_employee_id],
+    );
+    if (staffRows.length > 0) preferredStaffName = staffRows[0].name || null;
+  }
+
+  const { totalConsumption, yearConsumption } = await getConsumptionStats(pgUser.user_id);
+
+  // 到店信息（上次到店 + 到店频率 + 常购商品），并行查询
+  const clientUserId = pgUser.user_id;
+  const [visitInfo, purchaseInfo] = await Promise.all([
+    getVisitInfo(clientUserId),
+    getTopProduct(clientUserId),
+  ]);
 
   ctx.result = {
-    id: null,
-    clientUserId: pgUser.user_id,
+    id: pgUser.customer_id || null,
+    clientUserId,
     name,
+    gender: pgUser.gender || null,
     phone: isManagerRole ? phone : maskPhone(phone),
     phoneMasked: maskPhone(phone),
-    memberLevel: null,
-    preferredStaffName: null,
-    skinType: null,
-    focusAreas: null,
+    memberLevel: pgUser.member_level || null,
+    storeName: pgUser.store_name ? pgUser.store_name.trim() : "",
+    preferredStaffName,
+    skinType: pgUser.skin_type || null,
+    focusAreas: pgUser.improvement_focus || null,
+    notes: pgUser.notes || null,
+    lastServiceDate: visitInfo.lastServiceDate,
+    visitFrequency: visitInfo.visitFrequency,
+    topProductName: purchaseInfo,
     totalConsumption,
     yearConsumption,
-    source: "miniprogram",
+    source: pgUser.customer_id ? "both" : "miniprogram",
   };
 }
 
 /**
- * 查询消费统计
+ * 到店信息（上次到店日期 + 到店频率）
+ * 频率基于近 90 天内的服务单去重天数计算
  */
-async function getConsumptionStats(clientUserId, phone) {
-  let totalConsumption = 0;
-  let yearConsumption = 0;
+async function getVisitInfo(clientUserId) {
+  if (!clientUserId) return { lastServiceDate: null, visitFrequency: null };
 
-  if (clientUserId) {
-    const totalRows = await pg.query(
-      `SELECT COALESCE(SUM(si.received::numeric), 0) AS total
-       FROM sale_orders o JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-       WHERE o.status = '已支付' AND o.client_user_id = $1`,
-      [clientUserId],
-    );
-    totalConsumption = Number(totalRows[0].total);
+  const rows = await pg.query(`
+    SELECT
+      MAX(so.service_date) AS last_date,
+      COUNT(DISTINCT so.service_date) FILTER (WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days') AS visit_count_90d
+    FROM service_orders so
+    WHERE so.client_user_id = $1 AND so.status = '已完成'
+  `, [clientUserId]);
 
-    const yearStart = new Date(new Date().getFullYear(), 0, 1);
-    const yearRows = await pg.query(
-      `SELECT COALESCE(SUM(si.received::numeric), 0) AS total
-       FROM sale_orders o JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-       WHERE o.status = '已支付' AND o.client_user_id = $1 AND o.paid_at >= $2`,
-      [clientUserId, yearStart],
-    );
-    yearConsumption = Number(yearRows[0].total);
-  } else if (phone) {
-    const totalRows = await pg.query(
-      `SELECT COALESCE(SUM(si.received::numeric), 0) AS total
-       FROM sale_orders o JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-       WHERE o.status = '已支付' AND o.client_phone = $1`,
-      [phone],
-    );
-    totalConsumption = Number(totalRows[0].total);
+  const lastDate = rows[0].last_date || null;
+  const count90d = parseInt(rows[0].visit_count_90d) || 0;
 
-    const yearStart = new Date(new Date().getFullYear(), 0, 1);
-    const yearRows = await pg.query(
-      `SELECT COALESCE(SUM(si.received::numeric), 0) AS total
-       FROM sale_orders o JOIN sale_items si ON o.sale_order_id = si.sale_order_id
-       WHERE o.status = '已支付' AND o.client_phone = $1 AND o.paid_at >= $2`,
-      [phone, yearStart],
-    );
-    yearConsumption = Number(yearRows[0].total);
-  }
+  let visitFrequency = null;
+  if (count90d >= 12) visitFrequency = '一周一次以上';
+  else if (count90d >= 6) visitFrequency = '两周一次';
+  else if (count90d >= 3) visitFrequency = '一月一次';
+  else if (count90d >= 1) visitFrequency = '偶尔到店';
 
-  return { totalConsumption, yearConsumption };
+  return { lastServiceDate: lastDate, visitFrequency };
+}
+
+/**
+ * 常购商品（购买次数最多的商品名称）
+ */
+async function getTopProduct(clientUserId) {
+  if (!clientUserId) return null;
+
+  const rows = await pg.query(`
+    SELECT si.product_name, COUNT(*) AS cnt
+    FROM sale_orders o
+    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    WHERE o.client_user_id = $1
+      AND o.status IN ('已支付', '已完成')
+      AND si.item_direction = 'purchase'
+    GROUP BY si.product_name
+    ORDER BY cnt DESC
+    LIMIT 1
+  `, [clientUserId]);
+
+  return rows.length > 0 ? rows[0].product_name : null;
+}
+
+/**
+ * 查询消费统计（单次查询同时计算累计 + 年度）
+ */
+async function getConsumptionStats(clientUserId) {
+  if (!clientUserId) return { totalConsumption: 0, yearConsumption: 0 };
+
+  const yearStart = new Date(new Date().getFullYear(), 0, 1);
+  const rows = await pg.query(
+    `SELECT
+       COALESCE(SUM(si.received::numeric), 0) AS total,
+       COALESCE(SUM(CASE WHEN o.paid_at >= $2 THEN si.received::numeric ELSE 0 END), 0) AS year_total
+     FROM sale_orders o
+     JOIN sale_items si ON o.sale_order_id = si.sale_order_id
+     WHERE o.status = '已支付' AND o.client_user_id = $1`,
+    [clientUserId, yearStart],
+  );
+  return {
+    totalConsumption: Number(rows[0].total),
+    yearConsumption: Number(rows[0].year_total),
+  };
 }
 
 /**
@@ -860,7 +772,7 @@ async function giftHistory(ctx) {
            si.received, o.created_at, o.paid_at
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-    WHERE ${whereClause.replace('o.', 'o.')}
+    WHERE ${whereClause}
       AND o.status IN ('已支付', '已完成')
       AND o.sale_order_type NOT IN ('福利活动', '退款', '转换', '回款')
       AND si.item_direction = 'purchase'
@@ -915,4 +827,61 @@ async function giftHistory(ctx) {
   }
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory };
+/**
+ * 更新顾客备注
+ */
+async function updateNotes(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { clientUserId, notes } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (typeof notes !== 'string') throw new Error('INVALID_PARAMS: notes 必须为字符串')
+
+  const trimmed = notes.trim().slice(0, 500)
+
+  const result = await pg.query(
+    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
+    [trimmed || null, clientUserId]
+  )
+
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 顾客不存在')
+  }
+
+  ctx.result = { message: '备注已保存' }
+}
+
+/**
+ * 客户分配（店长将顾客分配给美容师）
+ */
+async function assign(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId, employeeId } = ctx.event.payload || {}
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
+
+  // 验证员工存在且在本店
+  const staffRows = await pg.query(
+    'SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = $1 AND store_id = $2',
+    [employeeId, ctx.auth.storeId]
+  )
+  if (staffRows.length === 0) {
+    throw new Error('INVALID_PARAMS: 员工不存在或不属于本门店')
+  }
+
+  const result = await pg.query(
+    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
+    [employeeId, clientUserId]
+  )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 顾客不存在')
+  }
+
+  ctx.result = {
+    message: '分配成功',
+    employeeName: staffRows[0].name,
+  }
+}
+
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign };

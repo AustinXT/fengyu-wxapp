@@ -10,6 +10,7 @@ interface CustomerDetail {
   id: string | null;
   clientUserId: string | null;
   name: string;
+  gender: string | null;
   phone: string;
   phoneMasked: string;
   memberLevel: string | null;
@@ -19,8 +20,11 @@ interface CustomerDetail {
   yearConsumption: number;
   storeName: string;
   skinType: string | null;
+  focusAreas: string | null;
+  notes: string | null;
+  lastServiceDate: string | null;
   visitFrequency: string | null;
-  remark: string | null;
+  topProductName: string | null;
 }
 
 interface CustomerQuery {
@@ -138,6 +142,9 @@ Page({
     isManager: false,
     activeTab: 0,
     // Tab 0: 详情（客户信息）
+    notesValue: '',
+    notesDirty: false,
+    notesSaving: false,
     // Tab 1: 日历
     calendarYear: 0,
     calendarMonth: 0,
@@ -197,7 +204,7 @@ Page({
     this.setData({ loading: true });
     try {
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
-      this.setData({ customer });
+      this.setData({ customer, notesValue: customer.notes || '', notesDirty: false });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -416,5 +423,36 @@ Page({
   onRefundOrderTap(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
     wx.navigateTo({ url: `/packageOrder/order-detail/order-detail?id=${id}` });
+  },
+
+  // ===== 备注编辑 =====
+  onNotesChange(e: WechatMiniprogram.CustomEvent) {
+    const val = e.detail as unknown as string;
+    this.setData({
+      notesValue: val,
+      notesDirty: val !== (this.data.customer?.notes || ''),
+    });
+  },
+
+  async onSaveNotes() {
+    const { customer, notesValue } = this.data;
+    if (!customer?.clientUserId) return;
+    this.setData({ notesSaving: true });
+    try {
+      await callStaffApi('customer.updateNotes', {
+        clientUserId: customer.clientUserId,
+        notes: notesValue,
+      });
+      this.setData({
+        notesDirty: false,
+        'customer.notes': notesValue.trim() || null,
+      });
+      wx.showToast({ title: '备注已保存', icon: 'success' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '保存失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ notesSaving: false });
+    }
   },
 });

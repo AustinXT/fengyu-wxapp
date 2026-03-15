@@ -71,7 +71,9 @@
       class="customer-card"
       data-id="{{item.id}}"
       data-client-user-id="{{item.clientUserId}}"
+      data-name="{{item.name}}"
       bindtap="onItemTap"
+      bindlongpress="{{isManager ? 'onLongPressAssign' : ''}}"
     >
       <view class="customer-avatar">
         <text class="customer-avatar-text">{{item.name ? item.name[0] : '?'}}</text>
@@ -98,4 +100,16 @@
   <view wx:else />
 
   <view class="safe-area-bottom" />
+
+  <!-- 客户分配 Action Sheet（仅店长） -->
+  <van-action-sheet
+    wx:if="{{isManager}}"
+    show="{{showAssignSheet}}"
+    actions="{{staffActions}}"
+    cancel-text="取消"
+    bind:close="onAssignClose"
+    bind:cancel="onAssignClose"
+    bind:select="onAssignSelect"
+    description="将 {{assignTarget.name}} 分配给"
+  />
 </view>
