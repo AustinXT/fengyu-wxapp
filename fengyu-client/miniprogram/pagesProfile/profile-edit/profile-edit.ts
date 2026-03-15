@@ -1,7 +1,7 @@
 // pagesProfile/profile-edit/profile-edit.ts
 import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
-import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 
 Page({
   data: {
@@ -112,31 +112,14 @@ Page({
     }
 
     try {
-      wx.showLoading({ title: '绑定中...', mask: true });
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'auth.bindPhone',
-          payload: {},
-          phoneData: wx.cloud.CloudID(cloudID as string)
-        }
-      }) as any;
-      wx.hideLoading();
-
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
-      }
-
-      const { phone } = res.result.data;
-      wx.setStorageSync('phone', phone);
+      const { phone, updatedOrdersCount } = await bindPhoneWithCloudID(cloudID as string);
       this.setData({ maskedPhone: maskPhone(phone) });
 
-      const tips = res.result.data.updatedOrdersCount > 0
-        ? `已同步 ${res.result.data.updatedOrdersCount} 笔历史订单`
+      const tips = updatedOrdersCount > 0
+        ? `已同步 ${updatedOrdersCount} 笔历史订单`
         : '绑定成功';
       Toast.success(tips);
     } catch (err: any) {
-      wx.hideLoading();
       Toast.fail(err.message || '绑定失败');
     }
   },

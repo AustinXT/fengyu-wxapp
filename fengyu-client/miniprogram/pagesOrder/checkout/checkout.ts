@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
-import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -374,31 +374,13 @@ Page({
     }
 
     try {
-      wx.showLoading({ title: '绑定中...', mask: true });
-
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'auth.bindPhone',
-          payload: {},
-          phoneData: wx.cloud.CloudID(cloudID as string)
-        }
-      }) as any;
-
-      wx.hideLoading();
-
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
-      }
-
-      wx.setStorageSync('phone', res.result.data.phone);
+      await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
 
       Toast.success('绑定成功');
       // 绑定成功后自动重新提交订单
       setTimeout(() => this.onSubmitOrder(), 800);
     } catch (err: any) {
-      wx.hideLoading();
       Toast.fail(err.message || '绑定失败，请重试');
     }
   },

@@ -49,9 +49,9 @@ describe('order.scanDetail', () => {
     expect(ctx.result.statusMsg).toContain('已完成支付')
   })
 
-  test('缺少 orderNo → INVALID_PARAMS', async () => {
+  test('缺少 saleOrderId → INVALID_PARAMS', async () => {
     const ctx = createCtx({ payload: {} })
-    await expect(routes.scanDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*orderNo/)
+    await expect(routes.scanDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
   })
 
   test('订单不存在 → INVALID_PARAMS', async () => {
@@ -64,15 +64,13 @@ describe('order.scanDetail', () => {
 describe('order.create', () => {
   test('正常创建订单', async () => {
     pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([{
+    pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
+    pg.query.mockResolvedValueOnce([])  // check pending
+    pg.query.mockResolvedValueOnce([{   // SKU query
       sku_id: 'sku-1', product_id: 'p1', product_type: '单品',
       spec_name: '标准', price: '100', special_price: null,
       session_count: 1, product_name: '护理A', sales_category: null,
     }])
-    pg.query.mockResolvedValueOnce([{ name: '张三' }])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
@@ -148,9 +146,9 @@ describe('order.pay', () => {
     expect(ctx.result.paymentParams).toBeDefined()
   })
 
-  test('缺少 orderNo → INVALID_PARAMS', async () => {
+  test('缺少 saleOrderId → INVALID_PARAMS', async () => {
     const ctx = createBoundCtx({})
-    await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*orderNo/)
+    await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
   })
 
   test('非本人订单 → PERMISSION_DENIED', async () => {
@@ -254,9 +252,9 @@ describe('order.detail', () => {
     expect(ctx.result.items).toHaveLength(1)
   })
 
-  test('缺少 orderNo → INVALID_PARAMS', async () => {
+  test('缺少 saleOrderId → INVALID_PARAMS', async () => {
     const ctx = createBoundCtx({})
-    await expect(routes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS.*orderNo/)
+    await expect(routes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
   })
 
   test('订单不存在 → INVALID_PARAMS', async () => {

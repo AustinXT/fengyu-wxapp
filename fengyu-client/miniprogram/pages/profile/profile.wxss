@@ -45,10 +45,23 @@
   color: #FFFFFF;
 }
 
+.user-phone-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
 .user-phone {
-  display: block;
   font-size: 26rpx;
   color: rgba(255, 255, 255, 0.85);
+}
+
+.member-level-tag {
+  font-size: 20rpx;
+  color: #FFFFFF;
+  padding: 2rpx 14rpx;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 16rpx;
 }
 
 .user-store-row {

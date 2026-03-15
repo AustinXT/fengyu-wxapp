@@ -2,10 +2,28 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 
+interface ScanOrder {
+  orderNo: string;
+  status: string;
+  storeId: string;
+  storeName: string;
+  orderType: string;
+  totalAmount: number;
+}
+
+interface ScanOrderItem {
+  saleItemId: string;
+  productName: string;
+  skuSpecName: string;
+  unitPrice: number;
+  quantity: number;
+  received: number;
+}
+
 Page({
   data: {
-    order: null as any,
-    items: [] as any[],
+    order: null as ScanOrder | null,
+    items: [] as ScanOrderItem[],
     orderNo: '',
     paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
     isLoading: true,

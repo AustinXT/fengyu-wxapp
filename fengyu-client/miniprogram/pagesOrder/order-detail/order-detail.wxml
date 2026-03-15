@@ -6,7 +6,10 @@
   <!-- 状态大图区 -->
   <view class="status-hero">
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
-    <text class="status-label">{{order.status}}</text>
+    <view class="status-label-row">
+      <text class="status-label">{{order.status}}</text>
+      <van-tag wx:if="{{order.sale_order_type === '体验'}}" color="#F9F0FF" text-color="#722ED1">体验</van-tag>
+    </view>
     <text class="status-hint" wx:if="{{order.status === '待确认收款'}}">请等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
       <text class="status-hint-countdown" wx:if="{{countdown}}">请在 {{order.expire_time_fmt}} 前完成支付（剩余 {{countdown}}）</text>
@@ -16,7 +19,12 @@
 
   <!-- 订单基础信息 -->
   <van-cell-group title="订单信息" inset>
-    <van-cell title="订单编号" value="{{order.sale_order_id}}" />
+    <van-cell title="订单编号" bindtap="onCopyOrderNo">
+      <view slot="right-icon" class="copy-cell-value">
+        <text>{{order.sale_order_id}}</text>
+        <text class="copy-link">复制</text>
+      </view>
+    </van-cell>
     <van-cell title="下单时间" value="{{order.order_time_fmt}}" />
     <van-cell title="支付方式" value="{{order.payment_method === 'wechat' ? '微信支付' : order.payment_method === 'alipay' ? '支付宝' : '线下付款'}}" />
     <van-cell title="门店" value="{{order.store_name}}" />

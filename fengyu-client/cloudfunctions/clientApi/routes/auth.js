@@ -17,7 +17,7 @@ async function login(ctx) {
 
   // 检查用户是否存在（JOIN stores + org_nodes 获取门店名和市场名）
   const users = await pg.query(
-    `SELECT u.user_id, u.phone, u.name, u.avatar_url, u.bound_store_id,
+    `SELECT u.user_id, u.phone, u.name, u.avatar_url, u.member_level, u.bound_store_id,
             s.store_name AS bound_store_name,
             pm.name AS bound_market_name
      FROM client_wechat_users u
@@ -63,6 +63,7 @@ async function login(ctx) {
       phone: users[0].phone,
       name: users[0].name,
       avatarUrl: users[0].avatar_url,
+      memberLevel: users[0].member_level,
       boundStoreId: users[0].bound_store_id,
       boundStoreName: users[0].bound_store_name,
       boundMarketName: users[0].bound_market_name
@@ -87,8 +88,6 @@ async function bindPhone(ctx) {
 
   // 方式1: CloudID 方式（推荐）
   if (phoneData) {
-    console.log('[bindPhone] phoneData resolved:', JSON.stringify(phoneData))
-
     if (phoneData.errCode) {
       throw new Error(`INVALID_PARAMS: 手机号解密失败 (${phoneData.errMsg || phoneData.errCode})`)
     }

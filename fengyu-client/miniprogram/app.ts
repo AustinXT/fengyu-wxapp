@@ -1,4 +1,6 @@
 // app.ts — 凤御客户端小程序
+import { callClientApi } from './utils/cloud';
+
 App<IAppOption>({
   globalData: {
     userInfo: null as WechatMiniprogram.UserInfo | null,
@@ -53,33 +55,33 @@ App<IAppOption>({
 
   async syncLoginState() {
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: { action: 'auth.login', payload: {} }
-      }) as any;
-      if (res.result?.code === 0 && res.result.data) {
-        const { userId, phone, boundStoreId, boundStoreName, boundMarketName } = res.result.data;
-        if (userId) {
-          this.globalData.userId = userId;
-          wx.setStorageSync('userId', userId);
-        }
-        if (phone) {
-          wx.setStorageSync('phone', phone);
-        }
-        if (res.result.data.name) {
-          wx.setStorageSync('userName', res.result.data.name);
-        }
-        if (res.result.data.avatarUrl) {
-          wx.setStorageSync('avatarUrl', res.result.data.avatarUrl);
-        }
-        // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
-        this.globalData.boundStoreId = boundStoreId || '';
-        wx.setStorageSync('boundStoreId', boundStoreId || '');
-        this.globalData.boundStoreName = boundStoreName || '';
-        wx.setStorageSync('boundStoreName', boundStoreName || '');
-        this.globalData.boundMarketName = boundMarketName || '';
-        wx.setStorageSync('boundMarketName', boundMarketName || '');
+      const data = await callClientApi<{
+        userId: string; phone: string; name: string; avatarUrl: string;
+        memberLevel: string; boundStoreId: string; boundStoreName: string; boundMarketName: string;
+      }>('auth.login', {});
+      if (data.userId) {
+        this.globalData.userId = data.userId;
+        wx.setStorageSync('userId', data.userId);
       }
+      if (data.phone) {
+        wx.setStorageSync('phone', data.phone);
+      }
+      if (data.name) {
+        wx.setStorageSync('userName', data.name);
+      }
+      if (data.avatarUrl) {
+        wx.setStorageSync('avatarUrl', data.avatarUrl);
+      }
+      if (data.memberLevel) {
+        wx.setStorageSync('memberLevel', data.memberLevel);
+      }
+      // 同步服务器端绑定的门店（双向同步：绑定和解绑都要同步）
+      this.globalData.boundStoreId = data.boundStoreId || '';
+      wx.setStorageSync('boundStoreId', data.boundStoreId || '');
+      this.globalData.boundStoreName = data.boundStoreName || '';
+      wx.setStorageSync('boundStoreName', data.boundStoreName || '');
+      this.globalData.boundMarketName = data.boundMarketName || '';
+      wx.setStorageSync('boundMarketName', data.boundMarketName || '');
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
     }

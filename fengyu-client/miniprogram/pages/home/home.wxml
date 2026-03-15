@@ -124,8 +124,11 @@
             </view>
             <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
             <view class="spu-body">
-              <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                <van-tag color="#C0322A">推荐</van-tag>
+              <view class="spu-tags">
+                <van-tag color="#E8684A" wx:if="{{item.product_kind === '福利活动'}}">福利活动</van-tag>
+                <van-tag type="primary" wx:elif="{{item.product_kind === '护理项目'}}">护理项目</van-tag>
+                <van-tag color="#5AACA5" wx:elif="{{item.product_kind === '家居产品'}}">家居产品</van-tag>
+                <van-tag color="#D4820A" wx:elif="{{item.product_kind === '充值卡'}}">充值卡</van-tag>
               </view>
               <text class="spu-name">{{item.name}}</text>
               <view class="spu-footer">
@@ -211,8 +214,11 @@
             <!-- 右侧信息 -->
             <view class="spu-body">
               <!-- 标签行 -->
-              <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                <van-tag color="#C0322A">推荐</van-tag>
+              <view class="spu-tags">
+                <van-tag color="#E8684A" wx:if="{{item.product_kind === '福利活动'}}">福利活动</van-tag>
+                <van-tag type="primary" wx:elif="{{item.product_kind === '护理项目'}}">护理项目</van-tag>
+                <van-tag color="#5AACA5" wx:elif="{{item.product_kind === '家居产品'}}">家居产品</van-tag>
+                <van-tag color="#D4820A" wx:elif="{{item.product_kind === '充值卡'}}">充值卡</van-tag>
               </view>
 
               <!-- 商品名 -->

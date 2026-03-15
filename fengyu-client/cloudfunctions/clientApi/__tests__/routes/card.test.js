@@ -32,8 +32,8 @@ describe('card.list', () => {
     await routes.list(ctx)
 
     expect(ctx.result.cards).toHaveLength(2)
-    expect(ctx.result.cards[0].card_id).toBe('card-1')
-    expect(ctx.result.cards[0].store_name).toBe('凤御A店')
+    expect(ctx.result.cards[0].cardId).toBe('card-1')
+    expect(ctx.result.cards[0].storeName).toBe('凤御A店')
     expect(ctx.result.cards[1].balance).toBe(1000)
   })
 

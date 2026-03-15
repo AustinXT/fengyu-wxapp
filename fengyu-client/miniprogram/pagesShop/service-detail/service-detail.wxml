@@ -24,10 +24,10 @@ module.exports.fmt = function(val) {
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#722ED1" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
+      <van-tag color="#E8684A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
       <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
-      <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
-      <van-tag color="#006D75" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+      <van-tag color="#5AACA5" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
+      <van-tag color="#D4820A" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
@@ -88,7 +88,7 @@ module.exports.fmt = function(val) {
   </van-cell-group>
 
   <!-- 底部操作栏 -->
-  <view class="action-bar">
+  <view class="action-bar safe-area-bottom">
     <!-- 价格区 -->
     <view class="action-bar__price" wx:if="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>

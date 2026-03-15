@@ -35,3 +35,38 @@ export async function callClientApi<T = any>(
   }
   return res.result.data as T
 }
+
+interface BindPhoneResult {
+  phone: string
+  updatedOrdersCount: number
+}
+
+/**
+ * CloudID 方式绑定手机号
+ * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
+ * 各页面只需处理成功后的 UI 回调
+ */
+export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneResult> {
+  wx.showLoading({ title: '绑定中...', mask: true })
+  try {
+    const res = await wx.cloud.callFunction({
+      name: 'clientApi',
+      data: {
+        action: 'auth.bindPhone',
+        payload: {},
+        phoneData: wx.cloud.CloudID(cloudID)
+      }
+    }) as any
+
+    if (res.result?.code !== 0) {
+      throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'))
+    }
+
+    const { phone, updatedOrdersCount = 0 } = res.result.data
+    wx.setStorageSync('phone', phone)
+
+    return { phone, updatedOrdersCount }
+  } finally {
+    wx.hideLoading()
+  }
+}

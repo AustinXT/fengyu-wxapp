@@ -67,9 +67,16 @@
         </view>
       </view>
 
-      <!-- 待支付操作 -->
+      <!-- 操作按钮 -->
       <view class="order-card__actions" wx:if="{{item.status === '待支付'}}">
-        <van-button size="small" plain round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
+        <van-button size="small" plain round catch:tap="onCancelTap" data-sale-order-id="{{item.sale_order_id}}">取消订单</van-button>
+        <van-button size="small" type="primary" round catch:tap="onPayTap" data-sale-order-id="{{item.sale_order_id}}">去支付</van-button>
+      </view>
+      <view class="order-card__actions" wx:elif="{{item.status === '已支付' && item.hasAppointable}}">
+        <van-button size="small" type="primary" round catch:tap="onAppointmentTap" data-sale-order-id="{{item.sale_order_id}}">发起预约</van-button>
+      </view>
+      <view class="order-card__actions" wx:elif="{{item.status === '已完成' || item.status === '已关闭'}}">
+        <van-button size="small" plain round catch:tap="onOrderTap" data-sale-order-id="{{item.sale_order_id}}">查看详情</van-button>
       </view>
 
     </view>

@@ -26,10 +26,29 @@
   margin-bottom: 24rpx;
 }
 
+.status-label-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
 .status-label {
   font-size: 36rpx;
   font-weight: 700;
   color: var(--color-text-primary);
+}
+
+.copy-cell-value {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  color: var(--color-text-secondary);
+  font-size: 28rpx;
+}
+
+.copy-link {
+  color: var(--color-primary);
+  font-size: 24rpx;
 }
 
 .status-hint {

@@ -1,7 +1,7 @@
 // pages/shop/shop.ts
 import Toast from '@vant/weapp/toast/toast';
 import { addToCart, getCartCount, clearCart } from '../../utils/cart';
-import { sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -108,20 +108,10 @@ Page({
   async loadShopInit() {
     try {
       this.setData({ isLoading: true });
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'product.shopInit',
-          payload: {},
-        },
-      }) as any;
+      const initData = await callClientApi<{ categories: Category[]; spuList: any[] }>('product.shopInit', {});
 
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '加载失败'));
-      }
-
-      const categories: Category[] = res.result.data?.categories || [];
-      const spuList: SpuItem[] = res.result.data?.spuList || [];
+      const categories: Category[] = initData?.categories || [];
+      const spuList: SpuItem[] = initData?.spuList || [];
 
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
@@ -222,19 +212,9 @@ Page({
       return;
     }
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'product.spuList',
-          payload: { categoryId: catObj.category_id },
-        },
-      }) as any;
+      const data = await callClientApi<{ spuList: SpuItem[] }>('product.spuList', { categoryId: catObj.category_id });
 
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '加载商品失败'));
-      }
-
-      const spuList: SpuItem[] = res.result.data?.spuList || [];
+      const spuList: SpuItem[] = data?.spuList || [];
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
         min_price: spu.priceFrom || '0',

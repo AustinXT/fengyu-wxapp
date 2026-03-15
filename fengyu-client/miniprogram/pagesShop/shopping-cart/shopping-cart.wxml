@@ -69,7 +69,7 @@
     </scroll-view>
 
     <!-- 底部结算栏 -->
-    <view class="cart-bottom">
+    <view class="cart-bottom safe-area-bottom">
       <view class="cart-bottom-left" bindtap="onToggleAll">
         <van-checkbox value="{{allChecked}}" />
         <text class="check-all-text">全选</text>
@@ -89,8 +89,6 @@
       </view>
     </view>
 
-    <!-- 底部安全区 -->
-    <view class="safe-area-bottom"></view>
   </view>
 
 </view>

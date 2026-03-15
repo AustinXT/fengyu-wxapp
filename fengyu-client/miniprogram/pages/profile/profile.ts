@@ -1,7 +1,7 @@
 // pages/profile/profile.ts
 import Toast from '@vant/weapp/toast/toast';
 import { maskPhone } from '../../utils/format';
-import { sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -9,6 +9,7 @@ Page({
   data: {
     userName: '',
     maskedPhone: '',
+    memberLevel: '',
     boundStoreName: '',
     avatarUrl: '',
     unreadCount: 0,
@@ -27,9 +28,11 @@ Page({
     const phone = wx.getStorageSync('phone') as string || '';
     const userName = wx.getStorageSync('userName') as string || '';
     const avatarUrl = wx.getStorageSync('avatarUrl') as string || '';
+    const memberLevel = wx.getStorageSync('memberLevel') as string || '';
     this.setData({
       userName,
       maskedPhone: maskPhone(phone),
+      memberLevel,
       boundStoreName: app.globalData.boundStoreName,
       avatarUrl,
     });
@@ -66,13 +69,8 @@ Page({
 
   async loadUnreadCount() {
     try {
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: { action: 'message.unreadCount', payload: {} }
-      }) as any;
-      if (res.result?.code === 0) {
-        this.setData({ unreadCount: res.result.data?.count || 0 });
-      }
+      const data = await callClientApi<{ count: number }>('message.unreadCount', {});
+      this.setData({ unreadCount: data?.count || 0 });
     } catch (_err) {
       // silently fail for unread count
     }
@@ -88,11 +86,6 @@ Page({
 
   onPrepaidCards() {
     wx.navigateTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
-  },
-
-  onBindPhone() {
-    // 已废弃，改用 onGetPhoneNumber 通过 button open-type 实现
-    wx.showToast({ title: '功能开发中', icon: 'none' });
   },
 
   /**
@@ -113,34 +106,11 @@ Page({
     }
 
     try {
-      wx.showLoading({ title: '绑定中...', mask: true });
-
-      // 调用云函数绑定手机号，传入 CloudID
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'auth.bindPhone',
-          payload: {},
-          phoneData: wx.cloud.CloudID(cloudID as string)
-        }
-      }) as any;
-
-      wx.hideLoading();
-
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
-      }
-
-      const { phone } = res.result.data;
-
-      // 更新本地存储
-      wx.setStorageSync('phone', phone);
-
-      // 刷新页面数据
+      const { updatedOrdersCount } = await bindPhoneWithCloudID(cloudID as string);
       this.refreshData();
 
-      const tips = res.result.data.updatedOrdersCount > 0
-        ? `已同步 ${res.result.data.updatedOrdersCount} 笔历史订单`
+      const tips = updatedOrdersCount > 0
+        ? `已同步 ${updatedOrdersCount} 笔历史订单`
         : '';
 
       wx.showToast({
@@ -150,7 +120,6 @@ Page({
       });
 
     } catch (err: any) {
-      wx.hideLoading();
       console.error('绑定手机号失败:', err);
       wx.showToast({
         title: err.message || '绑定失败，请重试',

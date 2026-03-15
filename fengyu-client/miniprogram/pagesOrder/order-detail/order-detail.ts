@@ -2,6 +2,38 @@
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 
+interface OrderDetailItem {
+  sale_item_id: string;
+  product_name: string;
+  sku_spec_name: string;
+  product_type: string;
+  session_count: number;
+  remaining_sessions: number | null;
+  unit_price: number;
+  quantity: number;
+  received: number;
+  expire_date: string | null;
+}
+
+interface OrderDetailData {
+  sale_order_id: string;
+  status: string;
+  sale_order_type: string;
+  sale_order_datetime: string;
+  store_name: string;
+  total_amount: number;
+  payment_method: string;
+  preferred_employee_id: string | null;
+  preferred_staff_name: string | null;
+  coupon_id: string | null;
+  coupon_discount: number;
+  coupon_name: string | null;
+  expire_at: string | null;
+  items?: OrderDetailItem[];
+  order_time_fmt?: string;
+  expire_time_fmt?: string;
+}
+
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
   '待确认收款': { icon: 'clock-o',   color: '#C9986A' },
@@ -13,7 +45,7 @@ const STATUS_ICON: Record<string, { icon: string; color: string }> = {
 
 Page({
   data: {
-    order: null as any,
+    order: null as OrderDetailData | null,
     statusIcon: 'clock-o',
     statusIconColor: '#FAAD14',
     hasAppointableItems: false,
@@ -21,7 +53,7 @@ Page({
     countdown: '',
   },
 
-  _countdownTimer: null as any,
+  _countdownTimer: null as number | null,
 
   onLoad(options) {
     const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
@@ -46,15 +78,15 @@ Page({
     this.setData({ isLoading: true });
     try {
       const data = await callClientApi('order.detail', { saleOrderId });
-      const order = data?.order || {};
-      const items = data?.items || [];
+      const order = (data?.order || {}) as OrderDetailData;
+      const items: OrderDetailItem[] = data?.items || [];
       const rawDt = String(order.sale_order_datetime);
       const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
       const hasAppointableItems = order.status === '已支付'
-        && items.some((i: any) =>
+        && items.some(i =>
             i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
           );
 
@@ -87,10 +119,10 @@ Page({
     }
   },
 
-  startCountdown(order: any) {
+  startCountdown(order: OrderDetailData) {
     // 清理旧定时器
     if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
+      clearInterval(this._countdownTimer!);
       this._countdownTimer = null;
     }
 
@@ -103,7 +135,7 @@ Page({
       const rawExpire = String(order.expire_at);
       const remaining = new Date(rawExpire.includes('T') ? rawExpire : rawExpire.replace(/-/g, '/')).getTime() - Date.now();
       if (remaining <= 0) {
-        clearInterval(this._countdownTimer);
+        clearInterval(this._countdownTimer!);
         this._countdownTimer = null;
         this.setData({ countdown: '' });
         // 超时刷新页面
@@ -123,9 +155,18 @@ Page({
 
   onUnload() {
     if (this._countdownTimer) {
-      clearInterval(this._countdownTimer);
+      clearInterval(this._countdownTimer!);
       this._countdownTimer = null;
     }
+  },
+
+  onCopyOrderNo() {
+    const id = this.data.order?.sale_order_id;
+    if (!id) return;
+    wx.setClipboardData({
+      data: id,
+      success: () => Toast.success('已复制订单号'),
+    });
   },
 
   onPay() {
