@@ -1,0 +1,427 @@
+#!/usr/bin/env node
+/**
+ * migrate-history-orders.js — 导入 WorkFine 全部历史订单到 PG
+ *
+ * 补全 Round 1（仅活跃疗程卡）遗漏的历史订单：已用完疗程卡、过期卡、单品销售等。
+ * 导入后可重跑 migrate-allocations.js 补全这些订单的业绩分配。
+ *
+ * 安全设计：
+ *   - 对已存在的 sale_order/sale_item 执行 DO NOTHING（不覆盖 Round 1 数据）
+ *   - 不影响 PG 端已发生的核销扣减（remaining_sessions 不被覆盖）
+ *
+ * 用法：
+ *   node scripts/migrate-history-orders.js              # 正式执行
+ *   node scripts/migrate-history-orders.js --dry-run     # 预览
+ *   node scripts/migrate-history-orders.js --verify      # 仅验证
+ */
+
+const mssql = require('mssql')
+const { Pool } = require('pg')
+
+const MSSQL_CONFIG = {
+  user: process.env.MSSQL_USER || 'SD',
+  password: process.env.MSSQL_PASSWORD || 'Se4Qimoh',
+  database: process.env.MSSQL_DATABASE || 'wkdb_20220804_86cd3292',
+  server: process.env.MSSQL_SERVER || '47.96.87.33',
+  port: parseInt(process.env.MSSQL_PORT) || 1433,
+  pool: { max: 5, min: 1, idleTimeoutMillis: 30000 },
+  options: { encrypt: false, trustServerCertificate: true, enableArithAbort: true },
+  requestTimeout: 600000, // 10 分钟（CTE 大查询）
+}
+
+const PG_CONFIG = {
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  max: 5,
+}
+
+const BATCH_SIZE = 500
+
+function trim(val) {
+  if (val === null || val === undefined) return null
+  const s = String(val).trim()
+  return s === '' ? null : s
+}
+
+function toDateStr(val) {
+  if (!val) return null
+  if (val instanceof Date) {
+    const y = val.getFullYear()
+    const m = String(val.getMonth() + 1).padStart(2, '0')
+    const d = String(val.getDate()).padStart(2, '0')
+    return `${y}-${m}-${d}`
+  }
+  return String(val).substring(0, 10)
+}
+
+function toTimestamp(val) {
+  if (!val) return null
+  if (val instanceof Date) return val.toISOString()
+  return String(val)
+}
+
+function log(msg) { console.log(`[HISTORY] ${msg}`) }
+
+// ─── 1. 查询 WorkFine 全部订单项目 ────────────────────────────
+
+async function queryAllItems(mssqlPool) {
+  log('查询 WorkFine 全部订单明细（含余次计算 CTE）...')
+  log('  → 这可能需要 3-5 分钟...')
+
+  const { recordset } = await mssqlPool.request().query(`
+    ;WITH usage AS (
+      SELECT
+        RTRIM(UDF_M_4904) AS sale_flow_no,
+        SUM(ISNULL(UDF_M_836, 0)) AS used_sessions
+      FROM UDT_M_260
+      WHERE UDF_M_4904 IS NOT NULL AND RTRIM(UDF_M_4904) != ''
+      GROUP BY RTRIM(UDF_M_4904)
+    )
+    SELECT
+      RTRIM(m.UDF_M_852)   AS sale_item_id,
+      RTRIM(s.UDF_S_372)   AS sale_order_id,
+      s.UDF_S_350           AS sale_date,
+      RTRIM(s.UDF_S_348)   AS market_name,
+      RTRIM(s.UDF_S_349)   AS store_name,
+      RTRIM(s.UDF_S_1485)  AS customer_id,
+      RTRIM(s.UDF_S_370)   AS customer_name,
+      s.UDF_S_507           AS order_total,
+      RTRIM(m.UDF_M_392)   AS category_name,
+      RTRIM(m.UDF_M_393)   AS item_name,
+      RTRIM(m.UDF_M_4728)  AS product_type_raw,
+      m.UDF_M_394           AS total_sessions,
+      ISNULL(u.used_sessions, 0) AS used_sessions,
+      m.UDF_M_4949          AS original_price,
+      m.UDF_M_395           AS sale_amount,
+      m.UDF_M_399           AS received,
+      m.UDF_M_7122          AS expire_date,
+      RTRIM(m.UDF_M_16124)  AS remark
+    FROM UDT_M_213 m
+    INNER JOIN UDT_S_209 s ON m.RID = s.RID
+    LEFT JOIN usage u ON u.sale_flow_no = RTRIM(m.UDF_M_852)
+    WHERE m.UDF_M_852 IS NOT NULL AND RTRIM(m.UDF_M_852) != ''
+      AND s.UDF_S_372 IS NOT NULL AND RTRIM(s.UDF_S_372) != ''
+    ORDER BY s.UDF_S_372, m.UDF_M_852
+  `)
+
+  log(`WorkFine 查询到 ${recordset.length} 条总明细`)
+  return recordset
+}
+
+// ─── 2. 过滤和分组 ─────────────────────────────────────────
+
+function processItems(rows, existingItemIds, customerMap, storeMap) {
+  const orders = new Map()
+  const stats = {
+    total: rows.length,
+    alreadyInPg: 0,
+    skippedNoCustomer: 0,
+    skippedNoStore: 0,
+    newItems: 0,
+    newOrders: 0,
+  }
+
+  for (const row of rows) {
+    const saleItemId = trim(row.sale_item_id)
+    const saleOrderId = trim(row.sale_order_id)
+    if (!saleItemId || !saleOrderId) continue
+
+    // 跳过已存在的项目（保护 Round 1 数据）
+    if (existingItemIds.has(saleItemId)) {
+      stats.alreadyInPg++
+      continue
+    }
+
+    // 跳过 PG 原生订单格式
+    if (saleOrderId.includes('-WX-') || saleItemId.includes('-WX-')) continue
+
+    // 顾客匹配
+    const customerId = trim(row.customer_id)
+    const userId = customerId ? customerMap[customerId] : null
+    if (!userId) { stats.skippedNoCustomer++; continue }
+
+    // 门店匹配
+    const storeName = trim(row.store_name)
+    const storeId = storeName ? storeMap[storeName] : null
+    if (!storeId) { stats.skippedNoStore++; continue }
+
+    // 产品类型映射
+    const rawType = trim(row.product_type_raw)
+    let productType = null
+    let sessionCount = null
+    let remainingSessions = null
+
+    if (rawType === '疗程卡' || rawType === '自定义-疗程') {
+      productType = '疗程卡'
+      sessionCount = Math.round(parseFloat(row.total_sessions) || 0)
+      const computed = sessionCount - (parseFloat(row.used_sessions) || 0)
+      remainingSessions = Math.max(0, Math.round(computed))
+    } else if (rawType === '单品' || rawType === '自定义-单品') {
+      productType = '单品'
+      sessionCount = 1
+      remainingSessions = 0
+    } else {
+      // NULL 或其他类型，作为单品处理
+      productType = '单品'
+      sessionCount = 1
+      remainingSessions = 0
+    }
+
+    const unitPrice = Math.max(0, parseFloat(row.original_price) || 0)
+    const saleAmount = Math.max(0, parseFloat(row.sale_amount) || 0)
+    const received = parseFloat(row.received) || 0
+
+    // 构建订单组
+    if (!orders.has(saleOrderId)) {
+      orders.set(saleOrderId, {
+        saleOrderId,
+        saleDate: toTimestamp(row.sale_date),
+        marketName: trim(row.market_name) || '未知市场',
+        storeId,
+        clientUserId: userId,
+        customerName: trim(row.customer_name),
+        items: [],
+      })
+    }
+
+    orders.get(saleOrderId).items.push({
+      saleItemId,
+      itemName: trim(row.item_name) || '未知项目',
+      productType,
+      sessionCount,
+      remainingSessions,
+      unitPrice,
+      unitRealPrice: saleAmount, // quantity = 1
+      saleAmount,
+      received,
+      expireDate: toDateStr(row.expire_date),
+      remark: trim(row.remark),
+    })
+
+    stats.newItems++
+  }
+
+  stats.newOrders = orders.size
+  return { orders, stats }
+}
+
+// ─── 3. 批量 INSERT（DO NOTHING 保护已有数据）─────────────────
+
+async function batchInsert(pgPool, orders, dryRun) {
+  const orderList = [...orders.values()]
+  const totalBatches = Math.ceil(orderList.length / BATCH_SIZE)
+  const totalItems = orderList.reduce((sum, o) => sum + o.items.length, 0)
+
+  log(`导入：${orderList.length} 个新订单, ${totalItems} 个新项目, 分 ${totalBatches} 批`)
+
+  if (dryRun) {
+    return { ordersInserted: orderList.length, itemsInserted: totalItems }
+  }
+
+  let ordersInserted = 0
+  let itemsInserted = 0
+
+  for (let batch = 0; batch < totalBatches; batch++) {
+    const start = batch * BATCH_SIZE
+    const end = Math.min(start + BATCH_SIZE, orderList.length)
+    const batchOrders = orderList.slice(start, end)
+
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+
+      for (const order of batchOrders) {
+        const totalAmount = order.items.reduce((sum, it) => sum + it.saleAmount, 0)
+
+        // INSERT sale_order (DO NOTHING if exists)
+        const res = await client.query(`
+          INSERT INTO sale_orders (
+            sale_order_id, status, sale_order_type, market_name, store_id,
+            sale_order_datetime, client_user_id, customer_name, total_amount,
+            payment_method, sale_order_source, allocation_status, remark
+          ) VALUES (
+            $1, '已完成', '普通', $2, $3,
+            $4, $5, $6, $7,
+            'offline', 'admin', 'allocated', 'WorkFine历史订单导入'
+          )
+          ON CONFLICT (sale_order_id) DO NOTHING
+        `, [
+          order.saleOrderId, order.marketName, order.storeId,
+          order.saleDate || new Date().toISOString(),
+          order.clientUserId, order.customerName, totalAmount,
+        ])
+        if (res.rowCount > 0) ordersInserted++
+
+        for (const item of order.items) {
+          const res2 = await client.query(`
+            INSERT INTO sale_items (
+              sale_item_id, sale_order_id, item_direction, product_name,
+              product_type, session_count, remaining_sessions,
+              unit_price, quantity, unit_real_price, sale_amount, received,
+              expire_date, sales_category, remark
+            ) VALUES (
+              $1, $2, 'purchase', $3,
+              $4, $5, $6,
+              $7, 1, $8, $9, $10,
+              $11, '自采自销', $12
+            )
+            ON CONFLICT (sale_item_id) DO NOTHING
+          `, [
+            item.saleItemId, order.saleOrderId, item.itemName,
+            item.productType, item.sessionCount, item.remainingSessions,
+            item.unitPrice, item.unitRealPrice, item.saleAmount, item.received,
+            item.expireDate, item.remark,
+          ])
+          if (res2.rowCount > 0) itemsInserted++
+        }
+      }
+
+      await client.query('COMMIT')
+
+      if ((batch + 1) % 20 === 0 || batch === totalBatches - 1) {
+        log(`  批次 ${batch + 1}/${totalBatches} (累计: ${ordersInserted} 订单, ${itemsInserted} 项目)`)
+      }
+    } catch (err) {
+      await client.query('ROLLBACK')
+      throw err
+    } finally {
+      client.release()
+    }
+  }
+
+  return { ordersInserted, itemsInserted }
+}
+
+// ─── 4. 验证 ────────────────────────────────────────────────
+
+async function verify(pgPool) {
+  console.log('\n=== 数据验证 ===')
+
+  const totals = await pgPool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM sale_orders WHERE remark = 'WorkFine历史订单导入') AS orders,
+      (SELECT COUNT(*) FROM sale_items si JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+       WHERE so.remark = 'WorkFine历史订单导入') AS items
+  `)
+  console.log(`  导入订单总数: ${totals.rows[0].orders}`)
+  console.log(`  导入项目总数: ${totals.rows[0].items}`)
+
+  // 按产品类型
+  const byType = await pgPool.query(`
+    SELECT si.product_type, COUNT(*) AS cnt,
+           SUM(CASE WHEN si.remaining_sessions > 0 THEN 1 ELSE 0 END) AS active_cnt
+    FROM sale_items si JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+    WHERE so.remark = 'WorkFine历史订单导入'
+    GROUP BY si.product_type ORDER BY cnt DESC
+  `)
+  console.log('\n  按产品类型:')
+  byType.rows.forEach(r => console.log(`    ${r.product_type || '(null)'}: ${r.cnt} (活跃: ${r.active_cnt})`))
+
+  // FK 完整性
+  const orphanOrders = await pgPool.query(`
+    SELECT COUNT(*) AS cnt FROM sale_orders so
+    WHERE so.remark = 'WorkFine历史订单导入'
+    AND so.client_user_id IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM client_wechat_users c WHERE c.user_id = so.client_user_id)
+  `)
+  const orphanStores = await pgPool.query(`
+    SELECT COUNT(*) AS cnt FROM sale_orders so
+    WHERE so.remark = 'WorkFine历史订单导入'
+    AND NOT EXISTS (SELECT 1 FROM stores s WHERE s.store_id = so.store_id)
+  `)
+  console.log('\n  FK 完整性:')
+  console.log(`    孤立 client_user_id: ${orphanOrders.rows[0].cnt}`)
+  console.log(`    孤立 store_id: ${orphanStores.rows[0].cnt}`)
+
+  // 涉及顾客数
+  const customers = await pgPool.query(`
+    SELECT COUNT(DISTINCT client_user_id) AS cnt FROM sale_orders
+    WHERE remark = 'WorkFine历史订单导入'
+  `)
+  console.log(`\n  涉及顾客: ${customers.rows[0].cnt}`)
+}
+
+// ─── 主函数 ─────────────────────────────────────────────────
+
+async function main() {
+  const args = process.argv.slice(2)
+  const dryRun = args.includes('--dry-run')
+  const verifyOnly = args.includes('--verify')
+
+  console.log('=== WorkFine 全量历史订单导入 ===')
+  console.log(`模式: ${dryRun ? 'DRY-RUN' : verifyOnly ? '仅验证' : '正式执行'}\n`)
+
+  let mssqlPool = null
+  const pgPool = new Pool(PG_CONFIG)
+
+  try {
+    await pgPool.query('SELECT 1')
+    console.log('✓ PostgreSQL 连接成功')
+
+    if (verifyOnly) {
+      await verify(pgPool)
+      return
+    }
+
+    console.log('连接 WorkFine SQL Server...')
+    mssqlPool = await mssql.connect(MSSQL_CONFIG)
+    console.log('✓ MSSQL 连接成功\n')
+
+    // Step 1: 查询全部数据
+    const allItems = await queryAllItems(mssqlPool)
+
+    // Step 2: 加载 PG 查找表
+    log('加载 PG 查找表...')
+    const existItemsRes = await pgPool.query("SELECT sale_item_id FROM sale_items")
+    const existingItemIds = new Set(existItemsRes.rows.map(r => r.sale_item_id))
+    log(`  已有项目: ${existingItemIds.size}`)
+
+    const custRes = await pgPool.query(
+      "SELECT user_id, customer_id FROM client_wechat_users WHERE customer_id IS NOT NULL"
+    )
+    const customerMap = {}
+    custRes.rows.forEach(r => { customerMap[r.customer_id] = r.user_id })
+
+    const storeRes = await pgPool.query("SELECT store_id, store_name FROM stores")
+    const storeMap = {}
+    storeRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
+
+    // Step 3: 过滤和分组
+    const { orders, stats } = processItems(allItems, existingItemIds, customerMap, storeMap)
+
+    console.log('\n=== 数据分析 ===')
+    console.log(`  WorkFine 总明细: ${stats.total}`)
+    console.log(`  已在 PG 中: ${stats.alreadyInPg}`)
+    console.log(`  新项目: ${stats.newItems}`)
+    console.log(`  新订单: ${stats.newOrders}`)
+    console.log(`  跳过（顾客未匹配）: ${stats.skippedNoCustomer}`)
+    console.log(`  跳过（门店未匹配）: ${stats.skippedNoStore}`)
+
+    if (stats.newItems === 0) {
+      log('没有新数据需要导入')
+      return
+    }
+
+    // Step 4: 批量 INSERT
+    console.log('')
+    const result = await batchInsert(pgPool, orders, dryRun)
+
+    console.log(`\n=== ${dryRun ? '预览' : '导入'}结果 ===`)
+    console.log(`  新增订单: ${result.ordersInserted}`)
+    console.log(`  新增项目: ${result.itemsInserted}`)
+
+    if (!dryRun) {
+      await verify(pgPool)
+    }
+
+    console.log(`\n✓ ${dryRun ? '预览完成' : '导入完成!'}`)
+  } catch (err) {
+    console.error('\n✗ 失败:', err.message)
+    console.error(err.stack)
+    process.exit(1)
+  } finally {
+    if (mssqlPool) await mssqlPool.close()
+    await pgPool.end()
+  }
+}
+
+main()
