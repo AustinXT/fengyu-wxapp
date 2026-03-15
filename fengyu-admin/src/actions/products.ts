@@ -52,6 +52,8 @@ export async function getProducts(): Promise<Product[]> {
     .from(products)
     .leftJoin(productCategories, eq(products.categoryId, productCategories.categoryId))
     .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
+    .orderBy(products.sortOrder)
+    .limit(500)
 
   return rows.map((r) => ({
     productId: r.product.productId,

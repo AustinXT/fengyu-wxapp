@@ -49,6 +49,7 @@ export async function getRates(): Promise<CommissionRate[]> {
     .from(commissionRateMatrix)
     .leftJoin(orgNodes, eq(commissionRateMatrix.orgId, orgNodes.id))
     .orderBy(commissionRateMatrix.id)
+    .limit(1000)
 
   return rows.map((r) => ({
     id: r.id,

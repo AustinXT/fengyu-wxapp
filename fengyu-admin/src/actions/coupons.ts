@@ -104,6 +104,7 @@ export async function getTemplates(): Promise<CouponTemplate[]> {
     .select()
     .from(couponTemplates)
     .orderBy(desc(couponTemplates.createdAt))
+    .limit(500)
 
   // 聚合每个模板的已发放数量（不受 status 过滤，反映总发放量）
   const counts = await db

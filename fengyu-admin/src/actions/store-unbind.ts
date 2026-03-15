@@ -39,6 +39,7 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
     .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
     .orderBy(desc(storeUnbindRequests.createdAt))
+    .limit(500)
 
   return rows.map((r) => ({
     requestId: r.request.requestId,

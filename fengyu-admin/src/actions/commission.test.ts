@@ -54,7 +54,7 @@ vi.mock('drizzle-orm', () => ({
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
 }))
 
-import { createRate, updateRate, deleteRate } from './commission'
+import { createRate, updateRate, deleteRate, getRates, getMarkets } from './commission'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 
@@ -328,5 +328,56 @@ describe('deleteRate — rowCount=0 + DB 错误处理', () => {
     ;(db.delete as any).mockReturnValue({ where })
 
     await expect(deleteRate(42)).rejects.toThrow('connection lost')
+  })
+})
+
+// ── getRates / getMarkets（读函数覆盖）────────────────────────────────────────
+
+describe('getRates — 全量提成比例列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回序列化的提成比例列表', async () => {
+    const limit = vi.fn().mockResolvedValue([{
+      id: 1, orgId: 'market-1', orderType: 'sale', roleType: '技师',
+      salesCategory: '自采自销', amountTierMin: '0', amountTierMax: '1000',
+      commissionRate: '0.08',
+      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+      orgName: '南昌市场',
+    }])
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getRates()
+
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe(1)
+    expect(result[0].orgName).toBe('南昌市场')
+  })
+})
+
+describe('getMarkets — 市场列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回市场选项列表', async () => {
+    const orderBy = vi.fn().mockResolvedValue([
+      { id: 'market-1', name: '南昌市场' },
+      { id: 'market-2', name: '九江市场' },
+    ])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getMarkets()
+
+    expect(result).toHaveLength(2)
+    expect(result[0]).toEqual({ orgId: 'market-1', name: '南昌市场' })
   })
 })

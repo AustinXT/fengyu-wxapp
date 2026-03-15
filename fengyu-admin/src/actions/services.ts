@@ -5,7 +5,8 @@ import { serviceOrders, serviceItems } from '@db/service'
 import { saleItems } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { eq, desc, and, sql } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lte } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -55,8 +56,99 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, serviceOrders.storeId))
     .orderBy(desc(serviceOrders.createdAt))
+    .limit(500)
 
   return rows.map(serializeServiceOrder)
+}
+
+/** 服务单列表筛选参数 */
+export interface ServiceOrderFilters {
+  status?: string
+  storeId?: string
+  dateFrom?: string
+  dateTo?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 分页结果 */
+export interface PaginatedServiceOrders {
+  data: ServiceOrder[]
+  total: number
+}
+
+/**
+ * 服务端分页服务单列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * 替代 getServiceOrders() 的客户端过滤模式。
+ * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
+ */
+export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> {
+  const session = await getSession()
+  requirePermission(session, 'service:list')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  // 构建 WHERE 条件（DB 级过滤）
+  const conditions: (SQL | undefined)[] = [
+    scopeCondition(session, serviceOrders.storeId),
+  ]
+
+  if (filters.status) {
+    conditions.push(eq(serviceOrders.status, filters.status as typeof serviceOrders.status.enumValues[number]))
+  }
+  if (filters.storeId) {
+    conditions.push(eq(serviceOrders.storeId, filters.storeId))
+  }
+  if (filters.dateFrom) {
+    conditions.push(gte(serviceOrders.serviceDate, filters.dateFrom))
+  }
+  if (filters.dateTo) {
+    conditions.push(lte(serviceOrders.serviceDate, filters.dateTo))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(serviceOrders.serviceOrderId, pattern),
+        // 跨表搜索通过子查询实现，避免 JOIN 影响 COUNT
+        sql`EXISTS (SELECT 1 FROM staff_wechat_users sw WHERE sw.employee_id = ${serviceOrders.assignedEmployeeId} AND sw.name ILIKE ${pattern})`,
+        sql`EXISTS (SELECT 1 FROM client_wechat_users cw WHERE cw.user_id = ${serviceOrders.clientUserId} AND cw.name ILIKE ${pattern})`,
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  // COUNT 查询
+  const [countRow] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(serviceOrders)
+    .where(whereClause)
+
+  const total = countRow?.count ?? 0
+
+  // 数据查询 — JOIN + ORDER + LIMIT/OFFSET
+  const rows = await db
+    .select({
+      service_order: serviceOrders,
+      storeName: stores.storeName,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(stores, eq(serviceOrders.storeId, stores.storeId))
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(whereClause)
+    .orderBy(desc(serviceOrders.createdAt))
+    .limit(pageSize)
+    .offset(offset)
+
+  return { data: rows.map(serializeServiceOrder), total }
 }
 
 export async function getServiceOrderById(serviceOrderId: string): Promise<ServiceOrder | null> {

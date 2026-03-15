@@ -41,7 +41,7 @@ vi.mock('@db/order', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -68,6 +68,11 @@ import {
   createSku,
   updateSku,
   deleteSku,
+  getCategories,
+  getProducts,
+  getProductById,
+  getSkusByProductId,
+  getAllSkus,
 } from './products'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -384,5 +389,181 @@ describe('deleteSku — 引用校验', () => {
     expect(result.success).toBe(true)
     expect(result.message).toContain('已删除')
     expect(db.delete).toHaveBeenCalledOnce()
+  })
+})
+
+// ── 读函数覆盖 ───────────────────────────────────────────────────────────────
+
+describe('getCategories — 品项分类列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回序列化的分类列表', async () => {
+    const orderBy = vi.fn().mockResolvedValue([{
+      categoryId: 'cat-1', categoryName: '护理项目', productKind: '护理项目',
+      sortOrder: 1, isValid: true,
+      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+    }])
+    const from = vi.fn().mockReturnValue({ orderBy })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getCategories()
+
+    expect(result).toHaveLength(1)
+    expect(result[0].categoryId).toBe('cat-1')
+    expect(result[0].categoryName).toBe('护理项目')
+  })
+})
+
+describe('getProducts — 商品列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回商品列表', async () => {
+    // getProducts 内部有子查询 + 主查询
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // 子查询: select → from → groupBy → as
+        const as = vi.fn().mockReturnValue({ count: 'sku_count' })
+        const groupBy = vi.fn().mockReturnValue({ as })
+        const from = vi.fn().mockReturnValue({ groupBy })
+        return { from }
+      }
+      // 主查询: select → from → leftJoin → leftJoin → orderBy → limit
+      const limit = vi.fn().mockResolvedValue([{
+        product: {
+          productId: 'prod-1', name: '蜜语面膜', categoryId: 'cat-1',
+          description: null, isShengmei: false, isBundle: false,
+          price: '199.00', specialPrice: null, salesCategory: null,
+          manageScope: null, marketScope: null,
+          coverImage: null, detailImages: null,
+          validStart: null, validEnd: null, sortOrder: 1,
+          createdAt: new Date(), updatedAt: new Date(),
+        },
+        categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
+      }])
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const leftJoin2 = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+
+    const result = await getProducts()
+
+    expect(result).toHaveLength(1)
+    expect(result[0].productId).toBe('prod-1')
+  })
+})
+
+describe('getProductById — 单商品查询', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('未找到 → 返回 null', async () => {
+    const limit = vi.fn().mockResolvedValue([])
+    const where = vi.fn().mockReturnValue({ limit })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getProductById('prod-999')
+
+    expect(result).toBeNull()
+  })
+
+  it('找到 → 返回序列化的 Product', async () => {
+    const limit = vi.fn().mockResolvedValue([{
+      product: {
+        productId: 'prod-1', name: '蜜语面膜', categoryId: 'cat-1',
+        description: null, isShengmei: false, isBundle: false,
+        price: '199.00', specialPrice: null, salesCategory: null,
+        manageScope: null, marketScope: null,
+        coverImage: null, detailImages: null,
+        validStart: null, validEnd: null, sortOrder: 1,
+        createdAt: new Date(), updatedAt: new Date(),
+      },
+      categoryName: '护理项目', productKind: '护理项目',
+    }])
+    const where = vi.fn().mockReturnValue({ limit })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getProductById('prod-1')
+
+    expect(result).not.toBeNull()
+    expect(result!.productId).toBe('prod-1')
+    expect(result!.categoryName).toBe('护理项目')
+  })
+})
+
+// ── SKU 读函数 ────────────────────────────────────────────────────────────────
+
+const mockSkuRow = {
+  skuId: 'SKU-001', productId: 'prod-1', productType: '疗程卡',
+  specName: '10次卡', price: '1999.00', specialPrice: null,
+  sessionCount: 10, isBundleSku: false, sortOrder: 1, serviceFee: '50.00',
+  validStart: null, validEnd: null,
+  createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+}
+
+describe('getSkusByProductId — 按商品查 SKU', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回序列化的 SKU 列表', async () => {
+    const orderBy = vi.fn().mockResolvedValue([mockSkuRow])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getSkusByProductId('prod-1')
+
+    expect(result).toHaveLength(1)
+    expect(result[0].skuId).toBe('SKU-001')
+    expect(result[0].specName).toBe('10次卡')
+    expect(result[0].sessionCount).toBe(10)
+  })
+
+  it('空结果 → []', async () => {
+    const orderBy = vi.fn().mockResolvedValue([])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getSkusByProductId('prod-999')
+
+    expect(result).toEqual([])
+  })
+})
+
+describe('getAllSkus — 全量 SKU', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回全量 SKU 列表', async () => {
+    const limit = vi.fn().mockResolvedValue([mockSkuRow])
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ orderBy })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getAllSkus()
+
+    expect(result).toHaveLength(1)
+    expect(result[0].skuId).toBe('SKU-001')
+    expect(result[0].productType).toBe('疗程卡')
   })
 })

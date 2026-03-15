@@ -7,7 +7,8 @@ import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
+import type { AuthSession } from '@/lib/types'
 import { logOperation } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
@@ -52,6 +53,9 @@ export async function getStores(): Promise<Store[]> {
     .from(stores)
     .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+    .where(scopeCondition(session, stores.storeId))
+    .orderBy(stores.storeName)
+    .limit(200)
 
   return rows.map(rowToStore)
 }
@@ -65,7 +69,7 @@ export async function getStoreById(storeId: string): Promise<Store | null> {
     .from(stores)
     .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
-    .where(eq(stores.storeId, storeId))
+    .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
 
   if (rows.length === 0) return null
   return rowToStore(rows[0])
@@ -92,6 +96,14 @@ export async function createStore(data: {
 }): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'store:create')
+
+  // scope 隔离：非 admin 只能在自己 scope 的市场下创建门店
+  if (!isAdminScope(session)) {
+    const scopeIds = new Set(session.roles.map((r: AuthSession['roles'][number]) => r.scopeId))
+    if (!scopeIds.has(data.marketId)) {
+      return { success: false, message: '无权在该市场下创建门店' }
+    }
+  }
 
   // 事务：org_node + stores 原子创建，失败则全部回滚
   const orgNodeId = `store-${data.storeId}`
@@ -163,10 +175,11 @@ export async function updateStore(
   const session = await getSession()
   requirePermission(session, 'store:update')
 
-  // 乐观锁：WHERE store_id = $1 AND updated_at = $2
+  // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
+  const scopeCond = scopeCondition(session, stores.storeId)
   const whereConditions = expectedUpdatedAt
-    ? and(eq(stores.storeId, storeId), eq(stores.updatedAt, new Date(expectedUpdatedAt)))
-    : eq(stores.storeId, storeId)
+    ? and(eq(stores.storeId, storeId), eq(stores.updatedAt, new Date(expectedUpdatedAt)), scopeCond)
+    : and(eq(stores.storeId, storeId), scopeCond)
 
   let result: any
   try {

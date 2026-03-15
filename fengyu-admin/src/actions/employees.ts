@@ -4,7 +4,8 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, or, sql, ilike } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -48,9 +49,84 @@ export async function getEmployees(): Promise<Employee[]> {
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
     .where(scopeCondition(session, staffWechatUsers.storeId))
+    .orderBy(staffWechatUsers.name)
     .limit(500)
 
   return rows.map(rowToEmployee)
+}
+
+/** 员工列表筛选参数 */
+export interface EmployeeFilters {
+  storeId?: string
+  status?: 'active' | 'resigned'
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 分页结果 */
+export interface PaginatedEmployees {
+  data: Employee[]
+  total: number
+}
+
+/**
+ * 服务端分页员工列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * status 映射：active → is_resigned = false, resigned → is_resigned = true
+ * 搜索支持：姓名、员工编号、手机号（ILIKE）
+ */
+export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Promise<PaginatedEmployees> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const conditions: (SQL | undefined)[] = [
+    scopeCondition(session, staffWechatUsers.storeId),
+  ]
+
+  if (filters.storeId) {
+    conditions.push(eq(staffWechatUsers.storeId, filters.storeId))
+  }
+  if (filters.status === 'active') {
+    conditions.push(eq(staffWechatUsers.isResigned, false))
+  } else if (filters.status === 'resigned') {
+    conditions.push(eq(staffWechatUsers.isResigned, true))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(staffWechatUsers.name, pattern),
+        ilike(staffWechatUsers.employeeId, pattern),
+        ilike(staffWechatUsers.phone, pattern),
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  const [[countRow], rows] = await Promise.all([
+    db.select({ count: sql<number>`cast(count(*) as int)` })
+      .from(staffWechatUsers)
+      .where(whereClause),
+    db.select()
+      .from(staffWechatUsers)
+      .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
+      .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+      .where(whereClause)
+      .orderBy(staffWechatUsers.name)
+      .limit(pageSize)
+      .offset(offset),
+  ])
+
+  return {
+    data: rows.map(rowToEmployee),
+    total: countRow?.count ?? 0,
+  }
 }
 
 export async function getEmployeeById(employeeId: string): Promise<Employee | null> {
@@ -208,6 +284,17 @@ export async function updateEmployee(
     }
   }
 
+  // 如果 storeId 变更，先获取旧值以便后续同步 permission_roles scope（§AFF-03）
+  let oldStoreId: string | null = null
+  if (data.storeId !== undefined) {
+    const [current] = await db
+      .select({ storeId: staffWechatUsers.storeId })
+      .from(staffWechatUsers)
+      .where(eq(staffWechatUsers.employeeId, employeeId))
+      .limit(1)
+    oldStoreId = current?.storeId ?? null
+  }
+
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
   const whereConditions = expectedUpdatedAt
@@ -240,20 +327,50 @@ export async function updateEmployee(
 
   // 标记离职时同步作废所有有效的 permission_roles
   if (data.isResigned === true) {
-    try {
-      await db
+    await db
+      .update(permissionRoles)
+      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
+      .where(and(
+        eq(permissionRoles.employeeId, employeeId),
+        eq(permissionRoles.isVoid, false),
+      ))
+  }
+
+  // §AFF-03：门店变更时同步更新 permission_roles scope
+  // 仅更新 store 级别的 scope（旧门店 org_node → 新门店 org_node），不影响 market/headquarters 级 scope
+  if (data.storeId && oldStoreId && data.storeId !== oldStoreId) {
+    const [oldStore] = await db
+      .select({ orgNodeId: stores.orgNodeId })
+      .from(stores)
+      .where(eq(stores.storeId, oldStoreId))
+      .limit(1)
+    const [newStore] = await db
+      .select({ orgNodeId: stores.orgNodeId })
+      .from(stores)
+      .where(eq(stores.storeId, data.storeId))
+      .limit(1)
+
+    if (oldStore?.orgNodeId && newStore?.orgNodeId) {
+      const scopeResult = await db
         .update(permissionRoles)
-        .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
+        .set({ scopeId: newStore.orgNodeId, updatedBy: session.employeeId })
         .where(and(
           eq(permissionRoles.employeeId, employeeId),
+          eq(permissionRoles.scopeId, oldStore.orgNodeId),
           eq(permissionRoles.isVoid, false),
         ))
-    } catch (err: any) {
-      throw err
+
+      if ((scopeResult as any).rowCount > 0) {
+        await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
+          oldStoreId, newStoreId: data.storeId,
+          oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId,
+        })
+      }
     }
   }
 
   await logOperation(session, 'employee.update', 'employee', employeeId, data)
   revalidatePath('/employees')
+  revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }
 }

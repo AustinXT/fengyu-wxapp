@@ -100,7 +100,8 @@ function setupDbSelect(templateRows: any[], countRows: any[]) {
 
     if (currentCall === 1) {
       // First call: getTemplates → couponTemplates
-      const orderBy = vi.fn().mockResolvedValue(templateRows)
+      const limit = vi.fn().mockResolvedValue(templateRows)
+      const orderBy = vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ orderBy })
       return { from }
     } else {

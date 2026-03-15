@@ -7,8 +7,9 @@ import { stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { products } from '@db/product'
-import { eq, desc, and, or, sql } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
@@ -61,6 +62,124 @@ export async function getOrders(): Promise<SaleOrder[]> {
     storeName: r.storeName ?? undefined,
     openedByName: r.openedByName ?? undefined,
   }))
+}
+
+/** 订单列表筛选参数 */
+export interface OrderFilters {
+  status?: string
+  type?: string
+  storeId?: string
+  dateFrom?: string
+  dateTo?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 分页结果 */
+export interface PaginatedOrders {
+  data: SaleOrder[]
+  total: number
+}
+
+/**
+ * 服务端分页订单列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * 替代 getOrders() 的客户端过滤模式，支持大数据量下的高效分页。
+ * 筛选条件通过 URL searchParams → Server Component → 此函数流转。
+ */
+export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<PaginatedOrders> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:list')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  // 构建 WHERE 条件（DB 级过滤）
+  const conditions: (SQL | undefined)[] = [
+    scopeCondition(session, saleOrders.storeId),
+  ]
+
+  if (filters.status) {
+    conditions.push(eq(saleOrders.status, filters.status as typeof saleOrders.status.enumValues[number]))
+  }
+  if (filters.type) {
+    conditions.push(eq(saleOrders.saleOrderType, filters.type as typeof saleOrders.saleOrderType.enumValues[number]))
+  }
+  if (filters.storeId) {
+    conditions.push(eq(saleOrders.storeId, filters.storeId))
+  }
+  if (filters.dateFrom) {
+    conditions.push(gte(saleOrders.saleOrderDatetime, new Date(filters.dateFrom)))
+  }
+  if (filters.dateTo) {
+    conditions.push(lt(saleOrders.saleOrderDatetime, new Date(filters.dateTo + 'T23:59:59.999')))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(saleOrders.saleOrderId, pattern),
+        ilike(saleOrders.customerName, pattern),
+        ilike(saleOrders.clientPhone, pattern),
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  // COUNT 查询（与数据查询共用相同 WHERE）
+  const [countRow] = await db
+    .select({ count: sql<number>`cast(count(*) as int)` })
+    .from(saleOrders)
+    .where(whereClause)
+
+  const total = countRow?.count ?? 0
+
+  // 数据查询 — JOIN + ORDER + LIMIT/OFFSET
+  const rows = await db
+    .select({
+      order: saleOrders,
+      storeName: stores.storeName,
+      openedByName: opener.name,
+    })
+    .from(saleOrders)
+    .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
+    .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
+    .where(whereClause)
+    .orderBy(desc(saleOrders.saleOrderDatetime))
+    .limit(pageSize)
+    .offset(offset)
+
+  const data = rows.map((r) => ({
+    saleOrderId: r.order.saleOrderId,
+    status: r.order.status as SaleOrder['status'],
+    saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
+    refSaleOrderId: r.order.refSaleOrderId,
+    marketName: r.order.marketName,
+    storeId: r.order.storeId,
+    saleOrderDatetime: r.order.saleOrderDatetime.toISOString(),
+    clientUserId: r.order.clientUserId,
+    clientPhone: r.order.clientPhone,
+    customerName: r.order.customerName,
+    totalAmount: r.order.totalAmount,
+    paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
+    saleOrderSource: r.order.saleOrderSource as SaleOrder['saleOrderSource'],
+    openedBy: r.order.openedBy,
+    preferredEmployeeId: r.order.preferredEmployeeId,
+    paidAt: r.order.paidAt?.toISOString() ?? null,
+    allocationStatus: r.order.allocationStatus as SaleOrder['allocationStatus'],
+    couponId: r.order.couponId,
+    couponDiscount: r.order.couponDiscount,
+    remark: r.order.remark,
+    createdAt: r.order.createdAt.toISOString(),
+    updatedAt: r.order.updatedAt.toISOString(),
+    storeName: r.storeName ?? undefined,
+    openedByName: r.openedByName ?? undefined,
+  }))
+
+  return { data, total }
 }
 
 export async function getOrderById(saleOrderId: string): Promise<SaleOrder | null> {

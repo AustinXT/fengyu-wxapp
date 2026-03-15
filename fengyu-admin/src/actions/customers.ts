@@ -3,10 +3,11 @@
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, and, desc, inArray } from 'drizzle-orm'
+import { eq, and, or, desc, inArray, sql, ilike } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function serializeCustomer(row: {
@@ -69,9 +70,81 @@ export async function getCustomers(): Promise<Customer[]> {
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
     .where(scopeCondition(session, clientWechatUsers.boundStoreId))
+    .orderBy(clientWechatUsers.name)
     .limit(500)
 
   return rows.map(serializeCustomer)
+}
+
+/** 顾客列表筛选参数 */
+export interface CustomerFilters {
+  storeId?: string
+  memberLevel?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 分页结果 */
+export interface PaginatedCustomers {
+  data: Customer[]
+  total: number
+}
+
+/**
+ * 服务端分页顾客列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * scope 基于 boundStoreId（顾客归属门店）。
+ * 搜索支持：姓名、手机号（ILIKE）。
+ */
+export async function getCustomersPaginated(filters: CustomerFilters = {}): Promise<PaginatedCustomers> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const conditions: (SQL | undefined)[] = [
+    scopeCondition(session, clientWechatUsers.boundStoreId),
+  ]
+
+  if (filters.storeId) {
+    conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
+  }
+  if (filters.memberLevel) {
+    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(clientWechatUsers.name, pattern),
+        ilike(clientWechatUsers.phone, pattern),
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  const [[countRow], rows] = await Promise.all([
+    db.select({ count: sql<number>`cast(count(*) as int)` })
+      .from(clientWechatUsers)
+      .where(whereClause),
+    db.select()
+      .from(clientWechatUsers)
+      .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+      .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
+      .where(whereClause)
+      .orderBy(clientWechatUsers.name)
+      .limit(pageSize)
+      .offset(offset),
+  ])
+
+  return {
+    data: rows.map(serializeCustomer),
+    total: countRow?.count ?? 0,
+  }
 }
 
 export async function getCustomerById(userId: string): Promise<Customer | null> {
@@ -318,6 +391,11 @@ export async function createCustomer(data: {
   }
   if (!/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+
+  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
+  if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
+    return { success: false, message: '无权在该门店创建顾客' }
   }
 
   // 检查手机号是否已存在

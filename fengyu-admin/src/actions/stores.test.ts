@@ -45,6 +45,8 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  scopeCondition: vi.fn(() => undefined), // admin 返回 undefined（不过滤）
+  isAdminScope: vi.fn(() => true), // 默认 admin
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -55,9 +57,10 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { createStore, updateStore } from './stores'
+import { getStores, createStore, updateStore } from './stores'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { scopeCondition, isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -70,6 +73,49 @@ const baseStoreData = {
   storeName: '凤御华南店',
   marketId: 'market-1',
 }
+
+// ── getStores — scope 隔离 ──────────────────────────────────────────────────
+
+describe('getStores — scope 隔离', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function setupSelectChain(returnValue: any[]) {
+    const limit = vi.fn().mockResolvedValue(returnValue)
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin2 = vi.fn().mockReturnValue({ where })
+    const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+    const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    ;(db.select as any).mockReturnValue({ from })
+    return { where }
+  }
+
+  it('admin 角色 → scopeCondition 返回 undefined（不过滤）', async () => {
+    ;(getSession as any).mockResolvedValue(mockSession)
+    setupSelectChain([])
+
+    await getStores()
+
+    expect(scopeCondition).toHaveBeenCalled()
+  })
+
+  it('hr 角色 → scopeCondition 被调用以过滤 stores', async () => {
+    const hrSession = {
+      employeeId: 'HR-001',
+      roles: [{ role: 'hr', scopeId: 'store-1' }],
+      permissions: { actions: ['store:list'], scopeStoreIds: ['store-1'] },
+    }
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(scopeCondition as any).mockReturnValue({ type: 'inArray' })
+    setupSelectChain([])
+
+    await getStores()
+
+    expect(scopeCondition).toHaveBeenCalledWith(hrSession, 'store_id')
+  })
+})
 
 // ── createStore ───────────────────────────────────────────────────────────────
 
@@ -116,6 +162,35 @@ describe('createStore — 事务错误处理', () => {
     const result = await createStore(baseStoreData)
     expect(result.success).toBe(true)
     expect(result.message).toContain('门店创建成功')
+  })
+
+  it('非 admin 用户 — marketId 在 scope 内 → 允许创建', async () => {
+    const hrSession = {
+      employeeId: 'HR-001',
+      roles: [{ role: 'hr', scopeId: 'market-1' }],
+      permissions: { actions: ['store:create'], scopeStoreIds: [] },
+    }
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+    mockTx()
+
+    const result = await createStore(baseStoreData) // marketId = 'market-1'
+    expect(result.success).toBe(true)
+  })
+
+  it('非 admin 用户 — marketId 不在 scope 内 → 拒绝', async () => {
+    const hrSession = {
+      employeeId: 'HR-001',
+      roles: [{ role: 'hr', scopeId: 'market-other' }],
+      permissions: { actions: ['store:create'], scopeStoreIds: [] },
+    }
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+
+    const result = await createStore(baseStoreData) // marketId = 'market-1', scope = 'market-other'
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+    expect(db.transaction).not.toHaveBeenCalled()
   })
 })
 

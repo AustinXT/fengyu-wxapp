@@ -76,7 +76,8 @@ function makeRow(scopeId: string) {
 }
 
 function setupDbSelect(returnValue: any[]) {
-  const orderBy = vi.fn().mockResolvedValue(returnValue)
+  const limit = vi.fn().mockResolvedValue(returnValue)
+  const orderBy = vi.fn().mockReturnValue({ limit })
   const where = vi.fn().mockReturnValue({ orderBy })
   const leftJoin2 = vi.fn().mockReturnValue({ where })
   const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })

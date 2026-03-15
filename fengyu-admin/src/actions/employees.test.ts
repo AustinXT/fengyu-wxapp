@@ -62,16 +62,20 @@ vi.mock('next/cache', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  or: vi.fn((...args) => ({ type: 'or', args })),
+  ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   sql: Object.assign(
     vi.fn((...args) => ({ type: 'sql', args })),
     { raw: vi.fn() },
   ),
 }))
 
-import { createEmployee, updateEmployee } from './employees'
+import { createEmployee, updateEmployee, getEmployeesPaginated } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
+import { eq, ilike } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -351,5 +355,296 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
+  })
+})
+
+describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  /**
+   * 构建 mock chain，支持 storeId 变更场景的多次 db.select / db.update 序列。
+   *
+   * db.select 调用顺序：
+   *   1. 获取旧 storeId（仅 data.storeId !== undefined 时）
+   *   2. 手机号唯一性校验（仅 data.phone 时）
+   *   3. 获取旧门店 orgNodeId（scope sync）
+   *   4. 获取新门店 orgNodeId（scope sync）
+   *
+   * db.update 调用顺序：
+   *   1. 更新员工记录
+   *   2. 更新 permission_roles scope
+   */
+  function setupScopeSyncMocks(opts: {
+    oldStoreId: string
+    oldOrgNodeId: string
+    newOrgNodeId: string
+    scopeUpdateRowCount?: number
+  }) {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const current = selectCall
+      const limit = vi.fn().mockImplementation(() => {
+        if (current === 1) return Promise.resolve([{ storeId: opts.oldStoreId }])
+        if (current === 2) return Promise.resolve([{ orgNodeId: opts.oldOrgNodeId }])
+        if (current === 3) return Promise.resolve([{ orgNodeId: opts.newOrgNodeId }])
+        return Promise.resolve([])
+      })
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    let updateCall = 0
+    ;(db.update as any).mockImplementation(() => {
+      updateCall++
+      const current = updateCall
+      const where = vi.fn().mockImplementation(() => {
+        if (current === 1) return Promise.resolve({ rowCount: 1 }) // employee update
+        if (current === 2) return Promise.resolve({ rowCount: opts.scopeUpdateRowCount ?? 1 }) // scope sync
+        return Promise.resolve({ rowCount: 0 })
+      })
+      const set = vi.fn().mockReturnValue({ where })
+      return { set }
+    })
+  }
+
+  it('storeId 变更 → 触发 scope 同步 + 审计日志', async () => {
+    setupScopeSyncMocks({
+      oldStoreId: 'store-A',
+      oldOrgNodeId: 'org-store-A',
+      newOrgNodeId: 'org-store-B',
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    // db.update 应被调用 2 次：员工更新 + scope 同步
+    expect(db.update).toHaveBeenCalledTimes(2)
+    // logOperation 应被调用 2 次：permission.scopeSync + employee.update
+    expect(logOperation).toHaveBeenCalledTimes(2)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
+      expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
+    )
+  })
+
+  it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
+    // data 中不含 storeId → 不查旧值，不做 scope sync
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { name: '李四' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(1) // 仅员工更新
+    expect(logOperation).not.toHaveBeenCalledWith(
+      expect.anything(), 'permission.scopeSync', expect.anything(), expect.anything(), expect.anything(),
+    )
+  })
+
+  it('storeId 设为相同值 → 不触发 scope 同步', async () => {
+    // 旧 storeId 与新值相同
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1 ? [{ storeId: 'store-A' }] : [],
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-A' })
+
+    expect(result.success).toBe(true)
+    expect(db.update).toHaveBeenCalledTimes(1) // 仅员工更新
+  })
+
+  it('原无门店（oldStoreId=null）→ 不触发 scope 同步', async () => {
+    // 旧 storeId 为 null（新入职未分配门店的员工）
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1 ? [{ storeId: null }] : [],
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    // 旧门店为 null，不做 scope 同步
+    expect(db.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('scope 同步无匹配行（rowCount=0）→ 不写审计日志', async () => {
+    setupScopeSyncMocks({
+      oldStoreId: 'store-A',
+      oldOrgNodeId: 'org-store-A',
+      newOrgNodeId: 'org-store-B',
+      scopeUpdateRowCount: 0, // 无匹配的 store 级 scope
+    })
+
+    const result = await updateEmployee('FY-001', { storeId: 'store-B' })
+
+    expect(result.success).toBe(true)
+    // scope UPDATE 执行了但 rowCount=0 → 不写 scopeSync 日志
+    expect(logOperation).toHaveBeenCalledTimes(1) // 仅 employee.update
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession, 'employee.update', 'employee', 'FY-001', expect.anything(),
+    )
+  })
+})
+
+// ── getEmployeesPaginated 服务端分页 ──────────────────────────────────────────
+
+describe('getEmployeesPaginated — 服务端分页', () => {
+  const mockEmployeeRow = {
+    staff_wechat_users: {
+      employeeId: 'FY-260315001',
+      openid: null,
+      phone: '13812345678',
+      name: '张三',
+      gender: '男',
+      idCard: null,
+      storeId: 'store-1',
+      orgNodeId: 'dept-1',
+      positionName: '美容师',
+      birthday: null,
+      skills: ['美容师'],
+      isResigned: false,
+      lastLoginAt: null,
+      createdAt: new Date('2026-01-15T08:00:00Z'),
+      updatedAt: new Date('2026-03-15T10:00:00Z'),
+    },
+    stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
+    org_nodes: { id: 'dept-1', name: '美容部' },
+  }
+
+  const listSession = {
+    ...mockSession,
+    permissions: { actions: ['employee:list', 'employee:create', 'employee:update'], scopeStoreIds: [] },
+  }
+
+  /** mock 2 个并行 select：COUNT + DATA */
+  function mockPaginatedChain(total: number, dataRows: any[]) {
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        const where = vi.fn().mockResolvedValue([{ count: total }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // DATA: select → from → leftJoin × 2 → where → orderBy → limit → offset
+      const offset = vi.fn().mockResolvedValue(dataRows)
+      const limit = vi.fn().mockReturnValue({ offset })
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin2 = vi.fn().mockReturnValue({ where })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(listSession)
+  })
+
+  it('无筛选 → 返回 data + total', async () => {
+    mockPaginatedChain(1, [mockEmployeeRow])
+
+    const result = await getEmployeesPaginated()
+
+    expect(result.total).toBe(1)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0].employeeId).toBe('FY-260315001')
+    expect(result.data[0].name).toBe('张三')
+    expect(result.data[0].storeName).toBe('南昌旗舰店')
+    expect(result.data[0].departmentName).toBe('美容部')
+  })
+
+  it('空数据 → { data: [], total: 0 }', async () => {
+    mockPaginatedChain(0, [])
+
+    const result = await getEmployeesPaginated()
+
+    expect(result.total).toBe(0)
+    expect(result.data).toEqual([])
+  })
+
+  it('storeId 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ storeId: 'store-2' })
+
+    expect(eq).toHaveBeenCalledWith('store_id', 'store-2')
+  })
+
+  it('status=active → eq(isResigned, false)', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ status: 'active' })
+
+    expect(eq).toHaveBeenCalledWith('is_resigned', false)
+  })
+
+  it('status=resigned → eq(isResigned, true)', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ status: 'resigned' })
+
+    expect(eq).toHaveBeenCalledWith('is_resigned', true)
+  })
+
+  it('search 筛选 → ilike(name, employeeId, phone)', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ search: '张' })
+
+    expect(ilike).toHaveBeenCalledWith('name', '%张%')
+    expect(ilike).toHaveBeenCalledWith('employee_id', '%张%')
+    expect(ilike).toHaveBeenCalledWith('phone', '%张%')
+  })
+
+  it('page/pageSize → 2 次 select', async () => {
+    mockPaginatedChain(100, [])
+
+    const result = await getEmployeesPaginated({ page: 5, pageSize: 10 })
+
+    expect(result.total).toBe(100)
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('stores/org_nodes JOIN 为 null → undefined', async () => {
+    const noJoins = {
+      ...mockEmployeeRow,
+      stores: null,
+      org_nodes: null,
+    }
+    mockPaginatedChain(1, [noJoins])
+
+    const result = await getEmployeesPaginated()
+
+    expect(result.data[0].storeName).toBeUndefined()
+    expect(result.data[0].departmentName).toBeUndefined()
   })
 })

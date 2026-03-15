@@ -13,7 +13,11 @@ vi.mock('@db/order', () => ({
   saleOrders: {
     saleOrderId: 'sale_order_id',
     status: 'status',
+    saleOrderType: 'sale_order_type',
     storeId: 'store_id',
+    saleOrderDatetime: 'sale_order_datetime',
+    customerName: 'customer_name',
+    clientPhone: 'client_phone',
     paidAt: 'paid_at',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
@@ -59,6 +63,9 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ type: 'and', args })),
   or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
+  lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
+  ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -88,11 +95,12 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated } from './orders'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope } from '@/lib/permissions'
+import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
+import { eq, ilike, gte, lt } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -485,5 +493,190 @@ describe('resetOrderFailed — 重置支付失败', () => {
     ;(db.update as any).mockReturnValue({ set })
 
     await expect(resetOrderFailed('order-1')).rejects.toThrow('connection lost')
+  })
+})
+
+// ─── getOrdersPaginated 服务端分页 ─────────────────────────────────
+
+describe('getOrdersPaginated — 服务端分页', () => {
+  const mockOrderRow = {
+    order: {
+      saleOrderId: 'FY-XSD-WX-260315-0001',
+      status: '已支付',
+      saleOrderType: '普通',
+      refSaleOrderId: null,
+      marketName: '南昌市场',
+      storeId: 'store-1',
+      saleOrderDatetime: new Date('2026-03-15T10:00:00Z'),
+      clientUserId: 'user-1',
+      clientPhone: '13812345678',
+      customerName: '李女士',
+      totalAmount: '1999.00',
+      paymentMethod: 'wechat',
+      saleOrderSource: 'admin',
+      openedBy: 'EMP-001',
+      preferredEmployeeId: null,
+      paidAt: new Date('2026-03-15T10:05:00Z'),
+      allocationStatus: 'pending',
+      couponId: null,
+      couponDiscount: '0',
+      remark: null,
+      createdAt: new Date('2026-03-15T10:00:00Z'),
+      updatedAt: new Date('2026-03-15T10:05:00Z'),
+    },
+    storeName: '南昌旗舰店',
+    openedByName: '张三',
+  }
+
+  /** 构建完整的链式调用 mock：select → from → leftJoin → leftJoin → where → orderBy → limit → offset */
+  function mockPaginatedChain(countResult: number, dataRows: any[]) {
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // COUNT 查询链：select → from → where
+        const where = vi.fn().mockResolvedValue([{ count: countResult }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // DATA 查询链：select → from → leftJoin → leftJoin → where → orderBy → limit → offset
+      const offset = vi.fn().mockResolvedValue(dataRows)
+      const limit = vi.fn().mockReturnValue({ offset })
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin2 = vi.fn().mockReturnValue({ where })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('无筛选 → 返回分页结果 + total', async () => {
+    mockPaginatedChain(1, [mockOrderRow])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.total).toBe(1)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0].saleOrderId).toBe('FY-XSD-WX-260315-0001')
+    expect(result.data[0].storeName).toBe('南昌旗舰店')
+    expect(result.data[0].openedByName).toBe('张三')
+  })
+
+  it('空数据 → 返回 { data: [], total: 0 }', async () => {
+    mockPaginatedChain(0, [])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.total).toBe(0)
+    expect(result.data).toEqual([])
+  })
+
+  it('page/pageSize 传入 → 调用链包含 limit + offset', async () => {
+    mockPaginatedChain(50, [])
+
+    const result = await getOrdersPaginated({ page: 3, pageSize: 10 })
+
+    expect(result.total).toBe(50)
+    // 验证 limit/offset 链被调用（mock 链已验证结构）
+    expect(db.select).toHaveBeenCalledTimes(2) // COUNT + DATA
+  })
+
+  it('page < 1 时修正为 1', async () => {
+    mockPaginatedChain(10, [])
+
+    const result = await getOrdersPaginated({ page: -5 })
+
+    expect(result.total).toBe(10)
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('非法 pageSize → 默认 20', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ pageSize: 999 })
+
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('status 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ status: '已支付' })
+
+    expect(eq).toHaveBeenCalledWith('status', '已支付')
+  })
+
+  it('type 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ type: '体验' })
+
+    expect(eq).toHaveBeenCalledWith('sale_order_type', '体验')
+  })
+
+  it('storeId 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ storeId: 'store-2' })
+
+    expect(eq).toHaveBeenCalledWith('store_id', 'store-2')
+  })
+
+  it('search 筛选 → ilike 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ search: '李女士' })
+
+    expect(ilike).toHaveBeenCalledWith('sale_order_id', '%李女士%')
+    expect(ilike).toHaveBeenCalledWith('customer_name', '%李女士%')
+    expect(ilike).toHaveBeenCalledWith('client_phone', '%李女士%')
+  })
+
+  it('dateFrom 筛选 → gte 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ dateFrom: '2026-03-01' })
+
+    expect(gte).toHaveBeenCalled()
+  })
+
+  it('dateTo 筛选 → lt 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ dateTo: '2026-03-31' })
+
+    expect(lt).toHaveBeenCalled()
+  })
+
+  it('paidAt 为 null → 序列化为 null', async () => {
+    const rowNoPaid = {
+      ...mockOrderRow,
+      order: { ...mockOrderRow.order, paidAt: null },
+    }
+    mockPaginatedChain(1, [rowNoPaid])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.data[0].paidAt).toBeNull()
+  })
+
+  it('storeName/openedByName 为 null → 序列化为 undefined', async () => {
+    const rowNoJoins = {
+      ...mockOrderRow,
+      storeName: null,
+      openedByName: null,
+    }
+    mockPaginatedChain(1, [rowNoJoins])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.data[0].storeName).toBeUndefined()
+    expect(result.data[0].openedByName).toBeUndefined()
   })
 })

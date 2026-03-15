@@ -14,7 +14,11 @@ vi.mock('@db/service', () => ({
   serviceOrders: {
     serviceOrderId: 'service_order_id',
     status: 'status',
+    serviceDate: 'service_date',
     storeId: 'store_id',
+    assignedEmployeeId: 'assigned_employee_id',
+    clientUserId: 'client_user_id',
+    createdAt: 'created_at',
     startedAt: 'started_at',
     completedAt: 'completed_at',
     updatedAt: 'updated_at',
@@ -49,7 +53,11 @@ vi.mock('@db/user', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
+  lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
+  ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -77,10 +85,12 @@ import {
   completeServiceOrder,
   cancelServiceOrder,
   createServiceOrder,
+  getServiceOrdersPaginated,
 } from './services'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope } from '@/lib/permissions'
+import { eq, ilike, gte, lte } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -365,5 +375,164 @@ describe('createServiceOrder — scope + 次数校验 + 事务错误处理', () 
     expect(result.message).toContain('服务单创建成功')
     expect(result.serviceOrderId).toBe('FY-FW-260315001')
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+})
+
+// ── getServiceOrdersPaginated 服务端分页 ──────────────────────────────────────
+
+describe('getServiceOrdersPaginated — 服务端分页', () => {
+  const mockServiceOrderRow = {
+    service_order: {
+      serviceOrderId: 'FY-FW-260315-0001',
+      status: '待服务',
+      serviceOrderType: '普通',
+      marketName: '南昌市场',
+      storeId: 'store-1',
+      serviceDate: '2026-03-15',
+      assignedEmployeeId: 'EMP-001',
+      remark: null,
+      appointmentId: null,
+      clientUserId: 'user-1',
+      createdAt: new Date('2026-03-15T08:00:00Z'),
+      updatedAt: new Date('2026-03-15T08:00:00Z'),
+    },
+    storeName: '南昌旗舰店',
+    employeeName: '张三',
+    customerName: '李女士',
+  }
+
+  /** mock select chain: call 1 = COUNT, call 2 = DATA (with JOINs) */
+  function mockPaginatedChain(countResult: number, dataRows: any[]) {
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // COUNT: select → from → where
+        const where = vi.fn().mockResolvedValue([{ count: countResult }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // DATA: select → from → leftJoin × 3 → where → orderBy → limit → offset
+      const offset = vi.fn().mockResolvedValue(dataRows)
+      const limit = vi.fn().mockReturnValue({ offset })
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin3 = vi.fn().mockReturnValue({ where })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: ['service:list', 'service:update', 'service:create'], scopeStoreIds: ['store-1'] },
+    })
+  })
+
+  it('无筛选 → 返回分页结果 + total', async () => {
+    mockPaginatedChain(1, [mockServiceOrderRow])
+
+    const result = await getServiceOrdersPaginated()
+
+    expect(result.total).toBe(1)
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0].serviceOrderId).toBe('FY-FW-260315-0001')
+    expect(result.data[0].storeName).toBe('南昌旗舰店')
+    expect(result.data[0].employeeName).toBe('张三')
+    expect(result.data[0].customerName).toBe('李女士')
+  })
+
+  it('空数据 → { data: [], total: 0 }', async () => {
+    mockPaginatedChain(0, [])
+
+    const result = await getServiceOrdersPaginated()
+
+    expect(result.total).toBe(0)
+    expect(result.data).toEqual([])
+  })
+
+  it('page/pageSize 传入 → 两次 select 调用', async () => {
+    mockPaginatedChain(100, [])
+
+    const result = await getServiceOrdersPaginated({ page: 5, pageSize: 10 })
+
+    expect(result.total).toBe(100)
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('page < 1 修正为 1', async () => {
+    mockPaginatedChain(5, [])
+
+    const result = await getServiceOrdersPaginated({ page: -3 })
+
+    expect(result.total).toBe(5)
+  })
+
+  it('非法 pageSize → 默认 20', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ pageSize: 999 })
+
+    expect(db.select).toHaveBeenCalledTimes(2)
+  })
+
+  it('status 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ status: '服务中' })
+
+    expect(eq).toHaveBeenCalledWith('status', '服务中')
+  })
+
+  it('storeId 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ storeId: 'store-2' })
+
+    expect(eq).toHaveBeenCalledWith('store_id', 'store-2')
+  })
+
+  it('dateFrom 筛选 → gte 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ dateFrom: '2026-03-01' })
+
+    expect(gte).toHaveBeenCalledWith('service_date', '2026-03-01')
+  })
+
+  it('dateTo 筛选 → lte 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ dateTo: '2026-03-31' })
+
+    expect(lte).toHaveBeenCalledWith('service_date', '2026-03-31')
+  })
+
+  it('search 筛选 → ilike + sql 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getServiceOrdersPaginated({ search: '张三' })
+
+    expect(ilike).toHaveBeenCalledWith('service_order_id', '%张三%')
+  })
+
+  it('storeName/employeeName/customerName 为 null → undefined', async () => {
+    const rowNoJoins = {
+      ...mockServiceOrderRow,
+      storeName: null,
+      employeeName: null,
+      customerName: null,
+    }
+    mockPaginatedChain(1, [rowNoJoins])
+
+    const result = await getServiceOrdersPaginated()
+
+    expect(result.data[0].storeName).toBeUndefined()
+    expect(result.data[0].employeeName).toBeUndefined()
+    expect(result.data[0].customerName).toBeUndefined()
   })
 })

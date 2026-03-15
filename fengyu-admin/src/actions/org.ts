@@ -8,10 +8,34 @@ import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, isAdminScope } from '@/lib/permissions'
+import type { AuthSession } from '@/lib/types'
 import { logOperation } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['headquarters', 'market', 'store', 'department'] as const
+
+/**
+ * 校验 org_node 是否在用户 scope 内（admin 始终通过）。
+ * 从目标节点沿 parentId 向上遍历（最多 5 层），
+ * 任一祖先命中 session.roles[].scopeId 即视为在 scope 内。
+ */
+async function isNodeInScope(session: AuthSession, nodeId: string): Promise<boolean> {
+  if (isAdminScope(session)) return true
+  const scopeIds = new Set(session.roles.map((r) => r.scopeId))
+  if (scopeIds.size === 0) return false
+
+  let currentId: string | null = nodeId
+  for (let depth = 0; depth < 5 && currentId; depth++) {
+    if (scopeIds.has(currentId)) return true
+    const [node] = await db
+      .select({ parentId: orgNodes.parentId })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, currentId))
+      .limit(1)
+    currentId = node?.parentId ?? null
+  }
+  return false
+}
 
 export async function getOrgNodes(): Promise<OrgNode[]> {
   const session = await getSession()
@@ -64,6 +88,11 @@ export async function createOrgNode(data: {
     if (parent.type === 'store' && data.type !== 'department') {
       return { success: false, message: '门店节点下只能创建部门' }
     }
+
+    // scope 隔离：非 admin 只能在自己 scope 内的父节点下创建子节点
+    if (!(await isNodeInScope(session, data.parentId))) {
+      return { success: false, message: '无权在该节点下创建子节点' }
+    }
   }
 
   try {
@@ -106,6 +135,11 @@ export async function updateOrgNode(
     return { success: false, message: `无效的节点类型: ${data.type}` }
   }
 
+  // scope 隔离：非 admin 只能编辑自己 scope 内的节点
+  if (!(await isNodeInScope(session, id))) {
+    return { success: false, message: '无权编辑该节点' }
+  }
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
     : eq(orgNodes.id, id)
@@ -136,6 +170,11 @@ export async function deleteOrgNode(
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:delete')
+
+  // scope 隔离：非 admin 只能停用自己 scope 内的节点
+  if (!(await isNodeInScope(session, id))) {
+    return { success: false, message: '无权操作该节点' }
+  }
 
   // 检查是否有子节点
   const children = await db

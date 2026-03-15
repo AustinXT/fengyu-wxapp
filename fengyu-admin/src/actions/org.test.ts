@@ -42,6 +42,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  isAdminScope: vi.fn(() => true), // 默认 admin（不限 scope）
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -55,6 +56,7 @@ vi.mock('next/cache', () => ({
 import { createOrgNode, updateOrgNode, deleteOrgNode } from './org'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+import { isAdminScope } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -271,5 +273,115 @@ describe('deleteOrgNode — 前置校验 + rowCount=0 修复', () => {
     expect(result.success).toBe(true)
     expect(result.message).toContain('已停用')
     expect(db.update).toHaveBeenCalledOnce()
+  })
+})
+
+// ── scope 隔离测试 ───────────────────────────────────────────────────────────
+
+describe('org scope 隔离 — 非 admin 用户', () => {
+  const hrSession = {
+    employeeId: 'HR-001',
+    roles: [{ role: 'hr', scopeId: 'store-nc01' }],
+    permissions: { actions: ['org:list', 'org:create', 'org:update', 'org:delete'], scopeStoreIds: ['store-nc01'] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(hrSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  it('createOrgNode — parentId 在 scope 内 → 允许', async () => {
+    // select call 1: parent type check → returns store type
+    // select call 2: isNodeInScope → scopeId matches nodeId directly
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1 ? [{ type: 'store' }] : []
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await createOrgNode({
+      id: 'dept-new', name: '美容部', type: 'department',
+      parentId: 'store-nc01', sortOrder: 1, isActive: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('createOrgNode — parentId 不在 scope 内 → 拒绝', async () => {
+    // select call 1: parent type → store
+    // select call 2+: isNodeInScope walks up but never matches
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1
+          ? [{ type: 'store' }]
+          : selectCall === 2
+            ? [{ parentId: 'market-other' }]
+            : selectCall === 3
+              ? [{ parentId: 'hq' }]
+              : [{ parentId: null }]
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    const result = await createOrgNode({
+      id: 'dept-bad', name: '非法部门', type: 'department',
+      parentId: 'store-other', sortOrder: 1, isActive: true,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+  })
+
+  it('updateOrgNode — 节点不在 scope 内 → 拒绝', async () => {
+    // isNodeInScope: walks up but never matches hrSession.roles[0].scopeId
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1
+          ? [{ parentId: 'market-other' }]
+          : selectCall === 2
+            ? [{ parentId: 'hq' }]
+            : [{ parentId: null }]
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    const result = await updateOrgNode('store-other', { name: '改名' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('deleteOrgNode — 节点不在 scope 内 → 拒绝', async () => {
+    let selectCall = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCall++
+      const limit = vi.fn().mockResolvedValue(
+        selectCall === 1
+          ? [{ parentId: 'market-other' }]
+          : [{ parentId: null }]
+      )
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    const result = await deleteOrgNode('dept-other')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+    expect(db.update).not.toHaveBeenCalled()
   })
 })

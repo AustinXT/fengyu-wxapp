@@ -43,6 +43,7 @@ export async function getRoles(): Promise<PermissionRole[]> {
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(whereCondition)
     .orderBy(permissionRoles.id)
+    .limit(500)
 
   return rows.map((r) => ({
     id: r.id,
