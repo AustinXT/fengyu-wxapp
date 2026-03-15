@@ -16,6 +16,7 @@ import {
   formatRelativeTime,
   formatAmount,
   safeParseDate,
+  formatAppointmentTime,
 } from '../../utils/format'
 
 describe('maskPhone', () => {
@@ -268,5 +269,20 @@ describe('safeParseDate', () => {
   test('null/undefined 安全处理', () => {
     expect(safeParseDate(null as any)).toBeNull()
     expect(safeParseDate(undefined as any)).toBeNull()
+  })
+})
+
+describe('formatAppointmentTime', () => {
+  test('标准格式 "YYYY-MM-DD HH:MM-HH:MM" → "M月D日 HH:MM-HH:MM"', () => {
+    expect(formatAppointmentTime('2026-03-15 09:00-11:00')).toBe('3月15日 09:00-11:00')
+  })
+  test('个位月日不补零', () => {
+    expect(formatAppointmentTime('2026-01-05 13:00-15:00')).toBe('1月5日 13:00-15:00')
+  })
+  test('空字符串返回空', () => {
+    expect(formatAppointmentTime('')).toBe('')
+  })
+  test('无效日期部分原样返回', () => {
+    expect(formatAppointmentTime('not-a-date 09:00-11:00')).toBe('not-a-date 09:00-11:00')
   })
 })

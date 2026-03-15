@@ -406,3 +406,51 @@ describe('导航目标有效性', () => {
     })
   }
 })
+
+// ——————————————————————————————————————
+// 7. WXML 表达式禁止使用 JS 全局函数
+// ——————————————————————————————————————
+
+/** WXML {{}} 表达式中不允许直接调用 JS 全局构造函数（应在 TS 层预计算） */
+const WXML_FORBIDDEN_GLOBALS = ['Number', 'parseInt', 'parseFloat', 'String', 'Boolean', 'Array', 'Object', 'JSON']
+
+function checkForbiddenGlobals(content: string): string[] {
+  const errors: string[] = []
+  const cleaned = content
+    .replace(/<!--[\s\S]*?-->/g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/<wxs[^>]*>[\s\S]*?<\/wxs>/g, m => m.replace(/[^\n]/g, ' '))
+
+  const mustacheRe = /\{\{([\s\S]*?)\}\}/g
+  let m: RegExpExecArray | null
+
+  while ((m = mustacheRe.exec(cleaned)) !== null) {
+    const expr = m[1]
+    const line = lineAt(cleaned, m.index)
+    for (const globalFn of WXML_FORBIDDEN_GLOBALS) {
+      if (new RegExp(`\\b${globalFn}\\s*\\(`).test(expr)) {
+        errors.push(
+          `第 ${line} 行: WXML 表达式禁止使用 JS 全局函数 "${globalFn}()"，请在 TS 中预计算或使用 WXS 模块`
+        )
+      }
+    }
+  }
+
+  return errors
+}
+
+describe('WXML 禁止 JS 全局函数', () => {
+  const pages = getAllPages()
+
+  for (const page of pages) {
+    const wxmlPath = path.join(ROOT, page + '.wxml')
+    if (!fs.existsSync(wxmlPath)) continue
+
+    test(`${page} — 无 JS 全局函数调用`, () => {
+      const content = fs.readFileSync(wxmlPath, 'utf-8')
+      const errors = checkForbiddenGlobals(content)
+      if (errors.length > 0) {
+        throw new Error(`禁止 JS 全局函数:\n${errors.join('\n')}`)
+      }
+    })
+  }
+})

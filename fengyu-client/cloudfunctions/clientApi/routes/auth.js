@@ -293,9 +293,10 @@ async function updateProfile(ctx) {
   }
 
   if (avatarUrl && typeof avatarUrl === 'string') {
-    params.push(avatarUrl.substring(0, 500))
+    const trimmedUrl = avatarUrl.substring(0, 500)
+    params.push(trimmedUrl)
     setClauses.push(`avatar_url = $${params.length}`)
-    result.avatarUrl = avatarUrl
+    result.avatarUrl = trimmedUrl
   }
 
   params.push(users[0].user_id)
