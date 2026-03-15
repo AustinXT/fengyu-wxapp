@@ -241,10 +241,13 @@ async function start(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2",
+  const result = await pg.query(
+    "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '待服务'",
     [now, serviceOrderId]
   )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     serviceOrderId,
@@ -341,11 +344,14 @@ async function complete(ctx) {
       }
     }
 
-    // 更新服务单状态
-    await client.query(
-      "UPDATE service_orders SET status = '已完成', completed_at = $1, updated_at = $1 WHERE service_order_id = $2",
+    // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）
+    const soUpdateResult = await client.query(
+      "UPDATE service_orders SET status = '已完成', completed_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
       [now, serviceOrderId]
     )
+    if (soUpdateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+    }
 
     // 如关联预约，将预约状态更新为已完成
     if (so.appointment_id) {
@@ -637,10 +643,13 @@ async function cancel(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2",
-    [now, serviceOrderId]
+  const result = await pg.query(
+    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2 AND status = $3",
+    [now, serviceOrderId, so.status]
   )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     serviceOrderId,

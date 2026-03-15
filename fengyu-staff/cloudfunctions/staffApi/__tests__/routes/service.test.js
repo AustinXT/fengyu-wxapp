@@ -199,7 +199,7 @@ describe('service.start', () => {
     vi.clearAllMocks()
   })
 
-  test('开始服务成功', async () => {
+  test('开始服务成功（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
@@ -214,6 +214,24 @@ describe('service.start', () => {
     await serviceRoutes.start(ctx)
 
     expect(ctx.result.status).toBe('服务中')
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain("AND status = '待服务'")
+  })
+
+  test('并发竞态：start UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '待服务',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+
+    await expect(serviceRoutes.start(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
   })
 
   test('非待服务状态拒绝开始', async () => {
@@ -250,7 +268,7 @@ describe('service.complete', () => {
     vi.clearAllMocks()
   })
 
-  test('完成服务 — 原子扣减次数', async () => {
+  test('完成服务 — 原子扣减次数（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
@@ -265,15 +283,13 @@ describe('service.complete', () => {
         { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
       ])
 
+    let capturedSoUpdateSql = ''
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
-          // 原子扣减
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-          // 查询扣减后剩余次数
-          .mockResolvedValueOnce({ rows: [{ remaining_sessions: 5 }] })
-          // UPDATE service_orders
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && sql.includes("status = '已完成'")) capturedSoUpdateSql = sql
+          return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+        }),
       }
       return await cb(client)
     })
@@ -282,6 +298,40 @@ describe('service.complete', () => {
 
     expect(ctx.result.status).toBe('已完成')
     expect(ctx.result.message).toContain('次数已扣减')
+    expect(capturedSoUpdateSql).toContain("AND status = '服务中'")
+  })
+
+  test('并发竞态：complete UPDATE service_orders rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
+      ])
+
+    let callCount = 0
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async () => {
+          callCount++
+          // 第 1 次：原子扣减成功，第 2 次：查剩余次数，第 3 次：UPDATE service_orders 失败
+          if (callCount === 1) return { rows: [], rowCount: 1 }
+          if (callCount === 2) return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+          return { rows: [], rowCount: 0 } // 并发竞态
+        }),
+      }
+      return await cb(client)
+    })
+
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
   })
 
   test('幂等 — 已完成的服务单不重复扣减', async () => {
@@ -393,7 +443,7 @@ describe('service.cancel', () => {
     vi.clearAllMocks()
   })
 
-  test('取消待服务的服务单（不扣次数）', async () => {
+  test('取消待服务的服务单（C4: UPDATE WHERE 含 status 条件，不扣次数）', async () => {
     const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
 
     pg.query
@@ -408,8 +458,27 @@ describe('service.cancel', () => {
     await serviceRoutes.cancel(ctx)
 
     expect(ctx.result.status).toBe('已取消')
-    // 确认不调用 transaction（不扣次数）
     expect(pg.transaction).not.toHaveBeenCalled()
+    // C4 合规验证
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain('AND status = $')
+    expect(pg.query.mock.calls[1][1]).toContain('待服务')
+  })
+
+  test('并发竞态：cancel UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '待服务',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+
+    await expect(serviceRoutes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
   })
 
   test('取消服务中的服务单', async () => {
