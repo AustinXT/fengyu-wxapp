@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -15,7 +15,16 @@ export async function getRoles(): Promise<PermissionRole[]> {
   const session = await getSession()
   requirePermission(session, 'permission:list')
 
-  // 默认只返回有效（未撤销）的记录
+  // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
+  const isAdmin = hasRole(session, 'admin')
+  const userScopeIds = session.roles.map(r => r.scopeId)
+  if (!isAdmin && userScopeIds.length === 0) return []
+
+  const baseWhere = eq(permissionRoles.isVoid, false)
+  const whereCondition = isAdmin
+    ? baseWhere
+    : and(baseWhere, inArray(permissionRoles.scopeId, userScopeIds))
+
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -32,7 +41,7 @@ export async function getRoles(): Promise<PermissionRole[]> {
     .from(permissionRoles)
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
-    .where(eq(permissionRoles.isVoid, false))
+    .where(whereCondition)
     .orderBy(permissionRoles.id)
 
   return rows.map((r) => ({
