@@ -1,6 +1,7 @@
 // pages/appointment-create/appointment-create.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { formatDate } from '../../utils/format';
 
 const app = getApp<IAppOption>();
 
@@ -144,7 +145,7 @@ Page({
 
   onDateConfirm(e: WechatMiniprogram.CustomEvent<Date>) {
     const d = e.detail;
-    const fmt = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
   },
 
@@ -188,7 +189,7 @@ Page({
   async onSubmit() {
     const { selectedSaleItemId, appointmentDate, appointmentTimeSlot, selectedStaffWfId, selectedStaffName, notes } = this.data;
     if (!appointmentDate || !appointmentTimeSlot) {
-      Toast('请选择预约日期和时段');
+      Toast.fail('请选择预约日期和时段');
       return;
     }
     if (this.data.submitting) return;
@@ -224,7 +225,7 @@ Page({
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        Toast('您拒绝了授权');
+        Toast.fail('您拒绝了授权');
       }
       return;
     }
