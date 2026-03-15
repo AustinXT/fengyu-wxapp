@@ -68,14 +68,16 @@ Page({
 
   _loaded: false,
 
-  onLoad() {
+  onLoad(options: Record<string, string>) {
     const mgr = isManager();
     this.setData({
       isManager: mgr,
       staffName: app.globalData.staffName || '',
     });
     if (mgr) this.loadStaffList();
-    this.setRange('today');
+    const validRanges: RangeType[] = ['today', 'month', 'lastMonth'];
+    const range = validRanges.includes(options.range as RangeType) ? options.range as RangeType : 'today';
+    this.setRange(range);
     this._loaded = true;
   },
 

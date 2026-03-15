@@ -38,6 +38,7 @@ Page({
     skuList: [] as Sku[],
     selectedSku: null as Sku | null,
     quantity: 1,
+    selectedTotal: '',
     isLoading: true,
     isPromo: false,
   },
@@ -91,11 +92,13 @@ Page({
   onSkuTap(e: WechatMiniprogram.TouchEvent) {
     const { skuId } = e.currentTarget.dataset as { skuId: string };
     const sku = this.data.skuList.find(s => s.sku_id === skuId) || null;
-    this.setData({ selectedSku: sku, quantity: 1 });
+    this.setData({ selectedSku: sku, quantity: 1, selectedTotal: (sku?.price ?? 0).toFixed(2) });
   },
 
   onQuantityChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ quantity: e.detail as unknown as number });
+    const qty = e.detail as unknown as number;
+    const price = this.data.selectedSku?.price || 0;
+    this.setData({ quantity: qty, selectedTotal: (price * qty).toFixed(2) });
   },
 
   _buildCartItem(directCheckout: boolean) {

@@ -265,6 +265,7 @@ Page({
   },
 
   async onSubmit() {
+    if (this.data.submitting) return;
     const { selectedCustomer, selectedItems, appointmentId, staffName, remark } = this.data;
 
     if (!selectedCustomer) {

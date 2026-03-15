@@ -34,6 +34,7 @@ Page({
     ],
     list: [] as ServiceItem[],
     isManager: false,
+    actioningId: '',
   },
 
   onLoad() {},
@@ -90,6 +91,8 @@ Page({
 
   async onStartService(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    this.setData({ actioningId: id });
     try {
       await callStaffApi('service.start', { serviceOrderId: id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
@@ -97,17 +100,21 @@ Page({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ actioningId: '' });
     }
   },
 
   onCompleteService(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
     wx.showModal({
       title: '确认完成服务',
       content: '确认完成后将扣减1次疗程次数，操作不可撤销',
       confirmText: '确认完成',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ actioningId: id });
         try {
           await callStaffApi('service.complete', { serviceOrderId: id });
           wx.showToast({ title: '服务已完成', icon: 'success' });
@@ -115,6 +122,8 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ actioningId: '' });
         }
       }
     });

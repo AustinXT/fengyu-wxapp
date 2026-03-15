@@ -174,6 +174,25 @@ describe('appointment.checkin', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已取消.*不支持签到/)
   })
 
+  test('美容师签到自己的预约（权限 happy path）', async () => {
+    const ctx = createBeauticianCtx({ appointmentId: 'appt-own' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'appt-own',
+        status: '已确认',
+        employee_id: 'emp-beautician-001',  // 匹配自己
+        store_id: 'store-001',
+        checkin_at: null,
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+
+    await appointmentRoutes.checkin(ctx)
+
+    expect(ctx.result.checkinAt).toBeDefined()
+    expect(ctx.result.message).toContain('已到店')
+  })
+
   test('美容师不能操作非分配给自己的预约', async () => {
     const ctx = createBeauticianCtx({ appointmentId: 'appt-001' })
 
@@ -368,6 +387,33 @@ describe('appointment.detail', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
+  test('美容师查看自己的预约详情（权限 happy path）', async () => {
+    const ctx = createBeauticianCtx({ id: 'appt-own' })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-own',
+      status: '已确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-beautician-001',  // 匹配美容师自己
+      employee_name: '当前美容师',
+      appointment_time: '2024-01-15T10:00:00Z',
+      notes: '需注意过敏',
+      sale_item_id: 'si-001',
+      checkin_at: null,
+      service_name: '面部护理',
+      sku_spec_name: '10次卡',
+      customer_phone: '138****1111',
+      service_order_id: null,
+    }])
+
+    await appointmentRoutes.detail(ctx)
+
+    expect(ctx.result.id).toBe('appt-own')
+    expect(ctx.result.customerName).toBe('顾客A')
+    expect(ctx.result.remark).toBe('需注意过敏')
+  })
+
   test('已有服务单时返回 serviceOrderId', async () => {
     const ctx = createManagerCtx({ id: 'appt-001' })
 
@@ -450,6 +496,86 @@ describe('appointment.list 补充', () => {
     await appointmentRoutes.list(ctx)
 
     expect(ctx.result[0].appointmentTime).toBe('')
+  })
+
+  test('status + todayOnly 组合过滤', async () => {
+    const ctx = createManagerCtx({ status: 'pending', todayOnly: true, page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await appointmentRoutes.list(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('a.status =')
+    expect(sql).toContain('DATE(a.appointment_time)')
+    expect(params).toContain('待确认')
+  })
+
+  test('service_name 为 null 时回退到 sku_spec_name', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-sku',
+      status: '待确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-001',
+      employee_name: '员工A',
+      appointment_time: '2024-06-01T10:00:00Z',
+      notes: '',
+      sale_item_id: 'si-001',
+      checkin_at: null,
+      created_at: '2024-06-01',
+      sale_order_id: 'SO-001',
+      service_name: null,
+      sku_spec_name: '10次卡',
+      customer_phone: '138',
+    }])
+
+    await appointmentRoutes.list(ctx)
+
+    // service_name null → 回退到 sku_spec_name
+    expect(ctx.result[0].serviceItemName).toBe('10次卡')
+  })
+
+  test('service_name 和 sku_spec_name 都为 null 时返回空字符串', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-empty',
+      status: '待确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-001',
+      employee_name: '员工A',
+      appointment_time: '2024-06-01T10:00:00Z',
+      notes: '',
+      sale_item_id: null,
+      checkin_at: null,
+      created_at: '2024-06-01',
+      sale_order_id: null,
+      service_name: null,
+      sku_spec_name: null,
+      customer_phone: '138',
+    }])
+
+    await appointmentRoutes.list(ctx)
+
+    expect(ctx.result[0].serviceItemName).toBe('')
+  })
+
+  test('美容师 + 状态过滤组合', async () => {
+    const ctx = createBeauticianCtx({ status: 'confirmed', page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await appointmentRoutes.list(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('a.status =')
+    expect(sql).toContain('a.employee_id =')
+    expect(params).toContain('已确认')
+    expect(params).toContain('emp-beautician-001')
   })
 
   test('appointment_time 为无效日期字符串时 formatDateTime 返回原始值（line 18 TRUE 分支）', async () => {

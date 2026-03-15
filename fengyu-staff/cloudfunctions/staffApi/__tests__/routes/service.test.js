@@ -66,6 +66,34 @@ describe('service.create', () => {
     expect(pg.transaction).toHaveBeenCalled()
   })
 
+  test('美容师为自己创建服务单（权限 happy path）', async () => {
+    const ctx = createBeauticianCtx({
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+      // assignedStaffWfId 未指定 → 默认 ctx.auth.staffWfId = 'emp-beautician-001'
+    })
+
+    pg.query
+      // 1. sale_item + order JOIN（单次查询含 order_status）
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001', remaining_sessions: 5, unit_real_price: '200',
+        product_type: '疗程卡', order_status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138',
+      }])
+      // 2. resolvedClientUserId 从 order 获取（L130-136）
+      .mockResolvedValueOnce([{ client_user_id: 'cu-001' }])
+      // 3. 无进行中护理单
+      .mockResolvedValueOnce([])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('待服务')
+  })
+
   test('美容师不能为其他人创建服务单', async () => {
     const ctx = createBeauticianCtx({
       assignedStaffWfId: 'emp-other', // 不是自己
@@ -613,6 +641,74 @@ describe('service.list', () => {
     const sql = pg.query.mock.calls[0][0]
     expect(sql).not.toContain('assigned_employee_id =')
   })
+
+  test('list 返回完整数据（含 items/staffName/customerName 批量查询）', async () => {
+    const ctx = createManagerCtx({ status: '待服务', page: 1 })
+
+    pg.query
+      // 1. 服务单列表
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001', status: '待服务', service_date: '2024-06-01',
+        assigned_employee_id: 'emp-001', client_user_id: 'cu-001',
+        appointment_id: null, remark: '', started_at: null, completed_at: null,
+        created_at: '2024-06-01', client_phone: '138',
+      }])
+      // 2. 服务明细 (soIds.length > 0)
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001', product_name: '面部护理',
+        sku_spec_name: '10次卡', remaining_sessions: 8, session_count: 10, service_duration: 60,
+      }])
+      // 3. 员工姓名 (staffWfIds.length > 0)
+      .mockResolvedValueOnce([{ employee_id: 'emp-001', name: '张三' }])
+      // 4. 顾客姓名 (clientUserIds.length > 0)
+      .mockResolvedValueOnce([{ user_id: 'cu-001', name: '李女士' }])
+
+    await serviceRoutes.list(ctx)
+
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].staffName).toBe('张三')
+    expect(ctx.result[0].customerName).toBe('李女士')
+    expect(ctx.result[0].items).toHaveLength(1)
+    expect(ctx.result[0].items[0].itemName).toBe('面部护理')
+    // status 过滤
+    expect(pg.query.mock.calls[0][1]).toContain('待服务')
+  })
+
+  test('list 顾客姓名从 sale_orders 兜底', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-002', status: '待服务', service_date: '2024-06-01',
+        assigned_employee_id: 'emp-001', client_user_id: 'cu-noname',
+        appointment_id: null, remark: '', started_at: null, completed_at: null,
+        created_at: '2024-06-01', client_phone: '139',
+      }])
+      .mockResolvedValueOnce([])  // 无服务明细
+      .mockResolvedValueOnce([{ employee_id: 'emp-001', name: '张三' }])
+      // client_wechat_users: 无 name
+      .mockResolvedValueOnce([{ user_id: 'cu-noname', name: null }])
+      // sale_orders 兜底
+      .mockResolvedValueOnce([{ client_user_id: 'cu-noname', customer_name: '订单顾客' }])
+
+    await serviceRoutes.list(ctx)
+
+    expect(ctx.result[0].customerName).toBe('订单顾客')
+  })
+
+  test('美容师 + 状态过滤组合', async () => {
+    const ctx = createBeauticianCtx({ status: '服务中', page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await serviceRoutes.list(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('so.status =')
+    expect(sql).toContain('so.assigned_employee_id =')
+    expect(params).toContain('服务中')
+    expect(params).toContain('emp-beautician-001')
+  })
 })
 
 describe('service.detail', () => {
@@ -658,6 +754,27 @@ describe('service.detail', () => {
     expect(ctx.result.customerName).toBe('顾客A')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].itemName).toBe('面部护理')
+  })
+
+  test('美容师查看自己的服务单详情（权限 happy path）', async () => {
+    const ctx = createBeauticianCtx({ id: 'HLD-OWN' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-OWN', status: '服务中', service_date: '2024-06-01',
+        assigned_employee_id: 'emp-beautician-001',  // 匹配自己
+        client_user_id: 'cu-001', appointment_id: null, remark: '',
+        started_at: '2024-06-01T10:00:00Z', completed_at: null,
+        created_at: '2024-06-01', updated_at: '2024-06-01', client_phone: '138',
+      }])
+      .mockResolvedValueOnce([])  // items
+      .mockResolvedValueOnce([{ name: '当前美容师' }])  // staffName
+      .mockResolvedValueOnce([{ name: '顾客A' }])  // customerName
+
+    await serviceRoutes.detail(ctx)
+
+    expect(ctx.result.serviceOrderId).toBe('HLD-OWN')
+    expect(ctx.result.staffName).toBe('当前美容师')
   })
 
   test('美容师不能查看非分配给自己的服务单', async () => {

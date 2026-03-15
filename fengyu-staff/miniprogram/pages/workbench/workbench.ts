@@ -217,8 +217,9 @@ Page({
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
   },
 
-  goPerformance() {
-    wx.navigateTo({ url: '/packageOrder/staff-performance/staff-performance' });
+  goPerformance(e: WechatMiniprogram.TouchEvent) {
+    const range = e.currentTarget.dataset.range || 'today';
+    wx.navigateTo({ url: `/packageOrder/staff-performance/staff-performance?range=${range}` });
   },
 
   goCustomerList() {

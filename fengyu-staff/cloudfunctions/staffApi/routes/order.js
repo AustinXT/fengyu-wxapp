@@ -228,6 +228,11 @@ async function create(ctx) {
 
     if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
+    } else if (couponInfo.coupon_type === '折扣券') {
+      couponDiscount = eligibleTotal * (1 - Number(couponInfo.discount_value))
+      if (couponInfo.max_discount) {
+        couponDiscount = Math.min(couponDiscount, Number(couponInfo.max_discount))
+      }
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 

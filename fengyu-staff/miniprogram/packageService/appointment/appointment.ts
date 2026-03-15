@@ -30,6 +30,7 @@ Page({
     list: [] as ApptItem[],
     page: 1,
     hasMore: true,
+    actioningId: '',
   },
 
   _inited: false,
@@ -104,6 +105,8 @@ Page({
 
   async onConfirmAppt(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    this.setData({ actioningId: id });
     try {
       await callStaffApi('appointment.confirm', { appointmentId: id });
       wx.showToast({ title: '已确认预约', icon: 'success' });
@@ -111,11 +114,15 @@ Page({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ actioningId: '' });
     }
   },
 
   async onCheckin(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    this.setData({ actioningId: id });
     try {
       await callStaffApi('appointment.checkin', { appointmentId: id });
       wx.showToast({ title: '顾客到店已记录', icon: 'success' });
@@ -123,6 +130,8 @@ Page({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '操作失败';
       wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ actioningId: '' });
     }
   },
 

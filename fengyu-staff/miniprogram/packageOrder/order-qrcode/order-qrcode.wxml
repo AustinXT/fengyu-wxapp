@@ -92,12 +92,16 @@
         block type="primary"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"
+        loading="{{submitting}}"
+        disabled="{{submitting}}"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button
         wx:if="{{(isManager || isCreator) && status !== '已支付' && status !== '已关闭'}}"
         block plain
         custom-style="color:#D94040;border-color:#D94040;border-radius:48rpx;margin-top:24rpx;"
+        loading="{{submitting}}"
+        disabled="{{submitting}}"
         bind:click="onCloseOrder"
       >关闭订单</van-button>
     </view>

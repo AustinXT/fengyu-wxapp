@@ -402,6 +402,82 @@ describe('order.create', () => {
     await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*未满足使用条件/)
   })
 
+  test('折扣券正确计算打折金额（含 max_discount 上限）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-disc',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])  // 已注册
+      .mockResolvedValueOnce([])  // 无待支付
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '1000.00', special_price: null, session_count: null,
+        product_name: '精华液', sales_category: '自采自销', product_kind: '家居产品',
+      }])
+      // 折扣券：8折(0.8)，最大优惠 150
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-disc', user_id: 'cu-001',
+        coupon_type: '折扣券', discount_value: '0.8', min_spend: '0',
+        max_discount: '150',
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-001' }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // 1000 × (1-0.8) = 200, 但 max_discount=150, 所以 discount=150
+    // totalAmount = 1000 - 150 = 850
+    expect(ctx.result.totalAmount).toBe(850)
+  })
+
+  test('折扣券无 max_discount 时全额打折', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-disc2',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '500.00', special_price: null, session_count: null,
+        product_name: '面膜', sales_category: '自采自销', product_kind: '家居产品',
+      }])
+      // 折扣券：9折(0.9)，无上限
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-disc2', user_id: 'cu-001',
+        coupon_type: '折扣券', discount_value: '0.9', min_spend: '0',
+        max_discount: null,
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-001' }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // 500 × (1-0.9) = 50, 无上限
+    // totalAmount = 500 - 50 = 450
+    expect(ctx.result.totalAmount).toBe(450)
+  })
+
   test('事务内优惠券原子 claim 竞态（rowCount=0）时报错', async () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
@@ -496,6 +572,65 @@ describe('order.create', () => {
 
     await expect(orderRoutes.create(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*福利活动/)
+  })
+
+  test('已注册顾客成功开单（单品 SKU，session_count=null）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '注册顾客',
+      items: [{ skuId: 'sku-single', quantity: 2 }],
+      paymentMethod: 'offline',
+      orderType: '普通',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])  // 已注册 → clientUserId = 'cu-001'
+      .mockResolvedValueOnce([])                        // 无待支付订单（按 clientUserId）
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-single', product_id: 'prod-002', product_type: '单品',
+        spec_name: '标准', price: '200.00', special_price: null,
+        session_count: null, // 单品无疗程次数 → sessionCount = null
+        product_name: '精华液', sales_category: '自采自销', product_kind: '家居产品',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-/)
+    expect(ctx.result.totalAmount).toBe(400) // 200 × 2
+  })
+
+  test('special_price 优先于 price', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138',
+      clientName: 'X',
+      items: [{ skuId: 'sku-sp', quantity: 1 }],
+      paymentMethod: 'offline',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([])  // 未注册
+      .mockResolvedValueOnce([])  // 无待支付
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-sp', product_id: 'prod-003', product_type: '疗程卡',
+        spec_name: '特惠款', price: '1000.00', special_price: '800.00',
+        session_count: 5, product_name: '特价项目', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.totalAmount).toBe(800)  // 使用 special_price 而非 price
   })
 })
 
@@ -933,6 +1068,45 @@ describe('order.list', () => {
     const params = pg.query.mock.calls[0][1]
     expect(params).toContain('已支付')
   })
+
+  test('分页参数正确传递（page=2，offset=20）', async () => {
+    const ctx = createManagerCtx({ page: 2, pageSize: 20 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await orderRoutes.list(ctx)
+
+    const params = pg.query.mock.calls[0][1]
+    // params = [storeId, pageSize, offset]
+    expect(params[1]).toBe(20)  // pageSize
+    expect(params[2]).toBe(20)  // offset = (2-1) * 20
+    expect(ctx.result.page).toBe(2)
+  })
+
+  test('美容师 + 状态过滤组合查询', async () => {
+    const ctx = createBeauticianCtx({ status: '待支付', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await orderRoutes.list(ctx)
+
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('AND o.status')
+    expect(sql).toContain('AND o.preferred_employee_id')
+    expect(params).toContain('待支付')
+    expect(params).toContain('emp-beautician-001')
+  })
+
+  test('无 status 参数时不添加状态过滤', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await orderRoutes.list(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).not.toContain('AND o.status')
+  })
 })
 
 describe('order.detail', () => {
@@ -1097,6 +1271,48 @@ describe('order.detail', () => {
     await orderRoutes.detail(ctx)
 
     expect(ctx.result.order.coupon_name).toBe('满减券')
+  })
+
+  test('coupon_id 存在但优惠券查询无结果时 coupon_name 为 null', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D07' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D07', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: '138', customer_name: '顾客A',
+        coupon_id: 'coupon-expired',
+      }])
+      // items
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+      // coupon → 未找到（已删除/过期）
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.coupon_name).toBeNull()
+  })
+
+  test('customer_name 存在时跳过姓名补全查询', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D08' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D08', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: '138', customer_name: '已有姓名',
+        client_user_id: null, coupon_id: null,
+      }])
+      // items（直接跳到 items，不查 client_wechat_users 和 name）
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.customer_name).toBe('已有姓名')
+    // 只有 3 次 pg.query（order + items + allocations），无补全查询
+    expect(pg.query).toHaveBeenCalledTimes(3)
   })
 })
 

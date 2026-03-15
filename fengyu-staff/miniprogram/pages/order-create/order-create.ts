@@ -19,6 +19,10 @@ interface CartItem {
   sessionCount: number;
   productType: string;
   workfineItemId: string;
+  /** 预计算：price × quantity（避免 WXML 浮点精度问题） */
+  subtotal: string;
+  /** 预计算：price × quantity - discount */
+  itemTotal: string;
 }
 
 interface Category {
@@ -142,6 +146,7 @@ Page({
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId || '',
+          subtotal: '', itemTotal: '',
         }];
         this.updateCart(cart);
       } else {
@@ -166,6 +171,7 @@ Page({
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
+            subtotal: '', itemTotal: '',
           });
         }
         this.updateCart(cart);
@@ -330,11 +336,16 @@ Page({
   },
 
   updateCart(cart: CartItem[]) {
-    const { count, total } = calcCartTotal(cart);
-    this.setData({ cart, cartCount: count, cartTotal: total });
-    if (this.data.couponDiscount > 0) {
-      this.setData({ couponTotal: (parseFloat(total) - this.data.couponDiscount).toFixed(2) });
+    for (const c of cart) {
+      c.subtotal = (c.price * c.quantity).toFixed(2);
+      c.itemTotal = (c.price * c.quantity - c.discount).toFixed(2);
     }
+    const { count, total } = calcCartTotal(cart);
+    const update: Record<string, any> = { cart, cartCount: count, cartTotal: total };
+    if (this.data.couponDiscount > 0) {
+      update.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
+    }
+    this.setData(update);
   },
 
   // ===== 结算面板 =====

@@ -665,14 +665,15 @@ async function generateServiceOrderId() {
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   // 使用 advisory lock 防止并发生成重复 ID
+  const likePattern = `HLD-WX-${dateStr}%`
   const lockKey = Buffer.from('svc_order_id').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
   const result = await pg.transaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
     const rows = await client.query(`
       SELECT service_order_id FROM service_orders
-      WHERE service_order_id LIKE 'HLD-WX-${dateStr}%'
+      WHERE service_order_id LIKE $1
       ORDER BY service_order_id DESC LIMIT 1
-    `)
+    `, [likePattern])
     let seq = 1
     if (rows.rows.length > 0) {
       seq = parseInt(rows.rows[0].service_order_id.slice(-4)) + 1

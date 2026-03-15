@@ -2,6 +2,8 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 
+const app = getApp<IAppOption>();
+
 type OrderStatus = '全部' | '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭';
 
 interface OrderItem {
@@ -16,6 +18,7 @@ interface OrderItem {
   createdAt: string;
   paidAt: string | null;
   statusClass: string;
+  openedBy: string | null;
 }
 
 interface RawOrderRow {
@@ -28,6 +31,7 @@ interface RawOrderRow {
   total_amount: string;
   created_at: string;
   paid_at: string | null;
+  opened_by: string | null;
 }
 
 interface OrderListResponse {
@@ -53,6 +57,7 @@ Page({
     list: [] as OrderItem[],
     page: 1,
     hasMore: true,
+    currentStaffId: '',
     // 来自代办区的预设过滤
     presetStatus: '',
   },
@@ -60,7 +65,7 @@ Page({
   _loaded: false,
 
   onLoad(options) {
-    this.setData({ isManager: isManager() });
+    this.setData({ isManager: isManager(), currentStaffId: app.globalData.staffWfId || '' });
     if (options.status) {
       const statusMap: Record<string, OrderStatus> = {
         pendingOffline: '待确认收款',
@@ -117,6 +122,7 @@ Page({
         createdAt: r.created_at,
         paidAt: r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
+        openedBy: r.opened_by || null,
       }));
       this.setData({
         list: [...this.data.list, ...mapped],

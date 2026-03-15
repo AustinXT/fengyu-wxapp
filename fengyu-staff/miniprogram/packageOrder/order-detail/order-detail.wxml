@@ -85,12 +85,16 @@
         block type="primary"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"
+        loading="{{submitting}}"
+        disabled="{{submitting}}"
         bind:click="onConfirmOffline"
       >确认线下收款</van-button>
       <van-button
         wx:if="{{isManager && order.status === '支付失败'}}"
         block type="warning"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
+        loading="{{submitting}}"
+        disabled="{{submitting}}"
         bind:click="onResetFailed"
       >重置支付失败</van-button>
       <van-button
