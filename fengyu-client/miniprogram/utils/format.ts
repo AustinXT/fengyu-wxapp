@@ -86,8 +86,8 @@ export function formatOrderDate(dateStr: string): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 
-/** iOS 安全日期解析 */
-function safeParseDate(dateStr: string): Date | null {
+/** iOS 安全日期解析："-" → "/"（修复 iOS Safari 无法解析 "YYYY-MM-DD" 问题），无效日期返回 null */
+export function safeParseDate(dateStr: string): Date | null {
   if (!dateStr) return null;
   const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
   const d = new Date(safe);

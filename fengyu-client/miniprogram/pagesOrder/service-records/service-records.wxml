@@ -8,6 +8,13 @@
     <van-loading size="48rpx" color="#C0322A">加载中...</van-loading>
   </view>
 
+  <!-- 错误态 -->
+  <van-empty
+    wx:elif="{{loadError}}"
+    image="error"
+    description="加载失败，下拉刷新重试"
+  />
+
   <!-- 空态 -->
   <van-empty
     wx:elif="{{!isLoading && records.length === 0}}"

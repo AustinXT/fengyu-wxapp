@@ -1,6 +1,6 @@
 // pagesOrder/service-records/service-records.ts
 import Toast from '@vant/weapp/toast/toast';
-import { formatDate } from '../../utils/format';
+import { formatDate, safeParseDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
 
 interface ServiceRecord {
@@ -28,6 +28,7 @@ Page({
   data: {
     records: [] as ServiceRecord[],
     isLoading: false,
+    loadError: false,
     page: 1,
     hasMore: true,
   },
@@ -48,7 +49,7 @@ Page({
 
   async loadRecords() {
     if (this.data.isLoading) return;
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
 
     try {
       const data = await callClientApi('service.list', {
@@ -75,6 +76,7 @@ Page({
       });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -97,10 +99,8 @@ function getStatusColor(status: string): string {
 
 function calcDuration(record: any): string {
   if (record.started_at && record.completed_at) {
-    const rawStart = String(record.started_at);
-    const start = new Date(rawStart.includes('T') ? rawStart : rawStart.replace(/-/g, '/')).getTime();
-    const rawEnd = String(record.completed_at);
-    const end = new Date(rawEnd.includes('T') ? rawEnd : rawEnd.replace(/-/g, '/')).getTime();
+    const start = safeParseDate(record.started_at)?.getTime() ?? 0;
+    const end = safeParseDate(record.completed_at)?.getTime() ?? 0;
     const mins = Math.round((end - start) / 60000);
     if (mins > 0) return `${mins}分钟`;
   }

@@ -15,6 +15,7 @@ import {
   formatShortDate,
   formatRelativeTime,
   formatAmount,
+  safeParseDate,
 } from '../../utils/format'
 
 describe('maskPhone', () => {
@@ -242,5 +243,30 @@ describe('formatAmount', () => {
   })
   test('小数精度', () => {
     expect(formatAmount(9.9)).toBe('+9.90')
+  })
+})
+
+describe('safeParseDate', () => {
+  test('ISO 带 T 的日期时间', () => {
+    const d = safeParseDate('2025-03-14T10:30:00Z')
+    expect(d).toBeInstanceOf(Date)
+    expect(isNaN(d!.getTime())).toBe(false)
+  })
+  test('YYYY-MM-DD 字符串（iOS 安全转换）', () => {
+    const d = safeParseDate('2025-03-14')
+    expect(d).toBeInstanceOf(Date)
+    expect(d!.getFullYear()).toBe(2025)
+    expect(d!.getMonth()).toBe(2) // 月份从 0 开始
+    expect(d!.getDate()).toBe(14)
+  })
+  test('空字符串返回 null', () => {
+    expect(safeParseDate('')).toBeNull()
+  })
+  test('无效日期返回 null', () => {
+    expect(safeParseDate('not-a-date')).toBeNull()
+  })
+  test('null/undefined 安全处理', () => {
+    expect(safeParseDate(null as any)).toBeNull()
+    expect(safeParseDate(undefined as any)).toBeNull()
   })
 })
