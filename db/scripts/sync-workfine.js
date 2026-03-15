@@ -552,6 +552,40 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
       }
     }
 
+    // 3-pre. 先按 customer_id 更新已有行（处理 PG 中无 phone 但 WorkFine 新增 phone 的场景）
+    // 避免 step 3a INSERT 时触发 customer_id 唯一约束冲突
+    const preUpdate = await client.query(`
+      UPDATE client_wechat_users c SET
+        phone = CASE
+          WHEN s.phone IS NOT NULL AND NOT EXISTS (
+            SELECT 1 FROM client_wechat_users o WHERE o.phone = s.phone AND o.user_id != c.user_id
+          ) THEN s.phone
+          ELSE c.phone
+        END,
+        name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
+        member_level = s.member_level, customer_source = s.customer_source,
+        category = s.category, birthday = s.birthday, occupation = s.occupation,
+        is_married = s.is_married, wechat_name = s.wechat_name,
+        skin_type = s.skin_type, improvement_focus = s.improvement_focus,
+        skin_issue = s.skin_issue, wellness_preference = s.wellness_preference,
+        updated_at = now()
+      FROM (
+        SELECT DISTINCT ON (customer_id) *
+        FROM _cust_staging
+        WHERE customer_id IS NOT NULL
+        ORDER BY customer_id, phone NULLS LAST
+      ) s
+      WHERE c.customer_id = s.customer_id
+    `)
+    log('CUSTOMERS', `PRE-UPDATE by customer_id: ${preUpdate.rowCount} 条`)
+
+    // 从 staging 中移除已按 customer_id 更新的行，避免 step 3a 重复处理
+    await client.query(`
+      DELETE FROM _cust_staging s
+      USING client_wechat_users c
+      WHERE s.customer_id IS NOT NULL AND s.customer_id = c.customer_id
+    `)
+
     // 3a. 有手机号：UPSERT by phone（去重，不覆盖微信身份字段）
     const upsertByPhone = await client.query(`
       INSERT INTO client_wechat_users (
