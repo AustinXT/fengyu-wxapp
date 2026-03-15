@@ -47,6 +47,26 @@ interface CouponsPageProps {
 export default function CouponsPage({ templates }: CouponsPageProps) {
   const router = useRouter()
   const { get, set } = useUrlFilters()
+  const [toggleTarget, setToggleTarget] = useState<CouponTemplate | null>(null)
+
+  async function doToggle() {
+    if (!toggleTarget) return
+    const action = toggleTarget.isActive ? '停用' : '启用'
+    try {
+      const res = await toggleTemplateActive(toggleTarget.templateId, !toggleTarget.isActive, toggleTarget.updatedAt)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+        if (res.message.includes('已被其他人修改')) router.refresh()
+      }
+    } catch {
+      toast.error(`${action}失败`)
+    } finally {
+      setToggleTarget(null)
+    }
+  }
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -146,22 +166,7 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
             variant="link"
             size="sm"
             className={`h-auto p-0 ${row.isActive ? 'text-[var(--destructive)]' : 'text-[#3D8A5A]'}`}
-            onClick={async () => {
-              const action = row.isActive ? '停用' : '启用'
-              if (!confirm(`确定要${action}「${row.name}」吗？`)) return
-              try {
-                const res = await toggleTemplateActive(row.templateId, !row.isActive, row.updatedAt)
-                if (res.success) {
-                  toast.success(res.message)
-                  router.refresh()
-                } else {
-                  toast.error(res.message)
-                  if (res.message.includes('已被其他人修改')) router.refresh()
-                }
-              } catch {
-                toast.error(`${action}失败`)
-              }
-            }}
+            onClick={() => setToggleTarget(row)}
           >
             {row.isActive ? '停用' : '启用'}
           </Button>
@@ -196,6 +201,17 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
         page={page}
         onPageChange={setPage}
       />
+
+      <AlertDialog open={!!toggleTarget} onOpenChange={(open) => !open && setToggleTarget(null)}>
+        <AlertDialogTitle>确认{toggleTarget?.isActive ? '停用' : '启用'}优惠券？</AlertDialogTitle>
+        <AlertDialogDescription>
+          将{toggleTarget?.isActive ? '停用' : '启用'}「{toggleTarget?.name}」，操作后立即生效。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setToggleTarget(null)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={doToggle}>确认{toggleTarget?.isActive ? '停用' : '启用'}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }
