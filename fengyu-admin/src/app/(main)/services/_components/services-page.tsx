@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useTransition, useCallback } from "react"
+import { useState, useTransition, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -10,9 +10,12 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
+import { Pagination } from "@/components/ui/pagination"
 import { startServiceOrder, completeServiceOrder, cancelServiceOrder } from "@/actions/services"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { ServiceOrder, Store, ServiceOrderStatus } from "@/lib/types"
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDate(dt: string) {
   return new Date(dt).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
@@ -71,14 +74,27 @@ function ServiceActions({ so }: { so: ServiceOrder }) {
   )
 }
 
+/**
+ * 服务单列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getServiceOrdersPaginated() 完成 DB 级过滤+分页，
+ * 此组件仅负责展示和 URL 筛选控制。
+ */
 export default function ServicesPageClient({
   serviceOrders,
   stores,
+  total,
 }: {
   serviceOrders: ServiceOrder[]
   stores: Store[]
+  total: number
 }) {
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+
+  /** 筛选变更时重置到第 1 页 */
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -87,50 +103,41 @@ export default function ServicesPageClient({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => set("q", value), 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   const statusFilter = get("status")
   const storeFilter = get("store")
-  const search = get("q")
-
-  const filtered = useMemo(() => {
-    return serviceOrders.filter((s) => {
-      if (statusFilter && s.status !== statusFilter) return false
-      if (storeFilter && s.storeId !== storeFilter) return false
-      if (search) {
-        const q = search.toLowerCase()
-        if (
-          !s.serviceOrderId.toLowerCase().includes(q) &&
-          !(s.customerName || "").toLowerCase().includes(q) &&
-          !(s.employeeName || "").toLowerCase().includes(q)
-        )
-          return false
-      }
-      return true
-    })
-  }, [serviceOrders, statusFilter, storeFilter, search])
+  const dateFrom = get("from")
+  const dateTo = get("to")
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单管理</h1>
 
-      {/* Filters */}
+      {/* Filters — URL-driven, 触发服务端重新查询 */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => set("status", e.target.value)}>
+            <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
               {(["待服务", "服务中", "已完成", "已取消"] as ServiceOrderStatus[]).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => set("store", e.target.value)}>
+            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
               <option value="">全部门店</option>
               {stores.map((s) => (
                 <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
               ))}
             </Select>
+            <div className="flex items-center gap-2">
+              <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
+              <span className="text-[#999999]">-</span>
+              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+            </div>
             <Input
               className="w-56"
               placeholder="搜索服务单号/顾客/美容师"
@@ -141,7 +148,7 @@ export default function ServicesPageClient({
         </CardContent>
       </Card>
 
-      {/* Table */}
+      {/* Table — 数据已经是当前页的切片 */}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -159,7 +166,7 @@ export default function ServicesPageClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filtered.map((so) => (
+                {serviceOrders.map((so) => (
                   <tr key={so.serviceOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
                       <Link href={`/services/${so.serviceOrderId}`} className="text-[var(--primary)] hover:underline">
@@ -181,9 +188,11 @@ export default function ServicesPageClient({
                     </td>
                   </tr>
                 ))}
-                {filtered.length === 0 && (
+                {serviceOrders.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-4 py-12 text-center text-[#999999]">暂无服务单数据</td>
+                    <td colSpan={8} className="px-4 py-12 text-center text-[#999999]">
+                      {total === 0 ? "暂无服务单数据" : "未找到匹配结果，请调整筛选条件"}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -191,6 +200,15 @@ export default function ServicesPageClient({
           </div>
         </CardContent>
       </Card>
+
+      <Pagination
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
     </div>
   )
 }

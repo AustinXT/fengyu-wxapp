@@ -1,15 +1,20 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Pagination } from "@/components/ui/pagination"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { confirmAppointment, checkinAppointment, cancelAppointment } from "@/actions/appointments"
-import type { Appointment } from "@/lib/types"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import type { Appointment, Store } from "@/lib/types"
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 function formatDateTime(dt: string | null) {
   if (!dt) return "-"
@@ -18,20 +23,66 @@ function formatDateTime(dt: string | null) {
   })
 }
 
-function isToday(dt: string) {
-  const d = new Date(dt)
-  const today = new Date()
-  return d.getFullYear() === today.getFullYear() &&
-    d.getMonth() === today.getMonth() &&
-    d.getDate() === today.getDate()
-}
+const TAB_OPTIONS = [
+  { value: "pending", label: "待确认" },
+  { value: "confirmed", label: "已确认" },
+  { value: "today", label: "今日" },
+  { value: "all", label: "全部" },
+] as const
 
-function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
+type TabValue = typeof TAB_OPTIONS[number]['value']
+
+/**
+ * 预约列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getAppointmentsPaginated() 完成 DB 级过滤+分页。
+ * Tab badge 数量来自服务端独立 COUNT（scope 范围内全局统计，不受 tab/search 影响）。
+ */
+export default function AppointmentsPageClient({
+  appointments,
+  stores,
+  total,
+  pendingCount,
+  confirmedCount,
+}: {
+  appointments: Appointment[]
+  stores: Store[]
+  total: number
+  pendingCount: number
+  confirmedCount: number
+}) {
   const router = useRouter()
+  const { get, set, setMany } = useUrlFilters()
+
+  /** 筛选/Tab 变更时重置到第 1 页 */
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
+
+  // 搜索框防抖
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
+
+  const activeTab = (get("tab") || "pending") as TabValue
+  const storeFilter = get("store")
+  const dateFrom = get("from")
+  const dateTo = get("to")
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
+
+  // 操作 state
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [cancelTarget, setCancelTarget] = useState<Appointment | null>(null)
 
   const handleAction = async (action: 'confirm' | 'checkin' | 'cancel', appt: Appointment) => {
+    if (action === 'cancel') {
+      setCancelTarget(null)
+    }
     setPendingId(appt.appointmentId)
     try {
       const actionMap = { confirm: confirmAppointment, checkin: checkinAppointment, cancel: cancelAppointment }
@@ -50,130 +101,132 @@ function AppointmentTable({ appointments }: { appointments: Appointment[] }) {
   }
 
   return (
-    <>
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50 sticky top-0">
-          <tr>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">预约时间</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">美容师</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">签到时间</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-200">
-          {appointments.map((appt) => (
-            <tr key={appt.appointmentId} className="hover:bg-[#FFF0EE] transition-colors">
-              <td className="px-4 py-3"><StatusBadge status={appt.status} /></td>
-              <td className="px-4 py-3 font-medium">{appt.clientName}</td>
-              <td className="px-4 py-3">{formatDateTime(appt.appointmentTime)}</td>
-              <td className="px-4 py-3">{appt.storeName || "-"}</td>
-              <td className="px-4 py-3">{appt.employeeName}</td>
-              <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
-              <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{appt.notes || "-"}</td>
-              <td className="px-4 py-3">
-                <div className="flex gap-1">
-                  {appt.status === "待确认" && (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
-                      <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
-                    </>
-                  )}
-                  {appt.status === "已确认" && (
-                    <>
-                      <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
-                      <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
-                    </>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
-          {appointments.length === 0 && (
-            <tr>
-              <td colSpan={8} className="px-4 py-12 text-center text-[#999999]">暂无预约数据</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-
-    <AlertDialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
-      <AlertDialogTitle>确认取消预约？</AlertDialogTitle>
-      <AlertDialogDescription>
-        {cancelTarget?.status === '已确认' ? '该预约已确认，' : ''}取消后不可恢复。
-      </AlertDialogDescription>
-      <AlertDialogFooter>
-        <AlertDialogCancel onClick={() => setCancelTarget(null)}>返回</AlertDialogCancel>
-        <AlertDialogAction onClick={() => cancelTarget && handleAction("cancel", cancelTarget)}>确认取消</AlertDialogAction>
-      </AlertDialogFooter>
-    </AlertDialog>
-    </>
-  )
-}
-
-export default function AppointmentsPageClient({
-  appointments,
-}: {
-  appointments: Appointment[]
-}) {
-  const pendingAppts = appointments.filter((a) => a.status === "待确认")
-  const confirmedAppts = appointments.filter((a) => a.status === "已确认")
-  const todayAppts = appointments.filter((a) => isToday(a.appointmentTime))
-  const allAppts = appointments
-
-  return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-[var(--foreground)]">预约管理</h1>
 
-      <Tabs defaultValue="pending">
-        <TabsList>
-          <TabsTrigger value="pending">
-            待确认 <span className="ml-1 text-xs bg-[#FFF8E6] text-[#D4820A] rounded-full px-1.5">{pendingAppts.length}</span>
-          </TabsTrigger>
-          <TabsTrigger value="confirmed">
-            已确认 <span className="ml-1 text-xs bg-[#F0F9F2] text-[#3D8A5A] rounded-full px-1.5">{confirmedAppts.length}</span>
-          </TabsTrigger>
-          <TabsTrigger value="today">今日</TabsTrigger>
-          <TabsTrigger value="all">全部</TabsTrigger>
-        </TabsList>
+      {/* Status Tabs — spec §5.15，badge 数量来自服务端 */}
+      <div className="flex items-center gap-1 border-b border-[var(--border)]">
+        {TAB_OPTIONS.map((tab) => (
+          <button
+            key={tab.value}
+            onClick={() => setFilter("tab", tab.value === "pending" ? "" : tab.value)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab.value
+                ? "border-[var(--primary)] text-[var(--primary)]"
+                : "border-transparent text-[#999999] hover:text-[var(--foreground)]"
+            }`}
+          >
+            {tab.label}
+            {tab.value === "pending" && pendingCount > 0 && (
+              <span className="ml-1 text-xs bg-[#FFF8E6] text-[#D4820A] rounded-full px-1.5">{pendingCount}</span>
+            )}
+            {tab.value === "confirmed" && confirmedCount > 0 && (
+              <span className="ml-1 text-xs bg-[#F0F9F2] text-[#3D8A5A] rounded-full px-1.5">{confirmedCount}</span>
+            )}
+          </button>
+        ))}
+      </div>
 
-        <TabsContent value="pending">
-          <Card>
-            <CardContent className="p-0">
-              <AppointmentTable appointments={pendingAppts} />
-            </CardContent>
-          </Card>
-        </TabsContent>
+      {/* Filters — URL-driven, 触发服务端重新查询 */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap gap-3">
+            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
+              <option value="">全部门店</option>
+              {stores.map((s) => (
+                <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
+              ))}
+            </Select>
+            <div className="flex items-center gap-2">
+              <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
+              <span className="text-[#999999]">-</span>
+              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+            </div>
+            <Input
+              className="w-56"
+              placeholder="搜索顾客/美容师"
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
-        <TabsContent value="confirmed">
-          <Card>
-            <CardContent className="p-0">
-              <AppointmentTable appointments={confirmedAppts} />
-            </CardContent>
-          </Card>
-        </TabsContent>
+      {/* Table — 数据已经是当前页的切片 */}
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">预约时间</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">美容师</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">签到时间</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">操作</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {appointments.map((appt) => (
+                  <tr key={appt.appointmentId} className="hover:bg-[#FFF0EE] transition-colors">
+                    <td className="px-4 py-3"><StatusBadge status={appt.status} /></td>
+                    <td className="px-4 py-3 font-medium">{appt.clientName}</td>
+                    <td className="px-4 py-3">{formatDateTime(appt.appointmentTime)}</td>
+                    <td className="px-4 py-3">{appt.storeName || "-"}</td>
+                    <td className="px-4 py-3">{appt.employeeName}</td>
+                    <td className="px-4 py-3 text-[#999999]">{appt.checkinAt ? formatDateTime(appt.checkinAt) : "-"}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1">
+                        {appt.status === "待确认" && (
+                          <>
+                            <Button size="sm" variant="outline" onClick={() => handleAction("confirm", appt)} disabled={pendingId === appt.appointmentId}>确认</Button>
+                            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                          </>
+                        )}
+                        {appt.status === "已确认" && (
+                          <>
+                            <Button size="sm" variant="outline" onClick={() => handleAction("checkin", appt)} disabled={pendingId === appt.appointmentId}>签到</Button>
+                            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setCancelTarget(appt)} disabled={pendingId === appt.appointmentId}>取消</Button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {appointments.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">
+                      {total === 0 ? "暂无预约数据" : "未找到匹配结果，请调整筛选条件"}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
 
-        <TabsContent value="today">
-          <Card>
-            <CardContent className="p-0">
-              <AppointmentTable appointments={todayAppts} />
-            </CardContent>
-          </Card>
-        </TabsContent>
+      <Pagination
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
 
-        <TabsContent value="all">
-          <Card>
-            <CardContent className="p-0">
-              <AppointmentTable appointments={allAppts} />
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      <AlertDialog open={!!cancelTarget} onOpenChange={(open) => !open && setCancelTarget(null)}>
+        <AlertDialogTitle>确认取消预约？</AlertDialogTitle>
+        <AlertDialogDescription>
+          {cancelTarget?.status === '已确认' ? '该预约已确认，' : ''}取消后不可恢复。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setCancelTarget(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => cancelTarget && handleAction("cancel", cancelTarget)}>确认取消</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

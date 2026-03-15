@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -16,7 +16,7 @@ import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/
 import { formatPhone } from "@/lib/utils"
 import { createCustomer } from "@/actions/customers"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const MEMBER_LEVEL_COLORS: Record<string, string> = {
   "钻石": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
@@ -27,58 +27,45 @@ const MEMBER_LEVEL_COLORS: Record<string, string> = {
 
 const MEMBER_LEVELS = ["钻石", "金卡", "银卡", "新客"]
 
-interface CustomersPageProps {
+/**
+ * 顾客列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getCustomersPaginated() 完成 DB 级过滤+分页。
+ */
+export default function CustomersPage({
+  customers,
+  stores,
+  total,
+}: {
   customers: Customer[]
   stores: Store[]
-}
-
-export default function CustomersPage({ customers, stores }: CustomersPageProps) {
+  total: number
+}) {
   const router = useRouter()
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
+
   const storeFilter = get("store")
   const levelFilter = get("level")
-  const search = get("q")
-  const page = Number(get("page", "1"))
-  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   // 搜索防抖
-  const [searchInput, setSearchInput] = useState(search)
+  const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
-  }, [set, setPage, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   // Create dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [newPhone, setNewPhone] = useState("")
   const [newName, setNewName] = useState("")
-
-  const filtered = useMemo(() => {
-    let result = customers
-    if (search.trim()) {
-      const q = search.trim().toLowerCase()
-      result = result.filter(
-        (c) =>
-          c.name?.toLowerCase().includes(q) ||
-          c.phone?.includes(q)
-      )
-    }
-    if (storeFilter) {
-      result = result.filter((c) => c.boundStoreId === storeFilter)
-    }
-    if (levelFilter) {
-      result = result.filter((c) => c.memberLevel === levelFilter)
-    }
-    return result
-  }, [customers, search, storeFilter, levelFilter])
-
-  const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
-  )
 
   async function handleCreate() {
     if (!newPhone.trim()) {
@@ -176,7 +163,7 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
       <div className="flex items-center gap-3">
         <Select
           value={storeFilter}
-          onChange={(e) => { set("store", e.target.value); setPage(1) }}
+          onChange={(e) => setFilter("store", e.target.value)}
           className="w-40"
         >
           <option value="">全部门店</option>
@@ -188,7 +175,7 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
         </Select>
         <Select
           value={levelFilter}
-          onChange={(e) => { set("level", e.target.value); setPage(1) }}
+          onChange={(e) => setFilter("level", e.target.value)}
           className="w-32"
         >
           <option value="">全部等级</option>
@@ -206,13 +193,15 @@ export default function CustomersPage({ customers, stores }: CustomersPageProps)
         />
       </div>
 
-      <DataTable columns={columns} data={paged} />
+      <DataTable columns={columns} data={customers} />
 
       <Pagination
-        total={filtered.length}
-        pageSize={PAGE_SIZE}
-        page={page}
-        onPageChange={setPage}
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
       {/* 新增顾客 Dialog */}

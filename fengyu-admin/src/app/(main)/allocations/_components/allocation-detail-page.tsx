@@ -11,7 +11,7 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
-import type { SaleOrder, SaleAllocation, Employee } from "@/lib/types"
+import type { SaleOrder, SaleAllocation, Employee, CommissionRate } from "@/lib/types"
 
 interface AllocationRow {
   id: number
@@ -22,14 +22,42 @@ interface AllocationRow {
   ratio: string
 }
 
+/** 从员工的部门/职位推断提成角色类型 */
+function inferRoleType(employee: Employee): string {
+  const dept = employee.departmentName || ''
+  const pos = employee.positionName || ''
+  if (dept.includes('推广') || pos.includes('推广')) return '推广'
+  return '技师'
+}
+
+/** 根据市场、角色、销售分类、金额匹配提成比例 */
+function findMatchingRate(
+  rates: CommissionRate[],
+  marketName: string,
+  roleType: string,
+  salesCategory: string | null,
+  amount: number,
+): CommissionRate | null {
+  return rates.find((r) =>
+    r.orgName === marketName &&
+    r.orderType === 'sale' &&
+    r.roleType === roleType &&
+    r.salesCategory === (salesCategory || '') &&
+    Number(r.amountTierMin) <= amount &&
+    (r.amountTierMax === null || Number(r.amountTierMax) > amount)
+  ) ?? null
+}
+
 export default function AllocationDetailPageClient({
   order,
   allocations,
   employees,
+  commissionRates = [],
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   employees: Employee[]
+  commissionRates?: CommissionRate[]
 }) {
   const activeEmployees = employees.filter((e) => !e.isResigned)
 
@@ -72,6 +100,29 @@ export default function AllocationDetailPageClient({
     ])
   }
 
+  /** 为指定行查找建议提成比例 */
+  const getSuggestedRate = (row: AllocationRow): { rate: string; amount: string } | null => {
+    if (!row.employeeId || !row.saleItemId || commissionRates.length === 0) return null
+    const employee = activeEmployees.find((e) => e.employeeId === row.employeeId)
+    const item = items.find((i) => i.saleItemId === row.saleItemId)
+    if (!employee || !item) return null
+
+    const roleType = inferRoleType(employee)
+    const received = Number(item.received)
+    const match = findMatchingRate(
+      commissionRates,
+      order.marketName ?? '',
+      roleType,
+      item.salesCategory ?? null,
+      received,
+    )
+    if (!match) return null
+
+    const ratePercent = (Number(match.commissionRate) * 100).toFixed(1)
+    const suggestedAmount = (received * Number(match.commissionRate)).toFixed(2)
+    return { rate: ratePercent, amount: suggestedAmount }
+  }
+
   const updateRow = (id: number, field: keyof AllocationRow, value: string) => {
     setRows((prev) =>
       prev.map((r) => {
@@ -86,6 +137,24 @@ export default function AllocationDetailPageClient({
           }
         }
         return updated
+      })
+    )
+  }
+
+  /** 应用建议提成比例到指定行 */
+  const applySuggestedRate = (id: number) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r
+        const suggestion = getSuggestedRate(r)
+        if (!suggestion) return r
+        const totalAmount = Number(order.totalAmount)
+        const amount = Number(suggestion.amount)
+        return {
+          ...r,
+          amount: suggestion.amount,
+          ratio: totalAmount > 0 ? ((amount / totalAmount) * 100).toFixed(1) : '',
+        }
       })
     )
   }
@@ -167,72 +236,91 @@ export default function AllocationDetailPageClient({
         </CardHeader>
         <CardContent className="space-y-4">
           {rows.length > 0 ? (
-            rows.map((row) => (
-              <div key={row.id} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end bg-[#FAFAFA] rounded-lg p-4">
-                <div>
-                  <label className="text-xs text-[#999999]">关联明细</label>
-                  <Select
-                    className="mt-1"
-                    value={row.saleItemId}
-                    onChange={(e) => updateRow(row.id, "saleItemId", e.target.value)}
-                  >
-                    <option value="">选择明细</option>
-                    {items.map((item) => (
-                      <option key={item.saleItemId} value={item.saleItemId}>
-                        {item.skuName || item.productName} (¥{item.received})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">部门</label>
-                  <Select
-                    className="mt-1"
-                    value={row.departmentId}
-                    onChange={(e) => updateRow(row.id, "departmentId", e.target.value)}
-                  >
-                    <option value="">选择部门</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">员工</label>
-                  <Select
-                    className="mt-1"
-                    value={row.employeeId}
-                    onChange={(e) => updateRow(row.id, "employeeId", e.target.value)}
-                  >
-                    <option value="">选择员工</option>
-                    {activeEmployees
-                      .filter((e) => !row.departmentId || e.orgNodeId === row.departmentId)
-                      .map((e) => (
-                        <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
-                      ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">金额</label>
-                  <Input
-                    className="mt-1"
-                    type="number"
-                    placeholder="0.00"
-                    value={row.amount}
-                    onChange={(e) => updateRow(row.id, "amount", e.target.value)}
-                  />
-                </div>
-                <div className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <label className="text-xs text-[#999999]">比例</label>
-                    <Input className="mt-1" value={row.ratio ? `${row.ratio}%` : ""} readOnly />
+            rows.map((row) => {
+              const suggestion = getSuggestedRate(row)
+              return (
+                <div key={row.id} className="bg-[#FAFAFA] rounded-lg p-4 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                    <div>
+                      <label className="text-xs text-[#999999]">关联明细</label>
+                      <Select
+                        className="mt-1"
+                        value={row.saleItemId}
+                        onChange={(e) => updateRow(row.id, "saleItemId", e.target.value)}
+                      >
+                        <option value="">选择明细</option>
+                        {items.map((item) => (
+                          <option key={item.saleItemId} value={item.saleItemId}>
+                            {item.skuName || item.productName} (¥{item.received})
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">部门</label>
+                      <Select
+                        className="mt-1"
+                        value={row.departmentId}
+                        onChange={(e) => updateRow(row.id, "departmentId", e.target.value)}
+                      >
+                        <option value="">选择部门</option>
+                        {departments.map((d) => (
+                          <option key={d.id} value={d.id}>{d.name}</option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">员工</label>
+                      <Select
+                        className="mt-1"
+                        value={row.employeeId}
+                        onChange={(e) => updateRow(row.id, "employeeId", e.target.value)}
+                      >
+                        <option value="">选择员工</option>
+                        {activeEmployees
+                          .filter((e) => !row.departmentId || e.orgNodeId === row.departmentId)
+                          .map((e) => (
+                            <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                          ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">金额</label>
+                      <Input
+                        className="mt-1"
+                        type="number"
+                        placeholder="0.00"
+                        value={row.amount}
+                        onChange={(e) => updateRow(row.id, "amount", e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <label className="text-xs text-[#999999]">比例</label>
+                        <Input className="mt-1" value={row.ratio ? `${row.ratio}%` : ""} readOnly />
+                      </div>
+                      <Button size="sm" variant="ghost" onClick={() => removeRow(row.id)} className="text-[#D94040]">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      </Button>
+                    </div>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => removeRow(row.id)} className="text-[#D94040]">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </Button>
+                  {suggestion && (
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-[#3D8A5A]">
+                        建议比例 {suggestion.rate}%（¥{Number(suggestion.amount).toLocaleString()}）
+                      </span>
+                      <button
+                        type="button"
+                        className="text-[var(--primary)] hover:underline font-medium"
+                        onClick={() => applySuggestedRate(row.id)}
+                      >
+                        应用
+                      </button>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))
+              )
+            })
           ) : (
             <p className="text-center text-[#999999] py-8">暂无分配记录，点击"添加分配人"开始分配</p>
           )}

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { useState, useCallback } from "react"
 import Link from "next/link"
 import type { Employee, Store } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -12,10 +12,28 @@ import { Pagination } from "@/components/ui/pagination"
 import { formatPhone } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
-export default function EmployeesPage({ employees, stores }: { employees: Employee[]; stores: Store[] }) {
-  const { get, set } = useUrlFilters()
+/**
+ * 员工列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getEmployeesPaginated() 完成 DB 级过滤+分页。
+ */
+export default function EmployeesPage({
+  employees,
+  stores,
+  total,
+}: {
+  employees: Employee[]
+  stores: Store[]
+  total: number
+}) {
+  const { get, set, setMany } = useUrlFilters()
+
+  /** 筛选变更时重置到第 1 页 */
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -24,40 +42,13 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => set("q", value), 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
-  const search = get("q")
   const storeFilter = get("store")
   const statusFilter = get("status")
-  const page = Number(get("page")) || 1
-
-  const filtered = useMemo(() => {
-    let result = employees
-    if (search.trim()) {
-      const q = search.trim().toLowerCase()
-      result = result.filter(
-        (e) =>
-          e.name?.toLowerCase().includes(q) ||
-          e.employeeId.toLowerCase().includes(q) ||
-          e.phone?.includes(q)
-      )
-    }
-    if (storeFilter) {
-      result = result.filter((e) => e.storeId === storeFilter)
-    }
-    if (statusFilter === "active") {
-      result = result.filter((e) => !e.isResigned)
-    } else if (statusFilter === "resigned") {
-      result = result.filter((e) => e.isResigned)
-    }
-    return result
-  }, [search, storeFilter, statusFilter, employees])
-
-  const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
-  )
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -127,7 +118,7 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
       <div className="flex items-center gap-3">
         <Select
           value={storeFilter}
-          onChange={(e) => set("store", e.target.value)}
+          onChange={(e) => setFilter("store", e.target.value)}
           className="w-40"
         >
           <option value="">全部门店</option>
@@ -139,7 +130,7 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
         </Select>
         <Select
           value={statusFilter}
-          onChange={(e) => set("status", e.target.value)}
+          onChange={(e) => setFilter("status", e.target.value)}
           className="w-32"
         >
           <option value="">全部状态</option>
@@ -154,13 +145,15 @@ export default function EmployeesPage({ employees, stores }: { employees: Employ
         />
       </div>
 
-      <DataTable columns={columns} data={paged} />
+      <DataTable columns={columns} data={employees} />
 
       <Pagination
-        total={filtered.length}
-        pageSize={PAGE_SIZE}
-        page={page}
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
         onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
     </div>
   )

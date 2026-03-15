@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useRef } from "react"
 import Link from "next/link"
+import QRCode from "qrcode"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -118,6 +119,21 @@ export default function OrderCreatePageClient({
 
   const removeFromCart = (skuId: string) => {
     setCart((prev) => prev.filter((i) => i.sku.skuId !== skuId))
+  }
+
+  const updateCartQuantity = (skuId: string, delta: number) => {
+    setCart((prev) =>
+      prev.reduce<CartItem[]>((acc, item) => {
+        if (item.sku.skuId !== skuId) {
+          acc.push(item)
+        } else {
+          const newQty = item.quantity + delta
+          if (newQty > 0) acc.push({ ...item, quantity: newQty })
+          // newQty <= 0 时自动移除
+        }
+        return acc
+      }, [])
+    )
   }
 
   const totalAmount = cart.reduce((sum, item) => {
@@ -270,23 +286,40 @@ export default function OrderCreatePageClient({
                 </h3>
                 {cart.length > 0 ? (
                   <div className="space-y-2">
-                    {cart.map((item) => (
-                      <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
-                        <div>
-                          <span className="font-medium">{item.product.name}</span>
-                          <span className="text-[#999999] ml-2">{item.sku.specName}</span>
-                          <span className="text-[#999999] ml-2">x{item.quantity}</span>
+                    {cart.map((item) => {
+                      const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
+                      return (
+                        <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-medium">{item.product.name}</span>
+                            <span className="text-[#999999] ml-2">{item.sku.specName}</span>
+                          </div>
+                          <div className="flex items-center gap-3 shrink-0">
+                            <div className="flex items-center border border-[var(--border)] rounded">
+                              <button
+                                onClick={() => updateCartQuantity(item.sku.skuId, -1)}
+                                className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors"
+                              >
+                                −
+                              </button>
+                              <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
+                              <button
+                                onClick={() => updateCartQuantity(item.sku.skuId, 1)}
+                                className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors"
+                              >
+                                +
+                              </button>
+                            </div>
+                            <span className="font-medium w-20 text-right">
+                              ¥{(unitPrice * item.quantity).toLocaleString()}
+                            </span>
+                            <button onClick={() => removeFromCart(item.sku.skuId)} className="text-[#D94040] text-xs hover:underline">
+                              删除
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-medium">
-                            ¥{((item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)) * item.quantity).toLocaleString()}
-                          </span>
-                          <button onClick={() => removeFromCart(item.sku.skuId)} className="text-[#D94040] text-xs hover:underline">
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                     <div className="text-right font-bold text-lg pt-2">
                       合计: ¥{totalAmount.toLocaleString()}
                     </div>
@@ -499,7 +532,7 @@ export default function OrderCreatePageClient({
         <Card>
           <CardContent className="p-6 text-center space-y-4">
             <div className="flex justify-center">
-              <div className={`h-16 w-16 rounded-full flex items-center justify-center ${paymentConfirmed ? "bg-[#F0F9F2]" : "bg-[#F0F9F2]"}`}>
+              <div className="h-16 w-16 rounded-full flex items-center justify-center bg-[#F0F9F2]">
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3D8A5A" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
               </div>
             </div>
@@ -514,8 +547,13 @@ export default function OrderCreatePageClient({
                 ? '订单已确认收款，状态已更新为已支付'
                 : paymentMethod === 'offline'
                   ? '线下支付订单，可直接确认收款'
-                  : '订单已提交，等待顾客扫码支付'}
+                  : '请将二维码展示给顾客，扫码进入小程序完成支付'}
             </p>
+
+            {/* 微信/支付宝支付：可打印 QR 码（spec §5.12） */}
+            {paymentMethod !== 'offline' && createdOrderId && !paymentConfirmed && (
+              <OrderQRCode orderId={createdOrderId} />
+            )}
 
             {/* 线下支付：确认收款按钮 */}
             {paymentMethod === 'offline' && createdOrderId && !paymentConfirmed && (
@@ -562,6 +600,62 @@ export default function OrderCreatePageClient({
           </CardContent>
         </Card>
       )}
+    </div>
+  )
+}
+
+/**
+ * 订单 QR 码组件 — 编码小程序订单详情页路径，顾客扫码可直接跳转支付。
+ * 支持打印：点击"打印二维码"按钮触发浏览器打印（仅打印 QR 码区域）。
+ */
+function OrderQRCode({ orderId }: { orderId: string }) {
+  const [qrDataUrl, setQrDataUrl] = useState<string>("")
+  const printRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    // 编码小程序路径：顾客扫码 → 微信识别 → 打开小程序订单详情页
+    const miniProgramPath = `pagesOrder/order-detail/order-detail?orderId=${encodeURIComponent(orderId)}`
+    QRCode.toDataURL(miniProgramPath, {
+      width: 200,
+      margin: 2,
+      color: { dark: '#1A1A1A', light: '#FFFFFF' },
+    }).then(setQrDataUrl).catch(() => {
+      // QR 生成失败时静默降级
+    })
+  }, [orderId])
+
+  const handlePrint = () => {
+    if (!qrDataUrl) return
+    const w = window.open('', '_blank', 'width=400,height=500')
+    if (!w) return
+    w.document.write(`<html><head><title>订单二维码</title>
+      <style>body{text-align:center;font-family:system-ui;padding:40px}
+      img{width:200px;height:200px}p{margin:8px 0;color:#333}
+      .id{font-family:monospace;font-size:14px;color:#C0322A}</style>
+      </head><body>
+      <h3>凤御美业</h3>
+      <img src="${qrDataUrl}" />
+      <p class="id">${orderId}</p>
+      <p style="font-size:12px;color:#999">请使用微信扫描二维码完成支付</p>
+      </body></html>`)
+    w.document.close()
+    w.onload = () => { w.print(); w.close() }
+  }
+
+  if (!qrDataUrl) return null
+
+  return (
+    <div ref={printRef} className="flex flex-col items-center gap-3 py-4">
+      <div className="bg-white p-3 rounded-lg border border-[var(--border)] inline-block">
+        <img src={qrDataUrl} alt="订单二维码" width={200} height={200} />
+      </div>
+      <p className="text-xs text-[#999999]">顾客使用微信扫描二维码 → 进入小程序 → 完成支付</p>
+      <Button variant="outline" size="sm" onClick={handlePrint}>
+        <svg className="mr-1.5" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" />
+        </svg>
+        打印二维码
+      </Button>
     </div>
   )
 }

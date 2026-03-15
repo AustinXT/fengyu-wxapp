@@ -14,7 +14,7 @@ import { Pagination } from "@/components/ui/pagination"
 import { useRouter } from "next/navigation"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const unbindStatusMap: Record<string, { label: string; className: string }> = {
   pending: { label: "待审批", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -29,20 +29,23 @@ export default function StoresPage({
   stores: Store[]
   unbindRequests: UnbindRequest[]
 }) {
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  // 搜索框防抖
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   const search = get("q")
   const page = Number(get("page", "1"))
-  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
   const tab = (get("tab") || "stores") as "stores" | "unbind"
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const router = useRouter()
@@ -64,8 +67,8 @@ export default function StoresPage({
   }, [search, stores])
 
   const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
   )
 
   const columns: Column<Store>[] = [
@@ -199,9 +202,11 @@ export default function StoresPage({
 
           <Pagination
             total={filtered.length}
-            pageSize={PAGE_SIZE}
+            pageSize={pageSize}
             page={page}
-            onPageChange={setPage}
+            onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
           />
         </>
       )}

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useTransition, useCallback } from "react"
+import { useState, useTransition, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge, Badge } from "@/components/ui/badge"
+import { Pagination } from "@/components/ui/pagination"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { confirmOfflinePayment, closeOrder, resetOrderFailed } from "@/actions/orders"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types"
@@ -33,34 +35,12 @@ function formatTime(dt: string) {
 function OrderActions({ order }: { order: SaleOrder }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
+  const [confirmDialog, setConfirmDialog] = useState<'confirm' | 'close' | 'reset' | null>(null)
 
-  const handleConfirm = () => {
+  const handleAction = (actionFn: (id: string) => Promise<{ success: boolean; message: string }>) => {
+    setConfirmDialog(null)
     startTransition(async () => {
-      const res = await confirmOfflinePayment(order.saleOrderId)
-      if (res.success) {
-        toast.success(res.message)
-        router.refresh()
-      } else {
-        toast.error(res.message)
-      }
-    })
-  }
-
-  const handleClose = () => {
-    startTransition(async () => {
-      const res = await closeOrder(order.saleOrderId)
-      if (res.success) {
-        toast.success(res.message)
-        router.refresh()
-      } else {
-        toast.error(res.message)
-      }
-    })
-  }
-
-  const handleReset = () => {
-    startTransition(async () => {
-      const res = await resetOrderFailed(order.saleOrderId)
+      const res = await actionFn(order.saleOrderId)
       if (res.success) {
         toast.success(res.message)
         router.refresh()
@@ -71,31 +51,81 @@ function OrderActions({ order }: { order: SaleOrder }) {
   }
 
   return (
-    <div className="flex gap-1">
-      {order.status === "待确认收款" && (
-        <Button size="sm" variant="outline" onClick={handleConfirm} disabled={pending}>确认收款</Button>
-      )}
-      {order.status === "待支付" && (
-        <Button size="sm" variant="outline" onClick={handleClose} disabled={pending}>关闭订单</Button>
-      )}
-      {order.status === "支付失败" && (
-        <>
-          <Button size="sm" variant="outline" onClick={handleReset} disabled={pending}>重置</Button>
-          <Button size="sm" variant="outline" onClick={handleClose} disabled={pending}>关闭</Button>
-        </>
-      )}
-    </div>
+    <>
+      <div className="flex gap-1">
+        {order.status === "待确认收款" && (
+          <Button size="sm" variant="outline" onClick={() => setConfirmDialog('confirm')} disabled={pending}>确认收款</Button>
+        )}
+        {order.status === "待支付" && (
+          <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setConfirmDialog('close')} disabled={pending}>关闭订单</Button>
+        )}
+        {order.status === "支付失败" && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => setConfirmDialog('reset')} disabled={pending}>重置</Button>
+            <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setConfirmDialog('close')} disabled={pending}>关闭</Button>
+          </>
+        )}
+      </div>
+
+      <AlertDialog open={confirmDialog === 'confirm'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>确认收款？</AlertDialogTitle>
+        <AlertDialogDescription>
+          确认后订单将变为"已支付"状态，请确保已收到线下款项。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(confirmOfflinePayment)}>确认收款</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === 'close'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>确认关闭订单？</AlertDialogTitle>
+        <AlertDialogDescription>
+          关闭后顾客无法继续支付，关联的分配记录也将被作废。此操作不可撤销。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(closeOrder)}>关闭订单</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      <AlertDialog open={confirmDialog === 'reset'} onOpenChange={(open) => !open && setConfirmDialog(null)}>
+        <AlertDialogTitle>确认重置为待支付？</AlertDialogTitle>
+        <AlertDialogDescription>
+          重置后订单状态将变为"待支付"，顾客可重新发起支付。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setConfirmDialog(null)}>返回</AlertDialogCancel>
+          <AlertDialogAction onClick={() => handleAction(resetOrderFailed)}>确认重置</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+    </>
   )
 }
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
+
+/**
+ * 订单列表页 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getOrdersPaginated() 完成 DB 级过滤+分页，
+ * 此组件仅负责展示和 URL 筛选控制。筛选变更触发 URL 更新 → Server Component 重新执行。
+ */
 export default function OrdersPageClient({
   orders,
   stores,
+  total,
 }: {
   orders: SaleOrder[]
   stores: Store[]
+  total: number
 }) {
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+
+  /** 筛选变更时重置到第 1 页 */
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -104,31 +134,17 @@ export default function OrdersPageClient({
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => set("q", value), 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   const statusFilter = get("status")
   const typeFilter = get("type")
   const storeFilter = get("store")
-  const search = get("q")
+  const dateFrom = get("from")
+  const dateTo = get("to")
 
-  const filtered = useMemo(() => {
-    return orders.filter((o) => {
-      if (statusFilter && o.status !== statusFilter) return false
-      if (typeFilter && o.saleOrderType !== typeFilter) return false
-      if (storeFilter && o.storeId !== storeFilter) return false
-      if (search) {
-        const q = search.toLowerCase()
-        if (
-          !o.saleOrderId.toLowerCase().includes(q) &&
-          !(o.customerName || "").toLowerCase().includes(q) &&
-          !(o.clientPhone || "").includes(q)
-        )
-          return false
-      }
-      return true
-    })
-  }, [orders, statusFilter, typeFilter, storeFilter, search])
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   return (
     <div className="space-y-4">
@@ -139,28 +155,33 @@ export default function OrdersPageClient({
         </Link>
       </div>
 
-      {/* Filters — URL-driven */}
+      {/* Filters — URL-driven, 触发服务端重新查询 */}
       <Card>
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-3">
-            <Select className="w-40" value={statusFilter} onChange={(e) => set("status", e.target.value)}>
+            <Select className="w-40" value={statusFilter} onChange={(e) => setFilter("status", e.target.value)}>
               <option value="">全部状态</option>
               {(["待支付", "待确认收款", "已支付", "已完成", "支付失败", "已关闭"] as OrderStatus[]).map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
             </Select>
-            <Select className="w-40" value={typeFilter} onChange={(e) => set("type", e.target.value)}>
+            <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
               <option value="">全部类型</option>
               {(["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </Select>
-            <Select className="w-40" value={storeFilter} onChange={(e) => set("store", e.target.value)}>
+            <Select className="w-40" value={storeFilter} onChange={(e) => setFilter("store", e.target.value)}>
               <option value="">全部门店</option>
               {stores.map((s) => (
                 <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
               ))}
             </Select>
+            <div className="flex items-center gap-2">
+              <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
+              <span className="text-[#999999]">-</span>
+              <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
+            </div>
             <Input
               className="w-56"
               placeholder="搜索订单号/顾客/手机号"
@@ -171,7 +192,7 @@ export default function OrdersPageClient({
         </CardContent>
       </Card>
 
-      {/* Table */}
+      {/* Table — 数据已经是当前页的切片 */}
       <Card>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -191,7 +212,7 @@ export default function OrdersPageClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filtered.map((order) => (
+                {orders.map((order) => (
                   <tr key={order.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
                       <Link href={`/orders/${order.saleOrderId}`} className="text-[var(--primary)] hover:underline">
@@ -215,9 +236,11 @@ export default function OrdersPageClient({
                     </td>
                   </tr>
                 ))}
-                {filtered.length === 0 && (
+                {orders.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-12 text-center text-[#999999]">暂无订单数据</td>
+                    <td colSpan={10} className="px-4 py-12 text-center text-[#999999]">
+                      {total === 0 ? "暂无订单数据" : "未找到匹配结果，请调整筛选条件"}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -225,6 +248,15 @@ export default function OrdersPageClient({
           </div>
         </CardContent>
       </Card>
+
+      <Pagination
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
     </div>
   )
 }

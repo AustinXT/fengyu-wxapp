@@ -1,12 +1,15 @@
 "use client"
 
-import { useState, useMemo, useCallback } from "react"
+import { Fragment, useState, useMemo, useCallback } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { Pagination } from "@/components/ui/pagination"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { OperationLog } from "@/lib/types"
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
 const actionLabels: Record<string, string> = {
   // 组织
@@ -78,7 +81,12 @@ interface Props {
 }
 
 export default function LogsPage({ logs }: Props) {
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+
+  /** 筛选变更时重置到第 1 页 */
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
   const [searchInput, setSearchInput] = useState(get("q"))
@@ -87,14 +95,16 @@ export default function LogsPage({ logs }: Props) {
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => set("q", value), 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   const operatorSearch = get("q")
   const actionFilter = get("action")
   const targetTypeFilter = get("target")
   const dateFrom = get("from")
   const dateTo = get("to")
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const uniqueActions = useMemo(() => {
@@ -106,30 +116,33 @@ export default function LogsPage({ logs }: Props) {
   }, [logs])
 
   const filtered = useMemo(() => {
-    return logs
-      .filter((log) => {
-        if (operatorSearch) {
-          const q = operatorSearch.toLowerCase()
-          if (
-            !log.operatorName.toLowerCase().includes(q) &&
-            !log.operatorEmployeeId.toLowerCase().includes(q)
-          )
-            return false
-        }
-        if (actionFilter && log.action !== actionFilter) return false
-        if (targetTypeFilter && log.targetType !== targetTypeFilter) return false
-        if (dateFrom) {
-          const from = new Date(dateFrom)
-          if (new Date(log.createdAt) < from) return false
-        }
-        if (dateTo) {
-          const to = new Date(dateTo + "T23:59:59")
-          if (new Date(log.createdAt) > to) return false
-        }
-        return true
-      })
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    return logs.filter((log) => {
+      if (operatorSearch) {
+        const q = operatorSearch.toLowerCase()
+        if (
+          !log.operatorName.toLowerCase().includes(q) &&
+          !log.operatorEmployeeId.toLowerCase().includes(q)
+        )
+          return false
+      }
+      if (actionFilter && log.action !== actionFilter) return false
+      if (targetTypeFilter && log.targetType !== targetTypeFilter) return false
+      if (dateFrom) {
+        const from = new Date(dateFrom)
+        if (new Date(log.createdAt) < from) return false
+      }
+      if (dateTo) {
+        const to = new Date(dateTo + "T23:59:59")
+        if (new Date(log.createdAt) > to) return false
+      }
+      return true
+    })
+    // 服务端已按 desc(createdAt) 排序，无需客户端重排
   }, [operatorSearch, actionFilter, targetTypeFilter, dateFrom, dateTo, logs])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(currentPage, totalPages)
+  const paged = filtered.slice((safePage - 1) * pageSize, safePage * pageSize)
 
   return (
     <div className="space-y-4">
@@ -145,13 +158,13 @@ export default function LogsPage({ logs }: Props) {
               value={searchInput}
               onChange={(e) => handleSearchChange(e.target.value)}
             />
-            <Select className="w-44" value={actionFilter} onChange={(e) => set("action", e.target.value)}>
+            <Select className="w-44" value={actionFilter} onChange={(e) => setFilter("action", e.target.value)}>
               <option value="">全部操作类型</option>
               {uniqueActions.map((a) => (
                 <option key={a} value={a}>{actionLabels[a] || a}</option>
               ))}
             </Select>
-            <Select className="w-40" value={targetTypeFilter} onChange={(e) => set("target", e.target.value)}>
+            <Select className="w-40" value={targetTypeFilter} onChange={(e) => setFilter("target", e.target.value)}>
               <option value="">全部目标类型</option>
               {uniqueTargetTypes.map((t) => (
                 <option key={t} value={t}>{targetTypeLabels[t] || t}</option>
@@ -162,14 +175,14 @@ export default function LogsPage({ logs }: Props) {
                 type="date"
                 className="w-40"
                 value={dateFrom}
-                onChange={(e) => set("from", e.target.value)}
+                onChange={(e) => setFilter("from", e.target.value)}
               />
               <span className="text-[#999999]">-</span>
               <Input
                 type="date"
                 className="w-40"
                 value={dateTo}
-                onChange={(e) => set("to", e.target.value)}
+                onChange={(e) => setFilter("to", e.target.value)}
               />
             </div>
           </div>
@@ -191,9 +204,9 @@ export default function LogsPage({ logs }: Props) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filtered.map((log) => (
-                  <>
-                    <tr key={log.id} className="hover:bg-[#FFF0EE] transition-colors">
+                {paged.map((log) => (
+                  <Fragment key={log.id}>
+                    <tr className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 text-[#999999] whitespace-nowrap">{formatDateTime(log.createdAt)}</td>
                       <td className="px-4 py-3">
                         <div>
@@ -222,7 +235,7 @@ export default function LogsPage({ logs }: Props) {
                       </td>
                     </tr>
                     {expandedId === log.id && log.detail && (
-                      <tr key={`${log.id}-detail`}>
+                      <tr>
                         <td colSpan={5} className="px-4 py-3 bg-gray-50">
                           <pre className="text-xs font-mono text-[#666666] whitespace-pre-wrap overflow-x-auto">
                             {JSON.stringify(log.detail, null, 2)}
@@ -230,11 +243,13 @@ export default function LogsPage({ logs }: Props) {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
-                {filtered.length === 0 && (
+                {paged.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-[#999999]">暂无日志数据</td>
+                    <td colSpan={5} className="px-4 py-12 text-center text-[#999999]">
+                      {filtered.length === 0 ? "暂无日志数据" : "未找到匹配结果，请调整筛选条件"}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -242,6 +257,15 @@ export default function LogsPage({ logs }: Props) {
           </div>
         </CardContent>
       </Card>
+
+      <Pagination
+        total={filtered.length}
+        pageSize={pageSize}
+        page={safePage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
     </div>
   )
 }

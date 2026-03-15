@@ -15,7 +15,7 @@ import { toast } from "sonner"
 import { toggleTemplateActive } from "@/actions/coupons"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
@@ -46,7 +46,10 @@ interface CouponsPageProps {
 
 export default function CouponsPage({ templates }: CouponsPageProps) {
   const router = useRouter()
-  const { get, set } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters()
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
   const [toggleTarget, setToggleTarget] = useState<CouponTemplate | null>(null)
 
   async function doToggle() {
@@ -68,18 +71,18 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
     }
   }
 
-  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  // 搜索框防抖
   const [searchInput, setSearchInput] = useState(get("q"))
   const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
   const handleSearchChange = useCallback((value: string) => {
     setSearchInput(value)
     if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => { set("q", value); setPage(1) }, 300)
-  }, [set, debounceRef])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
 
   const search = get("q")
   const page = Number(get("page", "1"))
-  const setPage = useCallback((p: number) => set("page", p > 1 ? String(p) : ""), [set])
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const filtered = useMemo(() => {
     if (!search.trim()) return templates
@@ -90,8 +93,8 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
   }, [templates, search])
 
   const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
   )
 
   const columns: Column<CouponTemplate>[] = [
@@ -197,9 +200,11 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
 
       <Pagination
         total={filtered.length}
-        pageSize={PAGE_SIZE}
+        pageSize={pageSize}
         page={page}
-        onPageChange={setPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
 
       <AlertDialog open={!!toggleTarget} onOpenChange={(open) => !open && setToggleTarget(null)}>

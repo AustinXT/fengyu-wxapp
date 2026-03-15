@@ -1,15 +1,31 @@
 import { Suspense } from 'react'
-import { getEmployees } from '@/actions/employees'
+import { getEmployeesPaginated } from '@/actions/employees'
 import { getStores } from '@/actions/stores'
 import EmployeesPage from './_components/employees-page'
 
 export const dynamic = 'force-dynamic'
 
-export default async function Page() {
-  const [employees, stores] = await Promise.all([getEmployees(), getStores()])
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>
+}) {
+  const params = await searchParams
+
+  const [{ data: employees, total }, stores] = await Promise.all([
+    getEmployeesPaginated({
+      storeId: params.store,
+      status: (params.status as 'active' | 'resigned') || undefined,
+      search: params.q,
+      page: params.page ? Number(params.page) : undefined,
+      pageSize: params.size ? Number(params.size) : undefined,
+    }),
+    getStores(),
+  ])
+
   return (
     <Suspense>
-      <EmployeesPage employees={employees} stores={stores} />
+      <EmployeesPage employees={employees} stores={stores} total={total} />
     </Suspense>
   )
 }

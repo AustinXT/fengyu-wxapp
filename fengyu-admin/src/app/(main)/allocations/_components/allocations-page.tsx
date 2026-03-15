@@ -4,7 +4,11 @@ import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Pagination } from "@/components/ui/pagination"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SaleOrder } from "@/lib/types"
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const allocationStatusMap: Record<string, { label: string; className: string }> = {
   pending: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -15,14 +19,22 @@ function formatTime(dt: string) {
   return new Date(dt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
 }
 
+/**
+ * 营业额分配列表 — 服务端分页
+ *
+ * 数据已在 Server Component 中通过 getOrdersPaginated({ status: '已支付' }) 完成 DB 级过滤。
+ * 客户端无需再 filter，所有传入的 orders 都是已支付状态。
+ */
 export default function AllocationsPageClient({
   orders,
+  total,
 }: {
   orders: SaleOrder[]
+  total: number
 }) {
-  const ordersNeedingAllocation = orders.filter(
-    (o) => o.status === "已支付"
-  )
+  const { get, set, setMany } = useUrlFilters()
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   return (
     <div className="space-y-4">
@@ -44,7 +56,7 @@ export default function AllocationsPageClient({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {ordersNeedingAllocation.map((order) => {
+                {orders.map((order) => {
                   const statusInfo = allocationStatusMap[order.allocationStatus || "pending"] || allocationStatusMap.pending
                   return (
                     <tr key={order.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
@@ -72,7 +84,7 @@ export default function AllocationsPageClient({
                     </tr>
                   )
                 })}
-                {ordersNeedingAllocation.length === 0 && (
+                {orders.length === 0 && (
                   <tr>
                     <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">暂无需要分配的订单</td>
                   </tr>
@@ -82,6 +94,15 @@ export default function AllocationsPageClient({
           </div>
         </CardContent>
       </Card>
+
+      <Pagination
+        total={total}
+        pageSize={pageSize}
+        page={currentPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+      />
     </div>
   )
 }
