@@ -929,12 +929,15 @@ async function approveRefund(ctx) {
     }
 
     // 更新退款单状态
-    await client.query(
+    const updateResult = await client.query(
       `UPDATE sale_orders SET status = '已支付', paid_at = $1, approved_by = $2, approved_at = $1,
        allocation_status = 'pending', updated_at = $1
-       WHERE sale_order_id = $3`,
+       WHERE sale_order_id = $3 AND status = '待审批'`,
       [now, ctx.auth.staffWfId, saleOrderId]
     )
+    if (updateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 退款单状态已变更，请刷新后重试')
+    }
   })
 
   ctx.result = { saleOrderId, status: '已支付', message: '退款已审批通过' }

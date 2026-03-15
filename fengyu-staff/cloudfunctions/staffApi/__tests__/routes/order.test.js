@@ -705,6 +705,115 @@ describe('order.detail', () => {
     await expect(orderRoutes.detail(ctx))
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
+
+  test('client_phone 缺失时从 client_wechat_users 补全手机号和姓名', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D02' })
+
+    pg.query
+      // order: 无 client_phone, 有 client_user_id, 无 customer_name
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D02', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: null, client_user_id: 'cu-002',
+        customer_name: null, coupon_id: null,
+      }])
+      // client_phone fallback → 找到手机号
+      .mockResolvedValueOnce([{ phone: '13911112222' }])
+      // customer_name fallback → 找到姓名
+      .mockResolvedValueOnce([{ name: '顾客B' }])
+      // items
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.client_phone).toBe('13911112222')
+    expect(ctx.result.order.customer_name).toBe('顾客B')
+  })
+
+  test('client_phone fallback 未找到时 phone 保持 null，customer_name 跳过查询', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D03' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D03', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: null, client_user_id: 'cu-003',
+        customer_name: null, coupon_id: null,
+      }])
+      // client_phone fallback → 未找到
+      .mockResolvedValueOnce([])
+      // items（customer_name fallback 因 phone 仍 null 被跳过）
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.client_phone).toBeNull()
+    expect(ctx.result.order.customer_name).toBeNull()
+  })
+
+  test('preferred_employee_id 为空时跳过员工姓名查询', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D04' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D04', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: '138', customer_name: '顾客A',
+        coupon_id: null,
+      }])
+      // items（跳过 staff query）
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    // 没有 preferred_staff_name 字段被设置
+    expect(ctx.result.order.preferred_staff_name).toBeUndefined()
+  })
+
+  test('preferred_employee_id 有值但 staff 不存在时不设置姓名', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D05' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D05', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: 'emp-gone', client_phone: '138', customer_name: '顾客A',
+        coupon_id: null,
+      }])
+      // staff query → 未找到
+      .mockResolvedValueOnce([])
+      // items
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.preferred_staff_name).toBeUndefined()
+  })
+
+  test('coupon_id 存在时查询优惠券名称', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D06' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D06', status: '已支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: '138', customer_name: '顾客A',
+        coupon_id: 'coupon-001',
+      }])
+      // items
+      .mockResolvedValueOnce([])
+      // allocations
+      .mockResolvedValueOnce([])
+      // coupon → 找到
+      .mockResolvedValueOnce([{ name: '满减券' }])
+
+    await orderRoutes.detail(ctx)
+
+    expect(ctx.result.order.coupon_name).toBe('满减券')
+  })
 })
 
 // ============================================================
@@ -972,6 +1081,45 @@ describe('order.approveRefund', () => {
   test('非店长拒绝', async () => {
     const ctx = createBeauticianCtx({ saleOrderId: 'FY-TKD-001' })
     await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('审批退款：事务内状态并发变更抛错（C4）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: 'refund_out', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // session deduction OK
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // status UPDATE race condition
+      }
+      return await cb(client)
+    })
+
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/退款单状态已变更/)
+  })
+
+  test('审批退款：status UPDATE SQL 含 AND status 锁（C4）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
+      .mockResolvedValueOnce([])  // 无退款明细，直接跳到状态 UPDATE
+
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: clientQuery }
+      return await cb(client)
+    })
+
+    await orderRoutes.approveRefund(ctx)
+
+    // 第一个（也是唯一一个）client.query 就是状态 UPDATE
+    const sql = clientQuery.mock.calls[0][0]
+    expect(sql).toMatch(/AND status = '待审批'/)
   })
 })
 
