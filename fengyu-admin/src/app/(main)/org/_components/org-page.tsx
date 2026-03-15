@@ -482,7 +482,7 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           <AlertDialogAction onClick={async () => {
             if (!deleteTarget) return
             try {
-              const res = await deleteOrgNode(deleteTarget.id)
+              const res = await deleteOrgNode(deleteTarget.id, deleteTarget.updatedAt)
               if (res.success) {
                 toast.success(res.message)
                 setDeleteTarget(null)
@@ -490,6 +490,7 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
                 router.refresh()
               } else {
                 toast.error(res.message)
+                if (res.message.includes('已被其他人修改')) router.refresh()
               }
             } catch {
               toast.error('操作失败')

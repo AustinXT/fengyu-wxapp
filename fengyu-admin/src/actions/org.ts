@@ -115,7 +115,11 @@ export async function updateOrgNode(
   return { success: true, message: '节点已更新' }
 }
 
-export async function deleteOrgNode(id: string): Promise<{ success: boolean; message: string }> {
+export async function deleteOrgNode(
+  id: string,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:delete')
 
@@ -160,8 +164,16 @@ export async function deleteOrgNode(id: string): Promise<{ success: boolean; mes
     return { success: false, message: '该节点被权限角色引用，请先移除关联权限后再删除' }
   }
 
-  // 软删除：设 isActive = false
-  await db.update(orgNodes).set({ isActive: false }).where(eq(orgNodes.id, id))
+  // 软删除：设 isActive = false（含乐观锁）
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(orgNodes.id, id)
+
+  const result = await db.update(orgNodes).set({ isActive: false }).where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'org.delete', 'org_node', id)
   revalidatePath('/org')

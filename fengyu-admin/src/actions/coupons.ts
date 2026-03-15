@@ -177,15 +177,25 @@ export async function updateTemplate(
 
 export async function toggleTemplateActive(
   templateId: string,
-  isActive: boolean
+  isActive: boolean,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'coupon:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(couponTemplates.templateId, templateId), eq(couponTemplates.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(couponTemplates.templateId, templateId)
+
+  const result = await db
     .update(couponTemplates)
     .set({ isActive })
-    .where(eq(couponTemplates.templateId, templateId))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   const action = isActive ? '启用' : '停用'
   await logOperation(session, `coupon.${action}`, 'coupon_template', templateId, { isActive })

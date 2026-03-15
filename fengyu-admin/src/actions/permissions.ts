@@ -102,7 +102,11 @@ export async function assignRole(data: {
   return { success: true, message: '角色分配成功' }
 }
 
-export async function revokeRole(id: number): Promise<{ success: boolean; message: string }> {
+export async function revokeRole(
+  id: number,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'permission:revoke')
 
@@ -133,10 +137,18 @@ export async function revokeRole(id: number): Promise<{ success: boolean; messag
     }
   }
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(permissionRoles.id, id), eq(permissionRoles.updatedAt, new Date(expectedUpdatedAt)))
+    : eq(permissionRoles.id, id)
+
+  const result = await db
     .update(permissionRoles)
     .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-    .where(eq(permissionRoles.id, id))
+    .where(whereConditions)
+
+  if (expectedUpdatedAt && (result as any).rowCount === 0) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
 
   await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
     role: target.role,

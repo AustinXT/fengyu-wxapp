@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import Link from "next/link"
 import type { CouponTemplate, CouponType } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -146,11 +147,15 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
               const action = row.isActive ? '停用' : '启用'
               if (!confirm(`确定要${action}「${row.name}」吗？`)) return
               try {
-                const res = await toggleTemplateActive(row.templateId, !row.isActive)
+                const res = await toggleTemplateActive(row.templateId, !row.isActive, row.updatedAt)
                 if (res.success) {
                   const { toast } = await import('sonner')
                   toast.success(res.message)
                   window.location.reload()
+                } else {
+                  const { toast } = await import('sonner')
+                  toast.error(res.message)
+                  if (res.message.includes('已被其他人修改')) window.location.reload()
                 }
               } catch {
                 const { toast } = await import('sonner')

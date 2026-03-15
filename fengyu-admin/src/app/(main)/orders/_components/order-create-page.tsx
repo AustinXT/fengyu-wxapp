@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { searchCustomerByPhone } from "@/actions/customers"
-import { createOrder } from "@/actions/orders"
+import { createOrder, confirmOfflinePayment } from "@/actions/orders"
 import type { ProductCategory, Product, ProductSku, Store, Employee, Customer } from "@/lib/types"
 
 interface CartItem {
@@ -73,6 +73,8 @@ export default function OrderCreatePageClient({
   const [submitting, setSubmitting] = useState(false)
   const [createdOrderId, setCreatedOrderId] = useState<string>("")
   const [searchDone, setSearchDone] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [paymentConfirmed, setPaymentConfirmed] = useState(false)
 
   const searchCustomer = async () => {
     if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
@@ -425,17 +427,52 @@ export default function OrderCreatePageClient({
         <Card>
           <CardContent className="p-6 text-center space-y-4">
             <div className="flex justify-center">
-              <div className="h-16 w-16 rounded-full bg-[#F0F9F2] flex items-center justify-center">
+              <div className={`h-16 w-16 rounded-full flex items-center justify-center ${paymentConfirmed ? "bg-[#F0F9F2]" : "bg-[#F0F9F2]"}`}>
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#3D8A5A" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
               </div>
             </div>
-            <h2 className="text-xl font-bold text-[var(--foreground)]">订单创建成功</h2>
+            <h2 className="text-xl font-bold text-[var(--foreground)]">
+              {paymentConfirmed ? '收款已确认' : '订单创建成功'}
+            </h2>
             {createdOrderId && (
               <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
             )}
             <p className="text-sm text-[#999999]">
-              {paymentMethod === 'offline' ? '线下支付订单，请到订单列表确认收款' : '订单已提交，等待顾客支付'}
+              {paymentConfirmed
+                ? '订单已确认收款，状态已更新为已支付'
+                : paymentMethod === 'offline'
+                  ? '线下支付订单，可直接确认收款'
+                  : '订单已提交，等待顾客扫码支付'}
             </p>
+
+            {/* 线下支付：确认收款按钮 */}
+            {paymentMethod === 'offline' && createdOrderId && !paymentConfirmed && (
+              <div className="pt-2">
+                <Button
+                  loading={confirming}
+                  className="bg-[#3D8A5A] hover:bg-[#2E6B45] text-white"
+                  onClick={async () => {
+                    setConfirming(true)
+                    try {
+                      const res = await confirmOfflinePayment(createdOrderId)
+                      if (res.success) {
+                        toast.success('收款确认成功')
+                        setPaymentConfirmed(true)
+                      } else {
+                        toast.error(res.message)
+                      }
+                    } catch {
+                      toast.error('确认收款失败，请稍后重试')
+                    } finally {
+                      setConfirming(false)
+                    }
+                  }}
+                >
+                  确认收款
+                </Button>
+              </div>
+            )}
+
             <div className="flex justify-center gap-3 pt-4">
               {createdOrderId ? (
                 <Link href={`/orders/${createdOrderId}`}>
@@ -446,7 +483,7 @@ export default function OrderCreatePageClient({
                   <Button variant="outline">返回订单列表</Button>
                 </Link>
               )}
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false) }}>
+              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false) }}>
                 继续开单
               </Button>
             </div>

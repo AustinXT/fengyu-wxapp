@@ -10,6 +10,7 @@ import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, and } from 'drizzle-orm'
 import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
 
 const JWT_SECRET = new TextEncoder().encode(
@@ -136,6 +137,8 @@ export async function changePassword(
     })
     .where(eq(adminPasswords.employeeId, session.employeeId))
 
+  await logOperation(session, 'auth.changePassword', 'admin_password', session.employeeId)
+
   // 重新签发 JWT（使 mustChange 状态更新）
   const token = await new SignJWT({ employeeId: session.employeeId })
     .setProtectedHeader({ alg: 'HS256' })
@@ -256,6 +259,11 @@ export async function resetEmployeePassword(
       mustChange: true,
     })
   }
+
+  await logOperation(session, 'auth.resetPassword', 'admin_password', employeeId, {
+    targetEmployeeId: employeeId,
+    isNewAccount: existing.length === 0,
+  })
 
   return { success: true, message: '密码重置成功，用户首次登录需修改密码' }
 }

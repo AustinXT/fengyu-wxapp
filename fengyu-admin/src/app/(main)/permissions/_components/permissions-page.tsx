@@ -150,11 +150,15 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                               onClick={async () => {
                                 if (!confirm(`确定要撤销 ${pr.employeeName} 的 ${roleLabels[pr.role as RoleType]} 角色吗？`)) return
                                 try {
-                                  const res = await revokeRole(pr.id)
+                                  const res = await revokeRole(pr.id, pr.updatedAt)
                                   if (res.success) {
                                     const { toast } = await import('sonner')
                                     toast.success(res.message)
                                     window.location.reload()
+                                  } else {
+                                    const { toast } = await import('sonner')
+                                    toast.error(res.message)
+                                    if (res.message.includes('已被其他人修改')) window.location.reload()
                                   }
                                 } catch {
                                   const { toast } = await import('sonner')
