@@ -77,7 +77,7 @@ Page({
     // 获取第一个 SKU 作为默认添加到购物车的商品
     const skuList = spu.skuList || [];
     if (skuList.length === 0) {
-      Toast('暂无可购规格');
+      Toast.fail('暂无可购规格');
       return;
     }
 

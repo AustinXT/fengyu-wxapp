@@ -1,4 +1,7 @@
 <!-- pages/orders/orders.wxml — 订单列表 -->
+<wxs module="fmt">
+module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
+</wxs>
 <van-toast id="van-toast" />
 
 <view class="container">
@@ -68,7 +71,7 @@
         <text class="order-time">{{item.order_time_fmt}}</text>
         <view class="order-amount-wrap">
           <text class="order-amount-label">合计</text>
-          <text class="order-amount">¥{{item.total_amount}}</text>
+          <text class="order-amount">¥{{fmt.price(item.total_amount)}}</text>
         </view>
       </view>
 

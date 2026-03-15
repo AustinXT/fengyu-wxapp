@@ -2,6 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi } from '../../utils/cloud';
+import { formatAppointmentTime } from '../../utils/format';
 
 const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
   '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
@@ -49,19 +50,18 @@ Page({
       const list = raw.map(item => {
         const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
         const rawTime = String(item.appointment_time);
-        const d = new Date(rawTime.includes('T') ? rawTime : rawTime.replace(/-/g, '/'));
         return {
           ...item,
           status_label:     meta.label,
           statusType:       meta.type,
           statusColor:      meta.color,
           statusTextColor:  meta.textColor,
-          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}-${String(d.getHours() + 2).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
+          appointment_time_fmt: formatAppointmentTime(rawTime),
         };
       });
       this.setData({ list });
-    } catch (err) {
-      console.error('[appointment.loadList] error:', err);
+    } catch {
+      Toast.fail('加载失败');
       this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });

@@ -2,6 +2,7 @@
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
 import { callClientApi } from "../../utils/cloud";
+import { searchProducts } from "../../utils/format";
 
 const app = getApp<IAppOption>();
 
@@ -70,6 +71,7 @@ Page({
 
     spuList: [] as SpuItem[],
     isLoading: false,
+    loadError: false,
     cartCount: 0,
   },
 
@@ -123,7 +125,9 @@ Page({
   },
 
   onPullDownRefresh() {
-    wx.stopPullDownRefresh();
+    this.loadShopInit().finally(() => {
+      wx.stopPullDownRefresh();
+    });
   },
 
   // ===== 搜索 =====
@@ -147,21 +151,7 @@ Page({
     // 加载所有未缓存的分类 SPU
     await this.loadAllSpus();
 
-    // 跨分类搜索，按名称匹配，去重
-    const keyword = value.toLowerCase();
-    const seen = new Set<string>();
-    const results: SpuItem[] = [];
-
-    for (const key of this._allCategoryKeys) {
-      const cached = this._spuCache[key] || [];
-      for (const spu of cached) {
-        if (!seen.has(spu.product_id) && spu.name.toLowerCase().includes(keyword)) {
-          seen.add(spu.product_id);
-          results.push(spu);
-        }
-      }
-    }
-
+    const results = searchProducts(value, this._spuCache, this._allCategoryKeys);
     this.setData({ searchResults: results, searchLoading: false });
   },
 
@@ -335,7 +325,7 @@ Page({
 
   async loadShopInit() {
     try {
-      this.setData({ isLoading: true });
+      this.setData({ isLoading: true, loadError: false });
       const initData = await callClientApi<{ categories: Category[]; spuList: any[] }>("product.shopInit", {});
 
       const categories: Category[] = initData?.categories || [];
@@ -385,6 +375,7 @@ Page({
     } catch (err: any) {
       console.error("loadShopInit error:", err);
       Toast.fail(err?.message || "加载失败");
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

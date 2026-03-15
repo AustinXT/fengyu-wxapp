@@ -136,3 +136,12 @@ export function formatRelativeTime(dateStr: string): string {
 export function formatAmount(amount: number): string {
   return amount >= 0 ? `+${amount.toFixed(2)}` : amount.toFixed(2);
 }
+
+/** 预约时间格式化："2026-03-15 09:00-11:00" → "3月15日 09:00-11:00" */
+export function formatAppointmentTime(appointmentTime: string): string {
+  if (!appointmentTime) return '';
+  const [datePart, slotPart] = appointmentTime.split(' ');
+  const d = safeParseDate(datePart);
+  if (!d) return appointmentTime;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${slotPart || ''}`;
+}

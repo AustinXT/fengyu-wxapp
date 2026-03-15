@@ -7,10 +7,11 @@ Page({
   data: {
     balance: 0,
     levelName: '',
-    nextLevel: null as { name: string; pointsNeeded: number } | null,
+    nextLevel: null as { name: string; minPoints: number } | null,
     activeTab: 0,
     records: [] as any[],
     isLoading: false,
+    loadError: false,
     balanceLoading: true,
     page: 1,
     hasMore: true,
@@ -52,7 +53,7 @@ Page({
 
   async loadHistory() {
     if (this.data.isLoading) return;
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const typeMap = ['all', 'earn', 'redeem'];
       const type = typeMap[this.data.activeTab] || 'all';
@@ -74,6 +75,7 @@ Page({
       });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

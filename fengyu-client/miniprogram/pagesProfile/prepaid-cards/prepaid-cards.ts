@@ -8,6 +8,7 @@ Page({
     totalBalance: 0,
     cards: [] as any[],
     isLoading: false,
+    loadError: false,
     selectedCardId: '',
     transactions: [] as any[],
     txLoading: false,
@@ -25,7 +26,7 @@ Page({
   },
 
   async loadCards() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const data = await callClientApi('card.list');
       const cards = data.cards || [];
@@ -33,6 +34,7 @@ Page({
       this.setData({ cards, totalBalance });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

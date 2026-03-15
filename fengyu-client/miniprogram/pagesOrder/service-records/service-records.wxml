@@ -4,8 +4,10 @@
 <view class="container">
 
   <!-- 加载态 -->
-  <view wx:if="{{isLoading && records.length === 0}}" class="loading-wrap">
-    <van-loading size="48rpx" color="#C0322A">加载中...</van-loading>
+  <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">
+    <van-skeleton title row="3" />
+    <van-skeleton title row="3" style="margin-top:24rpx" />
+    <van-skeleton title row="3" style="margin-top:24rpx" />
   </view>
 
   <!-- 错误态 -->

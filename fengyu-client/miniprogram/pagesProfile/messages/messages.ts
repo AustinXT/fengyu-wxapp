@@ -19,6 +19,7 @@ Page({
   data: {
     records: [] as any[],
     isLoading: false,
+    loadError: false,
     page: 1,
     hasMore: true,
   },
@@ -42,7 +43,7 @@ Page({
 
   async loadMessages() {
     if (this.data.isLoading) return;
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const data = await callClientApi('message.list', {
         page: this.data.page,
@@ -61,6 +62,7 @@ Page({
       });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

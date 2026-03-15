@@ -77,7 +77,7 @@ Page({
   async onSaveName() {
     const name = this.data.editName.trim();
     if (!name) {
-      Toast('昵称不能为空');
+      Toast.fail('昵称不能为空');
       return;
     }
     if (this.data.submitting) return;
@@ -106,7 +106,7 @@ Page({
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        Toast('您拒绝了授权');
+        Toast.fail('您拒绝了授权');
       }
       return;
     }

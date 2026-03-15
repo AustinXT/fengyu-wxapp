@@ -36,7 +36,7 @@ module.exports.fmt = function(val) {
     <view class="price-row" wx:if="{{selectedSku}}">
       <view class="price-group">
         <text class="price-symbol">¥</text>
-        <text class="price-integer">{{selectedSku.price}}</text>
+        <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
       </view>
       <text class="price-unit" wx:if="{{selectedSku.session_count}}">/ {{selectedSku.session_count}} 次</text>
     </view>
@@ -57,7 +57,7 @@ module.exports.fmt = function(val) {
         data-sku-id="{{item.sku_id}}"
       >
         <text class="sku-display-name">{{item.spec_name}}</text>
-        <text class="sku-price">¥{{item.price}}</text>
+        <text class="sku-price">¥{{price.fmt(item.price)}}</text>
         <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
       </view>
     </view>

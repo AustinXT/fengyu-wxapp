@@ -1,6 +1,6 @@
 <!-- pagesProfile/prepaid-cards/prepaid-cards.wxml — 充值卡 -->
 <wxs module="fmt">
-module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
+module.exports.price = function(n) { return (Math.round((n || 0) * 100) / 100).toFixed(2) }
 </wxs>
 <van-toast id="van-toast" />
 
@@ -13,10 +13,17 @@ module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
 
   <block wx:else>
 
+    <!-- 错误态 -->
+    <van-empty
+      wx:if="{{loadError}}"
+      image="error"
+      description="加载失败，下拉刷新重试"
+    />
+
     <!-- 总余额 -->
     <view class="balance-header brand-gradient">
       <text class="balance-label">充值卡总余额（元）</text>
-      <text class="balance-value">{{fmt.fixed2(totalBalance)}}</text>
+      <text class="balance-value">{{fmt.price(totalBalance)}}</text>
     </view>
 
     <!-- 空态 -->
@@ -37,7 +44,7 @@ module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
             <text class="card-id">卡号: {{item.cardId}}</text>
           </view>
           <view class="card-balance-wrap">
-            <text class="card-balance-value">{{fmt.fixed2(item.balance)}}</text>
+            <text class="card-balance-value">{{fmt.price(item.balance)}}</text>
             <text class="card-balance-label">余额（元）</text>
           </view>
           <van-icon name="{{selectedCardId === item.cardId ? 'arrow-up' : 'arrow-down'}}" size="28rpx" color="var(--color-text-hint)" />
@@ -46,7 +53,7 @@ module.exports.fixed2 = function(n) { return (n || 0).toFixed(2) }
         <!-- 展开的消费明细 -->
         <view wx:if="{{selectedCardId === item.cardId}}" class="tx-section">
           <view wx:if="{{txLoading}}" class="tx-loading">
-            <text class="loading-text">加载中...</text>
+            <van-loading size="32rpx" color="#999">加载中...</van-loading>
           </view>
           <view wx:elif="{{transactions.length === 0}}" class="tx-empty">
             <text class="loading-text">暂无消费记录</text>

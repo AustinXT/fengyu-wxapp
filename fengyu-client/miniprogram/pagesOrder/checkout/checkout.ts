@@ -10,6 +10,7 @@ interface CheckoutItem {
   skuId: string;
   spuName: string;
   skuDisplayName: string;
+  coverImage: string;
   price: number;
   quantity: number;
 }
@@ -37,6 +38,7 @@ Page({
     // 购物车批量下单
     fromCart: false,
     cartItems: [] as CheckoutItem[],
+    displayItems: [] as CheckoutItem[],
     totalPrice: 0,
     quantity: 1,
     // 支付宝二维码弹窗
@@ -85,6 +87,7 @@ Page({
       this.setData({
         fromCart: true,
         cartItems: checkoutItems,
+        displayItems: checkoutItems,
         spuName: checkoutItems.length === 1 ? checkoutItems[0].spuName : `${checkoutItems.length} 件商品`,
         skuDisplayName: checkoutItems.length === 1 ? checkoutItems[0].skuDisplayName : checkoutItems.map(i => i.spuName).join('、'),
         unitPrice: total,
@@ -117,6 +120,14 @@ Page({
         skuDisplayName: sku?.spec_name || '',
         unitPrice,
         totalPrice: Math.round(unitPrice * quantity * 100) / 100,
+        displayItems: [{
+          skuId,
+          spuName: this.data.spuName,
+          skuDisplayName: sku?.spec_name || '',
+          coverImage: '',
+          price: unitPrice,
+          quantity,
+        }],
       });
     } catch {
       Toast.fail('加载价格失败');
@@ -139,6 +150,14 @@ Page({
         unitPrice: Number(order.total_amount || 0),
         storeName: order.store_name || '',
         quantity: 1,
+        displayItems: items.map((i: any) => ({
+          skuId: i.sale_item_id || '',
+          spuName: i.product_name || '',
+          skuDisplayName: i.sku_spec_name || '',
+          coverImage: '',
+          price: Number(i.unit_price || 0),
+          quantity: Number(i.quantity || 1),
+        })),
       });
     } catch {
       Toast.fail('加载订单信息失败');
@@ -274,7 +293,7 @@ Page({
 
   async onSubmitOrder() {
     if (!this.data.agreed) {
-      Toast('请先同意消费协议');
+      Toast.fail('请先同意消费协议');
       return;
     }
     if (this.data.submitting) return;
@@ -368,7 +387,7 @@ Page({
 
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        Toast('您拒绝了授权');
+        Toast.fail('您拒绝了授权');
       }
       return;
     }
@@ -409,7 +428,16 @@ Page({
   async doWechatPay(saleOrderId: string) {
     const data = await callClientApi('order.pay', { saleOrderId });
     const paymentParams = data?.paymentParams || {};
-    await wx.requestPayment(paymentParams);
+    try {
+      await wx.requestPayment(paymentParams);
+    } catch (err: any) {
+      // 用户主动取消支付，静默跳转订单详情（订单仍处于待支付，可重新支付）
+      if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        return;
+      }
+      throw err;
+    }
     Toast.success('支付成功');
     setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
   },

@@ -208,6 +208,10 @@ Page({
     wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${sale_order_id}` });
   },
 
+  onViewTreatmentCards() {
+    wx.navigateTo({ url: '/pagesOrder/treatment-cards/treatment-cards' });
+  },
+
   onShareAppMessage() {
     return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
   },

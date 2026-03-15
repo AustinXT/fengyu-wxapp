@@ -233,3 +233,69 @@
 }
 
 /* 美容师选择 Popup — 复用 app.wxss 全局 .staff-* 样式 */
+
+/* ===== 商品明细列表 ===== */
+.checkout-items {
+  padding: 8rpx 0;
+}
+
+.checkout-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 20rpx 32rpx;
+  border-bottom: 1rpx solid var(--color-border);
+}
+
+.checkout-item:last-child {
+  border-bottom: none;
+}
+
+.checkout-item__cover {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 12rpx;
+  flex-shrink: 0;
+  margin-right: 24rpx;
+}
+
+.checkout-item__cover--empty {
+  background: var(--color-bg-section);
+}
+
+.checkout-item__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.checkout-item__name {
+  font-size: 28rpx;
+  color: var(--color-text-title);
+  font-weight: 500;
+  display: block;
+  line-height: 1.4;
+}
+
+.checkout-item__spec {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  display: block;
+  margin-top: 8rpx;
+}
+
+.checkout-item__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16rpx;
+}
+
+.checkout-item__price {
+  font-size: 28rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.checkout-item__qty {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}

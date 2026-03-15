@@ -163,7 +163,7 @@ Page({
   onAddToCart() {
     const { selectedSku, spu, quantity } = this.data;
     if (!selectedSku) {
-      Toast('请先选择规格');
+      Toast.fail('请先选择规格');
       return;
     }
     // 福利活动不进购物车，仅直接下单
@@ -194,7 +194,7 @@ Page({
   onSubmit() {
     const { selectedSku, selectedStaffWfId, selectedStaffName, spu, quantity } = this.data;
     if (!selectedSku) {
-      Toast('请先选择规格');
+      Toast.fail('请先选择规格');
       return;
     }
     let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;

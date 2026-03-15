@@ -64,7 +64,7 @@ Page({
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
     // catchtap in WXML already prevents event bubbling
-    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
-    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${saleOrderId}` });
+    const { saleItemId } = e.currentTarget.dataset as { saleItemId: string };
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleItemId=${saleItemId}` });
   },
 });

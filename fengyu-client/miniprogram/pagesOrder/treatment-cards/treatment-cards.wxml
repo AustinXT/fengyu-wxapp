@@ -78,7 +78,7 @@
           wx:if="{{item.active}}"
           class="tc-card__book-btn"
           catchtap="onBookTap"
-          data-sale-order-id="{{item.saleOrderId}}"
+          data-sale-item-id="{{item.saleItemId}}"
         >预约</view>
         <view wx:else class="tc-card__status-text">已失效</view>
       </view>

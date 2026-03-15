@@ -15,9 +15,27 @@ module.exports.date = function(s) {
 
 <view class="container">
 
-  <!-- 订单信息 -->
-  <van-cell-group title="服务信息" inset>
-    <van-cell title="{{spuName}}" label="{{skuDisplayName}}" />
+  <!-- 商品明细 -->
+  <van-cell-group title="商品明细" inset>
+    <view class="checkout-items">
+      <view wx:for="{{displayItems}}" wx:key="skuId" class="checkout-item">
+        <image
+          wx:if="{{item.coverImage}}"
+          src="{{item.coverImage}}"
+          class="checkout-item__cover"
+          mode="aspectFill"
+        />
+        <view wx:else class="checkout-item__cover checkout-item__cover--empty" />
+        <view class="checkout-item__info">
+          <text class="checkout-item__name">{{item.spuName}}</text>
+          <text class="checkout-item__spec" wx:if="{{item.skuDisplayName}}">{{item.skuDisplayName}}</text>
+          <view class="checkout-item__meta">
+            <text class="checkout-item__price">¥{{price.fmt(item.price)}}</text>
+            <text class="checkout-item__qty">×{{item.quantity}}</text>
+          </view>
+        </view>
+      </view>
+    </view>
     <van-cell
       title="指定美容师"
       value="{{staffName || '不指定'}}"
@@ -63,7 +81,7 @@ module.exports.date = function(s) {
 
   <!-- 价格明细 -->
   <van-cell-group title="价格明细" inset>
-    <van-cell title="服务单价" value="¥{{unitPrice}}" />
+    <van-cell title="{{fromCart ? '商品合计' : '服务单价'}}" value="¥{{price.fmt(unitPrice)}}" />
     <van-cell wx:if="{{!fromCart && quantity > 1}}" title="数量" value="x{{quantity}}" />
     <!-- 优惠券选择（扫码场景不展示） -->
     <van-cell
@@ -71,7 +89,7 @@ module.exports.date = function(s) {
       title="优惠券"
       is-link
       bindtap="onSelectCoupon"
-      value="{{selectedCoupon ? '-¥' + couponDiscount : '去选择'}}"
+      value="{{selectedCoupon ? '-¥' + price.fmt(couponDiscount) : '去选择'}}"
       value-class="{{selectedCoupon ? 'coupon-selected-value' : 'coupon-unselected-value'}}"
     />
     <van-cell wx:else title="优惠" value="- ¥0.00" />
@@ -154,7 +172,7 @@ module.exports.date = function(s) {
         data-discount="{{item.discount}}"
       >
         <view class="coupon-popup__item-left">
-          <text class="coupon-popup__item-discount">¥{{item.discount}}</text>
+          <text class="coupon-popup__item-discount">¥{{price.fmt(item.discount)}}</text>
           <text class="coupon-popup__item-type">{{item.couponType}}</text>
         </view>
         <view class="coupon-popup__item-right">

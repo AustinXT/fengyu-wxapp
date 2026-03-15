@@ -1,4 +1,8 @@
 <!-- pages/scan-pay/scan-pay.wxml — 扫码收款（员工端开单后客户扫码） -->
+<wxs module="fmt">
+module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
+module.exports.cents = function(n) { return Math.round(n * 100) }
+</wxs>
 <van-toast id="van-toast" />
 <van-dialog id="van-dialog" />
 
@@ -46,7 +50,7 @@
           <text class="item-name">{{item.productName}}</text>
           <text class="item-spec">{{item.skuSpecName}}</text>
         </view>
-        <text class="item-price">¥{{item.unitPrice}}</text>
+        <text class="item-price">¥{{fmt.price(item.unitPrice)}}</text>
       </view>
     </view>
 
@@ -55,7 +59,7 @@
       <text class="total-label">合计</text>
       <view class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{order.totalAmount}}</text>
+        <text class="total-value">{{fmt.price(order.totalAmount)}}</text>
       </view>
     </view>
 
@@ -79,7 +83,7 @@
 
     <!-- 底部确认 -->
     <van-submit-bar
-      price="{{order.totalAmount * 100}}"
+      price="{{fmt.cents(order.totalAmount)}}"
       button-text="{{paymentMethod === 'wechat' ? '微信支付' : paymentMethod === 'alipay' ? '支付宝付款' : '确认付款'}}"
       loading="{{submitting}}"
       bind:submit="onSubmit"

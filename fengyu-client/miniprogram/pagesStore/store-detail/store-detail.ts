@@ -127,7 +127,7 @@ Page({
   async onConfirmBind() {
     const { storeId, storeName, sourceChannel, promoterName } = this.data;
     if (!sourceChannel) {
-      Toast('请选择来源渠道');
+      Toast.fail('请选择来源渠道');
       return;
     }
     try {
@@ -216,7 +216,7 @@ Page({
       });
     } else if (store?.street_address) {
       wx.setClipboardData({ data: store.street_address });
-      Toast('地址已复制');
+      Toast.success('地址已复制');
     }
   },
 

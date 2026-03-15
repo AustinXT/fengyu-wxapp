@@ -50,11 +50,11 @@ Page({
       minDate: now,
       maxDate: now + 90 * 24 * 60 * 60 * 1000,
     });
-    const { saleOrderId, orderNo, employeeId, employeeName } = options as {
-      saleOrderId?: string; orderNo?: string;
+    const { saleOrderId, orderNo, saleItemId, employeeId, employeeName } = options as {
+      saleOrderId?: string; orderNo?: string; saleItemId?: string;
       employeeId?: string; employeeName?: string;
     };
-    this.loadAppointableItems(saleOrderId || orderNo);
+    this.loadAppointableItems(saleOrderId || orderNo, saleItemId);
     this.loadStaffList();
     // 如果从美容师详情页传入了 employeeId，优先使用
     if (employeeId) {
@@ -67,7 +67,7 @@ Page({
     }
   },
 
-  async loadAppointableItems(filterSaleOrderId?: string) {
+  async loadAppointableItems(filterSaleOrderId?: string, preselectItemId?: string) {
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
@@ -87,7 +87,17 @@ Page({
           });
         }
       }
-      this.setData({ appointableItems: items });
+      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目
+      const preselect = preselectItemId
+        ? items.find(i => i.sale_item_id === preselectItemId)
+        : null;
+      this.setData({
+        appointableItems: items,
+        ...(preselect ? {
+          selectedSaleItemId: preselect.sale_item_id,
+          selectedSaleOrderId: preselect.sale_order_id,
+        } : {}),
+      });
     } catch {
       Toast.fail('加载可预约项目失败');
     }

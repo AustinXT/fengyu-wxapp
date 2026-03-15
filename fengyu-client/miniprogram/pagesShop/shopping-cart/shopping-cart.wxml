@@ -1,4 +1,7 @@
 <!-- pagesShop/shopping-cart/shopping-cart.wxml — 购物车 -->
+<wxs module="fmt">
+module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
+</wxs>
 <van-toast id="van-toast" />
 
 <view class="container">
@@ -44,7 +47,7 @@
             <view class="cart-item-bottom">
               <view class="cart-item-price-wrap">
                 <text class="cart-item-price-symbol">¥</text>
-                <text class="cart-item-price-value">{{item.price}}</text>
+                <text class="cart-item-price-value">{{fmt.price(item.price)}}</text>
               </view>
               <view catchtap="">
                 <van-stepper
@@ -78,7 +81,7 @@
         <view class="cart-total">
           <text class="total-label">合计：</text>
           <text class="total-symbol">¥</text>
-          <text class="total-price">{{totalPrice}}</text>
+          <text class="total-price">{{fmt.price(totalPrice)}}</text>
         </view>
         <view
           class="checkout-btn {{totalCount === 0 ? 'checkout-btn--disabled' : ''}}"
