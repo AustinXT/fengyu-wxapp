@@ -246,7 +246,25 @@ function groupByOrder(rows, lookups) {
   return { orders, stats }
 }
 
-// ─── 4. 批量 UPSERT ────────────────────────────────────────
+// ─── 4. 批量 UPSERT（多行 VALUES 优化版）──────────────────────
+
+/**
+ * 构建多行 INSERT 的 VALUES 占位符和扁平参数数组
+ */
+function buildMultiRowValues(rows, colCount) {
+  const values = []
+  const placeholders = []
+  let paramIdx = 1
+  for (const row of rows) {
+    const ph = []
+    for (let i = 0; i < colCount; i++) {
+      ph.push(`$${paramIdx++}`)
+      values.push(row[i])
+    }
+    placeholders.push(`(${ph.join(',')})`)
+  }
+  return { placeholders: placeholders.join(','), values }
+}
 
 async function batchUpsert(pgPool, orders, dryRun) {
   const orderList = [...orders.values()]
@@ -257,85 +275,73 @@ async function batchUpsert(pgPool, orders, dryRun) {
   let totalOrdersUpserted = 0
   let totalItemsUpserted = 0
 
+  if (dryRun) {
+    totalOrdersUpserted = orderList.length
+    totalItemsUpserted = orderList.reduce((sum, o) => sum + o.items.length, 0)
+    return { totalOrdersUpserted, totalItemsUpserted }
+  }
+
   for (let batch = 0; batch < totalBatches; batch++) {
     const start = batch * BATCH_SIZE
     const end = Math.min(start + BATCH_SIZE, orderList.length)
     const batchOrders = orderList.slice(start, end)
 
-    if (dryRun) {
-      totalOrdersUpserted += batchOrders.length
-      totalItemsUpserted += batchOrders.reduce((sum, o) => sum + o.items.length, 0)
-      continue
-    }
-
     const client = await pgPool.connect()
     try {
       await client.query('BEGIN')
 
+      // ── 批量 UPSERT sale_orders ──
+      const orderRows = batchOrders.map(o => {
+        const totalAmount = o.items.reduce((sum, it) => sum + it.saleAmount, 0)
+        return [
+          o.saleOrderId, '已完成', '普通', o.marketName, o.storeId,
+          o.saleDate || new Date().toISOString(), o.clientUserId, o.customerName,
+          totalAmount, 'offline', 'admin', 'allocated', 'WorkFine历史订单导入',
+        ]
+      })
+      const oMv = buildMultiRowValues(orderRows, 13)
+      const r1 = await client.query(`
+        INSERT INTO sale_orders (
+          sale_order_id, status, sale_order_type, market_name, store_id,
+          sale_order_datetime, client_user_id, customer_name, total_amount,
+          payment_method, sale_order_source, allocation_status, remark
+        ) VALUES ${oMv.placeholders}
+        ON CONFLICT (sale_order_id) DO UPDATE SET
+          customer_name = EXCLUDED.customer_name,
+          total_amount = EXCLUDED.total_amount,
+          updated_at = now()
+      `, oMv.values)
+      totalOrdersUpserted += r1.rowCount
+
+      // ── 批量 UPSERT sale_items ──
+      const itemRows = []
       for (const order of batchOrders) {
-        // 计算 total_amount = SUM(sale_amount) of items
-        const totalAmount = order.items.reduce((sum, item) => sum + item.saleAmount, 0)
-
-        // UPSERT sale_order
-        await client.query(`
-          INSERT INTO sale_orders (
-            sale_order_id, status, sale_order_type, market_name, store_id,
-            sale_order_datetime, client_user_id, customer_name, total_amount,
-            payment_method, sale_order_source, allocation_status, remark
-          ) VALUES (
-            $1, '已完成', '普通', $2, $3,
-            $4, $5, $6, $7,
-            'offline', 'admin', 'allocated', 'WorkFine历史订单导入'
-          )
-          ON CONFLICT (sale_order_id) DO UPDATE SET
-            customer_name = EXCLUDED.customer_name,
-            total_amount = EXCLUDED.total_amount,
-            updated_at = now()
-        `, [
-          order.saleOrderId,
-          order.marketName,
-          order.storeId,
-          order.saleDate || new Date().toISOString(),
-          order.clientUserId,
-          order.customerName,
-          totalAmount,
-        ])
-        totalOrdersUpserted++
-
-        // UPSERT sale_items
         for (const item of order.items) {
-          await client.query(`
-            INSERT INTO sale_items (
-              sale_item_id, sale_order_id, item_direction, product_name,
-              product_type, session_count, remaining_sessions,
-              unit_price, quantity, unit_real_price, sale_amount, received,
-              expire_date, sales_category, remark
-            ) VALUES (
-              $1, $2, 'purchase', $3,
-              $4, $5, $6,
-              $7, 1, $8, $9, $10,
-              $11, '自采自销', $12
-            )
-            ON CONFLICT (sale_item_id) DO UPDATE SET
-              remaining_sessions = EXCLUDED.remaining_sessions,
-              expire_date = EXCLUDED.expire_date,
-              updated_at = now()
-          `, [
-            item.saleItemId,
-            order.saleOrderId,
-            item.itemName || '未知项目',
-            item.productType,
-            item.totalSessions,
-            item.remainingSessions,
-            item.unitPrice,
-            item.unitRealPrice,
-            item.saleAmount,
-            item.received,
-            item.expireDate,
-            item.remark,
+          itemRows.push([
+            item.saleItemId, order.saleOrderId, 'purchase',
+            item.itemName || '未知项目', item.productType,
+            item.totalSessions, item.remainingSessions,
+            item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
+            item.expireDate, '自采自销', item.remark,
           ])
-          totalItemsUpserted++
         }
+      }
+      if (itemRows.length > 0) {
+        const iMv = buildMultiRowValues(itemRows, 15)
+        const r2 = await client.query(`
+          INSERT INTO sale_items (
+            sale_item_id, sale_order_id, item_direction,
+            product_name, product_type,
+            session_count, remaining_sessions,
+            unit_price, quantity, unit_real_price, sale_amount, received,
+            expire_date, sales_category, remark
+          ) VALUES ${iMv.placeholders}
+          ON CONFLICT (sale_item_id) DO UPDATE SET
+            remaining_sessions = EXCLUDED.remaining_sessions,
+            expire_date = EXCLUDED.expire_date,
+            updated_at = now()
+        `, iMv.values)
+        totalItemsUpserted += r2.rowCount
       }
 
       await client.query('COMMIT')
@@ -346,10 +352,9 @@ async function batchUpsert(pgPool, orders, dryRun) {
     } catch (err) {
       await client.query('ROLLBACK')
       warn(`批次 ${batch + 1} 失败，已回滚: ${err.message}`)
-      // 记录失败的订单范围
       const failedIds = batchOrders.map(o => o.saleOrderId).join(', ')
       warn(`  失败订单: ${failedIds.substring(0, 200)}...`)
-      throw err // 中止整个迁移
+      throw err
     } finally {
       client.release()
     }

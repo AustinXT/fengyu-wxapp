@@ -228,7 +228,25 @@ function generateAllocations(wfAllocations, lookups) {
   return { pgAllocations, stats }
 }
 
-// ─── 4. 批量 UPSERT ────────────────────────────────────────
+// ─── 4. 批量 UPSERT（多行 VALUES 优化版）──────────────────────
+
+/**
+ * 构建多行 INSERT 的 VALUES 占位符和扁平参数数组
+ */
+function buildMultiRowValues(rows, colCount) {
+  const values = []
+  const placeholders = []
+  let paramIdx = 1
+  for (const row of rows) {
+    const ph = []
+    for (let i = 0; i < colCount; i++) {
+      ph.push(`$${paramIdx++}`)
+      values.push(row[i])
+    }
+    placeholders.push(`(${ph.join(',')})`)
+  }
+  return { placeholders: placeholders.join(','), values }
+}
 
 async function batchUpsert(pgPool, allocations, dryRun) {
   const totalBatches = Math.ceil(allocations.length / BATCH_SIZE)
@@ -250,38 +268,27 @@ async function batchUpsert(pgPool, allocations, dryRun) {
     try {
       await client.query('BEGIN')
 
-      for (const row of batchRows) {
-        await client.query(`
-          INSERT INTO sale_allocations (
-            sale_item_id, employee_id, allocation_ratio, total_amount,
-            is_void, department_name
-          ) VALUES ($1, $2, $3, $4, false, $5)
-          ON CONFLICT (sale_item_id, employee_id) WHERE is_void = false
-          DO UPDATE SET
-            allocation_ratio = EXCLUDED.allocation_ratio,
-            total_amount = EXCLUDED.total_amount,
-            department_name = EXCLUDED.department_name,
-            updated_at = now()
-        `, [
-          row.saleItemId,
-          row.employeeId,
-          row.allocationRatio,
-          row.totalAmount,
-          row.departmentName,
-        ])
-        totalUpserted++
-      }
-
-      // 更新对应订单的 allocation_status
-      const orderIds = [...new Set(batchRows.map(r => {
-        // 需要从 sale_items 反查 sale_order_id — 但这太慢
-        // 改为在 COMMIT 后批量更新
-        return null
-      }))]
+      const rows = batchRows.map(r => [
+        r.saleItemId, r.employeeId, r.allocationRatio, r.totalAmount, false, r.departmentName,
+      ])
+      const mv = buildMultiRowValues(rows, 6)
+      const res = await client.query(`
+        INSERT INTO sale_allocations (
+          sale_item_id, employee_id, allocation_ratio, total_amount,
+          is_void, department_name
+        ) VALUES ${mv.placeholders}
+        ON CONFLICT (sale_item_id, employee_id) WHERE is_void = false
+        DO UPDATE SET
+          allocation_ratio = EXCLUDED.allocation_ratio,
+          total_amount = EXCLUDED.total_amount,
+          department_name = EXCLUDED.department_name,
+          updated_at = now()
+      `, mv.values)
+      totalUpserted += res.rowCount
 
       await client.query('COMMIT')
 
-      if ((batch + 1) % 20 === 0 || batch === totalBatches - 1) {
+      if ((batch + 1) % 10 === 0 || batch === totalBatches - 1) {
         log(`  批次 ${batch + 1}/${totalBatches} (累计: ${totalUpserted})`)
       }
     } catch (err) {

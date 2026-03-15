@@ -204,7 +204,25 @@ function processItems(rows, existingItemIds, customerMap, storeMap) {
   return { orders, stats }
 }
 
-// ─── 3. 批量 INSERT（DO NOTHING 保护已有数据）─────────────────
+// ─── 3. 批量 INSERT（多行 VALUES 优化版，DO NOTHING 保护已有数据）──
+
+/**
+ * 构建多行 INSERT 的 VALUES 占位符和扁平参数数组
+ */
+function buildMultiRowValues(rows, colCount) {
+  const values = []
+  const placeholders = []
+  let paramIdx = 1
+  for (const row of rows) {
+    const ph = []
+    for (let i = 0; i < colCount; i++) {
+      ph.push(`$${paramIdx++}`)
+      values.push(row[i])
+    }
+    placeholders.push(`(${ph.join(',')})`)
+  }
+  return { placeholders: placeholders.join(','), values }
+}
 
 async function batchInsert(pgPool, orders, dryRun) {
   const orderList = [...orders.values()]
@@ -229,55 +247,55 @@ async function batchInsert(pgPool, orders, dryRun) {
     try {
       await client.query('BEGIN')
 
+      // ── 批量 INSERT sale_orders ──
+      const orderRows = batchOrders.map(o => {
+        const totalAmount = o.items.reduce((sum, it) => sum + it.saleAmount, 0)
+        return [
+          o.saleOrderId, '已完成', '普通', o.marketName, o.storeId,
+          o.saleDate || new Date().toISOString(), o.clientUserId, o.customerName,
+          totalAmount, 'offline', 'admin', 'allocated', 'WorkFine历史订单导入',
+        ]
+      })
+      const oMv = buildMultiRowValues(orderRows, 13)
+      const r1 = await client.query(`
+        INSERT INTO sale_orders (
+          sale_order_id, status, sale_order_type, market_name, store_id,
+          sale_order_datetime, client_user_id, customer_name, total_amount,
+          payment_method, sale_order_source, allocation_status, remark
+        ) VALUES ${oMv.placeholders}
+        ON CONFLICT (sale_order_id) DO NOTHING
+      `, oMv.values)
+      ordersInserted += r1.rowCount
+
+      // ── 批量 INSERT sale_items ──
+      const itemRows = []
       for (const order of batchOrders) {
-        const totalAmount = order.items.reduce((sum, it) => sum + it.saleAmount, 0)
-
-        // INSERT sale_order (DO NOTHING if exists)
-        const res = await client.query(`
-          INSERT INTO sale_orders (
-            sale_order_id, status, sale_order_type, market_name, store_id,
-            sale_order_datetime, client_user_id, customer_name, total_amount,
-            payment_method, sale_order_source, allocation_status, remark
-          ) VALUES (
-            $1, '已完成', '普通', $2, $3,
-            $4, $5, $6, $7,
-            'offline', 'admin', 'allocated', 'WorkFine历史订单导入'
-          )
-          ON CONFLICT (sale_order_id) DO NOTHING
-        `, [
-          order.saleOrderId, order.marketName, order.storeId,
-          order.saleDate || new Date().toISOString(),
-          order.clientUserId, order.customerName, totalAmount,
-        ])
-        if (res.rowCount > 0) ordersInserted++
-
         for (const item of order.items) {
-          const res2 = await client.query(`
-            INSERT INTO sale_items (
-              sale_item_id, sale_order_id, item_direction, product_name,
-              product_type, session_count, remaining_sessions,
-              unit_price, quantity, unit_real_price, sale_amount, received,
-              expire_date, sales_category, remark
-            ) VALUES (
-              $1, $2, 'purchase', $3,
-              $4, $5, $6,
-              $7, 1, $8, $9, $10,
-              $11, '自采自销', $12
-            )
-            ON CONFLICT (sale_item_id) DO NOTHING
-          `, [
-            item.saleItemId, order.saleOrderId, item.itemName,
+          itemRows.push([
+            item.saleItemId, order.saleOrderId, 'purchase', item.itemName,
             item.productType, item.sessionCount, item.remainingSessions,
-            item.unitPrice, item.unitRealPrice, item.saleAmount, item.received,
-            item.expireDate, item.remark,
+            item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
+            item.expireDate, '自采自销', item.remark,
           ])
-          if (res2.rowCount > 0) itemsInserted++
         }
+      }
+      if (itemRows.length > 0) {
+        const iMv = buildMultiRowValues(itemRows, 15)
+        const r2 = await client.query(`
+          INSERT INTO sale_items (
+            sale_item_id, sale_order_id, item_direction, product_name,
+            product_type, session_count, remaining_sessions,
+            unit_price, quantity, unit_real_price, sale_amount, received,
+            expire_date, sales_category, remark
+          ) VALUES ${iMv.placeholders}
+          ON CONFLICT (sale_item_id) DO NOTHING
+        `, iMv.values)
+        itemsInserted += r2.rowCount
       }
 
       await client.query('COMMIT')
 
-      if ((batch + 1) % 20 === 0 || batch === totalBatches - 1) {
+      if ((batch + 1) % 10 === 0 || batch === totalBatches - 1) {
         log(`  批次 ${batch + 1}/${totalBatches} (累计: ${ordersInserted} 订单, ${itemsInserted} 项目)`)
       }
     } catch (err) {

@@ -34,7 +34,7 @@ const PG_CONFIG = {
   max: 5,
 }
 
-const BATCH_SIZE = 200
+const BATCH_SIZE = 500
 
 function trim(val) {
   if (val === null || val === undefined) return null
@@ -179,7 +179,30 @@ function processData(rows, lookups) {
   return { orders, stats }
 }
 
-// ─── 3. 批量 INSERT ─────────────────────────────────────────
+// ─── 3. 批量 INSERT（多行 VALUES 优化版）──────────────────────
+
+/**
+ * 构建多行 INSERT 的 VALUES 占位符和扁平参数数组
+ * @param {Array<Array>} rows - 每行的参数数组
+ * @param {number} colCount - 每行列数
+ * @returns {{ placeholders: string, values: Array }}
+ */
+function buildMultiRowValues(rows, colCount) {
+  const values = []
+  const placeholders = []
+  let paramIdx = 1
+
+  for (const row of rows) {
+    const ph = []
+    for (let i = 0; i < colCount; i++) {
+      ph.push(`$${paramIdx++}`)
+      values.push(row[i])
+    }
+    placeholders.push(`(${ph.join(',')})`)
+  }
+
+  return { placeholders: placeholders.join(','), values }
+}
 
 async function batchInsert(pgPool, orders, dryRun) {
   const orderList = [...orders.values()]
@@ -205,57 +228,74 @@ async function batchInsert(pgPool, orders, dryRun) {
     try {
       await client.query('BEGIN')
 
-      for (const order of batchOrders) {
-        // INSERT service_order
-        const r1 = await client.query(`
-          INSERT INTO service_orders (
-            service_order_id, status, service_order_type, market_name, store_id,
-            service_date, assigned_employee_id, client_user_id, completed_at
-          ) VALUES ($1, '已完成', $2, $3, $4, $5::date, $6, $7, $8::timestamp)
-          ON CONFLICT (service_order_id) DO NOTHING
-        `, [
-          order.serviceOrderId, order.serviceType, order.marketName,
-          order.storeId, order.serviceDate, order.assignedEmployeeId,
-          order.clientUserId, order.serviceDate,
-        ])
-        if (r1.rowCount > 0) ordersInserted++
+      // ── 1. 批量 INSERT service_orders ──
+      const orderRows = batchOrders.map(o => [
+        o.serviceOrderId, '已完成', o.serviceType, o.marketName,
+        o.storeId, o.serviceDate, o.assignedEmployeeId,
+        o.clientUserId, o.serviceDate,
+      ])
+      const oMv = buildMultiRowValues(orderRows, 9)
+      const r1 = await client.query(`
+        INSERT INTO service_orders (
+          service_order_id, status, service_order_type, market_name, store_id,
+          service_date, assigned_employee_id, client_user_id, completed_at
+        ) VALUES ${oMv.placeholders}
+        ON CONFLICT (service_order_id) DO NOTHING
+      `, oMv.values)
+      ordersInserted += r1.rowCount
 
+      // ── 2. 批量 INSERT service_items ──
+      const itemRows = []
+      for (const order of batchOrders) {
         for (const item of order.items) {
-          // INSERT service_item
-          const r2 = await client.query(`
-            INSERT INTO service_items (
-              service_item_id, sale_item_id, service_order_id,
-              session_used, employee_id, service_duration, unit_real_price
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (service_item_id) DO NOTHING
-          `, [
+          itemRows.push([
             item.serviceItemId, item.saleItemId, order.serviceOrderId,
             item.sessionUsed, item.employeeId, item.serviceDuration,
             item.unitRealPrice,
           ])
-          if (r2.rowCount > 0) itemsInserted++
+        }
+      }
+      if (itemRows.length > 0) {
+        const iMv = buildMultiRowValues(itemRows, 7)
+        const r2 = await client.query(`
+          INSERT INTO service_items (
+            service_item_id, sale_item_id, service_order_id,
+            session_used, employee_id, service_duration, unit_real_price
+          ) VALUES ${iMv.placeholders}
+          ON CONFLICT (service_item_id) DO NOTHING
+        `, iMv.values)
+        itemsInserted += r2.rowCount
+      }
 
-          // INSERT service_commission (if service_fee > 0)
+      // ── 3. 批量 INSERT service_commissions ──
+      const commRows = []
+      for (const order of batchOrders) {
+        for (const item of order.items) {
           if (item.serviceFee > 0) {
             const rate = item.unitRealPrice > 0
               ? Math.min(9.9999, Math.round((item.serviceFee / item.unitRealPrice) * 10000) / 10000)
               : 1.0000
-
-            await client.query(`
-              INSERT INTO service_commissions (
-                service_item_id, employee_id, commission_rate, commission_amount, is_void
-              ) VALUES ($1, $2, $3, $4, false)
-              ON CONFLICT (service_item_id, employee_id) WHERE is_void = false
-              DO NOTHING
-            `, [item.serviceItemId, item.employeeId, rate, item.serviceFee])
-            commissionsInserted++
+            commRows.push([
+              item.serviceItemId, item.employeeId, rate, item.serviceFee, false,
+            ])
           }
         }
+      }
+      if (commRows.length > 0) {
+        const cMv = buildMultiRowValues(commRows, 5)
+        const r3 = await client.query(`
+          INSERT INTO service_commissions (
+            service_item_id, employee_id, commission_rate, commission_amount, is_void
+          ) VALUES ${cMv.placeholders}
+          ON CONFLICT (service_item_id, employee_id) WHERE is_void = false
+          DO NOTHING
+        `, cMv.values)
+        commissionsInserted += r3.rowCount
       }
 
       await client.query('COMMIT')
 
-      if ((batch + 1) % 50 === 0 || batch === totalBatches - 1) {
+      if ((batch + 1) % 10 === 0 || batch === totalBatches - 1) {
         log(`  批次 ${batch + 1}/${totalBatches} (累计: ${ordersInserted} 单, ${itemsInserted} 明细, ${commissionsInserted} 提成)`)
       }
     } catch (err) {
