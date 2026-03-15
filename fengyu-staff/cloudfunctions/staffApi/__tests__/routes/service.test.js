@@ -42,7 +42,17 @@ describe('service.create', () => {
       // generateServiceOrderId
       .mockResolvedValueOnce([])
 
-    pg.transaction.mockImplementation(async (cb) => {
+    // 第一次 transaction: generateServiceOrderId（advisory lock + SELECT 最大 ID）
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // advisory lock
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),   // 无已有服务单 → seq=1
+      }
+      return await cb(client)
+    })
+    // 第二次 transaction: INSERT 服务单 + 服务明细
+    pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
         query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
       }

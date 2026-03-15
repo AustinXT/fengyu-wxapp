@@ -17,52 +17,64 @@ const { requireStaffBound } = require("../middleware/auth");
 async function search(ctx) {
   await requireStaffBound()(ctx, async () => {});
 
-  const { keyword, phone } = ctx.event.payload || {};
+  const { keyword, phone, customerType } = ctx.event.payload || {};
 
   const esc = (v) => String(v).replace(/'/g, "''");
   const isManagerRole = ctx.auth.roles.includes("manager");
 
-  // Step 1: 查 WorkFine UDT_S_311
-  let searchCondition;
-  let limit = 20;
-  if (phone) {
-    searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`;
-    limit = 1;
-  } else if (keyword && keyword.trim()) {
-    const k = esc(keyword.trim());
-    searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%') AND UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
-  } else {
-    searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
+  // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
+  const pgTypeFilter = customerType === 'member'
+    ? ' AND customer_id IS NOT NULL'
+    : customerType === 'flow'
+    ? ' AND customer_id IS NULL'
+    : '';
+
+  // Step 1: 查 WorkFine UDT_S_311（流量客模式跳过 WorkFine）
+  let customerRows = [];
+  if (customerType !== 'flow') {
+    let searchCondition;
+    let limit = 20;
+    if (phone) {
+      searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`;
+      limit = 1;
+    } else if (keyword && keyword.trim()) {
+      const k = esc(keyword.trim());
+      searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%') AND UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
+    } else {
+      searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
+    }
+
+    customerRows = await mssql.query(`
+      SELECT TOP ${limit}
+        UDF_S_1475 AS customer_id,
+        UDF_S_1476 AS name,
+        UDF_S_1478 AS phone,
+        UDF_S_1477 AS member_level,
+        UDF_S_6443 AS store_name,
+        UDF_S_6444 AS main_staff_id,
+        UDF_S_1474 AS register_date
+      FROM UDT_S_311
+      WHERE ${searchCondition}
+      ORDER BY UDF_S_1474 DESC
+    `);
   }
 
-  const customerRows = await mssql.query(`
-    SELECT TOP ${limit}
-      UDF_S_1475 AS customer_id,
-      UDF_S_1476 AS name,
-      UDF_S_1478 AS phone,
-      UDF_S_1477 AS member_level,
-      UDF_S_6443 AS store_name,
-      UDF_S_6444 AS main_staff_id,
-      UDF_S_1474 AS register_date
-    FROM UDT_S_311
-    WHERE ${searchCondition}
-    ORDER BY UDF_S_1474 DESC
-  `);
-
   // Step 2: 查 PG client_wechat_users
+  const limit = 20;
   let pgUsers = [];
   if (phone) {
-    pgUsers = await pg.query("SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE phone = $1", [
-      phone.trim(),
-    ]);
+    pgUsers = await pg.query(
+      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE phone = $1${pgTypeFilter}`,
+      [phone.trim()],
+    );
   } else if (keyword && keyword.trim()) {
     pgUsers = await pg.query(
-      "SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE (phone LIKE $1 OR name LIKE $1) AND bound_store_id = $2 LIMIT $3",
+      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE (phone LIKE $1 OR name LIKE $1) AND bound_store_id = $2${pgTypeFilter} LIMIT $3`,
       [`%${keyword.trim()}%`, ctx.auth.storeId, limit],
     );
   } else {
     pgUsers = await pg.query(
-      "SELECT user_id, phone, name, bound_store_id FROM client_wechat_users WHERE bound_store_id = $1 LIMIT $2",
+      `SELECT user_id, phone, name, customer_id, bound_store_id FROM client_wechat_users WHERE bound_store_id = $1${pgTypeFilter} LIMIT $2`,
       [ctx.auth.storeId, limit],
     );
   }

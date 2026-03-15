@@ -25,7 +25,7 @@
 
 .service-no {
   font-size: 26rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   font-family: monospace;
 }
 
@@ -46,7 +46,7 @@
 
 .customer-phone {
   font-size: 26rpx;
-  color: #999999;
+  color: var(--color-text-hint);
   margin-left: 8rpx;
 }
 
@@ -71,7 +71,7 @@
 
 .item-spec {
   font-size: 24rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   background: #F5F2EE;
   padding: 2rpx 12rpx;
   border-radius: 8rpx;
@@ -79,7 +79,7 @@
 
 .item-sessions {
   font-size: 22rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 
@@ -94,7 +94,7 @@
 
 .time-text {
   font-size: 24rpx;
-  color: #999999;
+  color: var(--color-text-hint);
 }
 
 /* ===== 操作按钮 ===== */

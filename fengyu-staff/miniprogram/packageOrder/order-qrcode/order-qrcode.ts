@@ -88,8 +88,9 @@ Page({
         wx.showToast({ title: '支付成功', icon: 'success' });
         setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 1500);
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
       this.setData({ loading: false });
     }
   },
@@ -128,8 +129,9 @@ Page({
           await callStaffApi('order.confirmOffline', { orderNo: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadQrcode(this.data.saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });
@@ -149,8 +151,9 @@ Page({
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.stopPolling();
           setTimeout(() => wx.navigateBack(), 1500);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });

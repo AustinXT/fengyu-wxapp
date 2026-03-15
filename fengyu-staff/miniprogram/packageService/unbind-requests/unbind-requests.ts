@@ -33,8 +33,9 @@ Page({
         createdAt: this.formatDate(r.createdAt),
       }));
       this.setData({ requests });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -52,8 +53,9 @@ Page({
           await callStaffApi('store.approveUnbind', { requestId });
           wx.showToast({ title: '已通过', icon: 'success' });
           this.loadRequests();
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       }
     });
@@ -83,8 +85,9 @@ Page({
       this.setData({ showRejectDialog: false });
       wx.showToast({ title: '已拒绝', icon: 'success' });
       this.loadRequests();
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }

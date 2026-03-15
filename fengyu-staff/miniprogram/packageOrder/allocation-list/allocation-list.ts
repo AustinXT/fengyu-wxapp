@@ -64,8 +64,9 @@ Page({
         hasMore: data.orders.length >= 20,
         page: this.data.page + 1,
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }

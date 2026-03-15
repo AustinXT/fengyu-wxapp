@@ -70,7 +70,7 @@ describe('staffApi 入口', () => {
     const mainFresh = require('../index').main
     const result = await mainFresh({ action: 'store.list', payload: {} }, {})
     expect(result.code).toBe(-401)
-    expect(result.message).toContain('UNAUTHORIZED')
+    expect(result.errorType).toBe('UNAUTHORIZED')
   })
 
   test('INVALID_PARAMS 错误映射为 code: -400', async () => {
@@ -79,7 +79,7 @@ describe('staffApi 入口', () => {
       payload: {},
     }, {})
     expect(result.code).toBe(-400)
-    expect(result.message).toContain('INVALID_PARAMS')
+    expect(result.errorType).toBe('INVALID_PARAMS')
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
@@ -108,6 +108,6 @@ describe('staffApi 入口', () => {
       payload: { page: 1 },
     }, {})
     expect(result.code).toBe(-403)
-    expect(result.message).toContain('PERMISSION_DENIED')
+    expect(result.errorType).toBe('PERMISSION_DENIED')
   })
 })

@@ -70,6 +70,38 @@ describe('customer.search', () => {
     await customerRoutes.search(ctx)
     expect(ctx.result).toEqual([])
   })
+
+  test('customerType=member 只返回会员客（WorkFine + PG customer_id 非空）', async () => {
+    const ctx = createManagerCtx({ customerType: 'member' })
+    mssql.query.mockResolvedValueOnce([
+      { customer_id: 'C001', name: '会员张', phone: '13800001111', member_level: 'VIP', store_name: '测试店', main_staff_id: null, register_date: '2024-01-01' },
+    ])
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u1', phone: '13800001111', name: '会员张', customer_id: 'C001', bound_store_id: 'store-001' },
+    ])
+    await customerRoutes.search(ctx)
+    // WorkFine 会员 + PG 去重 → 1条
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].source).toBe('both')
+    // PG SQL 应包含 customer_id IS NOT NULL 过滤
+    const pgSql = pg.query.mock.calls[0][0]
+    expect(pgSql).toContain('customer_id IS NOT NULL')
+  })
+
+  test('customerType=flow 跳过 WorkFine 只返回流量客', async () => {
+    const ctx = createManagerCtx({ customerType: 'flow' })
+    pg.query.mockResolvedValueOnce([
+      { user_id: 'u3', phone: '13700003333', name: '流量客', customer_id: null, bound_store_id: 'store-001' },
+    ])
+    await customerRoutes.search(ctx)
+    // 不查 WorkFine
+    expect(mssql.query).not.toHaveBeenCalled()
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].source).toBe('miniprogram')
+    // PG SQL 应包含 customer_id IS NULL 过滤
+    const pgSql = pg.query.mock.calls[0][0]
+    expect(pgSql).toContain('customer_id IS NULL')
+  })
 })
 
 // ============================================================

@@ -51,8 +51,9 @@ Page({
     try {
       const data = await callStaffApi<ServiceDetail>('service.detail', { id });
       this.setData({ detail: data });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -66,8 +67,9 @@ Page({
       await callStaffApi('service.start', { serviceOrderId: detail.id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
       this.loadDetail(detail.id);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }
@@ -88,8 +90,9 @@ Page({
           wx.showToast({ title: '服务已完成', icon: 'success' });
           this.loadDetail(detail.id);
           setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         } finally {
           this.setData({ submitting: false });
         }
@@ -113,8 +116,9 @@ Page({
           wx.showToast({ title: '服务单已取消', icon: 'success' });
           this.loadDetail(detail.id);
           setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 3000);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         } finally {
           this.setData({ submitting: false });
         }

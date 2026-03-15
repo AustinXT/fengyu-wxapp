@@ -18,6 +18,24 @@ interface OrderItem {
   statusClass: string;
 }
 
+interface RawOrderRow {
+  sale_order_id: string;
+  customer_name: string;
+  client_phone: string;
+  status: string;
+  sale_order_type: string;
+  payment_method: string | null;
+  total_amount: string;
+  created_at: string;
+  paid_at: string | null;
+}
+
+interface OrderListResponse {
+  orders: RawOrderRow[];
+  page: number;
+  pageSize: number;
+}
+
 const STATUS_CLASS: Record<string, string> = {
   '待支付': 'pending',
   '待确认收款': 'pending',
@@ -81,7 +99,7 @@ Page({
     this.setData({ loading: true });
     try {
       const tabStatus = this.data.tabActive === '全部' ? undefined : this.data.tabActive;
-      const res = await callStaffApi<{ orders: any[]; page: number; pageSize: number }>('order.list', {
+      const res = await callStaffApi<OrderListResponse>('order.list', {
         status: tabStatus,
         page: this.data.page,
         pageSize: 20,
@@ -92,7 +110,7 @@ Page({
         saleOrderId: r.sale_order_id,
         customerName: r.customer_name || '',
         customerPhoneMasked: r.client_phone || '',
-        status: r.status,
+        status: r.status as OrderStatus,
         orderType: r.sale_order_type,
         payType: r.payment_method,
         totalAmount: r.total_amount,
@@ -105,8 +123,9 @@ Page({
         hasMore: mapped.length === 20,
         page: this.data.page + 1,
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -135,8 +154,9 @@ Page({
           await callStaffApi('order.confirmOffline', { orderNo: id });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.resetAndLoad();
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       }
     });
@@ -160,8 +180,9 @@ Page({
           await callStaffApi('order.close', { orderNo: id });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.resetAndLoad();
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       }
     });
@@ -179,8 +200,9 @@ Page({
           await callStaffApi('order.resetFailed', { orderNo: id });
           wx.showToast({ title: '已重置为待支付', icon: 'success' });
           this.resetAndLoad();
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       }
     });

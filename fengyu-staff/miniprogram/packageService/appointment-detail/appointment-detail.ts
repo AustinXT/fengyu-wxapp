@@ -1,6 +1,20 @@
 // pages/appointment-detail/appointment-detail.ts
 import { callStaffApi } from '../../utils/cloud';
 
+interface AppointmentDetail {
+  id: string;
+  status: string;
+  customerName: string;
+  customerPhone: string;
+  appointmentTime: string;
+  serviceItemName: string;
+  employeeName: string;
+  storeName: string;
+  checkinAt: string | null;
+  serviceOrderId: string | null;
+  clientUserId: string | null;
+}
+
 const STATUS_MAP: Record<string, { text: string; cls: string }> = {
   pending:   { text: '待确认', cls: 'pending' },
   confirmed: { text: '已确认', cls: 'success' },
@@ -13,7 +27,7 @@ Page({
   data: {
     loading: false,
     submitting: false,
-    appt: null as any,
+    appt: null as AppointmentDetail | null,
     statusText: '',
     statusCls: '',
   },
@@ -33,11 +47,12 @@ Page({
   async loadDetail(id: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('appointment.detail', { id });
+      const data = await callStaffApi<AppointmentDetail>('appointment.detail', { id });
       const sm = STATUS_MAP[data.status] || { text: data.status, cls: 'pending' };
       this.setData({ appt: data, statusText: sm.text, statusCls: sm.cls });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -57,8 +72,9 @@ Page({
           await callStaffApi('appointment.confirm', { appointmentId: id });
           wx.showToast({ title: '已确认预约', icon: 'success' });
           this.loadDetail(id);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         } finally {
           this.setData({ submitting: false });
         }
@@ -74,8 +90,9 @@ Page({
       await callStaffApi('appointment.checkin', { appointmentId: id });
       wx.showToast({ title: '顾客到店已记录', icon: 'success' });
       this.loadDetail(id);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }

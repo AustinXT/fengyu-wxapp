@@ -28,6 +28,6 @@
 
 .service-no {
   font-size: 26rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   font-family: monospace;
 }

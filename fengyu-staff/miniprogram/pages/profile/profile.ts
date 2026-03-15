@@ -35,8 +35,9 @@ Page({
       const { phone, staffWfId, staffName, position, boundStoreName } = app.globalData
       this.setData({ phone, staffWfId, staffName, position, boundStoreName, isManager: isManager() })
       wx.showToast({ title: '绑定成功', icon: 'success' })
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '绑定失败', icon: 'none' })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '绑定失败';
+      wx.showToast({ title: msg, icon: 'none' })
     }
   },
 
@@ -48,7 +49,7 @@ Page({
           storeList: data || [],
           storeColumns: (data || []).map(s => s.storeName),
         });
-      } catch (err: any) {
+      } catch (err: unknown) {
         wx.showToast({ title: '获取门店列表失败', icon: 'none' });
         return;
       }
@@ -70,8 +71,9 @@ Page({
       app.setStaffInfo({ boundStoreName: store.storeName, boundStoreId: store.storeId });
       this.setData({ boundStoreName: store.storeName });
       wx.showToast({ title: '门店已切换', icon: 'success' });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '切换失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '切换失败';
+      wx.showToast({ title: msg, icon: 'none' });
     }
   },
 

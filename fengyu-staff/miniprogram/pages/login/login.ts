@@ -48,8 +48,9 @@ Page({
       } else {
         this.setData({ binding: false, errorMsg: '手机号未关联员工档案，请联系管理员' })
       }
-    } catch (err: any) {
-      this.setData({ binding: false, errorMsg: err.message || '绑定失败' })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '绑定失败';
+      this.setData({ binding: false, errorMsg: msg })
     }
   },
 })

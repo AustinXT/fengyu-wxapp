@@ -71,8 +71,9 @@ Page({
         status,
       });
       this.setData({ list: list || [] });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -93,8 +94,9 @@ Page({
       await callStaffApi('service.start', { serviceOrderId: id });
       wx.showToast({ title: '服务已开始', icon: 'success' });
       this.loadList();
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     }
   },
 
@@ -110,8 +112,9 @@ Page({
           await callStaffApi('service.complete', { serviceOrderId: id });
           wx.showToast({ title: '服务已完成', icon: 'success' });
           this.loadList();
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       }
     });

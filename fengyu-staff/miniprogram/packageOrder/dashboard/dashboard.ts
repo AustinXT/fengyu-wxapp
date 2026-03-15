@@ -4,6 +4,14 @@ import { isManager } from '../../utils/role';
 
 type RangeType = 'today' | 'month' | 'lastMonth';
 
+interface DashboardData {
+  footfall: number;
+  headcount: number;
+  revenue: number;
+  consume: number;
+  newMembers: number;
+}
+
 Page({
   data: {
     loading: false,
@@ -62,7 +70,7 @@ Page({
   async loadDashboard(startDate: string, endDate: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('staff.dashboard', { startDate, endDate });
+      const data = await callStaffApi<DashboardData>('staff.dashboard', { startDate, endDate });
       this.setData({
         footfall: data.footfall || 0,
         headcount: data.headcount || 0,
@@ -70,8 +78,9 @@ Page({
         consume: (data.consume || 0).toFixed(2),
         newMembers: data.newMembers || 0,
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }

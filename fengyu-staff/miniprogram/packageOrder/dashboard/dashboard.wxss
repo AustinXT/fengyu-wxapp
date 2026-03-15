@@ -76,7 +76,7 @@
   height: 96rpx;
 }
 
-.metric-icon--primary { background: linear-gradient(135deg, #C0322A, #9B1E14); }
+.metric-icon--primary { background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark)); }
 .metric-icon--blue { background: linear-gradient(135deg, #5E8BB3, #3D6A8E); }
 .metric-icon--green { background: linear-gradient(135deg, #3D8A5A, #2A6B42); }
 .metric-icon--orange { background: linear-gradient(135deg, #D4820A, #B06B00); }

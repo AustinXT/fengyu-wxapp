@@ -676,7 +676,7 @@ describe('order.qrcode', () => {
     await orderRoutes.qrcode(ctx)
 
     expect(ctx.result.qrcodeUrl).toBe('')
-    expect(ctx.result.qrcodeError).toContain('生成失败')
+    expect(ctx.result.qrcodeError).toBe('生成小程序码失败')
   })
 
   test('非本店美容师不能查看', async () => {

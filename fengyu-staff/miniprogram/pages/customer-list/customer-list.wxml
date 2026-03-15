@@ -33,6 +33,19 @@
     </view>
   </view>
 
+  <!-- 统计栏：全部/会员客/流量客 -->
+  <view class="type-tabs">
+    <view class="type-tab {{customerType === 'all' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="all">
+      全部({{stats.total}})
+    </view>
+    <view class="type-tab {{customerType === 'member' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="member">
+      会员客({{stats.memberCount}})
+    </view>
+    <view class="type-tab {{customerType === 'flow' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="flow">
+      流量客({{stats.flowCount}})
+    </view>
+  </view>
+
   <van-search
     value="{{searchKeyword}}"
     placeholder="搜索姓名或手机号"

@@ -23,7 +23,7 @@
 .appt-customer {
   font-size: 30rpx;
   font-weight: 600;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
 }
 
 .appt-info {
@@ -35,7 +35,7 @@
 
 .appt-time, .appt-staff {
   font-size: 26rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
 }
 
 .appt-actions {

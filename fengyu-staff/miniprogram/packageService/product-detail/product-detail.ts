@@ -19,6 +19,19 @@ interface Sku {
   product_type: string;
 }
 
+interface RawSku {
+  sku_id: string;
+  spec_name: string;
+  price: number;
+  special_price: number | null;
+  session_count: number | null;
+  product_type: string;
+}
+
+interface SpuDetailResponse {
+  spu: Spu & { skuList: RawSku[] };
+}
+
 Page({
   data: {
     spu: {} as Spu,
@@ -40,7 +53,7 @@ Page({
 
   async loadDetail(spuId: string) {
     try {
-      const data = await callStaffApi<any>('product.spuDetail', { spuId });
+      const data = await callStaffApi<SpuDetailResponse>('product.spuDetail', { spuId });
       const spu = data?.spu;
 
       if (!spu) {
@@ -59,7 +72,7 @@ Page({
           is_bundle: spu.is_bundle || false,
         },
         isPromo,
-        skuList: (spu.skuList || []).map((sku: any) => ({
+        skuList: (spu.skuList || []).map((sku: RawSku) => ({
           sku_id: sku.sku_id,
           spec_name: sku.spec_name || '',
           price: Number(sku.special_price || sku.price) || 0,

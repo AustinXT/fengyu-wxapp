@@ -13,10 +13,101 @@ const ORDER_SOURCE_LABEL: Record<string, string> = {
   staff: '员工开单',
 };
 
+// ===== API 原始类型（snake_case，字段可选以兼容不同版本） =====
+
+interface RawOrder {
+  sale_order_id: string;
+  status: string;
+  sale_order_type?: string;
+  order_type?: string;
+  sale_order_source?: string;
+  order_source?: string;
+  store_name?: string;
+  payment_method?: string;
+  customer_name?: string;
+  client_phone?: string;
+  preferred_staff_name?: string;
+  offline_confirmed_by?: string;
+  offline_confirmed_at?: string;
+  created_at?: string;
+  paid_at?: string;
+  totalAmount?: string;
+  total_amount?: string;
+  opened_by?: string;
+  refund_reason?: string;
+  ref_sale_order_id?: string;
+}
+
+interface RawOrderItem {
+  sale_item_id: string;
+  product_name?: string;
+  sku_spec_name?: string;
+  received?: string;
+  sale_amount?: string;
+  session_count?: number;
+  remaining_sessions?: number;
+}
+
+interface RawAllocation {
+  employee_name?: string;
+  employee_id?: string;
+  department_name?: string;
+  total_amount?: string;
+  allocation_ratio?: number;
+}
+
+interface OrderDetailResponse {
+  order: RawOrder;
+  items: RawOrderItem[];
+  allocations: RawAllocation[];
+}
+
+// ===== 展示层类型（camelCase，用于 WXML 绑定） =====
+
+interface DisplayOrderItem {
+  saleItemId: string;
+  itemName: string;
+  spec: string;
+  totalPrice: string;
+  sessionCount: number | undefined;
+  remainingSessions: number | undefined;
+}
+
+interface DisplayAllocation {
+  staffName: string;
+  department: string;
+  amount: string;
+  ratio: string;
+}
+
+interface DisplayOrder {
+  saleOrderId: string;
+  status: string;
+  storeName: string;
+  orderType: string;
+  orderTypeLabel: string;
+  orderSourceLabel: string;
+  refundReason: string;
+  refOrderId: string;
+  payType: string;
+  payTypeLabel: string;
+  customerName: string;
+  customerPhone: string;
+  customerPhoneMasked: string;
+  preferredStaffName: string;
+  confirmedBy: string;
+  confirmedAt: string;
+  createdAt: string;
+  paidAt: string;
+  totalAmount: string;
+  items: DisplayOrderItem[];
+  allocation: DisplayAllocation[];
+}
+
 Page({
   data: {
     loading: false,
-    order: null as any,
+    order: null as DisplayOrder | null,
     isManager: false,
     isCreator: false,
     statusClass: '',
@@ -38,51 +129,54 @@ Page({
   async loadDetail(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const res = await callStaffApi<any>('order.detail', { orderNo: saleOrderId });
-      const o = res.order || {};
-      const items = (res.items || []).map((it: any) => ({
+      const res = await callStaffApi<OrderDetailResponse>('order.detail', { orderNo: saleOrderId });
+      const o = res.order || {} as RawOrder;
+      const items: DisplayOrderItem[] = (res.items || []).map((it) => ({
         saleItemId: it.sale_item_id,
         itemName: it.product_name || it.sku_spec_name || '—',
         spec: it.sku_spec_name || '',
-        totalPrice: it.received || it.sale_amount,
+        totalPrice: it.received || it.sale_amount || '0',
         sessionCount: it.session_count,
         remainingSessions: it.remaining_sessions,
       }));
-      const allocation = (res.allocations || []).map((a: any) => ({
-        staffName: a.employee_name || a.employee_id,
+      const allocation: DisplayAllocation[] = (res.allocations || []).map((a) => ({
+        staffName: a.employee_name || a.employee_id || '',
         department: a.department_name || '',
-        amount: a.total_amount,
+        amount: a.total_amount || '0',
         ratio: `${Number(a.allocation_ratio) * 100}%`,
       }));
+      const orderType = o.sale_order_type || o.order_type || '';
+      const orderSource = o.sale_order_source || o.order_source || '';
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
           status: o.status,
           storeName: o.store_name || '',
-          orderType: o.sale_order_type || o.order_type,
-          orderTypeLabel: ORDER_TYPE_LABEL[o.sale_order_type || o.order_type] || o.sale_order_type || o.order_type,
-          orderSourceLabel: ORDER_SOURCE_LABEL[o.sale_order_source || o.order_source] || o.sale_order_source || o.order_source || '—',
+          orderType,
+          orderTypeLabel: ORDER_TYPE_LABEL[orderType] || orderType,
+          orderSourceLabel: ORDER_SOURCE_LABEL[orderSource] || orderSource || '—',
           refundReason: o.refund_reason || '',
           refOrderId: o.ref_sale_order_id || '',
-          payType: o.payment_method,
-          payTypeLabel: PAY_TYPE_LABEL[o.payment_method] || o.payment_method || '—',
+          payType: o.payment_method || '',
+          payTypeLabel: PAY_TYPE_LABEL[o.payment_method || ''] || o.payment_method || '—',
           customerName: o.customer_name || '',
           customerPhone: o.client_phone || '',
           customerPhoneMasked: o.client_phone ? o.client_phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
           preferredStaffName: o.preferred_staff_name || '',
-          confirmedBy: o.offline_confirmed_by,
+          confirmedBy: o.offline_confirmed_by || '',
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
-          totalAmount: o.totalAmount || o.total_amount,
+          totalAmount: o.totalAmount || o.total_amount || '0',
           items,
           allocation,
         },
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -105,8 +199,9 @@ Page({
           await callStaffApi('order.resetFailed', { orderNo: saleOrderId });
           wx.showToast({ title: '已重置', icon: 'success' });
           this.loadDetail(saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });
@@ -124,8 +219,9 @@ Page({
           await callStaffApi('order.confirmOffline', { orderNo: saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadDetail(saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });
@@ -144,8 +240,9 @@ Page({
           await callStaffApi('order.close', { orderNo: saleOrderId });
           wx.showToast({ title: '订单已取消', icon: 'success' });
           this.loadDetail(saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });
@@ -162,6 +259,7 @@ Page({
 
   onShowQrcode() {
     const o = this.data.order;
+    if (!o) return;
     const params = `orderNo=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
@@ -186,8 +284,7 @@ Page({
     }
     this.setData({ submitting: true });
     try {
-      // 默认全部项目退款
-      const items = order.items.map((it: any) => ({ saleItemId: it.saleItemId }));
+      const items = order.items.map((it) => ({ saleItemId: it.saleItemId }));
       await callStaffApi('order.createRefund', {
         refSaleOrderId: order.saleOrderId,
         items,
@@ -196,8 +293,9 @@ Page({
       this.setData({ showRefundDialog: false });
       wx.showToast({ title: '退款单已创建', icon: 'success' });
       this.loadDetail(this.data._saleOrderId);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }
@@ -220,8 +318,9 @@ Page({
           await callStaffApi('order.approveRefund', { saleOrderId: this.data._saleOrderId });
           wx.showToast({ title: '退款已审批', icon: 'success' });
           this.loadDetail(this.data._saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });
@@ -239,8 +338,9 @@ Page({
           await callStaffApi('order.rejectRefund', { saleOrderId: this.data._saleOrderId });
           wx.showToast({ title: '退款已驳回', icon: 'success' });
           this.loadDetail(this.data._saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
         }
       },
     });

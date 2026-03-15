@@ -3,9 +3,9 @@
 /* 头部信息卡 */
 .profile-card {
   background: #FFFFFF;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
   padding: 40rpx 32rpx 32rpx;
-  border-bottom: 3rpx solid #C0322A;
+  border-bottom: 3rpx solid var(--color-primary);
 }
 
 .profile-header {
@@ -32,17 +32,17 @@
   gap: 12rpx;
   margin-bottom: 8rpx;
 }
-.profile-name { font-size: 40rpx; font-weight: 700; color: #1A1A1A; }
+.profile-name { font-size: 40rpx; font-weight: 700; color: var(--color-text-primary); }
 .vip-badge {
   font-size: 20rpx;
   font-weight: 600;
   padding: 4rpx 12rpx;
   border-radius: 16rpx;
   background: #FFF0EE;
-  color: #C0322A;
+  color: var(--color-primary);
   border: 1rpx solid rgba(192, 50, 42, 0.3);
 }
-.profile-phone { font-size: 26rpx; color: #666666; }
+.profile-phone { font-size: 26rpx; color: var(--color-text-secondary); }
 
 .profile-stats {
   display: flex;
@@ -52,8 +52,8 @@
   padding: 20rpx;
 }
 .stat-item { flex: 1; text-align: center; }
-.stat-label { display: block; font-size: 22rpx; color: #999999; margin-bottom: 4rpx; }
-.stat-value { font-size: 32rpx; font-weight: 700; color: #C0322A; }
+.stat-label { display: block; font-size: 22rpx; color: var(--color-text-hint); margin-bottom: 4rpx; }
+.stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 .stat-divider { width: 1rpx; height: 48rpx; background: #E8E8E8; }
 
 /* Tab 内容区 */
@@ -106,12 +106,12 @@
 }
 .calendar-amount {
   font-size: 18rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
   margin-top: 2rpx;
 }
 .calendar-cell--has-data .calendar-day {
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
 }
 .calendar-cell--selected {
@@ -182,7 +182,7 @@
 }
 .purchase-link {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 /* ===== 持卡汇总（复用原有疗程卡样式） ===== */
@@ -195,11 +195,11 @@
 .section-title {
   font-size: 28rpx;
   font-weight: 600;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
 }
 .section-hint {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 
@@ -214,7 +214,7 @@
   transition: border-color 0.2s, background-color 0.2s;
 }
 .treatment-card--selected {
-  border-color: #C0322A;
+  border-color: var(--color-primary);
   background: #FFF0EE;
 }
 
@@ -228,7 +228,7 @@
 .tc-name {
   font-size: 28rpx;
   font-weight: 600;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
   margin-bottom: 8rpx;
   display: block;
 }
@@ -240,19 +240,19 @@
 }
 .tc-spec {
   font-size: 22rpx;
-  color: #666;
+  color: var(--color-text-secondary);
   background: #F5F5F5;
   padding: 2rpx 10rpx;
   border-radius: 6rpx;
 }
 .tc-order {
   font-size: 20rpx;
-  color: #999;
+  color: var(--color-text-hint);
   font-family: monospace;
 }
 .tc-sessions {
   font-size: 22rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
 }
 
@@ -264,8 +264,8 @@
   padding-top: 16rpx;
   border-top: 1rpx solid #F0EDE9;
 }
-.tc-stepper-label { font-size: 24rpx; color: #666; }
-.tc-stepper-unit { font-size: 24rpx; color: #666; }
+.tc-stepper-label { font-size: 24rpx; color: var(--color-text-secondary); }
+.tc-stepper-unit { font-size: 24rpx; color: var(--color-text-secondary); }
 
 /* 底部操作栏 */
 .bottom-action-bar {
@@ -275,11 +275,12 @@
   right: 0;
   background: #FFFFFF;
   padding: 16rpx 32rpx;
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
   box-shadow: 0 -2rpx 12rpx rgba(0,0,0,0.06);
   z-index: 100;
 }
 .bottom-bar-spacer {
-  height: 140rpx;
+  height: calc(120rpx + env(safe-area-inset-bottom));
 }
 
 /* ===== 赠送记录 ===== */
@@ -334,7 +335,7 @@
 
 .gift-item-sessions {
   font-size: 22rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 
