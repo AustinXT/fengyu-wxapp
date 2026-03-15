@@ -8,6 +8,7 @@ Page({
     activeTab: 'all',
     list: [] as any[],
     isLoading: false,
+    loadError: false,
   },
 
   onLoad(options) {
@@ -32,7 +33,7 @@ Page({
   },
 
   async loadOrders() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const payload = this.data.activeTab === 'all' ? {} : { status: this.data.activeTab };
       const data = await callClientApi('order.list', payload);
@@ -54,6 +55,7 @@ Page({
       this.setData({ list });
     } catch {
       Toast.fail('加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

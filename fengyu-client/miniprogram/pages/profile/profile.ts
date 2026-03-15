@@ -98,9 +98,9 @@ Page({
     // 用户拒绝授权
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        wx.showToast({ title: '您拒绝了授权', icon: 'none' });
+        Toast.fail('您拒绝了授权');
       } else if (errMsg) {
-        wx.showToast({ title: errMsg, icon: 'none' });
+        Toast.fail(errMsg);
       }
       return;
     }
@@ -113,19 +113,11 @@ Page({
         ? `已同步 ${updatedOrdersCount} 笔历史订单`
         : '';
 
-      wx.showToast({
-        title: tips || '绑定成功',
-        icon: 'success',
-        duration: 2000
-      });
+      Toast.success(tips || '绑定成功');
 
     } catch (err: any) {
       console.error('绑定手机号失败:', err);
-      wx.showToast({
-        title: err.message || '绑定失败，请重试',
-        icon: 'none',
-        duration: 2000
-      });
+      Toast.fail(err.message || '绑定失败，请重试');
     }
   },
 

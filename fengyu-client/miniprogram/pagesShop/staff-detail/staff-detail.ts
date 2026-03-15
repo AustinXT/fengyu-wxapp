@@ -1,4 +1,5 @@
 // pagesShop/staff-detail/staff-detail.ts
+import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 
 Page({
@@ -19,7 +20,7 @@ Page({
       const data = await callClientApi('staff.detail', { employeeId });
       this.setData({ staff: data });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
@@ -41,5 +42,3 @@ Page({
     };
   },
 });
-
-export {};

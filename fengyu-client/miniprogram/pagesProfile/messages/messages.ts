@@ -1,5 +1,7 @@
 // pagesProfile/messages/messages.ts
+import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { formatRelativeTime } from '../../utils/format';
 
 const TYPE_COLOR_MAP: Record<string, string> = {
   appointment: '#096DD9',
@@ -12,23 +14,6 @@ const TYPE_ICON_MAP: Record<string, string> = {
   order: 'orders-o',
   system: 'info-o',
 };
-
-function formatTime(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr.replace(/-/g, '/'));
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return '刚刚';
-  if (minutes < 60) return `${minutes}分钟前`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}小时前`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}天前`;
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${m}-${day}`;
-}
 
 Page({
   data: {
@@ -65,7 +50,7 @@ Page({
       });
       const newRecords = (data.records || []).map((r: any) => ({
         ...r,
-        displayTime: formatTime(r.createdAt),
+        displayTime: formatRelativeTime(r.createdAt),
         dotColor: TYPE_COLOR_MAP[r.type] || '#999999',
         iconName: TYPE_ICON_MAP[r.type] || 'info-o',
       }));
@@ -75,7 +60,7 @@ Page({
         page: this.data.page + 1,
       });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
@@ -104,5 +89,3 @@ Page({
     }
   },
 });
-
-export {};

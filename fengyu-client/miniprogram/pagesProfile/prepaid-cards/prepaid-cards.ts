@@ -1,17 +1,7 @@
 // pagesProfile/prepaid-cards/prepaid-cards.ts
+import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr.replace(/-/g, '/'));
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${m}-${day}`;
-}
-
-function formatAmount(amount: number): string {
-  return amount >= 0 ? `+${amount.toFixed(2)}` : amount.toFixed(2);
-}
+import { formatShortDate, formatAmount } from '../../utils/format';
 
 Page({
   data: {
@@ -42,7 +32,7 @@ Page({
       const totalBalance = cards.reduce((sum: number, c: any) => sum + (c.balance || 0), 0);
       this.setData({ cards, totalBalance });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
@@ -63,17 +53,15 @@ Page({
       const data = await callClientApi('card.history', { cardId });
       const transactions = (data.records || []).map((r: any) => ({
         ...r,
-        displayDate: formatDate(r.createdAt),
+        displayDate: formatShortDate(r.createdAt),
         displayAmount: formatAmount(r.amount),
         isPositive: r.amount >= 0,
       }));
       this.setData({ transactions });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ txLoading: false });
     }
   },
 });
-
-export {};

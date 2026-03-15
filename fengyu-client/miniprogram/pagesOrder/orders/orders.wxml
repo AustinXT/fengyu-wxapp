@@ -22,6 +22,11 @@
     <van-skeleton title row="4" style="margin-top:24rpx" />
   </view>
 
+  <!-- 错误态 -->
+  <view wx:elif="{{loadError}}" class="empty-wrap">
+    <van-empty image="error" description="加载失败，下拉刷新重试" />
+  </view>
+
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
     <van-empty description="暂无订单记录" />

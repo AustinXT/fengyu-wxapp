@@ -1,11 +1,13 @@
 // pages/treatment-cards/treatment-cards.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { calculateProgress } from '../../utils/format';
 
 Page({
   data: {
     cards: [] as any[],
     isLoading: false,
+    loadError: false,
   },
 
   onLoad() {
@@ -21,7 +23,7 @@ Page({
   },
 
   async loadCards() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const data = await callClientApi('order.appointableItems', { includeInactive: true });
       const orders: any[] = data?.orders || [];
@@ -30,14 +32,11 @@ Page({
       const cards: any[] = [];
       for (const order of orders) {
         for (const item of order.items) {
-          const percent = item.sessionCount > 0
-            ? Math.round(((item.sessionCount - item.remainingSessions) / item.sessionCount) * 100)
-            : 0;
           cards.push({
             ...item,
             saleOrderId: order.saleOrderId,
             storeName: order.storeName,
-            percent,
+            percent: calculateProgress(item.sessionCount, item.remainingSessions),
             expireFmt: item.expireDate ? item.expireDate.slice(0, 10) : '',
           });
         }
@@ -52,6 +51,7 @@ Page({
       this.setData({ cards });
     } catch {
       Toast.fail('加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }

@@ -11,6 +11,10 @@ import {
   searchProducts,
   getStatusClass,
   formatOrderDate,
+  formatDateTime,
+  formatShortDate,
+  formatRelativeTime,
+  formatAmount,
 } from '../../utils/format'
 
 describe('maskPhone', () => {
@@ -163,5 +167,80 @@ describe('formatOrderDate', () => {
   })
   test('无效日期', () => {
     expect(formatOrderDate('invalid')).toBe('')
+  })
+})
+
+describe('formatDateTime', () => {
+  test('ISO 日期时间', () => {
+    // 使用本地时间构造以避免时区问题
+    const d = new Date(2025, 2, 14, 10, 30); // 2025-03-14 10:30 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-03-14 10:30')
+  })
+  test('补零', () => {
+    const d = new Date(2025, 0, 5, 8, 5); // 2025-01-05 08:05 local
+    expect(formatDateTime(d.toISOString())).toBe('2025-01-05 08:05')
+  })
+  test('空字符串', () => {
+    expect(formatDateTime('')).toBe('')
+  })
+  test('无效日期', () => {
+    expect(formatDateTime('not-a-date')).toBe('')
+  })
+})
+
+describe('formatShortDate', () => {
+  test('标准 ISO 日期', () => {
+    expect(formatShortDate('2025-03-14')).toBe('03-14')
+  })
+  test('个位月日补零', () => {
+    expect(formatShortDate('2025-01-05')).toBe('01-05')
+  })
+  test('空字符串', () => {
+    expect(formatShortDate('')).toBe('')
+  })
+  test('无效日期', () => {
+    expect(formatShortDate('invalid')).toBe('')
+  })
+})
+
+describe('formatRelativeTime', () => {
+  test('刚刚（< 1 分钟）', () => {
+    const now = new Date().toISOString()
+    expect(formatRelativeTime(now)).toBe('刚刚')
+  })
+  test('X 分钟前', () => {
+    const d = new Date(Date.now() - 5 * 60000).toISOString()
+    expect(formatRelativeTime(d)).toBe('5分钟前')
+  })
+  test('X 小时前', () => {
+    const d = new Date(Date.now() - 3 * 3600000).toISOString()
+    expect(formatRelativeTime(d)).toBe('3小时前')
+  })
+  test('X 天前', () => {
+    const d = new Date(Date.now() - 2 * 86400000).toISOString()
+    expect(formatRelativeTime(d)).toBe('2天前')
+  })
+  test('超过 7 天显示 MM-DD', () => {
+    const d = new Date(Date.now() - 10 * 86400000)
+    const expected = `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    expect(formatRelativeTime(d.toISOString())).toBe(expected)
+  })
+  test('空字符串', () => {
+    expect(formatRelativeTime('')).toBe('')
+  })
+})
+
+describe('formatAmount', () => {
+  test('正数带 + 号', () => {
+    expect(formatAmount(100)).toBe('+100.00')
+  })
+  test('负数带 - 号', () => {
+    expect(formatAmount(-50.5)).toBe('-50.50')
+  })
+  test('零为正', () => {
+    expect(formatAmount(0)).toBe('+0.00')
+  })
+  test('小数精度', () => {
+    expect(formatAmount(9.9)).toBe('+9.90')
   })
 })

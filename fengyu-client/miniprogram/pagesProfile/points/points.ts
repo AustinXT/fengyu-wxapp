@@ -1,16 +1,7 @@
 // pagesProfile/points/points.ts
+import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '';
-  const d = new Date(dateStr.replace(/-/g, '/'));
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const h = String(d.getHours()).padStart(2, '0');
-  const min = String(d.getMinutes()).padStart(2, '0');
-  return `${y}-${m}-${day} ${h}:${min}`;
-}
+import { formatDateTime } from '../../utils/format';
 
 Page({
   data: {
@@ -53,7 +44,7 @@ Page({
         nextLevel: data.nextLevel || null,
       });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ balanceLoading: false });
     }
@@ -72,7 +63,7 @@ Page({
       });
       const newRecords = (data.records || []).map((r: any) => ({
         ...r,
-        displayDate: formatDate(r.createdAt),
+        displayDate: formatDateTime(r.createdAt),
         displayAmount: r.amount > 0 ? `+${r.amount}` : `${r.amount}`,
         isEarn: r.amount > 0,
       }));
@@ -82,7 +73,7 @@ Page({
         page: this.data.page + 1,
       });
     } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+      Toast.fail(err.message || '加载失败');
     } finally {
       this.setData({ isLoading: false });
     }
@@ -94,5 +85,3 @@ Page({
     this.loadHistory();
   },
 });
-
-export {};
