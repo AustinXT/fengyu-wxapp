@@ -27,6 +27,28 @@ describe('formatDateTime', () => {
   test('无效字符串原样返回', () => {
     expect(formatDateTime('not-a-date')).toBe('not-a-date')
   })
+
+  test('PG timestamp 格式（Safari 兼容路径：不含 T，使用 replace(/-/g, "/")）', () => {
+    // PG 返回格式 '2025-03-14 10:30:45'，不含 T
+    // Safari 不支持 new Date('2025-03-14 10:30:45')，需 replace 为 '2025/03/14 10:30:45'
+    const result = formatDateTime('2025-03-14 10:30:45')
+    expect(result).toBe('2025-03-14 10:30:45')
+  })
+
+  test('数字时间戳', () => {
+    const ts = new Date(2025, 2, 14, 10, 30, 45).getTime()
+    const result = formatDateTime(ts)
+    expect(result).toBe('2025-03-14 10:30:45')
+  })
+
+  test('仅日期字符串（无时间部分，Safari 兼容）', () => {
+    const result = formatDateTime('2025-03-14')
+    expect(result).toMatch(/^2025-03-14/)
+  })
+
+  test('falsy 数字 0 返回空字符串（非 epoch）', () => {
+    expect(formatDateTime(0)).toBe('')
+  })
 })
 
 describe('formatTime', () => {
