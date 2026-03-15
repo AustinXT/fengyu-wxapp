@@ -19,22 +19,32 @@ beforeEach(() => {
 })
 
 describe('order.scanDetail', () => {
-  test('待支付订单返回详情 + 明细', async () => {
+  test('待支付订单返回详情 + 明细（含开单人和封面图）', async () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
         sale_order_type: '普通', total_amount: 100, sale_order_source: 'staff',
+        store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,
         product_name: '美白护理', sku_spec_name: '10次卡',
+        cover_image: 'https://img.example.com/a.jpg',
       }])
 
     const ctx = createCtx({ payload: { orderNo: 'FY-001' } })
     await routes.scanDetail(ctx)
 
     expect(ctx.result.order.orderNo).toBe('FY-001')
+    expect(ctx.result.order.openerName).toBe('张三')
     expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
+
+    // 验证 SQL 包含 opener JOIN 和 cover_image JOIN
+    const orderQuery = pg.query.mock.calls[0][0]
+    expect(orderQuery).toContain('opener_name')
+    const itemsQuery = pg.query.mock.calls[1][0]
+    expect(itemsQuery).toContain('cover_image')
   })
 
   test('非待支付订单返回状态提示', async () => {
@@ -411,20 +421,65 @@ describe('order.offlinePay', () => {
 })
 
 describe('order.list', () => {
-  test('返回用户订单列表', async () => {
+  test('返回用户订单列表（含商品封面图和实收金额）', async () => {
+    // page=1 触发 closeExpiredOrdersByUser
     pg.query.mockResolvedValueOnce([])
     pg.query.mockResolvedValueOnce([
       { sale_order_id: 'FY-001', status: '已支付', total_amount: 100 },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'FY-001', sale_item_id: 'SI-001', product_name: 'A' },
+      { sale_order_id: 'FY-001', sale_item_id: 'SI-001', product_name: 'A', received: 95, cover_image: 'https://img.example.com/a.jpg' },
     ])
 
     const ctx = createBoundCtx({})
     await routes.list(ctx)
 
     expect(ctx.result.orders).toHaveLength(1)
+    expect(ctx.result.hasMore).toBe(false)
     expect(ctx.result.orders[0].items).toHaveLength(1)
+    expect(ctx.result.orders[0].items[0].cover_image).toBe('https://img.example.com/a.jpg')
+    expect(ctx.result.orders[0].items[0].received).toBe(95)
+
+    // 验证 SQL 包含 LIMIT/OFFSET 分页参数
+    const listQuery = pg.query.mock.calls[1][0]
+    expect(listQuery).toContain('LIMIT')
+    expect(listQuery).toContain('OFFSET')
+
+    // 验证明细查询 SQL 包含 received、cover_image JOIN
+    const itemsQuery = pg.query.mock.calls[2][0]
+    expect(itemsQuery).toContain('si.received')
+    expect(itemsQuery).toContain('cover_image')
+    expect(itemsQuery).toContain('product_skus')
+  })
+
+  test('hasMore=true 当结果超过 pageSize', async () => {
+    pg.query.mockResolvedValueOnce([])
+    // 返回 pageSize+1 条（默认 20+1=21 条），表示有下一页
+    const orders = Array.from({ length: 21 }, (_, i) => ({
+      sale_order_id: `FY-${String(i).padStart(3, '0')}`, status: '已支付', total_amount: 100,
+    }))
+    pg.query.mockResolvedValueOnce(orders)
+    // items 查询（对 20 条订单的明细）
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    expect(ctx.result.orders).toHaveLength(20)
+    expect(ctx.result.hasMore).toBe(true)
+  })
+
+  test('page=2 跳过 closeExpiredOrdersByUser', async () => {
+    pg.query.mockResolvedValueOnce([])  // 订单查询
+
+    const ctx = createBoundCtx({ page: 2, pageSize: 10 })
+    await routes.list(ctx)
+
+    // page=2 不触发 closeExpired，只有 1 次 query（订单查询）
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    // 验证 OFFSET 参数
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toContain(10)  // offset = (2-1) * 10 = 10
   })
 
   test('按状态筛选', async () => {
@@ -441,20 +496,29 @@ describe('order.list', () => {
 })
 
 describe('order.detail', () => {
-  test('返回订单详情', async () => {
+  test('返回订单详情（含商品封面图）', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '已支付',
       client_user_id: 'user-001',
       sale_order_datetime: new Date().toISOString(),
       preferred_employee_id: null, coupon_id: null,
     }])
-    pg.query.mockResolvedValueOnce([{ sale_item_id: 'SI-001', product_name: 'A' }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001', product_name: 'A',
+      cover_image: 'https://img.example.com/a.jpg',
+    }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.detail(ctx)
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
+    expect(ctx.result.items[0].cover_image).toBe('https://img.example.com/a.jpg')
+
+    // 验证明细查询 SQL 包含 cover_image JOIN
+    const itemsQuery = pg.query.mock.calls[1][0]
+    expect(itemsQuery).toContain('cover_image')
+    expect(itemsQuery).toContain('product_skus')
   })
 
   test('缺少 saleOrderId → INVALID_PARAMS', async () => {

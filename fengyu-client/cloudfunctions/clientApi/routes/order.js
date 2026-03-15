@@ -54,9 +54,10 @@ async function scanDetail(ctx) {
   }
 
   const orders = await pg.query(
-    `SELECT o.*, s.store_name
+    `SELECT o.*, s.store_name, sw.name AS opener_name
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
+     LEFT JOIN staff_wechat_users sw ON o.opened_by = sw.employee_id
      WHERE o.sale_order_id = $1 AND o.sale_order_source = 'staff'`,
     [targetOrderId]
   )
@@ -93,12 +94,15 @@ async function scanDetail(ctx) {
     return
   }
 
-  // 查询商品明细（使用 sale_items 快照字段）
+  // 查询商品明细（使用 sale_items 快照字段 + 商品封面）
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
-      si.product_name, si.sku_spec_name
+      si.product_name, si.sku_spec_name,
+      p.cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [targetOrderId])
@@ -109,6 +113,7 @@ async function scanDetail(ctx) {
       status: order.status,
       storeId: order.store_id,
       storeName: order.store_name || '',
+      openerName: order.opener_name || '',
       orderType: order.sale_order_type,
       totalAmount: order.total_amount
     },
@@ -118,7 +123,8 @@ async function scanDetail(ctx) {
       skuSpecName: i.sku_spec_name,
       unitPrice: i.unit_price,
       quantity: i.quantity,
-      received: i.received
+      received: i.received,
+      coverImage: i.cover_image || ''
     }))
   }
 }
@@ -553,10 +559,17 @@ async function offlinePay(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status } = ctx.event.payload || {}
+  const { status, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
 
-  // 懒清理过期的待支付订单（同时释放优惠券）
-  await closeExpiredOrdersByUser(userId)
+  // 分页参数（默认 20 条/页，上限 50）
+  const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
+  const page = Math.max(Number(pageParam) || 1, 1)
+  const offset = (page - 1) * pageSize
+
+  // 懒清理过期的待支付订单（同时释放优惠券），仅首页触发
+  if (page === 1) {
+    await closeExpiredOrdersByUser(userId)
+  }
 
   let whereClause = 'WHERE o.client_user_id = $1'
   const params = [userId]
@@ -565,6 +578,10 @@ async function list(ctx) {
     params.push(status)
     whereClause += ` AND o.status = $${params.length}`
   }
+
+  // 多取 1 条用于判断是否有下一页
+  const fetchLimit = pageSize + 1
+  params.push(fetchLimit, offset)
 
   const orders = await pg.query(`
     SELECT
@@ -583,8 +600,11 @@ async function list(ctx) {
     LEFT JOIN stores s ON o.store_id = s.store_id
     ${whereClause}
     ORDER BY o.created_at DESC
-    LIMIT 100
+    LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
+
+  const hasMore = orders.length > pageSize
+  if (hasMore) orders.pop()
 
   // 批量查询所有订单的明细项（使用快照字段）
   if (orders.length > 0) {
@@ -594,11 +614,15 @@ async function list(ctx) {
         si.sale_order_id,
         si.sale_item_id,
         si.quantity,
+        si.received,
         si.remaining_sessions,
         si.product_name,
         si.sku_spec_name,
-        si.product_type
+        si.product_type,
+        p.cover_image
       FROM sale_items si
+      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+      LEFT JOIN products p ON ps.product_id = p.product_id
       WHERE si.sale_order_id = ANY($1)
       ORDER BY si.sale_item_id
     `, [orderIds])
@@ -616,7 +640,7 @@ async function list(ctx) {
     }
   }
 
-  ctx.result = { orders }
+  ctx.result = { orders, hasMore }
 }
 
 /**
@@ -654,7 +678,7 @@ async function detail(ctx) {
     }
   }
 
-  // 查询订单明细（使用快照字段）
+  // 查询订单明细（使用快照字段 + 商品封面）
   const items = await pg.query(`
     SELECT
       si.sale_item_id,
@@ -669,8 +693,11 @@ async function detail(ctx) {
       si.quantity,
       si.sale_amount,
       si.received,
-      si.expire_date
+      si.expire_date,
+      p.cover_image
     FROM sale_items si
+    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])

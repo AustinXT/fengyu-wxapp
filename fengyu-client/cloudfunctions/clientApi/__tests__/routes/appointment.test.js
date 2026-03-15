@@ -7,6 +7,16 @@ const pg = globalThis.__mocks__.pg
 const { createBoundCtx, createCtx } = require('../helpers')
 
 let routes
+
+// 生成未来日期字符串（明天），确保不触发"过去时间"校验
+function futureTime() {
+  const d = new Date(Date.now() + 24 * 60 * 60 * 1000)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day} 上午 10:00-12:00`
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   Object.keys(require.cache).forEach(key => {
@@ -32,7 +42,7 @@ describe('appointment.create', () => {
 
     const ctx = createBoundCtx({
       saleItemId: 'SI-001',
-      appointmentTime: '2025-03-20 上午 10:00-12:00',
+      appointmentTime: futureTime(),
     })
     await routes.create(ctx)
 
@@ -48,7 +58,7 @@ describe('appointment.create', () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({
-      appointmentTime: '2025-03-20 上午 10:00-12:00',
+      appointmentTime: futureTime(),
     })
     await routes.create(ctx)
 
@@ -66,7 +76,7 @@ describe('appointment.create', () => {
 
     const ctx = createBoundCtx({
       saleItemId: 'SI-001',
-      appointmentTime: '2025-03-20 上午 10:00-12:00',
+      appointmentTime: futureTime(),
     })
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*剩余次数不足/)
   })
@@ -83,14 +93,14 @@ describe('appointment.create', () => {
 
     const ctx = createBoundCtx({
       saleItemId: 'SI-001',
-      appointmentTime: '2025-03-20 上午 10:00-12:00',
+      appointmentTime: futureTime(),
     })
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*已有待确认/)
   })
 
   test('无手机号 → PHONE_REQUIRED', async () => {
     const ctx = createCtx({
-      payload: { appointmentTime: '2025-03-20 上午 10:00-12:00' },
+      payload: { appointmentTime: futureTime() },
       auth: { phone: null },
     })
     await expect(routes.create(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
@@ -110,6 +120,13 @@ describe('appointment.create', () => {
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*格式不正确/)
   })
 
+  test('预约时间为过去 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({
+      appointmentTime: '2024-01-01 上午 09:00-11:00',
+    })
+    await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*过去/)
+  })
+
   test('非本人订单 → PERMISSION_DENIED', async () => {
     pg.query.mockResolvedValueOnce([{
       phone: '138', name: '张三', bound_store_id: 's1', bound_store_name: 'S1',
@@ -121,14 +138,14 @@ describe('appointment.create', () => {
 
     const ctx = createBoundCtx({
       saleItemId: 'SI-001',
-      appointmentTime: '2025-03-20 上午 10:00-12:00',
+      appointmentTime: futureTime(),
     })
     await expect(routes.create(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 })
 
 describe('appointment.list', () => {
-  test('返回用户预约列表', async () => {
+  test('返回用户预约列表（含分页）', async () => {
     pg.query.mockResolvedValueOnce([{
       appointment_id: 'apt-1', status: '待确认',
       store_id: 's1', store_name: '测试店',
@@ -140,6 +157,35 @@ describe('appointment.list', () => {
     await routes.list(ctx)
 
     expect(ctx.result.appointments).toHaveLength(1)
+    expect(ctx.result.hasMore).toBe(false)
+
+    // 验证 SQL 包含 LIMIT/OFFSET
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('LIMIT')
+    expect(sql).toContain('OFFSET')
+  })
+
+  test('hasMore=true 当结果超过 pageSize', async () => {
+    const items = Array.from({ length: 21 }, (_, i) => ({
+      appointment_id: `apt-${i}`, status: '待确认',
+    }))
+    pg.query.mockResolvedValueOnce(items)
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    expect(ctx.result.appointments).toHaveLength(20)
+    expect(ctx.result.hasMore).toBe(true)
+  })
+
+  test('page=2 使用正确的 OFFSET', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ page: 2, pageSize: 10 })
+    await routes.list(ctx)
+
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toContain(10)  // offset = (2-1) * 10
   })
 
   test('按状态筛选', async () => {

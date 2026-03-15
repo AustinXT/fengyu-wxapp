@@ -75,11 +75,12 @@ describe('product.spuList', () => {
 })
 
 describe('product.skuDetail', () => {
-  test('正常返回 SKU 详情', async () => {
+  test('正常返回 SKU 详情（含封面图）', async () => {
     pg.query.mockResolvedValueOnce([{
       sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
       spec_name: '10次卡', price: 1000, special_price: 800,
       session_count: 10, product_name: '美白护理',
+      cover_image: 'https://img.example.com/beauty.jpg',
       category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目',
     }])
 
@@ -88,6 +89,11 @@ describe('product.skuDetail', () => {
 
     expect(ctx.result.sku.sku_id).toBe('sku-1')
     expect(ctx.result.sku.product_name).toBe('美白护理')
+    expect(ctx.result.sku.cover_image).toBe('https://img.example.com/beauty.jpg')
+
+    // 验证 SQL 包含 cover_image
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('cover_image')
   })
 
   test('缺少 skuId → INVALID_PARAMS', async () => {
