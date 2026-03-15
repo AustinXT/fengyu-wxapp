@@ -27,3 +27,22 @@ export function formatDateTime(date: string | Date): string {
     hour: '2-digit', minute: '2-digit'
   })
 }
+
+/**
+ * 计算给定订单金额下，优惠券的实际抵扣金额。
+ * - 现金券/项目券：min(discountValue, totalAmount)
+ * - 折扣券：totalAmount × (1 - discountValue)，可选 maxDiscount 封顶
+ */
+export function calcCouponDiscount(
+  couponType: string,
+  discountValue: string,
+  maxDiscount: string | null,
+  totalAmount: number,
+): number {
+  const dv = parseFloat(discountValue)
+  if (couponType === '折扣券') {
+    const saved = totalAmount * (1 - dv)
+    return maxDiscount ? Math.min(saved, parseFloat(maxDiscount)) : saved
+  }
+  return Math.min(dv, totalAmount)
+}

@@ -10,7 +10,9 @@ import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { searchCustomerByPhone } from "@/actions/customers"
 import { createOrder, confirmOfflinePayment } from "@/actions/orders"
-import type { ProductCategory, Product, ProductSku, Store, Employee, Customer } from "@/lib/types"
+import { getAvailableCoupons } from "@/actions/coupons"
+import { formatDate } from "@/lib/utils"
+import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 
 interface CartItem {
   sku: ProductSku
@@ -75,6 +77,9 @@ export default function OrderCreatePageClient({
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
+  const [availableCoupons, setAvailableCoupons] = useState<AvailableCoupon[]>([])
+  const [selectedCouponId, setSelectedCouponId] = useState<string>("")
+  const [loadingCoupons, setLoadingCoupons] = useState(false)
 
   const searchCustomer = async () => {
     if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
@@ -294,7 +299,29 @@ export default function OrderCreatePageClient({
 
             <div className="flex justify-between">
               <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
-              <Button onClick={() => setStep(2)} disabled={cart.length === 0}>下一步</Button>
+              <Button
+                onClick={async () => {
+                  setStep(2)
+                  setSelectedCouponId("")
+                  // 如果是已注册顾客，拉取可用优惠券
+                  if (selectedCustomer?.userId) {
+                    setLoadingCoupons(true)
+                    try {
+                      const coupons = await getAvailableCoupons(selectedCustomer.userId, totalAmount, selectedStoreId || undefined)
+                      setAvailableCoupons(coupons)
+                    } catch {
+                      setAvailableCoupons([])
+                    } finally {
+                      setLoadingCoupons(false)
+                    }
+                  } else {
+                    setAvailableCoupons([])
+                  }
+                }}
+                disabled={cart.length === 0}
+              >
+                下一步
+              </Button>
             </div>
           </div>
         </div>
@@ -354,6 +381,31 @@ export default function OrderCreatePageClient({
                   onChange={(e) => setRemark(e.target.value)}
                 />
               </div>
+
+              {/* 优惠券（仅已注册顾客可选） */}
+              {selectedCustomer?.userId && (
+                <div className="col-span-2 md:col-span-3">
+                  <label className="text-sm text-[#999999]">优惠券（可选）</label>
+                  {loadingCoupons ? (
+                    <p className="text-sm text-[#999999] mt-1">正在加载可用优惠券…</p>
+                  ) : availableCoupons.length > 0 ? (
+                    <Select
+                      className="mt-1"
+                      value={selectedCouponId}
+                      onChange={(e) => setSelectedCouponId(e.target.value)}
+                    >
+                      <option value="">不使用优惠券</option>
+                      {availableCoupons.map((c) => (
+                        <option key={c.couponId} value={c.couponId}>
+                          {c.name} — 优惠¥{c.discountAmount}（到期 {formatDate(c.expireAt)}）
+                        </option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <p className="text-sm text-[#999999] mt-1">暂无可用优惠券</p>
+                  )}
+                </div>
+              )}
             </div>
 
             <Separator />
@@ -370,9 +422,28 @@ export default function OrderCreatePageClient({
                   </div>
                 ))}
               </div>
-              <div className="text-right font-bold text-xl pt-4 text-[var(--primary)]">
-                合计: ¥{totalAmount.toLocaleString()}
-              </div>
+              {(() => {
+                const selectedCoupon = availableCoupons.find((c) => c.couponId === selectedCouponId)
+                const couponDiscount = selectedCoupon ? Number(selectedCoupon.discountAmount) : 0
+                const finalAmount = Math.max(0, totalAmount - couponDiscount)
+                return (
+                  <div className="text-right pt-4 space-y-1">
+                    {selectedCoupon && (
+                      <>
+                        <div className="text-sm text-[#999999]">
+                          商品小计: ¥{totalAmount.toLocaleString()}
+                        </div>
+                        <div className="text-sm text-[#3D8A5A]">
+                          优惠券减免: -¥{couponDiscount.toFixed(2)}
+                        </div>
+                      </>
+                    )}
+                    <div className="font-bold text-xl text-[var(--primary)]">
+                      实付: ¥{finalAmount.toLocaleString()}
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
 
             <div className="flex justify-between">
@@ -392,6 +463,7 @@ export default function OrderCreatePageClient({
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
+                    couponId: selectedCouponId || null,
                     items: cart.map((item) => ({
                       skuId: item.sku.skuId,
                       productName: item.product.name,
@@ -483,7 +555,7 @@ export default function OrderCreatePageClient({
                   <Button variant="outline">返回订单列表</Button>
                 </Link>
               )}
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false) }}>
+              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]) }}>
                 继续开单
               </Button>
             </div>

@@ -289,6 +289,7 @@ export interface CouponTemplate {
   minSpend: string | null
   maxDiscount: string | null
   totalCount: number | null
+  issuedCount: number
   applicableProductIds: string[] | null
   applicableCategoryIds: string[] | null
   applicableStoreIds: string[] | null
@@ -300,6 +301,22 @@ export interface CouponTemplate {
   isActive: boolean | null
   createdAt: string
   updatedAt: string
+}
+
+/** 开单时可选用的顾客优惠券（已按订单金额过滤） */
+export interface AvailableCoupon {
+  couponId: string
+  templateId: string
+  name: string
+  couponType: CouponType
+  discountValue: string
+  minSpend: string | null
+  maxDiscount: string | null
+  applicableProductIds: string[] | null
+  applicableCategoryIds: string[] | null
+  expireAt: string
+  /** 针对当前订单金额计算出的实际优惠金额 */
+  discountAmount: string
 }
 
 export interface OperationLog {

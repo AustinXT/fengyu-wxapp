@@ -50,14 +50,19 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
-  const result = await db
-    .update(appointments)
-    .set({ status: '已确认' })
-    .where(and(
-      eq(appointments.appointmentId, appointmentId),
-      eq(appointments.status, '待确认'),
-      scopeCondition(session, appointments.storeId),
-    ))
+  let result: any
+  try {
+    result = await db
+      .update(appointments)
+      .set({ status: '已确认' })
+      .where(and(
+        eq(appointments.appointmentId, appointmentId),
+        eq(appointments.status, '待确认'),
+        scopeCondition(session, appointments.storeId),
+      ))
+  } catch (err: any) {
+    throw err
+  }
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }
@@ -74,14 +79,19 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'appointment:checkin')
 
-  const result = await db
-    .update(appointments)
-    .set({ checkinAt: new Date() })
-    .where(and(
-      eq(appointments.appointmentId, appointmentId),
-      eq(appointments.status, '已确认'),
-      scopeCondition(session, appointments.storeId),
-    ))
+  let result: any
+  try {
+    result = await db
+      .update(appointments)
+      .set({ checkinAt: new Date() })
+      .where(and(
+        eq(appointments.appointmentId, appointmentId),
+        eq(appointments.status, '已确认'),
+        scopeCondition(session, appointments.storeId),
+      ))
+  } catch (err: any) {
+    throw err
+  }
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }
@@ -98,14 +108,19 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
-  const result = await db
-    .update(appointments)
-    .set({ status: '已取消' })
-    .where(and(
-      eq(appointments.appointmentId, appointmentId),
-      sql`${appointments.status} IN ('待确认', '已确认')`,
-      scopeCondition(session, appointments.storeId),
-    ))
+  let result: any
+  try {
+    result = await db
+      .update(appointments)
+      .set({ status: '已取消' })
+      .where(and(
+        eq(appointments.appointmentId, appointmentId),
+        sql`${appointments.status} IN ('待确认', '已确认')`,
+        scopeCondition(session, appointments.storeId),
+      ))
+  } catch (err: any) {
+    throw err
+  }
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }

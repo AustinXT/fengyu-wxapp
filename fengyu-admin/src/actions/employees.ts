@@ -8,7 +8,7 @@ import { eq, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function rowToEmployee(row: {
@@ -83,6 +83,25 @@ export async function createEmployee(data: {
   const session = await getSession()
   requirePermission(session, 'employee:create')
 
+  // 服务端输入校验（手机号格式 + 必填字段）
+  if (!data.name?.trim()) {
+    return { success: false, message: '姓名不能为空' }
+  }
+  if (!data.phone?.trim()) {
+    return { success: false, message: '请输入手机号' }
+  }
+  if (!/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+  if (data.idCard && !/^\d{17}[\dXx]$/.test(data.idCard)) {
+    return { success: false, message: '身份证号格式不正确' }
+  }
+
+  // 校验 storeId 在 scope 内（HR 角色受 scope 限制）— 在 DB 查询前快速失败
+  if (data.storeId && !isInScope(session, data.storeId)) {
+    return { success: false, message: '无权在该门店创建员工' }
+  }
+
   // 校验手机号唯一性（事务外，快速短路）
   if (data.phone) {
     const [existing] = await db
@@ -96,41 +115,53 @@ export async function createEmployee(data: {
   }
 
   // 事务：ID 生成（advisory lock）+ 插入，原子提交防并发重复
-  const employeeId = await db.transaction(async (tx) => {
-    const idRows = await tx.execute(sql`
-      WITH lock AS (
-        SELECT pg_advisory_xact_lock(hashtext('employee_id_gen'))
-      )
-      SELECT 'FY-' || to_char(NOW(), 'YYMMDD') ||
-        LPAD(
-          (SELECT COALESCE(MAX(
-            CAST(NULLIF(SUBSTRING(employee_id FROM '.{3}$'), '') AS INTEGER)
-          ), 0) + 1
-          FROM staff_wechat_users
-          WHERE employee_id LIKE 'FY-' || to_char(NOW(), 'YYMMDD') || '%'
-          )::TEXT, 3, '0'
-        ) AS id
-      FROM lock
-    `)
-    const id = (idRows as any[])[0]?.id as string
-    if (!id) throw new Error('员工编号生成失败')
+  let employeeId: string
+  try {
+    employeeId = await db.transaction(async (tx) => {
+      const idRows = await tx.execute(sql`
+        WITH lock AS (
+          SELECT pg_advisory_xact_lock(hashtext('employee_id_gen'))
+        )
+        SELECT 'FY-' || to_char(NOW(), 'YYMMDD') ||
+          LPAD(
+            (SELECT COALESCE(MAX(
+              CAST(NULLIF(SUBSTRING(employee_id FROM '.{3}$'), '') AS INTEGER)
+            ), 0) + 1
+            FROM staff_wechat_users
+            WHERE employee_id LIKE 'FY-' || to_char(NOW(), 'YYMMDD') || '%'
+            )::TEXT, 3, '0'
+          ) AS id
+        FROM lock
+      `)
+      const id = (idRows as any[])[0]?.id as string
+      if (!id) throw new Error('员工编号生成失败')
 
-    await tx.insert(staffWechatUsers).values({
-      employeeId: id,
-      phone: data.phone,
-      name: data.name,
-      gender: data.gender ?? null,
-      idCard: data.idCard ?? null,
-      storeId: data.storeId ?? null,
-      orgNodeId: data.orgNodeId ?? null,
-      positionName: data.positionName ?? null,
-      birthday: data.birthday ?? null,
-      skills: data.skills ?? null,
-      isResigned: false,
+      await tx.insert(staffWechatUsers).values({
+        employeeId: id,
+        phone: data.phone,
+        name: data.name,
+        gender: data.gender ?? null,
+        idCard: data.idCard ?? null,
+        storeId: data.storeId ?? null,
+        orgNodeId: data.orgNodeId ?? null,
+        positionName: data.positionName ?? null,
+        birthday: data.birthday ?? null,
+        skills: data.skills ?? null,
+        isResigned: false,
+      })
+
+      return id
     })
-
-    return id
-  })
+  } catch (err: any) {
+    // PG 唯一约束冲突（手机号或员工编号并发重复）
+    if (err?.code === '23505') {
+      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+        return { success: false, message: '该手机号已被其他员工使用' }
+      }
+      return { success: false, message: '数据冲突，请稍后重试' }
+    }
+    throw err
+  }
 
   await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
   revalidatePath('/employees')
@@ -157,6 +188,14 @@ export async function updateEmployee(
   const session = await getSession()
   requirePermission(session, 'employee:update')
 
+  // 服务端输入校验
+  if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+  if (data.idCard !== undefined && data.idCard !== null && !/^\d{17}[\dXx]$/.test(data.idCard)) {
+    return { success: false, message: '身份证号格式不正确' }
+  }
+
   // 校验手机号唯一性（如果更新了手机号）
   if (data.phone) {
     const [existing] = await db
@@ -169,29 +208,49 @@ export async function updateEmployee(
     }
   }
 
-  // 乐观锁：WHERE employee_id = $1 AND updated_at = $2
+  // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
+  const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(staffWechatUsers.employeeId, employeeId),
         eq(staffWechatUsers.updatedAt, new Date(expectedUpdatedAt)),
+        scopeCond,
       )
-    : eq(staffWechatUsers.employeeId, employeeId)
+    : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)
 
-  const result = await db.update(staffWechatUsers).set(data).where(whereConditions)
+  let result: any
+  try {
+    result = await db.update(staffWechatUsers).set(data).where(whereConditions)
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {
+        return { success: false, message: '该手机号已被其他员工使用' }
+      }
+      return { success: false, message: '数据冲突，请稍后重试' }
+    }
+    throw err
+  }
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '员工不存在或无权修改',
+    }
   }
 
   // 标记离职时同步作废所有有效的 permission_roles
   if (data.isResigned === true) {
-    await db
-      .update(permissionRoles)
-      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-      .where(and(
-        eq(permissionRoles.employeeId, employeeId),
-        eq(permissionRoles.isVoid, false),
-      ))
+    try {
+      await db
+        .update(permissionRoles)
+        .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
+        .where(and(
+          eq(permissionRoles.employeeId, employeeId),
+          eq(permissionRoles.isVoid, false),
+        ))
+    } catch (err: any) {
+      throw err
+    }
   }
 
   await logOperation(session, 'employee.update', 'employee', employeeId, data)

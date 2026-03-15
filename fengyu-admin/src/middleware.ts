@@ -11,11 +11,15 @@ export async function middleware(request: NextRequest) {
 
   // Auth pages: allow without token
   if (pathname.startsWith('/login') || pathname.startsWith('/change-password')) {
-    // If user has valid token and is on /login, redirect to dashboard
+    // If user has valid token and is on /login, redirect appropriately
     const token = request.cookies.get(COOKIE_NAME)?.value
     if (token && pathname === '/login') {
       try {
-        await jwtVerify(token, JWT_SECRET)
+        const { payload } = await jwtVerify(token, JWT_SECRET)
+        // AC-03: 首次登录或重置后必须先改密码
+        if (payload.mustChange === true) {
+          return NextResponse.redirect(new URL('/change-password', request.url))
+        }
         return NextResponse.redirect(new URL('/dashboard', request.url))
       } catch {
         // Invalid token, let them stay on login
@@ -31,7 +35,13 @@ export async function middleware(request: NextRequest) {
   }
 
   try {
-    await jwtVerify(token, JWT_SECRET)
+    const { payload } = await jwtVerify(token, JWT_SECRET)
+
+    // AC-03: mustChange=true 时强制跳转到改密码页，阻止访问任何其他路由
+    if (payload.mustChange === true) {
+      return NextResponse.redirect(new URL('/change-password', request.url))
+    }
+
     return NextResponse.next()
   } catch {
     // Expired or invalid token

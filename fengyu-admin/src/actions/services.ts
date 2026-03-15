@@ -9,7 +9,7 @@ import { eq, desc, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function serializeServiceOrder(r: {
@@ -132,10 +132,19 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'service:update')
 
-  const result = await db
-    .update(serviceOrders)
-    .set({ status: '服务中', startedAt: new Date() })
-    .where(and(eq(serviceOrders.serviceOrderId, serviceOrderId), eq(serviceOrders.status, '待服务')))
+  let result: any
+  try {
+    result = await db
+      .update(serviceOrders)
+      .set({ status: '服务中', startedAt: new Date() })
+      .where(and(
+        eq(serviceOrders.serviceOrderId, serviceOrderId),
+        eq(serviceOrders.status, '待服务'),
+        scopeCondition(session, serviceOrders.storeId),
+      ))
+  } catch (err: any) {
+    throw err
+  }
 
   if ((result as any).rowCount === 0) {
     return { success: false, message: '服务单状态已变更，无法开始' }
@@ -149,33 +158,53 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
 
 /**
  * C1+C4: 完成服务 — 原子扣减 remaining_sessions + 状态推进
+ * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL
  */
 export async function completeServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'service:update')
 
-  const result = await db.execute(sql`
-    WITH status_check AS (
-      UPDATE service_orders
-      SET status = '已完成', completed_at = NOW(), updated_at = NOW()
-      WHERE service_order_id = ${serviceOrderId} AND status = '服务中'
-      RETURNING service_order_id
-    ),
-    deduct AS (
-      UPDATE sale_items
-      SET remaining_sessions = remaining_sessions - si.session_used,
-          updated_at = NOW()
-      FROM service_items si
-      WHERE sale_items.sale_item_id = si.sale_item_id
-        AND si.service_order_id = ${serviceOrderId}
-        AND sale_items.remaining_sessions >= si.session_used
-        AND EXISTS (SELECT 1 FROM status_check)
-      RETURNING sale_items.sale_item_id
-    )
-    SELECT
-      (SELECT COUNT(*) FROM status_check) AS status_updated,
-      (SELECT COUNT(*) FROM deduct) AS items_deducted
-  `)
+  // 非 admin 需校验 scope（原子 SQL 不支持 Drizzle scopeCondition，此处预检查）
+  if (!isAdminScope(session)) {
+    const scopeStoreIds = session.permissions.scopeStoreIds
+    if (scopeStoreIds.length === 0) return { success: false, message: '无权操作该服务单' }
+    const [so] = await db
+      .select({ storeId: serviceOrders.storeId })
+      .from(serviceOrders)
+      .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+      .limit(1)
+    if (!so || !scopeStoreIds.includes(so.storeId)) {
+      return { success: false, message: '无权操作该服务单' }
+    }
+  }
+
+  let result: any
+  try {
+    result = await db.execute(sql`
+      WITH status_check AS (
+        UPDATE service_orders
+        SET status = '已完成', completed_at = NOW(), updated_at = NOW()
+        WHERE service_order_id = ${serviceOrderId} AND status = '服务中'
+        RETURNING service_order_id
+      ),
+      deduct AS (
+        UPDATE sale_items
+        SET remaining_sessions = remaining_sessions - si.session_used,
+            updated_at = NOW()
+        FROM service_items si
+        WHERE sale_items.sale_item_id = si.sale_item_id
+          AND si.service_order_id = ${serviceOrderId}
+          AND sale_items.remaining_sessions >= si.session_used
+          AND EXISTS (SELECT 1 FROM status_check)
+        RETURNING sale_items.sale_item_id
+      )
+      SELECT
+        (SELECT COUNT(*) FROM status_check) AS status_updated,
+        (SELECT COUNT(*) FROM deduct) AS items_deducted
+    `)
+  } catch (err: any) {
+    throw err
+  }
 
   const row = (result as any[])[0]
   if (!row || Number(row.status_updated) === 0) {
@@ -193,12 +222,21 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
   const session = await getSession()
   requirePermission(session, 'service:update')
 
-  const result = await db
-    .update(serviceOrders)
-    .set({ status: '已取消' })
-    .where(and(eq(serviceOrders.serviceOrderId, serviceOrderId), eq(serviceOrders.status, '待服务')))
+  let cancelResult: any
+  try {
+    cancelResult = await db
+      .update(serviceOrders)
+      .set({ status: '已取消' })
+      .where(and(
+        eq(serviceOrders.serviceOrderId, serviceOrderId),
+        eq(serviceOrders.status, '待服务'),
+        scopeCondition(session, serviceOrders.storeId),
+      ))
+  } catch (err: any) {
+    throw err
+  }
 
-  if ((result as any).rowCount === 0) {
+  if ((cancelResult as any).rowCount === 0) {
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
 
@@ -226,6 +264,11 @@ export async function createServiceOrder(data: {
   const session = await getSession()
   requirePermission(session, 'service:create')
 
+  // 校验 storeId 在用户 scope 内
+  if (!isInScope(session, data.storeId)) {
+    return { success: false, message: '无权在该门店创建服务单' }
+  }
+
   // 先校验剩余次数（事务外，只读查询）
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
@@ -248,55 +291,64 @@ export async function createServiceOrder(data: {
   }
 
   // 事务：ID 生成 + 服务单 + 服务明细，原子提交
-  const serviceOrderId = await db.transaction(async (tx) => {
-    const idRows = await tx.execute(sql`
-      WITH lock AS (
-        SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
-      )
-      SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
-        LPAD(
-          (SELECT COALESCE(MAX(
-            CAST(NULLIF(SUBSTRING(service_order_id FROM '.{4}$'), '') AS INTEGER)
-          ), 0) + 1
-          FROM service_orders
-          WHERE service_order_id LIKE 'FY-FW-' || to_char(NOW(), 'YYMMDD') || '%'
-          )::TEXT, 4, '0'
-        ) AS id
-      FROM lock
-    `)
-    const id = (idRows as any[])[0]?.id as string
-    if (!id) throw new Error('服务单号生成失败')
+  let serviceOrderId: string
+  try {
+    serviceOrderId = await db.transaction(async (tx) => {
+      const idRows = await tx.execute(sql`
+        WITH lock AS (
+          SELECT pg_advisory_xact_lock(hashtext('service_order_id_gen'))
+        )
+        SELECT 'FY-FW-' || to_char(NOW(), 'YYMMDD') ||
+          LPAD(
+            (SELECT COALESCE(MAX(
+              CAST(NULLIF(SUBSTRING(service_order_id FROM '.{4}$'), '') AS INTEGER)
+            ), 0) + 1
+            FROM service_orders
+            WHERE service_order_id LIKE 'FY-FW-' || to_char(NOW(), 'YYMMDD') || '%'
+            )::TEXT, 4, '0'
+          ) AS id
+        FROM lock
+      `)
+      const id = (idRows as any[])[0]?.id as string
+      if (!id) throw new Error('服务单号生成失败')
 
-    await tx.insert(serviceOrders).values({
-      serviceOrderId: id,
-      status: '待服务',
-      serviceOrderType: data.serviceOrderType || '普通',
-      marketName: data.marketName,
-      storeId: data.storeId,
-      serviceDate: data.serviceDate,
-      assignedEmployeeId: data.assignedEmployeeId,
-      clientUserId: data.clientUserId,
-      appointmentId: data.appointmentId || null,
-      remark: data.remark || null,
-    })
-
-    for (let i = 0; i < data.items.length; i++) {
-      const item = data.items[i]
-      const serviceItemId = `${id}-${String(i + 1).padStart(2, '0')}`
-      const snapshot = saleItemSnapshots[i]
-
-      await tx.insert(serviceItems).values({
-        serviceItemId,
+      await tx.insert(serviceOrders).values({
         serviceOrderId: id,
-        saleItemId: item.saleItemId,
-        sessionUsed: item.sessionUsed,
-        unitRealPrice: snapshot.unitRealPrice || '0',
-        employeeId: data.assignedEmployeeId,
+        status: '待服务',
+        serviceOrderType: data.serviceOrderType || '普通',
+        marketName: data.marketName,
+        storeId: data.storeId,
+        serviceDate: data.serviceDate,
+        assignedEmployeeId: data.assignedEmployeeId,
+        clientUserId: data.clientUserId,
+        appointmentId: data.appointmentId || null,
+        remark: data.remark || null,
       })
-    }
 
-    return id
-  })
+      for (let i = 0; i < data.items.length; i++) {
+        const item = data.items[i]
+        const serviceItemId = `${id}-${String(i + 1).padStart(2, '0')}`
+        const snapshot = saleItemSnapshots[i]
+
+        await tx.insert(serviceItems).values({
+          serviceItemId,
+          serviceOrderId: id,
+          saleItemId: item.saleItemId,
+          sessionUsed: item.sessionUsed,
+          unitRealPrice: snapshot.unitRealPrice || '0',
+          employeeId: data.assignedEmployeeId,
+        })
+      }
+
+      return id
+    })
+  } catch (err: any) {
+    // PG 外键违反（storeId / clientUserId / assignedEmployeeId 不存在）
+    if (err?.code === '23503') {
+      return { success: false, message: '关联数据不存在，请检查员工或顾客信息' }
+    }
+    throw err
+  }
 
   await logOperation(session, 'service.create', 'service_order', serviceOrderId, {
     storeId: data.storeId, itemCount: data.items.length,

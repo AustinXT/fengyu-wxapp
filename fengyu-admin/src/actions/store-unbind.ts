@@ -75,21 +75,26 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  // 更新请求状态
-  await db
-    .update(storeUnbindRequests)
-    .set({
-      status: 'approved',
-      reviewedBy: session.employeeId,
-      reviewedAt: new Date(),
-    })
-    .where(eq(storeUnbindRequests.requestId, requestId))
+  // 更新请求状态 + 清除顾客绑定（原子事务，防止部分成功导致数据不一致）
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(storeUnbindRequests)
+        .set({
+          status: 'approved',
+          reviewedBy: session.employeeId,
+          reviewedAt: new Date(),
+        })
+        .where(eq(storeUnbindRequests.requestId, requestId))
 
-  // 清除顾客的绑定门店
-  await db
-    .update(clientWechatUsers)
-    .set({ boundStoreId: null, boundEmployeeId: null })
-    .where(eq(clientWechatUsers.userId, request.userId))
+      await tx
+        .update(clientWechatUsers)
+        .set({ boundStoreId: null, boundEmployeeId: null })
+        .where(eq(clientWechatUsers.userId, request.userId))
+    })
+  } catch (err: any) {
+    throw err
+  }
 
   await logOperation(session, 'store_unbind.approve', 'store_unbind_request', requestId, {
     userId: request.userId, fromStoreId: request.fromStoreId,
@@ -122,15 +127,19 @@ export async function rejectUnbind(
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  await db
-    .update(storeUnbindRequests)
-    .set({
-      status: 'rejected',
-      reviewedBy: session.employeeId,
-      reviewedAt: new Date(),
-      rejectReason: reason,
-    })
-    .where(eq(storeUnbindRequests.requestId, requestId))
+  try {
+    await db
+      .update(storeUnbindRequests)
+      .set({
+        status: 'rejected',
+        reviewedBy: session.employeeId,
+        reviewedAt: new Date(),
+        rejectReason: reason,
+      })
+      .where(eq(storeUnbindRequests.requestId, requestId))
+  } catch (err: any) {
+    throw err
+  }
 
   await logOperation(session, 'store_unbind.reject', 'store_unbind_request', requestId, {
     userId: request.userId, reason,

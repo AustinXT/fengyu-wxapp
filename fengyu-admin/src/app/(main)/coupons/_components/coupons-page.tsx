@@ -132,7 +132,7 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
       header: "已发/总量",
       cell: (row) => (
         <span>
-          0 / {row.totalCount ?? "不限"}
+          {row.issuedCount} / {row.totalCount ?? "不限"}
         </span>
       ),
     },

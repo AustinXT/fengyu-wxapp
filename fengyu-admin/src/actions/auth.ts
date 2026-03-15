@@ -93,8 +93,8 @@ export async function login(
 
   clearFailure(phone)
 
-  // 签发 JWT
-  const token = await new SignJWT({ employeeId: staff.employeeId })
+  // 签发 JWT（含 mustChange 标记，供 middleware 零 DB 查询判断）
+  const token = await new SignJWT({ employeeId: staff.employeeId, mustChange: pwRow.mustChange })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(JWT_EXPIRES)
     .setIssuedAt()
@@ -139,8 +139,8 @@ export async function changePassword(
 
   await logOperation(session, 'auth.changePassword', 'admin_password', session.employeeId)
 
-  // 重新签发 JWT（使 mustChange 状态更新）
-  const token = await new SignJWT({ employeeId: session.employeeId })
+  // 重新签发 JWT（mustChange: false，使强制修改密码流程立即解除）
+  const token = await new SignJWT({ employeeId: session.employeeId, mustChange: false })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(JWT_EXPIRES)
     .setIssuedAt()

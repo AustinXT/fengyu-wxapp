@@ -224,10 +224,15 @@ export async function createProduct(data: {
     return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
-  await db.insert(products).values({
-    ...data,
-    salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
-  })
+  try {
+    await db.insert(products).values({
+      ...data,
+      salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
+    throw err
+  }
 
   await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
   revalidatePath('/products')
@@ -271,8 +276,11 @@ export async function updateProduct(
     })
     .where(whereConditions)
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
+    }
   }
 
   await logOperation(session, 'product.update', 'product', productId, data)
@@ -290,10 +298,15 @@ export async function createCategory(data: {
   const session = await getSession()
   requirePermission(session, 'product:create')
 
-  await db.insert(productCategories).values({
-    ...data,
-    productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
-  })
+  try {
+    await db.insert(productCategories).values({
+      ...data,
+      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+    throw err
+  }
 
   await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
   revalidatePath('/products')
@@ -327,8 +340,11 @@ export async function updateCategory(
     })
     .where(whereConditions)
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '分类不存在',
+    }
   }
 
   await logOperation(session, 'category.update', 'product_category', categoryId, data)
@@ -385,10 +401,16 @@ export async function createSku(data: {
     return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
-  await db.insert(productSkus).values({
-    ...data,
-    productType: data.productType as typeof productSkus.$inferInsert['productType'],
-  })
+  try {
+    await db.insert(productSkus).values({
+      ...data,
+      productType: data.productType as typeof productSkus.$inferInsert['productType'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: 'SKU 编号已存在' }
+    if (err?.code === '23503') return { success: false, message: '商品不存在，请检查 productId' }
+    throw err
+  }
 
   await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
   revalidatePath('/products')
@@ -427,8 +449,11 @@ export async function updateSku(
     })
     .where(whereConditions)
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : 'SKU 不存在',
+    }
   }
 
   await logOperation(session, 'sku.update', 'product_sku', skuId, data)

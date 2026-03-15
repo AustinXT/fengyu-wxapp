@@ -262,17 +262,35 @@ export async function updateCustomer(
   const session = await getSession()
   requirePermission(session, 'customer:update')
 
+  // 服务端输入校验
+  if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+
+  const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const whereConditions = expectedUpdatedAt
-    ? and(eq(clientWechatUsers.userId, userId), eq(clientWechatUsers.updatedAt, new Date(expectedUpdatedAt)))
-    : eq(clientWechatUsers.userId, userId)
+    ? and(
+        eq(clientWechatUsers.userId, userId),
+        eq(clientWechatUsers.updatedAt, new Date(expectedUpdatedAt)),
+        scopeCond,
+      )
+    : and(eq(clientWechatUsers.userId, userId), scopeCond)
 
-  const result = await db
-    .update(clientWechatUsers)
-    .set(data)
-    .where(whereConditions)
+  let result: any
+  try {
+    result = await db.update(clientWechatUsers).set(data).where(whereConditions)
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return { success: false, message: '该手机号已被其他顾客使用' }
+    }
+    throw err
+  }
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '顾客不存在或无权修改',
+    }
   }
 
   await logOperation(session, 'customer.update', 'customer', userId, data)
@@ -291,6 +309,17 @@ export async function createCustomer(data: {
   const session = await getSession()
   requirePermission(session, 'customer:create')
 
+  // 服务端输入校验
+  if (!data.name?.trim()) {
+    return { success: false, message: '姓名不能为空' }
+  }
+  if (!data.phone?.trim()) {
+    return { success: false, message: '请输入手机号' }
+  }
+  if (!/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+
   // 检查手机号是否已存在
   const existing = await db
     .select({ userId: clientWechatUsers.userId })
@@ -306,13 +335,20 @@ export async function createCustomer(data: {
   const { randomBytes } = await import('crypto')
   const userId = `FYGK-${randomBytes(6).toString('hex')}`
 
-  await db.insert(clientWechatUsers).values({
-    userId,
-    phone: data.phone,
-    name: data.name,
-    boundStoreId: data.boundStoreId ?? null,
-    boundEmployeeId: data.boundEmployeeId ?? null,
-  })
+  try {
+    await db.insert(clientWechatUsers).values({
+      userId,
+      phone: data.phone,
+      name: data.name,
+      boundStoreId: data.boundStoreId ?? null,
+      boundEmployeeId: data.boundEmployeeId ?? null,
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return { success: false, message: '该手机号已被其他顾客使用' }
+    }
+    throw err
+  }
 
   await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
 

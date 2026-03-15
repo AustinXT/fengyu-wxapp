@@ -66,14 +66,20 @@ export async function createOrgNode(data: {
     }
   }
 
-  await db.insert(orgNodes).values({
-    id: data.id,
-    name: data.name,
-    type: data.type,
-    parentId: data.parentId,
-    sortOrder: data.sortOrder,
-    isActive: data.isActive,
-  })
+  try {
+    await db.insert(orgNodes).values({
+      id: data.id,
+      name: data.name,
+      type: data.type,
+      parentId: data.parentId,
+      sortOrder: data.sortOrder,
+      isActive: data.isActive,
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '节点编号已存在' }
+    if (err?.code === '23503') return { success: false, message: '父节点不存在，请刷新后重试' }
+    throw err
+  }
 
   await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
   revalidatePath('/org')
@@ -104,10 +110,18 @@ export async function updateOrgNode(
     ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
     : eq(orgNodes.id, id)
 
-  const result = await db.update(orgNodes).set(data).where(whereConditions)
+  let result: any
+  try {
+    result = await db.update(orgNodes).set(data).where(whereConditions)
+  } catch (err: any) {
+    throw err
+  }
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '节点不存在',
+    }
   }
 
   await logOperation(session, 'org.update', 'org_node', id, data)
@@ -169,10 +183,18 @@ export async function deleteOrgNode(
     ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
     : eq(orgNodes.id, id)
 
-  const result = await db.update(orgNodes).set({ isActive: false }).where(whereConditions)
+  let deleteResult: any
+  try {
+    deleteResult = await db.update(orgNodes).set({ isActive: false }).where(whereConditions)
+  } catch (err: any) {
+    throw err
+  }
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((deleteResult as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '节点不存在',
+    }
   }
 
   await logOperation(session, 'org.delete', 'org_node', id)

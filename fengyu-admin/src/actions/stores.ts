@@ -95,36 +95,42 @@ export async function createStore(data: {
 
   // 事务：org_node + stores 原子创建，失败则全部回滚
   const orgNodeId = `store-${data.storeId}`
-  await db.transaction(async (tx) => {
-    await tx.insert(orgNodes).values({
-      id: orgNodeId,
-      name: data.storeName,
-      type: 'store',
-      parentId: data.marketId,
-      sortOrder: 0,
-      isActive: true,
-    })
+  try {
+    await db.transaction(async (tx) => {
+      await tx.insert(orgNodes).values({
+        id: orgNodeId,
+        name: data.storeName,
+        type: 'store',
+        parentId: data.marketId,
+        sortOrder: 0,
+        isActive: true,
+      })
 
-    await tx.insert(stores).values({
-      storeId: data.storeId,
-      storeName: data.storeName,
-      orgNodeId,
-      openingDate: data.openingDate ?? null,
-      bedCount: data.bedCount ?? null,
-      isClosed: data.isClosed ?? false,
-      coverImage: data.coverImage ?? null,
-      images: data.images ?? null,
-      district: data.district ?? null,
-      streetAddress: data.streetAddress ?? null,
-      latitude: data.latitude ?? null,
-      longitude: data.longitude ?? null,
-      phone: data.phone ?? null,
-      businessHours: data.businessHours ?? null,
-      description: data.description ?? null,
-      announcement: data.announcement ?? null,
-      parkingInfo: data.parkingInfo ?? null,
+      await tx.insert(stores).values({
+        storeId: data.storeId,
+        storeName: data.storeName,
+        orgNodeId,
+        openingDate: data.openingDate ?? null,
+        bedCount: data.bedCount ?? null,
+        isClosed: data.isClosed ?? false,
+        coverImage: data.coverImage ?? null,
+        images: data.images ?? null,
+        district: data.district ?? null,
+        streetAddress: data.streetAddress ?? null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        phone: data.phone ?? null,
+        businessHours: data.businessHours ?? null,
+        description: data.description ?? null,
+        announcement: data.announcement ?? null,
+        parkingInfo: data.parkingInfo ?? null,
+      })
     })
-  })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '门店编号已存在' }
+    if (err?.code === '23503') return { success: false, message: '所属市场不存在，请刷新后重试' }
+    throw err
+  }
 
   await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
   revalidatePath('/stores')
@@ -162,10 +168,18 @@ export async function updateStore(
     ? and(eq(stores.storeId, storeId), eq(stores.updatedAt, new Date(expectedUpdatedAt)))
     : eq(stores.storeId, storeId)
 
-  const result = await db.update(stores).set(data).where(whereConditions)
+  let result: any
+  try {
+    result = await db.update(stores).set(data).where(whereConditions)
+  } catch (err: any) {
+    throw err
+  }
 
-  if (expectedUpdatedAt && (result as any).rowCount === 0) {
-    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  if ((result as any).rowCount === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '门店不存在',
+    }
   }
 
   await logOperation(session, 'store.update', 'store', storeId, data)
