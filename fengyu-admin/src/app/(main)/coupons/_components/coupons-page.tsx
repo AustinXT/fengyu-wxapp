@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { toast } from "sonner"
 import { toggleTemplateActive } from "@/actions/coupons"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
@@ -150,16 +151,13 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
               try {
                 const res = await toggleTemplateActive(row.templateId, !row.isActive, row.updatedAt)
                 if (res.success) {
-                  const { toast } = await import('sonner')
                   toast.success(res.message)
                   router.refresh()
                 } else {
-                  const { toast } = await import('sonner')
                   toast.error(res.message)
                   if (res.message.includes('已被其他人修改')) router.refresh()
                 }
               } catch {
-                const { toast } = await import('sonner')
                 toast.error(`${action}失败`)
               }
             }}

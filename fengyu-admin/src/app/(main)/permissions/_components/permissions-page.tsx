@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
+import { toast } from "sonner"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
@@ -154,16 +155,13 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                                 try {
                                   const res = await revokeRole(pr.id, pr.updatedAt)
                                   if (res.success) {
-                                    const { toast } = await import('sonner')
                                     toast.success(res.message)
                                     router.refresh()
                                   } else {
-                                    const { toast } = await import('sonner')
                                     toast.error(res.message)
                                     if (res.message.includes('已被其他人修改')) router.refresh()
                                   }
                                 } catch {
-                                  const { toast } = await import('sonner')
                                   toast.error('撤销失败，请稍后重试')
                                 }
                               }}
@@ -323,18 +321,15 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                   scopeId: assignScopeId,
                 })
                 if (res.success) {
-                  const { toast } = await import('sonner')
                   toast.success(res.message)
                   setDialogOpen(false)
                   setAssignEmployeeId("")
                   setAssignScopeId("")
                   router.refresh()
                 } else {
-                  const { toast } = await import('sonner')
                   toast.error(res.message)
                 }
               } catch {
-                const { toast } = await import('sonner')
                 toast.error('分配失败，请稍后重试')
               } finally {
                 setAssigning(false)
