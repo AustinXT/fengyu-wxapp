@@ -188,6 +188,7 @@ Page({
   },
 
   onResetFailed() {
+    if (this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '重置支付',
@@ -195,6 +196,7 @@ Page({
       confirmText: '确认重置',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.resetFailed', { orderNo: saleOrderId });
           wx.showToast({ title: '已重置', icon: 'success' });
@@ -202,12 +204,15 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
   },
 
-  async onConfirmOffline() {
+  onConfirmOffline() {
+    if (this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '确认线下收款',
@@ -215,6 +220,7 @@ Page({
       confirmText: '确认收款',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.confirmOffline', { orderNo: saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
@@ -222,12 +228,15 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
   },
 
   onCloseOrder() {
+    if (this.data.submitting) return;
     const saleOrderId = this.data._saleOrderId;
     wx.showModal({
       title: '取消订单',
@@ -236,6 +245,7 @@ Page({
       confirmColor: '#D94040',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.close', { orderNo: saleOrderId });
           wx.showToast({ title: '订单已取消', icon: 'success' });
@@ -243,6 +253,8 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
@@ -307,6 +319,7 @@ Page({
 
   // ===== P2: 审批退款 =====
   onApproveRefund() {
+    if (this.data.submitting) return;
     wx.showModal({
       title: '审批退款',
       content: '确认通过此退款申请？审批后将扣减对应次数。',
@@ -314,6 +327,7 @@ Page({
       confirmColor: '#C0322A',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.approveRefund', { saleOrderId: this.data._saleOrderId });
           wx.showToast({ title: '退款已审批', icon: 'success' });
@@ -321,12 +335,15 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
   },
 
   onRejectRefund() {
+    if (this.data.submitting) return;
     wx.showModal({
       title: '驳回退款',
       content: '确认驳回此退款申请？',
@@ -334,6 +351,7 @@ Page({
       confirmColor: '#D94040',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.rejectRefund', { saleOrderId: this.data._saleOrderId });
           wx.showToast({ title: '退款已驳回', icon: 'success' });
@@ -341,6 +359,8 @@ Page({
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : '操作失败';
           wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });

@@ -1,6 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { formatDateTime } from '../../utils/format';
 
 interface OrderDetailItem {
   sale_item_id: string;
@@ -80,8 +81,6 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = (data?.order || {}) as OrderDetailData;
       const items: OrderDetailItem[] = data?.items || [];
-      const rawDt = String(order.sale_order_datetime);
-      const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
@@ -90,7 +89,7 @@ Page({
             i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
           );
 
-      // 格式化支付到期时间
+      // 格式化支付到期时间（仅时间 HH:mm）
       let expireTimeFmt = '';
       if (order.status === '待支付' && order.expire_at) {
         const rawExp = String(order.expire_at);
@@ -102,7 +101,7 @@ Page({
         order: {
           ...order,
           items,
-          order_time_fmt: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
+          order_time_fmt: formatDateTime(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
         },
         statusIcon: iconMeta.icon,
