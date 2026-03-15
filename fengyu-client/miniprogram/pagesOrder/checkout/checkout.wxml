@@ -45,22 +45,6 @@ module.exports.date = function(s) {
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
 
-  <!-- 消费协议 -->
-  <van-cell-group title="消费协议" inset>
-    <van-cell>
-      <view slot="title" class="agreement-row">
-        <van-checkbox
-          value="{{agreed}}"
-          shape="round"
-          bind:change="onAgreementChange"
-        >
-          <text class="agreement-text">我已阅读并同意</text>
-          <text class="agreement-link" bindtap="onViewAgreement">《服务消费协议》</text>
-        </van-checkbox>
-      </view>
-    </van-cell>
-  </van-cell-group>
-
   <!-- 支付方式 -->
   <van-cell-group title="支付方式" inset>
     <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
@@ -92,11 +76,27 @@ module.exports.date = function(s) {
       value="{{selectedCoupon ? '-¥' + price.fmt(couponDiscount) : '去选择'}}"
       value-class="{{selectedCoupon ? 'coupon-selected-value' : 'coupon-unselected-value'}}"
     />
-    <van-cell wx:else title="优惠" value="- ¥0.00" />
+    <van-cell wx:else title="优惠" value="{{couponDiscount > 0 ? '-¥' + price.fmt(couponDiscount) : '- ¥0.00'}}" value-class="{{couponDiscount > 0 ? 'coupon-selected-value' : ''}}" />
     <van-cell title="实付" class="total-row">
       <view slot="right-icon" class="total-amount">
         <text class="total-symbol">¥</text>
         <text class="total-value">{{price.fmt((fromCart ? totalPrice : (unitPrice * quantity)) - couponDiscount)}}</text>
+      </view>
+    </van-cell>
+  </van-cell-group>
+
+  <!-- 消费协议 -->
+  <van-cell-group title="消费协议" inset>
+    <van-cell>
+      <view slot="title" class="agreement-row">
+        <van-checkbox
+          value="{{agreed}}"
+          shape="round"
+          bind:change="onAgreementChange"
+        >
+          <text class="agreement-text">我已阅读并同意</text>
+          <text class="agreement-link" bindtap="onViewAgreement">《服务消费协议》</text>
+        </van-checkbox>
       </view>
     </van-cell>
   </van-cell-group>
@@ -190,43 +190,10 @@ module.exports.date = function(s) {
 </van-popup>
 
 <!-- 美容师选择 Popup -->
-<van-popup
+<staff-popup
   show="{{showStaffPopup}}"
-  position="bottom"
-  round
-  closeable
+  staff-list="{{staffList}}"
+  selected-id="{{staffWfId}}"
+  bind:select="onStaffSelect"
   bind:close="onCloseStaffPopup"
->
-  <view class="staff-popup">
-    <view class="staff-popup__title">选择美容师</view>
-    <view class="staff-list">
-      <!-- 不指定 -->
-      <view
-        class="staff-item {{!staffWfId ? 'staff-item--active' : ''}}"
-        bindtap="onStaffSelect"
-        data-wf-id=""
-        data-name=""
-      >
-        <view class="staff-avatar">
-          <van-icon name="user-o" size="48rpx" color="#B09880" />
-        </view>
-        <text class="staff-name">不指定</text>
-      </view>
-      <!-- 美容师列表 -->
-      <view
-        wx:for="{{staffList}}"
-        wx:key="employee_id"
-        class="staff-item {{staffWfId === item.employee_id ? 'staff-item--active' : ''}}"
-        bindtap="onStaffSelect"
-        data-wf-id="{{item.employee_id}}"
-        data-name="{{item.name}}"
-      >
-        <view class="staff-avatar">
-          <van-icon name="manager-o" size="48rpx" color="#C0322A" />
-        </view>
-        <text class="staff-name">{{item.name}}</text>
-        <text class="staff-title">{{item.position}}</text>
-      </view>
-    </view>
-  </view>
-</van-popup>
+/>

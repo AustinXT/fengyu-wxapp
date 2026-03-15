@@ -84,7 +84,7 @@
   width: 16rpx;
   height: 16rpx;
   border-radius: 8rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   position: absolute;
   top: 32rpx;
   right: 0;

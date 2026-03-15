@@ -6,11 +6,11 @@ import { formatDate } from '../../utils/format';
 const app = getApp<IAppOption>();
 
 const TIME_SLOTS = [
-  { text: '上午 09:00-11:00', value: '09:00-11:00' },
-  { text: '上午 11:00-13:00', value: '11:00-13:00' },
-  { text: '下午 13:00-15:00', value: '13:00-15:00' },
-  { text: '下午 15:00-17:00', value: '15:00-17:00' },
-  { text: '下午 17:00-19:00', value: '17:00-19:00' },
+  { label: '09-11', text: '上午 09:00-11:00', value: '09:00-11:00' },
+  { label: '11-13', text: '上午 11:00-13:00', value: '11:00-13:00' },
+  { label: '13-15', text: '下午 13:00-15:00', value: '13:00-15:00' },
+  { label: '15-17', text: '下午 15:00-17:00', value: '15:00-17:00' },
+  { label: '17-19', text: '下午 17:00-19:00', value: '17:00-19:00' },
 ];
 
 Page({
@@ -37,7 +37,6 @@ Page({
 
     // UI 状态
     showCalendar: false,
-    showTimePicker: false,
     showStaffPopup: false,
     timeSlots: TIME_SLOTS,
     submitting: false,
@@ -74,7 +73,7 @@ Page({
       const items: any[] = [];
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
-        for (const item of order.items) {
+        for (const item of (order.items || [])) {
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
@@ -157,26 +156,42 @@ Page({
     const d = e.detail;
     const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
+    this._updateDisabledSlots(fmt);
   },
 
-  onShowTimePicker() {
-    this.setData({ showTimePicker: true });
-  },
+  /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
+  _updateDisabledSlots(dateStr: string) {
+    const today = formatDate(new Date().toISOString());
+    const isToday = dateStr === today;
+    const currentHour = new Date().getHours();
 
-  onCloseTimePicker() {
-    this.setData({ showTimePicker: false });
-  },
+    const updatedSlots = TIME_SLOTS.map(slot => {
+      // 取时段开始小时：'09:00-11:00' → 9
+      const startHour = parseInt(slot.value.split(':')[0], 10);
+      const disabled = isToday && currentHour >= startHour;
+      return { ...slot, disabled };
+    });
+    this.setData({ timeSlots: updatedSlots });
 
-  onTimeConfirm(e: WechatMiniprogram.CustomEvent) {
-    const { index } = e.detail;
-    const slot = TIME_SLOTS[index];
-    if (slot) {
-      this.setData({
-        appointmentTimeSlot: slot.value,        // "HH:MM-HH:MM" 供提交
-        _timeSlotDisplay: slot.text,            // 中文展示
-        showTimePicker: false,
-      });
+    // 若当前已选时段变为禁用，则清空选择
+    if (this.data.appointmentTimeSlot) {
+      const selected = updatedSlots.find(s => s.value === this.data.appointmentTimeSlot);
+      if (selected?.disabled) {
+        this.setData({ appointmentTimeSlot: '', _timeSlotDisplay: '' });
+      }
     }
+  },
+
+  onTimeSlotTap(e: WechatMiniprogram.TouchEvent) {
+    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean };
+    if (disabled) {
+      Toast('该时段已过，请选择其他时段');
+      return;
+    }
+    this.setData({
+      appointmentTimeSlot: value,
+      _timeSlotDisplay: text,
+    });
   },
 
   onShowStaffPopup() {
@@ -187,8 +202,8 @@ Page({
     this.setData({ showStaffPopup: false });
   },
 
-  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
-    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+  onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
+    const { wfId, name } = e.detail;
     this.setData({ selectedStaffWfId: wfId, selectedStaffName: name, showStaffPopup: false });
   },
 
@@ -201,6 +216,16 @@ Page({
     if (!appointmentDate || !appointmentTimeSlot) {
       Toast.fail('请选择预约日期和时段');
       return;
+    }
+    // 安全校验：防止提交当天已过时段
+    const today = formatDate(new Date().toISOString());
+    if (appointmentDate === today) {
+      const startHour = parseInt(appointmentTimeSlot.split(':')[0], 10);
+      if (new Date().getHours() >= startHour) {
+        Toast.fail('所选时段已过，请重新选择');
+        this._updateDisabledSlots(appointmentDate);
+        return;
+      }
     }
     if (this.data.submitting) return;
     this.setData({ submitting: true });

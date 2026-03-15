@@ -10,9 +10,9 @@
     "van-button": "@vant/weapp/button/index",
     "van-empty": "@vant/weapp/empty/index",
     "van-popup": "@vant/weapp/popup/index",
-    "van-picker": "@vant/weapp/picker/index",
     "van-calendar": "@vant/weapp/calendar/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-overlay": "@vant/weapp/overlay/index"
+    "van-overlay": "@vant/weapp/overlay/index",
+    "staff-popup": "../../components/staff-popup/staff-popup"
   }
 }

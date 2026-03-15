@@ -140,7 +140,7 @@
 }
 
 .tx-positive {
-  color: #52C41A;
+  color: var(--color-success);
 }
 
 .tx-negative {

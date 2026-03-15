@@ -1,6 +1,7 @@
 // pagesShop/shopping-cart/shopping-cart.ts
 import Toast from "@vant/weapp/toast/toast";
-import { getCart, updateQuantity, removeFromCart } from "../../utils/cart";
+import Dialog from "@vant/weapp/dialog/dialog";
+import { getCart, updateQuantity, removeFromCart, clearCart } from "../../utils/cart";
 
 interface CartItemDisplay {
   skuId: string;
@@ -10,6 +11,7 @@ interface CartItemDisplay {
   coverImage: string;
   price: number;
   quantity: number;
+  bigCategory: string;
   checked: boolean;
 }
 
@@ -36,6 +38,7 @@ Page({
       coverImage: item.coverImage,
       price: item.price,
       quantity: item.quantity,
+      bigCategory: item.bigCategory || '',
       checked: true,
     }));
 
@@ -81,6 +84,20 @@ Page({
     updateQuantity(item.skuId, quantity);
     this.setData({ [`cartItems[${index}].quantity`]: quantity });
     this.calcTotal();
+  },
+
+  async onClearAll() {
+    try {
+      await Dialog.confirm({
+        title: '清空购物车',
+        message: '确定要清空购物车中的所有商品吗？',
+      });
+      clearCart();
+      this.setData({ cartItems: [], isEmpty: true, allChecked: true, totalPrice: 0, totalCount: 0 });
+      Toast.success('已清空');
+    } catch {
+      // 用户取消
+    }
   },
 
   onDeleteItem(e: WechatMiniprogram.TouchEvent) {

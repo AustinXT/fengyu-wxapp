@@ -193,3 +193,16 @@ page {
   font-size: 26rpx;
   color: var(--color-text-hint);
 }
+
+/* ===== 列表分页底部（全局复用） ===== */
+.list-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 32rpx 0 48rpx;
+}
+
+.list-footer__end {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}

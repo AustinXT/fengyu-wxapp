@@ -52,12 +52,21 @@
       is-link
       bindtap="onShowDatePicker"
     />
-    <van-cell
-      title="到店时段"
-      value="{{_timeSlotDisplay || '请选择'}}"
-      is-link
-      bindtap="onShowTimePicker"
-    />
+    <van-cell title="到店时段" border="{{false}}">
+      <view slot="label" class="time-slots">
+        <view
+          wx:for="{{timeSlots}}"
+          wx:key="value"
+          class="time-slot-tag {{appointmentTimeSlot === item.value ? 'time-slot-tag--active' : ''}} {{item.disabled ? 'time-slot-tag--disabled' : ''}}"
+          bindtap="onTimeSlotTap"
+          data-value="{{item.value}}"
+          data-text="{{item.text}}"
+          data-disabled="{{item.disabled}}"
+        >
+          <text>{{item.label}}</text>
+        </view>
+      </view>
+    </van-cell>
   </van-cell-group>
 
   <!-- 选择美容师（可选） -->
@@ -92,7 +101,7 @@
       round
       size="large"
       loading="{{submitting}}"
-      disabled="{{!appointmentDate || !_timeSlotDisplay || submitting}}"
+      disabled="{{!appointmentDate || !appointmentTimeSlot || submitting}}"
       bindtap="onSubmit"
     >提交预约申请</van-button>
   </view>
@@ -107,22 +116,6 @@
     color="#C0322A"
     title="选择到店日期"
   />
-
-  <!-- 时段选择 Popup -->
-  <van-popup
-    show="{{showTimePicker}}"
-    position="bottom"
-    round
-    bind:close="onCloseTimePicker"
-  >
-    <van-picker
-      show-toolbar
-      title="选择到店时段"
-      columns="{{timeSlots}}"
-      bind:confirm="onTimeConfirm"
-      bind:cancel="onCloseTimePicker"
-    />
-  </van-popup>
 
   <!-- 手机号绑定 Overlay -->
   <van-overlay show="{{showPhoneBind}}" bind:click="onClosePhoneBind">
@@ -140,43 +133,12 @@
   </van-overlay>
 
   <!-- 美容师选择 Popup -->
-  <van-popup
+  <staff-popup
     show="{{showStaffPopup}}"
-    position="bottom"
-    round
-    closeable
+    staff-list="{{staffList}}"
+    selected-id="{{selectedStaffWfId}}"
+    bind:select="onStaffSelect"
     bind:close="onCloseStaffPopup"
-  >
-    <view class="staff-popup">
-      <view class="staff-popup__title">选择美容师</view>
-      <view class="staff-list">
-        <view
-          class="staff-item {{!selectedStaffWfId ? 'staff-item--active' : ''}}"
-          bindtap="onStaffSelect"
-          data-wf-id=""
-          data-name=""
-        >
-          <view class="staff-avatar">
-            <van-icon name="user-o" size="48rpx" color="#B09880" />
-          </view>
-          <text class="staff-name">不指定</text>
-        </view>
-        <view
-          wx:for="{{staffList}}"
-          wx:key="employee_id"
-          class="staff-item {{selectedStaffWfId === item.employee_id ? 'staff-item--active' : ''}}"
-          bindtap="onStaffSelect"
-          data-wf-id="{{item.employee_id}}"
-          data-name="{{item.name}}"
-        >
-          <view class="staff-avatar">
-            <van-icon name="manager-o" size="48rpx" color="#C0322A" />
-          </view>
-          <text class="staff-name">{{item.name}}</text>
-          <text class="staff-role">{{item.position}}</text>
-        </view>
-      </view>
-    </view>
-  </van-popup>
+  />
 
 </view>

@@ -20,6 +20,32 @@
   margin-top: 24rpx;
 }
 
+/* ===== 购物车头部操作栏 ===== */
+.cart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 24rpx;
+  flex-shrink: 0;
+}
+
+.cart-header-count {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.cart-header-clear {
+  display: flex;
+  align-items: center;
+  gap: 4rpx;
+  padding: 8rpx 0;
+}
+
+.cart-header-clear-text {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
 /* ===== 购物车内容 ===== */
 .cart-content {
   flex: 1;
@@ -77,6 +103,12 @@
   min-width: 0;
 }
 
+.cart-item-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
 .cart-item-name {
   font-size: 26rpx;
   font-weight: 600;
@@ -84,6 +116,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .cart-item-sku {

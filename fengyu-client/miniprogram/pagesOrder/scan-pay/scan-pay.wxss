@@ -57,10 +57,21 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+.order-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+}
+
 .order-store {
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);
+}
+
+.order-opener {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
 }
 
 /* ===== 商品明细 ===== */
@@ -71,8 +82,7 @@
 
 .order-item {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
   padding: 16rpx 0;
   border-bottom: 1px solid var(--color-border);
 }
@@ -81,8 +91,24 @@
   border-bottom: none;
 }
 
-.item-left {
+.item-cover {
+  width: 96rpx;
+  height: 96rpx;
+  flex-shrink: 0;
+  border-radius: 8rpx;
+  margin-right: 16rpx;
+}
+
+.item-cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-section);
+}
+
+.item-info {
   flex: 1;
+  min-width: 0;
 }
 
 .item-name {

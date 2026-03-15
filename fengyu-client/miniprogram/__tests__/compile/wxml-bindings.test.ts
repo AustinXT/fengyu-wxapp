@@ -1,6 +1,6 @@
 /**
  * WXML 绑定完整性测试
- * 检查所有页面 .wxml 中的事件 handler 在对应 .ts 文件中都有定义
+ * 检查所有页面和组件 .wxml 中的事件 handler 在对应 .ts 文件中都有定义
  */
 import fs from 'fs'
 import path from 'path'
@@ -19,6 +19,26 @@ function getAllPages(): string[] {
   return pages
 }
 
+/** 扫描 components/ 目录下的自定义组件 */
+function getAllComponents(): string[] {
+  const compsDir = path.join(ROOT, 'components')
+  if (!fs.existsSync(compsDir)) return []
+  const result: string[] = []
+  for (const dir of fs.readdirSync(compsDir)) {
+    const jsonPath = path.join(compsDir, dir, `${dir}.json`)
+    if (!fs.existsSync(jsonPath)) continue
+    try {
+      const json = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
+      if (json.component) result.push(`components/${dir}/${dir}`)
+    } catch { /* skip */ }
+  }
+  return result
+}
+
+function getAllTargets(): string[] {
+  return [...getAllPages(), ...getAllComponents()]
+}
+
 function extractWxmlHandlers(wxmlContent: string): Set<string> {
   const handlers = new Set<string>()
   const re = /(?:bind:|catch:|mut-bind:|bind|catch)[\w-]+=["'](\w+)["']/g
@@ -29,6 +49,7 @@ function extractWxmlHandlers(wxmlContent: string): Set<string> {
   return handlers
 }
 
+/** 提取 Page({}) 顶层方法（2 空格缩进） */
 function extractPageMethods(tsContent: string): Set<string> {
   const methods = new Set<string>()
   const re = /^ {2}(?:async\s+)?(\w+)\s*[\(:{,]/gm
@@ -39,21 +60,36 @@ function extractPageMethods(tsContent: string): Set<string> {
   return methods
 }
 
-describe('WXML 事件绑定完整性', () => {
-  const pages = getAllPages()
+/** 提取 Component methods:{} 块中的方法（4 空格缩进） */
+function extractComponentMethods(tsContent: string): Set<string> {
+  const methods = new Set<string>()
+  const re = /^ {4}(?:async\s+)?(\w+)\s*[\(:{,]/gm
+  let m: RegExpExecArray | null
+  while ((m = re.exec(tsContent)) !== null) {
+    methods.add(m[1])
+  }
+  return methods
+}
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
-    const tsPath = path.join(ROOT, page + '.ts')
+describe('WXML 事件绑定完整性', () => {
+  const targets = getAllTargets()
+
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
+    const tsPath = path.join(ROOT, target + '.ts')
 
     if (!fs.existsSync(wxmlPath) || !fs.existsSync(tsPath)) continue
 
-    test(`${page} — 所有 handler 绑定有效`, () => {
+    const isComponent = target.startsWith('components/')
+
+    test(`${target} — 所有 handler 绑定有效`, () => {
       const wxmlContent = fs.readFileSync(wxmlPath, 'utf-8')
       const tsContent = fs.readFileSync(tsPath, 'utf-8')
 
       const handlers = extractWxmlHandlers(wxmlContent)
-      const methods = extractPageMethods(tsContent)
+      const methods = isComponent
+        ? extractComponentMethods(tsContent)
+        : extractPageMethods(tsContent)
 
       const missing: string[] = []
       for (const handler of handlers) {
@@ -72,13 +108,13 @@ describe('WXML 事件绑定完整性', () => {
 })
 
 describe('WXML 语法基础验证', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — WXML 标签闭合正确`, () => {
+    test(`${target} — WXML 标签闭合正确`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
 
       // 检查 wx:for 不缺 wx:key
@@ -110,15 +146,15 @@ describe('WXML 语法基础验证', () => {
   }
 })
 
-describe('页面 JSON 组件注册完整性', () => {
-  const pages = getAllPages()
+describe('页面/组件 JSON 组件注册完整性', () => {
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const jsonPath = path.join(ROOT, page + '.json')
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const jsonPath = path.join(ROOT, target + '.json')
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(jsonPath) || !fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — WXML 使用的自定义组件已注册`, () => {
+    test(`${target} — WXML 使用的自定义组件已注册`, () => {
       const pageJson = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
       const registered = new Set(Object.keys(pageJson.usingComponents || {}))
       const wxmlContent = fs.readFileSync(wxmlPath, 'utf-8')

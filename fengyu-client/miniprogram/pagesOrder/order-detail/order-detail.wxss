@@ -106,8 +106,21 @@
 .order-item__main {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 16rpx;
+}
+
+.oi-cover {
+  width: 120rpx;
+  height: 120rpx;
+  flex-shrink: 0;
+  border-radius: 12rpx;
+}
+
+.oi-cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-section);
 }
 
 .order-item__info {

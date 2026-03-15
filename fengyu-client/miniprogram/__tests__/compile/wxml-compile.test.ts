@@ -30,6 +30,27 @@ function getAllPages(): string[] {
   return pages
 }
 
+/** 扫描 components/ 目录下的自定义组件（有 .json + component: true） */
+function getAllComponents(): string[] {
+  const compsDir = path.join(ROOT, 'components')
+  if (!fs.existsSync(compsDir)) return []
+  const result: string[] = []
+  for (const dir of fs.readdirSync(compsDir)) {
+    const jsonPath = path.join(compsDir, dir, `${dir}.json`)
+    if (!fs.existsSync(jsonPath)) continue
+    try {
+      const json = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
+      if (json.component) result.push(`components/${dir}/${dir}`)
+    } catch { /* skip invalid JSON */ }
+  }
+  return result
+}
+
+/** 页面 + 组件的合集 */
+function getAllTargets(): string[] {
+  return [...getAllPages(), ...getAllComponents()]
+}
+
 /** 清理 WXML 以便安全地做标签解析（保留行号） */
 function cleanForParsing(content: string): string {
   return content
@@ -293,13 +314,13 @@ function checkMustacheExpressions(content: string): string[] {
 // ——————————————————————————————————————
 
 describe('WXML 标签配对', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — 开闭标签匹配`, () => {
+    test(`${target} — 开闭标签匹配`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
       const errors = checkTagBalance(content)
       if (errors.length > 0) {
@@ -310,13 +331,13 @@ describe('WXML 标签配对', () => {
 })
 
 describe('wx: 指令合法性', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — 仅使用合法 wx: 指令`, () => {
+    test(`${target} — 仅使用合法 wx: 指令`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
       const errors = checkWxDirectives(content)
       if (errors.length > 0) {
@@ -327,13 +348,13 @@ describe('wx: 指令合法性', () => {
 })
 
 describe('WXML 属性重复检测', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — 无重复属性`, () => {
+    test(`${target} — 无重复属性`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
       const errors = checkDuplicateAttributes(content)
       if (errors.length > 0) {
@@ -344,13 +365,13 @@ describe('WXML 属性重复检测', () => {
 })
 
 describe('组件路径可达性', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const jsonPath = path.join(ROOT, page + '.json')
+  for (const target of targets) {
+    const jsonPath = path.join(ROOT, target + '.json')
     if (!fs.existsSync(jsonPath)) continue
 
-    test(`${page} — 注册组件路径有效`, () => {
+    test(`${target} — 注册组件路径有效`, () => {
       const errors = checkComponentPaths(jsonPath)
       if (errors.length > 0) {
         throw new Error(`组件路径不可达:\n${errors.join('\n')}`)
@@ -360,13 +381,13 @@ describe('组件路径可达性', () => {
 })
 
 describe('mustache 表达式合法性', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — 无非法方法调用`, () => {
+    test(`${target} — 无非法方法调用`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
       const errors = checkMustacheExpressions(content)
       if (errors.length > 0) {
@@ -439,13 +460,13 @@ function checkForbiddenGlobals(content: string): string[] {
 }
 
 describe('WXML 禁止 JS 全局函数', () => {
-  const pages = getAllPages()
+  const targets = getAllTargets()
 
-  for (const page of pages) {
-    const wxmlPath = path.join(ROOT, page + '.wxml')
+  for (const target of targets) {
+    const wxmlPath = path.join(ROOT, target + '.wxml')
     if (!fs.existsSync(wxmlPath)) continue
 
-    test(`${page} — 无 JS 全局函数调用`, () => {
+    test(`${target} — 无 JS 全局函数调用`, () => {
       const content = fs.readFileSync(wxmlPath, 'utf-8')
       const errors = checkForbiddenGlobals(content)
       if (errors.length > 0) {

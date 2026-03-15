@@ -84,6 +84,9 @@ Page({
   // 所有分类 key 的有序列表（用于自动切换下一个分类）
   _allCategoryKeys: [] as string[],
 
+  // 搜索防抖定时器
+  _searchTimer: null as number | null,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
 
@@ -125,37 +128,77 @@ Page({
   },
 
   onPullDownRefresh() {
+    // 退出搜索模式，重新加载全部数据
+    if (this.data.isSearching) {
+      this.setData({ isSearching: false, searchResults: [], searchValue: '' });
+    }
     this.loadShopInit().finally(() => {
       wx.stopPullDownRefresh();
     });
   },
 
-  // ===== 搜索 =====
+  // ===== 搜索（即时过滤 + 300ms 防抖） =====
 
   onSearchInput(e: WechatMiniprogram.InputEvent) {
-    this.setData({ searchValue: e.detail.value });
+    const value = e.detail.value;
+    this.setData({ searchValue: value });
+
+    // 清除上次定时器
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+
+    // 输入为空 → 立即退出搜索模式
+    if (!value.trim()) {
+      if (this.data.isSearching) {
+        this.setData({ isSearching: false, searchResults: [], searchLoading: false });
+      }
+      return;
+    }
+
+    // 300ms 防抖后执行搜索
+    this._searchTimer = setTimeout(() => {
+      this._searchTimer = null;
+      this._doSearch(value.trim());
+    }, 300) as unknown as number;
   },
 
+  /** 回车/按钮点击：立即搜索（跳过防抖） */
   async onSearchSubmit() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
     const value = this.data.searchValue.trim();
     if (!value) {
-      // 清空搜索 → 退出搜索模式
       if (this.data.isSearching) {
         this.setData({ isSearching: false, searchResults: [] });
       }
       return;
     }
+    await this._doSearch(value);
+  },
 
-    this.setData({ isSearching: true, searchLoading: true, searchResults: [] });
+  /** 实际搜索执行 */
+  async _doSearch(value: string) {
+    this.setData({ isSearching: true, searchLoading: true });
 
     // 加载所有未缓存的分类 SPU
     await this.loadAllSpus();
 
     const results = searchProducts(value, this._spuCache, this._allCategoryKeys);
-    this.setData({ searchResults: results, searchLoading: false });
+    // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
+    if (this.data.searchValue.trim() === value) {
+      this.setData({ searchResults: results, searchLoading: false });
+    }
   },
 
   onSearchClear() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
     this.setData({ isSearching: false, searchResults: [], searchValue: "" });
   },
 

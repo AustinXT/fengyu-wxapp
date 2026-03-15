@@ -16,6 +16,43 @@
   background: var(--color-primary-light) !important;
 }
 
+/* ===== 时段 tag 按钮 ===== */
+.time-slots {
+  display: flex;
+  gap: 16rpx;
+  margin-top: 16rpx;
+  flex-wrap: wrap;
+}
+
+.time-slot-tag {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100rpx;
+  height: 60rpx;
+  padding: 0 20rpx;
+  border-radius: 8rpx;
+  border: 1rpx solid var(--color-border);
+  background: var(--color-bg-card);
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.time-slot-tag--active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.time-slot-tag--disabled {
+  opacity: 0.4;
+  background: var(--color-bg-section);
+  color: var(--color-text-hint);
+  border-color: var(--color-border);
+  pointer-events: none;
+}
+
 /* ===== 底部提交 ===== */
 .submit-wrap {
   position: fixed;

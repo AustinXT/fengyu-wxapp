@@ -116,7 +116,7 @@
   font-size: 20rpx;
   font-weight: 500;
   color: #FFFFFF;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 16rpx;
   text-align: center;
   box-sizing: border-box;

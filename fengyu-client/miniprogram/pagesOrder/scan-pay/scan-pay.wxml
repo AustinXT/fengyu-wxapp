@@ -33,9 +33,12 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
   <!-- 订单展示 -->
   <view wx:elif="{{order}}" class="order-wrap">
 
-    <!-- 门店 + 状态 -->
+    <!-- 门店 + 开单人 + 状态 -->
     <view class="order-header">
-      <text class="order-store">{{order.storeName}}</text>
+      <view class="order-header-left">
+        <text class="order-store">{{order.storeName}}</text>
+        <text wx:if="{{order.openerName}}" class="order-opener">开单人：{{order.openerName}}</text>
+      </view>
       <van-tag type="primary">{{order.status}}</van-tag>
     </view>
 
@@ -46,7 +49,17 @@ module.exports.cents = function(n) { return Math.round(n * 100) }
         wx:key="saleItemId"
         class="order-item"
       >
-        <view class="item-left">
+        <image
+          wx:if="{{item.coverImage}}"
+          class="item-cover"
+          src="{{item.coverImage}}"
+          mode="aspectFill"
+          lazy-load
+        />
+        <view wx:else class="item-cover item-cover--empty">
+          <van-icon name="photo-o" size="32rpx" color="#CCC" />
+        </view>
+        <view class="item-info">
           <text class="item-name">{{item.productName}}</text>
           <text class="item-spec">{{item.skuSpecName}}</text>
         </view>

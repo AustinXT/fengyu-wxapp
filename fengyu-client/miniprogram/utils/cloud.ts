@@ -6,7 +6,7 @@
  */
 export function sanitizeErrorMessage(msg: string, fallback: string = '请求失败'): string {
   if (!msg) return fallback
-  const techPatterns = /\b(violates|constraint|relation|column|duplicate key|syntax error|ECONNREFUSED|ETIMEDOUT|TypeError|ReferenceError|Cannot read|undefined is not|null is not)\b/i
+  const techPatterns = /\b(violates|constraint|relation|column|duplicate key|syntax error|ECONNREFUSED|ETIMEDOUT|TypeError|ReferenceError|Cannot read|undefined is not|null is not)\b|cloud\.\w+:fail/i
   if (techPatterns.test(msg)) return fallback
   if (msg.length > 60) return fallback
   return msg
@@ -22,10 +22,20 @@ export async function callClientApi<T = any>(
   action: string,
   payload: Record<string, any> = {}
 ): Promise<T> {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any
+  let res: any
+  try {
+    res = await wx.cloud.callFunction({
+      name: 'clientApi',
+      data: { action, payload }
+    })
+  } catch (sdkErr: any) {
+    // 网络/SDK 层错误（超时、断网、函数不存在等）→ 友好提示
+    const err: ClientApiError = new Error(
+      sanitizeErrorMessage(sdkErr?.message || sdkErr?.errMsg, '网络异常，请稍后重试')
+    )
+    err.code = -1
+    throw err
+  }
   if (res.result?.code !== 0) {
     const err: ClientApiError = new Error(sanitizeErrorMessage(res.result?.message, '请求失败'))
     err.code = res.result?.code

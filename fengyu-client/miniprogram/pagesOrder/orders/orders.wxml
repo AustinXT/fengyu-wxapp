@@ -46,9 +46,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     >
       <!-- 卡片头 -->
       <view class="order-card__header">
-        <view class="order-no-row">
-          <text class="order-no">{{item.sale_order_id}}</text>
-          <van-tag wx:if="{{item.sale_order_type === '体验'}}" color="#F9F0FF" text-color="#722ED1">体验</van-tag>
+        <view class="order-header-left">
+          <view class="order-no-row">
+            <text class="order-no">{{item.sale_order_id}}</text>
+            <van-tag wx:if="{{item.sale_order_type === '福利活动'}}" color="#F9F0FF" text-color="#722ED1">福利</van-tag>
+          </view>
+          <text class="order-time">{{item.order_time_fmt}}</text>
         </view>
         <text class="order-status {{item.statusClass}}">{{item.status}}</text>
       </view>
@@ -56,19 +59,35 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
       <!-- 商品明细摘要 -->
       <view class="order-items">
         <view wx:for="{{item.items}}" wx:key="sale_item_id" wx:for-item="oi" class="order-item-row">
-          <text class="oi-name">{{oi.product_name}} · {{oi.sku_spec_name}}</text>
-          <view class="oi-right">
-            <text class="oi-qty">×{{oi.quantity}}</text>
-            <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
-              <text class="oi-sessions-text">剩余{{oi.remaining_sessions}}次</text>
+          <image
+            wx:if="{{oi.cover_image}}"
+            class="oi-cover"
+            src="{{oi.cover_image}}"
+            mode="aspectFill"
+            lazy-load
+          />
+          <view wx:else class="oi-cover oi-cover--empty">
+            <van-icon name="photo-o" size="32rpx" color="#CCC" />
+          </view>
+          <view class="oi-info">
+            <view class="oi-top">
+              <text class="oi-name">{{oi.product_name}} · {{oi.sku_spec_name}}</text>
+              <text class="oi-qty">×{{oi.quantity}}</text>
+            </view>
+            <view class="oi-bottom">
+              <view wx:if="{{oi.remaining_sessions !== null}}" class="oi-sessions">
+                <text class="oi-sessions-text">剩余{{oi.remaining_sessions}}次</text>
+              </view>
+              <view wx:else />
+              <text class="oi-price">¥{{fmt.price(oi.received)}}</text>
             </view>
           </view>
         </view>
       </view>
 
-      <!-- 底部：金额 + 时间 -->
+      <!-- 底部：件数 + 金额 -->
       <view class="order-card__footer">
-        <text class="order-time">{{item.order_time_fmt}}</text>
+        <text class="order-count">共 {{item.itemCount}} 件</text>
         <view class="order-amount-wrap">
           <text class="order-amount-label">合计</text>
           <text class="order-amount">¥{{fmt.price(item.total_amount)}}</text>
@@ -87,6 +106,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <van-button size="small" plain round catch:tap="onOrderTap" data-sale-order-id="{{item.sale_order_id}}">查看详情</van-button>
       </view>
 
+    </view>
+
+    <!-- 加载更多 / 底部提示 -->
+    <view class="list-footer">
+      <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
+      <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多订单了</text>
     </view>
   </view>
 

@@ -10,10 +10,6 @@ Page({
     loadError: false,
   },
 
-  onLoad() {
-    this.loadCards();
-  },
-
   onShow() {
     this.loadCards();
   },
@@ -31,7 +27,7 @@ Page({
       // 展平为卡片列表
       const cards: any[] = [];
       for (const order of orders) {
-        for (const item of order.items) {
+        for (const item of (order.items || [])) {
           cards.push({
             ...item,
             saleOrderId: order.saleOrderId,

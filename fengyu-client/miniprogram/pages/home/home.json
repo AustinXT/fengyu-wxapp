@@ -1,6 +1,6 @@
 {
   "navigationStyle": "custom",
-  "enablePullDownRefresh": false,
+  "enablePullDownRefresh": true,
   "usingComponents": {
     "nav-bar": "../../components/nav-bar/nav-bar",
     "van-icon": "@vant/weapp/icon/index",

@@ -124,7 +124,7 @@ Page({
           skuId,
           spuName: this.data.spuName,
           skuDisplayName: sku?.spec_name || '',
-          coverImage: '',
+          coverImage: sku?.cover_image || '',
           price: unitPrice,
           quantity,
         }],
@@ -139,7 +139,31 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
+
+      // 校验订单状态：仅待支付可进入结算
+      if (order.status && order.status !== '待支付') {
+        const msgMap: Record<string, string> = {
+          '已关闭': '订单已超时关闭',
+          '已支付': '订单已完成支付',
+          '已完成': '订单已完成',
+          '待确认收款': '订单正在等待确认收款',
+          '支付失败': '订单支付失败，请联系店员',
+        };
+        Toast.fail(msgMap[order.status] || `订单状态：${order.status}`);
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        }, 1500);
+        return;
+      }
+
       const firstItem = items[0] || {};
+      const existingCouponDiscount = Number(order.coupon_discount || 0);
+      // unitPrice 需为扣券前金额，WXML 用 unitPrice - couponDiscount 计算实付
+      const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount;
+      // 还原支付方式（避免默认 wechat 覆盖用户原选）
+      const validMethods = ['wechat', 'alipay', 'offline'] as const;
+      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : 'wechat';
+
       this.setData({
         spuName: items.length > 1
           ? `${items.length} 件商品`
@@ -147,14 +171,19 @@ Page({
         skuDisplayName: items.length > 1
           ? items.map((i: any) => i.product_name).join('、')
           : (firstItem.sku_spec_name || ''),
-        unitPrice: Number(order.total_amount || 0),
+        unitPrice: preDiscountTotal,
         storeName: order.store_name || '',
         quantity: 1,
+        couponDiscount: existingCouponDiscount,
+        paymentMethod: restoredMethod,
+        // 还原订单指定的美容师（覆盖 loadDefaultStaff 的并行竞态）
+        staffWfId: order.preferred_employee_id || '',
+        staffName: order.preferred_staff_name || '',
         displayItems: items.map((i: any) => ({
           skuId: i.sale_item_id || '',
           spuName: i.product_name || '',
           skuDisplayName: i.sku_spec_name || '',
-          coverImage: '',
+          coverImage: i.cover_image || '',
           price: Number(i.unit_price || 0),
           quantity: Number(i.quantity || 1),
         })),
@@ -204,8 +233,8 @@ Page({
     this.setData({ showStaffPopup: false });
   },
 
-  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
-    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+  onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
+    const { wfId, name } = e.detail;
     this.setData({
       staffWfId: wfId,
       staffName: name,

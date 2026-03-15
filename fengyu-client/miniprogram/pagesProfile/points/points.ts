@@ -3,6 +3,8 @@ import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
 import { formatDateTime } from '../../utils/format';
 
+const PAGE_SIZE = 20;
+
 Page({
   data: {
     balance: 0,
@@ -11,11 +13,13 @@ Page({
     activeTab: 0,
     records: [] as any[],
     isLoading: false,
+    loadingMore: false,
     loadError: false,
     balanceLoading: true,
-    page: 1,
     hasMore: true,
   },
+
+  _page: 1,
 
   onLoad() {
     this.loadBalance();
@@ -23,15 +27,14 @@ Page({
   },
 
   onPullDownRefresh() {
-    this.setData({ page: 1, hasMore: true, records: [] });
     Promise.all([this.loadBalance(), this.loadHistory()]).finally(() => {
       wx.stopPullDownRefresh();
     });
   },
 
   onReachBottom() {
-    if (this.data.hasMore && !this.data.isLoading) {
-      this.loadHistory();
+    if (this.data.hasMore && !this.data.loadingMore && !this.data.isLoading) {
+      this.loadMore();
     }
   },
 
@@ -51,27 +54,35 @@ Page({
     }
   },
 
+  _mapRecords(raw: any[]) {
+    return raw.map((r: any) => ({
+      ...r,
+      displayDate: formatDateTime(r.createdAt),
+      displayAmount: r.amount > 0 ? `+${r.amount}` : `${r.amount}`,
+      isEarn: r.amount > 0,
+    }));
+  },
+
+  _buildPayload() {
+    const typeMap = ['all', 'earn', 'redeem'];
+    const type = typeMap[this.data.activeTab] || 'all';
+    return { type: type === 'all' ? undefined : type };
+  },
+
+  /** 加载首页（重置分页） */
   async loadHistory() {
-    if (this.data.isLoading) return;
-    this.setData({ isLoading: true, loadError: false });
+    this._page = 1;
+    this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
-      const typeMap = ['all', 'earn', 'redeem'];
-      const type = typeMap[this.data.activeTab] || 'all';
       const data = await callClientApi('points.history', {
-        type: type === 'all' ? undefined : type,
-        page: this.data.page,
-        pageSize: 20,
+        ...this._buildPayload(),
+        page: 1,
+        pageSize: PAGE_SIZE,
       });
-      const newRecords = (data.records || []).map((r: any) => ({
-        ...r,
-        displayDate: formatDateTime(r.createdAt),
-        displayAmount: r.amount > 0 ? `+${r.amount}` : `${r.amount}`,
-        isEarn: r.amount > 0,
-      }));
+      const newRecords = this._mapRecords(data.records || []);
       this.setData({
-        records: this.data.page === 1 ? newRecords : [...this.data.records, ...newRecords],
-        hasMore: newRecords.length >= 20,
-        page: this.data.page + 1,
+        records: newRecords,
+        hasMore: newRecords.length === PAGE_SIZE,
       });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
@@ -81,9 +92,32 @@ Page({
     }
   },
 
+  /** 加载更多（追加，错误不覆盖已有数据） */
+  async loadMore() {
+    this._page += 1;
+    this.setData({ loadingMore: true });
+    try {
+      const data = await callClientApi('points.history', {
+        ...this._buildPayload(),
+        page: this._page,
+        pageSize: PAGE_SIZE,
+      });
+      const newRecords = this._mapRecords(data.records || []);
+      this.setData({
+        records: [...this.data.records, ...newRecords],
+        hasMore: newRecords.length === PAGE_SIZE,
+      });
+    } catch {
+      this._page -= 1;
+      Toast.fail('加载更多失败');
+    } finally {
+      this.setData({ loadingMore: false });
+    }
+  },
+
   onTabChange(e: WechatMiniprogram.CustomEvent) {
     const index = e.detail.index;
-    this.setData({ activeTab: index, page: 1, hasMore: true, records: [] });
+    this.setData({ activeTab: index });
     this.loadHistory();
   },
 });

@@ -3,6 +3,7 @@
 module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
 </wxs>
 <van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
 
 <view class="container">
 
@@ -16,6 +17,14 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
   <!-- 购物车列表 -->
   <view wx:else class="cart-content">
+    <!-- 顶部操作栏 -->
+    <view class="cart-header">
+      <text class="cart-header-count">共 {{cartItems.length}} 件商品</text>
+      <view class="cart-header-clear" bindtap="onClearAll">
+        <van-icon name="delete" size="28rpx" color="#999" />
+        <text class="cart-header-clear-text">清空</text>
+      </view>
+    </view>
     <scroll-view class="cart-list" scroll-y>
       <view
         wx:for="{{cartItems}}"
@@ -42,7 +51,12 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 
           <!-- 详情 -->
           <view class="cart-item-info">
-            <text class="cart-item-name">{{item.spuName}}</text>
+            <view class="cart-item-name-row">
+              <text class="cart-item-name">{{item.spuName}}</text>
+              <van-tag wx:if="{{item.bigCategory === '护理项目'}}" type="primary" size="mini">护理</van-tag>
+              <van-tag wx:elif="{{item.bigCategory === '家居产品'}}" color="#5AACA5" size="mini">家居</van-tag>
+              <van-tag wx:elif="{{item.bigCategory === '充值卡'}}" color="#D4820A" size="mini">充值</van-tag>
+            </view>
             <text class="cart-item-sku">{{item.skuDisplayName}}</text>
             <view class="cart-item-bottom">
               <view class="cart-item-price-wrap">

@@ -28,8 +28,8 @@
       bindtap="onCardTap"
       data-sale-order-id="{{item.saleOrderId}}"
     >
-      <!-- 头部：项目名 + 类型标签 -->
-      <view class="tc-card__header">
+      <!-- 头部：项目名 + 类型标签（活跃卡用品牌渐变） -->
+      <view class="tc-card__header {{item.active ? 'brand-gradient' : ''}}">
         <view class="tc-card__title-row">
           <text class="tc-card__name">{{item.productName}}</text>
           <van-tag
@@ -39,13 +39,13 @@
           >已失效</van-tag>
           <van-tag
             wx:elif="{{item.productType === '疗程卡'}}"
-            color="#FFF7ED"
-            text-color="#C0322A"
+            color="rgba(255,255,255,0.2)"
+            text-color="#FFF"
           >疗程卡</van-tag>
           <van-tag
             wx:elif="{{item.productType === '单品'}}"
-            color="#F0FAF0"
-            text-color="#389E0D"
+            color="rgba(255,255,255,0.2)"
+            text-color="#FFF"
           >单品</van-tag>
         </view>
         <text class="tc-card__sku">{{item.skuSpecName}}</text>

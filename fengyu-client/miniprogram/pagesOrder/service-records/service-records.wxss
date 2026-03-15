@@ -6,10 +6,8 @@
 }
 
 /* ===== 加载态 ===== */
-.loading-wrap {
-  display: flex;
-  justify-content: center;
-  padding: 120rpx 0;
+.skeleton-wrap {
+  padding: 24rpx;
 }
 
 /* ===== 记录列表 ===== */

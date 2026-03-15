@@ -40,9 +40,13 @@ Page({
     selectedStaffWfId: '',
     selectedStaffName: '',
     showStaffPopup: false,
+    showSkuPopup: false,
     isLoading: true,
+    loadError: false,
     cartCount: 0,
   },
+
+  _productId: '',
 
   onLoad(options) {
     const { productId, spuId } = options as { productId?: string; spuId?: string };
@@ -51,6 +55,7 @@ Page({
       wx.navigateBack();
       return;
     }
+    this._productId = id;
     this.loadDetail(id);
     this.loadStaffList();
     this.loadDefaultStaff();
@@ -61,6 +66,7 @@ Page({
   },
 
   async loadDetail(productId: string) {
+    this.setData({ isLoading: true, loadError: false });
     try {
       const data = await callClientApi('product.spuDetail', { productId });
       const spu = data?.spu;
@@ -89,8 +95,17 @@ Page({
       wx.setNavigationBarTitle({ title: spu.name || '服务详情' });
     } catch {
       Toast.fail('加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  onPullDownRefresh() {
+    if (this._productId) {
+      this.loadDetail(this._productId).finally(() => wx.stopPullDownRefresh());
+    } else {
+      wx.stopPullDownRefresh();
     }
   },
 
@@ -129,6 +144,14 @@ Page({
     }
   },
 
+  onOpenSkuPopup() {
+    this.setData({ showSkuPopup: true });
+  },
+
+  onCloseSkuPopup() {
+    this.setData({ showSkuPopup: false });
+  },
+
   onSkuTap(e: WechatMiniprogram.TouchEvent) {
     const { skuId } = e.currentTarget.dataset as { skuId: string };
     const sku = this.data.skuList.find(s => s.sku_id === skuId) || null;
@@ -151,8 +174,8 @@ Page({
     this.setData({ showStaffPopup: false });
   },
 
-  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
-    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+  onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
+    const { wfId, name } = e.detail;
     this.setData({
       selectedStaffWfId: wfId,
       selectedStaffName: name,

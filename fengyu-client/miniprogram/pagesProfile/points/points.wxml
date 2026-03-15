@@ -57,11 +57,9 @@
     </view>
 
     <!-- 加载更多 -->
-    <view wx:if="{{isLoading && records.length > 0}}" class="loading-more">
-      <van-loading size="32rpx" color="#999">加载中...</van-loading>
-    </view>
-    <view wx:elif="{{!hasMore && records.length > 0}}" class="loading-more">
-      <text class="loading-text">没有更多了</text>
+    <view wx:if="{{records.length > 0}}" class="list-footer">
+      <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
+      <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多了</text>
     </view>
   </view>
 

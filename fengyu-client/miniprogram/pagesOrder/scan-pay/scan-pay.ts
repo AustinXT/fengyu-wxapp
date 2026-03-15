@@ -7,6 +7,7 @@ interface ScanOrder {
   status: string;
   storeId: string;
   storeName: string;
+  openerName: string;
   orderType: string;
   totalAmount: number;
 }
@@ -18,6 +19,7 @@ interface ScanOrderItem {
   unitPrice: number;
   quantity: number;
   received: number;
+  coverImage: string;
 }
 
 Page({
