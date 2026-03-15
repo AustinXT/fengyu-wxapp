@@ -19,7 +19,6 @@ async function search(ctx) {
 
   const { keyword, phone, customerType } = ctx.event.payload || {};
 
-  const esc = (v) => String(v).replace(/'/g, "''");
   const isManagerRole = ctx.auth.roles.includes("manager");
 
   // customerType 过滤：'member' = 会员客（customer_id 非空），'flow' = 流量客（customer_id 为空）
@@ -33,19 +32,24 @@ async function search(ctx) {
   let customerRows = [];
   if (customerType !== 'flow') {
     let searchCondition;
+    const mssqlParams = {};
     let limit = 20;
     if (phone) {
-      searchCondition = `UDF_S_1478 = '${esc(phone.trim())}'`;
+      searchCondition = "UDF_S_1478 = @phone";
+      mssqlParams.phone = phone.trim();
       limit = 1;
     } else if (keyword && keyword.trim()) {
-      const k = esc(keyword.trim());
-      searchCondition = `(UDF_S_1476 LIKE '%${k}%' OR UDF_S_1478 LIKE '%${k}%') AND UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
+      searchCondition = "(UDF_S_1476 LIKE @keyword OR UDF_S_1478 LIKE @keyword) AND UDF_S_6443 = @storeName";
+      mssqlParams.keyword = `%${keyword.trim()}%`;
+      mssqlParams.storeName = ctx.auth.storeName;
     } else {
-      searchCondition = `UDF_S_6443 = '${esc(ctx.auth.storeName)}'`;
+      searchCondition = "UDF_S_6443 = @storeName";
+      mssqlParams.storeName = ctx.auth.storeName;
     }
+    mssqlParams.limit = limit;
 
     customerRows = await mssql.query(`
-      SELECT TOP ${limit}
+      SELECT TOP (@limit)
         UDF_S_1475 AS customer_id,
         UDF_S_1476 AS name,
         UDF_S_1478 AS phone,
@@ -56,7 +60,7 @@ async function search(ctx) {
       FROM UDT_S_311
       WHERE ${searchCondition}
       ORDER BY UDF_S_1474 DESC
-    `);
+    `, mssqlParams);
   }
 
   // Step 2: 查 PG client_wechat_users
@@ -297,7 +301,6 @@ async function detail(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 id、phone 或 clientUserId 参数");
   }
 
-  const esc = (v) => String(v).replace(/'/g, "''");
   const isManagerRole = ctx.auth.roles.includes("manager");
 
   let resolvedPhone = queryPhone;
@@ -317,7 +320,7 @@ async function detail(ctx) {
   let customerRows = [];
   if (id) {
     customerRows = await mssql.query(`
-      SELECT TOP 1
+      SELECT TOP (1)
         UDF_S_1475 AS customer_id,
         UDF_S_1476 AS name,
         UDF_S_1478 AS phone,
@@ -325,11 +328,11 @@ async function detail(ctx) {
         UDF_S_6443 AS store_name,
         UDF_S_6444 AS main_staff_id
       FROM UDT_S_311
-      WHERE UDF_S_1475 = '${esc(id)}'
-    `);
+      WHERE UDF_S_1475 = @id
+    `, { id });
   } else if (resolvedPhone) {
     customerRows = await mssql.query(`
-      SELECT TOP 1
+      SELECT TOP (1)
         UDF_S_1475 AS customer_id,
         UDF_S_1476 AS name,
         UDF_S_1478 AS phone,
@@ -337,8 +340,8 @@ async function detail(ctx) {
         UDF_S_6443 AS store_name,
         UDF_S_6444 AS main_staff_id
       FROM UDT_S_311
-      WHERE UDF_S_1478 = '${esc(resolvedPhone.trim())}'
-    `);
+      WHERE UDF_S_1478 = @phone
+    `, { phone: resolvedPhone.trim() });
   }
 
   if (customerRows.length > 0) {
@@ -559,7 +562,8 @@ function maskPhone(phone) {
   if (!phone) return "";
   const p = String(phone).trim();
   if (p.length <= 4) return "****";
-  return "*".repeat(p.length - 4) + p.slice(-4);
+  if (p.length <= 7) return p.slice(0, 1) + "****" + p.slice(-2);
+  return p.slice(0, 3) + "****" + p.slice(-4);
 }
 
 /**

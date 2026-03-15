@@ -59,8 +59,8 @@ describe('customer.search', () => {
     pg.query.mockResolvedValueOnce([])
     await customerRoutes.search(ctx)
     expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].phone).toBe('*******1111')
-    expect(ctx.result[0].phoneMasked).toBe('*******1111')
+    expect(ctx.result[0].phone).toBe('138****1111')
+    expect(ctx.result[0].phoneMasked).toBe('138****1111')
   })
 
   test('无结果时返回空数组', async () => {
@@ -101,6 +101,35 @@ describe('customer.search', () => {
     // PG SQL 应包含 customer_id IS NULL 过滤
     const pgSql = pg.query.mock.calls[0][0]
     expect(pgSql).toContain('customer_id IS NULL')
+  })
+
+  test('MSSQL 查询使用参数化而非字符串拼接', async () => {
+    const ctx = createManagerCtx({ phone: '13800001111' })
+    mssql.query.mockResolvedValueOnce([
+      { customer_id: 'C001', name: '张三', phone: '13800001111', member_level: 'VIP', store_name: '测试店', main_staff_id: null, register_date: '2024-01-01' },
+    ])
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    // MSSQL 查询应传递参数对象（第二个参数）
+    expect(mssql.query).toHaveBeenCalledTimes(1)
+    const [sql, params] = mssql.query.mock.calls[0]
+    expect(sql).toContain('@phone')
+    expect(sql).toContain('@limit')
+    expect(sql).not.toContain("'13800001111'")
+    expect(params).toEqual(expect.objectContaining({ phone: '13800001111', limit: 1 }))
+  })
+
+  test('MSSQL 关键词搜索使用参数化 LIKE', async () => {
+    const ctx = createManagerCtx({ keyword: '张' })
+    mssql.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.search(ctx)
+    expect(mssql.query).toHaveBeenCalledTimes(1)
+    const [sql, params] = mssql.query.mock.calls[0]
+    expect(sql).toContain('@keyword')
+    expect(sql).toContain('@storeName')
+    expect(params.keyword).toBe('%张%')
+    expect(params.storeName).toBeTruthy()
   })
 })
 
@@ -184,6 +213,21 @@ describe('customer.detail', () => {
   test('缺少所有标识参数时拒绝', async () => {
     const ctx = createManagerCtx({})
     await expect(customerRoutes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+
+  test('MSSQL detail 查询使用参数化', async () => {
+    const ctx = createManagerCtx({ id: 'C001' })
+    mssql.query.mockResolvedValueOnce([
+      { customer_id: 'C001', name: '张三', phone: '13800001111', member_level: 'VIP', store_name: '测试店', main_staff_id: null },
+    ])
+    pg.query.mockResolvedValueOnce([{ user_id: 'u1' }])
+    pg.query.mockResolvedValueOnce([{ total: '0' }])
+    pg.query.mockResolvedValueOnce([{ total: '0' }])
+    await customerRoutes.detail(ctx)
+    const [sql, params] = mssql.query.mock.calls[0]
+    expect(sql).toContain('@id')
+    expect(sql).not.toContain("'C001'")
+    expect(params).toEqual({ id: 'C001' })
   })
 })
 
@@ -369,7 +413,7 @@ describe('customer.listByTag', () => {
     await customerRoutes.listByTag(ctx)
 
     expect(ctx.result.customers[0].phone).not.toBe('13800001111')
-    expect(ctx.result.customers[0].phoneMasked).toBe('*******1111')
+    expect(ctx.result.customers[0].phoneMasked).toBe('138****1111')
   })
 
   test('分页功能正确', async () => {

@@ -84,7 +84,7 @@
           <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
           <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
         </view>
-        <text class="customer-phone">{{item.phoneMasked || item.phone}}</text>
+        <text class="customer-phone">{{item.phone}}</text>
         <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
         <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
       </view>

@@ -18,7 +18,7 @@ describe('appointment.confirm', () => {
     vi.clearAllMocks()
   })
 
-  test('确认待确认预约', async () => {
+  test('确认待确认预约（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ appointmentId: 'appt-001' })
 
     pg.query
@@ -33,10 +33,10 @@ describe('appointment.confirm', () => {
     await appointmentRoutes.confirm(ctx)
 
     expect(ctx.result.status).toBe('已确认')
-    expect(pg.query).toHaveBeenCalledWith(
-      expect.stringContaining("'已确认'"),
-      expect.any(Array)
-    )
+    // 验证 UPDATE WHERE 包含状态条件（C4 合规）
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain("status = '已确认'")
+    expect(updateSql).toContain("AND status = '待确认'")
   })
 
   test('非待确认状态拒绝确认', async () => {
@@ -97,6 +97,23 @@ describe('appointment.confirm', () => {
 
     await expect(appointmentRoutes.confirm(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('并发竞态：UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ appointmentId: 'appt-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        appointment_id: 'appt-001',
+        status: '待确认',
+        employee_id: 'emp-001',
+        store_id: 'store-001',
+      }])
+      // 模拟并发：SELECT 通过但 UPDATE 匹配 0 行（另一个请求先到）
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+
+    await expect(appointmentRoutes.confirm(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
   })
 })
 
@@ -169,6 +186,42 @@ describe('appointment.checkin', () => {
 
     await expect(appointmentRoutes.checkin(ctx))
       .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('幂等 — 已签到过的预约不覆盖原始时间', async () => {
+    const ctx = createManagerCtx({ appointmentId: 'appt-001' })
+    const existingCheckinAt = '2024-01-15T09:55:00Z'
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '已确认',
+      employee_id: 'emp-001',
+      store_id: 'store-001',
+      checkin_at: existingCheckinAt,
+    }])
+
+    await appointmentRoutes.checkin(ctx)
+
+    expect(ctx.result.checkinAt).toBe(existingCheckinAt)
+    expect(ctx.result.message).toContain('幂等')
+    // 不应执行 UPDATE
+    expect(pg.query).toHaveBeenCalledTimes(1) // 仅 SELECT
+  })
+
+  test('缺少 appointmentId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+
+    await expect(appointmentRoutes.checkin(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*appointmentId/)
+  })
+
+  test('预约不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ appointmentId: 'appt-nonexist' })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(appointmentRoutes.checkin(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
   })
 })
 
@@ -280,5 +333,96 @@ describe('appointment.detail', () => {
 
     await expect(appointmentRoutes.detail(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*id/)
+  })
+
+  test('预约不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ id: 'appt-nonexist' })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(appointmentRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('美容师不能查看非分配给自己的预约', async () => {
+    const ctx = createBeauticianCtx({ id: 'appt-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '已确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-other',
+      employee_name: '他人',
+      appointment_time: '2024-01-15T10:00:00Z',
+      notes: '',
+      sale_item_id: null,
+      checkin_at: null,
+      service_name: '到店预约',
+      sku_spec_name: null,
+      customer_phone: '',
+      service_order_id: null,
+    }])
+
+    await expect(appointmentRoutes.detail(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('已有服务单时返回 serviceOrderId', async () => {
+    const ctx = createManagerCtx({ id: 'appt-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-001',
+      status: '已完成',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-001',
+      employee_name: '员工A',
+      appointment_time: '2024-01-15T10:00:00Z',
+      notes: '',
+      sale_item_id: null,
+      checkin_at: '2024-01-15T09:55:00Z',
+      service_name: '面部护理',
+      sku_spec_name: '10次卡',
+      customer_phone: '138',
+      service_order_id: 'HLD-WX-001',
+    }])
+
+    await appointmentRoutes.detail(ctx)
+
+    expect(ctx.result.serviceOrderId).toBe('HLD-WX-001')
+    expect(ctx.result.status).toBe('completed')
+  })
+})
+
+// ============================================================
+// list 补充覆盖
+// ============================================================
+describe('appointment.list 补充', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('中文状态直接传入也能过滤', async () => {
+    const ctx = createManagerCtx({ status: '待确认', page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await appointmentRoutes.list(ctx)
+
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toContain('待确认')
+  })
+
+  test('无状态过滤和无 todayOnly 时只按 store_id 查询', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await appointmentRoutes.list(ctx)
+
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).not.toContain('a.status =')
+    expect(sql).not.toContain('DATE(a.appointment_time)')
   })
 })

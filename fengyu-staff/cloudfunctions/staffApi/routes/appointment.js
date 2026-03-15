@@ -201,10 +201,14 @@ async function confirm(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2",
+  const result = await pg.query(
+    "UPDATE appointments SET status = '已确认', confirmed_at = $1, updated_at = $1 WHERE appointment_id = $2 AND status = '待确认'",
     [now, appointmentId]
   )
+
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 预约状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     appointmentId,

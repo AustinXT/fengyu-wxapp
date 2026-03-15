@@ -544,4 +544,363 @@ describe('service.detail', () => {
     await expect(serviceRoutes.detail(ctx))
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
+
+  test('缺少 id 参数时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(serviceRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*id/)
+  })
+
+  test('服务单不存在时报错', async () => {
+    const ctx = createManagerCtx({ id: 'HLD-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(serviceRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('顾客姓名从 sale_orders 兜底获取', async () => {
+    const ctx = createManagerCtx({ id: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '待服务',
+        service_date: '2024-01-15',
+        assigned_employee_id: 'emp-001',
+        client_user_id: 'client-001',
+        appointment_id: null,
+        remark: '',
+        started_at: null,
+        completed_at: null,
+        created_at: '2024-01-15T09:00:00Z',
+        updated_at: '2024-01-15T09:00:00Z',
+        client_phone: '13800001111',
+      }])
+      .mockResolvedValueOnce([]) // 服务明细
+      .mockResolvedValueOnce([{ name: '员工' }]) // 员工姓名
+      .mockResolvedValueOnce([{ name: null }])    // client_wechat_users.name 为空
+      .mockResolvedValueOnce([{ customer_name: '订单顾客名' }]) // 从 sale_orders 兜底
+
+    await serviceRoutes.detail(ctx)
+    expect(ctx.result.customerName).toBe('订单顾客名')
+  })
+})
+
+// ============================================================
+// service.counts
+// ============================================================
+describe('service.counts', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('店长查看门店全部待服务/服务中计数', async () => {
+    const ctx = createManagerCtx({})
+
+    pg.query.mockResolvedValueOnce([
+      { status: '待服务', cnt: 3 },
+      { status: '服务中', cnt: 2 },
+    ])
+
+    await serviceRoutes.counts(ctx)
+
+    expect(ctx.result.pending).toBe(3)
+    expect(ctx.result.processing).toBe(2)
+    // 店长不按 assigned_employee_id 过滤
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).not.toContain('assigned_employee_id')
+  })
+
+  test('美容师只看自己的服务单计数', async () => {
+    const ctx = createBeauticianCtx({})
+
+    pg.query.mockResolvedValueOnce([
+      { status: '待服务', cnt: 1 },
+    ])
+
+    await serviceRoutes.counts(ctx)
+
+    expect(ctx.result.pending).toBe(1)
+    expect(ctx.result.processing).toBe(0) // 无服务中
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('assigned_employee_id')
+    expect(pg.query.mock.calls[0][1]).toContain('emp-beautician-001')
+  })
+
+  test('无数据时返回全零', async () => {
+    const ctx = createManagerCtx({})
+    pg.query.mockResolvedValueOnce([])
+    await serviceRoutes.counts(ctx)
+    expect(ctx.result.pending).toBe(0)
+    expect(ctx.result.processing).toBe(0)
+  })
+})
+
+// ============================================================
+// 参数校验边界
+// ============================================================
+describe('参数校验边界', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('start 缺少 serviceOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(serviceRoutes.start(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
+  })
+
+  test('complete 缺少 serviceOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
+  })
+
+  test('cancel 缺少 serviceOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(serviceRoutes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*serviceOrderId/)
+  })
+
+  test('start 服务单不存在时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(serviceRoutes.start(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('complete 服务单不存在时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('cancel 服务单不存在时报错', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(serviceRoutes.cancel(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('complete 美容师不能操作非分配给自己的服务单', async () => {
+    const ctx = createBeauticianCtx({ serviceOrderId: 'HLD-001' })
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '服务中',
+      assigned_employee_id: 'emp-other',
+      store_id: 'store-001',
+    }])
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+})
+
+// ============================================================
+// service.list 深层覆盖
+// ============================================================
+describe('service.list 深层覆盖', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('返回服务单列表含明细和姓名', async () => {
+    const ctx = createManagerCtx({ page: 1, status: '待服务' })
+
+    // 服务单主表
+    pg.query.mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      status: '待服务',
+      service_date: '2024-01-15',
+      assigned_employee_id: 'emp-001',
+      client_user_id: 'client-001',
+      appointment_id: null,
+      remark: '',
+      started_at: null,
+      completed_at: null,
+      created_at: '2024-01-15T09:00:00Z',
+      client_phone: '13800001111',
+    }])
+    // 服务明细
+    .mockResolvedValueOnce([{
+      service_order_id: 'HLD-001',
+      product_name: '面部护理',
+      sku_spec_name: '10次卡',
+      remaining_sessions: 8,
+      session_count: 10,
+      service_duration: 60,
+    }])
+    // 员工姓名
+    .mockResolvedValueOnce([{ employee_id: 'emp-001', name: '张三' }])
+    // 顾客姓名（client_wechat_users）
+    .mockResolvedValueOnce([{ user_id: 'client-001', name: '顾客A' }])
+
+    await serviceRoutes.list(ctx)
+
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].staffName).toBe('张三')
+    expect(ctx.result[0].customerName).toBe('顾客A')
+    expect(ctx.result[0].items).toHaveLength(1)
+    expect(ctx.result[0].items[0].itemName).toBe('面部护理')
+    // 验证 status 过滤参数
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toContain('待服务')
+  })
+
+  test('顾客姓名兜底从订单获取', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '待服务',
+        service_date: '2024-01-15',
+        assigned_employee_id: null,
+        client_user_id: 'client-noname',
+        appointment_id: null,
+        remark: '',
+        started_at: null,
+        completed_at: null,
+        created_at: '2024-01-15T09:00:00Z',
+        client_phone: null,
+      }])
+      .mockResolvedValueOnce([]) // 无明细
+      // 顾客姓名 — name 为 null
+      .mockResolvedValueOnce([{ user_id: 'client-noname', name: null }])
+      // 兜底从 sale_orders 获取
+      .mockResolvedValueOnce([{ client_user_id: 'client-noname', customer_name: '订单顾客' }])
+
+    await serviceRoutes.list(ctx)
+
+    expect(ctx.result[0].customerName).toBe('订单顾客')
+  })
+})
+
+// ============================================================
+// service.create clientUserId 解析分支
+// ============================================================
+describe('service.create clientUserId 解析', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  test('通过 clientPhone 从 client_wechat_users 解析 clientUserId', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    pg.query
+      // 验证订单行
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001',
+        remaining_sessions: 10,
+        unit_real_price: '100',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: null,
+        client_phone: '13800001111',
+      }])
+      // 通过 clientPhone 查 client_wechat_users
+      .mockResolvedValueOnce([{ user_id: 'resolved-user' }])
+      // 顾客无进行中的护理单
+      .mockResolvedValueOnce([])
+
+    // generateServiceOrderId
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
+      }
+      return await cb(client)
+    })
+    // INSERT 服务单
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+      }
+      await cb(client)
+      // 验证 INSERT 的 client_user_id 参数（第 6 个，索引 [6]）
+      const insertCall = client.query.mock.calls[0]
+      expect(insertCall[1][6]).toBe('resolved-user')
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+  })
+
+  test('从 sale_orders 兜底解析 clientUserId', async () => {
+    const ctx = createManagerCtx({
+      // 不传 clientUserId 也不传 clientPhone
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    pg.query
+      // 验证订单行
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001',
+        remaining_sessions: 10,
+        unit_real_price: '100',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: null,
+        client_phone: null,
+      }])
+      // 从 sale_orders 兜底获取 client_user_id
+      .mockResolvedValueOnce([{ client_user_id: 'fallback-user' }])
+      // 顾客无进行中的护理单
+      .mockResolvedValueOnce([])
+
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
+      }
+      return await cb(client)
+    })
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+      }
+      await cb(client)
+      const insertCall = client.query.mock.calls[0]
+      expect(insertCall[1][6]).toBe('fallback-user')
+    })
+
+    await serviceRoutes.create(ctx)
+    expect(ctx.result.status).toBe('待服务')
+  })
+
+  test('saleItemId 不存在时拒绝', async () => {
+    const ctx = createManagerCtx({
+      items: [{ saleItemId: 'item-nonexist', sessionUsed: 1 }],
+    })
+
+    pg.query.mockResolvedValueOnce([]) // 查不到
+
+    await expect(serviceRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('缺少 saleItemId 字段时拒绝', async () => {
+    const ctx = createManagerCtx({
+      items: [{ sessionUsed: 1 }], // 无 saleItemId
+    })
+
+    await expect(serviceRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleItemId/)
+  })
+
+  test('sessionUsed 为负数时拒绝', async () => {
+    const ctx = createManagerCtx({
+      items: [{ saleItemId: 'item-001', sessionUsed: -1 }],
+    })
+
+    await expect(serviceRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*sessionUsed.*大于 0/)
+  })
 })
