@@ -428,9 +428,25 @@ async function main() {
       return
     }
 
+    // 去重：同一 (sale_item_id, employee_id) 合并金额，避免同批 UPSERT 冲突
+    const dedupMap = new Map()
+    for (const r of pgAllocations) {
+      const key = `${r.saleItemId}|${r.employeeId}`
+      if (dedupMap.has(key)) {
+        const existing = dedupMap.get(key)
+        existing.totalAmount = Math.round((existing.totalAmount + r.totalAmount) * 100) / 100
+      } else {
+        dedupMap.set(key, { ...r })
+      }
+    }
+    const dedupedAllocations = [...dedupMap.values()]
+    if (dedupedAllocations.length < pgAllocations.length) {
+      log(`  去重: ${pgAllocations.length} → ${dedupedAllocations.length} 条（合并 ${pgAllocations.length - dedupedAllocations.length} 条重复）`)
+    }
+
     // Step 4: 批量 UPSERT
     console.log('')
-    const totalUpserted = await batchUpsert(pgPool, pgAllocations, dryRun)
+    const totalUpserted = await batchUpsert(pgPool, dedupedAllocations, dryRun)
 
     console.log(`\n=== ${dryRun ? '预览' : '导入'}结果 ===`)
     console.log(`  分配记录: ${totalUpserted}`)
