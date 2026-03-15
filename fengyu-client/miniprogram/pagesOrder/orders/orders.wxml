@@ -29,7 +29,7 @@
 
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
-    <van-empty description="暂无订单记录" />
+    <van-empty description="暂无订单" />
   </view>
 
   <!-- 订单卡片 -->

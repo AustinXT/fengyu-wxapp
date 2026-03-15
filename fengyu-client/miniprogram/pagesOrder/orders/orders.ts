@@ -1,6 +1,6 @@
 // pages/orders/orders.ts
 import Toast from '@vant/weapp/toast/toast';
-import { getStatusClass } from '../../utils/format';
+import { getStatusClass, formatOrderDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
 
 Page({
@@ -39,8 +39,6 @@ Page({
       const data = await callClientApi('order.list', payload);
       const orders: any[] = data?.orders || [];
       const list = orders.map(item => {
-        const rawDt = String(item.sale_order_datetime);
-        const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
         const hasAppointable = item.status === '已支付'
           && (item.items || []).some((i: any) =>
             i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
@@ -48,7 +46,7 @@ Page({
         return {
           ...item,
           statusClass: getStatusClass(item.status),
-          order_time_fmt: `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`,
+          order_time_fmt: formatOrderDate(item.sale_order_datetime),
           hasAppointable,
         };
       });
