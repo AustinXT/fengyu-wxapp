@@ -118,6 +118,22 @@ describe('store.approveUnbind', () => {
     await expect(storeRoutes.approveUnbind(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*不允许审批/)
   })
+
+  test('缺少 requestId 时拒绝（line 80 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({})
+
+    await expect(storeRoutes.approveUnbind(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*requestId/)
+  })
+
+  test('申请不存在时拒绝（line 86 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-nonexist' })
+
+    pg.query.mockResolvedValueOnce([]) // 查不到申请
+
+    await expect(storeRoutes.approveUnbind(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*申请不存在/)
+  })
 })
 
 describe('store.rejectUnbind', () => {
@@ -144,5 +160,38 @@ describe('store.rejectUnbind', () => {
 
     await expect(storeRoutes.rejectUnbind(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*requestId/)
+  })
+
+  test('申请不存在时拒绝（line 123 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-nonexist' })
+
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(storeRoutes.rejectUnbind(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*申请不存在/)
+  })
+
+  test('非本门店申请拒绝审批（line 125 PERMISSION_DENIED）', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      from_store_id: 'store-other',
+      status: 'pending',
+    }])
+
+    await expect(storeRoutes.rejectUnbind(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('非 pending 状态拒绝审批（line 126 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      from_store_id: 'store-001',
+      status: 'rejected',
+    }])
+
+    await expect(storeRoutes.rejectUnbind(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不允许审批/)
   })
 })

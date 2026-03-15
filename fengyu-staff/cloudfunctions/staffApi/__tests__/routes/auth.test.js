@@ -226,6 +226,21 @@ describe('auth.bindPhone', () => {
       .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
   })
 
+  test('CloudID data 为 null 时抛出未解密错误（lines 134-135）', async () => {
+    const ctx = {
+      event: {
+        payload: {},
+        phoneData: { data: null }, // 无 errCode 但 data 为 null
+      },
+      context: {},
+      auth: {},
+      result: null,
+    }
+
+    await expect(authRoutes.bindPhone(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*CloudID 未被解密/)
+  })
+
   test('CloudID 方式正常解密手机号', async () => {
     pg.query
       .mockResolvedValueOnce([{
@@ -256,5 +271,80 @@ describe('auth.bindPhone', () => {
 
     expect(ctx.result.success).toBe(true)
     expect(ctx.result.phone).toBe('13700001234')
+  })
+
+  test('CloudID purePhoneNumber 为空时降级使用 phoneNumber（line 137 右侧操作数）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        employee_id: 'emp-cloud-002',
+        openid: null,
+        name: 'CloudID降级员工',
+        position_name: '美容师',
+        is_resigned: false,
+        store_id: 'store-001',
+        store_name: '测试店',
+        market_name: '测试市场',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce([])
+
+    const ctx = {
+      event: {
+        payload: {},
+        phoneData: {
+          data: { phoneNumber: '+8613700005678' }, // purePhoneNumber 缺失 → 降级
+        },
+      },
+      context: {},
+      auth: {},
+      result: null,
+    }
+    await authRoutes.bindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.phone).toBe('+8613700005678')
+  })
+
+  test('CloudID 解析后手机号均为空时抛出 INVALID_PARAMS（lines 138-139）', async () => {
+    const ctx = {
+      event: {
+        payload: {},
+        phoneData: {
+          data: { purePhoneNumber: '', phoneNumber: '' },
+        },
+      },
+      context: {},
+      auth: {},
+      result: null,
+    }
+
+    await expect(authRoutes.bindPhone(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*无法从 CloudID 获取手机号/)
+  })
+
+  test('自动建档当日已有记录时序号递增（generateEmployeeId line 36 TRUE 分支）', async () => {
+    pg.query.mockResolvedValueOnce([]) // 未找到已有行 → 走自动建档
+
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [] })                                      // advisory lock
+          .mockResolvedValueOnce({ rows: [{ employee_id: 'FY-WX-260315001' }] })   // 当日已有 → seq+1
+          .mockResolvedValueOnce({ rows: [] }),                                     // INSERT
+      }
+      return await cb(client)
+    })
+
+    const ctx = {
+      event: { payload: { phoneNumber: '13800007777' } },
+      context: {},
+      auth: {},
+      result: null,
+    }
+    await authRoutes.bindPhone(ctx)
+
+    // seq = parseInt('001', 10) + 1 = 2 → 末3位应为 002
+    expect(ctx.result.staffWfId).toMatch(/002$/)
+    expect(ctx.result.success).toBe(true)
   })
 })

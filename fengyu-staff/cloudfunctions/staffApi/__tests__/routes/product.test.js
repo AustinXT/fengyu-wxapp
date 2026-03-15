@@ -85,6 +85,25 @@ describe('product.spuList', () => {
     await productRoutes.spuList(ctx)
     expect(ctx.result).toEqual([])
   })
+
+  test('按 productKind 过滤商品（lines 51-52 TRUE 分支）', async () => {
+    const ctx = createCtx({ payload: { productKind: '护理项目' } })
+
+    pg.query.mockResolvedValueOnce([
+      {
+        product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
+        category_name: '护理项目', product_kind: '护理项目',
+        cover_image: null, description: '', sort_order: 1, list_price: '200',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([]) // 无 SKU
+
+    await productRoutes.spuList(ctx)
+
+    expect(ctx.result).toHaveLength(1)
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('product_kind')
+  })
 })
 
 // ============================================================

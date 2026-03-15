@@ -109,6 +109,27 @@ describe('order.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*商品明细/)
   })
 
+  test('缺少 paymentMethod 时拒绝（line 60 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138',
+      clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+    })
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*paymentMethod/)
+  })
+
+  test('未绑定门店时拒绝开单（line 63 TRUE 分支）', async () => {
+    const ctx = createManagerCtx(
+      { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku-001', quantity: 1 }], paymentMethod: 'offline' },
+      { storeId: null }
+    )
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*门店/)
+  })
+
   test('已注册顾客有待支付订单时拒绝', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
@@ -236,6 +257,246 @@ describe('order.create', () => {
 
     expect(ctx.result.totalAmount).toBe(1) // customPrice 而非原价
   })
+
+  // ===== 优惠券路径覆盖 =====
+
+  test('开单成功 + 现金券抵扣（全单适用，无分类限制）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      orderType: '普通',
+      couponId: 'coupon-001',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])       // 已注册顾客
+      .mockResolvedValueOnce([])                             // 无待支付订单
+      .mockResolvedValueOnce([{                              // SKU 数据
+        sku_id: 'sku-001', product_id: 'prod-001',
+        product_type: '疗程卡', spec_name: '基础款',
+        price: '1000.00', special_price: null, session_count: 10,
+        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([{                              // 优惠券查询 → 有效
+        coupon_id: 'coupon-001', user_id: 'cu-001',
+        coupon_type: '现金券', discount_value: '200', min_spend: '500',
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-001' }])  // SKU 分类
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // 1000 - 200 = 800（couponDiscount=200，满足 min_spend=500）
+    expect(ctx.result.totalAmount).toBe(800)
+    expect(ctx.result.status).toBe('待支付')
+  })
+
+  test('优惠券不存在或已过期时报错（couponRows.length === 0）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-bad',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '100.00', special_price: null, session_count: 0,
+        product_name: 'P', sales_category: null, product_kind: '家居产品',
+      }])
+      .mockResolvedValueOnce([])   // 优惠券查询 → 空
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*优惠券已失效/)
+  })
+
+  test('优惠券门店限制不匹配时报错（applicable_store_ids 不含当前门店）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-002',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '800.00', special_price: null, session_count: 0,
+        product_name: 'P', sales_category: null, product_kind: '家居产品',
+      }])
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-002', user_id: 'cu-001',
+        coupon_type: '现金券', discount_value: '100', min_spend: '0',
+        applicable_store_ids: ['store-other'],      // 不含 store-001
+        applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不适用于此门店/)
+  })
+
+  test('优惠券品项分类不匹配时报错（eligibleItems.length === 0）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-003',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '800.00', special_price: null, session_count: 0,
+        product_name: 'P', sales_category: null, product_kind: '家居产品',
+      }])
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-003', user_id: 'cu-001',
+        coupon_type: '项目券', discount_value: '50', min_spend: '0',
+        applicable_store_ids: null,
+        applicable_category_ids: ['cat-护理'],  // 商品属于 cat-home，不匹配
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-home' }])  // SKU 分类
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不适用于当前商品/)
+  })
+
+  test('优惠券未满最低消费限制时报错（eligibleTotal < minSpend）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-004',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
+        spec_name: 'S', price: '300.00', special_price: null, session_count: 0,  // 实收 300
+        product_name: 'P', sales_category: null, product_kind: '家居产品',
+      }])
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-004', user_id: 'cu-001',
+        coupon_type: '现金券', discount_value: '50', min_spend: '500',  // 要满 500
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-001' }])
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*未满足使用条件/)
+  })
+
+  test('事务内优惠券原子 claim 竞态（rowCount=0）时报错', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '138', clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      couponId: 'coupon-001',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
+        spec_name: '基础款', price: '1000.00', special_price: null, session_count: 10,
+        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-001', user_id: 'cu-001',
+        coupon_type: '现金券', discount_value: '200', min_spend: '500',
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-001', category_id: 'cat-001' }])
+
+    // generateOrderNo 事务：正常返回
+    pg.transaction
+      .mockImplementationOnce(async (cb) => {
+        const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
+        return await cb(client)
+      })
+      // 主事务：UPDATE user_coupons 返回 rowCount=0 → 竞态失败
+      .mockImplementationOnce(async (cb) => {
+        const client = {
+          query: vi.fn()
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // advisory_xact_lock
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // SELECT sale_items
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 }),  // UPDATE user_coupons → 0
+        }
+        return await cb(client)
+      })
+
+    await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*优惠券已失效/)
+  })
+
+  test('内部单统一半价（orderType=internal，line 127 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '内部员工',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      orderType: 'internal',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([])    // 未注册客户端账号
+      .mockResolvedValueOnce([])    // 无待支付订单（按 phone+store）
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
+        spec_name: '基础款', price: '1000.00', special_price: null, session_count: 5,
+        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // 内部单半价：Math.round(1000 * 50) / 100 = 500
+    expect(ctx.result.totalAmount).toBe(500)
+    expect(ctx.result.status).toBe('待支付')
+  })
+
+  test('福利活动订单包含非福利商品时拒绝（line 166 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'offline',
+      orderType: 'promotion',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([])    // 未注册
+      .mockResolvedValueOnce([])    // 无待支付订单
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001', product_id: 'prod-001', product_type: '家居产品',
+        spec_name: '标准', price: '500.00', special_price: null, session_count: null,
+        product_name: '护肤品', sales_category: '自采自销', product_kind: '家居产品',
+      }])
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*福利活动/)
+  })
 })
 
 describe('order.confirmOffline', () => {
@@ -345,6 +606,29 @@ describe('order.confirmOffline', () => {
 
     await expect(orderRoutes.confirmOffline(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*不可确认/)
+  })
+
+  test('待支付线下订单可直接确认收款（跳过 wechat 拦截，进入事务）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '待支付',
+        payment_method: 'offline',  // offline → 不触发非线下拦截
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '300', product_type: '单品' }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.totalReceived).toBe(300)
   })
 })
 
@@ -1026,6 +1310,114 @@ describe('order.createRefund', () => {
 
     await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*item-wrong.*不存在/)
   })
+
+  test('refundQuantity 缺失时使用 orig.quantity 回退（行覆盖 qty = orig.quantity）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-001',
+      items: [{ saleItemId: 'item-001' }],  // 无 refundQuantity
+      refundReason: '顾客要求退全单',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三', payment_method: 'offline',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001', sku_id: 'sku-001', product_name: '面部护理',
+        sku_spec_name: '基础款', product_type: '疗程卡', session_count: 10,
+        unit_price: '1000', unit_real_price: '500', quantity: 3,  // orig.quantity = 3
+        sales_category: '自采自销',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.createRefund(ctx)
+
+    // qty = orig.quantity = 3, fee = 0, totalAmount = -(500*3) = -1500
+    expect(ctx.result.totalAmount).toBe(-1500)
+    expect(ctx.result.status).toBe('待审批')
+  })
+
+  test('handlingFee 缺失时 fee = 0，totalAmount 不扣手续费', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-002',
+      items: [{ saleItemId: 'item-002', refundQuantity: 2 }],
+      refundReason: '质量问题',
+      // 无 handlingFee
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-002', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '李四', payment_method: 'wechat',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-002', sku_id: 'sku-002', product_name: '精油SPA',
+        sku_spec_name: '高级款', product_type: '单品', session_count: 0,
+        unit_price: '800', unit_real_price: '800', quantity: 2,
+        sales_category: '自采自销',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.createRefund(ctx)
+
+    // fee = Number(undefined) || 0 = 0, totalAmount = -(800*2 - 0) = -1600
+    expect(ctx.result.totalAmount).toBe(-1600)
+    expect(ctx.result.status).toBe('待审批')
+  })
+
+  test('generateOrderNo 已有当日订单时序号从末4位递增（TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-003',
+      items: [{ saleItemId: 'item-003', refundQuantity: 1 }],
+      refundReason: '超时退款',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-003', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '王五', payment_method: 'offline',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-003', sku_id: 'sku-003', product_name: '护理套餐',
+        sku_spec_name: null, product_type: '单品', session_count: 0,
+        unit_price: '300', unit_real_price: '300', quantity: 1,
+        sales_category: '自采自销',
+      }])
+
+    // 第一次 pg.transaction → generateOrderNo: client 返回已有订单行 → seq 递增
+    pg.transaction
+      .mockImplementationOnce(async (cb) => {
+        const client = {
+          query: vi.fn()
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // pg_advisory_xact_lock
+            .mockResolvedValueOnce({
+              rows: [{ sale_order_id: 'FY-TKD-WX-2603150001' }],
+              rowCount: 1,
+            }),  // SELECT sale_order_id → 已有0001
+        }
+        return await cb(client)
+      })
+      // 第二次 pg.transaction → createRefund 主事务
+      .mockImplementationOnce(async (cb) => {
+        const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+        return await cb(client)
+      })
+
+    await orderRoutes.createRefund(ctx)
+
+    // seq = parseInt('0001') + 1 = 2 → 订单号末4位为 '0002'
+    expect(ctx.result.saleOrderId).toMatch(/0002$/)
+    expect(ctx.result.status).toBe('待审批')
+  })
 })
 
 // ============================================================
@@ -1277,6 +1669,91 @@ describe('order.createConversion', () => {
       convertInItems: [{ skuId: 'sku-1' }],
     })
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('转换无疗程次数商品时跳过原子扣减（sessionCount = null → if 分支 FALSE）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-001',
+      convertOutItems: [{ saleItemId: 'item-001', convertQuantity: 1 }],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
+      }])
+      // 原明细行：session_count = null（单品，无次数）
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: 'purchase',
+        sku_id: 'sku-old', product_name: '家居产品', sku_spec_name: '标准',
+        product_type: '单品', session_count: null, unit_price: '200',
+        unit_real_price: '200', quantity: 1, sales_category: '自采自销',
+      }])
+      // 新 SKU：也无次数
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-new', product_id: 'p-new', spec_name: '升级款',
+        product_type: '单品', session_count: null, price: '250',
+        product_name: '家居升级版', sales_category: '自采自销',
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.createConversion(ctx)
+
+    // session_count=null → d.sessionCount = null → if(null) = false → 跳过原子扣减
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.message).toContain('转换单已创建')
+  })
+
+  test('转换时次数不足抛出 INVALID_PARAMS（line 1205 TRUE 分支，rowCount=0）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-001',
+      convertOutItems: [{ saleItemId: 'item-001', convertQuantity: 1 }],
+      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
+      }])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: 'purchase',
+        sku_id: 'sku-old', product_name: '旧疗程', sku_spec_name: '标准',
+        product_type: '疗程卡', session_count: 5, unit_price: '1000',
+        unit_real_price: '1000', quantity: 1, sales_category: '自采自销',
+      }])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-new', product_id: 'p-new', spec_name: '高级款',
+        product_type: '疗程卡', session_count: 5, price: '1500',
+        product_name: '新疗程', sales_category: '自采自销',
+      }])
+
+    pg.transaction
+      // 第一次：generateOrderNo 内部事务
+      .mockImplementationOnce(async (cb) => {
+        const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+        return await cb(client)
+      })
+      // 第二次：主事务 — UPDATE remaining_sessions 返回 rowCount=0（次数不足）
+      .mockImplementationOnce(async (cb) => {
+        const client = {
+          query: vi.fn()
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // advisory lock
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // maxResult sale_items
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
+            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_items convert_out
+            .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE remaining_sessions → 次数不足
+        }
+        return await cb(client)
+      })
+
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*剩余次数不足/)
   })
 })
 

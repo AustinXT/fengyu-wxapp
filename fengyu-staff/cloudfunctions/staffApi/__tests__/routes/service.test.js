@@ -143,6 +143,19 @@ describe('service.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*服务明细不能为空/)
   })
 
+  test('关联预约不存在时拒绝创建（line 62 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      appointmentId: 'appt-nonexist',
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    // appointment query → 空，预约不存在
+    pg.query.mockResolvedValueOnce([])
+
+    await expect(serviceRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*预约不存在/)
+  })
+
   test('预约已关联服务单时拒绝重复创建', async () => {
     const ctx = createManagerCtx({
       appointmentId: 'appt-001',
@@ -191,6 +204,53 @@ describe('service.create', () => {
 
     await expect(serviceRoutes.create(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*已有进行中的护理单/)
+  })
+
+  test('sale_item 无 sku_id 时快照为 null（line 183 || null 分支）', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      assignedStaffWfId: 'emp-beautician-001',
+      items: [{ saleItemId: 'item-no-sku', sessionUsed: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-no-sku',
+        remaining_sessions: 3,
+        unit_real_price: '200',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: 'client-001',
+        client_phone: '138',
+      }])
+      .mockResolvedValueOnce([]) // check active service orders → 无进行中
+
+    // pg.transaction #1: generateServiceOrderId
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // advisory lock
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }), // no existing → seq=1
+      }
+      return await cb(client)
+    })
+
+    // pg.transaction #2: INSERT service_orders + SELECT sku_id(null) + INSERT service_items
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT service_orders
+          .mockResolvedValueOnce({ rows: [{ sku_id: null, unit_real_price: null }], rowCount: 1 }) // sku_id 为 null → || null 分支
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 }), // INSERT service_items
+      }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    expect(ctx.result.serviceOrderId).toMatch(/^HLD-WX-\d{6}\d{4}$/)
+    expect(ctx.result.status).toBe('待服务')
   })
 })
 

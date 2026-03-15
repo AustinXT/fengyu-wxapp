@@ -86,6 +86,7 @@
         </view>
         <text class="customer-phone">{{item.phone}}</text>
         <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
+        <text wx:if="{{item.lastPurchaseName}}" class="customer-recent">最近购买：{{item.lastPurchaseName}}</text>
         <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
       </view>
     </view>

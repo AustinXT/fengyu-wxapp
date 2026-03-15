@@ -17,6 +17,7 @@ interface CustomerListItem {
   storeName: string;
   tier: 'diamond' | 'iron' | 'fan' | null;
   lastServiceDate: string | null;
+  lastPurchaseName: string | null;
   source: string;
 }
 

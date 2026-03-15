@@ -183,10 +183,27 @@ async function search(ctx) {
       svcDateMap[r.client_user_id] = r.service_date;
     }
 
+    // 最近购买商品名
+    const lastPurchaseRows = await pg.query(`
+      SELECT DISTINCT ON (o.client_user_id)
+             o.client_user_id, si.product_name AS last_product_name
+      FROM sale_orders o
+      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+      WHERE o.client_user_id = ANY($1)
+        AND o.status IN ('已支付', '已完成')
+        AND si.item_direction = 'purchase'
+      ORDER BY o.client_user_id, o.paid_at DESC NULLS LAST, si.sale_item_id ASC
+    `, [allClientUserIds]);
+    const lastPurchaseMap = {};
+    for (const r of lastPurchaseRows) {
+      lastPurchaseMap[r.client_user_id] = r.last_product_name;
+    }
+
     for (const item of allResults) {
       if (item.clientUserId) {
         item.tier = spendMap[item.clientUserId] || null;
         item.lastServiceDate = svcDateMap[item.clientUserId] || null;
+        item.lastPurchaseName = lastPurchaseMap[item.clientUserId] || null;
       }
     }
   }
@@ -694,6 +711,25 @@ async function listByTag(ctx) {
   const offset = (page - 1) * pageSize
   const paged = filtered.slice(offset, offset + pageSize)
 
+  // 最近购买商品名（仅查分页后的用户，减少查询量）
+  const pagedUserIds = paged.map(r => r.user_id).filter(Boolean)
+  const lastPurchaseMap = {}
+  if (pagedUserIds.length > 0) {
+    const lastPurchaseRows = await pg.query(`
+      SELECT DISTINCT ON (o.client_user_id)
+             o.client_user_id, si.product_name AS last_product_name
+      FROM sale_orders o
+      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+      WHERE o.client_user_id = ANY($1)
+        AND o.status IN ('已支付', '已完成')
+        AND si.item_direction = 'purchase'
+      ORDER BY o.client_user_id, o.paid_at DESC NULLS LAST, si.sale_item_id ASC
+    `, [pagedUserIds])
+    for (const r of lastPurchaseRows) {
+      lastPurchaseMap[r.client_user_id] = r.last_product_name
+    }
+  }
+
   ctx.result = {
     total: filtered.length,
     customers: paged.map(r => {
@@ -706,6 +742,7 @@ async function listByTag(ctx) {
         phoneMasked: maskPhone(r.phone),
         memberLevel: r.member_level,
         lastServiceDate: r.last_service_date,
+        lastPurchaseName: lastPurchaseMap[r.user_id] || null,
         birthday: r.birthday,
         tier: yearTotal >= 20000 ? 'diamond' : yearTotal >= 5000 ? 'iron' : yearTotal > 0 ? 'fan' : null,
         source: 'miniprogram',

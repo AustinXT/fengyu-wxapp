@@ -168,6 +168,108 @@ describe('allocation.save', () => {
     await expect(allocationRoutes.save(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*employeeId/)
   })
+
+  test('缺少 saleOrderId 时拒绝（line 34 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ allocations: [] })
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝（line 47 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST', allocations: [] })
+    pg.query.mockResolvedValueOnce([])
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('订单分配状态异常时拒绝（line 56 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001',
+      status: '已支付',
+      allocation_status: 'done', // 非 pending/allocated → 异常
+      store_id: 'store-001',
+    }])
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*分配状态异常/)
+  })
+
+  test('空分配且订单无明细时直接更新状态（line 73 FALSE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([]) // 空 orderItems → itemIds.length === 0 → 跳过 DELETE
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await allocationRoutes.save(ctx)
+
+    expect(ctx.result.allocationCount).toBe(0)
+    expect(ctx.result.message).toContain('无需分配')
+  })
+
+  test('分配记录缺少 saleItemId 时拒绝（line 90 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{ employeeId: 'emp-001' }], // 无 saleItemId
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleItemId/)
+  })
+
+  test('分配记录缺省字段使用默认值（lines 122-124）', async () => {
+    // alloc 不提供 departmentName / allocationRatio / totalAmount
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-001' }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
+
+    let capturedInsertParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql && sql.includes('INSERT INTO sale_allocations')) capturedInsertParams = params
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await allocationRoutes.save(ctx)
+
+    // $3=departmentName(null), $4=allocationRatio(1.0), $5=totalAmount(0)
+    expect(capturedInsertParams[2]).toBeNull()
+    expect(capturedInsertParams[3]).toBe(1.0)
+    expect(capturedInsertParams[4]).toBe(0)
+  })
 })
 
 describe('allocation.deleteAllocation', () => {

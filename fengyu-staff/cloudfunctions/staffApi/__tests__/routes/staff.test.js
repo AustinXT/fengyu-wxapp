@@ -454,6 +454,28 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.items).toEqual([])
     expect(ctx.result.categorySummary).toEqual({})
   })
+
+  test('svcRows 中 session_used 为 null 时默认 1、sales_category 为 null 时归入"未分类"（lines 510-511）', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query.mockResolvedValueOnce([]) // allocRows 空
+    pg.query.mockResolvedValueOnce([
+      {
+        service_price: '150', session_used: null,   // || 1 分支
+        product_name: 'P-null', sku_spec_name: 'S-null', sales_category: null, // || '未分类' 分支
+        service_order_id: 'SVC-null', service_date: '2024-06-25',
+        store_id: 'store-001', customer_name: '客户X', client_phone: '138',
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalServiceFee).toBe(150) // 150 * 1（session_used 默认为 1）
+    expect(ctx.result.categorySummary['未分类'].service).toBe(150)
+  })
 })
 
 // ============================================================

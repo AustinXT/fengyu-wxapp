@@ -425,4 +425,56 @@ describe('appointment.list 补充', () => {
     expect(sql).not.toContain('a.status =')
     expect(sql).not.toContain('DATE(a.appointment_time)')
   })
+
+  test('appointment_time 为 null 时 formatDateTime 返回空字符串（line 16 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-null',
+      status: '待确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-001',
+      employee_name: '员工A',
+      appointment_time: null,
+      notes: '',
+      sale_item_id: null,
+      checkin_at: null,
+      created_at: '2024-01-15',
+      sale_order_id: null,
+      service_name: '到店预约',
+      sku_spec_name: null,
+      customer_phone: '138',
+    }])
+
+    await appointmentRoutes.list(ctx)
+
+    expect(ctx.result[0].appointmentTime).toBe('')
+  })
+
+  test('appointment_time 为无效日期字符串时 formatDateTime 返回原始值（line 18 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ page: 1 })
+
+    pg.query.mockResolvedValueOnce([{
+      appointment_id: 'appt-bad',
+      status: '待确认',
+      client_user_id: 'c1',
+      client_name: '顾客A',
+      employee_id: 'emp-001',
+      employee_name: '员工A',
+      appointment_time: 'not-a-date',
+      notes: '',
+      sale_item_id: null,
+      checkin_at: null,
+      created_at: '2024-01-15',
+      sale_order_id: null,
+      service_name: '到店预约',
+      sku_spec_name: null,
+      customer_phone: '138',
+    }])
+
+    await appointmentRoutes.list(ctx)
+
+    expect(ctx.result[0].appointmentTime).toBe('not-a-date')
+  })
 })

@@ -131,6 +131,60 @@ describe('customer.search', () => {
     expect(params.keyword).toBe('%张%')
     expect(params.storeName).toBeTruthy()
   })
+
+  test('search 返回 lastPurchaseName 字段', async () => {
+    const ctx = createManagerCtx({})
+    mssql.query.mockResolvedValueOnce([
+      { customer_id: 'C001', name: '张三', phone: '13800001111', member_level: null, store_name: '测试店', main_staff_id: null, register_date: null },
+    ])
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u1', phone: '13800001111', name: '张三', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])   // spendRows
+      .mockResolvedValueOnce([])   // svcDateRows
+      .mockResolvedValueOnce([{ client_user_id: 'u1', last_product_name: '精油SPA套餐' }]) // lastPurchaseRows
+    await customerRoutes.search(ctx)
+    const item = ctx.result.find(r => r.clientUserId === 'u1')
+    expect(item.lastPurchaseName).toBe('精油SPA套餐')
+    // SQL 应包含 item_direction 过滤（C2：不引用当前商品价格，而是从订单行读取）
+    const lastPurchaseSql = pg.query.mock.calls[3][0]
+    expect(lastPurchaseSql).toContain('item_direction')
+  })
+
+  test('spendRows/svcDateRows 非空时 tier 和 lastServiceDate 被填充（lines 169-170, 183-184）', async () => {
+    // 让 spendRows 和 svcDateRows 返回数据，触发 for...of 循环体
+    const ctx = createManagerCtx({ phone: '13800001111' })
+    mssql.query.mockResolvedValueOnce([
+      { customer_id: 'C001', name: '张三', phone: '13800001111', member_level: 'VIP',
+        store_name: '测试店', main_staff_id: null, register_date: '2024-01-01' },
+    ])
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u1', phone: '13800001111', name: '张三', customer_id: 'C001', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ client_user_id: 'u1', annual_spend: '25000' }])  // spendRows 非空
+      .mockResolvedValueOnce([{ client_user_id: 'u1', service_date: '2024-05-10' }]) // svcDateRows 非空
+      .mockResolvedValueOnce([])  // lastPurchaseRows
+
+    await customerRoutes.search(ctx)
+
+    expect(ctx.result[0].tier).toBe('diamond')          // 25000 >= 20000 → diamond
+    expect(ctx.result[0].lastServiceDate).toBe('2024-05-10')
+  })
+
+  test('PG-only 用户无姓名时从 sale_orders 补全（lines 106-113）', async () => {
+    // pgOnly 用户 name=null → phonesWithoutName 非空 → 查 sale_orders 补名
+    const ctx = createManagerCtx({ keyword: '匿名' })
+    mssql.query.mockResolvedValueOnce([]) // WorkFine 无结果
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u-anon', phone: '13700007777', name: null, customer_id: null, bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ client_phone: '13700007777', customer_name: '匿名客' }]) // nameRows 非空
+      .mockResolvedValueOnce([])   // spendRows
+      .mockResolvedValueOnce([])   // svcDateRows
+      .mockResolvedValueOnce([])   // lastPurchaseRows
+
+    await customerRoutes.search(ctx)
+
+    expect(ctx.result[0].name).toBe('匿名客')
+    expect(ctx.result[0].clientUserId).toBe('u-anon')
+  })
 })
 
 // ============================================================
@@ -163,6 +217,28 @@ describe('customer.calendar', () => {
   test('缺少 year 或 month 时拒绝', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
     await expect(customerRoutes.calendar(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+
+  test('使用 clientPhone 查询日历（lines 244-246 else 分支）', async () => {
+    // clientUserId 未提供，走 else 分支用 client_phone 过滤
+    const ctx = createManagerCtx({ clientPhone: '13800001111', year: 2024, month: 6 })
+    pg.query
+      .mockResolvedValueOnce([
+        { pay_date: '2024-06-10', order_count: '1', total_received: '200.00' },
+      ])
+      .mockResolvedValueOnce([
+        { sale_order_id: 'SO-X01', sale_order_type: '正式', store_id: 'store-001',
+          payment_method: '微信支付', paid_at: '2024-06-10T12:00:00Z',
+          client_phone: '13800001111', customer_name: '李四',
+          pay_date: '2024-06-10', total_received: '200.00' },
+      ])
+
+    await customerRoutes.calendar(ctx)
+
+    expect(ctx.result.dailySummary).toHaveLength(1)
+    expect(ctx.result.dailySummary[0].totalReceived).toBe(200)
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toContain('client_phone')
   })
 })
 
@@ -228,6 +304,101 @@ describe('customer.detail', () => {
     expect(sql).toContain('@id')
     expect(sql).not.toContain("'C001'")
     expect(params).toEqual({ id: 'C001' })
+  })
+
+  test('WorkFine 有客户但无 PG 账号时按 phone 查询消费统计（lines 480-496）', async () => {
+    // 场景：WorkFine 老客户，未注册小程序，clientUserId 为 null
+    const ctx = createManagerCtx({ id: 'C002' })
+
+    mssql.query.mockResolvedValueOnce([{
+      customer_id: 'C002', name: '老客户', phone: '138001', // 6位短号，同时覆盖 maskPhone line 582
+      member_level: 'VIP', store_name: '测试店', main_staff_id: null,
+    }])
+    pg.query
+      .mockResolvedValueOnce([])               // client_wechat_users → 无 PG 账号 → clientUserId 保持 null
+      .mockResolvedValueOnce([{ total: '8000' }])  // getConsumptionStats else if(phone): 总消费
+      .mockResolvedValueOnce([{ total: '3000' }])  // getConsumptionStats else if(phone): 年消费
+
+    await customerRoutes.detail(ctx)
+
+    expect(ctx.result.id).toBe('C002')
+    expect(ctx.result.clientUserId).toBeNull()
+    expect(ctx.result.totalConsumption).toBe(8000)
+    expect(ctx.result.yearConsumption).toBe(3000)
+    // maskPhone('138001') → length=6, ≤7 → '1****01'（line 582 覆盖）
+    expect(ctx.result.phoneMasked).toBe('1****01')
+    expect(ctx.result.source).toBe('workfine')
+  })
+
+  test('手机号全为空白时拒绝（line 411 TRUE 分支）', async () => {
+    // queryPhone = '   '（空白）：truthy 通过 line 317，但 trim 后为空 → if (!phone) throw
+    const ctx = createManagerCtx({ phone: '   ' })
+    // mssql 默认返回 [] (beforeEach reset)，WorkFine 无记录 → 进入 PG 回退路径
+    await expect(customerRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
+  })
+
+  test('PG 用户无姓名时从 sale_orders 补全姓名（lines 428-435）', async () => {
+    const ctx = createManagerCtx({ phone: '13900003333' })
+    // WorkFine 无记录（mssql 默认 []）→ PG 路径
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u3', phone: '13900003333', name: null, bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ customer_name: '陈六' }])    // sale_orders 补全名
+      .mockResolvedValueOnce([{ total: '500' }])              // getConsumptionStats total
+      .mockResolvedValueOnce([{ total: '200' }])              // getConsumptionStats year
+
+    await customerRoutes.detail(ctx)
+
+    expect(ctx.result.name).toBe('陈六')
+    expect(ctx.result.clientUserId).toBe('u3')
+    expect(ctx.result.source).toBe('miniprogram')
+  })
+
+  test('phone 和 clientUserId 同时提供时直接构造 pgUser（line 408 TRUE 分支）', async () => {
+    // resolvedPhone='138' 且 queryClientUserId='u3' → if(resolvedPhone && queryClientUserId) TRUE
+    // pgUser 由两个参数直接构造，无需再查 client_wechat_users
+    const ctx = createManagerCtx({ phone: '138', clientUserId: 'u3' })
+    // mssql 默认返回 [] → WorkFine 无记录 → 进入 PG 回退
+    // pgUser = { user_id: 'u3', phone: '138' }，无 name 字段 → !name → 查 sale_orders
+    pg.query
+      .mockResolvedValueOnce([{ customer_name: '王七' }])  // sale_orders 名字
+      .mockResolvedValueOnce([{ total: '300' }])           // getConsumptionStats total
+      .mockResolvedValueOnce([{ total: '100' }])           // getConsumptionStats year
+
+    await customerRoutes.detail(ctx)
+
+    expect(ctx.result.id).toBeNull()
+    expect(ctx.result.clientUserId).toBe('u3')
+    expect(ctx.result.name).toBe('王七')
+    expect(ctx.result.source).toBe('miniprogram')
+  })
+
+  test('仅传 clientUserId 且 PG 中不存在时拒绝（line 330-331 TRUE 分支）', async () => {
+    // !id && !queryPhone && queryClientUserId → 进 line 325 分支，pg 查询为空 → throw
+    const ctx = createManagerCtx({ clientUserId: 'u-nonexist' })
+    pg.query.mockResolvedValueOnce([]) // client_wechat_users 无结果
+
+    await expect(customerRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*顾客不存在/)
+  })
+
+  test('仅传 clientUserId 且 PG 存在时回填 phone（line 333）', async () => {
+    // !id && !queryPhone && queryClientUserId → 查 PG → resolvedPhone 回填
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    // 1. client_wechat_users by user_id → 回填 resolvedPhone
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'u1', phone: '13800001111', name: null, bound_store_id: 'store-001' }])
+      // WorkFine 默认 [] → 无记录 → resolvedPhone && resolvedClientUserId → pgUser 构造
+      // pgUser.name undefined → !name → sale_orders 补名
+      .mockResolvedValueOnce([{ customer_name: '赵八' }])
+      .mockResolvedValueOnce([{ total: '1500' }])  // total
+      .mockResolvedValueOnce([{ total: '600' }])   // year
+
+    await customerRoutes.detail(ctx)
+
+    expect(ctx.result.clientUserId).toBe('u1')
+    expect(ctx.result.name).toBe('赵八')
+    expect(ctx.result.source).toBe('miniprogram')
   })
 })
 
@@ -337,6 +508,31 @@ describe('customer.stats', () => {
     expect(ctx.result.total).toBe(0)
     expect(ctx.result.memberCount).toBe(0)
     expect(ctx.result.flowCount).toBe(0)
+  })
+
+  test('12月时 nextMonth 回绕到1月（覆盖 line 597 TRUE 分支）', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2025-12-15'))
+    try {
+      const ctx = createManagerCtx({})
+
+      pg.query
+        .mockResolvedValueOnce([
+          // 1月生日 → 在12月时应计入 birthdayNext
+          { user_id: 'u1', birthday: '1990-01-10', last_service_date: null },
+          // 12月生日 → 在12月时应计入 birthday（本月）
+          { user_id: 'u2', birthday: '1990-12-05', last_service_date: null },
+        ])
+        .mockResolvedValueOnce([{ cnt: '0' }])
+
+      await customerRoutes.stats(ctx)
+
+      expect(ctx.result.birthdayNext).toBe(1)  // 1月生日在12月时算下月
+      expect(ctx.result.birthday).toBe(1)      // 12月生日在12月时算本月
+      expect(ctx.result.sleeping).toBe(2)      // 无服务记录→沉睡
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -455,6 +651,48 @@ describe('customer.listByTag', () => {
 
     await customerRoutes.listByTag(ctx)
     expect(ctx.result.customers[0].tier).toBe('fan') // 0 < 100 < 5000
+  })
+
+  test('listByTag 返回 lastPurchaseName 字段', async () => {
+    const now = new Date()
+    const daysAgo = (n) => { const d = new Date(now); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10) }
+    const ctx = createManagerCtx({ tag: 'active', page: 1, pageSize: 10 })
+    pg.query
+      .mockResolvedValueOnce([
+        { user_id: 'u1', name: '活跃客', phone: '138', birthday: null, member_level: null,
+          last_service_date: daysAgo(10), year_consumption: '0' },
+      ])
+      // lastPurchaseRows
+      .mockResolvedValueOnce([{ client_user_id: 'u1', last_product_name: '面部护理套餐' }])
+    await customerRoutes.listByTag(ctx)
+    expect(ctx.result.customers[0].lastPurchaseName).toBe('面部护理套餐')
+  })
+
+  test('按 birthdayNext 标签筛选下月生日客户（覆盖 lines 697-698）', async () => {
+    const now = new Date()
+    const currentMonth = now.getMonth() + 1
+    const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
+
+    const ctx = createManagerCtx({ tag: 'birthdayNext', page: 1, pageSize: 10 })
+
+    pg.query.mockResolvedValueOnce([
+      // 下月生日 → 应被筛选出
+      { user_id: 'u1', name: '下月生日客', phone: '13800001111',
+        birthday: `1990-${String(nextMonth).padStart(2, '0')}-20`,
+        member_level: null, last_service_date: null, year_consumption: '0' },
+      // 本月生日 → 不应被 birthdayNext 筛选
+      { user_id: 'u2', name: '本月生日客', phone: '13900002222',
+        birthday: `1990-${String(currentMonth).padStart(2, '0')}-15`,
+        member_level: null, last_service_date: null, year_consumption: '0' },
+      // 无生日 → 不应被筛选
+      { user_id: 'u3', name: '无生日客', phone: '15000003333',
+        birthday: null, member_level: null, last_service_date: null, year_consumption: '0' },
+    ])
+
+    await customerRoutes.listByTag(ctx)
+
+    expect(ctx.result.total).toBe(1)
+    expect(ctx.result.customers[0].name).toBe('下月生日客')
   })
 })
 
