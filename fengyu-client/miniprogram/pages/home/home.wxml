@@ -184,10 +184,10 @@
 
         <!-- 空态 -->
         <view wx:elif="{{spuList.length === 0 && sidebarItems.length === 0}}">
-          <van-empty description="暂无服务项目" />
+          <van-empty description="该分类暂无商品" />
         </view>
         <view wx:elif="{{spuList.length === 0 && sidebarItems.length > 0}}">
-          <van-empty description="该分类暂无服务项目" />
+          <van-empty description="该分类暂无商品" />
         </view>
 
         <!-- SPU 卡片列表 -->
