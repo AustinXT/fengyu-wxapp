@@ -478,15 +478,18 @@ async function confirmOffline(ctx) {
   const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
   await pg.transaction(async (client) => {
-    // 更新订单状态
-    await client.query(
+    // 更新订单状态（C4: WHERE 锁定当前状态防止并发竞态）
+    const updateResult = await client.query(
       `UPDATE sale_orders
        SET status = '已支付', paid_at = $1, updated_at = $1,
            offline_confirmed_by = $2, offline_confirmed_at = $1,
            allocation_status = CASE WHEN allocation_status = 'allocated' THEN 'allocated' ELSE 'pending' END
-       WHERE sale_order_id = $3`,
-      [now, ctx.auth.staffWfId, saleOrderId]
+       WHERE sale_order_id = $3 AND status = $4`,
+      [now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
+    if (updateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
+    }
 
     // 单品到期日写入（paid_at + 1年）
     await client.query(
@@ -548,10 +551,13 @@ async function close(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
-    await client.query(
-      "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2",
-      [now, saleOrderId]
+    const updateResult = await client.query(
+      "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2 AND status = $3",
+      [now, saleOrderId, order.status]
     )
+    if (updateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
+    }
     // 作废营业额分配
     const saleItemIds = await client.query(
       'SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1',
@@ -606,10 +612,13 @@ async function resetFailed(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE sale_orders SET status = '待支付', updated_at = $1 WHERE sale_order_id = $2",
+  const result = await pg.query(
+    "UPDATE sale_orders SET status = '待支付', updated_at = $1 WHERE sale_order_id = $2 AND status = '支付失败'",
     [now, saleOrderId]
   )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     saleOrderId,

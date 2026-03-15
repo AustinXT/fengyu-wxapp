@@ -243,7 +243,7 @@ describe('order.confirmOffline', () => {
     vi.clearAllMocks()
   })
 
-  test('店长确认线下收款成功', async () => {
+  test('店长确认线下收款成功（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-XSD-WX-2401010001' })
 
     pg.query
@@ -257,9 +257,13 @@ describe('order.confirmOffline', () => {
         { sale_item_id: 'item-001', sku_id: 'sku-001', received: '500', product_type: '疗程卡' },
       ])
 
+    let capturedUpdateSql = ''
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
+        query: vi.fn(async (sql) => {
+          if (sql.includes("status = '已支付'")) capturedUpdateSql = sql
+          return { rows: [], rowCount: 1 }
+        }),
       }
       return await cb(client)
     })
@@ -268,7 +272,44 @@ describe('order.confirmOffline', () => {
 
     expect(ctx.result.status).toBe('已支付')
     expect(ctx.result.totalReceived).toBe(500)
-    expect(pg.transaction).toHaveBeenCalled()
+    // 验证 C4 合规：UPDATE WHERE 含 status 条件
+    expect(capturedUpdateSql).toContain('AND status = $')
+  })
+
+  test('并发竞态：confirmOffline UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '待确认收款',
+        payment_method: 'offline',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '100', product_type: '单品' }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      }
+      return await cb(client)
+    })
+
+    await expect(orderRoutes.confirmOffline(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
+  })
+
+  test('缺少 saleOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(orderRoutes.confirmOffline(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(orderRoutes.confirmOffline(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
   })
 
   test('非店长拒绝确认', async () => {
@@ -312,7 +353,7 @@ describe('order.close', () => {
     vi.clearAllMocks()
   })
 
-  test('店长可关闭待支付订单', async () => {
+  test('店长可关闭待支付订单（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
     pg.query.mockResolvedValueOnce([{
@@ -322,13 +363,18 @@ describe('order.close', () => {
       opened_by: 'emp-other',
     }])
 
+    let capturedUpdateSql = ''
+    let capturedUpdateParams = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-          .mockResolvedValueOnce({ rows: [{ sale_item_id: 'item-1' }] })
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-          .mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes("status = '已关闭'")) {
+            capturedUpdateSql = sql
+            capturedUpdateParams = params
+          }
+          if (sql.includes('sale_items')) return { rows: [{ sale_item_id: 'item-1' }], rowCount: 1 }
+          return { rows: [], rowCount: 1 }
+        }),
       }
       return await cb(client)
     })
@@ -336,6 +382,9 @@ describe('order.close', () => {
     await orderRoutes.close(ctx)
 
     expect(ctx.result.status).toBe('已关闭')
+    // C4 合规验证
+    expect(capturedUpdateSql).toContain('AND status = $')
+    expect(capturedUpdateParams).toContain('待支付')
   })
 
   test('店长可关闭支付失败订单', async () => {
@@ -350,7 +399,9 @@ describe('order.close', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE sale_orders
+          .mockResolvedValue({ rows: [], rowCount: 0 }),     // 其他查询
       }
       return await cb(client)
     })
@@ -385,7 +436,9 @@ describe('order.close', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE sale_orders
+          .mockResolvedValue({ rows: [], rowCount: 0 }),     // 其他查询
       }
       return await cb(client)
     })
@@ -406,6 +459,40 @@ describe('order.close', () => {
 
     await expect(orderRoutes.close(ctx))
       .rejects.toThrow(/PERMISSION_DENIED.*无权/)
+  })
+
+  test('并发竞态：close UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001',
+      status: '待支付',
+      store_id: 'store-001',
+      opened_by: 'emp-001',
+    }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      }
+      return await cb(client)
+    })
+
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
+  })
+
+  test('缺少 saleOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(orderRoutes.close(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
   })
 
   test('关闭订单时作废分配并释放优惠券', async () => {
@@ -448,7 +535,7 @@ describe('order.resetFailed', () => {
     vi.clearAllMocks()
   })
 
-  test('店长重置支付失败订单为待支付', async () => {
+  test('店长重置支付失败订单为待支付（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
     pg.query
@@ -462,6 +549,37 @@ describe('order.resetFailed', () => {
     await orderRoutes.resetFailed(ctx)
 
     expect(ctx.result.status).toBe('待支付')
+    // C4 合规验证
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain("AND status = '支付失败'")
+  })
+
+  test('并发竞态：resetFailed UPDATE rowCount=0 时报错', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '支付失败',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // 并发：另一个请求先到
+
+    await expect(orderRoutes.resetFailed(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*状态已变更/)
+  })
+
+  test('缺少 saleOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(orderRoutes.resetFailed(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(orderRoutes.resetFailed(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
   })
 
   test('非支付失败状态拒绝重置', async () => {
@@ -559,6 +677,19 @@ describe('order.detail', () => {
 
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
+  })
+
+  test('缺少 saleOrderId 时拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(orderRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST' })
+    pg.query.mockResolvedValueOnce([])
+    await expect(orderRoutes.detail(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
   })
 
   test('美容师不能查看非指定自己的订单', async () => {
