@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -40,6 +41,7 @@ interface PermissionsPageProps {
 }
 
 export default function PermissionsPage({ roles, employees, orgNodes }: PermissionsPageProps) {
+  const router = useRouter()
   const [selectedRole, setSelectedRole] = useState<RoleType>("admin")
   const [employeeSearch, setEmployeeSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -154,11 +156,11 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                                   if (res.success) {
                                     const { toast } = await import('sonner')
                                     toast.success(res.message)
-                                    window.location.reload()
+                                    router.refresh()
                                   } else {
                                     const { toast } = await import('sonner')
                                     toast.error(res.message)
-                                    if (res.message.includes('已被其他人修改')) window.location.reload()
+                                    if (res.message.includes('已被其他人修改')) router.refresh()
                                   }
                                 } catch {
                                   const { toast } = await import('sonner')
@@ -326,7 +328,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                   setDialogOpen(false)
                   setAssignEmployeeId("")
                   setAssignScopeId("")
-                  window.location.reload()
+                  router.refresh()
                 } else {
                   const { toast } = await import('sonner')
                   toast.error(res.message)

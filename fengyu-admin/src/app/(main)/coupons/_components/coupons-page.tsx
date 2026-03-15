@@ -43,6 +43,7 @@ interface CouponsPageProps {
 }
 
 export default function CouponsPage({ templates }: CouponsPageProps) {
+  const router = useRouter()
   const { get, set } = useUrlFilters()
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
@@ -151,11 +152,11 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
                 if (res.success) {
                   const { toast } = await import('sonner')
                   toast.success(res.message)
-                  window.location.reload()
+                  router.refresh()
                 } else {
                   const { toast } = await import('sonner')
                   toast.error(res.message)
-                  if (res.message.includes('已被其他人修改')) window.location.reload()
+                  if (res.message.includes('已被其他人修改')) router.refresh()
                 }
               } catch {
                 const { toast } = await import('sonner')
