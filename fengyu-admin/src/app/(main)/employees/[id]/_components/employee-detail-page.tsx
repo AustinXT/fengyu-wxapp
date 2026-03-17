@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -18,7 +18,7 @@ import { getRoleLabel } from "@/lib/auth"
 import { formatDate } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole } from "@/actions/permissions"
-import { resetEmployeePassword } from "@/actions/auth"
+import { resetToDefaultPassword } from "@/actions/auth"
 import type { Employee, PermissionRole, Store, OrgNode, RoleType } from "@/lib/types"
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr"]
@@ -66,10 +66,9 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
   const [assignScopeId, setAssignScopeId] = useState("")
   const [assigning, setAssigning] = useState(false)
 
-  // Password form state
-  const [showPwdForm, setShowPwdForm] = useState(false)
-  const newPwdRef = useRef<HTMLInputElement>(null)
-  const confirmPwdRef = useRef<HTMLInputElement>(null)
+  // Password reset state
+  const [resetPwdDialogOpen, setResetPwdDialogOpen] = useState(false)
+  const [resettingPwd, setResettingPwd] = useState(false)
 
   function maskIdCard(value: string | null): string {
     if (!value || value.length < 8) return value ?? ""
@@ -150,33 +149,20 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
     }
   }
 
-  async function handleResetPassword() {
-    const newPwd = newPwdRef.current?.value ?? ""
-    const confirmPwd = confirmPwdRef.current?.value ?? ""
-    if (!newPwd || !confirmPwd) {
-      toast.error("请输入密码")
-      return
-    }
-    if (newPwd.length < 8 || !/[a-zA-Z]/.test(newPwd) || !/\d/.test(newPwd)) {
-      toast.error("密码至少 8 位，须包含字母和数字")
-      return
-    }
-    if (newPwd !== confirmPwd) {
-      toast.error("两次输入的密码不一致")
-      return
-    }
+  async function handleResetToDefault() {
+    setResettingPwd(true)
     try {
-      const res = await resetEmployeePassword(employee.employeeId, newPwd)
+      const res = await resetToDefaultPassword(employee.employeeId)
       if (res.success) {
         toast.success(res.message)
-        setShowPwdForm(false)
-        if (newPwdRef.current) newPwdRef.current.value = ""
-        if (confirmPwdRef.current) confirmPwdRef.current.value = ""
+        setResetPwdDialogOpen(false)
       } else {
         toast.error(res.message)
       }
     } catch {
       toast.error("密码重置失败，请稍后重试")
+    } finally {
+      setResettingPwd(false)
     }
   }
 
@@ -443,35 +429,19 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
               <div>
                 <h3 className="text-sm font-medium mb-3">密码管理</h3>
-                {showPwdForm ? (
-                  <div className="space-y-3 max-w-sm">
-                    <div className="space-y-2">
-                      <label className="text-sm">新密码</label>
-                      <Input ref={newPwdRef} type="password" placeholder="请输入新密码（至少 8 位）" />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm">确认密码</label>
-                      <Input ref={confirmPwdRef} type="password" placeholder="请再次输入新密码" />
-                    </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" onClick={handleResetPassword}>确认重置</Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowPwdForm(false)}
-                      >
-                        取消
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setShowPwdForm(true)}
-                  >
-                    重置密码
-                  </Button>
+                <p className="text-sm text-[var(--muted-foreground)] mb-3">
+                  初始密码为手机号后 6 位，首次登录需修改密码
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setResetPwdDialogOpen(true)}
+                  disabled={!employee.phone}
+                >
+                  重置为初始密码
+                </Button>
+                {!employee.phone && (
+                  <p className="mt-2 text-xs text-[var(--destructive)]">该员工未绑定手机号，无法重置</p>
                 )}
               </div>
             </CardContent>
@@ -559,6 +529,20 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
               toast.error('操作失败')
             }
           }}>确认离职</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* 重置密码确认 */}
+      <AlertDialog open={resetPwdDialogOpen} onOpenChange={setResetPwdDialogOpen}>
+        <AlertDialogTitle>确认重置密码？</AlertDialogTitle>
+        <AlertDialogDescription>
+          将「{employee.name}」的密码重置为手机号后 6 位（{employee.phone?.slice(-6) ?? "—"}），首次登录需修改密码。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setResetPwdDialogOpen(false)} disabled={resettingPwd}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={handleResetToDefault} disabled={resettingPwd}>
+            {resettingPwd ? "重置中..." : "确认重置"}
+          </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
     </div>

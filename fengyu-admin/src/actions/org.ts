@@ -165,78 +165,69 @@ export async function updateOrgNode(
 
 export async function deleteOrgNode(
   id: string,
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'org:delete')
 
-  // scope 隔离：非 admin 只能停用自己 scope 内的节点
+  // scope 隔离
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }
   }
 
-  // 检查是否有子节点
-  const children = await db
+  // 检查子节点
+  const [child] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
     .where(eq(orgNodes.parentId, id))
     .limit(1)
-
-  if (children.length > 0) {
-    return { success: false, message: '该节点下存在子节点，无法删除' }
+  if (child) {
+    return { success: false, message: '该节点下存在子节点，请先删除子节点' }
   }
 
-  // 检查是否有员工绑定到此节点
+  // 检查员工绑定
   const [empRef] = await db
     .select({ employeeId: staffWechatUsers.employeeId })
     .from(staffWechatUsers)
     .where(eq(staffWechatUsers.orgNodeId, id))
     .limit(1)
   if (empRef) {
-    return { success: false, message: '该节点下仍有员工，请先移除员工归属后再删除' }
+    return { success: false, message: '该节点下仍有员工，请先移除员工归属' }
   }
 
-  // 检查是否有门店绑定到此节点
+  // 检查门店绑定
   const [storeRef] = await db
     .select({ storeId: stores.storeId })
     .from(stores)
     .where(eq(stores.orgNodeId, id))
     .limit(1)
   if (storeRef) {
-    return { success: false, message: '该节点关联了门店，请先移除门店后再删除' }
+    return { success: false, message: '该节点关联了门店，请先移除门店' }
   }
 
-  // 检查是否有权限角色以此节点为 scope
+  // 检查权限角色引用
   const [roleRef] = await db
     .select({ id: permissionRoles.id })
     .from(permissionRoles)
     .where(eq(permissionRoles.scopeId, id))
     .limit(1)
   if (roleRef) {
-    return { success: false, message: '该节点被权限角色引用，请先移除关联权限后再删除' }
+    return { success: false, message: '该节点被权限角色引用，请先移除关联权限' }
   }
 
-  // 软删除：设 isActive = false（含乐观锁）
-  const whereConditions = expectedUpdatedAt
-    ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
-    : eq(orgNodes.id, id)
-
-  let deleteResult: any
+  // 真实删除
   try {
-    deleteResult = await db.update(orgNodes).set({ isActive: false }).where(whereConditions)
-  } catch (err: any) {
-    throw err
-  }
-
-  if ((deleteResult as any).rowCount === 0) {
-    return {
-      success: false,
-      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '节点不存在',
+    const result = await db.delete(orgNodes).where(eq(orgNodes.id, id))
+    if ((result as any).rowCount === 0) {
+      return { success: false, message: '节点不存在' }
     }
+  } catch (err: any) {
+    if (err?.code === '23503') {
+      return { success: false, message: '该节点仍有关联数据，无法删除' }
+    }
+    throw err
   }
 
   await logOperation(session, 'org.delete', 'org_node', id)
   revalidatePath('/org')
-  return { success: true, message: '节点已停用' }
+  return { success: true, message: '节点已删除' }
 }

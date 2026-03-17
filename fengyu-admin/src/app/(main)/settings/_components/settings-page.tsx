@@ -30,7 +30,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
 
   // Banner images: use CDN URL with cache-buster for preview
   const [bannerImages, setBannerImages] = useState<(string | null)[]>(
-    Array.from({ length: 5 }, (_, i) =>
+    Array.from({ length: 9 }, (_, i) =>
       `${CDN_BASE}/fengyu-client/banner/banner${i + 1}.jpg`
     )
   )
@@ -110,20 +110,22 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-[#999999]">上传后将直接覆盖小程序首页对应轮播位的图片</p>
-          {bannerImages.map((url, i) => (
-            <div key={i} className="space-y-2">
-              <label className="text-sm font-medium">轮播图 {i + 1}</label>
-              <ImageUpload
-                value={url ?? ""}
-                onChange={(v) => {
-                  const next = [...bannerImages]
-                  next[i] = v as string
-                  setBannerImages(next)
-                }}
-                exactKey={`fengyu-client/banner/banner${i + 1}.jpg`}
-              />
-            </div>
-          ))}
+          <div className="grid grid-cols-3 gap-4">
+            {bannerImages.map((url, i) => (
+              <div key={i} className="space-y-1">
+                <label className="text-sm font-medium">轮播图 {i + 1}</label>
+                <ImageUpload
+                  value={url ?? ""}
+                  onChange={(v) => {
+                    const next = [...bannerImages]
+                    next[i] = v as string
+                    setBannerImages(next)
+                  }}
+                  exactKey={`fengyu-client/banner/banner${i + 1}.jpg`}
+                />
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 
