@@ -5,6 +5,7 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
   },
 }))
 
@@ -76,6 +77,11 @@ function setupUpdate(rowCount: number) {
   const where = vi.fn().mockResolvedValue({ rowCount })
   const set = vi.fn().mockReturnValue({ where })
   ;(db.update as any).mockReturnValue({ set })
+}
+
+function setupDelete(rowCount: number) {
+  const where = vi.fn().mockResolvedValue({ rowCount })
+  ;(db.delete as any).mockReturnValue({ where })
 }
 
 // ── createOrgNode ─────────────────────────────────────────────────────────────
@@ -195,45 +201,44 @@ describe('updateOrgNode — rowCount=0 静默成功修复', () => {
 
 // ── deleteOrgNode ─────────────────────────────────────────────────────────────
 
-describe('deleteOrgNode — 前置校验 + rowCount=0 修复', () => {
+describe('deleteOrgNode — 真实删除', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('有子节点 → 拒绝，不执行软删除', async () => {
+  it('有子节点 → 拒绝', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ id: 'child-1' }]))
     const result = await deleteOrgNode('n-1')
     expect(result.success).toBe(false)
     expect(result.message).toContain('子节点')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
   it('有员工绑定 → 拒绝', async () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      if (callCount === 1) return makeSelectChain([])() // 无子节点
-      return makeSelectChain([{ employeeId: 'EMP-001' }])() // 有员工
+      if (callCount === 1) return makeSelectChain([])()
+      return makeSelectChain([{ employeeId: 'EMP-001' }])()
     })
     const result = await deleteOrgNode('n-1')
     expect(result.success).toBe(false)
     expect(result.message).toContain('员工')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
   it('有门店绑定 → 拒绝', async () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      if (callCount === 1) return makeSelectChain([])() // 无子节点
-      if (callCount === 2) return makeSelectChain([])() // 无员工
-      return makeSelectChain([{ storeId: 'store-1' }])() // 有门店
+      if (callCount <= 2) return makeSelectChain([])()
+      return makeSelectChain([{ storeId: 'store-1' }])()
     })
     const result = await deleteOrgNode('n-1')
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
   it('有权限角色引用 → 拒绝', async () => {
@@ -241,38 +246,29 @@ describe('deleteOrgNode — 前置校验 + rowCount=0 修复', () => {
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount <= 3) return makeSelectChain([])()
-      return makeSelectChain([{ id: 1 }])() // 有权限角色
+      return makeSelectChain([{ id: 1 }])()
     })
     const result = await deleteOrgNode('n-1')
     expect(result.success).toBe(false)
     expect(result.message).toContain('权限角色')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
-  it('rowCount=0，无乐观锁 → 报告节点不存在（而非静默成功）', async () => {
-    // 所有前置检查均通过（无引用）
+  it('rowCount=0 → 节点不存在', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
-    setupUpdate(0)
+    setupDelete(0)
     const result = await deleteOrgNode('nonexistent')
     expect(result.success).toBe(false)
     expect(result.message).toContain('节点不存在')
   })
 
-  it('rowCount=0，有乐观锁 → 报告并发冲突', async () => {
+  it('正常删除 → 成功', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
-    setupUpdate(0)
-    const result = await deleteOrgNode('n-1', '2026-01-01T00:00:00.000Z')
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('已被其他人修改')
-  })
-
-  it('正常软删除 → 成功', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([]))
-    setupUpdate(1)
+    setupDelete(1)
     const result = await deleteOrgNode('n-1')
     expect(result.success).toBe(true)
-    expect(result.message).toContain('已停用')
-    expect(db.update).toHaveBeenCalledOnce()
+    expect(result.message).toContain('已删除')
+    expect(db.delete).toHaveBeenCalledOnce()
   })
 })
 

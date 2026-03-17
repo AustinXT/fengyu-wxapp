@@ -50,7 +50,7 @@ function Dialog({ open, onOpenChange, children }: DialogProps) {
     <dialog
       ref={dialogRef}
       className={cn(
-        "w-full max-w-lg rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--card-foreground)] shadow-lg backdrop:bg-black/50",
+        "m-auto w-full max-w-lg rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--card-foreground)] shadow-lg backdrop:bg-black/50",
         "open:animate-in open:fade-in-0 open:zoom-in-95"
       )}
       onClick={handleBackdropClick}

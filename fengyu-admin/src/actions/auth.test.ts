@@ -92,6 +92,7 @@ import {
   changePassword,
   getSessionFromCookie,
   resetEmployeePassword,
+  resetToDefaultPassword,
   checkMustChange,
 } from './auth'
 import { db } from '@/db'
@@ -505,6 +506,155 @@ describe('resetEmployeePassword — admin UPSERT', () => {
       expect.anything(), 'auth.resetPassword', 'admin_password', 'EMP-002',
       expect.objectContaining({ isNewAccount: false }),
     )
+  })
+})
+
+// ── resetToDefaultPassword ────────────────────────────────────────────────────
+
+describe('resetToDefaultPassword — 手机号后 6 位', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  function mockAdminSession() {
+    mockCookieStore.get.mockReturnValue({ value: 'admin-token' })
+    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'ADMIN-001' } })
+  }
+
+  function mockAdminRoles(selectCallIndex: { value: number }) {
+    if (selectCallIndex.value === 1) {
+      // admin staff lookup
+      const limit = vi.fn().mockResolvedValue([{ employeeId: 'ADMIN-001', name: '管理员', phone: '13800000000' }])
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    }
+    // admin roles
+    const where = vi.fn().mockResolvedValue([
+      { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+    ])
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    return { from }
+  }
+
+  it('未登录 → 失败', async () => {
+    mockCookieStore.get.mockReturnValue(undefined)
+
+    const result = await resetToDefaultPassword('EMP-002')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('未登录')
+  })
+
+  it('非 admin → 失败', async () => {
+    mockCookieStore.get.mockReturnValue({ value: 'token' })
+    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
+
+    let selectCallIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCallIndex++
+      if (selectCallIndex === 1) {
+        const limit = vi.fn().mockResolvedValue([staffRow])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      const where = vi.fn().mockResolvedValue([
+        { role: 'manager', scopeId: 'store-1', scopeType: 'store' },
+      ])
+      const leftJoin = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ leftJoin })
+      return { from }
+    })
+
+    const result = await resetToDefaultPassword('EMP-002')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('仅系统管理员')
+  })
+
+  it('员工无手机号 → 失败', async () => {
+    mockAdminSession()
+
+    const counter = { value: 0 }
+    ;(db.select as any).mockImplementation(() => {
+      counter.value++
+      if (counter.value <= 2) return mockAdminRoles(counter)
+      // target employee phone lookup — no phone
+      const limit = vi.fn().mockResolvedValue([{ phone: null }])
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    const result = await resetToDefaultPassword('EMP-002')
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('未绑定手机号')
+  })
+
+  it('正常 → 使用手机号后 6 位 + mustChange + INSERT', async () => {
+    mockAdminSession()
+
+    const counter = { value: 0 }
+    ;(db.select as any).mockImplementation(() => {
+      counter.value++
+      if (counter.value <= 2) return mockAdminRoles(counter)
+      if (counter.value === 3) {
+        // target employee phone
+        const limit = vi.fn().mockResolvedValue([{ phone: '15958024944' }])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // existing password check — not found
+      const limit = vi.fn().mockResolvedValue([])
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+
+    const result = await resetToDefaultPassword('EMP-002')
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('初始密码')
+    expect(hash).toHaveBeenCalledWith('024944', 12)
+    expect(db.insert).toHaveBeenCalled()
+    expect(logOperation).toHaveBeenCalledWith(
+      expect.anything(), 'auth.resetToDefault', 'admin_password', 'EMP-002',
+      expect.objectContaining({ isNewAccount: true }),
+    )
+  })
+
+  it('已有密码记录 → UPDATE', async () => {
+    mockAdminSession()
+
+    const counter = { value: 0 }
+    ;(db.select as any).mockImplementation(() => {
+      counter.value++
+      if (counter.value <= 2) return mockAdminRoles(counter)
+      if (counter.value === 3) {
+        // target employee phone
+        const limit = vi.fn().mockResolvedValue([{ phone: '13812345678' }])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // existing password — found
+      const limit = vi.fn().mockResolvedValue([{ id: 1 }])
+      const where = vi.fn().mockReturnValue({ limit })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+    mockUpdateChain()
+
+    const result = await resetToDefaultPassword('EMP-002')
+
+    expect(result.success).toBe(true)
+    expect(hash).toHaveBeenCalledWith('345678', 12)
+    expect(db.update).toHaveBeenCalled()
   })
 })
 
