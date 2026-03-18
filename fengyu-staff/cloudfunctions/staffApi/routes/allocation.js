@@ -12,7 +12,8 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 
-// role_type 直接作为 department（数据层面存 '美容部'/'养生部'/'推广' 等值）
+// role_type 存储角色名（'美容师'/'养生师'/'推广师' 等），部门通过映射关联
+const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师' }
 
 /**
  * 保存提成分配（支付后分配）
@@ -233,8 +234,8 @@ async function getCommissionRates(ctx) {
     }
     const entry = grouped.get(key)
     const rate = Number(r.commission_rate) || 0
-    if (r.order_type === 'sale') entry.orderRates[r.sales_category] = rate
-    else if (r.order_type === 'service') entry.serviceRates[r.sales_category] = rate
+    if (r.order_type === '销售单') entry.orderRates[r.sales_category] = rate
+    else if (r.order_type === '服务单') entry.serviceRates[r.sales_category] = rate
   }
 
   ctx.result = { rates: [...grouped.values()] }
@@ -282,12 +283,12 @@ async function resolveStaffDepartment(staffWfId) {
 
   const row = rows[0]
   const dept = (row.department || '').trim()
-  const validDepts = ['美容部', '养生部']
+  const role = DEPT_TO_ROLE[dept] || null
 
   return {
     staffWfId: row.employee_id,
     name: (row.name || '').trim(),
-    resolvedDept: validDepts.includes(dept) ? dept : null,
+    resolvedDept: role,
   }
 }
 
@@ -360,7 +361,7 @@ async function suggest(ctx) {
              crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
       FROM commission_rate_matrix crm
       JOIN org_nodes n ON n.id = crm.org_id
-      WHERE n.name = $1 AND crm.order_type = 'sale'
+      WHERE n.name = $1 AND crm.order_type = '销售单'
       ORDER BY crm.role_type, crm.amount_tier_min
     `, [order.market_name])
 
@@ -382,7 +383,7 @@ async function suggest(ctx) {
   }
 
   // 7. 提取美容部/养生部提成比例
-  const beautyDepts = ['美容部', '养生部']
+  const beautyDepts = ['美容师', '养生师']
   const beautyRates = {}
   for (const rate of rates) {
     if (beautyDepts.includes(rate.department) && !beautyRates[rate.department]) {
