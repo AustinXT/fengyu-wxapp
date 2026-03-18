@@ -337,12 +337,12 @@ export default function ProductDetailPageClient({
                 <Input name="price" type="number" defaultValue={product.price} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">特价</label>
+                <label className="text-sm font-medium">会员价</label>
                 <Input
                   name="specialPrice"
                   type="number"
                   defaultValue={product.specialPrice ?? ""}
-                  placeholder="不填则无特价"
+                  placeholder="不填则无会员价"
                 />
               </div>
             </div>
@@ -482,13 +482,13 @@ export default function ProductDetailPageClient({
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">特价</label>
+                <label className="text-sm font-medium">会员价</label>
                 <Input
                   name="specialPrice"
                   type="number"
                   step="0.01"
                   defaultValue={editingSku?.specialPrice ?? ""}
-                  placeholder="不填则无特价"
+                  placeholder="不填则无会员价"
                   key={`sp-${editingSku?.skuId ?? "new"}`}
                 />
               </div>

@@ -156,8 +156,8 @@ export default function ProductCreatePageClient({
               <Input name="price" type="number" placeholder="0.00" />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">特价</label>
-              <Input name="specialPrice" type="number" placeholder="不填则无特价" />
+              <label className="text-sm font-medium">会员价</label>
+              <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
             </div>
           </div>
         </CardContent>

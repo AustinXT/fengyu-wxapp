@@ -7,7 +7,7 @@ import type { CommissionRate } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Select } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import {
@@ -22,8 +22,8 @@ import { formatCurrency } from "@/lib/utils"
 import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions/commission"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const ORDER_TYPE_OPTIONS = ["普通", "体验", "内部", "福利活动", "回款", "转换", "退款"]
-const ROLE_TYPE_OPTIONS = ["美容师", "推广师", "顾问"]
+const ORDER_TYPE_OPTIONS = ["销售单", "服务单"]
+const ROLE_TYPE_OPTIONS = ["美容师", "养生师", "推广师", "顾问"]
 const SALES_CATEGORY_OPTIONS = ["自采自销", "他销自耗", "他销他耗", "生态合作"]
 
 interface RateFormData {
@@ -268,6 +268,17 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
 
       <div className="flex items-center gap-3">
         <Select
+          value={activeTab}
+          onChange={(e) => setActiveTab(e.target.value)}
+          className="w-36"
+        >
+          {markets.map((m) => (
+            <option key={m.orgId} value={m.orgId}>
+              {m.name}
+            </option>
+          ))}
+        </Select>
+        <Select
           value={orderTypeFilter}
           onChange={(e) => set("orderType", e.target.value)}
           className="w-32"
@@ -308,25 +319,11 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
       {markets.length === 0 ? (
         <p className="text-sm text-[#999999] py-8 text-center">暂无市场节点，请先在组织架构中创建市场</p>
       ) : (
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          {markets.map((tab) => (
-            <TabsTrigger key={tab.orgId} value={tab.orgId}>
-              {tab.name}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-
-        {markets.map((tab) => (
-          <TabsContent key={tab.orgId} value={tab.orgId}>
-            <DataTable
-              columns={columns}
-              data={filterRates(tab.orgId)}
-              emptyText="暂无提成规则"
-            />
-          </TabsContent>
-        ))}
-      </Tabs>
+        <DataTable
+          columns={columns}
+          data={filterRates(activeTab)}
+          emptyText="暂无提成规则"
+        />
       )}
 
       {/* Add/Edit Dialog */}

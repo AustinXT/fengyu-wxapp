@@ -47,6 +47,11 @@ export default function ProductsPageClient({
   const search = get("q")
   const categoryFilter = get("category")
   const kindFilter = get("kind")
+  const filteredCategories = useMemo(() => {
+    if (!kindFilter) return categories
+    return categories.filter((c) => c.productKind === kindFilter)
+  }, [categories, kindFilter])
+
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
@@ -109,7 +114,7 @@ export default function ProductsPageClient({
     },
     {
       key: "specialPrice",
-      header: "特价",
+      header: "会员价",
       cell: (row) => (
         <span className={row.specialPrice ? "text-[#C0322A]" : ""}>
           {row.specialPrice ? formatCurrency(row.specialPrice) : "—"}
@@ -162,26 +167,46 @@ export default function ProductsPageClient({
 
       <div className="flex items-center gap-3">
         <Select
-          value={categoryFilter}
-          onChange={(e) => setFilter("category", e.target.value)}
-          className="w-40"
-        >
-          <option value="">全部分类</option>
-          {categories.map((c) => (
-            <option key={c.categoryId} value={c.categoryId}>
-              {c.categoryName}
-            </option>
-          ))}
-        </Select>
-        <Select
           value={kindFilter}
-          onChange={(e) => setFilter("kind", e.target.value)}
+          onChange={(e) => {
+            const newKind = e.target.value
+            if (categoryFilter) {
+              const cat = categories.find((c) => c.categoryId === categoryFilter)
+              if (cat && newKind && cat.productKind !== newKind) {
+                setMany({ kind: newKind, category: '', page: '' })
+                return
+              }
+            }
+            setFilter("kind", newKind)
+          }}
           className="w-32"
         >
           <option value="">全部类型</option>
           {PRODUCT_KINDS.map((k) => (
             <option key={k} value={k}>
               {k}
+            </option>
+          ))}
+        </Select>
+        <Select
+          value={categoryFilter}
+          onChange={(e) => {
+            const catId = e.target.value
+            if (catId) {
+              const cat = categories.find((c) => c.categoryId === catId)
+              if (cat) {
+                setMany({ category: catId, kind: cat.productKind, page: '' })
+                return
+              }
+            }
+            setFilter("category", catId)
+          }}
+          className="w-40"
+        >
+          <option value="">全部品项</option>
+          {filteredCategories.map((c) => (
+            <option key={c.categoryId} value={c.categoryId}>
+              {c.categoryName}
             </option>
           ))}
         </Select>

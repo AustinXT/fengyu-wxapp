@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import Link from "next/link"
 import type { Employee, Store } from "@/lib/types"
 import { Button } from "@/components/ui/button"
@@ -22,10 +22,12 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 export default function EmployeesPage({
   employees,
   stores,
+  markets,
   total,
 }: {
   employees: Employee[]
   stores: Store[]
+  markets: { id: string; name: string }[]
   total: number
 }) {
   const { get, set, setMany } = useUrlFilters()
@@ -45,10 +47,20 @@ export default function EmployeesPage({
     debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
   }, [setFilter, debounceRef])
 
+  const marketFilter = get("market")
   const storeFilter = get("store")
   const statusFilter = get("status")
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
+
+  const isHqSelected = marketFilter === "__hq__"
+
+  /** 门店下拉：按市场筛选联动 */
+  const filteredStores = useMemo(() => {
+    if (isHqSelected) return []
+    if (marketFilter) return stores.filter(s => s.marketName === markets.find(m => m.id === marketFilter)?.name)
+    return stores
+  }, [marketFilter, isHqSelected, stores, markets])
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -61,6 +73,11 @@ export default function EmployeesPage({
       key: "phone",
       header: "手机号",
       cell: (row) => <span>{row.phone ? formatPhone(row.phone) : "—"}</span>,
+    },
+    {
+      key: "marketName",
+      header: "所属市场",
+      cell: (row) => <span>{row.marketName ?? "—"}</span>,
     },
     {
       key: "storeName",
@@ -117,12 +134,26 @@ export default function EmployeesPage({
 
       <div className="flex items-center gap-3">
         <Select
+          value={marketFilter}
+          onChange={(e) => setMany({ market: e.target.value, store: '', page: '' })}
+          className="w-40"
+        >
+          <option value="">全部市场</option>
+          <option value="__hq__">总部（未分配）</option>
+          {markets.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </Select>
+        <Select
           value={storeFilter}
           onChange={(e) => setFilter("store", e.target.value)}
           className="w-40"
+          disabled={isHqSelected}
         >
           <option value="">全部门店</option>
-          {stores.map((s) => (
+          {filteredStores.map((s) => (
             <option key={s.storeId} value={s.storeId}>
               {s.storeName}
             </option>

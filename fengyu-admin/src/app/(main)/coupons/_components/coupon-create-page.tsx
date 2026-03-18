@@ -12,7 +12,16 @@ import { Separator } from "@/components/ui/separator"
 import { createTemplate } from "@/actions/coupons"
 import type { CouponType } from "@/lib/types"
 
-export default function CouponCreatePage() {
+interface Market {
+  id: string
+  name: string
+}
+
+interface Props {
+  markets: Market[]
+}
+
+export default function CouponCreatePage({ markets }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -28,6 +37,8 @@ export default function CouponCreatePage() {
   const [validFrom, setValidFrom] = useState("")
   const [validTo, setValidTo] = useState("")
   const [description, setDescription] = useState("")
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
+  const [allMarkets, setAllMarkets] = useState(true)
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -67,6 +78,7 @@ export default function CouponCreatePage() {
         validFrom: validityMode === "fixed" && validFrom ? validFrom : null,
         validTo: validityMode === "fixed" && validTo ? validTo : null,
         validDays: validityMode === "days" && validDays ? parseInt(validDays, 10) : null,
+        applicableMarketIds: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds : null),
         description: description.trim() || null,
         isActive: true,
       })
@@ -211,6 +223,49 @@ export default function CouponCreatePage() {
                   />
                 </div>
               </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">适用市场</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allMarkets}
+                onChange={(e) => {
+                  setAllMarkets(e.target.checked)
+                  if (e.target.checked) setSelectedMarketIds([])
+                }}
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm font-medium">全部市场</span>
+            </label>
+            {!allMarkets && (
+              <div className="grid grid-cols-3 gap-2 pl-6">
+                {markets.map((m) => (
+                  <label key={m.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedMarketIds.includes(m.id)}
+                      onChange={(e) => {
+                        setSelectedMarketIds((prev) =>
+                          e.target.checked
+                            ? [...prev, m.id]
+                            : prev.filter((id) => id !== m.id)
+                        )
+                      }}
+                      className="h-4 w-4 rounded border-[var(--input)]"
+                    />
+                    <span className="text-sm">{m.name}</span>
+                  </label>
+                ))}
+              </div>
             )}
           </div>
         </CardContent>

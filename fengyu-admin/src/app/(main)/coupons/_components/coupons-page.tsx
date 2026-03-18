@@ -13,6 +13,7 @@ import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFoote
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { toast } from "sonner"
 import { toggleTemplateActive } from "@/actions/coupons"
+import { Select } from "@/components/ui/select"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -40,11 +41,17 @@ function formatValidity(tpl: CouponTemplate): string {
   return "—"
 }
 
-interface CouponsPageProps {
-  templates: CouponTemplate[]
+interface Market {
+  id: string
+  name: string
 }
 
-export default function CouponsPage({ templates }: CouponsPageProps) {
+interface CouponsPageProps {
+  templates: CouponTemplate[]
+  markets: Market[]
+}
+
+export default function CouponsPage({ templates, markets }: CouponsPageProps) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
@@ -81,16 +88,25 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
   }, [setFilter, debounceRef])
 
   const search = get("q")
+  const marketFilter = get("market")
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
+  const marketMap = useMemo(() => new Map(markets.map((m) => [m.id, m.name])), [markets])
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return templates
-    const q = search.trim().toLowerCase()
-    return templates.filter((t) =>
-      t.name.toLowerCase().includes(q)
-    )
-  }, [templates, search])
+    let list = templates
+    if (search.trim()) {
+      const q = search.trim().toLowerCase()
+      list = list.filter((t) => t.name.toLowerCase().includes(q))
+    }
+    if (marketFilter) {
+      list = list.filter((t) =>
+        t.applicableMarketIds?.includes(marketFilter)
+      )
+    }
+    return list
+  }, [templates, search, marketFilter])
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -124,6 +140,17 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
         row.minSpend && parseFloat(row.minSpend) > 0
           ? `满${formatCurrency(row.minSpend)}可用`
           : "无门槛",
+    },
+    {
+      key: "applicableMarketIds",
+      header: "适用市场",
+      cell: (row) => {
+        if (!row.applicableMarketIds || row.applicableMarketIds.length === 0) {
+          return <span className="text-[var(--muted-foreground)]">全部市场</span>
+        }
+        const names = row.applicableMarketIds.map((id) => marketMap.get(id) ?? id)
+        return <span title={names.join('、')}>{names.join('、')}</span>
+      },
     },
     {
       key: "validity",
@@ -194,6 +221,16 @@ export default function CouponsPage({ templates }: CouponsPageProps) {
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
+        <Select
+          value={marketFilter}
+          onChange={(e) => setFilter("market", e.target.value)}
+          className="w-40"
+        >
+          <option value="">全部市场</option>
+          {markets.map((m) => (
+            <option key={m.id} value={m.id}>{m.name}</option>
+          ))}
+        </Select>
       </div>
 
       <DataTable columns={columns} data={paged} />

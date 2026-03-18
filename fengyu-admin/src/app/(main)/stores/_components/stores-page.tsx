@@ -8,6 +8,7 @@ import type { UnbindRequest } from "@/actions/store-unbind"
 import { approveUnbind, rejectUnbind } from "@/actions/store-unbind"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
@@ -44,6 +45,7 @@ export default function StoresPage({
   }, [setFilter, debounceRef])
 
   const search = get("q")
+  const marketFilter = get("market")
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
   const tab = (get("tab") || "stores") as "stores" | "unbind"
@@ -52,9 +54,17 @@ export default function StoresPage({
 
   const pendingCount = unbindRequests.filter((r) => r.status === "pending").length
 
+  const markets = useMemo(() => {
+    const names = [...new Set(stores.map((s) => s.marketName).filter(Boolean))] as string[]
+    return names.sort()
+  }, [stores])
+
   // ── 门店列表 ──
   const filtered = useMemo(() => {
     let result = stores
+    if (marketFilter) {
+      result = result.filter((s) => s.marketName === marketFilter)
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       result = result.filter(
@@ -64,7 +74,7 @@ export default function StoresPage({
       )
     }
     return result
-  }, [search, stores])
+  }, [search, marketFilter, stores])
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -190,6 +200,16 @@ export default function StoresPage({
       {tab === "stores" && (
         <>
           <div className="flex items-center gap-3">
+            <Select
+              value={marketFilter}
+              onChange={(e) => setFilter("market", e.target.value)}
+              className="w-40"
+            >
+              <option value="">全部市场</option>
+              {markets.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </Select>
             <Input
               placeholder="搜索门店名称 / 电话"
               value={searchInput}

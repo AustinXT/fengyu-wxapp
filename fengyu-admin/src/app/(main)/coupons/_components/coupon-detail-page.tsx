@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -44,11 +44,17 @@ function toDateInputValue(isoStr: string | null): string {
   return isoStr.slice(0, 10)
 }
 
-interface Props {
-  template: CouponTemplate
+interface Market {
+  id: string
+  name: string
 }
 
-export default function CouponDetailPage({ template }: Props) {
+interface Props {
+  template: CouponTemplate
+  markets: Market[]
+}
+
+export default function CouponDetailPage({ template, markets }: Props) {
   const router = useRouter()
 
   // Edit mode state
@@ -69,6 +75,9 @@ export default function CouponDetailPage({ template }: Props) {
   const [editValidTo, setEditValidTo] = useState(toDateInputValue(template.validTo))
   const [editDescription, setEditDescription] = useState(template.description ?? "")
   const [editIsActive, setEditIsActive] = useState(template.isActive ?? true)
+  const [editAllMarkets, setEditAllMarkets] = useState(!template.applicableMarketIds || template.applicableMarketIds.length === 0)
+  const [editSelectedMarketIds, setEditSelectedMarketIds] = useState<string[]>(template.applicableMarketIds ?? [])
+  const marketMap = useMemo(() => new Map(markets.map((m) => [m.id, m.name])), [markets])
 
   // Issue coupon dialog state
   const [issueOpen, setIssueOpen] = useState(false)
@@ -89,6 +98,8 @@ export default function CouponDetailPage({ template }: Props) {
     setEditValidTo(toDateInputValue(template.validTo))
     setEditDescription(template.description ?? "")
     setEditIsActive(template.isActive ?? true)
+    setEditAllMarkets(!template.applicableMarketIds || template.applicableMarketIds.length === 0)
+    setEditSelectedMarketIds(template.applicableMarketIds ?? [])
     setEditing(true)
   }
 
@@ -128,6 +139,7 @@ export default function CouponDetailPage({ template }: Props) {
         validFrom: editValidityMode === "fixed" && editValidFrom ? editValidFrom : null,
         validTo: editValidityMode === "fixed" && editValidTo ? editValidTo : null,
         validDays: editValidityMode === "days" && editValidDays ? parseInt(editValidDays, 10) : null,
+        applicableMarketIds: editAllMarkets ? null : (editSelectedMarketIds.length > 0 ? editSelectedMarketIds : null),
         description: editDescription.trim() || null,
         isActive: editIsActive,
       }, template.updatedAt)
@@ -359,6 +371,44 @@ export default function CouponDetailPage({ template }: Props) {
                   <option value="false">停用</option>
                 </Select>
               </div>
+              <div className="col-span-2 space-y-3">
+                <label className="text-sm font-medium">适用市场</label>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={editAllMarkets}
+                      onChange={(e) => {
+                        setEditAllMarkets(e.target.checked)
+                        if (e.target.checked) setEditSelectedMarketIds([])
+                      }}
+                      className="h-4 w-4 rounded border-[var(--input)]"
+                    />
+                    <span className="text-sm">全部市场</span>
+                  </label>
+                  {!editAllMarkets && (
+                    <div className="grid grid-cols-3 gap-2 pl-6">
+                      {markets.map((m) => (
+                        <label key={m.id} className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={editSelectedMarketIds.includes(m.id)}
+                            onChange={(e) => {
+                              setEditSelectedMarketIds((prev) =>
+                                e.target.checked
+                                  ? [...prev, m.id]
+                                  : prev.filter((id) => id !== m.id)
+                              )
+                            }}
+                            className="h-4 w-4 rounded border-[var(--input)]"
+                          />
+                          <span className="text-sm">{m.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-sm font-medium">描述说明</label>
                 <textarea
@@ -430,6 +480,14 @@ export default function CouponDetailPage({ template }: Props) {
                   >
                     {template.isActive ? "启用" : "停用"}
                   </Badge>
+                </div>
+              </div>
+              <div className="col-span-2">
+                <div className="text-sm text-[var(--muted-foreground)]">适用市场</div>
+                <div className="mt-1 font-medium">
+                  {!template.applicableMarketIds || template.applicableMarketIds.length === 0
+                    ? "全部市场"
+                    : template.applicableMarketIds.map((id) => marketMap.get(id) ?? id).join('、')}
                 </div>
               </div>
               {template.description && (
