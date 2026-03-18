@@ -57,6 +57,20 @@
       "when": 1773504995960,
       "tag": "0007_sync_to_current",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1773814352082,
+      "tag": "0008_wide_mongoose",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1774070400000,
+      "tag": "0009_commission_enum_chinese",
+      "breakpoints": true
     }
   ]
 }
