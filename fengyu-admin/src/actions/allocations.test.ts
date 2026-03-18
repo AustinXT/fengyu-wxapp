@@ -137,7 +137,7 @@ describe('deleteAllocation — scope 校验', () => {
     ;(db.select as any).mockImplementation(
       makeSelectChain([{ saleItemId: 'item-1', isVoid: false }])
     )
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -157,7 +157,7 @@ describe('deleteAllocation — scope 校验', () => {
       if (callCount === 2) return makeSelectChain([{ saleOrderId: 'order-1' }])()
       return makeSelectChain([{ storeId: 'store-1' }])() // store-1 in scope
     })
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 

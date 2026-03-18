@@ -73,14 +73,14 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue({ from })
 }
 
-function setupUpdate(rowCount: number) {
-  const where = vi.fn().mockResolvedValue({ rowCount })
+function setupUpdate(count: number) {
+  const where = vi.fn().mockResolvedValue({ count })
   const set = vi.fn().mockReturnValue({ where })
   ;(db.update as any).mockReturnValue({ set })
 }
 
-function setupDelete(rowCount: number) {
-  const where = vi.fn().mockResolvedValue({ rowCount })
+function setupDelete(count: number) {
+  const where = vi.fn().mockResolvedValue({ count })
   ;(db.delete as any).mockReturnValue({ where })
 }
 

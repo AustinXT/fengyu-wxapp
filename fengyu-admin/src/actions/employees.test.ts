@@ -28,7 +28,7 @@ vi.mock('@db/user', () => ({
 
 vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
-  orgNodes: { id: 'id', name: 'name' },
+  orgNodes: { id: 'id', name: 'name', type: 'type', sortOrder: 'sort_order', parentId: 'parent_id' },
 }))
 
 vi.mock('@db/permission', () => ({
@@ -64,18 +64,24 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ type: 'and', args })),
   or: vi.fn((...args) => ({ type: 'or', args })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
+  isNull: vi.fn((a) => ({ type: 'isNull', a })),
   sql: Object.assign(
     vi.fn((...args) => ({ type: 'sql', args })),
     { raw: vi.fn() },
   ),
 }))
 
-import { createEmployee, updateEmployee, getEmployeesPaginated } from './employees'
+vi.mock('drizzle-orm/pg-core', () => ({
+  alias: vi.fn((_table, aliasName) => ({ _aliasName: aliasName })),
+}))
+
+import { createEmployee, updateEmployee, getEmployeesPaginated, getMarketsForFilter } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
-import { eq, ilike } from 'drizzle-orm'
+import { eq, ilike, inArray, isNull } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -260,7 +266,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
   it('手机号 null → 跳过格式校验（合法清除）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -271,7 +277,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
   it('乐观锁冲突（rowCount=0）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const where = vi.fn().mockResolvedValue({ rowCount: 0 })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -302,7 +308,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
   it('正常更新 → 成功', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -313,7 +319,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
   it('rowCount=0，无乐观锁 → 报告员工不存在或无权（不再静默成功）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const where = vi.fn().mockResolvedValue({ rowCount: 0 })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -326,7 +332,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
   it('isResigned=true → 同步作废权限角色', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     // 第一次 update：更新员工
-    const empWhere = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     // 第二次 update：作废权限
     const roleWhere = vi.fn().mockResolvedValue({})
@@ -345,7 +351,7 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
 
   it('权限作废失败 → 重新抛出（不静默忽略）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const empWhere = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     const roleSet = vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
     let updateCallCount = 0
@@ -403,9 +409,9 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
       updateCall++
       const current = updateCall
       const where = vi.fn().mockImplementation(() => {
-        if (current === 1) return Promise.resolve({ rowCount: 1 }) // employee update
-        if (current === 2) return Promise.resolve({ rowCount: opts.scopeUpdateRowCount ?? 1 }) // scope sync
-        return Promise.resolve({ rowCount: 0 })
+        if (current === 1) return Promise.resolve({ count: 1 }) // employee update
+        if (current === 2) return Promise.resolve({ count: opts.scopeUpdateRowCount ?? 1 }) // scope sync
+        return Promise.resolve({ count: 0 })
       })
       const set = vi.fn().mockReturnValue({ where })
       return { set }
@@ -435,7 +441,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
   it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
     // data 中不含 storeId → 不查旧值，不做 scope sync
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -460,7 +466,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
       const from = vi.fn().mockReturnValue({ where })
       return { from }
     })
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -482,7 +488,7 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
       const from = vi.fn().mockReturnValue({ where })
       return { from }
     })
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -535,6 +541,8 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     },
     stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
     org_nodes: { id: 'dept-1', name: '美容部' },
+    store_node: { id: 'org-store-1', name: '南昌旗舰店节点' },
+    market_node: { id: 'market-1', name: '南昌市场' },
   }
 
   const listSession = {
@@ -552,12 +560,14 @@ describe('getEmployeesPaginated — 服务端分页', () => {
         const from = vi.fn().mockReturnValue({ where })
         return { from }
       }
-      // DATA: select → from → leftJoin × 2 → where → orderBy → limit → offset
+      // DATA: select → from → leftJoin × 4 → where → orderBy → limit → offset
       const offset = vi.fn().mockResolvedValue(dataRows)
       const limit = vi.fn().mockReturnValue({ offset })
       const orderBy = vi.fn().mockReturnValue({ limit })
       const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin2 = vi.fn().mockReturnValue({ where })
+      const leftJoin4 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
       const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
       const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
       return { from }
@@ -639,6 +649,8 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       ...mockEmployeeRow,
       stores: null,
       org_nodes: null,
+      store_node: null,
+      market_node: null,
     }
     mockPaginatedChain(1, [noJoins])
 
@@ -646,5 +658,101 @@ describe('getEmployeesPaginated — 服务端分页', () => {
 
     expect(result.data[0].storeName).toBeUndefined()
     expect(result.data[0].departmentName).toBeUndefined()
+  })
+
+  it('marketName 从 market_node JOIN 映射', async () => {
+    mockPaginatedChain(1, [mockEmployeeRow])
+
+    const result = await getEmployeesPaginated()
+
+    expect(result.data[0].marketName).toBe('南昌市场')
+  })
+
+  it('market_node null → marketName undefined', async () => {
+    const noMarket = {
+      ...mockEmployeeRow,
+      market_node: null,
+    }
+    mockPaginatedChain(1, [noMarket])
+
+    const result = await getEmployeesPaginated()
+
+    expect(result.data[0].marketName).toBeUndefined()
+  })
+
+  it('marketId 筛选 → inArray 被调用', async () => {
+    // marketId 筛选会先建 subquery（db.select → from → innerJoin → where），再执行 COUNT + DATA
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // subquery: select → from → innerJoin → where (返回 subquery 对象)
+        const subWhere = vi.fn().mockReturnValue({ _subquery: true })
+        const innerJoin = vi.fn().mockReturnValue({ where: subWhere })
+        const from = vi.fn().mockReturnValue({ innerJoin })
+        return { from }
+      }
+      if (callIndex === 2) {
+        // COUNT query
+        const where = vi.fn().mockResolvedValue([{ count: 0 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // DATA query: select → from → leftJoin × 4 → where → orderBy → limit → offset
+      const offset = vi.fn().mockResolvedValue([])
+      const limit = vi.fn().mockReturnValue({ offset })
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin4 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+
+    await getEmployeesPaginated({ marketId: 'market-1' })
+
+    expect(inArray).toHaveBeenCalledWith('store_id', expect.anything())
+  })
+
+  it('marketId="__hq__" → isNull(storeId) 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getEmployeesPaginated({ marketId: '__hq__' })
+
+    expect(isNull).toHaveBeenCalledWith('store_id')
+  })
+})
+
+// ── getMarketsForFilter ──────────────────────────────────────────────────────
+
+describe('getMarketsForFilter', () => {
+  const listSession = {
+    ...mockSession,
+    permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(listSession)
+  })
+
+  it('返回 market 类型 org_nodes', async () => {
+    const orderBy = vi.fn().mockResolvedValue([
+      { id: 'market-1', name: '南昌市场' },
+      { id: 'market-2', name: '九江市场' },
+    ])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getMarketsForFilter()
+
+    expect(result).toEqual([
+      { id: 'market-1', name: '南昌市场' },
+      { id: 'market-2', name: '九江市场' },
+    ])
+    expect(eq).toHaveBeenCalledWith(expect.anything(), 'market')
   })
 })

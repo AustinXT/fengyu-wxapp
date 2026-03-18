@@ -53,6 +53,7 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
 import { getRoles, assignRole, revokeRole } from './permissions'
@@ -318,7 +319,7 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
       callCount++
       return mockSelectOnce(target)()
     })
-    const where = vi.fn().mockResolvedValue({ rowCount: updateRowCount })
+    const where = vi.fn().mockResolvedValue({ count: updateRowCount })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }

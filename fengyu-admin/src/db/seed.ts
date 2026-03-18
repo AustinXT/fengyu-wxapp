@@ -231,13 +231,19 @@ const PERMISSION_ROLES = [
 ]
 
 const COMMISSION_RATES = [
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
-  { orgId: '6707cc8b88579108', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
-  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
 ]
 
 const COUPON_TEMPLATES = [

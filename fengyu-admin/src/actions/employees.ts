@@ -4,13 +4,17 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, or, sql, ilike } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, inArray, isNull } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+
+const storeNode = alias(orgNodes, 'store_node')
+const marketNode = alias(orgNodes, 'market_node')
 
 function rowToEmployee(row: {
   staff_wechat_users: typeof staffWechatUsers.$inferSelect
@@ -57,6 +61,7 @@ export async function getEmployees(): Promise<Employee[]> {
 
 /** 员工列表筛选参数 */
 export interface EmployeeFilters {
+  marketId?: string
   storeId?: string
   status?: 'active' | 'resigned'
   search?: string
@@ -88,6 +93,14 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
     scopeCondition(session, staffWechatUsers.storeId),
   ]
 
+  if (filters.marketId === '__hq__') {
+    conditions.push(isNull(staffWechatUsers.storeId))
+  } else if (filters.marketId) {
+    const sub = db.select({ storeId: stores.storeId }).from(stores)
+      .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+      .where(eq(storeNode.parentId, filters.marketId))
+    conditions.push(inArray(staffWechatUsers.storeId, sub))
+  }
   if (filters.storeId) {
     conditions.push(eq(staffWechatUsers.storeId, filters.storeId))
   }
@@ -117,6 +130,8 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .from(staffWechatUsers)
       .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
       .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
+      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(whereClause)
       .orderBy(staffWechatUsers.name)
       .limit(pageSize)
@@ -124,7 +139,10 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
   ])
 
   return {
-    data: rows.map(rowToEmployee),
+    data: rows.map(row => ({
+      ...rowToEmployee(row),
+      marketName: (row as any).market_node?.name ?? undefined,
+    })),
     total: countRow?.count ?? 0,
   }
 }
@@ -142,6 +160,20 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
 
   if (rows.length === 0) return null
   return rowToEmployee(rows[0])
+}
+
+/** 获取所有市场节点（用于筛选下拉） */
+export async function getMarketsForFilter(): Promise<{ id: string; name: string }[]> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name })
+    .from(orgNodes)
+    .where(eq(orgNodes.type, 'market'))
+    .orderBy(orgNodes.sortOrder)
+
+  return rows.map(r => ({ id: r.id, name: r.name ?? '' }))
 }
 
 
@@ -300,7 +332,7 @@ export async function updateEmployee(
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(staffWechatUsers.employeeId, employeeId),
-        eq(staffWechatUsers.updatedAt, new Date(expectedUpdatedAt)),
+        sql`date_trunc('milliseconds', ${staffWechatUsers.updatedAt}) = ${new Date(expectedUpdatedAt)}`,
         scopeCond,
       )
     : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)
@@ -318,7 +350,7 @@ export async function updateEmployee(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '员工不存在或无权修改',
@@ -360,7 +392,7 @@ export async function updateEmployee(
           eq(permissionRoles.isVoid, false),
         ))
 
-      if ((scopeResult as any).rowCount > 0) {
+      if ((scopeResult as any).count > 0) {
         await logOperation(session, 'permission.scopeSync', 'permission_role', employeeId, {
           oldStoreId, newStoreId: data.storeId,
           oldScopeId: oldStore.orgNodeId, newScopeId: newStore.orgNodeId,

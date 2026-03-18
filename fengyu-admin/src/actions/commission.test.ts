@@ -52,6 +52,7 @@ vi.mock('drizzle-orm', () => ({
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   ne: vi.fn((a, b) => ({ type: 'ne', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
 import { createRate, updateRate, deleteRate, getRates, getMarkets } from './commission'
@@ -65,7 +66,7 @@ const mockSession = {
 
 const baseData = {
   orgId: 'market-1',
-  orderType: '普通',
+  orderType: '销售单',
   roleType: 'manager',
   salesCategory: '自采自销',
 }
@@ -85,8 +86,8 @@ function setupInsertSuccess() {
 }
 
 // 设置 update 成功，rowCount=1
-function setupUpdateSuccess(rowCount = 1) {
-  const where = vi.fn().mockResolvedValue({ rowCount })
+function setupUpdateSuccess(count = 1) {
+  const where = vi.fn().mockResolvedValue({ count })
   const set = vi.fn().mockReturnValue({ where })
   return { update: vi.fn().mockReturnValue({ set }) }
 }
@@ -304,8 +305,8 @@ describe('deleteRate — rowCount=0 + DB 错误处理', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function setupDelete(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupDelete(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     ;(db.delete as any).mockReturnValue({ where })
   }
 
@@ -341,7 +342,7 @@ describe('getRates — 全量提成比例列表', () => {
 
   it('返回序列化的提成比例列表', async () => {
     const limit = vi.fn().mockResolvedValue([{
-      id: 1, orgId: 'market-1', orderType: 'sale', roleType: '技师',
+      id: 1, orgId: 'market-1', orderType: '销售单', roleType: '美容师',
       salesCategory: '自采自销', amountTierMin: '0', amountTierMax: '1000',
       commissionRate: '0.08',
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),

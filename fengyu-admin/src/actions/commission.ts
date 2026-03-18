@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
-import { eq, and, or, isNull, gt, lt, ne } from 'drizzle-orm'
+import { eq, and, or, isNull, gt, lt, ne, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -142,7 +142,7 @@ export async function updateRate(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(commissionRateMatrix.id, id), eq(commissionRateMatrix.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(commissionRateMatrix.id, id)
 
   let result: any
@@ -155,7 +155,7 @@ export async function updateRate(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '提成规则不存在',
@@ -180,7 +180,7 @@ export async function deleteRate(id: number): Promise<{ success: boolean; messag
     throw err
   }
 
-  if ((deleteResult as any).rowCount === 0) {
+  if ((deleteResult as any).count === 0) {
     return { success: false, message: '提成规则不存在' }
   }
 

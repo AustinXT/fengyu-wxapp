@@ -196,33 +196,33 @@ describe('createStore — 事务错误处理', () => {
 
 // ── updateStore ───────────────────────────────────────────────────────────────
 
-describe('updateStore — rowCount=0 静默成功修复', () => {
+describe('updateStore — count=0 检测修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }
 
-  it('rowCount=0，无乐观锁 → 报告门店不存在（而非静默成功）', async () => {
+  it('count=0，无乐观锁 → 报告门店不存在（而非静默成功）', async () => {
     setupUpdate(0)
     const result = await updateStore('nonexistent', { storeName: '新名称' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('门店不存在')
   })
 
-  it('rowCount=0，有乐观锁 → 报告并发冲突', async () => {
+  it('count=0，有乐观锁 → 报告并发冲突', async () => {
     setupUpdate(0)
     const result = await updateStore('STORE-001', { storeName: '新名称' }, '2026-01-01T00:00:00.000Z')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已被其他人修改')
   })
 
-  it('rowCount=1 → 成功', async () => {
+  it('count=1 → 成功', async () => {
     setupUpdate(1)
     const result = await updateStore('STORE-001', { storeName: '新名称' })
     expect(result.success).toBe(true)

@@ -184,7 +184,7 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
@@ -213,7 +213,7 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
@@ -242,7 +242,7 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 

@@ -176,9 +176,10 @@ export async function updateStore(
   requirePermission(session, 'store:update')
 
   // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
+  // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
   const scopeCond = scopeCondition(session, stores.storeId)
   const whereConditions = expectedUpdatedAt
-    ? and(eq(stores.storeId, storeId), eq(stores.updatedAt, new Date(expectedUpdatedAt)), scopeCond)
+    ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${new Date(expectedUpdatedAt)}`, scopeCond)
     : and(eq(stores.storeId, storeId), scopeCond)
 
   let result: any
@@ -188,7 +189,7 @@ export async function updateStore(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '门店不存在',

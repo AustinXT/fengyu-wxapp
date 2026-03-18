@@ -106,11 +106,11 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(db.select).not.toHaveBeenCalled()
   })
 
-  it('特价为负数 → 拒绝', async () => {
+  it('会员价为负数 → 拒绝', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
     const result = await createProduct({ productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100', specialPrice: '-5' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('特价必须为非负数')
+    expect(result.message).toContain('会员价必须为非负数')
   })
 
   it('分类不存在 → 拒绝', async () => {
@@ -165,8 +165,8 @@ describe('updateProduct — rowCount=0 静默成功修复', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }
@@ -232,8 +232,8 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }
@@ -338,8 +338,8 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }

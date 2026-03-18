@@ -112,7 +112,7 @@ function mockSelectChain(results: any[]) {
 }
 
 function mockUpdateChain() {
-  const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+  const where = vi.fn().mockResolvedValue({ count: 1 })
   const set = vi.fn().mockReturnValue({ where })
   ;(db.update as any).mockReturnValue({ set })
   return { set, where }

@@ -23,6 +23,7 @@ vi.mock('@db/coupon', () => ({
     applicableProductIds: 'applicable_product_ids',
     applicableCategoryIds: 'applicable_category_ids',
     applicableStoreIds: 'applicable_store_ids',
+    applicableMarketIds: 'applicable_market_ids',
     validityMode: 'validity_mode',
     validFrom: 'valid_from',
     validTo: 'valid_to',
@@ -35,6 +36,21 @@ vi.mock('@db/coupon', () => ({
     userId: 'user_id',
     status: 'status',
     expireAt: 'expire_at',
+  },
+}))
+
+vi.mock('@db/org', () => ({
+  orgNodes: {
+    id: 'id',
+    name: 'name',
+    type: 'type',
+    parentId: 'parent_id',
+    sortOrder: 'sort_order',
+    isActive: 'is_active',
+  },
+  stores: {
+    storeId: 'store_id',
+    orgNodeId: 'org_node_id',
   },
 }))
 
@@ -81,6 +97,7 @@ function makeTemplateRow(templateId: string, overrides: Partial<Record<string, a
     applicableProductIds: null,
     applicableCategoryIds: null,
     applicableStoreIds: null,
+    applicableMarketIds: null,
     validityMode: 'fixed',
     validFrom: new Date('2026-01-01'),
     validTo: new Date('2026-12-31'),
@@ -262,8 +279,8 @@ describe('updateTemplate — rowCount=0 静默成功修复 + 错误处理', () =
     })
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }
@@ -308,8 +325,8 @@ describe('toggleTemplateActive — rowCount=0 静默成功修复', () => {
     })
   })
 
-  function setupUpdate(rowCount: number) {
-    const where = vi.fn().mockResolvedValue({ rowCount })
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
   }

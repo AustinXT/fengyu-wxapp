@@ -141,7 +141,7 @@ export async function updateOrgNode(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(orgNodes.id, id), eq(orgNodes.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(orgNodes.id, id)
 
   let result: any
@@ -151,7 +151,7 @@ export async function updateOrgNode(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '节点不存在',
@@ -217,7 +217,7 @@ export async function deleteOrgNode(
   // 真实删除
   try {
     const result = await db.delete(orgNodes).where(eq(orgNodes.id, id))
-    if ((result as any).rowCount === 0) {
+    if ((result as any).count === 0) {
       return { success: false, message: '节点不存在' }
     }
   } catch (err: any) {

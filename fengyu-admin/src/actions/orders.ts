@@ -287,7 +287,7 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
           scopeCondition(session, saleOrders.storeId),
         ))
 
-      if ((result as any).rowCount === 0) {
+      if ((result as any).count === 0) {
         return { matched: false }
       }
 
@@ -333,7 +333,7 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
           scopeCondition(session, saleOrders.storeId),
         ))
 
-      if ((result as any).rowCount === 0) {
+      if ((result as any).count === 0) {
         return { matched: false }
       }
 
@@ -381,7 +381,7 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return { success: false, message: '订单状态已变更，无法重置' }
   }
 
@@ -494,7 +494,7 @@ export async function createOrder(data: {
           .set({ status: '已使用', usedSaleOrderId: id, usedAt: new Date() })
           .where(and(eq(userCoupons.couponId, data.couponId), eq(userCoupons.status, '未使用')))
 
-        if ((voidResult as any).rowCount === 0) {
+        if ((voidResult as any).count === 0) {
           throw new Error('优惠券已被使用，请刷新后重试')
         }
       }

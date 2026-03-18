@@ -207,7 +207,7 @@ export async function createProduct(data: {
   if (data.specialPrice) {
     const sp = Number(data.specialPrice)
     if (isNaN(sp) || sp < 0) {
-      return { success: false, message: '特价必须为非负数' }
+      return { success: false, message: '会员价必须为非负数' }
     }
   }
 
@@ -267,7 +267,7 @@ export async function updateProduct(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(products.productId, productId), eq(products.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(products.productId, productId)
 
   const result = await db
@@ -278,7 +278,7 @@ export async function updateProduct(
     })
     .where(whereConditions)
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
@@ -331,7 +331,7 @@ export async function updateCategory(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(productCategories.categoryId, categoryId), eq(productCategories.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(productCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(productCategories.categoryId, categoryId)
 
   const result = await db
@@ -342,7 +342,7 @@ export async function updateCategory(
     })
     .where(whereConditions)
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '分类不存在',
@@ -440,7 +440,7 @@ export async function updateSku(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(productSkus.skuId, skuId), eq(productSkus.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(productSkus.skuId, skuId)
 
   const result = await db
@@ -451,7 +451,7 @@ export async function updateSku(
     })
     .where(whereConditions)
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : 'SKU 不存在',

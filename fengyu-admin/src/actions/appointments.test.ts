@@ -63,8 +63,8 @@ const mockSession = {
   permissions: { actions: ['appointment:confirm', 'appointment:checkin'], scopeStoreIds: [] },
 }
 
-function setupUpdate(rowCount: number) {
-  const where = vi.fn().mockResolvedValue({ rowCount })
+function setupUpdate(count: number) {
+  const where = vi.fn().mockResolvedValue({ count })
   const set = vi.fn().mockReturnValue({ where })
   ;(db.update as any).mockReturnValue({ set })
 }

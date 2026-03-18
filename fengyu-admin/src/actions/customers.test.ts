@@ -97,7 +97,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
   })
 
   it('手机号为 null → 跳过格式校验，进入 DB 更新', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -108,7 +108,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
   })
 
   it('scope 不符（rowCount=0，无 expectedUpdatedAt）→ 失败，提示不存在或无权', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 0 })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -119,7 +119,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
   })
 
   it('乐观锁冲突（rowCount=0，有 expectedUpdatedAt）→ 失败，提示已被修改', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 0 })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -148,7 +148,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
   })
 
   it('正常更新（rowCount=1）→ 成功', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 

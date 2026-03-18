@@ -53,6 +53,7 @@ export interface Employee {
   // joined
   storeName?: string
   departmentName?: string
+  marketName?: string
 }
 
 export interface Customer {
@@ -293,6 +294,7 @@ export interface CouponTemplate {
   applicableProductIds: string[] | null
   applicableCategoryIds: string[] | null
   applicableStoreIds: string[] | null
+  applicableMarketIds: string[] | null
   validityMode: string | null
   validFrom: string | null
   validTo: string | null

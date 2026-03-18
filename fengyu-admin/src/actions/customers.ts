@@ -344,7 +344,7 @@ export async function updateCustomer(
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(clientWechatUsers.userId, userId),
-        eq(clientWechatUsers.updatedAt, new Date(expectedUpdatedAt)),
+        sql`date_trunc('milliseconds', ${clientWechatUsers.updatedAt}) = ${new Date(expectedUpdatedAt)}`,
         scopeCond,
       )
     : and(eq(clientWechatUsers.userId, userId), scopeCond)
@@ -359,7 +359,7 @@ export async function updateCustomer(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '顾客不存在或无权修改',

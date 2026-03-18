@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -167,7 +167,7 @@ export async function revokeRole(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(permissionRoles.id, id), eq(permissionRoles.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(permissionRoles.id, id), sql`date_trunc('milliseconds', ${permissionRoles.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(permissionRoles.id, id)
 
   let result: any
@@ -180,7 +180,7 @@ export async function revokeRole(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '角色记录不存在或已被撤销',

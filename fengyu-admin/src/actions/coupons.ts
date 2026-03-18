@@ -2,7 +2,8 @@
 
 import { db } from '@/db'
 import { couponTemplates, userCoupons } from '@db/coupon'
-import { eq, and, desc, gt, lte, or, isNull, sql } from 'drizzle-orm'
+import { orgNodes, stores } from '@db/org'
+import { eq, and, desc, gt, lte, or, isNull, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CouponTemplate, AvailableCoupon } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -11,8 +12,24 @@ import { logOperation } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 /**
+ * 获取所有市场节点（type='market'），用于优惠券市场作用域选择。
+ */
+export async function getMarkets(): Promise<{ id: string; name: string }[]> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:list')
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name })
+    .from(orgNodes)
+    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .orderBy(asc(orgNodes.sortOrder))
+
+  return rows
+}
+
+/**
  * 查询顾客在当前订单金额下可用的优惠券列表。
- * 过滤规则：未使用 + 未过期 + 模板启用 + 满足 minSpend + storeId 适用（if set）
+ * 过滤规则：未使用 + 未过期 + 模板启用 + 满足 minSpend + storeId 适用（if set）+ 市场适用
  */
 export async function getAvailableCoupons(
   clientUserId: string,
@@ -28,6 +45,27 @@ export async function getAvailableCoupons(
         sql`${storeId} = ANY(${couponTemplates.applicableStoreIds})`,
       )
     : isNull(couponTemplates.applicableStoreIds)
+
+  // 市场过滤：先解析 storeId → marketId，再检查 applicableMarketIds
+  let marketCondition
+  if (storeId) {
+    // 通过 stores → org_nodes 找到门店所属市场
+    const storeRow = await db
+      .select({ parentId: orgNodes.parentId })
+      .from(stores)
+      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+      .where(eq(stores.storeId, storeId))
+      .limit(1)
+    const marketId = storeRow[0]?.parentId
+    marketCondition = marketId
+      ? or(
+          isNull(couponTemplates.applicableMarketIds),
+          sql`${marketId} = ANY(${couponTemplates.applicableMarketIds})`,
+        )
+      : isNull(couponTemplates.applicableMarketIds)
+  } else {
+    marketCondition = isNull(couponTemplates.applicableMarketIds)
+  }
 
   const rows = await db
     .select({
@@ -51,6 +89,7 @@ export async function getAvailableCoupons(
       eq(couponTemplates.isActive, true),
       lte(sql`COALESCE(${couponTemplates.minSpend}, '0')::numeric`, totalAmount),
       storeCondition,
+      marketCondition,
     ))
     .orderBy(userCoupons.expireAt)
 
@@ -85,6 +124,7 @@ function serializeTemplate(r: typeof couponTemplates.$inferSelect, issuedCount =
     applicableProductIds: r.applicableProductIds,
     applicableCategoryIds: r.applicableCategoryIds,
     applicableStoreIds: r.applicableStoreIds,
+    applicableMarketIds: r.applicableMarketIds,
     validityMode: r.validityMode,
     validFrom: r.validFrom?.toISOString() ?? null,
     validTo: r.validTo?.toISOString() ?? null,
@@ -145,6 +185,7 @@ export async function createTemplate(data: {
   applicableProductIds?: string[] | null
   applicableCategoryIds?: string[] | null
   applicableStoreIds?: string[] | null
+  applicableMarketIds?: string[] | null
   validityMode?: string
   validFrom?: string | null
   validTo?: string | null
@@ -188,6 +229,7 @@ export async function createTemplate(data: {
       applicableProductIds: data.applicableProductIds ?? null,
       applicableCategoryIds: data.applicableCategoryIds ?? null,
       applicableStoreIds: data.applicableStoreIds ?? null,
+      applicableMarketIds: data.applicableMarketIds ?? null,
       validityMode: data.validityMode as typeof couponTemplates.$inferInsert['validityMode'],
       validFrom: data.validFrom ? new Date(data.validFrom) : null,
       validTo: data.validTo ? new Date(data.validTo) : null,
@@ -219,6 +261,7 @@ export async function updateTemplate(
     applicableProductIds?: string[] | null
     applicableCategoryIds?: string[] | null
     applicableStoreIds?: string[] | null
+    applicableMarketIds?: string[] | null
     validityMode?: string
     validFrom?: string | null
     validTo?: string | null
@@ -241,7 +284,7 @@ export async function updateTemplate(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(couponTemplates.templateId, templateId), eq(couponTemplates.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(couponTemplates.templateId, templateId)
 
   let result: any
@@ -254,7 +297,7 @@ export async function updateTemplate(
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '优惠券模板不存在',
@@ -276,7 +319,7 @@ export async function toggleTemplateActive(
   requirePermission(session, 'coupon:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(couponTemplates.templateId, templateId), eq(couponTemplates.updatedAt, new Date(expectedUpdatedAt)))
+    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
     : eq(couponTemplates.templateId, templateId)
 
   let toggleResult: any
@@ -289,7 +332,7 @@ export async function toggleTemplateActive(
     throw err
   }
 
-  if ((toggleResult as any).rowCount === 0) {
+  if ((toggleResult as any).count === 0) {
     return {
       success: false,
       message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '优惠券模板不存在',

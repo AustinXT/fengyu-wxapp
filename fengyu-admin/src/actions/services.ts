@@ -238,7 +238,7 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
     throw err
   }
 
-  if ((result as any).rowCount === 0) {
+  if ((result as any).count === 0) {
     return { success: false, message: '服务单状态已变更，无法开始' }
   }
 
@@ -328,7 +328,7 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
     throw err
   }
 
-  if ((cancelResult as any).rowCount === 0) {
+  if ((cancelResult as any).count === 0) {
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
 

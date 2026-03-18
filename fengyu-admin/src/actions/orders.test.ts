@@ -135,7 +135,7 @@ function mockTransactionSuccess(orderId = 'FY-XSD-WX-260315001') {
       execute: vi.fn().mockResolvedValue([{ id: orderId }]),
       insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
       update: vi.fn().mockReturnValue({
-        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ rowCount: 1 }) }),
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
       }),
     }
     return fn(tx)
@@ -357,12 +357,12 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function mockConfirmTx(rowCount: number) {
+  function mockConfirmTx(count: number) {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ rowCount }),
+            where: vi.fn().mockResolvedValue({ count }),
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
@@ -383,7 +383,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ rowCount: 1 }),
+            where: vi.fn().mockResolvedValue({ count: 1 }),
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
@@ -412,12 +412,12 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  function mockCloseTx(rowCount: number) {
+  function mockCloseTx(count: number) {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ rowCount }),
+            where: vi.fn().mockResolvedValue({ count }),
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
@@ -438,7 +438,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue({ rowCount: 1 }),
+            where: vi.fn().mockResolvedValue({ count: 1 }),
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
@@ -467,7 +467,7 @@ describe('resetOrderFailed — 重置支付失败', () => {
   })
 
   it('订单不是支付失败状态（rowCount=0）→ 失败', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 0 })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
@@ -477,7 +477,7 @@ describe('resetOrderFailed — 重置支付失败', () => {
   })
 
   it('正常重置（rowCount=1）→ 成功', async () => {
-    const where = vi.fn().mockResolvedValue({ rowCount: 1 })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
