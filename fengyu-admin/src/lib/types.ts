@@ -336,6 +336,16 @@ export interface AvailableCoupon {
   discountAmount: string
 }
 
+/** 已发放优惠券记录（详情页展示用） */
+export interface IssuedCoupon {
+  couponId: string
+  customerName: string
+  phone: string
+  status: CouponStatus
+  issuedAt: string
+  usedAt: string | null
+}
+
 export interface OperationLog {
   id: number
   operatorEmployeeId: string

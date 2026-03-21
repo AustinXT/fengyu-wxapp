@@ -13,8 +13,8 @@ import { Separator } from "@/components/ui/separator"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { formatCurrency, formatDate } from "@/lib/utils"
-import { updateTemplate } from "@/actions/coupons"
-import type { CouponTemplate, CouponType } from "@/lib/types"
+import { updateTemplate, issueCoupon } from "@/actions/coupons"
+import type { CouponTemplate, CouponType, IssuedCoupon } from "@/lib/types"
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
@@ -22,16 +22,6 @@ const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "折扣券": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
 }
 
-interface IssuedCoupon {
-  couponId: string
-  customerName: string
-  phone: string
-  status: string
-  issuedAt: string
-  usedAt: string | null
-}
-
-// 已发放记录从 props 传入（由 server action 查询 user_coupons 表）
 
 const ISSUED_STATUS_COLORS: Record<string, string> = {
   "已使用": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
@@ -52,9 +42,10 @@ interface Market {
 interface Props {
   template: CouponTemplate
   markets: Market[]
+  issuedCoupons: IssuedCoupon[]
 }
 
-export default function CouponDetailPage({ template, markets }: Props) {
+export default function CouponDetailPage({ template, markets, issuedCoupons }: Props) {
   const router = useRouter()
 
   // Edit mode state
@@ -84,6 +75,7 @@ export default function CouponDetailPage({ template, markets }: Props) {
   const [issuePhone, setIssuePhone] = useState("")
   const [issueCustomerName, setIssueCustomerName] = useState("")
   const [issueSearched, setIssueSearched] = useState(false)
+  const [issueLoading, setIssueLoading] = useState(false)
 
   function handleStartEdit() {
     setEditName(template.name)
@@ -178,16 +170,29 @@ export default function CouponDetailPage({ template, markets }: Props) {
     }
   }
 
-  function handleIssueCoupon() {
+  async function handleIssueCoupon() {
     if (!issueSearched || !issueCustomerName) {
       toast.error("请先搜索顾客")
       return
     }
-    toast.success("发放成功（功能待后端支持）")
-    setIssueOpen(false)
-    setIssuePhone("")
-    setIssueCustomerName("")
-    setIssueSearched(false)
+    setIssueLoading(true)
+    try {
+      const result = await issueCoupon(template.templateId, issuePhone.trim())
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      toast.success(result.message)
+      setIssueOpen(false)
+      setIssuePhone("")
+      setIssueCustomerName("")
+      setIssueSearched(false)
+      router.refresh()
+    } catch {
+      toast.error("发放失败，请重试")
+    } finally {
+      setIssueLoading(false)
+    }
   }
 
   const issuedColumns: Column<IssuedCoupon>[] = [
@@ -511,7 +516,7 @@ export default function CouponDetailPage({ template, markets }: Props) {
         <CardContent>
           <DataTable
             columns={issuedColumns}
-            data={[] as IssuedCoupon[]}
+            data={issuedCoupons}
             emptyText="暂无已发放记录"
           />
         </CardContent>
@@ -552,8 +557,8 @@ export default function CouponDetailPage({ template, markets }: Props) {
           <Button variant="outline" onClick={() => setIssueOpen(false)}>
             取消
           </Button>
-          <Button onClick={handleIssueCoupon} disabled={!issueSearched}>
-            确认发放
+          <Button onClick={handleIssueCoupon} disabled={!issueSearched || !issueCustomerName || issueLoading}>
+            {issueLoading ? "发放中..." : "确认发放"}
           </Button>
         </DialogFooter>
       </Dialog>

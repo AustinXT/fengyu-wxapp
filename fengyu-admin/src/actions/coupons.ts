@@ -2,10 +2,11 @@
 
 import { db } from '@/db'
 import { couponTemplates, userCoupons } from '@db/coupon'
+import { clientWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
 import { eq, and, desc, gt, lte, or, isNull, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { CouponTemplate, AvailableCoupon } from '@/lib/types'
+import type { CouponTemplate, AvailableCoupon, IssuedCoupon } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
@@ -343,4 +344,113 @@ export async function toggleTemplateActive(
   await logOperation(session, `coupon.${action}`, 'coupon_template', templateId, { isActive })
   revalidatePath('/coupons')
   return { success: true, message: `优惠券模板已${action}` }
+}
+
+/**
+ * 向指定顾客发放一张优惠券。
+ * 校验：模板启用 + 发放量未超限 + 顾客存在 + 有效期计算。
+ */
+export async function issueCoupon(
+  templateId: string,
+  phone: string,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:create')
+
+  // 1. 查模板
+  const [tpl] = await db
+    .select()
+    .from(couponTemplates)
+    .where(eq(couponTemplates.templateId, templateId))
+    .limit(1)
+
+  if (!tpl) return { success: false, message: '优惠券模板不存在' }
+  if (!tpl.isActive) return { success: false, message: '该模板已停用，无法发放' }
+
+  // 2. 校验发放量限制
+  if (tpl.totalCount !== null) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(userCoupons)
+      .where(eq(userCoupons.templateId, templateId))
+
+    if (count >= tpl.totalCount) {
+      return { success: false, message: `发放数量已达上限（${tpl.totalCount}）` }
+    }
+  }
+
+  // 3. 查顾客
+  const [customer] = await db
+    .select({ userId: clientWechatUsers.userId, name: clientWechatUsers.name })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.phone, phone))
+    .limit(1)
+
+  if (!customer) return { success: false, message: '未找到该手机号对应的顾客' }
+
+  // 4. 计算 expireAt
+  let expireAt: Date
+  if (tpl.validityMode === 'days' && tpl.validDays) {
+    expireAt = new Date()
+    expireAt.setDate(expireAt.getDate() + tpl.validDays)
+  } else if (tpl.validTo) {
+    expireAt = new Date(tpl.validTo)
+  } else {
+    // 无有效期配置，默认 365 天
+    expireAt = new Date()
+    expireAt.setDate(expireAt.getDate() + 365)
+  }
+
+  // 5. 生成 couponId 并插入
+  const couponId = `cpn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+
+  await db.insert(userCoupons).values({
+    couponId,
+    templateId,
+    userId: customer.userId,
+    status: '未使用',
+    expireAt,
+  })
+
+  await logOperation(session, 'coupon.issue', 'user_coupon', couponId, {
+    templateId,
+    templateName: tpl.name,
+    customerPhone: phone,
+    customerName: customer.name,
+  })
+
+  revalidatePath(`/coupons/${templateId}`)
+  return { success: true, message: `已成功向 ${customer.name || phone} 发放优惠券` }
+}
+
+/**
+ * 查询某模板下的所有已发放券记录。
+ */
+export async function getIssuedCoupons(templateId: string): Promise<IssuedCoupon[]> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:list')
+
+  const rows = await db
+    .select({
+      couponId: userCoupons.couponId,
+      customerName: clientWechatUsers.name,
+      phone: clientWechatUsers.phone,
+      status: userCoupons.status,
+      issuedAt: userCoupons.createdAt,
+      usedAt: userCoupons.usedAt,
+    })
+    .from(userCoupons)
+    .innerJoin(clientWechatUsers, eq(userCoupons.userId, clientWechatUsers.userId))
+    .where(eq(userCoupons.templateId, templateId))
+    .orderBy(desc(userCoupons.createdAt))
+    .limit(500)
+
+  return rows.map((r) => ({
+    couponId: r.couponId,
+    customerName: r.customerName || '未知',
+    phone: r.phone || '',
+    status: r.status as IssuedCoupon['status'],
+    issuedAt: r.issuedAt.toISOString(),
+    usedAt: r.usedAt?.toISOString() ?? null,
+  }))
 }
