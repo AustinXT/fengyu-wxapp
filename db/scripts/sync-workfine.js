@@ -235,29 +235,59 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
   try {
     await client.query('BEGIN')
 
-    // 预加载 stores lookup (store_name → store_id)
-    const storesRes = await client.query('SELECT store_id, store_name FROM stores')
-    const storeMap = {}
-    storesRes.rows.forEach(r => { storeMap[r.store_name] = r.store_id })
+    // 预加载 stores lookup (store_name → store_id + org_node_id)
+    const storesRes = await client.query('SELECT store_id, store_name, org_node_id FROM stores')
+    const storeMap = {}          // store_name → store_id
+    const storeOrgNodeMap = {}   // store_name → org_node_id (org tree)
+    storesRes.rows.forEach(r => {
+      storeMap[r.store_name] = r.store_id
+      storeOrgNodeMap[r.store_name] = r.org_node_id
+    })
 
-    // 收集并创建部门节点
+    // 收集门店级部门对 + 无门店的全局部门
     const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = 'headquarters' LIMIT 1")
     const hqId = hqRes.rows[0]?.id
-    const deptNames = [...new Set(rows.map(r => trim(r.dept_name)).filter(Boolean))]
-    const deptMap = {} // deptName → orgNodeId
+    const storeDeptPairs = new Set()  // "storeName|deptName"
+    const globalDeptNames = new Set() // 无门店员工的部门
+    for (const row of rows) {
+      const storeName = trim(row.store_name)
+      const deptName = trim(row.dept_name)
+      if (!deptName) continue
+      if (storeName && storeOrgNodeMap[storeName]) {
+        storeDeptPairs.add(storeName + '|' + deptName)
+      } else {
+        globalDeptNames.add(deptName)
+      }
+    }
 
+    // 创建门店级部门节点（挂在各门店 org_node 下）
+    const storeDeptMap = {} // "storeName|deptName" → orgNodeId
+    for (const pair of storeDeptPairs) {
+      const [storeName, deptName] = pair.split('|')
+      const deptId = hashId('org', 'department', storeName, deptName)
+      const parentId = storeOrgNodeMap[storeName]
+      await client.query(`
+        INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+        VALUES ($1, $2, 'department', $3, 0, true)
+        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
+      `, [deptId, deptName, parentId])
+      storeDeptMap[pair] = deptId
+    }
+
+    // 创建全局部门节点（无门店员工的 fallback，挂在总部下）
+    const globalDeptMap = {}
     if (hqId) {
-      for (const deptName of deptNames) {
+      for (const deptName of globalDeptNames) {
         const deptId = hashId('org', 'department', deptName)
         await client.query(`
           INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
           VALUES ($1, $2, 'department', $3, 0, true)
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
         `, [deptId, deptName, hqId])
-        deptMap[deptName] = deptId
+        globalDeptMap[deptName] = deptId
       }
-      log('EMPLOYEES', `UPSERT ${deptNames.length} 个部门节点`)
     }
+    log('EMPLOYEES', `UPSERT ${storeDeptPairs.size} 个门店部门 + ${globalDeptNames.size} 个全局部门`)
 
     // 处理手机号去重：同一手机号多条记录，在职优先保留一条，其余设为 null
     // 同时过滤占位符手机号（如全 1、全 0）
@@ -310,7 +340,12 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const storeName = trim(row.store_name)
       const storeId = storeName ? (storeMap[storeName] || null) : null
       const deptName = trim(row.dept_name)
-      const orgNodeId = deptName ? (deptMap[deptName] || null) : null
+      let orgNodeId = null
+      if (deptName && storeName && storeOrgNodeMap[storeName]) {
+        orgNodeId = storeDeptMap[storeName + '|' + deptName] || null
+      } else if (deptName) {
+        orgNodeId = globalDeptMap[deptName] || null
+      }
       const phone = empPhones[empId]
 
       await client.query(`
@@ -340,6 +375,19 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
         toBool(row.is_resigned_raw),
       ])
       count++
+    }
+
+    // 清理不再被引用的全局部门节点（挂在总部下但无员工指向的）
+    if (hqId) {
+      const { rowCount } = await client.query(`
+        DELETE FROM org_nodes
+        WHERE type = 'department'
+          AND parent_id = $1
+          AND id NOT IN (SELECT DISTINCT org_node_id FROM staff_wechat_users WHERE org_node_id IS NOT NULL)
+      `, [hqId])
+      if (rowCount > 0) {
+        log('EMPLOYEES', `清理 ${rowCount} 个孤儿全局部门节点`)
+      }
     }
 
     await client.query('COMMIT')
