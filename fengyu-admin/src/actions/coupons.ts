@@ -4,9 +4,10 @@ import { db } from '@/db'
 import { couponTemplates, userCoupons } from '@db/coupon'
 import { clientWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
-import { eq, and, desc, gt, lte, or, isNull, sql, asc } from 'drizzle-orm'
+import { eq, and, desc, gt, lte, or, isNull, isNotNull, sql, asc, ilike, inArray } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { CouponTemplate, AvailableCoupon, IssuedCoupon } from '@/lib/types'
+import type { CouponTemplate, AvailableCoupon, IssuedCoupon, BatchCouponCustomer } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
@@ -453,4 +454,198 @@ export async function getIssuedCoupons(templateId: string): Promise<IssuedCoupon
     issuedAt: r.issuedAt.toISOString(),
     usedAt: r.usedAt?.toISOString() ?? null,
   }))
+}
+
+/**
+ * 批量向多个顾客发放优惠券。
+ * 全有全无：所有手机号必须匹配顾客，否则整批拒绝。
+ */
+export async function batchIssueCoupons(
+  templateId: string,
+  phones: string[],
+): Promise<{
+  success: boolean
+  message: string
+  errors?: Array<{ phone: string; reason: string }>
+}> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:create')
+
+  // 1. 去重 + 基本校验
+  const uniquePhones = [...new Set(phones.map((p) => p.trim()).filter(Boolean))]
+  if (uniquePhones.length === 0) {
+    return { success: false, message: '请输入至少一个手机号' }
+  }
+  if (uniquePhones.length > 200) {
+    return { success: false, message: '单次批量发放不能超过 200 个手机号' }
+  }
+
+  // 2. 查模板
+  const [tpl] = await db
+    .select()
+    .from(couponTemplates)
+    .where(eq(couponTemplates.templateId, templateId))
+    .limit(1)
+
+  if (!tpl) return { success: false, message: '优惠券模板不存在' }
+  if (!tpl.isActive) return { success: false, message: '该模板已停用，无法发放' }
+
+  // 3. 校验发放量限制
+  if (tpl.totalCount !== null) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`COUNT(*)::int` })
+      .from(userCoupons)
+      .where(eq(userCoupons.templateId, templateId))
+
+    const remaining = tpl.totalCount - count
+    if (remaining < uniquePhones.length) {
+      return {
+        success: false,
+        message: `发放数量不足：剩余额度 ${remaining} 张，请求 ${uniquePhones.length} 张`,
+      }
+    }
+  }
+
+  // 4. 批量查顾客
+  const customers = await db
+    .select({ userId: clientWechatUsers.userId, name: clientWechatUsers.name, phone: clientWechatUsers.phone })
+    .from(clientWechatUsers)
+    .where(inArray(clientWechatUsers.phone, uniquePhones))
+
+  const customerMap = new Map(customers.map((c) => [c.phone!, { userId: c.userId, name: c.name }]))
+
+  // 5. 检查未匹配手机号
+  const errors: Array<{ phone: string; reason: string }> = []
+  for (const phone of uniquePhones) {
+    if (!customerMap.has(phone)) {
+      errors.push({ phone, reason: '未找到该手机号对应的顾客' })
+    }
+  }
+  if (errors.length > 0) {
+    return { success: false, message: `有 ${errors.length} 个手机号未匹配到顾客`, errors }
+  }
+
+  // 6. 计算 expireAt
+  let expireAt: Date
+  if (tpl.validityMode === 'days' && tpl.validDays) {
+    expireAt = new Date()
+    expireAt.setDate(expireAt.getDate() + tpl.validDays)
+  } else if (tpl.validTo) {
+    expireAt = new Date(tpl.validTo)
+  } else {
+    expireAt = new Date()
+    expireAt.setDate(expireAt.getDate() + 365)
+  }
+
+  // 7. 事务内批量插入
+  const now = Date.now()
+  const values = uniquePhones.map((phone, i) => {
+    const customer = customerMap.get(phone)!
+    return {
+      couponId: `cpn-${now}-${Math.random().toString(36).slice(2, 6)}-${i}`,
+      templateId,
+      userId: customer.userId,
+      status: '未使用' as const,
+      expireAt,
+    }
+  })
+
+  await db.insert(userCoupons).values(values)
+
+  // 8. 审计日志
+  await logOperation(session, 'coupon.batchIssue', 'coupon_template', templateId, {
+    templateName: tpl.name,
+    count: uniquePhones.length,
+    phones: uniquePhones,
+  })
+
+  revalidatePath(`/coupons/${templateId}`)
+  return { success: true, message: `已成功向 ${uniquePhones.length} 位顾客批量发放优惠券` }
+}
+
+/**
+ * 批量发券时的顾客分页列表。
+ * 权限走 coupon:create（而非 customer:list），以便 product 角色可用。
+ * 仅返回有手机号的顾客。
+ */
+export async function getCustomersForBatchIssue(filters: {
+  storeId?: string
+  memberLevel?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}): Promise<{ data: BatchCouponCustomer[]; total: number }> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:create')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const conditions: (SQL | undefined)[] = [
+    isNotNull(clientWechatUsers.phone),
+  ]
+
+  if (filters.storeId) {
+    conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
+  }
+  if (filters.memberLevel) {
+    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(clientWechatUsers.name, pattern),
+        ilike(clientWechatUsers.phone, pattern),
+      ),
+    )
+  }
+
+  const whereClause = and(...conditions)
+
+  const [[countRow], rows] = await Promise.all([
+    db.select({ count: sql<number>`cast(count(*) as int)` })
+      .from(clientWechatUsers)
+      .where(whereClause),
+    db.select({
+      userId: clientWechatUsers.userId,
+      name: clientWechatUsers.name,
+      phone: clientWechatUsers.phone,
+      storeName: stores.storeName,
+      memberLevel: clientWechatUsers.memberLevel,
+    })
+      .from(clientWechatUsers)
+      .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+      .where(whereClause)
+      .orderBy(clientWechatUsers.name)
+      .limit(pageSize)
+      .offset(offset),
+  ])
+
+  return {
+    data: rows.map((r) => ({
+      userId: r.userId,
+      name: r.name,
+      phone: r.phone,
+      storeName: r.storeName ?? null,
+      memberLevel: r.memberLevel,
+    })),
+    total: countRow?.count ?? 0,
+  }
+}
+
+/**
+ * 门店列表（批量发券筛选用）。
+ * 权限走 coupon:create，product 角色无 store:list 但有此权限。
+ */
+export async function getStoresForBatchIssue(): Promise<Array<{ storeId: string; storeName: string }>> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:create')
+
+  return db
+    .select({ storeId: stores.storeId, storeName: stores.storeName })
+    .from(stores)
+    .where(eq(stores.isClosed, false))
+    .orderBy(stores.storeName)
 }

@@ -44,6 +44,8 @@ vi.mock('@db/user', () => ({
     userId: 'user_id',
     name: 'name',
     phone: 'phone',
+    boundStoreId: 'bound_store_id',
+    memberLevel: 'member_level',
   },
 }))
 
@@ -58,7 +60,9 @@ vi.mock('@db/org', () => ({
   },
   stores: {
     storeId: 'store_id',
+    storeName: 'store_name',
     orgNodeId: 'org_node_id',
+    isClosed: 'is_closed',
   },
 }))
 
@@ -82,13 +86,18 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
+  isNotNull: vi.fn((a) => ({ type: 'isNotNull', a })),
+  ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  or: vi.fn((...args) => ({ type: 'or', args })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
     vi.fn(() => ({ type: 'sql' })),
     { raw: vi.fn(() => ({ type: 'sql_raw' })) },
   ),
 }))
 
-import { getTemplates, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons } from './coupons'
+import { getTemplates, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons, batchIssueCoupons } from './coupons'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 
@@ -561,5 +570,238 @@ describe('getIssuedCoupons — 查询已发放券', () => {
     const result = await getIssuedCoupons('TPL-001')
 
     expect(result[0].customerName).toBe('未知')
+  })
+})
+
+// ── batchIssueCoupons ───────────────────────────────────────────────
+
+describe('batchIssueCoupons — 批量发放', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+    })
+  })
+
+  it('空手机号列表 → 拒绝', async () => {
+    const result = await batchIssueCoupons('TPL-001', [])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('至少一个')
+  })
+
+  it('空白和空字符串 → 去除后为空 → 拒绝', async () => {
+    const result = await batchIssueCoupons('TPL-001', ['  ', '', '  '])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('至少一个')
+  })
+
+  it('超过 200 条 → 拒绝', async () => {
+    const phones = Array.from({ length: 201 }, (_, i) => `138${String(i).padStart(8, '0')}`)
+    const result = await batchIssueCoupons('TPL-001', phones)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('200')
+  })
+
+  it('模板不存在 → 拒绝', async () => {
+    const limit = vi.fn().mockResolvedValue([])
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await batchIssueCoupons('TPL-NOT-EXIST', ['13800000001'])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+  })
+
+  it('模板已停用 → 拒绝', async () => {
+    const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { isActive: false })])
+    const where = vi.fn().mockReturnValue({ limit })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001'])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('停用')
+  })
+
+  it('totalCount 不足 → 提示剩余额度', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { totalCount: 5 })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 查已发数量
+        const where = vi.fn().mockResolvedValue([{ count: 3 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001', '13800000002', '13800000003'])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('剩余额度 2')
+    expect(result.message).toContain('请求 3')
+  })
+
+  it('部分手机号未匹配 → 返回 errors，不发放', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { totalCount: null })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 批量查顾客 — 只找到一个
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001', '13800000002'])
+    expect(result.success).toBe(false)
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors![0].phone).toBe('13800000002')
+    // 确保没有 insert
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('全部匹配 + 无限额 → 成功', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板 — totalCount=null
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { totalCount: null })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 批量查顾客
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+          { userId: 'U-002', name: '李四', phone: '13800000002' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001', '13800000002'])
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('2 位')
+    expect(db.insert).toHaveBeenCalled()
+    // 验证 insert 调用参数中有 2 项
+    const insertedValues = values.mock.calls[0][0]
+    expect(insertedValues).toHaveLength(2)
+  })
+
+  it('全部匹配 + 额度充足 → 成功', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板 — totalCount=100
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { totalCount: 100 })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else if (callCount === 2) {
+        // 查已发数量
+        const where = vi.fn().mockResolvedValue([{ count: 10 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 批量查顾客
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001'])
+    expect(result.success).toBe(true)
+  })
+
+  it('重复手机号 → 自动去重', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', { totalCount: null })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await batchIssueCoupons('TPL-001', ['13800000001', '13800000001', '13800000001'])
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('1 位')
+    const insertedValues = values.mock.calls[0][0]
+    expect(insertedValues).toHaveLength(1)
+  })
+
+  it('days 有效期模式 → 正确计算 expireAt', async () => {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-001', {
+          totalCount: null,
+          validityMode: 'days',
+          validDays: 30,
+          validTo: null,
+        })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    await batchIssueCoupons('TPL-001', ['13800000001'])
+    const insertedValues = values.mock.calls[0][0]
+    const expireAt = insertedValues[0].expireAt as Date
+    const now = new Date()
+    const diffDays = Math.round((expireAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+    expect(diffDays).toBeGreaterThanOrEqual(29)
+    expect(diffDays).toBeLessThanOrEqual(31)
   })
 })

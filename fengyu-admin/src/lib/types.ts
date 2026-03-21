@@ -336,6 +336,15 @@ export interface AvailableCoupon {
   discountAmount: string
 }
 
+/** 批量发券时的顾客选择项 */
+export interface BatchCouponCustomer {
+  userId: string
+  name: string | null
+  phone: string | null
+  storeName: string | null
+  memberLevel: string | null
+}
+
 /** 已发放优惠券记录（详情页展示用） */
 export interface IssuedCoupon {
   couponId: string
