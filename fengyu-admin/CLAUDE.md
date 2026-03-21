@@ -57,7 +57,6 @@ fengyu-admin/
 │       ├── types.ts           # TypeScript 类型定义
 │       ├── menu.ts            # 角色驱动菜单可见性
 │       ├── utils.ts           # cn() + 格式化工具
-│       ├── mock-data.ts       # Mock 数据（开发回退用）
 │       └── hooks/             # useUrlFilters, useUnsavedChanges
 ├── e2e/                       # Playwright E2E 测试（21 spec）
 └── vitest.config.ts

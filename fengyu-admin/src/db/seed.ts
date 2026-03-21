@@ -1,5 +1,5 @@
 /**
- * Seed script — 基于 mock-data.ts 数据按 FK 顺序 INSERT
+ * Seed script — 按 FK 顺序 INSERT 测试数据
  *
  * 用法: bun run db:seed
  */
@@ -26,7 +26,7 @@ const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)
 
 // ---------------------------------------------------------------------------
-// Seed Data (from mock-data.ts, adapted for DB columns)
+// Seed Data
 // ---------------------------------------------------------------------------
 
 // 注意：不插入 headquarters / market 节点，这些由 sync-workfine.js 同步创建。
