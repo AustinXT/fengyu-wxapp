@@ -13,7 +13,7 @@
 .paid-at { font-size: 22rpx; color: #999; }
 .amount-row { display: flex; align-items: baseline; gap: 16rpx; }
 .amount-label { font-size: 26rpx; color: #666; }
-.amount-value { font-size: 48rpx; font-weight: 700; color: #C0322A; }
+.amount-value { font-size: 48rpx; font-weight: 700; color: var(--color-primary); }
 
 /* 上下文提示区 */
 .context-hints {
@@ -62,7 +62,7 @@
 }
 .item-name-row { display: flex; align-items: center; gap: 12rpx; flex: 1; }
 .item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
-.item-amount { font-size: 28rpx; font-weight: 700; color: #C0322A; white-space: nowrap; margin-left: 16rpx; }
+.item-amount { font-size: 28rpx; font-weight: 700; color: var(--color-primary); white-space: nowrap; margin-left: 16rpx; }
 
 /* 人员行 */
 .person-row {
@@ -122,7 +122,7 @@
   height: 64rpx;
   width: 200rpx;
 }
-.currency-symbol { font-size: 26rpx; color: #C0322A; font-weight: 600; margin-right: 4rpx; }
+.currency-symbol { font-size: 26rpx; color: var(--color-primary); font-weight: 600; margin-right: 4rpx; }
 .amount-input {
   flex: 1;
   height: 64rpx;
@@ -144,7 +144,7 @@
 }
 .add-person-text {
   font-size: 26rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 /* 选人弹窗 */
@@ -215,7 +215,7 @@
   padding-top: 12rpx;
 }
 .summary-grand-label { font-size: 28rpx; font-weight: 600; color: #2D2017; }
-.summary-grand-value { font-size: 32rpx; font-weight: 700; color: #C0322A; }
+.summary-grand-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
 
 /* 操作区 */
 .action-bar { padding: 0 32rpx 32rpx; }

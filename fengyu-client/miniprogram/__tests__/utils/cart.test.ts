@@ -40,7 +40,7 @@ describe('getCart', () => {
   })
 
   test('有数据时返回已有购物车', () => {
-    const saved = { items: [{ skuId: 'sku-1', quantity: 2 }], updatedAt: 123 }
+    const saved = { items: [{ skuId: 'sku-1', quantity: 2, price: 100 }], updatedAt: 123 }
     wx.setStorageSync('cart', saved)
     const cart = getCart()
     expect(cart.items).toHaveLength(1)

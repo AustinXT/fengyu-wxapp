@@ -187,6 +187,7 @@ async function skuDetail(ctx) {
       sk.price, sk.special_price, sk.session_count,
       sk.service_fee, sk.sort_order,
       p.name AS product_name,
+      p.cover_image,
       p.category_id,
       c.category_name, c.product_kind,
       p.description

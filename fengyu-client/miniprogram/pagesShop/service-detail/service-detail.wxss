@@ -10,6 +10,14 @@
   padding: 32rpx;
 }
 
+.error-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-page);
+}
+
 /* ===== 封面 ===== */
 .cover-wrap {
   width: 100%;
@@ -79,25 +87,62 @@
   color: var(--color-text-hint);
 }
 
-/* ===== SKU 选择 ===== */
-.sku-card {
-  background: var(--color-bg-card);
-  padding: 28rpx 32rpx;
-  margin-bottom: 16rpx;
+/* ===== SKU Popup ===== */
+.sku-popup {
+  padding: 32rpx;
 }
 
-.sku-title {
+.sku-popup__header {
+  display: flex;
+  align-items: flex-end;
+  gap: 20rpx;
+  margin-bottom: 32rpx;
+  padding-bottom: 24rpx;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sku-popup__cover {
+  width: 160rpx;
+  height: 160rpx;
+  flex-shrink: 0;
+  border-radius: 12rpx;
+}
+
+.sku-popup__cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-section);
+}
+
+.sku-popup__price-info {
+  flex: 1;
+}
+
+.sku-popup__price-hint {
+  font-size: 28rpx;
+  color: var(--color-text-hint);
+}
+
+.sku-popup__selected-name {
   display: block;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  margin-top: 8rpx;
+}
+
+.sku-popup__title {
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);
   margin-bottom: 20rpx;
 }
 
-.sku-list {
+.sku-popup__list {
   display: flex;
   flex-wrap: wrap;
   gap: 16rpx;
+  margin-bottom: 32rpx;
 }
 
 .sku-item {
@@ -137,20 +182,23 @@
   color: var(--color-text-hint);
 }
 
-/* ===== 购买数量 ===== */
-.quantity-card {
-  background: var(--color-bg-card);
-  padding: 24rpx 32rpx;
-  margin-bottom: 16rpx;
+.sku-popup__quantity {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 24rpx 0;
+  border-top: 1px solid var(--color-border);
+  margin-bottom: 24rpx;
 }
 
-.quantity-label {
+.sku-popup__quantity-label {
   font-size: 28rpx;
   font-weight: 600;
   color: var(--color-text-primary);
+}
+
+.sku-popup__confirm {
+  padding-top: 16rpx;
 }
 
 /* ===== 底部操作栏 ===== */

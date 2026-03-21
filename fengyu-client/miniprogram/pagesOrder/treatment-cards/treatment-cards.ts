@@ -1,15 +1,13 @@
 // pages/treatment-cards/treatment-cards.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import { calculateProgress } from '../../utils/format';
 
 Page({
   data: {
     cards: [] as any[],
     isLoading: false,
-  },
-
-  onLoad() {
-    this.loadCards();
+    loadError: false,
   },
 
   onShow() {
@@ -21,7 +19,7 @@ Page({
   },
 
   async loadCards() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const data = await callClientApi('order.appointableItems', { includeInactive: true });
       const orders: any[] = data?.orders || [];
@@ -29,15 +27,12 @@ Page({
       // 展平为卡片列表
       const cards: any[] = [];
       for (const order of orders) {
-        for (const item of order.items) {
-          const percent = item.sessionCount > 0
-            ? Math.round(((item.sessionCount - item.remainingSessions) / item.sessionCount) * 100)
-            : 0;
+        for (const item of (order.items || [])) {
           cards.push({
             ...item,
             saleOrderId: order.saleOrderId,
             storeName: order.storeName,
-            percent,
+            percent: calculateProgress(item.sessionCount, item.remainingSessions),
             expireFmt: item.expireDate ? item.expireDate.slice(0, 10) : '',
           });
         }
@@ -52,6 +47,7 @@ Page({
       this.setData({ cards });
     } catch {
       Toast.fail('加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -64,7 +60,7 @@ Page({
 
   onBookTap(e: WechatMiniprogram.TouchEvent) {
     // catchtap in WXML already prevents event bubbling
-    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
-    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${saleOrderId}` });
+    const { saleItemId } = e.currentTarget.dataset as { saleItemId: string };
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleItemId=${saleItemId}` });
   },
 });

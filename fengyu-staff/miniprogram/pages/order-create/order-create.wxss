@@ -250,7 +250,7 @@
 .confirm-coupon-discount {
   font-size: 28rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 .confirm-coupon-hint {
   font-size: 26rpx;
@@ -294,7 +294,7 @@
   border: 2rpx solid transparent;
 }
 .coupon-popup__item--active {
-  border-color: #C0322A;
+  border-color: var(--color-primary);
   background: #FFF5F5;
 }
 .coupon-popup__item-left {
@@ -308,11 +308,11 @@
 .coupon-popup__item-discount {
   font-size: 36rpx;
   font-weight: 700;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 .coupon-popup__item-type {
   font-size: 20rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 .coupon-popup__item-right {
   flex: 1;

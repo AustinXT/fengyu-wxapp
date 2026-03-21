@@ -1,6 +1,23 @@
 "use client"
 
 import { useState, useRef, useCallback } from "react"
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+  type DragStartEvent,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  arrayMove,
+  SortableContext,
+  rectSortingStrategy,
+  useSortable,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -26,6 +43,88 @@ function toHttpUrl(url: string): string {
   return `${CDN_BASE}/${withoutProtocol}`
 }
 
+// ── Sortable image item ──────────────────────────────────────────────────────
+
+function SortableImageItem({
+  id,
+  url,
+  onRemove,
+}: {
+  id: string
+  url: string
+  onRemove: () => void
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id })
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={cn(
+        "group relative h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] overflow-hidden cursor-grab active:cursor-grabbing",
+      )}
+      {...attributes}
+      {...listeners}
+    >
+      <img
+        src={url}
+        alt=""
+        className="h-full w-full object-cover pointer-events-none"
+      />
+      <button
+        type="button"
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={onRemove}
+        className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        &times;
+      </button>
+    </div>
+  )
+}
+
+// ── Static image item (no drag, for single mode) ────────────────────────────
+
+function StaticImageItem({
+  url,
+  onRemove,
+}: {
+  url: string
+  onRemove: () => void
+}) {
+  return (
+    <div className="group relative h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] overflow-hidden">
+      <img
+        src={url}
+        alt=""
+        className="h-full w-full object-cover pointer-events-none"
+      />
+      <button
+        type="button"
+        onClick={onRemove}
+        className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        &times;
+      </button>
+    </div>
+  )
+}
+
+// ── Main component ───────────────────────────────────────────────────────────
+
 interface ImageUploadProps {
   value: string | string[]
   onChange: (value: string | string[]) => void
@@ -50,6 +149,7 @@ export function ImageUpload({
   className,
 }: ImageUploadProps) {
   const [uploading, setUploading] = useState(false)
+  const [activeId, setActiveId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const urls: string[] = (multiple
@@ -57,12 +157,41 @@ export function ImageUpload({
     : value ? [value as string] : []
   ).map(toHttpUrl)
 
+  // dnd-kit needs stable string IDs; use URL as ID
+  const sortableIds = urls
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 5 },
+    })
+  )
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveId(String(event.active.id))
+  }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null)
+    const { active, over } = event
+    if (over && active.id !== over.id) {
+      const oldIndex = urls.indexOf(String(active.id))
+      const newIndex = urls.indexOf(String(over.id))
+      if (oldIndex !== -1 && newIndex !== -1) {
+        onChange(arrayMove(urls, oldIndex, newIndex))
+      }
+    }
+  }
+
+  const handleDragCancel = () => {
+    setActiveId(null)
+  }
+
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
 
       const filesToUpload = Array.from(files)
-      if (multiple && urls.length + filesToUpload.length > max) {
+      if (multiple && max > 0 && urls.length + filesToUpload.length > max) {
         toast.error(`最多上传 ${max} 张图片`)
         return
       }
@@ -111,76 +240,114 @@ export function ImageUpload({
     }
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault()
     handleFiles(e.dataTransfer.files)
   }
 
-  const canAdd = multiple ? urls.length < max : urls.length === 0
+  const canAdd = multiple ? (max > 0 ? urls.length < max : true) : urls.length === 0
+  const canDrag = multiple && urls.length > 1
 
+  const uploadButton = canAdd && (
+    <div
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleFileDrop}
+      className={cn(
+        "flex h-24 w-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--radius)] border-2 border-dashed border-[var(--input)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--ring)] hover:text-[var(--foreground)]",
+        uploading && "pointer-events-none opacity-50"
+      )}
+    >
+      {uploading ? (
+        <span className="text-xs">上传中...</span>
+      ) : (
+        <>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span className="text-xs">上传</span>
+        </>
+      )}
+    </div>
+  )
+
+  const fileInput = (
+    <input
+      ref={inputRef}
+      type="file"
+      accept="image/jpeg,image/png,image/webp,image/gif"
+      multiple={multiple}
+      className="hidden"
+      onChange={(e) => handleFiles(e.target.files)}
+    />
+  )
+
+  // Single mode or only 0-1 images: no drag context needed
+  if (!canDrag) {
+    return (
+      <div className={cn("flex flex-wrap gap-2", className)}>
+        {urls.map((url, i) => (
+          <StaticImageItem
+            key={url}
+            url={url}
+            onRemove={() => handleRemove(i)}
+          />
+        ))}
+        {uploadButton}
+        {fileInput}
+      </div>
+    )
+  }
+
+  // Multiple mode with 2+ images: enable dnd-kit sortable
   return (
     <div className={cn("flex flex-wrap gap-2", className)}>
-      {urls.map((url, i) => (
-        <div
-          key={`${url}-${i}`}
-          className="group relative h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] overflow-hidden"
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
+        <SortableContext
+          items={sortableIds}
+          strategy={rectSortingStrategy}
         >
-          <img
-            src={url}
-            alt=""
-            className="h-full w-full object-cover"
-          />
-          <button
-            type="button"
-            onClick={() => handleRemove(i)}
-            className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
-          >
-            &times;
-          </button>
-        </div>
-      ))}
+          {urls.map((url, i) => (
+            <SortableImageItem
+              key={url}
+              id={url}
+              url={url}
+              onRemove={() => handleRemove(i)}
+            />
+          ))}
+        </SortableContext>
 
-      {canAdd && (
-        <div
-          onClick={() => inputRef.current?.click()}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={handleDrop}
-          className={cn(
-            "flex h-24 w-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--radius)] border-2 border-dashed border-[var(--input)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--ring)] hover:text-[var(--foreground)]",
-            uploading && "pointer-events-none opacity-50"
-          )}
-        >
-          {uploading ? (
-            <span className="text-xs">上传中...</span>
-          ) : (
-            <>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-              <span className="text-xs">上传</span>
-            </>
-          )}
-        </div>
-      )}
+        <DragOverlay>
+          {activeId ? (
+            <div className="h-24 w-24 rounded-[var(--radius)] border-2 border-[var(--ring)] overflow-hidden shadow-lg">
+              <img
+                src={activeId}
+                alt=""
+                className="h-full w-full object-cover"
+              />
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/jpeg,image/png,image/webp,image/gif"
-        multiple={multiple}
-        className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
-      />
+      {uploadButton}
+      {fileInput}
     </div>
   )
 }

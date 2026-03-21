@@ -52,12 +52,19 @@ getPool().catch(() => {});
 
 /**
  * 执行 SQL 查询(只读)
- * @param {string} sqlQuery - SQL 查询语句
+ * @param {string} sqlQuery - SQL 查询语句（支持 @param 占位符）
+ * @param {Object} [params] - 命名参数（如 { id: 'C001', phone: '138...' }）
  * @returns {Promise<Array>} 查询结果
  */
-async function query(sqlQuery) {
+async function query(sqlQuery, params) {
   const pool = await getPool();
-  const result = await pool.request().query(sqlQuery);
+  const request = pool.request();
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      request.input(key, value);
+    }
+  }
+  const result = await request.query(sqlQuery);
   return result.recordset;
 }
 

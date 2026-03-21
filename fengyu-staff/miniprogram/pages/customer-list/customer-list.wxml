@@ -33,6 +33,19 @@
     </view>
   </view>
 
+  <!-- 统计栏：全部/会员客/流量客 -->
+  <view class="type-tabs">
+    <view class="type-tab {{customerType === 'all' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="all">
+      全部({{stats.total}})
+    </view>
+    <view class="type-tab {{customerType === 'member' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="member">
+      会员客({{stats.memberCount}})
+    </view>
+    <view class="type-tab {{customerType === 'flow' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="flow">
+      流量客({{stats.flowCount}})
+    </view>
+  </view>
+
   <van-search
     value="{{searchKeyword}}"
     placeholder="搜索姓名或手机号"
@@ -58,7 +71,9 @@
       class="customer-card"
       data-id="{{item.id}}"
       data-client-user-id="{{item.clientUserId}}"
+      data-name="{{item.name}}"
       bindtap="onItemTap"
+      bindlongpress="{{isManager ? 'onLongPressAssign' : ''}}"
     >
       <view class="customer-avatar">
         <text class="customer-avatar-text">{{item.name ? item.name[0] : '?'}}</text>
@@ -71,8 +86,9 @@
           <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
           <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
         </view>
-        <text class="customer-phone">{{item.phoneMasked || item.phone}}</text>
+        <text class="customer-phone">{{item.phone}}</text>
         <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
+        <text wx:if="{{item.lastPurchaseName}}" class="customer-recent">最近购买：{{item.lastPurchaseName}}</text>
         <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
       </view>
     </view>
@@ -84,4 +100,16 @@
   <view wx:else />
 
   <view class="safe-area-bottom" />
+
+  <!-- 客户分配 Action Sheet（仅店长） -->
+  <van-action-sheet
+    wx:if="{{isManager}}"
+    show="{{showAssignSheet}}"
+    actions="{{staffActions}}"
+    cancel-text="取消"
+    bind:close="onAssignClose"
+    bind:cancel="onAssignClose"
+    bind:select="onAssignSelect"
+    description="将 {{assignTarget.name}} 分配给"
+  />
 </view>

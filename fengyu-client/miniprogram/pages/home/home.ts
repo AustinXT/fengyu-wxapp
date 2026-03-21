@@ -1,7 +1,8 @@
 // pages/home/home.ts
 import Toast from "@vant/weapp/toast/toast";
 import { getCartCount, clearCart } from "../../utils/cart";
-import { sanitizeErrorMessage } from "../../utils/cloud";
+import { callClientApi } from "../../utils/cloud";
+import { searchProducts } from "../../utils/format";
 
 const app = getApp<IAppOption>();
 
@@ -58,7 +59,7 @@ Page({
       { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
       { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
       { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
-    ] as Banner[],
+    ] as Banner[], // fallback defaults, overridden by config.banners API
     currentBanner: 0,
 
     // 侧边栏（统一展示所有分类，按大分类分组）
@@ -70,6 +71,7 @@ Page({
 
     spuList: [] as SpuItem[],
     isLoading: false,
+    loadError: false,
     cartCount: 0,
   },
 
@@ -82,6 +84,9 @@ Page({
   // 所有分类 key 的有序列表（用于自动切换下一个分类）
   _allCategoryKeys: [] as string[],
 
+  // 搜索防抖定时器
+  _searchTimer: null as number | null,
+
   // 防止 scrolltolower 连续触发
   _isLoadingNext: false,
 
@@ -89,6 +94,7 @@ Page({
     const storeName = app.globalData.boundStoreName || "";
     this.setData({ boundStoreName: storeName });
     this.loadShopInit();
+    this.loadBanners();
     this.updateCartCount();
   },
 
@@ -123,49 +129,77 @@ Page({
   },
 
   onPullDownRefresh() {
-    wx.stopPullDownRefresh();
+    // 退出搜索模式，重新加载全部数据
+    if (this.data.isSearching) {
+      this.setData({ isSearching: false, searchResults: [], searchValue: '' });
+    }
+    this.loadShopInit().finally(() => {
+      wx.stopPullDownRefresh();
+    });
   },
 
-  // ===== 搜索 =====
+  // ===== 搜索（即时过滤 + 300ms 防抖） =====
 
   onSearchInput(e: WechatMiniprogram.InputEvent) {
-    this.setData({ searchValue: e.detail.value });
+    const value = e.detail.value;
+    this.setData({ searchValue: value });
+
+    // 清除上次定时器
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
+
+    // 输入为空 → 立即退出搜索模式
+    if (!value.trim()) {
+      if (this.data.isSearching) {
+        this.setData({ isSearching: false, searchResults: [], searchLoading: false });
+      }
+      return;
+    }
+
+    // 300ms 防抖后执行搜索
+    this._searchTimer = setTimeout(() => {
+      this._searchTimer = null;
+      this._doSearch(value.trim());
+    }, 300) as unknown as number;
   },
 
+  /** 回车/按钮点击：立即搜索（跳过防抖） */
   async onSearchSubmit() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
     const value = this.data.searchValue.trim();
     if (!value) {
-      // 清空搜索 → 退出搜索模式
       if (this.data.isSearching) {
         this.setData({ isSearching: false, searchResults: [] });
       }
       return;
     }
+    await this._doSearch(value);
+  },
 
-    this.setData({ isSearching: true, searchLoading: true, searchResults: [] });
+  /** 实际搜索执行 */
+  async _doSearch(value: string) {
+    this.setData({ isSearching: true, searchLoading: true });
 
     // 加载所有未缓存的分类 SPU
     await this.loadAllSpus();
 
-    // 跨分类搜索，按名称匹配，去重
-    const keyword = value.toLowerCase();
-    const seen = new Set<string>();
-    const results: SpuItem[] = [];
-
-    for (const key of this._allCategoryKeys) {
-      const cached = this._spuCache[key] || [];
-      for (const spu of cached) {
-        if (!seen.has(spu.product_id) && spu.name.toLowerCase().includes(keyword)) {
-          seen.add(spu.product_id);
-          results.push(spu);
-        }
-      }
+    const results = searchProducts(value, this._spuCache, this._allCategoryKeys);
+    // 防止旧搜索结果覆盖新搜索（用户可能已继续输入）
+    if (this.data.searchValue.trim() === value) {
+      this.setData({ searchResults: results, searchLoading: false });
     }
-
-    this.setData({ searchResults: results, searchLoading: false });
   },
 
   onSearchClear() {
+    if (this._searchTimer) {
+      clearTimeout(this._searchTimer);
+      this._searchTimer = null;
+    }
     this.setData({ isSearching: false, searchResults: [], searchValue: "" });
   },
 
@@ -185,18 +219,12 @@ Page({
         const categoryId = this._findCategoryId(key);
         if (!categoryId) return;
         try {
-          const res = (await wx.cloud.callFunction({
-            name: "clientApi",
-            data: { action: "product.spuList", payload: { categoryId } },
-          })) as any;
-
-          if (res.result?.code === 0) {
-            const spuList = (res.result.data?.spuList || []).map((spu: any) => ({
-              ...spu,
-              min_price: spu.priceFrom || "0",
-            }));
-            this._spuCache[key] = spuList;
-          }
+          const data = await callClientApi<{ spuList: any[] }>("product.spuList", { categoryId });
+          const spuList = (data?.spuList || []).map((spu: any) => ({
+            ...spu,
+            min_price: spu.priceFrom || "0",
+          }));
+          this._spuCache[key] = spuList;
         } catch (err) {
           console.error("loadAllSpus error:", key, err);
         }
@@ -339,20 +367,36 @@ Page({
 
   // ===== 数据加载 =====
 
+  async loadBanners() {
+    try {
+      const data = await callClientApi<{ banners: string[] }>("config.banners", {});
+      const urls = data?.banners;
+      if (urls && urls.length > 0) {
+        this.setData({
+          banners: urls.map((url, i) => ({
+            id: String(i + 1),
+            title: "",
+            desc: "",
+            bgColor: "",
+            image: url,
+            link: "",
+          })),
+        });
+      }
+      // If empty, keep the default fallback banners
+    } catch (err) {
+      console.error("loadBanners error:", err);
+      // Keep fallback banners on error
+    }
+  },
+
   async loadShopInit() {
     try {
-      this.setData({ isLoading: true });
-      const res = (await wx.cloud.callFunction({
-        name: "clientApi",
-        data: { action: "product.shopInit", payload: {} },
-      })) as any;
+      this.setData({ isLoading: true, loadError: false });
+      const initData = await callClientApi<{ categories: Category[]; spuList: any[] }>("product.shopInit", {});
 
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, "加载失败"));
-      }
-
-      const categories: Category[] = res.result.data?.categories || [];
-      const spuList: SpuItem[] = res.result.data?.spuList || [];
+      const categories: Category[] = initData?.categories || [];
+      const spuList: SpuItem[] = initData?.spuList || [];
 
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
@@ -398,6 +442,7 @@ Page({
     } catch (err: any) {
       console.error("loadShopInit error:", err);
       Toast.fail(err?.message || "加载失败");
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -445,16 +490,9 @@ Page({
       return;
     }
     try {
-      const res = (await wx.cloud.callFunction({
-        name: "clientApi",
-        data: { action: "product.spuList", payload: { categoryId } },
-      })) as any;
+      const data = await callClientApi<{ spuList: SpuItem[] }>("product.spuList", { categoryId });
 
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, "加载商品失败"));
-      }
-
-      const spuList: SpuItem[] = res.result.data?.spuList || [];
+      const spuList: SpuItem[] = data?.spuList || [];
       const listWithPrice = spuList.map((spu: any) => ({
         ...spu,
         min_price: spu.priceFrom || "0",

@@ -7,6 +7,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 Page({
   data: {
     loading: false,
+    submitting: false,
     saleOrderId: '',
     customerName: '',
     totalAmount: '',
@@ -88,8 +89,9 @@ Page({
         wx.showToast({ title: '支付成功', icon: 'success' });
         setTimeout(() => wx.switchTab({ url: '/pages/workbench/workbench' }), 1500);
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
       this.setData({ loading: false });
     }
   },
@@ -117,26 +119,30 @@ Page({
   },
 
   onConfirmOffline() {
-    if (!this.data.isManager) return;
+    if (!this.data.isManager || this.data.submitting) return;
     wx.showModal({
       title: '确认线下收款',
       content: '确认已收到顾客的现金/转账付款？',
       confirmText: '确认收款',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.confirmOffline', { orderNo: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadQrcode(this.data.saleOrderId);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });
   },
 
   onCloseOrder() {
-    if (!this.data.isManager && !this.data.isCreator) return;
+    if ((!this.data.isManager && !this.data.isCreator) || this.data.submitting) return;
     wx.showModal({
       title: '关闭订单',
       content: '确认关闭该订单？关闭后不可恢复。',
@@ -144,13 +150,17 @@ Page({
       confirmColor: '#D94040',
       success: async (res) => {
         if (!res.confirm) return;
+        this.setData({ submitting: true });
         try {
           await callStaffApi('order.close', { orderNo: this.data.saleOrderId });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.stopPolling();
           setTimeout(() => wx.navigateBack(), 1500);
-        } catch (err: any) {
-          wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '操作失败';
+          wx.showToast({ title: msg, icon: 'none' });
+        } finally {
+          this.setData({ submitting: false });
         }
       },
     });

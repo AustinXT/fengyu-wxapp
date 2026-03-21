@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Store } from "@/lib/types"
 import { updateStore } from "@/actions/stores"
 import { Button } from "@/components/ui/button"
@@ -12,10 +13,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
+import { RegionSelect } from "@/components/ui/region-select"
 
 export default function StoreEditPage({ store }: { store: Store }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [closeDialogOpen, setCloseDialogOpen] = useState(false)
   const [coverImage, setCoverImage] = useState(store.coverImage ?? "")
   const [storeImages, setStoreImages] = useState<string[]>(store.images ?? [])
@@ -23,7 +27,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
   const handleSave = async (formData: FormData) => {
     setSaving(true)
     try {
-      await updateStore(store.storeId, {
+      const result = await updateStore(store.storeId, {
         storeName: formData.get("storeName") as string,
         phone: (formData.get("phone") as string) || null,
         openingDate: (formData.get("openingDate") as string) || null,
@@ -38,7 +42,13 @@ export default function StoreEditPage({ store }: { store: Store }) {
         announcement: (formData.get("announcement") as string) || null,
         coverImage: coverImage || null,
         images: storeImages.length > 0 ? storeImages : null,
-      })
+      }, store.updatedAt)
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes('已被其他人修改')) router.refresh()
+        return
+      }
+      setFormDirty(false)
       toast.success("保存成功")
       router.push("/stores")
     } catch {
@@ -49,7 +59,7 @@ export default function StoreEditPage({ store }: { store: Store }) {
   }
 
   return (
-    <form action={handleSave} className="space-y-4">
+    <form action={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
       <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
@@ -113,11 +123,11 @@ export default function StoreEditPage({ store }: { store: Store }) {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">区域</label>
-              <Input name="district" defaultValue={store.district ?? ""} />
+              <RegionSelect name="district" value={store.district} />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">详细地址</label>
               <Input name="streetAddress" defaultValue={store.streetAddress ?? ""} />
             </div>
@@ -202,7 +212,12 @@ export default function StoreEditPage({ store }: { store: Store }) {
           <AlertDialogCancel onClick={() => setCloseDialogOpen(false)}>取消</AlertDialogCancel>
           <AlertDialogAction onClick={async () => {
             try {
-              await updateStore(store.storeId, { isClosed: true })
+              const result = await updateStore(store.storeId, { isClosed: true }, store.updatedAt)
+              if (!result.success) {
+                toast.error(result.message)
+                if (result.message.includes('已被其他人修改')) router.refresh()
+                return
+              }
               toast.success('门店已关闭')
               setCloseDialogOpen(false)
               router.refresh()

@@ -30,6 +30,7 @@ Page({
     list: [] as ApptItem[],
     page: 1,
     hasMore: true,
+    actioningId: '',
   },
 
   _inited: false,
@@ -85,8 +86,9 @@ Page({
         hasMore: mapped.length === 20,
         page: this.data.page + 1,
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -103,23 +105,33 @@ Page({
 
   async onConfirmAppt(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    this.setData({ actioningId: id });
     try {
       await callStaffApi('appointment.confirm', { appointmentId: id });
       wx.showToast({ title: '已确认预约', icon: 'success' });
       this.resetAndLoad();
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ actioningId: '' });
     }
   },
 
   async onCheckin(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
+    if (this.data.actioningId) return;
+    this.setData({ actioningId: id });
     try {
       await callStaffApi('appointment.checkin', { appointmentId: id });
       wx.showToast({ title: '顾客到店已记录', icon: 'success' });
       this.resetAndLoad();
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ actioningId: '' });
     }
   },
 

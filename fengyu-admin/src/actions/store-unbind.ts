@@ -4,10 +4,10 @@ import { db } from '@/db'
 import { storeUnbindRequests } from '@db/store-unbind'
 import { clientWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, desc, inArray, sql } from 'drizzle-orm'
+import { eq, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 export interface UnbindRequest {
@@ -27,7 +27,6 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
   const session = await getSession()
   requirePermission(session, 'store_unbind:list')
 
-  const scopeIds = session.permissions.scopeStoreIds
   const rows = await db
     .select({
       request: storeUnbindRequests,
@@ -38,8 +37,9 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
     .from(storeUnbindRequests)
     .leftJoin(clientWechatUsers, eq(storeUnbindRequests.userId, clientWechatUsers.userId))
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
-    .where(scopeIds.length > 0 ? inArray(storeUnbindRequests.fromStoreId, scopeIds) : sql`FALSE`)
+    .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
     .orderBy(desc(storeUnbindRequests.createdAt))
+    .limit(500)
 
   return rows.map((r) => ({
     requestId: r.request.requestId,
@@ -59,8 +59,6 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
   const session = await getSession()
   requirePermission(session, 'store_unbind:approve')
 
-  const scopeIds = session.permissions.scopeStoreIds
-
   // 查找请求并校验 scope
   const [request] = await db
     .select()
@@ -74,25 +72,30 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
   if (request.status !== 'pending') {
     return { success: false, message: '该申请已处理' }
   }
-  if (scopeIds.length > 0 && !scopeIds.includes(request.fromStoreId)) {
+  if (!isInScope(session, request.fromStoreId)) {
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  // 更新请求状态
-  await db
-    .update(storeUnbindRequests)
-    .set({
-      status: 'approved',
-      reviewedBy: session.employeeId,
-      reviewedAt: new Date(),
-    })
-    .where(eq(storeUnbindRequests.requestId, requestId))
+  // 更新请求状态 + 清除顾客绑定（原子事务，防止部分成功导致数据不一致）
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(storeUnbindRequests)
+        .set({
+          status: 'approved',
+          reviewedBy: session.employeeId,
+          reviewedAt: new Date(),
+        })
+        .where(eq(storeUnbindRequests.requestId, requestId))
 
-  // 清除顾客的绑定门店
-  await db
-    .update(clientWechatUsers)
-    .set({ boundStoreId: null, boundEmployeeId: null })
-    .where(eq(clientWechatUsers.userId, request.userId))
+      await tx
+        .update(clientWechatUsers)
+        .set({ boundStoreId: null, boundEmployeeId: null })
+        .where(eq(clientWechatUsers.userId, request.userId))
+    })
+  } catch {
+    return { success: false, message: '审批解绑失败，请稍后重试' }
+  }
 
   await logOperation(session, 'store_unbind.approve', 'store_unbind_request', requestId, {
     userId: request.userId, fromStoreId: request.fromStoreId,
@@ -109,8 +112,6 @@ export async function rejectUnbind(
   const session = await getSession()
   requirePermission(session, 'store_unbind:reject')
 
-  const scopeIds = session.permissions.scopeStoreIds
-
   const [request] = await db
     .select()
     .from(storeUnbindRequests)
@@ -123,19 +124,23 @@ export async function rejectUnbind(
   if (request.status !== 'pending') {
     return { success: false, message: '该申请已处理' }
   }
-  if (scopeIds.length > 0 && !scopeIds.includes(request.fromStoreId)) {
+  if (!isInScope(session, request.fromStoreId)) {
     return { success: false, message: '无权操作该门店的解绑申请' }
   }
 
-  await db
-    .update(storeUnbindRequests)
-    .set({
-      status: 'rejected',
-      reviewedBy: session.employeeId,
-      reviewedAt: new Date(),
-      rejectReason: reason,
-    })
-    .where(eq(storeUnbindRequests.requestId, requestId))
+  try {
+    await db
+      .update(storeUnbindRequests)
+      .set({
+        status: 'rejected',
+        reviewedBy: session.employeeId,
+        reviewedAt: new Date(),
+        rejectReason: reason,
+      })
+      .where(eq(storeUnbindRequests.requestId, requestId))
+  } catch {
+    return { success: false, message: '驳回解绑失败，请稍后重试' }
+  }
 
   await logOperation(session, 'store_unbind.reject', 'store_unbind_request', requestId, {
     userId: request.userId, reason,

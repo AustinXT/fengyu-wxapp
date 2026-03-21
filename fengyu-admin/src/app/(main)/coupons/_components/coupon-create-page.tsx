@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -11,9 +12,20 @@ import { Separator } from "@/components/ui/separator"
 import { createTemplate } from "@/actions/coupons"
 import type { CouponType } from "@/lib/types"
 
-export default function CouponCreatePage() {
+interface Market {
+  id: string
+  name: string
+}
+
+interface Props {
+  markets: Market[]
+}
+
+export default function CouponCreatePage({ markets }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [name, setName] = useState("")
   const [couponType, setCouponType] = useState<CouponType | "">("")
   const [discountValue, setDiscountValue] = useState("")
@@ -25,6 +37,8 @@ export default function CouponCreatePage() {
   const [validFrom, setValidFrom] = useState("")
   const [validTo, setValidTo] = useState("")
   const [description, setDescription] = useState("")
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
+  const [allMarkets, setAllMarkets] = useState(true)
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -52,7 +66,7 @@ export default function CouponCreatePage() {
     setSaving(true)
     try {
       const templateId = `tpl-${Date.now()}`
-      await createTemplate({
+      const result = await createTemplate({
         templateId,
         name: name.trim(),
         couponType,
@@ -64,9 +78,15 @@ export default function CouponCreatePage() {
         validFrom: validityMode === "fixed" && validFrom ? validFrom : null,
         validTo: validityMode === "fixed" && validTo ? validTo : null,
         validDays: validityMode === "days" && validDays ? parseInt(validDays, 10) : null,
+        applicableMarketIds: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds : null),
         description: description.trim() || null,
         isActive: true,
       })
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success("优惠券创建成功")
       router.push("/coupons")
       router.refresh()
@@ -78,7 +98,7 @@ export default function CouponCreatePage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" onInput={() => setFormDirty(true)}>
       <div className="flex items-center gap-3">
         <Button variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
@@ -210,13 +230,56 @@ export default function CouponCreatePage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">适用市场</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allMarkets}
+                onChange={(e) => {
+                  setAllMarkets(e.target.checked)
+                  if (e.target.checked) setSelectedMarketIds([])
+                }}
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm font-medium">全部市场</span>
+            </label>
+            {!allMarkets && (
+              <div className="grid grid-cols-3 gap-2 pl-6">
+                {markets.map((m) => (
+                  <label key={m.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedMarketIds.includes(m.id)}
+                      onChange={(e) => {
+                        setSelectedMarketIds((prev) =>
+                          e.target.checked
+                            ? [...prev, m.id]
+                            : prev.filter((id) => id !== m.id)
+                        )
+                      }}
+                      className="h-4 w-4 rounded border-[var(--input)]"
+                    />
+                    <span className="text-sm">{m.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">其他信息</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
             <label className="text-sm font-medium">描述说明</label>
             <textarea
-              className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 min-h-[80px]"
+              className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] min-h-[80px]"
               placeholder="请输入券的使用说明"
               value={description}
               onChange={(e) => setDescription(e.target.value)}

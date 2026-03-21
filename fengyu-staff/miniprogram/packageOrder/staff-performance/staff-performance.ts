@@ -6,6 +6,37 @@ const app = getApp<IAppOption>();
 
 type RangeType = 'today' | 'month' | 'lastMonth';
 
+interface StaffMember {
+  staffWfId: string;
+  name: string;
+}
+
+interface StaffListResponse {
+  staffList: StaffMember[];
+}
+
+interface PerformanceItem {
+  type: 'sale' | 'service';
+  productName: string;
+  specName: string;
+  amount: string;
+  ratio: string;
+  businessAmount: string;
+  servicePrice: string;
+  sessionUsed: number;
+  customerName: string;
+  date: string;
+  salesCategory: string;
+}
+
+interface PerformanceResponse {
+  totalSalesAlloc: number;
+  totalServiceFee: number;
+  totalCommission: number;
+  items: PerformanceItem[];
+  total: number;
+}
+
 Page({
   data: {
     loading: false,
@@ -24,12 +55,12 @@ Page({
     activeCategoryTab: 0,
     categoryOptions: ['合计', '销售', '服务', '他销他耗', '生态合作'],
     // 员工筛选（仅店长）
-    staffList: [] as Array<{ staffWfId: string; name: string }>,
+    staffList: [] as StaffMember[],
     selectedStaffIndex: 0,
     staffColumns: [] as string[],
     showStaffPicker: false,
     // 明细列表
-    items: [] as any[],
+    items: [] as PerformanceItem[],
     total: 0,
     page: 1,
     hasMore: false,
@@ -37,14 +68,16 @@ Page({
 
   _loaded: false,
 
-  onLoad() {
+  onLoad(options: Record<string, string>) {
     const mgr = isManager();
     this.setData({
       isManager: mgr,
       staffName: app.globalData.staffName || '',
     });
     if (mgr) this.loadStaffList();
-    this.setRange('today');
+    const validRanges: RangeType[] = ['today', 'month', 'lastMonth'];
+    const range = validRanges.includes(options.range as RangeType) ? options.range as RangeType : 'today';
+    this.setRange(range);
     this._loaded = true;
   },
 
@@ -56,12 +89,12 @@ Page({
 
   async loadStaffList() {
     try {
-      const data = await callStaffApi<any>('staff.list');
-      const list = (data.staffList || []) as Array<{ staffWfId: string; name: string }>;
+      const data = await callStaffApi<StaffListResponse>('staff.list');
+      const list = data.staffList || [];
       const self = app.globalData.staffName || '';
       // 自己放首位
       const columns = [self + '（我）', ...list.filter(s => s.staffWfId !== app.globalData.staffWfId).map(s => s.name)];
-      const allStaff = [
+      const allStaff: StaffMember[] = [
         { staffWfId: app.globalData.staffWfId || '', name: self },
         ...list.filter(s => s.staffWfId !== app.globalData.staffWfId),
       ];
@@ -144,7 +177,7 @@ Page({
       // 店长可查看指定员工
       const employeeId = (isMgr && staffList.length > 0) ? staffList[selectedStaffIndex]?.staffWfId : undefined;
 
-      const res = await callStaffApi<any>('staff.performanceDetail', {
+      const res = await callStaffApi<PerformanceResponse>('staff.performanceDetail', {
         startDate: this.data.startDate,
         endDate: this.data.endDate,
         salesCategory,
@@ -163,8 +196,9 @@ Page({
         total: res.total || 0,
         hasMore: newItems.length < (res.total || 0),
       });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }

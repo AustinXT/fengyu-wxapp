@@ -28,10 +28,16 @@
 
 .order-card__header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   padding: 24rpx 28rpx 16rpx;
   border-bottom: 1px solid var(--color-border);
+}
+
+.order-header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
 }
 
 .order-no-row {
@@ -60,8 +66,7 @@
 .order-item-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8rpx 0;
+  padding: 12rpx 0;
   border-bottom: 1px solid var(--color-border);
 }
 
@@ -69,30 +74,67 @@
   border-bottom: none;
 }
 
+.oi-cover {
+  width: 96rpx;
+  height: 96rpx;
+  flex-shrink: 0;
+  border-radius: 8rpx;
+  margin-right: 16rpx;
+}
+
+.oi-cover--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-section);
+}
+
+.oi-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+
+.oi-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .oi-name {
   font-size: 26rpx;
   color: var(--color-text-secondary);
   flex: 1;
-}
-
-.oi-right {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  margin-left: 16rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .oi-qty {
   font-size: 24rpx;
   color: var(--color-text-hint);
+  margin-left: 16rpx;
+  flex-shrink: 0;
 }
 
-.oi-sessions {}
+.oi-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
 
 .oi-sessions-text {
   font-size: 22rpx;
   color: var(--color-primary);
   font-weight: 500;
+}
+
+.oi-price {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
 }
 
 /* ===== 底部区 ===== */
@@ -115,6 +157,11 @@
   gap: 8rpx;
 }
 
+.order-count {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
 .order-amount-label {
   font-size: 22rpx;
   color: var(--color-text-hint);
@@ -134,3 +181,5 @@
   gap: 16rpx;
   border-top: 1px solid var(--color-border);
 }
+
+/* 列表底部样式复用 app.wxss .list-footer */

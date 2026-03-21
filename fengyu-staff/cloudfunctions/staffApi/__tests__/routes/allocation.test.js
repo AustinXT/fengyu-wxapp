@@ -168,6 +168,108 @@ describe('allocation.save', () => {
     await expect(allocationRoutes.save(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*employeeId/)
   })
+
+  test('缺少 saleOrderId 时拒绝（line 34 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ allocations: [] })
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
+  })
+
+  test('订单不存在时拒绝（line 47 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST', allocations: [] })
+    pg.query.mockResolvedValueOnce([])
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+
+  test('订单分配状态异常时拒绝（line 56 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001',
+      status: '已支付',
+      allocation_status: 'done', // 非 pending/allocated → 异常
+      store_id: 'store-001',
+    }])
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*分配状态异常/)
+  })
+
+  test('空分配且订单无明细时直接更新状态（line 73 FALSE 分支）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001', allocations: [] })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([]) // 空 orderItems → itemIds.length === 0 → 跳过 DELETE
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await allocationRoutes.save(ctx)
+
+    expect(ctx.result.allocationCount).toBe(0)
+    expect(ctx.result.message).toContain('无需分配')
+  })
+
+  test('分配记录缺少 saleItemId 时拒绝（line 90 TRUE 分支）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{ employeeId: 'emp-001' }], // 无 saleItemId
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*saleItemId/)
+  })
+
+  test('分配记录缺省字段使用默认值（lines 122-124）', async () => {
+    // alloc 不提供 departmentName / allocationRatio / totalAmount
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-001' }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: 'pending',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
+
+    let capturedInsertParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql && sql.includes('INSERT INTO sale_allocations')) capturedInsertParams = params
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await allocationRoutes.save(ctx)
+
+    // $3=departmentName(null), $4=allocationRatio(1.0), $5=totalAmount(0)
+    expect(capturedInsertParams[2]).toBeNull()
+    expect(capturedInsertParams[3]).toBe(1.0)
+    expect(capturedInsertParams[4]).toBe(0)
+  })
 })
 
 describe('allocation.deleteAllocation', () => {
@@ -251,39 +353,23 @@ describe('allocation.pendingList', () => {
 // allocation.getCommissionRates
 // ============================================================
 describe('allocation.getCommissionRates', () => {
-  const mssql = globalThis.__mocks__.mssql
+  beforeEach(() => { vi.clearAllMocks() })
 
-  beforeEach(() => {
-    vi.clearAllMocks()
-    // 重置 mssql mock 链
-    mssql._mockRequest.input.mockReturnThis()
-  })
-
-  test('返回提成比例矩阵', async () => {
+  test('返回提成比例矩阵（PG 扁平行 pivot 为 department 分组）', async () => {
     const ctx = createManagerCtx({ marketName: '华东市场' })
 
-    // master 查询
-    mssql._mockRequest.query
-      .mockResolvedValueOnce({ recordset: [{ RID: 100 }] })
-      // detail 查询
-      .mockResolvedValueOnce({
-        recordset: [
-          {
-            department: '美容部',
-            amount_min: 0, amount_max: 5000,
-            order_self_sell: 0.3, order_other_sell_self_use: 0.2,
-            order_other_sell_other_use: 0.1, order_eco_coop: 0.05,
-            service_self_sell: 0.25, service_other_sell_self_use: 0.15,
-            service_other_sell_other_use: 0.1, service_eco_coop: 0.05,
-          },
-        ],
-      })
+    pg.query.mockResolvedValueOnce([
+      { role_type: '美容部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.3000' },
+      { role_type: '美容部', order_type: 'sale', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2000' },
+      { role_type: '美容部', order_type: 'service', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2500' },
+    ])
 
     await allocationRoutes.getCommissionRates(ctx)
 
     expect(ctx.result.rates).toHaveLength(1)
     expect(ctx.result.rates[0].department).toBe('美容部')
     expect(ctx.result.rates[0].orderRates['自采自销']).toBe(0.3)
+    expect(ctx.result.rates[0].orderRates['他销自耗']).toBe(0.2)
     expect(ctx.result.rates[0].serviceRates['自采自销']).toBe(0.25)
     expect(ctx.result.rates[0].amountMin).toBe(0)
     expect(ctx.result.rates[0].amountMax).toBe(5000)
@@ -291,9 +377,7 @@ describe('allocation.getCommissionRates', () => {
 
   test('市场不存在时抛出错误', async () => {
     const ctx = createManagerCtx({ marketName: '不存在市场' })
-
-    mssql._mockRequest.query.mockResolvedValueOnce({ recordset: [] })
-
+    pg.query.mockResolvedValueOnce([])
     await expect(allocationRoutes.getCommissionRates(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*未找到市场/)
   })
@@ -310,21 +394,12 @@ describe('allocation.getCommissionRates', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('null 值字段使用默认值', async () => {
+  test('null amount_tier_max 使用默认值', async () => {
     const ctx = createManagerCtx({ marketName: '华东市场' })
 
-    mssql._mockRequest.query
-      .mockResolvedValueOnce({ recordset: [{ RID: 100 }] })
-      .mockResolvedValueOnce({
-        recordset: [{
-          department: '  养生部  ',
-          amount_min: null, amount_max: null,
-          order_self_sell: null, order_other_sell_self_use: null,
-          order_other_sell_other_use: null, order_eco_coop: null,
-          service_self_sell: null, service_other_sell_self_use: null,
-          service_other_sell_other_use: null, service_eco_coop: null,
-        }],
-      })
+    pg.query.mockResolvedValueOnce([
+      { role_type: '养生部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: null, amount_tier_max: null, commission_rate: '0' },
+    ])
 
     await allocationRoutes.getCommissionRates(ctx)
 
@@ -333,23 +408,34 @@ describe('allocation.getCommissionRates', () => {
     expect(ctx.result.rates[0].amountMax).toBe(10000000)
     expect(ctx.result.rates[0].orderRates['自采自销']).toBe(0)
   })
+
+  test('美容部和养生部分别返回不同比例', async () => {
+    const ctx = createManagerCtx({ marketName: '华东市场' })
+
+    pg.query.mockResolvedValueOnce([
+      { role_type: '美容部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
+      { role_type: '养生部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
+    ])
+
+    await allocationRoutes.getCommissionRates(ctx)
+
+    expect(ctx.result.rates).toHaveLength(2)
+    const beauty = ctx.result.rates.find(r => r.department === '美容部')
+    const wellness = ctx.result.rates.find(r => r.department === '养生部')
+    expect(beauty.orderRates['自采自销']).toBe(0.3)
+    expect(wellness.orderRates['自采自销']).toBe(0.2)
+  })
 })
 
 // ============================================================
 // allocation.suggest
 // ============================================================
 describe('allocation.suggest', () => {
-  const mssql = globalThis.__mocks__.mssql
+  beforeEach(() => { vi.clearAllMocks() })
 
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mssql._mockRequest.input.mockReturnThis()
-  })
-
-  test('返回分配建议（含指定美容师）', async () => {
+  test('返回分配建议（含指定美容师，PG 提成比例）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
-    // 1. 加载订单
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '已支付', allocation_status: 'pending',
@@ -357,27 +443,16 @@ describe('allocation.suggest', () => {
         sale_order_source: 'staff', preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
       }])
-      // 2. resolveStaffDepartment
-      .mockResolvedValueOnce([{
-        employee_id: 'emp-b1', name: '李四', department: '美容部',
-      }])
-      // 3. checkNewCustomer
+      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', department: '美容部' }])
       .mockResolvedValueOnce([{ cnt: 0 }])
-      // 5. 加载订单项
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000', sales_category: '自采自销', product_name: '面部护理', sku_spec_name: '基础款', product_type: '疗程卡' },
       ])
-
-    // 6. WorkFine 提成比例
-    mssql._mockRequest.query
-      .mockResolvedValueOnce({ recordset: [{ RID: 100 }] })
-      .mockResolvedValueOnce({
-        recordset: [{
-          department: '美容部', amount_min: 0, amount_max: 99999,
-          order_self_sell: 0.3, order_other_sell_self_use: 0.2,
-          order_other_sell_other_use: 0.1, order_eco_coop: 0.05,
-        }],
-      })
+      // 6. PG 提成比例
+      .mockResolvedValueOnce([
+        { role_type: '美容部', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
+        { role_type: '美容部', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
+      ])
 
     await allocationRoutes.suggest(ctx)
 
@@ -400,14 +475,11 @@ describe('allocation.suggest', () => {
         sale_order_source: 'staff', preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
-      // checkNewCustomer
       .mockResolvedValueOnce([{ cnt: 3 }])
-      // 订单项
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '500', sales_category: '自采自销', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
       ])
-
-    mssql._mockRequest.query.mockResolvedValueOnce({ recordset: [] })
+      .mockResolvedValueOnce([])  // 无提成配置
 
     await allocationRoutes.suggest(ctx)
 
@@ -416,7 +488,7 @@ describe('allocation.suggest', () => {
     expect(ctx.result.isNewCustomer).toBe(false)
   })
 
-  test('部门异常（非美容部/养生部）标记 deptAnomalous', async () => {
+  test('部门异常标记 deptAnomalous', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-003' })
 
     pg.query
@@ -426,21 +498,17 @@ describe('allocation.suggest', () => {
         sale_order_source: 'staff', preferred_employee_id: 'emp-b2',
         client_phone: '13800001111', customer_name: '张三',
       }])
-      // resolveStaffDepartment — 部门为"咨询部"
-      .mockResolvedValueOnce([{
-        employee_id: 'emp-b2', name: '王五', department: '咨询部',
-      }])
+      .mockResolvedValueOnce([{ employee_id: 'emp-b2', name: '王五', department: '咨询部' }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '500', sales_category: '自采自销', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
       ])
-
-    mssql._mockRequest.query.mockResolvedValueOnce({ recordset: [] })
+      .mockResolvedValueOnce([])
 
     await allocationRoutes.suggest(ctx)
 
     expect(ctx.result.deptAnomalous).toBe(true)
-    expect(ctx.result.allocLines).toEqual([]) // 无匹配部门，不生成分配行
+    expect(ctx.result.allocLines).toEqual([])
   })
 
   test('缺少 saleOrderId 时拒绝', async () => {
@@ -462,13 +530,13 @@ describe('allocation.suggest', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('WorkFine 连接失败时降级返回空 rates', async () => {
+  test('market_name 为空时 rates 为空数组', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-004' })
 
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-004', status: '已支付', allocation_status: 'pending',
-        store_id: 'store-001', market_name: '华东市场',
+        store_id: 'store-001', market_name: '',
         sale_order_source: 'staff', preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
@@ -477,12 +545,8 @@ describe('allocation.suggest', () => {
         { sale_item_id: 'item-001', received: '500', sales_category: '自采自销', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品' },
       ])
 
-    // WorkFine 抛异常
-    mssql.getPool.mockRejectedValueOnce(new Error('MSSQL connection failed'))
-
     await allocationRoutes.suggest(ctx)
 
-    // 不应抛出，而是降级
     expect(ctx.result.rates).toEqual([])
     expect(ctx.result.allocLines).toEqual([])
   })

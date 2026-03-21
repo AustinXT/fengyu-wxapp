@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
-import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
 
@@ -10,6 +10,7 @@ interface CheckoutItem {
   skuId: string;
   spuName: string;
   skuDisplayName: string;
+  coverImage: string;
   price: number;
   quantity: number;
 }
@@ -37,6 +38,7 @@ Page({
     // 购物车批量下单
     fromCart: false,
     cartItems: [] as CheckoutItem[],
+    displayItems: [] as CheckoutItem[],
     totalPrice: 0,
     quantity: 1,
     // 支付宝二维码弹窗
@@ -85,6 +87,7 @@ Page({
       this.setData({
         fromCart: true,
         cartItems: checkoutItems,
+        displayItems: checkoutItems,
         spuName: checkoutItems.length === 1 ? checkoutItems[0].spuName : `${checkoutItems.length} 件商品`,
         skuDisplayName: checkoutItems.length === 1 ? checkoutItems[0].skuDisplayName : checkoutItems.map(i => i.spuName).join('、'),
         unitPrice: total,
@@ -117,6 +120,14 @@ Page({
         skuDisplayName: sku?.spec_name || '',
         unitPrice,
         totalPrice: Math.round(unitPrice * quantity * 100) / 100,
+        displayItems: [{
+          skuId,
+          spuName: this.data.spuName,
+          skuDisplayName: sku?.spec_name || '',
+          coverImage: sku?.cover_image || '',
+          price: unitPrice,
+          quantity,
+        }],
       });
     } catch {
       Toast.fail('加载价格失败');
@@ -128,7 +139,31 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = data?.order || {};
       const items = data?.items || [];
+
+      // 校验订单状态：仅待支付可进入结算
+      if (order.status && order.status !== '待支付') {
+        const msgMap: Record<string, string> = {
+          '已关闭': '订单已超时关闭',
+          '已支付': '订单已完成支付',
+          '已完成': '订单已完成',
+          '待确认收款': '订单正在等待确认收款',
+          '支付失败': '订单支付失败，请联系店员',
+        };
+        Toast.fail(msgMap[order.status] || `订单状态：${order.status}`);
+        setTimeout(() => {
+          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        }, 1500);
+        return;
+      }
+
       const firstItem = items[0] || {};
+      const existingCouponDiscount = Number(order.coupon_discount || 0);
+      // unitPrice 需为扣券前金额，WXML 用 unitPrice - couponDiscount 计算实付
+      const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount;
+      // 还原支付方式（避免默认 wechat 覆盖用户原选）
+      const validMethods = ['wechat', 'alipay', 'offline'] as const;
+      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : 'wechat';
+
       this.setData({
         spuName: items.length > 1
           ? `${items.length} 件商品`
@@ -136,9 +171,22 @@ Page({
         skuDisplayName: items.length > 1
           ? items.map((i: any) => i.product_name).join('、')
           : (firstItem.sku_spec_name || ''),
-        unitPrice: Number(order.total_amount || 0),
+        unitPrice: preDiscountTotal,
         storeName: order.store_name || '',
         quantity: 1,
+        couponDiscount: existingCouponDiscount,
+        paymentMethod: restoredMethod,
+        // 还原订单指定的美容师（覆盖 loadDefaultStaff 的并行竞态）
+        staffWfId: order.preferred_employee_id || '',
+        staffName: order.preferred_staff_name || '',
+        displayItems: items.map((i: any) => ({
+          skuId: i.sale_item_id || '',
+          spuName: i.product_name || '',
+          skuDisplayName: i.sku_spec_name || '',
+          coverImage: i.cover_image || '',
+          price: Number(i.unit_price || 0),
+          quantity: Number(i.quantity || 1),
+        })),
       });
     } catch {
       Toast.fail('加载订单信息失败');
@@ -185,8 +233,8 @@ Page({
     this.setData({ showStaffPopup: false });
   },
 
-  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
-    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+  onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
+    const { wfId, name } = e.detail;
     this.setData({
       staffWfId: wfId,
       staffName: name,
@@ -274,7 +322,7 @@ Page({
 
   async onSubmitOrder() {
     if (!this.data.agreed) {
-      Toast('请先同意消费协议');
+      Toast.fail('请先同意消费协议');
       return;
     }
     if (this.data.submitting) return;
@@ -368,37 +416,19 @@ Page({
 
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        Toast('您拒绝了授权');
+        Toast.fail('您拒绝了授权');
       }
       return;
     }
 
     try {
-      wx.showLoading({ title: '绑定中...', mask: true });
-
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'auth.bindPhone',
-          payload: {},
-          phoneData: wx.cloud.CloudID(cloudID as string)
-        }
-      }) as any;
-
-      wx.hideLoading();
-
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
-      }
-
-      wx.setStorageSync('phone', res.result.data.phone);
+      await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
 
       Toast.success('绑定成功');
       // 绑定成功后自动重新提交订单
       setTimeout(() => this.onSubmitOrder(), 800);
     } catch (err: any) {
-      wx.hideLoading();
       Toast.fail(err.message || '绑定失败，请重试');
     }
   },
@@ -427,7 +457,16 @@ Page({
   async doWechatPay(saleOrderId: string) {
     const data = await callClientApi('order.pay', { saleOrderId });
     const paymentParams = data?.paymentParams || {};
-    await wx.requestPayment(paymentParams);
+    try {
+      await wx.requestPayment(paymentParams);
+    } catch (err: any) {
+      // 用户主动取消支付，静默跳转订单详情（订单仍处于待支付，可重新支付）
+      if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        return;
+      }
+      throw err;
+    }
     Toast.success('支付成功');
     setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
   },

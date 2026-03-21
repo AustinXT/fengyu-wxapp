@@ -6,6 +6,8 @@
     "van-checkbox": "@vant/weapp/checkbox/index",
     "van-empty": "@vant/weapp/empty/index",
     "van-toast": "@vant/weapp/toast/index",
-    "van-button": "@vant/weapp/button/index"
+    "van-button": "@vant/weapp/button/index",
+    "van-dialog": "@vant/weapp/dialog/index",
+    "van-tag": "@vant/weapp/tag/index"
   }
 }

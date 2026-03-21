@@ -1,6 +1,6 @@
 /**
  * 认证路由测试
- * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全）、bindStore（有效/无效门店）
+ * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -179,5 +179,105 @@ describe('auth.bindStore', () => {
     const ctx = createCtx({ payload: { storeId: 'store-001' } })
     await expect(routes.bindStore(ctx))
       .rejects.toThrow(/UNAUTHORIZED/)
+  })
+})
+
+describe('auth.updateProfile', () => {
+  test('更新昵称成功', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])  // SELECT
+    pg.query.mockResolvedValueOnce([])                          // UPDATE
+
+    const ctx = createCtx({ payload: { name: '张小美' } })
+    await routes.updateProfile(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.name).toBe('张小美')
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain('name = $')
+    expect(updateSql).not.toContain('avatar_url')
+  })
+
+  test('更新头像 URL 成功', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { avatarUrl: 'https://cdn.example.com/avatar.jpg' } })
+    await routes.updateProfile(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.avatarUrl).toBe('https://cdn.example.com/avatar.jpg')
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain('avatar_url = $')
+    expect(updateSql).not.toContain('name = $')
+  })
+
+  test('同时更新昵称和头像', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { name: '李小红', avatarUrl: 'https://cdn.example.com/img.png' } })
+    await routes.updateProfile(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.name).toBe('李小红')
+    expect(ctx.result.avatarUrl).toBe('https://cdn.example.com/img.png')
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain('name = $')
+    expect(updateSql).toContain('avatar_url = $')
+  })
+
+  test('name 超过 50 字截断', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const longName = 'A'.repeat(80)
+    const ctx = createCtx({ payload: { name: longName } })
+    await routes.updateProfile(ctx)
+
+    expect(ctx.result.name).toHaveLength(50)
+  })
+
+  test('avatarUrl 超过 500 字截断', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const longUrl = 'https://cdn.example.com/' + 'x'.repeat(480)
+    const ctx = createCtx({ payload: { avatarUrl: longUrl } })
+    await routes.updateProfile(ctx)
+
+    expect(ctx.result.avatarUrl).toHaveLength(500)
+  })
+
+  test('name 为空白字符串时不更新 name', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { name: '   ', avatarUrl: 'https://cdn.example.com/a.jpg' } })
+    await routes.updateProfile(ctx)
+
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).not.toContain('name = $')
+    expect(updateSql).toContain('avatar_url = $')
+  })
+
+  test('name 和 avatarUrl 都未提供 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+
+    const ctx = createCtx({ payload: {} })
+    await expect(routes.updateProfile(ctx)).rejects.toThrow(/INVALID_PARAMS.*name.*avatarUrl/)
+  })
+
+  test('用户不存在 → UNAUTHORIZED', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'unknown-openid' })
+    pg.query.mockResolvedValueOnce([])  // SELECT 返回空
+
+    const ctx = createCtx({ payload: { name: '测试' } })
+    await expect(routes.updateProfile(ctx)).rejects.toThrow(/UNAUTHORIZED.*用户不存在/)
   })
 })

@@ -2,6 +2,9 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi } from '../../utils/cloud';
+import { formatAppointmentTime } from '../../utils/format';
+
+const PAGE_SIZE = 20;
 
 const STATUS_MAP: Record<string, { label: string; type: string; color: string; textColor: string }> = {
   '待确认': { label: '待确认', type: 'warning',  color: '#FFF7E6', textColor: '#D48806' },
@@ -23,8 +26,12 @@ Page({
     activeTab: 'all',
     list: [] as any[],
     isLoading: false,
+    loadingMore: false,
     loadError: false,
+    hasMore: true,
   },
+
+  _page: 1,
 
   onShow() {
     this.loadList();
@@ -34,37 +41,71 @@ Page({
     this.loadList().finally(() => wx.stopPullDownRefresh());
   },
 
+  onReachBottom() {
+    if (this.data.hasMore && !this.data.loadingMore && !this.data.isLoading) {
+      this.loadMore();
+    }
+  },
+
   onTabChange(e: WechatMiniprogram.CustomEvent<{ name: string }>) {
     this.setData({ activeTab: e.detail.name });
     this.loadList();
   },
 
+  _mapItems(raw: any[]) {
+    return raw.map(item => {
+      const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
+      const rawTime = String(item.appointment_time);
+      return {
+        ...item,
+        status_label:     meta.label,
+        statusType:       meta.type,
+        statusColor:      meta.color,
+        statusTextColor:  meta.textColor,
+        appointment_time_fmt: formatAppointmentTime(rawTime),
+      };
+    });
+  },
+
   async loadList() {
-    this.setData({ isLoading: true, loadError: false });
+    this._page = 1;
+    this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
       const dbStatus = TAB_STATUS_MAP[this.data.activeTab];
-      const payload = dbStatus ? { status: dbStatus } : {};
+      const payload: Record<string, any> = { page: 1, pageSize: PAGE_SIZE };
+      if (dbStatus) payload.status = dbStatus;
       const data = await callClientApi('appointment.list', payload);
       const raw: any[] = data?.appointments || [];
-      const list = raw.map(item => {
-        const meta = STATUS_MAP[item.status] || STATUS_MAP['已关闭'];
-        const rawTime = String(item.appointment_time);
-        const d = new Date(rawTime.includes('T') ? rawTime : rawTime.replace(/-/g, '/'));
-        return {
-          ...item,
-          status_label:     meta.label,
-          statusType:       meta.type,
-          statusColor:      meta.color,
-          statusTextColor:  meta.textColor,
-          appointment_time_fmt: `${d.getMonth()+1}月${d.getDate()}日 ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}-${String(d.getHours() + 2).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,
-        };
+      this.setData({
+        list: this._mapItems(raw),
+        hasMore: data?.hasMore ?? false,
       });
-      this.setData({ list });
-    } catch (err) {
-      console.error('[appointment.loadList] error:', err);
+    } catch {
+      Toast.fail('加载失败');
       this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  async loadMore() {
+    this._page += 1;
+    this.setData({ loadingMore: true });
+    try {
+      const dbStatus = TAB_STATUS_MAP[this.data.activeTab];
+      const payload: Record<string, any> = { page: this._page, pageSize: PAGE_SIZE };
+      if (dbStatus) payload.status = dbStatus;
+      const data = await callClientApi('appointment.list', payload);
+      const raw: any[] = data?.appointments || [];
+      this.setData({
+        list: [...this.data.list, ...this._mapItems(raw)],
+        hasMore: data?.hasMore ?? false,
+      });
+    } catch {
+      this._page -= 1;
+      Toast.fail('加载更多失败');
+    } finally {
+      this.setData({ loadingMore: false });
     }
   },
 

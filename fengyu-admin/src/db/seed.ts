@@ -1,5 +1,5 @@
 /**
- * Seed script — 基于 mock-data.ts 数据按 FK 顺序 INSERT
+ * Seed script — 按 FK 顺序 INSERT 测试数据
  *
  * 用法: bun run db:seed
  */
@@ -26,7 +26,7 @@ const client = postgres(connectionString, { max: 1 })
 const db = drizzle(client)
 
 // ---------------------------------------------------------------------------
-// Seed Data (from mock-data.ts, adapted for DB columns)
+// Seed Data
 // ---------------------------------------------------------------------------
 
 // 注意：不插入 headquarters / market 节点，这些由 sync-workfine.js 同步创建。
@@ -107,13 +107,13 @@ const STAFF = [
   { employeeId: 'FY-260101-0001', openid: 'o_staff_zhangming', phone: '13800138000', name: '张明', gender: '男', idCard: '3601**********0011', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-beauty', positionName: '店长', birthday: '1988-05-12', skills: ['管理', '美容师'], isResigned: false },
   { employeeId: 'FY-260101-0002', openid: 'o_staff_liufang', phone: '13800138001', name: '刘芳', gender: '女', idCard: '3601**********0028', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-beauty', positionName: '高级美容师', birthday: '1992-08-23', skills: ['美容师', '面部护理', '身体护理'], isResigned: false },
   { employeeId: 'FY-260101-0003', openid: 'o_staff_wangjing', phone: '13800138002', name: '王静', gender: '女', idCard: '3601**********0035', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-wellness', positionName: '养生师', birthday: '1990-11-07', skills: ['养生师', '经络调理', '艾灸'], isResigned: false },
-  { employeeId: 'FY-260101-0004', openid: 'o_staff_chenwei', phone: '13800138003', name: '陈伟', gender: '男', idCard: '3601**********0042', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-promo', positionName: '推广顾问', birthday: '1995-03-15', skills: ['推广'], isResigned: false },
+  { employeeId: 'FY-260101-0004', openid: 'o_staff_chenwei', phone: '13800138003', name: '陈伟', gender: '男', idCard: '3601**********0042', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-promo', positionName: '推广顾问', birthday: '1995-03-15', skills: ['推广师'], isResigned: false },
   { employeeId: 'FY-260301-0005', openid: 'o_staff_zhaoling', phone: '13800138004', name: '赵玲', gender: '女', idCard: '3601**********0059', storeId: 'store-nc02', orgNodeId: 'org-dept-nc02-beauty', positionName: '店长', birthday: '1989-07-20', skills: ['管理', '美容师'], isResigned: false },
   { employeeId: 'FY-260201-0006', openid: 'o_staff_sunhao', phone: '13800138005', name: '孙浩', gender: '男', idCard: '3602**********0066', storeId: 'store-jj01', orgNodeId: 'org-dept-jj01-beauty', positionName: '店长', birthday: '1987-12-03', skills: ['管理', '美容师'], isResigned: false },
   { employeeId: 'FY-260201-0007', openid: 'o_staff_zhouxia', phone: '13800138006', name: '周霞', gender: '女', idCard: '3602**********0073', storeId: 'store-jj01', orgNodeId: 'org-dept-jj01-beauty', positionName: '美容师', birthday: '1993-04-18', skills: ['美容师', '面部护理'], isResigned: false },
   { employeeId: 'FY-260601-0008', openid: 'o_staff_huangmin', phone: '13800138007', name: '黄敏', gender: '女', idCard: '3602**********0080', storeId: 'store-gqc01', orgNodeId: 'org-dept-gqc01-beauty', positionName: '店长', birthday: '1991-09-28', skills: ['管理', '美容师', '养生师'], isResigned: false },
   { employeeId: 'FY-260101-0009', openid: 'o_staff_wuyan', phone: '13800138008', name: '吴燕', gender: '女', idCard: '3601**********0097', storeId: 'store-nc01', orgNodeId: 'org-dept-nc01-beauty', positionName: '美容师', birthday: '1996-01-10', skills: ['美容师', '面部护理', '皮肤管理'], isResigned: false },
-  { employeeId: 'FY-260101-0010', openid: null, phone: '13800138009', name: '郑强', gender: '男', idCard: '3601**********0104', storeId: 'store-nc02', orgNodeId: 'org-dept-nc02-promo', positionName: '推广顾问', birthday: '1994-06-25', skills: ['推广'], isResigned: true },
+  { employeeId: 'FY-260101-0010', openid: null, phone: '13800138009', name: '郑强', gender: '男', idCard: '3601**********0104', storeId: 'store-nc02', orgNodeId: 'org-dept-nc02-promo', positionName: '推广顾问', birthday: '1994-06-25', skills: ['推广师'], isResigned: true },
 ]
 
 const CLIENTS = [
@@ -231,13 +231,19 @@ const PERMISSION_ROLES = [
 ]
 
 const COMMISSION_RATES = [
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '推广', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
-  { orgId: '6707cc8b88579108', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
-  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '推广师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
 ]
 
 const COUPON_TEMPLATES = [

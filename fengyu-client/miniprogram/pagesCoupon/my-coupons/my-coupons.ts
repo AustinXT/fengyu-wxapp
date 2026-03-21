@@ -10,6 +10,7 @@ Page({
     activeTab: 0,
     coupons: [] as any[],
     isLoading: false,
+    loadError: false,
     redeemCode: '',
     redeeming: false,
   },
@@ -30,23 +31,28 @@ Page({
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ activeTab: e.detail.index });
+    this.setData({ activeTab: e.detail.index, coupons: [] });
     this.loadCoupons();
   },
 
   async loadCoupons() {
-    this.setData({ isLoading: true });
+    this.setData({ isLoading: true, loadError: false });
     try {
       const status = TAB_STATUS[this.data.activeTab];
       const data = await callClientApi('coupon.list', { status });
-      const coupons = (data?.coupons || []).map((c: any) => ({
-        ...c,
-        expireAtFmt: formatDate(c.expireAt),
-        discountLabel: formatDiscount(c),
-      }));
+      const coupons = (data?.coupons || []).map((c: any) => {
+        const minSpendNum = Number(c.minSpend) || 0;
+        return {
+          ...c,
+          expireAtFmt: formatDate(c.expireAt),
+          discountLabel: formatDiscount(c),
+          minSpendNum,
+        };
+      });
       this.setData({ coupons });
     } catch (err: any) {
       Toast.fail(err.message || '加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
     }
@@ -59,7 +65,7 @@ Page({
   async onRedeem() {
     const code = this.data.redeemCode.trim();
     if (!code) {
-      Toast('请输入兑换码');
+      Toast.fail('请输入兑换码');
       return;
     }
     if (this.data.redeeming) return;

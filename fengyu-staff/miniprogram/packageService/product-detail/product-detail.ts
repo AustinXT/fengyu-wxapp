@@ -19,12 +19,26 @@ interface Sku {
   product_type: string;
 }
 
+interface RawSku {
+  sku_id: string;
+  spec_name: string;
+  price: number;
+  special_price: number | null;
+  session_count: number | null;
+  product_type: string;
+}
+
+interface SpuDetailResponse {
+  spu: Spu & { skuList: RawSku[] };
+}
+
 Page({
   data: {
     spu: {} as Spu,
     skuList: [] as Sku[],
     selectedSku: null as Sku | null,
     quantity: 1,
+    selectedTotal: '',
     isLoading: true,
     isPromo: false,
   },
@@ -40,7 +54,7 @@ Page({
 
   async loadDetail(spuId: string) {
     try {
-      const data = await callStaffApi<any>('product.spuDetail', { spuId });
+      const data = await callStaffApi<SpuDetailResponse>('product.spuDetail', { spuId });
       const spu = data?.spu;
 
       if (!spu) {
@@ -59,7 +73,7 @@ Page({
           is_bundle: spu.is_bundle || false,
         },
         isPromo,
-        skuList: (spu.skuList || []).map((sku: any) => ({
+        skuList: (spu.skuList || []).map((sku: RawSku) => ({
           sku_id: sku.sku_id,
           spec_name: sku.spec_name || '',
           price: Number(sku.special_price || sku.price) || 0,
@@ -78,11 +92,13 @@ Page({
   onSkuTap(e: WechatMiniprogram.TouchEvent) {
     const { skuId } = e.currentTarget.dataset as { skuId: string };
     const sku = this.data.skuList.find(s => s.sku_id === skuId) || null;
-    this.setData({ selectedSku: sku, quantity: 1 });
+    this.setData({ selectedSku: sku, quantity: 1, selectedTotal: (sku?.price ?? 0).toFixed(2) });
   },
 
   onQuantityChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ quantity: e.detail as unknown as number });
+    const qty = e.detail as unknown as number;
+    const price = this.data.selectedSku?.price || 0;
+    this.setData({ quantity: qty, selectedTotal: (price * qty).toFixed(2) });
   },
 
   _buildCartItem(directCheckout: boolean) {

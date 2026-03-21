@@ -241,10 +241,13 @@ async function start(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2",
+  const result = await pg.query(
+    "UPDATE service_orders SET status = '服务中', started_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '待服务'",
     [now, serviceOrderId]
   )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     serviceOrderId,
@@ -341,11 +344,14 @@ async function complete(ctx) {
       }
     }
 
-    // 更新服务单状态
-    await client.query(
-      "UPDATE service_orders SET status = '已完成', completed_at = $1, updated_at = $1 WHERE service_order_id = $2",
+    // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）
+    const soUpdateResult = await client.query(
+      "UPDATE service_orders SET status = '已完成', completed_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
       [now, serviceOrderId]
     )
+    if (soUpdateResult.rowCount === 0) {
+      throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+    }
 
     // 如关联预约，将预约状态更新为已完成
     if (so.appointment_id) {
@@ -637,10 +643,13 @@ async function cancel(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2",
-    [now, serviceOrderId]
+  const result = await pg.query(
+    "UPDATE service_orders SET status = '已取消', updated_at = $1 WHERE service_order_id = $2 AND status = $3",
+    [now, serviceOrderId, so.status]
   )
+  if (result.rowCount === 0) {
+    throw new Error('INVALID_PARAMS: 服务单状态已变更，请刷新后重试')
+  }
 
   ctx.result = {
     serviceOrderId,
@@ -656,14 +665,15 @@ async function generateServiceOrderId() {
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   // 使用 advisory lock 防止并发生成重复 ID
+  const likePattern = `HLD-WX-${dateStr}%`
   const lockKey = Buffer.from('svc_order_id').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
   const result = await pg.transaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
     const rows = await client.query(`
       SELECT service_order_id FROM service_orders
-      WHERE service_order_id LIKE 'HLD-WX-${dateStr}%'
+      WHERE service_order_id LIKE $1
       ORDER BY service_order_id DESC LIMIT 1
-    `)
+    `, [likePattern])
     let seq = 1
     if (rows.rows.length > 0) {
       seq = parseInt(rows.rows[0].service_order_id.slice(-4)) + 1

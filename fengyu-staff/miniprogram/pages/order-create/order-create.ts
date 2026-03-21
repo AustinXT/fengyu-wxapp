@@ -6,6 +6,8 @@ import { calcCartTotal } from '../../utils/cart-calc';
 const app = getApp<IAppOption>();
 const BIG_CATEGORIES = ['福利活动', '护理项目', '家居产品', '充值卡'];
 
+type OrderType = 'normal' | 'experience' | 'internal' | 'promotion';
+
 interface CartItem {
   spuId: string;
   skuId: string;
@@ -17,6 +19,52 @@ interface CartItem {
   sessionCount: number;
   productType: string;
   workfineItemId: string;
+  /** 预计算：price × quantity（避免 WXML 浮点精度问题） */
+  subtotal: string;
+  /** 预计算：price × quantity - discount */
+  itemTotal: string;
+}
+
+interface Category {
+  id: string;
+  name: string;
+  productKind: string;
+}
+
+interface ProductSPU {
+  spuId: string;
+  name: string;
+  price: number;
+  specialPrice: number | null;
+  coverImage: string;
+  tags: string[];
+}
+
+interface CustomerInfo {
+  id: string;
+  name: string;
+  phone: string;
+  phoneMasked?: string;
+}
+
+interface CouponInfo {
+  couponId: string;
+  name: string;
+  discount: number;
+  description?: string;
+}
+
+interface ShopInitResponse {
+  categories: Category[];
+  spuList: ProductSPU[];
+}
+
+interface OrderCreateResponse {
+  saleOrderId: string;
+}
+
+interface CouponAvailableResponse {
+  coupons: CouponInfo[];
 }
 
 Page({
@@ -26,9 +74,9 @@ Page({
     bigCategories: BIG_CATEGORIES,
     activeBigCategoryIndex: 0,
     catalogLoading: false,
-    categories: [] as any[],
+    categories: [] as Category[],
     activeCategoryIndex: 0,
-    spuList: [] as any[],
+    spuList: [] as ProductSPU[],
     // 购物车
     cart: [] as CartItem[],
     cartCount: 0,
@@ -39,10 +87,10 @@ Page({
     // Step 0: 顾客
     customerPhone: '',
     customerSearching: false,
-    customerInfo: null as null | { id: string; name: string; phone: string; phoneMasked?: string },
-    recentCustomers: [] as any[],
+    customerInfo: null as null | CustomerInfo,
+    recentCustomers: [] as CustomerInfo[],
     // Step 1: 开单类型
-    orderType: 'normal' as 'normal' | 'experience' | 'internal' | 'promotion',
+    orderType: 'normal' as OrderType,
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
@@ -51,7 +99,7 @@ Page({
     couponDiscount: 0,
     couponTotal: '',
     showCouponPopup: false,
-    availableCoupons: [] as any[],
+    availableCoupons: [] as CouponInfo[],
     couponsLoading: false,
     // 指定美容师（可选，用于默认分配）
     preferredStaffWfId: '' as string,
@@ -62,9 +110,9 @@ Page({
   },
 
   // 所有分类（未过滤）
-  _allCategories: [] as any[],
+  _allCategories: [] as Category[],
   // SPU 缓存：按 categoryId 缓存已加载的 SPU 列表
-  _spuCache: {} as Record<string, any[]>,
+  _spuCache: {} as Record<string, ProductSPU[]>,
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -76,7 +124,7 @@ Page({
       this.loadShopInit();
     }
     try {
-      const recent = wx.getStorageSync('recentCustomers') || [];
+      const recent: CustomerInfo[] = wx.getStorageSync('recentCustomers') || [];
       this.setData({ recentCustomers: recent });
     } catch (_) {}
 
@@ -98,6 +146,7 @@ Page({
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId || '',
+          subtotal: '', itemTotal: '',
         }];
         this.updateCart(cart);
       } else {
@@ -122,14 +171,15 @@ Page({
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
+            subtotal: '', itemTotal: '',
           });
         }
         this.updateCart(cart);
       }
       if (pending.directCheckout) {
         // 福利活动商品直接下单时自动设置类型
-        const autoType = pending.productType === '福利活动' ? 'promotion' : 'normal';
-        this.setData({ showCheckout: true, checkoutStep: 0, orderType: autoType as any });
+        const autoType: OrderType = pending.productType === '福利活动' ? 'promotion' : 'normal';
+        this.setData({ showCheckout: true, checkoutStep: 0, orderType: autoType });
       }
     }
   },
@@ -139,9 +189,9 @@ Page({
   async loadShopInit() {
     this.setData({ catalogLoading: true });
     try {
-      const data = await callStaffApi<any>('product.shopInit');
-      const categories: any[] = data.categories || [];
-      const spuList: any[] = data.spuList || [];
+      const data = await callStaffApi<ShopInitResponse>('product.shopInit');
+      const categories: Category[] = data.categories || [];
+      const spuList: ProductSPU[] = data.spuList || [];
 
       this._allCategories = categories;
       if (categories.length > 0) {
@@ -150,7 +200,7 @@ Page({
 
       // 按当前大类筛选侧边栏
       const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
-      const filtered = categories.filter((c: any) => c.productKind === activeBig);
+      const filtered = categories.filter((c: Category) => c.productKind === activeBig);
 
       // 判断首个筛选分类是否有缓存
       let displayList = spuList;
@@ -169,18 +219,19 @@ Page({
       if (filtered.length > 0 && displayList.length === 0) {
         this.loadSpuList(filtered[0].id);
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
       this.setData({ catalogLoading: false });
     }
   },
 
   onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.index;
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as { index?: number })?.index;
     if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
 
     const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter((c: any) => c.productKind === activeBig);
+    const filtered = this._allCategories.filter((c: Category) => c.productKind === activeBig);
 
     // 先重置 activeCategoryIndex 为 -1，强制 van-sidebar 刷新选中态
     this.setData({
@@ -204,7 +255,7 @@ Page({
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = typeof e.detail === 'number' ? e.detail : (e.detail as any)?.key;
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as { key?: number })?.key;
     if (typeof index !== 'number') return;
     const { categories } = this.data;
     if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
@@ -227,7 +278,7 @@ Page({
   async loadSpuList(categoryId: string) {
     this.setData({ catalogLoading: true });
     try {
-      const spus = await callStaffApi<any[]>('product.spuList', { categoryId });
+      const spus = await callStaffApi<ProductSPU[]>('product.spuList', { categoryId });
       const list = spus || [];
       this._spuCache[categoryId] = list;
       this.setData({ spuList: list, catalogLoading: false });
@@ -239,7 +290,7 @@ Page({
   // ===== SPU 点击 → 跳转详情页 =====
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
-    const spu = e.currentTarget.dataset.spu as any;
+    const spu = e.currentTarget.dataset.spu as ProductSPU;
     if (!spu?.spuId) return;
     wx.navigateTo({ url: `/packageService/product-detail/product-detail?spuId=${spu.spuId}` });
   },
@@ -285,12 +336,16 @@ Page({
   },
 
   updateCart(cart: CartItem[]) {
-    const { count, total } = calcCartTotal(cart);
-    const updates: Record<string, any> = { cart, cartCount: count, cartTotal: total };
-    if (this.data.couponDiscount > 0) {
-      updates.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
+    for (const c of cart) {
+      c.subtotal = (c.price * c.quantity).toFixed(2);
+      c.itemTotal = (c.price * c.quantity - c.discount).toFixed(2);
     }
-    this.setData(updates);
+    const { count, total } = calcCartTotal(cart);
+    const update: Record<string, any> = { cart, cartCount: count, cartTotal: total };
+    if (this.data.couponDiscount > 0) {
+      update.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
+    }
+    this.setData(update);
   },
 
   // ===== 结算面板 =====
@@ -320,7 +375,7 @@ Page({
     }
     this.setData({ customerSearching: true });
     try {
-      const results = await callStaffApi<any[]>('customer.search', { phone });
+      const results = await callStaffApi<CustomerInfo[]>('customer.search', { phone });
       const found = results && results[0];
       if (found) {
         this.setData({ customerInfo: found });
@@ -328,15 +383,16 @@ Page({
         this.setData({ customerInfo: { id: '', name: '', phone } });
         wx.showToast({ title: '未注册顾客，将以手机号开单', icon: 'none' });
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '查询失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '查询失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ customerSearching: false });
     }
   },
 
   onSelectRecentCustomer(e: WechatMiniprogram.TouchEvent) {
-    const customer = e.currentTarget.dataset.customer as any;
+    const customer = e.currentTarget.dataset.customer as CustomerInfo;
     this.setData({ customerInfo: customer, customerPhone: customer.phone });
   },
 
@@ -355,7 +411,7 @@ Page({
 
   // Step 1: 选开单类型
   onSelectOrderType(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as 'normal' | 'experience' | 'internal' | 'promotion';
+    const type = e.currentTarget.dataset.type as OrderType;
     if ((type === 'experience' || type === 'internal' || type === 'promotion') && !this.data.isManager) return;
     this.setData({ orderType: type });
   },
@@ -389,7 +445,7 @@ Page({
         quantity: c.quantity,
         amount: c.price * c.quantity - c.discount,
       }));
-      const data = await callStaffApi<any>('coupon.available', {
+      const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
         clientPhone: customerInfo.phone,
         items,
       });
@@ -467,7 +523,7 @@ Page({
     if (!customerInfo || submitting) return;
     this.setData({ submitting: true });
     try {
-      const res = await callStaffApi<any>('order.create', {
+      const res = await callStaffApi<OrderCreateResponse>('order.create', {
         clientUserId: customerInfo.id || null,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
@@ -490,16 +546,17 @@ Page({
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
       wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.saleOrderId}` });
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '开单失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '开单失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }
   },
 
-  saveRecentCustomer(customer: any) {
+  saveRecentCustomer(customer: CustomerInfo) {
     try {
-      let recent: any[] = wx.getStorageSync('recentCustomers') || [];
+      let recent: CustomerInfo[] = wx.getStorageSync('recentCustomers') || [];
       recent = recent.filter(c => c.phone !== customer.phone);
       recent.unshift(customer);
       recent = recent.slice(0, 5);

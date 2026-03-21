@@ -42,7 +42,7 @@
     >
       <!-- 卡片头：服务名 + 状态 -->
       <view class="appt-card__header">
-        <text class="appt-service">{{item.service_name}}</text>
+        <text class="appt-service">{{item.service_name}}{{item.sku_spec_name ? ' · ' + item.sku_spec_name : ''}}</text>
         <van-tag
           type="{{item.statusType}}"
           color="{{item.statusColor}}"
@@ -52,9 +52,9 @@
 
       <!-- 详情行 -->
       <van-cell-group border="{{false}}">
-        <van-cell title="预约时间" value="{{item.appointment_time_fmt}}" />
-        <van-cell title="美容师"   value="{{item.employee_name || '未指定'}}" />
-        <van-cell title="来源订单" value="{{item.sale_order_id}}" />
+        <van-cell title="预约时间" value="{{item.appointment_time_fmt}}" icon="clock-o" />
+        <van-cell title="门店" value="{{item.store_name || '—'}}" icon="location-o" />
+        <van-cell title="美容师" value="{{item.employee_name || '未指定'}}" icon="contact" />
       </van-cell-group>
 
       <!-- 操作按钮 -->
@@ -68,6 +68,12 @@
           data-id="{{item.appointment_id}}"
         >取消预约</van-button>
       </view>
+    </view>
+
+    <!-- 加载更多 / 底部提示 -->
+    <view class="list-footer">
+      <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
+      <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多预约了</text>
     </view>
   </view>
 

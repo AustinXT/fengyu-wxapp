@@ -21,6 +21,31 @@ interface PaidOrder {
   items: PaidOrderItem[];
 }
 
+interface OrderDetailForCreate {
+  order: {
+    client_user_id: string;
+    customer_name: string;
+    client_phone: string;
+  };
+}
+
+interface AppointmentDetailForCreate {
+  id: string;
+  customerName: string;
+  customerPhone: string;
+  appointmentTime: string;
+  serviceItemName: string;
+  clientUserId: string | null;
+}
+
+interface CustomerSearchResult {
+  id: string;
+  name: string;
+  phone: string;
+  phoneMasked?: string;
+  clientUserId?: string;
+}
+
 Page({
   data: {
     loading: false,
@@ -94,7 +119,7 @@ Page({
   async loadOrderInfo(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('order.detail', { saleOrderId });
+      const data = await callStaffApi<OrderDetailForCreate>('order.detail', { saleOrderId });
       if (data?.order) {
         const order = data.order;
         const customer = {
@@ -108,8 +133,9 @@ Page({
           await this.loadPaidOrders(customer.clientUserId || customer.id);
         }
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -117,7 +143,7 @@ Page({
 
   async loadAppointmentInfo(id: string) {
     try {
-      const data = await callStaffApi<any>('appointment.detail', { id });
+      const data = await callStaffApi<AppointmentDetailForCreate>('appointment.detail', { id });
       const customer = { id: data.clientUserId || '', name: data.customerName, phone: data.customerPhone };
       this.setData({
         appointmentInfo: {
@@ -147,13 +173,14 @@ Page({
     }
     this.setData({ loading: true });
     try {
-      const results = await callStaffApi<any[]>('customer.search', { keyword });
+      const results = await callStaffApi<CustomerSearchResult[]>('customer.search', { keyword });
       this.setData({ customerResults: results || [] });
       if (!results || results.length === 0) {
         wx.showToast({ title: '未找到该顾客', icon: 'none' });
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '搜索失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '搜索失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
     }
@@ -238,6 +265,7 @@ Page({
   },
 
   async onSubmit() {
+    if (this.data.submitting) return;
     const { selectedCustomer, selectedItems, appointmentId, staffName, remark } = this.data;
 
     if (!selectedCustomer) {
@@ -264,8 +292,9 @@ Page({
       });
       wx.showToast({ title: '服务单已创建', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '提交失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '提交失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }

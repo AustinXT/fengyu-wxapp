@@ -53,7 +53,8 @@ const routes = {
   'message.read': () => require('./routes/message').read,
   'message.unreadCount': () => require('./routes/message').unreadCount,
   'card.list': () => require('./routes/card').list,
-  'card.history': () => require('./routes/card').history
+  'card.history': () => require('./routes/card').history,
+  'config.banners': () => require('./routes/config').banners
 }
 
 /**

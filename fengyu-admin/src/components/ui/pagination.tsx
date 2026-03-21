@@ -9,11 +9,18 @@ export interface PaginationProps {
   page: number
   pageSize: number
   onPageChange: (page: number) => void
+  /** 提供后渲染"N条/页"下拉选择器 */
+  pageSizeOptions?: number[]
+  onPageSizeChange?: (size: number) => void
   className?: string
 }
 
-function Pagination({ total, page, pageSize, onPageChange, className }: PaginationProps) {
+function Pagination({ total: rawTotal, page: rawPage, pageSize: rawPageSize, onPageChange, pageSizeOptions, onPageSizeChange, className }: PaginationProps) {
+  // 输入防护：防止 NaN/Infinity/负值导致渲染异常
+  const total = Math.max(0, Math.floor(rawTotal) || 0)
+  const pageSize = Math.max(1, Math.floor(rawPageSize) || 20)
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const page = Math.min(Math.max(1, Math.floor(rawPage) || 1), totalPages)
 
   if (totalPages <= 1 && total <= pageSize) {
     return (
@@ -74,6 +81,17 @@ function Pagination({ total, page, pageSize, onPageChange, className }: Paginati
         >
           下一页
         </Button>
+        {pageSizeOptions && onPageSizeChange && (
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="ml-2 h-8 rounded-[var(--radius)] border border-[var(--border)] bg-transparent px-2 text-sm"
+          >
+            {pageSizeOptions.map((n) => (
+              <option key={n} value={n}>{n}条/页</option>
+            ))}
+          </select>
+        )}
       </div>
     </div>
   )

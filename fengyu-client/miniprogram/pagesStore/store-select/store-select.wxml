@@ -41,17 +41,17 @@
   <view wx:else>
     <view
       wx:for="{{groupedStores}}"
-      wx:key="market"
+      wx:key="market_name"
       class="market-group"
     >
-      <view class="market-title">{{item.market}}</view>
+      <view class="market-title">{{item.market_name}}</view>
       <van-cell-group inset>
         <van-cell
           wx:for="{{item.stores}}"
           wx:for-item="store"
           wx:key="store_name"
           title="{{store.store_name}}"
-          label="{{store.region}}"
+          label="{{store.store_region}}"
           is-link
           bindtap="onStoreTap"
           data-store-id="{{store.store_id}}"

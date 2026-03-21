@@ -70,7 +70,7 @@ describe('staffApi 入口', () => {
     const mainFresh = require('../index').main
     const result = await mainFresh({ action: 'store.list', payload: {} }, {})
     expect(result.code).toBe(-401)
-    expect(result.message).toContain('UNAUTHORIZED')
+    expect(result.errorType).toBe('UNAUTHORIZED')
   })
 
   test('INVALID_PARAMS 错误映射为 code: -400', async () => {
@@ -79,7 +79,44 @@ describe('staffApi 入口', () => {
       payload: {},
     }, {})
     expect(result.code).toBe(-400)
-    expect(result.message).toContain('INVALID_PARAMS')
+    expect(result.errorType).toBe('INVALID_PARAMS')
+  })
+
+  test('路由完整性 — 所有 route 模块导出的函数都已注册', () => {
+    // 此测试防止新增 API 忘记注册路由（如 R6 updateNotes、R7 assign 曾被遗漏）
+    const fs = require('fs')
+    const indexSrc = fs.readFileSync(path.join(staffApiDir, 'index.js'), 'utf-8')
+
+    // 提取路由表中引用的所有 moduleName.functionName（支持别名路由）
+    // 匹配模式: require('./routes/xxx').yyy
+    const referencedFunctions = new Set()
+    const refRe = /require\('\.\/routes\/(\w+)'\)\.(\w+)/g
+    let rm
+    while ((rm = refRe.exec(indexSrc)) !== null) {
+      referencedFunctions.add(`${rm[1]}.${rm[2]}`)
+    }
+
+    // 扫描所有 route 模块的导出函数
+    const routeFiles = fs.readdirSync(path.join(staffApiDir, 'routes')).filter(f => f.endsWith('.js'))
+    const missing = []
+
+    for (const file of routeFiles) {
+      const moduleName = file.replace('.js', '')
+      const mod = require(path.join(staffApiDir, 'routes', file))
+      for (const fnName of Object.keys(mod)) {
+        if (!referencedFunctions.has(`${moduleName}.${fnName}`)) {
+          missing.push(`${moduleName}.${fnName}`)
+        }
+      }
+    }
+
+    if (missing.length > 0) {
+      throw new Error(
+        `以下 API 已在 route 模块中导出但未在 index.js 路由表中注册:\n` +
+        missing.map(a => `  - ${a}`).join('\n') +
+        `\n请在 index.js 的 routes 对象中添加对应条目。`
+      )
+    }
   })
 
   test('PERMISSION_DENIED 错误映射为 code: -403', async () => {
@@ -108,6 +145,6 @@ describe('staffApi 入口', () => {
       payload: { page: 1 },
     }, {})
     expect(result.code).toBe(-403)
-    expect(result.message).toContain('PERMISSION_DENIED')
+    expect(result.errorType).toBe('PERMISSION_DENIED')
   })
 })

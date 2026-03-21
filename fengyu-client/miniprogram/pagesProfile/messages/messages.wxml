@@ -10,6 +10,13 @@
     <van-skeleton title row="2" />
   </view>
 
+  <!-- 错误态 -->
+  <van-empty
+    wx:elif="{{loadError}}"
+    image="error"
+    description="加载失败，下拉刷新重试"
+  />
+
   <!-- 空态 -->
   <van-empty wx:elif="{{!isLoading && records.length === 0}}" description="暂无消息" />
 
@@ -36,12 +43,10 @@
     </view>
   </view>
 
-  <!-- 加载更多 -->
-  <view wx:if="{{isLoading && records.length > 0}}" class="loading-more">
-    <text class="loading-text">加载中...</text>
-  </view>
-  <view wx:elif="{{!hasMore && records.length > 0}}" class="loading-more">
-    <text class="loading-text">没有更多了</text>
+  <!-- 加载更多 / 底部提示 -->
+  <view wx:if="{{records.length > 0}}" class="list-footer">
+    <van-loading wx:if="{{loadingMore}}" size="24px" color="#C0322A">加载中...</van-loading>
+    <text wx:elif="{{!hasMore}}" class="list-footer__end">没有更多消息了</text>
   </view>
 
 </view>

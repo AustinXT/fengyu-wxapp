@@ -11,49 +11,74 @@ import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
-import type { SaleOrder, SaleAllocation, Employee } from "@/lib/types"
+import type { SaleOrder, SaleAllocation, Employee, CommissionRate } from "@/lib/types"
+
+const ROLE_TYPE_OPTIONS = ["美容师", "养生师", "推广师"] as const
 
 interface AllocationRow {
   id: number
   saleItemId: string
   employeeId: string
-  departmentId: string
+  roleType: string
   amount: string
   ratio: string
+}
+
+/** 从员工的部门/职位推断提成角色类型 */
+function inferRoleType(employee: Employee): string {
+  const dept = employee.departmentName || ''
+  const pos = employee.positionName || ''
+  if (dept.includes('推广') || pos.includes('推广')) return '推广师'
+  return '美容师'
+}
+
+/** 根据市场、角色、销售分类、金额匹配提成比例 */
+function findMatchingRate(
+  rates: CommissionRate[],
+  marketName: string,
+  roleType: string,
+  salesCategory: string | null,
+  amount: number,
+): CommissionRate | null {
+  return rates.find((r) =>
+    r.orgName === marketName &&
+    r.orderType === '销售单' &&
+    r.roleType === roleType &&
+    r.salesCategory === (salesCategory || '') &&
+    Number(r.amountTierMin) <= amount &&
+    (r.amountTierMax === null || Number(r.amountTierMax) > amount)
+  ) ?? null
 }
 
 export default function AllocationDetailPageClient({
   order,
   allocations,
   employees,
+  commissionRates = [],
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   employees: Employee[]
+  commissionRates?: CommissionRate[]
 }) {
-  const activeEmployees = employees.filter((e) => !e.isResigned)
-
-  // Collect unique departments from employees
-  const departmentMap = new Map<string, string>()
-  activeEmployees.forEach((e) => {
-    if (e.orgNodeId && e.departmentName) {
-      departmentMap.set(e.orgNodeId, e.departmentName)
-    }
-  })
-  const departments = Array.from(departmentMap.entries()).map(([id, name]) => ({ id, name }))
+  // 仅显示订单所属门店的在职员工
+  const activeEmployees = employees.filter((e) => !e.isResigned && e.storeId === order.storeId)
 
   const items = order.items || []
 
   const [rows, setRows] = useState<AllocationRow[]>(() => {
     if (allocations.length > 0) {
-      return allocations.map((a, idx) => ({
-        id: idx,
-        saleItemId: a.saleItemId,
-        employeeId: a.employeeId,
-        departmentId: activeEmployees.find((e) => e.employeeId === a.employeeId)?.orgNodeId || "",
-        amount: a.totalAmount,
-        ratio: (Number(a.allocationRatio) * 100).toFixed(0),
-      }))
+      return allocations.map((a, idx) => {
+        const emp = employees.find((e) => e.employeeId === a.employeeId)
+        return {
+          id: idx,
+          saleItemId: a.saleItemId,
+          employeeId: a.employeeId,
+          roleType: emp ? inferRoleType(emp) : '',
+          amount: a.totalAmount,
+          ratio: (Number(a.allocationRatio) * 100).toFixed(0),
+        }
+      })
     }
     return []
   })
@@ -65,11 +90,28 @@ export default function AllocationDetailPageClient({
         id: Date.now(),
         saleItemId: items[0]?.saleItemId || "",
         employeeId: "",
-        departmentId: "",
+        roleType: "",
         amount: "",
         ratio: "",
       },
     ])
+  }
+
+  /** 根据当前行数据自动从提成矩阵查找比例并计算金额 */
+  const autoFillFromMatrix = (row: AllocationRow): AllocationRow => {
+    const item = items.find((i) => i.saleItemId === row.saleItemId)
+    if (!item || !row.roleType || commissionRates.length === 0) return row
+    const received = Number(item.received)
+    const match = findMatchingRate(
+      commissionRates,
+      order.marketName ?? '',
+      row.roleType,
+      item.salesCategory ?? null,
+      received,
+    )
+    if (!match) return row
+    const ratioPercent = (Number(match.commissionRate) * 100).toFixed(1)
+    return { ...row, ratio: ratioPercent, amount: (received * Number(match.commissionRate)).toFixed(2) }
   }
 
   const updateRow = (id: number, field: keyof AllocationRow, value: string) => {
@@ -77,12 +119,31 @@ export default function AllocationDetailPageClient({
       prev.map((r) => {
         if (r.id !== id) return r
         const updated = { ...r, [field]: value }
-        // Auto-calc ratio when amount changes
-        if (field === "amount" && order) {
-          const totalAmount = Number(order.totalAmount)
+        // 选择员工时自动推断角色
+        if (field === "employeeId" && value) {
+          const emp = activeEmployees.find((e) => e.employeeId === value)
+          if (emp) updated.roleType = inferRoleType(emp)
+        }
+        // 当角色/关联明细/员工变更时，自动从提成矩阵查找比例并计算金额
+        if (field === "roleType" || field === "saleItemId" || field === "employeeId") {
+          return autoFillFromMatrix(updated)
+        }
+        // 比例变化时计算金额 = 比例/100 * 实收
+        if (field === "ratio") {
+          const item = items.find((i) => i.saleItemId === updated.saleItemId)
+          const itemReceived = item ? Number(item.received) : 0
+          const ratio = Number(value)
+          if (itemReceived > 0 && !isNaN(ratio)) {
+            updated.amount = ((ratio / 100) * itemReceived).toFixed(2)
+          }
+        }
+        // 金额变化时反算比例
+        if (field === "amount") {
+          const item = items.find((i) => i.saleItemId === updated.saleItemId)
+          const itemReceived = item ? Number(item.received) : 0
           const amount = Number(value)
-          if (totalAmount > 0 && !isNaN(amount)) {
-            updated.ratio = ((amount / totalAmount) * 100).toFixed(1)
+          if (itemReceived > 0 && !isNaN(amount)) {
+            updated.ratio = ((amount / itemReceived) * 100).toFixed(1)
           }
         }
         return updated
@@ -140,17 +201,23 @@ export default function AllocationDetailPageClient({
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">商品</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">销售分类</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {items.map((item) => (
                   <tr key={item.saleItemId}>
-                    <td className="px-4 py-3 font-medium">{item.skuName || item.productName}</td>
-                    <td className="px-4 py-3 text-right">¥{Number(item.received).toLocaleString()}</td>
+                    <td className="px-4 py-3 font-medium">{item.productName || '-'}</td>
+                    <td className="px-4 py-3 text-[#666666]">{item.skuName || '-'}</td>
+                    <td className="px-4 py-3 text-[#666666]">{item.salesCategory || '-'}</td>
+                    <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toLocaleString()}</td>
                     <td className="px-4 py-3 text-right">{item.quantity}</td>
+                    <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -168,85 +235,92 @@ export default function AllocationDetailPageClient({
         <CardContent className="space-y-4">
           {rows.length > 0 ? (
             rows.map((row) => (
-              <div key={row.id} className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end bg-[#FAFAFA] rounded-lg p-4">
-                <div>
-                  <label className="text-xs text-[#999999]">关联明细</label>
-                  <Select
-                    className="mt-1"
-                    value={row.saleItemId}
-                    onChange={(e) => updateRow(row.id, "saleItemId", e.target.value)}
-                  >
-                    <option value="">选择明细</option>
-                    {items.map((item) => (
-                      <option key={item.saleItemId} value={item.saleItemId}>
-                        {item.skuName || item.productName} (¥{item.received})
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">部门</label>
-                  <Select
-                    className="mt-1"
-                    value={row.departmentId}
-                    onChange={(e) => updateRow(row.id, "departmentId", e.target.value)}
-                  >
-                    <option value="">选择部门</option>
-                    {departments.map((d) => (
-                      <option key={d.id} value={d.id}>{d.name}</option>
-                    ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">员工</label>
-                  <Select
-                    className="mt-1"
-                    value={row.employeeId}
-                    onChange={(e) => updateRow(row.id, "employeeId", e.target.value)}
-                  >
-                    <option value="">选择员工</option>
-                    {activeEmployees
-                      .filter((e) => !row.departmentId || e.orgNodeId === row.departmentId)
-                      .map((e) => (
-                        <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
-                      ))}
-                  </Select>
-                </div>
-                <div>
-                  <label className="text-xs text-[#999999]">金额</label>
-                  <Input
-                    className="mt-1"
-                    type="number"
-                    placeholder="0.00"
-                    value={row.amount}
-                    onChange={(e) => updateRow(row.id, "amount", e.target.value)}
-                  />
-                </div>
-                <div className="flex items-end gap-2">
-                  <div className="flex-1">
-                    <label className="text-xs text-[#999999]">比例</label>
-                    <Input className="mt-1" value={row.ratio ? `${row.ratio}%` : ""} readOnly />
+                <div key={row.id} className="bg-[#FAFAFA] rounded-lg p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+                    <div>
+                      <label className="text-xs text-[#999999]">关联明细</label>
+                      <Select
+                        className="mt-1"
+                        value={row.saleItemId}
+                        onChange={(e) => updateRow(row.id, "saleItemId", e.target.value)}
+                      >
+                        <option value="">选择明细</option>
+                        {items.map((item) => (
+                          <option key={item.saleItemId} value={item.saleItemId}>
+                            {item.productName}{item.skuName ? ` - ${item.skuName}` : ''}{item.salesCategory ? ` [${item.salesCategory}]` : ''} (¥{item.received})
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">员工</label>
+                      <Select
+                        className="mt-1"
+                        value={row.employeeId}
+                        onChange={(e) => updateRow(row.id, "employeeId", e.target.value)}
+                      >
+                        <option value="">选择员工</option>
+                        {activeEmployees.map((e) => (
+                          <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">员工角色</label>
+                      <Select
+                        className="mt-1"
+                        value={row.roleType}
+                        onChange={(e) => updateRow(row.id, "roleType", e.target.value)}
+                      >
+                        <option value="">选择角色</option>
+                        {ROLE_TYPE_OPTIONS.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-[#999999]">提成比例(%)</label>
+                      <Input
+                        className="mt-1"
+                        type="number"
+                        placeholder="0.0"
+                        value={row.ratio}
+                        onChange={(e) => updateRow(row.id, "ratio", e.target.value)}
+                      />
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <label className="text-xs text-[#999999]">金额</label>
+                        <Input
+                          className="mt-1"
+                          type="number"
+                          placeholder="0.00"
+                          value={row.amount}
+                          onChange={(e) => updateRow(row.id, "amount", e.target.value)}
+                        />
+                      </div>
+                      <Button size="sm" variant="ghost" onClick={() => removeRow(row.id)} className="text-[#D94040]">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      </Button>
+                    </div>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={() => removeRow(row.id)} className="text-[#D94040]">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </Button>
                 </div>
-              </div>
-            ))
+              )
+            )
           ) : (
             <p className="text-center text-[#999999] py-8">暂无分配记录，点击"添加分配人"开始分配</p>
           )}
 
           <Separator />
 
-          <SaveButton orderId={order.saleOrderId} rows={rows} departments={departments} />
+          <SaveButton orderId={order.saleOrderId} rows={rows} />
         </CardContent>
       </Card>
     </div>
   )
 }
 
-function SaveButton({ orderId, rows, departments }: { orderId: string; rows: AllocationRow[]; departments: { id: string; name: string }[] }) {
+function SaveButton({ orderId, rows }: { orderId: string; rows: AllocationRow[] }) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
 
@@ -282,7 +356,6 @@ function SaveButton({ orderId, rows, departments }: { orderId: string; rows: All
         employeeId: r.employeeId,
         allocationRatio: (Number(r.ratio) / 100).toFixed(2),
         totalAmount: Number(r.amount).toFixed(2),
-        departmentName: departments.find((d) => d.id === r.departmentId)?.name,
       })))
       if (res.success) {
         toast.success(res.message)

@@ -1,0 +1,60 @@
+# fengyu-admin Next.js 15 生产镜像
+# 构建上下文：monorepo 根目录（需要访问 db/schema/）
+# 用法：docker build -f docker/Dockerfile.admin -t fengyu-admin .
+
+FROM oven/bun:1-alpine AS base
+
+# Alpine apk 换阿里云镜像
+RUN sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
+
+# bun 换淘宝镜像
+ENV BUN_INSTALL_REGISTRY=https://registry.npmmirror.com
+
+# ---- 依赖安装 ----
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+# 复制 db schema（fengyu-admin 通过 webpack alias @db 引用）
+COPY db/schema/ /db/schema/
+
+# 复制 package 文件并安装依赖
+COPY fengyu-admin/package.json fengyu-admin/bun.lock ./
+RUN bun install --frozen-lockfile
+
+# ---- 构建 ----
+FROM base AS builder
+RUN apk add --no-cache nodejs
+WORKDIR /app
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /db/schema/ /db/schema/
+COPY fengyu-admin/ .
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+
+RUN bun run build
+
+# ---- 生产运行 ----
+FROM node:18-alpine AS runner
+WORKDIR /app
+
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# 复制 standalone 输出
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]

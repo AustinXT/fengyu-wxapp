@@ -115,12 +115,24 @@ function TreeNode({ node, children, allNodes, depth, selectedId, expandedIds, on
   )
 }
 
-export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
+export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[] }) {
   const router = useRouter()
-  const [selectedId, setSelectedId] = useState<string | null>(orgNodes[0]?.id ?? null)
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(
-    () => new Set(orgNodes.map((n) => n.id))
+  const [showInactive, setShowInactive] = useState(false)
+
+  // 过滤停用节点（默认隐藏）
+  const orgNodes = useMemo(
+    () => (showInactive ? allOrgNodes : allOrgNodes.filter((n) => n.isActive)),
+    [allOrgNodes, showInactive]
   )
+
+  const [selectedId, setSelectedId] = useState<string | null>(allOrgNodes[0]?.id ?? null)
+
+  // 默认展开两层：根节点 + 根节点的直接子节点
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {
+    const roots = allOrgNodes.filter((n) => n.parentId === null)
+    const level1Children = allOrgNodes.filter((n) => roots.some((r) => r.id === n.parentId))
+    return new Set([...roots, ...level1Children].map((n) => n.id))
+  })
 
   // Delete state
   const [deleteTarget, setDeleteTarget] = useState<OrgNode | null>(null)
@@ -200,7 +212,7 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
     try {
       if (dialogMode === "create") {
         const newId = `org-${formType}-${Date.now()}`
-        await createOrgNode({
+        const createResult = await createOrgNode({
           id: newId,
           name: formName.trim(),
           type: formType,
@@ -208,6 +220,10 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
           sortOrder: formSortOrder,
           isActive: formIsActive,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("节点创建成功")
         setDialogOpen(false)
         router.refresh()
@@ -217,12 +233,17 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
         }
         setSelectedId(newId)
       } else if (editingNode) {
-        await updateOrgNode(editingNode.id, {
+        const orgResult = await updateOrgNode(editingNode.id, {
           name: formName.trim(),
           type: formType,
           sortOrder: formSortOrder,
           isActive: formIsActive,
-        })
+        }, editingNode.updatedAt)
+        if (!orgResult.success) {
+          toast.error(orgResult.message)
+          if (orgResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("节点更新成功")
         setDialogOpen(false)
         router.refresh()
@@ -255,8 +276,17 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
       <div className="flex gap-4" style={{ minHeight: "calc(100vh - 220px)" }}>
         {/* Left: Tree */}
         <Card className="w-80 shrink-0 flex flex-col">
-          <CardHeader className="pb-3">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">组织树</CardTitle>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 rounded border-[var(--input)] accent-[var(--primary)]"
+                checked={showInactive}
+                onChange={(e) => setShowInactive(e.target.checked)}
+              />
+              <span className="text-xs text-[var(--muted-foreground)]">显示停用</span>
+            </label>
           </CardHeader>
           <CardContent className="flex-1 overflow-auto pb-3">
             {rootNodes.map((node) => (
@@ -273,12 +303,6 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
               />
             ))}
           </CardContent>
-          <Separator />
-          <div className="p-4">
-            <Button variant="outline" className="w-full" size="sm" onClick={() => openCreateDialog(null)}>
-              新增根节点
-            </Button>
-          </div>
         </Card>
 
         {/* Right: Detail */}
@@ -292,9 +316,9 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
                     编辑
                   </Button>
                   <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
-                  {selectedNode.isActive && selectedNode.type !== 'headquarters' && (
+                  {selectedNode.type !== 'headquarters' && (
                     <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setDeleteTarget(selectedNode)}>
-                      停用
+                      删除
                     </Button>
                   )}
                 </div>
@@ -462,11 +486,11 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
         </DialogFooter>
       </Dialog>
 
-      {/* 停用确认 */}
+      {/* 删除确认 */}
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogTitle>确认停用节点？</AlertDialogTitle>
+        <AlertDialogTitle>确认删除节点？</AlertDialogTitle>
         <AlertDialogDescription>
-          将停用「{deleteTarget?.name}」节点。如果该节点下存在子节点，停用操作会被拒绝。
+          将永久删除「{deleteTarget?.name}」节点，此操作不可撤销。如果该节点下存在子节点或关联数据，删除会被拒绝。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
@@ -482,10 +506,17 @@ export default function OrgPage({ orgNodes }: { orgNodes: OrgNode[] }) {
               } else {
                 toast.error(res.message)
               }
-            } catch {
-              toast.error('操作失败')
+            } catch (err: any) {
+              const msg = err?.message ?? ''
+              if (msg.includes('PERMISSION_DENIED')) {
+                toast.error('无权执行删除操作')
+              } else if (msg.includes('UNAUTHORIZED')) {
+                toast.error('登录已过期，请重新登录')
+              } else {
+                toast.error('操作失败，请稍后重试')
+              }
             }
-          }}>确认停用</AlertDialogAction>
+          }}>确认删除</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
     </div>

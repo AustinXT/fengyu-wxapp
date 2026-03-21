@@ -30,7 +30,7 @@
 
 .appt-item {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 /* ===== 通用 section ===== */
@@ -65,7 +65,7 @@
 
 .customer-change {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   flex-shrink: 0;
 }
 
@@ -81,7 +81,7 @@
 
 .customer-phone {
   font-size: 26rpx;
-  color: #999999;
+  color: var(--color-text-hint);
 }
 
 
@@ -111,13 +111,13 @@
 
 .order-no {
   font-size: 24rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   font-family: monospace;
 }
 
 .order-date {
   font-size: 24rpx;
-  color: #999999;
+  color: var(--color-text-hint);
 }
 
 .order-item-wrap {
@@ -156,7 +156,7 @@
 
 .order-item-spec {
   font-size: 24rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   background: #F5F2EE;
   padding: 2rpx 10rpx;
   border-radius: 6rpx;
@@ -164,7 +164,7 @@
 
 .order-item-sessions {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 

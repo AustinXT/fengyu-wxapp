@@ -40,6 +40,8 @@ const routes = {
   'customer.listByTag':   () => require('./routes/customer').listByTag,
   'customer.giftHistory': () => require('./routes/customer').giftHistory,
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
+  'customer.updateNotes': () => require('./routes/customer').updateNotes,
+  'customer.assign':      () => require('./routes/customer').assign,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,

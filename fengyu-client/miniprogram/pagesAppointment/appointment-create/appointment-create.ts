@@ -1,15 +1,16 @@
 // pages/appointment-create/appointment-create.ts
 import Toast from '@vant/weapp/toast/toast';
-import { callClientApi, sanitizeErrorMessage } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { formatDate } from '../../utils/format';
 
 const app = getApp<IAppOption>();
 
 const TIME_SLOTS = [
-  { text: '上午 09:00-11:00', value: '09:00-11:00' },
-  { text: '上午 11:00-13:00', value: '11:00-13:00' },
-  { text: '下午 13:00-15:00', value: '13:00-15:00' },
-  { text: '下午 15:00-17:00', value: '15:00-17:00' },
-  { text: '下午 17:00-19:00', value: '17:00-19:00' },
+  { label: '09-11', text: '上午 09:00-11:00', value: '09:00-11:00' },
+  { label: '11-13', text: '上午 11:00-13:00', value: '11:00-13:00' },
+  { label: '13-15', text: '下午 13:00-15:00', value: '13:00-15:00' },
+  { label: '15-17', text: '下午 15:00-17:00', value: '15:00-17:00' },
+  { label: '17-19', text: '下午 17:00-19:00', value: '17:00-19:00' },
 ];
 
 Page({
@@ -36,7 +37,6 @@ Page({
 
     // UI 状态
     showCalendar: false,
-    showTimePicker: false,
     showStaffPopup: false,
     timeSlots: TIME_SLOTS,
     submitting: false,
@@ -49,11 +49,11 @@ Page({
       minDate: now,
       maxDate: now + 90 * 24 * 60 * 60 * 1000,
     });
-    const { saleOrderId, orderNo, employeeId, employeeName } = options as {
-      saleOrderId?: string; orderNo?: string;
+    const { saleOrderId, orderNo, saleItemId, employeeId, employeeName } = options as {
+      saleOrderId?: string; orderNo?: string; saleItemId?: string;
       employeeId?: string; employeeName?: string;
     };
-    this.loadAppointableItems(saleOrderId || orderNo);
+    this.loadAppointableItems(saleOrderId || orderNo, saleItemId);
     this.loadStaffList();
     // 如果从美容师详情页传入了 employeeId，优先使用
     if (employeeId) {
@@ -66,14 +66,14 @@ Page({
     }
   },
 
-  async loadAppointableItems(filterSaleOrderId?: string) {
+  async loadAppointableItems(filterSaleOrderId?: string, preselectItemId?: string) {
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
       const items: any[] = [];
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
-        for (const item of order.items) {
+        for (const item of (order.items || [])) {
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
@@ -86,7 +86,17 @@ Page({
           });
         }
       }
-      this.setData({ appointableItems: items });
+      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目
+      const preselect = preselectItemId
+        ? items.find(i => i.sale_item_id === preselectItemId)
+        : null;
+      this.setData({
+        appointableItems: items,
+        ...(preselect ? {
+          selectedSaleItemId: preselect.sale_item_id,
+          selectedSaleOrderId: preselect.sale_order_id,
+        } : {}),
+      });
     } catch {
       Toast.fail('加载可预约项目失败');
     }
@@ -144,28 +154,44 @@ Page({
 
   onDateConfirm(e: WechatMiniprogram.CustomEvent<Date>) {
     const d = e.detail;
-    const fmt = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const fmt = formatDate(d.toISOString());
     this.setData({ appointmentDate: fmt, showCalendar: false });
+    this._updateDisabledSlots(fmt);
   },
 
-  onShowTimePicker() {
-    this.setData({ showTimePicker: true });
-  },
+  /** 当选日期为今天时，禁用已过去的时段；切换到非今天时全部可选 */
+  _updateDisabledSlots(dateStr: string) {
+    const today = formatDate(new Date().toISOString());
+    const isToday = dateStr === today;
+    const currentHour = new Date().getHours();
 
-  onCloseTimePicker() {
-    this.setData({ showTimePicker: false });
-  },
+    const updatedSlots = TIME_SLOTS.map(slot => {
+      // 取时段开始小时：'09:00-11:00' → 9
+      const startHour = parseInt(slot.value.split(':')[0], 10);
+      const disabled = isToday && currentHour >= startHour;
+      return { ...slot, disabled };
+    });
+    this.setData({ timeSlots: updatedSlots });
 
-  onTimeConfirm(e: WechatMiniprogram.CustomEvent) {
-    const { index } = e.detail;
-    const slot = TIME_SLOTS[index];
-    if (slot) {
-      this.setData({
-        appointmentTimeSlot: slot.value,        // "HH:MM-HH:MM" 供提交
-        _timeSlotDisplay: slot.text,            // 中文展示
-        showTimePicker: false,
-      });
+    // 若当前已选时段变为禁用，则清空选择
+    if (this.data.appointmentTimeSlot) {
+      const selected = updatedSlots.find(s => s.value === this.data.appointmentTimeSlot);
+      if (selected?.disabled) {
+        this.setData({ appointmentTimeSlot: '', _timeSlotDisplay: '' });
+      }
     }
+  },
+
+  onTimeSlotTap(e: WechatMiniprogram.TouchEvent) {
+    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean };
+    if (disabled) {
+      Toast('该时段已过，请选择其他时段');
+      return;
+    }
+    this.setData({
+      appointmentTimeSlot: value,
+      _timeSlotDisplay: text,
+    });
   },
 
   onShowStaffPopup() {
@@ -176,8 +202,8 @@ Page({
     this.setData({ showStaffPopup: false });
   },
 
-  onStaffSelect(e: WechatMiniprogram.TouchEvent) {
-    const { wfId, name } = e.currentTarget.dataset as { wfId: string; name: string };
+  onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
+    const { wfId, name } = e.detail;
     this.setData({ selectedStaffWfId: wfId, selectedStaffName: name, showStaffPopup: false });
   },
 
@@ -188,8 +214,18 @@ Page({
   async onSubmit() {
     const { selectedSaleItemId, appointmentDate, appointmentTimeSlot, selectedStaffWfId, selectedStaffName, notes } = this.data;
     if (!appointmentDate || !appointmentTimeSlot) {
-      Toast('请选择预约日期和时段');
+      Toast.fail('请选择预约日期和时段');
       return;
+    }
+    // 安全校验：防止提交当天已过时段
+    const today = formatDate(new Date().toISOString());
+    if (appointmentDate === today) {
+      const startHour = parseInt(appointmentTimeSlot.split(':')[0], 10);
+      if (new Date().getHours() >= startHour) {
+        Toast.fail('所选时段已过，请重新选择');
+        this._updateDisabledSlots(appointmentDate);
+        return;
+      }
     }
     if (this.data.submitting) return;
     this.setData({ submitting: true });
@@ -224,31 +260,17 @@ Page({
     const { cloudID, errMsg } = e.detail;
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
-        Toast('您拒绝了授权');
+        Toast.fail('您拒绝了授权');
       }
       return;
     }
     try {
-      wx.showLoading({ title: '绑定中...', mask: true });
-      const res = await wx.cloud.callFunction({
-        name: 'clientApi',
-        data: {
-          action: 'auth.bindPhone',
-          payload: {},
-          phoneData: wx.cloud.CloudID(cloudID as string)
-        }
-      }) as any;
-      wx.hideLoading();
-      if (res.result?.code !== 0) {
-        throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'));
-      }
-      wx.setStorageSync('phone', res.result.data.phone);
+      await bindPhoneWithCloudID(cloudID as string);
       this.setData({ showPhoneBind: false });
       Toast.success('绑定成功');
       // 绑定成功后自动重新提交预约
       setTimeout(() => this.onSubmit(), 800);
     } catch (err: any) {
-      wx.hideLoading();
       Toast.fail(err.message || '绑定失败，请重试');
     }
   },

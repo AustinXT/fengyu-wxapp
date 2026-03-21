@@ -2,12 +2,75 @@
 
 import { db } from '@/db'
 import { productCategories, products, productSkus } from '@db/product'
-import { eq, sql } from 'drizzle-orm'
+import { orgNodes } from '@db/org'
+import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { ProductCategory, Product, ProductSku } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, AuthSession } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+
+/**
+ * 获取所有市场节点（type='market'），用于商品可见范围选择。
+ */
+export async function getMarkets(): Promise<{ id: string; name: string }[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name })
+    .from(orgNodes)
+    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .orderBy(asc(orgNodes.sortOrder))
+
+  return rows
+}
+
+/**
+ * 根据当前用户 session 自动判断管理范围。
+ * - headquarters scope → null（总部管理）
+ * - market scope → 该市场 id
+ * - store scope → 向上查找所属市场
+ */
+export async function resolveManageScope(): Promise<{ scopeId: string | null; scopeName: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  if (session.roles.some(r => r.scopeType === 'headquarters')) {
+    return { scopeId: null, scopeName: '总部' }
+  }
+
+  const marketRole = session.roles.find(r => r.scopeType === 'market')
+  if (marketRole) {
+    const [node] = await db
+      .select({ name: orgNodes.name })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, marketRole.scopeId))
+      .limit(1)
+    return { scopeId: marketRole.scopeId, scopeName: node?.name ?? marketRole.scopeId }
+  }
+
+  const storeRole = session.roles.find(r => r.scopeType === 'store')
+  if (storeRole) {
+    const [storeNode] = await db
+      .select({ parentId: orgNodes.parentId })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, storeRole.scopeId))
+      .limit(1)
+    if (storeNode?.parentId) {
+      const [parentNode] = await db
+        .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, storeNode.parentId))
+        .limit(1)
+      if (parentNode?.type === 'market') {
+        return { scopeId: parentNode.id, scopeName: parentNode.name }
+      }
+    }
+  }
+
+  return { scopeId: null, scopeName: '总部' }
+}
 
 export async function getCategories(): Promise<ProductCategory[]> {
   const session = await getSession()
@@ -52,6 +115,8 @@ export async function getProducts(): Promise<Product[]> {
     .from(products)
     .leftJoin(productCategories, eq(products.categoryId, productCategories.categoryId))
     .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
+    .orderBy(products.sortOrder)
+    .limit(500)
 
   return rows.map((r) => ({
     productId: r.product.productId,
@@ -205,7 +270,7 @@ export async function createProduct(data: {
   if (data.specialPrice) {
     const sp = Number(data.specialPrice)
     if (isNaN(sp) || sp < 0) {
-      return { success: false, message: '特价必须为非负数' }
+      return { success: false, message: '会员价必须为非负数' }
     }
   }
 
@@ -224,10 +289,15 @@ export async function createProduct(data: {
     return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
-  await db.insert(products).values({
-    ...data,
-    salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
-  })
+  try {
+    await db.insert(products).values({
+      ...data,
+      salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
+    throw err
+  }
 
   await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
   revalidatePath('/products')
@@ -252,21 +322,35 @@ export async function updateProduct(
     sortOrder: number
     validStart: string | null
     validEnd: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
+    : eq(products.productId, productId)
+
+  const result = await db
     .update(products)
     .set({
       ...data,
       salesCategory: data.salesCategory as typeof products.$inferInsert['salesCategory'],
     })
-    .where(eq(products.productId, productId))
+    .where(whereConditions)
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
+    }
+  }
 
   await logOperation(session, 'product.update', 'product', productId, data)
   revalidatePath('/products')
+  return { success: true, message: '商品信息已更新' }
 }
 
 export async function createCategory(data: {
@@ -275,18 +359,24 @@ export async function createCategory(data: {
   productKind: string
   sortOrder?: number
   isValid?: boolean
-}) {
+}): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
 
-  await db.insert(productCategories).values({
-    ...data,
-    productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
-  })
+  try {
+    await db.insert(productCategories).values({
+      ...data,
+      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
+    throw err
+  }
 
   await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
   revalidatePath('/products')
   revalidatePath('/products/categories')
+  return { success: true, message: '分类创建成功' }
 }
 
 export async function updateCategory(
@@ -296,22 +386,36 @@ export async function updateCategory(
     productKind: string
     sortOrder: number
     isValid: boolean
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(productCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${expectedUpdatedAt}`)
+    : eq(productCategories.categoryId, categoryId)
+
+  const result = await db
     .update(productCategories)
     .set({
       ...data,
       productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
     })
-    .where(eq(productCategories.categoryId, categoryId))
+    .where(whereConditions)
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '分类不存在',
+    }
+  }
 
   await logOperation(session, 'category.update', 'product_category', categoryId, data)
   revalidatePath('/products')
   revalidatePath('/products/categories')
+  return { success: true, message: '分类已更新' }
 }
 
 const VALID_PRODUCT_TYPES = ['疗程卡', '单品', '院装产品'] as const
@@ -362,10 +466,16 @@ export async function createSku(data: {
     return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
-  await db.insert(productSkus).values({
-    ...data,
-    productType: data.productType as typeof productSkus.$inferInsert['productType'],
-  })
+  try {
+    await db.insert(productSkus).values({
+      ...data,
+      productType: data.productType as typeof productSkus.$inferInsert['productType'],
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: 'SKU 编号已存在' }
+    if (err?.code === '23503') return { success: false, message: '商品不存在，请检查 productId' }
+    throw err
+  }
 
   await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
   revalidatePath('/products')
@@ -385,21 +495,35 @@ export async function updateSku(
     serviceFee: string
     validStart: string | null
     validEnd: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
 
-  await db
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
+    : eq(productSkus.skuId, skuId)
+
+  const result = await db
     .update(productSkus)
     .set({
       ...data,
       productType: data.productType as typeof productSkus.$inferInsert['productType'],
     })
-    .where(eq(productSkus.skuId, skuId))
+    .where(whereConditions)
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : 'SKU 不存在',
+    }
+  }
 
   await logOperation(session, 'sku.update', 'product_sku', skuId, data)
   revalidatePath('/products')
+  return { success: true, message: '规格已更新' }
 }
 
 export async function deleteSku(skuId: string): Promise<{ success: boolean; message: string }> {

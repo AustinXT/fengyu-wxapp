@@ -3,10 +3,11 @@
 import { db } from '@/db'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { stores } from '@db/org'
-import { eq, inArray, and, desc } from 'drizzle-orm'
+import { eq, and, or, desc, inArray, sql, ilike } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 function serializeCustomer(row: {
@@ -61,36 +62,97 @@ export async function getCustomers(): Promise<Customer[]> {
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
-  const scopeStoreIds = session.permissions.scopeStoreIds
-  const isAdmin = hasRole(session, 'admin')
-
-  let query = db
+  // admin 不碰顾客数据（规范约束），但 scopeCondition 会返回 undefined（无过滤）
+  // 非 admin 角色按 boundStoreId scope 过滤
+  const rows = await db
     .select()
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .$dynamic()
+    .where(scopeCondition(session, clientWechatUsers.boundStoreId))
+    .orderBy(clientWechatUsers.name)
+    .limit(500)
 
-  // admin 不碰顾客数据（规范约束），但 admin 的 PERMISSION_MATRIX 包含 customer:list
-  // 非 admin 角色按 scope 过滤：只能看到绑定在自己门店范围内的顾客
-  if (!isAdmin && scopeStoreIds.length > 0) {
-    query = query.where(inArray(clientWechatUsers.boundStoreId, scopeStoreIds)) as typeof query
-  } else if (!isAdmin && scopeStoreIds.length === 0) {
-    return [] // 无 scope 则无数据
+  return rows.map(serializeCustomer)
+}
+
+/** 顾客列表筛选参数 */
+export interface CustomerFilters {
+  storeId?: string
+  memberLevel?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}
+
+/** 分页结果 */
+export interface PaginatedCustomers {
+  data: Customer[]
+  total: number
+}
+
+/**
+ * 服务端分页顾客列表 — DB 级过滤 + LIMIT/OFFSET
+ *
+ * scope 基于 boundStoreId（顾客归属门店）。
+ * 搜索支持：姓名、手机号（ILIKE）。
+ */
+export async function getCustomersPaginated(filters: CustomerFilters = {}): Promise<PaginatedCustomers> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const conditions: (SQL | undefined)[] = [
+    scopeCondition(session, clientWechatUsers.boundStoreId),
+  ]
+
+  if (filters.storeId) {
+    conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
+  }
+  if (filters.memberLevel) {
+    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
+  }
+  if (filters.search) {
+    const pattern = `%${filters.search}%`
+    conditions.push(
+      or(
+        ilike(clientWechatUsers.name, pattern),
+        ilike(clientWechatUsers.phone, pattern),
+      ),
+    )
   }
 
-  const rows = await query.limit(500)
-  return rows.map(serializeCustomer)
+  const whereClause = and(...conditions)
+
+  const [[countRow], rows] = await Promise.all([
+    db.select({ count: sql<number>`cast(count(*) as int)` })
+      .from(clientWechatUsers)
+      .where(whereClause),
+    db.select()
+      .from(clientWechatUsers)
+      .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+      .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
+      .where(whereClause)
+      .orderBy(clientWechatUsers.name)
+      .limit(pageSize)
+      .offset(offset),
+  ])
+
+  return {
+    data: rows.map(serializeCustomer),
+    total: countRow?.count ?? 0,
+  }
 }
 
 export async function getCustomerById(userId: string): Promise<Customer | null> {
   const session = await getSession()
   requirePermission(session, 'customer:list')
 
-  const scopeStoreIds = session.permissions.scopeStoreIds
-  const isAdminOnly = hasRole(session, 'admin') && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
-
-  // admin 不碰顾客数据
+  // admin 纯角色不碰顾客数据（admin+manager 双角色可访问）
+  const isAdminOnly = isAdminScope(session) && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
   if (isAdminOnly) return null
 
   const rows = await db
@@ -98,11 +160,7 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
     .from(clientWechatUsers)
     .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
     .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
-    .where(
-      scopeStoreIds.length > 0
-        ? and(eq(clientWechatUsers.userId, userId), inArray(clientWechatUsers.boundStoreId, scopeStoreIds))
-        : eq(clientWechatUsers.userId, userId)
-    )
+    .where(and(eq(clientWechatUsers.userId, userId), scopeCondition(session, clientWechatUsers.boundStoreId)))
     .limit(1)
 
   if (rows.length === 0) return null
@@ -270,20 +328,49 @@ export async function updateCustomer(
     wellnessPreference: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'customer:update')
 
-  await db
-    .update(clientWechatUsers)
-    .set(data)
-    .where(eq(clientWechatUsers.userId, userId))
+  // 服务端输入校验
+  if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+
+  const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
+  const whereConditions = expectedUpdatedAt
+    ? and(
+        eq(clientWechatUsers.userId, userId),
+        sql`date_trunc('milliseconds', ${clientWechatUsers.updatedAt}) = ${expectedUpdatedAt}`,
+        scopeCond,
+      )
+    : and(eq(clientWechatUsers.userId, userId), scopeCond)
+
+  let result: any
+  try {
+    result = await db.update(clientWechatUsers).set(data).where(whereConditions)
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return { success: false, message: '该手机号已被其他顾客使用' }
+    }
+    throw err
+  }
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '顾客不存在或无权修改',
+    }
+  }
 
   await logOperation(session, 'customer.update', 'customer', userId, data)
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
+  return { success: true, message: '顾客信息已更新' }
 }
 
 export async function createCustomer(data: {
@@ -294,6 +381,22 @@ export async function createCustomer(data: {
 }): Promise<{ success: boolean; message: string; userId?: string }> {
   const session = await getSession()
   requirePermission(session, 'customer:create')
+
+  // 服务端输入校验
+  if (!data.name?.trim()) {
+    return { success: false, message: '姓名不能为空' }
+  }
+  if (!data.phone?.trim()) {
+    return { success: false, message: '请输入手机号' }
+  }
+  if (!/^1\d{10}$/.test(data.phone)) {
+    return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
+  }
+
+  // scope 隔离：非 admin 只能在自己 scope 内的门店创建顾客
+  if (data.boundStoreId && !isInScope(session, data.boundStoreId)) {
+    return { success: false, message: '无权在该门店创建顾客' }
+  }
 
   // 检查手机号是否已存在
   const existing = await db
@@ -310,13 +413,20 @@ export async function createCustomer(data: {
   const { randomBytes } = await import('crypto')
   const userId = `FYGK-${randomBytes(6).toString('hex')}`
 
-  await db.insert(clientWechatUsers).values({
-    userId,
-    phone: data.phone,
-    name: data.name,
-    boundStoreId: data.boundStoreId ?? null,
-    boundEmployeeId: data.boundEmployeeId ?? null,
-  })
+  try {
+    await db.insert(clientWechatUsers).values({
+      userId,
+      phone: data.phone,
+      name: data.name,
+      boundStoreId: data.boundStoreId ?? null,
+      boundEmployeeId: data.boundEmployeeId ?? null,
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return { success: false, message: '该手机号已被其他顾客使用' }
+    }
+    throw err
+  }
 
   await logOperation(session, 'customer.create', 'customer', userId, { name: data.name, phone: data.phone })
 

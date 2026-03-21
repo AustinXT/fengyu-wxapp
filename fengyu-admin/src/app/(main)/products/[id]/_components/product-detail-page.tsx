@@ -1,14 +1,16 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Product, ProductSku, ProductCategory } from "@/lib/types"
 import { updateProduct, createSku, updateSku, deleteSku } from "@/actions/products"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { CategoryCascader } from "@/components/ui/category-cascader"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { DataTable, type Column } from "@/components/ui/data-table"
@@ -23,19 +25,51 @@ import {
 } from "@/components/ui/alert-dialog"
 import { formatCurrency } from "@/lib/utils"
 
+interface Market {
+  id: string
+  name: string
+}
+
 export default function ProductDetailPageClient({
   product,
   skus,
   categories,
+  markets,
+  manageScope,
 }: {
   product: Product
   skus: ProductSku[]
   categories: ProductCategory[]
+  markets: Market[]
+  manageScope: { scopeId: string | null; scopeName: string }
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
+  const [categoryId, setCategoryId] = useState(product.categoryId)
   const [coverImage, setCoverImage] = useState(product.coverImage ?? "")
   const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? [])
+
+  // 新增字段状态
+  const [isBundle, setIsBundle] = useState(product.isBundle)
+  const [isShengmei, setIsShengmei] = useState<boolean>(product.isShengmei ?? false)
+  const [allMarkets, setAllMarkets] = useState(!product.marketScope)
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
+    product.marketScope ? product.marketScope.split(',') : []
+  )
+
+  const selectedCategory = categories.find(c => c.categoryId === categoryId)
+  const selectedProductKind = selectedCategory?.productKind
+
+  // 管理范围显示名（从 markets 查找，或显示 "总部"）
+  const manageScopeDisplay = useMemo(() => {
+    if (!product.manageScope) return '总部'
+    const m = markets.find(mk => mk.id === product.manageScope)
+    return m?.name ?? product.manageScope
+  }, [product.manageScope, markets])
+
+  const marketMap = useMemo(() => new Map(markets.map(m => [m.id, m.name])), [markets])
 
   // SKU Sheet state
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -47,6 +81,18 @@ export default function ProductDetailPageClient({
   const [deletingSkuId, setDeletingSkuId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  const handleCategoryChange = (id: string) => {
+    setCategoryId(id)
+    const cat = categories.find(c => c.categoryId === id)
+    if (cat) {
+      setIsBundle(cat.productKind === '福利活动')
+      if (cat.productKind !== '护理项目') {
+        setIsShengmei(false)
+      }
+    }
+    setFormDirty(true)
+  }
+
   // --- Product Save ---
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -54,7 +100,6 @@ export default function ProductDetailPageClient({
     const fd = new FormData(form)
 
     const name = (fd.get("name") as string).trim()
-    const categoryId = fd.get("categoryId") as string
     const price = (fd.get("price") as string).trim()
 
     if (!name) {
@@ -79,19 +124,29 @@ export default function ProductDetailPageClient({
 
     setSaving(true)
     try {
-      await updateProduct(product.productId, {
+      const result = await updateProduct(product.productId, {
         categoryId,
         name,
         coverImage: coverImage || null,
         detailImages: detailImages.length > 0 ? detailImages : null,
         description,
+        isShengmei: selectedProductKind === '护理项目' ? isShengmei : null,
+        isBundle,
         price,
         specialPrice,
         salesCategory,
+        manageScope: manageScope.scopeId,
+        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         sortOrder,
         validStart,
         validEnd,
-      })
+      }, product.updatedAt)
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
+      setFormDirty(false)
       toast.success("保存成功")
       router.refresh()
     } catch {
@@ -142,12 +197,13 @@ export default function ProductDetailPageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const serviceFee = (fd.get("serviceFee") as string).trim() || "0"
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const isBundleSku = fd.get("isBundleSku") === "on"
+    const skuValidStart = (fd.get("skuValidStart") as string) || null
+    const skuValidEnd = (fd.get("skuValidEnd") as string) || null
 
     setSkuSaving(true)
     try {
       if (editingSku) {
-        await updateSku(editingSku.skuId, {
+        const skuResult = await updateSku(editingSku.skuId, {
           specName,
           productType,
           price,
@@ -155,12 +211,19 @@ export default function ProductDetailPageClient({
           sessionCount,
           serviceFee,
           sortOrder,
-          isBundleSku,
-        })
+          isBundleSku: isBundle,
+          validStart: skuValidStart,
+          validEnd: skuValidEnd,
+        }, editingSku.updatedAt)
+        if (!skuResult.success) {
+          toast.error(skuResult.message)
+          if (skuResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("规格更新成功")
       } else {
         const skuId = `sku-${Date.now()}`
-        await createSku({
+        const createResult = await createSku({
           skuId,
           productId: product.productId,
           specName,
@@ -170,8 +233,14 @@ export default function ProductDetailPageClient({
           sessionCount,
           serviceFee,
           sortOrder,
-          isBundleSku,
+          isBundleSku: isBundle,
+          validStart: skuValidStart,
+          validEnd: skuValidEnd,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("规格创建成功")
       }
       setSheetOpen(false)
@@ -193,7 +262,11 @@ export default function ProductDetailPageClient({
     if (!deletingSkuId) return
     setDeleting(true)
     try {
-      await deleteSku(deletingSkuId)
+      const delResult = await deleteSku(deletingSkuId)
+      if (!delResult.success) {
+        toast.error(delResult.message)
+        return
+      }
       toast.success("规格已删除")
       setDeleteDialogOpen(false)
       setDeletingSkuId(null)
@@ -237,6 +310,17 @@ export default function ProductDetailPageClient({
       cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
     },
     {
+      key: "validEnd" as keyof ProductSku,
+      header: "有效期",
+      cell: (row) => (
+        <span className="text-sm text-[var(--muted-foreground)]">
+          {row.validStart || row.validEnd
+            ? `${row.validStart ?? '—'} ~ ${row.validEnd ?? '—'}`
+            : "同商品"}
+        </span>
+      ),
+    },
+    {
       key: "actions",
       header: "操作",
       cell: (row) => (
@@ -254,16 +338,31 @@ export default function ProductDetailPageClient({
 
   return (
     <div className="space-y-4">
-      <form onSubmit={handleSave} className="space-y-4">
-        <div className="flex items-center gap-3">
-          <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
-            &larr; 返回
-          </Button>
-          <h1 className="text-2xl font-bold text-[var(--foreground)]">
-            商品详情 - {product.name}
-          </h1>
-        </div>
+      <div className="flex items-center gap-3">
+        <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+          &larr; 返回
+        </Button>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">
+          商品详情 - {product.name}
+        </h1>
+      </div>
 
+      {/* 商品规格列表 */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">商品规格列表</CardTitle>
+          <Button size="sm" onClick={openCreateSku}>新增规格</Button>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            columns={skuColumns}
+            data={skus}
+            emptyText="暂无规格"
+          />
+        </CardContent>
+      </Card>
+
+      <form onSubmit={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
         {/* 基本信息 */}
         <Card>
           <CardHeader>
@@ -277,13 +376,12 @@ export default function ProductDetailPageClient({
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">品项分类</label>
-                <Select name="categoryId" defaultValue={product.categoryId}>
-                  {categories.map((c) => (
-                    <option key={c.categoryId} value={c.categoryId}>
-                      {c.categoryName}（{c.productKind}）
-                    </option>
-                  ))}
-                </Select>
+                <CategoryCascader
+                  name="categoryId"
+                  categories={categories}
+                  value={categoryId}
+                  onChange={handleCategoryChange}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">销售分类</label>
@@ -297,7 +395,29 @@ export default function ProductDetailPageClient({
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">是否套餐</label>
-                <Input value={product.isBundle ? "是" : "否"} disabled />
+                <Select
+                  value={isBundle ? "true" : "false"}
+                  onChange={(e) => { setIsBundle(e.target.value === "true"); setFormDirty(true) }}
+                >
+                  <option value="false">否</option>
+                  <option value="true">是</option>
+                </Select>
+              </div>
+              {selectedProductKind === '护理项目' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">是否生美</label>
+                  <Select
+                    value={isShengmei ? "true" : "false"}
+                    onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
+                  >
+                    <option value="false">否（科美）</option>
+                    <option value="true">是（生美）</option>
+                  </Select>
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">管理范围</label>
+                <Input value={manageScopeDisplay} disabled />
               </div>
             </div>
           </CardContent>
@@ -315,12 +435,12 @@ export default function ProductDetailPageClient({
                 <Input name="price" type="number" defaultValue={product.price} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">特价</label>
+                <label className="text-sm font-medium">会员价</label>
                 <Input
                   name="specialPrice"
                   type="number"
                   defaultValue={product.specialPrice ?? ""}
-                  placeholder="不填则无特价"
+                  placeholder="不填则无会员价"
                 />
               </div>
             </div>
@@ -338,7 +458,7 @@ export default function ProductDetailPageClient({
                 <label className="text-sm font-medium">商品描述</label>
                 <textarea
                   name="description"
-                  className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 min-h-[80px]"
+                  className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] min-h-[80px]"
                   defaultValue={product.description ?? ""}
                 />
               </div>
@@ -364,6 +484,52 @@ export default function ProductDetailPageClient({
                 <label className="text-sm font-medium">排序</label>
                 <Input name="sortOrder" type="number" defaultValue={product.sortOrder} />
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 可见范围 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">可见范围</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={allMarkets}
+                  onChange={(e) => {
+                    setAllMarkets(e.target.checked)
+                    if (e.target.checked) setSelectedMarketIds([])
+                    setFormDirty(true)
+                  }}
+                  className="h-4 w-4 rounded border-[var(--input)]"
+                />
+                <span className="text-sm font-medium">全部市场</span>
+              </label>
+              {!allMarkets && (
+                <div className="grid grid-cols-3 gap-2 pl-6">
+                  {markets.map((m) => (
+                    <label key={m.id} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedMarketIds.includes(m.id)}
+                        onChange={(e) => {
+                          setSelectedMarketIds((prev) =>
+                            e.target.checked
+                              ? [...prev, m.id]
+                              : prev.filter((id) => id !== m.id)
+                          )
+                          setFormDirty(true)
+                        }}
+                        className="h-4 w-4 rounded border-[var(--input)]"
+                      />
+                      <span className="text-sm">{m.name}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -401,21 +567,6 @@ export default function ProductDetailPageClient({
           <Button type="submit" loading={saving}>保存</Button>
         </div>
       </form>
-
-      {/* SKU 列表 */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">SKU 列表</CardTitle>
-          <Button size="sm" onClick={openCreateSku}>新增规格</Button>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            columns={skuColumns}
-            data={skus}
-            emptyText="暂无规格"
-          />
-        </CardContent>
-      </Card>
 
       {/* SKU Sheet */}
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
@@ -460,13 +611,13 @@ export default function ProductDetailPageClient({
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">特价</label>
+                <label className="text-sm font-medium">会员价</label>
                 <Input
                   name="specialPrice"
                   type="number"
                   step="0.01"
                   defaultValue={editingSku?.specialPrice ?? ""}
-                  placeholder="不填则无特价"
+                  placeholder="不填则无会员价"
                   key={`sp-${editingSku?.skuId ?? "new"}`}
                 />
               </div>
@@ -503,13 +654,39 @@ export default function ProductDetailPageClient({
               <div className="flex items-center gap-2">
                 <input
                   type="checkbox"
-                  name="isBundleSku"
                   id="isBundleSku"
-                  defaultChecked={editingSku?.isBundleSku ?? false}
+                  checked={isBundle}
+                  disabled
                   className="h-4 w-4 rounded border-[var(--input)]"
-                  key={`bs-${editingSku?.skuId ?? "new"}`}
                 />
-                <label htmlFor="isBundleSku" className="text-sm font-medium">套餐规格</label>
+                <label htmlFor="isBundleSku" className="text-sm font-medium text-[var(--muted-foreground)]">
+                  套餐规格{isBundle ? "（跟随商品）" : ""}
+                </label>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <label className="text-sm font-medium">规格有效期</label>
+                <p className="text-xs text-[var(--muted-foreground)]">默认继承商品有效期，可单独设置</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <label className="text-sm">生效日期</label>
+                  <Input
+                    name="skuValidStart"
+                    type="date"
+                    defaultValue={editingSku?.validStart ?? product.validStart ?? ""}
+                    key={`vs-${editingSku?.skuId ?? "new"}`}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm">截止日期</label>
+                  <Input
+                    name="skuValidEnd"
+                    type="date"
+                    defaultValue={editingSku?.validEnd ?? product.validEnd ?? ""}
+                    key={`ve-${editingSku?.skuId ?? "new"}`}
+                  />
+                </div>
               </div>
             </div>
           </SheetContent>

@@ -1,21 +1,28 @@
 // pages/orders/orders.ts
 import Toast from '@vant/weapp/toast/toast';
-import { getStatusClass } from '../../utils/format';
+import { getStatusClass, formatOrderDate } from '../../utils/format';
 import { callClientApi } from '../../utils/cloud';
+
+const PAGE_SIZE = 20;
 
 Page({
   data: {
     activeTab: 'all',
     list: [] as any[],
     isLoading: false,
+    loadingMore: false,
+    loadError: false,
+    hasMore: true,
   },
+
+  _page: 1,
 
   onLoad(options) {
     const { status } = options as { status?: string };
     if (status) {
       this.setData({ activeTab: status });
     }
-    this.loadOrders();
+    // 不在此处加载，由 onShow 统一处理（避免首次进入双重请求）
   },
 
   onShow() {
@@ -26,31 +33,76 @@ Page({
     this.loadOrders().finally(() => wx.stopPullDownRefresh());
   },
 
+  onReachBottom() {
+    if (this.data.hasMore && !this.data.loadingMore && !this.data.isLoading) {
+      this.loadMore();
+    }
+  },
+
   onTabChange(e: WechatMiniprogram.CustomEvent<{ name: string }>) {
     this.setData({ activeTab: e.detail.name });
     this.loadOrders();
   },
 
+  _mapOrders(orders: any[]) {
+    return orders.map(item => {
+      const hasAppointable = item.status === '已支付'
+        && (item.items || []).some((i: any) =>
+          i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
+        );
+      const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
+      return {
+        ...item,
+        statusClass: getStatusClass(item.status),
+        order_time_fmt: formatOrderDate(item.sale_order_datetime),
+        hasAppointable,
+        itemCount,
+      };
+    });
+  },
+
   async loadOrders() {
-    this.setData({ isLoading: true });
+    this._page = 1;
+    this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
-      const payload = this.data.activeTab === 'all' ? {} : { status: this.data.activeTab };
+      const payload: Record<string, any> = { page: 1, pageSize: PAGE_SIZE };
+      if (this.data.activeTab !== 'all') {
+        payload.status = this.data.activeTab;
+      }
       const data = await callClientApi('order.list', payload);
       const orders: any[] = data?.orders || [];
-      const list = orders.map(item => {
-        const rawDt = String(item.sale_order_datetime);
-        const d = new Date(rawDt.includes('T') ? rawDt : rawDt.replace(/-/g, '/'));
-        return {
-          ...item,
-          statusClass: getStatusClass(item.status),
-          order_time_fmt: `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`,
-        };
+      this.setData({
+        list: this._mapOrders(orders),
+        hasMore: data?.hasMore ?? false,
       });
-      this.setData({ list });
     } catch {
       Toast.fail('加载失败');
+      this.setData({ loadError: true });
     } finally {
       this.setData({ isLoading: false });
+    }
+  },
+
+  async loadMore() {
+    this._page += 1;
+    this.setData({ loadingMore: true });
+    try {
+      const payload: Record<string, any> = { page: this._page, pageSize: PAGE_SIZE };
+      if (this.data.activeTab !== 'all') {
+        payload.status = this.data.activeTab;
+      }
+      const data = await callClientApi('order.list', payload);
+      const orders: any[] = data?.orders || [];
+      this.setData({
+        list: [...this.data.list, ...this._mapOrders(orders)],
+        hasMore: data?.hasMore ?? false,
+      });
+    } catch {
+      // 加载更多失败，回退页码，用户可重试
+      this._page -= 1;
+      Toast.fail('加载更多失败');
+    } finally {
+      this.setData({ loadingMore: false });
     }
   },
 
@@ -60,9 +112,32 @@ Page({
   },
 
   onPayTap(e: WechatMiniprogram.TouchEvent) {
-    // catch:tap in WXML prevents bubbling; no JS stopPropagation needed
     const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?saleOrderId=${saleOrderId}` });
+  },
+
+  async onCancelTap(e: WechatMiniprogram.TouchEvent) {
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    try {
+      const res = await wx.showModal({
+        title: '确认取消',
+        content: '确定要取消该订单吗？取消后无法恢复。',
+        confirmText: '确定取消',
+        confirmColor: '#FF4D4F',
+      });
+      if (!res.confirm) return;
+      Toast.loading({ message: '取消中...', forbidClick: true, duration: 0 });
+      await callClientApi('order.cancel', { saleOrderId });
+      Toast.success('订单已取消');
+      this.loadOrders();
+    } catch (err: any) {
+      Toast.fail(err.message || '取消失败');
+    }
+  },
+
+  onAppointmentTap(e: WechatMiniprogram.TouchEvent) {
+    const { saleOrderId } = e.currentTarget.dataset as { saleOrderId: string };
+    wx.navigateTo({ url: `/pagesAppointment/appointment-create/appointment-create?saleOrderId=${saleOrderId}` });
   },
 
   onShareAppMessage() {

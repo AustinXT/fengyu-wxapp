@@ -1,13 +1,17 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { SkillSelect } from "@/components/ui/skill-select"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
+import { findAncestorMarketId } from "@/lib/utils"
 import type { Store, OrgNode } from "@/lib/types"
 
 interface Props {
@@ -18,6 +22,8 @@ interface Props {
 export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
   const [form, setForm] = useState({
     name: "",
     gender: "",
@@ -27,10 +33,21 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
     orgNodeId: "",
     positionName: "",
     birthday: "",
-    skills: "",
+    skills: [] as string[],
   })
 
-  function handleChange(field: string, value: string) {
+  // 根据所属组织的市场过滤门店
+  const filteredStores = useMemo(() => {
+    const marketId = findAncestorMarketId(form.orgNodeId || null, orgNodes)
+    if (!marketId) return stores
+    return stores.filter((s) => {
+      const storeOrgNode = orgNodes.find((n) => n.id === s.orgNodeId)
+      return storeOrgNode?.parentId === marketId
+    })
+  }, [form.orgNodeId, orgNodes, stores])
+
+  function handleChange(field: string, value: string | string[]) {
+    setFormDirty(true)
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -46,11 +63,6 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
 
     setSaving(true)
     try {
-      const skillsArr = form.skills
-        .split(/[,，]/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-
       const result = await createEmployee({
         name: form.name.trim(),
         phone: form.phone.trim(),
@@ -60,9 +72,14 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName.trim() || null,
         birthday: form.birthday || null,
-        skills: skillsArr.length > 0 ? skillsArr : null,
+        skills: form.skills.length > 0 ? form.skills : null,
       })
 
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success(result.message)
       router.push("/employees")
       router.refresh()
@@ -128,33 +145,36 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
               />
             </div>
             <div className="space-y-2">
+              <label className="text-sm font-medium">所属组织</label>
+              <OrgTreeSelect
+                orgNodes={orgNodes}
+                value={form.orgNodeId}
+                onChange={(id) => {
+                  handleChange("orgNodeId", id)
+                  const newMarketId = findAncestorMarketId(id, orgNodes)
+                  const storeMarketId = findAncestorMarketId(
+                    stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
+                    orgNodes,
+                  )
+                  if (newMarketId !== storeMarketId) {
+                    handleChange("storeId", "")
+                  }
+                }}
+                placeholder="请选择所属组织"
+              />
+            </div>
+            <div className="space-y-2">
               <label className="text-sm font-medium">所属门店</label>
               <Select
                 value={form.storeId}
                 onChange={(e) => handleChange("storeId", e.target.value)}
               >
                 <option value="">请选择门店</option>
-                {stores.map((s) => (
+                {filteredStores.map((s) => (
                   <option key={s.storeId} value={s.storeId}>
                     {s.storeName}
                   </option>
                 ))}
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">部门</label>
-              <Select
-                value={form.orgNodeId}
-                onChange={(e) => handleChange("orgNodeId", e.target.value)}
-              >
-                <option value="">请选择部门</option>
-                {orgNodes
-                  .filter((n) => n.isActive)
-                  .map((n) => (
-                    <option key={n.id} value={n.id}>
-                      {n.name} ({n.type})
-                    </option>
-                  ))}
               </Select>
             </div>
             <div className="space-y-2">
@@ -175,10 +195,9 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
             </div>
             <div className="space-y-2 col-span-2">
               <label className="text-sm font-medium">技能标签</label>
-              <Input
+              <SkillSelect
                 value={form.skills}
-                onChange={(e) => handleChange("skills", e.target.value)}
-                placeholder="多个技能用逗号分隔"
+                onChange={(skills) => handleChange("skills", skills)}
               />
             </div>
           </div>

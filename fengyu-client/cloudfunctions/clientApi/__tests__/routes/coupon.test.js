@@ -1,6 +1,6 @@
 /**
  * 优惠券路由测试
- * 覆盖：list（过期懒清理）、available（store/category 匹配、折扣计算）
+ * 覆盖：list（过期懒清理）、available（store/category 匹配、折扣计算）、redeem（兑换码全路径）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -205,5 +205,166 @@ describe('coupon.available', () => {
     await routes.available(ctx)
 
     expect(pg.query.mock.calls[0][0]).toContain('store_name = $1')
+  })
+})
+
+describe('coupon.redeem', () => {
+  // 共用的有效模板数据
+  const validTemplate = {
+    template_id: 'tpl-1',
+    name: '新人专享券',
+    coupon_type: '现金券',
+    discount_value: 20,
+    min_spend: 0,
+    max_discount: null,
+    applicable_category_ids: null,
+    applicable_store_ids: null,
+    valid_days: 30,
+    template_expire_at: null,
+    max_claims: null,
+    claimed_count: 0,
+    description: '新用户专属',
+    is_active: true,
+  }
+
+  test('正常兑换（valid_days 计算有效期）', async () => {
+    pg.query
+      .mockResolvedValueOnce([validTemplate])   // 查找模板
+      .mockResolvedValueOnce([])                // 检查用户是否已兑换
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({ code: 'NEWUSER2025' })
+    await routes.redeem(ctx)
+
+    expect(ctx.result.name).toBe('新人专享券')
+    expect(ctx.result.couponType).toBe('现金券')
+    expect(ctx.result.discountValue).toBe(20)
+    expect(ctx.result.couponId).toMatch(/^cpn_/)
+    // 有效期约 30 天后
+    const diffDays = (new Date(ctx.result.expireAt) - new Date()) / (24 * 60 * 60 * 1000)
+    expect(diffDays).toBeGreaterThan(29)
+    expect(diffDays).toBeLessThan(31)
+  })
+
+  test('正常兑换（使用 template_expire_at 作为有效期）', async () => {
+    const futureDate = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000) // 60天后
+    const tpl = { ...validTemplate, valid_days: null, template_expire_at: futureDate.toISOString() }
+
+    pg.query
+      .mockResolvedValueOnce([tpl])
+      .mockResolvedValueOnce([])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({ code: 'SEASONAL' })
+    await routes.redeem(ctx)
+
+    expect(new Date(ctx.result.expireAt).getTime()).toBeCloseTo(futureDate.getTime(), -3)
+  })
+
+  test('正常兑换（无 valid_days 也无 template_expire_at → 默认30天）', async () => {
+    const tpl = { ...validTemplate, valid_days: null, template_expire_at: null }
+
+    pg.query
+      .mockResolvedValueOnce([tpl])
+      .mockResolvedValueOnce([])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({ code: 'DEFAULT30' })
+    await routes.redeem(ctx)
+
+    const diffDays = (new Date(ctx.result.expireAt) - new Date()) / (24 * 60 * 60 * 1000)
+    expect(diffDays).toBeGreaterThan(29)
+    expect(diffDays).toBeLessThan(31)
+  })
+
+  test('事务正确执行：INSERT user_coupons + UPDATE claimed_count', async () => {
+    pg.query
+      .mockResolvedValueOnce([validTemplate])
+      .mockResolvedValueOnce([])
+
+    let capturedClient = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      capturedClient = client
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({ code: 'TXTEST' })
+    await routes.redeem(ctx)
+
+    expect(capturedClient.query).toHaveBeenCalledTimes(2)
+    const [firstSql] = capturedClient.query.mock.calls[0]
+    const [secondSql] = capturedClient.query.mock.calls[1]
+    expect(firstSql).toContain('INSERT INTO user_coupons')
+    expect(secondSql).toContain('claimed_count = claimed_count + 1')
+  })
+
+  test('缺少兑换码 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({})
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*兑换码/)
+  })
+
+  test('空字符串兑换码 → INVALID_PARAMS', async () => {
+    const ctx = createBoundCtx({ code: '   ' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*兑换码/)
+  })
+
+  test('兑换码无效（模板不存在）→ INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([])  // 模板不存在
+
+    const ctx = createBoundCtx({ code: 'NOTEXIST' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*兑换码无效/)
+  })
+
+  test('模板已失效 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{ ...validTemplate, is_active: false }])
+
+    const ctx = createBoundCtx({ code: 'INACTIVE' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*已失效/)
+  })
+
+  test('模板级过期 → INVALID_PARAMS', async () => {
+    const expiredDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    pg.query.mockResolvedValueOnce([{
+      ...validTemplate, valid_days: null, template_expire_at: expiredDate,
+    }])
+
+    const ctx = createBoundCtx({ code: 'EXPIRED' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*已过期/)
+  })
+
+  test('达到领取上限 → INVALID_PARAMS', async () => {
+    pg.query.mockResolvedValueOnce([{
+      ...validTemplate, max_claims: 100, claimed_count: 100,
+    }])
+
+    const ctx = createBoundCtx({ code: 'MAXOUT' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*已被领完/)
+  })
+
+  test('用户已兑换过同一券 → INVALID_PARAMS', async () => {
+    pg.query
+      .mockResolvedValueOnce([validTemplate])
+      .mockResolvedValueOnce([{ coupon_id: 'cpn_existing' }])  // 已兑换
+
+    const ctx = createBoundCtx({ code: 'DUPLICATE' })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/INVALID_PARAMS.*已兑换过/)
+  })
+
+  test('无手机号 → PHONE_REQUIRED', async () => {
+    const ctx = createCtx({ payload: { code: 'TEST' }, auth: { phone: null } })
+    await expect(routes.redeem(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
   })
 })

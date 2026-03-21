@@ -57,19 +57,19 @@
 
 .section-more {
   font-size: 24rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .section-desc {
   font-size: 24rpx;
-  color: #999999;
+  color: var(--color-text-hint);
   display: block;
   margin-bottom: 12rpx;
 }
 
 /* ===== 分成卡片 ===== */
 .commission-card {
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 20rpx;
   padding: 32rpx;
   box-shadow: 0 4rpx 20rpx rgba(192, 50, 42, 0.35);
@@ -164,12 +164,12 @@
 .cal-total-amount {
   font-size: 32rpx;
   font-weight: 700;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .cal-total-detail {
   font-size: 22rpx;
-  color: #999999;
+  color: var(--color-text-hint);
 }
 
 .month-nav {
@@ -180,7 +180,7 @@
 
 .month-label {
   font-size: 26rpx;
-  color: #666666;
+  color: var(--color-text-secondary);
   min-width: 120rpx;
   text-align: center;
 }
@@ -194,7 +194,7 @@
   flex: 1;
   text-align: center;
   font-size: 22rpx;
-  color: #999999;
+  color: var(--color-text-hint);
   padding: 8rpx 0;
 }
 
@@ -215,13 +215,13 @@
 
 .cal-day-num {
   font-size: 26rpx;
-  color: #1A1A1A;
+  color: var(--color-text-primary);
   line-height: 1;
 }
 
 .cal-day-today .cal-day-num {
   color: #FFFFFF;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 50%;
   width: 48rpx;
   height: 48rpx;
@@ -233,7 +233,7 @@
 
 .cal-day-amount {
   font-size: 20rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   margin-top: 4rpx;
   line-height: 1;
 }

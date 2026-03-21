@@ -10,6 +10,7 @@ import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq, and } from 'drizzle-orm'
 import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
 
 const JWT_SECRET = new TextEncoder().encode(
@@ -92,8 +93,8 @@ export async function login(
 
   clearFailure(phone)
 
-  // 签发 JWT
-  const token = await new SignJWT({ employeeId: staff.employeeId })
+  // 签发 JWT（含 mustChange 标记，供 middleware 零 DB 查询判断）
+  const token = await new SignJWT({ employeeId: staff.employeeId, mustChange: pwRow.mustChange })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(JWT_EXPIRES)
     .setIssuedAt()
@@ -136,8 +137,10 @@ export async function changePassword(
     })
     .where(eq(adminPasswords.employeeId, session.employeeId))
 
-  // 重新签发 JWT（使 mustChange 状态更新）
-  const token = await new SignJWT({ employeeId: session.employeeId })
+  await logOperation(session, 'auth.changePassword', 'admin_password', session.employeeId)
+
+  // 重新签发 JWT（mustChange: false，使强制修改密码流程立即解除）
+  const token = await new SignJWT({ employeeId: session.employeeId, mustChange: false })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime(JWT_EXPIRES)
     .setIssuedAt()
@@ -257,7 +260,70 @@ export async function resetEmployeePassword(
     })
   }
 
+  await logOperation(session, 'auth.resetPassword', 'admin_password', employeeId, {
+    targetEmployeeId: employeeId,
+    isNewAccount: existing.length === 0,
+  })
+
   return { success: true, message: '密码重置成功，用户首次登录需修改密码' }
+}
+
+/**
+ * 管理员将员工密码重置为初始密码（手机号后 6 位）
+ */
+export async function resetToDefaultPassword(
+  employeeId: string
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSessionFromCookie()
+  if (!session) {
+    return { success: false, message: '未登录' }
+  }
+
+  const isAdmin = session.roles.some(r => r.role === 'admin')
+  if (!isAdmin) {
+    return { success: false, message: '仅系统管理员可重置密码' }
+  }
+
+  // 查询员工手机号
+  const [staff] = await db
+    .select({ phone: staffWechatUsers.phone })
+    .from(staffWechatUsers)
+    .where(eq(staffWechatUsers.employeeId, employeeId))
+    .limit(1)
+
+  if (!staff?.phone || staff.phone.length < 6) {
+    return { success: false, message: '该员工未绑定手机号，无法设置初始密码' }
+  }
+
+  const defaultPassword = staff.phone.slice(-6)
+  const passwordHash = await hash(defaultPassword, 12)
+
+  // UPSERT
+  const existing = await db
+    .select({ id: adminPasswords.id })
+    .from(adminPasswords)
+    .where(eq(adminPasswords.employeeId, employeeId))
+    .limit(1)
+
+  if (existing.length > 0) {
+    await db
+      .update(adminPasswords)
+      .set({ passwordHash, mustChange: true, lastChangedAt: new Date() })
+      .where(eq(adminPasswords.employeeId, employeeId))
+  } else {
+    await db.insert(adminPasswords).values({
+      employeeId,
+      passwordHash,
+      mustChange: true,
+    })
+  }
+
+  await logOperation(session, 'auth.resetToDefault', 'admin_password', employeeId, {
+    targetEmployeeId: employeeId,
+    isNewAccount: existing.length === 0,
+  })
+
+  return { success: true, message: '已重置为初始密码（手机号后 6 位），首次登录需修改密码' }
 }
 
 /**

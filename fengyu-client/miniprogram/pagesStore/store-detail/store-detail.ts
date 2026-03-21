@@ -5,6 +5,7 @@ import { callClientApi } from '../../utils/cloud';
 const app = getApp<IAppOption>();
 
 interface StoreInfo {
+  store_id: string;
   store_name: string;
   market_name: string;
   store_region: string;
@@ -14,10 +15,13 @@ interface StoreInfo {
   customer_count: number;
   cover_image: string;
   street_address: string;
+  latitude: number | null;
+  longitude: number | null;
   phone: string;
   business_hours: string;
   parking_info: string;
   description: string;
+  announcement: string;
 }
 
 interface UnbindRequest {
@@ -123,7 +127,7 @@ Page({
   async onConfirmBind() {
     const { storeId, storeName, sourceChannel, promoterName } = this.data;
     if (!sourceChannel) {
-      Toast('请选择来源渠道');
+      Toast.fail('请选择来源渠道');
       return;
     }
     try {
@@ -195,14 +199,14 @@ Page({
   },
 
   onCallPhone() {
-    const phone = (this.data.store as any)?.phone;
+    const phone = this.data.store?.phone;
     if (phone) {
       wx.makePhoneCall({ phoneNumber: phone });
     }
   },
 
   onOpenMap() {
-    const store = this.data.store as any;
+    const store = this.data.store;
     if (store?.latitude && store?.longitude) {
       wx.openLocation({
         latitude: Number(store.latitude),
@@ -212,7 +216,7 @@ Page({
       });
     } else if (store?.street_address) {
       wx.setClipboardData({ data: store.street_address });
-      Toast('地址已复制');
+      Toast.success('地址已复制');
     }
   },
 

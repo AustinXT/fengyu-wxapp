@@ -39,6 +39,8 @@
         block
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;"
+        loading="{{submitting}}"
+        disabled="{{submitting}}"
         bind:click="onConfirm"
       >确认预约</van-button>
 
@@ -47,6 +49,8 @@
           plain
           type="warning"
           custom-style="flex:1;border-radius:48rpx;"
+          loading="{{submitting}}"
+          disabled="{{submitting}}"
           bind:click="onCheckin"
         >顾客已到店</van-button>
         <van-button

@@ -1,8 +1,9 @@
 /**
  * 门店路由测试
- * 覆盖：list、detail、requestUnbind、getUnbindRequest、cancelUnbindRequest
+ * 覆盖：list、detail、requestUnbind、getUnbindRequest、cancelUnbindRequest、geocode
  */
 
+const https = require('https')
 const pg = globalThis.__mocks__.pg
 const { createCtx, createBoundCtx } = require('../helpers')
 
@@ -168,5 +169,83 @@ describe('store.cancelUnbindRequest', () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createBoundCtx({ requestId: 'nonexistent' })
     await expect(routes.cancelUnbindRequest(ctx)).rejects.toThrow(/INVALID_PARAMS.*不存在/)
+  })
+})
+
+describe('store.geocode', () => {
+  // 模拟 https.get 返回指定 body 的 helper
+  function mockHttpsResponse(body) {
+    vi.spyOn(https, 'get').mockImplementation((_url, callback) => {
+      const res = {
+        on: vi.fn((event, handler) => {
+          if (event === 'data') handler(body)
+          if (event === 'end') handler()
+          return res
+        }),
+      }
+      callback(res)
+      // 返回具有 .on() 方法的 req 对象（供链式 .on('error') 使用）
+      return { on: vi.fn().mockReturnThis() }
+    })
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  test('正常返回城市名（去掉"市"字）', async () => {
+    mockHttpsResponse(JSON.stringify({
+      status: 0,
+      result: { address_component: { city: '南昌市' } },
+    }))
+
+    const ctx = createCtx({ payload: { latitude: 28.6, longitude: 115.8 } })
+    await routes.geocode(ctx)
+
+    expect(ctx.result.city).toBe('南昌')
+  })
+
+  test('无"市"字的城市名原样返回', async () => {
+    mockHttpsResponse(JSON.stringify({
+      status: 0,
+      result: { address_component: { city: '北京' } },
+    }))
+
+    const ctx = createCtx({ payload: { latitude: 39.9, longitude: 116.4 } })
+    await routes.geocode(ctx)
+
+    expect(ctx.result.city).toBe('北京')
+  })
+
+  test('API 返回 city 为空时 → 返回空字符串', async () => {
+    mockHttpsResponse(JSON.stringify({
+      status: 0,
+      result: { address_component: { city: '' } },
+    }))
+
+    const ctx = createCtx({ payload: { latitude: 28.6, longitude: 115.8 } })
+    await routes.geocode(ctx)
+
+    expect(ctx.result.city).toBe('')
+  })
+
+  test('API status 非 0 → INVALID_PARAMS', async () => {
+    mockHttpsResponse(JSON.stringify({
+      status: 110,
+      message: 'key不合法',
+    }))
+
+    const ctx = createCtx({ payload: { latitude: 28.6, longitude: 115.8 } })
+    await expect(routes.geocode(ctx)).rejects.toThrow(/INVALID_PARAMS.*逆地理编码失败/)
+  })
+
+  test('缺少 latitude → INVALID_PARAMS', async () => {
+    const ctx = createCtx({ payload: { longitude: 115.8 } })
+    await expect(routes.geocode(ctx)).rejects.toThrow(/INVALID_PARAMS.*坐标/)
+  })
+
+  test('缺少 longitude → INVALID_PARAMS', async () => {
+    const ctx = createCtx({ payload: { latitude: 28.6 } })
+    await expect(routes.geocode(ctx)).rejects.toThrow(/INVALID_PARAMS.*坐标/)
   })
 })

@@ -14,10 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Tab | 页面 | 说明 |
 |-----|------|------|
-| 首页 | pages/home/home | 轮播、疗程卡、热门服务 |
-| 预约 | pages/appointment/appointment | 预约列表，按状态 Tab 筛选 |
-| 凤御馆 | pages/cart/cart | 购物车入口 |
-| 我的 | pages/profile/profile | 个人中心、手机绑定、门店绑定 |
+| 首页 | pages/home/home | Banner 轮播、金刚区、商品分类浏览、搜索 |
+| 预约 | pages/appointment/appointment | 预约列表，按状态 Tab 筛选，FAB 创建 |
+| 凤御馆 | pages/cart/cart | 品牌宣传长图 |
+| 我的 | pages/profile/profile | 个人中心、手机绑定、门店切换、快捷入口 |
 
 ## 分包
 
@@ -32,32 +32,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## API 调用模式
 
-各页面内定义 `callClientApi` 调用云函数：
+所有页面通过 `utils/cloud.ts` 导出的工具函数调用云函数，**禁止直接使用 `wx.cloud.callFunction`**：
 
 ```typescript
-async function callClientApi(action: string, payload: Record<string, any> = {}) {
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: { action, payload }
-  }) as any;
-  if (res.result?.code !== 0) {
-    throw new Error(res.result?.message || '请求失败');
-  }
-  return res.result.data;
-}
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+
+// 普通 API 调用（自动错误处理 + sanitizeErrorMessage）
+const data = await callClientApi<{ orders: Order[] }>('order.list', { status: '已支付' });
+
+// CloudID 手机号绑定（封装 loading/hideLoading + localStorage 持久化）
+const { phone, updatedOrdersCount } = await bindPhoneWithCloudID(cloudID);
 ```
 
-手机号绑定使用 CloudID 安全解密：
-```typescript
-wx.cloud.callFunction({
-  name: 'clientApi',
-  data: {
-    action: 'auth.bindPhone',
-    payload: {},
-    phoneData: wx.cloud.CloudID(cloudID)
-  }
-})
-```
+`utils/cloud.ts` 导出：
+- `callClientApi<T>(action, payload)` — 通用 API 调用，返回 `res.result.data`，失败自动 throw
+- `bindPhoneWithCloudID(cloudID)` — CloudID 绑定手机号，含 loading/error/storage 全流程
+- `sanitizeErrorMessage(msg, fallback)` — 过滤技术性错误（仅内部使用）
 
 ## 全局状态（app.globalData）
 
@@ -66,12 +56,15 @@ wx.cloud.callFunction({
   userInfo: WechatMiniprogram.UserInfo | null,
   userId: string,
   boundStoreName: string,
-  boundStoreId: string
+  boundStoreId: string,
+  boundMarketName: string,
+  statusBarHeight: number,    // 系统状态栏高度
+  navBarContentHeight: number, // 导航栏内容高度
+  navBarHeight: number,        // 总导航栏高度（状态栏 + 内容）
 }
 ```
 
-- 启动时 `restoreFromCache()` 从 localStorage 恢复
-- 随后 `syncLoginState()` 调用 `auth.login` 同步服务端状态
+- 启动时 `initNavBarInfo()` 计算导航栏高度 → `restoreFromCache()` 从 localStorage 恢复 → `syncLoginState()` 调用 `auth.login` 同步
 - `setUserInfo()` / `setStore()` 更新并持久化
 
 ## 状态管理
@@ -133,8 +126,8 @@ getCartTotal(): number                       // 总价
 
 ### 加购 → 结算
 ```
-pagesShop/shop → cart.addToCart() → localStorage
-pages/cart → setStorage('checkoutItems') → navigateTo pagesOrder/checkout
+pagesShop/service-detail → cart.addToCart() → localStorage
+pagesShop/shopping-cart → setStorage('checkoutItems') → navigateTo pagesOrder/checkout
 checkout → callClientApi('order.create') → order.pay → wx.requestPayment
 ```
 

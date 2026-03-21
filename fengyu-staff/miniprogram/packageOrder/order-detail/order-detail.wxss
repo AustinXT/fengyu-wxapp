@@ -19,7 +19,7 @@
   display: block;
   font-size: 26rpx;
   font-weight: 600;
-  color: #666;
+  color: var(--color-text-secondary);
   margin-bottom: 20rpx;
 }
 
@@ -37,7 +37,7 @@
 }
 .item-name { font-size: 28rpx; font-weight: 600; color: #2D2017; }
 .item-spec {
-  font-size: 22rpx; color: #666;
+  font-size: 22rpx; color: var(--color-text-secondary);
   background: #F5F2EE; padding: 2rpx 10rpx; border-radius: 6rpx;
 }
 
@@ -46,8 +46,8 @@
   align-items: center;
   gap: 16rpx;
 }
-.item-price { font-size: 26rpx; color: #C0322A; font-weight: 600; }
-.item-sessions { font-size: 22rpx; color: #999; }
+.item-price { font-size: 26rpx; color: var(--color-primary); font-weight: 600; }
+.item-sessions { font-size: 22rpx; color: var(--color-text-hint); }
 .item-flow-no { font-size: 20rpx; color: #BBB; font-family: monospace; display: block; margin-top: 4rpx; }
 
 .total-row {
@@ -58,8 +58,8 @@
   margin-top: 8rpx;
   border-top: 1rpx solid #E5DDD5;
 }
-.total-label { font-size: 26rpx; color: #666; }
-.total-amount { font-size: 40rpx; font-weight: 700; color: #C0322A; }
+.total-label { font-size: 26rpx; color: var(--color-text-secondary); }
+.total-amount { font-size: 40rpx; font-weight: 700; color: var(--color-primary); }
 
 .alloc-row {
   display: flex;
@@ -71,8 +71,8 @@
 .alloc-row:last-of-type { border-bottom: none; }
 .alloc-staff { font-size: 26rpx; color: #2D2017; }
 .alloc-right { display: flex; align-items: baseline; }
-.alloc-amount { font-size: 28rpx; font-weight: 600; color: #C0322A; }
-.alloc-ratio { font-size: 22rpx; color: #999; }
+.alloc-amount { font-size: 28rpx; font-weight: 600; color: var(--color-primary); }
+.alloc-ratio { font-size: 22rpx; color: var(--color-text-hint); }
 
 .re-alloc-btn { margin-top: 20rpx; text-align: right; }
 

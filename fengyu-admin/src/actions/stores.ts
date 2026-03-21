@@ -2,12 +2,13 @@
 
 import { db } from '@/db'
 import { stores, orgNodes } from '@db/org'
-import { eq, sql } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
+import type { AuthSession } from '@/lib/types'
 import { logOperation } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
@@ -52,6 +53,9 @@ export async function getStores(): Promise<Store[]> {
     .from(stores)
     .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+    .where(scopeCondition(session, stores.storeId))
+    .orderBy(stores.storeName)
+    .limit(200)
 
   return rows.map(rowToStore)
 }
@@ -65,7 +69,7 @@ export async function getStoreById(storeId: string): Promise<Store | null> {
     .from(stores)
     .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
-    .where(eq(stores.storeId, storeId))
+    .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
 
   if (rows.length === 0) return null
   return rowToStore(rows[0])
@@ -93,36 +97,52 @@ export async function createStore(data: {
   const session = await getSession()
   requirePermission(session, 'store:create')
 
-  // 同时创建 org_node（type=store）和 stores 记录
-  const orgNodeId = `store-${data.storeId}`
-  await db.insert(orgNodes).values({
-    id: orgNodeId,
-    name: data.storeName,
-    type: 'store',
-    parentId: data.marketId,
-    sortOrder: 0,
-    isActive: true,
-  })
+  // scope 隔离：非 admin 只能在自己 scope 的市场下创建门店
+  if (!isAdminScope(session)) {
+    const scopeIds = new Set(session.roles.map((r: AuthSession['roles'][number]) => r.scopeId))
+    if (!scopeIds.has(data.marketId)) {
+      return { success: false, message: '无权在该市场下创建门店' }
+    }
+  }
 
-  await db.insert(stores).values({
-    storeId: data.storeId,
-    storeName: data.storeName,
-    orgNodeId,
-    openingDate: data.openingDate ?? null,
-    bedCount: data.bedCount ?? null,
-    isClosed: data.isClosed ?? false,
-    coverImage: data.coverImage ?? null,
-    images: data.images ?? null,
-    district: data.district ?? null,
-    streetAddress: data.streetAddress ?? null,
-    latitude: data.latitude ?? null,
-    longitude: data.longitude ?? null,
-    phone: data.phone ?? null,
-    businessHours: data.businessHours ?? null,
-    description: data.description ?? null,
-    announcement: data.announcement ?? null,
-    parkingInfo: data.parkingInfo ?? null,
-  })
+  // 事务：org_node + stores 原子创建，失败则全部回滚
+  const orgNodeId = `store-${data.storeId}`
+  try {
+    await db.transaction(async (tx) => {
+      await tx.insert(orgNodes).values({
+        id: orgNodeId,
+        name: data.storeName,
+        type: 'store',
+        parentId: data.marketId,
+        sortOrder: 0,
+        isActive: true,
+      })
+
+      await tx.insert(stores).values({
+        storeId: data.storeId,
+        storeName: data.storeName,
+        orgNodeId,
+        openingDate: data.openingDate ?? null,
+        bedCount: data.bedCount ?? null,
+        isClosed: data.isClosed ?? false,
+        coverImage: data.coverImage ?? null,
+        images: data.images ?? null,
+        district: data.district ?? null,
+        streetAddress: data.streetAddress ?? null,
+        latitude: data.latitude ?? null,
+        longitude: data.longitude ?? null,
+        phone: data.phone ?? null,
+        businessHours: data.businessHours ?? null,
+        description: data.description ?? null,
+        announcement: data.announcement ?? null,
+        parkingInfo: data.parkingInfo ?? null,
+      })
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '门店编号已存在' }
+    if (err?.code === '23503') return { success: false, message: '所属市场不存在，请刷新后重试' }
+    throw err
+  }
 
   await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
   revalidatePath('/stores')
@@ -148,13 +168,35 @@ export async function updateStore(
     description: string | null
     announcement: string | null
     parkingInfo: string | null
-  }>
-) {
+  }>,
+  /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'store:update')
 
-  await db.update(stores).set(data).where(eq(stores.storeId, storeId))
+  // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
+  // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
+  const scopeCond = scopeCondition(session, stores.storeId)
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${expectedUpdatedAt}`, scopeCond)
+    : and(eq(stores.storeId, storeId), scopeCond)
+
+  let result: any
+  try {
+    result = await db.update(stores).set(data).where(whereConditions)
+  } catch (err: any) {
+    throw err
+  }
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '门店不存在',
+    }
+  }
 
   await logOperation(session, 'store.update', 'store', storeId, data)
   revalidatePath('/stores')
+  return { success: true, message: '门店信息已更新' }
 }

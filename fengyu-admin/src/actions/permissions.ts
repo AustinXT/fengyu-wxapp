@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -15,7 +15,16 @@ export async function getRoles(): Promise<PermissionRole[]> {
   const session = await getSession()
   requirePermission(session, 'permission:list')
 
-  // 默认只返回有效（未撤销）的记录
+  // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
+  const isAdmin = hasRole(session, 'admin')
+  const userScopeIds = session.roles.map(r => r.scopeId)
+  if (!isAdmin && userScopeIds.length === 0) return []
+
+  const baseWhere = eq(permissionRoles.isVoid, false)
+  const whereCondition = isAdmin
+    ? baseWhere
+    : and(baseWhere, inArray(permissionRoles.scopeId, userScopeIds))
+
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -32,8 +41,9 @@ export async function getRoles(): Promise<PermissionRole[]> {
     .from(permissionRoles)
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
-    .where(eq(permissionRoles.isVoid, false))
+    .where(whereCondition)
     .orderBy(permissionRoles.id)
+    .limit(500)
 
   return rows.map((r) => ({
     id: r.id,
@@ -45,6 +55,44 @@ export async function getRoles(): Promise<PermissionRole[]> {
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
     employeeName: r.employeeName ?? undefined,
+    scopeName: r.scopeName ?? undefined,
+  }))
+}
+
+/**
+ * 按员工查询权限角色（含已撤销），用于员工详情页。
+ * 页面级 scopeCondition 已保证只有可访问的员工才会到达此处，无需再做 scope 过滤。
+ */
+export async function getEmployeeRoles(employeeId: string): Promise<PermissionRole[]> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
+  const rows = await db
+    .select({
+      id: permissionRoles.id,
+      employeeId: permissionRoles.employeeId,
+      role: permissionRoles.role,
+      scopeId: permissionRoles.scopeId,
+      isVoid: permissionRoles.isVoid,
+      createdBy: permissionRoles.createdBy,
+      createdAt: permissionRoles.createdAt,
+      updatedAt: permissionRoles.updatedAt,
+      scopeName: orgNodes.name,
+    })
+    .from(permissionRoles)
+    .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
+    .where(eq(permissionRoles.employeeId, employeeId))
+    .orderBy(permissionRoles.id)
+
+  return rows.map((r) => ({
+    id: r.id,
+    employeeId: r.employeeId,
+    role: r.role as PermissionRole['role'],
+    scopeId: r.scopeId,
+    isVoid: r.isVoid,
+    createdBy: r.createdBy,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
     scopeName: r.scopeName ?? undefined,
   }))
 }
@@ -71,6 +119,18 @@ export async function assignRole(data: {
     }
   }
 
+  // admin 角色的 scopeId 必须是总部节点（spec AFF-07: scope_id 固定 headquarters）
+  if (data.role === 'admin') {
+    const [node] = await db
+      .select({ type: orgNodes.type })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, data.scopeId))
+      .limit(1)
+    if (!node || node.type !== 'headquarters') {
+      return { success: false, message: 'admin 角色必须绑定总部节点（headquarters）' }
+    }
+  }
+
   // 检查是否已存在相同的活跃角色记录，避免重复分配
   const [existing] = await db
     .select({ id: permissionRoles.id })
@@ -87,22 +147,34 @@ export async function assignRole(data: {
     return { success: false, message: '该员工已拥有相同的角色和权限范围' }
   }
 
-  await db.insert(permissionRoles).values({
-    employeeId: data.employeeId,
-    role: data.role,
-    scopeId: data.scopeId,
-    createdBy: session.employeeId,
-  })
+  try {
+    await db.insert(permissionRoles).values({
+      employeeId: data.employeeId,
+      role: data.role,
+      scopeId: data.scopeId,
+      createdBy: session.employeeId,
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      return { success: false, message: '该员工已拥有相同的角色和权限范围' }
+    }
+    throw err
+  }
 
   await logOperation(session, 'permission.assign', 'permission_role', data.employeeId, {
     role: data.role, scopeId: data.scopeId,
   })
 
   revalidatePath('/permissions')
+  revalidatePath('/employees')
   return { success: true, message: '角色分配成功' }
 }
 
-export async function revokeRole(id: number): Promise<{ success: boolean; message: string }> {
+export async function revokeRole(
+  id: number,
+  /** 乐观锁：提交时携带的 updated_at */
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'permission:revoke')
 
@@ -133,15 +205,32 @@ export async function revokeRole(id: number): Promise<{ success: boolean; messag
     }
   }
 
-  await db
-    .update(permissionRoles)
-    .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-    .where(eq(permissionRoles.id, id))
+  const whereConditions = expectedUpdatedAt
+    ? and(eq(permissionRoles.id, id), sql`date_trunc('milliseconds', ${permissionRoles.updatedAt}) = ${expectedUpdatedAt}`)
+    : eq(permissionRoles.id, id)
+
+  let result: any
+  try {
+    result = await db
+      .update(permissionRoles)
+      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
+      .where(whereConditions)
+  } catch (err: any) {
+    throw err
+  }
+
+  if ((result as any).count === 0) {
+    return {
+      success: false,
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '角色记录不存在或已被撤销',
+    }
+  }
 
   await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
     role: target.role,
   })
 
   revalidatePath('/permissions')
+  revalidatePath('/employees')
   return { success: true, message: '角色已撤销' }
 }

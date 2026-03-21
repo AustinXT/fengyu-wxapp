@@ -1,17 +1,18 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import type { Product, ProductKind, ProductCategory } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { CategoryCascader } from "@/components/ui/category-cascader"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const KIND_COLORS: Record<ProductKind, string> = {
   "福利活动": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
@@ -20,7 +21,6 @@ const KIND_COLORS: Record<ProductKind, string> = {
   "充值卡": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
 }
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
 
 export default function ProductsPageClient({
   products,
@@ -29,10 +29,26 @@ export default function ProductsPageClient({
   products: Product[]
   categories: ProductCategory[]
 }) {
-  const [search, setSearch] = useState("")
-  const [categoryFilter, setCategoryFilter] = useState("")
-  const [kindFilter, setKindFilter] = useState("")
-  const [page, setPage] = useState(1)
+  const { get, set, setMany } = useUrlFilters()
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
+
+  // 搜索框防抖
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
+
+  const search = get("q")
+  const categoryFilter = get("category")
+  const kindFilter = get("kind")
+
+  const page = Number(get("page", "1"))
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
   const filtered = useMemo(() => {
     let result = products
@@ -50,8 +66,8 @@ export default function ProductsPageClient({
   }, [products, search, categoryFilter, kindFilter])
 
   const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
   )
 
   const columns: Column<Product>[] = [
@@ -93,7 +109,7 @@ export default function ProductsPageClient({
     },
     {
       key: "specialPrice",
-      header: "特价",
+      header: "会员价",
       cell: (row) => (
         <span className={row.specialPrice ? "text-[#C0322A]" : ""}>
           {row.specialPrice ? formatCurrency(row.specialPrice) : "—"}
@@ -145,43 +161,21 @@ export default function ProductsPageClient({
       </div>
 
       <div className="flex items-center gap-3">
-        <Select
+        <CategoryCascader
+          categories={categories}
           value={categoryFilter}
-          onChange={(e) => {
-            setCategoryFilter(e.target.value)
-            setPage(1)
+          kindValue={kindFilter}
+          allowEmpty
+          placeholder="品项筛选"
+          className="w-56"
+          onChange={(catId, kind) => {
+            setMany({ category: catId, kind, page: '' })
           }}
-          className="w-40"
-        >
-          <option value="">全部分类</option>
-          {categories.map((c) => (
-            <option key={c.categoryId} value={c.categoryId}>
-              {c.categoryName}
-            </option>
-          ))}
-        </Select>
-        <Select
-          value={kindFilter}
-          onChange={(e) => {
-            setKindFilter(e.target.value)
-            setPage(1)
-          }}
-          className="w-32"
-        >
-          <option value="">全部类型</option>
-          {PRODUCT_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </Select>
+        />
         <Input
           placeholder="搜索商品名称"
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value)
-            setPage(1)
-          }}
+          value={searchInput}
+          onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"
         />
       </div>
@@ -190,9 +184,11 @@ export default function ProductsPageClient({
 
       <Pagination
         total={filtered.length}
-        pageSize={PAGE_SIZE}
+        pageSize={pageSize}
         page={page}
-        onPageChange={setPage}
+        onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
       />
     </div>
   )

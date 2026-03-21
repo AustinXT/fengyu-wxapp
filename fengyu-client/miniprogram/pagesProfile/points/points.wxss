@@ -91,11 +91,11 @@
 }
 
 .record-icon-earn {
-  background: #52C41A;
+  background: var(--color-success);
 }
 
 .record-icon-redeem {
-  background: #FAAD14;
+  background: var(--color-warning);
 }
 
 .record-info {
@@ -122,7 +122,7 @@
 }
 
 .amount-earn {
-  color: #52C41A;
+  color: var(--color-success);
 }
 
 .amount-redeem {

@@ -76,7 +76,7 @@
     <!-- 价格区 -->
     <view class="action-bar__price" wx:if="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
-      <text class="action-bar__price-value">{{selectedSku.price * quantity}}</text>
+      <text class="action-bar__price-value">{{selectedTotal}}</text>
       <text class="action-bar__price-qty" wx:if="{{quantity > 1}}"> x{{quantity}}</text>
     </view>
     <view class="action-bar__price" wx:else>

@@ -3,6 +3,7 @@
 import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Customer, SaleOrder, Appointment, SaleItem, Store, Employee } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -28,6 +29,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
 
   // Edit state
   const [isEditing, setIsEditing] = useState(false)
+  useUnsavedChanges(isEditing)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: customer.name ?? "",
@@ -71,7 +73,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
   async function handleSave() {
     setSaving(true)
     try {
-      await updateCustomer(customer.userId, {
+      const result = await updateCustomer(customer.userId, {
         name: form.name || null,
         boundStoreId: form.boundStoreId || null,
         boundEmployeeId: form.boundEmployeeId || null,
@@ -85,7 +87,12 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
         improvementFocus: form.improvementFocus || null,
         skinIssue: form.skinIssue || null,
         wellnessPreference: form.wellnessPreference || null,
-      })
+      }, customer.updatedAt)
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
       toast.success("保存成功")
       setIsEditing(false)
       router.refresh()

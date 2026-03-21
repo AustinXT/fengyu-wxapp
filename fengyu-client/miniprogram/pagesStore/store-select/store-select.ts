@@ -8,16 +8,14 @@ const app = getApp<IAppOption>();
 interface Store {
   store_id: string;
   store_name: string;
-  market: string;
-  market_name?: string;
-  store_region?: string;
-  region?: string;
+  market_name: string;
+  store_region: string;
   open_date?: string;
   available_beds?: number;
 }
 
 interface StoreGroup {
-  market: string;
+  market_name: string;
   stores: Store[];
 }
 
@@ -46,7 +44,7 @@ Page({
       city = await getCurrentCity();
       this.setData({ currentCity: city });
     } catch (err: any) {
-      console.log('[loadStoresWithLocation] 定位失败或被拒绝:', err);
+      console.warn('[loadStoresWithLocation] 定位失败或被拒绝:', err);
       // 定位失败：标记状态，预加载全量门店供搜索使用
       this.setData({ locationFailed: true, showHint: 'search' });
     }
@@ -55,18 +53,14 @@ Page({
 
   async loadStores(city: string = '') {
     this.setData({ isLoading: true });
-    console.log('[Stores] start loading, selectedStore:', this.data.selectedStore, 'city:', city);
     try {
       const payload = city ? { city } : {};
-      const data = await callClientApi('store.list', payload);
-      console.log('[loadStores] data:', JSON.stringify(data));
-      const stores: Store[] = data?.stores || [];
-      // 兼容字段名：API 返回 market_name，前端使用 market
-      stores.forEach(s => {
-        (s as any).market = (s as any).market_name || '其他';
-        (s as any).region = (s as any).store_region || '';
-      });
-      console.log('[loadStores] stores count:', stores.length);
+      const data = await callClientApi<{ stores: Store[] }>('store.list', payload);
+      const stores: Store[] = (data?.stores || []).map(s => ({
+        ...s,
+        market_name: s.market_name || '其他',
+        store_region: s.store_region || '',
+      }));
 
       // 按城市筛选后无门店：提示并停止，不降级显示全部
       if (city && stores.length === 0) {
@@ -97,11 +91,11 @@ Page({
   buildGroups(stores: Store[]) {
     const map = new Map<string, Store[]>();
     stores.forEach(s => {
-      if (!map.has(s.market)) map.set(s.market, []);
-      map.get(s.market)!.push(s);
+      if (!map.has(s.market_name)) map.set(s.market_name, []);
+      map.get(s.market_name)!.push(s);
     });
-    const groupedStores: StoreGroup[] = Array.from(map.entries()).map(([market, stores]) => ({
-      market,
+    const groupedStores: StoreGroup[] = Array.from(map.entries()).map(([market_name, stores]) => ({
+      market_name,
       stores,
     }));
     this.setData({ groupedStores });
@@ -113,7 +107,7 @@ Page({
 
     if (keyword.length >= 2) {
       const filtered = this.data.allStores.filter(s =>
-        s.store_name.includes(keyword) || s.region?.includes(keyword)
+        s.store_name.includes(keyword) || s.store_region.includes(keyword)
       );
       this.setData({ showHint: '' });
       this.buildGroups(filtered);

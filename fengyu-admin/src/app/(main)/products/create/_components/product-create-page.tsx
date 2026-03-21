@@ -5,22 +5,59 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import type { ProductCategory } from "@/lib/types"
 import { createProduct } from "@/actions/products"
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
+import { CategoryCascader } from "@/components/ui/category-cascader"
+
+interface Market {
+  id: string
+  name: string
+}
 
 export default function ProductCreatePageClient({
   categories,
+  markets,
+  manageScope,
 }: {
   categories: ProductCategory[]
+  markets: Market[]
+  manageScope: { scopeId: string | null; scopeName: string }
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const [categoryId, setCategoryId] = useState("")
   const [coverImage, setCoverImage] = useState("")
   const [detailImages, setDetailImages] = useState<string[]>([])
+  const [formDirty, setFormDirty] = useState(false)
+  useUnsavedChanges(formDirty)
+
+  // 是否套餐：根据分类自动默认（福利活动→是）
+  const [isBundle, setIsBundle] = useState(false)
+  // 是否生美：仅护理项目显示
+  const [isShengmei, setIsShengmei] = useState<boolean>(false)
+  // 可见范围：市场多选
+  const [allMarkets, setAllMarkets] = useState(true)
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
+
+  const selectedCategory = categories.find(c => c.categoryId === categoryId)
+  const selectedProductKind = selectedCategory?.productKind
+
+  const handleCategoryChange = (id: string) => {
+    setCategoryId(id)
+    const cat = categories.find(c => c.categoryId === id)
+    if (cat) {
+      setIsBundle(cat.productKind === '福利活动')
+      if (cat.productKind !== '护理项目') {
+        setIsShengmei(false)
+      }
+    }
+    setFormDirty(true)
+  }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -28,7 +65,6 @@ export default function ProductCreatePageClient({
     const fd = new FormData(form)
 
     const name = (fd.get("name") as string).trim()
-    const categoryId = fd.get("categoryId") as string
     const price = (fd.get("price") as string).trim()
 
     if (!name) {
@@ -46,7 +82,6 @@ export default function ProductCreatePageClient({
 
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const salesCategory = (fd.get("salesCategory") as string) || null
-    const isBundle = fd.get("isBundle") === "true"
     const description = (fd.get("description") as string).trim() || null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const validStart = (fd.get("validStart") as string) || null
@@ -56,21 +91,29 @@ export default function ProductCreatePageClient({
 
     setSaving(true)
     try {
-      await createProduct({
+      const result = await createProduct({
         productId,
         categoryId,
         name,
         coverImage: coverImage || null,
         detailImages: detailImages.length > 0 ? detailImages : null,
         description,
+        isShengmei: selectedProductKind === '护理项目' ? isShengmei : null,
         isBundle,
         price,
         specialPrice,
         salesCategory,
+        manageScope: manageScope.scopeId,
+        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         sortOrder,
         validStart,
         validEnd,
       })
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      setFormDirty(false)
       toast.success("商品创建成功")
       router.push("/products")
     } catch {
@@ -81,7 +124,7 @@ export default function ProductCreatePageClient({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} onInput={() => setFormDirty(true)} className="space-y-4">
       <div className="flex items-center gap-3">
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
@@ -102,16 +145,12 @@ export default function ProductCreatePageClient({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">品项分类</label>
-              <Select name="categoryId" defaultValue="">
-                <option value="" disabled>
-                  请选择分类
-                </option>
-                {categories.map((c) => (
-                  <option key={c.categoryId} value={c.categoryId}>
-                    {c.categoryName}（{c.productKind}）
-                  </option>
-                ))}
-              </Select>
+              <CategoryCascader
+                name="categoryId"
+                categories={categories}
+                value={categoryId}
+                onChange={handleCategoryChange}
+              />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">销售分类</label>
@@ -127,10 +166,29 @@ export default function ProductCreatePageClient({
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">是否套餐</label>
-              <Select name="isBundle" defaultValue="false">
+              <Select
+                value={isBundle ? "true" : "false"}
+                onChange={(e) => { setIsBundle(e.target.value === "true"); setFormDirty(true) }}
+              >
                 <option value="false">否</option>
                 <option value="true">是</option>
               </Select>
+            </div>
+            {selectedProductKind === '护理项目' && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium">是否生美</label>
+                <Select
+                  value={isShengmei ? "true" : "false"}
+                  onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
+                >
+                  <option value="false">否（科美）</option>
+                  <option value="true">是（生美）</option>
+                </Select>
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">管理范围</label>
+              <Input value={manageScope.scopeName} disabled />
             </div>
           </div>
         </CardContent>
@@ -148,8 +206,8 @@ export default function ProductCreatePageClient({
               <Input name="price" type="number" placeholder="0.00" />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">特价</label>
-              <Input name="specialPrice" type="number" placeholder="不填则无特价" />
+              <label className="text-sm font-medium">会员价</label>
+              <Input name="specialPrice" type="number" placeholder="不填则无会员价" />
             </div>
           </div>
         </CardContent>
@@ -166,7 +224,7 @@ export default function ProductCreatePageClient({
               <label className="text-sm font-medium">商品描述</label>
               <textarea
                 name="description"
-                className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 min-h-[80px]"
+                className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] min-h-[80px]"
                 placeholder="请输入商品描述"
               />
             </div>
@@ -192,6 +250,52 @@ export default function ProductCreatePageClient({
               <label className="text-sm font-medium">排序</label>
               <Input name="sortOrder" type="number" defaultValue={0} />
             </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 可见范围 */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">可见范围</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allMarkets}
+                onChange={(e) => {
+                  setAllMarkets(e.target.checked)
+                  if (e.target.checked) setSelectedMarketIds([])
+                  setFormDirty(true)
+                }}
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm font-medium">全部市场</span>
+            </label>
+            {!allMarkets && (
+              <div className="grid grid-cols-3 gap-2 pl-6">
+                {markets.map((m) => (
+                  <label key={m.id} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedMarketIds.includes(m.id)}
+                      onChange={(e) => {
+                        setSelectedMarketIds((prev) =>
+                          e.target.checked
+                            ? [...prev, m.id]
+                            : prev.filter((id) => id !== m.id)
+                        )
+                        setFormDirty(true)
+                      }}
+                      className="h-4 w-4 rounded border-[var(--input)]"
+                    />
+                    <span className="text-sm">{m.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

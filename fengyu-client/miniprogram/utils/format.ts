@@ -85,3 +85,63 @@ export function formatOrderDate(dateStr: string): string {
   if (isNaN(d.getTime())) return '';
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
+
+/** iOS 安全日期解析："-" → "/"（修复 iOS Safari 无法解析 "YYYY-MM-DD" 问题），无效日期返回 null */
+export function safeParseDate(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  const safe = String(dateStr).includes('T') ? dateStr : String(dateStr).replace(/-/g, '/');
+  const d = new Date(safe);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/** 日期时间格式化："2025-03-14 10:30" */
+export function formatDateTime(dateStr: string): string {
+  const d = safeParseDate(dateStr);
+  if (!d) return '';
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const h = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}`;
+}
+
+/** 短日期格式化："03-14" */
+export function formatShortDate(dateStr: string): string {
+  const d = safeParseDate(dateStr);
+  if (!d) return '';
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${m}-${day}`;
+}
+
+/** 相对时间格式化："刚刚"/"5分钟前"/"3小时前"/"2天前"/"03-14" */
+export function formatRelativeTime(dateStr: string): string {
+  const d = safeParseDate(dateStr);
+  if (!d) return '';
+  const diff = Date.now() - d.getTime();
+  const minutes = Math.floor(diff / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}天前`;
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${m}-${day}`;
+}
+
+/** 金额带符号格式化："+1.00" / "-1.00" */
+export function formatAmount(amount: number): string {
+  return amount >= 0 ? `+${amount.toFixed(2)}` : amount.toFixed(2);
+}
+
+/** 预约时间格式化："2026-03-15 09:00-11:00" → "3月15日 09:00-11:00" */
+export function formatAppointmentTime(appointmentTime: string): string {
+  if (!appointmentTime) return '';
+  const [datePart, slotPart] = appointmentTime.split(' ');
+  const d = safeParseDate(datePart);
+  if (!d) return appointmentTime;
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${slotPart || ''}`;
+}

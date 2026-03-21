@@ -32,6 +32,11 @@ async function create(ctx) {
   // 解析前端传入的时段字符串
   const parsedTime = parseAppointmentTime(appointmentTime)
 
+  // 校验预约时间不能为过去（允许 5 分钟容差，避免网络延迟误拒）
+  if (parsedTime.getTime() < Date.now() - 5 * 60 * 1000) {
+    throw new Error('INVALID_PARAMS: 预约时间不能为过去')
+  }
+
   // 查询顾客信息
   const users = await pg.query(
     `SELECT u.phone, u.name, u.bound_store_id,
@@ -125,7 +130,12 @@ async function create(ctx) {
  */
 async function list(ctx) {
   const { userId } = ctx.auth
-  const { status } = ctx.event.payload || {}
+  const { status, page: pageParam, pageSize: pageSizeParam } = ctx.event.payload || {}
+
+  // 分页参数（默认 20 条/页，上限 50）
+  const pageSize = Math.min(Math.max(Number(pageSizeParam) || 20, 1), 50)
+  const page = Math.max(Number(pageParam) || 1, 1)
+  const offset = (page - 1) * pageSize
 
   let whereClause = 'WHERE a.client_user_id = $1'
   const params = [userId]
@@ -134,6 +144,10 @@ async function list(ctx) {
     params.push(status)
     whereClause += ` AND a.status = $${params.length}`
   }
+
+  // 多取 1 条用于判断是否有下一页
+  const fetchLimit = pageSize + 1
+  params.push(fetchLimit, offset)
 
   const appointments = await pg.query(`
     SELECT
@@ -155,10 +169,13 @@ async function list(ctx) {
     LEFT JOIN stores s ON a.store_id = s.store_id
     ${whereClause}
     ORDER BY a.appointment_time DESC
-    LIMIT 100
+    LIMIT $${params.length - 1} OFFSET $${params.length}
   `, params)
 
-  ctx.result = { appointments }
+  const hasMore = appointments.length > pageSize
+  if (hasMore) appointments.pop()
+
+  ctx.result = { appointments, hasMore }
 }
 
 /**

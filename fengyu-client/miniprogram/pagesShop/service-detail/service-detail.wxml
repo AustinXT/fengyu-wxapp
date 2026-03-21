@@ -6,7 +6,12 @@ module.exports.fmt = function(val) {
 </wxs>
 <van-toast id="van-toast" />
 
-<view class="container" wx:if="{{!isLoading}}">
+<!-- 错误态 -->
+<view wx:if="{{!isLoading && loadError}}" class="error-wrap">
+  <van-empty image="error" description="加载失败，下拉刷新重试" />
+</view>
+
+<view class="container" wx:elif="{{!isLoading}}">
 
   <!-- 封面图 -->
   <view class="cover-wrap">
@@ -24,10 +29,10 @@ module.exports.fmt = function(val) {
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#722ED1" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
+      <van-tag color="#E8684A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
       <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
-      <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
-      <van-tag color="#006D75" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+      <van-tag color="#5AACA5" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
+      <van-tag color="#D4820A" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
@@ -36,7 +41,7 @@ module.exports.fmt = function(val) {
     <view class="price-row" wx:if="{{selectedSku}}">
       <view class="price-group">
         <text class="price-symbol">¥</text>
-        <text class="price-integer">{{selectedSku.price}}</text>
+        <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
       </view>
       <text class="price-unit" wx:if="{{selectedSku.session_count}}">/ {{selectedSku.session_count}} 次</text>
     </view>
@@ -45,36 +50,15 @@ module.exports.fmt = function(val) {
     </view>
   </view>
 
-  <!-- SKU 规格选择 -->
-  <view class="sku-card">
-    <text class="sku-title">选择规格</text>
-    <view class="sku-list">
-      <view
-        wx:for="{{skuList}}"
-        wx:key="sku_id"
-        class="sku-item {{selectedSku.sku_id === item.sku_id ? 'sku-item--active' : ''}}"
-        bindtap="onSkuTap"
-        data-sku-id="{{item.sku_id}}"
-      >
-        <text class="sku-display-name">{{item.spec_name}}</text>
-        <text class="sku-price">¥{{item.price}}</text>
-        <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
-      </view>
-    </view>
-  </view>
-
-  <!-- 购买数量 -->
-  <view class="quantity-card" wx:if="{{selectedSku}}">
-    <text class="quantity-label">购买数量</text>
-    <van-stepper
-      value="{{quantity}}"
-      min="1"
-      max="99"
-      bind:change="onQuantityChange"
-      input-width="44px"
-      button-size="28px"
+  <!-- SKU 规格选择入口 -->
+  <van-cell-group inset>
+    <van-cell
+      title="已选规格"
+      value="{{selectedSku ? selectedSku.spec_name + (quantity > 1 ? ' x' + quantity : '') : '请选择'}}"
+      is-link
+      bindtap="onOpenSkuPopup"
     />
-  </view>
+  </van-cell-group>
 
   <!-- 选择美容师（可选） -->
   <van-cell-group title="指定美容师（可选）" inset>
@@ -88,7 +72,7 @@ module.exports.fmt = function(val) {
   </van-cell-group>
 
   <!-- 底部操作栏 -->
-  <view class="action-bar">
+  <view class="action-bar safe-area-bottom">
     <!-- 价格区 -->
     <view class="action-bar__price" wx:if="{{selectedSku}}">
       <text class="action-bar__price-symbol">¥</text>
@@ -113,47 +97,83 @@ module.exports.fmt = function(val) {
   </view>
 
   <!-- 美容师选择 Popup -->
-  <van-popup
+  <staff-popup
     show="{{showStaffPopup}}"
+    staff-list="{{staffList}}"
+    selected-id="{{selectedStaffWfId}}"
+    loading="{{staffListLoading}}"
+    bind:select="onStaffSelect"
+    bind:close="onCloseStaffPopup"
+  />
+
+  <!-- SKU 选择 Popup -->
+  <van-popup
+    show="{{showSkuPopup}}"
     position="bottom"
     round
     closeable
-    bind:close="onCloseStaffPopup"
+    bind:close="onCloseSkuPopup"
   >
-    <view class="staff-popup">
-      <view class="staff-popup__title">选择美容师</view>
-      <view class="staff-list">
-        <!-- 不指定 -->
-        <view
-          class="staff-item {{!selectedStaffWfId ? 'staff-item--active' : ''}}"
-          bindtap="onStaffSelect"
-          data-wf-id=""
-          data-name=""
-        >
-          <view class="staff-avatar">
-            <van-icon name="user-o" size="48rpx" color="#B09880" />
+    <view class="sku-popup">
+      <!-- 顶部：封面 + 当前选中价格 -->
+      <view class="sku-popup__header">
+        <image
+          wx:if="{{spu.cover_image}}"
+          class="sku-popup__cover"
+          src="{{spu.cover_image}}"
+          mode="aspectFill"
+        />
+        <view wx:else class="sku-popup__cover sku-popup__cover--empty">
+          <van-icon name="photo-o" size="48rpx" color="#CCC" />
+        </view>
+        <view class="sku-popup__price-info">
+          <view wx:if="{{selectedSku}}" class="price-group">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{price.fmt(selectedSku.price)}}</text>
           </view>
-          <text class="staff-name">不指定</text>
+          <text wx:else class="sku-popup__price-hint">请选择规格</text>
+          <text class="sku-popup__selected-name" wx:if="{{selectedSku}}">{{selectedSku.spec_name}}</text>
         </view>
-        <!-- 美容师列表 -->
-        <van-loading wx:if="{{staffListLoading && staffList.length === 0}}" size="24px" vertical style="padding: 40rpx 0;">加载中...</van-loading>
+      </view>
+
+      <!-- SKU 列表 -->
+      <view class="sku-popup__title">选择规格</view>
+      <view class="sku-popup__list">
         <view
-          wx:for="{{staffList}}"
-          wx:key="employee_id"
-          class="staff-item {{selectedStaffWfId === item.employee_id ? 'staff-item--active' : ''}}"
-          bindtap="onStaffSelect"
-          data-wf-id="{{item.employee_id}}"
-          data-name="{{item.name}}"
+          wx:for="{{skuList}}"
+          wx:key="sku_id"
+          class="sku-item {{selectedSku.sku_id === item.sku_id ? 'sku-item--active' : ''}}"
+          bindtap="onSkuTap"
+          data-sku-id="{{item.sku_id}}"
         >
-          <view class="staff-avatar">
-            <van-icon name="manager-o" size="48rpx" color="#C0322A" />
-          </view>
-          <text class="staff-name">{{item.name}}</text>
-          <text class="staff-title">{{item.position}}</text>
+          <text class="sku-display-name">{{item.spec_name}}</text>
+          <text class="sku-price">¥{{price.fmt(item.price)}}</text>
+          <text class="sku-sessions" wx:if="{{item.session_count}}">{{item.session_count}}次</text>
         </view>
-        <view wx:if="{{!staffListLoading && staffList.length === 0}}" class="staff-empty">
-          <text>暂无可选美容师</text>
-        </view>
+      </view>
+
+      <!-- 数量 -->
+      <view class="sku-popup__quantity">
+        <text class="sku-popup__quantity-label">购买数量</text>
+        <van-stepper
+          value="{{quantity}}"
+          min="1"
+          max="99"
+          bind:change="onQuantityChange"
+          input-width="44px"
+          button-size="28px"
+        />
+      </view>
+
+      <!-- 确认按钮 -->
+      <view class="sku-popup__confirm safe-area-bottom">
+        <van-button
+          type="primary"
+          block
+          round
+          disabled="{{!selectedSku}}"
+          bindtap="onCloseSkuPopup"
+        >确定</van-button>
       </view>
     </view>
   </van-popup>

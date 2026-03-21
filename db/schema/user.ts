@@ -81,7 +81,7 @@ export const staffWechatUsers = pgTable(
     idCard: varchar('id_card', { length: 200 }),
     // Layer 3 — 组织归属
     storeId: text('store_id').references(() => stores.storeId),
-    /** 指向 type='department' 的部门节点 */
+    /** 指向 type='department' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     positionName: varchar('position_name', { length: 50 }),
     // Layer 4 — 个人档案

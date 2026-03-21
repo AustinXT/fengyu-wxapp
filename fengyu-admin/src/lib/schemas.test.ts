@@ -185,8 +185,8 @@ describe('createOrderSchema', () => {
 describe('commissionRateSchema', () => {
   const valid = {
     orgId: 'org-market-nc',
-    orderType: 'sale',
-    roleType: '技师',
+    orderType: '销售单',
+    roleType: '美容师',
     salesCategory: '自采自销',
     amountTierMin: '0',
     amountTierMax: '5000',

@@ -69,12 +69,58 @@ interface PickerGroup {
   members: StaffInfo[];
 }
 
+/** 订单摘要（分配页仅用到这几个字段） */
+interface OrderSummary {
+  saleOrderId: string;
+  status: string;
+  totalAmount: string;
+  allocation_status: string;
+}
+
+/** allocation.suggest API 响应 */
+interface SuggestResponse {
+  items: OrderItem[];
+  totalAmount: number;
+  rates: RateRow[];
+  beautyRates: Record<string, Record<string, number>>;
+  isNewCustomer: boolean;
+  beauticianInfo: BeauticianInfo | null;
+  deptAnomalous: boolean;
+  orderSource: string;
+  allocLines: AllocLine[];
+}
+
+/** order.detail API 响应 */
+interface OrderDetailResponse {
+  order: OrderSummary;
+  items: OrderItem[];
+  allocations: AllocationRecord[];
+}
+
+/** 云函数返回的分配记录（兼容 snake_case / camelCase） */
+interface AllocationRecord {
+  sale_item_id?: string;
+  saleItemId?: string;
+  employee_id?: string;
+  employeeId?: string;
+  department_name?: string;
+  department?: string;
+  allocation_ratio?: number;
+  commissionRate?: number;
+  total_amount?: string;
+  amount?: string;
+  is_void?: boolean;
+  isVoid?: boolean;
+  employee_name?: string;
+  sales_category?: string;
+}
+
 Page({
   data: {
     loading: false,
     submitting: false,
     saleOrderId: '',
-    order: null as any,
+    order: null as OrderSummary | null,
     items: [] as OrderItem[],
     totalAmount: 0,
     rates: [] as RateRow[],
@@ -116,9 +162,9 @@ Page({
     this.setData({ loading: true });
     try {
       const [suggestData, deptResponse, orderData] = await Promise.all([
-        callStaffApi<any>('allocation.suggest', { saleOrderId }),
+        callStaffApi<SuggestResponse>('allocation.suggest', { saleOrderId }),
         callStaffApi<DeptApiResponse>('staff.departments'),
-        callStaffApi<any>('order.detail', { saleOrderId }),
+        callStaffApi<OrderDetailResponse>('order.detail', { saleOrderId }),
       ]);
 
       const order = orderData.order;
@@ -132,7 +178,7 @@ Page({
       const allStaffList: StaffInfo[] = [];
       const pickerGroups: PickerGroup[] = [];
       for (const d of (deptResponse.departments || [])) {
-        const members: StaffInfo[] = (d.members || []).map((s: any) => ({
+        const members: StaffInfo[] = (d.members || []).map((s) => ({
           staffWfId: s.staffWfId,
           staffName: s.name || '',
           department: d.departmentName,
@@ -181,8 +227,9 @@ Page({
       } else {
         this.computeSummary();
       }
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '加载失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '加载失败';
+      wx.showToast({ title: msg, icon: 'none' });
       this.setData({ loading: false });
     }
   },
@@ -277,7 +324,7 @@ Page({
   },
 
   /** 从已有分配记录恢复到 displayItems（云函数返回扁平结构） */
-  restoreAllocations(allocations: any[], items: OrderItem[]) {
+  restoreAllocations(allocations: AllocationRecord[], items: OrderItem[]) {
     // 构建员工名映射
     const staffMap = new Map<string, string>();
     this.data.allStaffList.forEach(s => staffMap.set(s.staffWfId, s.staffName));
@@ -343,8 +390,9 @@ Page({
       });
       wx.showToast({ title: '已标记为无需分配', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '操作失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '操作失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }
@@ -383,8 +431,9 @@ Page({
       await callStaffApi('allocation.save', { saleOrderId, allocations });
       wx.showToast({ title: '分配已保存', icon: 'success' });
       setTimeout(() => wx.navigateBack(), 1500);
-    } catch (err: any) {
-      wx.showToast({ title: err.message || '保存失败', icon: 'none' });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '保存失败';
+      wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });
     }

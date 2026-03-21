@@ -115,20 +115,27 @@ describe('staff.departments', () => {
 describe('staff.todayCommission', () => {
   test('返回今日分成数据', async () => {
     const ctx = createBeauticianCtx()
-    pg.query.mockResolvedValueOnce([{ today_amount: '350.00', order_count: '3' }])
-    pg.query.mockResolvedValueOnce([{ service_count: '2' }])
+    pg.query.mockResolvedValueOnce([{ today_amount: '350.00', order_count: '3' }])  // 今日分成
+    pg.query.mockResolvedValueOnce([{ service_count: '2' }])                        // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '1200.00', order_count: '10' }])      // 上月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '8' }])                        // 上月服务
     await staffRoutes.todayCommission(ctx)
     expect(ctx.result.todayAmount).toBe('350.00')
     expect(ctx.result.orderCount).toBe(3)
     expect(ctx.result.serviceCount).toBe(2)
+    expect(ctx.result.lastMonthAmount).toBe('1200.00')
+    expect(ctx.result.lastMonthOrderCount).toBe(10)
+    expect(ctx.result.lastMonthServiceCount).toBe(8)
     expect(ctx.result.storeTodayRevenue).toBeUndefined()
   })
 
   test('店长额外获取门店今日营收', async () => {
     const ctx = createManagerCtx()
-    pg.query.mockResolvedValueOnce([{ today_amount: '500.00', order_count: '5' }])
-    pg.query.mockResolvedValueOnce([{ service_count: '3' }])
-    pg.query.mockResolvedValueOnce([{ store_revenue: '8000.00' }])
+    pg.query.mockResolvedValueOnce([{ today_amount: '500.00', order_count: '5' }])  // 今日分成
+    pg.query.mockResolvedValueOnce([{ service_count: '3' }])                        // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])             // 上月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '0' }])                        // 上月服务
+    pg.query.mockResolvedValueOnce([{ store_revenue: '8000.00' }])                  // 门店营收
     await staffRoutes.todayCommission(ctx)
     expect(ctx.result.todayAmount).toBe('500.00')
     expect(ctx.result.storeTodayRevenue).toBe('8000.00')
@@ -136,11 +143,13 @@ describe('staff.todayCommission', () => {
 
   test('美容师不包含门店营收', async () => {
     const ctx = createBeauticianCtx()
-    pg.query.mockResolvedValueOnce([{ today_amount: '0', order_count: '0' }])
-    pg.query.mockResolvedValueOnce([{ service_count: '0' }])
+    pg.query.mockResolvedValueOnce([{ today_amount: '0', order_count: '0' }])   // 今日分成
+    pg.query.mockResolvedValueOnce([{ service_count: '0' }])                    // 今日服务
+    pg.query.mockResolvedValueOnce([{ amount: '0', order_count: '0' }])         // 上月分成
+    pg.query.mockResolvedValueOnce([{ service_count: '0' }])                    // 上月服务
     await staffRoutes.todayCommission(ctx)
     expect(ctx.result.storeTodayRevenue).toBeUndefined()
-    expect(pg.query).toHaveBeenCalledTimes(2)
+    expect(pg.query).toHaveBeenCalledTimes(4)
   })
 })
 
@@ -444,6 +453,28 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.totalCommission).toBe(0)
     expect(ctx.result.items).toEqual([])
     expect(ctx.result.categorySummary).toEqual({})
+  })
+
+  test('svcRows 中 session_used 为 null 时默认 1、sales_category 为 null 时归入"未分类"（lines 510-511）', async () => {
+    const ctx = createManagerCtx({
+      startDate: '2024-06-01',
+      endDate: '2024-06-30',
+    })
+
+    pg.query.mockResolvedValueOnce([]) // allocRows 空
+    pg.query.mockResolvedValueOnce([
+      {
+        service_price: '150', session_used: null,   // || 1 分支
+        product_name: 'P-null', sku_spec_name: 'S-null', sales_category: null, // || '未分类' 分支
+        service_order_id: 'SVC-null', service_date: '2024-06-25',
+        store_id: 'store-001', customer_name: '客户X', client_phone: '138',
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalServiceFee).toBe(150) // 150 * 1（session_used 默认为 1）
+    expect(ctx.result.categorySummary['未分类'].service).toBe(150)
   })
 })
 

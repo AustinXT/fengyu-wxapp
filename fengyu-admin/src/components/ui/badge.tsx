@@ -24,12 +24,12 @@ const badgeVariants = cva(
 )
 
 export interface BadgeProps
-  extends React.HTMLAttributes<HTMLDivElement>,
+  extends React.HTMLAttributes<HTMLSpanElement>,
     VariantProps<typeof badgeVariants> {}
 
 function Badge({ className, variant, ...props }: BadgeProps) {
   return (
-    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+    <span className={cn(badgeVariants({ variant }), className)} {...props} />
   )
 }
 
@@ -54,7 +54,7 @@ export const STATUS_BADGE_MAP: Record<string, string> = {
   '已取消':       'border-[#888888] text-[#888888] bg-[#F5F5F5]',
 }
 
-export function StatusBadge({ status, className, ...props }: { status: string } & React.HTMLAttributes<HTMLDivElement>) {
+export function StatusBadge({ status, className, ...props }: { status: string } & React.HTMLAttributes<HTMLSpanElement>) {
   const statusClass = STATUS_BADGE_MAP[status] ?? ''
   return (
     <Badge variant="outline" className={cn(statusClass, className)} {...props}>

@@ -10,8 +10,10 @@
  */
 
 const pg = require('../db/pg')
-const mssql = require('../db/mssql')
 const { requireManager } = require('../middleware/auth')
+
+// role_type 存储角色名（'美容师'/'养生师'/'推广师' 等），部门通过映射关联
+const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推广部': '推广师' }
 
 /**
  * 保存提成分配（支付后分配）
@@ -192,8 +194,8 @@ async function deleteAllocation(ctx) {
 }
 
 /**
- * 获取提成比例矩阵（从 WorkFine UDT_S_1962 / UDT_M_1964）
- * 暂保留 WorkFine 查询（commission_rate_matrix 数据未确认）
+ * 获取提成比例矩阵（PG commission_rate_matrix）
+ * 运行时 100% PG，零 MSSQL 依赖。
  */
 async function getCommissionRates(ctx) {
   await requireManager()(ctx, async () => {})
@@ -203,57 +205,40 @@ async function getCommissionRates(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 marketName')
   }
 
-  const pool = await mssql.getPool()
+  const rows = await pg.query(`
+    SELECT crm.role_type, crm.order_type, crm.sales_category,
+           crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+    FROM commission_rate_matrix crm
+    JOIN org_nodes n ON n.id = crm.org_id
+    WHERE n.name = $1
+    ORDER BY crm.role_type, crm.amount_tier_min
+  `, [marketName])
 
-  const masterResult = await pool.request()
-    .input('market', marketName)
-    .query('SELECT RID FROM UDT_S_1962 WHERE UDF_S_18660 = @market')
-
-  if (masterResult.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new Error(`INVALID_PARAMS: 未找到市场 "${marketName}" 的提成配置`)
   }
 
-  const rid = masterResult.recordset[0].RID
+  // 将扁平行 pivot 为按 (role_type, amount_tier) 分组的结构
+  const grouped = new Map()
+  for (const r of rows) {
+    const dept = (r.role_type || '').trim()
+    const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        department: dept,
+        amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+        amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+        orderRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        serviceRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+      })
+    }
+    const entry = grouped.get(key)
+    const rate = Number(r.commission_rate) || 0
+    if (r.order_type === '销售单') entry.orderRates[r.sales_category] = rate
+    else if (r.order_type === '服务单') entry.serviceRates[r.sales_category] = rate
+  }
 
-  const detailResult = await pool.request()
-    .input('rid', rid)
-    .query(`
-      SELECT
-        UDF_M_18649 AS department,
-        UDF_M_18650 AS amount_min,
-        UDF_M_18651 AS amount_max,
-        UDF_M_18652 AS order_self_sell,
-        UDF_M_18653 AS order_other_sell_self_use,
-        UDF_M_18654 AS order_other_sell_other_use,
-        UDF_M_18655 AS order_eco_coop,
-        UDF_M_18656 AS service_self_sell,
-        UDF_M_18657 AS service_other_sell_self_use,
-        UDF_M_18658 AS service_other_sell_other_use,
-        UDF_M_18659 AS service_eco_coop
-      FROM UDT_M_1964
-      WHERE RID = @rid
-      ORDER BY UDF_M_18649, UDF_M_18650
-    `)
-
-  const rates = detailResult.recordset.map(r => ({
-    department: (r.department || '').trim(),
-    amountMin: r.amount_min != null ? Number(r.amount_min) : -9999.9,
-    amountMax: r.amount_max != null ? Number(r.amount_max) : 10000000,
-    orderRates: {
-      '自采自销': Number(r.order_self_sell) || 0,
-      '他销自耗': Number(r.order_other_sell_self_use) || 0,
-      '他销他耗': Number(r.order_other_sell_other_use) || 0,
-      '生态合作': Number(r.order_eco_coop) || 0,
-    },
-    serviceRates: {
-      '自采自销': Number(r.service_self_sell) || 0,
-      '他销自耗': Number(r.service_other_sell_self_use) || 0,
-      '他销他耗': Number(r.service_other_sell_other_use) || 0,
-      '生态合作': Number(r.service_eco_coop) || 0,
-    },
-  }))
-
-  ctx.result = { rates }
+  ctx.result = { rates: [...grouped.values()] }
 }
 
 /**
@@ -298,12 +283,12 @@ async function resolveStaffDepartment(staffWfId) {
 
   const row = rows[0]
   const dept = (row.department || '').trim()
-  const validDepts = ['美容部', '养生部']
+  const role = DEPT_TO_ROLE[dept] || null
 
   return {
     staffWfId: row.employee_id,
     name: (row.name || '').trim(),
-    resolvedDept: validDepts.includes(dept) ? dept : null,
+    resolvedDept: role,
   }
 }
 
@@ -368,47 +353,37 @@ async function suggest(ctx) {
 
   const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
-  // 6. 加载提成比例（暂保留 WorkFine 查询）
+  // 6. 加载提成比例（PG commission_rate_matrix，仅 sale 类型用于分配建议）
   let rates = []
-  try {
-    const pool = await mssql.getPool()
-    const masterResult = await pool.request()
-      .input('market', order.market_name)
-      .query('SELECT RID FROM UDT_S_1962 WHERE UDF_S_18660 = @market')
+  if (order.market_name) {
+    const rateRows = await pg.query(`
+      SELECT crm.role_type, crm.sales_category,
+             crm.amount_tier_min, crm.amount_tier_max, crm.commission_rate
+      FROM commission_rate_matrix crm
+      JOIN org_nodes n ON n.id = crm.org_id
+      WHERE n.name = $1 AND crm.order_type = '销售单'
+      ORDER BY crm.role_type, crm.amount_tier_min
+    `, [order.market_name])
 
-    if (masterResult.recordset.length > 0) {
-      const rid = masterResult.recordset[0].RID
-      const detailResult = await pool.request()
-        .input('rid', rid)
-        .query(`
-          SELECT
-            UDF_M_18649 AS department, UDF_M_18650 AS amount_min, UDF_M_18651 AS amount_max,
-            UDF_M_18652 AS order_self_sell, UDF_M_18653 AS order_other_sell_self_use,
-            UDF_M_18654 AS order_other_sell_other_use, UDF_M_18655 AS order_eco_coop,
-            UDF_M_18656 AS service_self_sell, UDF_M_18657 AS service_other_sell_self_use,
-            UDF_M_18658 AS service_other_sell_other_use, UDF_M_18659 AS service_eco_coop
-          FROM UDT_M_1964 WHERE RID = @rid
-          ORDER BY UDF_M_18649, UDF_M_18650
-        `)
-
-      rates = detailResult.recordset.map(r => ({
-        department: (r.department || '').trim(),
-        amountMin: r.amount_min != null ? Number(r.amount_min) : -9999.9,
-        amountMax: r.amount_max != null ? Number(r.amount_max) : 10000000,
-        orderRates: {
-          '自采自销': Number(r.order_self_sell) || 0,
-          '他销自耗': Number(r.order_other_sell_self_use) || 0,
-          '他销他耗': Number(r.order_other_sell_other_use) || 0,
-          '生态合作': Number(r.order_eco_coop) || 0,
-        },
-      }))
+    const grouped = new Map()
+    for (const r of rateRows) {
+      const dept = (r.role_type || '').trim()
+      const key = `${dept}|${r.amount_tier_min}|${r.amount_tier_max}`
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          department: dept,
+          amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
+          amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
+          orderRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        })
+      }
+      grouped.get(key).orderRates[r.sales_category] = Number(r.commission_rate) || 0
     }
-  } catch (_) {
-    console.warn('[allocation.suggest] 获取提成比例失败')
+    rates = [...grouped.values()]
   }
 
   // 7. 提取美容部/养生部提成比例
-  const beautyDepts = ['美容部', '养生部']
+  const beautyDepts = ['美容师', '养生师']
   const beautyRates = {}
   for (const rate of rates) {
     if (beautyDepts.includes(rate.department) && !beautyRates[rate.department]) {

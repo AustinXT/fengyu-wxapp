@@ -33,7 +33,7 @@
   height: 88rpx;
   line-height: 88rpx;
   border-radius: 44rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
   font-size: 32rpx;
   font-weight: 600;

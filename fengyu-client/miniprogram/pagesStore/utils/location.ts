@@ -1,3 +1,5 @@
+import { callClientApi } from '../../utils/cloud';
+
 /**
  * 自动定位：获取当前城市名（地级市，不含"市"字）
  * 流程：wx.getLocation() → store.geocode 云函数 → 城市名
@@ -15,16 +17,12 @@ export async function getCurrentCity(): Promise<string> {
   });
 
   // 2. 调用云函数逆地理编码
-  const res = await wx.cloud.callFunction({
-    name: 'clientApi',
-    data: {
-      action: 'store.geocode',
-      payload: { latitude: location.latitude, longitude: location.longitude },
-    },
-  }) as any;
+  const data = await callClientApi<{ city: string }>('store.geocode', {
+    latitude: location.latitude,
+    longitude: location.longitude,
+  });
 
-  if (res.result?.code !== 0) throw new Error('解析城市失败');
-  const city: string = res.result.data?.city || '';
+  const city: string = data?.city || '';
   if (!city) throw new Error('未获取到城市信息');
   return city;
 }

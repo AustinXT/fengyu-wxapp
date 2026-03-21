@@ -1,4 +1,7 @@
 <!-- pages/order-detail/order-detail.wxml — 订单详情 -->
+<wxs module="fmt">
+module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(2) }
+</wxs>
 <van-toast id="van-toast" />
 
 <view class="container" wx:if="{{!isLoading}}">
@@ -6,7 +9,10 @@
   <!-- 状态大图区 -->
   <view class="status-hero">
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
-    <text class="status-label">{{order.status}}</text>
+    <view class="status-label-row">
+      <text class="status-label">{{order.status}}</text>
+      <van-tag wx:if="{{order.sale_order_type === '福利活动'}}" color="#F9F0FF" text-color="#722ED1">福利</van-tag>
+    </view>
     <text class="status-hint" wx:if="{{order.status === '待确认收款'}}">请等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
       <text class="status-hint-countdown" wx:if="{{countdown}}">请在 {{order.expire_time_fmt}} 前完成支付（剩余 {{countdown}}）</text>
@@ -16,7 +22,12 @@
 
   <!-- 订单基础信息 -->
   <van-cell-group title="订单信息" inset>
-    <van-cell title="订单编号" value="{{order.sale_order_id}}" />
+    <van-cell title="订单编号" bindtap="onCopyOrderNo">
+      <view slot="right-icon" class="copy-cell-value">
+        <text>{{order.sale_order_id}}</text>
+        <text class="copy-link">复制</text>
+      </view>
+    </van-cell>
     <van-cell title="下单时间" value="{{order.order_time_fmt}}" />
     <van-cell title="支付方式" value="{{order.payment_method === 'wechat' ? '微信支付' : order.payment_method === 'alipay' ? '支付宝' : '线下付款'}}" />
     <van-cell title="门店" value="{{order.store_name}}" />
@@ -44,13 +55,23 @@
         class="order-item"
       >
         <view class="order-item__main">
+          <image
+            wx:if="{{item.cover_image}}"
+            class="oi-cover"
+            src="{{item.cover_image}}"
+            mode="aspectFill"
+            lazy-load
+          />
+          <view wx:else class="oi-cover oi-cover--empty">
+            <van-icon name="photo-o" size="36rpx" color="#CCC" />
+          </view>
           <view class="order-item__info">
             <text class="oi-name">{{item.product_name}}</text>
             <text class="oi-spec">{{item.sku_spec_name}}</text>
             <text class="oi-qty">×{{item.quantity}}</text>
           </view>
           <view class="order-item__right">
-            <text class="oi-price">¥{{item.received}}</text>
+            <text class="oi-price">¥{{fmt.price(item.received)}}</text>
             <view class="oi-sessions" wx:if="{{item.remaining_sessions !== null}}">
               <text class="oi-sessions-text">剩余 {{item.remaining_sessions}}/{{item.session_count}} 次</text>
             </view>
@@ -69,27 +90,28 @@
   <van-cell-group title="金额明细" inset>
     <van-cell
       title="商品总价"
-      value="¥{{order.coupon_discount > 0 ? (order.total_amount + order.coupon_discount * 1) : order.total_amount}}"
+      value="¥{{fmt.price(order.coupon_discount > 0 ? order.total_amount * 1 + order.coupon_discount * 1 : order.total_amount)}}"
     />
     <van-cell
       wx:if="{{order.coupon_id}}"
       title="优惠券"
       label="{{order.coupon_name || ''}}"
-      value="-¥{{order.coupon_discount}}"
+      value="-¥{{fmt.price(order.coupon_discount)}}"
       value-class="coupon-discount-value"
     />
     <van-cell wx:else title="优惠" value="- ¥0.00" />
     <van-cell title="实付" class="total-cell">
       <view slot="right-icon" class="total-price-wrap">
         <text class="total-symbol">¥</text>
-        <text class="total-amount">{{order.total_amount}}</text>
+        <text class="total-amount">{{fmt.price(order.total_amount)}}</text>
       </view>
     </van-cell>
   </van-cell-group>
 
   <!-- 操作区 -->
   <view class="actions-wrap safe-area-bottom">
-    <!-- 待支付：去支付 + 取消订单 -->
+
+    <!-- 待支付：取消订单 + 去支付 -->
     <view class="actions-row" wx:if="{{order.status === '待支付'}}">
       <van-button
         type="default"
@@ -109,19 +131,43 @@
       >去支付</van-button>
     </view>
 
-    <!-- 已支付且有疗程卡：发起预约 -->
-    <van-button
-      wx:if="{{order.status === '已支付' && hasAppointableItems}}"
-      type="primary"
-      block
-      round
-      size="large"
-      bindtap="onCreateAppointment"
-    >发起预约</van-button>
+    <!-- 已支付：发起预约（有可预约项）+ 查看疗程卡 -->
+    <view wx:elif="{{order.status === '已支付'}}">
+      <view wx:if="{{hasAppointableItems}}" class="actions-row">
+        <van-button
+          type="primary"
+          block
+          round
+          size="large"
+          bindtap="onCreateAppointment"
+          class="appt-btn"
+        >发起预约</van-button>
+        <van-button
+          type="primary"
+          block
+          round
+          plain
+          size="large"
+          custom-style="color:#C0322A;border-color:#C0322A;"
+          bindtap="onViewTreatmentCards"
+          class="treatment-btn"
+        >查看疗程卡</van-button>
+      </view>
+      <van-button
+        wx:else
+        type="primary"
+        block
+        round
+        plain
+        size="large"
+        custom-style="color:#C0322A;border-color:#C0322A;"
+        bindtap="onViewTreatmentCards"
+      >查看疗程卡</van-button>
+    </view>
 
-    <!-- 终态：返回首页 -->
+    <!-- 终态（已完成/已关闭/支付失败/待确认收款）：返回首页 -->
     <van-button
-      wx:if="{{order.status === '已完成' || order.status === '已关闭' || order.status === '支付失败' || order.status === '待确认收款' || (order.status === '已支付' && !hasAppointableItems)}}"
+      wx:else
       type="primary"
       block
       round
@@ -130,6 +176,7 @@
       custom-style="color:#C0322A;border-color:#C0322A;"
       bindtap="onBackToHome"
     >返回首页</van-button>
+
   </view>
 
 </view>

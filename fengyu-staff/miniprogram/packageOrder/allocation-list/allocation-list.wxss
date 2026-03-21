@@ -27,7 +27,7 @@
 }
 .info-label { font-size: 24rpx; color: #999; width: 120rpx; }
 .info-value { font-size: 26rpx; color: #2D2017; flex: 1; }
-.info-value.amount { font-weight: 700; color: #C0322A; font-size: 30rpx; }
+.info-value.amount { font-weight: 700; color: var(--color-primary); font-size: 30rpx; }
 
 .card-footer {
   display: flex;

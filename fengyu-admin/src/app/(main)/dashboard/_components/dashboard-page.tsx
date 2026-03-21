@@ -31,51 +31,36 @@ interface Props {
   stats: DashboardStats
 }
 
-export default function DashboardPage({ stats }: Props) {
+/** 业务角色看板：manager / finance */
+function BusinessDashboard({ stats }: Props) {
   const metricCards = [
     {
       label: "今日客流",
       value: stats.todayVisitors,
       format: (v: number) => String(v),
       prev: stats.yesterdayVisitors,
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C45C48" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" />
-        </svg>
-      ),
+      href: "/orders",
     },
     {
       label: "今日业绩",
       value: stats.todayRevenue,
       format: (v: number) => `¥${v.toLocaleString()}`,
       prev: stats.yesterdayRevenue,
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C45C48" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-        </svg>
-      ),
+      href: "/orders",
     },
     {
       label: "待处理订单",
       value: stats.pendingOrders,
       format: (v: number) => String(v),
       prev: null as number | null,
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C45C48" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
-        </svg>
-      ),
+      href: "/orders",
     },
     {
       label: "待确认预约",
       value: stats.pendingAppointments,
       format: (v: number) => String(v),
       prev: null as number | null,
-      icon: (
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C45C48" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" />
-        </svg>
-      ),
+      href: "/appointments",
     },
   ]
 
@@ -90,67 +75,57 @@ export default function DashboardPage({ stats }: Props) {
     { label: "开单", href: "/orders/create" },
     { label: "订单管理", href: "/orders" },
     { label: "顾客管理", href: "/customers" },
-    { label: "员工管理", href: "/employees" },
+    { label: "营业额分配", href: "/allocations" },
   ]
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">工作台</h1>
-        <p className="mt-1 text-sm text-[#999999]">欢迎使用凤御美业管理后台</p>
-      </div>
-
-      {/* Metric Cards */}
+    <>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {metricCards.map((card) => (
-          <Card key={card.label}>
-            <CardContent className="p-5">
-              <div className="flex items-center justify-between">
-                <div className="space-y-2">
-                  <p className="text-sm text-[#999999]">{card.label}</p>
-                  <p className="text-2xl font-bold text-[var(--foreground)]">{card.format(card.value)}</p>
-                  {card.prev !== null && (
-                    <div className="flex items-center gap-1 text-xs text-[#999999]">
-                      vs 昨日 <TrendArrow current={card.value} previous={card.prev} />
-                    </div>
-                  )}
-                </div>
-                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#FFF0EE]">
-                  {card.icon}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <Link key={card.label} href={card.href}>
+            <Card className="hover:border-[#C0322A]/30 transition-colors cursor-pointer">
+              <CardContent className="p-5">
+                <p className="text-sm text-[#999999]">{card.label}</p>
+                <p className="mt-2 text-2xl font-bold text-[var(--foreground)]">{card.format(card.value)}</p>
+                {card.prev !== null && (
+                  <div className="mt-1 flex items-center gap-1 text-xs text-[#999999]">
+                    vs 昨日 <TrendArrow current={card.value} previous={card.prev} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </Link>
         ))}
       </div>
 
-      {/* Two columns: Todo + Shortcuts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 待办事项 */}
         <Card>
           <CardContent className="p-5">
             <h2 className="text-base font-semibold text-[var(--foreground)] mb-4">待办事项</h2>
-            <div className="space-y-3">
-              {todoItems.map((item) => (
-                <Link
-                  key={item.text}
-                  href={item.href}
-                  className="flex items-center justify-between rounded-lg border border-[var(--border)] px-4 py-3 hover:bg-[#FFF0EE] transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="h-2 w-2 rounded-full bg-[#D4820A]" />
-                    <span className="text-sm text-[var(--foreground)]">{item.text}</span>
-                  </div>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#999999" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                </Link>
-              ))}
-            </div>
+            {todoItems.length > 0 ? (
+              <div className="space-y-3">
+                {todoItems.map((item) => (
+                  <Link
+                    key={item.text}
+                    href={item.href}
+                    className="flex items-center justify-between rounded-lg border border-[var(--border)] px-4 py-3 hover:bg-[#FFF0EE] transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="h-2 w-2 rounded-full bg-[#D4820A]" />
+                      <span className="text-sm text-[var(--foreground)]">{item.text}</span>
+                    </div>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#999999" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[#999999] text-center py-6">暂无待办事项</p>
+            )}
           </CardContent>
         </Card>
 
-        {/* 快捷入口 */}
         <Card>
           <CardContent className="p-5">
             <h2 className="text-base font-semibold text-[var(--foreground)] mb-4">快捷入口</h2>
@@ -166,6 +141,102 @@ export default function DashboardPage({ stats }: Props) {
           </CardContent>
         </Card>
       </div>
+    </>
+  )
+}
+
+/** 系统管理看板：admin / hr / product */
+function SystemDashboard({ stats }: Props) {
+  const a = stats.adminStats
+  if (!a) return null
+
+  const ROLE_CARDS: Record<string, Array<{ label: string; value: number; href: string }>> = {
+    admin: [
+      { label: "营业门店", value: a.totalStores, href: "/stores" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees" },
+      { label: "在售商品", value: a.totalProducts, href: "/products" },
+      { label: "注册顾客", value: a.totalCustomers, href: "/customers" },
+    ],
+    hr: [
+      { label: "营业门店", value: a.totalStores, href: "/stores" },
+      { label: "在职员工", value: a.totalEmployees, href: "/employees" },
+    ],
+    product: [
+      { label: "在售商品", value: a.totalProducts, href: "/products" },
+    ],
+  }
+
+  const ROLE_SHORTCUTS: Record<string, Array<{ label: string; href: string }>> = {
+    admin: [
+      { label: "组织架构", href: "/org" },
+      { label: "门店管理", href: "/stores" },
+      { label: "员工管理", href: "/employees" },
+      { label: "商品管理", href: "/products" },
+      { label: "权限管理", href: "/permissions" },
+      { label: "数据同步", href: "/sync" },
+    ],
+    hr: [
+      { label: "组织架构", href: "/org" },
+      { label: "门店管理", href: "/stores" },
+      { label: "员工管理", href: "/employees" },
+      { label: "权限管理", href: "/permissions" },
+    ],
+    product: [
+      { label: "商品管理", href: "/products" },
+      { label: "品项分类", href: "/products/categories" },
+      { label: "优惠券管理", href: "/coupons" },
+    ],
+  }
+
+  const ctx = stats.roleContext
+  const cards = ROLE_CARDS[ctx] ?? ROLE_CARDS.admin!
+  const shortcuts = ROLE_SHORTCUTS[ctx] ?? ROLE_SHORTCUTS.admin!
+
+  return (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {cards.map((card) => (
+          <Link key={card.label} href={card.href}>
+            <Card className="hover:border-[#C0322A]/30 transition-colors cursor-pointer">
+              <CardContent className="p-5">
+                <p className="text-sm text-[#999999]">{card.label}</p>
+                <p className="mt-2 text-2xl font-bold text-[var(--foreground)]">{card.value.toLocaleString()}</p>
+              </CardContent>
+            </Card>
+          </Link>
+        ))}
+      </div>
+
+      <Card>
+        <CardContent className="p-5">
+          <h2 className="text-base font-semibold text-[var(--foreground)] mb-4">快捷入口</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {shortcuts.map((item) => (
+              <Link key={item.label} href={item.href}>
+                <Button variant="outline" className="w-full h-16 text-base">
+                  {item.label}
+                </Button>
+              </Link>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  )
+}
+
+export default function DashboardPage({ stats }: Props) {
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">工作台</h1>
+        <p className="mt-1 text-sm text-[#999999]">欢迎使用凤御美业管理后台</p>
+      </div>
+
+      {stats.roleContext === 'business'
+        ? <BusinessDashboard stats={stats} />
+        : <SystemDashboard stats={stats} />
+      }
     </div>
   )
 }

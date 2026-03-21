@@ -53,6 +53,7 @@ export interface Employee {
   // joined
   storeName?: string
   departmentName?: string
+  marketName?: string
 }
 
 export interface Customer {
@@ -226,12 +227,27 @@ export interface ServiceOrder {
   remark: string | null
   appointmentId: string | null
   clientUserId: string | null
+  commissionStatus?: AllocationStatus | null
   createdAt: string
   updatedAt: string
   // joined
   storeName?: string
   employeeName?: string
   customerName?: string
+}
+
+export interface ServiceCommission {
+  id: number
+  serviceItemId: string
+  employeeId: string
+  commissionRate: string
+  commissionAmount: string
+  isVoid: boolean
+  createdAt: string
+  updatedAt: string
+  // joined
+  employeeName?: string
+  departmentName?: string
 }
 
 export interface Appointment {
@@ -289,9 +305,11 @@ export interface CouponTemplate {
   minSpend: string | null
   maxDiscount: string | null
   totalCount: number | null
+  issuedCount: number
   applicableProductIds: string[] | null
   applicableCategoryIds: string[] | null
   applicableStoreIds: string[] | null
+  applicableMarketIds: string[] | null
   validityMode: string | null
   validFrom: string | null
   validTo: string | null
@@ -300,6 +318,41 @@ export interface CouponTemplate {
   isActive: boolean | null
   createdAt: string
   updatedAt: string
+}
+
+/** 开单时可选用的顾客优惠券（已按订单金额过滤） */
+export interface AvailableCoupon {
+  couponId: string
+  templateId: string
+  name: string
+  couponType: CouponType
+  discountValue: string
+  minSpend: string | null
+  maxDiscount: string | null
+  applicableProductIds: string[] | null
+  applicableCategoryIds: string[] | null
+  expireAt: string
+  /** 针对当前订单金额计算出的实际优惠金额 */
+  discountAmount: string
+}
+
+/** 批量发券时的顾客选择项 */
+export interface BatchCouponCustomer {
+  userId: string
+  name: string | null
+  phone: string | null
+  storeName: string | null
+  memberLevel: string | null
+}
+
+/** 已发放优惠券记录（详情页展示用） */
+export interface IssuedCoupon {
+  couponId: string
+  customerName: string
+  phone: string
+  status: CouponStatus
+  issuedAt: string
+  usedAt: string | null
 }
 
 export interface OperationLog {
@@ -342,4 +395,13 @@ export interface DashboardStats {
   activeServices: number
   yesterdayVisitors: number
   yesterdayRevenue: number
+  /** 角色上下文：决定前端展示哪种看板 */
+  roleContext: 'business' | 'admin' | 'hr' | 'product'
+  /** admin/hr 角色的系统概览指标 */
+  adminStats?: {
+    totalStores: number
+    totalEmployees: number
+    totalProducts: number
+    totalCustomers: number
+  }
 }

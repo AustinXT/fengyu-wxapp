@@ -423,3 +423,126 @@ describe('导航目标有效性', () => {
     })
   }
 })
+
+// ——————————————————————————————————————
+// 7. 页面文件完整性（四件套：.wxml .ts .json .wxss）
+// ——————————————————————————————————————
+
+describe('页面文件完整性', () => {
+  const pages = getAllPages()
+  const requiredExts = ['.wxml', '.ts', '.json', '.wxss']
+
+  for (const page of pages) {
+    test(`${page} — 四件套文件齐全`, () => {
+      const missing = requiredExts.filter(ext => !fs.existsSync(path.join(ROOT, page + ext)))
+      if (missing.length > 0) {
+        throw new Error(`缺少文件: ${missing.map(ext => page + ext).join(', ')}`)
+      }
+    })
+  }
+})
+
+// ——————————————————————————————————————
+// 8. 禁止 HTML 标签（平台兼容 — UI spec §8）
+// （原编号 7，因新增"页面文件完整性"而顺移）
+// ——————————————————————————————————————
+
+const FORBIDDEN_HTML_TAGS = ['div', 'span', 'p', 'a', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'tr', 'td', 'th', 'br', 'hr', 'img', 'b', 'i', 'em', 'strong', 'section', 'article', 'header', 'footer', 'nav', 'main']
+
+function checkForbiddenHtmlTags(content: string): string[] {
+  const errors: string[] = []
+  const cleaned = cleanForParsing(content)
+  for (const tag of FORBIDDEN_HTML_TAGS) {
+    const re = new RegExp(`<${tag}(?:\\s|>|/)`, 'gi')
+    let m: RegExpExecArray | null
+    while ((m = re.exec(cleaned)) !== null) {
+      errors.push(`第 ${lineAt(cleaned, m.index)} 行: 禁止使用 HTML 标签 <${tag}>，应使用 <view>/<text> 等小程序标签`)
+    }
+  }
+  return errors
+}
+
+describe('禁止 HTML 标签（平台兼容）', () => {
+  const pages = getAllPages()
+
+  for (const page of pages) {
+    const wxmlPath = path.join(ROOT, page + '.wxml')
+    if (!fs.existsSync(wxmlPath)) continue
+
+    test(`${page} — 无 <div>/<span> 等 HTML 标签`, () => {
+      const content = fs.readFileSync(wxmlPath, 'utf-8')
+      const errors = checkForbiddenHtmlTags(content)
+      if (errors.length > 0) {
+        throw new Error(`检测到 HTML 标签:\n${errors.join('\n')}`)
+      }
+    })
+  }
+})
+
+// ——————————————————————————————————————
+// 8. Vant 弹窗组件节点检测（UI spec §8）
+// ——————————————————————————————————————
+
+/** 检查：如果 JSON 注册了 van-dialog/van-toast，WXML 中必须有对应节点 */
+function checkVantPopupNodes(jsonPath: string, wxmlPath: string): string[] {
+  const errors: string[] = []
+  if (!fs.existsSync(jsonPath) || !fs.existsSync(wxmlPath)) return errors
+
+  const json = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
+  const components = json.usingComponents || {}
+  const wxml = fs.readFileSync(wxmlPath, 'utf-8')
+
+  for (const name of ['van-dialog', 'van-toast', 'van-notify']) {
+    if (components[name] && !wxml.includes(`<${name}`)) {
+      errors.push(`注册了 ${name} 但 WXML 中未放置 <${name} /> 节点（Vant 弹窗组件需要 WXML 节点才能渲染）`)
+    }
+  }
+  return errors
+}
+
+describe('Vant 弹窗组件节点放置', () => {
+  const pages = getAllPages()
+
+  for (const page of pages) {
+    const jsonPath = path.join(ROOT, page + '.json')
+    const wxmlPath = path.join(ROOT, page + '.wxml')
+    if (!fs.existsSync(jsonPath)) continue
+
+    test(`${page} — 已注册的 Vant 弹窗组件有 WXML 节点`, () => {
+      const errors = checkVantPopupNodes(jsonPath, wxmlPath)
+      if (errors.length > 0) {
+        throw new Error(errors.join('\n'))
+      }
+    })
+  }
+})
+
+// ——————————————————————————————————————
+// 9. WXSS 禁止在页面级硬编码品牌主色（UI spec §1.2）
+// ——————————————————————————————————————
+
+describe('WXSS 品牌色使用 CSS 变量', () => {
+  const pages = getAllPages()
+
+  for (const page of pages) {
+    const wxssPath = path.join(ROOT, page + '.wxss')
+    if (!fs.existsSync(wxssPath)) continue
+
+    test(`${page} — 无硬编码 #C0322A，应使用 var(--color-primary)`, () => {
+      const content = fs.readFileSync(wxssPath, 'utf-8')
+      const errors: string[] = []
+      const lines = content.split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        // 跳过注释行
+        if (line.trim().startsWith('/*') || line.trim().startsWith('*') || line.trim().startsWith('//')) continue
+        if (/#C0322A/i.test(line)) {
+          errors.push(`第 ${i + 1} 行: 检测到硬编码品牌色 #C0322A，应使用 var(--color-primary)`)
+        }
+      }
+      if (errors.length > 0) {
+        throw new Error(errors.join('\n'))
+      }
+    })
+  }
+})

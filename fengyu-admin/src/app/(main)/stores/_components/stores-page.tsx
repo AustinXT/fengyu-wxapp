@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 import type { Store } from "@/lib/types"
@@ -8,12 +8,14 @@ import type { UnbindRequest } from "@/actions/store-unbind"
 import { approveUnbind, rejectUnbind } from "@/actions/store-unbind"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
 import { useRouter } from "next/navigation"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
-const PAGE_SIZE = 10
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const unbindStatusMap: Record<string, { label: string; className: string }> = {
   pending: { label: "待审批", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
@@ -28,17 +30,41 @@ export default function StoresPage({
   stores: Store[]
   unbindRequests: UnbindRequest[]
 }) {
-  const [search, setSearch] = useState("")
-  const [page, setPage] = useState(1)
-  const [tab, setTab] = useState<"stores" | "unbind">("stores")
+  const { get, set, setMany } = useUrlFilters()
+  const setFilter = useCallback((key: string, value: string) => {
+    setMany({ [key]: value, page: '' })
+  }, [setMany])
+
+  // 搜索框防抖
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
+  }, [setFilter, debounceRef])
+
+  const search = get("q")
+  const marketFilter = get("market")
+  const page = Number(get("page", "1"))
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
+  const tab = (get("tab") || "stores") as "stores" | "unbind"
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const router = useRouter()
 
   const pendingCount = unbindRequests.filter((r) => r.status === "pending").length
 
+  const markets = useMemo(() => {
+    const names = [...new Set(stores.map((s) => s.marketName).filter(Boolean))] as string[]
+    return names.sort()
+  }, [stores])
+
   // ── 门店列表 ──
   const filtered = useMemo(() => {
     let result = stores
+    if (marketFilter) {
+      result = result.filter((s) => s.marketName === marketFilter)
+    }
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       result = result.filter(
@@ -48,11 +74,11 @@ export default function StoresPage({
       )
     }
     return result
-  }, [search, stores])
+  }, [search, marketFilter, stores])
 
   const paged = useMemo(
-    () => filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
-    [filtered, page]
+    () => filtered.slice((page - 1) * pageSize, page * pageSize),
+    [filtered, page, pageSize]
   )
 
   const columns: Column<Store>[] = [
@@ -145,7 +171,7 @@ export default function StoresPage({
       {/* Tab 切换 */}
       <div className="flex gap-1 border-b border-[var(--border)]">
         <button
-          onClick={() => setTab("stores")}
+          onClick={() => set("tab", "")}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 ${
             tab === "stores"
               ? "border-[var(--primary)] text-[var(--primary)]"
@@ -155,7 +181,7 @@ export default function StoresPage({
           门店列表
         </button>
         <button
-          onClick={() => setTab("unbind")}
+          onClick={() => set("tab", "unbind")}
           className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 flex items-center gap-1.5 ${
             tab === "unbind"
               ? "border-[var(--primary)] text-[var(--primary)]"
@@ -174,13 +200,20 @@ export default function StoresPage({
       {tab === "stores" && (
         <>
           <div className="flex items-center gap-3">
+            <Select
+              value={marketFilter}
+              onChange={(e) => setFilter("market", e.target.value)}
+              className="w-40"
+            >
+              <option value="">全部市场</option>
+              {markets.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </Select>
             <Input
               placeholder="搜索门店名称 / 电话"
-              value={search}
-              onChange={(e) => {
-                setSearch(e.target.value)
-                setPage(1)
-              }}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="max-w-xs"
             />
           </div>
@@ -189,9 +222,11 @@ export default function StoresPage({
 
           <Pagination
             total={filtered.length}
-            pageSize={PAGE_SIZE}
+            pageSize={pageSize}
             page={page}
-            onPageChange={setPage}
+            onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
           />
         </>
       )}

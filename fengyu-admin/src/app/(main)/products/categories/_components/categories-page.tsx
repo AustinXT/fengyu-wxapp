@@ -91,22 +91,31 @@ export default function CategoriesPageClient({
     setSaving(true)
     try {
       if (editingCategory) {
-        await updateCategory(editingCategory.categoryId, {
+        const catResult = await updateCategory(editingCategory.categoryId, {
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
-        })
+        }, editingCategory.updatedAt)
+        if (!catResult.success) {
+          toast.error(catResult.message)
+          if (catResult.message.includes("已被其他人修改")) router.refresh()
+          return
+        }
         toast.success("分类已更新")
       } else {
         const categoryId = `cat-${Date.now()}`
-        await createCategory({
+        const createResult = await createCategory({
           categoryId,
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
         })
+        if (!createResult.success) {
+          toast.error(createResult.message)
+          return
+        }
         toast.success("分类已创建")
       }
       setDialogOpen(false)
@@ -123,7 +132,12 @@ export default function CategoriesPageClient({
     if (!disableTarget) return
     setDisabling(true)
     try {
-      await updateCategory(disableTarget.categoryId, { isValid: false })
+      const disableResult = await updateCategory(disableTarget.categoryId, { isValid: false }, disableTarget.updatedAt)
+      if (!disableResult.success) {
+        toast.error(disableResult.message)
+        if (disableResult.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
       toast.success("分类已停用")
       setDisableTarget(null)
       router.refresh()

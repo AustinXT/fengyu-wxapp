@@ -26,6 +26,8 @@ export const couponTemplates = pgTable('coupon_templates', {
   applicableCategoryIds: text('applicable_category_ids').array(),
   /** 适用门店ID数组（→ stores.store_id），NULL=全部门店 */
   applicableStoreIds: text('applicable_store_ids').array(),
+  /** 适用市场ID数组（→ org_nodes.id where type='market'），NULL=全部市场 */
+  applicableMarketIds: text('applicable_market_ids').array(),
   /** fixed=固定日期区间，days=领取后N天 */
   validityMode: text('validity_mode').default('fixed'),
   /** fixed 模式：生效日期 */

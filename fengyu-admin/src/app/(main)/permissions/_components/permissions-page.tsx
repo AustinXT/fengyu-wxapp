@@ -1,13 +1,17 @@
 "use client"
 
 import { useState, useMemo } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
+import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
+import { toast } from "sonner"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
@@ -40,6 +44,7 @@ interface PermissionsPageProps {
 }
 
 export default function PermissionsPage({ roles, employees, orgNodes }: PermissionsPageProps) {
+  const router = useRouter()
   const [selectedRole, setSelectedRole] = useState<RoleType>("admin")
   const [employeeSearch, setEmployeeSearch] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -47,6 +52,8 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
   const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("staff")
   const [assignScopeId, setAssignScopeId] = useState("")
   const [assigning, setAssigning] = useState(false)
+  const [revokeTarget, setRevokeTarget] = useState<PermissionRole | null>(null)
+  const [adminConfirmOpen, setAdminConfirmOpen] = useState(false)
 
   const activeRoles = roles.filter((r) => !r.isVoid)
 
@@ -67,6 +74,48 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
         e.employeeId.toLowerCase().includes(q)
     )
   }, [employees, employeeSearch])
+
+  async function doAssign() {
+    setAssigning(true)
+    try {
+      const res = await assignRole({
+        employeeId: assignEmployeeId,
+        role: assignRoleValue,
+        scopeId: assignScopeId,
+      })
+      if (res.success) {
+        toast.success(res.message)
+        setDialogOpen(false)
+        setAssignEmployeeId("")
+        setAssignScopeId("")
+        router.refresh()
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error('分配失败，请稍后重试')
+    } finally {
+      setAssigning(false)
+    }
+  }
+
+  async function doRevoke() {
+    if (!revokeTarget) return
+    try {
+      const res = await revokeRole(revokeTarget.id, revokeTarget.updatedAt)
+      if (res.success) {
+        toast.success(res.message)
+        router.refresh()
+      } else {
+        toast.error(res.message)
+        if (res.message.includes('已被其他人修改')) router.refresh()
+      }
+    } catch {
+      toast.error('撤销失败，请稍后重试')
+    } finally {
+      setRevokeTarget(null)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -147,20 +196,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                               variant="link"
                               size="sm"
                               className="h-auto p-0 text-[var(--destructive)]"
-                              onClick={async () => {
-                                if (!confirm(`确定要撤销 ${pr.employeeName} 的 ${roleLabels[pr.role as RoleType]} 角色吗？`)) return
-                                try {
-                                  const res = await revokeRole(pr.id)
-                                  if (res.success) {
-                                    const { toast } = await import('sonner')
-                                    toast.success(res.message)
-                                    window.location.reload()
-                                  }
-                                } catch {
-                                  const { toast } = await import('sonner')
-                                  toast.error('撤销失败，请稍后重试')
-                                }
-                              }}
+                              onClick={() => setRevokeTarget(pr)}
                             >
                               撤销
                             </Button>
@@ -283,16 +319,14 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
           </div>
           <div>
             <label className="text-sm text-[#999999]">权限范围</label>
-            <Select
+            <OrgTreeSelect
               className="mt-1"
+              orgNodes={orgNodes}
+              excludeTypes={['department']}
               value={assignScopeId}
-              onChange={(e) => setAssignScopeId(e.target.value)}
-            >
-              <option value="">选择组织节点</option>
-              {orgNodes.filter((n) => n.isActive).map((n) => (
-                <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
-              ))}
-            </Select>
+              onChange={(id) => setAssignScopeId(id)}
+              placeholder="选择组织节点"
+            />
           </div>
         </div>
         <DialogFooter>
@@ -302,43 +336,51 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
             disabled={!assignEmployeeId || !assignScopeId}
             onClick={async () => {
               if (!assignEmployeeId || !assignScopeId) return
-              // admin 角色需要二次确认
+              // admin 角色需要二次确认（通过 AlertDialog）
               if (assignRoleValue === 'admin') {
-                const confirmed = window.confirm(
-                  '即将分配【系统管理员】角色，该角色拥有最高权限（不受 scope 限制），请确认此操作。'
-                )
-                if (!confirmed) return
+                setAdminConfirmOpen(true)
+                return
               }
-              setAssigning(true)
-              try {
-                const res = await assignRole({
-                  employeeId: assignEmployeeId,
-                  role: assignRoleValue,
-                  scopeId: assignScopeId,
-                })
-                if (res.success) {
-                  const { toast } = await import('sonner')
-                  toast.success(res.message)
-                  setDialogOpen(false)
-                  setAssignEmployeeId("")
-                  setAssignScopeId("")
-                  window.location.reload()
-                } else {
-                  const { toast } = await import('sonner')
-                  toast.error(res.message)
-                }
-              } catch {
-                const { toast } = await import('sonner')
-                toast.error('分配失败，请稍后重试')
-              } finally {
-                setAssigning(false)
-              }
+              await doAssign()
             }}
           >
             确认分配
           </Button>
         </DialogFooter>
       </Dialog>
+
+      {/* 撤销角色二次确认 */}
+      <AlertDialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
+        <AlertDialogTitle>确认撤销角色？</AlertDialogTitle>
+        <AlertDialogDescription>
+          将撤销 {revokeTarget?.employeeName} 的{" "}
+          {roleLabels[(revokeTarget?.role ?? "staff") as RoleType]} 角色，撤销后该员工将立即失去对应权限。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setRevokeTarget(null)}>取消</AlertDialogCancel>
+          <AlertDialogAction onClick={doRevoke}>确认撤销</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* 分配 admin 角色二次确认 */}
+      <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
+        <AlertDialogTitle>确认分配超级管理员？</AlertDialogTitle>
+        <AlertDialogDescription>
+          系统管理员（admin）拥有最高权限，不受 scope 限制，可访问全部数据和功能。请确认此操作。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setAdminConfirmOpen(false)}>取消</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-[var(--primary)] text-white hover:bg-[var(--primary)]/90"
+            onClick={async () => {
+              setAdminConfirmOpen(false)
+              await doAssign()
+            }}
+          >
+            确认分配
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

@@ -1,6 +1,8 @@
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
 import { eq, and, sql, inArray } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
+import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 
 /**
@@ -141,7 +143,48 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
     return sql`FALSE`
   }
   // 使用参数化查询避免 SQL 注入
-  return sql`${sql.raw(storeIdColumn)} = ANY(${ids})`
+  return sql`${sql.raw(storeIdColumn)} IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})`
+}
+
+/**
+ * 判断 session 是否拥有 admin 角色（不受 scope 限制）
+ */
+export function isAdminScope(session: AuthSession): boolean {
+  return session.roles.some(r => r.role === 'admin')
+}
+
+/**
+ * 构建 Drizzle ORM 的 scope 条件
+ *
+ * - admin → 返回 undefined（不过滤，等效于 buildScopeWhere 返回空条件）
+ * - 非 admin 有 scopeStoreIds → 返回 inArray(column, ids)
+ * - 非 admin 无 scopeStoreIds → 返回 sql`FALSE`
+ *
+ * 用于 `.where(and(existingConditions, scopeCondition(session, table.storeId)))`
+ * Drizzle 的 and() 会忽略 undefined 参数。
+ */
+export function scopeCondition(
+  session: AuthSession,
+  storeIdColumn: PgColumn,
+): SQL | undefined {
+  if (isAdminScope(session)) {
+    return undefined // admin 无数据过滤
+  }
+  const ids = session.permissions.scopeStoreIds
+  if (ids.length === 0) {
+    return sql`FALSE`
+  }
+  return inArray(storeIdColumn, ids) as SQL
+}
+
+/**
+ * 检查指定 storeId 是否在用户 scope 内
+ *
+ * admin → 始终 true
+ */
+export function isInScope(session: AuthSession, storeId: string): boolean {
+  if (isAdminScope(session)) return true
+  return session.permissions.scopeStoreIds.includes(storeId)
 }
 
 /**

@@ -70,6 +70,12 @@ describe('auth 中间件', () => {
   })
 
   test('_testOpenid 覆盖真实 OPENID', async () => {
+    const origEnv = process.env.ALLOW_TEST_OPENID
+    process.env.ALLOW_TEST_OPENID = 'true'
+
+    // 重新加载 auth 模块以读取新的环境变量
+    const freshAuth = loadAuth().auth
+
     cloud.getWXContext.mockReturnValue({ OPENID: 'real-openid' })
     pg.query.mockResolvedValueOnce([{
       user_id: 'user-test',
@@ -85,12 +91,19 @@ describe('auth 中间件', () => {
       auth: {},
       result: null,
     }
-    await auth(ctx, async () => {})
+    await freshAuth(ctx, async () => {})
 
     expect(pg.query).toHaveBeenCalledWith(
       expect.stringContaining('WHERE u.openid = $1'),
       ['test-override-openid']
     )
+
+    // 还原环境变量
+    if (origEnv === undefined) {
+      delete process.env.ALLOW_TEST_OPENID
+    } else {
+      process.env.ALLOW_TEST_OPENID = origEnv
+    }
   })
 
   test('缓存命中时不查询数据库', async () => {
