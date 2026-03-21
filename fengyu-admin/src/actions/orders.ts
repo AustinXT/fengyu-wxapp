@@ -414,6 +414,10 @@ export async function createOrder(data: {
     unitPrice: string
     unitRealPrice: string
     quantity: number
+    /** 手动应付金额（可选，覆盖 unitRealPrice * quantity） */
+    saleAmount?: string
+    /** 手动实付金额（可选，覆盖 saleAmount） */
+    received?: string
     salesCategory?: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
 }): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
@@ -425,9 +429,29 @@ export async function createOrder(data: {
     return { success: false, message: '无权在该门店创建订单' }
   }
 
-  // 计算商品总金额（事务外，纯计算）
+  // 校验手动金额
+  for (const item of data.items) {
+    if (item.saleAmount !== undefined) {
+      const sa = Number(item.saleAmount)
+      if (isNaN(sa) || sa < 0) return { success: false, message: '应付金额无效' }
+    }
+    if (item.received !== undefined) {
+      const rc = Number(item.received)
+      if (isNaN(rc) || rc < 0) return { success: false, message: '实付金额无效' }
+      const sa = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+      if (rc > sa + 0.005) return { success: false, message: '实付金额不能超过应付金额' }
+    }
+  }
+
+  // 计算商品总金额（基于 received 实收）
   const rawTotal = data.items.reduce((sum, item) => {
-    return sum + Number(item.unitRealPrice) * item.quantity
+    const computed = Number(item.unitRealPrice) * item.quantity
+    return sum + (item.received ? Number(item.received) : (item.saleAmount ? Number(item.saleAmount) : computed))
+  }, 0)
+
+  // 应付金额合计（用于优惠券 minSpend 校验）
+  const saleAmountTotal = data.items.reduce((sum, item) => {
+    return sum + (item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity)
   }, 0)
 
   // 提前校验优惠券（事务外查询，避免在事务内做复杂查询）
@@ -455,10 +479,10 @@ export async function createOrder(data: {
     if (coupon.expireAt < new Date()) return { success: false, message: '优惠券已过期' }
     if (!coupon.isActive) return { success: false, message: '该优惠券模板已停用' }
     const minSpend = parseFloat(coupon.minSpend ?? '0')
-    if (rawTotal < minSpend) {
+    if (saleAmountTotal < minSpend) {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
     }
-    couponDiscount = calcCouponDiscount(coupon.couponType, coupon.discountValue, coupon.maxDiscount ?? null, rawTotal)
+    couponDiscount = calcCouponDiscount(coupon.couponType, coupon.discountValue, coupon.maxDiscount ?? null, saleAmountTotal)
   }
 
   const totalAmount = Math.max(0, rawTotal - couponDiscount)
@@ -486,18 +510,6 @@ export async function createOrder(data: {
       `)
       const id = (idRows as any[])[0]?.id as string
       if (!id) throw new Error('订单号生成失败')
-
-      // 原子核销优惠券：WHERE coupon_id = X AND status = '未使用' 防止重用
-      if (data.couponId) {
-        const voidResult = await tx
-          .update(userCoupons)
-          .set({ status: '已使用', usedSaleOrderId: id, usedAt: new Date() })
-          .where(and(eq(userCoupons.couponId, data.couponId), eq(userCoupons.status, '未使用')))
-
-        if ((voidResult as any).count === 0) {
-          throw new Error('优惠券已被使用，请刷新后重试')
-        }
-      }
 
       // 检查该顾客是否已有待支付订单（partial unique index 保护）
       if (initialStatus === '待支付' && data.clientUserId) {
@@ -537,10 +549,28 @@ export async function createOrder(data: {
         remark: data.remark || null,
       })
 
+      // 原子核销优惠券：WHERE coupon_id = X AND status = '未使用' 防止重用
+      // 必须在 insert sale_orders 之后，因为 used_sale_order_id 有外键约束
+      if (data.couponId) {
+        const voidResult = await tx
+          .update(userCoupons)
+          .set({ status: '已使用', usedSaleOrderId: id, usedAt: new Date() })
+          .where(and(eq(userCoupons.couponId, data.couponId), eq(userCoupons.status, '未使用')))
+
+        if ((voidResult as any).count === 0) {
+          throw new Error('优惠券已被使用，请刷新后重试')
+        }
+      }
+
       for (let i = 0; i < data.items.length; i++) {
         const item = data.items[i]
         const saleItemId = `${id}-${String(i + 1).padStart(2, '0')}`
-        const saleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
+        const computedSaleAmount = (Number(item.unitRealPrice) * item.quantity).toFixed(2)
+        const saleAmount = item.saleAmount ?? computedSaleAmount
+        const received = item.received ?? saleAmount
+        const unitRealPrice = item.saleAmount
+          ? (Number(item.saleAmount) / item.quantity).toFixed(2)
+          : item.unitRealPrice
 
         await tx.insert(saleItems).values({
           saleItemId,
@@ -554,9 +584,9 @@ export async function createOrder(data: {
           remainingSessions: item.sessionCount,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
-          unitRealPrice: item.unitRealPrice,
+          unitRealPrice,
           saleAmount,
-          received: saleAmount,
+          received,
           salesCategory: item.salesCategory || null,
         })
       }
