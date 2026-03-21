@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import type { Employee, Store, OrgNode } from "@/lib/types";
+import type { Employee, OrgNode } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -10,7 +10,7 @@ import { OrgTreeSelect } from "@/components/ui/org-tree-select";
 import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
-import { formatPhone, buildOrgPath, findAncestorMarketId } from "@/lib/utils";
+import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
@@ -22,12 +22,10 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50];
  */
 export default function EmployeesPage({
   employees,
-  stores,
   total,
   orgNodes,
 }: {
   employees: Employee[];
-  stores: Store[];
   total: number;
   orgNodes: OrgNode[];
 }) {
@@ -55,26 +53,12 @@ export default function EmployeesPage({
   );
 
   const marketFilter = get("market");
-  const storeFilter = get("store");
   const statusFilter = get("status");
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  const selectedNode = orgNodes.find((n) => n.id === marketFilter);
-
   /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
   const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "department"), [orgNodes]);
-
-  /** 门店下拉：按组织筛选联动 */
-  const filteredStores = useMemo(() => {
-    if (!marketFilter) return stores;
-    // 找到所选节点对应的市场
-    const marketId = selectedNode?.type === "market" ? selectedNode.id : findAncestorMarketId(marketFilter, orgNodes);
-    if (!marketId) return stores;
-    const market = orgNodes.find((n) => n.id === marketId);
-    if (!market) return stores;
-    return stores.filter((s) => s.marketName === market.name);
-  }, [marketFilter, stores, selectedNode, orgNodes]);
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -146,22 +130,9 @@ export default function EmployeesPage({
           className="w-48"
           orgNodes={filterOrgNodes}
           value={marketFilter}
-          onChange={(id) => setMany({ market: id, store: "", page: "" })}
-          placeholder="全部市场/部门"
+          onChange={(id) => setMany({ market: id, page: "" })}
+          placeholder="全部组织"
         />
-        <Select
-          value={storeFilter}
-          onChange={(e) => setFilter("store", e.target.value)}
-          className="w-40"
-          disabled={selectedNode?.type === "store"}
-        >
-          <option value="">全部门店</option>
-          {filteredStores.map((s) => (
-            <option key={s.storeId} value={s.storeId}>
-              {s.storeName}
-            </option>
-          ))}
-        </Select>
         <Select value={statusFilter} onChange={(e) => setFilter("status", e.target.value)} className="w-32">
           <option value="">全部状态</option>
           <option value="active">在职</option>
