@@ -4,10 +4,11 @@ services:
     image: postgres:16-alpine
     container_name: fengyu-postgres
     restart: unless-stopped
+    env_file: .env
     environment:
-      POSTGRES_USER: fengyu
-      POSTGRES_PASSWORD: fengyu123
-      POSTGRES_DB: fengyu
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
       # 设置默认时区
       TZ: Asia/Shanghai
       PGTZ: Asia/Shanghai
@@ -31,9 +32,17 @@ services:
     container_name: fengyu-admin
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      - "3000:3000"
+    env_file: .env
     environment:
-      - DATABASE_URL=postgresql://fengyu:fengyu123@postgres:5432/fengyu
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - COOKIE_SECURE=false
+      - TENCENTCLOUD_SECRETID=${TENCENTCLOUD_SECRETID}
+      - TENCENTCLOUD_SECRETKEY=${TENCENTCLOUD_SECRETKEY}
+      - CLOUDBASE_ENV_ID=${CLOUDBASE_ENV_ID}
+      - WX_CLIENT_APPID=${WX_CLIENT_APPID}
+      - WX_CLIENT_SECRET=${WX_CLIENT_SECRET}
+      - WXACODE_ENV_VERSION=${WXACODE_ENV_VERSION}
     depends_on:
       postgres:
         condition: service_healthy

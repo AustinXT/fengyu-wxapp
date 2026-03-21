@@ -19,6 +19,7 @@ test-results/
 
 # PostgreSQL & Docker
 db/.env
+docker/.env
 *.sql.backup
 postgres_data/
 .env
