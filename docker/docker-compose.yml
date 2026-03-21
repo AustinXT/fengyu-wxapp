@@ -12,7 +12,7 @@ services:
       TZ: Asia/Shanghai
       PGTZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       # 数据持久化
       - postgres_data:/var/lib/postgresql/data
