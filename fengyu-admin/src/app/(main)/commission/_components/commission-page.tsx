@@ -23,7 +23,7 @@ import { createRate, updateRate, deleteRate, type MarketOption } from "@/actions
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const ORDER_TYPE_OPTIONS = ["销售单", "服务单"]
-const ROLE_TYPE_OPTIONS = ["美容师", "养生师", "推广师", "顾问"]
+const ROLE_TYPE_OPTIONS = ["美容师", "养生师", "推广师"]
 const SALES_CATEGORY_OPTIONS = ["自采自销", "他销自耗", "他销他耗", "生态合作"]
 
 interface RateFormData {
@@ -258,6 +258,10 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
     () => [...new Set([...ROLE_TYPE_OPTIONS, ...roleTypes])],
     [roleTypes]
   )
+  const allSalesCategories = useMemo(
+    () => [...new Set([...SALES_CATEGORY_OPTIONS, ...salesCategories])],
+    [salesCategories]
+  )
 
   return (
     <div className="space-y-4">
@@ -284,7 +288,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
           className="w-32"
         >
           <option value="">全部订单类型</option>
-          {orderTypes.map((t) => (
+          {allOrderTypes.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>
@@ -296,7 +300,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
           className="w-32"
         >
           <option value="">全部角色</option>
-          {roleTypes.map((t) => (
+          {allRoleTypes.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>
@@ -308,7 +312,7 @@ export default function CommissionPage({ rates, markets }: CommissionPageProps) 
           className="w-32"
         >
           <option value="">全部销售分类</option>
-          {salesCategories.map((t) => (
+          {allSalesCategories.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>

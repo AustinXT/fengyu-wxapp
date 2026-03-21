@@ -13,7 +13,7 @@ const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 
 // role_type 存储角色名（'美容师'/'养生师'/'推广师' 等），部门通过映射关联
-const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师' }
+const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推广部': '推广师' }
 
 /**
  * 保存提成分配（支付后分配）

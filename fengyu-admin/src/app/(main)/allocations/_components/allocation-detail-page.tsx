@@ -26,7 +26,7 @@ interface AllocationRow {
 function inferRoleType(employee: Employee): string {
   const dept = employee.departmentName || ''
   const pos = employee.positionName || ''
-  if (dept.includes('推广') || pos.includes('推广')) return '推广'
+  if (dept.includes('推广') || pos.includes('推广')) return '推广师'
   return '技师'
 }
 

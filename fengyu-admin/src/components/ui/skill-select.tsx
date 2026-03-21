@@ -1,6 +1,6 @@
 "use client"
 
-const SKILL_OPTIONS = ["美容师", "推广", "养生师"] as const
+const SKILL_OPTIONS = ["美容师", "养生师", "推广师"] as const
 
 interface SkillSelectProps {
   value: string[]
