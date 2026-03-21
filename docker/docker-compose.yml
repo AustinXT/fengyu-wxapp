@@ -23,9 +23,24 @@ services:
       timeout: 5s
       retries: 5
 
+  admin:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.admin
+    container_name: fengyu-admin
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://fengyu:fengyu123@postgres:5432/fengyu
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
-    driver: local
+    external: true
+    name: fengyu-wxapp_postgres_data
 
 # 网络配置（可选，用于与其他服务连接）
 networks:
