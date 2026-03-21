@@ -1,23 +1,24 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { SkillSelect } from "@/components/ui/skill-select"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { DataTable, type Column } from "@/components/ui/data-table"
-import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
-import { formatDate } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
-import { assignRole } from "@/actions/permissions"
+import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
 import type { Employee, PermissionRole, Store, OrgNode, RoleType } from "@/lib/types"
 
@@ -45,7 +46,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
   // Edit info state
   const [isEditing, setIsEditing] = useState(false)
-  useUnsavedChanges(isEditing)
+  useUnsavedChanges(isEditing || isEditingRoles)
   const [resignDialogOpen, setResignDialogOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
@@ -57,25 +58,34 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
     orgNodeId: employee.orgNodeId ?? "",
     positionName: employee.positionName ?? "",
     birthday: employee.birthday ?? "",
-    skills: employee.skills?.join(", ") ?? "",
+    skills: employee.skills ?? ([] as string[]),
   })
 
-  // Assign role dialog state
-  const [roleDialogOpen, setRoleDialogOpen] = useState(false)
-  const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("manager")
-  const [assignScopeId, setAssignScopeId] = useState("")
-  const [assigning, setAssigning] = useState(false)
+  // Inline role editing state
+  const [isEditingRoles, setIsEditingRoles] = useState(false)
+  const [roleEntries, setRoleEntries] = useState<{ role: RoleType; scopeId: string }[]>([])
+  const [savingRoles, setSavingRoles] = useState(false)
 
   // Password reset state
   const [resetPwdDialogOpen, setResetPwdDialogOpen] = useState(false)
   const [resettingPwd, setResettingPwd] = useState(false)
+
+  // 根据所属组织的市场过滤门店
+  const filteredStores = useMemo(() => {
+    const marketId = findAncestorMarketId(form.orgNodeId || null, orgNodes)
+    if (!marketId) return stores
+    return stores.filter((s) => {
+      const storeOrgNode = orgNodes.find((n) => n.id === s.orgNodeId)
+      return storeOrgNode?.parentId === marketId
+    })
+  }, [form.orgNodeId, orgNodes, stores])
 
   function maskIdCard(value: string | null): string {
     if (!value || value.length < 8) return value ?? ""
     return value.slice(0, 4) + "****" + value.slice(-4)
   }
 
-  function handleFormChange(field: string, value: string) {
+  function handleFormChange(field: string, value: string | string[]) {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -89,7 +99,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
       orgNodeId: employee.orgNodeId ?? "",
       positionName: employee.positionName ?? "",
       birthday: employee.birthday ?? "",
-      skills: employee.skills?.join(", ") ?? "",
+      skills: employee.skills ?? ([] as string[]),
     })
     setIsEditing(false)
   }
@@ -97,10 +107,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
   async function handleSave() {
     setSaving(true)
     try {
-      const skillsArr = form.skills
-        .split(/[,，]/)
-        .map((s) => s.trim())
-        .filter(Boolean)
       const result = await updateEmployee(employee.employeeId, {
         name: form.name || null,
         gender: form.gender || null,
@@ -110,7 +116,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName || null,
         birthday: form.birthday || null,
-        skills: skillsArr.length > 0 ? skillsArr : null,
+        skills: form.skills.length > 0 ? form.skills : null,
       }, employee.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -127,25 +133,40 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
     }
   }
 
-  async function handleAssignRole() {
-    if (!assignScopeId) return
-    setAssigning(true)
+  async function handleSaveRoles() {
+    setSavingRoles(true)
     try {
-      const res = await assignRole({
-        employeeId: employee.employeeId,
-        role: assignRoleValue,
-        scopeId: assignScopeId,
-      })
-      if (res.success) {
-        toast.success(res.message)
-        setRoleDialogOpen(false)
-        setAssignScopeId("")
-        router.refresh()
+      const activeRoles = roles.filter(r => !r.isVoid)
+      const key = (role: string, scopeId: string) => `${role}:${scopeId}`
+      const originalKeys = new Set(activeRoles.map(r => key(r.role, r.scopeId)))
+      const editedKeys = new Set(roleEntries.filter(e => e.scopeId).map(e => key(e.role, e.scopeId)))
+
+      const toRevoke = activeRoles.filter(r => !editedKeys.has(key(r.role, r.scopeId)))
+      const toAdd = roleEntries.filter(e => e.scopeId && !originalKeys.has(key(e.role, e.scopeId)))
+
+      const errors: string[] = []
+      for (const r of toRevoke) {
+        const res = await revokeRole(r.id, r.updatedAt)
+        if (!res.success) errors.push(res.message)
       }
+      for (const e of toAdd) {
+        const res = await assignRole({ employeeId: employee.employeeId, role: e.role, scopeId: e.scopeId })
+        if (!res.success) errors.push(res.message)
+      }
+
+      if (errors.length > 0) {
+        toast.error(errors.join('；'))
+      } else if (toRevoke.length === 0 && toAdd.length === 0) {
+        toast.info('未检测到变更')
+      } else {
+        toast.success('权限角色已更新')
+      }
+      setIsEditingRoles(false)
+      router.refresh()
     } catch {
-      toast.error("分配失败，请稍后重试")
+      toast.error('保存失败，请稍后重试')
     } finally {
-      setAssigning(false)
+      setSavingRoles(false)
     }
   }
 
@@ -319,6 +340,30 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                   )}
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">所属组织</label>
+                  {isEditing ? (
+                    <OrgTreeSelect
+                      orgNodes={orgNodes}
+                      value={form.orgNodeId}
+                      onChange={(id) => {
+                        handleFormChange("orgNodeId", id)
+                        // 组织变更时，若当前门店不在新市场下则清空
+                        const newMarketId = findAncestorMarketId(id, orgNodes)
+                        const storeMarketId = findAncestorMarketId(
+                          stores.find((s) => s.storeId === form.storeId)?.orgNodeId ?? null,
+                          orgNodes,
+                        )
+                        if (newMarketId !== storeMarketId) {
+                          handleFormChange("storeId", "")
+                        }
+                      }}
+                      placeholder="请选择所属组织"
+                    />
+                  ) : (
+                    <Input value={buildOrgPath(employee.orgNodeId, orgNodes)} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">所属门店</label>
                   {isEditing ? (
                     <Select
@@ -326,7 +371,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                       onChange={(e) => handleFormChange("storeId", e.target.value)}
                     >
                       <option value="">请选择门店</option>
-                      {stores.map((s) => (
+                      {filteredStores.map((s) => (
                         <option key={s.storeId} value={s.storeId}>
                           {s.storeName}
                         </option>
@@ -334,26 +379,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                     </Select>
                   ) : (
                     <Input value={employee.storeName ?? ""} disabled />
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">部门</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.orgNodeId}
-                      onChange={(e) => handleFormChange("orgNodeId", e.target.value)}
-                    >
-                      <option value="">请选择部门</option>
-                      {orgNodes
-                        .filter((n) => n.isActive)
-                        .map((n) => (
-                          <option key={n.id} value={n.id}>
-                            {n.name} ({n.type})
-                          </option>
-                        ))}
-                    </Select>
-                  ) : (
-                    <Input value={employee.departmentName ?? ""} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
@@ -369,15 +394,11 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">技能标签</label>
-                  {isEditing ? (
-                    <Input
-                      value={form.skills}
-                      onChange={(e) => handleFormChange("skills", e.target.value)}
-                      placeholder="多个技能用逗号分隔"
-                    />
-                  ) : (
-                    <Input value={employee.skills?.join(", ") ?? ""} disabled />
-                  )}
+                  <SkillSelect
+                    value={isEditing ? form.skills : (employee.skills ?? [])}
+                    onChange={(skills) => handleFormChange("skills", skills)}
+                    disabled={!isEditing}
+                  />
                 </div>
               </div>
             </CardContent>
@@ -388,14 +409,82 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">权限角色</CardTitle>
-              <Button size="sm" onClick={() => setRoleDialogOpen(true)}>分配角色</Button>
+              {isEditingRoles ? (
+                <div className="flex gap-2">
+                  <Button size="sm" loading={savingRoles} onClick={handleSaveRoles}>
+                    保存
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setIsEditingRoles(false)} disabled={savingRoles}>
+                    取消
+                  </Button>
+                </div>
+              ) : (
+                <Button variant="outline" size="sm" onClick={() => {
+                  const activeRoles = roles.filter(r => !r.isVoid)
+                  setRoleEntries(activeRoles.map(r => ({ role: r.role as RoleType, scopeId: r.scopeId })))
+                  setIsEditingRoles(true)
+                }}>
+                  编辑
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
-              <DataTable
-                columns={roleColumns}
-                data={roles}
-                emptyText="暂无权限角色"
-              />
+              {isEditingRoles ? (
+                <div className="space-y-3">
+                  {roleEntries.map((entry, index) => (
+                    <div key={index} className="flex items-center gap-3">
+                      <Select
+                        className="flex-1"
+                        value={entry.role}
+                        onChange={(e) => {
+                          const updated = [...roleEntries]
+                          updated[index] = { ...entry, role: e.target.value as RoleType }
+                          setRoleEntries(updated)
+                        }}
+                      >
+                        {allRoleTypes.map((r) => (
+                          <option key={r} value={r}>{roleLabels[r]}</option>
+                        ))}
+                      </Select>
+                      <Select
+                        className="flex-1"
+                        value={entry.scopeId}
+                        onChange={(e) => {
+                          const updated = [...roleEntries]
+                          updated[index] = { ...entry, scopeId: e.target.value }
+                          setRoleEntries(updated)
+                        }}
+                      >
+                        <option value="">选择组织节点</option>
+                        {orgNodes.filter(n => n.isActive).map((n) => (
+                          <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
+                        ))}
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-[var(--destructive)] shrink-0"
+                        onClick={() => setRoleEntries(prev => prev.filter((_, i) => i !== index))}
+                      >
+                        删除
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRoleEntries(prev => [...prev, { role: 'manager', scopeId: '' }])}
+                  >
+                    + 添加角色
+                  </Button>
+                </div>
+              ) : (
+                <DataTable
+                  columns={roleColumns}
+                  data={roles}
+                  emptyText="暂无权限角色"
+                />
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -448,63 +537,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
           </Card>
         </TabsContent>
       </Tabs>
-
-      {/* 分配角色 Dialog */}
-      <Dialog open={roleDialogOpen} onOpenChange={setRoleDialogOpen}>
-        <DialogClose onOpenChange={setRoleDialogOpen} />
-        <DialogHeader>
-          <DialogTitle>分配角色</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4 mt-4">
-          <div>
-            <label className="text-sm text-[#999999]">员工</label>
-            <Input className="mt-1" value={`${employee.name ?? ""} (${employee.employeeId})`} disabled />
-          </div>
-          <div>
-            <label className="text-sm text-[#999999]">角色</label>
-            <Select
-              className="mt-1"
-              value={assignRoleValue}
-              onChange={(e) => setAssignRoleValue(e.target.value as RoleType)}
-            >
-              {allRoleTypes.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabels[r]}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div>
-            <label className="text-sm text-[#999999]">权限范围</label>
-            <Select
-              className="mt-1"
-              value={assignScopeId}
-              onChange={(e) => setAssignScopeId(e.target.value)}
-            >
-              <option value="">选择组织节点</option>
-              {orgNodes
-                .filter((n) => n.isActive)
-                .map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name} ({n.type})
-                  </option>
-                ))}
-            </Select>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setRoleDialogOpen(false)}>
-            取消
-          </Button>
-          <Button
-            loading={assigning}
-            disabled={!assignScopeId}
-            onClick={handleAssignRole}
-          >
-            确认分配
-          </Button>
-        </DialogFooter>
-      </Dialog>
 
       {/* 离职确认 */}
       <AlertDialog open={resignDialogOpen} onOpenChange={setResignDialogOpen}>

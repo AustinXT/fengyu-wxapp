@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, or, sql, ilike, inArray, isNull } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -93,13 +93,23 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
     scopeCondition(session, staffWechatUsers.storeId),
   ]
 
-  if (filters.marketId === '__hq__') {
-    conditions.push(isNull(staffWechatUsers.storeId))
-  } else if (filters.marketId) {
-    const sub = db.select({ storeId: stores.storeId }).from(stores)
-      .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-      .where(eq(storeNode.parentId, filters.marketId))
-    conditions.push(inArray(staffWechatUsers.storeId, sub))
+  if (filters.marketId) {
+    // 查询节点类型以决定过滤策略
+    const [node] = await db
+      .select({ type: orgNodes.type })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, filters.marketId))
+      .limit(1)
+    if (node?.type === 'market') {
+      // 市场：筛选该市场下所有门店的员工
+      const sub = db.select({ storeId: stores.storeId }).from(stores)
+        .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+        .where(eq(storeNode.parentId, filters.marketId))
+      conditions.push(inArray(staffWechatUsers.storeId, sub))
+    } else if (node?.type === 'department') {
+      // 总部部门：筛选 orgNodeId 为该部门的员工
+      conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
+    }
   }
   if (filters.storeId) {
     conditions.push(eq(staffWechatUsers.storeId, filters.storeId))
@@ -162,18 +172,25 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
   return rowToEmployee(rows[0])
 }
 
-/** 获取所有市场节点（用于筛选下拉） */
-export async function getMarketsForFilter(): Promise<{ id: string; name: string }[]> {
+/** 获取组织架构第 2 级节点（市场 + 总部部门，用于筛选下拉） */
+export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: string; type: string }[]> {
   const session = await getSession()
   requirePermission(session, 'employee:list')
 
-  const rows = await db
-    .select({ id: orgNodes.id, name: orgNodes.name })
+  const [hq] = await db
+    .select({ id: orgNodes.id })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'market'))
+    .where(eq(orgNodes.type, 'headquarters'))
+    .limit(1)
+  if (!hq) return []
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.parentId, hq.id))
     .orderBy(orgNodes.sortOrder)
 
-  return rows.map(r => ({ id: r.id, name: r.name ?? '' }))
+  return rows.map(r => ({ id: r.id, name: r.name ?? '', type: r.type }))
 }
 
 
@@ -332,7 +349,7 @@ export async function updateEmployee(
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(staffWechatUsers.employeeId, employeeId),
-        sql`date_trunc('milliseconds', ${staffWechatUsers.updatedAt}) = ${new Date(expectedUpdatedAt)}`,
+        sql`date_trunc('milliseconds', ${staffWechatUsers.updatedAt}) = ${expectedUpdatedAt}`,
         scopeCond,
       )
     : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)

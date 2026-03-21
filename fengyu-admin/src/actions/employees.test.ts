@@ -76,7 +76,7 @@ vi.mock('drizzle-orm/pg-core', () => ({
   alias: vi.fn((_table, aliasName) => ({ _aliasName: aliasName })),
 }))
 
-import { createEmployee, updateEmployee, getEmployeesPaginated, getMarketsForFilter } from './employees'
+import { createEmployee, updateEmployee, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -680,19 +680,26 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(result.data[0].marketName).toBeUndefined()
   })
 
-  it('marketId 筛选 → inArray 被调用', async () => {
-    // marketId 筛选会先建 subquery（db.select → from → innerJoin → where），再执行 COUNT + DATA
+  it('marketId 筛选（市场类型） → inArray 被调用', async () => {
+    // marketId 筛选会先查 org_node type，再建 subquery，再执行 COUNT + DATA
     let callIndex = 0
     ;(db.select as any).mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
+        // 查询节点类型: select → from → where → limit
+        const limit = vi.fn().mockResolvedValue([{ type: 'market' }])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      if (callIndex === 2) {
         // subquery: select → from → innerJoin → where (返回 subquery 对象)
         const subWhere = vi.fn().mockReturnValue({ _subquery: true })
         const innerJoin = vi.fn().mockReturnValue({ where: subWhere })
         const from = vi.fn().mockReturnValue({ innerJoin })
         return { from }
       }
-      if (callIndex === 2) {
+      if (callIndex === 3) {
         // COUNT query
         const where = vi.fn().mockResolvedValue([{ count: 0 }])
         const from = vi.fn().mockReturnValue({ where })
@@ -716,18 +723,46 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(inArray).toHaveBeenCalledWith('store_id', expect.anything())
   })
 
-  it('marketId="__hq__" → isNull(storeId) 被调用', async () => {
-    mockPaginatedChain(0, [])
+  it('marketId 筛选（部门类型） → eq(orgNodeId) 被调用', async () => {
+    // 先查节点类型返回 department，然后直接按 orgNodeId 过滤
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // 查询节点类型: select → from → where → limit
+        const limit = vi.fn().mockResolvedValue([{ type: 'department' }])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      if (callIndex === 2) {
+        // COUNT query
+        const where = vi.fn().mockResolvedValue([{ count: 0 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // DATA query
+      const offset = vi.fn().mockResolvedValue([])
+      const limit = vi.fn().mockReturnValue({ offset })
+      const orderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin4 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
 
-    await getEmployeesPaginated({ marketId: '__hq__' })
+    await getEmployeesPaginated({ marketId: 'dept-1' })
 
-    expect(isNull).toHaveBeenCalledWith('store_id')
+    expect(eq).toHaveBeenCalledWith('org_node_id', 'dept-1')
   })
 })
 
-// ── getMarketsForFilter ──────────────────────────────────────────────────────
+// ── getOrgLevel2ForFilter ──────────────────────────────────────────────────────
 
-describe('getMarketsForFilter', () => {
+describe('getOrgLevel2ForFilter', () => {
   const listSession = {
     ...mockSession,
     permissions: { actions: ['employee:list'], scopeStoreIds: [] },
@@ -738,21 +773,45 @@ describe('getMarketsForFilter', () => {
     ;(getSession as any).mockResolvedValue(listSession)
   })
 
-  it('返回 market 类型 org_nodes', async () => {
-    const orderBy = vi.fn().mockResolvedValue([
-      { id: 'market-1', name: '南昌市场' },
-      { id: 'market-2', name: '九江市场' },
+  it('返回 headquarters 子节点（市场 + 总部部门）', async () => {
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // 查询 headquarters: select → from → where → limit
+        const limit = vi.fn().mockResolvedValue([{ id: 'hq-1' }])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      // 查询子节点: select → from → where → orderBy
+      const orderBy = vi.fn().mockResolvedValue([
+        { id: 'market-1', name: '南昌市场', type: 'market' },
+        { id: 'market-2', name: '九江市场', type: 'market' },
+        { id: 'dept-1', name: '人事部', type: 'department' },
+      ])
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const from = vi.fn().mockReturnValue({ where })
+      return { from }
+    })
+
+    const result = await getOrgLevel2ForFilter()
+
+    expect(result).toEqual([
+      { id: 'market-1', name: '南昌市场', type: 'market' },
+      { id: 'market-2', name: '九江市场', type: 'market' },
+      { id: 'dept-1', name: '人事部', type: 'department' },
     ])
-    const where = vi.fn().mockReturnValue({ orderBy })
+  })
+
+  it('无 headquarters 节点 → 返回空数组', async () => {
+    const limit = vi.fn().mockResolvedValue([])
+    const where = vi.fn().mockReturnValue({ limit })
     const from = vi.fn().mockReturnValue({ where })
     ;(db.select as any).mockReturnValue({ from })
 
-    const result = await getMarketsForFilter()
+    const result = await getOrgLevel2ForFilter()
 
-    expect(result).toEqual([
-      { id: 'market-1', name: '南昌市场' },
-      { id: 'market-2', name: '九江市场' },
-    ])
-    expect(eq).toHaveBeenCalledWith(expect.anything(), 'market')
+    expect(result).toEqual([])
   })
 })
