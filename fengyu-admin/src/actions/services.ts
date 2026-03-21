@@ -219,6 +219,59 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
   }))
 }
 
+/** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡/单品） */
+export interface AvailableSaleItem {
+  saleItemId: string
+  saleOrderId: string
+  productName: string | null
+  skuSpecName: string | null
+  productType: string | null
+  sessionCount: number | null
+  remainingSessions: number | null
+  unitRealPrice: string
+  expireDate: string | null
+}
+
+export async function getAvailableSaleItems(clientUserId: string): Promise<AvailableSaleItem[]> {
+  const session = await getSession()
+  requirePermission(session, 'service:create')
+
+  const rows = await db.execute(sql`
+    SELECT
+      si.sale_item_id,
+      si.sale_order_id,
+      si.product_name,
+      si.sku_spec_name,
+      si.product_type,
+      si.session_count,
+      si.remaining_sessions,
+      si.unit_real_price,
+      si.expire_date
+    FROM sale_items si
+    INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    WHERE o.client_user_id = ${clientUserId}
+      AND o.status = '已支付'
+      AND si.item_direction = 'purchase'
+      AND si.product_type IN ('疗程卡', '单品')
+      AND si.remaining_sessions IS NOT NULL
+      AND si.remaining_sessions > 0
+      AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+    ORDER BY o.paid_at DESC, si.sale_item_id
+  `)
+
+  return (rows as any[]).map((r: any) => ({
+    saleItemId: r.sale_item_id,
+    saleOrderId: r.sale_order_id,
+    productName: r.product_name,
+    skuSpecName: r.sku_spec_name,
+    productType: r.product_type,
+    sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+    remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
+    unitRealPrice: r.unit_real_price ?? '0',
+    expireDate: r.expire_date,
+  }))
+}
+
 /** C4: 开始服务 — WHERE status = '待服务' */
 export async function startServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()

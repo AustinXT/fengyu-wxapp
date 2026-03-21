@@ -115,7 +115,12 @@ export default function ServicesPageClient({
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单管理</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">服务单管理</h1>
+        <Link href="/services/create">
+          <Button>新建服务单</Button>
+        </Link>
+      </div>
 
       {/* Filters — URL-driven, 触发服务端重新查询 */}
       <Card>
@@ -134,6 +139,7 @@ export default function ServicesPageClient({
               ))}
             </Select>
             <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground whitespace-nowrap">服务日期</span>
               <Input type="date" className="w-36" value={dateFrom} onChange={(e) => setFilter("from", e.target.value)} />
               <span className="text-[#999999]">-</span>
               <Input type="date" className="w-36" value={dateTo} onChange={(e) => setFilter("to", e.target.value)} />
