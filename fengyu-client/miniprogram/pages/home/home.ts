@@ -59,7 +59,7 @@ Page({
       { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
       { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
       { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
-    ] as Banner[],
+    ] as Banner[], // fallback defaults, overridden by config.banners API
     currentBanner: 0,
 
     // 侧边栏（统一展示所有分类，按大分类分组）
@@ -94,6 +94,7 @@ Page({
     const storeName = app.globalData.boundStoreName || "";
     this.setData({ boundStoreName: storeName });
     this.loadShopInit();
+    this.loadBanners();
     this.updateCartCount();
   },
 
@@ -365,6 +366,29 @@ Page({
   },
 
   // ===== 数据加载 =====
+
+  async loadBanners() {
+    try {
+      const data = await callClientApi<{ banners: string[] }>("config.banners", {});
+      const urls = data?.banners;
+      if (urls && urls.length > 0) {
+        this.setData({
+          banners: urls.map((url, i) => ({
+            id: String(i + 1),
+            title: "",
+            desc: "",
+            bgColor: "",
+            image: url,
+            link: "",
+          })),
+        });
+      }
+      // If empty, keep the default fallback banners
+    } catch (err) {
+      console.error("loadBanners error:", err);
+      // Keep fallback banners on error
+    }
+  },
 
   async loadShopInit() {
     try {
