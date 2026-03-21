@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useMemo } from "react"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -50,6 +50,9 @@ export function ImageUpload({
   className,
 }: ImageUploadProps) {
   const [uploading, setUploading] = useState(false)
+  // Drag state: [sourceIndex, targetIndex]; null when not dragging
+  const [drag, setDrag] = useState<[number, number] | null>(null)
+  const dragRef = useRef<[number, number] | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const urls: string[] = (multiple
@@ -57,12 +60,26 @@ export function ImageUpload({
     : value ? [value as string] : []
   ).map(toHttpUrl)
 
+  const canDrag = multiple && urls.length > 1
+
+  // Compute preview order during drag: move source to target, others shift
+  const displayItems = useMemo(() => {
+    const items = urls.map((url, i) => ({ url, orig: i }))
+    if (!drag) return items
+    const [src, tgt] = drag
+    if (src === tgt || src < 0 || tgt < 0) return items
+    const moved = items[src]
+    items.splice(src, 1)
+    items.splice(tgt, 0, moved)
+    return items
+  }, [urls, drag])
+
   const handleFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
 
       const filesToUpload = Array.from(files)
-      if (multiple && urls.length + filesToUpload.length > max) {
+      if (multiple && max > 0 && urls.length + filesToUpload.length > max) {
         toast.error(`最多上传 ${max} 张图片`)
         return
       }
@@ -111,28 +128,76 @@ export function ImageUpload({
     }
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleFileDrop = (e: React.DragEvent) => {
     e.preventDefault()
     handleFiles(e.dataTransfer.files)
   }
 
-  const canAdd = multiple ? urls.length < max : urls.length === 0
+  // Drag-and-drop reorder: ref + state kept in sync
+  const setDragState = (next: [number, number] | null) => {
+    dragRef.current = next
+    setDrag(next)
+  }
+
+  const onDragStart = (e: React.DragEvent, origIndex: number) => {
+    e.dataTransfer.effectAllowed = "move"
+    setDragState([origIndex, origIndex])
+  }
+
+  // onDragOver fires on display-order index; map back to compute new target
+  const onDragOver = (e: React.DragEvent, displayIndex: number) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = "move"
+    const d = dragRef.current
+    if (!d) return
+    // displayIndex is already the visual target position
+    if (d[1] !== displayIndex) {
+      setDragState([d[0], displayIndex])
+    }
+  }
+
+  const onDropReorder = (e: React.DragEvent) => {
+    e.preventDefault()
+    const d = dragRef.current
+    if (!d || d[0] === d[1]) {
+      setDragState(null)
+      return
+    }
+    // Commit the preview order
+    onChange(displayItems.map((item) => item.url))
+    setDragState(null)
+  }
+
+  const onDragEnd = () => {
+    setDragState(null)
+  }
+
+  const canAdd = multiple ? (max > 0 ? urls.length < max : true) : urls.length === 0
 
   return (
     <div className={cn("flex flex-wrap gap-2", className)}>
-      {urls.map((url, i) => (
+      {displayItems.map((item, displayIdx) => (
         <div
-          key={`${url}-${i}`}
-          className="group relative h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] overflow-hidden"
+          key={item.url}
+          draggable={canDrag}
+          onDragStart={canDrag ? (e) => onDragStart(e, displayIdx) : undefined}
+          onDragOver={canDrag ? (e) => onDragOver(e, displayIdx) : undefined}
+          onDrop={canDrag ? onDropReorder : undefined}
+          onDragEnd={canDrag ? onDragEnd : undefined}
+          className={cn(
+            "group relative h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] overflow-hidden",
+            canDrag && "cursor-grab active:cursor-grabbing",
+            drag && item.orig === drag[0] && "opacity-50 ring-2 ring-[var(--ring)]",
+          )}
         >
           <img
-            src={url}
+            src={item.url}
             alt=""
-            className="h-full w-full object-cover"
+            className="h-full w-full object-cover pointer-events-none"
           />
           <button
             type="button"
-            onClick={() => handleRemove(i)}
+            onClick={() => handleRemove(item.orig)}
             className="absolute top-0.5 right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-opacity"
           >
             &times;
@@ -144,7 +209,7 @@ export function ImageUpload({
         <div
           onClick={() => inputRef.current?.click()}
           onDragOver={(e) => e.preventDefault()}
-          onDrop={handleDrop}
+          onDrop={handleFileDrop}
           className={cn(
             "flex h-24 w-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--radius)] border-2 border-dashed border-[var(--input)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--ring)] hover:text-[var(--foreground)]",
             uploading && "pointer-events-none opacity-50"
