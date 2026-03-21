@@ -1,19 +1,19 @@
-"use client"
+"use client";
 
-import { useState, useCallback, useMemo } from "react"
-import Link from "next/link"
-import type { Employee, Store, OrgNode } from "@/lib/types"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
-import { OrgTreeSelect } from "@/components/ui/org-tree-select"
-import { Badge } from "@/components/ui/badge"
-import { DataTable, type Column } from "@/components/ui/data-table"
-import { Pagination } from "@/components/ui/pagination"
-import { formatPhone, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
-import { useUrlFilters } from "@/lib/hooks/use-url-filters"
+import { useState, useCallback, useMemo } from "react";
+import Link from "next/link";
+import type { Employee, Store, OrgNode } from "@/lib/types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { OrgTreeSelect } from "@/components/ui/org-tree-select";
+import { Badge } from "@/components/ui/badge";
+import { DataTable, type Column } from "@/components/ui/data-table";
+import { Pagination } from "@/components/ui/pagination";
+import { formatPhone, buildOrgPath, findAncestorMarketId } from "@/lib/utils";
+import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 
-const PAGE_SIZE_OPTIONS = [10, 20, 50]
+const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
 /**
  * 员工列表页 — 服务端分页
@@ -26,50 +26,55 @@ export default function EmployeesPage({
   total,
   orgNodes,
 }: {
-  employees: Employee[]
-  stores: Store[]
-  total: number
-  orgNodes: OrgNode[]
+  employees: Employee[];
+  stores: Store[];
+  total: number;
+  orgNodes: OrgNode[];
 }) {
-  const { get, set, setMany } = useUrlFilters()
+  const { get, set, setMany } = useUrlFilters();
 
   /** 筛选变更时重置到第 1 页 */
-  const setFilter = useCallback((key: string, value: string) => {
-    setMany({ [key]: value, page: '' })
-  }, [setMany])
+  const setFilter = useCallback(
+    (key: string, value: string) => {
+      setMany({ [key]: value, page: "" });
+    },
+    [setMany],
+  );
 
   // 搜索框防抖：本地 state 即时响应，URL 延迟更新
-  const [searchInput, setSearchInput] = useState(get("q"))
-  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const [searchInput, setSearchInput] = useState(get("q"));
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleSearchChange = useCallback((value: string) => {
-    setSearchInput(value)
-    if (debounceRef[0]) clearTimeout(debounceRef[0])
-    debounceRef[0] = setTimeout(() => setFilter("q", value), 300)
-  }, [setFilter, debounceRef])
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchInput(value);
+      if (debounceRef[0]) clearTimeout(debounceRef[0]);
+      debounceRef[0] = setTimeout(() => setFilter("q", value), 300);
+    },
+    [setFilter, debounceRef],
+  );
 
-  const marketFilter = get("market")
-  const storeFilter = get("store")
-  const statusFilter = get("status")
-  const currentPage = Math.max(1, Number(get("page", "1")) || 1)
-  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
+  const marketFilter = get("market");
+  const storeFilter = get("store");
+  const statusFilter = get("status");
+  const currentPage = Math.max(1, Number(get("page", "1")) || 1);
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
-  const selectedNode = orgNodes.find(n => n.id === marketFilter)
-  const isDeptSelected = selectedNode?.type === 'department'
+  const selectedNode = orgNodes.find((n) => n.id === marketFilter);
+
+  /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
+  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "department"), [orgNodes]);
 
   /** 门店下拉：按组织筛选联动 */
   const filteredStores = useMemo(() => {
-    if (!marketFilter) return stores
-    if (isDeptSelected) return []
+    if (!marketFilter) return stores;
     // 找到所选节点对应的市场
-    const marketId = selectedNode?.type === 'market'
-      ? selectedNode.id
-      : findAncestorMarketId(marketFilter, orgNodes)
-    if (!marketId) return stores
-    const market = orgNodes.find(n => n.id === marketId)
-    if (!market) return stores
-    return stores.filter(s => s.marketName === market.name)
-  }, [marketFilter, isDeptSelected, stores, selectedNode, orgNodes])
+    const marketId = selectedNode?.type === "market" ? selectedNode.id : findAncestorMarketId(marketFilter, orgNodes);
+    if (!marketId) return stores;
+    const market = orgNodes.find((n) => n.id === marketId);
+    if (!market) return stores;
+    return stores.filter((s) => s.marketName === market.name);
+  }, [marketFilter, stores, selectedNode, orgNodes]);
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -125,7 +130,7 @@ export default function EmployeesPage({
         </Link>
       ),
     },
-  ]
+  ];
 
   return (
     <div className="space-y-4">
@@ -139,16 +144,16 @@ export default function EmployeesPage({
       <div className="flex items-center gap-3">
         <OrgTreeSelect
           className="w-48"
-          orgNodes={orgNodes}
+          orgNodes={filterOrgNodes}
           value={marketFilter}
-          onChange={(id) => setMany({ market: id, store: '', page: '' })}
+          onChange={(id) => setMany({ market: id, store: "", page: "" })}
           placeholder="全部市场/部门"
         />
         <Select
           value={storeFilter}
           onChange={(e) => setFilter("store", e.target.value)}
           className="w-40"
-          disabled={isDeptSelected}
+          disabled={selectedNode?.type === "store"}
         >
           <option value="">全部门店</option>
           {filteredStores.map((s) => (
@@ -157,11 +162,7 @@ export default function EmployeesPage({
             </option>
           ))}
         </Select>
-        <Select
-          value={statusFilter}
-          onChange={(e) => setFilter("status", e.target.value)}
-          className="w-32"
-        >
+        <Select value={statusFilter} onChange={(e) => setFilter("status", e.target.value)} className="w-32">
           <option value="">全部状态</option>
           <option value="active">在职</option>
           <option value="resigned">已离职</option>
@@ -182,8 +183,8 @@ export default function EmployeesPage({
         page={currentPage}
         onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
-        onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+        onPageSizeChange={(size) => setMany({ size: String(size), page: "" })}
       />
     </div>
-  )
+  );
 }

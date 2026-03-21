@@ -10,6 +10,9 @@ import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { saveSettings } from "@/actions/settings"
 
+const CDN_BASE =
+  "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
+
 interface SettingsPageProps {
   initialSettings: {
     orderPrefix: string
