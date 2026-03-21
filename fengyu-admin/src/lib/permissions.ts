@@ -143,7 +143,7 @@ export function buildScopeWhere(session: AuthSession, storeIdColumn = 'store_id'
     return sql`FALSE`
   }
   // 使用参数化查询避免 SQL 注入
-  return sql`${sql.raw(storeIdColumn)} = ANY(${ids})`
+  return sql`${sql.raw(storeIdColumn)} IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})`
 }
 
 /**

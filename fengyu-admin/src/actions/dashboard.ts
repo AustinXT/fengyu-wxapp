@@ -79,19 +79,19 @@ export async function getDashboardStats(): Promise<DashboardStats> {
           THEN total_amount
         END), 0) AS yesterday_revenue
       FROM sale_orders
-      WHERE store_id = ANY(${scopeIds})
+      WHERE store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
     `)
 
     const appointmentStats = await db.execute(sql`
       SELECT COUNT(*) AS pending_appointments
       FROM appointments
-      WHERE status = '待确认' AND store_id = ANY(${scopeIds})
+      WHERE status = '待确认' AND store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
     `)
 
     const serviceStats = await db.execute(sql`
       SELECT COUNT(*) AS active_services
       FROM service_orders
-      WHERE status = '服务中' AND store_id = ANY(${scopeIds})
+      WHERE status = '服务中' AND store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
     `)
 
     const row = (orderStats as any[])[0] ?? {}
