@@ -104,7 +104,7 @@ export async function login(
   const cookieStore = await cookies()
   cookieStore.set(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE !== 'false' && process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
     maxAge: 24 * 60 * 60, // 24h
@@ -149,7 +149,7 @@ export async function changePassword(
   const cookieStore = await cookies()
   cookieStore.set(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE !== 'false' && process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
     maxAge: 24 * 60 * 60,
