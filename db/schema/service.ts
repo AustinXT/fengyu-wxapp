@@ -1,5 +1,5 @@
 import { date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
-import { serviceOrderStatusEnum, serviceOrderTypeEnum } from './enums'
+import { allocationStatusEnum, serviceOrderStatusEnum, serviceOrderTypeEnum } from './enums'
 import { stores } from './org'
 import { saleItems } from './order'
 import { clientWechatUsers, staffWechatUsers } from './user'
@@ -34,6 +34,8 @@ export const serviceOrders = pgTable(
     startedAt: timestamp('started_at'),
     /** 服务完成时间（状态转为"已完成"时记录） */
     completedAt: timestamp('completed_at'),
+    /** 提成分配状态（仅已完成的服务单有值） */
+    commissionStatus: allocationStatusEnum('commission_status'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },

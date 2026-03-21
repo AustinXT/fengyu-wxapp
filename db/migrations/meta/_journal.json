@@ -71,6 +71,13 @@
       "when": 1774070400000,
       "tag": "0009_commission_enum_chinese",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774106101019,
+      "tag": "0010_closed_spyke",
+      "breakpoints": true
     }
   ]
 }
