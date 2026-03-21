@@ -14,8 +14,9 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
-import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getStoresForBatchIssue } from "@/actions/coupons"
-import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer } from "@/lib/types"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
+import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
@@ -88,12 +89,12 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
   const [batchCustomers, setBatchCustomers] = useState<BatchCouponCustomer[]>([])
   const [batchTotal, setBatchTotal] = useState(0)
   const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set())
-  const [batchStoreFilter, setBatchStoreFilter] = useState("")
+  const [batchOrgFilter, setBatchOrgFilter] = useState("")
   const [batchLevelFilter, setBatchLevelFilter] = useState("")
   const [batchSearch, setBatchSearch] = useState("")
   const [batchPage, setBatchPage] = useState(1)
-  const [batchStores, setBatchStores] = useState<Array<{ storeId: string; storeName: string }>>([])
-  const [batchStoresLoaded, setBatchStoresLoaded] = useState(false)
+  const [batchOrgNodes, setBatchOrgNodes] = useState<OrgNode[]>([])
+  const [batchOrgLoaded, setBatchOrgLoaded] = useState(false)
 
   // Parse manual phone input
   const parsedPhones = useMemo(() => {
@@ -109,21 +110,21 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
   // Get phones for current mode
   const batchPhoneList = batchMode === "manual" ? parsedPhones : [...batchSelected]
 
-  // Load stores on first open
+  // Load org nodes on first open
   useEffect(() => {
-    if (batchOpen && !batchStoresLoaded) {
-      getStoresForBatchIssue().then((s) => {
-        setBatchStores(s)
-        setBatchStoresLoaded(true)
+    if (batchOpen && !batchOrgLoaded) {
+      getOrgNodesForBatchIssue().then((nodes) => {
+        setBatchOrgNodes(nodes)
+        setBatchOrgLoaded(true)
       })
     }
-  }, [batchOpen, batchStoresLoaded])
+  }, [batchOpen, batchOrgLoaded])
 
   // Load customers for select mode
   const loadBatchCustomers = useCallback(async (p = 1) => {
     try {
       const result = await getCustomersForBatchIssue({
-        storeId: batchStoreFilter || undefined,
+        orgNodeId: batchOrgFilter || undefined,
         memberLevel: batchLevelFilter || undefined,
         search: batchSearch || undefined,
         page: p,
@@ -134,7 +135,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
     } catch {
       toast.error("加载顾客列表失败")
     }
-  }, [batchStoreFilter, batchLevelFilter, batchSearch])
+  }, [batchOrgFilter, batchLevelFilter, batchSearch])
 
   // Reload customers when filters change
   useEffect(() => {
@@ -142,7 +143,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
       setBatchPage(1)
       loadBatchCustomers(1)
     }
-  }, [batchOpen, batchMode, batchStoreFilter, batchLevelFilter, batchSearch, loadBatchCustomers])
+  }, [batchOpen, batchMode, batchOrgFilter, batchLevelFilter, batchSearch, loadBatchCustomers])
 
   function handleBatchPageChange(p: number) {
     setBatchPage(p)
@@ -206,7 +207,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
     setBatchCustomers([])
     setBatchTotal(0)
     setBatchSelected(new Set())
-    setBatchStoreFilter("")
+    setBatchOrgFilter("")
     setBatchLevelFilter("")
     setBatchSearch("")
     setBatchPage(1)
@@ -746,16 +747,14 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
             <div className="space-y-3">
               {/* 筛选栏 */}
               <div className="flex gap-2">
-                <Select
-                  value={batchStoreFilter}
-                  onChange={(e) => setBatchStoreFilter(e.target.value)}
-                  className="w-40"
-                >
-                  <option value="">全部门店</option>
-                  {batchStores.map((s) => (
-                    <option key={s.storeId} value={s.storeId}>{s.storeName}</option>
-                  ))}
-                </Select>
+                <OrgTreeSelect
+                  orgNodes={batchOrgNodes}
+                  value={batchOrgFilter}
+                  onChange={(id) => setBatchOrgFilter(id)}
+                  placeholder="全部门店"
+                  excludeTypes={["department"]}
+                  className="w-48"
+                />
                 <Select
                   value={batchLevelFilter}
                   onChange={(e) => setBatchLevelFilter(e.target.value)}

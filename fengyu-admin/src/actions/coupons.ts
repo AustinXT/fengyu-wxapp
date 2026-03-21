@@ -7,7 +7,7 @@ import { orgNodes, stores } from '@db/org'
 import { eq, and, desc, gt, lte, or, isNull, isNotNull, sql, asc, ilike, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { CouponTemplate, AvailableCoupon, IssuedCoupon, BatchCouponCustomer } from '@/lib/types'
+import type { CouponTemplate, AvailableCoupon, IssuedCoupon, BatchCouponCustomer, OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
@@ -564,12 +564,48 @@ export async function batchIssueCoupons(
 }
 
 /**
+ * 将组织节点 ID 解析为对应的 storeId 列表。
+ * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
+ */
+async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
+  const [node] = await db
+    .select({ type: orgNodes.type, parentId: orgNodes.parentId })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, orgNodeId))
+    .limit(1)
+
+  if (!node) return null
+
+  if (node.type === 'headquarters') return null
+
+  if (node.type === 'store') {
+    const [store] = await db
+      .select({ storeId: stores.storeId })
+      .from(stores)
+      .where(eq(stores.orgNodeId, orgNodeId))
+      .limit(1)
+    return store ? [store.storeId] : []
+  }
+
+  if (node.type === 'market') {
+    const storeRows = await db
+      .select({ storeId: stores.storeId })
+      .from(stores)
+      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+      .where(eq(orgNodes.parentId, orgNodeId))
+    return storeRows.map((r) => r.storeId)
+  }
+
+  return null
+}
+
+/**
  * 批量发券时的顾客分页列表。
  * 权限走 coupon:create（而非 customer:list），以便 product 角色可用。
  * 仅返回有手机号的顾客。
  */
 export async function getCustomersForBatchIssue(filters: {
-  storeId?: string
+  orgNodeId?: string
   memberLevel?: string
   search?: string
   page?: number
@@ -586,9 +622,20 @@ export async function getCustomersForBatchIssue(filters: {
     isNotNull(clientWechatUsers.phone),
   ]
 
-  if (filters.storeId) {
-    conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
+  // 组织节点 → storeIds 过滤
+  if (filters.orgNodeId) {
+    const storeIds = await resolveOrgNodeToStoreIds(filters.orgNodeId)
+    if (storeIds !== null) {
+      if (storeIds.length === 0) {
+        return { data: [], total: 0 }
+      } else if (storeIds.length === 1) {
+        conditions.push(eq(clientWechatUsers.boundStoreId, storeIds[0]))
+      } else {
+        conditions.push(inArray(clientWechatUsers.boundStoreId, storeIds))
+      }
+    }
   }
+
   if (filters.memberLevel) {
     conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
   }
@@ -636,16 +683,22 @@ export async function getCustomersForBatchIssue(filters: {
 }
 
 /**
- * 门店列表（批量发券筛选用）。
- * 权限走 coupon:create，product 角色无 store:list 但有此权限。
+ * 组织树节点列表（批量发券筛选用）。
+ * 权限走 coupon:create，product 角色无 org:list 但有此权限。
  */
-export async function getStoresForBatchIssue(): Promise<Array<{ storeId: string; storeName: string }>> {
+export async function getOrgNodesForBatchIssue(): Promise<OrgNode[]> {
   const session = await getSession()
   requirePermission(session, 'coupon:create')
 
-  return db
-    .select({ storeId: stores.storeId, storeName: stores.storeName })
-    .from(stores)
-    .where(eq(stores.isClosed, false))
-    .orderBy(stores.storeName)
+  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    parentId: row.parentId,
+    sortOrder: row.sortOrder,
+    isActive: row.isActive,
+    createdAt: row.createdAt?.toISOString() ?? '',
+    updatedAt: row.updatedAt?.toISOString() ?? '',
+  }))
 }
