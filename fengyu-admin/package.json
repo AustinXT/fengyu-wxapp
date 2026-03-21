@@ -19,6 +19,9 @@
   },
   "dependencies": {
     "@cloudbase/node-sdk": "^3.18.1",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/sortable": "^10.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
     "@vant/area-data": "^2.1.0",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
