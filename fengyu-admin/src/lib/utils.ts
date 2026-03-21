@@ -55,7 +55,7 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   const names: string[] = []
   let current = map.get(nodeId)
   for (let i = 0; i < 5 && current; i++) {
-    if (current.type !== "headquarters") {
+    if (i === 0 || current.type !== "headquarters") {
       names.unshift(current.name)
     }
     current = current.parentId ? map.get(current.parentId) : undefined

@@ -1,50 +1,53 @@
-"use client"
+"use client";
 
-import Link from "next/link"
-import { usePathname } from "next/navigation"
-import { ChevronsLeft, ChevronsRight } from "lucide-react"
-import { cn } from "@/lib/utils"
-import { getVisibleMenuGroups } from "@/lib/menu"
-import { getRoleLabel } from "@/lib/auth"
-import type { AuthSession } from "@/lib/types"
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import logoFull from "../../../public/logo.png";
+import logoIcon from "../../../public/logo-icon.png";
+import { ChevronsLeft, ChevronsRight } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { getVisibleMenuGroups } from "@/lib/menu";
+import { getRoleLabel } from "@/lib/auth";
+import type { AuthSession } from "@/lib/types";
 
 interface SidebarProps {
-  collapsed: boolean
-  onToggle: () => void
-  session: AuthSession
+  collapsed: boolean;
+  onToggle: () => void;
+  session: AuthSession;
 }
 
 export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
-  const pathname = usePathname()
+  const pathname = usePathname();
 
-  const primaryRole = session.roles[0]
-  const menuGroups = getVisibleMenuGroups(session)
+  const primaryRole = session.roles[0];
+  const menuGroups = getVisibleMenuGroups(session);
 
   function isActive(href: string): boolean {
     // Exact match for top-level routes
-    if (href === pathname) return true
+    if (href === pathname) return true;
     // For nested routes like /orders/create, check if /orders is parent
     // But /orders/create should match itself, not /orders
-    if (href === "/orders/create" && pathname === "/orders/create") return true
-    if (href === "/orders" && pathname.startsWith("/orders") && pathname !== "/orders/create") return true
+    if (href === "/orders/create" && pathname === "/orders/create") return true;
+    if (href === "/orders" && pathname.startsWith("/orders") && pathname !== "/orders/create") return true;
     // Generic: pathname starts with href and href is not just "/"
-    if (href !== "/orders" && href !== "/orders/create" && pathname.startsWith(href) && href.length > 1) return true
-    return false
+    if (href !== "/orders" && href !== "/orders/create" && pathname.startsWith(href) && href.length > 1) return true;
+    return false;
   }
 
   return (
     <aside
       className={cn(
         "flex h-screen flex-col border-r border-[var(--border)] bg-white transition-all duration-200",
-        collapsed ? "w-16" : "w-60"
+        collapsed ? "w-16" : "w-40",
       )}
     >
       {/* Brand Logo */}
       <div className="flex h-14 items-center border-b border-[var(--border)] px-4">
         {collapsed ? (
-          <span className="mx-auto text-xl font-bold text-[var(--primary)]">凤</span>
+          <Image src={logoIcon} alt="凤御美业" width={30} height={32} className="mx-auto" priority />
         ) : (
-          <span className="text-lg font-bold text-[var(--primary)]">凤御美业</span>
+          <Image src={logoFull} alt="凤御美业" width={93} height={36} priority />
         )}
       </div>
 
@@ -58,14 +61,12 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                 {group.label}
               </div>
             )}
-            {group.label && collapsed && gi > 0 && (
-              <div className="mx-3 my-2 border-t border-[var(--border)]" />
-            )}
+            {group.label && collapsed && gi > 0 && <div className="mx-3 my-2 border-t border-[var(--border)]" />}
 
             {/* Menu items */}
             {group.items.map((item) => {
-              const Icon = item.icon
-              const active = isActive(item.href)
+              const Icon = item.icon;
+              const active = isActive(item.href);
 
               return (
                 <Link
@@ -77,7 +78,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                     active
                       ? "bg-[#FFF0EE] font-medium text-[var(--primary)]"
                       : "text-[#666666] hover:bg-[var(--muted)] hover:text-[var(--foreground)]",
-                    collapsed && "justify-center px-0"
+                    collapsed && "justify-center px-0",
                   )}
                 >
                   <Icon className="size-[18px] shrink-0" />
@@ -90,7 +91,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
                     </span>
                   )}
                 </Link>
-              )
+              );
             })}
           </div>
         ))}
@@ -99,9 +100,7 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
       {/* User info (collapsed: hidden) */}
       {!collapsed && (
         <div className="border-t border-[var(--border)] px-4 py-3">
-          <div className="truncate text-sm font-medium text-[var(--foreground)]">
-            {session.name}
-          </div>
+          <div className="truncate text-sm font-medium text-[var(--foreground)]">{session.name}</div>
           <div className="truncate text-xs text-[#999999]">
             {primaryRole ? getRoleLabel(primaryRole.role) : "未分配角色"}
           </div>
@@ -114,12 +113,8 @@ export function Sidebar({ collapsed, onToggle, session }: SidebarProps) {
         className="flex h-10 items-center justify-center border-t border-[var(--border)] text-[#999999] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
         aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
       >
-        {collapsed ? (
-          <ChevronsRight className="size-4" />
-        ) : (
-          <ChevronsLeft className="size-4" />
-        )}
+        {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
       </button>
     </aside>
-  )
+  );
 }
