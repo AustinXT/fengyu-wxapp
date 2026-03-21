@@ -227,12 +227,27 @@ export interface ServiceOrder {
   remark: string | null
   appointmentId: string | null
   clientUserId: string | null
+  commissionStatus?: AllocationStatus | null
   createdAt: string
   updatedAt: string
   // joined
   storeName?: string
   employeeName?: string
   customerName?: string
+}
+
+export interface ServiceCommission {
+  id: number
+  serviceItemId: string
+  employeeId: string
+  commissionRate: string
+  commissionAmount: string
+  isVoid: boolean
+  createdAt: string
+  updatedAt: string
+  // joined
+  employeeName?: string
+  departmentName?: string
 }
 
 export interface Appointment {

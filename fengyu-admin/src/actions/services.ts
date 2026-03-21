@@ -31,6 +31,7 @@ function serializeServiceOrder(r: {
     remark: so.remark,
     appointmentId: so.appointmentId,
     clientUserId: so.clientUserId,
+    commissionStatus: so.commissionStatus ?? undefined,
     createdAt: so.createdAt.toISOString(),
     updatedAt: so.updatedAt.toISOString(),
     storeName: r.storeName ?? undefined,
@@ -179,8 +180,10 @@ export interface ServiceItemDetail {
   sessionUsed: number
   unitRealPrice: string | null
   employeeName: string | null
+  employeeId: string | null
   productName: string | null
   skuName: string | null
+  salesCategory: string | null
   remainingSessions: number | null
   sessionCount: number | null
 }
@@ -195,9 +198,11 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
       si.sale_item_id,
       si.session_used,
       si.unit_real_price,
+      si.employee_id,
       e.name AS employee_name,
       sli.product_name,
       sli.sku_spec_name AS sku_name,
+      sli.sales_category,
       sli.remaining_sessions,
       sli.session_count
     FROM service_items si
@@ -212,8 +217,10 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     sessionUsed: Number(r.session_used),
     unitRealPrice: r.unit_real_price,
     employeeName: r.employee_name,
+    employeeId: r.employee_id,
     productName: r.product_name,
     skuName: r.sku_name,
+    salesCategory: r.sales_category ?? null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
   }))

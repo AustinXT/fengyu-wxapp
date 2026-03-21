@@ -29,7 +29,7 @@ function inferRoleType(employee: Employee): string {
   const dept = employee.departmentName || ''
   const pos = employee.positionName || ''
   if (dept.includes('推广') || pos.includes('推广')) return '推广师'
-  return '技师'
+  return '美容师'
 }
 
 /** 根据市场、角色、销售分类、金额匹配提成比例 */
@@ -42,7 +42,7 @@ function findMatchingRate(
 ): CommissionRate | null {
   return rates.find((r) =>
     r.orgName === marketName &&
-    r.orderType === 'sale' &&
+    r.orderType === '销售单' &&
     r.roleType === roleType &&
     r.salesCategory === (salesCategory || '') &&
     Number(r.amountTierMin) <= amount &&

@@ -1357,13 +1357,13 @@ export const MOCK_PERMISSION_ROLES: PermissionRole[] = [
 // ---------------------------------------------------------------------------
 
 export const MOCK_COMMISSION_RATES: CommissionRate[] = [
-  { id: 1, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 2, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 3, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '推广师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 4, orgId: '6707cc8b88579108', orderType: 'service', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
-  { id: 5, orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
-  { id: 6, orgId: 'dad2db0b1249daca', orderType: 'sale', roleType: '技师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
-  { id: 7, orgId: '6707cc8b88579108', orderType: 'sale', roleType: '技师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 1, orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 2, orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 3, orgId: '6707cc8b88579108', orderType: '销售单', roleType: '推广师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 4, orgId: '6707cc8b88579108', orderType: '服务单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
+  { id: 5, orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
+  { id: 6, orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '九江市场' },
+  { id: 7, orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600', createdAt: '2025-01-01T00:00:00Z', updatedAt: '2025-01-01T00:00:00Z', orgName: '南昌市场' },
 ]
 
 // ---------------------------------------------------------------------------
