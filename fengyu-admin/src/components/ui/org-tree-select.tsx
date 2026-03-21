@@ -11,6 +11,7 @@ interface OrgTreeSelectProps {
   placeholder?: string
   disabled?: boolean
   className?: string
+  excludeTypes?: string[]
 }
 
 function getAncestorIds(nodeId: string, nodeMap: Map<string, OrgNode>): Set<string> {
@@ -30,11 +31,18 @@ export function OrgTreeSelect({
   placeholder = "请选择",
   disabled = false,
   className,
+  excludeTypes,
 }: OrgTreeSelectProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const activeNodes = useMemo(() => orgNodes.filter((n) => n.isActive), [orgNodes])
+  const activeNodes = useMemo(() => {
+    let nodes = orgNodes.filter((n) => n.isActive)
+    if (excludeTypes?.length) {
+      nodes = nodes.filter((n) => !excludeTypes.includes(n.type))
+    }
+    return nodes
+  }, [orgNodes, excludeTypes])
   const nodeMap = useMemo(() => new Map(orgNodes.map((n) => [n.id, n])), [orgNodes])
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => {

@@ -144,15 +144,17 @@ export function ImageUpload({
     setDragState([origIndex, origIndex])
   }
 
-  // onDragOver fires on display-order index; map back to compute new target
-  const onDragOver = (e: React.DragEvent, displayIndex: number) => {
+  // Use original index (item.orig) — NOT display position — to avoid oscillation
+  // when React re-renders and shifts DOM positions during drag.
+  const onDragOver = (e: React.DragEvent, origIndex: number) => {
     e.preventDefault()
     e.dataTransfer.dropEffect = "move"
     const d = dragRef.current
     if (!d) return
-    // displayIndex is already the visual target position
-    if (d[1] !== displayIndex) {
-      setDragState([d[0], displayIndex])
+    // Skip dragover on the dragged item itself to prevent feedback loops
+    if (origIndex === d[0]) return
+    if (d[1] !== origIndex) {
+      setDragState([d[0], origIndex])
     }
   }
 
@@ -163,8 +165,12 @@ export function ImageUpload({
       setDragState(null)
       return
     }
-    // Commit the preview order
-    onChange(displayItems.map((item) => item.url))
+    // Compute final order from ref (always fresh) + urls (stable during drag)
+    const reordered = [...urls]
+    const [src, tgt] = d
+    const [moved] = reordered.splice(src, 1)
+    reordered.splice(tgt, 0, moved)
+    onChange(reordered)
     setDragState(null)
   }
 
@@ -176,12 +182,12 @@ export function ImageUpload({
 
   return (
     <div className={cn("flex flex-wrap gap-2", className)}>
-      {displayItems.map((item, displayIdx) => (
+      {displayItems.map((item) => (
         <div
           key={item.url}
           draggable={canDrag}
-          onDragStart={canDrag ? (e) => onDragStart(e, displayIdx) : undefined}
-          onDragOver={canDrag ? (e) => onDragOver(e, displayIdx) : undefined}
+          onDragStart={canDrag ? (e) => onDragStart(e, item.orig) : undefined}
+          onDragOver={canDrag ? (e) => onDragOver(e, item.orig) : undefined}
           onDrop={canDrag ? onDropReorder : undefined}
           onDragEnd={canDrag ? onDragEnd : undefined}
           className={cn(
