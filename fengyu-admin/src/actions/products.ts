@@ -2,12 +2,75 @@
 
 import { db } from '@/db'
 import { productCategories, products, productSkus } from '@db/product'
-import { eq, and, sql } from 'drizzle-orm'
+import { orgNodes } from '@db/org'
+import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { ProductCategory, Product, ProductSku } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, AuthSession } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+
+/**
+ * 获取所有市场节点（type='market'），用于商品可见范围选择。
+ */
+export async function getMarkets(): Promise<{ id: string; name: string }[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select({ id: orgNodes.id, name: orgNodes.name })
+    .from(orgNodes)
+    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .orderBy(asc(orgNodes.sortOrder))
+
+  return rows
+}
+
+/**
+ * 根据当前用户 session 自动判断管理范围。
+ * - headquarters scope → null（总部管理）
+ * - market scope → 该市场 id
+ * - store scope → 向上查找所属市场
+ */
+export async function resolveManageScope(): Promise<{ scopeId: string | null; scopeName: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  if (session.roles.some(r => r.scopeType === 'headquarters')) {
+    return { scopeId: null, scopeName: '总部' }
+  }
+
+  const marketRole = session.roles.find(r => r.scopeType === 'market')
+  if (marketRole) {
+    const [node] = await db
+      .select({ name: orgNodes.name })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, marketRole.scopeId))
+      .limit(1)
+    return { scopeId: marketRole.scopeId, scopeName: node?.name ?? marketRole.scopeId }
+  }
+
+  const storeRole = session.roles.find(r => r.scopeType === 'store')
+  if (storeRole) {
+    const [storeNode] = await db
+      .select({ parentId: orgNodes.parentId })
+      .from(orgNodes)
+      .where(eq(orgNodes.id, storeRole.scopeId))
+      .limit(1)
+    if (storeNode?.parentId) {
+      const [parentNode] = await db
+        .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
+        .from(orgNodes)
+        .where(eq(orgNodes.id, storeNode.parentId))
+        .limit(1)
+      if (parentNode?.type === 'market') {
+        return { scopeId: parentNode.id, scopeName: parentNode.name }
+      }
+    }
+  }
+
+  return { scopeId: null, scopeName: '总部' }
+}
 
 export async function getCategories(): Promise<ProductCategory[]> {
   const session = await getSession()

@@ -5,10 +5,10 @@ import Link from "next/link"
 import type { Product, ProductKind, ProductCategory } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { CategoryCascader } from "@/components/ui/category-cascader"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
@@ -21,7 +21,6 @@ const KIND_COLORS: Record<ProductKind, string> = {
   "充值卡": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
 }
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
 
 export default function ProductsPageClient({
   products,
@@ -47,10 +46,6 @@ export default function ProductsPageClient({
   const search = get("q")
   const categoryFilter = get("category")
   const kindFilter = get("kind")
-  const filteredCategories = useMemo(() => {
-    if (!kindFilter) return categories
-    return categories.filter((c) => c.productKind === kindFilter)
-  }, [categories, kindFilter])
 
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
@@ -166,50 +161,17 @@ export default function ProductsPageClient({
       </div>
 
       <div className="flex items-center gap-3">
-        <Select
-          value={kindFilter}
-          onChange={(e) => {
-            const newKind = e.target.value
-            if (categoryFilter) {
-              const cat = categories.find((c) => c.categoryId === categoryFilter)
-              if (cat && newKind && cat.productKind !== newKind) {
-                setMany({ kind: newKind, category: '', page: '' })
-                return
-              }
-            }
-            setFilter("kind", newKind)
-          }}
-          className="w-32"
-        >
-          <option value="">全部类型</option>
-          {PRODUCT_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {k}
-            </option>
-          ))}
-        </Select>
-        <Select
+        <CategoryCascader
+          categories={categories}
           value={categoryFilter}
-          onChange={(e) => {
-            const catId = e.target.value
-            if (catId) {
-              const cat = categories.find((c) => c.categoryId === catId)
-              if (cat) {
-                setMany({ category: catId, kind: cat.productKind, page: '' })
-                return
-              }
-            }
-            setFilter("category", catId)
+          kindValue={kindFilter}
+          allowEmpty
+          placeholder="品项筛选"
+          className="w-56"
+          onChange={(catId, kind) => {
+            setMany({ category: catId, kind, page: '' })
           }}
-          className="w-40"
-        >
-          <option value="">全部品项</option>
-          {filteredCategories.map((c) => (
-            <option key={c.categoryId} value={c.categoryId}>
-              {c.categoryName}
-            </option>
-          ))}
-        </Select>
+        />
         <Input
           placeholder="搜索商品名称"
           value={searchInput}
