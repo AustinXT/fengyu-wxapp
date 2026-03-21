@@ -1,6 +1,5 @@
 import { Suspense } from 'react'
 import { getEmployeesPaginated } from '@/actions/employees'
-import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
 import EmployeesPage from './_components/employees-page'
 
@@ -13,7 +12,7 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: employees, total }, stores, orgNodes] = await Promise.all([
+  const [{ data: employees, total }, orgNodes] = await Promise.all([
     getEmployeesPaginated({
       marketId: params.market || undefined,
       storeId: params.store,
@@ -22,13 +21,12 @@ export default async function Page({
       page: params.page ? Number(params.page) : undefined,
       pageSize: params.size ? Number(params.size) : undefined,
     }),
-    getStores(),
     getOrgNodes(),
   ])
 
   return (
     <Suspense>
-      <EmployeesPage employees={employees} stores={stores} total={total} orgNodes={orgNodes} />
+      <EmployeesPage employees={employees} total={total} orgNodes={orgNodes} />
     </Suspense>
   )
 }

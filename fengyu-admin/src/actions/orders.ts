@@ -306,8 +306,8 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
     if (!txResult.matched) {
       return { success: false, message: '订单状态已变更，无法确认收款' }
     }
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
   await logOperation(session, 'order.confirmPayment', 'sale_order', saleOrderId)
@@ -351,8 +351,8 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
     if (!txResult.matched) {
       return { success: false, message: '订单状态已变更，无法关闭' }
     }
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
   await logOperation(session, 'order.close', 'sale_order', saleOrderId)
@@ -594,7 +594,13 @@ export async function createOrder(data: {
       return id
     })
   } catch (err: any) {
-    // 事务内业务异常（优惠券并发核销失败）→ 友好消息
+    // 事务内业务异常 → 友好消息
+    if (err?.message === '订单号生成失败') {
+      return { success: false, message: '订单号生成失败，请稍后重试' }
+    }
+    if (err?.message?.startsWith('该顾客已有待支付订单')) {
+      return { success: false, message: err.message }
+    }
     if (err?.message === '优惠券已被使用，请刷新后重试') {
       return { success: false, message: err.message }
     }
@@ -606,7 +612,7 @@ export async function createOrder(data: {
     if (err?.code === '23505') {
       return { success: false, message: '订单号冲突，请稍后重试' }
     }
-    throw err
+    return { success: false, message: '创建订单失败，请稍后重试' }
   }
 
   await logOperation(session, 'order.create', 'sale_order', saleOrderId, {

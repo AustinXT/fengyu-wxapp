@@ -142,11 +142,13 @@ describe('approveUnbind — 前置校验 + 事务原子性', () => {
     expect(db.transaction).toHaveBeenCalledOnce()
   })
 
-  it('事务内第一条 UPDATE 失败 → 整体回滚，重新抛出', async () => {
+  it('事务内第一条 UPDATE 失败 → 整体回滚，返回友好错误', async () => {
     mockSelectRequest(pendingRequest)
     ;(db.transaction as any).mockRejectedValue(new Error('tx rollback'))
 
-    await expect(approveUnbind('REQ-001')).rejects.toThrow('tx rollback')
+    const result = await approveUnbind('REQ-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('审批解绑失败，请稍后重试')
   })
 })
 
@@ -196,12 +198,14 @@ describe('rejectUnbind — 前置校验 + 错误处理', () => {
     expect(db.update).toHaveBeenCalledOnce()
   })
 
-  it('DB 异常 → 重新抛出', async () => {
+  it('DB 异常 → 返回友好错误', async () => {
     mockSelectRequest(pendingRequest)
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
-    await expect(rejectUnbind('REQ-001', '理由')).rejects.toThrow('connection lost')
+    const result = await rejectUnbind('REQ-001', '理由')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('驳回解绑失败，请稍后重试')
   })
 })

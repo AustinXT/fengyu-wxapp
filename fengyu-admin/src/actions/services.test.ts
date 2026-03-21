@@ -139,12 +139,14 @@ describe('startServiceOrder — scope + 状态推进', () => {
     expect(result.message).toContain('服务已开始')
   })
 
-  it('DB 异常 → 重新抛出', async () => {
+  it('DB 异常 → 返回友好错误', async () => {
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
-    await expect(startServiceOrder('svc-1')).rejects.toThrow('connection lost')
+    const result = await startServiceOrder('svc-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('开始服务失败，请稍后重试')
   })
 })
 
@@ -174,12 +176,14 @@ describe('cancelServiceOrder — scope + 状态推进', () => {
     expect(result.message).toContain('服务已取消')
   })
 
-  it('DB 异常 → 重新抛出', async () => {
+  it('DB 异常 → 返回友好错误', async () => {
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
     const set = vi.fn().mockReturnValue({ where })
     ;(db.update as any).mockReturnValue({ set })
 
-    await expect(cancelServiceOrder('svc-1')).rejects.toThrow('connection lost')
+    const result = await cancelServiceOrder('svc-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('取消服务失败，请稍后重试')
   })
 })
 
@@ -256,11 +260,13 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     expect(db.select).not.toHaveBeenCalled() // admin 不做预检查
   })
 
-  it('原子 SQL 异常 → 重新抛出', async () => {
+  it('原子 SQL 异常 → 返回友好错误', async () => {
     ;(isAdminScope as any).mockReturnValue(true)
     ;(db.execute as any).mockRejectedValue(new Error('connection lost'))
 
-    await expect(completeServiceOrder('svc-1')).rejects.toThrow('connection lost')
+    const result = await completeServiceOrder('svc-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('完成服务失败，请稍后重试')
   })
 })
 

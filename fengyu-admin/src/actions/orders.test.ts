@@ -334,10 +334,12 @@ describe('createOrder — 事务异常捕获', () => {
     expect(result.message).toContain('冲突')
   })
 
-  it('其他 DB 异常重新抛出（非业务错误）', async () => {
+  it('其他 DB 异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
 
-    await expect(createOrder(baseOrderData)).rejects.toThrow('connection lost')
+    const result = await createOrder(baseOrderData)
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('创建订单失败，请稍后重试')
   })
 
   it('正常创建（无优惠券）→ 返回 saleOrderId', async () => {
@@ -400,9 +402,11 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     expect(db.transaction).toHaveBeenCalledOnce()
   })
 
-  it('事务异常 → 重新抛出', async () => {
+  it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
-    await expect(confirmOfflinePayment('order-1')).rejects.toThrow('connection lost')
+    const result = await confirmOfflinePayment('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('确认收款失败，请稍后重试')
   })
 })
 
@@ -454,9 +458,11 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
     expect(db.transaction).toHaveBeenCalledOnce()
   })
 
-  it('事务异常 → 重新抛出', async () => {
+  it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
-    await expect(closeOrder('order-1')).rejects.toThrow('connection lost')
+    const result = await closeOrder('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('关闭订单失败，请稍后重试')
   })
 })
 

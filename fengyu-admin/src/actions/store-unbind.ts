@@ -93,8 +93,8 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
         .set({ boundStoreId: null, boundEmployeeId: null })
         .where(eq(clientWechatUsers.userId, request.userId))
     })
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '审批解绑失败，请稍后重试' }
   }
 
   await logOperation(session, 'store_unbind.approve', 'store_unbind_request', requestId, {
@@ -138,8 +138,8 @@ export async function rejectUnbind(
         rejectReason: reason,
       })
       .where(eq(storeUnbindRequests.requestId, requestId))
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '驳回解绑失败，请稍后重试' }
   }
 
   await logOperation(session, 'store_unbind.reject', 'store_unbind_request', requestId, {

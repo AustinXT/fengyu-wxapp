@@ -7,9 +7,10 @@ export interface DialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   children: React.ReactNode
+  className?: string
 }
 
-function Dialog({ open, onOpenChange, children }: DialogProps) {
+function Dialog({ open, onOpenChange, children, className }: DialogProps) {
   const dialogRef = React.useRef<HTMLDialogElement>(null)
 
   React.useEffect(() => {
@@ -51,7 +52,8 @@ function Dialog({ open, onOpenChange, children }: DialogProps) {
       ref={dialogRef}
       className={cn(
         "m-auto w-full max-w-lg rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--card-foreground)] shadow-lg backdrop:bg-black/50",
-        "open:animate-in open:fade-in-0 open:zoom-in-95"
+        "open:animate-in open:fade-in-0 open:zoom-in-95",
+        className,
       )}
       onClick={handleBackdropClick}
     >

@@ -29,6 +29,29 @@ interface CartItem {
   quantity: number
 }
 
+interface ItemPriceOverride {
+  saleAmount: string | null
+  received: string | null
+  receivedTouched: boolean
+}
+
+function getItemAmounts(item: CartItem, override?: ItemPriceOverride) {
+  const defaultUnitPrice = item.sku.specialPrice
+    ? Number(item.sku.specialPrice)
+    : Number(item.sku.price)
+  const defaultSaleAmount = defaultUnitPrice * item.quantity
+
+  const saleAmount = override?.saleAmount != null && override.saleAmount !== ''
+    ? Number(override.saleAmount)
+    : defaultSaleAmount
+
+  const received = override?.received != null && override.received !== ''
+    ? Number(override.received)
+    : saleAmount
+
+  return { defaultUnitPrice, defaultSaleAmount, saleAmount, received }
+}
+
 const steps = ["选择顾客", "选择商品", "确认订单", "完成"]
 
 function StepIndicator({ current }: { current: number }) {
@@ -101,6 +124,7 @@ export default function OrderCreatePageClient({
   const [availableCoupons, setAvailableCoupons] = useState<AvailableCoupon[]>([])
   const [selectedCouponId, setSelectedCouponId] = useState<string>("")
   const [loadingCoupons, setLoadingCoupons] = useState(false)
+  const [priceOverrides, setPriceOverrides] = useState<Record<string, ItemPriceOverride>>({})
 
   const searchCustomer = async () => {
     if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
@@ -174,10 +198,22 @@ export default function OrderCreatePageClient({
     }
   }, [selectedStoreId, selectedEmployeeId, employees])
 
-  const totalAmount = cart.reduce((sum, item) => {
+  // 原价合计（用于购物车显示，不含手动覆盖）
+  const catalogTotal = cart.reduce((sum, item) => {
     const price = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
     return sum + price * item.quantity
   }, 0)
+
+  // 应付合计 & 实付合计（含手动覆盖）
+  const { totalSaleAmount, totalReceived } = useMemo(() => {
+    let sa = 0, rc = 0
+    for (const item of cart) {
+      const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+      sa += amounts.saleAmount
+      rc += amounts.received
+    }
+    return { totalSaleAmount: sa, totalReceived: rc }
+  }, [cart, priceOverrides])
 
   return (
     <div className="space-y-4">
@@ -389,7 +425,7 @@ export default function OrderCreatePageClient({
                       )
                     })}
                     <div className="text-right font-bold text-lg pt-2">
-                      合计: ¥{totalAmount.toLocaleString()}
+                      合计: ¥{catalogTotal.toLocaleString()}
                     </div>
                   </div>
                 ) : (
@@ -408,7 +444,7 @@ export default function OrderCreatePageClient({
                   if (selectedCustomer?.userId) {
                     setLoadingCoupons(true)
                     try {
-                      const coupons = await getAvailableCoupons(selectedCustomer.userId, totalAmount, selectedStoreId || undefined)
+                      const coupons = await getAvailableCoupons(selectedCustomer.userId, catalogTotal, selectedStoreId || undefined)
                       setAvailableCoupons(coupons)
                     } catch {
                       setAvailableCoupons([])
@@ -513,34 +549,111 @@ export default function OrderCreatePageClient({
 
             <div>
               <h3 className="text-sm font-semibold mb-3">商品清单</h3>
-              <div className="space-y-2">
-                {cart.map((item) => (
-                  <div key={item.sku.skuId} className="flex justify-between text-sm bg-[#FAFAFA] rounded px-3 py-2">
-                    <span>{item.product.name} - {item.sku.specName} x{item.quantity}</span>
-                    <span className="font-medium">
-                      ¥{((item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)) * item.quantity).toLocaleString()}
-                    </span>
-                  </div>
-                ))}
+              {/* 表头 */}
+              <div className="grid grid-cols-12 gap-2 text-xs text-[#999999] px-3 mb-1">
+                <span className="col-span-3">商品规格</span>
+                <span className="col-span-1 text-center">数量</span>
+                <span className="col-span-2 text-right">原价小计</span>
+                <span className="col-span-2 text-right">应付金额</span>
+                <span className="col-span-2 text-right">实付金额</span>
+                <span className="col-span-2 text-center">操作</span>
               </div>
+              <div className="space-y-2">
+                {cart.map((item) => {
+                  const override = priceOverrides[item.sku.skuId]
+                  const amounts = getItemAmounts(item, override)
+                  const hasOverride = override?.saleAmount != null || override?.received != null
+
+                  return (
+                    <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
+                      <span className="col-span-3 truncate" title={`${item.product.name} - ${item.sku.specName}`}>
+                        {item.product.name} - {item.sku.specName}
+                      </span>
+                      <span className="col-span-1 text-center">{item.quantity}</span>
+                      <span className="col-span-2 text-right text-[#999999]">
+                        ¥{amounts.defaultSaleAmount.toFixed(2)}
+                      </span>
+                      <div className="col-span-2">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          className="h-8 text-sm text-right"
+                          value={override?.saleAmount ?? amounts.defaultSaleAmount.toFixed(2)}
+                          onChange={(e) => {
+                            const val = e.target.value
+                            setPriceOverrides(prev => ({
+                              ...prev,
+                              [item.sku.skuId]: {
+                                saleAmount: val,
+                                received: prev[item.sku.skuId]?.receivedTouched ? (prev[item.sku.skuId]?.received ?? null) : null,
+                                receivedTouched: prev[item.sku.skuId]?.receivedTouched ?? false,
+                              }
+                            }))
+                          }}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          className="h-8 text-sm text-right"
+                          value={override?.received ?? amounts.saleAmount.toFixed(2)}
+                          onChange={(e) => {
+                            setPriceOverrides(prev => ({
+                              ...prev,
+                              [item.sku.skuId]: {
+                                saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
+                                received: e.target.value,
+                                receivedTouched: true,
+                              }
+                            }))
+                          }}
+                        />
+                      </div>
+                      <div className="col-span-2 flex justify-center">
+                        {hasOverride && (
+                          <button
+                            className="text-xs text-[#5E8BB3] hover:underline"
+                            onClick={() => {
+                              setPriceOverrides(prev => {
+                                const next = { ...prev }
+                                delete next[item.sku.skuId]
+                                return next
+                              })
+                            }}
+                          >
+                            重置
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              {/* 金额汇总 */}
               {(() => {
                 const selectedCoupon = availableCoupons.find((c) => c.couponId === selectedCouponId)
                 const couponDiscount = selectedCoupon ? Number(selectedCoupon.discountAmount) : 0
-                const finalAmount = Math.max(0, totalAmount - couponDiscount)
+                const finalAmount = Math.max(0, totalReceived - couponDiscount)
                 return (
                   <div className="text-right pt-4 space-y-1">
+                    <div className="text-sm text-[#999999]">
+                      应付合计: ¥{totalSaleAmount.toFixed(2)}
+                    </div>
+                    {totalReceived !== totalSaleAmount && (
+                      <div className="text-sm text-[#999999]">
+                        实付合计: ¥{totalReceived.toFixed(2)}
+                      </div>
+                    )}
                     {selectedCoupon && (
-                      <>
-                        <div className="text-sm text-[#999999]">
-                          商品小计: ¥{totalAmount.toLocaleString()}
-                        </div>
-                        <div className="text-sm text-[#3D8A5A]">
-                          优惠券减免: -¥{couponDiscount.toFixed(2)}
-                        </div>
-                      </>
+                      <div className="text-sm text-[#3D8A5A]">
+                        优惠券减免: -¥{couponDiscount.toFixed(2)}
+                      </div>
                     )}
                     <div className="font-bold text-xl text-[var(--primary)]">
-                      实付: ¥{finalAmount.toLocaleString()}
+                      订单总额: ¥{finalAmount.toFixed(2)}
                     </div>
                   </div>
                 )
@@ -551,6 +664,19 @@ export default function OrderCreatePageClient({
               <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
               <Button loading={submitting} onClick={async () => {
                 if (!selectedStoreId) { toast.error("请选择门店"); return }
+                // 校验手动金额
+                for (const item of cart) {
+                  const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+                  if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
+                    toast.error(`${item.product.name} 的应付金额无效`); return
+                  }
+                  if (isNaN(amounts.received) || amounts.received < 0) {
+                    toast.error(`${item.product.name} 的实付金额无效`); return
+                  }
+                  if (amounts.received > amounts.saleAmount + 0.005) {
+                    toast.error(`${item.product.name} 的实付金额不能超过应付金额`); return
+                  }
+                }
                 setSubmitting(true)
                 try {
                   const store = stores.find((s) => s.storeId === selectedStoreId)
@@ -565,17 +691,22 @@ export default function OrderCreatePageClient({
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
                     couponId: selectedCouponId || null,
-                    items: cart.map((item) => ({
-                      skuId: item.sku.skuId,
-                      productName: item.product.name,
-                      skuSpecName: item.sku.specName,
-                      productType: item.sku.productType as '疗程卡' | '单品' | '院装产品',
-                      sessionCount: item.sku.sessionCount,
-                      unitPrice: item.sku.price,
-                      unitRealPrice: item.sku.specialPrice || item.sku.price,
-                      quantity: item.quantity,
-                      salesCategory: item.product.salesCategory || null,
-                    })),
+                    items: cart.map((item) => {
+                      const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+                      return {
+                        skuId: item.sku.skuId,
+                        productName: item.product.name,
+                        skuSpecName: item.sku.specName,
+                        productType: item.sku.productType as '疗程卡' | '单品' | '院装产品',
+                        sessionCount: item.sku.sessionCount,
+                        unitPrice: item.sku.price,
+                        unitRealPrice: (amounts.saleAmount / item.quantity).toFixed(2),
+                        quantity: item.quantity,
+                        saleAmount: amounts.saleAmount.toFixed(2),
+                        received: amounts.received.toFixed(2),
+                        salesCategory: item.product.salesCategory || null,
+                      }
+                    }),
                   })
                   if (res.success) {
                     toast.success(res.message)
@@ -661,7 +792,7 @@ export default function OrderCreatePageClient({
                   <Button variant="outline">返回订单列表</Button>
                 </Link>
               )}
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]) }}>
+              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}) }}>
                 继续开单
               </Button>
             </div>

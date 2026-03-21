@@ -51,12 +51,16 @@ function OrderActions({ order }: { order: SaleOrder }) {
   const handleAction = (actionFn: (id: string) => Promise<{ success: boolean; message: string }>) => {
     setConfirmDialog(null);
     startTransition(async () => {
-      const res = await actionFn(order.saleOrderId);
-      if (res.success) {
-        toast.success(res.message);
-        router.refresh();
-      } else {
-        toast.error(res.message);
+      try {
+        const res = await actionFn(order.saleOrderId);
+        if (res.success) {
+          toast.success(res.message);
+          router.refresh();
+        } else {
+          toast.error(res.message);
+        }
+      } catch {
+        toast.error("操作失败，请稍后重试");
       }
     });
   };

@@ -294,8 +294,8 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
         eq(serviceOrders.status, '待服务'),
         scopeCondition(session, serviceOrders.storeId),
       ))
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '开始服务失败，请稍后重试' }
   }
 
   if ((result as any).count === 0) {
@@ -354,8 +354,8 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
         (SELECT COUNT(*) FROM status_check) AS status_updated,
         (SELECT COUNT(*) FROM deduct) AS items_deducted
     `)
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '完成服务失败，请稍后重试' }
   }
 
   const row = (result as any[])[0]
@@ -384,8 +384,8 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
         eq(serviceOrders.status, '待服务'),
         scopeCondition(session, serviceOrders.storeId),
       ))
-  } catch (err: any) {
-    throw err
+  } catch {
+    return { success: false, message: '取消服务失败，请稍后重试' }
   }
 
   if ((cancelResult as any).count === 0) {
