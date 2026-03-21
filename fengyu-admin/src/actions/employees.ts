@@ -109,7 +109,15 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
     } else if (node?.type === 'department') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
+    } else if (node?.type === 'store') {
+      // 门店：按 orgNodeId 查对应 storeId 过滤
+      const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
+        .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
+      if (storeRow) {
+        conditions.push(eq(staffWechatUsers.storeId, storeRow.storeId))
+      }
     }
+    // headquarters：不添加条件，显示全部
   }
   if (filters.storeId) {
     conditions.push(eq(staffWechatUsers.storeId, filters.storeId))

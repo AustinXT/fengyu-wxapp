@@ -6,10 +6,11 @@ import type { Employee, Store, OrgNode } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Badge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
-import { formatPhone, buildOrgPath } from "@/lib/utils"
+import { formatPhone, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -22,13 +23,11 @@ const PAGE_SIZE_OPTIONS = [10, 20, 50]
 export default function EmployeesPage({
   employees,
   stores,
-  orgLevel2,
   total,
   orgNodes,
 }: {
   employees: Employee[]
   stores: Store[]
-  orgLevel2: { id: string; name: string; type: string }[]
   total: number
   orgNodes: OrgNode[]
 }) {
@@ -55,15 +54,22 @@ export default function EmployeesPage({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
-  const selectedNode = orgLevel2.find(n => n.id === marketFilter)
+  const selectedNode = orgNodes.find(n => n.id === marketFilter)
   const isDeptSelected = selectedNode?.type === 'department'
 
-  /** 门店下拉：按市场筛选联动，选中总部部门时无门店 */
+  /** 门店下拉：按组织筛选联动 */
   const filteredStores = useMemo(() => {
+    if (!marketFilter) return stores
     if (isDeptSelected) return []
-    if (marketFilter) return stores.filter(s => s.marketName === selectedNode?.name)
-    return stores
-  }, [marketFilter, isDeptSelected, stores, selectedNode])
+    // 找到所选节点对应的市场
+    const marketId = selectedNode?.type === 'market'
+      ? selectedNode.id
+      : findAncestorMarketId(marketFilter, orgNodes)
+    if (!marketId) return stores
+    const market = orgNodes.find(n => n.id === marketId)
+    if (!market) return stores
+    return stores.filter(s => s.marketName === market.name)
+  }, [marketFilter, isDeptSelected, stores, selectedNode, orgNodes])
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -131,27 +137,13 @@ export default function EmployeesPage({
       </div>
 
       <div className="flex items-center gap-3">
-        <Select
-          value={marketFilter}
-          onChange={(e) => setMany({ market: e.target.value, store: '', page: '' })}
+        <OrgTreeSelect
           className="w-48"
-        >
-          <option value="">全部市场/部门</option>
-          {orgLevel2.filter(n => n.type === 'market').length > 0 && (
-            <optgroup label="市场">
-              {orgLevel2.filter(n => n.type === 'market').map((n) => (
-                <option key={n.id} value={n.id}>{n.name}</option>
-              ))}
-            </optgroup>
-          )}
-          {orgLevel2.filter(n => n.type === 'department').length > 0 && (
-            <optgroup label="总部部门">
-              {orgLevel2.filter(n => n.type === 'department').map((n) => (
-                <option key={n.id} value={n.id}>{n.name}</option>
-              ))}
-            </optgroup>
-          )}
-        </Select>
+          orgNodes={orgNodes}
+          value={marketFilter}
+          onChange={(id) => setMany({ market: id, store: '', page: '' })}
+          placeholder="全部市场/部门"
+        />
         <Select
           value={storeFilter}
           onChange={(e) => setFilter("store", e.target.value)}

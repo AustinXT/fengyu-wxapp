@@ -1,5 +1,5 @@
 import { Suspense } from 'react'
-import { getEmployeesPaginated, getOrgLevel2ForFilter } from '@/actions/employees'
+import { getEmployeesPaginated } from '@/actions/employees'
 import { getStores } from '@/actions/stores'
 import { getOrgNodes } from '@/actions/org'
 import EmployeesPage from './_components/employees-page'
@@ -13,7 +13,7 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: employees, total }, stores, orgLevel2, orgNodes] = await Promise.all([
+  const [{ data: employees, total }, stores, orgNodes] = await Promise.all([
     getEmployeesPaginated({
       marketId: params.market || undefined,
       storeId: params.store,
@@ -23,13 +23,12 @@ export default async function Page({
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getStores(),
-    getOrgLevel2ForFilter(),
     getOrgNodes(),
   ])
 
   return (
     <Suspense>
-      <EmployeesPage employees={employees} stores={stores} orgLevel2={orgLevel2} total={total} orgNodes={orgNodes} />
+      <EmployeesPage employees={employees} stores={stores} total={total} orgNodes={orgNodes} />
     </Suspense>
   )
 }

@@ -46,7 +46,6 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
   // Edit info state
   const [isEditing, setIsEditing] = useState(false)
-  useUnsavedChanges(isEditing || isEditingRoles)
   const [resignDialogOpen, setResignDialogOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
@@ -63,6 +62,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
 
   // Inline role editing state
   const [isEditingRoles, setIsEditingRoles] = useState(false)
+  useUnsavedChanges(isEditing || isEditingRoles)
   const [roleEntries, setRoleEntries] = useState<{ role: RoleType; scopeId: string }[]>([])
   const [savingRoles, setSavingRoles] = useState(false)
 
@@ -446,20 +446,18 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                           <option key={r} value={r}>{roleLabels[r]}</option>
                         ))}
                       </Select>
-                      <Select
+                      <OrgTreeSelect
                         className="flex-1"
+                        orgNodes={orgNodes}
+                        excludeTypes={['department']}
                         value={entry.scopeId}
-                        onChange={(e) => {
+                        onChange={(id) => {
                           const updated = [...roleEntries]
-                          updated[index] = { ...entry, scopeId: e.target.value }
+                          updated[index] = { ...entry, scopeId: id }
                           setRoleEntries(updated)
                         }}
-                      >
-                        <option value="">选择组织节点</option>
-                        {orgNodes.filter(n => n.isActive).map((n) => (
-                          <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
-                        ))}
-                      </Select>
+                        placeholder="选择组织节点"
+                      />
                       <Button
                         variant="ghost"
                         size="sm"

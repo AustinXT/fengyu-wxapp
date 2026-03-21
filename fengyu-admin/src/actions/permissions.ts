@@ -59,6 +59,44 @@ export async function getRoles(): Promise<PermissionRole[]> {
   }))
 }
 
+/**
+ * 按员工查询权限角色（含已撤销），用于员工详情页。
+ * 页面级 scopeCondition 已保证只有可访问的员工才会到达此处，无需再做 scope 过滤。
+ */
+export async function getEmployeeRoles(employeeId: string): Promise<PermissionRole[]> {
+  const session = await getSession()
+  requirePermission(session, 'employee:list')
+
+  const rows = await db
+    .select({
+      id: permissionRoles.id,
+      employeeId: permissionRoles.employeeId,
+      role: permissionRoles.role,
+      scopeId: permissionRoles.scopeId,
+      isVoid: permissionRoles.isVoid,
+      createdBy: permissionRoles.createdBy,
+      createdAt: permissionRoles.createdAt,
+      updatedAt: permissionRoles.updatedAt,
+      scopeName: orgNodes.name,
+    })
+    .from(permissionRoles)
+    .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
+    .where(eq(permissionRoles.employeeId, employeeId))
+    .orderBy(permissionRoles.id)
+
+  return rows.map((r) => ({
+    id: r.id,
+    employeeId: r.employeeId,
+    role: r.role as PermissionRole['role'],
+    scopeId: r.scopeId,
+    isVoid: r.isVoid,
+    createdBy: r.createdBy,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+    scopeName: r.scopeName ?? undefined,
+  }))
+}
+
 export async function assignRole(data: {
   employeeId: string
   role: string

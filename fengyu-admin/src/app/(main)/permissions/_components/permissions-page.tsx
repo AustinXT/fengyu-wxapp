@@ -6,6 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
+import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
@@ -318,16 +319,14 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
           </div>
           <div>
             <label className="text-sm text-[#999999]">权限范围</label>
-            <Select
+            <OrgTreeSelect
               className="mt-1"
+              orgNodes={orgNodes}
+              excludeTypes={['department']}
               value={assignScopeId}
-              onChange={(e) => setAssignScopeId(e.target.value)}
-            >
-              <option value="">选择组织节点</option>
-              {orgNodes.filter((n) => n.isActive).map((n) => (
-                <option key={n.id} value={n.id}>{n.name} ({n.type})</option>
-              ))}
-            </Select>
+              onChange={(id) => setAssignScopeId(id)}
+              placeholder="选择组织节点"
+            />
           </div>
         </div>
         <DialogFooter>
