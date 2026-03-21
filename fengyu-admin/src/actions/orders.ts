@@ -499,6 +499,23 @@ export async function createOrder(data: {
         }
       }
 
+      // 检查该顾客是否已有待支付订单（partial unique index 保护）
+      if (initialStatus === '待支付' && data.clientUserId) {
+        const existing = await tx
+          .select({ saleOrderId: saleOrders.saleOrderId })
+          .from(saleOrders)
+          .where(
+            and(
+              eq(saleOrders.clientUserId, data.clientUserId),
+              eq(saleOrders.status, '待支付')
+            )
+          )
+          .limit(1)
+        if (existing.length > 0) {
+          throw new Error(`该顾客已有待支付订单 ${existing[0].saleOrderId}，请先关闭后再创建新订单`)
+        }
+      }
+
       await tx.insert(saleOrders).values({
         saleOrderId: id,
         status: initialStatus,
@@ -569,4 +586,86 @@ export async function createOrder(data: {
 
   revalidatePath('/orders')
   return { success: true, message: '订单创建成功', saleOrderId }
+}
+
+// ========== 小程序码生成 ==========
+
+const WX_CLIENT_APPID = process.env.WX_CLIENT_APPID || 'wx811eb4ded3dfba3f'
+const WX_CLIENT_SECRET = process.env.WX_CLIENT_SECRET
+const WXACODE_ENV_VERSION = process.env.WXACODE_ENV_VERSION || 'release'
+
+let cachedToken: string | null = null
+let tokenExpiresAt = 0
+
+async function getClientAccessToken(forceRefresh = false): Promise<string> {
+  if (!WX_CLIENT_SECRET) {
+    throw new Error('未配置 WX_CLIENT_SECRET 环境变量')
+  }
+  if (!forceRefresh && cachedToken && Date.now() < tokenExpiresAt) {
+    return cachedToken
+  }
+  const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${WX_CLIENT_APPID}&secret=${WX_CLIENT_SECRET}`
+  const res = await fetch(url)
+  const data = await res.json()
+  if (data.errcode) {
+    throw new Error(`获取 access_token 失败: ${data.errcode} ${data.errmsg}`)
+  }
+  cachedToken = data.access_token
+  tokenExpiresAt = Date.now() + (data.expires_in - 300) * 1000
+  return cachedToken!
+}
+
+/** 生成客户端小程序码，返回 base64 data URL */
+export async function generateOrderWxacode(saleOrderId: string): Promise<{ success: boolean; dataUrl?: string; message?: string }> {
+  if (!WX_CLIENT_SECRET) {
+    return { success: false, message: '未配置小程序密钥' }
+  }
+
+  try {
+    let token = await getClientAccessToken()
+    let buffer = await requestWxacode(token, saleOrderId, 'pagesOrder/scan-pay/scan-pay')
+
+    // 响应小于 1000 字节可能是错误 JSON
+    if (buffer.byteLength < 1000) {
+      const text = new TextDecoder().decode(buffer)
+      try {
+        const errData = JSON.parse(text)
+        if (errData.errcode === 42001 || errData.errcode === 40001) {
+          token = await getClientAccessToken(true)
+          buffer = await requestWxacode(token, saleOrderId, 'pagesOrder/scan-pay/scan-pay')
+          if (buffer.byteLength < 1000) {
+            const retryErr = JSON.parse(new TextDecoder().decode(buffer))
+            return { success: false, message: `生成失败: ${retryErr.errcode} ${retryErr.errmsg}` }
+          }
+        } else if (errData.errcode) {
+          return { success: false, message: `生成失败: ${errData.errcode} ${errData.errmsg}` }
+        }
+      } catch {
+        // 不是 JSON，当作正常图片
+      }
+    }
+
+    const base64 = Buffer.from(buffer).toString('base64')
+    return { success: true, dataUrl: `data:image/png;base64,${base64}` }
+  } catch (err: any) {
+    return { success: false, message: err.message || '生成小程序码失败' }
+  }
+}
+
+async function requestWxacode(token: string, scene: string, page: string): Promise<ArrayBuffer> {
+  const url = `https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token=${token}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scene,
+      page,
+      check_path: false,
+      env_version: WXACODE_ENV_VERSION,
+      width: 430,
+      auto_color: false,
+      line_color: { r: 212, g: 167, b: 106 },
+    }),
+  })
+  return res.arrayBuffer()
 }

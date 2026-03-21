@@ -1,8 +1,7 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import Link from "next/link"
-import QRCode from "qrcode"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,10 +9,19 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { searchCustomerByPhone } from "@/actions/customers"
-import { createOrder, confirmOfflinePayment } from "@/actions/orders"
+import { createOrder, confirmOfflinePayment, generateOrderWxacode } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { formatDate } from "@/lib/utils"
-import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
+import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon, ProductKind } from "@/lib/types"
+
+const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
+
+const KIND_COLORS: Record<ProductKind, string> = {
+  "福利活动": "bg-[#FFF8E6] text-[#D4820A]",
+  "护理项目": "bg-[#F0F5FA] text-[#5E8BB3]",
+  "家居产品": "bg-[#F0F9F2] text-[#3D8A5A]",
+  "充值卡": "bg-[#F5F5F5] text-[#888888]",
+}
 
 interface CartItem {
   sku: ProductSku
@@ -66,6 +74,18 @@ export default function OrderCreatePageClient({
   const [phone, setPhone] = useState("")
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categories[0]?.categoryId || "")
+  const [expandedKind, setExpandedKind] = useState<ProductKind | "">(
+    () => categories.find(c => c.categoryId === (categories[0]?.categoryId))?.productKind || ""
+  )
+
+  const categoriesByKind = useMemo(() => {
+    const groups: Partial<Record<ProductKind, ProductCategory[]>> = {}
+    for (const kind of PRODUCT_KINDS) {
+      const filtered = categories.filter(c => c.productKind === kind)
+      if (filtered.length > 0) groups[kind] = filtered
+    }
+    return groups
+  }, [categories])
   const [cart, setCart] = useState<CartItem[]>([])
   const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
   const [paymentMethod, setPaymentMethod] = useState("wechat")
@@ -93,7 +113,15 @@ export default function OrderCreatePageClient({
       const result = await searchCustomerByPhone(phone.trim())
       setSelectedCustomer(result)
       setSearchDone(true)
-      if (!result) {
+      if (result) {
+        // 自动默认顾客绑定的门店和美容师
+        if (result.boundStoreId && stores.some(s => s.storeId === result.boundStoreId)) {
+          setSelectedStoreId(result.boundStoreId)
+        }
+        if (result.boundEmployeeId && employees.some(e => e.employeeId === result.boundEmployeeId && !e.isResigned)) {
+          setSelectedEmployeeId(result.boundEmployeeId)
+        }
+      } else {
         toast.info("未找到该手机号对应的顾客，可直接使用手机号开单")
       }
     } catch {
@@ -136,6 +164,16 @@ export default function OrderCreatePageClient({
     )
   }
 
+  // 门店切换时，清除不属于该门店的美容师选择
+  useEffect(() => {
+    if (selectedEmployeeId && selectedStoreId) {
+      const emp = employees.find(e => e.employeeId === selectedEmployeeId)
+      if (emp && emp.storeId !== selectedStoreId) {
+        setSelectedEmployeeId("")
+      }
+    }
+  }, [selectedStoreId, selectedEmployeeId, employees])
+
   const totalAmount = cart.reduce((sum, item) => {
     const price = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
     return sum + price * item.quantity
@@ -169,7 +207,7 @@ export default function OrderCreatePageClient({
             {selectedCustomer && (
               <Card className="bg-[#FAFAFA]">
                 <CardContent className="p-4">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
                     <div>
                       <span className="text-[#999999]">姓名</span>
                       <p className="font-medium">{selectedCustomer.name || "-"}</p>
@@ -185,6 +223,10 @@ export default function OrderCreatePageClient({
                     <div>
                       <span className="text-[#999999]">绑定门店</span>
                       <p className="font-medium">{selectedCustomer.storeName || "-"}</p>
+                    </div>
+                    <div>
+                      <span className="text-[#999999]">绑定美容师</span>
+                      <p className="font-medium">{selectedCustomer.employeeName || "-"}</p>
                     </div>
                   </div>
                 </CardContent>
@@ -208,25 +250,51 @@ export default function OrderCreatePageClient({
       {/* Step 2: 选择商品 */}
       {step === 1 && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          {/* Category nav */}
+          {/* Category nav — 二级分类 */}
           <Card className="lg:col-span-1">
             <CardContent className="p-3">
               <h3 className="text-sm font-semibold text-[#999999] mb-2">商品分类</h3>
-              <div className="space-y-1">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.categoryId}
-                    onClick={() => setSelectedCategoryId(cat.categoryId)}
-                    className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
-                      selectedCategoryId === cat.categoryId
-                        ? "bg-[var(--primary)] text-white"
-                        : "hover:bg-[#FFF0EE]"
-                    }`}
-                  >
-                    {cat.categoryName}
-                    <span className="text-xs ml-1 opacity-70">({cat.productKind})</span>
-                  </button>
-                ))}
+              <div className="space-y-0.5">
+                {PRODUCT_KINDS.map((kind) => {
+                  const kindCategories = categoriesByKind[kind]
+                  if (!kindCategories) return null
+                  const isExpanded = expandedKind === kind
+                  return (
+                    <div key={kind}>
+                      <button
+                        onClick={() => setExpandedKind(isExpanded ? "" : kind)}
+                        className="w-full text-left px-3 py-2 rounded text-sm flex items-center justify-between hover:bg-gray-50 transition-colors"
+                      >
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${KIND_COLORS[kind]}`}>
+                          {kind}
+                        </span>
+                        <svg
+                          width="12" height="12" viewBox="0 0 12 12"
+                          className={`text-[#999999] transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                        >
+                          <path d="M4.5 3L7.5 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                      {isExpanded && (
+                        <div className="ml-3 space-y-0.5 mt-0.5">
+                          {kindCategories.map((cat) => (
+                            <button
+                              key={cat.categoryId}
+                              onClick={() => setSelectedCategoryId(cat.categoryId)}
+                              className={`w-full text-left px-3 py-1.5 rounded text-sm transition-colors ${
+                                selectedCategoryId === cat.categoryId
+                                  ? "bg-[var(--primary)] text-white"
+                                  : "hover:bg-[#FFF0EE] text-[var(--foreground)]"
+                              }`}
+                            >
+                              {cat.categoryName}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </CardContent>
           </Card>
@@ -605,23 +673,28 @@ export default function OrderCreatePageClient({
 }
 
 /**
- * 订单 QR 码组件 — 编码小程序订单详情页路径，顾客扫码可直接跳转支付。
- * 支持打印：点击"打印二维码"按钮触发浏览器打印（仅打印 QR 码区域）。
+ * 订单小程序码组件 — 调用微信 API 生成客户端小程序码，顾客扫码进入支付页。
+ * 支持打印：点击"打印二维码"按钮触发浏览器打印（仅打印二维码区域）。
  */
 function OrderQRCode({ orderId }: { orderId: string }) {
   const [qrDataUrl, setQrDataUrl] = useState<string>("")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState("")
   const printRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    // 编码小程序路径：顾客扫码 → 微信识别 → 打开小程序订单详情页
-    const miniProgramPath = `pagesOrder/order-detail/order-detail?orderId=${encodeURIComponent(orderId)}`
-    QRCode.toDataURL(miniProgramPath, {
-      width: 200,
-      margin: 2,
-      color: { dark: '#1A1A1A', light: '#FFFFFF' },
-    }).then(setQrDataUrl).catch(() => {
-      // QR 生成失败时静默降级
-    })
+    setLoading(true)
+    setError("")
+    generateOrderWxacode(orderId)
+      .then((res) => {
+        if (res.success && res.dataUrl) {
+          setQrDataUrl(res.dataUrl)
+        } else {
+          setError(res.message || "生成小程序码失败")
+        }
+      })
+      .catch(() => setError("生成小程序码失败"))
+      .finally(() => setLoading(false))
   }, [orderId])
 
   const handlePrint = () => {
@@ -642,14 +715,31 @@ function OrderQRCode({ orderId }: { orderId: string }) {
     w.onload = () => { w.print(); w.close() }
   }
 
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-4">
+        <div className="w-[200px] h-[200px] bg-[var(--muted)] rounded-lg animate-pulse" />
+        <p className="text-xs text-[#999999]">正在生成小程序码…</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-4">
+        <p className="text-xs text-[#D94040]">{error}</p>
+      </div>
+    )
+  }
+
   if (!qrDataUrl) return null
 
   return (
     <div ref={printRef} className="flex flex-col items-center gap-3 py-4">
       <div className="bg-white p-3 rounded-lg border border-[var(--border)] inline-block">
-        <img src={qrDataUrl} alt="订单二维码" width={200} height={200} />
+        <img src={qrDataUrl} alt="订单小程序码" width={200} height={200} />
       </div>
-      <p className="text-xs text-[#999999]">顾客使用微信扫描二维码 → 进入小程序 → 完成支付</p>
+      <p className="text-xs text-[#999999]">顾客使用微信扫描小程序码 → 进入小程序 → 完成支付</p>
       <Button variant="outline" size="sm" onClick={handlePrint}>
         <svg className="mr-1.5" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" />
