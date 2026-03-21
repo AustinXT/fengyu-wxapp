@@ -141,7 +141,7 @@ export async function updateOrgNode(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(orgNodes.id, id)
 
   let result: any

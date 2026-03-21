@@ -179,7 +179,7 @@ export async function updateStore(
   // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
   const scopeCond = scopeCondition(session, stores.storeId)
   const whereConditions = expectedUpdatedAt
-    ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${new Date(expectedUpdatedAt)}`, scopeCond)
+    ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${expectedUpdatedAt}`, scopeCond)
     : and(eq(stores.storeId, storeId), scopeCond)
 
   let result: any

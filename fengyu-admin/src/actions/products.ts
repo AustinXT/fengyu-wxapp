@@ -267,7 +267,7 @@ export async function updateProduct(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(products.productId, productId)
 
   const result = await db
@@ -331,7 +331,7 @@ export async function updateCategory(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(productCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(productCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(productCategories.categoryId, categoryId)
 
   const result = await db
@@ -440,7 +440,7 @@ export async function updateSku(
   requirePermission(session, 'product:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(productSkus.skuId, skuId)
 
   const result = await db

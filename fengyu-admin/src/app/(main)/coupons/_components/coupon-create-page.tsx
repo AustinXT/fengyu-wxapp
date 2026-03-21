@@ -279,7 +279,7 @@ export default function CouponCreatePage({ markets }: Props) {
           <div className="space-y-2">
             <label className="text-sm font-medium">描述说明</label>
             <textarea
-              className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 min-h-[80px]"
+              className="flex w-full rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 py-2 text-sm placeholder:text-[var(--muted-foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] min-h-[80px]"
               placeholder="请输入券的使用说明"
               value={description}
               onChange={(e) => setDescription(e.target.value)}

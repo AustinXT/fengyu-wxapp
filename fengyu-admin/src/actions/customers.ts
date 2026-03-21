@@ -344,7 +344,7 @@ export async function updateCustomer(
   const whereConditions = expectedUpdatedAt
     ? and(
         eq(clientWechatUsers.userId, userId),
-        sql`date_trunc('milliseconds', ${clientWechatUsers.updatedAt}) = ${new Date(expectedUpdatedAt)}`,
+        sql`date_trunc('milliseconds', ${clientWechatUsers.updatedAt}) = ${expectedUpdatedAt}`,
         scopeCond,
       )
     : and(eq(clientWechatUsers.userId, userId), scopeCond)

@@ -284,7 +284,7 @@ export async function updateTemplate(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(couponTemplates.templateId, templateId)
 
   let result: any
@@ -319,7 +319,7 @@ export async function toggleTemplateActive(
   requirePermission(session, 'coupon:update')
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(couponTemplates.templateId, templateId)
 
   let toggleResult: any

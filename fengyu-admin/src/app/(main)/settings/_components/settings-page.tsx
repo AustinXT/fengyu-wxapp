@@ -10,13 +10,12 @@ import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { saveSettings } from "@/actions/settings"
 
-const CDN_BASE = "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
-
 interface SettingsPageProps {
   initialSettings: {
     orderPrefix: string
     newMemberThreshold: string
     orderTimeout: string
+    bannerImages: string[]
   }
 }
 
@@ -28,12 +27,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
 
-  // Banner images: use CDN URL with cache-buster for preview
-  const [bannerImages, setBannerImages] = useState<(string | null)[]>(
-    Array.from({ length: 9 }, (_, i) =>
-      `${CDN_BASE}/fengyu-client/banner/banner${i + 1}.jpg`
-    )
-  )
+  const [bannerImages, setBannerImages] = useState<string[]>(initialSettings.bannerImages)
   const [fengyuguanImage, setFengyuguanImage] = useState(
     `${CDN_BASE}/images/fengyuguan.jpg`
   )
@@ -41,7 +35,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
   const handleSave = async () => {
     setSaving(true)
     try {
-      const res = await saveSettings({ orderPrefix, newMemberThreshold, orderTimeout })
+      const res = await saveSettings({ orderPrefix, newMemberThreshold, orderTimeout, bannerImages })
       if (res.success) {
         setFormDirty(false)
         toast.success(res.message)
@@ -109,23 +103,14 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
           <CardTitle>首页轮播图</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-xs text-[#999999]">上传后将直接覆盖小程序首页对应轮播位的图片</p>
-          <div className="grid grid-cols-3 gap-4">
-            {bannerImages.map((url, i) => (
-              <div key={i} className="space-y-1">
-                <label className="text-sm font-medium">轮播图 {i + 1}</label>
-                <ImageUpload
-                  value={url ?? ""}
-                  onChange={(v) => {
-                    const next = [...bannerImages]
-                    next[i] = v as string
-                    setBannerImages(next)
-                  }}
-                  exactKey={`fengyu-client/banner/banner${i + 1}.jpg`}
-                />
-              </div>
-            ))}
-          </div>
+          <p className="text-xs text-[#999999]">上传轮播图，拖拽调整显示顺序</p>
+          <ImageUpload
+            value={bannerImages}
+            onChange={(v) => { setBannerImages(v as string[]); setFormDirty(true); }}
+            path="fengyu-client/banner"
+            multiple
+            max={0}
+          />
         </CardContent>
       </Card>
 

@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
+import { RegionSelect } from "@/components/ui/region-select"
 
 export default function StoreEditPage({ store }: { store: Store }) {
   const router = useRouter()
@@ -122,11 +123,11 @@ export default function StoreEditPage({ store }: { store: Store }) {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">区域</label>
-              <Input name="district" defaultValue={store.district ?? ""} />
+              <RegionSelect name="district" value={store.district} />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">详细地址</label>
               <Input name="streetAddress" defaultValue={store.streetAddress ?? ""} />
             </div>

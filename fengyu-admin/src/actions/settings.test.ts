@@ -104,12 +104,13 @@ describe('saveSettings — 系统配置保存', () => {
       orderPrefix: 'FY-',
       newMemberThreshold: '2000',
       orderTimeout: '20',
+      bannerImages: [],
     })
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // CREATE TABLE + 3 UPSERT = 4 次 execute
-    expect(db.execute).toHaveBeenCalledTimes(4)
+    // CREATE TABLE + 4 UPSERT = 5 次 execute
+    expect(db.execute).toHaveBeenCalledTimes(5)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
       expect.objectContaining({ orderPrefix: 'FY-' }),
@@ -123,6 +124,7 @@ describe('saveSettings — 系统配置保存', () => {
       orderPrefix: 'FY-',
       newMemberThreshold: '1980',
       orderTimeout: '10',
+      bannerImages: [],
     })
 
     expect(result.success).toBe(false)

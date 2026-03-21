@@ -142,7 +142,7 @@ export async function updateRate(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(commissionRateMatrix.id, id)
 
   let result: any

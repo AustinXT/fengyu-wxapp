@@ -128,6 +128,7 @@ export async function assignRole(data: {
   })
 
   revalidatePath('/permissions')
+  revalidatePath('/employees')
   return { success: true, message: '角色分配成功' }
 }
 
@@ -167,7 +168,7 @@ export async function revokeRole(
   }
 
   const whereConditions = expectedUpdatedAt
-    ? and(eq(permissionRoles.id, id), sql`date_trunc('milliseconds', ${permissionRoles.updatedAt}) = ${new Date(expectedUpdatedAt)}`)
+    ? and(eq(permissionRoles.id, id), sql`date_trunc('milliseconds', ${permissionRoles.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(permissionRoles.id, id)
 
   let result: any
@@ -192,5 +193,6 @@ export async function revokeRole(
   })
 
   revalidatePath('/permissions')
+  revalidatePath('/employees')
   return { success: true, message: '角色已撤销' }
 }

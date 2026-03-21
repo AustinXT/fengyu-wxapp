@@ -13,6 +13,7 @@ import { Select, SelectOption } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
+import { RegionSelect } from "@/components/ui/region-select"
 
 export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
   const router = useRouter()
@@ -132,11 +133,11 @@ export default function StoreCreatePage({ markets }: { markets: OrgNode[] }) {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">区域</label>
-              <Input name="district" />
+              <RegionSelect name="district" />
             </div>
-            <div className="space-y-2">
+            <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">详细地址</label>
               <Input name="streetAddress" />
             </div>
