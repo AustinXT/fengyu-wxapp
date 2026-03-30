@@ -822,9 +822,10 @@ JSON 详情使用 Accordion 展开，格式化显示。
 
 | 配置项 | 组件 | 当前值 |
 |--------|------|--------|
-| 订单号前缀 | Input | FY-XSD-WX- |
 | 新会员消费门槛 | Input (number) | 1980 |
 | 订单超时时间(分钟) | Input (number) | 10 |
+| 首页轮播图 | ImageUpload (multiple) | - |
+| 凤御馆宣传图 | ImageUpload (single) | - |
 
 ### 5.20 数据中心 `/data-center`（P2）
 

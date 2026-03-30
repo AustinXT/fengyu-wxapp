@@ -7,17 +7,17 @@ import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 interface SystemSettings {
-  orderPrefix: string
   newMemberThreshold: string
   orderTimeout: string
   bannerImages: string[]
+  fengyuguanImage: string
 }
 
 const DEFAULT_SETTINGS: SystemSettings = {
-  orderPrefix: 'FY-XSD-WX-',
   newMemberThreshold: '1980',
   orderTimeout: '10',
   bannerImages: [],
+  fengyuguanImage: '',
 }
 
 export async function getSettings(): Promise<SystemSettings> {
@@ -27,17 +27,17 @@ export async function getSettings(): Promise<SystemSettings> {
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
-      WHERE key IN ('order_prefix', 'new_member_threshold', 'order_timeout', 'banner_images')
+      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image')
     `)
 
     const settings = { ...DEFAULT_SETTINGS }
     for (const row of rows as any[]) {
-      if (row.key === 'order_prefix') settings.orderPrefix = row.value
       if (row.key === 'new_member_threshold') settings.newMemberThreshold = row.value
       if (row.key === 'order_timeout') settings.orderTimeout = row.value
       if (row.key === 'banner_images') {
         try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
       }
+      if (row.key === 'fengyuguan_image') settings.fengyuguanImage = row.value
     }
     return settings
   } catch {
@@ -59,10 +59,10 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
     `)
 
     const entries = [
-      { key: 'order_prefix', value: settings.orderPrefix },
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
       { key: 'order_timeout', value: settings.orderTimeout },
       { key: 'banner_images', value: JSON.stringify(settings.bannerImages) },
+      { key: 'fengyuguan_image', value: settings.fengyuguanImage },
     ]
 
     for (const entry of entries) {

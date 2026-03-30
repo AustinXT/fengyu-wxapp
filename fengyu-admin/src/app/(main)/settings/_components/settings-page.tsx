@@ -15,15 +15,14 @@ const CDN_BASE =
 
 interface SettingsPageProps {
   initialSettings: {
-    orderPrefix: string
     newMemberThreshold: string
     orderTimeout: string
     bannerImages: string[]
+    fengyuguanImage: string
   }
 }
 
 export default function SettingsPageClient({ initialSettings }: SettingsPageProps) {
-  const [orderPrefix, setOrderPrefix] = useState(initialSettings.orderPrefix)
   const [newMemberThreshold, setNewMemberThreshold] = useState(initialSettings.newMemberThreshold)
   const [orderTimeout, setOrderTimeout] = useState(initialSettings.orderTimeout)
   const [saving, setSaving] = useState(false)
@@ -32,13 +31,13 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
 
   const [bannerImages, setBannerImages] = useState<string[]>(initialSettings.bannerImages)
   const [fengyuguanImage, setFengyuguanImage] = useState(
-    `${CDN_BASE}/images/fengyuguan.jpg`
+    initialSettings.fengyuguanImage || `${CDN_BASE}/images/fengyuguan.jpg`
   )
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      const res = await saveSettings({ orderPrefix, newMemberThreshold, orderTimeout, bannerImages })
+      const res = await saveSettings({ newMemberThreshold, orderTimeout, bannerImages, fengyuguanImage })
       if (res.success) {
         setFormDirty(false)
         toast.success(res.message)
@@ -61,18 +60,6 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
           <CardTitle>基础配置</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-[var(--foreground)]">订单号前缀</label>
-            <Input
-              value={orderPrefix}
-              onChange={(e) => setOrderPrefix(e.target.value)}
-              placeholder="FY-XSD-WX-"
-            />
-            <p className="text-xs text-[#999999]">订单号格式：前缀 + YYMMDD + 4位序号</p>
-          </div>
-
-          <Separator />
-
           <div className="space-y-2">
             <label className="text-sm font-medium text-[var(--foreground)]">新会员消费门槛（元）</label>
             <Input
@@ -126,7 +113,7 @@ export default function SettingsPageClient({ initialSettings }: SettingsPageProp
           <p className="text-xs text-[#999999]">上传后将直接覆盖小程序凤御馆页面的宣传图</p>
           <ImageUpload
             value={fengyuguanImage}
-            onChange={(v) => setFengyuguanImage(v as string)}
+            onChange={(v) => { setFengyuguanImage(v as string); setFormDirty(true); }}
             exactKey="images/fengyuguan.jpg"
           />
         </CardContent>

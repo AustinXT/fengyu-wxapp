@@ -14,7 +14,6 @@ test.describe('系统配置', () => {
   test('配置字段完整', async ({ page }) => {
     await page.goto('/settings')
     // 标签是普通文字（非 <label>），用 getByText
-    await expect(page.getByText('订单号前缀')).toBeVisible()
     await expect(page.getByText(/新会员消费门槛/)).toBeVisible()
     await expect(page.getByText(/订单超时时间/)).toBeVisible()
   })
@@ -24,14 +23,8 @@ test.describe('系统配置', () => {
     await expect(page.getByRole('button', { name: '保存' })).toBeVisible()
   })
 
-  test('输入框有默认值', async ({ page }) => {
-    await page.goto('/settings')
-    // 找到包含 FY-XSD-WX- 的 input
-    await expect(page.locator('input[value*="FY"]').first()).toBeVisible()
-  })
-
   test('辅助说明文字可见', async ({ page }) => {
     await page.goto('/settings')
-    await expect(page.getByText(/订单号格式/)).toBeVisible()
+    await expect(page.getByText(/自动升级为会员/)).toBeVisible()
   })
 })

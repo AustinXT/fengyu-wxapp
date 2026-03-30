@@ -45,14 +45,12 @@ describe('getSettings — 系统配置读取', () => {
 
   it('DB 有记录 → 覆盖默认值', async () => {
     ;(db.execute as any).mockResolvedValue([
-      { key: 'order_prefix', value: 'CUSTOM-' },
       { key: 'new_member_threshold', value: '3000' },
       { key: 'order_timeout', value: '15' },
     ])
 
     const result = await getSettings()
 
-    expect(result.orderPrefix).toBe('CUSTOM-')
     expect(result.newMemberThreshold).toBe('3000')
     expect(result.orderTimeout).toBe('15')
   })
@@ -62,20 +60,18 @@ describe('getSettings — 系统配置读取', () => {
 
     const result = await getSettings()
 
-    expect(result.orderPrefix).toBe('FY-XSD-WX-')
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
   })
 
   it('部分配置缺失 → 缺失项用默认值', async () => {
     ;(db.execute as any).mockResolvedValue([
-      { key: 'order_prefix', value: 'NEW-' },
+      { key: 'new_member_threshold', value: '3000' },
     ])
 
     const result = await getSettings()
 
-    expect(result.orderPrefix).toBe('NEW-')
-    expect(result.newMemberThreshold).toBe('1980') // 默认
+    expect(result.newMemberThreshold).toBe('3000')
     expect(result.orderTimeout).toBe('10') // 默认
   })
 
@@ -84,8 +80,8 @@ describe('getSettings — 系统配置读取', () => {
 
     const result = await getSettings()
 
-    expect(result.orderPrefix).toBe('FY-XSD-WX-')
     expect(result.newMemberThreshold).toBe('1980')
+    expect(result.orderTimeout).toBe('10')
   })
 })
 
@@ -97,14 +93,14 @@ describe('saveSettings — 系统配置保存', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 3 次 UPSERT + 日志', async () => {
+  it('正常保存 → 执行 CREATE TABLE + 4 次 UPSERT + 日志', async () => {
     ;(db.execute as any).mockResolvedValue({})
 
     const result = await saveSettings({
-      orderPrefix: 'FY-',
       newMemberThreshold: '2000',
       orderTimeout: '20',
       bannerImages: [],
+      fengyuguanImage: '',
     })
 
     expect(result.success).toBe(true)
@@ -113,7 +109,7 @@ describe('saveSettings — 系统配置保存', () => {
     expect(db.execute).toHaveBeenCalledTimes(5)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
-      expect.objectContaining({ orderPrefix: 'FY-' }),
+      expect.objectContaining({ newMemberThreshold: '2000' }),
     )
   })
 
@@ -121,10 +117,10 @@ describe('saveSettings — 系统配置保存', () => {
     ;(db.execute as any).mockRejectedValue(new Error('disk full'))
 
     const result = await saveSettings({
-      orderPrefix: 'FY-',
       newMemberThreshold: '1980',
       orderTimeout: '10',
       bannerImages: [],
+      fengyuguanImage: '',
     })
 
     expect(result.success).toBe(false)
