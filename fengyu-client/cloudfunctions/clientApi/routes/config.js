@@ -20,4 +20,15 @@ async function banners(ctx) {
   ctx.result = { banners: urls }
 }
 
-module.exports = { banners }
+/**
+ * 获取凤御馆宣传图 URL
+ * 无需认证，公开接口
+ */
+async function fengyuguan(ctx) {
+  const { rows } = await pg.query(
+    "SELECT value FROM system_configs WHERE key = 'fengyuguan_image'"
+  )
+  ctx.result = { url: rows.length > 0 ? (rows[0].value || '') : '' }
+}
+
+module.exports = { banners, fengyuguan }
