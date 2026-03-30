@@ -10,7 +10,7 @@ const pg = require('../db/pg')
  * 无需认证，公开接口
  */
 async function banners(ctx) {
-  const { rows } = await pg.query(
+  const rows = await pg.query(
     "SELECT value FROM system_configs WHERE key = 'banner_images'"
   )
   let urls = []
@@ -25,7 +25,7 @@ async function banners(ctx) {
  * 无需认证，公开接口
  */
 async function fengyuguan(ctx) {
-  const { rows } = await pg.query(
+  const rows = await pg.query(
     "SELECT value FROM system_configs WHERE key = 'fengyuguan_image'"
   )
   ctx.result = { url: rows.length > 0 ? (rows[0].value || '') : '' }

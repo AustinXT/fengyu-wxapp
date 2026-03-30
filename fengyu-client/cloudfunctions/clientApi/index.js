@@ -84,11 +84,19 @@ exports.main = async (event, context) => {
     result: null
   }
 
+  // 无需认证的公开接口
+  const publicActions = ['config.banners', 'config.fengyuguan']
+
   try {
-    // 执行中间件链 + 业务处理
-    await auth(ctx, async () => {
+    if (publicActions.includes(action)) {
+      // 公开接口，跳过认证
       await handler(ctx)
-    })
+    } else {
+      // 执行中间件链 + 业务处理
+      await auth(ctx, async () => {
+        await handler(ctx)
+      })
+    }
 
     return {
       code: 0,
