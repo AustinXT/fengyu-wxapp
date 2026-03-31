@@ -6,33 +6,56 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { StatusBadge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { batchSaveAllocations } from "@/actions/allocations"
-import type { SaleOrder, SaleAllocation, Employee, CommissionRate } from "@/lib/types"
+import type { SaleOrder, SaleItem, SaleAllocation, Employee, CommissionRate } from "@/lib/types"
 
-const ROLE_TYPE_OPTIONS = ["美容师", "养生师", "推广师"] as const
+// --------------- 常量 ---------------
 
-interface AllocationRow {
-  id: number
-  saleItemId: string
-  employeeId: string
-  roleType: string
-  amount: string
-  ratio: string
+const PERCENTAGE_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const
+
+type RoleGroup = 'beautician' | 'promoter'
+
+const ROLE_GROUP_LABELS: Record<RoleGroup, string> = {
+  beautician: '美容师/养生师业绩分配',
+  promoter: '推广师业绩分配',
 }
 
-/** 从员工的部门/职位推断提成角色类型 */
-function inferRoleType(employee: Employee): string {
-  const dept = employee.departmentName || ''
-  const pos = employee.positionName || ''
-  if (dept.includes('推广') || pos.includes('推广')) return '推广师'
+const MAX_PER_GROUP = 3
+
+// --------------- 类型 ---------------
+
+interface AllocationEntry {
+  id: number
+  employeeId: string
+  ratioPercent: string  // '10' | '20' | ... | '100' | ''
+  amount: string
+  roleType: string      // '美容师' | '养生师' | '推广师'
+}
+
+type ItemAllocations = Record<string, {
+  beautician: AllocationEntry[]
+  promoter: AllocationEntry[]
+}>
+
+// --------------- 工具函数 ---------------
+
+/** 从员工 skills 标签推断角色类型 */
+function inferRoleFromSkills(employee: Employee, group: RoleGroup): string {
+  if (group === 'promoter') return '推广师'
+  const skills = employee.skills || []
+  if (skills.includes('养生师')) return '养生师'
   return '美容师'
 }
 
-/** 根据市场、角色、销售分类、金额匹配提成比例 */
+/** 角色类型 → 角色组 */
+function getRoleGroup(roleType: string): RoleGroup {
+  return roleType === '推广师' ? 'promoter' : 'beautician'
+}
+
+/** 根据市场、角色、销售分类、金额匹配提成比例（仅作参考显示） */
 function findMatchingRate(
   rates: CommissionRate[],
   marketName: string,
@@ -50,6 +73,67 @@ function findMatchingRate(
   ) ?? null
 }
 
+/** 员工按职位排序 */
+function sortEmployeesByPosition(employees: Employee[]): Employee[] {
+  return [...employees].sort((a, b) =>
+    (a.positionName || '').localeCompare(b.positionName || '', 'zh-CN')
+  )
+}
+
+/** 计算分配金额 */
+function calcAmount(ratioPercent: string, received: string): string {
+  const ratio = Number(ratioPercent)
+  const recv = Number(received)
+  if (isNaN(ratio) || isNaN(recv) || ratio <= 0) return '0.00'
+  return ((ratio / 100) * recv).toFixed(2)
+}
+
+// --------------- 初始化状态 ---------------
+
+function initAllocations(
+  items: SaleItem[],
+  allocations: SaleAllocation[],
+  employees: Employee[],
+): ItemAllocations {
+  const result: ItemAllocations = {}
+
+  // 为每个 item 初始化空组
+  for (const item of items) {
+    result[item.saleItemId] = { beautician: [], promoter: [] }
+  }
+
+  // 填充已有分配
+  for (const alloc of allocations) {
+    const entry = result[alloc.saleItemId]
+    if (!entry) continue
+
+    const emp = employees.find((e) => e.employeeId === alloc.employeeId)
+    // 确定角色组：优先用保存的 roleType，回退到 skills 推断
+    let roleType = alloc.roleType
+    if (!roleType && emp) {
+      roleType = inferRoleFromSkills(emp, 'beautician')
+      // 如果 skills 中有推广师，放到推广师组
+      if (emp.skills?.includes('推广师')) roleType = '推广师'
+    }
+    roleType = roleType || '美容师'
+
+    const group = getRoleGroup(roleType)
+    const ratioPercent = (Number(alloc.allocationRatio) * 100).toFixed(0)
+
+    entry[group].push({
+      id: Date.now() + Math.random(),
+      employeeId: alloc.employeeId,
+      ratioPercent,
+      amount: alloc.totalAmount,
+      roleType,
+    })
+  }
+
+  return result
+}
+
+// --------------- 主组件 ---------------
+
 export default function AllocationDetailPageClient({
   order,
   allocations,
@@ -61,102 +145,90 @@ export default function AllocationDetailPageClient({
   employees: Employee[]
   commissionRates?: CommissionRate[]
 }) {
-  // 仅显示订单所属门店的在职员工
-  const activeEmployees = employees.filter((e) => !e.isResigned && e.storeId === order.storeId)
+  const activeEmployees = sortEmployeesByPosition(
+    employees.filter((e) => !e.isResigned && e.storeId === order.storeId)
+  )
 
   const items = order.items || []
 
-  const [rows, setRows] = useState<AllocationRow[]>(() => {
-    if (allocations.length > 0) {
-      return allocations.map((a, idx) => {
-        const emp = employees.find((e) => e.employeeId === a.employeeId)
-        return {
-          id: idx,
-          saleItemId: a.saleItemId,
-          employeeId: a.employeeId,
-          roleType: emp ? inferRoleType(emp) : '',
-          amount: a.totalAmount,
-          ratio: (Number(a.allocationRatio) * 100).toFixed(0),
-        }
-      })
-    }
-    return []
-  })
+  const [itemAllocs, setItemAllocs] = useState<ItemAllocations>(() =>
+    initAllocations(items, allocations, employees)
+  )
 
-  const addRow = () => {
-    setRows((prev) => [
+  const addEntry = (saleItemId: string, group: RoleGroup) => {
+    setItemAllocs((prev) => {
+      const current = prev[saleItemId]?.[group] || []
+      if (current.length >= MAX_PER_GROUP) return prev
+      return {
+        ...prev,
+        [saleItemId]: {
+          ...prev[saleItemId],
+          [group]: [
+            ...current,
+            {
+              id: Date.now() + Math.random(),
+              employeeId: '',
+              ratioPercent: '',
+              amount: '0.00',
+              roleType: group === 'promoter' ? '推广师' : '美容师',
+            },
+          ],
+        },
+      }
+    })
+  }
+
+  const updateEntry = (
+    saleItemId: string,
+    group: RoleGroup,
+    entryId: number,
+    field: 'employeeId' | 'ratioPercent',
+    value: string,
+  ) => {
+    setItemAllocs((prev) => {
+      const item = items.find((i) => i.saleItemId === saleItemId)
+      const received = item?.received || '0'
+      const entries = prev[saleItemId]?.[group] || []
+
+      return {
+        ...prev,
+        [saleItemId]: {
+          ...prev[saleItemId],
+          [group]: entries.map((e) => {
+            if (e.id !== entryId) return e
+            const updated = { ...e, [field]: value }
+
+            // 选择员工时自动推断角色
+            if (field === 'employeeId' && value) {
+              const emp = activeEmployees.find((em) => em.employeeId === value)
+              if (emp) updated.roleType = inferRoleFromSkills(emp, group)
+            }
+
+            // 选择百分比时自动计算金额
+            if (field === 'ratioPercent' || field === 'employeeId') {
+              updated.amount = calcAmount(updated.ratioPercent, received)
+            }
+
+            return updated
+          }),
+        },
+      }
+    })
+  }
+
+  const removeEntry = (saleItemId: string, group: RoleGroup, entryId: number) => {
+    setItemAllocs((prev) => ({
       ...prev,
-      {
-        id: Date.now(),
-        saleItemId: items[0]?.saleItemId || "",
-        employeeId: "",
-        roleType: "",
-        amount: "",
-        ratio: "",
+      [saleItemId]: {
+        ...prev[saleItemId],
+        [group]: (prev[saleItemId]?.[group] || []).filter((e) => e.id !== entryId),
       },
-    ])
-  }
-
-  /** 根据当前行数据自动从提成矩阵查找比例并计算金额 */
-  const autoFillFromMatrix = (row: AllocationRow): AllocationRow => {
-    const item = items.find((i) => i.saleItemId === row.saleItemId)
-    if (!item || !row.roleType || commissionRates.length === 0) return row
-    const received = Number(item.received)
-    const match = findMatchingRate(
-      commissionRates,
-      order.marketName ?? '',
-      row.roleType,
-      item.salesCategory ?? null,
-      received,
-    )
-    if (!match) return row
-    const ratioPercent = (Number(match.commissionRate) * 100).toFixed(1)
-    return { ...row, ratio: ratioPercent, amount: (received * Number(match.commissionRate)).toFixed(2) }
-  }
-
-  const updateRow = (id: number, field: keyof AllocationRow, value: string) => {
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== id) return r
-        const updated = { ...r, [field]: value }
-        // 选择员工时自动推断角色
-        if (field === "employeeId" && value) {
-          const emp = activeEmployees.find((e) => e.employeeId === value)
-          if (emp) updated.roleType = inferRoleType(emp)
-        }
-        // 当角色/关联明细/员工变更时，自动从提成矩阵查找比例并计算金额
-        if (field === "roleType" || field === "saleItemId" || field === "employeeId") {
-          return autoFillFromMatrix(updated)
-        }
-        // 比例变化时计算金额 = 比例/100 * 实收
-        if (field === "ratio") {
-          const item = items.find((i) => i.saleItemId === updated.saleItemId)
-          const itemReceived = item ? Number(item.received) : 0
-          const ratio = Number(value)
-          if (itemReceived > 0 && !isNaN(ratio)) {
-            updated.amount = ((ratio / 100) * itemReceived).toFixed(2)
-          }
-        }
-        // 金额变化时反算比例
-        if (field === "amount") {
-          const item = items.find((i) => i.saleItemId === updated.saleItemId)
-          const itemReceived = item ? Number(item.received) : 0
-          const amount = Number(value)
-          if (itemReceived > 0 && !isNaN(amount)) {
-            updated.ratio = ((amount / itemReceived) * 100).toFixed(1)
-          }
-        }
-        return updated
-      })
-    )
-  }
-
-  const removeRow = (id: number) => {
-    setRows((prev) => prev.filter((r) => r.id !== id))
+    }))
   }
 
   return (
     <div className="space-y-6">
+      {/* 页头 */}
       <div className="flex items-center gap-3">
         <Link href="/allocations" className="text-[#999999] hover:text-[var(--foreground)]">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
@@ -191,172 +263,297 @@ export default function AllocationDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 商品明细 */}
+      {/* 逐 SKU 分配卡片 */}
+      {items.map((item) => (
+        <ItemAllocationCard
+          key={item.saleItemId}
+          item={item}
+          allocs={itemAllocs[item.saleItemId] || { beautician: [], promoter: [] }}
+          activeEmployees={activeEmployees}
+          commissionRates={commissionRates}
+          marketName={order.marketName ?? ''}
+          onAdd={addEntry}
+          onUpdate={updateEntry}
+          onRemove={removeEntry}
+        />
+      ))}
+
+      {/* 保存/取消 */}
       <Card>
-        <CardHeader>
-          <CardTitle>商品明细</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">销售分类</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {items.map((item) => (
-                  <tr key={item.saleItemId}>
-                    <td className="px-4 py-3 font-medium">{item.productName || '-'}</td>
-                    <td className="px-4 py-3 text-[#666666]">{item.skuName || '-'}</td>
-                    <td className="px-4 py-3 text-[#666666]">{item.salesCategory || '-'}</td>
-                    <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toLocaleString()}</td>
-                    <td className="px-4 py-3 text-right">{item.quantity}</td>
-                    <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* 分配表单 */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>分配明细</CardTitle>
-          <Button size="sm" variant="outline" onClick={addRow}>+ 添加分配人</Button>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {rows.length > 0 ? (
-            rows.map((row) => (
-                <div key={row.id} className="bg-[#FAFAFA] rounded-lg p-4">
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
-                    <div>
-                      <label className="text-xs text-[#999999]">关联明细</label>
-                      <Select
-                        className="mt-1"
-                        value={row.saleItemId}
-                        onChange={(e) => updateRow(row.id, "saleItemId", e.target.value)}
-                      >
-                        <option value="">选择明细</option>
-                        {items.map((item) => (
-                          <option key={item.saleItemId} value={item.saleItemId}>
-                            {item.productName}{item.skuName ? ` - ${item.skuName}` : ''}{item.salesCategory ? ` [${item.salesCategory}]` : ''} (¥{item.received})
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-                    <div>
-                      <label className="text-xs text-[#999999]">员工</label>
-                      <Select
-                        className="mt-1"
-                        value={row.employeeId}
-                        onChange={(e) => updateRow(row.id, "employeeId", e.target.value)}
-                      >
-                        <option value="">选择员工</option>
-                        {activeEmployees.map((e) => (
-                          <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
-                        ))}
-                      </Select>
-                    </div>
-                    <div>
-                      <label className="text-xs text-[#999999]">员工角色</label>
-                      <Select
-                        className="mt-1"
-                        value={row.roleType}
-                        onChange={(e) => updateRow(row.id, "roleType", e.target.value)}
-                      >
-                        <option value="">选择角色</option>
-                        {ROLE_TYPE_OPTIONS.map((r) => (
-                          <option key={r} value={r}>{r}</option>
-                        ))}
-                      </Select>
-                    </div>
-                    <div>
-                      <label className="text-xs text-[#999999]">提成比例(%)</label>
-                      <Input
-                        className="mt-1"
-                        type="number"
-                        placeholder="0.0"
-                        value={row.ratio}
-                        onChange={(e) => updateRow(row.id, "ratio", e.target.value)}
-                      />
-                    </div>
-                    <div className="flex items-end gap-2">
-                      <div className="flex-1">
-                        <label className="text-xs text-[#999999]">金额</label>
-                        <Input
-                          className="mt-1"
-                          type="number"
-                          placeholder="0.00"
-                          value={row.amount}
-                          onChange={(e) => updateRow(row.id, "amount", e.target.value)}
-                        />
-                      </div>
-                      <Button size="sm" variant="ghost" onClick={() => removeRow(row.id)} className="text-[#D94040]">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )
-            )
-          ) : (
-            <p className="text-center text-[#999999] py-8">暂无分配记录，点击"添加分配人"开始分配</p>
-          )}
-
-          <Separator />
-
-          <SaveButton orderId={order.saleOrderId} rows={rows} />
+        <CardContent className="pt-6">
+          <SaveButton orderId={order.saleOrderId} items={items} itemAllocs={itemAllocs} />
         </CardContent>
       </Card>
     </div>
   )
 }
 
-function SaveButton({ orderId, rows }: { orderId: string; rows: AllocationRow[] }) {
+// --------------- SKU 分配卡片 ---------------
+
+function ItemAllocationCard({
+  item,
+  allocs,
+  activeEmployees,
+  commissionRates,
+  marketName,
+  onAdd,
+  onUpdate,
+  onRemove,
+}: {
+  item: SaleItem
+  allocs: { beautician: AllocationEntry[]; promoter: AllocationEntry[] }
+  activeEmployees: Employee[]
+  commissionRates: CommissionRate[]
+  marketName: string
+  onAdd: (saleItemId: string, group: RoleGroup) => void
+  onUpdate: (saleItemId: string, group: RoleGroup, entryId: number, field: 'employeeId' | 'ratioPercent', value: string) => void
+  onRemove: (saleItemId: string, group: RoleGroup, entryId: number) => void
+}) {
+  const received = Number(item.received)
+
+  return (
+    <Card>
+      {/* SKU 信息头 */}
+      <CardHeader className="pb-3">
+        <div className="flex items-baseline justify-between">
+          <CardTitle className="text-base">
+            {item.productName || '-'}
+            {item.skuName ? ` - ${item.skuName}` : ''}
+            {item.salesCategory && (
+              <span className="ml-2 text-xs font-normal text-[#999999] bg-gray-100 px-2 py-0.5 rounded">
+                {item.salesCategory}
+              </span>
+            )}
+          </CardTitle>
+          <span className="text-lg font-bold text-[var(--primary)]">¥{received.toLocaleString()}</span>
+        </div>
+        <p className="text-xs text-[#999999] mt-1">
+          单价 ¥{Number(item.unitRealPrice).toLocaleString()} × {item.quantity}
+        </p>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        {/* 美容师/养生师组 */}
+        <RoleGroupSection
+          label={ROLE_GROUP_LABELS.beautician}
+          group="beautician"
+          entries={allocs.beautician}
+          received={received}
+          saleItemId={item.saleItemId}
+          activeEmployees={activeEmployees}
+          commissionRates={commissionRates}
+          marketName={marketName}
+          salesCategory={item.salesCategory}
+          onAdd={onAdd}
+          onUpdate={onUpdate}
+          onRemove={onRemove}
+        />
+
+        <Separator />
+
+        {/* 推广师组 */}
+        <RoleGroupSection
+          label={ROLE_GROUP_LABELS.promoter}
+          group="promoter"
+          entries={allocs.promoter}
+          received={received}
+          saleItemId={item.saleItemId}
+          activeEmployees={activeEmployees}
+          commissionRates={commissionRates}
+          marketName={marketName}
+          salesCategory={item.salesCategory}
+          onAdd={onAdd}
+          onUpdate={onUpdate}
+          onRemove={onRemove}
+        />
+      </CardContent>
+    </Card>
+  )
+}
+
+// --------------- 角色组区块 ---------------
+
+function RoleGroupSection({
+  label,
+  group,
+  entries,
+  received,
+  saleItemId,
+  activeEmployees,
+  commissionRates,
+  marketName,
+  salesCategory,
+  onAdd,
+  onUpdate,
+  onRemove,
+}: {
+  label: string
+  group: RoleGroup
+  entries: AllocationEntry[]
+  received: number
+  saleItemId: string
+  activeEmployees: Employee[]
+  commissionRates: CommissionRate[]
+  marketName: string
+  salesCategory: string | null
+  onAdd: (saleItemId: string, group: RoleGroup) => void
+  onUpdate: (saleItemId: string, group: RoleGroup, entryId: number, field: 'employeeId' | 'ratioPercent', value: string) => void
+  onRemove: (saleItemId: string, group: RoleGroup, entryId: number) => void
+}) {
+  const sum = entries.reduce((s, e) => s + Number(e.amount), 0)
+  const overLimit = sum > received + 0.01
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-medium text-[#666666]">{label}</h4>
+        {entries.length < MAX_PER_GROUP && (
+          <Button size="sm" variant="outline" onClick={() => onAdd(saleItemId, group)}>
+            + 添加
+          </Button>
+        )}
+      </div>
+
+      {entries.length > 0 ? (
+        <div className="space-y-2">
+          {entries.map((entry) => {
+            // 查找提成比例参考
+            const rateRef = entry.roleType
+              ? findMatchingRate(commissionRates, marketName, entry.roleType, salesCategory, received)
+              : null
+
+            return (
+              <div key={entry.id} className="flex items-center gap-3 bg-[#FAFAFA] rounded-lg px-3 py-2">
+                {/* 员工选择 */}
+                <div className="flex-1 min-w-0">
+                  <Select
+                    value={entry.employeeId}
+                    onChange={(e) => onUpdate(saleItemId, group, entry.id, 'employeeId', e.target.value)}
+                  >
+                    <option value="">选择员工</option>
+                    {activeEmployees.map((emp) => (
+                      <option key={emp.employeeId} value={emp.employeeId}>
+                        {emp.name} ({emp.positionName || '-'})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* 百分比选择 */}
+                <div className="w-24 shrink-0">
+                  <Select
+                    value={entry.ratioPercent}
+                    onChange={(e) => onUpdate(saleItemId, group, entry.id, 'ratioPercent', e.target.value)}
+                  >
+                    <option value="">比例</option>
+                    {PERCENTAGE_OPTIONS.map((p) => (
+                      <option key={p} value={String(p)}>{p}%</option>
+                    ))}
+                  </Select>
+                </div>
+
+                {/* 金额（只读） */}
+                <div className="w-24 shrink-0 text-right">
+                  <span className="text-sm font-medium">¥{Number(entry.amount).toLocaleString()}</span>
+                  {rateRef && (
+                    <p className="text-[10px] text-[#999999]">
+                      提成 {(Number(rateRef.commissionRate) * 100).toFixed(1)}%
+                    </p>
+                  )}
+                </div>
+
+                {/* 删除 */}
+                <Button size="sm" variant="ghost" onClick={() => onRemove(saleItemId, group, entry.id)} className="text-[#D94040] shrink-0 px-1">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </Button>
+              </div>
+            )
+          })}
+
+          {/* 小计 */}
+          <div className={`text-xs text-right pr-10 ${overLimit ? 'text-[#D94040] font-medium' : 'text-[#999999]'}`}>
+            小计: ¥{sum.toFixed(2)} / ¥{received.toFixed(2)}
+            {overLimit && ' (超出实收金额)'}
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-[#999999] py-2">暂无分配</p>
+      )}
+    </div>
+  )
+}
+
+// --------------- 保存按钮 ---------------
+
+function SaveButton({
+  orderId,
+  items,
+  itemAllocs,
+}: {
+  orderId: string
+  items: SaleItem[]
+  itemAllocs: ItemAllocations
+}) {
   const [pending, startTransition] = useTransition()
   const router = useRouter()
 
   const handleSave = () => {
-    const validRows = rows.filter((r) => r.saleItemId && r.employeeId && r.amount)
-    if (validRows.length === 0 && rows.length > 0) {
-      toast.error('请填写完整的分配信息')
-      return
-    }
+    // 扁平化 + 校验
+    const flatAllocations: Array<{
+      saleItemId: string
+      employeeId: string
+      roleType: string
+      allocationRatio: string
+      totalAmount: string
+    }> = []
 
-    // 校验：同一 saleItemId + employeeId 不能重复
-    const seen = new Set<string>()
-    for (const r of validRows) {
-      const key = `${r.saleItemId}|${r.employeeId}`
-      if (seen.has(key)) {
-        toast.error('同一明细行不能分配给同一员工多次，请合并或删除重复行')
-        return
-      }
-      seen.add(key)
-    }
+    for (const item of items) {
+      const allocs = itemAllocs[item.saleItemId]
+      if (!allocs) continue
+      const received = Number(item.received)
 
-    // 校验：分配金额不能为负数
-    for (const r of validRows) {
-      if (Number(r.amount) <= 0) {
-        toast.error('分配金额必须大于 0')
-        return
+      for (const group of ['beautician', 'promoter'] as RoleGroup[]) {
+        const entries = allocs[group].filter((e) => e.employeeId || e.ratioPercent)
+
+        // 校验完整性
+        for (const e of entries) {
+          if (!e.employeeId || !e.ratioPercent) {
+            toast.error('请填写完整的分配信息（员工和比例）')
+            return
+          }
+        }
+
+        // 校验重复员工
+        const empIds = new Set<string>()
+        for (const e of entries) {
+          if (empIds.has(e.employeeId)) {
+            toast.error(`${item.productName || '商品'} 中同一角色组不能重复选择同一员工`)
+            return
+          }
+          empIds.add(e.employeeId)
+        }
+
+        // 校验金额合计
+        const sum = entries.reduce((s, e) => s + Number(e.amount), 0)
+        if (sum > received + 0.01) {
+          toast.error(`${item.productName || '商品'} 的${group === 'beautician' ? '美容师/养生师' : '推广师'}分配金额超出实收金额`)
+          return
+        }
+
+        for (const e of entries) {
+          flatAllocations.push({
+            saleItemId: item.saleItemId,
+            employeeId: e.employeeId,
+            roleType: e.roleType,
+            allocationRatio: (Number(e.ratioPercent) / 100).toFixed(2),
+            totalAmount: e.amount,
+          })
+        }
       }
     }
 
     startTransition(async () => {
-      const res = await batchSaveAllocations(orderId, validRows.map((r) => ({
-        saleItemId: r.saleItemId,
-        employeeId: r.employeeId,
-        allocationRatio: (Number(r.ratio) / 100).toFixed(2),
-        totalAmount: Number(r.amount).toFixed(2),
-      })))
+      const res = await batchSaveAllocations(orderId, flatAllocations)
       if (res.success) {
         toast.success(res.message)
         router.push('/allocations')

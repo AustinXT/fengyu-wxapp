@@ -206,7 +206,7 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers } = await import('@db/user')
-  const { productSkus, products } = await import('@db/product')
+  const { productSkus } = await import('@db/product')
   const { alias } = await import('drizzle-orm/pg-core')
   const { desc } = await import('drizzle-orm')
 
@@ -231,11 +231,9 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
         .select({
           item: saleItems,
           skuName: productSkus.specName,
-          productName: products.name,
         })
         .from(saleItems)
         .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-        .leftJoin(products, eq(productSkus.productId, products.productId))
         .where(inArray(saleItems.saleOrderId, orderIds))
     : []
 
@@ -295,7 +293,7 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
         createdAt: ir.item.createdAt.toISOString(),
         updatedAt: ir.item.updatedAt.toISOString(),
         skuName: ir.skuName ?? undefined,
-        productName: ir.productName ?? undefined,
+        productName: ir.item.productName ?? undefined,
       })),
     })
   }

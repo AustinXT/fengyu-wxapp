@@ -6,7 +6,6 @@ import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
-import { products } from '@db/product'
 import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -202,16 +201,14 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
 
   const r = rows[0]
 
-  // Get items with joins
+  // Get items with SKU join (product_name from sale_items snapshot)
   const itemRows = await db
     .select({
       item: saleItems,
       skuName: productSkus.specName,
-      productName: products.name,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-    .leftJoin(products, eq(productSkus.productId, products.productId))
     .where(eq(saleItems.saleOrderId, saleOrderId))
 
   const items: SaleItem[] = itemRows.map((ir) => ({
@@ -233,7 +230,7 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     createdAt: ir.item.createdAt.toISOString(),
     updatedAt: ir.item.updatedAt.toISOString(),
     skuName: ir.skuName ?? undefined,
-    productName: ir.productName ?? undefined,
+    productName: ir.item.productName ?? undefined,
   }))
 
   return {

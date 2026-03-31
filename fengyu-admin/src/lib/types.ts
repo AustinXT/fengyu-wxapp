@@ -123,12 +123,14 @@ export interface ProductCategory {
   categoryId: string
   categoryName: string
   productKind: ProductKind
+  salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean
   createdAt: string
   updatedAt: string
 }
 
+/** 商城商品（products 表，category_id → mall_categories） */
 export interface Product {
   productId: string
   categoryId: string
@@ -136,11 +138,10 @@ export interface Product {
   coverImage: string | null
   detailImages: string[] | null
   description: string | null
-  isShengmei: boolean | null
   isBundle: boolean
+  pickCount: number | null
   price: string
   specialPrice: string | null
-  salesCategory: SalesCategory | null
   manageScope: string | null
   marketScope: string | null
   sortOrder: number
@@ -150,23 +151,37 @@ export interface Product {
   updatedAt: string
   // joined
   categoryName?: string
-  productKind?: ProductKind
   skuCount?: number
 }
 
+/** SKU（独立实体，category_id → product_categories） */
 export interface ProductSku {
   skuId: string
-  productId: string
+  categoryId: string
   productType: ProductType
   specName: string
   price: string
   specialPrice: string | null
   sessionCount: number | null
-  isBundleSku: boolean
   sortOrder: number
   serviceFee: string
+  isShengmei: boolean | null
+  marketScope: string | null
   validStart: string | null
   validEnd: string | null
+  createdAt: string
+  updatedAt: string
+  // joined
+  categoryName?: string
+  productKind?: ProductKind
+  salesCategory?: SalesCategory | null
+}
+
+export interface MallCategory {
+  categoryId: string
+  categoryName: string
+  sortOrder: number
+  isValid: boolean
   createdAt: string
   updatedAt: string
 }

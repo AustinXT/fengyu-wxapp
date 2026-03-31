@@ -229,8 +229,7 @@ export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryM
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
       AND si.item_direction = 'purchase'
       ${scopeFilter} ${inlineFilter}
@@ -265,8 +264,7 @@ export async function getProductRank(filter: DateFilter = {}): Promise<ProductRa
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
       AND si.item_direction = 'purchase'
       ${scopeFilter} ${inlineFilter}
@@ -453,8 +451,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status IN ('已支付', '已完成')
       AND si.item_direction = 'purchase'
       ${scopeFilter} ${inlineFilter}
