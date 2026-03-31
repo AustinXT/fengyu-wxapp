@@ -28,11 +28,8 @@ module.exports.fmt = function(val) {
 
   <!-- 商品基础信息 -->
   <view class="info-card">
-    <view class="info-tags">
-      <van-tag color="#E8684A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
-      <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
-      <van-tag color="#5AACA5" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
-      <van-tag color="#D4820A" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+    <view class="info-tags" wx:if="{{spu.category_name}}">
+      <van-tag type="primary">{{spu.category_name}}</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>
@@ -83,16 +80,16 @@ module.exports.fmt = function(val) {
       <text class="action-bar__price-hint">请选择规格</text>
     </view>
 
-    <!-- 购物车图标：促销方案不显示 -->
-    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{spu.product_kind !== '福利活动'}}">
+    <!-- 购物车图标：套餐不显示 -->
+    <view class="action-bar__cart-icon" bindtap="onCartTap" wx:if="{{!spu.is_bundle}}">
       <van-icon name="shopping-cart-o" size="48rpx" />
       <view class="action-bar__badge" wx:if="{{cartCount > 0}}">{{cartCount > 99 ? '99+' : cartCount}}</view>
     </view>
 
     <!-- 按钮区 -->
     <view class="action-bar__btns">
-      <view wx:if="{{spu.product_kind !== '福利活动'}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
-      <view class="action-bar__btn action-bar__btn--buy {{spu.product_kind === '福利活动' ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
+      <view wx:if="{{!spu.is_bundle}}" class="action-bar__btn action-bar__btn--cart-add {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onAddToCart">加入购物车</view>
+      <view class="action-bar__btn action-bar__btn--buy {{spu.is_bundle ? 'action-bar__btn--full' : ''}} {{!selectedSku ? 'action-bar__btn--disabled' : ''}}" bindtap="onSubmit">立即下单</view>
     </view>
   </view>
 
