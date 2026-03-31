@@ -164,6 +164,8 @@ export const saleAllocations = pgTable(
       .notNull()
       .references(() => staffWechatUsers.employeeId),
     allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 2 }).notNull(),
+    /** 员工角色类型（美容师/养生师/推广师） */
+    roleType: varchar('role_type', { length: 20 }),
     /** 部门名称快照（用于按部门分组展示） */
     departmentName: varchar('department_name', { length: 100 }),
     /** 该员工最终分配金额（退款为负数） */
@@ -174,8 +176,8 @@ export const saleAllocations = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (table) => [
-    uniqueIndex('uq_sale_alloc_item_emp')
-      .on(table.saleItemId, table.employeeId)
+    uniqueIndex('uq_sale_alloc_item_emp_role')
+      .on(table.saleItemId, table.employeeId, table.roleType)
       .where(sql`is_void = false`),
     index('idx_sale_alloc_employee_id').on(table.employeeId),
   ],

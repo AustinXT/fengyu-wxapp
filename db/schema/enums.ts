@@ -64,3 +64,5 @@ export const pointTransactionTypeEnum = pgEnum('point_transaction_type', ['earn'
 export const messageRecipientTypeEnum = pgEnum('message_recipient_type', ['client', 'staff'])
 
 export const cardTransactionTypeEnum = pgEnum('card_transaction_type', ['topup', 'deduct'])
+
+export const positionScopeEnum = pgEnum('position_scope', ['headquarters', 'market', 'store'])

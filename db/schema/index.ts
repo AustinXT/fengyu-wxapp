@@ -4,7 +4,7 @@ export * from './enums'
 // 组织架构与门店
 export * from './org'
 
-// 商品（品项分类 + 商品 + 规格）
+// 商品管理（品项分类 + SKU）+ 商城管理（商品分类 + 商城商品 + 关联）
 export * from './product'
 
 // 微信用户（客户端 + 员工端）
@@ -54,3 +54,6 @@ export * from './pickup'
 
 // 系统配置
 export * from './system-config'
+
+// 查找表（职位 + 技能标签）
+export * from './lookup'

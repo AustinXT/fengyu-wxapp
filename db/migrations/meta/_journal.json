@@ -78,6 +78,27 @@
       "when": 1774106101019,
       "tag": "0010_closed_spyke",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1774945191398,
+      "tag": "0011_superb_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1775145600000,
+      "tag": "0012_product_mall_split",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1775232000000,
+      "tag": "0013_sale_alloc_role_type",
+      "breakpoints": true
     }
   ]
 }
