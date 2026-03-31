@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -11,8 +11,10 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/components/ui/dialog"
 import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
+import { Pagination } from "@/components/ui/pagination"
 import { toast } from "sonner"
 import { assignRole, revokeRole } from "@/actions/permissions"
+import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { ROLE_LABELS } from "@/lib/types"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
 
@@ -28,16 +30,33 @@ const roleBgMap: Record<string, string> = {
 
 const allRoles: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
 
+const PAGE_SIZE_OPTIONS = [10, 20, 50]
+
 interface PermissionsPageProps {
   roles: PermissionRole[]
-  employees: Employee[]
+  paginatedEmployees: Employee[]
+  employeeTotal: number
+  allEmployees: Employee[]
   orgNodes: OrgNode[]
 }
 
-export default function PermissionsPage({ roles, employees, orgNodes }: PermissionsPageProps) {
+export default function PermissionsPage({ roles, paginatedEmployees, employeeTotal, allEmployees, orgNodes }: PermissionsPageProps) {
   const router = useRouter()
+  const { get, set, setMany } = useUrlFilters()
   const [selectedRole, setSelectedRole] = useState<RoleType>("admin")
-  const [employeeSearch, setEmployeeSearch] = useState("")
+
+  // 服务端分页状态（URL 驱动）
+  const currentPage = Math.max(1, Number(get('page', '1')) || 1)
+  const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get('size'))) ? Number(get('size')) : 20
+
+  // 搜索框防抖
+  const [searchInput, setSearchInput] = useState(get('q'))
+  const debounceRef = useState<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchInput(value)
+    if (debounceRef[0]) clearTimeout(debounceRef[0])
+    debounceRef[0] = setTimeout(() => setMany({ q: value, page: '' }), 300)
+  }, [setMany, debounceRef])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [assignEmployeeId, setAssignEmployeeId] = useState("")
   const [assignRoleValue, setAssignRoleValue] = useState<RoleType>("staff")
@@ -52,19 +71,6 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
   const employeesForRole = useMemo(() => {
     return activeRoles.filter((r) => r.role === selectedRole)
   }, [selectedRole, activeRoles])
-
-  // By employee view
-  const filteredEmployees = useMemo(() => {
-    const active = employees.filter((e) => !e.isResigned)
-    if (!employeeSearch) return active
-    const q = employeeSearch.toLowerCase()
-    return active.filter(
-      (e) =>
-        (e.name || "").toLowerCase().includes(q) ||
-        (e.phone || "").includes(q) ||
-        e.employeeId.toLowerCase().includes(q)
-    )
-  }, [employees, employeeSearch])
 
   async function doAssign() {
     setAssigning(true)
@@ -214,8 +220,8 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
               <Input
                 className="w-64 mb-4"
                 placeholder="搜索员工姓名/工号/手机号"
-                value={employeeSearch}
-                onChange={(e) => setEmployeeSearch(e.target.value)}
+                value={searchInput}
+                onChange={(e) => handleSearchChange(e.target.value)}
               />
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -229,7 +235,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
-                    {filteredEmployees.map((emp) => {
+                    {paginatedEmployees.map((emp) => {
                       const empRoles = activeRoles.filter((r) => r.employeeId === emp.employeeId)
                       return (
                         <tr key={emp.employeeId} className="hover:bg-[#FFF0EE] transition-colors">
@@ -258,6 +264,14 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                   </tbody>
                 </table>
               </div>
+              <Pagination
+                total={employeeTotal}
+                pageSize={pageSize}
+                page={currentPage}
+                onPageChange={(p) => set('page', p === 1 ? '' : String(p))}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
+                onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
+              />
             </CardContent>
           </Card>
         </TabsContent>
@@ -278,7 +292,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
               onChange={(e) => setAssignEmployeeId(e.target.value)}
             >
               <option value="">选择员工</option>
-              {employees.filter((e) => !e.isResigned).map((e) => (
+              {allEmployees.filter((e) => !e.isResigned).map((e) => (
                 <option key={e.employeeId} value={e.employeeId}>
                   {e.name} ({e.positionName} - {e.storeName})
                 </option>
