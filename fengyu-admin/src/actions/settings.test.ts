@@ -24,6 +24,12 @@ vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
 
+vi.mock('@/lib/cloudbase', () => ({
+  uploadFile: vi.fn(),
+  reuploadToFixedPath: vi.fn(),
+  deleteByCloudPaths: vi.fn(),
+}))
+
 import { getSettings, saveSettings } from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -93,8 +99,8 @@ describe('saveSettings — 系统配置保存', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 4 次 UPSERT + 日志', async () => {
-    ;(db.execute as any).mockResolvedValue({})
+  it('正常保存 → 执行 CREATE TABLE + 4 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
+    ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
       newMemberThreshold: '2000',
@@ -105,8 +111,8 @@ describe('saveSettings — 系统配置保存', () => {
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // CREATE TABLE + 4 UPSERT = 5 次 execute
-    expect(db.execute).toHaveBeenCalledTimes(5)
+    // CREATE TABLE + 4 UPSERT + SELECT banner_count + UPSERT banner_count = 7
+    expect(db.execute).toHaveBeenCalledTimes(7)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
       expect.objectContaining({ newMemberThreshold: '2000' }),
