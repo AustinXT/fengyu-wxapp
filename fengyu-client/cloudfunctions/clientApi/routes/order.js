@@ -99,10 +99,10 @@ async function scanDetail(ctx) {
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
       si.product_name, si.sku_spec_name,
-      p.cover_image
+      (SELECT p.cover_image FROM mall_product_skus mps
+       JOIN products p ON mps.product_id = p.product_id
+       WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
-    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [targetOrderId])
@@ -183,15 +183,15 @@ async function create(ctx) {
 
   const now = new Date()
 
-  // 查询 SKU 信息（价格/次数直接从 PG product_skus 读取）
+  // 查询 SKU 信息（product_skus → product_categories 两表 JOIN）
   const skuIds = items.map(i => i.skuId)
   const skuResults = await pg.query(`
     SELECT
-      sk.sku_id, sk.product_id, sk.product_type, sk.spec_name,
+      sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
-      p.name AS product_name, p.sales_category
+      sk.category_id, pc.sales_category
     FROM product_skus sk
-    JOIN products p ON sk.product_id = p.product_id
+    JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = ANY($1)
   `, [skuIds])
 
@@ -219,7 +219,7 @@ async function create(ctx) {
     totalAmount += saleAmount
     return {
       skuId: item.skuId,
-      productName: sku.product_name,
+      productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount: sku.session_count,
@@ -261,11 +261,9 @@ async function create(ctx) {
       }
     }
 
-    // 品项分类匹配
+    // 品项分类匹配（SKU 直接有 category_id）
     const skuCats = await pg.query(
-      `SELECT ps.sku_id, p.category_id
-       FROM product_skus ps JOIN products p ON ps.product_id = p.product_id
-       WHERE ps.sku_id = ANY($1)`,
+      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
       [skuIds]
     )
     const catMap = new Map()
@@ -619,10 +617,10 @@ async function list(ctx) {
         si.product_name,
         si.sku_spec_name,
         si.product_type,
-        p.cover_image
+        (SELECT p.cover_image FROM mall_product_skus mps
+         JOIN products p ON mps.product_id = p.product_id
+         WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
       FROM sale_items si
-      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-      LEFT JOIN products p ON ps.product_id = p.product_id
       WHERE si.sale_order_id = ANY($1)
       ORDER BY si.sale_item_id
     `, [orderIds])
@@ -694,10 +692,10 @@ async function detail(ctx) {
       si.sale_amount,
       si.received,
       si.expire_date,
-      p.cover_image
+      (SELECT p.cover_image FROM mall_product_skus mps
+       JOIN products p ON mps.product_id = p.product_id
+       WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
-    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])

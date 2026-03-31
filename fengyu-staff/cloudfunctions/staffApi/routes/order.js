@@ -8,7 +8,7 @@
  * order.list — 订单列表
  * order.detail — 订单详情
  *
- * 数据全部来自 PG（sale_orders / sale_items / products / product_skus），零 WorkFine 依赖。
+ * 数据全部来自 PG（sale_orders / sale_items / product_skus / product_categories），零 WorkFine 依赖。
  */
 
 const pg = require('../db/pg')
@@ -97,16 +97,14 @@ async function create(ctx) {
     }
   }
 
-  // 获取 SKU 信息 + 价格（全部从 PG product_skus 读取）
+  // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const itemDataList = await Promise.all(
     items.map(async (item) => {
       const skuRows = await pg.query(
-        `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                p.name AS product_name, p.sales_category,
-                pc.product_kind
+        `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+                pc.sales_category, pc.product_kind
          FROM product_skus s
-         JOIN products p ON s.product_id = p.product_id
-         LEFT JOIN product_categories pc ON p.category_id = pc.category_id
+         JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1`,
         [item.skuId]
       )
@@ -146,7 +144,7 @@ async function create(ctx) {
 
       return {
         skuId: item.skuId,
-        productName: sku.product_name,
+        productName: sku.spec_name,
         skuSpecName: sku.spec_name,
         productType: sku.product_type,
         productKind: sku.product_kind,
@@ -200,9 +198,7 @@ async function create(ctx) {
     // 品项分类匹配
     const skuIdList = itemDataList.map(d => d.skuId)
     const skuCats = await pg.query(
-      `SELECT ps.sku_id, p.category_id
-       FROM product_skus ps JOIN products p ON ps.product_id = p.product_id
-       WHERE ps.sku_id = ANY($1)`,
+      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
       [skuIdList]
     )
     const catMap = new Map()
@@ -1133,8 +1129,9 @@ async function createConversion(ctx) {
   const inItems = []
   for (const req of convertInItems) {
     const skuRows = await pg.query(
-      `SELECT s.*, p.name AS product_name, p.sales_category
-       FROM product_skus s JOIN products p ON s.product_id = p.product_id
+      `SELECT s.*, pc.sales_category
+       FROM product_skus s
+       JOIN product_categories pc ON s.category_id = pc.category_id
        WHERE s.sku_id = $1`,
       [req.skuId]
     )
@@ -1145,7 +1142,7 @@ async function createConversion(ctx) {
     totalIn += amount
     inItems.push({
       skuId: req.skuId,
-      productName: sku.product_name,
+      productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount: sku.session_count != null ? Number(sku.session_count) : null,

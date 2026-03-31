@@ -2,11 +2,12 @@
  * 商品模块路由（员工端）
  * product.shopInit — 开单页初始化（合并接口）
  * product.categories — 品项分类列表
- * product.spuList — 商品列表（含 SKU 价格）
+ * product.skuList — SKU 列表（按品项分类）
  * product.skuDetail — SKU 详情
- * product.spuDetail — 商品详情
+ * product.spuDetail — 商城商品详情
  *
- * 数据全部来自 PG（product_categories / products / product_skus），零 WorkFine 依赖。
+ * SKU 直接绑定品项分类（product_skus → product_categories），无 products 中间层。
+ * 商城商品查询通过 products → mall_product_skus → product_skus。
  */
 
 const pg = require('../db/pg')
@@ -14,10 +15,10 @@ const { requireStaffBound } = require('../middleware/auth')
 
 // ===== 公共查询辅助 =====
 
-/** 查询分类列表 */
+/** 查询品项分类列表 */
 async function _queryCategoryRows() {
   return pg.query(`
-    SELECT category_id, category_name, product_kind, sort_order
+    SELECT category_id, category_name, product_kind, sales_category, sort_order
     FROM product_categories
     WHERE is_valid = true
     ORDER BY sort_order ASC
@@ -30,21 +31,22 @@ function _formatCategory(r) {
     id: r.category_id,
     name: r.category_name,
     productKind: r.product_kind,
+    salesCategory: r.sales_category,
     sortOrder: r.sort_order
   }
 }
 
-/** 查询商品列表并格式化为前端格式 */
-async function _queryFormattedSpuList(categoryId, productKind) {
+/** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories） */
+async function _queryFormattedSkuList(categoryId, productKind) {
   const params = []
   const conditions = [
-    `(p.valid_start IS NULL OR p.valid_start <= CURRENT_DATE)`,
-    `(p.valid_end IS NULL OR p.valid_end >= CURRENT_DATE)`
+    `(sk.valid_start IS NULL OR sk.valid_start <= CURRENT_DATE)`,
+    `(sk.valid_end IS NULL OR sk.valid_end >= CURRENT_DATE)`
   ]
 
   if (categoryId) {
     params.push(categoryId)
-    conditions.push(`p.category_id = $${params.length}`)
+    conditions.push(`sk.category_id = $${params.length}`)
   }
 
   if (productKind) {
@@ -54,63 +56,38 @@ async function _queryFormattedSpuList(categoryId, productKind) {
 
   const whereClause = 'WHERE ' + conditions.join(' AND ')
 
-  const spuRows = await pg.query(`
-    SELECT p.product_id, p.name, p.category_id, pc.category_name, pc.product_kind,
-           p.cover_image, p.description, p.sort_order, p.price AS list_price
-    FROM products p
-    JOIN product_categories pc ON p.category_id = pc.category_id
+  const skuRows = await pg.query(`
+    SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
+           sk.price, sk.special_price, sk.session_count, sk.sort_order,
+           sk.service_fee, sk.is_shengmei,
+           pc.category_name, pc.product_kind, pc.sales_category
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
     ${whereClause}
-    ORDER BY p.sort_order ASC
+    ORDER BY sk.sort_order ASC
   `, params)
 
-  // 批量查询所有商品的 SKU
-  const productIds = spuRows.map(s => s.product_id)
-  let allSkus = []
-  if (productIds.length > 0) {
-    allSkus = await pg.query(`
-      SELECT sku_id, product_id, product_type, spec_name, price, special_price,
-             session_count, sort_order
-      FROM product_skus
-      WHERE product_id = ANY($1)
-        AND (valid_start IS NULL OR valid_start <= CURRENT_DATE)
-        AND (valid_end IS NULL OR valid_end >= CURRENT_DATE)
-      ORDER BY sort_order ASC
-    `, [productIds])
-  }
-
-  const skuByProduct = {}
-  for (const sku of allSkus) {
-    if (!skuByProduct[sku.product_id]) skuByProduct[sku.product_id] = []
-    skuByProduct[sku.product_id].push(sku)
-  }
-
-  return spuRows.map(spu => {
-    const skus = skuByProduct[spu.product_id] || []
-    return {
-      spuId: spu.product_id,
-      spuName: spu.name,
-      categoryId: spu.category_id,
-      categoryName: spu.category_name,
-      productKind: spu.product_kind,
-      priceFrom: skus.length > 0 ? Math.min(...skus.map(s => Number(s.special_price || s.price) || 0)) : null,
-      cover_image: spu.cover_image,
-      skus: skus.map(s => ({
-        skuId: s.sku_id,
-        specName: s.spec_name || '',
-        price: Number(s.price) || 0,
-        specialPrice: s.special_price ? Number(s.special_price) : null,
-        sessionCount: s.session_count != null ? Number(s.session_count) : null,
-        productType: s.product_type,
-      }))
-    }
-  })
+  return skuRows.map(sk => ({
+    skuId: sk.sku_id,
+    specName: sk.spec_name,
+    categoryId: sk.category_id,
+    categoryName: sk.category_name,
+    productKind: sk.product_kind,
+    salesCategory: sk.sales_category,
+    price: Number(sk.price) || 0,
+    specialPrice: sk.special_price ? Number(sk.special_price) : null,
+    sessionCount: sk.session_count != null ? Number(sk.session_count) : null,
+    productType: sk.product_type,
+    serviceFee: Number(sk.service_fee) || 0,
+    isShengmei: sk.is_shengmei,
+  }))
 }
 
 // ===== 路由处理器 =====
 
 /**
  * 开单页初始化（合并接口）
- * 一次返回 categories + 第一个分类的 spuList
+ * 一次返回 categories + 第一个分类的 skuList
  */
 async function shopInit(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -118,12 +95,12 @@ async function shopInit(ctx) {
   const catRows = await _queryCategoryRows()
   const categories = catRows.map(_formatCategory)
 
-  let spuList = []
+  let skuList = []
   if (categories.length > 0) {
-    spuList = await _queryFormattedSpuList(categories[0].id, null)
+    skuList = await _queryFormattedSkuList(categories[0].id, null)
   }
 
-  ctx.result = { categories, spuList }
+  ctx.result = { categories, skuList }
 }
 
 /**
@@ -136,14 +113,17 @@ async function categories(ctx) {
 }
 
 /**
- * 商品列表（按品项分类）
+ * SKU 列表（按品项分类）
  */
-async function spuList(ctx) {
+async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
   const { category, categoryId, productKind } = ctx.event.payload || {}
   const resolvedCategoryId = categoryId || category
-  ctx.result = await _queryFormattedSpuList(resolvedCategoryId, productKind)
+  ctx.result = await _queryFormattedSkuList(resolvedCategoryId, productKind)
 }
+
+// 保留旧接口名兼容
+const spuList = skuList
 
 /**
  * SKU 详情
@@ -156,27 +136,26 @@ async function skuDetail(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 skuId 参数')
   }
 
-  const skuList = await pg.query(`
+  const rows = await pg.query(`
     SELECT
-      s.sku_id, s.product_id, s.product_type, s.spec_name,
-      s.price, s.special_price, s.session_count, s.sort_order,
-      p.name AS product_name, p.category_id, pc.category_name, pc.product_kind,
-      p.description
-    FROM product_skus s
-    JOIN products p ON s.product_id = p.product_id
-    JOIN product_categories pc ON p.category_id = pc.category_id
-    WHERE s.sku_id = $1
+      sk.sku_id, sk.product_type, sk.spec_name,
+      sk.price, sk.special_price, sk.session_count, sk.sort_order,
+      sk.service_fee, sk.is_shengmei, sk.market_scope,
+      pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
+    FROM product_skus sk
+    JOIN product_categories pc ON sk.category_id = pc.category_id
+    WHERE sk.sku_id = $1
   `, [skuId])
 
-  if (skuList.length === 0) {
+  if (rows.length === 0) {
     throw new Error('INVALID_PARAMS: SKU 不存在')
   }
 
-  ctx.result = { sku: skuList[0] }
+  ctx.result = { sku: rows[0] }
 }
 
 /**
- * 商品详情（单个商品详情页）
+ * 商城商品详情（展示用，查 products + mall_product_skus）
  */
 async function spuDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -187,11 +166,11 @@ async function spuDetail(ctx) {
   }
 
   const spuRows = await pg.query(`
-    SELECT p.product_id, p.name, p.category_id, pc.category_name, pc.product_kind,
+    SELECT p.product_id, p.name, p.category_id, mc.category_name,
            p.cover_image, p.description, p.sort_order, p.price, p.special_price,
-           p.is_bundle
+           p.is_bundle, p.pick_count
     FROM products p
-    JOIN product_categories pc ON p.category_id = pc.category_id
+    JOIN mall_categories mc ON p.category_id = mc.category_id
     WHERE p.product_id = $1
   `, [spuId])
 
@@ -202,13 +181,15 @@ async function spuDetail(ctx) {
   const spu = spuRows[0]
 
   const skuList = await pg.query(`
-    SELECT sku_id, product_type, spec_name, price, special_price,
-           session_count, sort_order
-    FROM product_skus
-    WHERE product_id = $1
-      AND (valid_start IS NULL OR valid_start <= CURRENT_DATE)
-      AND (valid_end IS NULL OR valid_end >= CURRENT_DATE)
-    ORDER BY sort_order ASC
+    SELECT sk.sku_id, sk.product_type, sk.spec_name, sk.price, sk.special_price,
+           sk.session_count, sk.sort_order, sk.service_fee,
+           mps.bundle_price, mps.sort_order AS display_order
+    FROM mall_product_skus mps
+    JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    WHERE mps.product_id = $1
+      AND (sk.valid_start IS NULL OR sk.valid_start <= CURRENT_DATE)
+      AND (sk.valid_end IS NULL OR sk.valid_end >= CURRENT_DATE)
+    ORDER BY mps.sort_order ASC
   `, [spuId])
 
   ctx.result = {
@@ -234,4 +215,4 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, spuList, skuDetail, spuDetail, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, spuList, skuDetail, spuDetail, promotionList, promotionPlans }
