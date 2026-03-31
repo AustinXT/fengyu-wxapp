@@ -119,6 +119,17 @@ export type CouponType = '现金券' | '项目券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
 export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
 
+/** 角色中文名（全局唯一权威定义，所有展示/错误提示均引用此常量） */
+export const ROLE_LABELS: Record<RoleType, string> = {
+  admin: '系统管理员',
+  manager: '店长',
+  finance: '财务',
+  hr: '人事',
+  product: '商品管理员',
+  customer_mgr: '顾客管理员',
+  staff: '员工',
+}
+
 export interface ProductCategory {
   categoryId: string
   categoryName: string

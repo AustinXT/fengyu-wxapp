@@ -205,18 +205,16 @@ export async function batchSaveAllocations(
       groups.set(key, group)
     }
 
-    for (const [key, group] of groups) {
+    for (const [, group] of groups) {
       // 每角色组最多 3 人
       if (group.length > 3) {
         return { success: false, message: '每个商品每种角色最多分配 3 人' }
       }
 
-      // 角色组内金额合计 ≤ 实收（容差 0.01）
-      const [itemId] = key.split('|')
-      const received = itemReceivedMap.get(itemId) ?? 0
-      const sum = group.reduce((s, a) => s + Number(a.totalAmount), 0)
-      if (sum > received + 0.01) {
-        return { success: false, message: '同角色组的分配金额合计不能超过商品实收金额' }
+      // 角色组内分配比例合计 ≤ 100%（1.00，容差 0.01）
+      const ratioSum = group.reduce((s, a) => s + Number(a.allocationRatio), 0)
+      if (ratioSum > 1.01) {
+        return { success: false, message: '同角色组的分配比例合计不能超过 100%' }
       }
 
       // 同角色组内不能重复分配同一员工

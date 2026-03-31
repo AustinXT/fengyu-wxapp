@@ -13,17 +13,8 @@ import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/
 import { AlertDialog, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
 import { assignRole, revokeRole } from "@/actions/permissions"
+import { ROLE_LABELS } from "@/lib/types"
 import type { PermissionRole, Employee, RoleType, OrgNode } from "@/lib/types"
-
-const roleLabels: Record<RoleType, string> = {
-  admin: "系统管理员",
-  manager: "门店店长",
-  finance: "财务",
-  hr: "人事",
-  product: "商品管理",
-  customer_mgr: "客户经理",
-  staff: "普通员工",
-}
 
 const roleBgMap: Record<string, string> = {
   admin: "bg-[#FFF0F0] text-[#D94040] border-[#D94040]",
@@ -150,7 +141,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                             : "hover:bg-[#FFF0EE]"
                         }`}
                       >
-                        <span>{roleLabels[role]}</span>
+                        <span>{ROLE_LABELS[role]}</span>
                         <span className={`text-xs px-1.5 py-0.5 rounded-full ${
                           selectedRole === role ? "bg-white/20" : "bg-gray-100"
                         }`}>
@@ -166,7 +157,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
             {/* Employee list for selected role */}
             <Card className="lg:col-span-3">
               <CardHeader>
-                <CardTitle>{roleLabels[selectedRole]}({employeesForRole.length} 人)</CardTitle>
+                <CardTitle>{ROLE_LABELS[selectedRole]}({employeesForRole.length} 人)</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -254,7 +245,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
                                   variant="outline"
                                   className={roleBgMap[r.role] || ""}
                                 >
-                                  {roleLabels[r.role as RoleType] || r.role}
+                                  {ROLE_LABELS[r.role as RoleType] || r.role}
                                 </Badge>
                               )) : (
                                 <span className="text-[#999999]">未分配</span>
@@ -310,7 +301,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
               }}
             >
               {allRoles.filter((r) => r !== 'staff').map((r) => (
-                <option key={r} value={r}>{roleLabels[r]}</option>
+                <option key={r} value={r}>{ROLE_LABELS[r]}</option>
               ))}
             </Select>
             {assignRoleValue === 'admin' && (
@@ -354,7 +345,7 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
         <AlertDialogTitle>确认撤销角色？</AlertDialogTitle>
         <AlertDialogDescription>
           将撤销 {revokeTarget?.employeeName} 的{" "}
-          {roleLabels[(revokeTarget?.role ?? "staff") as RoleType]} 角色，撤销后该员工将立即失去对应权限。
+          {ROLE_LABELS[(revokeTarget?.role ?? "staff") as RoleType]} 角色，撤销后该员工将立即失去对应权限。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setRevokeTarget(null)}>取消</AlertDialogCancel>
@@ -364,9 +355,9 @@ export default function PermissionsPage({ roles, employees, orgNodes }: Permissi
 
       {/* 分配 admin 角色二次确认 */}
       <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
-        <AlertDialogTitle>确认分配超级管理员？</AlertDialogTitle>
+        <AlertDialogTitle>确认分配系统管理员？</AlertDialogTitle>
         <AlertDialogDescription>
-          系统管理员（admin）拥有最高权限，不受 scope 限制，可访问全部数据和功能。请确认此操作。
+          系统管理员拥有最高权限，不受 scope 限制，可访问全部数据和功能。请确认此操作。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setAdminConfirmOpen(false)}>取消</AlertDialogCancel>

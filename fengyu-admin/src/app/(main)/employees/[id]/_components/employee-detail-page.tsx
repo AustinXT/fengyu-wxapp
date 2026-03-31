@@ -20,6 +20,7 @@ import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
+import { ROLE_LABELS } from "@/lib/types"
 import type { Employee, PermissionRole, Store, OrgNode, RoleType, Position, SkillTag } from "@/lib/types"
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -29,16 +30,6 @@ const SCOPE_LABELS: Record<string, string> = {
 }
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr"]
-
-const roleLabels: Record<RoleType, string> = {
-  admin: "系统管理员",
-  manager: "门店店长",
-  finance: "财务",
-  hr: "人事",
-  product: "商品管理",
-  customer_mgr: "客户经理",
-  staff: "普通员工",
-}
 
 interface Props {
   employee: Employee
@@ -471,7 +462,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                         }}
                       >
                         {allRoleTypes.map((r) => (
-                          <option key={r} value={r}>{roleLabels[r]}</option>
+                          <option key={r} value={r}>{ROLE_LABELS[r]}</option>
                         ))}
                       </Select>
                       <OrgTreeSelect

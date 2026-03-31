@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { serviceOrders, serviceItems } from '@db/service'
-import { saleItems } from '@db/order'
+import { saleItems, saleOrders } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { eq, desc, and, or, sql, ilike, gte, lte } from 'drizzle-orm'
@@ -179,6 +179,7 @@ export interface ServiceItemDetail {
   saleItemId: string
   sessionUsed: number
   unitRealPrice: string | null
+  isPresale: boolean
   employeeName: string | null
   employeeId: string | null
   productName: string | null
@@ -198,6 +199,7 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
       si.sale_item_id,
       si.session_used,
       si.unit_real_price,
+      si.is_presale,
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
@@ -216,6 +218,7 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     saleItemId: r.sale_item_id,
     sessionUsed: Number(r.session_used),
     unitRealPrice: r.unit_real_price,
+    isPresale: !!r.is_presale,
     employeeName: r.employee_name,
     employeeId: r.employee_id,
     productName: r.product_name,
@@ -422,14 +425,16 @@ export async function createServiceOrder(data: {
   }
 
   // 先校验剩余次数（事务外，只读查询）
-  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
+  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string; isPresale: boolean }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
         remainingSessions: saleItems.remainingSessions,
         unitRealPrice: saleItems.unitRealPrice,
+        saleOrderType: saleOrders.saleOrderType,
       })
       .from(saleItems)
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
       .where(eq(saleItems.saleItemId, item.saleItemId))
       .limit(1)
 
@@ -439,7 +444,11 @@ export async function createServiceOrder(data: {
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
     }
-    saleItemSnapshots.push({ saleItemId: item.saleItemId, unitRealPrice: saleItem.unitRealPrice })
+    saleItemSnapshots.push({
+      saleItemId: item.saleItemId,
+      unitRealPrice: saleItem.unitRealPrice,
+      isPresale: saleItem.saleOrderType === '体验',
+    })
   }
 
   // 事务：ID 生成 + 服务单 + 服务明细，原子提交
@@ -488,6 +497,7 @@ export async function createServiceOrder(data: {
           saleItemId: item.saleItemId,
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
+          isPresale: snapshot.isPresale,
           employeeId: data.assignedEmployeeId,
         })
       }

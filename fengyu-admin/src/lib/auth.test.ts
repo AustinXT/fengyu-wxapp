@@ -76,7 +76,7 @@ describe('hasRole', () => {
 
 describe('getRoleLabel', () => {
   it.each([
-    ['admin', '超级管理员'],
+    ['admin', '系统管理员'],
     ['manager', '店长'],
     ['finance', '财务'],
     ['hr', '人事'],

@@ -365,7 +365,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(true)
   })
 
-  it('同角色组金额超出实收 → 拒绝', async () => {
+  it('同角色组分配比例超100% → 拒绝', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
 
     const result = await batchSaveAllocations('order-1', [
@@ -374,15 +374,15 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     ])
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('超过商品实收金额')
+    expect(result.message).toContain('超过 100%')
   })
 
-  it('金额合计差 1 分（容差内）→ 通过', async () => {
+  it('分配比例合计刚好 100%（容差内）→ 通过', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
     mockTx()
 
     const result = await batchSaveAllocations('order-1', [
-      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.70', totalAmount: '70.01' },
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.70', totalAmount: '70.00' },
       { saleItemId: 'item-1', employeeId: 'EMP-002', roleType: '美容师', allocationRatio: '0.30', totalAmount: '30.00' },
     ])
 
