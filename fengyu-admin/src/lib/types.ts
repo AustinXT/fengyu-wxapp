@@ -288,6 +288,8 @@ export interface ServiceCommission {
   id: number
   serviceItemId: string
   employeeId: string
+  roleType?: string
+  allocationRatio?: string
   commissionRate: string
   commissionAmount: string
   isVoid: boolean

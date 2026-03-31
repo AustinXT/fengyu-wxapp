@@ -347,19 +347,17 @@ function ItemAllocationCard({
                 </div>
 
                 {/* 员工 */}
-                <div className="flex-1 min-w-[140px]">
-                  <label className="text-[10px] text-[#999999]">
-                    员工{entry.skillTag ? `（${entry.skillTag === '美容师' ? '本店' : '市场'} · ${filteredEmployees.length}人）` : ''}
-                  </label>
+                <div className="w-32 shrink-0">
+                  <label className="text-[10px] text-[#999999]">员工</label>
                   <Select
                     value={entry.employeeId}
                     onChange={(e) => onUpdate(item.saleItemId, entry.id, 'employeeId', e.target.value)}
                     disabled={!entry.skillTag}
                   >
-                    <option value="">{entry.skillTag ? '选择员工' : '先选标签'}</option>
+                    <option value="">{entry.skillTag ? `选择(${filteredEmployees.length}人)` : '先选标签'}</option>
                     {filteredEmployees.map((emp) => (
                       <option key={emp.employeeId} value={emp.employeeId}>
-                        {emp.name} ({emp.positionName || '-'})
+                        {emp.name}
                       </option>
                     ))}
                   </Select>

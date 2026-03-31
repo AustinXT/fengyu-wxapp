@@ -45,27 +45,35 @@ export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllo
     return []
   }
 
-  const rows = await db.execute(sql`
-    SELECT
-      sa.id,
-      sa.sale_item_id,
-      sa.employee_id,
-      sa.allocation_ratio,
-      sa.role_type,
-      sa.total_amount,
-      sa.is_void,
-      sa.created_at,
-      sa.updated_at,
-      swu.name AS employee_name,
-      orn.name AS department_name
-    FROM sale_allocations sa
-    LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
-    LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-    WHERE sa.sale_item_id IN (
-      SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
-    )
-    AND sa.is_void = false
-  `)
+  // 尝试含 role_type 的查询，迁移未执行时回退到不含该列的查询
+  let rows: any[]
+  try {
+    rows = await db.execute(sql`
+      SELECT
+        sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
+        sa.role_type, sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
+        swu.name AS employee_name, orn.name AS department_name
+      FROM sale_allocations sa
+      LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
+      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
+      WHERE sa.sale_item_id IN (
+        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
+      ) AND sa.is_void = false
+    `) as any[]
+  } catch {
+    rows = await db.execute(sql`
+      SELECT
+        sa.id, sa.sale_item_id, sa.employee_id, sa.allocation_ratio,
+        sa.total_amount, sa.is_void, sa.created_at, sa.updated_at,
+        swu.name AS employee_name, orn.name AS department_name
+      FROM sale_allocations sa
+      LEFT JOIN staff_wechat_users swu ON sa.employee_id = swu.employee_id
+      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
+      WHERE sa.sale_item_id IN (
+        SELECT si.sale_item_id FROM sale_items si WHERE si.sale_order_id = ${saleOrderId}
+      ) AND sa.is_void = false
+    `) as any[]
+  }
 
   return (rows as any[]).map((r: any) => ({
     id: Number(r.id),
