@@ -99,6 +99,13 @@
       "when": 1775232000000,
       "tag": "0013_sale_alloc_role_type",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1775232100000,
+      "tag": "0014_service_items_is_presale",
+      "breakpoints": true
     }
   ]
 }
