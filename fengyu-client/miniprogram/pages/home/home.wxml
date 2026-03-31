@@ -3,7 +3,7 @@
 module.exports.min = function(n) {
   var v = parseFloat(n) || 0;
   var r = Math.round(v * 100) / 100;
-  return r % 1 === 0 ? String(Math.round(r)) : r.toFixed(2);
+  return r % 1 === 0 ? '' + Math.round(r) : r.toFixed(2);
 }
 </wxs>
 <van-toast id="van-toast" />
@@ -47,7 +47,7 @@ module.exports.min = function(n) {
   <view class="top-section">
 
     <!-- ===== 1. 轮播图 ===== -->
-    <view class="section-banner">
+    <view class="section-banner" wx:if="{{banners.length > 0}}">
       <swiper
         class="banner-swiper"
         indicator-dots="{{false}}"

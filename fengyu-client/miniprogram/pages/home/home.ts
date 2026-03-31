@@ -53,13 +53,7 @@ Page({
     searchResults: [] as SpuItem[],
     searchLoading: false,
     boundStoreName: "",
-    banners: [
-      { id: "1", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner1.jpg`, link: "" },
-      { id: "2", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner2.jpg`, link: "" },
-      { id: "3", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner3.jpg`, link: "" },
-      { id: "4", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner4.jpg`, link: "" },
-      { id: "5", title: "", desc: "", bgColor: "", image: `${CDN_BASE}/banner/banner5.jpg`, link: "" },
-    ] as Banner[], // fallback defaults, overridden by config.banners API
+    banners: [] as Banner[],
     currentBanner: 0,
 
     // 侧边栏（统一展示所有分类，按大分类分组）
@@ -367,27 +361,27 @@ Page({
 
   // ===== 数据加载 =====
 
-  async loadBanners() {
-    try {
-      const data = await callClientApi<{ banners: string[] }>("config.banners", {});
-      const urls = data?.banners;
-      if (urls && urls.length > 0) {
-        this.setData({
-          banners: urls.map((url, i) => ({
-            id: String(i + 1),
-            title: "",
-            desc: "",
-            bgColor: "",
-            image: url,
-            link: "",
-          })),
-        });
-      }
-      // If empty, keep the default fallback banners
-    } catch (err) {
-      console.error("loadBanners error:", err);
-      // Keep fallback banners on error
-    }
+  loadBanners() {
+    wx.request({
+      url: `${CDN_BASE}/banner/config.json?t=${Date.now()}`,
+      success: (res: WechatMiniprogram.RequestSuccessCallbackResult) => {
+        const data = res.data as { count?: number; v?: number };
+        const count = data?.count || 0;
+        const v = data?.v || '';
+        if (count > 0) {
+          this.setData({
+            banners: Array.from({ length: count }, (_, i) => ({
+              id: String(i + 1),
+              title: "",
+              desc: "",
+              bgColor: "",
+              image: `${CDN_BASE}/banner/banner${i + 1}.jpg?v=${v}`,
+              link: "",
+            })),
+          });
+        }
+      },
+    });
   },
 
   async loadShopInit() {

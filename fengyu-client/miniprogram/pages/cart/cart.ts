@@ -1,7 +1,5 @@
 // pages/cart/cart.ts
 
-import { callClientApi } from '../../utils/cloud';
-
 const CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la';
 const DEFAULT_IMAGE_PATH = '/images/fengyuguan.jpg';
 const IMAGE_WIDTH = 2480;
@@ -31,26 +29,6 @@ function buildStrips(baseUrl: string, cacheBuster?: string): StripItem[] {
 Page({
   data: {
     strips: buildStrips(`${CDN_BASE}${DEFAULT_IMAGE_PATH}`),
-  },
-
-  onLoad() {
-    this.loadFengyuguanImage();
-  },
-
-  async loadFengyuguanImage() {
-    try {
-      const data = await callClientApi<{ url: string }>('config.fengyuguan', {});
-      const url = data?.url;
-      if (url) {
-        // Strip any existing query params (e.g. ?t=xxx cache-buster from admin upload)
-        const cleanUrl = url.split('?')[0];
-        this.setData({
-          strips: buildStrips(cleanUrl, String(Date.now())),
-        });
-      }
-    } catch (err) {
-      console.error('loadFengyuguanImage error:', err);
-    }
   },
 
   onShareAppMessage() {
