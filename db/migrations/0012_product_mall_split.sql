@@ -64,11 +64,10 @@ FROM (
 ) sub
 WHERE pc."category_id" = sub."category_id";--> statement-breakpoint
 
--- 4c: mall_categories 从 product_categories 初始化（1:1 映射）
+-- 4c: mall_categories 从 product_categories 初始化（1:1 映射，含所有分类）
 INSERT INTO "mall_categories" ("category_id", "category_name", "sort_order", "is_valid", "created_at", "updated_at")
 SELECT 'mall-' || "category_id", "category_name", "sort_order", "is_valid", "created_at", "updated_at"
-FROM "product_categories"
-WHERE "is_valid" = true;--> statement-breakpoint
+FROM "product_categories";--> statement-breakpoint
 
 -- 4d: mall_product_skus 从现有 product_id 关系填充
 INSERT INTO "mall_product_skus" ("product_id", "sku_id", "sort_order")
