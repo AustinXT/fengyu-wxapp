@@ -200,3 +200,17 @@ export async function updateStore(
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
 }
+
+/** 根据门店 ID 获取同市场下所有门店 ID（含自身） */
+export async function getMarketStoreIds(storeId: string): Promise<string[]> {
+  const rows = await db.execute(sql`
+    SELECT s2.store_id
+    FROM stores s1
+    JOIN org_nodes sn1 ON s1.org_node_id = sn1.id
+    JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = 'store'
+    JOIN stores s2 ON s2.org_node_id = sn2.id
+    WHERE s1.store_id = ${storeId}
+  `)
+  const ids = (rows as any[]).map((r: any) => r.store_id as string)
+  return ids.length > 0 ? ids : [storeId]
+}
