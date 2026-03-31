@@ -58,6 +58,38 @@ export async function searchCustomerByPhone(phone: string): Promise<Customer | n
   return serializeCustomer(rows[0])
 }
 
+/**
+ * 模糊搜索顾客 — 按姓名或手机号 ILIKE 匹配，返回最多 20 条结果。
+ * 用于开单页面的顾客搜索。
+ */
+export async function searchCustomers(keyword: string): Promise<Customer[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
+  const trimmed = keyword.trim()
+  if (!trimmed) return []
+
+  const pattern = `%${trimmed}%`
+  const rows = await db
+    .select()
+    .from(clientWechatUsers)
+    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
+    .where(
+      and(
+        scopeCondition(session, clientWechatUsers.boundStoreId),
+        or(
+          ilike(clientWechatUsers.name, pattern),
+          ilike(clientWechatUsers.phone, pattern),
+        ),
+      ),
+    )
+    .orderBy(clientWechatUsers.name)
+    .limit(20)
+
+  return rows.map(serializeCustomer)
+}
+
 export async function getCustomers(): Promise<Customer[]> {
   const session = await getSession()
   requirePermission(session, 'customer:list')
