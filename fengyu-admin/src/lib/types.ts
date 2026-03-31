@@ -82,6 +82,27 @@ export interface Customer {
   employeeName?: string
 }
 
+export type PositionScope = 'headquarters' | 'market' | 'store'
+
+export interface Position {
+  id: string
+  name: string
+  scope: PositionScope
+  sortOrder: number
+  isValid: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SkillTag {
+  id: string
+  name: string
+  sortOrder: number
+  isValid: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export type ProductKind = '福利活动' | '护理项目' | '家居产品' | '充值卡'
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
@@ -207,6 +228,7 @@ export interface SaleAllocation {
   saleItemId: string
   employeeId: string
   allocationRatio: string
+  roleType?: string
   totalAmount: string
   isVoid: boolean
   createdAt: string

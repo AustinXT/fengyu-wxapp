@@ -12,14 +12,22 @@ import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
 import { findAncestorMarketId } from "@/lib/utils"
-import type { Store, OrgNode } from "@/lib/types"
+import type { Store, OrgNode, Position, SkillTag } from "@/lib/types"
+
+const SCOPE_LABELS: Record<string, string> = {
+  headquarters: "总部职位",
+  market: "市场职位",
+  store: "门店职位",
+}
 
 interface Props {
   stores: Store[]
   orgNodes: OrgNode[]
+  positions: Position[]
+  skillTags: SkillTag[]
 }
 
-export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
+export default function EmployeeCreatePage({ stores, orgNodes, positions, skillTags }: Props) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
@@ -179,11 +187,25 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">职位</label>
-              <Input
+              <Select
                 value={form.positionName}
                 onChange={(e) => handleChange("positionName", e.target.value)}
-                placeholder="请输入职位"
-              />
+              >
+                <option value="">请选择职位</option>
+                {(["headquarters", "market", "store"] as const).map((scope) => {
+                  const items = positions.filter((p) => p.scope === scope)
+                  if (items.length === 0) return null
+                  return (
+                    <optgroup key={scope} label={SCOPE_LABELS[scope]}>
+                      {items.map((p) => (
+                        <option key={p.id} value={p.name}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )
+                })}
+              </Select>
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">生日</label>
@@ -196,6 +218,7 @@ export default function EmployeeCreatePage({ stores, orgNodes }: Props) {
             <div className="space-y-2 col-span-2">
               <label className="text-sm font-medium">技能标签</label>
               <SkillSelect
+                options={skillTags.map((t) => t.name)}
                 value={form.skills}
                 onChange={(skills) => handleChange("skills", skills)}
               />

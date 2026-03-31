@@ -20,7 +20,13 @@ import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
-import type { Employee, PermissionRole, Store, OrgNode, RoleType } from "@/lib/types"
+import type { Employee, PermissionRole, Store, OrgNode, RoleType, Position, SkillTag } from "@/lib/types"
+
+const SCOPE_LABELS: Record<string, string> = {
+  headquarters: "总部职位",
+  market: "市场职位",
+  store: "门店职位",
+}
 
 const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr"]
 
@@ -39,9 +45,11 @@ interface Props {
   roles: PermissionRole[]
   stores: Store[]
   orgNodes: OrgNode[]
+  positions: Position[]
+  skillTags: SkillTag[]
 }
 
-export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }: Props) {
+export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, positions, skillTags }: Props) {
   const router = useRouter()
 
   // Edit info state
@@ -384,10 +392,29 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                 <div className="space-y-2">
                   <label className="text-sm font-medium">职位</label>
                   {isEditing ? (
-                    <Input
+                    <Select
                       value={form.positionName}
                       onChange={(e) => handleFormChange("positionName", e.target.value)}
-                    />
+                    >
+                      <option value="">请选择职位</option>
+                      {/* 若当前值不在选项中（旧数据），显示为额外选项 */}
+                      {form.positionName && !positions.some((p) => p.name === form.positionName) && (
+                        <option value={form.positionName}>{form.positionName}（旧）</option>
+                      )}
+                      {(["headquarters", "market", "store"] as const).map((scope) => {
+                        const items = positions.filter((p) => p.scope === scope)
+                        if (items.length === 0) return null
+                        return (
+                          <optgroup key={scope} label={SCOPE_LABELS[scope]}>
+                            {items.map((p) => (
+                              <option key={p.id} value={p.name}>
+                                {p.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )
+                      })}
+                    </Select>
                   ) : (
                     <Input value={employee.positionName ?? ""} disabled />
                   )}
@@ -395,6 +422,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes }
                 <div className="space-y-2">
                   <label className="text-sm font-medium">技能标签</label>
                   <SkillSelect
+                    options={skillTags.map((t) => t.name)}
                     value={isEditing ? form.skills : (employee.skills ?? [])}
                     onChange={(skills) => handleFormChange("skills", skills)}
                     disabled={!isEditing}

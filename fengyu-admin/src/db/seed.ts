@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm'
 // Schema tables
 import { orgNodes, stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { productCategories, products, productSkus } from '@db/product'
+import { productCategories, products, productSkus, mallCategories, mallProductSkus } from '@db/product'
 import { saleOrders, saleItems, saleAllocations } from '@db/order'
 import { appointments } from '@db/appointment'
 import { serviceOrders, serviceItems } from '@db/service'
@@ -128,46 +128,75 @@ const CLIENTS = [
 ]
 
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+]
+
+const MALL_CATEGORIES = [
+  { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', sortOrder: 1, isValid: true },
+  { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', sortOrder: 2, isValid: true },
+  { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', sortOrder: 3, isValid: true },
+  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', sortOrder: 4, isValid: true },
+  { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', sortOrder: 5, isValid: true },
+  { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', sortOrder: 6, isValid: true },
+  { categoryId: 'mall-cat-cz-01', categoryName: '储值卡', sortOrder: 7, isValid: true },
 ]
 
 const PRODUCTS = [
-  { productId: 'prod-001', categoryId: 'cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isShengmei: true, isBundle: false, price: '299.00', specialPrice: '259.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-002', categoryId: 'cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isShengmei: true, isBundle: false, price: '599.00', specialPrice: '499.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 2, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-003', categoryId: 'cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isShengmei: false, isBundle: false, price: '388.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-004', categoryId: 'cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isShengmei: null, isBundle: true, price: '99.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { productId: 'prod-005', categoryId: 'cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isShengmei: null, isBundle: false, price: '268.00', specialPrice: '228.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-006', categoryId: 'cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isShengmei: null, isBundle: false, price: '198.00', specialPrice: '168.00', salesCategory: '他销自耗' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-03-01', validEnd: null },
-  { productId: 'prod-007', categoryId: 'cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isShengmei: null, isBundle: false, price: '5000.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-008', categoryId: 'cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isShengmei: true, isBundle: false, price: '880.00', specialPrice: '780.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: null },
+  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, pickCount: null, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, pickCount: null, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, pickCount: null, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, pickCount: null, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: '2026-12-31' },
+  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, pickCount: null, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, pickCount: null, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-03-01', validEnd: null },
+  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, pickCount: null, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, pickCount: null, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: null },
 ]
 
 const PRODUCT_SKUS = [
-  { skuId: 'sku-001-01', productId: 'prod-001', productType: '单品' as const, specName: '单次体验', price: '299.00', specialPrice: '259.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '30.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-001-02', productId: 'prod-001', productType: '疗程卡' as const, specName: '10次卡', price: '1999.00', specialPrice: '1800.00', sessionCount: 10, isBundleSku: false, sortOrder: 2, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-001-03', productId: 'prod-001', productType: '疗程卡' as const, specName: '20次卡', price: '3599.00', specialPrice: '3200.00', sessionCount: 20, isBundleSku: false, sortOrder: 3, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-002-01', productId: 'prod-002', productType: '单品' as const, specName: '单次', price: '599.00', specialPrice: '499.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-002-02', productId: 'prod-002', productType: '疗程卡' as const, specName: '6次卡', price: '2999.00', specialPrice: '2680.00', sessionCount: 6, isBundleSku: false, sortOrder: 2, serviceFee: '60.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-003-01', productId: 'prod-003', productType: '单品' as const, specName: '60分钟', price: '388.00', specialPrice: null, sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '40.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-003-02', productId: 'prod-003', productType: '疗程卡' as const, specName: '10次卡', price: '2880.00', specialPrice: '2580.00', sessionCount: 10, isBundleSku: false, sortOrder: 2, serviceFee: '40.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-004-01', productId: 'prod-004', productType: '单品' as const, specName: '面部深层清洁', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 1, serviceFee: '20.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-004-02', productId: 'prod-004', productType: '单品' as const, specName: '基础面部护理', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 2, serviceFee: '20.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-004-03', productId: 'prod-004', productType: '单品' as const, specName: '肩颈放松', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 3, serviceFee: '15.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-005-01', productId: 'prod-005', productType: '单品' as const, specName: '30ml', price: '268.00', specialPrice: '228.00', sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-005-02', productId: 'prod-005', productType: '单品' as const, specName: '60ml', price: '468.00', specialPrice: '398.00', sessionCount: null, isBundleSku: false, sortOrder: 2, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-006-01', productId: 'prod-006', productType: '单品' as const, specName: '标准礼盒', price: '198.00', specialPrice: '168.00', sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-03-01', validEnd: null },
-  { skuId: 'sku-007-01', productId: 'prod-007', productType: '单品' as const, specName: '金卡5000', price: '5000.00', specialPrice: null, sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-008-01', productId: 'prod-008', productType: '单品' as const, specName: '单次', price: '880.00', specialPrice: '780.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '80.00', validStart: '2025-06-01', validEnd: null },
-  { skuId: 'sku-008-02', productId: 'prod-008', productType: '疗程卡' as const, specName: '5次卡', price: '3880.00', specialPrice: '3500.00', sessionCount: 5, isBundleSku: false, sortOrder: 2, serviceFee: '80.00', validStart: '2025-06-01', validEnd: null },
+  { skuId: 'sku-001-01', categoryId: 'cat-hr-01', productType: '单品' as const, specName: '蜜语水润嫩肤护理 单次体验', price: '299.00', specialPrice: '259.00', sessionCount: 1, sortOrder: 1, serviceFee: '30.00', isShengmei: true, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-001-02', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '蜜语水润嫩肤护理 10次卡', price: '1999.00', specialPrice: '1800.00', sessionCount: 10, sortOrder: 2, serviceFee: '50.00', isShengmei: true, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-001-03', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '蜜语水润嫩肤护理 20次卡', price: '3599.00', specialPrice: '3200.00', sessionCount: 20, sortOrder: 3, serviceFee: '50.00', isShengmei: true, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-002-01', categoryId: 'cat-hr-01', productType: '单品' as const, specName: '科颜美逆龄焕肤 单次', price: '599.00', specialPrice: '499.00', sessionCount: 1, sortOrder: 1, serviceFee: '50.00', isShengmei: true, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-002-02', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '科颜美逆龄焕肤 6次卡', price: '2999.00', specialPrice: '2680.00', sessionCount: 6, sortOrder: 2, serviceFee: '60.00', isShengmei: true, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-003-01', categoryId: 'cat-hr-02', productType: '单品' as const, specName: '经络疏通养生护理 60分钟', price: '388.00', specialPrice: null, sessionCount: 1, sortOrder: 1, serviceFee: '40.00', isShengmei: false, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-003-02', categoryId: 'cat-hr-02', productType: '疗程卡' as const, specName: '经络疏通养生护理 10次卡', price: '2880.00', specialPrice: '2580.00', sessionCount: 10, sortOrder: 2, serviceFee: '40.00', isShengmei: false, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-004-01', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 面部深层清洁', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 1, serviceFee: '20.00', isShengmei: null, marketScope: null, validStart: '2025-06-01', validEnd: '2026-12-31' },
+  { skuId: 'sku-004-02', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 基础面部护理', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 2, serviceFee: '20.00', isShengmei: null, marketScope: null, validStart: '2025-06-01', validEnd: '2026-12-31' },
+  { skuId: 'sku-004-03', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 肩颈放松', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 3, serviceFee: '15.00', isShengmei: null, marketScope: null, validStart: '2025-06-01', validEnd: '2026-12-31' },
+  { skuId: 'sku-005-01', categoryId: 'cat-jj-01', productType: '单品' as const, specName: '凤御玻尿酸精华液 30ml', price: '268.00', specialPrice: '228.00', sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-005-02', categoryId: 'cat-jj-01', productType: '单品' as const, specName: '凤御玻尿酸精华液 60ml', price: '468.00', specialPrice: '398.00', sessionCount: null, sortOrder: 2, serviceFee: '0', isShengmei: null, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-006-01', categoryId: 'cat-jj-02', productType: '单品' as const, specName: '艾草精油礼盒 标准礼盒', price: '198.00', specialPrice: '168.00', sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, validStart: '2025-03-01', validEnd: null },
+  { skuId: 'sku-007-01', categoryId: 'cat-cz-01', productType: '单品' as const, specName: '金卡充值卡 5000', price: '5000.00', specialPrice: null, sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, validStart: '2025-01-01', validEnd: null },
+  { skuId: 'sku-008-01', categoryId: 'cat-hr-03', productType: '单品' as const, specName: '光子嫩肤仪器护理 单次', price: '880.00', specialPrice: '780.00', sessionCount: 1, sortOrder: 1, serviceFee: '80.00', isShengmei: true, marketScope: null, validStart: '2025-06-01', validEnd: null },
+  { skuId: 'sku-008-02', categoryId: 'cat-hr-03', productType: '疗程卡' as const, specName: '光子嫩肤仪器护理 5次卡', price: '3880.00', specialPrice: '3500.00', sessionCount: 5, sortOrder: 2, serviceFee: '80.00', isShengmei: true, marketScope: null, validStart: '2025-06-01', validEnd: null },
+]
+
+const MALL_PRODUCT_SKUS = [
+  { productId: 'prod-001', skuId: 'sku-001-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-001', skuId: 'sku-001-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-001', skuId: 'sku-001-03', bundlePrice: null, sortOrder: 3 },
+  { productId: 'prod-002', skuId: 'sku-002-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-002', skuId: 'sku-002-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-003', skuId: 'sku-003-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-003', skuId: 'sku-003-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-004', skuId: 'sku-004-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-004', skuId: 'sku-004-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-004', skuId: 'sku-004-03', bundlePrice: null, sortOrder: 3 },
+  { productId: 'prod-005', skuId: 'sku-005-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-005', skuId: 'sku-005-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-006', skuId: 'sku-006-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-007', skuId: 'sku-007-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-008', skuId: 'sku-008-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-008', skuId: 'sku-008-02', bundlePrice: null, sortOrder: 2 },
 ]
 
 const SALE_ORDERS = [
@@ -287,17 +316,25 @@ async function seed() {
     console.log('  client_wechat_users...')
     await tx.insert(clientWechatUsers).values(CLIENTS).onConflictDoNothing()
 
-    // 5. product_categories
+    // 5. product_categories (品项分类)
     console.log('  product_categories...')
     await tx.insert(productCategories).values(PRODUCT_CATEGORIES).onConflictDoNothing()
 
-    // 6. products
+    // 6. product_skus (SKU，独立实体)
+    console.log('  product_skus...')
+    await tx.insert(productSkus).values(PRODUCT_SKUS).onConflictDoNothing()
+
+    // 7. mall_categories (商品分类)
+    console.log('  mall_categories...')
+    await tx.insert(mallCategories).values(MALL_CATEGORIES).onConflictDoNothing()
+
+    // 8. products (商城商品)
     console.log('  products...')
     await tx.insert(products).values(PRODUCTS).onConflictDoNothing()
 
-    // 7. product_skus
-    console.log('  product_skus...')
-    await tx.insert(productSkus).values(PRODUCT_SKUS).onConflictDoNothing()
+    // 9. mall_product_skus (商城商品-SKU关联)
+    console.log('  mall_product_skus...')
+    await tx.insert(mallProductSkus).values(MALL_PRODUCT_SKUS).onConflictDoNothing()
 
     // 8. sale_orders
     console.log('  sale_orders...')
