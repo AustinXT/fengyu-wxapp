@@ -98,7 +98,7 @@ export default function MallPageClient({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <Link href={`/products/${row.productId}`}>
+        <Link href={`/mall/${row.productId}`}>
           <Button variant="link" size="sm" className="h-auto p-0">
             详情
           </Button>
@@ -115,7 +115,7 @@ export default function MallPageClient({
           <Link href="/mall/categories">
             <Button variant="outline">商城分类</Button>
           </Link>
-          <Link href="/products/create">
+          <Link href="/mall/create">
             <Button>新增商品</Button>
           </Link>
         </div>

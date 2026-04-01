@@ -12,16 +12,18 @@ import { searchCustomers } from "@/actions/customers"
 import { createOrder, confirmOfflinePayment, generateOrderWxacode } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { formatDate } from "@/lib/utils"
-import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon, ProductKind } from "@/lib/types"
+import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
-
-const KIND_COLORS: Record<ProductKind, string> = {
-  "福利活动": "bg-[#FFF8E6] text-[#D4820A]",
-  "护理项目": "bg-[#F0F5FA] text-[#5E8BB3]",
-  "家居产品": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "充值卡": "bg-[#F5F5F5] text-[#888888]",
-}
+const KIND_PALETTE = [
+  "bg-[#FFF8E6] text-[#D4820A]",
+  "bg-[#F0F5FA] text-[#5E8BB3]",
+  "bg-[#F0F9F2] text-[#3D8A5A]",
+  "bg-[#F5F5F5] text-[#888888]",
+  "bg-[#FFF0EE] text-[#C0322A]",
+  "bg-[#F5F0FF] text-[#8B5CF6]",
+  "bg-[#FFF0F5] text-[#EC4899]",
+  "bg-[#F0FAFA] text-[#0E7490]",
+]
 
 interface CartItem {
   sku: ProductSku
@@ -86,12 +88,14 @@ export default function OrderCreatePageClient({
   skus,
   stores,
   employees,
+  productKinds,
 }: {
   categories: ProductCategory[]
   products: Product[]
   skus: ProductSku[]
   stores: Store[]
   employees: Employee[]
+  productKinds?: ProductCategory[]
 }) {
   const [step, setStep] = useState(0)
   const [searchKeyword, setSearchKeyword] = useState("")
@@ -99,18 +103,32 @@ export default function OrderCreatePageClient({
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [manualPhone, setManualPhone] = useState("")
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categories[0]?.categoryId || "")
-  const [expandedKind, setExpandedKind] = useState<ProductKind | "">(
+  const [expandedKind, setExpandedKind] = useState<string>(
     () => categories.find(c => c.categoryId === (categories[0]?.categoryId))?.productKind || ""
   )
 
+  // 动态一级分类列表
+  const activeKinds = useMemo(() => {
+    if (productKinds) {
+      return productKinds.filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder).map(k => k.categoryName)
+    }
+    // fallback: derive from categories
+    const seen = new Set<string>()
+    return categories.filter(c => c.productKind && !seen.has(c.productKind) && seen.add(c.productKind)).map(c => c.productKind!)
+  }, [productKinds, categories])
+
+  const kindColors = useMemo(() => {
+    return Object.fromEntries(activeKinds.map((k, i) => [k, KIND_PALETTE[i % KIND_PALETTE.length]]))
+  }, [activeKinds])
+
   const categoriesByKind = useMemo(() => {
-    const groups: Partial<Record<ProductKind, ProductCategory[]>> = {}
-    for (const kind of PRODUCT_KINDS) {
+    const groups: Record<string, ProductCategory[]> = {}
+    for (const kind of activeKinds) {
       const filtered = categories.filter(c => c.productKind === kind)
       if (filtered.length > 0) groups[kind] = filtered
     }
     return groups
-  }, [categories])
+  }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
   const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
   const [paymentMethod, setPaymentMethod] = useState("wechat")
@@ -382,7 +400,7 @@ export default function OrderCreatePageClient({
             <CardContent className="p-3">
               <h3 className="text-sm font-semibold text-[#999999] mb-2">商品分类</h3>
               <div className="space-y-0.5">
-                {PRODUCT_KINDS.map((kind) => {
+                {activeKinds.map((kind) => {
                   const kindCategories = categoriesByKind[kind]
                   if (!kindCategories) return null
                   const isExpanded = expandedKind === kind
@@ -392,7 +410,7 @@ export default function OrderCreatePageClient({
                         onClick={() => setExpandedKind(isExpanded ? "" : kind)}
                         className="w-full text-left px-3 py-2 rounded text-sm flex items-center justify-between hover:bg-gray-50 transition-colors"
                       >
-                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${KIND_COLORS[kind]}`}>
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${kindColors[kind] ?? KIND_PALETTE[0]}`}>
                           {kind}
                         </span>
                         <svg
@@ -432,7 +450,7 @@ export default function OrderCreatePageClient({
               <CardContent className="p-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {categoryProducts.map((product) => {
-                    const productSkus = skus.filter((s) => s.productId === product.productId)
+                    const productSkus = skus.filter((s) => (s as any).productId === product.productId)
                     return (
                       <Card key={product.productId} className="bg-[#FAFAFA]">
                         <CardContent className="p-4 space-y-2">
@@ -790,7 +808,7 @@ export default function OrderCreatePageClient({
                         quantity: item.quantity,
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
-                        salesCategory: item.product.salesCategory || null,
+                        salesCategory: (item.product as any).salesCategory || null,
                       }
                     }),
                   })
