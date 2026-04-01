@@ -5,7 +5,7 @@ vi.mock('@/db', () => ({
   db: {
     select: vi.fn(),
     insert: vi.fn(),
-    update: vi.fn(),
+    delete: vi.fn(),
   },
 }))
 
@@ -15,11 +15,9 @@ vi.mock('@db/permission', () => ({
     employeeId: 'employee_id',
     role: 'role',
     scopeId: 'scope_id',
-    isVoid: 'is_void',
     createdBy: 'created_by',
     createdAt: 'created_at',
     updatedAt: 'updated_at',
-    voidedAt: 'voided_at',
     updatedBy: 'updated_by',
   },
 }))
@@ -67,7 +65,6 @@ function makeRow(scopeId: string) {
     employeeId: 'EMP-001',
     role: 'manager',
     scopeId,
-    isVoid: false,
     createdBy: null,
     createdAt: new Date('2024-01-01'),
     updatedAt: new Date('2024-01-01'),
@@ -258,7 +255,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(db.insert).not.toHaveBeenCalled()
   })
 
-  it('已存在相同活跃角色时 → 拒绝重复分配', async () => {
+  it('已存在相同角色时 → 拒绝重复分配', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
 
@@ -313,32 +310,27 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     vi.clearAllMocks()
   })
 
-  function setupRevokeDbCalls(target: any, updateRowCount = 1) {
-    let callCount = 0
-    ;(db.select as any).mockImplementation(() => {
-      callCount++
-      return mockSelectOnce(target)()
-    })
-    const where = vi.fn().mockResolvedValue({ count: updateRowCount })
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+  function setupRevokeDbCalls(target: any, deleteRowCount = 1) {
+    ;(db.select as any).mockImplementation(() => mockSelectOnce(target)())
+    const where = vi.fn().mockResolvedValue({ count: deleteRowCount })
+    ;(db.delete as any).mockReturnValue({ where })
   }
 
   it('admin 撤销任意角色 → 成功', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    setupRevokeDbCalls({ role: 'manager', isVoid: false, scopeId: 'market-1' })
+    setupRevokeDbCalls({ role: 'manager', scopeId: 'market-1' })
 
     const result = await revokeRole(10)
 
     expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalledOnce()
+    expect(db.delete).toHaveBeenCalledOnce()
   })
 
   it('admin 撤销 admin 角色 → 成功（admin-only 规则允许）', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    setupRevokeDbCalls({ role: 'admin', isVoid: false, scopeId: 'hq-1' })
+    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1' })
 
     const result = await revokeRole(20)
 
@@ -348,37 +340,25 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
   it('非 admin 撤销 admin 角色 → 拒绝', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    setupRevokeDbCalls({ role: 'admin', isVoid: false, scopeId: 'hq-1' })
+    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1' })
 
     const result = await revokeRole(20)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('只有系统管理员')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
   it('hr 撤销超出自身 scope 的角色 → 拒绝', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    setupRevokeDbCalls({ role: 'manager', isVoid: false, scopeId: 'other-market' })
+    setupRevokeDbCalls({ role: 'manager', scopeId: 'other-market' })
 
     const result = await revokeRole(30)
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('不能撤销超出自身权限范围')
-    expect(db.update).not.toHaveBeenCalled()
-  })
-
-  it('目标角色已被撤销 → 拒绝幂等', async () => {
-    ;(getSession as any).mockResolvedValue(adminSession)
-    ;(hasRole as any).mockReturnValue(true)
-    setupRevokeDbCalls({ role: 'manager', isVoid: true, scopeId: 'market-1' })
-
-    const result = await revokeRole(40)
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('已被撤销')
-    expect(db.update).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
   })
 
   it('角色不存在 → 拒绝', async () => {
@@ -392,35 +372,23 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     expect(result.message).toContain('不存在')
   })
 
-  it('乐观锁冲突（rowCount=0）→ 返回修改提示', async () => {
+  it('deleteRowCount=0 → 报告不存在', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    setupRevokeDbCalls({ role: 'manager', isVoid: false, scopeId: 'hq-1' }, 0)
+    setupRevokeDbCalls({ role: 'manager', scopeId: 'hq-1' }, 0)
 
-    const result = await revokeRole(50, '2026-01-01T00:00:00.000Z')
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('已被其他人修改')
-  })
-
-  it('rowCount=0，无乐观锁 → 报告不存在或已被撤销（不静默成功）', async () => {
-    ;(getSession as any).mockResolvedValue(adminSession)
-    ;(hasRole as any).mockReturnValue(true)
-    setupRevokeDbCalls({ role: 'manager', isVoid: false, scopeId: 'hq-1' }, 0)
-
-    const result = await revokeRole(51) // 不传 expectedUpdatedAt
+    const result = await revokeRole(50)
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('不存在或已被撤销')
+    expect(result.message).toContain('不存在')
   })
 
   it('DB 异常 → 重新抛出', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
-    ;(db.select as any).mockImplementation(() => mockSelectOnce({ role: 'manager', isVoid: false, scopeId: 'hq-1' })())
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ role: 'manager', scopeId: 'hq-1' })())
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
-    const set = vi.fn().mockReturnValue({ where })
-    ;(db.update as any).mockReturnValue({ set })
+    ;(db.delete as any).mockReturnValue({ where })
 
     await expect(revokeRole(52)).rejects.toThrow('connection lost')
   })

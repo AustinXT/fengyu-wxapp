@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and, inArray, sql } from 'drizzle-orm'
+import { eq, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -20,10 +20,9 @@ export async function getRoles(): Promise<PermissionRole[]> {
   const userScopeIds = session.roles.map(r => r.scopeId)
   if (!isAdmin && userScopeIds.length === 0) return []
 
-  const baseWhere = eq(permissionRoles.isVoid, false)
   const whereCondition = isAdmin
-    ? baseWhere
-    : and(baseWhere, inArray(permissionRoles.scopeId, userScopeIds))
+    ? undefined
+    : inArray(permissionRoles.scopeId, userScopeIds)
 
   const rows = await db
     .select({
@@ -31,7 +30,6 @@ export async function getRoles(): Promise<PermissionRole[]> {
       employeeId: permissionRoles.employeeId,
       role: permissionRoles.role,
       scopeId: permissionRoles.scopeId,
-      isVoid: permissionRoles.isVoid,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
       updatedAt: permissionRoles.updatedAt,
@@ -50,7 +48,6 @@ export async function getRoles(): Promise<PermissionRole[]> {
     employeeId: r.employeeId,
     role: r.role as PermissionRole['role'],
     scopeId: r.scopeId,
-    isVoid: r.isVoid,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -60,7 +57,7 @@ export async function getRoles(): Promise<PermissionRole[]> {
 }
 
 /**
- * 按员工查询权限角色（含已撤销），用于员工详情页。
+ * 按员工查询权限角色，用于员工详情页。
  * 页面级 scopeCondition 已保证只有可访问的员工才会到达此处，无需再做 scope 过滤。
  */
 export async function getEmployeeRoles(employeeId: string): Promise<PermissionRole[]> {
@@ -73,7 +70,6 @@ export async function getEmployeeRoles(employeeId: string): Promise<PermissionRo
       employeeId: permissionRoles.employeeId,
       role: permissionRoles.role,
       scopeId: permissionRoles.scopeId,
-      isVoid: permissionRoles.isVoid,
       createdBy: permissionRoles.createdBy,
       createdAt: permissionRoles.createdAt,
       updatedAt: permissionRoles.updatedAt,
@@ -89,7 +85,6 @@ export async function getEmployeeRoles(employeeId: string): Promise<PermissionRo
     employeeId: r.employeeId,
     role: r.role as PermissionRole['role'],
     scopeId: r.scopeId,
-    isVoid: r.isVoid,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
@@ -131,7 +126,7 @@ export async function assignRole(data: {
     }
   }
 
-  // 检查是否已存在相同的活跃角色记录，避免重复分配
+  // 检查是否已存在相同的角色记录，避免重复分配
   const [existing] = await db
     .select({ id: permissionRoles.id })
     .from(permissionRoles)
@@ -139,7 +134,6 @@ export async function assignRole(data: {
       eq(permissionRoles.employeeId, data.employeeId),
       eq(permissionRoles.role, data.role),
       eq(permissionRoles.scopeId, data.scopeId),
-      eq(permissionRoles.isVoid, false),
     ))
     .limit(1)
 
@@ -172,24 +166,19 @@ export async function assignRole(data: {
 
 export async function revokeRole(
   id: number,
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'permission:revoke')
 
   // 查询要撤销的角色记录
   const [target] = await db
-    .select({ role: permissionRoles.role, isVoid: permissionRoles.isVoid, scopeId: permissionRoles.scopeId })
+    .select({ role: permissionRoles.role, scopeId: permissionRoles.scopeId })
     .from(permissionRoles)
     .where(eq(permissionRoles.id, id))
     .limit(1)
 
   if (!target) {
     return { success: false, message: '角色记录不存在' }
-  }
-  if (target.isVoid) {
-    return { success: false, message: '该角色已被撤销' }
   }
 
   // 只有 admin 才能撤销 admin 角色
@@ -205,25 +194,12 @@ export async function revokeRole(
     }
   }
 
-  const whereConditions = expectedUpdatedAt
-    ? and(eq(permissionRoles.id, id), sql`date_trunc('milliseconds', ${permissionRoles.updatedAt}) = ${expectedUpdatedAt}`)
-    : eq(permissionRoles.id, id)
-
-  let result: any
-  try {
-    result = await db
-      .update(permissionRoles)
-      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-      .where(whereConditions)
-  } catch (err: any) {
-    throw err
-  }
+  const result = await db
+    .delete(permissionRoles)
+    .where(eq(permissionRoles.id, id))
 
   if ((result as any).count === 0) {
-    return {
-      success: false,
-      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '角色记录不存在或已被撤销',
-    }
+    return { success: false, message: '角色记录不存在' }
   }
 
   await logOperation(session, 'permission.revoke', 'permission_role', String(id), {

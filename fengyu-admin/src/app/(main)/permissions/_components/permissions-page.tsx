@@ -65,12 +65,10 @@ export default function PermissionsPage({ roles, paginatedEmployees, employeeTot
   const [revokeTarget, setRevokeTarget] = useState<PermissionRole | null>(null)
   const [adminConfirmOpen, setAdminConfirmOpen] = useState(false)
 
-  const activeRoles = roles.filter((r) => !r.isVoid)
-
   // By role view
   const employeesForRole = useMemo(() => {
-    return activeRoles.filter((r) => r.role === selectedRole)
-  }, [selectedRole, activeRoles])
+    return roles.filter((r) => r.role === selectedRole)
+  }, [selectedRole, roles])
 
   async function doAssign() {
     setAssigning(true)
@@ -99,13 +97,12 @@ export default function PermissionsPage({ roles, paginatedEmployees, employeeTot
   async function doRevoke() {
     if (!revokeTarget) return
     try {
-      const res = await revokeRole(revokeTarget.id, revokeTarget.updatedAt)
+      const res = await revokeRole(revokeTarget.id)
       if (res.success) {
         toast.success(res.message)
         router.refresh()
       } else {
         toast.error(res.message)
-        if (res.message.includes('已被其他人修改')) router.refresh()
       }
     } catch {
       toast.error('撤销失败，请稍后重试')
@@ -136,7 +133,7 @@ export default function PermissionsPage({ roles, paginatedEmployees, employeeTot
                 <h3 className="text-sm font-semibold text-[#999999] mb-2">角色列表</h3>
                 <div className="space-y-1">
                   {allRoles.map((role) => {
-                    const count = activeRoles.filter((r) => r.role === role).length
+                    const count = roles.filter((r) => r.role === role).length
                     return (
                       <button
                         key={role}
@@ -236,7 +233,7 @@ export default function PermissionsPage({ roles, paginatedEmployees, employeeTot
                   </thead>
                   <tbody className="divide-y divide-gray-200">
                     {paginatedEmployees.map((emp) => {
-                      const empRoles = activeRoles.filter((r) => r.employeeId === emp.employeeId)
+                      const empRoles = roles.filter((r) => r.employeeId === emp.employeeId)
                       return (
                         <tr key={emp.employeeId} className="hover:bg-[#FFF0EE] transition-colors">
                           <td className="px-4 py-3 font-medium">{emp.name}</td>

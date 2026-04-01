@@ -245,18 +245,17 @@ const SERVICE_ITEMS = [
 ]
 
 const PERMISSION_ROLES = [
-  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'system' },
-  { employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260601-0008', role: 'manager', scopeId: 'org-store-gqc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0002', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0003', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'FY-260101-0001' },
-  { employeeId: 'FY-260101-0010', role: 'staff', scopeId: 'org-store-nc02', isVoid: true, createdBy: 'sync' },
+  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', createdBy: 'system' },
+  { employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', createdBy: 'sync' },
+  { employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', createdBy: 'sync' },
+  { employeeId: 'FY-260601-0008', role: 'manager', scopeId: 'org-store-gqc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0002', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0003', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', createdBy: 'FY-260101-0001' },
 ]
 
 const COMMISSION_RATES = [
