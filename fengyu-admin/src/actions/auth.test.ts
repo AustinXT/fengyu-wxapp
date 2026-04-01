@@ -62,7 +62,6 @@ vi.mock('@db/permission', () => ({
     employeeId: 'employee_id',
     role: 'role',
     scopeId: 'scope_id',
-    isVoid: 'is_void',
   },
 }))
 

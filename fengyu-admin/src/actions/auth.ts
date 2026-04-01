@@ -8,7 +8,7 @@ import { adminPasswords } from '@db/admin-auth'
 import { staffWechatUsers } from '@db/user'
 import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
-import { eq, and } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
@@ -193,10 +193,7 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
       })
       .from(permissionRoles)
       .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
-      .where(and(
-        eq(permissionRoles.employeeId, employeeId),
-        eq(permissionRoles.isVoid, false),
-      ))
+      .where(eq(permissionRoles.employeeId, employeeId))
 
     const roles = roleRows.map(r => ({
       role: r.role as RoleType,

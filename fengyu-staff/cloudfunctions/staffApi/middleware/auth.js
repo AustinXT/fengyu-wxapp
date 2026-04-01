@@ -79,7 +79,7 @@ async function auth(ctx, next) {
     let roles = []
     if (isActive) {
       const roleRows = await pg.query(
-        'SELECT role FROM permission_roles WHERE employee_id = $1 AND is_void = false',
+        'SELECT role FROM permission_roles WHERE employee_id = $1',
         [user.employee_id]
       )
       roles = roleRows.map(r => r.role)
