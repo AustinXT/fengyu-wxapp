@@ -128,7 +128,7 @@ export default function MallPageClient({
           onChange={(e) => { setCatFilter(e.target.value); setPage(1) }}
         >
           <option value="">全部分类</option>
-          {categories.filter((c) => c.isValid).map((c) => (
+          {categories.map((c) => (
             <option key={c.categoryId} value={c.categoryId}>
               {c.categoryName}
             </option>
