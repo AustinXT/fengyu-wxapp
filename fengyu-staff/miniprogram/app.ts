@@ -38,7 +38,6 @@ App<IAppOption>({
   restoreFromCache() {
     const staffWfId = wx.getStorageSync('staffWfId');
     const staffName = wx.getStorageSync('staffName');
-    const role = wx.getStorageSync('role');
     const position = wx.getStorageSync('position');
     const roles = wx.getStorageSync('roles');
     const phone = wx.getStorageSync('phone');
@@ -46,7 +45,6 @@ App<IAppOption>({
     const boundStoreId = wx.getStorageSync('boundStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
     if (staffName) this.globalData.staffName = staffName;
-    if (role) this.globalData.position = role; // 兼容旧缓存
     if (position) this.globalData.position = position;
     if (roles) this.globalData.roles = roles;
     if (phone) this.globalData.phone = phone;

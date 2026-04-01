@@ -21,7 +21,7 @@ Page({
 
   onLoad(options: Record<string, string>) {
     this.setData({ isManager: isManager() });
-    const saleOrderId = options.orderNo || '';
+    const saleOrderId = options.saleOrderId || '';
     if (saleOrderId) {
       this.setData({
         saleOrderId,
@@ -47,7 +47,7 @@ Page({
   async loadQrcode(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const data = await callStaffApi<any>('order.qrcode', { orderNo: saleOrderId });
+      const data = await callStaffApi<any>('order.qrcode', { saleOrderId });
       const isCreator = data.openedBy === getStaffWfId();
 
       // 后端返回了 qrcodeError 说明小程序码生成失败
@@ -128,7 +128,7 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.confirmOffline', { orderNo: this.data.saleOrderId });
+          await callStaffApi('order.confirmOffline', { saleOrderId: this.data.saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadQrcode(this.data.saleOrderId);
         } catch (err: unknown) {
@@ -152,7 +152,7 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.close', { orderNo: this.data.saleOrderId });
+          await callStaffApi('order.close', { saleOrderId: this.data.saleOrderId });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.stopPolling();
           setTimeout(() => wx.navigateBack(), 1500);

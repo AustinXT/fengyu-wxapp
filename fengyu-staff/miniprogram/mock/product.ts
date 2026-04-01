@@ -199,13 +199,13 @@ export const productHandlers: Record<string, (payload: Record<string, any>) => a
     const firstCat = MOCK_CATEGORIES[0]
     return {
       categories: MOCK_CATEGORIES,
-      spuList: firstCat ? (MOCK_SPUS[firstCat.id] || []) : [],
+      skuList: firstCat ? (MOCK_SPUS[firstCat.id] || []) : [],
     }
   },
 
   'product.categories': () => MOCK_CATEGORIES,
 
-  'product.spuList': (payload) => {
+  'product.skuList': (payload) => {
     const catId = payload.categoryId
     return MOCK_SPUS[catId] || []
   },

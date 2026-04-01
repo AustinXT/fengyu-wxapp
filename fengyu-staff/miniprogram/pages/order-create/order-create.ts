@@ -309,7 +309,7 @@ Page({
   async loadSpuList(categoryId: string) {
     this.setData({ catalogLoading: true });
     try {
-      const skus = await callStaffApi<SkuItem[]>('product.spuList', { categoryId });
+      const skus = await callStaffApi<SkuItem[]>('product.skuList', { categoryId });
       const list = (skus || []).map(skuToDisplay);
       this._spuCache[categoryId] = list;
       this.setData({ spuList: list, catalogLoading: false });
@@ -609,7 +609,7 @@ Page({
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
-      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.saleOrderId}` });
+      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '开单失败';
       wx.showToast({ title: msg, icon: 'none' });
