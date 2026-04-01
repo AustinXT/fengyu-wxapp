@@ -11,7 +11,7 @@ import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { createEmployee } from "@/actions/employees"
-import { findAncestorMarketId } from "@/lib/utils"
+import { findAncestorMarketId, getPositionScope } from "@/lib/utils"
 import type { Store, OrgNode, Position, SkillTag } from "@/lib/types"
 
 const SCOPE_LABELS: Record<string, string> = {
@@ -19,6 +19,7 @@ const SCOPE_LABELS: Record<string, string> = {
   market: "市场职位",
   store: "门店职位",
 }
+
 
 interface Props {
   stores: Store[]
@@ -43,6 +44,13 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
     birthday: "",
     skills: [] as string[],
   })
+
+  // 根据所属组织推断职位 scope，过滤可选职位
+  const positionScope = useMemo(() => getPositionScope(form.orgNodeId || null, orgNodes), [form.orgNodeId, orgNodes])
+  const filteredPositions = useMemo(() => {
+    if (!positionScope) return positions
+    return positions.filter((p) => p.scope === positionScope)
+  }, [positionScope, positions])
 
   // 根据所属组织的市场过滤门店
   const filteredStores = useMemo(() => {
@@ -158,6 +166,7 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
                 orgNodes={orgNodes}
                 value={form.orgNodeId}
                 onChange={(id) => {
+                  const prevScope = getPositionScope(form.orgNodeId || null, orgNodes)
                   handleChange("orgNodeId", id)
                   const newMarketId = findAncestorMarketId(id, orgNodes)
                   const storeMarketId = findAncestorMarketId(
@@ -166,6 +175,11 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
                   )
                   if (newMarketId !== storeMarketId) {
                     handleChange("storeId", "")
+                  }
+                  // 组织 scope 变更时清空职位
+                  const newScope = getPositionScope(id, orgNodes)
+                  if (newScope !== prevScope) {
+                    handleChange("positionName", "")
                   }
                 }}
                 placeholder="请选择所属组织"
@@ -191,20 +205,14 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
                 value={form.positionName}
                 onChange={(e) => handleChange("positionName", e.target.value)}
               >
-                <option value="">请选择职位</option>
-                {(["headquarters", "market", "store"] as const).map((scope) => {
-                  const items = positions.filter((p) => p.scope === scope)
-                  if (items.length === 0) return null
-                  return (
-                    <optgroup key={scope} label={SCOPE_LABELS[scope]}>
-                      {items.map((p) => (
-                        <option key={p.id} value={p.name}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )
-                })}
+                <option value="">
+                  {positionScope ? `请选择${SCOPE_LABELS[positionScope] ?? "职位"}` : "请先选择所属组织"}
+                </option>
+                {filteredPositions.map((p) => (
+                  <option key={p.id} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
               </Select>
             </div>
             <div className="space-y-2">

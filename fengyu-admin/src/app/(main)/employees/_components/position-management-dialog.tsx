@@ -19,7 +19,7 @@ import {
   AlertDialogCancel,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
-import { createPosition, updatePosition } from "@/actions/positions"
+import { createPosition, updatePosition, deletePosition } from "@/actions/positions"
 
 const SCOPE_TABS: { value: PositionScope; label: string }[] = [
   { value: "headquarters", label: "总部" },
@@ -59,9 +59,9 @@ export default function PositionManagementDialog({
   const [form, setForm] = useState<FormData>(emptyForm("store"))
   const [saving, setSaving] = useState(false)
 
-  // Disable confirmation
-  const [disableTarget, setDisableTarget] = useState<Position | null>(null)
-  const [disabling, setDisabling] = useState(false)
+  // Delete confirmation
+  const [deleteTarget, setDeleteTarget] = useState<Position | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const positionsByScope = useMemo(() => {
     const map: Record<string, Position[]> = {}
@@ -138,23 +138,22 @@ export default function PositionManagementDialog({
     }
   }
 
-  async function handleDisable() {
-    if (!disableTarget) return
-    setDisabling(true)
+  async function handleDelete() {
+    if (!deleteTarget) return
+    setDeleting(true)
     try {
-      const res = await updatePosition(disableTarget.id, { isValid: false }, disableTarget.updatedAt)
+      const res = await deletePosition(deleteTarget.id)
       if (!res.success) {
         toast.error(res.message)
-        if (res.message.includes("已被其他人修改")) router.refresh()
         return
       }
-      toast.success("职位已停用")
-      setDisableTarget(null)
+      toast.success("职位已删除")
+      setDeleteTarget(null)
       router.refresh()
     } catch {
-      toast.error("停用失败")
+      toast.error("删除失败")
     } finally {
-      setDisabling(false)
+      setDeleting(false)
     }
   }
 
@@ -189,16 +188,14 @@ export default function PositionManagementDialog({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
             编辑
           </Button>
-          {row.isValid && (
-            <Button
-              variant="link"
-              size="sm"
-              className="h-auto p-0 text-[var(--destructive)]"
-              onClick={() => setDisableTarget(row)}
-            >
-              停用
-            </Button>
-          )}
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-[var(--destructive)]"
+            onClick={() => setDeleteTarget(row)}
+          >
+            删除
+          </Button>
         </div>
       ),
     },
@@ -287,18 +284,18 @@ export default function PositionManagementDialog({
         </DialogFooter>
       </Dialog>
 
-      {/* Disable confirmation */}
-      <AlertDialog open={!!disableTarget} onOpenChange={(o) => !o && setDisableTarget(null)}>
-        <AlertDialogTitle>确认停用</AlertDialogTitle>
+      {/* Delete confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
-          确定要停用职位「{disableTarget?.name}」吗？停用后该职位将不再出现在下拉选项中。
+          确定要删除职位「{deleteTarget?.name}」吗？删除后不可恢复。
         </AlertDialogDescription>
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>
+          <AlertDialogCancel onClick={() => setDeleteTarget(null)} disabled={deleting}>
             取消
           </AlertDialogCancel>
-          <AlertDialogAction onClick={handleDisable} disabled={disabling}>
-            {disabling ? "停用中..." : "确认停用"}
+          <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+            {deleting ? "删除中..." : "确认删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>

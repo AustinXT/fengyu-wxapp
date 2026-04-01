@@ -112,3 +112,18 @@ export async function updateSkillTag(
   revalidatePath('/employees')
   return { success: true, message: '标签已更新' }
 }
+
+export async function deleteSkillTag(id: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'employee:update')
+
+  const result = await db.delete(skillTags).where(eq(skillTags.id, id))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '标签不存在' }
+  }
+
+  await logOperation(session, 'skillTag.delete', 'skill_tag', id, {})
+  revalidatePath('/employees')
+  return { success: true, message: '标签已删除' }
+}

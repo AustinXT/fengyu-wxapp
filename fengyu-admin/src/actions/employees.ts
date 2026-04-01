@@ -382,15 +382,11 @@ export async function updateEmployee(
     }
   }
 
-  // 标记离职时同步作废所有有效的 permission_roles
+  // 标记离职时删除所有权限角色
   if (data.isResigned === true) {
     await db
-      .update(permissionRoles)
-      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-      .where(and(
-        eq(permissionRoles.employeeId, employeeId),
-        eq(permissionRoles.isVoid, false),
-      ))
+      .delete(permissionRoles)
+      .where(eq(permissionRoles.employeeId, employeeId))
   }
 
   // §AFF-03：门店变更时同步更新 permission_roles scope
@@ -414,7 +410,6 @@ export async function updateEmployee(
         .where(and(
           eq(permissionRoles.employeeId, employeeId),
           eq(permissionRoles.scopeId, oldStore.orgNodeId),
-          eq(permissionRoles.isVoid, false),
         ))
 
       if ((scopeResult as any).count > 0) {

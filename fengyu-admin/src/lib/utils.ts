@@ -63,6 +63,20 @@ export function buildOrgPath(nodeId: string | null, orgNodes: OrgNode[]): string
   return names.join("/")
 }
 
+/** 根据组织节点推断职位 scope：department 往上找父节点的 type */
+export function getPositionScope(nodeId: string | null, orgNodes: OrgNode[]): 'headquarters' | 'market' | 'store' | null {
+  if (!nodeId || orgNodes.length === 0) return null
+  const map = new Map(orgNodes.map((n) => [n.id, n]))
+  const node = map.get(nodeId)
+  if (!node) return null
+  if (node.type === 'department') {
+    const parent = node.parentId ? map.get(node.parentId) : undefined
+    if (parent && parent.type !== 'department') return parent.type as 'headquarters' | 'market' | 'store'
+    return null
+  }
+  return node.type as 'headquarters' | 'market' | 'store'
+}
+
 /** 查找组织节点所属的市场节点 ID（向上遍历 parentId 链） */
 export function findAncestorMarketId(nodeId: string | null, orgNodes: OrgNode[]): string | null {
   if (!nodeId || orgNodes.length === 0) return null

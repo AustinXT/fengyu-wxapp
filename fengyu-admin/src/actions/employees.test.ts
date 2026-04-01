@@ -5,6 +5,7 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     transaction: vi.fn(),
   },
 }))
@@ -35,8 +36,6 @@ vi.mock('@db/permission', () => ({
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
-    isVoid: 'is_void',
-    voidedAt: 'voided_at',
     updatedBy: 'updated_by',
   },
 }))
@@ -329,36 +328,28 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.message).toContain('不存在或无权')
   })
 
-  it('isResigned=true → 同步作废权限角色', async () => {
+  it('isResigned=true → 删除权限角色', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    // 第一次 update：更新员工
+    // update：更新员工
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    // 第二次 update：作废权限
-    const roleWhere = vi.fn().mockResolvedValue({})
-    const roleSet = vi.fn().mockReturnValue({ where: roleWhere })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
-    })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    // delete：删除权限
+    const deleteWhere = vi.fn().mockResolvedValue({})
+    ;(db.delete as any).mockReturnValue({ where: deleteWhere })
 
     const result = await updateEmployee('FY-001', { isResigned: true })
 
     expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalledTimes(2) // 员工 + 权限
+    expect(db.delete).toHaveBeenCalledOnce()
   })
 
-  it('权限作废失败 → 重新抛出（不静默忽略）', async () => {
+  it('权限删除失败 → 重新抛出（不静默忽略）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    const roleSet = vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
-    })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
   })

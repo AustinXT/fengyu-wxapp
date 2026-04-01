@@ -116,3 +116,18 @@ export async function updatePosition(
   revalidatePath('/employees')
   return { success: true, message: '职位已更新' }
 }
+
+export async function deletePosition(id: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'employee:update')
+
+  const result = await db.delete(positions).where(eq(positions.id, id))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '职位不存在' }
+  }
+
+  await logOperation(session, 'position.delete', 'position', id, {})
+  revalidatePath('/employees')
+  return { success: true, message: '职位已删除' }
+}

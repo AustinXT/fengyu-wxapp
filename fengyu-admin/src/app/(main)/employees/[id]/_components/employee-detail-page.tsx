@@ -16,7 +16,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
-import { formatDate, buildOrgPath, findAncestorMarketId } from "@/lib/utils"
+import { formatDate, buildOrgPath, findAncestorMarketId, getPositionScope } from "@/lib/utils"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
@@ -29,7 +29,7 @@ const SCOPE_LABELS: Record<string, string> = {
   store: "门店职位",
 }
 
-const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr"]
+const allRoleTypes: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
 
 interface Props {
   employee: Employee
@@ -68,6 +68,13 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   // Password reset state
   const [resetPwdDialogOpen, setResetPwdDialogOpen] = useState(false)
   const [resettingPwd, setResettingPwd] = useState(false)
+
+  // 根据所属组织推断职位 scope，过滤可选职位
+  const positionScope = useMemo(() => getPositionScope(form.orgNodeId || null, orgNodes), [form.orgNodeId, orgNodes])
+  const filteredPositions = useMemo(() => {
+    if (!positionScope) return positions
+    return positions.filter((p) => p.scope === positionScope)
+  }, [positionScope, positions])
 
   // 根据所属组织的市场过滤门店
   const filteredStores = useMemo(() => {
@@ -135,17 +142,16 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
   async function handleSaveRoles() {
     setSavingRoles(true)
     try {
-      const activeRoles = roles.filter(r => !r.isVoid)
       const key = (role: string, scopeId: string) => `${role}:${scopeId}`
-      const originalKeys = new Set(activeRoles.map(r => key(r.role, r.scopeId)))
+      const originalKeys = new Set(roles.map(r => key(r.role, r.scopeId)))
       const editedKeys = new Set(roleEntries.filter(e => e.scopeId).map(e => key(e.role, e.scopeId)))
 
-      const toRevoke = activeRoles.filter(r => !editedKeys.has(key(r.role, r.scopeId)))
+      const toRevoke = roles.filter(r => !editedKeys.has(key(r.role, r.scopeId)))
       const toAdd = roleEntries.filter(e => e.scopeId && !originalKeys.has(key(e.role, e.scopeId)))
 
       const errors: string[] = []
       for (const r of toRevoke) {
-        const res = await revokeRole(r.id, r.updatedAt)
+        const res = await revokeRole(r.id)
         if (!res.success) errors.push(res.message)
       }
       for (const e of toAdd) {
@@ -195,23 +201,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     {
       key: "scopeName",
       header: "作用域",
-      cell: (row) => <span>{row.scopeName ?? "—"}</span>,
-    },
-    {
-      key: "isVoid",
-      header: "状态",
-      cell: (row) => (
-        <Badge
-          variant="outline"
-          className={
-            row.isVoid
-              ? "border-[#888888] text-[#888888] bg-[#F5F5F5]"
-              : "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]"
-          }
-        >
-          {row.isVoid ? "已撤销" : "生效中"}
-        </Badge>
-      ),
+      cell: (row) => <span>{buildOrgPath(row.scopeId, orgNodes) || "—"}</span>,
     },
     {
       key: "createdAt",
@@ -345,6 +335,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       orgNodes={orgNodes}
                       value={form.orgNodeId}
                       onChange={(id) => {
+                        const prevScope = getPositionScope(form.orgNodeId || null, orgNodes)
                         handleFormChange("orgNodeId", id)
                         // 组织变更时，若当前门店不在新市场下则清空
                         const newMarketId = findAncestorMarketId(id, orgNodes)
@@ -354,6 +345,11 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                         )
                         if (newMarketId !== storeMarketId) {
                           handleFormChange("storeId", "")
+                        }
+                        // 组织 scope 变更时清空职位
+                        const newScope = getPositionScope(id, orgNodes)
+                        if (newScope !== prevScope) {
+                          handleFormChange("positionName", "")
                         }
                       }}
                       placeholder="请选择所属组织"
@@ -387,24 +383,18 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       value={form.positionName}
                       onChange={(e) => handleFormChange("positionName", e.target.value)}
                     >
-                      <option value="">请选择职位</option>
+                      <option value="">
+                        {positionScope ? `请选择${SCOPE_LABELS[positionScope] ?? "职位"}` : "请先选择所属组织"}
+                      </option>
                       {/* 若当前值不在选项中（旧数据），显示为额外选项 */}
-                      {form.positionName && !positions.some((p) => p.name === form.positionName) && (
+                      {form.positionName && !filteredPositions.some((p) => p.name === form.positionName) && (
                         <option value={form.positionName}>{form.positionName}（旧）</option>
                       )}
-                      {(["headquarters", "market", "store"] as const).map((scope) => {
-                        const items = positions.filter((p) => p.scope === scope)
-                        if (items.length === 0) return null
-                        return (
-                          <optgroup key={scope} label={SCOPE_LABELS[scope]}>
-                            {items.map((p) => (
-                              <option key={p.id} value={p.name}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                        )
-                      })}
+                      {filteredPositions.map((p) => (
+                        <option key={p.id} value={p.name}>
+                          {p.name}
+                        </option>
+                      ))}
                     </Select>
                   ) : (
                     <Input value={employee.positionName ?? ""} disabled />
@@ -439,8 +429,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 </div>
               ) : (
                 <Button variant="outline" size="sm" onClick={() => {
-                  const activeRoles = roles.filter(r => !r.isVoid)
-                  setRoleEntries(activeRoles.map(r => ({ role: r.role as RoleType, scopeId: r.scopeId })))
+                  setRoleEntries(roles.map(r => ({ role: r.role as RoleType, scopeId: r.scopeId })))
                   setIsEditingRoles(true)
                 }}>
                   编辑

@@ -323,7 +323,6 @@ export interface PermissionRole {
   employeeId: string
   role: RoleType
   scopeId: string
-  isVoid: boolean
   createdBy: string | null
   createdAt: string
   updatedAt: string
