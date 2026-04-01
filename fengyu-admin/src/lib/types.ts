@@ -191,8 +191,8 @@ export interface ProductSku {
 export interface MallCategory {
   categoryId: string
   categoryName: string
+  categoryGroup: string | null
   sortOrder: number
-  isValid: boolean
   createdAt: string
   updatedAt: string
 }

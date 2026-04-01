@@ -548,6 +548,53 @@ export async function deleteSku(skuId: string): Promise<{ success: boolean; mess
   return { success: true, message: 'SKU 已删除' }
 }
 
+// ===== 商城商品-SKU 关联 =====
+
+export async function addSkuToProduct(
+  productId: string,
+  skuId: string,
+  sortOrder?: number,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  try {
+    await db.insert(mallProductSkus).values({
+      productId,
+      skuId,
+      sortOrder: sortOrder ?? 0,
+    })
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '该规格已关联到此商品' }
+    if (err?.code === '23503') return { success: false, message: '商品或规格不存在' }
+    throw err
+  }
+
+  await logOperation(session, 'mall_product_sku.create', 'mall_product_sku', productId, { skuId })
+  revalidatePath('/mall')
+  return { success: true, message: '规格已添加' }
+}
+
+export async function removeSkuFromProduct(
+  productId: string,
+  skuId: string,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  const result = await db
+    .delete(mallProductSkus)
+    .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '关联记录不存在' }
+  }
+
+  await logOperation(session, 'mall_product_sku.delete', 'mall_product_sku', productId, { skuId })
+  revalidatePath('/mall')
+  return { success: true, message: '规格已移除' }
+}
+
 // ===== 商城管理（mall_categories + products + mall_product_skus） =====
 
 export async function getMallCategories(): Promise<MallCategory[]> {
@@ -562,11 +609,159 @@ export async function getMallCategories(): Promise<MallCategory[]> {
   return rows.map((c) => ({
     categoryId: c.categoryId,
     categoryName: c.categoryName,
+    categoryGroup: c.categoryGroup,
     sortOrder: c.sortOrder,
-    isValid: c.isValid,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
   }))
+}
+
+/** 获取商城一级分组（category_group IS NULL 的行） */
+export async function getMallCategoryGroups(): Promise<MallCategory[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select()
+    .from(mallCategories)
+    .where(sql`${mallCategories.categoryGroup} IS NULL`)
+    .orderBy(mallCategories.sortOrder)
+
+  return rows.map((c) => ({
+    categoryId: c.categoryId,
+    categoryName: c.categoryName,
+    categoryGroup: null,
+    sortOrder: c.sortOrder,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+  }))
+}
+
+/** 创建商城一级分组 */
+export async function createMallCategoryGroup(data: {
+  categoryName: string
+  sortOrder?: number
+}): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:create')
+
+  if (!data.categoryName.trim()) {
+    return { success: false, message: '请输入分组名称' }
+  }
+
+  const [existing] = await db
+    .select({ categoryId: mallCategories.categoryId })
+    .from(mallCategories)
+    .where(and(
+      sql`${mallCategories.categoryGroup} IS NULL`,
+      eq(mallCategories.categoryName, data.categoryName.trim()),
+    ))
+    .limit(1)
+  if (existing) {
+    return { success: false, message: `分组「${data.categoryName.trim()}」已存在` }
+  }
+
+  const categoryId = `mgrp-${Date.now()}`
+  await db.insert(mallCategories).values({
+    categoryId,
+    categoryName: data.categoryName.trim(),
+    categoryGroup: null,
+    sortOrder: data.sortOrder ?? 0,
+  })
+
+  await logOperation(session, 'mall_category_group.create', 'mall_category', categoryId, { categoryName: data.categoryName.trim() })
+  revalidatePath('/mall')
+  return { success: true, message: '分组创建成功' }
+}
+
+/** 更新商城一级分组，改名时级联更新子级 category_group */
+export async function updateMallCategoryGroup(
+  categoryId: string,
+  data: Partial<{
+    categoryName: string
+    sortOrder: number
+  }>,
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  const [current] = await db
+    .select({ categoryName: mallCategories.categoryName, updatedAt: mallCategories.updatedAt })
+    .from(mallCategories)
+    .where(eq(mallCategories.categoryId, categoryId))
+    .limit(1)
+  if (!current) {
+    return { success: false, message: '分组不存在' }
+  }
+
+  if (expectedUpdatedAt && current.updatedAt.toISOString() !== expectedUpdatedAt) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
+
+  const newName = data.categoryName?.trim()
+
+  if (newName && newName !== current.categoryName) {
+    const [dup] = await db
+      .select({ categoryId: mallCategories.categoryId })
+      .from(mallCategories)
+      .where(and(
+        sql`${mallCategories.categoryGroup} IS NULL`,
+        eq(mallCategories.categoryName, newName),
+      ))
+      .limit(1)
+    if (dup) {
+      return { success: false, message: `分组「${newName}」已存在` }
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    const updateData: Record<string, unknown> = {}
+    if (newName !== undefined) updateData.categoryName = newName
+    if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
+
+    await tx
+      .update(mallCategories)
+      .set(updateData)
+      .where(eq(mallCategories.categoryId, categoryId))
+
+    if (newName && newName !== current.categoryName) {
+      await tx
+        .update(mallCategories)
+        .set({ categoryGroup: newName })
+        .where(eq(mallCategories.categoryGroup, current.categoryName))
+    }
+  })
+
+  await logOperation(session, 'mall_category_group.update', 'mall_category', categoryId, data)
+  revalidatePath('/mall')
+  return { success: true, message: '分组已更新' }
+}
+
+/** 删除商城一级分组（级联删除子级分类） */
+export async function deleteMallCategoryGroup(categoryId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  const [current] = await db
+    .select({ categoryName: mallCategories.categoryName })
+    .from(mallCategories)
+    .where(eq(mallCategories.categoryId, categoryId))
+    .limit(1)
+  if (!current) {
+    return { success: false, message: '分组不存在' }
+  }
+
+  await db.transaction(async (tx) => {
+    // 先删子级分类
+    await tx.delete(mallCategories).where(eq(mallCategories.categoryGroup, current.categoryName))
+    // 再删一级分组
+    await tx.delete(mallCategories).where(eq(mallCategories.categoryId, categoryId))
+  })
+
+  await logOperation(session, 'mall_category_group.delete', 'mall_category', categoryId, { categoryName: current.categoryName })
+  revalidatePath('/mall')
+  return { success: true, message: '分组已删除' }
 }
 
 export async function getProducts(): Promise<Product[]> {
@@ -754,8 +949,8 @@ export async function updateProduct(
 export async function createMallCategory(data: {
   categoryId: string
   categoryName: string
+  categoryGroup?: string | null
   sortOrder?: number
-  isValid?: boolean
 }): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
@@ -777,7 +972,6 @@ export async function updateMallCategory(
   data: Partial<{
     categoryName: string
     sortOrder: number
-    isValid: boolean
   }>,
   expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
@@ -803,4 +997,29 @@ export async function updateMallCategory(
   await logOperation(session, 'mall_category.update', 'mall_category', categoryId, data)
   revalidatePath('/mall')
   return { success: true, message: '商品分类已更新' }
+}
+
+/** 删除商城二级分类（硬删除） */
+export async function deleteMallCategory(categoryId: string): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  // 检查是否有商品引用
+  const [ref] = await db
+    .select({ productId: products.productId })
+    .from(products)
+    .where(eq(products.categoryId, categoryId))
+    .limit(1)
+  if (ref) {
+    return { success: false, message: '该分类下还有商品，无法删除' }
+  }
+
+  const result = await db.delete(mallCategories).where(eq(mallCategories.categoryId, categoryId))
+  if ((result as any).count === 0) {
+    return { success: false, message: '分类不存在' }
+  }
+
+  await logOperation(session, 'mall_category.delete', 'mall_category', categoryId, {})
+  revalidatePath('/mall')
+  return { success: true, message: '分类已删除' }
 }

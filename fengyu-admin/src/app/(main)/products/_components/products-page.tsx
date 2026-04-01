@@ -92,19 +92,20 @@ export default function ProductsPageClient({
     {
       key: "categoryName",
       header: "品项分类",
-      cell: (row) => <span>{row.categoryName ?? "—"}</span>,
-    },
-    {
-      key: "productKind" as keyof ProductSku,
-      header: "品项类型",
       cell: (row) => {
         const pk = row.productKind as string | undefined
-        return pk ? (
-          <Badge variant="outline" className={kindColors[pk] ?? KIND_PALETTE[0]}>
-            {pk}
-          </Badge>
-        ) : (
-          "—"
+        const cat = row.categoryName
+        if (!pk && !cat) return "—"
+        return (
+          <span>
+            {pk && (
+              <Badge variant="outline" className={kindColors[pk] ?? KIND_PALETTE[0]}>
+                {pk}
+              </Badge>
+            )}
+            {pk && cat && " / "}
+            {cat}
+          </span>
         )
       },
     },

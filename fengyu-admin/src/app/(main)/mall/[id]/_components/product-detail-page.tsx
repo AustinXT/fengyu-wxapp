@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import type { Product, ProductSku, ProductCategory } from "@/lib/types"
-import { updateProduct, createSku, updateSku, deleteSku } from "@/actions/products"
+import { updateProduct, updateSku, addSkuToProduct, removeSkuFromProduct } from "@/actions/products"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
@@ -33,12 +33,14 @@ interface Market {
 export default function MallProductDetailPageClient({
   product,
   skus,
+  allSkus,
   categories,
   markets,
   manageScope,
 }: {
   product: Product
   skus: ProductSku[]
+  allSkus: ProductSku[]
   categories: ProductCategory[]
   markets: Market[]
   manageScope: { scopeId: string | null; scopeName: string }
@@ -67,15 +69,47 @@ export default function MallProductDetailPageClient({
     return m?.name ?? product.manageScope
   }, [product.manageScope, markets])
 
-  // SKU Sheet state
-  const [sheetOpen, setSheetOpen] = useState(false)
+  // SKU Picker state
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerSearch, setPickerSearch] = useState("")
+  const [pickerKindFilter, setPickerKindFilter] = useState("")
+  const [addingSku, setAddingSku] = useState<string | null>(null)
+
+  // SKU Edit Sheet state
+  const [editSheetOpen, setEditSheetOpen] = useState(false)
   const [editingSku, setEditingSku] = useState<ProductSku | null>(null)
   const [skuSaving, setSkuSaving] = useState(false)
 
-  // Delete dialog state
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const [deletingSkuId, setDeletingSkuId] = useState<string | null>(null)
-  const [deleting, setDeleting] = useState(false)
+  // Remove dialog state
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false)
+  const [removingSkuId, setRemovingSkuId] = useState<string | null>(null)
+  const [removing, setRemoving] = useState(false)
+
+  // SKU Picker computed
+  const linkedSkuIds = useMemo(() => new Set(skus.map(s => s.skuId)), [skus])
+
+  const productKindOptions = useMemo(() => {
+    const kinds = new Set(allSkus.map(s => s.productKind).filter(Boolean))
+    return Array.from(kinds) as string[]
+  }, [allSkus])
+
+  const availableSkus = useMemo(() => {
+    let list = allSkus.filter(s => !linkedSkuIds.has(s.skuId))
+
+    if (pickerKindFilter) {
+      list = list.filter(s => s.productKind === pickerKindFilter)
+    }
+
+    if (pickerSearch.trim()) {
+      const kw = pickerSearch.trim().toLowerCase()
+      list = list.filter(s =>
+        s.specName.toLowerCase().includes(kw) ||
+        (s.categoryName ?? "").toLowerCase().includes(kw)
+      )
+    }
+
+    return list
+  }, [allSkus, linkedSkuIds, pickerSearch, pickerKindFilter])
 
   const handleCategoryChange = (id: string) => {
     setCategoryId(id)
@@ -150,19 +184,39 @@ export default function MallProductDetailPageClient({
     }
   }
 
-  // --- SKU Sheet ---
-  const openCreateSku = () => {
-    setEditingSku(null)
-    setSheetOpen(true)
+  // --- SKU Picker ---
+  const openPicker = () => {
+    setPickerSearch("")
+    setPickerKindFilter("")
+    setPickerOpen(true)
   }
 
+  const handleAddSku = async (skuId: string) => {
+    setAddingSku(skuId)
+    try {
+      const result = await addSkuToProduct(product.productId, skuId)
+      if (!result.success) {
+        toast.error(result.message)
+        return
+      }
+      toast.success("规格已添加")
+      router.refresh()
+    } catch {
+      toast.error("添加失败，请稍后重试")
+    } finally {
+      setAddingSku(null)
+    }
+  }
+
+  // --- SKU Edit ---
   const openEditSku = (sku: ProductSku) => {
     setEditingSku(sku)
-    setSheetOpen(true)
+    setEditSheetOpen(true)
   }
 
   const handleSkuSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    if (!editingSku) return
     const form = e.currentTarget
     const fd = new FormData(form)
 
@@ -196,77 +250,55 @@ export default function MallProductDetailPageClient({
 
     setSkuSaving(true)
     try {
-      if (editingSku) {
-        const skuResult = await updateSku(editingSku.skuId, {
-          specName,
-          productType,
-          price,
-          specialPrice,
-          sessionCount,
-          serviceFee,
-          sortOrder,
-          validStart: skuValidStart,
-          validEnd: skuValidEnd,
-        } as any, editingSku.updatedAt)
-        if (!skuResult.success) {
-          toast.error(skuResult.message)
-          if (skuResult.message.includes("已被其他人修改")) router.refresh()
-          return
-        }
-        toast.success("规格更新成功")
-      } else {
-        const skuId = `sku-${Date.now()}`
-        const createResult = await createSku({
-          skuId,
-          categoryId: categoryId,
-          specName,
-          productType,
-          price,
-          specialPrice,
-          sessionCount,
-          serviceFee,
-          sortOrder,
-          validStart: skuValidStart,
-          validEnd: skuValidEnd,
-        } as any)
-        if (!createResult.success) {
-          toast.error(createResult.message)
-          return
-        }
-        toast.success("规格创建成功")
+      const skuResult = await updateSku(editingSku.skuId, {
+        specName,
+        productType,
+        price,
+        specialPrice,
+        sessionCount,
+        serviceFee,
+        sortOrder,
+        validStart: skuValidStart,
+        validEnd: skuValidEnd,
+      } as any, editingSku.updatedAt)
+      if (!skuResult.success) {
+        toast.error(skuResult.message)
+        if (skuResult.message.includes("已被其他人修改")) router.refresh()
+        return
       }
-      setSheetOpen(false)
+      toast.success("规格更新成功")
+      setEditSheetOpen(false)
       router.refresh()
     } catch {
-      toast.error(editingSku ? "更新失败，请稍后重试" : "创建失败，请稍后重试")
+      toast.error("更新失败，请稍后重试")
     } finally {
       setSkuSaving(false)
     }
   }
 
-  // --- SKU Delete ---
-  const openDeleteDialog = (skuId: string) => {
-    setDeletingSkuId(skuId)
-    setDeleteDialogOpen(true)
+  // --- SKU Remove ---
+  const openRemoveDialog = (skuId: string) => {
+    setRemovingSkuId(skuId)
+    setRemoveDialogOpen(true)
   }
 
-  const handleDeleteSku = async () => {
-    if (!deletingSkuId) return
-    setDeleting(true)
+  const handleRemoveSku = async () => {
+    if (!removingSkuId) return
+    setRemoving(true)
     try {
-      const delResult = await deleteSku(deletingSkuId)
-      if (!delResult.success) {
-        toast.error(delResult.message)
+      const result = await removeSkuFromProduct(product.productId, removingSkuId)
+      if (!result.success) {
+        toast.error(result.message)
         return
       }
-      toast.success("规格已删除")
-      setDeleteDialogOpen(false)
-      setDeletingSkuId(null)
+      toast.success("规格已移除")
+      setRemoveDialogOpen(false)
+      setRemovingSkuId(null)
       router.refresh()
     } catch {
-      toast.error("删除失败，请稍后重试")
+      toast.error("移除失败，请稍后重试")
     } finally {
-      setDeleting(false)
+      setRemoving(false)
     }
   }
 
@@ -320,8 +352,8 @@ export default function MallProductDetailPageClient({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditSku(row)}>
             编辑
           </Button>
-          <Button variant="link" size="sm" className="h-auto p-0 text-[var(--destructive)]" onClick={() => openDeleteDialog(row.skuId)}>
-            删除
+          <Button variant="link" size="sm" className="h-auto p-0 text-[var(--destructive)]" onClick={() => openRemoveDialog(row.skuId)}>
+            移除
           </Button>
         </div>
       ),
@@ -343,7 +375,7 @@ export default function MallProductDetailPageClient({
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">商品规格列表</CardTitle>
-          <Button size="sm" onClick={openCreateSku}>新增规格</Button>
+          <Button size="sm" onClick={openPicker}>添加规格</Button>
         </CardHeader>
         <CardContent>
           <DataTable
@@ -560,11 +592,64 @@ export default function MallProductDetailPageClient({
         </div>
       </form>
 
-      {/* SKU Sheet */}
-      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+      {/* SKU Picker Sheet */}
+      <Sheet open={pickerOpen} onOpenChange={setPickerOpen}>
         <SheetHeader>
-          <SheetTitle>{editingSku ? "编辑规格" : "新增规格"}</SheetTitle>
-          <SheetClose onClick={() => setSheetOpen(false)} />
+          <SheetTitle>添加规格</SheetTitle>
+          <SheetClose onClick={() => setPickerOpen(false)} />
+        </SheetHeader>
+        <SheetContent>
+          <div className="space-y-3">
+            <Input
+              placeholder="搜索规格名称..."
+              value={pickerSearch}
+              onChange={(e) => setPickerSearch(e.target.value)}
+            />
+            <Select value={pickerKindFilter} onChange={(e) => setPickerKindFilter(e.target.value)}>
+              <option value="">全部品项类型</option>
+              {productKindOptions.map(k => <option key={k} value={k}>{k}</option>)}
+            </Select>
+            <div className="space-y-2">
+              {availableSkus.length === 0 ? (
+                <p className="text-sm text-[var(--muted-foreground)] py-8 text-center">
+                  {pickerSearch || pickerKindFilter ? "无匹配结果" : "暂无可添加的规格"}
+                </p>
+              ) : (
+                availableSkus.map(sku => (
+                  <div key={sku.skuId} className="flex items-center justify-between p-3 rounded-[var(--radius)] border border-[var(--border)] hover:bg-[var(--accent)] transition-colors">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm truncate">{sku.specName}</p>
+                      <p className="text-xs text-[var(--muted-foreground)]">
+                        {sku.productKind} · {sku.categoryName} · {sku.productType}
+                      </p>
+                      <p className="text-xs">
+                        {formatCurrency(sku.price)}
+                        {sku.specialPrice && <span className="text-[#C0322A] ml-1">会员 {formatCurrency(sku.specialPrice)}</span>}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="ml-2 shrink-0"
+                      loading={addingSku === sku.skuId}
+                      disabled={!!addingSku}
+                      onClick={() => handleAddSku(sku.skuId)}
+                    >
+                      添加
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* SKU Edit Sheet */}
+      <Sheet open={editSheetOpen} onOpenChange={setEditSheetOpen}>
+        <SheetHeader>
+          <SheetTitle>编辑规格</SheetTitle>
+          <SheetClose onClick={() => setEditSheetOpen(false)} />
         </SheetHeader>
         <form onSubmit={handleSkuSubmit} className="flex flex-1 flex-col overflow-hidden">
           <SheetContent>
@@ -574,7 +659,6 @@ export default function MallProductDetailPageClient({
                 <Input
                   name="specName"
                   defaultValue={editingSku?.specName ?? ""}
-                  placeholder="请输入规格名称"
                   key={editingSku?.skuId ?? "new"}
                 />
               </div>
@@ -643,18 +727,6 @@ export default function MallProductDetailPageClient({
                   key={`so-${editingSku?.skuId ?? "new"}`}
                 />
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="isBundleSku"
-                  checked={isBundle}
-                  disabled
-                  className="h-4 w-4 rounded border-[var(--input)]"
-                />
-                <label htmlFor="isBundleSku" className="text-sm font-medium text-[var(--muted-foreground)]">
-                  套餐规格{isBundle ? "（跟随商品）" : ""}
-                </label>
-              </div>
               <Separator />
               <div className="space-y-2">
                 <label className="text-sm font-medium">规格有效期</label>
@@ -683,34 +755,34 @@ export default function MallProductDetailPageClient({
             </div>
           </SheetContent>
           <SheetFooter>
-            <Button type="button" variant="outline" onClick={() => setSheetOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setEditSheetOpen(false)}>
               取消
             </Button>
             <Button type="submit" loading={skuSaving}>
-              {editingSku ? "保存" : "创建"}
+              保存
             </Button>
           </SheetFooter>
         </form>
       </Sheet>
 
-      {/* Delete Confirmation */}
-      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <AlertDialogTitle>确认删除</AlertDialogTitle>
+      {/* Remove Confirmation */}
+      <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
+        <AlertDialogTitle>确认移除</AlertDialogTitle>
         <AlertDialogDescription>
-          确定要删除该规格吗？此操作不可撤销。
+          确定要移除该规格吗？移除后不会删除规格本身，仅解除与本商品的关联。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel
             onClick={() => {
-              setDeleteDialogOpen(false)
-              setDeletingSkuId(null)
+              setRemoveDialogOpen(false)
+              setRemovingSkuId(null)
             }}
-            disabled={deleting}
+            disabled={removing}
           >
             取消
           </AlertDialogCancel>
-          <AlertDialogAction onClick={handleDeleteSku} disabled={deleting}>
-            {deleting ? "删除中..." : "删除"}
+          <AlertDialogAction onClick={handleRemoveSku} disabled={removing}>
+            {removing ? "移除中..." : "移除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
