@@ -350,7 +350,7 @@ async function qrcode(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -443,7 +443,7 @@ async function confirmOffline(ctx) {
   await requireManager()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -519,7 +519,7 @@ async function close(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -594,7 +594,7 @@ async function resetFailed(ctx) {
   await requireManager()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -673,7 +673,7 @@ async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }

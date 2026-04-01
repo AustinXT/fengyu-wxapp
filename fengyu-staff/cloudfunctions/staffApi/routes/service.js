@@ -32,10 +32,9 @@ async function create(ctx) {
     items
   } = payload
 
-  // 兼容前端参数
   const normalizedItems = (items || []).map(item => ({
-    saleItemId: item.saleItemId || item.itemFlowNo,
-    sessionUsed: item.sessionUsed || item.sessionCount || 1,
+    saleItemId: item.saleItemId,
+    sessionUsed: item.sessionUsed || 1,
     employeeId: item.employeeId,
     serviceDuration: item.serviceDuration || null,
   }))

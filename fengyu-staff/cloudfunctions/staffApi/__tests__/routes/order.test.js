@@ -1432,22 +1432,6 @@ describe('order.qrcode', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('支持 orderNo 兼容参数', async () => {
-    const ctx = createManagerCtx({})
-    ctx.event.payload = { orderNo: 'FY-COMPAT-001' }
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-COMPAT-001', status: '已支付', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'offline',
-        paid_at: '2024-06-15', store_id: 'store-001', opened_by: 'emp-001',
-      }])
-      .mockResolvedValueOnce([])
-
-    await orderRoutes.qrcode(ctx)
-
-    expect(ctx.result.saleOrderId).toBe('FY-COMPAT-001')
-  })
 })
 
 // ============================================================

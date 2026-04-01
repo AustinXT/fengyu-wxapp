@@ -117,13 +117,9 @@ async function categories(ctx) {
  */
 async function skuList(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const { category, categoryId, productKind } = ctx.event.payload || {}
-  const resolvedCategoryId = categoryId || category
-  ctx.result = await _queryFormattedSkuList(resolvedCategoryId, productKind)
+  const { categoryId, productKind } = ctx.event.payload || {}
+  ctx.result = await _queryFormattedSkuList(categoryId, productKind)
 }
-
-// 保留旧接口名兼容
-const spuList = skuList
 
 /**
  * SKU 详情
@@ -215,4 +211,4 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, skuList, spuList, skuDetail, spuDetail, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
