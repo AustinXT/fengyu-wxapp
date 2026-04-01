@@ -68,8 +68,9 @@ export const productSkus = pgTable(
 export const mallCategories = pgTable('mall_categories', {
   categoryId: text('category_id').primaryKey(),
   categoryName: text('category_name').notNull(),
+  /** 分组名称（NULL=一级分组/Tab，非 NULL=二级分类，值为一级分组的 categoryName） */
+  categoryGroup: text('category_group'),
   sortOrder: integer('sort_order').notNull().default(0),
-  isValid: boolean('is_valid').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 })
