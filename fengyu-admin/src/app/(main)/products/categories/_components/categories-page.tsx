@@ -212,7 +212,12 @@ export default function CategoriesPageClient({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
+        <div className="flex items-center gap-3">
+          <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
+            &larr; 返回
+          </Button>
+          <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
+        </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项类型管理</Button>
           <Button onClick={openAddDialog}>新增分类</Button>

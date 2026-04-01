@@ -93,14 +93,7 @@ function initCommissions(
     }
     skillTag = skillTag || '美容师'
 
-    // 回退兼容：旧数据没有 allocationRatio，从 commissionAmount 反推
-    let ratioPercent: string
-    if (comm.allocationRatio) {
-      ratioPercent = (Number(comm.allocationRatio) * 100).toFixed(0)
-    } else {
-      // 旧数据：直接用提成比例
-      ratioPercent = '100'
-    }
+    const ratioPercent = (Number(comm.allocationRatio) * 100).toFixed(0)
 
     const allocAmount = calcAllocAmount(ratioPercent, unitPrice)
     const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, unitPrice)

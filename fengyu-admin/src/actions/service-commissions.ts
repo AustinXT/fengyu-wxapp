@@ -31,35 +31,18 @@ export async function getServiceOrderCommissions(serviceOrderId: string): Promis
     return []
   }
 
-  // 尝试含 role_type/allocation_ratio 的查询，迁移未执行时回退
-  let rows: any[]
-  try {
-    rows = await db.execute(sql`
-      SELECT
-        sc.id, sc.service_item_id, sc.employee_id, sc.role_type, sc.allocation_ratio,
-        sc.commission_rate, sc.commission_amount, sc.is_void, sc.created_at, sc.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
-      FROM service_commissions sc
-      LEFT JOIN staff_wechat_users swu ON sc.employee_id = swu.employee_id
-      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sc.service_item_id IN (
-        SELECT si.service_item_id FROM service_items si WHERE si.service_order_id = ${serviceOrderId}
-      ) AND sc.is_void = false
-    `) as any[]
-  } catch {
-    rows = await db.execute(sql`
-      SELECT
-        sc.id, sc.service_item_id, sc.employee_id,
-        sc.commission_rate, sc.commission_amount, sc.is_void, sc.created_at, sc.updated_at,
-        swu.name AS employee_name, orn.name AS department_name
-      FROM service_commissions sc
-      LEFT JOIN staff_wechat_users swu ON sc.employee_id = swu.employee_id
-      LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
-      WHERE sc.service_item_id IN (
-        SELECT si.service_item_id FROM service_items si WHERE si.service_order_id = ${serviceOrderId}
-      ) AND sc.is_void = false
-    `) as any[]
-  }
+  const rows = await db.execute(sql`
+    SELECT
+      sc.id, sc.service_item_id, sc.employee_id, sc.role_type, sc.allocation_ratio,
+      sc.commission_rate, sc.commission_amount, sc.is_void, sc.created_at, sc.updated_at,
+      swu.name AS employee_name, orn.name AS department_name
+    FROM service_commissions sc
+    LEFT JOIN staff_wechat_users swu ON sc.employee_id = swu.employee_id
+    LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
+    WHERE sc.service_item_id IN (
+      SELECT si.service_item_id FROM service_items si WHERE si.service_order_id = ${serviceOrderId}
+    ) AND sc.is_void = false
+  `) as any[]
 
   return (rows as any[]).map((r: any) => ({
     id: Number(r.id),

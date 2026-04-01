@@ -10,6 +10,14 @@ import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 import { createMallCategory, updateMallCategory } from "@/actions/products"
 
 interface CategoryFormData {
@@ -34,6 +42,10 @@ export default function MallCategoriesPageClient({
   const [editingCat, setEditingCat] = useState<MallCategory | null>(null)
   const [form, setForm] = useState<CategoryFormData>(emptyForm)
   const [saving, setSaving] = useState(false)
+
+  // AlertDialog state for disable confirmation
+  const [disableTarget, setDisableTarget] = useState<MallCategory | null>(null)
+  const [disabling, setDisabling] = useState(false)
 
   const openAdd = () => {
     setEditingCat(null)
@@ -93,6 +105,26 @@ export default function MallCategoriesPageClient({
     }
   }
 
+  const handleDisable = async () => {
+    if (!disableTarget) return
+    setDisabling(true)
+    try {
+      const res = await updateMallCategory(disableTarget.categoryId, { isValid: false }, disableTarget.updatedAt)
+      if (!res.success) {
+        toast.error(res.message)
+        if (res.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
+      toast.success("分类已停用")
+      setDisableTarget(null)
+      router.refresh()
+    } catch {
+      toast.error("停用失败")
+    } finally {
+      setDisabling(false)
+    }
+  }
+
   const columns: Column<MallCategory>[] = [
     {
       key: "categoryName",
@@ -120,9 +152,21 @@ export default function MallCategoriesPageClient({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
-          编辑
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEdit(row)}>
+            编辑
+          </Button>
+          {row.isValid && (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDisableTarget(row)}
+            >
+              停用
+            </Button>
+          )}
+        </div>
       ),
     },
   ]
@@ -141,6 +185,7 @@ export default function MallCategoriesPageClient({
 
       <DataTable columns={columns} data={categories} emptyText="暂无分类" />
 
+      {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogHeader>
           <DialogTitle>{editingCat ? "编辑分类" : "新增分类"}</DialogTitle>
@@ -179,6 +224,22 @@ export default function MallCategoriesPageClient({
           </Button>
         </DialogFooter>
       </Dialog>
+
+      {/* Disable Confirmation */}
+      <AlertDialog open={!!disableTarget} onOpenChange={(open) => !open && setDisableTarget(null)}>
+        <AlertDialogTitle>确认停用</AlertDialogTitle>
+        <AlertDialogDescription>
+          确定要停用分类「{disableTarget?.categoryName}」吗？停用后该分类下的商城商品将不再展示。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDisable} disabled={disabling}>
+            {disabling ? "停用中..." : "确认停用"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }
