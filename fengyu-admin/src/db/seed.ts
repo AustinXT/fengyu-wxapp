@@ -127,17 +127,26 @@ const CLIENTS = [
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '新客', customerSource: '线上推广', category: '新客户', birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
+// 一级分类（品项类型）：product_kind = null
+const PRODUCT_KINDS = [
+  { categoryId: 'kind-welfare', categoryName: '福利活动', productKind: null, sortOrder: 1, isValid: true },
+  { categoryId: 'kind-care', categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true },
+  { categoryId: 'kind-home', categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true },
+  { categoryId: 'kind-card', categoryName: '充值卡', productKind: null, sortOrder: 4, isValid: true },
+]
+
+// 二级分类：product_kind = 所属一级分类的 categoryName
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品', salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
 ]
 
 const MALL_CATEGORIES = [
@@ -315,8 +324,12 @@ async function seed() {
     console.log('  client_wechat_users...')
     await tx.insert(clientWechatUsers).values(CLIENTS).onConflictDoNothing()
 
-    // 5. product_categories (品项分类)
-    console.log('  product_categories...')
+    // 5a. product_categories — 一级分类（品项类型）
+    console.log('  product_categories (kinds)...')
+    await tx.insert(productCategories).values(PRODUCT_KINDS).onConflictDoNothing()
+
+    // 5b. product_categories — 二级分类
+    console.log('  product_categories (sub)...')
     await tx.insert(productCategories).values(PRODUCT_CATEGORIES).onConflictDoNothing()
 
     // 6. product_skus (SKU，独立实体)

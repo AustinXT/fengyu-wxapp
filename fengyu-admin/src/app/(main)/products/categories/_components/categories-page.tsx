@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import type { ProductKind, ProductCategory } from "@/lib/types"
+import type { ProductCategory } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -21,54 +21,69 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { createCategory, updateCategory } from "@/actions/products"
-
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
+import ProductKindManagementDialog from "./product-kind-management-dialog"
 
 interface CategoryFormData {
   categoryName: string
-  productKind: ProductKind
+  productKind: string
   sortOrder: number
   isValid: boolean
 }
 
-const emptyForm = (defaultKind: ProductKind): CategoryFormData => ({
-  categoryName: "",
-  productKind: defaultKind,
-  sortOrder: 0,
-  isValid: true,
-})
-
 export default function CategoriesPageClient({
   categories,
+  productKinds,
 }: {
   categories: ProductCategory[]
+  productKinds: ProductCategory[]
 }) {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<ProductKind>("福利活动")
+
+  // 动态一级分类列表（启用 + 按排序）
+  const activeKinds = useMemo(
+    () => [...productKinds].filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder),
+    [productKinds],
+  )
+
+  const defaultKind = activeKinds[0]?.categoryName ?? ""
+  const [activeTab, setActiveTab] = useState(defaultKind)
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingCategory, setEditingCategory] = useState<ProductCategory | null>(null)
-  const [form, setForm] = useState<CategoryFormData>(emptyForm("福利活动"))
+  const [form, setForm] = useState<CategoryFormData>({
+    categoryName: "",
+    productKind: defaultKind,
+    sortOrder: 0,
+    isValid: true,
+  })
   const [saving, setSaving] = useState(false)
 
   // AlertDialog state for disable confirmation
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
+  // 品项类型管理 dialog
+  const [kindDialogOpen, setKindDialogOpen] = useState(false)
+
   const categoriesByKind = useMemo(() => {
     const map: Record<string, ProductCategory[]> = {}
-    for (const kind of PRODUCT_KINDS) {
-      map[kind] = categories
-        .filter((c) => c.productKind === kind)
+    for (const kind of activeKinds) {
+      map[kind.categoryName] = categories
+        .filter((c) => c.productKind === kind.categoryName)
         .sort((a, b) => a.sortOrder - b.sortOrder)
     }
     return map
-  }, [categories])
+  }, [categories, activeKinds])
 
   const openAddDialog = () => {
     setEditingCategory(null)
-    setForm(emptyForm(activeTab))
+    setForm({
+      categoryName: "",
+      productKind: activeTab,
+      sortOrder: 0,
+      isValid: true,
+    })
     setDialogOpen(true)
   }
 
@@ -76,7 +91,7 @@ export default function CategoriesPageClient({
     setEditingCategory(row)
     setForm({
       categoryName: row.categoryName,
-      productKind: row.productKind,
+      productKind: row.productKind ?? activeTab,
       sortOrder: row.sortOrder,
       isValid: row.isValid,
     })
@@ -104,9 +119,7 @@ export default function CategoriesPageClient({
         }
         toast.success("分类已更新")
       } else {
-        const categoryId = `cat-${Date.now()}`
         const createResult = await createCategory({
-          categoryId,
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
           sortOrder: form.sortOrder,
@@ -200,28 +213,37 @@ export default function CategoriesPageClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
-        <Button onClick={openAddDialog}>新增分类</Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项类型管理</Button>
+          <Button onClick={openAddDialog}>新增分类</Button>
+        </div>
       </div>
 
-      <Tabs defaultValue="福利活动" onValueChange={(v) => setActiveTab(v as ProductKind)}>
-        <TabsList>
-          {PRODUCT_KINDS.map((kind) => (
-            <TabsTrigger key={kind} value={kind}>
-              {kind}（{categoriesByKind[kind]?.length ?? 0}）
-            </TabsTrigger>
-          ))}
-        </TabsList>
+      {activeKinds.length > 0 ? (
+        <Tabs defaultValue={defaultKind} onValueChange={setActiveTab}>
+          <TabsList>
+            {activeKinds.map((kind) => (
+              <TabsTrigger key={kind.categoryId} value={kind.categoryName}>
+                {kind.categoryName}（{categoriesByKind[kind.categoryName]?.length ?? 0}）
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-        {PRODUCT_KINDS.map((kind) => (
-          <TabsContent key={kind} value={kind}>
-            <DataTable
-              columns={columns}
-              data={(categoriesByKind[kind] ?? [])}
-              emptyText="暂无分类"
-            />
-          </TabsContent>
-        ))}
-      </Tabs>
+          {activeKinds.map((kind) => (
+            <TabsContent key={kind.categoryId} value={kind.categoryName}>
+              <DataTable
+                columns={columns}
+                data={(categoriesByKind[kind.categoryName] ?? [])}
+                emptyText="暂无分类"
+              />
+            </TabsContent>
+          ))}
+        </Tabs>
+      ) : (
+        <div className="text-center py-8 text-[var(--muted-foreground)]">
+          暂无品项类型，请先通过「品项类型管理」添加
+        </div>
+      )}
 
       {/* Add/Edit Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -241,11 +263,11 @@ export default function CategoriesPageClient({
             <label className="text-sm font-medium">品项类型 *</label>
             <Select
               value={form.productKind}
-              onChange={(e) => setForm({ ...form, productKind: e.target.value as ProductKind })}
+              onChange={(e) => setForm({ ...form, productKind: e.target.value })}
             >
-              {PRODUCT_KINDS.map((kind) => (
-                <option key={kind} value={kind}>
-                  {kind}
+              {activeKinds.map((kind) => (
+                <option key={kind.categoryId} value={kind.categoryName}>
+                  {kind.categoryName}
                 </option>
               ))}
             </Select>
@@ -291,6 +313,13 @@ export default function CategoriesPageClient({
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>
+
+      {/* 品项类型管理 Dialog */}
+      <ProductKindManagementDialog
+        open={kindDialogOpen}
+        onOpenChange={setKindDialogOpen}
+        productKinds={productKinds}
+      />
     </div>
   )
 }

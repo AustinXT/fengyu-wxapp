@@ -5,6 +5,7 @@ import { productCategories, products, productSkus, mallCategories, mallProductSk
 import { orgNodes } from '@db/org'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
+import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, MallCategory } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
@@ -83,7 +84,7 @@ export async function getCategories(): Promise<ProductCategory[]> {
   return rows.map((c) => ({
     categoryId: c.categoryId,
     categoryName: c.categoryName,
-    productKind: c.productKind as ProductCategory['productKind'],
+    productKind: c.productKind ?? null,
     salesCategory: c.salesCategory as ProductCategory['salesCategory'],
     sortOrder: c.sortOrder,
     isValid: c.isValid,
@@ -92,8 +93,148 @@ export async function getCategories(): Promise<ProductCategory[]> {
   }))
 }
 
+/**
+ * 获取所有一级分类（品项类型），即 product_kind IS NULL 的行。
+ */
+export async function getProductKinds(): Promise<ProductCategory[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select()
+    .from(productCategories)
+    .where(sql`${productCategories.productKind} IS NULL`)
+    .orderBy(productCategories.sortOrder)
+
+  return rows.map((c) => ({
+    categoryId: c.categoryId,
+    categoryName: c.categoryName,
+    productKind: null,
+    salesCategory: null,
+    sortOrder: c.sortOrder,
+    isValid: c.isValid,
+    createdAt: c.createdAt.toISOString(),
+    updatedAt: c.updatedAt.toISOString(),
+  }))
+}
+
+/**
+ * 创建一级分类（品项类型）
+ */
+export async function createProductKind(data: {
+  categoryName: string
+  sortOrder?: number
+  isValid?: boolean
+}): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:create')
+
+  if (!data.categoryName.trim()) {
+    return { success: false, message: '请输入品项类型名称' }
+  }
+
+  // 检查重名（同名一级分类）
+  const [existing] = await db
+    .select({ categoryId: productCategories.categoryId })
+    .from(productCategories)
+    .where(and(
+      sql`${productCategories.productKind} IS NULL`,
+      eq(productCategories.categoryName, data.categoryName.trim()),
+    ))
+    .limit(1)
+  if (existing) {
+    return { success: false, message: `品项类型「${data.categoryName.trim()}」已存在` }
+  }
+
+  const categoryId = crypto.randomUUID()
+  await db.insert(productCategories).values({
+    categoryId,
+    categoryName: data.categoryName.trim(),
+    productKind: null,
+    sortOrder: data.sortOrder ?? 0,
+    isValid: data.isValid ?? true,
+  })
+
+  await logOperation(session, 'product_kind.create', 'product_category', categoryId, { categoryName: data.categoryName.trim() })
+  revalidatePath('/products')
+  return { success: true, message: '品项类型创建成功' }
+}
+
+/**
+ * 更新一级分类（品项类型）
+ * 若 categoryName 变更，事务内同步更新所有子级的 product_kind 值。
+ */
+export async function updateProductKind(
+  categoryId: string,
+  data: Partial<{
+    categoryName: string
+    sortOrder: number
+    isValid: boolean
+  }>,
+  expectedUpdatedAt?: string,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  // 查当前行（获取旧名称用于级联更新）
+  const [current] = await db
+    .select({ categoryName: productCategories.categoryName, updatedAt: productCategories.updatedAt })
+    .from(productCategories)
+    .where(eq(productCategories.categoryId, categoryId))
+    .limit(1)
+  if (!current) {
+    return { success: false, message: '品项类型不存在' }
+  }
+
+  // 乐观锁检查
+  if (expectedUpdatedAt && current.updatedAt.toISOString() !== expectedUpdatedAt) {
+    return { success: false, message: '数据已被其他人修改，请刷新后重试' }
+  }
+
+  const newName = data.categoryName?.trim()
+
+  // 重名检查
+  if (newName && newName !== current.categoryName) {
+    const [dup] = await db
+      .select({ categoryId: productCategories.categoryId })
+      .from(productCategories)
+      .where(and(
+        sql`${productCategories.productKind} IS NULL`,
+        eq(productCategories.categoryName, newName),
+      ))
+      .limit(1)
+    if (dup) {
+      return { success: false, message: `品项类型「${newName}」已存在` }
+    }
+  }
+
+  // 事务：更新自身 + 级联更新子级 product_kind
+  await db.transaction(async (tx) => {
+    const updateData: Record<string, unknown> = {}
+    if (newName !== undefined) updateData.categoryName = newName
+    if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
+    if (data.isValid !== undefined) updateData.isValid = data.isValid
+
+    await tx
+      .update(productCategories)
+      .set(updateData)
+      .where(eq(productCategories.categoryId, categoryId))
+
+    // 若改名，级联更新所有子级的 product_kind
+    if (newName && newName !== current.categoryName) {
+      await tx
+        .update(productCategories)
+        .set({ productKind: newName })
+        .where(eq(productCategories.productKind, current.categoryName))
+    }
+  })
+
+  await logOperation(session, 'product_kind.update', 'product_category', categoryId, data)
+  revalidatePath('/products')
+  return { success: true, message: '品项类型已更新' }
+}
+
 export async function createCategory(data: {
-  categoryId: string
   categoryName: string
   productKind: string
   salesCategory?: string | null
@@ -103,18 +244,22 @@ export async function createCategory(data: {
   const session = await getSession()
   requirePermission(session, 'product:create')
 
+  const categoryId = crypto.randomUUID()
   try {
     await db.insert(productCategories).values({
-      ...data,
-      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
+      categoryId,
+      categoryName: data.categoryName,
+      productKind: data.productKind,
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
+      sortOrder: data.sortOrder,
+      isValid: data.isValid,
     })
   } catch (err: any) {
     if (err?.code === '23505') return { success: false, message: '分类编号已存在' }
     throw err
   }
 
-  await logOperation(session, 'category.create', 'product_category', data.categoryId, { categoryName: data.categoryName })
+  await logOperation(session, 'category.create', 'product_category', categoryId, { categoryName: data.categoryName })
   revalidatePath('/products')
   return { success: true, message: '分类创建成功' }
 }
@@ -141,7 +286,6 @@ export async function updateCategory(
     .update(productCategories)
     .set({
       ...data,
-      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
     })
     .where(whereConditions)
@@ -193,9 +337,51 @@ export async function getAllSkus(): Promise<ProductSku[]> {
     createdAt: r.sku.createdAt.toISOString(),
     updatedAt: r.sku.updatedAt.toISOString(),
     categoryName: r.categoryName ?? undefined,
-    productKind: (r.productKind as ProductSku['productKind']) ?? undefined,
+    productKind: r.productKind ?? undefined,
     salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
   }))
+}
+
+/** 根据 skuId 获取单个 SKU 详情 */
+export async function getSkuById(skuId: string): Promise<ProductSku | null> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select({
+      sku: productSkus,
+      categoryName: productCategories.categoryName,
+      productKind: productCategories.productKind,
+      salesCategory: productCategories.salesCategory,
+    })
+    .from(productSkus)
+    .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(eq(productSkus.skuId, skuId))
+    .limit(1)
+
+  if (rows.length === 0) return null
+
+  const r = rows[0]
+  return {
+    skuId: r.sku.skuId,
+    categoryId: r.sku.categoryId,
+    productType: r.sku.productType as ProductSku['productType'],
+    specName: r.sku.specName,
+    price: r.sku.price,
+    specialPrice: r.sku.specialPrice,
+    sessionCount: r.sku.sessionCount,
+    sortOrder: r.sku.sortOrder,
+    serviceFee: r.sku.serviceFee,
+    isShengmei: r.sku.isShengmei,
+    marketScope: r.sku.marketScope,
+    validStart: r.sku.validStart,
+    validEnd: r.sku.validEnd,
+    createdAt: r.sku.createdAt.toISOString(),
+    updatedAt: r.sku.updatedAt.toISOString(),
+    categoryName: r.categoryName ?? undefined,
+    productKind: r.productKind ?? undefined,
+    salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
+  }
 }
 
 /** 获取商城商品关联的 SKU 列表（通过 mall_product_skus） */
@@ -517,7 +703,7 @@ export async function createProduct(data: {
   }
 
   await logOperation(session, 'product.create', 'product', data.productId, { name: data.name })
-  revalidatePath('/products')
+  revalidatePath('/mall')
   return { success: true, message: '商品创建成功' }
 }
 
@@ -561,7 +747,7 @@ export async function updateProduct(
   }
 
   await logOperation(session, 'product.update', 'product', productId, data)
-  revalidatePath('/products')
+  revalidatePath('/mall')
   return { success: true, message: '商品信息已更新' }
 }
 
@@ -582,7 +768,7 @@ export async function createMallCategory(data: {
   }
 
   await logOperation(session, 'mall_category.create', 'mall_category', data.categoryId, { categoryName: data.categoryName })
-  revalidatePath('/products')
+  revalidatePath('/mall')
   return { success: true, message: '商品分类创建成功' }
 }
 
@@ -615,6 +801,6 @@ export async function updateMallCategory(
   }
 
   await logOperation(session, 'mall_category.update', 'mall_category', categoryId, data)
-  revalidatePath('/products')
+  revalidatePath('/mall')
   return { success: true, message: '商品分类已更新' }
 }

@@ -103,7 +103,7 @@ export interface SkillTag {
   updatedAt: string
 }
 
-export type ProductKind = '福利活动' | '护理项目' | '家居产品' | '充值卡'
+export type ProductKind = string
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
 export type SaleOrderType = '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
@@ -133,7 +133,7 @@ export const ROLE_LABELS: Record<RoleType, string> = {
 export interface ProductCategory {
   categoryId: string
   categoryName: string
-  productKind: ProductKind
+  productKind: string | null  // null = 一级分类（品项类型）
   salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean

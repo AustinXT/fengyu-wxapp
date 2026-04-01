@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import crypto from 'crypto'
+
+vi.spyOn(crypto, 'randomUUID').mockReturnValue('mock-uuid-1234' as any)
 
 vi.mock('@/db', () => ({
   db: {
@@ -28,9 +31,34 @@ vi.mock('@db/product', () => ({
   },
   productSkus: {
     skuId: 'sku_id',
-    productId: 'product_id',
+    categoryId: 'category_id',
     productType: 'product_type',
     updatedAt: 'updated_at',
+    sortOrder: 'sort_order',
+  },
+  mallCategories: {
+    categoryId: 'category_id',
+    categoryName: 'category_name',
+    sortOrder: 'sort_order',
+    isValid: 'is_valid',
+    updatedAt: 'updated_at',
+  },
+  mallProductSkus: {
+    productId: 'product_id',
+    skuId: 'sku_id',
+    bundlePrice: 'bundle_price',
+    sortOrder: 'sort_order',
+  },
+}))
+
+vi.mock('@db/org', () => ({
+  orgNodes: {
+    id: 'id',
+    name: 'name',
+    type: 'type',
+    isActive: 'is_active',
+    sortOrder: 'sort_order',
+    parentId: 'parent_id',
   },
 }))
 
@@ -204,7 +232,7 @@ describe('createCategory — 错误处理', () => {
   it('分类编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('分类编号已存在')
   })
@@ -212,13 +240,13 @@ describe('createCategory — 错误处理', () => {
   it('其他 DB 异常 → 重新抛出', async () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
     await expect(
-      createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+      createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     ).rejects.toThrow('connection lost')
   })
 
   it('正常创建 → 成功', async () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('分类创建成功')
   })

@@ -1,20 +1,18 @@
-import { getCategories, getMarkets, resolveManageScope } from '@/actions/products'
-import ProductCreatePageClient from './_components/product-create-page'
+import { getCategories, getMarkets } from '@/actions/products'
+import SkuCreatePageClient from './_components/product-create-page'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ProductCreatePage() {
-  const [categories, markets, manageScope] = await Promise.all([
+export default async function SkuCreatePage() {
+  const [categories, markets] = await Promise.all([
     getCategories(),
     getMarkets(),
-    resolveManageScope(),
   ])
 
   return (
-    <ProductCreatePageClient
+    <SkuCreatePageClient
       categories={categories}
       markets={markets}
-      manageScope={manageScope}
     />
   )
 }
