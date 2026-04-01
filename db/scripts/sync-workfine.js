@@ -458,9 +458,9 @@ async function syncPermissionRoles(pgPool, dryRun) {
 
       // UPSERT（仅 sync 创建的记录）
       await client.query(`
-        INSERT INTO permission_roles (employee_id, role, scope_id, is_void, created_by, updated_by)
-        VALUES ($1, $2, $3, false, 'sync', 'sync')
-        ON CONFLICT (employee_id, role, scope_id) WHERE is_void = false
+        INSERT INTO permission_roles (employee_id, role, scope_id, created_by, updated_by)
+        VALUES ($1, $2, $3, 'sync', 'sync')
+        ON CONFLICT (employee_id, role, scope_id)
         DO UPDATE SET updated_by = 'sync', updated_at = now()
           WHERE permission_roles.created_by = 'sync'
       `, [emp.employee_id, role, scopeId])
@@ -1117,7 +1117,7 @@ async function verify(pgPool) {
 
   // permission_roles 按角色
   const { rows: roles } = await pgPool.query(
-    "SELECT role, count(*) AS cnt FROM permission_roles WHERE is_void = false GROUP BY role ORDER BY role"
+    "SELECT role, count(*) AS cnt FROM permission_roles GROUP BY role ORDER BY role"
   )
   console.log('\n  permission_roles 按角色:')
   roles.forEach(r => console.log(`    ${r.role}: ${r.cnt}`))
