@@ -25,5 +25,8 @@ postgres_data/
 .env
 .env.local
 
+# CloudBase
+cloudbaserc.json
+
 # Delivery build output
 delivery/
