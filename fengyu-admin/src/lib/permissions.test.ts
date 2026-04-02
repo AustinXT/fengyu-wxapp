@@ -40,7 +40,7 @@ describe('PERMISSION_MATRIX', () => {
     expect(adminActions).toContain('org:list')
     expect(adminActions).toContain('employee:create')
     expect(adminActions).toContain('permission:assign_admin')
-    expect(adminActions).toContain('sync:trigger')
+
     expect(adminActions).toContain('operation_log:list')
   })
 

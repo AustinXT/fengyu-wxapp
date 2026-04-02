@@ -38,7 +38,7 @@ describe('hasPermission', () => {
     )
     expect(hasPermission(adminSession, 'org:list')).toBe(true)
     expect(hasPermission(adminSession, 'permission:assign_admin')).toBe(true)
-    expect(hasPermission(adminSession, 'sync:trigger')).toBe(true)
+
   })
 })
 

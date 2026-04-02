@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -54,6 +54,77 @@ export async function getRoles(): Promise<PermissionRole[]> {
     employeeName: r.employeeName ?? undefined,
     scopeName: r.scopeName ?? undefined,
   }))
+}
+
+/** 按 scope 查询角色分配 */
+export async function getRolesByScope(scopeId: string): Promise<PermissionRole[]> {
+  const session = await getSession()
+  requirePermission(session, 'permission:list')
+
+  const isAdmin = hasRole(session, 'admin')
+  if (!isAdmin) {
+    const userScopeIds = session.roles.map(r => r.scopeId)
+    if (!userScopeIds.includes(scopeId)) return []
+  }
+
+  const rows = await db
+    .select({
+      id: permissionRoles.id,
+      employeeId: permissionRoles.employeeId,
+      role: permissionRoles.role,
+      scopeId: permissionRoles.scopeId,
+      createdBy: permissionRoles.createdBy,
+      createdAt: permissionRoles.createdAt,
+      updatedAt: permissionRoles.updatedAt,
+      employeeName: staffWechatUsers.name,
+      scopeName: orgNodes.name,
+    })
+    .from(permissionRoles)
+    .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
+    .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
+    .where(eq(permissionRoles.scopeId, scopeId))
+    .orderBy(permissionRoles.id)
+
+  return rows.map((r) => ({
+    id: r.id,
+    employeeId: r.employeeId,
+    role: r.role as PermissionRole['role'],
+    scopeId: r.scopeId,
+    createdBy: r.createdBy,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+    employeeName: r.employeeName ?? undefined,
+    scopeName: r.scopeName ?? undefined,
+  }))
+}
+
+/** 查询每个 scope 的角色分配数量 */
+export async function getRoleCountsByScope(): Promise<Record<string, number>> {
+  const session = await getSession()
+  requirePermission(session, 'permission:list')
+
+  const isAdmin = hasRole(session, 'admin')
+  const userScopeIds = session.roles.map(r => r.scopeId)
+  if (!isAdmin && userScopeIds.length === 0) return {}
+
+  const whereCondition = isAdmin
+    ? undefined
+    : inArray(permissionRoles.scopeId, userScopeIds)
+
+  const rows = await db
+    .select({
+      scopeId: permissionRoles.scopeId,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(permissionRoles)
+    .where(whereCondition)
+    .groupBy(permissionRoles.scopeId)
+
+  const result: Record<string, number> = {}
+  for (const r of rows) {
+    result[r.scopeId] = r.count
+  }
+  return result
 }
 
 /**

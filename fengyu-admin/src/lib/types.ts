@@ -150,18 +150,18 @@ export interface Product {
   detailImages: string[] | null
   description: string | null
   isBundle: boolean
-  pickCount: number | null
   price: string
   specialPrice: string | null
   manageScope: string | null
   marketScope: string | null
   sortOrder: number
-  validStart: string | null
-  validEnd: string | null
+  isEnabled: boolean
+  isVisible: boolean
   createdAt: string
   updatedAt: string
   // joined
   categoryName?: string
+  categoryGroup?: string
   skuCount?: number
 }
 
@@ -178,8 +178,7 @@ export interface ProductSku {
   serviceFee: string
   isShengmei: boolean | null
   marketScope: string | null
-  validStart: string | null
-  validEnd: string | null
+  isEnabled: boolean
   createdAt: string
   updatedAt: string
   // joined
@@ -187,6 +186,17 @@ export interface ProductSku {
   productKind?: ProductKind
   salesCategory?: SalesCategory | null
   bundlePrice?: string | null
+  bundleGroupId?: number | null
+  groupName?: string | null
+}
+
+export interface MallBundleGroup {
+  id: number
+  productId: string
+  groupName: string
+  pickCount: number | null
+  sortOrder: number
+  createdAt: string
 }
 
 export interface MallCategory {
