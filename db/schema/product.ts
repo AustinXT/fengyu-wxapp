@@ -1,4 +1,4 @@
-import { bigserial, boolean, check, date, index, integer, numeric, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
+import { bigint, bigserial, boolean, check, index, integer, numeric, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { productTypeEnum, salesCategoryEnum } from './enums'
 
@@ -47,8 +47,7 @@ export const productSkus = pgTable(
     isShengmei: boolean('is_shengmei'),
     /** 可见范围（null=全部可见） */
     marketScope: text('market_scope'),
-    validStart: date('valid_start'),
-    validEnd: date('valid_end'),
+    isEnabled: boolean('is_enabled').notNull().default(true),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -80,7 +79,7 @@ export const mallCategories = pgTable('mall_categories', {
  *
  * 原 products 表改造。category_id 指向 mall_categories（商品分类）。
  * 展示属性（封面图、详情图、描述）和管理范围在此层。
- * is_bundle=true 时为套餐，pick_count 指定 N选M 的 M。
+ * is_bundle=true 时为套餐，分组选择逻辑由 mall_bundle_groups 管理。
  */
 export const products = pgTable('products', {
   productId: text('product_id').primaryKey(),
@@ -92,8 +91,6 @@ export const products = pgTable('products', {
   detailImages: text('detail_images').array(),
   description: text('description'),
   isBundle: boolean('is_bundle').notNull().default(false),
-  /** 套餐 N选M 的 M（null=全选） */
-  pickCount: integer('pick_count'),
   /** 展示价/套餐总价 */
   price: numeric('price', { precision: 10, scale: 2 }).notNull(),
   specialPrice: numeric('special_price', { precision: 10, scale: 2 }),
@@ -102,16 +99,41 @@ export const products = pgTable('products', {
   /** 可见范围（null=全部可见） */
   marketScope: text('market_scope'),
   sortOrder: integer('sort_order').notNull().default(0),
-  validStart: date('valid_start'),
-  validEnd: date('valid_end'),
+  isEnabled: boolean('is_enabled').notNull().default(true),
+  isVisible: boolean('is_visible').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 })
 
 /**
+ * 商城管理 — 套餐分组
+ *
+ * 每个套餐商品可以有多个分组，每个分组有独立的 pick_count。
+ * 例如"护理服务组 5选2 + 家居产品组 3选1"。
+ */
+export const mallBundleGroups = pgTable(
+  'mall_bundle_groups',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    productId: text('product_id')
+      .notNull()
+      .references(() => products.productId),
+    groupName: text('group_name').notNull(),
+    /** N选M 的 M（null=全选） */
+    pickCount: integer('pick_count'),
+    sortOrder: integer('sort_order').notNull().default(0),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('uq_bundle_group').on(table.productId, table.groupName),
+  ],
+)
+
+/**
  * 商城管理 — 商城商品与SKU关联
  *
  * 多对多关联。bundle_price 用于套餐内优惠价。
+ * bundle_group_id 关联套餐分组（非套餐为 null）。
  */
 export const mallProductSkus = pgTable(
   'mall_product_skus',
@@ -123,6 +145,8 @@ export const mallProductSkus = pgTable(
     skuId: text('sku_id')
       .notNull()
       .references(() => productSkus.skuId),
+    /** 套餐分组（非套餐或未分组为 null） */
+    bundleGroupId: bigint('bundle_group_id', { mode: 'number' }).references(() => mallBundleGroups.id),
     /** 套餐内优惠价（非套餐为 null） */
     bundlePrice: numeric('bundle_price', { precision: 10, scale: 2 }),
     sortOrder: integer('sort_order').notNull().default(0),
@@ -142,5 +166,7 @@ export type ProductSku = typeof productSkus.$inferSelect
 export type NewProductSku = typeof productSkus.$inferInsert
 export type MallCategory = typeof mallCategories.$inferSelect
 export type NewMallCategory = typeof mallCategories.$inferInsert
+export type MallBundleGroup = typeof mallBundleGroups.$inferSelect
+export type NewMallBundleGroup = typeof mallBundleGroups.$inferInsert
 export type MallProductSku = typeof mallProductSkus.$inferSelect
 export type NewMallProductSku = typeof mallProductSkus.$inferInsert
