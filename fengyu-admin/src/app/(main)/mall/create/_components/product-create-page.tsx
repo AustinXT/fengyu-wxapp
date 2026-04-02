@@ -1,9 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import type { ProductCategory } from "@/lib/types"
+import type { MallCategory } from "@/lib/types"
 import { createProduct } from "@/actions/products"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
@@ -12,7 +12,6 @@ import { Select } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { ImageUpload } from "@/components/ui/image-upload"
-import { CategoryCascader } from "@/components/ui/category-cascader"
 
 interface Market {
   id: string
@@ -20,11 +19,11 @@ interface Market {
 }
 
 export default function MallProductCreatePageClient({
-  categories,
+  mallCategories,
   markets,
   manageScope,
 }: {
-  categories: ProductCategory[]
+  mallCategories: MallCategory[]
   markets: Market[]
   manageScope: { scopeId: string | null; scopeName: string }
 }) {
@@ -37,24 +36,18 @@ export default function MallProductCreatePageClient({
   useUnsavedChanges(formDirty)
 
   const [isBundle, setIsBundle] = useState(false)
-  const [isShengmei, setIsShengmei] = useState<boolean>(false)
   const [allMarkets, setAllMarkets] = useState(true)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
 
-  const selectedCategory = categories.find(c => c.categoryId === categoryId)
-  const selectedProductKind = selectedCategory?.productKind
-
-  const handleCategoryChange = (id: string) => {
-    setCategoryId(id)
-    const cat = categories.find(c => c.categoryId === id)
-    if (cat) {
-      setIsBundle(cat.productKind === '福利活动')
-      if (cat.productKind !== '护理项目') {
-        setIsShengmei(false)
-      }
-    }
-    setFormDirty(true)
-  }
+  // Mall category groups for grouped select
+  const mallGroups = useMemo(
+    () => mallCategories.filter((c) => c.categoryGroup === null).sort((a, b) => a.sortOrder - b.sortOrder),
+    [mallCategories],
+  )
+  const mallSubCats = useMemo(
+    () => mallCategories.filter((c) => c.categoryGroup !== null).sort((a, b) => a.sortOrder - b.sortOrder),
+    [mallCategories],
+  )
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -69,7 +62,7 @@ export default function MallProductCreatePageClient({
       return
     }
     if (!categoryId) {
-      toast.error("请选择品项分类")
+      toast.error("请选择商城分类")
       return
     }
     if (!price) {
@@ -78,7 +71,6 @@ export default function MallProductCreatePageClient({
     }
 
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
-    const salesCategory = (fd.get("salesCategory") as string) || null
     const description = (fd.get("description") as string).trim() || null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const validStart = (fd.get("validStart") as string) || null
@@ -103,14 +95,14 @@ export default function MallProductCreatePageClient({
         sortOrder,
         validStart,
         validEnd,
-      } as any)
+      })
       if (!result.success) {
         toast.error(result.message)
         return
       }
       setFormDirty(false)
-      toast.success("商品创建成功")
-      router.push("/mall")
+      toast.success("商品创建成功，请在详情页管理套餐分组")
+      router.push(`/mall/${productId}`)
     } catch {
       toast.error("创建失败，请稍后重试")
     } finally {
@@ -139,24 +131,26 @@ export default function MallProductCreatePageClient({
               <Input name="name" placeholder="请输入商品名称" />
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">品项分类</label>
-              <CategoryCascader
-                name="categoryId"
-                categories={categories}
+              <label className="text-sm font-medium">商城分类</label>
+              <Select
                 value={categoryId}
-                onChange={handleCategoryChange}
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">销售分类</label>
-              <Select name="salesCategory" defaultValue="">
-                <option value="" disabled>
-                  请选择
-                </option>
-                <option value="自采自销">自采自销</option>
-                <option value="他销自耗">他销自耗</option>
-                <option value="他销他耗">他销他耗</option>
-                <option value="生态合作">生态合作</option>
+                onChange={(e) => {
+                  setCategoryId(e.target.value)
+                  setFormDirty(true)
+                }}
+              >
+                <option value="">请选择商城分类</option>
+                {mallGroups.map((group) => (
+                  <optgroup key={group.categoryId} label={group.categoryName}>
+                    {mallSubCats
+                      .filter((c) => c.categoryGroup === group.categoryName)
+                      .map((c) => (
+                        <option key={c.categoryId} value={c.categoryId}>
+                          {c.categoryName}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
               </Select>
             </div>
             <div className="space-y-2">
@@ -169,16 +163,11 @@ export default function MallProductCreatePageClient({
                 <option value="true">是</option>
               </Select>
             </div>
-            {selectedProductKind === '护理项目' && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium">是否生美</label>
-                <Select
-                  value={isShengmei ? "true" : "false"}
-                  onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
-                >
-                  <option value="false">否（科美）</option>
-                  <option value="true">是（生美）</option>
-                </Select>
+            {isBundle && (
+              <div className="col-span-2">
+                <p className="text-sm text-[var(--muted-foreground)] bg-[var(--accent)] px-3 py-2 rounded-[var(--radius)]">
+                  创建商品后，可在详情页管理套餐分组和规格
+                </p>
               </div>
             )}
             <div className="space-y-2">

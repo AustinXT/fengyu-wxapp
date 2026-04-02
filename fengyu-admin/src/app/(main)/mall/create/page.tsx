@@ -1,18 +1,18 @@
-import { getCategories, getMarkets, resolveManageScope } from '@/actions/products'
+import { getMallCategories, getMarkets, resolveManageScope } from '@/actions/products'
 import ProductCreatePageClient from './_components/product-create-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function MallProductCreatePage() {
-  const [categories, markets, manageScope] = await Promise.all([
-    getCategories(),
+  const [mallCategories, markets, manageScope] = await Promise.all([
+    getMallCategories(),
     getMarkets(),
     resolveManageScope(),
   ])
 
   return (
     <ProductCreatePageClient
-      categories={categories}
+      mallCategories={mallCategories}
       markets={markets}
       manageScope={manageScope}
     />

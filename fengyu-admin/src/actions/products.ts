@@ -1,12 +1,12 @@
 'use server'
 
 import { db } from '@/db'
-import { productCategories, products, productSkus, mallCategories, mallProductSkus } from '@db/product'
+import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { orgNodes } from '@db/org'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
-import type { ProductCategory, Product, ProductSku, MallCategory } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
@@ -332,8 +332,7 @@ export async function getAllSkus(): Promise<ProductSku[]> {
     serviceFee: r.sku.serviceFee,
     isShengmei: r.sku.isShengmei,
     marketScope: r.sku.marketScope,
-    validStart: r.sku.validStart,
-    validEnd: r.sku.validEnd,
+    isEnabled: r.sku.isEnabled,
     createdAt: r.sku.createdAt.toISOString(),
     updatedAt: r.sku.updatedAt.toISOString(),
     categoryName: r.categoryName ?? undefined,
@@ -374,8 +373,7 @@ export async function getSkuById(skuId: string): Promise<ProductSku | null> {
     serviceFee: r.sku.serviceFee,
     isShengmei: r.sku.isShengmei,
     marketScope: r.sku.marketScope,
-    validStart: r.sku.validStart,
-    validEnd: r.sku.validEnd,
+    isEnabled: r.sku.isEnabled,
     createdAt: r.sku.createdAt.toISOString(),
     updatedAt: r.sku.updatedAt.toISOString(),
     categoryName: r.categoryName ?? undefined,
@@ -393,10 +391,13 @@ export async function getSkusByProductId(productId: string): Promise<ProductSku[
     .select({
       sku: productSkus,
       bundlePrice: mallProductSkus.bundlePrice,
+      bundleGroupId: mallProductSkus.bundleGroupId,
       displayOrder: mallProductSkus.sortOrder,
+      groupName: mallBundleGroups.groupName,
     })
     .from(mallProductSkus)
     .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
+    .leftJoin(mallBundleGroups, eq(mallProductSkus.bundleGroupId, mallBundleGroups.id))
     .where(eq(mallProductSkus.productId, productId))
     .orderBy(mallProductSkus.sortOrder)
 
@@ -412,9 +413,10 @@ export async function getSkusByProductId(productId: string): Promise<ProductSku[
     serviceFee: r.sku.serviceFee,
     isShengmei: r.sku.isShengmei,
     marketScope: r.sku.marketScope,
-    validStart: r.sku.validStart,
-    validEnd: r.sku.validEnd,
+    isEnabled: r.sku.isEnabled,
     bundlePrice: r.bundlePrice,
+    bundleGroupId: r.bundleGroupId,
+    groupName: r.groupName,
     createdAt: r.sku.createdAt.toISOString(),
     updatedAt: r.sku.updatedAt.toISOString(),
   }))
@@ -434,8 +436,7 @@ export async function createSku(data: {
   serviceFee?: string
   isShengmei?: boolean | null
   marketScope?: string | null
-  validStart?: string | null
-  validEnd?: string | null
+  isEnabled?: boolean
 }): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
@@ -459,10 +460,6 @@ export async function createSku(data: {
     if (!data.sessionCount || data.sessionCount < 1) {
       return { success: false, message: '疗程卡的次数必须 >= 1' }
     }
-  }
-
-  if (data.validStart && data.validEnd && data.validStart > data.validEnd) {
-    return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
   try {
@@ -494,8 +491,7 @@ export async function updateSku(
     serviceFee: string
     isShengmei: boolean | null
     marketScope: string | null
-    validStart: string | null
-    validEnd: string | null
+    isEnabled: boolean
   }>,
   expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
@@ -555,6 +551,7 @@ export async function addSkuToProduct(
   productId: string,
   skuId: string,
   sortOrder?: number,
+  bundleGroupId?: number | null,
 ): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:update')
@@ -564,6 +561,7 @@ export async function addSkuToProduct(
       productId,
       skuId,
       sortOrder: sortOrder ?? 0,
+      bundleGroupId: bundleGroupId ?? null,
     })
   } catch (err: any) {
     if (err?.code === '23505') return { success: false, message: '该规格已关联到此商品' }
@@ -617,6 +615,135 @@ export async function updateSkuBundlePrice(
   await logOperation(session, 'mall_product_sku.update', 'mall_product_sku', productId, { skuId, bundlePrice })
   revalidatePath('/mall')
   return { success: true, message: '套餐价已更新' }
+}
+
+// ===== 套餐分组管理（mall_bundle_groups） =====
+
+export async function getBundleGroupsByProductId(productId: string): Promise<MallBundleGroup[]> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  const rows = await db
+    .select()
+    .from(mallBundleGroups)
+    .where(eq(mallBundleGroups.productId, productId))
+    .orderBy(mallBundleGroups.sortOrder)
+
+  return rows.map((r) => ({
+    id: r.id,
+    productId: r.productId,
+    groupName: r.groupName,
+    pickCount: r.pickCount,
+    sortOrder: r.sortOrder,
+    createdAt: r.createdAt.toISOString(),
+  }))
+}
+
+export async function createBundleGroup(data: {
+  productId: string
+  groupName: string
+  pickCount?: number | null
+  sortOrder?: number
+}): Promise<{ success: boolean; message: string; id?: number }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  if (!data.groupName.trim()) {
+    return { success: false, message: '分组名称不能为空' }
+  }
+  if (data.pickCount !== undefined && data.pickCount !== null && data.pickCount < 1) {
+    return { success: false, message: '可选数量必须大于 0' }
+  }
+
+  try {
+    const [row] = await db.insert(mallBundleGroups).values({
+      productId: data.productId,
+      groupName: data.groupName.trim(),
+      pickCount: data.pickCount ?? null,
+      sortOrder: data.sortOrder ?? 0,
+    }).returning({ id: mallBundleGroups.id })
+
+    await logOperation(session, 'bundle_group.create', 'mall_bundle_group', String(row.id), { productId: data.productId, groupName: data.groupName })
+    revalidatePath('/mall')
+    return { success: true, message: '分组已创建', id: row.id }
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
+    if (err?.code === '23503') return { success: false, message: '商品不存在' }
+    throw err
+  }
+}
+
+export async function updateBundleGroup(
+  id: number,
+  data: Partial<{ groupName: string; pickCount: number | null; sortOrder: number }>,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  if (data.groupName !== undefined && !data.groupName.trim()) {
+    return { success: false, message: '分组名称不能为空' }
+  }
+  if (data.pickCount !== undefined && data.pickCount !== null && data.pickCount < 1) {
+    return { success: false, message: '可选数量必须大于 0' }
+  }
+
+  const updateData: Record<string, unknown> = {}
+  if (data.groupName !== undefined) updateData.groupName = data.groupName.trim()
+  if (data.pickCount !== undefined) updateData.pickCount = data.pickCount
+  if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
+
+  try {
+    const result = await db.update(mallBundleGroups).set(updateData).where(eq(mallBundleGroups.id, id))
+    if ((result as any).count === 0) {
+      return { success: false, message: '分组不存在' }
+    }
+  } catch (err: any) {
+    if (err?.code === '23505') return { success: false, message: '该商品下已存在同名分组' }
+    throw err
+  }
+
+  await logOperation(session, 'bundle_group.update', 'mall_bundle_group', String(id), data)
+  revalidatePath('/mall')
+  return { success: true, message: '分组已更新' }
+}
+
+export async function deleteBundleGroup(id: number): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  // 先将该分组下的 SKU 关联清除（设 bundleGroupId = null）
+  await db.update(mallProductSkus).set({ bundleGroupId: null }).where(eq(mallProductSkus.bundleGroupId, id))
+
+  const result = await db.delete(mallBundleGroups).where(eq(mallBundleGroups.id, id))
+  if ((result as any).count === 0) {
+    return { success: false, message: '分组不存在' }
+  }
+
+  await logOperation(session, 'bundle_group.delete', 'mall_bundle_group', String(id), {})
+  revalidatePath('/mall')
+  return { success: true, message: '分组已删除' }
+}
+
+export async function updateSkuBundleGroup(
+  productId: string,
+  skuId: string,
+  bundleGroupId: number | null,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  const result = await db
+    .update(mallProductSkus)
+    .set({ bundleGroupId })
+    .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '关联记录不存在' }
+  }
+
+  await logOperation(session, 'mall_product_sku.update', 'mall_product_sku', productId, { skuId, bundleGroupId })
+  revalidatePath('/mall')
+  return { success: true, message: '规格分组已更新' }
 }
 
 // ===== 商城管理（mall_categories + products + mall_product_skus） =====
@@ -805,6 +932,7 @@ export async function getProducts(): Promise<Product[]> {
     .select({
       product: products,
       categoryName: mallCategories.categoryName,
+      categoryGroup: mallCategories.categoryGroup,
       skuCount: skuCountSq.count,
     })
     .from(products)
@@ -821,17 +949,17 @@ export async function getProducts(): Promise<Product[]> {
     detailImages: r.product.detailImages,
     description: r.product.description,
     isBundle: r.product.isBundle,
-    pickCount: r.product.pickCount,
     price: r.product.price,
     specialPrice: r.product.specialPrice,
     manageScope: r.product.manageScope,
     marketScope: r.product.marketScope,
     sortOrder: r.product.sortOrder,
-    validStart: r.product.validStart,
-    validEnd: r.product.validEnd,
+    isEnabled: r.product.isEnabled,
+    isVisible: r.product.isVisible,
     createdAt: r.product.createdAt.toISOString(),
     updatedAt: r.product.updatedAt.toISOString(),
     categoryName: r.categoryName ?? undefined,
+    categoryGroup: r.categoryGroup ?? undefined,
     skuCount: r.skuCount ?? 0,
   }))
 }
@@ -861,14 +989,13 @@ export async function getProductById(productId: string): Promise<Product | null>
     detailImages: r.product.detailImages,
     description: r.product.description,
     isBundle: r.product.isBundle,
-    pickCount: r.product.pickCount,
     price: r.product.price,
     specialPrice: r.product.specialPrice,
     manageScope: r.product.manageScope,
     marketScope: r.product.marketScope,
     sortOrder: r.product.sortOrder,
-    validStart: r.product.validStart,
-    validEnd: r.product.validEnd,
+    isEnabled: r.product.isEnabled,
+    isVisible: r.product.isVisible,
     createdAt: r.product.createdAt.toISOString(),
     updatedAt: r.product.updatedAt.toISOString(),
     categoryName: r.categoryName ?? undefined,
@@ -883,14 +1010,13 @@ export async function createProduct(data: {
   detailImages?: string[] | null
   description?: string | null
   isBundle?: boolean
-  pickCount?: number | null
   price: string
   specialPrice?: string | null
   manageScope?: string | null
   marketScope?: string | null
   sortOrder?: number
-  validStart?: string | null
-  validEnd?: string | null
+  isEnabled?: boolean
+  isVisible?: boolean
 }): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
@@ -908,10 +1034,6 @@ export async function createProduct(data: {
     .limit(1)
   if (!cat) {
     return { success: false, message: '商品分类不存在' }
-  }
-
-  if (data.validStart && data.validEnd && data.validStart > data.validEnd) {
-    return { success: false, message: '有效期开始日期不能晚于结束日期' }
   }
 
   try {
@@ -935,14 +1057,13 @@ export async function updateProduct(
     detailImages: string[] | null
     description: string | null
     isBundle: boolean
-    pickCount: number | null
     price: string
     specialPrice: string | null
     manageScope: string | null
     marketScope: string | null
     sortOrder: number
-    validStart: string | null
-    validEnd: string | null
+    isEnabled: boolean
+    isVisible: boolean
   }>,
   expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {

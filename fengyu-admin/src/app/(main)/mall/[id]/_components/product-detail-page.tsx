@@ -4,8 +4,11 @@ import { useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
-import type { Product, ProductSku, ProductCategory } from "@/lib/types";
-import { updateProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice } from "@/actions/products";
+import type { Product, ProductSku, ProductCategory, MallCategory, MallBundleGroup } from "@/lib/types";
+import {
+  updateProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice,
+  createBundleGroup, updateBundleGroup, deleteBundleGroup,
+} from "@/actions/products";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -33,15 +36,19 @@ interface Market {
 export default function MallProductDetailPageClient({
   product,
   skus,
+  bundleGroups,
   allSkus,
-  categories,
+  mallCategories,
+  skuCategories,
   markets,
   manageScope,
 }: {
   product: Product;
   skus: ProductSku[];
+  bundleGroups: MallBundleGroup[];
   allSkus: ProductSku[];
-  categories: ProductCategory[];
+  mallCategories: MallCategory[];
+  skuCategories: ProductCategory[];
   markets: Market[];
   manageScope: { scopeId: string | null; scopeName: string };
 }) {
@@ -54,14 +61,20 @@ export default function MallProductDetailPageClient({
   const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? []);
 
   const [isBundle, setIsBundle] = useState(product.isBundle);
-  const [isShengmei, setIsShengmei] = useState<boolean>((product as any).isShengmei ?? false);
   const [allMarkets, setAllMarkets] = useState(!product.marketScope);
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
     product.marketScope ? product.marketScope.split(",") : [],
   );
 
-  const selectedCategory = categories.find((c) => c.categoryId === categoryId);
-  const selectedProductKind = selectedCategory?.productKind;
+  // Mall category groups for grouped select
+  const mallGroups = useMemo(
+    () => mallCategories.filter((c) => c.categoryGroup === null).sort((a, b) => a.sortOrder - b.sortOrder),
+    [mallCategories],
+  );
+  const mallSubCats = useMemo(
+    () => mallCategories.filter((c) => c.categoryGroup !== null).sort((a, b) => a.sortOrder - b.sortOrder),
+    [mallCategories],
+  );
 
   const manageScopeDisplay = useMemo(() => {
     if (!product.manageScope) return "总部";
@@ -75,17 +88,28 @@ export default function MallProductDetailPageClient({
   const [pickerCategoryId, setPickerCategoryId] = useState("");
   const [pickerKindValue, setPickerKindValue] = useState("");
   const [addingSku, setAddingSku] = useState<string | null>(null);
+  const [pickerTargetGroupId, setPickerTargetGroupId] = useState<number | null>(null);
 
   // Remove dialog state
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const [removingSkuId, setRemovingSkuId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
-  // SKU Picker computed
+  // Bundle group dialog state
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<MallBundleGroup | null>(null);
+  const [groupSaving, setGroupSaving] = useState(false);
+
+  // Delete group dialog
+  const [deleteGroupDialogOpen, setDeleteGroupDialogOpen] = useState(false);
+  const [deletingGroupId, setDeletingGroupId] = useState<number | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState(false);
+
+  // SKU Picker computed (uses skuCategories = product_categories)
   const linkedSkuIds = useMemo(() => new Set(skus.map((s) => s.skuId)), [skus]);
 
-  const subCategories = useMemo(() => categories.filter((c) => c.productKind !== null), [categories]);
-  const productKinds = useMemo(() => categories.filter((c) => c.productKind === null), [categories]);
+  const subCategories = useMemo(() => skuCategories.filter((c) => c.productKind !== null), [skuCategories]);
+  const productKinds = useMemo(() => skuCategories.filter((c) => c.productKind === null), [skuCategories]);
 
   const availableSkus = useMemo(() => {
     let list = allSkus.filter((s) => !linkedSkuIds.has(s.skuId));
@@ -106,18 +130,6 @@ export default function MallProductDetailPageClient({
     return list;
   }, [allSkus, linkedSkuIds, pickerSearch, pickerCategoryId, pickerKindValue]);
 
-  const handleCategoryChange = (id: string) => {
-    setCategoryId(id);
-    const cat = categories.find((c) => c.categoryId === id);
-    if (cat) {
-      setIsBundle(cat.productKind === "福利活动");
-      if (cat.productKind !== "护理项目") {
-        setIsShengmei(false);
-      }
-    }
-    setFormDirty(true);
-  };
-
   // --- Product Save ---
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -132,7 +144,7 @@ export default function MallProductDetailPageClient({
       return;
     }
     if (!categoryId) {
-      toast.error("请选择品项分类");
+      toast.error("请选择商城分类");
       return;
     }
     if (!price) {
@@ -141,7 +153,6 @@ export default function MallProductDetailPageClient({
     }
 
     const specialPrice = (fd.get("specialPrice") as string).trim() || null;
-    const salesCategory = (fd.get("salesCategory") as string) || null;
     const description = (fd.get("description") as string).trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
     const validStart = (fd.get("validStart") as string) || null;
@@ -165,7 +176,7 @@ export default function MallProductDetailPageClient({
           sortOrder,
           validStart,
           validEnd,
-        } as any,
+        },
         product.updatedAt,
       );
       if (!result.success) {
@@ -184,17 +195,18 @@ export default function MallProductDetailPageClient({
   };
 
   // --- SKU Picker ---
-  const openPicker = () => {
+  const openPicker = (groupId?: number | null) => {
     setPickerSearch("");
     setPickerCategoryId("");
     setPickerKindValue("");
+    setPickerTargetGroupId(groupId ?? null);
     setPickerOpen(true);
   };
 
   const handleAddSku = async (skuId: string) => {
     setAddingSku(skuId);
     try {
-      const result = await addSkuToProduct(product.productId, skuId);
+      const result = await addSkuToProduct(product.productId, skuId, 0, pickerTargetGroupId);
       if (!result.success) {
         toast.error(result.message);
         return;
@@ -250,6 +262,77 @@ export default function MallProductDetailPageClient({
     }
   };
 
+  // --- Bundle Group CRUD ---
+  const openGroupDialog = (group?: MallBundleGroup) => {
+    setEditingGroup(group ?? null);
+    setGroupDialogOpen(true);
+  };
+
+  const handleGroupSave = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const groupName = (fd.get("groupName") as string).trim();
+    const pickCountRaw = (fd.get("pickCount") as string).trim();
+    const pickCount = pickCountRaw ? parseInt(pickCountRaw) || null : null;
+
+    if (!groupName) {
+      toast.error("请输入分组名称");
+      return;
+    }
+
+    setGroupSaving(true);
+    try {
+      if (editingGroup) {
+        const result = await updateBundleGroup(editingGroup.id, { groupName, pickCount });
+        if (!result.success) {
+          toast.error(result.message);
+          return;
+        }
+        toast.success("分组已更新");
+      } else {
+        const result = await createBundleGroup({ productId: product.productId, groupName, pickCount });
+        if (!result.success) {
+          toast.error(result.message);
+          return;
+        }
+        toast.success("分组已创建");
+      }
+      setGroupDialogOpen(false);
+      setEditingGroup(null);
+      router.refresh();
+    } catch {
+      toast.error("操作失败，请稍后重试");
+    } finally {
+      setGroupSaving(false);
+    }
+  };
+
+  const openDeleteGroupDialog = (groupId: number) => {
+    setDeletingGroupId(groupId);
+    setDeleteGroupDialogOpen(true);
+  };
+
+  const handleDeleteGroup = async () => {
+    if (!deletingGroupId) return;
+    setDeletingGroup(true);
+    try {
+      const result = await deleteBundleGroup(deletingGroupId);
+      if (!result.success) {
+        toast.error(result.message);
+        return;
+      }
+      toast.success("分组已删除");
+      setDeleteGroupDialogOpen(false);
+      setDeletingGroupId(null);
+      router.refresh();
+    } catch {
+      toast.error("删除失败，请稍后重试");
+    } finally {
+      setDeletingGroup(false);
+    }
+  };
+
+  // --- SKU columns ---
   const skuColumns: Column<ProductSku>[] = [
     {
       key: "specName",
@@ -289,15 +372,6 @@ export default function MallProductDetailPageClient({
       cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
     },
     {
-      key: "validEnd" as keyof ProductSku,
-      header: "有效期",
-      cell: (row) => (
-        <span className="text-sm text-[var(--muted-foreground)]">
-          {row.validStart || row.validEnd ? `${row.validStart ?? "—"} ~ ${row.validEnd ?? "—"}` : "同商品"}
-        </span>
-      ),
-    },
-    {
       key: "actions",
       header: "操作",
       cell: (row) => (
@@ -313,6 +387,19 @@ export default function MallProductDetailPageClient({
     },
   ];
 
+  // Group SKUs by bundleGroupId for bundle view
+  const ungroupedSkus = useMemo(() => skus.filter((s) => !s.bundleGroupId), [skus]);
+  const skusByGroup = useMemo(() => {
+    const map: Record<number, ProductSku[]> = {};
+    for (const s of skus) {
+      if (s.bundleGroupId) {
+        if (!map[s.bundleGroupId]) map[s.bundleGroupId] = [];
+        map[s.bundleGroupId].push(s);
+      }
+    }
+    return map;
+  }, [skus]);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -322,18 +409,106 @@ export default function MallProductDetailPageClient({
         <h1 className="text-2xl font-bold text-[var(--foreground)]">商品详情 - {product.name}</h1>
       </div>
 
-      {/* 商品规格列表 */}
+      {/* 是否套餐切换 */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">商品规格列表</CardTitle>
-          <Button size="sm" onClick={openPicker}>
-            添加规格
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <DataTable columns={skuColumns} data={skus} emptyText="暂无规格" />
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-4">
+            <label className="text-sm font-medium">是否套餐</label>
+            <Select
+              value={isBundle ? "true" : "false"}
+              onChange={(e) => {
+                setIsBundle(e.target.value === "true");
+                setFormDirty(true);
+              }}
+              className="w-32"
+            >
+              <option value="false">否</option>
+              <option value="true">是</option>
+            </Select>
+          </div>
         </CardContent>
       </Card>
+
+      {/* 套餐分组管理（isBundle 时显示） */}
+      {isBundle && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">套餐分组管理</CardTitle>
+            <Button size="sm" onClick={() => openGroupDialog()}>
+              添加分组
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {bundleGroups.length === 0 ? (
+              <p className="text-sm text-[var(--muted-foreground)] py-4 text-center">
+                暂无分组，请添加套餐分组后再添加规格
+              </p>
+            ) : (
+              bundleGroups.map((group) => {
+                const groupSkus = skusByGroup[group.id] || [];
+                return (
+                  <div key={group.id} className="border border-[var(--border)] rounded-[var(--radius)]">
+                    <div className="flex items-center justify-between px-4 py-3 bg-[var(--muted)]/30">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm">{group.groupName}</span>
+                        <span className="text-xs px-2 py-0.5 rounded bg-[var(--accent)] text-[var(--accent-foreground)]">
+                          {group.pickCount ? `${groupSkus.length}选${group.pickCount}` : "全选"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button variant="link" size="sm" className="h-auto p-0 text-sm" onClick={() => openGroupDialog(group)}>
+                          编辑
+                        </Button>
+                        <span className="text-[var(--border)]">|</span>
+                        <Button variant="link" size="sm" className="h-auto p-0 text-sm text-[var(--destructive)]" onClick={() => openDeleteGroupDialog(group.id)}>
+                          删除
+                        </Button>
+                        <span className="text-[var(--border)]">|</span>
+                        <Button variant="link" size="sm" className="h-auto p-0 text-sm" onClick={() => openPicker(group.id)}>
+                          添加规格
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="p-2">
+                      <DataTable columns={skuColumns} data={groupSkus} emptyText="该分组暂无规格" />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+
+            {/* 未分组的 SKU */}
+            {ungroupedSkus.length > 0 && (
+              <div className="border border-dashed border-[var(--border)] rounded-[var(--radius)]">
+                <div className="flex items-center justify-between px-4 py-3 bg-[var(--muted)]/20">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm text-[var(--muted-foreground)]">未分组规格</span>
+                    <span className="text-xs text-[var(--muted-foreground)]">（请将这些规格分配到分组中）</span>
+                  </div>
+                </div>
+                <div className="p-2">
+                  <DataTable columns={skuColumns} data={ungroupedSkus} />
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 非套餐：平铺 SKU 列表 */}
+      {!isBundle && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">商品规格列表</CardTitle>
+            <Button size="sm" onClick={() => openPicker()}>
+              添加规格
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <DataTable columns={skuColumns} data={skus} emptyText="暂无规格" />
+          </CardContent>
+        </Card>
+      )}
 
       <form onSubmit={handleSave} onInput={() => setFormDirty(true)} className="space-y-4">
         {/* 基本信息 */}
@@ -348,52 +523,28 @@ export default function MallProductDetailPageClient({
                 <Input name="name" defaultValue={product.name} />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">品项分类</label>
-                <CategoryCascader
-                  name="categoryId"
-                  categories={categories}
-                  value={categoryId}
-                  onChange={handleCategoryChange}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">销售分类</label>
-                <Select name="salesCategory" defaultValue={(product as any).salesCategory ?? ""}>
-                  <option value="">请选择</option>
-                  <option value="自采自销">自采自销</option>
-                  <option value="他销自耗">他销自耗</option>
-                  <option value="他销他耗">他销他耗</option>
-                  <option value="生态合作">生态合作</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">是否套餐</label>
+                <label className="text-sm font-medium">商城分类</label>
                 <Select
-                  value={isBundle ? "true" : "false"}
+                  value={categoryId}
                   onChange={(e) => {
-                    setIsBundle(e.target.value === "true");
+                    setCategoryId(e.target.value);
                     setFormDirty(true);
                   }}
                 >
-                  <option value="false">否</option>
-                  <option value="true">是</option>
+                  <option value="">请选择商城分类</option>
+                  {mallGroups.map((group) => (
+                    <optgroup key={group.categoryId} label={group.categoryName}>
+                      {mallSubCats
+                        .filter((c) => c.categoryGroup === group.categoryName)
+                        .map((c) => (
+                          <option key={c.categoryId} value={c.categoryId}>
+                            {c.categoryName}
+                          </option>
+                        ))}
+                    </optgroup>
+                  ))}
                 </Select>
               </div>
-              {selectedProductKind === "护理项目" && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">是否生美</label>
-                  <Select
-                    value={isShengmei ? "true" : "false"}
-                    onChange={(e) => {
-                      setIsShengmei(e.target.value === "true");
-                      setFormDirty(true);
-                    }}
-                  >
-                    <option value="false">否（科美）</option>
-                    <option value="true">是（生美）</option>
-                  </Select>
-                </div>
-              )}
               <div className="space-y-2">
                 <label className="text-sm font-medium">管理范围</label>
                 <Input value={manageScopeDisplay} disabled />
@@ -541,7 +692,7 @@ export default function MallProductDetailPageClient({
       {/* SKU Picker Dialog */}
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen} className="max-w-2xl">
         <DialogHeader className="relative">
-          <DialogTitle>添加规格</DialogTitle>
+          <DialogTitle>添加规格{pickerTargetGroupId ? ` — ${bundleGroups.find((g) => g.id === pickerTargetGroupId)?.groupName}` : ""}</DialogTitle>
           <DialogClose onOpenChange={setPickerOpen} />
         </DialogHeader>
         <div className="mt-4 space-y-3">
@@ -606,7 +757,7 @@ export default function MallProductDetailPageClient({
         </div>
       </Dialog>
 
-      {/* Remove Confirmation */}
+      {/* Remove SKU Confirmation */}
       <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
         <AlertDialogTitle>确认移除</AlertDialogTitle>
         <AlertDialogDescription>
@@ -624,6 +775,67 @@ export default function MallProductDetailPageClient({
           </AlertDialogCancel>
           <AlertDialogAction onClick={handleRemoveSku} disabled={removing}>
             {removing ? "移除中..." : "移除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* Bundle Group Create/Edit Dialog */}
+      <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
+        <DialogHeader className="relative">
+          <DialogTitle>{editingGroup ? "编辑分组" : "添加分组"}</DialogTitle>
+          <DialogClose onOpenChange={setGroupDialogOpen} />
+        </DialogHeader>
+        <form onSubmit={handleGroupSave} className="mt-4 space-y-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">分组名称</label>
+            <Input
+              name="groupName"
+              defaultValue={editingGroup?.groupName ?? ""}
+              placeholder="如：护理服务、家居产品"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">可选数量</label>
+            <Input
+              name="pickCount"
+              type="number"
+              min={1}
+              defaultValue={editingGroup?.pickCount ?? ""}
+              placeholder="不填则全选"
+            />
+            <p className="text-xs text-[var(--muted-foreground)]">
+              N选M 的 M 值，留空表示该组内全部必选
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setGroupDialogOpen(false)}>
+              取消
+            </Button>
+            <Button type="submit" loading={groupSaving}>
+              {editingGroup ? "保存" : "创建"}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Delete Group Confirmation */}
+      <AlertDialog open={deleteGroupDialogOpen} onOpenChange={setDeleteGroupDialogOpen}>
+        <AlertDialogTitle>确认删除分组</AlertDialogTitle>
+        <AlertDialogDescription>
+          删除后，该分组下的规格将变为未分组状态（不会删除规格关联）。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            onClick={() => {
+              setDeleteGroupDialogOpen(false);
+              setDeletingGroupId(null);
+            }}
+            disabled={deletingGroup}
+          >
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDeleteGroup} disabled={deletingGroup}>
+            {deletingGroup ? "删除中..." : "删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>

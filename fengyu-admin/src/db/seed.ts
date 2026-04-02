@@ -149,25 +149,39 @@ const PRODUCT_CATEGORIES = [
   { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
 ]
 
+// 一级分组（category_group = null，Tab/分组头，不直接关联商品）
+// 二级分类（category_group = 对应一级分组的 categoryName，商品挂载到此层）
 const MALL_CATEGORIES = [
-  { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', sortOrder: 1, isValid: true },
-  { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', sortOrder: 2, isValid: true },
-  { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', sortOrder: 3, isValid: true },
-  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', sortOrder: 4, isValid: true },
-  { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', sortOrder: 5, isValid: true },
-  { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', sortOrder: 6, isValid: true },
-  { categoryId: 'mall-cat-cz-01', categoryName: '储值卡', sortOrder: 7, isValid: true },
+  // 一级分组
+  { categoryId: 'mall-group-care', categoryName: '护理项目', sortOrder: 1 },
+  { categoryId: 'mall-group-welfare', categoryName: '福利活动', sortOrder: 2 },
+  { categoryId: 'mall-group-home', categoryName: '家居产品', sortOrder: 3 },
+  { categoryId: 'mall-group-card', categoryName: '充值卡', sortOrder: 4 },
+  // 二级分类 — 护理项目
+  { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', categoryGroup: '护理项目', sortOrder: 1 },
+  { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', categoryGroup: '护理项目', sortOrder: 2 },
+  { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', categoryGroup: '护理项目', sortOrder: 3 },
+  // 二级分类 — 福利活动
+  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', categoryGroup: '福利活动', sortOrder: 1 },
+  { categoryId: 'mall-cat-hl-02', categoryName: '季节活动', categoryGroup: '福利活动', sortOrder: 2 },
+  { categoryId: 'mall-cat-hl-03', categoryName: '周年庆', categoryGroup: '福利活动', sortOrder: 3 },
+  // 二级分类 — 家居产品
+  { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', categoryGroup: '家居产品', sortOrder: 1 },
+  { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', categoryGroup: '家居产品', sortOrder: 2 },
+  // 二级分类 — 充值卡
+  { categoryId: 'mall-cat-cz-01', categoryName: '储值卡', categoryGroup: '充值卡', sortOrder: 1 },
+  { categoryId: 'mall-cat-cz-02', categoryName: '次卡', categoryGroup: '充值卡', sortOrder: 2 },
 ]
 
 const PRODUCTS = [
-  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, pickCount: null, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, pickCount: null, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, pickCount: null, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, pickCount: null, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, pickCount: null, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, pickCount: null, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-03-01', validEnd: null },
-  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, pickCount: null, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, pickCount: null, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: null },
+  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: '2026-12-31' },
+  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-03-01', validEnd: null },
+  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
+  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: null },
 ]
 
 const PRODUCT_SKUS = [
@@ -297,7 +311,7 @@ const OPERATION_LOGS = [
   { operatorEmployeeId: 'FY-260201-0006', operatorName: '孙浩', operatorRole: 'manager', orgNodeId: 'org-store-jj01', orgNodeName: '九江旗舰店', action: 'order.confirmOffline', targetType: 'sale_order', targetId: 'FY-XSD-WX-260311-0002', detail: { previousStatus: '待确认收款', newStatus: '已支付' }, source: 'staffApi', createdAt: new Date('2026-03-11T14:10:00Z') },
   { operatorEmployeeId: 'FY-260101-0002', operatorName: '刘芳', operatorRole: 'staff', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'service.complete', targetType: 'service_order', targetId: 'HLD-WX-2603110001', detail: { remainingSessions: { before: 10, after: 9 } }, source: 'staffApi', createdAt: new Date('2026-03-11T11:30:00Z') },
   { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'permission.assign', targetType: 'permission_role', targetId: '11', detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a' }, source: 'adminApi', createdAt: new Date('2025-02-01T10:00:00Z') },
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'sync.trigger', targetType: 'system', targetId: 'workfine-sync', detail: { type: 'full', modules: ['org_nodes', 'stores', 'employees', 'customers', 'commission'] }, source: 'adminApi', createdAt: new Date('2026-03-13T08:00:00Z') },
+
 ]
 
 // ---------------------------------------------------------------------------

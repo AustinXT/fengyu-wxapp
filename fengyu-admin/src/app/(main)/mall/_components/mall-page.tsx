@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Pagination } from "@/components/ui/pagination"
+import { MallCategoryCascader } from "@/components/ui/mall-category-cascader"
 import { formatCurrency, formatDate } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
@@ -63,7 +64,20 @@ export default function MallPageClient({
     {
       key: "categoryName",
       header: "商城分类",
-      cell: (row) => <span>{row.categoryName ?? "—"}</span>,
+      cell: (row) => (
+        <span>
+          {row.categoryGroup && row.categoryName
+            ? `${row.categoryGroup} / ${row.categoryName}`
+            : row.categoryName ?? "—"}
+        </span>
+      ),
+    },
+    {
+      key: "isBundle",
+      header: "套餐",
+      cell: (row) => (
+        <span>{row.isBundle ? "是" : "—"}</span>
+      ),
     },
     {
       key: "price",
@@ -122,18 +136,14 @@ export default function MallPageClient({
       </div>
 
       <div className="flex items-center gap-3">
-        <select
-          className="h-9 rounded-[var(--radius)] border border-[var(--input)] bg-transparent px-3 text-sm"
+        <MallCategoryCascader
+          categories={categories}
           value={catFilter}
-          onChange={(e) => { setCatFilter(e.target.value); setPage(1) }}
-        >
-          <option value="">全部分类</option>
-          {categories.map((c) => (
-            <option key={c.categoryId} value={c.categoryId}>
-              {c.categoryName}
-            </option>
-          ))}
-        </select>
+          onChange={(id) => { setCatFilter(id); setPage(1) }}
+          allowEmpty
+          placeholder="全部分类"
+          className="w-56"
+        />
         <Input
           placeholder="搜索商品名称"
           value={searchInput}

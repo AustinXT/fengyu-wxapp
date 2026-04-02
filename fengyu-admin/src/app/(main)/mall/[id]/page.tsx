@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getProductById, getSkusByProductId, getCategories, getMarkets, resolveManageScope, getAllSkus } from '@/actions/products'
+import { getProductById, getSkusByProductId, getBundleGroupsByProductId, getCategories, getMallCategories, getMarkets, resolveManageScope, getAllSkus } from '@/actions/products'
 import ProductDetailPageClient from './_components/product-detail-page'
 
 export const dynamic = 'force-dynamic'
@@ -11,9 +11,11 @@ export default async function MallProductDetailPage({
 }) {
   const { id } = await params
 
-  const [product, skus, categories, markets, manageScope, allSkus] = await Promise.all([
+  const [product, skus, bundleGroups, mallCategories, skuCategories, markets, manageScope, allSkus] = await Promise.all([
     getProductById(id),
     getSkusByProductId(id),
+    getBundleGroupsByProductId(id),
+    getMallCategories(),
     getCategories(),
     getMarkets(),
     resolveManageScope(),
@@ -28,8 +30,10 @@ export default async function MallProductDetailPage({
     <ProductDetailPageClient
       product={product}
       skus={skus}
+      bundleGroups={bundleGroups}
       allSkus={allSkus}
-      categories={categories}
+      mallCategories={mallCategories}
+      skuCategories={skuCategories}
       markets={markets}
       manageScope={manageScope}
     />

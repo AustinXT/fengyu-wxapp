@@ -43,9 +43,17 @@ vi.mock('@db/product', () => ({
     isValid: 'is_valid',
     updatedAt: 'updated_at',
   },
+  mallBundleGroups: {
+    id: 'id',
+    productId: 'product_id',
+    groupName: 'group_name',
+    pickCount: 'pick_count',
+    sortOrder: 'sort_order',
+  },
   mallProductSkus: {
     productId: 'product_id',
     skuId: 'sku_id',
+    bundleGroupId: 'bundle_group_id',
     bundlePrice: 'bundle_price',
     sortOrder: 'sort_order',
   },
