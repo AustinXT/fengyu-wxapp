@@ -1,10 +1,4 @@
-// @ts-ignore — 无类型声明的 JS SDK
-import QQMapWX from './qqmap-wx-jssdk.min';
-
-/** Tencent LBS Key — 仅授权给 appid wx811eb4ded3dfba3f */
-const LBS_KEY = 'EGIBZ-QAEKQ-XQ557-B23AA-RFYIK-FCB47';
-
-const qqmapsdk = new QQMapWX({ key: LBS_KEY });
+import { callClientApi } from '../../utils/cloud';
 
 export interface LocationResult {
   province: string;
@@ -16,7 +10,7 @@ export interface LocationResult {
 
 /**
  * 自动定位：获取当前位置的省/市/区
- * 流程：wx.getFuzzyLocation() → qqmap-wx-jssdk 逆地理编码 → 位置信息
+ * 流程：wx.getFuzzyLocation() → store.geocode 云函数(TMAP_KEY 签名) → 位置信息
  */
 export async function getCurrentLocation(): Promise<LocationResult> {
   // 1. 获取模糊 GPS 坐标 (gcj02)
@@ -28,26 +22,19 @@ export async function getCurrentLocation(): Promise<LocationResult> {
     });
   });
 
-  // 2. qqmap-wx-jssdk 逆地理编码
-  const ac = await new Promise<any>((resolve, reject) => {
-    qqmapsdk.reverseGeocoder({
-      location: { latitude, longitude },
-      success: (res: any) => {
-        resolve(res.result?.address_component || {});
-      },
-      fail: (err: any) => {
-        reject(new Error(err?.message || '逆地理编码失败'));
-      },
-    });
+  // 2. 调用云函数逆地理编码
+  const data = await callClientApi<{ province: string; city: string; district: string }>('store.geocode', {
+    latitude,
+    longitude,
   });
 
-  const city = (ac.city || '').replace(/市$/, '');
+  const city = data?.city || '';
   if (!city) throw new Error('未获取到城市信息');
 
   return {
-    province: ac.province || '',
+    province: data?.province || '',
     city,
-    district: ac.district || '',
+    district: data?.district || '',
     latitude,
     longitude,
   };
