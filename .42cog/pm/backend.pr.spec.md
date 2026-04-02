@@ -27,7 +27,7 @@
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `name` | text | 节点名称，NOT NULL |
-| `type` | org_node_type enum | `headquarters` / `market` / `store` / `department`，NOT NULL |
+| `type` | org_node_type enum | `总部` / `市场` / `门店` / `部门`，NOT NULL |
 | `parent_id` | text \| null | FK → `org_nodes.id`（NULL = 根节点） |
 | `sort_order` | integer | 排序序号，NOT NULL DEFAULT 0 |
 | `is_active` | boolean | 是否启用，NOT NULL DEFAULT true |
@@ -41,10 +41,10 @@
 >
 > | 节点类型 | parent 必须是 |
 > |----------|--------------|
-> | headquarters | NULL（根节点，仅一个） |
-> | market | headquarters |
-> | store | market |
-> | department | headquarters / market / store（不能挂在 department 下） |
+> | 总部 | NULL（根节点，仅一个） |
+> | 市场 | 总部 |
+> | 门店 | 市场 |
+> | 部门 | 总部 / 市场 / 门店（不能挂在 部门 下） |
 >
 > `permission_roles.scope_id` → FK `org_nodes.id`
 
@@ -54,7 +54,7 @@
 |------|------|------|
 | `store_id` | text | 主键，UUID |
 | `store_name` | text | 门店名称（唯一索引） |
-| `org_node_id` | text \| null | FK → `org_nodes.id`（关联 type='store' 的节点） |
+| `org_node_id` | text \| null | FK → `org_nodes.id`（关联 type='门店' 的节点） |
 | `opening_date` | date \| null | 开业时间 |
 | `bed_count` | integer \| null | 可用床位数 |
 | `is_closed` | boolean | 是否停止营业，NOT NULL DEFAULT false |
@@ -71,7 +71,7 @@
 
 > **索引**: `INDEX(org_node_id)`。业务表通过 `store_id` FK 关联 stores，市场名称通过 JOIN `org_nodes` 树获取。
 >
-> **顾客向字段**（`cover_image` ~ `parking_info`）：员工端维护。图片指向 CloudBase 云存储。经纬度用于距离排序（Haversine，无需 PostGIS）。stores 是 org_nodes（type='store'）的 1:1 扩展表。
+> **顾客向字段**（`cover_image` ~ `parking_info`）：员工端维护。图片指向 CloudBase 云存储。经纬度用于距离排序（Haversine，无需 PostGIS）。stores 是 org_nodes（type='门店'）的 1:1 扩展表。
 
 ### 2.3 staff_wechat_users（员工 / 员工端微信用户）
 
@@ -88,7 +88,7 @@
 | `gender` | varchar(20) \| null | 性别 |
 | `id_card` | varchar(200) \| null | 身份证号码（AES-256-GCM 加密存储，密钥存环境变量） |
 | `store_id` | text \| null | FK → `stores.store_id` |
-| `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='department' 的部门节点） |
+| `org_node_id` | text \| null | FK → `org_nodes.id`（指向 type='部门' 的部门节点） |
 | `position_name` | varchar(50) \| null | 工作职位 |
 | `birthday` | date \| null | 出生日期 |
 | `skills` | text[] \| null | 技能标签数组 |
@@ -190,7 +190,7 @@
 | `client_phone` | varchar(30) \| null | 顾客手机号快照；员工开单时必填 |
 | `customer_name` | varchar(50) \| null | 顾客姓名快照 |
 | `total_amount` | numeric(10,2) | 订单总金额（退款为负数），NOT NULL |
-| `payment_method` | enum | `wechat` / `alipay` / `offline` |
+| `payment_method` | enum | `微信` / `支付宝` / `线下` |
 | `sale_order_source` | enum | `client` / `staff` / `admin`；回款/转换/退款仅 `staff` 或 `admin` |
 | `opened_by` | varchar(30) \| null | 开单人，FK → `staff_wechat_users.employee_id` |
 | `preferred_employee_id` | varchar(30) \| null | 顾客指定美容师，FK → `staff_wechat_users.employee_id` |
@@ -199,7 +199,7 @@
 | `alipay_transaction_id` | varchar(64) \| null | 支付宝交易号（唯一索引） |
 | `offline_confirmed_by` | varchar(30) \| null | 线下确认人，FK → `staff_wechat_users.employee_id` |
 | `offline_confirmed_at` | timestamp | 线下确认时间 |
-| `allocation_status` | allocation_status enum \| null | null → `pending` → `allocated` |
+| `allocation_status` | allocation_status enum \| null | null → `待分配` → `已分配` |
 | `coupon_id` | text \| null | 使用的券实例ID |
 | `coupon_discount` | numeric(10,2) | 券抵扣总金额，DEFAULT 0 |
 
@@ -219,17 +219,17 @@
 ### 2.9 sale_items（销售明细）
 
 > **复用说明**：sale_items 用于销售、回款、转换、退款四种单据的明细行。`item_direction` 标识行的方向语义：
-> - `purchase`（默认）：正常购买行
-> - `convert_out`：转换退出行，`quantity` = 退次数，`received` = 负数
-> - `convert_in`：转换转入行，创建新的 sale_item
-> - `refund_out`：退款退出行，`quantity` = 退次数，`received` = 负数
+> - `购买`（默认）：正常购买行
+> - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
+> - `转入`：转换转入行，创建新的 sale_item
+> - `退出`：退款退出行，`quantity` = 退次数，`received` = 负数
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_item_id` | varchar(30) | 主键，格式 `XSLSH-WX-{YYYYMMDD}{序号}` |
 | `sale_order_id` | varchar(30) | FK → `sale_orders.sale_order_id`，NOT NULL |
-| `item_direction` | enum | `purchase` / `convert_out` / `convert_in` / `refund_out` |
-| `ref_sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`；convert_out/refund_out 引用原购买行 |
+| `item_direction` | enum | `购买` / `转出` / `转入` / `退出` |
+| `ref_sale_item_id` | varchar(30) \| null | FK → `sale_items.sale_item_id`；转出/退出 引用原购买行 |
 | `sku_id` | text \| null | FK → `product_skus.sku_id` |
 | `session_count` | integer \| null | 疗程总次数 |
 | `remaining_sessions` | integer \| null | 剩余可用次数；原子递减防超卖 |
@@ -271,7 +271,7 @@
 |------|------|------|
 | `service_order_id` | varchar(30) | 主键，格式 `HLD-WX-{YYMMDD}{序号}` |
 | `status` | enum | `待服务` / `服务中` / `已完成` / `已取消` |
-| `service_order_type` | enum | `普通` / `体验` |
+| `service_order_type` | enum | `售前` / `售后`（由顾客 customer_type 自动判定：会员客→售后，其他→售前） |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
 | `service_date` | date | 护理服务日期 |
@@ -342,7 +342,7 @@
 |------|------|------|
 | `employee_id` | varchar(30) NOT NULL | FK → `staff_wechat_users.employee_id` |
 | `role` | text NOT NULL | `admin` / `manager` / `finance` / `hr` / `product` / `staff` / `customer_mgr` |
-| `scope_id` | text NOT NULL | FK → `org_nodes.id`（headquarters/market/store 级别） |
+| `scope_id` | text NOT NULL | FK → `org_nodes.id`（总部/市场/门店 级别） |
 | `is_void` | boolean | 软删除标记，NOT NULL DEFAULT false |
 | `voided_at` | timestamp \| null | 作废时间 |
 | `created_by` | text \| null | 创建者（同步脚本标记 `'sync'`，手动标记操作人员工编号） |
@@ -380,13 +380,13 @@
 | `request_id` | text | 主键 |
 | `user_id` | text | FK → `client_wechat_users.user_id`，NOT NULL |
 | `from_store_id` | text | FK → `stores.store_id`，NOT NULL |
-| `status` | enum | `pending` / `approved` / `rejected` / `cancelled`，NOT NULL DEFAULT `pending` |
+| `status` | enum | `待处理` / `已通过` / `已拒绝` / `已取消`，NOT NULL DEFAULT `待处理` |
 | `note` | text \| null | 申请备注 |
 | `reviewed_by` | varchar(30) \| null | FK → `staff_wechat_users.employee_id` |
 | `reviewed_at` | timestamp \| null | 审批时间 |
 | `reject_reason` | text \| null | 拒绝原因 |
 
-> `approved` 后清除 `client_wechat_users.bound_store_id`；`cancelled` = 顾客主动撤销。
+> `已通过` 后清除 `client_wechat_users.bound_store_id`；`已取消` = 顾客主动撤销。
 
 ### 2.18 coupon_templates（券模板）
 
@@ -508,7 +508,7 @@ ctx.auth = {
     {
       role,          // 'manager' | 'finance' | 'hr' | 'product' | 'staff' | 'customer_mgr'
       scope: {
-        type,        // 'headquarters' | 'market' | 'store'
+        type,        // '总部' | '市场' | '门店'
         nodeId,      // org_nodes.id
         nodeName,    // org_nodes.name
         marketName,  // store 时通过 JOIN 父节点获取，headquarters 时为 null
@@ -581,7 +581,7 @@ login 返回中包含 `permissions` 字段：
 17. **员工开单顾客身份验证**：通过手机号查询 `client_wechat_users.phone`，填入 `client_user_id`
 18. **预约取消后可重新发起**：`已取消` 可重新发起；`已关闭` 不可
 19. **回款规则**：`ref_sale_order_id` 必填；回款时原子累加原 `sale_item.received`；支持多次回款（N:1）；支付方式与销售单一致；仅员工端操作
-20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `convert_out` 行和 `convert_in` 行，单事务完成；`convert_out` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
+20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
 21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
 22. **回款/转换/退款仅员工端操作**
 
@@ -624,9 +624,9 @@ login 返回中包含 `permissions` 字段：
 ### 5.4 营业额分配状态机
 
 ```text
-null → pending               （订单支付成功）
-pending → allocated          （店长完成分配）
-allocated → pending          （店长删除重新分配）
+null → 待分配               （订单支付成功）
+待分配 → 已分配              （店长完成分配）
+已分配 → 待分配              （店长删除重新分配）
 ```
 
 ### 5.5 退款审批状态机

@@ -141,7 +141,7 @@
 |------|----------|
 | 员工端开单 | 开单流程中手动分配 |
 | 顾客端下单（指定美容师） | 支付后系统自动创建分配记录 |
-| 顾客端下单（未指定美容师） | allocation_status = pending，店长手动分配 |
+| 顾客端下单（未指定美容师） | allocation_status = 待分配，店长手动分配 |
 
 **API**: `allocation.save` / `allocation.deleteAllocation` / `allocation.getCommissionRates` / `allocation.pendingList` / `allocation.suggest` / `staff.departments`
 

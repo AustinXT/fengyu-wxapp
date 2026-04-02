@@ -160,10 +160,10 @@ product.shopInit(门店商品初始化)
 
 ```text
 顾客发起 store.requestUnbind(reason)
-  → status: pending
+  → status: 待处理
   → 员工端 store.approveUnbind / rejectUnbind
-  → approved: 清除 client_wechat_users.bound_store_id
-  → 顾客可查看状态 / 可取消(pending 时)
+  → 已通过: 清除 client_wechat_users.bound_store_id
+  → 顾客可查看状态 / 可取消(待处理 时)
 ```
 
 ## 8. 外部集成
