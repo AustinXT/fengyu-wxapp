@@ -22,7 +22,7 @@ const ROUTE_LABELS: Record<string, string> = {
   "/coupons": "优惠券管理",
   "/data-center": "数据中心",
   "/permissions": "权限管理",
-  "/sync": "数据同步",
+
   "/logs": "操作日志",
   "/settings": "系统配置",
 }

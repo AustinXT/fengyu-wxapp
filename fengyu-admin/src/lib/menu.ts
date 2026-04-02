@@ -15,7 +15,7 @@ import {
   Ticket,
   BarChart3,
   Shield,
-  RefreshCw,
+
   ScrollText,
   Settings,
   Unlink,
@@ -77,7 +77,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     label: '系统管理',
     items: [
       { label: '权限管理', icon: Shield, href: '/permissions', requiredRoles: ['admin', 'hr'] },
-      { label: '数据同步', icon: RefreshCw, href: '/sync', requiredRoles: ['admin'] },
+
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredRoles: ['admin'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredRoles: ['admin'] },
     ],
