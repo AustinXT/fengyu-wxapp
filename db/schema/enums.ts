@@ -1,67 +1,70 @@
-import { pgEnum } from 'drizzle-orm/pg-core'
+import { pgEnum } from "drizzle-orm/pg-core";
 
+export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "院装产品"]);
 
-export const productTypeEnum = pgEnum('product_type', ['疗程卡', '单品', '院装产品'])
+export const orderStatusEnum = pgEnum("order_status", [
+  "待支付",
+  "待确认收款",
+  "已支付",
+  "已完成",
+  "支付失败",
+  "已关闭",
+  "待审批",
+]);
 
-export const orderStatusEnum = pgEnum('order_status', [
-  '待支付',
-  '待确认收款',
-  '已支付',
-  '已完成',
-  '支付失败',
-  '已关闭',
-  '待审批',
-])
+export const saleOrderTypeEnum = pgEnum("sale_order_type", [
+  "普通",
+  "体验",
+  "内部",
+  "福利活动",
+  "回款",
+  "转换",
+  "退款",
+]);
 
-export const saleOrderTypeEnum = pgEnum('sale_order_type', [
-  '普通', '体验', '内部', '福利活动', '回款', '转换', '退款',
-])
+export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 
-export const allocationStatusEnum = pgEnum('allocation_status', ['pending', 'allocated'])
+export const itemDirectionEnum = pgEnum("item_direction", ["购买", "转出", "转入", "退出"]);
 
-export const itemDirectionEnum = pgEnum('item_direction', [
-  'purchase', 'convert_out', 'convert_in', 'refund_out',
-])
+export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下"]);
 
-export const paymentMethodEnum = pgEnum('payment_method', ['wechat', 'alipay', 'offline'])
+export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "已完成", "已取消"]);
 
-export const orderSourceEnum = pgEnum('order_source', ['client', 'staff', 'admin'])
+export const serviceOrderTypeEnum = pgEnum("service_order_type", ["售前", "售后"]);
 
-export const serviceOrderStatusEnum = pgEnum('service_order_status', ['待服务', '服务中', '已完成', '已取消'])
+export const appointmentStatusEnum = pgEnum("appointment_status", ["待确认", "已确认", "已完成", "已取消", "已关闭"]);
 
-export const serviceOrderTypeEnum = pgEnum('service_order_type', ['普通', '体验'])
+export const storeUnbindRequestStatusEnum = pgEnum("store_unbind_request_status", [
+  "待处理",
+  "已通过",
+  "已拒绝",
+  "已取消",
+]);
 
-export const appointmentStatusEnum = pgEnum('appointment_status', [
-  '待确认',
-  '已确认',
-  '已完成',
-  '已取消',
-  '已关闭',
-])
+export const salesCategoryEnum = pgEnum("sales_category", ["自采自销", "他销自耗", "他销他耗", "生态合作"]);
 
-export const storeUnbindRequestStatusEnum = pgEnum('store_unbind_request_status', [
-  'pending', 'approved', 'rejected', 'cancelled',
-])
+export const couponTypeEnum = pgEnum("coupon_type", ["现金券", "项目券", "折扣券"]);
 
-export const salesCategoryEnum = pgEnum('sales_category', [
-  '自采自销', '他销自耗', '他销他耗', '生态合作',
-])
+export const couponStatusEnum = pgEnum("coupon_status", ["未使用", "已使用", "已过期"]);
 
-export const couponTypeEnum = pgEnum('coupon_type', ['现金券', '项目券', '折扣券'])
+export const orgNodeTypeEnum = pgEnum("org_node_type", ["总部", "市场", "门店", "部门"]);
 
-export const couponStatusEnum = pgEnum('coupon_status', ['未使用', '已使用', '已过期'])
+export const pointTransactionTypeEnum = pgEnum("point_transaction_type", ["获取", "兑换"]);
 
-export const orgNodeTypeEnum = pgEnum('org_node_type', [
-  'headquarters',  // 总部（根节点，仅一个）
-  'market',        // 市场
-  'store',         // 门店
-  'department',    // 部门（可挂在任意层级）
-])
+export const messageRecipientTypeEnum = pgEnum("message_recipient_type", ["客户", "员工"]);
 
-export const pointTransactionTypeEnum = pgEnum('point_transaction_type', ['earn', 'redeem'])
+export const cardTransactionTypeEnum = pgEnum("card_transaction_type", ["充值", "扣款"]);
 
-export const messageRecipientTypeEnum = pgEnum('message_recipient_type', ['client', 'staff'])
+export const positionScopeEnum = pgEnum("position_scope", ["总部", "市场", "门店"]);
 
-export const cardTransactionTypeEnum = pgEnum('card_transaction_type', ['topup', 'deduct'])
+export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
 
-export const positionScopeEnum = pgEnum('position_scope', ['headquarters', 'market', 'store'])
+export const documentTypeEnum = pgEnum("document_type", ["售前", "售后"]);
+
+export const spendingTierEnum = pgEnum("spending_tier", ["10W+", "6-10W", "3-6W", "1-3W", "1990-1W", "<1990"]);
+
+export const monthlyActivityEnum = pgEnum("monthly_activity", ["二次客活", "一次客活", "0次客活"]);
+
+export const customerStatusEnum = pgEnum("customer_status", [
+  "保有会员-稳定", "保有会员-有效", "预警沉睡", "冰冻", "休眠",
+]);

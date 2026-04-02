@@ -253,7 +253,7 @@ async function batchInsert(pgPool, orders, dryRun) {
         return [
           o.saleOrderId, '已完成', '普通', o.marketName, o.storeId,
           o.saleDate || new Date().toISOString(), o.clientUserId, o.customerName,
-          totalAmount, 'offline', 'admin', 'allocated', 'WorkFine历史订单导入',
+          totalAmount, '线下', 'admin', '已分配', 'WorkFine历史订单导入',
         ]
       })
       const oMv = buildMultiRowValues(orderRows, 13)
@@ -272,7 +272,7 @@ async function batchInsert(pgPool, orders, dryRun) {
       for (const order of batchOrders) {
         for (const item of order.items) {
           itemRows.push([
-            item.saleItemId, order.saleOrderId, 'purchase', item.itemName,
+            item.saleItemId, order.saleOrderId, '购买', item.itemName,
             item.productType, item.sessionCount, item.remainingSessions,
             item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
             item.expireDate, '自采自销', item.remark,

@@ -140,7 +140,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
     const hqId = hashId('org', 'headquarters', '总部')
     await client.query(`
       INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-      VALUES ($1, '总部', 'headquarters', NULL, 0, true)
+      VALUES ($1, '总部', '总部', NULL, 0, true)
       ON CONFLICT (id) DO UPDATE SET name = '总部', updated_at = now()
     `, [hqId])
 
@@ -153,7 +153,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       marketIdMap[markets[i]] = marketId
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'market', $3, $4, true)
+        VALUES ($1, $2, '市场', $3, $4, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [marketId, markets[i], hqId, i])
     }
@@ -172,7 +172,7 @@ async function syncOrgNodesAndStores(mssqlPool, pgPool, dryRun) {
       // org_nodes store 节点
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'store', $3, 0, true)
+        VALUES ($1, $2, '门店', $3, 0, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [storeOrgNodeId, storeName, parentMarketId])
 
@@ -245,7 +245,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     })
 
     // 收集门店级部门对 + 无门店的全局部门
-    const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = 'headquarters' LIMIT 1")
+    const hqRes = await client.query("SELECT id FROM org_nodes WHERE type = '总部' LIMIT 1")
     const hqId = hqRes.rows[0]?.id
     const storeDeptPairs = new Set()  // "storeName|deptName"
     const globalDeptNames = new Set() // 无门店员工的部门
@@ -268,7 +268,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
       const parentId = storeOrgNodeMap[storeName]
       await client.query(`
         INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-        VALUES ($1, $2, 'department', $3, 0, true)
+        VALUES ($1, $2, '部门', $3, 0, true)
         ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, updated_at = now()
       `, [deptId, deptName, parentId])
       storeDeptMap[pair] = deptId
@@ -281,7 +281,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
         const deptId = hashId('org', 'department', deptName)
         await client.query(`
           INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
-          VALUES ($1, $2, 'department', $3, 0, true)
+          VALUES ($1, $2, '部门', $3, 0, true)
           ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
         `, [deptId, deptName, hqId])
         globalDeptMap[deptName] = deptId
@@ -381,7 +381,7 @@ async function syncEmployees(mssqlPool, pgPool, dryRun) {
     if (hqId) {
       const { rowCount } = await client.query(`
         DELETE FROM org_nodes
-        WHERE type = 'department'
+        WHERE type = '部门'
           AND parent_id = $1
           AND id NOT IN (SELECT DISTINCT org_node_id FROM staff_wechat_users WHERE org_node_id IS NOT NULL)
       `, [hqId])
@@ -611,7 +611,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
           ELSE c.phone
         END,
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        member_level = s.member_level, customer_source = s.customer_source,
+        customer_source = s.customer_source,
         category = s.category, birthday = s.birthday, occupation = s.occupation,
         is_married = s.is_married, wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,
@@ -656,7 +656,6 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
         name = EXCLUDED.name,
         bound_store_id = EXCLUDED.bound_store_id,
         bound_employee_id = EXCLUDED.bound_employee_id,
-        member_level = EXCLUDED.member_level,
         customer_source = EXCLUDED.customer_source,
         category = EXCLUDED.category,
         birthday = EXCLUDED.birthday,
@@ -675,7 +674,7 @@ async function syncCustomers(mssqlPool, pgPool, dryRun) {
     const updateByCustId = await client.query(`
       UPDATE client_wechat_users c SET
         name = s.name, bound_store_id = s.bound_store_id, bound_employee_id = s.bound_employee_id,
-        member_level = s.member_level, customer_source = s.customer_source,
+        customer_source = s.customer_source,
         category = s.category, birthday = s.birthday, occupation = s.occupation,
         is_married = s.is_married, wechat_name = s.wechat_name,
         skin_type = s.skin_type, improvement_focus = s.improvement_focus,

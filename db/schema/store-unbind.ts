@@ -11,7 +11,7 @@ export const storeUnbindRequests = pgTable('store_unbind_requests', {
   fromStoreId:  text('from_store_id')
     .notNull()
     .references(() => stores.storeId),
-  status:       storeUnbindRequestStatusEnum('status').notNull().default('pending'),
+  status:       storeUnbindRequestStatusEnum('status').notNull().default('待处理'),
   note:         text('note'),
   reviewedBy:   varchar('reviewed_by', { length: 30 }).references(() => staffWechatUsers.employeeId),
   reviewedAt:   timestamp('reviewed_at'),

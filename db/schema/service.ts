@@ -17,7 +17,7 @@ export const serviceOrders = pgTable(
   {
     serviceOrderId: varchar('service_order_id', { length: 30 }).primaryKey(),
     status: serviceOrderStatusEnum('status').notNull().default('待服务'),
-    serviceOrderType: serviceOrderTypeEnum('service_order_type').notNull().default('普通'),
+    serviceOrderType: serviceOrderTypeEnum('service_order_type').notNull().default('售前'),
     /** 所属市场（快照） */
     marketName: varchar('market_name', { length: 100 }).notNull(),
     storeId: text('store_id')
