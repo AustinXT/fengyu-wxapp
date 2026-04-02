@@ -25,7 +25,7 @@ function mockSession(overrides?: Partial<AuthSession>): AuthSession {
     employeeId: 'EMP-001',
     name: '测试用户',
     phone: '13800138000',
-    roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' }],
+    roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
     permissions: {
       actions: ['dashboard:view', 'employee:list', 'employee:create'],
       scopeStoreIds: ['S001', 'S002'],
@@ -169,14 +169,14 @@ describe('buildScopeWhere', () => {
 describe('isAdminScope', () => {
   it('admin 角色返回 true', () => {
     const session = mockSession({
-      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' }],
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
     })
     expect(isAdminScope(session)).toBe(true)
   })
 
   it('非 admin 角色返回 false', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
     })
     expect(isAdminScope(session)).toBe(false)
   })
@@ -184,8 +184,8 @@ describe('isAdminScope', () => {
   it('混合角色中有 admin 返回 true', () => {
     const session = mockSession({
       roles: [
-        { role: 'hr', scopeId: 'hq-1', scopeType: 'headquarters' },
-        { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+        { role: 'hr', scopeId: 'hq-1', scopeType: '总部' },
+        { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
       ],
     })
     expect(isAdminScope(session)).toBe(true)
@@ -200,7 +200,7 @@ describe('isAdminScope', () => {
 describe('scopeCondition', () => {
   it('admin 返回 undefined（无过滤）', () => {
     const session = mockSession({
-      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' }],
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
     })
     const result = scopeCondition(session, {} as any) // column mock
     expect(result).toBeUndefined()
@@ -208,7 +208,7 @@ describe('scopeCondition', () => {
 
   it('非 admin 有 scopeStoreIds 返回 SQL 条件', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
       permissions: { actions: [], scopeStoreIds: ['S001', 'S002'] },
     })
     const result = scopeCondition(session, {} as any)
@@ -217,7 +217,7 @@ describe('scopeCondition', () => {
 
   it('非 admin 无 scopeStoreIds 返回 FALSE', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
       permissions: { actions: [], scopeStoreIds: [] },
     })
     const result = scopeCondition(session, {} as any)
@@ -228,7 +228,7 @@ describe('scopeCondition', () => {
 describe('isInScope', () => {
   it('admin 任何门店都返回 true', () => {
     const session = mockSession({
-      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' }],
+      roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
       permissions: { actions: [], scopeStoreIds: [] },
     })
     expect(isInScope(session, 'ANY-STORE')).toBe(true)
@@ -236,7 +236,7 @@ describe('isInScope', () => {
 
   it('非 admin 门店在 scope 内返回 true', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
       permissions: { actions: [], scopeStoreIds: ['S001', 'S002'] },
     })
     expect(isInScope(session, 'S001')).toBe(true)
@@ -244,7 +244,7 @@ describe('isInScope', () => {
 
   it('非 admin 门店不在 scope 内返回 false', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
       permissions: { actions: [], scopeStoreIds: ['S001'] },
     })
     expect(isInScope(session, 'S999')).toBe(false)
@@ -252,7 +252,7 @@ describe('isInScope', () => {
 
   it('非 admin 空 scopeStoreIds 返回 false', () => {
     const session = mockSession({
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: 'store' }],
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
       permissions: { actions: [], scopeStoreIds: [] },
     })
     expect(isInScope(session, 'S001')).toBe(false)
@@ -278,7 +278,7 @@ describe('expandScopeStoreIds', () => {
     ;(db.select as any).mockReturnValue({ from: mockFrom })
 
     const result = await expandScopeStoreIds([
-      { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+      { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
     ])
     expect(result).toContain('S001')
     expect(result).toContain('S002')
@@ -303,7 +303,7 @@ describe('expandScopeStoreIds', () => {
     }))
 
     const result = await expandScopeStoreIds([
-      { role: 'manager', scopeId: 'market-1', scopeType: 'market' },
+      { role: 'manager', scopeId: 'market-1', scopeType: '市场' },
     ])
     expect(result).toContain('S003')
   })
@@ -317,7 +317,7 @@ describe('expandScopeStoreIds', () => {
     })
 
     const result = await expandScopeStoreIds([
-      { role: 'manager', scopeId: 'store-node-5', scopeType: 'store' },
+      { role: 'manager', scopeId: 'store-node-5', scopeType: '门店' },
     ])
     expect(result).toContain('S005')
   })

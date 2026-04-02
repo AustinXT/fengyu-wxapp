@@ -678,7 +678,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'market' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '市场' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -721,7 +721,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'department' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '部门' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -777,9 +777,9 @@ describe('getOrgLevel2ForFilter', () => {
       }
       // 查询子节点: select → from → where → orderBy
       const orderBy = vi.fn().mockResolvedValue([
-        { id: 'market-1', name: '南昌市场', type: 'market' },
-        { id: 'market-2', name: '九江市场', type: 'market' },
-        { id: 'dept-1', name: '人事部', type: 'department' },
+        { id: 'market-1', name: '南昌市场', type: '市场' },
+        { id: 'market-2', name: '九江市场', type: '市场' },
+        { id: 'dept-1', name: '人事部', type: '部门' },
       ])
       const where = vi.fn().mockReturnValue({ orderBy })
       const from = vi.fn().mockReturnValue({ where })
@@ -789,9 +789,9 @@ describe('getOrgLevel2ForFilter', () => {
     const result = await getOrgLevel2ForFilter()
 
     expect(result).toEqual([
-      { id: 'market-1', name: '南昌市场', type: 'market' },
-      { id: 'market-2', name: '九江市场', type: 'market' },
-      { id: 'dept-1', name: '人事部', type: 'department' },
+      { id: 'market-1', name: '南昌市场', type: '市场' },
+      { id: 'market-2', name: '九江市场', type: '市场' },
+      { id: 'dept-1', name: '人事部', type: '部门' },
     ])
   })
 

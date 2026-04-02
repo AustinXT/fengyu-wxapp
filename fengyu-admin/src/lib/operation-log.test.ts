@@ -35,7 +35,7 @@ function mockSession(overrides?: Partial<AuthSession>): AuthSession {
     employeeId: 'EMP-001',
     name: '管理员',
     phone: '13800138000',
-    roles: [{ role: 'admin', scopeId: 'org-1', scopeType: 'headquarters' }],
+    roles: [{ role: 'admin', scopeId: 'org-1', scopeType: '总部' }],
     permissions: { actions: [], scopeStoreIds: [] },
     ...overrides,
   }
@@ -57,7 +57,7 @@ describe('logOperation', () => {
 
   it('无 scopeId 时 orgNodeId 为 null', async () => {
     const session = mockSession({
-      roles: [{ role: 'admin', scopeId: '', scopeType: 'headquarters' }],
+      roles: [{ role: 'admin', scopeId: '', scopeType: '总部' }],
     })
     await logOperation(session, 'store.create', 'store', 'S001')
 

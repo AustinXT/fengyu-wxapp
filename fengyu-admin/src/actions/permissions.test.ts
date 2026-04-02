@@ -187,7 +187,7 @@ describe('assignRole — AC-09 & scope constraint', () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      if (callCount === 1) return mockSelectOnce({ type: 'headquarters' })() // HQ check
+      if (callCount === 1) return mockSelectOnce({ type: '总部' })() // HQ check
       return mockSelectOnce(null)() // no existing role
     })
     const values = vi.fn().mockResolvedValue({})
@@ -204,12 +204,12 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(hasRole as any).mockReturnValue(true)
 
     // HQ check 返回 market 类型
-    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: 'market' })())
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '市场' })())
 
     const result = await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'market-1' })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('headquarters')
+    expect(result.message).toContain('总部')
     expect(db.insert).not.toHaveBeenCalled()
   })
 
