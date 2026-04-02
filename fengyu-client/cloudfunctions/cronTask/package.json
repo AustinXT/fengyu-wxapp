@@ -1,0 +1,10 @@
+{
+  "name": "cronTask",
+  "version": "1.0.0",
+  "description": "定时任务：每日凌晨3点更新顾客到店状态",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3",
+    "pg": "^8.11.3"
+  }
+}
