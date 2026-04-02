@@ -40,8 +40,7 @@ function _formatCategory(r) {
 async function _queryFormattedSkuList(categoryId, productKind) {
   const params = []
   const conditions = [
-    `(sk.valid_start IS NULL OR sk.valid_start <= CURRENT_DATE)`,
-    `(sk.valid_end IS NULL OR sk.valid_end >= CURRENT_DATE)`
+    `sk.is_enabled = true`
   ]
 
   if (categoryId) {
@@ -186,8 +185,7 @@ async function spuDetail(ctx) {
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
     LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
-      AND (sk.valid_start IS NULL OR sk.valid_start <= CURRENT_DATE)
-      AND (sk.valid_end IS NULL OR sk.valid_end >= CURRENT_DATE)
+      AND sk.is_enabled = true
     ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [spuId])
 

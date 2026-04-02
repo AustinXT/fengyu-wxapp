@@ -8,8 +8,8 @@ const pg = require('../db/pg')
 /**
  * 有效性过滤条件（商城商品层 + SKU 层叠加）
  */
-const PRODUCT_VALID_FILTER = `(p.valid_start IS NULL OR p.valid_start <= CURRENT_DATE) AND (p.valid_end IS NULL OR p.valid_end >= CURRENT_DATE)`
-const SKU_VALID_FILTER = `(sk.valid_start IS NULL OR sk.valid_start <= CURRENT_DATE) AND (sk.valid_end IS NULL OR sk.valid_end >= CURRENT_DATE)`
+const PRODUCT_VALID_FILTER = `p.is_enabled = true AND p.is_visible = true`
+const SKU_VALID_FILTER = `sk.is_enabled = true`
 
 /**
  * 内部函数：获取商品分类列表（mall_categories）
