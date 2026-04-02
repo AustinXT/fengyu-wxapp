@@ -55,7 +55,10 @@ Page({
     showSourcePopup: false,
     sourceChannel: '',
     promoterName: '',
-    sourceChannels: ['推广部', '老带新', '美团', '抖音', '转让店', '自进', '内部地推', '第三方拓客'],
+    sourceGroups: [
+      { label: '线上来源', channels: ['美团', '抖音', '小程序'] },
+      { label: '线下来源', channels: ['推带新', '地推卡', '拓客卡', '老带新', '转让店', '自进店', '内部员工或家属'] },
+    ],
   },
 
   onLoad(options: { storeId?: string; storeName?: string }) {

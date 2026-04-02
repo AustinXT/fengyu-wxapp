@@ -118,7 +118,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     }
     return allItems.filter(
       (item) =>
-        item.itemDirection === "purchase" &&
+        item.itemDirection === "购买" &&
         item.sessionCount !== null &&
         (item.remainingSessions ?? 0) > 0
     )
@@ -333,10 +333,26 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 <div className="space-y-2">
                   <label className="text-sm font-medium">顾客来源</label>
                   {isEditing ? (
-                    <Input
+                    <Select
                       value={form.customerSource}
                       onChange={(e) => handleFormChange("customerSource", e.target.value)}
-                    />
+                    >
+                      <option value="">请选择来源</option>
+                      <optgroup label="线上来源">
+                        <option value="美团">美团</option>
+                        <option value="抖音">抖音</option>
+                        <option value="小程序">小程序</option>
+                      </optgroup>
+                      <optgroup label="线下来源">
+                        <option value="推带新">推带新</option>
+                        <option value="地推卡">地推卡</option>
+                        <option value="拓客卡">拓客卡</option>
+                        <option value="老带新">老带新</option>
+                        <option value="转让店">转让店</option>
+                        <option value="自进店">自进店</option>
+                        <option value="内部员工或家属">内部员工或家属</option>
+                      </optgroup>
+                    </Select>
                   ) : (
                     <Input value={customer.customerSource ?? ""} disabled />
                   )}
