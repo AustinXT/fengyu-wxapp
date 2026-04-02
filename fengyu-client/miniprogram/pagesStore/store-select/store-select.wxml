@@ -6,7 +6,7 @@
   <!-- 当前城市提示 -->
   <view wx:if="{{currentCity}}" class="location-bar">
     <van-icon name="location-o" size="14" />
-    <text>当前城市：{{currentCity}}</text>
+    <text>当前城市：{{currentCity}}{{currentDistrict ? ' · ' + currentDistrict : ''}}</text>
   </view>
 
   <van-search

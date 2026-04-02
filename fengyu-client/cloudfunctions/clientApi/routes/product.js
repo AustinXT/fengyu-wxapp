@@ -32,8 +32,7 @@ async function getCategoriesList(marketName) {
       mc.category_name,
       mc.sort_order AS category_order
     FROM mall_categories mc
-    WHERE mc.is_valid = true
-      AND EXISTS (
+    WHERE EXISTS (
         SELECT 1 FROM products p
         JOIN mall_product_skus mps ON mps.product_id = p.product_id
         JOIN product_skus sk ON mps.sku_id = sk.sku_id

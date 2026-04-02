@@ -245,12 +245,19 @@ async function geocode(ctx) {
   })
 
   const json = JSON.parse(body)
-  if (json.status !== 0) throw new Error('INVALID_PARAMS: 逆地理编码失败')
+  if (json.status !== 0) {
+    console.error('[geocode] LBS API error:', JSON.stringify(json))
+    throw new Error('INVALID_PARAMS: 逆地理编码失败')
+  }
 
-  const city = json.result?.address_component?.city || ''
-  const cityName = city.replace(/市$/, '')
+  const ac = json.result?.address_component || {}
+  const cityName = (ac.city || '').replace(/市$/, '')
 
-  ctx.result = { city: cityName }
+  ctx.result = {
+    province: ac.province || '',
+    city: cityName,
+    district: ac.district || '',
+  }
 }
 
 module.exports = {
