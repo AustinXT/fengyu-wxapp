@@ -253,6 +253,7 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
       saleOrderId: r.order.saleOrderId,
       status: r.order.status as SaleOrder['status'],
       saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
+      documentType: r.order.documentType as SaleOrder['documentType'],
       refSaleOrderId: r.order.refSaleOrderId,
       marketName: r.order.marketName,
       storeId: r.order.storeId,

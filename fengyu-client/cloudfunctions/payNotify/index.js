@@ -22,6 +22,15 @@ function getPg() {
   return pgPool
 }
 
+function determineMemberLevel(spend) {
+  if (spend >= 100000) return '黑钻'
+  if (spend >= 60000)  return '金钻'
+  if (spend >= 30000)  return '粉钻'
+  if (spend >= 10000)  return '星钻'
+  if (spend >= 1990)   return '初钻'
+  return null
+}
+
 /**
  * 云函数入口
  */
@@ -39,7 +48,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount FROM sale_orders WHERE sale_order_id = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id FROM sale_orders WHERE sale_order_id = $1',
       [orderNo]
     )
 
@@ -105,6 +114,115 @@ exports.main = async (event) => {
              VALUES ($1, $2, 1.00, $3, $4, $4)
              ON CONFLICT DO NOTHING`,
             [item.sale_item_id, order.preferred_employee_id, item.received, now]
+          )
+        }
+      }
+
+      // 4. 重算顾客历史消费档位
+      if (order.client_user_id) {
+        await client.query(
+          `UPDATE client_wechat_users
+           SET spending_tier = CASE
+             WHEN t.total >= 100000 THEN '10W+'
+             WHEN t.total >= 60000  THEN '6-10W'
+             WHEN t.total >= 30000  THEN '3-6W'
+             WHEN t.total >= 10000  THEN '1-3W'
+             WHEN t.total >= 1990   THEN '1990-1W'
+             ELSE '<1990'
+           END::spending_tier,
+           updated_at = NOW()
+           FROM (
+             SELECT COALESCE(SUM(total_amount), 0) AS total
+             FROM sale_orders
+             WHERE client_user_id = $1
+               AND status IN ('已支付', '已完成')
+           ) t
+           WHERE user_id = $1`,
+          [order.client_user_id]
+        )
+
+        // 5. 重算会员等级（滚动12个月，排除内部单，仅会员客）
+        const ctResult = await client.query(
+          'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+          [order.client_user_id]
+        )
+        if (ctResult.rows[0]?.customer_type === '会员客') {
+          const mlResult = await client.query(
+            `SELECT COALESCE(SUM(total_amount::numeric), 0) AS rolling_spend
+             FROM sale_orders
+             WHERE client_user_id = $1
+               AND status IN ('已支付', '已完成')
+               AND sale_order_type NOT IN ('内部')
+               AND paid_at >= (NOW() - INTERVAL '12 months')`,
+            [order.client_user_id]
+          )
+          const level = determineMemberLevel(Number(mlResult.rows[0]?.rolling_spend || 0))
+          await client.query(
+            'UPDATE client_wechat_users SET member_level = $1, updated_at = NOW() WHERE user_id = $2',
+            [level, order.client_user_id]
+          )
+        }
+
+        // 6. 重算顾客类型（只升不降，已是会员客则跳过）
+        const curType = await client.query(
+          'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+          [order.client_user_id]
+        )
+        if (curType.rows[0]?.customer_type !== '会员客') {
+          const configResult = await client.query(
+            "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+          )
+          const threshold = Number(configResult.rows[0]?.value) || 1990
+
+          const typeResult = await client.query(
+            `SELECT CASE
+               WHEN EXISTS (
+                 SELECT 1 FROM sale_orders o
+                 WHERE o.client_user_id = $1
+                   AND o.status IN ('已支付', '已完成')
+                   AND o.sale_order_type = '普通'
+                   AND (
+                     o.total_amount >= $2
+                     OR (o.total_amount + COALESCE((
+                       SELECT SUM(r.total_amount)
+                       FROM sale_orders r
+                       WHERE r.ref_sale_order_id = o.sale_order_id
+                         AND r.sale_order_type = '回款'
+                         AND r.status IN ('已支付', '已完成')
+                     ), 0)) >= $2
+                   )
+               ) THEN '会员客'
+               WHEN EXISTS (
+                 SELECT 1 FROM sale_orders
+                 WHERE client_user_id = $1
+                   AND status IN ('已支付', '已完成')
+                   AND sale_order_type = '普通'
+               ) THEN '小美客'
+               WHEN EXISTS (
+                 SELECT 1 FROM sale_orders
+                 WHERE client_user_id = $1
+                   AND status IN ('已支付', '已完成')
+                   AND sale_order_type = '体验'
+               ) THEN '体验客'
+               ELSE '流量客'
+             END AS computed_type`,
+            [order.client_user_id, threshold]
+          )
+
+          const newType = typeResult.rows[0].computed_type
+          await client.query(
+            `UPDATE client_wechat_users
+             SET customer_type = $2::customer_type, updated_at = NOW()
+             WHERE user_id = $1
+               AND (CASE customer_type
+                      WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                      WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+                    END)
+                 < (CASE $2::customer_type
+                      WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+                      WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+                    END)`,
+            [order.client_user_id, newType]
           )
         }
       }
