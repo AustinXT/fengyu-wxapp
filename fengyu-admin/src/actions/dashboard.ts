@@ -66,7 +66,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
           THEN 1
         END) AS pending_orders,
         COUNT(CASE
-          WHEN status IN ('已支付') AND allocation_status = 'pending'
+          WHEN status IN ('已支付') AND allocation_status = '待分配'
           THEN 1
         END) AS pending_allocations,
         COUNT(DISTINCT CASE

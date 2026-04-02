@@ -84,7 +84,7 @@ describe('store.approveUnbind', () => {
       .mockResolvedValueOnce([{
         user_id: 'u1',
         from_store_id: 'store-001',
-        status: 'pending',
+        status: '待处理',
       }])
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE client_wechat_users
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE store_unbind_requests
@@ -99,7 +99,7 @@ describe('store.approveUnbind', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'u1',
       from_store_id: 'store-other', // 不是当前门店
-      status: 'pending',
+      status: '待处理',
     }])
 
     await expect(storeRoutes.approveUnbind(ctx))
@@ -112,7 +112,7 @@ describe('store.approveUnbind', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'u1',
       from_store_id: 'store-001',
-      status: 'approved', // 已审批
+      status: '已通过', // 已审批
     }])
 
     await expect(storeRoutes.approveUnbind(ctx))
@@ -147,7 +147,7 @@ describe('store.rejectUnbind', () => {
     pg.query
       .mockResolvedValueOnce([{
         from_store_id: 'store-001',
-        status: 'pending',
+        status: '待处理',
       }])
       .mockResolvedValueOnce({ rows: [], rowCount: 1 })
 
@@ -176,7 +176,7 @@ describe('store.rejectUnbind', () => {
 
     pg.query.mockResolvedValueOnce([{
       from_store_id: 'store-other',
-      status: 'pending',
+      status: '待处理',
     }])
 
     await expect(storeRoutes.rejectUnbind(ctx))
@@ -188,7 +188,7 @@ describe('store.rejectUnbind', () => {
 
     pg.query.mockResolvedValueOnce([{
       from_store_id: 'store-001',
-      status: 'rejected',
+      status: '已拒绝',
     }])
 
     await expect(storeRoutes.rejectUnbind(ctx))

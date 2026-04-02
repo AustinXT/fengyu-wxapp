@@ -457,7 +457,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                       <OrgTreeSelect
                         className="flex-1"
                         orgNodes={orgNodes}
-                        excludeTypes={['department']}
+                        excludeTypes={['部门']}
                         value={entry.scopeId}
                         onChange={(id) => {
                           const updated = [...roleEntries]

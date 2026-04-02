@@ -164,7 +164,7 @@ Page({
       const order = orderData.order;
       const items: OrderItem[] = suggestData.items || orderData.items || [];
       const totalAmount = suggestData.totalAmount || Number(order.totalAmount) || 0;
-      const isAllocated = order.allocation_status === 'allocated';
+      const isAllocated = order.allocation_status === '已分配';
       const rates: RateRow[] = suggestData.rates || [];
       const beautyRates: Record<string, Record<string, number>> = suggestData.beautyRates || {};
 

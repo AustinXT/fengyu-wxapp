@@ -64,7 +64,7 @@ Page({
   },
 
   _buildPayload() {
-    const typeMap = ['all', 'earn', 'redeem'];
+    const typeMap = ['all', '获取', '兑换'];
     const type = typeMap[this.data.activeTab] || 'all';
     return { type: type === 'all' ? undefined : type };
   },

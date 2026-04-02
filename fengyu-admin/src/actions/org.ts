@@ -12,7 +12,7 @@ import { requirePermission, isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
 import { logOperation } from '@/lib/operation-log'
 
-const VALID_NODE_TYPES = ['headquarters', 'market', 'store', 'department'] as const
+const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
 /**
  * 校验 org_node 是否在用户 scope 内（admin 始终通过）。
@@ -81,11 +81,11 @@ export async function createOrgNode(data: {
       return { success: false, message: '父节点不存在' }
     }
     // department 下不能再建 department
-    if (parent.type === 'department' && data.type === 'department') {
+    if (parent.type === '部门' && data.type === '部门') {
       return { success: false, message: '部门不可嵌套' }
     }
-    // store 下只能建 department
-    if (parent.type === 'store' && data.type !== 'department') {
+    // 门店下只能建部门
+    if (parent.type === '门店' && data.type !== '部门') {
       return { success: false, message: '门店节点下只能创建部门' }
     }
 

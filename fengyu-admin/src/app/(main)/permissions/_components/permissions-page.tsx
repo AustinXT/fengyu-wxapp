@@ -26,9 +26,9 @@ const roleBgMap: Record<string, string> = {
 }
 
 const scopeTypeBadge: Record<string, { label: string; className: string }> = {
-  headquarters: { label: "总部", className: "bg-[#FFF0F0] text-[#D94040] border-[#D94040]" },
-  market: { label: "市场", className: "bg-[#FFF8E6] text-[#D4820A] border-[#D4820A]" },
-  store: { label: "门店", className: "bg-[#F5F5F5] text-[#888888] border-[#888888]" },
+  总部: { label: "总部", className: "bg-[#FFF0F0] text-[#D94040] border-[#D94040]" },
+  市场: { label: "市场", className: "bg-[#FFF8E6] text-[#D4820A] border-[#D4820A]" },
+  门店: { label: "门店", className: "bg-[#F5F5F5] text-[#888888] border-[#888888]" },
 }
 
 const allRoles: RoleType[] = ["admin", "manager", "finance", "hr", "product", "customer_mgr", "staff"]
@@ -118,7 +118,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
 
   // 过滤：仅保留 headquarters/market/store 且 active
   const permissionNodes = useMemo(
-    () => orgNodes.filter(n => n.isActive && n.type !== "department"),
+    () => orgNodes.filter(n => n.isActive && n.type !== "部门"),
     [orgNodes],
   )
 
@@ -401,7 +401,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
                 const role = e.target.value as RoleType
                 setAssignRoleValue(role)
                 if (role === "admin") {
-                  const hq = orgNodes.find(n => n.type === "headquarters")
+                  const hq = orgNodes.find(n => n.type === "总部")
                   if (hq) setAssignScopeId(hq.id)
                 }
               }}
@@ -419,7 +419,7 @@ export default function PermissionsPage({ initialRoles, initialScopeId, roleCoun
             <OrgTreeSelect
               className="mt-1"
               orgNodes={orgNodes}
-              excludeTypes={["department"]}
+              excludeTypes={["部门"]}
               value={assignScopeId}
               onChange={(id) => setAssignScopeId(id)}
               placeholder="选择组织节点"

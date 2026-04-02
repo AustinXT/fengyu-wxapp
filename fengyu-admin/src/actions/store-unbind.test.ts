@@ -73,7 +73,7 @@ const pendingRequest = {
   requestId: 'REQ-001',
   userId: 'CLIENT-001',
   fromStoreId: 'STORE-001',
-  status: 'pending',
+  status: '待处理',
   note: null,
   rejectReason: null,
   reviewedBy: null,

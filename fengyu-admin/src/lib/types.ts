@@ -2,7 +2,7 @@
 export interface OrgNode {
   id: string
   name: string
-  type: 'headquarters' | 'market' | 'store' | 'department'
+  type: '总部' | '市场' | '门店' | '部门'
   parentId: string | null
   sortOrder: number
   isActive: boolean
@@ -82,7 +82,7 @@ export interface Customer {
   employeeName?: string
 }
 
-export type PositionScope = 'headquarters' | 'market' | 'store'
+export type PositionScope = '总部' | '市场' | '门店'
 
 export interface Position {
   id: string
@@ -107,14 +107,14 @@ export type ProductKind = string
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
 export type SaleOrderType = '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
-export type PaymentMethod = 'wechat' | 'alipay' | 'offline'
+export type PaymentMethod = '微信' | '支付宝' | '线下'
 export type OrderSource = 'client' | 'staff' | 'admin'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
-export type ServiceOrderType = '普通' | '体验'
+export type ServiceOrderType = '售前' | '售后'
 export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
 export type SalesCategory = '自采自销' | '他销自耗' | '他销他耗' | '生态合作'
-export type AllocationStatus = 'pending' | 'allocated'
-export type ItemDirection = 'purchase' | 'convert_out' | 'convert_in' | 'refund_out'
+export type AllocationStatus = '待分配' | '已分配'
+export type ItemDirection = '购买' | '转出' | '转入' | '退出'
 export type CouponType = '现金券' | '项目券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
 export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
@@ -208,10 +208,13 @@ export interface MallCategory {
   updatedAt: string
 }
 
+export type DocumentType = '售前' | '售后'
+
 export interface SaleOrder {
   saleOrderId: string
   status: OrderStatus
   saleOrderType: SaleOrderType
+  documentType: DocumentType | null
   refSaleOrderId: string | null
   marketName: string
   storeId: string
@@ -437,7 +440,7 @@ export interface AuthSession {
   roles: Array<{
     role: RoleType
     scopeId: string
-    scopeType: 'headquarters' | 'market' | 'store'
+    scopeType: '总部' | '市场' | '门店'
   }>
   permissions: {
     actions: string[]

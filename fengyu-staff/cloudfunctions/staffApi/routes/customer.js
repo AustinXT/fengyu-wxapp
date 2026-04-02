@@ -120,7 +120,7 @@ async function search(ctx) {
       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
       WHERE o.client_user_id = ANY($1)
         AND o.status IN ('已支付', '已完成')
-        AND si.item_direction = 'purchase'
+        AND si.item_direction = '购买'
       ORDER BY o.client_user_id, o.paid_at DESC NULLS LAST, si.sale_item_id ASC
     `, [allClientUserIds]);
     const lastPurchaseMap = {};
@@ -380,7 +380,7 @@ async function getTopProduct(clientUserId) {
     JOIN sale_items si ON si.sale_order_id = o.sale_order_id
     WHERE o.client_user_id = $1
       AND o.status IN ('已支付', '已完成')
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
     GROUP BY si.product_name
     ORDER BY cnt DESC
     LIMIT 1
@@ -634,7 +634,7 @@ async function listByTag(ctx) {
       JOIN sale_items si ON si.sale_order_id = o.sale_order_id
       WHERE o.client_user_id = ANY($1)
         AND o.status IN ('已支付', '已完成')
-        AND si.item_direction = 'purchase'
+        AND si.item_direction = '购买'
       ORDER BY o.client_user_id, o.paid_at DESC NULLS LAST, si.sale_item_id ASC
     `, [pagedUserIds])
     for (const r of lastPurchaseRows) {
@@ -775,7 +775,7 @@ async function giftHistory(ctx) {
     WHERE ${whereClause}
       AND o.status IN ('已支付', '已完成')
       AND o.sale_order_type NOT IN ('福利活动', '退款', '转换', '回款')
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       AND si.received::numeric = 0
     ORDER BY o.created_at DESC
   `, params)

@@ -131,7 +131,7 @@ export default function OrderCreatePageClient({
   }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
   const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
-  const [paymentMethod, setPaymentMethod] = useState("wechat")
+  const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [searching, setSearching] = useState(false)
@@ -591,9 +591,9 @@ export default function OrderCreatePageClient({
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
                 <Select className="mt-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                  <option value="wechat">微信支付</option>
-                  <option value="alipay">支付宝</option>
-                  <option value="offline">线下支付</option>
+                  <option value="微信">微信支付</option>
+                  <option value="支付宝">支付宝</option>
+                  <option value="线下">线下支付</option>
                 </Select>
               </div>
               <div>
@@ -790,7 +790,7 @@ export default function OrderCreatePageClient({
                     clientUserId: selectedCustomer?.userId || null,
                     clientPhone: selectedCustomer?.phone || manualPhone.trim(),
                     customerName: selectedCustomer?.name || manualPhone.trim(),
-                    paymentMethod: paymentMethod as 'wechat' | 'alipay' | 'offline',
+                    paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
@@ -848,18 +848,18 @@ export default function OrderCreatePageClient({
             <p className="text-sm text-[#999999]">
               {paymentConfirmed
                 ? '订单已确认收款，状态已更新为已支付'
-                : paymentMethod === 'offline'
+                : paymentMethod === '线下'
                   ? '线下支付订单，可直接确认收款'
                   : '请将二维码展示给顾客，扫码进入小程序完成支付'}
             </p>
 
             {/* 微信/支付宝支付：可打印 QR 码（spec §5.12） */}
-            {paymentMethod !== 'offline' && createdOrderId && !paymentConfirmed && (
+            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
             {/* 线下支付：确认收款按钮 */}
-            {paymentMethod === 'offline' && createdOrderId && !paymentConfirmed && (
+            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed && (
               <div className="pt-2">
                 <Button
                   loading={confirming}

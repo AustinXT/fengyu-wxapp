@@ -24,9 +24,9 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import type { SaleOrder, Store, OrderStatus, SaleOrderType } from "@/lib/types";
 
 const paymentMethodMap: Record<string, string> = {
-  wechat: "微信支付",
-  alipay: "支付宝",
-  offline: "线下支付",
+  微信: "微信支付",
+  支付宝: "支付宝",
+  线下: "线下支付",
 };
 
 const orderTypeColorMap: Record<string, string> = {

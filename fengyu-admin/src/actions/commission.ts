@@ -22,7 +22,7 @@ export async function getMarkets(): Promise<MarketOption[]> {
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'market'))
+    .where(eq(orgNodes.type, '市场'))
     .orderBy(orgNodes.sortOrder)
 
   return rows.map((r) => ({ orgId: r.id, name: r.name }))

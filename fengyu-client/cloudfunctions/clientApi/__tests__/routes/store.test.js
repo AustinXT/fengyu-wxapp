@@ -109,7 +109,7 @@ describe('store.getUnbindRequest', () => {
   test('有 pending 申请时返回', async () => {
     pg.query.mockResolvedValueOnce([{
       request_id: 'req-1', from_store_name: '凤御A店',
-      status: 'pending', note: '搬家', created_at: '2025-01-01',
+      status: '待处理', note: '搬家', created_at: '2025-01-01',
     }])
 
     const ctx = createBoundCtx({})
@@ -137,7 +137,7 @@ describe('store.getUnbindRequest', () => {
 describe('store.cancelUnbindRequest', () => {
   test('正常取消 pending 申请', async () => {
     pg.query
-      .mockResolvedValueOnce([{ user_id: 'user-001', status: 'pending' }])
+      .mockResolvedValueOnce([{ user_id: 'user-001', status: '待处理' }])
       .mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
@@ -147,14 +147,14 @@ describe('store.cancelUnbindRequest', () => {
   })
 
   test('非本人申请 → PERMISSION_DENIED', async () => {
-    pg.query.mockResolvedValueOnce([{ user_id: 'other-user', status: 'pending' }])
+    pg.query.mockResolvedValueOnce([{ user_id: 'other-user', status: '待处理' }])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
     await expect(routes.cancelUnbindRequest(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
   test('非 pending 状态 → INVALID_PARAMS', async () => {
-    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', status: 'approved' }])
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', status: '已通过' }])
 
     const ctx = createBoundCtx({ requestId: 'req-1' })
     await expect(routes.cancelUnbindRequest(ctx)).rejects.toThrow(/INVALID_PARAMS.*不允许取消/)

@@ -591,7 +591,7 @@ Page({
         clientUserId: customerInfo.id || null,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
-        paymentMethod: 'wechat',
+        paymentMethod: '微信',
         orderType,
         items: cart.map(c => ({
           skuId: c.skuId,

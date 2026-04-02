@@ -192,8 +192,8 @@ export async function assignRole(data: {
       .from(orgNodes)
       .where(eq(orgNodes.id, data.scopeId))
       .limit(1)
-    if (!node || node.type !== 'headquarters') {
-      return { success: false, message: 'admin 角色必须绑定总部节点（headquarters）' }
+    if (!node || node.type !== '总部') {
+      return { success: false, message: 'admin 角色必须绑定总部节点' }
     }
   }
 

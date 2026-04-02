@@ -12,7 +12,7 @@ import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 
 /**
- * 获取所有市场节点（type='market'），用于商品可见范围选择。
+ * 获取所有市场节点（type='市场'），用于商品可见范围选择。
  */
 export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const session = await getSession()
@@ -21,7 +21,7 @@ export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows
@@ -34,11 +34,11 @@ export async function resolveManageScope(): Promise<{ scopeId: string | null; sc
   const session = await getSession()
   requirePermission(session, 'product:list')
 
-  if (session.roles.some(r => r.scopeType === 'headquarters')) {
+  if (session.roles.some(r => r.scopeType === '总部')) {
     return { scopeId: null, scopeName: '总部' }
   }
 
-  const marketRole = session.roles.find(r => r.scopeType === 'market')
+  const marketRole = session.roles.find(r => r.scopeType === '市场')
   if (marketRole) {
     const [node] = await db
       .select({ name: orgNodes.name })
@@ -61,7 +61,7 @@ export async function resolveManageScope(): Promise<{ scopeId: string | null; sc
         .from(orgNodes)
         .where(eq(orgNodes.id, storeNode.parentId))
         .limit(1)
-      if (parentNode?.type === 'market') {
+      if (parentNode?.type === '市场') {
         return { scopeId: parentNode.id, scopeName: parentNode.name }
       }
     }

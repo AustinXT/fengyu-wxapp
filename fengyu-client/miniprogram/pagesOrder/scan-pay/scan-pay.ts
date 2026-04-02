@@ -27,7 +27,7 @@ Page({
     order: null as ScanOrder | null,
     items: [] as ScanOrderItem[],
     orderNo: '',
-    paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
+    paymentMethod: '微信' as '微信' | '支付宝' | '线下',
     isLoading: true,
     errorMsg: '',
     statusMsg: '',
@@ -75,11 +75,11 @@ Page({
   },
 
   onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
+    this.setData({ paymentMethod: e.detail as '微信' | '支付宝' | '线下' });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'alipay' | 'offline' };
+    const { method } = e.currentTarget.dataset as { method: '微信' | '支付宝' | '线下' };
     this.setData({ paymentMethod: method });
   },
 
@@ -94,7 +94,7 @@ Page({
     try {
       const { orderNo, paymentMethod } = this.data;
 
-      if (paymentMethod === 'offline') {
+      if (paymentMethod === '线下') {
         await callClientApi('order.offlinePay', { saleOrderId: orderNo });
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => {
@@ -103,7 +103,7 @@ Page({
         return;
       }
 
-      if (paymentMethod === 'alipay') {
+      if (paymentMethod === '支付宝') {
         const data = await callClientApi('order.alipayPay', { saleOrderId: orderNo });
         this.setData({
           showAlipayQr: true,

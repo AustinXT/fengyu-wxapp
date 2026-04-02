@@ -261,7 +261,7 @@ export async function batchSaveAllocations(
 
       await tx
         .update(saleOrders)
-        .set({ allocationStatus: allocations.length > 0 ? 'allocated' : 'pending' })
+        .set({ allocationStatus: allocations.length > 0 ? '已分配' : '待分配' })
         .where(eq(saleOrders.saleOrderId, saleOrderId))
     })
   } catch (err: any) {

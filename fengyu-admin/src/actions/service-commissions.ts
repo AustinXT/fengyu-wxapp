@@ -163,7 +163,7 @@ export async function batchSaveServiceCommissions(
 
       await tx
         .update(serviceOrders)
-        .set({ commissionStatus: commissions.length > 0 ? 'allocated' : 'pending' })
+        .set({ commissionStatus: commissions.length > 0 ? '已分配' : '待分配' })
         .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     })
   } catch (err: any) {

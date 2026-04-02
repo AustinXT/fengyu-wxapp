@@ -14,7 +14,7 @@ export default async function Page() {
   ])
 
   // 默认选中 headquarters 节点，预加载其角色
-  const hqNode = orgNodes.find(n => n.type === 'headquarters')
+  const hqNode = orgNodes.find(n => n.type === '总部')
   const defaultScopeId = hqNode?.id ?? orgNodes.find(n => !n.parentId)?.id ?? ''
   const initialRoles = defaultScopeId ? await getRolesByScope(defaultScopeId) : []
 

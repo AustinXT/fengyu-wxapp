@@ -752,7 +752,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons }: P
                   value={batchOrgFilter}
                   onChange={(id) => setBatchOrgFilter(id)}
                   placeholder="全部门店"
-                  excludeTypes={["department"]}
+                  excludeTypes={["部门"]}
                   className="w-48"
                 />
                 <Select

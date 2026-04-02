@@ -100,16 +100,16 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .from(orgNodes)
       .where(eq(orgNodes.id, filters.marketId))
       .limit(1)
-    if (node?.type === 'market') {
+    if (node?.type === '市场') {
       // 市场：筛选该市场下所有门店的员工
       const sub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
       conditions.push(inArray(staffWechatUsers.storeId, sub))
-    } else if (node?.type === 'department') {
+    } else if (node?.type === '部门') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
-    } else if (node?.type === 'store') {
+    } else if (node?.type === '门店') {
       // 门店：按 orgNodeId 查对应 storeId 过滤
       const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
         .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
@@ -188,7 +188,7 @@ export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: strin
   const [hq] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'headquarters'))
+    .where(eq(orgNodes.type, '总部'))
     .limit(1)
   if (!hq) return []
 

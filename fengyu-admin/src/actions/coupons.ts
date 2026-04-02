@@ -14,7 +14,7 @@ import { logOperation } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 /**
- * 获取所有市场节点（type='market'），用于优惠券市场作用域选择。
+ * 获取所有市场节点（type='市场'），用于优惠券市场作用域选择。
  */
 export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const session = await getSession()
@@ -23,7 +23,7 @@ export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows
@@ -576,9 +576,9 @@ async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | n
 
   if (!node) return null
 
-  if (node.type === 'headquarters') return null
+  if (node.type === '总部') return null
 
-  if (node.type === 'store') {
+  if (node.type === '门店') {
     const [store] = await db
       .select({ storeId: stores.storeId })
       .from(stores)
@@ -587,7 +587,7 @@ async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | n
     return store ? [store.storeId] : []
   }
 
-  if (node.type === 'market') {
+  if (node.type === '市场') {
     const storeRows = await db
       .select({ storeId: stores.storeId })
       .from(stores)

@@ -66,7 +66,7 @@ export default function EmployeesPage({
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
   /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
-  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "department"), [orgNodes]);
+  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },

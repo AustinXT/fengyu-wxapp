@@ -22,9 +22,9 @@ import {
 import { createPosition, updatePosition, deletePosition } from "@/actions/positions"
 
 const SCOPE_TABS: { value: PositionScope; label: string }[] = [
-  { value: "headquarters", label: "总部" },
-  { value: "market", label: "市场" },
-  { value: "store", label: "门店" },
+  { value: "总部", label: "总部" },
+  { value: "市场", label: "市场" },
+  { value: "门店", label: "门店" },
 ]
 
 interface FormData {
@@ -51,12 +51,12 @@ export default function PositionManagementDialog({
   positions: Position[]
 }) {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<PositionScope>("store")
+  const [activeTab, setActiveTab] = useState<PositionScope>("门店")
 
   // Inner dialog state for add/edit
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Position | null>(null)
-  const [form, setForm] = useState<FormData>(emptyForm("store"))
+  const [form, setForm] = useState<FormData>(emptyForm("门店"))
   const [saving, setSaving] = useState(false)
 
   // Delete confirmation
@@ -208,7 +208,7 @@ export default function PositionManagementDialog({
           <DialogTitle>职位管理</DialogTitle>
         </DialogHeader>
         <div className="mt-4">
-          <Tabs defaultValue="store" onValueChange={(v) => setActiveTab(v as PositionScope)}>
+          <Tabs defaultValue="门店" onValueChange={(v) => setActiveTab(v as PositionScope)}>
             <div className="flex items-center justify-between mb-3">
               <TabsList>
                 {SCOPE_TABS.map((tab) => (
