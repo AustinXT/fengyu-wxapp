@@ -12,7 +12,6 @@ interface Spu {
   cover_image: string;
   description: string;
   is_bundle: boolean;
-  pick_count: number | null;
 }
 
 interface Sku {

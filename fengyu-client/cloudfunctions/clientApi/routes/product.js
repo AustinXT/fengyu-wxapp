@@ -90,7 +90,7 @@ async function getProductListByCategory({ categoryId, marketName }) {
       p.product_id, p.name, p.category_id,
       mc.category_name,
       p.cover_image, p.description, p.sort_order,
-      p.price, p.special_price, p.is_bundle, p.pick_count
+      p.price, p.special_price, p.is_bundle
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
     ${whereClause}
@@ -106,9 +106,11 @@ async function getProductListByCategory({ categoryId, marketName }) {
         mps.product_id, sk.sku_id, sk.product_type, sk.spec_name,
         sk.price, sk.special_price, sk.session_count,
         sk.service_fee, mps.sort_order AS display_order,
-        mps.bundle_price
+        mps.bundle_price, mps.bundle_group_id,
+        bg.group_name, bg.pick_count AS group_pick_count
       FROM mall_product_skus mps
       JOIN product_skus sk ON mps.sku_id = sk.sku_id
+      LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
       WHERE mps.product_id = ANY($1)
         AND ${SKU_VALID_FILTER}
       ORDER BY mps.sort_order ASC
@@ -282,7 +284,7 @@ async function spuDetail(ctx) {
       p.product_id, p.name, p.category_id,
       mc.category_name,
       p.cover_image, p.detail_images, p.description, p.sort_order,
-      p.price, p.special_price, p.is_bundle, p.pick_count
+      p.price, p.special_price, p.is_bundle
     FROM products p
     JOIN mall_categories mc ON p.category_id = mc.category_id
     WHERE p.product_id = $1 ${marketFilter}
@@ -299,20 +301,42 @@ async function spuDetail(ctx) {
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
       sk.service_fee, sk.sort_order, sk.is_shengmei,
-      mps.bundle_price, mps.sort_order AS display_order
+      mps.bundle_price, mps.sort_order AS display_order,
+      mps.bundle_group_id,
+      bg.group_name, bg.pick_count AS group_pick_count
     FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
       AND ${SKU_VALID_FILTER}
-    ORDER BY mps.sort_order ASC
+    ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [productId])
 
   const prices = skuList.map(s => Number(s.bundle_price || s.special_price || s.price || 0))
+
+  // 构建分组信息（套餐商品）
+  let bundleGroups = null
+  if (product.is_bundle) {
+    const groupRows = await pg.query(`
+      SELECT id, group_name, pick_count, sort_order
+      FROM mall_bundle_groups
+      WHERE product_id = $1
+      ORDER BY sort_order ASC
+    `, [productId])
+
+    bundleGroups = groupRows.map(g => ({
+      id: g.id,
+      groupName: g.group_name,
+      pickCount: g.pick_count,
+      skuIds: skuList.filter(s => s.bundle_group_id === g.id).map(s => s.sku_id),
+    }))
+  }
 
   ctx.result = {
     spu: {
       ...product,
       skuList,
+      bundleGroups,
       priceFrom: prices.length > 0 ? Math.min(...prices) : null
     }
   }
