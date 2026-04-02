@@ -185,7 +185,7 @@ export default function ServicesPageClient({
                     </td>
                     <td className="px-4 py-3"><StatusBadge status={so.status} /></td>
                     <td className="px-4 py-3">
-                      <Badge variant="secondary" className={so.serviceOrderType === "体验" ? "bg-[#FFF0EE] text-[#C45C48]" : "bg-[#E8F0FE] text-[#3574C4]"}>
+                      <Badge variant="secondary" className={so.serviceOrderType === "售前" ? "bg-[#FFF0EE] text-[#C45C48]" : "bg-[#E8F0FE] text-[#3574C4]"}>
                         {so.serviceOrderType}
                       </Badge>
                     </td>

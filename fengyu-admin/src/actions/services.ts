@@ -261,7 +261,7 @@ export async function getAvailableSaleItems(clientUserId: string): Promise<Avail
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE o.client_user_id = ${clientUserId}
       AND o.status = '已支付'
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       AND si.product_type IN ('疗程卡', '单品')
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
@@ -408,7 +408,6 @@ export async function createServiceOrder(data: {
   clientUserId: string
   assignedEmployeeId: string
   serviceDate: string
-  serviceOrderType?: '普通' | '体验'
   appointmentId?: string | null
   remark?: string | null
   items: Array<{
@@ -423,6 +422,14 @@ export async function createServiceOrder(data: {
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
   }
+
+  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  const [customerRow] = await db
+    .select({ customerType: clientWechatUsers.customerType })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, data.clientUserId))
+    .limit(1)
+  const serviceOrderType = customerRow?.customerType === '会员客' ? '售后' : '售前'
 
   // 先校验剩余次数（事务外，只读查询）
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string; isPresale: boolean }> = []
@@ -476,7 +483,7 @@ export async function createServiceOrder(data: {
       await tx.insert(serviceOrders).values({
         serviceOrderId: id,
         status: '待服务',
-        serviceOrderType: data.serviceOrderType || '普通',
+        serviceOrderType,
         marketName: data.marketName,
         storeId: data.storeId,
         serviceDate: data.serviceDate,

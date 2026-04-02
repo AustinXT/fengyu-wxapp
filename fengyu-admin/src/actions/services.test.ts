@@ -391,7 +391,7 @@ describe('getServiceOrdersPaginated — 服务端分页', () => {
     service_order: {
       serviceOrderId: 'FY-FW-260315-0001',
       status: '待服务',
-      serviceOrderType: '普通',
+      serviceOrderType: '售前',
       marketName: '南昌市场',
       storeId: 'store-1',
       serviceDate: '2026-03-15',

@@ -146,6 +146,18 @@ async function create(ctx) {
     }
   }
 
+  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  let serviceOrderType = '售前'
+  if (resolvedClientUserId) {
+    const ctRows = await pg.query(
+      'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+      [resolvedClientUserId]
+    )
+    if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
+      serviceOrderType = '售后'
+    }
+  }
+
   const serviceOrderId = await generateServiceOrderId()
   const now = new Date()
 
@@ -153,12 +165,13 @@ async function create(ctx) {
     // 创建服务单主表
     await client.query(
       `INSERT INTO service_orders (
-        service_order_id, status, market_name, store_id,
+        service_order_id, status, service_order_type, market_name, store_id,
         service_date, assigned_employee_id,
         remark, client_user_id, appointment_id, created_at, updated_at
-      ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+      ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
       [
         serviceOrderId,
+        serviceOrderType,
         ctx.auth.marketName || '',
         ctx.auth.storeId,
         resolvedServiceDate,

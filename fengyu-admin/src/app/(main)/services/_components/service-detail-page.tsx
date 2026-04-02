@@ -48,7 +48,7 @@ export default function ServiceDetailPageClient({
             <div>
               <span className="text-[#999999]">类型</span>
               <p className="mt-1">
-                <Badge variant="secondary" className={serviceOrder.serviceOrderType === "体验" ? "bg-[#FFF0EE] text-[#C45C48]" : "bg-[#E8F0FE] text-[#3574C4]"}>
+                <Badge variant="secondary" className={serviceOrder.serviceOrderType === "售前" ? "bg-[#FFF0EE] text-[#C45C48]" : "bg-[#E8F0FE] text-[#3574C4]"}>
                   {serviceOrder.serviceOrderType}
                 </Badge>
               </p>
