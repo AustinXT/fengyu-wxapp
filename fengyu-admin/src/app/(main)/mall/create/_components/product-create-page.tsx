@@ -73,8 +73,8 @@ export default function MallProductCreatePageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null
     const description = (fd.get("description") as string).trim() || null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const validStart = (fd.get("validStart") as string) || null
-    const validEnd = (fd.get("validEnd") as string) || null
+    const isEnabled = fd.get("isEnabled") === "on"
+    const isVisible = fd.get("isVisible") === "on"
 
     const productId = `prod-${Date.now()}`
 
@@ -93,8 +93,8 @@ export default function MallProductCreatePageClient({
         manageScope: manageScope.scopeId,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         sortOrder,
-        validStart,
-        validEnd,
+        isEnabled,
+        isVisible,
       })
       if (!result.success) {
         toast.error(result.message)
@@ -284,21 +284,31 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 有效期 */}
+      {/* 启用与展示 */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">有效期</CardTitle>
+          <CardTitle className="text-base">启用与展示</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">生效日期</label>
-              <Input name="validStart" type="date" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">截止日期</label>
-              <Input name="validEnd" type="date" />
-            </div>
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                name="isEnabled"
+                defaultChecked
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm">启用</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                name="isVisible"
+                defaultChecked
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm">客户端展示</span>
+            </label>
           </div>
         </CardContent>
       </Card>

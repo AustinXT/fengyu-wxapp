@@ -157,16 +157,6 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(db.insert).not.toHaveBeenCalled()
   })
 
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
-    const result = await createProduct({
-      productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100',
-      validStart: '2026-12-01', validEnd: '2026-01-01',
-    })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
-  })
-
   it('商品编号重复（23505）→ 友好消息', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
@@ -331,12 +321,6 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('疗程卡的次数必须 >= 1')
   })
 
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    const result = await createSku({ ...baseSkuData, validStart: '2026-12-01', validEnd: '2026-01-01' })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
-  })
-
   it('SKU 编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
@@ -479,7 +463,7 @@ describe('getProducts — 商品列表', () => {
           price: '199.00', specialPrice: null, salesCategory: null,
           manageScope: null, marketScope: null,
           coverImage: null, detailImages: null,
-          validStart: null, validEnd: null, sortOrder: 1,
+          isEnabled: true, isVisible: true, sortOrder: 1,
           createdAt: new Date(), updatedAt: new Date(),
         },
         categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
@@ -524,7 +508,7 @@ describe('getProductById — 单商品查询', () => {
         price: '199.00', specialPrice: null, salesCategory: null,
         manageScope: null, marketScope: null,
         coverImage: null, detailImages: null,
-        validStart: null, validEnd: null, sortOrder: 1,
+        isEnabled: true, isVisible: true, sortOrder: 1,
         createdAt: new Date(), updatedAt: new Date(),
       },
       categoryName: '护理项目', productKind: '护理项目',
@@ -548,7 +532,7 @@ const mockSkuRow = {
   skuId: 'SKU-001', productId: 'prod-1', productType: '疗程卡',
   specName: '10次卡', price: '1999.00', specialPrice: null,
   sessionCount: 10, isBundleSku: false, sortOrder: 1, serviceFee: '50.00',
-  validStart: null, validEnd: null,
+  isEnabled: true,
   createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
 }
 

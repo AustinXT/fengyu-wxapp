@@ -138,12 +138,11 @@ export default function ProductsPageClient({
       cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
     },
     {
-      key: "validEnd" as keyof ProductSku,
-      header: "有效期",
+      key: "isEnabled" as keyof ProductSku,
+      header: "状态",
       cell: (row) => (
-        <span>
-          {row.validStart ? formatDate(row.validStart) : "—"} ~{" "}
-          {row.validEnd ? formatDate(row.validEnd) : "长期"}
+        <span className={row.isEnabled ? "text-[#3D8A5A]" : "text-[#888888]"}>
+          {row.isEnabled ? "启用" : "停用"}
         </span>
       ),
     },

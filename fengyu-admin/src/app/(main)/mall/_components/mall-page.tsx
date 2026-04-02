@@ -94,12 +94,18 @@ export default function MallPageClient({
       ),
     },
     {
-      key: "validEnd",
-      header: "有效期",
+      key: "isEnabled",
+      header: "状态",
       cell: (row) => (
-        <span>
-          {row.validStart ? formatDate(row.validStart) : "—"} ~{" "}
-          {row.validEnd ? formatDate(row.validEnd) : "长期"}
+        <span className="flex gap-2">
+          <span className={row.isEnabled ? "text-[#3D8A5A]" : "text-[#888888]"}>
+            {row.isEnabled ? "启用" : "停用"}
+          </span>
+          {row.isEnabled && (
+            <span className={row.isVisible ? "text-[#5E8BB3]" : "text-[#888888]"}>
+              {row.isVisible ? "展示中" : "未展示"}
+            </span>
+          )}
         </span>
       ),
     },

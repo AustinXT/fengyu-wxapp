@@ -94,8 +94,7 @@ export default function SkuDetailPageClient({
     const sessionCountRaw = (fd.get("sessionCount") as string).trim()
     const sessionCount = sessionCountRaw ? parseInt(sessionCountRaw) : null
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const validStart = (fd.get("validStart") as string) || null
-    const validEnd = (fd.get("validEnd") as string) || null
+    const isEnabled = fd.get("isEnabled") === "on"
 
     setSaving(true)
     try {
@@ -110,8 +109,7 @@ export default function SkuDetailPageClient({
         serviceFee,
         isShengmei: selectedProductKind === '护理项目' ? isShengmei : null,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
-        validStart,
-        validEnd,
+        isEnabled,
       }, sku.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -317,27 +315,22 @@ export default function SkuDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 有效期 */}
+        {/* 启用状态 */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">有效期</CardTitle>
+            <CardTitle className="text-base">启用状态</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">生效日期</label>
-                <Input name="validStart" type="date" defaultValue={sku.validStart ?? ""} />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">截止日期</label>
-                <Input
-                  name="validEnd"
-                  type="date"
-                  defaultValue={sku.validEnd ?? ""}
-                  placeholder="不填则长期有效"
-                />
-              </div>
-            </div>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                name="isEnabled"
+                defaultChecked={sku.isEnabled}
+                onChange={() => setFormDirty(true)}
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm">启用</span>
+            </label>
           </CardContent>
         </Card>
 
