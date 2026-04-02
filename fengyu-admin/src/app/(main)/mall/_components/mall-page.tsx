@@ -50,11 +50,18 @@ export default function MallPageClient({
     {
       key: "coverImage",
       header: "封面图",
-      cell: () => (
-        <div className="h-10 w-10 rounded-[var(--radius)] bg-[var(--muted)] flex items-center justify-center text-xs text-[var(--muted-foreground)]">
-          图
-        </div>
-      ),
+      cell: (row) =>
+        row.coverImage ? (
+          <img
+            src={row.coverImage}
+            alt={row.name}
+            className="h-10 w-10 rounded-[var(--radius)] object-cover"
+          />
+        ) : (
+          <div className="h-10 w-10 rounded-[var(--radius)] bg-[var(--muted)] flex items-center justify-center text-xs text-[var(--muted-foreground)]">
+            无图
+          </div>
+        ),
     },
     {
       key: "name",

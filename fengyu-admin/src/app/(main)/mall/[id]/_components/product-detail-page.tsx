@@ -333,59 +333,66 @@ export default function MallProductDetailPageClient({
   };
 
   // --- SKU columns ---
-  const skuColumns: Column<ProductSku>[] = [
-    {
-      key: "specName",
-      header: "规格名",
-      cell: (row) => <span className="font-medium">{row.specName}</span>,
-    },
-    { key: "productType", header: "产品类型" },
-    {
-      key: "price",
-      header: "标价",
-      cell: (row) => <span>{formatCurrency(row.price)}</span>,
-    },
-    {
-      key: "specialPrice",
-      header: "会员价",
-      cell: (row) => (
-        <span className={row.specialPrice ? "text-[#C0322A]" : ""}>
-          {row.specialPrice ? formatCurrency(row.specialPrice) : "—"}
-        </span>
-      ),
-    },
-    {
-      key: "bundlePrice" as keyof ProductSku,
-      header: "套餐内价格",
-      cell: (row) => (
-        <BundlePriceCell skuId={row.skuId} defaultValue={row.bundlePrice ?? ""} onSave={handleBundlePriceSave} />
-      ),
-    },
-    {
-      key: "sessionCount",
-      header: "次数",
-      cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
-    },
-    {
-      key: "serviceFee",
-      header: "手工费",
-      cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
-    },
-    {
-      key: "actions",
-      header: "操作",
-      cell: (row) => (
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto p-0 text-[var(--destructive)]"
-          onClick={() => openRemoveDialog(row.skuId)}
-        >
-          移除
-        </Button>
-      ),
-    },
-  ];
+  const skuColumns: Column<ProductSku>[] = useMemo(() => {
+    const cols: Column<ProductSku>[] = [
+      {
+        key: "specName",
+        header: "规格名",
+        cell: (row) => <span className="font-medium">{row.specName}</span>,
+      },
+      { key: "productType", header: "产品类型" },
+      {
+        key: "price",
+        header: "标价",
+        cell: (row) => <span>{formatCurrency(row.price)}</span>,
+      },
+      {
+        key: "specialPrice",
+        header: "会员价",
+        cell: (row) => (
+          <span className={row.specialPrice ? "text-[#C0322A]" : ""}>
+            {row.specialPrice ? formatCurrency(row.specialPrice) : "—"}
+          </span>
+        ),
+      },
+    ];
+    if (isBundle) {
+      cols.push({
+        key: "bundlePrice" as keyof ProductSku,
+        header: "套餐内价格",
+        cell: (row) => (
+          <BundlePriceCell skuId={row.skuId} defaultValue={row.bundlePrice ?? ""} onSave={handleBundlePriceSave} />
+        ),
+      });
+    }
+    cols.push(
+      {
+        key: "sessionCount",
+        header: "次数",
+        cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
+      },
+      {
+        key: "serviceFee",
+        header: "手工费",
+        cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
+      },
+      {
+        key: "actions",
+        header: "操作",
+        cell: (row) => (
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-[var(--destructive)]"
+            onClick={() => openRemoveDialog(row.skuId)}
+          >
+            移除
+          </Button>
+        ),
+      },
+    );
+    return cols;
+  }, [isBundle]);
 
   // Group SKUs by bundleGroupId for bundle view
   const ungroupedSkus = useMemo(() => skus.filter((s) => !s.bundleGroupId), [skus]);
