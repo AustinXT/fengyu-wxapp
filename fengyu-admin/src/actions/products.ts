@@ -414,6 +414,7 @@ export async function getSkusByProductId(productId: string): Promise<ProductSku[
     marketScope: r.sku.marketScope,
     validStart: r.sku.validStart,
     validEnd: r.sku.validEnd,
+    bundlePrice: r.bundlePrice,
     createdAt: r.sku.createdAt.toISOString(),
     updatedAt: r.sku.updatedAt.toISOString(),
   }))
@@ -567,7 +568,8 @@ export async function addSkuToProduct(
   } catch (err: any) {
     if (err?.code === '23505') return { success: false, message: '该规格已关联到此商品' }
     if (err?.code === '23503') return { success: false, message: '商品或规格不存在' }
-    throw err
+    console.error('[addSkuToProduct] insert failed:', err)
+    return { success: false, message: `添加失败: ${err?.message ?? '未知错误'}` }
   }
 
   await logOperation(session, 'mall_product_sku.create', 'mall_product_sku', productId, { skuId })
@@ -593,6 +595,28 @@ export async function removeSkuFromProduct(
   await logOperation(session, 'mall_product_sku.delete', 'mall_product_sku', productId, { skuId })
   revalidatePath('/mall')
   return { success: true, message: '规格已移除' }
+}
+
+export async function updateSkuBundlePrice(
+  productId: string,
+  skuId: string,
+  bundlePrice: string | null,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'product:update')
+
+  const result = await db
+    .update(mallProductSkus)
+    .set({ bundlePrice })
+    .where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId)))
+
+  if ((result as any).count === 0) {
+    return { success: false, message: '关联记录不存在' }
+  }
+
+  await logOperation(session, 'mall_product_sku.update', 'mall_product_sku', productId, { skuId, bundlePrice })
+  revalidatePath('/mall')
+  return { success: true, message: '套餐价已更新' }
 }
 
 // ===== 商城管理（mall_categories + products + mall_product_skus） =====

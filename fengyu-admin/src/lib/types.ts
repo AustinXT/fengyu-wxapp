@@ -186,6 +186,7 @@ export interface ProductSku {
   categoryName?: string
   productKind?: ProductKind
   salesCategory?: SalesCategory | null
+  bundlePrice?: string | null
 }
 
 export interface MallCategory {

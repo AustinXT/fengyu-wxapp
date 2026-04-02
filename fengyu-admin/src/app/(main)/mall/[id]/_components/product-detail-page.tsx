@@ -1,20 +1,20 @@
-"use client"
+"use client";
 
-import { useState, useMemo } from "react"
-import { useRouter } from "next/navigation"
-import { toast } from "sonner"
-import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import type { Product, ProductSku, ProductCategory } from "@/lib/types"
-import { updateProduct, updateSku, addSkuToProduct, removeSkuFromProduct } from "@/actions/products"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { CategoryCascader } from "@/components/ui/category-cascader"
-import { Separator } from "@/components/ui/separator"
-import { ImageUpload } from "@/components/ui/image-upload"
-import { DataTable, type Column } from "@/components/ui/data-table"
-import { Sheet, SheetHeader, SheetTitle, SheetClose, SheetContent, SheetFooter } from "@/components/ui/sheet"
+import { useState, useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
+import type { Product, ProductSku, ProductCategory } from "@/lib/types";
+import { updateProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice } from "@/actions/products";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CategoryCascader } from "@/components/ui/category-cascader";
+import { Separator } from "@/components/ui/separator";
+import { ImageUpload } from "@/components/ui/image-upload";
+import { DataTable, type Column } from "@/components/ui/data-table";
+import { Dialog, DialogHeader, DialogTitle, DialogClose } from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogTitle,
@@ -22,12 +22,12 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
   AlertDialogAction,
-} from "@/components/ui/alert-dialog"
-import { formatCurrency } from "@/lib/utils"
+} from "@/components/ui/alert-dialog";
+import { formatCurrency } from "@/lib/utils";
 
 interface Market {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 export default function MallProductDetailPageClient({
@@ -38,269 +38,217 @@ export default function MallProductDetailPageClient({
   markets,
   manageScope,
 }: {
-  product: Product
-  skus: ProductSku[]
-  allSkus: ProductSku[]
-  categories: ProductCategory[]
-  markets: Market[]
-  manageScope: { scopeId: string | null; scopeName: string }
+  product: Product;
+  skus: ProductSku[];
+  allSkus: ProductSku[];
+  categories: ProductCategory[];
+  markets: Market[];
+  manageScope: { scopeId: string | null; scopeName: string };
 }) {
-  const router = useRouter()
-  const [saving, setSaving] = useState(false)
-  const [formDirty, setFormDirty] = useState(false)
-  useUnsavedChanges(formDirty)
-  const [categoryId, setCategoryId] = useState(product.categoryId)
-  const [coverImage, setCoverImage] = useState(product.coverImage ?? "")
-  const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? [])
+  const router = useRouter();
+  const [saving, setSaving] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
+  useUnsavedChanges(formDirty);
+  const [categoryId, setCategoryId] = useState(product.categoryId);
+  const [coverImage, setCoverImage] = useState(product.coverImage ?? "");
+  const [detailImages, setDetailImages] = useState<string[]>(product.detailImages ?? []);
 
-  const [isBundle, setIsBundle] = useState(product.isBundle)
-  const [isShengmei, setIsShengmei] = useState<boolean>((product as any).isShengmei ?? false)
-  const [allMarkets, setAllMarkets] = useState(!product.marketScope)
+  const [isBundle, setIsBundle] = useState(product.isBundle);
+  const [isShengmei, setIsShengmei] = useState<boolean>((product as any).isShengmei ?? false);
+  const [allMarkets, setAllMarkets] = useState(!product.marketScope);
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
-    product.marketScope ? product.marketScope.split(',') : []
-  )
+    product.marketScope ? product.marketScope.split(",") : [],
+  );
 
-  const selectedCategory = categories.find(c => c.categoryId === categoryId)
-  const selectedProductKind = selectedCategory?.productKind
+  const selectedCategory = categories.find((c) => c.categoryId === categoryId);
+  const selectedProductKind = selectedCategory?.productKind;
 
   const manageScopeDisplay = useMemo(() => {
-    if (!product.manageScope) return '总部'
-    const m = markets.find(mk => mk.id === product.manageScope)
-    return m?.name ?? product.manageScope
-  }, [product.manageScope, markets])
+    if (!product.manageScope) return "总部";
+    const m = markets.find((mk) => mk.id === product.manageScope);
+    return m?.name ?? product.manageScope;
+  }, [product.manageScope, markets]);
 
   // SKU Picker state
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [pickerSearch, setPickerSearch] = useState("")
-  const [pickerKindFilter, setPickerKindFilter] = useState("")
-  const [addingSku, setAddingSku] = useState<string | null>(null)
-
-  // SKU Edit Sheet state
-  const [editSheetOpen, setEditSheetOpen] = useState(false)
-  const [editingSku, setEditingSku] = useState<ProductSku | null>(null)
-  const [skuSaving, setSkuSaving] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [pickerCategoryId, setPickerCategoryId] = useState("");
+  const [pickerKindValue, setPickerKindValue] = useState("");
+  const [addingSku, setAddingSku] = useState<string | null>(null);
 
   // Remove dialog state
-  const [removeDialogOpen, setRemoveDialogOpen] = useState(false)
-  const [removingSkuId, setRemovingSkuId] = useState<string | null>(null)
-  const [removing, setRemoving] = useState(false)
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [removingSkuId, setRemovingSkuId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   // SKU Picker computed
-  const linkedSkuIds = useMemo(() => new Set(skus.map(s => s.skuId)), [skus])
+  const linkedSkuIds = useMemo(() => new Set(skus.map((s) => s.skuId)), [skus]);
 
-  const productKindOptions = useMemo(() => {
-    const kinds = new Set(allSkus.map(s => s.productKind).filter(Boolean))
-    return Array.from(kinds) as string[]
-  }, [allSkus])
+  const subCategories = useMemo(() => categories.filter((c) => c.productKind !== null), [categories]);
+  const productKinds = useMemo(() => categories.filter((c) => c.productKind === null), [categories]);
 
   const availableSkus = useMemo(() => {
-    let list = allSkus.filter(s => !linkedSkuIds.has(s.skuId))
+    let list = allSkus.filter((s) => !linkedSkuIds.has(s.skuId));
 
-    if (pickerKindFilter) {
-      list = list.filter(s => s.productKind === pickerKindFilter)
+    if (pickerCategoryId) {
+      list = list.filter((s) => s.categoryId === pickerCategoryId);
+    } else if (pickerKindValue) {
+      list = list.filter((s) => s.productKind === pickerKindValue);
     }
 
     if (pickerSearch.trim()) {
-      const kw = pickerSearch.trim().toLowerCase()
-      list = list.filter(s =>
-        s.specName.toLowerCase().includes(kw) ||
-        (s.categoryName ?? "").toLowerCase().includes(kw)
-      )
+      const kw = pickerSearch.trim().toLowerCase();
+      list = list.filter(
+        (s) => s.specName.toLowerCase().includes(kw) || (s.categoryName ?? "").toLowerCase().includes(kw),
+      );
     }
 
-    return list
-  }, [allSkus, linkedSkuIds, pickerSearch, pickerKindFilter])
+    return list;
+  }, [allSkus, linkedSkuIds, pickerSearch, pickerCategoryId, pickerKindValue]);
 
   const handleCategoryChange = (id: string) => {
-    setCategoryId(id)
-    const cat = categories.find(c => c.categoryId === id)
+    setCategoryId(id);
+    const cat = categories.find((c) => c.categoryId === id);
     if (cat) {
-      setIsBundle(cat.productKind === '福利活动')
-      if (cat.productKind !== '护理项目') {
-        setIsShengmei(false)
+      setIsBundle(cat.productKind === "福利活动");
+      if (cat.productKind !== "护理项目") {
+        setIsShengmei(false);
       }
     }
-    setFormDirty(true)
-  }
+    setFormDirty(true);
+  };
 
   // --- Product Save ---
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const form = e.currentTarget
-    const fd = new FormData(form)
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
 
-    const name = (fd.get("name") as string).trim()
-    const price = (fd.get("price") as string).trim()
+    const name = (fd.get("name") as string).trim();
+    const price = (fd.get("price") as string).trim();
 
     if (!name) {
-      toast.error("请输入商品名称")
-      return
+      toast.error("请输入商品名称");
+      return;
     }
     if (!categoryId) {
-      toast.error("请选择品项分类")
-      return
+      toast.error("请选择品项分类");
+      return;
     }
     if (!price) {
-      toast.error("请输入标价")
-      return
+      toast.error("请输入标价");
+      return;
     }
 
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null
-    const salesCategory = (fd.get("salesCategory") as string) || null
-    const description = (fd.get("description") as string).trim() || null
-    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const validStart = (fd.get("validStart") as string) || null
-    const validEnd = (fd.get("validEnd") as string) || null
+    const specialPrice = (fd.get("specialPrice") as string).trim() || null;
+    const salesCategory = (fd.get("salesCategory") as string) || null;
+    const description = (fd.get("description") as string).trim() || null;
+    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
+    const validStart = (fd.get("validStart") as string) || null;
+    const validEnd = (fd.get("validEnd") as string) || null;
 
-    setSaving(true)
+    setSaving(true);
     try {
-      const result = await updateProduct(product.productId, {
-        categoryId,
-        name,
-        coverImage: coverImage || null,
-        detailImages: detailImages.length > 0 ? detailImages : null,
-        description,
-        isBundle,
-        price,
-        specialPrice,
-        manageScope: manageScope.scopeId,
-        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
-        sortOrder,
-        validStart,
-        validEnd,
-      } as any, product.updatedAt)
+      const result = await updateProduct(
+        product.productId,
+        {
+          categoryId,
+          name,
+          coverImage: coverImage || null,
+          detailImages: detailImages.length > 0 ? detailImages : null,
+          description,
+          isBundle,
+          price,
+          specialPrice,
+          manageScope: manageScope.scopeId,
+          marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
+          sortOrder,
+          validStart,
+          validEnd,
+        } as any,
+        product.updatedAt,
+      );
       if (!result.success) {
-        toast.error(result.message)
-        if (result.message.includes("已被其他人修改")) router.refresh()
-        return
+        toast.error(result.message);
+        if (result.message.includes("已被其他人修改")) router.refresh();
+        return;
       }
-      setFormDirty(false)
-      toast.success("保存成功")
-      router.refresh()
+      setFormDirty(false);
+      toast.success("保存成功");
+      router.refresh();
     } catch {
-      toast.error("保存失败，请稍后重试")
+      toast.error("保存失败，请稍后重试");
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   // --- SKU Picker ---
   const openPicker = () => {
-    setPickerSearch("")
-    setPickerKindFilter("")
-    setPickerOpen(true)
-  }
+    setPickerSearch("");
+    setPickerCategoryId("");
+    setPickerKindValue("");
+    setPickerOpen(true);
+  };
 
   const handleAddSku = async (skuId: string) => {
-    setAddingSku(skuId)
+    setAddingSku(skuId);
     try {
-      const result = await addSkuToProduct(product.productId, skuId)
+      const result = await addSkuToProduct(product.productId, skuId);
       if (!result.success) {
-        toast.error(result.message)
-        return
+        toast.error(result.message);
+        return;
       }
-      toast.success("规格已添加")
-      router.refresh()
+      toast.success("规格已添加");
+      router.refresh();
     } catch {
-      toast.error("添加失败，请稍后重试")
+      toast.error("添加失败，请稍后重试");
     } finally {
-      setAddingSku(null)
+      setAddingSku(null);
     }
-  }
+  };
 
-  // --- SKU Edit ---
-  const openEditSku = (sku: ProductSku) => {
-    setEditingSku(sku)
-    setEditSheetOpen(true)
-  }
-
-  const handleSkuSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    if (!editingSku) return
-    const form = e.currentTarget
-    const fd = new FormData(form)
-
-    const specName = (fd.get("specName") as string).trim()
-    const productType = fd.get("productType") as string
-    const price = (fd.get("price") as string).trim()
-    const sessionCount = parseInt(fd.get("sessionCount") as string)
-
-    if (!specName) {
-      toast.error("请输入规格名称")
-      return
-    }
-    if (!productType) {
-      toast.error("请选择产品类型")
-      return
-    }
-    if (!price) {
-      toast.error("请输入标价")
-      return
-    }
-    if (isNaN(sessionCount) || sessionCount < 1) {
-      toast.error("次数至少为 1")
-      return
-    }
-
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null
-    const serviceFee = (fd.get("serviceFee") as string).trim() || "0"
-    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const skuValidStart = (fd.get("skuValidStart") as string) || null
-    const skuValidEnd = (fd.get("skuValidEnd") as string) || null
-
-    setSkuSaving(true)
+  // --- bundlePrice inline edit ---
+  const handleBundlePriceSave = async (skuId: string, value: string) => {
+    const bundlePrice = value.trim() === "" ? null : value.trim();
     try {
-      const skuResult = await updateSku(editingSku.skuId, {
-        specName,
-        productType,
-        price,
-        specialPrice,
-        sessionCount,
-        serviceFee,
-        sortOrder,
-        validStart: skuValidStart,
-        validEnd: skuValidEnd,
-      } as any, editingSku.updatedAt)
-      if (!skuResult.success) {
-        toast.error(skuResult.message)
-        if (skuResult.message.includes("已被其他人修改")) router.refresh()
-        return
+      const result = await updateSkuBundlePrice(product.productId, skuId, bundlePrice);
+      if (!result.success) {
+        toast.error(result.message);
+        router.refresh();
+        return;
       }
-      toast.success("规格更新成功")
-      setEditSheetOpen(false)
-      router.refresh()
+      toast.success("套餐价已更新");
     } catch {
-      toast.error("更新失败，请稍后重试")
-    } finally {
-      setSkuSaving(false)
+      toast.error("更新失败，请稍后重试");
     }
-  }
+  };
 
   // --- SKU Remove ---
   const openRemoveDialog = (skuId: string) => {
-    setRemovingSkuId(skuId)
-    setRemoveDialogOpen(true)
-  }
+    setRemovingSkuId(skuId);
+    setRemoveDialogOpen(true);
+  };
 
   const handleRemoveSku = async () => {
-    if (!removingSkuId) return
-    setRemoving(true)
+    if (!removingSkuId) return;
+    setRemoving(true);
     try {
-      const result = await removeSkuFromProduct(product.productId, removingSkuId)
+      const result = await removeSkuFromProduct(product.productId, removingSkuId);
       if (!result.success) {
-        toast.error(result.message)
-        return
+        toast.error(result.message);
+        return;
       }
-      toast.success("规格已移除")
-      setRemoveDialogOpen(false)
-      setRemovingSkuId(null)
-      router.refresh()
+      toast.success("规格已移除");
+      setRemoveDialogOpen(false);
+      setRemovingSkuId(null);
+      router.refresh();
     } catch {
-      toast.error("移除失败，请稍后重试")
+      toast.error("移除失败，请稍后重试");
     } finally {
-      setRemoving(false)
+      setRemoving(false);
     }
-  }
+  };
 
   const skuColumns: Column<ProductSku>[] = [
     {
@@ -324,6 +272,13 @@ export default function MallProductDetailPageClient({
       ),
     },
     {
+      key: "bundlePrice" as keyof ProductSku,
+      header: "套餐内价格",
+      cell: (row) => (
+        <BundlePriceCell skuId={row.skuId} defaultValue={row.bundlePrice ?? ""} onSave={handleBundlePriceSave} />
+      ),
+    },
+    {
       key: "sessionCount",
       header: "次数",
       cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
@@ -338,9 +293,7 @@ export default function MallProductDetailPageClient({
       header: "有效期",
       cell: (row) => (
         <span className="text-sm text-[var(--muted-foreground)]">
-          {row.validStart || row.validEnd
-            ? `${row.validStart ?? '—'} ~ ${row.validEnd ?? '—'}`
-            : "同商品"}
+          {row.validStart || row.validEnd ? `${row.validStart ?? "—"} ~ ${row.validEnd ?? "—"}` : "同商品"}
         </span>
       ),
     },
@@ -348,17 +301,17 @@ export default function MallProductDetailPageClient({
       key: "actions",
       header: "操作",
       cell: (row) => (
-        <div className="flex gap-2">
-          <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditSku(row)}>
-            编辑
-          </Button>
-          <Button variant="link" size="sm" className="h-auto p-0 text-[var(--destructive)]" onClick={() => openRemoveDialog(row.skuId)}>
-            移除
-          </Button>
-        </div>
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0 text-[var(--destructive)]"
+          onClick={() => openRemoveDialog(row.skuId)}
+        >
+          移除
+        </Button>
       ),
     },
-  ]
+  ];
 
   return (
     <div className="space-y-4">
@@ -366,23 +319,19 @@ export default function MallProductDetailPageClient({
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
         </Button>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">
-          商品详情 - {product.name}
-        </h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">商品详情 - {product.name}</h1>
       </div>
 
       {/* 商品规格列表 */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">商品规格列表</CardTitle>
-          <Button size="sm" onClick={openPicker}>添加规格</Button>
+          <Button size="sm" onClick={openPicker}>
+            添加规格
+          </Button>
         </CardHeader>
         <CardContent>
-          <DataTable
-            columns={skuColumns}
-            data={skus}
-            emptyText="暂无规格"
-          />
+          <DataTable columns={skuColumns} data={skus} emptyText="暂无规格" />
         </CardContent>
       </Card>
 
@@ -421,18 +370,24 @@ export default function MallProductDetailPageClient({
                 <label className="text-sm font-medium">是否套餐</label>
                 <Select
                   value={isBundle ? "true" : "false"}
-                  onChange={(e) => { setIsBundle(e.target.value === "true"); setFormDirty(true) }}
+                  onChange={(e) => {
+                    setIsBundle(e.target.value === "true");
+                    setFormDirty(true);
+                  }}
                 >
                   <option value="false">否</option>
                   <option value="true">是</option>
                 </Select>
               </div>
-              {selectedProductKind === '护理项目' && (
+              {selectedProductKind === "护理项目" && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium">是否生美</label>
                   <Select
                     value={isShengmei ? "true" : "false"}
-                    onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
+                    onChange={(e) => {
+                      setIsShengmei(e.target.value === "true");
+                      setFormDirty(true);
+                    }}
                   >
                     <option value="false">否（科美）</option>
                     <option value="true">是（生美）</option>
@@ -488,11 +443,7 @@ export default function MallProductDetailPageClient({
               </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-sm font-medium">封面图</label>
-                <ImageUpload
-                  value={coverImage}
-                  onChange={(v) => setCoverImage(v as string)}
-                  path="product-covers"
-                />
+                <ImageUpload value={coverImage} onChange={(v) => setCoverImage(v as string)} path="product-covers" />
               </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-sm font-medium">详情图</label>
@@ -524,9 +475,9 @@ export default function MallProductDetailPageClient({
                   type="checkbox"
                   checked={allMarkets}
                   onChange={(e) => {
-                    setAllMarkets(e.target.checked)
-                    if (e.target.checked) setSelectedMarketIds([])
-                    setFormDirty(true)
+                    setAllMarkets(e.target.checked);
+                    if (e.target.checked) setSelectedMarketIds([]);
+                    setFormDirty(true);
                   }}
                   className="h-4 w-4 rounded border-[var(--input)]"
                 />
@@ -541,11 +492,9 @@ export default function MallProductDetailPageClient({
                         checked={selectedMarketIds.includes(m.id)}
                         onChange={(e) => {
                           setSelectedMarketIds((prev) =>
-                            e.target.checked
-                              ? [...prev, m.id]
-                              : prev.filter((id) => id !== m.id)
-                          )
-                          setFormDirty(true)
+                            e.target.checked ? [...prev, m.id] : prev.filter((id) => id !== m.id),
+                          );
+                          setFormDirty(true);
                         }}
                         className="h-4 w-4 rounded border-[var(--input)]"
                       />
@@ -571,12 +520,7 @@ export default function MallProductDetailPageClient({
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">截止日期</label>
-                <Input
-                  name="validEnd"
-                  type="date"
-                  defaultValue={product.validEnd ?? ""}
-                  placeholder="不填则长期有效"
-                />
+                <Input name="validEnd" type="date" defaultValue={product.validEnd ?? ""} placeholder="不填则长期有效" />
               </div>
             </div>
           </CardContent>
@@ -588,182 +532,79 @@ export default function MallProductDetailPageClient({
           <Button type="button" variant="outline" onClick={() => router.back()}>
             取消
           </Button>
-          <Button type="submit" loading={saving}>保存</Button>
+          <Button type="submit" loading={saving}>
+            保存
+          </Button>
         </div>
       </form>
 
-      {/* SKU Picker Sheet */}
-      <Sheet open={pickerOpen} onOpenChange={setPickerOpen}>
-        <SheetHeader>
-          <SheetTitle>添加规格</SheetTitle>
-          <SheetClose onClick={() => setPickerOpen(false)} />
-        </SheetHeader>
-        <SheetContent>
-          <div className="space-y-3">
+      {/* SKU Picker Dialog */}
+      <Dialog open={pickerOpen} onOpenChange={setPickerOpen} className="max-w-2xl">
+        <DialogHeader className="relative">
+          <DialogTitle>添加规格</DialogTitle>
+          <DialogClose onOpenChange={setPickerOpen} />
+        </DialogHeader>
+        <div className="mt-4 space-y-3">
+          <div className="flex gap-2">
+            <CategoryCascader
+              categories={subCategories}
+              productKinds={productKinds}
+              value={pickerCategoryId}
+              kindValue={pickerKindValue}
+              allowEmpty
+              placeholder="品项筛选"
+              className="w-56"
+              onChange={(catId, kind) => {
+                setPickerCategoryId(catId);
+                setPickerKindValue(kind);
+              }}
+            />
             <Input
               placeholder="搜索规格名称..."
               value={pickerSearch}
               onChange={(e) => setPickerSearch(e.target.value)}
+              className="flex-1"
             />
-            <Select value={pickerKindFilter} onChange={(e) => setPickerKindFilter(e.target.value)}>
-              <option value="">全部品项类型</option>
-              {productKindOptions.map(k => <option key={k} value={k}>{k}</option>)}
-            </Select>
-            <div className="space-y-2">
-              {availableSkus.length === 0 ? (
-                <p className="text-sm text-[var(--muted-foreground)] py-8 text-center">
-                  {pickerSearch || pickerKindFilter ? "无匹配结果" : "暂无可添加的规格"}
-                </p>
-              ) : (
-                availableSkus.map(sku => (
-                  <div key={sku.skuId} className="flex items-center justify-between p-3 rounded-[var(--radius)] border border-[var(--border)] hover:bg-[var(--accent)] transition-colors">
-                    <div className="min-w-0 flex-1">
-                      <p className="font-medium text-sm truncate">{sku.specName}</p>
-                      <p className="text-xs text-[var(--muted-foreground)]">
-                        {sku.productKind} · {sku.categoryName} · {sku.productType}
-                      </p>
-                      <p className="text-xs">
-                        {formatCurrency(sku.price)}
-                        {sku.specialPrice && <span className="text-[#C0322A] ml-1">会员 {formatCurrency(sku.specialPrice)}</span>}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="ml-2 shrink-0"
-                      loading={addingSku === sku.skuId}
-                      disabled={!!addingSku}
-                      onClick={() => handleAddSku(sku.skuId)}
-                    >
-                      添加
-                    </Button>
-                  </div>
-                ))
-              )}
-            </div>
           </div>
-        </SheetContent>
-      </Sheet>
-
-      {/* SKU Edit Sheet */}
-      <Sheet open={editSheetOpen} onOpenChange={setEditSheetOpen}>
-        <SheetHeader>
-          <SheetTitle>编辑规格</SheetTitle>
-          <SheetClose onClick={() => setEditSheetOpen(false)} />
-        </SheetHeader>
-        <form onSubmit={handleSkuSubmit} className="flex flex-1 flex-col overflow-hidden">
-          <SheetContent>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">规格名称 *</label>
-                <Input
-                  name="specName"
-                  defaultValue={editingSku?.specName ?? ""}
-                  key={editingSku?.skuId ?? "new"}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">产品类型 *</label>
-                <Select
-                  name="productType"
-                  defaultValue={editingSku?.productType ?? ""}
-                  key={`type-${editingSku?.skuId ?? "new"}`}
+          <div className="max-h-[400px] overflow-y-auto space-y-2">
+            {availableSkus.length === 0 ? (
+              <p className="text-sm text-[var(--muted-foreground)] py-8 text-center">
+                {pickerSearch || pickerCategoryId || pickerKindValue ? "无匹配结果" : "暂无可添加的规格"}
+              </p>
+            ) : (
+              availableSkus.map((sku) => (
+                <div
+                  key={sku.skuId}
+                  className="flex items-center justify-between p-3 rounded-[var(--radius)] border border-[var(--border)] hover:bg-[var(--accent)] transition-colors"
                 >
-                  <option value="" disabled>请选择</option>
-                  <option value="疗程卡">疗程卡</option>
-                  <option value="单品">单品</option>
-                  <option value="院装产品">院装产品</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">标价 *</label>
-                <Input
-                  name="price"
-                  type="number"
-                  step="0.01"
-                  defaultValue={editingSku?.price ?? ""}
-                  placeholder="0.00"
-                  key={`price-${editingSku?.skuId ?? "new"}`}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">会员价</label>
-                <Input
-                  name="specialPrice"
-                  type="number"
-                  step="0.01"
-                  defaultValue={editingSku?.specialPrice ?? ""}
-                  placeholder="不填则无会员价"
-                  key={`sp-${editingSku?.skuId ?? "new"}`}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">次数 *</label>
-                <Input
-                  name="sessionCount"
-                  type="number"
-                  min={1}
-                  defaultValue={editingSku?.sessionCount ?? 1}
-                  key={`sc-${editingSku?.skuId ?? "new"}`}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">手工费</label>
-                <Input
-                  name="serviceFee"
-                  type="number"
-                  step="0.01"
-                  defaultValue={editingSku?.serviceFee ?? "0"}
-                  placeholder="0.00"
-                  key={`sf-${editingSku?.skuId ?? "new"}`}
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">排序</label>
-                <Input
-                  name="sortOrder"
-                  type="number"
-                  defaultValue={editingSku?.sortOrder ?? 0}
-                  key={`so-${editingSku?.skuId ?? "new"}`}
-                />
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <label className="text-sm font-medium">规格有效期</label>
-                <p className="text-xs text-[var(--muted-foreground)]">默认继承商品有效期，可单独设置</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <label className="text-sm">生效日期</label>
-                  <Input
-                    name="skuValidStart"
-                    type="date"
-                    defaultValue={editingSku?.validStart ?? product.validStart ?? ""}
-                    key={`vs-${editingSku?.skuId ?? "new"}`}
-                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-sm truncate">{sku.specName}</p>
+                    <p className="text-xs text-[var(--muted-foreground)]">
+                      {sku.productKind} · {sku.categoryName} · {sku.productType}
+                    </p>
+                    <p className="text-xs">
+                      {formatCurrency(sku.price)}
+                      {sku.specialPrice && (
+                        <span className="text-[#C0322A] ml-1">会员 {formatCurrency(sku.specialPrice)}</span>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="ml-2 shrink-0"
+                    loading={addingSku === sku.skuId}
+                    disabled={!!addingSku}
+                    onClick={() => handleAddSku(sku.skuId)}
+                  >
+                    添加
+                  </Button>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-sm">截止日期</label>
-                  <Input
-                    name="skuValidEnd"
-                    type="date"
-                    defaultValue={editingSku?.validEnd ?? product.validEnd ?? ""}
-                    key={`ve-${editingSku?.skuId ?? "new"}`}
-                  />
-                </div>
-              </div>
-            </div>
-          </SheetContent>
-          <SheetFooter>
-            <Button type="button" variant="outline" onClick={() => setEditSheetOpen(false)}>
-              取消
-            </Button>
-            <Button type="submit" loading={skuSaving}>
-              保存
-            </Button>
-          </SheetFooter>
-        </form>
-      </Sheet>
+              ))
+            )}
+          </div>
+        </div>
+      </Dialog>
 
       {/* Remove Confirmation */}
       <AlertDialog open={removeDialogOpen} onOpenChange={setRemoveDialogOpen}>
@@ -774,8 +615,8 @@ export default function MallProductDetailPageClient({
         <AlertDialogFooter>
           <AlertDialogCancel
             onClick={() => {
-              setRemoveDialogOpen(false)
-              setRemovingSkuId(null)
+              setRemoveDialogOpen(false);
+              setRemovingSkuId(null);
             }}
             disabled={removing}
           >
@@ -787,5 +628,46 @@ export default function MallProductDetailPageClient({
         </AlertDialogFooter>
       </AlertDialog>
     </div>
-  )
+  );
+}
+
+function BundlePriceCell({
+  skuId,
+  defaultValue,
+  onSave,
+}: {
+  skuId: string;
+  defaultValue: string;
+  onSave: (skuId: string, value: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState(defaultValue);
+  const [saving, setSaving] = useState(false);
+  const committed = useRef(defaultValue);
+
+  const submit = async () => {
+    if (value === committed.current) return;
+    setSaving(true);
+    await onSave(skuId, value);
+    committed.current = value;
+    setSaving(false);
+  };
+
+  return (
+    <Input
+      type="number"
+      step="0.01"
+      className="h-8 w-24"
+      placeholder="—"
+      value={value}
+      disabled={saving}
+      onChange={(e) => setValue(e.target.value)}
+      onBlur={submit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
 }
