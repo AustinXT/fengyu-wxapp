@@ -1,5 +1,7 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
+export const productKindEnum = pgEnum("product_kind", ["组合套餐", "护理项目", "家居产品", "充值卡", "体验卡"]);
+
 export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "院装产品"]);
 
 export const orderStatusEnum = pgEnum("order_status", [
@@ -13,13 +15,11 @@ export const orderStatusEnum = pgEnum("order_status", [
 ]);
 
 export const saleOrderTypeEnum = pgEnum("sale_order_type", [
-  "普通",
-  "体验",
-  "内部",
-  "组合套餐",
-  "回款",
-  "转换",
-  "退款",
+  "销售单",
+  "内部单",
+  "回款单",
+  "转换单",
+  "退款单",
 ]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);

@@ -782,7 +782,8 @@ function mapProductKind(raw) {
   if (!raw) return '护理项目'
   if (raw.includes('充值')) return '充值卡'
   if (raw.includes('家居') || raw.includes('院装')) return '家居产品'
-  if (raw.includes('福利') || raw.includes('促销') || raw.includes('活动')) return '福利活动'
+  if (raw.includes('福利') || raw.includes('促销') || raw.includes('活动') || raw.includes('套餐') || raw.includes('组合')) return '组合套餐'
+  if (raw.includes('体验')) return '体验卡'
   return '护理项目'
 }
 
@@ -1032,16 +1033,16 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       promoGroups.get(schemeId).items.push(row)
     }
 
-    // 找到或创建福利活动分类
+    // 找到或创建组合套餐分类
     let promoCatId = null
     for (const [, v] of Object.entries(catMap)) {
-      if (v.kind === '福利活动') { promoCatId = v.id; break }
+      if (v.kind === '组合套餐') { promoCatId = v.id; break }
     }
     if (!promoCatId) {
-      promoCatId = hashId('cat', '福利活动', '福利活动')
+      promoCatId = hashId('cat', '组合套餐', '组合套餐')
       await client.query(`
         INSERT INTO product_categories (category_id, category_name, product_kind, sort_order, is_valid)
-        VALUES ($1, '福利活动', '福利活动', 0, true)
+        VALUES ($1, '组合套餐', '组合套餐', 0, true)
         ON CONFLICT (category_id) DO NOTHING
       `, [promoCatId])
     }
