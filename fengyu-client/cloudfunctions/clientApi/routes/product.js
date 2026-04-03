@@ -30,6 +30,7 @@ async function getCategoriesList(marketName) {
     SELECT
       mc.category_id,
       mc.category_name,
+      mc.category_group,
       mc.sort_order AS category_order
     FROM mall_categories mc
     WHERE EXISTS (
@@ -42,6 +43,47 @@ async function getCategoriesList(marketName) {
           ${marketFilter}
       )
     ORDER BY mc.sort_order ASC
+  `
+
+  return pg.query(sql, params)
+}
+
+/**
+ * 内部函数：获取一级分组列表（category_group IS NULL）
+ * 仅返回下属二级分类中含有效商品的分组
+ */
+async function getCategoryGroups(marketName) {
+  const params = []
+  let marketFilter
+
+  if (marketName) {
+    params.push(marketName)
+    marketFilter = `AND (p.market_scope IS NULL OR p.market_scope = $${params.length})`
+  } else {
+    marketFilter = 'AND p.market_scope IS NULL'
+  }
+
+  const sql = `
+    SELECT
+      mg.category_id,
+      mg.category_name,
+      mg.sort_order
+    FROM mall_categories mg
+    WHERE mg.category_group IS NULL
+      AND EXISTS (
+        SELECT 1 FROM mall_categories mc
+        WHERE mc.category_group = mg.category_name
+          AND EXISTS (
+            SELECT 1 FROM products p
+            JOIN mall_product_skus mps ON mps.product_id = p.product_id
+            JOIN product_skus sk ON mps.sku_id = sk.sku_id
+            WHERE p.category_id = mc.category_id
+              AND ${PRODUCT_VALID_FILTER}
+              AND ${SKU_VALID_FILTER}
+              ${marketFilter}
+          )
+      )
+    ORDER BY mg.sort_order ASC
   `
 
   return pg.query(sql, params)
@@ -150,15 +192,25 @@ async function spuList(ctx) {
 async function shopInit(ctx) {
   const marketName = ctx.auth?.boundMarketName || null
 
-  const categoriesList = await getCategoriesList(marketName)
+  const [groups, categoriesList] = await Promise.all([
+    getCategoryGroups(marketName),
+    getCategoriesList(marketName),
+  ])
 
+  // 找第一个 group 下的第一个二级分类，加载其商品
   let firstSpuList = []
-  if (categoriesList.length > 0) {
-    const firstCategoryId = categoriesList[0].category_id
-    firstSpuList = await getProductListByCategory({ categoryId: firstCategoryId, marketName })
+  if (groups.length > 0 && categoriesList.length > 0) {
+    const firstChild = categoriesList.find(c => c.category_group === groups[0].category_name)
+    if (firstChild) {
+      firstSpuList = await getProductListByCategory({ categoryId: firstChild.category_id, marketName })
+    }
+  } else if (categoriesList.length > 0) {
+    // 降级：无分组时取第一个分类
+    firstSpuList = await getProductListByCategory({ categoryId: categoriesList[0].category_id, marketName })
   }
 
   ctx.result = {
+    groups,
     categories: categoriesList,
     spuList: firstSpuList
   }

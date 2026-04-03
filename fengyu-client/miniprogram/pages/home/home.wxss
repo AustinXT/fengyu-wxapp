@@ -243,13 +243,13 @@
 
 /* ===== 自定义侧边栏 ===== */
 .sidebar-scroll {
-  width: 180rpx;
+  width: 200rpx;
   flex-shrink: 0;
   background: var(--color-bg-section);
 }
 
 .sidebar-title {
-  padding: 24rpx 16rpx 8rpx;
+  padding: 20rpx 12rpx 6rpx;
 }
 
 .sidebar-title-text {
@@ -260,7 +260,7 @@
 }
 
 .sidebar-item {
-  padding: 20rpx 16rpx;
+  padding: 16rpx 12rpx 16rpx 28rpx;
   position: relative;
 }
 
