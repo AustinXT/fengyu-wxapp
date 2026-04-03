@@ -25,7 +25,7 @@ describe('order.create', () => {
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
       paymentMethod: '线下',
-      orderType: '普通',
+      orderType: 'normal',
     })
 
     // 查询顾客是否已注册
@@ -228,7 +228,7 @@ describe('order.create', () => {
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1, customPrice: 1 }],
       paymentMethod: '线下',
-      orderType: '体验',
+      orderType: 'experience',
     })
 
     pg.query
@@ -266,7 +266,7 @@ describe('order.create', () => {
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
       paymentMethod: '线下',
-      orderType: '普通',
+      orderType: 'normal',
       couponId: 'coupon-001',
     })
 
@@ -552,7 +552,7 @@ describe('order.create', () => {
     expect(ctx.result.status).toBe('待支付')
   })
 
-  test('福利活动订单包含非福利商品时拒绝（line 166 TRUE 分支）', async () => {
+  test('组合套餐订单包含非套餐商品时拒绝（line 166 TRUE 分支）', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '顾客',
@@ -571,7 +571,7 @@ describe('order.create', () => {
       }])
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*福利活动/)
+      .rejects.toThrow(/INVALID_PARAMS.*组合套餐/)
   })
 
   test('已注册顾客成功开单（单品 SKU，session_count=null）', async () => {
@@ -580,7 +580,7 @@ describe('order.create', () => {
       clientName: '注册顾客',
       items: [{ skuId: 'sku-single', quantity: 2 }],
       paymentMethod: '线下',
-      orderType: '普通',
+      orderType: 'normal',
     })
 
     pg.query
@@ -1331,7 +1331,7 @@ describe('order.qrcode', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-QR-001', status: '待支付', sale_order_type: '普通',
+        sale_order_id: 'FY-QR-001', status: '待支付', sale_order_type: '销售单',
         client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
@@ -1355,7 +1355,7 @@ describe('order.qrcode', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-QR-002', status: '已支付', sale_order_type: '普通',
+        sale_order_id: 'FY-QR-002', status: '已支付', sale_order_type: '销售单',
         client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: '2024-06-15', store_id: 'store-001', opened_by: 'emp-001',
       }])
@@ -1375,7 +1375,7 @@ describe('order.qrcode', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-QR-003', status: '待确认收款', sale_order_type: '普通',
+        sale_order_id: 'FY-QR-003', status: '待确认收款', sale_order_type: '销售单',
         client_phone: '138', customer_name: '张三', payment_method: '微信',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
@@ -1405,7 +1405,7 @@ describe('order.qrcode', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-QR-ERR', status: '待支付', sale_order_type: '普通',
+        sale_order_id: 'FY-QR-ERR', status: '待支付', sale_order_type: '销售单',
         client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
@@ -1423,7 +1423,7 @@ describe('order.qrcode', () => {
     const ctx = createBeauticianCtx({ saleOrderId: 'FY-QR-004' })
 
     pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-QR-004', status: '待支付', sale_order_type: '普通',
+      sale_order_id: 'FY-QR-004', status: '待支付', sale_order_type: '销售单',
       client_phone: '138', customer_name: '张三', payment_method: '线下',
       paid_at: null, store_id: 'store-other', opened_by: 'emp-001',
     }])
@@ -1631,7 +1631,7 @@ describe('order.approveRefund', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001',
+        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'ref-item-1', item_direction: '退出',
@@ -1659,7 +1659,7 @@ describe('order.approveRefund', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-002' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
       .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -1679,7 +1679,7 @@ describe('order.approveRefund', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
       .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -1698,7 +1698,7 @@ describe('order.approveRefund', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
       .mockResolvedValueOnce([])  // 无退款明细，直接跳到状态 UPDATE
 
     const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })

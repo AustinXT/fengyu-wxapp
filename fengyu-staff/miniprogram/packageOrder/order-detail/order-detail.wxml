@@ -120,7 +120,7 @@
       >创建服务单</van-button>
       <!-- P2: 退款按钮（已支付/已完成 + 店长 + 非退款/转换/回款单） -->
       <van-button
-        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType !== '退款' && order.orderType !== '转换' && order.orderType !== '回款'}}"
+        wx:if="{{isManager && (order.status === '已支付' || order.status === '已完成') && order.orderType !== '退款单' && order.orderType !== '转换单' && order.orderType !== '回款单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onCreateRefund"
@@ -128,14 +128,14 @@
 
       <!-- P2: 退款审批按钮（待审批 + 退款单 + 店长） -->
       <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款'}}"
+        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
         block type="primary"
         custom-class="btn-primary-brand"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onApproveRefund"
       >通过退款</van-button>
       <van-button
-        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款'}}"
+        wx:if="{{isManager && order.status === '待审批' && order.orderType === '退款单'}}"
         block plain type="danger"
         custom-style="border-radius:48rpx;margin-top:24rpx;"
         bind:click="onRejectRefund"

@@ -182,9 +182,9 @@
             <van-loading type="spinner" color="#C0322A" />
           </view>
           <view wx:elif="{{giftData && (giftData.promoOrders.length > 0 || giftData.giftItems.length > 0)}}">
-            <!-- 福利活动订单 -->
+            <!-- 组合套餐订单 -->
             <view wx:if="{{giftData.promoOrders.length > 0}}">
-              <text class="gift-section-title">福利活动</text>
+              <text class="gift-section-title">组合套餐</text>
               <view class="gift-card" wx:for="{{giftData.promoOrders}}" wx:key="saleOrderId">
                 <view class="gift-card-header">
                   <text class="gift-order-no">{{item.saleOrderId}}</text>

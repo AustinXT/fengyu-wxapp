@@ -688,7 +688,7 @@ async function refundHistory(ctx) {
            o.created_at, o.paid_at
     FROM sale_orders o
     WHERE ${whereClause}
-      AND o.sale_order_type IN ('退款', '转换')
+      AND o.sale_order_type IN ('退款单', '转换单')
     ORDER BY o.created_at DESC
   `, params)
 
@@ -735,9 +735,9 @@ async function refundHistory(ctx) {
 }
 
 /**
- * 赠送记录（套餐内赠品 + 福利活动）
+ * 赠送记录（套餐内赠品 + 组合套餐）
  * 逻辑：从已支付订单中提取 received=0 或 is_bundle_sku=true+price=0 的明细行
- *       以及 sale_order_type='福利活动' 的全部订单
+ *       以及原组合套餐类型的订单（已合并为销售单）
  */
 async function giftHistory(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -754,18 +754,18 @@ async function giftHistory(ctx) {
     params = [clientPhone]
   }
 
-  // 福利活动订单（整单视为赠送/活动）
+  // 组合套餐订单（整单视为赠送/活动）
   const promoOrders = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
            o.created_at, o.paid_at
     FROM sale_orders o
     WHERE ${whereClause}
-      AND o.sale_order_type = '福利活动'
+      AND FALSE -- TODO: 组合套餐已合并为销售单，需另行标记
       AND o.status IN ('已支付', '已完成')
     ORDER BY o.created_at DESC
   `, params)
 
-  // 套餐内赠品（received=0 的明细行，排除福利活动）
+  // 套餐内赠品（received=0 的明细行，排除组合套餐）
   const giftItems = await pg.query(`
     SELECT si.sale_item_id, si.sale_order_id, si.product_name, si.sku_spec_name,
            si.quantity, si.session_count, si.remaining_sessions,
@@ -774,13 +774,13 @@ async function giftHistory(ctx) {
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE ${whereClause}
       AND o.status IN ('已支付', '已完成')
-      AND o.sale_order_type NOT IN ('福利活动', '退款', '转换', '回款')
+      AND o.sale_order_type NOT IN ('内部单', '退款单', '转换单', '回款单')
       AND si.item_direction = '购买'
       AND si.received::numeric = 0
     ORDER BY o.created_at DESC
   `, params)
 
-  // 福利活动订单的明细
+  // 组合套餐订单的明细
   const promoOrderIds = promoOrders.map(o => o.sale_order_id)
   let promoItems = []
   if (promoOrderIds.length > 0) {

@@ -11,13 +11,11 @@ export const STATUS_CLASS: Record<string, string> = {
 }
 
 export const ORDER_TYPE_LABEL: Record<string, string> = {
-  普通: '普通单',
-  福利活动: '福利活动',
-  体验: '体验单',
-  内部: '内部单',
-  回款: '回款单',
-  转换: '转换单',
-  退款: '退款单',
+  销售单: '销售单',
+  内部单: '内部单',
+  回款单: '回款单',
+  转换单: '转换单',
+  退款单: '退款单',
 }
 
 /**

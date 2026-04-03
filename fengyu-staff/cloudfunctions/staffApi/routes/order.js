@@ -66,7 +66,7 @@ async function refreshSpendingTier(client, clientUserId) {
        FROM sale_orders
        WHERE client_user_id = $1
          AND status IN ('已支付', '已完成')
-         AND sale_order_type NOT IN ('内部')
+         AND sale_order_type != '内部单'
          AND paid_at >= (NOW() - INTERVAL '12 months')`,
       [clientUserId]
     )
@@ -105,14 +105,14 @@ async function recalcCustomerType(client, clientUserId) {
          SELECT 1 FROM sale_orders o
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
-           AND o.sale_order_type = '普通'
+           AND o.sale_order_type = '销售单'
            AND (
              o.total_amount >= $2
              OR (o.total_amount + COALESCE((
                SELECT SUM(r.total_amount)
                FROM sale_orders r
                WHERE r.ref_sale_order_id = o.sale_order_id
-                 AND r.sale_order_type = '回款'
+                 AND r.sale_order_type = '回款单'
                  AND r.status IN ('已支付', '已完成')
              ), 0)) >= $2
            )
@@ -121,13 +121,13 @@ async function recalcCustomerType(client, clientUserId) {
          SELECT 1 FROM sale_orders
          WHERE client_user_id = $1
            AND status IN ('已支付', '已完成')
-           AND sale_order_type = '普通'
+           AND sale_order_type = '销售单'
        ) THEN '小美客'
        WHEN EXISTS (
          SELECT 1 FROM sale_orders
          WHERE client_user_id = $1
            AND status IN ('已支付', '已完成')
-           AND sale_order_type = '体验'
+           AND sale_order_type = '销售单'
        ) THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
@@ -156,7 +156,7 @@ async function recalcCustomerType(client, clientUserId) {
  * payload: {
  *   clientPhone: string,
  *   clientName: string,
- *   orderType: '普通'|'体验'|'福利活动',
+ *   orderType: 'normal'|'experience'|'internal'|'promotion' → sale_order_type: '销售单'|'内部单',
  *   items: [{ skuId, quantity, customPrice?, discount? }],
  *   paymentMethod: '微信'|'线下',
  *   preferredStaffWfId: string,
@@ -197,10 +197,10 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
-  // 映射前端 orderType
-  const ORDER_TYPE_MAP = { normal: '普通', experience: '体验', promotion: '福利活动', internal: '内部' }
-  const orderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '普通'
-  if (!['普通', '体验', '福利活动', '内部'].includes(orderType)) {
+  // 映射前端 orderType → sale_order_type
+  const ORDER_TYPE_MAP = { normal: '销售单', experience: '销售单', promotion: '销售单', internal: '内部单' }
+  const saleOrderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '销售单'
+  if (!['销售单', '内部单'].includes(saleOrderType)) {
     throw new Error('INVALID_PARAMS: orderType 值不合法')
   }
 
@@ -252,10 +252,10 @@ async function create(ctx) {
       // 优先使用特价（special_price），没有则用标准价
       const basePrice = Number(sku.special_price || sku.price)
 
-      if (orderType === '体验' && item.customPrice !== undefined) {
+      if (orderTypeParam === 'experience' && item.customPrice !== undefined) {
         unitPrice = Number(item.customPrice)
         sessionCount = 1
-      } else if (orderType === '内部') {
+      } else if (saleOrderType === '内部单') {
         // 内部单（员工消费）统一半价
         unitPrice = Math.round(basePrice * 50) / 100
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null
@@ -293,11 +293,11 @@ async function create(ctx) {
     })
   )
 
-  // ========== 福利活动订单验证 ==========
-  if (orderType === '福利活动') {
-    const nonPromoItems = itemDataList.filter(d => d.productKind !== '福利活动')
+  // ========== 组合套餐订单验证 ==========
+  if (orderTypeParam === 'promotion') {
+    const nonPromoItems = itemDataList.filter(d => d.productKind !== '组合套餐')
     if (nonPromoItems.length > 0) {
-      throw new Error('INVALID_PARAMS: 福利活动订单只能包含福利活动类型的商品')
+      throw new Error('INVALID_PARAMS: 组合套餐订单只能包含组合套餐类型的商品')
     }
   }
 
@@ -449,7 +449,7 @@ async function create(ctx) {
         created_at, updated_at
       ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $6, $6)`,
       [
-        saleOrderId, orderType, documentType, marketName, storeId, now,
+        saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
         paymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
@@ -1016,7 +1016,7 @@ async function createRefund(ctx) {
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, opened_by,
         refund_reason, handling_fee, created_at, updated_at
-      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $6, $6)`,
+      ) VALUES ($1, '待审批', '退款单', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $6, $6)`,
       [
         refundOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
@@ -1060,7 +1060,7 @@ async function approveRefund(ctx) {
   if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
 
   const orders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款' AND status = '待审批'",
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单' AND status = '待审批'",
     [saleOrderId, ctx.auth.storeId]
   )
   if (orders.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许审批')
@@ -1120,7 +1120,7 @@ async function rejectRefund(ctx) {
   const now = new Date()
   const result = await pg.query(
     `UPDATE sale_orders SET status = '已关闭', rejected_reason = $1, approved_by = $2, approved_at = $3, updated_at = $3
-     WHERE sale_order_id = $4 AND store_id = $5 AND sale_order_type = '退款' AND status = '待审批'`,
+     WHERE sale_order_id = $4 AND store_id = $5 AND sale_order_type = '退款单' AND status = '待审批'`,
     [rejectedReason || '', ctx.auth.staffWfId, now, saleOrderId, ctx.auth.storeId]
   )
   if (result.rowCount === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许驳回')
@@ -1197,7 +1197,7 @@ async function createRepayment(ctx) {
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '待分配', $6, $6)`,
+      ) VALUES ($1, '待支付', '回款单', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '待分配', $6, $6)`,
       [
         repayOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
@@ -1340,7 +1340,7 @@ async function createConversion(ctx) {
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', $11, '待分配', $6, $6)`,
+      ) VALUES ($1, '已支付', '转换单', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', $11, '待分配', $6, $6)`,
       [
         convOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,

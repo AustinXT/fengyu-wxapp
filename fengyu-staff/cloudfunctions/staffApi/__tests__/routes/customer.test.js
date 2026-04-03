@@ -160,7 +160,7 @@ describe('customer.calendar', () => {
       { pay_date: '2024-06-15', order_count: '1', total_received: '300.00' },
     ])
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'SO-001', sale_order_type: '正式', store_id: 'store-001', payment_method: '微信支付', paid_at: '2024-06-01T10:00:00Z', client_phone: '138', customer_name: '张三', pay_date: '2024-06-01', total_received: '250.00' },
+      { sale_order_id: 'SO-001', sale_order_type: '销售单', store_id: 'store-001', payment_method: '微信支付', paid_at: '2024-06-01T10:00:00Z', client_phone: '138', customer_name: '张三', pay_date: '2024-06-01', total_received: '250.00' },
     ])
     await customerRoutes.calendar(ctx)
     expect(ctx.result.year).toBe(2024)
@@ -188,7 +188,7 @@ describe('customer.calendar', () => {
         { pay_date: '2024-06-10', order_count: '1', total_received: '200.00' },
       ])
       .mockResolvedValueOnce([
-        { sale_order_id: 'SO-X01', sale_order_type: '正式', store_id: 'store-001',
+        { sale_order_id: 'SO-X01', sale_order_type: '销售单', store_id: 'store-001',
           payment_method: '微信支付', paid_at: '2024-06-10T12:00:00Z',
           client_phone: '13800001111', customer_name: '李四',
           pay_date: '2024-06-10', total_received: '200.00' },
@@ -761,13 +761,13 @@ describe('customer.refundHistory', () => {
 
     pg.query.mockResolvedValueOnce([
       {
-        sale_order_id: 'REF-001', status: '已完成', sale_order_type: '退款',
+        sale_order_id: 'REF-001', status: '已完成', sale_order_type: '退款单',
         total_amount: '500', refund_reason: '质量问题', handling_fee: '50',
         ref_sale_order_id: 'FY-001', approved_by: 'emp-001', approved_at: '2024-06-20',
         rejected_reason: null, created_at: '2024-06-15', paid_at: null,
       },
       {
-        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换',
+        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换单',
         total_amount: '300', refund_reason: '更换项目', handling_fee: null,
         ref_sale_order_id: 'FY-002', approved_by: 'emp-001', approved_at: '2024-06-22',
         rejected_reason: null, created_at: '2024-06-18', paid_at: null,
@@ -782,10 +782,10 @@ describe('customer.refundHistory', () => {
 
     expect(ctx.result).toHaveLength(2)
     expect(ctx.result[0].saleOrderId).toBe('REF-001')
-    expect(ctx.result[0].type).toBe('退款')
+    expect(ctx.result[0].type).toBe('退款单')
     expect(ctx.result[0].handlingFee).toBe(50)
     expect(ctx.result[0].items).toHaveLength(1)
-    expect(ctx.result[1].type).toBe('转换')
+    expect(ctx.result[1].type).toBe('转换单')
     expect(ctx.result[1].handlingFee).toBeNull()
   })
 
@@ -819,12 +819,12 @@ describe('customer.refundHistory', () => {
 // customer.giftHistory
 // ============================================================
 describe('customer.giftHistory', () => {
-  test('返回福利活动订单和赠品明细', async () => {
+  test('返回组合套餐订单和赠品明细', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
 
     pg.query.mockResolvedValueOnce([
       {
-        sale_order_id: 'PROMO-001', status: '已支付', sale_order_type: '福利活动',
+        sale_order_id: 'PROMO-001', status: '已支付', sale_order_type: '销售单',
         total_amount: '0', created_at: '2024-06-01', paid_at: '2024-06-01',
       },
     ])
@@ -853,10 +853,10 @@ describe('customer.giftHistory', () => {
     expect(ctx.result.giftItems[0].productName).toBe('赠送面膜')
   })
 
-  test('无福利活动时 promoOrders 为空', async () => {
+  test('无组合套餐时 promoOrders 为空', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
 
-    pg.query.mockResolvedValueOnce([]) // 无福利活动
+    pg.query.mockResolvedValueOnce([]) // 无组合套餐
     pg.query.mockResolvedValueOnce([]) // 无赠品
 
     await customerRoutes.giftHistory(ctx)

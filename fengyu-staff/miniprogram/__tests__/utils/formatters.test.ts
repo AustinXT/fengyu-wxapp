@@ -134,15 +134,23 @@ describe('STATUS_CLASS', () => {
 })
 
 describe('ORDER_TYPE_LABEL', () => {
-  test('普通 → 普通单', () => {
-    expect(ORDER_TYPE_LABEL['普通']).toBe('普通单')
+  test('销售单 → 销售单', () => {
+    expect(ORDER_TYPE_LABEL['销售单']).toBe('销售单')
   })
 
-  test('体验 → 体验单', () => {
-    expect(ORDER_TYPE_LABEL['体验']).toBe('体验单')
+  test('回款单 → 回款单', () => {
+    expect(ORDER_TYPE_LABEL['回款单']).toBe('回款单')
   })
 
-  test('福利活动 → 福利活动', () => {
-    expect(ORDER_TYPE_LABEL['福利活动']).toBe('福利活动')
+  test('转换单 → 转换单', () => {
+    expect(ORDER_TYPE_LABEL['转换单']).toBe('转换单')
+  })
+
+  test('退款单 → 退款单', () => {
+    expect(ORDER_TYPE_LABEL['退款单']).toBe('退款单')
+  })
+
+  test('内部单 → 内部单', () => {
+    expect(ORDER_TYPE_LABEL['内部单']).toBe('内部单')
   })
 })

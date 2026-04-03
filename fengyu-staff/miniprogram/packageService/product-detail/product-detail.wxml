@@ -19,10 +19,11 @@
   <!-- 商品基础信息 -->
   <view class="info-card">
     <view class="info-tags">
-      <van-tag color="#C0322A" wx:if="{{spu.product_kind === '福利活动'}}">福利活动</van-tag>
+      <van-tag color="#C0322A" wx:if="{{spu.product_kind === '组合套餐'}}">组合套餐</van-tag>
       <van-tag type="primary" wx:elif="{{spu.product_kind === '护理项目'}}">护理项目</van-tag>
       <van-tag color="#006D75" wx:elif="{{spu.product_kind === '家居产品'}}">家居产品</van-tag>
       <van-tag color="#D46B08" wx:elif="{{spu.product_kind === '充值卡'}}">充值卡</van-tag>
+      <van-tag color="#8B5CF6" wx:elif="{{spu.product_kind === '体验卡'}}">体验卡</van-tag>
     </view>
     <text class="spu-name">{{spu.name}}</text>
     <text class="spu-desc" wx:if="{{spu.description}}">{{spu.description}}</text>

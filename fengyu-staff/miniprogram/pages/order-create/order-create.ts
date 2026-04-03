@@ -4,7 +4,7 @@ import { isManager } from '../../utils/role';
 import { calcCartTotal } from '../../utils/cart-calc';
 
 const app = getApp<IAppOption>();
-const BIG_CATEGORIES = ['福利活动', '护理项目', '家居产品', '充值卡'];
+const BIG_CATEGORIES = ['组合套餐', '护理项目', '家居产品', '充值卡', '体验卡'];
 
 type OrderType = 'normal' | 'experience' | 'internal' | 'promotion';
 
@@ -164,8 +164,8 @@ Page({
     if (pending) {
       app.globalData.pendingCartItem = null;
 
-      // 福利活动商品不加入购物车，只能直接下单（清空购物车后单独放入）
-      if (pending.productType === '福利活动') {
+      // 组合套餐商品不加入购物车，只能直接下单（清空购物车后单独放入）
+      if (pending.productType === '组合套餐') {
         const cart: CartItem[] = [{
           spuId: pending.spuId,
           skuId: pending.skuId,
@@ -182,9 +182,9 @@ Page({
         this.updateCart(cart);
       } else {
         const cart = [...this.data.cart];
-        // 购物车中有福利活动商品时不允许混入其他商品
-        if (cart.some(c => c.productType === '福利活动')) {
-          wx.showToast({ title: '福利活动订单需单独下单', icon: 'none' });
+        // 购物车中有组合套餐商品时不允许混入其他商品
+        if (cart.some(c => c.productType === '组合套餐')) {
+          wx.showToast({ title: '组合套餐订单需单独下单', icon: 'none' });
           return;
         }
         const existing = cart.findIndex(c => c.skuId === pending.skuId);
@@ -208,8 +208,8 @@ Page({
         this.updateCart(cart);
       }
       if (pending.directCheckout) {
-        // 福利活动商品直接下单时自动设置类型
-        const autoType: OrderType = pending.productType === '福利活动' ? 'promotion' : 'normal';
+        // 组合套餐商品直接下单时自动设置类型
+        const autoType: OrderType = pending.productType === '组合套餐' ? 'promotion' : 'normal';
         this.setData({ showCheckout: true, checkoutStep: 0, orderType: autoType });
       }
     }
@@ -327,16 +327,16 @@ Page({
     // SKU 扁平化后直接加入购物车（qty=1）
     const cart = [...this.data.cart];
 
-    // 购物车中有福利活动商品时不允许混入其他商品
-    if (item.productKind !== '福利活动' && cart.some(c => c.productType === '福利活动')) {
-      wx.showToast({ title: '福利活动订单需单独下单', icon: 'none' });
+    // 购物车中有组合套餐商品时不允许混入其他商品
+    if (item.productKind !== '组合套餐' && cart.some(c => c.productType === '组合套餐')) {
+      wx.showToast({ title: '组合套餐订单需单独下单', icon: 'none' });
       return;
     }
 
     const existing = cart.findIndex(c => c.skuId === item.spuId);
     if (existing >= 0) {
-      if (cart[existing].productType === '福利活动') {
-        wx.showToast({ title: '福利活动项目不可修改数量', icon: 'none' });
+      if (cart[existing].productType === '组合套餐') {
+        wx.showToast({ title: '组合套餐项目不可修改数量', icon: 'none' });
         return;
       }
       cart[existing].quantity += 1;
@@ -364,8 +364,8 @@ Page({
   onCartItemRemove(e: WechatMiniprogram.TouchEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
     const item = this.data.cart.find(c => c.skuId === skuId);
-    if (item?.productType === '福利活动') {
-      wx.showToast({ title: '福利活动项目不可删除', icon: 'none' });
+    if (item?.productType === '组合套餐') {
+      wx.showToast({ title: '组合套餐项目不可删除', icon: 'none' });
       return;
     }
     const cart = this.data.cart.filter(c => c.skuId !== skuId);
@@ -378,8 +378,8 @@ Page({
     const cart = [...this.data.cart];
     const idx = cart.findIndex(c => c.skuId === skuId);
     if (idx >= 0) {
-      if (cart[idx].productType === '福利活动') {
-        wx.showToast({ title: '福利活动项目不可修改数量', icon: 'none' });
+      if (cart[idx].productType === '组合套餐') {
+        wx.showToast({ title: '组合套餐项目不可修改数量', icon: 'none' });
         return;
       }
       cart[idx].quantity = qty;
@@ -465,7 +465,7 @@ Page({
       wx.showToast({ title: '请先选择顾客', icon: 'none' });
       return;
     }
-    // 福利活动类型已锁定，跳过类型选择直接到确认步骤
+    // 组合套餐类型已锁定，跳过类型选择直接到确认步骤
     if (this.data.orderType === 'promotion') {
       this.setData({ checkoutStep: 2 });
     } else {
@@ -492,7 +492,7 @@ Page({
   },
 
   onStep2Back() {
-    // 福利活动跳过类型选择，直接返回到选顾客
+    // 组合套餐跳过类型选择，直接返回到选顾客
     this.setData({ checkoutStep: this.data.orderType === 'promotion' ? 0 : 1 });
   },
 

@@ -61,7 +61,7 @@ Page({
         throw new Error('商品不存在');
       }
 
-      const isPromo = spu.product_kind === '福利活动';
+      const isPromo = spu.product_kind === '组合套餐';
 
       this.setData({
         spu: {

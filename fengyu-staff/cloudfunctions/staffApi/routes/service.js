@@ -197,7 +197,7 @@ async function create(ctx) {
       )
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
-      const isPresale = siRows.rows[0]?.sale_order_type === '体验'
+      const isPresale = false // 体验单已合并为销售单，无法区分
 
       await client.query(
         `INSERT INTO service_items
