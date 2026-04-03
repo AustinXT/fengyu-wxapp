@@ -16,7 +16,7 @@ export const saleOrderTypeEnum = pgEnum("sale_order_type", [
   "普通",
   "体验",
   "内部",
-  "福利活动",
+  "组合套餐",
   "回款",
   "转换",
   "退款",
@@ -43,19 +43,23 @@ export const storeUnbindRequestStatusEnum = pgEnum("store_unbind_request_status"
 
 export const salesCategoryEnum = pgEnum("sales_category", ["自采自销", "他销自耗", "他销他耗", "生态合作"]);
 
-export const couponTypeEnum = pgEnum("coupon_type", ["现金券", "项目券", "折扣券"]);
+export const couponTypeEnum = pgEnum("coupon_type", ["现金券", "品项券", "折扣券"]);
 
 export const couponStatusEnum = pgEnum("coupon_status", ["未使用", "已使用", "已过期"]);
 
 export const orgNodeTypeEnum = pgEnum("org_node_type", ["总部", "市场", "门店", "部门"]);
-
-export const pointTransactionTypeEnum = pgEnum("point_transaction_type", ["获取", "兑换"]);
 
 export const messageRecipientTypeEnum = pgEnum("message_recipient_type", ["客户", "员工"]);
 
 export const cardTransactionTypeEnum = pgEnum("card_transaction_type", ["充值", "扣款"]);
 
 export const positionScopeEnum = pgEnum("position_scope", ["总部", "市场", "门店"]);
+
+export const memberLevelEnum = pgEnum("member_level", ["初钻", "星钻", "粉钻", "金钻", "黑钻"]);
+
+export const customerSourceEnum = pgEnum("customer_source", [
+  "美团", "抖音", "小程序", "推带新", "地推卡", "拓客卡", "老带新", "转让店", "自进店", "内部员工或家属",
+]);
 
 export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
 
@@ -66,5 +70,9 @@ export const spendingTierEnum = pgEnum("spending_tier", ["10W+", "6-10W", "3-6W"
 export const monthlyActivityEnum = pgEnum("monthly_activity", ["二次客活", "一次客活", "0次客活"]);
 
 export const customerStatusEnum = pgEnum("customer_status", [
-  "保有会员-稳定", "保有会员-有效", "预警沉睡", "冰冻", "休眠",
+  "保有会员-稳定",
+  "保有会员-有效",
+  "预警沉睡",
+  "冰冻",
+  "休眠",
 ]);

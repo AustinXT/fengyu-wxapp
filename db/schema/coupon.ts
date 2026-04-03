@@ -12,7 +12,7 @@ export const couponTemplates = pgTable('coupon_templates', {
   templateId: text('template_id').primaryKey(),
   name: text('name').notNull(),
   couponType: couponTypeEnum('coupon_type').notNull(),
-  /** 现金券/项目券=抵扣金额；折扣券=折扣率(0.85=85折) */
+  /** 现金券/品项券=抵扣金额；折扣券=折扣率(0.85=85折) */
   discountValue: numeric('discount_value', { precision: 10, scale: 2 }).notNull(),
   /** 满减门槛（0=无门槛） */
   minSpend: numeric('min_spend', { precision: 10, scale: 2 }).default('0'),
