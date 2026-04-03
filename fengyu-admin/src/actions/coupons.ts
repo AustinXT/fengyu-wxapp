@@ -668,7 +668,7 @@ export async function getCustomersForBatchIssue(filters: {
   }
 
   if (filters.memberLevel) {
-    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
+    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel as typeof clientWechatUsers.memberLevel.enumValues[number]))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
