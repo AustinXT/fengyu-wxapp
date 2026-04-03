@@ -1,3 +1,4 @@
+import { redirect } from 'next/navigation'
 import { db } from '@/db'
 import { orgNodes, stores } from '@db/org'
 import { eq, and, sql, inArray } from 'drizzle-orm'
@@ -194,7 +195,7 @@ export function isInScope(session: AuthSession, storeId: string): boolean {
  */
 export function requirePermission(session: AuthSession | null, action: string): asserts session is AuthSession {
   if (!session) {
-    throw new Error('UNAUTHORIZED: 未登录')
+    redirect('/login?expired=1')
   }
   if (!session.permissions.actions.includes(action)) {
     throw new Error(`PERMISSION_DENIED: 无权执行 ${action}`)

@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const { mockRedirect } = vi.hoisted(() => {
+  const mockRedirect = vi.fn((url: string): never => {
+    throw new Error(`NEXT_REDIRECT:${url}`)
+  })
+  return { mockRedirect }
+})
+vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
+
 // Mock drizzle-orm 和 db 模块（expandScopeStoreIds 和 buildScopeWhere 需要）
 vi.mock('@/db', () => ({
   db: {
@@ -128,9 +136,10 @@ describe('computeActions', () => {
 })
 
 describe('requirePermission', () => {
-  it('session 为 null 抛出 UNAUTHORIZED', () => {
-    expect(() => requirePermission(null, 'employee:list'))
-      .toThrow('UNAUTHORIZED: 未登录')
+  it('session 为 null 时重定向到登录页', () => {
+    mockRedirect.mockClear()
+    expect(() => requirePermission(null, 'employee:list')).toThrow()
+    expect(mockRedirect).toHaveBeenCalledWith('/login?expired=1')
   })
 
   it('session 有权限不抛出', () => {

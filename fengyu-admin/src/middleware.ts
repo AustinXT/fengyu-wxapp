@@ -11,6 +11,13 @@ export async function middleware(request: NextRequest) {
 
   // Auth pages: allow without token
   if (pathname.startsWith('/login') || pathname.startsWith('/change-password')) {
+    // Session expired: clear stale cookie and stay on login
+    if (pathname === '/login' && request.nextUrl.searchParams.has('expired')) {
+      const response = NextResponse.redirect(new URL('/login', request.url))
+      response.cookies.delete(COOKIE_NAME)
+      return response
+    }
+
     // If user has valid token and is on /login, redirect appropriately
     const token = request.cookies.get(COOKIE_NAME)?.value
     if (token && pathname === '/login') {

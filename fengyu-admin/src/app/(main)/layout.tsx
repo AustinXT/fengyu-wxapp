@@ -7,7 +7,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   const session = await getSession()
 
   if (!session) {
-    redirect("/login")
+    redirect("/login?expired=1")
   }
 
   // 首次登录强制改密
