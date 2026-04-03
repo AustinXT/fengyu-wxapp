@@ -136,15 +136,20 @@ module.exports.min = function(n) {
     <!-- 正常浏览模式 -->
     <view wx:else class="catalog">
 
-      <!-- 左侧：自定义分类侧边栏（一级分类作为标题，二级分类可点击） -->
+      <!-- 左侧：自定义分类侧边栏（一级分组标题 + 二级分类可点击） -->
       <scroll-view class="sidebar-scroll" scroll-y scroll-into-view="{{sidebarScrollIntoView}}">
         <view
           wx:for="{{sidebarItems}}"
           wx:key="id"
           id="{{item.id}}"
         >
-          <!-- 分类项 -->
+          <!-- 一级分组标题 -->
+          <view wx:if="{{item.type === 'title'}}" class="sidebar-title">
+            <text class="sidebar-title-text">{{item.label}}</text>
+          </view>
+          <!-- 二级分类项 -->
           <view
+            wx:else
             class="sidebar-item {{activeCategoryKey === item.categoryKey ? 'sidebar-item--active' : ''}}"
             bindtap="onSidebarCategoryTap"
             data-key="{{item.categoryKey}}"

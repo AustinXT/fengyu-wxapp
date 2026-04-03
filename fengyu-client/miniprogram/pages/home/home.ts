@@ -18,9 +18,16 @@ interface Banner {
   link: string;
 }
 
+interface CategoryGroup {
+  category_id: string;
+  category_name: string;
+  sort_order: number;
+}
+
 interface Category {
   category_id: string;
   category_name: string;
+  category_group: string | null;
   category_order: number;
 }
 
@@ -36,7 +43,7 @@ interface SpuItem {
 
 interface SidebarItem {
   id: string;
-  type: "category";
+  type: "title" | "category";
   label: string;
   categoryKey: string;
 }
@@ -62,7 +69,10 @@ Page({
     cartCount: 0,
   },
 
-  // 所有分类
+  // 所有一级分组
+  _allGroups: [] as CategoryGroup[],
+
+  // 所有二级分类
   _allCategories: [] as Category[],
 
   // 页面级 SPU 缓存：按分类名缓存已加载的 SPU 列表
@@ -91,6 +101,7 @@ Page({
       // 切换门店时清空购物车和 SPU 缓存
       clearCart();
       this._spuCache = {};
+      this._allGroups = [];
       this._allCategories = [];
       this._allCategoryKeys = [];
       this.setData({
@@ -343,8 +354,9 @@ Page({
   async loadShopInit() {
     try {
       this.setData({ isLoading: true, loadError: false });
-      const initData = await callClientApi<{ categories: Category[]; spuList: any[] }>("product.shopInit", {});
+      const initData = await callClientApi<{ groups?: CategoryGroup[]; categories: Category[]; spuList: any[] }>("product.shopInit", {});
 
+      const groups: CategoryGroup[] = initData?.groups || [];
       const categories: Category[] = initData?.categories || [];
       const spuList: SpuItem[] = initData?.spuList || [];
 
@@ -353,30 +365,24 @@ Page({
         min_price: spu.priceFrom || "0",
       }));
 
-      // 缓存 shopInit 返回的商品列表（对应第一个分类）
-      if (categories.length > 0) {
-        this._spuCache[categories[0].category_id] = listWithPrice;
-      }
-
+      this._allGroups = groups;
       this._allCategories = categories;
 
-      // 构建侧边栏（扁平分类列表）
+      // 构建侧边栏（分组标题 + 二级分类）
       this.buildSidebarItems();
 
-      // 设置初始分类和商品
+      // 缓存 shopInit 返回的商品列表（对应第一个二级分类）
       const firstKey = this._allCategoryKeys[0] || "";
-
-      let displayList = listWithPrice;
-      if (firstKey && categories.length > 0 && firstKey !== categories[0].category_id) {
-        displayList = this._spuCache[firstKey] || [];
+      if (firstKey && listWithPrice.length > 0) {
+        this._spuCache[firstKey] = listWithPrice;
       }
 
       this.setData({
         activeCategoryKey: firstKey,
-        spuList: displayList,
+        spuList: firstKey ? (this._spuCache[firstKey] || []) : [],
       });
 
-      if (firstKey && displayList.length === 0 && !this._spuCache[firstKey]) {
+      if (firstKey && !this._spuCache[firstKey]) {
         this.loadSpuList(firstKey);
       }
     } catch (err: any) {
@@ -391,16 +397,29 @@ Page({
   buildSidebarItems() {
     const items: SidebarItem[] = [];
     const allCategoryKeys: string[] = [];
+    let idx = 0;
 
-    for (let i = 0; i < this._allCategories.length; i++) {
-      const cat = this._allCategories[i];
-      items.push({
-        id: `sid-${i}`,
-        type: "category",
-        label: cat.category_name,
-        categoryKey: cat.category_id,
-      });
-      allCategoryKeys.push(cat.category_id);
+    if (this._allGroups.length > 0) {
+      // 有分组：按分组组织侧边栏
+      for (const group of this._allGroups) {
+        const children = this._allCategories.filter(c => c.category_group === group.category_name);
+        if (children.length === 0) continue;
+
+        // 一级分组标题
+        items.push({ id: `sid-${idx++}`, type: "title", label: group.category_name, categoryKey: "" });
+
+        // 二级分类项
+        for (const cat of children) {
+          items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id });
+          allCategoryKeys.push(cat.category_id);
+        }
+      }
+    } else {
+      // 降级：无分组时扁平展示
+      for (const cat of this._allCategories) {
+        items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id });
+        allCategoryKeys.push(cat.category_id);
+      }
     }
 
     this._allCategoryKeys = allCategoryKeys;
