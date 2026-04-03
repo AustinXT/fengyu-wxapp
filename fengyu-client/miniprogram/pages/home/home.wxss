@@ -249,35 +249,22 @@
 }
 
 .sidebar-title {
-  padding: 20rpx 12rpx 6rpx;
+  padding: 20rpx 12rpx 8rpx;
 }
 
 .sidebar-title-text {
-  font-size: 22rpx;
-  font-weight: 700;
-  color: var(--color-primary);
+  font-size: 28rpx;
+  font-weight: 800;
+  color: var(--color-text-primary);
   letter-spacing: 2rpx;
 }
 
 .sidebar-item {
   padding: 16rpx 12rpx 16rpx 28rpx;
-  position: relative;
 }
 
 .sidebar-item--active {
   background: var(--color-bg-card);
-}
-
-.sidebar-item--active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 6rpx;
-  height: 36rpx;
-  background: var(--color-primary);
-  border-radius: 0 3rpx 3rpx 0;
 }
 
 .sidebar-item-text {
@@ -346,12 +333,6 @@
   min-height: 160rpx;
 }
 
-.spu-tags {
-  display: flex;
-  gap: 8rpx;
-  margin-bottom: 8rpx;
-  flex-wrap: wrap;
-}
 
 .spu-name {
   font-size: 26rpx;

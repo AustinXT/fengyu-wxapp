@@ -46,6 +46,7 @@ interface SidebarItem {
   type: "title" | "category";
   label: string;
   categoryKey: string;
+  groupKey: string;
 }
 
 Page({
@@ -88,6 +89,7 @@ Page({
   _isLoadingNext: false,
 
   onLoad() {
+    this._spuCache = {};
     const storeName = app.globalData.boundStoreName || "";
     this.setData({ boundStoreName: storeName });
     this.loadShopInit();
@@ -282,7 +284,7 @@ Page({
     }
   },
 
-  // 侧边栏分类点击
+  // 二级分类点击
   onSidebarCategoryTap(e: WechatMiniprogram.TouchEvent) {
     const { key } = e.currentTarget.dataset as { key: string };
     if (key && key !== this.data.activeCategoryKey) {
@@ -313,11 +315,11 @@ Page({
 
     const { activeCategoryKey } = this.data;
     const currentIndex = this._allCategoryKeys.indexOf(activeCategoryKey);
-
     if (currentIndex < 0 || currentIndex >= this._allCategoryKeys.length - 1) return;
 
     const nextKey = this._allCategoryKeys[currentIndex + 1];
     this._isLoadingNext = true;
+
     this.switchToCategory(nextKey);
 
     // 防止连续触发
@@ -372,18 +374,18 @@ Page({
       this.buildSidebarItems();
 
       // 缓存 shopInit 返回的商品列表（对应第一个二级分类）
-      const firstKey = this._allCategoryKeys[0] || "";
-      if (firstKey && listWithPrice.length > 0) {
-        this._spuCache[firstKey] = listWithPrice;
+      const firstCatKey = this._allCategoryKeys[0] || "";
+      if (firstCatKey && listWithPrice.length > 0) {
+        this._spuCache[firstCatKey] = listWithPrice;
       }
 
       this.setData({
-        activeCategoryKey: firstKey,
-        spuList: firstKey ? (this._spuCache[firstKey] || []) : [],
+        activeCategoryKey: firstCatKey,
+        spuList: firstCatKey ? (this._spuCache[firstCatKey] || []) : [],
       });
 
-      if (firstKey && !this._spuCache[firstKey]) {
-        this.loadSpuList(firstKey);
+      if (firstCatKey && !this._spuCache[firstCatKey]) {
+        this.loadSpuList(firstCatKey);
       }
     } catch (err: any) {
       console.error("loadShopInit error:", err);
@@ -405,19 +407,20 @@ Page({
         const children = this._allCategories.filter(c => c.category_group === group.category_name);
         if (children.length === 0) continue;
 
+        const groupKey = `group:${group.category_name}`;
         // 一级分组标题
-        items.push({ id: `sid-${idx++}`, type: "title", label: group.category_name, categoryKey: "" });
+        items.push({ id: `sid-${idx++}`, type: "title", label: group.category_name, categoryKey: groupKey, groupKey: "" });
 
-        // 二级分类项
+        // 二级分类项（groupKey 关联所属分组）
         for (const cat of children) {
-          items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id });
+          items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey });
           allCategoryKeys.push(cat.category_id);
         }
       }
     } else {
       // 降级：无分组时扁平展示
       for (const cat of this._allCategories) {
-        items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id });
+        items.push({ id: `sid-${idx++}`, type: "category", label: cat.category_name, categoryKey: cat.category_id, groupKey: "" });
         allCategoryKeys.push(cat.category_id);
       }
     }

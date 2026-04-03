@@ -113,9 +113,6 @@ module.exports.min = function(n) {
             </view>
             <image wx:else class="spu-cover" src="{{item.cover_image}}" mode="aspectFill" lazy-load />
             <view class="spu-body">
-              <view class="spu-tags" wx:if="{{item.category_name}}">
-                <van-tag type="primary">{{item.category_name}}</van-tag>
-              </view>
               <text class="spu-name">{{item.name}}</text>
               <view class="spu-footer">
                 <view class="price-group">
@@ -203,11 +200,6 @@ module.exports.min = function(n) {
 
             <!-- 右侧信息 -->
             <view class="spu-body">
-              <!-- 标签行 -->
-              <view class="spu-tags" wx:if="{{item.category_name}}">
-                <van-tag type="primary">{{item.category_name}}</van-tag>
-              </view>
-
               <!-- 商品名 -->
               <text class="spu-name">{{item.name}}</text>
 
