@@ -17,6 +17,7 @@ import {
   allocationStatusEnum,
   documentTypeEnum,
   itemDirectionEnum,
+  orderSourceEnum,
   orderStatusEnum,
   paymentMethodEnum,
   productTypeEnum,
@@ -55,6 +56,7 @@ export const saleOrders = pgTable(
     /** 订单总金额；退款为负数，转换=补差价，回款=本次回款金额 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
+    saleOrderSource: orderSourceEnum("sale_order_source").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     preferredEmployeeId: varchar("preferred_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
     paidAt: timestamp("paid_at"),
