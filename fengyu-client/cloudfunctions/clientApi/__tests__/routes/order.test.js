@@ -23,7 +23,7 @@ describe('order.scanDetail', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
-        sale_order_type: '普通', total_amount: 100,        store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
+        sale_order_type: '销售单', total_amount: 100, store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,

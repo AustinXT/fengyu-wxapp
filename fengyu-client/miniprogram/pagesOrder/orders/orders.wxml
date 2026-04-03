@@ -49,7 +49,6 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <view class="order-header-left">
           <view class="order-no-row">
             <text class="order-no">{{item.sale_order_id}}</text>
-            <van-tag wx:if="{{item.sale_order_type === '福利活动'}}" color="#F9F0FF" text-color="#722ED1">福利</van-tag>
           </view>
           <text class="order-time">{{item.order_time_fmt}}</text>
         </view>

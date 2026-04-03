@@ -152,7 +152,7 @@ exports.main = async (event) => {
              FROM sale_orders
              WHERE client_user_id = $1
                AND status IN ('已支付', '已完成')
-               AND sale_order_type NOT IN ('内部')
+               AND sale_order_type != '内部单'
                AND paid_at >= (NOW() - INTERVAL '12 months')`,
             [order.client_user_id]
           )
@@ -180,14 +180,14 @@ exports.main = async (event) => {
                  SELECT 1 FROM sale_orders o
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
-                   AND o.sale_order_type = '普通'
+                   AND o.sale_order_type = '销售单'
                    AND (
                      o.total_amount >= $2
                      OR (o.total_amount + COALESCE((
                        SELECT SUM(r.total_amount)
                        FROM sale_orders r
                        WHERE r.ref_sale_order_id = o.sale_order_id
-                         AND r.sale_order_type = '回款'
+                         AND r.sale_order_type = '回款单'
                          AND r.status IN ('已支付', '已完成')
                      ), 0)) >= $2
                    )
@@ -196,13 +196,13 @@ exports.main = async (event) => {
                  SELECT 1 FROM sale_orders
                  WHERE client_user_id = $1
                    AND status IN ('已支付', '已完成')
-                   AND sale_order_type = '普通'
+                   AND sale_order_type = '销售单'
                ) THEN '小美客'
                WHEN EXISTS (
                  SELECT 1 FROM sale_orders
                  WHERE client_user_id = $1
                    AND status IN ('已支付', '已完成')
-                   AND sale_order_type = '体验'
+                   AND sale_order_type = '销售单'
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,

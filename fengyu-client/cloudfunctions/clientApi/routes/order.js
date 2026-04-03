@@ -370,9 +370,6 @@ async function create(ctx) {
       seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
     }
 
-    // 确定订单类型
-    const saleOrderType = orderTypeParam === 'promo' ? '福利活动' : '普通'
-
     // 原子 claim 优惠券（在事务内防并发重用）
     if (inputCouponId) {
       const claimResult = await client.query(
@@ -395,8 +392,8 @@ async function create(ctx) {
         total_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $6, $6)`,
-      [orderNo, saleOrderType, documentType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
+      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $5, $5)`,
+      [orderNo, documentType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
     )
 
     // 创建订单明细（流水号递增）

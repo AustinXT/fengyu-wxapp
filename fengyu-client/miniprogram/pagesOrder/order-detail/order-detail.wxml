@@ -11,7 +11,6 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
     <view class="status-label-row">
       <text class="status-label">{{order.status}}</text>
-      <van-tag wx:if="{{order.sale_order_type === '福利活动'}}" color="#F9F0FF" text-color="#722ED1">福利</van-tag>
     </view>
     <text class="status-hint" wx:if="{{order.status === '待确认收款'}}">请等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
