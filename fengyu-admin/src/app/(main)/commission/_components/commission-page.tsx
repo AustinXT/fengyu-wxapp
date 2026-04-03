@@ -55,9 +55,8 @@ interface CommissionPageProps {
 export default function CommissionPage({ rates, markets, skillTags }: CommissionPageProps) {
   const router = useRouter()
   const { get, set } = useUrlFilters()
-  const defaultOrgId = markets.length > 0 ? markets[0].orgId : ""
-  const activeTab = get("market") || defaultOrgId
-  const setActiveTab = useCallback((v: string) => set("market", v === defaultOrgId ? "" : v), [set, defaultOrgId])
+  const activeTab = get("market") || ""
+  const setActiveTab = useCallback((v: string) => set("market", v), [set])
   const orderTypeFilter = get("orderType")
   const roleTypeFilter = get("roleType")
   const salesCategoryFilter = get("salesCategory")
@@ -65,7 +64,7 @@ export default function CommissionPage({ rates, markets, skillTags }: Commission
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingRate, setEditingRate] = useState<CommissionRate | null>(null)
-  const [form, setForm] = useState<RateFormData>(emptyForm(defaultOrgId, skillTags))
+  const [form, setForm] = useState<RateFormData>(emptyForm(markets[0]?.orgId ?? "", skillTags))
   const [saving, setSaving] = useState(false)
 
   // Delete confirmation state
@@ -81,18 +80,18 @@ const salesCategories = useMemo(
     [rates]
   )
 
-  const filterRates = (orgId: string) => {
-    let result = rates.filter((r) => r.orgId === orgId)
+  const filteredRates = useMemo(() => {
+    let result = activeTab ? rates.filter((r) => r.orgId === activeTab) : rates
     if (orderTypeFilter) result = result.filter((r) => r.orderType === orderTypeFilter)
     if (roleTypeFilter) result = result.filter((r) => r.roleType === roleTypeFilter)
     if (salesCategoryFilter)
       result = result.filter((r) => r.salesCategory === salesCategoryFilter)
     return result
-  }
+  }, [rates, activeTab, orderTypeFilter, roleTypeFilter, salesCategoryFilter])
 
   const openAddDialog = () => {
     setEditingRate(null)
-    setForm(emptyForm(activeTab, skillTags))
+    setForm(emptyForm(activeTab || (markets[0]?.orgId ?? ""), skillTags))
     setDialogOpen(true)
   }
 
@@ -202,7 +201,14 @@ const salesCategories = useMemo(
     }
   }
 
+  const marketMap = useMemo(() => new Map(markets.map(m => [m.orgId, m.name])), [markets])
+
   const columns: Column<CommissionRate>[] = [
+    ...(!activeTab ? [{
+      key: "orgName" as const,
+      header: "市场",
+      cell: (row: CommissionRate) => <span>{row.orgName ?? marketMap.get(row.orgId) ?? row.orgId}</span>,
+    }] : []),
     { key: "orderType", header: "订单类型" },
     { key: "roleType", header: "技能标签" },
     { key: "salesCategory", header: "销售分类" },
@@ -270,6 +276,7 @@ const salesCategories = useMemo(
           onChange={(e) => setActiveTab(e.target.value)}
           className="w-36"
         >
+          <option value="">全部市场</option>
           {markets.map((m) => (
             <option key={m.orgId} value={m.orgId}>
               {m.name}
@@ -319,7 +326,7 @@ const salesCategories = useMemo(
       ) : (
         <DataTable
           columns={columns}
-          data={filterRates(activeTab)}
+          data={filteredRates}
           emptyText="暂无提成规则"
         />
       )}
