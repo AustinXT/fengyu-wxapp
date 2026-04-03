@@ -8,10 +8,10 @@ const app = getApp<IAppOption>();
 interface Spu {
   product_id: string;
   name: string;
-  product_kind: string;
+  category_name: string;
   cover_image: string;
   description: string;
-  promotionSchemeId: string;
+  is_bundle: boolean;
 }
 
 interface Sku {
@@ -79,7 +79,7 @@ Page({
         spu: {
           product_id: spu.product_id,
           name: spu.name,
-          product_kind: spu.product_kind,
+          category_name: spu.category_name || '',
           cover_image: spu.cover_image,
           description: spu.description || '',
           promotionSchemeId: spu.promotionSchemeId || ''
@@ -189,8 +189,8 @@ Page({
       Toast.fail('请先选择规格');
       return;
     }
-    // 福利活动不进购物车，仅直接下单
-    if (spu.product_kind === '福利活动') {
+    // 套餐商品直接下单，不进购物车
+    if (spu.is_bundle) {
       this.onSubmit();
       return;
     }
@@ -202,7 +202,7 @@ Page({
       skuDisplayName: selectedSku.spec_name,
       coverImage: spu.cover_image,
       price: selectedSku.price,
-      bigCategory: spu.product_kind,
+      bigCategory: spu.category_name,
       productType: selectedSku.product_type,
     }, quantity);
 
@@ -221,10 +221,10 @@ Page({
       return;
     }
     let url = `/pagesOrder/checkout/checkout?skuId=${selectedSku.sku_id}&spuName=${encodeURIComponent(spu.name)}&staffWfId=${selectedStaffWfId}&staffName=${encodeURIComponent(selectedStaffName)}&quantity=${quantity}`;
-    // 福利活动使用特殊订单类型 + promotionSchemeId
-    if (spu.product_kind === '福利活动') {
+    // 套餐使用特殊订单类型
+    if (spu.is_bundle) {
       url += '&orderType=promo';
-      if (spu.promotionSchemeId) {
+      if ((spu as any).promotionSchemeId) {
         url += `&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
       }
     }

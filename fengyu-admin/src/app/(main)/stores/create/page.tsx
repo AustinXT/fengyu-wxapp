@@ -5,6 +5,6 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page() {
   const orgNodes = await getOrgNodes()
-  const markets = orgNodes.filter((n) => n.type === 'market' && n.isActive)
+  const markets = orgNodes.filter((n) => n.type === '市场' && n.isActive)
   return <StoreCreatePage markets={markets} />
 }

@@ -1,6 +1,7 @@
 import { boolean, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { stores, orgNodes } from './org'
+import { customerTypeEnum, customerStatusEnum, monthlyActivityEnum, spendingTierEnum, memberLevelEnum, customerSourceEnum } from './enums'
 
 /**
  * 顾客 / 客户端微信用户（合并原 customers + client_wechat_users）
@@ -29,12 +30,21 @@ export const clientWechatUsers = pgTable(
     boundStoreId: text('bound_store_id').references(() => stores.storeId),
     /** 绑定美容师（同步写入 or 营业额分配默认人员） */
     boundEmployeeId: varchar('bound_employee_id', { length: 50 }),
+    /** 绑定美容师姓名（冗余，随 boundEmployeeId 同步写入） */
+    boundEmployeeName: varchar('bound_employee_name', { length: 50 }),
     // Layer 4 — 会员与分类
-    memberLevel: varchar('member_level', { length: 20 }),
-    customerSource: varchar('customer_source', { length: 50 }),
+    memberLevel: memberLevelEnum('member_level'),
+    customerSource: customerSourceEnum('customer_source'),
     /** 推荐人（美容师员工ID） */
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
-    category: varchar('category', { length: 50 }),
+    /** 顾客类型：流量客/体验客/小美客/会员客，默认流量客 */
+    customerType: customerTypeEnum('customer_type').notNull().default('流量客'),
+    /** 历史消费档位：按累计消费额分档，默认<1990（未被经营） */
+    spendingTier: spendingTierEnum('spending_tier').notNull().default('<1990'),
+    /** 月度客活：每日凌晨3点根据当月已完成服务单计算 */
+    monthlyActivity: monthlyActivityEnum('monthly_activity'),
+    /** 到店状态：基于服务单历史自动计算，每日凌晨3点更新 */
+    customerStatus: customerStatusEnum('customer_status'),
     // Layer 5 — 个人档案
     birthday: date('birthday'),
     occupation: varchar('occupation', { length: 50 }),
@@ -81,7 +91,7 @@ export const staffWechatUsers = pgTable(
     idCard: varchar('id_card', { length: 200 }),
     // Layer 3 — 组织归属
     storeId: text('store_id').references(() => stores.storeId),
-    /** 指向 type='department' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
+    /** 指向 type='部门' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     positionName: varchar('position_name', { length: 50 }),
     // Layer 4 — 个人档案

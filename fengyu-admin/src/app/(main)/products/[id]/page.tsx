@@ -1,35 +1,31 @@
 import { notFound } from 'next/navigation'
-import { getProductById, getSkusByProductId, getCategories, getMarkets, resolveManageScope } from '@/actions/products'
-import ProductDetailPageClient from './_components/product-detail-page'
+import { getSkuById, getCategories, getMarkets } from '@/actions/products'
+import SkuDetailPageClient from './_components/product-detail-page'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ProductDetailPage({
+export default async function SkuDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>
 }) {
   const { id } = await params
 
-  const [product, skus, categories, markets, manageScope] = await Promise.all([
-    getProductById(id),
-    getSkusByProductId(id),
+  const [sku, categories, markets] = await Promise.all([
+    getSkuById(id),
     getCategories(),
     getMarkets(),
-    resolveManageScope(),
   ])
 
-  if (!product) {
+  if (!sku) {
     notFound()
   }
 
   return (
-    <ProductDetailPageClient
-      product={product}
-      skus={skus}
+    <SkuDetailPageClient
+      sku={sku}
       categories={categories}
       markets={markets}
-      manageScope={manageScope}
     />
   )
 }

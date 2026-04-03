@@ -36,7 +36,11 @@
 }
 .item-row:last-child { border-bottom: none; }
 
-.item-name { font-size: 30rpx; color: #2D2017; font-weight: 500; display: block; margin-bottom: 8rpx; }
+.item-name-row { display: flex; align-items: center; gap: 12rpx; margin-bottom: 8rpx; }
+.item-name { font-size: 30rpx; color: #2D2017; font-weight: 500; }
+.item-tag { font-size: 22rpx; padding: 2rpx 12rpx; border-radius: 6rpx; line-height: 1.4; }
+.item-tag--presale { background: #FFF0EE; color: #C45C48; }
+.item-tag--postsale { background: #E8F0FE; color: #3574C4; }
 .item-meta { display: flex; align-items: center; gap: 16rpx; margin-bottom: 8rpx; }
 .item-spec { font-size: 24rpx; color: var(--color-text-secondary); background: #F5F2EE; padding: 2rpx 12rpx; border-radius: 8rpx; }
 .item-sessions { font-size: 24rpx; color: var(--color-primary); }

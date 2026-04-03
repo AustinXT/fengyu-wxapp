@@ -75,7 +75,7 @@ Page({
   onTapOrder(e: WechatMiniprogram.TouchEvent) {
     const saleOrderId = e.currentTarget.dataset.saleOrderId as string;
     wx.navigateTo({
-      url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${saleOrderId}`,
+      url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${saleOrderId}`,
     });
   },
 

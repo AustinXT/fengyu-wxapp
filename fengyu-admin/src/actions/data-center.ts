@@ -229,10 +229,9 @@ export async function getCategoryMix(filter: DateFilter = {}): Promise<CategoryM
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       ${scopeFilter} ${inlineFilter}
     GROUP BY pc.product_kind
     ORDER BY total_amount DESC
@@ -265,10 +264,9 @@ export async function getProductRank(filter: DateFilter = {}): Promise<ProductRa
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status NOT IN ('已关闭', '支付失败')
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       ${scopeFilter} ${inlineFilter}
     GROUP BY si.product_name, pc.product_kind
     ORDER BY total_amount DESC
@@ -453,10 +451,9 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     LEFT JOIN product_skus ps ON ps.sku_id = si.sku_id
-    LEFT JOIN products p ON p.product_id = ps.product_id
-    LEFT JOIN product_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN product_categories pc ON pc.category_id = ps.category_id
     WHERE o.status IN ('已支付', '已完成')
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       ${scopeFilter} ${inlineFilter}
     GROUP BY si.product_name, pc.product_kind
     ORDER BY value DESC
@@ -466,7 +463,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
   const customerRows = await db.execute(sql.raw(`
     SELECT
       COALESCE(c.name, o.client_phone, '未知顾客') AS name,
-      COALESCE(c.member_level, '新客') AS subtitle,
+      COALESCE(c.member_level, '未定级') AS subtitle,
       COALESCE(SUM(o.total_amount), 0) AS value
     FROM sale_orders o
     LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id

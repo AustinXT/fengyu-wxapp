@@ -173,7 +173,7 @@ function SystemDashboard({ stats }: Props) {
       { label: "员工管理", href: "/employees" },
       { label: "商品管理", href: "/products" },
       { label: "权限管理", href: "/permissions" },
-      { label: "数据同步", href: "/sync" },
+
     ],
     hr: [
       { label: "组织架构", href: "/org" },

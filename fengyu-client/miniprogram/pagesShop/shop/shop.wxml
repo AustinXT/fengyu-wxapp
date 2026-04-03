@@ -3,14 +3,10 @@
 
 <view class="container">
 
-  <!-- 顶部一级分类横向导航 -->
-  <van-tabs
-    active="{{activeBigCategoryIndex}}"
-    bind:change="onBigCategoryChange"
-    line-width="40rpx"
-  >
-    <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
-  </van-tabs>
+  <!-- 分类标题 -->
+  <view class="section-title" style="padding: 16rpx 24rpx;">
+    <text style="font-size: 28rpx; font-weight: 600; color: #333;">全部分类</text>
+  </view>
 
   <!-- 分类 + 商品主区域（始终显示） -->
   <view class="catalog">
@@ -67,11 +63,8 @@
           <!-- 商品信息 -->
           <view class="spu-body">
             <!-- 标签行 -->
-            <view class="spu-tags">
-              <van-tag color="#E8684A" wx:if="{{item.product_kind === '福利活动'}}">福利活动</van-tag>
-              <van-tag type="primary" wx:elif="{{item.product_kind === '护理项目'}}">护理项目</van-tag>
-              <van-tag color="#5AACA5" wx:elif="{{item.product_kind === '家居产品'}}">家居产品</van-tag>
-              <van-tag color="#D4820A" wx:elif="{{item.product_kind === '充值卡'}}">充值卡</van-tag>
+            <view class="spu-tags" wx:if="{{item.category_name}}">
+              <van-tag type="primary">{{item.category_name}}</van-tag>
             </view>
 
             <!-- 商品名 -->

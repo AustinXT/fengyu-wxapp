@@ -55,7 +55,7 @@ async function save(ctx) {
   if (order.status !== '已支付') {
     throw new Error('PERMISSION_DENIED: 仅已支付订单可进行提成分配')
   }
-  if (!['pending', 'allocated'].includes(order.allocation_status)) {
+  if (!['待分配', '已分配'].includes(order.allocation_status)) {
     throw new Error('PERMISSION_DENIED: 订单分配状态异常')
   }
 
@@ -79,7 +79,7 @@ async function save(ctx) {
         )
       }
       await client.query(
-        "UPDATE sale_orders SET allocation_status = 'allocated', updated_at = $1 WHERE sale_order_id = $2",
+        "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2",
         [now, saleOrderId]
       )
     })
@@ -131,7 +131,7 @@ async function save(ctx) {
 
     // 更新订单分配状态
     await client.query(
-      "UPDATE sale_orders SET allocation_status = 'allocated', updated_at = $1 WHERE sale_order_id = $2",
+      "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2",
       [now, saleOrderId]
     )
   })
@@ -182,7 +182,7 @@ async function deleteAllocation(ctx) {
       )
     }
     await client.query(
-      "UPDATE sale_orders SET allocation_status = 'pending', updated_at = $1 WHERE sale_order_id = $2",
+      "UPDATE sale_orders SET allocation_status = '待分配', updated_at = $1 WHERE sale_order_id = $2",
       [now, saleOrderId]
     )
   })
@@ -258,7 +258,7 @@ async function pendingList(ctx) {
     FROM sale_orders o
     WHERE o.store_id = $1
       AND o.status = '已支付'
-      AND o.allocation_status = 'pending'
+      AND o.allocation_status = '待分配'
     ORDER BY o.paid_at DESC
     LIMIT $2 OFFSET $3
   `, [ctx.auth.storeId, pageSize, offset])

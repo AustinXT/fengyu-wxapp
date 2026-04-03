@@ -62,7 +62,6 @@ vi.mock('@db/permission', () => ({
     employeeId: 'employee_id',
     role: 'role',
     scopeId: 'scope_id',
-    isVoid: 'is_void',
   },
 }))
 
@@ -262,7 +261,7 @@ describe('changePassword — 密码变更 + JWT 重签', () => {
         return { from }
       }
       // roles lookup
-      const where = vi.fn().mockResolvedValue([{ role: 'admin', scopeId: 'hq', scopeType: 'headquarters' }])
+      const where = vi.fn().mockResolvedValue([{ role: 'admin', scopeId: 'hq', scopeType: '总部' }])
       const leftJoin = vi.fn().mockReturnValue({ where })
       const from = vi.fn().mockReturnValue({ leftJoin })
       return { from }
@@ -330,7 +329,7 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
       }
       // roles
       const where = vi.fn().mockResolvedValue([
-        { role: 'manager', scopeId: 'store-node-1', scopeType: 'store' },
+        { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
       const from = vi.fn().mockReturnValue({ leftJoin })
@@ -343,7 +342,7 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
     expect(result!.employeeId).toBe('EMP-001')
     expect(result!.name).toBe('张三')
     expect(result!.roles).toEqual([
-      { role: 'manager', scopeId: 'store-node-1', scopeType: 'store' },
+      { role: 'manager', scopeId: 'store-node-1', scopeType: '门店' },
     ])
     expect(computeActions).toHaveBeenCalled()
     expect(expandScopeStoreIds).toHaveBeenCalled()
@@ -374,7 +373,7 @@ describe('getSessionFromCookie — JWT → AuthSession', () => {
 
     const result = await getSessionFromCookie()
 
-    expect(result!.roles[0].scopeType).toBe('store')
+    expect(result!.roles[0].scopeType).toBe('门店')
   })
 })
 
@@ -402,7 +401,7 @@ describe('resetEmployeePassword — admin UPSERT', () => {
       if (selectCallIndex === 2) {
         // roles
         const where = vi.fn().mockResolvedValue([
-          { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+          { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
         ])
         const leftJoin = vi.fn().mockReturnValue({ where })
         const from = vi.fn().mockReturnValue({ leftJoin })
@@ -440,7 +439,7 @@ describe('resetEmployeePassword — admin UPSERT', () => {
       }
       // roles: manager, not admin
       const where = vi.fn().mockResolvedValue([
-        { role: 'manager', scopeId: 'store-1', scopeType: 'store' },
+        { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
       const from = vi.fn().mockReturnValue({ leftJoin })
@@ -484,7 +483,7 @@ describe('resetEmployeePassword — admin UPSERT', () => {
       }
       if (selectCallIndex === 2) {
         const where = vi.fn().mockResolvedValue([
-          { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+          { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
         ])
         const leftJoin = vi.fn().mockReturnValue({ where })
         const from = vi.fn().mockReturnValue({ leftJoin })
@@ -531,7 +530,7 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
     }
     // admin roles
     const where = vi.fn().mockResolvedValue([
-      { role: 'admin', scopeId: 'hq-1', scopeType: 'headquarters' },
+      { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
     ])
     const leftJoin = vi.fn().mockReturnValue({ where })
     const from = vi.fn().mockReturnValue({ leftJoin })
@@ -561,7 +560,7 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
         return { from }
       }
       const where = vi.fn().mockResolvedValue([
-        { role: 'manager', scopeId: 'store-1', scopeType: 'store' },
+        { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
       ])
       const leftJoin = vi.fn().mockReturnValue({ where })
       const from = vi.fn().mockReturnValue({ leftJoin })

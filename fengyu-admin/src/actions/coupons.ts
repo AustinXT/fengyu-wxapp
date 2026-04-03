@@ -4,17 +4,18 @@ import { db } from '@/db'
 import { couponTemplates, userCoupons } from '@db/coupon'
 import { clientWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
+import { productCategories } from '@db/product'
 import { eq, and, desc, gt, lte, or, isNull, isNotNull, sql, asc, ilike, inArray } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CouponTemplate, AvailableCoupon, IssuedCoupon, BatchCouponCustomer, OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 /**
- * 获取所有市场节点（type='market'），用于优惠券市场作用域选择。
+ * 获取所有市场节点（type='市场'），用于优惠券市场作用域选择。
  */
 export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const session = await getSession()
@@ -23,10 +24,35 @@ export async function getMarkets(): Promise<{ id: string; name: string }[]> {
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(and(eq(orgNodes.type, 'market'), eq(orgNodes.isActive, true)))
+    .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows
+}
+
+/**
+ * 获取品项分类列表（品项券适用范围选择用）。
+ * 权限走 coupon:list，避免依赖 product:list。
+ */
+export async function getCategoriesForCoupon(): Promise<{ categoryId: string; categoryName: string; productKind: string | null }[]> {
+  const session = await getSession()
+  requirePermission(session, 'coupon:list')
+
+  const rows = await db
+    .select({
+      categoryId: productCategories.categoryId,
+      categoryName: productCategories.categoryName,
+      productKind: productCategories.productKind,
+    })
+    .from(productCategories)
+    .where(eq(productCategories.isValid, true))
+    .orderBy(asc(productCategories.sortOrder))
+
+  return rows.map((r) => ({
+    categoryId: r.categoryId,
+    categoryName: r.categoryName,
+    productKind: r.productKind,
+  }))
 }
 
 /**
@@ -199,7 +225,7 @@ export async function createTemplate(data: {
   requirePermission(session, 'coupon:create')
 
   // 校验券种类型
-  const VALID_COUPON_TYPES = ['现金券', '项目券', '折扣券']
+  const VALID_COUPON_TYPES = ['现金券', '品项券', '折扣券']
   if (!VALID_COUPON_TYPES.includes(data.couponType)) {
     return { success: false, message: `无效的券种类型: ${data.couponType}` }
   }
@@ -285,6 +311,9 @@ export async function updateTemplate(
     updateData.validTo = data.validTo ? new Date(data.validTo) : null
   }
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(couponTemplates).where(eq(couponTemplates.templateId, templateId)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(couponTemplates.templateId, templateId)
@@ -306,7 +335,7 @@ export async function updateTemplate(
     }
   }
 
-  await logOperation(session, 'coupon.update', 'coupon_template', templateId, data)
+  await logUpdate(session, 'coupon.update', 'coupon_template', templateId, before as Record<string, unknown>, data)
   revalidatePath('/coupons')
   return { success: true, message: '优惠券模板已更新' }
 }
@@ -341,10 +370,12 @@ export async function toggleTemplateActive(
     }
   }
 
-  const action = isActive ? '启用' : '停用'
-  await logOperation(session, `coupon.${action}`, 'coupon_template', templateId, { isActive })
+  const actionLabel = isActive ? '启用' : '停用'
+  await logTransition(session, `coupon.${actionLabel}`, 'coupon_template', templateId,
+    isActive ? '停用' : '启用', actionLabel,
+  )
   revalidatePath('/coupons')
-  return { success: true, message: `优惠券模板已${action}` }
+  return { success: true, message: `优惠券模板已${actionLabel}` }
 }
 
 /**
@@ -576,9 +607,9 @@ async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | n
 
   if (!node) return null
 
-  if (node.type === 'headquarters') return null
+  if (node.type === '总部') return null
 
-  if (node.type === 'store') {
+  if (node.type === '门店') {
     const [store] = await db
       .select({ storeId: stores.storeId })
       .from(stores)
@@ -587,7 +618,7 @@ async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | n
     return store ? [store.storeId] : []
   }
 
-  if (node.type === 'market') {
+  if (node.type === '市场') {
     const storeRows = await db
       .select({ storeId: stores.storeId })
       .from(stores)

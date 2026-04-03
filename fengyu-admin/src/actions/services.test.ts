@@ -34,8 +34,13 @@ vi.mock('@db/service', () => ({
 }))
 
 vi.mock('@db/order', () => ({
+  saleOrders: {
+    saleOrderId: 'sale_order_id',
+    saleOrderType: 'sale_order_type',
+  },
   saleItems: {
     saleItemId: 'sale_item_id',
+    saleOrderId: 'sale_order_id',
     remainingSessions: 'remaining_sessions',
     unitRealPrice: 'unit_real_price',
   },
@@ -74,6 +79,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -104,13 +111,27 @@ function setupUpdate(count: number) {
   ;(db.update as any).mockReturnValue({ set })
 }
 
-/** select chain: .from().where().limit() 或 .from().where()（直接 await） */
+/** select chain: .from().leftJoin().innerJoin().where().limit() 或 .from().where()（直接 await） */
 function makeSelectChain(result: any[]) {
   const limit = vi.fn().mockResolvedValue(result)
   const whereResult = Object.assign(Promise.resolve(result), { limit })
   const where = vi.fn().mockReturnValue(whereResult)
-  const from = vi.fn().mockReturnValue({ where })
+  const chain: any = { where }
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.innerJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue({ from })
+}
+
+/** mock db.select() 链用于 logTransition 上下文获取：.from().leftJoin().where().limit() */
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
 }
 
 // ── startServiceOrder ─────────────────────────────────────────────────────────
@@ -119,6 +140,7 @@ describe('startServiceOrder — scope + 状态推进', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ assignedEmployeeId: 'EMP-001', employeeName: '张三', clientUserId: 'client-1', customerName: '李女士' }])
   })
 
   it('rowCount=0（状态已变更或 scope 不符）→ 失败', async () => {
@@ -156,6 +178,7 @@ describe('cancelServiceOrder — scope + 状态推进', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '李女士' }])
   })
 
   it('rowCount=0 → 失败', async () => {
@@ -196,7 +219,8 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
     ;(isAdminScope as any).mockReturnValue(false)
   })
 
-  it('scopeStoreIds 为空 → 直接拒绝（不查 DB）', async () => {
+  it('scopeStoreIds 为空 → 直接拒绝（不执行原子 SQL）', async () => {
+    mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(getSession as any).mockResolvedValue({
       ...mockSession,
       permissions: { actions: ['service:update'], scopeStoreIds: [] },
@@ -206,7 +230,6 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('无权')
-    expect(db.select).not.toHaveBeenCalled()
     expect(db.execute).not.toHaveBeenCalled()
   })
 
@@ -251,16 +274,19 @@ describe('completeServiceOrder — 非 admin scope 预检查', () => {
   })
 
   it('admin 用户：跳过 scope 预检查，直接执行原子 SQL', async () => {
+    mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(isAdminScope as any).mockReturnValue(true)
     ;(db.execute as any).mockResolvedValue([{ status_updated: '1', items_deducted: '1' }])
 
     const result = await completeServiceOrder('svc-1')
 
     expect(result.success).toBe(true)
-    expect(db.select).not.toHaveBeenCalled() // admin 不做预检查
+    // admin 跳过 scope 检查但仍获取上下文用于日志
+    expect(db.select).toHaveBeenCalledOnce()
   })
 
   it('原子 SQL 异常 → 返回友好错误', async () => {
+    mockSelectBefore([{ storeId: 'store-1', employeeName: '张三', customerName: '李女士' }])
     ;(isAdminScope as any).mockReturnValue(true)
     ;(db.execute as any).mockRejectedValue(new Error('connection lost'))
 
@@ -391,7 +417,7 @@ describe('getServiceOrdersPaginated — 服务端分页', () => {
     service_order: {
       serviceOrderId: 'FY-FW-260315-0001',
       status: '待服务',
-      serviceOrderType: '普通',
+      serviceOrderType: '售前',
       marketName: '南昌市场',
       storeId: 'store-1',
       serviceDate: '2026-03-15',

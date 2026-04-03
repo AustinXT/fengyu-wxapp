@@ -148,14 +148,14 @@ async function upsertCards(pgPool, cards, dryRun) {
       // UPSERT 初始 topup 流水（用 ref_order_id 去重）
       // 先检查是否已有该卡的 topup 记录
       const existing = await client.query(
-        "SELECT id FROM card_transactions WHERE card_id = $1 AND type = 'topup' AND ref_order_id = $2",
+        "SELECT id FROM card_transactions WHERE card_id = $1 AND type = '充值' AND ref_order_id = $2",
         [card.cardId, card.saleOrderId]
       )
 
       if (existing.rows.length === 0) {
         await client.query(`
           INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-          VALUES ($1, 'topup', $2, $3, $4)
+          VALUES ($1, '充值', $2, $3, $4)
         `, [
           card.cardId,
           card.balance,
@@ -190,7 +190,7 @@ async function verify(pgPool) {
   console.log(`  涉及顾客: ${cards.rows[0].users}`)
 
   const txns = await pgPool.query(
-    "SELECT COUNT(*) AS cnt, SUM(amount) AS total FROM card_transactions WHERE type = 'topup'"
+    "SELECT COUNT(*) AS cnt, SUM(amount) AS total FROM card_transactions WHERE type = '充值'"
   )
   console.log(`  充值流水: ${txns.rows[0].cnt} 条, 总额 ¥${parseFloat(txns.rows[0].total || 0).toFixed(2)}`)
 
@@ -235,7 +235,7 @@ async function verify(pgPool) {
     SELECT COUNT(*) AS cnt
     FROM prepaid_cards p
     WHERE ABS(p.balance - COALESCE((
-      SELECT SUM(CASE WHEN type = 'topup' THEN amount ELSE -amount END)
+      SELECT SUM(CASE WHEN type = '充值' THEN amount ELSE -amount END)
       FROM card_transactions WHERE card_id = p.card_id
     ), 0)) > 0.01
   `)

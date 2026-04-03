@@ -253,6 +253,7 @@ describe('service.create', () => {
         client_phone: '138',
       }])
       .mockResolvedValueOnce([]) // check active service orders → 无进行中
+      .mockResolvedValueOnce([{ customer_type: '流量客' }]) // customer_type 查询 → 售前
 
     // pg.transaction #1: generateServiceOrderId
     pg.transaction.mockImplementationOnce(async (cb) => {

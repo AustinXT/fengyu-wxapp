@@ -4,7 +4,8 @@ import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
+import { uploadFile, reuploadToFixedPath, deleteByCloudPaths } from '@/lib/cloudbase'
 
 interface SystemSettings {
   newMemberThreshold: string
@@ -50,6 +51,8 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
   requirePermission(session, 'system:config')
 
   try {
+    const oldSettings = await getSettings()
+
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS system_configs (
         key TEXT PRIMARY KEY,
@@ -73,7 +76,40 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       `)
     }
 
-    await logOperation(session, 'system.saveConfig', 'system_config', 'all', settings as unknown as Record<string, unknown>)
+    // 将轮播图重新上传到固定 CDN 路径 (banner1.jpg, banner2.jpg, ...)
+    const bannerUrls = settings.bannerImages || []
+    const newCount = bannerUrls.length
+    await Promise.all(
+      bannerUrls.map((url, i) =>
+        reuploadToFixedPath(url, `fengyu-client/banner/banner${i + 1}.jpg`)
+      )
+    )
+
+    // 读取旧的 banner_count，删除多余的旧固定路径图片
+    const oldCountRows = await db.execute<{ value: string }>(sql`
+      SELECT value FROM system_configs WHERE key = 'banner_count'
+    `)
+    const oldCount = parseInt((oldCountRows as any[])[0]?.value || '0', 10) || 0
+    if (oldCount > newCount) {
+      const pathsToDelete = Array.from(
+        { length: oldCount - newCount },
+        (_, i) => `fengyu-client/banner/banner${newCount + i + 1}.jpg`
+      )
+      await deleteByCloudPaths(pathsToDelete)
+    }
+
+    // 上传 config.json 到 CDN（client 端读取此文件获取轮播图数量和版本号）
+    const configJson = Buffer.from(JSON.stringify({ count: newCount, v: Date.now() }))
+    await uploadFile(configJson, 'fengyu-client/banner/config.json')
+
+    // 保存 banner_count
+    await db.execute(sql`
+      INSERT INTO system_configs (key, value, updated_at)
+      VALUES ('banner_count', ${String(newCount)}, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = ${String(newCount)}, updated_at = NOW()
+    `)
+
+    await logUpdate(session, 'system.saveConfig', 'system_config', 'all', oldSettings as unknown as Record<string, unknown>, settings as unknown as Record<string, unknown>)
 
     const { revalidatePath } = await import('next/cache')
     revalidatePath('/settings')

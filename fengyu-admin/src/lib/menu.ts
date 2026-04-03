@@ -9,12 +9,13 @@ import {
   Store,
   Users,
   Package,
+  ShoppingBag,
   Grid3x3,
   UserRound,
   Ticket,
   BarChart3,
   Shield,
-  RefreshCw,
+
   ScrollText,
   Settings,
   Unlink,
@@ -60,6 +61,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: '门店管理', icon: Store, href: '/stores', requiredRoles: ['admin', 'hr'] },
       { label: '员工管理', icon: Users, href: '/employees', requiredRoles: ['admin', 'hr'] },
       { label: '商品管理', icon: Package, href: '/products', requiredRoles: ['admin', 'product'] },
+      { label: '商城管理', icon: ShoppingBag, href: '/mall', requiredRoles: ['admin', 'product'] },
       { label: '提成矩阵', icon: Grid3x3, href: '/commission', requiredRoles: ['admin'] },
       { label: '顾客管理', icon: UserRound, href: '/customers', requiredRoles: ['manager', 'customer_mgr'], readonlyRoles: ['finance'] },
       { label: '优惠券管理', icon: Ticket, href: '/coupons', requiredRoles: ['admin', 'product'] },
@@ -75,7 +77,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     label: '系统管理',
     items: [
       { label: '权限管理', icon: Shield, href: '/permissions', requiredRoles: ['admin', 'hr'] },
-      { label: '数据同步', icon: RefreshCw, href: '/sync', requiredRoles: ['admin'] },
+
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredRoles: ['admin'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredRoles: ['admin'] },
     ],

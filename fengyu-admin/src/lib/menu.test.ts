@@ -31,7 +31,6 @@ describe('getVisibleMenuGroups', () => {
     expect(labels).toContain('提成矩阵')
     expect(labels).toContain('优惠券管理')
     expect(labels).toContain('权限管理')
-    expect(labels).toContain('数据同步')
     expect(labels).toContain('操作日志')
     expect(labels).toContain('系统配置')
   })
@@ -59,7 +58,6 @@ describe('getVisibleMenuGroups', () => {
   it('manager 看不到系统管理', () => {
     const labels = getMenuLabels(makeSession({ role: 'manager' }))
     expect(labels).not.toContain('权限管理')
-    expect(labels).not.toContain('数据同步')
     expect(labels).not.toContain('操作日志')
     expect(labels).not.toContain('系统配置')
   })

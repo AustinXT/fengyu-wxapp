@@ -16,24 +16,24 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { createOrgNode, updateOrgNode, deleteOrgNode } from "@/actions/org"
 
 const TYPE_ICON: Record<OrgNode["type"], string> = {
-  headquarters: "\u{1F3E2}",
-  market: "\u{1F4CA}",
-  store: "\u{1F3EA}",
-  department: "\u{1F3F7}\uFE0F",
+  总部: "\u{1F3E2}",
+  市场: "\u{1F4CA}",
+  门店: "\u{1F3EA}",
+  部门: "\u{1F3F7}\uFE0F",
 }
 
 const TYPE_LABEL: Record<OrgNode["type"], string> = {
-  headquarters: "总部",
-  market: "市场",
-  store: "门店",
-  department: "部门",
+  总部: "总部",
+  市场: "市场",
+  门店: "门店",
+  部门: "部门",
 }
 
 const TYPE_OPTIONS: { value: OrgNode["type"]; label: string }[] = [
-  { value: "headquarters", label: "总部" },
-  { value: "market", label: "市场" },
-  { value: "store", label: "门店" },
-  { value: "department", label: "部门" },
+  { value: "总部", label: "总部" },
+  { value: "市场", label: "市场" },
+  { value: "门店", label: "门店" },
+  { value: "部门", label: "部门" },
 ]
 
 function validateType(
@@ -42,13 +42,13 @@ function validateType(
   orgNodes: OrgNode[],
   editingNodeId: string | null
 ): string | null {
-  if (type === "headquarters" && orgNodes.some((n) => n.type === "headquarters" && n.id !== editingNodeId))
+  if (type === "总部" && orgNodes.some((n) => n.type === "总部" && n.id !== editingNodeId))
     return "只能有一个总部"
-  if (type === "market" && parentNode?.type !== "headquarters")
+  if (type === "市场" && parentNode?.type !== "总部")
     return "市场只能在总部下"
-  if (type === "store" && parentNode?.type !== "market")
+  if (type === "门店" && parentNode?.type !== "市场")
     return "门店只能在市场下"
-  if (type === "department" && parentNode?.type === "department")
+  if (type === "部门" && parentNode?.type === "部门")
     return "部门不能嵌套"
   return null
 }
@@ -143,7 +143,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
   const [dialogParentId, setDialogParentId] = useState<string | null>(null)
   const [editingNode, setEditingNode] = useState<OrgNode | null>(null)
   const [formName, setFormName] = useState("")
-  const [formType, setFormType] = useState<OrgNode["type"]>("department")
+  const [formType, setFormType] = useState<OrgNode["type"]>("部门")
   const [formSortOrder, setFormSortOrder] = useState(0)
   const [formIsActive, setFormIsActive] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -179,7 +179,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
     setDialogParentId(parentId)
     setEditingNode(null)
     setFormName("")
-    setFormType("department")
+    setFormType("部门")
     setFormSortOrder(0)
     setFormIsActive(true)
     setDialogOpen(true)
@@ -316,7 +316,7 @@ export default function OrgPage({ orgNodes: allOrgNodes }: { orgNodes: OrgNode[]
                     编辑
                   </Button>
                   <Button size="sm" onClick={() => openCreateDialog(selectedNode.id)}>新增子节点</Button>
-                  {selectedNode.type !== 'headquarters' && (
+                  {selectedNode.type !== '总部' && (
                     <Button size="sm" variant="ghost" className="text-[#D94040]" onClick={() => setDeleteTarget(selectedNode)}>
                       删除
                     </Button>

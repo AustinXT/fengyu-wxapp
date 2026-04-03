@@ -51,7 +51,7 @@ export const createOrderSchema = z.object({
   clientUserId: z.string().nullable(),
   clientPhone: z.string().regex(/^1\d{10}$/, '请输入正确的手机号'),
   customerName: z.string().min(1, '顾客姓名不能为空'),
-  paymentMethod: z.enum(['wechat', 'alipay', 'offline']),
+  paymentMethod: z.enum(['微信', '支付宝', '线下']),
   saleOrderType: z.enum(['普通', '体验', '内部', '福利活动', '回款', '转换', '退款']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),
@@ -90,11 +90,11 @@ export type CommissionRateInput = z.infer<typeof commissionRateSchema>
 // ─── 顾客档案 ───
 export const customerSchema = z.object({
   name: z.string().optional().nullable(),
+  gender: z.string().optional().nullable(),
   boundStoreId: z.string().optional().nullable(),
   boundEmployeeId: z.string().optional().nullable(),
   memberLevel: z.string().optional().nullable(),
   customerSource: z.string().optional().nullable(),
-  category: z.string().optional().nullable(),
   birthday: z.string().optional().nullable(),
   occupation: z.string().optional().nullable(),
   isMarried: z.boolean().optional().nullable(),
@@ -103,6 +103,7 @@ export const customerSchema = z.object({
   improvementFocus: z.string().optional().nullable(),
   skinIssue: z.string().optional().nullable(),
   wellnessPreference: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
 })
 export type CustomerInput = z.infer<typeof customerSchema>
 

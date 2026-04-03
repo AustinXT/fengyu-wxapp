@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -59,6 +59,40 @@ export async function getEmployees(): Promise<Employee[]> {
   return rows.map(rowToEmployee)
 }
 
+/**
+ * 搜索在职员工（不限 scope），用于推荐人选择等场景。
+ * 返回简要信息，最多 20 条。
+ */
+export async function searchEmployees(keyword: string): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:update')
+
+  const trimmed = keyword.trim()
+  if (!trimmed) return []
+
+  const pattern = `%${trimmed}%`
+  const rows = await db
+    .select({
+      employeeId: staffWechatUsers.employeeId,
+      name: staffWechatUsers.name,
+      phone: staffWechatUsers.phone,
+    })
+    .from(staffWechatUsers)
+    .where(
+      and(
+        eq(staffWechatUsers.isResigned, false),
+        or(
+          ilike(staffWechatUsers.name, pattern),
+          ilike(staffWechatUsers.phone, pattern),
+        ),
+      ),
+    )
+    .orderBy(staffWechatUsers.name)
+    .limit(20)
+
+  return rows
+}
+
 /** 员工列表筛选参数 */
 export interface EmployeeFilters {
   marketId?: string
@@ -100,16 +134,16 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .from(orgNodes)
       .where(eq(orgNodes.id, filters.marketId))
       .limit(1)
-    if (node?.type === 'market') {
+    if (node?.type === '市场') {
       // 市场：筛选该市场下所有门店的员工
       const sub = db.select({ storeId: stores.storeId }).from(stores)
         .innerJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
         .where(eq(storeNode.parentId, filters.marketId))
       conditions.push(inArray(staffWechatUsers.storeId, sub))
-    } else if (node?.type === 'department') {
+    } else if (node?.type === '部门') {
       // 总部部门：筛选 orgNodeId 为该部门的员工
       conditions.push(eq(staffWechatUsers.orgNodeId, filters.marketId))
-    } else if (node?.type === 'store') {
+    } else if (node?.type === '门店') {
       // 门店：按 orgNodeId 查对应 storeId 过滤
       const [storeRow] = await db.select({ storeId: stores.storeId }).from(stores)
         .where(eq(stores.orgNodeId, filters.marketId)).limit(1)
@@ -188,7 +222,7 @@ export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: strin
   const [hq] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'headquarters'))
+    .where(eq(orgNodes.type, '总部'))
     .limit(1)
   if (!hq) return []
 
@@ -341,16 +375,9 @@ export async function updateEmployee(
     }
   }
 
-  // 如果 storeId 变更，先获取旧值以便后续同步 permission_roles scope（§AFF-03）
-  let oldStoreId: string | null = null
-  if (data.storeId !== undefined) {
-    const [current] = await db
-      .select({ storeId: staffWechatUsers.storeId })
-      .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, employeeId))
-      .limit(1)
-    oldStoreId = current?.storeId ?? null
-  }
+  // 获取旧值用于日志 diff + storeId 变更检测
+  const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
+  const oldStoreId = currentEmployee?.storeId ?? null
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
@@ -382,15 +409,11 @@ export async function updateEmployee(
     }
   }
 
-  // 标记离职时同步作废所有有效的 permission_roles
+  // 标记离职时删除所有权限角色
   if (data.isResigned === true) {
     await db
-      .update(permissionRoles)
-      .set({ isVoid: true, voidedAt: new Date(), updatedBy: session.employeeId })
-      .where(and(
-        eq(permissionRoles.employeeId, employeeId),
-        eq(permissionRoles.isVoid, false),
-      ))
+      .delete(permissionRoles)
+      .where(eq(permissionRoles.employeeId, employeeId))
   }
 
   // §AFF-03：门店变更时同步更新 permission_roles scope
@@ -414,7 +437,6 @@ export async function updateEmployee(
         .where(and(
           eq(permissionRoles.employeeId, employeeId),
           eq(permissionRoles.scopeId, oldStore.orgNodeId),
-          eq(permissionRoles.isVoid, false),
         ))
 
       if ((scopeResult as any).count > 0) {
@@ -426,7 +448,7 @@ export async function updateEmployee(
     }
   }
 
-  await logOperation(session, 'employee.update', 'employee', employeeId, data)
+  await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, data)
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }

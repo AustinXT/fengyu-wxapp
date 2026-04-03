@@ -303,9 +303,9 @@ async function batchUpsert(pgPool, allocations, dryRun) {
   // 批量更新 allocation_status
   log('更新订单分配状态...')
   await pgPool.query(`
-    UPDATE sale_orders so SET allocation_status = 'allocated', updated_at = now()
+    UPDATE sale_orders so SET allocation_status = '已分配', updated_at = now()
     WHERE so.remark = 'WorkFine历史订单导入'
-      AND so.allocation_status IS DISTINCT FROM 'allocated'
+      AND so.allocation_status IS DISTINCT FROM '已分配'
       AND EXISTS (
         SELECT 1 FROM sale_items si
         JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id AND sa.is_void = false

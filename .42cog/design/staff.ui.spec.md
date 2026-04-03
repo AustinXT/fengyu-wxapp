@@ -1098,7 +1098,7 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 └─────────────────────────────────────┘
 ```
 
-仅店长可见。筛选已支付且 `allocation_status != 'allocated'` 的订单。
+仅店长可见。筛选已支付且 `allocation_status != '已分配'` 的订单。
 
 ### 4.17 解绑申请审批 `packageService/unbind-requests`
 

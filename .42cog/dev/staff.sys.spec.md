@@ -86,9 +86,9 @@ app.onLaunch()
 
 | 级别 | 数据范围 | SQL 过滤 |
 |------|---------|---------|
-| `headquarters` | 全局无过滤 | 无 WHERE 限制 |
-| `market` | 市场下所有门店 | `WHERE store_id IN (市场子门店列表)` |
-| `store` | 单门店 | `WHERE store_id = ?` |
+| `总部` | 全局无过滤 | 无 WHERE 限制 |
+| `市场` | 市场下所有门店 | `WHERE store_id IN (市场子门店列表)` |
+| `门店` | 单门店 | `WHERE store_id = ?` |
 
 **一人多角色 + 一角色多域**：`permission_roles` 表每条 `(employee_id, role, scope_id)` 组合独立记录，登录时聚合所有角色和权限。
 
@@ -208,19 +208,19 @@ order.qrcode(sale_order_id)
 ### 7.2 营业额分配
 
 ```text
-订单进入已支付 → allocation_status: null → pending
+订单进入已支付 → allocation_status: null → 待分配
 
 店长操作:
 allocation.save(sale_order_id, allocations[])
   → 按 sale_item 级写入 sale_allocations(employee_id, ratio, amount)
-  → allocation_status: pending → allocated
+  → allocation_status: 待分配 → 已分配
 
 allocation.deleteAllocation(sale_order_id)
-  → 标记 is_void = true → allocation_status: allocated → pending
+  → 标记 is_void = true → allocation_status: 已分配 → 待分配
 
 特殊场景:
   - 指定美容师 + 顾客端支付 → 系统自动 100% 分配
-  - 未指定美容师 + 顾客端支付 → pending 等待店长手动分配
+  - 未指定美容师 + 顾客端支付 → 待分配 等待店长手动分配
   - 订单关闭/支付失败 → sale_allocations.is_void = true
 
 锁定规则:
@@ -282,7 +282,7 @@ staff.todoList → 6 种待办:
   → 仅可选体验卡商品
   → order.create(sale_order_type='体验')
   → 支付 → 营业额分配（不计入普通业绩统计）
-  → 创建护理单(service_order_type='体验')
+  → 创建护理单(service_order_type 由顾客 customer_type 自动判定)
   → 服务完成 → 扣次
 ```
 

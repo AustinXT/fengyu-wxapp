@@ -10,7 +10,7 @@ import { sql } from 'drizzle-orm'
 // Schema tables
 import { orgNodes, stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { productCategories, products, productSkus } from '@db/product'
+import { productCategories, products, productSkus, mallCategories, mallProductSkus } from '@db/product'
 import { saleOrders, saleItems, saleAllocations } from '@db/order'
 import { appointments } from '@db/appointment'
 import { serviceOrders, serviceItems } from '@db/service'
@@ -34,22 +34,22 @@ const db = drizzle(client)
 // sync HQ: 16d1184b46db099a (总部)
 // sync 南昌市场: 6707cc8b88579108 / sync 九江市场: dad2db0b1249daca
 const ORG_NODES = [
-  { id: 'org-store-nc01', name: '南昌旗舰店', type: 'store' as const, parentId: '6707cc8b88579108', sortOrder: 1, isActive: true },
-  { id: 'org-store-nc02', name: '青山湖店', type: 'store' as const, parentId: '6707cc8b88579108', sortOrder: 2, isActive: true },
-  { id: 'org-store-jj01', name: '九江旗舰店', type: 'store' as const, parentId: 'dad2db0b1249daca', sortOrder: 1, isActive: true },
-  { id: 'org-store-gqc01', name: '共青城店', type: 'store' as const, parentId: 'dad2db0b1249daca', sortOrder: 2, isActive: true },
-  { id: 'org-dept-nc01-beauty', name: '美容部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 1, isActive: true },
-  { id: 'org-dept-nc01-wellness', name: '养生部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 2, isActive: true },
-  { id: 'org-dept-nc01-promo', name: '推广部', type: 'department' as const, parentId: 'org-store-nc01', sortOrder: 3, isActive: true },
-  { id: 'org-dept-nc02-beauty', name: '美容部', type: 'department' as const, parentId: 'org-store-nc02', sortOrder: 1, isActive: true },
-  { id: 'org-dept-nc02-wellness', name: '养生部', type: 'department' as const, parentId: 'org-store-nc02', sortOrder: 2, isActive: true },
-  { id: 'org-dept-nc02-promo', name: '推广部', type: 'department' as const, parentId: 'org-store-nc02', sortOrder: 3, isActive: true },
-  { id: 'org-dept-jj01-beauty', name: '美容部', type: 'department' as const, parentId: 'org-store-jj01', sortOrder: 1, isActive: true },
-  { id: 'org-dept-jj01-wellness', name: '养生部', type: 'department' as const, parentId: 'org-store-jj01', sortOrder: 2, isActive: true },
-  { id: 'org-dept-jj01-promo', name: '推广部', type: 'department' as const, parentId: 'org-store-jj01', sortOrder: 3, isActive: true },
-  { id: 'org-dept-gqc01-beauty', name: '美容部', type: 'department' as const, parentId: 'org-store-gqc01', sortOrder: 1, isActive: true },
-  { id: 'org-dept-gqc01-wellness', name: '养生部', type: 'department' as const, parentId: 'org-store-gqc01', sortOrder: 2, isActive: true },
-  { id: 'org-dept-gqc01-promo', name: '推广部', type: 'department' as const, parentId: 'org-store-gqc01', sortOrder: 3, isActive: true },
+  { id: 'org-store-nc01', name: '南昌旗舰店', type: '门店' as const, parentId: '6707cc8b88579108', sortOrder: 1, isActive: true },
+  { id: 'org-store-nc02', name: '青山湖店', type: '门店' as const, parentId: '6707cc8b88579108', sortOrder: 2, isActive: true },
+  { id: 'org-store-jj01', name: '九江旗舰店', type: '门店' as const, parentId: 'dad2db0b1249daca', sortOrder: 1, isActive: true },
+  { id: 'org-store-gqc01', name: '共青城店', type: '门店' as const, parentId: 'dad2db0b1249daca', sortOrder: 2, isActive: true },
+  { id: 'org-dept-nc01-beauty', name: '美容部', type: '部门' as const, parentId: 'org-store-nc01', sortOrder: 1, isActive: true },
+  { id: 'org-dept-nc01-wellness', name: '养生部', type: '部门' as const, parentId: 'org-store-nc01', sortOrder: 2, isActive: true },
+  { id: 'org-dept-nc01-promo', name: '推广部', type: '部门' as const, parentId: 'org-store-nc01', sortOrder: 3, isActive: true },
+  { id: 'org-dept-nc02-beauty', name: '美容部', type: '部门' as const, parentId: 'org-store-nc02', sortOrder: 1, isActive: true },
+  { id: 'org-dept-nc02-wellness', name: '养生部', type: '部门' as const, parentId: 'org-store-nc02', sortOrder: 2, isActive: true },
+  { id: 'org-dept-nc02-promo', name: '推广部', type: '部门' as const, parentId: 'org-store-nc02', sortOrder: 3, isActive: true },
+  { id: 'org-dept-jj01-beauty', name: '美容部', type: '部门' as const, parentId: 'org-store-jj01', sortOrder: 1, isActive: true },
+  { id: 'org-dept-jj01-wellness', name: '养生部', type: '部门' as const, parentId: 'org-store-jj01', sortOrder: 2, isActive: true },
+  { id: 'org-dept-jj01-promo', name: '推广部', type: '部门' as const, parentId: 'org-store-jj01', sortOrder: 3, isActive: true },
+  { id: 'org-dept-gqc01-beauty', name: '美容部', type: '部门' as const, parentId: 'org-store-gqc01', sortOrder: 1, isActive: true },
+  { id: 'org-dept-gqc01-wellness', name: '养生部', type: '部门' as const, parentId: 'org-store-gqc01', sortOrder: 2, isActive: true },
+  { id: 'org-dept-gqc01-promo', name: '推广部', type: '部门' as const, parentId: 'org-store-gqc01', sortOrder: 3, isActive: true },
 ]
 
 const STORES = [
@@ -117,76 +117,128 @@ const STAFF = [
 ]
 
 const CLIENTS = [
-  { userId: 'FYGK-20250120-0001', openid: 'o_client_linmei', phone: '13900139001', customerId: 'WF-C-0001', name: '林美', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0002', memberLevel: '钻石', customerSource: '老客户转介绍', category: 'VIP', birthday: '1985-06-18', occupation: '企业高管', isMarried: true, wechatName: '美美林', skinType: '干性', improvementFocus: '抗衰老、提拉紧致', skinIssue: '法令纹较深', wellnessPreference: '经络调理' },
-  { userId: 'FYGK-20250205-0002', openid: 'o_client_yangxue', phone: '13900139002', customerId: 'WF-C-0002', name: '杨雪', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0009', memberLevel: '金卡', customerSource: '线上推广', category: '潜力客户', birthday: '1990-12-05', occupation: '教师', isMarried: true, wechatName: '雪儿', skinType: '混合性', improvementFocus: '美白、祛斑', skinIssue: '色斑', wellnessPreference: null },
-  { userId: 'FYGK-20250310-0003', openid: 'o_client_heli', phone: '13900139003', customerId: 'WF-C-0003', name: '何丽', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '银卡', customerSource: '门店自然客', category: '普通客户', birthday: '1993-03-22', occupation: '会计', isMarried: false, wechatName: '丽丽', skinType: '油性', improvementFocus: '控油、收缩毛孔', skinIssue: '毛孔粗大', wellnessPreference: null },
-  { userId: 'FYGK-20250415-0004', openid: 'o_client_xuming', phone: '13900139004', customerId: 'WF-C-0004', name: '徐敏', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0007', memberLevel: '金卡', customerSource: '朋友推荐', category: 'VIP', birthday: '1988-09-14', occupation: '自由职业', isMarried: true, wechatName: '小敏', skinType: '敏感性', improvementFocus: '修复、舒敏', skinIssue: '泛红敏感', wellnessPreference: '艾灸' },
-  { userId: 'FYGK-20250620-0005', openid: 'o_client_songqian', phone: '13900139005', customerId: 'WF-C-0005', name: '宋茜', boundStoreId: 'store-gqc01', boundEmployeeId: 'FY-260601-0008', memberLevel: '银卡', customerSource: '线上推广', category: '普通客户', birthday: '1995-11-30', occupation: '设计师', isMarried: false, wechatName: '茜茜', skinType: '中性', improvementFocus: '日常保养', skinIssue: null, wellnessPreference: null },
-  { userId: 'FYGK-20260101-0006', openid: 'o_client_zhanghua', phone: '13900139006', customerId: null, name: '张华', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0002', memberLevel: '新客', customerSource: '门店自然客', category: '新客户', birthday: '1998-07-08', occupation: '学生', isMarried: false, wechatName: '华华', skinType: '油性', improvementFocus: '祛痘', skinIssue: '痘痘肌', wellnessPreference: null },
-  { userId: 'FYGK-20260215-0007', openid: null, phone: '13900139007', customerId: 'WF-C-0007', name: '吕秀', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0006', memberLevel: '钻石', customerSource: '老客户转介绍', category: 'VIP', birthday: '1982-04-01', occupation: '企业主', isMarried: true, wechatName: null, skinType: '干性', improvementFocus: '抗衰老、紧致', skinIssue: '松弛下垂', wellnessPreference: '养生SPA' },
-  { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '新客', customerSource: '线上推广', category: '新客户', birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
+  { userId: 'FYGK-20250120-0001', openid: 'o_client_linmei', phone: '13900139001', customerId: 'WF-C-0001', name: '林美', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0002', memberLevel: '黑钻', customerSource: '老带新', birthday: '1985-06-18', occupation: '企业高管', isMarried: true, wechatName: '美美林', skinType: '干性', improvementFocus: '抗衰老、提拉紧致', skinIssue: '法令纹较深', wellnessPreference: '经络调理' },
+  { userId: 'FYGK-20250205-0002', openid: 'o_client_yangxue', phone: '13900139002', customerId: 'WF-C-0002', name: '杨雪', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0009', memberLevel: '金钻', customerSource: '美团', birthday: '1990-12-05', occupation: '教师', isMarried: true, wechatName: '雪儿', skinType: '混合性', improvementFocus: '美白、祛斑', skinIssue: '色斑', wellnessPreference: null },
+  { userId: 'FYGK-20250310-0003', openid: 'o_client_heli', phone: '13900139003', customerId: 'WF-C-0003', name: '何丽', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '星钻', customerSource: '自进店', birthday: '1993-03-22', occupation: '会计', isMarried: false, wechatName: '丽丽', skinType: '油性', improvementFocus: '控油、收缩毛孔', skinIssue: '毛孔粗大', wellnessPreference: null },
+  { userId: 'FYGK-20250415-0004', openid: 'o_client_xuming', phone: '13900139004', customerId: 'WF-C-0004', name: '徐敏', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0007', memberLevel: '金钻', customerSource: '老带新', birthday: '1988-09-14', occupation: '自由职业', isMarried: true, wechatName: '小敏', skinType: '敏感性', improvementFocus: '修复、舒敏', skinIssue: '泛红敏感', wellnessPreference: '艾灸' },
+  { userId: 'FYGK-20250620-0005', openid: 'o_client_songqian', phone: '13900139005', customerId: 'WF-C-0005', name: '宋茜', boundStoreId: 'store-gqc01', boundEmployeeId: 'FY-260601-0008', memberLevel: '星钻', customerSource: '抖音', birthday: '1995-11-30', occupation: '设计师', isMarried: false, wechatName: '茜茜', skinType: '中性', improvementFocus: '日常保养', skinIssue: null, wellnessPreference: null },
+  { userId: 'FYGK-20260101-0006', openid: 'o_client_zhanghua', phone: '13900139006', customerId: null, name: '张华', boundStoreId: 'store-nc01', boundEmployeeId: 'FY-260101-0002', memberLevel: '初钻', customerSource: '自进店', birthday: '1998-07-08', occupation: '学生', isMarried: false, wechatName: '华华', skinType: '油性', improvementFocus: '祛痘', skinIssue: '痘痘肌', wellnessPreference: null },
+  { userId: 'FYGK-20260215-0007', openid: null, phone: '13900139007', customerId: 'WF-C-0007', name: '吕秀', boundStoreId: 'store-jj01', boundEmployeeId: 'FY-260201-0006', memberLevel: '黑钻', customerSource: '推带新', birthday: '1982-04-01', occupation: '企业主', isMarried: true, wechatName: null, skinType: '干性', improvementFocus: '抗衰老、紧致', skinIssue: '松弛下垂', wellnessPreference: '养生SPA' },
+  { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻', customerSource: '小程序', birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
+// 一级分类（品项类型）：product_kind = null
+const PRODUCT_KINDS = [
+  { categoryId: 'kind-welfare', categoryName: '福利活动', productKind: null, sortOrder: 1, isValid: true },
+  { categoryId: 'kind-care', categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true },
+  { categoryId: 'kind-home', categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true },
+  { categoryId: 'kind-card', categoryName: '充值卡', productKind: null, sortOrder: 4, isValid: true },
+]
+
+// 二级分类：product_kind = 所属一级分类的 categoryName
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品', salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+]
+
+// 一级分组（category_group = null，Tab/分组头，不直接关联商品）
+// 二级分类（category_group = 对应一级分组的 categoryName，商品挂载到此层）
+const MALL_CATEGORIES = [
+  // 一级分组
+  { categoryId: 'mall-group-care', categoryName: '护理项目', sortOrder: 1 },
+  { categoryId: 'mall-group-welfare', categoryName: '福利活动', sortOrder: 2 },
+  { categoryId: 'mall-group-home', categoryName: '家居产品', sortOrder: 3 },
+  { categoryId: 'mall-group-card', categoryName: '充值卡', sortOrder: 4 },
+  // 二级分类 — 护理项目
+  { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', categoryGroup: '护理项目', sortOrder: 1 },
+  { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', categoryGroup: '护理项目', sortOrder: 2 },
+  { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', categoryGroup: '护理项目', sortOrder: 3 },
+  // 二级分类 — 福利活动
+  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', categoryGroup: '福利活动', sortOrder: 1 },
+  { categoryId: 'mall-cat-hl-02', categoryName: '季节活动', categoryGroup: '福利活动', sortOrder: 2 },
+  { categoryId: 'mall-cat-hl-03', categoryName: '周年庆', categoryGroup: '福利活动', sortOrder: 3 },
+  // 二级分类 — 家居产品
+  { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', categoryGroup: '家居产品', sortOrder: 1 },
+  { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', categoryGroup: '家居产品', sortOrder: 2 },
+  // 二级分类 — 充值卡
+  { categoryId: 'mall-cat-cz-01', categoryName: '储值卡', categoryGroup: '充值卡', sortOrder: 1 },
+  { categoryId: 'mall-cat-cz-02', categoryName: '次卡', categoryGroup: '充值卡', sortOrder: 2 },
 ]
 
 const PRODUCTS = [
-  { productId: 'prod-001', categoryId: 'cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isShengmei: true, isBundle: false, price: '299.00', specialPrice: '259.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-002', categoryId: 'cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isShengmei: true, isBundle: false, price: '599.00', specialPrice: '499.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 2, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-003', categoryId: 'cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isShengmei: false, isBundle: false, price: '388.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-004', categoryId: 'cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isShengmei: null, isBundle: true, price: '99.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { productId: 'prod-005', categoryId: 'cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isShengmei: null, isBundle: false, price: '268.00', specialPrice: '228.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-006', categoryId: 'cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isShengmei: null, isBundle: false, price: '198.00', specialPrice: '168.00', salesCategory: '他销自耗' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-03-01', validEnd: null },
-  { productId: 'prod-007', categoryId: 'cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isShengmei: null, isBundle: false, price: '5000.00', specialPrice: null, salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-01-01', validEnd: null },
-  { productId: 'prod-008', categoryId: 'cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isShengmei: true, isBundle: false, price: '880.00', specialPrice: '780.00', salesCategory: '自采自销' as const, manageScope: null, marketScope: null, sortOrder: 1, validStart: '2025-06-01', validEnd: null },
+  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, isEnabled: true, isVisible: true },
+  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
 ]
 
 const PRODUCT_SKUS = [
-  { skuId: 'sku-001-01', productId: 'prod-001', productType: '单品' as const, specName: '单次体验', price: '299.00', specialPrice: '259.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '30.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-001-02', productId: 'prod-001', productType: '疗程卡' as const, specName: '10次卡', price: '1999.00', specialPrice: '1800.00', sessionCount: 10, isBundleSku: false, sortOrder: 2, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-001-03', productId: 'prod-001', productType: '疗程卡' as const, specName: '20次卡', price: '3599.00', specialPrice: '3200.00', sessionCount: 20, isBundleSku: false, sortOrder: 3, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-002-01', productId: 'prod-002', productType: '单品' as const, specName: '单次', price: '599.00', specialPrice: '499.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '50.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-002-02', productId: 'prod-002', productType: '疗程卡' as const, specName: '6次卡', price: '2999.00', specialPrice: '2680.00', sessionCount: 6, isBundleSku: false, sortOrder: 2, serviceFee: '60.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-003-01', productId: 'prod-003', productType: '单品' as const, specName: '60分钟', price: '388.00', specialPrice: null, sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '40.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-003-02', productId: 'prod-003', productType: '疗程卡' as const, specName: '10次卡', price: '2880.00', specialPrice: '2580.00', sessionCount: 10, isBundleSku: false, sortOrder: 2, serviceFee: '40.00', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-004-01', productId: 'prod-004', productType: '单品' as const, specName: '面部深层清洁', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 1, serviceFee: '20.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-004-02', productId: 'prod-004', productType: '单品' as const, specName: '基础面部护理', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 2, serviceFee: '20.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-004-03', productId: 'prod-004', productType: '单品' as const, specName: '肩颈放松', price: '0.00', specialPrice: null, sessionCount: 1, isBundleSku: true, sortOrder: 3, serviceFee: '15.00', validStart: '2025-06-01', validEnd: '2026-12-31' },
-  { skuId: 'sku-005-01', productId: 'prod-005', productType: '单品' as const, specName: '30ml', price: '268.00', specialPrice: '228.00', sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-005-02', productId: 'prod-005', productType: '单品' as const, specName: '60ml', price: '468.00', specialPrice: '398.00', sessionCount: null, isBundleSku: false, sortOrder: 2, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-006-01', productId: 'prod-006', productType: '单品' as const, specName: '标准礼盒', price: '198.00', specialPrice: '168.00', sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-03-01', validEnd: null },
-  { skuId: 'sku-007-01', productId: 'prod-007', productType: '单品' as const, specName: '金卡5000', price: '5000.00', specialPrice: null, sessionCount: null, isBundleSku: false, sortOrder: 1, serviceFee: '0', validStart: '2025-01-01', validEnd: null },
-  { skuId: 'sku-008-01', productId: 'prod-008', productType: '单品' as const, specName: '单次', price: '880.00', specialPrice: '780.00', sessionCount: 1, isBundleSku: false, sortOrder: 1, serviceFee: '80.00', validStart: '2025-06-01', validEnd: null },
-  { skuId: 'sku-008-02', productId: 'prod-008', productType: '疗程卡' as const, specName: '5次卡', price: '3880.00', specialPrice: '3500.00', sessionCount: 5, isBundleSku: false, sortOrder: 2, serviceFee: '80.00', validStart: '2025-06-01', validEnd: null },
+  { skuId: 'sku-001-01', categoryId: 'cat-hr-01', productType: '单品' as const, specName: '蜜语水润嫩肤护理 单次体验', price: '299.00', specialPrice: '259.00', sessionCount: 1, sortOrder: 1, serviceFee: '30.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-001-02', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '蜜语水润嫩肤护理 10次卡', price: '1999.00', specialPrice: '1800.00', sessionCount: 10, sortOrder: 2, serviceFee: '50.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-001-03', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '蜜语水润嫩肤护理 20次卡', price: '3599.00', specialPrice: '3200.00', sessionCount: 20, sortOrder: 3, serviceFee: '50.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-002-01', categoryId: 'cat-hr-01', productType: '单品' as const, specName: '科颜美逆龄焕肤 单次', price: '599.00', specialPrice: '499.00', sessionCount: 1, sortOrder: 1, serviceFee: '50.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-002-02', categoryId: 'cat-hr-01', productType: '疗程卡' as const, specName: '科颜美逆龄焕肤 6次卡', price: '2999.00', specialPrice: '2680.00', sessionCount: 6, sortOrder: 2, serviceFee: '60.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-003-01', categoryId: 'cat-hr-02', productType: '单品' as const, specName: '经络疏通养生护理 60分钟', price: '388.00', specialPrice: null, sessionCount: 1, sortOrder: 1, serviceFee: '40.00', isShengmei: false, marketScope: null, isEnabled: true },
+  { skuId: 'sku-003-02', categoryId: 'cat-hr-02', productType: '疗程卡' as const, specName: '经络疏通养生护理 10次卡', price: '2880.00', specialPrice: '2580.00', sessionCount: 10, sortOrder: 2, serviceFee: '40.00', isShengmei: false, marketScope: null, isEnabled: true },
+  { skuId: 'sku-004-01', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 面部深层清洁', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 1, serviceFee: '20.00', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-004-02', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 基础面部护理', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 2, serviceFee: '20.00', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-004-03', categoryId: 'cat-hl-01', productType: '单品' as const, specName: '新客体验 肩颈放松', price: '0.00', specialPrice: null, sessionCount: 1, sortOrder: 3, serviceFee: '15.00', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-005-01', categoryId: 'cat-jj-01', productType: '单品' as const, specName: '凤御玻尿酸精华液 30ml', price: '268.00', specialPrice: '228.00', sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-005-02', categoryId: 'cat-jj-01', productType: '单品' as const, specName: '凤御玻尿酸精华液 60ml', price: '468.00', specialPrice: '398.00', sessionCount: null, sortOrder: 2, serviceFee: '0', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-006-01', categoryId: 'cat-jj-02', productType: '单品' as const, specName: '艾草精油礼盒 标准礼盒', price: '198.00', specialPrice: '168.00', sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-007-01', categoryId: 'cat-cz-01', productType: '单品' as const, specName: '金卡充值卡 5000', price: '5000.00', specialPrice: null, sessionCount: null, sortOrder: 1, serviceFee: '0', isShengmei: null, marketScope: null, isEnabled: true },
+  { skuId: 'sku-008-01', categoryId: 'cat-hr-03', productType: '单品' as const, specName: '光子嫩肤仪器护理 单次', price: '880.00', specialPrice: '780.00', sessionCount: 1, sortOrder: 1, serviceFee: '80.00', isShengmei: true, marketScope: null, isEnabled: true },
+  { skuId: 'sku-008-02', categoryId: 'cat-hr-03', productType: '疗程卡' as const, specName: '光子嫩肤仪器护理 5次卡', price: '3880.00', specialPrice: '3500.00', sessionCount: 5, sortOrder: 2, serviceFee: '80.00', isShengmei: true, marketScope: null, isEnabled: true },
+]
+
+const MALL_PRODUCT_SKUS = [
+  { productId: 'prod-001', skuId: 'sku-001-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-001', skuId: 'sku-001-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-001', skuId: 'sku-001-03', bundlePrice: null, sortOrder: 3 },
+  { productId: 'prod-002', skuId: 'sku-002-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-002', skuId: 'sku-002-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-003', skuId: 'sku-003-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-003', skuId: 'sku-003-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-004', skuId: 'sku-004-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-004', skuId: 'sku-004-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-004', skuId: 'sku-004-03', bundlePrice: null, sortOrder: 3 },
+  { productId: 'prod-005', skuId: 'sku-005-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-005', skuId: 'sku-005-02', bundlePrice: null, sortOrder: 2 },
+  { productId: 'prod-006', skuId: 'sku-006-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-007', skuId: 'sku-007-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-008', skuId: 'sku-008-01', bundlePrice: null, sortOrder: 1 },
+  { productId: 'prod-008', skuId: 'sku-008-02', bundlePrice: null, sortOrder: 2 },
 ]
 
 const SALE_ORDERS = [
-  { saleOrderId: 'FY-XSD-WX-260310-0001', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-10T10:30:00Z'), clientUserId: 'FYGK-20250120-0001', clientPhone: '13900139001', customerName: '林美', totalAmount: '2299.00', paymentMethod: 'wechat' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: new Date('2026-03-10T10:35:00Z'), allocationStatus: 'allocated' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260311-0002', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-jj01', saleOrderDatetime: new Date('2026-03-11T14:00:00Z'), clientUserId: 'FYGK-20250415-0004', clientPhone: '13900139004', customerName: '徐敏', totalAmount: '2580.00', paymentMethod: 'offline' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260201-0006', preferredEmployeeId: 'FY-260201-0007', paidAt: new Date('2026-03-11T14:10:00Z'), allocationStatus: 'pending' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260312-0003', status: '待确认收款' as const, saleOrderType: '体验' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc02', saleOrderDatetime: new Date('2026-03-12T09:00:00Z'), clientUserId: 'FYGK-20260310-0008', clientPhone: '13900139008', customerName: '彭玉', totalAmount: '99.00', paymentMethod: 'offline' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260301-0005', preferredEmployeeId: 'FY-260301-0005', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260312-0004', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-12T15:00:00Z'), clientUserId: 'FYGK-20250205-0002', clientPhone: '13900139002', customerName: '杨雪', totalAmount: '3500.00', paymentMethod: 'wechat' as const, saleOrderSource: 'client' as const, openedBy: null, preferredEmployeeId: 'FY-260101-0009', paidAt: new Date('2026-03-12T15:05:00Z'), allocationStatus: 'pending' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260313-0005', status: '待支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-gqc01', saleOrderDatetime: new Date('2026-03-13T10:00:00Z'), clientUserId: 'FYGK-20250620-0005', clientPhone: '13900139005', customerName: '宋茜', totalAmount: '456.00', paymentMethod: 'wechat' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260601-0008', preferredEmployeeId: 'FY-260601-0008', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260313-0006', status: '已关闭' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-13T11:00:00Z'), clientUserId: 'FYGK-20260101-0006', clientPhone: '13900139006', customerName: '张华', totalAmount: '259.00', paymentMethod: 'wechat' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260310-0001', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-10T10:30:00Z'), clientUserId: 'FYGK-20250120-0001', clientPhone: '13900139001', customerName: '林美', totalAmount: '2299.00', paymentMethod: '微信' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: new Date('2026-03-10T10:35:00Z'), allocationStatus: '已分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260311-0002', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-jj01', saleOrderDatetime: new Date('2026-03-11T14:00:00Z'), clientUserId: 'FYGK-20250415-0004', clientPhone: '13900139004', customerName: '徐敏', totalAmount: '2580.00', paymentMethod: '线下' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260201-0006', preferredEmployeeId: 'FY-260201-0007', paidAt: new Date('2026-03-11T14:10:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260312-0003', status: '待确认收款' as const, saleOrderType: '体验' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc02', saleOrderDatetime: new Date('2026-03-12T09:00:00Z'), clientUserId: 'FYGK-20260310-0008', clientPhone: '13900139008', customerName: '彭玉', totalAmount: '99.00', paymentMethod: '线下' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260301-0005', preferredEmployeeId: 'FY-260301-0005', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260312-0004', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-12T15:00:00Z'), clientUserId: 'FYGK-20250205-0002', clientPhone: '13900139002', customerName: '杨雪', totalAmount: '3500.00', paymentMethod: '微信' as const, saleOrderSource: 'client' as const, openedBy: null, preferredEmployeeId: 'FY-260101-0009', paidAt: new Date('2026-03-12T15:05:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260313-0005', status: '待支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-gqc01', saleOrderDatetime: new Date('2026-03-13T10:00:00Z'), clientUserId: 'FYGK-20250620-0005', clientPhone: '13900139005', customerName: '宋茜', totalAmount: '456.00', paymentMethod: '微信' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260601-0008', preferredEmployeeId: 'FY-260601-0008', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260313-0006', status: '已关闭' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-13T11:00:00Z'), clientUserId: 'FYGK-20260101-0006', clientPhone: '13900139006', customerName: '张华', totalAmount: '259.00', paymentMethod: '微信' as const, saleOrderSource: 'staff' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
 ]
 
 const SALE_ITEMS = [
-  { saleItemId: 'XSLSH-WX-202603100001', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-02', productName: '蜜语水润嫩肤护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603100002', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-002-01', productName: '科颜美逆龄焕肤', skuSpecName: '单次', productType: '单品' as const, sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603110001', saleOrderId: 'FY-XSD-WX-260311-0002', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-003-02', productName: '经络疏通养生护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603120001', saleOrderId: 'FY-XSD-WX-260312-0003', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-004-01', productName: '新客首次体验套餐', skuSpecName: '面部深层清洁', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603120002', saleOrderId: 'FY-XSD-WX-260312-0004', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-008-02', productName: '光子嫩肤仪器护理', skuSpecName: '5次卡', productType: '疗程卡' as const, sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603130001', saleOrderId: 'FY-XSD-WX-260313-0005', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-005-01', productName: '凤御玻尿酸精华液', skuSpecName: '30ml', productType: '单品' as const, sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', itemDirection: 'purchase' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', skuSpecName: '单次体验', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603100001', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-02', productName: '蜜语水润嫩肤护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603100002', saleOrderId: 'FY-XSD-WX-260310-0001', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-002-01', productName: '科颜美逆龄焕肤', skuSpecName: '单次', productType: '单品' as const, sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603110001', saleOrderId: 'FY-XSD-WX-260311-0002', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-003-02', productName: '经络疏通养生护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603120001', saleOrderId: 'FY-XSD-WX-260312-0003', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-004-01', productName: '新客首次体验套餐', skuSpecName: '面部深层清洁', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603120002', saleOrderId: 'FY-XSD-WX-260312-0004', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-008-02', productName: '光子嫩肤仪器护理', skuSpecName: '5次卡', productType: '疗程卡' as const, sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603130001', saleOrderId: 'FY-XSD-WX-260313-0005', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-005-01', productName: '凤御玻尿酸精华液', skuSpecName: '30ml', productType: '单品' as const, sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', skuSpecName: '单次体验', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
 ]
 
 const SALE_ALLOCATIONS = [
@@ -204,10 +256,10 @@ const APPOINTMENTS = [
 ]
 
 const SERVICE_ORDERS = [
-  { serviceOrderId: 'HLD-WX-2603110001', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-11', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-001', clientUserId: 'FYGK-20250120-0001' },
-  { serviceOrderId: 'HLD-WX-2603120001', status: '已完成' as const, serviceOrderType: '普通' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-12', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-002', clientUserId: 'FYGK-20250120-0001' },
-  { serviceOrderId: 'HLD-WX-2603130001', status: '待服务' as const, serviceOrderType: '普通' as const, marketName: '九江市场', storeId: 'store-jj01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260201-0007', remark: '顾客要求使用温和型产品', appointmentId: 'appt-004', clientUserId: 'FYGK-20250415-0004' },
-  { serviceOrderId: 'HLD-WX-2603130002', status: '服务中' as const, serviceOrderType: '体验' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260101-0009', remark: null, appointmentId: null, clientUserId: 'FYGK-20250205-0002' },
+  { serviceOrderId: 'HLD-WX-2603110001', status: '已完成' as const, serviceOrderType: '售后' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-11', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-001', clientUserId: 'FYGK-20250120-0001' },
+  { serviceOrderId: 'HLD-WX-2603120001', status: '已完成' as const, serviceOrderType: '售后' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-12', assignedEmployeeId: 'FY-260101-0002', remark: null, appointmentId: 'appt-002', clientUserId: 'FYGK-20250120-0001' },
+  { serviceOrderId: 'HLD-WX-2603130001', status: '待服务' as const, serviceOrderType: '售前' as const, marketName: '九江市场', storeId: 'store-jj01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260201-0007', remark: '顾客要求使用温和型产品', appointmentId: 'appt-004', clientUserId: 'FYGK-20250415-0004' },
+  { serviceOrderId: 'HLD-WX-2603130002', status: '服务中' as const, serviceOrderType: '售前' as const, marketName: '南昌市场', storeId: 'store-nc01', serviceDate: '2026-03-13', assignedEmployeeId: 'FY-260101-0009', remark: null, appointmentId: null, clientUserId: 'FYGK-20250205-0002' },
 ]
 
 const SERVICE_ITEMS = [
@@ -216,18 +268,17 @@ const SERVICE_ITEMS = [
 ]
 
 const PERMISSION_ROLES = [
-  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'system' },
-  { employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260601-0008', role: 'manager', scopeId: 'org-store-gqc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0002', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0003', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', isVoid: false, createdBy: 'sync' },
-  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', isVoid: false, createdBy: 'FY-260101-0001' },
-  { employeeId: 'FY-260101-0010', role: 'staff', scopeId: 'org-store-nc02', isVoid: true, createdBy: 'sync' },
+  { employeeId: 'FY-260101-0001', role: 'admin', scopeId: '16d1184b46db099a', createdBy: 'system' },
+  { employeeId: 'FY-260101-0001', role: 'manager', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260301-0005', role: 'manager', scopeId: 'org-store-nc02', createdBy: 'sync' },
+  { employeeId: 'FY-260201-0006', role: 'manager', scopeId: 'org-store-jj01', createdBy: 'sync' },
+  { employeeId: 'FY-260601-0008', role: 'manager', scopeId: 'org-store-gqc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0002', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0003', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0004', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260201-0007', role: 'staff', scopeId: 'org-store-jj01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0009', role: 'staff', scopeId: 'org-store-nc01', createdBy: 'sync' },
+  { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a', createdBy: 'FY-260101-0001' },
 ]
 
 const COMMISSION_RATES = [
@@ -248,7 +299,7 @@ const COMMISSION_RATES = [
 
 const COUPON_TEMPLATES = [
   { templateId: 'coupon-tpl-001', name: '新客50元现金券', couponType: '现金券' as const, discountValue: '50.00', minSpend: '200.00', maxDiscount: null, totalCount: 500, applicableProductIds: null, applicableCategoryIds: null, applicableStoreIds: null, validityMode: 'days', validFrom: null, validTo: null, validDays: 30, description: '新客注册赠送，满200元可用', isActive: true },
-  { templateId: 'coupon-tpl-002', name: '面部护理体验券', couponType: '项目券' as const, discountValue: '100.00', minSpend: '0', maxDiscount: null, totalCount: 200, applicableProductIds: null, applicableCategoryIds: ['cat-hr-01'], applicableStoreIds: null, validityMode: 'fixed', validFrom: new Date('2026-03-01T00:00:00Z'), validTo: new Date('2026-06-30T23:59:59Z'), validDays: null, description: '面部护理品类专享100元抵扣', isActive: true },
+  { templateId: 'coupon-tpl-002', name: '面部护理体验券', couponType: '品项券' as const, discountValue: '100.00', minSpend: '0', maxDiscount: null, totalCount: 200, applicableProductIds: null, applicableCategoryIds: ['cat-hr-01'], applicableStoreIds: null, validityMode: 'fixed', validFrom: new Date('2026-03-01T00:00:00Z'), validTo: new Date('2026-06-30T23:59:59Z'), validDays: null, description: '面部护理品类专享100元抵扣', isActive: true },
   { templateId: 'coupon-tpl-003', name: '会员日8.5折券', couponType: '折扣券' as const, discountValue: '0.85', minSpend: '500.00', maxDiscount: '200.00', totalCount: null, applicableProductIds: null, applicableCategoryIds: null, applicableStoreIds: ['store-nc01', 'store-nc02'], validityMode: 'fixed', validFrom: new Date('2026-03-15T00:00:00Z'), validTo: new Date('2026-03-15T23:59:59Z'), validDays: null, description: '会员日当天全场8.5折，封顶200元，满500可用，仅限南昌门店', isActive: true },
 ]
 
@@ -260,7 +311,7 @@ const OPERATION_LOGS = [
   { operatorEmployeeId: 'FY-260201-0006', operatorName: '孙浩', operatorRole: 'manager', orgNodeId: 'org-store-jj01', orgNodeName: '九江旗舰店', action: 'order.confirmOffline', targetType: 'sale_order', targetId: 'FY-XSD-WX-260311-0002', detail: { previousStatus: '待确认收款', newStatus: '已支付' }, source: 'staffApi', createdAt: new Date('2026-03-11T14:10:00Z') },
   { operatorEmployeeId: 'FY-260101-0002', operatorName: '刘芳', operatorRole: 'staff', orgNodeId: 'org-store-nc01', orgNodeName: '南昌旗舰店', action: 'service.complete', targetType: 'service_order', targetId: 'HLD-WX-2603110001', detail: { remainingSessions: { before: 10, after: 9 } }, source: 'staffApi', createdAt: new Date('2026-03-11T11:30:00Z') },
   { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'permission.assign', targetType: 'permission_role', targetId: '11', detail: { employeeId: 'FY-260101-0001', role: 'hr', scopeId: '16d1184b46db099a' }, source: 'adminApi', createdAt: new Date('2025-02-01T10:00:00Z') },
-  { operatorEmployeeId: 'FY-260101-0001', operatorName: '张明', operatorRole: 'admin', orgNodeId: '16d1184b46db099a', orgNodeName: '总部', action: 'sync.trigger', targetType: 'system', targetId: 'workfine-sync', detail: { type: 'full', modules: ['org_nodes', 'stores', 'employees', 'customers', 'commission'] }, source: 'adminApi', createdAt: new Date('2026-03-13T08:00:00Z') },
+
 ]
 
 // ---------------------------------------------------------------------------
@@ -287,17 +338,29 @@ async function seed() {
     console.log('  client_wechat_users...')
     await tx.insert(clientWechatUsers).values(CLIENTS).onConflictDoNothing()
 
-    // 5. product_categories
-    console.log('  product_categories...')
+    // 5a. product_categories — 一级分类（品项类型）
+    console.log('  product_categories (kinds)...')
+    await tx.insert(productCategories).values(PRODUCT_KINDS).onConflictDoNothing()
+
+    // 5b. product_categories — 二级分类
+    console.log('  product_categories (sub)...')
     await tx.insert(productCategories).values(PRODUCT_CATEGORIES).onConflictDoNothing()
 
-    // 6. products
+    // 6. product_skus (SKU，独立实体)
+    console.log('  product_skus...')
+    await tx.insert(productSkus).values(PRODUCT_SKUS).onConflictDoNothing()
+
+    // 7. mall_categories (商品分类)
+    console.log('  mall_categories...')
+    await tx.insert(mallCategories).values(MALL_CATEGORIES).onConflictDoNothing()
+
+    // 8. products (商城商品)
     console.log('  products...')
     await tx.insert(products).values(PRODUCTS).onConflictDoNothing()
 
-    // 7. product_skus
-    console.log('  product_skus...')
-    await tx.insert(productSkus).values(PRODUCT_SKUS).onConflictDoNothing()
+    // 9. mall_product_skus (商城商品-SKU关联)
+    console.log('  mall_product_skus...')
+    await tx.insert(mallProductSkus).values(MALL_PRODUCT_SKUS).onConflictDoNothing()
 
     // 8. sale_orders
     console.log('  sale_orders...')

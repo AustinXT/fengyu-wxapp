@@ -1,5 +1,4 @@
 import { bigserial, index, integer, jsonb, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
-import { pointTransactionTypeEnum } from './enums'
 import { clientWechatUsers } from './user'
 import { saleOrders } from './order'
 
@@ -39,8 +38,8 @@ export const pointTransactions = pgTable(
     userId: text('user_id')
       .notNull()
       .references(() => clientWechatUsers.userId),
-    type: pointTransactionTypeEnum('type').notNull(),
-    /** 积分变动量（earn 为正，redeem 为负） */
+    type: text('type').notNull().default('获取'),
+    /** 积分变动量 */
     amount: integer('amount').notNull(),
     /** 关联订单ID（可选） */
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),

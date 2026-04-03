@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo } from "react";
 import Link from "next/link";
-import type { Employee, OrgNode } from "@/lib/types";
+import type { Employee, OrgNode, Position, SkillTag } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
@@ -12,6 +12,8 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
 import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
+import PositionManagementDialog from "./position-management-dialog";
+import SkillTagManagementDialog from "./skill-tag-management-dialog";
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 
@@ -24,11 +26,17 @@ export default function EmployeesPage({
   employees,
   total,
   orgNodes,
+  positions,
+  skillTags,
 }: {
   employees: Employee[];
   total: number;
   orgNodes: OrgNode[];
+  positions: Position[];
+  skillTags: SkillTag[];
 }) {
+  const [positionDialogOpen, setPositionDialogOpen] = useState(false);
+  const [skillTagDialogOpen, setSkillTagDialogOpen] = useState(false);
   const { get, set, setMany } = useUrlFilters();
 
   /** 筛选变更时重置到第 1 页 */
@@ -58,7 +66,7 @@ export default function EmployeesPage({
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
 
   /** 筛选用 org tree：仅保留 market/store 层级（不含 department） */
-  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "department"), [orgNodes]);
+  const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
 
   const columns: Column<Employee>[] = [
     { key: "employeeId", header: "员工编号" },
@@ -120,9 +128,17 @@ export default function EmployeesPage({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">员工管理</h1>
-        <Link href="/employees/create">
-          <Button>新增员工</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setPositionDialogOpen(true)}>
+            职位管理
+          </Button>
+          <Button variant="outline" onClick={() => setSkillTagDialogOpen(true)}>
+            标签管理
+          </Button>
+          <Link href="/employees/create">
+            <Button>新增员工</Button>
+          </Link>
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
@@ -155,6 +171,17 @@ export default function EmployeesPage({
         onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
         pageSizeOptions={PAGE_SIZE_OPTIONS}
         onPageSizeChange={(size) => setMany({ size: String(size), page: "" })}
+      />
+
+      <PositionManagementDialog
+        open={positionDialogOpen}
+        onOpenChange={setPositionDialogOpen}
+        positions={positions}
+      />
+      <SkillTagManagementDialog
+        open={skillTagDialogOpen}
+        onOpenChange={setSkillTagDialogOpen}
+        skillTags={skillTags}
       />
     </div>
   );

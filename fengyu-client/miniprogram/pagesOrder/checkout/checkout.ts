@@ -30,7 +30,7 @@ Page({
     staffWfId: '',
     staffName: '',
     storeName: '',
-    paymentMethod: 'wechat' as 'wechat' | 'alipay' | 'offline',
+    paymentMethod: '微信' as '微信' | '支付宝' | '线下',
     agreed: false,
     submitting: false,
     // 若从员工端扫码进入，持有已有 orderNo
@@ -161,8 +161,8 @@ Page({
       // unitPrice 需为扣券前金额，WXML 用 unitPrice - couponDiscount 计算实付
       const preDiscountTotal = Number(order.total_amount || 0) + existingCouponDiscount;
       // 还原支付方式（避免默认 wechat 覆盖用户原选）
-      const validMethods = ['wechat', 'alipay', 'offline'] as const;
-      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : 'wechat';
+      const validMethods = ['微信', '支付宝', '线下'] as const;
+      const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : '微信';
 
       this.setData({
         spuName: items.length > 1
@@ -304,11 +304,11 @@ Page({
   },
 
   onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as 'wechat' | 'alipay' | 'offline' });
+    this.setData({ paymentMethod: e.detail as '微信' | '支付宝' | '线下' });
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: 'wechat' | 'alipay' | 'offline' };
+    const { method } = e.currentTarget.dataset as { method: '微信' | '支付宝' | '线下' };
     this.setData({ paymentMethod: method });
   },
 
@@ -329,7 +329,7 @@ Page({
     this.setData({ submitting: true });
 
     try {
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'offline') {
+      if (this.data.existingOrderNo && this.data.paymentMethod === '线下') {
         // 扫码 + 线下付款
         await callClientApi('order.offlinePay', { saleOrderId: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
@@ -337,13 +337,13 @@ Page({
         return;
       }
 
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'alipay') {
+      if (this.data.existingOrderNo && this.data.paymentMethod === '支付宝') {
         // 扫码 + 支付宝
         await this.doAlipayPay(this.data.existingOrderNo);
         return;
       }
 
-      if (this.data.existingOrderNo && this.data.paymentMethod === 'wechat') {
+      if (this.data.existingOrderNo && this.data.paymentMethod === '微信') {
         // 扫码 + 微信支付
         await this.doWechatPay(this.data.existingOrderNo);
         return;
@@ -373,11 +373,11 @@ Page({
       const saleOrderId = data?.saleOrderId || data?.orderNo;
       if (!saleOrderId) throw new Error('创建订单失败');
 
-      if (this.data.paymentMethod === 'offline') {
+      if (this.data.paymentMethod === '线下') {
         if (this.data.fromCart) clearCart();
         Toast.success('已提交，等待店长确认收款');
         setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1500);
-      } else if (this.data.paymentMethod === 'alipay') {
+      } else if (this.data.paymentMethod === '支付宝') {
         if (this.data.fromCart) clearCart();
         await this.doAlipayPay(saleOrderId);
       } else {

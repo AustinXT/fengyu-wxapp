@@ -1,14 +1,17 @@
 "use client"
 
-const SKILL_OPTIONS = ["美容师", "养生师", "推广师"] as const
+const DEFAULT_SKILL_OPTIONS = ["美容师", "养生师", "推广师"]
 
 interface SkillSelectProps {
+  options?: string[]
   value: string[]
   onChange?: (skills: string[]) => void
   disabled?: boolean
 }
 
-export function SkillSelect({ value, onChange, disabled }: SkillSelectProps) {
+export function SkillSelect({ options, value, onChange, disabled }: SkillSelectProps) {
+  const SKILL_OPTIONS = options ?? DEFAULT_SKILL_OPTIONS
+
   function toggle(skill: string) {
     if (disabled || !onChange) return
     const next = value.includes(skill)

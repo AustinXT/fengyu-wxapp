@@ -20,11 +20,7 @@
 
   <!-- 积分记录 -->
   <view class="history-section">
-    <van-tabs active="{{activeTab}}" bind:change="onTabChange" color="#C0322A" line-width="60rpx">
-      <van-tab title="全部" />
-      <van-tab title="收入" />
-      <van-tab title="支出" />
-    </van-tabs>
+    <view class="section-title">积分记录</view>
 
     <!-- 加载骨架 -->
     <view wx:if="{{isLoading && records.length === 0}}" class="skeleton-wrap">

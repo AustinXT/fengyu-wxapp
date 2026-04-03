@@ -157,7 +157,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.confirmOffline', { orderNo: id });
+          await callStaffApi('order.confirmOffline', { saleOrderId: id });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -170,7 +170,7 @@ Page({
 
   onViewQrcode(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${id}` });
+    wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${id}` });
   },
 
   onCloseOrder(e: WechatMiniprogram.TouchEvent) {
@@ -183,7 +183,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.close', { orderNo: id });
+          await callStaffApi('order.close', { saleOrderId: id });
           wx.showToast({ title: '订单已关闭', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -203,7 +203,7 @@ Page({
       success: async (res) => {
         if (!res.confirm) return;
         try {
-          await callStaffApi('order.resetFailed', { orderNo: id });
+          await callStaffApi('order.resetFailed', { saleOrderId: id });
           wx.showToast({ title: '已重置为待支付', icon: 'success' });
           this.resetAndLoad();
         } catch (err: unknown) {
@@ -216,6 +216,6 @@ Page({
 
   onAllocate(e: WechatMiniprogram.TouchEvent) {
     const id = e.currentTarget.dataset.id as string;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${id}` });
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${id}` });
   },
 });

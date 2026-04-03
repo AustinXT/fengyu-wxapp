@@ -13,15 +13,13 @@ const ORDER_SOURCE_LABEL: Record<string, string> = {
   staff: '员工开单',
 };
 
-// ===== API 原始类型（snake_case，字段可选以兼容不同版本） =====
+// ===== API 原始类型（snake_case） =====
 
 interface RawOrder {
   sale_order_id: string;
   status: string;
   sale_order_type?: string;
-  order_type?: string;
   sale_order_source?: string;
-  order_source?: string;
   store_name?: string;
   payment_method?: string;
   customer_name?: string;
@@ -31,7 +29,6 @@ interface RawOrder {
   offline_confirmed_at?: string;
   created_at?: string;
   paid_at?: string;
-  totalAmount?: string;
   total_amount?: string;
   opened_by?: string;
   refund_reason?: string;
@@ -43,7 +40,6 @@ interface RawOrderItem {
   product_name?: string;
   sku_spec_name?: string;
   received?: string;
-  sale_amount?: string;
   session_count?: number;
   remaining_sessions?: number;
 }
@@ -129,13 +125,13 @@ Page({
   async loadDetail(saleOrderId: string) {
     this.setData({ loading: true });
     try {
-      const res = await callStaffApi<OrderDetailResponse>('order.detail', { orderNo: saleOrderId });
+      const res = await callStaffApi<OrderDetailResponse>('order.detail', { saleOrderId });
       const o = res.order || {} as RawOrder;
       const items: DisplayOrderItem[] = (res.items || []).map((it) => ({
         saleItemId: it.sale_item_id,
         itemName: it.product_name || it.sku_spec_name || '—',
         spec: it.sku_spec_name || '',
-        totalPrice: it.received || it.sale_amount || '0',
+        totalPrice: it.received || '0',
         sessionCount: it.session_count,
         remainingSessions: it.remaining_sessions,
       }));
@@ -145,8 +141,8 @@ Page({
         amount: a.total_amount || '0',
         ratio: `${Number(a.allocation_ratio) * 100}%`,
       }));
-      const orderType = o.sale_order_type || o.order_type || '';
-      const orderSource = o.sale_order_source || o.order_source || '';
+      const orderType = o.sale_order_type || '';
+      const orderSource = o.sale_order_source || '';
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
@@ -167,7 +163,7 @@ Page({
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
-          totalAmount: o.totalAmount || o.total_amount || '0',
+          totalAmount: o.total_amount || '0',
           items,
           allocation,
         },
@@ -184,7 +180,7 @@ Page({
 
   onReAllocation() {
     const saleOrderId = this.data._saleOrderId;
-    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?orderNo=${saleOrderId}` });
+    wx.navigateTo({ url: `/packageOrder/revenue-allocation/revenue-allocation?saleOrderId=${saleOrderId}` });
   },
 
   onResetFailed() {
@@ -198,7 +194,7 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.resetFailed', { orderNo: saleOrderId });
+          await callStaffApi('order.resetFailed', { saleOrderId });
           wx.showToast({ title: '已重置', icon: 'success' });
           this.loadDetail(saleOrderId);
         } catch (err: unknown) {
@@ -222,7 +218,7 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.confirmOffline', { orderNo: saleOrderId });
+          await callStaffApi('order.confirmOffline', { saleOrderId });
           wx.showToast({ title: '收款已确认', icon: 'success' });
           this.loadDetail(saleOrderId);
         } catch (err: unknown) {
@@ -247,7 +243,7 @@ Page({
         if (!res.confirm) return;
         this.setData({ submitting: true });
         try {
-          await callStaffApi('order.close', { orderNo: saleOrderId });
+          await callStaffApi('order.close', { saleOrderId });
           wx.showToast({ title: '订单已取消', icon: 'success' });
           this.loadDetail(saleOrderId);
         } catch (err: unknown) {
@@ -272,7 +268,7 @@ Page({
   onShowQrcode() {
     const o = this.data.order;
     if (!o) return;
-    const params = `orderNo=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
+    const params = `saleOrderId=${o.saleOrderId}&customerName=${encodeURIComponent(o.customerName)}&totalAmount=${o.totalAmount}`;
     wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?${params}` });
   },
 

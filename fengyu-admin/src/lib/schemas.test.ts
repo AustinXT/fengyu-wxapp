@@ -129,7 +129,7 @@ describe('createOrderSchema', () => {
     clientUserId: null,
     clientPhone: '13800138000',
     customerName: '李女士',
-    paymentMethod: 'offline' as const,
+    paymentMethod: '线下' as const,
     saleOrderType: '普通' as const,
     openedBy: 'FY-260101-0001',
     items: [validItem],

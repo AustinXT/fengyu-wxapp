@@ -361,14 +361,14 @@ async function todoList(ctx) {
     result.pendingCreateOrderCount = Number(createRows[0].cnt)
 
     const unbindRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = 'pending'`,
+      `SELECT COUNT(*) AS cnt FROM store_unbind_requests WHERE from_store_id = $1 AND status = '待处理'`,
       [storeId]
     )
     result.pendingUnbindCount = Number(unbindRows[0].cnt)
 
     // 待提成分配订单
     const allocRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = 'pending'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '已支付' AND allocation_status = '待分配'`,
       [storeId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)

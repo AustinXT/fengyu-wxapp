@@ -99,10 +99,10 @@ async function scanDetail(ctx) {
     SELECT
       si.sale_item_id, si.unit_price, si.quantity, si.received,
       si.product_name, si.sku_spec_name,
-      p.cover_image
+      (SELECT p.cover_image FROM mall_product_skus mps
+       JOIN products p ON mps.product_id = p.product_id
+       WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
-    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [targetOrderId])
@@ -144,7 +144,7 @@ async function create(ctx) {
     storeId,
     items, // [{ skuId, quantity }]
     preferredStaffWfId, // 可选,指定美容师
-    paymentMethod, // 'wechat' | 'offline'
+    paymentMethod, // '微信' | '线下'
     orderType: orderTypeParam, // 可选, 'promo' | undefined
     couponId: inputCouponId // 可选, 优惠券ID
   } = payload
@@ -183,15 +183,15 @@ async function create(ctx) {
 
   const now = new Date()
 
-  // 查询 SKU 信息（价格/次数直接从 PG product_skus 读取）
+  // 查询 SKU 信息（product_skus → product_categories 两表 JOIN）
   const skuIds = items.map(i => i.skuId)
   const skuResults = await pg.query(`
     SELECT
-      sk.sku_id, sk.product_id, sk.product_type, sk.spec_name,
+      sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
-      p.name AS product_name, p.sales_category
+      sk.category_id, pc.sales_category
     FROM product_skus sk
-    JOIN products p ON sk.product_id = p.product_id
+    JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = ANY($1)
   `, [skuIds])
 
@@ -219,7 +219,7 @@ async function create(ctx) {
     totalAmount += saleAmount
     return {
       skuId: item.skuId,
-      productName: sku.product_name,
+      productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount: sku.session_count,
@@ -261,11 +261,9 @@ async function create(ctx) {
       }
     }
 
-    // 品项分类匹配
+    // 品项分类匹配（SKU 直接有 category_id）
     const skuCats = await pg.query(
-      `SELECT ps.sku_id, p.category_id
-       FROM product_skus ps JOIN products p ON ps.product_id = p.product_id
-       WHERE ps.sku_id = ANY($1)`,
+      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
       [skuIds]
     )
     const catMap = new Map()
@@ -290,7 +288,7 @@ async function create(ctx) {
     }
 
     // 计算抵扣金额
-    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
+    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
@@ -315,16 +313,25 @@ async function create(ctx) {
     totalAmount = Math.round(totalAmount * 100) / 100
   }
 
-  // 从 PG 查询顾客姓名
+  // 从 PG 查询顾客姓名 + customer_type（用于 document_type 判断）
   let customerName = null
-  if (ctx.auth.phone) {
-    const nameRows = await pg.query(
-      'SELECT name FROM client_wechat_users WHERE user_id = $1',
+  let documentType = '售前'
+  {
+    const userRows = await pg.query(
+      'SELECT name, customer_type FROM client_wechat_users WHERE user_id = $1',
       [userId]
     )
-    if (nameRows.length > 0 && nameRows[0].name) {
-      customerName = nameRows[0].name
+    if (userRows.length > 0) {
+      if (userRows[0].name) customerName = userRows[0].name
+      if (userRows[0].customer_type === '会员客') documentType = '售后'
     }
+  }
+  if (documentType === '售前') {
+    const cfgRows = await pg.query(
+      "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+    )
+    const threshold = Number(cfgRows[0]?.value) || 1990
+    if (totalAmount >= threshold) documentType = '售后'
   }
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
@@ -383,13 +390,13 @@ async function create(ctx) {
     // 创建订单主表
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
         total_amount, payment_method, sale_order_source,
         preferred_employee_id, coupon_id, coupon_discount,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'client', $11, $12, $13, $5, $5)`,
-      [orderNo, saleOrderType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'client', $12, $13, $14, $6, $6)`,
+      [orderNo, saleOrderType, documentType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
     )
 
     // 创建订单明细（流水号递增）
@@ -472,11 +479,11 @@ async function pay(ctx) {
   if (!order.client_user_id && order.sale_order_source === 'staff') {
     await pg.query(
       'UPDATE sale_orders SET client_user_id = $1, payment_method = $2, updated_at = $3 WHERE sale_order_id = $4',
-      [userId, 'wechat', now, orderNo]
+      [userId, '微信', now, orderNo]
     )
   } else {
     await pg.query(
-      "UPDATE sale_orders SET payment_method = 'wechat', updated_at = $1 WHERE sale_order_id = $2",
+      "UPDATE sale_orders SET payment_method = '微信', updated_at = $1 WHERE sale_order_id = $2",
       [now, orderNo]
     )
   }
@@ -487,7 +494,7 @@ async function pay(ctx) {
   ctx.result = {
     orderNo,
     totalAmount,
-    paymentMethod: 'wechat',
+    paymentMethod: '微信',
     mockMode: true,
     paymentParams: {
       timeStamp: String(Math.floor(Date.now() / 1000)),
@@ -543,7 +550,7 @@ async function offlinePay(ctx) {
 
   const now = new Date()
   await pg.query(
-    "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = 'offline', updated_at = $2 WHERE sale_order_id = $3",
+    "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3",
     [userId, now, orderNo]
   )
 
@@ -619,10 +626,10 @@ async function list(ctx) {
         si.product_name,
         si.sku_spec_name,
         si.product_type,
-        p.cover_image
+        (SELECT p.cover_image FROM mall_product_skus mps
+         JOIN products p ON mps.product_id = p.product_id
+         WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
       FROM sale_items si
-      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-      LEFT JOIN products p ON ps.product_id = p.product_id
       WHERE si.sale_order_id = ANY($1)
       ORDER BY si.sale_item_id
     `, [orderIds])
@@ -694,10 +701,10 @@ async function detail(ctx) {
       si.sale_amount,
       si.received,
       si.expire_date,
-      p.cover_image
+      (SELECT p.cover_image FROM mall_product_skus mps
+       JOIN products p ON mps.product_id = p.product_id
+       WHERE mps.sku_id = si.sku_id LIMIT 1) AS cover_image
     FROM sale_items si
-    LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-    LEFT JOIN products p ON ps.product_id = p.product_id
     WHERE si.sale_order_id = $1
     ORDER BY si.sale_item_id
   `, [orderNo])
@@ -908,7 +915,7 @@ async function alipayPay(ctx) {
 
   const now = new Date()
   await pg.query(
-    "UPDATE sale_orders SET status = '待确认收款', payment_method = 'alipay', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
+    "UPDATE sale_orders SET status = '待确认收款', payment_method = '支付宝', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
     [userId, now, orderNo]
   )
 

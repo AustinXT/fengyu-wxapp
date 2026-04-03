@@ -96,7 +96,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
     })
     await routes.create(ctx)
 
@@ -107,7 +107,7 @@ describe('order.create', () => {
 
   test('无手机号 → PHONE_REQUIRED', async () => {
     const ctx = createCtx({
-      payload: { storeId: 's1', items: [{ skuId: 'sku-1' }], paymentMethod: 'wechat' },
+      payload: { storeId: 's1', items: [{ skuId: 'sku-1' }], paymentMethod: '微信' },
       auth: { phone: null },
     })
     await expect(routes.create(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
@@ -121,7 +121,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
     })
 
     try {
@@ -188,7 +188,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-1',
     })
     await routes.create(ctx)
@@ -211,7 +211,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-2',
     })
     await routes.create(ctx)
@@ -228,7 +228,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-expired',
     })
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*优惠券已失效/)
@@ -246,7 +246,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-3',
     })
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不适用于此门店/)
@@ -256,7 +256,7 @@ describe('order.create', () => {
     mockBaseCreateQueries()
     pg.query.mockResolvedValueOnce([{
       coupon_id: 'cpn-4', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
-      coupon_type: '项目券', discount_value: 30, min_spend: 0,
+      coupon_type: '品项券', discount_value: 30, min_spend: 0,
       applicable_category_ids: ['cat-special'],  // 限定分类
       applicable_store_ids: null,
     }])
@@ -266,7 +266,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-4',
     })
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*不适用于当前商品/)
@@ -284,7 +284,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-1', quantity: 1 }],
-      paymentMethod: 'wechat',
+      paymentMethod: '微信',
       couponId: 'cpn-5',
     })
     // 商品 ¥80 < 满减门槛 ¥100
@@ -334,7 +334,7 @@ describe('order.create', () => {
     const ctx = createBoundCtx({
       storeId: 's1',
       items: [{ skuId: 'sku-a', quantity: 1 }, { skuId: 'sku-b', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'cpn-multi',
     })
     await routes.create(ctx)

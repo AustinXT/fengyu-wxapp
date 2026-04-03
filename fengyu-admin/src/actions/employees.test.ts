@@ -5,6 +5,7 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
     transaction: vi.fn(),
   },
 }))
@@ -35,8 +36,6 @@ vi.mock('@db/permission', () => ({
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
-    isVoid: 'is_void',
-    voidedAt: 'voided_at',
     updatedBy: 'updated_by',
   },
 }))
@@ -53,6 +52,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -80,7 +81,7 @@ import { createEmployee, updateEmployee, getEmployeesPaginated, getOrgLevel2ForF
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull } from 'drizzle-orm'
 
 const mockSession = {
@@ -329,36 +330,28 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.message).toContain('不存在或无权')
   })
 
-  it('isResigned=true → 同步作废权限角色', async () => {
+  it('isResigned=true → 删除权限角色', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    // 第一次 update：更新员工
+    // update：更新员工
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    // 第二次 update：作废权限
-    const roleWhere = vi.fn().mockResolvedValue({})
-    const roleSet = vi.fn().mockReturnValue({ where: roleWhere })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
-    })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    // delete：删除权限
+    const deleteWhere = vi.fn().mockResolvedValue({})
+    ;(db.delete as any).mockReturnValue({ where: deleteWhere })
 
     const result = await updateEmployee('FY-001', { isResigned: true })
 
     expect(result.success).toBe(true)
-    expect(db.update).toHaveBeenCalledTimes(2) // 员工 + 权限
+    expect(db.delete).toHaveBeenCalledOnce()
   })
 
-  it('权限作废失败 → 重新抛出（不静默忽略）', async () => {
+  it('权限删除失败 → 重新抛出（不静默忽略）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
-    const roleSet = vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
-    let updateCallCount = 0
-    ;(db.update as any).mockImplementation(() => {
-      updateCallCount++
-      return updateCallCount === 1 ? { set: empSet } : { set: roleSet }
-    })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
   })
@@ -430,12 +423,13 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(result.success).toBe(true)
     // db.update 应被调用 2 次：员工更新 + scope 同步
     expect(db.update).toHaveBeenCalledTimes(2)
-    // logOperation 应被调用 2 次：permission.scopeSync + employee.update
-    expect(logOperation).toHaveBeenCalledTimes(2)
+    // logOperation 1 次：permission.scopeSync；logUpdate 1 次：employee.update
+    expect(logOperation).toHaveBeenCalledTimes(1)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
       expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
     )
+    expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 
   it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
@@ -511,10 +505,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
 
     expect(result.success).toBe(true)
     // scope UPDATE 执行了但 rowCount=0 → 不写 scopeSync 日志
-    expect(logOperation).toHaveBeenCalledTimes(1) // 仅 employee.update
-    expect(logOperation).toHaveBeenCalledWith(
-      mockSession, 'employee.update', 'employee', 'FY-001', expect.anything(),
-    )
+    expect(logOperation).not.toHaveBeenCalled() // scopeSync 被跳过
+    expect(logUpdate).toHaveBeenCalledTimes(1) // 仅 employee.update
   })
 })
 
@@ -687,7 +679,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'market' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '市场' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -730,7 +722,7 @@ describe('getEmployeesPaginated — 服务端分页', () => {
       callIndex++
       if (callIndex === 1) {
         // 查询节点类型: select → from → where → limit
-        const limit = vi.fn().mockResolvedValue([{ type: 'department' }])
+        const limit = vi.fn().mockResolvedValue([{ type: '部门' }])
         const where = vi.fn().mockReturnValue({ limit })
         const from = vi.fn().mockReturnValue({ where })
         return { from }
@@ -786,9 +778,9 @@ describe('getOrgLevel2ForFilter', () => {
       }
       // 查询子节点: select → from → where → orderBy
       const orderBy = vi.fn().mockResolvedValue([
-        { id: 'market-1', name: '南昌市场', type: 'market' },
-        { id: 'market-2', name: '九江市场', type: 'market' },
-        { id: 'dept-1', name: '人事部', type: 'department' },
+        { id: 'market-1', name: '南昌市场', type: '市场' },
+        { id: 'market-2', name: '九江市场', type: '市场' },
+        { id: 'dept-1', name: '人事部', type: '部门' },
       ])
       const where = vi.fn().mockReturnValue({ orderBy })
       const from = vi.fn().mockReturnValue({ where })
@@ -798,9 +790,9 @@ describe('getOrgLevel2ForFilter', () => {
     const result = await getOrgLevel2ForFilter()
 
     expect(result).toEqual([
-      { id: 'market-1', name: '南昌市场', type: 'market' },
-      { id: 'market-2', name: '九江市场', type: 'market' },
-      { id: 'dept-1', name: '人事部', type: 'department' },
+      { id: 'market-1', name: '南昌市场', type: '市场' },
+      { id: 'market-2', name: '九江市场', type: '市场' },
+      { id: 'dept-1', name: '人事部', type: '部门' },
     ])
   })
 

@@ -161,7 +161,7 @@ async function createTkklsSaleItems(pgPool, wfItems, customerMap, storeMap, dryR
       const oRows = slice.map(o => [
         o.saleOrderId, '已完成', '普通', '未知市场', o.storeId,
         o.saleDate, o.clientUserId, null,
-        0, 'offline', 'admin', 'allocated', 'WorkFine拓客卡导入',
+        0, '线下', 'admin', '已分配', 'WorkFine拓客卡导入',
       ])
       const oMv = buildMultiRowValues(oRows, 13)
       const r1 = await client.query(`
@@ -179,7 +179,7 @@ async function createTkklsSaleItems(pgPool, wfItems, customerMap, storeMap, dryR
       for (const o of slice) {
         for (const it of o.items) {
           iRows.push([
-            it.saleItemId, o.saleOrderId, 'purchase', it.itemName,
+            it.saleItemId, o.saleOrderId, '购买', it.itemName,
             '疗程卡', it.sessionCount, 0,
             0, 1, 0, 0, 0,
             null, '自采自销', null,

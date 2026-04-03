@@ -42,24 +42,16 @@ async function balance(ctx) {
  */
 async function history(ctx) {
   const { userId } = ctx.auth
-  const { page = 1, pageSize = 20, type } = ctx.event.payload || {}
+  const { page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
-
-  let whereClause = 'WHERE pt.user_id = $1'
-  const params = [userId]
-  if (type) {
-    params.push(type)
-    whereClause += ` AND pt.type = $${params.length}`
-  }
-  params.push(pageSize, offset)
 
   const records = await pg.query(`
     SELECT pt.id, pt.type, pt.amount, pt.ref_order_id, pt.created_at
     FROM point_transactions pt
-    ${whereClause}
+    WHERE pt.user_id = $1
     ORDER BY pt.created_at DESC
-    LIMIT $${params.length - 1} OFFSET $${params.length}
-  `, params)
+    LIMIT $2 OFFSET $3
+  `, [userId, pageSize, offset])
 
   ctx.result = {
     records: records.map(r => ({

@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { serviceOrders, serviceItems } from '@db/service'
-import { saleItems } from '@db/order'
+import { saleItems, saleOrders } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { eq, desc, and, or, sql, ilike, gte, lte } from 'drizzle-orm'
@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition } from '@/lib/operation-log'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -179,6 +179,7 @@ export interface ServiceItemDetail {
   saleItemId: string
   sessionUsed: number
   unitRealPrice: string | null
+  isPresale: boolean
   employeeName: string | null
   employeeId: string | null
   productName: string | null
@@ -198,6 +199,7 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
       si.sale_item_id,
       si.session_used,
       si.unit_real_price,
+      si.is_presale,
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
@@ -216,6 +218,7 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     saleItemId: r.sale_item_id,
     sessionUsed: Number(r.session_used),
     unitRealPrice: r.unit_real_price,
+    isPresale: !!r.is_presale,
     employeeName: r.employee_name,
     employeeId: r.employee_id,
     productName: r.product_name,
@@ -258,7 +261,7 @@ export async function getAvailableSaleItems(clientUserId: string): Promise<Avail
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE o.client_user_id = ${clientUserId}
       AND o.status = '已支付'
-      AND si.item_direction = 'purchase'
+      AND si.item_direction = '购买'
       AND si.product_type IN ('疗程卡', '单品')
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
@@ -284,6 +287,20 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'service:update')
 
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({
+      assignedEmployeeId: serviceOrders.assignedEmployeeId,
+      employeeName: staffWechatUsers.name,
+      clientUserId: serviceOrders.clientUserId,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
   let result: any
   try {
     result = await db
@@ -302,7 +319,9 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
     return { success: false, message: '服务单状态已变更，无法开始' }
   }
 
-  await logOperation(session, 'service.start', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已开始' }
@@ -316,16 +335,22 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
   const session = await getSession()
   requirePermission(session, 'service:update')
 
-  // 非 admin 需校验 scope（原子 SQL 不支持 Drizzle scopeCondition，此处预检查）
+  // 获取上下文用于日志 + 非 admin scope 预检查
+  const [svcCtx] = await db
+    .select({
+      storeId: serviceOrders.storeId,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
   if (!isAdminScope(session)) {
     const scopeStoreIds = session.permissions.scopeStoreIds
-    if (scopeStoreIds.length === 0) return { success: false, message: '无权操作该服务单' }
-    const [so] = await db
-      .select({ storeId: serviceOrders.storeId })
-      .from(serviceOrders)
-      .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
-      .limit(1)
-    if (!so || !scopeStoreIds.includes(so.storeId)) {
+    if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
       return { success: false, message: '无权操作该服务单' }
     }
   }
@@ -363,7 +388,9 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
     return { success: false, message: '服务单状态已变更，无法完成' }
   }
 
-  await logOperation(session, 'service.complete', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '已完成', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已完成' }
@@ -373,6 +400,14 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
 export async function cancelServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'service:update')
+
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({ customerName: clientWechatUsers.name })
+    .from(serviceOrders)
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
 
   let cancelResult: any
   try {
@@ -392,7 +427,9 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
 
-  await logOperation(session, 'service.cancel', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.cancel', 'service_order', serviceOrderId, '待服务', '已取消', {
+    customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
@@ -405,7 +442,6 @@ export async function createServiceOrder(data: {
   clientUserId: string
   assignedEmployeeId: string
   serviceDate: string
-  serviceOrderType?: '普通' | '体验'
   appointmentId?: string | null
   remark?: string | null
   items: Array<{
@@ -421,15 +457,25 @@ export async function createServiceOrder(data: {
     return { success: false, message: '无权在该门店创建服务单' }
   }
 
+  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  const [customerRow] = await db
+    .select({ customerType: clientWechatUsers.customerType })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, data.clientUserId))
+    .limit(1)
+  const serviceOrderType = customerRow?.customerType === '会员客' ? '售后' : '售前'
+
   // 先校验剩余次数（事务外，只读查询）
-  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
+  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string; isPresale: boolean }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
         remainingSessions: saleItems.remainingSessions,
         unitRealPrice: saleItems.unitRealPrice,
+        saleOrderType: saleOrders.saleOrderType,
       })
       .from(saleItems)
+      .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
       .where(eq(saleItems.saleItemId, item.saleItemId))
       .limit(1)
 
@@ -439,7 +485,11 @@ export async function createServiceOrder(data: {
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
     }
-    saleItemSnapshots.push({ saleItemId: item.saleItemId, unitRealPrice: saleItem.unitRealPrice })
+    saleItemSnapshots.push({
+      saleItemId: item.saleItemId,
+      unitRealPrice: saleItem.unitRealPrice,
+      isPresale: saleItem.saleOrderType === '体验',
+    })
   }
 
   // 事务：ID 生成 + 服务单 + 服务明细，原子提交
@@ -467,7 +517,7 @@ export async function createServiceOrder(data: {
       await tx.insert(serviceOrders).values({
         serviceOrderId: id,
         status: '待服务',
-        serviceOrderType: data.serviceOrderType || '普通',
+        serviceOrderType,
         marketName: data.marketName,
         storeId: data.storeId,
         serviceDate: data.serviceDate,
@@ -488,6 +538,7 @@ export async function createServiceOrder(data: {
           saleItemId: item.saleItemId,
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
+          isPresale: snapshot.isPresale,
           employeeId: data.assignedEmployeeId,
         })
       }

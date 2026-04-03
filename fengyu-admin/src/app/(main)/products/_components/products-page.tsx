@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useCallback } from "react"
 import Link from "next/link"
-import type { Product, ProductKind, ProductCategory } from "@/lib/types"
+import type { ProductSku, ProductCategory } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -14,20 +14,26 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
-const KIND_COLORS: Record<ProductKind, string> = {
-  "福利活动": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
-  "护理项目": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
-  "家居产品": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
-  "充值卡": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
-}
+const KIND_PALETTE = [
+  "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
+  "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
+  "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
+  "border-[#888888] text-[#888888] bg-[#F5F5F5]",
+  "border-[#C0322A] text-[#C0322A] bg-[#FFF0EE]",
+  "border-[#8B5CF6] text-[#8B5CF6] bg-[#F5F0FF]",
+  "border-[#EC4899] text-[#EC4899] bg-[#FFF0F5]",
+  "border-[#0E7490] text-[#0E7490] bg-[#F0FAFA]",
+]
 
 
 export default function ProductsPageClient({
-  products,
+  skus,
   categories,
+  productKinds,
 }: {
-  products: Product[]
+  skus: ProductSku[]
   categories: ProductCategory[]
+  productKinds?: ProductCategory[]
 }) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback((key: string, value: string) => {
@@ -50,57 +56,62 @@ export default function ProductsPageClient({
   const page = Number(get("page", "1"))
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
+  // Build dynamic KIND_COLORS
+  const kindColors = useMemo(() => {
+    if (!productKinds) return {} as Record<string, string>
+    const sorted = [...productKinds].filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder)
+    return Object.fromEntries(sorted.map((k, i) => [k.categoryName, KIND_PALETTE[i % KIND_PALETTE.length]]))
+  }, [productKinds])
+
   const filtered = useMemo(() => {
-    let result = products
+    let result = skus
     if (search.trim()) {
       const q = search.trim().toLowerCase()
-      result = result.filter((p) => p.name.toLowerCase().includes(q))
+      result = result.filter((s) => s.specName.toLowerCase().includes(q))
     }
     if (categoryFilter) {
-      result = result.filter((p) => p.categoryId === categoryFilter)
+      result = result.filter((s) => s.categoryId === categoryFilter)
     }
     if (kindFilter) {
-      result = result.filter((p) => p.productKind === kindFilter)
+      result = result.filter((s) => s.productKind === kindFilter)
     }
     return result
-  }, [products, search, categoryFilter, kindFilter])
+  }, [skus, search, categoryFilter, kindFilter])
 
   const paged = useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
     [filtered, page, pageSize]
   )
 
-  const columns: Column<Product>[] = [
+  const columns: Column<ProductSku>[] = [
     {
-      key: "coverImage",
-      header: "封面图",
-      cell: () => (
-        <div className="h-10 w-10 rounded-[var(--radius)] bg-[var(--muted)] flex items-center justify-center text-xs text-[var(--muted-foreground)]">
-          图
-        </div>
-      ),
-    },
-    {
-      key: "name",
-      header: "商品名称",
-      cell: (row) => <span className="font-medium">{row.name}</span>,
+      key: "specName",
+      header: "品项名称",
+      cell: (row) => <span className="font-medium">{row.specName}</span>,
     },
     {
       key: "categoryName",
       header: "品项分类",
-      cell: (row) => <span>{row.categoryName ?? "—"}</span>,
+      cell: (row) => {
+        const pk = row.productKind as string | undefined
+        const cat = row.categoryName
+        if (!pk && !cat) return "—"
+        return (
+          <span>
+            {pk && (
+              <Badge variant="outline" className={kindColors[pk] ?? KIND_PALETTE[0]}>
+                {pk}
+              </Badge>
+            )}
+            {pk && cat && " / "}
+            {cat}
+          </span>
+        )
+      },
     },
     {
-      key: "productKind",
-      header: "商品类型",
-      cell: (row) =>
-        row.productKind ? (
-          <Badge variant="outline" className={KIND_COLORS[row.productKind]}>
-            {row.productKind}
-          </Badge>
-        ) : (
-          "—"
-        ),
+      key: "productType",
+      header: "产品类型",
     },
     {
       key: "price",
@@ -117,26 +128,30 @@ export default function ProductsPageClient({
       ),
     },
     {
-      key: "validEnd",
-      header: "有效期",
+      key: "sessionCount",
+      header: "次数",
+      cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
+    },
+    {
+      key: "serviceFee",
+      header: "手工费",
+      cell: (row) => <span>{formatCurrency(row.serviceFee)}</span>,
+    },
+    {
+      key: "isEnabled" as keyof ProductSku,
+      header: "状态",
       cell: (row) => (
-        <span>
-          {row.validStart ? formatDate(row.validStart) : "—"} ~{" "}
-          {row.validEnd ? formatDate(row.validEnd) : "长期"}
+        <span className={row.isEnabled ? "text-[#3D8A5A]" : "text-[#888888]"}>
+          {row.isEnabled ? "启用" : "停用"}
         </span>
       ),
     },
     {
-      key: "skuCount",
-      header: "规格数",
-      cell: (row) => <span>{row.skuCount ?? 0}</span>,
-    },
-    {
-      key: "actions",
+      key: "actions" as keyof ProductSku,
       header: "操作",
       cell: (row) => (
         <div className="flex gap-2">
-          <Link href={`/products/${row.productId}`}>
+          <Link href={`/products/${row.skuId}`}>
             <Button variant="link" size="sm" className="h-auto p-0">
               详情
             </Button>
@@ -155,7 +170,7 @@ export default function ProductsPageClient({
             <Button variant="outline">品项分类</Button>
           </Link>
           <Link href="/products/create">
-            <Button>新增商品</Button>
+            <Button>新增品项</Button>
           </Link>
         </div>
       </div>
@@ -163,6 +178,7 @@ export default function ProductsPageClient({
       <div className="flex items-center gap-3">
         <CategoryCascader
           categories={categories}
+          productKinds={productKinds}
           value={categoryFilter}
           kindValue={kindFilter}
           allowEmpty
@@ -173,7 +189,7 @@ export default function ProductsPageClient({
           }}
         />
         <Input
-          placeholder="搜索商品名称"
+          placeholder="搜索品项名称"
           value={searchInput}
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"

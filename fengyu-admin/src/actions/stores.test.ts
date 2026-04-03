@@ -51,6 +51,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -200,7 +202,19 @@ describe('updateStore — count=0 检测修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
+
+  /** mock db.select() 链，用于 update 前获取旧值 */
+  function mockSelectBefore(rows: any[] = [{}]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    ;(db.select as any).mockReturnValue(chain)
+  }
 
   function setupUpdate(count: number) {
     const where = vi.fn().mockResolvedValue({ count })

@@ -47,7 +47,7 @@ async function generateEmployeeId(client) {
 async function queryRoles(employeeId) {
   if (!employeeId) return []
   const roleRows = await pg.query(
-    'SELECT role FROM permission_roles WHERE employee_id = $1 AND is_void = false',
+    'SELECT role FROM permission_roles WHERE employee_id = $1',
     [employeeId]
   )
   return roleRows.map(r => r.role)

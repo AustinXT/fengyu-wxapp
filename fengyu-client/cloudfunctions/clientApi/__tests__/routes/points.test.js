@@ -1,6 +1,6 @@
 /**
  * 积分路由测试
- * 覆盖：balance（余额+等级+下一等级）、history（分页+类型筛选）
+ * 覆盖：balance（余额+等级+下一等级）、history（分页）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -85,17 +85,6 @@ describe('points.history', () => {
 
     expect(ctx.result.records).toHaveLength(2)
     expect(ctx.result.records[0].type).toBe('消费')
-  })
-
-  test('按类型筛选', async () => {
-    pg.query.mockResolvedValueOnce([])
-
-    const ctx = createBoundCtx({ type: '签到', page: 1, pageSize: 10 })
-    await routes.history(ctx)
-
-    const [sql, params] = pg.query.mock.calls[0]
-    expect(sql).toContain('pt.type = $')
-    expect(params).toContain('签到')
   })
 
   test('分页参数正确', async () => {

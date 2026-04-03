@@ -69,6 +69,10 @@
   flex: 1;
 }
 
+.item-tag { font-size: 22rpx; padding: 2rpx 12rpx; border-radius: 6rpx; line-height: 1.4; flex-shrink: 0; }
+.item-tag--presale { background: #FFF0EE; color: #C45C48; }
+.item-tag--postsale { background: #E8F0FE; color: #3574C4; }
+
 .item-spec {
   font-size: 24rpx;
   color: var(--color-text-secondary);

@@ -775,7 +775,7 @@ describe('customer.refundHistory', () => {
     ])
     pg.query.mockResolvedValueOnce([
       { sale_order_id: 'REF-001', sale_item_id: 'refitem-1', item_direction: 'refund', product_name: '面部护理', sku_spec_name: '基础款', quantity: 1, received: '500' },
-      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: 'purchase', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
+      { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
     ])
 
     await customerRoutes.refundHistory(ctx)

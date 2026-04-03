@@ -9,7 +9,7 @@ import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition } from '@/lib/operation-log'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -170,6 +170,13 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
 
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ clientName: appointments.clientName, employeeName: appointments.employeeName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
+
   let result: any
   try {
     result = await db
@@ -188,7 +195,10 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.confirm', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.confirm', 'appointment', appointmentId, '待确认', '已确认', {
+    clientName: apptCtx?.clientName, employeeName: apptCtx?.employeeName,
+    appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已确认' }
@@ -198,6 +208,13 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
 export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'appointment:checkin')
+
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
 
   let result: any
   try {
@@ -217,7 +234,9 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.checkin', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.checkin', 'appointment', appointmentId, '已确认', '已签到', {
+    clientName: apptCtx?.clientName, appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '签到成功' }
@@ -227,6 +246,13 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
 export async function cancelAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'appointment:confirm')
+
+  // 获取上下文用于日志
+  const [apptCtx] = await db
+    .select({ status: appointments.status, clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
+    .from(appointments)
+    .where(eq(appointments.appointmentId, appointmentId))
+    .limit(1)
 
   let result: any
   try {
@@ -246,7 +272,9 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
     return { success: false, message: '预约状态已变更或无权操作' }
   }
 
-  await logOperation(session, 'appointment.cancel', 'appointment', appointmentId)
+  await logTransition(session, 'appointment.cancel', 'appointment', appointmentId, apptCtx?.status ?? '待确认', '已取消', {
+    clientName: apptCtx?.clientName, appointmentTime: apptCtx?.appointmentTime?.toISOString(),
+  })
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已取消' }

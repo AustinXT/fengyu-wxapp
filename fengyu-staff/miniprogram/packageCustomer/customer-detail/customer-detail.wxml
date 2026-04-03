@@ -240,8 +240,8 @@
               </view>
               <view class="refund-items">
                 <view wx:for="{{item.items}}" wx:for-item="ri" wx:key="saleItemId" class="refund-item-row">
-                  <text class="refund-item-direction {{ri.direction === 'refund_out' || ri.direction === 'convert_out' ? 'direction--out' : 'direction--in'}}">
-                    {{ri.direction === 'refund_out' ? '退出' : ri.direction === 'convert_out' ? '转出' : ri.direction === 'convert_in' ? '转入' : '购买'}}
+                  <text class="refund-item-direction {{ri.direction === '退出' || ri.direction === '转出' ? 'direction--out' : 'direction--in'}}">
+                    {{ri.direction}}
                   </text>
                   <text class="refund-item-name">{{ri.productName}}</text>
                   <text class="refund-item-amount">¥{{ri.received}}</text>

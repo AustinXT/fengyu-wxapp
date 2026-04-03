@@ -32,10 +32,9 @@ async function create(ctx) {
     items
   } = payload
 
-  // 兼容前端参数
   const normalizedItems = (items || []).map(item => ({
-    saleItemId: item.saleItemId || item.itemFlowNo,
-    sessionUsed: item.sessionUsed || item.sessionCount || 1,
+    saleItemId: item.saleItemId,
+    sessionUsed: item.sessionUsed || 1,
     employeeId: item.employeeId,
     serviceDuration: item.serviceDuration || null,
   }))
@@ -147,6 +146,18 @@ async function create(ctx) {
     }
   }
 
+  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  let serviceOrderType = '售前'
+  if (resolvedClientUserId) {
+    const ctRows = await pg.query(
+      'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+      [resolvedClientUserId]
+    )
+    if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
+      serviceOrderType = '售后'
+    }
+  }
+
   const serviceOrderId = await generateServiceOrderId()
   const now = new Date()
 
@@ -154,12 +165,13 @@ async function create(ctx) {
     // 创建服务单主表
     await client.query(
       `INSERT INTO service_orders (
-        service_order_id, status, market_name, store_id,
+        service_order_id, status, service_order_type, market_name, store_id,
         service_date, assigned_employee_id,
         remark, client_user_id, appointment_id, created_at, updated_at
-      ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $9)`,
+      ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
       [
         serviceOrderId,
+        serviceOrderType,
         ctx.auth.marketName || '',
         ctx.auth.storeId,
         resolvedServiceDate,
@@ -175,23 +187,28 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 sku_id 和 unit_real_price
+      // 获取 sale_item 的 sku_id、unit_real_price 和订单类型（售前/售后判定）
       const siRows = await client.query(
-        'SELECT sku_id, unit_real_price FROM sale_items WHERE sale_item_id = $1',
+        `SELECT si.sku_id, si.unit_real_price, so.sale_order_type
+         FROM sale_items si
+         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+         WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
+      const isPresale = siRows.rows[0]?.sale_order_type === '体验'
 
       await client.query(
         `INSERT INTO service_items
-           (service_item_id, sale_item_id, unit_real_price, service_order_id,
+           (service_item_id, sale_item_id, unit_real_price, is_presale, service_order_id,
             sku_id, session_used, employee_id, service_duration)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           serviceItemId,
           item.saleItemId,
           unitRealPrice,
+          isPresale,
           serviceOrderId,
           skuId,
           item.sessionUsed,
@@ -423,7 +440,8 @@ async function list(ctx) {
         sli.sku_spec_name,
         sli.remaining_sessions,
         sli.session_count,
-        si.service_duration
+        si.service_duration,
+        si.is_presale
       FROM service_items si
       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
       WHERE si.service_order_id = ANY($1)
@@ -438,6 +456,7 @@ async function list(ctx) {
       spec: i.sku_spec_name || '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
+      isPresale: i.is_presale,
     })
   }
 
@@ -546,6 +565,7 @@ async function detail(ctx) {
       si.sale_item_id,
       si.session_used,
       si.service_duration,
+      si.is_presale,
       sli.session_count,
       sli.remaining_sessions,
       sli.sku_spec_name,
@@ -607,6 +627,7 @@ async function detail(ctx) {
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
+      isPresale: i.is_presale,
     }))
   }
 }

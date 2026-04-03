@@ -38,7 +38,7 @@ test.describe('页面路由可达性', () => {
     { path: '/customers', heading: '顾客管理' },
     { path: '/coupons', heading: /优惠券管理/ },
     { path: '/permissions', heading: '权限管理' },
-    { path: '/sync', heading: '数据同步' },
+
     { path: '/logs', heading: '操作日志' },
     { path: '/settings', heading: '系统配置' },
     { path: '/data-center', heading: '数据中心' },

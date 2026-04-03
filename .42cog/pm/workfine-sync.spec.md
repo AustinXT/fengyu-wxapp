@@ -98,11 +98,11 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 ### 4.5 org_nodes 同步附加逻辑：组织架构树生成
 
 同步脚本在读取 WorkFine 门店数据后，自动构建 org_nodes 层级树：
-1. UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL`
-2. 遍历现有门店的 `market_name` 去重，为每个市场 UPSERT 一条 `type='market'` 节点（`parent_id` 指向总部）
-3. 为每个门店 UPSERT 一条 `type='store'` 节点（`parent_id` 指向所属市场节点，`parent_name` 写入市场名）
+1. UPSERT 根节点：`type='总部', name='总部', parent_id=NULL`
+2. 遍历现有门店的 `market_name` 去重，为每个市场 UPSERT 一条 `type='市场'` 节点（`parent_id` 指向总部）
+3. 为每个门店 UPSERT 一条 `type='门店'` 节点（`parent_id` 指向所属市场节点，`parent_name` 写入市场名）
 4. org_nodes 节点作为 `permission_roles.scope_id` 的 FK 目标（替代原 stores 虚拟条目方案）
-5. stores 表仅存 `type='store'` 的门店业务详情，通过 `org_node_id` 关联对应 org_nodes 节点
+5. stores 表仅存 `type='门店'` 的门店业务详情，通过 `org_node_id` 关联对应 org_nodes 节点
 
 ### 4.6 permission_roles 自动推导
 
@@ -148,9 +148,9 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 
 | 步骤 | org_nodes 操作 |
 |------|---------------|
-| 1 | UPSERT 根节点：`type='headquarters', name='总部', parent_id=NULL` |
-| 2 | 遍历 `UDF_M_437`（市场）去重，UPSERT `type='market'` 节点，`parent_id` → 总部，`parent_name='总部'` |
-| 3 | 为每个门店 UPSERT `type='store'` 节点，`parent_id` → 所属市场节点，`parent_name` → 市场名 |
+| 1 | UPSERT 根节点：`type='总部', name='总部', parent_id=NULL` |
+| 2 | 遍历 `UDF_M_437`（市场）去重，UPSERT `type='市场'` 节点，`parent_id` → 总部，`parent_name='总部'` |
+| 3 | 为每个门店 UPSERT `type='门店'` 节点，`parent_id` → 所属市场节点，`parent_name` → 市场名 |
 
 #### stores 字段映射
 
@@ -161,7 +161,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | UDF_M_1777 | 开业时间 | 日期 | `opening_date` |
 | UDF_M_8590 | 可用床位 | 整数 | `bed_count` |
 | UDF_M_11956 | 是否停止营业 | 文本 | `is_closed`（'是' → true） |
-| — | 关联 org_nodes | — | `org_node_id`（查找对应 type='store' 的 org_nodes.id 写入） |
+| — | 关联 org_nodes | — | `org_node_id`（查找对应 type='门店' 的 org_nodes.id 写入） |
 
 **匹配键**: `UDF_M_438`（门店名）→ `store_name`
 
@@ -180,7 +180,7 @@ WorkFine（上游权威源） → PG（本地工作副本），**单向只读同
 | UDF_S_1154 | 身份证号码 | 身份证 | `id_card`（高敏 PII，需评估加密方案） |
 | UDF_S_1163 | 所属分院 | 文本 | → 查找 `stores.store_name` 匹配后写入 `store_id` |
 | UDF_S_1160 | 所属市场 | 文本 | → 辅助匹配 stores（不再冗余存储） |
-| UDF_S_1513 | 职能部门 | 文本 | → 查找 `org_nodes`（type='department'）匹配后写入 `org_node_id`；同时冗余写入 `org_node_name`（部门名）和 `org_parent_node_name`（部门父节点名） |
+| UDF_S_1513 | 职能部门 | 文本 | → 查找 `org_nodes`（type='部门'）匹配后写入 `org_node_id`；同时冗余写入 `org_node_name`（部门名）和 `org_parent_node_name`（部门父节点名） |
 | UDF_S_1161 | 工作职位 | 文本 | `position_name` |
 | UDF_S_1149 | 出生日期 | 日期 | `birthday` |
 | UDF_S_1624 | 是否离职 | 文本 | `is_resigned`（'是' → true） |
@@ -552,8 +552,8 @@ WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（�
 
 | WorkFine 行类型 | PG item_direction | 映射逻辑 |
 |----------------|-------------------|----------|
-| A 表行（转出项目） | `convert_out` | `quantity` = 退次数，`received` = 负退消耗金额，`ref_sale_item_id` = 原购买行 |
-| B 表行（转入项目） | `convert_in` | 新的 sale_item，正常金额，`session_count`/`remaining_sessions` 为新项目次数 |
+| A 表行（转出项目） | `转出` | `quantity` = 退次数，`received` = 负退消耗金额，`ref_sale_item_id` = 原购买行 |
+| B 表行（转入项目） | `转入` | 新的 sale_item，正常金额，`session_count`/`remaining_sessions` 为新项目次数 |
 
 > **区分 A/B 表行**：WorkFine 中 A 表行的 `UDF_M_399`（实收）通常为负值或零，B 表行为正值。具体区分逻辑需在迁移脚本中根据实际数据校验。
 
@@ -563,7 +563,7 @@ WorkFine 转换单（单号 `FY-ABZH-`）在 UDT_M_213 中同时包含 A 表（�
 |---------------|---------|----------|
 | `UDF_M_399`（实收，负数） | `sale_items.received` | 负数直接映射 |
 | `UDF_M_394`（退款次数） | `sale_items.quantity` | 退次数 |
-| — | `sale_items.item_direction` | 固定为 `refund_out` |
+| — | `sale_items.item_direction` | 固定为 `退出` |
 | — | `sale_items.ref_sale_item_id` | 通过 `UDF_M_852` 流水号格式或业务逻辑匹配原购买行 |
 | 手续费（如有） | `sale_items.remark` | handling_fee 存入备注 |
 

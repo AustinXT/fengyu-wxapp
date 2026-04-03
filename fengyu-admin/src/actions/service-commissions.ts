@@ -33,29 +33,23 @@ export async function getServiceOrderCommissions(serviceOrderId: string): Promis
 
   const rows = await db.execute(sql`
     SELECT
-      sc.id,
-      sc.service_item_id,
-      sc.employee_id,
-      sc.commission_rate,
-      sc.commission_amount,
-      sc.is_void,
-      sc.created_at,
-      sc.updated_at,
-      swu.name AS employee_name,
-      orn.name AS department_name
+      sc.id, sc.service_item_id, sc.employee_id, sc.role_type, sc.allocation_ratio,
+      sc.commission_rate, sc.commission_amount, sc.is_void, sc.created_at, sc.updated_at,
+      swu.name AS employee_name, orn.name AS department_name
     FROM service_commissions sc
     LEFT JOIN staff_wechat_users swu ON sc.employee_id = swu.employee_id
     LEFT JOIN org_nodes orn ON swu.org_node_id = orn.id
     WHERE sc.service_item_id IN (
       SELECT si.service_item_id FROM service_items si WHERE si.service_order_id = ${serviceOrderId}
-    )
-    AND sc.is_void = false
-  `)
+    ) AND sc.is_void = false
+  `) as any[]
 
   return (rows as any[]).map((r: any) => ({
     id: Number(r.id),
     serviceItemId: r.service_item_id,
     employeeId: r.employee_id,
+    roleType: r.role_type ?? undefined,
+    allocationRatio: r.allocation_ratio ?? undefined,
     commissionRate: r.commission_rate,
     commissionAmount: r.commission_amount,
     isVoid: r.is_void,
@@ -66,12 +60,22 @@ export async function getServiceOrderCommissions(serviceOrderId: string): Promis
   }))
 }
 
+/** 角色组映射：美容师/养生师同组，推广师独立组 */
+function getRoleGroup(roleType: string): string {
+  return roleType === '推广师' ? 'promoter' : 'beautician'
+}
+
+/** 合法的分配比例（整十百分比） */
+const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
+
 /** 批量保存服务提成（先作废旧的，再插入新的） */
 export async function batchSaveServiceCommissions(
   serviceOrderId: string,
   commissions: Array<{
     serviceItemId: string
     employeeId: string
+    roleType: string
+    allocationRatio: string
     commissionRate: string
     commissionAmount: string
   }>
@@ -98,11 +102,45 @@ export async function batchSaveServiceCommissions(
     if (invalid) {
       return { success: false, message: '服务明细不属于该服务单，请刷新后重试' }
     }
+
+    // 校验分配比例为整十
+    for (const c of commissions) {
+      if (!VALID_RATIOS.has(c.allocationRatio)) {
+        return { success: false, message: '分配比例必须为整十百分比（10%~100%）' }
+      }
+    }
+
+    // 按 (serviceItemId, roleGroup) 分组校验
+    const groups = new Map<string, typeof commissions>()
+    for (const c of commissions) {
+      const key = `${c.serviceItemId}|${getRoleGroup(c.roleType)}`
+      const group = groups.get(key) || []
+      group.push(c)
+      groups.set(key, group)
+    }
+
+    for (const [, group] of groups) {
+      if (group.length > 3) {
+        return { success: false, message: '每个服务明细每种角色最多分配 3 人' }
+      }
+
+      const ratioSum = group.reduce((s, c) => s + Number(c.allocationRatio), 0)
+      if (ratioSum > 1.01) {
+        return { success: false, message: '同角色组的分配比例合计不能超过 100%' }
+      }
+
+      const empIds = new Set<string>()
+      for (const c of group) {
+        if (empIds.has(c.employeeId)) {
+          return { success: false, message: '同一服务明细同一角色组不能重复分配同一员工' }
+        }
+        empIds.add(c.employeeId)
+      }
+    }
   }
 
   try {
     await db.transaction(async (tx) => {
-      // 作废旧提成记录
       await tx.execute(sql`
         UPDATE service_commissions SET is_void = true
         WHERE service_item_id IN (
@@ -110,22 +148,22 @@ export async function batchSaveServiceCommissions(
         ) AND is_void = false
       `)
 
-      // 插入新提成记录
       if (commissions.length > 0) {
         await tx.insert(serviceCommissions).values(
           commissions.map((c) => ({
             serviceItemId: c.serviceItemId,
             employeeId: c.employeeId,
+            roleType: c.roleType,
+            allocationRatio: c.allocationRatio,
             commissionRate: c.commissionRate,
             commissionAmount: c.commissionAmount,
           }))
         )
       }
 
-      // 更新服务单提成状态
       await tx
         .update(serviceOrders)
-        .set({ commissionStatus: commissions.length > 0 ? 'allocated' : 'pending' })
+        .set({ commissionStatus: commissions.length > 0 ? '已分配' : '待分配' })
         .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
     })
   } catch (err: any) {

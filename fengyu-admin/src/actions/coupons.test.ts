@@ -76,6 +76,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -100,6 +102,16 @@ vi.mock('drizzle-orm', () => ({
 import { getTemplates, createTemplate, updateTemplate, toggleTemplateActive, issueCoupon, getIssuedCoupons, batchIssueCoupons } from './coupons'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
+
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
 
 function makeTemplateRow(templateId: string, overrides: Partial<Record<string, any>> = {}) {
   return {
@@ -294,6 +306,7 @@ describe('updateTemplate — rowCount=0 静默成功修复 + 错误处理', () =
       employeeId: 'ADMIN-001',
       roles: [{ role: 'admin', scopeId: 'hq-1' }],
     })
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {

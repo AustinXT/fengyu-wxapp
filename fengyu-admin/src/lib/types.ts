@@ -2,7 +2,7 @@
 export interface OrgNode {
   id: string
   name: string
-  type: 'headquarters' | 'market' | 'store' | 'department'
+  type: '总部' | '市场' | '门店' | '部门'
   parentId: string | null
   sortOrder: number
   isActive: boolean
@@ -62,11 +62,16 @@ export interface Customer {
   phone: string | null
   customerId: string | null
   name: string | null
+  gender: string | null
   boundStoreId: string | null
   boundEmployeeId: string | null
   memberLevel: string | null
   customerSource: string | null
-  category: string | null
+  promoterEmployeeId: string | null
+  customerType: string
+  spendingTier: string
+  monthlyActivity: string | null
+  customerStatus: string | null
   birthday: string | null
   occupation: string | null
   isMarried: boolean | null
@@ -75,39 +80,76 @@ export interface Customer {
   improvementFocus: string | null
   skinIssue: string | null
   wellnessPreference: string | null
+  notes: string | null
   createdAt: string
   updatedAt: string
   // joined
   storeName?: string
   employeeName?: string
+  promoterName?: string
+  marketName?: string
 }
 
-export type ProductKind = '福利活动' | '护理项目' | '家居产品' | '充值卡'
-export type ProductType = '疗程卡' | '单品' | '院装产品'
-export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
-export type SaleOrderType = '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
-export type PaymentMethod = 'wechat' | 'alipay' | 'offline'
-export type OrderSource = 'client' | 'staff' | 'admin'
-export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
-export type ServiceOrderType = '普通' | '体验'
-export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
-export type SalesCategory = '自采自销' | '他销自耗' | '他销他耗' | '生态合作'
-export type AllocationStatus = 'pending' | 'allocated'
-export type ItemDirection = 'purchase' | 'convert_out' | 'convert_in' | 'refund_out'
-export type CouponType = '现金券' | '项目券' | '折扣券'
-export type CouponStatus = '未使用' | '已使用' | '已过期'
-export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
+export type PositionScope = '总部' | '市场' | '门店'
 
-export interface ProductCategory {
-  categoryId: string
-  categoryName: string
-  productKind: ProductKind
+export interface Position {
+  id: string
+  name: string
+  scope: PositionScope
   sortOrder: number
   isValid: boolean
   createdAt: string
   updatedAt: string
 }
 
+export interface SkillTag {
+  id: string
+  name: string
+  sortOrder: number
+  isValid: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export type ProductKind = string
+export type ProductType = '疗程卡' | '单品' | '院装产品'
+export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
+export type SaleOrderType = '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
+export type PaymentMethod = '微信' | '支付宝' | '线下'
+export type OrderSource = 'client' | 'staff' | 'admin'
+export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
+export type ServiceOrderType = '售前' | '售后'
+export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
+export type SalesCategory = '自采自销' | '他销自耗' | '他销他耗' | '生态合作'
+export type AllocationStatus = '待分配' | '已分配'
+export type ItemDirection = '购买' | '转出' | '转入' | '退出'
+export type CouponType = '现金券' | '品项券' | '折扣券'
+export type CouponStatus = '未使用' | '已使用' | '已过期'
+export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
+
+/** 角色中文名（全局唯一权威定义，所有展示/错误提示均引用此常量） */
+export const ROLE_LABELS: Record<RoleType, string> = {
+  admin: '系统管理员',
+  manager: '店长',
+  finance: '财务',
+  hr: '人事',
+  product: '商品管理员',
+  customer_mgr: '顾客管理员',
+  staff: '员工',
+}
+
+export interface ProductCategory {
+  categoryId: string
+  categoryName: string
+  productKind: string | null  // null = 一级分类（品项类型）
+  salesCategory: SalesCategory | null
+  sortOrder: number
+  isValid: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/** 商城商品（products 表，category_id → mall_categories） */
 export interface Product {
   productId: string
   categoryId: string
@@ -115,45 +157,72 @@ export interface Product {
   coverImage: string | null
   detailImages: string[] | null
   description: string | null
-  isShengmei: boolean | null
   isBundle: boolean
   price: string
   specialPrice: string | null
-  salesCategory: SalesCategory | null
   manageScope: string | null
   marketScope: string | null
   sortOrder: number
-  validStart: string | null
-  validEnd: string | null
+  isEnabled: boolean
+  isVisible: boolean
   createdAt: string
   updatedAt: string
   // joined
   categoryName?: string
-  productKind?: ProductKind
+  categoryGroup?: string
   skuCount?: number
 }
 
+/** SKU（独立实体，category_id → product_categories） */
 export interface ProductSku {
   skuId: string
-  productId: string
+  categoryId: string
   productType: ProductType
   specName: string
   price: string
   specialPrice: string | null
   sessionCount: number | null
-  isBundleSku: boolean
   sortOrder: number
   serviceFee: string
-  validStart: string | null
-  validEnd: string | null
+  isShengmei: boolean | null
+  marketScope: string | null
+  isEnabled: boolean
+  createdAt: string
+  updatedAt: string
+  // joined
+  categoryName?: string
+  productKind?: ProductKind
+  salesCategory?: SalesCategory | null
+  bundlePrice?: string | null
+  bundleGroupId?: number | null
+  groupName?: string | null
+}
+
+export interface MallBundleGroup {
+  id: number
+  productId: string
+  groupName: string
+  pickCount: number | null
+  sortOrder: number
+  createdAt: string
+}
+
+export interface MallCategory {
+  categoryId: string
+  categoryName: string
+  categoryGroup: string | null
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }
+
+export type DocumentType = '售前' | '售后'
 
 export interface SaleOrder {
   saleOrderId: string
   status: OrderStatus
   saleOrderType: SaleOrderType
+  documentType: DocumentType | null
   refSaleOrderId: string | null
   marketName: string
   storeId: string
@@ -207,6 +276,7 @@ export interface SaleAllocation {
   saleItemId: string
   employeeId: string
   allocationRatio: string
+  roleType?: string
   totalAmount: string
   isVoid: boolean
   createdAt: string
@@ -240,6 +310,8 @@ export interface ServiceCommission {
   id: number
   serviceItemId: string
   employeeId: string
+  roleType?: string
+  allocationRatio?: string
   commissionRate: string
   commissionAmount: string
   isVoid: boolean
@@ -273,7 +345,6 @@ export interface PermissionRole {
   employeeId: string
   role: RoleType
   scopeId: string
-  isVoid: boolean
   createdBy: string | null
   createdAt: string
   updatedAt: string
@@ -377,7 +448,7 @@ export interface AuthSession {
   roles: Array<{
     role: RoleType
     scopeId: string
-    scopeType: 'headquarters' | 'market' | 'store'
+    scopeType: '总部' | '市场' | '门店'
   }>
   permissions: {
     actions: string[]

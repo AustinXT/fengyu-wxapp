@@ -24,7 +24,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: '普通',
     })
 
@@ -68,7 +68,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     await expect(orderRoutes.create(ctx))
@@ -79,7 +79,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     await expect(orderRoutes.create(ctx))
@@ -90,7 +90,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     await expect(orderRoutes.create(ctx))
@@ -102,7 +102,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     await expect(orderRoutes.create(ctx))
@@ -122,7 +122,7 @@ describe('order.create', () => {
 
   test('未绑定门店时拒绝开单（line 63 TRUE 分支）', async () => {
     const ctx = createManagerCtx(
-      { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku-001', quantity: 1 }], paymentMethod: 'offline' },
+      { clientPhone: '138', clientName: 'X', items: [{ skuId: 'sku-001', quantity: 1 }], paymentMethod: '线下' },
       { storeId: null }
     )
 
@@ -135,7 +135,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -151,7 +151,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -167,7 +167,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: '非法类型',
     })
 
@@ -184,7 +184,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-nonexist', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -201,7 +201,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1, discount: 99999 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -227,7 +227,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1, customPrice: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: '体验',
     })
 
@@ -265,7 +265,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '测试顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: '普通',
       couponId: 'coupon-001',
     })
@@ -303,7 +303,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-bad',
     })
 
@@ -324,7 +324,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-002',
     })
 
@@ -351,7 +351,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-003',
     })
 
@@ -365,7 +365,7 @@ describe('order.create', () => {
       }])
       .mockResolvedValueOnce([{
         coupon_id: 'coupon-003', user_id: 'cu-001',
-        coupon_type: '项目券', discount_value: '50', min_spend: '0',
+        coupon_type: '品项券', discount_value: '50', min_spend: '0',
         applicable_store_ids: null,
         applicable_category_ids: ['cat-护理'],  // 商品属于 cat-home，不匹配
         expire_at: new Date(Date.now() + 86400000),
@@ -379,7 +379,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-004',
     })
 
@@ -406,7 +406,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-disc',
     })
 
@@ -444,7 +444,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-disc2',
     })
 
@@ -482,7 +482,7 @@ describe('order.create', () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       couponId: 'coupon-001',
     })
 
@@ -527,7 +527,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '内部员工',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: 'internal',
     })
 
@@ -557,7 +557,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '顾客',
       items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: 'promotion',
     })
 
@@ -579,7 +579,7 @@ describe('order.create', () => {
       clientPhone: '13800001111',
       clientName: '注册顾客',
       items: [{ skuId: 'sku-single', quantity: 2 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
       orderType: '普通',
     })
 
@@ -611,7 +611,7 @@ describe('order.create', () => {
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-sp', quantity: 1 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -646,7 +646,7 @@ describe('order.confirmOffline', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-XSD-WX-2401010001',
         status: '待确认收款',
-        payment_method: 'offline',
+        payment_method: '线下',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([
@@ -679,7 +679,7 @@ describe('order.confirmOffline', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '待确认收款',
-        payment_method: 'offline',
+        payment_method: '线下',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '100', product_type: '单品' }])
@@ -721,7 +721,7 @@ describe('order.confirmOffline', () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
-      payment_method: 'wechat',
+      payment_method: '微信',
       store_id: 'store-001',
     }])
 
@@ -735,7 +735,7 @@ describe('order.confirmOffline', () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '已支付',
-      payment_method: 'offline',
+      payment_method: '线下',
       store_id: 'store-001',
     }])
 
@@ -750,7 +750,7 @@ describe('order.confirmOffline', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '待支付',
-        payment_method: 'offline',  // offline → 不触发非线下拦截
+        payment_method: '线下',  // offline → 不触发非线下拦截
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '300', product_type: '单品' }])
@@ -1332,7 +1332,7 @@ describe('order.qrcode', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-QR-001', status: '待支付', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'offline',
+        client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([
@@ -1356,7 +1356,7 @@ describe('order.qrcode', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-QR-002', status: '已支付', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'offline',
+        client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: '2024-06-15', store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([
@@ -1376,7 +1376,7 @@ describe('order.qrcode', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-QR-003', status: '待确认收款', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'wechat',
+        client_phone: '138', customer_name: '张三', payment_method: '微信',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([])
@@ -1406,7 +1406,7 @@ describe('order.qrcode', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-QR-ERR', status: '待支付', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'offline',
+        client_phone: '138', customer_name: '张三', payment_method: '线下',
         paid_at: null, store_id: 'store-001', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([])
@@ -1424,7 +1424,7 @@ describe('order.qrcode', () => {
 
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-QR-004', status: '待支付', sale_order_type: '普通',
-      client_phone: '138', customer_name: '张三', payment_method: 'offline',
+      client_phone: '138', customer_name: '张三', payment_method: '线下',
       paid_at: null, store_id: 'store-other', opened_by: 'emp-001',
     }])
 
@@ -1432,22 +1432,6 @@ describe('order.qrcode', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('支持 orderNo 兼容参数', async () => {
-    const ctx = createManagerCtx({})
-    ctx.event.payload = { orderNo: 'FY-COMPAT-001' }
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-COMPAT-001', status: '已支付', sale_order_type: '普通',
-        client_phone: '138', customer_name: '张三', payment_method: 'offline',
-        paid_at: '2024-06-15', store_id: 'store-001', opened_by: 'emp-001',
-      }])
-      .mockResolvedValueOnce([])
-
-    await orderRoutes.qrcode(ctx)
-
-    expect(ctx.result.saleOrderId).toBe('FY-COMPAT-001')
-  })
 })
 
 // ============================================================
@@ -1469,7 +1453,7 @@ describe('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-        payment_method: 'offline',
+        payment_method: '线下',
       }])
       // 查原单明细
       .mockResolvedValueOnce([{
@@ -1521,7 +1505,7 @@ describe('order.createRefund', () => {
       refSaleOrderId: 'FY-001', items: [{ saleItemId: 'item-wrong' }], refundReason: 'x',
     })
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-001', status: '已支付', store_id: 'store-001', client_user_id: null, client_phone: '138', customer_name: 'C', payment_method: 'offline' }])
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-001', status: '已支付', store_id: 'store-001', client_user_id: null, client_phone: '138', customer_name: 'C', payment_method: '线下' }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001' }]) // 原单明细中无 item-wrong
 
     await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*item-wrong.*不存在/)
@@ -1537,7 +1521,7 @@ describe('order.createRefund', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三', payment_method: 'offline',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三', payment_method: '线下',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'item-001', sku_id: 'sku-001', product_name: '面部护理',
@@ -1569,7 +1553,7 @@ describe('order.createRefund', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-002', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '李四', payment_method: 'wechat',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '李四', payment_method: '微信',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'item-002', sku_id: 'sku-002', product_name: '精油SPA',
@@ -1600,7 +1584,7 @@ describe('order.createRefund', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-003', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '王五', payment_method: 'offline',
+        client_user_id: 'cu-001', client_phone: '138', customer_name: '王五', payment_method: '线下',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'item-003', sku_id: 'sku-003', product_name: '护理套餐',
@@ -1650,7 +1634,7 @@ describe('order.approveRefund', () => {
         sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{
-        sale_item_id: 'ref-item-1', item_direction: 'refund_out',
+        sale_item_id: 'ref-item-1', item_direction: '退出',
         ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1,
       }])
 
@@ -1676,7 +1660,7 @@ describe('order.approveRefund', () => {
 
     pg.query
       .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: 'refund_out', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }])
+      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
@@ -1696,7 +1680,7 @@ describe('order.approveRefund', () => {
 
     pg.query
       .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款', store_id: 'store-001' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: 'refund_out', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }])
+      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }])
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
@@ -1769,7 +1753,7 @@ describe('order.createRepayment', () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-001',
       items: [{ saleItemId: 'item-001', repayAmount: 200 }],
-      paymentMethod: 'offline',
+      paymentMethod: '线下',
     })
 
     pg.query
@@ -1838,7 +1822,7 @@ describe('order.createConversion', () => {
       }])
       // 查原明细行
       .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: 'purchase',
+        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
         sku_id: 'sku-old', product_name: '旧项目', sku_spec_name: '标准',
         product_type: '疗程卡', session_count: 10, unit_price: '1000',
         unit_real_price: '1000', quantity: 1, sales_category: '自采自销',
@@ -1901,7 +1885,7 @@ describe('order.createConversion', () => {
       }])
       // 原明细行：session_count = null（单品，无次数）
       .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: 'purchase',
+        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
         sku_id: 'sku-old', product_name: '家居产品', sku_spec_name: '标准',
         product_type: '单品', session_count: null, unit_price: '200',
         unit_real_price: '200', quantity: 1, sales_category: '自采自销',
@@ -1938,7 +1922,7 @@ describe('order.createConversion', () => {
         client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
       }])
       .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: 'purchase',
+        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
         sku_id: 'sku-old', product_name: '旧疗程', sku_spec_name: '标准',
         product_type: '疗程卡', session_count: 5, unit_price: '1000',
         unit_real_price: '1000', quantity: 1, sales_category: '自采自销',

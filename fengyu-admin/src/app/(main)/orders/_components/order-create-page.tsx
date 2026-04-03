@@ -8,20 +8,22 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { searchCustomerByPhone } from "@/actions/customers"
+import { searchCustomers } from "@/actions/customers"
 import { createOrder, confirmOfflinePayment, generateOrderWxacode } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { formatDate } from "@/lib/utils"
-import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon, ProductKind } from "@/lib/types"
+import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
-
-const KIND_COLORS: Record<ProductKind, string> = {
-  "福利活动": "bg-[#FFF8E6] text-[#D4820A]",
-  "护理项目": "bg-[#F0F5FA] text-[#5E8BB3]",
-  "家居产品": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "充值卡": "bg-[#F5F5F5] text-[#888888]",
-}
+const KIND_PALETTE = [
+  "bg-[#FFF8E6] text-[#D4820A]",
+  "bg-[#F0F5FA] text-[#5E8BB3]",
+  "bg-[#F0F9F2] text-[#3D8A5A]",
+  "bg-[#F5F5F5] text-[#888888]",
+  "bg-[#FFF0EE] text-[#C0322A]",
+  "bg-[#F5F0FF] text-[#8B5CF6]",
+  "bg-[#FFF0F5] text-[#EC4899]",
+  "bg-[#F0FAFA] text-[#0E7490]",
+]
 
 interface CartItem {
   sku: ProductSku
@@ -86,32 +88,50 @@ export default function OrderCreatePageClient({
   skus,
   stores,
   employees,
+  productKinds,
 }: {
   categories: ProductCategory[]
   products: Product[]
   skus: ProductSku[]
   stores: Store[]
   employees: Employee[]
+  productKinds?: ProductCategory[]
 }) {
   const [step, setStep] = useState(0)
-  const [phone, setPhone] = useState("")
+  const [searchKeyword, setSearchKeyword] = useState("")
+  const [searchResults, setSearchResults] = useState<Customer[]>([])
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
+  const [manualPhone, setManualPhone] = useState("")
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categories[0]?.categoryId || "")
-  const [expandedKind, setExpandedKind] = useState<ProductKind | "">(
+  const [expandedKind, setExpandedKind] = useState<string>(
     () => categories.find(c => c.categoryId === (categories[0]?.categoryId))?.productKind || ""
   )
 
+  // 动态一级分类列表
+  const activeKinds = useMemo(() => {
+    if (productKinds) {
+      return productKinds.filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder).map(k => k.categoryName)
+    }
+    // fallback: derive from categories
+    const seen = new Set<string>()
+    return categories.filter(c => c.productKind && !seen.has(c.productKind) && seen.add(c.productKind)).map(c => c.productKind!)
+  }, [productKinds, categories])
+
+  const kindColors = useMemo(() => {
+    return Object.fromEntries(activeKinds.map((k, i) => [k, KIND_PALETTE[i % KIND_PALETTE.length]]))
+  }, [activeKinds])
+
   const categoriesByKind = useMemo(() => {
-    const groups: Partial<Record<ProductKind, ProductCategory[]>> = {}
-    for (const kind of PRODUCT_KINDS) {
+    const groups: Record<string, ProductCategory[]> = {}
+    for (const kind of activeKinds) {
       const filtered = categories.filter(c => c.productKind === kind)
       if (filtered.length > 0) groups[kind] = filtered
     }
     return groups
-  }, [categories])
+  }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
   const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
-  const [paymentMethod, setPaymentMethod] = useState("wechat")
+  const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [searching, setSearching] = useState(false)
@@ -126,32 +146,39 @@ export default function OrderCreatePageClient({
   const [loadingCoupons, setLoadingCoupons] = useState(false)
   const [priceOverrides, setPriceOverrides] = useState<Record<string, ItemPriceOverride>>({})
 
-  const searchCustomer = async () => {
-    if (!phone.trim() || !/^1\d{10}$/.test(phone.trim())) {
-      toast.error("请输入正确的手机号")
+  const handleSearch = async () => {
+    const kw = searchKeyword.trim()
+    if (!kw) {
+      toast.error("请输入姓名或手机号")
       return
     }
     setSearching(true)
     setSearchDone(false)
+    setSelectedCustomer(null)
+    setSearchResults([])
     try {
-      const result = await searchCustomerByPhone(phone.trim())
-      setSelectedCustomer(result)
+      const results = await searchCustomers(kw)
+      setSearchResults(results)
       setSearchDone(true)
-      if (result) {
-        // 自动默认顾客绑定的门店和美容师
-        if (result.boundStoreId && stores.some(s => s.storeId === result.boundStoreId)) {
-          setSelectedStoreId(result.boundStoreId)
-        }
-        if (result.boundEmployeeId && employees.some(e => e.employeeId === result.boundEmployeeId && !e.isResigned)) {
-          setSelectedEmployeeId(result.boundEmployeeId)
-        }
-      } else {
-        toast.info("未找到该手机号对应的顾客，可直接使用手机号开单")
+      if (results.length === 0) {
+        toast.info("未找到匹配的顾客，可输入手机号直接开单")
       }
     } catch {
       toast.error("搜索失败，请稍后重试")
     } finally {
       setSearching(false)
+    }
+  }
+
+  const selectCustomer = (customer: Customer) => {
+    setSelectedCustomer(customer)
+    setManualPhone("")
+    // 自动默认顾客绑定的门店和美容师
+    if (customer.boundStoreId && stores.some(s => s.storeId === customer.boundStoreId)) {
+      setSelectedStoreId(customer.boundStoreId)
+    }
+    if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned)) {
+      setSelectedEmployeeId(customer.boundEmployeeId)
     }
   }
 
@@ -226,58 +253,140 @@ export default function OrderCreatePageClient({
 
       <StepIndicator current={step} />
 
-      {/* Step 1: 选择顾客 */}
+      {/* Step 1: 选择顾客 + 订单类型 */}
       {step === 0 && (
         <Card>
-          <CardContent className="p-6 space-y-4">
-            <h2 className="text-base font-semibold">搜索顾客</h2>
-            <div className="flex gap-2">
-              <Input
-                placeholder="输入手机号搜索"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-64"
-              />
-              <Button onClick={searchCustomer} loading={searching}>搜索</Button>
+          <CardContent className="p-6 space-y-6">
+            {/* 订单类型 */}
+            <div>
+              <h2 className="text-base font-semibold mb-3">订单类型</h2>
+              <div className="flex gap-2">
+                {(["普通", "体验", "内部", "福利活动"] as const).map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => setOrderType(type)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                      orderType === type
+                        ? "border-[var(--primary)] bg-[#FFF0EE] text-[var(--primary)]"
+                        : "border-[var(--border)] bg-white text-[var(--foreground)] hover:bg-gray-50"
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
             </div>
-            {selectedCustomer && (
-              <Card className="bg-[#FAFAFA]">
-                <CardContent className="p-4">
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
-                    <div>
-                      <span className="text-[#999999]">姓名</span>
-                      <p className="font-medium">{selectedCustomer.name || "-"}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#999999]">手机</span>
-                      <p className="font-medium">{selectedCustomer.phone}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#999999]">会员等级</span>
-                      <p className="font-medium">{selectedCustomer.memberLevel || "-"}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#999999]">绑定门店</span>
-                      <p className="font-medium">{selectedCustomer.storeName || "-"}</p>
-                    </div>
-                    <div>
-                      <span className="text-[#999999]">绑定美容师</span>
-                      <p className="font-medium">{selectedCustomer.employeeName || "-"}</p>
-                    </div>
+
+            <Separator />
+
+            {/* 搜索顾客 */}
+            <div className="space-y-4">
+              <h2 className="text-base font-semibold">搜索顾客</h2>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="输入姓名或手机号搜索"
+                  value={searchKeyword}
+                  onChange={(e) => setSearchKeyword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
+                  className="w-72"
+                />
+                <Button onClick={handleSearch} loading={searching}>搜索</Button>
+              </div>
+
+              {/* 搜索结果列表 */}
+              {searchDone && searchResults.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm text-[#999999]">找到 {searchResults.length} 位顾客，请选择：</p>
+                  <div className="space-y-1 max-h-64 overflow-y-auto">
+                    {searchResults.map((c) => (
+                      <button
+                        key={c.userId}
+                        onClick={() => selectCustomer(c)}
+                        className={`w-full text-left px-4 py-3 rounded-lg border text-sm transition-colors ${
+                          selectedCustomer?.userId === c.userId
+                            ? "border-[var(--primary)] bg-[#FFF0EE]"
+                            : "border-[var(--border)] bg-[#FAFAFA] hover:bg-gray-100"
+                        }`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <span className="font-medium min-w-[4em]">{c.name || "-"}</span>
+                          <span className="text-[#999999]">{c.phone}</span>
+                          {c.memberLevel && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-[#FFF8E6] text-[#D4820A]">{c.memberLevel}</span>
+                          )}
+                          {c.storeName && (
+                            <span className="text-xs text-[#999999]">{c.storeName}</span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
                   </div>
-                </CardContent>
-              </Card>
-            )}
-            {searchDone && !selectedCustomer && (
-              <Card className="bg-[#FFF8E6] border-[#D4820A]">
-                <CardContent className="p-4 text-sm">
-                  <p className="text-[#D4820A] font-medium">未找到已注册顾客</p>
-                  <p className="text-[#999999] mt-1">将使用手机号 {phone} 开单，顾客后续注册绑定手机号后历史订单会自动关联</p>
-                </CardContent>
-              </Card>
-            )}
+                </div>
+              )}
+
+              {/* 已选顾客信息卡 */}
+              {selectedCustomer && (
+                <Card className="bg-[#FAFAFA]">
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-[#3D8A5A]">已选择顾客</span>
+                      <button
+                        className="text-xs text-[#999999] hover:text-[#D94040]"
+                        onClick={() => setSelectedCustomer(null)}
+                      >
+                        取消选择
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm">
+                      <div>
+                        <span className="text-[#999999]">姓名</span>
+                        <p className="font-medium">{selectedCustomer.name || "-"}</p>
+                      </div>
+                      <div>
+                        <span className="text-[#999999]">手机</span>
+                        <p className="font-medium">{selectedCustomer.phone}</p>
+                      </div>
+                      <div>
+                        <span className="text-[#999999]">会员等级</span>
+                        <p className="font-medium">{selectedCustomer.memberLevel || "-"}</p>
+                      </div>
+                      <div>
+                        <span className="text-[#999999]">绑定门店</span>
+                        <p className="font-medium">{selectedCustomer.storeName || "-"}</p>
+                      </div>
+                      <div>
+                        <span className="text-[#999999]">绑定美容师</span>
+                        <p className="font-medium">{selectedCustomer.employeeName || "-"}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* 未找到顾客 — 手动输入手机号 */}
+              {searchDone && searchResults.length === 0 && (
+                <Card className="bg-[#FFF8E6] border-[#D4820A]">
+                  <CardContent className="p-4 text-sm space-y-3">
+                    <p className="text-[#D4820A] font-medium">未找到匹配的顾客</p>
+                    <p className="text-[#999999]">可输入手机号直接开单，顾客后续注册绑定手机号后历史订单会自动关联</p>
+                    <Input
+                      placeholder="输入顾客手机号"
+                      value={manualPhone}
+                      onChange={(e) => setManualPhone(e.target.value)}
+                      className="w-64"
+                    />
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+
             <div className="flex justify-end">
-              <Button onClick={() => setStep(1)} disabled={!searchDone && !selectedCustomer}>下一步</Button>
+              <Button
+                onClick={() => setStep(1)}
+                disabled={!selectedCustomer && !(searchDone && searchResults.length === 0 && /^1\d{10}$/.test(manualPhone.trim()))}
+              >
+                下一步
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -291,7 +400,7 @@ export default function OrderCreatePageClient({
             <CardContent className="p-3">
               <h3 className="text-sm font-semibold text-[#999999] mb-2">商品分类</h3>
               <div className="space-y-0.5">
-                {PRODUCT_KINDS.map((kind) => {
+                {activeKinds.map((kind) => {
                   const kindCategories = categoriesByKind[kind]
                   if (!kindCategories) return null
                   const isExpanded = expandedKind === kind
@@ -301,7 +410,7 @@ export default function OrderCreatePageClient({
                         onClick={() => setExpandedKind(isExpanded ? "" : kind)}
                         className="w-full text-left px-3 py-2 rounded text-sm flex items-center justify-between hover:bg-gray-50 transition-colors"
                       >
-                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${KIND_COLORS[kind]}`}>
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${kindColors[kind] ?? KIND_PALETTE[0]}`}>
                           {kind}
                         </span>
                         <svg
@@ -341,7 +450,7 @@ export default function OrderCreatePageClient({
               <CardContent className="p-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {categoryProducts.map((product) => {
-                    const productSkus = skus.filter((s) => s.productId === product.productId)
+                    const productSkus = skus.filter((s) => (s as any).productId === product.productId)
                     return (
                       <Card key={product.productId} className="bg-[#FAFAFA]">
                         <CardContent className="p-4 space-y-2">
@@ -473,23 +582,18 @@ export default function OrderCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
-                <p className="font-medium">{selectedCustomer?.name || phone}</p>
+                <p className="font-medium">{selectedCustomer?.name || manualPhone.trim()}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">订单类型</label>
-                <Select className="mt-1" value={orderType} onChange={(e) => setOrderType(e.target.value as '普通' | '体验' | '内部' | '福利活动')}>
-                  <option value="普通">普通</option>
-                  <option value="体验">体验</option>
-                  <option value="内部">内部</option>
-                  <option value="福利活动">福利活动</option>
-                </Select>
+                <p className="font-medium mt-1">{orderType}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
                 <Select className="mt-1" value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-                  <option value="wechat">微信支付</option>
-                  <option value="alipay">支付宝</option>
-                  <option value="offline">线下支付</option>
+                  <option value="微信">微信支付</option>
+                  <option value="支付宝">支付宝</option>
+                  <option value="线下">线下支付</option>
                 </Select>
               </div>
               <div>
@@ -684,9 +788,9 @@ export default function OrderCreatePageClient({
                     storeId: selectedStoreId,
                     marketName: store?.marketName || "未知市场",
                     clientUserId: selectedCustomer?.userId || null,
-                    clientPhone: selectedCustomer?.phone || phone,
-                    customerName: selectedCustomer?.name || phone,
-                    paymentMethod: paymentMethod as 'wechat' | 'alipay' | 'offline',
+                    clientPhone: selectedCustomer?.phone || manualPhone.trim(),
+                    customerName: selectedCustomer?.name || manualPhone.trim(),
+                    paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
@@ -704,7 +808,7 @@ export default function OrderCreatePageClient({
                         quantity: item.quantity,
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
-                        salesCategory: item.product.salesCategory || null,
+                        salesCategory: (item.product as any).salesCategory || null,
                       }
                     }),
                   })
@@ -744,18 +848,18 @@ export default function OrderCreatePageClient({
             <p className="text-sm text-[#999999]">
               {paymentConfirmed
                 ? '订单已确认收款，状态已更新为已支付'
-                : paymentMethod === 'offline'
+                : paymentMethod === '线下'
                   ? '线下支付订单，可直接确认收款'
                   : '请将二维码展示给顾客，扫码进入小程序完成支付'}
             </p>
 
             {/* 微信/支付宝支付：可打印 QR 码（spec §5.12） */}
-            {paymentMethod !== 'offline' && createdOrderId && !paymentConfirmed && (
+            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
             {/* 线下支付：确认收款按钮 */}
-            {paymentMethod === 'offline' && createdOrderId && !paymentConfirmed && (
+            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed && (
               <div className="pt-2">
                 <Button
                   loading={confirming}
@@ -792,7 +896,7 @@ export default function OrderCreatePageClient({
                   <Button variant="outline">返回订单列表</Button>
                 </Link>
               )}
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}) }}>
+              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setManualPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("普通") }}>
                 继续开单
               </Button>
             </div>

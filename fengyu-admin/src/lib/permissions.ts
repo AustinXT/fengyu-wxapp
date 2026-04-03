@@ -21,9 +21,9 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
-    // 系统管理（权限/同步/日志/配置）
+    // 系统管理（权限/日志/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-    'sync:trigger', 'sync:status',
+
     'operation_log:list',
     'system:config',
     // admin 不碰业务数据（订单/分配/服务/预约）和顾客
@@ -93,7 +93,7 @@ export async function expandScopeStoreIds(
   const storeIds = new Set<string>()
 
   for (const r of roles) {
-    if (r.scopeType === 'headquarters') {
+    if (r.scopeType === '总部') {
       // 总部权限：返回所有门店
       const allStores = await db
         .select({ storeId: stores.storeId })
@@ -102,12 +102,12 @@ export async function expandScopeStoreIds(
       return Array.from(storeIds) // 总部已包含全部
     }
 
-    if (r.scopeType === 'market') {
-      // 市场权限：该市场节点下的所有 store 节点 → stores
+    if (r.scopeType === '市场') {
+      // 市场权限：该市场节点下的所有门店节点 → stores
       const storeNodes = await db
         .select({ id: orgNodes.id })
         .from(orgNodes)
-        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, 'store')))
+        .where(and(eq(orgNodes.parentId, r.scopeId), eq(orgNodes.type, '门店')))
       if (storeNodes.length > 0) {
         const storeNodeIds = storeNodes.map(n => n.id)
         const marketStores = await db
@@ -118,7 +118,7 @@ export async function expandScopeStoreIds(
       }
     }
 
-    if (r.scopeType === 'store') {
+    if (r.scopeType === '门店') {
       // 门店权限：通过 scopeId（orgNode id）找 store
       const storeRows = await db
         .select({ storeId: stores.storeId })

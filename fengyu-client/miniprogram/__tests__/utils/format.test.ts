@@ -59,8 +59,8 @@ describe('formatDiscount', () => {
   test('现金券：10 → "¥10"', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: 10 })).toBe('¥10')
   })
-  test('项目券：50 → "¥50"', () => {
-    expect(formatDiscount({ couponType: '项目券', discountValue: 50 })).toBe('¥50')
+  test('品项券：50 → "¥50"', () => {
+    expect(formatDiscount({ couponType: '品项券', discountValue: 50 })).toBe('¥50')
   })
   test('字符串数值', () => {
     expect(formatDiscount({ couponType: '现金券', discountValue: '20' })).toBe('¥20')

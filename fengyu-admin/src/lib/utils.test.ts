@@ -89,9 +89,9 @@ describe('calcCouponDiscount', () => {
     expect(calcCouponDiscount('现金券', '50', null, 30)).toBe(30) // 订单金额不足
   })
 
-  it('项目券：同现金券逻辑', () => {
-    expect(calcCouponDiscount('项目券', '100', null, 500)).toBe(100)
-    expect(calcCouponDiscount('项目券', '100', null, 80)).toBe(80)
+  it('品项券：同现金券逻辑', () => {
+    expect(calcCouponDiscount('品项券', '100', null, 500)).toBe(100)
+    expect(calcCouponDiscount('品项券', '100', null, 80)).toBe(80)
   })
 
   it('折扣券：按折扣率计算', () => {

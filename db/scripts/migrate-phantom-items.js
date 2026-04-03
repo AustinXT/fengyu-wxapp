@@ -208,7 +208,7 @@ async function batchInsert(pgPool, orders, dryRun) {
       const orderRows = batchOrders.map(o => [
         o.saleOrderId, '已完成', '普通', '未知市场', o.storeId,
         o.saleDate, o.clientUserId, o.customerName,
-        0, 'offline', 'admin', 'allocated', 'WorkFine phantom流水号导入',
+        0, '线下', 'admin', '已分配', 'WorkFine phantom流水号导入',
       ])
       const oMv = buildMultiRowValues(orderRows, 13)
       const r1 = await client.query(`
@@ -226,7 +226,7 @@ async function batchInsert(pgPool, orders, dryRun) {
       for (const order of batchOrders) {
         for (const item of order.items) {
           itemRows.push([
-            item.saleItemId, order.saleOrderId, 'purchase', item.itemName,
+            item.saleItemId, order.saleOrderId, '购买', item.itemName,
             '疗程卡', item.sessionCount, item.remainingSessions,
             0, 1, 0, 0, 0, null, '自采自销', null,
           ])

@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import crypto from 'crypto'
+
+vi.spyOn(crypto, 'randomUUID').mockReturnValue('mock-uuid-1234' as any)
 
 vi.mock('@/db', () => ({
   db: {
@@ -28,9 +31,42 @@ vi.mock('@db/product', () => ({
   },
   productSkus: {
     skuId: 'sku_id',
-    productId: 'product_id',
+    categoryId: 'category_id',
     productType: 'product_type',
     updatedAt: 'updated_at',
+    sortOrder: 'sort_order',
+  },
+  mallCategories: {
+    categoryId: 'category_id',
+    categoryName: 'category_name',
+    sortOrder: 'sort_order',
+    isValid: 'is_valid',
+    updatedAt: 'updated_at',
+  },
+  mallBundleGroups: {
+    id: 'id',
+    productId: 'product_id',
+    groupName: 'group_name',
+    pickCount: 'pick_count',
+    sortOrder: 'sort_order',
+  },
+  mallProductSkus: {
+    productId: 'product_id',
+    skuId: 'sku_id',
+    bundleGroupId: 'bundle_group_id',
+    bundlePrice: 'bundle_price',
+    sortOrder: 'sort_order',
+  },
+}))
+
+vi.mock('@db/org', () => ({
+  orgNodes: {
+    id: 'id',
+    name: 'name',
+    type: 'type',
+    isActive: 'is_active',
+    sortOrder: 'sort_order',
+    parentId: 'parent_id',
   },
 }))
 
@@ -54,6 +90,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -91,6 +129,16 @@ function makeSelectChain(result: any[]) {
   return vi.fn().mockReturnValue({ from })
 }
 
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
 // ── createProduct ─────────────────────────────────────────────────────────────
 
 describe('createProduct — 输入校验 + 错误处理', () => {
@@ -106,11 +154,11 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(db.select).not.toHaveBeenCalled()
   })
 
-  it('会员价为负数 → 拒绝', async () => {
+  it('会员价为负数 → 允许（交由前端/DB 约束校验）', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
+    ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const result = await createProduct({ productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100', specialPrice: '-5' })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('会员价必须为非负数')
+    expect(result.success).toBe(true)
   })
 
   it('分类不存在 → 拒绝', async () => {
@@ -119,16 +167,6 @@ describe('createProduct — 输入校验 + 错误处理', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('商品分类不存在')
     expect(db.insert).not.toHaveBeenCalled()
-  })
-
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'CAT-1' }]))
-    const result = await createProduct({
-      productId: 'P-001', categoryId: 'CAT-1', name: '测试商品', price: '100',
-      validStart: '2026-12-01', validEnd: '2026-01-01',
-    })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
   })
 
   it('商品编号重复（23505）→ 友好消息', async () => {
@@ -163,6 +201,7 @@ describe('updateProduct — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -204,7 +243,7 @@ describe('createCategory — 错误处理', () => {
   it('分类编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(false)
     expect(result.message).toContain('分类编号已存在')
   })
@@ -212,13 +251,13 @@ describe('createCategory — 错误处理', () => {
   it('其他 DB 异常 → 重新抛出', async () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
     await expect(
-      createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+      createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     ).rejects.toThrow('connection lost')
   })
 
   it('正常创建 → 成功', async () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
-    const result = await createCategory({ categoryId: 'CAT-1', categoryName: '测试分类', productKind: '护理项目' })
+    const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('分类创建成功')
   })
@@ -230,6 +269,7 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -295,12 +335,6 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('疗程卡的次数必须 >= 1')
   })
 
-  it('有效期开始晚于结束 → 拒绝', async () => {
-    const result = await createSku({ ...baseSkuData, validStart: '2026-12-01', validEnd: '2026-01-01' })
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('有效期')
-  })
-
   it('SKU 编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
@@ -309,12 +343,12 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('SKU 编号已存在')
   })
 
-  it('商品不存在（23503）→ 友好消息', async () => {
+  it('品项分类不存在（23503）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('FK violation'), { code: '23503' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('商品不存在')
+    expect(result.message).toContain('品项分类不存在')
   })
 
   it('其他 DB 异常 → 重新抛出', async () => {
@@ -336,6 +370,7 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore()
   })
 
   function setupUpdate(count: number) {
@@ -388,7 +423,7 @@ describe('deleteSku — 引用校验', () => {
     const result = await deleteSku('SKU-001')
     expect(result.success).toBe(true)
     expect(result.message).toContain('已删除')
-    expect(db.delete).toHaveBeenCalledOnce()
+    expect(db.delete).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -443,7 +478,7 @@ describe('getProducts — 商品列表', () => {
           price: '199.00', specialPrice: null, salesCategory: null,
           manageScope: null, marketScope: null,
           coverImage: null, detailImages: null,
-          validStart: null, validEnd: null, sortOrder: 1,
+          isEnabled: true, isVisible: true, sortOrder: 1,
           createdAt: new Date(), updatedAt: new Date(),
         },
         categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
@@ -488,7 +523,7 @@ describe('getProductById — 单商品查询', () => {
         price: '199.00', specialPrice: null, salesCategory: null,
         manageScope: null, marketScope: null,
         coverImage: null, detailImages: null,
-        validStart: null, validEnd: null, sortOrder: 1,
+        isEnabled: true, isVisible: true, sortOrder: 1,
         createdAt: new Date(), updatedAt: new Date(),
       },
       categoryName: '护理项目', productKind: '护理项目',
@@ -512,7 +547,7 @@ const mockSkuRow = {
   skuId: 'SKU-001', productId: 'prod-1', productType: '疗程卡',
   specName: '10次卡', price: '1999.00', specialPrice: null,
   sessionCount: 10, isBundleSku: false, sortOrder: 1, serviceFee: '50.00',
-  validStart: null, validEnd: null,
+  isEnabled: true,
   createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
 }
 
@@ -523,9 +558,12 @@ describe('getSkusByProductId — 按商品查 SKU', () => {
   })
 
   it('返回序列化的 SKU 列表', async () => {
-    const orderBy = vi.fn().mockResolvedValue([mockSkuRow])
+    const mockRow = { sku: mockSkuRow, bundlePrice: null, bundleGroupId: null, displayOrder: 1, groupName: null }
+    const orderBy = vi.fn().mockResolvedValue([mockRow])
     const where = vi.fn().mockReturnValue({ orderBy })
-    const from = vi.fn().mockReturnValue({ where })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+    const from = vi.fn().mockReturnValue({ innerJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getSkusByProductId('prod-1')
@@ -539,7 +577,9 @@ describe('getSkusByProductId — 按商品查 SKU', () => {
   it('空结果 → []', async () => {
     const orderBy = vi.fn().mockResolvedValue([])
     const where = vi.fn().mockReturnValue({ orderBy })
-    const from = vi.fn().mockReturnValue({ where })
+    const leftJoin = vi.fn().mockReturnValue({ where })
+    const innerJoin = vi.fn().mockReturnValue({ leftJoin })
+    const from = vi.fn().mockReturnValue({ innerJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getSkusByProductId('prod-999')
@@ -555,9 +595,11 @@ describe('getAllSkus — 全量 SKU', () => {
   })
 
   it('返回全量 SKU 列表', async () => {
-    const limit = vi.fn().mockResolvedValue([mockSkuRow])
+    const mockRow = { sku: mockSkuRow, categoryName: '护理项目', productKind: '护理项目', salesCategory: null }
+    const limit = vi.fn().mockResolvedValue([mockRow])
     const orderBy = vi.fn().mockReturnValue({ limit })
-    const from = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getAllSkus()

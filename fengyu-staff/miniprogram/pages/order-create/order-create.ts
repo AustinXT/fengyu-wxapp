@@ -31,13 +31,31 @@ interface Category {
   productKind: string;
 }
 
-interface ProductSPU {
-  spuId: string;
-  name: string;
+/** SKU 列表项（从 product.shopInit / product.skuList 返回） */
+interface SkuItem {
+  skuId: string;
+  specName: string;
+  categoryId: string;
+  categoryName: string;
+  productKind: string;
+  salesCategory: string;
   price: number;
   specialPrice: number | null;
-  coverImage: string;
-  tags: string[];
+  sessionCount: number | null;
+  productType: string;
+  serviceFee: number;
+  isShengmei: boolean | null;
+}
+
+/** 展示用 SPU 格式（兼容 WXML 模板） */
+interface DisplayItem {
+  spuId: string;
+  spuName: string;
+  price: number;
+  specialPrice: number | null;
+  productKind: string;
+  productType: string;
+  sessionCount: number | null;
 }
 
 interface CustomerInfo {
@@ -56,7 +74,7 @@ interface CouponInfo {
 
 interface ShopInitResponse {
   categories: Category[];
-  spuList: ProductSPU[];
+  skuList: SkuItem[];
 }
 
 interface OrderCreateResponse {
@@ -67,16 +85,29 @@ interface CouponAvailableResponse {
   coupons: CouponInfo[];
 }
 
+/** 将后端 SKU 项映射为兼容 WXML 的展示格式 */
+function skuToDisplay(sku: SkuItem): DisplayItem {
+  return {
+    spuId: sku.skuId,
+    spuName: sku.specName,
+    price: Number(sku.specialPrice || sku.price) || 0,
+    specialPrice: sku.specialPrice ? Number(sku.specialPrice) : null,
+    productKind: sku.productKind,
+    productType: sku.productType,
+    sessionCount: sku.sessionCount,
+  }
+}
+
 Page({
   data: {
     isManager: false,
-    // 商品目录（三级：大类 → 分类 → SPU）
+    // 商品目录（三级：大类 → 分类 → SKU）
     bigCategories: BIG_CATEGORIES,
     activeBigCategoryIndex: 0,
     catalogLoading: false,
     categories: [] as Category[],
     activeCategoryIndex: 0,
-    spuList: [] as ProductSPU[],
+    spuList: [] as DisplayItem[],
     // 购物车
     cart: [] as CartItem[],
     cartCount: 0,
@@ -111,8 +142,8 @@ Page({
 
   // 所有分类（未过滤）
   _allCategories: [] as Category[],
-  // SPU 缓存：按 categoryId 缓存已加载的 SPU 列表
-  _spuCache: {} as Record<string, ProductSPU[]>,
+  // SKU 缓存：按 categoryId 缓存已加载的展示列表
+  _spuCache: {} as Record<string, DisplayItem[]>,
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -191,7 +222,7 @@ Page({
     try {
       const data = await callStaffApi<ShopInitResponse>('product.shopInit');
       const categories: Category[] = data.categories || [];
-      const spuList: ProductSPU[] = data.spuList || [];
+      const spuList: DisplayItem[] = (data.skuList || []).map(skuToDisplay);
 
       this._allCategories = categories;
       if (categories.length > 0) {
@@ -278,8 +309,8 @@ Page({
   async loadSpuList(categoryId: string) {
     this.setData({ catalogLoading: true });
     try {
-      const spus = await callStaffApi<ProductSPU[]>('product.spuList', { categoryId });
-      const list = spus || [];
+      const skus = await callStaffApi<SkuItem[]>('product.skuList', { categoryId });
+      const list = (skus || []).map(skuToDisplay);
       this._spuCache[categoryId] = list;
       this.setData({ spuList: list, catalogLoading: false });
     } catch (_) {
@@ -290,9 +321,42 @@ Page({
   // ===== SPU 点击 → 跳转详情页 =====
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
-    const spu = e.currentTarget.dataset.spu as ProductSPU;
-    if (!spu?.spuId) return;
-    wx.navigateTo({ url: `/packageService/product-detail/product-detail?spuId=${spu.spuId}` });
+    const item = e.currentTarget.dataset.spu as DisplayItem;
+    if (!item?.spuId) return;
+
+    // SKU 扁平化后直接加入购物车（qty=1）
+    const cart = [...this.data.cart];
+
+    // 购物车中有福利活动商品时不允许混入其他商品
+    if (item.productKind !== '福利活动' && cart.some(c => c.productType === '福利活动')) {
+      wx.showToast({ title: '福利活动订单需单独下单', icon: 'none' });
+      return;
+    }
+
+    const existing = cart.findIndex(c => c.skuId === item.spuId);
+    if (existing >= 0) {
+      if (cart[existing].productType === '福利活动') {
+        wx.showToast({ title: '福利活动项目不可修改数量', icon: 'none' });
+        return;
+      }
+      cart[existing].quantity += 1;
+    } else {
+      cart.push({
+        spuId: item.spuId,
+        skuId: item.spuId,
+        spuName: item.spuName,
+        specName: item.spuName,
+        price: item.price,
+        quantity: 1,
+        discount: 0,
+        sessionCount: item.sessionCount || 0,
+        productType: item.productKind || item.productType,
+        workfineItemId: '',
+        subtotal: '', itemTotal: '',
+      });
+    }
+    this.updateCart(cart);
+    wx.showToast({ title: '已加入购物车', icon: 'success', duration: 800 });
   },
 
   // ===== 购物车 =====
@@ -527,7 +591,7 @@ Page({
         clientUserId: customerInfo.id || null,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
-        paymentMethod: 'wechat',
+        paymentMethod: '微信',
         orderType,
         items: cart.map(c => ({
           skuId: c.skuId,
@@ -545,7 +609,7 @@ Page({
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
       this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
-      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?orderNo=${res.saleOrderId}` });
+      wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '开单失败';
       wx.showToast({ title: msg, icon: 'none' });

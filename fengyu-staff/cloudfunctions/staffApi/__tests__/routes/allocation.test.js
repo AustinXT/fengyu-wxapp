@@ -37,7 +37,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([
@@ -68,7 +68,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([
@@ -127,7 +127,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([
@@ -158,7 +158,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([
@@ -201,7 +201,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([]) // 空 orderItems → itemIds.length === 0 → 跳过 DELETE
@@ -227,7 +227,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
@@ -247,7 +247,7 @@ describe('allocation.save', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001',
         status: '已支付',
-        allocation_status: 'pending',
+        allocation_status: '待分配',
         store_id: 'store-001',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
@@ -283,7 +283,7 @@ describe('allocation.deleteAllocation', () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '已支付',
-      allocation_status: 'allocated',
+      allocation_status: '已分配',
     }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -331,8 +331,8 @@ describe('allocation.pendingList', () => {
     const ctx = createManagerCtx({ page: 1, pageSize: 10 })
 
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'FY-001', status: '已支付', allocation_status: 'pending' },
-      { sale_order_id: 'FY-002', status: '已支付', allocation_status: 'pending' },
+      { sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配' },
+      { sale_order_id: 'FY-002', status: '已支付', allocation_status: '待分配' },
     ])
 
     await allocationRoutes.pendingList(ctx)
@@ -438,7 +438,7 @@ describe('allocation.suggest', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-001', status: '已支付', allocation_status: 'pending',
+        sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
         sale_order_source: 'staff', preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
@@ -470,7 +470,7 @@ describe('allocation.suggest', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-002', status: '已支付', allocation_status: 'pending',
+        sale_order_id: 'FY-002', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
         sale_order_source: 'staff', preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
@@ -493,7 +493,7 @@ describe('allocation.suggest', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-003', status: '已支付', allocation_status: 'pending',
+        sale_order_id: 'FY-003', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
         sale_order_source: 'staff', preferred_employee_id: 'emp-b2',
         client_phone: '13800001111', customer_name: '张三',
@@ -535,7 +535,7 @@ describe('allocation.suggest', () => {
 
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-004', status: '已支付', allocation_status: 'pending',
+        sale_order_id: 'FY-004', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '',
         sale_order_source: 'staff', preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',

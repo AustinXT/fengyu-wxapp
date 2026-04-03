@@ -68,7 +68,6 @@ export default function ServiceCreatePageClient({
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
   const [serviceDate, setServiceDate] = useState(() => new Date().toISOString().slice(0, 10))
-  const [serviceOrderType, setServiceOrderType] = useState<'普通' | '体验'>("普通")
   const [remark, setRemark] = useState("")
 
   // Step 3: Submit
@@ -166,7 +165,6 @@ export default function ServiceCreatePageClient({
         clientUserId: selectedCustomer.userId,
         assignedEmployeeId: selectedEmployeeId,
         serviceDate,
-        serviceOrderType,
         remark: remark.trim() || null,
         items: selectedItems.map(i => ({
           saleItemId: i.saleItemId,
@@ -196,7 +194,6 @@ export default function ServiceCreatePageClient({
     setSelectedItems([])
     setRemark("")
     setCreatedServiceOrderId("")
-    setServiceOrderType("普通")
   }
 
   return (
@@ -374,13 +371,6 @@ export default function ServiceCreatePageClient({
                   <label className="text-sm text-[#999999]">服务日期</label>
                   <Input type="date" className="mt-1" value={serviceDate} onChange={(e) => setServiceDate(e.target.value)} />
                 </div>
-                <div>
-                  <label className="text-sm text-[#999999]">服务类型</label>
-                  <Select className="mt-1" value={serviceOrderType} onChange={(e) => setServiceOrderType(e.target.value as '普通' | '体验')}>
-                    <option value="普通">普通</option>
-                    <option value="体验">体验</option>
-                  </Select>
-                </div>
                 <div className="col-span-2">
                   <label className="text-sm text-[#999999]">备注（可选）</label>
                   <Input className="mt-1" placeholder="服务备注" value={remark} onChange={(e) => setRemark(e.target.value)} />
@@ -422,10 +412,6 @@ export default function ServiceCreatePageClient({
               <div>
                 <span className="text-[#999999]">服务日期</span>
                 <p className="font-medium">{serviceDate}</p>
-              </div>
-              <div>
-                <span className="text-[#999999]">服务类型</span>
-                <p className="font-medium">{serviceOrderType}</p>
               </div>
               {remark.trim() && (
                 <div className="col-span-2">

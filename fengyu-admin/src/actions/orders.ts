@@ -4,9 +4,9 @@ import { db } from '@/db'
 import { saleOrders, saleItems } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
-import { staffWechatUsers } from '@db/user'
+import { clientWechatUsers, staffWechatUsers } from '@db/user'
+import { systemConfigs } from '@db/system-config'
 import { productSkus } from '@db/product'
-import { products } from '@db/product'
 import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -14,7 +14,7 @@ import type { SaleOrder, SaleItem } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 const opener = alias(staffWechatUsers, 'opener')
@@ -40,6 +40,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     saleOrderId: r.order.saleOrderId,
     status: r.order.status as SaleOrder['status'],
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
+    documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
@@ -156,6 +157,7 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
     saleOrderId: r.order.saleOrderId,
     status: r.order.status as SaleOrder['status'],
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
+    documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
@@ -202,16 +204,14 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
 
   const r = rows[0]
 
-  // Get items with joins
+  // Get items with SKU join (product_name from sale_items snapshot)
   const itemRows = await db
     .select({
       item: saleItems,
       skuName: productSkus.specName,
-      productName: products.name,
     })
     .from(saleItems)
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
-    .leftJoin(products, eq(productSkus.productId, products.productId))
     .where(eq(saleItems.saleOrderId, saleOrderId))
 
   const items: SaleItem[] = itemRows.map((ir) => ({
@@ -233,13 +233,14 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     createdAt: ir.item.createdAt.toISOString(),
     updatedAt: ir.item.updatedAt.toISOString(),
     skuName: ir.skuName ?? undefined,
-    productName: ir.productName ?? undefined,
+    productName: ir.item.productName ?? undefined,
   }))
 
   return {
     saleOrderId: r.order.saleOrderId,
     status: r.order.status as SaleOrder['status'],
     saleOrderType: r.order.saleOrderType as SaleOrder['saleOrderType'],
+    documentType: r.order.documentType as SaleOrder['documentType'],
     refSaleOrderId: r.order.refSaleOrderId,
     marketName: r.order.marketName,
     storeId: r.order.storeId,
@@ -269,6 +270,13 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
 export async function confirmOfflinePayment(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
+
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
 
   // 事务：确认收款 + 设置到期日，原子提交（AC-13）
   try {
@@ -310,7 +318,9 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
     return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
-  await logOperation(session, 'order.confirmPayment', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待确认收款', '已支付', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   return { success: true, message: '确认收款成功' }
@@ -320,6 +330,13 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
 export async function closeOrder(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
+
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ status: saleOrders.status, customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
 
   // 事务：关闭订单 + 作废分配，原子提交
   try {
@@ -355,7 +372,9 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
     return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
-  await logOperation(session, 'order.close', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.close', 'sale_order', saleOrderId, orderCtx?.status ?? '待支付', '已关闭', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   revalidatePath('/allocations')
@@ -366,6 +385,13 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
 export async function resetOrderFailed(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
+
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
 
   let result: any
   try {
@@ -385,7 +411,9 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
     return { success: false, message: '订单状态已变更，无法重置' }
   }
 
-  await logOperation(session, 'order.resetFailed', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.resetFailed', 'sale_order', saleOrderId, '支付失败', '待支付', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   return { success: true, message: '已重置为待支付' }
@@ -398,7 +426,7 @@ export async function createOrder(data: {
   clientUserId: string | null
   clientPhone: string
   customerName: string
-  paymentMethod: 'wechat' | 'alipay' | 'offline'
+  paymentMethod: '微信' | '支付宝' | '线下'
   saleOrderType: '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
   openedBy?: string
   preferredEmployeeId?: string
@@ -486,7 +514,31 @@ export async function createOrder(data: {
   }
 
   const totalAmount = Math.max(0, rawTotal - couponDiscount)
-  const initialStatus = data.paymentMethod === 'offline' ? '待确认收款' : '待支付'
+  const initialStatus = data.paymentMethod === '线下' ? '待确认收款' : '待支付'
+
+  // 计算 document_type（售前/售后快照）
+  let documentType: '售前' | '售后' = '售前'
+  if (data.clientUserId) {
+    const [client] = await db
+      .select({ customerType: clientWechatUsers.customerType })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (client?.customerType === '会员客') {
+      documentType = '售后'
+    }
+  }
+  if (documentType === '售前') {
+    const [config] = await db
+      .select({ value: systemConfigs.value })
+      .from(systemConfigs)
+      .where(eq(systemConfigs.key, 'new_member_threshold'))
+      .limit(1)
+    const threshold = Number(config?.value) || 1990
+    if (totalAmount >= threshold) {
+      documentType = '售后'
+    }
+  }
 
   // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
   let saleOrderId: string
@@ -532,6 +584,7 @@ export async function createOrder(data: {
         saleOrderId: id,
         status: initialStatus,
         saleOrderType: data.saleOrderType,
+        documentType,
         marketName: data.marketName,
         storeId: data.storeId,
         saleOrderDatetime: new Date(),
@@ -545,7 +598,7 @@ export async function createOrder(data: {
         saleOrderSource: 'admin',
         openedBy: data.openedBy || session.employeeId,
         preferredEmployeeId: data.preferredEmployeeId || null,
-        allocationStatus: 'pending',
+        allocationStatus: '待分配',
         remark: data.remark || null,
       })
 
@@ -575,7 +628,7 @@ export async function createOrder(data: {
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
-          itemDirection: 'purchase',
+          itemDirection: '购买',
           skuId: item.skuId,
           productName: item.productName,
           skuSpecName: item.skuSpecName,

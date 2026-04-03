@@ -12,8 +12,8 @@ import type { SaleOrder, ServiceOrder } from "@/lib/types"
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const allocationStatusMap: Record<string, { label: string; className: string }> = {
-  pending: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
-  allocated: { label: "已分配", className: "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]" },
+  待分配: { label: "待分配", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
+  已分配: { label: "已分配", className: "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]" },
 }
 
 function formatTime(dt: string) {
@@ -109,7 +109,7 @@ function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
             </thead>
             <tbody className="divide-y divide-gray-200">
               {orders.map((order) => {
-                const statusInfo = allocationStatusMap[order.allocationStatus || "pending"] || allocationStatusMap.pending
+                const statusInfo = allocationStatusMap[order.allocationStatus || "待分配"] || allocationStatusMap.待分配
                 return (
                   <tr key={order.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
@@ -129,7 +129,7 @@ function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
                     <td className="px-4 py-3">
                       <Link href={`/allocations/${order.saleOrderId}`}>
                         <Button size="sm" variant="outline">
-                          {order.allocationStatus === "allocated" ? "查看分配" : "分配"}
+                          {order.allocationStatus === "已分配" ? "查看分配" : "分配"}
                         </Button>
                       </Link>
                     </td>
@@ -168,7 +168,7 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
             </thead>
             <tbody className="divide-y divide-gray-200">
               {serviceOrders.map((so) => {
-                const statusInfo = allocationStatusMap[so.commissionStatus || "pending"] || allocationStatusMap.pending
+                const statusInfo = allocationStatusMap[so.commissionStatus || "待分配"] || allocationStatusMap.待分配
                 return (
                   <tr key={so.serviceOrderId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3">
@@ -188,7 +188,7 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
                     <td className="px-4 py-3">
                       <Link href={`/allocations/service/${so.serviceOrderId}`}>
                         <Button size="sm" variant="outline">
-                          {so.commissionStatus === "allocated" ? "查看分配" : "分配"}
+                          {so.commissionStatus === "已分配" ? "查看分配" : "分配"}
                         </Button>
                       </Link>
                     </td>

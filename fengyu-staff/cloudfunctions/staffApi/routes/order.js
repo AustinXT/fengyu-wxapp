@@ -8,7 +8,7 @@
  * order.list — 订单列表
  * order.detail — 订单详情
  *
- * 数据全部来自 PG（sale_orders / sale_items / products / product_skus），零 WorkFine 依赖。
+ * 数据全部来自 PG（sale_orders / sale_items / product_skus / product_categories），零 WorkFine 依赖。
  */
 
 const pg = require('../db/pg')
@@ -18,6 +18,139 @@ const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
 
+function determineMemberLevel(spend) {
+  if (spend >= 100000) return '黑钻'
+  if (spend >= 60000)  return '金钻'
+  if (spend >= 30000)  return '粉钻'
+  if (spend >= 10000)  return '星钻'
+  if (spend >= 1990)   return '初钻'
+  return null
+}
+
+/**
+ * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位 + 会员等级
+ * @param {object} client - pg 事务客户端
+ * @param {string} clientUserId - client_wechat_users.user_id
+ */
+async function refreshSpendingTier(client, clientUserId) {
+  if (!clientUserId) return
+  await client.query(
+    `UPDATE client_wechat_users
+     SET spending_tier = CASE
+       WHEN t.total >= 100000 THEN '10W+'
+       WHEN t.total >= 60000  THEN '6-10W'
+       WHEN t.total >= 30000  THEN '3-6W'
+       WHEN t.total >= 10000  THEN '1-3W'
+       WHEN t.total >= 1990   THEN '1990-1W'
+       ELSE '<1990'
+     END::spending_tier,
+     updated_at = NOW()
+     FROM (
+       SELECT COALESCE(SUM(total_amount), 0) AS total
+       FROM sale_orders
+       WHERE client_user_id = $1
+         AND status IN ('已支付', '已完成')
+     ) t
+     WHERE user_id = $1`,
+    [clientUserId]
+  )
+
+  // 滚动12个月累计消费额 → 会员等级（仅会员客）
+  const ctRows = await client.query(
+    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId]
+  )
+  if (ctRows.rows[0]?.customer_type === '会员客') {
+    const mlRows = await client.query(
+      `SELECT COALESCE(SUM(total_amount::numeric), 0) AS rolling_spend
+       FROM sale_orders
+       WHERE client_user_id = $1
+         AND status IN ('已支付', '已完成')
+         AND sale_order_type NOT IN ('内部')
+         AND paid_at >= (NOW() - INTERVAL '12 months')`,
+      [clientUserId]
+    )
+    const level = determineMemberLevel(Number(mlRows.rows[0]?.rolling_spend || 0))
+    await client.query(
+      'UPDATE client_wechat_users SET member_level = $1, updated_at = NOW() WHERE user_id = $2',
+      [level, clientUserId]
+    )
+  }
+}
+
+/**
+ * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
+ * 阈值从 system_configs.new_member_threshold 读取
+ * @param {object} client - pg 事务客户端
+ * @param {string} clientUserId - client_wechat_users.user_id
+ */
+async function recalcCustomerType(client, clientUserId) {
+  if (!clientUserId) return
+
+  // 已是最高级，无需重算
+  const cur = await client.query(
+    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId]
+  )
+  if (cur.rows[0]?.customer_type === '会员客') return
+
+  const configResult = await client.query(
+    "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+  )
+  const threshold = Number(configResult.rows[0]?.value) || 1990
+
+  const typeResult = await client.query(
+    `SELECT CASE
+       WHEN EXISTS (
+         SELECT 1 FROM sale_orders o
+         WHERE o.client_user_id = $1
+           AND o.status IN ('已支付', '已完成')
+           AND o.sale_order_type = '普通'
+           AND (
+             o.total_amount >= $2
+             OR (o.total_amount + COALESCE((
+               SELECT SUM(r.total_amount)
+               FROM sale_orders r
+               WHERE r.ref_sale_order_id = o.sale_order_id
+                 AND r.sale_order_type = '回款'
+                 AND r.status IN ('已支付', '已完成')
+             ), 0)) >= $2
+           )
+       ) THEN '会员客'
+       WHEN EXISTS (
+         SELECT 1 FROM sale_orders
+         WHERE client_user_id = $1
+           AND status IN ('已支付', '已完成')
+           AND sale_order_type = '普通'
+       ) THEN '小美客'
+       WHEN EXISTS (
+         SELECT 1 FROM sale_orders
+         WHERE client_user_id = $1
+           AND status IN ('已支付', '已完成')
+           AND sale_order_type = '体验'
+       ) THEN '体验客'
+       ELSE '流量客'
+     END AS computed_type`,
+    [clientUserId, threshold]
+  )
+
+  const newType = typeResult.rows[0].computed_type
+  await client.query(
+    `UPDATE client_wechat_users
+     SET customer_type = $2::customer_type, updated_at = NOW()
+     WHERE user_id = $1
+       AND (CASE customer_type
+              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+            END)
+         < (CASE $2::customer_type
+              WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
+              WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
+            END)`,
+    [clientUserId, newType]
+  )
+}
+
 /**
  * 员工开单（店长专用）
  * payload: {
@@ -25,7 +158,7 @@ const qrcodeCache = new Map()
  *   clientName: string,
  *   orderType: '普通'|'体验'|'福利活动',
  *   items: [{ skuId, quantity, customPrice?, discount? }],
- *   paymentMethod: 'wechat'|'offline',
+ *   paymentMethod: '微信'|'线下',
  *   preferredStaffWfId: string,
  *   couponId: string
  * }
@@ -97,16 +230,14 @@ async function create(ctx) {
     }
   }
 
-  // 获取 SKU 信息 + 价格（全部从 PG product_skus 读取）
+  // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
   const itemDataList = await Promise.all(
     items.map(async (item) => {
       const skuRows = await pg.query(
-        `SELECT s.sku_id, s.product_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                p.name AS product_name, p.sales_category,
-                pc.product_kind
+        `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+                pc.sales_category, pc.product_kind
          FROM product_skus s
-         JOIN products p ON s.product_id = p.product_id
-         LEFT JOIN product_categories pc ON p.category_id = pc.category_id
+         JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1`,
         [item.skuId]
       )
@@ -146,7 +277,7 @@ async function create(ctx) {
 
       return {
         skuId: item.skuId,
-        productName: sku.product_name,
+        productName: sku.spec_name,
         skuSpecName: sku.spec_name,
         productType: sku.product_type,
         productKind: sku.product_kind,
@@ -200,9 +331,7 @@ async function create(ctx) {
     // 品项分类匹配
     const skuIdList = itemDataList.map(d => d.skuId)
     const skuCats = await pg.query(
-      `SELECT ps.sku_id, p.category_id
-       FROM product_skus ps JOIN products p ON ps.product_id = p.product_id
-       WHERE ps.sku_id = ANY($1)`,
+      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
       [skuIdList]
     )
     const catMap = new Map()
@@ -226,7 +355,7 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
     }
 
-    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
+    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
     } else if (couponInfo.coupon_type === '折扣券') {
       couponDiscount = eligibleTotal * (1 - Number(couponInfo.discount_value))
@@ -257,6 +386,27 @@ async function create(ctx) {
   const now = new Date()
   const saleOrderId = await generateOrderNo()
   const totalAmount = itemDataList.reduce((sum, d) => sum + d.received, 0)
+
+  // ========== 计算 document_type（售前/售后快照） ==========
+  let documentType = '售前'
+  if (clientUserId) {
+    const ctRows = await pg.query(
+      'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+      [clientUserId]
+    )
+    if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
+      documentType = '售后'
+    }
+  }
+  if (documentType === '售前') {
+    const cfgRows = await pg.query(
+      "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
+    )
+    const threshold = Number(cfgRows[0]?.value) || 1990
+    if (totalAmount >= threshold) {
+      documentType = '售后'
+    }
+  }
 
   await pg.transaction(async (client) => {
     // Advisory lock 防并发流水号冲突
@@ -292,14 +442,14 @@ async function create(ctx) {
     // 创建订单主表
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, market_name, store_id,
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, sale_order_source, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $14, $15, $5, $5)`,
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, $13, $14, $15, $16, $6, $6)`,
       [
-        saleOrderId, orderType, marketName, storeId, now,
+        saleOrderId, orderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
         paymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
@@ -324,7 +474,7 @@ async function create(ctx) {
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category
-        ) VALUES ($1, $2, 'purchase', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           saleItemId, saleOrderId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -354,7 +504,7 @@ async function qrcode(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -447,7 +597,7 @@ async function confirmOffline(ctx) {
   await requireManager()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -463,7 +613,7 @@ async function confirmOffline(ctx) {
 
   const order = orders[0]
 
-  if (order.status === '待支付' && order.payment_method !== 'offline') {
+  if (order.status === '待支付' && order.payment_method !== '线下') {
     throw new Error(`INVALID_PARAMS: 非线下支付订单不可直接确认收款`)
   }
   if (!['待确认收款', '待支付'].includes(order.status)) {
@@ -488,7 +638,7 @@ async function confirmOffline(ctx) {
       `UPDATE sale_orders
        SET status = '已支付', paid_at = $1, updated_at = $1,
            offline_confirmed_by = $2, offline_confirmed_at = $1,
-           allocation_status = CASE WHEN allocation_status = 'allocated' THEN 'allocated' ELSE 'pending' END
+           allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END
        WHERE sale_order_id = $3 AND status = $4`,
       [now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
@@ -505,6 +655,11 @@ async function confirmOffline(ctx) {
          AND expire_date IS NULL`,
       [now, saleOrderId]
     )
+
+    // 重算顾客历史消费档位
+    await refreshSpendingTier(client, order.client_user_id)
+    // 重算顾客类型（只升不降）
+    await recalcCustomerType(client, order.client_user_id)
   })
 
   ctx.result = {
@@ -523,7 +678,7 @@ async function close(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -598,7 +753,7 @@ async function resetFailed(ctx) {
   await requireManager()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -677,7 +832,7 @@ async function detail(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const saleOrderId = payload.saleOrderId
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -805,7 +960,7 @@ async function createRefund(ctx) {
 
   // 查原单明细
   const origItems = await pg.query(
-    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = 'purchase'",
+    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '购买'",
     [refSaleOrderId]
   )
   const origItemMap = {}
@@ -856,14 +1011,14 @@ async function createRefund(ctx) {
     // 创建退款订单
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, sale_order_source, opened_by,
         refund_reason, handling_fee, created_at, updated_at
-      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, $12, $13, $5, $5)`,
+      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, $13, $14, $6, $6)`,
       [
-        refundOrderId, refSaleOrderId, marketName, storeId, now,
+        refundOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
         totalAmount, origOrder.payment_method, ctx.auth.staffWfId,
         refundReason, fee || null
@@ -880,7 +1035,7 @@ async function createRefund(ctx) {
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity,
           unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, 'refund_out', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        ) VALUES ($1, $2, '退出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           saleItemId, refundOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -914,7 +1069,7 @@ async function approveRefund(ctx) {
 
   // 查退款明细（refund_out 行），原子扣减原购买行 remaining_sessions
   const refundItems = await pg.query(
-    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = 'refund_out'",
+    "SELECT * FROM sale_items WHERE sale_order_id = $1 AND item_direction = '退出'",
     [saleOrderId]
   )
 
@@ -936,13 +1091,18 @@ async function approveRefund(ctx) {
     // 更新退款单状态
     const updateResult = await client.query(
       `UPDATE sale_orders SET status = '已支付', paid_at = $1, approved_by = $2, approved_at = $1,
-       allocation_status = 'pending', updated_at = $1
+       allocation_status = '待分配', updated_at = $1
        WHERE sale_order_id = $3 AND status = '待审批'`,
       [now, ctx.auth.staffWfId, saleOrderId]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 退款单状态已变更，请刷新后重试')
     }
+
+    // 重算顾客历史消费档位（退款会减少累计消费）
+    await refreshSpendingTier(client, orders[0].client_user_id)
+    // 重算顾客类型（退款不降级，但保持一致性）
+    await recalcCustomerType(client, orders[0].client_user_id)
   })
 
   ctx.result = { saleOrderId, status: '已支付', message: '退款已审批通过' }
@@ -975,7 +1135,7 @@ async function rejectRefund(ctx) {
  * payload: {
  *   refSaleOrderId: string,     // 原销售单号
  *   items: [{ saleItemId, repayAmount }],  // 需回款的明细行
- *   paymentMethod: 'wechat'|'offline'
+ *   paymentMethod: '微信'|'线下'
  * }
  */
 async function createRepayment(ctx) {
@@ -1032,16 +1192,16 @@ async function createRepayment(ctx) {
 
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, sale_order_source, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, 'staff', $11, 'pending', $5, $5)`,
+      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, '待分配', $6, $6)`,
       [
-        repayOrderId, refSaleOrderId, marketName, storeId, now,
+        repayOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
-        totalRepay, paymentMethod || 'offline', ctx.auth.staffWfId
+        totalRepay, paymentMethod || '线下', ctx.auth.staffWfId
       ]
     )
 
@@ -1053,7 +1213,7 @@ async function createRepayment(ctx) {
           sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, 'purchase', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9)`,
+        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9)`,
         [
           saleItemId, repayOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -1105,7 +1265,7 @@ async function createConversion(ctx) {
   const outItems = []
   for (const req of convertOutItems) {
     const origItem = await pg.query(
-      "SELECT * FROM sale_items WHERE sale_item_id = $1 AND sale_order_id = $2 AND item_direction = 'purchase'",
+      "SELECT * FROM sale_items WHERE sale_item_id = $1 AND sale_order_id = $2 AND item_direction = '购买'",
       [req.saleItemId, refSaleOrderId]
     )
     if (origItem.length === 0) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
@@ -1133,8 +1293,9 @@ async function createConversion(ctx) {
   const inItems = []
   for (const req of convertInItems) {
     const skuRows = await pg.query(
-      `SELECT s.*, p.name AS product_name, p.sales_category
-       FROM product_skus s JOIN products p ON s.product_id = p.product_id
+      `SELECT s.*, pc.sales_category
+       FROM product_skus s
+       JOIN product_categories pc ON s.category_id = pc.category_id
        WHERE s.sku_id = $1`,
       [req.skuId]
     )
@@ -1145,7 +1306,7 @@ async function createConversion(ctx) {
     totalIn += amount
     inItems.push({
       skuId: req.skuId,
-      productName: sku.product_name,
+      productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
       sessionCount: sku.session_count != null ? Number(sku.session_count) : null,
@@ -1174,14 +1335,14 @@ async function createConversion(ctx) {
     // 创建转换订单
     await client.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, ref_sale_order_id,
+        sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, sale_order_source, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, 'offline', 'staff', $10, 'pending', $5, $5)`,
+      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', 'staff', $11, '待分配', $6, $6)`,
       [
-        convOrderId, refSaleOrderId, marketName, storeId, now,
+        convOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
         priceDiff, ctx.auth.staffWfId
       ]
@@ -1197,7 +1358,7 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, 'convert_out', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        ) VALUES ($1, $2, '转出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
         [
           saleItemId, convOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -1227,7 +1388,7 @@ async function createConversion(ctx) {
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, 'convert_in', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11)`,
+        ) VALUES ($1, $2, '转入', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11)`,
         [
           saleItemId, convOrderId,
           d.skuId, d.productName, d.skuSpecName, d.productType,

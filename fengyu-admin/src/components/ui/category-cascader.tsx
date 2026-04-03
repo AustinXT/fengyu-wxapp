@@ -2,16 +2,18 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from "react"
 import { cn } from "@/lib/utils"
-import type { ProductCategory, ProductKind } from "@/lib/types"
+import type { ProductCategory } from "@/lib/types"
 
-const PRODUCT_KINDS: ProductKind[] = ["福利活动", "护理项目", "家居产品", "充值卡"]
-
-const KIND_COLORS: Record<ProductKind, string> = {
-  "福利活动": "bg-[#FFF8E6] text-[#D4820A]",
-  "护理项目": "bg-[#F0F5FA] text-[#5E8BB3]",
-  "家居产品": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "充值卡": "bg-[#F5F5F5] text-[#888888]",
-}
+const KIND_PALETTE = [
+  "bg-[#FFF8E6] text-[#D4820A]",
+  "bg-[#F0F5FA] text-[#5E8BB3]",
+  "bg-[#F0F9F2] text-[#3D8A5A]",
+  "bg-[#F5F5F5] text-[#888888]",
+  "bg-[#FFF0EE] text-[#C0322A]",
+  "bg-[#F5F0FF] text-[#8B5CF6]",
+  "bg-[#FFF0F5] text-[#EC4899]",
+  "bg-[#F0FAFA] text-[#0E7490]",
+]
 
 interface CategoryCascaderProps {
   categories: ProductCategory[]
@@ -28,6 +30,8 @@ interface CategoryCascaderProps {
   allowEmpty?: boolean
   /** External kind value (for filter mode when only kind is selected) */
   kindValue?: string
+  /** Dynamic product kinds (一级分类). If omitted, derived from categories */
+  productKinds?: ProductCategory[]
 }
 
 export function CategoryCascader({
@@ -40,16 +44,42 @@ export function CategoryCascader({
   disabled = false,
   allowEmpty = false,
   kindValue = "",
+  productKinds,
 }: CategoryCascaderProps) {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  // Derive kind list: from prop or from categories
+  const kindList = useMemo(() => {
+    if (productKinds) {
+      return productKinds.filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder).map(k => k.categoryName)
+    }
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const c of categories) {
+      if (c.productKind && !seen.has(c.productKind)) {
+        seen.add(c.productKind)
+        result.push(c.productKind)
+      }
+    }
+    return result
+  }, [productKinds, categories])
+
+  // Build color map by index
+  const kindColors = useMemo(() => {
+    const map: Record<string, string> = {}
+    kindList.forEach((k, i) => {
+      map[k] = KIND_PALETTE[i % KIND_PALETTE.length]
+    })
+    return map
+  }, [kindList])
 
   const selectedCategory = useMemo(
     () => categories.find((c) => c.categoryId === value),
     [categories, value],
   )
 
-  const [activeKind, setActiveKind] = useState<ProductKind | null>(
+  const [activeKind, setActiveKind] = useState<string | null>(
     selectedCategory?.productKind ?? null,
   )
 
@@ -98,10 +128,10 @@ export function CategoryCascader({
     if (nextOpen) {
       setActiveKind(
         selectedCategory?.productKind ??
-          ((kindValue as ProductKind) || PRODUCT_KINDS[0]),
+          (kindValue || kindList[0] || null),
       )
     }
-  }, [disabled, open, selectedCategory, kindValue])
+  }, [disabled, open, selectedCategory, kindValue, kindList])
 
   const handleSelectCategory = useCallback(
     (categoryId: string, kind: string) => {
@@ -192,7 +222,7 @@ export function CategoryCascader({
                 全部类型
               </button>
             )}
-            {PRODUCT_KINDS.map((kind) => {
+            {kindList.map((kind) => {
               const isActive = activeKind === kind
               const isKindSelected =
                 selectedCategory?.productKind === kind ||
@@ -213,7 +243,7 @@ export function CategoryCascader({
                   <span
                     className={cn(
                       "inline-block w-2 h-2 rounded-full shrink-0",
-                      KIND_COLORS[kind],
+                      kindColors[kind] ?? KIND_PALETTE[0],
                     )}
                   />
                   {kind}
@@ -268,7 +298,7 @@ export function CategoryCascader({
                       "bg-[#FFF0EE] text-[#C0322A] font-medium",
                   )}
                   onClick={() =>
-                    handleSelectCategory(c.categoryId, c.productKind)
+                    handleSelectCategory(c.categoryId, c.productKind!)
                   }
                 >
                   {c.categoryName}

@@ -18,9 +18,9 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const unbindStatusMap: Record<string, { label: string; className: string }> = {
-  pending: { label: "待审批", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
-  approved: { label: "已通过", className: "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]" },
-  rejected: { label: "已拒绝", className: "border-[#D94040] text-[#D94040] bg-[#FFF0F0]" },
+  待处理: { label: "待审批", className: "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]" },
+  已通过: { label: "已通过", className: "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]" },
+  已拒绝: { label: "已拒绝", className: "border-[#D94040] text-[#D94040] bg-[#FFF0F0]" },
 }
 
 export default function StoresPage({
@@ -52,7 +52,7 @@ export default function StoresPage({
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const router = useRouter()
 
-  const pendingCount = unbindRequests.filter((r) => r.status === "pending").length
+  const pendingCount = unbindRequests.filter((r) => r.status === "待处理").length
 
   const markets = useMemo(() => {
     const names = [...new Set(stores.map((s) => s.marketName).filter(Boolean))] as string[]
@@ -266,7 +266,7 @@ export default function StoresPage({
                         {new Date(r.createdAt).toLocaleString("zh-CN")}
                       </td>
                       <td className="px-4 py-3">
-                        {r.status === "pending" ? (
+                        {r.status === "待处理" ? (
                           <div className="flex gap-2">
                             <Button
                               size="sm"

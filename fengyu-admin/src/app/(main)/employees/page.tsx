@@ -1,6 +1,8 @@
 import { Suspense } from 'react'
 import { getEmployeesPaginated } from '@/actions/employees'
 import { getOrgNodes } from '@/actions/org'
+import { getPositions } from '@/actions/positions'
+import { getSkillTags } from '@/actions/skill-tags'
 import EmployeesPage from './_components/employees-page'
 
 export const dynamic = 'force-dynamic'
@@ -12,7 +14,7 @@ export default async function Page({
 }) {
   const params = await searchParams
 
-  const [{ data: employees, total }, orgNodes] = await Promise.all([
+  const [{ data: employees, total }, orgNodes, positions, skillTags] = await Promise.all([
     getEmployeesPaginated({
       marketId: params.market || undefined,
       storeId: params.store,
@@ -22,11 +24,13 @@ export default async function Page({
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getOrgNodes(),
+    getPositions(),
+    getSkillTags(),
   ])
 
   return (
     <Suspense>
-      <EmployeesPage employees={employees} total={total} orgNodes={orgNodes} />
+      <EmployeesPage employees={employees} total={total} orgNodes={orgNodes} positions={positions} skillTags={skillTags} />
     </Suspense>
   )
 }

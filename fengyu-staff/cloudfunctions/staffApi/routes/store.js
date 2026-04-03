@@ -53,7 +53,7 @@ async function unbindRequests(ctx) {
     FROM store_unbind_requests r
     LEFT JOIN client_wechat_users u ON u.user_id = r.user_id
     LEFT JOIN stores s ON s.store_id = r.from_store_id
-    WHERE r.from_store_id = $1 AND r.status = 'pending'
+    WHERE r.from_store_id = $1 AND r.status = '待处理'
     ORDER BY r.created_at ASC
   `, [storeId])
 
@@ -86,7 +86,7 @@ async function approveUnbind(ctx) {
   if (rows.length === 0) throw new Error('INVALID_PARAMS: 申请不存在')
   const req = rows[0]
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
-  if (req.status !== 'pending') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
+  if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
   // 事务：解绑顾客门店 + 更新申请状态
   await pg.transaction(async (client) => {
@@ -96,7 +96,7 @@ async function approveUnbind(ctx) {
     )
     await client.query(
       `UPDATE store_unbind_requests
-       SET status = 'approved', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
+       SET status = '已通过', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
        WHERE request_id = $2`,
       [staffWfId, requestId]
     )
@@ -123,11 +123,11 @@ async function rejectUnbind(ctx) {
   if (rows.length === 0) throw new Error('INVALID_PARAMS: 申请不存在')
   const req = rows[0]
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
-  if (req.status !== 'pending') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
+  if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
   await pg.query(
     `UPDATE store_unbind_requests
-     SET status = 'rejected', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2, updated_at = NOW()
+     SET status = '已拒绝', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2, updated_at = NOW()
      WHERE request_id = $3`,
     [staffWfId, rejectReason || null, requestId]
   )

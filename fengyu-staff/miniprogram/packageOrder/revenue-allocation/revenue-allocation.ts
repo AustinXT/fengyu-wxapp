@@ -97,20 +97,14 @@ interface OrderDetailResponse {
   allocations: AllocationRecord[];
 }
 
-/** 云函数返回的分配记录（兼容 snake_case / camelCase） */
+/** 云函数返回的分配记录（snake_case） */
 interface AllocationRecord {
   sale_item_id?: string;
-  saleItemId?: string;
   employee_id?: string;
-  employeeId?: string;
   department_name?: string;
-  department?: string;
   allocation_ratio?: number;
-  commissionRate?: number;
   total_amount?: string;
-  amount?: string;
   is_void?: boolean;
-  isVoid?: boolean;
   employee_name?: string;
   sales_category?: string;
 }
@@ -151,7 +145,7 @@ Page({
       wx.navigateBack();
       return;
     }
-    const saleOrderId = options.orderNo || options.orderId;
+    const saleOrderId = options.saleOrderId;
     if (saleOrderId) {
       this.setData({ saleOrderId });
       this.init(saleOrderId);
@@ -170,7 +164,7 @@ Page({
       const order = orderData.order;
       const items: OrderItem[] = suggestData.items || orderData.items || [];
       const totalAmount = suggestData.totalAmount || Number(order.totalAmount) || 0;
-      const isAllocated = order.allocation_status === 'allocated';
+      const isAllocated = order.allocation_status === '已分配';
       const rates: RateRow[] = suggestData.rates || [];
       const beautyRates: Record<string, Record<string, number>> = suggestData.beautyRates || {};
 
@@ -332,18 +326,18 @@ Page({
     // 云函数返回扁平结构：每行 = { sale_item_id, employee_id, department_name, allocation_ratio, total_amount, is_void }
     const linesMap = new Map<string, AllocLine[]>();
     for (const alloc of allocations) {
-      if (alloc.is_void || alloc.isVoid) continue;
-      const saleItemId = alloc.sale_item_id || alloc.saleItemId || '';
-      const employeeId = alloc.employee_id || alloc.employeeId || '';
-      const dept = alloc.department_name || alloc.department || '';
-      const amount = Number(alloc.total_amount || alloc.amount || 0).toFixed(2);
+      if (alloc.is_void) continue;
+      const saleItemId = alloc.sale_item_id || '';
+      const employeeId = alloc.employee_id || '';
+      const dept = alloc.department_name || '';
+      const amount = Number(alloc.total_amount || 0).toFixed(2);
       const line: AllocLine = {
         saleItemId,
         department: dept,
         staffWfId: employeeId,
         staffName: staffMap.get(employeeId) || alloc.employee_name || employeeId || '',
         salesCategory: alloc.sales_category || '',
-        commissionRate: Number(alloc.allocation_ratio || alloc.commissionRate) || 0,
+        commissionRate: Number(alloc.allocation_ratio) || 0,
         amount,
         autoAmount: amount,
         autoFilled: false,

@@ -94,12 +94,12 @@
     ]
   },
   "permission": {
-    "scope.userLocation": {
+    "scope.userFuzzyLocation": {
       "desc": "用于定位您所在城市，展示附近门店"
     }
   },
   "requiredPrivateInfos": [
-    "getLocation"
+    "getFuzzyLocation"
   ],
   "window": {
     "backgroundTextStyle": "light",

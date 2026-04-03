@@ -59,6 +59,13 @@
   padding-bottom: 24rpx;
 }
 
+.section-title {
+  padding: 28rpx 32rpx 16rpx;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
 .skeleton-wrap {
   padding: 24rpx 32rpx;
 }

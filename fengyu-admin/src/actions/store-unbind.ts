@@ -8,7 +8,7 @@ import { eq, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logTransition } from '@/lib/operation-log'
 
 export interface UnbindRequest {
   requestId: string
@@ -69,7 +69,7 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
   if (!request) {
     return { success: false, message: '解绑申请不存在' }
   }
-  if (request.status !== 'pending') {
+  if (request.status !== '待处理') {
     return { success: false, message: '该申请已处理' }
   }
   if (!isInScope(session, request.fromStoreId)) {
@@ -82,7 +82,7 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
       await tx
         .update(storeUnbindRequests)
         .set({
-          status: 'approved',
+          status: '已通过',
           reviewedBy: session.employeeId,
           reviewedAt: new Date(),
         })
@@ -97,7 +97,7 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
     return { success: false, message: '审批解绑失败，请稍后重试' }
   }
 
-  await logOperation(session, 'store_unbind.approve', 'store_unbind_request', requestId, {
+  await logTransition(session, 'store_unbind.approve', 'store_unbind_request', requestId, '待处理', '已通过', {
     userId: request.userId, fromStoreId: request.fromStoreId,
   })
 
@@ -121,7 +121,7 @@ export async function rejectUnbind(
   if (!request) {
     return { success: false, message: '解绑申请不存在' }
   }
-  if (request.status !== 'pending') {
+  if (request.status !== '待处理') {
     return { success: false, message: '该申请已处理' }
   }
   if (!isInScope(session, request.fromStoreId)) {
@@ -132,7 +132,7 @@ export async function rejectUnbind(
     await db
       .update(storeUnbindRequests)
       .set({
-        status: 'rejected',
+        status: '已拒绝',
         reviewedBy: session.employeeId,
         reviewedAt: new Date(),
         rejectReason: reason,
@@ -142,7 +142,7 @@ export async function rejectUnbind(
     return { success: false, message: '驳回解绑失败，请稍后重试' }
   }
 
-  await logOperation(session, 'store_unbind.reject', 'store_unbind_request', requestId, {
+  await logTransition(session, 'store_unbind.reject', 'store_unbind_request', requestId, '待处理', '已拒绝', {
     userId: request.userId, reason,
   })
 

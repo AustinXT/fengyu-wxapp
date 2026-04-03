@@ -12,7 +12,7 @@ export const couponTemplates = pgTable('coupon_templates', {
   templateId: text('template_id').primaryKey(),
   name: text('name').notNull(),
   couponType: couponTypeEnum('coupon_type').notNull(),
-  /** 现金券/项目券=抵扣金额；折扣券=折扣率(0.85=85折) */
+  /** 现金券/品项券=抵扣金额；折扣券=折扣率(0.85=85折) */
   discountValue: numeric('discount_value', { precision: 10, scale: 2 }).notNull(),
   /** 满减门槛（0=无门槛） */
   minSpend: numeric('min_spend', { precision: 10, scale: 2 }).default('0'),
@@ -26,7 +26,7 @@ export const couponTemplates = pgTable('coupon_templates', {
   applicableCategoryIds: text('applicable_category_ids').array(),
   /** 适用门店ID数组（→ stores.store_id），NULL=全部门店 */
   applicableStoreIds: text('applicable_store_ids').array(),
-  /** 适用市场ID数组（→ org_nodes.id where type='market'），NULL=全部市场 */
+  /** 适用市场ID数组（→ org_nodes.id where type='市场'），NULL=全部市场 */
   applicableMarketIds: text('applicable_market_ids').array(),
   /** fixed=固定日期区间，days=领取后N天 */
   validityMode: text('validity_mode').default('fixed'),

@@ -74,13 +74,10 @@ async function available(ctx) {
     return
   }
 
-  // 解析 SKU → category_id
+  // 解析 SKU → category_id（SKU 直接有 category_id，无需 JOIN products）
   const skuIds = items.map(i => i.skuId)
   const skuCats = await pg.query(
-    `SELECT ps.sku_id, p.category_id
-     FROM product_skus ps
-     JOIN products p ON ps.product_id = p.product_id
-     WHERE ps.sku_id = ANY($1)`,
+    `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
     [skuIds]
   )
   const catMap = new Map()
@@ -112,7 +109,7 @@ async function available(ctx) {
     if (eligibleTotal < minSpend) continue
 
     let discount = 0
-    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '项目券') {
+    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '品项券') {
       discount = Math.min(Number(coupon.discount_value), eligibleTotal)
     } else if (coupon.coupon_type === '折扣券') {
       discount = eligibleTotal * (1 - Number(coupon.discount_value))

@@ -143,13 +143,18 @@
     <view class="source-popup-title">请选择来源渠道</view>
     <van-radio-group value="{{ sourceChannel }}" bind:change="onSourceChannelChange">
       <view class="source-radio-list">
-        <van-radio
-          wx:for="{{sourceChannels}}"
-          wx:key="*this"
-          name="{{item}}"
-          checked-color="#C0322A"
-          custom-class="source-radio-item"
-        >{{item}}</van-radio>
+        <block wx:for="{{sourceGroups}}" wx:key="label" wx:for-item="group">
+          <view class="source-group-title">{{group.label}}</view>
+          <view class="source-group-items">
+            <van-radio
+              wx:for="{{group.channels}}"
+              wx:key="*this"
+              name="{{item}}"
+              checked-color="#C0322A"
+              custom-class="source-radio-item"
+            >{{item}}</van-radio>
+          </view>
+        </block>
       </view>
     </van-radio-group>
     <view class="source-promoter">

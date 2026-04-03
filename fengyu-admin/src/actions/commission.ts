@@ -8,7 +8,7 @@ import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 export interface MarketOption {
   orgId: string
@@ -22,7 +22,7 @@ export async function getMarkets(): Promise<MarketOption[]> {
   const rows = await db
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
-    .where(eq(orgNodes.type, 'market'))
+    .where(eq(orgNodes.type, '市场'))
     .orderBy(orgNodes.sortOrder)
 
   return rows.map((r) => ({ orgId: r.id, name: r.name }))
@@ -141,6 +141,9 @@ export async function updateRate(
     }
   }
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(commissionRateMatrix).where(eq(commissionRateMatrix.id, id)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(commissionRateMatrix.id, id), sql`date_trunc('milliseconds', ${commissionRateMatrix.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(commissionRateMatrix.id, id)
@@ -162,7 +165,7 @@ export async function updateRate(
     }
   }
 
-  await logOperation(session, 'commission.update', 'commission_rate', String(id), data)
+  await logUpdate(session, 'commission.update', 'commission_rate', String(id), before as Record<string, unknown>, data)
   revalidatePath('/commission')
   return { success: true, message: '提成规则已更新' }
 }

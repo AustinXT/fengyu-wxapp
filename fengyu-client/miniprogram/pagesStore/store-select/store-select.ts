@@ -1,6 +1,6 @@
 // pages/store-select/store-select.ts
 import Toast from '@vant/weapp/toast/toast';
-import { getCurrentCity } from '../utils/location';
+import { getCurrentLocation } from '../utils/location';
 import { callClientApi } from '../../utils/cloud';
 
 const app = getApp<IAppOption>();
@@ -27,6 +27,7 @@ Page({
     selectedStore: '',
     isLoading: false,
     currentCity: '',
+    currentDistrict: '',
     locationFailed: false,
     // 'search': 定位失败，提示搜索；'minlen': 输入不足2字符；'': 正常
     showHint: '' as '' | 'search' | 'minlen',
@@ -40,9 +41,9 @@ Page({
   async loadStoresWithLocation() {
     let city = '';
     try {
-      // 尝试获取定位
-      city = await getCurrentCity();
-      this.setData({ currentCity: city });
+      const loc = await getCurrentLocation();
+      city = loc.city;
+      this.setData({ currentCity: loc.city, currentDistrict: loc.district });
     } catch (err: any) {
       console.warn('[loadStoresWithLocation] 定位失败或被拒绝:', err);
       // 定位失败：标记状态，预加载全量门店供搜索使用

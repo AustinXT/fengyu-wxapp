@@ -1,6 +1,6 @@
 /**
  * 商品模块路由测试
- * 覆盖：shopInit / categories / spuList / skuDetail / spuDetail
+ * 覆盖：shopInit / categories / skuList / skuDetail / spuDetail
  */
 
 
@@ -43,9 +43,9 @@ describe('product.categories', () => {
 })
 
 // ============================================================
-// product.spuList
+// product.skuList
 // ============================================================
-describe('product.spuList', () => {
+describe('product.skuList', () => {
   test('返回商品列表（含 SKU 及 priceFrom）', async () => {
     const ctx = createCtx({ payload: { categoryId: 'cat-1' } })
 
@@ -69,7 +69,7 @@ describe('product.spuList', () => {
       },
     ])
 
-    await productRoutes.spuList(ctx)
+    await productRoutes.skuList(ctx)
 
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].spuId).toBe('prod-1')
@@ -82,7 +82,7 @@ describe('product.spuList', () => {
 
     pg.query.mockResolvedValueOnce([])
 
-    await productRoutes.spuList(ctx)
+    await productRoutes.skuList(ctx)
     expect(ctx.result).toEqual([])
   })
 
@@ -98,7 +98,7 @@ describe('product.spuList', () => {
     ])
     pg.query.mockResolvedValueOnce([]) // 无 SKU
 
-    await productRoutes.spuList(ctx)
+    await productRoutes.skuList(ctx)
 
     expect(ctx.result).toHaveLength(1)
     const sql = pg.query.mock.calls[0][0]
@@ -216,8 +216,8 @@ describe('product.shopInit', () => {
     await productRoutes.shopInit(ctx)
 
     expect(ctx.result.categories).toHaveLength(2)
-    expect(ctx.result.spuList).toHaveLength(1)
-    expect(ctx.result.spuList[0].spuId).toBe('prod-1')
+    expect(ctx.result.skuList).toHaveLength(1)
+    expect(ctx.result.skuList[0].spuId).toBe('prod-1')
   })
 
   test('无分类时返回空商品列表', async () => {
@@ -228,7 +228,7 @@ describe('product.shopInit', () => {
     await productRoutes.shopInit(ctx)
 
     expect(ctx.result.categories).toEqual([])
-    expect(ctx.result.spuList).toEqual([])
+    expect(ctx.result.skuList).toEqual([])
   })
 })
 

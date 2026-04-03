@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -15,6 +15,7 @@ import { StatusBadge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { updateCustomer } from "@/actions/customers"
+import { searchEmployees } from "@/actions/employees"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -33,11 +34,10 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: customer.name ?? "",
-    boundStoreId: customer.boundStoreId ?? "",
+    gender: customer.gender ?? "",
     boundEmployeeId: customer.boundEmployeeId ?? "",
-    memberLevel: customer.memberLevel ?? "",
+    promoterEmployeeId: customer.promoterEmployeeId ?? "",
     customerSource: customer.customerSource ?? "",
-    category: customer.category ?? "",
     birthday: customer.birthday ?? "",
     occupation: customer.occupation ?? "",
     isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
@@ -45,20 +45,51 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     improvementFocus: customer.improvementFocus ?? "",
     skinIssue: customer.skinIssue ?? "",
     wellnessPreference: customer.wellnessPreference ?? "",
+    notes: customer.notes ?? "",
   })
 
   function handleFormChange(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  // 推荐人搜索选择（异步搜索，不受 scope/limit 限制）
+  type PromoterOption = { employeeId: string; name: string | null; phone: string | null }
+  const [promoterSearch, setPromoterSearch] = useState("")
+  const [promoterOpen, setPromoterOpen] = useState(false)
+  const [promoterResults, setPromoterResults] = useState<PromoterOption[]>([])
+  const [promoterLoading, setPromoterLoading] = useState(false)
+  const promoterRef = useRef<HTMLDivElement>(null)
+  const promoterTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [selectedPromoter, setSelectedPromoter] = useState<PromoterOption | null>(
+    customer.promoterEmployeeId
+      ? { employeeId: customer.promoterEmployeeId, name: employees.find(e => e.employeeId === customer.promoterEmployeeId)?.name ?? null, phone: null }
+      : null
+  )
+  const doPromoterSearch = useCallback((q: string) => {
+    if (promoterTimer.current) clearTimeout(promoterTimer.current)
+    if (!q.trim()) { setPromoterResults([]); return }
+    setPromoterLoading(true)
+    promoterTimer.current = setTimeout(async () => {
+      const results = await searchEmployees(q)
+      setPromoterResults(results)
+      setPromoterLoading(false)
+    }, 300)
+  }, [])
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
   function handleCancelEdit() {
     setForm({
       name: customer.name ?? "",
-      boundStoreId: customer.boundStoreId ?? "",
+      gender: customer.gender ?? "",
       boundEmployeeId: customer.boundEmployeeId ?? "",
-      memberLevel: customer.memberLevel ?? "",
+      promoterEmployeeId: customer.promoterEmployeeId ?? "",
       customerSource: customer.customerSource ?? "",
-      category: customer.category ?? "",
       birthday: customer.birthday ?? "",
       occupation: customer.occupation ?? "",
       isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
@@ -66,7 +97,10 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
       improvementFocus: customer.improvementFocus ?? "",
       skinIssue: customer.skinIssue ?? "",
       wellnessPreference: customer.wellnessPreference ?? "",
+      notes: customer.notes ?? "",
     })
+    setPromoterSearch("")
+    setPromoterOpen(false)
     setIsEditing(false)
   }
 
@@ -75,11 +109,10 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     try {
       const result = await updateCustomer(customer.userId, {
         name: form.name || null,
-        boundStoreId: form.boundStoreId || null,
+        gender: form.gender || null,
         boundEmployeeId: form.boundEmployeeId || null,
-        memberLevel: form.memberLevel || null,
+        promoterEmployeeId: form.promoterEmployeeId || null,
         customerSource: form.customerSource || null,
-        category: form.category || null,
         birthday: form.birthday || null,
         occupation: form.occupation || null,
         isMarried: form.isMarried === "true" ? true : form.isMarried === "false" ? false : null,
@@ -87,6 +120,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
         improvementFocus: form.improvementFocus || null,
         skinIssue: form.skinIssue || null,
         wellnessPreference: form.wellnessPreference || null,
+        notes: form.notes || null,
       }, customer.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -103,11 +137,11 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     }
   }
 
-  // Employees filtered by selected store for convenience
+  // Employees filtered by customer's bound store
   const storeEmployees = useMemo(() => {
-    if (!form.boundStoreId) return employees.filter((e) => !e.isResigned)
-    return employees.filter((e) => !e.isResigned && e.storeId === form.boundStoreId)
-  }, [employees, form.boundStoreId])
+    if (!customer.boundStoreId) return employees.filter((e) => !e.isResigned)
+    return employees.filter((e) => !e.isResigned && e.storeId === customer.boundStoreId)
+  }, [employees, customer.boundStoreId])
 
   const activeSaleItems = useMemo(() => {
     const allItems: SaleItem[] = []
@@ -118,7 +152,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     }
     return allItems.filter(
       (item) =>
-        item.itemDirection === "purchase" &&
+        item.itemDirection === "购买" &&
         item.sessionCount !== null &&
         (item.remainingSessions ?? 0) > 0
     )
@@ -259,6 +293,21 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                   )}
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">性别</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.gender}
+                      onChange={(e) => handleFormChange("gender", e.target.value)}
+                    >
+                      <option value="">未填写</option>
+                      <option value="女">女</option>
+                      <option value="男">男</option>
+                    </Select>
+                  ) : (
+                    <Input value={customer.gender ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">手机号</label>
                   <Input value={customer.phone ?? ""} disabled />
                 </div>
@@ -268,21 +317,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">归属门店</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.boundStoreId}
-                      onChange={(e) => handleFormChange("boundStoreId", e.target.value)}
-                    >
-                      <option value="">请选择门店</option>
-                      {stores.map((s) => (
-                        <option key={s.storeId} value={s.storeId}>
-                          {s.storeName}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <Input value={customer.storeName ?? ""} disabled />
-                  )}
+                  <Input value={customer.storeName ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">所属美容师</label>
@@ -303,40 +338,98 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                   )}
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">会员等级</label>
+                  <label className="text-sm font-medium">推荐人</label>
                   {isEditing ? (
-                    <Select
-                      value={form.memberLevel}
-                      onChange={(e) => handleFormChange("memberLevel", e.target.value)}
-                    >
-                      <option value="">请选择</option>
-                      <option value="钻石">钻石</option>
-                      <option value="金卡">金卡</option>
-                      <option value="银卡">银卡</option>
-                      <option value="新客">新客</option>
-                    </Select>
+                    <div ref={promoterRef} className="relative">
+                      <Input
+                        placeholder="输入姓名或手机号搜索"
+                        value={promoterOpen ? promoterSearch : (selectedPromoter ? `${selectedPromoter.name}${selectedPromoter.phone ? ` (${selectedPromoter.phone})` : ""}` : "")}
+                        onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
+                        onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
+                      />
+                      {form.promoterEmployeeId && !promoterOpen && (
+                        <button
+                          type="button"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-[#999999] hover:text-[#333333] text-sm"
+                          onClick={() => { handleFormChange("promoterEmployeeId", ""); setSelectedPromoter(null); setPromoterSearch("") }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                      {promoterOpen && (
+                        <ul className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border border-[var(--border)] bg-[var(--background)] shadow-md">
+                          {promoterLoading ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">搜索中…</li>
+                          ) : !promoterSearch.trim() ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">请输入关键词搜索</li>
+                          ) : promoterResults.length === 0 ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">无匹配结果</li>
+                          ) : (
+                            promoterResults.map((emp) => (
+                              <li
+                                key={emp.employeeId}
+                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.employeeId === form.promoterEmployeeId ? "bg-[var(--muted)] font-medium" : ""}`}
+                                onMouseDown={() => {
+                                  handleFormChange("promoterEmployeeId", emp.employeeId)
+                                  setSelectedPromoter(emp)
+                                  setPromoterOpen(false)
+                                  setPromoterSearch("")
+                                }}
+                              >
+                                {emp.name}{emp.phone ? ` (${emp.phone})` : ""}
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      )}
+                    </div>
                   ) : (
-                    <Input value={customer.memberLevel ?? ""} disabled />
+                    <Input value={selectedPromoter?.name ?? (customer.promoterEmployeeId || "")} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">顾客分类</label>
-                  {isEditing ? (
-                    <Input
-                      value={form.category}
-                      onChange={(e) => handleFormChange("category", e.target.value)}
-                    />
-                  ) : (
-                    <Input value={customer.category ?? ""} disabled />
-                  )}
+                  <label className="text-sm font-medium">会员等级</label>
+                  <Input value={customer.memberLevel ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">顾客类型</label>
+                  <Input value={customer.customerType ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">消费档位</label>
+                  <Input value={customer.spendingTier ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">月度客活</label>
+                  <Input value={customer.monthlyActivity ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">到店状态</label>
+                  <Input value={customer.customerStatus ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">顾客来源</label>
                   {isEditing ? (
-                    <Input
+                    <Select
                       value={form.customerSource}
                       onChange={(e) => handleFormChange("customerSource", e.target.value)}
-                    />
+                    >
+                      <option value="">请选择来源</option>
+                      <optgroup label="线上来源">
+                        <option value="美团">美团</option>
+                        <option value="抖音">抖音</option>
+                        <option value="小程序">小程序</option>
+                      </optgroup>
+                      <optgroup label="线下来源">
+                        <option value="推带新">推带新</option>
+                        <option value="地推卡">地推卡</option>
+                        <option value="拓客卡">拓客卡</option>
+                        <option value="老带新">老带新</option>
+                        <option value="转让店">转让店</option>
+                        <option value="自进店">自进店</option>
+                        <option value="内部员工或家属">内部员工或家属</option>
+                      </optgroup>
+                    </Select>
                   ) : (
                     <Input value={customer.customerSource ?? ""} disabled />
                   )}
@@ -430,6 +523,20 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                     />
                   ) : (
                     <Input value={customer.wellnessPreference ?? ""} disabled />
+                  )}
+                </div>
+                <div className="col-span-2 space-y-2">
+                  <label className="text-sm font-medium">备注</label>
+                  {isEditing ? (
+                    <textarea
+                      className="flex min-h-[80px] w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
+                      value={form.notes}
+                      onChange={(e) => handleFormChange("notes", e.target.value)}
+                    />
+                  ) : (
+                    <div className="min-h-[40px] rounded-md border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm text-[var(--muted-foreground)]">
+                      {customer.notes || "—"}
+                    </div>
                   )}
                 </div>
               </div>

@@ -9,7 +9,7 @@ import type { Store } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -112,7 +112,7 @@ export async function createStore(data: {
       await tx.insert(orgNodes).values({
         id: orgNodeId,
         name: data.storeName,
-        type: 'store',
+        type: '门店',
         parentId: data.marketId,
         sortOrder: 0,
         isActive: true,
@@ -175,6 +175,9 @@ export async function updateStore(
   const session = await getSession()
   requirePermission(session, 'store:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
+
   // 乐观锁 + scope 隔离：WHERE store_id = $1 [AND updated_at = $2] [AND scope]
   // 注意：PostgreSQL NOW() 有微秒精度，JS Date 仅毫秒精度，需 date_trunc 对齐
   const scopeCond = scopeCondition(session, stores.storeId)
@@ -196,7 +199,21 @@ export async function updateStore(
     }
   }
 
-  await logOperation(session, 'store.update', 'store', storeId, data)
+  await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, data)
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
+}
+
+/** 根据门店 ID 获取同市场下所有门店 ID（含自身） */
+export async function getMarketStoreIds(storeId: string): Promise<string[]> {
+  const rows = await db.execute(sql`
+    SELECT s2.store_id
+    FROM stores s1
+    JOIN org_nodes sn1 ON s1.org_node_id = sn1.id
+    JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = '门店'
+    JOIN stores s2 ON s2.org_node_id = sn2.id
+    WHERE s1.store_id = ${storeId}
+  `)
+  const ids = (rows as any[]).map((r: any) => r.store_id as string)
+  return ids.length > 0 ? ids : [storeId]
 }

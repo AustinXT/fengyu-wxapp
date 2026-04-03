@@ -4,7 +4,7 @@ import { PERMISSION_MATRIX, computeActions } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂
-function makeSession(roles: Array<{ role: RoleType; scopeId: string; scopeType: 'headquarters' | 'market' | 'store' }>, actions: string[] = []): AuthSession {
+function makeSession(roles: Array<{ role: RoleType; scopeId: string; scopeType: '总部' | '市场' | '门店' }>, actions: string[] = []): AuthSession {
   return {
     employeeId: 'test-001',
     name: '测试用户',
@@ -33,26 +33,26 @@ describe('hasPermission', () => {
 
   it('admin session 拥有 admin 全部权限', () => {
     const adminSession = makeSession(
-      [{ role: 'admin', scopeId: 'hq', scopeType: 'headquarters' }],
+      [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
       computeActions([{ role: 'admin' }])
     )
     expect(hasPermission(adminSession, 'org:list')).toBe(true)
     expect(hasPermission(adminSession, 'permission:assign_admin')).toBe(true)
-    expect(hasPermission(adminSession, 'sync:trigger')).toBe(true)
+
   })
 })
 
 describe('hasRole', () => {
   it('拥有角色返回 true', () => {
     const session = makeSession([
-      { role: 'admin', scopeId: 'hq', scopeType: 'headquarters' },
+      { role: 'admin', scopeId: 'hq', scopeType: '总部' },
     ])
     expect(hasRole(session, 'admin')).toBe(true)
   })
 
   it('不拥有角色返回 false', () => {
     const session = makeSession([
-      { role: 'manager', scopeId: 'store-1', scopeType: 'store' },
+      { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
     ])
     expect(hasRole(session, 'admin')).toBe(false)
     expect(hasRole(session, 'finance')).toBe(false)
@@ -60,8 +60,8 @@ describe('hasRole', () => {
 
   it('多角色场景', () => {
     const session = makeSession([
-      { role: 'admin', scopeId: 'hq', scopeType: 'headquarters' },
-      { role: 'manager', scopeId: 'store-1', scopeType: 'store' },
+      { role: 'admin', scopeId: 'hq', scopeType: '总部' },
+      { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
     ])
     expect(hasRole(session, 'admin')).toBe(true)
     expect(hasRole(session, 'manager')).toBe(true)
@@ -76,7 +76,7 @@ describe('hasRole', () => {
 
 describe('getRoleLabel', () => {
   it.each([
-    ['admin', '超级管理员'],
+    ['admin', '系统管理员'],
     ['manager', '店长'],
     ['finance', '财务'],
     ['hr', '人事'],
