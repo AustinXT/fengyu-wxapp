@@ -288,7 +288,7 @@ async function create(ctx) {
     }
 
     // 计算抵扣金额
-    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
+    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100

@@ -10,7 +10,6 @@ Page({
     balance: 0,
     levelName: '',
     nextLevel: null as { name: string; minPoints: number } | null,
-    activeTab: 0,
     records: [] as any[],
     isLoading: false,
     loadingMore: false,
@@ -63,19 +62,12 @@ Page({
     }));
   },
 
-  _buildPayload() {
-    const typeMap = ['all', '获取', '兑换'];
-    const type = typeMap[this.data.activeTab] || 'all';
-    return { type: type === 'all' ? undefined : type };
-  },
-
   /** 加载首页（重置分页） */
   async loadHistory() {
     this._page = 1;
     this.setData({ isLoading: true, loadError: false, hasMore: true });
     try {
       const data = await callClientApi('points.history', {
-        ...this._buildPayload(),
         page: 1,
         pageSize: PAGE_SIZE,
       });
@@ -98,7 +90,6 @@ Page({
     this.setData({ loadingMore: true });
     try {
       const data = await callClientApi('points.history', {
-        ...this._buildPayload(),
         page: this._page,
         pageSize: PAGE_SIZE,
       });
@@ -115,9 +106,4 @@ Page({
     }
   },
 
-  onTabChange(e: WechatMiniprogram.CustomEvent) {
-    const index = e.detail.index;
-    this.setData({ activeTab: index });
-    this.loadHistory();
-  },
 });

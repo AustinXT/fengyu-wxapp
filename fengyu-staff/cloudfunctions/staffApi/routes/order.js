@@ -355,7 +355,7 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
     }
 
-    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '项目券') {
+    if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
     } else if (couponInfo.coupon_type === '折扣券') {
       couponDiscount = eligibleTotal * (1 - Number(couponInfo.discount_value))

@@ -256,7 +256,7 @@ describe('order.create', () => {
     mockBaseCreateQueries()
     pg.query.mockResolvedValueOnce([{
       coupon_id: 'cpn-4', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
-      coupon_type: '项目券', discount_value: 30, min_spend: 0,
+      coupon_type: '品项券', discount_value: 30, min_spend: 0,
       applicable_category_ids: ['cat-special'],  // 限定分类
       applicable_store_ids: null,
     }])

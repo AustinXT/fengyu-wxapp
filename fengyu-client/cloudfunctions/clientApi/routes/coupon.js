@@ -176,7 +176,7 @@ async function available(ctx) {
 
     // 计算可抵扣金额
     let discount = 0
-    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '项目券') {
+    if (coupon.coupon_type === '现金券' || coupon.coupon_type === '品项券') {
       discount = Math.min(Number(coupon.discount_value), eligibleTotal)
     } else if (coupon.coupon_type === '折扣券') {
       discount = eligibleTotal * (1 - Number(coupon.discount_value))

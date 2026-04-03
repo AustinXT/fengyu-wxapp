@@ -365,7 +365,7 @@ describe('order.create', () => {
       }])
       .mockResolvedValueOnce([{
         coupon_id: 'coupon-003', user_id: 'cu-001',
-        coupon_type: '项目券', discount_value: '50', min_spend: '0',
+        coupon_type: '品项券', discount_value: '50', min_spend: '0',
         applicable_store_ids: null,
         applicable_category_ids: ['cat-护理'],  // 商品属于 cat-home，不匹配
         expire_at: new Date(Date.now() + 86400000),
