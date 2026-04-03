@@ -40,10 +40,12 @@ function serializeCustomer(row: CustomerRow): Customer {
     phone: row.phone,
     customerId: row.customerId,
     name: row.name,
+    gender: row.gender,
     boundStoreId: row.boundStoreId,
     boundEmployeeId: row.boundEmployeeId,
     memberLevel: row.memberLevel,
     customerSource: row.customerSource,
+    promoterEmployeeId: row.promoterEmployeeId,
     customerType: row.customerType,
     spendingTier: row.spendingTier,
     monthlyActivity: row.monthlyActivity,
@@ -56,6 +58,7 @@ function serializeCustomer(row: CustomerRow): Customer {
     improvementFocus: row.improvementFocus,
     skinIssue: row.skinIssue,
     wellnessPreference: row.wellnessPreference,
+    notes: row.notes,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     storeName: row.storeName ?? undefined,
@@ -384,6 +387,7 @@ export async function updateCustomer(
   userId: string,
   data: Partial<{
     name: string | null
+    gender: string | null
     phone: string | null
     memberLevel: string | null
     customerSource: string | null
@@ -395,6 +399,8 @@ export async function updateCustomer(
     improvementFocus: string | null
     skinIssue: string | null
     wellnessPreference: string | null
+    notes: string | null
+    promoterEmployeeId: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
   }>,

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -33,7 +33,9 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: customer.name ?? "",
+    gender: customer.gender ?? "",
     boundEmployeeId: customer.boundEmployeeId ?? "",
+    promoterEmployeeId: customer.promoterEmployeeId ?? "",
     customerSource: customer.customerSource ?? "",
     birthday: customer.birthday ?? "",
     occupation: customer.occupation ?? "",
@@ -42,16 +44,45 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     improvementFocus: customer.improvementFocus ?? "",
     skinIssue: customer.skinIssue ?? "",
     wellnessPreference: customer.wellnessPreference ?? "",
+    notes: customer.notes ?? "",
   })
 
   function handleFormChange(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
+  // 推荐人搜索选择
+  const [promoterSearch, setPromoterSearch] = useState("")
+  const [promoterOpen, setPromoterOpen] = useState(false)
+  const promoterRef = useRef<HTMLDivElement>(null)
+  const filteredPromoters = useMemo(() => {
+    const active = employees.filter((e) => !e.isResigned)
+    if (!promoterSearch) return active.slice(0, 50)
+    const q = promoterSearch.toLowerCase()
+    return active.filter((e) =>
+      e.name?.toLowerCase().includes(q) ||
+      e.phone?.includes(q) ||
+      e.employeeId.toLowerCase().includes(q)
+    )
+  }, [employees, promoterSearch])
+  const selectedPromoter = useMemo(() =>
+    employees.find((e) => e.employeeId === form.promoterEmployeeId),
+    [employees, form.promoterEmployeeId]
+  )
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
   function handleCancelEdit() {
     setForm({
       name: customer.name ?? "",
+      gender: customer.gender ?? "",
       boundEmployeeId: customer.boundEmployeeId ?? "",
+      promoterEmployeeId: customer.promoterEmployeeId ?? "",
       customerSource: customer.customerSource ?? "",
       birthday: customer.birthday ?? "",
       occupation: customer.occupation ?? "",
@@ -60,7 +91,10 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
       improvementFocus: customer.improvementFocus ?? "",
       skinIssue: customer.skinIssue ?? "",
       wellnessPreference: customer.wellnessPreference ?? "",
+      notes: customer.notes ?? "",
     })
+    setPromoterSearch("")
+    setPromoterOpen(false)
     setIsEditing(false)
   }
 
@@ -69,7 +103,9 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     try {
       const result = await updateCustomer(customer.userId, {
         name: form.name || null,
+        gender: form.gender || null,
         boundEmployeeId: form.boundEmployeeId || null,
+        promoterEmployeeId: form.promoterEmployeeId || null,
         customerSource: form.customerSource || null,
         birthday: form.birthday || null,
         occupation: form.occupation || null,
@@ -78,6 +114,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
         improvementFocus: form.improvementFocus || null,
         skinIssue: form.skinIssue || null,
         wellnessPreference: form.wellnessPreference || null,
+        notes: form.notes || null,
       }, customer.updatedAt)
       if (!result.success) {
         toast.error(result.message)
@@ -250,6 +287,21 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                   )}
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">性别</label>
+                  {isEditing ? (
+                    <Select
+                      value={form.gender}
+                      onChange={(e) => handleFormChange("gender", e.target.value)}
+                    >
+                      <option value="">未填写</option>
+                      <option value="女">女</option>
+                      <option value="男">男</option>
+                    </Select>
+                  ) : (
+                    <Input value={customer.gender ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">手机号</label>
                   <Input value={customer.phone ?? ""} disabled />
                 </div>
@@ -277,6 +329,31 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                     </Select>
                   ) : (
                     <Input value={customer.employeeName ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">推荐人</label>
+                  {isEditing ? (
+                    <div className="space-y-1">
+                      <Input
+                        placeholder="搜索姓名/手机号"
+                        value={promoterSearch}
+                        onChange={(e) => setPromoterSearch(e.target.value)}
+                      />
+                      <Select
+                        value={form.promoterEmployeeId}
+                        onChange={(e) => handleFormChange("promoterEmployeeId", e.target.value)}
+                      >
+                        <option value="">无</option>
+                        {filteredPromoters.map((emp) => (
+                          <option key={emp.employeeId} value={emp.employeeId}>
+                            {emp.name} ({emp.phone ?? emp.employeeId})
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  ) : (
+                    <Input value={customer.promoterEmployeeId ? (employees.find(e => e.employeeId === customer.promoterEmployeeId)?.name ?? customer.promoterEmployeeId) : ""} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
@@ -415,6 +492,20 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                     />
                   ) : (
                     <Input value={customer.wellnessPreference ?? ""} disabled />
+                  )}
+                </div>
+                <div className="col-span-2 space-y-2">
+                  <label className="text-sm font-medium">备注</label>
+                  {isEditing ? (
+                    <textarea
+                      className="flex min-h-[80px] w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-2 text-sm"
+                      value={form.notes}
+                      onChange={(e) => handleFormChange("notes", e.target.value)}
+                    />
+                  ) : (
+                    <div className="min-h-[40px] rounded-md border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm text-[var(--muted-foreground)]">
+                      {customer.notes || "—"}
+                    </div>
                   )}
                 </div>
               </div>

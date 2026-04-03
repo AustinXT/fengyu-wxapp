@@ -90,6 +90,7 @@ export type CommissionRateInput = z.infer<typeof commissionRateSchema>
 // ─── 顾客档案 ───
 export const customerSchema = z.object({
   name: z.string().optional().nullable(),
+  gender: z.string().optional().nullable(),
   boundStoreId: z.string().optional().nullable(),
   boundEmployeeId: z.string().optional().nullable(),
   memberLevel: z.string().optional().nullable(),
@@ -102,6 +103,7 @@ export const customerSchema = z.object({
   improvementFocus: z.string().optional().nullable(),
   skinIssue: z.string().optional().nullable(),
   wellnessPreference: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
 })
 export type CustomerInput = z.infer<typeof customerSchema>
 
