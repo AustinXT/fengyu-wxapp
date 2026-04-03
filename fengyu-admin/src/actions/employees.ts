@@ -59,6 +59,40 @@ export async function getEmployees(): Promise<Employee[]> {
   return rows.map(rowToEmployee)
 }
 
+/**
+ * 搜索在职员工（不限 scope），用于推荐人选择等场景。
+ * 返回简要信息，最多 20 条。
+ */
+export async function searchEmployees(keyword: string): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:update')
+
+  const trimmed = keyword.trim()
+  if (!trimmed) return []
+
+  const pattern = `%${trimmed}%`
+  const rows = await db
+    .select({
+      employeeId: staffWechatUsers.employeeId,
+      name: staffWechatUsers.name,
+      phone: staffWechatUsers.phone,
+    })
+    .from(staffWechatUsers)
+    .where(
+      and(
+        eq(staffWechatUsers.isResigned, false),
+        or(
+          ilike(staffWechatUsers.name, pattern),
+          ilike(staffWechatUsers.phone, pattern),
+        ),
+      ),
+    )
+    .orderBy(staffWechatUsers.name)
+    .limit(20)
+
+  return rows
+}
+
 /** 员工列表筛选参数 */
 export interface EmployeeFilters {
   marketId?: string

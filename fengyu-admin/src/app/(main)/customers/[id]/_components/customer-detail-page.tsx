@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useRef, useEffect } from "react"
+import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
@@ -15,6 +15,7 @@ import { StatusBadge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { updateCustomer } from "@/actions/customers"
+import { searchEmployees } from "@/actions/employees"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -51,24 +52,29 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
-  // 推荐人搜索选择
+  // 推荐人搜索选择（异步搜索，不受 scope/limit 限制）
+  type PromoterOption = { employeeId: string; name: string | null; phone: string | null }
   const [promoterSearch, setPromoterSearch] = useState("")
   const [promoterOpen, setPromoterOpen] = useState(false)
+  const [promoterResults, setPromoterResults] = useState<PromoterOption[]>([])
+  const [promoterLoading, setPromoterLoading] = useState(false)
   const promoterRef = useRef<HTMLDivElement>(null)
-  const filteredPromoters = useMemo(() => {
-    const active = employees.filter((e) => !e.isResigned)
-    if (!promoterSearch) return active.slice(0, 50)
-    const q = promoterSearch.toLowerCase()
-    return active.filter((e) =>
-      e.name?.toLowerCase().includes(q) ||
-      e.phone?.includes(q) ||
-      e.employeeId.toLowerCase().includes(q)
-    )
-  }, [employees, promoterSearch])
-  const selectedPromoter = useMemo(() =>
-    employees.find((e) => e.employeeId === form.promoterEmployeeId),
-    [employees, form.promoterEmployeeId]
+  const promoterTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [selectedPromoter, setSelectedPromoter] = useState<PromoterOption | null>(
+    customer.promoterEmployeeId
+      ? { employeeId: customer.promoterEmployeeId, name: employees.find(e => e.employeeId === customer.promoterEmployeeId)?.name ?? null, phone: null }
+      : null
   )
+  const doPromoterSearch = useCallback((q: string) => {
+    if (promoterTimer.current) clearTimeout(promoterTimer.current)
+    if (!q.trim()) { setPromoterResults([]); return }
+    setPromoterLoading(true)
+    promoterTimer.current = setTimeout(async () => {
+      const results = await searchEmployees(q)
+      setPromoterResults(results)
+      setPromoterLoading(false)
+    }, 300)
+  }, [])
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (promoterRef.current && !promoterRef.current.contains(e.target as Node)) setPromoterOpen(false)
@@ -334,26 +340,51 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 <div className="space-y-2">
                   <label className="text-sm font-medium">推荐人</label>
                   {isEditing ? (
-                    <div className="space-y-1">
+                    <div ref={promoterRef} className="relative">
                       <Input
-                        placeholder="搜索姓名/手机号"
-                        value={promoterSearch}
-                        onChange={(e) => setPromoterSearch(e.target.value)}
+                        placeholder="输入姓名或手机号搜索"
+                        value={promoterOpen ? promoterSearch : (selectedPromoter ? `${selectedPromoter.name}${selectedPromoter.phone ? ` (${selectedPromoter.phone})` : ""}` : "")}
+                        onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
+                        onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
                       />
-                      <Select
-                        value={form.promoterEmployeeId}
-                        onChange={(e) => handleFormChange("promoterEmployeeId", e.target.value)}
-                      >
-                        <option value="">无</option>
-                        {filteredPromoters.map((emp) => (
-                          <option key={emp.employeeId} value={emp.employeeId}>
-                            {emp.name} ({emp.phone ?? emp.employeeId})
-                          </option>
-                        ))}
-                      </Select>
+                      {form.promoterEmployeeId && !promoterOpen && (
+                        <button
+                          type="button"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-[#999999] hover:text-[#333333] text-sm"
+                          onClick={() => { handleFormChange("promoterEmployeeId", ""); setSelectedPromoter(null); setPromoterSearch("") }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                      {promoterOpen && (
+                        <ul className="absolute z-10 mt-1 max-h-48 w-full overflow-auto rounded-md border border-[var(--border)] bg-[var(--background)] shadow-md">
+                          {promoterLoading ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">搜索中…</li>
+                          ) : !promoterSearch.trim() ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">请输入关键词搜索</li>
+                          ) : promoterResults.length === 0 ? (
+                            <li className="px-3 py-2 text-sm text-[#999999]">无匹配结果</li>
+                          ) : (
+                            promoterResults.map((emp) => (
+                              <li
+                                key={emp.employeeId}
+                                className={`cursor-pointer px-3 py-2 text-sm hover:bg-[var(--muted)] ${emp.employeeId === form.promoterEmployeeId ? "bg-[var(--muted)] font-medium" : ""}`}
+                                onMouseDown={() => {
+                                  handleFormChange("promoterEmployeeId", emp.employeeId)
+                                  setSelectedPromoter(emp)
+                                  setPromoterOpen(false)
+                                  setPromoterSearch("")
+                                }}
+                              >
+                                {emp.name}{emp.phone ? ` (${emp.phone})` : ""}
+                              </li>
+                            ))
+                          )}
+                        </ul>
+                      )}
                     </div>
                   ) : (
-                    <Input value={customer.promoterEmployeeId ? (employees.find(e => e.employeeId === customer.promoterEmployeeId)?.name ?? customer.promoterEmployeeId) : ""} disabled />
+                    <Input value={selectedPromoter?.name ?? (customer.promoterEmployeeId || "")} disabled />
                   )}
                 </div>
                 <div className="space-y-2">
