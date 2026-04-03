@@ -52,7 +52,7 @@ export const createOrderSchema = z.object({
   clientPhone: z.string().regex(/^1\d{10}$/, '请输入正确的手机号'),
   customerName: z.string().min(1, '顾客姓名不能为空'),
   paymentMethod: z.enum(['微信', '支付宝', '线下']),
-  saleOrderType: z.enum(['普通', '体验', '内部', '福利活动', '回款', '转换', '退款']),
+  saleOrderType: z.enum(['普通', '体验', '内部', '组合套餐', '回款', '转换', '退款']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),
   items: z.array(z.object({

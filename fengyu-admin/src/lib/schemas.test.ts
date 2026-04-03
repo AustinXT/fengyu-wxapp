@@ -170,7 +170,7 @@ describe('createOrderSchema', () => {
   })
 
   it('支持全部订单类型', () => {
-    const types = ['普通', '体验', '内部', '福利活动', '回款', '转换', '退款'] as const
+    const types = ['普通', '体验', '内部', '组合套餐', '回款', '转换', '退款'] as const
     types.forEach(t => {
       expect(createOrderSchema.safeParse({ ...validOrder, saleOrderType: t }).success).toBe(true)
     })

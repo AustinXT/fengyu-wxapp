@@ -424,7 +424,7 @@ export async function createOrder(data: {
   clientPhone: string
   customerName: string
   paymentMethod: '微信' | '支付宝' | '线下'
-  saleOrderType: '普通' | '体验' | '内部' | '福利活动' | '回款' | '转换' | '退款'
+  saleOrderType: '普通' | '体验' | '内部' | '组合套餐' | '回款' | '转换' | '退款'
   openedBy?: string
   preferredEmployeeId?: string
   remark?: string | null

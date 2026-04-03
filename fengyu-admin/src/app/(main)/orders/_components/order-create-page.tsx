@@ -130,7 +130,7 @@ export default function OrderCreatePageClient({
     return groups
   }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
-  const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '福利活动'>("普通")
+  const [orderType, setOrderType] = useState<'普通' | '体验' | '内部' | '组合套餐'>("普通")
   const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
@@ -261,7 +261,7 @@ export default function OrderCreatePageClient({
             <div>
               <h2 className="text-base font-semibold mb-3">订单类型</h2>
               <div className="flex gap-2">
-                {(["普通", "体验", "内部", "福利活动"] as const).map((type) => (
+                {(["普通", "体验", "内部", "组合套餐"] as const).map((type) => (
                   <button
                     key={type}
                     onClick={() => setOrderType(type)}
