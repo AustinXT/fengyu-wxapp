@@ -540,7 +540,6 @@ describe('getOrdersPaginated — 服务端分页', () => {
       customerName: '李女士',
       totalAmount: '1999.00',
       paymentMethod: '微信',
-      saleOrderSource: 'admin',
       openedBy: 'EMP-001',
       preferredEmployeeId: null,
       paidAt: new Date('2026-03-15T10:05:00Z'),

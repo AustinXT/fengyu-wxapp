@@ -444,10 +444,10 @@ async function create(ctx) {
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
-        payment_method, sale_order_source, opened_by,
+        payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, $13, $14, $15, $16, $6, $6)`,
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $6, $6)`,
       [
         saleOrderId, orderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -813,7 +813,7 @@ async function list(ctx) {
   const orders = await pg.query(`
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
-      o.payment_method, o.sale_order_source, o.preferred_employee_id,
+      o.payment_method, o.preferred_employee_id,
       o.paid_at, o.created_at, o.opened_by, o.total_amount
     FROM sale_orders o
     WHERE o.store_id = $1
@@ -1014,9 +1014,9 @@ async function createRefund(ctx) {
         sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payment_method, sale_order_source, opened_by,
+        total_amount, payment_method, opened_by,
         refund_reason, handling_fee, created_at, updated_at
-      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, $13, $14, $6, $6)`,
+      ) VALUES ($1, '待审批', '退款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $6, $6)`,
       [
         refundOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
@@ -1195,9 +1195,9 @@ async function createRepayment(ctx) {
         sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payment_method, sale_order_source, opened_by,
+        total_amount, payment_method, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staff', $12, '待分配', $6, $6)`,
+      ) VALUES ($1, '待支付', '回款', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, '待分配', $6, $6)`,
       [
         repayOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
@@ -1338,9 +1338,9 @@ async function createConversion(ctx) {
         sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payment_method, sale_order_source, opened_by,
+        total_amount, payment_method, opened_by,
         allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', 'staff', $11, '待分配', $6, $6)`,
+      ) VALUES ($1, '已支付', '转换', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', $11, '待分配', $6, $6)`,
       [
         convOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
         origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,

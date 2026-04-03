@@ -86,7 +86,6 @@ interface SuggestResponse {
   isNewCustomer: boolean;
   beauticianInfo: BeauticianInfo | null;
   deptAnomalous: boolean;
-  orderSource: string;
   allocLines: AllocLine[];
 }
 
@@ -137,7 +136,6 @@ Page({
     isNewCustomer: false,
     beauticianInfo: null as BeauticianInfo | null,
     deptAnomalous: false,
-    orderSource: '' as string,
   },
 
   onLoad(options: Record<string, string>) {
@@ -185,7 +183,6 @@ Page({
       const isNewCustomer = suggestData.isNewCustomer || false;
       const beauticianInfo = suggestData.beauticianInfo || null;
       const deptAnomalous = suggestData.deptAnomalous || false;
-      const orderSource = suggestData.orderSource || '';
 
       const suggestLines: AllocLine[] = suggestData.allocLines || [];
 
@@ -211,7 +208,6 @@ Page({
         isNewCustomer,
         beauticianInfo,
         deptAnomalous,
-        orderSource,
         displayItems,
         loading: false,
       });

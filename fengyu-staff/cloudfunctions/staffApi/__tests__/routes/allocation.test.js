@@ -440,7 +440,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
-        sale_order_source: 'staff', preferred_employee_id: 'emp-b1',
+ preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
       }])
       .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', department: '美容部' }])
@@ -472,7 +472,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-002', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
-        sale_order_source: 'staff', preferred_employee_id: null,
+ preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
       .mockResolvedValueOnce([{ cnt: 3 }])
@@ -495,7 +495,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-003', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
-        sale_order_source: 'staff', preferred_employee_id: 'emp-b2',
+ preferred_employee_id: 'emp-b2',
         client_phone: '13800001111', customer_name: '张三',
       }])
       .mockResolvedValueOnce([{ employee_id: 'emp-b2', name: '王五', department: '咨询部' }])
@@ -537,7 +537,7 @@ describe('allocation.suggest', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-004', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '',
-        sale_order_source: 'staff', preferred_employee_id: null,
+ preferred_employee_id: null,
         client_phone: '13800001111', customer_name: '张三',
       }])
       .mockResolvedValueOnce([{ cnt: 0 }])

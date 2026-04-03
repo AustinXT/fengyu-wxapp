@@ -254,7 +254,7 @@ async function pendingList(ctx) {
     SELECT
       o.sale_order_id, o.status, o.sale_order_type, o.client_phone, o.customer_name,
       o.payment_method, o.paid_at, o.created_at, o.allocation_status,
-      o.sale_order_source, o.preferred_employee_id, o.total_amount
+      o.preferred_employee_id, o.total_amount
     FROM sale_orders o
     WHERE o.store_id = $1
       AND o.status = '已支付'
@@ -318,7 +318,7 @@ async function suggest(ctx) {
   // 1. 加载订单
   const orders = await pg.query(
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
-            sale_order_source, preferred_employee_id, client_phone, customer_name
+            preferred_employee_id, client_phone, customer_name
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
     [saleOrderId, ctx.auth.storeId]
   )
@@ -419,7 +419,6 @@ async function suggest(ctx) {
     beauticianInfo,
     deptAnomalous,
     beauticianRequired,
-    orderSource: order.sale_order_source,
     beautyRates,
     allocLines,
     items,

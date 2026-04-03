@@ -28,8 +28,6 @@ export const itemDirectionEnum = pgEnum("item_direction", ["购买", "转出", "
 
 export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下"]);
 
-export const orderSourceEnum = pgEnum("order_source", ["client", "staff", "admin"]);
-
 export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "已完成", "已取消"]);
 
 export const serviceOrderTypeEnum = pgEnum("service_order_type", ["售前", "售后"]);

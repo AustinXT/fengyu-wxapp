@@ -44,7 +44,7 @@ async function closeExpiredOrdersByUser(userId) {
 
 /**
  * 扫码查看订单详情（员工开单订单专用）
- * 不要求 client_user_id 匹配，仅限 sale_order_source = 'staff' 的订单
+ * 不要求 client_user_id 匹配，仅限员工开单（opened_by IS NOT NULL）的订单
  */
 async function scanDetail(ctx) {
   const { orderNo, saleOrderId } = ctx.event.payload || {}
@@ -58,7 +58,7 @@ async function scanDetail(ctx) {
      FROM sale_orders o
      LEFT JOIN stores s ON o.store_id = s.store_id
      LEFT JOIN staff_wechat_users sw ON o.opened_by = sw.employee_id
-     WHERE o.sale_order_id = $1 AND o.sale_order_source = 'staff'`,
+     WHERE o.sale_order_id = $1 AND o.opened_by IS NOT NULL`,
     [targetOrderId]
   )
 
@@ -392,10 +392,10 @@ async function create(ctx) {
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, payment_method, sale_order_source,
+        total_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'client', $12, $13, $14, $6, $6)`,
+      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $6, $6)`,
       [orderNo, saleOrderType, documentType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
     )
 
@@ -458,7 +458,7 @@ async function pay(ctx) {
     if (order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-  } else if (order.sale_order_source !== 'staff') {
+  } else if (!order.opened_by) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
@@ -476,7 +476,7 @@ async function pay(ctx) {
   const now = new Date()
 
   // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
-  if (!order.client_user_id && order.sale_order_source === 'staff') {
+  if (!order.client_user_id && order.opened_by) {
     await pg.query(
       'UPDATE sale_orders SET client_user_id = $1, payment_method = $2, updated_at = $3 WHERE sale_order_id = $4',
       [userId, '微信', now, orderNo]
@@ -533,7 +533,7 @@ async function offlinePay(ctx) {
     if (order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-  } else if (order.sale_order_source !== 'staff') {
+  } else if (!order.opened_by) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
@@ -896,7 +896,7 @@ async function alipayPay(ctx) {
     if (order.client_user_id !== userId) {
       throw new Error('PERMISSION_DENIED: 无权操作该订单')
     }
-  } else if (order.sale_order_source !== 'staff') {
+  } else if (!order.opened_by) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 

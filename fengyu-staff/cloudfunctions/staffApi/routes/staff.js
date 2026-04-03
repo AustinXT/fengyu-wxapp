@@ -354,7 +354,7 @@ async function todoList(ctx) {
       [storeId]
     )
     const createRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND sale_order_source != 'staff'`,
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND status = '待支付' AND opened_by IS NULL`,
       [storeId]
     )
     result.pendingOfflineOrderCount = Number(offlineRows[0].cnt)

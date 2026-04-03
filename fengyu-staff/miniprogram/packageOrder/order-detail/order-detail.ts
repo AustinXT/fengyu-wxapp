@@ -8,10 +8,6 @@ const PAY_TYPE_LABEL: Record<string, string> = {
   offline: '线下收款',
 };
 
-const ORDER_SOURCE_LABEL: Record<string, string> = {
-  client: '顾客下单',
-  staff: '员工开单',
-};
 
 // ===== API 原始类型（snake_case） =====
 
@@ -19,7 +15,6 @@ interface RawOrder {
   sale_order_id: string;
   status: string;
   sale_order_type?: string;
-  sale_order_source?: string;
   store_name?: string;
   payment_method?: string;
   customer_name?: string;
@@ -142,7 +137,6 @@ Page({
         ratio: `${Number(a.allocation_ratio) * 100}%`,
       }));
       const orderType = o.sale_order_type || '';
-      const orderSource = o.sale_order_source || '';
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
@@ -150,7 +144,7 @@ Page({
           storeName: o.store_name || '',
           orderType,
           orderTypeLabel: ORDER_TYPE_LABEL[orderType] || orderType,
-          orderSourceLabel: ORDER_SOURCE_LABEL[orderSource] || orderSource || '—',
+          orderSourceLabel: o.opened_by ? '员工开单' : '顾客下单',
           refundReason: o.refund_reason || '',
           refOrderId: o.ref_sale_order_id || '',
           payType: o.payment_method || '',

@@ -23,8 +23,7 @@ describe('order.scanDetail', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
-        sale_order_type: '普通', total_amount: 100, sale_order_source: 'staff',
-        store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
+        sale_order_type: '普通', total_amount: 100,        store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,
@@ -49,8 +48,7 @@ describe('order.scanDetail', () => {
 
   test('非待支付订单返回状态提示', async () => {
     pg.query.mockResolvedValueOnce([{
-      sale_order_id: 'FY-002', status: '已支付', sale_order_source: 'staff',
-    }])
+      sale_order_id: 'FY-002', status: '已支付',    }])
 
     const ctx = createCtx({ payload: { orderNo: 'FY-002' } })
     await routes.scanDetail(ctx)
@@ -350,8 +348,7 @@ describe('order.pay', () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付',
       client_user_id: 'user-001', total_amount: 100,
-      sale_order_datetime: now.toISOString(), sale_order_source: 'client',
-    }])
+      sale_order_datetime: now.toISOString(),    }])
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
@@ -369,8 +366,7 @@ describe('order.pay', () => {
   test('非本人订单 → PERMISSION_DENIED', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付',
-      client_user_id: 'other-user', sale_order_source: 'client',
-    }])
+      client_user_id: 'other-user',    }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.pay(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
@@ -381,8 +377,7 @@ describe('order.pay', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付',
-        client_user_id: 'user-001', sale_order_source: 'client',
-        sale_order_datetime: expiredTime.toISOString(),
+        client_user_id: 'user-001',        sale_order_datetime: expiredTime.toISOString(),
       }])
       .mockResolvedValueOnce([])
 
@@ -397,8 +392,7 @@ describe('order.offlinePay', () => {
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付',
-        client_user_id: 'user-001', sale_order_source: 'client',
-        sale_order_datetime: now.toISOString(),
+        client_user_id: 'user-001',        sale_order_datetime: now.toISOString(),
       }])
       .mockResolvedValueOnce([])
 
@@ -411,8 +405,7 @@ describe('order.offlinePay', () => {
   test('非待支付订单 → INVALID_PARAMS', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '已支付',
-      client_user_id: 'user-001', sale_order_source: 'client',
-      sale_order_datetime: new Date().toISOString(),
+      client_user_id: 'user-001',      sale_order_datetime: new Date().toISOString(),
     }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
