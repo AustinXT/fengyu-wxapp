@@ -304,35 +304,35 @@ describe('createCustomer — 输入校验 + 错误处理', () => {
 
 describe('getCustomersPaginated — 服务端分页', () => {
   const mockCustomerRow = {
-    client_wechat_users: {
-      userId: 'FYGK-001',
-      openid: null,
-      phone: '13812345678',
-      customerId: null,
-      name: '李女士',
-      boundStoreId: 'store-1',
-      boundEmployeeId: 'EMP-001',
-      boundEmployeeName: '张三',
-      memberLevel: '金钻',
-      customerSource: null,
-      customerType: '流量客',
-      spendingTier: '<1990',
-      monthlyActivity: null,
-      customerStatus: null,
-      birthday: null,
-      occupation: null,
-      isMarried: null,
-      wechatName: null,
-      skinType: null,
-      improvementFocus: null,
-      skinIssue: null,
-      wellnessPreference: null,
-      createdAt: new Date('2026-01-15T08:00:00Z'),
-      updatedAt: new Date('2026-03-15T10:00:00Z'),
-    },
-    stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
-    store_node: { id: 'org-store-1', name: '南昌旗舰店', parentId: 'org-market-1' },
-    market_node: { id: 'org-market-1', name: '南昌市场' },
+    userId: 'FYGK-001',
+    openid: null,
+    phone: '13812345678',
+    customerId: null,
+    name: '李女士',
+    gender: '女',
+    boundStoreId: 'store-1',
+    boundEmployeeId: 'EMP-001',
+    boundEmployeeName: '张三',
+    memberLevel: '金钻',
+    customerSource: null,
+    promoterEmployeeId: null,
+    customerType: '流量客',
+    spendingTier: '<1990',
+    monthlyActivity: null,
+    customerStatus: null,
+    birthday: null,
+    occupation: null,
+    isMarried: null,
+    wechatName: null,
+    skinType: null,
+    improvementFocus: null,
+    skinIssue: null,
+    wellnessPreference: null,
+    notes: null,
+    createdAt: new Date('2026-01-15T08:00:00Z'),
+    updatedAt: new Date('2026-03-15T10:00:00Z'),
+    storeName: '南昌旗舰店',
+    marketName: '南昌市场',
   }
 
   /** mock 2 个并行 select：COUNT + DATA */
@@ -346,15 +346,12 @@ describe('getCustomersPaginated — 服务端分页', () => {
         const from = vi.fn().mockReturnValue({ where })
         return { from }
       }
-      // DATA: select → from → leftJoin × 3 → where → orderBy → limit → offset
+      // DATA: select(customerColumns) → from → where → orderBy → limit → offset
       const offset = vi.fn().mockResolvedValue(dataRows)
       const limit = vi.fn().mockReturnValue({ offset })
       const orderBy = vi.fn().mockReturnValue({ limit })
       const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin3 = vi.fn().mockReturnValue({ where })
-      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
-      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      const from = vi.fn().mockReturnValue({ where })
       return { from }
     })
   }
@@ -421,15 +418,14 @@ describe('getCustomersPaginated — 服务端分页', () => {
     expect(db.select).toHaveBeenCalledTimes(2)
   })
 
-  it('stores JOIN 为 null → storeName/marketName undefined', async () => {
-    const noJoins = {
+  it('storeName/marketName 为 null → undefined', async () => {
+    const noStore = {
       ...mockCustomerRow,
-      client_wechat_users: { ...mockCustomerRow.client_wechat_users, boundEmployeeName: null },
-      stores: null,
-      store_node: null,
-      market_node: null,
+      boundEmployeeName: null,
+      storeName: null,
+      marketName: null,
     }
-    mockPaginatedChain(1, [noJoins])
+    mockPaginatedChain(1, [noStore])
 
     const result = await getCustomersPaginated()
 
@@ -486,31 +482,25 @@ describe('getCustomersPaginated — 服务端分页', () => {
 // ── 读函数覆盖（getCustomers / getCustomerById / searchCustomerByPhone）─────
 
 const mockFullRow = {
-  client_wechat_users: {
-    userId: 'FYGK-001', openid: null, phone: '13812345678', customerId: null,
-    name: '李女士', boundStoreId: 'store-1', boundEmployeeId: 'EMP-001',
-    boundEmployeeName: '张三',
-    memberLevel: '金钻', customerSource: null, category: null,
-    customerType: '流量客', spendingTier: '<1990', monthlyActivity: null, customerStatus: null,
-    birthday: null, occupation: null, isMarried: null, wechatName: null, skinType: null,
-    improvementFocus: null, skinIssue: null, wellnessPreference: null,
-    createdAt: new Date('2026-01-15T08:00:00Z'),
-    updatedAt: new Date('2026-03-15T10:00:00Z'),
-  },
-  stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
-  store_node: { id: 'org-store-1', name: '南昌旗舰店', parentId: 'org-market-1' },
-  market_node: { id: 'org-market-1', name: '南昌市场' },
+  userId: 'FYGK-001', openid: null, phone: '13812345678', customerId: null,
+  name: '李女士', gender: '女', boundStoreId: 'store-1', boundEmployeeId: 'EMP-001',
+  boundEmployeeName: '张三',
+  memberLevel: '金钻', customerSource: null, promoterEmployeeId: null,
+  customerType: '流量客', spendingTier: '<1990', monthlyActivity: null, customerStatus: null,
+  birthday: null, occupation: null, isMarried: null, wechatName: null, skinType: null,
+  improvementFocus: null, skinIssue: null, wellnessPreference: null, notes: null,
+  createdAt: new Date('2026-01-15T08:00:00Z'),
+  updatedAt: new Date('2026-03-15T10:00:00Z'),
+  storeName: '南昌旗舰店',
+  marketName: '南昌市场',
 }
 
-/** mock: select → from → leftJoin × 3 → where → orderBy → limit */
+/** mock: select(customerColumns) → from → where → orderBy → limit */
 function mockFullSelectChain(rows: any[]) {
   const limit = vi.fn().mockResolvedValue(rows)
   const orderBy = vi.fn().mockReturnValue({ limit })
   const where = vi.fn().mockReturnValue({ orderBy, limit })
-  const leftJoin3 = vi.fn().mockReturnValue({ where })
-  const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
-  const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
-  const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+  const from = vi.fn().mockReturnValue({ where })
   ;(db.select as any).mockReturnValue({ from })
 }
 
