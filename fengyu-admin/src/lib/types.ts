@@ -111,10 +111,10 @@ export interface SkillTag {
   updatedAt: string
 }
 
-export type ProductKind = string
+export type ProductKind = '组合套餐' | '护理项目' | '家居产品' | '充值卡' | '体验卡'
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
-export type SaleOrderType = '普通' | '体验' | '内部' | '组合套餐' | '回款' | '转换' | '退款'
+export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
 export type PaymentMethod = '微信' | '支付宝' | '线下'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'

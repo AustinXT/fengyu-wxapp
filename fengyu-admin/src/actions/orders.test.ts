@@ -122,7 +122,7 @@ const baseOrderData = {
   clientPhone: '13812345678',
   customerName: '顾客甲',
   paymentMethod: '线下' as const,
-  saleOrderType: '普通' as const,
+  saleOrderType: '销售单' as const,
   items: [{
     skuId: 'sku-001',
     productName: '美容套餐',
@@ -530,7 +530,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
     order: {
       saleOrderId: 'FY-XSD-WX-260315-0001',
       status: '已支付',
-      saleOrderType: '普通',
+      saleOrderType: '销售单',
       refSaleOrderId: null,
       marketName: '南昌市场',
       storeId: 'store-1',

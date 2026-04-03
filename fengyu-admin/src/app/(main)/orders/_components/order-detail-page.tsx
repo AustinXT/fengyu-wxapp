@@ -13,13 +13,11 @@ const paymentMethodMap: Record<string, string> = {
 }
 
 const orderTypeColorMap: Record<string, string> = {
-  "普通": "bg-[#E8F0FE] text-[#3574C4]",
-  "体验": "bg-[#FFF0EE] text-[#C45C48]",
-  "内部": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "组合套餐": "bg-[#FFF8E6] text-[#D4820A]",
-  "回款": "bg-[#E8F5E9] text-[#2E7D32]",
-  "转换": "bg-[#E3F2FD] text-[#1565C0]",
-  "退款": "bg-[#FFEBEE] text-[#C62828]",
+  "销售单": "bg-[#E8F0FE] text-[#3574C4]",
+  "内部单": "bg-[#F0F9F2] text-[#3D8A5A]",
+  "回款单": "bg-[#E8F5E9] text-[#2E7D32]",
+  "转换单": "bg-[#E3F2FD] text-[#1565C0]",
+  "退款单": "bg-[#FFEBEE] text-[#C62828]",
 }
 
 function formatDateTime(dt: string | null) {

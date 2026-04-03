@@ -129,17 +129,18 @@ const CLIENTS = [
 
 // 一级分类（品项类型）：product_kind = null
 const PRODUCT_KINDS = [
-  { categoryId: 'kind-welfare', categoryName: '福利活动', productKind: null, sortOrder: 1, isValid: true },
+  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true },
   { categoryId: 'kind-care', categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true },
   { categoryId: 'kind-home', categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true },
   { categoryId: 'kind-card', categoryName: '充值卡', productKind: null, sortOrder: 4, isValid: true },
+  { categoryId: 'kind-trial', categoryName: '体验卡', productKind: null, sortOrder: 5, isValid: true },
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '福利活动', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
   { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
   { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
   { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
@@ -154,17 +155,17 @@ const PRODUCT_CATEGORIES = [
 const MALL_CATEGORIES = [
   // 一级分组
   { categoryId: 'mall-group-care', categoryName: '护理项目', sortOrder: 1 },
-  { categoryId: 'mall-group-welfare', categoryName: '福利活动', sortOrder: 2 },
+  { categoryId: 'mall-group-combo', categoryName: '组合套餐', sortOrder: 2 },
   { categoryId: 'mall-group-home', categoryName: '家居产品', sortOrder: 3 },
   { categoryId: 'mall-group-card', categoryName: '充值卡', sortOrder: 4 },
   // 二级分类 — 护理项目
   { categoryId: 'mall-cat-hr-01', categoryName: '面部护理', categoryGroup: '护理项目', sortOrder: 1 },
   { categoryId: 'mall-cat-hr-02', categoryName: '身体护理', categoryGroup: '护理项目', sortOrder: 2 },
   { categoryId: 'mall-cat-hr-03', categoryName: '特色项目', categoryGroup: '护理项目', sortOrder: 3 },
-  // 二级分类 — 福利活动
-  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', categoryGroup: '福利活动', sortOrder: 1 },
-  { categoryId: 'mall-cat-hl-02', categoryName: '季节活动', categoryGroup: '福利活动', sortOrder: 2 },
-  { categoryId: 'mall-cat-hl-03', categoryName: '周年庆', categoryGroup: '福利活动', sortOrder: 3 },
+  // 二级分类 — 组合套餐
+  { categoryId: 'mall-cat-hl-01', categoryName: '新客体验', categoryGroup: '组合套餐', sortOrder: 1 },
+  { categoryId: 'mall-cat-hl-02', categoryName: '季节活动', categoryGroup: '组合套餐', sortOrder: 2 },
+  { categoryId: 'mall-cat-hl-03', categoryName: '周年庆', categoryGroup: '组合套餐', sortOrder: 3 },
   // 二级分类 — 家居产品
   { categoryId: 'mall-cat-jj-01', categoryName: '护肤品', categoryGroup: '家居产品', sortOrder: 1 },
   { categoryId: 'mall-cat-jj-02', categoryName: '养生产品', categoryGroup: '家居产品', sortOrder: 2 },
@@ -223,12 +224,12 @@ const MALL_PRODUCT_SKUS = [
 ]
 
 const SALE_ORDERS = [
-  { saleOrderId: 'FY-XSD-WX-260310-0001', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-10T10:30:00Z'), clientUserId: 'FYGK-20250120-0001', clientPhone: '13900139001', customerName: '林美', totalAmount: '2299.00', paymentMethod: '微信' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: new Date('2026-03-10T10:35:00Z'), allocationStatus: '已分配' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260311-0002', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-jj01', saleOrderDatetime: new Date('2026-03-11T14:00:00Z'), clientUserId: 'FYGK-20250415-0004', clientPhone: '13900139004', customerName: '徐敏', totalAmount: '2580.00', paymentMethod: '线下' as const, openedBy: 'FY-260201-0006', preferredEmployeeId: 'FY-260201-0007', paidAt: new Date('2026-03-11T14:10:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260312-0003', status: '待确认收款' as const, saleOrderType: '体验' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc02', saleOrderDatetime: new Date('2026-03-12T09:00:00Z'), clientUserId: 'FYGK-20260310-0008', clientPhone: '13900139008', customerName: '彭玉', totalAmount: '99.00', paymentMethod: '线下' as const, openedBy: 'FY-260301-0005', preferredEmployeeId: 'FY-260301-0005', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260312-0004', status: '已支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-12T15:00:00Z'), clientUserId: 'FYGK-20250205-0002', clientPhone: '13900139002', customerName: '杨雪', totalAmount: '3500.00', paymentMethod: '微信' as const, openedBy: null, preferredEmployeeId: 'FY-260101-0009', paidAt: new Date('2026-03-12T15:05:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260313-0005', status: '待支付' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-gqc01', saleOrderDatetime: new Date('2026-03-13T10:00:00Z'), clientUserId: 'FYGK-20250620-0005', clientPhone: '13900139005', customerName: '宋茜', totalAmount: '456.00', paymentMethod: '微信' as const, openedBy: 'FY-260601-0008', preferredEmployeeId: 'FY-260601-0008', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
-  { saleOrderId: 'FY-XSD-WX-260313-0006', status: '已关闭' as const, saleOrderType: '普通' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-13T11:00:00Z'), clientUserId: 'FYGK-20260101-0006', clientPhone: '13900139006', customerName: '张华', totalAmount: '259.00', paymentMethod: '微信' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260310-0001', status: '已支付' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-10T10:30:00Z'), clientUserId: 'FYGK-20250120-0001', clientPhone: '13900139001', customerName: '林美', totalAmount: '2299.00', paymentMethod: '微信' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: new Date('2026-03-10T10:35:00Z'), allocationStatus: '已分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260311-0002', status: '已支付' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-jj01', saleOrderDatetime: new Date('2026-03-11T14:00:00Z'), clientUserId: 'FYGK-20250415-0004', clientPhone: '13900139004', customerName: '徐敏', totalAmount: '2580.00', paymentMethod: '线下' as const, openedBy: 'FY-260201-0006', preferredEmployeeId: 'FY-260201-0007', paidAt: new Date('2026-03-11T14:10:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260312-0003', status: '待确认收款' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc02', saleOrderDatetime: new Date('2026-03-12T09:00:00Z'), clientUserId: 'FYGK-20260310-0008', clientPhone: '13900139008', customerName: '彭玉', totalAmount: '99.00', paymentMethod: '线下' as const, openedBy: 'FY-260301-0005', preferredEmployeeId: 'FY-260301-0005', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260312-0004', status: '已支付' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-12T15:00:00Z'), clientUserId: 'FYGK-20250205-0002', clientPhone: '13900139002', customerName: '杨雪', totalAmount: '3500.00', paymentMethod: '微信' as const, openedBy: null, preferredEmployeeId: 'FY-260101-0009', paidAt: new Date('2026-03-12T15:05:00Z'), allocationStatus: '待分配' as const, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260313-0005', status: '待支付' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '九江市场', storeId: 'store-gqc01', saleOrderDatetime: new Date('2026-03-13T10:00:00Z'), clientUserId: 'FYGK-20250620-0005', clientPhone: '13900139005', customerName: '宋茜', totalAmount: '456.00', paymentMethod: '微信' as const, openedBy: 'FY-260601-0008', preferredEmployeeId: 'FY-260601-0008', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
+  { saleOrderId: 'FY-XSD-WX-260313-0006', status: '已关闭' as const, saleOrderType: '销售单' as const, refSaleOrderId: null, marketName: '南昌市场', storeId: 'store-nc01', saleOrderDatetime: new Date('2026-03-13T11:00:00Z'), clientUserId: 'FYGK-20260101-0006', clientPhone: '13900139006', customerName: '张华', totalAmount: '259.00', paymentMethod: '微信' as const, openedBy: 'FY-260101-0001', preferredEmployeeId: 'FY-260101-0002', paidAt: null, allocationStatus: null, couponId: null, couponDiscount: '0' },
 ]
 
 const SALE_ITEMS = [

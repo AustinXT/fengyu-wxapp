@@ -128,7 +128,7 @@ test.describe('商品按钮交互', () => {
 
   test('品项分类: Tab 全部可切换', async ({ page }) => {
     await page.goto('/products/categories')
-    for (const kind of ['护理项目', '家居产品', '充值卡', '福利活动']) {
+    for (const kind of ['组合套餐', '护理项目', '家居产品', '充值卡', '体验卡']) {
       const tab = page.getByRole('tab', { name: new RegExp(kind) })
       await tab.click()
       await expect(tab).toHaveAttribute('aria-selected', 'true')

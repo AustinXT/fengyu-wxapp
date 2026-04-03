@@ -33,12 +33,13 @@ test.describe('品项分类', () => {
     await expect(page.getByRole('heading', { name: /品项分类/ })).toBeVisible()
   })
 
-  test('4 个 product_kind Tab 完整', async ({ page }) => {
+  test('5 个 product_kind Tab 完整', async ({ page }) => {
     await page.goto('/products/categories')
-    await expect(page.getByRole('tab', { name: /福利活动/ })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /组合套餐/ })).toBeVisible()
     await expect(page.getByRole('tab', { name: /护理项目/ })).toBeVisible()
     await expect(page.getByRole('tab', { name: /家居产品/ })).toBeVisible()
     await expect(page.getByRole('tab', { name: /充值卡/ })).toBeVisible()
+    await expect(page.getByRole('tab', { name: /体验卡/ })).toBeVisible()
   })
 
   test('Tab 切换正常', async ({ page }) => {

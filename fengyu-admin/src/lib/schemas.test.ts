@@ -130,7 +130,7 @@ describe('createOrderSchema', () => {
     clientPhone: '13800138000',
     customerName: '李女士',
     paymentMethod: '线下' as const,
-    saleOrderType: '普通' as const,
+    saleOrderType: '销售单' as const,
     openedBy: 'FY-260101-0001',
     items: [validItem],
   }
@@ -170,7 +170,7 @@ describe('createOrderSchema', () => {
   })
 
   it('支持全部订单类型', () => {
-    const types = ['普通', '体验', '内部', '组合套餐', '回款', '转换', '退款'] as const
+    const types = ['销售单', '内部单', '回款单', '转换单', '退款单'] as const
     types.forEach(t => {
       expect(createOrderSchema.safeParse({ ...validOrder, saleOrderType: t }).success).toBe(true)
     })

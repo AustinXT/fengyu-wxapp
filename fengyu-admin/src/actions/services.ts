@@ -488,7 +488,7 @@ export async function createServiceOrder(data: {
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,
       unitRealPrice: saleItem.unitRealPrice,
-      isPresale: saleItem.saleOrderType === '体验',
+      isPresale: false, // TODO: 体验单已合并入销售单，需另行判断售前/售后
     })
   }
 
