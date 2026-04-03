@@ -14,7 +14,7 @@ import type { SaleOrder, SaleItem } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 const opener = alias(staffWechatUsers, 'opener')
@@ -271,6 +271,13 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
 
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
+
   // 事务：确认收款 + 设置到期日，原子提交（AC-13）
   try {
     const txResult = await db.transaction(async (tx) => {
@@ -311,7 +318,9 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
     return { success: false, message: '确认收款失败，请稍后重试' }
   }
 
-  await logOperation(session, 'order.confirmPayment', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.confirmPayment', 'sale_order', saleOrderId, '待确认收款', '已支付', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   return { success: true, message: '确认收款成功' }
@@ -321,6 +330,13 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
 export async function closeOrder(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
+
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ status: saleOrders.status, customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
 
   // 事务：关闭订单 + 作废分配，原子提交
   try {
@@ -356,7 +372,9 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
     return { success: false, message: '关闭订单失败，请稍后重试' }
   }
 
-  await logOperation(session, 'order.close', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.close', 'sale_order', saleOrderId, orderCtx?.status ?? '待支付', '已关闭', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   revalidatePath('/allocations')
@@ -367,6 +385,13 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
 export async function resetOrderFailed(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:update')
+
+  // 获取上下文用于日志
+  const [orderCtx] = await db
+    .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
 
   let result: any
   try {
@@ -386,7 +411,9 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
     return { success: false, message: '订单状态已变更，无法重置' }
   }
 
-  await logOperation(session, 'order.resetFailed', 'sale_order', saleOrderId)
+  await logTransition(session, 'order.resetFailed', 'sale_order', saleOrderId, '支付失败', '待支付', {
+    customerName: orderCtx?.customerName, totalAmount: orderCtx?.totalAmount,
+  })
 
   revalidatePath('/orders')
   return { success: true, message: '已重置为待支付' }

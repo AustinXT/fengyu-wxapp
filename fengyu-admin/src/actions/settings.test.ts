@@ -18,6 +18,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -33,7 +35,7 @@ vi.mock('@/lib/cloudbase', () => ({
 import { getSettings, saveSettings } from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { logOperation } from '@/lib/operation-log'
+import { logUpdate } from '@/lib/operation-log'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -111,11 +113,11 @@ describe('saveSettings — 系统配置保存', () => {
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // CREATE TABLE + 4 UPSERT + SELECT banner_count + UPSERT banner_count = 7
-    expect(db.execute).toHaveBeenCalledTimes(7)
-    expect(logOperation).toHaveBeenCalledWith(
+    // getSettings SELECT + CREATE TABLE + 4 UPSERT + SELECT banner_count + UPSERT banner_count = 8
+    expect(db.execute).toHaveBeenCalledTimes(8)
+    expect(logUpdate).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
-      expect.objectContaining({ newMemberThreshold: '2000' }),
+      expect.anything(), expect.objectContaining({ newMemberThreshold: '2000' }),
     )
   })
 

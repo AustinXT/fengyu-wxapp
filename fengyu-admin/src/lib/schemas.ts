@@ -94,7 +94,6 @@ export const customerSchema = z.object({
   boundEmployeeId: z.string().optional().nullable(),
   memberLevel: z.string().optional().nullable(),
   customerSource: z.string().optional().nullable(),
-  category: z.string().optional().nullable(),
   birthday: z.string().optional().nullable(),
   occupation: z.string().optional().nullable(),
   isMarried: z.boolean().optional().nullable(),

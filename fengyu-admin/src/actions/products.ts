@@ -9,7 +9,7 @@ import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -48,7 +48,7 @@ export async function resolveManageScope(): Promise<{ scopeId: string | null; sc
     return { scopeId: marketRole.scopeId, scopeName: node?.name ?? marketRole.scopeId }
   }
 
-  const storeRole = session.roles.find(r => r.scopeType === 'store')
+  const storeRole = session.roles.find(r => r.scopeType === '门店')
   if (storeRole) {
     const [storeNode] = await db
       .select({ parentId: orgNodes.parentId })
@@ -178,7 +178,7 @@ export async function updateProductKind(
 
   // 查当前行（获取旧名称用于级联更新）
   const [current] = await db
-    .select({ categoryName: productCategories.categoryName, updatedAt: productCategories.updatedAt })
+    .select()
     .from(productCategories)
     .where(eq(productCategories.categoryId, categoryId))
     .limit(1)
@@ -229,7 +229,7 @@ export async function updateProductKind(
     }
   })
 
-  await logOperation(session, 'product_kind.update', 'product_category', categoryId, data)
+  await logUpdate(session, 'product_kind.update', 'product_category', categoryId, current as Record<string, unknown>, data)
   revalidatePath('/products')
   return { success: true, message: '品项类型已更新' }
 }
@@ -278,6 +278,9 @@ export async function updateCategory(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(productCategories).where(eq(productCategories.categoryId, categoryId)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(productCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(productCategories.categoryId, categoryId)
@@ -297,7 +300,7 @@ export async function updateCategory(
     }
   }
 
-  await logOperation(session, 'category.update', 'product_category', categoryId, data)
+  await logUpdate(session, 'category.update', 'product_category', categoryId, before as Record<string, unknown>, data)
   revalidatePath('/products')
   return { success: true, message: '分类已更新' }
 }
@@ -498,6 +501,9 @@ export async function updateSku(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(productSkus).where(eq(productSkus.skuId, skuId)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(productSkus.skuId, skuId)
@@ -517,7 +523,7 @@ export async function updateSku(
     }
   }
 
-  await logOperation(session, 'sku.update', 'product_sku', skuId, data)
+  await logUpdate(session, 'sku.update', 'product_sku', skuId, before as Record<string, unknown>, data)
   revalidatePath('/products')
   return { success: true, message: '规格已更新' }
 }
@@ -603,6 +609,9 @@ export async function updateSkuBundlePrice(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(mallProductSkus).where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId))).limit(1)
+
   const result = await db
     .update(mallProductSkus)
     .set({ bundlePrice })
@@ -612,7 +621,7 @@ export async function updateSkuBundlePrice(
     return { success: false, message: '关联记录不存在' }
   }
 
-  await logOperation(session, 'mall_product_sku.update', 'mall_product_sku', productId, { skuId, bundlePrice })
+  await logUpdate(session, 'mall_product_sku.update', 'mall_product_sku', productId, before as Record<string, unknown>, { skuId, bundlePrice })
   revalidatePath('/mall')
   return { success: true, message: '套餐价已更新' }
 }
@@ -687,6 +696,9 @@ export async function updateBundleGroup(
     return { success: false, message: '可选数量必须大于 0' }
   }
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(mallBundleGroups).where(eq(mallBundleGroups.id, id)).limit(1)
+
   const updateData: Record<string, unknown> = {}
   if (data.groupName !== undefined) updateData.groupName = data.groupName.trim()
   if (data.pickCount !== undefined) updateData.pickCount = data.pickCount
@@ -702,7 +714,7 @@ export async function updateBundleGroup(
     throw err
   }
 
-  await logOperation(session, 'bundle_group.update', 'mall_bundle_group', String(id), data)
+  await logUpdate(session, 'bundle_group.update', 'mall_bundle_group', String(id), before as Record<string, unknown>, data)
   revalidatePath('/mall')
   return { success: true, message: '分组已更新' }
 }
@@ -732,6 +744,9 @@ export async function updateSkuBundleGroup(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(mallProductSkus).where(and(eq(mallProductSkus.productId, productId), eq(mallProductSkus.skuId, skuId))).limit(1)
+
   const result = await db
     .update(mallProductSkus)
     .set({ bundleGroupId })
@@ -741,7 +756,7 @@ export async function updateSkuBundleGroup(
     return { success: false, message: '关联记录不存在' }
   }
 
-  await logOperation(session, 'mall_product_sku.update', 'mall_product_sku', productId, { skuId, bundleGroupId })
+  await logUpdate(session, 'mall_product_sku.update', 'mall_product_sku', productId, before as Record<string, unknown>, { skuId, bundleGroupId })
   revalidatePath('/mall')
   return { success: true, message: '规格分组已更新' }
 }
@@ -838,7 +853,7 @@ export async function updateMallCategoryGroup(
   requirePermission(session, 'product:update')
 
   const [current] = await db
-    .select({ categoryName: mallCategories.categoryName, updatedAt: mallCategories.updatedAt })
+    .select()
     .from(mallCategories)
     .where(eq(mallCategories.categoryId, categoryId))
     .limit(1)
@@ -884,7 +899,7 @@ export async function updateMallCategoryGroup(
     }
   })
 
-  await logOperation(session, 'mall_category_group.update', 'mall_category', categoryId, data)
+  await logUpdate(session, 'mall_category_group.update', 'mall_category', categoryId, current as Record<string, unknown>, data)
   revalidatePath('/mall')
   return { success: true, message: '分组已更新' }
 }
@@ -1070,6 +1085,9 @@ export async function updateProduct(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(products).where(eq(products.productId, productId)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(products.productId, productId)
@@ -1086,7 +1104,7 @@ export async function updateProduct(
     }
   }
 
-  await logOperation(session, 'product.update', 'product', productId, data)
+  await logUpdate(session, 'product.update', 'product', productId, before as Record<string, unknown>, data)
   revalidatePath('/mall')
   return { success: true, message: '商品信息已更新' }
 }
@@ -1123,6 +1141,9 @@ export async function updateMallCategory(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(mallCategories).where(eq(mallCategories.categoryId, categoryId)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(mallCategories.categoryId, categoryId), sql`date_trunc('milliseconds', ${mallCategories.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(mallCategories.categoryId, categoryId)
@@ -1139,7 +1160,7 @@ export async function updateMallCategory(
     }
   }
 
-  await logOperation(session, 'mall_category.update', 'mall_category', categoryId, data)
+  await logUpdate(session, 'mall_category.update', 'mall_category', categoryId, before as Record<string, unknown>, data)
   revalidatePath('/mall')
   return { success: true, message: '商品分类已更新' }
 }

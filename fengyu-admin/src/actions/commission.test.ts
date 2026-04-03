@@ -38,6 +38,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -173,6 +175,17 @@ describe('createRate — 金额阶段重叠校验 (AC-07)', () => {
 })
 
 describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
+  /** mock db.select() 自引用链，用于 update 前获取旧值 */
+  function mockSelectBefore(rows: any[] = [{}]) {
+    const chain: any = {}
+    chain.from = vi.fn().mockReturnValue(chain)
+    chain.where = vi.fn().mockReturnValue(chain)
+    chain.limit = vi.fn().mockResolvedValue(rows)
+    chain.leftJoin = vi.fn().mockReturnValue(chain)
+    chain.orderBy = vi.fn().mockReturnValue(chain)
+    ;(db.select as any).mockReturnValue(chain)
+  }
+
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -185,7 +198,13 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      return overlapSelect.select()
+      if (callCount === 1) return overlapSelect.select()
+      // call 2+: before-fetch chain
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue([{}])
+      return chain
     })
     ;(db.update as any).mockImplementation(updateMock.update)
 
@@ -213,6 +232,7 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('仅更新 commissionRate（无分类键）时：跳过重叠检查', async () => {
+    mockSelectBefore() // before-fetch 仍需 db.select
     const updateMock = setupUpdateSuccess(1)
     ;(db.update as any).mockImplementation(updateMock.update)
 
@@ -220,14 +240,23 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
     const result = await updateRate(42, { commissionRate: '0.09' })
 
     expect(result.success).toBe(true)
-    expect(db.select).not.toHaveBeenCalled() // 未触发重叠查询
+    expect(db.select).toHaveBeenCalledTimes(1) // 仅 before-fetch，无重叠查询
   })
 
   it('乐观锁冲突时：返回修改提示', async () => {
     const overlapSelect = setupOverlapCheck(false)
     const updateMock = setupUpdateSuccess(0) // rowCount=0
 
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return overlapSelect.select()
+      const chain: any = {}
+      chain.from = vi.fn().mockReturnValue(chain)
+      chain.where = vi.fn().mockReturnValue(chain)
+      chain.limit = vi.fn().mockResolvedValue([{}])
+      return chain
+    })
     ;(db.update as any).mockImplementation(updateMock.update)
 
     const result = await updateRate(
@@ -241,10 +270,9 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('rowCount=0，无乐观锁 → 报告规则不存在（不静默成功）', async () => {
-    const overlapSelect = setupOverlapCheck(false)
+    mockSelectBefore() // before-fetch
     const updateMock = setupUpdateSuccess(0)
 
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
     ;(db.update as any).mockImplementation(updateMock.update)
 
     const result = await updateRate(99, { commissionRate: '0.09' }) // 无 expectedUpdatedAt
@@ -254,8 +282,7 @@ describe('updateRate — 金额阶段重叠校验（排除自身）', () => {
   })
 
   it('DB 异常 → 重新抛出', async () => {
-    const overlapSelect = setupOverlapCheck(false)
-    ;(db.select as any).mockReturnValue(overlapSelect.select())
+    mockSelectBefore() // before-fetch
 
     const where = vi.fn().mockRejectedValue(new Error('connection lost'))
     const set = vi.fn().mockReturnValue({ where })

@@ -7,7 +7,7 @@ import { revalidatePath } from 'next/cache'
 import type { Position, PositionScope } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 function rowToPosition(row: typeof positions.$inferSelect): Position {
   return {
@@ -93,6 +93,9 @@ export async function updatePosition(
   const session = await getSession()
   requirePermission(session, 'employee:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(positions).where(eq(positions.id, id)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(positions.id, id), sql`date_trunc('milliseconds', ${positions.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(positions.id, id)
@@ -112,7 +115,7 @@ export async function updatePosition(
     }
   }
 
-  await logOperation(session, 'position.update', 'position', id, data)
+  await logUpdate(session, 'position.update', 'position', id, before as Record<string, unknown>, data)
   revalidatePath('/employees')
   return { success: true, message: '职位已更新' }
 }

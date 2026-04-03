@@ -5,7 +5,7 @@ vi.mock('@/db', () => ({
 }))
 
 vi.mock('drizzle-orm', () => ({
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn(() => ({})) }),
 }))
 
 vi.mock('@/lib/auth', () => ({

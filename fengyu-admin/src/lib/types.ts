@@ -62,11 +62,16 @@ export interface Customer {
   phone: string | null
   customerId: string | null
   name: string | null
+  gender: string | null
   boundStoreId: string | null
   boundEmployeeId: string | null
   memberLevel: string | null
   customerSource: string | null
-  category: string | null
+  promoterEmployeeId: string | null
+  customerType: string
+  spendingTier: string
+  monthlyActivity: string | null
+  customerStatus: string | null
   birthday: string | null
   occupation: string | null
   isMarried: boolean | null
@@ -75,11 +80,14 @@ export interface Customer {
   improvementFocus: string | null
   skinIssue: string | null
   wellnessPreference: string | null
+  notes: string | null
   createdAt: string
   updatedAt: string
   // joined
   storeName?: string
   employeeName?: string
+  promoterName?: string
+  marketName?: string
 }
 
 export type PositionScope = '总部' | '市场' | '门店'
@@ -115,7 +123,7 @@ export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已�
 export type SalesCategory = '自采自销' | '他销自耗' | '他销他耗' | '生态合作'
 export type AllocationStatus = '待分配' | '已分配'
 export type ItemDirection = '购买' | '转出' | '转入' | '退出'
-export type CouponType = '现金券' | '项目券' | '折扣券'
+export type CouponType = '现金券' | '品项券' | '折扣券'
 export type CouponStatus = '未使用' | '已使用' | '已过期'
 export type RoleType = 'admin' | 'manager' | 'finance' | 'hr' | 'product' | 'customer_mgr' | 'staff'
 

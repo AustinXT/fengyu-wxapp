@@ -10,7 +10,7 @@ import type { OrgNode } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, isAdminScope } from '@/lib/permissions'
 import type { AuthSession } from '@/lib/types'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const VALID_NODE_TYPES = ['总部', '市场', '门店', '部门'] as const
 
@@ -140,6 +140,9 @@ export async function updateOrgNode(
     return { success: false, message: '无权编辑该节点' }
   }
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(orgNodes).where(eq(orgNodes.id, id)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(orgNodes.id, id), sql`date_trunc('milliseconds', ${orgNodes.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(orgNodes.id, id)
@@ -158,7 +161,7 @@ export async function updateOrgNode(
     }
   }
 
-  await logOperation(session, 'org.update', 'org_node', id, data)
+  await logUpdate(session, 'org.update', 'org_node', id, before as Record<string, unknown>, data)
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
 }

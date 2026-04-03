@@ -1,44 +1,66 @@
 'use server'
 
 import { db } from '@/db'
-import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { stores } from '@db/org'
-import { eq, and, or, desc, inArray, sql, ilike } from 'drizzle-orm'
+import { clientWechatUsers } from '@db/user'
+import { stores, orgNodes } from '@db/org'
+import { eq, and, or, desc, inArray, sql, ilike, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
 import { requirePermission, scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
-function serializeCustomer(row: {
-  client_wechat_users: typeof clientWechatUsers.$inferSelect
-  stores: typeof stores.$inferSelect | null
-  staff_wechat_users: typeof staffWechatUsers.$inferSelect | null
-}): Customer {
-  const c = row.client_wechat_users
+// 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
+const storeName = sql<string | null>`(
+  SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
+)`.as('store_name')
+
+const marketName = sql<string | null>`(
+  SELECT n.name FROM stores s
+  JOIN org_nodes sn ON sn.id = s.org_node_id
+  JOIN org_nodes n ON n.id = sn.parent_id
+  WHERE s.store_id = ${clientWechatUsers.boundStoreId}
+)`.as('market_name')
+
+const customerColumns = {
+  ...getTableColumns(clientWechatUsers),
+  storeName,
+  marketName,
+}
+
+type CustomerRow = typeof clientWechatUsers.$inferSelect & {
+  storeName: string | null
+  marketName: string | null
+}
+
+function serializeCustomer(row: CustomerRow): Customer {
   return {
-    userId: c.userId,
-    openid: c.openid,
-    phone: c.phone,
-    customerId: c.customerId,
-    name: c.name,
-    boundStoreId: c.boundStoreId,
-    boundEmployeeId: c.boundEmployeeId,
-    memberLevel: c.memberLevel,
-    customerSource: c.customerSource,
-    category: c.category,
-    birthday: c.birthday,
-    occupation: c.occupation,
-    isMarried: c.isMarried,
-    wechatName: c.wechatName,
-    skinType: c.skinType,
-    improvementFocus: c.improvementFocus,
-    skinIssue: c.skinIssue,
-    wellnessPreference: c.wellnessPreference,
-    createdAt: c.createdAt.toISOString(),
-    updatedAt: c.updatedAt.toISOString(),
-    storeName: row.stores?.storeName ?? undefined,
-    employeeName: row.staff_wechat_users?.name ?? undefined,
+    userId: row.userId,
+    openid: row.openid,
+    phone: row.phone,
+    customerId: row.customerId,
+    name: row.name,
+    boundStoreId: row.boundStoreId,
+    boundEmployeeId: row.boundEmployeeId,
+    memberLevel: row.memberLevel,
+    customerSource: row.customerSource,
+    customerType: row.customerType,
+    spendingTier: row.spendingTier,
+    monthlyActivity: row.monthlyActivity,
+    customerStatus: row.customerStatus,
+    birthday: row.birthday,
+    occupation: row.occupation,
+    isMarried: row.isMarried,
+    wechatName: row.wechatName,
+    skinType: row.skinType,
+    improvementFocus: row.improvementFocus,
+    skinIssue: row.skinIssue,
+    wellnessPreference: row.wellnessPreference,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    storeName: row.storeName ?? undefined,
+    employeeName: row.boundEmployeeName ?? undefined,
+    marketName: row.marketName ?? undefined,
   }
 }
 
@@ -47,10 +69,8 @@ export async function searchCustomerByPhone(phone: string): Promise<Customer | n
   requirePermission(session, 'customer:list')
 
   const rows = await db
-    .select()
+    .select(customerColumns)
     .from(clientWechatUsers)
-    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
-    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
     .where(eq(clientWechatUsers.phone, phone))
     .limit(1)
 
@@ -71,10 +91,8 @@ export async function searchCustomers(keyword: string): Promise<Customer[]> {
 
   const pattern = `%${trimmed}%`
   const rows = await db
-    .select()
+    .select(customerColumns)
     .from(clientWechatUsers)
-    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
-    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
     .where(
       and(
         scopeCondition(session, clientWechatUsers.boundStoreId),
@@ -97,10 +115,8 @@ export async function getCustomers(): Promise<Customer[]> {
   // admin 不碰顾客数据（规范约束），但 scopeCondition 会返回 undefined（无过滤）
   // 非 admin 角色按 boundStoreId scope 过滤
   const rows = await db
-    .select()
+    .select(customerColumns)
     .from(clientWechatUsers)
-    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
-    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
     .where(scopeCondition(session, clientWechatUsers.boundStoreId))
     .orderBy(clientWechatUsers.name)
     .limit(500)
@@ -110,8 +126,14 @@ export async function getCustomers(): Promise<Customer[]> {
 
 /** 顾客列表筛选参数 */
 export interface CustomerFilters {
+  marketId?: string
   storeId?: string
   memberLevel?: string
+  customerSource?: string
+  customerType?: string
+  spendingTier?: string
+  monthlyActivity?: string
+  customerStatus?: string
   search?: string
   page?: number
   pageSize?: number
@@ -141,11 +163,32 @@ export async function getCustomersPaginated(filters: CustomerFilters = {}): Prom
     scopeCondition(session, clientWechatUsers.boundStoreId),
   ]
 
+  if (filters.marketId) {
+    const sub = db.select({ storeId: stores.storeId }).from(stores)
+      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+      .where(eq(orgNodes.parentId, filters.marketId))
+    conditions.push(inArray(clientWechatUsers.boundStoreId, sub))
+  }
   if (filters.storeId) {
     conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
   }
   if (filters.memberLevel) {
-    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel))
+    conditions.push(eq(clientWechatUsers.memberLevel, filters.memberLevel as typeof clientWechatUsers.memberLevel.enumValues[number]))
+  }
+  if (filters.customerSource) {
+    conditions.push(eq(clientWechatUsers.customerSource, filters.customerSource as typeof clientWechatUsers.customerSource.enumValues[number]))
+  }
+  if (filters.customerType) {
+    conditions.push(eq(clientWechatUsers.customerType, filters.customerType as typeof clientWechatUsers.customerType.enumValues[number]))
+  }
+  if (filters.spendingTier) {
+    conditions.push(eq(clientWechatUsers.spendingTier, filters.spendingTier as typeof clientWechatUsers.spendingTier.enumValues[number]))
+  }
+  if (filters.monthlyActivity) {
+    conditions.push(eq(clientWechatUsers.monthlyActivity, filters.monthlyActivity as typeof clientWechatUsers.monthlyActivity.enumValues[number]))
+  }
+  if (filters.customerStatus) {
+    conditions.push(eq(clientWechatUsers.customerStatus, filters.customerStatus as typeof clientWechatUsers.customerStatus.enumValues[number]))
   }
   if (filters.search) {
     const pattern = `%${filters.search}%`
@@ -163,10 +206,8 @@ export async function getCustomersPaginated(filters: CustomerFilters = {}): Prom
     db.select({ count: sql<number>`cast(count(*) as int)` })
       .from(clientWechatUsers)
       .where(whereClause),
-    db.select()
+    db.select(customerColumns)
       .from(clientWechatUsers)
-      .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
-      .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
       .where(whereClause)
       .orderBy(clientWechatUsers.name)
       .limit(pageSize)
@@ -188,10 +229,8 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
   if (isAdminOnly) return null
 
   const rows = await db
-    .select()
+    .select(customerColumns)
     .from(clientWechatUsers)
-    .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
-    .leftJoin(staffWechatUsers, eq(clientWechatUsers.boundEmployeeId, staffWechatUsers.employeeId))
     .where(and(eq(clientWechatUsers.userId, userId), scopeCondition(session, clientWechatUsers.boundStoreId)))
     .limit(1)
 
@@ -348,7 +387,6 @@ export async function updateCustomer(
     phone: string | null
     memberLevel: string | null
     customerSource: string | null
-    category: string | null
     birthday: string | null
     occupation: string | null
     isMarried: boolean | null
@@ -371,6 +409,21 @@ export async function updateCustomer(
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
   }
 
+  // boundEmployeeId 变更时同步写入冗余姓名
+  if ('boundEmployeeId' in data) {
+    if (data.boundEmployeeId) {
+      const { staffWechatUsers } = await import('@db/user')
+      const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
+        .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
+      ;(data as any).boundEmployeeName = emp?.name ?? null
+    } else {
+      ;(data as any).boundEmployeeName = null
+    }
+  }
+
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(clientWechatUsers).where(eq(clientWechatUsers.userId, userId)).limit(1)
+
   const scopeCond = scopeCondition(session, clientWechatUsers.boundStoreId)
   const whereConditions = expectedUpdatedAt
     ? and(
@@ -382,7 +435,7 @@ export async function updateCustomer(
 
   let result: any
   try {
-    result = await db.update(clientWechatUsers).set(data).where(whereConditions)
+    result = await db.update(clientWechatUsers).set(data as any).where(whereConditions)
   } catch (err: any) {
     if (err?.code === '23505') {
       return { success: false, message: '该手机号已被其他顾客使用' }
@@ -397,7 +450,7 @@ export async function updateCustomer(
     }
   }
 
-  await logOperation(session, 'customer.update', 'customer', userId, data)
+  await logUpdate(session, 'customer.update', 'customer', userId, before as Record<string, unknown>, data)
 
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
@@ -440,6 +493,15 @@ export async function createCustomer(data: {
     return { success: false, message: '该手机号已存在顾客记录' }
   }
 
+  // 解析绑定美容师姓名
+  let boundEmployeeName: string | null = null
+  if (data.boundEmployeeId) {
+    const { staffWechatUsers } = await import('@db/user')
+    const [emp] = await db.select({ name: staffWechatUsers.name }).from(staffWechatUsers)
+      .where(eq(staffWechatUsers.employeeId, data.boundEmployeeId)).limit(1)
+    boundEmployeeName = emp?.name ?? null
+  }
+
   // 服务端生成 userId
   const { randomBytes } = await import('crypto')
   const userId = `FYGK-${randomBytes(6).toString('hex')}`
@@ -451,6 +513,7 @@ export async function createCustomer(data: {
       name: data.name,
       boundStoreId: data.boundStoreId ?? null,
       boundEmployeeId: data.boundEmployeeId ?? null,
+      boundEmployeeName,
     })
   } catch (err: any) {
     if (err?.code === '23505') {

@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -341,16 +341,9 @@ export async function updateEmployee(
     }
   }
 
-  // 如果 storeId 变更，先获取旧值以便后续同步 permission_roles scope（§AFF-03）
-  let oldStoreId: string | null = null
-  if (data.storeId !== undefined) {
-    const [current] = await db
-      .select({ storeId: staffWechatUsers.storeId })
-      .from(staffWechatUsers)
-      .where(eq(staffWechatUsers.employeeId, employeeId))
-      .limit(1)
-    oldStoreId = current?.storeId ?? null
-  }
+  // 获取旧值用于日志 diff + storeId 变更检测
+  const [currentEmployee] = await db.select().from(staffWechatUsers).where(eq(staffWechatUsers.employeeId, employeeId)).limit(1)
+  const oldStoreId = currentEmployee?.storeId ?? null
 
   // 乐观锁 + scope 隔离：WHERE employee_id = $1 [AND updated_at = $2] [AND scope]
   const scopeCond = scopeCondition(session, staffWechatUsers.storeId)
@@ -421,7 +414,7 @@ export async function updateEmployee(
     }
   }
 
-  await logOperation(session, 'employee.update', 'employee', employeeId, data)
+  await logUpdate(session, 'employee.update', 'employee', employeeId, currentEmployee as Record<string, unknown>, data)
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }

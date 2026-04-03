@@ -52,6 +52,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -79,7 +81,7 @@ import { createEmployee, updateEmployee, getEmployeesPaginated, getOrgLevel2ForF
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull } from 'drizzle-orm'
 
 const mockSession = {
@@ -421,12 +423,13 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
     expect(result.success).toBe(true)
     // db.update 应被调用 2 次：员工更新 + scope 同步
     expect(db.update).toHaveBeenCalledTimes(2)
-    // logOperation 应被调用 2 次：permission.scopeSync + employee.update
-    expect(logOperation).toHaveBeenCalledTimes(2)
+    // logOperation 1 次：permission.scopeSync；logUpdate 1 次：employee.update
+    expect(logOperation).toHaveBeenCalledTimes(1)
     expect(logOperation).toHaveBeenCalledWith(
       mockSession, 'permission.scopeSync', 'permission_role', 'FY-001',
       expect.objectContaining({ oldStoreId: 'store-A', newStoreId: 'store-B' }),
     )
+    expect(logUpdate).toHaveBeenCalledTimes(1)
   })
 
   it('storeId 未变更（编辑其他字段）→ 不触发 scope 同步', async () => {
@@ -502,10 +505,8 @@ describe('updateEmployee — §AFF-03 门店变更 scope 同步', () => {
 
     expect(result.success).toBe(true)
     // scope UPDATE 执行了但 rowCount=0 → 不写 scopeSync 日志
-    expect(logOperation).toHaveBeenCalledTimes(1) // 仅 employee.update
-    expect(logOperation).toHaveBeenCalledWith(
-      mockSession, 'employee.update', 'employee', 'FY-001', expect.anything(),
-    )
+    expect(logOperation).not.toHaveBeenCalled() // scopeSync 被跳过
+    expect(logUpdate).toHaveBeenCalledTimes(1) // 仅 employee.update
   })
 })
 

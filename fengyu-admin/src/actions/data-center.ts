@@ -463,7 +463,7 @@ export async function getRankings(filter: DateFilter = {}): Promise<{
   const customerRows = await db.execute(sql.raw(`
     SELECT
       COALESCE(c.name, o.client_phone, '未知顾客') AS name,
-      COALESCE(c.member_level, '新客') AS subtitle,
+      COALESCE(c.member_level, '未定级') AS subtitle,
       COALESCE(SUM(o.total_amount), 0) AS value
     FROM sale_orders o
     LEFT JOIN client_wechat_users c ON c.user_id = o.client_user_id

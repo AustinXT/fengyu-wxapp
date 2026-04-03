@@ -51,6 +51,11 @@ vi.mock('@db/org', () => ({
 
 vi.mock('@db/user', () => ({
   staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
+  clientWechatUsers: { userId: 'user_id', customerType: 'customer_type' },
+}))
+
+vi.mock('@db/system-config', () => ({
+  systemConfigs: { key: 'key', value: 'value' },
 }))
 
 vi.mock('@db/product', () => ({
@@ -85,6 +90,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('@/lib/utils', () => ({
@@ -353,10 +360,22 @@ describe('createOrder — 事务异常捕获', () => {
   })
 })
 
+/** mock db.select() 链用于 logTransition 上下文获取：.from().where().limit() */
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
+}
+
 describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
   })
 
   function mockConfirmTx(count: number) {
@@ -414,6 +433,7 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ status: '待支付', customerName: '顾客甲', totalAmount: '200.00' }])
   })
 
   function mockCloseTx(count: number) {
@@ -470,6 +490,7 @@ describe('resetOrderFailed — 重置支付失败', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
   })
 
   it('订单不是支付失败状态（rowCount=0）→ 失败', async () => {

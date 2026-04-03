@@ -17,12 +17,17 @@ vi.mock('@db/user', () => ({
     boundEmployeeId: 'bound_employee_id',
     updatedAt: 'updated_at',
     memberLevel: 'member_level',
+    customerType: 'customer_type',
+    spendingTier: 'spending_tier',
+    monthlyActivity: 'monthly_activity',
+    customerStatus: 'customer_status',
   },
   staffWechatUsers: { employeeId: 'employee_id', name: 'name' },
 }))
 
 vi.mock('@db/org', () => ({
-  stores: { storeId: 'store_id', storeName: 'store_name' },
+  stores: { storeId: 'store_id', storeName: 'store_name', orgNodeId: 'org_node_id' },
+  orgNodes: { id: 'id', name: 'name', type: 'type', parentId: 'parent_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -31,8 +36,9 @@ vi.mock('drizzle-orm', () => ({
   or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
-  sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
+  sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  getTableColumns: vi.fn(() => ({})),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -49,6 +55,8 @@ vi.mock('@/lib/permissions', () => ({
 
 vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
+  logUpdate: vi.fn(),
+  logTransition: vi.fn(),
 }))
 
 vi.mock('next/cache', () => ({
@@ -76,8 +84,21 @@ function makeSelectChain(result: any[]) {
   const limit = vi.fn().mockResolvedValue(result)
   const whereResult = Object.assign(Promise.resolve(result), { limit })
   const where = vi.fn().mockReturnValue(whereResult)
-  const from = vi.fn().mockReturnValue({ where })
+  const chain: any = { where }
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  const from = vi.fn().mockReturnValue(chain)
   return vi.fn().mockReturnValue({ from })
+}
+
+/** mock db.select() 链用于 logUpdate 获取旧值：.from().where().limit() */
+function mockSelectBefore(rows: any[] = [{}]) {
+  const chain: any = {}
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.limit = vi.fn().mockResolvedValue(rows)
+  chain.leftJoin = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
+  ;(db.select as any).mockReturnValue(chain)
 }
 
 // ── updateCustomer ────────────────────────────────────────────────────────────
@@ -86,6 +107,7 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ userId: 'user-1', name: '张三', phone: '13800000000' }])
   })
 
   it('手机号格式错误 → 拒绝，不调用 DB', async () => {
@@ -290,9 +312,13 @@ describe('getCustomersPaginated — 服务端分页', () => {
       name: '李女士',
       boundStoreId: 'store-1',
       boundEmployeeId: 'EMP-001',
-      memberLevel: '金卡',
+      boundEmployeeName: '张三',
+      memberLevel: '金钻',
       customerSource: null,
-      category: null,
+      customerType: '流量客',
+      spendingTier: '<1990',
+      monthlyActivity: null,
+      customerStatus: null,
       birthday: null,
       occupation: null,
       isMarried: null,
@@ -305,7 +331,8 @@ describe('getCustomersPaginated — 服务端分页', () => {
       updatedAt: new Date('2026-03-15T10:00:00Z'),
     },
     stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
-    staff_wechat_users: { employeeId: 'EMP-001', name: '张三' },
+    store_node: { id: 'org-store-1', name: '南昌旗舰店', parentId: 'org-market-1' },
+    market_node: { id: 'org-market-1', name: '南昌市场' },
   }
 
   /** mock 2 个并行 select：COUNT + DATA */
@@ -319,12 +346,13 @@ describe('getCustomersPaginated — 服务端分页', () => {
         const from = vi.fn().mockReturnValue({ where })
         return { from }
       }
-      // DATA: select → from → leftJoin × 2 → where → orderBy → limit → offset
+      // DATA: select → from → leftJoin × 3 → where → orderBy → limit → offset
       const offset = vi.fn().mockResolvedValue(dataRows)
       const limit = vi.fn().mockReturnValue({ offset })
       const orderBy = vi.fn().mockReturnValue({ limit })
       const where = vi.fn().mockReturnValue({ orderBy })
-      const leftJoin2 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ where })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
       const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
       const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
       return { from }
@@ -347,7 +375,7 @@ describe('getCustomersPaginated — 服务端分页', () => {
     expect(result.data[0].name).toBe('李女士')
     expect(result.data[0].storeName).toBe('南昌旗舰店')
     expect(result.data[0].employeeName).toBe('张三')
-    expect(result.data[0].memberLevel).toBe('金卡')
+    expect(result.data[0].memberLevel).toBe('金钻')
   })
 
   it('空数据 → { data: [], total: 0 }', async () => {
@@ -370,9 +398,9 @@ describe('getCustomersPaginated — 服务端分页', () => {
   it('memberLevel 筛选 → eq 被调用', async () => {
     mockPaginatedChain(0, [])
 
-    await getCustomersPaginated({ memberLevel: '钻石' })
+    await getCustomersPaginated({ memberLevel: '黑钻' })
 
-    expect(eq).toHaveBeenCalledWith('member_level', '钻石')
+    expect(eq).toHaveBeenCalledWith('member_level', '黑钻')
   })
 
   it('search 筛选 → ilike(name) + ilike(phone)', async () => {
@@ -393,11 +421,13 @@ describe('getCustomersPaginated — 服务端分页', () => {
     expect(db.select).toHaveBeenCalledTimes(2)
   })
 
-  it('stores/staff JOIN 为 null → undefined', async () => {
+  it('stores JOIN 为 null → storeName/marketName undefined', async () => {
     const noJoins = {
       ...mockCustomerRow,
+      client_wechat_users: { ...mockCustomerRow.client_wechat_users, boundEmployeeName: null },
       stores: null,
-      staff_wechat_users: null,
+      store_node: null,
+      market_node: null,
     }
     mockPaginatedChain(1, [noJoins])
 
@@ -405,6 +435,51 @@ describe('getCustomersPaginated — 服务端分页', () => {
 
     expect(result.data[0].storeName).toBeUndefined()
     expect(result.data[0].employeeName).toBeUndefined()
+    expect(result.data[0].marketName).toBeUndefined()
+  })
+
+  it('新字段序列化 → customerType/spendingTier/marketName', async () => {
+    mockPaginatedChain(1, [mockCustomerRow])
+
+    const result = await getCustomersPaginated()
+
+    expect(result.data[0].customerType).toBe('流量客')
+    expect(result.data[0].spendingTier).toBe('<1990')
+    expect(result.data[0].monthlyActivity).toBeNull()
+    expect(result.data[0].customerStatus).toBeNull()
+    expect(result.data[0].marketName).toBe('南昌市场')
+  })
+
+  it('customerType 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCustomersPaginated({ customerType: '会员客' })
+
+    expect(eq).toHaveBeenCalledWith('customer_type', '会员客')
+  })
+
+  it('spendingTier 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCustomersPaginated({ spendingTier: '3-6W' })
+
+    expect(eq).toHaveBeenCalledWith('spending_tier', '3-6W')
+  })
+
+  it('monthlyActivity 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCustomersPaginated({ monthlyActivity: '二次客活' })
+
+    expect(eq).toHaveBeenCalledWith('monthly_activity', '二次客活')
+  })
+
+  it('customerStatus 筛选 → eq 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getCustomersPaginated({ customerStatus: '保有会员-稳定' })
+
+    expect(eq).toHaveBeenCalledWith('customer_status', '保有会员-稳定')
   })
 })
 
@@ -414,22 +489,26 @@ const mockFullRow = {
   client_wechat_users: {
     userId: 'FYGK-001', openid: null, phone: '13812345678', customerId: null,
     name: '李女士', boundStoreId: 'store-1', boundEmployeeId: 'EMP-001',
-    memberLevel: '金卡', customerSource: null, category: null, birthday: null,
-    occupation: null, isMarried: null, wechatName: null, skinType: null,
+    boundEmployeeName: '张三',
+    memberLevel: '金钻', customerSource: null, category: null,
+    customerType: '流量客', spendingTier: '<1990', monthlyActivity: null, customerStatus: null,
+    birthday: null, occupation: null, isMarried: null, wechatName: null, skinType: null,
     improvementFocus: null, skinIssue: null, wellnessPreference: null,
     createdAt: new Date('2026-01-15T08:00:00Z'),
     updatedAt: new Date('2026-03-15T10:00:00Z'),
   },
   stores: { storeId: 'store-1', storeName: '南昌旗舰店' },
-  staff_wechat_users: { employeeId: 'EMP-001', name: '张三' },
+  store_node: { id: 'org-store-1', name: '南昌旗舰店', parentId: 'org-market-1' },
+  market_node: { id: 'org-market-1', name: '南昌市场' },
 }
 
-/** mock: select → from → leftJoin × 2 → where → orderBy → limit */
+/** mock: select → from → leftJoin × 3 → where → orderBy → limit */
 function mockFullSelectChain(rows: any[]) {
   const limit = vi.fn().mockResolvedValue(rows)
   const orderBy = vi.fn().mockReturnValue({ limit })
   const where = vi.fn().mockReturnValue({ orderBy, limit })
-  const leftJoin2 = vi.fn().mockReturnValue({ where })
+  const leftJoin3 = vi.fn().mockReturnValue({ where })
+  const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
   const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
   const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
   ;(db.select as any).mockReturnValue({ from })

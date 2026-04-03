@@ -11,7 +11,7 @@ import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logTransition } from '@/lib/operation-log'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -287,6 +287,20 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
   const session = await getSession()
   requirePermission(session, 'service:update')
 
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({
+      assignedEmployeeId: serviceOrders.assignedEmployeeId,
+      employeeName: staffWechatUsers.name,
+      clientUserId: serviceOrders.clientUserId,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
   let result: any
   try {
     result = await db
@@ -305,7 +319,9 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
     return { success: false, message: '服务单状态已变更，无法开始' }
   }
 
-  await logOperation(session, 'service.start', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.start', 'service_order', serviceOrderId, '待服务', '服务中', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已开始' }
@@ -319,16 +335,22 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
   const session = await getSession()
   requirePermission(session, 'service:update')
 
-  // 非 admin 需校验 scope（原子 SQL 不支持 Drizzle scopeCondition，此处预检查）
+  // 获取上下文用于日志 + 非 admin scope 预检查
+  const [svcCtx] = await db
+    .select({
+      storeId: serviceOrders.storeId,
+      employeeName: staffWechatUsers.name,
+      customerName: clientWechatUsers.name,
+    })
+    .from(serviceOrders)
+    .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
+
   if (!isAdminScope(session)) {
     const scopeStoreIds = session.permissions.scopeStoreIds
-    if (scopeStoreIds.length === 0) return { success: false, message: '无权操作该服务单' }
-    const [so] = await db
-      .select({ storeId: serviceOrders.storeId })
-      .from(serviceOrders)
-      .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
-      .limit(1)
-    if (!so || !scopeStoreIds.includes(so.storeId)) {
+    if (scopeStoreIds.length === 0 || !svcCtx || !scopeStoreIds.includes(svcCtx.storeId)) {
       return { success: false, message: '无权操作该服务单' }
     }
   }
@@ -366,7 +388,9 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
     return { success: false, message: '服务单状态已变更，无法完成' }
   }
 
-  await logOperation(session, 'service.complete', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '已完成', {
+    employeeName: svcCtx?.employeeName, customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已完成' }
@@ -376,6 +400,14 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
 export async function cancelServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'service:update')
+
+  // 获取上下文用于日志
+  const [svcCtx] = await db
+    .select({ customerName: clientWechatUsers.name })
+    .from(serviceOrders)
+    .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
+    .where(eq(serviceOrders.serviceOrderId, serviceOrderId))
+    .limit(1)
 
   let cancelResult: any
   try {
@@ -395,7 +427,9 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
     return { success: false, message: '服务单状态已变更，无法取消' }
   }
 
-  await logOperation(session, 'service.cancel', 'service_order', serviceOrderId)
+  await logTransition(session, 'service.cancel', 'service_order', serviceOrderId, '待服务', '已取消', {
+    customerName: svcCtx?.customerName,
+  })
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }

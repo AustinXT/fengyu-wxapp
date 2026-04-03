@@ -31,7 +31,7 @@ export function formatDateTime(date: string | Date): string {
 
 /**
  * 计算给定订单金额下，优惠券的实际抵扣金额。
- * - 现金券/项目券：min(discountValue, totalAmount)
+ * - 现金券/品项券：min(discountValue, totalAmount)
  * - 折扣券：totalAmount × (1 - discountValue)，可选 maxDiscount 封顶
  */
 export function calcCouponDiscount(

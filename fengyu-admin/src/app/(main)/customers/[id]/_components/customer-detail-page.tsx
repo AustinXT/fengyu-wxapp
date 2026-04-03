@@ -33,11 +33,8 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
     name: customer.name ?? "",
-    boundStoreId: customer.boundStoreId ?? "",
     boundEmployeeId: customer.boundEmployeeId ?? "",
-    memberLevel: customer.memberLevel ?? "",
     customerSource: customer.customerSource ?? "",
-    category: customer.category ?? "",
     birthday: customer.birthday ?? "",
     occupation: customer.occupation ?? "",
     isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
@@ -54,11 +51,8 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
   function handleCancelEdit() {
     setForm({
       name: customer.name ?? "",
-      boundStoreId: customer.boundStoreId ?? "",
       boundEmployeeId: customer.boundEmployeeId ?? "",
-      memberLevel: customer.memberLevel ?? "",
       customerSource: customer.customerSource ?? "",
-      category: customer.category ?? "",
       birthday: customer.birthday ?? "",
       occupation: customer.occupation ?? "",
       isMarried: customer.isMarried === true ? "true" : customer.isMarried === false ? "false" : "",
@@ -75,11 +69,8 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     try {
       const result = await updateCustomer(customer.userId, {
         name: form.name || null,
-        boundStoreId: form.boundStoreId || null,
         boundEmployeeId: form.boundEmployeeId || null,
-        memberLevel: form.memberLevel || null,
         customerSource: form.customerSource || null,
-        category: form.category || null,
         birthday: form.birthday || null,
         occupation: form.occupation || null,
         isMarried: form.isMarried === "true" ? true : form.isMarried === "false" ? false : null,
@@ -103,11 +94,11 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
     }
   }
 
-  // Employees filtered by selected store for convenience
+  // Employees filtered by customer's bound store
   const storeEmployees = useMemo(() => {
-    if (!form.boundStoreId) return employees.filter((e) => !e.isResigned)
-    return employees.filter((e) => !e.isResigned && e.storeId === form.boundStoreId)
-  }, [employees, form.boundStoreId])
+    if (!customer.boundStoreId) return employees.filter((e) => !e.isResigned)
+    return employees.filter((e) => !e.isResigned && e.storeId === customer.boundStoreId)
+  }, [employees, customer.boundStoreId])
 
   const activeSaleItems = useMemo(() => {
     const allItems: SaleItem[] = []
@@ -268,21 +259,7 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">归属门店</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.boundStoreId}
-                      onChange={(e) => handleFormChange("boundStoreId", e.target.value)}
-                    >
-                      <option value="">请选择门店</option>
-                      {stores.map((s) => (
-                        <option key={s.storeId} value={s.storeId}>
-                          {s.storeName}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <Input value={customer.storeName ?? ""} disabled />
-                  )}
+                  <Input value={customer.storeName ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">所属美容师</label>
@@ -304,31 +281,23 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">会员等级</label>
-                  {isEditing ? (
-                    <Select
-                      value={form.memberLevel}
-                      onChange={(e) => handleFormChange("memberLevel", e.target.value)}
-                    >
-                      <option value="">请选择</option>
-                      <option value="钻石">钻石</option>
-                      <option value="金卡">金卡</option>
-                      <option value="银卡">银卡</option>
-                      <option value="新客">新客</option>
-                    </Select>
-                  ) : (
-                    <Input value={customer.memberLevel ?? ""} disabled />
-                  )}
+                  <Input value={customer.memberLevel ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium">顾客分类</label>
-                  {isEditing ? (
-                    <Input
-                      value={form.category}
-                      onChange={(e) => handleFormChange("category", e.target.value)}
-                    />
-                  ) : (
-                    <Input value={customer.category ?? ""} disabled />
-                  )}
+                  <label className="text-sm font-medium">顾客类型</label>
+                  <Input value={customer.customerType ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">消费档位</label>
+                  <Input value={customer.spendingTier ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">月度客活</label>
+                  <Input value={customer.monthlyActivity ?? ""} disabled />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">到店状态</label>
+                  <Input value={customer.customerStatus ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">顾客来源</label>

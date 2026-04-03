@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 import { uploadFile, reuploadToFixedPath, deleteByCloudPaths } from '@/lib/cloudbase'
 
 interface SystemSettings {
@@ -51,6 +51,8 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
   requirePermission(session, 'system:config')
 
   try {
+    const oldSettings = await getSettings()
+
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS system_configs (
         key TEXT PRIMARY KEY,
@@ -107,7 +109,7 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       ON CONFLICT (key) DO UPDATE SET value = ${String(newCount)}, updated_at = NOW()
     `)
 
-    await logOperation(session, 'system.saveConfig', 'system_config', 'all', settings as unknown as Record<string, unknown>)
+    await logUpdate(session, 'system.saveConfig', 'system_config', 'all', oldSettings as unknown as Record<string, unknown>, settings as unknown as Record<string, unknown>)
 
     const { revalidatePath } = await import('next/cache')
     revalidatePath('/settings')

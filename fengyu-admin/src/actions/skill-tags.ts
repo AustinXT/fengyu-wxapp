@@ -7,7 +7,7 @@ import { revalidatePath } from 'next/cache'
 import type { SkillTag } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation } from '@/lib/operation-log'
+import { logOperation, logUpdate } from '@/lib/operation-log'
 
 function rowToSkillTag(row: typeof skillTags.$inferSelect): SkillTag {
   return {
@@ -89,6 +89,9 @@ export async function updateSkillTag(
   const session = await getSession()
   requirePermission(session, 'employee:update')
 
+  // 获取旧值用于日志 diff
+  const [before] = await db.select().from(skillTags).where(eq(skillTags.id, id)).limit(1)
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(skillTags.id, id), sql`date_trunc('milliseconds', ${skillTags.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(skillTags.id, id)
@@ -108,7 +111,7 @@ export async function updateSkillTag(
     }
   }
 
-  await logOperation(session, 'skillTag.update', 'skill_tag', id, data)
+  await logUpdate(session, 'skillTag.update', 'skill_tag', id, before as Record<string, unknown>, data)
   revalidatePath('/employees')
   return { success: true, message: '标签已更新' }
 }
