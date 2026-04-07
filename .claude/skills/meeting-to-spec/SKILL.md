@@ -1,11 +1,10 @@
 ---
 name: meeting-to-spec
 description: |
-  用于从会议纪要中提取核心决策，与用户对话澄清理解偏差，
-  帮助生成迭代需求描述并更新对应的 .42cog/pm/*.pr.spec.md 规范文档。
-  当用户说"整理会议需求"、"更新spec"、"会议决议落地"时使用。
-argument-hint: '<会议目录路径，如: notes/meetings/meeting-20260407>'
-disable-model-invocation: true
+  从会议纪要中提取核心决策，澄清理解后更新 spec 文档。
+  当用户说"整理会议需求"、"更新 spec"、"会议决议落地"、
+  "帮我看看上次开会说了什么"、"把会议内容整理一下"、
+  "notes/meetings 目录下的内容"时激活。
 metadata:
   title: 会议纪要转需求规范
   description_zh: 会议决策提取、需求澄清、spec 文档更新

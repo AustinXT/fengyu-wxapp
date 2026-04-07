@@ -1,11 +1,15 @@
 ---
 name: admin-coding
 description: |
-  用于 Next.js 15 管理后台（fengyu-admin）的编码规范与模式参考。
+  Next.js 15 管理后台（fengyu-admin）编码规范与模式参考。
   覆盖 Server Actions、Drizzle ORM 查询、Zod 校验、权限控制、
-  Tailwind CSS v4 样式、Vitest 测试和 Playwright E2E。
-  当用户在 admin 目录下工作，或说"admin 页面"、"管理后台"、
-  "Server Actions"、"admin 测试"时激活。
+  Tailwind CSS v4、Vitest 和 Playwright E2E。
+  当用户在 fengyu-admin 目录工作，或谈到以下内容时激活：
+  admin 页面、管理后台、Server Actions、Drizzle 查询、
+  权限矩阵、角色管理、订单管理、员工管理、商品管理、门店管理、
+  顾客管理、提成矩阵、优惠券管理、预约管理、服务单管理、
+  admin 测试、E2E 测试、Vitest、bun run build、
+  表格组件、分页、筛选器、导出、数据看板、审计日志。
 metadata:
   title: Next.js 管理后台编码规范
   description_zh: fengyu-admin Server Actions / Drizzle 查询 / 权限 / 测试模式参考

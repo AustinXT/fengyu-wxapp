@@ -1,12 +1,15 @@
 ---
 name: wx-coding
 title: 微信小程序编码规范
-description: >
-  用于编写微信小程序 Page/Component、开发 CloudBase 云函数（Action 路由）、
-  集成微信认证与错误处理。适用于所有编码实现任务，不含 UI 设计和 Schema 设计。
-  含 API 开发和全栈功能开发的完整 Checklist。
-  当用户说"写云函数"、"加个接口"、"实现后端 API"、"实现某个功能"、
-  "开发新模块"、"做一个新页面+接口"时激活。
+description: |
+  微信小程序 Page/Component 编写、CloudBase 云函数 Action 路由开发、认证与错误处理。
+  适用于所有小程序端和云函数端的编码实现任务。
+  当用户在 fengyu-client 或 fengyu-staff 目录工作，或谈到以下内容时激活：
+  写云函数、加个接口、实现后端 API、实现功能、开发新模块、做个新页面、
+  小程序页面、表单提交、列表页、详情页、下单、支付、退款、
+  预约、服务单、顾客管理、员工管理、商品展示、门店、优惠券、积分、
+  改个页面、加个按钮、做个弹窗、loading 状态、分页、搜索、筛选、
+  callClientApi、callStaffApi、onLoad、onShow。
 metadata:
   title: 微信小程序编码规范
   description_zh: 微信小程序编码约束、CloudBase 云函数模式、认证集成、API/全栈开发 Checklist
