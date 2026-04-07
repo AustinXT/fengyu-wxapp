@@ -17,20 +17,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 架构概览
 
 ```
-┌─────────────┐  ┌─────────────┐
-│ fengyu-     │  │ fengyu-     │
-│ client      │  │ staff       │
-│ miniprogram │  │ miniprogram │
-└──────┬──────┘  └──────┬──────┘
-       │                │
-  wx.cloud.callFunction
-       │                │
-┌──────▼──────┐  ┌──────▼──────┐
-│  clientApi  │  │  staffApi   │
-│ (云函数)     │  │ (云函数)     │
-└──────┬──────┘  └──────┬──────┘
-       │                │
-       └───────┬────────┘
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│ fengyu-     │  │ fengyu-     │  │ fengyu-     │
+│ client      │  │ staff       │  │ admin       │
+│ miniprogram │  │ miniprogram │  │ (Next.js)   │
+└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+       │                │                │
+  wx.cloud.callFunction          Drizzle ORM
+       │                │                │
+┌──────▼──────┐  ┌──────▼──────┐        │
+│  clientApi  │  │  staffApi   │        │
+│ (云函数)     │  │ (云函数)     │        │
+└──────┬──────┘  └──────┬──────┘        │
+       │                │                │
+       └───────┬────────┴────────────────┘
                │
          PostgreSQL
          （业务主库）

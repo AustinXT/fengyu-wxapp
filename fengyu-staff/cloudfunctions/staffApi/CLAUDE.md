@@ -20,13 +20,13 @@ staffApi/
 │   ├── auth.js       # login, bindPhone
 │   ├── store.js      # list, unbindRequests, approveUnbind, rejectUnbind
 │   ├── staff.js      # list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard
-│   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory
-│   ├── product.js    # shopInit, categories, skuDetail, spuList, spuDetail, promotionList, promotionPlans
-│   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail
-│   ├── allocation.js # save, delete, rates, pendingList, suggest
-│   ├── appointment.js # list, confirm, checkin, detail
+│   ├── customer.js   # search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign
+│   ├── product.js    # shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans
+│   ├── order.js      # create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup
+│   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList, suggest
+│   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
-│   └── service.js    # create, start, complete, cancel, list, detail
+│   └── service.js    # create, start, complete, cancel, list, detail, counts
 └── utils/
 ```
 
