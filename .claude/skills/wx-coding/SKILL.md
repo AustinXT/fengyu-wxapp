@@ -4,11 +4,14 @@ title: 微信小程序编码规范
 description: >
   用于编写微信小程序 Page/Component、开发 CloudBase 云函数（Action 路由）、
   集成微信认证与错误处理。适用于所有编码实现任务，不含 UI 设计和 Schema 设计。
+  含 API 开发和全栈功能开发的完整 Checklist。
+  当用户说"写云函数"、"加个接口"、"实现后端 API"、"实现某个功能"、
+  "开发新模块"、"做一个新页面+接口"时激活。
 metadata:
   title: 微信小程序编码规范
-  description_zh: 微信小程序编码约束、CloudBase 云函数模式、认证集成与错误处理
+  description_zh: 微信小程序编码约束、CloudBase 云函数模式、认证集成、API/全栈开发 Checklist
   author: nvoyager
-  version: 1.0.3
+  version: 2.0.0
 ---
 
 ## 何时使用 / 不适用
@@ -202,10 +205,121 @@ Tab 页和列表页需要在 `onLoad` **和** `onShow` 中都调用 `loadData()`
 | [mock-data-patterns.md](references/mock-data-patterns.md) | Mock 拦截架构、handler 编写规范、生产安全 |
 | [cloud-function-patterns.md](references/cloud-function-patterns.md) | Auth LRU 缓存、N+1 预防、_testOpenid、env 管理、cron、部署 |
 
+---
+
+## §7 API 开发 Checklist
+
+新增或修改云函数 API 时，按此顺序执行：
+
+### 7.1 需求确认
+
+```text
+目标云函数：clientApi / staffApi
+Action 名称：module.method
+请求参数：{ param1: type, param2: type }
+返回数据：{ field1: type, field2: type }
+权限要求：[ ] 无  [ ] 需手机号  [ ] 需 manager 角色
+是否需要 Schema 变更：[ ] 是  [ ] 否
+```
+
+### 7.2 数据库（如需）
+
+1. 检查 `db/schema/` 已有表结构和枚举
+2. 编写 Drizzle schema（snake_case 表名，必含 `created_at`/`updated_at`）
+3. 在 `db/schema/index.ts` 导出新表
+4. `cd db && npm run db:generate` → 检查迁移 SQL → `npm run db:migrate`
+
+### 7.3 路由 Handler
+
+```javascript
+// cloudfunctions/<functionName>/routes/{module}.js
+const pg = require('../db/pg')
+
+exports.method = async (ctx) => {
+  // 1. 参数校验
+  const { param1 } = ctx.event.payload
+  if (!param1) throw new Error('INVALID_PARAMS: 缺少 param1')
+
+  // 2. 权限校验（如需）
+  // await requirePhone(ctx) / requireManager()(ctx, next)
+
+  // 3. 业务逻辑（参数化查询）
+  const { rows } = await pg.query('SELECT ... WHERE id = $1', [param1])
+
+  // 4. 返回
+  ctx.result = rows
+}
+```
+
+**事务模式**：`pg.transaction(async (client) => { ... })`，配合 `pg_advisory_xact_lock` 防并发。
+
+### 7.4 注册路由
+
+在 `index.js` 路由表添加：`'module.method': () => require('./routes/module').method`
+
+### 7.5 部署验证
+
+1. `/cloudbase-deploy` 部署云函数
+2. `invokeFunction` 冒烟测试 → 期望 `{ code: 0 }`
+3. 参数校验测试 → 期望 `{ code: -400 }`
+4. 环境变量：先读后合并，**绝不直接覆盖**
+
+---
+
+## §8 全栈功能开发 Checklist
+
+从需求到上线的完整流程（含前端页面）：
+
+### Phase 顺序
+
+```text
+1. 需求分析 → 输出摘要，等用户确认
+2. 数据库设计与迁移（同 §7.2）
+3. 后端 API 开发（同 §7.3–7.4）
+4. 前端页面开发（见下）
+5. 部署与验证（同 §7.5 + 前端检查）
+```
+
+### 前端页面开发要点
+
+```text
+pages/{page-name}/
+  ├── {page-name}.ts      # 仅 TypeScript
+  ├── {page-name}.wxml
+  ├── {page-name}.wxss
+  └── {page-name}.json    # usingComponents 注册 Vant
+```
+
+- `app.json` 注册页面路径
+- 使用 `callClientApi` / `callStaffApi`（见 §1）
+- `onLoad` + `onShow` 双加载（见 §4）
+- `submitting` guard 防重复提交（见 §4）
+- Vant 组件使用参见 `vant-weapp` skill
+
+### 完成检查清单
+
+- [ ] 数据库迁移已执行
+- [ ] 新 action 已注册路由表
+- [ ] 云函数已部署
+- [ ] `invokeFunction` 返回 `{ code: 0 }`
+- [ ] 页面已在 `app.json` 注册
+- [ ] 页面 `.json` 注册所需 Vant 组件
+- [ ] TypeScript 无编译错误
+
+---
+
+## 参考资源
+
+| 文件 | 内容 |
+|---|---|
+| [pitfalls.md](references/pitfalls.md) | 陷阱代码对比、CloudID 手机号/WeRun 流程、交付清单 |
+| [mock-data-patterns.md](references/mock-data-patterns.md) | Mock 拦截架构、handler 编写规范、生产安全 |
+| [cloud-function-patterns.md](references/cloud-function-patterns.md) | Auth LRU 缓存、N+1 预防、_testOpenid、env 管理、cron、部署 |
+
 | 关联技能 | 用途 |
 |---|---|
 | `wx-ui-design` | WXML/WXSS 布局与样式 |
 | `vant-weapp` | Vant Weapp 组件使用 |
-| `wx-database-design` | 数据库 Schema 设计 |
+| `admin-coding` | Next.js 管理后台编码 |
 | `wx-system-architecture` | 系统架构、认证模型 |
 | `cloudbase-deploy` | 部署工作流 |
