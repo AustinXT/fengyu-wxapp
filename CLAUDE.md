@@ -66,3 +66,50 @@ docker compose -f docker/docker-compose.yml up -d    # 本地数据库
 - `.42cog/pm/workfine-sync.spec.md` — WorkFine 数据同步规范
 - `.42cog/dev/sys.spec.md` — 系统架构规范（各端有独立 sys.spec）
 - `.42cog/design/*.ui.spec.md` — UI 设计规范（client / staff / admin）
+
+## 自主工作流
+
+### 编码后自检（每次修改代码后必做）
+
+1. **admin 代码**：修改 `fengyu-admin/src/` 后，立即运行 `cd fengyu-admin && npx tsc --noEmit` 检查类型错误，有错误就在同一轮修复
+2. **云函数代码**：修改 `cloudfunctions/*/routes/*.js` 后，检查 SQL 是否用参数化查询（`$1, $2`），OPENID 认证是否正确
+3. **小程序页面**：修改 `.wxml` 后，确认 Vant 组件属性和事件名正确（参考 vant-weapp skill 的陷阱列表）
+
+### 结构性变更守卫
+
+修改以下文件时，**先扫描全仓影响再动手**：
+- `db/schema/enums.ts` — grep 所有引用该枚举的文件，列出影响范围，确认后再逐层修改
+- `db/schema/*.ts` 列定义 — 检查云函数 SQL、admin actions、前端类型定义
+- 联合类型/TypeScript 类型定义 — grep 所有 import 该类型的文件
+
+扫描结果展示给用户确认后，按 L0→L10 顺序逐层修改（参考 wx-change-propagation skill 的 10 层传播图）。
+
+### 云函数部署后
+
+每次 /cloudbase-deploy 完成后：
+- 提醒验证环境变量（**禁止使用 `tcb fn deploy --force`**，用 `tcb fn code update`）
+- 必检变量：clientApi(PG_CONNECTION_STRING, TMAP_KEY, TMAP_SECRET)、staffApi(PG_CONNECTION_STRING, CLIENT_SECRET)
+
+### 跨端变更
+
+涉及 3 个以上目录（db + admin + client/staff）的变更，先用 plan mode 输出计划，用户确认后执行。
+
+### 并行开发（Git Worktree）
+
+并行任务使用 worktree 隔离（项目已配置 `.tree/` 在 .gitignore）：
+
+```bash
+scripts/worktree-setup.sh feat/xxx    # 创建 + 复制 .env
+cd .tree/feat/xxx && claude             # 独立 Claude 会话
+git worktree remove .tree/feat/xxx      # 完成后清理
+```
+
+所有 worktree 共享同一个 PG，同一时间只能有一个 worktree 执行 db:migrate。
+
+### 远程部署
+
+管理后台使用本地构建 Docker 镜像 + 远程部署（远程服务器不 build）：
+
+```bash
+.claude/skills/remote-deploy/deploy-admin.sh [ali-demo]    # 本地 docker build → 传输 → compose up
+```
