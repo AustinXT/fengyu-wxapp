@@ -146,14 +146,15 @@ async function create(ctx) {
     }
   }
 
-  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  // 根据顾客成为会员客的时间戳判定服务单类型：
+  // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
   let serviceOrderType = '售前'
   if (resolvedClientUserId) {
-    const ctRows = await pg.query(
-      'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    const cuRows = await pg.query(
+      'SELECT became_member_at FROM client_wechat_users WHERE user_id = $1',
       [resolvedClientUserId]
     )
-    if (ctRows.length > 0 && ctRows[0].customer_type === '会员客') {
+    if (cuRows.length > 0 && cuRows[0].became_member_at && new Date(cuRows[0].became_member_at) <= new Date()) {
       serviceOrderType = '售后'
     }
   }
@@ -187,28 +188,25 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 sku_id、unit_real_price 和订单类型（售前/售后判定）
+      // 获取 sale_item 的 sku_id、unit_real_price
       const siRows = await client.query(
-        `SELECT si.sku_id, si.unit_real_price, so.sale_order_type
+        `SELECT si.sku_id, si.unit_real_price
          FROM sale_items si
-         JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
-      const isPresale = false // 体验单已合并为销售单，无法区分
 
       await client.query(
         `INSERT INTO service_items
-           (service_item_id, sale_item_id, unit_real_price, is_presale, service_order_id,
+           (service_item_id, sale_item_id, unit_real_price, service_order_id,
             sku_id, session_used, employee_id, service_duration)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           serviceItemId,
           item.saleItemId,
           unitRealPrice,
-          isPresale,
           serviceOrderId,
           skuId,
           item.sessionUsed,
@@ -440,8 +438,7 @@ async function list(ctx) {
         sli.sku_spec_name,
         sli.remaining_sessions,
         sli.session_count,
-        si.service_duration,
-        si.is_presale
+        si.service_duration
       FROM service_items si
       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
       WHERE si.service_order_id = ANY($1)
@@ -456,7 +453,6 @@ async function list(ctx) {
       spec: i.sku_spec_name || '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
-      isPresale: i.is_presale,
     })
   }
 
@@ -565,7 +561,6 @@ async function detail(ctx) {
       si.sale_item_id,
       si.session_used,
       si.service_duration,
-      si.is_presale,
       sli.session_count,
       sli.remaining_sessions,
       sli.sku_spec_name,
@@ -627,7 +622,6 @@ async function detail(ctx) {
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
-      isPresale: i.is_presale,
     }))
   }
 }

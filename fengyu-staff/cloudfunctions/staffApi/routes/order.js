@@ -53,6 +53,8 @@ async function refreshSpendingTier(client, clientUserId) {
 /**
  * 根据已支付/已完成订单历史，重算顾客类型（只升不降）
  * 阈值从 system_configs.new_member_threshold 读取
+ * 跃迁为"会员客"时同步写入 became_member_at = NOW()。
+ * TODO: 将来若开放"会员客→非会员客"降级路径，需同步 UPDATE became_member_at = NULL。
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
@@ -107,7 +109,7 @@ async function recalcCustomerType(client, clientUserId) {
   )
 
   const newType = typeResult.rows[0].computed_type
-  await client.query(
+  const updateResult = await client.query(
     `UPDATE client_wechat_users
      SET customer_type = $2::customer_type, updated_at = NOW()
      WHERE user_id = $1
@@ -118,9 +120,18 @@ async function recalcCustomerType(client, clientUserId) {
          < (CASE $2::customer_type
               WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
               WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-            END)`,
+            END)
+     RETURNING customer_type`,
     [clientUserId, newType]
   )
+
+  // 若本次 UPDATE 实际将顾客升级为"会员客"，同步写入 became_member_at
+  if (updateResult.rowCount > 0 && updateResult.rows[0].customer_type === '会员客') {
+    await client.query(
+      `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
+      [clientUserId]
+    )
+  }
 }
 
 /**

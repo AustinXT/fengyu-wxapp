@@ -98,7 +98,6 @@ export default function ServiceDetailPageClient({
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">售前/售后</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">划卡次数</th>
@@ -110,11 +109,6 @@ export default function ServiceDetailPageClient({
                 {serviceItems.length > 0 ? serviceItems.map((item) => (
                   <tr key={item.serviceItemId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3 font-medium">{item.productName || "-"}</td>
-                    <td className="px-4 py-3">
-                      <Badge variant="secondary" className={item.isPresale ? "bg-[#FFF0EE] text-[#C45C48]" : "bg-[#E8F0FE] text-[#3574C4]"}>
-                        {item.isPresale ? "售前" : "售后"}
-                      </Badge>
-                    </td>
                     <td className="px-4 py-3">{item.skuName || "-"}</td>
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice ? `¥${Number(item.unitRealPrice).toLocaleString()}` : "-"}
@@ -129,7 +123,7 @@ export default function ServiceDetailPageClient({
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">暂无关联明细</td>
+                    <td colSpan={6} className="px-4 py-8 text-center text-[#999999]">暂无关联明细</td>
                   </tr>
                 )}
               </tbody>

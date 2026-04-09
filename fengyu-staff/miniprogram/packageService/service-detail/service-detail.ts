@@ -21,7 +21,6 @@ interface ServiceDetail {
     sessionCount: number;
     remainingSessions: number;
     totalSessions: number;
-    isPresale: boolean;
   }>;
 }
 

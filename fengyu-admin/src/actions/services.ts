@@ -179,7 +179,6 @@ export interface ServiceItemDetail {
   saleItemId: string
   sessionUsed: number
   unitRealPrice: string | null
-  isPresale: boolean
   employeeName: string | null
   employeeId: string | null
   productName: string | null
@@ -199,7 +198,6 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
       si.sale_item_id,
       si.session_used,
       si.unit_real_price,
-      si.is_presale,
       si.employee_id,
       e.name AS employee_name,
       sli.product_name,
@@ -218,7 +216,6 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     saleItemId: r.sale_item_id,
     sessionUsed: Number(r.session_used),
     unitRealPrice: r.unit_real_price,
-    isPresale: !!r.is_presale,
     employeeName: r.employee_name,
     employeeId: r.employee_id,
     productName: r.product_name,
@@ -457,16 +454,18 @@ export async function createServiceOrder(data: {
     return { success: false, message: '无权在该门店创建服务单' }
   }
 
-  // 根据顾客类型判定服务单类型：会员客→售后，其他→售前
+  // 根据顾客成为会员客的时间戳判定服务单类型：
+  // became_member_at 非空且 ≤ 当前时间 → 售后，否则 → 售前
   const [customerRow] = await db
-    .select({ customerType: clientWechatUsers.customerType })
+    .select({ becameMemberAt: clientWechatUsers.becameMemberAt })
     .from(clientWechatUsers)
     .where(eq(clientWechatUsers.userId, data.clientUserId))
     .limit(1)
-  const serviceOrderType = customerRow?.customerType === '会员客' ? '售后' : '售前'
+  const serviceOrderType: '售前' | '售后' =
+    customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date() ? '售后' : '售前'
 
   // 先校验剩余次数（事务外，只读查询）
-  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string; isPresale: boolean }> = []
+  const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
@@ -488,7 +487,6 @@ export async function createServiceOrder(data: {
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,
       unitRealPrice: saleItem.unitRealPrice,
-      isPresale: false, // TODO: 体验单已合并入销售单，需另行判断售前/售后
     })
   }
 
@@ -538,7 +536,6 @@ export async function createServiceOrder(data: {
           saleItemId: item.saleItemId,
           sessionUsed: item.sessionUsed,
           unitRealPrice: snapshot.unitRealPrice || '0',
-          isPresale: snapshot.isPresale,
           employeeId: data.assignedEmployeeId,
         })
       }

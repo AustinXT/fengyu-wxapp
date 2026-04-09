@@ -32,7 +32,6 @@
         <view class="item-info">
           <view class="item-name-row">
             <text class="item-name">{{item.itemName}}</text>
-            <text class="item-tag item-tag--{{item.isPresale ? 'presale' : 'postsale'}}">{{item.isPresale ? '售前' : '售后'}}</text>
           </view>
           <view class="item-meta">
             <text class="item-spec">{{item.spec}}</text>

@@ -181,7 +181,9 @@ exports.main = async (event) => {
           )
 
           const newType = typeResult.rows[0].computed_type
-          await client.query(
+          // 只升不降；若跃迁为 '会员客'，同步写入 became_member_at
+          // TODO: 将来若开放降级路径，需同步 UPDATE became_member_at = NULL。
+          const upgradeResult = await client.query(
             `UPDATE client_wechat_users
              SET customer_type = $2::customer_type, updated_at = NOW()
              WHERE user_id = $1
@@ -192,9 +194,16 @@ exports.main = async (event) => {
                  < (CASE $2::customer_type
                       WHEN '流量客' THEN 0 WHEN '体验客' THEN 1
                       WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
-                    END)`,
+                    END)
+             RETURNING customer_type`,
             [order.client_user_id, newType]
           )
+          if (upgradeResult.rowCount > 0 && upgradeResult.rows[0].customer_type === '会员客') {
+            await client.query(
+              `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
+              [order.client_user_id]
+            )
+          }
         }
       }
 
