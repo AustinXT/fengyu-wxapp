@@ -15,6 +15,7 @@ import {
   Ticket,
   BarChart3,
   Shield,
+  Coins,
 
   ScrollText,
   Settings,
@@ -65,6 +66,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: '提成矩阵', icon: Grid3x3, href: '/commission', requiredRoles: ['admin'] },
       { label: '顾客管理', icon: UserRound, href: '/customers', requiredRoles: ['manager', 'customer_mgr'], readonlyRoles: ['finance'] },
       { label: '优惠券管理', icon: Ticket, href: '/coupons', requiredRoles: ['admin', 'product'] },
+      { label: '积分流水', icon: Coins, href: '/points', requiredRoles: ['admin', 'manager'], readonlyRoles: ['finance'] },
     ],
   },
   {
