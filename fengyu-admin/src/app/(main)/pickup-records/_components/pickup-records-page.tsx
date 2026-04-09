@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
+import Link from 'next/link'
 import { useUrlFilters } from '@/lib/hooks/use-url-filters'
 import type { AdminPickupRecord } from '@/actions/pickup-records'
 import type { Store } from '@/lib/types'
@@ -34,14 +35,16 @@ interface Props {
   records: AdminPickupRecord[]
   stores: Store[]
   total: number
+  canCreate: boolean
 }
 
 /**
- * 提货记录管理页 — 服务端分页（只读）
+ * 提货记录管理页 — 服务端分页
  *
  * scope 过滤基于 pickup_records.store_id，非 admin 角色仅看到 scopeStoreIds 内的门店记录。
+ * canCreate=true 时（manager 角色）显示"新建提货记录"入口。
  */
-export default function PickupRecordsPage({ records, stores, total }: Props) {
+export default function PickupRecordsPage({ records, stores, total, canCreate }: Props) {
   const { get, set, setMany } = useUrlFilters()
   const setFilter = useCallback(
     (key: string, value: string) => {
@@ -154,7 +157,14 @@ export default function PickupRecordsPage({ records, stores, total }: Props) {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-[var(--foreground)]">提货记录</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">提货记录</h1>
+        {canCreate && (
+          <Link href="/pickup-records/create">
+            <Button>新建提货记录</Button>
+          </Link>
+        )}
+      </div>
 
       <Card>
         <CardContent className="p-4">

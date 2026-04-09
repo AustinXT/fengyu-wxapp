@@ -9,7 +9,8 @@ import { productSkus } from '@db/product'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
+import { isInScope, requirePermission, scopeCondition } from '@/lib/permissions'
+import { logOperation } from '@/lib/operation-log'
 
 export interface AdminPickupRecord {
   id: number
@@ -202,5 +203,161 @@ export async function getPickupRecordById(
     saleOrderId: r.saleOrderId ?? undefined,
     itemQuantity: r.itemQuantity ?? undefined,
     itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
+  }
+}
+
+/**
+ * 顾客可提货的院装产品销售明细
+ *
+ * 筛选条件：
+ * - 订单已支付
+ * - item_direction = '购买'
+ * - product_type = '院装产品'
+ * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
+ */
+export interface AvailablePickupItem {
+  saleItemId: string
+  saleOrderId: string
+  productName: string | null
+  skuSpecName: string | null
+  quantity: number
+  pickedUpQuantity: number
+  remaining: number
+  unitRealPrice: string
+  storeId: string
+  storeName: string | null
+}
+
+export async function getAvailablePickupItems(
+  clientUserId: string,
+): Promise<AvailablePickupItem[]> {
+  const session = await getSession()
+  requirePermission(session, 'pickup_record:create')
+
+  const rows = await db.execute(sql`
+    SELECT
+      si.sale_item_id,
+      si.sale_order_id,
+      si.product_name,
+      si.sku_spec_name,
+      si.quantity,
+      COALESCE(si.picked_up_quantity, 0) AS picked_up_quantity,
+      si.unit_real_price,
+      o.store_id,
+      s.store_name
+    FROM sale_items si
+    INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+    LEFT JOIN stores s ON s.store_id = o.store_id
+    WHERE o.client_user_id = ${clientUserId}
+      AND o.status = '已支付'
+      AND si.item_direction = '购买'
+      AND si.product_type = '院装产品'
+      AND si.quantity > COALESCE(si.picked_up_quantity, 0)
+    ORDER BY o.paid_at DESC, si.sale_item_id
+  `)
+
+  // 不按原订单门店过滤：提货店可能与原销售店不同（顾客跨店提货），
+  // scope 约束在 createPickupRecord 对"实际提货门店"生效。
+  return (rows as unknown as Array<Record<string, unknown>>).map((r) => ({
+    saleItemId: r.sale_item_id as string,
+    saleOrderId: r.sale_order_id as string,
+    productName: (r.product_name as string | null) ?? null,
+    skuSpecName: (r.sku_spec_name as string | null) ?? null,
+    quantity: Number(r.quantity),
+    pickedUpQuantity: Number(r.picked_up_quantity ?? 0),
+    remaining: Number(r.quantity) - Number(r.picked_up_quantity ?? 0),
+    unitRealPrice: (r.unit_real_price as string) ?? '0',
+    storeId: r.store_id as string,
+    storeName: (r.store_name as string | null) ?? null,
+  }))
+}
+
+/**
+ * 创建提货记录
+ *
+ * 事务内原子累加 sale_items.picked_up_quantity 并插入 pickup_records。
+ * 使用 UPDATE ... WHERE 中的条件保证并发安全：
+ *   (COALESCE(picked_up_quantity, 0) + $1) <= quantity
+ * 若超出可提数量，UPDATE 返回 0 行，事务回滚。
+ */
+export async function createPickupRecord(data: {
+  saleItemId: string
+  pickupQuantity: number
+  storeId: string
+  clientUserId: string | null
+  remark?: string | null
+}): Promise<{ success: boolean; message: string; createdId?: number }> {
+  const session = await getSession()
+  requirePermission(session, 'pickup_record:create')
+
+  // 基础参数校验
+  if (!data.saleItemId) {
+    return { success: false, message: '缺少销售明细号' }
+  }
+  if (!Number.isInteger(data.pickupQuantity) || data.pickupQuantity <= 0) {
+    return { success: false, message: '提货数量必须为正整数' }
+  }
+  if (!data.storeId) {
+    return { success: false, message: '缺少提货门店' }
+  }
+  if (!isInScope(session, data.storeId)) {
+    return { success: false, message: '无权在该门店创建提货记录' }
+  }
+
+  try {
+    const createdId = await db.transaction(async (tx) => {
+      // 1. 原子累加 picked_up_quantity，仅院装产品，超量会被 WHERE 拦截
+      const updated = await tx.execute(sql`
+        UPDATE sale_items
+           SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity},
+               updated_at = NOW()
+         WHERE sale_item_id = ${data.saleItemId}
+           AND product_type = '院装产品'
+           AND item_direction = '购买'
+           AND (COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity}) <= quantity
+        RETURNING sale_item_id, quantity, picked_up_quantity
+      `)
+      const updatedRows = updated as unknown as Array<{
+        sale_item_id: string
+        quantity: number
+        picked_up_quantity: number
+      }>
+      if (updatedRows.length === 0) {
+        throw new Error('OVER_QUANTITY: 销售明细不存在、非院装产品或超出可提数量')
+      }
+
+      // 2. 插入 pickup_records
+      const inserted = await tx
+        .insert(pickupRecords)
+        .values({
+          saleItemId: data.saleItemId,
+          pickupQuantity: data.pickupQuantity,
+          storeId: data.storeId,
+          clientUserId: data.clientUserId,
+          confirmedBy: session.employeeId,
+          remark: data.remark?.trim() || null,
+        })
+        .returning({ id: pickupRecords.id })
+
+      return inserted[0]?.id ?? 0
+    })
+
+    await logOperation(session, 'create', 'pickup_record', String(createdId), {
+      saleItemId: data.saleItemId,
+      pickupQuantity: data.pickupQuantity,
+      storeId: data.storeId,
+      clientUserId: data.clientUserId,
+    })
+
+    return { success: true, message: '提货记录创建成功', createdId }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '创建失败'
+    if (msg.startsWith('OVER_QUANTITY:')) {
+      return { success: false, message: msg.slice('OVER_QUANTITY:'.length).trim() }
+    }
+    if (msg.startsWith('PERMISSION_DENIED:')) {
+      throw err
+    }
+    return { success: false, message: msg }
   }
 }
