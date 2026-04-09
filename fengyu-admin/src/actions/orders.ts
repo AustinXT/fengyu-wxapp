@@ -7,7 +7,7 @@ import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { systemConfigs } from '@db/system-config'
 import { productSkus } from '@db/product'
-import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem } from '@/lib/types'
@@ -537,6 +537,18 @@ export async function createOrder(data: {
     }
   }
 
+  // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）
+  // 用于 sale_items.service_fee 快照，开单后服务完成时参与提成计算
+  const skuIdList = data.items.map(i => i.skuId).filter((s): s is string => !!s)
+  const skuFeeMap = new Map<string, string>()
+  if (skuIdList.length > 0) {
+    const skuRows = await db
+      .select({ skuId: productSkus.skuId, serviceFee: productSkus.serviceFee })
+      .from(productSkus)
+      .where(inArray(productSkus.skuId, skuIdList))
+    for (const r of skuRows) skuFeeMap.set(r.skuId, r.serviceFee)
+  }
+
   // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
   let saleOrderId: string
   try {
@@ -621,6 +633,10 @@ export async function createOrder(data: {
           ? (Number(item.saleAmount) / item.quantity).toFixed(2)
           : item.unitRealPrice
 
+        // 固定手工费快照 = product_skus.service_fee × quantity
+        const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
+        const serviceFee = (skuServiceFee * item.quantity).toFixed(2)
+
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
@@ -637,6 +653,7 @@ export async function createOrder(data: {
           saleAmount,
           received,
           salesCategory: item.salesCategory || null,
+          serviceFee,
         })
       }
 

@@ -218,6 +218,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+                s.service_fee,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -258,6 +259,10 @@ async function create(ctx) {
       const unitRealPrice = quantity > 0 ? (unitPrice - discount / quantity) : unitPrice
       const received = saleAmount - discount
 
+      // 固定手工费快照：从 product_skus.service_fee 取值 × quantity
+      // 即使现在是 0 也要明确快照，避免后续 sku 改价影响历史订单
+      const serviceFee = Math.round(Number(sku.service_fee || 0) * quantity * 100) / 100
+
       return {
         skuId: item.skuId,
         productName: sku.spec_name,
@@ -271,7 +276,8 @@ async function create(ctx) {
         unitRealPrice,
         saleAmount,
         received,
-        salesCategory
+        salesCategory,
+        serviceFee,
       }
     })
   )
@@ -332,9 +338,11 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
     }
 
-    const eligibleTotal = eligibleItems.reduce((s, d) => s + d.received, 0)
-    const minSpend = Number(couponInfo.min_spend) || 0
-    if (eligibleTotal < minSpend) {
+    // 满减门槛（归一化到分 + 浮点兜底，与 coupon.available 保持一致）
+    const eligibleTotalRaw = eligibleItems.reduce((s, d) => s + d.received, 0)
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
+    const minSpend = Math.round((Number(couponInfo.min_spend) || 0) * 100) / 100
+    if (eligibleTotal + 0.001 < minSpend) {
       throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
     }
 
@@ -456,15 +464,16 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category
-        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          sales_category, service_fee
+        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           saleItemId, saleOrderId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,
           d.saleAmount, d.received,
-          d.salesCategory || null
+          d.salesCategory || null,
+          d.serviceFee || 0,
         ]
       )
     }
@@ -959,6 +968,10 @@ async function createRefund(ctx) {
     const unitRealPrice = Number(orig.unit_real_price)
     const refundAmount = unitRealPrice * qty
     totalRefund += refundAmount
+    // 退款行 service_fee 为负数，按退款数量占原单数量的比例扣减
+    const origServiceFee = Number(orig.service_fee || 0)
+    const origQty = Number(orig.quantity) || 1
+    const refundServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
     refundItems.push({
       refSaleItemId: req.saleItemId,
       skuId: orig.sku_id,
@@ -971,6 +984,7 @@ async function createRefund(ctx) {
       unitRealPrice,
       refundAmount,
       salesCategory: orig.sales_category,
+      serviceFee: refundServiceFee,
     })
   }
 
@@ -1017,14 +1031,15 @@ async function createRefund(ctx) {
           sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity,
-          unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, '退出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          unit_real_price, sale_amount, received, sales_category, service_fee
+        ) VALUES ($1, $2, '退出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           saleItemId, refundOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity,
           d.unitRealPrice, -(d.refundAmount), -(d.refundAmount),
-          d.salesCategory
+          d.salesCategory,
+          d.serviceFee || 0,
         ]
       )
     }
@@ -1191,12 +1206,14 @@ async function createRepayment(ctx) {
     for (let i = 0; i < repayItems.length; i++) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = repayItems[i]
+      // 回款单不产生新的服务次数消耗，service_fee 置 0，避免后续服务完成时重复计算手工费
       await client.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
-          unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9)`,
+          unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
+          service_fee
+        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9, 0)`,
         [
           saleItemId, repayOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -1256,6 +1273,10 @@ async function createConversion(ctx) {
     const qty = req.convertQuantity || oi.quantity
     const amount = Number(oi.unit_real_price) * qty
     totalOut += amount
+    // 转出行 service_fee 为负数，按转出数量占原单数量的比例扣减
+    const origServiceFee = Number(oi.service_fee || 0)
+    const origQty = Number(oi.quantity) || 1
+    const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
     outItems.push({
       refSaleItemId: req.saleItemId,
       skuId: oi.sku_id,
@@ -1268,6 +1289,7 @@ async function createConversion(ctx) {
       quantity: qty,
       amount,
       salesCategory: oi.sales_category,
+      serviceFee: outServiceFee,
     })
   }
 
@@ -1287,6 +1309,8 @@ async function createConversion(ctx) {
     const qty = req.quantity || 1
     const amount = Number(sku.price) * qty
     totalIn += amount
+    // 转入行 service_fee 从新 sku 查取并 × 转入数量快照
+    const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
     inItems.push({
       skuId: req.skuId,
       productName: sku.spec_name,
@@ -1297,6 +1321,7 @@ async function createConversion(ctx) {
       quantity: qty,
       amount,
       salesCategory: sku.sales_category,
+      serviceFee: inServiceFee,
     })
   }
 
@@ -1340,13 +1365,15 @@ async function createConversion(ctx) {
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
-          session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, '转出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+          session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
+          service_fee
+        ) VALUES ($1, $2, '转出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           saleItemId, convOrderId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
-          -(d.amount), -(d.amount), d.salesCategory
+          -(d.amount), -(d.amount), d.salesCategory,
+          d.serviceFee || 0,
         ]
       )
       // 原子扣减
@@ -1370,13 +1397,15 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, item_direction,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
-          unit_price, quantity, unit_real_price, sale_amount, received, sales_category
-        ) VALUES ($1, $2, '转入', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11)`,
+          unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
+          service_fee
+        ) VALUES ($1, $2, '转入', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11, $12)`,
         [
           saleItemId, convOrderId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount,
-          d.unitPrice, d.quantity, d.amount, d.salesCategory
+          d.unitPrice, d.quantity, d.amount, d.salesCategory,
+          d.serviceFee || 0,
         ]
       )
     }

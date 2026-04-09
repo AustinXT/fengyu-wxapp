@@ -137,6 +137,8 @@ export const saleItems = pgTable(
     pickedUpQuantity: integer("picked_up_quantity").default(0),
     remark: text("remark"),
     salesCategory: salesCategoryEnum("sales_category"),
+    /** 固定手工费快照（开单时从 product_skus.service_fee × quantity 持久化，用于服务完成时计算固定手工费部分的服务提成） */
+    serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
@@ -151,6 +153,7 @@ export const saleItems = pgTable(
     check("chk_item_unit_real_price", sql`${table.unitRealPrice} >= 0`),
     check("chk_item_remaining", sql`${table.remainingSessions} IS NULL OR ${table.remainingSessions} >= 0`),
     check("chk_item_quantity", sql`${table.quantity} > 0`),
+    check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],
 );
 

@@ -313,8 +313,17 @@ async function complete(ctx) {
     throw new Error(`INVALID_PARAMS: 服务单当前状态为"${so.status}"，不可完成`)
   }
 
+  // 加载本服务单所有 service_items + 关联 sale_items 的快照（含 service_fee、sales_category）+ 员工 skills
+  // 一次 JOIN 拿全，避免 for 循环内 N 次查询
   const items = await pg.query(
-    'SELECT service_item_id, sale_item_id, session_used FROM service_items WHERE service_order_id = $1',
+    `SELECT sit.service_item_id, sit.sale_item_id, sit.session_used, sit.employee_id,
+            sit.unit_real_price,
+            si.service_fee, si.sales_category,
+            swu.skills
+     FROM service_items sit
+     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+     LEFT JOIN staff_wechat_users swu ON swu.employee_id = sit.employee_id
+     WHERE sit.service_order_id = $1`,
     [serviceOrderId]
   )
 
@@ -359,9 +368,72 @@ async function complete(ctx) {
       }
     }
 
-    // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）
+    // ========== 计算并写入服务提成（service_commissions）==========
+    // 双字段模型：fixed_fee = service_fee × session_used
+    //            consume_amount = unit_real_price × session_used × commission_rate
+    //            commission_amount = fixed_fee + consume_amount
+    // roleType 取员工 skills[0] 自动推断；无 skills 兜底 '美容师'
+    // commission_rate 缺失时 rate=0 + 写 operation_logs，不阻塞 service.complete
+    for (const row of items) {
+      const skills = Array.isArray(row.skills) ? row.skills : []
+      const roleType = skills[0] || '美容师'
+
+      const fixedFee = Math.round(Number(row.service_fee || 0) * row.session_used * 100) / 100
+      const consumeBase = Math.round(Number(row.unit_real_price || 0) * row.session_used * 100) / 100
+
+      const rateRows = await client.query(
+        `SELECT commission_rate FROM commission_rate_matrix
+         WHERE order_type = '服务单'
+           AND role_type = $1
+           AND sales_category = $2
+           AND amount_tier_min <= $3
+           AND (amount_tier_max IS NULL OR amount_tier_max >= $3)
+         ORDER BY amount_tier_min DESC
+         LIMIT 1`,
+        [roleType, row.sales_category, consumeBase]
+      )
+      const rate = Number(rateRows.rows[0]?.commission_rate || 0)
+      const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+      const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
+
+      // rate=0 且有消耗金额时，提示运维补齐矩阵规则
+      if (rate === 0 && consumeBase > 0) {
+        await client.query(
+          `INSERT INTO operation_logs
+             (operator_employee_id, operator_name, operator_role, action, target_type, target_id, detail, source, created_at)
+           VALUES ($1, $2, $3, 'service.complete.rate_missing', 'service_item', $4, $5::jsonb, 'staffApi', NOW())`,
+          [
+            ctx.auth.staffWfId,
+            ctx.auth.name || null,
+            (ctx.auth.roles && ctx.auth.roles[0]) || null,
+            row.service_item_id,
+            JSON.stringify({ roleType, salesCategory: row.sales_category, consumeBase, serviceOrderId }),
+          ]
+        )
+      }
+
+      // INSERT 提成记录：ON CONFLICT 保证幂等（唯一索引 where is_void=false）
+      await client.query(
+        `INSERT INTO service_commissions (
+           service_item_id, employee_id, role_type, allocation_ratio,
+           commission_rate, commission_amount, fixed_fee, consume_amount
+         ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7)
+         ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role DO NOTHING`,
+        [
+          row.service_item_id,
+          row.employee_id,
+          roleType,
+          rate,
+          commissionAmount,
+          fixedFee,
+          consumeAmount,
+        ]
+      )
+    }
+
+    // 更新服务单状态（C4: WHERE 锁定当前状态防止并发竞态）+ 同步 commission_status
     const soUpdateResult = await client.query(
-      "UPDATE service_orders SET status = '已完成', completed_at = $1, updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
+      "UPDATE service_orders SET status = '已完成', completed_at = $1, commission_status = '已分配', updated_at = $1 WHERE service_order_id = $2 AND status = '服务中'",
       [now, serviceOrderId]
     )
     if (soUpdateResult.rowCount === 0) {

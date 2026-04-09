@@ -127,6 +127,13 @@
       "when": 1775752197466,
       "tag": "0017_even_warpath",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1775754504702,
+      "tag": "0018_green_rogue",
+      "breakpoints": true
     }
   ]
 }

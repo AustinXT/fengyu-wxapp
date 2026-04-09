@@ -461,7 +461,12 @@ async function performanceDetail(ctx) {
     ORDER BY o.paid_at DESC
   `, allocParams)
 
-  // 服务提成明细（基于 service_items）
+  // 服务提成明细（基于 service_commissions 表）
+  // 口径：commission_amount = fixed_fee + consume_amount
+  //       fixed_fee = sale_items.service_fee × session_used （固定手工费快照）
+  //       consume_amount = unit_real_price × session_used × commission_rate （消耗提成）
+  // 旧实现曾用 unit_real_price × session_used 作为"服务提成"，这是消耗业绩金额口径，
+  // 导致员工看到的数字虚高 3-5 倍，已修复。
   const svcParams = [targetEmployeeId, startDate, endDate.replace(/-/g, '/')]
   let svcWhere = ''
   if (salesCategory) {
@@ -471,8 +476,13 @@ async function performanceDetail(ctx) {
 
   const svcRows = await pg.query(`
     SELECT
-      sit.unit_real_price AS service_price,
+      sc.commission_amount,
+      sc.fixed_fee,
+      sc.consume_amount,
+      sc.role_type,
+      sc.commission_rate,
       sit.session_used,
+      sit.unit_real_price AS service_unit_price,
       si.product_name,
       si.sku_spec_name,
       si.sales_category,
@@ -481,11 +491,13 @@ async function performanceDetail(ctx) {
       so.store_id,
       cu.name AS customer_name,
       cu.phone AS client_phone
-    FROM service_items sit
+    FROM service_commissions sc
+    JOIN service_items sit ON sit.service_item_id = sc.service_item_id
     JOIN service_orders so ON so.service_order_id = sit.service_order_id
     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
     LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
-    WHERE sit.employee_id = $1
+    WHERE sc.employee_id = $1
+      AND sc.is_void = false
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
@@ -495,7 +507,7 @@ async function performanceDetail(ctx) {
 
   // 汇总
   let totalSalesAlloc = 0
-  let totalServiceFee = 0
+  let totalServiceCommission = 0
   const categorySummary = {}
 
   for (const r of allocRows) {
@@ -506,11 +518,11 @@ async function performanceDetail(ctx) {
   }
 
   for (const r of svcRows) {
-    const fee = Number(r.service_price) * (r.session_used || 1)
-    totalServiceFee += fee
+    const amount = Number(r.commission_amount)
+    totalServiceCommission += amount
     const cat = r.sales_category || '未分类'
     if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
-    categorySummary[cat].service += fee
+    categorySummary[cat].service += amount
   }
 
   // 合并为时间线，按 filterType 过滤，分页
@@ -534,9 +546,13 @@ async function performanceDetail(ctx) {
     productName: r.product_name,
     specName: r.sku_spec_name,
     salesCategory: r.sales_category,
-    amount: Number(r.service_price) * (r.session_used || 1),
+    roleType: r.role_type,
+    amount: Number(r.commission_amount),
+    fixedFee: Number(r.fixed_fee || 0),
+    consumeAmount: Number(r.consume_amount || 0),
+    commissionRate: Number(r.commission_rate || 0),
     sessionUsed: r.session_used,
-    servicePrice: Number(r.service_price),
+    servicePrice: Number(r.service_unit_price || 0),
     customerName: r.customer_name,
     clientPhone: r.client_phone,
     orderId: r.service_order_id,
@@ -553,10 +569,14 @@ async function performanceDetail(ctx) {
   const offset = (page - 1) * pageSize
   const paged = allItems.slice(offset, offset + pageSize)
 
+  const roundedServiceCommission = Math.round(totalServiceCommission * 100) / 100
+
   ctx.result = {
     totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
-    totalServiceFee: Math.round(totalServiceFee * 100) / 100,
-    totalCommission: Math.round((totalSalesAlloc + totalServiceFee) * 100) / 100,
+    totalServiceCommission: roundedServiceCommission,
+    // 向后兼容：保留 totalServiceFee 字段名供老版本前端使用（1-2 发布周期后下线）
+    totalServiceFee: roundedServiceCommission,
+    totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
     categorySummary,
     items: paged,
     total: allItems.length,

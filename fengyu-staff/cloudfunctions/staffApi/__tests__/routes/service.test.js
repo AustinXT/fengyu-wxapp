@@ -497,20 +497,30 @@ describe('service.complete', () => {
         appointment_id: 'appt-001',
       }])
       .mockResolvedValueOnce([
-        { service_item_id: 'si-1', sale_item_id: 'item-001', session_used: 1 },
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-001',
+          session_used: 1,
+          employee_id: 'emp-001',
+          unit_real_price: '500.00',
+          service_fee: '80.00',
+          sales_category: '自采自销',
+          skills: ['美容师'],
+        },
       ])
 
-    const clientQueryMock = vi.fn()
-      // 原子扣减成功
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      // 剩余次数归零
-      .mockResolvedValueOnce({ rows: [{ remaining_sessions: 0 }] })
-      // 关闭关联预约（sale_item_id 维度）
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      // UPDATE service_orders
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      // UPDATE appointment（appointment_id 维度）
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    // 根据 SQL 动态分派返回值（新实现增加了 commission_rate_matrix 查询 + service_commissions INSERT）
+    const clientQueryMock = vi.fn(async (sql) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 0 }], rowCount: 1 }
+      }
+      if (sql.includes('commission_rate_matrix')) {
+        return { rows: [{ commission_rate: '0.1000' }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
 
     pg.transaction.mockImplementation(async (cb) => {
       return await cb({ query: clientQueryMock })
@@ -524,6 +534,197 @@ describe('service.complete', () => {
       call => typeof call[0] === 'string' && call[0].includes('appointments') && call[0].includes('已关闭')
     )
     expect(closeCalls.length).toBeGreaterThanOrEqual(1)
+  })
+
+  // ============================================================
+  // 修复 Bug：service.complete 需自动写入 service_commissions
+  // 双字段模型：fixed_fee + consume_amount = commission_amount
+  // ============================================================
+  test('服务完成时自动写入 service_commissions（固定手工费 + 消耗提成）', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-001',
+          session_used: 2,
+          employee_id: 'emp-001',
+          unit_real_price: '500.00',
+          service_fee: '80.00',       // sale_items.service_fee 快照
+          sales_category: '自采自销',
+          skills: ['美容师'],          // skills[0] 自动推断 roleType
+        },
+      ])
+
+    // commission_rate_matrix 返回 10% 消耗提成比例
+    let svcCommInsertCall = null
+    let soUpdateCall = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) {
+        return { rows: [{ commission_rate: '0.1000' }], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsertCall = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes("UPDATE service_orders SET status = '已完成'")) {
+        soUpdateCall = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    await serviceRoutes.complete(ctx)
+
+    // 断言 service_commissions 被 INSERT
+    expect(svcCommInsertCall).not.toBeNull()
+    // 参数顺序：service_item_id, employee_id, role_type, commission_rate, commission_amount, fixed_fee, consume_amount
+    const [svcItemId, empId, roleType, rate, commAmt, fixedFee, consumeAmt] = svcCommInsertCall.params
+    expect(svcItemId).toBe('si-1')
+    expect(empId).toBe('emp-001')
+    expect(roleType).toBe('美容师')
+    expect(rate).toBe(0.1)
+    expect(fixedFee).toBe(160)          // 80 × 2
+    expect(consumeAmt).toBe(100)        // 500 × 2 × 0.10
+    expect(commAmt).toBe(260)           // 160 + 100 = 260
+    expect(fixedFee + consumeAmt).toBe(commAmt) // 双字段拆分恒等
+
+    // 断言 service_orders 的 commission_status 被设置为 '已分配'
+    expect(soUpdateCall).not.toBeNull()
+    expect(soUpdateCall.sql).toContain("commission_status = '已分配'")
+  })
+
+  test('commission_rate_matrix 查不到规则时 rate=0 + 写 operation_logs，不阻塞 complete', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-001',
+          session_used: 1,
+          employee_id: 'emp-001',
+          unit_real_price: '500.00',
+          service_fee: '80.00',
+          sales_category: '他销他耗',  // 矩阵无对应规则
+          skills: ['美容师'],
+        },
+      ])
+
+    let svcCommInsert = null
+    let opLogInsert = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) {
+        // 返回空：无匹配规则
+        return { rows: [], rowCount: 0 }
+      }
+      if (sql.includes('INSERT INTO operation_logs')) {
+        opLogInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    // 不应 throw
+    await serviceRoutes.complete(ctx)
+
+    // operation_logs 被写入
+    expect(opLogInsert).not.toBeNull()
+    expect(opLogInsert.sql).toContain('service.complete.rate_missing')
+
+    // service_commissions 依然被写入：rate=0, consume_amount=0, fixed_fee=80 照常
+    expect(svcCommInsert).not.toBeNull()
+    const [, , , rate, commAmt, fixedFee, consumeAmt] = svcCommInsert.params
+    expect(rate).toBe(0)
+    expect(fixedFee).toBe(80)   // 80 × 1
+    expect(consumeAmt).toBe(0)  // consume_base × 0 = 0
+    expect(commAmt).toBe(80)    // 仅固定手工费
+  })
+
+  test('skills 为空时 roleType 兜底为"美容师"', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-001',
+          session_used: 1,
+          employee_id: 'emp-001',
+          unit_real_price: '500.00',
+          service_fee: '80.00',
+          sales_category: '自采自销',
+          skills: null,  // 无技能标签
+        },
+      ])
+
+    let svcCommInsert = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) return { rows: [{ commission_rate: '0.1000' }] }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 5 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    await serviceRoutes.complete(ctx)
+
+    const [, , roleType] = svcCommInsert.params
+    expect(roleType).toBe('美容师')  // 兜底值
   })
 })
 

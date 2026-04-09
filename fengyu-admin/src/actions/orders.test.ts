@@ -71,6 +71,7 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  inArray: vi.fn((col, arr) => ({ type: 'inArray', col, arr })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -149,17 +150,24 @@ function mockTransactionSuccess(orderId = 'FY-XSD-WX-260315001') {
   })
 }
 
+// where 返回的对象同时支持 `.limit()` 链式和直接 await（productSkus 批量查询走后者）
+function makeThenableWhere(rows: any[]) {
+  const limit = vi.fn().mockResolvedValue(rows)
+  return vi.fn().mockImplementation(() => ({
+    limit,
+    then: (resolve: (value: any[]) => any) => resolve(rows),
+  }))
+}
+
 function mockSelectEmpty() {
-  const limit = vi.fn().mockResolvedValue([])
-  const where = vi.fn().mockReturnValue({ limit })
+  const where = makeThenableWhere([])
   const innerJoin = vi.fn().mockReturnValue({ where })
   const from = vi.fn().mockReturnValue({ where, innerJoin })
   return vi.fn().mockReturnValue({ from })
 }
 
 function mockSelectFound(row: any) {
-  const limit = vi.fn().mockResolvedValue([row])
-  const where = vi.fn().mockReturnValue({ limit })
+  const where = makeThenableWhere([row])
   const innerJoin = vi.fn().mockReturnValue({ where })
   const from = vi.fn().mockReturnValue({ where, innerJoin })
   return vi.fn().mockReturnValue({ from })

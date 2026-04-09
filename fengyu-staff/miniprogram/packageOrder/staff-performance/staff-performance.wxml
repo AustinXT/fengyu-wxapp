@@ -36,7 +36,7 @@
         <text class="summary-label">服务提成</text>
         <view class="price-group">
           <text class="price-symbol">¥</text>
-          <text class="price-integer">{{totalServiceFee}}</text>
+          <text class="price-integer">{{totalServiceCommission}}</text>
         </view>
       </view>
       <view class="summary-divider" />
@@ -78,9 +78,22 @@
         <text class="perf-item-label">业绩</text>
         <text class="perf-item-value">¥{{item.businessAmount}}</text>
       </view>
+      <!-- 服务提成双字段拆分：固定手工费 + 消耗提成 -->
+      <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
+        <text class="perf-item-label">手工费</text>
+        <text class="perf-item-value">¥{{item.fixedFee}}</text>
+      </view>
+      <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
+        <text class="perf-item-label">消耗提成</text>
+        <text class="perf-item-value">¥{{item.consumeAmount}}</text>
+      </view>
       <view wx:if="{{item.type === 'service'}}" class="perf-item-row">
         <text class="perf-item-label">划卡单价</text>
         <text class="perf-item-value">¥{{item.servicePrice}} × {{item.sessionUsed}}次</text>
+      </view>
+      <view wx:if="{{item.type === 'service' && item.roleType}}" class="perf-item-row">
+        <text class="perf-item-label">角色</text>
+        <text class="perf-item-value">{{item.roleType}}</text>
       </view>
       <view class="perf-item-row">
         <text class="perf-item-label">顾客</text>

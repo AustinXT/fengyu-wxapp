@@ -267,10 +267,13 @@ describe('staff.performanceDetail', () => {
         paid_at: '2024-06-15', store_id: 'store-001',
       },
     ])
-    // svcRows (服务提成)
+    // svcRows (服务提成，新口径：读 service_commissions.commission_amount)
+    // 双字段：fixed_fee=120 + consume_amount=80 = commission_amount=200
     pg.query.mockResolvedValueOnce([
       {
-        service_price: '100', session_used: 2,
+        commission_amount: '200.00', fixed_fee: '120.00', consume_amount: '80.00',
+        role_type: '美容师', commission_rate: '0.0800',
+        session_used: 2, service_unit_price: '500.00',
         product_name: '身体护理', sku_spec_name: '高级款', sales_category: '自采自销',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: '李四', client_phone: '139',
@@ -280,7 +283,8 @@ describe('staff.performanceDetail', () => {
     await staffRoutes.performanceDetail(ctx)
 
     expect(ctx.result.totalSalesAlloc).toBe(300)
-    expect(ctx.result.totalServiceFee).toBe(200) // 100 * 2
+    expect(ctx.result.totalServiceCommission).toBe(200)
+    expect(ctx.result.totalServiceFee).toBe(200) // 向后兼容字段
     expect(ctx.result.totalCommission).toBe(500)
     expect(ctx.result.items).toHaveLength(2)
     expect(ctx.result.categorySummary['自采自销'].sales).toBe(300)
@@ -455,7 +459,7 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.categorySummary).toEqual({})
   })
 
-  test('svcRows 中 session_used 为 null 时默认 1、sales_category 为 null 时归入"未分类"（lines 510-511）', async () => {
+  test('sales_category 为 null 时归入"未分类"', async () => {
     const ctx = createManagerCtx({
       startDate: '2024-06-01',
       endDate: '2024-06-30',
@@ -464,8 +468,11 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([]) // allocRows 空
     pg.query.mockResolvedValueOnce([
       {
-        service_price: '150', session_used: null,   // || 1 分支
-        product_name: 'P-null', sku_spec_name: 'S-null', sales_category: null, // || '未分类' 分支
+        commission_amount: '150.00', fixed_fee: '150.00', consume_amount: '0.00',
+        role_type: '美容师', commission_rate: '0.0000',
+        session_used: 1, service_unit_price: '500.00',
+        product_name: 'P-null', sku_spec_name: 'S-null',
+        sales_category: null, // || '未分类' 分支
         service_order_id: 'SVC-null', service_date: '2024-06-25',
         store_id: 'store-001', customer_name: '客户X', client_phone: '138',
       },
@@ -473,7 +480,7 @@ describe('staff.performanceDetail', () => {
 
     await staffRoutes.performanceDetail(ctx)
 
-    expect(ctx.result.totalServiceFee).toBe(150) // 150 * 1（session_used 默认为 1）
+    expect(ctx.result.totalServiceCommission).toBe(150)
     expect(ctx.result.categorySummary['未分类'].service).toBe(150)
   })
 })
@@ -557,5 +564,195 @@ describe('staff.dashboard', () => {
     expect(ctx.result.revenue).toBe(0)
     expect(ctx.result.consume).toBe(0)
     expect(ctx.result.newMembers).toBe(0)
+  })
+})
+
+// ============================================================
+// staff.performanceDetail
+// 修复 Bug：原实现把 unit_real_price × session_used（消耗业绩金额）
+// 冒充"服务提成"累加返回，导致员工绩效页数字虚高 3-5 倍。
+// 新实现改查 service_commissions 表，直接读 commission_amount
+// （= fixed_fee + consume_amount 双字段拆分）。
+// ============================================================
+describe('staff.performanceDetail', () => {
+  const rangePayload = { startDate: '2026-03-01', endDate: '2026-03-31' }
+
+  test('服务提成汇总读 service_commissions.commission_amount（而非 unit_real_price × session_used）', async () => {
+    const ctx = createManagerCtx(rangePayload)
+
+    // allocRows：空销售提成，聚焦服务维度
+    pg.query.mockResolvedValueOnce([])
+    // svcRows：10 行 service_commissions，每行 commission_amount=130 (fixed_fee=80 + consume_amount=50)
+    // 旧错误实现会返回 unit_real_price × session_used = 500 × 10 = 5000
+    // 新正确实现应返回 130 × 10 = 1300
+    pg.query.mockResolvedValueOnce(
+      Array.from({ length: 10 }, (_, i) => ({
+        commission_amount: '130.00',
+        fixed_fee: '80.00',
+        consume_amount: '50.00',
+        role_type: '美容师',
+        commission_rate: '0.1000',
+        session_used: 1,
+        service_unit_price: '500.00',
+        product_name: '面部护理',
+        sku_spec_name: '单次',
+        sales_category: '自采自销',
+        service_order_id: `HLD-WX-2603${String(i).padStart(4, '0')}`,
+        service_date: '2026-03-10',
+        store_id: 'store-001',
+        customer_name: '张三',
+        client_phone: '13800000001',
+      }))
+    )
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalServiceCommission).toBe(1300)
+    expect(ctx.result.totalServiceCommission).not.toBe(5000) // 旧 Bug 值
+    expect(ctx.result.totalSalesAlloc).toBe(0)
+    expect(ctx.result.totalCommission).toBe(1300)
+  })
+
+  test('categorySummary 按分类汇总使用 commission_amount 口径', async () => {
+    const ctx = createManagerCtx(rangePayload)
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([
+      {
+        commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
+        role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
+        customer_name: '张三', client_phone: null,
+      },
+      {
+        commission_amount: '200.00', fixed_fee: '100.00', consume_amount: '100.00',
+        role_type: '推广师', commission_rate: '0.1000', session_used: 1, service_unit_price: '1000.00',
+        product_name: '家居产品', sku_spec_name: '单瓶', sales_category: '他销他耗',
+        service_order_id: 'HLD-WX-2603-0002', service_date: '2026-03-11', store_id: 'store-001',
+        customer_name: '李四', client_phone: null,
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.categorySummary['自采自销'].service).toBe(130)
+    expect(ctx.result.categorySummary['他销他耗'].service).toBe(200)
+    // 两分类之间不互相污染
+    expect(ctx.result.categorySummary['自采自销'].sales).toBe(0)
+    expect(ctx.result.categorySummary['他销他耗'].sales).toBe(0)
+  })
+
+  test('totalCommission === totalSalesAlloc + totalServiceCommission', async () => {
+    const ctx = createManagerCtx(rangePayload)
+
+    // 销售提成 800
+    pg.query.mockResolvedValueOnce([
+      {
+        alloc_amount: '800.00', allocation_ratio: '0.80', department_name: '美容部',
+        product_name: '销售商品', sku_spec_name: '10次卡', sales_category: '自采自销',
+        unit_real_price: '1000.00', received: '1000.00',
+        sale_order_id: 'FY-XSD-WX-260310-0001', customer_name: '张三', client_phone: null,
+        paid_at: new Date('2026-03-10'), store_id: 'store-001',
+      },
+    ])
+    // 服务提成 130
+    pg.query.mockResolvedValueOnce([
+      {
+        commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
+        role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
+        product_name: '护理项目', sku_spec_name: '单次', sales_category: '自采自销',
+        service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
+        customer_name: '张三', client_phone: null,
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalSalesAlloc).toBe(800)
+    expect(ctx.result.totalServiceCommission).toBe(130)
+    expect(ctx.result.totalCommission).toBe(930) // 800 + 130
+  })
+
+  test('serviceItems 明细返回 fixedFee / consumeAmount / roleType 字段', async () => {
+    const ctx = createManagerCtx({ ...rangePayload, filterType: 'service' })
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([
+      {
+        commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
+        role_type: '美容师', commission_rate: '0.1200', session_used: 2, service_unit_price: '500.00',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
+        customer_name: '张三', client_phone: null,
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    const svc = ctx.result.items[0]
+    expect(svc.type).toBe('service')
+    expect(svc.amount).toBe(130)
+    expect(svc.fixedFee).toBe(80)
+    expect(svc.consumeAmount).toBe(50)
+    expect(svc.roleType).toBe('美容师')
+    expect(svc.commissionRate).toBe(0.12)
+    // fixedFee + consumeAmount === amount（保证两字段拆分恒等）
+    expect(svc.fixedFee + svc.consumeAmount).toBe(svc.amount)
+  })
+
+  test('保留 totalServiceFee 字段向后兼容老版本前端', async () => {
+    const ctx = createManagerCtx(rangePayload)
+
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([
+      {
+        commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
+        role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
+        customer_name: '张三', client_phone: null,
+      },
+    ])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 双字段返回，值相同，老版本前端读 totalServiceFee 也能拿到正确值
+    expect(ctx.result.totalServiceFee).toBe(130)
+    expect(ctx.result.totalServiceCommission).toBe(130)
+    expect(ctx.result.totalServiceFee).toBe(ctx.result.totalServiceCommission)
+  })
+
+  test('服务提成 SQL 查 service_commissions 表（带 is_void=false 过滤）', async () => {
+    const ctx = createManagerCtx(rangePayload)
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    // 第二次 pg.query 查的是服务提成
+    const svcSql = pg.query.mock.calls[1][0]
+    expect(svcSql).toContain('service_commissions')
+    expect(svcSql).toContain('sc.commission_amount')
+    expect(svcSql).toContain('sc.fixed_fee')
+    expect(svcSql).toContain('sc.consume_amount')
+    expect(svcSql).toContain('is_void = false')
+    // 不应再使用 unit_real_price × session_used 作为口径
+    expect(svcSql).not.toMatch(/sit\.unit_real_price\s+AS\s+service_price/)
+  })
+
+  test('空数据正确返回', async () => {
+    const ctx = createManagerCtx(rangePayload)
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
+
+    await staffRoutes.performanceDetail(ctx)
+
+    expect(ctx.result.totalSalesAlloc).toBe(0)
+    expect(ctx.result.totalServiceCommission).toBe(0)
+    expect(ctx.result.totalServiceFee).toBe(0)
+    expect(ctx.result.totalCommission).toBe(0)
+    expect(ctx.result.items).toEqual([])
+    expect(ctx.result.total).toBe(0)
   })
 })
