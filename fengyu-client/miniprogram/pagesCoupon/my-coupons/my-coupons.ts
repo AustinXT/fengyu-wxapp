@@ -11,8 +11,6 @@ Page({
     coupons: [] as any[],
     isLoading: false,
     loadError: false,
-    redeemCode: '',
-    redeeming: false,
   },
 
   onLoad() {
@@ -66,28 +64,4 @@ Page({
     }
   },
 
-  onRedeemInput(e: WechatMiniprogram.Input) {
-    this.setData({ redeemCode: e.detail.value.trim() });
-  },
-
-  async onRedeem() {
-    const code = this.data.redeemCode.trim();
-    if (!code) {
-      Toast.fail('请输入兑换码');
-      return;
-    }
-    if (this.data.redeeming) return;
-    this.setData({ redeeming: true });
-
-    try {
-      await callClientApi('coupon.redeem', { code });
-      Toast.success('兑换成功');
-      this.setData({ redeemCode: '', activeTab: 0 });
-      this.loadCoupons();
-    } catch (err: any) {
-      Toast.fail(err.message || '兑换失败');
-    } finally {
-      this.setData({ redeeming: false });
-    }
-  },
 });
