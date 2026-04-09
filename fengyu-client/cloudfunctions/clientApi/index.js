@@ -46,7 +46,6 @@ const routes = {
   'service.list': () => require('./routes/service').list,
   'coupon.list': () => require('./routes/coupon').list,
   'coupon.available': () => require('./routes/coupon').available,
-  'coupon.redeem': () => require('./routes/coupon').redeem,
   'points.balance': () => require('./routes/points').balance,
   'points.history': () => require('./routes/points').history,
   'message.list': () => require('./routes/message').list,
