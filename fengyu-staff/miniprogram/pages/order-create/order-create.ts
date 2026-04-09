@@ -2,6 +2,7 @@
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { calcCartTotal } from '../../utils/cart-calc';
+import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 
 const app = getApp<IAppOption>();
 const BIG_CATEGORIES = ['组合套餐', '护理项目', '家居产品', '充值卡', '体验卡'];
@@ -410,6 +411,8 @@ Page({
       update.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
     }
     this.setData(update);
+    // cart 变动后重新评估已选优惠券（未选券时内部短路，零开销）
+    void this.revalidateCoupon();
   },
 
   // ===== 结算面板 =====
@@ -541,6 +544,50 @@ Page({
 
   onClearCoupon() {
     this.setData({ selectedCoupon: null, couponDiscount: 0, couponTotal: '', showCouponPopup: false });
+  },
+
+  /**
+   * cart 变动后重新评估已选优惠券
+   * - 未选券 / 未选顾客时短路返回
+   * - 原券仍在可用列表 → discount 变化则更新（品项券可能因 cart 变化而变）
+   * - 原券已不在列表 → 清空选择并 Toast 提示
+   * 决策纯函数在 utils/coupon-evaluator.ts，便于单测
+   */
+  async revalidateCoupon() {
+    const { selectedCoupon, customerInfo, cart } = this.data;
+    if (!selectedCoupon || !customerInfo?.phone) return;
+    try {
+      const items = cart.map(c => ({
+        skuId: c.skuId,
+        quantity: c.quantity,
+        amount: Math.round((c.price * c.quantity - c.discount) * 100) / 100,
+      }));
+      const data = await callStaffApi<CouponAvailableResponse>('coupon.available', {
+        clientPhone: customerInfo.phone,
+        items,
+      });
+      const result = evaluateCouponAfterCartChange(
+        selectedCoupon.couponId,
+        selectedCoupon.discount,
+        data?.coupons || []
+      );
+      if (result.kind === 'cleared') {
+        this.setData({
+          selectedCoupon: null,
+          couponDiscount: 0,
+          couponTotal: '',
+        });
+        wx.showToast({ title: '商品已变动，原优惠券已失效', icon: 'none' });
+      } else if (result.kind === 'updated') {
+        this.setData({
+          selectedCoupon: { ...selectedCoupon, discount: result.discount },
+          couponDiscount: result.discount,
+          couponTotal: (parseFloat(this.data.cartTotal) - result.discount).toFixed(2),
+        });
+      }
+    } catch {
+      // 评估失败保持原状，提交时由后端兜底拒绝
+    }
   },
 
   // ===== 指定美容师 =====
