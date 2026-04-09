@@ -33,25 +33,83 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 
 ```bash
 npm run db:generate   # 生成迁移文件（schema 变更后）
-npm run db:migrate    # 执行迁移（生产环境）
-npm run db:push       # 推送 schema（开发环境，跳过迁移文件）
+npm run db:migrate    # 执行迁移
 npm run db:studio     # Drizzle Studio 可视化管理
 ```
 
 迁移前需设置环境变量 `DATABASE_URL`（或在 `.env` 中配置）。Drizzle 配置见 `drizzle.config.ts`，启用了 strict 模式（破坏性变更需确认）。
 
-## 本地数据库
+**不用 `db:push`**：push 会直接改目标库 schema 而不写 `drizzle.__drizzle_migrations` 表，会让库和 journal 脱节。所有变更都必须走 `db:generate` + `db:migrate`。
+
+## Schema 变更工作流（2026-04 baseline reset 之后强制）
+
+标准流程：
+
+1. 改 `schema/*.ts`（22 个模块之一。`schema/*.ts` 是 schema 的唯一权威来源）
+2. `npm run db:generate` — drizzle-kit 产出 `migrations/00NN_<name>.sql` + 对应 `meta/00NN_snapshot.json` + 更新 `meta/_journal.json`
+3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
+4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
+5. **部署**：PR merge 后，**对两个库都跑** `npm run db:migrate`
+   - 5434/fengyu（测试库，admin 用）
+   - 5433/fengyu_wxapp（开发库，staffApi/clientApi 云函数用）
+   - 只跑一个库会造成 drift 再次扩大
+
+### 严格禁止
+
+- **禁止** 用 `psql` 或任何客户端直连库执行 `CREATE TABLE / ALTER TABLE / DROP` 等 DDL
+- **禁止** 手写 `.sql` 文件塞进 `db/migrations/`（哪怕序号不冲突）
+- **禁止** 手动编辑 `db/migrations/meta/_journal.json`（baseline reset 收尾用 `db/scripts/reset-drizzle-journal.js` 除外）
+- **禁止** 在已 merge 的 migration 上原地修改，应该写一个新 migration 修复
+- **禁止** 用 `db:push` 对生产/开发库 push schema，会让 journal 脱节
+- **唯一例外**：生成的 migration `.sql` 文件末尾可以追加手写 `UPDATE`/`INSERT` 做数据回填（参考归档里的
+  `_archive_pre_baseline_2026_04/sql/0018_green_rogue.sql` 模式），但**只能追加**，不能修改 drizzle-kit 生成的部分
+
+### 补救措施
+
+- **尚未 merge 的 migration 要改**：删除对应 `.sql` + `meta/00NN_snapshot.json`，手工把 `_journal.json` 的 entry 删掉，重新 `db:generate`
+- **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
+- **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
+
+## 两库必须同步（2026-04-10 发现）
+
+项目有两个 PG 实例（详见 `project_db_dual_env.md` memory）：
+
+| 角色 | 连接 | 使用方 |
+|------|------|--------|
+| 测试库 | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | admin web、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标） |
+| 开发库 | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | staffApi/clientApi 云函数（CloudBase 环境变量 `PG_CONNECTION_STRING`） |
+
+**任何 schema 变更都必须**在两库各跑一遍 `db:migrate`。本地 `db:migrate` 只打测试库（`db/.env` 里的 URL），必须**额外**手动跑一遍：
 
 ```bash
-# 从 monorepo 根目录启动
-docker compose -f docker/docker-compose.yml up -d
-
-# 连接信息
-# host: localhost:5432, db: fengyu, user: fengyu, password: fengyu123
-
-# 进入 psql
-docker exec -it fengyu-postgres psql -U fengyu -d fengyu
+DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate
 ```
+
+## Baseline reset 历史
+
+2026-04-10 执行了一次 drizzle-kit baseline reset。背景、过程、归档位置、follow-up 任务见
+`db/migrations/_archive_pre_baseline_2026_04/README.md`。在此之前的迁移历史通过 git log 和归档目录查询。
+
+**注意**：截至 2026-04-10，**只有 5434/fengyu（测试库）完成了 baseline reset**。5433/fengyu_wxapp（开发库）还停留在约 2026-02 的 schema 状态，drift 清单见 `db/scripts/follow-up-5433-drift.txt`，将作为独立任务单独修复。在 5433 的 drift 修复完成前，**小心**任何需要跨库的操作。
+
+## 临时 PG（仅用于 migration 验证）
+
+项目没有常驻本地 PG；所有真实数据库都是远程的（见上节）。当需要做 `db:generate` 后的
+「空库从零 apply」验证时，**临时**起一个 docker 容器：
+
+```bash
+docker run -d --name drizzle-migrate-test \
+  -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+  -p 54399:5432 postgres:16
+
+DATABASE_URL="postgresql://postgres:test@localhost:54399/test" npm run db:migrate
+
+# 验证后销毁
+docker rm -f drizzle-migrate-test
+```
+
+这个临时容器**只用于验证**，不要承载任何业务数据。`docker/docker-compose.yml` 里定义的
+`fengyu-postgres` 容器是历史遗留，团队不使用。
 
 ## 同步脚本
 
