@@ -29,7 +29,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | order | create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail |
 | appointment | create, list, cancel |
 | service | detail, list |
-| coupon | list, available, redeem |
+| coupon | list, available |
 | points | balance, history |
 | message | list, read, unreadCount |
 | card | list, history |

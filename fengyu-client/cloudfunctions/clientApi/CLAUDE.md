@@ -23,7 +23,7 @@ clientApi/
     ├── order.js      # create, pay, alipayPay, offlinePay, list, detail, cancel, appointableItems, scanDetail
     ├── appointment.js # create, list, cancel
     ├── service.js    # detail, list
-    ├── coupon.js     # list, available, redeem
+    ├── coupon.js     # list, available
     ├── points.js     # balance, history
     ├── message.js    # list, read, unreadCount
     ├── card.js       # list, history
