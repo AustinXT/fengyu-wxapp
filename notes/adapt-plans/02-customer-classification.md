@@ -732,7 +732,7 @@ UI 方案由设计确认后实施。
 
 ### 5.3 文档 & 记忆同步
 
-- 修正 `project_member_level_rules.md` 的阈值区间表述（`project_member_level_rules.md:9-15`）
+- 修正 `project_member_level_rules.md` 的阈值区间表述（`project_member_level_rules.md:9-15`） **(DONE 2026-04-10，见 tickets/bug-memory-member-level-boundary-overlap.md)**
 - 更新 `.42cog/pm/staff.pr.spec.md §312` 的"新会员"定义
 - 更新 `.42cog/pm/admin.pr.spec.md §232` 的"新会员消费门槛"说明，补充"当月首次达标"定义
 - 更新 `.42cog/design/admin.ui.spec.md:825` 相关 UI 规格
@@ -830,6 +830,10 @@ scripts/worktree-setup.sh feat/customer-5tier
    - commit A：db schema + migration
    - commit B：云函数 (staffApi + clientApi + payNotify + cronTask)
    - commit C：admin + staff miniprogram + tests
+
+**Changelog：**
+
+- 2026-04-10 修正 project_member_level_rules.md 会员等级区间 off-by-one（见 tickets/bug-memory-member-level-boundary-overlap.md）
 
 ### 7.2 近期跟进（P1）
 
