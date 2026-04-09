@@ -396,7 +396,7 @@ test('SELECT 真实包含 schema 存在的列（防假阳性 mock）', () => {
 
 ## 7 验收清单（Definition of Done）
 
-- [ ] §2.1 exposed_users 在 prod 执行完毕，结果录入本 ticket（即使是 0 也记录）
+- [x] §2.1 exposed_users 在 prod 执行完毕：**12 个用户**（2026-04-10 prod 查询，语义为"过去 30 天内仍持有未过期券的不同用户数"，代表曝光面上限）。按 §5.2 默认策略**不发通知**（兑换功能本来就崩，没有"以前用得好现在坏了"的回溯问题）
 - [ ] §4.1 云函数删除：`coupon.js` redeem 函数消失、`index.js` 路由条目消失
 - [ ] §4.2 测试删除：`coupon.test.js` 的 `describe('coupon.redeem')` 11 例消失，顶部注释同步更新
 - [ ] §4.3 防假阳性抗体：`coupon.list` 和 `coupon.available` 的测试用例中新增 SELECT 字段断言；`npm test -- routes/coupon` 全绿

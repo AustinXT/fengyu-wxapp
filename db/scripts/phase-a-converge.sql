@@ -82,6 +82,6 @@ SELECT 'pg_type product_kind' AS item,
 -- ==========================================================
 -- DRY-RUN / COMMIT 开关
 -- ==========================================================
--- 默认 ROLLBACK 保护。确认 Part 2 输出正确后，把下面一行改为 COMMIT。
-ROLLBACK;
--- COMMIT;
+-- 2026-04-10: dry-run 全部 OK，用户授权 COMMIT
+-- ROLLBACK;
+COMMIT;

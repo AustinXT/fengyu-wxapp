@@ -618,6 +618,8 @@ else if (couponInfo.coupon_type === '折扣券') {
 - 删除 `__tests__/routes/coupon.test.js` 中对 redeem 的测试（如有）
 - 从 `fengyu-client/CLAUDE.md` / `cloudfunctions/clientApi/CLAUDE.md` 的接口表删除 redeem
 
+> ✅ **已修复（2026-04-10，merge b4c4ddc）**：见 `notes/tickets/06-2-client-coupon-redeem-schema-mismatch.md`。本节"前端无调用 → 死代码"前提被推翻——`pagesCoupon/my-coupons/` 三个文件有完整兑换码 UI + `callClientApi('coupon.redeem')` 调用，实际是 P0 **线上崩溃**而非死代码。已按方案 A 删除 redeem 全链路（8 个文件 / 4 commits）+ 下架前端 UI + 为 `list`/`available` 补防假阳性 SELECT 字段抗体。Prod §2.1 曝光面 = **12 个用户**（过去 30 天内有未过期券），按 §5.2 默认策略不发通知。
+
 ### 4.5 [P1] admin UI 未暴露 `applicable_store_ids`
 
 **位置**：
