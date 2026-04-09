@@ -1,6 +1,6 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
-export const productKindEnum = pgEnum("product_kind", ["组合套餐", "护理项目", "家居产品", "充值卡", "体验卡"]);
+export const productKindEnum = pgEnum("product_kind", ["护理项目", "家居产品", "充值卡", "体验卡"]);
 
 export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "院装产品"]);
 
@@ -14,13 +14,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "待审批",
 ]);
 
-export const saleOrderTypeEnum = pgEnum("sale_order_type", [
-  "销售单",
-  "内部单",
-  "回款单",
-  "转换单",
-  "退款单",
-]);
+export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "回款单", "转换单", "退款单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 
@@ -58,7 +52,16 @@ export const positionScopeEnum = pgEnum("position_scope", ["总部", "市场", "
 export const memberLevelEnum = pgEnum("member_level", ["初钻", "星钻", "粉钻", "金钻", "黑钻"]);
 
 export const customerSourceEnum = pgEnum("customer_source", [
-  "美团", "抖音", "小程序", "推带新", "地推卡", "拓客卡", "老带新", "转让店", "自进店", "内部员工或家属",
+  "美团",
+  "抖音",
+  "小程序",
+  "推带新",
+  "地推卡",
+  "拓客卡",
+  "老带新",
+  "转让店",
+  "自进店",
+  "内部员工或家属",
 ]);
 
 export const customerTypeEnum = pgEnum("customer_type", ["流量客", "体验客", "小美客", "会员客"]);
