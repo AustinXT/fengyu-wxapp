@@ -40,8 +40,22 @@ require.cache[wxPath] = {
   exports: mockCloud,
 }
 
+// ====== Mock: utils/config ======
+const configPath = require.resolve('../utils/config')
+const mockConfig = {
+  getMemberThreshold: vi.fn(async () => 1980),
+  invalidateCache: vi.fn(),
+  FALLBACK_THRESHOLD: 1980,
+}
+require.cache[configPath] = {
+  id: configPath,
+  filename: configPath,
+  loaded: true,
+  exports: mockConfig,
+}
+
 // Export mocks for test files to reference
-globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud }
+globalThis.__mocks__ = { pg: mockPg, cloud: mockCloud, config: mockConfig }
 
 // Reset mock state before each test (clears "once" queue + call history)
 beforeEach(() => {
@@ -57,4 +71,6 @@ beforeEach(() => {
     APPID: 'wx811eb4ded3dfba3f',
     UNIONID: undefined,
   })
+  mockConfig.getMemberThreshold.mockReset().mockResolvedValue(1980)
+  mockConfig.invalidateCache.mockReset()
 })

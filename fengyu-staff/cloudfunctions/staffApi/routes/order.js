@@ -14,6 +14,7 @@
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
+const { getMemberThreshold } = require('../utils/config')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -68,10 +69,7 @@ async function recalcCustomerType(client, clientUserId) {
   )
   if (cur.rows[0]?.customer_type === '会员客') return
 
-  const configResult = await client.query(
-    "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-  )
-  const threshold = Number(configResult.rows[0]?.value) || 1990
+  const threshold = await getMemberThreshold()
 
   const typeResult = await client.query(
     `SELECT CASE
@@ -382,10 +380,7 @@ async function create(ctx) {
     }
   }
   if (documentType === '售前') {
-    const cfgRows = await pg.query(
-      "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-    )
-    const threshold = Number(cfgRows[0]?.value) || 1990
+    const threshold = await getMemberThreshold()
     if (totalAmount >= threshold) {
       documentType = '售后'
     }

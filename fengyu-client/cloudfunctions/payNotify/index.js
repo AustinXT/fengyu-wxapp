@@ -8,6 +8,8 @@
 const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
+const { getMemberThreshold } = require('./config')
+
 // PostgreSQL 连接（懒初始化）
 let pgPool = null
 function getPg() {
@@ -140,10 +142,7 @@ exports.main = async (event) => {
           [order.client_user_id]
         )
         if (curType.rows[0]?.customer_type !== '会员客') {
-          const configResult = await client.query(
-            "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-          )
-          const threshold = Number(configResult.rows[0]?.value) || 1990
+          const threshold = await getMemberThreshold()
 
           const typeResult = await client.query(
             `SELECT CASE
