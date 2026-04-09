@@ -240,7 +240,7 @@ async function create(ctx) {
     // 验证券有效性
     const couponRows = await pg.query(
       `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
-              ct.coupon_type, ct.discount_value, ct.min_spend,
+              ct.coupon_type, ct.discount_value, ct.min_spend, ct.max_discount,
               ct.applicable_category_ids, ct.applicable_store_ids
        FROM user_coupons uc
        JOIN coupon_templates ct ON uc.template_id = ct.template_id
@@ -290,6 +290,11 @@ async function create(ctx) {
     // 计算抵扣金额
     if (couponInfo.coupon_type === '现金券' || couponInfo.coupon_type === '品项券') {
       couponDiscount = Math.min(Number(couponInfo.discount_value), eligibleTotal)
+    } else if (couponInfo.coupon_type === '折扣券') {
+      couponDiscount = eligibleTotal * (1 - Number(couponInfo.discount_value))
+      if (couponInfo.max_discount) {
+        couponDiscount = Math.min(couponDiscount, Number(couponInfo.max_discount))
+      }
     }
     couponDiscount = Math.round(couponDiscount * 100) / 100
 

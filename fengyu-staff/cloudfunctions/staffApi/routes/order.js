@@ -290,7 +290,7 @@ async function create(ctx) {
   if (inputCouponId && clientUserId) {
     const couponRows = await pg.query(
       `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
-              ct.coupon_type, ct.discount_value, ct.min_spend,
+              ct.coupon_type, ct.discount_value, ct.min_spend, ct.max_discount,
               ct.applicable_category_ids, ct.applicable_store_ids
        FROM user_coupons uc
        JOIN coupon_templates ct ON uc.template_id = ct.template_id
