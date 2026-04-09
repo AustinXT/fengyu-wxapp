@@ -9,16 +9,17 @@ const pg = require('../db/pg')
 
 /**
  * 查询积分余额及会员等级
+ * 积分余额从 client_wechat_users.points_balance 直接读取（已去掉 customer_points 表）
  */
 async function balance(ctx) {
   const { userId } = ctx.auth
 
+  // 积分余额直接读 client_wechat_users.points_balance（已去掉 customer_points 表）
   const rows = await pg.query(`
     SELECT
-      COALESCE(cp.balance, 0) AS balance,
+      cwu.points_balance AS balance,
       cwu.member_level AS level_name
     FROM client_wechat_users cwu
-    LEFT JOIN customer_points cp ON cp.user_id = cwu.user_id
     WHERE cwu.user_id = $1
   `, [userId])
 
