@@ -90,6 +90,32 @@ export interface Customer {
   marketName?: string
 }
 
+/** 积分流水 */
+export interface PointTransaction {
+  id: number
+  userId: string
+  type: string
+  amount: number
+  refOrderId: string | null
+  createdAt: string
+  // joined
+  customerName: string | null
+  customerPhone: string | null
+  memberLevel: string | null
+  storeId: string | null
+  storeName: string | null
+  marketName: string | null
+}
+
+/** 积分流水汇总统计 */
+export interface PointTransactionSummary {
+  totalEarn: number
+  totalSpend: number
+  netChange: number
+  txnCount: number
+  userCount: number
+}
+
 export type PositionScope = '总部' | '市场' | '门店'
 
 export interface Position {
