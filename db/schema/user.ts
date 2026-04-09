@@ -39,6 +39,8 @@ export const clientWechatUsers = pgTable(
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
     /** 顾客类型：流量客/体验客/小美客/会员客，默认流量客 */
     customerType: customerTypeEnum('customer_type').notNull().default('流量客'),
+    /** 首次/当前成为会员客的时间戳，与 customer_type 跃迁同步维护 */
+    becameMemberAt: timestamp('became_member_at', { withTimezone: true }),
     /** 历史消费档位：按累计消费额分档，默认<1990（未被经营） */
     spendingTier: spendingTierEnum('spending_tier').notNull().default('<1990'),
     /** 月度客活：每日凌晨3点根据当月已完成服务单计算 */
