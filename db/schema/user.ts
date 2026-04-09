@@ -56,6 +56,10 @@ export const clientWechatUsers = pgTable(
     skinIssue: varchar('skin_issue', { length: 200 }),
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
     notes: text('notes'),
+    /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
+    pointsBalance: integer('points_balance').notNull().default(0),
+    /** 最近积分更新时间 */
+    pointsUpdatedAt: timestamp('points_updated_at'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
