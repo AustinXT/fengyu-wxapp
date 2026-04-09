@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { createTemplate } from "@/actions/coupons"
 import type { CouponType } from "@/lib/types"
+import { validateCouponValidityFields } from "./coupon-validity-helper"
 
 interface Market {
   id: string
@@ -69,6 +70,17 @@ export default function CouponCreatePage({ markets, categories }: Props) {
     }
     if (couponType === "折扣券" && dv >= 1) {
       toast.error("折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）")
+      return
+    }
+
+    const validityCheck = validateCouponValidityFields({
+      validityMode,
+      validDays,
+      validFrom,
+      validTo,
+    })
+    if (!validityCheck.ok) {
+      toast.error(validityCheck.message)
       return
     }
 
@@ -189,7 +201,17 @@ export default function CouponCreatePage({ markets, categories }: Props) {
               <label className="text-sm font-medium">有效期模式</label>
               <Select
                 value={validityMode}
-                onChange={(e) => setValidityMode(e.target.value as "fixed" | "days")}
+                onChange={(e) => {
+                  const next = e.target.value as "fixed" | "days"
+                  setValidityMode(next)
+                  // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                  if (next === "days") {
+                    setValidFrom("")
+                    setValidTo("")
+                  } else {
+                    setValidDays("")
+                  }
+                }}
               >
                 <option value="days">领取后N天</option>
                 <option value="fixed">固定时段</option>
