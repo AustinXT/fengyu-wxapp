@@ -1,5 +1,12 @@
 # 02 — 顾客分类与会员等级规则 适配计划
 
+> ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> - `customerTypeEnum` **不重排**，保留当前 `[流量客, 体验客, 小美客, 会员客]`
+> - Q1 答：**保留"小美客"**
+> - Q2 答：**没有"注册"档，未消费顾客归入"流量客"**
+> - 5 档分类改为**派生视图**（SQL CASE + 聚合），不改底层枚举
+> - `recalcCustomerType` 死分支 Bug 仍需修复，但方向是修复而非删除
+
 > 生成日期：2026-04-09
 > 生成者：/wx-requirement-adapt
 > 会议来源：`notes/meetings/meeting-20260312/article.md §二`、`notes/meetings/meeting-20260324/article.md §七`

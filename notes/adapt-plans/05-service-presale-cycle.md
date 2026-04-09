@@ -1,10 +1,35 @@
 # 差异报告：服务单售前/售后 + 经营周期/会员门槛配置化
 
+> ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> - `service_order_type` **不回滚**，保留当前 `[售前, 售后]`
+> - `sale_items.document_type` **不新增列**
+> - 本报告第 12 行起的"修订说明（2026-04-10）"如涉及**新增** `client_wechat_users.became_member_at` 字段，也属结构性变更，需降级为"运行时派生"方案
+> - `service_items.is_presale` TODO 就地修复（不删除列、改为从 `service_orders.service_order_type` 回填或按主表口径判断）
+> - 1980/1990 硬编码收敛等待 Q9 生产库值确认后再执行
+
 > 适配来源
 > - `notes/meetings/meeting-20260324/article.md` §六 服务单
 > - `notes/meetings/meeting-20260312/article.md` §五 经营周期
 > 适配方法论：`.claude/skills/wx-requirement-adapt/SKILL.md` §3 + §4
 > 生成时间：2026-04-09
+> **最后修订：2026-04-10 — 方案大幅简化，详见下方"修订说明"**
+
+---
+
+## 修订说明（2026-04-10）
+
+初稿方案试图通过新增 `sale_items.document_type` 列 + 回滚 `service_order_type` 枚举到 `[普通,体验]` 的组合来修复 bug。经业务复核后判断**过度设计**，现采用**简化方案**：
+
+| 项 | 初稿方案 | 现方案 |
+|---|---------|-------|
+| `service_order_type` 枚举 | 回滚到 `['普通','体验']` | **保持** `['售前','售后']` |
+| `sale_items.document_type` | 新增列 + 主表子项双写 | ❌ **取消** |
+| `service_items.is_presale` | 派生写入 | ❌ **删除整列** |
+| 判定承载层 | 订单子项级 | **服务单主表级** |
+| 判定规则 | 按订单金额 × `customer_type` | 按**顾客会员身份时点** |
+| 新增字段 | — | `client_wechat_users.became_member_at` |
+
+**核心规则**：顾客成为会员**之前**创建的服务单 = 售前；**之后**创建的 = 售后；严格时间戳比较（同一天成为会员，当天之后的新服务单即售后）。`service_order_type` 在服务单创建时一次性快照。
 
 ---
 
@@ -12,13 +37,13 @@
 
 | 要素 | 说明 |
 |------|------|
-| **变更概念 A** | 服务类型（serviceOrderType）的语义与承载层级 |
-| **变更概念 B** | 售前/售后（documentType / isPresale）的承载层级，从订单主表下沉到订单子项 |
-| **变更概念 C** | 服务类型枚举从"售前/售后"回退到"普通/体验" |
+| **变更概念 A** | 服务单售前/售后的承载层从"子项 + 主表双写"收敛为**主表单点快照** |
+| **变更概念 B** | 删除 `service_items.is_presale` 列及其所有写入/查询/UI 引用 |
+| **变更概念 C** | 判定规则变更：不再按 `customer_type` 或订单金额，改按"顾客是否已成为会员"（基于新增 `became_member_at` 时间戳） |
 | **变更概念 D** | 经营周期先按自然月实现（这条已经隐式落地，需固化） |
 | **变更概念 E** | 会员门槛 1980/1990 硬编码全部改走 `system_configs.new_member_threshold` |
-| **受影响角色** | 店长（开单时可能需要选择）、美容师（服务单明细展示）、后台数据分析（导出） |
-| **受影响端** | db / staffApi / clientApi / payNotify / cronTask / fengyu-admin / fengyu-staff 前端 |
+| **受影响角色** | 美容师（服务单列表/详情徽章展示）、后台数据分析、开发维护 |
+| **受影响端** | db / staffApi / clientApi / payNotify / fengyu-admin / fengyu-staff 前端 |
 
 ---
 
@@ -34,27 +59,24 @@
 
 **`db/schema/order.ts`**
 - `saleOrders.documentType` (第 42 行)：订单主表级售前/售后字段，值基于 `client_wechat_users.customer_type` + `total_amount` 对比门槛判定
-- `saleItems` 表**没有** `business_type` / `is_presale` / `document_type` 字段
+- `saleItems` 表**没有** `business_type` / `is_presale` / `document_type` 字段（本方案**不再新增**）
 
 **`db/schema/service.ts`**
 - `serviceOrders.serviceOrderType` (第 20 行)：服务单主表级，默认 `'售前'`
-- `serviceItems.isPresale` (第 62 行)：**子项级布尔字段已经存在**，注释说"`sale_orders.sale_order_type = '体验' → true (售前), otherwise false`"——这注释对应 migration 0014 时期的"体验卡=售前"语义，与现状已不一致
+- `serviceItems.isPresale` (第 62 行)：**子项级布尔字段已经存在**，注释说"`sale_orders.sale_order_type = '体验' → true (售前), otherwise false`"——本方案要**删除**此列
 - migration 0014 (`0014_service_items_is_presale.sql`) 是新字段 + 初始回填
+
+**`db/schema/user.ts` — `client_wechat_users`（顾客表）**
+- 第 16 行：PK 为 `userId`（`user_id`），格式 `FYGK-{YYYYMMDD}{序号}`
+- 第 41 行：`customerType` 枚举 `[流量客/体验客/小美客/会员客]`，默认 `'流量客'`
+- 第 36 行：`memberLevel` 枚举 `[初钻/星钻/粉钻/金钻/黑钻]`，nullable
+- ⚠️ **当前没有任何"成为会员时间"字段**（grep `became_member_at` / `member_since` / `upgraded_at` 均无匹配）→ 本方案需新增
 
 **`db/schema/system-config.ts`**
 - 已存在 `system_configs` 键值对表。当前已写入的 key：`new_member_threshold`、`order_timeout`、`banner_images`、`fengyuguan_image`、`member_level_benefits`、`banner_count`
 - 默认 `new_member_threshold = '1980'`（见 `fengyu-admin/src/actions/settings.ts:54`）
 
 ### 1.2 后端逻辑层
-
-**售前/售后判定（订单主表级）**
-
-| 位置 | 行号 | 现有逻辑 |
-|------|------|---------|
-| `fengyu-staff/cloudfunctions/staffApi/routes/order.js` | 362-381 | 开单时根据 `customer_type === '会员客'` OR `totalAmount >= threshold` → documentType |
-| `fengyu-client/cloudfunctions/clientApi/routes/order.js` | 316-335 | 同上（顾客端下单） |
-| `fengyu-admin/src/actions/orders.ts` | 516-538 | 同上（admin 手工开单） |
-| `db/migrations/0023_document_type.sql` | 8-34 | 历史回填 |
 
 **服务单类型判定（服务单主表级）**
 
@@ -63,7 +85,7 @@
 | `fengyu-staff/cloudfunctions/staffApi/routes/service.js` | 150-159 | 创建服务单时查顾客 `customer_type`，会员客→售后，其他→售前 |
 | `fengyu-admin/src/actions/services.ts` | 460-466 | 同上 |
 
-**服务明细 is_presale 写入（已“硬编码 false”）**
+**服务明细 is_presale 写入（已"硬编码 false"）**
 
 | 位置 | 行号 | 现有逻辑 |
 |------|------|---------|
@@ -78,16 +100,9 @@
 | **严重度** | 中 — 不影响资金/权限/扣次，但"售前/售后"是服务单对账时的关键口径，当前整个列是**死数据** |
 | **状态** | 已知缺陷，两处写入路径均保留 TODO 注释待修复 |
 
-**1. 错误行为**
+**错误行为**：`service_items.is_presale` 两个服务单创建入口（员工端云函数 + 管理后台 Server Action）**一律写 `false`**。上方的 SELECT（`service.js:191-197`、`services.ts:469-480`）虽然已经 JOIN 到了 `sale_orders`，但没有任何可靠字段能区分售前/售后，开发者只能挂 TODO 跳过判定。
 
-`service_items.is_presale` 列在数据库中**存在但从未被写入有效值**：
-
-- `fengyu-staff/cloudfunctions/staffApi/routes/service.js:200` — `const isPresale = false // 体验单已合并为销售单，无法区分`
-- `fengyu-admin/src/actions/services.ts:491` — `isPresale: false, // TODO: 体验单已合并入销售单，需另行判断售前/售后`
-
-两个服务单创建入口（员工端云函数 + 管理后台 Server Action）**一律写 `false`**。上方的 SELECT（`service.js:191-197`、`services.ts:469-480`）虽然已经 JOIN 到了 `sale_orders`，但没有任何可靠字段能区分售前/售后，开发者只能挂 TODO 跳过判定。
-
-**2. 数据流及影响面**
+**数据流及影响面**：
 
 ```
 创建 → INSERT service_items (is_presale = false)        ← 写入端硬编码
@@ -105,25 +120,32 @@
 | `fengyu-staff/miniprogram/packageService/service-detail/service-detail.wxml:35` | 员工端服务单详情每条明细徽章 |
 | `fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx:113-116` | 管理后台服务单详情表格"售前/售后"列（Badge 配色 `bg-[#E8F0FE] text-[#3574C4]`） |
 
-**观察症状**：生产/测试环境中打开任意服务单，明细列的徽章**100% 显示"售后"**——不存在任何"售前"数据。即便是非会员客买的售前定金类产品，明细仍标记为售后，徽章与实际业务状态完全脱节。
+**观察症状**：打开任意服务单，明细列的徽章**100% 显示"售后"**——不存在任何"售前"数据。
 
-**3. 引入时机与根因**
+**引入时机与根因**：
+- **migration 0014** 首次新增 `service_items.is_presale` 字段，原设计依赖 `sale_orders.sale_order_type === '体验'` 推断（schema 注释仍保留此说明，见 `db/schema/service.ts:62`）
+- **migration 0028-0031** 精简 `sale_order_type` 枚举到 `[销售单/内部单/回款单/转换单/退款单]` 时删除了 `'体验'` 值 → 原推断条件彻底失效
+- 开发者当时把写入路径改为 `false` 并挂 TODO（两端同步保留），此后再无人补齐
 
-- **migration 0014** 首次新增 `service_items.is_presale` 字段，原设计依赖 `sale_orders.sale_order_type === '体验'` 推断（schema 注释仍保留此说明，见 `db/schema/service.ts:62`）。
-- **migration 0028-0031** 精简 `sale_order_type` 枚举到 `[销售单/内部单/回款单/转换单/退款单]` 时删除了 `'体验'` 值 → 原推断条件彻底失效。
-- 开发者当时把写入路径改为 `false` 并挂 TODO（两端同步保留），此后再无人补齐。
+**根因**：**概念错位**——"售前/售后"本就是顾客维度的身份属性（顾客是否已是会员），应在**服务单创建时刻**以**主表级**快照登记，而不是在服务明细层或订单子项层反复推断。现方案删除 `service_items.is_presale` 列，仅在 `service_orders.service_order_type` 上做判定。
 
-**根因**：售前/售后的**承载层错位**——它本就应该在 `sale_items` 级别打快照（开单时机确定），而不是在服务明细层再次推断。服务明细应该**纯粹继承** `sale_items.document_type`，而该列当前尚不存在（见阶段 A2 新增计划）。
+**修复路径**：
+- **前置条件**：`client_wechat_users` 新增 `became_member_at` 列，并与 `recalcCustomerType` 联动写入
+- **修复动作**：
+  1. 删除 `service_items.is_presale` 列及两处写入/查询/前端引用（见阶段 A1 + C）
+  2. 服务单创建时按"顾客 `became_member_at` ≤ NOW() ? '售后' : '售前'"判定 `service_order_type`（见阶段 B1）
+- **验证锚点**：grep 两处 TODO 注释文本（`体验单已合并为销售单` / `体验单已合并入销售单`）确认已全部清除；全仓 grep `is_presale` / `isPresale` 应为零命中
 
-**4. 修复路径**
+**售前/售后判定（订单主表级）**
 
-- **前置条件**：阶段 A2 落地 `sale_items.document_type` 列并回填历史数据
-- **修复动作**：阶段 B1/B2 将两处 `isPresale = false` 改为从 SELECT 结果中读取 `sale_items.document_type === '售前'`（具体 patch 见 §B2 的两端代码示例）
-- **验证锚点**：grep 两处 TODO 注释文本（`体验单已合并为销售单` / `体验单已合并入销售单`）确认已全部清除
-- **回归要点**：
-  1. 创建服务单后 SELECT `service_items`，断言 `is_presale` 与关联 `sale_items.document_type` 严格一致
-  2. 前端徽章能出现"售前"分支，staff `--presale` 样式和 admin `bg-[#FFF0EE] text-[#C45C48]` 配色真正被触发
-- **历史数据**：根据 `feedback_no_legacy_compat`（开发阶段无历史兼容要求）可选择不回填，只保证增量正确；若要回填参考 §6.5 的 SQL
+> 订单主表 `sale_orders.document_type` 的判定逻辑本次**不改**。以下表格仅作为盘点存档，与 1980/1990 硬编码清单关联，不在本次结构性变更范围内。
+
+| 位置 | 行号 | 现有逻辑 |
+|------|------|---------|
+| `fengyu-staff/cloudfunctions/staffApi/routes/order.js` | 362-381 | 开单时根据 `customer_type === '会员客'` OR `totalAmount >= threshold` → documentType |
+| `fengyu-client/cloudfunctions/clientApi/routes/order.js` | 316-335 | 同上（顾客端下单） |
+| `fengyu-admin/src/actions/orders.ts` | 516-538 | 同上（admin 手工开单） |
+| `db/migrations/0023_document_type.sql` | 8-34 | 历史回填 |
 
 **1980/1990 硬编码清单**
 
@@ -143,8 +165,8 @@
 | 12 | `db/migrations/0023_document_type.sql:11` | `1990` | 历史回填 fallback（已执行，非热代码） | 读取 system_configs |
 
 **关键数值不一致**：
-- Admin 默认值写 `'1980'`；除它之外，所有云函数的 fallback 和 CASE 语句都用 `1990`。
-- 若 `system_configs.new_member_threshold` 有值（已通过 admin 配置保存），代码里的 fallback 不会触发，但 `payNotify`、`staff.js:676`、`cronTask`、`staffApi/order.js:38` 是**完全未读取** `system_configs` 的裸字面量——运行时即使管理员改了后台配置，这几段仍按旧数字执行。
+- Admin 默认值写 `'1980'`；除它之外，所有云函数的 fallback 和 CASE 语句都用 `1990`
+- 若 `system_configs.new_member_threshold` 有值（已通过 admin 配置保存），代码里的 fallback 不会触发，但 `payNotify`、`staff.js:676`、`cronTask`、`staffApi/order.js:38` 是**完全未读取** `system_configs` 的裸字面量——运行时即使管理员改了后台配置，这几段仍按旧数字执行
 
 ### 1.3 前端渲染层
 
@@ -152,19 +174,18 @@
 
 | 位置 | 现状 |
 |------|------|
-| `pages/order-create/order-create.wxml` | orderType 4 选 1：`normal / experience / internal / promotion`；**没有**售前/售后录入，当前靠订单主表自动判定 |
-| `pages/order-create/order-create.ts` | 默认 `orderType: 'normal'`，仅店长可切换到其他三种 |
-| `pages/service/service.wxml:60` | 列表行显示徽章 `<text class="item-tag item-tag--{{si.isPresale ? 'presale' : 'postsale'}}">{{si.isPresale ? '售前' : '售后'}}</text>` |
-| `packageService/service-detail/service-detail.wxml:35` | 详情页每行显示售前/售后徽章 |
+| `pages/order-create/order-create.wxml` | orderType 4 选 1：`normal / experience / internal / promotion`；**没有**售前/售后录入 |
+| `pages/service/service.wxml:60` | 列表行显示子项徽章 `<text class="item-tag item-tag--{{si.isPresale ? 'presale' : 'postsale'}}">{{si.isPresale ? '售前' : '售后'}}</text>` |
+| `packageService/service-detail/service-detail.wxml:35` | 详情页每行显示售前/售后徽章（子项级） |
 | `packageService/service-detail/service-detail.ts:24` | Item 类型含 `isPresale: boolean` |
 
 **管理后台 (fengyu-admin/src)**
 
 | 位置 | 现状 |
 |------|------|
-| `app/(main)/services/_components/services-page.tsx:188` | 服务单列表按 `serviceOrder.serviceOrderType === '售前'` 渲染徽章（**主表级**） |
-| `app/(main)/services/_components/service-detail-page.tsx:51` | 详情页顶部徽章（主表级） |
-| `app/(main)/services/_components/service-detail-page.tsx:101,115` | 同时又在明细 table 展示 `item.isPresale ? '售前' : '售后'`（**子项级**）——形式上主表与子项两套信号同时存在 |
+| `app/(main)/services/_components/services-page.tsx:188` | 服务单列表按 `serviceOrder.serviceOrderType === '售前'` 渲染徽章（**主表级**，本次判定源变化但文案不变） |
+| `app/(main)/services/_components/service-detail-page.tsx:51` | 详情页顶部徽章（主表级，同上） |
+| `app/(main)/services/_components/service-detail-page.tsx:101,115` | 同时又在明细 table 展示 `item.isPresale ? '售前' : '售后'`（**子项级**）——本方案**删除**此列 |
 | `app/(main)/orders/...` | 订单管理无任何售前/售后 UI（即 `documentType` 存了但未渲染） |
 | `app/(main)/settings/_components/settings-page.tsx:112-120` | 已有"新会员消费门槛"Input 配置 UI |
 
@@ -177,10 +198,10 @@
 |--------|---------|
 | 权限 | 无新角色要求。售前/售后为信息展示字段，不涉及权限扩展 |
 | 审计日志 | `logs-page.tsx:124` 已把 `newMemberThreshold` 映射为"新客阈值"，saveSettings 走 `logUpdate`。门槛修改可被审计 |
-| FK / 唯一约束 | 新增 `sale_items.is_presale` 不破坏约束 |
-| WorkFine 同步 | `sync-workfine.js` 不同步订单/服务单，无影响 |
-| seed.ts | `fengyu-admin/src/db/seed.ts:260-263` 构造了 `serviceOrderType: '售后'`/`'售前'` 的种子数据，需同步调整 |
-| 存量数据 | 生产环境目前无真实订单（上线前清空计划）。但测试/开发数据库已有数据，迁移需要回填 |
+| FK / 唯一约束 | 删除 `service_items.is_presale` 不破坏约束；新增 `client_wechat_users.became_member_at` 不破坏约束 |
+| WorkFine 同步 | `sync-workfine.js` 不同步订单/服务单，无影响；同步顾客时不会覆盖 `became_member_at`（该字段由 payNotify/order.create 写入） |
+| seed.ts | `fengyu-admin/src/db/seed.ts:260-263` 构造了 `serviceOrderType: '售后'`/`'售前'` 的种子数据，**无需改动枚举**，但需配合新规则构造顾客的 `became_member_at` |
+| 存量数据 | 开发期无需回填历史服务单（见 §8 Q3） |
 
 ---
 
@@ -190,37 +211,74 @@
 
 | 概念 | 现状承载层 | 目标承载层 | 备注 |
 |------|-----------|-----------|------|
-| 订单"售前/售后" | `sale_orders.document_type` | `sale_orders.document_type`（保留，仍作整单快照） + `sale_items.document_type`（新增，开单时从主表继承） | 主表的值在开单时机就已经确定，子项只是复制一份；退款/转换子项按 `ref_sale_item_id` 继承原值 |
-| 服务单"类型" | `service_orders.service_order_type = 售前/售后` | `service_orders.service_order_type = 普通/体验`（回滚到 migration 0024 之前的含义） | 由会议 §6.2 明确：保留"普通"和"体验"对应体验卡等业务 |
-| 服务明细"售前/售后" | `service_items.is_presale`（字段存在但硬编码 false） | `service_items.is_presale` 或改为 `document_type`，写入时从对应的 `sale_items.document_type` 继承 | 子项级真实值，同一张服务单可以混合售前/售后 |
-| 会员门槛 `1980` | 多处硬编码 `1980`/`1990` | 所有代码路径从 `system_configs.new_member_threshold` 读取，单一事实源 | 修正数字不一致问题（定下一个统一数字） |
-| 经营周期 | 各处 `date_trunc('month')` + `new Date(year, month, 1)` 自然月 | 固化为自然月，在 spec 中写明 | 无代码大动作；只需 spec 补一句，顺便重命名变量/注释 |
+| 服务单"售前/售后" | `service_orders.service_order_type`（按 `customer_type` 派生） + `service_items.is_presale`（硬编码 false） | `service_orders.service_order_type`（按 `became_member_at` 快照判定）**单点承载** | 删除 `service_items.is_presale` |
+| 顾客"成为会员时间" | 无字段 | `client_wechat_users.became_member_at` (timestamptz, nullable) | 由 `recalcCustomerType` 在 `customer_type` 跃迁为 `会员客` 时写入 `NOW()` |
+| 订单"售前/售后" | `sale_orders.document_type`（保留现状） | **不变** | 与服务单售前/售后语义独立，初稿方案曾计划"下沉到子项"现作废 |
+| 会员门槛 `1980` | 多处硬编码 `1980`/`1990` | 所有代码路径从 `system_configs.new_member_threshold` 读取，单一事实源 | 修正数字不一致问题 |
+| 经营周期 | 各处 `date_trunc('month')` + `new Date(year, month, 1)` 自然月 | 固化为自然月，在 spec 中写明 | 无代码大动作；只需 spec 补一句 |
 
 ### 2.2 用户故事层
 
-1. **店长开单**
-   - 不需要手动选择售前/售后
-   - 系统按顾客类型 + 订单金额 × `system_configs.new_member_threshold` 算出 `document_type`，同时落到 `sale_orders.document_type` 和每条 `sale_items.document_type`
-   - 对于"内部单""组合套餐"这类特殊类型，`document_type` 允许为 null 或按规则处理（待澄清）
+1. **顾客首次达到会员门槛**
+   - 顾客支付订单后触发 `recalcCustomerType`：若累计消费 ≥ `new_member_threshold` → `customer_type` 从非会员客升为 `会员客`
+   - 同一事务内 `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1 AND became_member_at IS NULL`
+   - 此时顾客成为会员的瞬间被精确记录（timestamptz 精度）
 
 2. **美容师创建服务单**
-   - 点选 `sale_item`，服务明细行自动拿到 `sale_items.document_type`（= isPresale true/false 或直接存 '售前'/'售后'）
-   - 服务单主表类型由店长选择（`普通` 或 `体验`），**不再与顾客类型挂钩**
-   - 同一张服务单可以同时包含售前和售后子项
+   - 系统查询顾客 `became_member_at`：若 `became_member_at IS NOT NULL AND became_member_at <= NOW()` → `service_order_type = '售后'`；否则 `'售前'`
+   - 判定结果在服务单创建事务内一次性写入 `service_orders.service_order_type`，**不再可变**
+   - 同一顾客、同一天内跨越会员门槛：跨越前创建的服务单是 `售前`，跨越后创建的是 `售后`
 
-3. **后台导出服务单明细**
-   - 子项级 CSV 含列：`服务单号 | 顾客姓名 | 服务日期 | 商品名 | 规格 | 售前/售后 | 消耗金额 | 员工`
-   - 服务单主表列表筛选仍按 `serviceOrderType`（普通/体验），但**明细导出时**可按 `service_items.is_presale` 分组汇总
+3. **美容师查看服务单列表/详情**
+   - 列表页每行显示主表徽章 `售前` / `售后`（现有逻辑数据源变化，UI 无需改动）
+   - 详情页每条明细**不再**显示售前/售后徽章（与主表一致，子项无独立语义）
 
-4. **管理员修改会员门槛**
+4. **管理员查看顾客档案**
+   - 顾客档案详情页展示"成为会员时间"字段（只读展示，不提供编辑入口）
+   - 若 `became_member_at IS NULL` 显示"—"
+
+5. **管理员修改会员门槛**
    - 在 `settings` 页面修改 `新会员消费门槛`，保存后**立即生效**
    - 所有云函数的 documentType 判定、消费档位 CASE、"新会员" 统计、member_level `初钻` 阈值都从 system_configs 读取
    - cronTask 夜间重算 member_level 时，读取 system_configs 的最新值
 
-5. **经营周期**
+6. **经营周期**
    - 统一按**自然月**（1 号 00:00 到月末 23:59）
    - 看板、绩效、客流、客量、新会员都使用这一口径
    - 在 spec 中写明"凤御真实经营周期为 26-25 号，当前先按自然月实现，未来引入 business_period_start 配置项时再迁移"
+
+### 2.3 关键业务规则
+
+**规则 R1 — 服务单类型判定**
+
+```
+serviceOrderType = (customer.became_member_at IS NOT NULL
+                    AND customer.became_member_at <= service_order.created_at)
+                   ? '售后'
+                   : '售前'
+```
+
+**规则 R2 — 快照语义**
+
+`service_order_type` 在服务单创建时**一次性确定**，此后顾客会员状态任何变化（升降级）均**不回写**历史服务单。
+
+**规则 R3 — became_member_at 写入时机**
+
+在 `recalcCustomerType` 判定 `customer_type` 即将从非会员客升为 `会员客` 的事务路径上，同步 `UPDATE ... SET became_member_at = NOW() WHERE user_id = $1 AND became_member_at IS NULL`。`COALESCE` 写法避免覆盖已有时间戳。
+
+**规则 R4 — became_member_at 清空时机**
+
+当顾客 `customer_type` 从 `会员客` 降级回非会员客时（退款导致累计消费跌破门槛），同步清空 `became_member_at = NULL`。此时新创建的服务单重新判为 `售前`，但**已创建的历史服务单快照不变**。
+
+> ⚠️ 当前 `recalcCustomerType` 在 `fengyu-staff/cloudfunctions/staffApi/routes/order.js:67` **只升不降**（检测到已是会员客即 early return）。本方案需要**新增降级路径**：在 refund/conversion 退款后若累计消费跌破门槛，显式降级并清空 `became_member_at`。降级逻辑为本次变更新增的保护性代码，当前为"休眠状态"触发点极少，但必须落地以保持语义正确性。
+
+**规则 R5 — 无订单关联的顾客**
+
+从未消费或 `became_member_at IS NULL` 的顾客，其所有服务单一律判为 `售前`。
+
+**规则 R6 — became_member_at 只读**
+
+管理员后台顾客档案**仅展示**该字段，**不提供编辑入口**（避免人工篡改导致服务单快照与实际成为会员时点不一致）。
 
 ---
 
@@ -228,14 +286,13 @@
 
 | 维度 | 当前 | 期望 | 影响范围 |
 |------|------|------|---------|
-| `serviceOrderTypeEnum` 值 | `['售前', '售后']` | `['普通', '体验']` | **结构性变更**：db schema + migration + seed + types.ts + admin UI + cloudfunctions |
-| `service_orders.service_order_type` 默认值 | `'售前'` | `'普通'` | db schema + 所有 INSERT 语句 |
-| `sale_items` 新增 `document_type` 列 | 不存在 | `document_type` (enum, nullable) | **结构性变更**：db schema + migration + admin actions + cloudfunctions order.js + wx-change-propagation |
-| `service_items.is_presale` 真实值 | 永远 false（硬编码） | 从 `sale_items.document_type` 派生或直接读取 | **逻辑变更**：staffApi service.js create / admin services.ts createServiceOrder |
-| 订单开单流程 | 主表算一次 documentType | 主表算 + 子项复制 documentType | **逻辑变更**：3 个 order.js/orders.ts 的 create |
-| 服务单主表类型判定 | 按顾客 customer_type | 用户显式选择（UI 新增 radio） | **逻辑变更** + **前端 UI**：staff 创建服务单页 + admin 创建服务单页 |
-| 服务单列表/详情徽章 | 按 `serviceOrderType` 显示"售前/售后" | 主表徽章改显示"普通/体验"；售前/售后徽章仍在子项行展示（无变化） | **渲染层**：staff 前端 + admin 前端 |
-| 服务单导出 | 待实现（未见导出代码） | 子项级明细导出，列含 `document_type` | **新增功能**（属会议整体的导出需求，本报告只约束字段） |
+| `client_wechat_users.became_member_at` | 不存在 | 新增 `timestamptz` nullable 列 | **结构性变更**：db schema + migration + seed + types.ts |
+| `service_items.is_presale` | 存在但硬编码 false | **删除整列** | **结构性变更**：db schema + migration + 两端写入/查询 + 两处前端徽章 |
+| `service_order_type` 枚举 | `['售前','售后']` | **保持不变** | 无 |
+| `service_orders.service_order_type` 判定逻辑 | 按 `customer_type === '会员客'` | 按 `became_member_at <= NOW()` | **逻辑变更**：staffApi service.js / admin services.ts |
+| `recalcCustomerType` 写入路径 | 仅更新 `customer_type`，且只升不降 | 增升降级时同步写/清 `became_member_at` | **逻辑变更**：staffApi order.js（含 refund/conversion 路径）、clientApi/payNotify 同步点 |
+| 服务单明细徽章 UI | staff 列表/详情 + admin 详情显示 `isPresale ? '售前' : '售后'` | **删除所有明细徽章**（主表徽章保留） | **渲染层**：staff WXML/TS + admin TSX + 类型定义 |
+| 订单 `sale_orders.document_type` | 按订单金额+ `customer_type` 判定 | **不变**（本方案与订单 documentType 解耦） | 无 |
 | 1980/1990 硬编码 | 10+ 处硬编码 | 全部改读 system_configs | **逻辑变更**：cronTask、payNotify、staffApi (order.js, staff.js)、clientApi (order.js)、admin orders.ts |
 | 经营周期说明 | spec 未明确 | spec 固化为"自然月，未来可配" | **文档变更**：`.42cog/pm/*.pr.spec.md` + `.42cog/real.md` |
 
@@ -247,149 +304,208 @@
 
 ### 阶段 A：数据库结构调整
 
-#### A1 [结构性] 服务单类型枚举回滚
+#### A1 [结构性] `client_wechat_users` 新增 `became_member_at` 列
 
 **文件**：
-- `db/schema/enums.ts:33` — `serviceOrderTypeEnum` 值改回 `['普通', '体验']`
-- `db/schema/service.ts:20` — `service_order_type` 默认值改为 `'普通'`
-- 新增 `db/migrations/0035_service_order_type_rollback.sql`：
-  1. `ALTER TYPE service_order_type ADD VALUE IF NOT EXISTS '普通';`
-  2. `ALTER TYPE service_order_type ADD VALUE IF NOT EXISTS '体验';`
-  3. 数据回填：`UPDATE service_orders SET service_order_type = '普通' WHERE service_order_type IN ('售前', '售后');`（按 issue-free 语义全部变"普通"，测试数据无实际体验卡场景）
-  4. 用 `CREATE TYPE ... AS ENUM` + `ALTER COLUMN TYPE USING` 的惯用手法去掉 `'售前'`/`'售后'` 值并重建枚举
-  5. `ALTER TABLE service_orders ALTER COLUMN service_order_type SET DEFAULT '普通';`
-
-**受影响文件全扫描清单**（交 /wx-change-propagation）：
-- `fengyu-admin/src/lib/types.ts:120` — `ServiceOrderType = '售前' | '售后'` → `'普通' | '体验'`
-- `fengyu-admin/src/db/seed.ts:260-263` — 种子数据的 `serviceOrderType: '售后'`/`'售前'` 批量替换
-- `fengyu-admin/src/app/(main)/services/_components/services-page.tsx:188` — 徽章条件与 className 对应的配色表；同时变更"售前/售后"徽章 → "普通/体验"徽章的文案
-- `fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx:51` — 详情页主表徽章，同上
-- `fengyu-admin/src/actions/services.ts:26,466,520` — 类型断言、serviceOrderType 推导逻辑全面修改
-- `fengyu-staff/cloudfunctions/staffApi/routes/service.js:150-159` — 不再按顾客 customer_type 自动判定，改为 payload 入参或默认 `'普通'`
-- `fengyu-client/cloudfunctions/clientApi/routes/service.js:27` — SELECT 会返回新值，类型定义更新（前端类型声明无影响，因是只读字段）
-- `fengyu-admin/src/actions/services.test.ts` — 测试用例中涉及 `serviceOrderType` 的 mock/断言
-- `.42cog/pm/backend.pr.spec.md:274` — 规范文档同步修正描述
-- `.42cog/pm/staff.pr.spec.md` — 服务单类型枚举描述
-
-#### A2 [结构性] sale_items 增加 document_type 列
-
-**文件**：
-- `db/schema/order.ts` `saleItems` 表定义，新增：
+- `db/schema/user.ts` `clientWechatUsers` 表定义，在 `customerType` 附近新增：
   ```ts
-  documentType: documentTypeEnum('document_type'),
+  /** 顾客首次成为会员客（customer_type = '会员客'）的时间戳。
+   *  - 由 recalcCustomerType 在升级路径写入 NOW()
+   *  - 由 recalcCustomerType 在降级路径清空为 NULL
+   *  - 管理后台仅做只读展示，不提供编辑入口 */
+  becameMemberAt: timestamp('became_member_at', { withTimezone: true }),
   ```
-- 新增 `db/migrations/0036_sale_items_document_type.sql`：
-  1. `ALTER TABLE sale_items ADD COLUMN document_type document_type;`
-  2. 回填：`UPDATE sale_items si SET document_type = so.document_type FROM sale_orders so WHERE si.sale_order_id = so.sale_order_id;`
-  3. 回填退款/转换子项：`UPDATE sale_items si SET document_type = ref.document_type FROM sale_items ref WHERE si.ref_sale_item_id = ref.sale_item_id AND si.document_type IS NULL;`
+- 新增 `db/migrations/0035_client_became_member_at.sql`：
+  ```sql
+  ALTER TABLE client_wechat_users
+    ADD COLUMN became_member_at TIMESTAMP WITH TIME ZONE;
 
-> 注：不使用 `business_type` 命名，保持与 `sale_orders.document_type` 同名，方便 ORM/代码复用类型定义。
+  -- 对当前已是"会员客"的顾客，用一个保底值回填
+  -- （开发期无精确时间可追溯，用 updated_at 作为近似）
+  UPDATE client_wechat_users
+     SET became_member_at = COALESCE(updated_at, created_at, NOW())
+   WHERE customer_type = '会员客'
+     AND became_member_at IS NULL;
+  ```
 
-**受影响文件全扫描清单**：
-- `fengyu-admin/src/lib/types.ts:249` — `SaleItem` interface 增加 `documentType: DocumentType | null`
-- `fengyu-admin/src/actions/orders.ts` — create/list/detail 查询处映射新列；`create` 事务里把主表算出的 documentType 同时写到每个子项 INSERT
-- `fengyu-staff/cloudfunctions/staffApi/routes/order.js` create (~第 442 行 INSERT sale_items)：新增 `document_type` 列
-- `fengyu-client/cloudfunctions/clientApi/routes/order.js` create：同上
-- `fengyu-staff/cloudfunctions/staffApi/routes/order.js` createRefund / createRepayment / createConversion：为 `refund_out`/`convert_out` 类型的子项从原 `sale_items.document_type` 继承
-- Admin 订单详情 UI (`app/(main)/orders/...`)：是否展示该列（按会议要求"导出包含子项售前/售后" — 至少在 order-detail 页的子项 table 增加"售前/售后"列）
+> 回填精度说明：`updated_at` 在顾客类型跃迁时会被 `$onUpdate` 更新，可作为近似。若后续有更精确需求，可扫 `operation_logs` 中 `customer_type` 变更记录重算。
 
-#### A3 [结构性（小）] service_items 字段与 sale_items 对齐
+**受影响文件全扫描清单**（交 `/wx-change-propagation`）：
+- `db/schema/user.ts` — 字段定义 + 注释
+- `fengyu-admin/src/lib/types.ts` — `ClientWechatUser`/`Customer` 相关 interface 增加 `becameMemberAt: Date | null`
+- `fengyu-admin/src/db/seed.ts` — 顾客种子数据构造 `becameMemberAt`（针对 `customerType = '会员客'` 的记录）
+- `fengyu-admin/src/actions/customers.ts` — list/detail SELECT 增加映射；管理后台只读展示
+- `fengyu-admin/src/app/(main)/customers/_components/customer-detail-page.tsx` — 详情页顶部/档案区增加"成为会员时间"展示
+- `fengyu-staff/cloudfunctions/staffApi/routes/customer.js` — detail 返回字段透传（若 staff 端顾客详情需展示）
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/customer.test.js` — mock 数据补字段
 
-两种方案选一：
+#### A2 [结构性] 删除 `service_items.is_presale` 列
 
-- **方案 B1**（推荐，改动最小）：保留 `service_items.is_presale` 字段，写入时从 `sale_items.document_type === '售前'` 派生。不需要新迁移。
-- **方案 B2**：新增 `service_items.document_type`，与 `sale_items.document_type` 同步，并标记 `is_presale` 为 deprecated 或直接删除。
+**文件**：
+- `db/schema/service.ts:62` 删除 `isPresale: boolean('is_presale').notNull().default(false)` 字段定义及注释
+- 新增 `db/migrations/0036_drop_service_items_is_presale.sql`：
+  ```sql
+  ALTER TABLE service_items DROP COLUMN IF EXISTS is_presale;
+  ```
 
-本报告推荐 **B1**，因为前端已经有 `isPresale` 类型/UI，改动最小；代价是"售前/售后"不是 null-safe（即使 document_type 为 null 的子项也会被误归为 "售后"）。
-
-若走 B1：
-- 不需新迁移
-- 只改写入路径（见阶段 B1）
-
-若走 B2：
-- 新增 `db/migrations/0037_service_items_document_type.sql`
-- 回填：`UPDATE service_items si SET document_type = sli.document_type FROM sale_items sli WHERE si.sale_item_id = sli.sale_item_id;`
-- staff/admin/client 代码全面把 `is_presale` 迁移到 `document_type`（走 /wx-change-propagation）
+**受影响文件全扫描清单**（交 `/wx-change-propagation`）：
+- `db/schema/service.ts` — 字段声明
+- `fengyu-admin/src/lib/types.ts` — `ServiceItem` interface 删除 `isPresale: boolean`
+- `fengyu-admin/src/db/seed.ts` — 若有 service_items seed，删除 `isPresale` 字段
+- `fengyu-admin/src/actions/services.ts` — createServiceOrder（第 469-493 行的 saleItemSnapshots）、list、getServiceOrder 等 SELECT 全部移除 `isPresale` 列
+- `fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx:101,113-116` — 表头"售前/售后"列 + 单元格 Badge 删除；表格列数 -1
+- `fengyu-staff/cloudfunctions/staffApi/routes/service.js` — create（第 190-218 行 SELECT + 变量 + INSERT 列清单）、list、detail 全部去除 `is_presale`
+- `fengyu-staff/miniprogram/pages/service/service.wxml:60` — 删除 `item-tag--presale/postsale` 徽章元素
+- `fengyu-staff/miniprogram/pages/service/service.ts` — Item 类型若含 `isPresale` 字段同步删除
+- `fengyu-staff/miniprogram/packageService/service-detail/service-detail.wxml:35` — 删除每行徽章
+- `fengyu-staff/miniprogram/packageService/service-detail/service-detail.ts:24` — Item 类型删除 `isPresale: boolean`
+- `fengyu-client/cloudfunctions/clientApi/routes/service.js`（若存在）— 去除 `is_presale` 列引用
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/service.test.js` — mock/断言清理
+- `fengyu-admin/src/actions/services.test.ts` — 同上
+- `.42cog/pm/backend.pr.spec.md` — 服务明细字段描述更新
 
 ### 阶段 B：后端逻辑修改
 
-#### B1 [逻辑] 订单开单：把 documentType 下沉到子项
-
-**文件与改动**：
-
-1. `fengyu-staff/cloudfunctions/staffApi/routes/order.js` 的 `create` 函数
-   - 第 362-381 行：计算 documentType 的逻辑保留（**基于 totalAmount 而非 saleAmount**，因为目前判定是按整单）
-   - 第 442-449 行 INSERT sale_items：在列清单和 VALUES 中加入 `document_type`，值为上面算出的 `documentType`
-   - 新增考虑：**如果未来需要子项级独立判定**（例如同一单混合自费 + 刷卡），可以预留钩子；当前阶段保持整单同一个值
-
-2. `fengyu-client/cloudfunctions/clientApi/routes/order.js` 的 `create` 函数
-   - 同上
-
-3. `fengyu-admin/src/actions/orders.ts` 的 `createOrder` 函数
-   - 第 516-538 行 documentType 计算保留
-   - 事务内 `tx.insert(saleItems).values(...)` 处：每个子项对象增加 `documentType`
-
-4. `fengyu-staff/cloudfunctions/staffApi/routes/order.js` 的 `createRefund` / `createRepayment` / `createConversion`
-   - 为引用类型（`refund_out`/`convert_out`/`convert_in`/`repayment_in`）的子项，从原 sale_item 的 document_type 继承（查 `ref_sale_item_id` → 原行）
-
-5. 各处 `SELECT sale_items ...` 需要把 `document_type` 列读出来（list/detail/allocation 参考）
-
-#### B2 [逻辑] 服务单创建：serviceOrderType 改为 payload 入参，is_presale 从 sale_items 派生
+#### B1 [逻辑] 服务单创建：按 `became_member_at` 判定 `service_order_type`
 
 **`fengyu-staff/cloudfunctions/staffApi/routes/service.js`**
 
-第 150-159 行（服务单主表类型判定）：
+替换第 150-159 行的 customer_type 判定逻辑：
+
 ```js
-// 旧：根据 customer_type 自动判定
+// 旧：
+// let serviceOrderType = '售前'
+// if (resolvedClientUserId) {
+//   const { rows } = await client.query(
+//     'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+//     [resolvedClientUserId]
+//   )
+//   if (rows[0]?.customer_type === '会员客') serviceOrderType = '售后'
+// }
+
+// 新：按 became_member_at 快照判定
 let serviceOrderType = '售前'
-if (resolvedClientUserId) { ...会员客→售后... }
-
-// 新：从 payload 读取，默认 '普通'
-const serviceOrderType = payload.serviceOrderType === '体验' ? '体验' : '普通'
-// 校验：'体验' 仅在所有 sale_item 对应商品的 product_kind === '体验卡' 时允许（待业务确认）
+if (resolvedClientUserId) {
+  const { rows } = await client.query(
+    'SELECT became_member_at FROM client_wechat_users WHERE user_id = $1',
+    [resolvedClientUserId]
+  )
+  const bma = rows[0]?.became_member_at
+  if (bma && new Date(bma) <= new Date()) {
+    serviceOrderType = '售后'
+  }
+}
 ```
 
-第 200 行（is_presale 硬编码）：
-```js
-// 旧
-const isPresale = false
-
-// 新：从 sale_items.document_type 派生（SELECT 加 si.document_type）
-const siRows = await client.query(
-  `SELECT si.sku_id, si.unit_real_price, si.document_type
-   FROM sale_items si
-   WHERE si.sale_item_id = $1`,
-  [item.saleItemId]
-)
-const isPresale = siRows.rows[0]?.document_type === '售前'
-```
+同时删除第 190-218 行 INSERT service_items 逻辑里所有 `is_presale` 相关代码（SELECT 列、`isPresale` 变量、INSERT 列清单与 VALUES 占位）。
 
 **`fengyu-admin/src/actions/services.ts`**
 
-第 460-466 行（serviceOrderType 判定）：
-```ts
-// 旧：const serviceOrderType = customerRow?.customerType === '会员客' ? '售后' : '售前'
-// 新：const serviceOrderType = data.serviceOrderType === '体验' ? '体验' : '普通'
-```
-同时 `createServiceOrder` 的入参接口增加 `serviceOrderType?: '普通' | '体验'`。
+替换第 460-466 行的判定逻辑：
 
-第 469-493 行（is_presale 硬编码 false）：
 ```ts
-// 在 select 中加入 saleItems.documentType
-.select({
-  remainingSessions: saleItems.remainingSessions,
-  unitRealPrice: saleItems.unitRealPrice,
-  documentType: saleItems.documentType,  // 新
-  saleOrderType: saleOrders.saleOrderType,
-})
+// 旧：
+// const serviceOrderType: ServiceOrderType =
+//   customerRow?.customerType === '会员客' ? '售后' : '售前'
 
-// snapshot push 时
-saleItemSnapshots.push({
-  saleItemId: item.saleItemId,
-  unitRealPrice: saleItem.unitRealPrice,
-  isPresale: saleItem.documentType === '售前',
-})
+// 新：
+const [customerRow] = await db
+  .select({
+    becameMemberAt: clientWechatUsers.becameMemberAt,
+  })
+  .from(clientWechatUsers)
+  .where(eq(clientWechatUsers.userId, data.clientUserId))
+  .limit(1)
+
+const serviceOrderType: ServiceOrderType =
+  customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date()
+    ? '售后'
+    : '售前'
 ```
+
+删除第 488-492 行 `saleItemSnapshots.push({ ..., isPresale: false })` 中的 `isPresale` 字段；删除事务内 `tx.insert(serviceItems).values(...)` 对 `isPresale` 的映射。
+
+#### B2 [逻辑] `recalcCustomerType` 升降级时同步维护 `became_member_at`
+
+**升级路径（写入 `NOW()`）**
+
+涉及文件：
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:59-100`（`recalcCustomerType` 函数体）
+- `fengyu-client/cloudfunctions/payNotify/index.js`（支付回调后调用或内联的 recalc 逻辑）
+- `fengyu-staff/cloudfunctions/staffApi/routes/customer.js`（若有独立升级路径）
+
+在 `UPDATE client_wechat_users SET customer_type = '会员客' ...` 语句中同步写入：
+
+```sql
+UPDATE client_wechat_users
+   SET customer_type = '会员客',
+       became_member_at = COALESCE(became_member_at, NOW())
+ WHERE user_id = $1
+   AND customer_type <> '会员客'
+```
+
+`COALESCE(became_member_at, NOW())` 保证**首次入会时间只写一次**，即使在降级再升级的场景下也只记录"当前这一段会员期"的起点（见下方降级清空逻辑后重新开始新一段）。
+
+> 决策说明：此处保留 `COALESCE` 看似冗余（因降级会清空），但：
+> 1. 若降级路径未运行（部署顺序错位）不会污染历史
+> 2. 并发场景下避免两次 UPDATE 互相覆盖
+> 3. 语义上显式"若无则写"更清晰
+
+**降级路径（清空为 `NULL`）**
+
+当前 `recalcCustomerType` 在 `order.js:67` 一句 `if (cur.rows[0]?.customer_type === '会员客') return` **只升不降**。本方案需要新增降级分支：
+
+```js
+async function recalcCustomerType(client, clientUserId) {
+  if (!clientUserId) return
+
+  const cur = await client.query(
+    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId]
+  )
+  const currentType = cur.rows[0]?.customer_type
+  const threshold = await getMemberThreshold(client)  // 见 B3
+
+  // 计算累计消费
+  const { rows: [{ total }] } = await client.query(
+    `SELECT COALESCE(SUM(total_amount), 0) AS total
+       FROM sale_orders
+      WHERE client_user_id = $1
+        AND status = '已支付'`,
+    [clientUserId]
+  )
+
+  const shouldBeMember = Number(total) >= threshold
+
+  if (shouldBeMember && currentType !== '会员客') {
+    // 升级
+    await client.query(
+      `UPDATE client_wechat_users
+          SET customer_type = '会员客',
+              became_member_at = COALESCE(became_member_at, NOW())
+        WHERE user_id = $1`,
+      [clientUserId]
+    )
+  } else if (!shouldBeMember && currentType === '会员客') {
+    // 降级（新增路径）
+    await client.query(
+      `UPDATE client_wechat_users
+          SET customer_type = '体验客',   -- 或业务定义的默认非会员类型
+              became_member_at = NULL
+        WHERE user_id = $1`,
+      [clientUserId]
+    )
+  }
+}
+```
+
+> ⚠️ 降级后 `customer_type` 应退回哪个具体值（流量客/体验客/小美客）需业务确认。参考原 `customer_type` 枚举 `[流量客/体验客/小美客/会员客]`，建议默认退为"体验客"（曾消费但未达标）。
+
+**调用点同步审计**：
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:634` — `order.create` 成功后调用 `recalcCustomerType`（保留）
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1077` — `approveRefund` 成功后调用（此处新降级分支即会触发）
+- `fengyu-client/cloudfunctions/payNotify/index.js` — 支付成功回调（保留）
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/customer.test.js` — 测试新降级分支
 
 #### B3 [逻辑] 会员门槛硬编码统一走 system_configs
 
@@ -401,11 +517,12 @@ const pg = require('../db/pg')
 let _cachedThreshold = null
 let _cacheAt = 0
 const CACHE_TTL = 5 * 60 * 1000  // 5 分钟
-async function getMemberThreshold() {
+async function getMemberThreshold(client) {
   const now = Date.now()
   if (_cachedThreshold !== null && now - _cacheAt < CACHE_TTL) return _cachedThreshold
-  const rows = await pg.query("SELECT value FROM system_configs WHERE key = 'new_member_threshold'")
-  _cachedThreshold = Number(rows[0]?.value) || 1980
+  const exec = client ? client.query.bind(client) : pg.query.bind(pg)
+  const rows = await exec("SELECT value FROM system_configs WHERE key = 'new_member_threshold'")
+  _cachedThreshold = Number(rows.rows?.[0]?.value || rows[0]?.value) || 1980
   _cacheAt = now
   return _cachedThreshold
 }
@@ -428,181 +545,188 @@ module.exports = { getMemberThreshold }
 | `fengyu-client/cloudfunctions/cronTask/index.js` | 77, 84 | `determineMemberLevel(spend, threshold)` 增加参数 |
 | `fengyu-client/cloudfunctions/cronTask/index.js` | `refreshMemberLevels` | 在主流程开头读取一次 threshold 传入 |
 | `fengyu-admin/src/actions/orders.ts` | 534 | fallback `1990` → `1980` |
-| `fengyu-admin/src/app/(main)/settings/_components/settings-page.tsx` | 117 | placeholder 是否保留为 1980（保留，作为 UX 提示） |
+| `fengyu-admin/src/app/(main)/settings/_components/settings-page.tsx` | 117 | placeholder 保留 1980 |
 
-**选一个权威数字**：建议统一为 **1980**，理由：
+**选一个权威数字**：统一为 **1980**，理由：
 - `fengyu-admin/src/actions/settings.ts:54` 的默认值是 `'1980'`
 - 会议纪要 20260304 明确说过"1980"
 - admin UI placeholder 也写着 1980
-- 只有代码里的 fallback 和 cronTask 的 CASE 是 1990（推测是早期误抄）
-
-> ⚠️ 如果生产 DB 里 `system_configs.new_member_threshold = '1990'`，则统一到 1980 前需要由业务方确认；若未设置（用默认），修正后 new_member_threshold 统一为 1980。
 
 #### B4 [逻辑] spending_tier CASE 的 1990 处理
 
 `spending_tier` 档位枚举本身是 `['10W+', '6-10W', '3-6W', '1-3W', '1990-1W', '<1990']`（见 enums.ts:68），**枚举值里带着 1990**——这是字面量，不可随门槛变化。
-
-所以 `spending_tier` CASE 的 `1990` 应与 `new_member_threshold` **解耦**：`spending_tier` 是对历史消费档位的分桶标签，它的 1990 分界点是固定的领域概念；`new_member_threshold` 是判定会员资格的动态门槛。
 
 **结论**：
 - `payNotify/index.js:123` 的 spending_tier CASE → **保留 1990**，不改
 - `staffApi/order.js:38` 的 spending_tier CASE → **保留 1990**，不改
 - 但代码需补注释说明"此 1990 为 spending_tier 枚举值定义，与 new_member_threshold 独立"
 
-如果业务方要求 spending_tier 的分界点也随 new_member_threshold 变化，则需要改造为动态 CASE（把字符串枚举值改为 numeric 区间查表），工作量较大——**建议默认不动**，等业务方明确提出再做。
-
 ### 阶段 C：前端 UI 修改
 
-#### C1 [渲染] 员工端服务单列表/详情
+#### C1 [渲染] 员工端服务单列表/详情删除明细徽章
 
-`fengyu-staff/miniprogram/pages/service/service.wxml` 与 `packageService/service-detail/service-detail.wxml`：
+**`fengyu-staff/miniprogram/pages/service/service.wxml:60`**
 
-- 当前每行的 `item-tag--presale/postsale` 保留（子项级）
-- 主表"服务类型"标签的显示文案从"售前/售后" → "普通/体验"（如有）
-- 检查 `packageService/service-detail/service-detail.ts:24` 的 Item 类型是否需要新增字段（当前只有 `isPresale`，保留）
-
-#### C2 [渲染/交互] 员工端服务单创建页（如存在）
-
-- `fengyu-staff/miniprogram/packageService/service-create/` 若要让店长选 "普通/体验"，需要新增 radio/picker；若业务决定自动按商品类型判定（体验卡→体验，其他→普通），则维持自动
-- **需澄清**：谁决定 serviceOrderType？（店长选 vs 按商品 product_kind 自动）
-
-建议先走"自动按商品判定"路线：
+删除整行徽章：
+```diff
+- <text class="item-tag item-tag--{{si.isPresale ? 'presale' : 'postsale'}}">{{si.isPresale ? '售前' : '售后'}}</text>
 ```
-所有服务明细对应的 sale_item 的 sku → 查 product 的 product_kind
-若所有 product_kind === '体验卡' → '体验'
-否则 → '普通'
+
+**`fengyu-staff/miniprogram/packageService/service-detail/service-detail.wxml:35`**
+
+删除详情页每行售前/售后徽章。
+
+**`fengyu-staff/miniprogram/packageService/service-detail/service-detail.ts:24`** 及 `pages/service/service.ts` — 删除 Item 类型中的 `isPresale: boolean`。
+
+**样式清理**：`.item-tag--presale` / `.item-tag--postsale` CSS 选择器若在 wxss 中定义，删除。
+
+#### C2 [渲染] 管理后台服务单详情删除明细列
+
+**`fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx`**
+
+删除第 101 行表头 `<th>售前/售后</th>`，第 113-116 行单元格 Badge 代码。表格列数相应调整。
+
+**`fengyu-admin/src/lib/types.ts`**
+
+`ServiceItem` interface 删除 `isPresale: boolean` 字段。
+
+#### C3 [渲染] 管理后台顾客详情新增"成为会员时间"展示
+
+**`fengyu-admin/src/app/(main)/customers/_components/customer-detail-page.tsx`**
+
+在顾客档案区（会员等级/顾客类型附近）新增一行只读展示：
+
+```tsx
+<div className="flex justify-between">
+  <span className="text-gray-500">成为会员时间</span>
+  <span>
+    {customer.becameMemberAt
+      ? format(new Date(customer.becameMemberAt), 'yyyy-MM-dd HH:mm')
+      : '—'}
+  </span>
+</div>
 ```
-这样不需要新增 UI 元素。
 
-#### C3 [渲染] 员工端开单页
+**`fengyu-admin/src/actions/customers.ts`**
 
-- `fengyu-staff/miniprogram/pages/order-create/order-create.wxml/ts`
-- orderType `experience` 未来对应"体验单"，与 sale_items 的 document_type 正交（`experience` orderType 的商品可能是售前也可能是售后，按门槛走）
-- 保持 orderType 4 选 1 不变
-- 不需要新增售前/售后录入 UI（由系统计算）
+`getCustomer` / `listCustomers` 的 SELECT 增加 `becameMemberAt` 字段映射。
 
-#### C4 [渲染] 管理后台服务单页
+#### C4 [渲染] 服务单主表徽章保持不变
 
-`fengyu-admin/src/app/(main)/services/_components/services-page.tsx:188`：
-- 主表徽章"售前/售后" → "普通/体验"
-- 配色表映射调整
+**`fengyu-admin/src/app/(main)/services/_components/services-page.tsx:188`** 与 `service-detail-page.tsx:51`：
 
-`fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx`：
-- 第 51 行顶部徽章同上
-- 第 101, 115 行明细 table 中子项徽章保持不变（它已经在读 `item.isPresale`，读源变了但 UI 不变）
-
-#### C5 [渲染] 管理后台订单详情页
-
-- `fengyu-admin/src/app/(main)/orders/_components/order-detail-page.tsx`（需定位）
-- 在子项 table 增加"售前/售后"列
-- 列表页可以加一个按 `documentType` 筛选的 URL 参数
-
-#### C6 [渲染] 管理后台服务单导出
-
-- 会议要求导出按子项明细，每行含售前/售后
-- 新增导出 Server Action（若未实现）：SELECT service_items JOIN sale_items，导出列含 `document_type`
-- 该功能属于"数据导出"整体需求，本报告只约束字段
+- 徽章文案 `售前` / `售后` **保持不变**
+- 数据源 `serviceOrder.serviceOrderType` **保持不变**
+- 实际判定规则从"按 customer_type 派生"变为"按 became_member_at 快照"，但此变化对前端不可见
 
 ### 阶段 D：测试与 seed 修复
 
 #### D1 seed.ts 更新
-`fengyu-admin/src/db/seed.ts:260-263`：
-- `serviceOrderType: '售后' as const` → `'普通' as const`
-- 对应的 service_items seed 如果存在应同时设置 `is_presale` 的真实值（或让其从 sale_items 派生，数据库层不需要 seed 写入）
+- `fengyu-admin/src/db/seed.ts` — 顾客种子数据：
+  - 对构造为 `customerType: '会员客'` 的记录，补 `becameMemberAt: new Date(...)` 字段
+  - 删除所有 service_items seed 中的 `isPresale` 字段
+- `seed.ts:260-263` — `serviceOrderType: '售后'`/`'售前'` 枚举值**保留不变**（本方案不回滚枚举）
 
 #### D2 单元测试
-- `fengyu-admin/src/actions/services.test.ts` — 服务单相关 mock 中 `serviceOrderType` 值全面替换
+- `fengyu-admin/src/actions/services.test.ts` — createServiceOrder 测试：
+  - mock 顾客 `becameMemberAt` 为过去时间 → 断言 `serviceOrderType === '售后'`
+  - mock 顾客 `becameMemberAt = null` → 断言 `serviceOrderType === '售前'`
+  - mock 顾客 `becameMemberAt` 为未来时间（边界 case）→ 断言 `serviceOrderType === '售前'`
+  - 删除所有 `isPresale` 相关断言
+- `fengyu-admin/src/actions/customers.test.ts` — 新增 `becameMemberAt` 透传测试
 - `fengyu-admin/src/actions/settings.test.ts` — 新增测试：默认值确为 '1980'、保存后读回一致
-- `fengyu-admin/src/actions/orders.test.ts` — 开单后断言 `sale_items[i].documentType` 被写入
-- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/service.test.js` — is_presale 从 sale_items.document_type 派生的用例（预期 sale_items.document_type = '售前' → is_presale true）
-- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/order.test.js` — documentType 写入 sale_items 的回归测试
+- `fengyu-admin/src/actions/orders.test.ts` — 新增：
+  - 订单支付后，顾客首次达标 → 顾客 `becameMemberAt` 被写入
+  - 已是会员的顾客再支付 → `becameMemberAt` 不被覆盖（`COALESCE`）
+  - 退款后顾客累计消费跌破门槛 → `becameMemberAt` 被清空，`customer_type` 降级
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/service.test.js` — 新增用例：
+  - 顾客 `became_member_at IS NULL` → 服务单 `service_order_type === '售前'`
+  - 顾客 `became_member_at <= NOW()` → 服务单 `service_order_type === '售后'`
+  - 删除所有 `is_presale` 相关断言
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/order.test.js` — 回归测试 recalcCustomerType 升降级
 
 #### D3 E2E
-- Playwright `e2e/services.spec.ts`（如存在）更新徽章文案断言
-- 管理后台 settings 页面 E2E 校验"1980 → 保存 → 看板统计读到新值"链路
+- Playwright `e2e/services.spec.ts`（如存在）— 确认列表/详情主表徽章仍正常；确认详情页明细 table 已无"售前/售后"列
+- `e2e/customers.spec.ts` — 断言顾客详情页"成为会员时间"行渲染正常
+- Admin settings 页面 E2E 校验"1980 → 保存 → 看板统计读到新值"链路
 
 ### 阶段 E：规范文档同步
 
 | 文件 | 修改点 |
 |------|--------|
-| `.42cog/pm/backend.pr.spec.md:274` | `service_order_type` 描述改为：`普通 / 体验`（对应体验卡业务），不再由 customer_type 判定；新增条目 `sale_items.document_type` |
-| `.42cog/pm/staff.pr.spec.md:312` | 新会员门槛"1980"改为"由 system_configs.new_member_threshold 配置，默认 1980" |
-| `.42cog/pm/admin.pr.spec.md:232` | 已有"新会员消费门槛"配置项描述，无需改 |
-| `.42cog/design/admin.ui.spec.md:825` | 已有 Input 描述，无需改 |
+| `.42cog/pm/backend.pr.spec.md` | `client_wechat_users` 字段清单增加 `became_member_at`；`service_orders.service_order_type` 描述改为"按顾客成为会员时间判定（快照）"；`service_items` 删除 `is_presale` 字段描述 |
+| `.42cog/pm/staff.pr.spec.md` | 新会员门槛"1980"改为"由 system_configs.new_member_threshold 配置，默认 1980"；服务单售前/售后规则补描述 |
+| `.42cog/pm/admin.pr.spec.md` | 顾客详情增加"成为会员时间"只读字段描述 |
+| `.42cog/design/admin.ui.spec.md` | 顾客详情页布局补"成为会员时间"展示位 |
 | `.42cog/pm/*.pr.spec.md` 中关于经营周期的描述 | 新增段落："凤御真实经营周期为每月 26 号至次月 25 号；当前系统按自然月实现；未来如需支持自定义周期，通过新增 `system_configs.business_period_start_day` 配置" |
-| `.42cog/real.md` | 新增约束："售前/售后是订单子项级属性，随订单创建时机快照写入 `sale_items.document_type`，服务明细从 `sale_items` 继承" |
+| `.42cog/real.md` | 新增约束："服务单售前/售后在创建时刻按顾客 `became_member_at` 快照判定；`service_items` 无售前/售后字段；顾客 `became_member_at` 由 `recalcCustomerType` 维护，管理员不可手动编辑" |
 
 ---
 
-## 5. 结构性变更交接清单（→ /wx-change-propagation）
+## 5. 结构性变更交接清单（→ `/wx-change-propagation`）
 
 汇总需要走 wx-change-propagation 10 层传播图的条目：
 
-### 交接 1：枚举值变更 `service_order_type`
-- 类型：枚举值重命名 + 语义变更
-- 从：`['售前', '售后']`
-- 到：`['普通', '体验']`
-- 涉及层级：L0 DB schema → L1 migration → L2 drizzle types → L3 admin lib/types → L4 admin actions → L5 admin UI → L6 staffApi routes → L7 clientApi routes → L8 staff 前端 → L9 tests → L10 spec docs
-
-### 交接 2：字段新增 `sale_items.document_type`
+### 交接 1：字段新增 `client_wechat_users.became_member_at`
 - 类型：列新增 + 回填
-- 涉及层级：L0 schema → L1 migration → L2 types → L3 三端 INSERT/SELECT → L4 UI 展示 + 导出列 → L5 tests
+- 涉及层级：L0 schema → L1 migration → L2 drizzle types → L3 admin lib/types → L4 admin actions (customers) → L5 admin UI (customer-detail) → L6 staffApi routes (customer) → L7 tests → L8 seed → L9 spec docs
 
-### 交接 3（可选 B2）：字段替换 `service_items.is_presale → document_type`
-- 若选择 B1 方案则跳过此项
+### 交接 2：字段删除 `service_items.is_presale`
+- 类型：列删除 + 所有写入/查询/UI 清理
+- 涉及层级：L0 schema → L1 migration → L2 drizzle types → L3 admin lib/types → L4 admin actions (services) → L5 admin UI (service-detail table) → L6 staffApi routes (service) → L7 staff 前端 WXML/TS (list + detail) → L8 tests → L9 seed → L10 spec docs
 
 ---
 
 ## 6. 风险点
 
-### 6.1 枚举值回滚的 PG 限制
-`ALTER TYPE` **不支持直接删除枚举值**。migration 0035 需要：
-1. 先新建同名临时类型 `service_order_type_new AS ENUM ('普通','体验')`
-2. `ALTER TABLE service_orders ALTER COLUMN service_order_type TYPE service_order_type_new USING (CASE WHEN service_order_type = '售前' THEN '普通' ELSE '普通' END)::service_order_type_new`
-3. `DROP TYPE service_order_type; ALTER TYPE service_order_type_new RENAME TO service_order_type;`
+### 6.1 `recalcCustomerType` 降级路径是新增行为
+当前 `recalcCustomerType` 在 `order.js:67` **只升不降**。本方案新增降级分支会引入之前不存在的写入路径。虽然当前业务中降级触发频率极低（仅 approveRefund 场景），但需要：
+1. 明确降级后 `customer_type` 退回值（建议"体验客"）
+2. 降级后是否需要 `spending_tier`/`member_level` 联动重算
+3. 审计日志是否记录降级事件
 
-**缓解**：遵循 migration 0030 (`0030_split_sale_order_type.sql`) 的惯用手法——该迁移已经处理过类似的 sale_order_type 枚举切换，可直接复用其 SQL 模板。
+**缓解**：新增的降级分支默认触发条件严格（`!shouldBeMember && currentType === '会员客'`），若业务担忧可加 feature flag 分阶段启用。
 
-### 6.2 "体验"单判定歧义
-会议 §6.2 说"保留普通和体验两种类型，对应体验卡等业务场景"，但未明确：
-- 服务单类型由谁输入（店长手选 vs 按商品 product_kind 自动推断）
-- 一张服务单如果混合了体验卡和正常疗程卡，类型应为哪一个？
+### 6.2 历史顾客 `became_member_at` 回填精度
+迁移回填使用 `updated_at` 作为近似值。若某顾客长期是会员但近期有其他字段更新（例如改绑门店），`updated_at` 会偏晚于实际成为会员时间。
 
-**建议**：按"如果所有子项对应 SKU 的 product_kind === '体验卡' 则类型为'体验'，否则为'普通'"自动判定，并在 UI 禁用选择；若业务方有异议再改为手选。
+**影响**：此值仅用于**判定未来新创建服务单**的 `service_order_type`。对于已经存在的服务单，`service_order_type` 已是历史快照不受影响。新创建的服务单由于顾客早已是会员，判定结果仍为"售后"（回填值 <= NOW()），结果正确。
 
-### 6.3 1980 vs 1990 的生产数据影响
-生产环境 `system_configs.new_member_threshold` 当前实际值未知。如果管理员历史上设为了 1990，而我们把 fallback 改为 1980，不会影响实际行为（system_configs 有值时不触发 fallback）。但**需要一次性校对**：
+**结论**：精度偏差不影响业务正确性，可接受。
 
-```sql
-SELECT value FROM system_configs WHERE key = 'new_member_threshold';
-```
+### 6.3 `became_member_at` 与 `customer_type` 一致性
+两个字段必须满足约束：`customer_type = '会员客' ⇔ became_member_at IS NOT NULL`。任何违反此约束的写入都是 bug。
 
-若返回空或 1990，需要人工确认后写入 1980。
+**防御措施**：
+- 所有写入都走 `recalcCustomerType` 单一入口
+- 迁移脚本回填时保证一致
+- 可选：添加 CHECK constraint `CHECK ((customer_type = '会员客') = (became_member_at IS NOT NULL))`（但注意 constraint 会让降级分两步 UPDATE 失败，需要在同一 UPDATE 语句内同时改两列）
 
-### 6.4 回款/转换子项继承 document_type
-退款/转换子项通过 `ref_sale_item_id` 引用原购买行。migration 0036 的回填需要正确处理引用链：
-- 第一次 UPDATE：从 sale_orders 继承给"购买"方向的子项
-- 第二次 UPDATE：从 `ref_sale_item_id` 原行继承给 refund_out / convert_out 子项
+### 6.4 清理 `is_presale` 的历史数据无需处理
+现有 `service_items.is_presale` 全部是 false（因为写入路径硬编码了 false）。DROP COLUMN 后数据自然消失，**无历史兼容负担**（`feedback_no_legacy_compat`）。
 
-### 6.5 service_items 历史数据
-现有 service_items 的 `is_presale` 全部是 false（因为写入路径硬编码了 false）。
-- 如果选方案 B1（派生读取），需要考虑是否要回填一次：`UPDATE service_items si SET is_presale = (CASE WHEN sli.document_type = '售前' THEN true ELSE false END) FROM sale_items sli WHERE si.sale_item_id = sli.sale_item_id;`
-- 回填前提是 sale_items.document_type 已经回填完成（阶段 A2 之后）
-- 由于项目还在开发期（`feedback_no_legacy_compat`），可选择**不回填** service_items，只保证增量数据正确
-
-### 6.6 经营周期未来可配置化
+### 6.5 经营周期未来可配置化
 当前决定按自然月实现，未来可能改为 26-25 号。为避免未来大面积重改：
 - 所有"本月"相关的 SQL 尽量使用 named parameter `$startDate, $endDate`，不要写 `DATE_TRUNC('month', NOW())` 硬编码
-- 前端计算 startDate/endDate 的逻辑集中在一个 utils 函数（`miniprogram/utils/calendar.ts` 或类似）
+- 前端计算 startDate/endDate 的逻辑集中在一个 utils 函数
 - 未来改配置化时只需修改一个 helper
 
 **当前状态**：staff/dashboard/staff-performance 已经在前端算 startDate/endDate 后传给 API（符合这个模式）。**calc-monthly-activity.js** 的 SQL 用了 `date_trunc('month')` 裸字面量，未来改造时需替换为参数化。
 
-### 6.7 枚举回滚会破坏部分已有数据
-`serviceOrderTypeEnum` 中现有 `'售前'`、`'售后'` 的数据（测试/开发库）需要统一归为 `'普通'`。这会丢失原有售前/售后信息——但由于服务单主表原本就不是合适的承载层（一张单可能混合），这信息在新模型下本就不应该存在主表。
+### 6.6 并发写入 `became_member_at`
+同一顾客短时间内两次支付达标，两次 `recalcCustomerType` 并发执行：
+- 若两次都走升级分支：第二次的 `COALESCE(became_member_at, NOW())` 保证不覆盖第一次
+- 若都在同一事务的 advisory lock 下：天然串行化
 
-### 6.8 `.42cog/pm/backend.pr.spec.md` 中对 sale_order_type 的描述已是 v2.1.0
-v2.1.0 精简了 sale_order_type 到 5 值（`['销售单','内部单','回款单','转换单','退款单']`），与本次变更**无冲突**，但需要一并确认 document_type 的字段描述同步更新到 spec。
+**现状**：`order.create` 已在事务内调用 `recalcCustomerType`（order.js:634），天然串行。无额外锁需求。
+
+### 6.7 `service_order_type` 枚举未回滚的隐性影响
+初稿方案曾计划把枚举回滚为 `[普通, 体验]`，本方案决定保留 `[售前, 售后]`。需核对：
+- `db/seed.ts:260-263` 现有种子数据 `'售后'` / `'售前'` **仍然有效**，无需改动
+- `fengyu-admin/src/lib/types.ts:120` `ServiceOrderType = '售前' | '售后'` **仍然有效**
+- 所有前端徽章文案 **仍然有效**
+
+**结论**：保留枚举是最小改动路径。
 
 ---
 
@@ -610,52 +734,55 @@ v2.1.0 精简了 sale_order_type 到 5 值（`['销售单','内部单','回款�
 
 按依赖关系：
 
-1. **阶段 A1 + A2 同批次** 作为一个 worktree：`feat/service-type-rollback-and-doctype`
-   - 执行：`scripts/worktree-setup.sh feat/service-type-rollback-and-doctype`
-   - 在 worktree 内先执行 wx-change-propagation（交接清单 1, 2）
+1. **阶段 A1**（became_member_at 新增）与 **A2**（is_presale 删除）可同一 worktree：`feat/service-presale-snapshot`
+   - 执行：`scripts/worktree-setup.sh feat/service-presale-snapshot`
+   - 在 worktree 内串行执行 wx-change-propagation（交接 1 → 交接 2）
    - 生成 migration 0035, 0036
    - 跑 `bun run db:migrate` 验证无报错
-   - 跑 `bun run test` 验证所有引用 serviceOrderType/isPresale 的 test 都过
+   - 跑 `bun run test` 验证所有引用 isPresale 的 test 都更新完毕
 
-2. **阶段 B3**（1980 硬编码统一）可与 A 并行，放入单独 worktree：`fix/member-threshold-unify`
+2. **阶段 B1 + B2** 紧跟 A 完成：服务单创建新判定 + recalcCustomerType 升降级
+
+3. **阶段 B3**（1980 硬编码统一）可与 B1/B2 并行，放入单独 worktree：`fix/member-threshold-unify`
    - 不依赖 schema 变更
    - 对 cronTask 的改动需要单独走云函数部署
 
-3. **阶段 B1 + B2** 依赖 A 完成，在 A 之后
-4. **阶段 C**（前端 UI）依赖 B 完成
+4. **阶段 C**（前端 UI）依赖 B 完成，可在同一 worktree 接着做
 5. **阶段 D**（测试）与 B/C 并行，持续补充
 6. **阶段 E**（文档）最后批量提交
 
 ---
 
-## 8. 需要澄清的问题（建议同步业务方）
+## 8. 已澄清问题
 
-| # | 问题 | 建议默认答案 |
-|---|------|-----------|
-| Q1 | 服务单主表"普通/体验"由店长手选还是按商品 product_kind 自动判定？ | 自动：所有 sale_item 对应 SKU 的 product_kind === '体验卡' → '体验'，否则 '普通' |
-| Q2 | 当前生产 `system_configs.new_member_threshold` 值是 1980 还是 1990？ | 统一为 1980（会议纪要明文） |
-| Q3 | `spending_tier` 枚举的"1990-1W"分界点是否也要跟着 new_member_threshold 联动？ | 不联动，spending_tier 是固定分桶标签 |
-| Q4 | 组合套餐 (orderType='promotion')、内部单 (orderType='internal') 的 document_type 如何算？ | 仍按整单 total_amount 对比门槛判定；内部单可以允许 null |
-| Q5 | 服务单导出 Excel 的表头字段？ | 待张凯团队提供（会议 §8 待办） |
-| Q6 | 经营周期自然月决定是暂时的还是永久的？未来是否需要 business_period_start_day 配置项？ | 暂时按自然月；留一个 placeholder 在 system_configs 中，未来真实启用时再迁移 |
-| Q7 | `service_items.is_presale` 历史数据（全 false）是否需要回填？ | 不回填（开发阶段无历史兼容要求） |
+| # | 问题 | 决策 |
+|---|------|------|
+| Q1 | `client_wechat_users` 是否已有"成为会员时间"字段？若有名称是什么？ | ❌ **当前没有**（grep `member_since` / `became_member_at` / `upgraded_at` 均无匹配）→ 新增 `became_member_at` (timestamptz, nullable) |
+| Q2 | "成为会员" 基于 `customer_type` 还是 `member_level`？ | ✅ 以 `customer_type` 转换时点为准（与 `new_member_threshold` 判定一致）。`member_level` 初钻及以上是业务展示层级，与售前/售后判定解耦 |
+| Q3 | 历史服务单 `service_order_type` 是否需要按新规则回填？ | ✅ **不回填**（开发期 `feedback_no_legacy_compat`）。历史服务单保持其创建时快照 |
+| Q4 | 顾客从会员客降级回非会员客时，`became_member_at` 是否清空？ | ✅ **清空为 NULL**。需同步在 `recalcCustomerType` 新增降级分支（见 §B2），当前代码的 only-upgrade 行为要打破 |
+| Q5 | 管理员能否手动修改顾客的 `became_member_at`？ | ✅ **不能**。后台仅提供只读展示（顾客档案详情页），避免人工干预导致快照与客观事实不符 |
+| Q6 | 服务单创建时，判定时间用 `NOW()` 还是 `service_orders.service_time`？ | ✅ 用 `NOW()`（即 `created_at`），因为"成为会员"是顾客**身份**状态，而非服务**发生**时点 |
 
 ---
 
 ## 9. 摘要
 
-- **核心结构性变更**：
-  - `service_order_type` 枚举回滚：`[售前,售后]` → `[普通,体验]`
-  - 新增 `sale_items.document_type` 列，开单时主表 + 子项双写
-  - 修正 `service_items.is_presale` 从硬编码 false 改为从 sale_items 派生
+- **核心结构性变更**（两条）：
+  - 新增 `client_wechat_users.became_member_at` (timestamptz, nullable) — 顾客首次成为会员客的时点快照
+  - **删除** `service_items.is_presale` 列及两端写入/查询、两处前端徽章
 - **核心逻辑变更**：
-  - 服务单主表类型不再按 customer_type 自动判定，改为按子项商品 product_kind 自动判定（或业务方确认后手选）
+  - `service_order_type` 判定从"按 `customer_type` 派生"改为"按 `became_member_at <= NOW()` 快照判定"
+  - `recalcCustomerType` 新增降级分支（退款跌破门槛时降级 + 清空 `became_member_at`），打破当前 only-upgrade 行为
   - 10+ 处 1980/1990 硬编码统一改走 `system_configs.new_member_threshold`，默认 1980
-- **经营周期**：固化为自然月实现，在 spec 补充未来可配置化钩子描述，无代码大动作
+- **保持不变**：
+  - `service_order_type` 枚举仍为 `['售前','售后']`（不回滚到 `['普通','体验']`）
+  - `sale_orders.document_type` 判定逻辑（与服务单售前/售后解耦）
+  - 服务单主表徽章文案与数据源名称
 - **前端改动**：
-  - staff + admin 的服务单徽章文案从"售前/售后"→"普通/体验"
-  - 服务单子项级徽章仍显示"售前/售后"（数据源从硬编码变为真实）
-  - admin 订单详情页子项 table 增加"售前/售后"列
+  - staff + admin 服务单**明细**徽章/列**全部删除**
+  - admin 顾客详情页新增"成为会员时间"只读展示
+  - 服务单主表徽章保持现状
+- **经营周期**：固化为自然月实现，在 spec 补充未来可配置化钩子描述，无代码大动作
 - **配套**：seed.ts、测试、spec 文档联动更新
-
-**总体估算**：3 个 worktree 并行，2 个迭代工时可完成（schema + 后端 1 迭代，前端 UI + 测试 + 文档 0.5 迭代，导出功能 0.5 迭代）。
+- **与初稿方案对比**：工作量和风险显著收敛 — 初稿 3 处结构性变更（枚举回滚 + 新增 document_type 列 + service_items 字段重构）缩减为 2 处（`became_member_at` 新增 + `is_presale` 删除）

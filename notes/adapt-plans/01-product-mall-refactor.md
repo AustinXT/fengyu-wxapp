@@ -1,5 +1,10 @@
 # 差异报告: 商品管理重构 + 商城管理职责分离
 
+> ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> - 结构性变更**全部取消**：`product_bundles` 三表新建、`product_kind` 10 层重审 ❌ 不执行
+> - 套餐继续承载于 `mall_*` 侧
+> - 仅执行：商品/商城权限收窄 + 套餐降级方案（见 00-decisions §3 P2-12/13）
+
 > **方法论来源**: `.claude/skills/wx-requirement-adapt/SKILL.md`（§3 代码路径追踪 + §4 差异报告模板）
 > **输入会议**:
 > - `notes/meetings/meeting-20260324/article.md` §一 商品管理重构 / §二 商城管理（新增板块）

@@ -1,5 +1,10 @@
 # 06 - 优惠券通用模型适配计划
 
+> ✅ **本报告不受 [`00-decisions.md`](./00-decisions.md) 结构性变更取消的影响**（2026-04-10）
+> - 本报告原结论：底层通用模型已落地，**无结构性变更**
+> - 所有 P0 Bug 修复 + "适用门店"UI 补全计划原样执行
+> - 决策覆盖仅影响其他 5 份报告，本报告列于此仅用于统一追溯
+
 > 依据：
 > - `notes/meetings/meeting-20260304/article.md` §八 优惠券体系 ✅
 > - `notes/meetings/meeting-20260324/article.md` §十二 优惠券（当前问题 + 二期需求）
@@ -405,6 +410,17 @@ issueCoupon (L424-434)：
 
 **会议原文**：「满减券适用条件测试异常（满 500 可用券未正确匹配）」
 
+> **审计更新（2026-04-10）**：对四端代码（client/staff 的 `coupon.js` 与 `order.js` + 前端构造 items 位置）重新核查后，**本节原假设"`available` 用原价 / `create` 用折后价"不成立**：
+>
+> - staff 前端 `order-create.ts:510` 传入的 `amount = c.price * c.quantity - c.discount`（折后小计），与后端 `staffApi/routes/order.js:248` 的 `received = saleAmount - discount` **口径一致**。
+> - client 前端 `checkout.ts:259` 传入的 `amount = i.price * i.quantity`，其中 `i.price` 在加购时已规范为 `special_price || price`（见 `service-detail.ts:90`、`shop.ts:85`、`checkout.ts:118`），与后端 `clientApi/routes/order.js:216-218` 的 `unitRealPrice = special_price || price` **口径一致**。
+>
+> "满 500 未匹配" 的真实根因是以下三个场景，完整方案详见下方 §4.2bis。原"疑点 ②"段落保留为历史记录：
+>
+> - **真凶 A（P0，时序）**：员工端在选券后修改 cart，`selectedCoupon` 未重新评估 → 提交订单时校验失败
+> - **真凶 B（P0，语义）**：品项券 `min_spend` 实为"符合分类行的小计门槛"，销售误以为是"全单总额门槛"
+> - **真凶 C（P1，精度）**：4 处满减比较未做分单位归一化，JS 浮点 + PG numeric 在边界抖动
+
 **审计结论**：有两处可疑点。
 
 #### 疑点 ①：`getAvailableCoupons`（admin）的满减比较做了隐式 cast
@@ -476,6 +492,83 @@ items = this.data.cartItems.map(i => ({
 - 统一 `coupon.available` 和 `order.create` 的满减基数口径：**都用"折后小计"（即 `received`）**，前端构造 items 时字段名统一为 `receivedAmount`
 - 后端在比较前显式 `Number()` + `toFixed(2)` 确保精度
 - 加 e2e 测试覆盖"满减边界值"（499.99 / 500.00 / 500.01）
+
+### 4.2bis 重新定位的真凶与修复方案（审计 2026-04-10）
+
+> 本子节由 2026-04-10 重新审计产生，推翻了 §4.2 原"疑点 ②"的直接口径假设。新证据表明 staff/client 两端的 `coupon.available` 与 `order.create` **实际口径都已经一致**：staff 两侧都是"原价特价 × 数量 - 手动折扣"（折后小计），client 两侧都是"`special_price || price` × 数量"。真正触发"满 500 未正确匹配"的是下面三个具体场景。
+
+#### 真凶 A：时序 —— 员工端选券后改 cart 未重新评估【P0】
+
+**触发路径**：
+1. 店长加购 → `cartTotal = 500`
+2. 点"选券" → `coupon.available` 返回"满 500 可用券"
+3. 店长选中该券 → `selectedCoupon` 缓存到 `this.data`
+4. 店长返回 Step0/1 修改某行数量/折扣 → `cartTotal` 变成 480，但 `selectedCoupon` 依然显示为选中
+5. 提交 `order.create` → 后端 `eligibleTotal = Σreceived = 480 < minSpend 500` → `INVALID_PARAMS: 未满足使用条件（满500可用）`
+
+**证据**：
+- `fengyu-staff/miniprogram/pages/order-create/order-create.ts:402-413 updateCart`：只重算 cart 总额与 `couponTotal`，不重评估 `selectedCoupon` 是否仍适用
+- cart 变动入口全部走 `updateCart`：`onSpuTap:323-360`、`onCartItemRemove:364-373`、`onCartQtyChange:375-388`、`onDiscountChange:390-400`
+- `onCouponPick:528-540` 仅在首次选券时调 `coupon.available`，之后无 watcher
+
+**精确修复**：
+- 在 `order-create.ts` 新增 `revalidateCoupon()` 方法：若 `selectedCoupon !== null`，重新调 `coupon.available`，用原 `couponId` 在返回列表中查找
+  - 不在列表 → 清空 `selectedCoupon` + `couponDiscount` + `couponTotal` + Toast "商品已变动，原优惠券已失效"
+  - 在列表但 discount 变化（品项券可能）→ 更新为新 discount
+- `updateCart` 尾部追加 `void this.revalidateCoupon()`（不 await，不阻塞 UI；未选券时短路零开销）
+- 新增单测文件 `__tests__/pages/order-create.test.ts`（参考 `__tests__/utils/cart-calc.test.ts` 的 Vitest harness），覆盖 3 个分支
+
+**相关代码位置**：
+- `fengyu-staff/miniprogram/pages/order-create/order-create.ts:402-413`（updateCart 接入点）
+- `fengyu-staff/miniprogram/pages/order-create/order-create.ts:500-544`（onSelectCoupon / onCouponPick / onClearCoupon 参考上下文）
+
+#### 真凶 B：品项券基数语义误解【P0，文案/UI】
+
+**触发路径**：
+1. 后台发"满 500 可用，品类=护理项目"的券
+2. 顾客购物车 = 护理 300 + 美甲 300（非护理品类）
+3. `coupon.available`：`eligibleItems = 护理行`，`eligibleTotal = 300 < 500` → 不返回这张券
+4. 销售认为"全单 600 ≥ 500 应该可用"，报障"满 500 未匹配"
+
+**证据**：
+- `fengyu-client/cloudfunctions/clientApi/routes/coupon.js:160-175`、`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:95-109`：`eligibleItems.filter(applicable_category_ids)` 后再 reduce 得到门槛基数
+- `fengyu-client/cloudfunctions/clientApi/routes/order.js:272-288`、`fengyu-staff/cloudfunctions/staffApi/routes/order.js:312-327`：`order.create` 同语义
+
+**决策（方案 A，2026-04-10 批准）**：
+保持代码行为不变（品项券 `min_spend` 判据 = 符合品类行的小计门槛），仅在三处补清晰文案，避免销售误解：
+1. `fengyu-admin/src/app/(main)/coupons/_components/coupon-create-page.tsx` minSpend 字段旁增加 shadcn `<Tooltip>`：说明"品类=X 时，X 类商品小计 ≥ minSpend 才能使用"
+2. `fengyu-client/miniprogram/pagesCoupon/my-coupons/my-coupons.wxml` 描述行下方追加"仅限 XX 品类小计满 X 元可用"
+3. `.42cog/pm/backend.pr.spec.md` 优惠券章节补一句满减门槛口径
+
+**不采用方案 B**：改代码语义为"全单总额判据"与后台"适用范围"字段的设计意图冲突，且涉及四端改动，待 PM 明确要求时再动。
+
+**相关代码位置**：
+- `fengyu-client/cloudfunctions/clientApi/routes/coupon.js:14-86 list`（新增 `applicableCategoryNames` 返回字段）
+- `fengyu-client/miniprogram/pagesCoupon/my-coupons/my-coupons.ts / .wxml / .wxss`
+- `fengyu-admin/src/app/(main)/coupons/_components/coupon-create-page.tsx` + `coupon-detail-page.tsx`
+
+#### 真凶 C：浮点精度边界抖动【P1】
+
+**触发路径**：
+- JS 浮点：`99.9 * 5 = 499.49999999999994`（数学上应 499.5）
+- 前端 `reduce` 与后端 `reduce` 顺序相同，当前**双侧同错**，不会出现"available 说可用 + create 说不可用"的纯口径 bug
+- 但边界值（500.00 / 499.99 / 500.01）处 JS 浮点 + PG numeric 混算仍会偶发性错判，且缺乏兜底更危险
+
+**精确修复**：对 4 处满减比较统一做：
+1. `eligibleTotal` 累加后 `Math.round(x * 100) / 100` 归一到分
+2. `minSpend` 同样归一化
+3. 比较时 `if (eligibleTotal + 0.001 < minSpend)` 兜底浮点累计误差（仅用于门槛判断；抵扣分摊/显示仍精确到分）
+
+**admin 入口补强**：`fengyu-admin/src/actions/coupons.ts` 的 `getAvailableCoupons` 在 Drizzle 比较前显式 `const total = Number(totalAmount)` + `Number.isFinite` 校验，避免字符串透传。
+
+**相关代码位置**：
+- `fengyu-client/cloudfunctions/clientApi/routes/coupon.js:171-175`
+- `fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:105-109`
+- `fengyu-client/cloudfunctions/clientApi/routes/order.js:284-288`
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:324-328`
+- `fengyu-admin/src/actions/coupons.ts` getAvailableCoupons
+
+**单测补强**：`client/staff` 两端 `__tests__/routes/coupon.test.js` 新增 4 个浮点边界用例（500.00 / 499.99 / 99.9×5 / 500.005）。
 
 ### 4.3 [P0] clientApi `order.create` 缺失折扣券分支
 
@@ -628,16 +721,31 @@ schema、Action 参数、Types 保留，UI 和下单匹配逻辑完全不用。
    - 部署：通过 `/cloudbase-deploy` 重新上传 clientApi
    - 测试：补单测覆盖「折扣券顾客端下单」场景
 
-4. **修复满减基数口径不一致** [逻辑变更，直接改]
-   - 文件 A：`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:93-206`
-   - 文件 B：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:13-137`
-   - 文件 C：`fengyu-client/miniprogram/pagesOrder/checkout/checkout.ts:256-264`（items 构造）
-   - 文件 D：`fengyu-staff/miniprogram/pages/order-create/order-create.ts`（items 构造，需查）
-   - 改动：
-     - 前端构造 items 时，`amount` 字段改为 `receivedAmount`，值 = 折后成交价 × 数量
-     - 后端 `coupon.available` 读取 `receivedAmount`（向前兼容旧 `amount` 字段 1-2 个灰度周期）
-     - `coupon.available` 和 `order.create` 在比较前显式 `Number(x).toFixed(2)` 精度处理
-   - 测试：E2E 覆盖 499.99 / 500.00 / 500.01 边界，以及"原价满足但折后不满足"场景
+4. **修复满减基数口径问题** [逻辑变更，直接改]
+
+   > **审计更正（2026-04-10）**：经重新审计，`amount` 字段在 client/staff 两侧与 `order.create` 的 `received`/`saleAmount` **口径本身就一致**，原步骤 4 提到的"字段改名 + 灰度"**不再需要**。本步骤降级为"归一化到分 + 浮点兜底 + 补员工端时序 revalidate"。真正的三个根因见 §4.2bis（真凶 A / B / C）。
+
+   **4a. 真凶 C 精度（4 处满减比较归一化）**：
+   - 文件 A：`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:171-175`
+   - 文件 B：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:105-109`
+   - 文件 C：`fengyu-client/cloudfunctions/clientApi/routes/order.js:284-288`
+   - 文件 D：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:324-328`
+   - 改动：`eligibleTotal = Math.round(raw * 100) / 100`，`minSpend = Math.round((Number(min_spend) || 0) * 100) / 100`，比较 `if (eligibleTotal + 0.001 < minSpend)`
+   - 同步 `fengyu-admin/src/actions/coupons.ts` 的 `getAvailableCoupons` 入口追加 `Number(totalAmount)` 强制 + `Number.isFinite` 校验
+   - 测试：client/staff 云函数单测新增 4 个浮点边界用例（500.00 / 499.99 / 99.9×5 / 500.005）
+
+   **4b. 真凶 A 时序（员工端选券后改 cart 未重新评估）**：
+   - 文件：`fengyu-staff/miniprogram/pages/order-create/order-create.ts`
+   - 改动：新增 `revalidateCoupon()` 方法；`updateCart` 尾部追加 `void this.revalidateCoupon()`
+   - 语义：原券不在返回列表 → 清空 `selectedCoupon` + Toast；原券在但 discount 变化 → 更新 discount
+   - 测试：新建 `__tests__/pages/order-create.test.ts`，覆盖 3 个分支
+
+   **4c. 真凶 B 品项券语义（文案对齐，不改代码语义）**：
+   - 决策：保持代码行为不变，仅补文案 —— 详见 §4.2bis 的真凶 B 段落
+   - 文件 1：`fengyu-admin/src/app/(main)/coupons/_components/coupon-create-page.tsx` + `coupon-detail-page.tsx` minSpend 字段加 shadcn Tooltip
+   - 文件 2：`fengyu-client/cloudfunctions/clientApi/routes/coupon.js` list 返回 `applicableCategoryNames`
+   - 文件 3：`fengyu-client/miniprogram/pagesCoupon/my-coupons/my-coupons.ts / .wxml / .wxss` 追加 `minSpendHint` 计算字段与渲染
+   - 文件 4：`.42cog/pm/backend.pr.spec.md` 追加满减门槛口径说明
 
 5. **修复 createTemplate / updateTemplate 有效期必填校验 + 消灭 issueCoupon fallback** [逻辑变更，直接改，对应 §4.1.1]
 

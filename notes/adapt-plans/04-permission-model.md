@@ -1,5 +1,11 @@
 # 权限双维度模型 — 需求变更适配报告
 
+> ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> - `orgNodeTypeEnum` **不收窄**，`"部门"` 值保留；业务层面不再创建 `type='部门'` 节点即可
+> - Q6 答：**sync-workfine 硬编码"财智部" → `finance+store` scope 符合预期**，不改同步脚本
+> - 仅执行：员工端 `ctx.auth.roles` 结构化（scopeId/scopeType）+ staff.dashboard 市场级聚合
+> - Q7 区域经理 3.5 层仍登记为**待讨论遗留事项**
+
 > **适配计划编号**: 04
 > **来源会议**: [2026-03-12](../meetings/meeting-20260312/article.md) §六 权限设计、[2026-04-07](../meetings/meeting-20260407/article.md) §四 权限管理
 > **产出日期**: 2026-04-09

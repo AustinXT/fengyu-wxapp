@@ -1,5 +1,12 @@
 # 员工提成模型重构 — 需求变更适配计划
 
+> ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> - `salesCategoryEnum` **不重命名**，保留当前 `[自采自销, 他销自耗, 他销他耗, 生态合作]`
+> - Q5 答：**美容师/养生师/推广师三角色独立校验；更准确地按 `staff_wechat_users.skills` 中的有效技能标签独立校验**
+> - 业绩分配算法按 `skillTags` 维度池独立校验，每池 `SUM ≤ 商品金额`，池间不互相约束
+> - 废除 `DEPT_TO_ROLE = { '美容部':'美容师' }` 从部门推断，改为读 `skills`
+> - 无结构性变更，全部为算法层重写
+
 > 来源会议: meeting-20260312 §三 + meeting-20260324 §四/§五
 > 方法论: `.claude/skills/wx-requirement-adapt/SKILL.md` §3 §4 §5.3
 > 生成日期: 2026-04-09
@@ -252,6 +259,8 @@ totalAmount, isVoid, voidedAt
 
 ### 2.5 关键 Bug 深度解析 — performanceDetail 服务提成口径错误
 
+> ✅ **已修复（2026-04-10）**：迁移 `0018_green_rogue.sql` 新增 `sale_items.service_fee` + `service_commissions.fixed_fee/consume_amount` 列；`service.complete` 自动写 service_commissions（skills[0] 自动推断 roleType，rate 缺失写 operation_logs）；`performanceDetail` 改查 `service_commissions.commission_amount`；前端 staff-performance 展示固定手工费/消耗提成拆分；新增 10 个单元测试（7 performanceDetail + 3 service.complete）。详见 plan `/Users/nv/.claude/plans/tranquil-singing-clover.md`。**多员工手动分成流程留给后续 Phase**（本次 out of scope）。
+
 **严重性**: 高 — 员工在绩效明细页看到虚高的"服务提成"数字，与实际工资单强烈不一致，直接破坏团队信任；`totalCommission` 汇总字段基于错误加总，任何依赖该字段的上游看板/报表都被污染。
 
 **Bug 一句话概括**: `performanceDetail` 用 `unit_real_price × session_used`（= **消耗业绩金额**，即"这位员工今天消耗掉了多少客户已付的服务卡次数金额"）当成了"服务提成"累加返回。前者是**业绩口径**（衡量劳动负荷/业务量），后者是**薪资口径**（固定手工费 + 消耗比例），两者数值差可达 3-5 倍。
@@ -311,10 +320,10 @@ totalAmount, isVoid, voidedAt
 
 修复本 Bug 需要先落地以下 Phase 条目：
 
-- **(A)** Phase 1.2 — `sale_items` 新增 `service_fee` 快照列
-- **(B)** Phase 1.4 — `service_commissions` 新增 `fixed_fee` / `consume_amount` 两列
-- **(C)** Phase 2.1 — `order.create` 等 5 处 INSERT 写入 service_fee 快照
-- **(D)** Phase 2.5 — `service.complete` 自动写入 `service_commissions`（含 fixed_fee + consume_amount + commission_amount）
+- **(A)** Phase 1.2 ✅ — `sale_items` 新增 `service_fee` 快照列（migration 0018）
+- **(B)** Phase 1.4 ✅ — `service_commissions` 新增 `fixed_fee` / `consume_amount` 两列（migration 0018）
+- **(C)** Phase 2.1 ✅ — `order.create` / createRefund / createRepayment / createConversion 5 处 + admin/orders.ts 1 处 INSERT 写入 service_fee 快照
+- **(D)** Phase 2.5 ✅ — `service.complete` 自动写入 `service_commissions`（含 fixed_fee + consume_amount + commission_amount，skills[0] 自动推断 roleType，rate 缺失兜底 0 + 写 operation_logs）
 
 **无 A-D 则本 Bug 无法根治**（只能走 §2.5.7 临时方案）。
 
@@ -883,10 +892,10 @@ b471d70 将会员权益配置存到 `system_configs.member_level_benefits`，由
 ## 6 验收标准（Acceptance Criteria）
 
 - [ ] AC-01: 数据库迁移 0035 成功运行，所有 sale_items / commission_rate_matrix / product_categories 的 sales_category 值分布符合新 4 值集合
-- [ ] AC-02: 开单后 sale_items.service_fee 快照等于 product_skus.service_fee × quantity
-- [ ] AC-03: 服务单 complete 后 service_commissions 被自动写入，fixed_fee + consume_amount = commission_amount
+- [x] AC-02: 开单后 sale_items.service_fee 快照等于 product_skus.service_fee × quantity ✅（staffApi/order.js 5 处 INSERT + admin/orders.ts 1 处）
+- [x] AC-03: 服务单 complete 后 service_commissions 被自动写入，fixed_fee + consume_amount = commission_amount ✅（service.complete 新增逻辑 + 3 个单元测试覆盖）
 - [ ] AC-04: 员工当天完成一个服务单后，staff.todayCommission 的 todayAmount 包含该服务单的 commission_amount
-- [ ] AC-05: 员工绩效明细页的"服务提成"金额显示为 service_commissions.commission_amount，而非 unit_real_price × session_used
+- [x] AC-05: 员工绩效明细页的"服务提成"金额显示为 service_commissions.commission_amount，而非 unit_real_price × session_used ✅（performanceDetail 改查 service_commissions + 7 个单元测试覆盖 + 前端 wxml 展示拆分）
 - [ ] AC-06: 数据看板新增"划卡数"指标，值 = SUM(service_items.session_used)
 - [ ] AC-07: 业绩分配页对同一 sku，美容师/养生师/推广师三角色可以各自独立加人，每组最多 3 人、每组比例合计 ≤ 100%，跨角色不互相影响
 - [ ] AC-08: 分配的员工角色由员工技能标签 `staff.skills` 决定，不再由部门推断
