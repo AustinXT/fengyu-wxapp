@@ -757,6 +757,28 @@ describe('issueCoupon — 发放优惠券', () => {
     const result = await issueCoupon('TPL-001', '13800000000')
     expect(result.success).toBe(true)
   })
+
+  it('历史脏数据模板（validityMode=days 但 validDays=null）→ 拒绝，不 insert', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    setupIssueMocks({
+      template: makeTemplateRow('TPL-DIRTY', {
+        totalCount: null,
+        validityMode: 'days',
+        validDays: null,
+        validTo: null,
+      }),
+      customer: { userId: 'FYGK-001', name: '赵女士' },
+    })
+    const result = await issueCoupon('TPL-DIRTY', '13800000000')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('优惠券模板有效期配置异常')
+    expect(db.insert).not.toHaveBeenCalled()
+    expect(errSpy).toHaveBeenCalledWith(
+      '[issueCoupon] INVALID_TEMPLATE',
+      expect.objectContaining({ templateId: 'TPL-DIRTY' }),
+    )
+    errSpy.mockRestore()
+  })
 })
 
 // ── getIssuedCoupons ─────────────────────────────────────────────────────────
@@ -1074,5 +1096,46 @@ describe('batchIssueCoupons — 批量发放', () => {
     const diffDays = Math.round((expireAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
     expect(diffDays).toBeGreaterThanOrEqual(29)
     expect(diffDays).toBeLessThanOrEqual(31)
+  })
+
+  it('历史脏数据模板（validityMode=fixed 但 validTo=null）→ 整批拒绝，不 insert', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        // 查模板 — 脏数据
+        const limit = vi.fn().mockResolvedValue([makeTemplateRow('TPL-DIRTY', {
+          totalCount: null,
+          validityMode: 'fixed',
+          validTo: null,
+          validDays: null,
+        })])
+        const where = vi.fn().mockReturnValue({ limit })
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      } else {
+        // 批量查顾客
+        const where = vi.fn().mockResolvedValue([
+          { userId: 'U-001', name: '张三', phone: '13800000001' },
+          { userId: 'U-002', name: '李四', phone: '13800000002' },
+        ])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+    })
+
+    const values = vi.fn().mockResolvedValue(undefined)
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await batchIssueCoupons('TPL-DIRTY', ['13800000001', '13800000002'])
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('优惠券模板有效期配置异常')
+    expect(db.insert).not.toHaveBeenCalled()
+    expect(errSpy).toHaveBeenCalledWith(
+      '[batchIssueCoupons] INVALID_TEMPLATE',
+      expect.objectContaining({ templateId: 'TPL-DIRTY' }),
+    )
+    errSpy.mockRestore()
   })
 })

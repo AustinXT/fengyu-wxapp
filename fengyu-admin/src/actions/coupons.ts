@@ -545,12 +545,14 @@ export async function issueCoupon(
   if (tpl.validityMode === 'days' && tpl.validDays) {
     expireAt = new Date()
     expireAt.setDate(expireAt.getDate() + tpl.validDays)
-  } else if (tpl.validTo) {
+  } else if (tpl.validityMode === 'fixed' && tpl.validTo) {
     expireAt = new Date(tpl.validTo)
   } else {
-    // 无有效期配置，默认 365 天
-    expireAt = new Date()
-    expireAt.setDate(expireAt.getDate() + 365)
+    console.error('[issueCoupon] INVALID_TEMPLATE', {
+      templateId: tpl.templateId, validityMode: tpl.validityMode,
+      validDays: tpl.validDays, validTo: tpl.validTo,
+    })
+    return { success: false, message: '优惠券模板有效期配置异常，请联系管理员修复后再发放' }
   }
 
   // 5. 生成 couponId 并插入
@@ -681,11 +683,14 @@ export async function batchIssueCoupons(
   if (tpl.validityMode === 'days' && tpl.validDays) {
     expireAt = new Date()
     expireAt.setDate(expireAt.getDate() + tpl.validDays)
-  } else if (tpl.validTo) {
+  } else if (tpl.validityMode === 'fixed' && tpl.validTo) {
     expireAt = new Date(tpl.validTo)
   } else {
-    expireAt = new Date()
-    expireAt.setDate(expireAt.getDate() + 365)
+    console.error('[batchIssueCoupons] INVALID_TEMPLATE', {
+      templateId: tpl.templateId, validityMode: tpl.validityMode,
+      validDays: tpl.validDays, validTo: tpl.validTo,
+    })
+    return { success: false, message: '优惠券模板有效期配置异常，请联系管理员修复后再发放' }
   }
 
   // 7. 事务内批量插入
