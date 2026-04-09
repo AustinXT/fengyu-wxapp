@@ -1,0 +1,117 @@
+name: DB migrations integrity check
+
+# 2026-04-10 baseline reset 之后的规范守卫：
+#  1. journal-磁盘一致性：_journal.json 和 migrations/*.sql 必须一一对应（归档子目录不算）
+#  2. schema-generate 同步：如果 PR 改了 schema.ts 却忘了 db:generate，CI 会失败
+#  3. 从零 apply 测试：baseline + 所有增量 migration 必须能在空 PG 上从零 apply 成功
+
+on:
+  pull_request:
+    paths:
+      - 'db/schema/**'
+      - 'db/migrations/**'
+      - 'db/drizzle.config.ts'
+      - 'db/package.json'
+      - 'db/package-lock.json'
+      - '.github/workflows/db-migrations-check.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install db deps
+        working-directory: db
+        run: npm ci
+
+      # ---------------------------------------------------------
+      # Check 1: journal-磁盘一致性
+      # ---------------------------------------------------------
+      - name: Journal vs disk consistency
+        working-directory: db
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = require("node:path");
+            const j = JSON.parse(fs.readFileSync("migrations/meta/_journal.json", "utf8"));
+            const tags = new Set(j.entries.map(e => e.tag));
+            // Non-recursive scan of migrations/ root — archive subdirectories are invisible
+            const files = fs.readdirSync("migrations")
+              .filter(f => f.endsWith(".sql"))
+              .map(f => f.replace(/\.sql$/, ""));
+            const orphans = files.filter(f => !tags.has(f));
+            const missing = [...tags].filter(t => !files.includes(t));
+            if (orphans.length) {
+              console.error("ERROR: orphan .sql files not in _journal.json:");
+              orphans.forEach(f => console.error("  -", f + ".sql"));
+              console.error("Fix: run `npm run db:generate` or remove the stray file.");
+              process.exit(1);
+            }
+            if (missing.length) {
+              console.error("ERROR: journal entries without matching .sql file:");
+              missing.forEach(t => console.error("  -", t));
+              process.exit(1);
+            }
+            console.log("OK:", tags.size, "entries in sync with disk");
+          '
+
+      # ---------------------------------------------------------
+      # Check 2: schema.ts 已 generate
+      # 如果 PR 改了 schema.ts 却没跑 db:generate，CI 会生成新文件并让 git diff 非空
+      # ---------------------------------------------------------
+      - name: schema.ts synced with migrations
+        working-directory: db
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: |
+          set -e
+          npx drizzle-kit generate --name ci_check_regen
+          # 如果 drizzle-kit 产生了新文件或改动，说明作者忘了 generate
+          if ! git diff --exit-code migrations/ > /dev/null 2>&1 || [ -n "$(git ls-files --others --exclude-standard migrations/)" ]; then
+            echo "ERROR: schema.ts has uncommitted changes not reflected in migrations/"
+            git status migrations/
+            exit 1
+          fi
+          echo "OK: schema.ts matches committed migrations"
+
+      # ---------------------------------------------------------
+      # Check 3: 从零 apply 测试
+      # baseline + 所有增量必须能在空 PG 上全部 apply 成功
+      # ---------------------------------------------------------
+      - name: From-zero migrate test
+        working-directory: db
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test
+        run: |
+          set -e
+          # 先重置 CI service 上的 PG 到干净状态（service 默认启动的 test 库是空的，但以防万一）
+          PGPASSWORD=test psql -h localhost -U postgres -d test -c 'DROP SCHEMA IF EXISTS drizzle CASCADE;' || true
+          PGPASSWORD=test psql -h localhost -U postgres -d test -c 'DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;'
+          npm run db:migrate
+          # 基础断言：至少 30 个表被建起
+          TBL_COUNT=$(PGPASSWORD=test psql -h localhost -U postgres -d test -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE';" | xargs)
+          if [ "$TBL_COUNT" -lt 30 ]; then
+            echo "ERROR: expected >= 30 tables after migrate, got $TBL_COUNT"
+            exit 1
+          fi
+          echo "OK: from-zero migrate built $TBL_COUNT tables"
