@@ -18,6 +18,7 @@ import { formatCurrency, formatDate } from "@/lib/utils"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
+import { validateCouponValidityFields } from "./coupon-validity-helper"
 
 const COUPON_TYPE_COLORS: Record<CouponType, string> = {
   "现金券": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
@@ -268,6 +269,17 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
       return
     }
 
+    const validityCheck = validateCouponValidityFields({
+      validityMode: editValidityMode,
+      validDays: editValidDays,
+      validFrom: editValidFrom,
+      validTo: editValidTo,
+    })
+    if (!validityCheck.ok) {
+      toast.error(validityCheck.message)
+      return
+    }
+
     setSaving(true)
     try {
       const tplResult = await updateTemplate(template.templateId, {
@@ -484,7 +496,17 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                 <label className="text-sm font-medium">有效期模式</label>
                 <Select
                   value={editValidityMode}
-                  onChange={(e) => setEditValidityMode(e.target.value as "fixed" | "days")}
+                  onChange={(e) => {
+                    const next = e.target.value as "fixed" | "days"
+                    setEditValidityMode(next)
+                    // 切模式时立即清空另一侧输入，避免脏数据混入提交
+                    if (next === "days") {
+                      setEditValidFrom("")
+                      setEditValidTo("")
+                    } else {
+                      setEditValidDays("")
+                    }
+                  }}
                 >
                   <option value="days">领取后N天</option>
                   <option value="fixed">固定时段</option>

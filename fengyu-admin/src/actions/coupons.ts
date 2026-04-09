@@ -15,6 +15,48 @@ import { logOperation, logTransition, logUpdate } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 
 /**
+ * 有效期字段校验（基于合并后的完整状态）。
+ * createTemplate 直接传入提交数据；updateTemplate 传入 DB 现值 merge 补丁的 merged。
+ * 错误消息必须与前端 `validateCouponValidityFields` helper 字符级一致。
+ */
+function validateValidityFields(merged: {
+  validityMode?: string | null
+  validDays?: number | null
+  validFrom?: string | Date | null
+  validTo?: string | Date | null
+}): { ok: true } | { ok: false; message: string } {
+  if (merged.validityMode !== 'days' && merged.validityMode !== 'fixed') {
+    return { ok: false, message: '有效期模式必须为 days 或 fixed' }
+  }
+  if (merged.validityMode === 'days') {
+    const vd = Number(merged.validDays)
+    if (!Number.isInteger(vd) || vd <= 0) {
+      return { ok: false, message: '"领取后 N 天"模式需填写正整数有效天数' }
+    }
+    if (vd > 3650) {
+      return { ok: false, message: '有效天数不能超过 3650 天（10 年）' }
+    }
+  }
+  if (merged.validityMode === 'fixed') {
+    if (!merged.validFrom || !merged.validTo) {
+      return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
+    }
+    const from = merged.validFrom instanceof Date ? merged.validFrom : new Date(merged.validFrom)
+    const to = merged.validTo instanceof Date ? merged.validTo : new Date(merged.validTo)
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      return { ok: false, message: '"固定时段"模式需同时填写开始与结束日期' }
+    }
+    if (from >= to) {
+      return { ok: false, message: '有效期开始日期必须早于结束日期' }
+    }
+    if (to <= new Date()) {
+      return { ok: false, message: '有效期结束日期必须晚于当前时间' }
+    }
+  }
+  return { ok: true }
+}
+
+/**
  * 获取所有市场节点（type='市场'），用于优惠券市场作用域选择。
  */
 export async function getMarkets(): Promise<{ id: string; name: string }[]> {
@@ -222,7 +264,7 @@ export async function createTemplate(data: {
   applicableCategoryIds?: string[] | null
   applicableStoreIds?: string[] | null
   applicableMarketIds?: string[] | null
-  validityMode?: string
+  validityMode: 'days' | 'fixed'
   validFrom?: string | null
   validTo?: string | null
   validDays?: number | null
@@ -248,10 +290,22 @@ export async function createTemplate(data: {
     return { success: false, message: '折扣券的折扣值必须在 0~1 之间（如 0.85 表示 85 折）' }
   }
 
-  // 校验有效期顺序
-  if (data.validFrom && data.validTo && new Date(data.validFrom) > new Date(data.validTo)) {
-    return { success: false, message: '有效期开始日期不能晚于结束日期' }
+  // 校验有效期字段（days/fixed 分支）
+  const validityCheck = validateValidityFields({
+    validityMode: data.validityMode,
+    validDays: data.validDays ?? null,
+    validFrom: data.validFrom ?? null,
+    validTo: data.validTo ?? null,
+  })
+  if (!validityCheck.ok) {
+    return { success: false, message: validityCheck.message }
   }
+
+  // 根据模式强制另一侧为 null，避免脏数据
+  const isDays = data.validityMode === 'days'
+  const insertValidFrom = isDays ? null : (data.validFrom ? new Date(data.validFrom) : null)
+  const insertValidTo = isDays ? null : (data.validTo ? new Date(data.validTo) : null)
+  const insertValidDays = isDays ? (data.validDays ?? null) : null
 
   try {
     await db.insert(couponTemplates).values({
@@ -267,9 +321,9 @@ export async function createTemplate(data: {
       applicableStoreIds: data.applicableStoreIds ?? null,
       applicableMarketIds: data.applicableMarketIds ?? null,
       validityMode: data.validityMode as typeof couponTemplates.$inferInsert['validityMode'],
-      validFrom: data.validFrom ? new Date(data.validFrom) : null,
-      validTo: data.validTo ? new Date(data.validTo) : null,
-      validDays: data.validDays ?? null,
+      validFrom: insertValidFrom,
+      validTo: insertValidTo,
+      validDays: insertValidDays,
       description: data.description ?? null,
       isActive: data.isActive ?? true,
     })
@@ -311,16 +365,74 @@ export async function updateTemplate(
   const session = await getSession()
   requirePermission(session, 'coupon:update')
 
-  const updateData: Record<string, unknown> = { ...data }
-  if (data.validFrom !== undefined) {
-    updateData.validFrom = data.validFrom ? new Date(data.validFrom) : null
-  }
-  if (data.validTo !== undefined) {
-    updateData.validTo = data.validTo ? new Date(data.validTo) : null
+  // 获取旧值用于日志 diff + 合并校验
+  const [before] = await db.select().from(couponTemplates).where(eq(couponTemplates.templateId, templateId)).limit(1)
+
+  if (!before) {
+    return { success: false, message: '优惠券模板不存在' }
   }
 
-  // 获取旧值用于日志 diff
-  const [before] = await db.select().from(couponTemplates).where(eq(couponTemplates.templateId, templateId)).limit(1)
+  // 若 patch 触及任一有效期相关字段，必须走合并后的完整校验
+  const patchTouchesValidity =
+    data.validityMode !== undefined ||
+    data.validDays !== undefined ||
+    data.validFrom !== undefined ||
+    data.validTo !== undefined
+
+  const updateData: Record<string, unknown> = { ...data }
+
+  if (patchTouchesValidity) {
+    // 检测模式切换：patch 显式把 validityMode 从 before 的模式切到另一个模式
+    const nextMode = data.validityMode !== undefined ? data.validityMode : (before as any).validityMode
+    const modeSwitched = data.validityMode !== undefined && data.validityMode !== (before as any).validityMode
+
+    if (modeSwitched && nextMode === 'days') {
+      if (data.validDays === undefined) {
+        return { success: false, message: '切换到"领取后 N 天"模式需同时提交有效天数' }
+      }
+    }
+    if (modeSwitched && nextMode === 'fixed') {
+      if (data.validFrom === undefined || data.validTo === undefined) {
+        return { success: false, message: '切换到"固定时段"模式需同时提交开始与结束日期' }
+      }
+    }
+
+    // 构造 merged = before ∪ patch（patch 中显式出现的字段覆盖 before）
+    const merged = {
+      validityMode: data.validityMode !== undefined ? data.validityMode : (before as any).validityMode,
+      validDays: data.validDays !== undefined ? data.validDays : (before as any).validDays,
+      validFrom: data.validFrom !== undefined
+        ? (data.validFrom ? new Date(data.validFrom) : null)
+        : (before as any).validFrom,
+      validTo: data.validTo !== undefined
+        ? (data.validTo ? new Date(data.validTo) : null)
+        : (before as any).validTo,
+    }
+
+    const validityCheck = validateValidityFields(merged)
+    if (!validityCheck.ok) {
+      return { success: false, message: validityCheck.message }
+    }
+
+    // 根据 merged 模式强制清空另一侧字段
+    if (merged.validityMode === 'days') {
+      updateData.validFrom = null
+      updateData.validTo = null
+      updateData.validDays = merged.validDays
+    } else {
+      updateData.validDays = null
+      updateData.validFrom = merged.validFrom
+      updateData.validTo = merged.validTo
+    }
+  } else {
+    // 未触及有效期字段，仍需规范日期序列化（保持旧行为）
+    if (data.validFrom !== undefined) {
+      updateData.validFrom = data.validFrom ? new Date(data.validFrom) : null
+    }
+    if (data.validTo !== undefined) {
+      updateData.validTo = data.validTo ? new Date(data.validTo) : null
+    }
+  }
 
   const whereConditions = expectedUpdatedAt
     ? and(eq(couponTemplates.templateId, templateId), sql`date_trunc('milliseconds', ${couponTemplates.updatedAt}) = ${expectedUpdatedAt}`)
