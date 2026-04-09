@@ -40,7 +40,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'service:list', 'service:create', 'service:update',
     'appointment:list', 'appointment:confirm', 'appointment:checkin',
     'point_transaction:list',
-    'pickup_record:list',
+    'pickup_record:list', 'pickup_record:create',
     'data_center:dashboard',
     'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
   ],
