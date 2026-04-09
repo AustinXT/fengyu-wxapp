@@ -600,6 +600,8 @@ else if (couponInfo.coupon_type === '折扣券') {
 }
 ```
 
+> ✅ **已修复（2026-04-10，merge 400c911）**：见 `notes/tickets/06-1-client-discount-coupon-fix.md`。执行面较本节扩大一处**孪生 Bug**——两端 `order.js` 的 coupon SELECT 都漏取 `ct.max_discount`，即使抄本节写法也会让 staffApi 的封顶分支恒为假（"公司权益被吞"）。本次一并修复 + 两端测试加 SELECT 字段断言防回归。
+
 ### 4.4 [P1] clientApi `redeem` 引用不存在的数据库列
 
 **位置**：`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:224-290`
