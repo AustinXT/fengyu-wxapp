@@ -26,7 +26,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
     'operation_log:list',
     'point_transaction:list',
-    'message:list', 'message:delete',
+    'message:list', 'message:delete', 'message:send',
     'system:config',
     // admin 不碰业务数据（订单/分配/服务/预约）和顾客
   ],
