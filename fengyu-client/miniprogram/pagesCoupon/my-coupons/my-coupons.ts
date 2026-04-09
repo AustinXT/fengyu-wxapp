@@ -42,11 +42,19 @@ Page({
       const data = await callClientApi('coupon.list', { status });
       const coupons = (data?.coupons || []).map((c: any) => {
         const minSpendNum = Number(c.minSpend) || 0;
+        const hasCategory = Array.isArray(c.applicableCategoryNames) && c.applicableCategoryNames.length > 0;
+        // 品项券满减门槛仅对"符合品类行的小计"生效，文案须明确避免"全单满 X"的误解
+        const minSpendHint = minSpendNum > 0
+          ? (hasCategory
+              ? `仅限 ${c.applicableCategoryNames.join('/')} 品类小计满 ${minSpendNum} 元可用`
+              : `满 ${minSpendNum} 元可用`)
+          : '';
         return {
           ...c,
           expireAtFmt: formatDate(c.expireAt),
           discountLabel: formatDiscount(c),
           minSpendNum,
+          minSpendHint,
         };
       });
       this.setData({ coupons });

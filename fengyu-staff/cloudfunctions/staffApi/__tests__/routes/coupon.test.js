@@ -346,6 +346,103 @@ describe('coupon.available', () => {
     expect(ctx.result.coupons).toEqual([])
   })
 
+  // ========== 满减门槛浮点边界（真凶 C：归一化到分 + +0.001 兜底）==========
+
+  test('min_spend 边界：amount=500.00 恰好等于 minSpend=500 → 可用', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      storeId: 'store-001',
+      items: [{ skuId: 'sku-1', quantity: 1, amount: 500.00 }],
+    })
+
+    setupAvailableMocks({
+      coupons: [{
+        coupon_id: 'cp-edge', expire_at: '2027-12-31', template_id: 'tpl-1',
+        name: '满500减50', coupon_type: '现金券', discount_value: '50',
+        min_spend: '500', max_discount: null,
+        applicable_category_ids: null, applicable_store_ids: null, description: '',
+      }],
+    })
+
+    await couponRoutes.available(ctx)
+    expect(ctx.result.coupons).toHaveLength(1)
+    expect(ctx.result.coupons[0].discount).toBe(50)
+  })
+
+  test('min_spend 边界：amount=499.99 < 500 → 不可用', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      storeId: 'store-001',
+      items: [{ skuId: 'sku-1', quantity: 1, amount: 499.99 }],
+    })
+
+    setupAvailableMocks({
+      coupons: [{
+        coupon_id: 'cp-edge', expire_at: '2027-12-31', template_id: 'tpl-1',
+        name: '满500减50', coupon_type: '现金券', discount_value: '50',
+        min_spend: '500', max_discount: null,
+        applicable_category_ids: null, applicable_store_ids: null, description: '',
+      }],
+    })
+
+    await couponRoutes.available(ctx)
+    expect(ctx.result.coupons).toEqual([])
+  })
+
+  test('min_spend 浮点兜底：JS 浮点 99.9×5=499.4999... 累加 + minSpend=499.50 → 可用', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      storeId: 'store-001',
+      items: [{ skuId: 'sku-1', quantity: 5, amount: 99.9 * 5 }], // 浮点 499.49999999999994
+    })
+
+    setupAvailableMocks({
+      coupons: [{
+        coupon_id: 'cp-edge', expire_at: '2027-12-31', template_id: 'tpl-1',
+        name: '满499.5减10', coupon_type: '现金券', discount_value: '10',
+        min_spend: '499.5', max_discount: null,
+        applicable_category_ids: null, applicable_store_ids: null, description: '',
+      }],
+    })
+
+    await couponRoutes.available(ctx)
+    // 归一化后 Math.round(499.4999... * 100) / 100 = 499.5，通过 +0.001 兜底
+    expect(ctx.result.coupons).toHaveLength(1)
+  })
+
+  test('min_spend 多行累加浮点：3 行 (99.9, 99.9, 99.9) + minSpend=299.70 → 可用', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      storeId: 'store-001',
+      items: [
+        { skuId: 'sku-1', quantity: 1, amount: 99.9 },
+        { skuId: 'sku-2', quantity: 1, amount: 99.9 },
+        { skuId: 'sku-3', quantity: 1, amount: 99.9 },
+      ],
+    })
+
+    // 3 行 category 各不相同
+    pg.query.mockResolvedValueOnce([{ user_id: 'client-001' }]) // 查找顾客
+    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })    // 过期清扫
+    pg.query.mockResolvedValueOnce([{                            // 券查询
+      coupon_id: 'cp-edge', expire_at: '2027-12-31', template_id: 'tpl-1',
+      name: '满299.7减10', coupon_type: '现金券', discount_value: '10',
+      min_spend: '299.7', max_discount: null,
+      applicable_category_ids: null, applicable_store_ids: null, description: '',
+    }])
+    pg.query.mockResolvedValueOnce([                             // SKU category
+      { sku_id: 'sku-1', category_id: 'cat-1' },
+      { sku_id: 'sku-2', category_id: 'cat-2' },
+      { sku_id: 'sku-3', category_id: 'cat-3' },
+    ])
+
+    await couponRoutes.available(ctx)
+    // 99.9 + 99.9 + 99.9 = 299.70000000000005（JS 浮点）
+    // 归一化 Math.round(299.70000000000005 * 100) / 100 = 299.70
+    // 299.70 + 0.001 >= 299.70 → 可用
+    expect(ctx.result.coupons).toHaveLength(1)
+  })
+
   test('通过 storeName 解析 storeId', async () => {
     const ctx = createManagerCtx(
       {

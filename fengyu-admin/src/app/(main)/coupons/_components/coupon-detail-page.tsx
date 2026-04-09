@@ -10,6 +10,7 @@ import { Select } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
+import { Tooltip } from "@/components/ui/tooltip"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Pagination } from "@/components/ui/pagination"
@@ -449,7 +450,18 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">最低消费</label>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-sm font-medium">最低消费</label>
+                  <Tooltip
+                    side="top"
+                    wide
+                    content='门槛基数 = "符合适用分类的商品行小计"，而非全单总额。例：品类=护理项目 + 最低消费 500，顾客必须购买护理类商品金额 ≥ 500 才能使用本券，美甲等其他分类不计入门槛。若不限品类则退化为全单小计。'
+                  >
+                    <span className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-[var(--border)] text-[10px] text-[var(--muted-foreground)]">
+                      ?
+                    </span>
+                  </Tooltip>
+                </div>
                 <Input
                   type="number"
                   placeholder="0 表示无门槛"

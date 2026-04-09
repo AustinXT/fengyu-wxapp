@@ -398,7 +398,7 @@
 | `name` | text | 券名称，NOT NULL |
 | `coupon_type` | coupon_type enum | `现金券` / `项目券` / `折扣券`，NOT NULL |
 | `discount_value` | numeric(10,2) | 现金券/项目券=抵扣金额；折扣券=折扣率（0.85=85折），NOT NULL |
-| `min_spend` | numeric(10,2) | 满减门槛（0=无门槛），DEFAULT 0 |
+| `min_spend` | numeric(10,2) | 满减门槛（0=无门槛），DEFAULT 0。**基数口径见下方说明** |
 | `max_discount` | numeric(10,2) \| null | 折扣券封顶金额 |
 | `total_count` | integer \| null | 发放总量限制（null=不限量） |
 | `applicable_product_ids` | text[] \| null | 适用商品ID数组（→ products.product_id），NULL=全部 |
@@ -409,6 +409,8 @@
 | `valid_days` | integer \| null | days 模式：领取后有效天数 |
 | `description` | text \| null | 券描述 |
 | `is_active` | boolean | DEFAULT true |
+
+**满减门槛口径（2026-04-10 审计确认）**：`min_spend` 判据基数为"**符合 `applicable_category_ids` 的商品行小计**"，**非订单全单总额**。若券无品类限制（`applicable_category_ids` 为 NULL 或 `[]`），则退化为全单小计。比较时需做分单位归一化（`Math.round(x * 100) / 100`）+ `eligibleTotal + 0.001 < minSpend` 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动（如 499.99 / 500.00 / 99.9×5 = 499.4999...）。四端实现必须口径一致：`clientApi/routes/coupon.js` available、`staffApi/routes/coupon.js` available、`clientApi/routes/order.js` create、`staffApi/routes/order.js` create。
 
 ### 2.19 user_coupons（用户券实例）
 

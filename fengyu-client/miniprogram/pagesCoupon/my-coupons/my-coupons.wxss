@@ -106,6 +106,12 @@ page {
   margin-top: 4rpx;
 }
 
+.coupon-card__hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  margin-top: 4rpx;
+}
+
 .coupon-card__tag {
   align-self: flex-start;
   margin-top: 4rpx;

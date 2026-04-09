@@ -102,11 +102,14 @@ async function available(ctx) {
     }
     if (eligibleItems.length === 0) continue
 
-    const eligibleTotal = eligibleItems.reduce(
+    // 满减门槛（归一化到分 + 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动）
+    const eligibleTotalRaw = eligibleItems.reduce(
       (sum, i) => sum + Number(i.amount || 0), 0
     )
-    const minSpend = Number(coupon.min_spend) || 0
-    if (eligibleTotal < minSpend) continue
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
+    const minSpend = Math.round((Number(coupon.min_spend) || 0) * 100) / 100
+    // +0.001 兜底 JS 浮点累计误差（仅用于门槛判断，分摊/显示仍精确到分）
+    if (eligibleTotal + 0.001 < minSpend) continue
 
     let discount = 0
     if (coupon.coupon_type === '现金券' || coupon.coupon_type === '品项券') {

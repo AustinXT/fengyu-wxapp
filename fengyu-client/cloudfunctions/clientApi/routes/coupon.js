@@ -66,6 +66,22 @@ async function list(ctx) {
     for (const r of storeRows) storeNameMap[r.store_id] = r.store_name
   }
 
+  // 查询适用品类名称（批量，复用 storeNameMap 模式）
+  const categoryIds = new Set()
+  for (const c of coupons) {
+    if (c.applicable_category_ids) {
+      for (const id of c.applicable_category_ids) categoryIds.add(id)
+    }
+  }
+  let categoryNameMap = {}
+  if (categoryIds.size > 0) {
+    const catRows = await pg.query(
+      'SELECT category_id, category_name FROM product_categories WHERE category_id = ANY($1)',
+      [Array.from(categoryIds)]
+    )
+    for (const r of catRows) categoryNameMap[r.category_id] = r.category_name
+  }
+
   ctx.result = {
     coupons: coupons.map(c => ({
       couponId: c.coupon_id,
@@ -80,6 +96,9 @@ async function list(ctx) {
       description: c.description,
       applicableStoreNames: c.applicable_store_ids
         ? c.applicable_store_ids.map(id => storeNameMap[id] || id)
+        : null,
+      applicableCategoryNames: c.applicable_category_ids
+        ? c.applicable_category_ids.map(id => categoryNameMap[id] || id)
         : null,
     }))
   }
@@ -167,12 +186,14 @@ async function available(ctx) {
     }
     if (eligibleItems.length === 0) continue
 
-    // 满减门槛
-    const eligibleTotal = eligibleItems.reduce(
+    // 满减门槛（归一化到分 + 浮点兜底，避免 JS 浮点 + PG numeric 边界抖动）
+    const eligibleTotalRaw = eligibleItems.reduce(
       (sum, i) => sum + Number(i.amount || 0), 0
     )
-    const minSpend = Number(coupon.min_spend) || 0
-    if (eligibleTotal < minSpend) continue
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
+    const minSpend = Math.round((Number(coupon.min_spend) || 0) * 100) / 100
+    // +0.001 兜底 JS 浮点累计误差（仅用于门槛判断，分摊/显示仍精确到分）
+    if (eligibleTotal + 0.001 < minSpend) continue
 
     // 计算可抵扣金额
     let discount = 0

@@ -74,6 +74,7 @@ module.exports.slice = function(s, start, end) { return s ? s.slice(start, end) 
         <block wx:else>有效期至 {{item.expireAtFmt}}</block>
       </text>
       <text class="coupon-card__desc" wx:if="{{item.description}}">{{item.description}}</text>
+      <text class="coupon-card__hint" wx:if="{{item.minSpendHint}}">{{item.minSpendHint}}</text>
       <van-tag wx:if="{{item.minSpendNum > 0}}" plain color="#C9986A" custom-class="coupon-card__tag">
         满{{item.minSpendNum}}可用
       </van-tag>

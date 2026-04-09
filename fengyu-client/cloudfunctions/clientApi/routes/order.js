@@ -281,9 +281,11 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
     }
 
-    const eligibleTotal = eligibleItems.reduce((s, d) => s + d.saleAmount, 0)
-    const minSpend = Number(couponInfo.min_spend) || 0
-    if (eligibleTotal < minSpend) {
+    // 满减门槛（归一化到分 + 浮点兜底，与 coupon.available 保持一致）
+    const eligibleTotalRaw = eligibleItems.reduce((s, d) => s + d.saleAmount, 0)
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
+    const minSpend = Math.round((Number(couponInfo.min_spend) || 0) * 100) / 100
+    if (eligibleTotal + 0.001 < minSpend) {
       throw new Error(`INVALID_PARAMS: 未满足使用条件（满${minSpend}可用）`)
     }
 

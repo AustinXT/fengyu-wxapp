@@ -67,6 +67,14 @@ export async function getAvailableCoupons(
   const session = await getSession()
   requirePermission(session, 'sale_order:create')
 
+  // 防御性强制数值化：避免外部调用方透传字符串导致 PG 隐式 cast 边界抖动
+  // 并归一化到分，与 client/staff coupon.available / order.create 对齐
+  const totalRaw = Number(totalAmount)
+  if (!Number.isFinite(totalRaw) || totalRaw < 0) {
+    throw new Error('INVALID_PARAMS: totalAmount 参数非法')
+  }
+  const total = Math.round(totalRaw * 100) / 100
+
   const storeCondition = storeId
     ? or(
         isNull(couponTemplates.applicableStoreIds),
@@ -115,14 +123,14 @@ export async function getAvailableCoupons(
       eq(userCoupons.status, '未使用'),
       gt(userCoupons.expireAt, new Date()),
       eq(couponTemplates.isActive, true),
-      lte(sql`COALESCE(${couponTemplates.minSpend}, '0')::numeric`, totalAmount),
+      lte(sql`COALESCE(${couponTemplates.minSpend}, '0')::numeric`, total),
       storeCondition,
       marketCondition,
     ))
     .orderBy(userCoupons.expireAt)
 
   return rows.map((r) => {
-    const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, totalAmount)
+    const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, total)
     return {
       couponId: r.couponId,
       templateId: r.templateId,
