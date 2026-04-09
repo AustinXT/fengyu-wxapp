@@ -22,11 +22,11 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
-    // 系统管理（权限/日志/配置）
+    // 系统管理（权限/日志/消息/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
-
     'operation_log:list',
     'point_transaction:list',
+    'message:list', 'message:delete',
     'system:config',
     // admin 不碰业务数据（订单/分配/服务/预约）和顾客
   ],
@@ -40,6 +40,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'service:list', 'service:create', 'service:update',
     'appointment:list', 'appointment:confirm', 'appointment:checkin',
     'point_transaction:list',
+    'pickup_record:list',
     'data_center:dashboard',
     'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
   ],
@@ -49,6 +50,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'allocation:list',
     'customer:list',
     'point_transaction:list',
+    'pickup_record:list',
     'data_center:dashboard',
   ],
   hr: [

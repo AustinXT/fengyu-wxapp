@@ -9,6 +9,7 @@ import {
   Store,
   Users,
   Package,
+  PackageCheck,
   ShoppingBag,
   Grid3x3,
   UserRound,
@@ -16,7 +17,7 @@ import {
   BarChart3,
   Shield,
   Coins,
-
+  MessageSquare,
   ScrollText,
   Settings,
   Unlink,
@@ -52,6 +53,7 @@ export const MENU_CONFIG: MenuGroup[] = [
       { label: '营业额分配', icon: PieChart, href: '/allocations', requiredRoles: ['manager'], readonlyRoles: ['finance'] },
       { label: '服务单管理', icon: Stethoscope, href: '/services', requiredRoles: ['manager'] },
       { label: '预约管理', icon: CalendarCheck, href: '/appointments', requiredRoles: ['manager'] },
+      { label: '提货记录', icon: PackageCheck, href: '/pickup-records', requiredRoles: ['manager'], readonlyRoles: ['finance'] },
       { label: '门店解绑', icon: Unlink, href: '/store-unbind', requiredRoles: ['manager'] },
     ],
   },
@@ -79,7 +81,7 @@ export const MENU_CONFIG: MenuGroup[] = [
     label: '系统管理',
     items: [
       { label: '权限管理', icon: Shield, href: '/permissions', requiredRoles: ['admin', 'hr'] },
-
+      { label: '消息中心', icon: MessageSquare, href: '/messages', requiredRoles: ['admin'] },
       { label: '操作日志', icon: ScrollText, href: '/logs', requiredRoles: ['admin'] },
       { label: '系统配置', icon: Settings, href: '/settings', requiredRoles: ['admin'] },
     ],
