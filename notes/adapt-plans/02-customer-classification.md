@@ -110,19 +110,92 @@ ELSE '休眠'
 
 ### 1.5 顾客类型 (customer_type) 重算（当前规则）
 
-文件 `fengyu-staff/cloudfunctions/staffApi/routes/order.js:54-124`（同 `fengyu-client/cloudfunctions/payNotify/index.js:137-198`）
+文件 `fengyu-staff/cloudfunctions/staffApi/routes/order.js:59-124`（镜像实现 `fengyu-client/cloudfunctions/payNotify/index.js:137-198`，两处 CASE 字符串逐字节一致）
 
 ```sql
 SELECT CASE
-  WHEN EXISTS (销售单 total_amount >= threshold 或 含回款单合计 >= threshold) THEN '会员客'
-  WHEN EXISTS (销售单) THEN '小美客'
-  WHEN EXISTS (销售单) THEN '体验客'  -- ⚠ 死分支！条件与'小美客'完全相同
-  ELSE '流量客'
+  WHEN EXISTS (                              -- ① 会员客
+    SELECT 1 FROM sale_orders o
+    WHERE o.client_user_id = $1
+      AND o.status IN ('已支付','已完成')
+      AND o.sale_order_type = '销售单'
+      AND (
+        o.total_amount >= $2
+        OR (o.total_amount + COALESCE((
+          SELECT SUM(r.total_amount)
+          FROM sale_orders r
+          WHERE r.ref_sale_order_id = o.sale_order_id
+            AND r.sale_order_type = '回款单'
+            AND r.status IN ('已支付','已完成')
+        ), 0)) >= $2
+      )
+  ) THEN '会员客'
+  WHEN EXISTS (                              -- ② 小美客
+    SELECT 1 FROM sale_orders
+    WHERE client_user_id = $1
+      AND status IN ('已支付','已完成')
+      AND sale_order_type = '销售单'
+  ) THEN '小美客'
+  WHEN EXISTS (                              -- ③ 体验客 ⚠ 与 ② WHERE 子句字节级相同
+    SELECT 1 FROM sale_orders
+    WHERE client_user_id = $1
+      AND status IN ('已支付','已完成')
+      AND sale_order_type = '销售单'
+  ) THEN '体验客'
+  ELSE '流量客'                              -- ④
 END
 ```
 
-**关键发现：bug — "体验客"分支永远不可达**
-line 92-103 的"小美客"和"体验客"WHEN 条件完全相同，逻辑短路后只会命中前者，永远不会返回"体验客"。这是一个潜在 bug，在本次需求变更中会被一次性修复（新设计不再区分"小美客"）。
+#### ❗ Bug：`recalcCustomerType` 死分支 — "体验客"永远不可达
+
+**位置**
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:92-103`（`recalcCustomerType` 函数内）
+- `fengyu-client/cloudfunctions/payNotify/index.js:166-177`（支付回调重算镜像）
+
+**症状**
+上述 SQL 中分支 ② "小美客" 与 ③ "体验客" 的 `WHEN EXISTS (...)` 子查询**逐字符相同**（同一张 `sale_orders` 表、同一组谓词 `client_user_id=$1 / status IN ('已支付','已完成') / sale_order_type='销售单'`）。按 PG CASE 的短路求值语义（第一个返回 TRUE 的 WHEN 即终止后续分支计算），真实可达的执行路径仅三条：
+
+| 顾客状态 | 命中分支 | 返回值 |
+|---------|---------|--------|
+| 有销售单 且 ① 达阈值判定 TRUE | ① | `'会员客'` |
+| 有销售单 且 ① 达阈值判定 FALSE | ② | `'小美客'` |
+| 无任何已支付销售单 | ④ | `'流量客'` |
+
+**分支 ③ 在任何输入下都不可能返回** — 因为只要 ③ 的 EXISTS 为 TRUE，② 必然已经为 TRUE 并提前短路；只要 ② 为 FALSE，③ 以相同谓词也必然为 FALSE。这是教科书式的 dead code。
+
+**根因溯源**
+Migration `db/migrations/0022_customer_type.sql:3-6` 的原始设计按 `sale_order_type` 区分两类客：
+```
+-- 体验客：售前体验卡68/99/线上体验等（体验单）
+-- 小美客：单笔消费 < 1990 元（普通单）
+```
+当时 `sale_order_type` 枚举包含 `'体验单'`，③ 分支应当是 `sale_order_type = '体验单'`。随后 commit `538bf4f refactor(staff): 适配 product_kind + sale_order_type 枚举重构` 把 `sale_order_type` 精简到现在的 5 值 `销售单/内部单/回款单/转换单/退款单`（见 migrations 0028-0031），**'体验单' 枚举值被删除**。重构时 `recalcCustomerType` 中 ③ 分支的 `'体验单'` 字符串被批量 find-replace 成 `'销售单'`，没人重新审视语义，结果与 ② 变得同构。重构清单里也没有"体验客判定"条目，所以评审时漏过。
+
+**可观测影响**
+
+1. **枚举值成僵尸值**
+   `customer_type = '体验客'` 不再有任何运行时生产者。`db/schema/enums.ts:64` 保留该枚举值仅供 admin 手工更新或 v0.x 历史数据回溯使用；新项目零使用（no-legacy-compat 反馈适用，无存量需兜底）。
+
+2. **Admin 筛选恒空**
+   `fengyu-admin/src/app/(main)/customers/_components/customers-page.tsx:186` 硬编码 `CUSTOMER_TYPES = ["流量客","体验客","小美客","会员客"]`，用户在后台筛选"体验客"时结果集永远为空，是 silent UX 缺陷。
+
+3. **"只升不降"排序的二次保险让 bug 无法被外部绕过**
+   `order.js:114-121` 与 `payNotify/index.js:188-195` 的升级排序表是 `流量客=0 < 体验客=1 < 小美客=2 < 会员客=3`。即使 DBA 或 admin 手工把某顾客 `customer_type` 直改为 `'体验客'`，只要该顾客下一次触发 `recalcCustomerType`（店长开单或微信支付回调），新算出来的值必定 ∈ {会员客, 小美客, 流量客}。命中"小美客"时因 2 > 1 升级成功，"体验客"被覆盖；命中"流量客"时因 0 < 1 升级失败 — 但这属于 "有销售单却降级为流量客" 的逻辑矛盾（说明顾客本来就不该是体验客）。结论：**死分支 + 单向排序 = `'体验客'` 无法长期存续**。
+
+4. **双处镜像**
+   同一段 SQL 以拷贝粘贴的方式同时存在于 `staffApi/routes/order.js`（店长开单路径）和 `clientApi/payNotify/index.js`（微信支付回调路径）。任何修复必须两处同时进行；本次 §5.2 变更 3 重写 `recalcCustomerType` 时应把逻辑抽到共享 util（或至少加显式 "镜像于 payNotify/index.js:L 的 P" 注释）避免下次再漂移。
+
+**附加语义漂移（非 dead branch，一并记录）**
+Migration 0022 注释声明"单笔消费 >= 1990 → 会员客"，但分支 ① 的 SQL 计算的是 `o.total_amount + SUM(回款单 total_amount)`，即"销售单本身金额 + 其对应回款单累计"，实质是"订单款清总额"而非"单笔"。这个漂移同样是 538bf4f 前后迭代累积的结果。会议 §2.1 明确"历史累计或单笔消费 ≥ 1990 元"，目前 ① 分支的语义（按单张销售单的订单款清口径）**部分对齐**会议但仍非"历史累计"（累计应是该顾客所有销售单 SUM，而代码只把单张销售单与其回款单相加）。本次变更 3 已计划改为 `SUM(total_amount)` 全累计口径，一并纠正。
+
+**结论：不要再把 migration 0022 的注释当作权威**。权威语义以会议 §2.1 + 变更 3 新 SQL 为准，migration 注释仅供历史追溯。
+
+**修复归属**
+本 bug 不单独发 fix；§5.2 变更 3 重写 `recalcCustomerType` 时：
+- 删除 `'小美客'` 分支（连同枚举）
+- "体验客" 判定改为 `EXISTS (JOIN products ON p.product_kind='体验卡')`
+- 死分支自然消除
+- `payNotify/index.js` 镜像作为变更 3 的同步项一并 patch
 
 **阈值来源**：`system_configs.new_member_threshold` (默认 1990) — 代码中写死回落值 1990，但 dashboard 的 newMembers 指标硬编码 `o.total_amount >= 1980`（`staff.js:676`），阈值两处不一致。
 

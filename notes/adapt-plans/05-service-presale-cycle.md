@@ -70,7 +70,60 @@
 | `fengyu-staff/cloudfunctions/staffApi/routes/service.js` | 200 | `const isPresale = false // 体验单已合并为销售单，无法区分` |
 | `fengyu-admin/src/actions/services.ts` | 491 | `isPresale: false, // TODO: 体验单已合并入销售单，需另行判断售前/售后` |
 
-换句话说：子项级字段**存在但从未被真正写入有效值**。查询端（list/detail）读出来的 `is_presale` 永远是 `false`，WXML/TSX 展示的"售后"徽章是按 `!isPresale` 反推出来的误判。
+**🐛 Bug 细化描述**
+
+| 属性 | 内容 |
+|------|------|
+| **类型** | 数据正确性 Bug（写入错误 → 前端展示系统性误导） |
+| **严重度** | 中 — 不影响资金/权限/扣次，但"售前/售后"是服务单对账时的关键口径，当前整个列是**死数据** |
+| **状态** | 已知缺陷，两处写入路径均保留 TODO 注释待修复 |
+
+**1. 错误行为**
+
+`service_items.is_presale` 列在数据库中**存在但从未被写入有效值**：
+
+- `fengyu-staff/cloudfunctions/staffApi/routes/service.js:200` — `const isPresale = false // 体验单已合并为销售单，无法区分`
+- `fengyu-admin/src/actions/services.ts:491` — `isPresale: false, // TODO: 体验单已合并入销售单，需另行判断售前/售后`
+
+两个服务单创建入口（员工端云函数 + 管理后台 Server Action）**一律写 `false`**。上方的 SELECT（`service.js:191-197`、`services.ts:469-480`）虽然已经 JOIN 到了 `sale_orders`，但没有任何可靠字段能区分售前/售后，开发者只能挂 TODO 跳过判定。
+
+**2. 数据流及影响面**
+
+```
+创建 → INSERT service_items (is_presale = false)        ← 写入端硬编码
+  ↓
+查询 → SELECT si.* (list / detail)                        ← 透传 false
+  ↓
+前端 → 三处 UI 按 isPresale 二值渲染徽章                   ← 一律显示"售后"
+```
+
+受影响的 UI 渲染位置（全部基于 `item.isPresale ? '售前' : '售后'`）：
+
+| 渲染位置 | 行为 |
+|---------|------|
+| `fengyu-staff/miniprogram/pages/service/service.wxml:60` | 护理 Tab 服务单列表每行徽章 |
+| `fengyu-staff/miniprogram/packageService/service-detail/service-detail.wxml:35` | 员工端服务单详情每条明细徽章 |
+| `fengyu-admin/src/app/(main)/services/_components/service-detail-page.tsx:113-116` | 管理后台服务单详情表格"售前/售后"列（Badge 配色 `bg-[#E8F0FE] text-[#3574C4]`） |
+
+**观察症状**：生产/测试环境中打开任意服务单，明细列的徽章**100% 显示"售后"**——不存在任何"售前"数据。即便是非会员客买的售前定金类产品，明细仍标记为售后，徽章与实际业务状态完全脱节。
+
+**3. 引入时机与根因**
+
+- **migration 0014** 首次新增 `service_items.is_presale` 字段，原设计依赖 `sale_orders.sale_order_type === '体验'` 推断（schema 注释仍保留此说明，见 `db/schema/service.ts:62`）。
+- **migration 0028-0031** 精简 `sale_order_type` 枚举到 `[销售单/内部单/回款单/转换单/退款单]` 时删除了 `'体验'` 值 → 原推断条件彻底失效。
+- 开发者当时把写入路径改为 `false` 并挂 TODO（两端同步保留），此后再无人补齐。
+
+**根因**：售前/售后的**承载层错位**——它本就应该在 `sale_items` 级别打快照（开单时机确定），而不是在服务明细层再次推断。服务明细应该**纯粹继承** `sale_items.document_type`，而该列当前尚不存在（见阶段 A2 新增计划）。
+
+**4. 修复路径**
+
+- **前置条件**：阶段 A2 落地 `sale_items.document_type` 列并回填历史数据
+- **修复动作**：阶段 B1/B2 将两处 `isPresale = false` 改为从 SELECT 结果中读取 `sale_items.document_type === '售前'`（具体 patch 见 §B2 的两端代码示例）
+- **验证锚点**：grep 两处 TODO 注释文本（`体验单已合并为销售单` / `体验单已合并入销售单`）确认已全部清除
+- **回归要点**：
+  1. 创建服务单后 SELECT `service_items`，断言 `is_presale` 与关联 `sale_items.document_type` 严格一致
+  2. 前端徽章能出现"售前"分支，staff `--presale` 样式和 admin `bg-[#FFF0EE] text-[#C45C48]` 配色真正被触发
+- **历史数据**：根据 `feedback_no_legacy_compat`（开发阶段无历史兼容要求）可选择不回填，只保证增量正确；若要回填参考 §6.5 的 SQL
 
 **1980/1990 硬编码清单**
 

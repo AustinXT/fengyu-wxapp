@@ -250,6 +250,215 @@ totalAmount, isVoid, voidedAt
 - 已存在页面（`fengyu-staff/miniprogram/packageOrder/staff-performance/staff-performance.ts`）
 - 绩效明细表按 `salesCategory` 分组汇总 — **新枚举值切换后该页面所有标签都会错位**
 
+### 2.5 关键 Bug 深度解析 — performanceDetail 服务提成口径错误
+
+**严重性**: 高 — 员工在绩效明细页看到虚高的"服务提成"数字，与实际工资单强烈不一致，直接破坏团队信任；`totalCommission` 汇总字段基于错误加总，任何依赖该字段的上游看板/报表都被污染。
+
+**Bug 一句话概括**: `performanceDetail` 用 `unit_real_price × session_used`（= **消耗业绩金额**，即"这位员工今天消耗掉了多少客户已付的服务卡次数金额"）当成了"服务提成"累加返回。前者是**业绩口径**（衡量劳动负荷/业务量），后者是**薪资口径**（固定手工费 + 消耗比例），两者数值差可达 3-5 倍。
+
+#### 2.5.1 Bug 精确定位（一次计算错误，6 处耦合暴露）
+
+文件: `fengyu-staff/cloudfunctions/staffApi/routes/staff.js`（`performanceDetail` 函数内）
+
+| # | 行号 | 代码 | 角色 |
+|---|------|------|------|
+| 1 | L474 | `sit.unit_real_price AS service_price` | SELECT 别名把"销售快照单价"起名为"service_price"，为下游误读埋雷 |
+| 2 | L498 | `let totalServiceFee = 0` | 累加器命名暗示"服务费/手工费"，对外输出时被误解为"服务提成" |
+| 3 | L509 | `const fee = Number(r.service_price) * (r.session_used || 1)` | 公式本身：**单价 × 使用次数 = 消耗业绩金额**，不是提成 |
+| 4 | L510 / L513 | `totalServiceFee += fee` / `categorySummary[cat].service += fee` | 错误值被累加进"总服务提成"和"按分类服务提成"两个汇总字段 |
+| 5 | L537 | `amount: Number(r.service_price) * (r.session_used || 1)` | serviceItems 明细列表中每条记录的 `amount` 字段（前端列表直接渲染） |
+| 6 | L558 | `totalServiceFee: Math.round(totalServiceFee * 100) / 100` | 返回字段命名直接把错误语义暴露给前端 |
+| 7 | L559 | `totalCommission: ...(totalSalesAlloc + totalServiceFee)` | 总提成 = 销售提成 + **消耗金额**（应为 + 服务提成），结构性错误 |
+
+#### 2.5.2 数值对照（示例）
+
+假设员工 A 本月完成 10 次"面部护理"服务，每次：
+- `sale_items.unit_real_price` = 500（单次售价快照）
+- `sale_items.service_fee` = 80（固定手工费，**Phase 1.2 新增的快照列**）
+- 对应 commission_rate_matrix 消耗提成比例 = 10%
+- `session_used` = 1
+
+| 指标 | 正确口径 | 当前 `performanceDetail` 返回 | 偏差 |
+|------|---------|------------------------------|------|
+| 固定手工费 | 80 × 10 = **800** | — | — |
+| 消耗提成 | 500 × 10 × 0.10 = **500** | — | — |
+| **应得服务提成** | **1300** | — | — |
+| **totalServiceFee** 返回值 | — | 500 × 10 = **5000** | **+3700（+285%）** |
+| categorySummary.护理.service | 1300 | 5000 | +3700 |
+| totalCommission（销售 0 + 服务） | 1300 | 5000 | +3700 |
+
+**实质危害**: 员工看到 "本月服务提成 ¥5000"，实际到手只有 ¥1300 — 4 倍差距。每月 1 号财务发薪时爆发矛盾。
+
+#### 2.5.3 根因拆解（为何当初会写成这样）
+
+1. **历史占位**: 函数编写时 `service_commissions` 表虽已建好，但运行时零写入（唯一写入来源是迁移脚本 `db/scripts/migrate-presale-services.js`），作者**没有 Ground Truth 可读**，只能用 `service_items` 现有字段凑一个"近似值"，选了 `unit_real_price × session_used` 作为临时占位。
+2. **命名漂移**: SELECT 里写 `sit.unit_real_price AS service_price`，掩盖了字段的真实语义（销售单价快照）。下游看到 `service_price * session_used`，直觉理解为"服务费总额"，实际是消耗业绩金额。
+3. **快照缺失**: 当时 `sale_items` 还没有 `service_fee` 快照列（Phase 1.2 待加），作者即便想按 "固定手工费 + 消耗比例" 正确计算也做不到（product_skus.service_fee 修改后历史无法回溯）。
+4. **占位变产品**: 对外返回字段名直接叫 `totalServiceFee`（而非 `totalServiceConsumedAmount`），前端也就这样展示 — 占位逻辑永久化为 API 契约。
+
+#### 2.5.4 同类错误检索结果（核查其他 3 个读服务数据的位置）
+
+| 位置 | 行号 | 是否有相同错误 | 结论 |
+|------|------|---------------|------|
+| `staff.js` todayCommission | L146-233 | 否 | 仅查 `sale_allocations`，**未覆盖服务维度**（见 §3 差异表第 11 行）。不是本 Bug，但是"口径缺失"，需要 Phase 2.6 补 |
+| `staff.js` monthlyCalendar | L238-306 | 否 | 同上，仅 sale_allocations，无服务提成聚合 |
+| `staff.js` dashboard.consume | L573-693 | **不是 Bug** | 这里 `unit_real_price × session_used` 作为 `consume` 指标 — **语义正确**：consume 本就是"消耗业绩金额"，命名匹配用途。**修复时不要误删 dashboard 的计算** |
+| `staff-performance.ts/wxml` | 前端 | 无二次计算 | 直接接收 `totalServiceFee` 并渲染。修复后端 = 修复前端展示，但字段重命名时前端需同步 |
+
+**结论**: 本 Bug **只在 performanceDetail 内部**，修复范围限定在 staff.js 约 60 行代码 + staff-performance 前端字段名。
+
+#### 2.5.5 修复依赖（按顺序完成前置项）
+
+修复本 Bug 需要先落地以下 Phase 条目：
+
+- **(A)** Phase 1.2 — `sale_items` 新增 `service_fee` 快照列
+- **(B)** Phase 1.4 — `service_commissions` 新增 `fixed_fee` / `consume_amount` 两列
+- **(C)** Phase 2.1 — `order.create` 等 5 处 INSERT 写入 service_fee 快照
+- **(D)** Phase 2.5 — `service.complete` 自动写入 `service_commissions`（含 fixed_fee + consume_amount + commission_amount）
+
+**无 A-D 则本 Bug 无法根治**（只能走 §2.5.7 临时方案）。
+
+#### 2.5.6 根治修复步骤
+
+1. **重写 svcRows 查询**（L472-494），数据源切换到 `service_commissions`：
+
+```sql
+SELECT
+  sc.commission_amount,
+  sc.fixed_fee,
+  sc.consume_amount,
+  sc.role_type,
+  sit.session_used,
+  sit.unit_real_price AS service_unit_price,  -- 保留供前端参考，但不参与提成计算
+  si.product_name,
+  si.sku_spec_name,
+  si.sales_category,
+  so.service_order_id,
+  so.service_date,
+  so.store_id,
+  cu.name AS customer_name,
+  cu.phone AS client_phone
+FROM service_commissions sc
+JOIN service_items sit ON sit.service_item_id = sc.service_item_id
+JOIN service_orders so ON so.service_order_id = sit.service_order_id
+JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
+WHERE sc.employee_id = $1
+  AND sc.is_void = false
+  AND so.status = '已完成'
+  AND so.service_date >= $2
+  AND so.service_date <= $3
+  ${svcWhere}
+ORDER BY so.service_date DESC
+```
+
+2. **重写累加逻辑**（L497-514）：
+
+```js
+let totalSalesAlloc = 0
+let totalServiceCommission = 0   // 重命名：不再是 totalServiceFee
+const categorySummary = {}
+
+for (const r of allocRows) {
+  totalSalesAlloc += Number(r.alloc_amount)
+  const cat = r.sales_category || '未分类'
+  if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
+  categorySummary[cat].sales += Number(r.alloc_amount)
+}
+
+for (const r of svcRows) {
+  const amount = Number(r.commission_amount)  // ← 从 service_commissions 读
+  totalServiceCommission += amount
+  const cat = r.sales_category || '未分类'
+  if (!categorySummary[cat]) categorySummary[cat] = { sales: 0, service: 0 }
+  categorySummary[cat].service += amount
+}
+```
+
+3. **重写 serviceItems 映射**（L532-544）：
+
+```js
+const serviceItems = svcRows.map(r => ({
+  type: 'service',
+  productName: r.product_name,
+  specName: r.sku_spec_name,
+  salesCategory: r.sales_category,
+  roleType: r.role_type,                        // 新增：标明该条是哪个角色的提成
+  amount: Number(r.commission_amount),          // 不再是 unit_real_price × session_used
+  fixedFee: Number(r.fixed_fee),                // 新增：供前端拆分展示
+  consumeAmount: Number(r.consume_amount),      // 新增：供前端拆分展示
+  sessionUsed: r.session_used,
+  servicePrice: Number(r.service_unit_price),   // 保留：用户想知道"单次卡价"还是可以看
+  customerName: r.customer_name,
+  clientPhone: r.client_phone,
+  orderId: r.service_order_id,
+  date: r.service_date,
+}))
+```
+
+4. **重命名返回字段**（L556-565）：
+
+```js
+ctx.result = {
+  totalSalesAlloc: Math.round(totalSalesAlloc * 100) / 100,
+  totalServiceCommission: Math.round(totalServiceCommission * 100) / 100,  // ← 重命名
+  totalCommission: Math.round((totalSalesAlloc + totalServiceCommission) * 100) / 100,
+  categorySummary,
+  items: paged,
+  total: allItems.length,
+  page,
+  pageSize,
+}
+```
+
+5. **前端同步**: `fengyu-staff/miniprogram/packageOrder/staff-performance/staff-performance.ts` 把读 `totalServiceFee` 的地方改为 `totalServiceCommission`；wxml 的展示文案"服务费"改"服务提成"；可选展示 `fixedFee / consumeAmount` 拆分 cell 提升透明度（例："固定手工费 ¥80 + 消耗提成 ¥50 = ¥130"）。
+
+#### 2.5.7 临时缓解方案（若 Phase 2.5 暂不能落地）
+
+如果 `service.complete` 自动写入 `service_commissions` 这一步因其他依赖推迟，业务方仍希望先修复展示错误，有三个临时选项：
+
+| 选项 | 做法 | 优点 | 缺点 |
+|------|------|------|------|
+| **A（推荐）** | performanceDetail 内部"**实时重算**"：`fixed_fee = sale_items.service_fee × session_used`（依赖 Phase 1.2），`consume_amount = unit_real_price × session_used × lookupRate(roleType, salesCategory, unit_real_price)`，实时查 commission_rate_matrix | 只依赖 Phase 1.2，不依赖 Phase 2.5；业务方能立刻看到正确数值 | 代码重复了 service.complete 的计算逻辑，Phase 2.5 落地后必须立刻切换到 service_commissions 读取，否则就有两份"真相"漂移 |
+| **B** | 把字段 `totalServiceFee` **改名**为 `totalServiceConsumedAmount`（消耗业绩金额），前端文案改"服务消耗业绩"；暂不展示服务提成 | 改动小，语义诚实 | 员工在绩效页看不到"服务提成"，需要等根治方案 |
+| **C** | 直接**删除** svcRows 返回字段，performanceDetail 只返回销售维度 | 改动最小 | 员工看不到服务记录，体验退化 |
+
+**决策**: 选项 A。Phase 1.2 是独立低风险变更，应当优先落地；在 Phase 2.5 未完成前用"实时查矩阵"兜底；Phase 2.5 落地后切换到"直接读 service_commissions"，同时删除临时计算代码（留 TODO 注释标记）。
+
+#### 2.5.8 回归测试用例
+
+**单元测试**（新增在 `fengyu-staff/cloudfunctions/staffApi/__tests__/staff.performanceDetail.test.js`）：
+
+1. **test_service_commission_reads_from_commission_amount** — Mock service_commissions 表 10 行，commission_amount=130，断言 `totalServiceCommission === 1300`，且**不等于** `unit_real_price × session_used × 10 = 5000`
+2. **test_category_summary_service_uses_correct_field** — 断言 `categorySummary['护理项目'].service === 1300`
+3. **test_total_commission_is_additive_of_correct_fields** — 断言 `totalCommission === totalSalesAlloc + totalServiceCommission`
+4. **test_service_items_expose_fixed_fee_and_consume_amount** — 断言 `serviceItems[0]` 包含 `fixedFee` 和 `consumeAmount` 字段，且 `amount === fixedFee + consumeAmount`
+5. **test_void_service_commission_excluded** — 断言 `is_void = true` 的 service_commissions 不计入汇总
+6. **test_cross_category_isolation** — 两个不同 salesCategory 的服务单，categorySummary 分类下的 service 金额互不污染
+7. **test_role_type_exposed_per_row** — serviceItems 每行 `roleType` 字段存在（用于前端显示"美容师/推广师"等）
+
+**E2E 回归**:
+
+- 准备数据：员工完成 2 个不同 salesCategory 的服务单（护理项目 3 次 + 家居产品 2 次），提成矩阵已配置
+- 执行：调 performanceDetail 云函数
+- 断言：
+  - `totalServiceCommission === SUM(service_commissions.commission_amount)`（可用 psql 直接验证）
+  - `categorySummary` 两个分类的 service 分别等于各自 SUM
+  - 前端绩效页展示的"服务提成"数字 = 上述 totalServiceCommission
+
+#### 2.5.9 与 AC-05 的关系
+
+§6 AC-05 原文："员工绩效明细页的'服务提成'金额显示为 `service_commissions.commission_amount`，而非 `unit_real_price × session_used`" —— 即为本 Bug 的验收断言。按 §2.5.6 根治后 AC-05 自动满足。
+
+#### 2.5.10 修复优先级建议
+
+本 Bug 属于**可见性高、危害直接、修复路径清晰**的类型，建议在 Phase 1.2 + Phase 2.5 落地后**作为 Phase 2.6 的第一项**执行（先于 todayCommission / monthlyCalendar 的服务维度补全），原因：
+
+1. 错误数值每天都在给员工看，每多一天就多一份信任损失
+2. 修复范围集中（仅 performanceDetail 一个函数 + 前端一个页面）
+3. 依赖链最短（只需 Phase 1.2 + Phase 2.5，不需要 Phase 1.1 枚举换值落地）
+4. 可以作为 service_commissions 运行时写入正确性的**首个端到端验证点**
+
 ---
 
 ## 3 差异报告
