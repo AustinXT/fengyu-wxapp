@@ -94,6 +94,28 @@ describe('coupon.list', () => {
     expect(ctx.result.coupons[0].applicableCategoryNames).toEqual(['护理项目'])
     expect(ctx.result.coupons[0].applicableStoreNames).toBeNull()
   })
+
+  test('SELECT 真实包含 schema 存在的列（防假阳性 mock）', async () => {
+    // 捕获 list 真实 SELECT SQL：包含合法列、不包含 schema 不存在的列
+    pg.query.mockResolvedValueOnce([]) // 过期清扫
+    pg.query.mockResolvedValueOnce([]) // 券查询（返回空即可，我们关心 SQL 文本）
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    const call = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(call).toBeDefined()
+    // 正向：SELECT 必须真实包含 schema 合法列
+    expect(call[0]).toMatch(/ct\.coupon_type/)
+    expect(call[0]).toMatch(/ct\.discount_value/)
+    expect(call[0]).toMatch(/ct\.min_spend/)
+    // 反向：SELECT 不得出现 schema 不存在的列
+    expect(call[0]).not.toMatch(/redeem_code/)
+    expect(call[0]).not.toMatch(/max_claims/)
+    expect(call[0]).not.toMatch(/claimed_count/)
+  })
 })
 
 describe('coupon.available', () => {
@@ -312,6 +334,31 @@ describe('coupon.available', () => {
 
     // 99.9*3 = 299.70000000000005（JS 浮点）归一化到 299.70 + 0.001 兜底 → 可用
     expect(ctx.result.coupons).toHaveLength(1)
+  })
+
+  test('SELECT 真实包含 schema 存在的列（防假阳性 mock）', async () => {
+    // 捕获 available 真实 SELECT SQL：包含合法列、不包含 schema 不存在的列
+    pg.query.mockResolvedValueOnce([]) // 过期清扫
+    pg.query.mockResolvedValueOnce([]) // 券查询（返回空即可，early return 前 SQL 已被记录）
+
+    const ctx = createBoundCtx({
+      storeId: 'store-001',
+      items: [{ skuId: 'sku-1', quantity: 1, amount: 100 }],
+    })
+    await routes.available(ctx)
+
+    const call = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(call).toBeDefined()
+    // 正向：SELECT 必须真实包含 schema 合法列
+    expect(call[0]).toMatch(/ct\.coupon_type/)
+    expect(call[0]).toMatch(/ct\.discount_value/)
+    expect(call[0]).toMatch(/ct\.min_spend/)
+    // 反向：SELECT 不得出现 schema 不存在的列
+    expect(call[0]).not.toMatch(/redeem_code/)
+    expect(call[0]).not.toMatch(/max_claims/)
+    expect(call[0]).not.toMatch(/claimed_count/)
   })
 })
 
