@@ -89,10 +89,21 @@ WHERE uc.status = '已使用'
 
 ### 2.4 排查执行记录（2026-04-10）
 
-| 排查项 | 命中数 | 结论 |
+**关键发现**：线上存在**两个物理独立的 PG 实例**（cloudbaserc 配置不精确）：
+
+| 实例 | 版本 | 服务对象 | 真实连接（从 `tcb fn detail` 读取） |
+|---|---|---|---|
+| `47.113.202.7:5434/fengyu` | PG 16.11 Alpine | clientApi | `PG_CONNECTION_STRING` |
+| `47.113.202.7:5433/fengyu_wxapp` | PG 16.13 Ubuntu | staffApi | `PG_CONNECTION_STRING` |
+
+> cloudbaserc.json 里 staffApi 写的是 `5434/fengyu_wxapp`——端口错写成 5434 + 库名为 fengyu_wxapp（该组合不存在），线上实际运行环境变量端口是 5433。两处端口错位是遗留配置漂移，非本 ticket 范围，**严禁 `tcb fn deploy --force`** 否则会把坏配置推上去。
+
+#### 两库分别排查结果
+
+| 排查项 | 5434/fengyu（clientApi 库） | 5433/fengyu_wxapp（staffApi 库） |
 |---|---|---|
-| §2.1 clientApi 吞券（Bug A） | **0 行** | 顾客端历史上无已使用折扣券 + `coupon_discount=0` 的订单，无顾客权益被吞实例 |
-| §2.2 staffApi 封顶失效（Bug B） | **0 行** | 无"店长开单 + 折扣券带封顶 + 实扣 > 封顶"记录，无公司少收实例 |
+| §2.1 Bug A 吞券 | **0 行** | **0 行** |
+| §2.2 Bug B 封顶失效 | **0 行** | **0 行** |
 
 **结论**：走 §2.3 的 = 0 分支，**不执行补偿脚本**。Bug A/B 客观存在但历史未触发（折扣券实际使用量尚未让两个缺陷显形）。直接合并代码 + 部署即可。
 
