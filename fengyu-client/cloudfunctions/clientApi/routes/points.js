@@ -1,5 +1,8 @@
 /**
  * 积分模块路由
+ *
+ * 注意：会员等级（钻石等级）由 client_wechat_users.member_level 字段单独维护，
+ * 由 cronTask 每日凌晨3点根据滚动 12 个月消费额重算，与积分系统解耦。
  */
 
 const pg = require('../db/pg')
@@ -10,30 +13,20 @@ const pg = require('../db/pg')
 async function balance(ctx) {
   const { userId } = ctx.auth
 
-  // Get point balance and level
   const rows = await pg.query(`
-    SELECT cp.balance, cp.level_id, ml.name AS level_name, ml.min_points, ml.benefits
-    FROM customer_points cp
-    LEFT JOIN member_levels ml ON cp.level_id = ml.level_id
-    WHERE cp.user_id = $1
+    SELECT
+      COALESCE(cp.balance, 0) AS balance,
+      cwu.member_level AS level_name
+    FROM client_wechat_users cwu
+    LEFT JOIN customer_points cp ON cp.user_id = cwu.user_id
+    WHERE cwu.user_id = $1
   `, [userId])
 
-  // Get next level
-  let nextLevel = null
-  if (rows.length > 0) {
-    const currentBalance = rows[0].balance
-    const nextLevels = await pg.query(
-      'SELECT level_id, name, min_points FROM member_levels WHERE min_points > $1 ORDER BY min_points ASC LIMIT 1',
-      [currentBalance]
-    )
-    if (nextLevels.length > 0) nextLevel = nextLevels[0]
-  }
-
   ctx.result = {
-    balance: rows.length > 0 ? rows[0].balance : 0,
-    levelName: rows.length > 0 ? rows[0].level_name : null,
-    levelBenefits: rows.length > 0 ? rows[0].benefits : null,
-    nextLevel: nextLevel ? { name: nextLevel.name, minPoints: nextLevel.min_points } : null,
+    balance: rows[0]?.balance || 0,
+    levelName: rows[0]?.level_name || null,
+    levelBenefits: null,
+    nextLevel: null,
   }
 }
 

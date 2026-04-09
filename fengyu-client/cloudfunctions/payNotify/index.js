@@ -22,17 +22,10 @@ function getPg() {
   return pgPool
 }
 
-function determineMemberLevel(spend) {
-  if (spend >= 100000) return '黑钻'
-  if (spend >= 60000)  return '金钻'
-  if (spend >= 30000)  return '粉钻'
-  if (spend >= 10000)  return '星钻'
-  if (spend >= 1990)   return '初钻'
-  return null
-}
-
 /**
  * 云函数入口
+ *
+ * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
   console.log('[payNotify] received event:', JSON.stringify(event))
@@ -141,29 +134,7 @@ exports.main = async (event) => {
           [order.client_user_id]
         )
 
-        // 5. 重算会员等级（滚动12个月，排除内部单，仅会员客）
-        const ctResult = await client.query(
-          'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
-          [order.client_user_id]
-        )
-        if (ctResult.rows[0]?.customer_type === '会员客') {
-          const mlResult = await client.query(
-            `SELECT COALESCE(SUM(total_amount::numeric), 0) AS rolling_spend
-             FROM sale_orders
-             WHERE client_user_id = $1
-               AND status IN ('已支付', '已完成')
-               AND sale_order_type != '内部单'
-               AND paid_at >= (NOW() - INTERVAL '12 months')`,
-            [order.client_user_id]
-          )
-          const level = determineMemberLevel(Number(mlResult.rows[0]?.rolling_spend || 0))
-          await client.query(
-            'UPDATE client_wechat_users SET member_level = $1, updated_at = NOW() WHERE user_id = $2',
-            [level, order.client_user_id]
-          )
-        }
-
-        // 6. 重算顾客类型（只升不降，已是会员客则跳过）
+        // 5. 重算顾客类型（只升不降，已是会员客则跳过）
         const curType = await client.query(
           'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
           [order.client_user_id]

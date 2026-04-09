@@ -4,14 +4,50 @@ import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
-import { logOperation, logUpdate } from '@/lib/operation-log'
+import { logUpdate } from '@/lib/operation-log'
 import { uploadFile, reuploadToFixedPath, deleteByCloudPaths } from '@/lib/cloudbase'
+
+/**
+ * 单个等级的权益配置
+ */
+export interface MemberLevelBenefit {
+  /** 升级时奖励积分（整数，0 表示不发） */
+  points: number
+  /** 升级时发放的优惠券模板 ID 数组（templateId 来自 coupon_templates） */
+  couponTemplateIds: string[]
+  /** 升级消息标题（空字符串表示不发消息） */
+  messageTitle: string
+  /** 升级消息正文 */
+  messageBody: string
+}
+
+/** 五个钻石等级的权益配置映射 */
+export type MemberLevelBenefitsMap = Record<
+  '初钻' | '星钻' | '粉钻' | '金钻' | '黑钻',
+  MemberLevelBenefit
+>
 
 interface SystemSettings {
   newMemberThreshold: string
   orderTimeout: string
   bannerImages: string[]
   fengyuguanImage: string
+  memberLevelBenefits: MemberLevelBenefitsMap
+}
+
+const DEFAULT_BENEFIT: MemberLevelBenefit = {
+  points: 0,
+  couponTemplateIds: [],
+  messageTitle: '',
+  messageBody: '',
+}
+
+const DEFAULT_MEMBER_LEVEL_BENEFITS: MemberLevelBenefitsMap = {
+  初钻: { ...DEFAULT_BENEFIT },
+  星钻: { ...DEFAULT_BENEFIT },
+  粉钻: { ...DEFAULT_BENEFIT },
+  金钻: { ...DEFAULT_BENEFIT },
+  黑钻: { ...DEFAULT_BENEFIT },
 }
 
 const DEFAULT_SETTINGS: SystemSettings = {
@@ -19,6 +55,36 @@ const DEFAULT_SETTINGS: SystemSettings = {
   orderTimeout: '10',
   bannerImages: [],
   fengyuguanImage: '',
+  memberLevelBenefits: DEFAULT_MEMBER_LEVEL_BENEFITS,
+}
+
+/**
+ * 规范化用户提交的权益配置：
+ * - 缺失等级用 DEFAULT_BENEFIT 补齐
+ * - points 转 number 并裁剪为非负整数
+ * - couponTemplateIds 去重 + 过滤空值
+ * - 文案 trim
+ */
+function normalizeBenefits(input: unknown): MemberLevelBenefitsMap {
+  const result: MemberLevelBenefitsMap = { ...DEFAULT_MEMBER_LEVEL_BENEFITS }
+  if (!input || typeof input !== 'object') return result
+
+  for (const level of ['初钻', '星钻', '粉钻', '金钻', '黑钻'] as const) {
+    const raw = (input as Record<string, unknown>)[level]
+    if (!raw || typeof raw !== 'object') continue
+    const r = raw as Record<string, unknown>
+    const points = Math.max(0, Math.floor(Number(r.points) || 0))
+    const couponTemplateIds = Array.isArray(r.couponTemplateIds)
+      ? [...new Set(r.couponTemplateIds.map((id) => String(id).trim()).filter(Boolean))]
+      : []
+    result[level] = {
+      points,
+      couponTemplateIds,
+      messageTitle: typeof r.messageTitle === 'string' ? r.messageTitle.trim() : '',
+      messageBody: typeof r.messageBody === 'string' ? r.messageBody.trim() : '',
+    }
+  }
+  return result
 }
 
 export async function getSettings(): Promise<SystemSettings> {
@@ -28,10 +94,13 @@ export async function getSettings(): Promise<SystemSettings> {
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
-      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image')
+      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image', 'member_level_benefits')
     `)
 
-    const settings = { ...DEFAULT_SETTINGS }
+    const settings: SystemSettings = {
+      ...DEFAULT_SETTINGS,
+      memberLevelBenefits: { ...DEFAULT_MEMBER_LEVEL_BENEFITS },
+    }
     for (const row of rows as any[]) {
       if (row.key === 'new_member_threshold') settings.newMemberThreshold = row.value
       if (row.key === 'order_timeout') settings.orderTimeout = row.value
@@ -39,10 +108,13 @@ export async function getSettings(): Promise<SystemSettings> {
         try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
       }
       if (row.key === 'fengyuguan_image') settings.fengyuguanImage = row.value
+      if (row.key === 'member_level_benefits') {
+        try { settings.memberLevelBenefits = normalizeBenefits(JSON.parse(row.value)) } catch { /* keep default */ }
+      }
     }
     return settings
   } catch {
-    return DEFAULT_SETTINGS
+    return { ...DEFAULT_SETTINGS, memberLevelBenefits: { ...DEFAULT_MEMBER_LEVEL_BENEFITS } }
   }
 }
 
@@ -61,11 +133,14 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       )
     `)
 
+    const normalizedBenefits = normalizeBenefits(settings.memberLevelBenefits)
+
     const entries = [
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
       { key: 'order_timeout', value: settings.orderTimeout },
       { key: 'banner_images', value: JSON.stringify(settings.bannerImages) },
       { key: 'fengyuguan_image', value: settings.fengyuguanImage },
+      { key: 'member_level_benefits', value: JSON.stringify(normalizedBenefits) },
     ]
 
     for (const entry of entries) {
@@ -109,7 +184,14 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       ON CONFLICT (key) DO UPDATE SET value = ${String(newCount)}, updated_at = NOW()
     `)
 
-    await logUpdate(session, 'system.saveConfig', 'system_config', 'all', oldSettings as unknown as Record<string, unknown>, settings as unknown as Record<string, unknown>)
+    await logUpdate(
+      session,
+      'system.saveConfig',
+      'system_config',
+      'all',
+      oldSettings as unknown as Record<string, unknown>,
+      { ...settings, memberLevelBenefits: normalizedBenefits } as unknown as Record<string, unknown>,
+    )
 
     const { revalidatePath } = await import('next/cache')
     revalidatePath('/settings')
@@ -118,4 +200,20 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
     console.error('Save settings error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
+}
+
+/**
+ * 加载所有有效的优惠券模板（用于权益配置中的多选下拉）
+ */
+export async function listActiveCouponTemplates(): Promise<Array<{ templateId: string; name: string }>> {
+  const session = await getSession()
+  requirePermission(session, 'system:config')
+
+  const rows = await db.execute<{ template_id: string; name: string }>(sql`
+    SELECT template_id, name FROM coupon_templates
+    WHERE is_active = true
+    ORDER BY created_at DESC
+    LIMIT 200
+  `)
+  return (rows as any[]).map((r) => ({ templateId: r.template_id, name: r.name }))
 }

@@ -18,17 +18,11 @@ const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
 
-function determineMemberLevel(spend) {
-  if (spend >= 100000) return '黑钻'
-  if (spend >= 60000)  return '金钻'
-  if (spend >= 30000)  return '粉钻'
-  if (spend >= 10000)  return '星钻'
-  if (spend >= 1990)   return '初钻'
-  return null
-}
-
 /**
- * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位 + 会员等级
+ * 根据已支付/已完成订单的累计金额，重算顾客的历史消费档位
+ *
+ * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
+ *
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
@@ -54,28 +48,6 @@ async function refreshSpendingTier(client, clientUserId) {
      WHERE user_id = $1`,
     [clientUserId]
   )
-
-  // 滚动12个月累计消费额 → 会员等级（仅会员客）
-  const ctRows = await client.query(
-    'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
-    [clientUserId]
-  )
-  if (ctRows.rows[0]?.customer_type === '会员客') {
-    const mlRows = await client.query(
-      `SELECT COALESCE(SUM(total_amount::numeric), 0) AS rolling_spend
-       FROM sale_orders
-       WHERE client_user_id = $1
-         AND status IN ('已支付', '已完成')
-         AND sale_order_type != '内部单'
-         AND paid_at >= (NOW() - INTERVAL '12 months')`,
-      [clientUserId]
-    )
-    const level = determineMemberLevel(Number(mlRows.rows[0]?.rolling_spend || 0))
-    await client.query(
-      'UPDATE client_wechat_users SET member_level = $1, updated_at = NOW() WHERE user_id = $2',
-      [level, clientUserId]
-    )
-  }
 }
 
 /**

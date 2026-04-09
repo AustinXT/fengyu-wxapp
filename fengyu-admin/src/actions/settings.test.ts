@@ -32,7 +32,7 @@ vi.mock('@/lib/cloudbase', () => ({
   deleteByCloudPaths: vi.fn(),
 }))
 
-import { getSettings, saveSettings } from './settings'
+import { getSettings, saveSettings, listActiveCouponTemplates } from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
@@ -41,6 +41,13 @@ const mockSession = {
   employeeId: 'ADMIN-001',
   roles: [{ role: 'admin' }],
   permissions: { actions: ['system:config'], scopeStoreIds: [] },
+}
+
+const EMPTY_BENEFIT = {
+  points: 0,
+  couponTemplateIds: [],
+  messageTitle: '',
+  messageBody: '',
 }
 
 // ── getSettings ───────────────────────────────────────────────────────────────
@@ -63,13 +70,15 @@ describe('getSettings — 系统配置读取', () => {
     expect(result.orderTimeout).toBe('15')
   })
 
-  it('DB 无记录 → 返回默认值', async () => {
+  it('DB 无记录 → 返回默认值（含空权益结构）', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await getSettings()
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
+    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
+    expect(result.memberLevelBenefits.黑钻).toEqual(EMPTY_BENEFIT)
   })
 
   it('部分配置缺失 → 缺失项用默认值', async () => {
@@ -83,6 +92,32 @@ describe('getSettings — 系统配置读取', () => {
     expect(result.orderTimeout).toBe('10') // 默认
   })
 
+  it('member_level_benefits JSON 正常 → 解析后规范化', async () => {
+    const benefitsJson = JSON.stringify({
+      星钻: { points: 500, couponTemplateIds: ['tpl-1', 'tpl-2'], messageTitle: '🎉', messageBody: 'hi' },
+    })
+    ;(db.execute as any).mockResolvedValue([
+      { key: 'member_level_benefits', value: benefitsJson },
+    ])
+
+    const result = await getSettings()
+
+    expect(result.memberLevelBenefits.星钻.points).toBe(500)
+    expect(result.memberLevelBenefits.星钻.couponTemplateIds).toEqual(['tpl-1', 'tpl-2'])
+    expect(result.memberLevelBenefits.星钻.messageTitle).toBe('🎉')
+    // 未配置的等级用默认值
+    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
+  })
+
+  it('member_level_benefits JSON 损坏 → 静默降级为默认', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { key: 'member_level_benefits', value: '{not valid json' },
+    ])
+
+    const result = await getSettings()
+    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
+  })
+
   it('DB 异常 → 返回默认值（静默降级）', async () => {
     ;(db.execute as any).mockRejectedValue(new Error('table not found'))
 
@@ -90,6 +125,7 @@ describe('getSettings — 系统配置读取', () => {
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
+    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
   })
 })
 
@@ -101,7 +137,7 @@ describe('saveSettings — 系统配置保存', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 4 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
+  it('正常保存 → 执行 CREATE TABLE + 5 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
@@ -109,16 +145,49 @@ describe('saveSettings — 系统配置保存', () => {
       orderTimeout: '20',
       bannerImages: [],
       fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: EMPTY_BENEFIT,
+        星钻: EMPTY_BENEFIT,
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
     })
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // getSettings SELECT + CREATE TABLE + 4 UPSERT + SELECT banner_count + UPSERT banner_count = 8
-    expect(db.execute).toHaveBeenCalledTimes(8)
+    // getSettings SELECT + CREATE TABLE + 5 UPSERT + SELECT banner_count + UPSERT banner_count = 9
+    expect(db.execute).toHaveBeenCalledTimes(9)
     expect(logUpdate).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
       expect.anything(), expect.objectContaining({ newMemberThreshold: '2000' }),
     )
+  })
+
+  it('权益数据规范化 → points 负值/小数被裁剪为非负整数', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980',
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: { points: -10, couponTemplateIds: ['', 'tpl-1', 'tpl-1', '  '], messageTitle: '  hi  ', messageBody: '' },
+        星钻: { points: 100.7, couponTemplateIds: [], messageTitle: '', messageBody: '' },
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
+    })
+
+    expect(result.success).toBe(true)
+    // 验证 logUpdate 收到的 normalizedBenefits（last call args[5]）
+    const normalizedSettings = (logUpdate as any).mock.calls[0][5] as any
+    expect(normalizedSettings.memberLevelBenefits.初钻.points).toBe(0)        // 负值裁剪
+    expect(normalizedSettings.memberLevelBenefits.初钻.couponTemplateIds).toEqual(['tpl-1'])  // 去重 + 过滤空值
+    expect(normalizedSettings.memberLevelBenefits.初钻.messageTitle).toBe('hi')  // trim
+    expect(normalizedSettings.memberLevelBenefits.星钻.points).toBe(100)       // 小数 floor
   })
 
   it('DB 异常 → 返回失败消息', async () => {
@@ -129,9 +198,39 @@ describe('saveSettings — 系统配置保存', () => {
       orderTimeout: '10',
       bannerImages: [],
       fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: EMPTY_BENEFIT,
+        星钻: EMPTY_BENEFIT,
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
     })
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('保存失败')
+  })
+})
+
+// ── listActiveCouponTemplates ─────────────────────────────────────────────────
+
+describe('listActiveCouponTemplates — 优惠券模板列表', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回有效模板列表（驼峰映射）', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { template_id: 'tpl-1', name: '满减券' },
+      { template_id: 'tpl-2', name: '折扣券' },
+    ])
+
+    const result = await listActiveCouponTemplates()
+
+    expect(result).toEqual([
+      { templateId: 'tpl-1', name: '满减券' },
+      { templateId: 'tpl-2', name: '折扣券' },
+    ])
   })
 })

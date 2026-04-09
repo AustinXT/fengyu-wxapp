@@ -21,7 +21,7 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 | coupon | coupon_templates, user_coupons | 优惠券模板 + 用户券实例 |
 | store-unbind | store_unbind_requests | 门店解绑申请 |
 | operation-log | operation_logs | 操作审计日志 |
-| points | member_levels, customer_points, point_transactions | 积分系统 |
+| points | customer_points, point_transactions | 积分系统（会员等级由 client_wechat_users.member_level 单独维护） |
 | message | messages | 消息中心 |
 | prepaid-card | prepaid_cards, card_transactions | 充值卡 + 流水 |
 | service-commission | service_commissions | 服务提成（手工费/卡数提成） |
