@@ -117,6 +117,10 @@ export default function SettingsPageClient({ initialSettings, couponTemplates }:
                   placeholder="1980"
                 />
                 <p className="text-xs text-[#999999]">新客户首次消费达到此金额自动升级为会员</p>
+                <p className="text-xs text-[#D4820A]">
+                  ⚠️ 调整后，顾客消费档位的最低档（显示为 &ldquo;1990-1W&rdquo;）边界会随之变化，
+                  但档位标签名保留为 <code>1990-1W</code>（历史分桶 ID）。如需改标签名需做 migration。
+                </p>
               </div>
 
               <Separator />

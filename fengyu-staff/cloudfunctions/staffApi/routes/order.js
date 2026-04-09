@@ -24,11 +24,15 @@ const qrcodeCache = new Map()
  *
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  *
+ * spending_tier CASE B1 方案：'1990-1W' 档的下界从 config 读取，
+ * 标签名 '1990-1W' 作为历史 bucket id 保留（枚举值不可动态生成）。
+ *
  * @param {object} client - pg 事务客户端
  * @param {string} clientUserId - client_wechat_users.user_id
  */
 async function refreshSpendingTier(client, clientUserId) {
   if (!clientUserId) return
+  const memberThreshold = await getMemberThreshold()
   await client.query(
     `UPDATE client_wechat_users
      SET spending_tier = CASE
@@ -36,7 +40,7 @@ async function refreshSpendingTier(client, clientUserId) {
        WHEN t.total >= 60000  THEN '6-10W'
        WHEN t.total >= 30000  THEN '3-6W'
        WHEN t.total >= 10000  THEN '1-3W'
-       WHEN t.total >= 1990   THEN '1990-1W'
+       WHEN t.total >= $2     THEN '1990-1W'
        ELSE '<1990'
      END::spending_tier,
      updated_at = NOW()
@@ -47,7 +51,7 @@ async function refreshSpendingTier(client, clientUserId) {
          AND status IN ('已支付', '已完成')
      ) t
      WHERE user_id = $1`,
-    [clientUserId]
+    [clientUserId, memberThreshold]
   )
 }
 
