@@ -3,12 +3,14 @@
 import { db } from '@/db'
 import { messages } from '@db/message'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
+import { orgNodes, stores } from '@db/org'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
 
 export interface AdminMessage {
   id: number
@@ -185,4 +187,301 @@ export async function deleteMessage(
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/messages')
   return { success: true, message: '消息已删除' }
+}
+
+// ----------------------------------------------------------------------------
+// 批量发送消息相关 Actions
+// ----------------------------------------------------------------------------
+
+/** 单次批量发送的最大接收人数 */
+const BATCH_SEND_MAX = 1000
+
+/**
+ * 将组织节点 ID 解析为对应的 storeId 列表。
+ * 返回 null 表示不过滤（总部 / 未知），空数组表示无匹配门店。
+ *
+ * 与 actions/coupons.ts 的同名内部函数逻辑一致，因处于不同文件且 admin-coding
+ * 规范不鼓励为"小工具"新建 lib 模块，这里就地复制 30 行。
+ */
+async function resolveOrgNodeToStoreIds(orgNodeId: string): Promise<string[] | null> {
+  const [node] = await db
+    .select({ type: orgNodes.type, parentId: orgNodes.parentId })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, orgNodeId))
+    .limit(1)
+
+  if (!node) return null
+  if (node.type === '总部') return null
+
+  if (node.type === '门店') {
+    const [store] = await db
+      .select({ storeId: stores.storeId })
+      .from(stores)
+      .where(eq(stores.orgNodeId, orgNodeId))
+      .limit(1)
+    return store ? [store.storeId] : []
+  }
+
+  if (node.type === '市场') {
+    const storeRows = await db
+      .select({ storeId: stores.storeId })
+      .from(stores)
+      .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+      .where(eq(orgNodes.parentId, orgNodeId))
+    return storeRows.map((r) => r.storeId)
+  }
+
+  return null
+}
+
+/**
+ * 构造"批量发送消息"场景下的客户筛选 WHERE 条件。
+ * 返回 `null` 表示"存在筛选但无匹配门店"（调用方应直接返回空集而非查询）。
+ */
+async function buildBatchMessageCustomerWhere(filters: {
+  orgNodeId?: string
+  memberLevel?: string
+  search?: string
+}): Promise<SQL | undefined | null> {
+  const conditions: (SQL | undefined)[] = []
+
+  if (filters.orgNodeId) {
+    const storeIds = await resolveOrgNodeToStoreIds(filters.orgNodeId)
+    if (storeIds !== null) {
+      if (storeIds.length === 0) return null
+      if (storeIds.length === 1) {
+        conditions.push(eq(clientWechatUsers.boundStoreId, storeIds[0]))
+      } else {
+        conditions.push(inArray(clientWechatUsers.boundStoreId, storeIds))
+      }
+    }
+  }
+
+  if (filters.memberLevel) {
+    conditions.push(
+      eq(
+        clientWechatUsers.memberLevel,
+        filters.memberLevel as typeof clientWechatUsers.memberLevel.enumValues[number],
+      ),
+    )
+  }
+
+  if (filters.search) {
+    const pattern = `%${filters.search.replace(/[%_]/g, '\\$&')}%`
+    conditions.push(
+      or(
+        ilike(clientWechatUsers.name, pattern),
+        ilike(clientWechatUsers.phone, pattern),
+      ),
+    )
+  }
+
+  return conditions.length > 0 ? and(...conditions) : undefined
+}
+
+/**
+ * 组织树节点列表（批量发送消息筛选用）。
+ * 权限走 message:send，避免依赖 org:list。
+ */
+export async function getOrgNodesForBatchMessage(): Promise<OrgNode[]> {
+  const session = await getSession()
+  requirePermission(session, 'message:send')
+
+  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    parentId: row.parentId,
+    sortOrder: row.sortOrder,
+    isActive: row.isActive,
+    createdAt: row.createdAt?.toISOString() ?? '',
+    updatedAt: row.updatedAt?.toISOString() ?? '',
+  }))
+}
+
+/**
+ * 批量发送消息时的顾客分页列表。
+ * 不要求顾客有手机号（消息中心按 userId 投递，与优惠券不同）。
+ */
+export async function getCustomersForBatchMessage(filters: {
+  orgNodeId?: string
+  memberLevel?: string
+  search?: string
+  page?: number
+  pageSize?: number
+}): Promise<{ data: BatchMessageCustomer[]; total: number }> {
+  const session = await getSession()
+  requirePermission(session, 'message:send')
+
+  const page = Math.max(1, filters.page || 1)
+  const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
+  const offset = (page - 1) * pageSize
+
+  const whereClause = await buildBatchMessageCustomerWhere({
+    orgNodeId: filters.orgNodeId,
+    memberLevel: filters.memberLevel,
+    search: filters.search,
+  })
+  if (whereClause === null) {
+    return { data: [], total: 0 }
+  }
+
+  const [[countRow], rows] = await Promise.all([
+    db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(clientWechatUsers)
+      .where(whereClause),
+    db
+      .select({
+        userId: clientWechatUsers.userId,
+        name: clientWechatUsers.name,
+        phone: clientWechatUsers.phone,
+        storeName: stores.storeName,
+        memberLevel: clientWechatUsers.memberLevel,
+      })
+      .from(clientWechatUsers)
+      .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
+      .where(whereClause)
+      .orderBy(clientWechatUsers.name)
+      .limit(pageSize)
+      .offset(offset),
+  ])
+
+  return {
+    data: rows.map((r) => ({
+      userId: r.userId,
+      name: r.name,
+      phone: r.phone,
+      storeName: r.storeName ?? null,
+      memberLevel: r.memberLevel,
+    })),
+    total: countRow?.count ?? 0,
+  }
+}
+
+export interface BatchSendMessagesParams {
+  title: string
+  body?: string
+  messageType?: string
+  /** 精确投递：指定顾客 userId 列表（与 filters 二选一；两者都提供时以 userIds 为准） */
+  userIds?: string[]
+  /** 筛选投递：按当前筛选条件命中的全部顾客（上限 BATCH_SEND_MAX） */
+  filters?: {
+    orgNodeId?: string
+    memberLevel?: string
+    search?: string
+  }
+}
+
+/**
+ * 批量发送站内消息给多个客户。
+ *
+ * 两种投递模式：
+ * 1. 精确投递：传 `userIds`，直接向指定顾客发送
+ * 2. 筛选投递：传 `filters`，展开命中顾客后发送（总数 > BATCH_SEND_MAX 拒绝）
+ *
+ * 消息仅允许 recipient_type='客户'（员工消息暂不支持批量发送）。
+ */
+export async function batchSendMessages(
+  params: BatchSendMessagesParams,
+): Promise<{ success: boolean; message: string; count?: number }> {
+  const session = await getSession()
+  requirePermission(session, 'message:send')
+
+  // 1. 基础校验
+  const title = params.title?.trim() ?? ''
+  if (!title) {
+    return { success: false, message: '请输入消息标题' }
+  }
+  if (title.length > 200) {
+    return { success: false, message: '消息标题不能超过 200 个字符' }
+  }
+  const body = params.body?.trim() || null
+  const messageType = params.messageType?.trim() || null
+  if (messageType && messageType.length > 50) {
+    return { success: false, message: '消息分类不能超过 50 个字符' }
+  }
+
+  // 2. 解析接收人 userId 列表
+  let recipientIds: string[] = []
+
+  if (params.userIds && params.userIds.length > 0) {
+    // 精确投递：去重 + 校验存在
+    const unique = [...new Set(params.userIds)]
+    if (unique.length > BATCH_SEND_MAX) {
+      return { success: false, message: `单次批量发送不能超过 ${BATCH_SEND_MAX} 人` }
+    }
+    const existing = await db
+      .select({ userId: clientWechatUsers.userId })
+      .from(clientWechatUsers)
+      .where(inArray(clientWechatUsers.userId, unique))
+    const existingSet = new Set(existing.map((e) => e.userId))
+    recipientIds = unique.filter((id) => existingSet.has(id))
+    if (recipientIds.length === 0) {
+      return { success: false, message: '所选顾客均不存在或已被删除' }
+    }
+  } else if (params.filters) {
+    // 筛选投递：展开命中顾客
+    const whereClause = await buildBatchMessageCustomerWhere(params.filters)
+    if (whereClause === null) {
+      return { success: false, message: '所选组织下暂无顾客，无需发送' }
+    }
+    // 先 count，防止超限后才知道
+    const [{ count }] = await db
+      .select({ count: sql<number>`cast(count(*) as int)` })
+      .from(clientWechatUsers)
+      .where(whereClause)
+    if (count === 0) {
+      return { success: false, message: '当前筛选条件下没有匹配的顾客' }
+    }
+    if (count > BATCH_SEND_MAX) {
+      return {
+        success: false,
+        message: `筛选结果 ${count} 人，超过单次上限 ${BATCH_SEND_MAX}，请缩小范围`,
+      }
+    }
+    const rows = await db
+      .select({ userId: clientWechatUsers.userId })
+      .from(clientWechatUsers)
+      .where(whereClause)
+    recipientIds = rows.map((r) => r.userId)
+  } else {
+    return { success: false, message: '请指定接收人（选择顾客或设置筛选条件）' }
+  }
+
+  // 3. 构造消息行
+  const now = new Date()
+  const values = recipientIds.map((userId) => ({
+    recipientType: '客户' as const,
+    recipientId: userId,
+    title,
+    body,
+    messageType,
+    isRead: false,
+    createdAt: now,
+  }))
+
+  // 4. 分片 INSERT（防止单次 values 过大；1000 条以内其实单次也能处理，分片兜底）
+  const CHUNK = 500
+  for (let i = 0; i < values.length; i += CHUNK) {
+    await db.insert(messages).values(values.slice(i, i + CHUNK))
+  }
+
+  // 5. 审计日志
+  await logOperation(session, 'message.batchSend', 'message', 'batch', {
+    title,
+    messageType,
+    count: recipientIds.length,
+    mode: params.userIds ? 'userIds' : 'filters',
+    filters: params.filters,
+  })
+
+  const { revalidatePath } = await import('next/cache')
+  revalidatePath('/messages')
+  return {
+    success: true,
+    message: `已向 ${recipientIds.length} 位顾客发送消息`,
+    count: recipientIds.length,
+  }
 }

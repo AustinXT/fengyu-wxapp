@@ -440,6 +440,15 @@ export interface BatchCouponCustomer {
   memberLevel: string | null
 }
 
+/** 批量发送消息时的顾客选择项 */
+export interface BatchMessageCustomer {
+  userId: string
+  name: string | null
+  phone: string | null
+  storeName: string | null
+  memberLevel: string | null
+}
+
 /** 已发放优惠券记录（详情页展示用） */
 export interface IssuedCoupon {
   couponId: string
