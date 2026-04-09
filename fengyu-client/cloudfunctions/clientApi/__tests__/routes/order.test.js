@@ -340,6 +340,129 @@ describe('order.create', () => {
     // 总价 500-100=400
     expect(ctx.result.totalAmount).toBe(400)
   })
+
+  // ========== 折扣券路径 ==========
+
+  test('折扣券无封顶：1000 × 8 折 → 抵扣 200', async () => {
+    mockBaseCreateQueries({ price: '1000' })
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-disc-1', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '折扣券', discount_value: '0.8', min_spend: '0',
+      max_discount: null,
+      applicable_category_ids: null, applicable_store_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1' }])
+    pg.query.mockResolvedValueOnce([{ name: '张三' }])
+    mockCreateTransaction()
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-disc-1',
+    })
+    await routes.create(ctx)
+
+    // 1000 × (1 - 0.8) = 200, totalAmount = 800
+    expect(ctx.result.totalAmount).toBe(800)
+    expect(ctx.result.status).toBe('待支付')
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
+  })
+
+  test('折扣券带封顶且触发封顶：1000 × 8 折 + 封顶 150 → 抵扣 150', async () => {
+    mockBaseCreateQueries({ price: '1000' })
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-disc-2', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '折扣券', discount_value: '0.8', min_spend: '0',
+      max_discount: '150',
+      applicable_category_ids: null, applicable_store_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1' }])
+    pg.query.mockResolvedValueOnce([{ name: '张三' }])
+    mockCreateTransaction()
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-disc-2',
+    })
+    await routes.create(ctx)
+
+    // 原始折扣 200 > 封顶 150，取封顶 → totalAmount = 1000 - 150 = 850
+    expect(ctx.result.totalAmount).toBe(850)
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
+  })
+
+  test('折扣券带封顶但未触发：500 × 8 折 + 封顶 150 → 抵扣 100', async () => {
+    mockBaseCreateQueries({ price: '500' })
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-disc-3', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '折扣券', discount_value: '0.8', min_spend: '0',
+      max_discount: '150',
+      applicable_category_ids: null, applicable_store_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1' }])
+    pg.query.mockResolvedValueOnce([{ name: '张三' }])
+    mockCreateTransaction()
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-disc-3',
+    })
+    await routes.create(ctx)
+
+    // 500 × (1 - 0.8) = 100 < 封顶 150，取原折扣 → totalAmount = 500 - 100 = 400
+    expect(ctx.result.totalAmount).toBe(400)
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
+  })
+
+  test('折扣券满减不满足 → INVALID_PARAMS', async () => {
+    mockBaseCreateQueries({ price: '500' })
+    pg.query.mockResolvedValueOnce([{
+      coupon_id: 'cpn-disc-4', user_id: 'user-001', expire_at: new Date(Date.now() + 86400000),
+      coupon_type: '折扣券', discount_value: '0.8', min_spend: '600',
+      max_discount: null,
+      applicable_category_ids: null, applicable_store_ids: null,
+    }])
+    pg.query.mockResolvedValueOnce([{ sku_id: 'sku-1', category_id: 'cat-1' }])
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: 'cpn-disc-4',
+    })
+    // 商品 ¥500 < 满减门槛 ¥600
+    await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*未满足使用条件/)
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
+  })
 })
 
 describe('order.pay', () => {
