@@ -438,6 +438,13 @@ describe('order.create', () => {
     // 1000 × (1-0.8) = 200, 但 max_discount=150, 所以 discount=150
     // totalAmount = 1000 - 150 = 850
     expect(ctx.result.totalAmount).toBe(850)
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
   })
 
   test('折扣券无 max_discount 时全额打折', async () => {
@@ -476,6 +483,13 @@ describe('order.create', () => {
     // 500 × (1-0.9) = 50, 无上限
     // totalAmount = 500 - 50 = 450
     expect(ctx.result.totalAmount).toBe(450)
+
+    // 防回归：断言真实执行的 SELECT 包含 max_discount 字段，不靠 mock 塞值掩盖
+    const couponSelectCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM user_coupons/i.test(sql) && /JOIN coupon_templates/i.test(sql)
+    )
+    expect(couponSelectCall).toBeDefined()
+    expect(couponSelectCall[0]).toMatch(/ct\.max_discount/)
   })
 
   test('事务内优惠券原子 claim 竞态（rowCount=0）时报错', async () => {
