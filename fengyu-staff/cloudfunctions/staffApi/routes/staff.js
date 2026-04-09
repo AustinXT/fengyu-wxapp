@@ -6,6 +6,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
+const { getMemberThreshold } = require('../utils/config')
 
 /**
  * 员工列表
@@ -676,7 +677,7 @@ async function dashboard(ctx) {
       AND so.service_date <= $${scopeParams.length + 2}
   `, [...scopeParams, start, end])
 
-  // 5. 新会员：首次消费达 1980 元（简化统计）
+  // 5. 新会员：首次消费达配置阈值（system_configs.new_member_threshold）
   let newMemberFilter, newMemberParams
   if (isManagerRole) {
     newMemberFilter = 'o.store_id = $1'
@@ -686,6 +687,7 @@ async function dashboard(ctx) {
     newMemberParams = [employeeId]
   }
 
+  const memberThreshold = await getMemberThreshold()
   const newMemberRows = await pg.query(`
     SELECT COUNT(DISTINCT o.client_user_id) AS new_members
     FROM sale_orders o
@@ -693,7 +695,7 @@ async function dashboard(ctx) {
       AND o.status = '已支付'
       AND o.paid_at >= $${newMemberParams.length + 1}::date
       AND o.paid_at < ($${newMemberParams.length + 2}::date + INTERVAL '1 day')
-      AND o.total_amount >= 1980
+      AND o.total_amount >= $${newMemberParams.length + 3}
       AND o.client_user_id IS NOT NULL
       AND NOT EXISTS (
         SELECT 1 FROM sale_orders o2
@@ -701,7 +703,7 @@ async function dashboard(ctx) {
           AND o2.status = '已支付'
           AND o2.paid_at < $${newMemberParams.length + 1}::date
       )
-  `, [...newMemberParams, start, end])
+  `, [...newMemberParams, start, end, memberThreshold])
 
   ctx.result = {
     footfall: Number(footfallRows[0].footfall),

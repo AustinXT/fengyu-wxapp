@@ -5,7 +5,6 @@ import { saleOrders, saleItems } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { systemConfigs } from '@db/system-config'
 import { productSkus } from '@db/product'
 import { eq, desc, and, or, sql, ilike, gte, lt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -16,6 +15,7 @@ import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
+import { getMemberThreshold } from '@/lib/member-threshold'
 
 const opener = alias(staffWechatUsers, 'opener')
 
@@ -526,12 +526,7 @@ export async function createOrder(data: {
     }
   }
   if (documentType === '售前') {
-    const [config] = await db
-      .select({ value: systemConfigs.value })
-      .from(systemConfigs)
-      .where(eq(systemConfigs.key, 'new_member_threshold'))
-      .limit(1)
-    const threshold = Number(config?.value) || 1990
+    const threshold = await getMemberThreshold()
     if (totalAmount >= threshold) {
       documentType = '售后'
     }

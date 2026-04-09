@@ -5,7 +5,8 @@ import { sql } from 'drizzle-orm'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logUpdate } from '@/lib/operation-log'
-import { uploadFile, reuploadToFixedPath, deleteByCloudPaths } from '@/lib/cloudbase'
+import { uploadFile, reuploadToFixedPath, deleteByCloudPaths, callClientFunction } from '@/lib/cloudbase'
+import { invalidateMemberThreshold } from '@/lib/member-threshold'
 
 /**
  * 单个等级的权益配置
@@ -192,6 +193,21 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       oldSettings as unknown as Record<string, unknown>,
       { ...settings, memberLevelBenefits: normalizedBenefits } as unknown as Record<string, unknown>,
     )
+
+    // 会员门槛变化时，主动失效 admin 自身 + clientApi 内存缓存
+    // staffApi / cronTask 在另一个 envId，依赖 utils/config 的被动 updated_at 戳核对（30 秒内生效）
+    if (oldSettings.newMemberThreshold !== settings.newMemberThreshold) {
+      invalidateMemberThreshold()
+      await Promise.allSettled([
+        callClientFunction('clientApi', { action: 'config.invalidateConfig' }),
+      ]).then((results) => {
+        for (const r of results) {
+          if (r.status === 'rejected') {
+            console.warn('Broadcast invalidateConfig failed:', r.reason)
+          }
+        }
+      })
+    }
 
     const { revalidatePath } = await import('next/cache')
     revalidatePath('/settings')

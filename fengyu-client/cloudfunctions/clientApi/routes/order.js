@@ -5,6 +5,7 @@
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
+const { getMemberThreshold } = require('../utils/config')
 
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）
@@ -334,10 +335,7 @@ async function create(ctx) {
     }
   }
   if (documentType === '售前') {
-    const cfgRows = await pg.query(
-      "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-    )
-    const threshold = Number(cfgRows[0]?.value) || 1990
+    const threshold = await getMemberThreshold()
     if (totalAmount >= threshold) documentType = '售后'
   }
 

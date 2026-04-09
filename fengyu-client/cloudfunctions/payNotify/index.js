@@ -8,6 +8,8 @@
 const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
+const { getMemberThreshold } = require('./config')
+
 // PostgreSQL 连接（懒初始化）
 let pgPool = null
 function getPg() {
@@ -112,7 +114,9 @@ exports.main = async (event) => {
       }
 
       // 4. 重算顾客历史消费档位
+      // B1 方案：'1990-1W' 档下界从 config 读取，枚举标签保留（历史 bucket id）
       if (order.client_user_id) {
+        const tierThreshold = await getMemberThreshold()
         await client.query(
           `UPDATE client_wechat_users
            SET spending_tier = CASE
@@ -120,7 +124,7 @@ exports.main = async (event) => {
              WHEN t.total >= 60000  THEN '6-10W'
              WHEN t.total >= 30000  THEN '3-6W'
              WHEN t.total >= 10000  THEN '1-3W'
-             WHEN t.total >= 1990   THEN '1990-1W'
+             WHEN t.total >= $2     THEN '1990-1W'
              ELSE '<1990'
            END::spending_tier,
            updated_at = NOW()
@@ -131,7 +135,7 @@ exports.main = async (event) => {
                AND status IN ('已支付', '已完成')
            ) t
            WHERE user_id = $1`,
-          [order.client_user_id]
+          [order.client_user_id, tierThreshold]
         )
 
         // 5. 重算顾客类型（只升不降，已是会员客则跳过）
@@ -140,10 +144,7 @@ exports.main = async (event) => {
           [order.client_user_id]
         )
         if (curType.rows[0]?.customer_type !== '会员客') {
-          const configResult = await client.query(
-            "SELECT value FROM system_configs WHERE key = 'new_member_threshold'"
-          )
-          const threshold = Number(configResult.rows[0]?.value) || 1990
+          const threshold = await getMemberThreshold()
 
           const typeResult = await client.query(
             `SELECT CASE

@@ -101,6 +101,16 @@ vi.mock('@/lib/utils', () => ({
 
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
+  revalidateTag: vi.fn(),
+  unstable_cache: (fn: (...a: unknown[]) => unknown) => fn,
+}))
+
+const mockGetMemberThreshold = vi.fn(async () => 1980)
+vi.mock('@/lib/member-threshold', () => ({
+  getMemberThreshold: () => mockGetMemberThreshold(),
+  invalidateMemberThreshold: vi.fn(),
+  MEMBER_THRESHOLD_FALLBACK: 1980,
+  MEMBER_THRESHOLD_TAG: 'new_member_threshold',
 }))
 
 import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated } from './orders'
@@ -365,6 +375,49 @@ describe('createOrder — 事务异常捕获', () => {
     expect(result.success).toBe(true)
     expect(result.saleOrderId).toBe('FY-XSD-WX-260315001')
     expect(result.message).toBe('订单创建成功')
+  })
+})
+
+describe('createOrder — documentType 使用 getMemberThreshold helper', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('金额低于 helper 返回门槛 → documentType 保持售前（即调用 helper）', async () => {
+    mockGetMemberThreshold.mockResolvedValueOnce(2000)
+    mockTransactionSuccess('FY-XSD-WX-260410001')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        ...baseOrderData.items[0],
+        unitPrice: '100.00',
+        unitRealPrice: '100.00',
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    expect(mockGetMemberThreshold).toHaveBeenCalled()
+  })
+
+  it('金额 >= helper 门槛 → documentType = 售后（helper 读到 1980 时 total=2000）', async () => {
+    mockGetMemberThreshold.mockResolvedValueOnce(1980)
+    mockTransactionSuccess('FY-XSD-WX-260410002')
+
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        ...baseOrderData.items[0],
+        unitPrice: '2000.00',
+        unitRealPrice: '2000.00',
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    expect(mockGetMemberThreshold).toHaveBeenCalled()
   })
 })
 

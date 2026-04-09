@@ -70,3 +70,20 @@ export async function deleteByCloudPaths(
   const fileList = cloudPaths.map((p) => `cloud://${envId}/${p}`)
   await app.deleteFile({ fileList })
 }
+
+/**
+ * 调用 clientApi / payNotify 等 client envId 下的云函数（action 路由模式）。
+ *
+ * 仅用于 admin → client envId 的内部广播调用（如 saveSettings 清理 utils/config 缓存）。
+ * 跨 envId 调用（如 staffApi）不支持 —— 需要另配 STAFF_CLOUDBASE_ENV_ID + 第二个 app 实例。
+ *
+ * 失败时抛出；调用方负责用 Promise.allSettled 做容错（云函数缓存失效不是关键路径）。
+ */
+export async function callClientFunction<T = unknown>(
+  name: string,
+  data: { action: string; payload?: Record<string, unknown> }
+): Promise<T> {
+  const app = getApp()
+  const res = await app.callFunction({ name, data })
+  return res.result as T
+}

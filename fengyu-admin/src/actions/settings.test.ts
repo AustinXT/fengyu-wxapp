@@ -30,12 +30,19 @@ vi.mock('@/lib/cloudbase', () => ({
   uploadFile: vi.fn(),
   reuploadToFixedPath: vi.fn(),
   deleteByCloudPaths: vi.fn(),
+  callClientFunction: vi.fn().mockResolvedValue({ code: 0, message: 'success' }),
+}))
+
+vi.mock('@/lib/member-threshold', () => ({
+  invalidateMemberThreshold: vi.fn(),
 }))
 
 import { getSettings, saveSettings, listActiveCouponTemplates } from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
+import { callClientFunction } from '@/lib/cloudbase'
+import { invalidateMemberThreshold } from '@/lib/member-threshold'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -209,6 +216,76 @@ describe('saveSettings — 系统配置保存', () => {
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('保存失败')
+  })
+
+  it('newMemberThreshold 变化 → 广播 invalidate 到 admin 自身 + clientApi', async () => {
+    // oldSettings.newMemberThreshold = '1980' (DEFAULT)
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '2500', // 改变
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: EMPTY_BENEFIT,
+        星钻: EMPTY_BENEFIT,
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
+    })
+
+    expect(result.success).toBe(true)
+    expect(invalidateMemberThreshold).toHaveBeenCalledTimes(1)
+    expect(callClientFunction).toHaveBeenCalledWith('clientApi', {
+      action: 'config.invalidateConfig',
+    })
+  })
+
+  it('newMemberThreshold 未变化 → 不广播', async () => {
+    // oldSettings.newMemberThreshold = '1980' (DEFAULT)，new 也是 '1980'
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveSettings({
+      newMemberThreshold: '1980', // 未变
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: EMPTY_BENEFIT,
+        星钻: EMPTY_BENEFIT,
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
+    })
+
+    expect(result.success).toBe(true)
+    expect(invalidateMemberThreshold).not.toHaveBeenCalled()
+    expect(callClientFunction).not.toHaveBeenCalled()
+  })
+
+  it('广播失败 → 不影响 saveSettings 成功返回（Promise.allSettled 容错）', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    ;(callClientFunction as any).mockRejectedValueOnce(new Error('cloudbase timeout'))
+
+    const result = await saveSettings({
+      newMemberThreshold: '3000', // 改变触发广播
+      orderTimeout: '10',
+      bannerImages: [],
+      fengyuguanImage: '',
+      memberLevelBenefits: {
+        初钻: EMPTY_BENEFIT,
+        星钻: EMPTY_BENEFIT,
+        粉钻: EMPTY_BENEFIT,
+        金钻: EMPTY_BENEFIT,
+        黑钻: EMPTY_BENEFIT,
+      },
+    })
+
+    expect(result.success).toBe(true)
+    expect(invalidateMemberThreshold).toHaveBeenCalledTimes(1)
   })
 })
 

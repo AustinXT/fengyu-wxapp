@@ -11,6 +11,7 @@ const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const { Pool } = require('pg')
+const { getMemberThreshold } = require('./config')
 
 let pool = null
 function getPool() {
@@ -74,14 +75,15 @@ const LEVEL_RANK = { null: 0, '初钻': 1, '星钻': 2, '粉钻': 3, '金钻': 4
 
 /**
  * 根据滚动 12 个月消费额计算钻石等级
- * 阈值：黑钻 ≥10w / 金钻 ≥6w / 粉钻 ≥3w / 星钻 ≥1w / 初钻 ≥1990 / null
+ * 阈值：黑钻 ≥10w / 金钻 ≥6w / 粉钻 ≥3w / 星钻 ≥1w / 初钻 ≥ 阈值 / null
+ * 初钻下限由 system_configs.new_member_threshold 配置，经 refreshMemberLevels 传入。
  */
-function determineMemberLevel(spend) {
+function determineMemberLevel(spend, threshold) {
   if (spend >= 100000) return '黑钻'
   if (spend >= 60000)  return '金钻'
   if (spend >= 30000)  return '粉钻'
   if (spend >= 10000)  return '星钻'
-  if (spend >= 1990)   return '初钻'
+  if (spend >= threshold) return '初钻'
   return null
 }
 
@@ -184,6 +186,7 @@ async function grantUpgradeBenefits(client, userId, fromLevel, toLevel, config) 
  */
 async function refreshMemberLevels(client) {
   const benefitsConfig = await loadBenefitsConfig(client)
+  const memberThreshold = await getMemberThreshold()
 
   const memberClients = (await client.query(
     "SELECT user_id, member_level FROM client_wechat_users WHERE customer_type = '会员客'"
@@ -207,7 +210,7 @@ async function refreshMemberLevels(client) {
         [row.user_id]
       )).rows[0]
 
-      const newLevel = determineMemberLevel(Number(spendRow.spend || 0))
+      const newLevel = determineMemberLevel(Number(spendRow.spend || 0), memberThreshold)
       const oldLevel = row.member_level
 
       if (newLevel === oldLevel) {
