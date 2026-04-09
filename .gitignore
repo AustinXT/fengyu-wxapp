@@ -31,3 +31,4 @@ cloudbaserc.json
 # Delivery build output
 delivery/
 .tree/
+.claude/worktrees/*
