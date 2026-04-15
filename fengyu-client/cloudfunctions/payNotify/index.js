@@ -165,16 +165,26 @@ exports.main = async (event) => {
                    )
                ) THEN '会员客'
                WHEN EXISTS (
-                 SELECT 1 FROM sale_orders
-                 WHERE client_user_id = $1
-                   AND status IN ('已支付', '已完成')
-                   AND sale_order_type = '销售单'
+                 SELECT 1
+                 FROM sale_orders o
+                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                 JOIN product_skus sk ON sk.sku_id = si.sku_id
+                 JOIN product_categories pc ON pc.category_id = sk.category_id
+                 WHERE o.client_user_id = $1
+                   AND o.status IN ('已支付', '已完成')
+                   AND o.sale_order_type = '销售单'
+                   AND pc.product_kind <> '体验卡'
                ) THEN '小美客'
                WHEN EXISTS (
-                 SELECT 1 FROM sale_orders
-                 WHERE client_user_id = $1
-                   AND status IN ('已支付', '已完成')
-                   AND sale_order_type = '销售单'
+                 SELECT 1
+                 FROM sale_orders o
+                 JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+                 JOIN product_skus sk ON sk.sku_id = si.sku_id
+                 JOIN product_categories pc ON pc.category_id = sk.category_id
+                 WHERE o.client_user_id = $1
+                   AND o.status IN ('已支付', '已完成')
+                   AND o.sale_order_type = '销售单'
+                   AND pc.product_kind = '体验卡'
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,
