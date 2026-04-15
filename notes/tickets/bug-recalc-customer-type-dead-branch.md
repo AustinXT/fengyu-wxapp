@@ -162,3 +162,13 @@ END AS computed_type
 ### 7.4 修复归属 commit 建议
 
 单独一个 commit：`fix(customer-type): 消除 recalcCustomerType 死分支 + 对齐 5 档新语义`，与结构性枚举变更 commit 独立，便于 cherry-pick 和 review。
+
+---
+
+## 8 修复落地
+
+> **本 ticket §7 的修复方案已被取代**：结构性 5 档枚举重构在 `notes/adapt-plans/00-decisions.md` §1 被业务方取消。等价的纯逻辑修复方案见 [`notes/tickets/02-1-recalc-customer-type-fix.md`](./02-1-recalc-customer-type-fix.md)。
+>
+> **已于 2026-04-15 由 commit `be89af7`（merge `385c631`）修复。**
+>
+> §1–6 的位置定位、缺陷代码展示、短路证明、根因溯源（migration 0028–0031 删除 `'体验单'` 枚举后批量 find-replace 把 `sale_order_type='体验单'` 改成 `sale_order_type='销售单'` 导致 ② ③ 字节相同）、可观测影响继续有效，作为 post-mortem 保留。

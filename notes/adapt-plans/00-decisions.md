@@ -136,7 +136,7 @@ authoritative_over:
 2. **[#06] 满减基数口径统一**（`available` 用原价 vs `create` 用折后价）
 3. **[#06] `createTemplate` 有效期 validityMode 校验**
 4. **[#06] `clientApi/routes/coupon.js` 的 `redeem` 死代码删除** + CLAUDE.md / index.js 路由表同步清理
-5. **[#02] `recalcCustomerType` 死分支修复**（`staffApi/routes/order.js:92-103`）——等 Q1 补充定义后再定最终 SQL
+5. **[#02] `recalcCustomerType` 死分支修复**（`staffApi/routes/order.js` + `fengyu-client/cloudfunctions/payNotify/index.js`）—— ✅ **已完成** 2026-04-15，commit `be89af7`（merge `385c631`），方案见 `notes/tickets/02-1-recalc-customer-type-fix.md`；Q1 权威定义已落地为 product_kind 判定的新 CASE SQL
 6. **[#05] `service_items.is_presale` TODO 落地**——从 `service_orders.service_order_type` 或其他口径回填，不再写死 false
 7. **[#03] `performanceDetail` 口径修正**——`unit_real_price × session_used` 不是服务提成，改为从 `service_commissions` 或按手工费+消耗比例计算
 

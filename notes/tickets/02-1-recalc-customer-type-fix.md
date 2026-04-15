@@ -180,7 +180,9 @@ WHEN EXISTS (
 | # | 文件 | 动作 | 参考行号 |
 |---|---|---|---|
 | 1 | `fengyu-staff/cloudfunctions/staffApi/routes/order.js` | 替换 `recalcCustomerType` 函数体内的 CASE SQL | 第 78-111 行（`client.query` 调用，`SELECT CASE ... END AS computed_type`） |
-| 2 | `fengyu-client/cloudfunctions/clientApi/payNotify/index.js` | 镜像同步 CASE SQL（逐字节一致） | 约第 141-208 行的 `recalcCustomerType` 镜像；具体行号以文件当前状态为准 |
+| 2 | `fengyu-client/cloudfunctions/payNotify/index.js` | 镜像同步 CASE SQL（逐字节一致） | 约第 141-208 行的 `recalcCustomerType` 镜像；具体行号以文件当前状态为准 |
+
+> **路径订正（执行时发现）**：`payNotify` 是与 `clientApi` **平级**的独立云函数，不在 `clientApi/` 嵌套下。本 ticket 原 §6 写作 `fengyu-client/cloudfunctions/clientApi/payNotify/index.js` 有误，实际路径为 `fengyu-client/cloudfunctions/payNotify/index.js`（参见 `fengyu-client/CLAUDE.md` 云函数列表）。修复 commit `be89af7` 已按实际路径落地。
 
 **不动的内容**：
 - `getMemberThreshold()` 调用（第 76 行）保持
@@ -334,11 +336,106 @@ becameAt 写入、只升不降排序、getMemberThreshold helper 全部保持。
 
 ---
 
-## 10 执行记录（commit 后回填）
+## 10 执行记录
 
-_待填：_
-- commit hash:
-- 部署时间:
-- §7.2 校验 1 结果:
-- §7.2 校验 2 结果:
-- 相关 PR / cnb MR:
+### 代码落地
+
+- **修复 commit**: `be89af7` fix(customer-type): recalcCustomerType 按 product_kind 区分体验客/小美客
+- **合并 commit**: `385c631` merge: 02-1 recalcCustomerType 按 product_kind 区分体验客/小美客（`--no-ff` merge 到 `dev`）
+- **落地日期**: 2026-04-15
+- **执行方式**: 通过 `.claude/skills/worktree-flow` 在隔离 worktree 内由子 Agent 完成修复 + diff 自检 + schema 核对后 merge
+- **文件改动**: 2 个文件，+36 / −16
+  - `fengyu-staff/cloudfunctions/staffApi/routes/order.js` — 函数 `recalcCustomerType` 内 CASE SQL
+  - `fengyu-client/cloudfunctions/payNotify/index.js` — 镜像位置的 CASE SQL（路径订正见 §6 注）
+
+### 单测
+
+- **新增测试文件**: `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js`
+- **测试性质**: 源文件文本结构守卫（非行为单测）。vitest 下 pg 被 mock，SQL 语义正确性无法用单元测试验证，故采用"反回归断言"策略：
+  1. 两处 CASE SQL 必须同时存在 `pc.product_kind <> '体验卡'` 与 `pc.product_kind = '体验卡'`（反死分支回归）
+  2. 会员客 ① 分支必须含 `ref_sale_order_id` 回款累计
+  3. ELSE 兜底必须是 `'流量客'`
+  4. 两处 CASE SQL 规范化空白后逐字一致（镜像守卫，防止单边漂移）
+  5. 不能再出现旧"② ③ 分支只查 sale_orders 无 JOIN"的死分支模式
+- **结果**: 11 个断言全通过，执行时间 ~110ms
+- **§7.1 清单映射**: ticket §7.1 列出的 11 个数据场景（"无销售单 → 流量客"、"仅体验卡 → 体验客"等）本质上是集成测试，需连真实 PG 灌数据跑。本次落地仅做了源文件守卫，**11 个数据场景的集成测试单独追加为后续任务**。
+
+### 已知 pre-existing 测试故障（与本修复无关）
+
+跑 staffApi 全量 vitest 时，`allocation` / `product` / `service` 三个文件共 7 个测试失败。通过在 pre-fix 版本上跑同一批测试确认结果**完全一致**，属于 baseline 故障，非本修复引入。本 ticket 不处理，独立清理。
+
+### §7.2 数据校验（待手动执行）
+
+本地 PG 5433/fengyu_wxapp 在执行时未运行（docker daemon 未启动），两条校验 SQL 未自动执行。需在**部署前后各跑一次**并回填结果：
+
+```bash
+# 示例命令（替换为实际连接参数）
+psql "$DEV_PG_URL" <<'SQL'
+-- 查询 1: 当前 customer_type='体验客' 的顾客应只买过体验卡（预期 0 行）
+SELECT cw.user_id, cw.phone, cw.customer_type
+FROM client_wechat_users cw
+WHERE cw.customer_type = '体验客'
+  AND EXISTS (
+    SELECT 1 FROM sale_orders o
+    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    JOIN product_skus sk ON sk.sku_id = si.sku_id
+    JOIN product_categories pc ON pc.category_id = sk.category_id
+    WHERE o.client_user_id = cw.user_id
+      AND o.status IN ('已支付','已完成')
+      AND o.sale_order_type = '销售单'
+      AND pc.product_kind <> '体验卡'
+  );
+
+-- 查询 2: 当前 '小美客'/'流量客' 中本应是"体验客"的顾客数（历史被死分支吞掉的群体）
+SELECT COUNT(*) AS should_be_experience
+FROM client_wechat_users cw
+WHERE cw.customer_type IN ('小美客','流量客')
+  AND EXISTS (
+    SELECT 1 FROM sale_orders o
+    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    JOIN product_skus sk ON sk.sku_id = si.sku_id
+    JOIN product_categories pc ON pc.category_id = sk.category_id
+    WHERE o.client_user_id = cw.user_id
+      AND o.status IN ('已支付','已完成')
+      AND o.sale_order_type = '销售单'
+      AND pc.product_kind = '体验卡'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM sale_orders o
+    JOIN sale_items si ON si.sale_order_id = o.sale_order_id
+    JOIN product_skus sk ON sk.sku_id = si.sku_id
+    JOIN product_categories pc ON pc.category_id = sk.category_id
+    WHERE o.client_user_id = cw.user_id
+      AND o.status IN ('已支付','已完成')
+      AND o.sale_order_type = '销售单'
+      AND pc.product_kind <> '体验卡'
+  );
+SQL
+```
+
+| 时机 | 查询 1 结果 | 查询 2 结果 |
+|---|---|---|
+| 部署前 | _待填_ | _待填_ |
+| 部署后 | _待填_（应仍为 0） | _待填_（应与部署前一致，修复不回填历史，只在下次 recalc 时自动升级） |
+
+### 部署（待执行）
+
+- [ ] staffApi 部署（`tcb fn code update`，**不要 `--force`**，参考 `project_cloudbase_envvar_risk`）
+- [ ] payNotify 部署（同上）
+- [ ] 环境变量无变动本次无需校验
+- 部署时间: _待填_
+- 部署方式: _待填（cloudbase-mcp / tcb CLI）_
+
+### 手工回归（待执行）
+
+按 §7.3 清单：
+
+- [ ] staffApi `order.create` 体验卡 68 元 → `customer_type = '体验客'`
+- [ ] staffApi `order.create` 普通 500 元 → 升级为 `'小美客'`
+- [ ] staffApi `order.create` 3000 元 → 升级为 `'会员客'`，`became_member_at = NOW()`
+- [ ] clientApi 微信支付回调 → payNotify 镜像等价验证
+- [ ] 幂等性：同一顾客连续重算 2 次结果稳定
+
+### 相关 PR / cnb MR
+
+_待填_
