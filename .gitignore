@@ -32,3 +32,7 @@ cloudbaserc.json
 delivery/
 .tree/
 .claude/worktrees/*
+
+# Progress reports (PDF output)
+reports/
+.claude/last-report.json
