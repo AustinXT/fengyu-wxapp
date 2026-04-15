@@ -90,7 +90,10 @@ DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm 
 2026-04-10 执行了一次 drizzle-kit baseline reset。背景、过程、归档位置、follow-up 任务见
 `db/migrations/_archive_pre_baseline_2026_04/README.md`。在此之前的迁移历史通过 git log 和归档目录查询。
 
-**注意**：截至 2026-04-10，**只有 5434/fengyu（测试库）完成了 baseline reset**。5433/fengyu_wxapp（开发库）还停留在约 2026-02 的 schema 状态，drift 清单见 `db/scripts/follow-up-5433-drift.txt`，将作为独立任务单独修复。在 5433 的 drift 修复完成前，**小心**任何需要跨库的操作。
+**5433 drift 修复（同日完成）**：5433/fengyu_wxapp 的 schema drift 已通过 `db/scripts/5433-converge.sql`
+一次性 delta DDL 修复，并用 `db/scripts/reset-drizzle-journal.js` 对齐 journal。两库的 `drizzle.__drizzle_migrations`
+现在完全一致（同一 baseline hash + created_at）。drift 历史清单保留在 `db/scripts/follow-up-5433-drift.txt` 文件头加了 RESOLVED 标记。
+全量备份位于 `~/backups/5433-before-drift-fix-20260410.dump`（50MB custom format）。
 
 ## 临时 PG（仅用于 migration 验证）
 

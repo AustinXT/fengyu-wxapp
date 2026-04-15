@@ -1,3 +1,15 @@
+# RESOLVED 2026-04-10
+# 修复方式：db/scripts/5433-converge.sql（一次性 delta DDL，已 apply 并 COMMIT）
+# Journal 对齐：db/scripts/reset-drizzle-journal.js 已对 5433 跑过 --yes
+# 后置校验：5433 和 5434 的 drizzle.__drizzle_migrations 完全一致
+#          （id=1 hash=fc42e4114cf6a5d6... created_at=1775758338453）
+# 全量备份：~/backups/5433-before-drift-fix-20260410.dump（50MB custom format，310 TOC）
+#
+# 本文件作为历史记录保留。所有列出的真实结构差异（enum 值集、列添加/删除、表 DROP）
+# 都已在 5433 上修复；剩余差异（FK 命名 _fkey/_fk、index opclass、约束表达式格式）
+# 是 drizzle introspect 的语义噪音，按 _archive_pre_baseline_2026_04/README.md 第 64-66 行
+# 的 cosmetic 决议，不修复。
+#
 # Semantic diff (EXPECTED = schema/*.ts generated; PROD = introspected from 47.113.202.7)
 
 ### ENUMS
