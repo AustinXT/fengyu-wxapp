@@ -32,6 +32,8 @@ interface CartItem {
   subtotal: string;
   /** 预计算：price × quantity - discount */
   itemTotal: string;
+  /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
+  refBundleId?: string;
 }
 
 interface Category {
@@ -169,6 +171,9 @@ Page({
     spuList: [] as DisplayItem[],
     // 组合套餐（BundlePicker 数据源）
     bundleSpus: [] as BundleSpu[],
+    skuMap: {} as Record<string, SkuItem>,
+    /** 卡类型（体验卡/充值卡）→ grid 简化布局 */
+    isCardType: false,
     // 购物车
     cart: [] as CartItem[],
     cartCount: 0,
@@ -292,7 +297,10 @@ Page({
       this._allSkus = rawSkus;
       this._spuCache = {};
 
-      this.setData({ bundleSpus, catalogLoading: false });
+      const skuMap: Record<string, SkuItem> = {};
+      for (const s of rawSkus) skuMap[s.skuId] = s;
+
+      this.setData({ bundleSpus, skuMap, catalogLoading: false });
       this.applyKindChoice(this.data.productKindChoice);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
@@ -306,6 +314,9 @@ Page({
    * 组合套餐不走此路径（由 BundlePicker 接管，主区域通过 wx:if 切视图）
    */
   applyKindChoice(choice: ProductKindChoice) {
+    const isCardType = choice === '体验卡' || choice === '充值卡';
+    this.setData({ isCardType });
+
     if (choice === '组合套餐') {
       this.setData({
         categories: [],
@@ -424,6 +435,20 @@ Page({
     }
   },
 
+  // ===== BundlePicker 选完后覆盖购物车 =====
+
+  onBundlePickerSelect(e: WechatMiniprogram.CustomEvent) {
+    const { cartItems, bundleName } = (e.detail || {}) as { cartItems?: CartItem[]; bundleName?: string };
+    if (!cartItems || cartItems.length === 0) return;
+    // 组合套餐独占：直接覆盖 cart（保留 §2.1 决策）
+    this.updateCart(cartItems);
+    wx.showToast({
+      title: bundleName ? `${bundleName} 已加入` : '已加入购物车',
+      icon: 'success',
+      duration: 1000,
+    });
+  },
+
   // ===== SPU 点击 → 跳转详情页 =====
 
   onSpuTap(e: WechatMiniprogram.TouchEvent) {
@@ -433,8 +458,8 @@ Page({
     // SKU 扁平化后直接加入购物车（qty=1）
     const cart = [...this.data.cart];
 
-    // 购物车中有组合套餐商品时不允许混入其他商品
-    if (item.productKind !== '组合套餐' && cart.some(c => c.productType === '组合套餐')) {
+    // 购物车中有组合套餐行（refBundleId / productType='组合套餐'）时不允许混入其他商品
+    if (cart.some(c => c.refBundleId || c.productType === '组合套餐')) {
       wx.showToast({ title: '组合套餐订单需单独下单', icon: 'none' });
       return;
     }
@@ -470,6 +495,13 @@ Page({
   onCartItemRemove(e: WechatMiniprogram.TouchEvent) {
     const skuId = e.currentTarget.dataset.skuId as string;
     const item = this.data.cart.find(c => c.skuId === skuId);
+    // PR-B: 组合套餐生成的多行（refBundleId 同源）整组清空
+    if (item?.refBundleId) {
+      const refId = item.refBundleId;
+      const cart = this.data.cart.filter(c => c.refBundleId !== refId);
+      this.updateCart(cart);
+      return;
+    }
     if (item?.productType === '组合套餐') {
       wx.showToast({ title: '组合套餐项目不可删除', icon: 'none' });
       return;

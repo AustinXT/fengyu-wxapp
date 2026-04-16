@@ -14,110 +14,129 @@
 
   <!-- 分类 + 商品主区域 -->
   <view class="catalog-layout">
-    <!-- 左侧：分类侧边栏 -->
-    <scroll-view class="sidebar-scroll" scroll-y>
-      <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
-        <van-sidebar-item
-          wx:for="{{categories}}"
-          wx:key="id"
-          title="{{item.name}}"
+
+    <!-- 组合套餐：独立 BundlePicker 子视图（隐藏侧边栏）-->
+    <block wx:if="{{productKindChoice === '组合套餐'}}">
+      <view class="bundle-picker-wrap">
+        <bundle-picker
+          bundles="{{bundleSpus}}"
+          skuMap="{{skuMap}}"
+          bind:select="onBundlePickerSelect"
         />
-      </van-sidebar>
-    </scroll-view>
-
-    <!-- 右侧：商品列表 -->
-    <scroll-view class="product-scroll" scroll-y>
-      <!-- 骨架屏 -->
-      <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
-        <van-skeleton title avatar row="3" />
-        <van-skeleton title avatar row="3" style="margin-top:24rpx" />
       </view>
+    </block>
 
-      <!-- 空态 -->
-      <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
-        <van-empty description="暂无商品" />
-      </view>
-      <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
-        <van-empty description="该分类暂无商品" />
-      </view>
+    <!-- 其他类型：侧边栏 + SKU 列表 -->
+    <block wx:else>
+      <!-- 左侧：分类侧边栏 -->
+      <scroll-view class="sidebar-scroll" scroll-y>
+        <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
+          <van-sidebar-item
+            wx:for="{{categories}}"
+            wx:key="id"
+            title="{{item.name}}"
+          />
+        </van-sidebar>
+      </scroll-view>
 
-      <!-- SPU 卡片列表 -->
-      <view wx:else>
-        <view class="spu-list-inner">
-          <view
-            class="spu-card"
-            wx:for="{{spuList}}"
-            wx:key="spuId"
-            bindtap="onSpuTap"
-            data-spu="{{item}}"
-          >
-            <!-- 商品封面 -->
-            <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
-              <van-icon name="photo-o" size="64rpx" color="#C0322A" />
-            </view>
-            <image
-              wx:else
-              class="spu-cover"
-              src="{{item.cover_image}}"
-              mode="aspectFill"
-              lazy-load
-            />
+      <!-- 右侧：商品列表 -->
+      <scroll-view class="product-scroll" scroll-y>
+        <!-- 骨架屏 -->
+        <view wx:if="{{catalogLoading && spuList.length === 0}}" class="skeleton-wrap">
+          <van-skeleton title avatar row="3" />
+          <van-skeleton title avatar row="3" style="margin-top:24rpx" />
+        </view>
 
-            <!-- 商品信息 -->
-            <view class="spu-body">
-              <!-- 标签行 -->
-              <view class="spu-tags" wx:if="{{item.is_recommend}}">
-                <van-tag color="#C0322A">推荐</van-tag>
-              </view>
+        <!-- 空态 -->
+        <view wx:elif="{{spuList.length === 0 && categories.length === 0}}">
+          <van-empty description="暂无商品" />
+        </view>
+        <view wx:elif="{{spuList.length === 0 && categories.length > 0}}">
+          <van-empty description="该分类暂无商品" />
+        </view>
 
-              <!-- 商品名 -->
-              <text class="spu-name">{{item.spuName}}</text>
-
-              <!-- 底部：价格 + 按钮 -->
-              <view class="spu-footer">
-                <view class="price-group">
+        <!-- SPU 列表（isCardType=true 时 grid 简化布局；否则平铺卡片）-->
+        <view wx:else>
+          <view class="spu-list-inner {{isCardType ? 'spu-list-inner--grid' : ''}}">
+            <view
+              class="{{isCardType ? 'sku-grid-item' : 'spu-card'}}"
+              wx:for="{{spuList}}"
+              wx:key="spuId"
+              bindtap="onSpuTap"
+              data-spu="{{item}}"
+            >
+              <!-- 卡类型 grid：简化为"名称 + 金额"按钮块 -->
+              <block wx:if="{{isCardType}}">
+                <text class="sku-grid-name">{{item.spuName}}</text>
+                <view class="sku-grid-price">
                   <text class="price-symbol">¥</text>
-                  <text class="price-integer">{{item.priceFrom}}</text>
-                  <text class="price-start">起</text>
+                  <text class="price-integer">{{item.price}}</text>
                 </view>
-                <view class="spu-add-btn">
-                  <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+              </block>
+
+              <!-- 普通商品：保留原图文卡片 -->
+              <block wx:else>
+                <view class="spu-cover cover-placeholder" wx:if="{{!item.cover_image}}">
+                  <van-icon name="photo-o" size="64rpx" color="#C0322A" />
                 </view>
+                <image
+                  wx:else
+                  class="spu-cover"
+                  src="{{item.cover_image}}"
+                  mode="aspectFill"
+                  lazy-load
+                />
+                <view class="spu-body">
+                  <view class="spu-tags" wx:if="{{item.is_recommend}}">
+                    <van-tag color="#C0322A">推荐</van-tag>
+                  </view>
+                  <text class="spu-name">{{item.spuName}}</text>
+                  <view class="spu-footer">
+                    <view class="price-group">
+                      <text class="price-symbol">¥</text>
+                      <text class="price-integer">{{item.price}}</text>
+                    </view>
+                    <view class="spu-add-btn">
+                      <van-icon name="plus" size="36rpx" color="#FFFFFF" />
+                    </view>
+                  </view>
+                </view>
+              </block>
+            </view>
+          </view>
+
+          <!-- 购物车已选项目（内联） -->
+          <view wx:if="{{cart.length > 0}}" class="cart-items-inline">
+            <text class="cart-inline-title">已添加项目</text>
+            <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
+              <view class="cart-item-info">
+                <text class="cart-item-name">{{item.spuName}}</text>
+                <text class="cart-item-spec">{{item.specName}}</text>
+              </view>
+              <view class="cart-item-right">
+                <text class="cart-item-price">¥{{item.itemTotal}}</text>
+                <van-stepper
+                  wx:if="{{!item.refBundleId}}"
+                  value="{{item.quantity}}"
+                  min="1"
+                  max="10"
+                  data-sku-id="{{item.skuId}}"
+                  bind:change="onCartQtyChange"
+                />
+                <van-icon
+                  name="delete-o" size="36rpx" color="#D94040"
+                  data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
+                />
               </view>
             </view>
           </view>
         </view>
-
-        <!-- 购物车已选项目（内联） -->
-        <view wx:if="{{cart.length > 0}}" class="cart-items-inline">
-          <text class="cart-inline-title">已添加项目</text>
-          <view class="cart-item" wx:for="{{cart}}" wx:key="skuId">
-            <view class="cart-item-info">
-              <text class="cart-item-name">{{item.spuName}}</text>
-              <text class="cart-item-spec">{{item.specName}}</text>
-            </view>
-            <view class="cart-item-right">
-              <text class="cart-item-price">¥{{item.itemTotal}}</text>
-              <van-stepper
-                value="{{item.quantity}}"
-                min="1"
-                max="10"
-                data-sku-id="{{item.skuId}}"
-                bind:change="onCartQtyChange"
-              />
-              <van-icon
-                name="delete-o" size="36rpx" color="#D94040"
-                data-sku-id="{{item.skuId}}" catchtap="onCartItemRemove"
-              />
-            </view>
-          </view>
-        </view>
-      </view>
-    </scroll-view>
+      </scroll-view>
+    </block>
   </view>
 
-  <!-- 底部操作栏 -->
-  <view class="bottom-bar" wx:if="{{categories.length > 0}}">
+  <!-- 底部操作栏（组合套餐视图或普通分类有数据时显示）-->
+  <view class="bottom-bar" wx:if="{{categories.length > 0 || productKindChoice === '组合套餐'}}">
     <view class="bottom-bar-mid">
       <text class="bottom-bar-count" wx:if="{{cartCount > 0}}">已选 {{cartCount}} 项</text>
       <text class="bottom-bar-total">¥{{cartTotal}}</text>
