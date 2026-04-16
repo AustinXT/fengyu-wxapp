@@ -36,7 +36,12 @@ function _formatCategory(r) {
   }
 }
 
-/** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories） */
+/** 查询 SKU 列表并格式化为前端格式（直接查 product_skus JOIN product_categories）
+ *
+ * isBundle 字段说明：SKU 本身不持有 is_bundle，bundle 信息属于 products 层。
+ * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
+ * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
+ */
 async function _queryFormattedSkuList(categoryId, productKind) {
   const params = []
   const conditions = [
@@ -59,7 +64,13 @@ async function _queryFormattedSkuList(categoryId, productKind) {
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
-           pc.category_name, pc.product_kind, pc.sales_category
+           pc.category_name, pc.product_kind, pc.sales_category,
+           COALESCE((
+             SELECT bool_or(p.is_bundle)
+             FROM mall_product_skus mps
+             JOIN products p ON mps.product_id = p.product_id
+             WHERE mps.sku_id = sk.sku_id
+           ), false) AS is_bundle
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     ${whereClause}
@@ -79,14 +90,75 @@ async function _queryFormattedSkuList(categoryId, productKind) {
     productType: sk.product_type,
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
+    isBundle: !!sk.is_bundle,
   }))
+}
+
+/**
+ * 查询套餐商品（bundle SPU）及其 N 选 M 分组
+ *
+ * 返回结构：
+ *   [{ productId, name, coverImage, price, specialPrice, description,
+ *      groups: [{ id, groupName, pickCount, skuIds:[...] }] }]
+ *
+ * 供前端 BundlePicker 子视图使用（Step 1 选"组合套餐"商品类型时）。
+ */
+async function _queryMallBundleGroups() {
+  const productRows = await pg.query(`
+    SELECT p.product_id, p.name, p.cover_image, p.description,
+           p.price, p.special_price, p.sort_order
+    FROM products p
+    WHERE p.is_bundle = true
+      AND p.is_enabled = true
+      AND p.is_visible = true
+    ORDER BY p.sort_order ASC
+  `)
+
+  if (productRows.length === 0) return []
+
+  const productIds = productRows.map(r => r.product_id)
+  const groupRows = await pg.query(`
+    SELECT id, product_id, group_name, pick_count, sort_order
+    FROM mall_bundle_groups
+    WHERE product_id = ANY($1)
+    ORDER BY sort_order ASC
+  `, [productIds])
+
+  const skuLinkRows = await pg.query(`
+    SELECT product_id, sku_id, bundle_group_id, bundle_price, sort_order
+    FROM mall_product_skus
+    WHERE product_id = ANY($1)
+    ORDER BY sort_order ASC
+  `, [productIds])
+
+  return productRows.map(p => {
+    const groups = groupRows
+      .filter(g => g.product_id === p.product_id)
+      .map(g => ({
+        id: g.id,
+        groupName: g.group_name,
+        pickCount: g.pick_count,
+        skuIds: skuLinkRows
+          .filter(s => s.product_id === p.product_id && s.bundle_group_id === g.id)
+          .map(s => s.sku_id),
+      }))
+    return {
+      productId: p.product_id,
+      name: p.name,
+      coverImage: p.cover_image,
+      description: p.description,
+      price: Number(p.price) || 0,
+      specialPrice: p.special_price ? Number(p.special_price) : null,
+      groups,
+    }
+  })
 }
 
 // ===== 路由处理器 =====
 
 /**
  * 开单页初始化（合并接口）
- * 一次返回 categories + 第一个分类的 skuList
+ * 一次返回 categories + 第一个分类的 skuList + 套餐分组
  */
 async function shopInit(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -99,7 +171,9 @@ async function shopInit(ctx) {
     skuList = await _queryFormattedSkuList(categories[0].id, null)
   }
 
-  ctx.result = { categories, skuList }
+  const mallBundleGroups = await _queryMallBundleGroups()
+
+  ctx.result = { categories, skuList, mallBundleGroups }
 }
 
 /**
