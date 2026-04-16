@@ -15,7 +15,7 @@ describe('auth.login', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'staff-openid-001' })
   })
 
-  test('已注册的活跃员工返回完整信息', async () => {
+  test('已注册的活跃员工返回完整信息（含 P2-14 skills）', async () => {
     pg.query
       .mockResolvedValueOnce([{
         employee_id: 'emp-001',
@@ -23,6 +23,7 @@ describe('auth.login', () => {
         name: '张三',
         position_name: '门店经理',
         is_resigned: false,
+        skills: ['美容师', '推广师'],
         store_id: 'store-001',
         store_name: '凤御测试店',
         market_name: '华东市场',
@@ -39,6 +40,7 @@ describe('auth.login', () => {
     expect(ctx.result.staffName).toBe('张三')
     expect(ctx.result.position).toBe('门店经理')
     expect(ctx.result.roles).toEqual(['manager'])
+    expect(ctx.result.skills).toEqual(['美容师', '推广师'])
     expect(ctx.result.boundStoreName).toBe('凤御测试店')
     expect(ctx.result.boundStoreId).toBe('store-001')
   })

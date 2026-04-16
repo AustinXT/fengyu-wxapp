@@ -62,14 +62,14 @@ describe('staff.list', () => {
 // staff.departments
 // ============================================================
 describe('staff.departments', () => {
-  test('返回按部门分组的员工', async () => {
+  test('返回按部门分组的员工（含 P2-14 skills）', async () => {
     const ctx = createManagerCtx()
     pg.query.mockResolvedValueOnce([
-      { employee_id: 'emp-001', name: '张三', position: '美容师', department: '美容部' },
-      { employee_id: 'emp-002', name: '李四', position: '美容师', department: '美容部' },
+      { employee_id: 'emp-001', name: '张三', position: '美容师', skills: ['美容师'], department: '美容部' },
+      { employee_id: 'emp-002', name: '李四', position: '美容师', skills: ['美容师', '推广师'], department: '美容部' },
     ])
     pg.query.mockResolvedValueOnce([
-      { employee_id: 'emp-010', name: '王五', position: '顾问', department: '咨询部', store_name: '凤御A店' },
+      { employee_id: 'emp-010', name: '王五', position: '顾问', skills: [], department: '咨询部', store_name: '凤御A店' },
     ])
 
     await staffRoutes.departments(ctx)
@@ -77,9 +77,13 @@ describe('staff.departments', () => {
     expect(ctx.result.departments).toHaveLength(2)
     const beautyDept = ctx.result.departments.find(d => d.departmentName === '美容部')
     expect(beautyDept.members).toHaveLength(2)
+    // P2-14：每个 member 都带 skills，供前端按 skill 重新桶化
+    expect(beautyDept.members[0].skills).toEqual(['美容师'])
+    expect(beautyDept.members[1].skills).toEqual(['美容师', '推广师'])
     const otherDept = ctx.result.departments.find(d => d.departmentName === '咨询部')
     expect(otherDept.members).toHaveLength(1)
     expect(otherDept.members[0].storeName).toBe('凤御A店')
+    expect(otherDept.members[0].skills).toEqual([])
   })
 
   test('无美容部时只返回其他部门', async () => {
