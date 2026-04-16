@@ -50,6 +50,7 @@ describe('PERMISSION_MATRIX', () => {
     expect(adminActions).toContain('permission:assign_admin')
 
     expect(adminActions).toContain('operation_log:list')
+    expect(adminActions).toContain('card_transaction:list')
   })
 
   it('admin 不碰业务数据（无 sale_order/service/appointment 权限）', () => {
@@ -70,6 +71,7 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('appointment:list')
     expect(actions).toContain('customer:list')
     expect(actions).toContain('sale_item:list')
+    expect(actions).toContain('card_transaction:list')
   })
 
   it('finance 仅有只读权限', () => {
@@ -77,6 +79,7 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
     expect(actions).toContain('sale_item:list')
+    expect(actions).toContain('card_transaction:list')
     expect(actions).not.toContain('sale_order:create')
     expect(actions).not.toContain('allocation:save')
   })
@@ -88,12 +91,16 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('permission:assign')
     // hr 不能分配 admin
     expect(actions).not.toContain('permission:assign_admin')
+    // hr 不看充值卡流水
+    expect(actions).not.toContain('card_transaction:list')
   })
 
   it('product 管理商品和优惠券', () => {
     const actions = PERMISSION_MATRIX.product
     expect(actions).toContain('product:create')
     expect(actions).toContain('coupon:create')
+    // product 不看充值卡流水
+    expect(actions).not.toContain('card_transaction:list')
   })
 
   it('customer_mgr 只管顾客（含卡包只读）', () => {
@@ -102,6 +109,8 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('customer:update')
     expect(actions).toContain('sale_item:list')
     expect(actions).not.toContain('sale_order:list')
+    // customer_mgr 不看充值卡流水（默认保守）
+    expect(actions).not.toContain('card_transaction:list')
   })
 
   it('staff 无权限（不可登录管理后台）', () => {

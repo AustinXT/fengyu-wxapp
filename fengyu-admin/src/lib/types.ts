@@ -116,6 +116,34 @@ export interface PointTransactionSummary {
   userCount: number
 }
 
+/** 充值卡流水 */
+export interface AdminCardTransaction {
+  id: number
+  cardId: string
+  userId: string
+  type: '充值' | '扣款'
+  amount: number
+  balance: number
+  refOrderId: string | null
+  createdAt: string
+  // joined
+  customerName: string | null
+  customerPhone: string | null
+  memberLevel: string | null
+  storeId: string
+  storeName: string | null
+  marketName: string | null
+}
+
+/** 充值卡流水汇总统计 */
+export interface CardTransactionSummary {
+  totalRecharge: number
+  totalDeduct: number
+  netChange: number
+  txnCount: number
+  userCount: number
+}
+
 export type PositionScope = '总部' | '市场' | '门店'
 
 export interface Position {
