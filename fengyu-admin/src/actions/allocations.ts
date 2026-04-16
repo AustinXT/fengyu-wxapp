@@ -160,6 +160,9 @@ function getPoolKey(roleType: string): string {
 /** 合法的分配比例（整十百分比） */
 const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
 
+/** 池金额合计与 received 比较的容差（整十档 × 浮点舍入） */
+const AMOUNT_TOLERANCE = 0.02
+
 /** 批量保存分配（先作废旧的，再插入新的） */
 export async function batchSaveAllocations(
   saleOrderId: string,
@@ -197,16 +200,23 @@ export async function batchSaveAllocations(
       return { success: false, message: '明细项不属于该订单，请刷新后重试' }
     }
 
-    // 校验分配比例为整十
-    for (const a of allocations) {
+    // 校验分配比例为整十 + 服务端重算 totalAmount（P2-14：忽略前端传入值防篡改）
+    const enriched = allocations.map((a) => {
       if (!VALID_RATIOS.has(a.allocationRatio)) {
-        return { success: false, message: '分配比例必须为整十百分比（10%~100%）' }
+        return { ...a, totalAmount: '', _error: '分配比例必须为整十百分比（10%~100%）' }
       }
+      const received = itemReceivedMap.get(a.saleItemId) || 0
+      const totalAmount = (received * Number(a.allocationRatio)).toFixed(2)
+      return { ...a, totalAmount }
+    })
+    const ratioError = enriched.find((e) => (e as any)._error)
+    if (ratioError) {
+      return { success: false, message: (ratioError as any)._error }
     }
 
     // 按 (saleItemId, roleType) 分池校验（P2-14 Q5：三角色独立池）
-    const pools = new Map<string, typeof allocations>()
-    for (const a of allocations) {
+    const pools = new Map<string, typeof enriched>()
+    for (const a of enriched) {
       const key = `${a.saleItemId}|${getPoolKey(a.roleType)}`
       const pool = pools.get(key) || []
       pool.push(a)
@@ -225,6 +235,13 @@ export async function batchSaveAllocations(
         return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
+      // 池内总金额合计 ≤ received（容差 AMOUNT_TOLERANCE，P2-14 Q5）
+      const itemReceived = itemReceivedMap.get(pool[0].saleItemId) || 0
+      const amountSum = pool.reduce((s, a) => s + Number(a.totalAmount), 0)
+      if (amountSum > itemReceived + AMOUNT_TOLERANCE) {
+        return { success: false, message: '分配金额合计超过商品金额' }
+      }
+
       // 同池内不能重复分配同一员工
       const empIds = new Set<string>()
       for (const a of pool) {
@@ -236,6 +253,14 @@ export async function batchSaveAllocations(
     }
   }
 
+  // 构造 INSERT 用的 enriched 数组（allocations.length === 0 时为空，下面事务分支会处理）
+  const finalAllocations = allocations.length > 0
+    ? allocations.map((a) => ({
+        ...a,
+        totalAmount: ((itemReceivedMap.get(a.saleItemId) || 0) * Number(a.allocationRatio)).toFixed(2),
+      }))
+    : []
+
   // 事务：作废旧分配 + 插入新分配 + 更新订单状态，原子提交
   try {
     await db.transaction(async (tx) => {
@@ -246,14 +271,14 @@ export async function batchSaveAllocations(
         ) AND is_void = false
       `)
 
-      if (allocations.length > 0) {
+      if (finalAllocations.length > 0) {
         await tx.insert(saleAllocations).values(
-          allocations.map((a) => ({
+          finalAllocations.map((a) => ({
             saleItemId: a.saleItemId,
             employeeId: a.employeeId,
             roleType: a.roleType,
             allocationRatio: a.allocationRatio,
-            totalAmount: a.totalAmount,
+            totalAmount: a.totalAmount, // 服务端重算值（P2-14）
             departmentName: a.departmentName || null,
           }))
         )
