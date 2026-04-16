@@ -1,4 +1,4 @@
-// utils/allocation-calc.ts — 提成计算
+// packageOrder/utils/allocation-calc.ts — 提成计算
 
 interface RateRow {
   department: string

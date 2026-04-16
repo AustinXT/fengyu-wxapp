@@ -1,7 +1,7 @@
 // packageOrder/revenue-allocation/revenue-allocation.ts — 提成分配（支付后）
 import { callStaffApi } from '../../utils/cloud';
 import { requireManager } from '../../utils/role';
-import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../../utils/allocation-calc';
+import { lookupRate as _lookupRate, computeSummary as _computeSummary } from '../utils/allocation-calc';
 
 interface OrderItem {
   sale_item_id: string;

@@ -1,4 +1,4 @@
-import { lookupRate, computeSummary } from '../../utils/allocation-calc'
+import { lookupRate, computeSummary } from '../../packageOrder/utils/allocation-calc'
 
 describe('lookupRate', () => {
   // P2-14：beautyRates 键改为 roleType（与 cloudfn ratesByRole 一致）
