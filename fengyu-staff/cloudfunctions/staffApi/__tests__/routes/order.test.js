@@ -59,7 +59,8 @@ describe('order.create', () => {
     expect(ctx.result).toBeDefined()
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
     expect(ctx.result.totalAmount).toBe(1000)
-    expect(ctx.result.status).toBe('待支付')
+    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
+    expect(ctx.result.status).toBe('待确认收款')
     expect(ctx.result.message).toBe('开单成功')
   })
 
@@ -293,7 +294,8 @@ describe('order.create', () => {
 
     // 1000 - 200 = 800（couponDiscount=200，满足 min_spend=500）
     expect(ctx.result.totalAmount).toBe(800)
-    expect(ctx.result.status).toBe('待支付')
+    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
+    expect(ctx.result.status).toBe('待确认收款')
   })
 
   test('优惠券不存在或已过期时报错（couponRows.length === 0）', async () => {
@@ -560,7 +562,8 @@ describe('order.create', () => {
 
     // 内部单半价：Math.round(1000 * 50) / 100 = 500
     expect(ctx.result.totalAmount).toBe(500)
-    expect(ctx.result.status).toBe('待支付')
+    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
+    expect(ctx.result.status).toBe('待确认收款')
   })
 
   // 已废弃：'promotion'/'组合套餐' 订单类型在 PR-C（commit 4966b67/fb618ea）重构中移除
@@ -623,6 +626,101 @@ describe('order.create', () => {
     await orderRoutes.create(ctx)
 
     expect(ctx.result.totalAmount).toBe(800)  // 使用 special_price 而非 price
+  })
+
+  // ===== PR-D1：paymentMethod 行为对齐 admin =====
+
+  test('销售单 + 线下支付 → status=待确认收款', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      saleOrderType: '销售单',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([])  // 未注册
+      .mockResolvedValueOnce([])  // 无待支付
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_id: 'prod-001',
+        product_type: '疗程卡',
+        spec_name: '基础款',
+        price: '1000.00',
+        session_count: 10,
+        product_name: '面部护理',
+        sales_category: '自采自销',
+      }])
+      .mockResolvedValueOnce([])  // generateOrderNo
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('待确认收款')
+    expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
+  })
+
+  test('销售单 + 微信支付 → status=待支付', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '微信',
+      saleOrderType: '销售单',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_id: 'prod-001',
+        product_type: '疗程卡',
+        spec_name: '基础款',
+        price: '1000.00',
+        session_count: 10,
+        product_name: '面部护理',
+        sales_category: '自采自销',
+      }])
+      .mockResolvedValueOnce([])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('待支付')
+  })
+
+  test('非法 paymentMethod=支付宝 被拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '支付宝',
+    })
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*支付方式/)
+  })
+
+  test('非法 paymentMethod=wechat 被拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '测试顾客',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: 'wechat',
+    })
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*支付方式/)
   })
 })
 
