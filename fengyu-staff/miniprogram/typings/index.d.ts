@@ -4,6 +4,7 @@ interface IAppOption {
     staffName: string;
     position: string;
     roles: string[];
+    skills: string[]; // P2-14：技能标签（用于业绩分配角色推断）
     boundStoreName: string;
     boundStoreId: string;
     phone: string;
@@ -32,6 +33,7 @@ interface IAppOption {
     staffName?: string;
     position?: string;
     roles?: string[];
+    skills?: string[];
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;
