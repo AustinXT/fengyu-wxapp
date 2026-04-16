@@ -162,21 +162,18 @@ describe('order.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已有待支付订单/)
   })
 
-  test('无效 orderType 拒绝', async () => {
+  test('无效 saleOrderType 拒绝', async () => {
+    // 重构后入参用 saleOrderType（中文枚举：销售单/内部单），原 orderType 已废弃
     const ctx = createManagerCtx({
       clientPhone: '138',
       clientName: 'X',
       items: [{ skuId: 'sku-001', quantity: 1 }],
       paymentMethod: '线下',
-      orderType: '非法类型',
+      saleOrderType: '非法类型',
     })
 
-    pg.query
-      .mockResolvedValueOnce([]) // 未注册
-      .mockResolvedValueOnce([]) // 无待支付
-
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*orderType/)
+      .rejects.toThrow(/INVALID_PARAMS.*saleOrderType/)
   })
 
   test('SKU 不存在时拒绝', async () => {
@@ -536,13 +533,13 @@ describe('order.create', () => {
     await expect(orderRoutes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*优惠券已失效/)
   })
 
-  test('内部单统一半价（orderType=internal，line 127 TRUE 分支）', async () => {
+  test('内部单统一半价（saleOrderType=内部单）', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '内部员工',
       items: [{ skuId: 'sku-001', quantity: 1 }],
       paymentMethod: '线下',
-      orderType: 'internal',
+      saleOrderType: '内部单',
     })
 
     pg.query
@@ -566,27 +563,8 @@ describe('order.create', () => {
     expect(ctx.result.status).toBe('待支付')
   })
 
-  test('组合套餐订单包含非套餐商品时拒绝（line 166 TRUE 分支）', async () => {
-    const ctx = createManagerCtx({
-      clientPhone: '13800001111',
-      clientName: '顾客',
-      items: [{ skuId: 'sku-001', quantity: 1 }],
-      paymentMethod: '线下',
-      orderType: 'promotion',
-    })
-
-    pg.query
-      .mockResolvedValueOnce([])    // 未注册
-      .mockResolvedValueOnce([])    // 无待支付订单
-      .mockResolvedValueOnce([{
-        sku_id: 'sku-001', product_id: 'prod-001', product_type: '家居产品',
-        spec_name: '标准', price: '500.00', special_price: null, session_count: null,
-        product_name: '护肤品', sales_category: '自采自销', product_kind: '家居产品',
-      }])
-
-    await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*组合套餐/)
-  })
+  // 已废弃：'promotion'/'组合套餐' 订单类型在 PR-C（commit 4966b67/fb618ea）重构中移除
+  // 现在 saleOrderType 仅 销售单/内部单，bundle 信息由商品自身 is_bundle 字段表达，不在订单层校验
 
   test('已注册顾客成功开单（单品 SKU，session_count=null）', async () => {
     const ctx = createManagerCtx({
@@ -1818,156 +1796,126 @@ describe('order.createRepayment', () => {
 // ============================================================
 // order.createConversion
 // ============================================================
+// commit 977237c 重构 createConversion 入参（convertOutSaleItemIds: string[] 整张卡折抵 +
+// 新增 clientUserId/paymentMethod 必填 + 差额负数充值储值卡）。下列测试已按新 API 重写。
 describe('order.createConversion', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('创建转换单成功', async () => {
+  test('创建转换单成功（差额>0 → 待确认收款，新 API 入参）', async () => {
     const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-ORIG-001',
-      convertOutItems: [{ saleItemId: 'item-001', convertQuantity: 1 }],
-      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['item-001'],
+      convertInItems: [{ skuId: 'sku-new', quantity: 10 }],
+      paymentMethod: '线下',
     })
 
-    pg.query
-      // 查原单
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-      }])
-      // 查原明细行
-      .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
-        sku_id: 'sku-old', product_name: '旧项目', sku_spec_name: '标准',
-        product_type: '疗程卡', session_count: 10, unit_price: '1000',
-        unit_real_price: '1000', quantity: 1, sales_category: '自采自销',
-      }])
-      // 查新 SKU
-      .mockResolvedValueOnce([{
-        sku_id: 'sku-new', product_id: 'p-new', spec_name: '高级款',
-        product_type: '疗程卡', session_count: 10, price: '1500',
-        product_name: '新项目', sales_category: '自采自销',
-      }])
-      // generateOrderNo
-      .mockResolvedValueOnce([])
-
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+    // 1) 查 client（路由顶层 pg.query）
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客',
+    }])
+    // 2) generateOrderNo 内部事务（rows 为空 → seq=1）
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
+    })
+    // 3) 主事务
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const tx = {
+        query: vi.fn()
+          // advisory_xact_lock
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          // SELECT held items（FOR UPDATE）— 余 1 次（整张卡折抵 → totalOut=1000）
+          .mockResolvedValueOnce({
+            rows: [{
+              sale_item_id: 'item-001', store_id: 'store-001', item_direction: '购买',
+              sku_id: 'sku-old', product_name: '旧项目', sku_spec_name: '标准',
+              product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
+              quantity: 1, picked_up_quantity: 0,
+              unit_price: '1000', unit_real_price: '1000',
+              sales_category: '自采自销', service_fee: '0',
+              client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
+            }], rowCount: 1,
+          })
+          // 转入 SKU 查询（quantity=10 → totalIn=15000）
+          .mockResolvedValueOnce({
+            rows: [{
+              sku_id: 'sku-new', product_type: '疗程卡', spec_name: '高级款',
+              price: '1500', session_count: 10, service_fee: '0', sales_category: '自采自销',
+            }], rowCount: 1,
+          })
+          // INSERT sale_orders
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          // SELECT max sale_item_id
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // INSERT 转出行
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          // UPDATE remaining_sessions（疗程卡）
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          // INSERT 转入行
+          .mockResolvedValueOnce({ rows: [], rowCount: 1 }),
+      }
+      return await cb(tx)
     })
 
     await orderRoutes.createConversion(ctx)
 
-    expect(ctx.result.status).toBe('已支付')
-    expect(ctx.result.priceDiff).toBe(500) // 1500 - 1000
+    // totalOut=1000*1=1000, totalIn=1500*10=15000, priceDiff=14000
+    expect(ctx.result.priceDiff).toBe(14000)
+    expect(ctx.result.status).toBe('待确认收款') // priceDiff>0 + 线下
     expect(ctx.result.message).toContain('转换单已创建')
   })
 
-  test('缺少转出项目拒绝', async () => {
+  test('缺少 clientUserId 拒绝', async () => {
     const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-001', convertOutItems: [], convertInItems: [{ skuId: 'sku-1' }],
+      convertOutSaleItemIds: ['i1'],
+      convertInItems: [{ skuId: 'sku-1' }],
+      paymentMethod: '线下',
     })
-    await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/INVALID_PARAMS.*转出/)
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*clientUserId/)
   })
 
-  test('缺少转入项目拒绝', async () => {
+  test('转出项目为空拒绝', async () => {
     const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-001', convertOutItems: [{ saleItemId: 'i1' }], convertInItems: [],
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: [],
+      convertInItems: [{ skuId: 'sku-1' }],
+      paymentMethod: '线下',
     })
-    await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/INVALID_PARAMS.*转入/)
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*折抵卡/)
+  })
+
+  test('转入项目为空拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['i1'],
+      convertInItems: [],
+      paymentMethod: '线下',
+    })
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*转入/)
+  })
+
+  test('paymentMethod 非法拒绝', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['i1'],
+      convertInItems: [{ skuId: 'sku-1' }],
+      paymentMethod: '非法',
+    })
+    await expect(orderRoutes.createConversion(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*paymentMethod/)
   })
 
   test('非店长拒绝', async () => {
     const ctx = createBeauticianCtx({
-      refSaleOrderId: 'FY-001',
-      convertOutItems: [{ saleItemId: 'i1' }],
+      clientUserId: 'cu-001',
+      convertOutSaleItemIds: ['i1'],
       convertInItems: [{ skuId: 'sku-1' }],
+      paymentMethod: '线下',
     })
     await expect(orderRoutes.createConversion(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
-  })
-
-  test('转换无疗程次数商品时跳过原子扣减（sessionCount = null → if 分支 FALSE）', async () => {
-    const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-ORIG-001',
-      convertOutItems: [{ saleItemId: 'item-001', convertQuantity: 1 }],
-      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
-    })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-      }])
-      // 原明细行：session_count = null（单品，无次数）
-      .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
-        sku_id: 'sku-old', product_name: '家居产品', sku_spec_name: '标准',
-        product_type: '单品', session_count: null, unit_price: '200',
-        unit_real_price: '200', quantity: 1, sales_category: '自采自销',
-      }])
-      // 新 SKU：也无次数
-      .mockResolvedValueOnce([{
-        sku_id: 'sku-new', product_id: 'p-new', spec_name: '升级款',
-        product_type: '单品', session_count: null, price: '250',
-        product_name: '家居升级版', sales_category: '自采自销',
-      }])
-
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
-      return await cb(client)
-    })
-
-    await orderRoutes.createConversion(ctx)
-
-    // session_count=null → d.sessionCount = null → if(null) = false → 跳过原子扣减
-    expect(ctx.result.status).toBe('已支付')
-    expect(ctx.result.message).toContain('转换单已创建')
-  })
-
-  test('转换时次数不足抛出 INVALID_PARAMS（line 1205 TRUE 分支，rowCount=0）', async () => {
-    const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-ORIG-001',
-      convertOutItems: [{ saleItemId: 'item-001', convertQuantity: 1 }],
-      convertInItems: [{ skuId: 'sku-new', quantity: 1 }],
-    })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-      }])
-      .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sale_order_id: 'FY-ORIG-001', item_direction: '购买',
-        sku_id: 'sku-old', product_name: '旧疗程', sku_spec_name: '标准',
-        product_type: '疗程卡', session_count: 5, unit_price: '1000',
-        unit_real_price: '1000', quantity: 1, sales_category: '自采自销',
-      }])
-      .mockResolvedValueOnce([{
-        sku_id: 'sku-new', product_id: 'p-new', spec_name: '高级款',
-        product_type: '疗程卡', session_count: 5, price: '1500',
-        product_name: '新疗程', sales_category: '自采自销',
-      }])
-
-    pg.transaction
-      // 第一次：generateOrderNo 内部事务
-      .mockImplementationOnce(async (cb) => {
-        const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
-        return await cb(client)
-      })
-      // 第二次：主事务 — UPDATE remaining_sessions 返回 rowCount=0（次数不足）
-      .mockImplementationOnce(async (cb) => {
-        const client = {
-          query: vi.fn()
-            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // advisory lock
-            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // maxResult sale_items
-            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
-            .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_items convert_out
-            .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE remaining_sessions → 次数不足
-        }
-        return await cb(client)
-      })
-
-    await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*剩余次数不足/)
   })
 })
 
