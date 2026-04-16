@@ -59,6 +59,7 @@ describe('PERMISSION_MATRIX', () => {
     expect(adminActions).not.toContain('service:list')
     expect(adminActions).not.toContain('appointment:list')
     expect(adminActions).not.toContain('customer:list')
+    expect(adminActions).not.toContain('sale_item:list')
   })
 
   it('manager 拥有业务操作权限', () => {
@@ -68,12 +69,14 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('service:create')
     expect(actions).toContain('appointment:list')
     expect(actions).toContain('customer:list')
+    expect(actions).toContain('sale_item:list')
   })
 
   it('finance 仅有只读权限', () => {
     const actions = PERMISSION_MATRIX.finance
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
+    expect(actions).toContain('sale_item:list')
     expect(actions).not.toContain('sale_order:create')
     expect(actions).not.toContain('allocation:save')
   })
@@ -93,10 +96,11 @@ describe('PERMISSION_MATRIX', () => {
     expect(actions).toContain('coupon:create')
   })
 
-  it('customer_mgr 只管顾客', () => {
+  it('customer_mgr 只管顾客（含卡包只读）', () => {
     const actions = PERMISSION_MATRIX.customer_mgr
     expect(actions).toContain('customer:list')
     expect(actions).toContain('customer:update')
+    expect(actions).toContain('sale_item:list')
     expect(actions).not.toContain('sale_order:list')
   })
 
