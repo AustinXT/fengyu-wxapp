@@ -46,35 +46,38 @@ describe('product.categories', () => {
 // product.skuList
 // ============================================================
 describe('product.skuList', () => {
-  test('返回商品列表（含 SKU 及 priceFrom）', async () => {
+  test('返回扁平 SKU 列表（含分类信息、isBundle 标记）', async () => {
     const ctx = createCtx({ payload: { categoryId: 'cat-1' } })
 
+    // PR-C 重构后：单次 JOIN 查询直接返回 SKU 行
     pg.query.mockResolvedValueOnce([
       {
-        product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
-        category_name: '护理项目', product_kind: '护理项目',
-        cover_image: null, description: '', sort_order: 1, list_price: '200',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sku_id: 'sku-1', product_id: 'prod-1', product_type: '疗程卡',
+        sku_id: 'sku-1', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '基础款', price: '300', special_price: '200',
-        session_count: 10, sort_order: 1,
+        session_count: 10, sort_order: 1, service_fee: '0', is_shengmei: false,
+        category_name: '护理项目', product_kind: '护理项目', sales_category: null,
+        is_bundle: false,
       },
       {
-        sku_id: 'sku-2', product_id: 'prod-1', product_type: '疗程卡',
+        sku_id: 'sku-2', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '高级款', price: '500', special_price: null,
-        session_count: 20, sort_order: 2,
+        session_count: 20, sort_order: 2, service_fee: '0', is_shengmei: false,
+        category_name: '护理项目', product_kind: '护理项目', sales_category: null,
+        is_bundle: false,
       },
     ])
 
     await productRoutes.skuList(ctx)
 
-    expect(ctx.result).toHaveLength(1)
-    expect(ctx.result[0].spuId).toBe('prod-1')
-    expect(ctx.result[0].priceFrom).toBe(200)
-    expect(ctx.result[0].skus).toHaveLength(2)
+    expect(ctx.result).toHaveLength(2)
+    expect(ctx.result[0].skuId).toBe('sku-1')
+    expect(ctx.result[0].specName).toBe('基础款')
+    expect(ctx.result[0].price).toBe(300)
+    expect(ctx.result[0].specialPrice).toBe(200)
+    expect(ctx.result[0].sessionCount).toBe(10)
+    expect(ctx.result[0].isBundle).toBe(false)
+    expect(ctx.result[1].skuId).toBe('sku-2')
+    expect(ctx.result[1].specialPrice).toBeNull()
   })
 
   test('无商品时返回空数组', async () => {
@@ -86,21 +89,13 @@ describe('product.skuList', () => {
     expect(ctx.result).toEqual([])
   })
 
-  test('按 productKind 过滤商品（lines 51-52 TRUE 分支）', async () => {
+  test('按 productKind 过滤 SKU（lines 56-58 TRUE 分支）', async () => {
     const ctx = createCtx({ payload: { productKind: '护理项目' } })
 
-    pg.query.mockResolvedValueOnce([
-      {
-        product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
-        category_name: '护理项目', product_kind: '护理项目',
-        cover_image: null, description: '', sort_order: 1, list_price: '200',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([]) // 无 SKU
+    pg.query.mockResolvedValueOnce([])
 
     await productRoutes.skuList(ctx)
 
-    expect(ctx.result).toHaveLength(1)
     const sql = pg.query.mock.calls[0][0]
     expect(sql).toContain('product_kind')
   })
@@ -191,44 +186,47 @@ describe('product.spuDetail', () => {
 // product.shopInit
 // ============================================================
 describe('product.shopInit', () => {
-  test('返回分类列表 + 第一个分类的商品', async () => {
+  test('返回分类 + 第一个分类的扁平 SKU 列表 + bundleGroups', async () => {
     const ctx = createCtx()
 
+    // PR-C 重构后调用顺序：
+    // 1) _queryCategoryRows
+    // 2) _queryFormattedSkuList (第一个分类的 SKU)
+    // 3) _queryMallBundleGroups → productRows
     pg.query.mockResolvedValueOnce([
-      { category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目', sort_order: 1 },
-      { category_id: 'cat-2', category_name: '家居产品', product_kind: '家居产品', sort_order: 2 },
+      { category_id: 'cat-1', category_name: '护理项目', product_kind: '护理项目', sales_category: null, sort_order: 1 },
+      { category_id: 'cat-2', category_name: '家居产品', product_kind: '家居产品', sales_category: null, sort_order: 2 },
     ])
     pg.query.mockResolvedValueOnce([
       {
-        product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
-        category_name: '护理项目', product_kind: '护理项目',
-        cover_image: null, description: '', sort_order: 1, list_price: '200',
-      },
-    ])
-    pg.query.mockResolvedValueOnce([
-      {
-        sku_id: 'sku-1', product_id: 'prod-1', product_type: '疗程卡',
+        sku_id: 'sku-1', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '基础款', price: '300', special_price: '200',
-        session_count: 10, sort_order: 1,
+        session_count: 10, sort_order: 1, service_fee: '0', is_shengmei: false,
+        category_name: '护理项目', product_kind: '护理项目', sales_category: null,
+        is_bundle: false,
       },
     ])
+    pg.query.mockResolvedValueOnce([]) // 无 bundle 商品 → mallBundleGroups 早返回
 
     await productRoutes.shopInit(ctx)
 
     expect(ctx.result.categories).toHaveLength(2)
     expect(ctx.result.skuList).toHaveLength(1)
-    expect(ctx.result.skuList[0].spuId).toBe('prod-1')
+    expect(ctx.result.skuList[0].skuId).toBe('sku-1')
+    expect(ctx.result.mallBundleGroups).toEqual([])
   })
 
-  test('无分类时返回空商品列表', async () => {
+  test('无分类时返回空 SKU 列表', async () => {
     const ctx = createCtx()
 
-    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([]) // _queryCategoryRows
+    pg.query.mockResolvedValueOnce([]) // _queryMallBundleGroups productRows
 
     await productRoutes.shopInit(ctx)
 
     expect(ctx.result.categories).toEqual([])
     expect(ctx.result.skuList).toEqual([])
+    expect(ctx.result.mallBundleGroups).toEqual([])
   })
 })
 
