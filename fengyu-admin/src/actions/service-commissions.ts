@@ -60,9 +60,9 @@ export async function getServiceOrderCommissions(serviceOrderId: string): Promis
   }))
 }
 
-/** 角色组映射：美容师/养生师同组，推广师独立组 */
-function getRoleGroup(roleType: string): string {
-  return roleType === '推广师' ? 'promoter' : 'beautician'
+/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+function getPoolKey(roleType: string): string {
+  return roleType
 }
 
 /** 合法的分配比例（整十百分比） */
@@ -110,29 +110,29 @@ export async function batchSaveServiceCommissions(
       }
     }
 
-    // 按 (serviceItemId, roleGroup) 分组校验
-    const groups = new Map<string, typeof commissions>()
+    // 按 (serviceItemId, roleType) 分池校验（P2-14 Q5：三角色独立池）
+    const pools = new Map<string, typeof commissions>()
     for (const c of commissions) {
-      const key = `${c.serviceItemId}|${getRoleGroup(c.roleType)}`
-      const group = groups.get(key) || []
-      group.push(c)
-      groups.set(key, group)
+      const key = `${c.serviceItemId}|${getPoolKey(c.roleType)}`
+      const pool = pools.get(key) || []
+      pool.push(c)
+      pools.set(key, pool)
     }
 
-    for (const [, group] of groups) {
-      if (group.length > 3) {
-        return { success: false, message: '每个服务明细每种角色最多分配 3 人' }
+    for (const [, pool] of pools) {
+      if (pool.length > 3) {
+        return { success: false, message: '每个服务明细每个技能标签最多分配 3 人' }
       }
 
-      const ratioSum = group.reduce((s, c) => s + Number(c.allocationRatio), 0)
+      const ratioSum = pool.reduce((s, c) => s + Number(c.allocationRatio), 0)
       if (ratioSum > 1.01) {
-        return { success: false, message: '同角色组的分配比例合计不能超过 100%' }
+        return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
       const empIds = new Set<string>()
-      for (const c of group) {
+      for (const c of pool) {
         if (empIds.has(c.employeeId)) {
-          return { success: false, message: '同一服务明细同一角色组不能重复分配同一员工' }
+          return { success: false, message: '同一服务明细同一技能标签不能重复分配同一员工' }
         }
         empIds.add(c.employeeId)
       }
