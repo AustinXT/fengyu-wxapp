@@ -14,7 +14,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { StatusBadge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
-import { updateCustomer } from "@/actions/customers"
+import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 
 interface CustomerDetailPageProps {
@@ -23,10 +23,39 @@ interface CustomerDetailPageProps {
   appointments: Appointment[]
   stores: Store[]
   employees: Employee[]
+  phoneChangeLogs: PhoneChangeLog[]
+  orphanProfiles: OrphanProfile[]
 }
 
-export default function CustomerDetailPage({ customer, orders, appointments, stores, employees }: CustomerDetailPageProps) {
+export default function CustomerDetailPage({
+  customer,
+  orders,
+  appointments,
+  stores,
+  employees,
+  phoneChangeLogs,
+  orphanProfiles,
+}: CustomerDetailPageProps) {
   const router = useRouter()
+  const [merging, setMerging] = useState<string | null>(null)
+
+  async function handleMerge(orphanUserId: string) {
+    if (!confirm(`确认合并孤儿档案 ${orphanUserId} 到当前顾客？\n该操作将把孤儿行的业务数据（订单/券/积分/充值卡/预约/消息/服务单）全部归并到当前顾客，且删除孤儿行。操作不可撤销。`)) return
+    setMerging(orphanUserId)
+    try {
+      const res = await mergeClientProfile(customer.userId, orphanUserId)
+      if (!res.success) {
+        toast.error(res.message)
+      } else {
+        toast.success(res.message)
+        router.refresh()
+      }
+    } catch (e: any) {
+      toast.error(e?.message ?? '合并失败')
+    } finally {
+      setMerging(null)
+    }
+  }
 
   // Edit state
   const [isEditing, setIsEditing] = useState(false)
@@ -252,12 +281,52 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
         )}
       </div>
 
+      {orphanProfiles.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base text-[#D4820A]">
+              检测到 {orphanProfiles.length} 个同手机号的孤儿档案（openid 为空）
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-[var(--muted-foreground)]">
+              孤儿档案通常来自历史 WorkFine 同步。合并会把孤儿行的订单、券、积分、充值卡、预约、消息、服务单等业务数据全部归并到当前顾客，
+              并删除孤儿行。当前顾客已有的非空档案字段不会被覆盖。仅店长及以上可执行。
+            </p>
+            <div className="space-y-2">
+              {orphanProfiles.map((o) => (
+                <div key={o.userId} className="flex items-center justify-between rounded-md border border-[var(--border)] bg-[var(--muted)] px-3 py-2">
+                  <div className="text-sm">
+                    <span className="font-mono text-xs">{o.userId}</span>
+                    <span className="mx-2">|</span>
+                    <span>{o.name ?? '(无姓名)'}</span>
+                    {o.customerId && <span className="ml-2 text-xs text-[var(--muted-foreground)]">customerId: {o.customerId}</span>}
+                    {o.memberLevel && <Badge variant="outline" className="ml-2">{o.memberLevel}</Badge>}
+                    {o.pointsBalance > 0 && <span className="ml-2 text-xs">积分 {o.pointsBalance}</span>}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    loading={merging === o.userId}
+                    disabled={merging !== null}
+                    onClick={() => handleMerge(o.userId)}
+                  >
+                    合并历史档案
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs defaultValue="profile">
         <TabsList>
           <TabsTrigger value="profile">基本档案</TabsTrigger>
           <TabsTrigger value="orders">消费记录（{orders.length}）</TabsTrigger>
           <TabsTrigger value="sessions">疗程卡余次（{activeSaleItems.length}）</TabsTrigger>
           <TabsTrigger value="appointments">预约记录（{appointments.length}）</TabsTrigger>
+          <TabsTrigger value="phone-history">手机号变更（{phoneChangeLogs.length}）</TabsTrigger>
         </TabsList>
 
         <TabsContent value="profile">
@@ -585,6 +654,31 @@ export default function CustomerDetailPage({ customer, orders, appointments, sto
                 data={appointments}
                 emptyText="暂无预约记录"
               />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="phone-history">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">手机号变更记录</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {phoneChangeLogs.length === 0 ? (
+                <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">暂无换绑记录</div>
+              ) : (
+                <DataTable
+                  columns={[
+                    { key: 'createdAt', header: '时间', cell: (row) => <span>{formatDateTime(row.createdAt)}</span> },
+                    { key: 'oldPhone', header: '旧号', cell: (row) => <span className="font-mono text-xs">{row.oldPhone ?? '—'}</span> },
+                    { key: 'newPhone', header: '新号', cell: (row) => <span className="font-mono text-xs">{row.newPhone ?? '—'}</span> },
+                    { key: 'mergedOrders', header: '归并订单数', cell: (row) => <span>{row.mergedOrders}</span> },
+                    { key: 'operatorLabel', header: '操作方', cell: (row) => <span>{row.operatorLabel}</span> },
+                  ] as Column<PhoneChangeLog>[]}
+                  data={phoneChangeLogs}
+                  emptyText="暂无换绑记录"
+                />
+              )}
             </CardContent>
           </Card>
         </TabsContent>

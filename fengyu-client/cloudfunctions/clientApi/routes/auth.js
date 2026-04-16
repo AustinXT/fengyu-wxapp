@@ -9,6 +9,11 @@ const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
 const { maskPhone } = require('../utils/mask')
 
+// 换绑限流（配置化）：默认 30 天最多 3 次
+// 可通过环境变量 REBIND_RATE_LIMIT_DAYS / REBIND_RATE_LIMIT_COUNT 覆盖
+const REBIND_RATE_LIMIT_DAYS = Math.max(1, parseInt(process.env.REBIND_RATE_LIMIT_DAYS, 10) || 30)
+const REBIND_RATE_LIMIT_COUNT = Math.max(1, parseInt(process.env.REBIND_RATE_LIMIT_COUNT, 10) || 3)
+
 /**
  * 微信登录
  * 写入/更新 client_wechat_users
@@ -247,6 +252,23 @@ async function rebindPhone(ctx) {
       throw new Error('PHONE_BOUND_BY_OTHER_USER: 该手机号已被其他微信账号绑定')
     }
     throw new Error('PHONE_HAS_EXISTING_PROFILE: 该手机号在系统中已存在消费档案，请联系门店协助处理')
+  }
+
+  // 限流：{REBIND_RATE_LIMIT_DAYS} 天内最多 {REBIND_RATE_LIMIT_COUNT} 次换绑
+  // 数据源：operation_logs WHERE action='auth.rebindPhone' AND detail.clientUserId = userId
+  //   AND created_at > now() - interval 'N days'
+  const rateRows = await pg.query(
+    `SELECT COUNT(*)::int AS cnt FROM operation_logs
+     WHERE action = 'auth.rebindPhone'
+       AND (detail->>'clientUserId') = $1
+       AND created_at > now() - ($2 || ' days')::interval`,
+    [userId, String(REBIND_RATE_LIMIT_DAYS)]
+  )
+  const recentCount = rateRows[0] ? rateRows[0].cnt : 0
+  if (recentCount >= REBIND_RATE_LIMIT_COUNT) {
+    throw new Error(
+      `RATE_LIMIT: 近 ${REBIND_RATE_LIMIT_DAYS} 天换绑次数已达上限（${REBIND_RATE_LIMIT_COUNT} 次），请稍后再试`
+    )
   }
 
   const now = new Date()

@@ -156,6 +156,8 @@ describe('auth.rebindPhone', () => {
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
     // 2) SELECT conflict rows → 空
     pg.query.mockResolvedValueOnce([])
+    // 3) SELECT COUNT（限流） → 0
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])
 
     const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
     pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
@@ -256,6 +258,7 @@ describe('auth.rebindPhone', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
     pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])
 
     const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
     pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
@@ -282,6 +285,7 @@ describe('auth.rebindPhone', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13812345678' }])
     pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])
 
     const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
     pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
@@ -307,6 +311,7 @@ describe('auth.rebindPhone', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
     pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
     pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{ cnt: 0 }])
 
     const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
     pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
@@ -348,6 +353,100 @@ describe('auth.rebindPhone', () => {
     })
     await expect(routes.rebindPhone(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*phoneData.*phoneNumber/)
+  })
+
+  // 限流（P1 — 30 天 3 次，可配置）
+  describe('换绑限流（30 天 3 次）', () => {
+    function mockHappyPath(recentCount) {
+      cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+      // 1) SELECT user_id, phone
+      pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+      // 2) 冲突检测 → 空
+      pg.query.mockResolvedValueOnce([])
+      // 3) 限流 COUNT
+      pg.query.mockResolvedValueOnce([{ cnt: recentCount }])
+    }
+
+    test('近 30 天 0 次 → 放行', async () => {
+      mockHappyPath(0)
+      const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await routes.rebindPhone(ctx)
+      expect(ctx.result.success).toBe(true)
+    })
+
+    test('近 30 天 1 次 → 放行', async () => {
+      mockHappyPath(1)
+      const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await routes.rebindPhone(ctx)
+      expect(ctx.result.success).toBe(true)
+    })
+
+    test('近 30 天 2 次 → 放行（临界）', async () => {
+      mockHappyPath(2)
+      const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await routes.rebindPhone(ctx)
+      expect(ctx.result.success).toBe(true)
+    })
+
+    test('近 30 天 3 次 → RATE_LIMIT 拦截，不进入事务', async () => {
+      mockHappyPath(3)
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await expect(routes.rebindPhone(ctx))
+        .rejects.toThrow(/RATE_LIMIT.*30.*3/)
+      expect(pg.transaction).not.toHaveBeenCalled()
+    })
+
+    test('近 30 天 5 次 → RATE_LIMIT 拦截', async () => {
+      mockHappyPath(5)
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await expect(routes.rebindPhone(ctx))
+        .rejects.toThrow(/RATE_LIMIT/)
+    })
+
+    test('限流 SQL 使用 interval 窗口（31 天前的不计入）— 由 SQL WHERE created_at > now() - interval 保证', async () => {
+      mockHappyPath(0)
+      const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await routes.rebindPhone(ctx)
+
+      // 检查限流 SQL 形状
+      const rateSql = pg.query.mock.calls[2][0]
+      expect(rateSql).toMatch(/FROM\s+operation_logs/i)
+      expect(rateSql).toMatch(/action\s*=\s*'auth\.rebindPhone'/i)
+      expect(rateSql).toMatch(/detail->>'clientUserId'/)
+      expect(rateSql).toMatch(/created_at\s*>\s*now\(\)\s*-\s*\(\$2\s*\|\|\s*' days'\)::interval/i)
+      // 参数：[userId, windowDays]
+      const rateParams = pg.query.mock.calls[2][1]
+      expect(rateParams[0]).toBe('user-001')
+      expect(rateParams[1]).toBe('30')
+    })
+
+    test('detail 无 clientUserId 的旧日志不被计入（由 SQL ->>\'clientUserId\' IS NOT NULL 过滤 — 靠 detail->>\'clientUserId\' = $1 自然排除 NULL）', async () => {
+      // SQL 用 (detail->>'clientUserId') = $1，NULL = $1 评估为 NULL（非 TRUE），自动排除
+      mockHappyPath(0)
+      const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+      const ctx = createCtx({ auth: BOUND_AUTH, payload: { phoneNumber: '13911112222' } })
+      await routes.rebindPhone(ctx)
+
+      // 确认 SQL 用了 "=" 匹配 clientUserId（NULL 不等于任何值）
+      const rateSql = pg.query.mock.calls[2][0]
+      expect(rateSql).toMatch(/\(detail->>'clientUserId'\)\s*=\s*\$1/)
+    })
   })
 })
 

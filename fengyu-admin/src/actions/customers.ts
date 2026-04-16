@@ -533,3 +533,278 @@ export async function createCustomer(data: {
   revalidatePath('/customers')
   return { success: true, message: '顾客创建成功', userId }
 }
+
+/* ============================================================
+ * P1 — 手机号变更日志（顾客详情 Tab，只读）
+ * ============================================================ */
+
+export interface PhoneChangeLog {
+  id: number
+  createdAt: string
+  oldPhone: string | null
+  newPhone: string | null
+  mergedOrders: number
+  operatorLabel: string
+  source: string | null
+}
+
+/**
+ * 读取指定顾客的手机号变更记录（auth.rebindPhone 审计）
+ *
+ * 数据源：operation_logs WHERE action='auth.rebindPhone'
+ *   AND target_type='client_user' AND target_id=<userId>
+ * detail 字段（P0 已脱敏）：{ oldPhone, newPhone, clientUserId, mergedOrders }
+ */
+export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneChangeLog[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
+  const { operationLogs } = await import('@db/operation-log')
+
+  // scope 保护：非 admin 需确认顾客在其 scope 内（复用 getCustomerById 的 scope 过滤）
+  const customer = await getCustomerById(userId)
+  if (!customer) return []
+
+  const rows = await db
+    .select({
+      id: operationLogs.id,
+      createdAt: operationLogs.createdAt,
+      detail: operationLogs.detail,
+      source: operationLogs.source,
+      operatorEmployeeId: operationLogs.operatorEmployeeId,
+      operatorName: operationLogs.operatorName,
+    })
+    .from(operationLogs)
+    .where(
+      and(
+        eq(operationLogs.action, 'auth.rebindPhone'),
+        eq(operationLogs.targetType, 'client_user'),
+        eq(operationLogs.targetId, userId),
+      ),
+    )
+    .orderBy(desc(operationLogs.createdAt))
+    .limit(200)
+
+  return rows.map((r) => {
+    const detail = (r.detail ?? {}) as { oldPhone?: string; newPhone?: string; clientUserId?: string; mergedOrders?: number }
+    // operator_employee_id 为 null + detail.clientUserId 存在 → 顾客自助
+    const operatorLabel = r.operatorEmployeeId
+      ? (r.operatorName ?? r.operatorEmployeeId)
+      : (detail.clientUserId ? '顾客自助' : (r.operatorName ?? '—'))
+    return {
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      oldPhone: detail.oldPhone ?? null,
+      newPhone: detail.newPhone ?? null,
+      mergedOrders: detail.mergedOrders ?? 0,
+      operatorLabel,
+      source: r.source ?? null,
+    }
+  })
+}
+
+/* ============================================================
+ * P1 — 顾客合并工具（孤儿档案认领）
+ * ============================================================ */
+
+export interface OrphanProfile {
+  userId: string
+  customerId: string | null
+  name: string | null
+  gender: string | null
+  memberLevel: string | null
+  spendingTier: string | null
+  pointsBalance: number
+  skinType: string | null
+  notes: string | null
+  createdAt: string
+}
+
+/**
+ * 查询与当前顾客同手机号的"孤儿档案"（openid IS NULL 且 user_id 不同）
+ *
+ * 用于顾客详情页展示"合并历史档案"入口。
+ */
+export async function getOrphanProfilesByUserId(userId: string): Promise<OrphanProfile[]> {
+  const session = await getSession()
+  requirePermission(session, 'customer:list')
+
+  // 先拿到当前行（受 scope 限制）
+  const current = await getCustomerById(userId)
+  if (!current || !current.phone) return []
+
+  const rows = await db
+    .select({
+      userId: clientWechatUsers.userId,
+      customerId: clientWechatUsers.customerId,
+      name: clientWechatUsers.name,
+      gender: clientWechatUsers.gender,
+      memberLevel: clientWechatUsers.memberLevel,
+      spendingTier: clientWechatUsers.spendingTier,
+      pointsBalance: clientWechatUsers.pointsBalance,
+      skinType: clientWechatUsers.skinType,
+      notes: clientWechatUsers.notes,
+      createdAt: clientWechatUsers.createdAt,
+      openid: clientWechatUsers.openid,
+    })
+    .from(clientWechatUsers)
+    .where(
+      and(
+        eq(clientWechatUsers.phone, current.phone),
+        sql`${clientWechatUsers.openid} IS NULL`,
+        sql`${clientWechatUsers.userId} <> ${userId}`,
+      ),
+    )
+    .limit(10)
+
+  return rows.map((r) => ({
+    userId: r.userId,
+    customerId: r.customerId,
+    name: r.name,
+    gender: r.gender,
+    memberLevel: r.memberLevel,
+    spendingTier: r.spendingTier,
+    pointsBalance: r.pointsBalance,
+    skinType: r.skinType,
+    notes: r.notes,
+    createdAt: r.createdAt.toISOString(),
+  }))
+}
+
+/**
+ * 合并客户档案（孤儿行 → 活跃行）
+ *
+ * 条件：
+ *   - 目标（source）必须是活跃行（openid NOT NULL）
+ *   - 来源（orphan）必须是孤儿行（openid IS NULL）
+ *   - 权限：仅店长（manager）/ admin
+ *
+ * 事务内：
+ *   1. 把孤儿行的档案字段填入活跃行（活跃行已有非空字段**不覆盖**）
+ *   2. 重挂 sale_orders / user_coupons / point_transactions / prepaid_cards /
+ *      card_transactions / appointments / messages / service_orders
+ *      的 client_user_id = orphan → source
+ *   3. DELETE 孤儿行
+ *   4. 审计日志 admin.mergeClientProfile
+ */
+export async function mergeClientProfile(
+  sourceUserId: string,
+  orphanUserId: string,
+): Promise<{ success: boolean; message: string; fieldsMigrated?: string[]; ordersReassigned?: number }> {
+  const session = await getSession()
+  requirePermission(session, 'customer:update')
+
+  // 仅店长 / admin 允许合并
+  if (!hasRole(session, 'manager') && !isAdminScope(session)) {
+    return { success: false, message: '仅店长或管理员可执行顾客合并' }
+  }
+
+  if (!sourceUserId || !orphanUserId || sourceUserId === orphanUserId) {
+    return { success: false, message: '源顾客与目标孤儿档案必须是两个不同的 userId' }
+  }
+
+  // 校验两边状态
+  const [sourceRow] = await db
+    .select()
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, sourceUserId))
+    .limit(1)
+  const [orphanRow] = await db
+    .select()
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, orphanUserId))
+    .limit(1)
+
+  if (!sourceRow) return { success: false, message: '活跃顾客不存在' }
+  if (!orphanRow) return { success: false, message: '孤儿档案不存在' }
+  if (!sourceRow.openid) return { success: false, message: '源顾客缺少 openid（并非活跃账户），不能作为合并目标' }
+  if (orphanRow.openid) return { success: false, message: '目标档案 openid 非空（并非孤儿档案），拒绝合并' }
+  if (sourceRow.phone && orphanRow.phone && sourceRow.phone !== orphanRow.phone) {
+    return { success: false, message: '两条档案手机号不一致，请先核实' }
+  }
+
+  // 非 admin 需 scope 允许访问活跃顾客所属门店
+  if (!isAdminScope(session)) {
+    if (sourceRow.boundStoreId && !isInScope(session, sourceRow.boundStoreId)) {
+      return { success: false, message: '无权对该门店的顾客执行合并' }
+    }
+  }
+
+  // 可迁移字段（源行**缺失**才从孤儿行搬）
+  const migratable: Array<keyof typeof clientWechatUsers.$inferSelect> = [
+    'customerId', 'memberLevel', 'spendingTier', 'pointsBalance', 'skinType',
+    'name', 'gender', 'notes', 'birthday', 'occupation', 'customerSource',
+    'customerType', 'improvementFocus', 'skinIssue', 'wellnessPreference',
+    'boundStoreId', 'boundEmployeeId', 'boundEmployeeName', 'wechatName', 'isMarried',
+  ]
+  const patch: Record<string, unknown> = {}
+  const fieldsMigrated: string[] = []
+  for (const field of migratable) {
+    const currentVal = (sourceRow as Record<string, unknown>)[field as string]
+    const orphanVal = (orphanRow as Record<string, unknown>)[field as string]
+    const currentEmpty = currentVal === null || currentVal === undefined || currentVal === '' ||
+      (field === 'pointsBalance' && currentVal === 0)
+    if (currentEmpty && orphanVal !== null && orphanVal !== undefined && orphanVal !== '') {
+      patch[field as string] = orphanVal
+      fieldsMigrated.push(field as string)
+    }
+  }
+
+  let ordersReassigned = 0
+  try {
+    await db.transaction(async (tx) => {
+      const { saleOrders } = await import('@db/order')
+      const { userCoupons } = await import('@db/coupon')
+      const { pointTransactions } = await import('@db/points')
+      const { prepaidCards } = await import('@db/prepaid-card')
+      const { appointments } = await import('@db/appointment')
+      const { messages } = await import('@db/message')
+      const { serviceOrders } = await import('@db/service')
+      const { pickupRecords } = await import('@db/pickup')
+
+      // 1. 档案字段回填（仅缺失项）
+      if (Object.keys(patch).length > 0) {
+        await tx.update(clientWechatUsers)
+          .set(patch as any)
+          .where(eq(clientWechatUsers.userId, sourceUserId))
+      }
+
+      // 2. 业务引用重挂（各表列名不同：order/appointment/service 用 clientUserId，
+      //    coupon/points/prepaid 用 userId，messages 用 recipientType+recipientId）
+      const reassignCol = async (table: any, col: any, setObj: Record<string, unknown>) => {
+        const res: any = await tx.update(table).set(setObj as any).where(eq(col, orphanUserId))
+        return (res?.count ?? res?.rowCount ?? 0) as number
+      }
+      ordersReassigned = await reassignCol(saleOrders, saleOrders.clientUserId, { clientUserId: sourceUserId })
+      await reassignCol(userCoupons, userCoupons.userId, { userId: sourceUserId })
+      await reassignCol(pointTransactions, pointTransactions.userId, { userId: sourceUserId })
+      await reassignCol(prepaidCards, prepaidCards.userId, { userId: sourceUserId })
+      // card_transactions 通过 card_id → prepaid_cards 间接关联，无需直接迁移
+      await reassignCol(appointments, appointments.clientUserId, { clientUserId: sourceUserId })
+      await reassignCol(serviceOrders, serviceOrders.clientUserId, { clientUserId: sourceUserId })
+      await reassignCol(pickupRecords, pickupRecords.clientUserId, { clientUserId: sourceUserId })
+      // messages: recipientType='客户' AND recipient_id = orphan
+      await tx.update(messages)
+        .set({ recipientId: sourceUserId })
+        .where(and(eq(messages.recipientType, '客户'), eq(messages.recipientId, orphanUserId)))
+
+      // 3. 删除孤儿行
+      await tx.delete(clientWechatUsers).where(eq(clientWechatUsers.userId, orphanUserId))
+    })
+  } catch (err: any) {
+    return { success: false, message: `合并失败：${err?.message ?? 'unknown'}` }
+  }
+
+  await logOperation(session, 'admin.mergeClientProfile', 'client_user', sourceUserId, {
+    sourceUserId,
+    orphanUserId,
+    fieldsMigrated,
+    ordersReassigned,
+  })
+
+  const { revalidatePath } = await import('next/cache')
+  revalidatePath('/customers')
+  revalidatePath(`/customers/${sourceUserId}`)
+
+  return { success: true, message: `已合并 ${fieldsMigrated.length} 个字段，${ordersReassigned} 笔订单归属已更新`, fieldsMigrated, ordersReassigned }
+}
