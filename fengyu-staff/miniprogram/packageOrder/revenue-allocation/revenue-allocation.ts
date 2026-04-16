@@ -22,7 +22,7 @@ interface RateRow {
 interface DeptApiResponse {
   departments: Array<{
     departmentName: string;
-    members: Array<{ staffWfId: string; name: string; position: string; department: string }>;
+    members: Array<{ staffWfId: string; name: string; position: string; department: string; skills?: string[] }>;
   }>;
 }
 
@@ -38,12 +38,14 @@ interface StaffInfo {
   staffWfId: string;
   staffName: string;
   department: string;
+  skills: string[]; // P2-14：用于推断 roleType
 }
 
 /** 每个 item × person 的分配行 */
 interface AllocLine {
   saleItemId: string;
   department: string;
+  roleType: string; // P2-14 Q5：技能标签，分池校验键
   staffWfId: string;
   staffName: string;
   salesCategory: string;
@@ -77,12 +79,13 @@ interface OrderSummary {
   allocation_status: string;
 }
 
-/** allocation.suggest API 响应 */
+/** allocation.suggest API 响应（P2-14：ratesByRole 替代 beautyRates） */
 interface SuggestResponse {
   items: OrderItem[];
   totalAmount: number;
   rates: RateRow[];
-  beautyRates: Record<string, Record<string, number>>;
+  ratesByRole?: Record<string, Record<string, number>>; // P2-14：以 roleType 为键
+  beautyRates?: Record<string, Record<string, number>>; // 向后兼容（cloudfn 老版本）
   isNewCustomer: boolean;
   beauticianInfo: BeauticianInfo | null;
   deptAnomalous: boolean;
@@ -100,6 +103,7 @@ interface OrderDetailResponse {
 interface AllocationRecord {
   sale_item_id?: string;
   employee_id?: string;
+  role_type?: string; // P2-14
   department_name?: string;
   allocation_ratio?: number;
   total_amount?: string;
@@ -164,7 +168,9 @@ Page({
       const totalAmount = suggestData.totalAmount || Number(order.totalAmount) || 0;
       const isAllocated = order.allocation_status === '已分配';
       const rates: RateRow[] = suggestData.rates || [];
-      const beautyRates: Record<string, Record<string, number>> = suggestData.beautyRates || {};
+      // P2-14：cloudfn 新返回 ratesByRole，老版本可能仍返回 beautyRates
+      const beautyRates: Record<string, Record<string, number>> =
+        suggestData.ratesByRole || suggestData.beautyRates || {};
 
       // 构建全量员工列表（扁平化）
       const allStaffList: StaffInfo[] = [];
@@ -174,6 +180,7 @@ Page({
           staffWfId: s.staffWfId,
           staffName: s.name || '',
           department: d.departmentName,
+          skills: Array.isArray(s.skills) ? s.skills : [], // P2-14
         }));
         allStaffList.push(...members);
         pickerGroups.push({ department: d.departmentName, members });
@@ -235,8 +242,8 @@ Page({
     this.setData({ pickerVisible: true, pickerSaleItemId: saleItemId });
   },
 
-  /** 选中员工 */
-  onStaffSelected(e: WechatMiniprogram.TouchEvent) {
+  /** 选中员工（P2-14 Q5：按 skills 推断 roleType） */
+  async onStaffSelected(e: WechatMiniprogram.TouchEvent) {
     const staffWfId = e.currentTarget.dataset.staffWfId as string;
     const department = e.currentTarget.dataset.department as string;
     const { pickerSaleItemId, displayItems, allStaffList } = this.data;
@@ -261,13 +268,35 @@ Page({
     const item = this.data.items.find(i => i.sale_item_id === pickerSaleItemId);
     if (!item) return;
 
+    // P2-14 Q5：从员工 skills 推断 roleType
+    // - 0 个 skill：提示管理员补资料后退出
+    // - 1 个 skill：自动填
+    // - 多个 skill：弹 actionSheet 让用户选
+    let roleType = ''
+    if (!staff.skills || staff.skills.length === 0) {
+      wx.showToast({ title: `${staff.staffName} 暂无技能标签，请联系管理员补录`, icon: 'none', duration: 2500 });
+      return;
+    } else if (staff.skills.length === 1) {
+      roleType = staff.skills[0];
+    } else {
+      try {
+        const sheetRes = await wx.showActionSheet({ itemList: staff.skills });
+        roleType = staff.skills[sheetRes.tapIndex];
+      } catch (_e) {
+        // 用户取消选择
+        return;
+      }
+    }
+
     const salesCat = item.sales_category || '自采自销';
     const received = Number(item.received) || 0;
-    const { commissionRate, amount } = this.lookupRate(department, salesCat, received);
+    // P2-14：传 roleType 给 lookupRate（cloudfn ratesByRole 以 roleType 为键）
+    const { commissionRate, amount } = this.lookupRate(roleType, salesCat, received);
 
     const newLine: AllocLine = {
       saleItemId: pickerSaleItemId,
       department,
+      roleType, // P2-14：必填
       staffWfId: staff.staffWfId,
       staffName: staff.staffName,
       salesCategory: salesCat,
@@ -330,6 +359,7 @@ Page({
       const line: AllocLine = {
         saleItemId,
         department: dept,
+        roleType: alloc.role_type || '', // P2-14（历史记录可能为空字符串）
         staffWfId: employeeId,
         staffName: staffMap.get(employeeId) || alloc.employee_name || employeeId || '',
         salesCategory: alloc.sales_category || '',
@@ -408,9 +438,17 @@ Page({
     }
 
     // 扁平化为云函数期望的格式：每行 = 一条 sale_item + 一个员工
+    // P2-14 Q5：payload 必须携带 roleType；若某行 roleType 缺失（历史记录）则提示补录
+    for (const line of effectiveLines) {
+      if (!line.roleType) {
+        wx.showToast({ title: `${line.staffName} 缺少技能标签，请删除后重选`, icon: 'none', duration: 2500 });
+        return;
+      }
+    }
     const allocations = effectiveLines.map(line => ({
       saleItemId: line.saleItemId,
       employeeId: line.staffWfId,
+      roleType: line.roleType, // P2-14：必填
       departmentName: line.department,
       allocationRatio: line.commissionRate,
       totalAmount: parseFloat(line.amount) || 0,

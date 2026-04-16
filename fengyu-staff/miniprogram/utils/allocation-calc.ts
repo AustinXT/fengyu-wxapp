@@ -29,7 +29,9 @@ export function lookupRate(
   rates: RateRow[],
   totalAmount: number
 ): { commissionRate: number; amount: string } {
-  const beautyDepts = ['美容部', '养生部']
+  // P2-14 Q5：beautyRates 现在以 roleType 为键（cloudfn 内部叫 ratesByRole），
+  // dept 参数语义也改为 roleType。白名单覆盖三个 SKILL_TAGS。
+  const beautyDepts = ['美容师', '养生师', '推广师']
   if (beautyDepts.includes(dept)) {
     const commRate = (beautyRates[dept] && beautyRates[dept][salesCat]) || 0
     return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) }
