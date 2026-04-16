@@ -10,6 +10,11 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const { getMemberThreshold } = require('./config')
 
+// 充值卡虚拟 SKU 标识 — 必须与 clientApi/routes/_constants.js 中的
+// RECHARGE_VIRTUAL_SKU_ID 保持一致；payNotify 是独立云函数，故重复定义。
+// seed 由 db/scripts/seed-recharge-virtual-product.js 维护。
+const RECHARGE_VIRTUAL_SKU_ID = 'sku-recharge-virtual'
+
 // PostgreSQL 连接（懒初始化）
 let pgPool = null
 function getPg() {
@@ -43,7 +48,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id FROM sale_orders WHERE sale_order_id = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id FROM sale_orders WHERE sale_order_id = $1',
       [orderNo]
     )
 
@@ -91,6 +96,56 @@ exports.main = async (event) => {
            AND expire_date IS NULL`,
         [now, orderNo]
       )
+
+      // 3a. 充值卡入账（识别虚拟 SKU → UPSERT prepaid_cards + INSERT card_transactions）
+      // 必须在状态翻转之后、业绩分配之前；与上述 UPDATE 同事务保证原子性。
+      // 幂等：依赖 card_transactions.ref_order_id 单独 SELECT 去重
+      // （表无 UNIQUE，所以不能用 ON CONFLICT；外层 status 翻转 rowCount 已是第一道幂等闸）
+      if (order.client_user_id && order.store_id) {
+        const rechargeRows = await client.query(
+          `SELECT product_name FROM sale_items
+           WHERE sale_order_id = $1 AND sku_id = $2`,
+          [orderNo, RECHARGE_VIRTUAL_SKU_ID]
+        )
+        if (rechargeRows.rows.length > 0) {
+          // 解析面值（从 "预付充值卡 ¥500" 中提取）
+          const productName = rechargeRows.rows[0].product_name || ''
+          const m = productName.match(/¥\s*(\d+(?:\.\d+)?)/)
+          if (!m) {
+            throw new Error(`[payNotify] 充值订单 product_name 无法解析面值: ${productName}`)
+          }
+          const faceValue = parseFloat(m[1])
+
+          // 幂等：防回调重放（虽然外层 status 翻转已有第一道闸，此处再确认一次）
+          const dupCheck = await client.query(
+            `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
+            [orderNo]
+          )
+          if (dupCheck.rows.length === 0) {
+            // UPSERT prepaid_cards：同 user+store 累加余额；新建则用随机 card_id
+            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+            const upsertRes = await client.query(
+              `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, NOW(), NOW())
+               ON CONFLICT (user_id, store_id) DO UPDATE
+                 SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+               RETURNING card_id`,
+              [newCardId, order.client_user_id, order.store_id, faceValue]
+            )
+            const cardId = upsertRes.rows[0].card_id
+
+            // 流水：amount 为充值面值（=余额增量）；折扣可由 sale_orders.total_amount(实付) 反推
+            await client.query(
+              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+               VALUES ($1, '充值', $2, $3, NOW())`,
+              [cardId, faceValue, orderNo]
+            )
+            console.log(`[payNotify] 充值入账: order=${orderNo}, card=${cardId}, faceValue=${faceValue}`)
+          } else {
+            console.log(`[payNotify] 充值入账幂等跳过: order=${orderNo}`)
+          }
+        }
+      }
 
       // 3. 自动创建业绩分配（如有指定美容师）
       if (order.preferred_employee_id) {
