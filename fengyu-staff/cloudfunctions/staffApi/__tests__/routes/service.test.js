@@ -1300,9 +1300,9 @@ describe('service.create clientUserId 解析', () => {
         query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
       }
       await cb(client)
-      // 验证 INSERT 的 client_user_id 参数（第 6 个，索引 [6]）
+      // 验证 INSERT 的 client_user_id 参数（参数列表第 8 项，索引 [7]）
       const insertCall = client.query.mock.calls[0]
-      expect(insertCall[1][6]).toBe('resolved-user')
+      expect(insertCall[1][7]).toBe('resolved-user')
     })
 
     await serviceRoutes.create(ctx)
@@ -1346,7 +1346,7 @@ describe('service.create clientUserId 解析', () => {
       }
       await cb(client)
       const insertCall = client.query.mock.calls[0]
-      expect(insertCall[1][6]).toBe('fallback-user')
+      expect(insertCall[1][7]).toBe('fallback-user')
     })
 
     await serviceRoutes.create(ctx)
