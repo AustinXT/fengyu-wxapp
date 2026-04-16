@@ -7,12 +7,6 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const pg = require('../db/pg')
 const { invalidateAuthCache } = require('../middleware/auth')
-const { maskPhone } = require('../utils/mask')
-
-// 换绑限流（配置化）：默认 30 天最多 3 次
-// 可通过环境变量 REBIND_RATE_LIMIT_DAYS / REBIND_RATE_LIMIT_COUNT 覆盖
-const REBIND_RATE_LIMIT_DAYS = Math.max(1, parseInt(process.env.REBIND_RATE_LIMIT_DAYS, 10) || 30)
-const REBIND_RATE_LIMIT_COUNT = Math.max(1, parseInt(process.env.REBIND_RATE_LIMIT_COUNT, 10) || 3)
 
 /**
  * 微信登录
@@ -130,9 +124,9 @@ async function bindPhone(ctx) {
     throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
   }
 
-  // 首绑守卫：已绑定手机号的用户必须走 auth.rebindPhone（换绑功能）
+  // 首绑守卫：已绑定手机号的用户禁止走 bindPhone（换绑改由管理后台操作）
   if (users[0].phone) {
-    throw new Error('INVALID_PARAMS: 已绑定手机号，请使用换绑功能')
+    throw new Error('INVALID_PARAMS: 已绑定手机号，如需修改请联系门店')
   }
 
   const userId = users[0].user_id
@@ -169,143 +163,6 @@ async function bindPhone(ctx) {
     userId,
     phone: phoneNumber,
     updatedOrdersCount: updateResult.rowCount || 0
-  }
-}
-
-/**
- * 换绑手机号（α 语义 — 跟人走：仅 UPDATE phone 一列，所有业务数据保留）
- *
- * 前置条件：ctx.auth.phone 必须非空（首绑走 bindPhone）
- * 幂等：新号 == 老号 → 直接返回成功
- * 占用检测：
- *   - 其他 user_id 已绑该号 → PHONE_BOUND_BY_OTHER_USER
- *   - 孤儿档案（openid IS NULL 的同号行）→ PHONE_HAS_EXISTING_PROFILE
- * 事务内：
- *   1. UPDATE client_wechat_users.phone（customer_id / member_level / points 等全部保留）
- *   2. INSERT operation_logs（detail 中手机号已 mask）
- *   换绑场景不触发匿名订单归并（sale_orders 不动）。
- */
-async function rebindPhone(ctx) {
-  const { OPENID } = cloud.getWXContext()
-  const { phoneNumber: directPhone } = ctx.event.payload || {}
-  const phoneData = ctx.event.phoneData
-
-  // 前置：必须已绑定
-  if (!ctx.auth || !ctx.auth.phone) {
-    throw new Error('PHONE_REQUIRED: 请先绑定手机号')
-  }
-
-  const oldPhone = ctx.auth.phone
-
-  let newPhone = null
-
-  // 方式1：CloudID 解密
-  if (phoneData) {
-    if (phoneData.errCode) {
-      throw new Error(`INVALID_PARAMS: 手机号解密失败 (${phoneData.errMsg || phoneData.errCode})`)
-    }
-    const resolved = phoneData.data
-    if (!resolved) {
-      throw new Error('INVALID_PARAMS: CloudID 未被解密，请检查是否放在 data 顶层')
-    }
-    newPhone = resolved.purePhoneNumber || resolved.phoneNumber
-    if (!newPhone) {
-      throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
-    }
-  } else if (directPhone) {
-    // 方式2：直传手机号（测试/特殊场景）
-    newPhone = directPhone
-  } else {
-    throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
-  }
-
-  // 查询当前用户（需 user_id）
-  const users = await pg.query(
-    'SELECT user_id, phone FROM client_wechat_users WHERE openid = $1',
-    [OPENID]
-  )
-  if (users.length === 0) {
-    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
-  }
-  const userId = users[0].user_id
-  const currentPhone = users[0].phone
-
-  // 幂等：新号 == 老号 直接返回成功
-  if (newPhone === currentPhone) {
-    ctx.result = {
-      success: true,
-      phone: newPhone,
-      oldPhone: currentPhone,
-      mergedAnonymousOrders: 0
-    }
-    return
-  }
-
-  // 占用检测 — 细分两种错误码
-  const conflictRows = await pg.query(
-    `SELECT user_id, openid FROM client_wechat_users
-     WHERE phone = $1 AND user_id != $2 LIMIT 1`,
-    [newPhone, userId]
-  )
-  if (conflictRows.length > 0) {
-    if (conflictRows[0].openid) {
-      throw new Error('PHONE_BOUND_BY_OTHER_USER: 该手机号已被其他微信账号绑定')
-    }
-    throw new Error('PHONE_HAS_EXISTING_PROFILE: 该手机号在系统中已存在消费档案，请联系门店协助处理')
-  }
-
-  // 限流：{REBIND_RATE_LIMIT_DAYS} 天内最多 {REBIND_RATE_LIMIT_COUNT} 次换绑
-  // 数据源：operation_logs WHERE action='auth.rebindPhone' AND detail.clientUserId = userId
-  //   AND created_at > now() - interval 'N days'
-  const rateRows = await pg.query(
-    `SELECT COUNT(*)::int AS cnt FROM operation_logs
-     WHERE action = 'auth.rebindPhone'
-       AND (detail->>'clientUserId') = $1
-       AND created_at > now() - ($2 || ' days')::interval`,
-    [userId, String(REBIND_RATE_LIMIT_DAYS)]
-  )
-  const recentCount = rateRows[0] ? rateRows[0].cnt : 0
-  if (recentCount >= REBIND_RATE_LIMIT_COUNT) {
-    throw new Error(
-      `RATE_LIMIT: 近 ${REBIND_RATE_LIMIT_DAYS} 天换绑次数已达上限（${REBIND_RATE_LIMIT_COUNT} 次），请稍后再试`
-    )
-  }
-
-  const now = new Date()
-
-  // 单事务：UPDATE phone + 审计日志
-  await pg.transaction(async (client) => {
-    // 仅更新 phone 一列（α 语义：customer_id / member_level / points 等全部保留）
-    await client.query(
-      'UPDATE client_wechat_users SET phone = $1, updated_at = $2 WHERE user_id = $3',
-      [newPhone, now, userId]
-    )
-
-    // 审计日志：operation_logs（operator_employee_id 可为 null，顾客自助）
-    const detail = {
-      oldPhone: maskPhone(oldPhone),
-      newPhone: maskPhone(newPhone),
-      clientUserId: userId,
-      mergedOrders: 0
-    }
-    await client.query(
-      `INSERT INTO operation_logs
-         (operator_employee_id, operator_name, action, target_type, target_id, detail, source, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [null, '顾客自助', 'auth.rebindPhone', 'client_user', userId, detail, 'clientApi', now]
-    )
-    // 注意：换绑场景显式**不触发**匿名订单归并
-    // （不执行 UPDATE sale_orders SET client_user_id = ... WHERE client_phone = new_phone AND client_user_id IS NULL）
-  })
-
-  // 清除认证缓存
-  invalidateAuthCache(OPENID)
-
-  ctx.result = {
-    success: true,
-    phone: newPhone,
-    oldPhone,
-    mergedAnonymousOrders: 0
   }
 }
 
@@ -517,7 +374,6 @@ async function uploadAvatar(ctx) {
 module.exports = {
   login,
   bindPhone,
-  rebindPhone,
   bindStore,
   updateProfile,
   uploadAvatar

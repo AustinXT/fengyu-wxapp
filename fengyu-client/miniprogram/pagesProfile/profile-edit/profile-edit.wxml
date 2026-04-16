@@ -1,6 +1,5 @@
 <!-- pagesProfile/profile-edit/profile-edit.wxml -->
 <van-toast id="van-toast" />
-<van-dialog id="van-dialog" />
 
 <view class="container">
 
@@ -56,34 +55,13 @@
       />
     </button>
 
-    <!-- 换绑场景：尚未确认 → 普通按钮弹 dialog 二次确认 -->
-    <button
-      wx:elif="{{!showRebindAuth}}"
-      class="phone-bind-btn"
-      bindtap="onRequestRebind"
-    >
-      <van-cell
-        title="手机号"
-        value="{{maskedPhone}}"
-        label="更换手机号"
-        is-link
-      />
-    </button>
-
-    <!-- 换绑场景：确认后 → 真正的授权按钮（让用户再点一次） -->
-    <button
+    <!-- 已绑定场景：只读展示（如需修改请联系门店） -->
+    <van-cell
       wx:else
-      class="phone-bind-btn phone-bind-btn--rebind"
-      open-type="getPhoneNumber"
-      bindgetphonenumber="onGetPhoneNumber"
-    >
-      <van-cell
-        title="手机号"
-        value="点此授权新手机号"
-        label="当前：{{maskedPhone}}"
-        is-link
-      />
-    </button>
+      title="手机号"
+      value="{{maskedPhone}}"
+      label="如需修改请联系门店"
+    />
   </van-cell-group>
 
   <!-- 只读信息 -->

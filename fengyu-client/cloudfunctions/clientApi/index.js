@@ -13,7 +13,6 @@ const { auth } = require('./middleware/auth')
 const routes = {
   'auth.login': () => require('./routes/auth').login,
   'auth.bindPhone': () => require('./routes/auth').bindPhone,
-  'auth.rebindPhone': () => require('./routes/auth').rebindPhone,
   'auth.bindStore': () => require('./routes/auth').bindStore,
   'auth.updateProfile': () => require('./routes/auth').updateProfile,
   'auth.uploadAvatar': () => require('./routes/auth').uploadAvatar,
@@ -118,8 +117,7 @@ exports.main = async (event, context) => {
     const errorType = errorTypeMatch ? errorTypeMatch[1] : null
     const knownTypes = [
       'UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS',
-      'PERMISSION_DENIED', 'NOT_FOUND',
-      'PHONE_BOUND_BY_OTHER_USER', 'PHONE_HAS_EXISTING_PROFILE'
+      'PERMISSION_DENIED', 'NOT_FOUND'
     ]
     const isKnown = errorType && knownTypes.includes(errorType)
     const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
@@ -129,8 +127,6 @@ exports.main = async (event, context) => {
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
                   errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
                   errorMessage.startsWith('NOT_FOUND') ? -404 :
-                  errorMessage.startsWith('PHONE_BOUND_BY_OTHER_USER') ? -400 :
-                  errorMessage.startsWith('PHONE_HAS_EXISTING_PROFILE') ? -400 :
                   -1
 
     return {

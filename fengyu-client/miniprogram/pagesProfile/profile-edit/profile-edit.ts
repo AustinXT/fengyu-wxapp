@@ -1,8 +1,7 @@
 // pagesProfile/profile-edit/profile-edit.ts
 import Toast from '@vant/weapp/toast/toast';
-import Dialog from '@vant/weapp/dialog/dialog';
 import { maskPhone } from '../../utils/format';
-import { callClientApi, bindPhoneWithCloudID, rebindPhoneWithCloudID } from '../../utils/cloud';
+import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
 
 Page({
   data: {
@@ -14,8 +13,6 @@ Page({
     isEditing: false,
     editName: '',
     submitting: false,
-    /** 换绑二次确认后才渲染真正的授权按钮 */
-    showRebindAuth: false,
   },
 
   onLoad() {
@@ -106,31 +103,11 @@ Page({
   },
 
   /**
-   * 换绑：点击"更换手机号"按钮先弹 dialog 二次确认
-   * 确认后切换 showRebindAuth=true，wxml 渲染出 open-type=getPhoneNumber 按钮，
-   * 用户再点一次真正触发微信授权（微信限制：必须由 button 的 tap 事件直接触发）
-   */
-  async onRequestRebind() {
-    try {
-      await Dialog.confirm({
-        title: '确认更换手机号',
-        message: '换绑后新手机号将用于登录、下单联系、会员识别，确认继续？',
-        confirmButtonText: '继续换绑',
-        cancelButtonText: '再想想',
-      });
-      this.setData({ showRebindAuth: true });
-    } catch (_err) {
-      // 用户取消，保持原状
-    }
-  },
-
-  /**
-   * 微信手机号授权回调
-   * 根据 maskedPhone 是否为空分派到首绑 / 换绑
+   * 微信手机号授权回调（仅用于首绑场景）
+   * 已绑定用户的换绑由管理后台操作，前端不再提供入口
    */
   async onGetPhoneNumber(e: WechatMiniprogram.TouchEvent) {
     const { cloudID, errMsg } = e.detail;
-    const isRebind = !!this.data.maskedPhone;
 
     if (!cloudID) {
       if (errMsg?.includes('auth deny')) {
@@ -138,48 +115,22 @@ Page({
       } else if (errMsg) {
         Toast.fail(errMsg);
       }
-      // 换绑时用户拒绝或取消 → 回到非授权状态，下次需要再次二次确认
-      if (isRebind) this.setData({ showRebindAuth: false });
       return;
     }
 
     const app = getApp<IAppOption>();
 
     try {
-      if (isRebind) {
-        const { phone } = await rebindPhoneWithCloudID(cloudID as string);
-        const newMasked = maskPhone(phone);
-        wx.setStorageSync('phone', phone);
-        if (app.globalData.userInfo) {
-          (app.globalData.userInfo as any).phone = phone;
-        }
-        this.setData({ maskedPhone: newMasked, showRebindAuth: false });
-        Toast.success(`已换绑至 ${newMasked}`);
-      } else {
-        const { phone } = await bindPhoneWithCloudID(cloudID as string);
-        const newMasked = maskPhone(phone);
-        wx.setStorageSync('phone', phone);
-        if (app.globalData.userInfo) {
-          (app.globalData.userInfo as any).phone = phone;
-        }
-        this.setData({ maskedPhone: newMasked });
-        Toast.success('绑定成功');
+      const { phone } = await bindPhoneWithCloudID(cloudID as string);
+      const newMasked = maskPhone(phone);
+      wx.setStorageSync('phone', phone);
+      if (app.globalData.userInfo) {
+        (app.globalData.userInfo as any).phone = phone;
       }
+      this.setData({ maskedPhone: newMasked });
+      Toast.success('绑定成功');
     } catch (err: any) {
-      // 换绑失败 → 重置 showRebindAuth 以便用户重新走二次确认
-      if (isRebind) this.setData({ showRebindAuth: false });
-      const errorType = err?.errorType;
-      if (errorType === 'PHONE_BOUND_BY_OTHER_USER') {
-        Toast.fail('该手机号已被其他微信账号绑定');
-      } else if (errorType === 'PHONE_HAS_EXISTING_PROFILE') {
-        Dialog.alert({
-          title: '无法直接换绑',
-          message: '该手机号在系统中已存在消费档案，请联系门店协助处理。',
-          confirmButtonText: '我知道了',
-        });
-      } else {
-        Toast.fail(err.message || (isRebind ? '换绑失败' : '绑定失败'));
-      }
+      Toast.fail(err.message || '绑定失败');
     }
   },
 });
