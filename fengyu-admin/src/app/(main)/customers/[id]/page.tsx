@@ -1,5 +1,11 @@
 import { notFound } from 'next/navigation'
-import { getCustomerById, getCustomerOrders, getCustomerAppointments } from '@/actions/customers'
+import {
+  getCustomerById,
+  getCustomerOrders,
+  getCustomerAppointments,
+  getCustomerPhoneChangeLogs,
+  getOrphanProfilesByUserId,
+} from '@/actions/customers'
 import { getStores } from '@/actions/stores'
 import { getEmployees } from '@/actions/employees'
 import CustomerDetailPage from './_components/customer-detail-page'
@@ -9,12 +15,14 @@ export const dynamic = 'force-dynamic'
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
 
-  const [customer, orders, appointments, stores, employees] = await Promise.all([
+  const [customer, orders, appointments, stores, employees, phoneChangeLogs, orphanProfiles] = await Promise.all([
     getCustomerById(id),
     getCustomerOrders(id),
     getCustomerAppointments(id),
     getStores(),
     getEmployees(),
+    getCustomerPhoneChangeLogs(id),
+    getOrphanProfilesByUserId(id),
   ])
 
   if (!customer) notFound()
@@ -26,6 +34,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       appointments={appointments}
       stores={stores}
       employees={employees}
+      phoneChangeLogs={phoneChangeLogs}
+      orphanProfiles={orphanProfiles}
     />
   )
 }
