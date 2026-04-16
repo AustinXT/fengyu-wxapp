@@ -66,7 +66,8 @@ async function main() {
   console.log('')
 
   // 拉所有在职无 skills 员工
-  const rows = await sql<{ employee_id: string; name: string; position_name: string | null }[]>`
+  type Row = { employee_id: string; name: string; position_name: string | null }
+  const rows = await sql<Row[]>`
     SELECT employee_id, name, position_name
     FROM staff_wechat_users
     WHERE is_resigned = false
@@ -75,10 +76,10 @@ async function main() {
   `
 
   // 按映射结果分组
-  const beautyRows: typeof rows = []
-  const wellnessRows: typeof rows = []
-  const promoterRows: typeof rows = []
-  const skippedRows: typeof rows = []
+  const beautyRows: Row[] = []
+  const wellnessRows: Row[] = []
+  const promoterRows: Row[] = []
+  const skippedRows: Row[] = []
 
   for (const r of rows) {
     const inferred = inferSkills(r.position_name)
