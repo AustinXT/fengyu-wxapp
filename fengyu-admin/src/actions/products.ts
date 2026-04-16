@@ -1232,6 +1232,8 @@ export interface OrderPickerBundleSkuRef {
   skuId: string
   specName: string
   productType: '疗程卡' | '单品' | '院装产品'
+  /** 疗程卡次数（非疗程卡为 null），开单时需快照到 sale_items.session_count */
+  sessionCount: number | null
   price: string
   bundlePrice: string | null
   bundleGroupId: number | null
@@ -1324,6 +1326,7 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
             skuId: m.skuId,
             specName: m.sku.specName,
             productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
+            sessionCount: m.sku.sessionCount,
             price: m.sku.price,
             bundlePrice: m.bundlePrice,
             bundleGroupId: m.bundleGroupId,
@@ -1336,6 +1339,7 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
           skuId: m.skuId,
           specName: m.sku.specName,
           productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
+          sessionCount: m.sku.sessionCount,
           price: m.sku.price,
           bundlePrice: m.bundlePrice,
           bundleGroupId: m.bundleGroupId,

@@ -553,16 +553,25 @@ export async function createOrder(data: {
     }
   }
 
-  // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）
-  // 用于 sale_items.service_fee 快照，开单后服务完成时参与提成计算
+  // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）与 session_count（疗程卡次数）
+  // 用于 sale_items 快照：service_fee 供服务完成时参与提成计算，
+  // session_count 对组合套餐路径做兜底（bundleSkuToProductSku 硬编码 null，前端传来不可信）
   const skuIdList = data.items.map(i => i.skuId).filter((s): s is string => !!s)
   const skuFeeMap = new Map<string, string>()
+  const skuSessionMap = new Map<string, number | null>()
   if (skuIdList.length > 0) {
     const skuRows = await db
-      .select({ skuId: productSkus.skuId, serviceFee: productSkus.serviceFee })
+      .select({
+        skuId: productSkus.skuId,
+        serviceFee: productSkus.serviceFee,
+        sessionCount: productSkus.sessionCount,
+      })
       .from(productSkus)
       .where(inArray(productSkus.skuId, skuIdList))
-    for (const r of skuRows) skuFeeMap.set(r.skuId, r.serviceFee)
+    for (const r of skuRows) {
+      skuFeeMap.set(r.skuId, r.serviceFee)
+      skuSessionMap.set(r.skuId, r.sessionCount)
+    }
   }
 
   // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
@@ -653,6 +662,9 @@ export async function createOrder(data: {
         const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
         const serviceFee = (skuServiceFee * item.quantity).toFixed(2)
 
+        // sessionCount 以服务端 productSkus.session_count 为权威（对组合套餐疗程卡兜底）
+        const sessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
+
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
@@ -662,8 +674,8 @@ export async function createOrder(data: {
           productName: item.productName,
           skuSpecName: item.skuSpecName,
           productType: item.productType,
-          sessionCount: item.sessionCount,
-          remainingSessions: item.sessionCount,
+          sessionCount,
+          remainingSessions: sessionCount,
           unitPrice: item.unitPrice,
           quantity: item.quantity,
           unitRealPrice,
@@ -827,7 +839,10 @@ export async function createConversionOrder(data: {
         INNER JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
         LEFT JOIN product_skus psk ON psk.sku_id = si.sku_id
         LEFT JOIN product_categories pc ON pc.category_id = psk.category_id
-        WHERE si.sale_item_id = ANY(${data.convertOutSaleItemIds})
+        WHERE si.sale_item_id IN (${sql.join(
+          data.convertOutSaleItemIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})
         FOR UPDATE OF si
       `)
 
@@ -1046,6 +1061,10 @@ export async function createConversionOrder(data: {
         const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
         seq++
         const unitPrice = inRow.sku.price
+        // sessionCount 以服务端查到的 productSkus.session_count 为权威，
+        // 组合套餐前端 payload 里疗程卡会丢失该字段（bundleSkuToProductSku 硬编码 null），
+        // 这里兜底保证 remaining_sessions 正确，否则卡永远无法核销。
+        const sessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId,
@@ -1055,8 +1074,8 @@ export async function createConversionOrder(data: {
           productName: inRow.item.productName,
           skuSpecName: inRow.item.skuSpecName,
           productType: inRow.item.productType,
-          sessionCount: inRow.item.sessionCount,
-          remainingSessions: inRow.item.sessionCount,
+          sessionCount,
+          remainingSessions: sessionCount,
           unitPrice,
           quantity: inRow.item.quantity,
           unitRealPrice: unitPrice,
@@ -1117,8 +1136,16 @@ export async function createConversionOrder(data: {
     if (m === 'ORDER_ID_GEN_FAILED') return { success: false, message: '订单号生成失败，请稍后重试' }
     if (m === 'PREPAID_CARD_UPSERT_FAILED') return { success: false, message: '储值卡入账失败，请稍后重试' }
     if (m?.startsWith('SKU_NOT_FOUND:')) return { success: false, message: '转入 SKU 不存在' }
-    if (err?.code === '23503') return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
+    if (err?.code === '23503') {
+      console.error('[createConversionOrder] fk_violation:', err)
+      return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
+    }
+    if (err?.code === '23502') {
+      console.error('[createConversionOrder] not_null_violation:', err)
+      return { success: false, message: '订单字段缺失，请联系管理员' }
+    }
     if (err?.code === '23505') return { success: false, message: '订单号冲突，请稍后重试' }
+    console.error('[createConversionOrder] unexpected error:', err)
     return { success: false, message: '转换单创建失败，请稍后重试' }
   }
 

@@ -90,6 +90,9 @@ export function bundleSkuToProductSku(args: {
   skuId: string
   specName: string
   productType: '疗程卡' | '单品' | '院装产品'
+  /** 疗程卡次数：必须透传到 ProductSku → cart → 开单 payload，
+   *  否则服务端写 sale_items 时 remaining_sessions 为 null 会导致该卡永远无法核销 */
+  sessionCount: number | null
   price: string
   bundlePrice: string | null
   bundleGroupId: number | null
@@ -102,7 +105,7 @@ export function bundleSkuToProductSku(args: {
     specName: args.specName,
     price: args.price,
     specialPrice: args.bundlePrice,
-    sessionCount: null,
+    sessionCount: args.sessionCount,
     sortOrder: args.sortOrder,
     serviceFee: '0',
     isShengmei: null,
