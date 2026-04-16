@@ -545,15 +545,23 @@ export interface PhoneChangeLog {
   newPhone: string | null
   mergedOrders: number
   operatorLabel: string
-  source: string | null
+  /** 'client'：顾客端 P0/P1 自助换绑历史；'admin'：管理后台代客修改 */
+  source: 'client' | 'admin'
+  /** 仅 admin 来源时填充：操作员姓名 */
+  operatorName: string | null
 }
 
 /**
- * 读取指定顾客的手机号变更记录（auth.rebindPhone 审计）
+ * 读取指定顾客的手机号变更记录
  *
- * 数据源：operation_logs WHERE action='auth.rebindPhone'
- *   AND target_type='client_user' AND target_id=<userId>
- * detail 字段（P0 已脱敏）：{ oldPhone, newPhone, clientUserId, mergedOrders }
+ * 数据源（合并展示）：
+ *   1. action='auth.rebindPhone' AND target_type='client_user'
+ *      （P0/P1 客户端自助换绑历史，2026-04-16 已下线，仅供历史回看）
+ *      detail 形如 { oldPhone, newPhone, clientUserId, mergedOrders }（P0 已脱敏）
+ *   2. action='customer.update' AND target_type='customer'
+ *      （admin-only 改 phone，detail 由 logUpdate 写入）
+ *      detail 形如 { _v: 2, _t: 'update', changes: { phone: { from, to }, ... } }
+ *      仅 changes.phone 存在的记录被纳入
  */
 export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneChangeLog[]> {
   const session = await getSession()
@@ -569,6 +577,7 @@ export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneC
     .select({
       id: operationLogs.id,
       createdAt: operationLogs.createdAt,
+      action: operationLogs.action,
       detail: operationLogs.detail,
       source: operationLogs.source,
       operatorEmployeeId: operationLogs.operatorEmployeeId,
@@ -576,16 +585,44 @@ export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneC
     })
     .from(operationLogs)
     .where(
-      and(
-        eq(operationLogs.action, 'auth.rebindPhone'),
-        eq(operationLogs.targetType, 'client_user'),
-        eq(operationLogs.targetId, userId),
+      or(
+        and(
+          eq(operationLogs.action, 'auth.rebindPhone'),
+          eq(operationLogs.targetType, 'client_user'),
+          eq(operationLogs.targetId, userId),
+        ),
+        and(
+          eq(operationLogs.action, 'customer.update'),
+          eq(operationLogs.targetType, 'customer'),
+          eq(operationLogs.targetId, userId),
+          // 仅当 detail.changes 中包含 phone 字段时才计入（admin 改了非 phone 字段的更新不应进入手机号变更 Tab）
+          sql`(${operationLogs.detail} -> 'changes' ? 'phone')`,
+        ),
       ),
     )
     .orderBy(desc(operationLogs.createdAt))
     .limit(200)
 
   return rows.map((r) => {
+    if (r.action === 'customer.update') {
+      // logUpdate 写入的 diff 结构：{ _v: 2, _t: 'update', changes: { phone: { from, to } } }
+      const detail = (r.detail ?? {}) as {
+        changes?: { phone?: { from?: string | null; to?: string | null } }
+      }
+      const phoneDiff = detail.changes?.phone ?? {}
+      return {
+        id: r.id,
+        createdAt: r.createdAt.toISOString(),
+        oldPhone: phoneDiff.from ?? null,
+        newPhone: phoneDiff.to ?? null,
+        mergedOrders: 0,
+        operatorLabel: r.operatorName ?? r.operatorEmployeeId ?? '—',
+        source: 'admin',
+        operatorName: r.operatorName ?? null,
+      }
+    }
+
+    // auth.rebindPhone 历史记录
     const detail = (r.detail ?? {}) as { oldPhone?: string; newPhone?: string; clientUserId?: string; mergedOrders?: number }
     // operator_employee_id 为 null + detail.clientUserId 存在 → 顾客自助
     const operatorLabel = r.operatorEmployeeId
@@ -598,7 +635,8 @@ export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneC
       newPhone: detail.newPhone ?? null,
       mergedOrders: detail.mergedOrders ?? 0,
       operatorLabel,
-      source: r.source ?? null,
+      source: 'client',
+      operatorName: r.operatorEmployeeId ? (r.operatorName ?? null) : null,
     }
   })
 }

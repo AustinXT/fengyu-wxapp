@@ -775,6 +775,15 @@ export default function CustomerDetailPage({
                     { key: 'oldPhone', header: '旧号', cell: (row) => <span className="font-mono text-xs">{row.oldPhone ?? '—'}</span> },
                     { key: 'newPhone', header: '新号', cell: (row) => <span className="font-mono text-xs">{row.newPhone ?? '—'}</span> },
                     { key: 'mergedOrders', header: '归并订单数', cell: (row) => <span>{row.mergedOrders}</span> },
+                    {
+                      key: 'source',
+                      header: '来源',
+                      cell: (row) => (
+                        <Badge variant="outline">
+                          {row.source === 'admin' ? '管理后台' : '顾客端'}
+                        </Badge>
+                      ),
+                    },
                     { key: 'operatorLabel', header: '操作方', cell: (row) => <span>{row.operatorLabel}</span> },
                   ] as Column<PhoneChangeLog>[]}
                   data={phoneChangeLogs}
