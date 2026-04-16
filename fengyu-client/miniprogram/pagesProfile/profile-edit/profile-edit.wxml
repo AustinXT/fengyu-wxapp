@@ -41,15 +41,46 @@
       </view>
     </view>
 
-    <!-- 手机号（换绑） -->
+    <!-- 手机号 -->
+    <!-- 首绑场景：直接触发 open-type=getPhoneNumber -->
     <button
+      wx:if="{{!maskedPhone}}"
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
     >
       <van-cell
         title="手机号"
-        value="{{maskedPhone || '未绑定'}}"
+        value="立即绑定"
+        is-link
+      />
+    </button>
+
+    <!-- 换绑场景：尚未确认 → 普通按钮弹 dialog 二次确认 -->
+    <button
+      wx:elif="{{!showRebindAuth}}"
+      class="phone-bind-btn"
+      bindtap="onRequestRebind"
+    >
+      <van-cell
+        title="手机号"
+        value="{{maskedPhone}}"
+        label="更换手机号"
+        is-link
+      />
+    </button>
+
+    <!-- 换绑场景：确认后 → 真正的授权按钮（让用户再点一次） -->
+    <button
+      wx:else
+      class="phone-bind-btn phone-bind-btn--rebind"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >
+      <van-cell
+        title="手机号"
+        value="点此授权新手机号"
+        label="当前：{{maskedPhone}}"
         is-link
       />
     </button>
