@@ -10,6 +10,7 @@ sources/*
 .next/
 next-env.d.ts
 *.tsbuildinfo
+fengyu-admin/src/generated/
 
 # Testing
 coverage/
