@@ -3,7 +3,7 @@ import { getVisibleMenuGroups, MENU_CONFIG } from "./menu";
 import type { AuthSession, RoleType } from "./types";
 
 function makeSession(
-	...roles: Array<{ role: RoleType; scopeType?: "headquarters" | "market" | "store" }>
+	...roles: Array<{ role: RoleType; scopeType?: "总部" | "市场" | "门店" }>
 ): AuthSession {
 	return {
 		employeeId: "test",
@@ -12,7 +12,7 @@ function makeSession(
 		roles: roles.map((r) => ({
 			role: r.role,
 			scopeId: "test-scope",
-			scopeType: r.scopeType ?? "store",
+			scopeType: r.scopeType ?? "门店",
 		})),
 		permissions: { actions: [], scopeStoreIds: [] },
 	};

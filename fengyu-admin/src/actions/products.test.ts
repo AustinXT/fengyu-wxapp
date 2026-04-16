@@ -310,7 +310,7 @@ describe('createSku — 输入校验 + 错误处理', () => {
 
   const baseSkuData = {
     skuId: 'SKU-001',
-    productId: 'P-001',
+    categoryId: 'cat-hr-01',
     productType: '疗程卡' as const,
     specName: '10次卡',
     price: '1000',

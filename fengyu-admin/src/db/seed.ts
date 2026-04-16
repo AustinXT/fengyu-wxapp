@@ -137,17 +137,18 @@ const PRODUCT_KINDS = [
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName
+// 注：组合套餐已从 product_kind 枚举移除（由 products.is_bundle 表达），故 cat-hl-* 的 productKind 为 null
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: '组合套餐' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目', salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品', salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡', salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: null, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: null, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: null, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
 ]
 
 // 一级分组（category_group = null，Tab/分组头，不直接关联商品）
