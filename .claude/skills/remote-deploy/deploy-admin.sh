@@ -6,7 +6,13 @@ REMOTE_DIR="${2:-/root/fengyu-wxapp}"
 
 echo "=== 1/4 本地构建 Docker 镜像 ==="
 cd "$(dirname "$0")/../../.."
-docker build -f docker/Dockerfile.admin -t fengyu-admin:latest .
+APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
+APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"
+docker build \
+  --build-arg APP_VERSION="$APP_VERSION" \
+  --build-arg APP_COMMIT="$APP_COMMIT" \
+  -f docker/Dockerfile.admin -t fengyu-admin:latest .
 
 echo "=== 2/4 传输镜像到 $SSH_HOST ==="
 docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"

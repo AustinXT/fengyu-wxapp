@@ -34,6 +34,12 @@ COPY fengyu-admin/ .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
+# 版本号注入：由 deploy-admin.sh 从宿主机 git 读取后传入；prebuild 脚本会读这两个 env。
+ARG APP_VERSION=dev
+ARG APP_COMMIT=
+ENV APP_VERSION=$APP_VERSION
+ENV APP_COMMIT=$APP_COMMIT
+
 RUN bun run build
 
 # ---- 生产运行 ----
