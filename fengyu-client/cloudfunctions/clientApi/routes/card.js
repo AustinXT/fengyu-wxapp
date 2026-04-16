@@ -71,7 +71,8 @@ async function list(ctx) {
   ctx.result = {
     cards: cards.map(c => ({
       cardId: c.card_id,
-      balance: c.balance,
+      // PG numeric 经 node-postgres 返回字符串，需显式转 number 保证前端合约
+      balance: Number(c.balance),
       storeId: c.store_id,
       storeName: c.store_name,
       createdAt: c.created_at,
@@ -108,7 +109,8 @@ async function history(ctx) {
     records: records.map(r => ({
       id: r.id,
       type: r.type,
-      amount: r.amount,
+      // PG numeric 经 node-postgres 返回字符串，需显式转 number 保证前端合约
+      amount: Number(r.amount),
       refOrderId: r.ref_order_id,
       createdAt: r.created_at,
     }))

@@ -132,9 +132,10 @@ export function formatRelativeTime(dateStr: string): string {
   return `${m}-${day}`;
 }
 
-/** 金额带符号格式化："+1.00" / "-1.00" */
-export function formatAmount(amount: number): string {
-  return amount >= 0 ? `+${amount.toFixed(2)}` : amount.toFixed(2);
+/** 金额带符号格式化："+1.00" / "-1.00"（兼容云函数返回的 PG numeric 字符串） */
+export function formatAmount(amount: number | string): string {
+  const n = Number(amount) || 0;
+  return n >= 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
 }
 
 /** 预约时间格式化："2026-03-15 09:00-11:00" → "3月15日 09:00-11:00" */

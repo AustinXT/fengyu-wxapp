@@ -245,6 +245,13 @@ describe('formatAmount', () => {
   test('小数精度', () => {
     expect(formatAmount(9.9)).toBe('+9.90')
   })
+  test('字符串数字（兼容 PG numeric 返回）', () => {
+    expect(formatAmount('7378.52')).toBe('+7378.52')
+    expect(formatAmount('-120.5')).toBe('-120.50')
+  })
+  test('非法字符串回退 0', () => {
+    expect(formatAmount('abc')).toBe('+0.00')
+  })
 })
 
 describe('safeParseDate', () => {

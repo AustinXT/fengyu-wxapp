@@ -72,6 +72,19 @@ describe('card.list', () => {
 
     expect(pg.query.mock.calls[0][0]).toContain('LEFT JOIN stores')
   })
+
+  test('PG numeric 字符串 balance 转为 number（避免前端 toFixed 报错）', async () => {
+    // node-postgres 将 numeric 类型返回为字符串，必须在云函数端转数字
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-1', balance: '7378.52', store_id: 's1', store_name: '凤御A店', created_at: '2025-01-01' },
+    ])
+
+    const ctx = createBoundCtx({})
+    await routes.list(ctx)
+
+    expect(typeof ctx.result.cards[0].balance).toBe('number')
+    expect(ctx.result.cards[0].balance).toBe(7378.52)
+  })
 })
 
 describe('card.history', () => {
@@ -158,5 +171,21 @@ describe('card.history', () => {
     await routes.history(ctx)
 
     expect(ctx.result.records).toEqual([])
+  })
+
+  test('PG numeric 字符串 amount 转为 number（避免前端 toFixed 报错）', async () => {
+    // node-postgres 将 numeric 类型返回为字符串，必须在云函数端转数字
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-1' }])
+    pg.query.mockResolvedValueOnce([
+      { id: 'ct-1', type: '充值', amount: '500.00', ref_order_id: null, created_at: '2025-06-01' },
+      { id: 'ct-2', type: '消费', amount: '-120.50', ref_order_id: 'ord-1', created_at: '2025-06-02' },
+    ])
+
+    const ctx = createBoundCtx({ cardId: 'card-1' })
+    await routes.history(ctx)
+
+    expect(typeof ctx.result.records[0].amount).toBe('number')
+    expect(ctx.result.records[0].amount).toBe(500)
+    expect(ctx.result.records[1].amount).toBe(-120.5)
   })
 })
