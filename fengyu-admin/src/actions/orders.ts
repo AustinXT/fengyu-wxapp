@@ -454,6 +454,26 @@ export async function createOrder(data: {
     return { success: false, message: '无权在该门店创建订单' }
   }
 
+  // 内部单自动半价：入口统一在事务前对 items 金额 ×0.5；unit_price（原价快照）保持不变。
+  // 服务费 (service_fee) 不受半价影响，仍按 SKU 配置快照。
+  if (data.saleOrderType === '内部单') {
+    if (data.couponId) {
+      return { success: false, message: '内部单不允许叠加优惠券' }
+    }
+    data = {
+      ...data,
+      items: data.items.map((item) => {
+        const halve = (v: string) => (Number(v) / 2).toFixed(2)
+        return {
+          ...item,
+          unitRealPrice: halve(item.unitRealPrice),
+          saleAmount: item.saleAmount !== undefined ? halve(item.saleAmount) : undefined,
+          received: item.received !== undefined ? halve(item.received) : undefined,
+        }
+      }),
+    }
+  }
+
   // 校验手动金额
   for (const item of data.items) {
     if (item.saleAmount !== undefined) {
