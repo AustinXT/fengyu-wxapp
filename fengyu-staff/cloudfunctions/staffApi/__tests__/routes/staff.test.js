@@ -230,13 +230,19 @@ describe('staff.todoList', () => {
 // staff.bindStore
 // ============================================================
 describe('staff.bindStore', () => {
-  test('有效门店绑定成功', async () => {
+  test('有效门店绑定成功并持久化 store_id', async () => {
     const ctx = createManagerCtx({ storeId: 'store-new' })
     pg.query.mockResolvedValueOnce([{ store_id: 'store-new', store_name: '凤御C店' }])
+    pg.query.mockResolvedValueOnce([]) // UPDATE staff_wechat_users
     await staffRoutes.bindStore(ctx)
     expect(ctx.result.success).toBe(true)
     expect(ctx.result.storeId).toBe('store-new')
     expect(ctx.result.storeName).toBe('凤御C店')
+    // 校验落库调用：UPDATE 参数为 [storeId, staffWfId]
+    const updateCall = pg.query.mock.calls[1]
+    expect(updateCall[0]).toMatch(/UPDATE\s+staff_wechat_users/i)
+    expect(updateCall[0]).toMatch(/store_id\s*=\s*\$1/i)
+    expect(updateCall[1]).toEqual(['store-new', 'emp-001'])
   })
 
   test('门店不存在或已关闭时拒绝', async () => {

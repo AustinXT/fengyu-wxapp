@@ -5,7 +5,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireStaffBound } = require('../middleware/auth')
+const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
 
 /**
@@ -401,6 +401,15 @@ async function bindStore(ctx) {
   if (storeRows.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在或已关闭')
   }
+
+  // 持久化到 staff_wechat_users.store_id，否则刷新后 auth 中间件依然读旧值
+  await pg.query(
+    'UPDATE staff_wechat_users SET store_id = $1, updated_at = NOW() WHERE employee_id = $2',
+    [storeRows[0].store_id, ctx.auth.staffWfId]
+  )
+
+  // 清除 OPENID → authData 缓存，避免 5 分钟内仍返回旧 storeId
+  invalidateAuthCache(ctx.auth.openid)
 
   ctx.result = {
     success: true,
