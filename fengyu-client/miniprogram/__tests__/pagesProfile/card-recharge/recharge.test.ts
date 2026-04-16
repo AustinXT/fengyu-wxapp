@@ -8,7 +8,7 @@ import {
   formatAmount,
   RECHARGE_MIN_AMOUNT,
   RECHARGE_MAX_AMOUNT,
-} from '../../utils/recharge';
+} from '../../../pagesProfile/card-recharge/recharge';
 
 describe('matchTier — 金额校验', () => {
   test('低于最低限额抛错', () => {

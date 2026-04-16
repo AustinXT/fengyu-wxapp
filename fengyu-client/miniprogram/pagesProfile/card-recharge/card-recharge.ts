@@ -2,7 +2,7 @@
 import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
-import { matchTier, formatAmount } from '../../utils/recharge';
+import { matchTier, formatAmount } from './recharge';
 
 const app = getApp<IAppOption>();
 
