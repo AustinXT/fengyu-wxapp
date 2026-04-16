@@ -18,13 +18,6 @@ const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','
 const MAX_PER_POOL = 3
 const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
 
-// ======================================================================
-// TODO(PR-4): remove DEPT_TO_ROLE after miniprogram PR-3 rollout
-// 旧前端不传 roleType，只传 departmentName；PR-1 期间兼容兜底使用该映射。
-// 同时 A4 的 resolveStaffDepartment 也依赖该常量，A4 重写后仅兜底段使用。
-// ======================================================================
-const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推广部': '推广师' }
-
 /**
  * 保存提成分配（支付后分配）
  *
@@ -36,8 +29,8 @@ const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推�
  *   allocations: [{
  *     saleItemId: string,
  *     employeeId: string,
- *     roleType: string,           // required (P2-14)，旧前端可传 departmentName，由兜底段反推
- *     departmentName?: string,    // deprecated (PR-4)，仅用于兜底与向后兼容展示
+ *     roleType: string,           // required (P2-14)
+ *     departmentName?: string,    // 仅用于 DB 向后兼容展示，不参与角色推断
  *     allocationRatio: number,    // 整十档 0.10~1.00
  *     totalAmount?: number        // ignored，服务端重算
  *   }]
@@ -102,42 +95,6 @@ async function save(ctx) {
     ctx.result = { saleOrderId, message: '已标记为无需分配', allocationCount: 0 }
     return
   }
-
-  // =====================================================================
-  // TODO(PR-4): remove department→roleType fallback after PR-3 rollout
-  // 旧小程序前端不传 roleType，只传 departmentName；PR-1 部署后做一次性反推，
-  // 命中时写 operation_logs 以便监控兜底使用频率。PR-3 全量 + 24h 无日志即可删除。
-  // =====================================================================
-  let fallbackTriggered = 0
-  for (const alloc of allocations) {
-    if (!alloc.roleType && alloc.departmentName) {
-      const mapped = DEPT_TO_ROLE[alloc.departmentName]
-      if (mapped) {
-        alloc.roleType = mapped
-        fallbackTriggered++
-      }
-    }
-  }
-  if (fallbackTriggered > 0) {
-    try {
-      await pg.query(
-        `INSERT INTO operation_logs
-           (operator_employee_id, operator_name, operator_role, action, target_type, target_id, detail, source, created_at)
-         VALUES ($1, $2, $3, 'allocation.save.role_type_fallback', 'sale_order', $4, $5::jsonb, 'staffApi', NOW())`,
-        [
-          ctx.auth.staffWfId,
-          null,
-          (ctx.auth.roles && ctx.auth.roles[0]) || null,
-          saleOrderId,
-          JSON.stringify({ fallbackCount: fallbackTriggered, total: allocations.length })
-        ]
-      )
-    } catch (e) {
-      // operation_logs 写入失败不应阻塞业务
-      console.error('[allocation.save] operation_logs fallback insert failed:', e.message)
-    }
-  }
-  // ========================== END PR-4 removal ==========================
 
   // 校验 + 服务端重算 totalAmount
   const enriched = []

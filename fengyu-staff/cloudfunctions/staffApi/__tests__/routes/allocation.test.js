@@ -20,12 +20,14 @@ describe('allocation.save', () => {
   })
 
   test('保存提成分配成功', async () => {
+    // PR-4 清理后 roleType 必传；departmentName 仅做 DB 展示层兼容（可传可不传）
     const ctx = createManagerCtx({
       saleOrderId: 'FY-001',
       allocations: [
         {
           saleItemId: 'item-001',
           employeeId: 'emp-b1',
+          roleType: '美容师',
           departmentName: '美容部',
           allocationRatio: 0.3,
           totalAmount: 300,
