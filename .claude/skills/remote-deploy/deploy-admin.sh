@@ -2,14 +2,18 @@
 set -e
 
 SSH_HOST="${1:-ali-demo}"
-REMOTE_DIR="${2:-/root/fengyu-wxapp}"
+REMOTE_DIR="${2:-/root/proj.xt.com/fengyu-wxapp/docker}"
+# 远程 compose.yml 用 build: 指令，默认镜像名为 <project>-<service>
+REMOTE_IMAGE_TAG="fengyu-wxapp-admin:latest"
 
-echo "=== 1/4 本地构建 Docker 镜像 ==="
+echo "=== 1/4 本地构建 Docker 镜像（linux/amd64）==="
 cd "$(dirname "$0")/../../.."
 APP_VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo dev)
 APP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "")
 echo "版本号: $APP_VERSION${APP_COMMIT:+ · $APP_COMMIT}"
-docker build \
+docker buildx build \
+  --platform linux/amd64 \
+  --load \
   --build-arg APP_VERSION="$APP_VERSION" \
   --build-arg APP_COMMIT="$APP_COMMIT" \
   -f docker/Dockerfile.admin -t fengyu-admin:latest .
@@ -17,8 +21,8 @@ docker build \
 echo "=== 2/4 传输镜像到 $SSH_HOST ==="
 docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"
 
-echo "=== 3/4 远程重启服务 ==="
-ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose up -d admin"
+echo "=== 3/4 远程 retag 并重启服务 ==="
+ssh "$SSH_HOST" "docker tag fengyu-admin:latest $REMOTE_IMAGE_TAG && cd $REMOTE_DIR && docker compose up -d admin"
 
 echo "=== 4/4 健康检查 ==="
 sleep 5
