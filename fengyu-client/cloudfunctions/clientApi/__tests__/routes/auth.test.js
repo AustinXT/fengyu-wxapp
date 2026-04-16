@@ -1,6 +1,6 @@
 /**
  * 认证路由测试
- * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
+ * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全/首绑守卫）、rebindPhone（α 语义保留/占用细分错误码/匿名归并禁用/审计脱敏/幂等）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -132,6 +132,222 @@ describe('auth.bindPhone', () => {
     })
     await expect(routes.bindPhone(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
+  })
+
+  test('首绑守卫：用户已绑定手机号 → INVALID_PARAMS（请使用换绑功能）', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'bound-openid' })
+    // SELECT 返回 phone 已有值
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+
+    const ctx = createCtx({ payload: { phoneNumber: '13911112222' } })
+    await expect(routes.bindPhone(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*已绑定手机号.*换绑/)
+    // 不应执行 UPDATE（仅一次 SELECT）
+    expect(pg.query).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('auth.rebindPhone', () => {
+  const BOUND_AUTH = { userId: 'user-001', phone: '13800001111' }
+
+  test('TC01 换绑到全新号 → 成功 + UPDATE phone + operation_logs 写入', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    // 1) SELECT user_id, phone
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    // 2) SELECT conflict rows → 空
+    pg.query.mockResolvedValueOnce([])
+
+    const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+    pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13911112222' },
+    })
+    await routes.rebindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.phone).toBe('13911112222')
+    expect(ctx.result.oldPhone).toBe('13800001111')
+    expect(ctx.result.mergedAnonymousOrders).toBe(0)
+
+    // 事务内 2 条 SQL：UPDATE client_wechat_users + INSERT operation_logs
+    expect(txClient.query).toHaveBeenCalledTimes(2)
+    const updateSql = txClient.query.mock.calls[0][0]
+    expect(updateSql).toMatch(/UPDATE client_wechat_users\s+SET\s+phone\s*=\s*\$1/)
+    // 仅更新 phone 一列（不含 member_level / points / customer_id）
+    expect(updateSql).not.toMatch(/member_level|points_balance|customer_id/)
+
+    const insertSql = txClient.query.mock.calls[1][0]
+    expect(insertSql).toContain('INSERT INTO operation_logs')
+    const insertParams = txClient.query.mock.calls[1][1]
+    // [operator_employee_id, operator_name, action, target_type, target_id, detail, source, created_at]
+    expect(insertParams[0]).toBeNull()
+    expect(insertParams[1]).toBe('顾客自助')
+    expect(insertParams[2]).toBe('auth.rebindPhone')
+    expect(insertParams[3]).toBe('client_user')
+    expect(insertParams[4]).toBe('user-001')
+    expect(insertParams[6]).toBe('clientApi')
+  })
+
+  test('TC02 新号 == 老号 → 幂等成功，不执行 UPDATE', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13800001111' },
+    })
+    await routes.rebindPhone(ctx)
+
+    expect(ctx.result.success).toBe(true)
+    expect(ctx.result.phone).toBe('13800001111')
+    expect(ctx.result.oldPhone).toBe('13800001111')
+    expect(ctx.result.mergedAnonymousOrders).toBe(0)
+    // 幂等：不进入 conflict select，不进入事务
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('TC10 未绑定调 rebindPhone → PHONE_REQUIRED', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'new-openid' })
+
+    const ctx = createCtx({
+      auth: { userId: 'user-001', phone: null },
+      payload: { phoneNumber: '13911112222' },
+    })
+    await expect(routes.rebindPhone(ctx))
+      .rejects.toThrow(/PHONE_REQUIRED/)
+    // 未到 DB 查询
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('TC11 新号被活跃 user 占用 → PHONE_BOUND_BY_OTHER_USER', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    // conflict row: openid 非空（活跃微信账号）
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-other', openid: 'other-openid' }])
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13911112222' },
+    })
+    await expect(routes.rebindPhone(ctx))
+      .rejects.toThrow(/PHONE_BOUND_BY_OTHER_USER.*已被其他微信账号绑定/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('TC12 新号为孤儿档案（openid IS NULL）→ PHONE_HAS_EXISTING_PROFILE', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    // conflict row: openid 为 null（WorkFine 孤儿档案）
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-orphan', openid: null }])
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13911112222' },
+    })
+    await expect(routes.rebindPhone(ctx))
+      .rejects.toThrow(/PHONE_HAS_EXISTING_PROFILE.*已存在消费档案/)
+    expect(pg.transaction).not.toHaveBeenCalled()
+  })
+
+  test('TC20 α 语义：换绑不触碰 member_level / customer_id / points / sale_orders', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+    pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13911112222' },
+    })
+    await routes.rebindPhone(ctx)
+
+    // 事务内所有 SQL 合并检查
+    const allTxSql = txClient.query.mock.calls.map((c) => c[0]).join('\n')
+    expect(allTxSql).not.toMatch(/member_level/i)
+    expect(allTxSql).not.toMatch(/customer_id/i)
+    expect(allTxSql).not.toMatch(/points_balance/i)
+    expect(allTxSql).not.toMatch(/bound_store_id/i)
+
+    // 事务外也不能有 sale_orders 匿名归并
+    const outsideSql = pg.query.mock.calls.map((c) => c[0]).join('\n')
+    expect(outsideSql).not.toMatch(/UPDATE\s+sale_orders/i)
+  })
+
+  test('TC30 审计日志 detail 的 oldPhone/newPhone 已 mask（不含完整 11 位号码）', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13812345678' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+    pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+    const ctx = createCtx({
+      auth: { userId: 'user-001', phone: '13812345678' },
+      payload: { phoneNumber: '13987654321' },
+    })
+    await routes.rebindPhone(ctx)
+
+    const insertParams = txClient.query.mock.calls[1][1]
+    const detail = insertParams[5]
+    expect(detail.oldPhone).toBe('138****5678')
+    expect(detail.newPhone).toBe('139****4321')
+    expect(detail.clientUserId).toBe('user-001')
+    expect(detail.mergedOrders).toBe(0)
+    // 不含完整号码
+    expect(JSON.stringify(detail)).not.toContain('13812345678')
+    expect(JSON.stringify(detail)).not.toContain('13987654321')
+  })
+
+  test('换绑时不执行匿名订单归并（sale_orders 未被 UPDATE）', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001', phone: '13800001111' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const txClient = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+    pg.transaction.mockImplementationOnce(async (cb) => cb(txClient))
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: { phoneNumber: '13911112222' },
+    })
+    await routes.rebindPhone(ctx)
+
+    const allSql = [
+      ...pg.query.mock.calls.map((c) => c[0]),
+      ...txClient.query.mock.calls.map((c) => c[0]),
+    ].join('\n')
+    expect(allSql).not.toMatch(/UPDATE\s+sale_orders/i)
+    expect(ctx.result.mergedAnonymousOrders).toBe(0)
+  })
+
+  test('CloudID 解密失败 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: {},
+      event: {
+        phoneData: { errCode: -1, errMsg: '解密失败' },
+      },
+    })
+    await expect(routes.rebindPhone(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*解密失败/)
+  })
+
+  test('缺少 phoneData 和 phoneNumber → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'rebind-openid' })
+
+    const ctx = createCtx({
+      auth: BOUND_AUTH,
+      payload: {},
+    })
+    await expect(routes.rebindPhone(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*phoneData.*phoneNumber/)
   })
 })
 
