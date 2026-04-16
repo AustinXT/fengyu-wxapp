@@ -42,10 +42,53 @@
 }
 
 
+/* ===== BundlePicker 子视图 ===== */
+.bundle-picker-wrap {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
 /* ===== SPU 卡片列表（图文卡片） ===== */
 .spu-list-inner {
   padding-bottom: 16rpx;
 }
+
+/* ===== SKU 网格（体验卡 / 充值卡 简化布局）===== */
+.spu-list-inner--grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16rpx;
+}
+.sku-grid-item {
+  background: #FFFFFF;
+  border-radius: 12rpx;
+  padding: 24rpx 16rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12rpx;
+  border: 2rpx solid transparent;
+}
+.sku-grid-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  text-align: center;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.sku-grid-price {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+.sku-grid-price .price-symbol { font-size: 24rpx; }
+.sku-grid-price .price-integer { font-size: 40rpx; }
 
 .spu-card {
   background: #FFFFFF;
