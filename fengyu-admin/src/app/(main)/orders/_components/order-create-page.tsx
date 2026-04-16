@@ -982,7 +982,7 @@ export default function OrderCreatePageClient({
                     marketName: store?.marketName || "未知市场",
                     clientUserId: selectedCustomer?.userId || null,
                     clientPhone: selectedCustomer?.phone || manualPhone.trim(),
-                    customerName: selectedCustomer?.name || manualPhone.trim(),
+                    customerName: selectedCustomer?.name?.trim() || manualPhone.trim() || (selectedCustomer?.phone ?? ''),
                     paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,

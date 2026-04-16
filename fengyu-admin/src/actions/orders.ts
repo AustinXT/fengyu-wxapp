@@ -656,6 +656,7 @@ export async function createOrder(data: {
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
+          storeId: data.storeId,
           itemDirection: '购买',
           skuId: item.skuId,
           productName: item.productName,
@@ -690,10 +691,16 @@ export async function createOrder(data: {
     if (err?.code === '23503') {
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
     }
+    // PG NOT NULL 违反（字段缺失）
+    if (err?.code === '23502') {
+      console.error('[createOrder] not_null_violation:', err)
+      return { success: false, message: '订单字段缺失，请联系管理员' }
+    }
     // PG 唯一约束冲突（advisory lock 下极罕见）
     if (err?.code === '23505') {
       return { success: false, message: '订单号冲突，请稍后重试' }
     }
+    console.error('[createOrder] unexpected error:', err)
     return { success: false, message: '创建订单失败，请稍后重试' }
   }
 
