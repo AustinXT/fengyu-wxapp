@@ -20,14 +20,16 @@ import type { OrderPickerBundle, OrderPickerBundleSkuRef } from "@/actions/produ
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { bundleSkuToProductSku, type BundlePickerProps } from "./types"
+import { bundleSkuToProductSku, type BundleAddPayload, type BundlePickerProps } from "./types"
 
 interface BundleRowProps {
   bundle: OrderPickerBundle
   onAdd: (product: Product, sku: ProductSku) => void
+  /** 一次性回调（组合套餐分支走替换 cart + 跳转确认页） */
+  onBundleAdded?: (payload: BundleAddPayload) => void
 }
 
-function BundleRow({ bundle, onAdd }: BundleRowProps) {
+function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
   // 各 N 选 M 分组的当前选择状态：groupId → Set<skuId>
   const pickGroups = useMemo(
     () => bundle.groups.filter((g) => g.pickCount != null && g.pickCount > 0),
@@ -100,8 +102,15 @@ function BundleRow({ bundle, onAdd }: BundleRowProps) {
       updatedAt: '',
     }
 
-    for (const ref of toAdd) {
-      onAdd(fakeProduct, bundleSkuToProductSku(ref))
+    if (onBundleAdded) {
+      // 一次性替换分支：父级负责清空旧 cart + 填入新套餐 + 跳 Step 3
+      const skus = toAdd.map((ref) => bundleSkuToProductSku(ref))
+      onBundleAdded({ product: fakeProduct, skus })
+    } else {
+      // 兼容分支：未提供一次性回调时走 addToCart 循环（保留既有单测路径）
+      for (const ref of toAdd) {
+        onAdd(fakeProduct, bundleSkuToProductSku(ref))
+      }
     }
 
     setSelections({})
@@ -191,14 +200,14 @@ function BundleRow({ bundle, onAdd }: BundleRowProps) {
   )
 }
 
-export function BundlePicker({ bundles, onAdd }: BundlePickerProps) {
+export function BundlePicker({ bundles, onAdd, onBundleAdded }: BundlePickerProps) {
   return (
     <Card>
       <CardContent className="p-4 space-y-3">
         <h3 className="text-sm font-semibold text-[#999999]">组合套餐</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {bundles.map((b) => (
-            <BundleRow key={b.productId} bundle={b} onAdd={onAdd} />
+            <BundleRow key={b.productId} bundle={b} onAdd={onAdd} onBundleAdded={onBundleAdded} />
           ))}
           {bundles.length === 0 && (
             <p className="text-sm text-[#999999] py-8 text-center col-span-2">暂无可选套餐</p>

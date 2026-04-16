@@ -28,6 +28,7 @@ import {
   ConversionPanel,
   type CartItem,
   type ItemPriceOverride,
+  type BundleAddPayload,
 } from "./order-create"
 import type { Product } from "@/lib/types"
 
@@ -310,6 +311,53 @@ export default function OrderCreatePageClient({
     )
   }
 
+  /**
+   * Step 1 → Step 3（确认页）跳转：切换到 Step 3 并按顾客/金额异步加载可用优惠券。
+   * 非套餐分支（普通/体验/充值）由底部「下一步」按钮调用；
+   * 组合套餐分支由 BundlePicker.onBundleAdded 触发（跳过购物车 UI）。
+   */
+  const goToConfirm = async (subtotal: number) => {
+    setStep(2)
+    setSelectedCouponId("")
+    if (selectedCustomer?.userId) {
+      setLoadingCoupons(true)
+      try {
+        const coupons = await getAvailableCoupons(
+          selectedCustomer.userId,
+          subtotal,
+          selectedStoreId || undefined,
+        )
+        setAvailableCoupons(coupons)
+      } catch {
+        setAvailableCoupons([])
+      } finally {
+        setLoadingCoupons(false)
+      }
+    } else {
+      setAvailableCoupons([])
+    }
+  }
+
+  /**
+   * 组合套餐一次性加购：清空旧 cart（保证一单仅 1 个套餐） →
+   * 按 bundlePrice 填入套餐子 SKU → 跳 Step 3 确认页。
+   * 预算子总额用 sku.specialPrice（= bundlePrice）逐项累加，用于优惠券匹配。
+   */
+  const handleBundleAdded = (payload: BundleAddPayload) => {
+    const newCart: CartItem[] = payload.skus.map((sku) => ({
+      sku,
+      product: payload.product,
+      quantity: 1,
+    }))
+    setCart(newCart)
+    setPriceOverrides({})
+    const subtotal = newCart.reduce((sum, item) => {
+      const unit = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
+      return sum + unit * item.quantity
+    }, 0)
+    void goToConfirm(subtotal)
+  }
+
   // 门店切换时，清除不属于该门店的美容师选择
   useEffect(() => {
     if (selectedEmployeeId && selectedStoreId) {
@@ -329,19 +377,22 @@ export default function OrderCreatePageClient({
   // 应付合计 & 实付合计（含手动覆盖）— 内部单走半价显示分支
   const isInternal = orderType === '内部单'
   const isConversion = orderType === '转换单'
+  const isBundleOrder = productKindChoice === '组合套餐'
   const internalRatio = isInternal ? 0.5 : 1
+  // 组合套餐 / 内部单均禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
+  const suppressOverride = isInternal || isBundleOrder
 
   const { totalSaleAmount, totalReceived } = useMemo(() => {
     let sa = 0, rc = 0
     for (const item of cart) {
-      // 内部单：禁止 priceOverrides 生效；统一按半价计算显示
-      const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+      // 组合套餐 / 内部单：禁止 priceOverrides 生效；组合套餐仍可叠加内部单半价
+      const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
       const amounts = getItemAmounts(item, override)
       sa += amounts.saleAmount * internalRatio
       rc += amounts.received * internalRatio
     }
     return { totalSaleAmount: sa, totalReceived: rc }
-  }, [cart, priceOverrides, isInternal, internalRatio])
+  }, [cart, priceOverrides, suppressOverride, internalRatio])
 
   // 转换单候选按钮可用性（ticket §5 表格最后两行）
   const conversionAllowed = !!selectedCustomer?.userId
@@ -532,7 +583,14 @@ export default function OrderCreatePageClient({
             }
             switch (productKindChoice) {
               case '组合套餐':
-                return <BundlePicker bundles={data.bundles} cart={cart} onAdd={addToCart} />
+                return (
+                  <BundlePicker
+                    bundles={data.bundles}
+                    cart={cart}
+                    onAdd={addToCart}
+                    onBundleAdded={handleBundleAdded}
+                  />
+                )
               case '普通商品':
                 return (
                   <NormalSkuPicker
@@ -563,7 +621,8 @@ export default function OrderCreatePageClient({
             }
           })()}
 
-          {/* 购物车 */}
+          {/* 购物车（组合套餐分支跳过购物车 UI，直接由 BundlePicker.onBundleAdded 进 Step 3） */}
+          {productKindChoice !== '组合套餐' && (
           <Card>
             <CardContent className="p-4">
               <h3 className="text-sm font-semibold mb-3">
@@ -614,32 +673,19 @@ export default function OrderCreatePageClient({
               )}
             </CardContent>
           </Card>
+          )}
 
           <div className="flex justify-between">
             <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
-            <Button
-              onClick={async () => {
-                setStep(2)
-                setSelectedCouponId("")
-                // 如果是已注册顾客，拉取可用优惠券
-                if (selectedCustomer?.userId) {
-                  setLoadingCoupons(true)
-                  try {
-                    const coupons = await getAvailableCoupons(selectedCustomer.userId, catalogTotal, selectedStoreId || undefined)
-                    setAvailableCoupons(coupons)
-                  } catch {
-                    setAvailableCoupons([])
-                  } finally {
-                    setLoadingCoupons(false)
-                  }
-                } else {
-                  setAvailableCoupons([])
-                }
-              }}
-              disabled={cart.length === 0}
-            >
-              下一步
-            </Button>
+            {/* 组合套餐分支：跳过购物车，选套餐后由 BundlePicker.onBundleAdded 自动进 Step 3；这里不渲染「下一步」 */}
+            {productKindChoice !== '组合套餐' && (
+              <Button
+                onClick={() => void goToConfirm(catalogTotal)}
+                disabled={cart.length === 0}
+              >
+                下一步
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -682,6 +728,9 @@ export default function OrderCreatePageClient({
               )}
               {isInternal && (
                 <p className="text-xs text-[#D4820A] mt-1">内部单 5 折，禁用手工改价 + 优惠券</p>
+              )}
+              {isBundleOrder && !isConversion && (
+                <p className="text-xs text-[#D4820A] mt-1">组合套餐按打包价销售，禁用手工改价</p>
               )}
             </div>
 
@@ -781,12 +830,12 @@ export default function OrderCreatePageClient({
                 </div>
                 <div className="space-y-2">
                   {cart.map((item) => {
-                    // 内部单：不读 priceOverrides，禁用手工改价
-                    const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+                    // 内部单 / 组合套餐：不读 priceOverrides，禁用手工改价
+                    const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
                     const baseAmounts = getItemAmounts(item, override)
                     const displaySaleAmount = baseAmounts.saleAmount * internalRatio
                     const displayReceived = baseAmounts.received * internalRatio
-                    const hasOverride = !isInternal && (override?.saleAmount != null || override?.received != null)
+                    const hasOverride = !suppressOverride && (override?.saleAmount != null || override?.received != null)
 
                     return (
                       <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
@@ -809,11 +858,11 @@ export default function OrderCreatePageClient({
                             type="number"
                             min="0"
                             step="0.01"
-                            disabled={isInternal}
+                            disabled={suppressOverride}
                             className="h-8 text-sm text-right"
-                            value={isInternal ? displaySaleAmount.toFixed(2) : (override?.saleAmount ?? baseAmounts.defaultSaleAmount.toFixed(2))}
+                            value={suppressOverride ? displaySaleAmount.toFixed(2) : (override?.saleAmount ?? baseAmounts.defaultSaleAmount.toFixed(2))}
                             onChange={(e) => {
-                              if (isInternal) return
+                              if (suppressOverride) return
                               const val = e.target.value
                               setPriceOverrides(prev => ({
                                 ...prev,
@@ -831,11 +880,11 @@ export default function OrderCreatePageClient({
                             type="number"
                             min="0"
                             step="0.01"
-                            disabled={isInternal}
+                            disabled={suppressOverride}
                             className="h-8 text-sm text-right"
-                            value={isInternal ? displayReceived.toFixed(2) : (override?.received ?? baseAmounts.saleAmount.toFixed(2))}
+                            value={suppressOverride ? displayReceived.toFixed(2) : (override?.received ?? baseAmounts.saleAmount.toFixed(2))}
                             onChange={(e) => {
-                              if (isInternal) return
+                              if (suppressOverride) return
                               setPriceOverrides(prev => ({
                                 ...prev,
                                 [item.sku.skuId]: {
@@ -959,8 +1008,8 @@ export default function OrderCreatePageClient({
                 }
 
                 // 销售单 / 内部单 — 走原 createOrder
-                // 校验手动金额（内部单跳过 priceOverrides，因为禁用了改价）
-                if (!isInternal) {
+                // 校验手动金额（内部单 / 组合套餐跳过 priceOverrides，因为禁用了改价）
+                if (!suppressOverride) {
                   for (const item of cart) {
                     const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
                     if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
@@ -990,7 +1039,8 @@ export default function OrderCreatePageClient({
                     couponId: !isInternal ? (selectedCouponId || null) : null,
                     items: cart.map((item) => {
                       // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
-                      const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+                      // 组合套餐：priceOverrides 被 UI 锁死不会有值，这里 suppressOverride 兜底
+                      const override = suppressOverride ? undefined : priceOverrides[item.sku.skuId]
                       const amounts = getItemAmounts(item, override)
                       return {
                         skuId: item.sku.skuId,

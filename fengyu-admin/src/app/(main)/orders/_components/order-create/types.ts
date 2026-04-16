@@ -39,9 +39,23 @@ export interface NormalKindPickerProps extends PickerCommonProps {
   kindLabel: string
 }
 
+/**
+ * 一次性加入套餐的 payload：
+ * - product：套餐封面占位 product（purchased 行的 product.name 显示用）
+ * - skus：套餐内已选 SKU 列表（bundlePrice 已写入 specialPrice）
+ *
+ * 组合套餐走"一次性替换 cart"分支；普通/体验/充值走 addToCart 循环。
+ */
+export interface BundleAddPayload {
+  product: Product
+  skus: ProductSku[]
+}
+
 /** 套餐 picker 数据形状 */
 export interface BundlePickerProps extends PickerCommonProps {
   bundles: OrderPickerBundle[]
+  /** 一次性回调：提供时走"替换 cart + 跳转"路径；未提供时 fallback 到 onAdd 循环 */
+  onBundleAdded?: (payload: BundleAddPayload) => void
 }
 
 /**
