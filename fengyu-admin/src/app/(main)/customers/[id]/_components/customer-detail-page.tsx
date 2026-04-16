@@ -13,6 +13,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { StatusBadge } from "@/components/ui/badge"
 import { DataTable, type Column } from "@/components/ui/data-table"
+import {
+  AlertDialog,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
@@ -25,6 +33,7 @@ interface CustomerDetailPageProps {
   employees: Employee[]
   phoneChangeLogs: PhoneChangeLog[]
   orphanProfiles: OrphanProfile[]
+  canEditPhone?: boolean
 }
 
 export default function CustomerDetailPage({
@@ -35,9 +44,65 @@ export default function CustomerDetailPage({
   employees,
   phoneChangeLogs,
   orphanProfiles,
+  canEditPhone = false,
 }: CustomerDetailPageProps) {
   const router = useRouter()
   const [merging, setMerging] = useState<string | null>(null)
+
+  // 手机号编辑（独立于"基本档案 编辑/保存"，因为手机号修改影响登录/会员识别，需要单独的二次确认流程）
+  const [phoneEditing, setPhoneEditing] = useState(false)
+  const [phoneInput, setPhoneInput] = useState(customer.phone ?? "")
+  const [phoneSaving, setPhoneSaving] = useState(false)
+  const [phoneConfirmOpen, setPhoneConfirmOpen] = useState(false)
+
+  function handlePhoneEditCancel() {
+    setPhoneInput(customer.phone ?? "")
+    setPhoneEditing(false)
+  }
+
+  function handlePhoneEditSubmit() {
+    const next = phoneInput.trim()
+    if (!next) {
+      toast.error("请输入手机号")
+      return
+    }
+    if (!/^1\d{10}$/.test(next)) {
+      toast.error("手机号格式不正确（需为 11 位手机号）")
+      return
+    }
+    if (next === (customer.phone ?? "")) {
+      // 与原号一致，无需提示，直接退出编辑态
+      setPhoneEditing(false)
+      return
+    }
+    setPhoneConfirmOpen(true)
+  }
+
+  async function handlePhoneConfirm() {
+    setPhoneSaving(true)
+    setPhoneConfirmOpen(false)
+    try {
+      // TODO(perf): admin 改 phone 后，client 端 AUTH_CACHE 仍按 OPENID 缓存 5min，自然过期。
+      // 若日后出现性能/一致性问题，可考虑通过 cloudbase 触发缓存失效；当前不实现跨服务调用。
+      const result = await updateCustomer(
+        customer.userId,
+        { phone: phoneInput.trim() },
+        customer.updatedAt,
+      )
+      if (!result.success) {
+        toast.error(result.message)
+        if (result.message.includes("已被其他人修改")) router.refresh()
+        return
+      }
+      toast.success("手机号已更新")
+      setPhoneEditing(false)
+      router.refresh()
+    } catch {
+      toast.error("保存失败，请稍后重试")
+    } finally {
+      setPhoneSaving(false)
+    }
+  }
 
   async function handleMerge(orphanUserId: string) {
     if (!confirm(`确认合并孤儿档案 ${orphanUserId} 到当前顾客？\n该操作将把孤儿行的业务数据（订单/券/积分/充值卡/预约/消息/服务单）全部归并到当前顾客，且删除孤儿行。操作不可撤销。`)) return
@@ -378,7 +443,44 @@ export default function CustomerDetailPage({
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">手机号</label>
-                  <Input value={customer.phone ?? ""} disabled />
+                  {phoneEditing ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={phoneInput}
+                        onChange={(e) => setPhoneInput(e.target.value)}
+                        placeholder="11 位手机号"
+                        maxLength={11}
+                        autoFocus
+                      />
+                      <Button size="sm" loading={phoneSaving} onClick={handlePhoneEditSubmit}>
+                        保存
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePhoneEditCancel}
+                        disabled={phoneSaving}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Input value={customer.phone ?? ""} disabled />
+                      {canEditPhone && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            setPhoneInput(customer.phone ?? "")
+                            setPhoneEditing(true)
+                          }}
+                        >
+                          编辑
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">微信昵称</label>
@@ -683,6 +785,21 @@ export default function CustomerDetailPage({
           </Card>
         </TabsContent>
       </Tabs>
+
+      <AlertDialog open={phoneConfirmOpen} onOpenChange={setPhoneConfirmOpen}>
+        <AlertDialogTitle>确认修改手机号</AlertDialogTitle>
+        <AlertDialogDescription>
+          修改手机号将影响登录、下单联系、会员识别。新手机号 {phoneInput.trim()} 已通过格式校验。确认继续？
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setPhoneConfirmOpen(false)} disabled={phoneSaving}>
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handlePhoneConfirm} disabled={phoneSaving}>
+            确认修改
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
     </div>
   )
 }

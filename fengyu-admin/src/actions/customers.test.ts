@@ -70,8 +70,9 @@ vi.mock('crypto', () => ({
 import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
-import { isInScope, isAdminScope } from '@/lib/permissions'
+import { isInScope, isAdminScope, requirePermission } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
+import { logUpdate } from '@/lib/operation-log'
 import { eq, ilike } from 'drizzle-orm'
 
 const mockSession = {
@@ -178,6 +179,73 @@ describe('updateCustomer — 校验 + scope + 错误处理', () => {
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('已更新')
+  })
+
+  // ── admin 修改顾客手机号专项（P2 — admin-only 换绑）────────────────────────
+  it('admin 改 phone（仅 phone 字段）→ 成功 + logUpdate 记录 phone diff', async () => {
+    mockSelectBefore([{ userId: 'user-1', phone: '13800000000', name: '张三' }])
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer(
+      'user-1',
+      { phone: '13911112222' },
+      '2026-04-16T00:00:00.000Z',
+    )
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已更新')
+    // logUpdate 被调用：customer.update + before/after 中含 phone
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession,
+      'customer.update',
+      'customer',
+      'user-1',
+      expect.objectContaining({ phone: '13800000000' }),
+      expect.objectContaining({ phone: '13911112222' }),
+    )
+  })
+
+  it('改 phone 时新号已被占用（23505）→ 提示文案"已被其他顾客使用"', async () => {
+    mockSelectBefore([{ userId: 'user-1', phone: '13800000000' }])
+    const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' })
+    const set = vi.fn().mockReturnValue({ where: vi.fn().mockRejectedValue(pgError) })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer('user-1', { phone: '13911112222' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('该手机号已被其他顾客使用')
+    // 唯一冲突不应写审计日志
+    expect(logUpdate).not.toHaveBeenCalled()
+  })
+
+  it('权限拒绝：requirePermission 抛出时整个 action 失败', async () => {
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 缺少 customer:update 权限')
+    })
+
+    await expect(
+      updateCustomer('user-1', { phone: '13911112222' }),
+    ).rejects.toThrow(/PERMISSION_DENIED/)
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('改 phone 时乐观锁不匹配（rowCount=0 + expectedUpdatedAt）→ 提示"已被其他人修改"', async () => {
+    mockSelectBefore([{ userId: 'user-1', phone: '13800000000' }])
+    const where = vi.fn().mockResolvedValue({ count: 0 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+
+    const result = await updateCustomer(
+      'user-1',
+      { phone: '13911112222' },
+      '2025-01-01T00:00:00.000Z',
+    )
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('数据已被其他人修改')
   })
 })
 
