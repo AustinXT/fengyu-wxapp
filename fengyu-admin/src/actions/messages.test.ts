@@ -117,6 +117,7 @@ type SelectStep =
   | { terminal: 'where'; rows: any[] }
   | { terminal: 'limit'; rows: any[] }
   | { terminal: 'orderBy'; rows: any[] }
+  | { terminal: 'offset'; rows: any[] }
 
 function enqueueSelect(steps: SelectStep[]) {
   let i = 0
@@ -135,7 +136,8 @@ function enqueueSelect(steps: SelectStep[]) {
     chain.orderBy =
       step.terminal === 'orderBy' ? terminalFn : vi.fn().mockReturnValue(chain)
     chain.limit = step.terminal === 'limit' ? terminalFn : vi.fn().mockReturnValue(chain)
-    chain.offset = vi.fn().mockResolvedValue(step.rows)
+    chain.offset =
+      step.terminal === 'offset' ? terminalFn : vi.fn().mockResolvedValue(step.rows)
     return chain
   })
 }
