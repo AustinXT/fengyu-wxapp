@@ -38,16 +38,19 @@ Page({
       if (!tempFilePath) return;
 
       wx.showLoading({ title: '上传中...', mask: true });
-      const ext = tempFilePath.split('.').pop() || 'jpg';
-      const cloudPath = `avatars/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const ext = (tempFilePath.split('.').pop() || 'jpg').toLowerCase();
 
-      const uploadRes = await wx.cloud.uploadFile({
-        cloudPath,
-        filePath: tempFilePath,
+      // 读取临时文件为 base64（小程序端直传 COS 被存储安全规则拦截，改走云函数代理）
+      const base64 = await new Promise<string>((resolve, reject) => {
+        wx.getFileSystemManager().readFile({
+          filePath: tempFilePath,
+          encoding: 'base64',
+          success: (r) => resolve(r.data as string),
+          fail: reject,
+        });
       });
-      const fileID = uploadRes.fileID;
 
-      await callClientApi('auth.updateProfile', { avatarUrl: fileID });
+      const { fileID } = await callClientApi<{ fileID: string }>('auth.uploadAvatar', { base64, ext });
       wx.setStorageSync('avatarUrl', fileID);
       this.setData({ avatarUrl: fileID });
       wx.hideLoading();

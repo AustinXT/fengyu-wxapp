@@ -1,6 +1,6 @@
 /**
  * 认证路由测试
- * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）
+ * 覆盖：login（新/老用户）、bindPhone（CloudID/直传/已绑定拒绝/历史补全）、bindStore（有效/无效门店）、updateProfile（昵称/头像更新+字段截断）、uploadAvatar（成功/校验失败/用户不存在）
  */
 
 const pg = globalThis.__mocks__.pg
@@ -279,5 +279,102 @@ describe('auth.updateProfile', () => {
 
     const ctx = createCtx({ payload: { name: '测试' } })
     await expect(routes.updateProfile(ctx)).rejects.toThrow(/UNAUTHORIZED.*用户不存在/)
+  })
+})
+
+describe('auth.uploadAvatar', () => {
+  // 注意：setup.js 的 mockCloud 默认不含 uploadFile，这里每个用例按需挂载 vi.fn()
+  beforeEach(() => {
+    cloud.uploadFile = vi.fn()
+  })
+
+  // 1px PNG 的 base64（>= 1 字节）
+  const smallBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAeImBZsAAAAASUVORK5CYII='
+
+  test('上传成功：写 COS + UPDATE avatar_url + 返回 fileID', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    cloud.uploadFile.mockResolvedValueOnce({ fileID: 'cloud://env/avatars/user-openid/1_abc.jpg' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])  // SELECT
+    pg.query.mockResolvedValueOnce([])                          // UPDATE
+
+    const ctx = createCtx({ payload: { base64: smallBase64, ext: 'jpg' } })
+    await routes.uploadAvatar(ctx)
+
+    expect(ctx.result.fileID).toBe('cloud://env/avatars/user-openid/1_abc.jpg')
+    expect(ctx.result.avatarUrl).toBe('cloud://env/avatars/user-openid/1_abc.jpg')
+
+    // cloudPath 含 openid 隔离前缀
+    const uploadArg = cloud.uploadFile.mock.calls[0][0]
+    expect(uploadArg.cloudPath).toMatch(/^avatars\/user-openid\/\d+_[a-z0-9]+\.jpg$/)
+    expect(Buffer.isBuffer(uploadArg.fileContent)).toBe(true)
+
+    // UPDATE SQL
+    const updateSql = pg.query.mock.calls[1][0]
+    expect(updateSql).toContain('UPDATE client_wechat_users')
+    expect(updateSql).toContain('avatar_url = $1')
+    expect(pg.query.mock.calls[1][1][0]).toBe('cloud://env/avatars/user-openid/1_abc.jpg')
+  })
+
+  test('ext 缺省时默认 jpg', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    cloud.uploadFile.mockResolvedValueOnce({ fileID: 'cloud://env/a.jpg' })
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createCtx({ payload: { base64: smallBase64 } })
+    await routes.uploadAvatar(ctx)
+
+    const uploadArg = cloud.uploadFile.mock.calls[0][0]
+    expect(uploadArg.cloudPath).toMatch(/\.jpg$/)
+  })
+
+  test('缺少 base64 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    const ctx = createCtx({ payload: {} })
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*base64/)
+    expect(cloud.uploadFile).not.toHaveBeenCalled()
+  })
+
+  test('不支持的扩展名 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    const ctx = createCtx({ payload: { base64: smallBase64, ext: 'gif' } })
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*格式/)
+    expect(cloud.uploadFile).not.toHaveBeenCalled()
+  })
+
+  test('图片超过 2MB → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    // 生成约 3MB 的 base64（解码后 ~ 2.25MB）
+    const bigBuffer = Buffer.alloc(3 * 1024 * 1024, 0)
+    const bigBase64 = bigBuffer.toString('base64')
+
+    const ctx = createCtx({ payload: { base64: bigBase64, ext: 'png' } })
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*2MB/)
+    expect(cloud.uploadFile).not.toHaveBeenCalled()
+  })
+
+  test('base64 解码为空 → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    const ctx = createCtx({ payload: { base64: '!!!', ext: 'jpg' } })
+    // '!!!' 在 base64 解码下得到空 Buffer
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*解码为空/)
+  })
+
+  test('用户不存在 → UNAUTHORIZED', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'unknown-openid' })
+    pg.query.mockResolvedValueOnce([])  // SELECT 返空
+
+    const ctx = createCtx({ payload: { base64: smallBase64, ext: 'jpg' } })
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/UNAUTHORIZED.*用户不存在/)
+    expect(cloud.uploadFile).not.toHaveBeenCalled()
+  })
+
+  test('COS 未返回 fileID → INVALID_PARAMS', async () => {
+    cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
+    cloud.uploadFile.mockResolvedValueOnce({})  // 缺 fileID
+    pg.query.mockResolvedValueOnce([{ user_id: 'user-001' }])
+
+    const ctx = createCtx({ payload: { base64: smallBase64, ext: 'jpg' } })
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*上传失败/)
   })
 })
