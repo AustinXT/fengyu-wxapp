@@ -82,7 +82,7 @@ Page({
           category_name: spu.category_name || '',
           cover_image: spu.cover_image,
           description: spu.description || '',
-          promotionSchemeId: spu.promotionSchemeId || ''
+          is_bundle: !!spu.is_bundle,
         },
         skuList: (spu.skuList || []).map((sku: any) => ({
           sku_id: sku.sku_id,
@@ -224,9 +224,6 @@ Page({
     // 套餐使用特殊订单类型
     if (spu.is_bundle) {
       url += '&orderType=promo';
-      if ((spu as any).promotionSchemeId) {
-        url += `&promotionSchemeId=${encodeURIComponent(spu.promotionSchemeId)}`;
-      }
     }
     wx.navigateTo({ url });
   },

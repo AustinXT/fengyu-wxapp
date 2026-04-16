@@ -53,7 +53,6 @@ Page({
     showStaffPopup: false,
     // 促销方案
     orderType: 'normal' as string,
-    promotionSchemeId: '',
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
@@ -63,7 +62,7 @@ Page({
   },
 
   onLoad(options) {
-    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType, promotionSchemeId } = options as Record<string, string>;
+    const { skuId, spuName, staffWfId, staffName, orderNo, saleOrderId, fromCart, quantity, orderType } = options as Record<string, string>;
     const storeName = app.globalData.boundStoreName;
 
     // 加载美容师列表 + 默认美容师
@@ -106,7 +105,6 @@ Page({
         storeName,
         quantity: qty,
         orderType: orderType || 'normal',
-        promotionSchemeId: promotionSchemeId ? decodeURIComponent(promotionSchemeId) : '',
       });
     }
   },
@@ -366,7 +364,6 @@ Page({
         preferredStaffWfId: this.data.staffWfId || null,
         paymentMethod: this.data.paymentMethod,
         orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
-        promotionSchemeId: this.data.promotionSchemeId || undefined,
         couponId: this.data.selectedCoupon?.couponId || undefined,
       });
 
