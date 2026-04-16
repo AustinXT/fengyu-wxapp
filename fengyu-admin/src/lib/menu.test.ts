@@ -35,6 +35,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("权限管理");
 		expect(labels).toContain("操作日志");
 		expect(labels).toContain("系统配置");
+		expect(labels).toContain("充值卡流水");
 	});
 
 	it("admin 看不到业务操作菜单", () => {
@@ -56,6 +57,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("预约管理");
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
+		expect(labels).toContain("充值卡流水");
 		expect(labels).toContain("经营数据");
 	});
 
@@ -73,6 +75,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("营业额分配");
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
+		expect(labels).toContain("充值卡流水");
 		expect(labels).toContain("经营数据");
 	});
 
@@ -98,6 +101,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("提成矩阵");
 		expect(labels).not.toContain("开单");
 		expect(labels).not.toContain("订单管理");
+		expect(labels).not.toContain("充值卡流水");
 	});
 
 	it("product 看到商品和优惠券", () => {
@@ -112,6 +116,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("员工管理");
 		expect(labels).not.toContain("订单管理");
 		expect(labels).not.toContain("权限管理");
+		expect(labels).not.toContain("充值卡流水");
 	});
 
 	it("customer_mgr 看到工作台/顾客/卡包", () => {
@@ -119,6 +124,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("工作台");
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
+		expect(labels).not.toContain("充值卡流水");
 		expect(labels).toHaveLength(3);
 	});
 
