@@ -5,7 +5,8 @@ import { saleOrders, saleItems } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { productSkus } from '@db/product'
+import { productSkus, productCategories } from '@db/product'
+import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, and, or, sql, ilike, gte, lt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
@@ -454,6 +455,26 @@ export async function createOrder(data: {
     return { success: false, message: '无权在该门店创建订单' }
   }
 
+  // 内部单自动半价：入口统一在事务前对 items 金额 ×0.5；unit_price（原价快照）保持不变。
+  // 服务费 (service_fee) 不受半价影响，仍按 SKU 配置快照。
+  if (data.saleOrderType === '内部单') {
+    if (data.couponId) {
+      return { success: false, message: '内部单不允许叠加优惠券' }
+    }
+    data = {
+      ...data,
+      items: data.items.map((item) => {
+        const halve = (v: string) => (Number(v) / 2).toFixed(2)
+        return {
+          ...item,
+          unitRealPrice: halve(item.unitRealPrice),
+          saleAmount: item.saleAmount !== undefined ? halve(item.saleAmount) : undefined,
+          received: item.received !== undefined ? halve(item.received) : undefined,
+        }
+      }),
+    }
+  }
+
   // 校验手动金额
   for (const item of data.items) {
     if (item.saleAmount !== undefined) {
@@ -683,6 +704,442 @@ export async function createOrder(data: {
 
   revalidatePath('/orders')
   return { success: true, message: '订单创建成功', saleOrderId }
+}
+
+/**
+ * 转换单 — 顾客持卡折抵换购
+ *
+ * 业务流程：
+ * 1. 锁住 convertOutSaleItemIds 对应 sale_items 行（FOR UPDATE），校验 store_id / item_direction / 状态
+ * 2. 计算转出折抵金额 totalOut = sum(unit_real_price × 可折抵数量)
+ *    - 疗程卡：remaining_sessions
+ *    - 单品：quantity - COALESCE(picked_up_quantity, 0)
+ * 3. 计算转入应付金额 totalIn = sum(sku.price × quantity)
+ * 4. priceDiff = totalIn - totalOut
+ *    - priceDiff > 0：补现（paymentMethod），sale_orders.total_amount = priceDiff，status='待支付'/'待确认收款'
+ *    - priceDiff = 0：不收款，status='已支付'
+ *    - priceDiff < 0：差额 UPSERT 到 prepaid_cards，INSERT card_transactions('充值')
+ * 5. 原子标记转出行已耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
+ * 6. INSERT 转出行（sale_amount/received 为负折抵，item_direction='转出'，ref_sale_item_id）
+ * 7. INSERT 转入行（item_direction='转入'，sale_amount/received=转入金额）
+ */
+export async function createConversionOrder(data: {
+  storeId: string
+  marketName: string
+  /** 转换单必须实名顾客（要挂储值卡），不允许 manualPhone */
+  clientUserId: string
+  paymentMethod: '微信' | '支付宝' | '线下'
+  preferredEmployeeId?: string
+  remark?: string | null
+  /** 转出：整张卡（不带数量，全部折抵） */
+  convertOutSaleItemIds: string[]
+  /** 转入项目（来自 Step 2 的购物车） */
+  convertInItems: Array<{
+    skuId: string
+    productName: string
+    skuSpecName: string
+    productType: '疗程卡' | '单品' | '院装产品'
+    sessionCount: number | null
+    unitPrice: string
+    quantity: number
+    salesCategory?: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
+  }>
+}): Promise<{
+  success: boolean
+  message: string
+  saleOrderId?: string
+  totalIn?: number
+  totalOut?: number
+  priceDiff?: number
+  prepaidCardCredit?: number
+}> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:create')
+
+  if (!isInScope(session, data.storeId)) {
+    return { success: false, message: '无权在该门店创建订单' }
+  }
+  if (!data.clientUserId) {
+    return { success: false, message: '转换单必须指定顾客' }
+  }
+  if (!data.convertOutSaleItemIds?.length) {
+    return { success: false, message: '请选择至少一张折抵卡' }
+  }
+  if (!data.convertInItems?.length) {
+    return { success: false, message: '请选择至少一个转入项目' }
+  }
+
+  // 查顾客基本信息（姓名快照 + phone 快照）
+  const [client] = await db
+    .select({
+      userId: clientWechatUsers.userId,
+      phone: clientWechatUsers.phone,
+      name: clientWechatUsers.name,
+      customerType: clientWechatUsers.customerType,
+    })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, data.clientUserId))
+    .limit(1)
+  if (!client) {
+    return { success: false, message: '顾客不存在' }
+  }
+
+  // 事务：锁转出行 + 校验 + 计算金额 + 插入订单 + 插入两段 items + 储值卡补差
+  let result: {
+    saleOrderId: string
+    totalIn: number
+    totalOut: number
+    priceDiff: number
+    prepaidCardCredit: number
+  }
+
+  try {
+    result = await db.transaction(async (tx) => {
+      // 1. 锁住转出候选行（FOR UPDATE）并 JOIN product_categories 以识别"体验卡单品"
+      const heldRows = await tx.execute(sql`
+        SELECT
+          si.sale_item_id,
+          si.store_id,
+          si.item_direction,
+          si.sku_id,
+          si.product_name,
+          si.sku_spec_name,
+          si.product_type,
+          si.session_count,
+          si.remaining_sessions,
+          si.quantity,
+          si.picked_up_quantity,
+          si.unit_price,
+          si.unit_real_price,
+          si.sales_category,
+          si.service_fee,
+          so.client_user_id,
+          so.status AS order_status,
+          pc.product_kind
+        FROM sale_items si
+        INNER JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+        LEFT JOIN product_skus psk ON psk.sku_id = si.sku_id
+        LEFT JOIN product_categories pc ON pc.category_id = psk.category_id
+        WHERE si.sale_item_id = ANY(${data.convertOutSaleItemIds})
+        FOR UPDATE OF si
+      `)
+
+      const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
+      if (held.length !== data.convertOutSaleItemIds.length) {
+        throw new Error('CARD_NOT_FOUND')
+      }
+
+      let totalOut = 0
+      type OutItem = {
+        refSaleItemId: string
+        skuId: string | null
+        productName: string | null
+        skuSpecName: string | null
+        productType: '疗程卡' | '单品' | '院装产品' | null
+        sessionCount: number | null
+        unitPrice: string
+        unitRealPrice: string
+        quantity: number
+        amount: number
+        salesCategory: string | null
+        serviceFee: number
+      }
+      const outItems: OutItem[] = []
+
+      for (const row of held) {
+        // 归属校验：store_id / client_user_id / direction / 状态
+        if (row.store_id !== data.storeId) throw new Error('CARD_STORE_MISMATCH')
+        if (row.client_user_id !== data.clientUserId) throw new Error('CARD_OWNER_MISMATCH')
+        if (row.item_direction !== '购买') throw new Error('CARD_DIRECTION_INVALID')
+        if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+          throw new Error('CARD_ORDER_STATUS_INVALID')
+        }
+
+        const unit = Number(row.unit_real_price)
+        const productType = row.product_type as string
+
+        let qty = 0
+        if (productType === '疗程卡') {
+          const rem = Number(row.remaining_sessions ?? 0)
+          if (rem <= 0) throw new Error('CARD_EXHAUSTED')
+          qty = rem
+        } else if (productType === '单品' && row.product_kind === '体验卡') {
+          const remQty = Number(row.quantity) - Number(row.picked_up_quantity ?? 0)
+          if (remQty <= 0) throw new Error('CARD_EXHAUSTED')
+          qty = remQty
+        } else {
+          throw new Error('CARD_TYPE_INVALID')
+        }
+
+        const amount = Math.round(unit * qty * 100) / 100
+        totalOut += amount
+        // 按折抵数量比例扣减 service_fee（负值）
+        const origServiceFee = Number(row.service_fee ?? 0)
+        const origQty = Number(row.quantity) || 1
+        const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
+
+        outItems.push({
+          refSaleItemId: row.sale_item_id as string,
+          skuId: (row.sku_id as string) ?? null,
+          productName: (row.product_name as string) ?? null,
+          skuSpecName: (row.sku_spec_name as string) ?? null,
+          productType: productType as OutItem['productType'],
+          sessionCount: row.session_count !== null ? Number(row.session_count) : null,
+          unitPrice: String(row.unit_price),
+          unitRealPrice: String(row.unit_real_price),
+          quantity: qty,
+          amount,
+          salesCategory: (row.sales_category as string) ?? null,
+          serviceFee: outServiceFee,
+        })
+      }
+
+      // 2. 加载转入 SKU 详情（price / service_fee / session_count / sales_category）
+      const inSkuIds = data.convertInItems.map((i) => i.skuId)
+      const skuRows = await tx
+        .select({
+          skuId: productSkus.skuId,
+          price: productSkus.price,
+          serviceFee: productSkus.serviceFee,
+          sessionCount: productSkus.sessionCount,
+          productType: productSkus.productType,
+          salesCategory: productCategories.salesCategory,
+        })
+        .from(productSkus)
+        .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+        .where(inArray(productSkus.skuId, inSkuIds))
+      const skuMap = new Map(skuRows.map((r) => [r.skuId, r]))
+
+      let totalIn = 0
+      const inItems: Array<{
+        item: (typeof data.convertInItems)[number]
+        sku: typeof skuRows[number]
+        amount: number
+        serviceFee: number
+      }> = []
+      for (const inItem of data.convertInItems) {
+        const sku = skuMap.get(inItem.skuId)
+        if (!sku) throw new Error(`SKU_NOT_FOUND:${inItem.skuId}`)
+        const amount = Math.round(Number(sku.price) * inItem.quantity * 100) / 100
+        totalIn += amount
+        const serviceFee = Math.round(Number(sku.serviceFee ?? 0) * inItem.quantity * 100) / 100
+        inItems.push({ item: inItem, sku, amount, serviceFee })
+      }
+
+      const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
+
+      // 3. 生成订单号（advisory lock + 当日序号）
+      const idRows = await tx.execute(sql`
+        WITH lock AS (
+          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+        )
+        SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+          LPAD(
+            (SELECT COALESCE(MAX(
+              CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+            ), 0) + 1
+            FROM sale_orders
+            WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+            )::TEXT, 4, '0'
+          ) AS id
+        FROM lock
+      `)
+      const saleOrderId = (idRows as any[])[0]?.id as string
+      if (!saleOrderId) throw new Error('ORDER_ID_GEN_FAILED')
+
+      // 4. 计算 documentType（售前/售后）
+      let documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
+      if (documentType === '售前') {
+        const threshold = await getMemberThreshold()
+        if (totalIn >= threshold) documentType = '售后'
+      }
+
+      // 5. 插入订单主表
+      // 顾客补现场景：priceDiff > 0 → total_amount=priceDiff，status 按支付方式决定
+      // 其他：total_amount=0 & status='已支付'
+      const orderTotal = Math.max(0, priceDiff).toFixed(2)
+      const orderStatus: typeof saleOrders.$inferInsert['status'] =
+        priceDiff > 0 ? (data.paymentMethod === '线下' ? '待确认收款' : '待支付') : '已支付'
+
+      await tx.insert(saleOrders).values({
+        saleOrderId,
+        status: orderStatus,
+        saleOrderType: '转换单',
+        documentType,
+        marketName: data.marketName,
+        storeId: data.storeId,
+        saleOrderDatetime: new Date(),
+        clientUserId: data.clientUserId,
+        clientPhone: client.phone ?? null,
+        customerName: client.name ?? null,
+        totalAmount: orderTotal,
+        paymentMethod: data.paymentMethod,
+        openedBy: session.employeeId,
+        preferredEmployeeId: data.preferredEmployeeId || null,
+        allocationStatus: '待分配',
+        remark: data.remark || null,
+        paidAt: priceDiff > 0 ? null : new Date(),
+      })
+
+      // 6. 转出行 + 原子扣减原卡余量
+      let seq = 1
+      for (const out of outItems) {
+        const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
+        seq++
+        await tx.insert(saleItems).values({
+          saleItemId,
+          saleOrderId,
+          storeId: data.storeId,
+          itemDirection: '转出',
+          refSaleItemId: out.refSaleItemId,
+          skuId: out.skuId,
+          productName: out.productName,
+          skuSpecName: out.skuSpecName,
+          productType: out.productType,
+          sessionCount: out.sessionCount,
+          unitPrice: out.unitPrice,
+          quantity: out.quantity,
+          unitRealPrice: out.unitRealPrice,
+          saleAmount: (-out.amount).toFixed(2),
+          received: (-out.amount).toFixed(2),
+          salesCategory: (out.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ?? null,
+          serviceFee: out.serviceFee.toFixed(2),
+        })
+
+        // 原子标记耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
+        if (out.productType === '疗程卡') {
+          const upd = await tx
+            .update(saleItems)
+            .set({ remainingSessions: 0 })
+            .where(
+              and(
+                eq(saleItems.saleItemId, out.refSaleItemId),
+                eq(saleItems.storeId, data.storeId),
+                sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
+              ),
+            )
+          if ((upd as any).count === 0) throw new Error('CARD_CONCURRENT_CHANGED')
+        } else if (out.productType === '单品') {
+          const upd = await tx
+            .update(saleItems)
+            .set({ pickedUpQuantity: sql`${saleItems.quantity}` })
+            .where(
+              and(
+                eq(saleItems.saleItemId, out.refSaleItemId),
+                eq(saleItems.storeId, data.storeId),
+                sql`${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0) >= ${out.quantity}`,
+              ),
+            )
+          if ((upd as any).count === 0) throw new Error('CARD_CONCURRENT_CHANGED')
+        }
+      }
+
+      // 7. 转入行
+      for (const inRow of inItems) {
+        const saleItemId = `${saleOrderId}-${String(seq).padStart(2, '0')}`
+        seq++
+        const unitPrice = inRow.sku.price
+        await tx.insert(saleItems).values({
+          saleItemId,
+          saleOrderId,
+          storeId: data.storeId,
+          itemDirection: '转入',
+          skuId: inRow.item.skuId,
+          productName: inRow.item.productName,
+          skuSpecName: inRow.item.skuSpecName,
+          productType: inRow.item.productType,
+          sessionCount: inRow.item.sessionCount,
+          remainingSessions: inRow.item.sessionCount,
+          unitPrice,
+          quantity: inRow.item.quantity,
+          unitRealPrice: unitPrice,
+          saleAmount: inRow.amount.toFixed(2),
+          received: inRow.amount.toFixed(2),
+          salesCategory:
+            (inRow.item.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
+            (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
+            null,
+          serviceFee: inRow.serviceFee.toFixed(2),
+        })
+      }
+
+      // 8. 差额退余：priceDiff < 0 → UPSERT prepaid_cards + card_transactions
+      let prepaidCardCredit = 0
+      if (priceDiff < 0) {
+        const creditAmount = Math.abs(priceDiff)
+        prepaidCardCredit = creditAmount
+
+        // UPSERT prepaid_cards (user_id, store_id) DO UPDATE balance += creditAmount
+        const upsertRows = await tx.execute(sql`
+          INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
+          VALUES (gen_random_uuid()::text, ${data.clientUserId}, ${data.storeId}, ${creditAmount.toFixed(2)})
+          ON CONFLICT (user_id, store_id) DO UPDATE
+            SET balance = prepaid_cards.balance + EXCLUDED.balance,
+                updated_at = NOW()
+          RETURNING card_id
+        `)
+        const cardId = (upsertRows as any[])[0]?.card_id as string
+        if (!cardId) throw new Error('PREPAID_CARD_UPSERT_FAILED')
+
+        await tx.insert(cardTransactions).values({
+          cardId,
+          type: '充值',
+          amount: creditAmount.toFixed(2),
+          refOrderId: saleOrderId,
+        })
+      }
+
+      return {
+        saleOrderId,
+        totalIn: Math.round(totalIn * 100) / 100,
+        totalOut: Math.round(totalOut * 100) / 100,
+        priceDiff,
+        prepaidCardCredit,
+      }
+    })
+  } catch (err: any) {
+    const m = err?.message as string | undefined
+    if (m === 'CARD_NOT_FOUND') return { success: false, message: '部分卡不存在或已失效' }
+    if (m === 'CARD_STORE_MISMATCH') return { success: false, message: '所选卡不属于当前门店' }
+    if (m === 'CARD_OWNER_MISMATCH') return { success: false, message: '所选卡不属于该顾客' }
+    if (m === 'CARD_DIRECTION_INVALID') return { success: false, message: '所选行非购买行，不可折抵' }
+    if (m === 'CARD_ORDER_STATUS_INVALID') return { success: false, message: '原订单状态不允许转换' }
+    if (m === 'CARD_EXHAUSTED') return { success: false, message: '所选卡已耗尽，无法折抵' }
+    if (m === 'CARD_TYPE_INVALID') return { success: false, message: '所选行类型不支持折抵' }
+    if (m === 'CARD_CONCURRENT_CHANGED') return { success: false, message: '卡状态变化，请重试' }
+    if (m === 'ORDER_ID_GEN_FAILED') return { success: false, message: '订单号生成失败，请稍后重试' }
+    if (m === 'PREPAID_CARD_UPSERT_FAILED') return { success: false, message: '储值卡入账失败，请稍后重试' }
+    if (m?.startsWith('SKU_NOT_FOUND:')) return { success: false, message: '转入 SKU 不存在' }
+    if (err?.code === '23503') return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
+    if (err?.code === '23505') return { success: false, message: '订单号冲突，请稍后重试' }
+    return { success: false, message: '转换单创建失败，请稍后重试' }
+  }
+
+  await logOperation(session, 'order.create_conversion', 'sale_order', result.saleOrderId, {
+    storeId: data.storeId,
+    saleOrderId: result.saleOrderId,
+    convertOutSaleItemIds: data.convertOutSaleItemIds,
+    totalIn: result.totalIn,
+    totalOut: result.totalOut,
+    priceDiff: result.priceDiff,
+    prepaidCardCredit: result.prepaidCardCredit,
+  })
+
+  revalidatePath('/orders')
+  return {
+    success: true,
+    message:
+      result.priceDiff > 0
+        ? `转换单已创建，请收款 ¥${result.priceDiff.toFixed(2)}`
+        : result.priceDiff < 0
+          ? `转换单已完成，差额 ¥${result.prepaidCardCredit.toFixed(2)} 已充入储值卡`
+          : '转换单已完成',
+    saleOrderId: result.saleOrderId,
+    totalIn: result.totalIn,
+    totalOut: result.totalOut,
+    priceDiff: result.priceDiff,
+    prepaidCardCredit: result.prepaidCardCredit,
+  }
 }
 
 // ========== 小程序码生成 ==========
