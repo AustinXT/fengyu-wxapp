@@ -310,9 +310,66 @@ async function updateProfile(ctx) {
   ctx.result = { success: true, ...result }
 }
 
+/**
+ * 头像上传（云函数代理）
+ * 小程序端直传 COS 默认被存储安全规则拦截（3002），改由云函数用管理员权限上传
+ * 客户端传 base64，云函数解码后上传到 avatars/{openid}/ 路径，并同步更新 avatar_url
+ */
+async function uploadAvatar(ctx) {
+  const { OPENID } = cloud.getWXContext()
+  const { base64, ext } = ctx.event.payload || {}
+
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  const allowedExts = ['jpg', 'jpeg', 'png', 'webp']
+  if (!allowedExts.includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  // 空 base64 解码得到空 buffer；过大图片拒绝（> 2MB）
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: base64 解码为空')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+
+  const users = await pg.query(
+    'SELECT user_id FROM client_wechat_users WHERE openid = $1',
+    [OPENID]
+  )
+  if (users.length === 0) {
+    throw new Error('UNAUTHORIZED: 用户不存在,请先登录')
+  }
+
+  const rand = Math.random().toString(36).slice(2, 8)
+  const cloudPath = `avatars/${OPENID}/${Date.now()}_${rand}.${normalizedExt}`
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer })
+  const fileID = uploadRes.fileID
+
+  if (!fileID) {
+    throw new Error('INVALID_PARAMS: 上传失败')
+  }
+
+  const now = new Date()
+  await pg.query(
+    'UPDATE client_wechat_users SET avatar_url = $1, updated_at = $2 WHERE user_id = $3',
+    [fileID, now, users[0].user_id]
+  )
+
+  invalidateAuthCache(OPENID)
+
+  ctx.result = { fileID, avatarUrl: fileID }
+}
+
 module.exports = {
   login,
   bindPhone,
   bindStore,
-  updateProfile
+  updateProfile,
+  uploadAvatar
 }

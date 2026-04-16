@@ -15,6 +15,7 @@ const routes = {
   'auth.bindPhone': () => require('./routes/auth').bindPhone,
   'auth.bindStore': () => require('./routes/auth').bindStore,
   'auth.updateProfile': () => require('./routes/auth').updateProfile,
+  'auth.uploadAvatar': () => require('./routes/auth').uploadAvatar,
   'store.list': () => require('./routes/store').list,
   'store.detail': () => require('./routes/store').detail,
   'store.requestUnbind': () => require('./routes/store').requestUnbind,
