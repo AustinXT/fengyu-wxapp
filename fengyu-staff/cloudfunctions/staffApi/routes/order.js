@@ -423,7 +423,7 @@ async function create(ctx) {
 
   await pg.transaction(async (client) => {
     // Advisory lock 防并发流水号冲突
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const today = now
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
@@ -1020,7 +1020,7 @@ async function createRefund(ctx) {
   const refundOrderId = await generateOrderNo('FY-TKD-WX-')
 
   await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
     const maxResult = await client.query(
@@ -1206,7 +1206,7 @@ async function createRepayment(ctx) {
   const repayOrderId = await generateOrderNo('FY-HKD-WX-')
 
   await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
     const maxResult = await client.query(
@@ -1322,7 +1322,7 @@ async function createConversion(ctx) {
   const convOrderId = await generateOrderNo('FY-XSD-WX-')
 
   const result = await pg.transaction(async (tx) => {
-    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
     const heldResult = await tx.query(
@@ -1748,10 +1748,9 @@ async function generateOrderNo(prefix) {
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
 
   const likePattern = `${prefix}${dateStr}%`
-  // 使用 advisory lock 防止并发生成重复订单号
-  const lockKey = Buffer.from('order_no_gen').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
+  // 使用 advisory lock 防止并发生成重复订单号（与 admin orders.ts 对齐：hashtext('sale_order_id_gen')）
   const result = await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
     const rows = await client.query(`
       SELECT sale_order_id FROM sale_orders
       WHERE sale_order_id LIKE $1
