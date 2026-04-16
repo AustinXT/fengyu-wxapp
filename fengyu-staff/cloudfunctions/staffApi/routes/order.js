@@ -151,12 +151,16 @@ async function recalcCustomerType(client, clientUserId) {
  * payload: {
  *   clientPhone: string,
  *   clientName: string,
- *   orderType: 'normal'|'experience'|'internal'|'promotion' → sale_order_type: '销售单'|'内部单',
+ *   saleOrderType: '销售单' | '内部单',   // 直接使用 DB 枚举文本，无历史兼容
  *   items: [{ skuId, quantity, customPrice?, discount? }],
  *   paymentMethod: '微信'|'线下',
  *   preferredStaffWfId: string,
  *   couponId: string
  * }
+ *
+ * 行为：
+ *   - 销售单：正常计价；customPrice 作为行级自定义单价；支持 couponId
+ *   - 内部单：所有 SKU 半价（basePrice × 0.5）；禁用 customPrice；拒绝 couponId
  */
 async function create(ctx) {
   await requireManager()(ctx, async () => {})
@@ -167,7 +171,7 @@ async function create(ctx) {
     clientName,
     items,
     paymentMethod,
-    orderType: orderTypeParam,
+    saleOrderType: saleOrderTypeParam,
     preferredStaffWfId,
     couponId: inputCouponId,
     remark: orderRemark
@@ -192,11 +196,23 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
-  // 映射前端 orderType → sale_order_type
-  const ORDER_TYPE_MAP = { normal: '销售单', experience: '销售单', promotion: '销售单', internal: '内部单' }
-  const saleOrderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '销售单'
+  // sale_order_type 直接使用 DB 枚举文本（无历史兼容映射）
+  const saleOrderType = saleOrderTypeParam || '销售单'
   if (!['销售单', '内部单'].includes(saleOrderType)) {
-    throw new Error('INVALID_PARAMS: orderType 值不合法')
+    throw new Error('INVALID_PARAMS: saleOrderType 值不合法（仅支持 销售单/内部单）')
+  }
+
+  // 内部单守卫：不允许叠加优惠券
+  if (saleOrderType === '内部单' && inputCouponId) {
+    throw new Error('INVALID_PARAMS: 内部单不允许叠加优惠券')
+  }
+
+  // 内部单守卫：不允许行级手工改价（与 admin 对齐）
+  if (saleOrderType === '内部单') {
+    const hasCustomPrice = items.some(it => it && it.customPrice !== undefined && it.customPrice !== null)
+    if (hasCustomPrice) {
+      throw new Error('INVALID_PARAMS: 内部单不允许手工改价')
+    }
   }
 
   // 查询顾客是否已注册客户端小程序
@@ -248,12 +264,13 @@ async function create(ctx) {
       // 优先使用特价（special_price），没有则用标准价
       const basePrice = Number(sku.special_price || sku.price)
 
-      if (orderTypeParam === 'experience' && item.customPrice !== undefined) {
-        unitPrice = Number(item.customPrice)
-        sessionCount = 1
-      } else if (saleOrderType === '内部单') {
-        // 内部单（员工消费）统一半价
+      if (saleOrderType === '内部单') {
+        // 内部单（员工消费）统一半价；不允许 customPrice（上方已拦截）
         unitPrice = Math.round(basePrice * 50) / 100
+        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
+      } else if (item.customPrice !== undefined && item.customPrice !== null) {
+        // 销售单 — 行级自定义单价（兜底店长改价；仅销售单生效）
+        unitPrice = Number(item.customPrice)
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       } else {
         unitPrice = basePrice
@@ -293,14 +310,6 @@ async function create(ctx) {
       }
     })
   )
-
-  // ========== 组合套餐订单验证 ==========
-  if (orderTypeParam === 'promotion') {
-    const nonPromoItems = itemDataList.filter(d => d.productKind !== '组合套餐')
-    if (nonPromoItems.length > 0) {
-      throw new Error('INVALID_PARAMS: 组合套餐订单只能包含组合套餐类型的商品')
-    }
-  }
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
