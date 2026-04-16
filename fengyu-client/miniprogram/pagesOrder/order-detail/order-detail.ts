@@ -54,7 +54,7 @@ Page({
     countdown: '',
   },
 
-  _countdownTimer: null as number | null,
+  _countdownTimer: null as ReturnType<typeof setInterval> | null,
 
   onLoad(options) {
     const { saleOrderId, orderNo } = options as { saleOrderId?: string; orderNo?: string };
