@@ -16,23 +16,20 @@ beforeEach(() => {
 })
 
 describe('points.balance', () => {
-  test('返回积分余额和等级信息', async () => {
-    pg.query
-      .mockResolvedValueOnce([{
-        balance: 1200, level_id: 'lv-2', level_name: '银卡会员',
-        min_points: 500, benefits: '9折优惠',
-      }])
-      .mockResolvedValueOnce([{
-        level_id: 'lv-3', name: '金卡会员', min_points: 2000,
-      }])
+  test('返回积分余额和等级名称（重构后：单表查询，levelBenefits/nextLevel 硬编码 null）', async () => {
+    // 重构后 customer_points 表已去掉，仅从 client_wechat_users 读取 balance + member_level
+    pg.query.mockResolvedValueOnce([{
+      balance: 1200,
+      level_name: '银卡会员',
+    }])
 
     const ctx = createBoundCtx({})
     await routes.balance(ctx)
 
     expect(ctx.result.balance).toBe(1200)
     expect(ctx.result.levelName).toBe('银卡会员')
-    expect(ctx.result.levelBenefits).toBe('9折优惠')
-    expect(ctx.result.nextLevel).toEqual({ name: '金卡会员', minPoints: 2000 })
+    expect(ctx.result.levelBenefits).toBeNull()
+    expect(ctx.result.nextLevel).toBeNull()
   })
 
   test('无积分记录返回默认值', async () => {
