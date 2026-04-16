@@ -12,12 +12,15 @@ interface PaidOrderItem {
   remainingSessions: number;
   totalSessions: number;
   productType: string;
+  storeId?: string;
 }
 
 interface PaidOrder {
   orderId: string;
   saleOrderId: string;
   paidAt: string;
+  storeId?: string;
+  storeName?: string;
   items: PaidOrderItem[];
 }
 

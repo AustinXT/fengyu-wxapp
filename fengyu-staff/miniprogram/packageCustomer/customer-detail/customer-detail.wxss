@@ -62,6 +62,14 @@
   min-height: 400rpx;
 }
 
+/* Tab 下方提示文案（例如"仅本店卡"说明） */
+.tab-hint {
+  padding: 8rpx 32rpx 16rpx;
+  font-size: 24rpx;
+  color: #999;
+  line-height: 1.5;
+}
+
 /* ===== 日历样式 ===== */
 .calendar-nav {
   display: flex;
