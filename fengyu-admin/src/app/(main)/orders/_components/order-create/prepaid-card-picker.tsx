@@ -17,8 +17,9 @@
  */
 import { useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 import {
   RECHARGE_TIERS,
   RECHARGE_MIN_AMOUNT,
@@ -125,13 +126,14 @@ export function PrepaidCardPicker({ onAdd }: PrepaidCardPickerProps) {
                   <span className="text-xs text-[#666666]">
                     {discountLabel} 折 · 实付 ¥{payAmount}
                   </span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 text-xs px-2 mt-1 pointer-events-none"
+                  <span
+                    className={cn(
+                      buttonVariants({ size: "sm", variant: "outline" }),
+                      "h-6 text-xs px-2 mt-1 pointer-events-none"
+                    )}
                   >
                     加入
-                  </Button>
+                  </span>
                 </button>
               )
             })}
