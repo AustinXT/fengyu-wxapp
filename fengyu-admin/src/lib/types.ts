@@ -489,8 +489,8 @@ export interface IssuedCoupon {
 
 export interface OperationLog {
   id: number
-  operatorEmployeeId: string
-  operatorName: string
+  operatorEmployeeId: string | null
+  operatorName: string | null
   operatorRole: string | null
   orgNodeId: string | null
   orgNodeName: string | null

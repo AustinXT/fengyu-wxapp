@@ -275,11 +275,9 @@ export default function LogsPage({ logs }: Props) {
     return logs.filter((log) => {
       if (operatorSearch) {
         const q = operatorSearch.toLowerCase()
-        if (
-          !log.operatorName.toLowerCase().includes(q) &&
-          !log.operatorEmployeeId.toLowerCase().includes(q)
-        )
-          return false
+        const name = (log.operatorName ?? '').toLowerCase()
+        const empId = (log.operatorEmployeeId ?? '').toLowerCase()
+        if (!name.includes(q) && !empId.includes(q)) return false
       }
       if (actionFilter && log.action !== actionFilter) return false
       if (targetTypeFilter && log.targetType !== targetTypeFilter) return false
