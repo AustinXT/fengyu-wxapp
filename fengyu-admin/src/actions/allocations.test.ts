@@ -402,4 +402,70 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('重复分配')
   })
+
+  // ─── P2-14 Q5 独立池回归 ──────────────────────────────────────────
+
+  it('三角色独立池：美容师 110% 被拒 + 养生师 50% 通过（P2-14）', async () => {
+    // 若仍合并为 beautician 组，三条合计 160% 应 pass（旧行为）；
+    // P2-14 后独立池：美容师池 110% 超 100% → 拒绝，不受养生师池 50% 影响
+    mockScopeAndItems([{ saleItemId: 'item-1', received: '1000.00' }])
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.60', totalAmount: '600.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-002', roleType: '美容师', allocationRatio: '0.50', totalAmount: '500.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-003', roleType: '养生师', allocationRatio: '0.50', totalAmount: '500.00' },
+    ])
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('超过 100%')
+  })
+
+  it('服务端重算 totalAmount：前端篡改 99999 被忽略（P2-14）', async () => {
+    mockScopeAndItems([{ saleItemId: 'item-1', received: '1000.00' }])
+    let capturedRows: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue({}),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((rows: any[]) => {
+            capturedRows = rows
+            return Promise.resolve({})
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await batchSaveAllocations('order-1', [
+      {
+        saleItemId: 'item-1',
+        employeeId: 'EMP-001',
+        roleType: '美容师',
+        allocationRatio: '0.30',
+        totalAmount: '99999.00', // 前端试图篡改
+      },
+    ])
+
+    expect(result.success).toBe(true)
+    // INSERT 的 totalAmount 应为 1000 × 0.30 = 300.00，不是 99999
+    expect(capturedRows).toHaveLength(1)
+    expect(capturedRows[0].totalAmount).toBe('300.00')
+  })
+
+  it('池金额合计 = received 通过（容差 0.02 内，P2-14）', async () => {
+    // 0.30 + 0.30 + 0.40 = 1.00；三人合计金额 = received
+    mockScopeAndItems([{ saleItemId: 'item-1', received: '1000.00' }])
+    mockTx()
+
+    const result = await batchSaveAllocations('order-1', [
+      { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.30', totalAmount: '300.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-002', roleType: '美容师', allocationRatio: '0.30', totalAmount: '300.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-003', roleType: '美容师', allocationRatio: '0.40', totalAmount: '400.00' },
+    ])
+
+    expect(result.success).toBe(true)
+  })
 })
