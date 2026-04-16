@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
@@ -24,11 +24,38 @@ vi.mock('@/actions/auth', () => ({
 
 import LoginPage from './page'
 
+// 登录成功后用 window.location.href 硬跳转（commit bf07dc1：确保 cookie 生效），
+// 故跳转断言通过 spy location.href setter
+const originalLocation = window.location
+const setHref = vi.fn()
+function installLocationSpy() {
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: {
+      ...originalLocation,
+      get href() { return '' },
+      set href(v: string) { setHref(v) },
+    },
+  })
+}
+function restoreLocation() {
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: originalLocation,
+  })
+}
+
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setHref.mockClear()
+    installLocationSpy()
     // 默认 login 返回失败（模拟手机号或密码错误）
     mockLogin.mockResolvedValue({ success: false, message: '手机号或密码错误' })
+  })
+
+  afterEach(() => {
+    restoreLocation()
   })
 
   it('渲染标题和表单元素', () => {
@@ -83,7 +110,7 @@ describe('LoginPage', () => {
     await user.click(screen.getByRole('button', { name: /登 录/ }))
     await waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith('13800138000', 'admin123')
-      expect(mockPush).toHaveBeenCalledWith('/dashboard')
+      expect(setHref).toHaveBeenCalledWith('/dashboard')
     })
   })
 
@@ -95,7 +122,7 @@ describe('LoginPage', () => {
     await user.type(screen.getByLabelText('密码'), 'admin123')
     await user.click(screen.getByRole('button', { name: /登 录/ }))
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith('/change-password')
+      expect(setHref).toHaveBeenCalledWith('/change-password')
     })
   })
 
