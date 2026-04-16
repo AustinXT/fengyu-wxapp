@@ -11,8 +11,37 @@ import { Separator } from "@/components/ui/separator"
 import { searchCustomers } from "@/actions/customers"
 import { createOrder, confirmOfflinePayment, generateOrderWxacode } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
+import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult } from "@/actions/products"
+import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
+
+/**
+ * Step 1 商品类型 4 选 1（PR-B）
+ * - "组合套餐" → 后端 `__bundle__` 分支，对应 products.is_bundle=true
+ * - 其余 3 个直接映射到 product_kind 枚举
+ *
+ * `普通商品` 在 UI 是用户语义入口，对应后端 `__normal__` 占位 — 实际数据走两个 kind
+ * （护理项目 / 家居产品）合并展示。这里在前端层做合并，避免后端再加一个虚拟 kind。
+ */
+type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡' | '充值卡'
+
+const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品', '体验卡', '充值卡']
+
+/** 选择 → 后端 getProductsByKind(kind) 调用列表（普通商品 = 护理项目 + 家居产品 合并）*/
+function resolveBackendKinds(choice: ProductKindChoice): ProductKindForOrder[] {
+  if (choice === '组合套餐') return ['__bundle__']
+  if (choice === '普通商品') return ['护理项目', '家居产品']
+  if (choice === '体验卡') return ['体验卡']
+  return ['充值卡']
+}
+
+/** 单次选择缓存的数据形态：bundle 与 normal 分开存放，PR-C 渲染层再消费 */
+interface PrefetchedKindData {
+  choice: ProductKindChoice
+  bundles: Extract<OrderPickerResult, { kind: '__bundle__' }>['bundles']
+  normalCategories: Extract<OrderPickerResult, { kind: '护理项目' | '家居产品' | '体验卡' | '充值卡' }>['categories']
+}
 
 const KIND_PALETTE = [
   "bg-[#FFF8E6] text-[#D4820A]",
@@ -130,7 +159,20 @@ export default function OrderCreatePageClient({
     return groups
   }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
+  // saleOrderType 仍保留于 state（Step 3 还要用），但 Step 1 UI 不再暴露
   const [orderType, setOrderType] = useState<'销售单' | '内部单'>("销售单")
+  // PR-B: Step 1 商品类型 4 选 1（默认 普通商品），驱动 Step 2 数据源
+  const [productKindChoice, setProductKindChoice] = useState<ProductKindChoice>('普通商品')
+  // PR-B: 内存缓存 — choice → 已预拉数据，避免 Step 2 切换 kind 时重复请求
+  const [kindDataCache, setKindDataCache] = useState<Record<ProductKindChoice, PrefetchedKindData | undefined>>({
+    组合套餐: undefined,
+    普通商品: undefined,
+    体验卡: undefined,
+    充值卡: undefined,
+  })
+  const [prefetching, setPrefetching] = useState(false)
+  // PR-B: 转换单备用（真正加载在 PR-C 做，这里先占位）
+  const [heldCards, setHeldCards] = useState<HeldCardCandidate[]>([])
   const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
@@ -170,6 +212,37 @@ export default function OrderCreatePageClient({
     }
   }
 
+  /**
+   * PR-B: 按 ProductKindChoice 预拉 Step 2 所需 SKU/SPU 数据。
+   * - 已缓存则直接返回；并发期间忽略重复触发。
+   * - 失败仅静默 toast 提示，不阻断 Step 1 → Step 2 流程（Step 2 自己会兜底）。
+   */
+  const prefetchKindData = async (choice: ProductKindChoice) => {
+    if (kindDataCache[choice]) return
+    setPrefetching(true)
+    try {
+      const backendKinds = resolveBackendKinds(choice)
+      const results = await Promise.all(backendKinds.map((k) => getProductsByKind(k)))
+      const data: PrefetchedKindData = {
+        choice,
+        bundles: [],
+        normalCategories: [],
+      }
+      for (const r of results) {
+        if (r.kind === '__bundle__') {
+          data.bundles = r.bundles
+        } else {
+          data.normalCategories = data.normalCategories.concat(r.categories)
+        }
+      }
+      setKindDataCache((prev) => ({ ...prev, [choice]: data }))
+    } catch {
+      toast.error("加载商品数据失败，进入下一步后可重试")
+    } finally {
+      setPrefetching(false)
+    }
+  }
+
   const selectCustomer = (customer: Customer) => {
     setSelectedCustomer(customer)
     setManualPhone("")
@@ -179,6 +252,21 @@ export default function OrderCreatePageClient({
     }
     if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned)) {
       setSelectedEmployeeId(customer.boundEmployeeId)
+    }
+    // PR-B: 选中顾客后按当前 productKindChoice 预拉 Step 2 数据
+    void prefetchKindData(productKindChoice)
+  }
+
+  /**
+   * PR-B: 切换商品类型
+   * - 若已选顾客 → 立即触发预拉
+   * - 不在此处清空购物车（清空发生在"进入 Step 2"时，参考 ticket B4）
+   */
+  const handleKindChoiceChange = (choice: ProductKindChoice) => {
+    if (choice === productKindChoice) return
+    setProductKindChoice(choice)
+    if (selectedCustomer) {
+      void prefetchKindData(choice)
     }
   }
 
@@ -253,28 +341,33 @@ export default function OrderCreatePageClient({
 
       <StepIndicator current={step} />
 
-      {/* Step 1: 选择顾客 + 订单类型 */}
+      {/* Step 1: 选择顾客 + 商品类型（PR-B：移除"订单类型"，订单类型已迁至 Step 3） */}
       {step === 0 && (
         <Card>
           <CardContent className="p-6 space-y-6">
-            {/* 订单类型 */}
+            {/* 商品类型 4 选 1 — Step 2 数据源由此驱动 */}
             <div>
-              <h2 className="text-base font-semibold mb-3">订单类型</h2>
-              <div className="flex gap-2">
-                {(["销售单", "内部单"] as const).map((type) => (
+              <h2 className="text-base font-semibold mb-3">商品类型</h2>
+              <div className="flex flex-wrap gap-2">
+                {PRODUCT_KIND_CHOICES.map((choice) => (
                   <button
-                    key={type}
-                    onClick={() => setOrderType(type)}
+                    key={choice}
+                    type="button"
+                    onClick={() => handleKindChoiceChange(choice)}
                     className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
-                      orderType === type
+                      productKindChoice === choice
                         ? "border-[var(--primary)] bg-[#FFF0EE] text-[var(--primary)]"
                         : "border-[var(--border)] bg-white text-[var(--foreground)] hover:bg-gray-50"
                     }`}
+                    aria-pressed={productKindChoice === choice}
                   >
-                    {type}
+                    {choice}
                   </button>
                 ))}
               </div>
+              {prefetching && (
+                <p className="text-xs text-[#999999] mt-2">正在加载 {productKindChoice} 数据…</p>
+              )}
             </div>
 
             <Separator />
@@ -382,7 +475,16 @@ export default function OrderCreatePageClient({
 
             <div className="flex justify-end">
               <Button
-                onClick={() => setStep(1)}
+                onClick={() => {
+                  // PR-B B4：跨 kind 加购残留清理 — 进入 Step 2 前清空 cart + priceOverrides
+                  setCart([])
+                  setPriceOverrides({})
+                  // manualPhone 路径下未走 selectCustomer，这里兜底触发预拉
+                  if (!kindDataCache[productKindChoice]) {
+                    void prefetchKindData(productKindChoice)
+                  }
+                  setStep(1)
+                }}
                 disabled={!selectedCustomer && !(searchDone && searchResults.length === 0 && /^1\d{10}$/.test(manualPhone.trim()))}
               >
                 下一步
@@ -896,7 +998,13 @@ export default function OrderCreatePageClient({
                   <Button variant="outline">返回订单列表</Button>
                 </Link>
               )}
-              <Button onClick={() => { setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setManualPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单") }}>
+              <Button onClick={() => {
+                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setManualPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
+                // PR-B：重置商品类型 + 缓存 + 转换单备用
+                setProductKindChoice('普通商品')
+                setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined, 充值卡: undefined })
+                setHeldCards([])
+              }}>
                 继续开单
               </Button>
             </div>
