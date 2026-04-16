@@ -1995,8 +1995,22 @@ describe('order.createPickup', () => {
 
   test('超出可提货数量拒绝', async () => {
     const ctx = createManagerCtx({ saleItemId: 'item-001', pickupQuantity: 10 })
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+    pg.query
+      // UPDATE rowCount=0
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      // probe: 同店（store_id 一致）、类型正确、但已提满
+      .mockResolvedValueOnce([{ store_id: 'store-001', product_type: '院装产品', quantity: 5, picked_up_quantity: 5 }])
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*超出/)
+  })
+
+  test('跨店提货拒绝 — sale_items.store_id 与员工当前门店不一致', async () => {
+    const ctx = createManagerCtx({ saleItemId: 'item-other-store', pickupQuantity: 1 })
+    pg.query
+      // UPDATE rowCount=0 因 store_id 不匹配
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      // probe: sale_item 存在但属于他店
+      .mockResolvedValueOnce([{ store_id: 'store-999', product_type: '院装产品', quantity: 5, picked_up_quantity: 0 }])
+    await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/仅在 store-999 可提货/)
   })
 
   test('缺少 saleItemId 拒绝', async () => {

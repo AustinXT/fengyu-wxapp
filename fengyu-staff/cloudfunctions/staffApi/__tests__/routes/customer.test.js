@@ -513,6 +513,37 @@ describe('customer.paidOrders', () => {
     expect(ctx.result).toHaveLength(1)
     expect(ctx.result[0].saleOrderId).toBe('SO-003')
   })
+
+  test('跨店过滤 — SQL WHERE 含 store_id 且用当前员工门店；返回含 storeId/storeName', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-multi-store' })
+    let ordersSql = ''
+    let ordersParams = []
+    pg.query.mockImplementation(async (sql, params) => {
+      const s = typeof sql === 'string' ? sql : ''
+      // 主订单查询：FROM sale_orders o
+      if (/FROM\s+sale_orders\s+o\b/.test(s)) {
+        ordersSql = s
+        ordersParams = params || []
+        return [
+          { sale_order_id: 'SO-HOME', status: '已支付', paid_at: '2024-06-01T10:00:00Z', store_id: 'store-001', store_name: '测试店' },
+        ]
+      }
+      // items 查询：FROM sale_items si
+      return [
+        { sale_order_id: 'SO-HOME', sale_item_id: 'item-home', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: '基础', product_name: '面部护理' },
+      ]
+    })
+    await customerRoutes.paidOrders(ctx)
+    // SQL 含 store_id 过滤
+    expect(ordersSql).toMatch(/o\.store_id\s*=\s*\$2/)
+    // 参数带上当前员工门店
+    expect(ordersParams).toContain('store-001')
+    // 返回字段含 storeId/storeName
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].storeId).toBe('store-001')
+    expect(ctx.result[0].storeName).toBe('测试店')
+    expect(ctx.result[0].items[0].storeId).toBe('store-001')
+  })
 })
 
 // ============================================================

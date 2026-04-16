@@ -475,14 +475,44 @@ describe('service.complete', () => {
         query: vi.fn()
           // rowCount = 0 → 原子扣减失败
           .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-          // 检查剩余次数
-          .mockResolvedValueOnce({ rows: [{ remaining_sessions: 2 }] }),
+          // probe: 同店（store_id 一致）但次数不足
+          .mockResolvedValueOnce({ rows: [{ store_id: 'store-001', remaining_sessions: 2 }] }),
       }
       return await cb(client)
     })
 
     await expect(serviceRoutes.complete(ctx))
       .rejects.toThrow(/次数不足/)
+  })
+
+  test('跨店核销拒绝 — sale_items.store_id 与服务单门店不一致', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        { service_item_id: 'si-1', sale_item_id: 'item-other-store', session_used: 1 },
+      ])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn()
+          // 原子 UPDATE 因 store_id 不匹配 rowCount=0
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          // probe: sale_item 存在但属于他店
+          .mockResolvedValueOnce({ rows: [{ store_id: 'store-999', remaining_sessions: 5 }] }),
+      }
+      return await cb(client)
+    })
+
+    await expect(serviceRoutes.complete(ctx))
+      .rejects.toThrow(/仅在 store-999 可核销/)
   })
 
   test('剩余次数归零时关闭关联预约', async () => {

@@ -469,14 +469,14 @@ async function create(ctx) {
 
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, item_direction, sku_id,
+          sale_item_id, sale_order_id, store_id, item_direction, sku_id,
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
           sales_category, service_fee
-        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
-          saleItemId, saleOrderId, d.skuId,
+          saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
           sc, rs,
           d.unitPrice, d.quantity, d.unitRealPrice,
@@ -1037,13 +1037,13 @@ async function createRefund(ctx) {
       const d = refundItems[i]
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity,
           unit_real_price, sale_amount, received, sales_category, service_fee
-        ) VALUES ($1, $2, '退出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        ) VALUES ($1, $2, $3, '退出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
-          saleItemId, refundOrderId, d.refSaleItemId,
+          saleItemId, refundOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity,
           d.unitRealPrice, -(d.refundAmount), -(d.refundAmount),
@@ -1165,7 +1165,10 @@ async function createRepayment(ctx) {
   let totalRepay = 0
   const repayItems = []
   for (const req of items) {
-    const origItem = await pg.query("SELECT * FROM sale_items WHERE sale_item_id = $1", [req.saleItemId])
+    const origItem = await pg.query(
+      "SELECT * FROM sale_items WHERE sale_item_id = $1 AND sale_order_id = $2",
+      [req.saleItemId, refSaleOrderId]
+    )
     if (origItem.length === 0) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
     const oi = origItem[0]
     const amount = Number(req.repayAmount) || 0
@@ -1218,13 +1221,13 @@ async function createRepayment(ctx) {
       // 回款单不产生新的服务次数消耗，service_fee 置 0，避免后续服务完成时重复计算手工费
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
           service_fee
-        ) VALUES ($1, $2, '购买', $3, $4, $5, $6, $7, $8, 1, $8, $8, $8, $9, 0)`,
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, 1, $9, $9, $9, $10, 0)`,
         [
-          saleItemId, repayOrderId, d.refSaleItemId,
+          saleItemId, repayOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.amount, d.salesCategory
         ]
@@ -1372,13 +1375,13 @@ async function createConversion(ctx) {
       const d = outItems[i]
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, item_direction, ref_sale_item_id,
+          sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
           service_fee
-        ) VALUES ($1, $2, '转出', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
-          saleItemId, convOrderId, d.refSaleItemId,
+          saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
           -(d.amount), -(d.amount), d.salesCategory,
@@ -1403,14 +1406,14 @@ async function createConversion(ctx) {
       const d = inItems[i]
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, item_direction,
+          sale_item_id, sale_order_id, store_id, item_direction,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
           service_fee
-        ) VALUES ($1, $2, '转入', $3, $4, $5, $6, $7, $7, $8, $9, $8, $10, $10, $11, $12)`,
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13)`,
         [
-          saleItemId, convOrderId,
+          saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount,
           d.unitPrice, d.quantity, d.amount, d.salesCategory,
@@ -1436,18 +1439,35 @@ async function createPickup(ctx) {
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
   if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
 
-  // 原子累加 picked_up_quantity
+  // 原子累加 picked_up_quantity（强制本店）
   const result = await pg.query(
     `UPDATE sale_items
      SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
      WHERE sale_item_id = $2
+       AND store_id = $3
        AND product_type = '院装产品'
        AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
      RETURNING sale_item_id, quantity, picked_up_quantity`,
-    [pickupQuantity, saleItemId]
+    [pickupQuantity, saleItemId, ctx.auth.storeId]
   )
 
-  if (result.rowCount === 0) throw new Error('INVALID_PARAMS: 取货数量超出可提货数量或商品类型不正确')
+  if (result.rowCount === 0) {
+    // 区分跨店 / 已提满 / 类型错误三种失败
+    const probe = await pg.query(
+      `SELECT store_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+       FROM sale_items WHERE sale_item_id = $1`,
+      [saleItemId]
+    )
+    const row = probe[0]
+    if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
+    if (row.store_id !== ctx.auth.storeId) {
+      throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
+    }
+    if (row.product_type !== '院装产品') {
+      throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
+    }
+    throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')
+  }
 
   // 查顾客信息
   const itemRows = await pg.query(
