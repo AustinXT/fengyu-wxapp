@@ -1426,6 +1426,73 @@ async function createConversion(ctx) {
   ctx.result = { saleOrderId: convOrderId, status: '已支付', priceDiff, message: '转换单已创建' }
 }
 
+/**
+ * 查询顾客在当前门店可折抵的卡（转换单备选）
+ *
+ * payload: { clientUserId: string }
+ * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, skuSpecName, productType,
+ *                    remainingSessions, remainingQuantity, unitRealPrice, deductibleAmount }] }
+ *
+ * 口径与 admin getCustomerHeldCards 保持一致：
+ *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
+ *   - 体验卡单品：product_type='单品' AND pc.product_kind='体验卡' AND (quantity - picked_up_quantity) > 0
+ */
+async function customerHeldCards(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId } = ctx.event.payload || {}
+  const storeId = ctx.auth.storeId
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
+
+  const rows = await pg.query(
+    `SELECT si.sale_item_id,
+            si.sale_order_id AS source_sale_order_id,
+            si.product_name,
+            si.sku_spec_name,
+            si.product_type,
+            si.remaining_sessions,
+            (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
+            si.unit_real_price,
+            CASE
+              WHEN si.product_type = '疗程卡'
+                THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
+              WHEN si.product_type = '单品' AND pc.product_kind = '体验卡'
+                THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
+              ELSE 0
+            END AS deductible_amount
+     FROM sale_items si
+     JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+     LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+     WHERE so.client_user_id = $1
+       AND si.store_id = $2
+       AND si.item_direction = '购买'
+       AND so.status IN ('已支付', '已完成')
+       AND (
+            (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
+         OR (si.product_type = '单品' AND pc.product_kind = '体验卡'
+              AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
+       )
+     ORDER BY si.sale_order_id DESC`,
+    [clientUserId, storeId]
+  )
+
+  ctx.result = {
+    cards: rows.map(r => ({
+      saleItemId: r.sale_item_id,
+      sourceSaleOrderId: r.source_sale_order_id,
+      productName: r.product_name,
+      skuSpecName: r.sku_spec_name,
+      productType: r.product_type,
+      remainingSessions: r.remaining_sessions != null ? Number(r.remaining_sessions) : null,
+      remainingQuantity: r.remaining_quantity != null ? Number(r.remaining_quantity) : null,
+      unitRealPrice: String(r.unit_real_price),
+      deductibleAmount: Number(r.deductible_amount).toFixed(2),
+    }))
+  }
+}
+
 // ========== P2: 取货单 ==========
 
 /**
@@ -1539,5 +1606,6 @@ module.exports = {
   rejectRefund,
   createRepayment,
   createConversion,
+  customerHeldCards,
   createPickup,
 }
