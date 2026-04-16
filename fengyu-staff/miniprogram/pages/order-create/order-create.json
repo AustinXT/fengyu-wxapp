@@ -18,6 +18,7 @@
     "van-stepper": "@vant/weapp/stepper/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
     "van-picker": "@vant/weapp/picker/index",
-    "bundle-picker": "/components/bundle-picker/bundle-picker"
+    "bundle-picker": "/components/bundle-picker/bundle-picker",
+    "conversion-panel": "/components/conversion-panel/conversion-panel"
   }
 }

@@ -1,0 +1,156 @@
+/* components/conversion-panel/conversion-panel.wxss */
+
+.conv-panel {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 20rpx;
+  margin-bottom: 16rpx;
+}
+
+.conv-title {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 16rpx;
+}
+
+.conv-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12rpx;
+  padding: 40rpx 0;
+  color: var(--color-text-hint);
+  font-size: 26rpx;
+}
+.conv-loading-text { font-size: 24rpx; color: var(--color-text-hint); }
+
+.conv-empty {
+  padding: 20rpx 0;
+}
+
+/* ===== 卡列表 ===== */
+.conv-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  margin-bottom: 20rpx;
+}
+.conv-card-item {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding: 20rpx 16rpx;
+  background: #FAFAFA;
+  border: 2rpx solid transparent;
+  border-radius: 12rpx;
+}
+.conv-card-item--active {
+  background: #FFF5F5;
+  border-color: var(--color-primary);
+}
+.conv-card-checkbox {
+  flex-shrink: 0;
+  width: 48rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.conv-card-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  min-width: 0;
+}
+.conv-card-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-card-spec {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+}
+.conv-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+.conv-card-remain { color: var(--color-primary); font-weight: 500; }
+.conv-card-unit { color: var(--color-text-hint); }
+.conv-card-amount {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4rpx;
+}
+.conv-card-amount-value {
+  font-size: 30rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+.conv-card-amount-label {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 底部差额汇总 ===== */
+.conv-summary {
+  background: #F5F2EE;
+  border-radius: 12rpx;
+  padding: 16rpx;
+}
+.conv-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6rpx 0;
+}
+.conv-summary-row--diff {
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx solid var(--color-border);
+}
+.conv-summary-label {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+.conv-summary-value {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+.conv-summary-value--discount {
+  color: var(--color-primary);
+}
+.conv-summary-diff {
+  font-size: 30rpx;
+  font-weight: 700;
+}
+.conv-summary-diff--positive { color: var(--color-primary); }
+.conv-summary-diff--zero { color: var(--color-text-secondary); }
+.conv-summary-diff--negative { color: #27AE60; }
+
+.conv-payment-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16rpx 0 4rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed var(--color-border);
+}
+.conv-payment-value {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+.conv-payment-placeholder { color: var(--color-text-hint); }
