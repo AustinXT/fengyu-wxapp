@@ -1,7 +1,7 @@
 ---
 title: Client 端换绑手机号需求分析
 date: 2026-04-16
-status: 需求分析（待决策）
+status: 需求已对齐（R1/R2/R3/R5/R6 已定，R4 风控待定），P0 可启动开发
 owner: 待分配
 area: fengyu-client / cloudfunctions/clientApi / db / admin（可选）
 related:
@@ -255,19 +255,32 @@ bindPhone 返回 `INVALID_PARAMS: 已绑定手机号，请使用换绑功能`。
 ### 5.2 新号已有"孤儿档案"的处理
 
 孤儿档案 = `client_wechat_users WHERE phone = new_phone AND openid IS NULL`，
-通常来自 WorkFine 同步出的顾客还没被微信扫码绑定。
+**均来自历史 WorkFine 同步时创建的顾客档案**（因同步已停，存量固定，不会新增）。
 
-**MVP 实现（推荐）**：
-- 拒绝该换绑，返回特殊错误码 `NEEDS_CUSTOMER_SUPPORT` + 文案
-  "该手机号在我们系统中已有档案，为保护数据安全请联系门店协助处理"。
-- 在 admin 端提供"客服合并"工具（后续迭代）：
-  admin 选中两条 client_wechat_users 行 → 选择主行 → 把从行的 customer_id、
-  部分档案字段搬到主行、从行删除或归档。
+这类行上挂着的不只是 phone，还可能有：customer_id、历史会员等级、消费档位、
+历史订单（通过 user_id 关联）、充值卡、积分等。简单 "UPDATE phone=new_phone
+WHERE user_id=当前" 会因 `uq_client_users_phone` 冲突而失败，
+且即便成功也会让那条孤儿行的业务数据**成为无法访问的死数据**。
 
-**高级实现（后续 P2）**：
-- 在小程序侧弹窗"你的新手机号已有消费档案，是否合并？"
-- 用户同意后云函数走合并事务（迁移 orders.client_user_id 等；
-  这是一个独立的大 ticket，不建议在本需求里一起做）。
+**MVP 实现（与 α 语义一致，最保守）**：
+
+- 换绑事务内先检测 `SELECT 1 FROM client_wechat_users WHERE phone = new_phone AND user_id != 当前`；
+- 命中即拒绝，返回错误码 `PHONE_HAS_EXISTING_PROFILE`，文案：
+  "该手机号在我们系统中已存在消费档案。为避免数据错乱，请联系门店协助处理。"
+- 业务备注：虽然现有代码 `auth.js:130-136` 已有"被其他 user_id 占用"的校验并返回
+  "该手机号已被其他用户绑定"，但该文案对"孤儿档案"（openid=NULL，并非另一个活跃用户）
+  用户误导性强；应细分为**两种错误码**：
+  - `PHONE_BOUND_BY_OTHER_USER`（目标行有 openid，是另一个活跃微信账号）
+  - `PHONE_HAS_EXISTING_PROFILE`（目标行 openid 为 NULL，是历史档案）
+  两类场景的处理方式相同（都拒绝），但文案区分，便于客服定位。
+
+**后续迭代（P1/P2，不在本 ticket 范围）**：
+
+- admin 端"顾客合并工具"：把孤儿行的 customer_id / member_level / 历史订单等
+  业务数据迁移到当前微信用户的行，再删除孤儿行。该工具同样能解决 α 语义下的
+  历史档案认领问题。
+- 客户端"检测到历史档案，是否认领合并"的自助流程需要身份核验（如门店员工扫码确认），
+  目前不实现。
 
 ### 5.3 匿名订单归并规则（换绑场景）
 
@@ -297,11 +310,9 @@ bindPhone 返回 `INVALID_PARAMS: 已绑定手机号，请使用换绑功能`。
   operator_name = '顾客自助'
   ```
 
-- schema 迁移（P1 同步完成）：
-  - 让 `operator_employee_id` 可为 NULL（已经是可空的 FK，核实不需要改）
-  - 新增可选列 `operator_client_user_id`（`text references client_wechat_users.user_id`）
-    便于按客户视角过滤。
-  - 或维持现状，只在 detail 里记录 clientUserId。**推荐后者（MVP 改动最小）**。
+- schema：`operator_employee_id` 已经是**可空** FK（见 db/schema/operation-log.ts:16），
+  无需迁移；MVP 直接用 `NULL + detail.clientUserId` 的方式记录即可。
+  是否增设 `operator_client_user_id` 列放 P1 评估。
 
 - 手机号脱敏：`detail` 里的 oldPhone/newPhone 使用 `maskPhone` 存储，防止审计表泄密。
 
@@ -346,25 +357,26 @@ MVP 不需要 schema 迁移（只用现有字段 + operation_logs.detail）。
 ## 6. 分阶段落地计划
 
 ### P0（本 ticket 范围 — MVP）
-- [ ] 后端：`auth.rebindPhone` action（严格事务 + customer_id 清空 + 审计）
-- [ ] 后端：`auth.bindPhone` 在已绑定情况下拒绝/转调
+- [ ] 后端：`auth.rebindPhone` action（单事务：仅 UPDATE phone 一列 + 审计）
+- [ ] 后端：`auth.bindPhone` 在 `ctx.auth.phone` 非空时返回 `INVALID_PARAMS`
+      或内部转调 `rebindPhone`（二选一）
 - [ ] 后端：换绑时**禁用**匿名订单归并（方案 A）
-- [ ] 后端：检测"新号存在孤儿档案"→ 返回 `NEEDS_CUSTOMER_SUPPORT`
-- [ ] 前端：profile-edit 二次确认 + 文案区分
-- [ ] 前端：换绑成功后刷新 globalData + localStorage
+- [ ] 后端：细分错误码 `PHONE_BOUND_BY_OTHER_USER` / `PHONE_HAS_EXISTING_PROFILE`
+- [ ] 前端：profile-edit 二次确认 + 首绑/换绑文案区分
+- [ ] 前端：换绑成功后刷新 globalData + localStorage（phone 一列即可）
 - [ ] 前端：pages/profile 移除重复的换绑入口
-- [ ] 测试：云函数单测覆盖新号=旧号、新号被占、新号孤儿、customer_id 清空、审计写入
+- [ ] 测试：单测覆盖 新号=旧号幂等 / 新号被活跃用户占 / 新号为孤儿档案 / 审计写入 / 匿名归并未触发
 - [ ] 测试：手机号 mask 脱敏写入 operation_logs
 
 ### P1（1-2 周内）
 - [ ] 换绑限流（30 天 3 次）配置化
-- [ ] admin 顾客合并工具（孤儿档案迁移）
+- [ ] admin 顾客合并工具（孤儿档案认领）
 - [ ] admin 顾客详情增加"手机号变更日志"Tab
+- [ ] 评估是否需要 `operation_logs.operator_client_user_id` 字段
 
 ### P2（长期）
 - [ ] `client_phone_history` 独立表
-- [ ] 换绑后的 WorkFine 档案一致性校验（定期 cron）
-- [ ] "合并到已有档案"的自助流程（带人工审核）
+- [ ] "合并到已有档案"的自助流程（带门店身份核验）
 
 ## 7. 测试用例清单（供 P0 对齐）
 
@@ -383,12 +395,11 @@ MVP 不需要 schema 迁移（只用现有字段 + operation_logs.detail）。
 - TC14 30 天内第 4 次换绑 → RATE_LIMIT（若启用限流）
 - TC15 新号为员工绑定号 → PERMISSION_DENIED（若启用）
 
-### 7.3 同步联动
-- TC20 换绑后跑一次 `sync-workfine.js`：
-  - 若新号在 WorkFine 无档案 → 档案字段不变，customer_id 仍为 NULL
-  - 若新号在 WorkFine 有档案 → customer_id 正确写入新 C2，档案被覆盖为 C2 的档案
-- TC21 换绑清空 customer_id 后，旧档案的 WorkFine 行在 PG 中找不到绑定 openid 的行
-  → 下次同步会走 3b/3c 路径重新建一条"孤儿行"（这是预期，业务方需确认可接受）
+### 7.3 身份/会员数据保留（α 语义核查）
+- TC20 换绑前积分 5000 → 换绑后 `points.balance` 仍为 5000
+- TC21 换绑前 member_level = 粉钻 → 换绑后等级不变
+- TC22 换绑前有优惠券 3 张、充值卡 2 张 → 换绑后全部保留
+- TC23 换绑前 customer_id = 'FY-GK-001' → 换绑后 customer_id 不变
 
 ### 7.4 审计
 - TC30 换绑后 operation_logs 新增 1 条，detail.oldPhone/newPhone 已脱敏
@@ -400,17 +411,17 @@ MVP 不需要 schema 迁移（只用现有字段 + operation_logs.detail）。
 - TC42 换绑后 profile 页、checkout 页读取的 phone 是新号
 - TC43 换绑失败（NEEDS_CUSTOMER_SUPPORT）时显示完整客服提示文案
 
-## 8. 需业务方决策的问题（打勾确认）
+## 8. 决策状态
 
-请产品 / 业务负责人在本 ticket 打勾后再进入开发阶段：
-
-- [ ] **R1 身份归属**：采用语义 α（跟人走，保留积分会员）？
-- [ ] **R2 WorkFine 联动**：换绑时同事务清空 `customer_id`，接受下次同步时档案字段覆盖？
-- [ ] **R3 匿名归并**：换绑**禁用**自动匿名订单归并（方案 A）？
-- [ ] **R4 风控**：30 天 3 次限流？是否拦截换绑到员工号？
-- [ ] **R5 Pending 单冲突**：新号带入匿名 pending 时，是否采用"拒绝归并并提示"方案？
-- [ ] **R6 孤儿档案**：MVP 是否拒绝此类换绑并指引客服？
-- [ ] **P1 admin 合并工具**：是否列入 1-2 周内计划？
+| 决策项 | 结论 | 备注 |
+| --- | --- | --- |
+| **R1 身份归属** | ✅ 采用语义 α（账号不变，只改 phone） | 2026-04-16 业务方确认 |
+| **R2 WorkFine 联动** | ✅ 已失效 | 正式运行后不再跑同步 |
+| **R3 匿名归并** | ✅ 换绑禁用匿名订单归并（方案 A） | 与 α 一致：历史订单不动 |
+| **R4 风控** | ⚠️ 待定（建议 30 天 3 次 + 拦截员工号） | 可放 P1 |
+| **R5 Pending 单冲突** | ✅ 已失效 | 方案 A 下 pending 单归并不触发 |
+| **R6 孤儿档案** | ✅ MVP 拒绝换绑，返回专用错误码引导客服 | 不合并业务数据 |
+| **P1 admin 合并工具** | ⚠️ 待定 | 取决于孤儿档案被拒后的客诉量 |
 
 ## 9. 关联 / 参考
 
