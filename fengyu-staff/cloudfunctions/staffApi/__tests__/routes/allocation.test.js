@@ -538,19 +538,21 @@ describe('allocation.pendingList', () => {
 describe('allocation.getCommissionRates', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('返回提成比例矩阵（PG 扁平行 pivot 为 department 分组）', async () => {
+  test('返回提成比例矩阵（PG 扁平行 pivot 为 role_type 分组）', async () => {
     const ctx = createManagerCtx({ marketName: '华东市场' })
 
+    // PG commission_rate_matrix 的 role_type 存储角色名（'美容师'/'养生师'/'推广师'），
+    // order_type 为中文枚举 '销售单'/'服务单'
     pg.query.mockResolvedValueOnce([
-      { role_type: '美容部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.3000' },
-      { role_type: '美容部', order_type: 'sale', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2000' },
-      { role_type: '美容部', order_type: 'service', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2500' },
+      { role_type: '美容师', order_type: '销售单', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.3000' },
+      { role_type: '美容师', order_type: '销售单', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2000' },
+      { role_type: '美容师', order_type: '服务单', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '5000', commission_rate: '0.2500' },
     ])
 
     await allocationRoutes.getCommissionRates(ctx)
 
     expect(ctx.result.rates).toHaveLength(1)
-    expect(ctx.result.rates[0].department).toBe('美容部')
+    expect(ctx.result.rates[0].department).toBe('美容师')
     expect(ctx.result.rates[0].orderRates['自采自销']).toBe(0.3)
     expect(ctx.result.rates[0].orderRates['他销自耗']).toBe(0.2)
     expect(ctx.result.rates[0].serviceRates['自采自销']).toBe(0.25)
@@ -581,30 +583,30 @@ describe('allocation.getCommissionRates', () => {
     const ctx = createManagerCtx({ marketName: '华东市场' })
 
     pg.query.mockResolvedValueOnce([
-      { role_type: '养生部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: null, amount_tier_max: null, commission_rate: '0' },
+      { role_type: '养生师', order_type: '销售单', sales_category: '自采自销', amount_tier_min: null, amount_tier_max: null, commission_rate: '0' },
     ])
 
     await allocationRoutes.getCommissionRates(ctx)
 
-    expect(ctx.result.rates[0].department).toBe('养生部')
+    expect(ctx.result.rates[0].department).toBe('养生师')
     expect(ctx.result.rates[0].amountMin).toBe(-9999.9)
     expect(ctx.result.rates[0].amountMax).toBe(10000000)
     expect(ctx.result.rates[0].orderRates['自采自销']).toBe(0)
   })
 
-  test('美容部和养生部分别返回不同比例', async () => {
+  test('美容师和养生师分别返回不同比例', async () => {
     const ctx = createManagerCtx({ marketName: '华东市场' })
 
     pg.query.mockResolvedValueOnce([
-      { role_type: '美容部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
-      { role_type: '养生部', order_type: 'sale', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
+      { role_type: '美容师', order_type: '销售单', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
+      { role_type: '养生师', order_type: '销售单', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
     ])
 
     await allocationRoutes.getCommissionRates(ctx)
 
     expect(ctx.result.rates).toHaveLength(2)
-    const beauty = ctx.result.rates.find(r => r.department === '美容部')
-    const wellness = ctx.result.rates.find(r => r.department === '养生部')
+    const beauty = ctx.result.rates.find(r => r.department === '美容师')
+    const wellness = ctx.result.rates.find(r => r.department === '养生师')
     expect(beauty.orderRates['自采自销']).toBe(0.3)
     expect(wellness.orderRates['自采自销']).toBe(0.2)
   })
@@ -616,36 +618,72 @@ describe('allocation.getCommissionRates', () => {
 describe('allocation.suggest', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('返回分配建议（含指定美容师，PG 提成比例）', async () => {
+  test('返回分配建议（按 skills 生成多角色 allocLine，P2-14 Q5）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
         store_id: 'store-001', market_name: '华东市场',
- preferred_employee_id: 'emp-b1',
+        preferred_employee_id: 'emp-b1',
         client_phone: '13800001111', customer_name: '张三',
       }])
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', department: '美容部' }])
+      // resolveStaffRoles 返回 skills 数组
+      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四', skills: ['美容师'] }])
       .mockResolvedValueOnce([{ cnt: 0 }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', received: '1000', sales_category: '自采自销', product_name: '面部护理', sku_spec_name: '基础款', product_type: '疗程卡' },
       ])
-      // 6. PG 提成比例
+      // 6. PG 提成比例（role_type 为角色名）
       .mockResolvedValueOnce([
-        { role_type: '美容部', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
-        { role_type: '美容部', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
+        { role_type: '美容师', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
+        { role_type: '美容师', sales_category: '他销自耗', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.2000' },
       ])
 
     await allocationRoutes.suggest(ctx)
 
     expect(ctx.result.isNewCustomer).toBe(true)
     expect(ctx.result.beauticianInfo.staffWfId).toBe('emp-b1')
+    expect(ctx.result.beauticianInfo.skills).toEqual(['美容师'])
     expect(ctx.result.deptAnomalous).toBe(false)
+    expect(ctx.result.beauticianRequired).toBe(true)
     expect(ctx.result.allocLines).toHaveLength(1)
+    expect(ctx.result.allocLines[0].roleType).toBe('美容师')
     expect(ctx.result.allocLines[0].commissionRate).toBe(0.3)
     expect(ctx.result.allocLines[0].amount).toBe('300.00')
     expect(ctx.result.totalAmount).toBe(1000)
+  })
+
+  test('多 skills 员工：每个 (item × skill) 生成独立 allocLine（P2-14）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001', status: '已支付', allocation_status: '待分配',
+        store_id: 'store-001', market_name: '华东市场',
+        preferred_employee_id: 'emp-multi',
+        client_phone: '13800001111', customer_name: '张三',
+      }])
+      // 员工同时有美容师 + 推广师两个技能
+      .mockResolvedValueOnce([{ employee_id: 'emp-multi', name: '全能', skills: ['美容师', '推广师'] }])
+      .mockResolvedValueOnce([{ cnt: 1 }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-001', received: '1000', sales_category: '自采自销', product_name: 'P1', sku_spec_name: 'S1', product_type: '疗程卡' },
+      ])
+      .mockResolvedValueOnce([
+        { role_type: '美容师', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.3000' },
+        { role_type: '推广师', sales_category: '自采自销', amount_tier_min: '0', amount_tier_max: '99999', commission_rate: '0.1000' },
+      ])
+
+    await allocationRoutes.suggest(ctx)
+
+    // 1 item × 2 skills = 2 行
+    expect(ctx.result.allocLines).toHaveLength(2)
+    const beautyLine = ctx.result.allocLines.find(l => l.roleType === '美容师')
+    const promoterLine = ctx.result.allocLines.find(l => l.roleType === '推广师')
+    expect(beautyLine.commissionRate).toBe(0.3)
+    expect(promoterLine.commissionRate).toBe(0.1)
+    expect(beautyLine.departmentName).toBeNull()
   })
 
   test('无指定美容师时 allocLines 为空', async () => {

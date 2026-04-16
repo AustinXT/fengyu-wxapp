@@ -364,28 +364,22 @@ async function pendingList(ctx) {
 }
 
 /**
- * 查询员工部门归属（美容部/养生部判定）
+ * 查询员工技能标签（P2-14 Q5）
+ * 返回 skills 数组，由 suggest 按每个 skill 生成独立 allocLine。
  */
-async function resolveStaffDepartment(staffWfId) {
-  const rows = await pg.query(`
-    SELECT
-      u.employee_id, u.name,
-      d.name AS department
-    FROM staff_wechat_users u
-    LEFT JOIN org_nodes d ON u.org_node_id = d.id
-    WHERE u.employee_id = $1
-  `, [staffWfId])
+async function resolveStaffRoles(staffWfId) {
+  const rows = await pg.query(
+    'SELECT employee_id, name, skills FROM staff_wechat_users WHERE employee_id = $1',
+    [staffWfId]
+  )
 
   if (rows.length === 0) return null
 
   const row = rows[0]
-  const dept = (row.department || '').trim()
-  const role = DEPT_TO_ROLE[dept] || null
-
   return {
     staffWfId: row.employee_id,
     name: (row.name || '').trim(),
-    resolvedDept: role,
+    skills: Array.isArray(row.skills) ? row.skills : [],
   }
 }
 
@@ -424,12 +418,12 @@ async function suggest(ctx) {
   }
   const order = orders[0]
 
-  // 2. 解析指定美容师
+  // 2. 解析指定员工（P2-14 Q5：按 skills 建议角色池）
   let beauticianInfo = null
-  let deptAnomalous = false
+  let deptAnomalous = false // 向后兼容字段：空 skills 时为 true
   if (order.preferred_employee_id) {
-    beauticianInfo = await resolveStaffDepartment(order.preferred_employee_id)
-    if (beauticianInfo && !beauticianInfo.resolvedDept) {
+    beauticianInfo = await resolveStaffRoles(order.preferred_employee_id)
+    if (beauticianInfo && beauticianInfo.skills.length === 0) {
       deptAnomalous = true
     }
   }
@@ -437,7 +431,8 @@ async function suggest(ctx) {
   // 3. 检查新顾客
   const isNewCustomer = await checkNewCustomer(order.client_phone, saleOrderId)
 
-  const beauticianRequired = false
+  // 向后兼容字段：保留 beauticianRequired，语义改为"员工有可用 skills"
+  const beauticianRequired = !!(beauticianInfo && beauticianInfo.skills.length > 0)
 
   // 5. 加载订单项
   const items = await pg.query(`
@@ -450,7 +445,7 @@ async function suggest(ctx) {
 
   const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
-  // 6. 加载提成比例（PG commission_rate_matrix，仅 sale 类型用于分配建议）
+  // 6. 加载提成比例（PG commission_rate_matrix，仅销售单用于分配建议）
   let rates = []
   if (order.market_name) {
     const rateRows = await pg.query(`
@@ -479,45 +474,46 @@ async function suggest(ctx) {
     rates = [...grouped.values()]
   }
 
-  // 7. 提取美容部/养生部提成比例
-  const beautyDepts = ['美容师', '养生师']
-  const beautyRates = {}
+  // 7. 按 role_type 索引提成比例（P2-14：三角色均纳入，不再过滤白名单）
+  const ratesByRole = {}
   for (const rate of rates) {
-    if (beautyDepts.includes(rate.department) && !beautyRates[rate.department]) {
-      beautyRates[rate.department] = rate.orderRates
+    if (!ratesByRole[rate.department]) {
+      ratesByRole[rate.department] = rate.orderRates
     }
   }
 
-  // 8. 生成分配行
+  // 8. 生成分配行：对每个 (item × skill) 生成一条 allocLine，roleType 必填
   const allocLines = []
-  if (beauticianInfo && beauticianInfo.resolvedDept && beautyRates[beauticianInfo.resolvedDept]) {
-    const dept = beauticianInfo.resolvedDept
+  if (beauticianInfo && beauticianInfo.skills.length > 0) {
     for (const item of items) {
       const salesCat = item.sales_category || '自采自销'
       const received = Number(item.received) || 0
-      const commRate = beautyRates[dept][salesCat] || 0
-      const amount = (received * commRate).toFixed(2)
-      allocLines.push({
-        saleItemId: item.sale_item_id,
-        departmentName: dept,
-        staffWfId: beauticianInfo.staffWfId,
-        staffName: beauticianInfo.name,
-        salesCategory: salesCat,
-        commissionRate: commRate,
-        amount,
-        autoAmount: amount,
-        autoFilled: true,
-      })
+      for (const role of beauticianInfo.skills) {
+        const commRate = (ratesByRole[role] && ratesByRole[role][salesCat]) || 0
+        const amount = (received * commRate).toFixed(2)
+        allocLines.push({
+          saleItemId: item.sale_item_id,
+          roleType: role,        // P2-14：必填
+          departmentName: null,  // deprecated (PR-4)：保留字段兼容前端展示，值不再由服务端填
+          staffWfId: beauticianInfo.staffWfId,
+          staffName: beauticianInfo.name,
+          salesCategory: salesCat,
+          commissionRate: commRate,
+          amount,
+          autoAmount: amount,
+          autoFilled: true,
+        })
+      }
     }
   }
 
   ctx.result = {
     isNewCustomer,
-    beauticianInfo,
-    deptAnomalous,
-    beauticianRequired,
-    beautyRates,
-    allocLines,
+    beauticianInfo,     // P2-14：现含 skills 字段（替代 resolvedDept）
+    deptAnomalous,      // 向后兼容：员工无 skills 时为 true
+    beauticianRequired, // 向后兼容：员工有可用 skills 时为 true
+    ratesByRole,        // P2-14：以 role_type 为键的提成比例索引（替代 beautyRates）
+    allocLines,         // 每条含 roleType（P2-14 必填）
     items,
     totalAmount,
     rates,
