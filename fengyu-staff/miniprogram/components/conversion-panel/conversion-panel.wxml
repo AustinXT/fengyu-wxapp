@@ -1,0 +1,105 @@
+<!-- components/conversion-panel/conversion-panel.wxml — 转换单折抵面板 -->
+<view class="conv-panel">
+  <text class="conv-title">折抵卡选择</text>
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="conv-loading">
+    <van-loading size="36rpx" />
+    <text class="conv-loading-text">加载顾客折抵卡</text>
+  </view>
+
+  <!-- 错误 -->
+  <view wx:elif="{{errorMsg}}" class="conv-empty">
+    <van-empty description="{{errorMsg}}" />
+  </view>
+
+  <!-- 空态 -->
+  <view wx:elif="{{cards.length === 0}}" class="conv-empty">
+    <van-empty description="该顾客暂无可折抵卡" />
+  </view>
+
+  <!-- 卡列表 -->
+  <view wx:else class="conv-card-list">
+    <view
+      wx:for="{{cards}}"
+      wx:key="saleItemId"
+      class="conv-card-item {{selectedIds.indexOf(item.saleItemId) >= 0 ? 'conv-card-item--active' : ''}}"
+      data-id="{{item.saleItemId}}"
+      bindtap="onToggleCard"
+    >
+      <view class="conv-card-checkbox">
+        <van-icon
+          name="{{selectedIds.indexOf(item.saleItemId) >= 0 ? 'checked' : 'circle'}}"
+          size="40rpx"
+          color="{{selectedIds.indexOf(item.saleItemId) >= 0 ? '#C0322A' : '#BBB'}}"
+        />
+      </view>
+      <view class="conv-card-info">
+        <text class="conv-card-name">{{item.productName}}</text>
+        <text class="conv-card-spec">{{item.skuSpecName}}</text>
+        <view class="conv-card-meta">
+          <text wx:if="{{item.productType === '疗程卡'}}" class="conv-card-remain">剩余 {{item.remainingSessions}} 次</text>
+          <text wx:else class="conv-card-remain">剩余 {{item.remainingQuantity}} 个</text>
+          <text class="conv-card-unit">· 单价 ¥{{item.unitRealPrice}}</text>
+        </view>
+      </view>
+      <view class="conv-card-amount">
+        <text class="conv-card-amount-value">¥{{item.deductibleAmount}}</text>
+        <text class="conv-card-amount-label">可折抵</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 底部差额汇总 -->
+  <view class="conv-summary">
+    <view class="conv-summary-row">
+      <text class="conv-summary-label">转入金额</text>
+      <text class="conv-summary-value">¥{{convertInAmount}}</text>
+    </view>
+    <view class="conv-summary-row">
+      <text class="conv-summary-label">折抵总额</text>
+      <text class="conv-summary-value conv-summary-value--discount">-¥{{deductibleSumDisplay}}</text>
+    </view>
+    <view class="conv-summary-row conv-summary-row--diff">
+      <text class="conv-summary-label">差额</text>
+      <block wx:if="{{priceDiff > 0}}">
+        <text class="conv-summary-diff conv-summary-diff--positive">还需支付 ¥{{priceDiffDisplay}}</text>
+      </block>
+      <block wx:elif="{{priceDiff === 0}}">
+        <text class="conv-summary-diff conv-summary-diff--zero">无需补差额</text>
+      </block>
+      <block wx:else>
+        <text class="conv-summary-diff conv-summary-diff--negative">将充入储值卡 ¥{{priceDiffAbs}}</text>
+      </block>
+    </view>
+
+    <!-- 差额>0 时选支付方式 -->
+    <view
+      wx:if="{{priceDiff > 0}}"
+      class="conv-payment-row"
+      bindtap="onOpenPaymentPicker"
+    >
+      <text class="conv-summary-label">支付方式</text>
+      <view class="conv-payment-value">
+        <text wx:if="{{paymentMethod}}">{{paymentMethod}}</text>
+        <text wx:else class="conv-payment-placeholder">请选择</text>
+        <van-icon name="arrow" size="28rpx" color="#999" />
+      </view>
+    </view>
+  </view>
+
+  <van-popup
+    show="{{showPaymentPicker}}"
+    round
+    position="bottom"
+    bind:close="onPaymentPickerClose"
+  >
+    <van-picker
+      title="支付方式"
+      show-toolbar
+      columns="{{paymentMethodOptions}}"
+      bind:confirm="onPaymentPickerConfirm"
+      bind:cancel="onPaymentPickerClose"
+    />
+  </van-popup>
+</view>
