@@ -1,4 +1,4 @@
-# Ticket: admin 卡包管理页
+# Ticket: admin 疗程卡管理页
 
 > 生成日期：2026-04-16
 > 严重级别：P2（产品增量；与 `p1-sale-items-store-binding` ticket 的"不在范围内"项对齐补齐）
@@ -11,7 +11,7 @@
 
 ## 0 一句话背景
 
-admin 后台目前没有独立的"卡包管理"视图。运营/客服/店长想查"某顾客在某店有哪些卡、还剩几次、什么时候过期"，只能进顾客详情逐单翻或到 workfine 老系统查。本 ticket 新增 `/cards` 路由，把顾客的**疗程卡**和**单次卡（一次性卡）**聚到一张表格，支持市场/门店二级联合筛选 + 顾客姓名/手机号模糊检索 + 状态筛选 + 分页。
+admin 后台目前没有独立的"疗程卡管理"视图。运营/客服/店长想查"某顾客在某店有哪些卡、还剩几次、什么时候过期"，只能进顾客详情逐单翻或到 workfine 老系统查。本 ticket 新增 `/cards` 路由，把顾客的**疗程卡**和**单次卡（一次性卡）**聚到一张表格，支持市场/门店二级联合筛选 + 顾客姓名/手机号模糊检索 + 状态筛选 + 分页。
 
 ---
 
@@ -19,7 +19,7 @@ admin 后台目前没有独立的"卡包管理"视图。运营/客服/店长想�
 
 ### 1.1 admin 现状
 
-当前 `fengyu-admin/src/app/(main)/` 下的 22 个路由里没有卡包管理。最接近的是：
+当前 `fengyu-admin/src/app/(main)/` 下的 22 个路由里没有疗程卡管理。最接近的是：
 
 | 现有页面 | 为什么不够用 |
 |---|---|
@@ -79,7 +79,7 @@ admin 后台目前没有独立的"卡包管理"视图。运营/客服/店长想�
 ### 2.1 页面定位
 
 - **路径**：`/(main)/cards`（复数，与 `customers`、`orders`、`services` 风格一致）
-- **标题**：卡包管理
+- **标题**：疗程卡管理
 - **菜单归属**：`MENU_CONFIG` 第 3 组 "数据管理"，`customers` 之后 / `coupons` 之前
 - **图标**：`lucide-react` `CreditCard`（或 `IdCard`，语义上 CreditCard 更贴）
 - **权限组**：`sale_item:list`（新增权限 action，避免和 `sale_order:list` 混淆——后者是整单，前者是明细/卡维度）
@@ -191,7 +191,7 @@ scope 过滤：`scopeCondition(session, saleItems.storeId)` —— manager/finan
 | # | 任务 |
 |---|------|
 | C1 | `src/lib/permissions.ts:15-73` 为 `manager` / `finance` / `customer_mgr` 添加 `sale_item:list`；admin/hr/product 不动 |
-| C2 | `src/lib/menu.ts:60-72` "数据管理"组插入 `{ label: '卡包管理', icon: CreditCard, href: '/cards', requiredRoles: ['manager', 'customer_mgr'], readonlyRoles: ['finance'] }`，位置在"顾客管理"之后 |
+| C2 | `src/lib/menu.ts:60-72` "数据管理"组插入 `{ label: '疗程卡管理', icon: CreditCard, href: '/cards', requiredRoles: ['manager', 'customer_mgr'], readonlyRoles: ['finance'] }`，位置在"顾客管理"之后 |
 | C3 | `src/lib/permissions.test.ts` / `menu.test.ts` 补对应断言 |
 
 ### 3.4 可选增强（超纲，P3）
@@ -250,4 +250,4 @@ scope 过滤：`scopeCondition(session, saleItems.storeId)` —— manager/finan
 - `fengyu-admin/src/lib/permissions.ts` — 权限矩阵
 - `fengyu-admin/src/lib/menu.ts` — 菜单配置
 - `notes/tickets/p1-sale-items-store-binding.md` — 前置 ticket（已完成）
-- `.42cog/pm/admin.pr.spec.md` — 待该 PR 上线后同步补 AC-19（卡包管理）
+- `.42cog/pm/admin.pr.spec.md` — 待该 PR 上线后同步补 AC-19（疗程卡管理）
