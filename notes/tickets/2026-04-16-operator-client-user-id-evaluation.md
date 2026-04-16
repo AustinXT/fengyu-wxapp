@@ -1,15 +1,22 @@
 ---
 title: operation_logs 增加 operator_client_user_id 字段评估
 date: 2026-04-16
-status: evaluation — 推荐 **推迟到 P2 与 phone_history 表一起做**
+status: 推迟（2026-04-16 客户端自助换绑已弃用，本评估对应的限流场景消失）
 owner: dev
 area: db / fengyu-client cloudfunctions / fengyu-admin
 related:
   - db/schema/operation-log.ts
-  - fengyu-client/cloudfunctions/clientApi/routes/auth.js (rebindPhone)
+  - fengyu-client/cloudfunctions/clientApi/routes/auth.js (rebindPhone — 已删除)
   - fengyu-admin/src/actions/customers.ts (getCustomerPhoneChangeLogs)
-  - notes/tickets/2026-04-16-client-rebind-phone.md §5.4 审计
+  - notes/tickets/2026-04-16-client-rebind-phone.md §5.4 审计 / §6 P2 弃用决策
 ---
+
+> **2026-04-16 决策回顾**：客户端 `auth.rebindPhone` 已下线（详见
+> `2026-04-16-client-rebind-phone.md` §6 P2），原本评估的"客户端自助操作需要
+> operator_client_user_id 字段以支持限流/反查"的场景**消失**。
+>
+> admin 改 phone 走 `customer.update` + 标准 logUpdate，operator_employee_id 始终
+> 非空，原审计缺口不复存在。本评估文档保留作历史参考，**不实施**。
 
 ## 1. 现状
 
