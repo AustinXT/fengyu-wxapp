@@ -192,6 +192,10 @@ async function create(ctx) {
   if (!paymentMethod) {
     throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
   }
+  // PR-D1：白名单守卫，与 createConversion 对齐（暂不支持支付宝，待业务确认）
+  if (!['微信', '线下'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: 非法的支付方式')
+  }
   if (!storeId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
@@ -449,6 +453,8 @@ async function create(ctx) {
     }
 
     // 创建订单主表
+    // PR-D1：线下支付 → 待确认收款（与 admin 对齐），微信支付 → 待支付
+    const initialStatus = paymentMethod === '线下' ? '待确认收款' : '待支付'
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -456,14 +462,15 @@ async function create(ctx) {
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
         created_at, updated_at
-      ) VALUES ($1, '待支付', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
         paymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
         inputCouponId || null, couponDiscount,
-        orderRemark || null
+        orderRemark || null,
+        initialStatus,
       ]
     )
 
@@ -501,7 +508,7 @@ async function create(ctx) {
     saleOrderId,
     totalAmount,
     couponDiscount,
-    status: '待支付',
+    status: paymentMethod === '线下' ? '待确认收款' : '待支付',
     clientUserId,
     message: '开单成功'
   }

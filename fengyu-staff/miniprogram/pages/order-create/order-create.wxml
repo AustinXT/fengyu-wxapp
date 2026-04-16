@@ -357,6 +357,26 @@
               <text class="confirm-total-amount confirm-total-amount--coupon">¥{{couponTotal}}</text>
             </view>
           </block>
+
+          <!-- PR-D1：支付方式（销售单 / 内部单二选一；转换单由 ConversionPanel 内部 picker 管理） -->
+          <view class="order-type-cards">
+            <view
+              class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
+              data-method="微信"
+              bindtap="onPaymentMethodTap"
+            >
+              <text class="order-type-card-name">微信支付</text>
+              <text class="order-type-card-desc">扫码付款</text>
+            </view>
+            <view
+              class="order-type-card {{paymentMethod === '线下' ? 'order-type-card--active' : ''}}"
+              data-method="线下"
+              bindtap="onPaymentMethodTap"
+            >
+              <text class="order-type-card-name">线下收款</text>
+              <text class="order-type-card-desc">待店长确认</text>
+            </view>
+          </view>
         </block>
 
         <!-- 指定美容师（可选，用于默认分配） -->
