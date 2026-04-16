@@ -384,6 +384,26 @@ Page({
     const nextChoice = PRODUCT_KIND_CHOICES[index];
     if (!nextChoice) return;
 
+    // 充值卡 Tab 走独立流程：不进购物车/结算弹层，直接跳 card-recharge 页
+    // 点完后保留原 Tab 选择（让 Tab 组件视觉上"弹回"），避免切换后的 SKU 列表被清空
+    if (nextChoice === '充值卡') {
+      if (!this.data.isManager) {
+        wx.showToast({ title: '仅店长可开充值卡', icon: 'none' });
+        return;
+      }
+      const customer = this.data.customerInfo;
+      const params: string[] = [];
+      if (customer?.id) {
+        params.push(`clientUserId=${encodeURIComponent(customer.id)}`);
+        if (customer.name) params.push(`customerName=${encodeURIComponent(customer.name)}`);
+        if (customer.phone) params.push(`customerPhone=${encodeURIComponent(customer.phone)}`);
+      }
+      const qs = params.length > 0 ? `?${params.join('&')}` : '';
+      wx.navigateTo({ url: `/packageOrder/card-recharge/card-recharge${qs}` });
+      // Tab 回弹到原选择（不改 productKindChoiceIndex / productKindChoice）
+      return;
+    }
+
     const apply = () => {
       this.setData({
         productKindChoiceIndex: index,

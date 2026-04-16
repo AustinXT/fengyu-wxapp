@@ -84,6 +84,10 @@ const routes = {
   // 优惠券
   'coupon.available':     () => require('./routes/coupon').available,
 
+  // 充值卡（店长替顾客充值）
+  'card.rechargeSkus':    () => require('./routes/card').rechargeSkus,
+  'card.recharge':        () => require('./routes/card').recharge,
+
   // 服务单
   'service.create':       () => require('./routes/service').create,
   'service.start':        () => require('./routes/service').start,

@@ -97,50 +97,60 @@ exports.main = async (event) => {
         [now, orderNo]
       )
 
-      // 3a. 充值卡入账（识别虚拟 SKU → UPSERT prepaid_cards + INSERT card_transactions）
+      // 3a. 充值卡入账（识别 product_kind='充值卡' 的行 → UPSERT prepaid_cards + INSERT card_transactions）
       // 必须在状态翻转之后、业绩分配之前；与上述 UPDATE 同事务保证原子性。
-      // 幂等：依赖 card_transactions.ref_order_id 单独 SELECT 去重
-      // （表无 UNIQUE，所以不能用 ON CONFLICT；外层 status 翻转 rowCount 已是第一道幂等闸）
+      //
+      // 覆盖两种下单路径：
+      //   - 虚拟 SKU（clientApi 自助充值 / staffApi 自定义金额）：面值从 product_name 的 "¥{n}" 解析
+      //   - 真实档位 SKU（staffApi 店长替充）：面值 = product_skus.price
+      //
+      // 幂等：card_transactions.ref_order_id 单独 SELECT 去重（表无 UNIQUE 约束），
+      // 外层 status 翻转 rowCount 已是第一道幂等闸。
       if (order.client_user_id && order.store_id) {
         const rechargeRows = await client.query(
-          `SELECT product_name FROM sale_items
-           WHERE sale_order_id = $1 AND sku_id = $2`,
-          [orderNo, RECHARGE_VIRTUAL_SKU_ID]
+          `SELECT si.sku_id, si.product_name, sk.price AS sku_price
+           FROM sale_items si
+           LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
+           LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+           WHERE si.sale_order_id = $1 AND pc.product_kind = '充值卡'`,
+          [orderNo]
         )
         if (rechargeRows.rows.length > 0) {
-          // 解析面值（从 "预付充值卡 ¥500" 中提取）
-          const productName = rechargeRows.rows[0].product_name || ''
-          const m = productName.match(/¥\s*(\d+(?:\.\d+)?)/)
-          if (!m) {
-            throw new Error(`[payNotify] 充值订单 product_name 无法解析面值: ${productName}`)
-          }
-          const faceValue = parseFloat(m[1])
-
-          // 幂等：防回调重放（虽然外层 status 翻转已有第一道闸，此处再确认一次）
           const dupCheck = await client.query(
             `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
             [orderNo]
           )
           if (dupCheck.rows.length === 0) {
-            // UPSERT prepaid_cards：同 user+store 累加余额；新建则用随机 card_id
-            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
-            const upsertRes = await client.query(
-              `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, NOW(), NOW())
-               ON CONFLICT (user_id, store_id) DO UPDATE
-                 SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
-               RETURNING card_id`,
-              [newCardId, order.client_user_id, order.store_id, faceValue]
-            )
-            const cardId = upsertRes.rows[0].card_id
+            for (const row of rechargeRows.rows) {
+              let faceValue
+              if (row.sku_id === RECHARGE_VIRTUAL_SKU_ID) {
+                const m = (row.product_name || '').match(/¥\s*(\d+(?:\.\d+)?)/)
+                if (!m) {
+                  throw new Error(`[payNotify] 充值订单 product_name 无法解析面值: ${row.product_name}`)
+                }
+                faceValue = parseFloat(m[1])
+              } else {
+                faceValue = Number(row.sku_price)
+              }
+              if (!(faceValue > 0)) continue
 
-            // 流水：amount 为充值面值（=余额增量）；折扣可由 sale_orders.total_amount(实付) 反推
-            await client.query(
-              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-               VALUES ($1, '充值', $2, $3, NOW())`,
-              [cardId, faceValue, orderNo]
-            )
-            console.log(`[payNotify] 充值入账: order=${orderNo}, card=${cardId}, faceValue=${faceValue}`)
+              const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+              const upsertRes = await client.query(
+                `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, NOW(), NOW())
+                 ON CONFLICT (user_id, store_id) DO UPDATE
+                   SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+                 RETURNING card_id`,
+                [newCardId, order.client_user_id, order.store_id, faceValue]
+              )
+              const cardId = upsertRes.rows[0].card_id
+              await client.query(
+                `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+                 VALUES ($1, '充值', $2, $3, NOW())`,
+                [cardId, faceValue, orderNo]
+              )
+              console.log(`[payNotify] 充值入账: order=${orderNo}, card=${cardId}, faceValue=${faceValue}, skuId=${row.sku_id}`)
+            }
           } else {
             console.log(`[payNotify] 充值入账幂等跳过: order=${orderNo}`)
           }

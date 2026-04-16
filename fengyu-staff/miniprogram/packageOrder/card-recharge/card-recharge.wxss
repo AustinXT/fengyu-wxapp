@@ -1,0 +1,290 @@
+/* packageOrder/card-recharge/card-recharge.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page, #FAFAFA);
+  padding-bottom: 200rpx;
+}
+
+/* ===== Hero ===== */
+.hero {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  padding: 48rpx 36rpx 40rpx;
+  color: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+.hero-title { font-size: 40rpx; font-weight: 700; }
+.hero-sub { font-size: 26rpx; color: rgba(255, 255, 255, 0.85); }
+.hero-store {
+  margin-top: 12rpx;
+  display: inline-flex;
+  align-items: center;
+  gap: 8rpx;
+  padding: 10rpx 18rpx;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 24rpx;
+  align-self: flex-start;
+}
+.hero-store-text { font-size: 24rpx; color: rgba(255, 255, 255, 0.95); }
+
+/* ===== 顾客选择 ===== */
+.customer-block {
+  background: #FFFFFF;
+  margin: -24rpx 24rpx 0;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  box-shadow: 0 4rpx 16rpx rgba(0,0,0,0.04);
+  position: relative;
+  z-index: 1;
+}
+.block-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #1A1A1A);
+  margin-bottom: 16rpx;
+}
+.customer-card {
+  display: flex;
+  align-items: center;
+  padding: 20rpx 24rpx;
+  background: #FFF0EE;
+  border-radius: 12rpx;
+  border: 2rpx solid #C0322A;
+}
+.customer-info { flex: 1; }
+.customer-name {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #1A1A1A);
+}
+.customer-phone {
+  font-size: 24rpx;
+  color: var(--color-text-secondary, #666);
+  margin-top: 4rpx;
+}
+.customer-action {
+  padding: 8rpx;
+}
+
+.customer-search {
+  display: flex;
+  flex-direction: column;
+  gap: 10rpx;
+}
+.customer-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+.customer-input {
+  flex: 1;
+  font-size: 28rpx;
+  height: 72rpx;
+  padding: 0 20rpx;
+  background: #F5F5F5;
+  border-radius: 12rpx;
+  color: var(--color-text-primary, #1A1A1A);
+}
+.customer-search-btn {
+  min-width: 120rpx;
+  height: 72rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #C0322A;
+  color: #FFFFFF;
+  font-size: 26rpx;
+  border-radius: 12rpx;
+  padding: 0 24rpx;
+}
+.customer-search-btn--disabled { background: #CCCCCC; }
+.customer-hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  padding-left: 4rpx;
+}
+
+/* ===== 加载 ===== */
+.loading-block { padding: 80rpx 0; text-align: center; }
+
+/* ===== 主体 ===== */
+.body { padding: 8rpx 24rpx 0; }
+.section-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary, #1A1A1A);
+  padding: 24rpx 8rpx 16rpx;
+}
+
+/* ===== 预设档卡片 ===== */
+.tier-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16rpx;
+  margin-bottom: 8rpx;
+}
+.tier-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 24rpx 16rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  border: 2rpx solid transparent;
+  transition: all 0.15s;
+  position: relative;
+}
+.tier-card--active {
+  border-color: #C0322A;
+  background: #FFF0EE;
+}
+.tier-face {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--color-text-primary, #1A1A1A);
+}
+.tier-card--active .tier-face { color: #C0322A; }
+.tier-discount {
+  font-size: 22rpx;
+  color: #C0322A;
+  font-weight: 500;
+  padding: 2rpx 12rpx;
+  background: #FFF0EE;
+  border-radius: 16rpx;
+}
+.tier-discount--plain {
+  color: var(--color-text-hint, #999);
+  background: #F5F5F5;
+}
+.tier-card--active .tier-discount { background: rgba(255, 255, 255, 0.6); }
+.tier-pay {
+  font-size: 22rpx;
+  color: var(--color-text-secondary, #666);
+  margin-top: 2rpx;
+}
+.tier-bonus {
+  font-size: 20rpx;
+  color: #C0322A;
+  font-weight: 500;
+}
+.tier-spec {
+  font-size: 20rpx;
+  color: var(--color-text-hint, #999);
+  margin-top: 4rpx;
+  text-align: center;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 自定义金额 ===== */
+.custom-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 24rpx 20rpx;
+  margin-bottom: 8rpx;
+  border: 2rpx solid transparent;
+  transition: border-color 0.15s;
+}
+.custom-card--active { border-color: #C0322A; }
+.custom-input-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+  padding-bottom: 14rpx;
+  border-bottom: 1rpx solid #E8E8E8;
+}
+.custom-currency {
+  font-size: 32rpx;
+  color: var(--color-text-primary, #1A1A1A);
+}
+.custom-input {
+  flex: 1;
+  font-size: 36rpx;
+  color: var(--color-text-primary, #1A1A1A);
+}
+.custom-hint {
+  font-size: 24rpx;
+  color: var(--color-text-secondary, #666);
+  padding-top: 12rpx;
+  line-height: 1.5;
+}
+.custom-hint--placeholder { color: var(--color-text-hint, #999); }
+.custom-hint--error { color: #D94040; }
+.custom-hint-strong { color: #C0322A; font-weight: 600; }
+.custom-hint-bonus { color: #C0322A; }
+
+/* ===== 支付方式 ===== */
+.payment-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  overflow: hidden;
+}
+.payment-option {
+  display: flex;
+  align-items: center;
+  padding: 24rpx 20rpx;
+}
+.payment-option-main { flex: 1; }
+.payment-option-title {
+  font-size: 28rpx;
+  color: var(--color-text-primary, #1A1A1A);
+  font-weight: 500;
+}
+.payment-option-desc {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  margin-top: 4rpx;
+}
+.payment-divider {
+  height: 1rpx;
+  background: #E8E8E8;
+  margin-left: 20rpx;
+}
+
+/* ===== 底部说明 ===== */
+.footer-note {
+  padding: 24rpx 8rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+.footer-note-line {
+  font-size: 22rpx;
+  color: var(--color-text-hint, #999);
+  line-height: 1.6;
+}
+
+/* ===== 底部 CTA ===== */
+.cta-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #FFFFFF;
+  padding: 20rpx 24rpx;
+  border-top: 1rpx solid #E8E8E8;
+  z-index: 100;
+}
+.safe-bottom {
+  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+}
+.cta-btn {
+  width: 100%;
+  background: #C0322A;
+  color: #FFFFFF;
+  font-size: 32rpx;
+  font-weight: 600;
+  border-radius: 48rpx;
+  padding: 20rpx 0;
+  border: none;
+}
+.cta-btn::after { border: none; }
+.cta-btn--disabled {
+  background: #CCCCCC !important;
+  color: #FFFFFF !important;
+}

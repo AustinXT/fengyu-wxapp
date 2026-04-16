@@ -15,6 +15,7 @@ const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
+const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
 
 // 模块级缓存：saleOrderId → qrcodeUrl，避免轮询时重复生成
 const qrcodeCache = new Map()
@@ -672,6 +673,58 @@ async function confirmOffline(ctx) {
          AND expire_date IS NULL`,
       [now, saleOrderId]
     )
+
+    // 充值卡入账：识别明细中 product_kind='充值卡' 的行，统一 UPSERT prepaid_cards
+    // - 虚拟 SKU（自定义金额路径）：面值从 product_name 的 "¥{n}" 解析
+    // - 真实档位 SKU：面值从 product_skus.price 读取
+    // 与 clientApi payNotify 侧的识别逻辑对称，二者均以 (ref_order_id) 幂等。
+    if (order.client_user_id && order.store_id) {
+      const rechargeRows = await client.query(
+        `SELECT si.sku_id, si.product_name, sk.price AS sku_price
+         FROM sale_items si
+         LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
+         LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+         WHERE si.sale_order_id = $1 AND pc.product_kind = '充值卡'`,
+        [saleOrderId]
+      )
+      if (rechargeRows.rows.length > 0) {
+        const dupCheck = await client.query(
+          `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
+          [saleOrderId]
+        )
+        if (dupCheck.rows.length === 0) {
+          for (const row of rechargeRows.rows) {
+            let faceValue
+            if (row.sku_id === RECHARGE_VIRTUAL_SKU_ID) {
+              const m = (row.product_name || '').match(/¥\s*(\d+(?:\.\d+)?)/)
+              if (!m) {
+                throw new Error(`[confirmOffline] 充值订单 product_name 无法解析面值: ${row.product_name}`)
+              }
+              faceValue = parseFloat(m[1])
+            } else {
+              faceValue = Number(row.sku_price)
+            }
+            if (!(faceValue > 0)) continue
+
+            const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+            const upsertRes = await client.query(
+              `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, NOW(), NOW())
+               ON CONFLICT (user_id, store_id) DO UPDATE
+                 SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+               RETURNING card_id`,
+              [newCardId, order.client_user_id, order.store_id, faceValue]
+            )
+            const cardId = upsertRes.rows[0].card_id
+            await client.query(
+              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+               VALUES ($1, '充值', $2, $3, NOW())`,
+              [cardId, faceValue, saleOrderId]
+            )
+          }
+        }
+      }
+    }
 
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)

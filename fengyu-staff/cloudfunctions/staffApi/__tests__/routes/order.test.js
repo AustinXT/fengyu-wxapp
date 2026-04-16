@@ -855,6 +855,199 @@ describe('order.confirmOffline', () => {
     expect(ctx.result.status).toBe('已支付')
     expect(ctx.result.totalReceived).toBe(300)
   })
+
+  // ===== 充值卡入账识别（真实档位 SKU + 虚拟 SKU 两条路径）=====
+
+  test('真实档位 SKU 充值卡：确认后 UPSERT prepaid_cards + INSERT card_transactions（面值从 product_skus.price）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CZ-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-CZ-001',
+        status: '待确认收款',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-001',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-cz-1', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
+      ])
+
+    let upsertCalls = 0
+    let txnInsertCalls = 0
+    let txnInsertParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('product_kind') && sql.includes('充值卡')) {
+            return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
+          }
+          if (sql.includes('FROM card_transactions') && sql.includes('ref_order_id')) {
+            return { rows: [] } // 无重复
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }  // 早退出 recalcCustomerType
+          }
+          if (sql.includes('INSERT INTO prepaid_cards')) {
+            upsertCalls++
+            return { rows: [{ card_id: 'FY-CARD-TEST-001' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO card_transactions')) {
+            txnInsertCalls++
+            txnInsertParams = params
+            return { rows: [], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(upsertCalls).toBe(1)
+    expect(txnInsertCalls).toBe(1)
+    // card_transactions(cardId, amount=面值, ref_order_id)
+    expect(txnInsertParams[0]).toBe('FY-CARD-TEST-001')
+    expect(Number(txnInsertParams[1])).toBe(500)
+    expect(txnInsertParams[2]).toBe('FY-CZ-001')
+  })
+
+  test('自定义金额虚拟 SKU：面值从 product_name 的 "¥{n}" 正则解析', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CZ-002' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-CZ-002',
+        status: '待确认收款',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-002',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-cz-v', sku_id: 'sku-recharge-virtual', received: '2940', product_type: '院装产品' },
+      ])
+
+    let txnInsertParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('product_kind') && sql.includes('充值卡')) {
+            return {
+              rows: [{
+                sku_id: 'sku-recharge-virtual',
+                product_name: '预付充值卡 ¥3000',
+                sku_price: '0.00',   // 虚拟 SKU 的 price=0，被正则覆盖
+              }],
+            }
+          }
+          if (sql.includes('FROM card_transactions') && sql.includes('ref_order_id')) {
+            return { rows: [] }
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO prepaid_cards')) {
+            return { rows: [{ card_id: 'FY-CARD-TEST-V' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO card_transactions')) {
+            txnInsertParams = params
+            return { rows: [], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(Number(txnInsertParams[1])).toBe(3000)  // 从 product_name 解析
+  })
+
+  test('幂等：已有 card_transactions.ref_order_id 时跳过入账', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-CZ-003' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-CZ-003',
+        status: '待确认收款',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-003',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-cz-3', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
+      ])
+
+    let upsertCalls = 0
+    let txnInsertCalls = 0
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (sql.includes('product_kind') && sql.includes('充值卡')) {
+            return { rows: [{ sku_id: 'sku-cz-500', product_name: '充值 500 元', sku_price: '500.00' }] }
+          }
+          if (sql.includes('FROM card_transactions') && sql.includes('ref_order_id')) {
+            return { rows: [{ '?column?': 1 }] }  // 已有流水，触发幂等跳过
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO prepaid_cards')) { upsertCalls++; return { rows: [{ card_id: 'x' }] } }
+          if (sql.includes('INSERT INTO card_transactions')) { txnInsertCalls++; return { rows: [] } }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(upsertCalls).toBe(0)
+    expect(txnInsertCalls).toBe(0)
+  })
+
+  test('非充值卡订单：确认收款不触发 prepaid_cards UPSERT', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-NORMAL' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-NORMAL',
+        status: '待确认收款',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-100',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-norm', sku_id: 'sku-careitem', received: '300', product_type: '疗程卡' },
+      ])
+
+    let upsertCalls = 0
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (sql.includes('product_kind') && sql.includes('充值卡')) {
+            return { rows: [] }  // 不含充值卡行
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO prepaid_cards')) { upsertCalls++; return { rows: [{ card_id: 'x' }] } }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(upsertCalls).toBe(0)
+  })
 })
 
 describe('order.close', () => {

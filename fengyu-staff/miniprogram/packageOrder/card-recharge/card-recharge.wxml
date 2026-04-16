@@ -1,0 +1,150 @@
+<!-- packageOrder/card-recharge/card-recharge.wxml — 店长替顾客充值 -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 顶部 Hero -->
+  <view class="hero">
+    <view class="hero-title">为顾客充值</view>
+    <view class="hero-sub">金额越大优惠越大</view>
+    <view wx:if="{{boundStoreName}}" class="hero-store">
+      <van-icon name="shop-o" size="24rpx" color="rgba(255,255,255,0.85)" />
+      <text class="hero-store-text">入账门店：{{boundStoreName}}</text>
+    </view>
+  </view>
+
+  <!-- 顾客选择块 -->
+  <view class="customer-block">
+    <view class="block-title">顾客</view>
+
+    <view wx:if="{{customerInfo}}" class="customer-card customer-card--selected">
+      <view class="customer-info">
+        <view class="customer-name">{{customerInfo.name || '未命名'}}</view>
+        <view class="customer-phone">{{customerInfo.phoneMasked || customerInfo.phone}}</view>
+      </view>
+      <view class="customer-action" bindtap="onClearCustomer">
+        <van-icon name="close" size="28rpx" color="#999" />
+      </view>
+    </view>
+
+    <view wx:else class="customer-search">
+      <view class="customer-input-row">
+        <input
+          class="customer-input"
+          type="number"
+          maxlength="11"
+          placeholder="输入顾客手机号"
+          placeholder-style="color:#BBBBBB"
+          value="{{customerPhone}}"
+          bindinput="onCustomerPhoneInput"
+        />
+        <view
+          class="customer-search-btn {{customerPhone.length >= 11 && !customerSearching ? '' : 'customer-search-btn--disabled'}}"
+          bindtap="onSearchCustomer"
+        >
+          <van-loading wx:if="{{customerSearching}}" size="16px" color="#FFFFFF" />
+          <text wx:else>查找</text>
+        </view>
+      </view>
+      <view class="customer-hint">仅已注册小程序的顾客可充值</view>
+    </view>
+  </view>
+
+  <!-- 加载档位 -->
+  <view wx:if="{{configLoading}}" class="loading-block">
+    <van-loading size="20px" />
+  </view>
+
+  <view wx:else class="body">
+
+    <!-- 预设档卡片（来自 product_skus）-->
+    <block wx:if="{{tiers.length > 0}}">
+      <view class="section-title">推荐档位</view>
+      <view class="tier-grid">
+        <view
+          wx:for="{{tiers}}"
+          wx:key="skuId"
+          class="tier-card {{selectedSkuId === item.skuId && !customMode ? 'tier-card--active' : ''}}"
+          data-sku-id="{{item.skuId}}"
+          bindtap="onTierTap"
+        >
+          <view class="tier-face">¥{{item.faceValue}}</view>
+          <view wx:if="{{item.bonus > 0}}" class="tier-discount">{{item.discountLabel}}</view>
+          <view wx:else class="tier-discount tier-discount--plain">原价</view>
+          <view class="tier-pay">实付 ¥{{item.payAmountLabel}}</view>
+          <view wx:if="{{item.bonus > 0}}" class="tier-bonus">送 ¥{{item.bonusLabel}}</view>
+          <view class="tier-spec">{{item.specName}}</view>
+        </view>
+      </view>
+    </block>
+
+    <!-- 自定义金额 -->
+    <view class="section-title">自定义金额</view>
+    <view class="custom-card {{customMode ? 'custom-card--active' : ''}}">
+      <view class="custom-input-row">
+        <text class="custom-currency">¥</text>
+        <input
+          class="custom-input"
+          type="digit"
+          placeholder="输入充值金额"
+          placeholder-style="color:#BBBBBB"
+          value="{{customInput}}"
+          bindinput="onCustomInput"
+          bindfocus="onCustomFocus"
+        />
+      </view>
+      <view wx:if="{{customError}}" class="custom-hint custom-hint--error">{{customError}}</view>
+      <view wx:elif="{{customMode && customPayAmount > 0}}" class="custom-hint">
+        匹配 <text class="custom-hint-strong">{{customDiscountLabel}}</text>
+        ｜实付 <text class="custom-hint-strong">¥{{customPayAmountLabel}}</text>
+        <text wx:if="{{customBonus > 0}}" class="custom-hint-bonus">（送 ¥{{customBonusLabel}}）</text>
+      </view>
+      <view wx:else class="custom-hint custom-hint--placeholder">
+        最低 ¥{{minAmount}}，最高 ¥{{maxAmount}}
+      </view>
+    </view>
+
+    <!-- 支付方式 -->
+    <view class="section-title">支付方式</view>
+    <view class="payment-card">
+      <van-radio-group value="{{paymentMethod}}" bind:change="onPaymentMethodChange">
+        <view class="payment-option" data-method="线下" bindtap="onPaymentOptionTap">
+          <view class="payment-option-main">
+            <view class="payment-option-title">线下收款</view>
+            <view class="payment-option-desc">现金/POS 刷卡/扫码到账，由店长确认</view>
+          </view>
+          <van-radio name="线下" checked-color="#C0322A" />
+        </view>
+        <view class="payment-divider" />
+        <view class="payment-option" data-method="微信" bindtap="onPaymentOptionTap">
+          <view class="payment-option-main">
+            <view class="payment-option-title">微信扫码</view>
+            <view class="payment-option-desc">生成订单后顾客扫小程序码支付</view>
+          </view>
+          <van-radio name="微信" checked-color="#C0322A" />
+        </view>
+      </van-radio-group>
+    </view>
+
+    <!-- 底部说明 -->
+    <view class="footer-note">
+      <view class="footer-note-line">· 充值入账到顾客在本店的账户（一店一账户）</view>
+      <view class="footer-note-line">· 充值后不支持退款，请与顾客确认金额</view>
+    </view>
+
+  </view>
+
+  <!-- 底部 sticky CTA -->
+  <view wx:if="{{!configLoading}}" class="cta-bar safe-bottom">
+    <button
+      class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"
+      disabled="{{ctaDisabled || submitting}}"
+      loading="{{submitting}}"
+      bindtap="onSubmit"
+    >
+      {{ctaText}}
+    </button>
+  </view>
+
+</view>
