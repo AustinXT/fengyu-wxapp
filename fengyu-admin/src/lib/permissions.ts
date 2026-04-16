@@ -36,6 +36,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'employee:list',
     'customer:list', 'customer:update', 'customer:create',
     'sale_order:list', 'sale_order:create', 'sale_order:update',
+    'sale_item:list',
     'allocation:list', 'allocation:save',
     'service:list', 'service:create', 'service:update',
     'appointment:list', 'appointment:confirm', 'appointment:checkin',
@@ -47,6 +48,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   finance: [
     'dashboard:view',
     'sale_order:list',
+    'sale_item:list',
     'allocation:list',
     'customer:list',
     'point_transaction:list',
@@ -68,6 +70,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   customer_mgr: [
     'dashboard:view',
     'customer:list', 'customer:update', 'customer:create',
+    'sale_item:list',
   ],
   staff: [],
 }
