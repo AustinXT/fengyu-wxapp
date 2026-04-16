@@ -85,13 +85,27 @@ Component({
     errorMsg: '',
   },
 
+  /**
+   * PR-D3.3 — race 保护：实例级单调递增计数器
+   * 快速切换 clientUserId 或 tab 重挂时，旧请求回包不应覆盖新状态
+   * 不放在 data 里（避免触发 observer/渲染）
+   */
+  lifetimes: {
+    attached(this: any) {
+      this._requestSeq = 0;
+    },
+  },
+
   methods: {
-    async loadCards(clientUserId: string) {
+    async loadCards(this: any, clientUserId: string) {
+      const seq = ++this._requestSeq;
       this.setData({ loading: true, errorMsg: '' });
       try {
         const data = await callStaffApi<HeldCardsResponse>('order.customerHeldCards', {
           clientUserId,
         });
+        // 旧回包丢弃（已有更新请求发出）
+        if (seq !== this._requestSeq) return;
         const cards = data?.cards || [];
         this.setData({
           cards,
@@ -102,6 +116,7 @@ Component({
         });
         this.recalcDiff();
       } catch (err: unknown) {
+        if (seq !== this._requestSeq) return;
         const msg = err instanceof Error ? err.message : '加载折抵卡失败';
         this.setData({ cards: [], loading: false, errorMsg: msg });
       }
