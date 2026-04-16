@@ -222,10 +222,11 @@ export async function updateProductKind(
 
     // 若改名，级联更新所有子级的 product_kind
     if (newName && newName !== current.categoryName) {
+      type ProductKind = '护理项目' | '家居产品' | '充值卡' | '体验卡'
       await tx
         .update(productCategories)
-        .set({ productKind: newName })
-        .where(eq(productCategories.productKind, current.categoryName))
+        .set({ productKind: newName as ProductKind })
+        .where(eq(productCategories.productKind, current.categoryName as ProductKind))
     }
   })
 
@@ -249,7 +250,7 @@ export async function createCategory(data: {
     await db.insert(productCategories).values({
       categoryId,
       categoryName: data.categoryName,
-      productKind: data.productKind,
+      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
       sortOrder: data.sortOrder,
       isValid: data.isValid,
@@ -289,6 +290,7 @@ export async function updateCategory(
     .update(productCategories)
     .set({
       ...data,
+      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
     })
     .where(whereConditions)
