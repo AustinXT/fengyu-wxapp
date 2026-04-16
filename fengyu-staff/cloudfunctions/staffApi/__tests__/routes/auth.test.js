@@ -113,8 +113,8 @@ describe('auth.bindPhone', () => {
   })
 
   test('直接传入手机号 — 匹配已有员工行', async () => {
-    // 按 phone 查找已有行
     pg.query
+      .mockResolvedValueOnce([])                          // openid 预检：未占用
       .mockResolvedValueOnce([{
         employee_id: 'emp-sync-001',
         openid: null, // 尚未绑定
@@ -148,16 +148,18 @@ describe('auth.bindPhone', () => {
   })
 
   test('手机号已被其他 openid 绑定时拒绝', async () => {
-    pg.query.mockResolvedValueOnce([{
-      employee_id: 'emp-other',
-      openid: 'other-openid-999',
-      name: '他人',
-      position_name: '美容师',
-      is_resigned: false,
-      store_id: 's1',
-      store_name: 'S',
-      market_name: 'M',
-    }])
+    pg.query
+      .mockResolvedValueOnce([])                          // openid 预检：未占用
+      .mockResolvedValueOnce([{
+        employee_id: 'emp-other',
+        openid: 'other-openid-999',
+        name: '他人',
+        position_name: '美容师',
+        is_resigned: false,
+        store_id: 's1',
+        store_name: 'S',
+        market_name: 'M',
+      }])
 
     const ctx = {
       event: { payload: { phoneNumber: '13800009999' } },
@@ -245,6 +247,7 @@ describe('auth.bindPhone', () => {
 
   test('CloudID 方式正常解密手机号', async () => {
     pg.query
+      .mockResolvedValueOnce([])                          // openid 预检：未占用
       .mockResolvedValueOnce([{
         employee_id: 'emp-cloud-001',
         openid: null,
@@ -277,6 +280,7 @@ describe('auth.bindPhone', () => {
 
   test('CloudID purePhoneNumber 为空时降级使用 phoneNumber（line 137 右侧操作数）', async () => {
     pg.query
+      .mockResolvedValueOnce([])                          // openid 预检：未占用
       .mockResolvedValueOnce([{
         employee_id: 'emp-cloud-002',
         openid: null,
