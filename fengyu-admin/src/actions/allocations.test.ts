@@ -327,13 +327,14 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.message).toContain('整十')
   })
 
-  it('同角色组超过 3 人 → 拒绝', async () => {
+  it('同技能标签超过 3 人 → 拒绝（P2-14 Q5）', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '400.00' }])
 
+    // P2-14 之后 4 人同一技能标签才超限；跨标签的 3 人 + 1 人不会触发
     const result = await batchSaveAllocations('order-1', [
       { saleItemId: 'item-1', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '0.20', totalAmount: '80.00' },
       { saleItemId: 'item-1', employeeId: 'EMP-002', roleType: '美容师', allocationRatio: '0.20', totalAmount: '80.00' },
-      { saleItemId: 'item-1', employeeId: 'EMP-003', roleType: '养生师', allocationRatio: '0.20', totalAmount: '80.00' },
+      { saleItemId: 'item-1', employeeId: 'EMP-003', roleType: '美容师', allocationRatio: '0.20', totalAmount: '80.00' },
       { saleItemId: 'item-1', employeeId: 'EMP-004', roleType: '美容师', allocationRatio: '0.20', totalAmount: '80.00' },
     ])
 
@@ -341,7 +342,8 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.message).toContain('最多分配 3 人')
   })
 
-  it('美容师与养生师属同一角色组（beautician）', async () => {
+  it('美容师与养生师三池独立校验（P2-14 Q5）', async () => {
+    // P2-14 前这两角色合并同一池（beautician）；现在是独立池，70%+30% 分别属两池各自 ≤100% 合法
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
     mockTx()
 
@@ -353,7 +355,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(true)
   })
 
-  it('不同角色组独立校验 — 美容师 100% + 推广师 100% 允许', async () => {
+  it('不同技能标签独立池 — 美容师 100% + 推广师 100% 允许', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
     mockTx()
 
@@ -365,7 +367,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(true)
   })
 
-  it('同角色组分配比例超100% → 拒绝', async () => {
+  it('同技能标签分配比例超 100% → 拒绝', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '100.00' }])
 
     const result = await batchSaveAllocations('order-1', [
@@ -389,7 +391,7 @@ describe('batchSaveAllocations — 业绩分配校验', () => {
     expect(result.success).toBe(true)
   })
 
-  it('同角色组重复员工 → 拒绝', async () => {
+  it('同技能标签重复员工 → 拒绝', async () => {
     mockScopeAndItems([{ saleItemId: 'item-1', received: '200.00' }])
 
     const result = await batchSaveAllocations('order-1', [

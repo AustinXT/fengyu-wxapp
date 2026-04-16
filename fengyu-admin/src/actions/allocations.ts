@@ -152,9 +152,9 @@ export async function deleteAllocation(id: number): Promise<{ success: boolean; 
   return { success: true, message: '分配已删除' }
 }
 
-/** 角色组映射：美容师/养生师为同一组，推广师为独立组 */
-function getRoleGroup(roleType: string): string {
-  return roleType === '推广师' ? 'promoter' : 'beautician'
+/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+function getPoolKey(roleType: string): string {
+  return roleType
 }
 
 /** 合法的分配比例（整十百分比） */
@@ -204,32 +204,32 @@ export async function batchSaveAllocations(
       }
     }
 
-    // 按 (saleItemId, roleGroup) 分组校验
-    const groups = new Map<string, typeof allocations>()
+    // 按 (saleItemId, roleType) 分池校验（P2-14 Q5：三角色独立池）
+    const pools = new Map<string, typeof allocations>()
     for (const a of allocations) {
-      const key = `${a.saleItemId}|${getRoleGroup(a.roleType)}`
-      const group = groups.get(key) || []
-      group.push(a)
-      groups.set(key, group)
+      const key = `${a.saleItemId}|${getPoolKey(a.roleType)}`
+      const pool = pools.get(key) || []
+      pool.push(a)
+      pools.set(key, pool)
     }
 
-    for (const [, group] of groups) {
-      // 每角色组最多 3 人
-      if (group.length > 3) {
-        return { success: false, message: '每个商品每种角色最多分配 3 人' }
+    for (const [, pool] of pools) {
+      // 每池最多 3 人
+      if (pool.length > 3) {
+        return { success: false, message: '每个商品每个技能标签最多分配 3 人' }
       }
 
-      // 角色组内分配比例合计 ≤ 100%（1.00，容差 0.01）
-      const ratioSum = group.reduce((s, a) => s + Number(a.allocationRatio), 0)
+      // 池内分配比例合计 ≤ 100%（1.00，容差 0.01）
+      const ratioSum = pool.reduce((s, a) => s + Number(a.allocationRatio), 0)
       if (ratioSum > 1.01) {
-        return { success: false, message: '同角色组的分配比例合计不能超过 100%' }
+        return { success: false, message: '同技能标签的分配比例合计不能超过 100%' }
       }
 
-      // 同角色组内不能重复分配同一员工
+      // 同池内不能重复分配同一员工
       const empIds = new Set<string>()
-      for (const a of group) {
+      for (const a of pool) {
         if (empIds.has(a.employeeId)) {
-          return { success: false, message: '同一商品同一角色组不能重复分配同一员工' }
+          return { success: false, message: '同一商品同一技能标签不能重复分配同一员工' }
         }
         empIds.add(a.employeeId)
       }
