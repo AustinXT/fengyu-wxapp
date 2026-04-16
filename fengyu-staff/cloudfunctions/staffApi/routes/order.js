@@ -151,12 +151,16 @@ async function recalcCustomerType(client, clientUserId) {
  * payload: {
  *   clientPhone: string,
  *   clientName: string,
- *   orderType: 'normal'|'experience'|'internal'|'promotion' → sale_order_type: '销售单'|'内部单',
+ *   saleOrderType: '销售单' | '内部单',   // 直接使用 DB 枚举文本，无历史兼容
  *   items: [{ skuId, quantity, customPrice?, discount? }],
  *   paymentMethod: '微信'|'线下',
  *   preferredStaffWfId: string,
  *   couponId: string
  * }
+ *
+ * 行为：
+ *   - 销售单：正常计价；customPrice 作为行级自定义单价；支持 couponId
+ *   - 内部单：所有 SKU 半价（basePrice × 0.5）；禁用 customPrice；拒绝 couponId
  */
 async function create(ctx) {
   await requireManager()(ctx, async () => {})
@@ -167,7 +171,7 @@ async function create(ctx) {
     clientName,
     items,
     paymentMethod,
-    orderType: orderTypeParam,
+    saleOrderType: saleOrderTypeParam,
     preferredStaffWfId,
     couponId: inputCouponId,
     remark: orderRemark
@@ -192,11 +196,23 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
-  // 映射前端 orderType → sale_order_type
-  const ORDER_TYPE_MAP = { normal: '销售单', experience: '销售单', promotion: '销售单', internal: '内部单' }
-  const saleOrderType = ORDER_TYPE_MAP[orderTypeParam] || orderTypeParam || '销售单'
+  // sale_order_type 直接使用 DB 枚举文本（无历史兼容映射）
+  const saleOrderType = saleOrderTypeParam || '销售单'
   if (!['销售单', '内部单'].includes(saleOrderType)) {
-    throw new Error('INVALID_PARAMS: orderType 值不合法')
+    throw new Error('INVALID_PARAMS: saleOrderType 值不合法（仅支持 销售单/内部单）')
+  }
+
+  // 内部单守卫：不允许叠加优惠券
+  if (saleOrderType === '内部单' && inputCouponId) {
+    throw new Error('INVALID_PARAMS: 内部单不允许叠加优惠券')
+  }
+
+  // 内部单守卫：不允许行级手工改价（与 admin 对齐）
+  if (saleOrderType === '内部单') {
+    const hasCustomPrice = items.some(it => it && it.customPrice !== undefined && it.customPrice !== null)
+    if (hasCustomPrice) {
+      throw new Error('INVALID_PARAMS: 内部单不允许手工改价')
+    }
   }
 
   // 查询顾客是否已注册客户端小程序
@@ -248,12 +264,13 @@ async function create(ctx) {
       // 优先使用特价（special_price），没有则用标准价
       const basePrice = Number(sku.special_price || sku.price)
 
-      if (orderTypeParam === 'experience' && item.customPrice !== undefined) {
-        unitPrice = Number(item.customPrice)
-        sessionCount = 1
-      } else if (saleOrderType === '内部单') {
-        // 内部单（员工消费）统一半价
+      if (saleOrderType === '内部单') {
+        // 内部单（员工消费）统一半价；不允许 customPrice（上方已拦截）
         unitPrice = Math.round(basePrice * 50) / 100
+        sessionCount = sku.session_count != null ? Number(sku.session_count) : null
+      } else if (item.customPrice !== undefined && item.customPrice !== null) {
+        // 销售单 — 行级自定义单价（兜底店长改价；仅销售单生效）
+        unitPrice = Number(item.customPrice)
         sessionCount = sku.session_count != null ? Number(sku.session_count) : null
       } else {
         unitPrice = basePrice
@@ -293,14 +310,6 @@ async function create(ctx) {
       }
     })
   )
-
-  // ========== 组合套餐订单验证 ==========
-  if (orderTypeParam === 'promotion') {
-    const nonPromoItems = itemDataList.filter(d => d.productKind !== '组合套餐')
-    if (nonPromoItems.length > 0) {
-      throw new Error('INVALID_PARAMS: 组合套餐订单只能包含组合套餐类型的商品')
-    }
-  }
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
@@ -1248,182 +1257,407 @@ async function createRepayment(ctx) {
 
 /**
  * 创建转换单（店长专用）
+ *
+ * 与 admin 侧 createConversionOrder 语义对齐：
+ *   - 按 client_user_id + store_id 跨订单聚合候选卡（不再绑定单一原订单）
+ *   - 整张卡折抵（疗程卡全部 remaining_sessions / 单品体验卡全部剩余数量）
+ *   - 差额>0：total_amount=差额，status 按支付方式（微信→待支付，线下→待确认收款）
+ *   - 差额=0：total_amount=0，status=已支付
+ *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
+ *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
+ *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.storeId
+ *
  * payload: {
- *   refSaleOrderId: string,
- *   convertOutItems: [{ saleItemId, convertQuantity }],
+ *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
+ *   convertOutSaleItemIds: string[],   // 整张卡折抵，不带 qty
  *   convertInItems: [{ skuId, quantity }],
+ *   paymentMethod: '微信' | '线下',
+ *   preferredStaffWfId?: string,
+ *   remark?: string
  * }
  */
 async function createConversion(ctx) {
   await requireManager()(ctx, async () => {})
 
-  const { refSaleOrderId, convertOutItems, convertInItems } = ctx.event.payload || {}
+  const {
+    clientUserId,
+    convertOutSaleItemIds,
+    convertInItems,
+    paymentMethod,
+    preferredStaffWfId,
+    remark,
+  } = ctx.event.payload || {}
   const storeId = ctx.auth.storeId
   const marketName = ctx.auth.marketName || ''
 
-  if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
-  if (!convertOutItems?.length) throw new Error('INVALID_PARAMS: 转出项目不能为空')
-  if (!convertInItems?.length) throw new Error('INVALID_PARAMS: 转入项目不能为空')
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 转换单必须指定顾客 clientUserId')
+  if (!Array.isArray(convertOutSaleItemIds) || convertOutSaleItemIds.length === 0) {
+    throw new Error('INVALID_PARAMS: 请选择至少一张折抵卡')
+  }
+  if (!Array.isArray(convertInItems) || convertInItems.length === 0) {
+    throw new Error('INVALID_PARAMS: 请选择至少一个转入项目')
+  }
+  if (!paymentMethod || !['微信', '线下'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: paymentMethod 仅支持 微信/线下')
+  }
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
-  const origOrders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND status IN ('已支付', '已完成')",
-    [refSaleOrderId, storeId]
+  // 查顾客快照信息（姓名 / phone）
+  const clientRows = await pg.query(
+    `SELECT user_id, phone, name, customer_type
+     FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
+    [clientUserId]
   )
-  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或状态不允许转换')
-  const origOrder = origOrders[0]
+  if (clientRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
+  const client = clientRows[0]
 
-  // 计算转出金额
-  let totalOut = 0
-  const outItems = []
-  for (const req of convertOutItems) {
-    const origItem = await pg.query(
-      "SELECT * FROM sale_items WHERE sale_item_id = $1 AND sale_order_id = $2 AND item_direction = '购买'",
-      [req.saleItemId, refSaleOrderId]
-    )
-    if (origItem.length === 0) throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 不存在`)
-    const oi = origItem[0]
-    const qty = req.convertQuantity || oi.quantity
-    const amount = Number(oi.unit_real_price) * qty
-    totalOut += amount
-    // 转出行 service_fee 为负数，按转出数量占原单数量的比例扣减
-    const origServiceFee = Number(oi.service_fee || 0)
-    const origQty = Number(oi.quantity) || 1
-    const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
-    outItems.push({
-      refSaleItemId: req.saleItemId,
-      skuId: oi.sku_id,
-      productName: oi.product_name,
-      skuSpecName: oi.sku_spec_name,
-      productType: oi.product_type,
-      sessionCount: oi.session_count,
-      unitPrice: Number(oi.unit_price),
-      unitRealPrice: Number(oi.unit_real_price),
-      quantity: qty,
-      amount,
-      salesCategory: oi.sales_category,
-      serviceFee: outServiceFee,
-    })
-  }
-
-  // 计算转入金额
-  let totalIn = 0
-  const inItems = []
-  for (const req of convertInItems) {
-    const skuRows = await pg.query(
-      `SELECT s.*, pc.sales_category
-       FROM product_skus s
-       JOIN product_categories pc ON s.category_id = pc.category_id
-       WHERE s.sku_id = $1`,
-      [req.skuId]
-    )
-    if (skuRows.length === 0) throw new Error(`INVALID_PARAMS: SKU ${req.skuId} 不存在`)
-    const sku = skuRows[0]
-    const qty = req.quantity || 1
-    const amount = Number(sku.price) * qty
-    totalIn += amount
-    // 转入行 service_fee 从新 sku 查取并 × 转入数量快照
-    const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
-    inItems.push({
-      skuId: req.skuId,
-      productName: sku.spec_name,
-      skuSpecName: sku.spec_name,
-      productType: sku.product_type,
-      sessionCount: sku.session_count != null ? Number(sku.session_count) : null,
-      unitPrice: Number(sku.price),
-      quantity: qty,
-      amount,
-      salesCategory: sku.sales_category,
-      serviceFee: inServiceFee,
-    })
-  }
-
-  const priceDiff = totalIn - totalOut  // 正=补差价，负=退差价
   const now = new Date()
-  const convOrderId = await generateOrderNo('FY-ABZH-WX-')
+  const convOrderId = await generateOrderNo('FY-XSD-WX-')
 
-  await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
+  const result = await pg.transaction(async (tx) => {
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_item_id_gen'])
 
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
-    const maxResult = await client.query(
-      `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1 ORDER BY sale_item_id DESC LIMIT 1`,
-      [`XSLSH-WX-${dateStr}%`]
+    // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
+    const heldResult = await tx.query(
+      `SELECT si.sale_item_id,
+              si.store_id,
+              si.item_direction,
+              si.sku_id,
+              si.product_name,
+              si.sku_spec_name,
+              si.product_type,
+              si.session_count,
+              si.remaining_sessions,
+              si.quantity,
+              si.picked_up_quantity,
+              si.unit_price,
+              si.unit_real_price,
+              si.sales_category,
+              si.service_fee,
+              so.client_user_id,
+              so.status AS order_status,
+              pc.product_kind
+       FROM sale_items si
+       JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+       LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+       LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+       WHERE si.sale_item_id = ANY($1)
+       FOR UPDATE OF si`,
+      [convertOutSaleItemIds]
     )
-    let seq = 1
-    if (maxResult.rows.length > 0) seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+    const held = heldResult.rows
+    if (held.length !== convertOutSaleItemIds.length) {
+      throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+    }
 
-    // 创建转换订单
-    await client.query(
+    let totalOut = 0
+    const outItems = []
+    for (const row of held) {
+      // 归属校验
+      if (row.store_id !== storeId) {
+        throw new Error('INVALID_PARAMS: 部分卡不属于当前门店或已耗尽')
+      }
+      if (row.client_user_id !== clientUserId) {
+        throw new Error('INVALID_PARAMS: 部分卡不属于该顾客')
+      }
+      if (row.item_direction !== '购买') {
+        throw new Error('INVALID_PARAMS: 所选行非购买行，不可折抵')
+      }
+      if (row.order_status !== '已支付' && row.order_status !== '已完成') {
+        throw new Error('INVALID_PARAMS: 原订单状态不允许转换')
+      }
+
+      const unit = Number(row.unit_real_price)
+      const productType = row.product_type
+      let qty = 0
+      if (productType === '疗程卡') {
+        const rem = Number(row.remaining_sessions || 0)
+        if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
+        qty = rem
+      } else if (productType === '单品' && row.product_kind === '体验卡') {
+        const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
+        if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
+        qty = remQty
+      } else {
+        throw new Error('INVALID_PARAMS: 所选行类型不支持折抵')
+      }
+
+      const amount = Math.round(unit * qty * 100) / 100
+      totalOut += amount
+
+      // 按折抵数量占原单比例扣减 service_fee（转出行为负数）
+      const origServiceFee = Number(row.service_fee || 0)
+      const origQty = Number(row.quantity) || 1
+      const outServiceFee = -Math.round((origServiceFee * qty / origQty) * 100) / 100
+
+      outItems.push({
+        refSaleItemId: row.sale_item_id,
+        skuId: row.sku_id,
+        productName: row.product_name,
+        skuSpecName: row.sku_spec_name,
+        productType,
+        sessionCount: row.session_count != null ? Number(row.session_count) : null,
+        unitPrice: Number(row.unit_price),
+        unitRealPrice: unit,
+        quantity: qty,
+        amount,
+        salesCategory: row.sales_category,
+        serviceFee: outServiceFee,
+      })
+    }
+
+    // 2. 转入项目 — 按 SKU 查询计价
+    let totalIn = 0
+    const inItems = []
+    for (const req of convertInItems) {
+      if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
+      const skuRes = await tx.query(
+        `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
+                pc.sales_category
+         FROM product_skus s
+         JOIN product_categories pc ON s.category_id = pc.category_id
+         WHERE s.sku_id = $1`,
+        [req.skuId]
+      )
+      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: SKU ${req.skuId} 不存在`)
+      const sku = skuRes.rows[0]
+      const qty = Number(req.quantity) || 1
+      const amount = Math.round(Number(sku.price) * qty * 100) / 100
+      totalIn += amount
+      const inServiceFee = Math.round(Number(sku.service_fee || 0) * qty * 100) / 100
+      inItems.push({
+        skuId: sku.sku_id,
+        productName: sku.spec_name,
+        skuSpecName: sku.spec_name,
+        productType: sku.product_type,
+        sessionCount: sku.session_count != null ? Number(sku.session_count) : null,
+        unitPrice: Number(sku.price),
+        quantity: qty,
+        amount,
+        salesCategory: sku.sales_category,
+        serviceFee: inServiceFee,
+      })
+    }
+
+    const priceDiff = Math.round((totalIn - totalOut) * 100) / 100
+    const orderTotal = Math.max(0, priceDiff)
+    // 差额>0：按支付方式决定；其它：已支付
+    const orderStatus = priceDiff > 0
+      ? (paymentMethod === '线下' ? '待确认收款' : '待支付')
+      : '已支付'
+
+    // 3. document_type 快照：会员客 → 售后，否则按 totalIn 与阈值比较
+    let documentType = client.customer_type === '会员客' ? '售后' : '售前'
+    if (documentType === '售前') {
+      const threshold = await getMemberThreshold()
+      if (totalIn >= threshold) documentType = '售后'
+    }
+
+    // 4. 插入订单主表
+    await tx.query(
       `INSERT INTO sale_orders (
-        sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
+        sale_order_id, status, sale_order_type, document_type,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
         total_amount, payment_method, opened_by,
-        allocation_status, created_at, updated_at
-      ) VALUES ($1, '已支付', '转换单', $2, $3, $4, $5, $6, $7, $8, $9, $10, '线下', $11, '待分配', $6, $6)`,
+        preferred_employee_id, allocation_status, remark,
+        paid_at, created_at, updated_at
+      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
       [
-        convOrderId, origOrder.document_type, refSaleOrderId, marketName, storeId, now,
-        origOrder.client_user_id, origOrder.client_phone, origOrder.customer_name,
-        priceDiff, ctx.auth.staffWfId
+        convOrderId, orderStatus, documentType, marketName, storeId, now,
+        clientUserId, client.phone || null, client.name || null,
+        orderTotal.toFixed(2), paymentMethod, ctx.auth.staffWfId,
+        preferredStaffWfId || null,
+        remark || null,
+        priceDiff > 0 ? null : now,
       ]
     )
 
-    // convert_out 行（负数）+ 原子扣减原行次数
-    for (let i = 0; i < outItems.length; i++) {
+    // 5. 生成 sale_item 流水号序列
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await tx.query(
+      `SELECT sale_item_id FROM sale_items WHERE sale_item_id LIKE $1
+       ORDER BY sale_item_id DESC LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (maxResult.rows.length > 0) {
+      seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+    }
+
+    // 6. 转出行 × N + 原子标记耗尽（疗程卡 remaining_sessions=0 / 单品 picked_up_quantity=quantity）
+    for (const d of outItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
-      const d = outItems[i]
-      await client.query(
+      await tx.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
-          session_count, unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
-          service_fee
+          session_count, unit_price, quantity, unit_real_price, sale_amount, received,
+          sales_category, service_fee
         ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
-          -(d.amount), -(d.amount), d.salesCategory,
-          d.serviceFee || 0,
+          -d.amount, -d.amount,
+          d.salesCategory, d.serviceFee,
         ]
       )
-      // 原子扣减
-      if (d.sessionCount) {
-        const res = await client.query(
-          `UPDATE sale_items SET remaining_sessions = remaining_sessions - $1, updated_at = $2
-           WHERE sale_item_id = $3 AND remaining_sessions >= $1`,
-          [d.quantity, now, d.refSaleItemId]
+      // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
+      if (d.productType === '疗程卡') {
+        const upd = await tx.query(
+          `UPDATE sale_items
+             SET remaining_sessions = 0, updated_at = $1
+           WHERE sale_item_id = $2
+             AND store_id = $3
+             AND COALESCE(remaining_sessions, 0) >= $4`,
+          [now, d.refSaleItemId, storeId, d.quantity]
         )
-        if (res.rowCount === 0) throw new Error('INVALID_PARAMS: 剩余次数不足，无法转换')
+        if (upd.rowCount === 0) {
+          throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
+        }
+      } else if (d.productType === '单品') {
+        const upd = await tx.query(
+          `UPDATE sale_items
+             SET picked_up_quantity = quantity, updated_at = $1
+           WHERE sale_item_id = $2
+             AND store_id = $3
+             AND (quantity - COALESCE(picked_up_quantity, 0)) >= $4`,
+          [now, d.refSaleItemId, storeId, d.quantity]
+        )
+        if (upd.rowCount === 0) {
+          throw new Error('INVALID_PARAMS: 卡状态变化，请重试')
+        }
       }
     }
 
-    // convert_in 行（正数）
-    for (let i = 0; i < inItems.length; i++) {
+    // 7. 转入行 × M（新卡；unit_real_price = unit_price = sku.price 全价）
+    for (const d of inItems) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq).padStart(4, '0')}`
       seq++
-      const d = inItems[i]
-      await client.query(
+      await tx.query(
         `INSERT INTO sale_items (
           sale_item_id, sale_order_id, store_id, item_direction,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
-          unit_price, quantity, unit_real_price, sale_amount, received, sales_category,
-          service_fee
+          unit_price, quantity, unit_real_price, sale_amount, received,
+          sales_category, service_fee
         ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount,
-          d.unitPrice, d.quantity, d.amount, d.salesCategory,
-          d.serviceFee || 0,
+          d.unitPrice, d.quantity, d.amount,
+          d.salesCategory, d.serviceFee,
         ]
       )
     }
+
+    // 8. 负差额 — UPSERT prepaid_cards + INSERT card_transactions（type='充值'）
+    let prepaidCardCredit = 0
+    if (priceDiff < 0) {
+      const creditAmount = Math.round(Math.abs(priceDiff) * 100) / 100
+      prepaidCardCredit = creditAmount
+
+      const upsert = await tx.query(
+        `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
+         VALUES (gen_random_uuid()::text, $1, $2, $3)
+         ON CONFLICT (user_id, store_id) DO UPDATE
+           SET balance = prepaid_cards.balance + EXCLUDED.balance,
+               updated_at = NOW()
+         RETURNING card_id`,
+        [clientUserId, storeId, creditAmount.toFixed(2)]
+      )
+      const cardId = upsert.rows[0]?.card_id
+      if (!cardId) throw new Error('INVALID_PARAMS: 储值卡入账失败，请稍后重试')
+
+      await tx.query(
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
+         VALUES ($1, '充值', $2, $3)`,
+        [cardId, creditAmount.toFixed(2), convOrderId]
+      )
+    }
+
+    return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit }
   })
 
-  ctx.result = { saleOrderId: convOrderId, status: '已支付', priceDiff, message: '转换单已创建' }
+  ctx.result = {
+    saleOrderId: convOrderId,
+    status: result.orderStatus,
+    totalIn: Math.round(result.totalIn * 100) / 100,
+    totalOut: Math.round(result.totalOut * 100) / 100,
+    priceDiff: result.priceDiff,
+    prepaidCardCredit: result.prepaidCardCredit,
+    message: '转换单已创建',
+  }
+}
+
+/**
+ * 查询顾客在当前门店可折抵的卡（转换单备选）
+ *
+ * payload: { clientUserId: string }
+ * 返回: { cards: [{ saleItemId, sourceSaleOrderId, productName, skuSpecName, productType,
+ *                    remainingSessions, remainingQuantity, unitRealPrice, deductibleAmount }] }
+ *
+ * 口径与 admin getCustomerHeldCards 保持一致：
+ *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
+ *   - 体验卡单品：product_type='单品' AND pc.product_kind='体验卡' AND (quantity - picked_up_quantity) > 0
+ */
+async function customerHeldCards(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { clientUserId } = ctx.event.payload || {}
+  const storeId = ctx.auth.storeId
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
+
+  const rows = await pg.query(
+    `SELECT si.sale_item_id,
+            si.sale_order_id AS source_sale_order_id,
+            si.product_name,
+            si.sku_spec_name,
+            si.product_type,
+            si.remaining_sessions,
+            (si.quantity - COALESCE(si.picked_up_quantity, 0)) AS remaining_quantity,
+            si.unit_real_price,
+            CASE
+              WHEN si.product_type = '疗程卡'
+                THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
+              WHEN si.product_type = '单品' AND pc.product_kind = '体验卡'
+                THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
+              ELSE 0
+            END AS deductible_amount
+     FROM sale_items si
+     JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
+     LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
+     LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+     WHERE so.client_user_id = $1
+       AND si.store_id = $2
+       AND si.item_direction = '购买'
+       AND so.status IN ('已支付', '已完成')
+       AND (
+            (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
+         OR (si.product_type = '单品' AND pc.product_kind = '体验卡'
+              AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
+       )
+     ORDER BY si.sale_order_id DESC`,
+    [clientUserId, storeId]
+  )
+
+  ctx.result = {
+    cards: rows.map(r => ({
+      saleItemId: r.sale_item_id,
+      sourceSaleOrderId: r.source_sale_order_id,
+      productName: r.product_name,
+      skuSpecName: r.sku_spec_name,
+      productType: r.product_type,
+      remainingSessions: r.remaining_sessions != null ? Number(r.remaining_sessions) : null,
+      remainingQuantity: r.remaining_quantity != null ? Number(r.remaining_quantity) : null,
+      unitRealPrice: String(r.unit_real_price),
+      deductibleAmount: Number(r.deductible_amount).toFixed(2),
+    }))
+  }
 }
 
 // ========== P2: 取货单 ==========
@@ -1539,5 +1773,6 @@ module.exports = {
   rejectRefund,
   createRepayment,
   createConversion,
+  customerHeldCards,
   createPickup,
 }

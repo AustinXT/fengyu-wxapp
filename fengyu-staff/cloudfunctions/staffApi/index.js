@@ -65,6 +65,7 @@ const routes = {
   'order.rejectRefund':   () => require('./routes/order').rejectRefund,
   'order.createRepayment': () => require('./routes/order').createRepayment,
   'order.createConversion': () => require('./routes/order').createConversion,
+  'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
   'order.createPickup':   () => require('./routes/order').createPickup,
 
   // 营业额分配
