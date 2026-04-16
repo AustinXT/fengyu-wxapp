@@ -50,7 +50,8 @@
         "profile-edit/profile-edit",
         "points/points",
         "messages/messages",
-        "prepaid-cards/prepaid-cards"
+        "prepaid-cards/prepaid-cards",
+        "card-recharge/card-recharge"
       ]
     },
     {

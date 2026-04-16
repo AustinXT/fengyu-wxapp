@@ -279,6 +279,9 @@ Page({
       case "treatment":
         wx.navigateTo({ url: "/pagesOrder/treatment-cards/treatment-cards" });
         break;
+      case "recharge":
+        wx.navigateTo({ url: "/pagesProfile/card-recharge/card-recharge" });
+        break;
       default:
         break;
     }

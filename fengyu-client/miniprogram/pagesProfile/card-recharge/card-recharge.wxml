@@ -1,0 +1,109 @@
+<!-- pagesProfile/card-recharge/card-recharge.wxml — 充值卡充值页 -->
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 顶部说明 -->
+  <view class="hero">
+    <view class="hero-title">选择充值金额</view>
+    <view class="hero-sub">金额越大优惠越大</view>
+    <view wx:if="{{boundStoreName}}" class="hero-store">
+      <van-icon name="shop-o" size="24rpx" color="rgba(255,255,255,0.85)" />
+      <text class="hero-store-text">充值至：{{boundStoreName}}</text>
+    </view>
+  </view>
+
+  <!-- 加载档位 -->
+  <view wx:if="{{configLoading}}" class="loading-block">
+    <van-loading size="20px" />
+  </view>
+
+  <view wx:else class="body">
+
+    <!-- 预设档卡片 -->
+    <view class="section-title">推荐充值</view>
+    <view class="tier-grid">
+      <view
+        wx:for="{{tiers}}"
+        wx:key="faceValue"
+        class="tier-card {{selectedTier === item.faceValue && !customMode ? 'tier-card--active' : ''}}"
+        data-face-value="{{item.faceValue}}"
+        bindtap="onTierTap"
+      >
+        <view class="tier-face">¥{{item.faceValue}}</view>
+        <view class="tier-discount">{{item.discountLabel}}</view>
+        <view class="tier-pay">实付 ¥{{item.payAmountLabel}}</view>
+        <view wx:if="{{item.faceValue - item.payAmount > 0}}" class="tier-bonus">送 ¥{{item.bonusLabel}}</view>
+      </view>
+    </view>
+
+    <!-- 自定义金额 -->
+    <view class="section-title">自定义金额</view>
+    <view class="custom-card {{customMode ? 'custom-card--active' : ''}}">
+      <view class="custom-input-row">
+        <text class="custom-currency">¥</text>
+        <input
+          class="custom-input"
+          type="digit"
+          placeholder="输入充值金额"
+          placeholder-style="color:#BBBBBB"
+          value="{{customInput}}"
+          bindinput="onCustomInput"
+          bindfocus="onCustomFocus"
+        />
+      </view>
+      <view wx:if="{{customError}}" class="custom-hint custom-hint--error">{{customError}}</view>
+      <view wx:elif="{{customMode && customPayAmount > 0}}" class="custom-hint">
+        匹配 <text class="custom-hint-strong">{{customDiscountLabel}}</text>
+        ｜实付 <text class="custom-hint-strong">¥{{customPayAmountLabel}}</text>
+        <text wx:if="{{customBonus > 0}}" class="custom-hint-bonus">（送 ¥{{customBonusLabel}}）</text>
+      </view>
+      <view wx:else class="custom-hint custom-hint--placeholder">
+        最低 ¥{{minAmount}}，最高 ¥{{maxAmount}}
+      </view>
+    </view>
+
+    <!-- 底部说明 -->
+    <view class="footer-note">
+      <view class="footer-note-line">· 充值卡可在凤御双连锁门店消费，无使用期限</view>
+      <view class="footer-note-line">· 充值后不支持退款</view>
+    </view>
+
+  </view>
+
+  <!-- 底部 sticky CTA -->
+  <view wx:if="{{!configLoading}}" class="cta-bar safe-bottom">
+    <button
+      class="cta-btn {{ctaDisabled ? 'cta-btn--disabled' : ''}}"
+      disabled="{{ctaDisabled || submitting}}"
+      loading="{{submitting}}"
+      bindtap="onRecharge"
+    >
+      {{ctaText}}
+    </button>
+  </view>
+
+</view>
+
+<!-- 手机绑定弹窗 -->
+<van-dialog
+  use-slot
+  show="{{showPhoneBind}}"
+  show-cancel-button
+  cancel-button-text="暂不绑定"
+  confirm-button-text="授权绑定"
+  bind:close="onClosePhoneBind"
+>
+  <view class="phone-bind-wrap">
+    <view class="phone-bind-title">需要绑定手机号</view>
+    <view class="phone-bind-desc">充值需先绑定手机号，便于后续核销与售后</view>
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >
+      获取手机号
+    </button>
+  </view>
+</van-dialog>
