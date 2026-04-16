@@ -12,19 +12,34 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 
-// role_type 存储角色名（'美容师'/'养生师'/'推广师' 等），部门通过映射关联
+// P2-14 Q5: skillTags 驱动的业绩分配校验
+// 每池 = (saleItemId, roleType) 二元组，池间互不约束
+const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
+const MAX_PER_POOL = 3
+const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
+
+// ======================================================================
+// TODO(PR-4): remove DEPT_TO_ROLE after miniprogram PR-3 rollout
+// 旧前端不传 roleType，只传 departmentName；PR-1 期间兼容兜底使用该映射。
+// 同时 A4 的 resolveStaffDepartment 也依赖该常量，A4 重写后仅兜底段使用。
+// ======================================================================
 const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推广部': '推广师' }
 
 /**
  * 保存提成分配（支付后分配）
+ *
+ * P2-14 Q5: roleType 字段改为 required，按 (saleItemId, roleType) 分池独立校验；
+ * totalAmount 在服务端由 received × allocationRatio 重算，忽略前端传入值（防篡改）。
+ *
  * payload: {
  *   saleOrderId: string,
  *   allocations: [{
  *     saleItemId: string,
  *     employeeId: string,
- *     departmentName: string,
- *     allocationRatio: number,
- *     totalAmount: number
+ *     roleType: string,           // required (P2-14)，旧前端可传 departmentName，由兜底段反推
+ *     departmentName?: string,    // deprecated (PR-4)，仅用于兜底与向后兼容展示
+ *     allocationRatio: number,    // 整十档 0.10~1.00
+ *     totalAmount?: number        // ignored，服务端重算
  *   }]
  * }
  */
@@ -59,12 +74,13 @@ async function save(ctx) {
     throw new Error('PERMISSION_DENIED: 订单分配状态异常')
   }
 
-  // 查询订单明细（用于校验 saleItemId 归属）
+  // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount）
   const orderItems = await pg.query(
     'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
     [saleOrderId]
   )
   const validItemIds = new Set(orderItems.map(i => i.sale_item_id))
+  const receivedMap = new Map(orderItems.map(i => [i.sale_item_id, Number(i.received) || 0]))
 
   // 空分配：标记为无需分配
   if (allocations.length === 0) {
@@ -87,7 +103,44 @@ async function save(ctx) {
     return
   }
 
-  // 校验分配记录
+  // =====================================================================
+  // TODO(PR-4): remove department→roleType fallback after PR-3 rollout
+  // 旧小程序前端不传 roleType，只传 departmentName；PR-1 部署后做一次性反推，
+  // 命中时写 operation_logs 以便监控兜底使用频率。PR-3 全量 + 24h 无日志即可删除。
+  // =====================================================================
+  let fallbackTriggered = 0
+  for (const alloc of allocations) {
+    if (!alloc.roleType && alloc.departmentName) {
+      const mapped = DEPT_TO_ROLE[alloc.departmentName]
+      if (mapped) {
+        alloc.roleType = mapped
+        fallbackTriggered++
+      }
+    }
+  }
+  if (fallbackTriggered > 0) {
+    try {
+      await pg.query(
+        `INSERT INTO operation_logs
+           (operator_employee_id, operator_name, operator_role, action, target_type, target_id, detail, source, created_at)
+         VALUES ($1, $2, $3, 'allocation.save.role_type_fallback', 'sale_order', $4, $5::jsonb, 'staffApi', NOW())`,
+        [
+          ctx.auth.staffWfId,
+          null,
+          (ctx.auth.roles && ctx.auth.roles[0]) || null,
+          saleOrderId,
+          JSON.stringify({ fallbackCount: fallbackTriggered, total: allocations.length })
+        ]
+      )
+    } catch (e) {
+      // operation_logs 写入失败不应阻塞业务
+      console.error('[allocation.save] operation_logs fallback insert failed:', e.message)
+    }
+  }
+  // ========================== END PR-4 removal ==========================
+
+  // 校验 + 服务端重算 totalAmount
+  const enriched = []
   for (const alloc of allocations) {
     if (!alloc.saleItemId) {
       throw new Error('INVALID_PARAMS: 分配记录缺少 saleItemId')
@@ -97,6 +150,49 @@ async function save(ctx) {
     }
     if (!alloc.employeeId) {
       throw new Error('INVALID_PARAMS: 分配记录缺少 employeeId')
+    }
+    if (!alloc.roleType) {
+      throw new Error('INVALID_PARAMS: 分配记录缺少 roleType')
+    }
+    const ratioStr = Number(alloc.allocationRatio).toFixed(2)
+    if (!VALID_RATIOS.has(ratioStr)) {
+      throw new Error('INVALID_PARAMS: allocationRatio 必须为整十百分比（0.10~1.00）')
+    }
+    const received = receivedMap.get(alloc.saleItemId) || 0
+    const totalAmount = Math.round(received * Number(ratioStr) * 100) / 100
+    enriched.push({
+      saleItemId: alloc.saleItemId,
+      employeeId: alloc.employeeId,
+      roleType: alloc.roleType,
+      departmentName: alloc.departmentName || null,
+      allocationRatio: ratioStr,
+      totalAmount,
+    })
+  }
+
+  // 按 (saleItemId, roleType) 分池校验
+  const pools = new Map()
+  for (const a of enriched) {
+    const key = `${a.saleItemId}|${a.roleType}`
+    if (!pools.has(key)) pools.set(key, [])
+    pools.get(key).push(a)
+  }
+  for (const [key, pool] of pools) {
+    const saleItemId = key.split('|')[0]
+    if (pool.length > MAX_PER_POOL) {
+      throw new Error(`INVALID_PARAMS: 每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`)
+    }
+    const received = receivedMap.get(saleItemId) || 0
+    const sum = pool.reduce((s, a) => s + a.totalAmount, 0)
+    if (sum > received + AMOUNT_TOLERANCE) {
+      throw new Error('INVALID_PARAMS: 分配金额合计超过商品金额')
+    }
+    const empIds = new Set()
+    for (const a of pool) {
+      if (empIds.has(a.employeeId)) {
+        throw new Error('INVALID_PARAMS: 同商品同技能标签不能重复分配同一员工')
+      }
+      empIds.add(a.employeeId)
     }
   }
 
@@ -112,18 +208,19 @@ async function save(ctx) {
       )
     }
 
-    // 插入新的分配记录（扁平结构）
-    for (const alloc of allocations) {
+    // 插入新的分配记录（扁平结构，写入 role_type 列）
+    for (const alloc of enriched) {
       await client.query(
         `INSERT INTO sale_allocations
-           (sale_item_id, employee_id, department_name, allocation_ratio, total_amount, is_void, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, false, $6, $6)`,
+           (sale_item_id, employee_id, role_type, department_name, allocation_ratio, total_amount, is_void, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, false, $7, $7)`,
         [
           alloc.saleItemId,
           alloc.employeeId,
-          alloc.departmentName || null,
-          alloc.allocationRatio != null ? alloc.allocationRatio : 1.0,
-          Number(alloc.totalAmount) || 0,
+          alloc.roleType,
+          alloc.departmentName,
+          alloc.allocationRatio,
+          alloc.totalAmount,
           now
         ]
       )
@@ -139,7 +236,7 @@ async function save(ctx) {
   ctx.result = {
     saleOrderId,
     message: '提成分配已保存',
-    allocationCount: allocations.length
+    allocationCount: enriched.length
   }
 }
 

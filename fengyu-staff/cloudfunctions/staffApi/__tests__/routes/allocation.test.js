@@ -236,11 +236,11 @@ describe('allocation.save', () => {
       .rejects.toThrow(/INVALID_PARAMS.*saleItemId/)
   })
 
-  test('分配记录缺省字段使用默认值（lines 122-124）', async () => {
-    // alloc 不提供 departmentName / allocationRatio / totalAmount
+  test('缺少 roleType 时拒绝（P2-14 Q5：技能标签必填）', async () => {
+    // P2-14 Q5 后不再允许缺省字段，roleType 必填；旧"默认值填充"行为作废
     const ctx = createManagerCtx({
       saleOrderId: 'FY-001',
-      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-001' }],
+      allocations: [{ saleItemId: 'item-001', employeeId: 'emp-001', allocationRatio: 0.3 }],
     })
 
     pg.query
@@ -252,23 +252,8 @@ describe('allocation.save', () => {
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '1000' }])
 
-    let capturedInsertParams = null
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql, params) => {
-          if (sql && sql.includes('INSERT INTO sale_allocations')) capturedInsertParams = params
-          return { rows: [], rowCount: 1 }
-        }),
-      }
-      return await cb(client)
-    })
-
-    await allocationRoutes.save(ctx)
-
-    // $3=departmentName(null), $4=allocationRatio(1.0), $5=totalAmount(0)
-    expect(capturedInsertParams[2]).toBeNull()
-    expect(capturedInsertParams[3]).toBe(1.0)
-    expect(capturedInsertParams[4]).toBe(0)
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*roleType/)
   })
 })
 
