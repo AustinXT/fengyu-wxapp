@@ -456,8 +456,10 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     mockSelectBefore([{ customerName: '顾客甲', totalAmount: '200.00' }])
   })
 
-  function mockConfirmTx(count: number) {
+  /** tx mock：支持 update + execute + select + insert 链（applyRechargeOnOrderPaid 依赖 select/insert） */
+  function mockConfirmTx(count: number, selectRows: any[][] = [[], []]) {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
       const tx = {
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({
@@ -465,6 +467,18 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            const rows = selectRows[selectCall] ?? []
+            selectCall++
+            return Promise.resolve(rows)
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
       }
       return fn(tx)
     })
@@ -477,7 +491,7 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
     expect(result.message).toContain('状态已变更')
   })
 
-  it('正常确认收款（rowCount=1）→ 事务内两步均执行', async () => {
+  it('正常确认收款（rowCount=1）→ 事务内各步均执行', async () => {
     ;(db.transaction as any).mockImplementation(async (fn: any) => {
       const tx = {
         update: vi.fn().mockReturnValue({
@@ -486,10 +500,19 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
           }),
         }),
         execute: vi.fn().mockResolvedValue({}),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          // 非充值订单：order 查询返回无 clientUserId，applyRechargeOnOrderPaid 提前 return
+          chain.limit = vi.fn().mockResolvedValue([])
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
       }
       const result = await fn(tx)
       expect(tx.update).toHaveBeenCalledOnce()
-      expect(tx.execute).toHaveBeenCalledOnce() // 设置到期日
+      expect(tx.execute).toHaveBeenCalledOnce() // 设置到期日（非充值订单只调 1 次 execute）
       return result
     })
 
@@ -502,6 +525,148 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
   it('事务异常 → 返回友好错误', async () => {
     ;(db.transaction as any).mockRejectedValue(new Error('connection lost'))
     const result = await confirmOfflinePayment('order-1')
+    expect(result.success).toBe(false)
+    expect(result.message).toBe('确认收款失败，请稍后重试')
+  })
+})
+
+describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '495.00' }])
+  })
+
+  /** 构造含充值虚拟 SKU 的订单 tx mock，默认未重复入账 */
+  function mockRechargeTx(opts: {
+    updateCount?: number
+    clientUserId?: string | null
+    storeId?: string | null
+    productName?: string | null
+    dupExists?: boolean
+    upsertCardId?: string
+  } = {}) {
+    const captured: { executes: any[]; insertValues: any[] } = { executes: [], insertValues: [] }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      let executeCall = 0
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: opts.updateCount ?? 1 }),
+          }),
+        }),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          captured.executes.push(sqlArg)
+          executeCall++
+          // 1: 设置到期日；2: dup 检查；3: UPSERT prepaid_cards
+          if (executeCall === 1) return Promise.resolve({})
+          if (executeCall === 2) return Promise.resolve(opts.dupExists ? [{ '?column?': 1 }] : [])
+          if (executeCall === 3) return Promise.resolve([{ card_id: opts.upsertCardId ?? 'FY-CARD-TEST' }])
+          return Promise.resolve({})
+        }),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            selectCall++
+            if (selectCall === 1) {
+              return Promise.resolve([{
+                clientUserId: opts.clientUserId ?? 'user-1',
+                storeId: opts.storeId ?? 'store-1',
+              }])
+            }
+            if (selectCall === 2) {
+              return Promise.resolve(opts.productName === null
+                ? []
+                : [{ productName: opts.productName ?? '预付充值卡 ¥500' }])
+            }
+            return Promise.resolve([])
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push(v)
+            return Promise.resolve({})
+          }),
+        }),
+      }
+      const result = await fn(tx)
+      return result
+    })
+    return captured
+  }
+
+  it('订单含充值虚拟 SKU → UPSERT prepaid_cards + INSERT card_transactions', async () => {
+    const captured = mockRechargeTx({ productName: '预付充值卡 ¥500' })
+    const result = await confirmOfflinePayment('order-recharge-1')
+    expect(result.success).toBe(true)
+    // 期望事务内 execute 被调用 3 次（到期日 + dup 检查 + UPSERT）
+    expect(captured.executes.length).toBe(3)
+    // card_transactions INSERT 捕获 amount=500.00, type=充值
+    expect(captured.insertValues.length).toBe(1)
+    expect(captured.insertValues[0]).toMatchObject({
+      type: '充值',
+      amount: '500.00',
+      refOrderId: 'order-recharge-1',
+      cardId: 'FY-CARD-TEST',
+    })
+  })
+
+  it('订单无充值虚拟 SKU → 不触发 prepaid_cards 写入', async () => {
+    const captured = mockRechargeTx({ productName: null })
+    const result = await confirmOfflinePayment('order-normal-1')
+    expect(result.success).toBe(true)
+    // 仅 1 次 execute（到期日），无 UPSERT / dup 检查
+    expect(captured.executes.length).toBe(1)
+    expect(captured.insertValues.length).toBe(0)
+  })
+
+  it('订单无 clientUserId（manualPhone 开单） → 不触发 prepaid_cards 写入', async () => {
+    const captured = mockRechargeTx({ clientUserId: null, productName: '预付充值卡 ¥500' })
+    const result = await confirmOfflinePayment('order-manual-phone')
+    expect(result.success).toBe(true)
+    expect(captured.executes.length).toBe(1)
+    expect(captured.insertValues.length).toBe(0)
+  })
+
+  it('充值入账幂等：card_transactions.ref_order_id 已存在 → 跳过 UPSERT/INSERT', async () => {
+    const captured = mockRechargeTx({ productName: '预付充值卡 ¥500', dupExists: true })
+    const result = await confirmOfflinePayment('order-recharge-dup')
+    expect(result.success).toBe(true)
+    // 期望 execute 被调用 2 次（到期日 + dup 检查），无 UPSERT
+    expect(captured.executes.length).toBe(2)
+    expect(captured.insertValues.length).toBe(0)
+  })
+
+  it('product_name 无法解析面值 → 抛错回滚', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let selectCall = 0
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockImplementation(() => {
+            selectCall++
+            if (selectCall === 1) return Promise.resolve([{ clientUserId: 'user-1', storeId: 'store-1' }])
+            return Promise.resolve([{ productName: '坏数据：没有面值标识' }])
+          })
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(tx)
+    })
+    const result = await confirmOfflinePayment('order-bad')
     expect(result.success).toBe(false)
     expect(result.message).toBe('确认收款失败，请稍后重试')
   })
@@ -840,6 +1005,199 @@ describe('createOrder — 内部单半价 + 禁用优惠券', () => {
     // 半价生效：unitRealPrice 200 → 100；unitPrice 保留原价 200
     expect(capturedItem.unitRealPrice).toBe('100.00')
     expect(capturedItem.unitPrice).toBe('200.00')
+  })
+})
+
+describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', () => {
+  const RECHARGE_SKU = 'sku-recharge-virtual'
+
+  /** 500 元档档位实付 = 500 × 0.99 = 495.00 */
+  const validRechargeItem = {
+    skuId: RECHARGE_SKU,
+    productName: '预付充值卡 ¥500',
+    skuSpecName: '预付充值卡（虚拟）',
+    productType: '院装产品' as const,
+    sessionCount: null,
+    unitPrice: '495.00',
+    unitRealPrice: '495.00',
+    quantity: 1,
+    salesCategory: null,
+  }
+
+  const baseRechargeData = {
+    ...baseOrderData,
+    clientUserId: 'user-1',
+    clientPhone: '13800000000',
+    items: [validRechargeItem],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('合法 500 档充值卡订单 → 成功，sale_items 字段强制覆盖', async () => {
+    let capturedItem: any
+    let capturedOrder: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260416-RC01' }]),
+        insert: vi.fn().mockImplementation((_table: any) => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if ('saleItemId' in v) capturedItem = v
+            else if ('saleOrderId' in v && 'status' in v) capturedOrder = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createOrder(baseRechargeData)
+
+    expect(result.success).toBe(true)
+    expect(capturedOrder.saleOrderType).toBe('销售单')
+    expect(capturedOrder.totalAmount).toBe('495.00')
+    // 字段强制覆盖：与 client card.js 保持一致
+    expect(capturedItem.skuId).toBe(RECHARGE_SKU)
+    expect(capturedItem.productName).toBe('预付充值卡 ¥500')
+    expect(capturedItem.skuSpecName).toBe('预付充值卡（虚拟）')
+    expect(capturedItem.productType).toBe('院装产品')
+    expect(capturedItem.sessionCount).toBe(null)
+    expect(capturedItem.remainingSessions).toBe(null)
+    expect(capturedItem.quantity).toBe(1)
+    expect(capturedItem.unitRealPrice).toBe('495.00')
+    expect(capturedItem.saleAmount).toBe('495.00')
+    expect(capturedItem.received).toBe('495.00')
+    expect(capturedItem.serviceFee).toBe('0.00')
+  })
+
+  it('充值卡 + 其他商品混单 → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      items: [
+        validRechargeItem,
+        {
+          skuId: 'sku-normal-001',
+          productName: '面部护理',
+          skuSpecName: '单次',
+          productType: '单品' as const,
+          sessionCount: null,
+          unitPrice: '200.00',
+          unitRealPrice: '200.00',
+          quantity: 1,
+          salesCategory: null,
+        },
+      ],
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不允许与其他商品混单')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡 + 内部单 → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      saleOrderType: '内部单',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('仅支持销售单')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡 + 优惠券 → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      couponId: 'coupon-1',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不支持叠加优惠券')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡无 clientUserId → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      clientUserId: null,
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('必须选择实名顾客')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡面值与 unitRealPrice 不匹配（篡改防护）→ 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      items: [{
+        ...validRechargeItem,
+        unitRealPrice: '100.00', // 500 档应为 495，篡改为 100
+      }],
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('实付金额与档位不匹配')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡面值低于最低档位（499） → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      items: [{
+        ...validRechargeItem,
+        productName: '预付充值卡 ¥499',
+        unitRealPrice: '499.00',
+      }],
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toMatch(/最低充值金额|不符合档位/)
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('充值卡 quantity !== 1 → 拒绝', async () => {
+    const result = await createOrder({
+      ...baseRechargeData,
+      items: [{
+        ...validRechargeItem,
+        quantity: 2,
+      }],
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('每单仅限 1 笔')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('合法 1000 档充值卡（9.8 折） → 成功，总额 980', async () => {
+    let capturedOrder: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260416-RC02' }]),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if ('saleOrderId' in v && 'status' in v) capturedOrder = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+    const result = await createOrder({
+      ...baseRechargeData,
+      items: [{
+        ...validRechargeItem,
+        productName: '预付充值卡 ¥1000',
+        unitPrice: '980.00',
+        unitRealPrice: '980.00',
+      }],
+    })
+    expect(result.success).toBe(true)
+    expect(capturedOrder.totalAmount).toBe('980.00')
   })
 })
 

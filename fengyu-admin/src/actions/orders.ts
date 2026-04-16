@@ -17,8 +17,95 @@ import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
+import {
+  RECHARGE_VIRTUAL_SKU_ID,
+  matchTier,
+  parseRechargeFaceValue,
+} from '@/lib/recharge'
 
 const opener = alias(staffWechatUsers, 'opener')
+
+/**
+ * 充值卡订单入账（与 fengyu-client/cloudfunctions/payNotify/index.js:100-147 保持同义）
+ *
+ * 在订单状态翻转到"已支付"的同事务内调用：
+ *   1. 查 sale_items 是否存在 sku_id = RECHARGE_VIRTUAL_SKU_ID 的行
+ *   2. 从 product_name "预付充值卡 ¥500" 解析面值
+ *   3. 幂等：若 card_transactions.ref_order_id 已存在，跳过
+ *   4. UPSERT prepaid_cards (user_id, store_id) DO UPDATE balance += faceValue
+ *   5. INSERT card_transactions (type='充值', amount=faceValue, ref_order_id)
+ *
+ * 幂等依赖 card_transactions.ref_order_id 无重复（表无 UNIQUE，SELECT 先查）。
+ */
+async function applyRechargeOnOrderPaid(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  saleOrderId: string,
+): Promise<void> {
+  // 查订单主信息（需 user_id + store_id 做卡账户定位）
+  const [order] = await tx
+    .select({
+      clientUserId: saleOrders.clientUserId,
+      storeId: saleOrders.storeId,
+    })
+    .from(saleOrders)
+    .where(eq(saleOrders.saleOrderId, saleOrderId))
+    .limit(1)
+
+  if (!order || !order.clientUserId || !order.storeId) {
+    // 未实名或门店缺失的订单不入账（与 payNotify 保护性分支一致）
+    return
+  }
+
+  // 查该订单是否含充值虚拟 SKU
+  const rechargeItems = await tx
+    .select({ productName: saleItems.productName })
+    .from(saleItems)
+    .where(
+      and(
+        eq(saleItems.saleOrderId, saleOrderId),
+        eq(saleItems.skuId, RECHARGE_VIRTUAL_SKU_ID),
+      ),
+    )
+    .limit(1)
+
+  if (rechargeItems.length === 0) return
+
+  const faceValue = parseRechargeFaceValue(rechargeItems[0].productName)
+  if (faceValue == null) {
+    throw new Error(
+      `[applyRechargeOnOrderPaid] 充值订单 product_name 无法解析面值: ${rechargeItems[0].productName}`,
+    )
+  }
+
+  // 幂等：防重放（外层 status 翻转已是第一道闸，此处再确认一次）
+  const dup = await tx.execute(sql`
+    SELECT 1 FROM card_transactions WHERE ref_order_id = ${saleOrderId} LIMIT 1
+  `)
+  if ((dup as unknown as any[]).length > 0) return
+
+  // UPSERT prepaid_cards（与 payNotify 的 FY-CARD- 前缀格式保持一致）
+  const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, '0')}`
+
+  const upsertRows = await tx.execute(sql`
+    INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
+    VALUES (${newCardId}, ${order.clientUserId}, ${order.storeId}, ${faceValue.toFixed(2)})
+    ON CONFLICT (user_id, store_id) DO UPDATE
+      SET balance = prepaid_cards.balance + EXCLUDED.balance,
+          updated_at = NOW()
+    RETURNING card_id
+  `)
+  const cardId = (upsertRows as unknown as any[])[0]?.card_id as string | undefined
+  if (!cardId) throw new Error('[applyRechargeOnOrderPaid] prepaid_cards UPSERT 失败')
+
+  await tx.insert(cardTransactions).values({
+    cardId,
+    type: '充值',
+    amount: faceValue.toFixed(2),
+    refOrderId: saleOrderId,
+  })
+}
 
 export async function getOrders(): Promise<SaleOrder[]> {
   const session = await getSession()
@@ -306,6 +393,10 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
           AND expire_date IS NULL
       `)
 
+      // 充值卡入账（若订单含虚拟 SKU）：UPSERT prepaid_cards + 记流水
+      // 与 fengyu-client payNotify 的充值入账逻辑完全同义，幂等由 ref_order_id 去重保障
+      await applyRechargeOnOrderPaid(tx, saleOrderId)
+
       return { matched: true }
     })
 
@@ -453,6 +544,72 @@ export async function createOrder(data: {
   // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
+  }
+
+  // ===== 充值卡订单识别与强校验 =====
+  // 与 client 虚拟 SKU 模型对齐（fengyu-client/cloudfunctions/clientApi/routes/card.js）：
+  //   - 强制销售单、严格一件、无优惠券、必须实名顾客
+  //   - faceValue 经 matchTier 反推 payAmount，比对前端传入的 unitRealPrice（防篡改）
+  //   - sale_items 字段强制覆盖，保证 payNotify/applyRechargeOnOrderPaid 能正确识别面值
+  const isRechargeOrder = data.items.some((i) => i.skuId === RECHARGE_VIRTUAL_SKU_ID)
+  if (isRechargeOrder) {
+    if (data.items.length !== 1) {
+      return { success: false, message: '充值卡订单不允许与其他商品混单' }
+    }
+    if (data.saleOrderType !== '销售单') {
+      return { success: false, message: '充值卡仅支持销售单，不能作为内部单/转换单等开立' }
+    }
+    if (data.couponId) {
+      return { success: false, message: '充值卡订单不支持叠加优惠券' }
+    }
+    if (!data.clientUserId) {
+      return { success: false, message: '充值卡订单必须选择实名顾客' }
+    }
+
+    const item = data.items[0]
+    const faceValue = parseRechargeFaceValue(item.productName)
+    if (faceValue == null) {
+      return { success: false, message: '充值卡面值解析失败，请重新选择档位' }
+    }
+
+    let expected: { discount: number; payAmount: number }
+    try {
+      expected = matchTier(faceValue)
+    } catch (err: any) {
+      const msg = err?.message?.startsWith('INVALID_PARAMS:')
+        ? err.message.replace(/^INVALID_PARAMS:\s*/, '')
+        : '充值金额不符合档位规则'
+      return { success: false, message: msg }
+    }
+
+    const clientPayAmount = Number(item.unitRealPrice)
+    if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expected.payAmount) > 0.01) {
+      return { success: false, message: '充值卡实付金额与档位不匹配，请刷新页面后重试' }
+    }
+
+    if (item.quantity !== 1) {
+      return { success: false, message: '充值卡每单仅限 1 笔' }
+    }
+
+    // 字段强制覆盖：与 client card.js 写入的 sale_items 保持完全一致
+    data = {
+      ...data,
+      items: [
+        {
+          skuId: RECHARGE_VIRTUAL_SKU_ID,
+          productName: `预付充值卡 ¥${faceValue}`,
+          skuSpecName: '预付充值卡（虚拟）',
+          productType: '院装产品',
+          sessionCount: null,
+          unitPrice: expected.payAmount.toFixed(2),
+          unitRealPrice: expected.payAmount.toFixed(2),
+          quantity: 1,
+          saleAmount: expected.payAmount.toFixed(2),
+          received: expected.payAmount.toFixed(2),
+          salesCategory: null,
+        },
+      ],
+    }
   }
 
   // 内部单自动半价：入口统一在事务前对 items 金额 ×0.5；unit_price（原价快照）保持不变。

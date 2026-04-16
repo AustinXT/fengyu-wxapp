@@ -19,6 +19,7 @@ import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult } from "@/actions/products"
 import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
+import { RECHARGE_VIRTUAL_SKU_ID } from "@/lib/recharge"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
   BundlePicker,
@@ -188,6 +189,14 @@ export default function OrderCreatePageClient({
    */
   const prefetchKindData = useCallback(async (choice: ProductKindChoice) => {
     if (kindDataCache[choice]) return
+    // 充值卡不依赖 SKU 列表（档位由前端 lib 提供，虚拟 SKU 已在 DB seed），无需拉数据
+    if (choice === '充值卡') {
+      setKindDataCache((prev) => ({
+        ...prev,
+        充值卡: { choice: '充值卡', bundles: [], normalCategories: [] },
+      }))
+      return
+    }
     setPrefetching(true)
     try {
       const backendKinds = resolveBackendKinds(choice)
@@ -240,6 +249,10 @@ export default function OrderCreatePageClient({
       setPriceOverrides({})
     }
     setProductKindChoice(choice)
+    // 充值卡仅支持销售单（与 client 对齐）；进入充值卡分支时强制回落
+    if (choice === '充值卡' && orderType !== '销售单') {
+      setOrderType('销售单')
+    }
     if (selectedCustomer) {
       void prefetchKindData(choice)
     }
@@ -281,6 +294,12 @@ export default function OrderCreatePageClient({
   }, [orderType])
 
   const addToCart = (product: Product, sku: ProductSku) => {
+    // 充值卡订单：每单仅 1 笔，点击档位/自定义金额时替换购物车（不累加数量）
+    if (sku.skuId === RECHARGE_VIRTUAL_SKU_ID) {
+      setCart([{ sku, product, quantity: 1 }])
+      setPriceOverrides({})
+      return
+    }
     setCart((prev) => {
       const existing = prev.find((i) => i.sku.skuId === sku.skuId)
       if (existing) {
@@ -378,9 +397,11 @@ export default function OrderCreatePageClient({
   const isInternal = orderType === '内部单'
   const isConversion = orderType === '转换单'
   const isBundleOrder = productKindChoice === '组合套餐'
+  // 充值卡订单：payAmount 已由 matchTier 计算，禁止手工改价（与 client 对齐）
+  const isRechargeOrder = cart.some((item) => item.sku.skuId === RECHARGE_VIRTUAL_SKU_ID)
   const internalRatio = isInternal ? 0.5 : 1
-  // 组合套餐 / 内部单均禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
-  const suppressOverride = isInternal || isBundleOrder
+  // 组合套餐 / 内部单 / 充值卡均禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
+  const suppressOverride = isInternal || isBundleOrder || isRechargeOrder
 
   const { totalSaleAmount, totalReceived } = useMemo(() => {
     let sa = 0, rc = 0
@@ -610,14 +631,7 @@ export default function OrderCreatePageClient({
                   />
                 )
               case '充值卡':
-                return (
-                  <PrepaidCardPicker
-                    categories={data.normalCategories}
-                    kindLabel="充值卡"
-                    cart={cart}
-                    onAdd={addToCart}
-                  />
-                )
+                return <PrepaidCardPicker onAdd={addToCart} />
             }
           })()}
 
@@ -632,6 +646,7 @@ export default function OrderCreatePageClient({
                 <div className="space-y-2">
                   {cart.map((item) => {
                     const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
+                    const isRechargeItem = item.sku.skuId === RECHARGE_VIRTUAL_SKU_ID
                     return (
                       <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
                         <div className="flex-1 min-w-0">
@@ -642,14 +657,16 @@ export default function OrderCreatePageClient({
                           <div className="flex items-center border border-[var(--border)] rounded">
                             <button
                               onClick={() => updateCartQuantity(item.sku.skuId, -1)}
-                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors"
+                              disabled={isRechargeItem}
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
                             >
                               −
                             </button>
                             <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
                             <button
                               onClick={() => updateCartQuantity(item.sku.skuId, 1)}
-                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors"
+                              disabled={isRechargeItem}
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
                             >
                               +
                             </button>
@@ -701,7 +718,12 @@ export default function OrderCreatePageClient({
               <label className="text-sm text-[#999999] block mb-2">订单类型</label>
               <div className="flex flex-wrap gap-2">
                 {ORDER_TYPE_CHOICES.map((choice) => {
-                  const disabled = choice === '转换单' && !conversionAllowed
+                  // 充值卡订单仅支持销售单（与 client 模型对齐）
+                  const rechargeLocked = productKindChoice === '充值卡' && choice !== '销售单'
+                  const disabled = rechargeLocked || (choice === '转换单' && !conversionAllowed)
+                  const disabledReason = rechargeLocked
+                    ? "充值卡订单仅支持销售单"
+                    : (choice === '转换单' && !conversionAllowed ? "请先用搜索确认顾客身份" : undefined)
                   return (
                     <button
                       key={choice}
@@ -716,7 +738,7 @@ export default function OrderCreatePageClient({
                             : "border-[var(--border)] bg-white text-[var(--foreground)] hover:bg-gray-50"
                       }`}
                       aria-pressed={orderType === choice}
-                      title={disabled ? "请先用搜索确认顾客身份" : undefined}
+                      title={disabledReason}
                     >
                       {choice}
                     </button>
@@ -725,6 +747,9 @@ export default function OrderCreatePageClient({
               </div>
               {orderType === '转换单' && !conversionAllowed && (
                 <p className="text-xs text-[#D94040] mt-1">请先用搜索确认顾客身份</p>
+              )}
+              {productKindChoice === '充值卡' && (
+                <p className="text-xs text-[#999999] mt-1">充值卡订单仅支持销售单</p>
               )}
               {isInternal && (
                 <p className="text-xs text-[#D4820A] mt-1">内部单 5 折，禁用手工改价 + 优惠券</p>
@@ -776,8 +801,8 @@ export default function OrderCreatePageClient({
                 />
               </div>
 
-              {/* 优惠券（仅已注册顾客可选 + 非内部单） */}
-              {selectedCustomer?.userId && !isInternal && !isConversion && (
+              {/* 优惠券（仅已注册顾客可选 + 非内部单 + 非充值卡） */}
+              {selectedCustomer?.userId && !isInternal && !isConversion && !isRechargeOrder && (
                 <div className="col-span-2 md:col-span-3">
                   <label className="text-sm text-[#999999]">优惠券（可选）</label>
                   {loadingCoupons ? (

@@ -1,62 +1,183 @@
 "use client"
 
 /**
- * 充值卡 picker（PR-C C1）
+ * 充值卡 picker（与 client `card.rechargeConfig` / `matchTier` 对齐）
  *
- * 充值卡是面值型 SKU，UI 平铺成"金额按钮组"。每个 SKU 卡片把价格作为主视觉，
- * 点击直接加入购物车。无分类导航。
+ * 不再依赖真实 SKU 列表；档位与折扣逻辑完全复用 `@/lib/recharge`（与 client
+ * `cloudfunctions/clientApi/routes/card.js` 同源）。
+ *
+ * 下单模型：
+ * - skuId 强制为虚拟 SKU `sku-recharge-virtual`
+ * - productName = `预付充值卡 ¥{faceValue}` → payNotify / applyRechargeOnOrderPaid
+ *   从此字段解析面值
+ * - price = specialPrice = unitPrice = payAmount（实付）
+ * - 每单仅 1 笔（quantity 固定 1，混单校验在 order-create-page 侧）
+ *
+ * onAdd 沿用通用 (product, sku) 签名：父级 addToCart 将其作为 CartItem。
  */
-import type { Product } from "@/lib/types"
+import { useState } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { pickerSkuToProductSku, type NormalKindPickerProps } from "./types"
+import { Input } from "@/components/ui/input"
+import {
+  RECHARGE_TIERS,
+  RECHARGE_MIN_AMOUNT,
+  RECHARGE_MAX_AMOUNT,
+  RECHARGE_VIRTUAL_SKU_ID,
+  matchTier,
+} from "@/lib/recharge"
+import type { Product, ProductSku } from "@/lib/types"
 
-export function PrepaidCardPicker({ categories, onAdd }: NormalKindPickerProps) {
-  const allSkus = categories.flatMap((c) => c.skus)
+export interface PrepaidCardPickerProps {
+  onAdd: (product: Product, sku: ProductSku) => void
+}
+
+function buildRechargeAddPayload(faceValue: number): { product: Product; sku: ProductSku } {
+  const { payAmount } = matchTier(faceValue)
+  const priceStr = payAmount.toFixed(2)
+  const product: Product = {
+    productId: RECHARGE_VIRTUAL_SKU_ID,
+    categoryId: '',
+    name: `预付充值卡 ¥${faceValue}`,
+    coverImage: null,
+    detailImages: null,
+    description: null,
+    isBundle: false,
+    price: priceStr,
+    specialPrice: null,
+    manageScope: null,
+    marketScope: null,
+    sortOrder: 0,
+    isEnabled: true,
+    isVisible: true,
+    createdAt: '',
+    updatedAt: '',
+  }
+  const sku: ProductSku = {
+    skuId: RECHARGE_VIRTUAL_SKU_ID,
+    categoryId: '',
+    productType: '院装产品',
+    specName: '预付充值卡（虚拟）',
+    price: priceStr,
+    specialPrice: null,
+    sessionCount: null,
+    sortOrder: 0,
+    serviceFee: '0',
+    isShengmei: null,
+    marketScope: null,
+    isEnabled: true,
+    createdAt: '',
+    updatedAt: '',
+  }
+  return { product, sku }
+}
+
+export function PrepaidCardPicker({ onAdd }: PrepaidCardPickerProps) {
+  const [customAmount, setCustomAmount] = useState("")
+  const [customError, setCustomError] = useState<string | null>(null)
+
+  const handleTierClick = (faceValue: number) => {
+    const { product, sku } = buildRechargeAddPayload(faceValue)
+    onAdd(product, sku)
+  }
+
+  const handleCustomAdd = () => {
+    setCustomError(null)
+    const amount = Number(customAmount)
+    if (!customAmount || !Number.isFinite(amount)) {
+      setCustomError("请输入有效金额")
+      return
+    }
+    try {
+      // matchTier 会校验小数位 / 区间；错误消息带 INVALID_PARAMS: 前缀
+      matchTier(amount)
+    } catch (err: any) {
+      const msg = err?.message?.startsWith('INVALID_PARAMS:')
+        ? err.message.replace(/^INVALID_PARAMS:\s*/, '')
+        : '金额不合法'
+      setCustomError(msg)
+      return
+    }
+    const { product, sku } = buildRechargeAddPayload(amount)
+    onAdd(product, sku)
+    setCustomAmount("")
+  }
 
   return (
     <Card>
-      <CardContent className="p-4 space-y-3">
-        <h3 className="text-sm font-semibold text-[#999999]">充值卡面值</h3>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {allSkus.map((sku) => {
-            const fakeProduct: Product = {
-              productId: sku.skuId,
-              categoryId: sku.categoryId,
-              name: sku.specName.split(" ")[0] || sku.specName,
-              coverImage: null,
-              detailImages: null,
-              description: null,
-              isBundle: false,
-              price: sku.price,
-              specialPrice: sku.specialPrice,
-              manageScope: null,
-              marketScope: null,
-              sortOrder: sku.sortOrder,
-              isEnabled: true,
-              isVisible: true,
-              createdAt: '',
-              updatedAt: '',
-            }
-            const displayPrice = sku.specialPrice || sku.price
-            return (
-              <button
-                key={sku.skuId}
-                type="button"
-                onClick={() => onAdd(fakeProduct, pickerSkuToProductSku(sku))}
-                className="bg-[#FAFAFA] rounded-lg border border-[var(--border)] hover:border-[var(--primary)] hover:bg-[#FFF0EE] transition-colors p-4 flex flex-col items-center gap-1"
-              >
-                <span className="text-2xl font-bold text-[var(--primary)]">¥{displayPrice}</span>
-                <span className="text-xs text-[#666666]">{sku.specName}</span>
-                <Button size="sm" variant="outline" className="h-6 text-xs px-2 mt-1 pointer-events-none">
-                  加入
-                </Button>
-              </button>
-            )
-          })}
-          {allSkus.length === 0 && (
-            <p className="text-sm text-[#999999] py-8 text-center col-span-4">暂无可选充值卡</p>
-          )}
+      <CardContent className="p-4 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-[#999999] mb-3">档位快选</h3>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {RECHARGE_TIERS.map((tier) => {
+              const { payAmount } = matchTier(tier.faceValue)
+              const discountLabel = (tier.discount * 10).toFixed(1).replace(/\.0$/, '')
+              return (
+                <button
+                  key={tier.faceValue}
+                  type="button"
+                  onClick={() => handleTierClick(tier.faceValue)}
+                  className="bg-[#FAFAFA] rounded-lg border border-[var(--border)] hover:border-[var(--primary)] hover:bg-[#FFF0EE] transition-colors p-4 flex flex-col items-center gap-1"
+                >
+                  <span className="text-2xl font-bold text-[var(--primary)]">
+                    ¥{tier.faceValue}
+                  </span>
+                  <span className="text-xs text-[#666666]">
+                    {discountLabel} 折 · 实付 ¥{payAmount}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-xs px-2 mt-1 pointer-events-none"
+                  >
+                    加入
+                  </Button>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div className="border-t border-[var(--border)] pt-4">
+          <h3 className="text-sm font-semibold text-[#999999] mb-2">自定义金额</h3>
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <Input
+                type="number"
+                inputMode="decimal"
+                placeholder={`¥${RECHARGE_MIN_AMOUNT} - ¥${RECHARGE_MAX_AMOUNT}`}
+                value={customAmount}
+                onChange={(e) => {
+                  setCustomAmount(e.target.value)
+                  setCustomError(null)
+                }}
+              />
+              {customError ? (
+                <p className="text-xs text-[#D94040] mt-1">{customError}</p>
+              ) : customAmount && Number.isFinite(Number(customAmount)) ? (
+                (() => {
+                  try {
+                    const { discount, payAmount } = matchTier(Number(customAmount))
+                    const label = (discount * 10).toFixed(1).replace(/\.0$/, '')
+                    return (
+                      <p className="text-xs text-[#666666] mt-1">
+                        匹配档位 {label} 折 · 实付 ¥{payAmount}
+                      </p>
+                    )
+                  } catch {
+                    return null
+                  }
+                })()
+              ) : (
+                <p className="text-xs text-[#999999] mt-1">
+                  500-999 → 9.9 折 · 1000-4999 → 9.8 折 · ≥5000 → 9.5 折
+                </p>
+              )}
+            </div>
+            <Button type="button" onClick={handleCustomAdd}>
+              加入
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
