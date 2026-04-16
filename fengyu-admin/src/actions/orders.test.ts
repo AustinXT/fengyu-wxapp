@@ -18,11 +18,22 @@ vi.mock('@db/order', () => ({
     saleOrderDatetime: 'sale_order_datetime',
     customerName: 'customer_name',
     clientPhone: 'client_phone',
+    clientUserId: 'client_user_id',
     paidAt: 'paid_at',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
+    $inferInsert: {} as any,
   },
-  saleItems: { saleOrderId: 'sale_order_id', saleItemId: 'sale_item_id' },
+  saleItems: {
+    saleOrderId: 'sale_order_id',
+    saleItemId: 'sale_item_id',
+    storeId: 'store_id',
+    itemDirection: 'item_direction',
+    remainingSessions: 'remaining_sessions',
+    pickedUpQuantity: 'picked_up_quantity',
+    quantity: 'quantity',
+    $inferInsert: {} as any,
+  },
 }))
 
 vi.mock('@db/coupon', () => ({
@@ -59,8 +70,14 @@ vi.mock('@db/system-config', () => ({
 }))
 
 vi.mock('@db/product', () => ({
-  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id' },
+  productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type' },
   products: { productId: 'product_id', name: 'name' },
+  productCategories: { categoryId: 'category_id', productKind: 'product_kind', salesCategory: 'sales_category' },
+}))
+
+vi.mock('@db/prepaid-card', () => ({
+  prepaidCards: { cardId: 'card_id', userId: 'user_id', storeId: 'store_id', balance: 'balance' },
+  cardTransactions: { id: 'id', cardId: 'card_id', type: 'type', amount: 'amount', refOrderId: 'ref_order_id' },
 }))
 
 vi.mock('drizzle-orm', () => ({
@@ -113,7 +130,7 @@ vi.mock('@/lib/member-threshold', () => ({
   MEMBER_THRESHOLD_TAG: 'new_member_threshold',
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder } from './orders'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
@@ -765,5 +782,407 @@ describe('getOrdersPaginated — 服务端分页', () => {
 
     expect(result.data[0].storeName).toBeUndefined()
     expect(result.data[0].openedByName).toBeUndefined()
+  })
+})
+
+// ─── createOrder — 内部单半价 + 禁用优惠券 (A4) ─────────────────────────
+
+describe('createOrder — 内部单半价 + 禁用优惠券', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('内部单 + couponId → 拒绝并返回明确提示', async () => {
+    const result = await createOrder({
+      ...baseOrderData,
+      saleOrderType: '内部单',
+      clientUserId: 'user-1',
+      couponId: 'coupon-1',
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('内部单不允许叠加优惠券')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('内部单 → 进入事务时 items 金额已 ×0.5（unitPrice 原价保留）', async () => {
+    let capturedItem: any
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260410-INT01' }]),
+        insert: vi.fn().mockImplementation((table: any) => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if (table && 'saleItemId' in v) capturedItem = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await createOrder({
+      ...baseOrderData,
+      saleOrderType: '内部单',
+      items: [{
+        ...baseOrderData.items[0],
+        unitPrice: '200.00',
+        unitRealPrice: '200.00',
+        quantity: 2,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    // 半价生效：unitRealPrice 200 → 100；unitPrice 保留原价 200
+    expect(capturedItem.unitRealPrice).toBe('100.00')
+    expect(capturedItem.unitPrice).toBe('200.00')
+  })
+})
+
+// ─── createConversionOrder (A3) ───────────────────────────────────────
+
+describe('createConversionOrder — 权限与入参校验', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  const baseConvData = {
+    storeId: 'store-1',
+    marketName: '市场A',
+    clientUserId: 'user-1',
+    paymentMethod: '线下' as const,
+    convertOutSaleItemIds: ['card-1'],
+    convertInItems: [{
+      skuId: 'sku-new-1',
+      productName: '新项目',
+      skuSpecName: '10次卡',
+      productType: '疗程卡' as const,
+      sessionCount: 10,
+      unitPrice: '1000.00',
+      quantity: 1,
+    }],
+  }
+
+  it('storeId 不在 scope → 拒绝', async () => {
+    ;(isInScope as any).mockReturnValue(false)
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('无权')
+  })
+
+  it('clientUserId 为空 → 拒绝', async () => {
+    const result = await createConversionOrder({ ...baseConvData, clientUserId: '' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('必须指定顾客')
+  })
+
+  it('convertOutSaleItemIds 空数组 → 拒绝', async () => {
+    const result = await createConversionOrder({ ...baseConvData, convertOutSaleItemIds: [] })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('折抵卡')
+  })
+
+  it('convertInItems 空数组 → 拒绝', async () => {
+    const result = await createConversionOrder({ ...baseConvData, convertInItems: [] })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('转入项目')
+  })
+
+  it('顾客不存在 → 拒绝', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('顾客不存在')
+  })
+})
+
+describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
+  const mockClient = { userId: 'user-1', phone: '13812345678', name: '张小姐', customerType: '会员客' }
+
+  /**
+   * 构造模拟 tx：
+   * heldRow 控制 FOR UPDATE 返回的转出候选（含 client_user_id / order_status 等字段）
+   * skuRow 控制转入 SKU 查询返回
+   * orderId 控制 INSERT 前 advisory lock 查询
+   */
+  function mockConvTx(opts: {
+    heldRows: any[]
+    skuRows: any[]
+    orderId?: string
+    updateCount?: number
+    upsertCardId?: string
+    onInsertOrder?: (v: any) => void
+  }) {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let execCall = 0
+      const tx = {
+        execute: vi.fn().mockImplementation(async () => {
+          execCall++
+          if (execCall === 1) return opts.heldRows
+          if (execCall === 2) return [{ id: opts.orderId || 'FY-XSD-WX-260416-0001' }]
+          if (execCall === 3) return [{ card_id: opts.upsertCardId || 'card-new-1' }]
+          return []
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue(opts.skuRows),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if (v && 'saleOrderId' in v && 'saleOrderType' in v) {
+              opts.onInsertOrder?.(v)
+            }
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: opts.updateCount ?? 1 }),
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    // 顾客查找
+    ;(db.select as any).mockImplementation(mockSelectFound(mockClient))
+  })
+
+  const baseConvData = {
+    storeId: 'store-1',
+    marketName: '市场A',
+    clientUserId: 'user-1',
+    paymentMethod: '线下' as const,
+    convertOutSaleItemIds: ['card-1'],
+    convertInItems: [{
+      skuId: 'sku-new-1',
+      productName: '新项目',
+      skuSpecName: '10次卡',
+      productType: '疗程卡' as const,
+      sessionCount: 10,
+      unitPrice: '1000.00',
+      quantity: 1,
+    }],
+  }
+
+  it('priceDiff = 0：totalIn=totalOut，订单 total_amount=0，status=已支付', async () => {
+    let capturedOrder: any
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '5次卡',
+        product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
+        quantity: 1, picked_up_quantity: 0, unit_price: '1000.00',
+        unit_real_price: '200.00', sales_category: '自采自销', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '1000.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自采自销',
+      }],
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    const result = await createConversionOrder(baseConvData)
+
+    expect(result.success).toBe(true)
+    expect(result.totalIn).toBe(1000)
+    expect(result.totalOut).toBe(1000)
+    expect(result.priceDiff).toBe(0)
+    expect(capturedOrder.totalAmount).toBe('0.00')
+    expect(capturedOrder.status).toBe('已支付')
+  })
+
+  it('priceDiff > 0：补现，total_amount=差额，status=待确认收款（线下）', async () => {
+    let capturedOrder: any
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
+        product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自采自销', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自采自销',
+      }],
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    const result = await createConversionOrder(baseConvData)
+
+    expect(result.success).toBe(true)
+    expect(result.totalIn).toBe(500)
+    expect(result.totalOut).toBe(300)
+    expect(result.priceDiff).toBe(200)
+    expect(capturedOrder.totalAmount).toBe('200.00')
+    expect(capturedOrder.status).toBe('待确认收款')
+    expect(result.prepaidCardCredit).toBe(0)
+  })
+
+  it('priceDiff < 0：差额入储值卡，status=已支付', async () => {
+    let capturedOrder: any
+    mockConvTx({
+      heldRows: [{
+        sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+        sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '8次卡',
+        product_type: '疗程卡', session_count: 8, remaining_sessions: 8,
+        quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
+        unit_real_price: '100.00', sales_category: '自采自销', service_fee: '0',
+        client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
+      }],
+      skuRows: [{
+        skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
+        productType: '疗程卡', salesCategory: '自采自销',
+      }],
+      upsertCardId: 'card-new-99',
+      onInsertOrder: (v) => { capturedOrder = v },
+    })
+
+    const result = await createConversionOrder(baseConvData)
+
+    expect(result.success).toBe(true)
+    expect(result.totalIn).toBe(500)
+    expect(result.totalOut).toBe(800)
+    expect(result.priceDiff).toBe(-300)
+    expect(result.prepaidCardCredit).toBe(300)
+    expect(capturedOrder.totalAmount).toBe('0.00')
+    expect(capturedOrder.status).toBe('已支付')
+  })
+})
+
+describe('createConversionOrder — 异常路径', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      userId: 'user-1', phone: '13812345678', name: '张小姐', customerType: '流量客',
+    }))
+  })
+
+  const baseConvData = {
+    storeId: 'store-1',
+    marketName: '市场A',
+    clientUserId: 'user-1',
+    paymentMethod: '线下' as const,
+    convertOutSaleItemIds: ['card-1'],
+    convertInItems: [{
+      skuId: 'sku-new-1',
+      productName: '新项目',
+      skuSpecName: '10次卡',
+      productType: '疗程卡' as const,
+      sessionCount: 10,
+      unitPrice: '1000.00',
+      quantity: 1,
+    }],
+  }
+
+  it('跨店（heldRow.store_id != ctx.storeId）→ CARD_STORE_MISMATCH', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{
+          sale_item_id: 'card-1', store_id: 'store-999', item_direction: '购买',
+          product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
+          client_user_id: 'user-1', order_status: '已支付', quantity: 1,
+          picked_up_quantity: 0, unit_price: '100', service_fee: '0',
+          session_count: 5, product_kind: '护理项目',
+        }]),
+        select: vi.fn(), insert: vi.fn(), update: vi.fn(),
+      }
+      return fn(tx)
+    })
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不属于当前门店')
+  })
+
+  it('卡已耗尽（remaining_sessions=0）→ CARD_EXHAUSTED', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{
+          sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+          product_type: '疗程卡', remaining_sessions: 0, unit_real_price: '100',
+          client_user_id: 'user-1', order_status: '已支付', quantity: 1,
+          picked_up_quantity: 0, unit_price: '100', service_fee: '0',
+          session_count: 5, product_kind: '护理项目',
+        }]),
+        select: vi.fn(), insert: vi.fn(), update: vi.fn(),
+      }
+      return fn(tx)
+    })
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('已耗尽')
+  })
+
+  it('部分卡不存在（held.length 不等于 input）→ CARD_NOT_FOUND', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([]),  // 输入 1 张卡，返回 0 张
+        select: vi.fn(), insert: vi.fn(), update: vi.fn(),
+      }
+      return fn(tx)
+    })
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在或已失效')
+  })
+
+  it('并发扣减失败（updateCount=0）→ CARD_CONCURRENT_CHANGED', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let execCall = 0
+      const tx = {
+        execute: vi.fn().mockImplementation(async () => {
+          execCall++
+          if (execCall === 1) return [{
+            sale_item_id: 'card-1', store_id: 'store-1', item_direction: '购买',
+            product_type: '疗程卡', remaining_sessions: 5, unit_real_price: '100',
+            client_user_id: 'user-1', order_status: '已支付', quantity: 1,
+            picked_up_quantity: 0, unit_price: '100', service_fee: '0',
+            session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
+            product_name: 'xx', sku_spec_name: 'yy', sales_category: '自采自销',
+          }]
+          return [{ id: 'FY-XSD-WX-260416-0001' }]
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{
+                skuId: 'sku-new-1', price: '500', serviceFee: '0', sessionCount: 10,
+                productType: '疗程卡', salesCategory: '自采自销',
+              }]),
+            }),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+        // 关键：update 返回 count=0 表示并发冲突
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 0 }),
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+    const result = await createConversionOrder(baseConvData)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('卡状态变化')
   })
 })
