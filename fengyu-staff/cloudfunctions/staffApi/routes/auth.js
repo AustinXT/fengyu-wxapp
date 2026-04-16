@@ -149,6 +149,18 @@ async function bindPhone(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')
   }
 
+  // openid 预检：拦截换绑 / 残留行场景，避免 INSERT 命中 uq_staff_users_openid
+  // 员工端 bindPhone 仅负责首次绑定；换手机号由管理后台操作
+  const byOpenid = await pg.query(
+    'SELECT employee_id, phone FROM staff_wechat_users WHERE openid = $1 LIMIT 1',
+    [OPENID]
+  )
+  if (byOpenid.length > 0 && byOpenid[0].phone !== phoneNumber) {
+    throw new Error('INVALID_PARAMS: 该微信账号已绑定其他手机号，如需变更请联系管理员')
+  }
+  // byOpenid.length === 0 → 继续往下按 phone 查 / INSERT
+  // byOpenid.length > 0 且 phone 相同 → 幂等，phone 查询会命中同一行走 UPDATE openid（no-op）
+
   // 按手机号查找已有行（含历史同步和管理后台创建的）
   const empRows = await pg.query(`
     SELECT
