@@ -76,6 +76,7 @@ interface PaidOrderItem {
   remainingSessions: number;
   totalSessions: number;
   productType: string;
+  storeId?: string;
 }
 
 interface PaidOrder {
@@ -83,6 +84,8 @@ interface PaidOrder {
   status: string;
   paidAt: string;
   totalReceived: string;
+  storeId?: string;
+  storeName?: string;
   items: PaidOrderItem[];
 }
 
@@ -97,6 +100,7 @@ interface TreatmentCard {
   paidAt: string;
   selected: boolean;
   sessionCount: number;
+  storeId?: string;
 }
 
 // Tab 4: 赠送记录

@@ -65,6 +65,7 @@ async function login(ctx) {
   const users = await pg.query(`
     SELECT
       u.employee_id, u.phone, u.name, u.position_name, u.is_resigned,
+      u.skills,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -83,6 +84,7 @@ async function login(ctx) {
       staffName: null,
       position: null,
       roles: [],
+      skills: [],
       boundStoreName: null,
       boundStoreId: null,
     }
@@ -105,6 +107,7 @@ async function login(ctx) {
     staffName: isActive ? user.name : null,
     position: isActive ? user.position_name : null,
     roles,
+    skills: isActive && Array.isArray(user.skills) ? user.skills : [],
     boundStoreName: isActive ? user.store_name : null,
     boundStoreId: isActive ? user.store_id : null,
   }
@@ -150,6 +153,7 @@ async function bindPhone(ctx) {
   const empRows = await pg.query(`
     SELECT
       u.employee_id, u.openid, u.name, u.position_name, u.is_resigned,
+      u.skills,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -186,6 +190,7 @@ async function bindPhone(ctx) {
       staffName: emp.name,
       position: emp.position_name,
       roles,
+      skills: Array.isArray(emp.skills) ? emp.skills : [],
       boundStoreName: emp.store_name,
       boundStoreId: emp.store_id,
     }
@@ -214,6 +219,7 @@ async function bindPhone(ctx) {
     staffName: null,
     position: null,
     roles: [],
+    skills: [],
     boundStoreName: null,
     boundStoreId: null,
   }

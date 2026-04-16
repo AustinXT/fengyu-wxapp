@@ -107,6 +107,10 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 院装产品不走到店服务流程`)
     }
 
+    if (si.store_id !== ctx.auth.storeId) {
+      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 仅在 ${si.store_id} 可核销，当前门店 ${ctx.auth.storeId} 无法创建服务单`)
+    }
+
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 剩余次数不足`)
     }
@@ -330,23 +334,32 @@ async function complete(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
-    // 原子扣减每条订单行的剩余次数
+    // 原子扣减每条订单行的剩余次数（强制 sale_items.store_id 与服务单门店一致，
+    // 防止本店服务单核销他店购买的卡）
     for (const item of items) {
       const updateResult = await client.query(
         `UPDATE sale_items
          SET remaining_sessions = remaining_sessions - $1
          WHERE sale_item_id = $2
+           AND store_id = $3
            AND remaining_sessions >= $1
            AND remaining_sessions IS NOT NULL`,
-        [item.session_used, item.sale_item_id]
+        [item.session_used, item.sale_item_id, so.store_id]
       )
 
       if (updateResult.rowCount === 0) {
         const checkRows = await client.query(
-          'SELECT remaining_sessions FROM sale_items WHERE sale_item_id = $1',
+          'SELECT store_id, remaining_sessions FROM sale_items WHERE sale_item_id = $1',
           [item.sale_item_id]
         )
-        if (checkRows.rows.length > 0 && checkRows.rows[0].remaining_sessions !== null) {
+        if (checkRows.rows.length === 0) {
+          throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 不存在`)
+        }
+        const probe = checkRows.rows[0]
+        if (probe.store_id !== so.store_id) {
+          throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
+        }
+        if (probe.remaining_sessions !== null) {
           throw new Error(`次数不足：订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
         }
       }

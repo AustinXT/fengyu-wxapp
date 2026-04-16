@@ -72,6 +72,7 @@ async function departments(ctx) {
       u.employee_id,
       u.name,
       u.position_name AS position,
+      u.skills,
       d.name AS department
     FROM staff_wechat_users u
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
@@ -92,6 +93,7 @@ async function departments(ctx) {
         u.employee_id,
         u.name,
         u.position_name AS position,
+        u.skills,
         d.name AS department,
         s.store_name
       FROM staff_wechat_users u
@@ -117,6 +119,7 @@ async function departments(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: Array.isArray(r.skills) ? r.skills : [],
       department: '美容部'
     }))
   }
@@ -128,6 +131,7 @@ async function departments(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      skills: Array.isArray(r.skills) ? r.skills : [],
       department: dept,
       storeName: r.store_name || ''
     })

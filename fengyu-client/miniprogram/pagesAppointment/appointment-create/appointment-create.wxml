@@ -28,16 +28,16 @@
         wx:for="{{appointableItems}}"
         wx:key="sale_item_id"
         title="{{item.product_name}}"
-        label="{{item.sku_spec_name}} · 剩余 {{item.remaining_sessions}} 次"
+        label="{{item.sku_spec_name}} · 剩余 {{item.remaining_sessions}} 次{{item.disabled_reason ? ' · ' + item.disabled_reason : ''}}"
         clickable
         bind:click="onSelectItem"
         data-item="{{item}}"
-        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}}"
+        class="{{selectedSaleItemId === item.sale_item_id ? 'item-selected' : ''}} {{item.disabled ? 'item-disabled' : ''}}"
       >
         <van-icon
           slot="right-icon"
-          name="{{selectedSaleItemId === item.sale_item_id ? 'success' : 'circle'}}"
-          color="{{selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC'}}"
+          name="{{item.disabled ? 'close' : (selectedSaleItemId === item.sale_item_id ? 'success' : 'circle')}}"
+          color="{{item.disabled ? '#CCCCCC' : (selectedSaleItemId === item.sale_item_id ? '#C0322A' : '#DCDCDC')}}"
           size="40rpx"
         />
       </van-cell>

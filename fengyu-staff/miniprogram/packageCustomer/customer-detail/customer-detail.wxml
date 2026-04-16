@@ -140,10 +140,11 @@
 
       <van-tab title="持卡汇总">
         <view class="tab-content">
+          <view class="tab-hint">仅显示顾客在本店购买的卡（跨店卡需在购买门店使用）</view>
           <view wx:if="{{!cardsLoaded}}" class="loading-wrap">
             <van-loading type="spinner" color="#C0322A" />
           </view>
-          <van-empty wx:elif="{{treatmentCards.length === 0}}" description="暂无可核销疗程" />
+          <van-empty wx:elif="{{treatmentCards.length === 0}}" description="顾客在本店暂无可核销疗程" />
           <view wx:else class="card-list">
             <view
               wx:for="{{treatmentCards}}" wx:key="saleItemId"

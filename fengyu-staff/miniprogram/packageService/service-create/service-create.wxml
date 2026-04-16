@@ -60,7 +60,7 @@
     </view>
 
     <view wx:elif="{{paidOrders.length === 0}}" class="empty-tip">
-      <van-empty description="该顾客暂无可核销的已支付订单" />
+      <van-empty description="该顾客在本店暂无可核销的已支付订单（跨店卡需在购买门店使用）" />
     </view>
 
     <view wx:else class="order-list">

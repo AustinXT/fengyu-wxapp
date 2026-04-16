@@ -32,9 +32,9 @@ interface AllocationEntry {
 
 // --------------- 工具函数 ---------------
 
-/** 角色类型 → 角色组（美容师/养生师同组，推广师独立组） */
-function getRoleGroup(roleType: string): string {
-  return roleType === '推广师' ? 'promoter' : 'beautician'
+/** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
+function getPoolKey(roleType: string): string {
+  return roleType
 }
 
 /** 根据市场、角色、销售分类、金额匹配提成比例 */
@@ -297,11 +297,11 @@ function ItemAllocationCard({
 }) {
   const received = Number(item.received)
 
-  // 按角色组统计分配比例合计
+  // 按 roleType 分池统计分配比例合计（P2-14 Q5：三角色独立）
   const groupSums: Record<string, number> = {}
   for (const e of entries) {
     if (!e.skillTag) continue
-    const g = getRoleGroup(e.skillTag)
+    const g = getPoolKey(e.skillTag)
     groupSums[g] = (groupSums[g] || 0) + Number(e.ratioPercent || 0)
   }
 
@@ -412,21 +412,18 @@ function ItemAllocationCard({
           <p className="text-xs text-[#999999] py-2">暂无分配，点击"添加分配"开始</p>
         )}
 
-        {/* 底部：角色组比例合计 + 添加按钮 */}
+        {/* 底部：每个技能标签独立池比例合计 + 添加按钮（P2-14 Q5） */}
         <div className="flex items-center justify-between pt-1">
-          <div className="flex gap-4 text-xs">
-            {groupSums.beautician != null && (
-              <span className={groupSums.beautician > 100 ? 'text-[#D94040] font-medium' : 'text-[#999999]'}>
-                美容师/养生师: {groupSums.beautician}% / 100%
-                {groupSums.beautician > 100 && ' (超出)'}
+          <div className="flex gap-4 text-xs flex-wrap">
+            {Object.entries(groupSums).map(([role, sum]) => (
+              <span
+                key={role}
+                className={sum > 100 ? 'text-[#D94040] font-medium' : 'text-[#999999]'}
+              >
+                {role}: {sum}% / 100%
+                {sum > 100 && ' (超出)'}
               </span>
-            )}
-            {groupSums.promoter != null && (
-              <span className={groupSums.promoter > 100 ? 'text-[#D94040] font-medium' : 'text-[#999999]'}>
-                推广师: {groupSums.promoter}% / 100%
-                {groupSums.promoter > 100 && ' (超出)'}
-              </span>
-            )}
+            ))}
           </div>
           <Button size="sm" variant="outline" onClick={() => onAdd(item.saleItemId)}>
             + 添加分配
@@ -470,33 +467,31 @@ function SaveButton({
         }
       }
 
-      // 按角色组校验
-      const groups: Record<string, AllocationEntry[]> = {}
+      // 按 (roleType) 分池校验（P2-14 Q5：三角色独立）
+      const pools: Record<string, AllocationEntry[]> = {}
       for (const e of entries) {
-        const g = getRoleGroup(e.skillTag)
-        ;(groups[g] ??= []).push(e)
+        const g = getPoolKey(e.skillTag)
+        ;(pools[g] ??= []).push(e)
       }
 
-      for (const [group, gEntries] of Object.entries(groups)) {
-        if (gEntries.length > MAX_PER_GROUP) {
-          const label = group === 'promoter' ? '推广师' : '美容师/养生师'
-          toast.error(`${item.productName || '商品'} 的${label}最多分配 3 人`)
+      for (const [roleType, poolEntries] of Object.entries(pools)) {
+        if (poolEntries.length > MAX_PER_GROUP) {
+          toast.error(`${item.productName || '商品'} 的${roleType}最多分配 3 人`)
           return
         }
 
         const empIds = new Set<string>()
-        for (const e of gEntries) {
+        for (const e of poolEntries) {
           if (empIds.has(e.employeeId)) {
-            toast.error(`${item.productName || '商品'} 中同角色组不能重复选择同一员工`)
+            toast.error(`${item.productName || '商品'} 中同技能标签不能重复选择同一员工`)
             return
           }
           empIds.add(e.employeeId)
         }
 
-        const ratioSum = gEntries.reduce((s, e) => s + Number(e.ratioPercent), 0)
+        const ratioSum = poolEntries.reduce((s, e) => s + Number(e.ratioPercent), 0)
         if (ratioSum > 100) {
-          const label = group === 'promoter' ? '推广师' : '美容师/养生师'
-          toast.error(`${item.productName || '商品'} 的${label}分配比例合计超过 100%`)
+          toast.error(`${item.productName || '商品'} 的${roleType}分配比例合计超过 100%`)
           return
         }
       }

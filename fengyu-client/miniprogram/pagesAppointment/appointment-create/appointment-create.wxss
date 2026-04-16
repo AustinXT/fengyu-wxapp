@@ -16,6 +16,16 @@
   background: var(--color-primary-light) !important;
 }
 
+/* 跨店卡：置灰 + 禁点（.wxml 仍保留 bind:click 做 Toast 提示） */
+.item-disabled {
+  opacity: 0.45;
+}
+
+.item-disabled .van-cell__title,
+.item-disabled .van-cell__label {
+  color: var(--color-text-hint) !important;
+}
+
 /* ===== 时段 tag 按钮 ===== */
 .time-slots {
   display: flex;

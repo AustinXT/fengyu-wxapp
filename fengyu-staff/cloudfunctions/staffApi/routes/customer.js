@@ -422,18 +422,20 @@ async function paidOrders(ctx) {
     throw new Error("INVALID_PARAMS: 缺少 clientUserId 或 clientPhone");
   }
 
+  // 强制按本店过滤：员工只能看到顾客在本店购买的订单/卡，跨店卡不可见
   let whereClause, params;
   if (clientUserId) {
-    whereClause = "o.status = '已支付' AND o.client_user_id = $1";
-    params = [clientUserId];
+    whereClause = "o.status = '已支付' AND o.client_user_id = $1 AND o.store_id = $2";
+    params = [clientUserId, ctx.auth.storeId];
   } else {
-    whereClause = "o.status = '已支付' AND o.client_phone = $1";
-    params = [clientPhone];
+    whereClause = "o.status = '已支付' AND o.client_phone = $1 AND o.store_id = $2";
+    params = [clientPhone, ctx.auth.storeId];
   }
 
   const orders = await pg.query(
-    `SELECT o.sale_order_id, o.status, o.paid_at
+    `SELECT o.sale_order_id, o.status, o.paid_at, o.store_id, s.store_name
      FROM sale_orders o
+     LEFT JOIN stores s ON s.store_id = o.store_id
      WHERE ${whereClause}
      ORDER BY o.paid_at DESC`,
     params,
@@ -449,6 +451,7 @@ async function paidOrders(ctx) {
     `SELECT
       si.sale_order_id,
       si.sale_item_id,
+      si.store_id,
       si.session_count,
       si.remaining_sessions,
       si.sku_id,
@@ -466,6 +469,7 @@ async function paidOrders(ctx) {
     if (!itemsByOrder[item.sale_order_id]) itemsByOrder[item.sale_order_id] = [];
     itemsByOrder[item.sale_order_id].push({
       saleItemId: item.sale_item_id,
+      storeId: item.store_id,
       itemName: item.product_name || "",
       spec: item.sku_spec_name || "",
       sessionCount: item.session_count,
@@ -480,6 +484,8 @@ async function paidOrders(ctx) {
     saleOrderId: o.sale_order_id,
     status: o.status,
     paidAt: o.paid_at,
+    storeId: o.store_id,
+    storeName: o.store_name || "",
     items: itemsByOrder[o.sale_order_id] || [],
   }));
 }

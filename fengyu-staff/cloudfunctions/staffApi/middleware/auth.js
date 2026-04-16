@@ -15,7 +15,7 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 分钟
 /**
  * 认证中间件
  * 将员工信息注入到 ctx.auth
- * ctx.auth = { openid, phone, staffWfId, storeId, roles, position, storeName, marketName, department }
+ * ctx.auth = { openid, phone, staffWfId, storeId, roles, position, storeName, marketName, department, skills }
  */
 async function auth(ctx, next) {
   const { OPENID } = cloud.getWXContext()
@@ -32,6 +32,8 @@ async function auth(ctx, next) {
   const cached = AUTH_CACHE.get(effectiveOpenid)
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
     ctx.auth = cached.data
+    // PR-1 兼容兜底：老缓存数据（部署瞬间 5 分钟窗口内）可能没有 skills 字段
+    if (ctx.auth.skills === undefined) ctx.auth.skills = []
     return await next()
   }
 
@@ -44,6 +46,7 @@ async function auth(ctx, next) {
       u.position_name,
       u.store_id,
       u.is_resigned,
+      u.skills,
       s.store_name,
       m.name AS market_name,
       d.name AS department
@@ -68,7 +71,8 @@ async function auth(ctx, next) {
       position: null,
       storeName: null,
       marketName: null,
-      department: null
+      department: null,
+      skills: []
     }
   } else {
     const user = users[0]
@@ -94,7 +98,8 @@ async function auth(ctx, next) {
       position: isActive ? user.position_name : null,
       storeName: isActive ? user.store_name : null,
       marketName: isActive ? user.market_name : null,
-      department: isActive ? user.department : null
+      department: isActive ? user.department : null,
+      skills: isActive && Array.isArray(user.skills) ? user.skills : []
     }
   }
 

@@ -12,19 +12,27 @@
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
 
-// role_type 存储角色名（'美容师'/'养生师'/'推广师' 等），部门通过映射关联
-const DEPT_TO_ROLE = { '美容部': '美容师', '养生部': '养生师', '推广部': '推广师' }
+// P2-14 Q5: skillTags 驱动的业绩分配校验
+// 每池 = (saleItemId, roleType) 二元组，池间互不约束
+const VALID_RATIOS = new Set(['0.10','0.20','0.30','0.40','0.50','0.60','0.70','0.80','0.90','1.00'])
+const MAX_PER_POOL = 3
+const AMOUNT_TOLERANCE = 0.02 // 整十档 × 浮点舍入的容差
 
 /**
  * 保存提成分配（支付后分配）
+ *
+ * P2-14 Q5: roleType 字段改为 required，按 (saleItemId, roleType) 分池独立校验；
+ * totalAmount 在服务端由 received × allocationRatio 重算，忽略前端传入值（防篡改）。
+ *
  * payload: {
  *   saleOrderId: string,
  *   allocations: [{
  *     saleItemId: string,
  *     employeeId: string,
- *     departmentName: string,
- *     allocationRatio: number,
- *     totalAmount: number
+ *     roleType: string,           // required (P2-14)
+ *     departmentName?: string,    // 仅用于 DB 向后兼容展示，不参与角色推断
+ *     allocationRatio: number,    // 整十档 0.10~1.00
+ *     totalAmount?: number        // ignored，服务端重算
  *   }]
  * }
  */
@@ -59,12 +67,13 @@ async function save(ctx) {
     throw new Error('PERMISSION_DENIED: 订单分配状态异常')
   }
 
-  // 查询订单明细（用于校验 saleItemId 归属）
+  // 查询订单明细（用于校验 saleItemId 归属 + 服务端重算 totalAmount）
   const orderItems = await pg.query(
     'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
     [saleOrderId]
   )
   const validItemIds = new Set(orderItems.map(i => i.sale_item_id))
+  const receivedMap = new Map(orderItems.map(i => [i.sale_item_id, Number(i.received) || 0]))
 
   // 空分配：标记为无需分配
   if (allocations.length === 0) {
@@ -87,7 +96,8 @@ async function save(ctx) {
     return
   }
 
-  // 校验分配记录
+  // 校验 + 服务端重算 totalAmount
+  const enriched = []
   for (const alloc of allocations) {
     if (!alloc.saleItemId) {
       throw new Error('INVALID_PARAMS: 分配记录缺少 saleItemId')
@@ -97,6 +107,49 @@ async function save(ctx) {
     }
     if (!alloc.employeeId) {
       throw new Error('INVALID_PARAMS: 分配记录缺少 employeeId')
+    }
+    if (!alloc.roleType) {
+      throw new Error('INVALID_PARAMS: 分配记录缺少 roleType')
+    }
+    const ratioStr = Number(alloc.allocationRatio).toFixed(2)
+    if (!VALID_RATIOS.has(ratioStr)) {
+      throw new Error('INVALID_PARAMS: allocationRatio 必须为整十百分比（0.10~1.00）')
+    }
+    const received = receivedMap.get(alloc.saleItemId) || 0
+    const totalAmount = Math.round(received * Number(ratioStr) * 100) / 100
+    enriched.push({
+      saleItemId: alloc.saleItemId,
+      employeeId: alloc.employeeId,
+      roleType: alloc.roleType,
+      departmentName: alloc.departmentName || null,
+      allocationRatio: ratioStr,
+      totalAmount,
+    })
+  }
+
+  // 按 (saleItemId, roleType) 分池校验
+  const pools = new Map()
+  for (const a of enriched) {
+    const key = `${a.saleItemId}|${a.roleType}`
+    if (!pools.has(key)) pools.set(key, [])
+    pools.get(key).push(a)
+  }
+  for (const [key, pool] of pools) {
+    const saleItemId = key.split('|')[0]
+    if (pool.length > MAX_PER_POOL) {
+      throw new Error(`INVALID_PARAMS: 每个商品每个技能标签最多分配 ${MAX_PER_POOL} 人`)
+    }
+    const received = receivedMap.get(saleItemId) || 0
+    const sum = pool.reduce((s, a) => s + a.totalAmount, 0)
+    if (sum > received + AMOUNT_TOLERANCE) {
+      throw new Error('INVALID_PARAMS: 分配金额合计超过商品金额')
+    }
+    const empIds = new Set()
+    for (const a of pool) {
+      if (empIds.has(a.employeeId)) {
+        throw new Error('INVALID_PARAMS: 同商品同技能标签不能重复分配同一员工')
+      }
+      empIds.add(a.employeeId)
     }
   }
 
@@ -112,18 +165,19 @@ async function save(ctx) {
       )
     }
 
-    // 插入新的分配记录（扁平结构）
-    for (const alloc of allocations) {
+    // 插入新的分配记录（扁平结构，写入 role_type 列）
+    for (const alloc of enriched) {
       await client.query(
         `INSERT INTO sale_allocations
-           (sale_item_id, employee_id, department_name, allocation_ratio, total_amount, is_void, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, false, $6, $6)`,
+           (sale_item_id, employee_id, role_type, department_name, allocation_ratio, total_amount, is_void, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, false, $7, $7)`,
         [
           alloc.saleItemId,
           alloc.employeeId,
-          alloc.departmentName || null,
-          alloc.allocationRatio != null ? alloc.allocationRatio : 1.0,
-          Number(alloc.totalAmount) || 0,
+          alloc.roleType,
+          alloc.departmentName,
+          alloc.allocationRatio,
+          alloc.totalAmount,
           now
         ]
       )
@@ -139,7 +193,7 @@ async function save(ctx) {
   ctx.result = {
     saleOrderId,
     message: '提成分配已保存',
-    allocationCount: allocations.length
+    allocationCount: enriched.length
   }
 }
 
@@ -267,28 +321,22 @@ async function pendingList(ctx) {
 }
 
 /**
- * 查询员工部门归属（美容部/养生部判定）
+ * 查询员工技能标签（P2-14 Q5）
+ * 返回 skills 数组，由 suggest 按每个 skill 生成独立 allocLine。
  */
-async function resolveStaffDepartment(staffWfId) {
-  const rows = await pg.query(`
-    SELECT
-      u.employee_id, u.name,
-      d.name AS department
-    FROM staff_wechat_users u
-    LEFT JOIN org_nodes d ON u.org_node_id = d.id
-    WHERE u.employee_id = $1
-  `, [staffWfId])
+async function resolveStaffRoles(staffWfId) {
+  const rows = await pg.query(
+    'SELECT employee_id, name, skills FROM staff_wechat_users WHERE employee_id = $1',
+    [staffWfId]
+  )
 
   if (rows.length === 0) return null
 
   const row = rows[0]
-  const dept = (row.department || '').trim()
-  const role = DEPT_TO_ROLE[dept] || null
-
   return {
     staffWfId: row.employee_id,
     name: (row.name || '').trim(),
-    resolvedDept: role,
+    skills: Array.isArray(row.skills) ? row.skills : [],
   }
 }
 
@@ -327,12 +375,12 @@ async function suggest(ctx) {
   }
   const order = orders[0]
 
-  // 2. 解析指定美容师
+  // 2. 解析指定员工（P2-14 Q5：按 skills 建议角色池）
   let beauticianInfo = null
-  let deptAnomalous = false
+  let deptAnomalous = false // 向后兼容字段：空 skills 时为 true
   if (order.preferred_employee_id) {
-    beauticianInfo = await resolveStaffDepartment(order.preferred_employee_id)
-    if (beauticianInfo && !beauticianInfo.resolvedDept) {
+    beauticianInfo = await resolveStaffRoles(order.preferred_employee_id)
+    if (beauticianInfo && beauticianInfo.skills.length === 0) {
       deptAnomalous = true
     }
   }
@@ -340,7 +388,8 @@ async function suggest(ctx) {
   // 3. 检查新顾客
   const isNewCustomer = await checkNewCustomer(order.client_phone, saleOrderId)
 
-  const beauticianRequired = false
+  // 向后兼容字段：保留 beauticianRequired，语义改为"员工有可用 skills"
+  const beauticianRequired = !!(beauticianInfo && beauticianInfo.skills.length > 0)
 
   // 5. 加载订单项
   const items = await pg.query(`
@@ -353,7 +402,7 @@ async function suggest(ctx) {
 
   const totalAmount = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
-  // 6. 加载提成比例（PG commission_rate_matrix，仅 sale 类型用于分配建议）
+  // 6. 加载提成比例（PG commission_rate_matrix，仅销售单用于分配建议）
   let rates = []
   if (order.market_name) {
     const rateRows = await pg.query(`
@@ -382,45 +431,46 @@ async function suggest(ctx) {
     rates = [...grouped.values()]
   }
 
-  // 7. 提取美容部/养生部提成比例
-  const beautyDepts = ['美容师', '养生师']
-  const beautyRates = {}
+  // 7. 按 role_type 索引提成比例（P2-14：三角色均纳入，不再过滤白名单）
+  const ratesByRole = {}
   for (const rate of rates) {
-    if (beautyDepts.includes(rate.department) && !beautyRates[rate.department]) {
-      beautyRates[rate.department] = rate.orderRates
+    if (!ratesByRole[rate.department]) {
+      ratesByRole[rate.department] = rate.orderRates
     }
   }
 
-  // 8. 生成分配行
+  // 8. 生成分配行：对每个 (item × skill) 生成一条 allocLine，roleType 必填
   const allocLines = []
-  if (beauticianInfo && beauticianInfo.resolvedDept && beautyRates[beauticianInfo.resolvedDept]) {
-    const dept = beauticianInfo.resolvedDept
+  if (beauticianInfo && beauticianInfo.skills.length > 0) {
     for (const item of items) {
       const salesCat = item.sales_category || '自采自销'
       const received = Number(item.received) || 0
-      const commRate = beautyRates[dept][salesCat] || 0
-      const amount = (received * commRate).toFixed(2)
-      allocLines.push({
-        saleItemId: item.sale_item_id,
-        departmentName: dept,
-        staffWfId: beauticianInfo.staffWfId,
-        staffName: beauticianInfo.name,
-        salesCategory: salesCat,
-        commissionRate: commRate,
-        amount,
-        autoAmount: amount,
-        autoFilled: true,
-      })
+      for (const role of beauticianInfo.skills) {
+        const commRate = (ratesByRole[role] && ratesByRole[role][salesCat]) || 0
+        const amount = (received * commRate).toFixed(2)
+        allocLines.push({
+          saleItemId: item.sale_item_id,
+          roleType: role,        // P2-14：必填
+          departmentName: null,  // deprecated (PR-4)：保留字段兼容前端展示，值不再由服务端填
+          staffWfId: beauticianInfo.staffWfId,
+          staffName: beauticianInfo.name,
+          salesCategory: salesCat,
+          commissionRate: commRate,
+          amount,
+          autoAmount: amount,
+          autoFilled: true,
+        })
+      }
     }
   }
 
   ctx.result = {
     isNewCustomer,
-    beauticianInfo,
-    deptAnomalous,
-    beauticianRequired,
-    beautyRates,
-    allocLines,
+    beauticianInfo,     // P2-14：现含 skills 字段（替代 resolvedDept）
+    deptAnomalous,      // 向后兼容：员工无 skills 时为 true
+    beauticianRequired, // 向后兼容：员工有可用 skills 时为 true
+    ratesByRole,        // P2-14：以 role_type 为键的提成比例索引（替代 beautyRates）
+    allocLines,         // 每条含 roleType（P2-14 必填）
     items,
     totalAmount,
     rates,

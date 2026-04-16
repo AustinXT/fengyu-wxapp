@@ -112,6 +112,15 @@ export const saleItems = pgTable(
     saleOrderId: varchar("sale_order_id", { length: 30 })
       .notNull()
       .references(() => saleOrders.saleOrderId),
+    /**
+     * 所属门店（销售时快照，回款/转换/退款继承原销售行）。
+     * 用于强制"一张卡只能在购买门店核销/提货"的业务规则，
+     * 与 sale_orders.store_id 始终一致；冗余字段以避免核销/提货热路径
+     * 在事务内 JOIN sale_orders。
+     */
+    storeId: text("store_id")
+      .notNull()
+      .references(() => stores.storeId),
     itemDirection: itemDirectionEnum("item_direction").notNull().default("购买"),
     /** convert_out/refund_out 引用原购买行，其他为 null */
     refSaleItemId: varchar("ref_sale_item_id", { length: 30 }).references((): any => saleItems.saleItemId),
@@ -149,6 +158,7 @@ export const saleItems = pgTable(
     index("idx_sale_items_order_id").on(table.saleOrderId),
     index("idx_sale_items_sku_id").on(table.skuId),
     index("idx_sale_items_ref").on(table.refSaleItemId),
+    index("idx_sale_items_store_order").on(table.storeId, table.saleOrderId),
     check("chk_item_unit_price", sql`${table.unitPrice} >= 0`),
     check("chk_item_unit_real_price", sql`${table.unitRealPrice} >= 0`),
     check("chk_item_remaining", sql`${table.remainingSessions} IS NULL OR ${table.remainingSessions} >= 0`),

@@ -70,10 +70,14 @@ Page({
     try {
       const data = await callClientApi('order.appointableItems');
       const orders: any[] = data?.orders || [];
+      // 当前绑定门店作为"预约门店"；非本店卡需要禁用以符合"一张卡只能在购买门店使用"业务规则
+      const bookingStoreId = app.globalData.boundStoreId || '';
       const items: any[] = [];
       for (const order of orders) {
         if (filterSaleOrderId && order.saleOrderId !== filterSaleOrderId) continue;
         for (const item of (order.items || [])) {
+          const itemStoreId = order.storeId || '';
+          const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
@@ -82,13 +86,16 @@ Page({
             session_count: item.sessionCount,
             product_type: item.productType,
             sale_order_id: order.saleOrderId,
+            store_id: itemStoreId,
             store_name: order.storeName,
+            disabled: isCrossStore,
+            disabled_reason: isCrossStore ? `仅在 ${order.storeName || itemStoreId} 可用` : '',
           });
         }
       }
-      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目
+      // 当指定了 saleItemId 时（来自疗程卡页），自动预选对应项目；跨店卡不预选
       const preselect = preselectItemId
-        ? items.find(i => i.sale_item_id === preselectItemId)
+        ? items.find(i => i.sale_item_id === preselectItemId && !i.disabled)
         : null;
       this.setData({
         appointableItems: items,
@@ -134,6 +141,10 @@ Page({
 
   onSelectItem(e: WechatMiniprogram.TouchEvent) {
     const item = e.currentTarget.dataset.item as any;
+    if (item.disabled) {
+      Toast(item.disabled_reason || '该卡不可用于当前门店');
+      return;
+    }
     this.setData({
       selectedSaleItemId: item.sale_item_id,
       selectedSaleOrderId: item.sale_order_id,

@@ -7,6 +7,7 @@ App<IAppOption>({
     staffName: '' as string,
     position: '' as string,
     roles: [] as string[],
+    skills: [] as string[], // P2-14：技能标签，用于业绩分配角色推断
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     phone: '' as string,
@@ -24,6 +25,7 @@ App<IAppOption>({
         staffName: '王店长',
         position: '门店经理',
         roles: ['manager'],
+        skills: ['美容师'],
         phone: '13800000001',
         boundStoreName: '南商市场·凤御旗舰店',
         boundStoreId: 'store-001',
@@ -40,6 +42,7 @@ App<IAppOption>({
     const staffName = wx.getStorageSync('staffName');
     const position = wx.getStorageSync('position');
     const roles = wx.getStorageSync('roles');
+    const skills = wx.getStorageSync('skills');
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
@@ -47,6 +50,7 @@ App<IAppOption>({
     if (staffName) this.globalData.staffName = staffName;
     if (position) this.globalData.position = position;
     if (roles) this.globalData.roles = roles;
+    if (skills) this.globalData.skills = skills;
     if (phone) this.globalData.phone = phone;
     if (boundStoreName) this.globalData.boundStoreName = boundStoreName;
     if (boundStoreId) this.globalData.boundStoreId = boundStoreId;
@@ -59,8 +63,8 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { staffWfId, staffName, position, roles, phone, boundStoreName, boundStoreId } = res.result.data;
-        this.setStaffInfo({ staffWfId, staffName, position, roles, phone, boundStoreName, boundStoreId });
+        const { staffWfId, staffName, position, roles, skills, phone, boundStoreName, boundStoreId } = res.result.data;
+        this.setStaffInfo({ staffWfId, staffName, position, roles, skills, phone, boundStoreName, boundStoreId });
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
@@ -72,6 +76,7 @@ App<IAppOption>({
     staffName?: string;
     position?: string;
     roles?: string[];
+    skills?: string[];
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;
@@ -91,6 +96,10 @@ App<IAppOption>({
     if (info.roles) {
       this.globalData.roles = info.roles;
       wx.setStorageSync('roles', info.roles);
+    }
+    if (info.skills) {
+      this.globalData.skills = info.skills;
+      wx.setStorageSync('skills', info.skills);
     }
     if (info.phone) {
       this.globalData.phone = info.phone;
@@ -112,6 +121,7 @@ App<IAppOption>({
     this.globalData.staffName = '';
     this.globalData.position = '';
     this.globalData.roles = [];
+    this.globalData.skills = [];
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';
