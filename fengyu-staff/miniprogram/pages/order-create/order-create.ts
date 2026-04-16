@@ -605,24 +605,8 @@ Page({
       wx.showToast({ title: '请先选择顾客', icon: 'none' });
       return;
     }
-    // 组合套餐类型已锁定，跳过类型选择直接到确认步骤
-    if (this.data.orderType === 'promotion') {
-      this.setData({ checkoutStep: 2 });
-    } else {
-      this.setData({ checkoutStep: 1 });
-    }
-  },
-
-  // Step 1: 选开单类型
-  onSelectOrderType(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as OrderType;
-    if ((type === 'experience' || type === 'internal' || type === 'promotion') && !this.data.isManager) return;
-    this.setData({ orderType: type });
-  },
-
-  onStep1Back() { this.setData({ checkoutStep: 0 }); },
-
-  onStep1Next() {
+    // PR-B: Step 1 "选开单模式" 已废除；Step 0 → Step 2 直跳确认页。
+    // Step 1 当前为空占位，PR-C 将填入"订单类型 3 选 1"。
     this.setData({ checkoutStep: 2 });
   },
 
@@ -632,8 +616,8 @@ Page({
   },
 
   onStep2Back() {
-    // 组合套餐跳过类型选择，直接返回到选顾客
-    this.setData({ checkoutStep: this.data.orderType === 'promotion' ? 0 : 1 });
+    // PR-B: 直接返回 Step 0（跳过空占位 Step 1）
+    this.setData({ checkoutStep: 0 });
   },
 
   // ===== 优惠券选择 =====

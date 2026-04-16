@@ -216,57 +216,9 @@
         </view>
       </view>
 
-      <!-- Step 1: 开单类型 -->
+      <!-- Step 1: 订单类型（PR-C 待填入）—— PR-B 已废除"选开单模式"，此处为空占位 -->
       <view wx:if="{{checkoutStep === 1}}" class="checkout-body">
-        <text class="checkout-customer-label">顾客：{{customerInfo.name || customerInfo.phone}}</text>
-        <text class="section-label">选择开单模式</text>
-        <view class="order-type-cards">
-          <view
-            class="order-type-card {{orderType === 'normal' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="normal"
-          >
-            <van-icon name="orders-o" size="48rpx" color="{{orderType === 'normal' ? '#C0322A' : '#999'}}" />
-            <text class="order-type-card-name">正常单</text>
-            <text class="order-type-card-desc">标准价格</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'experience' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="experience"
-          >
-            <van-icon name="smile-o" size="48rpx" color="{{orderType === 'experience' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">体验单</text>
-            <text class="order-type-card-desc">仅店长</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'internal' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="internal"
-          >
-            <van-icon name="friends-o" size="48rpx" color="{{orderType === 'internal' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">内部单</text>
-            <text class="order-type-card-desc">员工半价</text>
-          </view>
-          <view
-            class="order-type-card {{isManager ? '' : 'order-type-card--disabled'}} {{orderType === 'promotion' ? 'order-type-card--active' : ''}}"
-            bindtap="onSelectOrderType"
-            data-type="promotion"
-          >
-            <van-icon name="gift-o" size="48rpx" color="{{orderType === 'promotion' ? '#C0322A' : (isManager ? '#999' : '#CCC')}}" />
-            <text class="order-type-card-name {{isManager ? '' : 'order-type-card-name--gray'}}">组合套餐</text>
-            <text class="order-type-card-desc">套餐方案</text>
-          </view>
-        </view>
-        <view class="checkout-footer checkout-footer--row">
-          <van-button size="small" plain bind:click="onStep1Back">返回</van-button>
-          <van-button
-            size="small" type="primary"
-            custom-class="btn-primary-brand"
-            custom-style="border-radius:40rpx;"
-            bind:click="onStep1Next"
-          >下一步</van-button>
-        </view>
+        <!-- TODO(PR-C): 订单类型 3 选 1（销售单 / 内部单 / 转换单）+ ConversionPanel -->
       </view>
 
       <!-- Step 2: 确认订单 -->
