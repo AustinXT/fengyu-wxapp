@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { orgNodes } from '@db/org'
-import { eq, and, asc, sql } from 'drizzle-orm'
+import { eq, and, asc, sql, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
@@ -1188,4 +1188,210 @@ export async function deleteMallCategory(categoryId: string): Promise<{ success:
   await logOperation(session, 'mall_category.delete', 'mall_category', categoryId, {})
   revalidatePath('/mall')
   return { success: true, message: '分类已删除' }
+}
+
+// ===== 开单页：按商品类型驱动的选品数据源 =====
+
+/**
+ * 开单页 Step 2 数据源：按 kind 返回可加购的 SKU/套餐。
+ *
+ * 普通 4 值（'护理项目' | '家居产品' | '体验卡' | '充值卡'）：
+ *   返回 `product_skus JOIN product_categories WHERE pc.product_kind=$kind`
+ *   的 categories（分类分组）+ skus 列表，过滤 isEnabled。
+ *
+ * 特殊 '__bundle__'：
+ *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
+ *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
+ *
+ * 无权限：product:list。
+ */
+export type ProductKindForOrder = '护理项目' | '家居产品' | '体验卡' | '充值卡' | '__bundle__'
+
+export interface OrderPickerSku {
+  skuId: string
+  categoryId: string
+  categoryName: string
+  productType: '疗程卡' | '单品' | '院装产品'
+  specName: string
+  price: string
+  specialPrice: string | null
+  sessionCount: number | null
+  serviceFee: string
+  sortOrder: number
+}
+
+export interface OrderPickerCategory {
+  categoryId: string
+  categoryName: string
+  salesCategory: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
+  sortOrder: number
+  skus: OrderPickerSku[]
+}
+
+export interface OrderPickerBundleSkuRef {
+  skuId: string
+  specName: string
+  productType: '疗程卡' | '单品' | '院装产品'
+  price: string
+  bundlePrice: string | null
+  bundleGroupId: number | null
+  sortOrder: number
+}
+
+export interface OrderPickerBundleGroup {
+  id: number
+  groupName: string
+  /** N 选 M 的 M（null = 全选） */
+  pickCount: number | null
+  sortOrder: number
+  skus: OrderPickerBundleSkuRef[]
+}
+
+export interface OrderPickerBundle {
+  productId: string
+  name: string
+  coverImage: string | null
+  price: string
+  specialPrice: string | null
+  sortOrder: number
+  groups: OrderPickerBundleGroup[]
+  /** 未分组的 SKU（bundle_group_id IS NULL） */
+  ungroupedSkus: OrderPickerBundleSkuRef[]
+}
+
+export type OrderPickerResult =
+  | { kind: '护理项目' | '家居产品' | '体验卡' | '充值卡'; categories: OrderPickerCategory[] }
+  | { kind: '__bundle__'; bundles: OrderPickerBundle[] }
+
+export async function getProductsByKind(kind: ProductKindForOrder): Promise<OrderPickerResult> {
+  const session = await getSession()
+  requirePermission(session, 'product:list')
+
+  if (kind === '__bundle__') {
+    // 套餐商品：products WHERE is_bundle AND is_enabled AND is_visible
+    const bundleRows = await db
+      .select({
+        productId: products.productId,
+        name: products.name,
+        coverImage: products.coverImage,
+        price: products.price,
+        specialPrice: products.specialPrice,
+        sortOrder: products.sortOrder,
+      })
+      .from(products)
+      .where(and(eq(products.isBundle, true), eq(products.isEnabled, true), eq(products.isVisible, true)))
+      .orderBy(products.sortOrder)
+
+    if (bundleRows.length === 0) {
+      return { kind: '__bundle__', bundles: [] }
+    }
+
+    const productIds = bundleRows.map((b) => b.productId)
+
+    // 关联分组
+    const groupRows = await db
+      .select()
+      .from(mallBundleGroups)
+      .where(inArray(mallBundleGroups.productId, productIds))
+      .orderBy(mallBundleGroups.sortOrder)
+
+    // 关联 SKU（含 bundleGroupId / bundlePrice）
+    const mpsRows = await db
+      .select({
+        productId: mallProductSkus.productId,
+        skuId: mallProductSkus.skuId,
+        bundleGroupId: mallProductSkus.bundleGroupId,
+        bundlePrice: mallProductSkus.bundlePrice,
+        sortOrder: mallProductSkus.sortOrder,
+        sku: productSkus,
+      })
+      .from(mallProductSkus)
+      .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
+      .where(and(inArray(mallProductSkus.productId, productIds), eq(productSkus.isEnabled, true)))
+      .orderBy(mallProductSkus.sortOrder)
+
+    const bundles: OrderPickerBundle[] = bundleRows.map((b) => {
+      const myGroups = groupRows.filter((g) => g.productId === b.productId)
+      const mySkus = mpsRows.filter((m) => m.productId === b.productId)
+      const groups: OrderPickerBundleGroup[] = myGroups.map((g) => ({
+        id: g.id,
+        groupName: g.groupName,
+        pickCount: g.pickCount,
+        sortOrder: g.sortOrder,
+        skus: mySkus
+          .filter((m) => m.bundleGroupId === g.id)
+          .map((m) => ({
+            skuId: m.skuId,
+            specName: m.sku.specName,
+            productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
+            price: m.sku.price,
+            bundlePrice: m.bundlePrice,
+            bundleGroupId: m.bundleGroupId,
+            sortOrder: m.sortOrder,
+          })),
+      }))
+      const ungroupedSkus = mySkus
+        .filter((m) => m.bundleGroupId === null)
+        .map((m) => ({
+          skuId: m.skuId,
+          specName: m.sku.specName,
+          productType: m.sku.productType as OrderPickerBundleSkuRef['productType'],
+          price: m.sku.price,
+          bundlePrice: m.bundlePrice,
+          bundleGroupId: m.bundleGroupId,
+          sortOrder: m.sortOrder,
+        }))
+      return {
+        productId: b.productId,
+        name: b.name,
+        coverImage: b.coverImage,
+        price: b.price,
+        specialPrice: b.specialPrice,
+        sortOrder: b.sortOrder,
+        groups,
+        ungroupedSkus,
+      }
+    })
+
+    return { kind: '__bundle__', bundles }
+  }
+
+  // 普通 4 值分支
+  const rows = await db
+    .select({
+      category: productCategories,
+      sku: productSkus,
+    })
+    .from(productSkus)
+    .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+    .where(and(eq(productCategories.productKind, kind), eq(productSkus.isEnabled, true), eq(productCategories.isValid, true)))
+    .orderBy(productCategories.sortOrder, productSkus.sortOrder)
+
+  // 按 categoryId 聚合
+  const catMap = new Map<string, OrderPickerCategory>()
+  for (const r of rows) {
+    if (!catMap.has(r.category.categoryId)) {
+      catMap.set(r.category.categoryId, {
+        categoryId: r.category.categoryId,
+        categoryName: r.category.categoryName,
+        salesCategory: r.category.salesCategory as OrderPickerCategory['salesCategory'],
+        sortOrder: r.category.sortOrder,
+        skus: [],
+      })
+    }
+    catMap.get(r.category.categoryId)!.skus.push({
+      skuId: r.sku.skuId,
+      categoryId: r.sku.categoryId,
+      categoryName: r.category.categoryName,
+      productType: r.sku.productType as OrderPickerSku['productType'],
+      specName: r.sku.specName,
+      price: r.sku.price,
+      specialPrice: r.sku.specialPrice,
+      sessionCount: r.sku.sessionCount,
+      serviceFee: r.sku.serviceFee,
+      sortOrder: r.sku.sortOrder,
+    })
+  }
+  const categories = Array.from(catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder)
+  return { kind, categories }
 }
