@@ -203,6 +203,12 @@ Page({
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
+    /**
+     * PR-D1：销售单 / 内部单的支付方式（默认微信）
+     * - 仅作用于 saleOrderType ∈ {销售单, 内部单}（转换单的支付方式由 ConversionPanel 内部管理）
+     * - 白名单：'微信' | '线下'（暂未支持支付宝，待业务确认）
+     */
+    paymentMethod: '微信' as '微信' | '线下',
     // 转换单（ConversionPanel 反馈 → 主页记录用于提交）
     conversionSelectedSaleItemIds: [] as string[],
     conversionDeductibleSum: 0,
@@ -692,6 +698,9 @@ Page({
       update.conversionDeductibleSum = 0;
       update.conversionPriceDiff = 0;
       update.conversionPaymentMethod = null;
+    } else {
+      // PR-D1：切到转换单时重置销售/内部单的 paymentMethod，避免脏值（转换单走 ConversionPanel 内部 picker）
+      update.paymentMethod = '微信';
     }
     // 切到非销售单时清空行级 customPrice（后端内部单/转换单均不接受 customPrice）
     if (next !== '销售单') {
@@ -718,6 +727,17 @@ Page({
       conversionPriceDiff: Number(priceDiff) || 0,
       conversionPaymentMethod: paymentMethod ?? null,
     });
+  },
+
+  /**
+   * PR-D1 — 支付方式切换（仅销售单/内部单生效；转换单的支付方式由 ConversionPanel 内部管理）
+   * 白名单：'微信' | '线下'
+   */
+  onPaymentMethodTap(e: WechatMiniprogram.TouchEvent) {
+    const next = e.currentTarget.dataset.method as '微信' | '线下';
+    if (!next || (next !== '微信' && next !== '线下')) return;
+    if (next === this.data.paymentMethod) return;
+    this.setData({ paymentMethod: next });
   },
 
   // Step 2: 确认订单
@@ -875,7 +895,8 @@ Page({
         clientUserId: customerInfo.id || null,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
-        paymentMethod: '微信',
+        // PR-D1：使用 state（销售单 / 内部单可选 微信 / 线下）；转换单不走此分支
+        paymentMethod: this.data.paymentMethod,
         saleOrderType,
         items: cart.map(c => {
           const payloadItem: Record<string, any> = {
@@ -907,6 +928,7 @@ Page({
         saleOrderType: '销售单',
         selectedCoupon: null,
         couponDiscount: 0,
+        paymentMethod: '微信',
       });
       wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
     } catch (err: unknown) {
