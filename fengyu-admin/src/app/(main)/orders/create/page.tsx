@@ -1,31 +1,25 @@
-import { getCategories, getProducts, getAllSkus, getProductKinds } from '@/actions/products'
 import { getStores } from '@/actions/stores'
 import { getEmployees } from '@/actions/employees'
 import OrderCreatePageClient from '../_components/order-create-page'
 
 export const dynamic = 'force-dynamic'
 
+/**
+ * 开单页 Server Component
+ *
+ * PR-C：商品/分类数据全部由 client 在 Step 1 选定 productKindChoice 后通过
+ * getProductsByKind() 按需懒拉，server 端不再预加载 categories/products/skus。
+ */
 export default async function Page() {
-  const [categories, products, skus, stores, employees, productKinds] = await Promise.all([
-    getCategories(),
-    getProducts(),
-    getAllSkus(),
+  const [stores, employees] = await Promise.all([
     getStores(),
     getEmployees(),
-    getProductKinds(),
   ])
-
-  // 二级分类
-  const subCategories = categories.filter(c => c.productKind !== null)
 
   return (
     <OrderCreatePageClient
-      categories={subCategories}
-      products={products}
-      skus={skus}
       stores={stores}
       employees={employees}
-      productKinds={productKinds}
     />
   )
 }

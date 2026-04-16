@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useMemo } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import Link from "next/link"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
@@ -9,24 +9,40 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { searchCustomers } from "@/actions/customers"
-import { createOrder, confirmOfflinePayment, generateOrderWxacode } from "@/actions/orders"
+import {
+  createOrder,
+  createConversionOrder,
+  confirmOfflinePayment,
+  generateOrderWxacode,
+} from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult } from "@/actions/products"
 import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
-import type { ProductCategory, Product, ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
+import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
+import {
+  BundlePicker,
+  NormalSkuPicker,
+  TrialCardPicker,
+  PrepaidCardPicker,
+  ConversionPanel,
+  type CartItem,
+  type ItemPriceOverride,
+} from "./order-create"
+import type { Product } from "@/lib/types"
 
 /**
- * Step 1 商品类型 4 选 1（PR-B）
+ * Step 1 商品类型 4 选 1（PR-B / PR-C）
  * - "组合套餐" → 后端 `__bundle__` 分支，对应 products.is_bundle=true
- * - 其余 3 个直接映射到 product_kind 枚举
- *
- * `普通商品` 在 UI 是用户语义入口，对应后端 `__normal__` 占位 — 实际数据走两个 kind
- * （护理项目 / 家居产品）合并展示。这里在前端层做合并，避免后端再加一个虚拟 kind。
+ * - 其余 3 个直接映射到 product_kind 枚举（"普通商品" 在前端合并 护理项目+家居产品）
  */
 type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡' | '充值卡'
 
 const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品', '体验卡', '充值卡']
+
+/** Step 3 订单类型 3 选 1（PR-C） */
+type OrderTypeChoice = '销售单' | '内部单' | '转换单'
+const ORDER_TYPE_CHOICES: OrderTypeChoice[] = ['销售单', '内部单', '转换单']
 
 /** 选择 → 后端 getProductsByKind(kind) 调用列表（普通商品 = 护理项目 + 家居产品 合并）*/
 function resolveBackendKinds(choice: ProductKindChoice): ProductKindForOrder[] {
@@ -36,34 +52,11 @@ function resolveBackendKinds(choice: ProductKindChoice): ProductKindForOrder[] {
   return ['充值卡']
 }
 
-/** 单次选择缓存的数据形态：bundle 与 normal 分开存放，PR-C 渲染层再消费 */
+/** 单次选择缓存的数据形态：bundle 与 normal 分开存放，PR-C 渲染层消费 */
 interface PrefetchedKindData {
   choice: ProductKindChoice
   bundles: Extract<OrderPickerResult, { kind: '__bundle__' }>['bundles']
   normalCategories: Extract<OrderPickerResult, { kind: '护理项目' | '家居产品' | '体验卡' | '充值卡' }>['categories']
-}
-
-const KIND_PALETTE = [
-  "bg-[#FFF8E6] text-[#D4820A]",
-  "bg-[#F0F5FA] text-[#5E8BB3]",
-  "bg-[#F0F9F2] text-[#3D8A5A]",
-  "bg-[#F5F5F5] text-[#888888]",
-  "bg-[#FFF0EE] text-[#C0322A]",
-  "bg-[#F5F0FF] text-[#8B5CF6]",
-  "bg-[#FFF0F5] text-[#EC4899]",
-  "bg-[#F0FAFA] text-[#0E7490]",
-]
-
-interface CartItem {
-  sku: ProductSku
-  product: Product
-  quantity: number
-}
-
-interface ItemPriceOverride {
-  saleAmount: string | null
-  received: string | null
-  receivedTouched: boolean
 }
 
 function getItemAmounts(item: CartItem, override?: ItemPriceOverride) {
@@ -112,55 +105,21 @@ function StepIndicator({ current }: { current: number }) {
 }
 
 export default function OrderCreatePageClient({
-  categories,
-  products,
-  skus,
   stores,
   employees,
-  productKinds,
 }: {
-  categories: ProductCategory[]
-  products: Product[]
-  skus: ProductSku[]
   stores: Store[]
   employees: Employee[]
-  productKinds?: ProductCategory[]
 }) {
   const [step, setStep] = useState(0)
   const [searchKeyword, setSearchKeyword] = useState("")
   const [searchResults, setSearchResults] = useState<Customer[]>([])
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [manualPhone, setManualPhone] = useState("")
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(categories[0]?.categoryId || "")
-  const [expandedKind, setExpandedKind] = useState<string>(
-    () => categories.find(c => c.categoryId === (categories[0]?.categoryId))?.productKind || ""
-  )
 
-  // 动态一级分类列表
-  const activeKinds = useMemo(() => {
-    if (productKinds) {
-      return productKinds.filter(k => k.isValid).sort((a, b) => a.sortOrder - b.sortOrder).map(k => k.categoryName)
-    }
-    // fallback: derive from categories
-    const seen = new Set<string>()
-    return categories.filter(c => c.productKind && !seen.has(c.productKind) && seen.add(c.productKind)).map(c => c.productKind!)
-  }, [productKinds, categories])
-
-  const kindColors = useMemo(() => {
-    return Object.fromEntries(activeKinds.map((k, i) => [k, KIND_PALETTE[i % KIND_PALETTE.length]]))
-  }, [activeKinds])
-
-  const categoriesByKind = useMemo(() => {
-    const groups: Record<string, ProductCategory[]> = {}
-    for (const kind of activeKinds) {
-      const filtered = categories.filter(c => c.productKind === kind)
-      if (filtered.length > 0) groups[kind] = filtered
-    }
-    return groups
-  }, [categories, activeKinds])
   const [cart, setCart] = useState<CartItem[]>([])
-  // saleOrderType 仍保留于 state（Step 3 还要用），但 Step 1 UI 不再暴露
-  const [orderType, setOrderType] = useState<'销售单' | '内部单'>("销售单")
+  // PR-C: Step 3 订单类型 3 选 1（销售单 / 内部单 / 转换单），默认销售单
+  const [orderType, setOrderType] = useState<OrderTypeChoice>('销售单')
   // PR-B: Step 1 商品类型 4 选 1（默认 普通商品），驱动 Step 2 数据源
   const [productKindChoice, setProductKindChoice] = useState<ProductKindChoice>('普通商品')
   // PR-B: 内存缓存 — choice → 已预拉数据，避免 Step 2 切换 kind 时重复请求
@@ -171,8 +130,10 @@ export default function OrderCreatePageClient({
     充值卡: undefined,
   })
   const [prefetching, setPrefetching] = useState(false)
-  // PR-B: 转换单备用（真正加载在 PR-C 做，这里先占位）
+  // PR-C: 转换单候选卡（按顾客 + 门店动态加载）
   const [heldCards, setHeldCards] = useState<HeldCardCandidate[]>([])
+  const [heldCardsLoading, setHeldCardsLoading] = useState(false)
+  const [selectedHeldCardIds, setSelectedHeldCardIds] = useState<string[]>([])
   const [paymentMethod, setPaymentMethod] = useState("微信")
   const [selectedStoreId, setSelectedStoreId] = useState<string>(stores[0]?.storeId || "")
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>("")
@@ -180,6 +141,13 @@ export default function OrderCreatePageClient({
   const [remark, setRemark] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [createdOrderId, setCreatedOrderId] = useState<string>("")
+  // PR-C: 转换单成功结果（用于 Step 4 文案）
+  const [conversionResult, setConversionResult] = useState<{
+    totalIn: number
+    totalOut: number
+    priceDiff: number
+    prepaidCardCredit: number
+  } | null>(null)
   const [searchDone, setSearchDone] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [paymentConfirmed, setPaymentConfirmed] = useState(false)
@@ -213,11 +181,11 @@ export default function OrderCreatePageClient({
   }
 
   /**
-   * PR-B: 按 ProductKindChoice 预拉 Step 2 所需 SKU/SPU 数据。
+   * 按 ProductKindChoice 预拉 Step 2 所需 SKU/SPU 数据。
    * - 已缓存则直接返回；并发期间忽略重复触发。
    * - 失败仅静默 toast 提示，不阻断 Step 1 → Step 2 流程（Step 2 自己会兜底）。
    */
-  const prefetchKindData = async (choice: ProductKindChoice) => {
+  const prefetchKindData = useCallback(async (choice: ProductKindChoice) => {
     if (kindDataCache[choice]) return
     setPrefetching(true)
     try {
@@ -241,7 +209,7 @@ export default function OrderCreatePageClient({
     } finally {
       setPrefetching(false)
     }
-  }
+  }, [kindDataCache])
 
   const selectCustomer = (customer: Customer) => {
     setSelectedCustomer(customer)
@@ -253,24 +221,63 @@ export default function OrderCreatePageClient({
     if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned)) {
       setSelectedEmployeeId(customer.boundEmployeeId)
     }
-    // PR-B: 选中顾客后按当前 productKindChoice 预拉 Step 2 数据
     void prefetchKindData(productKindChoice)
   }
 
   /**
-   * PR-B: 切换商品类型
+   * 切换商品类型
    * - 若已选顾客 → 立即触发预拉
-   * - 不在此处清空购物车（清空发生在"进入 Step 2"时，参考 ticket B4）
+   * - 切换前若 cart 非空 → 弹确认（ticket §5 风险表）
+   * - 实际清空 cart 在"进入 Step 2"时统一处理
    */
   const handleKindChoiceChange = (choice: ProductKindChoice) => {
     if (choice === productKindChoice) return
+    if (cart.length > 0) {
+      const ok = window.confirm("切换商品类型将清空当前购物车，是否继续？")
+      if (!ok) return
+      setCart([])
+      setPriceOverrides({})
+    }
     setProductKindChoice(choice)
     if (selectedCustomer) {
       void prefetchKindData(choice)
     }
   }
 
-  const categoryProducts = products.filter((p) => p.categoryId === selectedCategoryId)
+  // PR-C: 当切到转换单 + 已知顾客 + 门店时，加载折抵候选卡
+  useEffect(() => {
+    if (step !== 2) return
+    if (orderType !== '转换单') return
+    if (!selectedCustomer?.userId || !selectedStoreId) {
+      setHeldCards([])
+      return
+    }
+    let cancelled = false
+    setHeldCardsLoading(true)
+    getCustomerHeldCards(selectedCustomer.userId, selectedStoreId)
+      .then((rows) => {
+        if (cancelled) return
+        setHeldCards(rows)
+      })
+      .catch(() => {
+        if (cancelled) return
+        toast.error("加载折抵卡失败，请重试")
+        setHeldCards([])
+      })
+      .finally(() => {
+        if (!cancelled) setHeldCardsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [step, orderType, selectedCustomer?.userId, selectedStoreId])
+
+  // 切到非转换单时清空已选折抵卡
+  useEffect(() => {
+    if (orderType !== '转换单') {
+      setSelectedHeldCardIds([])
+    }
+  }, [orderType])
 
   const addToCart = (product: Product, sku: ProductSku) => {
     setCart((prev) => {
@@ -319,16 +326,25 @@ export default function OrderCreatePageClient({
     return sum + price * item.quantity
   }, 0)
 
-  // 应付合计 & 实付合计（含手动覆盖）
+  // 应付合计 & 实付合计（含手动覆盖）— 内部单走半价显示分支
+  const isInternal = orderType === '内部单'
+  const isConversion = orderType === '转换单'
+  const internalRatio = isInternal ? 0.5 : 1
+
   const { totalSaleAmount, totalReceived } = useMemo(() => {
     let sa = 0, rc = 0
     for (const item of cart) {
-      const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
-      sa += amounts.saleAmount
-      rc += amounts.received
+      // 内部单：禁止 priceOverrides 生效；统一按半价计算显示
+      const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+      const amounts = getItemAmounts(item, override)
+      sa += amounts.saleAmount * internalRatio
+      rc += amounts.received * internalRatio
     }
     return { totalSaleAmount: sa, totalReceived: rc }
-  }, [cart, priceOverrides])
+  }, [cart, priceOverrides, isInternal, internalRatio])
+
+  // 转换单候选按钮可用性（ticket §5 表格最后两行）
+  const conversionAllowed = !!selectedCustomer?.userId
 
   return (
     <div className="space-y-4">
@@ -341,7 +357,7 @@ export default function OrderCreatePageClient({
 
       <StepIndicator current={step} />
 
-      {/* Step 1: 选择顾客 + 商品类型（PR-B：移除"订单类型"，订单类型已迁至 Step 3） */}
+      {/* Step 1: 选择顾客 + 商品类型（PR-B） */}
       {step === 0 && (
         <Card>
           <CardContent className="p-6 space-y-6">
@@ -494,201 +510,187 @@ export default function OrderCreatePageClient({
         </Card>
       )}
 
-      {/* Step 2: 选择商品 */}
+      {/* Step 2: 选择商品（PR-C：4 类 picker 渲染分支） */}
       {step === 1 && (
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          {/* Category nav — 二级分类 */}
-          <Card className="lg:col-span-1">
-            <CardContent className="p-3">
-              <h3 className="text-sm font-semibold text-[#999999] mb-2">商品分类</h3>
-              <div className="space-y-0.5">
-                {activeKinds.map((kind) => {
-                  const kindCategories = categoriesByKind[kind]
-                  if (!kindCategories) return null
-                  const isExpanded = expandedKind === kind
-                  return (
-                    <div key={kind}>
-                      <button
-                        onClick={() => setExpandedKind(isExpanded ? "" : kind)}
-                        className="w-full text-left px-3 py-2 rounded text-sm flex items-center justify-between hover:bg-gray-50 transition-colors"
-                      >
-                        <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${kindColors[kind] ?? KIND_PALETTE[0]}`}>
-                          {kind}
-                        </span>
-                        <svg
-                          width="12" height="12" viewBox="0 0 12 12"
-                          className={`text-[#999999] transition-transform ${isExpanded ? "rotate-90" : ""}`}
-                        >
-                          <path d="M4.5 3L7.5 6L4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                      {isExpanded && (
-                        <div className="ml-3 space-y-0.5 mt-0.5">
-                          {kindCategories.map((cat) => (
-                            <button
-                              key={cat.categoryId}
-                              onClick={() => setSelectedCategoryId(cat.categoryId)}
-                              className={`w-full text-left px-3 py-1.5 rounded text-sm transition-colors ${
-                                selectedCategoryId === cat.categoryId
-                                  ? "bg-[var(--primary)] text-white"
-                                  : "hover:bg-[#FFF0EE] text-[var(--foreground)]"
-                              }`}
-                            >
-                              {cat.categoryName}
-                            </button>
-                          ))}
+        <div className="space-y-4">
+          {(() => {
+            const data = kindDataCache[productKindChoice]
+            if (!data && prefetching) {
+              return <Card><CardContent className="p-6 text-sm text-[#999999]">正在加载 {productKindChoice} 数据…</CardContent></Card>
+            }
+            if (!data) {
+              return (
+                <Card>
+                  <CardContent className="p-6 text-sm text-[#999999] flex items-center gap-3">
+                    <span>{productKindChoice} 数据未加载</span>
+                    <Button size="sm" variant="outline" onClick={() => void prefetchKindData(productKindChoice)}>
+                      重试
+                    </Button>
+                  </CardContent>
+                </Card>
+              )
+            }
+            switch (productKindChoice) {
+              case '组合套餐':
+                return <BundlePicker bundles={data.bundles} cart={cart} onAdd={addToCart} />
+              case '普通商品':
+                return (
+                  <NormalSkuPicker
+                    categories={data.normalCategories}
+                    kindLabel="普通商品"
+                    cart={cart}
+                    onAdd={addToCart}
+                  />
+                )
+              case '体验卡':
+                return (
+                  <TrialCardPicker
+                    categories={data.normalCategories}
+                    kindLabel="体验卡"
+                    cart={cart}
+                    onAdd={addToCart}
+                  />
+                )
+              case '充值卡':
+                return (
+                  <PrepaidCardPicker
+                    categories={data.normalCategories}
+                    kindLabel="充值卡"
+                    cart={cart}
+                    onAdd={addToCart}
+                  />
+                )
+            }
+          })()}
+
+          {/* 购物车 */}
+          <Card>
+            <CardContent className="p-4">
+              <h3 className="text-sm font-semibold mb-3">
+                购物车 <span className="text-[#999999]">({cart.length} 件)</span>
+              </h3>
+              {cart.length > 0 ? (
+                <div className="space-y-2">
+                  {cart.map((item) => {
+                    const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
+                    return (
+                      <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
+                        <div className="flex-1 min-w-0">
+                          <span className="font-medium">{item.product.name}</span>
+                          <span className="text-[#999999] ml-2">{item.sku.specName}</span>
                         </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-center border border-[var(--border)] rounded">
+                            <button
+                              onClick={() => updateCartQuantity(item.sku.skuId, -1)}
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors"
+                            >
+                              −
+                            </button>
+                            <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
+                            <button
+                              onClick={() => updateCartQuantity(item.sku.skuId, 1)}
+                              className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors"
+                            >
+                              +
+                            </button>
+                          </div>
+                          <span className="font-medium w-20 text-right">
+                            ¥{(unitPrice * item.quantity).toLocaleString()}
+                          </span>
+                          <button onClick={() => removeFromCart(item.sku.skuId)} className="text-[#D94040] text-xs hover:underline">
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <div className="text-right font-bold text-lg pt-2">
+                    合计: ¥{catalogTotal.toLocaleString()}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-[#999999] text-center py-4">请从上方添加商品</p>
+              )}
             </CardContent>
           </Card>
 
-          {/* Products */}
-          <div className="lg:col-span-3 space-y-4">
-            <Card>
-              <CardContent className="p-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {categoryProducts.map((product) => {
-                    const productSkus = skus.filter((s) => (s as any).productId === product.productId)
-                    return (
-                      <Card key={product.productId} className="bg-[#FAFAFA]">
-                        <CardContent className="p-4 space-y-2">
-                          <div className="flex justify-between items-start">
-                            <h4 className="font-medium text-sm">{product.name}</h4>
-                            <span className="text-xs text-[#999999]">¥{product.price}</span>
-                          </div>
-                          <p className="text-xs text-[#999999] line-clamp-2">{product.description}</p>
-                          <Separator />
-                          <div className="space-y-1">
-                            {productSkus.map((sku) => (
-                              <div key={sku.skuId} className="flex items-center justify-between">
-                                <span className="text-xs">
-                                  {sku.specName}
-                                  <span className="text-[#999999] ml-1">
-                                    ¥{sku.specialPrice || sku.price}
-                                  </span>
-                                </span>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => addToCart(product, sku)}
-                                  className="h-6 text-xs px-2"
-                                >
-                                  加入
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )
-                  })}
-                  {categoryProducts.length === 0 && (
-                    <p className="text-sm text-[#999999] py-8 text-center col-span-2">该分类暂无商品</p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Cart */}
-            <Card>
-              <CardContent className="p-4">
-                <h3 className="text-sm font-semibold mb-3">
-                  购物车 <span className="text-[#999999]">({cart.length} 件)</span>
-                </h3>
-                {cart.length > 0 ? (
-                  <div className="space-y-2">
-                    {cart.map((item) => {
-                      const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
-                      return (
-                        <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
-                          <div className="flex-1 min-w-0">
-                            <span className="font-medium">{item.product.name}</span>
-                            <span className="text-[#999999] ml-2">{item.sku.specName}</span>
-                          </div>
-                          <div className="flex items-center gap-3 shrink-0">
-                            <div className="flex items-center border border-[var(--border)] rounded">
-                              <button
-                                onClick={() => updateCartQuantity(item.sku.skuId, -1)}
-                                className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-l transition-colors"
-                              >
-                                −
-                              </button>
-                              <span className="w-8 text-center text-sm font-medium">{item.quantity}</span>
-                              <button
-                                onClick={() => updateCartQuantity(item.sku.skuId, 1)}
-                                className="w-7 h-7 flex items-center justify-center text-[#666666] hover:bg-gray-100 rounded-r transition-colors"
-                              >
-                                +
-                              </button>
-                            </div>
-                            <span className="font-medium w-20 text-right">
-                              ¥{(unitPrice * item.quantity).toLocaleString()}
-                            </span>
-                            <button onClick={() => removeFromCart(item.sku.skuId)} className="text-[#D94040] text-xs hover:underline">
-                              删除
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                    <div className="text-right font-bold text-lg pt-2">
-                      合计: ¥{catalogTotal.toLocaleString()}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-[#999999] text-center py-4">请从上方添加商品</p>
-                )}
-              </CardContent>
-            </Card>
-
-            <div className="flex justify-between">
-              <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
-              <Button
-                onClick={async () => {
-                  setStep(2)
-                  setSelectedCouponId("")
-                  // 如果是已注册顾客，拉取可用优惠券
-                  if (selectedCustomer?.userId) {
-                    setLoadingCoupons(true)
-                    try {
-                      const coupons = await getAvailableCoupons(selectedCustomer.userId, catalogTotal, selectedStoreId || undefined)
-                      setAvailableCoupons(coupons)
-                    } catch {
-                      setAvailableCoupons([])
-                    } finally {
-                      setLoadingCoupons(false)
-                    }
-                  } else {
+          <div className="flex justify-between">
+            <Button variant="outline" onClick={() => setStep(0)}>上一步</Button>
+            <Button
+              onClick={async () => {
+                setStep(2)
+                setSelectedCouponId("")
+                // 如果是已注册顾客，拉取可用优惠券
+                if (selectedCustomer?.userId) {
+                  setLoadingCoupons(true)
+                  try {
+                    const coupons = await getAvailableCoupons(selectedCustomer.userId, catalogTotal, selectedStoreId || undefined)
+                    setAvailableCoupons(coupons)
+                  } catch {
                     setAvailableCoupons([])
+                  } finally {
+                    setLoadingCoupons(false)
                   }
-                }}
-                disabled={cart.length === 0}
-              >
-                下一步
-              </Button>
-            </div>
+                } else {
+                  setAvailableCoupons([])
+                }
+              }}
+              disabled={cart.length === 0}
+            >
+              下一步
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Step 3: 确认订单 */}
+      {/* Step 3: 确认订单（PR-C：订单类型 3 选 1 + 内部单/转换单分支） */}
       {step === 2 && (
         <Card>
           <CardContent className="p-6 space-y-6">
             <h2 className="text-base font-semibold">确认订单</h2>
 
+            {/* 订单类型 3 选 1 */}
+            <div>
+              <label className="text-sm text-[#999999] block mb-2">订单类型</label>
+              <div className="flex flex-wrap gap-2">
+                {ORDER_TYPE_CHOICES.map((choice) => {
+                  const disabled = choice === '转换单' && !conversionAllowed
+                  return (
+                    <button
+                      key={choice}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => setOrderType(choice)}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                        orderType === choice
+                          ? "border-[var(--primary)] bg-[#FFF0EE] text-[var(--primary)]"
+                          : disabled
+                            ? "border-[var(--border)] bg-gray-50 text-[#cccccc] cursor-not-allowed"
+                            : "border-[var(--border)] bg-white text-[var(--foreground)] hover:bg-gray-50"
+                      }`}
+                      aria-pressed={orderType === choice}
+                      title={disabled ? "请先用搜索确认顾客身份" : undefined}
+                    >
+                      {choice}
+                    </button>
+                  )
+                })}
+              </div>
+              {orderType === '转换单' && !conversionAllowed && (
+                <p className="text-xs text-[#D94040] mt-1">请先用搜索确认顾客身份</p>
+              )}
+              {isInternal && (
+                <p className="text-xs text-[#D4820A] mt-1">内部单 5 折，禁用手工改价 + 优惠券</p>
+              )}
+            </div>
+
+            <Separator />
+
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
                 <p className="font-medium">{selectedCustomer?.name || manualPhone.trim()}</p>
-              </div>
-              <div>
-                <label className="text-sm text-[#999999]">订单类型</label>
-                <p className="font-medium mt-1">{orderType}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
@@ -725,8 +727,8 @@ export default function OrderCreatePageClient({
                 />
               </div>
 
-              {/* 优惠券（仅已注册顾客可选） */}
-              {selectedCustomer?.userId && (
+              {/* 优惠券（仅已注册顾客可选 + 非内部单） */}
+              {selectedCustomer?.userId && !isInternal && !isConversion && (
                 <div className="col-span-2 md:col-span-3">
                   <label className="text-sm text-[#999999]">优惠券（可选）</label>
                   {loadingCoupons ? (
@@ -753,134 +755,223 @@ export default function OrderCreatePageClient({
 
             <Separator />
 
-            <div>
-              <h3 className="text-sm font-semibold mb-3">商品清单</h3>
-              {/* 表头 */}
-              <div className="grid grid-cols-12 gap-2 text-xs text-[#999999] px-3 mb-1">
-                <span className="col-span-3">商品规格</span>
-                <span className="col-span-1 text-center">数量</span>
-                <span className="col-span-2 text-right">原价小计</span>
-                <span className="col-span-2 text-right">应付金额</span>
-                <span className="col-span-2 text-right">实付金额</span>
-                <span className="col-span-2 text-center">操作</span>
-              </div>
-              <div className="space-y-2">
-                {cart.map((item) => {
-                  const override = priceOverrides[item.sku.skuId]
-                  const amounts = getItemAmounts(item, override)
-                  const hasOverride = override?.saleAmount != null || override?.received != null
+            {/* 商品清单 — 转换单走 ConversionPanel；销售/内部单走原表单 */}
+            {isConversion ? (
+              <ConversionPanel
+                loading={heldCardsLoading}
+                heldCards={heldCards}
+                selectedIds={selectedHeldCardIds}
+                onChange={setSelectedHeldCardIds}
+                totalIn={cart.reduce((s, item) => {
+                  const amt = getItemAmounts(item)
+                  return s + amt.saleAmount
+                }, 0)}
+              />
+            ) : (
+              <div>
+                <h3 className="text-sm font-semibold mb-3">商品清单</h3>
+                {/* 表头 */}
+                <div className="grid grid-cols-12 gap-2 text-xs text-[#999999] px-3 mb-1">
+                  <span className="col-span-3">商品规格</span>
+                  <span className="col-span-1 text-center">数量</span>
+                  <span className="col-span-2 text-right">原价小计</span>
+                  <span className="col-span-2 text-right">应付金额</span>
+                  <span className="col-span-2 text-right">实付金额</span>
+                  <span className="col-span-2 text-center">操作</span>
+                </div>
+                <div className="space-y-2">
+                  {cart.map((item) => {
+                    // 内部单：不读 priceOverrides，禁用手工改价
+                    const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+                    const baseAmounts = getItemAmounts(item, override)
+                    const displaySaleAmount = baseAmounts.saleAmount * internalRatio
+                    const displayReceived = baseAmounts.received * internalRatio
+                    const hasOverride = !isInternal && (override?.saleAmount != null || override?.received != null)
 
-                  return (
-                    <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
-                      <span className="col-span-3 truncate" title={`${item.product.name} - ${item.sku.specName}`}>
-                        {item.product.name} - {item.sku.specName}
-                      </span>
-                      <span className="col-span-1 text-center">{item.quantity}</span>
-                      <span className="col-span-2 text-right text-[#999999]">
-                        ¥{amounts.defaultSaleAmount.toFixed(2)}
-                      </span>
-                      <div className="col-span-2">
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          className="h-8 text-sm text-right"
-                          value={override?.saleAmount ?? amounts.defaultSaleAmount.toFixed(2)}
-                          onChange={(e) => {
-                            const val = e.target.value
-                            setPriceOverrides(prev => ({
-                              ...prev,
-                              [item.sku.skuId]: {
-                                saleAmount: val,
-                                received: prev[item.sku.skuId]?.receivedTouched ? (prev[item.sku.skuId]?.received ?? null) : null,
-                                receivedTouched: prev[item.sku.skuId]?.receivedTouched ?? false,
-                              }
-                            }))
-                          }}
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          className="h-8 text-sm text-right"
-                          value={override?.received ?? amounts.saleAmount.toFixed(2)}
-                          onChange={(e) => {
-                            setPriceOverrides(prev => ({
-                              ...prev,
-                              [item.sku.skuId]: {
-                                saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
-                                received: e.target.value,
-                                receivedTouched: true,
-                              }
-                            }))
-                          }}
-                        />
-                      </div>
-                      <div className="col-span-2 flex justify-center">
-                        {hasOverride && (
-                          <button
-                            className="text-xs text-[#5E8BB3] hover:underline"
-                            onClick={() => {
-                              setPriceOverrides(prev => {
-                                const next = { ...prev }
-                                delete next[item.sku.skuId]
-                                return next
-                              })
+                    return (
+                      <div key={item.sku.skuId} className="grid grid-cols-12 gap-2 items-center bg-[#FAFAFA] rounded px-3 py-2 text-sm">
+                        <span className="col-span-3 truncate" title={`${item.product.name} - ${item.sku.specName}`}>
+                          {item.product.name} - {item.sku.specName}
+                        </span>
+                        <span className="col-span-1 text-center">{item.quantity}</span>
+                        <span className="col-span-2 text-right text-[#999999]">
+                          {isInternal ? (
+                            <>
+                              <span className="line-through mr-1">¥{baseAmounts.defaultSaleAmount.toFixed(2)}</span>
+                              <span className="text-[var(--primary)]">¥{(baseAmounts.defaultSaleAmount * 0.5).toFixed(2)}</span>
+                            </>
+                          ) : (
+                            <>¥{baseAmounts.defaultSaleAmount.toFixed(2)}</>
+                          )}
+                        </span>
+                        <div className="col-span-2">
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            disabled={isInternal}
+                            className="h-8 text-sm text-right"
+                            value={isInternal ? displaySaleAmount.toFixed(2) : (override?.saleAmount ?? baseAmounts.defaultSaleAmount.toFixed(2))}
+                            onChange={(e) => {
+                              if (isInternal) return
+                              const val = e.target.value
+                              setPriceOverrides(prev => ({
+                                ...prev,
+                                [item.sku.skuId]: {
+                                  saleAmount: val,
+                                  received: prev[item.sku.skuId]?.receivedTouched ? (prev[item.sku.skuId]?.received ?? null) : null,
+                                  receivedTouched: prev[item.sku.skuId]?.receivedTouched ?? false,
+                                }
+                              }))
                             }}
-                          >
-                            重置
-                          </button>
-                        )}
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            disabled={isInternal}
+                            className="h-8 text-sm text-right"
+                            value={isInternal ? displayReceived.toFixed(2) : (override?.received ?? baseAmounts.saleAmount.toFixed(2))}
+                            onChange={(e) => {
+                              if (isInternal) return
+                              setPriceOverrides(prev => ({
+                                ...prev,
+                                [item.sku.skuId]: {
+                                  saleAmount: prev[item.sku.skuId]?.saleAmount ?? null,
+                                  received: e.target.value,
+                                  receivedTouched: true,
+                                }
+                              }))
+                            }}
+                          />
+                        </div>
+                        <div className="col-span-2 flex justify-center">
+                          {hasOverride && (
+                            <button
+                              className="text-xs text-[#5E8BB3] hover:underline"
+                              onClick={() => {
+                                setPriceOverrides(prev => {
+                                  const next = { ...prev }
+                                  delete next[item.sku.skuId]
+                                  return next
+                                })
+                              }}
+                            >
+                              重置
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {/* 金额汇总 */}
+                {(() => {
+                  const selectedCoupon = availableCoupons.find((c) => c.couponId === selectedCouponId)
+                  const couponDiscount = !isInternal && selectedCoupon ? Number(selectedCoupon.discountAmount) : 0
+                  const finalAmount = Math.max(0, totalReceived - couponDiscount)
+                  return (
+                    <div className="text-right pt-4 space-y-1">
+                      {isInternal && (
+                        <div className="flex justify-end">
+                          <span className="text-xs px-2 py-0.5 rounded bg-gray-100 text-[#888888]">内部单 5 折</span>
+                        </div>
+                      )}
+                      <div className="text-sm text-[#999999]">
+                        应付合计: ¥{totalSaleAmount.toFixed(2)}
+                      </div>
+                      {totalReceived !== totalSaleAmount && (
+                        <div className="text-sm text-[#999999]">
+                          实付合计: ¥{totalReceived.toFixed(2)}
+                        </div>
+                      )}
+                      {selectedCoupon && !isInternal && (
+                        <div className="text-sm text-[#3D8A5A]">
+                          优惠券减免: -¥{couponDiscount.toFixed(2)}
+                        </div>
+                      )}
+                      <div className="font-bold text-xl text-[var(--primary)]">
+                        订单总额: ¥{finalAmount.toFixed(2)}
                       </div>
                     </div>
                   )
-                })}
+                })()}
               </div>
-              {/* 金额汇总 */}
-              {(() => {
-                const selectedCoupon = availableCoupons.find((c) => c.couponId === selectedCouponId)
-                const couponDiscount = selectedCoupon ? Number(selectedCoupon.discountAmount) : 0
-                const finalAmount = Math.max(0, totalReceived - couponDiscount)
-                return (
-                  <div className="text-right pt-4 space-y-1">
-                    <div className="text-sm text-[#999999]">
-                      应付合计: ¥{totalSaleAmount.toFixed(2)}
-                    </div>
-                    {totalReceived !== totalSaleAmount && (
-                      <div className="text-sm text-[#999999]">
-                        实付合计: ¥{totalReceived.toFixed(2)}
-                      </div>
-                    )}
-                    {selectedCoupon && (
-                      <div className="text-sm text-[#3D8A5A]">
-                        优惠券减免: -¥{couponDiscount.toFixed(2)}
-                      </div>
-                    )}
-                    <div className="font-bold text-xl text-[var(--primary)]">
-                      订单总额: ¥{finalAmount.toFixed(2)}
-                    </div>
-                  </div>
-                )
-              })()}
-            </div>
+            )}
 
             <div className="flex justify-between">
               <Button variant="outline" onClick={() => setStep(1)}>上一步</Button>
               <Button loading={submitting} onClick={async () => {
                 if (!selectedStoreId) { toast.error("请选择门店"); return }
-                // 校验手动金额
-                for (const item of cart) {
-                  const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
-                  if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
-                    toast.error(`${item.product.name} 的应付金额无效`); return
+
+                // 转换单分支
+                if (isConversion) {
+                  if (!selectedCustomer?.userId) {
+                    toast.error("转换单必须实名顾客")
+                    return
                   }
-                  if (isNaN(amounts.received) || amounts.received < 0) {
-                    toast.error(`${item.product.name} 的实付金额无效`); return
+                  if (selectedHeldCardIds.length === 0) {
+                    toast.error("请至少勾选一张折抵卡")
+                    return
                   }
-                  if (amounts.received > amounts.saleAmount + 0.005) {
-                    toast.error(`${item.product.name} 的实付金额不能超过应付金额`); return
+                  setSubmitting(true)
+                  try {
+                    const store = stores.find((s) => s.storeId === selectedStoreId)
+                    const res = await createConversionOrder({
+                      storeId: selectedStoreId,
+                      marketName: store?.marketName || "未知市场",
+                      clientUserId: selectedCustomer.userId,
+                      paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
+                      preferredEmployeeId: selectedEmployeeId || undefined,
+                      remark: remark.trim() || null,
+                      convertOutSaleItemIds: selectedHeldCardIds,
+                      convertInItems: cart.map((item) => ({
+                        skuId: item.sku.skuId,
+                        productName: item.product.name,
+                        skuSpecName: item.sku.specName,
+                        productType: item.sku.productType as '疗程卡' | '单品' | '院装产品',
+                        sessionCount: item.sku.sessionCount,
+                        unitPrice: item.sku.price,
+                        quantity: item.quantity,
+                      })),
+                    })
+                    if (res.success && res.saleOrderId) {
+                      toast.success(res.message)
+                      setCreatedOrderId(res.saleOrderId)
+                      setConversionResult({
+                        totalIn: res.totalIn ?? 0,
+                        totalOut: res.totalOut ?? 0,
+                        priceDiff: res.priceDiff ?? 0,
+                        prepaidCardCredit: res.prepaidCardCredit ?? 0,
+                      })
+                      setStep(3)
+                    } else {
+                      toast.error(res.message)
+                    }
+                  } catch {
+                    toast.error("创建转换单失败，请稍后重试")
+                  } finally {
+                    setSubmitting(false)
+                  }
+                  return
+                }
+
+                // 销售单 / 内部单 — 走原 createOrder
+                // 校验手动金额（内部单跳过 priceOverrides，因为禁用了改价）
+                if (!isInternal) {
+                  for (const item of cart) {
+                    const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+                    if (isNaN(amounts.saleAmount) || amounts.saleAmount < 0) {
+                      toast.error(`${item.product.name} 的应付金额无效`); return
+                    }
+                    if (isNaN(amounts.received) || amounts.received < 0) {
+                      toast.error(`${item.product.name} 的实付金额无效`); return
+                    }
+                    if (amounts.received > amounts.saleAmount + 0.005) {
+                      toast.error(`${item.product.name} 的实付金额不能超过应付金额`); return
+                    }
                   }
                 }
                 setSubmitting(true)
@@ -896,9 +987,11 @@ export default function OrderCreatePageClient({
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
-                    couponId: selectedCouponId || null,
+                    couponId: !isInternal ? (selectedCouponId || null) : null,
                     items: cart.map((item) => {
-                      const amounts = getItemAmounts(item, priceOverrides[item.sku.skuId])
+                      // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
+                      const override = isInternal ? undefined : priceOverrides[item.sku.skuId]
+                      const amounts = getItemAmounts(item, override)
                       return {
                         skuId: item.sku.skuId,
                         productName: item.product.name,
@@ -910,13 +1003,14 @@ export default function OrderCreatePageClient({
                         quantity: item.quantity,
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
-                        salesCategory: (item.product as any).salesCategory || null,
+                        salesCategory: null,
                       }
                     }),
                   })
                   if (res.success) {
                     toast.success(res.message)
                     setCreatedOrderId(res.saleOrderId || "")
+                    setConversionResult(null)
                     setStep(3)
                   } else {
                     toast.error(res.message)
@@ -932,7 +1026,7 @@ export default function OrderCreatePageClient({
         </Card>
       )}
 
-      {/* Step 4: 完成 */}
+      {/* Step 4: 完成（PR-C C4：按订单类型/差额展示不同文案） */}
       {step === 3 && (
         <Card>
           <CardContent className="p-6 text-center space-y-4">
@@ -942,26 +1036,51 @@ export default function OrderCreatePageClient({
               </div>
             </div>
             <h2 className="text-xl font-bold text-[var(--foreground)]">
-              {paymentConfirmed ? '收款已确认' : '订单创建成功'}
+              {paymentConfirmed ? '收款已确认' : conversionResult ? '转换单已创建' : '订单创建成功'}
             </h2>
             {createdOrderId && (
               <p className="text-sm font-mono text-[var(--primary)]">{createdOrderId}</p>
             )}
-            <p className="text-sm text-[#999999]">
-              {paymentConfirmed
-                ? '订单已确认收款，状态已更新为已支付'
-                : paymentMethod === '线下'
-                  ? '线下支付订单，可直接确认收款'
-                  : '请将二维码展示给顾客，扫码进入小程序完成支付'}
-            </p>
 
-            {/* 微信/支付宝支付：可打印 QR 码（spec §5.12） */}
-            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed && (
+            {/* 转换单成功文案分支 */}
+            {conversionResult ? (
+              <div className="text-sm space-y-1">
+                <p className="text-[#666666]">
+                  转入 ¥{conversionResult.totalIn.toFixed(2)} ｜ 折抵 ¥{conversionResult.totalOut.toFixed(2)}
+                </p>
+                {conversionResult.priceDiff > 0 && (
+                  <p className="text-[#D94040] font-semibold">
+                    请确认补差额收款 ¥{conversionResult.priceDiff.toFixed(2)}
+                  </p>
+                )}
+                {conversionResult.priceDiff === 0 && (
+                  <p className="text-[#3D8A5A] font-semibold">折抵完成，无需收款</p>
+                )}
+                {conversionResult.priceDiff < 0 && (
+                  <p className="text-[#5E8BB3] font-semibold">
+                    差额 ¥{conversionResult.prepaidCardCredit.toFixed(2)} 已充入储值卡
+                  </p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-[#999999]">
+                {paymentConfirmed
+                  ? '订单已确认收款，状态已更新为已支付'
+                  : paymentMethod === '线下'
+                    ? '线下支付订单，可直接确认收款'
+                    : '请将二维码展示给顾客，扫码进入小程序完成支付'}
+              </p>
+            )}
+
+            {/* 微信/支付宝支付：可打印 QR 码（销售/内部单 + 转换单正差额场景） */}
+            {paymentMethod !== '线下' && createdOrderId && !paymentConfirmed
+              && (!conversionResult || conversionResult.priceDiff > 0) && (
               <OrderQRCode orderId={createdOrderId} />
             )}
 
-            {/* 线下支付：确认收款按钮 */}
-            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed && (
+            {/* 线下支付：确认收款按钮（销售/内部单 + 转换单正差额场景） */}
+            {paymentMethod === '线下' && createdOrderId && !paymentConfirmed
+              && (!conversionResult || conversionResult.priceDiff > 0) && (
               <div className="pt-2">
                 <Button
                   loading={confirming}
@@ -1000,10 +1119,11 @@ export default function OrderCreatePageClient({
               )}
               <Button onClick={() => {
                 setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setManualPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
-                // PR-B：重置商品类型 + 缓存 + 转换单备用
                 setProductKindChoice('普通商品')
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined, 充值卡: undefined })
                 setHeldCards([])
+                setSelectedHeldCardIds([])
+                setConversionResult(null)
               }}>
                 继续开单
               </Button>
