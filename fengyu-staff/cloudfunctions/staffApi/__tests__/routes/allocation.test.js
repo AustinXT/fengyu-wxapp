@@ -257,6 +257,204 @@ describe('allocation.save', () => {
   })
 })
 
+/**
+ * P2-14 Q5: skillTags 驱动的业绩分配校验
+ * 每池 = (saleItemId, roleType)，池间互不约束。
+ * 覆盖：整十档、每池 ≤3 人、池金额 ≤ received（0.02 容差）、
+ *       服务端重算 totalAmount、INSERT role_type 列、三角色独立池。
+ */
+describe('allocation.save — skills-based pools (P2-14)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  /** 公用 helper：mock orders + sale_items 查询链 */
+  function mockOrderAndItems(items) {
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-001',
+        status: '已支付',
+        allocation_status: '待分配',
+        store_id: 'store-001',
+      }])
+      .mockResolvedValueOnce(items)
+  }
+
+  /** 公用 helper：捕获所有 INSERT sale_allocations 的参数 */
+  function mockTransactionCaptureInsert() {
+    const captured = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql && sql.includes('INSERT INTO sale_allocations')) captured.push(params)
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+    return captured
+  }
+
+  test('非整十档 allocationRatio 被拒（0.15）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{
+        saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '美容师',
+        allocationRatio: 0.15,
+      }],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*整十百分比/)
+  })
+
+  test('同池 > 3 人被拒（美容师 4 人）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        { saleItemId: 'item-001', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.10 },
+        { saleItemId: 'item-001', employeeId: 'emp-2', roleType: '美容师', allocationRatio: 0.10 },
+        { saleItemId: 'item-001', employeeId: 'emp-3', roleType: '美容师', allocationRatio: 0.10 },
+        { saleItemId: 'item-001', employeeId: 'emp-4', roleType: '美容师', allocationRatio: 0.10 },
+      ],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*最多分配 3 人/)
+  })
+
+  test('三角色独立池：同 saleItemId 美容师/养生师/推广师各 2 人合计 6 人通过', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        { saleItemId: 'item-001', employeeId: 'emp-a', roleType: '美容师', allocationRatio: 0.50 },
+        { saleItemId: 'item-001', employeeId: 'emp-b', roleType: '美容师', allocationRatio: 0.50 },
+        { saleItemId: 'item-001', employeeId: 'emp-c', roleType: '养生师', allocationRatio: 0.40 },
+        { saleItemId: 'item-001', employeeId: 'emp-d', roleType: '养生师', allocationRatio: 0.60 },
+        { saleItemId: 'item-001', employeeId: 'emp-e', roleType: '推广师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-f', roleType: '推广师', allocationRatio: 0.70 },
+      ],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+    const captured = mockTransactionCaptureInsert()
+
+    await allocationRoutes.save(ctx)
+
+    expect(ctx.result.allocationCount).toBe(6)
+    expect(captured).toHaveLength(6)
+  })
+
+  test('服务端重算 totalAmount（前端传 99999 被忽略）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{
+        saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '美容师',
+        allocationRatio: 0.30, totalAmount: 99999, // 前端篡改
+      }],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+    const captured = mockTransactionCaptureInsert()
+
+    await allocationRoutes.save(ctx)
+
+    // INSERT 参数顺序: $1 saleItemId, $2 employeeId, $3 roleType,
+    //                 $4 departmentName, $5 allocationRatio, $6 totalAmount, $7 now
+    expect(captured[0][5]).toBe(300) // 1000 × 0.30 = 300，不是 99999
+  })
+
+  test('池金额合计超额被拒（0.60 + 0.60 = 1.20）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        { saleItemId: 'item-001', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.60 },
+        { saleItemId: 'item-001', employeeId: 'emp-2', roleType: '美容师', allocationRatio: 0.60 },
+      ],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*合计超过商品金额/)
+  })
+
+  test('池金额合计 = 1.00 通过（0.30 + 0.30 + 0.40，容差内）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        { saleItemId: 'item-001', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-2', roleType: '美容师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-3', roleType: '美容师', allocationRatio: 0.40 },
+      ],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+    const captured = mockTransactionCaptureInsert()
+
+    await allocationRoutes.save(ctx)
+
+    expect(ctx.result.allocationCount).toBe(3)
+    // 0.30+0.30+0.40 = 1.00，100+100+100+... 累计 = 300+300+400 = 1000 ≤ 1000+0.02
+    const sum = captured.reduce((s, p) => s + p[5], 0)
+    expect(sum).toBeCloseTo(1000, 2)
+  })
+
+  test('INSERT 写入 role_type 列', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [{
+        saleItemId: 'item-001', employeeId: 'emp-b1', roleType: '推广师',
+        allocationRatio: 0.40,
+      }],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+    const captured = mockTransactionCaptureInsert()
+
+    await allocationRoutes.save(ctx)
+
+    // $3 = roleType
+    expect(captured[0][2]).toBe('推广师')
+  })
+
+  test('同 roleType 跨不同 saleItemId 互不约束（池键含 saleItemId）', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        // item-001 美容师池 3 人
+        { saleItemId: 'item-001', employeeId: 'emp-1', roleType: '美容师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-2', roleType: '美容师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-3', roleType: '美容师', allocationRatio: 0.40 },
+        // item-002 美容师池 3 人（另一个池，与 item-001 美容师池独立）
+        { saleItemId: 'item-002', employeeId: 'emp-4', roleType: '美容师', allocationRatio: 0.50 },
+        { saleItemId: 'item-002', employeeId: 'emp-5', roleType: '美容师', allocationRatio: 0.50 },
+      ],
+    })
+    mockOrderAndItems([
+      { sale_item_id: 'item-001', received: '1000' },
+      { sale_item_id: 'item-002', received: '500' },
+    ])
+    const captured = mockTransactionCaptureInsert()
+
+    await allocationRoutes.save(ctx)
+
+    expect(ctx.result.allocationCount).toBe(5)
+    expect(captured).toHaveLength(5)
+  })
+
+  test('同池重复员工被拒', async () => {
+    const ctx = createManagerCtx({
+      saleOrderId: 'FY-001',
+      allocations: [
+        { saleItemId: 'item-001', employeeId: 'emp-dup', roleType: '美容师', allocationRatio: 0.30 },
+        { saleItemId: 'item-001', employeeId: 'emp-dup', roleType: '美容师', allocationRatio: 0.40 },
+      ],
+    })
+    mockOrderAndItems([{ sale_item_id: 'item-001', received: '1000' }])
+
+    await expect(allocationRoutes.save(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*不能重复分配同一员工/)
+  })
+})
+
 describe('allocation.deleteAllocation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
