@@ -41,9 +41,10 @@ describe('getVisibleMenuGroups', () => {
     expect(labels).not.toContain('服务单管理')
     expect(labels).not.toContain('预约管理')
     expect(labels).not.toContain('顾客管理')
+    expect(labels).not.toContain('卡包管理')
   })
 
-  it('manager 看到业务管理 + 顾客管理 + 数据中心', () => {
+  it('manager 看到业务管理 + 顾客管理 + 卡包管理 + 数据中心', () => {
     const labels = getMenuLabels(makeSession({ role: 'manager' }))
     expect(labels).toContain('工作台')
     expect(labels).toContain('开单')
@@ -52,6 +53,7 @@ describe('getVisibleMenuGroups', () => {
     expect(labels).toContain('服务单管理')
     expect(labels).toContain('预约管理')
     expect(labels).toContain('顾客管理')
+    expect(labels).toContain('卡包管理')
     expect(labels).toContain('经营数据')
   })
 
@@ -62,12 +64,13 @@ describe('getVisibleMenuGroups', () => {
     expect(labels).not.toContain('系统配置')
   })
 
-  it('finance 以只读角色看到订单/分配/顾客/数据中心', () => {
+  it('finance 以只读角色看到订单/分配/顾客/卡包/数据中心', () => {
     const labels = getMenuLabels(makeSession({ role: 'finance' }))
     expect(labels).toContain('工作台')
     expect(labels).toContain('订单管理')
     expect(labels).toContain('营业额分配')
     expect(labels).toContain('顾客管理')
+    expect(labels).toContain('卡包管理')
     expect(labels).toContain('经营数据')
   })
 
@@ -109,11 +112,12 @@ describe('getVisibleMenuGroups', () => {
     expect(labels).not.toContain('权限管理')
   })
 
-  it('customer_mgr 仅看到顾客管理', () => {
+  it('customer_mgr 看到工作台/顾客/卡包', () => {
     const labels = getMenuLabels(makeSession({ role: 'customer_mgr' }))
     expect(labels).toContain('工作台')
     expect(labels).toContain('顾客管理')
-    expect(labels).toHaveLength(2)
+    expect(labels).toContain('卡包管理')
+    expect(labels).toHaveLength(3)
   })
 
   it('多角色合并菜单（admin + manager）', () => {
