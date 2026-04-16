@@ -51,10 +51,16 @@ interface BindPhoneResult {
   updatedOrdersCount: number
 }
 
+interface RebindPhoneResult {
+  phone: string
+  oldPhone: string
+  mergedAnonymousOrders: number
+}
+
 /**
- * CloudID 方式绑定手机号
+ * CloudID 方式绑定手机号（首次绑定）
  * 封装 loading → API 调用 → 错误处理 → localStorage 持久化 → hideLoading
- * 各页面只需处理成功后的 UI 回调
+ * 已绑定手机号的用户应使用 rebindPhoneWithCloudID
  */
 export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneResult> {
   wx.showLoading({ title: '绑定中...', mask: true })
@@ -69,13 +75,49 @@ export async function bindPhoneWithCloudID(cloudID: string): Promise<BindPhoneRe
     }) as any
 
     if (res.result?.code !== 0) {
-      throw new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'))
+      const err: ClientApiError = new Error(sanitizeErrorMessage(res.result?.message, '绑定失败'))
+      err.code = res.result?.code
+      err.errorType = res.result?.errorType
+      throw err
     }
 
     const { phone, updatedOrdersCount = 0 } = res.result.data
     wx.setStorageSync('phone', phone)
 
     return { phone, updatedOrdersCount }
+  } finally {
+    wx.hideLoading()
+  }
+}
+
+/**
+ * CloudID 方式换绑手机号
+ * 已绑定用户调用，仅 UPDATE client_wechat_users.phone 一列，积分/会员/历史订单全部保留
+ * 业务错误 errorType：PHONE_BOUND_BY_OTHER_USER / PHONE_HAS_EXISTING_PROFILE / PHONE_REQUIRED
+ */
+export async function rebindPhoneWithCloudID(cloudID: string): Promise<RebindPhoneResult> {
+  wx.showLoading({ title: '换绑中...', mask: true })
+  try {
+    const res = await wx.cloud.callFunction({
+      name: 'clientApi',
+      data: {
+        action: 'auth.rebindPhone',
+        payload: {},
+        phoneData: wx.cloud.CloudID(cloudID)
+      }
+    }) as any
+
+    if (res.result?.code !== 0) {
+      const err: ClientApiError = new Error(sanitizeErrorMessage(res.result?.message, '换绑失败'))
+      err.code = res.result?.code
+      err.errorType = res.result?.errorType
+      throw err
+    }
+
+    const { phone, oldPhone, mergedAnonymousOrders = 0 } = res.result.data
+    wx.setStorageSync('phone', phone)
+
+    return { phone, oldPhone, mergedAnonymousOrders }
   } finally {
     wx.hideLoading()
   }

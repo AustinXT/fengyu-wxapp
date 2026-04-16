@@ -105,8 +105,9 @@
   <!-- 账户设置 -->
   <view class="section-title" style="margin-top:32rpx">账户设置</view>
   <van-cell-group inset>
-    <!-- 使用 button + getPhoneNumber 获取手机号 -->
+    <!-- 手机号：未绑定 → 直接触发微信授权（首绑）；已绑定 → 跳转 profile-edit 走换绑流程 -->
     <button
+      wx:if="{{!maskedPhone}}"
       class="phone-bind-btn"
       open-type="getPhoneNumber"
       bindgetphonenumber="onGetPhoneNumber"
@@ -115,9 +116,17 @@
         title="绑定手机号"
         icon="phone-o"
         is-link
-        value="{{maskedPhone || '未绑定'}}"
+        value="未绑定"
       />
     </button>
+    <van-cell
+      wx:else
+      title="手机号"
+      icon="phone-o"
+      is-link
+      value="{{maskedPhone}}"
+      bindtap="onEditProfile"
+    />
     <van-cell
       title="切换门店"
       icon="shop-o"
