@@ -1,15 +1,15 @@
 <!-- pages/order-create/order-create.wxml — 开单 -->
 <view class="container order-create-page">
 
-  <!-- 顶部大类分类横向导航 -->
+  <!-- 顶部商品类型 4 选 1（PR-B §2.1）-->
   <van-tabs
-    active="{{activeBigCategoryIndex}}"
+    active="{{productKindChoiceIndex}}"
     bind:change="onBigCategoryChange"
     color="#C0322A"
     title-active-color="#C0322A"
     line-width="40rpx"
   >
-    <van-tab wx:for="{{bigCategories}}" wx:key="*this" title="{{item}}" />
+    <van-tab wx:for="{{productKindChoices}}" wx:key="*this" title="{{item}}" />
   </van-tabs>
 
   <!-- 分类 + 商品主区域 -->

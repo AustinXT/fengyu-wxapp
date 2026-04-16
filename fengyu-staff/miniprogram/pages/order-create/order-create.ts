@@ -5,7 +5,15 @@ import { calcCartTotal } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 
 const app = getApp<IAppOption>();
-const BIG_CATEGORIES = ['组合套餐', '护理项目', '家居产品', '充值卡', '体验卡'];
+
+/**
+ * 顶部商品类型 4 选 1（PR-B 改版）
+ * - 组合套餐：走 BundlePicker 子视图（products.is_bundle=true）
+ * - 普通商品：productKind IN ('护理项目','家居产品') AND isBundle != true
+ * - 体验卡 / 充值卡：productKind='体验卡' / '充值卡'（grid 布局）
+ */
+const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充值卡'] as const;
+type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
 
 type OrderType = 'normal' | 'experience' | 'internal' | 'promotion';
 
@@ -46,6 +54,27 @@ interface SkuItem {
   productType: string;
   serviceFee: number;
   isShengmei: boolean | null;
+  /** 是否为套餐 SKU（关联任一 products.is_bundle=true 则为 true；用于"普通商品"视图过滤） */
+  isBundle?: boolean;
+}
+
+/** 套餐分组（PR-A 云函数 product.shopInit 返回 mallBundleGroups[]） */
+interface BundleGroup {
+  id: number;
+  groupName: string;
+  pickCount: number | null;
+  skuIds: string[];
+}
+
+/** 套餐商品（bundle SPU） */
+interface BundleSpu {
+  productId: string;
+  name: string;
+  coverImage: string | null;
+  description: string | null;
+  price: number;
+  specialPrice: number | null;
+  groups: BundleGroup[];
 }
 
 /** 展示用 SPU 格式（兼容 WXML 模板） */
@@ -57,6 +86,7 @@ interface DisplayItem {
   productKind: string;
   productType: string;
   sessionCount: number | null;
+  isBundle?: boolean;
 }
 
 interface CustomerInfo {
@@ -76,6 +106,7 @@ interface CouponInfo {
 interface ShopInitResponse {
   categories: Category[];
   skuList: SkuItem[];
+  mallBundleGroups?: BundleSpu[];
 }
 
 interface OrderCreateResponse {
@@ -96,19 +127,48 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
     productKind: sku.productKind,
     productType: sku.productType,
     sessionCount: sku.sessionCount,
+    isBundle: !!sku.isBundle,
   }
+}
+
+/**
+ * 商品类型过滤器（PR-B §1.2）
+ * - 普通商品：productKind ∈ {护理项目, 家居产品} 且非 bundle
+ * - 体验卡 / 充值卡：按 productKind 匹配
+ * - 组合套餐：不走 SKU 列表，由 BundlePicker 接管
+ */
+function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): SkuItem[] {
+  if (choice === '组合套餐') return [];
+  if (choice === '普通商品') {
+    return skus.filter(s => (s.productKind === '护理项目' || s.productKind === '家居产品') && !s.isBundle);
+  }
+  // 体验卡 / 充值卡
+  return skus.filter(s => s.productKind === choice);
+}
+
+/** 分类过滤器（按选中商品类型裁剪侧边栏候选分类） */
+function filterCategoriesByKindChoice(categories: Category[], choice: ProductKindChoice): Category[] {
+  if (choice === '组合套餐') return [];
+  if (choice === '普通商品') {
+    return categories.filter(c => c.productKind === '护理项目' || c.productKind === '家居产品');
+  }
+  return categories.filter(c => c.productKind === choice);
 }
 
 Page({
   data: {
     isManager: false,
-    // 商品目录（三级：大类 → 分类 → SKU）
-    bigCategories: BIG_CATEGORIES,
-    activeBigCategoryIndex: 0,
+    // 顶部商品类型 4 选 1（PR-B）
+    productKindChoices: PRODUCT_KIND_CHOICES as unknown as string[],
+    productKindChoiceIndex: 1, // 默认"普通商品"
+    productKindChoice: '普通商品' as ProductKindChoice,
+    // 商品目录（侧边栏分类 + SKU 列表）
     catalogLoading: false,
     categories: [] as Category[],
     activeCategoryIndex: 0,
     spuList: [] as DisplayItem[],
+    // 组合套餐（BundlePicker 数据源）
+    bundleSpus: [] as BundleSpu[],
     // 购物车
     cart: [] as CartItem[],
     cartCount: 0,
@@ -143,7 +203,9 @@ Page({
 
   // 所有分类（未过滤）
   _allCategories: [] as Category[],
-  // SKU 缓存：按 categoryId 缓存已加载的展示列表
+  // 所有 SKU（未过滤，shopInit 一次性返回全量）
+  _allSkus: [] as SkuItem[],
+  // SKU 缓存：按 `${productKindChoice}:${categoryId}` 缓存已加载的展示列表
   _spuCache: {} as Record<string, DisplayItem[]>,
 
   onShow() {
@@ -223,34 +285,15 @@ Page({
     try {
       const data = await callStaffApi<ShopInitResponse>('product.shopInit');
       const categories: Category[] = data.categories || [];
-      const spuList: DisplayItem[] = (data.skuList || []).map(skuToDisplay);
+      const rawSkus: SkuItem[] = data.skuList || [];
+      const bundleSpus: BundleSpu[] = data.mallBundleGroups || [];
 
       this._allCategories = categories;
-      if (categories.length > 0) {
-        this._spuCache[categories[0].id] = spuList;
-      }
+      this._allSkus = rawSkus;
+      this._spuCache = {};
 
-      // 按当前大类筛选侧边栏
-      const activeBig = BIG_CATEGORIES[this.data.activeBigCategoryIndex];
-      const filtered = categories.filter((c: Category) => c.productKind === activeBig);
-
-      // 判断首个筛选分类是否有缓存
-      let displayList = spuList;
-      if (filtered.length > 0 && filtered[0].id !== categories[0]?.id) {
-        displayList = [];
-      }
-
-      this.setData({
-        categories: filtered,
-        activeCategoryIndex: 0,
-        spuList: displayList,
-        catalogLoading: false,
-      });
-
-      // 首个大类分类与全局首个分类不同，需单独加载
-      if (filtered.length > 0 && displayList.length === 0) {
-        this.loadSpuList(filtered[0].id);
-      }
+      this.setData({ bundleSpus, catalogLoading: false });
+      this.applyKindChoice(this.data.productKindChoice);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
@@ -258,61 +301,123 @@ Page({
     }
   },
 
-  onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
-    const index = typeof e.detail === 'number' ? e.detail : (e.detail as { index?: number })?.index;
-    if (typeof index !== 'number' || index === this.data.activeBigCategoryIndex) return;
+  /**
+   * 按 productKindChoice 过滤侧边栏 + SKU 列表
+   * 组合套餐不走此路径（由 BundlePicker 接管，主区域通过 wx:if 切视图）
+   */
+  applyKindChoice(choice: ProductKindChoice) {
+    if (choice === '组合套餐') {
+      this.setData({
+        categories: [],
+        activeCategoryIndex: 0,
+        spuList: [],
+      });
+      return;
+    }
 
-    const activeBig = BIG_CATEGORIES[index];
-    const filtered = this._allCategories.filter((c: Category) => c.productKind === activeBig);
+    const filtered = filterCategoriesByKindChoice(this._allCategories, choice);
+    if (filtered.length === 0) {
+      this.setData({
+        categories: [],
+        activeCategoryIndex: 0,
+        spuList: [],
+      });
+      return;
+    }
 
-    // 先重置 activeCategoryIndex 为 -1，强制 van-sidebar 刷新选中态
+    const firstCatId = filtered[0].id;
+    const cacheKey = `${choice}:${firstCatId}`;
+    let list = this._spuCache[cacheKey];
+    if (!list) {
+      // 首次进入该 choice 的首分类：从 _allSkus 本地过滤
+      const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
+      list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
+      this._spuCache[cacheKey] = list;
+    }
+
+    // 先把 activeCategoryIndex 置 -1 强制 van-sidebar 刷新
     this.setData({
-      activeBigCategoryIndex: index,
       categories: filtered,
       activeCategoryIndex: -1,
       spuList: [],
     }, () => {
-      // categories 渲染完成后，再设置正确的选中索引
-      this.setData({ activeCategoryIndex: 0 });
-
-      if (filtered.length > 0) {
-        const cached = this._spuCache[filtered[0].id];
-        if (cached) {
-          this.setData({ spuList: cached });
-        } else {
-          this.loadSpuList(filtered[0].id);
-        }
-      }
+      this.setData({ activeCategoryIndex: 0, spuList: list });
     });
+  },
+
+  onBigCategoryChange(e: WechatMiniprogram.CustomEvent) {
+    const index = typeof e.detail === 'number' ? e.detail : (e.detail as { index?: number })?.index;
+    if (typeof index !== 'number' || index === this.data.productKindChoiceIndex) return;
+    const nextChoice = PRODUCT_KIND_CHOICES[index];
+    if (!nextChoice) return;
+
+    const apply = () => {
+      this.setData({
+        productKindChoiceIndex: index,
+        productKindChoice: nextChoice,
+      });
+      this.applyKindChoice(nextChoice);
+    };
+
+    // 切商品类型时购物车非空 → 确认清空（B4）
+    if (this.data.cart.length > 0) {
+      wx.showModal({
+        title: '切换商品类型',
+        content: '切换后将清空购物车，是否继续？',
+        confirmColor: '#C0322A',
+        success: (res) => {
+          if (res.confirm) {
+            this.updateCart([]);
+            apply();
+          }
+        },
+      });
+      return;
+    }
+    apply();
   },
 
   onCategoryChange(e: WechatMiniprogram.CustomEvent) {
     const index = typeof e.detail === 'number' ? e.detail : (e.detail as { key?: number })?.key;
     if (typeof index !== 'number') return;
-    const { categories } = this.data;
+    const { categories, productKindChoice } = this.data;
     if (index === this.data.activeCategoryIndex && this.data.spuList.length > 0) return;
 
     const cat = categories[index];
     if (!cat) return;
 
-    // 缓存命中：直接替换，不清空不闪烁
-    const cached = this._spuCache[cat.id];
+    const cacheKey = `${productKindChoice}:${cat.id}`;
+    const cached = this._spuCache[cacheKey];
     if (cached) {
       this.setData({ activeCategoryIndex: index, spuList: cached });
       return;
     }
 
-    // 未命中：清空列表显示骨架屏，发起请求
     this.setData({ activeCategoryIndex: index, spuList: [] });
     this.loadSpuList(cat.id);
   },
 
   async loadSpuList(categoryId: string) {
+    const { productKindChoice } = this.data;
+    const cacheKey = `${productKindChoice}:${categoryId}`;
+
+    // 优先用本地 _allSkus 过滤（shopInit 已返全量）
+    const localSkus = this._allSkus.filter(s => s.categoryId === categoryId);
+    if (localSkus.length > 0) {
+      const list = filterSkusByKindChoice(localSkus, productKindChoice).map(skuToDisplay);
+      this._spuCache[cacheKey] = list;
+      this.setData({ spuList: list });
+      return;
+    }
+
+    // 本地无缓存兜底：发请求（补 productKind 参数）
     this.setData({ catalogLoading: true });
     try {
       const skus = await callStaffApi<SkuItem[]>('product.skuList', { categoryId });
-      const list = (skus || []).map(skuToDisplay);
-      this._spuCache[categoryId] = list;
+      // 追加到 _allSkus（便于后续缓存命中）
+      this._allSkus = this._allSkus.concat(skus || []);
+      const list = filterSkusByKindChoice(skus || [], productKindChoice).map(skuToDisplay);
+      this._spuCache[cacheKey] = list;
       this.setData({ spuList: list, catalogLoading: false });
     } catch (_) {
       this.setData({ spuList: [], catalogLoading: false });
