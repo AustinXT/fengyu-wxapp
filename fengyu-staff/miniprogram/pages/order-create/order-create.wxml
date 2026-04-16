@@ -160,13 +160,11 @@
     bind:close="onCloseCheckout"
   >
     <view class="checkout-panel">
-      <!-- 步骤条 -->
+      <!-- 步骤条（PR-D3.1：简化为 2 步；Step 1 编号保留 2 避免 git blame 噪声） -->
       <view class="checkout-steps">
         <view class="checkout-step {{checkoutStep >= 0 ? 'checkout-step--active' : ''}}">选顾客</view>
         <view class="checkout-step-line" />
-        <view class="checkout-step {{checkoutStep >= 1 ? 'checkout-step--active' : ''}}">开单类型</view>
-        <view class="checkout-step-line" />
-        <view class="checkout-step {{checkoutStep >= 2 ? 'checkout-step--active' : ''}}">确认</view>
+        <view class="checkout-step {{checkoutStep === 2 ? 'checkout-step--active' : ''}}">确认订单</view>
       </view>
 
       <!-- Step 0: 选择顾客 -->
@@ -214,11 +212,6 @@
             bind:click="onStep0Next"
           >下一步</van-button>
         </view>
-      </view>
-
-      <!-- Step 1（死码）—— PR-B 废除"选开单模式"；PR-C 将订单类型挪到 Step 2 顶部 -->
-      <view wx:if="{{checkoutStep === 1}}" class="checkout-body">
-        <!-- intentionally empty -->
       </view>
 
       <!-- Step 2: 确认订单 -->

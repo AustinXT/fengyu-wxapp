@@ -190,7 +190,7 @@ Page({
     cartTotal: '0.00',
     // 结算底部弹层
     showCheckout: false,
-    checkoutStep: 0,   // 0=选顾客 1=选类型 2=确认
+    checkoutStep: 0,   // 0=选顾客 2=确认（Step 1 历史遗留编号，已废弃）
     // Step 0: 顾客
     customerPhone: '',
     customerSearching: false,
