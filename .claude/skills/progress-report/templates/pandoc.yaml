@@ -1,0 +1,24 @@
+---
+# pandoc metadata for XeLaTeX Chinese PDF
+documentclass: article
+CJKmainfont: Songti SC
+CJKsansfont: Heiti SC
+CJKmonofont: Heiti SC
+mainfont: Songti SC
+sansfont: Heiti SC
+monofont: Menlo
+header-includes:
+  - |
+    \usepackage{fancyhdr}
+    \pagestyle{fancy}
+    \fancyhead[L]{凤御美容院 — 项目进度汇报}
+    \fancyhead[R]{\today}
+    \fancyfoot[C]{\thepage}
+    \usepackage{xcolor}
+    \definecolor{brand}{HTML}{C0322A}
+    \usepackage{titlesec}
+    \titleformat{\section}{\Large\bfseries\color{brand}}{}{0em}{}
+    \titleformat{\subsection}{\large\bfseries}{}{0em}{}
+    \usepackage{enumitem}
+    \setlist[itemize]{itemsep=2pt, parsep=0pt}
+---
