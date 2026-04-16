@@ -572,9 +572,10 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
           chain.limit = vi.fn().mockImplementation(() => {
             selectCall++
             if (selectCall === 1) {
+              // 注意：不要用 ?? 覆盖显式传入的 null，otherwise clientUserId:null 分支失效
               return Promise.resolve([{
-                clientUserId: opts.clientUserId ?? 'user-1',
-                storeId: opts.storeId ?? 'store-1',
+                clientUserId: 'clientUserId' in opts ? opts.clientUserId : 'user-1',
+                storeId: 'storeId' in opts ? opts.storeId : 'store-1',
               }])
             }
             if (selectCall === 2) {
