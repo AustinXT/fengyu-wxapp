@@ -1,7 +1,7 @@
 // pages/order-create/order-create.ts — 开单
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
-import { calcCartTotal } from '../../utils/cart-calc';
+import { calcCartTotal, calcHalfPriceTotal } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
 
 const app = getApp<IAppOption>();
@@ -15,7 +15,13 @@ const app = getApp<IAppOption>();
 const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充值卡'] as const;
 type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
 
-type OrderType = 'normal' | 'experience' | 'internal' | 'promotion';
+/**
+ * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐，仅使用前 3 值
+ * - 销售单：默认，正常计价（支持 couponId / 行级 customPrice）
+ * - 内部单：managerOnly，所有 SKU 半价（后端计算），禁优惠券/禁改价
+ * - 转换单：managerOnly，调 order.createConversion；需要已注册 clientUserId
+ */
+type SaleOrderType = '销售单' | '内部单' | '转换单';
 
 interface CartItem {
   spuId: string;
@@ -32,8 +38,12 @@ interface CartItem {
   subtotal: string;
   /** 预计算：price × quantity - discount */
   itemTotal: string;
+  /** 预计算：内部单半价实付（price × 0.5 × quantity），仅 saleOrderType='内部单' 时展示 */
+  halfPriceItemTotal: string;
   /** 前端临时字段：同一套餐生成的多行共享此 id（PR-B §2.2），非 schema 字段 */
   refBundleId?: string;
+  /** PR-C §C6：行级自定义单价（仅销售单可用；空字符串=不启用） */
+  customPrice?: string;
 }
 
 interface Category {
@@ -186,11 +196,18 @@ Page({
     customerSearching: false,
     customerInfo: null as null | CustomerInfo,
     recentCustomers: [] as CustomerInfo[],
-    // Step 1: 开单类型
-    orderType: 'normal' as OrderType,
+    // Step 2 顶部：订单类型 3 选 1（PR-C §C1）
+    saleOrderType: '销售单' as SaleOrderType,
+    /** 内部单半价合计（原价 × 0.5 - 每行 discount；discount 禁用时实际始终为 原价 × 0.5） */
+    halfPriceTotal: '0.00',
     // Step 2: 确认 + 备注
     remark: '',
     submitting: false,
+    // 转换单（ConversionPanel 反馈 → 主页记录用于提交）
+    conversionSelectedSaleItemIds: [] as string[],
+    conversionDeductibleSum: 0,
+    conversionPriceDiff: 0,
+    conversionPaymentMethod: null as null | '微信' | '线下',
     // 优惠券
     selectedCoupon: null as null | { couponId: string; name: string; discount: number },
     couponDiscount: 0,
@@ -245,7 +262,7 @@ Page({
           sessionCount: pending.sessionCount || 0,
           productType: pending.productType,
           workfineItemId: pending.workfineItemId || '',
-          subtotal: '', itemTotal: '',
+          subtotal: '', itemTotal: '', halfPriceItemTotal: '',
         }];
         this.updateCart(cart);
       } else {
@@ -270,15 +287,14 @@ Page({
             sessionCount: pending.sessionCount || 0,
             productType: pending.productType,
             workfineItemId: pending.workfineItemId || '',
-            subtotal: '', itemTotal: '',
+            subtotal: '', itemTotal: '', halfPriceItemTotal: '',
           });
         }
         this.updateCart(cart);
       }
       if (pending.directCheckout) {
-        // 组合套餐商品直接下单时自动设置类型
-        const autoType: OrderType = pending.productType === '组合套餐' ? 'promotion' : 'normal';
-        this.setData({ showCheckout: true, checkoutStep: 0, orderType: autoType });
+        // PR-C §C6：旧 orderType='promotion' 分支删除；saleOrderType 默认 '销售单'
+        this.setData({ showCheckout: true, checkoutStep: 0, saleOrderType: '销售单' });
       }
     }
   },
@@ -483,7 +499,7 @@ Page({
         sessionCount: item.sessionCount || 0,
         productType: item.productKind || item.productType,
         workfineItemId: '',
-        subtotal: '', itemTotal: '',
+        subtotal: '', itemTotal: '', halfPriceItemTotal: '',
       });
     }
     this.updateCart(cart);
@@ -526,6 +542,8 @@ Page({
   },
 
   onDiscountChange(e: WechatMiniprogram.CustomEvent) {
+    // 内部单禁改 discount（UI 已 disabled，防御性再拒一次）
+    if (this.data.saleOrderType === '内部单') return;
     const skuId = e.currentTarget.dataset.skuId as string;
     const val = parseFloat(e.detail.value) || 0;
     const cart = [...this.data.cart];
@@ -537,13 +555,39 @@ Page({
     this.updateCart(cart);
   },
 
+  /**
+   * PR-C §C6：行级自定义单价（customPrice）。
+   * 仅销售单启用；内部单/转换单不显示该输入。空字符串=不启用，后端回落至 SKU 标价。
+   */
+  onCustomPriceChange(e: WechatMiniprogram.CustomEvent) {
+    if (this.data.saleOrderType !== '销售单') return;
+    const skuId = e.currentTarget.dataset.skuId as string;
+    const raw = (e.detail?.value ?? '') as string;
+    const cart = [...this.data.cart];
+    const idx = cart.findIndex(c => c.skuId === skuId);
+    if (idx < 0) return;
+    const parsed = parseFloat(raw);
+    if (!raw || Number.isNaN(parsed) || parsed < 0) {
+      cart[idx].customPrice = '';
+    } else {
+      cart[idx].customPrice = String(Math.round(parsed * 100) / 100);
+    }
+    this.updateCart(cart);
+  },
+
   updateCart(cart: CartItem[]) {
     for (const c of cart) {
       c.subtotal = (c.price * c.quantity).toFixed(2);
       c.itemTotal = (c.price * c.quantity - c.discount).toFixed(2);
+      // PR-C §C2：内部单半价行总计（与云函数 create 内部单分支口径对齐）
+      const halfUnit = Math.round(c.price * 50) / 100;
+      c.halfPriceItemTotal = (halfUnit * c.quantity - (c.discount || 0)).toFixed(2);
     }
     const { count, total } = calcCartTotal(cart);
-    const update: Record<string, any> = { cart, cartCount: count, cartTotal: total };
+    const halfPriceTotal = calcHalfPriceTotal(cart);
+    const update: Record<string, any> = {
+      cart, cartCount: count, cartTotal: total, halfPriceTotal,
+    };
     if (this.data.couponDiscount > 0) {
       update.couponTotal = (parseFloat(total) - this.data.couponDiscount).toFixed(2);
     }
@@ -559,7 +603,16 @@ Page({
       wx.showToast({ title: '请先添加商品', icon: 'none' });
       return;
     }
-    this.setData({ showCheckout: true, checkoutStep: 0, orderType: 'normal' });
+    this.setData({
+      showCheckout: true,
+      checkoutStep: 0,
+      saleOrderType: '销售单',
+      // 重置转换单 state
+      conversionSelectedSaleItemIds: [],
+      conversionDeductibleSum: 0,
+      conversionPriceDiff: 0,
+      conversionPaymentMethod: null,
+    });
   },
 
   onCloseCheckout() {
@@ -608,6 +661,63 @@ Page({
     // PR-B: Step 1 "选开单模式" 已废除；Step 0 → Step 2 直跳确认页。
     // Step 1 当前为空占位，PR-C 将填入"订单类型 3 选 1"。
     this.setData({ checkoutStep: 2 });
+  },
+
+  /**
+   * PR-C §C1 / §C5 — 订单类型 3 选 1 切换
+   * - managerOnly 守卫：内部单 / 转换单仅店长可切（前端 UI 也按 isManager 显示 disabled 态）
+   * - 转换单守卫：clientUserId 必填（未注册顾客禁用转换单 tab）
+   * - 切走销售单/转换单后清空优惠券（内部单/转换单均不允许券）
+   * - 切出转换单清空转换 state
+   */
+  onSelectSaleOrderType(e: WechatMiniprogram.TouchEvent) {
+    const next = e.currentTarget.dataset.type as SaleOrderType;
+    if (!next || next === this.data.saleOrderType) return;
+    if ((next === '内部单' || next === '转换单') && !this.data.isManager) {
+      wx.showToast({ title: '仅店长可用', icon: 'none' });
+      return;
+    }
+    if (next === '转换单' && !this.data.customerInfo?.id) {
+      wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
+      return;
+    }
+    const update: Record<string, any> = { saleOrderType: next };
+    if (next !== '销售单' && this.data.selectedCoupon) {
+      update.selectedCoupon = null;
+      update.couponDiscount = 0;
+      update.couponTotal = '';
+    }
+    if (next !== '转换单') {
+      update.conversionSelectedSaleItemIds = [];
+      update.conversionDeductibleSum = 0;
+      update.conversionPriceDiff = 0;
+      update.conversionPaymentMethod = null;
+    }
+    // 切到非销售单时清空行级 customPrice（后端内部单/转换单均不接受 customPrice）
+    if (next !== '销售单') {
+      const cart = this.data.cart.map(c => ({ ...c, customPrice: '' }));
+      update.cart = cart;
+      this.setData(update);
+      this.updateCart(cart);
+      return;
+    }
+    this.setData(update);
+  },
+
+  /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
+  onConversionPanelChange(e: WechatMiniprogram.CustomEvent) {
+    const { selectedSaleItemIds, deductibleSum, priceDiff, paymentMethod } = (e.detail || {}) as {
+      selectedSaleItemIds?: string[];
+      deductibleSum?: number;
+      priceDiff?: number;
+      paymentMethod?: '微信' | '线下' | null;
+    };
+    this.setData({
+      conversionSelectedSaleItemIds: selectedSaleItemIds || [],
+      conversionDeductibleSum: Number(deductibleSum) || 0,
+      conversionPriceDiff: Number(priceDiff) || 0,
+      conversionPaymentMethod: paymentMethod ?? null,
+    });
   },
 
   // Step 2: 确认订单
@@ -751,8 +861,14 @@ Page({
   },
 
   async onSubmitOrder() {
-    const { customerInfo, orderType, cart, remark, submitting } = this.data;
+    const { customerInfo, saleOrderType, cart, remark, submitting } = this.data;
     if (!customerInfo || submitting) return;
+
+    // PR-C §C4 — 分支到 createConversion
+    if (saleOrderType === '转换单') {
+      return this._submitConversion();
+    }
+
     this.setData({ submitting: true });
     try {
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
@@ -760,26 +876,114 @@ Page({
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
         paymentMethod: '微信',
-        orderType,
-        items: cart.map(c => ({
-          skuId: c.skuId,
-          workfineItemId: c.workfineItemId,
-          spuName: c.spuName,
-          specName: c.specName,
-          quantity: c.quantity,
-          unitPrice: c.price,
-          discount: c.discount,
-        })),
+        saleOrderType,
+        items: cart.map(c => {
+          const payloadItem: Record<string, any> = {
+            skuId: c.skuId,
+            workfineItemId: c.workfineItemId,
+            spuName: c.spuName,
+            specName: c.specName,
+            quantity: c.quantity,
+            // 内部单 discount 前端禁用，但若有残值会被后端校验；销售单透传
+            discount: saleOrderType === '内部单' ? 0 : c.discount,
+          };
+          // PR-C §C6 — 行级自定义单价（仅销售单，后端字段名 customPrice）
+          if (saleOrderType === '销售单' && c.customPrice && parseFloat(c.customPrice) > 0) {
+            payloadItem.customPrice = parseFloat(c.customPrice);
+          }
+          return payloadItem;
+        }),
         remark,
-        couponId: this.data.selectedCoupon?.couponId || undefined,
+        // 内部单不允许优惠券（云函数已守卫）
+        couponId: saleOrderType === '销售单'
+          ? (this.data.selectedCoupon?.couponId || undefined)
+          : undefined,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
-      this.setData({ showCheckout: false, orderType: 'normal', selectedCoupon: null, couponDiscount: 0 });
+      this.setData({
+        showCheckout: false,
+        saleOrderType: '销售单',
+        selectedCoupon: null,
+        couponDiscount: 0,
+      });
       wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '开单失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
+    }
+  },
+
+  /**
+   * PR-C §C3/§C4 — 转换单提交：order.createConversion
+   * - convertOutSaleItemIds 来自 ConversionPanel change 事件
+   * - convertInItems 来自当前购物车（只取 skuId + quantity）
+   * - paymentMethod：差额>0 必填；差额<=0 后端忽略但仍需字段，默认 '微信'
+   * - Toast 按差额方向差异化
+   */
+  async _submitConversion() {
+    const {
+      customerInfo, cart, remark, submitting,
+      conversionSelectedSaleItemIds, conversionPriceDiff, conversionPaymentMethod,
+    } = this.data;
+    if (!customerInfo?.id) {
+      wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
+      return;
+    }
+    if (conversionSelectedSaleItemIds.length === 0) {
+      wx.showToast({ title: '请选择折抵卡', icon: 'none' });
+      return;
+    }
+    if (conversionPriceDiff > 0 && !conversionPaymentMethod) {
+      wx.showToast({ title: '请选择支付方式', icon: 'none' });
+      return;
+    }
+    if (submitting) return;
+    this.setData({ submitting: true });
+    try {
+      const paymentMethod: '微信' | '线下' =
+        conversionPriceDiff > 0 ? (conversionPaymentMethod as '微信' | '线下') : '微信';
+      const res = await callStaffApi<{
+        saleOrderId: string; priceDiff: number; prepaidCardCredit: number; status: string;
+      }>('order.createConversion', {
+        clientUserId: customerInfo.id,
+        convertOutSaleItemIds: conversionSelectedSaleItemIds,
+        convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
+        paymentMethod,
+        preferredStaffWfId: this.data.preferredStaffWfId || undefined,
+        remark: remark || undefined,
+      });
+      this.saveRecentCustomer(customerInfo);
+      this.updateCart([]);
+      this.setData({
+        showCheckout: false,
+        saleOrderType: '销售单',
+        conversionSelectedSaleItemIds: [],
+        conversionDeductibleSum: 0,
+        conversionPriceDiff: 0,
+        conversionPaymentMethod: null,
+      });
+      // Toast 差异化
+      const diff = Number(res.priceDiff) || 0;
+      let title = '转换成功';
+      if (diff > 0) {
+        title = paymentMethod === '微信'
+          ? `请微信支付差额 ¥${diff.toFixed(2)}`
+          : `请确认补差额收款 ¥${diff.toFixed(2)}`;
+      } else if (diff < 0) {
+        const credit = Math.abs(diff).toFixed(2);
+        title = `差额 ¥${credit} 已充入储值卡`;
+      }
+      wx.showToast({ title, icon: 'none', duration: 2500 });
+      // 差额>0 → 跳订单码继续收款；差额<=0 直接完成，返回即可
+      if (diff > 0) {
+        wx.navigateTo({ url: `/packageOrder/order-qrcode/order-qrcode?saleOrderId=${res.saleOrderId}` });
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '转换失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });

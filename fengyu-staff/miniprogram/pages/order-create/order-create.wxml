@@ -216,68 +216,149 @@
         </view>
       </view>
 
-      <!-- Step 1: 订单类型（PR-C 待填入）—— PR-B 已废除"选开单模式"，此处为空占位 -->
+      <!-- Step 1（死码）—— PR-B 废除"选开单模式"；PR-C 将订单类型挪到 Step 2 顶部 -->
       <view wx:if="{{checkoutStep === 1}}" class="checkout-body">
-        <!-- TODO(PR-C): 订单类型 3 选 1（销售单 / 内部单 / 转换单）+ ConversionPanel -->
+        <!-- intentionally empty -->
       </view>
 
       <!-- Step 2: 确认订单 -->
       <view wx:if="{{checkoutStep === 2}}" class="checkout-body">
         <text class="checkout-customer-label">
-          顾客：{{customerInfo.name || customerInfo.phone}} ·
-          {{orderType === 'normal' ? '正常单' : orderType === 'experience' ? '体验单' : orderType === 'internal' ? '内部单' : '组合套餐'}}
+          顾客：{{customerInfo.name || customerInfo.phone}} · {{saleOrderType}}
         </text>
-        <view class="confirm-items">
-          <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
-            <view class="confirm-item-header">
-              <text class="confirm-item-name">{{item.spuName}}</text>
-              <text class="confirm-item-spec">{{item.specName}}</text>
-            </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">售价</text>
-              <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.subtotal}}</text>
-            </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">优惠</text>
-              <view class="confirm-discount-input-wrap">
-                <text class="confirm-discount-prefix">¥</text>
-                <input
-                  class="confirm-discount-input"
-                  type="digit"
-                  value="{{item.discount || ''}}"
-                  placeholder="0"
-                  data-sku-id="{{item.skuId}}"
-                  bindblur="onDiscountChange"
-                />
+
+        <!-- PR-C §C1 — 订单类型 3 选 1 -->
+        <view class="order-type-cards">
+          <view
+            class="order-type-card {{saleOrderType === '销售单' ? 'order-type-card--active' : ''}}"
+            data-type="销售单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name">销售单</text>
+            <text class="order-type-card-desc">正常计价</text>
+          </view>
+          <view
+            class="order-type-card {{saleOrderType === '内部单' ? 'order-type-card--active' : ''}} {{!isManager ? 'order-type-card--disabled' : ''}}"
+            data-type="内部单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name {{!isManager ? 'order-type-card-name--gray' : ''}}">内部单</text>
+            <text class="order-type-card-desc">员工半价</text>
+          </view>
+          <view
+            class="order-type-card {{saleOrderType === '转换单' ? 'order-type-card--active' : ''}} {{(!isManager || !customerInfo.id) ? 'order-type-card--disabled' : ''}}"
+            data-type="转换单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name {{(!isManager || !customerInfo.id) ? 'order-type-card-name--gray' : ''}}">转换单</text>
+            <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '卡折抵换购'}}</text>
+          </view>
+        </view>
+
+        <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
+        <block wx:if="{{saleOrderType === '转换单'}}">
+          <conversion-panel
+            clientUserId="{{customerInfo.id}}"
+            convertInAmount="{{cartTotal}}"
+            bind:change="onConversionPanelChange"
+          />
+        </block>
+
+        <!-- 销售单 / 内部单：行级明细 -->
+        <block wx:else>
+          <view class="confirm-items">
+            <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
+              <view class="confirm-item-header">
+                <text class="confirm-item-name">{{item.spuName}}</text>
+                <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">售价</text>
+                <text class="confirm-item-value">¥{{item.price}} × {{item.quantity}} = ¥{{item.subtotal}}</text>
+              </view>
+
+              <!-- PR-C §C6：行级自定义单价（仅销售单） -->
+              <view wx:if="{{saleOrderType === '销售单'}}" class="confirm-item-row">
+                <text class="confirm-item-label">自定义单价</text>
+                <view class="confirm-discount-input-wrap">
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{item.customPrice}}"
+                    placeholder="留空使用原价"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onCustomPriceChange"
+                  />
+                </view>
+              </view>
+
+              <!-- PR-C §C2：内部单禁 discount（仅展示），销售单正常可编辑 -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">优惠</text>
+                <view class="confirm-discount-input-wrap {{saleOrderType === '内部单' ? 'confirm-discount-input-wrap--disabled' : ''}}">
+                  <text class="confirm-discount-prefix">¥</text>
+                  <input
+                    class="confirm-discount-input"
+                    type="digit"
+                    value="{{item.discount || ''}}"
+                    placeholder="0"
+                    disabled="{{saleOrderType === '内部单'}}"
+                    data-sku-id="{{item.skuId}}"
+                    bindblur="onDiscountChange"
+                  />
+                </view>
+              </view>
+
+              <!-- 实付：内部单展示半价；销售单展示 itemTotal -->
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">实付</text>
+                <block wx:if="{{saleOrderType === '内部单'}}">
+                  <view class="confirm-internal-price">
+                    <text class="confirm-item-origprice">¥{{item.itemTotal}}</text>
+                    <text class="confirm-item-receivable">¥{{item.halfPriceItemTotal}}</text>
+                  </view>
+                </block>
+                <text wx:else class="confirm-item-receivable">¥{{item.itemTotal}}</text>
               </view>
             </view>
-            <view class="confirm-item-row">
-              <text class="confirm-item-label">实付</text>
-              <text class="confirm-item-receivable">¥{{item.itemTotal}}</text>
+
+            <!-- PR-C §C2：内部单合计区加"5 折"标签 + 划线原价 + 半价总计 -->
+            <view class="confirm-total-row">
+              <view class="confirm-total-label-group">
+                <text class="confirm-total-label">合计</text>
+                <view wx:if="{{saleOrderType === '内部单'}}" class="confirm-internal-badge">内部单 5 折</view>
+              </view>
+              <block wx:if="{{saleOrderType === '内部单'}}">
+                <view class="confirm-total-price-group">
+                  <text class="confirm-total-strikethrough">¥{{cartTotal}}</text>
+                  <text class="confirm-total-amount">¥{{halfPriceTotal}}</text>
+                </view>
+              </block>
+              <text wx:else class="confirm-total-amount">¥{{cartTotal}}</text>
             </view>
           </view>
-          <view class="confirm-total-row">
-            <text class="confirm-total-label">合计</text>
-            <text class="confirm-total-amount">¥{{cartTotal}}</text>
-          </view>
-        </view>
-        <!-- 优惠券选择 -->
-        <view class="confirm-coupon-row" bindtap="onSelectCoupon">
-          <text class="confirm-item-label">顾客优惠券</text>
-          <view class="confirm-coupon-value">
-            <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
-            <text wx:else class="confirm-coupon-hint">去选择</text>
-            <van-icon name="arrow" size="28rpx" color="#999" />
-          </view>
-        </view>
-        <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
-          <text>{{selectedCoupon.name}}</text>
-        </view>
-        <!-- 券后合计 -->
-        <view wx:if="{{couponDiscount > 0}}" class="confirm-total-row">
-          <text class="confirm-total-label">券后合计</text>
-          <text class="confirm-total-amount confirm-total-amount--coupon">¥{{couponTotal}}</text>
-        </view>
+
+          <!-- PR-C §C2：优惠券控件仅销售单可见（内部单已在云函数侧守卫拒券） -->
+          <block wx:if="{{saleOrderType === '销售单'}}">
+            <view class="confirm-coupon-row" bindtap="onSelectCoupon">
+              <text class="confirm-item-label">顾客优惠券</text>
+              <view class="confirm-coupon-value">
+                <text wx:if="{{selectedCoupon}}" class="confirm-coupon-discount">-¥{{couponDiscount}}</text>
+                <text wx:else class="confirm-coupon-hint">去选择</text>
+                <van-icon name="arrow" size="28rpx" color="#999" />
+              </view>
+            </view>
+            <view wx:if="{{selectedCoupon}}" class="confirm-coupon-info">
+              <text>{{selectedCoupon.name}}</text>
+            </view>
+            <view wx:if="{{couponDiscount > 0}}" class="confirm-total-row">
+              <text class="confirm-total-label">券后合计</text>
+              <text class="confirm-total-amount confirm-total-amount--coupon">¥{{couponTotal}}</text>
+            </view>
+          </block>
+        </block>
+
         <!-- 指定美容师（可选，用于默认分配） -->
         <van-cell
           title="指定美容师"

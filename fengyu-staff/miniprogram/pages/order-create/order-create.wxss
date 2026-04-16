@@ -388,21 +388,21 @@
   justify-content: flex-end;
 }
 
-/* ===== 开单类型卡片（Step 1）===== */
+/* ===== 订单类型卡片（Step 2 顶部；PR-C §C1）===== */
 .order-type-cards {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 16rpx;
   margin-bottom: 20rpx;
 }
 .order-type-card {
   flex: 1;
-  min-width: 28%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8rpx;
-  padding: 24rpx 12rpx;
+  padding: 20rpx 12rpx;
   background: #F5F2EE;
   border: 2rpx solid var(--color-border);
   border-radius: 16rpx;
@@ -414,4 +414,47 @@
 .order-type-card--disabled { opacity: 0.5; }
 .order-type-card-name { font-size: 28rpx; font-weight: 600; color: var(--color-text-primary); }
 .order-type-card-name--gray { color: #CCC; }
-.order-type-card-desc { font-size: 22rpx; color: var(--color-text-hint); }
+.order-type-card-desc { font-size: 22rpx; color: var(--color-text-hint); text-align: center; }
+
+/* ===== PR-C §C2 内部单视觉 ===== */
+/* 合计行"内部单 5 折"红底徽章 + 划线原价 */
+.confirm-total-label-group {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+.confirm-internal-badge {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  letter-spacing: 1rpx;
+}
+.confirm-total-price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 12rpx;
+}
+.confirm-total-strikethrough {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+}
+/* 行级实付：内部单双价 */
+.confirm-internal-price {
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+.confirm-item-origprice {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-decoration: line-through;
+}
+/* 内部单 discount 输入禁用态 */
+.confirm-discount-input-wrap--disabled {
+  background: #F5F2EE;
+  opacity: 0.6;
+}
