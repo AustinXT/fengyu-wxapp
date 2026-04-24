@@ -170,6 +170,6 @@ WHERE pc.user_id = 'FYGK-xxx' ORDER BY ct.created_at;
 
 ## 已知局限 & Follow-up
 
-- 🟠 **env drift**：clientApi(5434) vs staffApi/payNotify(5433) — 跨端联动（场景 B）需先修；建议单独 ticket 对齐。
-- 🟠 **card-recharge WXSS 硬编码 #C0322A**（pre-existing，11 处）：不在本 ticket 范围。
-- 🟡 微信支付接入 mock 模式：真实支付回调自动触发 payNotify 的链路需 env 对齐后重新 smoke。
+- ✅ **env drift 已修**（2026-04-24 11:29）：staffApi / payNotify 云端 `PG_CONNECTION_STRING` 从 5433/fengyu_wxapp 迁至 5434/fengyu，与 clientApi / admin 统一到同一业务库；其他环境变量（CLIENT_SECRET / WXACODE_ENV_VERSION / TMAP_KEY / TMAP_SECRET / MSSQL）完整保留。修复通过 `@cloudbase/manager-node` 的 `updateFunctionConfig` API 完成，以 cloudbaserc.json 为权威源覆盖云端。场景 B 跨端链路现可直接走通。
+- ✅ **card-recharge WXSS 硬编码 #C0322A 已修**（2026-04-24）：`fengyu-staff/miniprogram/packageOrder/card-recharge/card-recharge.wxss` 中 11 处硬编码替换为 `var(--color-primary)` / `var(--color-primary-dark)` / `var(--color-primary-light)`；`__tests__/compile/wxml-compile.test.ts` 220 tests 全绿。
+- 🟡 微信支付接入 mock 模式：真实支付回调自动触发 payNotify 的链路可以在 env 对齐后做一轮回归；当前仍是手动 `tcb fn invoke` 触发（mock `transactionId`）。

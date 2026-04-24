@@ -8,7 +8,7 @@
 
 /* ===== Hero ===== */
 .hero {
-  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
   padding: 48rpx 36rpx 40rpx;
   color: #FFFFFF;
   display: flex;
@@ -51,7 +51,7 @@
   padding: 20rpx 24rpx;
   background: #FFF0EE;
   border-radius: 12rpx;
-  border: 2rpx solid #C0322A;
+  border: 2rpx solid var(--color-primary);
 }
 .customer-info { flex: 1; }
 .customer-name {
@@ -93,7 +93,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
   font-size: 26rpx;
   border-radius: 12rpx;
@@ -138,18 +138,18 @@
   position: relative;
 }
 .tier-card--active {
-  border-color: #C0322A;
-  background: #FFF0EE;
+  border-color: var(--color-primary);
+  background: var(--color-primary-light);
 }
 .tier-face {
   font-size: 40rpx;
   font-weight: 700;
   color: var(--color-text-primary, #1A1A1A);
 }
-.tier-card--active .tier-face { color: #C0322A; }
+.tier-card--active .tier-face { color: var(--color-primary); }
 .tier-discount {
   font-size: 22rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
   padding: 2rpx 12rpx;
   background: #FFF0EE;
@@ -167,7 +167,7 @@
 }
 .tier-bonus {
   font-size: 20rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 500;
 }
 .tier-spec {
@@ -190,7 +190,7 @@
   border: 2rpx solid transparent;
   transition: border-color 0.15s;
 }
-.custom-card--active { border-color: #C0322A; }
+.custom-card--active { border-color: var(--color-primary); }
 .custom-input-row {
   display: flex;
   align-items: baseline;
@@ -215,8 +215,8 @@
 }
 .custom-hint--placeholder { color: var(--color-text-hint, #999); }
 .custom-hint--error { color: #D94040; }
-.custom-hint-strong { color: #C0322A; font-weight: 600; }
-.custom-hint-bonus { color: #C0322A; }
+.custom-hint-strong { color: var(--color-primary); font-weight: 600; }
+.custom-hint-bonus { color: var(--color-primary); }
 
 /* ===== 支付方式 ===== */
 .payment-card {
@@ -275,7 +275,7 @@
 }
 .cta-btn {
   width: 100%;
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
   font-size: 32rpx;
   font-weight: 600;
