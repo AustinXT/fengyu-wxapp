@@ -1,0 +1,13 @@
+<view class="placeholder-wrap">
+  <view class="placeholder-header" wx:if="{{pageTitle}}">{{pageTitle}}</view>
+  <view class="placeholder-body">
+    <van-icon name="{{icon}}" size="120rpx" color="#C0322A" />
+    <text class="placeholder-title">{{subtitle}}</text>
+    <view class="placeholder-slot"><slot /></view>
+    <button
+      wx:if="{{showSwitchToStore}}"
+      class="placeholder-switch-btn"
+      bindtap="onSwitchToStore"
+    >返回门店视图</button>
+  </view>
+</view>

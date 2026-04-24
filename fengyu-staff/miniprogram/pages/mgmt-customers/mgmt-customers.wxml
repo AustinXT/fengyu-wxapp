@@ -1,0 +1,7 @@
+<placeholder-page
+  page-title="顾客"
+  subtitle="功能建设中，敬请期待"
+  icon="friends-o"
+  show-switch-to-store="{{canSwitchStore}}"
+/>
+<mgmt-navbar active="customers" />

@@ -1,0 +1,19 @@
+<view class="mgmt-profile-wrap">
+  <view class="mgmt-profile-header">
+    <view class="mgmt-profile-name">{{staffName || '未命名员工'}}</view>
+    <view class="mgmt-profile-meta">
+      <text wx:if="{{staffLevelLabel}}" class="mgmt-profile-badge">{{staffLevelLabel}}</text>
+      <text wx:if="{{position}}" class="mgmt-profile-meta-text">{{position}}</text>
+      <text wx:if="{{phone}}" class="mgmt-profile-meta-text">{{phone}}</text>
+    </view>
+  </view>
+
+  <view class="mgmt-profile-body">
+    <van-icon name="gem-o" size="120rpx" color="#C0322A" />
+    <text class="mgmt-profile-tip">管理层菜单建设中，敬请期待</text>
+    <button wx:if="{{canSwitchStore}}" class="mgmt-profile-action mgmt-profile-action--outline" bindtap="onSwitchToStore">返回门店视图</button>
+    <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
+  </view>
+
+  <mgmt-navbar active="profile" />
+</view>

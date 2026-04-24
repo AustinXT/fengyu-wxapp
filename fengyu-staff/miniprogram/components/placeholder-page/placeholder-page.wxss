@@ -1,0 +1,48 @@
+.placeholder-wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #F5F5F5;
+}
+
+.placeholder-header {
+  padding: 48rpx 32rpx 16rpx;
+  font-size: 32rpx;
+  font-weight: 600;
+  color: #1A1A1A;
+}
+
+.placeholder-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64rpx 32rpx 180rpx;
+}
+
+.placeholder-title {
+  margin-top: 32rpx;
+  font-size: 30rpx;
+  color: #666;
+}
+
+.placeholder-slot {
+  margin-top: 24rpx;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.placeholder-switch-btn {
+  margin-top: 48rpx;
+  width: 60%;
+  height: 80rpx;
+  line-height: 80rpx;
+  border-radius: 40rpx;
+  background: #FFFFFF;
+  color: #C0322A;
+  font-size: 28rpx;
+  border: 2rpx solid #C0322A;
+}

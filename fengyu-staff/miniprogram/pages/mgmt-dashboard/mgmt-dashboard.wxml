@@ -1,0 +1,7 @@
+<placeholder-page
+  page-title="数据中心"
+  subtitle="功能建设中，敬请期待"
+  icon="chart-trending-o"
+  show-switch-to-store="{{canSwitchStore}}"
+/>
+<mgmt-navbar active="dashboard" />

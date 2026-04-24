@@ -1,0 +1,7 @@
+<placeholder-page
+  page-title="排行榜"
+  subtitle="功能建设中，敬请期待"
+  icon="medal-o"
+  show-switch-to-store="{{canSwitchStore}}"
+/>
+<mgmt-navbar active="ranking" />
