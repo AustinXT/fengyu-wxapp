@@ -132,6 +132,44 @@
 
 ---
 
+#### 3.6.1 储值卡抵扣支付（跨店共享） ✅
+
+**定位**: 储值卡是"**抵扣项**"（与优惠券并列），**不是支付方式**。下单页 UI 分为三段："订单总额 → 抵扣（优惠券 + 储值卡）→ 实付金额（支付方式通道）"。
+
+**核心规则**:
+
+| 规则 | 说明 |
+|------|------|
+| 跨店共享 | 一户一账户；`prepaid_cards.store_id` 列已 DROP；顾客换绑门店后原余额继续可用 |
+| 抵扣开关默认开 | 有余额时默认 `useCard=true`，能抵多少抵多少；用户可手动关闭 |
+| 实付 = 0 时 | `payment_method='无'`（`paymentMethodEnum` 已扩展为 4 值：微信/支付宝/线下/无）；UI 隐藏支付方式按钮组 |
+| 金额字段 | `sale_orders.prepaid_card_amount`（抵扣额，不计入实付）+ `paid_amount`（走支付通道的实付）；`prepaid_card_amount + paid_amount = total_amount`（DB CHECK） |
+| 不支持自定义抵扣金额 | UI 仅给开关，后端按 `min(balance, total - couponDiscount)` 自动算 |
+| 余额不足 | 返回 `INSUFFICIENT_BALANCE`；前端弹框由用户决定（关抵扣重付 / 取消订单），不自动降级 |
+
+**下单流程**:
+
+1. `onLoad` 调 `card.balance` 拉跨店统一余额（无 storeId 参数）
+2. 用户选券 + 决定是否用储值卡 → `order.create` 传 `useCard` + `prepaidCardAmount?`
+3. 后端事务内 `SELECT balance FOR UPDATE` 基础校验，写入订单
+4. 实付 = 0（全额抵扣）→ 同事务扣卡 + 订单直接 `'已支付'`（跳过 `order.pay`）
+5. 实付 > 0 + 微信 → 唤起微信支付 → `payNotify` 成功回调时同事务扣卡
+6. 实付 > 0 + 线下 → 订单转 `'待确认收款'`，员工端 `confirmOffline` 时扣卡
+
+**扫码支付链路（员工预选 → 顾客确认）**:
+
+- 店长在员工端预选的抵扣方案随订单存入（`prepaid_card_amount` 为预选值，`prepaid_cards.balance` 未动）
+- 顾客扫码进 `scan-pay` 页 → 看到预填方案 → 可调整（关抵扣 / 部分抵扣 / 改支付方式）→ 调 `order.scanAdjust` 重算落库
+- 顾客点"确认支付"：
+  - `paid_amount = 0` → `order.confirmPrepaidFull`（事务内扣卡 + 置已支付）
+  - `paid_amount > 0` → 按选的通道走（微信/线下）
+
+**退款回冲**: 退款按比例拆分：`refundByCard = floor(prepaid/total × refund, 2)`，`refundByOrigin = refund − refundByCard`（反向相减保证无尾差）；储值卡部分 INSERT `card_transactions(type='充值')` + balance 回冲，原通道部分走原退款链路。
+
+**API**: `card.balance`（查当前用户跨店统一余额）| `card.list` / `card.history`（余额与流水）| `order.create`（增补 `useCard` / `prepaidCardAmount`）| `order.scanAdjust`（扫码后调整预选方案）| `order.confirmPrepaidFull`（全额抵扣确认支付）
+
+---
+
 #### 3.7 订单管理 ✅
 
 **列表**: Tab（全部/待支付/已支付/已完成）；体验单"体验"标签；待支付显示"去支付"；日期 `YYYY-M-D`
@@ -257,9 +295,13 @@ screen_024：系统消息列表（标题+摘要+时间+未读角标）。类型�
 
 ---
 
-#### 3.22 充值卡（未实现）
+#### 3.22 充值卡（部分实现）
 
-screen_027：卡内余额+筛选（门店+日期）+消费明细。提示"仅显示最近半年"。
+screen_027：卡内余额 + 消费明细。提示"仅显示最近半年"。
+
+**已实现**: `card.list`（跨店统一余额）/ `card.history`（近 6 个月流水，含充值/扣款/退款回冲三类）/ `card.balance`（下单页抵扣用）；已接入下单抵扣链路（见 §3.6.1）。
+
+**重要**: 余额**跨店共享**（`prepaid_cards` 已 DROP `store_id`），顾客换绑门店后原余额继续可用，不再按门店隔离。筛选项仅保留日期筛选。
 
 ---
 

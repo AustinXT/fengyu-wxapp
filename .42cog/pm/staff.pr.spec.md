@@ -110,6 +110,39 @@
 
 ---
 
+#### 3.3.1 结算侧储值卡预选抵扣 ✅
+
+**实现状态**: 已实现 | **权限**: 仅店长
+
+**核心语义**: 店长端对储值卡的所有操作都是"**预选**"，**不扣卡**。扣卡仅在 clientApi（顾客端）/ payNotify（微信支付回调）/ staffApi.order.confirmOffline（线下确认）三处发生。
+
+**结算弹层 UI**:
+
+- "抵扣区（预选）"与"支付方式区"**分离布局**；储值卡位于抵扣区（与优惠券并列），**禁止**塞进支付方式按钮组
+- 储值卡按钮文案 "**预选抵扣**"（非"使用"），底部固定副文案 "**顾客扫码确认后才真正扣卡**"
+- 支付方式按钮组枚举扩展为 4 值（微信/支付宝/线下/无）：实付 > 0 时展示前三项；实付 = 0 时**隐藏按钮组**并显示 "全额抵扣（payment_method='无'）"
+- 店长可见顾客**跨店统一**余额（`customer.customerBalance`，无门店范围限制；仅店长角色可访问）
+
+**开单行为**:
+
+1. 店长勾选储值卡抵扣 → `staffApi.order.create` 写入 `sale_orders.prepaid_card_amount` + `paid_amount` + `payment_method`（实付=0 落 `'无'`）
+2. `prepaid_cards.balance` 不动，`card_transactions` 不写入；订单 `status='待支付'`，返回二维码
+3. 顾客扫码 → `scan-pay` 页（顾客端）调 `order.scanAdjust` 调整 / 调 `order.confirmPrepaidFull` 确认，客户端承担真实扣卡
+4. 超时未确认 → 订单按现有 TTL 关闭；预选值作废，`balance` 仍未动
+
+**扣卡时机（员工端触发）**:
+
+| 场景 | 触发点 | 动作 |
+|------|--------|------|
+| 顾客扫码后选"线下支付" | `order.confirmOffline` | 事务内 `FOR UPDATE` + 二次余额校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
+| 退款 | `order.approveRefund` | 按 §2.5 比例拆分：`refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund − refundByCard`；储值卡部分回冲 balance + INSERT `type='充值'` |
+| 转换单负差额（多退给客户） | `order.createConversion` | 保留现有"充入储值卡"逻辑；UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id` |
+| 转换单 / 回款单正差额补款 | `order.createConversion` / `order.createRepayment` | 沿用"店长开单 → 顾客扫码确认"链路，不直接扣卡 |
+
+**API**: `order.create`（增补 `useCard` / `prepaidCardAmount`，不扣卡）| `order.confirmOffline`（线下收款时扣卡）| `order.approveRefund`（返回 `{refundByCard, refundByOrigin}`）| `customer.customerBalance`（跨店查顾客余额，仅店长）
+
+---
+
 #### 3.4 营业额分配
 
 **实现状态**: 已实现 | **权限**: 仅店长

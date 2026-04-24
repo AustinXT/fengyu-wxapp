@@ -192,18 +192,33 @@ event { action, payload }
 ### 7.1 员工开单 → 顾客扫码支付
 
 ```text
-order.create(store_id, client_phone, cart_items, preferred_employee_id)
+order.create(store_id, client_phone, cart_items, preferred_employee_id,
+             useCard?, prepaidCardAmount?)
   → 查 client_wechat_users.phone → 填入 client_user_id（可为 null）
+  → 若 useCard: 事务内 SELECT balance FROM prepaid_cards WHERE user_id=$1
+    （注意：无 FOR UPDATE，因为不写；仅做基础预选余额校验）
   → PG 写入 sale_orders(待支付) + sale_items(价格快照)
+    + 预选字段: prepaid_card_amount / paid_amount / payment_method
+      - paid_amount = 0 → payment_method 强制落 '无'
+      - paid_amount > 0 → 取前端传的建议通道
+  → **balance 不动、card_transactions 不写入**（纯预选）
   → 返回 sale_order_id
 
 order.qrcode(sale_order_id)
   → utils/wxacode.js → 微信接口生成小程序码
   → 参数: orderNo / path → 顾客端扫码解析
 
-顾客端扫码 → order.pay → payNotify / offline 确认
+顾客端扫码链路（真正扣卡发生在此处，见 client.sys.spec.md §7.2）:
+  → 顾客可调整预选方案(clientApi.order.scanAdjust)
+  → 顾客确认支付:
+    → paid=0 → clientApi.order.confirmPrepaidFull（扣卡）
+    → paid>0 + 微信 → payNotify 扣卡
+    → paid>0 + 线下 → 转待确认收款 → staffApi.order.confirmOffline 扣卡
+
   → 已支付 + preferred_employee_id → 自动创建 sale_allocations
 ```
+
+**重要行为契约**：`staffApi.order.create` 是**预选**，不扣卡。单测须断言 create 返回后 `prepaid_cards.balance` 未变、`card_transactions` 无新行。
 
 ### 7.2 营业额分配
 
@@ -319,6 +334,25 @@ staff.todoList → 6 种待办:
 | 销售单 | 福利活动 | `福利活动` | 方案内价格 | 方案内项目不可增删 |
 | 回款单 | — | `回款` | 回款金额 | `ref_sale_order_id` 必填；P2 |
 | 转换单 | — | `转换` | 补差价 | `ref_sale_order_id` 必填；P2 |
+
+## 10.1 储值卡抵扣集成（员工端视角）
+
+**数据模型**：`prepaid_cards` 一户一账户（`UNIQUE(user_id)`，**无 `store_id` 列**），余额跨店共享。`paymentMethodEnum` 扩展为 4 值：`['微信', '支付宝', '线下', '无']`；`paid_amount = 0` ⇔ `payment_method = '无'`（应用层双向蕴含校验）。
+
+**扣卡契约**（员工端仅在两处扣卡）：
+
+| 触发点 | 场景 | 动作 |
+|--------|------|------|
+| `order.confirmOffline` | 顾客扫码选线下 → 店长确认收款 | 事务内 `FOR UPDATE` + 二次校验 + 扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付 |
+| `order.approveRefund` | 退款审批通过 | 按比例 `refundByCard = floor(prepaid/total × refund, 2)`、`refundByOrigin = refund - refundByCard`；储值卡部分 INSERT `type='充值'` 回冲 balance |
+
+**不扣卡的关键路径**（预选 / 转交客户端扣）：
+
+- `order.create`：仅写入预选值（`prepaid_card_amount` / `paid_amount` / `payment_method`），`balance` 不动
+- `order.createConversion` 正差额补款 / `order.createRepayment`：沿用"店长开单 → 顾客扫码确认"链路，balance 由 clientApi / payNotify / confirmOffline 处理
+- `order.createConversion` 负差额（多退给客户）：保留现有"充入储值卡"逻辑，UPSERT 维度改为 `ON CONFLICT (user_id)`，INSERT 列集不含 `store_id`
+
+**余额查询**：`customer.customerBalance({customerUserId})` — 跨店统一余额；`requireManager()` 权限校验。
 
 ## 11. 不包含（员工端不实现）
 

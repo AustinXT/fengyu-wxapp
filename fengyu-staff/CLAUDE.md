@@ -25,13 +25,20 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | auth | login, bindPhone |
 | store | list, unbindRequests, approveUnbind, rejectUnbind |
 | staff | list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard |
-| customer | search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign |
+| customer | search, calendar, detail, paidOrders, stats, listByTag, giftHistory, refundHistory, updateNotes, assign, customerBalance |
 | product | shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans |
 | order | create, qrcode, confirmOffline, close, resetFailed, list, detail, createRefund, approveRefund, rejectRefund, createRepayment, createConversion, createPickup |
 | allocation | save, deleteAllocation, getCommissionRates, pendingList, suggest |
 | appointment | list, detail, confirm, checkin |
 | coupon | available |
 | service | create, start, complete, cancel, list, detail, counts |
+
+### 储值卡抵扣相关接口说明
+
+- `customer.customerBalance` — 店长查顾客储值卡余额（跨店统一，一户一账户；仅店长角色可访问）。结算弹层展示顾客实时余额用
+- `order.create` — 店长开单时若顾客选择预选储值卡抵扣，仅写入 `prepaid_card_amount` / `paid_amount` / `payment_method`（实付=0 落 `'无'`），**`prepaid_cards.balance` 不动**；真正扣卡发生在顾客扫码确认链路（clientApi / payNotify / confirmOffline）
+- `order.confirmOffline` — 店长确认线下收款时，若订单有 `prepaid_card_amount > 0` 则事务内扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付
+- `order.approveRefund` — 退款审批通过时按 `floor(prepaid/total × refund, 2)` 比例拆分，储值卡部分 INSERT `type='充值'` 回冲 balance，返回 `{refundByCard, refundByOrigin}`
 
 ## 环境变量（云函数）
 

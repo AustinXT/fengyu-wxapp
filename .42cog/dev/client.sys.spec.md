@@ -123,25 +123,39 @@ event { action, payload }
 product.shopInit(门店商品初始化)
   → product.categories / product.spuList / product.skuDetail
   → 加入购物车(localStorage) 或 直接下单
-  → order.create(SKU 快照 + 可选美容师 + 可选券)
-    → PG 写入 sale_orders(待支付) + sale_items
+  → order.create(SKU 快照 + 可选美容师 + 可选券 + useCard/prepaidCardAmount)
+    → 事务内 SELECT balance FROM prepaid_cards WHERE user_id FOR UPDATE
+    → 写入 sale_orders(prepaid_card_amount + paid_amount; total=prepaid+paid)
+    → payment_method 规则:
+        paid_amount = 0  → 强制落 '无'（同事务扣卡 + 置已支付，跳过 order.pay）
+        paid_amount > 0  → 取前端传值 ∈ {'微信','支付宝','线下'}
     → 返回 orderNo
   → order.pay(wechat/alipay/offline)
-    → wechat: 调起微信支付 → payNotify 回调 → 更新已支付
-    → offline: 更新待确认收款 → 等待店长确认
+    → 金额 = paid_amount（不是 total_amount）；= 0 直接短路
+    → wechat: 调起微信支付 → payNotify 回调 → 同事务扣卡 + 更新已支付
+    → offline: 更新待确认收款 → 等待店长 confirmOffline 时扣卡
   → 已支付 + 指定美容师 → 自动创建 sale_allocations
 ```
 
-### 7.2 扫码支付（跨双端）
+### 7.2 扫码支付（跨双端，含预选抵扣调整）
 
 ```text
-员工端 order.create → PG 订单(待支付)
+员工端 order.create → PG 订单(待支付, 预选 prepaid_card_amount；balance 未动)
   → 员工端 order.qrcode → 生成小程序码(含 orderNo 或 path)
   → 顾客微信扫码 → 顾客端解析:
     → path 型: navigateTo 对应页面
     → orderNo 型: 跳转 scan-pay 页面
-  → order.scanDetail(免认证, 仅 sale_order_source='staff')
-  → 选择支付方式 → order.pay → payNotify → 已支付
+  → order.scanDetail(免认证, 仅员工开单订单)
+    + card.balance(拉取实时余额，用于调整)
+  → 顾客可调整预选方案:
+    → order.scanAdjust(useCard, prepaidCardAmount?, paymentMethod?)
+      → 后端重算 prepaid_card_amount / paid_amount / payment_method
+      → status 保持'待支付'，balance 仍不动
+  → 顾客点"确认支付":
+    → paid_amount = 0 → order.confirmPrepaidFull
+        事务内 SELECT FOR UPDATE + 扣卡 + INSERT card_transactions(扣款) + 置已支付
+    → paid_amount > 0 + 微信 → order.pay → payNotify(同 7.1 扣卡)
+    → paid_amount > 0 + 线下 → order.offlinePay → 待员工 confirmOffline 扣卡
 ```
 
 ### 7.3 预约核销
@@ -200,6 +214,29 @@ product.shopInit(门店商品初始化)
 4. 券抵扣金额写入 `sale_orders.coupon_discount`
 
 **券与购物车独立**：券选择在结算页进行，不影响购物车状态。
+
+## 10.1 储值卡抵扣集成
+
+**数据模型**：`prepaid_cards` 一户一账户（`UNIQUE(user_id)`，**无 `store_id` 列**），余额跨店共享。`card_transactions` 流水（`type ∈ {'充值','扣款'}`）按 `ref_order_id` 幂等。
+
+**扣款三处**（顾客端链路）：
+
+| 触发点 | 场景 | 事务动作 |
+|--------|------|---------|
+| `order.create` | 顾客端直下单 + 全额抵扣（`paid_amount = 0`） | `SELECT balance FOR UPDATE` → 扣减 → INSERT `扣款` → 订单 `'已支付'` → `payment_method='无'` |
+| `payNotify` | 微信支付成功回调（有 `prepaid_card_amount > 0`） | 事务内扣 balance + INSERT `扣款` + 订单 `'已支付'` |
+| `order.confirmPrepaidFull` | 员工开单 → 顾客扫码 → 确认支付（`paid_amount = 0`） | 同 `order.create` 全额抵扣路径 |
+
+**不扣款的两处关键路径**：
+
+- `staffApi.order.create`（员工开单）：写入预选值，`balance` 不动
+- `order.scanAdjust`（顾客扫码后调整）：重算 `prepaid_card_amount/paid_amount/payment_method`，`balance` 不动
+
+**幂等**：`INSERT ... WHERE NOT EXISTS (SELECT 1 FROM card_transactions WHERE ref_order_id=$1 AND type='扣款')`。
+
+**余额不足**：任何扣款前二次 `FOR UPDATE` 校验；不足返回 `INSUFFICIENT_BALANCE`，订单保持 `'待支付'`，**不自动降级**，前端弹框由用户决定。
+
+**退款回冲**：由员工端 `approveRefund` 驱动，按比例 `floor(prepaid/total × refund, 2)` 拆分，储值卡部分 INSERT `type='充值'` + balance 回冲。
 
 ## 11. 不包含（顾客端不实现）
 
