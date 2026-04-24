@@ -38,7 +38,7 @@ async function search(ctx) {
               c.bound_store_id, s.store_name
        FROM client_wechat_users c
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
-       WHERE c.phone = $1${typeFilter}`,
+       WHERE c.phone = $1 AND c.bound_store_id IS NOT NULL${typeFilter}`,
       [phone.trim()],
     );
   } else if (keyword && keyword.trim()) {

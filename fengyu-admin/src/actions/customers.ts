@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { clientWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, desc, inArray, sql, ilike, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, desc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -99,6 +99,7 @@ export async function searchCustomers(keyword: string): Promise<Customer[]> {
     .where(
       and(
         scopeCondition(session, clientWechatUsers.boundStoreId),
+        isNotNull(clientWechatUsers.boundStoreId),
         or(
           ilike(clientWechatUsers.name, pattern),
           ilike(clientWechatUsers.phone, pattern),
