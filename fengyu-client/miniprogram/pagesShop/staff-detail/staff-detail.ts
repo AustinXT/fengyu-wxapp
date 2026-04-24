@@ -35,10 +35,14 @@ Page({
   },
 
   onShareAppMessage() {
+    // 分享礼：统一回首页并附带邀请人 inv 参数，保留原 title 文案
     const { staff } = this.data;
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
     return {
       title: staff ? `凤御美容 — ${staff.name}` : '凤御美容',
-      path: staff ? `/pagesShop/staff-detail/staff-detail?employeeId=${staff.employeeId}` : '/pages/home/home'
+      path: `/pages/home/home${invSuffix}`
     };
   },
 });

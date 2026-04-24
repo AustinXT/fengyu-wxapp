@@ -979,6 +979,31 @@ async function confirmOffline(ctx) {
     await refreshSpendingTier(client, order.client_user_id)
     // 重算顾客类型（只升不降）
     await recalcCustomerType(client, order.client_user_id)
+
+    // 分享礼：首单结清（'已支付' / '已完成'）时向邀请人 + 新客各发一张动态面值代金券 + 一条站内消息
+    // 幂等由 grantShareGift 内部 INSERT ... ON CONFLICT 保证；失败不阻塞主事务（ticket §9.4），
+    // 用 SAVEPOINT 隔离：分享礼异常回滚到 savepoint，不影响已完成的收款状态更新。
+    if (targetStatus === '已支付' || targetStatus === '已完成') {
+      try {
+        await client.query('SAVEPOINT sp_share_gift')
+        const { grantShareGift } = require('../share-gift')
+        const sgRes = await grantShareGift(client, {
+          saleOrderId,
+          clientUserId: order.client_user_id,
+          paidAmount: newPaidAmount,
+          source: 'staffApi',
+        })
+        await client.query('RELEASE SAVEPOINT sp_share_gift')
+        if (sgRes.granted) {
+          console.log('[staffApi/share-gift] granted', sgRes)
+        } else {
+          console.log('[staffApi/share-gift] skipped', sgRes.reason)
+        }
+      } catch (sgErr) {
+        try { await client.query('ROLLBACK TO SAVEPOINT sp_share_gift') } catch (e) {}
+        console.error('[staffApi/share-gift] error (non-fatal):', sgErr)
+      }
+    }
   })
 
   ctx.result = {

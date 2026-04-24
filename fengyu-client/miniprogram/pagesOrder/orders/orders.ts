@@ -141,6 +141,10 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
+    // 分享礼：被分享人进入首页而非分享者的订单列表
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御订单', path: `/pages/home/home${invSuffix}` };
   },
 });

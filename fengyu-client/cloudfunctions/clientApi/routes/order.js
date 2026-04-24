@@ -244,10 +244,12 @@ async function create(ctx) {
   let couponDiscount = 0
   let couponInfo = null
   if (inputCouponId) {
-    // 验证券有效性
+    // 验证券有效性（face_value_override 优先于 template.discount_value，分享礼等动态面值场景）
     const couponRows = await pg.query(
       `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
-              ct.coupon_type, ct.discount_value, ct.min_spend, ct.max_discount,
+              ct.coupon_type,
+              COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
+              ct.min_spend, ct.max_discount,
               ct.applicable_category_ids, ct.applicable_store_ids
        FROM user_coupons uc
        JOIN coupon_templates ct ON uc.template_id = ct.template_id

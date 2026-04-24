@@ -229,6 +229,9 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: this.data.spu.name || '凤御服务', path: '/pages/home/home' };
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: this.data.spu.name || '凤御服务', path: `/pages/home/home${invSuffix}` };
   },
 });

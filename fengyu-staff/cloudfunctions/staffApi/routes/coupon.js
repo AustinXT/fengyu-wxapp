@@ -54,11 +54,12 @@ async function available(ctx) {
     [clientUserId]
   )
 
-  // 查询可用券 + 模板
+  // 查询可用券 + 模板（face_value_override 优先于 template.discount_value，分享礼等动态面值场景）
   const coupons = await pg.query(`
     SELECT
       uc.coupon_id, uc.expire_at,
-      ct.template_id, ct.name, ct.coupon_type, ct.discount_value,
+      ct.template_id, ct.name, ct.coupon_type,
+      COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
       ct.min_spend, ct.max_discount,
       ct.applicable_category_ids, ct.applicable_store_ids,
       ct.description

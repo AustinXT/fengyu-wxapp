@@ -13,16 +13,38 @@ App<IAppOption>({
     navBarHeight: 88,
     // Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关（默认开启；如需灰度下发可改为从 config 读）
     continuePayEnabled: true,
+    // Ticket 2026-04-24 分享礼：从分享链接 query 捕获的邀请人 userId，绑定门店时一次性写入并清空
+    pendingInviter: undefined,
   },
 
-  onLaunch() {
+  onLaunch(options: WechatMiniprogram.App.LaunchShowOption) {
     wx.cloud.init({ traceUser: true });
+    // 解析分享礼 inv 参数（邀请人 userId）
+    this.capturePendingInviter(options);
     // 计算导航栏高度（需在 UI 渲染前完成）
     this.initNavBarInfo();
     // 先从本地缓存恢复（快速展示）
     this.restoreFromCache();
     // 再从服务器同步最新数据（含 boundStoreName）
     this.syncLoginState();
+  },
+
+  onShow(options: WechatMiniprogram.App.LaunchShowOption) {
+    // 用户后台返回或再次扫码分享链接时，重新捕获 inv
+    this.capturePendingInviter(options);
+  },
+
+  /**
+   * 从启动/显示参数解析分享礼邀请人 userId
+   * - 仅接受字符串且以 'FYGK-' 开头（客户 userId 前缀）
+   * - 已有值时不覆盖（保护第一次捕获的邀请人）
+   */
+  capturePendingInviter(options: WechatMiniprogram.App.LaunchShowOption) {
+    const raw = options?.query?.inv;
+    if (typeof raw !== 'string') return;
+    if (!raw.startsWith('FYGK-')) return;
+    if (this.globalData.pendingInviter) return;
+    this.globalData.pendingInviter = raw;
   },
 
   initNavBarInfo() {
