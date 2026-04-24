@@ -60,42 +60,34 @@ test.describe('开单向导 PR-B: Step 1 商品类型', () => {
     // 等待搜索结果加载完成（"找到"文案）或"未找到"提示
     await page.waitForFunction(() => {
       const t = document.body.textContent || ''
-      return t.includes('找到') || t.includes('未找到匹配')
+      return t.includes('找到') || t.includes('未找到')
     }, { timeout: 10000 })
 
     const hasResults = await page.getByText(/找到 \d+ 位顾客/).isVisible().catch(() => false)
 
-    if (hasResults) {
-      // 选择第一个搜索结果
-      const firstResult = page.locator('button:has-text("会员")').first()
-      const fallbackResult = page.locator('div.space-y-1 > button').first()
-      const target = (await firstResult.count()) > 0 ? firstResult : fallbackResult
-      if ((await target.count()) > 0) {
-        await target.click()
-        await expect(page.getByText('已选择顾客')).toBeVisible({ timeout: 5000 })
-      }
+    // 2026-04-24 ticket 后：搜索未命中已无 manualPhone 路径，Step 1 必须命中已注册顾客才能前进。
+    // 测试库 58k+ 已绑店顾客，关键字 "1" 几乎必中；未命中则本 case 无法继续（由
+    // orders-require-registered.spec.ts 覆盖未命中场景）。
+    test.skip(!hasResults, '测试库未命中已注册顾客，未命中场景由 orders-require-registered.spec.ts 覆盖')
 
-      // 2) 切换 4 种商品类型
-      for (const choice of ['组合套餐', '体验卡', '充值卡', '普通商品']) {
-        await page.getByRole('button', { name: choice, exact: true }).click()
-        await expect(page.getByRole('button', { name: choice, exact: true })).toHaveAttribute('aria-pressed', 'true')
-      }
-
-      // 3) 进入 Step 2，"商品分类" 区可见（PR-C 普通商品分支保留分类导航）
-      await page.getByRole('button', { name: '下一步' }).click()
-      await expect(page.getByText('商品分类')).toBeVisible({ timeout: 5000 })
-    } else {
-      // 测试库无顾客 → 走 manualPhone 路径
-      await page.getByPlaceholder('输入顾客手机号').fill('13800138001')
-
-      // 切换商品类型
-      await page.getByRole('button', { name: '体验卡', exact: true }).click()
-      await expect(page.getByRole('button', { name: '体验卡', exact: true })).toHaveAttribute('aria-pressed', 'true')
-
-      await page.getByRole('button', { name: '下一步' }).click()
-      // 体验卡分支无"商品分类"导航，直接平铺
-      await expect(page.getByText('体验卡', { exact: false })).toBeVisible({ timeout: 5000 })
+    // 选择第一个搜索结果
+    const firstResult = page.locator('button:has-text("会员")').first()
+    const fallbackResult = page.locator('div.space-y-1 > button').first()
+    const target = (await firstResult.count()) > 0 ? firstResult : fallbackResult
+    if ((await target.count()) > 0) {
+      await target.click()
+      await expect(page.getByText('已选择顾客')).toBeVisible({ timeout: 5000 })
     }
+
+    // 2) 切换 4 种商品类型
+    for (const choice of ['组合套餐', '体验卡', '充值卡', '普通商品']) {
+      await page.getByRole('button', { name: choice, exact: true }).click()
+      await expect(page.getByRole('button', { name: choice, exact: true })).toHaveAttribute('aria-pressed', 'true')
+    }
+
+    // 3) 进入 Step 2，"商品分类" 区可见（PR-C 普通商品分支保留分类导航）
+    await page.getByRole('button', { name: '下一步' }).click()
+    await expect(page.getByText('商品分类')).toBeVisible({ timeout: 5000 })
   })
 })
 
@@ -116,18 +108,17 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
   test('Step 3 订单类型 3 选 1：销售单/内部单/转换单 + 默认销售单', async ({ page }) => {
     await page.goto('/orders/create')
 
-    // Step 1：触发顾客搜索 → 选第一个 / fallback manualPhone
+    // Step 1：触发顾客搜索 → 选第一个（2026-04-24 ticket 后不再有 manualPhone 路径）
     await page.getByPlaceholder(/手机号/).fill('1')
     await page.getByRole('button', { name: /搜索/ }).click()
     await page.waitForFunction(() => {
       const t = document.body.textContent || ''
-      return t.includes('找到') || t.includes('未找到匹配')
+      return t.includes('找到') || t.includes('未找到')
     }, { timeout: 10000 })
 
     const hasResults = await page.getByText(/找到 \d+ 位顾客/).isVisible().catch(() => false)
     if (!hasResults) {
-      // manualPhone 路径下没有 clientUserId，无法测试转换单完整流；跳过本 case
-      test.skip()
+      test.skip(true, '测试库未命中已注册顾客，本 case 无法构造')
       return
     }
 
@@ -168,22 +159,19 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
   test('内部单：切换后显示"内部单 5 折" tag + 应付/实付输入框 disabled', async ({ page }) => {
     await page.goto('/orders/create')
 
-    // 走 manualPhone 路径快速进入 Step 3（manualPhone 不影响内部单）
+    // 选命中已注册顾客（2026-04-24 ticket 后不再有 manualPhone 路径）
     await page.getByPlaceholder(/手机号/).fill('1')
     await page.getByRole('button', { name: /搜索/ }).click()
     await page.waitForFunction(() => {
       const t = document.body.textContent || ''
-      return t.includes('找到') || t.includes('未找到匹配')
+      return t.includes('找到') || t.includes('未找到')
     }, { timeout: 10000 })
 
     const hasResults = await page.getByText(/找到 \d+ 位顾客/).isVisible().catch(() => false)
-    if (hasResults) {
-      const first = page.locator('div.space-y-1 > button').first()
-      if ((await first.count()) === 0) { test.skip(); return }
-      await first.click()
-    } else {
-      await page.getByPlaceholder('输入顾客手机号').fill('13800138001')
-    }
+    if (!hasResults) { test.skip(true, '测试库未命中已注册顾客'); return }
+    const first = page.locator('div.space-y-1 > button').first()
+    if ((await first.count()) === 0) { test.skip(); return }
+    await first.click()
 
     await page.getByRole('button', { name: '下一步' }).click()
 
@@ -210,34 +198,11 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
     }
   })
 
-  test('转换单：未选顾客（manualPhone）按钮 disabled + 提示', async ({ page }) => {
+  // 2026-04-24 ticket 后：未选顾客时整个 Step 0 → Step 1 都过不去，无法到达转换单按钮；
+  // 未注册顾客无法开单 的场景改由 orders-require-registered.spec.ts 覆盖。
+  test.skip('转换单：未选顾客（manualPhone）按钮 disabled + 提示 — 已被 require-registered spec 覆盖', async ({ page }) => {
     await page.goto('/orders/create')
 
-    // 走 manualPhone 路径
-    await page.getByPlaceholder(/手机号/).fill('1')
-    await page.getByRole('button', { name: /搜索/ }).click()
-    await page.waitForFunction(() => {
-      const t = document.body.textContent || ''
-      return t.includes('找到') || t.includes('未找到匹配')
-    }, { timeout: 10000 })
-
-    const hasResults = await page.getByText(/找到 \d+ 位顾客/).isVisible().catch(() => false)
-    if (hasResults) {
-      // 测试库有顾客 → 跳过本 case（要求 manualPhone 路径）
-      test.skip()
-      return
-    }
-
-    await page.getByPlaceholder('输入顾客手机号').fill('13800138001')
-    await page.getByRole('button', { name: '下一步' }).click()
-
-    const addBtn = page.getByRole('button', { name: '加入', exact: true }).first()
-    if ((await addBtn.count()) === 0) { test.skip(); return }
-    await addBtn.click()
-
-    await page.getByRole('button', { name: '下一步' }).click()
-
-    // 转换单按钮存在但 disabled
     const convBtn = page.getByRole('button', { name: '转换单', exact: true })
     await expect(convBtn).toBeDisabled()
   })
@@ -249,7 +214,7 @@ test.describe('开单向导 PR-C: Step 2/3 重构 + 转换单', () => {
     await page.getByRole('button', { name: /搜索/ }).click()
     await page.waitForFunction(() => {
       const t = document.body.textContent || ''
-      return t.includes('找到') || t.includes('未找到匹配')
+      return t.includes('找到') || t.includes('未找到')
     }, { timeout: 10000 })
 
     const hasResults = await page.getByText(/找到 \d+ 位顾客/).isVisible().catch(() => false)
