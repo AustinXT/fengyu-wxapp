@@ -5,7 +5,7 @@
  * 这里收敛纯类型定义；ProductKindChoice 与 PrefetchedKindData 仍由 page 主组件持有。
  */
 import type { ProductSku, Product } from '@/lib/types'
-import type { OrderPickerSku, OrderPickerCategory, OrderPickerBundle } from '@/actions/products'
+import type { OrderPickerSku, OrderPickerCategory, OrderPickerBundle, OrderPickerNormalGroup } from '@/actions/products'
 
 /** 购物车中的一项（统一 sku + product 引用） */
 export interface CartItem {
@@ -32,7 +32,18 @@ export interface PickerCommonProps {
   onAdd: (product: Product, sku: ProductSku) => void
 }
 
-/** 普通商品 / 体验卡 / 充值卡 复用同一组数据形状（OrderPickerCategory[]） */
+/**
+ * 普通商品 picker（分组结构）props。
+ * groups[].productKind 为一级品项类型名（显示为 group header，不可点击）；
+ * groups[].categories 为该 productKind 下的二级分类列表（可点击，选中态）。
+ */
+export interface NormalGroupPickerProps extends PickerCommonProps {
+  groups: OrderPickerNormalGroup[]
+  /** UI 文案：当前 kind 名称（用于"暂无商品"占位） */
+  kindLabel: string
+}
+
+/** 体验卡 / 单 kind 平铺 picker 复用同一组数据形状（OrderPickerCategory[]） */
 export interface NormalKindPickerProps extends PickerCommonProps {
   categories: OrderPickerCategory[]
   /** UI 文案：当前 kind 名称（用于"暂无商品"占位） */

@@ -3,13 +3,15 @@
 import { db } from '@/db'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { orgNodes } from '@db/org'
-import { eq, and, asc, sql, inArray } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
+import { eq, and, asc, sql, inArray, notInArray, isNotNull, isNull } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { CARD_PRODUCT_KINDS } from '@/lib/product-kind'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -1225,17 +1227,24 @@ export async function deleteMallCategory(categoryId: string): Promise<{ success:
 /**
  * 开单页 Step 2 数据源：按 kind 返回可加购的 SKU/套餐。
  *
- * 普通 4 值（'护理项目' | '家居产品' | '体验卡' | '充值卡'）：
+ * 具名 kind（二级分类的 product_kind 值，例如 '体验卡' / '充值卡'）：
  *   返回 `product_skus JOIN product_categories WHERE pc.product_kind=$kind`
- *   的 categories（分类分组）+ skus 列表，过滤 isEnabled。
+ *   的 categories（分类分组）+ skus 列表，过滤 isEnabled + 排除 bundle SKU。
+ *   类型签名上用 string 表达（productKindEnum 已删除，运营可自由新建 kind）。
  *
  * 特殊 '__bundle__'：
  *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
  *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
  *
+ * 特殊 '__normal__'（普通商品 = 非卡类的所有二级分类）：
+ *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL
+ *   AND productKind NOT IN CARD_PRODUCT_KINDS），并 EXISTS 过滤非 bundle 有效 SKU。
+ *   返回分组结构 `{ kind: '__normal__', groups: [{ productKind, categories }] }`，
+ *   group 顺序按一级行 sortOrder，组内按二级行 sortOrder。
+ *
  * 无权限：product:list。
  */
-export type ProductKindForOrder = '护理项目' | '家居产品' | '体验卡' | '充值卡' | '__bundle__'
+export type ProductKindForOrder = string | '__bundle__' | '__normal__'
 
 export interface OrderPickerSku {
   skuId: string
@@ -1291,9 +1300,42 @@ export interface OrderPickerBundle {
   ungroupedSkus: OrderPickerBundleSkuRef[]
 }
 
+/**
+ * "普通商品"模式下按 productKind 分组的二级分类集合。
+ * group 顺序由一级行 sortOrder 决定；组内 categories 按二级行 sortOrder。
+ */
+export interface OrderPickerNormalGroup {
+  productKind: string
+  categories: OrderPickerCategory[]
+}
+
+/**
+ * discriminated union：
+ * - '__normal__' → groups（分组）
+ * - '__bundle__' → bundles
+ * - 其余具名 kind（如 '体验卡' / '充值卡'）→ categories（平铺）
+ *   使用 `Exclude<string, '__normal__' | '__bundle__'>` 语义由 TS 通过
+ *   类型守卫自动识别——平铺分支声明为 string，narrowing 靠运行时 if-else 顺序。
+ */
 export type OrderPickerResult =
-  | { kind: '护理项目' | '家居产品' | '体验卡' | '充值卡'; categories: OrderPickerCategory[] }
-  | { kind: '__bundle__'; bundles: OrderPickerBundle[] }
+  | OrderPickerNormalResult
+  | OrderPickerBundleResult
+  | OrderPickerFlatResult
+
+export interface OrderPickerNormalResult {
+  kind: '__normal__'
+  groups: OrderPickerNormalGroup[]
+}
+
+export interface OrderPickerBundleResult {
+  kind: '__bundle__'
+  bundles: OrderPickerBundle[]
+}
+
+export interface OrderPickerFlatResult {
+  kind: string
+  categories: OrderPickerCategory[]
+}
 
 export async function getProductsByKind(kind: ProductKindForOrder): Promise<OrderPickerResult> {
   const session = await getSession()
@@ -1390,7 +1432,101 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
     return { kind: '__bundle__', bundles }
   }
 
-  // 普通 4 值分支
+  if (kind === '__normal__') {
+    // 普通商品：排除卡类 + 必须有非 bundle 有效 SKU 的二级分类
+    // JOIN 一级行（parent.productKind IS NULL AND parent.categoryName = child.productKind）
+    // 以便按一级行 sortOrder 排序 group。
+    const parentCat = alias(productCategories, 'parent_cat')
+    const mpsBundle = alias(mallProductSkus, 'mps_bundle')
+
+    const rows = await db
+      .select({
+        category: productCategories,
+        sku: productSkus,
+        parentProductKind: parentCat.categoryName,
+        parentSortOrder: parentCat.sortOrder,
+      })
+      .from(productSkus)
+      .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .innerJoin(
+        parentCat,
+        and(
+          isNull(parentCat.productKind),
+          eq(parentCat.categoryName, productCategories.productKind),
+          eq(parentCat.isValid, true),
+        )!,
+      )
+      .where(
+        and(
+          isNotNull(productCategories.productKind),
+          notInArray(productCategories.productKind, CARD_PRODUCT_KINDS as readonly string[] as string[]),
+          eq(productCategories.isValid, true),
+          eq(productSkus.isEnabled, true),
+          // 排除 bundle SKU（SKU 被任何 is_bundle=true 的 products 通过 mall_product_skus 关联）
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${mpsBundle}
+            INNER JOIN ${products} ON ${products.productId} = ${mpsBundle.productId}
+            WHERE ${mpsBundle.skuId} = ${productSkus.skuId}
+              AND ${products.isBundle} = true
+          )`,
+        ),
+      )
+      .orderBy(parentCat.sortOrder, productCategories.sortOrder, productSkus.sortOrder)
+
+    // 按 productKind → categoryId 两层聚合
+    type GroupAccum = {
+      productKind: string
+      parentSortOrder: number
+      catMap: Map<string, OrderPickerCategory>
+    }
+    const groupMap = new Map<string, GroupAccum>()
+    for (const r of rows) {
+      const kindName = r.category.productKind
+      if (!kindName) continue // defensive：已被 SQL isNotNull 过滤
+      if (!groupMap.has(kindName)) {
+        groupMap.set(kindName, {
+          productKind: kindName,
+          parentSortOrder: r.parentSortOrder ?? 0,
+          catMap: new Map<string, OrderPickerCategory>(),
+        })
+      }
+      const grp = groupMap.get(kindName)!
+      if (!grp.catMap.has(r.category.categoryId)) {
+        grp.catMap.set(r.category.categoryId, {
+          categoryId: r.category.categoryId,
+          categoryName: r.category.categoryName,
+          salesCategory: r.category.salesCategory as OrderPickerCategory['salesCategory'],
+          sortOrder: r.category.sortOrder,
+          skus: [],
+        })
+      }
+      grp.catMap.get(r.category.categoryId)!.skus.push({
+        skuId: r.sku.skuId,
+        categoryId: r.sku.categoryId,
+        categoryName: r.category.categoryName,
+        productType: r.sku.productType as OrderPickerSku['productType'],
+        specName: r.sku.specName,
+        price: r.sku.price,
+        specialPrice: r.sku.specialPrice,
+        sessionCount: r.sku.sessionCount,
+        serviceFee: r.sku.serviceFee,
+        sortOrder: r.sku.sortOrder,
+      })
+    }
+
+    const groups: OrderPickerNormalGroup[] = Array.from(groupMap.values())
+      .sort((a, b) => a.parentSortOrder - b.parentSortOrder)
+      .map((g) => ({
+        productKind: g.productKind,
+        categories: Array.from(g.catMap.values()).sort((a, b) => a.sortOrder - b.sortOrder),
+      }))
+      // 防御：某 productKind 下没有任何 category → 整组丢弃（ticket §6.3）
+      .filter((g) => g.categories.length > 0)
+
+    return { kind: '__normal__', groups }
+  }
+
+  // 具名 kind（如 '体验卡' / '充值卡'）：平铺 categories
   const rows = await db
     .select({
       category: productCategories,

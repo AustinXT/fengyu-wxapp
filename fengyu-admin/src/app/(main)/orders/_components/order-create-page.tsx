@@ -16,7 +16,7 @@ import {
   generateOrderWxacode,
 } from "@/actions/orders"
 import { getAvailableCoupons } from "@/actions/coupons"
-import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult } from "@/actions/products"
+import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
 import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
 import { RECHARGE_VIRTUAL_SKU_ID } from "@/lib/recharge"
@@ -35,8 +35,9 @@ import type { Product } from "@/lib/types"
 
 /**
  * Step 1 商品类型 4 选 1（PR-B / PR-C）
- * - "组合套餐" → 后端 `__bundle__` 分支，对应 products.is_bundle=true
- * - 其余 3 个直接映射到 product_kind 枚举（"普通商品" 在前端合并 护理项目+家居产品）
+ * - "组合套餐" → 后端 `__bundle__`（products.is_bundle=true）
+ * - "普通商品" → 后端 `__normal__`（排除卡类 + 非 bundle，分组结构）
+ * - "体验卡" / "充值卡" → 精确 product_kind 匹配（平铺结构）
  */
 type ProductKindChoice = '组合套餐' | '普通商品' | '体验卡' | '充值卡'
 
@@ -46,19 +47,25 @@ const PRODUCT_KIND_CHOICES: ProductKindChoice[] = ['组合套餐', '普通商品
 type OrderTypeChoice = '销售单' | '内部单' | '转换单'
 const ORDER_TYPE_CHOICES: OrderTypeChoice[] = ['销售单', '内部单', '转换单']
 
-/** 选择 → 后端 getProductsByKind(kind) 调用列表（普通商品 = 护理项目 + 家居产品 合并）*/
-function resolveBackendKinds(choice: ProductKindChoice): ProductKindForOrder[] {
-  if (choice === '组合套餐') return ['__bundle__']
-  if (choice === '普通商品') return ['护理项目', '家居产品']
-  if (choice === '体验卡') return ['体验卡']
-  return ['充值卡']
+/** 选择 → 后端 getProductsByKind(kind) 单值调用（ticket 2026-04-24 PR-A）*/
+function resolveBackendKind(choice: ProductKindChoice): ProductKindForOrder {
+  if (choice === '组合套餐') return '__bundle__'
+  if (choice === '普通商品') return '__normal__'
+  if (choice === '体验卡') return '体验卡'
+  return '充值卡'
 }
 
-/** 单次选择缓存的数据形态：bundle 与 normal 分开存放，PR-C 渲染层消费 */
+/**
+ * 单次选择缓存的数据形态：
+ * - bundles：仅"组合套餐"分支有值
+ * - normalGroups：仅"普通商品"分支有值（分组结构）
+ * - flatCategories：仅"体验卡" / "充值卡"分支有值（平铺结构）
+ */
 interface PrefetchedKindData {
   choice: ProductKindChoice
   bundles: Extract<OrderPickerResult, { kind: '__bundle__' }>['bundles']
-  normalCategories: Extract<OrderPickerResult, { kind: '护理项目' | '家居产品' | '体验卡' | '充值卡' }>['categories']
+  normalGroups: OrderPickerNormalGroup[]
+  flatCategories: OrderPickerCategory[]
 }
 
 function getItemAmounts(item: CartItem, override?: ItemPriceOverride) {
@@ -198,25 +205,26 @@ export default function OrderCreatePageClient({
     if (choice === '充值卡') {
       setKindDataCache((prev) => ({
         ...prev,
-        充值卡: { choice: '充值卡', bundles: [], normalCategories: [] },
+        充值卡: { choice: '充值卡', bundles: [], normalGroups: [], flatCategories: [] },
       }))
       return
     }
     setPrefetching(true)
     try {
-      const backendKinds = resolveBackendKinds(choice)
-      const results = await Promise.all(backendKinds.map((k) => getProductsByKind(k)))
+      const result = await getProductsByKind(resolveBackendKind(choice))
       const data: PrefetchedKindData = {
         choice,
         bundles: [],
-        normalCategories: [],
+        normalGroups: [],
+        flatCategories: [],
       }
-      for (const r of results) {
-        if (r.kind === '__bundle__') {
-          data.bundles = r.bundles
-        } else {
-          data.normalCategories = data.normalCategories.concat(r.categories)
-        }
+      // 按 discriminant key 而非字面量值分派（避免 flat 分支 kind:string 吞并 literal narrowing）
+      if ('bundles' in result) {
+        data.bundles = result.bundles
+      } else if ('groups' in result) {
+        data.normalGroups = result.groups
+      } else {
+        data.flatCategories = result.categories
       }
       setKindDataCache((prev) => ({ ...prev, [choice]: data }))
     } catch {
@@ -613,7 +621,7 @@ export default function OrderCreatePageClient({
               case '普通商品':
                 return (
                   <NormalSkuPicker
-                    categories={data.normalCategories}
+                    groups={data.normalGroups}
                     kindLabel="普通商品"
                     cart={cart}
                     onAdd={addToCart}
@@ -622,7 +630,7 @@ export default function OrderCreatePageClient({
               case '体验卡':
                 return (
                   <TrialCardPicker
-                    categories={data.normalCategories}
+                    categories={data.flatCategories}
                     kindLabel="体验卡"
                     cart={cart}
                     onAdd={addToCart}

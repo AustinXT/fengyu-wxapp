@@ -1,59 +1,94 @@
 "use client"
 
 /**
- * 普通商品 picker（PR-C C1）
+ * 普通商品 picker（ticket 2026-04-24 PR-A）
  *
- * 数据源：getProductsByKind('护理项目' | '家居产品' | '体验卡' | '充值卡') 返回的
- * categories[]。本组件是 4 类 picker 中的"主力"，配套左侧二级分类导航 + 右侧 SKU
- * 卡片网格。普通商品包含 护理项目 + 家居产品（前端层合并）；体验卡 / 充值卡 复用
- * 这套布局，仅传入对应的 categories。
+ * 数据源：getProductsByKind('__normal__') 返回的
+ * `groups: [{ productKind, categories: [...] }]`。
+ * 左侧侧边栏按 productKind 分组渲染：
+ *   - group header（productKind 名，不可点击、灰底小字）
+ *   - 子项（categoryName，可点击、参与 selectedCategoryId 选中态）
+ * 右侧 SKU 网格复用原布局。
+ *
+ * 视觉规则见 ticket §6.2；空分类防御见 ticket §6.3。
  */
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { Product } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
-import { pickerSkuToProductSku, type NormalKindPickerProps } from "./types"
+import { pickerSkuToProductSku, type NormalGroupPickerProps } from "./types"
 
-export function NormalSkuPicker({ categories, kindLabel, onAdd }: NormalKindPickerProps) {
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
-    () => categories[0]?.categoryId ?? ""
+export function NormalSkuPicker({ groups, kindLabel, onAdd }: NormalGroupPickerProps) {
+  // 防御：过滤掉空 category 组（理论上后端 EXISTS 已保证不会出现）
+  const renderGroups = useMemo(
+    () => groups.filter((g) => g.categories.length > 0),
+    [groups],
   )
 
-  // categories 变化（如 kind 切换）时复位选中分类
+  // 平铺 categoryId 用于选中态校验
+  const allCategoryIds = useMemo(
+    () => renderGroups.flatMap((g) => g.categories.map((c) => c.categoryId)),
+    [renderGroups],
+  )
+
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>(
+    () => renderGroups[0]?.categories[0]?.categoryId ?? "",
+  )
+
+  // groups 变化（如 kind 切换）时复位选中：默认选第一组第一项
   useEffect(() => {
-    if (categories.length === 0) {
+    if (allCategoryIds.length === 0) {
       setSelectedCategoryId("")
       return
     }
-    if (!categories.some((c) => c.categoryId === selectedCategoryId)) {
-      setSelectedCategoryId(categories[0].categoryId)
+    if (!allCategoryIds.includes(selectedCategoryId)) {
+      setSelectedCategoryId(renderGroups[0].categories[0].categoryId)
     }
-  }, [categories, selectedCategoryId])
+  }, [allCategoryIds, renderGroups, selectedCategoryId])
 
-  const currentCategory = categories.find((c) => c.categoryId === selectedCategoryId)
+  const currentCategory = useMemo(() => {
+    for (const g of renderGroups) {
+      const cat = g.categories.find((c) => c.categoryId === selectedCategoryId)
+      if (cat) return cat
+    }
+    return null
+  }, [renderGroups, selectedCategoryId])
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-      {/* 左侧二级分类 */}
+      {/* 左侧二级分类（分组渲染） */}
       <Card className="lg:col-span-1">
         <CardContent className="p-3">
           <h3 className="text-sm font-semibold text-[#999999] mb-2">商品分类</h3>
           <div className="space-y-0.5">
-            {categories.map((cat) => (
-              <button
-                key={cat.categoryId}
-                onClick={() => setSelectedCategoryId(cat.categoryId)}
-                className={`w-full text-left px-3 py-1.5 rounded text-sm transition-colors ${
-                  selectedCategoryId === cat.categoryId
-                    ? "bg-[var(--primary)] text-white"
-                    : "hover:bg-[#FFF0EE] text-[var(--foreground)]"
-                }`}
-              >
-                {cat.categoryName}
-              </button>
+            {renderGroups.map((group) => (
+              <div key={group.productKind} className="mb-1">
+                {/* group header：不可点击，小字+灰底（ticket §6.2） */}
+                <div
+                  className="px-3 py-1 rounded text-xs text-[#888888] bg-[#F7F7F7] select-none"
+                  style={{ pointerEvents: 'none' }}
+                  aria-disabled="true"
+                >
+                  {group.productKind}
+                </div>
+                {/* 子项：可点击，选中态 */}
+                {group.categories.map((cat) => (
+                  <button
+                    key={cat.categoryId}
+                    onClick={() => setSelectedCategoryId(cat.categoryId)}
+                    className={`w-full text-left px-3 py-1.5 rounded text-sm transition-colors ${
+                      selectedCategoryId === cat.categoryId
+                        ? "bg-[var(--primary)] text-white font-medium"
+                        : "hover:bg-[#FFF0EE] text-[var(--foreground)]"
+                    }`}
+                  >
+                    {cat.categoryName}
+                  </button>
+                ))}
+              </div>
             ))}
-            {categories.length === 0 && (
+            {renderGroups.length === 0 && (
               <p className="text-xs text-[#999999] py-3 text-center">
                 {kindLabel} 暂无可选品类
               </p>
