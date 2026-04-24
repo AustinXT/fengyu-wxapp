@@ -443,6 +443,88 @@
 
 > **约束**: `UNIQUE(employee_id)`。认证流程详见 `admin.pr.spec.md` §2.3。
 
+### 2.21 积分域（point_transactions + client_wechat_users.points_balance）
+
+#### 2.21.1 数据模型
+
+**权威流水表** `point_transactions`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | bigserial PK | — |
+| `user_id` | text | FK → `client_wechat_users.user_id` |
+| `type` | text（自由文本，非枚举） | 变动分类（见 §2.21.4） |
+| `amount` | integer | 正负均可，累加即余额 |
+| `ref_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；冲销/发放以原销售单 id 聚合 |
+| `created_at` | timestamp | — |
+
+**余额缓存** `client_wechat_users.points_balance` + `points_updated_at`
+- 缓存语义：`SUM(point_transactions.amount WHERE user_id = u.user_id)`
+- 运行时由业务触发点同事务双写维护；`cronTask` 夜间做一致性校验（仅告警，不自动修）
+
+#### 2.21.2 发放规则（订单链净额差值法）
+
+发放不对单笔 `sale_order_payments` 逐笔计算（会产生累积舍入误差），改为对"原销售单"维度：
+
+```
+expected = floor( max(0, net_settled) / 100 )
+其中 net_settled = SUM(sale_orders.paid_amount
+                        WHERE sale_order_id = X OR ref_sale_order_id = X)
+delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
+```
+
+`delta ≠ 0` 时写入一条流水 + 更新余额；`delta = 0` 天然幂等，无副作用。
+
+#### 2.21.3 发放矩阵（按 sale_order_type）
+
+| sale_order_type | 调用 settle | 使用的 originalOrderId |
+|-----------------|:-----------:|-----------------------|
+| 销售单          | ✅          | 自身 `sale_order_id` |
+| 内部单          | ❌          | — |
+| 回款单          | ✅          | `ref_sale_order_id`（合并到原销售单重算） |
+| 转换单          | ✅          | `ref_sale_order_id`（补现金差价时有 delta） |
+| 退款单          | ✅          | `ref_sale_order_id`（delta 为负 → 冲销） |
+
+#### 2.21.4 type 取值约定
+
+| type 值 | 使用场景 | amount 符号 |
+|---------|---------|-------------|
+| `等级升级奖励` | `cronTask` 每日重算会员等级时升级发放 | + |
+| `消费赠送`     | 订单链净额增加，`delta > 0` | + |
+| `消费冲销`     | 订单链净额下降，`delta < 0` | − |
+
+未来兑换/过期等分类扩展时追加新值（type 是自由文本，无 DB 枚举约束）。
+
+#### 2.21.5 触发点清单
+
+所有触发点在资金状态写入之后、事务 COMMIT 之前调用 `settlePointsSafe(client, originalSaleOrderId, source)`：
+
+| 云函数 | 位置 | 场景 |
+|--------|------|------|
+| `payNotify` | 回调成功 COMMIT 前 | 微信/支付宝首次支付 / 线上回款 |
+| `clientApi.order.confirmPrepaidFull` | tx 末尾 | 全额储值卡抵扣支付（paid=0 → delta=0 无写入） |
+| `clientApi.order.repay`（纯卡分支） | 重算原单 paid_amount 之后 | 顾客用储值卡回款 |
+| `staffApi.order.confirmOffline` | recalcCustomerType 之后 | 店长二次确认线下收款 |
+| `staffApi.order.approveRefund` | recalcCustomerType 之后 | 店长审批退款单，传 `ref_sale_order_id` 作为 originalId |
+
+**决策**：`staffApi.order.create` 阶段订单最多为 `'待确认收款'`（而非 `'已支付'`），遵循"积分在店长确认时发放"的业务约束，不在 create 调用 settle；等 `confirmOffline` 触发。
+
+#### 2.21.6 不变量与幂等
+
+1. `FOR UPDATE` 原销售单行锁：串行化并发回款/退款，避免双写
+2. `delta = 0` 天然幂等：同一原单任意次重复调用不写流水
+3. `expected = floor(max(0, net_settled) / 100)`：链净额 ≤ 0 时积分回 0，不允许负余额
+4. 流水 `SUM(amount WHERE ref_order_id = X)` 恒等于 `floor(max(0, net_settled) / 100)`
+5. 失败隔离：`settlePointsSafe` 捕获异常写 `operation_logs('points.settleFailed')`，**不回滚主事务**（资金正确优先）
+6. Feature flag：环境变量 `POINTS_ACCRUAL_ENABLED='false'` 可一键停止所有触发点的写入
+
+#### 2.21.7 一致性兜底
+
+`cronTask` 每日凌晨 3 点执行一致性校验（STEP 3）：
+- 扫描 `client_wechat_users.points_balance ≠ SUM(point_transactions.amount)` 的行
+- 偏差写入 `operation_logs('points.balanceMismatch')`，供人工排查上游触发点 bug
+- **不自动修复**（决策 D7：自动修会掩盖触发点 bug）
+
 ---
 
 ## 3. 权限与角色（RBAC + Scope）
