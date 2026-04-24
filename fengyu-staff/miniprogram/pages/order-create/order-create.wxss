@@ -458,3 +458,110 @@
   background: #F5F2EE;
   opacity: 0.6;
 }
+
+/* ===== Wave 3G 储值卡预选抵扣区 ===== */
+.prepaid-card-section {
+  background: #FFFAF3;
+  border: 1rpx solid #F5E0C8;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 16rpx;
+}
+.prepaid-card-section-title {
+  display: block;
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  margin-bottom: 12rpx;
+}
+.prepaid-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4rpx 0;
+}
+.prepaid-card-info {
+  display: flex;
+  align-items: baseline;
+  gap: 16rpx;
+  flex: 1;
+}
+.prepaid-card-label {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.prepaid-card-balance {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-card-switch-wrap {
+  flex-shrink: 0;
+}
+.prepaid-card-deduct-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed #F5E0C8;
+}
+.prepaid-card-deduct-label {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-card-deduct-amount {
+  font-size: 30rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.prepaid-card-deduct-hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  font-weight: 400;
+  margin-left: 6rpx;
+}
+.prepaid-card-empty-hint {
+  padding-top: 12rpx;
+  margin-top: 8rpx;
+  border-top: 1rpx dashed #F5E0C8;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 实付金额 + 全额抵扣副文案 ===== */
+.prepaid-paid-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12rpx 4rpx 4rpx;
+}
+.prepaid-paid-label {
+  font-size: 28rpx;
+  color: var(--color-text-secondary);
+}
+.prepaid-paid-amount {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+.prepaid-paid-fullcover-hint {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  text-align: right;
+  padding-right: 4rpx;
+  margin-bottom: 16rpx;
+}
+
+/* ===== 警示副文案（温和强调色 #FA8C16） ===== */
+.prepaid-warning-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8rpx;
+  padding: 16rpx 0 8rpx;
+}
+.prepaid-warning-text {
+  font-size: 24rpx;
+  color: #FA8C16;
+  font-weight: 500;
+}

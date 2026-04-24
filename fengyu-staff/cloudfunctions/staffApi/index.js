@@ -42,6 +42,7 @@ const routes = {
   'customer.refundHistory': () => require('./routes/customer').refundHistory,
   'customer.updateNotes': () => require('./routes/customer').updateNotes,
   'customer.assign':      () => require('./routes/customer').assign,
+  'customer.customerBalance': () => require('./routes/customer').customerBalance,
 
   // 商品
   'product.shopInit':     () => require('./routes/product').shopInit,
@@ -142,7 +143,7 @@ exports.main = async (event, context) => {
     const errorMessage = error.message || '服务器内部错误'
     const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
     const errorType = errorTypeMatch ? errorTypeMatch[1] : null
-    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND']
+    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND', 'INSUFFICIENT_BALANCE', 'CLIENT_NOT_REGISTERED']
     const isKnown = errorType && knownTypes.includes(errorType)
     const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
 
@@ -151,6 +152,8 @@ exports.main = async (event, context) => {
                   errorMessage.startsWith('INVALID_PARAMS') ? -400 :
                   errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
                   errorMessage.startsWith('NOT_FOUND') ? -404 :
+                  errorMessage.startsWith('INSUFFICIENT_BALANCE') ? -400 :
+                  errorMessage.startsWith('CLIENT_NOT_REGISTERED') ? -400 :
                   -1
 
     return {

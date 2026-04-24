@@ -351,8 +351,45 @@
             </view>
           </block>
 
+          <!-- Wave 3G — 抵扣区（预选）：储值卡。与支付方式区明确分离 -->
+          <view class="prepaid-card-section">
+            <text class="prepaid-card-section-title">抵扣（预选）</text>
+            <view class="prepaid-card-row">
+              <view class="prepaid-card-info">
+                <text class="prepaid-card-label">储值卡</text>
+                <text class="prepaid-card-balance">余额 ¥{{customerCardBalance}}</text>
+              </view>
+              <view class="prepaid-card-switch-wrap">
+                <van-switch
+                  checked="{{useCard}}"
+                  size="40rpx"
+                  active-color="#C0322A"
+                  disabled="{{customerCardBalance <= 0 || customerBalanceLoading}}"
+                  bind:change="onTogglePrepaidCard"
+                />
+              </view>
+            </view>
+            <view wx:if="{{useCard && prepaidCardAmount > 0}}" class="prepaid-card-deduct-row">
+              <text class="prepaid-card-deduct-label">预选抵扣</text>
+              <text class="prepaid-card-deduct-amount">-¥{{prepaidCardAmount}}<text class="prepaid-card-deduct-hint">（不计入实付）</text></text>
+            </view>
+            <view wx:elif="{{customerCardBalance <= 0}}" class="prepaid-card-empty-hint">
+              <text>顾客暂无储值卡余额</text>
+            </view>
+          </view>
+
+          <!-- 实付金额行 -->
+          <view class="prepaid-paid-summary">
+            <text class="prepaid-paid-label">实付金额</text>
+            <text class="prepaid-paid-amount">¥{{paidAmount}}</text>
+          </view>
+          <view wx:if="{{!showPayMethodGroup}}" class="prepaid-paid-fullcover-hint">
+            <text>全额抵扣，payment_method='无'</text>
+          </view>
+
           <!-- PR-D1：支付方式（销售单 / 内部单二选一；转换单由 ConversionPanel 内部 picker 管理） -->
-          <view class="order-type-cards">
+          <!-- Wave 3G：仅在实付 > 0 时展示按钮组（作为建议通道） -->
+          <view wx:if="{{showPayMethodGroup}}" class="order-type-cards">
             <view
               class="order-type-card {{paymentMethod === '微信' ? 'order-type-card--active' : ''}}"
               data-method="微信"
@@ -369,6 +406,12 @@
               <text class="order-type-card-name">线下收款</text>
               <text class="order-type-card-desc">待店长确认</text>
             </view>
+          </view>
+
+          <!-- Wave 3G — 固定副文案：消除"店长点了就扣了"的误解 -->
+          <view class="prepaid-warning-tip">
+            <van-icon name="warning-o" size="28rpx" color="#FA8C16" />
+            <text class="prepaid-warning-text">顾客扫码确认后才真正扣卡</text>
           </view>
         </block>
 
@@ -395,7 +438,7 @@
             custom-class="btn-primary-brand"
             custom-style="border-radius:40rpx;"
             bind:click="onSubmitOrder"
-          >确认开单</van-button>
+          >生成付款码</van-button>
         </view>
       </view>
     </view>

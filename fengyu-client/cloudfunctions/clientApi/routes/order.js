@@ -116,7 +116,11 @@ async function scanDetail(ctx) {
       storeName: order.store_name || '',
       openerName: order.opener_name || '',
       orderType: order.sale_order_type,
-      totalAmount: order.total_amount
+      totalAmount: Number(order.total_amount || 0),
+      prepaidCardAmount: Number(order.prepaid_card_amount || 0),
+      paidAmount: Number(order.paid_amount ?? order.total_amount ?? 0),
+      paymentMethod: order.payment_method || '微信',
+      couponDiscount: Number(order.coupon_discount || 0)
     },
     items: items.map(i => ({
       saleItemId: i.sale_item_id,
@@ -145,9 +149,11 @@ async function create(ctx) {
     storeId,
     items, // [{ skuId, quantity }]
     preferredStaffWfId, // 可选,指定美容师
-    paymentMethod, // '微信' | '线下'
+    paymentMethod, // '微信' | '线下' | '支付宝'
     orderType: orderTypeParam, // 可选, 'promo' | undefined
-    couponId: inputCouponId // 可选, 优惠券ID
+    couponId: inputCouponId, // 可选, 优惠券ID
+    useCard, // 可选, 是否使用储值卡抵扣
+    prepaidCardAmount: inputPrepaidCardAmount // 可选, 前端传的抵扣金额
   } = payload
 
   if (!storeId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
@@ -341,9 +347,70 @@ async function create(ctx) {
 
   // 使用事务创建订单（订单号+流水号在事务内原子生成）
   let orderNo
+  let finalPrepaidCardAmount = 0
+  let finalPaidAmount = totalAmount
+  let finalPaymentMethod = paymentMethod
+  let cardIdForDeduction = null
+  let prepaidFullPaid = false
   await pg.transaction(async (client) => {
     // 获取 advisory lock 防止并发生成重复序号
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+
+    // === 储值卡抵扣计算（事务内、在 INSERT sale_orders 之前） ===
+    // 应抵上限 = totalAmount（已扣完优惠券）
+    let cardBalance = 0
+    let cardId = null
+    if (useCard) {
+      const cardRows = await client.query(
+        'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
+        [userId]
+      )
+      if (cardRows.rows.length > 0) {
+        cardId = cardRows.rows[0].card_id
+        cardBalance = Number(cardRows.rows[0].balance)
+      }
+    }
+
+    let prepaidCardAmount = 0
+    if (useCard) {
+      const cap = Math.round(totalAmount * 100) / 100
+      if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
+        const v = Number(inputPrepaidCardAmount)
+        if (!Number.isFinite(v) || v < 0) {
+          throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
+        }
+        if (Math.round(v * 100) !== v * 100) {
+          throw new Error('INVALID_PARAMS: 储值卡抵扣金额最多保留 2 位小数')
+        }
+        if (v > cardBalance + 0.001) {
+          throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+        }
+        if (v > cap + 0.001) {
+          throw new Error('INVALID_PARAMS: 储值卡抵扣金额超过应付金额')
+        }
+        prepaidCardAmount = Math.round(v * 100) / 100
+      } else {
+        prepaidCardAmount = Math.min(cardBalance, cap)
+        prepaidCardAmount = Math.round(prepaidCardAmount * 100) / 100
+      }
+    }
+
+    const paidAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+    // payment_method 规则：paid=0 强制 '无'；paid>0 校验前端传值属于 {微信,支付宝,线下}
+    let effectivePaymentMethod
+    if (paidAmount === 0) {
+      effectivePaymentMethod = '无'
+    } else {
+      if (!['微信', '支付宝', '线下'].includes(paymentMethod)) {
+        throw new Error('INVALID_PARAMS: 支付方式无效')
+      }
+      effectivePaymentMethod = paymentMethod
+    }
+    finalPrepaidCardAmount = prepaidCardAmount
+    finalPaidAmount = paidAmount
+    finalPaymentMethod = effectivePaymentMethod
+    cardIdForDeduction = cardId
+    prepaidFullPaid = paidAmount === 0 && prepaidCardAmount > 0
 
     // 生成订单号（在事务+锁内，防并发重复）
     const dateStrOrder = now.toISOString().slice(2, 10).replace(/-/g, '')
@@ -389,16 +456,23 @@ async function create(ctx) {
       }
     }
 
-    // 创建订单主表
+    // 创建订单主表（全额抵扣时直接 '已支付' + paid_at）
+    const initialStatus = prepaidFullPaid ? '已支付' : '待支付'
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, payment_method,
+        total_amount, prepaid_card_amount, paid_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
-        created_at, updated_at
-      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $5, $5)`,
-      [orderNo, documentType, marketName, storeId, now, userId, ctx.auth.phone || null, customerName, totalAmount, paymentMethod, preferredStaffWfId || null, inputCouponId || null, couponDiscount]
+        paid_at, created_at, updated_at
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $6, $6)`,
+      [
+        orderNo, initialStatus, documentType, marketName, storeId, now, userId,
+        ctx.auth.phone || null, customerName,
+        totalAmount, prepaidCardAmount, paidAmount, effectivePaymentMethod,
+        preferredStaffWfId || null, inputCouponId || null, couponDiscount,
+        prepaidFullPaid ? now : null
+      ]
     )
 
     // 创建订单明细（流水号递增）
@@ -422,12 +496,52 @@ async function create(ctx) {
         ]
       )
     }
+
+    // 全额抵扣：同事务扣减 balance + INSERT card_transactions（幂等）
+    if (prepaidFullPaid) {
+      // 幂等检查：若 ref_order_id + type='扣款' 已存在则跳过
+      const existDed = await client.query(
+        `SELECT 1 FROM card_transactions
+         WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+        [orderNo]
+      )
+      if (existDed.rows.length === 0) {
+        await client.query(
+          `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW()
+           WHERE card_id = $2`,
+          [prepaidCardAmount, cardIdForDeduction]
+        )
+        await client.query(
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
+           VALUES ($1, '扣款', $2, $3)`,
+          [cardIdForDeduction, -prepaidCardAmount, orderNo]
+        )
+      }
+    }
   })
+
+  if (prepaidFullPaid) {
+    ctx.result = {
+      orderNo,
+      saleOrderId: orderNo,
+      totalAmount,
+      prepaidCardAmount: finalPrepaidCardAmount,
+      paidAmount: finalPaidAmount,
+      paymentMethod: finalPaymentMethod,
+      status: '已支付',
+      reason: 'prepaid_card_full',
+      paymentParams: null,
+    }
+    return
+  }
 
   ctx.result = {
     orderNo,
     saleOrderId: orderNo,
     totalAmount,
+    prepaidCardAmount: finalPrepaidCardAmount,
+    paidAmount: finalPaidAmount,
+    paymentMethod: finalPaymentMethod,
     status: '待支付'
   }
 }
@@ -477,6 +591,18 @@ async function pay(ctx) {
 
   const now = new Date()
 
+  // 全额储值卡抵扣：paid_amount = 0，直接短路返回已支付（订单本身已在 create 阶段置为已支付）
+  const paidAmount = Number(order.paid_amount ?? order.total_amount ?? 0)
+  if (paidAmount === 0) {
+    ctx.result = {
+      orderNo,
+      status: '已支付',
+      reason: 'prepaid_card_full',
+      paymentParams: null,
+    }
+    return
+  }
+
   // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
   if (!order.client_user_id && order.opened_by) {
     await pg.query(
@@ -493,9 +619,11 @@ async function pay(ctx) {
   const totalAmount = order.total_amount
 
   // TODO: 接入真实微信支付统一下单接口
+  // total_fee 按 paid_amount（实付金额，扣除储值卡抵扣后）计算
   ctx.result = {
     orderNo,
     totalAmount,
+    paidAmount,
     paymentMethod: '微信',
     mockMode: true,
     paymentParams: {
@@ -503,7 +631,8 @@ async function pay(ctx) {
       nonceStr: Math.random().toString(36).substr(2),
       package: `prepay_id=wx${Date.now()}`,
       signType: 'MD5',
-      paySign: 'mock_sign'
+      paySign: 'mock_sign',
+      totalFee: Math.round(paidAmount * 100)
     }
   }
 }
@@ -548,6 +677,17 @@ async function offlinePay(ctx) {
   if (Date.now() - orderTimeOffline.getTime() > 10 * 60 * 1000) {
     await closeExpiredOrder(orderNo)
     throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+  }
+
+  // 全额储值卡抵扣：paid_amount = 0，直接短路返回已支付
+  const paidAmountOff = Number(order.paid_amount ?? order.total_amount ?? 0)
+  if (paidAmountOff === 0) {
+    ctx.result = {
+      orderNo,
+      status: '已支付',
+      reason: 'prepaid_card_full',
+    }
+    return
   }
 
   const now = new Date()
@@ -746,6 +886,7 @@ async function detail(ctx) {
 
 /**
  * 取消订单
+ * 若订单已扣过储值卡（全额抵扣场景），同事务反向 INSERT 充值流水并回冲 balance
  */
 async function cancel(ctx) {
   const { userId } = ctx.auth
@@ -767,12 +908,31 @@ async function cancel(ctx) {
 
   const order = orders[0]
 
-  if (order.status !== '待支付') {
+  // 允许取消状态：待支付（常规）、已支付（仅全额抵扣单，需回冲储值卡）
+  const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+  const isPrepaidFull = prepaidCardAmount > 0 && Number(order.paid_amount || 0) === 0
+  const cancelableStatuses = ['待支付']
+  if (isPrepaidFull && order.status === '已支付') {
+    // 全额抵扣单顾客确认立刻取消：允许回冲
+    cancelableStatuses.push('已支付')
+  }
+  if (!cancelableStatuses.includes(order.status)) {
     throw new Error('INVALID_PARAMS: 当前订单状态不允许取消')
   }
 
   const now = new Date()
   await pg.transaction(async (client) => {
+    // 事务内先查该订单是否已有扣款流水
+    let hasDeducted = false
+    if (prepaidCardAmount > 0) {
+      const existDed = await client.query(
+        `SELECT id FROM card_transactions
+         WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+        [orderNo]
+      )
+      hasDeducted = existDed.rows.length > 0
+    }
+
     await client.query(
       "UPDATE sale_orders SET status = '已关闭', updated_at = $1 WHERE sale_order_id = $2",
       [now, orderNo]
@@ -784,6 +944,35 @@ async function cancel(ctx) {
        WHERE used_sale_order_id = $1`,
       [orderNo]
     )
+
+    // 若已扣过卡：反向 INSERT 充值流水 + UPDATE prepaid_cards balance 回冲
+    if (hasDeducted) {
+      // 幂等：若已存在 ref_order_id + type='充值' 则跳过
+      const existRev = await client.query(
+        `SELECT id FROM card_transactions
+         WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
+        [orderNo]
+      )
+      if (existRev.rows.length === 0) {
+        const cardRows = await client.query(
+          `SELECT card_id FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+          [userId]
+        )
+        if (cardRows.rows.length > 0) {
+          const cardId = cardRows.rows[0].card_id
+          await client.query(
+            `UPDATE prepaid_cards SET balance = balance + $1, updated_at = NOW()
+             WHERE card_id = $2`,
+            [prepaidCardAmount, cardId]
+          )
+          await client.query(
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
+             VALUES ($1, '充值', $2, $3)`,
+            [cardId, prepaidCardAmount, orderNo]
+          )
+        }
+      }
+    }
   })
 
   ctx.result = {
@@ -931,6 +1120,204 @@ async function alipayPay(ctx) {
   }
 }
 
+/**
+ * 顾客扫码后调整店长预选的抵扣方案
+ * payload: { saleOrderId, useCard, prepaidCardAmount?, paymentMethod? }
+ * 仅限员工开单（opened_by IS NOT NULL）且状态='待支付'
+ * balance 不动；本端点只重算订单的 prepaid_card_amount/paid_amount/payment_method
+ */
+async function scanAdjust(ctx) {
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const { useCard, prepaidCardAmount: inputPrepaidCardAmount, paymentMethod } = payload
+
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+
+  const orders = await pg.query(
+    `SELECT * FROM sale_orders WHERE sale_order_id = $1`,
+    [saleOrderId]
+  )
+  if (orders.length === 0) {
+    throw new Error('INVALID_PARAMS: 订单不存在')
+  }
+  const order = orders[0]
+
+  if (!order.opened_by) {
+    throw new Error('INVALID_PARAMS: 非员工开单订单不支持此操作')
+  }
+  if (order.status !== '待支付') {
+    throw new Error('INVALID_PARAMS: 订单状态不允许调整')
+  }
+  // 归属校验：允许 client_user_id 为空（首次扫码绑定）或等于当前用户
+  if (order.client_user_id && order.client_user_id !== userId) {
+    throw new Error('PERMISSION_DENIED: 无权操作该订单')
+  }
+
+  const totalAmount = Number(order.total_amount || 0)
+
+  // 读当前余额（本端点不扣款，不加 FOR UPDATE）
+  let cardBalance = 0
+  const cardRows = await pg.query(
+    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
+    [userId]
+  )
+  if (cardRows.length > 0) {
+    cardBalance = Number(cardRows[0].balance)
+  }
+
+  // 重算 prepaid / paid / payment_method
+  let prepaidCardAmount = 0
+  if (useCard) {
+    const cap = Math.round(totalAmount * 100) / 100
+    if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
+      const v = Number(inputPrepaidCardAmount)
+      if (!Number.isFinite(v) || v < 0) {
+        throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
+      }
+      if (Math.round(v * 100) !== v * 100) {
+        throw new Error('INVALID_PARAMS: 储值卡抵扣金额最多保留 2 位小数')
+      }
+      if (v > cardBalance + 0.001) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+      }
+      if (v > cap + 0.001) {
+        throw new Error('INVALID_PARAMS: 储值卡抵扣金额超过应付金额')
+      }
+      prepaidCardAmount = Math.round(v * 100) / 100
+    } else {
+      prepaidCardAmount = Math.min(cardBalance, cap)
+      prepaidCardAmount = Math.round(prepaidCardAmount * 100) / 100
+    }
+  }
+  const paidAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+  let effectivePaymentMethod
+  if (paidAmount === 0) {
+    effectivePaymentMethod = '无'
+  } else {
+    if (!['微信', '支付宝', '线下'].includes(paymentMethod)) {
+      throw new Error('INVALID_PARAMS: 支付方式无效')
+    }
+    effectivePaymentMethod = paymentMethod
+  }
+
+  const now = new Date()
+  await pg.query(
+    `UPDATE sale_orders
+     SET prepaid_card_amount = $1,
+         paid_amount = $2,
+         payment_method = $3,
+         client_user_id = COALESCE(client_user_id, $4),
+         updated_at = $5
+     WHERE sale_order_id = $6 AND status = '待支付'`,
+    [prepaidCardAmount, paidAmount, effectivePaymentMethod, userId, now, saleOrderId]
+  )
+
+  ctx.result = {
+    orderNo: saleOrderId,
+    saleOrderId,
+    totalAmount,
+    prepaidCardAmount,
+    paidAmount,
+    paymentMethod: effectivePaymentMethod,
+    status: '待支付',
+  }
+}
+
+/**
+ * 全额抵扣确认支付（扫码页顾客点"确认支付"且 paid_amount=0 时调用）
+ * 同事务：SELECT FOR UPDATE balance → 扣减 → INSERT card_transactions → 订单置'已支付'
+ */
+async function confirmPrepaidFull(ctx) {
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+
+  await pg.transaction(async (client) => {
+    const ordRes = await client.query(
+      `SELECT sale_order_id, status, client_user_id, prepaid_card_amount, paid_amount
+       FROM sale_orders WHERE sale_order_id = $1`,
+      [saleOrderId]
+    )
+    if (ordRes.rows.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单不存在')
+    }
+    const order = ordRes.rows[0]
+    if (order.status !== '待支付') {
+      throw new Error('INVALID_PARAMS: 订单状态不允许支付')
+    }
+    if (order.client_user_id && order.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+    const prepaidCardAmount = Number(order.prepaid_card_amount || 0)
+    const paidAmount = Number(order.paid_amount || 0)
+    if (paidAmount !== 0) {
+      throw new Error('INVALID_PARAMS: 订单非全额抵扣，不能走此通道')
+    }
+    if (prepaidCardAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 订单无储值卡抵扣')
+    }
+
+    const cardRows = await client.query(
+      `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+      [userId]
+    )
+    if (cardRows.rows.length === 0) {
+      throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+    }
+    const cardId = cardRows.rows[0].card_id
+    const cardBalance = Number(cardRows.rows[0].balance)
+    if (cardBalance + 0.001 < prepaidCardAmount) {
+      throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+    }
+
+    // 幂等：若已扣过则跳过写入
+    const existDed = await client.query(
+      `SELECT 1 FROM card_transactions
+       WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+      [saleOrderId]
+    )
+    if (existDed.rows.length === 0) {
+      await client.query(
+        `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW()
+         WHERE card_id = $2`,
+        [prepaidCardAmount, cardId]
+      )
+      await client.query(
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
+         VALUES ($1, '扣款', $2, $3)`,
+        [cardId, -prepaidCardAmount, saleOrderId]
+      )
+    }
+
+    await client.query(
+      `UPDATE sale_orders
+       SET status = '已支付',
+           client_user_id = COALESCE(client_user_id, $1),
+           paid_at = NOW(),
+           updated_at = NOW()
+       WHERE sale_order_id = $2 AND status = '待支付'`,
+      [userId, saleOrderId]
+    )
+  })
+
+  ctx.result = {
+    status: '已支付',
+    saleOrderId,
+    orderNo: saleOrderId,
+  }
+}
+
 module.exports = {
   create,
   pay,
@@ -940,5 +1327,7 @@ module.exports = {
   detail,
   cancel,
   appointableItems,
-  scanDetail
+  scanDetail,
+  scanAdjust,
+  confirmPrepaidFull,
 }

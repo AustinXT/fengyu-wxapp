@@ -3,6 +3,7 @@ import Toast from '@vant/weapp/toast/toast';
 import Dialog from '@vant/weapp/dialog/dialog';
 import { clearCart } from '../../utils/cart';
 import { callClientApi, bindPhoneWithCloudID } from '../../utils/cloud';
+import { recomputeAmounts } from './checkout-helpers';
 
 const app = getApp<IAppOption>();
 
@@ -59,6 +60,14 @@ Page({
     showCouponPopup: false,
     availableCoupons: [] as any[],
     couponsLoading: false,
+    // 储值卡抵扣（Wave 3E）
+    cardBalance: 0,
+    cardId: '' as string,
+    useCard: true,                // 默认开（决策 #1）；余额 = 0 时 effectiveUseCard 自动 false
+    prepaidCardAmount: 0,         // 由 recomputeAmounts 派生
+    paidAmount: 0,                // 由 recomputeAmounts 派生
+    showPayMethodGroup: true,     // 由 recomputeAmounts 派生：实付 > 0 才显示
+    netBeforeCard: 0,             // 应抵扣部分（=总价-券），UI 显示用
   },
 
   onLoad(options) {
@@ -68,6 +77,8 @@ Page({
     // 加载美容师列表 + 默认美容师
     this.loadStaffList();
     this.loadDefaultStaff();
+    // 加载储值卡余额（与门店无关，跨店可用；注意先于 recompute 生效）
+    this.loadCardBalance();
 
     const existingId = saleOrderId || orderNo;
     if (existingId) {
@@ -93,6 +104,7 @@ Page({
         totalPrice: total,
         storeName,
       });
+      this.recomputeAmounts();
     } else {
       // 场景 A：自助下单
       const qty = parseInt(quantity, 10) || 1;
@@ -127,6 +139,7 @@ Page({
           quantity,
         }],
       });
+      this.recomputeAmounts();
     } catch {
       Toast.fail('加载价格失败');
     }
@@ -186,6 +199,7 @@ Page({
           quantity: Number(i.quantity || 1),
         })),
       });
+      this.recomputeAmounts();
     } catch {
       Toast.fail('加载订单信息失败');
     }
@@ -221,6 +235,54 @@ Page({
     } catch {
       // 获取默认美容师失败不影响主流程
     }
+  },
+
+  /** 拉取储值卡余额，并按当前金额状态触发一次 recompute */
+  async loadCardBalance() {
+    try {
+      const data = await callClientApi<{ balance: number; cardId: string | null }>(
+        'card.balance', {}
+      );
+      const balance = Number(data?.balance) || 0;
+      this.setData({
+        cardBalance: balance,
+        cardId: data?.cardId || '',
+        // 余额 = 0 时强制关闭开关，避免 UI 出现"开关 on 但抵扣 0"的违和状态
+        useCard: balance > 0 ? this.data.useCard : false,
+      });
+      this.recomputeAmounts();
+    } catch {
+      // 余额查询失败不阻断下单：保持 cardBalance=0、useCard=false
+      this.setData({ cardBalance: 0, useCard: false });
+      this.recomputeAmounts();
+    }
+  },
+
+  /** 根据当前 totalAmount/couponDiscount/cardBalance/useCard 重算抵扣明细 */
+  recomputeAmounts() {
+    const totalAmount = this.data.fromCart
+      ? Number(this.data.totalPrice) || 0
+      : (Number(this.data.unitPrice) || 0) * (Number(this.data.quantity) || 1);
+    const result = recomputeAmounts({
+      totalAmount,
+      couponDiscount: Number(this.data.couponDiscount) || 0,
+      cardBalance: Number(this.data.cardBalance) || 0,
+      useCard: this.data.useCard,
+    });
+    this.setData({
+      prepaidCardAmount: result.prepaidCardAmount,
+      paidAmount: result.paidAmount,
+      showPayMethodGroup: result.showPayMethodGroup,
+      netBeforeCard: result.netBeforeCard,
+    });
+  },
+
+  /** 储值卡开关切换 */
+  onToggleUseCard(e: WxEvent<boolean>) {
+    // 余额 = 0 时禁用：忽略 change 事件
+    if (this.data.cardBalance <= 0) return;
+    this.setData({ useCard: !!e.detail });
+    this.recomputeAmounts();
   },
 
   onSelectStaff() {
@@ -287,6 +349,7 @@ Page({
       couponDiscount: d,
       showCouponPopup: false,
     });
+    this.recomputeAmounts();
   },
 
   onClearCoupon() {
@@ -295,6 +358,7 @@ Page({
       couponDiscount: 0,
       showCouponPopup: false,
     });
+    this.recomputeAmounts();
   },
 
   onAgreementChange(e: WxEvent<boolean>) {
@@ -358,17 +422,30 @@ Page({
         items = [{ skuId: this.data.skuId, quantity: this.data.quantity }];
       }
 
-      const data = await callClientApi('order.create', {
+      const data = await callClientApi<any>('order.create', {
         storeId,
         items,
         preferredStaffWfId: this.data.staffWfId || null,
         paymentMethod: this.data.paymentMethod,
         orderType: this.data.orderType !== 'normal' ? this.data.orderType : undefined,
         couponId: this.data.selectedCoupon?.couponId || undefined,
+        useCard: this.data.useCard && this.data.cardBalance > 0,
+        prepaidCardAmount: this.data.prepaidCardAmount,
       });
 
       const saleOrderId = data?.saleOrderId || data?.orderNo;
       if (!saleOrderId) throw new Error('创建订单失败');
+
+      // 全额抵扣：后端已置 '已支付'，跳详情页不唤起支付
+      const isPrepaidFull = data?.status === '已支付'
+        || data?.reason === 'prepaid_card_full'
+        || (data?.paymentParams === null && Number(data?.paidAmount || 0) === 0);
+      if (isPrepaidFull) {
+        if (this.data.fromCart) clearCart();
+        Toast.success('已使用储值卡支付');
+        setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
+        return;
+      }
 
       if (this.data.paymentMethod === '线下') {
         if (this.data.fromCart) clearCart();

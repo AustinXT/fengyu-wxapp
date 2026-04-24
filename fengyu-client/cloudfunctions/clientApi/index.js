@@ -40,6 +40,8 @@ const routes = {
   'order.cancel': () => require('./routes/order').cancel,
   'order.appointableItems': () => require('./routes/order').appointableItems,
   'order.scanDetail': () => require('./routes/order').scanDetail,
+  'order.scanAdjust': () => require('./routes/order').scanAdjust,
+  'order.confirmPrepaidFull': () => require('./routes/order').confirmPrepaidFull,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,
@@ -53,6 +55,7 @@ const routes = {
   'message.read': () => require('./routes/message').read,
   'message.unreadCount': () => require('./routes/message').unreadCount,
   'card.list': () => require('./routes/card').list,
+  'card.balance': () => require('./routes/card').balance,
   'card.history': () => require('./routes/card').history,
   'card.rechargeConfig': () => require('./routes/card').rechargeConfig,
   'card.recharge': () => require('./routes/card').recharge,
@@ -117,7 +120,7 @@ exports.main = async (event, context) => {
     const errorType = errorTypeMatch ? errorTypeMatch[1] : null
     const knownTypes = [
       'UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS',
-      'PERMISSION_DENIED', 'NOT_FOUND'
+      'PERMISSION_DENIED', 'NOT_FOUND', 'INSUFFICIENT_BALANCE'
     ]
     const isKnown = errorType && knownTypes.includes(errorType)
     const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'

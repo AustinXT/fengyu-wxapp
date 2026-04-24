@@ -1,40 +1,35 @@
 /**
  * 充值卡路由测试
- * 覆盖：list（卡列表含门店名）、history（交易记录+分页+所有权校验）
+ * 覆盖：list（跨店共享，一户一账户）、balance（按 user_id 查余额）、history（交易记录+分页+所有权校验）
  */
 
 const pg = globalThis.__mocks__.pg
-const { createBoundCtx } = require('../helpers')
+const { createBoundCtx, createCtx } = require('../helpers')
 
 let routes
 beforeEach(() => {
   vi.clearAllMocks()
   Object.keys(require.cache).forEach(key => {
-    if (key.includes('/routes/card')) delete require.cache[key]
+    if (key.includes('/routes/card') || key.includes('/middleware/auth')) delete require.cache[key]
   })
   routes = require('../../routes/card')
 })
 
 describe('card.list', () => {
-  test('返回充值卡列表含门店名', async () => {
+  test('返回充值卡列表（无 storeId/storeName 字段）', async () => {
     pg.query.mockResolvedValueOnce([
-      {
-        card_id: 'card-1', balance: 500, store_id: 's1',
-        store_name: '凤御A店', created_at: '2025-01-01',
-      },
-      {
-        card_id: 'card-2', balance: 1000, store_id: 's2',
-        store_name: '凤御B店', created_at: '2025-02-01',
-      },
+      { card_id: 'card-1', balance: 500, created_at: '2025-01-01' },
     ])
 
     const ctx = createBoundCtx({})
     await routes.list(ctx)
 
-    expect(ctx.result.cards).toHaveLength(2)
+    expect(ctx.result.cards).toHaveLength(1)
     expect(ctx.result.cards[0].cardId).toBe('card-1')
-    expect(ctx.result.cards[0].storeName).toBe('凤御A店')
-    expect(ctx.result.cards[1].balance).toBe(1000)
+    expect(ctx.result.cards[0].balance).toBe(500)
+    expect(ctx.result.cards[0].createdAt).toBe('2025-01-01')
+    expect(ctx.result.cards[0].storeId).toBeUndefined()
+    expect(ctx.result.cards[0].storeName).toBeUndefined()
   })
 
   test('无充值卡返回空数组', async () => {
@@ -64,19 +59,19 @@ describe('card.list', () => {
     expect(pg.query.mock.calls[0][0]).toContain('ORDER BY pc.created_at DESC')
   })
 
-  test('LEFT JOIN stores 获取门店名', async () => {
+  test('SQL 不含 LEFT JOIN stores（跨店共享，不取 store_name）', async () => {
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({})
     await routes.list(ctx)
 
-    expect(pg.query.mock.calls[0][0]).toContain('LEFT JOIN stores')
+    expect(pg.query.mock.calls[0][0]).not.toContain('LEFT JOIN stores')
+    expect(pg.query.mock.calls[0][0]).not.toContain('store_id')
   })
 
   test('PG numeric 字符串 balance 转为 number（避免前端 toFixed 报错）', async () => {
-    // node-postgres 将 numeric 类型返回为字符串，必须在云函数端转数字
     pg.query.mockResolvedValueOnce([
-      { card_id: 'card-1', balance: '7378.52', store_id: 's1', store_name: '凤御A店', created_at: '2025-01-01' },
+      { card_id: 'card-1', balance: '7378.52', created_at: '2025-01-01' },
     ])
 
     const ctx = createBoundCtx({})
@@ -84,6 +79,70 @@ describe('card.list', () => {
 
     expect(typeof ctx.result.cards[0].balance).toBe('number')
     expect(ctx.result.cards[0].balance).toBe(7378.52)
+  })
+})
+
+describe('card.balance', () => {
+  test('无卡返回 balance=0, cardId=null', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({})
+    await routes.balance(ctx)
+
+    expect(ctx.result).toEqual({ balance: 0, cardId: null })
+  })
+
+  test('有卡按 user_id 查出余额', async () => {
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-1', balance: '320.50' },
+    ])
+
+    const ctx = createBoundCtx({}, { userId: 'user-xyz' })
+    await routes.balance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-1')
+    expect(ctx.result.balance).toBe(320.5)
+    expect(typeof ctx.result.balance).toBe('number')
+
+    // 参数化查询，SQL 按 user_id
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toContain('user_id = $1')
+    expect(sql).not.toContain('store_id')
+    expect(params).toEqual(['user-xyz'])
+  })
+
+  test('未绑定手机号 → PHONE_REQUIRED', async () => {
+    const ctx = createCtx({
+      payload: {},
+      auth: { phone: null },
+    })
+    await expect(routes.balance(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
+  })
+
+  test('不接受 storeId 参数（payload 有 storeId 被忽略）', async () => {
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-1', balance: '100' },
+    ])
+
+    const ctx = createBoundCtx({ storeId: 'any-store' }, { userId: 'user-1' })
+    await routes.balance(ctx)
+
+    // SQL 只按 user_id 查询，不会把 storeId 作为参数
+    const params = pg.query.mock.calls[0][1]
+    expect(params).toEqual(['user-1'])
+    expect(ctx.result.balance).toBe(100)
+  })
+
+  test('返回的 balance 是 number 而非字符串', async () => {
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-1', balance: '0.00' },
+    ])
+
+    const ctx = createBoundCtx({})
+    await routes.balance(ctx)
+
+    expect(typeof ctx.result.balance).toBe('number')
+    expect(ctx.result.balance).toBe(0)
   })
 })
 

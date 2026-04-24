@@ -51,6 +51,8 @@
             <van-cell wx:if="{{customer.lastServiceDate}}" title="上次到店" value="{{customer.lastServiceDate}}" />
             <van-cell wx:if="{{customer.visitFrequency}}" title="到店频率" value="{{customer.visitFrequency}}" />
             <van-cell title="消费金额" value="¥{{customer.totalConsumption}}" />
+            <!-- Wave 3G — 储值卡余额（跨店统一） -->
+            <van-cell wx:if="{{cardBalanceLoaded}}" title="储值卡余额" value="¥{{cardBalance}}" />
             <van-cell wx:if="{{customer.skinType}}" title="肤质" value="{{customer.skinType}}" />
             <van-cell wx:if="{{customer.focusAreas}}" title="改善重点" value="{{customer.focusAreas}}" />
             <van-field

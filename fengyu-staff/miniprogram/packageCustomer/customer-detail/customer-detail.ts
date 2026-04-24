@@ -27,6 +27,12 @@ interface CustomerDetail {
   topProductName: string | null;
 }
 
+/** Wave 2B 新增 customer.customerBalance 响应（跨店统一余额） */
+interface CustomerBalanceResponse {
+  balance: number;
+  cardId: string | null;
+}
+
 interface CustomerQuery {
   id?: string;
   clientUserId?: string;
@@ -170,6 +176,9 @@ Page({
     // Tab 5: 退换记录
     refundRecords: [] as RefundRecord[],
     refundLoaded: false,
+    // Wave 3G — 储值卡余额（跨店统一，仅店长视角）
+    cardBalance: 0 as number,
+    cardBalanceLoaded: false as boolean,
   },
 
   _query: null as CustomerQuery | null,
@@ -209,11 +218,37 @@ Page({
     try {
       const customer = await callStaffApi<CustomerDetail>('customer.detail', this._query);
       this.setData({ customer, notesValue: customer.notes || '', notesDirty: false });
+      // Wave 3G — 拉取储值卡余额（跨店统一）。失败静默兜底为 0
+      void this.loadCardBalance();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ loading: false });
+    }
+  },
+
+  /**
+   * Wave 3G — 加载顾客储值卡余额（跨店统一）
+   * - 仅当 customer.clientUserId 存在时调用
+   * - 静默失败：余额展示 0，不阻塞页面
+   */
+  async loadCardBalance() {
+    const { customer } = this.data;
+    if (!customer?.clientUserId) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: true });
+      return;
+    }
+    try {
+      const data = await callStaffApi<CustomerBalanceResponse>('customer.customerBalance', {
+        customerUserId: customer.clientUserId,
+      });
+      this.setData({
+        cardBalance: Math.max(0, Number(data?.balance) || 0),
+        cardBalanceLoaded: true,
+      });
+    } catch (_) {
+      this.setData({ cardBalance: 0, cardBalanceLoaded: true });
     }
   },
 

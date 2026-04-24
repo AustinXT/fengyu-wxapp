@@ -175,7 +175,9 @@ async function create(ctx) {
     saleOrderType: saleOrderTypeParam,
     preferredStaffWfId,
     couponId: inputCouponId,
-    remark: orderRemark
+    remark: orderRemark,
+    useCard,
+    prepaidCardAmount: inputPrepaidCardAmount,
   } = payload
 
   const storeId = ctx.auth.storeId
@@ -194,6 +196,7 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
   }
   // PR-D1：白名单守卫，与 createConversion 对齐（暂不支持支付宝，待业务确认）
+  // '无' 值由后端在 paid_amount=0 时强制覆盖，前端传值暂仅允许 微信/线下
   if (!['微信', '线下'].includes(paymentMethod)) {
     throw new Error('INVALID_PARAMS: 非法的支付方式')
   }
@@ -395,7 +398,43 @@ async function create(ctx) {
 
   const now = new Date()
   const saleOrderId = await generateOrderNo()
-  const totalAmount = itemDataList.reduce((sum, d) => sum + d.received, 0)
+  const totalAmount = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
+
+  // ========== 储值卡预选（店长开单 = 预选，不扣卡）==========
+  // 查询顾客当前余额（不加 FOR UPDATE，因为不写 balance）；仅店长预选为参考
+  let prepaidCardAmount = 0
+  if (useCard) {
+    const balanceRows = await pg.query(
+      'SELECT balance FROM prepaid_cards WHERE user_id = $1',
+      [clientUserId]
+    )
+    const currentBalance = balanceRows.length > 0 ? Number(balanceRows[0].balance) : 0
+
+    // 计算预选额上限 = totalAmount（优惠券已在 received 中扣除）
+    const maxPrepayable = totalAmount
+
+    if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
+      const inputAmount = Number(inputPrepaidCardAmount)
+      if (!Number.isFinite(inputAmount) || inputAmount < 0) {
+        throw new Error('INVALID_PARAMS: prepaidCardAmount 必须为非负数')
+      }
+      if (inputAmount > currentBalance) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+      }
+      if (inputAmount > maxPrepayable) {
+        throw new Error('INVALID_PARAMS: prepaidCardAmount 超过应抵上限')
+      }
+      prepaidCardAmount = Math.round(inputAmount * 100) / 100
+    } else {
+      // 未显式传值：默认"能抵多少抵多少"
+      prepaidCardAmount = Math.min(currentBalance, maxPrepayable)
+      prepaidCardAmount = Math.round(prepaidCardAmount * 100) / 100
+    }
+  }
+
+  const paidAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+  // paid=0 时强制落 '无'；paid>0 保留前端传值
+  const effectivePaymentMethod = paidAmount === 0 ? '无' : paymentMethod
 
   // ========== 计算 document_type（售前/售后快照） ==========
   let documentType = '售前'
@@ -448,6 +487,10 @@ async function create(ctx) {
 
     // 创建订单主表
     // PR-D1：线下支付 → 待确认收款（与 admin 对齐），微信支付 → 待支付
+    // 储值卡预选（店长端不扣卡）：status 依然按 paymentMethod 决定
+    //   - 线下 → 待确认收款（由 confirmOffline 扣卡 + 转为已支付）
+    //   - 微信 → 待支付（由 payNotify 扣卡 + 转为已支付）
+    //   - effectivePaymentMethod='无'（全额抵扣）时，待顾客扫码端调 confirmPrepaidFull 完成
     const initialStatus = paymentMethod === '线下' ? '待确认收款' : '待支付'
     await client.query(
       `INSERT INTO sale_orders (
@@ -455,16 +498,18 @@ async function create(ctx) {
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
+        prepaid_card_amount, paid_amount,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
-        paymentMethod, ctx.auth.staffWfId,
+        effectivePaymentMethod, ctx.auth.staffWfId,
         preferredStaffWfId || null,
         inputCouponId || null, couponDiscount,
         orderRemark || null,
         initialStatus,
+        prepaidCardAmount, paidAmount,
       ]
     )
 
@@ -502,6 +547,9 @@ async function create(ctx) {
     saleOrderId,
     totalAmount,
     couponDiscount,
+    prepaidCardAmount,
+    paidAmount,
+    paymentMethod: effectivePaymentMethod,
     status: paymentMethod === '线下' ? '待确认收款' : '待支付',
     clientUserId,
     message: '开单成功'
@@ -644,6 +692,43 @@ async function confirmOffline(ctx) {
   const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
 
   await pg.transaction(async (client) => {
+    // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
+    // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写流水
+    const prepaidAmount = Number(order.prepaid_card_amount || 0)
+    if (prepaidAmount > 0 && order.client_user_id) {
+      // 幂等：已扣过则跳过
+      const dupCheck = await client.query(
+        `SELECT 1 FROM card_transactions
+         WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+        [saleOrderId]
+      )
+      if (dupCheck.rows.length === 0) {
+        const balRes = await client.query(
+          'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
+          [order.client_user_id]
+        )
+        if (balRes.rows.length === 0) {
+          throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+        }
+        const currentBalance = Number(balRes.rows[0].balance)
+        if (currentBalance < prepaidAmount) {
+          throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+        }
+        const cardId = balRes.rows[0].card_id
+        await client.query(
+          `UPDATE prepaid_cards
+           SET balance = balance - $1, updated_at = NOW()
+           WHERE card_id = $2`,
+          [prepaidAmount, cardId]
+        )
+        await client.query(
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+           VALUES ($1, '扣款', $2, $3, NOW())`,
+          [cardId, -prepaidAmount, saleOrderId]
+        )
+      }
+    }
+
     // 更新订单状态（C4: WHERE 锁定当前状态防止并发竞态）
     const updateResult = await client.query(
       `UPDATE sale_orders
@@ -671,7 +756,8 @@ async function confirmOffline(ctx) {
     // - 虚拟 SKU（自定义金额路径）：面值从 product_name 的 "¥{n}" 解析
     // - 真实档位 SKU：面值从 product_skus.price 读取
     // 与 clientApi payNotify 侧的识别逻辑对称，二者均以 (ref_order_id) 幂等。
-    if (order.client_user_id && order.store_id) {
+    // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
+    if (order.client_user_id) {
       const rechargeRows = await client.query(
         `SELECT si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
@@ -682,7 +768,7 @@ async function confirmOffline(ctx) {
       )
       if (rechargeRows.rows.length > 0) {
         const dupCheck = await client.query(
-          `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
+          `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
           [saleOrderId]
         )
         if (dupCheck.rows.length === 0) {
@@ -701,12 +787,12 @@ async function confirmOffline(ctx) {
 
             const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
             const upsertRes = await client.query(
-              `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, NOW(), NOW())
-               ON CONFLICT (user_id, store_id) DO UPDATE
+              `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
+               VALUES ($1, $2, $3, NOW(), NOW())
+               ON CONFLICT (user_id) DO UPDATE
                  SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
                RETURNING card_id`,
-              [newCardId, order.client_user_id, order.store_id, faceValue]
+              [newCardId, order.client_user_id, faceValue]
             )
             const cardId = upsertRes.rows[0].card_id
             await client.query(
@@ -1121,6 +1207,10 @@ async function createRefund(ctx) {
 
 /**
  * 审批退款单（店长专用）
+ *
+ * 退款拆分规则（ticket §2.5 / §4.7）：
+ *   refundByCard   = floor(prepaid_card_amount / total_amount × refundAmount, 2)
+ *   refundByOrigin = refundAmount - refundByCard   // 反向相减，无尾差
  */
 async function approveRefund(ctx) {
   await requireManager()(ctx, async () => {})
@@ -1134,7 +1224,34 @@ async function approveRefund(ctx) {
   )
   if (orders.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许审批')
 
+  const refundOrder = orders[0]
   const now = new Date()
+
+  // 读被退原单的 prepaid_card_amount / total_amount（正数）
+  let origPrepaidCardAmount = 0
+  let origTotalAmount = 0
+  if (refundOrder.ref_sale_order_id) {
+    const origRows = await pg.query(
+      'SELECT prepaid_card_amount, total_amount FROM sale_orders WHERE sale_order_id = $1',
+      [refundOrder.ref_sale_order_id]
+    )
+    if (origRows.length > 0) {
+      origPrepaidCardAmount = Number(origRows[0].prepaid_card_amount || 0)
+      origTotalAmount = Number(origRows[0].total_amount || 0)
+    }
+  }
+
+  // 退款金额（正数）：退款单 total_amount 为负数
+  const refundAmount = Math.abs(Number(refundOrder.total_amount || 0))
+
+  let refundByCard = 0
+  let refundByOrigin = refundAmount
+  if (origPrepaidCardAmount > 0 && origTotalAmount > 0 && refundAmount > 0) {
+    // floor 到 2 位小数
+    const raw = (origPrepaidCardAmount / origTotalAmount) * refundAmount
+    refundByCard = Math.floor(raw * 100) / 100
+    refundByOrigin = Math.round((refundAmount - refundByCard) * 100) / 100
+  }
 
   // 查退款明细（refund_out 行），原子扣减原购买行 remaining_sessions
   const refundItems = await pg.query(
@@ -1157,24 +1274,55 @@ async function approveRefund(ctx) {
       }
     }
 
-    // 更新退款单状态
+    // 储值卡部分退款：回冲 balance + INSERT card_transactions(type='充值')
+    // 幂等守卫：以 ref_order_id=退款单ID + type='充值' 去重
+    if (refundByCard > 0 && refundOrder.client_user_id) {
+      const dupCheck = await client.query(
+        `SELECT 1 FROM card_transactions
+         WHERE ref_order_id = $1 AND type = '充值' LIMIT 1`,
+        [saleOrderId]
+      )
+      if (dupCheck.rows.length === 0) {
+        // 顾客此时可能没有卡行（极端场景：账户被清）→ UPSERT 新建
+        const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+        const upsertRes = await client.query(
+          `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
+           VALUES ($1, $2, $3, NOW(), NOW())
+           ON CONFLICT (user_id) DO UPDATE
+             SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
+           RETURNING card_id`,
+          [newCardId, refundOrder.client_user_id, refundByCard]
+        )
+        const cardId = upsertRes.rows[0].card_id
+        await client.query(
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+           VALUES ($1, '充值', $2, $3, NOW())`,
+          [cardId, refundByCard, saleOrderId]
+        )
+      }
+    }
+
+    // 更新退款单状态 + 写入 prepaid_card_amount / paid_amount 拆分（退款单 total_amount 为负，两者同号）
     const updateResult = await client.query(
-      `UPDATE sale_orders SET status = '已支付', paid_at = $1, approved_by = $2, approved_at = $1,
-       allocation_status = '待分配', updated_at = $1
+      `UPDATE sale_orders
+         SET status = '已支付', paid_at = $1, approved_by = $2, approved_at = $1,
+             allocation_status = '待分配',
+             prepaid_card_amount = $4, paid_amount = $5,
+             updated_at = $1
        WHERE sale_order_id = $3 AND status = '待审批'`,
-      [now, ctx.auth.staffWfId, saleOrderId]
+      [now, ctx.auth.staffWfId, saleOrderId, -refundByCard, -refundByOrigin]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 退款单状态已变更，请刷新后重试')
     }
 
     // 重算顾客历史消费档位（退款会减少累计消费）
-    await refreshSpendingTier(client, orders[0].client_user_id)
+    await refreshSpendingTier(client, refundOrder.client_user_id)
     // 重算顾客类型（退款不降级，但保持一致性）
-    await recalcCustomerType(client, orders[0].client_user_id)
+    await recalcCustomerType(client, refundOrder.client_user_id)
   })
 
-  ctx.result = { saleOrderId, status: '已支付', message: '退款已审批通过' }
+  ctx.result = { saleOrderId, status: '已支付', refundByCard, refundByOrigin, message: '退款已审批通过' }
 }
 
 /**
@@ -1614,19 +1762,20 @@ async function createConversion(ctx) {
     }
 
     // 8. 负差额 — UPSERT prepaid_cards + INSERT card_transactions（type='充值'）
+    // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享；INSERT 列集不含 store_id。
     let prepaidCardCredit = 0
     if (priceDiff < 0) {
       const creditAmount = Math.round(Math.abs(priceDiff) * 100) / 100
       prepaidCardCredit = creditAmount
 
       const upsert = await tx.query(
-        `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
-         VALUES (gen_random_uuid()::text, $1, $2, $3)
-         ON CONFLICT (user_id, store_id) DO UPDATE
+        `INSERT INTO prepaid_cards (card_id, user_id, balance)
+         VALUES (gen_random_uuid()::text, $1, $2)
+         ON CONFLICT (user_id) DO UPDATE
            SET balance = prepaid_cards.balance + EXCLUDED.balance,
                updated_at = NOW()
          RETURNING card_id`,
-        [clientUserId, storeId, creditAmount.toFixed(2)]
+        [clientUserId, creditAmount.toFixed(2)]
       )
       const cardId = upsert.rows[0]?.card_id
       if (!cardId) throw new Error('INVALID_PARAMS: 储值卡入账失败，请稍后重试')

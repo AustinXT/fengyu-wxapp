@@ -55,15 +55,14 @@ function matchTier(amount) {
 // =============================================================
 
 /**
- * 充值卡列表
+ * 充值卡列表（一户一账户，余额跨店共享）
  */
 async function list(ctx) {
   const { userId } = ctx.auth
 
   const cards = await pg.query(`
-    SELECT pc.card_id, pc.balance, pc.store_id, s.store_name, pc.created_at
+    SELECT pc.card_id, pc.balance, pc.created_at
     FROM prepaid_cards pc
-    LEFT JOIN stores s ON pc.store_id = s.store_id
     WHERE pc.user_id = $1
     ORDER BY pc.created_at DESC
   `, [userId])
@@ -73,10 +72,33 @@ async function list(ctx) {
       cardId: c.card_id,
       // PG numeric 经 node-postgres 返回字符串，需显式转 number 保证前端合约
       balance: Number(c.balance),
-      storeId: c.store_id,
-      storeName: c.store_name,
       createdAt: c.created_at,
     }))
+  }
+}
+
+/**
+ * 查询当前用户储值卡余额（跨店统一，一户一账户）
+ * 无卡返回 { balance: 0, cardId: null }
+ */
+async function balance(ctx) {
+  await requirePhone()(ctx, async () => {})
+
+  const { userId } = ctx.auth
+
+  const rows = await pg.query(
+    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
+    [userId]
+  )
+
+  if (rows.length === 0) {
+    ctx.result = { balance: 0, cardId: null }
+    return
+  }
+
+  ctx.result = {
+    cardId: rows[0].card_id,
+    balance: Number(rows[0].balance),
   }
 }
 
@@ -256,13 +278,14 @@ async function recharge(ctx) {
     const saleItemId = `XSLSH-WX-${dateStr}${String(itemSeq).padStart(4, '0')}`
 
     // d. INSERT sale_orders（实付 = payAmount，复用 total_amount 列）
+    // 充值订单全走正常支付通道，paid_amount = payAmount；prepaid_card_amount 默认 0
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, payment_method,
+        total_amount, paid_amount, payment_method,
         created_at, updated_at
-      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, '微信', $5, $5)`,
+      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $9, '微信', $5, $5)`,
       [saleOrderId, documentType, marketName, boundStoreId, now, userId, phone || null, customerName, payAmount]
     )
 
@@ -301,4 +324,4 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { list, history, rechargeConfig, recharge, matchTier }
+module.exports = { list, balance, history, rechargeConfig, recharge, matchTier }

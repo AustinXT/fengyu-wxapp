@@ -1037,3 +1037,55 @@ describe('customer.assign', () => {
       .rejects.toThrow(/INVALID_PARAMS.*employeeId/)
   })
 })
+
+// ============================================================
+// customer.customerBalance — 2026-04-24 新增：店长查顾客储值卡余额（跨店共享）
+// ============================================================
+describe('customer.customerBalance', () => {
+  test('店长查询已有卡的顾客余额（跨店统一）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-001' })
+
+    pg.query.mockResolvedValueOnce([
+      { card_id: 'card-001', balance: '320.50' },
+    ])
+
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result.cardId).toBe('card-001')
+    expect(ctx.result.balance).toBe(320.5)
+    // 查询仅按 user_id（无 store_id 条件）
+    const [sql, params] = pg.query.mock.calls[0]
+    expect(sql).toMatch(/FROM prepaid_cards WHERE user_id = \$1/)
+    expect(sql).not.toMatch(/store_id/)
+    expect(params).toEqual(['cu-001'])
+  })
+
+  test('无卡顾客返回 { cardId: null, balance: 0 }', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-nocard' })
+    pg.query.mockResolvedValueOnce([])
+    await customerRoutes.customerBalance(ctx)
+
+    expect(ctx.result).toEqual({ cardId: null, balance: 0 })
+  })
+
+  test('balance 返回为数字类型（Number 转换）', async () => {
+    const ctx = createManagerCtx({ customerUserId: 'cu-002' })
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-002', balance: '1500.00' }])
+    await customerRoutes.customerBalance(ctx)
+
+    expect(typeof ctx.result.balance).toBe('number')
+    expect(ctx.result.balance).toBe(1500)
+  })
+
+  test('非店长（美容师）拒绝', async () => {
+    const ctx = createBeauticianCtx({ customerUserId: 'cu-001' })
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('缺少 customerUserId 拒绝', async () => {
+    const ctx = createManagerCtx({})
+    await expect(customerRoutes.customerBalance(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*customerUserId/)
+  })
+})

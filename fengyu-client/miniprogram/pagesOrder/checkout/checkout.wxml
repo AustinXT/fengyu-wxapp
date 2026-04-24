@@ -45,28 +45,20 @@ module.exports.date = function(s) {
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
 
-  <!-- 支付方式 -->
-  <van-cell-group title="支付方式" inset>
-    <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
-      <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
-        <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
-        <van-radio slot="right-icon" name="微信" />
-      </van-cell>
-      <van-cell title="支付宝" label="使用支付宝扫码付款" clickable bindtap="onPayMethodTap" data-method="支付宝">
-        <image slot="icon" src="/images/alipay-icon.png" class="pay-icon" mode="aspectFit" />
-        <van-radio slot="right-icon" name="支付宝" />
-      </van-cell>
-      <van-cell title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="线下">
-        <van-icon slot="icon" name="balance-o" size="40rpx" color="#C0322A" style="margin-right:16rpx" />
-        <van-radio slot="right-icon" name="线下" />
-      </van-cell>
-    </van-radio-group>
-  </van-cell-group>
-
-  <!-- 价格明细 -->
-  <van-cell-group title="价格明细" inset>
+  <!-- 订单总额 -->
+  <van-cell-group title="订单总额" inset>
     <van-cell title="{{fromCart ? '商品合计' : '服务单价'}}" value="¥{{price.fmt(unitPrice)}}" />
     <van-cell wx:if="{{!fromCart && quantity > 1}}" title="数量" value="x{{quantity}}" />
+    <van-cell title="订单总额" class="total-row">
+      <view slot="right-icon" class="total-amount">
+        <text class="total-symbol">¥</text>
+        <text class="total-value">{{price.fmt(fromCart ? totalPrice : (unitPrice * quantity))}}</text>
+      </view>
+    </van-cell>
+  </van-cell-group>
+
+  <!-- 抵扣（优惠券 + 储值卡，与"支付方式"严格分开） -->
+  <van-cell-group title="抵扣" inset>
     <!-- 优惠券选择（扫码场景不展示） -->
     <van-cell
       wx:if="{{!existingOrderNo}}"
@@ -76,13 +68,57 @@ module.exports.date = function(s) {
       value="{{selectedCoupon ? '-¥' + price.fmt(couponDiscount) : '去选择'}}"
       value-class="{{selectedCoupon ? 'coupon-selected-value' : 'coupon-unselected-value'}}"
     />
-    <van-cell wx:else title="优惠" value="{{couponDiscount > 0 ? '-¥' + price.fmt(couponDiscount) : '- ¥0.00'}}" value-class="{{couponDiscount > 0 ? 'coupon-selected-value' : ''}}" />
+    <van-cell wx:else title="优惠券" value="{{couponDiscount > 0 ? '-¥' + price.fmt(couponDiscount) : '- ¥0.00'}}" value-class="{{couponDiscount > 0 ? 'coupon-selected-value' : ''}}" />
+
+    <!-- 储值卡 -->
+    <view class="card-deduction-row">
+      <view class="card-deduction-row__head">
+        <view class="card-deduction-row__title">
+          <text>储值卡</text>
+          <text wx:if="{{cardBalance > 0}}" class="card-deduction-row__balance">余额 ¥{{price.fmt(cardBalance)}}</text>
+          <text wx:else class="card-deduction-row__empty">暂无储值卡余额</text>
+        </view>
+        <van-switch
+          checked="{{useCard && cardBalance > 0}}"
+          disabled="{{cardBalance <= 0}}"
+          size="40rpx"
+          active-color="#C0322A"
+          bind:change="onToggleUseCard"
+        />
+      </view>
+      <view wx:if="{{useCard && cardBalance > 0 && prepaidCardAmount > 0}}" class="card-deduction-row__detail">
+        <text class="card-deduction-row__amount">抵扣 -¥{{price.fmt(prepaidCardAmount)}}</text>
+        <text class="card-deduction-row__hint">（不计入实付）</text>
+      </view>
+    </view>
+  </van-cell-group>
+
+  <!-- 实付金额 -->
+  <van-cell-group title="实付金额" inset>
     <van-cell title="实付" class="total-row">
       <view slot="right-icon" class="total-amount">
         <text class="total-symbol">¥</text>
-        <text class="total-value">{{price.fmt((fromCart ? totalPrice : (unitPrice * quantity)) - couponDiscount)}}</text>
+        <text class="total-value">{{price.fmt(paidAmount)}}</text>
       </view>
     </van-cell>
+    <!-- 仅实付 > 0 时显示支付方式按钮组 -->
+    <block wx:if="{{showPayMethodGroup}}">
+      <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
+        <van-cell title="微信支付" clickable bindtap="onPayMethodTap" data-method="微信">
+          <van-icon slot="icon" name="wechat-pay" size="40rpx" color="#07C160" style="margin-right:16rpx" />
+          <van-radio slot="right-icon" name="微信" />
+        </van-cell>
+        <van-cell title="支付宝" label="使用支付宝扫码付款" clickable bindtap="onPayMethodTap" data-method="支付宝">
+          <image slot="icon" src="/images/alipay-icon.png" class="pay-icon" mode="aspectFit" />
+          <van-radio slot="right-icon" name="支付宝" />
+        </van-cell>
+        <van-cell title="线下付款" label="到店后现场付款" clickable bindtap="onPayMethodTap" data-method="线下">
+          <van-icon slot="icon" name="balance-o" size="40rpx" color="#C0322A" style="margin-right:16rpx" />
+          <van-radio slot="right-icon" name="线下" />
+        </van-cell>
+      </van-radio-group>
+    </block>
+    <van-cell wx:else title="" label="全额抵扣，无需选择支付方式" label-class="pay-empty-hint" />
   </van-cell-group>
 
   <!-- 消费协议 -->
@@ -101,11 +137,11 @@ module.exports.date = function(s) {
     </van-cell>
   </van-cell-group>
 
-  <!-- 底部提交 -->
+  <!-- 底部提交：金额按"实付"展示；全额抵扣按钮文案改为"确认支付" -->
   <van-submit-bar
     wx:if="{{!showPhoneBind}}"
-    price="{{price.cents((fromCart ? totalPrice : unitPrice * quantity) - couponDiscount)}}"
-    button-text="{{paymentMethod === '微信' ? '微信支付' : paymentMethod === '支付宝' ? '支付宝付款' : '提交订单'}}"
+    price="{{price.cents(paidAmount)}}"
+    button-text="{{!showPayMethodGroup ? '确认支付（已抵扣）' : (paymentMethod === '微信' ? '微信支付' : paymentMethod === '支付宝' ? '支付宝付款' : '提交订单')}}"
     loading="{{submitting}}"
     disabled="{{!agreed || submitting}}"
     tip="{{!agreed ? '请先同意消费协议' : false}}"

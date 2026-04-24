@@ -232,6 +232,61 @@
   padding: 20rpx 24rpx;
 }
 
+/* ===== 储值卡抵扣区 ===== */
+.card-deduction-row {
+  padding: 24rpx 32rpx;
+  border-top: 1rpx solid var(--color-border);
+}
+
+.card-deduction-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-deduction-row__title {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+}
+
+.card-deduction-row__balance {
+  font-size: 26rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.card-deduction-row__empty {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.card-deduction-row__detail {
+  margin-top: 12rpx;
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+
+.card-deduction-row__amount {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.card-deduction-row__hint {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+/* 实付金额段 — 全额抵扣副文案 */
+.pay-empty-hint {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
 /* 美容师选择 Popup — 复用 app.wxss 全局 .staff-* 样式 */
 
 /* ===== 商品明细列表 ===== */

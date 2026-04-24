@@ -1,6 +1,11 @@
 // pages/scan-pay/scan-pay.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
+import {
+  recomputeAmounts,
+  decideConfirmRoute,
+  PayMethod,
+} from './scan-pay.logic';
 
 interface ScanOrder {
   orderNo: string;
@@ -10,6 +15,10 @@ interface ScanOrder {
   openerName: string;
   orderType: string;
   totalAmount: number;
+  prepaidCardAmount: number;
+  paidAmount: number;
+  paymentMethod: PayMethod;
+  couponDiscount: number;
 }
 
 interface ScanOrderItem {
@@ -27,12 +36,20 @@ Page({
     order: null as ScanOrder | null,
     items: [] as ScanOrderItem[],
     orderNo: '',
-    paymentMethod: '微信' as '微信' | '支付宝' | '线下',
+    paymentMethod: '微信' as PayMethod,
     isLoading: true,
     errorMsg: '',
     statusMsg: '',
     submitting: false,
-    // 支付宝二维码弹窗
+    // 储值卡抵扣
+    cardBalance: 0,
+    useCard: false,
+    prepaidCardAmount: 0,
+    paidAmount: 0,
+    couponDiscount: 0,
+    totalAmount: 0,
+    showPayMethodGroup: true,
+    // 支付宝二维码弹窗（保留以兼容 wxml，但 §4.6 推荐路径仅微信/线下/全额抵扣）
     showAlipayQr: false,
     alipayQrUrl: '',
     alipayAmount: '0.00',
@@ -55,7 +72,11 @@ Page({
   async loadOrder(saleOrderId: string) {
     this.setData({ isLoading: true, errorMsg: '', statusMsg: '' });
     try {
-      const data = await callClientApi('order.scanDetail', { saleOrderId });
+      // 并行：订单详情 + 储值卡余额
+      const [data, balanceData] = await Promise.all([
+        callClientApi<{ order?: any; items?: any[]; statusMsg?: string }>('order.scanDetail', { saleOrderId }),
+        callClientApi<{ balance: number; cardId: string | null }>('card.balance', {}).catch(() => ({ balance: 0, cardId: null })),
+      ]);
 
       // 非待支付订单：显示状态提示
       if (data.statusMsg) {
@@ -63,9 +84,34 @@ Page({
         return;
       }
 
+      const orderData = data.order || {};
+      const totalAmount = Number(orderData.totalAmount || 0);
+      const prepaid = Number(orderData.prepaidCardAmount || 0);
+      const paid = Number(orderData.paidAmount ?? totalAmount);
+      const couponDiscount = Number(orderData.couponDiscount || 0);
+      const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
+      const restoredMethod = validMethods.includes(orderData.paymentMethod)
+        ? (orderData.paymentMethod as PayMethod)
+        : '微信';
+
       this.setData({
-        order: data.order,
+        order: {
+          ...orderData,
+          totalAmount,
+          prepaidCardAmount: prepaid,
+          paidAmount: paid,
+          paymentMethod: restoredMethod,
+          couponDiscount,
+        },
         items: data.items || [],
+        cardBalance: Number(balanceData?.balance || 0),
+        useCard: prepaid > 0,
+        prepaidCardAmount: prepaid,
+        paidAmount: paid,
+        paymentMethod: restoredMethod,
+        couponDiscount,
+        totalAmount,
+        showPayMethodGroup: paid > 0,
       });
     } catch (err: any) {
       this.setData({ errorMsg: err.message || '加载订单信息失败，请稍后重试' });
@@ -74,60 +120,151 @@ Page({
     }
   },
 
-  onPayMethodChange(e: WxEvent<string>) {
-    this.setData({ paymentMethod: e.detail as '微信' | '支付宝' | '线下' });
+  /** 重算 prepaid/paid 并写回 setData，返回新值 */
+  applyRecompute(useCard: boolean): { prepaidCardAmount: number; paidAmount: number } {
+    const r = recomputeAmounts({
+      totalAmount: this.data.totalAmount,
+      couponDiscount: this.data.couponDiscount,
+      cardBalance: this.data.cardBalance,
+      useCard,
+    });
+    this.setData({
+      useCard,
+      prepaidCardAmount: r.prepaidCardAmount,
+      paidAmount: r.paidAmount,
+      showPayMethodGroup: r.paidAmount > 0,
+    });
+    return r;
+  },
+
+  /** 同步当前抵扣方案到后端（不阻塞 UI） */
+  async pushAdjust(useCard: boolean, paidAmount: number, paymentMethod: PayMethod): Promise<void> {
+    try {
+      await callClientApi('order.scanAdjust', {
+        saleOrderId: this.data.orderNo,
+        useCard,
+        paymentMethod: paidAmount > 0 ? paymentMethod : undefined,
+      });
+    } catch (err: any) {
+      Toast.fail(err?.message || '调整失败');
+      throw err;
+    }
+  },
+
+  /** 储值卡开关 */
+  async onUseCardChange(e: WxEvent<boolean>) {
+    const useCard = !!e.detail;
+    if (useCard && this.data.cardBalance <= 0) {
+      // 余额为 0：拦截开启
+      return;
+    }
+    const { paidAmount } = this.applyRecompute(useCard);
+    await this.pushAdjust(useCard, paidAmount, this.data.paymentMethod).catch(() => {});
+  },
+
+  /** 支付方式选择 */
+  async onPayMethodChange(e: WxEvent<string>) {
+    const method = e.detail as PayMethod;
+    this.setData({ paymentMethod: method });
+    if (this.data.paidAmount > 0) {
+      await this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
+    }
   },
 
   onPayMethodTap(e: WechatMiniprogram.TouchEvent) {
-    const { method } = e.currentTarget.dataset as { method: '微信' | '支付宝' | '线下' };
+    const { method } = e.currentTarget.dataset as { method: PayMethod };
     this.setData({ paymentMethod: method });
+    if (this.data.paidAmount > 0) {
+      this.pushAdjust(this.data.useCard, this.data.paidAmount, method).catch(() => {});
+    }
   },
 
   onBackHome() {
     wx.switchTab({ url: '/pages/home/home' });
   },
 
+  /** 确认支付 */
   async onSubmit() {
     if (this.data.submitting) return;
     this.setData({ submitting: true });
 
     try {
-      const { orderNo, paymentMethod } = this.data;
-
-      if (paymentMethod === '线下') {
-        await callClientApi('order.offlinePay', { saleOrderId: orderNo });
-        Toast.success('已提交，等待店长确认收款');
-        setTimeout(() => {
-          wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
-        }, 1500);
-        return;
-      }
-
-      if (paymentMethod === '支付宝') {
-        const data = await callClientApi('order.alipayPay', { saleOrderId: orderNo });
-        this.setData({
-          showAlipayQr: true,
-          alipayQrUrl: data?.qrCodeUrl || '',
-          alipayAmount: Number(data?.totalAmount || 0).toFixed(2),
-        });
-        return;
-      }
-
-      // 微信支付
-      const data = await callClientApi('order.pay', { saleOrderId: orderNo });
-      const payParams = data.paymentParams || {};
-      await wx.requestPayment(payParams);
-      Toast.success('支付成功');
-      setTimeout(() => {
-        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
-      }, 1200);
+      await this.executeConfirm();
     } catch (err: any) {
-      Toast.fail(err?.message || err?.errMsg || '支付失败，请重试');
+      const msg = err?.message || err?.errMsg || '';
+      if (msg.includes('INSUFFICIENT_BALANCE')) {
+        await this.handleInsufficientBalance();
+      } else {
+        Toast.fail(msg || '支付失败，请重试');
+      }
     } finally {
       this.setData({ submitting: false });
     }
   },
 
+  /** 根据当前 paid/method 路由到对应支付端点 */
+  async executeConfirm(): Promise<void> {
+    const { orderNo, paidAmount, paymentMethod } = this.data;
+    const route = decideConfirmRoute(paidAmount, paymentMethod);
+
+    if (route === 'confirmPrepaidFull') {
+      await callClientApi('order.confirmPrepaidFull', { saleOrderId: orderNo });
+      Toast.success('支付成功');
+      setTimeout(() => {
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
+      }, 1200);
+      return;
+    }
+
+    if (route === 'offlinePay') {
+      await callClientApi('order.offlinePay', { saleOrderId: orderNo });
+      Toast.success('已提交，等待店长确认收款');
+      setTimeout(() => {
+        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
+      }, 1500);
+      return;
+    }
+
+    // wechatPay
+    const data = await callClientApi<{ paymentParams?: any }>('order.pay', { saleOrderId: orderNo });
+    const payParams = data.paymentParams || {};
+    await wx.requestPayment(payParams);
+    Toast.success('支付成功');
+    setTimeout(() => {
+      wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
+    }, 1200);
+  },
+
+  /** 余额不足：弹框 → 关抵扣重付 / 取消订单 */
+  async handleInsufficientBalance(): Promise<void> {
+    const res = await new Promise<WechatMiniprogram.ShowModalSuccessCallbackResult>((resolve) => {
+      wx.showModal({
+        title: '储值卡余额不足',
+        content: '您的储值卡余额已不足以完成本次抵扣。请选择：',
+        confirmText: '关闭抵扣重付',
+        cancelText: '取消订单',
+        success: resolve,
+        fail: () => resolve({ confirm: false, cancel: true } as any),
+      });
+    });
+
+    if (res.confirm) {
+      // 关闭抵扣 → scanAdjust(useCard=false) → 重新执行 confirm
+      const { paidAmount } = this.applyRecompute(false);
+      await this.pushAdjust(false, paidAmount, this.data.paymentMethod).catch(() => {});
+      await this.executeConfirm();
+    } else if (res.cancel) {
+      try {
+        await callClientApi('order.cancel', { saleOrderId: this.data.orderNo });
+        Toast.success('订单已取消');
+        setTimeout(() => wx.switchTab({ url: '/pages/home/home' }), 1200);
+      } catch (err: any) {
+        Toast.fail(err?.message || '取消失败');
+      }
+    }
+  },
+
+  // 兼容旧 wxml 中的支付宝弹窗回调（保留以避免事件未定义警告）
   onAlipayDone() {
     this.setData({ showAlipayQr: false });
     wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${this.data.orderNo}` });

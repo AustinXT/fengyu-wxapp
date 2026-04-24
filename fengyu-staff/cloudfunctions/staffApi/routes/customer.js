@@ -858,6 +858,35 @@ async function updateNotes(ctx) {
 }
 
 /**
+ * 查询顾客储值卡余额（店长专用，跨店共享）
+ * payload: { customerUserId: string }
+ * 返回: { cardId: string|null, balance: number }
+ */
+async function customerBalance(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const { customerUserId } = ctx.event.payload || {}
+  if (!customerUserId) {
+    throw new Error('INVALID_PARAMS: 缺少 customerUserId')
+  }
+
+  const rows = await pg.query(
+    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
+    [customerUserId]
+  )
+
+  if (rows.length === 0) {
+    ctx.result = { cardId: null, balance: 0 }
+    return
+  }
+
+  ctx.result = {
+    cardId: rows[0].card_id,
+    balance: Number(rows[0].balance),
+  }
+}
+
+/**
  * 客户分配（店长将顾客分配给美容师）
  */
 async function assign(ctx) {
@@ -890,4 +919,4 @@ async function assign(ctx) {
   }
 }
 
-module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign };
+module.exports = { search, calendar, detail, paidOrders, stats, listByTag, refundHistory, giftHistory, updateNotes, assign, customerBalance };

@@ -1,0 +1,330 @@
+/**
+ * scan-pay 页面测试
+ * 覆盖：
+ *   - scan-pay.logic 纯函数（recompute / decideConfirmRoute）
+ *   - 页面行为：通过 Page mock 捕获 Page options，调用其方法验证 setData / API 调用顺序
+ */
+
+import { vi } from 'vitest';
+import {
+  recomputeAmounts,
+  decideConfirmRoute,
+} from '../../../pagesOrder/scan-pay/scan-pay.logic';
+
+// ====== Mock 微信全局 + Page + utils/cloud ======
+const callClientApiMock = vi.fn();
+vi.mock('../../../utils/cloud', () => ({
+  callClientApi: (...args: any[]) => callClientApiMock(...args),
+  bindPhoneWithCloudID: vi.fn(),
+  sanitizeErrorMessage: (msg: string) => msg,
+}));
+
+// Mock Toast (Vant)
+vi.mock('@vant/weapp/toast/toast', () => ({
+  default: {
+    success: vi.fn(),
+    fail: vi.fn(),
+  },
+}));
+
+let pageOptions: any = null;
+(globalThis as any).Page = (opts: any) => {
+  pageOptions = opts;
+};
+
+// 微信 wx 全局补全
+const wxMock: any = (globalThis as any).wx || {};
+wxMock.cloud = wxMock.cloud || { callFunction: vi.fn(), CloudID: vi.fn() };
+wxMock.requestPayment = vi.fn(async () => ({}));
+wxMock.redirectTo = vi.fn();
+wxMock.switchTab = vi.fn();
+wxMock.showModal = vi.fn();
+(globalThis as any).wx = wxMock;
+
+// 触发模块求值（运行 Page() 注册）
+beforeAll(async () => {
+  await import('../../../pagesOrder/scan-pay/scan-pay');
+});
+
+/** 创建一个"页面实例"：把 data 拷一份，方法绑定到该实例 */
+function createPageInstance(initialData: any = {}) {
+  const instance: any = {
+    data: { ...pageOptions.data, ...initialData },
+    setData(patch: any) {
+      Object.assign(this.data, patch);
+    },
+  };
+  // 把方法挂到实例上
+  for (const key of Object.keys(pageOptions)) {
+    if (key === 'data') continue;
+    if (typeof pageOptions[key] === 'function') {
+      instance[key] = pageOptions[key].bind(instance);
+    }
+  }
+  return instance;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  callClientApiMock.mockReset();
+  wxMock.requestPayment.mockClear();
+  wxMock.redirectTo.mockClear();
+  wxMock.switchTab.mockClear();
+  wxMock.showModal.mockReset();
+});
+
+// ============ 纯逻辑 ============
+describe('scan-pay.logic — recomputeAmounts', () => {
+  test('useCard=false → prepaid=0, paid=total-coupon', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 50, cardBalance: 200, useCard: false });
+    expect(r).toEqual({ payable: 250, prepaidCardAmount: 0, paidAmount: 250 });
+  });
+  test('useCard=true 且余额充足 → 全额抵扣', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 500, useCard: true });
+    expect(r).toEqual({ payable: 300, prepaidCardAmount: 300, paidAmount: 0 });
+  });
+  test('useCard=true 但余额不足 → 部分抵扣', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 100, useCard: true });
+    expect(r).toEqual({ payable: 300, prepaidCardAmount: 100, paidAmount: 200 });
+  });
+  test('useCard=true 但余额=0 → prepaid=0', () => {
+    const r = recomputeAmounts({ totalAmount: 300, couponDiscount: 0, cardBalance: 0, useCard: true });
+    expect(r).toEqual({ payable: 300, prepaidCardAmount: 0, paidAmount: 300 });
+  });
+});
+
+describe('scan-pay.logic — decideConfirmRoute', () => {
+  test('paid=0 → confirmPrepaidFull', () => {
+    expect(decideConfirmRoute(0, '微信')).toBe('confirmPrepaidFull');
+  });
+  test('paid>0 + 微信 → wechatPay', () => {
+    expect(decideConfirmRoute(100, '微信')).toBe('wechatPay');
+  });
+  test('paid>0 + 线下 → offlinePay', () => {
+    expect(decideConfirmRoute(100, '线下')).toBe('offlinePay');
+  });
+});
+
+// ============ 页面行为 ============
+describe('scan-pay 页面行为', () => {
+  test('预选全额抵扣：进入页 useCard=on, prepaid=total, paid=0；点确认调 confirmPrepaidFull', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-001', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '张三', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 300, paidAmount: 0,
+            paymentMethod: '无', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 500, cardId: 'c1' });
+      if (action === 'order.confirmPrepaidFull') return Promise.resolve({ status: '已支付' });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-001');
+
+    expect(inst.data.useCard).toBe(true);
+    expect(inst.data.prepaidCardAmount).toBe(300);
+    expect(inst.data.paidAmount).toBe(0);
+    expect(inst.data.showPayMethodGroup).toBe(false);
+
+    inst.data.orderNo = 'FY-001';
+    await inst.onSubmit();
+
+    const calls = callClientApiMock.mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContain('order.confirmPrepaidFull');
+    expect(calls).not.toContain('order.pay');
+    expect(calls).not.toContain('order.offlinePay');
+  });
+
+  test('顾客关掉抵扣：scanAdjust 入参 useCard=false，paid=total；点确认调 pay + requestPayment', async () => {
+    callClientApiMock.mockImplementation((action: string, payload: any) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-002', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '李四', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 300, paidAmount: 0,
+            paymentMethod: '无', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 500, cardId: 'c1' });
+      if (action === 'order.scanAdjust') return Promise.resolve({ saleOrderId: payload.saleOrderId });
+      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1' } });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-002');
+    inst.data.orderNo = 'FY-002';
+
+    // 顾客关掉储值卡开关
+    await inst.onUseCardChange({ detail: false });
+    expect(inst.data.useCard).toBe(false);
+    expect(inst.data.paidAmount).toBe(300);
+    expect(inst.data.showPayMethodGroup).toBe(true);
+
+    const adjustCall = callClientApiMock.mock.calls.find((c: any[]) => c[0] === 'order.scanAdjust');
+    expect(adjustCall).toBeDefined();
+    expect(adjustCall![1]).toMatchObject({ saleOrderId: 'FY-002', useCard: false });
+
+    // 点确认支付
+    await inst.onSubmit();
+    const calls = callClientApiMock.mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContain('order.pay');
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
+  });
+
+  test('顾客部分抵扣 + 微信：confirm 调 pay + wx.requestPayment', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-003', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 100, paidAmount: 200,
+            paymentMethod: '微信', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 100, cardId: 'c1' });
+      if (action === 'order.pay') return Promise.resolve({ paymentParams: { timeStamp: '1' } });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-003');
+    inst.data.orderNo = 'FY-003';
+    expect(inst.data.useCard).toBe(true);
+    expect(inst.data.paidAmount).toBe(200);
+    expect(inst.data.paymentMethod).toBe('微信');
+
+    await inst.onSubmit();
+    const calls = callClientApiMock.mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContain('order.pay');
+    expect(wxMock.requestPayment).toHaveBeenCalledTimes(1);
+  });
+
+  test('顾客部分抵扣 + 线下：confirm 调 offlinePay', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-004', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 100, paidAmount: 200,
+            paymentMethod: '微信', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 100, cardId: 'c1' });
+      if (action === 'order.scanAdjust') return Promise.resolve({});
+      if (action === 'order.offlinePay') return Promise.resolve({ status: '待确认收款' });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-004');
+    inst.data.orderNo = 'FY-004';
+
+    // 顾客切到线下
+    await inst.onPayMethodChange({ detail: '线下' });
+    expect(inst.data.paymentMethod).toBe('线下');
+
+    await inst.onSubmit();
+    const calls = callClientApiMock.mock.calls.map((c: any[]) => c[0]);
+    expect(calls).toContain('order.offlinePay');
+    expect(calls).not.toContain('order.pay');
+    expect(wxMock.requestPayment).not.toHaveBeenCalled();
+  });
+
+  test('INSUFFICIENT_BALANCE → 弹框含两按钮（关闭抵扣重付 / 取消订单）', async () => {
+    let payCalls = 0;
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-005', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 300, paidAmount: 0,
+            paymentMethod: '无', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 500, cardId: 'c1' });
+      if (action === 'order.confirmPrepaidFull') {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足');
+      }
+      if (action === 'order.scanAdjust') return Promise.resolve({});
+      if (action === 'order.pay') {
+        payCalls += 1;
+        return Promise.resolve({ paymentParams: { timeStamp: '1' } });
+      }
+      return Promise.resolve({});
+    });
+
+    // showModal 用户点"关闭抵扣重付"（confirm=true）
+    wxMock.showModal.mockImplementation((opts: any) => {
+      opts.success({ confirm: true, cancel: false });
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-005');
+    inst.data.orderNo = 'FY-005';
+
+    await inst.onSubmit();
+
+    // 弹框被调起，参数含两按钮文案
+    expect(wxMock.showModal).toHaveBeenCalledTimes(1);
+    const modalArg = wxMock.showModal.mock.calls[0][0];
+    expect(modalArg.confirmText).toBe('关闭抵扣重付');
+    expect(modalArg.cancelText).toBe('取消订单');
+
+    // 关闭抵扣 → useCard=false → 重新调 pay
+    expect(inst.data.useCard).toBe(false);
+    expect(payCalls).toBe(1);
+  });
+
+  test('余额为 0：储值卡开关灰显且无法切 on（disabled wxml binding + onUseCardChange 拦截）', async () => {
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-006', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 0, paidAmount: 300,
+            paymentMethod: '微信', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 0, cardId: null });
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-006');
+
+    expect(inst.data.cardBalance).toBe(0);
+    expect(inst.data.useCard).toBe(false);
+
+    // 模拟用户尝试切到 on（即使 disabled，也写个守卫验证）
+    await inst.onUseCardChange({ detail: true });
+    expect(inst.data.useCard).toBe(false);
+    expect(inst.data.prepaidCardAmount).toBe(0);
+    expect(inst.data.paidAmount).toBe(300);
+    // 不应触发 scanAdjust
+    const adjustCalls = callClientApiMock.mock.calls.filter((c: any[]) => c[0] === 'order.scanAdjust');
+    expect(adjustCalls).toHaveLength(0);
+  });
+});

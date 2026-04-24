@@ -48,7 +48,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id FROM sale_orders WHERE sale_order_id = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id, prepaid_card_amount FROM sale_orders WHERE sale_order_id = $1',
       [orderNo]
     )
 
@@ -136,12 +136,12 @@ exports.main = async (event) => {
 
               const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
               const upsertRes = await client.query(
-                `INSERT INTO prepaid_cards (card_id, user_id, store_id, balance, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, NOW(), NOW())
-                 ON CONFLICT (user_id, store_id) DO UPDATE
+                `INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
+                 VALUES ($1, $2, $3, NOW(), NOW())
+                 ON CONFLICT (user_id) DO UPDATE
                    SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
                  RETURNING card_id`,
-                [newCardId, order.client_user_id, order.store_id, faceValue]
+                [newCardId, order.client_user_id, faceValue]
               )
               const cardId = upsertRes.rows[0].card_id
               await client.query(
@@ -154,6 +154,40 @@ exports.main = async (event) => {
           } else {
             console.log(`[payNotify] 充值入账幂等跳过: order=${orderNo}`)
           }
+        }
+      }
+
+      // 3b. 消费扣款入账（订单的 prepaid_card_amount > 0 时扣余额）
+      // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
+      // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
+      if (order.client_user_id && Number(order.prepaid_card_amount) > 0) {
+        const dupCheck = await client.query(
+          `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+          [orderNo]
+        )
+        if (dupCheck.rows.length === 0) {
+          const prepaidAmount = Number(order.prepaid_card_amount)
+          // 二次校验余额（FOR UPDATE 锁，防并发）
+          const cardRow = await client.query(
+            `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+            [order.client_user_id]
+          )
+          if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) < prepaidAmount) {
+            throw new Error(`INSUFFICIENT_BALANCE: 储值卡余额不足以完成扣款`)
+          }
+          const cardId = cardRow.rows[0].card_id
+          await client.query(
+            `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+            [prepaidAmount, cardId]
+          )
+          await client.query(
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+             VALUES ($1, '扣款', $2, $3, NOW())`,
+            [cardId, -prepaidAmount, orderNo]
+          )
+          console.log(`[payNotify] 消费扣款: order=${orderNo}, card=${cardId}, amount=${prepaidAmount}`)
+        } else {
+          console.log(`[payNotify] 消费扣款幂等跳过: order=${orderNo}`)
         }
       }
 

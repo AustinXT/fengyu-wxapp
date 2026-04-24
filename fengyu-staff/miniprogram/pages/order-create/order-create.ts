@@ -3,6 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { calcCartTotal, calcHalfPriceTotal } from '../../utils/cart-calc';
 import { evaluateCouponAfterCartChange } from '../../utils/coupon-evaluator';
+import { computePrepaidDeduction } from '../../utils/prepaid-card-calc';
 
 const app = getApp<IAppOption>();
 
@@ -129,6 +130,12 @@ interface CouponAvailableResponse {
   coupons: CouponInfo[];
 }
 
+/** 顾客储值卡余额（Wave 2B 新增 customer.customerBalance；跨店统一余额） */
+interface CustomerBalanceResponse {
+  balance: number;
+  cardId: string | null;
+}
+
 /** 将后端 SKU 项映射为兼容 WXML 的展示格式 */
 function skuToDisplay(sku: SkuItem): DisplayItem {
   return {
@@ -209,6 +216,21 @@ Page({
      * - 白名单：'微信' | '线下'（暂未支持支付宝，待业务确认）
      */
     paymentMethod: '微信' as '微信' | '线下',
+    /**
+     * 储值卡抵扣（预选 Wave 3G）
+     * - customerCardBalance：顾客当前余额（跨店统一），由 customer.customerBalance 加载
+     * - useCard：店长预选开关，默认根据余额自动开（>0 开）
+     * - prepaidCardAmount / paidAmount：computePrepaidDeduction 计算结果（不影响后端 balance，仅作 payload 与 UI 展示）
+     * - showPayMethodGroup：paid > 0 时展示支付方式按钮组；paid = 0 时隐藏 + 显示"全额抵扣"
+     * - prepaidCardLoaded：避免重复请求；customerBalanceLoading：拉取中态
+     */
+    customerCardBalance: 0 as number,
+    useCard: false as boolean,
+    prepaidCardAmount: 0 as number,
+    paidAmount: '0.00' as string,
+    showPayMethodGroup: true as boolean,
+    prepaidCardLoaded: false as boolean,
+    customerBalanceLoading: false as boolean,
     // 转换单（ConversionPanel 反馈 → 主页记录用于提交）
     conversionSelectedSaleItemIds: [] as string[],
     conversionDeductibleSum: 0,
@@ -624,6 +646,8 @@ Page({
     this.setData(update);
     // cart 变动后重新评估已选优惠券（未选券时内部短路，零开销）
     void this.revalidateCoupon();
+    // cart 变动后重算储值卡预选（仅在弹层 Step 2 已加载余额时生效）
+    this.recomputePrepaidAmounts();
   },
 
   // ===== 结算面板 =====
@@ -642,6 +666,13 @@ Page({
       conversionDeductibleSum: 0,
       conversionPriceDiff: 0,
       conversionPaymentMethod: null,
+      // 重置储值卡预选 state（避免上次 customer 残值；进入 Step 2 时再加载）
+      customerCardBalance: 0,
+      useCard: false,
+      prepaidCardAmount: 0,
+      paidAmount: '0.00',
+      showPayMethodGroup: true,
+      prepaidCardLoaded: false,
     });
   },
 
@@ -696,6 +727,88 @@ Page({
     // PR-B: Step 1 "选开单模式" 已废除；Step 0 → Step 2 直跳确认页。
     // Step 1 当前为空占位，PR-C 将填入"订单类型 3 选 1"。
     this.setData({ checkoutStep: 2 });
+    // 进入 Step 2：拉取顾客储值卡余额（跨店统一）。失败静默兜底为 0
+    void this.loadCustomerBalance();
+  },
+
+  // ===== 储值卡预选（Wave 3G）=====
+
+  /**
+   * 拉取顾客储值卡余额（跨店统一）。
+   * - 仅在 Step 2 入场时调用一次（prepaidCardLoaded=true 后直到关闭弹层不再拉）
+   * - 余额 > 0 时 useCard 默认开（决策 #1：能抵多少抵多少）
+   * - 失败兜底为 0：UI 退化为"无可用余额"，不阻塞开单
+   */
+  async loadCustomerBalance() {
+    const customer = this.data.customerInfo;
+    if (!customer?.id || this.data.prepaidCardLoaded) {
+      // 即便已加载，进入 Step 2 仍触发一次 recompute（覆盖切回 Step 0 修改后再回来的场景）
+      this.recomputePrepaidAmounts();
+      return;
+    }
+    this.setData({ customerBalanceLoading: true });
+    try {
+      const data = await callStaffApi<CustomerBalanceResponse>('customer.customerBalance', {
+        customerUserId: customer.id,
+      });
+      const balance = Math.max(0, Number(data?.balance) || 0);
+      this.setData({
+        customerCardBalance: balance,
+        useCard: balance > 0,
+        prepaidCardLoaded: true,
+      });
+    } catch (_) {
+      // 静默兜底：拉取失败则视为 0 余额、useCard=off，不阻塞开单
+      this.setData({
+        customerCardBalance: 0,
+        useCard: false,
+        prepaidCardLoaded: true,
+      });
+    } finally {
+      this.setData({ customerBalanceLoading: false });
+      this.recomputePrepaidAmounts();
+    }
+  },
+
+  /**
+   * 重算储值卡抵扣额与实付额（与顾客端 checkout 算法口径一致）
+   * - 仅当弹层处于 Step 2 且 saleOrderType ∈ {销售单, 内部单} 时生效
+   *   （转换单走 ConversionPanel 内部金额管理；不参与本预选 UI）
+   * - 应抵部分 = totalAmount - couponDiscount（注意：内部单已半价，使用 halfPriceTotal 作为基础）
+   */
+  recomputePrepaidAmounts() {
+    if (this.data.saleOrderType === '转换单') {
+      this.setData({ prepaidCardAmount: 0, paidAmount: '0.00', showPayMethodGroup: true });
+      return;
+    }
+    const baseTotalStr = this.data.saleOrderType === '内部单'
+      ? this.data.halfPriceTotal
+      : this.data.cartTotal;
+    const total = parseFloat(baseTotalStr) || 0;
+    const result = computePrepaidDeduction({
+      totalAmount: total,
+      couponDiscount: this.data.couponDiscount || 0,
+      customerCardBalance: this.data.customerCardBalance || 0,
+      useCard: !!this.data.useCard,
+    });
+    this.setData({
+      prepaidCardAmount: result.prepaidCardAmount,
+      paidAmount: result.paidAmount.toFixed(2),
+      showPayMethodGroup: result.showPayMethodGroup,
+    });
+  },
+
+  /** 切换"预选抵扣"开关 */
+  onTogglePrepaidCard(e: WechatMiniprogram.CustomEvent) {
+    // van-switch 的 detail 是 boolean
+    const next = !!e.detail;
+    if (next === this.data.useCard) return;
+    if (next && this.data.customerCardBalance <= 0) {
+      // 余额为 0 时禁止开启（UI 已 disabled，防御性再拒）
+      return;
+    }
+    this.setData({ useCard: next });
+    this.recomputePrepaidAmounts();
   },
 
   /**
@@ -737,9 +850,12 @@ Page({
       update.cart = cart;
       this.setData(update);
       this.updateCart(cart);
+      // updateCart 末尾已触发 recomputePrepaidAmounts，此处无需再次调用
       return;
     }
     this.setData(update);
+    // 切回销售单（cart 未变）也需重算（基础 total 从 halfPriceTotal 切回 cartTotal）
+    this.recomputePrepaidAmounts();
   },
 
   /** PR-C §C3 — ConversionPanel 子组件 change 事件：同步选卡/差额到主 state */
@@ -820,10 +936,12 @@ Page({
       couponTotal,
       showCouponPopup: false,
     });
+    this.recomputePrepaidAmounts();
   },
 
   onClearCoupon() {
     this.setData({ selectedCoupon: null, couponDiscount: 0, couponTotal: '', showCouponPopup: false });
+    this.recomputePrepaidAmounts();
   },
 
   /**
@@ -920,11 +1038,16 @@ Page({
 
     this.setData({ submitting: true });
     try {
+      // Wave 3G — 储值卡预选（不扣卡，仅作为后端写订单的预选值）
+      // 决策 #6：店长开单 = 预选；balance 不动，extraField useCard + prepaidCardAmount 透传给云函数
+      const useCard = this.data.useCard && this.data.prepaidCardAmount > 0;
+      const prepaidCardAmount = useCard ? this.data.prepaidCardAmount : 0;
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
         clientUserId: customerInfo.id,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
         // PR-D1：使用 state（销售单 / 内部单可选 微信 / 线下）；转换单不走此分支
+        // Wave 3G：实付=0 时由后端强制覆盖为 '无'，前端仍传 paymentMethod 作为建议通道
         paymentMethod: this.data.paymentMethod,
         saleOrderType,
         items: cart.map(c => {
@@ -949,9 +1072,13 @@ Page({
           ? (this.data.selectedCoupon?.couponId || undefined)
           : undefined,
         preferredStaffWfId: this.data.preferredStaffWfId || undefined,
+        // Wave 3G — 储值卡预选（决策 #6：店长不扣卡，云函数仅写订单字段）
+        useCard,
+        prepaidCardAmount,
       });
       this.saveRecentCustomer(customerInfo);
       this.updateCart([]);
+      // Wave 3G 契约：店长 create 不扣卡，因此前端不做 customerCardBalance 乐观更新
       this.setData({
         showCheckout: false,
         saleOrderType: '销售单',
