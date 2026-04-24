@@ -117,8 +117,6 @@ export default function OrderCreatePageClient({
   const [searchKeyword, setSearchKeyword] = useState("")
   const [searchResults, setSearchResults] = useState<Customer[]>([])
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
-  const [manualPhone, setManualPhone] = useState("")
-
   const [cart, setCart] = useState<CartItem[]>([])
   // PR-C: Step 3 订单类型 3 选 1（销售单 / 内部单 / 转换单），默认销售单
   const [orderType, setOrderType] = useState<OrderTypeChoice>('销售单')
@@ -173,7 +171,7 @@ export default function OrderCreatePageClient({
       setSearchResults(results)
       setSearchDone(true)
       if (results.length === 0) {
-        toast.info("未找到匹配的顾客，可输入手机号直接开单")
+        toast.info("未找到已注册顾客，请引导顾客登录小程序并绑定门店")
       }
     } catch {
       toast.error("搜索失败，请稍后重试")
@@ -223,7 +221,6 @@ export default function OrderCreatePageClient({
 
   const selectCustomer = (customer: Customer) => {
     setSelectedCustomer(customer)
-    setManualPhone("")
     // 自动默认顾客绑定的门店和美容师
     if (customer.boundStoreId && stores.some(s => s.storeId === customer.boundStoreId)) {
       setSelectedStoreId(customer.boundStoreId)
@@ -544,18 +541,13 @@ export default function OrderCreatePageClient({
                 </Card>
               )}
 
-              {/* 未找到顾客 — 手动输入手机号 */}
+              {/* 未找到已注册顾客 — 指引顾客登录小程序 */}
               {searchDone && searchResults.length === 0 && (
-                <Card className="bg-[#FFF8E6] border-[#D4820A]">
-                  <CardContent className="p-4 text-sm space-y-3">
-                    <p className="text-[#D4820A] font-medium">未找到匹配的顾客</p>
-                    <p className="text-[#999999]">可输入手机号直接开单，顾客后续注册绑定手机号后历史订单会自动关联</p>
-                    <Input
-                      placeholder="输入顾客手机号"
-                      value={manualPhone}
-                      onChange={(e) => setManualPhone(e.target.value)}
-                      className="w-64"
-                    />
+                <Card className="bg-gray-50 border-gray-300">
+                  <CardContent className="p-4 text-sm space-y-1 text-gray-700">
+                    <p className="font-medium">未找到已注册顾客</p>
+                    <p>本系统仅支持为"已在凤御小程序登录并绑定门店"的顾客开单。</p>
+                    <p>请让顾客在客户端小程序完成登录与门店绑定后，再用姓名/手机号搜索。</p>
                   </CardContent>
                 </Card>
               )}
@@ -567,13 +559,12 @@ export default function OrderCreatePageClient({
                   // PR-B B4：跨 kind 加购残留清理 — 进入 Step 2 前清空 cart + priceOverrides
                   setCart([])
                   setPriceOverrides({})
-                  // manualPhone 路径下未走 selectCustomer，这里兜底触发预拉
                   if (!kindDataCache[productKindChoice]) {
                     void prefetchKindData(productKindChoice)
                   }
                   setStep(1)
                 }}
-                disabled={!selectedCustomer && !(searchDone && searchResults.length === 0 && /^1\d{10}$/.test(manualPhone.trim()))}
+                disabled={!selectedCustomer}
               >
                 下一步
               </Button>
@@ -764,7 +755,7 @@ export default function OrderCreatePageClient({
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-[#999999]">顾客</label>
-                <p className="font-medium">{selectedCustomer?.name || manualPhone.trim()}</p>
+                <p className="font-medium">{selectedCustomer?.name ?? "-"}</p>
               </div>
               <div>
                 <label className="text-sm text-[#999999]">支付方式</label>
@@ -1054,9 +1045,9 @@ export default function OrderCreatePageClient({
                   const res = await createOrder({
                     storeId: selectedStoreId,
                     marketName: store?.marketName || "未知市场",
-                    clientUserId: selectedCustomer?.userId || '',
-                    clientPhone: selectedCustomer?.phone || manualPhone.trim(),
-                    customerName: selectedCustomer?.name?.trim() || manualPhone.trim() || (selectedCustomer?.phone ?? ''),
+                    clientUserId: selectedCustomer!.userId,
+                    clientPhone: selectedCustomer!.phone ?? '',
+                    customerName: selectedCustomer!.name?.trim() || selectedCustomer!.phone || '',
                     paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',
                     saleOrderType: orderType,
                     preferredEmployeeId: selectedEmployeeId || undefined,
@@ -1193,7 +1184,7 @@ export default function OrderCreatePageClient({
                 </Link>
               )}
               <Button onClick={() => {
-                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setManualPhone(""); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
+                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
                 setProductKindChoice('普通商品')
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined, 充值卡: undefined })
                 setHeldCards([])
