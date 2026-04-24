@@ -449,11 +449,35 @@ exports.main = async (event) => {
         }
       }
 
-      // 积分结算（订单链净额差值法，幂等）
+      // 6. 积分结算（订单链净额差值法，幂等）
       // targetOrderNo 已指向原销售单（回款凭证单场景上面已重映射），直接作为原单 id 传入
       const pointsResult = await settlePointsSafe(client, targetOrderNo, 'payNotify')
       if (pointsResult.delta) {
         console.log(`[payNotify] 积分结算: order=${targetOrderNo}, delta=${pointsResult.delta}, expected=${pointsResult.expected}`)
+      }
+
+      // 7. 分享礼：首单结清时向邀请人 + 新客各发一张动态面值代金券 + 一条站内消息
+      // 仅在整单结清（fullyPaid=true）路径调用；回款凭证单场景以 targetOrderNo（原销售单）为幂等根键。
+      // 幂等由 grantShareGift 内部 INSERT ... ON CONFLICT 保证；失败不阻塞主支付事务（ticket §9.4）。
+      try {
+        await client.query('SAVEPOINT sp_share_gift')
+        const { grantShareGift } = require('./share-gift')
+        const sgRes = await grantShareGift(client, {
+          saleOrderId: targetOrderNo,
+          clientUserId: targetOrder.client_user_id,
+          paidAmount: newPaidSum,
+          source: 'payNotify',
+        })
+        await client.query('RELEASE SAVEPOINT sp_share_gift')
+        if (sgRes.granted) {
+          console.log('[payNotify/share-gift] granted', sgRes)
+        } else {
+          console.log('[payNotify/share-gift] skipped', sgRes.reason)
+        }
+      } catch (sgErr) {
+        // 分享礼失败不阻塞主支付事务
+        try { await client.query('ROLLBACK TO SAVEPOINT sp_share_gift') } catch (e) {}
+        console.error('[payNotify/share-gift] error (non-fatal):', sgErr)
       }
 
       await client.query('COMMIT')

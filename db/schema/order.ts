@@ -5,6 +5,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -93,6 +94,10 @@ export const saleOrders = pgTable(
     approvedAt: timestamp("approved_at"),
     /** 驳回原因（审批不通过时填写） */
     rejectedReason: text("rejected_reason"),
+    /** 退款单专用：因会员等级跌档扣除的超额权益价值（元） */
+    overdraftDeduction: numeric("overdraft_deduction", { precision: 10, scale: 2 }).default("0"),
+    /** 退款单专用：超额权益扣除明细，审计用 */
+    overdraftDeductionDetail: jsonb("overdraft_deduction_detail"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

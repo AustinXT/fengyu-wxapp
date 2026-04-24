@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
@@ -54,7 +54,8 @@ export async function getStores(): Promise<Store[]> {
     .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
     .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
     .where(scopeCondition(session, stores.storeId))
-    .orderBy(stores.storeName)
+    // 例外：选择器场景占主导（本 action 同时用作 /stores 主列表与 15+ 处筛选下拉），门店是低变更频率实体，字母序对下拉选择更稳定
+    .orderBy(asc(stores.storeName))
     .limit(200)
 
   return rows.map(rowToStore)

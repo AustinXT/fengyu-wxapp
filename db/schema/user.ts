@@ -1,4 +1,4 @@
-import { boolean, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { boolean, check, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { stores, orgNodes } from './org'
 import { customerTypeEnum, customerStatusEnum, monthlyActivityEnum, spendingTierEnum, memberLevelEnum, customerSourceEnum } from './enums'
@@ -34,9 +34,17 @@ export const clientWechatUsers = pgTable(
     boundEmployeeName: varchar('bound_employee_name', { length: 50 }),
     // Layer 4 — 会员与分类
     memberLevel: memberLevelEnum('member_level'),
+    /** 会员等级保级截止时间；升级时设为 NOW()+150 天；保级期内跳过降级 */
+    memberLevelLockedUntil: timestamp('member_level_locked_until', { withTimezone: true }),
+    /** 最近一次升级时间戳（审计用；定位"什么时候升的金钻"之类问题） */
+    memberLevelUpgradedAt: timestamp('member_level_upgraded_at', { withTimezone: true }),
     customerSource: customerSourceEnum('customer_source'),
     /** 推荐人（美容师员工ID） */
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
+    /** 邀请人（客户 user_id）；首次 bindStore 时写入，写入后不变 */
+    inviterUserId: text('inviter_user_id').references((): any => clientWechatUsers.userId),
+    /** 成为被邀请人的时间戳（审计） */
+    invitedAt: timestamp('invited_at'),
     /** 顾客类型：流量客/体验客/小美客/会员客，默认流量客 */
     customerType: customerTypeEnum('customer_type').notNull().default('流量客'),
     /** 首次/当前成为会员客的时间戳，与 customer_type 跃迁同步维护 */
@@ -71,6 +79,8 @@ export const clientWechatUsers = pgTable(
     uniqueIndex('uq_client_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     uniqueIndex('uq_client_users_customer_id').on(table.customerId).where(sql`customer_id IS NOT NULL`),
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
+    index('idx_client_users_inviter').on(table.inviterUserId).where(sql`inviter_user_id IS NOT NULL`),
+    check('chk_inviter_not_self', sql`${table.inviterUserId} IS NULL OR ${table.inviterUserId} <> ${table.userId}`),
   ],
 )
 

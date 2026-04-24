@@ -43,6 +43,10 @@ import {
   listActiveCouponTemplates,
   getMemberBenefits,
   saveMemberBenefits,
+  getShareGiftConfig,
+  saveShareGiftConfig,
+  normalizeShareGiftConfig,
+  DEFAULT_SHARE_GIFT_CONFIG,
 } from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -371,6 +375,156 @@ describe('saveMemberBenefits — 三组会员权益保存', () => {
       thanksgiving: EMPTY_BENEFITS_MAP,
     })
 
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('保存失败')
+  })
+})
+
+// ── normalizeShareGiftConfig ──────────────────────────────────────────────────
+
+describe('normalizeShareGiftConfig — 分享礼配置规范化', () => {
+  it('空输入 → 返回默认配置', () => {
+    expect(normalizeShareGiftConfig(null)).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+    expect(normalizeShareGiftConfig(undefined)).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+    expect(normalizeShareGiftConfig('not-object')).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+  })
+
+  it('percent 超下限 → clamp 到 0.01', () => {
+    const r = normalizeShareGiftConfig({ percent: -1 })
+    expect(r.percent).toBe(0.01)
+  })
+
+  it('percent 超上限 → clamp 到 0.5', () => {
+    const r = normalizeShareGiftConfig({ percent: 10 })
+    expect(r.percent).toBe(0.5)
+  })
+
+  it('percent 非数字 → 使用默认值 0.15', () => {
+    const r = normalizeShareGiftConfig({ percent: 'abc' })
+    expect(r.percent).toBe(0.15)
+  })
+
+  it('min > max → 自动交换', () => {
+    const r = normalizeShareGiftConfig({ minFaceValue: 500, maxFaceValue: 1 })
+    expect(r.minFaceValue).toBe(1)
+    expect(r.maxFaceValue).toBe(500)
+  })
+
+  it('负数面值 → 取 0', () => {
+    const r = normalizeShareGiftConfig({ minFaceValue: -5, maxFaceValue: 100 })
+    expect(r.minFaceValue).toBe(0)
+  })
+
+  it('validityDays 超范围 → clamp 到 [1, 3650]', () => {
+    expect(normalizeShareGiftConfig({ validityDays: 0 }).validityDays).toBe(1)
+    expect(normalizeShareGiftConfig({ validityDays: 99999 }).validityDays).toBe(3650)
+    expect(normalizeShareGiftConfig({ validityDays: 7.8 }).validityDays).toBe(7)
+  })
+
+  it('字符串字段 trim', () => {
+    const r = normalizeShareGiftConfig({
+      couponTemplateId: '  tpl-1  ',
+      messageInviterTitle: '  标题  ',
+      messageInviterBody: ' 正文 ',
+      messageInviteeTitle: ' invitee ',
+      messageInviteeBody: ' body ',
+    })
+    expect(r.couponTemplateId).toBe('tpl-1')
+    expect(r.messageInviterTitle).toBe('标题')
+    expect(r.messageInviterBody).toBe('正文')
+    expect(r.messageInviteeTitle).toBe('invitee')
+    expect(r.messageInviteeBody).toBe('body')
+  })
+
+  it('enabled / inviterMustHavePaidOrder 转 boolean', () => {
+    const r = normalizeShareGiftConfig({ enabled: 1, inviterMustHavePaidOrder: '' })
+    expect(r.enabled).toBe(true)
+    expect(r.inviterMustHavePaidOrder).toBe(false)
+  })
+})
+
+// ── getShareGiftConfig ────────────────────────────────────────────────────────
+
+describe('getShareGiftConfig — 分享礼配置读取', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('DB 无记录 → 返回默认配置', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await getShareGiftConfig()
+    expect(result).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+  })
+
+  it('JSON 损坏 → 返回默认配置', async () => {
+    ;(db.execute as any).mockResolvedValue([{ value: '{bad json' }])
+    const result = await getShareGiftConfig()
+    expect(result).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+  })
+
+  it('DB 异常 → 返回默认配置', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('table missing'))
+    const result = await getShareGiftConfig()
+    expect(result).toEqual(DEFAULT_SHARE_GIFT_CONFIG)
+  })
+
+  it('合法 JSON → 返回规范化后的配置', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      {
+        value: JSON.stringify({
+          enabled: true,
+          percent: 0.2,
+          minFaceValue: 5,
+          maxFaceValue: 200,
+          couponTemplateId: 'tpl-share',
+          validityDays: 60,
+          inviterMustHavePaidOrder: true,
+          messageInviterTitle: 'I',
+          messageInviterBody: 'Ib',
+          messageInviteeTitle: 'E',
+          messageInviteeBody: 'Eb',
+        }),
+      },
+    ])
+    const result = await getShareGiftConfig()
+    expect(result.enabled).toBe(true)
+    expect(result.percent).toBe(0.2)
+    expect(result.couponTemplateId).toBe('tpl-share')
+    expect(result.validityDays).toBe(60)
+  })
+})
+
+// ── saveShareGiftConfig ───────────────────────────────────────────────────────
+
+describe('saveShareGiftConfig — 分享礼配置保存', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('正常保存 → CREATE TABLE + SELECT + UPSERT + 日志', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+    const result = await saveShareGiftConfig({
+      ...DEFAULT_SHARE_GIFT_CONFIG,
+      enabled: true,
+      couponTemplateId: 'tpl-1',
+    })
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('分享礼配置已保存')
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession,
+      'system.saveShareGiftConfig',
+      'system_config',
+      'share_gift',
+      expect.any(Object),
+      expect.any(Object),
+    )
+  })
+
+  it('DB 异常 → 返回失败消息', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('pg down'))
+    const result = await saveShareGiftConfig(DEFAULT_SHARE_GIFT_CONFIG)
     expect(result.success).toBe(false)
     expect(result.message).toContain('保存失败')
   })

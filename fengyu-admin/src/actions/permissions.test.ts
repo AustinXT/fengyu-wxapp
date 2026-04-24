@@ -51,6 +51,8 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
@@ -146,6 +148,30 @@ describe('getRoles — scope filtering (AC-05)', () => {
     expect(result[0].updatedAt).toBe('2024-01-01T00:00:00.000Z')
     expect(result[0].employeeName).toBe('张三')
     expect(result[0].scopeName).toBe('门店A')
+  })
+
+  // admin.sys.spec.md §5 默认排序：最近分配/修改的角色浮顶
+  it('默认 orderBy 首键为 desc(updatedAt)，带 createdAt + id tiebreaker', async () => {
+    ;(getSession as any).mockResolvedValue({
+      employeeId: 'ADMIN-001',
+      roles: [{ role: 'admin', scopeId: 'hq-1' }],
+    })
+    ;(hasRole as any).mockReturnValue(true)
+    const limit = vi.fn().mockResolvedValue([])
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin2 = vi.fn().mockReturnValue({ where })
+    const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+    const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    ;(db.select as any).mockReturnValue({ from })
+
+    await getRoles()
+
+    expect(orderBy).toHaveBeenCalledTimes(1)
+    const args = orderBy.mock.calls[0]
+    expect(args[0]).toMatchObject({ type: 'desc', col: 'updated_at' })
+    expect(args[1]).toMatchObject({ type: 'desc', col: 'created_at' })
+    expect(args[2]).toMatchObject({ type: 'desc', col: 'id' })
   })
 })
 

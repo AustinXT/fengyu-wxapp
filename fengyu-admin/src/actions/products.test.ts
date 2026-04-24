@@ -78,6 +78,7 @@ vi.mock('@db/order', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
 }))
 

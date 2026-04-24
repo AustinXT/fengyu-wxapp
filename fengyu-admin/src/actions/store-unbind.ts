@@ -38,7 +38,8 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
     .leftJoin(clientWechatUsers, eq(storeUnbindRequests.userId, clientWechatUsers.userId))
     .leftJoin(stores, eq(storeUnbindRequests.fromStoreId, stores.storeId))
     .where(scopeCondition(session, storeUnbindRequests.fromStoreId))
-    .orderBy(desc(storeUnbindRequests.createdAt))
+    // 默认排序：最近审批/更新的解绑申请浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(storeUnbindRequests.updatedAt), desc(storeUnbindRequests.createdAt))
     .limit(500)
 
   return rows.map((r) => ({

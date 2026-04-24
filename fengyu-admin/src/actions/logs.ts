@@ -66,6 +66,7 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
     .select()
     .from(operationLogs)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
+    // 例外：日志型表无 updatedAt 列
     .orderBy(desc(operationLogs.createdAt))
     .limit(500)
 
@@ -84,6 +85,7 @@ export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]>
       eq(operationLogs.targetType, 'sale_order'),
       eq(operationLogs.targetId, saleOrderId),
     ))
+    // 例外：日志型表无 updatedAt 列
     .orderBy(desc(operationLogs.createdAt))
 
   return rows.map((r) => ({

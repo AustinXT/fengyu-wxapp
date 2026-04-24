@@ -122,6 +122,7 @@ export async function getPickupRecordsPaginated(
     .leftJoin(saleItems, eq(pickupRecords.saleItemId, saleItems.saleItemId))
     .leftJoin(productSkus, eq(saleItems.skuId, productSkus.skuId))
     .where(whereClause)
+    // 例外：提货流水型表无 updatedAt 列
     .orderBy(desc(pickupRecords.createdAt))
     .limit(pageSize)
     .offset(offset)

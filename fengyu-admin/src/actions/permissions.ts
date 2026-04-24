@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { permissionRoles } from '@db/permission'
 import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
-import { eq, and, inArray, sql } from 'drizzle-orm'
+import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -40,7 +40,8 @@ export async function getRoles(): Promise<PermissionRole[]> {
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(whereCondition)
-    .orderBy(permissionRoles.id)
+    // 默认排序：最近分配/修改的角色浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(permissionRoles.updatedAt), desc(permissionRoles.createdAt), desc(permissionRoles.id))
     .limit(500)
 
   return rows.map((r) => ({
@@ -83,7 +84,8 @@ export async function getRolesByScope(scopeId: string): Promise<PermissionRole[]
     .leftJoin(staffWechatUsers, eq(permissionRoles.employeeId, staffWechatUsers.employeeId))
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.scopeId, scopeId))
-    .orderBy(permissionRoles.id)
+    // 默认排序：最近分配/修改的角色浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(permissionRoles.updatedAt), desc(permissionRoles.createdAt), desc(permissionRoles.id))
 
   return rows.map((r) => ({
     id: r.id,
@@ -149,7 +151,8 @@ export async function getEmployeeRoles(employeeId: string): Promise<PermissionRo
     .from(permissionRoles)
     .leftJoin(orgNodes, eq(permissionRoles.scopeId, orgNodes.id))
     .where(eq(permissionRoles.employeeId, employeeId))
-    .orderBy(permissionRoles.id)
+    // 例外：详情页短子列表（1~3 条），按插入顺序稳定展示
+    .orderBy(asc(permissionRoles.id))
 
   return rows.map((r) => ({
     id: r.id,

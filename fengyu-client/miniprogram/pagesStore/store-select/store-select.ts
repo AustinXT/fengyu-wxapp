@@ -139,6 +139,10 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御美容 — 选择门店', path: '/pagesStore/store-select/store-select' };
+    // 分享礼：被分享人进入首页而非分享者的门店选择页
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御美容 — 选择门店', path: `/pages/home/home${invSuffix}` };
   },
 });

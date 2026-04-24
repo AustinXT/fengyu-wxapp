@@ -61,6 +61,8 @@ export const userCoupons = pgTable(
     status: couponStatusEnum('status').notNull().default('未使用'),
     /** 到期时间（发放时根据 validity_mode 计算） */
     expireAt: timestamp('expire_at').notNull(),
+    /** 运行时动态面值（分享礼等场景写入）；NULL 时读取点回退到 template.discount_value */
+    faceValueOverride: numeric('face_value_override', { precision: 10, scale: 2 }),
     /** 使用时写入的订单ID */
     usedSaleOrderId: varchar('used_sale_order_id', { length: 30 })
       .references(() => saleOrders.saleOrderId),

@@ -70,7 +70,36 @@
 - 登录安全：bcrypt (cost ≥ 12) + 连续 5 次失败锁定 15 分钟 + must_change 首次登录强制改密
 - 敏感操作审计：admin 角色变更、权限分配/撤销强制写入 operation_logs
 
-## 5. 跨模块业务流
+## 5. 列表默认排序规则
+
+> 适用范围：`fengyu-admin/src/actions/*.ts` 中所有返回"面向用户浏览的列表"的 Server Action。统计/聚合查询不在此范围。
+
+### 5.1 默认优先级
+
+admin 列表 `ORDER BY` 默认按以下优先级选择，确保"最近动过的在最上面"：
+
+1. **业务时间型**：表有强业务语义时间列（`sale_order_datetime` / `appointment_time` / `paid_at` / `expire_at`）→ `desc(业务时间), desc(createdAt), desc(id)`。业务时间对管理员和运营更直觉。
+2. **配置/档案型**：表有 `updated_at` 且无更强业务时间 → `desc(updatedAt), desc(createdAt), desc(id)`。编辑一行后自动浮顶。
+3. **仅 createdAt**：流水/日志型表（`operation_logs` / `messages` / `point_transactions` / `card_transactions` / `pickup_records`）→ `desc(createdAt), desc(id)`。
+
+`id DESC` 作为最后 tiebreaker 保障 offset 分页稳定。
+
+### 5.2 例外（必须在 `.orderBy(...)` 上方写一行 `// 例外：...` 注释说明原因）
+
+| 例外类型 | 场景 | 期望 orderBy |
+|----------|------|-------------|
+| sortOrder 权重 | 有 `sort_order` 列的配置型列表（分类、规格、技能标签、组织节点、职位、套餐组） | `asc(sortOrder)` + 名称 ASC |
+| 选择器字母序 | 下拉 / 搜索弹层 / 批量选择（发券、开单选店员、选顾客等 picker） | `asc(name)` |
+| 业务时间单独 | 即将过期券、快到期会员卡等"按业务时间远近"看的列表 | `asc(expireAt)` 等 |
+| 详情页短子列表 | 单行 1~3 条的关联列表（员工角色、订单分配明细） | 可按 `asc(id)` 插入顺序稳定展示 |
+
+### 5.3 前置约束
+
+- 配置/档案型表必须在 Drizzle schema 中以 `.$onUpdate(() => new Date())` 维护 `updatedAt`，保证"改完即浮顶"；未维护 `updatedAt` 的表禁止按 5.1 第 2 条排序
+- 新增列表 Server Action 必须在 PR 自检中标注归属哪类（业务时间型 / 配置档案型 / 流水型 / 例外）
+- 例外位置未写 `// 例外：` 注释的 PR 在 review 阶段应打回
+
+## 6. 跨模块业务流
 
 ### 管理后台开单 → 顾客支付（跨 Web + 小程序）
 
@@ -93,7 +122,7 @@ adminApi:sync.trigger → 互斥锁检查
   → 不覆盖 created_by != 'sync' 的手动权限记录
 ```
 
-## 6. 权限模型
+## 7. 权限模型
 
 ### 角色×模块矩阵（adminApi 扩展，含 admin 列）
 

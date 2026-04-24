@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { commissionRateMatrix } from '@db/commission'
 import { orgNodes } from '@db/org'
-import { eq, and, or, isNull, gt, lt, ne, sql } from 'drizzle-orm'
+import { eq, and, or, isNull, gt, lt, ne, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { CommissionRate } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -23,7 +23,8 @@ export async function getMarkets(): Promise<MarketOption[]> {
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
     .where(eq(orgNodes.type, '市场'))
-    .orderBy(orgNodes.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map((r) => ({ orgId: r.id, name: r.name }))
 }
@@ -48,7 +49,8 @@ export async function getRates(): Promise<CommissionRate[]> {
     })
     .from(commissionRateMatrix)
     .leftJoin(orgNodes, eq(commissionRateMatrix.orgId, orgNodes.id))
-    .orderBy(commissionRateMatrix.id)
+    // 默认排序：最近编辑过的规则浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(commissionRateMatrix.updatedAt), desc(commissionRateMatrix.id))
     .limit(1000)
 
   return rows.map((r) => ({

@@ -41,7 +41,11 @@ export async function getOrgNodes(): Promise<OrgNode[]> {
   const session = await getSession()
   requirePermission(session, 'org:list')
 
-  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+  const rows = await db
+    .select()
+    .from(orgNodes)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
     name: row.name,

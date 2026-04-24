@@ -1,4 +1,5 @@
-import { bigserial, index, integer, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { bigserial, index, integer, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { clientWechatUsers } from './user'
 import { saleOrders } from './order'
 
@@ -19,10 +20,15 @@ export const pointTransactions = pgTable(
     amount: integer('amount').notNull(),
     /** 关联订单ID（可选） */
     refOrderId: varchar('ref_order_id', { length: 30 }).references(() => saleOrders.saleOrderId),
+    /** 外部幂等引用；系统批量发放（升级/活动）使用，业务发放可为 null */
+    externalRef: text('external_ref'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
     index('idx_point_txns_user_id').on(table.userId),
+    uniqueIndex('uq_point_txns_external_ref')
+      .on(table.externalRef)
+      .where(sql`external_ref IS NOT NULL`),
   ],
 )
 

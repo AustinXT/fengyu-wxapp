@@ -67,6 +67,7 @@ export async function getMarkets(): Promise<{ id: string; name: string }[]> {
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
     .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
+    // 例外：sortOrder 手工排序权重
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows
@@ -88,6 +89,7 @@ export async function getCategoriesForCoupon(): Promise<{ categoryId: string; ca
     })
     .from(productCategories)
     .where(eq(productCategories.isValid, true))
+    // 例外：sortOrder 手工排序权重
     .orderBy(asc(productCategories.sortOrder))
 
   return rows.map((r) => ({
@@ -169,7 +171,8 @@ export async function getAvailableCoupons(
       storeCondition,
       marketCondition,
     ))
-    .orderBy(userCoupons.expireAt)
+    // 例外：业务时间优先（即将过期的券靠前显示）
+    .orderBy(asc(userCoupons.expireAt))
 
   return rows.map((r) => {
     const discount = calcCouponDiscount(r.couponType, r.discountValue, r.maxDiscount ?? null, total)
@@ -221,7 +224,8 @@ export async function getTemplates(): Promise<CouponTemplate[]> {
   const rows = await db
     .select()
     .from(couponTemplates)
-    .orderBy(desc(couponTemplates.createdAt))
+    // 默认排序：最近编辑过的模板浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(couponTemplates.updatedAt), desc(couponTemplates.createdAt))
     .limit(500)
 
   // 聚合每个模板的已发放数量（不受 status 过滤，反映总发放量）
@@ -596,6 +600,7 @@ export async function getIssuedCoupons(templateId: string): Promise<IssuedCoupon
     .from(userCoupons)
     .innerJoin(clientWechatUsers, eq(userCoupons.userId, clientWechatUsers.userId))
     .where(eq(userCoupons.templateId, templateId))
+    // 例外：已发放流水，user_coupons 表无 updatedAt 列
     .orderBy(desc(userCoupons.createdAt))
     .limit(500)
 
@@ -821,7 +826,8 @@ export async function getCustomersForBatchIssue(filters: {
       .from(clientWechatUsers)
       .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
       .where(whereClause)
-      .orderBy(clientWechatUsers.name)
+      // 例外：picker 字母序
+      .orderBy(asc(clientWechatUsers.name))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -846,7 +852,11 @@ export async function getOrgNodesForBatchIssue(): Promise<OrgNode[]> {
   const session = await getSession()
   requirePermission(session, 'coupon:create')
 
-  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+  const rows = await db
+    .select()
+    .from(orgNodes)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
     name: row.name,

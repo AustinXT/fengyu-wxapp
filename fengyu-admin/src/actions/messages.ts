@@ -122,6 +122,7 @@ export async function getMessagesPaginated(
         ) as SQL,
       )
       .where(whereClause)
+      // 例外：消息流水表无 updatedAt 列
       .orderBy(desc(messages.createdAt))
       .limit(pageSize)
       .offset(offset),
@@ -287,7 +288,11 @@ export async function getOrgNodesForBatchMessage(): Promise<OrgNode[]> {
   const session = await getSession()
   requirePermission(session, 'message:send')
 
-  const rows = await db.select().from(orgNodes).orderBy(asc(orgNodes.sortOrder))
+  const rows = await db
+    .select()
+    .from(orgNodes)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
@@ -343,7 +348,8 @@ export async function getCustomersForBatchMessage(filters: {
       .from(clientWechatUsers)
       .leftJoin(stores, eq(clientWechatUsers.boundStoreId, stores.storeId))
       .where(whereClause)
-      .orderBy(clientWechatUsers.name)
+      // 例外：picker 字母序
+      .orderBy(asc(clientWechatUsers.name))
       .limit(pageSize)
       .offset(offset),
   ])

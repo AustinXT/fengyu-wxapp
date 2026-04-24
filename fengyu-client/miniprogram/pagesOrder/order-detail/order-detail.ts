@@ -289,7 +289,11 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御订单', path: '/pagesOrder/orders/orders' };
+    // 分享礼：被分享人进入首页而非分享者的订单页
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御订单', path: `/pages/home/home${invSuffix}` };
   },
 
   // ========== 继续支付（多次回款，Ticket 2026-04-24 PR-C） ==========

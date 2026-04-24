@@ -15,7 +15,14 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { createRefundOrder, getRefundable, type RefundableItem } from "@/actions/refunds"
+import {
+  createRefundOrder,
+  estimateRefundOverdraft,
+  getRefundable,
+  type EstimateOverdraftResult,
+  type RefundableItem,
+} from "@/actions/refunds"
+import { formatDate } from "@/lib/utils"
 
 interface LineState {
   checked: boolean
@@ -39,6 +46,10 @@ export function RefundForm({
   const [lineStates, setLineStates] = useState<Record<string, LineState>>({})
   const [handlingFee, setHandlingFee] = useState<string>("0.00")
   const [refundReason, setRefundReason] = useState<string>("")
+  const [clientUserId, setClientUserId] = useState<string | null>(null)
+  const [overdraft, setOverdraft] = useState<EstimateOverdraftResult | null>(null)
+  const [overdraftLoading, setOverdraftLoading] = useState(false)
+  const [applyOverdraft, setApplyOverdraft] = useState(true)
 
   useEffect(() => {
     if (!open) return
@@ -47,6 +58,7 @@ export function RefundForm({
     getRefundable(saleOrderId)
       .then((res) => {
         setItems(res.items)
+        setClientUserId(res.clientUserId)
         const defaults: Record<string, LineState> = {}
         for (const it of res.items) {
           defaults[it.saleItemId] = {
@@ -77,6 +89,36 @@ export function RefundForm({
     const final = Math.max(0, Math.round((subtotal - fee) * 100) / 100)
     return { subtotal: Math.round(subtotal * 100) / 100, fee, final }
   }, [items, lineStates, handlingFee])
+
+  // 预判等级跌档 + 超额权益扣除（500ms 防抖）
+  useEffect(() => {
+    if (!open || !clientUserId || previewTotals.final <= 0) {
+      setOverdraft(null)
+      return
+    }
+    const refundAmount = previewTotals.final
+    setOverdraftLoading(true)
+    const h = setTimeout(() => {
+      estimateRefundOverdraft({
+        userId: clientUserId,
+        refundAmount,
+        originalSaleOrderId: saleOrderId,
+      })
+        .then(setOverdraft)
+        .catch(() => setOverdraft(null))
+        .finally(() => setOverdraftLoading(false))
+    }, 500)
+    return () => clearTimeout(h)
+  }, [open, clientUserId, previewTotals.final, saleOrderId])
+
+  const effectiveDeduction =
+    overdraft && overdraft.willDowngrade && applyOverdraft
+      ? overdraft.suggestedOverdraftDeduction
+      : 0
+  const customerRefund = Math.max(
+    0,
+    Math.round((previewTotals.final - effectiveDeduction) * 100) / 100,
+  )
 
   const handleSubmit = () => {
     if (!refundReason.trim()) {
@@ -110,6 +152,7 @@ export function RefundForm({
         items: payload,
         refundReason: refundReason.trim(),
         handlingFee: previewTotals.fee,
+        applyOverdraftDeduction: applyOverdraft,
       })
       if (res.success) {
         toast.success(`退款单已创建：${res.data.refundOrderId}，等待审批`)
@@ -230,12 +273,81 @@ export function RefundForm({
                 <span className="text-[#666]">手续费</span>
                 <span>-¥{previewTotals.fee.toFixed(2)}</span>
               </div>
+              {effectiveDeduction > 0 && (
+                <div className="flex justify-between mt-1">
+                  <span className="text-[#666]">权益扣除</span>
+                  <span>-¥{effectiveDeduction.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between mt-1 pt-1 border-t border-[#F3C77E]">
-                <span className="font-medium">实退金额</span>
-                <span className="font-bold text-[#C0322A]">¥{previewTotals.final.toFixed(2)}</span>
+                <span className="font-medium">顾客应退</span>
+                <span className="font-bold text-[#C0322A]">¥{customerRefund.toFixed(2)}</span>
               </div>
             </div>
           </div>
+
+          {/* 会员权益调整区块 */}
+          {clientUserId && (overdraftLoading || overdraft) && (
+            <div className="rounded-[var(--radius)] border border-[var(--border)] bg-white px-3 py-3 text-sm space-y-2">
+              <div className="font-medium">会员权益调整</div>
+              {overdraftLoading ? (
+                <div className="text-[#999]">计算中…</div>
+              ) : overdraft ? (
+                overdraft.willDowngrade ? (
+                  <>
+                    <div className="text-[#666]">
+                      当前等级 <span className="font-medium text-[var(--foreground)]">{overdraft.currentLevel ?? "-"}</span>
+                      {" → 退款后应降级至 "}
+                      <span className="font-medium text-[var(--foreground)]">{overdraft.recomputedLevel ?? "无等级"}</span>
+                    </div>
+                    {overdraft.upgradedAt && (
+                      <div className="text-[#666]">
+                        升级时间：{formatDate(overdraft.upgradedAt)}
+                      </div>
+                    )}
+                    <ul className="text-[#666] list-disc pl-5 space-y-0.5">
+                      {overdraft.usedCouponValue > 0 && (
+                        <li>
+                          已核销升级奖励优惠券 {overdraft.detail.usedCoupons.length} 张，面值 ¥{overdraft.usedCouponValue.toFixed(2)}
+                        </li>
+                      )}
+                      {overdraft.usedPointsValue > 0 && (
+                        <li>
+                          已用升级奖励积分 {overdraft.detail.usedPoints} 分（折 ¥{overdraft.usedPointsValue.toFixed(2)}）
+                        </li>
+                      )}
+                    </ul>
+                    <div className="text-[#666]">
+                      {overdraft.currentLevel} vs {overdraft.recomputedLevel ?? "无等级"} 权益差：
+                      ¥{overdraft.benefitValueDiff.toFixed(2)}
+                    </div>
+                    <div className="pt-1 border-t border-[var(--border)]">
+                      <label className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={applyOverdraft}
+                          onChange={(e) => setApplyOverdraft(e.target.checked)}
+                        />
+                        <span>
+                          应用扣除：<span className="font-medium">¥{overdraft.suggestedOverdraftDeduction.toFixed(2)}</span>
+                        </span>
+                      </label>
+                    </div>
+                  </>
+                ) : overdraft.lockedUntilStatus === "in_lock" ? (
+                  <div className="text-[#666]">
+                    顾客处于保级期至当前保级截止日，本次退款不影响等级，不扣权益。
+                  </div>
+                ) : overdraft.currentLevel ? (
+                  <div className="text-[#666]">
+                    本次退款后等级仍为 {overdraft.currentLevel}，不扣权益。
+                  </div>
+                ) : (
+                  <div className="text-[#666]">顾客无会员等级，不扣权益。</div>
+                )
+              ) : null}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium mb-1">

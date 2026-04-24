@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { skillTags } from '@db/lookup'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SkillTag } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -28,7 +28,8 @@ export async function getSkillTags(): Promise<SkillTag[]> {
   const rows = await db
     .select()
     .from(skillTags)
-    .orderBy(skillTags.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(skillTags.sortOrder))
 
   return rows.map(rowToSkillTag)
 }
@@ -42,7 +43,8 @@ export async function getActiveSkillTags(): Promise<SkillTag[]> {
     .select()
     .from(skillTags)
     .where(eq(skillTags.isValid, true))
-    .orderBy(skillTags.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(skillTags.sortOrder))
 
   return rows.map(rowToSkillTag)
 }

@@ -287,6 +287,10 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御预约', path: '/pages/appointment/appointment' };
+    // 分享礼：被分享人进入首页而非分享者的预约页
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御预约', path: `/pages/home/home${invSuffix}` };
   },
 });

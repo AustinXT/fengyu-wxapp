@@ -563,6 +563,37 @@ export default function CustomerDetailPage({
                   <Input value={customer.memberLevel ?? ""} disabled />
                 </div>
                 <div className="space-y-2">
+                  <label className="text-sm font-medium">最近升级</label>
+                  <Input
+                    value={customer.memberLevelUpgradedAt ? formatDateTime(customer.memberLevelUpgradedAt) : ""}
+                    disabled
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">保级至</label>
+                  <div className="flex items-center gap-2 h-9">
+                    {(() => {
+                      const lockedUntil = customer.memberLevelLockedUntil
+                      if (!lockedUntil) return <span className="text-sm text-[var(--muted-foreground)]">-</span>
+                      const isActive = new Date(lockedUntil) > new Date()
+                      return (
+                        <>
+                          <span className="text-sm">{formatDate(lockedUntil)}</span>
+                          {isActive ? (
+                            <Badge variant="outline" className="border-[#3D8A5A] text-[#3D8A5A] bg-[#E8F5EE]">
+                              保级中
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-[#888888] text-[#888888] bg-[#F4F4F4]">
+                              保级已到期
+                            </Badge>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
+                </div>
+                <div className="space-y-2">
                   <label className="text-sm font-medium">顾客类型</label>
                   <Input value={customer.customerType ?? ""} disabled />
                 </div>

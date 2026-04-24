@@ -24,6 +24,7 @@ export async function getMarkets(): Promise<{ id: string; name: string }[]> {
     .select({ id: orgNodes.id, name: orgNodes.name })
     .from(orgNodes)
     .where(and(eq(orgNodes.type, '市场'), eq(orgNodes.isActive, true)))
+    // 例外：sortOrder 手工排序权重
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows
@@ -81,7 +82,8 @@ export async function getCategories(): Promise<ProductCategory[]> {
   const rows = await db
     .select()
     .from(productCategories)
-    .orderBy(productCategories.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(productCategories.sortOrder))
 
   return rows.map((c) => ({
     categoryId: c.categoryId,
@@ -106,7 +108,8 @@ export async function getProductKinds(): Promise<ProductCategory[]> {
     .select()
     .from(productCategories)
     .where(sql`${productCategories.productKind} IS NULL`)
-    .orderBy(productCategories.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(productCategories.sortOrder))
 
   return rows.map((c) => ({
     categoryId: c.categoryId,
@@ -352,7 +355,8 @@ export async function getAllSkus(): Promise<ProductSku[]> {
     })
     .from(productSkus)
     .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-    .orderBy(productSkus.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(productSkus.sortOrder))
     .limit(1000)
 
   return rows.map((r) => ({
@@ -434,7 +438,8 @@ export async function getSkusByProductId(productId: string): Promise<ProductSku[
     .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
     .leftJoin(mallBundleGroups, eq(mallProductSkus.bundleGroupId, mallBundleGroups.id))
     .where(eq(mallProductSkus.productId, productId))
-    .orderBy(mallProductSkus.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(mallProductSkus.sortOrder))
 
   return rows.map((r) => ({
     skuId: r.sku.skuId,
@@ -668,7 +673,8 @@ export async function getBundleGroupsByProductId(productId: string): Promise<Mal
     .select()
     .from(mallBundleGroups)
     .where(eq(mallBundleGroups.productId, productId))
-    .orderBy(mallBundleGroups.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(mallBundleGroups.sortOrder))
 
   return rows.map((r) => ({
     id: r.id,
@@ -802,7 +808,8 @@ export async function getMallCategories(): Promise<MallCategory[]> {
   const rows = await db
     .select()
     .from(mallCategories)
-    .orderBy(mallCategories.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(mallCategories.sortOrder))
 
   return rows.map((c) => ({
     categoryId: c.categoryId,
@@ -823,7 +830,8 @@ export async function getMallCategoryGroups(): Promise<MallCategory[]> {
     .select()
     .from(mallCategories)
     .where(sql`${mallCategories.categoryGroup} IS NULL`)
-    .orderBy(mallCategories.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(mallCategories.sortOrder))
 
   return rows.map((c) => ({
     categoryId: c.categoryId,
@@ -985,7 +993,8 @@ export async function getProducts(): Promise<Product[]> {
     .from(products)
     .leftJoin(mallCategories, eq(products.categoryId, mallCategories.categoryId))
     .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
-    .orderBy(products.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(products.sortOrder))
     .limit(500)
 
   return rows.map((r) => ({
@@ -1354,7 +1363,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
       })
       .from(products)
       .where(and(eq(products.isBundle, true), eq(products.isEnabled, true), eq(products.isVisible, true)))
-      .orderBy(products.sortOrder)
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(products.sortOrder))
 
     if (bundleRows.length === 0) {
       return { kind: '__bundle__', bundles: [] }
@@ -1367,7 +1377,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
       .select()
       .from(mallBundleGroups)
       .where(inArray(mallBundleGroups.productId, productIds))
-      .orderBy(mallBundleGroups.sortOrder)
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(mallBundleGroups.sortOrder))
 
     // 关联 SKU（含 bundleGroupId / bundlePrice）
     const mpsRows = await db
@@ -1382,7 +1393,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
       .from(mallProductSkus)
       .innerJoin(productSkus, eq(mallProductSkus.skuId, productSkus.skuId))
       .where(and(inArray(mallProductSkus.productId, productIds), eq(productSkus.isEnabled, true)))
-      .orderBy(mallProductSkus.sortOrder)
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(mallProductSkus.sortOrder))
 
     const bundles: OrderPickerBundle[] = bundleRows.map((b) => {
       const myGroups = groupRows.filter((g) => g.productId === b.productId)
@@ -1471,7 +1483,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
           )`,
         ),
       )
-      .orderBy(parentCat.sortOrder, productCategories.sortOrder, productSkus.sortOrder)
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(parentCat.sortOrder), asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 
     // 按 productKind → categoryId 两层聚合
     type GroupAccum = {
@@ -1535,7 +1548,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
     .from(productSkus)
     .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
     .where(and(eq(productCategories.productKind, kind), eq(productSkus.isEnabled, true), eq(productCategories.isValid, true)))
-    .orderBy(productCategories.sortOrder, productSkus.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 
   // 按 categoryId 聚合
   const catMap = new Map<string, OrderPickerCategory>()

@@ -66,6 +66,10 @@ export interface Customer {
   boundStoreId: string | null
   boundEmployeeId: string | null
   memberLevel: string | null
+  /** 最近一次升级时间（ISO 字符串） */
+  memberLevelUpgradedAt: string | null
+  /** 保级截止时间（ISO 字符串）；NULL 或 ≤now 表示保级期已过 */
+  memberLevelLockedUntil: string | null
   customerSource: string | null
   promoterEmployeeId: string | null
   customerType: string

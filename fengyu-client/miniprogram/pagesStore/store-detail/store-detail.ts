@@ -126,20 +126,27 @@ Page({
     this.setData({ promoterName: e.detail.value });
   },
 
-  // 确认绑定（含来源渠道）
+  // 确认绑定（含来源渠道 + 分享礼邀请人一次性写入）
   async onConfirmBind() {
     const { storeId, storeName, sourceChannel, promoterName } = this.data;
     if (!sourceChannel) {
       Toast.fail('请选择来源渠道');
       return;
     }
+    // 分享礼：读取在 App.onLaunch / onShow 中捕获的邀请人 userId
+    const inviterUserId = app.globalData.pendingInviter;
     try {
       const data = await callClientApi('auth.bindStore', {
         storeId,
         sourceChannel,
         promoterEmployeeId: promoterName || undefined,
+        inviterUserId: inviterUserId || undefined,
       });
       app.setStore(data?.boundStoreId || storeId, storeName, data?.boundMarketName || '');
+      // 一次性消费邀请人，防止二次使用
+      if (inviterUserId) {
+        app.globalData.pendingInviter = undefined;
+      }
       this.setData({ bindState: 'is-current', boundStoreName: storeName, showSourcePopup: false });
       Toast.success('门店已绑定');
       setTimeout(() => wx.navigateBack(), 1200);
@@ -224,9 +231,12 @@ Page({
   },
 
   onShareAppMessage() {
+    // 分享礼：统一回首页并附带邀请人 inv 参数，保留原 title 文案
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
     return {
       title: `凤御美容 — ${this.data.storeName}`,
-      path: `/pagesStore/store-detail/store-detail?storeName=${encodeURIComponent(this.data.storeName)}`
+      path: `/pages/home/home${invSuffix}`
     };
   },
 });

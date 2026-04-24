@@ -1,4 +1,5 @@
-import { bigserial, boolean, index, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { bigserial, boolean, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { messageRecipientTypeEnum } from './enums'
 
 /**
@@ -23,10 +24,15 @@ export const messages = pgTable(
     refEntityType: varchar('ref_entity_type', { length: 50 }),
     /** 关联实体ID */
     refEntityId: text('ref_entity_id'),
+    /** 幂等键；cronTask/权益发放/系统触发类消息使用，业务消息可为 null */
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
     index('idx_messages_recipient').on(table.recipientType, table.recipientId, table.isRead),
+    uniqueIndex('uq_messages_idempotency_key')
+      .on(table.idempotencyKey)
+      .where(sql`idempotency_key IS NOT NULL`),
   ],
 )
 

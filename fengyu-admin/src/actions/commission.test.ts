@@ -54,6 +54,8 @@ vi.mock('drizzle-orm', () => ({
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
   ne: vi.fn((a, b) => ({ type: 'ne', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn((...args: unknown[]) => ({ type: 'sql', args })), { raw: vi.fn((s: string) => s) }),
 }))
 
@@ -385,6 +387,22 @@ describe('getRates — 全量提成比例列表', () => {
     expect(result).toHaveLength(1)
     expect(result[0].id).toBe(1)
     expect(result[0].orgName).toBe('南昌市场')
+  })
+
+  // admin.sys.spec.md §5 默认排序：最近编辑过的规则浮顶
+  it('默认 orderBy 首键为 desc(updatedAt)', async () => {
+    const limit = vi.fn().mockResolvedValue([])
+    const orderBy = vi.fn().mockReturnValue({ limit })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
+    ;(db.select as any).mockReturnValue({ from })
+
+    await getRates()
+
+    expect(orderBy).toHaveBeenCalledTimes(1)
+    const args = orderBy.mock.calls[0]
+    expect(args[0]).toMatchObject({ type: 'desc', col: 'updated_at' })
+    expect(args[1]).toMatchObject({ type: 'desc', col: 'id' })
   })
 })
 

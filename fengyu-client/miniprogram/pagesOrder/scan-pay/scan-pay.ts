@@ -275,6 +275,9 @@ Page({
   },
 
   onShareAppMessage() {
-    return { title: '凤御收款', path: '/pages/home/home' };
+    const app = getApp<IAppOption>();
+    const userId = app.globalData.userId;
+    const invSuffix = userId ? `?inv=${encodeURIComponent(userId)}` : '';
+    return { title: '凤御收款', path: `/pages/home/home${invSuffix}` };
   },
 });
