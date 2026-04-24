@@ -1,0 +1,45 @@
+/* packageOrder/refund-list/refund-list.wxss */
+
+.list-scroll {
+  height: calc(100vh - 88rpx);
+  padding: 16rpx 0 120rpx;
+  box-sizing: border-box;
+}
+
+.loading-wrap { padding: 60rpx 0; display: flex; justify-content: center; }
+.loading-more { display: flex; justify-content: center; padding: 24rpx 0; }
+.no-more { text-align: center; padding: 24rpx 0; }
+.no-more-text { font-size: 24rpx; color: #999; }
+
+.refund-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  margin: 16rpx 24rpx;
+  padding: 24rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0,0,0,0.05);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16rpx;
+}
+.refund-no { font-size: 24rpx; color: #666; font-family: monospace; }
+
+.status-tag {
+  font-size: 22rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
+  line-height: 1.4;
+}
+.status-tag--pending  { color: #D4820A; background: #FFF4E0; }
+.status-tag--approved { color: #3D8A5A; background: #E8F5EB; }
+.status-tag--rejected { color: #999999; background: #F0F0F0; }
+
+.card-body { padding-top: 4rpx; }
+.info-row { display: flex; align-items: flex-start; padding: 6rpx 0; }
+.info-label { font-size: 24rpx; color: #999; width: 130rpx; flex-shrink: 0; }
+.info-value { font-size: 26rpx; color: #2D2017; flex: 1; word-break: break-all; }
+.info-value.amount { font-weight: 700; color: #C62828; font-size: 32rpx; }
+.info-value.mono { font-family: monospace; font-size: 24rpx; color: #666; }

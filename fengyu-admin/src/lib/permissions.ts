@@ -29,6 +29,10 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
     'system:config',
+    // 订单资金录入（ticket 2026-04-24 多次回款 PR-B）— admin 录入线下/储值卡回款，不走线上支付
+    'sale_order:record_payment',
+    // 退款管理（ticket 2026-04-24 退款 PR-Y）— admin 创建/审批退款单
+    'sale_order:refund',
     // admin 不碰业务数据（订单/分配/服务/预约）和顾客
   ],
   manager: [
@@ -37,6 +41,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'employee:list',
     'customer:list', 'customer:update', 'customer:create',
     'sale_order:list', 'sale_order:create', 'sale_order:update',
+    'sale_order:refund',
     'sale_item:list',
     'allocation:list', 'allocation:save',
     'service:list', 'service:create', 'service:update',
@@ -50,6 +55,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   finance: [
     'dashboard:view',
     'sale_order:list',
+    'sale_order:refund',
     'sale_item:list',
     'allocation:list',
     'customer:list',

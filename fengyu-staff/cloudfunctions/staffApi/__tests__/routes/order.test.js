@@ -1975,12 +1975,36 @@ describe('order.detail', () => {
       .mockResolvedValueOnce([])
       // allocations
       .mockResolvedValueOnce([])
+      // payments（Ticket 2 PR-A 新增）
+      .mockResolvedValueOnce([])
 
     await orderRoutes.detail(ctx)
 
     expect(ctx.result.order.customer_name).toBe('已有姓名')
-    // 只有 3 次 pg.query（order + items + allocations），无补全查询
-    expect(pg.query).toHaveBeenCalledTimes(3)
+    // 4 次 pg.query（order + items + allocations + payments），无姓名/手机补全查询
+    expect(pg.query).toHaveBeenCalledTimes(4)
+  })
+
+  test('detail 返回 payments 流水（Ticket 2 PR-A）', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-D09' })
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-D09', status: '部分支付', store_id: 'store-001',
+        preferred_employee_id: null, client_phone: '138', customer_name: '顾客',
+        coupon_id: null,
+      }])
+      .mockResolvedValueOnce([]) // items
+      .mockResolvedValueOnce([]) // allocations
+      .mockResolvedValueOnce([   // payments
+        { change_type: '首次支付', amount: '100.00', payment_method: '线下', status: '已支付', paid_at: '2026-04-24', created_at: '2026-04-24', note: null },
+        { change_type: '回款', amount: '50.00', payment_method: '线下', status: '已支付', paid_at: '2026-04-24', created_at: '2026-04-24', note: '店长发起回款' },
+      ])
+
+    await orderRoutes.detail(ctx)
+    expect(ctx.result.payments).toHaveLength(2)
+    expect(ctx.result.payments[0].change_type).toBe('首次支付')
+    expect(ctx.result.payments[1].change_type).toBe('回款')
+    expect(ctx.result.payments[1].amount).toBe(50)
   })
 })
 
@@ -2121,12 +2145,15 @@ describe('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-        payment_method: '线下',
+        payment_method: '线下', prepaid_card_amount: '0', total_amount: '1000',
       }])
-      // 查原单明细
+      // in-flight 校验
+      .mockResolvedValueOnce([])
+      // 查原单明细（疗程卡剩 10 次）
       .mockResolvedValueOnce([{
         sale_item_id: 'item-001', sku_id: 'sku-001', product_name: '面部护理',
         sku_spec_name: '基础款', product_type: '疗程卡', session_count: 10,
+        remaining_sessions: 10,
         unit_price: '1000', unit_real_price: '1000', quantity: 1,
         sales_category: '自采自销',
       }])
@@ -2142,6 +2169,9 @@ describe('order.createRefund', () => {
 
     expect(ctx.result.status).toBe('待审批')
     expect(ctx.result.totalAmount).toBe(-950) // -(1000 - 50)
+    expect(ctx.result.finalRefundAmount).toBe(950)
+    expect(ctx.result.refundByOrigin).toBe(950)
+    expect(ctx.result.refundByCard).toBe(0)
     expect(ctx.result.message).toContain('退款单已创建')
   })
 
@@ -2173,13 +2203,14 @@ describe('order.createRefund', () => {
       refSaleOrderId: 'FY-001', items: [{ saleItemId: 'item-wrong' }], refundReason: 'x',
     })
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-001', status: '已支付', store_id: 'store-001', client_user_id: null, client_phone: '138', customer_name: 'C', payment_method: '线下' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'item-001' }]) // 原单明细中无 item-wrong
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-001', status: '已支付', store_id: 'store-001', client_user_id: null, client_phone: '138', customer_name: 'C', payment_method: '线下', prepaid_card_amount: '0', total_amount: '100' }])
+      .mockResolvedValueOnce([])  // in-flight 为空
+      .mockResolvedValueOnce([{ sale_item_id: 'item-001', product_type: '疗程卡', remaining_sessions: 1, unit_real_price: '100', quantity: 1 }]) // 原单明细中无 item-wrong
 
     await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*item-wrong.*不存在/)
   })
 
-  test('refundQuantity 缺失时使用 orig.quantity 回退（行覆盖 qty = orig.quantity）', async () => {
+  test('refundQuantity 缺失时使用未使用数量回退（疗程卡 remaining_sessions）', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-001',
       items: [{ saleItemId: 'item-001' }],  // 无 refundQuantity
@@ -2190,11 +2221,14 @@ describe('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-001', status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138', customer_name: '张三', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '1500',
       }])
+      .mockResolvedValueOnce([])  // in-flight 为空
       .mockResolvedValueOnce([{
         sale_item_id: 'item-001', sku_id: 'sku-001', product_name: '面部护理',
-        sku_spec_name: '基础款', product_type: '疗程卡', session_count: 10,
-        unit_price: '1000', unit_real_price: '500', quantity: 3,  // orig.quantity = 3
+        sku_spec_name: '基础款', product_type: '疗程卡', session_count: 3,
+        remaining_sessions: 3,  // 未使用 3 次
+        unit_price: '1000', unit_real_price: '500', quantity: 3,
         sales_category: '自采自销',
       }])
 
@@ -2205,7 +2239,7 @@ describe('order.createRefund', () => {
 
     await orderRoutes.createRefund(ctx)
 
-    // qty = orig.quantity = 3, fee = 0, totalAmount = -(500*3) = -1500
+    // qty = remaining_sessions = 3, fee = 0, totalAmount = -(500*3) = -1500
     expect(ctx.result.totalAmount).toBe(-1500)
     expect(ctx.result.status).toBe('待审批')
   })
@@ -2222,10 +2256,13 @@ describe('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-002', status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138', customer_name: '李四', payment_method: '微信',
+        prepaid_card_amount: '0', total_amount: '1600',
       }])
+      .mockResolvedValueOnce([])  // in-flight 为空
       .mockResolvedValueOnce([{
         sale_item_id: 'item-002', sku_id: 'sku-002', product_name: '精油SPA',
         sku_spec_name: '高级款', product_type: '单品', session_count: 0,
+        picked_up_quantity: 0,  // 单品未提货
         unit_price: '800', unit_real_price: '800', quantity: 2,
         sales_category: '自采自销',
       }])
@@ -2253,10 +2290,13 @@ describe('order.createRefund', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-ORIG-003', status: '已支付', store_id: 'store-001',
         client_user_id: 'cu-001', client_phone: '138', customer_name: '王五', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '300',
       }])
+      .mockResolvedValueOnce([])  // in-flight 为空
       .mockResolvedValueOnce([{
         sale_item_id: 'item-003', sku_id: 'sku-003', product_name: '护理套餐',
         sku_spec_name: null, product_type: '单品', session_count: 0,
+        picked_up_quantity: 0,
         unit_price: '300', unit_real_price: '300', quantity: 1,
         sales_category: '自采自销',
       }])
@@ -2286,6 +2326,172 @@ describe('order.createRefund', () => {
     expect(ctx.result.saleOrderId).toMatch(/0002$/)
     expect(ctx.result.status).toBe('待审批')
   })
+
+  test('in-flight 唯一性：已有待审批退款单拒绝创建', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-INF',
+      items: [{ saleItemId: 'item-001', refundQuantity: 1 }],
+      refundReason: '测试',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-INF', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '100',
+      }])
+      // in-flight 校验命中：已有一张 '待审批' FY-TKD
+      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-PENDING' }])
+
+    await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/CONFLICT.*未完结退款单/)
+  })
+
+  test('无可退项：全部明细 unused=0 拒绝（INVALID_STATE）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-USED',
+      items: [{ saleItemId: 'item-used', refundQuantity: 1 }],
+      refundReason: '测试',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-USED', status: '已完成', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '500',
+      }])
+      .mockResolvedValueOnce([])  // in-flight 为空
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-used', product_type: '疗程卡',
+        remaining_sessions: 0,  // 全部已用
+        session_count: 5, unit_real_price: '100', quantity: 1,
+      }])
+
+    await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_STATE.*可退数量.*0/)
+  })
+
+  test('院装产品退款：unused = quantity - picked_up_quantity', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-PICK',
+      items: [{ saleItemId: 'item-pick', refundQuantity: 3 }],
+      refundReason: '未提货退款',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-PICK', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '1000',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-pick', product_type: '院装产品',
+        quantity: 5, picked_up_quantity: 2,  // 未提 3 件
+        unit_real_price: '200', session_count: 0,
+      }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
+
+    await orderRoutes.createRefund(ctx)
+
+    // 3 × 200 = 600
+    expect(ctx.result.totalAmount).toBe(-600)
+    expect(ctx.result.finalRefundAmount).toBe(600)
+  })
+
+  test('院装产品超额退款拒绝（INVALID_STATE）', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-OVER',
+      items: [{ saleItemId: 'item-over', refundQuantity: 10 }],  // 请求 10
+      refundReason: '过度退款',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-OVER', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '线下',
+        prepaid_card_amount: '0', total_amount: '500',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-over', product_type: '院装产品',
+        quantity: 5, picked_up_quantity: 0,  // 可退 5 < 请求 10
+        unit_real_price: '100', session_count: 0,
+      }])
+
+    await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_STATE.*可退数量 5 不足 10/)
+  })
+
+  test('全额储值卡原单退款：refundByCard 含全部金额、不写原通道 payments', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-CARDONLY',
+      items: [{ saleItemId: 'item-card', refundQuantity: 1 }],
+      refundReason: '储值卡全额退',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-CARDONLY', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '无',
+        prepaid_card_amount: '200', total_amount: '200',  // 全额储值卡抵扣
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-card', product_type: '疗程卡',
+        remaining_sessions: 1, session_count: 1,
+        unit_real_price: '200', quantity: 1,
+      }])
+
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+
+    await orderRoutes.createRefund(ctx)
+
+    expect(ctx.result.refundByCard).toBe(200)
+    expect(ctx.result.refundByOrigin).toBe(0)
+
+    // 应 INSERT 一行储值卡退款 payments，且不应有原通道退款 payments
+    const payInserts = clientQuery.mock.calls.filter(([sql]) =>
+      sql.includes('INSERT INTO sale_order_payments'))
+    expect(payInserts.length).toBe(1)
+    expect(payInserts[0][0]).toMatch(/'储值卡'/)
+  })
+
+  test('微信原单退款：refundByOrigin 行 payment_method 过渡期映射为线下', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-WX',
+      items: [{ saleItemId: 'item-wx', refundQuantity: 1 }],
+      refundReason: '微信原路退',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-ORIG-WX', status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: '微信',
+        prepaid_card_amount: '0', total_amount: '300',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-wx', product_type: '疗程卡',
+        remaining_sessions: 1, session_count: 1,
+        unit_real_price: '300', quantity: 1,
+      }])
+
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+
+    await orderRoutes.createRefund(ctx)
+
+    // 原路径退款 payments 行应走 '线下'（过渡期映射）
+    const payInserts = clientQuery.mock.calls.filter(([sql]) =>
+      sql.includes('INSERT INTO sale_order_payments'))
+    expect(payInserts.length).toBe(1)
+    // 参数中 payment_method 位于第 3 个参数（$3），根据 SQL 参数顺序对应：refSaleOrderId, amount, payment_method, operator_employee_id, note, created_at
+    const params = payInserts[0][1]
+    expect(params).toContain('线下')
+  })
 })
 
 // ============================================================
@@ -2294,21 +2500,47 @@ describe('order.createRefund', () => {
 describe('order.approveRefund', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
+  /**
+   * 通用事务 mock：分派 SELECT SUM / SELECT sale_items / 其他 UPDATE
+   */
+  function mockApproveTxn({ refundItems = [], updateRowCount = 1, sumPaid = 0, sumPrepaid = 0 } = {}) {
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, _params) => {
+          if (sql.includes('COALESCE(SUM')) {
+            return { rows: [{ new_paid: sumPaid, new_prepaid: sumPrepaid }], rowCount: 1 }
+          }
+          if (sql.includes("item_direction = '退出'")) {
+            return { rows: refundItems, rowCount: refundItems.length }
+          }
+          if (sql.includes('FROM card_transactions')) {
+            return { rows: [] }
+          }
+          if (sql.includes('INSERT INTO prepaid_cards')) {
+            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: updateRowCount }
+        }),
+      }
+      return await cb(client)
+    })
+  }
+
   test('审批退款单成功', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
 
     pg.query
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
+        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500.00', client_user_id: 'cu-001',
       }])
-      .mockResolvedValueOnce([{
-        sale_item_id: 'ref-item-1', item_direction: '退出',
-        ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1,
-      }])
+      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
 
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
-      return await cb(client)
+    mockApproveTxn({
+      refundItems: [{ ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }],
     })
 
     await orderRoutes.approveRefund(ctx)
@@ -2327,11 +2559,25 @@ describe('order.approveRefund', () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-002' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
+        ref_sale_order_id: 'FY-ORIG-002', total_amount: '-500', client_user_id: 'cu-002',
+      }])
+      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
 
+    // UPDATE FY-TKD 成功（rowCount=1），但 UPDATE sale_items 扣次数 rowCount=0
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (sql.includes("item_direction = '退出'")) {
+            return { rows: [{ ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }], rowCount: 1 }
+          }
+          if (sql.includes('UPDATE sale_items SET remaining_sessions')) {
+            return { rows: [], rowCount: 0 } // 次数不足
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
       return await cb(client)
     })
 
@@ -2343,43 +2589,80 @@ describe('order.approveRefund', () => {
     await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('审批退款：事务内状态并发变更抛错（C4）', async () => {
+  test('审批退款：事务内状态并发变更抛错（幂等哨兵）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'ref-item-1', item_direction: '退出', ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }])
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
+        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500', client_user_id: 'cu-001',
+      }])
+      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
 
+    // 幂等哨兵：首个 UPDATE FY-TKD 即 rowCount=0
     pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // session deduction OK
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // status UPDATE race condition
-      }
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
       return await cb(client)
     })
 
     await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/退款单状态已变更/)
   })
 
-  test('审批退款：status UPDATE SQL 含 AND status 锁（C4）', async () => {
+  test('审批退款：status UPDATE 首先执行且带 AND status 锁', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
 
     pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001' }])
-      .mockResolvedValueOnce([])  // 无退款明细，直接跳到状态 UPDATE
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
+        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500', client_user_id: 'cu-001',
+      }])
+      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
 
-    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+    const clientQuery = vi.fn(async (sql) => {
+      if (sql.includes('COALESCE(SUM')) return { rows: [{ new_paid: -500, new_prepaid: 0 }], rowCount: 1 }
+      if (sql.includes("item_direction = '退出'")) return { rows: [], rowCount: 0 }
+      if (sql.includes('SELECT customer_type FROM client_wechat_users')) return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+      return { rows: [], rowCount: 1 }
+    })
     pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: clientQuery }
-      return await cb(client)
+      return await cb({ query: clientQuery })
     })
 
     await orderRoutes.approveRefund(ctx)
 
-    // 第一个（也是唯一一个）client.query 就是状态 UPDATE
-    const sql = clientQuery.mock.calls[0][0]
-    expect(sql).toMatch(/AND status = '待审批'/)
+    // 首个 client.query 就是幂等哨兵 UPDATE FY-TKD，SQL 含 AND status = '待审批'
+    const firstSql = clientQuery.mock.calls[0][0]
+    expect(firstSql).toMatch(/UPDATE sale_orders/)
+    expect(firstSql).toMatch(/AND status = '待审批'/)
+  })
+
+  test('审批通过后 UPDATE sale_order_payments 退款行为已支付', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-PAY' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-TKD-PAY', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
+        ref_sale_order_id: 'FY-ORIG-PAY', total_amount: '-200', client_user_id: 'cu-001',
+      }])
+      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
+
+    const clientQuery = vi.fn(async (sql) => {
+      if (sql.includes('COALESCE(SUM')) return { rows: [{ new_paid: -200, new_prepaid: 0 }], rowCount: 1 }
+      if (sql.includes("item_direction = '退出'")) return { rows: [], rowCount: 0 }
+      if (sql.includes('SELECT customer_type')) return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+      return { rows: [], rowCount: 1 }
+    })
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+
+    await orderRoutes.approveRefund(ctx)
+
+    // 应该至少有一条 UPDATE sale_order_payments SET status='已支付' 的 SQL，且 WHERE 含 '退款' + '待支付' + FY-TKD 过滤
+    const paymentsUpdate = clientQuery.mock.calls.find(([sql]) =>
+      sql.includes('UPDATE sale_order_payments') && sql.includes("SET status = '已支付'"))
+    expect(paymentsUpdate).toBeDefined()
+    expect(paymentsUpdate[0]).toMatch(/change_type = '退款'/)
+    expect(paymentsUpdate[0]).toMatch(/status = '待支付'/)
+    expect(paymentsUpdate[0]).toMatch(/note LIKE/)
   })
 })
 
@@ -2391,7 +2674,13 @@ describe('order.rejectRefund', () => {
 
   test('驳回退款单成功', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-003', rejectedReason: '不符合条件' })
-    pg.query.mockResolvedValueOnce({ rowCount: 1 })
+    // 预查 ref_sale_order_id
+    pg.query.mockResolvedValueOnce([{ ref_sale_order_id: 'FY-ORIG-003' }])
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
+      return await cb(client)
+    })
 
     await orderRoutes.rejectRefund(ctx)
 
@@ -2399,9 +2688,26 @@ describe('order.rejectRefund', () => {
     expect(ctx.result.message).toContain('已驳回')
   })
 
+  test('驳回退款：作废 payments 待支付退款行', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-VOID', rejectedReason: '无效' })
+    pg.query.mockResolvedValueOnce([{ ref_sale_order_id: 'FY-ORIG-VOID' }])
+
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+
+    await orderRoutes.rejectRefund(ctx)
+
+    // 应有 UPDATE sale_order_payments SET status='已作废' 的 SQL
+    const voidUpdate = clientQuery.mock.calls.find(([sql]) =>
+      sql.includes('UPDATE sale_order_payments') && sql.includes("SET status = '已作废'"))
+    expect(voidUpdate).toBeDefined()
+    expect(voidUpdate[0]).toMatch(/change_type = '退款'/)
+    expect(voidUpdate[0]).toMatch(/note LIKE/)
+  })
+
   test('退款单不存在拒绝', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-NOEXIST' })
-    pg.query.mockResolvedValueOnce({ rowCount: 0 })
+    pg.query.mockResolvedValueOnce([])
     await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*退款单/)
   })
 
@@ -2412,60 +2718,283 @@ describe('order.rejectRefund', () => {
 })
 
 // ============================================================
-// order.createRepayment
+// order.createRepayment（Ticket 2 PR-A：多次回款 payments 双写）
 // ============================================================
 describe('order.createRepayment', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('创建回款单成功', async () => {
+  /**
+   * 构造回款场景的 pg.transaction mock。
+   * @param origOrder 原单锁 FOR UPDATE 返回的单行（total_amount/paid_amount/status...）
+   * @param options  { newPaid, newPrepaid, lockedBalance }
+   */
+  function mockRepayTxn(origOrder, options = {}) {
+    const txCalls = []
+    const {
+      newPaid = 0,
+      newPrepaid = 0,
+      lockedBalance = null,
+    } = options
+
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          txCalls.push({ sql, params })
+          // generateOrderNo 子事务（advisory_xact_lock 后 SELECT sale_order_id LIKE）
+          if (sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) {
+            return { rows: [], rowCount: 0 }
+          }
+          // 主事务 1: 锁原单 FOR UPDATE
+          if (sql.includes('FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE')) {
+            return { rows: [origOrder], rowCount: 1 }
+          }
+          // 主事务 2: 锁储值卡
+          if (sql.includes('FROM prepaid_cards') && sql.includes('FOR UPDATE')) {
+            if (!lockedBalance) return { rows: [], rowCount: 0 }
+            return { rows: [{ card_id: 'card-001', balance: String(lockedBalance) }], rowCount: 1 }
+          }
+          // SUM payments 重算
+          if (sql.includes('FROM sale_order_payments') && sql.includes('SUM')) {
+            return { rows: [{ new_paid: String(newPaid), new_prepaid: String(newPrepaid) }], rowCount: 1 }
+          }
+          // 顾客类型重算
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+    return txCalls
+  }
+
+  test('部分支付单全额回款 → 原单翻 已支付 + payments 行 change_type=回款', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-001',
-      items: [{ saleItemId: 'item-001', repayAmount: 200 }],
+      repayAmount: 100,
       paymentMethod: '线下',
     })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-ORIG-001', store_id: 'store-001',
-        client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
-      }])
-      .mockResolvedValueOnce([{
-        sale_item_id: 'item-001', sku_id: 'sku-001', product_name: 'P1',
-        sku_spec_name: 'S1', product_type: '疗程卡', sales_category: '自采自销',
-      }])
-      .mockResolvedValueOnce([]) // generateOrderNo
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-001', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: '张三',
+    }])
 
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
-      return await cb(client)
-    })
+    const txCalls = mockRepayTxn({
+      sale_order_id: 'FY-ORIG-001',
+      status: '部分支付',
+      total_amount: '200',
+      paid_amount: '100',
+      prepaid_card_amount: '0',
+      payable_amount: '200',
+      client_user_id: 'cu-001',
+      client_phone: '138',
+      customer_name: '张三',
+      document_type: null,
+    }, { newPaid: 200, newPrepaid: 0 })
 
     await orderRoutes.createRepayment(ctx)
 
-    expect(ctx.result.status).toBe('待支付')
-    expect(ctx.result.totalAmount).toBe(200)
-    expect(ctx.result.message).toContain('回款单已创建')
+    expect(ctx.result.refStatus).toBe('已支付')
+    expect(ctx.result.refPaidAmount).toBe(200)
+    expect(ctx.result.repayAmount).toBe(100)
+    expect(ctx.result.repaymentOrderId).toMatch(/^FY-HKD-WX-/)
+    // payments 写入断言
+    const insertPayment = txCalls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payments') && c.sql.includes("'回款'"))
+    expect(insertPayment).toBeDefined()
+    expect(Number(insertPayment.params[1])).toBe(100)  // amount
+    // 原单 UPDATE 至 '已支付'
+    const updateOrig = txCalls.find(c =>
+      c.sql.includes('UPDATE sale_orders') && c.sql.includes('paid_amount') && c.sql.includes('AND status = $7'))
+    expect(updateOrig).toBeDefined()
+    expect(updateOrig.params[0]).toBe('已支付')
+  })
+
+  test('多次部分回款：首次 50 保持部分支付，次次 150 翻 已支付', async () => {
+    // 第一次回款（payable=300/paid=100 → 回 50）
+    const ctx1 = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-002', repayAmount: 50, paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-002', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: '李四',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-ORIG-002', status: '部分支付',
+      total_amount: '300', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '300', client_user_id: 'cu-001',
+    }, { newPaid: 150, newPrepaid: 0 })
+
+    await orderRoutes.createRepayment(ctx1)
+    expect(ctx1.result.refStatus).toBe('部分支付')
+    expect(ctx1.result.refPaidAmount).toBe(150)
+
+    // 第二次回款（payable=300/paid=150 → 回 150）
+    vi.clearAllMocks()
+    const ctx2 = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-002', repayAmount: 150, paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-002', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: '李四',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-ORIG-002', status: '部分支付',
+      total_amount: '300', paid_amount: '150', prepaid_card_amount: '0',
+      payable_amount: '300', client_user_id: 'cu-001',
+    }, { newPaid: 300, newPrepaid: 0 })
+
+    await orderRoutes.createRepayment(ctx2)
+    expect(ctx2.result.refStatus).toBe('已支付')
+    expect(ctx2.result.refPaidAmount).toBe(300)
+  })
+
+  test('超额回款拦截 → INVALID_PARAMS:OVERPAY', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-003', repayAmount: 150, paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-003', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: 'C',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-ORIG-003', status: '部分支付',
+      total_amount: '200', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '200', client_user_id: 'cu-001',
+    })
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/OVERPAY/)
+  })
+
+  test('已关闭订单防回款 → INVALID_STATE', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-CLOSED-001', repayAmount: 50, paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-CLOSED-001', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: 'C',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-CLOSED-001', status: '已关闭',
+      total_amount: '200', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '200', client_user_id: 'cu-001',
+    })
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INVALID_STATE/)
+  })
+
+  test('纯储值卡回款：repayAmount=0 + prepaidCardAmount=100 扣卡 + payments 写储值卡抵扣行', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-004',
+      repayAmount: 0,
+      prepaidCardAmount: 100,
+      paymentMethod: '储值卡',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-004', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: 'C',
+    }])
+    const txCalls = mockRepayTxn({
+      sale_order_id: 'FY-ORIG-004', status: '部分支付',
+      total_amount: '200', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '200', client_user_id: 'cu-001',
+    }, { newPaid: 100, newPrepaid: 100, lockedBalance: '150' })
+
+    await orderRoutes.createRepayment(ctx)
+
+    expect(ctx.result.refStatus).toBe('已支付')
+    expect(ctx.result.prepaidCardAmount).toBe(100)
+    // 扣卡 SQL
+    const deduct = txCalls.find(c =>
+      c.sql.includes('UPDATE prepaid_cards') && c.sql.includes('balance = balance -'))
+    expect(deduct).toBeDefined()
+    expect(Number(deduct.params[0])).toBe(100)
+    // card_transactions 写入
+    const cardTxn = txCalls.find(c =>
+      c.sql.includes('INSERT INTO card_transactions') && c.sql.includes("'扣款'"))
+    expect(cardTxn).toBeDefined()
+    // payments 写入 储值卡抵扣 行
+    const paymentRow = txCalls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payments') && c.sql.includes("'储值卡抵扣'"))
+    expect(paymentRow).toBeDefined()
+    expect(Number(paymentRow.params[1])).toBe(100)
+  })
+
+  test('储值卡余额不足拒绝 → INSUFFICIENT_BALANCE', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-005',
+      repayAmount: 0,
+      prepaidCardAmount: 200,
+      paymentMethod: '储值卡',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-005', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: 'C',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-ORIG-005', status: '部分支付',
+      total_amount: '400', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '400', client_user_id: 'cu-001',
+    }, { lockedBalance: '100' })
+
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INSUFFICIENT_BALANCE/)
+  })
+
+  test('微信支付方式暂未实现', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-001', repayAmount: 100, paymentMethod: '微信',
+    })
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/WX_SCAN_NOT_IMPLEMENTED/)
   })
 
   test('缺少原单号拒绝', async () => {
-    const ctx = createManagerCtx({ items: [{ saleItemId: 'i1', repayAmount: 100 }] })
+    const ctx = createManagerCtx({ repayAmount: 100, paymentMethod: '线下' })
     await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INVALID_PARAMS.*原销售单号/)
   })
 
-  test('回款金额 <= 0 拒绝', async () => {
+  test('回款金额 = 0 且无储值卡抵扣时拒绝', async () => {
     const ctx = createManagerCtx({
-      refSaleOrderId: 'FY-001', items: [{ saleItemId: 'item-001', repayAmount: 0 }],
+      refSaleOrderId: 'FY-001', repayAmount: 0, paymentMethod: '线下',
     })
-    pg.query
-      .mockResolvedValueOnce([{ sale_order_id: 'FY-001', store_id: 'store-001', client_user_id: 'cu-001', client_phone: '138', customer_name: 'C' }])
-      .mockResolvedValueOnce([{ sale_item_id: 'item-001', sku_id: 'sku-001', product_name: 'P1', sku_spec_name: 'S1', product_type: '单品', sales_category: null }])
-
     await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INVALID_PARAMS.*回款金额/)
   })
 
+  test('非法的支付方式拒绝', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-001', repayAmount: 100, paymentMethod: '奇葩',
+    })
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/INVALID_PARAMS.*支付方式/)
+  })
+
   test('非店长拒绝', async () => {
-    const ctx = createBeauticianCtx({ refSaleOrderId: 'FY-001', items: [{ saleItemId: 'i1', repayAmount: 100 }] })
+    const ctx = createBeauticianCtx({
+      refSaleOrderId: 'FY-001', repayAmount: 100, paymentMethod: '线下',
+    })
     await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('items 旧签名兼容 → 合计推导 repayAmount', async () => {
+    const ctx = createManagerCtx({
+      refSaleOrderId: 'FY-ORIG-006',
+      items: [{ saleItemId: 'i1', repayAmount: 60 }, { saleItemId: 'i2', repayAmount: 40 }],
+      paymentMethod: '线下',
+    })
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-ORIG-006', store_id: 'store-001',
+      client_user_id: 'cu-001', client_phone: '138', customer_name: 'C',
+    }])
+    mockRepayTxn({
+      sale_order_id: 'FY-ORIG-006', status: '部分支付',
+      total_amount: '200', paid_amount: '100', prepaid_card_amount: '0',
+      payable_amount: '200', client_user_id: 'cu-001',
+    }, { newPaid: 200, newPrepaid: 0 })
+
+    await orderRoutes.createRepayment(ctx)
+    expect(ctx.result.repayAmount).toBe(100)
+    expect(ctx.result.refStatus).toBe('已支付')
   })
 })
 

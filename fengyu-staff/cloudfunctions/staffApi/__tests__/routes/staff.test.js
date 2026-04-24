@@ -216,6 +216,7 @@ describe('staff.todoList', () => {
     pg.query.mockResolvedValueOnce([{ cnt: '4' }])
     pg.query.mockResolvedValueOnce([{ cnt: '0' }])
     pg.query.mockResolvedValueOnce([{ cnt: '5' }])
+    pg.query.mockResolvedValueOnce([{ cnt: '7' }])  // 待审批退款
     await staffRoutes.todoList(ctx)
     expect(ctx.result.pendingAppointmentCount).toBe(3)
     expect(ctx.result.pendingServiceCount).toBe(2)
@@ -223,6 +224,7 @@ describe('staff.todoList', () => {
     expect(ctx.result.pendingCreateOrderCount).toBe(4)
     expect(ctx.result.pendingUnbindCount).toBe(0)
     expect(ctx.result.pendingAllocationCount).toBe(5)
+    expect(ctx.result.pendingRefundCount).toBe(7)
   })
 })
 

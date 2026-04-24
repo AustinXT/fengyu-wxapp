@@ -38,6 +38,7 @@ Page({
     pendingCreateOrderCount: 0,
     pendingUnbindCount: 0,
     pendingAllocationCount: 0,
+    pendingRefundCount: 0,
   },
 
   onLoad() {
@@ -177,6 +178,7 @@ Page({
         pendingCreateOrderCount?: number;
         pendingUnbindCount?: number;
         pendingAllocationCount?: number;
+        pendingRefundCount?: number;
       }>('staff.todoList');
       this.setData({
         pendingAppointmentCount: data.pendingAppointmentCount || 0,
@@ -185,6 +187,7 @@ Page({
         pendingCreateOrderCount: data.pendingCreateOrderCount || 0,
         pendingUnbindCount: data.pendingUnbindCount || 0,
         pendingAllocationCount: data.pendingAllocationCount || 0,
+        pendingRefundCount: data.pendingRefundCount || 0,
       });
     } catch (_) {}
   },
@@ -215,6 +218,10 @@ Page({
 
   goAllocationList() {
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
+  },
+
+  goRefundList() {
+    wx.navigateTo({ url: '/packageOrder/refund-list/refund-list' });
   },
 
   goPerformance(e: WechatMiniprogram.TouchEvent) {

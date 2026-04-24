@@ -19,6 +19,8 @@ interface OrderItem {
   paidAt: string | null;
   statusClass: string;
   openedBy: string | null;
+  hasRefund: boolean;
+  hasPendingRefund: boolean;
 }
 
 interface RawOrderRow {
@@ -32,6 +34,8 @@ interface RawOrderRow {
   created_at: string;
   paid_at: string | null;
   opened_by: string | null;
+  has_refund?: boolean;
+  has_pending_refund?: boolean;
 }
 
 interface OrderListResponse {
@@ -123,6 +127,8 @@ Page({
         paidAt: r.paid_at,
         statusClass: STATUS_CLASS[r.status] || 'pending',
         openedBy: r.opened_by || null,
+        hasRefund: !!r.has_refund,
+        hasPendingRefund: !!r.has_pending_refund,
       }));
       this.setData({
         list: [...this.data.list, ...mapped],

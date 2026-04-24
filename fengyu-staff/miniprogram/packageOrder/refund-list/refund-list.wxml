@@ -1,0 +1,67 @@
+<!-- packageOrder/refund-list/refund-list.wxml — 退款单列表（店长审批入口） -->
+<view class="container">
+  <van-tabs active="{{tabActive}}" bind:change="onTabChange" color="#C0322A" sticky swipeable>
+    <van-tab name="待审批" title="待审批" />
+    <van-tab name="已支付" title="已通过" />
+    <van-tab name="已关闭" title="已驳回" />
+  </van-tabs>
+
+  <view wx:if="{{loading && refunds.length === 0}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <van-empty wx:elif="{{!loading && refunds.length === 0}}" description="暂无退款单" />
+
+  <scroll-view wx:else scroll-y class="list-scroll" bindscrolltolower="onLoadMore">
+    <view
+      class="refund-card"
+      wx:for="{{refunds}}"
+      wx:key="sale_order_id"
+      data-id="{{item.sale_order_id}}"
+      bindtap="onTapRefund"
+    >
+      <view class="card-header">
+        <text class="refund-no">{{item.sale_order_id}}</text>
+        <view class="status-tag status-tag--{{item.statusClass}}">{{item.statusLabel}}</view>
+      </view>
+      <view class="card-body">
+        <view class="info-row">
+          <text class="info-label">顾客</text>
+          <text class="info-value">{{item.customer_name || '未知'}} {{item.client_phone || ''}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">退款金额</text>
+          <text class="info-value amount">¥{{item.refund_abs}}</text>
+        </view>
+        <view wx:if="{{item.handling_fee_display}}" class="info-row">
+          <text class="info-label">手续费</text>
+          <text class="info-value">¥{{item.handling_fee_display}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">原因</text>
+          <text class="info-value">{{item.refund_reason || '—'}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">原单</text>
+          <text class="info-value mono">{{item.ref_sale_order_id}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">发起</text>
+          <text class="info-value">{{item.opened_by_name || item.opened_by || '—'}}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">时间</text>
+          <text class="info-value">{{item.created_at_display}}</text>
+        </view>
+      </view>
+    </view>
+    <view wx:if="{{loading && refunds.length > 0}}" class="loading-more">
+      <van-loading size="24px" color="#999">加载中...</van-loading>
+    </view>
+    <view wx:if="{{!hasMore && refunds.length > 0}}" class="no-more">
+      <text class="no-more-text">没有更多了</text>
+    </view>
+  </scroll-view>
+
+  <view class="safe-area-bottom" />
+</view>

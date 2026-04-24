@@ -1,0 +1,128 @@
+<!-- packageOrder/refund-detail/refund-detail.wxml — 退款凭证单详情 -->
+<view class="container">
+
+  <view wx:if="{{loading}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <view wx:elif="{{!refund}}" class="empty-wrap">
+    <van-empty description="未找到退款单" />
+  </view>
+
+  <block wx:else>
+    <!-- 状态条 -->
+    <view class="status-banner status-banner--{{refund.statusClass}}">
+      <text class="status-label">{{refund.statusLabel}}</text>
+      <text wx:if="{{refund.rejected_reason}}" class="status-sub">驳回原因：{{refund.rejected_reason}}</text>
+    </view>
+
+    <!-- 退款单信息 -->
+    <view class="card-group">
+      <van-cell-group>
+        <van-cell title="退款单号" value="{{refund.sale_order_id}}" value-class="mono-value" />
+        <van-cell title="关联原单" value="{{refund.ref_sale_order_id}}" is-link bind:click="onTapOrigOrder" value-class="mono-value" />
+        <van-cell title="顾客" value="{{refund.customer_name}} {{refund.client_phone}}" />
+        <van-cell title="发起人" value="{{refund.opened_by_name || refund.opened_by || '—'}}" />
+        <van-cell title="发起时间" value="{{refund.created_at_display}}" />
+        <van-cell wx:if="{{refund.approved_at_display}}" title="审批时间" value="{{refund.approved_at_display}}" />
+        <van-cell wx:if="{{refund.approved_by_name}}" title="审批人" value="{{refund.approved_by_name}}" />
+      </van-cell-group>
+    </view>
+
+    <!-- 退款原因 / 手续费 -->
+    <view class="card-group">
+      <view class="section-title">退款说明</view>
+      <view class="reason-row">
+        <text class="reason-label">原因</text>
+        <text class="reason-value">{{refund.refund_reason || '—'}}</text>
+      </view>
+      <view wx:if="{{refund.handling_fee_display}}" class="reason-row">
+        <text class="reason-label">手续费</text>
+        <text class="reason-value">¥{{refund.handling_fee_display}}</text>
+      </view>
+      <view class="reason-row">
+        <text class="reason-label">退款合计</text>
+        <text class="reason-value amount">¥{{refund.refund_abs}}</text>
+      </view>
+    </view>
+
+    <!-- 退款明细 -->
+    <view class="card-group" wx:if="{{refundItems.length > 0}}">
+      <view class="section-title">退款明细</view>
+      <view class="item-row" wx:for="{{refundItems}}" wx:key="sale_item_id">
+        <view class="item-main">
+          <text class="item-name">{{item.product_name}}</text>
+          <text wx:if="{{item.sku_spec_name}}" class="item-spec">{{item.sku_spec_name}}</text>
+        </view>
+        <view class="item-right">
+          <text class="item-qty">×{{item.quantity}}</text>
+          <text class="item-amount">-¥{{item.amount_abs}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 款项流水（挂在原单上的本次退款 payments） -->
+    <view class="card-group" wx:if="{{payments.length > 0}}">
+      <view class="section-title">款项流水</view>
+      <view class="pay-row" wx:for="{{payments}}" wx:key="timeFmt" wx:for-item="p">
+        <view class="pay-left">
+          <text class="pay-type">{{p.change_type}}</text>
+          <text class="pay-meta">{{p.timeFmt}} · {{p.payment_method}}</text>
+        </view>
+        <view class="pay-right">
+          <text class="pay-amount pay-amount--refund">-¥{{p.amountAbs}}</text>
+          <text class="pay-status" wx:if="{{p.status !== '已支付'}}">{{p.status}}</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 原单概要 -->
+    <view class="card-group" wx:if="{{origOrder}}">
+      <view class="section-title">原销售单</view>
+      <view class="orig-row">
+        <text class="orig-label">原单状态</text>
+        <text class="orig-value">{{origOrder.status}}</text>
+      </view>
+      <view class="orig-row">
+        <text class="orig-label">总金额</text>
+        <text class="orig-value">¥{{origOrder.total_display}}</text>
+      </view>
+      <view class="orig-row">
+        <text class="orig-label">已付</text>
+        <text class="orig-value">¥{{origOrder.paid_display}}</text>
+      </view>
+      <view wx:if="{{origOrder.prepaid_display}}" class="orig-row">
+        <text class="orig-label">储值卡抵扣</text>
+        <text class="orig-value">¥{{origOrder.prepaid_display}}</text>
+      </view>
+    </view>
+
+    <!-- 审批操作按钮（仅店长 + 待审批） -->
+    <view class="action-bar" wx:if="{{isManager && refund.status === '待审批'}}">
+      <van-button type="danger" plain bind:click="onShowReject" custom-class="btn-reject">驳回</van-button>
+      <van-button type="primary" bind:click="onApprove" custom-class="btn-approve">审批通过</van-button>
+    </view>
+  </block>
+
+  <!-- 驳回弹窗 -->
+  <van-popup show="{{rejectPopup}}" position="bottom" round bind:close="onCloseReject">
+    <view class="popup-box">
+      <view class="popup-title">驳回退款</view>
+      <van-field
+        label="驳回原因"
+        placeholder="请输入驳回原因（必填）"
+        value="{{rejectReason}}"
+        bind:change="onRejectReasonChange"
+        type="textarea"
+        autosize
+        maxlength="200"
+      />
+      <view class="popup-actions">
+        <van-button block plain bind:click="onCloseReject">取消</van-button>
+        <van-button block type="danger" bind:click="onConfirmReject">确认驳回</van-button>
+      </view>
+    </view>
+  </van-popup>
+
+  <view class="safe-area-bottom" />
+</view>
