@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { staffWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
 import { permissionRoles } from '@db/permission'
-import { eq, and, or, sql, ilike, inArray } from 'drizzle-orm'
+import { eq, and, or, sql, ilike, inArray, desc, asc } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -43,6 +43,10 @@ function rowToEmployee(row: {
   }
 }
 
+/**
+ * 员工选择器数据源 — 用于顾客分配、分配营业额、开单选店员等 picker 场景。
+ * 主管理列表（含筛选 + 分页 + 乐观锁编辑）请使用 getEmployeesPaginated。
+ */
 export async function getEmployees(): Promise<Employee[]> {
   const session = await getSession()
   requirePermission(session, 'employee:list')
@@ -53,7 +57,8 @@ export async function getEmployees(): Promise<Employee[]> {
     .leftJoin(stores, eq(staffWechatUsers.storeId, stores.storeId))
     .leftJoin(orgNodes, eq(staffWechatUsers.orgNodeId, orgNodes.id))
     .where(scopeCondition(session, staffWechatUsers.storeId))
-    .orderBy(staffWechatUsers.name)
+    // 例外：picker 字母序（人眼扫视更友好）
+    .orderBy(asc(staffWechatUsers.name))
     .limit(500)
 
   return rows.map(rowToEmployee)
@@ -87,7 +92,8 @@ export async function searchEmployees(keyword: string): Promise<{ employeeId: st
         ),
       ),
     )
-    .orderBy(staffWechatUsers.name)
+    // 例外：搜索选择器字母序
+    .orderBy(asc(staffWechatUsers.name))
     .limit(20)
 
   return rows
@@ -185,7 +191,8 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
       .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
       .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
       .where(whereClause)
-      .orderBy(staffWechatUsers.name)
+      // 默认排序：最近编辑过的员工浮顶（admin.sys.spec.md §5），employeeId 作为稳定分页 tiebreaker
+      .orderBy(desc(staffWechatUsers.updatedAt), desc(staffWechatUsers.createdAt), asc(staffWechatUsers.employeeId))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -230,7 +237,8 @@ export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: strin
     .select({ id: orgNodes.id, name: orgNodes.name, type: orgNodes.type })
     .from(orgNodes)
     .where(eq(orgNodes.parentId, hq.id))
-    .orderBy(orgNodes.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map(r => ({ id: r.id, name: r.name ?? '', type: r.type }))
 }

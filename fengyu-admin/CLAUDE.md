@@ -88,6 +88,7 @@ bun run test:all               # Vitest + Playwright
 - **审计日志**：所有增删改通过 `logOperation()` 写入 `operation_logs`（AC-11 全覆盖）
 - **服务端分页**：6 个列表页（orders/services/appointments/customers/employees/allocations）使用 DB 级 WHERE + COUNT + LIMIT/OFFSET，通过 `searchParams` 驱动 Server Component 重新查询；Pagination 组件含输入防护（负值/NaN/越界/除零）
 - **员工调店 scope 同步**：`updateEmployee` 变更 storeId 时自动同步 `permission_roles.scope_id`
+- **列表默认排序**：配置/档案型 `desc(updatedAt), desc(createdAt), desc(id)`（"编辑即浮顶"）；业务时间型 `desc(业务时间)` 优先；流水型 `desc(createdAt)`。例外必须在 `.orderBy(...)` 上方写 `// 例外：...` 注释。详见 `.42cog/dev/admin.sys.spec.md` §5
 
 ## 测试覆盖率
 

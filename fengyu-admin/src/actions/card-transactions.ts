@@ -145,6 +145,7 @@ export async function getCardTransactionsPaginated(
       .innerJoin(prepaidCards, eq(cardTransactions.cardId, prepaidCards.cardId))
       .innerJoin(clientWechatUsers, eq(prepaidCards.userId, clientWechatUsers.userId))
       .where(whereClause)
+      // 例外：流水型表无 updatedAt 列
       .orderBy(desc(cardTransactions.createdAt))
       .limit(pageSize)
       .offset(offset),

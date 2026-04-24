@@ -35,6 +35,7 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ type: 'and', args: args.filter(Boolean) })),
   or: vi.fn((...args) => ({ type: 'or', args })),
   desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),

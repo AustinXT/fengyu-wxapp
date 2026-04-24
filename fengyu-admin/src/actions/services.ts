@@ -56,7 +56,8 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(scopeCondition(session, serviceOrders.storeId))
-    .orderBy(desc(serviceOrders.createdAt))
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(500)
 
   return rows.map(serializeServiceOrder)
@@ -145,7 +146,8 @@ export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {
     .leftJoin(staffWechatUsers, eq(serviceOrders.assignedEmployeeId, staffWechatUsers.employeeId))
     .leftJoin(clientWechatUsers, eq(serviceOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
-    .orderBy(desc(serviceOrders.createdAt))
+    // 默认排序：最近开始/完成/修改的服务单浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(serviceOrders.updatedAt), desc(serviceOrders.createdAt))
     .limit(pageSize)
     .offset(offset)
 

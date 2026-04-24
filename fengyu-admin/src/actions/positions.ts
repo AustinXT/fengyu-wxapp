@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { positions } from '@db/lookup'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Position, PositionScope } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -29,7 +29,8 @@ export async function getPositions(): Promise<Position[]> {
   const rows = await db
     .select()
     .from(positions)
-    .orderBy(positions.scope, positions.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(positions.scope), asc(positions.sortOrder))
 
   return rows.map(rowToPosition)
 }
@@ -43,7 +44,8 @@ export async function getActivePositions(): Promise<Position[]> {
     .select()
     .from(positions)
     .where(eq(positions.isValid, true))
-    .orderBy(positions.scope, positions.sortOrder)
+    // 例外：sortOrder 手工排序权重
+    .orderBy(asc(positions.scope), asc(positions.sortOrder))
 
   return rows.map(rowToPosition)
 }

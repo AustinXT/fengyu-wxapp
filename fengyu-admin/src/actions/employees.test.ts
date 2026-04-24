@@ -23,6 +23,7 @@ vi.mock('@db/user', () => ({
     birthday: 'birthday',
     skills: 'skills',
     isResigned: 'is_resigned',
+    createdAt: 'created_at',
     updatedAt: 'updated_at',
   },
 }))
@@ -67,6 +68,8 @@ vi.mock('drizzle-orm', () => ({
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   isNull: vi.fn((a) => ({ type: 'isNull', a })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
+  asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(
     vi.fn((...args) => ({ type: 'sql', args })),
     { raw: vi.fn() },
@@ -582,6 +585,39 @@ describe('getEmployeesPaginated — 服务端分页', () => {
     expect(result.data[0].name).toBe('张三')
     expect(result.data[0].storeName).toBe('南昌旗舰店')
     expect(result.data[0].departmentName).toBe('美容部')
+  })
+
+  // admin.sys.spec.md §5 默认排序：最近编辑过的员工浮顶，employeeId 作分页 tiebreaker
+  it('默认 orderBy 首键为 desc(updatedAt)，带 createdAt DESC + employeeId ASC', async () => {
+    // 专门 mock 以捕获 DATA 查询的 orderBy 参数
+    let dataOrderBy: any = null
+    let callIndex = 0
+    ;(db.select as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        const where = vi.fn().mockResolvedValue([{ count: 0 }])
+        const from = vi.fn().mockReturnValue({ where })
+        return { from }
+      }
+      const offset = vi.fn().mockResolvedValue([])
+      const limit = vi.fn().mockReturnValue({ offset })
+      dataOrderBy = vi.fn().mockReturnValue({ limit })
+      const where = vi.fn().mockReturnValue({ orderBy: dataOrderBy })
+      const leftJoin4 = vi.fn().mockReturnValue({ where })
+      const leftJoin3 = vi.fn().mockReturnValue({ leftJoin: leftJoin4 })
+      const leftJoin2 = vi.fn().mockReturnValue({ leftJoin: leftJoin3 })
+      const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+      const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+      return { from }
+    })
+
+    await getEmployeesPaginated()
+
+    expect(dataOrderBy).toHaveBeenCalledTimes(1)
+    const args = dataOrderBy.mock.calls[0]
+    expect(args[0]).toMatchObject({ type: 'desc', col: 'updated_at' })
+    expect(args[1]).toMatchObject({ type: 'desc', col: 'created_at' })
+    expect(args[2]).toMatchObject({ type: 'asc', col: 'employee_id' })
   })
 
   it('空数据 → { data: [], total: 0 }', async () => {

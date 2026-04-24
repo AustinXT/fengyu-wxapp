@@ -177,6 +177,7 @@ export async function getCardsPaginated(filters: CardFilters = {}): Promise<Pagi
     .leftJoin(stores, eq(saleItems.storeId, stores.storeId))
     .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
     .where(whereClause)
+    // 例外：业务时间优先（支付时间优于"最近编辑"）
     .orderBy(desc(saleOrders.paidAt), desc(saleItems.createdAt))
     .limit(pageSize)
     .offset(offset)

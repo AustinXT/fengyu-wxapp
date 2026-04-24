@@ -46,6 +46,7 @@ export async function getAppointments(): Promise<Appointment[]> {
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
     .where(scopeCondition(session, appointments.storeId))
+    // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
     .orderBy(desc(appointments.appointmentTime))
     .limit(500)
 
@@ -152,6 +153,7 @@ export async function getAppointmentsPaginated(filters: AppointmentFilters = {})
       .from(appointments)
       .leftJoin(stores, eq(appointments.storeId, stores.storeId))
       .where(whereClause)
+      // 例外：业务时间优先（预约时间比"最近编辑过"更符合管理员直觉）
       .orderBy(desc(appointments.appointmentTime))
       .limit(pageSize)
       .offset(offset),

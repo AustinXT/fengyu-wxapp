@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers } from '@db/user'
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -780,7 +780,8 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .leftJoin(approver, eq(saleOrders.approvedBy, approver.employeeId))
     .where(whereClause)
-    .orderBy(desc(saleOrders.createdAt))
+    // 默认排序：最近修改/审批的退款单浮顶（admin.sys.spec.md §5）
+    .orderBy(desc(saleOrders.updatedAt), desc(saleOrders.createdAt))
     .limit(pageSize)
     .offset(offset)
 
@@ -911,7 +912,8 @@ export async function getRefundById(saleOrderId: string): Promise<RefundDetailRe
           sql`${saleOrderPayments.note} LIKE ${'FY-TKD=' + id + '%'}`,
         ),
       )
-      .orderBy(saleOrderPayments.createdAt)
+      // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
+      .orderBy(asc(saleOrderPayments.createdAt))
 
     payments = payRows.map((r) => ({
       id: r.payment.id,

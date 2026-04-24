@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { clientWechatUsers } from '@db/user'
 import { stores, orgNodes } from '@db/org'
-import { eq, and, or, desc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
+import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
 import { getSession, hasRole } from '@/lib/auth'
@@ -106,7 +106,8 @@ export async function searchCustomers(keyword: string): Promise<Customer[]> {
         ),
       ),
     )
-    .orderBy(clientWechatUsers.name)
+    // 例外：picker 字母序
+    .orderBy(asc(clientWechatUsers.name))
     .limit(20)
 
   return rows.map(serializeCustomer)
@@ -122,7 +123,8 @@ export async function getCustomers(): Promise<Customer[]> {
     .select(customerColumns)
     .from(clientWechatUsers)
     .where(scopeCondition(session, clientWechatUsers.boundStoreId))
-    .orderBy(clientWechatUsers.name)
+    // 例外：picker 字母序
+    .orderBy(asc(clientWechatUsers.name))
     .limit(500)
 
   return rows.map(serializeCustomer)
@@ -213,7 +215,8 @@ export async function getCustomersPaginated(filters: CustomerFilters = {}): Prom
     db.select(customerColumns)
       .from(clientWechatUsers)
       .where(whereClause)
-      .orderBy(clientWechatUsers.name)
+      // 例外：picker 字母序
+      .orderBy(asc(clientWechatUsers.name))
       .limit(pageSize)
       .offset(offset),
   ])
@@ -265,6 +268,7 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .where(eq(saleOrders.clientUserId, userId))
+    // 例外：详情页子列表，业务时间（订单日期）优先
     .orderBy(desc(saleOrders.saleOrderDatetime))
 
   // 批量查询所有订单的明细（避免 N+1）
@@ -362,6 +366,7 @@ export async function getCustomerAppointments(userId: string): Promise<Appointme
     .from(appointments)
     .leftJoin(stores, eq(appointments.storeId, stores.storeId))
     .where(eq(appointments.clientUserId, userId))
+    // 例外：详情页子列表，业务时间（预约时间）优先
     .orderBy(desc(appointments.appointmentTime))
 
   return rows.map((r) => {
@@ -603,6 +608,7 @@ export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneC
         ),
       ),
     )
+    // 例外：流水型表无 updatedAt 列（operation_logs）
     .orderBy(desc(operationLogs.createdAt))
     .limit(200)
 

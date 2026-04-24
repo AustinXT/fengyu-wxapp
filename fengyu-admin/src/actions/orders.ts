@@ -7,7 +7,7 @@ import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
-import { eq, desc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
+import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
@@ -121,6 +121,7 @@ export async function getOrders(): Promise<SaleOrder[]> {
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .where(scopeCondition(session, saleOrders.storeId))
+    // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(500)
 
@@ -255,6 +256,7 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
     .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
     .where(whereClause)
+    // 例外：业务时间优先（订单日期比"最近编辑"更符合管理员直觉）
     .orderBy(desc(saleOrders.saleOrderDatetime))
     .limit(pageSize)
     .offset(offset)
@@ -400,7 +402,8 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
-    .orderBy(saleOrderPayments.createdAt)
+    // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
+    .orderBy(asc(saleOrderPayments.createdAt))
 
   return rows.map((r) => ({
     id: r.payment.id,
