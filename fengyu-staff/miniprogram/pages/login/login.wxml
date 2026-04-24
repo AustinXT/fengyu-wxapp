@@ -1,34 +1,42 @@
-<!-- pages/login/login.wxml — 登录页 -->
+<!-- pages/login/login.wxml — 登录页（两阶段：initial / authed） -->
 <view class="login-container brand-gradient">
   <!-- 品牌 Logo 区 -->
   <view class="login-brand">
     <van-icon name="manager-o" size="120rpx" color="#C0322A" />
     <text class="login-title">凤御·员工端</text>
-    <text class="login-subtitle">请绑定手机号以验证员工身份</text>
+    <text class="login-subtitle">
+      {{ phase === 'authed' ? '请选择登录身份' : '请绑定手机号以验证员工身份' }}
+    </text>
   </view>
 
   <!-- 加载状态 -->
   <van-loading wx:if="{{checking}}" color="#C0322A" />
 
-  <!-- 绑定按钮 -->
   <block wx:elif="{{!checking}}">
-    <!-- 登录层级选择：仅在同时可选门店/管理层时显示 -->
-    <view wx:if="{{availableLoginLevels.length === 2}}" class="login-level-group">
-      <van-radio-group
-        value="{{ loginLevel }}"
-        bind:change="onLoginLevelChange"
-        direction="horizontal"
-        custom-class="login-level-radio"
-      >
-        <van-radio name="store" checked-color="#C0322A" custom-class="login-level-radio-item">门店</van-radio>
-        <van-radio name="management" checked-color="#C0322A" custom-class="login-level-radio-item">管理层</van-radio>
-      </van-radio-group>
-    </view>
+    <!-- Phase 1：未授权手机号 -->
+    <block wx:if="{{phase === 'initial'}}">
+      <button open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber"
+              class="login-btn" disabled="{{binding}}">
+        {{binding ? '验证中...' : '授权手机号登录'}}
+      </button>
+    </block>
 
-    <button open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber"
-            class="login-btn" disabled="{{binding}}">
-      {{binding ? '验证中...' : '授权手机号登录'}}
-    </button>
+    <!-- Phase 2：已授权 + 双身份权限，显示 radio + 登录按钮 -->
+    <block wx:elif="{{phase === 'authed'}}">
+      <view class="login-level-group">
+        <van-radio-group
+          value="{{ loginLevel }}"
+          bind:change="onLoginLevelChange"
+          direction="horizontal"
+          custom-class="login-level-radio"
+        >
+          <van-radio name="store" checked-color="#C0322A" custom-class="login-level-radio-item">门店</van-radio>
+          <van-radio name="management" checked-color="#C0322A" custom-class="login-level-radio-item">管理层</van-radio>
+        </van-radio-group>
+      </view>
+      <button bindtap="onEnterByLevel" class="login-btn">登录</button>
+    </block>
+
     <text wx:if="{{errorMsg}}" class="login-error">{{errorMsg}}</text>
   </block>
 </view>

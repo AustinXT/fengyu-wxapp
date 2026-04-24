@@ -1,4 +1,7 @@
 // pages/login/login.ts — 登录页
+// 两阶段状态机：
+//   initial  → 显示「授权手机号登录」按钮
+//   authed   → 已拿到 availableLoginLevels（2 项时），显示 radio + 「登录」按钮
 import { bindPhone } from '../../utils/auth'
 
 const app = getApp<IAppOption>()
@@ -11,28 +14,29 @@ Page({
     checking: true,
     binding: false,
     errorMsg: '',
+    phase: 'initial' as 'initial' | 'authed',
     availableLoginLevels: [] as LoginLevel[],
     loginLevel: 'store' as LoginLevel,
   },
 
   onLoad() {
-    // 快速路径：缓存命中
+    // 场景 B：已登录热启动（storage 有缓存）→ 快速路径直跳上次 tab，不重新授权
     if (app.globalData.staffWfId) {
       this.jumpByLoginLevel()
       return
     }
-    // 慢路径：等待 auth.login 完成
     this.checkAuth()
   },
 
   async checkAuth() {
+    // 等 onLaunch 的 syncLoginState 完成（场景 A 下会返回 isNewUser）
     await app._loginReady
     if (app.globalData.staffWfId) {
-      this.refreshLevelData()
       this.jumpByLoginLevel()
-    } else {
-      this.setData({ checking: false })
+      return
     }
+    // 进入 initial 阶段等用户授权手机号
+    this.setData({ checking: false, phase: 'initial' })
   },
 
   refreshLevelData() {
@@ -77,15 +81,31 @@ Page({
         this.setData({ binding: false, errorMsg: '手机号未关联员工档案，请联系管理员' })
         return
       }
-      // 根据 available 与用户选择锁定 loginLevel
       const levels = app.globalData.availableLoginLevels || []
-      let chosen: LoginLevel = this.data.loginLevel
-      if (!levels.includes(chosen)) chosen = levels[0] || 'store'
-      app.setLoginLevel(chosen)
-      this.jumpByLoginLevel()
+      if (levels.length === 0) {
+        this.setData({ binding: false, errorMsg: '员工档案未配置权限，请联系管理员' })
+        return
+      }
+      if (levels.length === 1) {
+        // 唯一视图权限：直接进入，不显示 radio
+        app.setLoginLevel(levels[0])
+        this.jumpByLoginLevel()
+        return
+      }
+      // 两种视图权限：进入 authed 阶段让用户手动选择
+      this.refreshLevelData()
+      this.setData({ phase: 'authed', binding: false })
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '绑定失败';
+      const msg = err instanceof Error ? err.message : '绑定失败'
       this.setData({ binding: false, errorMsg: msg })
     }
+  },
+
+  onEnterByLevel() {
+    const levels = app.globalData.availableLoginLevels || []
+    let chosen: LoginLevel = this.data.loginLevel
+    if (!levels.includes(chosen)) chosen = levels[0] || 'store'
+    app.setLoginLevel(chosen)
+    this.jumpByLoginLevel()
   },
 })
