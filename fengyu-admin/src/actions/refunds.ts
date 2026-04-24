@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
-import { staffWechatUsers } from '@db/user'
+import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { and, desc, asc, eq, inArray, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -11,6 +11,9 @@ import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
+import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
+import { getMemberThreshold } from '@/lib/member-threshold'
+import { getPointsToYuanRate } from './settings'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,
@@ -54,6 +57,8 @@ export interface GetRefundableResult {
   origTotalAmount: number
   origPrepaidCardAmount: number
   origPaymentMethod: PaymentMethod
+  /** 原订单顾客 ID；用于退款表单调用 estimateRefundOverdraft */
+  clientUserId: string | null
 }
 
 export type CreateRefundResult =
@@ -112,6 +117,33 @@ export interface RefundDetailResult {
   payments: SaleOrderPayment[]
 }
 
+/**
+ * 退款触发的会员等级预判 + 超额权益扣除建议
+ *
+ * 用户场景：顾客升级至高等级 → 已核销优惠券 / 已用升级奖励积分消费 → 发生退款
+ *   → 滚动12月消费跌至低等级 + 保级期已过 → 应从退款金额中扣回已享用超额权益。
+ */
+export interface EstimateOverdraftResult {
+  currentLevel: MemberLevel | null
+  recomputedLevel: MemberLevel | null
+  willDowngrade: boolean
+  lockedUntilStatus: 'none' | 'in_lock' | 'expired'
+  upgradedAt: string | null
+  usedCouponValue: number
+  usedPointsValue: number
+  currentBenefitsValue: number
+  newBenefitsValue: number
+  benefitValueDiff: number
+  /** 建议扣除额（元） = MIN(usedCouponValue + usedPointsValue, benefitValueDiff, refundAmount) */
+  suggestedOverdraftDeduction: number
+  detail: {
+    usedCoupons: Array<{ couponId: string; templateId: string; discountValue: number; usedAt: string }>
+    usedPoints: number
+    grantedPoints: number
+    pointsToYuanRate: number
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // getRefundable：查询原单可退明细
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,6 +160,7 @@ export async function getRefundable(saleOrderId: string): Promise<GetRefundableR
       totalAmount: saleOrders.totalAmount,
       prepaidCardAmount: saleOrders.prepaidCardAmount,
       paymentMethod: saleOrders.paymentMethod,
+      clientUserId: saleOrders.clientUserId,
     })
     .from(saleOrders)
     .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
@@ -188,6 +221,231 @@ export async function getRefundable(saleOrderId: string): Promise<GetRefundableR
     origTotalAmount: Number(order.totalAmount),
     origPrepaidCardAmount: Number(order.prepaidCardAmount),
     origPaymentMethod: order.paymentMethod as PaymentMethod,
+    clientUserId: order.clientUserId ?? null,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// estimateRefundOverdraft：退款预判 + 超额权益扣除建议（读端，无副作用）
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface LevelBenefitConfig {
+  points?: number
+  couponTemplateIds?: string[]
+  messageTitle?: string
+  messageBody?: string
+}
+
+/** 从 system_configs.member_level_benefits 读 upgrade 场景权益配置；缺失返回空映射 */
+async function loadUpgradeBenefitsMap(): Promise<Record<string, LevelBenefitConfig>> {
+  try {
+    const rows = await db.execute<{ value: string }>(sql`
+      SELECT value FROM system_configs WHERE key = 'member_level_benefits' LIMIT 1
+    `)
+    const raw = (rows as any[])[0]?.value
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, LevelBenefitConfig>
+  } catch {
+    return {}
+  }
+}
+
+function benefitsValue(
+  cfg: LevelBenefitConfig | undefined,
+  pointRate: number,
+  tplValueById: Record<string, number>,
+): number {
+  if (!cfg) return 0
+  const points = Number(cfg.points || 0) * pointRate
+  const coupons = (cfg.couponTemplateIds || []).reduce(
+    (sum, id) => sum + (tplValueById[id] || 0),
+    0,
+  )
+  return points + coupons
+}
+
+export async function estimateRefundOverdraft(params: {
+  userId: string
+  refundAmount: number
+  originalSaleOrderId: string
+}): Promise<EstimateOverdraftResult> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:refund')
+
+  const refundAmount = Math.max(0, Number(params.refundAmount) || 0)
+
+  // 1) 顾客当前会员信息
+  const [user] = await db
+    .select({
+      memberLevel: clientWechatUsers.memberLevel,
+      memberLevelUpgradedAt: clientWechatUsers.memberLevelUpgradedAt,
+      memberLevelLockedUntil: clientWechatUsers.memberLevelLockedUntil,
+    })
+    .from(clientWechatUsers)
+    .where(eq(clientWechatUsers.userId, params.userId))
+    .limit(1)
+
+  const currentLevel = (user?.memberLevel ?? null) as MemberLevel | null
+  const upgradedAt = user?.memberLevelUpgradedAt ?? null
+  const lockedUntil = user?.memberLevelLockedUntil ?? null
+  const now = new Date()
+  const lockedUntilStatus: 'none' | 'in_lock' | 'expired' = !lockedUntil
+    ? 'none'
+    : new Date(lockedUntil) > now
+      ? 'in_lock'
+      : 'expired'
+
+  const pointRate = await getPointsToYuanRate()
+  const emptyDetail = { usedCoupons: [], usedPoints: 0, grantedPoints: 0, pointsToYuanRate: pointRate }
+
+  // 无会员级 → 无级可降
+  if (!currentLevel) {
+    return {
+      currentLevel: null,
+      recomputedLevel: null,
+      willDowngrade: false,
+      lockedUntilStatus,
+      upgradedAt: upgradedAt ? upgradedAt.toISOString() : null,
+      usedCouponValue: 0,
+      usedPointsValue: 0,
+      currentBenefitsValue: 0,
+      newBenefitsValue: 0,
+      benefitValueDiff: 0,
+      suggestedOverdraftDeduction: 0,
+      detail: emptyDetail,
+    }
+  }
+
+  // 2) 滚动 12 月消费；应用退款后预判新等级（复用 PR-2 的白名单 SQL 口径）
+  const spendRows = await db.execute<{ spend: string }>(sql`
+    SELECT COALESCE(SUM(paid_amount::numeric), 0) AS spend
+    FROM sale_orders
+    WHERE client_user_id = ${params.userId}
+      AND sale_order_type = '销售单'
+      AND paid_amount > 0
+      AND paid_at >= (NOW() - INTERVAL '12 months')
+  `)
+  const currentSpend = Number((spendRows as any[])[0]?.spend || 0)
+  const projectedSpend = Math.max(0, currentSpend - refundAmount)
+
+  const threshold = await getMemberThreshold()
+  const recomputedLevel = determineMemberLevel(projectedSpend, threshold)
+
+  const willDowngrade =
+    isDowngrade(currentLevel, recomputedLevel) && lockedUntilStatus !== 'in_lock'
+
+  // 3) 权益配置与权益总值（即便不跌档也先算好给前端提示用，但成本极小）
+  const benefitsMap = await loadUpgradeBenefitsMap()
+  const currentCfg = benefitsMap[currentLevel]
+  const newCfg = recomputedLevel ? benefitsMap[recomputedLevel] : undefined
+  const allTemplateIds = Array.from(
+    new Set([...(currentCfg?.couponTemplateIds || []), ...(newCfg?.couponTemplateIds || [])]),
+  )
+  const tplRows = allTemplateIds.length
+    ? ((await db.execute<{ template_id: string; discount_value: string }>(sql`
+        SELECT template_id, discount_value FROM coupon_templates
+        WHERE template_id = ANY(${allTemplateIds}::text[])
+      `)) as any[])
+    : []
+  const tplValueById: Record<string, number> = {}
+  for (const r of tplRows) tplValueById[r.template_id] = Number(r.discount_value || 0)
+
+  const currentBenefitsValue = benefitsValue(currentCfg, pointRate, tplValueById)
+  const newBenefitsValue = benefitsValue(newCfg, pointRate, tplValueById)
+  const benefitValueDiff = Math.max(0, currentBenefitsValue - newBenefitsValue)
+
+  // 不跌档或保级期内 → 明示不扣
+  if (!willDowngrade) {
+    return {
+      currentLevel,
+      recomputedLevel,
+      willDowngrade: false,
+      lockedUntilStatus,
+      upgradedAt: upgradedAt ? upgradedAt.toISOString() : null,
+      usedCouponValue: 0,
+      usedPointsValue: 0,
+      currentBenefitsValue,
+      newBenefitsValue,
+      benefitValueDiff,
+      suggestedOverdraftDeduction: 0,
+      detail: emptyDetail,
+    }
+  }
+
+  // 4) 已享用权益核算（仅 willDowngrade 场景查）
+  const upgradedAtThreshold = upgradedAt ?? new Date(0)
+  const couponKeyPrefix = `cpn-up-${params.userId}-${currentLevel}-`
+
+  const usedCouponRows = (await db.execute<{
+    coupon_id: string
+    template_id: string
+    discount_value: string
+    used_at: Date
+  }>(sql`
+    SELECT uc.coupon_id, uc.template_id, ct.discount_value, uc.used_at
+    FROM user_coupons uc
+    JOIN coupon_templates ct ON ct.template_id = uc.template_id
+    WHERE uc.user_id = ${params.userId}
+      AND uc.coupon_id LIKE ${couponKeyPrefix + '%'}
+      AND uc.status = '已使用'
+      AND uc.used_at >= ${upgradedAtThreshold}
+  `)) as any[]
+
+  const usedCouponValue = usedCouponRows.reduce((s, r) => s + Number(r.discount_value || 0), 0)
+
+  const externalRef = `member-upgrade-${params.userId}-${currentLevel}`
+  const grantedRows = (await db.execute<{ granted: string }>(sql`
+    SELECT COALESCE(SUM(amount), 0) AS granted
+    FROM point_transactions
+    WHERE user_id = ${params.userId} AND external_ref = ${externalRef}
+  `)) as any[]
+  const grantedPoints = Number(grantedRows[0]?.granted || 0)
+
+  // 升级以来已消耗积分（负 amount 之和）；FIFO 近似归属升级奖励
+  const usedRows = (await db.execute<{ used: string }>(sql`
+    SELECT COALESCE(SUM(-amount), 0) AS used
+    FROM point_transactions
+    WHERE user_id = ${params.userId}
+      AND amount < 0
+      AND created_at >= ${upgradedAtThreshold}
+  `)) as any[]
+  const usedPointsSince = Number(usedRows[0]?.used || 0)
+  const usedUpgradePoints = Math.min(grantedPoints, usedPointsSince)
+  const usedPointsValue = usedUpgradePoints * pointRate
+
+  const suggestedOverdraftDeduction = Math.max(
+    0,
+    Math.min(
+      Math.round((usedCouponValue + usedPointsValue) * 100) / 100,
+      Math.round(benefitValueDiff * 100) / 100,
+      refundAmount,
+    ),
+  )
+
+  return {
+    currentLevel,
+    recomputedLevel,
+    willDowngrade: true,
+    lockedUntilStatus,
+    upgradedAt: upgradedAt ? upgradedAt.toISOString() : null,
+    usedCouponValue: Math.round(usedCouponValue * 100) / 100,
+    usedPointsValue: Math.round(usedPointsValue * 100) / 100,
+    currentBenefitsValue: Math.round(currentBenefitsValue * 100) / 100,
+    newBenefitsValue: Math.round(newBenefitsValue * 100) / 100,
+    benefitValueDiff: Math.round(benefitValueDiff * 100) / 100,
+    suggestedOverdraftDeduction,
+    detail: {
+      usedCoupons: usedCouponRows.map((r) => ({
+        couponId: r.coupon_id,
+        templateId: r.template_id,
+        discountValue: Number(r.discount_value || 0),
+        usedAt: r.used_at ? new Date(r.used_at).toISOString() : '',
+      })),
+      usedPoints: usedUpgradePoints,
+      grantedPoints,
+      pointsToYuanRate: pointRate,
+    },
   }
 }
 
@@ -200,6 +458,8 @@ export async function createRefundOrder(input: {
   items: Array<{ saleItemId: string; refundQuantity: number }>
   refundReason: string
   handlingFee?: number
+  /** 若 true，则退款单写入 overdraft_deduction 两列并扣减实退款；默认 true */
+  applyOverdraftDeduction?: boolean
 }): Promise<CreateRefundResult> {
   const session = await getSession()
   requirePermission(session, 'sale_order:refund')
@@ -300,12 +560,53 @@ export async function createRefundOrder(input: {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
-  const totalAmount = -finalRefundAmount
+  // 会员等级跌档 → 扣除已享用超额权益（ticket 2026-04-24 §7）
+  const applyOverdraft = input.applyOverdraftDeduction !== false  // 默认 true
+  let overdraftDeduction = 0
+  let overdraftDetail: Record<string, unknown> | null = null
+  if (applyOverdraft && origOrder.clientUserId) {
+    const estimate = await estimateRefundOverdraft({
+      userId: origOrder.clientUserId,
+      refundAmount: finalRefundAmount,
+      originalSaleOrderId: refSaleOrderId,
+    })
+    if (estimate.willDowngrade && estimate.suggestedOverdraftDeduction > 0) {
+      overdraftDeduction = estimate.suggestedOverdraftDeduction
+      overdraftDetail = {
+        _v: 1,
+        fromLevel: estimate.currentLevel,
+        toLevel: estimate.recomputedLevel,
+        upgradedAt: estimate.upgradedAt,
+        usedCouponValue: estimate.usedCouponValue,
+        usedCoupons: estimate.detail.usedCoupons.map((c) => ({
+          couponId: c.couponId,
+          discountValue: c.discountValue,
+        })),
+        grantedPoints: estimate.detail.grantedPoints,
+        usedUpgradePoints: estimate.detail.usedPoints,
+        pointsToYuanRate: estimate.detail.pointsToYuanRate,
+        usedPointsValue: estimate.usedPointsValue,
+        currentBenefitsValue: estimate.currentBenefitsValue,
+        newBenefitsValue: estimate.newBenefitsValue,
+        benefitValueDiff: estimate.benefitValueDiff,
+        refundAmount: finalRefundAmount,
+        suggestedDeduction: estimate.suggestedOverdraftDeduction,
+        actualDeduction: estimate.suggestedOverdraftDeduction,
+        adminOverride: false,
+      }
+    }
+  }
+
+  const adjustedRefundAmount = Math.max(
+    0,
+    Math.round((finalRefundAmount - overdraftDeduction) * 100) / 100,
+  )
+  const totalAmount = -adjustedRefundAmount
 
   const origPrepaidCardAmount = Number(origOrder.prepaidCardAmount || 0)
   const origTotalAmount = Number(origOrder.totalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
-    finalRefundAmount,
+    adjustedRefundAmount,
     origPrepaidCardAmount,
     origTotalAmount,
   )
@@ -357,6 +658,8 @@ export async function createRefundOrder(input: {
         openedBy: session.employeeId,
         refundReason,
         handlingFee: fee > 0 ? fee.toFixed(2) : null,
+        overdraftDeduction: overdraftDeduction > 0 ? overdraftDeduction.toFixed(2) : '0',
+        overdraftDeductionDetail: overdraftDetail,
       })
 
       // 生成退款明细行 ID（与 staff 格式保持一致：XSLSH-WX-YYMMDDnnnn）
@@ -444,11 +747,21 @@ export async function createRefundOrder(input: {
   await logOperation(session, 'refund.create', 'sale_order', refundOrderId, {
     refSaleOrderId,
     finalRefundAmount: finalRefundAmount.toFixed(2),
+    adjustedRefundAmount: adjustedRefundAmount.toFixed(2),
     refundByCard: refundByCard.toFixed(2),
     refundByOrigin: refundByOrigin.toFixed(2),
     handlingFee: fee.toFixed(2),
     refundReason,
+    overdraftDeduction: overdraftDeduction.toFixed(2),
   })
+
+  if (overdraftDeduction > 0) {
+    await logOperation(session, 'refund.overdraftDeducted', 'sale_order', refundOrderId, {
+      refSaleOrderId,
+      overdraftDeduction: overdraftDeduction.toFixed(2),
+      detail: overdraftDetail,
+    })
+  }
 
   revalidatePath('/refunds')
   revalidatePath(`/orders/${refSaleOrderId}`)
