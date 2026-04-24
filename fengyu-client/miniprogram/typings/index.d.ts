@@ -8,6 +8,8 @@ interface IAppOption {
     statusBarHeight: number;
     navBarContentHeight: number;
     navBarHeight: number;
+    /** Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关 */
+    continuePayEnabled?: boolean;
   };
   initNavBarInfo(): void;
   restoreFromCache(): void;

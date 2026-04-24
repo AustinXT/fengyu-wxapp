@@ -42,6 +42,7 @@ const routes = {
   'order.scanDetail': () => require('./routes/order').scanDetail,
   'order.scanAdjust': () => require('./routes/order').scanAdjust,
   'order.confirmPrepaidFull': () => require('./routes/order').confirmPrepaidFull,
+  'order.repay': () => require('./routes/order').repay,
   'appointment.create': () => require('./routes/appointment').create,
   'appointment.list': () => require('./routes/appointment').list,
   'appointment.cancel': () => require('./routes/appointment').cancel,

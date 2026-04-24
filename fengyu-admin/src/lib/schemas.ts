@@ -128,3 +128,23 @@ export const assignRoleSchema = z.object({
   scopeId: z.string().min(1, '请选择组织范围'),
 })
 export type AssignRoleInput = z.infer<typeof assignRoleSchema>
+
+// ─── 录入回款（ticket 2026-04-24 多次回款 PR-B） ───
+// admin 端 paymentMethod 仅支持线下 / 储值卡（后台不收线上钱）；
+// 线下要求 externalTxnId（银行回执号），储值卡场景 externalTxnId 为空。
+// 允许 repayAmount=0 + prepaidCardAmount>0（纯储值卡抵扣回款），但两者之和必须 > 0。
+export const recordPaymentInputSchema = z.object({
+  saleOrderId: z.string().min(1, '订单号不能为空'),
+  repayAmount: z.number().multipleOf(0.01, '金额精度最多 2 位小数').min(0, '回款金额不能为负'),
+  paymentMethod: z.enum(['线下', '储值卡']),
+  externalTxnId: z.string().optional(),
+  prepaidCardAmount: z.number().multipleOf(0.01, '金额精度最多 2 位小数').min(0, '储值卡抵扣金额不能为负').default(0),
+  note: z.string().optional(),
+}).refine((v) => v.repayAmount + v.prepaidCardAmount > 0, {
+  message: '回款金额与储值卡抵扣不能都为 0',
+  path: ['repayAmount'],
+}).refine(
+  (v) => v.paymentMethod !== '线下' || (!!v.externalTxnId && v.externalTxnId.trim().length > 0) || v.repayAmount === 0,
+  { message: '线下回款必须填写外部交易号（银行回执号/流水号）', path: ['externalTxnId'] },
+)
+export type RecordPaymentInput = z.infer<typeof recordPaymentInputSchema>

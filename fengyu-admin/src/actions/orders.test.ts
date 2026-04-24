@@ -151,12 +151,13 @@ vi.mock('@/lib/member-threshold', () => ({
   MEMBER_THRESHOLD_TAG: 'new_member_threshold',
 }))
 
-import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder } from './orders'
+import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment } from './orders'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
 import { eq, ilike, gte, lt, gt } from 'drizzle-orm'
+import { requirePermission } from '@/lib/permissions'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -2068,5 +2069,358 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(bag.order.status).toBe('待支付')
     expect(bag.order.paidAmount).toBe('0.00')
     expect(bag.payments).toHaveLength(0)
+  })
+})
+
+// ─── recordPayment（ticket 2026-04-24 多次回款 PR-B） ───
+//
+// 测试事务内各步骤的副作用，基于 sql 模板字符串的参数位置判定当前调用的语义：
+//   1) SELECT ... FOR UPDATE 锁原单
+//   2) advisory lock + 订单号生成
+//   3) （可选）SELECT prepaid_cards FOR UPDATE
+//   4) （可选）UPDATE prepaid_cards
+//   5) （可选）INSERT card_transactions（tx.insert）
+//   6) INSERT sale_orders（凭证单，tx.insert）
+//   7) INSERT sale_order_payments（可能 1~2 条，tx.insert）
+//   8) SELECT SUM(payments)
+//   9) UPDATE sale_orders（重算 paid_amount/status）
+describe('recordPayment — 管理后台录入回款', () => {
+  /**
+   * 构造事务 mock：
+   * - executes 数组按调用顺序返回；lookupOrder 提供锁定的原单行
+   * - insertValues 收集所有 tx.insert().values(...) 的入参
+   * - 支持 updOk 控制最后 UPDATE sale_orders 的 rowCount
+   */
+  function mockRecordTx(opts: {
+    lockedOrder?: Record<string, any>
+    orderIdGen?: string
+    cardBalance?: { cardId: string; balance: number } | null
+    sumRow?: { new_paid: string; new_prepaid: string }
+    updateRowCount?: number
+    throwOnStep?: string
+  } = {}) {
+    const captured = { insertValues: [] as Array<{ table: string; v: any }>, executed: [] as string[] }
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let execCall = 0
+      const tx = {
+        execute: vi.fn().mockImplementation((arg: any) => {
+          execCall++
+          // 记录顺序（便于调试失败用例）
+          captured.executed.push(`exec-${execCall}`)
+          // step 1: SELECT FOR UPDATE 原单
+          if (execCall === 1) {
+            return Promise.resolve(opts.lockedOrder ? [opts.lockedOrder] : [])
+          }
+          // step 2: advisory lock + 生成订单号
+          if (execCall === 2) {
+            return Promise.resolve([{ id: opts.orderIdGen ?? 'FY-HKD-WX-2604250001' }])
+          }
+          // 需要储值卡？step 3: SELECT balance FOR UPDATE；step 4: UPDATE balance
+          if (opts.cardBalance !== undefined) {
+            if (execCall === 3) {
+              return Promise.resolve(
+                opts.cardBalance
+                  ? [{ card_id: opts.cardBalance.cardId, balance: opts.cardBalance.balance.toFixed(2) }]
+                  : [],
+              )
+            }
+            if (execCall === 4) {
+              return Promise.resolve({})
+            }
+          }
+          // 后面的 SELECT SUM(payments) + UPDATE sale_orders
+          // 需要根据 cardBalance 存在与否确定 step 编号
+          const stepOffset = opts.cardBalance !== undefined ? 2 : 0
+          if (execCall === 3 + stepOffset) {
+            return Promise.resolve([
+              {
+                new_paid: opts.sumRow?.new_paid ?? '0',
+                new_prepaid: opts.sumRow?.new_prepaid ?? '0',
+              },
+            ])
+          }
+          if (execCall === 4 + stepOffset) {
+            return Promise.resolve({ rowCount: opts.updateRowCount ?? 1 })
+          }
+          return Promise.resolve({})
+        }),
+        insert: vi.fn().mockImplementation((table: any) => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            captured.insertValues.push({ table: String(table?.constructor?.name || 'unknown'), v })
+            return Promise.resolve({})
+          }),
+        })),
+      }
+      return fn(tx)
+    })
+    return captured
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: {
+        ...mockSession.permissions,
+        actions: ['sale_order:record_payment'],
+      },
+    })
+    mockSelectBefore([]) // logOperation orgNode 查询
+  })
+
+  const basePayload = {
+    saleOrderId: 'FY-XSD-WX-260420-0001',
+    repayAmount: 100,
+    paymentMethod: '线下' as const,
+    externalTxnId: 'BANK-RECEIPT-001',
+    prepaidCardAmount: 0,
+    note: '银行转账补款',
+  }
+
+  const lockedPartialOrder = {
+    sale_order_id: 'FY-XSD-WX-260420-0001',
+    status: '部分支付',
+    total_amount: '200.00',
+    prepaid_card_amount: '0.00',
+    payable_amount: '200.00',
+    paid_amount: '100.00',
+    client_user_id: 'user-1',
+    client_phone: '13800000000',
+    customer_name: '顾客甲',
+    store_id: 'store-1',
+    market_name: '南昌市场',
+    document_type: '售前',
+    paid_at: null,
+  }
+
+  it('成功路径：部分支付 100 → 回款 100 线下 → 付清 → 原单 "已支付"', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      sumRow: { new_paid: '200', new_prepaid: '0' },
+    })
+
+    const result = await recordPayment(basePayload)
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.repaymentOrderId).toBe('FY-HKD-WX-2604250001')
+      expect(result.data.refStatus).toBe('已支付')
+      expect(result.data.refPaidAmount).toBe('200.00')
+    }
+    // 凭证单 + 1 条 payments 行
+    expect(captured.insertValues.length).toBe(2)
+    // payments 行：change_type='回款' amount='100.00' source_end='admin'
+    const paymentInsert = captured.insertValues[1].v
+    expect(paymentInsert).toMatchObject({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      changeType: '回款',
+      amount: '100.00',
+      paymentMethod: '线下',
+      externalTxnId: 'BANK-RECEIPT-001',
+      status: '已支付',
+      sourceEnd: 'admin',
+      operatorEmployeeId: 'EMP-001',
+    })
+  })
+
+  it('多次回款累加：100 已付 + 50 回款 → "部分支付"；后续再回 50 → "已支付"', async () => {
+    // 第一次：50 回款 → payments SUM = 150，仍部分支付
+    const captured1 = mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      sumRow: { new_paid: '150', new_prepaid: '0' },
+    })
+    const r1 = await recordPayment({ ...basePayload, repayAmount: 50 })
+    expect(r1.success).toBe(true)
+    if (r1.success) {
+      expect(r1.data.refStatus).toBe('部分支付')
+      expect(r1.data.refPaidAmount).toBe('150.00')
+    }
+    expect(captured1.insertValues.length).toBe(2)
+
+    // 第二次：再回 50 → payments SUM = 200 → '已支付'
+    const captured2 = mockRecordTx({
+      lockedOrder: { ...lockedPartialOrder, paid_amount: '150.00' },
+      orderIdGen: 'FY-HKD-WX-2604250002',
+      sumRow: { new_paid: '200', new_prepaid: '0' },
+    })
+    const r2 = await recordPayment({ ...basePayload, repayAmount: 50 })
+    expect(r2.success).toBe(true)
+    if (r2.success) {
+      expect(r2.data.refStatus).toBe('已支付')
+      expect(r2.data.refPaidAmount).toBe('200.00')
+    }
+    expect(captured2.insertValues.length).toBe(2)
+  })
+
+  it('超额拦截：剩余欠款 100，尝试回款 150 → OVERPAY 错误，事务内抛错', async () => {
+    mockRecordTx({
+      lockedOrder: lockedPartialOrder, // payable=200 - paid=100 → 剩余 100
+      orderIdGen: 'FY-HKD-WX-2604250001',
+    })
+
+    const result = await recordPayment({ ...basePayload, repayAmount: 150 })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('OVERPAY')
+      expect(result.error.message).toContain('超过订单欠款')
+    }
+  })
+
+  it('已关闭订单拒绝：status="已关闭" → INVALID_STATE', async () => {
+    mockRecordTx({
+      lockedOrder: { ...lockedPartialOrder, status: '已关闭' },
+      orderIdGen: 'FY-HKD-WX-2604250001',
+    })
+
+    const result = await recordPayment(basePayload)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_STATE')
+      expect(result.error.message).toContain('已关闭')
+    }
+  })
+
+  it('原订单不存在 → REF_ORDER_NOT_FOUND', async () => {
+    mockRecordTx({ lockedOrder: undefined }) // SELECT FOR UPDATE 返回空
+
+    const result = await recordPayment(basePayload)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('REF_ORDER_NOT_FOUND')
+    }
+  })
+
+  it('储值卡回款：prepaidCardAmount=100 + repayAmount=0 → 扣卡 + 1 条 "储值卡抵扣" payments 行', async () => {
+    const captured = mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      cardBalance: { cardId: 'FY-CARD-USER-1', balance: 500 },
+      sumRow: { new_paid: '100', new_prepaid: '100' }, // paid=100 + prepaid=100 = total 200 → 已支付
+    })
+
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      repayAmount: 0,
+      paymentMethod: '储值卡',
+      prepaidCardAmount: 100,
+      note: '顾客自愿储值卡付清',
+    })
+
+    expect(result.success).toBe(true)
+    if (result.success) {
+      expect(result.data.refStatus).toBe('已支付')
+    }
+    // 3 次 insert：card_transactions + sale_orders 凭证单 + sale_order_payments
+    expect(captured.insertValues.length).toBe(3)
+    const cardTxn = captured.insertValues[0].v
+    expect(cardTxn).toMatchObject({
+      cardId: 'FY-CARD-USER-1',
+      type: '扣款',
+      amount: '-100.00',
+      refOrderId: 'FY-HKD-WX-2604250001', // 指向回款凭证单
+    })
+    const paymentInsert = captured.insertValues[2].v
+    expect(paymentInsert).toMatchObject({
+      changeType: '储值卡抵扣',
+      amount: '100.00',
+      paymentMethod: '储值卡',
+      externalTxnId: null,
+      sourceEnd: 'admin',
+    })
+  })
+
+  it('储值卡余额不足 → INSUFFICIENT_BALANCE', async () => {
+    mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      cardBalance: { cardId: 'FY-CARD-USER-1', balance: 50 }, // 余额 50 但要扣 100
+    })
+
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      repayAmount: 0,
+      paymentMethod: '储值卡',
+      prepaidCardAmount: 100,
+    })
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('INSUFFICIENT_BALANCE')
+    }
+  })
+
+  it('权限校验失败：requirePermission 抛 PERMISSION_DENIED → action 抛出', async () => {
+    ;(getSession as any).mockResolvedValue({
+      ...mockSession,
+      permissions: { actions: [], scopeStoreIds: ['store-1'] },
+    })
+    // requirePermission 模块被全局 mock 了（L124-128），此用例下让它实际抛错以模拟真实行为
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权执行 sale_order:record_payment')
+    })
+
+    await expect(recordPayment(basePayload)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  it('入参校验：repayAmount + prepaidCardAmount = 0 → INVALID_PARAMS', async () => {
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      repayAmount: 0,
+      paymentMethod: '线下',
+      prepaidCardAmount: 0,
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_PARAMS')
+      expect(result.error.message).toContain('不能都为 0')
+    }
+  })
+
+  it('入参校验：线下回款 + repayAmount>0 但未填 externalTxnId → INVALID_PARAMS', async () => {
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      repayAmount: 100,
+      paymentMethod: '线下',
+      // externalTxnId 缺失
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_PARAMS')
+      expect(result.error.message).toContain('外部交易号')
+    }
+  })
+
+  it('入参校验：储值卡 + repayAmount>0 → INVALID_PARAMS（语义冲突）', async () => {
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-260420-0001',
+      repayAmount: 50,
+      paymentMethod: '储值卡',
+      prepaidCardAmount: 50,
+    })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('INVALID_PARAMS')
+      expect(result.error.message).toContain('储值卡付款方式')
+    }
+  })
+
+  it('并发竞态：UPDATE sale_orders rowCount=0 → CONCURRENT_CHANGED', async () => {
+    mockRecordTx({
+      lockedOrder: lockedPartialOrder,
+      orderIdGen: 'FY-HKD-WX-2604250001',
+      sumRow: { new_paid: '200', new_prepaid: '0' },
+      updateRowCount: 0,
+    })
+
+    const result = await recordPayment(basePayload)
+
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.code).toBe('CONCURRENT_CHANGED')
+    }
   })
 })

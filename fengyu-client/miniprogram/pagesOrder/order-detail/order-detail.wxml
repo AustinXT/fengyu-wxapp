@@ -132,6 +132,17 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </view>
   </view>
 
+  <!-- 欠款提示（部分支付时） -->
+  <view
+    class="outstanding-wrap"
+    wx:if="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
+  >
+    <view class="outstanding-row">
+      <text class="outstanding-label">待付金额</text>
+      <text class="outstanding-value">¥{{order.outstanding_fmt}}</text>
+    </view>
+  </view>
+
   <!-- 操作区 -->
   <view class="actions-wrap safe-area-bottom">
 
@@ -153,6 +164,21 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         bindtap="onPay"
         class="pay-btn"
       >去支付</van-button>
+    </view>
+
+    <!-- 部分支付：继续支付（灰度开关开启时显示） -->
+    <view
+      class="actions-row"
+      wx:elif="{{continuePayEnabled && order.status === '部分支付' && outstandingAmount > 0}}"
+    >
+      <van-button
+        type="primary"
+        block
+        round
+        size="large"
+        bindtap="onContinuePayTap"
+        class="pay-btn"
+      >继续支付 ¥{{order.outstanding_fmt}}</van-button>
     </view>
 
     <!-- 已支付：发起预约（有可预约项）+ 查看疗程卡 -->
@@ -209,3 +235,64 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
 <view wx:else class="skeleton-wrap">
   <van-skeleton title row="6" />
 </view>
+
+<!-- 继续支付弹层 -->
+<van-popup
+  show="{{repayModalVisible}}"
+  position="bottom"
+  round
+  closeable
+  bind:close="onRepayModalClose"
+>
+  <view class="repay-modal">
+    <view class="repay-title">继续支付</view>
+    <view class="repay-outstanding">
+      <text class="repay-outstanding-label">待付金额</text>
+      <text class="repay-outstanding-value">¥{{order.outstanding_fmt}}</text>
+    </view>
+
+    <view class="repay-field-label">支付金额</view>
+    <van-field
+      value="{{repayAmountInput}}"
+      type="digit"
+      placeholder="请输入支付金额"
+      bind:change="onRepayAmountInput"
+      border="{{false}}"
+      custom-class="repay-amount-input"
+    />
+
+    <view class="repay-field-label">支付方式</view>
+    <van-radio-group
+      value="{{repayMethod}}"
+      bind:change="onRepayMethodChange"
+    >
+      <van-cell-group>
+        <van-cell title="微信支付" clickable data-name="微信" bind:click="onRepayMethodChange">
+          <van-radio slot="right-icon" name="微信" checked-color="#C0322A" />
+        </van-cell>
+        <van-cell title="支付宝" clickable data-name="支付宝" bind:click="onRepayMethodChange">
+          <van-radio slot="right-icon" name="支付宝" checked-color="#C0322A" />
+        </van-cell>
+        <van-cell
+          title="储值卡"
+          label="余额 ¥{{cardBalance}}"
+          clickable
+          data-name="储值卡"
+          bind:click="onRepayMethodChange"
+        >
+          <van-radio slot="right-icon" name="储值卡" checked-color="#C0322A" disabled="{{cardBalance <= 0}}" />
+        </van-cell>
+      </van-cell-group>
+    </van-radio-group>
+
+    <view class="repay-actions">
+      <van-button
+        type="primary"
+        block
+        round
+        loading="{{repaySubmitting}}"
+        bindtap="onRepayConfirm"
+      >确认支付</van-button>
+    </view>
+  </view>
+</van-popup>

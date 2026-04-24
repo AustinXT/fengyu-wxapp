@@ -10,7 +10,7 @@ import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
-import type { SaleOrder, SaleItem } from '@/lib/types'
+import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
@@ -1495,6 +1495,325 @@ export async function createConversionOrder(data: {
     priceDiff: result.priceDiff,
     prepaidCardCredit: result.prepaidCardCredit,
   }
+}
+
+// ========== 录入回款（ticket 2026-04-24 多次回款 PR-B） ==========
+
+/**
+ * 管理后台录入回款（admin 线下/储值卡回款）
+ *
+ * 设计对齐：staffApi.order.createRepayment（ticket-2 PR-A，staff 实现）
+ *   - 双写：1 条 FY-HKD 凭证单 sale_orders 行 + 1~2 条 sale_order_payments 流水行
+ *   - 线下：payments.change_type='回款' payment_method='线下' external_txn_id=银行回执 status='已支付' source_end='admin'
+ *   - 储值卡：事务内锁 prepaid_cards.balance → 扣减 → INSERT card_transactions + payments.change_type='储值卡抵扣'
+ *   - 基于 SUM(payments) 重算原单 paid_amount / prepaid_card_amount，付清翻 '已支付'
+ *   - admin 端不接受线上支付（微信/支付宝），paymentMethod 限定 '线下' / '储值卡'
+ *   - 幂等：本 ticket 简化，依赖前端防重复提交；'线下' external_txn_id 仅作审计凭证，不建唯一键
+ *
+ * 返回：{ success: true, data: { repaymentOrderId } } 或 { success: false, error: { code, message } }
+ */
+export type RecordPaymentResult =
+  | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string } }
+  | { success: false; error: { code: string; message: string } }
+
+export async function recordPayment(input: {
+  saleOrderId: string
+  repayAmount: number
+  paymentMethod: '线下' | '储值卡'
+  externalTxnId?: string
+  prepaidCardAmount?: number
+  note?: string
+}): Promise<RecordPaymentResult> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:record_payment')
+
+  // 入参归一 + 基本校验（Zod 在前端/Action 边界均可使用；此处做防御校验避免直接被调用时绕过）
+  const saleOrderId = String(input.saleOrderId || '').trim()
+  if (!saleOrderId) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '订单号不能为空' } }
+  }
+  const paymentMethod = input.paymentMethod
+  if (paymentMethod !== '线下' && paymentMethod !== '储值卡') {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '支付方式仅支持 线下 / 储值卡' } }
+  }
+
+  const repayAmount = Math.round(Number(input.repayAmount || 0) * 100) / 100
+  const prepaidCardAmount = Math.round(Number(input.prepaidCardAmount || 0) * 100) / 100
+  if (!Number.isFinite(repayAmount) || repayAmount < 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '回款金额无效' } }
+  }
+  if (!Number.isFinite(prepaidCardAmount) || prepaidCardAmount < 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '储值卡抵扣金额无效' } }
+  }
+  const totalThisTime = Math.round((repayAmount + prepaidCardAmount) * 100) / 100
+  if (totalThisTime <= 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '回款金额与储值卡抵扣不能都为 0' } }
+  }
+
+  // 储值卡付款方式下不应再传 repayAmount（语义是纯储值卡回款）
+  if (paymentMethod === '储值卡' && repayAmount > 0) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: '储值卡付款方式不应传回款金额（请通过储值卡抵扣字段传递）',
+      },
+    }
+  }
+
+  // 线下回款必须填 externalTxnId（作为审计凭证；银行回执号/扫码流水号）
+  const externalTxnId = input.externalTxnId?.trim() || null
+  if (paymentMethod === '线下' && repayAmount > 0 && !externalTxnId) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PARAMS',
+        message: '线下回款必须填写外部交易号（银行回执号/流水号）',
+      },
+    }
+  }
+
+  // 事务：锁原单 + 校验 + 扣卡 + 插凭证单 + 插 payments + 重算原单
+  let result: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string }
+  try {
+    result = await db.transaction(async (tx) => {
+      // 1) 锁原单 + 校验
+      const lockRes = await tx.execute(sql`
+        SELECT * FROM sale_orders WHERE sale_order_id = ${saleOrderId} FOR UPDATE
+      `)
+      const lockedRows = lockRes as unknown as any[]
+      if (lockedRows.length === 0) {
+        throw new Error('REF_ORDER_NOT_FOUND')
+      }
+      const locked = lockedRows[0]
+
+      // scope 保护：非 admin 的 record_payment 由权限矩阵拒绝，此处 admin 默认可跨门店；
+      // 若未来扩展该权限到 scoped 角色，需要在此处做 isInScope(session, locked.store_id) 校验。
+
+      if (!['部分支付', '待支付', '待确认收款'].includes(locked.status)) {
+        throw new Error(`INVALID_STATE:${locked.status}`)
+      }
+
+      if (!locked.client_user_id && prepaidCardAmount > 0) {
+        throw new Error('CLIENT_NOT_REGISTERED')
+      }
+
+      // 2) 计算欠款：payable_amount - paid_amount（储值卡已抵扣部分不占欠款）
+      const origTotal = Number(locked.total_amount || 0)
+      const origPrepaidSnapshot = Number(locked.prepaid_card_amount || 0)
+      const origPaid = Number(locked.paid_amount || 0)
+      const origPayable = locked.payable_amount != null
+        ? Number(locked.payable_amount)
+        : Math.round((origTotal - origPrepaidSnapshot) * 100) / 100
+      const remainingPayable = Math.round((origPayable - origPaid) * 100) / 100
+
+      // 3) 超额校验
+      if (totalThisTime > remainingPayable + 0.001) {
+        throw new Error(`OVERPAY:${remainingPayable.toFixed(2)}`)
+      }
+
+      // 4) 生成 FY-HKD 凭证单号（advisory lock + 当日序号，前缀 FY-HKD-WX-YYMMDDNNNN）
+      const idRows = await tx.execute(sql`
+        WITH lock AS (
+          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+        )
+        SELECT 'FY-HKD-WX-' || to_char(NOW(), 'YYMMDD') ||
+          LPAD(
+            (SELECT COALESCE(MAX(
+              CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+            ), 0) + 1
+            FROM sale_orders
+            WHERE sale_order_id LIKE 'FY-HKD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+            )::TEXT, 4, '0'
+          ) AS id
+        FROM lock
+      `)
+      const repaymentOrderId = (idRows as unknown as any[])[0]?.id as string
+      if (!repaymentOrderId) throw new Error('ORDER_ID_GEN_FAILED')
+
+      // 5) 储值卡抵扣：锁余额 + 扣减 + 写 card_transactions
+      if (prepaidCardAmount > 0) {
+        const balRes = await tx.execute(sql`
+          SELECT card_id, balance FROM prepaid_cards
+          WHERE user_id = ${locked.client_user_id} FOR UPDATE
+        `)
+        const balRows = balRes as unknown as any[]
+        if (balRows.length === 0) {
+          throw new Error('INSUFFICIENT_BALANCE:NO_CARD')
+        }
+        const currentBalance = Number(balRows[0].balance)
+        if (currentBalance + 0.001 < prepaidCardAmount) {
+          throw new Error(`INSUFFICIENT_BALANCE:${currentBalance.toFixed(2)}`)
+        }
+        const cardId = balRows[0].card_id as string
+        await tx.execute(sql`
+          UPDATE prepaid_cards
+          SET balance = balance - ${prepaidCardAmount.toFixed(2)}::numeric,
+              updated_at = NOW()
+          WHERE card_id = ${cardId}
+        `)
+        // ref_order_id 指向回款凭证单（避免幂等键冲突 — 原销售单上已有 create 时的扣卡引用）
+        await tx.insert(cardTransactions).values({
+          cardId,
+          type: '扣款',
+          amount: (-prepaidCardAmount).toFixed(2),
+          refOrderId: repaymentOrderId,
+        })
+      }
+
+      // 6) 插入 FY-HKD 凭证单（sale_orders 行） — 本身自成闭环，status='已支付'
+      const now = new Date()
+      await tx.insert(saleOrders).values({
+        saleOrderId: repaymentOrderId,
+        status: '已支付',
+        saleOrderType: '回款单',
+        documentType: locked.document_type as any,
+        refSaleOrderId: saleOrderId,
+        marketName: locked.market_name,
+        storeId: locked.store_id,
+        saleOrderDatetime: now,
+        clientUserId: locked.client_user_id,
+        clientPhone: locked.client_phone,
+        customerName: locked.customer_name,
+        totalAmount: totalThisTime.toFixed(2),
+        prepaidCardAmount: prepaidCardAmount.toFixed(2),
+        payableAmount: repayAmount.toFixed(2),
+        paidAmount: repayAmount.toFixed(2),
+        paymentMethod,
+        openedBy: session.employeeId,
+        allocationStatus: '待分配',
+        paidAt: now,
+      })
+
+      // 7) 向原销售单写 payments 流水
+      //    - 线下现金/转账部分（repayAmount > 0）
+      //    - 储值卡抵扣部分（prepaidCardAmount > 0）
+      if (repayAmount > 0) {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '回款',
+          amount: repayAmount.toFixed(2),
+          paymentMethod,
+          externalTxnId,
+          status: '已支付',
+          sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note: input.note?.trim() || '管理后台录入回款',
+          paidAt: now,
+        })
+      }
+      if (prepaidCardAmount > 0) {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '储值卡抵扣',
+          amount: prepaidCardAmount.toFixed(2),
+          paymentMethod: '储值卡',
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note: '管理后台录入回款-储值卡抵扣',
+          paidAt: now,
+        })
+      }
+
+      // 8) 重算原单 paid_amount / prepaid_card_amount + status
+      //    paid_amount         = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+      //    prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
+      const sumRes = await tx.execute(sql`
+        SELECT
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','退款')
+                            THEN amount::numeric ELSE 0 END), 0) AS new_paid,
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
+                            THEN amount::numeric ELSE 0 END), 0) AS new_prepaid
+        FROM sale_order_payments
+        WHERE sale_order_id = ${saleOrderId}
+      `)
+      const sumRow = (sumRes as unknown as any[])[0]
+      const newPaid = Math.round(Number(sumRow.new_paid) * 100) / 100
+      const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
+      const settled = Math.round((newPaid + newPrepaid) * 100) / 100
+      const targetStatus: OrderStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
+      const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at ? new Date(locked.paid_at) : null)
+
+      const updRes = await tx.execute(sql`
+        UPDATE sale_orders
+        SET status = ${targetStatus},
+            paid_amount = ${newPaid.toFixed(2)}::numeric,
+            prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
+            paid_at = ${paidAtValue},
+            updated_at = NOW()
+        WHERE sale_order_id = ${saleOrderId} AND status = ${locked.status}
+      `)
+      if ((updRes as any).rowCount === 0) {
+        throw new Error('CONCURRENT_CHANGED')
+      }
+
+      return {
+        repaymentOrderId,
+        refStatus: targetStatus,
+        refPaidAmount: newPaid.toFixed(2),
+        refPrepaidCardAmount: newPrepaid.toFixed(2),
+      }
+    })
+  } catch (err: any) {
+    const msg = err?.message as string | undefined
+    if (msg === 'REF_ORDER_NOT_FOUND') {
+      return { success: false, error: { code: 'REF_ORDER_NOT_FOUND', message: '原订单不存在' } }
+    }
+    if (msg?.startsWith('INVALID_STATE:')) {
+      const status = msg.split(':')[1] || ''
+      return {
+        success: false,
+        error: { code: 'INVALID_STATE', message: `订单当前状态"${status}"不允许回款` },
+      }
+    }
+    if (msg === 'CLIENT_NOT_REGISTERED') {
+      return { success: false, error: { code: 'CLIENT_NOT_REGISTERED', message: '顾客未注册小程序，无法使用储值卡抵扣' } }
+    }
+    if (msg?.startsWith('OVERPAY:')) {
+      const remaining = msg.split(':')[1] || '0.00'
+      return {
+        success: false,
+        error: { code: 'OVERPAY', message: `本次回款金额超过订单欠款（剩余 ¥${remaining}）` },
+      }
+    }
+    if (msg === 'INSUFFICIENT_BALANCE:NO_CARD') {
+      return { success: false, error: { code: 'INSUFFICIENT_BALANCE', message: '顾客无储值卡账户' } }
+    }
+    if (msg?.startsWith('INSUFFICIENT_BALANCE:')) {
+      const balance = msg.split(':')[1] || '0.00'
+      return {
+        success: false,
+        error: { code: 'INSUFFICIENT_BALANCE', message: `储值卡余额不足（当前 ¥${balance}）` },
+      }
+    }
+    if (msg === 'CONCURRENT_CHANGED') {
+      return { success: false, error: { code: 'CONCURRENT_CHANGED', message: '订单状态已变更，请刷新后重试' } }
+    }
+    if (msg === 'ORDER_ID_GEN_FAILED') {
+      return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '回款单号生成失败，请稍后重试' } }
+    }
+    if (err?.code === '23505') {
+      return { success: false, error: { code: 'ORDER_ID_CONFLICT', message: '订单号冲突，请稍后重试' } }
+    }
+    console.error('[recordPayment] unexpected error:', err)
+    return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败，请稍后重试' } }
+  }
+
+  await logOperation(session, 'order.record_payment', 'sale_order', saleOrderId, {
+    repaymentOrderId: result.repaymentOrderId,
+    repayAmount: repayAmount.toFixed(2),
+    paymentMethod,
+    externalTxnId,
+    prepaidCardAmount: prepaidCardAmount.toFixed(2),
+    refStatus: result.refStatus,
+    note: input.note?.trim() || null,
+  })
+
+  revalidatePath('/orders')
+  revalidatePath(`/orders/${saleOrderId}`)
+  return { success: true, data: result }
 }
 
 // ========== 小程序码生成 ==========

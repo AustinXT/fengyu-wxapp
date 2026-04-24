@@ -1460,6 +1460,297 @@ async function confirmPrepaidFull(ctx) {
   }
 }
 
+/**
+ * 继续支付（多次回款） — PR-C（Ticket 2026-04-24 multi-repayment）
+ *
+ * 顾客对 payable_amount > paid_amount 的未付清订单发起追加付款（微信/支付宝/储值卡）。
+ *
+ * 入参：
+ *   saleOrderId         原销售单号（FY-XSD-...）
+ *   paymentMethod       '微信' | '支付宝' | '储值卡'
+ *   repayAmount         线上实付金额（微信/支付宝时 > 0，纯储值卡时 = 0）
+ *   prepaidCardAmount?  储值卡抵扣金额（可选，默认 0）
+ *
+ * 事务内：
+ *   a. SELECT 原单 FOR UPDATE，校验归属 + status ∈ {'部分支付','待支付'}
+ *   b. 校验 repayAmount + prepaidCardAmount > 0 且不超过 (payable_amount - paid_amount)
+ *   c. 禁止混合线上（微信/支付宝 + 支付宝/微信 同时）；储值卡可与单一线上组合
+ *   d. 生成 FY-HKD-WX-... 凭证单（sale_order_type='回款单', ref_sale_order_id=原单）
+ *   e. 若 prepaidCardAmount > 0：扣卡 + INSERT payments(回款/储值卡) status='已支付'
+ *   f. 若 repayAmount > 0（线上）：不写 payments（payNotify 回调后补），凭证单 status='待支付'
+ *   g. 纯储值卡付清：凭证单直接 '已支付'，重算原单 paid_amount + status
+ *
+ * 返回：
+ *   { repaymentOrderId, status, paymentParams?, paidAmount, prepaidCardAmount, paymentMethod }
+ */
+async function repay(ctx) {
+  const { userId } = ctx.auth
+  const payload = ctx.event.payload || {}
+  const saleOrderId = payload.saleOrderId || payload.orderNo
+  const paymentMethod = payload.paymentMethod
+  const repayAmountInput = Number(payload.repayAmount || 0)
+  const prepaidCardAmountInput = Number(payload.prepaidCardAmount || 0)
+
+  if (!saleOrderId) {
+    throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
+  }
+  if (!['微信', '支付宝', '储值卡'].includes(paymentMethod)) {
+    throw new Error('INVALID_PARAMS: paymentMethod 仅支持 微信/支付宝/储值卡')
+  }
+  if (!Number.isFinite(repayAmountInput) || repayAmountInput < 0) {
+    throw new Error('INVALID_PARAMS: repayAmount 无效')
+  }
+  if (!Number.isFinite(prepaidCardAmountInput) || prepaidCardAmountInput < 0) {
+    throw new Error('INVALID_PARAMS: prepaidCardAmount 无效')
+  }
+  if (Math.round(repayAmountInput * 100) !== repayAmountInput * 100
+      || Math.round(prepaidCardAmountInput * 100) !== prepaidCardAmountInput * 100) {
+    throw new Error('INVALID_PARAMS: 金额最多保留 2 位小数')
+  }
+  const totalNew = Math.round((repayAmountInput + prepaidCardAmountInput) * 100) / 100
+  if (totalNew <= 0) {
+    throw new Error('INVALID_PARAMS: 回款金额必须大于 0')
+  }
+  // 储值卡通道：repayAmount 必须为 0，prepaidCardAmount 必须 > 0
+  if (paymentMethod === '储值卡') {
+    if (repayAmountInput > 0) {
+      throw new Error('INVALID_PARAMS: 储值卡通道 repayAmount 必须为 0')
+    }
+    if (prepaidCardAmountInput <= 0) {
+      throw new Error('INVALID_PARAMS: 储值卡通道必须指定 prepaidCardAmount')
+    }
+  } else {
+    // 微信/支付宝通道：repayAmount 必须 > 0（可叠加 prepaidCardAmount）
+    if (repayAmountInput <= 0) {
+      throw new Error('INVALID_PARAMS: 线上通道 repayAmount 必须大于 0')
+    }
+  }
+
+  // 预生成凭证单号（事务内无 advisory lock 时避免冲突——沿用 create 同模式）
+  let repaymentOrderId
+  let onlineStatus // 凭证单 status：'已支付'（纯储值卡）或 '待支付'（线上）
+  const isPureCard = paymentMethod === '储值卡'
+  const now = new Date()
+
+  await pg.transaction(async (client) => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+
+    // 1. 锁原单 + 校验归属 + 状态
+    const origRes = await client.query(
+      `SELECT * FROM sale_orders WHERE sale_order_id = $1 FOR UPDATE`,
+      [saleOrderId]
+    )
+    if (origRes.rows.length === 0) {
+      throw new Error('INVALID_PARAMS: 订单不存在')
+    }
+    const origOrder = origRes.rows[0]
+    if (origOrder.client_user_id && origOrder.client_user_id !== userId) {
+      throw new Error('PERMISSION_DENIED: 无权操作该订单')
+    }
+    if (!['待支付', '部分支付'].includes(origOrder.status)) {
+      throw new Error('INVALID_PARAMS: 订单状态不允许回款')
+    }
+    if (origOrder.sale_order_type !== '销售单') {
+      throw new Error('INVALID_PARAMS: 仅销售单支持回款')
+    }
+
+    // 2. 计算欠款 = payable_amount - 已到账金额
+    const payableAmount = Number(origOrder.payable_amount || 0) > 0
+      ? Number(origOrder.payable_amount)
+      : Math.round((Number(origOrder.total_amount || 0) - Number(origOrder.prepaid_card_amount || 0)) * 100) / 100
+    const paidSumRes = await client.query(
+      `SELECT COALESCE(SUM(amount), 0) AS paid_sum
+       FROM sale_order_payments
+       WHERE sale_order_id = $1
+         AND status = '已支付'
+         AND change_type IN ('首次支付','回款','退款')`,
+      [saleOrderId]
+    )
+    const alreadyPaid = Number(paidSumRes.rows[0]?.paid_sum || 0)
+    // 兼容：若 payments 表为空（尚未有首次到账行），以 sale_orders.paid_amount 列为已到账
+    const hasPayments = await client.query(
+      `SELECT 1 FROM sale_order_payments WHERE sale_order_id = $1 LIMIT 1`,
+      [saleOrderId]
+    )
+    const effectivePaid = hasPayments.rows.length > 0 ? alreadyPaid : Number(origOrder.paid_amount || 0)
+    // 注意：paid_amount 列在旧逻辑下初始化为 "payable - prepaid" 的剩余应付；
+    // 新逻辑下应为 "已实际到账"。本 PR 采用 payments 有无行区分：
+    //   - 有 payments 行：以 Σ 为准
+    //   - 无 payments 行：以 paid_amount 列为"已到账"——但 create 时 paid_amount=payable（非0）,
+    //     这意味着订单还没任何支付就无欠款。故直接取 0 更安全。
+    const realPaid = hasPayments.rows.length > 0 ? effectivePaid : 0
+    const remaining = Math.round((payableAmount - realPaid) * 100) / 100
+    if (remaining <= 0) {
+      throw new Error('INVALID_PARAMS: 订单无欠款')
+    }
+    if (totalNew > remaining + 0.001) {
+      throw new Error('INVALID_PARAMS: 回款金额超过剩余应付')
+    }
+
+    // 3. 储值卡扣款（若有）：校验 + 扣减 + INSERT payments(回款/储值卡) + card_transactions
+    let cardIdUsed = null
+    if (prepaidCardAmountInput > 0) {
+      const cardRes = await client.query(
+        `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+        [userId]
+      )
+      if (cardRes.rows.length === 0
+          || Number(cardRes.rows[0].balance) + 0.001 < prepaidCardAmountInput) {
+        throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+      }
+      cardIdUsed = cardRes.rows[0].card_id
+      await client.query(
+        `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW()
+         WHERE card_id = $2`,
+        [prepaidCardAmountInput, cardIdUsed]
+      )
+    }
+
+    // 4. 生成 FY-HKD 凭证单号（事务+锁内防并发）
+    const dateStr = now.toISOString().slice(2, 10).replace(/-/g, '')
+    const seqRes = await client.query(
+      `SELECT sale_order_id FROM sale_orders
+       WHERE sale_order_id LIKE $1
+       ORDER BY sale_order_id DESC LIMIT 1`,
+      [`FY-HKD-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (seqRes.rows.length > 0) {
+      seq = parseInt(seqRes.rows[0].sale_order_id.slice(-4)) + 1
+    }
+    repaymentOrderId = `FY-HKD-WX-${dateStr}${String(seq).padStart(4, '0')}`
+
+    // 5. INSERT 凭证单（sale_order_type='回款单' + ref_sale_order_id=原单）
+    onlineStatus = isPureCard ? '已支付' : '待支付'
+    const repayPaymentMethod = isPureCard
+      ? '储值卡'
+      : paymentMethod // 微信/支付宝
+    // 纯储值卡：total_amount=prepaidCardAmountInput, paid_amount=prepaidCardAmountInput（凭证单闭环）
+    // 线上：total_amount = repayAmount + prepaidCardAmount, paid_amount = prepaidCardAmount（已抵扣）
+    const credTotal = totalNew
+    const credPaid = isPureCard ? credTotal : prepaidCardAmountInput
+    const credPrepaid = prepaidCardAmountInput
+    await client.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
+        market_name, store_id, sale_order_datetime,
+        client_user_id, client_phone, customer_name,
+        total_amount, prepaid_card_amount, paid_amount, payment_method,
+        paid_at, created_at, updated_at
+      ) VALUES ($1, $2, '回款单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $7, $7)`,
+      [
+        repaymentOrderId, onlineStatus, origOrder.document_type,
+        saleOrderId, origOrder.market_name, origOrder.store_id, now,
+        origOrder.client_user_id || userId, origOrder.client_phone, origOrder.customer_name,
+        credTotal, credPrepaid, credPaid, repayPaymentMethod,
+        isPureCard ? now : null,
+      ]
+    )
+
+    // 6. 若储值卡抵扣 > 0：写 card_transactions(扣款) + payments(回款/储值卡) 到原单
+    if (prepaidCardAmountInput > 0 && cardIdUsed) {
+      await client.query(
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+         VALUES ($1, '扣款', $2, $3, NOW())`,
+        [cardIdUsed, -prepaidCardAmountInput, repaymentOrderId]
+      )
+      // payments 行：sale_order_id=原单；change_type='回款' + payment_method='储值卡'
+      // external_txn_id 为 NULL（储值卡不要求 txn）；CHECK (payment_method NOT IN ('微信','支付宝') OR txn != NULL) 通过
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method,
+          external_txn_id, status, source_end, operator_employee_id,
+          note, created_at, paid_at
+        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', NULL, $3, $4, $4)`,
+        [saleOrderId, prepaidCardAmountInput, `储值卡回款 凭证 ${repaymentOrderId}`, now]
+      )
+    }
+
+    // 7. 线上回款：不写 payments 行（留给 payNotify 回调，对齐 pay/alipayPay 设计）
+    //    只更新原单 payment_method 以反映最近回款通道
+    if (!isPureCard) {
+      await client.query(
+        `UPDATE sale_orders SET payment_method = $1, updated_at = $2
+         WHERE sale_order_id = $3`,
+        [paymentMethod, now, saleOrderId]
+      )
+    }
+
+    // 8. 重算原单 paid_amount + status（仅在储值卡抵扣写入了 payments 时；线上通道等 payNotify 触发）
+    if (prepaidCardAmountInput > 0) {
+      const sum2 = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) AS paid_sum
+         FROM sale_order_payments
+         WHERE sale_order_id = $1
+           AND status = '已支付'
+           AND change_type IN ('首次支付','回款','退款')`,
+        [saleOrderId]
+      )
+      const newPaidSum = Number(sum2.rows[0]?.paid_sum || 0)
+      const nowPaidRounded = Math.round(newPaidSum * 100) / 100
+      const fullyPaid = nowPaidRounded + 0.001 >= payableAmount
+      const newStatus = fullyPaid ? '已支付' : '部分支付'
+      await client.query(
+        `UPDATE sale_orders
+         SET status = $1::order_status,
+             paid_amount = $2,
+             paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $3) ELSE paid_at END,
+             updated_at = $3
+         WHERE sale_order_id = $4`,
+        [newStatus, nowPaidRounded, now, saleOrderId]
+      )
+    }
+  })
+
+  // 返回支付参数（微信/支付宝）或成功状态（储值卡）
+  if (isPureCard) {
+    ctx.result = {
+      repaymentOrderId,
+      saleOrderId,
+      status: '已支付',
+      paymentMethod: '储值卡',
+      repayAmount: 0,
+      prepaidCardAmount: prepaidCardAmountInput,
+      paymentParams: null,
+    }
+    return
+  }
+
+  // 线上通道：返回 mock 支付参数，out_trade_no = repaymentOrderId
+  // TODO: 接入真实微信/支付宝统一下单 API
+  if (paymentMethod === '微信') {
+    ctx.result = {
+      repaymentOrderId,
+      saleOrderId,
+      status: '待支付',
+      paymentMethod: '微信',
+      repayAmount: repayAmountInput,
+      prepaidCardAmount: prepaidCardAmountInput,
+      mockMode: true,
+      paymentParams: {
+        timeStamp: String(Math.floor(Date.now() / 1000)),
+        nonceStr: Math.random().toString(36).substr(2),
+        package: `prepay_id=wx${Date.now()}`,
+        signType: 'MD5',
+        paySign: 'mock_sign',
+        totalFee: Math.round(repayAmountInput * 100),
+      },
+    }
+    return
+  }
+  // 支付宝
+  ctx.result = {
+    repaymentOrderId,
+    saleOrderId,
+    status: '待支付',
+    paymentMethod: '支付宝',
+    repayAmount: repayAmountInput,
+    prepaidCardAmount: prepaidCardAmountInput,
+    mockMode: true,
+    qrCodeUrl: `https://qr.alipay.com/mock_${repaymentOrderId}`,
+  }
+}
+
 module.exports = {
   create,
   pay,
@@ -1472,4 +1763,5 @@ module.exports = {
   scanDetail,
   scanAdjust,
   confirmPrepaidFull,
+  repay,
 }
