@@ -27,7 +27,15 @@ const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
   支付宝: "支付宝",
   线下: "线下支付",
+  无: "无（全额抵扣）",
 };
+
+const PAYMENT_METHOD_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "微信", label: "微信" },
+  { value: "支付宝", label: "支付宝" },
+  { value: "线下", label: "线下" },
+  { value: "无", label: "无（全额抵扣）" },
+];
 
 const orderTypeColorMap: Record<string, string> = {
   销售单: "bg-[#E8F0FE] text-[#3574C4]",
@@ -265,6 +273,8 @@ export default function OrdersPageClient({
   const storeFilter = get("store");
   const dateFrom = get("from");
   const dateTo = get("to");
+  const paymentMethodFilter = get("payment");
+  const hasPrepaidFilter = get("hasPrepaid");
 
   const currentPage = Math.max(1, Number(get("page", "1")) || 1);
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20;
@@ -305,6 +315,26 @@ export default function OrdersPageClient({
                   {s.storeName}
                 </option>
               ))}
+            </Select>
+            <Select
+              className="w-40"
+              value={paymentMethodFilter}
+              onChange={(e) => setFilter("payment", e.target.value)}
+            >
+              <option value="">全部支付方式</option>
+              {PAYMENT_METHOD_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+            <Select
+              className="w-40"
+              value={hasPrepaidFilter}
+              onChange={(e) => setFilter("hasPrepaid", e.target.value)}
+            >
+              <option value="">全部订单</option>
+              <option value="1">有储值卡抵扣</option>
             </Select>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground whitespace-nowrap">下单日期</span>

@@ -10,6 +10,7 @@ const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
   支付宝: "支付宝",
   线下: "线下支付",
+  无: "无（全额抵扣）",
 }
 
 const orderTypeColorMap: Record<string, string> = {
@@ -38,6 +39,9 @@ export default function OrderDetailPageClient({
   logs: OperationLog[]
 }) {
   const items = order.items || []
+  const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
+  const paidAmount = Number(order.paidAmount ?? "0")
+  const hasPrepaidDeduction = prepaidCardAmount > 0
 
   return (
     <div className="space-y-6">
@@ -99,9 +103,21 @@ export default function OrderDetailPageClient({
               <p className="font-medium mt-1">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</p>
             </div>
             <div>
-              <span className="text-[#999999]">订单金额</span>
+              <span className="text-[#999999]">订单总额</span>
               <p className="font-bold text-lg mt-1 text-[var(--primary)]">¥{Number(order.totalAmount).toLocaleString()}</p>
             </div>
+            {hasPrepaidDeduction && (
+              <>
+                <div>
+                  <span className="text-[#999999]">储值卡抵扣</span>
+                  <p className="font-bold text-lg mt-1 text-[#C0322A]">-¥{prepaidCardAmount.toLocaleString()}</p>
+                </div>
+                <div>
+                  <span className="text-[#999999]">实付金额</span>
+                  <p className="font-bold text-lg mt-1 text-[var(--foreground)]">¥{paidAmount.toLocaleString()}</p>
+                </div>
+              </>
+            )}
             {order.remark && (
               <div className="col-span-2 md:col-span-3">
                 <span className="text-[#999999]">备注</span>

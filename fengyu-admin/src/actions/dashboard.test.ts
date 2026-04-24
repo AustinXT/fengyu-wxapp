@@ -86,10 +86,13 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.roleContext).toBe('business')
     expect(result.todayVisitors).toBe(0)
     expect(result.todayRevenue).toBe(0)
+    expect(result.todayPaidAmount).toBe(0)
     expect(result.pendingOrders).toBe(0)
     expect(result.pendingAllocations).toBe(0)
     expect(result.pendingAppointments).toBe(0)
     expect(result.activeServices).toBe(0)
+    expect(result.yesterdayPaidAmount).toBe(0)
+    expect(result.totalPaidAmount).toBe(0)
     expect(db.execute).not.toHaveBeenCalled()
   })
 
@@ -104,10 +107,13 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
         return Promise.resolve([{
           today_visitors: '5',
           today_revenue: '8600.00',
+          today_paid_amount: '8300.00',
           pending_orders: '3',
           pending_allocations: '2',
           yesterday_visitors: '4',
           yesterday_revenue: '7200.00',
+          yesterday_paid_amount: '7000.00',
+          total_paid_amount: '123456.78',
         }])
       }
       if (callIndex === 2) {
@@ -123,16 +129,19 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.roleContext).toBe('business')
     expect(result.todayVisitors).toBe(5)
     expect(result.todayRevenue).toBe(8600)
+    expect(result.todayPaidAmount).toBe(8300)
     expect(result.pendingOrders).toBe(3)
     expect(result.pendingAllocations).toBe(2)
     expect(result.pendingAppointments).toBe(7)
     expect(result.activeServices).toBe(1)
     expect(result.yesterdayVisitors).toBe(4)
     expect(result.yesterdayRevenue).toBe(7200)
+    expect(result.yesterdayPaidAmount).toBe(7000)
+    expect(result.totalPaidAmount).toBe(123456.78)
     expect(db.execute).toHaveBeenCalledTimes(3)
   })
 
-  it('DB 返回 null 字段 → 默认为 0', async () => {
+  it('DB 返回 null 字段 → 默认为 0（含 paid_amount 系列字段）', async () => {
     mockBusinessSession(['store-1'])
 
     ;(db.execute as any).mockResolvedValue([{}])
@@ -141,7 +150,39 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
 
     expect(result.todayVisitors).toBe(0)
     expect(result.todayRevenue).toBe(0)
+    expect(result.todayPaidAmount).toBe(0)
     expect(result.pendingOrders).toBe(0)
+    expect(result.yesterdayPaidAmount).toBe(0)
+    expect(result.totalPaidAmount).toBe(0)
+  })
+
+  it('含储值卡抵扣场景：todayRevenue 与 todayPaidAmount 可差异（前者含抵扣额）', async () => {
+    mockBusinessSession(['store-1'])
+
+    let callIndex = 0
+    ;(db.execute as any).mockImplementation(() => {
+      callIndex++
+      if (callIndex === 1) {
+        // 订单总额 1000（含 300 储值卡抵扣）→ paidAmount 700
+        return Promise.resolve([{
+          today_revenue: '1000.00',
+          today_paid_amount: '700.00',
+          yesterday_revenue: '0',
+          yesterday_paid_amount: '0',
+          total_paid_amount: '700.00',
+        }])
+      }
+      if (callIndex === 2) return Promise.resolve([{}])
+      return Promise.resolve([{}])
+    })
+
+    const result = await getDashboardStats()
+
+    expect(result.todayRevenue).toBe(1000)
+    expect(result.todayPaidAmount).toBe(700)
+    // 财务口径：SUM(paid_amount) < SUM(total_amount) 在有抵扣时成立
+    expect(result.todayPaidAmount).toBeLessThan(result.todayRevenue)
+    expect(result.totalPaidAmount).toBe(700)
   })
 })
 

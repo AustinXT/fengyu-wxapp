@@ -216,7 +216,7 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     expect(typeEqCalls).toHaveLength(0)
   })
 
-  it('storeId 筛选 → eq(store_id, ...) 被调用', async () => {
+  it('storeId 筛选 → eq(bound_store_id, ...) 被调用（跨店共享后按顾客绑定门店近似）', async () => {
     mockThreeQueries({
       count: 0,
       rows: [],
@@ -225,7 +225,8 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
 
     await getCardTransactionsPaginated({ storeId: 'store-2' })
 
-    expect(eq).toHaveBeenCalledWith('store_id', 'store-2')
+    // prepaid_cards.store_id 已 DROP，filter 退回到 client_wechat_users.bound_store_id
+    expect(eq).toHaveBeenCalledWith('bound_store_id', 'store-2')
   })
 
   it('marketId 筛选 → inArray + 子查询', async () => {
@@ -395,5 +396,49 @@ describe('getCardTransactionsPaginated — 服务端分页', () => {
     expect(result.summary.totalRecharge).toBe(1000)
     expect(result.summary.totalDeduct).toBe(500)
     expect(result.summary.netChange).toBe(500)
+  })
+
+  // ── type='扣款' 筛选（ticket §3.4 A4）────────────────────────────
+  it('type=扣款 筛选 → 返回的数据映射为 AdminCardTransaction，type 正确', async () => {
+    const deductRow = {
+      ...mockRow,
+      id: 100,
+      type: '扣款' as const,
+      amount: '-300.00',
+      balance: '200.00',
+      refOrderId: 'FY-XSD-WX-260423-0001',
+    }
+    mockThreeQueries({
+      count: 1,
+      rows: [deductRow],
+      summary: {
+        totalRecharge: '0',
+        totalDeduct: '300.00',
+        netChange: '-300.00',
+        txnCount: 1,
+        userCount: 1,
+      },
+    })
+
+    const result = await getCardTransactionsPaginated({ type: '扣款' })
+
+    expect(eq).toHaveBeenCalledWith('type', '扣款')
+    expect(result.total).toBe(1)
+    expect(result.data[0].type).toBe('扣款')
+    expect(result.data[0].amount).toBe(-300)
+    expect(result.summary.totalDeduct).toBe(300)
+  })
+
+  it('type=扣款 + search 同时筛选 → 两个条件都传入 WHERE', async () => {
+    mockThreeQueries({
+      count: 0,
+      rows: [],
+      summary: { totalRecharge: '0', totalDeduct: '0', netChange: '0', txnCount: 0, userCount: 0 },
+    })
+
+    await getCardTransactionsPaginated({ type: '扣款', search: '张' })
+
+    expect(eq).toHaveBeenCalledWith('type', '扣款')
+    expect(ilike).toHaveBeenCalledWith('name', '%张%')
   })
 })

@@ -7,7 +7,7 @@ import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
-import { eq, desc, and, or, sql, ilike, gte, lt, inArray } from 'drizzle-orm'
+import { eq, desc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem } from '@/lib/types'
@@ -137,6 +137,8 @@ export async function getOrders(): Promise<SaleOrder[]> {
     clientPhone: r.order.clientPhone,
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
+    prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    paidAmount: r.order.paidAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
@@ -160,6 +162,10 @@ export interface OrderFilters {
   dateFrom?: string
   dateTo?: string
   search?: string
+  /** 支付方式筛选（含 `'无'` = 全额储值卡抵扣） */
+  paymentMethod?: string
+  /** 是否仅筛选"有储值卡抵扣"的订单（prepaid_card_amount > 0） */
+  hasPrepaidDeduction?: boolean
   page?: number
   pageSize?: number
 }
@@ -214,6 +220,19 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
       ),
     )
   }
+  // 支付方式筛选（枚举已扩展为 4 值：微信/支付宝/线下/无）
+  if (
+    filters.paymentMethod === '微信' ||
+    filters.paymentMethod === '支付宝' ||
+    filters.paymentMethod === '线下' ||
+    filters.paymentMethod === '无'
+  ) {
+    conditions.push(eq(saleOrders.paymentMethod, filters.paymentMethod))
+  }
+  // 有储值卡抵扣（prepaid_card_amount > 0）
+  if (filters.hasPrepaidDeduction) {
+    conditions.push(gt(saleOrders.prepaidCardAmount, '0'))
+  }
 
   const whereClause = and(...conditions)
 
@@ -253,6 +272,8 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
     clientPhone: r.order.clientPhone,
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
+    prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    paidAmount: r.order.paidAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
@@ -335,6 +356,8 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     clientPhone: r.order.clientPhone,
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
+    prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+    paidAmount: r.order.paidAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,

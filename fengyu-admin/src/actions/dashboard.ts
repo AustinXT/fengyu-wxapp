@@ -7,12 +7,14 @@ import { getSession, hasRole } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 
 const ZERO_BUSINESS: Pick<DashboardStats,
-  'todayVisitors' | 'todayRevenue' | 'pendingOrders' | 'pendingAllocations' |
-  'pendingAppointments' | 'activeServices' | 'yesterdayVisitors' | 'yesterdayRevenue'
+  'todayVisitors' | 'todayRevenue' | 'todayPaidAmount' | 'pendingOrders' | 'pendingAllocations' |
+  'pendingAppointments' | 'activeServices' | 'yesterdayVisitors' | 'yesterdayRevenue' |
+  'yesterdayPaidAmount' | 'totalPaidAmount'
 > = {
-  todayVisitors: 0, todayRevenue: 0, pendingOrders: 0,
+  todayVisitors: 0, todayRevenue: 0, todayPaidAmount: 0, pendingOrders: 0,
   pendingAllocations: 0, pendingAppointments: 0, activeServices: 0,
-  yesterdayVisitors: 0, yesterdayRevenue: 0,
+  yesterdayVisitors: 0, yesterdayRevenue: 0, yesterdayPaidAmount: 0,
+  totalPaidAmount: 0,
 }
 
 /** 查询系统概览指标（admin/hr/product 共用） */
@@ -61,6 +63,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
           WHEN DATE(paid_at) = CURRENT_DATE
           THEN total_amount
         END), 0) AS today_revenue,
+        COALESCE(SUM(CASE
+          WHEN DATE(paid_at) = CURRENT_DATE
+          THEN paid_amount
+        END), 0) AS today_paid_amount,
         COUNT(CASE
           WHEN status IN ('待支付', '待确认收款')
           THEN 1
@@ -77,7 +83,12 @@ export async function getDashboardStats(): Promise<DashboardStats> {
         COALESCE(SUM(CASE
           WHEN DATE(paid_at) = CURRENT_DATE - 1
           THEN total_amount
-        END), 0) AS yesterday_revenue
+        END), 0) AS yesterday_revenue,
+        COALESCE(SUM(CASE
+          WHEN DATE(paid_at) = CURRENT_DATE - 1
+          THEN paid_amount
+        END), 0) AS yesterday_paid_amount,
+        COALESCE(SUM(paid_amount), 0) AS total_paid_amount
       FROM sale_orders
       WHERE store_id IN (${sql.join(scopeIds.map(id => sql`${id}`), sql`, `)})
     `)
@@ -101,12 +112,15 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     return {
       todayVisitors: Number(row.today_visitors ?? 0),
       todayRevenue: Number(row.today_revenue ?? 0),
+      todayPaidAmount: Number(row.today_paid_amount ?? 0),
       pendingOrders: Number(row.pending_orders ?? 0),
       pendingAllocations: Number(row.pending_allocations ?? 0),
       pendingAppointments: Number(apptRow.pending_appointments ?? 0),
       activeServices: Number(svcRow.active_services ?? 0),
       yesterdayVisitors: Number(row.yesterday_visitors ?? 0),
       yesterdayRevenue: Number(row.yesterday_revenue ?? 0),
+      yesterdayPaidAmount: Number(row.yesterday_paid_amount ?? 0),
+      totalPaidAmount: Number(row.total_paid_amount ?? 0),
       roleContext: 'business',
     }
   }

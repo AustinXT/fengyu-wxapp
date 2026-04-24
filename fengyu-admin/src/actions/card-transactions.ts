@@ -32,8 +32,10 @@ export interface PaginatedCardTransactions {
 /**
  * 构建充值卡流水查询的 WHERE 条件
  *
- * scope 基于 prepaid_cards.store_id（NOT NULL，天然按门店切分；
- * 与 points 基于顾客 bound_store_id 不同，充值卡账户与门店强绑定）。
+ * scope 基于顾客当前绑定门店（`client_wechat_users.bound_store_id`）。
+ * 储值卡自 2026-04-24 起**跨店共享**（prepaid_cards.store_id 列已 DROP），
+ * 卡账户本身不再挂门店；展示/筛选维度退回到"顾客当前绑定门店"这一近似口径，
+ * 与 points 模块保持一致。
  */
 function buildConditions(
   session: Awaited<ReturnType<typeof getSession>>,
@@ -41,8 +43,8 @@ function buildConditions(
 ): SQL[] {
   const conditions: SQL[] = []
 
-  // scope 数据隔离（基于卡的归属门店）
-  const scope = scopeCondition(session!, prepaidCards.storeId)
+  // scope 数据隔离（基于顾客当前绑定门店，近似"卡账户归属门店"）
+  const scope = scopeCondition(session!, clientWechatUsers.boundStoreId)
   if (scope) conditions.push(scope)
 
   // 市场二级筛选：市场 → 该市场下所有门店
@@ -52,11 +54,11 @@ function buildConditions(
       .from(stores)
       .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
       .where(eq(orgNodes.parentId, filters.marketId))
-    conditions.push(inArray(prepaidCards.storeId, sub))
+    conditions.push(inArray(clientWechatUsers.boundStoreId, sub))
   }
   // 门店筛选
   if (filters.storeId) {
-    conditions.push(eq(prepaidCards.storeId, filters.storeId))
+    conditions.push(eq(clientWechatUsers.boundStoreId, filters.storeId))
   }
   // 类型筛选（静态枚举 `充值` / `扣款`，精确匹配）
   if (filters.type === '充值' || filters.type === '扣款') {
@@ -102,17 +104,17 @@ export async function getCardTransactionsPaginated(
   const conditions = buildConditions(session, filters)
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined
 
-  // 标量子查询：卡所在门店的市场名
+  // 标量子查询：顾客当前绑定门店对应的市场名
   const marketName = sql<string | null>`(
     SELECT n.name FROM org_nodes n
     JOIN org_nodes sn ON sn.parent_id = n.id
     JOIN stores s ON s.org_node_id = sn.id
-    WHERE s.store_id = ${prepaidCards.storeId}
+    WHERE s.store_id = ${clientWechatUsers.boundStoreId}
   )`
 
-  // 门店名标量子查询
+  // 顾客当前绑定门店名（近似"卡账户当前所属门店"）
   const storeName = sql<string | null>`(
-    SELECT s.store_name FROM stores s WHERE s.store_id = ${prepaidCards.storeId}
+    SELECT s.store_name FROM stores s WHERE s.store_id = ${clientWechatUsers.boundStoreId}
   )`
 
   const [[countRow], rows, [summaryRow]] = await Promise.all([
@@ -135,7 +137,7 @@ export async function getCardTransactionsPaginated(
         customerName: clientWechatUsers.name,
         customerPhone: clientWechatUsers.phone,
         memberLevel: clientWechatUsers.memberLevel,
-        storeId: prepaidCards.storeId,
+        storeId: clientWechatUsers.boundStoreId,
         storeName,
         marketName,
       })

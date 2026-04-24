@@ -305,6 +305,8 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
       clientPhone: r.order.clientPhone,
       customerName: r.order.customerName,
       totalAmount: r.order.totalAmount,
+      prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
+      paidAmount: r.order.paidAmount ?? '0',
       paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
       openedBy: r.order.openedBy,
       preferredEmployeeId: r.order.preferredEmployeeId,

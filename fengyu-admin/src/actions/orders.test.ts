@@ -20,6 +20,9 @@ vi.mock('@db/order', () => ({
     clientPhone: 'client_phone',
     clientUserId: 'client_user_id',
     paidAt: 'paid_at',
+    paymentMethod: 'payment_method',
+    prepaidCardAmount: 'prepaid_card_amount',
+    paidAmount: 'paid_amount',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
     $inferInsert: {} as any,
@@ -87,6 +90,7 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn((col) => ({ type: 'desc', col })),
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lt: vi.fn((a, b) => ({ type: 'lt', a, b })),
+  gt: vi.fn((a, b) => ({ type: 'gt', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((col, arr) => ({ type: 'inArray', col, arr })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn() }),
@@ -135,7 +139,7 @@ import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { calcCouponDiscount } from '@/lib/utils'
-import { eq, ilike, gte, lt } from 'drizzle-orm'
+import { eq, ilike, gte, lt, gt } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'EMP-001',
@@ -807,6 +811,8 @@ describe('getOrdersPaginated — 服务端分页', () => {
       clientPhone: '13812345678',
       customerName: '李女士',
       totalAmount: '1999.00',
+      prepaidCardAmount: '0',
+      paidAmount: '1999.00',
       paymentMethod: '微信',
       openedBy: 'EMP-001',
       preferredEmployeeId: null,
@@ -972,6 +978,248 @@ describe('getOrdersPaginated — 服务端分页', () => {
 
     expect(result.data[0].storeName).toBeUndefined()
     expect(result.data[0].openedByName).toBeUndefined()
+  })
+
+  // ── 储值卡抵扣字段（ticket §3.4 A1/A3）──────────────────────────────
+  it('返回字段包含 prepaidCardAmount + paidAmount（默认 0 的订单）', async () => {
+    mockPaginatedChain(1, [mockOrderRow])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.data[0].prepaidCardAmount).toBe('0')
+    expect(result.data[0].paidAmount).toBe('1999.00')
+  })
+
+  it('部分抵扣订单字段透传：prepaid=100 + paid=200', async () => {
+    const rowWithDeduction = {
+      ...mockOrderRow,
+      order: {
+        ...mockOrderRow.order,
+        totalAmount: '300.00',
+        prepaidCardAmount: '100.00',
+        paidAmount: '200.00',
+        paymentMethod: '微信',
+      },
+    }
+    mockPaginatedChain(1, [rowWithDeduction])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.data[0].prepaidCardAmount).toBe('100.00')
+    expect(result.data[0].paidAmount).toBe('200.00')
+  })
+
+  it('全额抵扣订单：paymentMethod=无 透传', async () => {
+    const rowFullDeduction = {
+      ...mockOrderRow,
+      order: {
+        ...mockOrderRow.order,
+        totalAmount: '300.00',
+        prepaidCardAmount: '300.00',
+        paidAmount: '0',
+        paymentMethod: '无',
+      },
+    }
+    mockPaginatedChain(1, [rowFullDeduction])
+
+    const result = await getOrdersPaginated()
+
+    expect(result.data[0].paymentMethod).toBe('无')
+    expect(result.data[0].paidAmount).toBe('0')
+    expect(result.data[0].prepaidCardAmount).toBe('300.00')
+  })
+
+  it('hasPrepaidDeduction=true → gt(prepaid_card_amount, 0) 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ hasPrepaidDeduction: true })
+
+    expect(gt).toHaveBeenCalledWith('prepaid_card_amount', '0')
+  })
+
+  it('hasPrepaidDeduction=false → gt 不为 prepaid_card_amount 调用', async () => {
+    mockPaginatedChain(0, [])
+    ;(gt as any).mockClear()
+
+    await getOrdersPaginated({ hasPrepaidDeduction: false })
+
+    const prepaidGtCalls = (gt as any).mock.calls.filter(
+      (c: any[]) => c[0] === 'prepaid_card_amount',
+    )
+    expect(prepaidGtCalls).toHaveLength(0)
+  })
+
+  it('paymentMethod=无 筛选 → eq(payment_method, 无) 被调用', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ paymentMethod: '无' })
+
+    expect(eq).toHaveBeenCalledWith('payment_method', '无')
+  })
+
+  it('paymentMethod=微信 筛选 → eq(payment_method, 微信)', async () => {
+    mockPaginatedChain(0, [])
+
+    await getOrdersPaginated({ paymentMethod: '微信' })
+
+    expect(eq).toHaveBeenCalledWith('payment_method', '微信')
+  })
+
+  it('paymentMethod 为非法值（`储值卡`）→ 不触发 payment_method 上的 eq', async () => {
+    mockPaginatedChain(0, [])
+    ;(eq as any).mockClear()
+
+    await getOrdersPaginated({ paymentMethod: '储值卡' })
+
+    const pmCalls = (eq as any).mock.calls.filter(
+      (c: any[]) => c[0] === 'payment_method',
+    )
+    expect(pmCalls).toHaveLength(0)
+  })
+})
+
+// ── getOrderById（详情页）新字段 A1 ─────────────────────────────────
+describe('getOrderById — prepaidCardAmount + paidAmount', () => {
+  /**
+   * 详情查询链：
+   *   call#1 = select(order)：.from.leftJoin.leftJoin.where.limit
+   *   call#2 = select(items)：.from.leftJoin.where
+   */
+  function mockDetailChain(orderRow: any, itemRows: any[]) {
+    let i = 0
+    ;(db.select as any).mockImplementation(() => {
+      i++
+      if (i === 1) {
+        const limit = vi.fn().mockResolvedValue(orderRow ? [orderRow] : [])
+        const where = vi.fn().mockReturnValue({ limit })
+        const leftJoin2 = vi.fn().mockReturnValue({ where })
+        const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+        const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+        return { from }
+      }
+      // items
+      const where = vi.fn().mockResolvedValue(itemRows)
+      const leftJoin = vi.fn().mockReturnValue({ where })
+      const from = vi.fn().mockReturnValue({ leftJoin })
+      return { from }
+    })
+  }
+
+  const detailOrderBase = {
+    order: {
+      saleOrderId: 'FY-XSD-WX-260423-0001',
+      status: '已支付',
+      saleOrderType: '销售单',
+      documentType: '售前',
+      refSaleOrderId: null,
+      marketName: '南昌市场',
+      storeId: 'store-1',
+      saleOrderDatetime: new Date('2026-04-23T10:00:00Z'),
+      clientUserId: 'user-1',
+      clientPhone: '13812345678',
+      customerName: '李女士',
+      totalAmount: '300.00',
+      prepaidCardAmount: '100.00',
+      paidAmount: '200.00',
+      paymentMethod: '微信',
+      openedBy: 'EMP-001',
+      preferredEmployeeId: null,
+      paidAt: new Date('2026-04-23T10:05:00Z'),
+      allocationStatus: '待分配',
+      couponId: null,
+      couponDiscount: '0',
+      remark: null,
+      createdAt: new Date('2026-04-23T10:00:00Z'),
+      updatedAt: new Date('2026-04-23T10:05:00Z'),
+    },
+    storeName: '南昌旗舰店',
+    openedByName: '张三',
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('订单存在 → 返回含 prepaidCardAmount + paidAmount', async () => {
+    const { getOrderById } = await import('./orders')
+    mockDetailChain(detailOrderBase, [])
+
+    const result = await getOrderById('FY-XSD-WX-260423-0001')
+
+    expect(result).not.toBeNull()
+    expect(result!.prepaidCardAmount).toBe('100.00')
+    expect(result!.paidAmount).toBe('200.00')
+    expect(result!.totalAmount).toBe('300.00')
+    // 不变量：prepaid + paid = total
+    expect(Number(result!.prepaidCardAmount) + Number(result!.paidAmount)).toBe(300)
+  })
+
+  it('全额抵扣订单 → paymentMethod=无 + paidAmount=0', async () => {
+    const full = {
+      ...detailOrderBase,
+      order: {
+        ...detailOrderBase.order,
+        prepaidCardAmount: '300.00',
+        paidAmount: '0',
+        paymentMethod: '无',
+      },
+    }
+    const { getOrderById } = await import('./orders')
+    mockDetailChain(full, [])
+
+    const result = await getOrderById('FY-XSD-WX-260423-0002')
+
+    expect(result!.paymentMethod).toBe('无')
+    expect(result!.paidAmount).toBe('0')
+    expect(result!.prepaidCardAmount).toBe('300.00')
+  })
+
+  it('无抵扣订单 → prepaidCardAmount 默认 0', async () => {
+    const noDeduction = {
+      ...detailOrderBase,
+      order: {
+        ...detailOrderBase.order,
+        prepaidCardAmount: '0',
+        paidAmount: '300.00',
+        paymentMethod: '线下',
+      },
+    }
+    const { getOrderById } = await import('./orders')
+    mockDetailChain(noDeduction, [])
+
+    const result = await getOrderById('FY-XSD-WX-260423-0003')
+
+    expect(result!.prepaidCardAmount).toBe('0')
+    expect(result!.paidAmount).toBe('300.00')
+    expect(result!.paymentMethod).toBe('线下')
+  })
+
+  it('订单不存在 → 返回 null', async () => {
+    const { getOrderById } = await import('./orders')
+    mockDetailChain(null, [])
+
+    const result = await getOrderById('FY-NONEXISTENT')
+
+    expect(result).toBeNull()
+  })
+
+  it('历史订单缺失字段（旧数据）→ 默认为 "0"', async () => {
+    const legacy = {
+      ...detailOrderBase,
+      order: {
+        ...detailOrderBase.order,
+        prepaidCardAmount: null,
+        paidAmount: null,
+      },
+    }
+    const { getOrderById } = await import('./orders')
+    mockDetailChain(legacy, [])
+
+    const result = await getOrderById('FY-LEGACY-1')
+
+    expect(result!.prepaidCardAmount).toBe('0')
+    expect(result!.paidAmount).toBe('0')
   })
 })
 

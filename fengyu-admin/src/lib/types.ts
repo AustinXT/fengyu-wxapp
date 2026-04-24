@@ -130,7 +130,12 @@ export interface AdminCardTransaction {
   customerName: string | null
   customerPhone: string | null
   memberLevel: string | null
-  storeId: string
+  /**
+   * 顾客当前绑定门店（近似"卡账户所属门店"）。
+   * 自 2026-04-24 prepaid_cards.store_id 被 DROP 后，储值卡跨店共享，
+   * 此字段退回为 `client_wechat_users.bound_store_id`，可能为 null。
+   */
+  storeId: string | null
   storeName: string | null
   marketName: string | null
 }
@@ -169,7 +174,7 @@ export type ProductKind = '组合套餐' | '护理项目' | '家居产品' | '�
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
 export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
-export type PaymentMethod = '微信' | '支付宝' | '线下'
+export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
 export type AppointmentStatus = '待确认' | '已确认' | '已完成' | '已取消' | '已关闭'
@@ -284,6 +289,10 @@ export interface SaleOrder {
   clientPhone: string | null
   customerName: string | null
   totalAmount: string
+  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 paidAmount 之和等于 totalAmount */
+  prepaidCardAmount: string
+  /** 实付金额（走 paymentMethod 指定通道）；paidAmount === '0' ⇔ paymentMethod === '无' */
+  paidAmount: string
   paymentMethod: PaymentMethod
   openedBy: string | null
   preferredEmployeeId: string | null
@@ -521,12 +530,18 @@ export interface AuthSession {
 export interface DashboardStats {
   todayVisitors: number
   todayRevenue: number
+  /** 本日通过支付通道的实收金额（SUM paid_amount，排除储值卡抵扣） */
+  todayPaidAmount: number
   pendingOrders: number
   pendingAllocations: number
   pendingAppointments: number
   activeServices: number
   yesterdayVisitors: number
   yesterdayRevenue: number
+  /** 昨日通过支付通道的实收金额 */
+  yesterdayPaidAmount: number
+  /** 全量订单累计实付金额（SUM paid_amount，用于下期财务口径） */
+  totalPaidAmount: number
   /** 角色上下文：决定前端展示哪种看板 */
   roleContext: 'business' | 'admin' | 'hr' | 'product'
   /** admin/hr 角色的系统概览指标 */

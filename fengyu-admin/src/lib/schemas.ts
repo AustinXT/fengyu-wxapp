@@ -44,6 +44,11 @@ export const employeeSchema = z.object({
 })
 export type EmployeeInput = z.infer<typeof employeeSchema>
 
+// ─── 支付方式枚举（与 db/schema/enums.ts:23 对齐） ───
+// `'无'` 语义：全额储值卡抵扣，实付 = 0，不走任何支付通道
+export const paymentMethodSchema = z.enum(['微信', '支付宝', '线下', '无'])
+export type PaymentMethodInput = z.infer<typeof paymentMethodSchema>
+
 // ─── 订单创建 ───
 export const createOrderSchema = z.object({
   storeId: z.string().min(1, '请选择门店'),
@@ -51,7 +56,7 @@ export const createOrderSchema = z.object({
   clientUserId: z.string().nullable(),
   clientPhone: z.string().regex(/^1\d{10}$/, '请输入正确的手机号'),
   customerName: z.string().min(1, '顾客姓名不能为空'),
-  paymentMethod: z.enum(['微信', '支付宝', '线下']),
+  paymentMethod: paymentMethodSchema,
   saleOrderType: z.enum(['销售单', '内部单', '回款单', '转换单', '退款单']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),

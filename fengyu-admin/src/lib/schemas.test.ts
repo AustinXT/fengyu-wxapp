@@ -6,6 +6,7 @@ import {
   createOrderSchema,
   commissionRateSchema,
   assignRoleSchema,
+  paymentMethodSchema,
 } from './schemas'
 
 // ─── 登录表单 ───
@@ -269,5 +270,56 @@ describe('assignRoleSchema', () => {
         scopeId: 'org-hq',
       }).success).toBe(true)
     })
+  })
+})
+
+// ─── 支付方式枚举（含 `'无'` 全额抵扣） ───
+describe('paymentMethodSchema', () => {
+  it('接受 "微信"', () => {
+    expect(paymentMethodSchema.safeParse('微信').success).toBe(true)
+  })
+
+  it('接受 "支付宝"', () => {
+    expect(paymentMethodSchema.safeParse('支付宝').success).toBe(true)
+  })
+
+  it('接受 "线下"', () => {
+    expect(paymentMethodSchema.safeParse('线下').success).toBe(true)
+  })
+
+  it('接受 "无"（全额储值卡抵扣）', () => {
+    expect(paymentMethodSchema.safeParse('无').success).toBe(true)
+  })
+
+  it('拒绝未知值（如 "储值卡"，储值卡是抵扣项而非支付方式）', () => {
+    expect(paymentMethodSchema.safeParse('储值卡').success).toBe(false)
+  })
+
+  it('拒绝空字符串', () => {
+    expect(paymentMethodSchema.safeParse('').success).toBe(false)
+  })
+
+  it('createOrderSchema 的 paymentMethod 同步接受 "无"', () => {
+    const base = {
+      storeId: 'store-nc01',
+      marketName: '南昌市场',
+      clientUserId: null,
+      clientPhone: '13800138000',
+      customerName: '李女士',
+      saleOrderType: '销售单' as const,
+      openedBy: 'FY-260101-0001',
+      items: [{
+        skuId: 'sku-001',
+        productName: '蜜语生玑',
+        skuSpecName: '10次卡',
+        productType: '疗程卡' as const,
+        sessionCount: 10,
+        unitPrice: '1999.00',
+        unitRealPrice: '1800.00',
+        quantity: 1,
+        salesCategory: '自采自销' as const,
+      }],
+    }
+    expect(createOrderSchema.safeParse({ ...base, paymentMethod: '无' as const }).success).toBe(true)
   })
 })
