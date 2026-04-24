@@ -37,7 +37,13 @@ vi.mock('@/lib/member-threshold', () => ({
   invalidateMemberThreshold: vi.fn(),
 }))
 
-import { getSettings, saveSettings, listActiveCouponTemplates } from './settings'
+import {
+  getSettings,
+  saveSettings,
+  listActiveCouponTemplates,
+  getMemberBenefits,
+  saveMemberBenefits,
+} from './settings'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
@@ -57,9 +63,17 @@ const EMPTY_BENEFIT = {
   messageBody: '',
 }
 
+const EMPTY_BENEFITS_MAP = {
+  初钻: EMPTY_BENEFIT,
+  星钻: EMPTY_BENEFIT,
+  粉钻: EMPTY_BENEFIT,
+  金钻: EMPTY_BENEFIT,
+  黑钻: EMPTY_BENEFIT,
+}
+
 // ── getSettings ───────────────────────────────────────────────────────────────
 
-describe('getSettings — 系统配置读取', () => {
+describe('getSettings — 系统配置读取（不含权益）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -77,52 +91,21 @@ describe('getSettings — 系统配置读取', () => {
     expect(result.orderTimeout).toBe('15')
   })
 
-  it('DB 无记录 → 返回默认值（含空权益结构）', async () => {
+  it('DB 无记录 → 返回默认值', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await getSettings()
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
-    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
-    expect(result.memberLevelBenefits.黑钻).toEqual(EMPTY_BENEFIT)
+    expect(result.bannerImages).toEqual([])
+    expect(result.fengyuguanImage).toBe('')
   })
 
-  it('部分配置缺失 → 缺失项用默认值', async () => {
-    ;(db.execute as any).mockResolvedValue([
-      { key: 'new_member_threshold', value: '3000' },
-    ])
-
+  it('返回对象不再包含 memberLevelBenefits 字段', async () => {
+    ;(db.execute as any).mockResolvedValue([])
     const result = await getSettings()
-
-    expect(result.newMemberThreshold).toBe('3000')
-    expect(result.orderTimeout).toBe('10') // 默认
-  })
-
-  it('member_level_benefits JSON 正常 → 解析后规范化', async () => {
-    const benefitsJson = JSON.stringify({
-      星钻: { points: 500, couponTemplateIds: ['tpl-1', 'tpl-2'], messageTitle: '🎉', messageBody: 'hi' },
-    })
-    ;(db.execute as any).mockResolvedValue([
-      { key: 'member_level_benefits', value: benefitsJson },
-    ])
-
-    const result = await getSettings()
-
-    expect(result.memberLevelBenefits.星钻.points).toBe(500)
-    expect(result.memberLevelBenefits.星钻.couponTemplateIds).toEqual(['tpl-1', 'tpl-2'])
-    expect(result.memberLevelBenefits.星钻.messageTitle).toBe('🎉')
-    // 未配置的等级用默认值
-    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
-  })
-
-  it('member_level_benefits JSON 损坏 → 静默降级为默认', async () => {
-    ;(db.execute as any).mockResolvedValue([
-      { key: 'member_level_benefits', value: '{not valid json' },
-    ])
-
-    const result = await getSettings()
-    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
+    expect(result).not.toHaveProperty('memberLevelBenefits')
   })
 
   it('DB 异常 → 返回默认值（静默降级）', async () => {
@@ -132,19 +115,18 @@ describe('getSettings — 系统配置读取', () => {
 
     expect(result.newMemberThreshold).toBe('1980')
     expect(result.orderTimeout).toBe('10')
-    expect(result.memberLevelBenefits.初钻).toEqual(EMPTY_BENEFIT)
   })
 })
 
 // ── saveSettings ──────────────────────────────────────────────────────────────
 
-describe('saveSettings — 系统配置保存', () => {
+describe('saveSettings — 系统配置保存（不含权益）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('正常保存 → 执行 CREATE TABLE + 5 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
+  it('正常保存 → 执行 CREATE TABLE + 4 次 UPSERT + banner_count 查询/保存 + 日志', async () => {
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
@@ -152,49 +134,16 @@ describe('saveSettings — 系统配置保存', () => {
       orderTimeout: '20',
       bannerImages: [],
       fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: EMPTY_BENEFIT,
-        星钻: EMPTY_BENEFIT,
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
     })
 
     expect(result.success).toBe(true)
     expect(result.message).toContain('保存成功')
-    // getSettings SELECT + CREATE TABLE + 5 UPSERT + SELECT banner_count + UPSERT banner_count = 9
-    expect(db.execute).toHaveBeenCalledTimes(9)
+    // getSettings SELECT + CREATE TABLE + 4 UPSERT + SELECT banner_count + UPSERT banner_count = 8
+    expect(db.execute).toHaveBeenCalledTimes(8)
     expect(logUpdate).toHaveBeenCalledWith(
       mockSession, 'system.saveConfig', 'system_config', 'all',
       expect.anything(), expect.objectContaining({ newMemberThreshold: '2000' }),
     )
-  })
-
-  it('权益数据规范化 → points 负值/小数被裁剪为非负整数', async () => {
-    ;(db.execute as any).mockResolvedValue([])
-
-    const result = await saveSettings({
-      newMemberThreshold: '1980',
-      orderTimeout: '10',
-      bannerImages: [],
-      fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: { points: -10, couponTemplateIds: ['', 'tpl-1', 'tpl-1', '  '], messageTitle: '  hi  ', messageBody: '' },
-        星钻: { points: 100.7, couponTemplateIds: [], messageTitle: '', messageBody: '' },
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
-    })
-
-    expect(result.success).toBe(true)
-    // 验证 logUpdate 收到的 normalizedBenefits（last call args[5]）
-    const normalizedSettings = (logUpdate as any).mock.calls[0][5] as any
-    expect(normalizedSettings.memberLevelBenefits.初钻.points).toBe(0)        // 负值裁剪
-    expect(normalizedSettings.memberLevelBenefits.初钻.couponTemplateIds).toEqual(['tpl-1'])  // 去重 + 过滤空值
-    expect(normalizedSettings.memberLevelBenefits.初钻.messageTitle).toBe('hi')  // trim
-    expect(normalizedSettings.memberLevelBenefits.星钻.points).toBe(100)       // 小数 floor
   })
 
   it('DB 异常 → 返回失败消息', async () => {
@@ -205,13 +154,6 @@ describe('saveSettings — 系统配置保存', () => {
       orderTimeout: '10',
       bannerImages: [],
       fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: EMPTY_BENEFIT,
-        星钻: EMPTY_BENEFIT,
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
     })
 
     expect(result.success).toBe(false)
@@ -219,21 +161,13 @@ describe('saveSettings — 系统配置保存', () => {
   })
 
   it('newMemberThreshold 变化 → 广播 invalidate 到 admin 自身 + clientApi', async () => {
-    // oldSettings.newMemberThreshold = '1980' (DEFAULT)
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
-      newMemberThreshold: '2500', // 改变
+      newMemberThreshold: '2500',
       orderTimeout: '10',
       bannerImages: [],
       fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: EMPTY_BENEFIT,
-        星钻: EMPTY_BENEFIT,
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
     })
 
     expect(result.success).toBe(true)
@@ -244,21 +178,13 @@ describe('saveSettings — 系统配置保存', () => {
   })
 
   it('newMemberThreshold 未变化 → 不广播', async () => {
-    // oldSettings.newMemberThreshold = '1980' (DEFAULT)，new 也是 '1980'
     ;(db.execute as any).mockResolvedValue([])
 
     const result = await saveSettings({
-      newMemberThreshold: '1980', // 未变
+      newMemberThreshold: '1980',
       orderTimeout: '10',
       bannerImages: [],
       fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: EMPTY_BENEFIT,
-        星钻: EMPTY_BENEFIT,
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
     })
 
     expect(result.success).toBe(true)
@@ -271,17 +197,10 @@ describe('saveSettings — 系统配置保存', () => {
     ;(callClientFunction as any).mockRejectedValueOnce(new Error('cloudbase timeout'))
 
     const result = await saveSettings({
-      newMemberThreshold: '3000', // 改变触发广播
+      newMemberThreshold: '3000',
       orderTimeout: '10',
       bannerImages: [],
       fengyuguanImage: '',
-      memberLevelBenefits: {
-        初钻: EMPTY_BENEFIT,
-        星钻: EMPTY_BENEFIT,
-        粉钻: EMPTY_BENEFIT,
-        金钻: EMPTY_BENEFIT,
-        黑钻: EMPTY_BENEFIT,
-      },
     })
 
     expect(result.success).toBe(true)
@@ -309,5 +228,150 @@ describe('listActiveCouponTemplates — 优惠券模板列表', () => {
       { templateId: 'tpl-1', name: '满减券' },
       { templateId: 'tpl-2', name: '折扣券' },
     ])
+  })
+})
+
+// ── getMemberBenefits ─────────────────────────────────────────────────────────
+
+describe('getMemberBenefits — 三组会员权益读取', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('DB 无记录 → 三场景均返回空权益结构', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await getMemberBenefits()
+
+    expect(result.upgrade).toEqual(EMPTY_BENEFITS_MAP)
+    expect(result.birthday).toEqual(EMPTY_BENEFITS_MAP)
+    expect(result.thanksgiving).toEqual(EMPTY_BENEFITS_MAP)
+  })
+
+  it('三 key 齐全 → 三场景各自解析', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      {
+        key: 'member_level_benefits',
+        value: JSON.stringify({
+          星钻: { points: 500, couponTemplateIds: ['tpl-1'], messageTitle: '🎉', messageBody: 'hi' },
+        }),
+      },
+      {
+        key: 'birthday_benefits',
+        value: JSON.stringify({
+          金钻: { points: 300, couponTemplateIds: ['tpl-b'], messageTitle: '🎂', messageBody: 'birthday' },
+        }),
+      },
+      {
+        key: 'thanksgiving_benefits',
+        value: JSON.stringify({
+          黑钻: { points: 1000, couponTemplateIds: ['tpl-t'], messageTitle: '💝', messageBody: 'thanks' },
+        }),
+      },
+    ])
+
+    const result = await getMemberBenefits()
+
+    expect(result.upgrade.星钻.points).toBe(500)
+    expect(result.upgrade.星钻.messageTitle).toBe('🎉')
+    expect(result.birthday.金钻.points).toBe(300)
+    expect(result.birthday.金钻.messageTitle).toBe('🎂')
+    expect(result.thanksgiving.黑钻.points).toBe(1000)
+    expect(result.thanksgiving.黑钻.couponTemplateIds).toEqual(['tpl-t'])
+    // 未配置等级用默认值
+    expect(result.upgrade.初钻).toEqual(EMPTY_BENEFIT)
+    expect(result.birthday.初钻).toEqual(EMPTY_BENEFIT)
+  })
+
+  it('某个 key 的 JSON 损坏 → 仅该场景降级为默认，其他场景正常', async () => {
+    ;(db.execute as any).mockResolvedValue([
+      { key: 'member_level_benefits', value: '{not valid' },
+      {
+        key: 'birthday_benefits',
+        value: JSON.stringify({ 粉钻: { points: 100, couponTemplateIds: [], messageTitle: '', messageBody: '' } }),
+      },
+    ])
+
+    const result = await getMemberBenefits()
+
+    expect(result.upgrade).toEqual(EMPTY_BENEFITS_MAP)
+    expect(result.birthday.粉钻.points).toBe(100)
+    expect(result.thanksgiving).toEqual(EMPTY_BENEFITS_MAP)
+  })
+
+  it('DB 异常 → 三场景均返回默认（静默降级）', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('conn lost'))
+
+    const result = await getMemberBenefits()
+
+    expect(result.upgrade).toEqual(EMPTY_BENEFITS_MAP)
+    expect(result.birthday).toEqual(EMPTY_BENEFITS_MAP)
+    expect(result.thanksgiving).toEqual(EMPTY_BENEFITS_MAP)
+  })
+})
+
+// ── saveMemberBenefits ────────────────────────────────────────────────────────
+
+describe('saveMemberBenefits — 三组会员权益保存', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('正常保存 → getOld SELECT + CREATE TABLE + 3 UPSERT + 日志', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveMemberBenefits({
+      upgrade: EMPTY_BENEFITS_MAP,
+      birthday: EMPTY_BENEFITS_MAP,
+      thanksgiving: EMPTY_BENEFITS_MAP,
+    })
+
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('保存成功')
+    // getMemberBenefits SELECT + CREATE TABLE + 3 UPSERT = 5
+    expect(db.execute).toHaveBeenCalledTimes(5)
+    expect(logUpdate).toHaveBeenCalledWith(
+      mockSession, 'system.saveMemberBenefits', 'system_config', 'member_benefits',
+      expect.anything(), expect.anything(),
+    )
+  })
+
+  it('三场景各自规范化 → points 负值/小数裁剪、couponIds 去重、文案 trim', async () => {
+    ;(db.execute as any).mockResolvedValue([])
+
+    const result = await saveMemberBenefits({
+      upgrade: {
+        ...EMPTY_BENEFITS_MAP,
+        初钻: { points: -5, couponTemplateIds: ['', 'tpl-1', 'tpl-1'], messageTitle: '  a  ', messageBody: '' },
+      },
+      birthday: {
+        ...EMPTY_BENEFITS_MAP,
+        星钻: { points: 10.9, couponTemplateIds: [], messageTitle: '', messageBody: '' },
+      },
+      thanksgiving: EMPTY_BENEFITS_MAP,
+    })
+
+    expect(result.success).toBe(true)
+    // logUpdate args[5] 是 normalized bundle
+    const normalized = (logUpdate as any).mock.calls[0][5] as any
+    expect(normalized.upgrade.初钻.points).toBe(0)
+    expect(normalized.upgrade.初钻.couponTemplateIds).toEqual(['tpl-1'])
+    expect(normalized.upgrade.初钻.messageTitle).toBe('a')
+    expect(normalized.birthday.星钻.points).toBe(10)
+  })
+
+  it('DB 异常 → 返回失败消息', async () => {
+    ;(db.execute as any).mockRejectedValue(new Error('disk full'))
+
+    const result = await saveMemberBenefits({
+      upgrade: EMPTY_BENEFITS_MAP,
+      birthday: EMPTY_BENEFITS_MAP,
+      thanksgiving: EMPTY_BENEFITS_MAP,
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('保存失败')
   })
 })
