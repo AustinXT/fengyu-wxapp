@@ -12,13 +12,13 @@ import { invalidateMemberThreshold } from '@/lib/member-threshold'
  * 单个等级的权益配置
  */
 export interface MemberLevelBenefit {
-  /** 升级时奖励积分（整数，0 表示不发） */
+  /** 奖励积分（整数，0 表示不发） */
   points: number
-  /** 升级时发放的优惠券模板 ID 数组（templateId 来自 coupon_templates） */
+  /** 发放的优惠券模板 ID 数组（templateId 来自 coupon_templates） */
   couponTemplateIds: string[]
-  /** 升级消息标题（空字符串表示不发消息） */
+  /** 消息标题（空字符串表示不发消息） */
   messageTitle: string
-  /** 升级消息正文 */
+  /** 消息正文 */
   messageBody: string
 }
 
@@ -28,12 +28,21 @@ export type MemberLevelBenefitsMap = Record<
   MemberLevelBenefit
 >
 
+/** 会员权益的三种场景 */
+export type BenefitScenario = 'upgrade' | 'birthday' | 'thanksgiving'
+
+/** 三种场景下的权益配置 */
+export interface MemberBenefitsBundle {
+  upgrade: MemberLevelBenefitsMap
+  birthday: MemberLevelBenefitsMap
+  thanksgiving: MemberLevelBenefitsMap
+}
+
 interface SystemSettings {
   newMemberThreshold: string
   orderTimeout: string
   bannerImages: string[]
   fengyuguanImage: string
-  memberLevelBenefits: MemberLevelBenefitsMap
 }
 
 const DEFAULT_BENEFIT: MemberLevelBenefit = {
@@ -56,7 +65,22 @@ const DEFAULT_SETTINGS: SystemSettings = {
   orderTimeout: '10',
   bannerImages: [],
   fengyuguanImage: '',
-  memberLevelBenefits: DEFAULT_MEMBER_LEVEL_BENEFITS,
+}
+
+const SCENARIO_CONFIG_KEY: Record<BenefitScenario, string> = {
+  upgrade: 'member_level_benefits',
+  birthday: 'birthday_benefits',
+  thanksgiving: 'thanksgiving_benefits',
+}
+
+function emptyBenefits(): MemberLevelBenefitsMap {
+  return {
+    初钻: { ...DEFAULT_BENEFIT },
+    星钻: { ...DEFAULT_BENEFIT },
+    粉钻: { ...DEFAULT_BENEFIT },
+    金钻: { ...DEFAULT_BENEFIT },
+    黑钻: { ...DEFAULT_BENEFIT },
+  }
 }
 
 /**
@@ -67,7 +91,7 @@ const DEFAULT_SETTINGS: SystemSettings = {
  * - 文案 trim
  */
 function normalizeBenefits(input: unknown): MemberLevelBenefitsMap {
-  const result: MemberLevelBenefitsMap = { ...DEFAULT_MEMBER_LEVEL_BENEFITS }
+  const result = emptyBenefits()
   if (!input || typeof input !== 'object') return result
 
   for (const level of ['初钻', '星钻', '粉钻', '金钻', '黑钻'] as const) {
@@ -95,13 +119,10 @@ export async function getSettings(): Promise<SystemSettings> {
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
-      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image', 'member_level_benefits')
+      WHERE key IN ('new_member_threshold', 'order_timeout', 'banner_images', 'fengyuguan_image')
     `)
 
-    const settings: SystemSettings = {
-      ...DEFAULT_SETTINGS,
-      memberLevelBenefits: { ...DEFAULT_MEMBER_LEVEL_BENEFITS },
-    }
+    const settings: SystemSettings = { ...DEFAULT_SETTINGS }
     for (const row of rows as any[]) {
       if (row.key === 'new_member_threshold') settings.newMemberThreshold = row.value
       if (row.key === 'order_timeout') settings.orderTimeout = row.value
@@ -109,13 +130,10 @@ export async function getSettings(): Promise<SystemSettings> {
         try { settings.bannerImages = JSON.parse(row.value) } catch { /* keep default */ }
       }
       if (row.key === 'fengyuguan_image') settings.fengyuguanImage = row.value
-      if (row.key === 'member_level_benefits') {
-        try { settings.memberLevelBenefits = normalizeBenefits(JSON.parse(row.value)) } catch { /* keep default */ }
-      }
     }
     return settings
   } catch {
-    return { ...DEFAULT_SETTINGS, memberLevelBenefits: { ...DEFAULT_MEMBER_LEVEL_BENEFITS } }
+    return { ...DEFAULT_SETTINGS }
   }
 }
 
@@ -134,14 +152,11 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       )
     `)
 
-    const normalizedBenefits = normalizeBenefits(settings.memberLevelBenefits)
-
     const entries = [
       { key: 'new_member_threshold', value: settings.newMemberThreshold },
       { key: 'order_timeout', value: settings.orderTimeout },
       { key: 'banner_images', value: JSON.stringify(settings.bannerImages) },
       { key: 'fengyuguan_image', value: settings.fengyuguanImage },
-      { key: 'member_level_benefits', value: JSON.stringify(normalizedBenefits) },
     ]
 
     for (const entry of entries) {
@@ -191,7 +206,7 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
       'system_config',
       'all',
       oldSettings as unknown as Record<string, unknown>,
-      { ...settings, memberLevelBenefits: normalizedBenefits } as unknown as Record<string, unknown>,
+      settings as unknown as Record<string, unknown>,
     )
 
     // 会员门槛变化时，主动失效 admin 自身 + clientApi 内存缓存
@@ -232,4 +247,100 @@ export async function listActiveCouponTemplates(): Promise<Array<{ templateId: s
     LIMIT 200
   `)
   return (rows as any[]).map((r) => ({ templateId: r.template_id, name: r.name }))
+}
+
+/**
+ * 读取三种场景（升级/生日/感恩日）的会员权益配置。
+ * 任一场景缺失或 JSON 损坏静默降级为默认空值。
+ */
+export async function getMemberBenefits(): Promise<MemberBenefitsBundle> {
+  const session = await getSession()
+  requirePermission(session, 'system:config')
+
+  const bundle: MemberBenefitsBundle = {
+    upgrade: emptyBenefits(),
+    birthday: emptyBenefits(),
+    thanksgiving: emptyBenefits(),
+  }
+
+  try {
+    const rows = await db.execute<{ key: string; value: string }>(sql`
+      SELECT key, value FROM system_configs
+      WHERE key IN ('member_level_benefits', 'birthday_benefits', 'thanksgiving_benefits')
+    `)
+    for (const row of rows as any[]) {
+      const scenario = (Object.keys(SCENARIO_CONFIG_KEY) as BenefitScenario[]).find(
+        (s) => SCENARIO_CONFIG_KEY[s] === row.key,
+      )
+      if (!scenario) continue
+      try {
+        bundle[scenario] = normalizeBenefits(JSON.parse(row.value))
+      } catch {
+        // keep default
+      }
+    }
+  } catch {
+    // DB 未建表 → 返回空默认
+  }
+
+  return bundle
+}
+
+/**
+ * 保存三种场景的会员权益配置（一次性写入三份 JSON）。
+ * 权益变更不影响 newMemberThreshold 缓存广播逻辑。
+ */
+export async function saveMemberBenefits(
+  bundle: MemberBenefitsBundle,
+): Promise<{ success: boolean; message: string }> {
+  const session = await getSession()
+  requirePermission(session, 'system:config')
+
+  try {
+    const oldBundle = await getMemberBenefits()
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS system_configs (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `)
+
+    const normalized: MemberBenefitsBundle = {
+      upgrade: normalizeBenefits(bundle.upgrade),
+      birthday: normalizeBenefits(bundle.birthday),
+      thanksgiving: normalizeBenefits(bundle.thanksgiving),
+    }
+
+    const entries: Array<{ key: string; value: string }> = [
+      { key: SCENARIO_CONFIG_KEY.upgrade, value: JSON.stringify(normalized.upgrade) },
+      { key: SCENARIO_CONFIG_KEY.birthday, value: JSON.stringify(normalized.birthday) },
+      { key: SCENARIO_CONFIG_KEY.thanksgiving, value: JSON.stringify(normalized.thanksgiving) },
+    ]
+
+    for (const entry of entries) {
+      await db.execute(sql`
+        INSERT INTO system_configs (key, value, updated_at)
+        VALUES (${entry.key}, ${entry.value}, NOW())
+        ON CONFLICT (key) DO UPDATE SET value = ${entry.value}, updated_at = NOW()
+      `)
+    }
+
+    await logUpdate(
+      session,
+      'system.saveMemberBenefits',
+      'system_config',
+      'member_benefits',
+      oldBundle as unknown as Record<string, unknown>,
+      normalized as unknown as Record<string, unknown>,
+    )
+
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/member-benefits')
+    return { success: true, message: '会员权益保存成功' }
+  } catch (err) {
+    console.error('Save member benefits error:', err)
+    return { success: false, message: '保存失败，请稍后重试' }
+  }
 }

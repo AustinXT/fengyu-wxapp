@@ -19,6 +19,7 @@ import {
 	Shield,
 	Coins,
 	Wallet,
+	Gift,
 	MessageSquare,
 	ScrollText,
 	Settings,
@@ -100,6 +101,7 @@ export const MENU_CONFIG: MenuGroup[] = [
 				readonlyRoles: ["finance"],
 			},
 			{ label: "优惠券管理", icon: Ticket, href: "/coupons", requiredRoles: ["admin", "product"] },
+			{ label: "会员权益", icon: Gift, href: "/member-benefits", requiredRoles: ["admin"] },
 			{
 				label: "积分流水",
 				icon: Coins,
