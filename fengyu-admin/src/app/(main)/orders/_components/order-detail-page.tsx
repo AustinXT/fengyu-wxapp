@@ -1,10 +1,13 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { StatusBadge, Badge } from "@/components/ui/badge"
 import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types"
+import { RecordPaymentDialog } from "./record-payment-dialog"
+import { RefundForm } from "@/components/orders/refund-form"
 
 /** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
 const paymentChangeTypeLabelMap: Record<string, string> = {
@@ -48,16 +51,48 @@ export default function OrderDetailPageClient({
   allocations,
   logs,
   payments,
+  canRecordPayment = false,
+  canRefund = false,
+  cardBalance = null,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   logs: OperationLog[]
   payments?: SaleOrderPayment[]
+  /** ticket 2026-04-24 多次回款 PR-B — 是否展示"录入回款"按钮 */
+  canRecordPayment?: boolean
+  /** ticket 2026-04-24 退款 PR-Y — 是否展示"创建退款"按钮 */
+  canRefund?: boolean
+  /** 顾客当前储值卡余额（元，null=未查询或无账户） */
+  cardBalance?: number | null
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
   const paidAmount = Number(order.paidAmount ?? "0")
   const hasPrepaidDeduction = prepaidCardAmount > 0
+
+  // 剩余欠款 = payable_amount - paid_amount（payable_amount = total_amount - prepaid_card_amount）
+  const totalAmount = Number(order.totalAmount ?? "0")
+  const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+  const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100)
+  const canShowRecordPayment =
+    canRecordPayment &&
+    remainingPayable > 0 &&
+    (order.status === "部分支付" || order.status === "待支付" || order.status === "待确认收款")
+
+  const [repaymentDialogOpen, setRepaymentDialogOpen] = useState(false)
+  const [refundFormOpen, setRefundFormOpen] = useState(false)
+
+  // 退款按钮仅对销售单 + 已支付/已完成/部分支付 可见
+  const canShowRefund =
+    canRefund &&
+    order.saleOrderType === "销售单" &&
+    (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付")
+
+  // 是否存在待审批中的退款（payments 中有 change_type='退款' status='待支付' 的行）
+  const hasPendingRefund = (payments ?? []).some(
+    (p) => p.changeType === "退款" && p.status === "待支付",
+  )
 
   return (
     <div className="space-y-6">
@@ -69,7 +104,22 @@ export default function OrderDetailPageClient({
           </Link>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">订单详情</h1>
         </div>
+        <div className="flex items-center gap-2">
+          {canShowRefund && !hasPendingRefund && (
+            <Button variant="outline" onClick={() => setRefundFormOpen(true)}>
+              创建退款
+            </Button>
+          )}
+        </div>
       </div>
+
+      {/* 退款审批中提示 */}
+      {hasPendingRefund && (
+        <div className="rounded-[var(--radius)] bg-[#FFF7E6] border border-[#F3C77E] px-4 py-3 text-sm text-[#D4820A]">
+          该订单有退款申请正在审批中，审批完成后可再次发起退款。
+          <Link href="/refunds" className="ml-2 underline">查看退款管理</Link>
+        </div>
+      )}
 
       {/* 订单信息 */}
       <Card>
@@ -186,8 +236,20 @@ export default function OrderDetailPageClient({
 
       {/* 款项流水（ticket 2026-04-24 PR-3 §3.3） */}
       <Card>
-        <CardHeader>
-          <CardTitle>款项流水</CardTitle>
+        <CardHeader className="flex-row items-center justify-between">
+          <div>
+            <CardTitle>款项流水</CardTitle>
+            {remainingPayable > 0 && (
+              <p className="text-xs text-[#C0322A] mt-1">
+                剩余欠款 ¥{remainingPayable.toFixed(2)}
+              </p>
+            )}
+          </div>
+          {canShowRecordPayment && (
+            <Button size="sm" onClick={() => setRepaymentDialogOpen(true)}>
+              录入回款
+            </Button>
+          )}
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -325,6 +387,26 @@ export default function OrderDetailPageClient({
           )}
         </CardContent>
       </Card>
+
+      {/* 录入回款弹层（ticket 2026-04-24 多次回款 PR-B） */}
+      {canShowRecordPayment && (
+        <RecordPaymentDialog
+          open={repaymentDialogOpen}
+          onOpenChange={setRepaymentDialogOpen}
+          saleOrderId={order.saleOrderId}
+          remainingPayable={remainingPayable}
+          cardBalance={cardBalance}
+        />
+      )}
+
+      {/* 创建退款弹层（ticket 2026-04-24 退款 PR-Y） */}
+      {canShowRefund && (
+        <RefundForm
+          open={refundFormOpen}
+          onOpenChange={setRefundFormOpen}
+          saleOrderId={order.saleOrderId}
+        />
+      )}
     </div>
   )
 }

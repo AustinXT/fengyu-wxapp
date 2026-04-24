@@ -164,6 +164,15 @@
         </van-cell>
         <van-cell
           wx:if="{{isManager}}"
+          title="待审批退款"
+          value="{{pendingRefundCount}}条"
+          is-link
+          bind:click="goRefundList"
+        >
+          <van-icon slot="icon" name="revoke" size="40rpx" color="#C62828" class="cell-icon" />
+        </van-cell>
+        <van-cell
+          wx:if="{{isManager}}"
           title="待审批解绑申请"
           value="{{pendingUnbindCount}}条"
           is-link

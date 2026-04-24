@@ -24,6 +24,17 @@
 
 .order-no { font-size: 24rpx; color: #666; font-family: monospace; }
 
+.status-wrap { display: flex; align-items: center; gap: 8rpx; }
+
+.refund-tag {
+  font-size: 22rpx;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  line-height: 1.3;
+}
+.refund-tag--pending { color: #D4820A; background: #FFF4E0; }
+.refund-tag--done    { color: #C62828; background: #FBECEC; }
+
 
 .order-customer {
   display: flex; align-items: center; gap: 16rpx; margin-bottom: 12rpx;

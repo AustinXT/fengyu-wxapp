@@ -25,6 +25,9 @@ interface RawOrder {
   created_at?: string;
   paid_at?: string;
   total_amount?: string;
+  paid_amount?: string;
+  prepaid_card_amount?: string;
+  payable_amount?: string;
   opened_by?: string;
   refund_reason?: string;
   ref_sale_order_id?: string;
@@ -47,10 +50,32 @@ interface RawAllocation {
   allocation_ratio?: number;
 }
 
+interface RawPayment {
+  change_type: string;
+  amount: number;
+  payment_method: string;
+  status: string;
+  paid_at: string | null;
+  created_at: string;
+  note: string | null;
+}
+
+interface DisplayPayment {
+  changeType: string;
+  amount: string;
+  amountAbs: string;
+  isRefund: boolean;
+  paymentMethod: string;
+  status: string;
+  timeFmt: string;
+  note: string;
+}
+
 interface OrderDetailResponse {
   order: RawOrder;
   items: RawOrderItem[];
   allocations: RawAllocation[];
+  payments?: RawPayment[];
 }
 
 // ===== 展示层类型（camelCase，用于 WXML 绑定） =====
@@ -91,8 +116,14 @@ interface DisplayOrder {
   createdAt: string;
   paidAt: string;
   totalAmount: string;
+  paidAmount: string;
+  prepaidCardAmount: string;
+  payableAmount: string;
+  remainingPayable: string;
+  hasDebt: boolean;
   items: DisplayOrderItem[];
   allocation: DisplayAllocation[];
+  payments: DisplayPayment[];
 }
 
 Page({
@@ -107,6 +138,14 @@ Page({
     showRefundDialog: false,
     refundReason: '',
     submitting: false,
+    // Ticket 2: 回款弹层
+    showRepayPopup: false,
+    repayAmountInput: '',
+    repayPrepaidCardInput: '',
+    repayMethod: '线下' as '线下' | '微信' | '储值卡',
+    repayNote: '',
+    // 当前订单欠款（弹层内引用）
+    currentRemainingPayable: 0,
   },
 
   onLoad(options: Record<string, string>) {
@@ -136,7 +175,39 @@ Page({
         amount: a.total_amount || '0',
         ratio: `${Number(a.allocation_ratio) * 100}%`,
       }));
+
+      // Ticket 2 PR-A：payments 流水 + 欠款计算
+      const payments: DisplayPayment[] = (res.payments || []).map((p) => {
+        const amt = Number(p.amount) || 0;
+        const isRefund = amt < 0 || p.change_type === '退款';
+        const timeSrc = p.paid_at || p.created_at;
+        return {
+          changeType: p.change_type,
+          amount: amt.toFixed(2),
+          amountAbs: Math.abs(amt).toFixed(2),
+          isRefund,
+          paymentMethod: p.payment_method,
+          status: p.status,
+          timeFmt: timeSrc ? formatDateTime(timeSrc) : '',
+          note: p.note || '',
+        };
+      });
+
+      const totalAmount = Number(o.total_amount || 0);
+      const prepaidCardAmount = Number(o.prepaid_card_amount || 0);
+      const paidAmount = Number(o.paid_amount || 0);
+      // payable_amount 在旧订单可能 NULL，用 total - prepaid 兜底
+      const payableAmount = o.payable_amount != null
+        ? Number(o.payable_amount)
+        : Math.round((totalAmount - prepaidCardAmount) * 100) / 100;
+      const remainingPayable = Math.round((payableAmount - paidAmount) * 100) / 100;
+      // 仅在"销售单"且未付清且非终态时视为欠款可回款
       const orderType = o.sale_order_type || '';
+      const hasDebt = orderType === '销售单'
+        && remainingPayable > 0
+        && o.status !== '已关闭'
+        && o.status !== '已完成';
+
       this.setData({
         order: {
           saleOrderId: o.sale_order_id,
@@ -157,10 +228,17 @@ Page({
           confirmedAt: formatDateTime(o.offline_confirmed_at),
           createdAt: formatDateTime(o.created_at),
           paidAt: formatDateTime(o.paid_at),
-          totalAmount: o.total_amount || '0',
+          totalAmount: totalAmount.toFixed(2),
+          paidAmount: paidAmount.toFixed(2),
+          prepaidCardAmount: prepaidCardAmount.toFixed(2),
+          payableAmount: payableAmount.toFixed(2),
+          remainingPayable: remainingPayable.toFixed(2),
+          hasDebt,
           items,
           allocation,
+          payments,
         },
+        currentRemainingPayable: remainingPayable,
         isCreator: o.opened_by === getStaffWfId(),
         statusClass: STATUS_CLASS[o.status] || 'pending',
       });
@@ -354,5 +432,99 @@ Page({
         }
       },
     });
+  },
+
+  // ===== Ticket 2 PR-A：发起回款 =====
+  onRepayTap() {
+    const o = this.data.order;
+    if (!o || !o.hasDebt) return;
+    this.setData({
+      showRepayPopup: true,
+      repayAmountInput: o.remainingPayable,
+      repayPrepaidCardInput: '',
+      repayMethod: '线下',
+      repayNote: '',
+    });
+  },
+
+  onCloseRepayPopup() {
+    this.setData({ showRepayPopup: false });
+  },
+
+  onRepayAmountChange(e: WechatMiniprogram.CustomEvent) {
+    const val = (e.detail as unknown as string) || '';
+    this.setData({ repayAmountInput: val });
+  },
+
+  onRepayPrepaidCardChange(e: WechatMiniprogram.CustomEvent) {
+    const val = (e.detail as unknown as string) || '';
+    this.setData({ repayPrepaidCardInput: val });
+  },
+
+  onRepayMethodChange(e: WechatMiniprogram.CustomEvent) {
+    const val = (e.detail as unknown as string) as '线下' | '微信' | '储值卡';
+    // 微信扫码暂未开放：UI 层也拦截一次（后端兜底）
+    if (val === '微信') {
+      wx.showToast({ title: '微信扫码回款开发中', icon: 'none' });
+      return;
+    }
+    // 储值卡：清空 repayAmountInput，仅让用户填 prepaidCard
+    if (val === '储值卡') {
+      this.setData({ repayMethod: val, repayAmountInput: '0' });
+      return;
+    }
+    this.setData({ repayMethod: val });
+  },
+
+  onRepayNoteChange(e: WechatMiniprogram.CustomEvent) {
+    const val = (e.detail as unknown as string) || '';
+    this.setData({ repayNote: val });
+  },
+
+  async onConfirmRepay() {
+    if (this.data.submitting) return;
+    const { order, repayAmountInput, repayPrepaidCardInput, repayMethod, repayNote, currentRemainingPayable } = this.data;
+    if (!order || !order.saleOrderId) return;
+
+    const repayAmount = Math.round((Number(repayAmountInput) || 0) * 100) / 100;
+    const prepaidCardAmount = Math.round((Number(repayPrepaidCardInput) || 0) * 100) / 100;
+    const total = Math.round((repayAmount + prepaidCardAmount) * 100) / 100;
+
+    if (total <= 0) {
+      wx.showToast({ title: '回款金额需大于 0', icon: 'none' });
+      return;
+    }
+    if (total > currentRemainingPayable + 0.001) {
+      wx.showToast({ title: `超出欠款 ¥${currentRemainingPayable.toFixed(2)}`, icon: 'none' });
+      return;
+    }
+    if (repayMethod === '储值卡' && repayAmount > 0) {
+      wx.showToast({ title: '储值卡方式下现金回款应为 0', icon: 'none' });
+      return;
+    }
+    if (repayMethod === '微信') {
+      wx.showToast({ title: '微信扫码回款开发中', icon: 'none' });
+      return;
+    }
+
+    this.setData({ submitting: true });
+    try {
+      await callStaffApi('order.createRepayment', {
+        refSaleOrderId: order.saleOrderId,
+        repayAmount,
+        prepaidCardAmount,
+        paymentMethod: repayMethod,
+        note: repayNote || undefined,
+      });
+      wx.showToast({ title: '回款成功', icon: 'success' });
+      this.setData({ showRepayPopup: false });
+      this.loadDetail(this.data._saleOrderId);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '回款失败';
+      // 剥离错误前缀（INVALID_PARAMS:OVERPAY → OVERPAY / 中文后缀）
+      wx.showToast({ title: msg.replace(/^[A-Z_]+:\s*/, '') || '回款失败', icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
+    }
   },
 });

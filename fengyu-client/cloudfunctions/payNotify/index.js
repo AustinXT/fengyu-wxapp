@@ -47,8 +47,12 @@ exports.main = async (event) => {
     const pg = getPg()
 
     // 幂等检查：订单是否已支付
+    // 读 sale_order_type + ref_sale_order_id 以支持"回款凭证单"场景（Ticket 2026-04-24 PR-C）
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount FROM sale_orders WHERE sale_order_id = $1',
+      `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
+              total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount,
+              sale_order_type, ref_sale_order_id
+       FROM sale_orders WHERE sale_order_id = $1`,
       [orderNo]
     )
 
@@ -59,8 +63,28 @@ exports.main = async (event) => {
 
     const order = orderResult.rows[0]
 
-    // 幂等：已支付/已完成 → 尝试再写一次 payments 行（唯一索引 DO NOTHING）后直接返回
-    // 注意：这里主要是兜底重复回调。实际 payments 幂等由 uq_sop_txn 保证。
+    // 回款单场景：payments 行应写到 ref_sale_order_id（原销售单）；
+    // 凭证单自身仅状态翻 '已支付'，业务动作（次数到期/业绩/充值/消费扣款/档位）以原单为准。
+    const isRepaymentCredential = order.sale_order_type === '回款单' && order.ref_sale_order_id
+    let targetOrderNo = orderNo
+    let targetOrder = order
+    if (isRepaymentCredential) {
+      const origRes = await pg.query(
+        `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
+                total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount,
+                sale_order_type, ref_sale_order_id
+         FROM sale_orders WHERE sale_order_id = $1`,
+        [order.ref_sale_order_id]
+      )
+      if (origRes.rows.length === 0) {
+        console.error('[payNotify] 回款凭证单对应的原单不存在:', orderNo, '->', order.ref_sale_order_id)
+        return { code: 'FAIL', message: '原销售单不存在' }
+      }
+      targetOrderNo = order.ref_sale_order_id
+      targetOrder = origRes.rows[0]
+    }
+
+    // 幂等：凭证单自身或原单已终态 → 再写一次 payments（ON CONFLICT DO NOTHING）后返回
     if (order.status === '已支付' || order.status === '已完成') {
       console.log('[payNotify] 订单已支付，跳过:', orderNo)
       return { code: 'SUCCESS', message: '已处理' }
@@ -88,11 +112,14 @@ exports.main = async (event) => {
       //
       // 幂等键：uq_sop_txn (sale_order_id, payment_method, external_txn_id) WHERE external_txn_id IS NOT NULL
       //
-      // 先决定本次金额 payAmount：优先取 event.payAmount，否则按订单剩余应付推算
+      // **回款凭证单场景**：payments / 业务动作以 targetOrderNo（=原销售单）为准；
+      //   凭证单本身在事务末尾再更新 status='已支付'。
+      //
+      // 先决定本次金额 payAmount：优先取 event.payAmount，否则按目标订单剩余应付推算
       //   remaining = (total_amount - prepaid_card_amount) - Σ payments.amount (已支付, 首次/回款/退款)
       // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount = paid_amount 列初值
       const payableAmount = Math.round(
-        (Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0)) * 100
+        (Number(targetOrder.total_amount || 0) - Number(targetOrder.prepaid_card_amount || 0)) * 100
       ) / 100
       const sumRes = await client.query(
         `SELECT COALESCE(SUM(amount), 0) AS paid_sum
@@ -100,7 +127,7 @@ exports.main = async (event) => {
          WHERE sale_order_id = $1
            AND status = '已支付'
            AND change_type IN ('首次支付','回款','退款')`,
-        [orderNo]
+        [targetOrderNo]
       )
       const paidSum = Number(sumRes.rows[0]?.paid_sum || 0)
       const remaining = Math.round((payableAmount - paidSum) * 100) / 100
@@ -112,15 +139,23 @@ exports.main = async (event) => {
         throw new Error(`INVALID_PAY_AMOUNT: ${thisPayAmount}`)
       }
 
-      // change_type：判断该订单是否已有 '首次支付' 行
-      const firstPayCheck = await client.query(
-        `SELECT 1 FROM sale_order_payments
-         WHERE sale_order_id = $1 AND change_type = '首次支付' LIMIT 1`,
-        [orderNo]
-      )
-      const changeType = firstPayCheck.rows.length > 0 ? '回款' : '首次支付'
+      // change_type：
+      //   - 回款凭证单回调：总是 '回款'（线上通道）
+      //   - 普通销售单：判断是否已有 '首次支付' 行
+      let changeType
+      if (isRepaymentCredential) {
+        changeType = '回款'
+      } else {
+        const firstPayCheck = await client.query(
+          `SELECT 1 FROM sale_order_payments
+           WHERE sale_order_id = $1 AND change_type = '首次支付' LIMIT 1`,
+          [targetOrderNo]
+        )
+        changeType = firstPayCheck.rows.length > 0 ? '回款' : '首次支付'
+      }
 
       // INSERT payments（幂等：重复回调 ON CONFLICT DO NOTHING）
+      // 注意：payments.sale_order_id 写 targetOrderNo（原销售单），不是凭证单
       const insertRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method,
@@ -131,7 +166,13 @@ exports.main = async (event) => {
           WHERE external_txn_id IS NOT NULL
         DO NOTHING
         RETURNING id`,
-        [orderNo, changeType, thisPayAmount, paymentMethod, txnId, `${paymentMethod} 回调到账`, now]
+        [
+          targetOrderNo, changeType, thisPayAmount, paymentMethod, txnId,
+          isRepaymentCredential
+            ? `${paymentMethod} 回款到账 凭证 ${orderNo}`
+            : `${paymentMethod} 回调到账`,
+          now,
+        ]
       )
 
       if (insertRes.rows.length === 0) {
@@ -141,14 +182,12 @@ exports.main = async (event) => {
         return { code: 'SUCCESS', message: '已处理（幂等）' }
       }
 
-      // 判定订单最终状态
+      // 判定目标订单最终状态
       const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
       const fullyPaid = newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
-      // 1. 更新订单：paid_amount 累加（改为"已到账实金"语义）、status 置新值、paid_at（全额时）
-      // 注意：为兼容 PR-2/PR-3 前的旧语义（create 阶段把 total-prepaid 预写入 paid_amount），
-      //       此处采用"直接赋值 newPaidSum"而非 += thisPayAmount——保证重算一致。
+      // 1. 更新目标订单：paid_amount 累加、status 置新值、paid_at（全额时）
       await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
@@ -157,25 +196,38 @@ exports.main = async (event) => {
              wechat_transaction_id = COALESCE(wechat_transaction_id, $4),
              updated_at = $3
          WHERE sale_order_id = $5`,
-        [newStatus, newPaidSum, now, txnId, orderNo]
+        [newStatus, newPaidSum, now, txnId, targetOrderNo]
       )
 
+      // 1b. 回款凭证单：同步翻 '已支付' + 记录 paid_at + 记录 txn
+      if (isRepaymentCredential) {
+        await client.query(
+          `UPDATE sale_orders
+           SET status = '已支付'::order_status,
+               paid_at = COALESCE(paid_at, $1),
+               wechat_transaction_id = COALESCE(wechat_transaction_id, $2),
+               updated_at = $1
+           WHERE sale_order_id = $3`,
+          [now, txnId, orderNo]
+        )
+      }
+
       // 后续业务动作（单品到期日 / 充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
-      // 仅当订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
+      // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
       if (!fullyPaid) {
         await client.query('COMMIT')
         console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
         return { code: 'SUCCESS', message: '部分支付已到账' }
       }
 
-      // 2. 设置单品到期日（paid_at + 1 year）
+      // 2. 设置单品到期日（paid_at + 1 year）——以原销售单为准
       await client.query(
         `UPDATE sale_items
          SET expire_date = ($1::date + interval '1 year')::date
          WHERE sale_order_id = $2
            AND product_type = '单品'
            AND expire_date IS NULL`,
-        [now, orderNo]
+        [now, targetOrderNo]
       )
 
       // 3a. 充值卡入账（识别 product_kind='充值卡' 的行 → UPSERT prepaid_cards + INSERT card_transactions）
@@ -187,19 +239,19 @@ exports.main = async (event) => {
       //
       // 幂等：card_transactions.ref_order_id 单独 SELECT 去重（表无 UNIQUE 约束），
       // 外层 status 翻转 rowCount 已是第一道幂等闸。
-      if (order.client_user_id && order.store_id) {
+      if (targetOrder.client_user_id && targetOrder.store_id) {
         const rechargeRows = await client.query(
           `SELECT si.sku_id, si.product_name, sk.price AS sku_price
            FROM sale_items si
            LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
            LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
            WHERE si.sale_order_id = $1 AND pc.product_kind = '充值卡'`,
-          [orderNo]
+          [targetOrderNo]
         )
         if (rechargeRows.rows.length > 0) {
           const dupCheck = await client.query(
             `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
-            [orderNo]
+            [targetOrderNo]
           )
           if (dupCheck.rows.length === 0) {
             for (const row of rechargeRows.rows) {
@@ -222,18 +274,18 @@ exports.main = async (event) => {
                  ON CONFLICT (user_id) DO UPDATE
                    SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
                  RETURNING card_id`,
-                [newCardId, order.client_user_id, faceValue]
+                [newCardId, targetOrder.client_user_id, faceValue]
               )
               const cardId = upsertRes.rows[0].card_id
               await client.query(
                 `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
                  VALUES ($1, '充值', $2, $3, NOW())`,
-                [cardId, faceValue, orderNo]
+                [cardId, faceValue, targetOrderNo]
               )
-              console.log(`[payNotify] 充值入账: order=${orderNo}, card=${cardId}, faceValue=${faceValue}, skuId=${row.sku_id}`)
+              console.log(`[payNotify] 充值入账: order=${targetOrderNo}, card=${cardId}, faceValue=${faceValue}, skuId=${row.sku_id}`)
             }
           } else {
-            console.log(`[payNotify] 充值入账幂等跳过: order=${orderNo}`)
+            console.log(`[payNotify] 充值入账幂等跳过: order=${targetOrderNo}`)
           }
         }
       }
@@ -241,17 +293,17 @@ exports.main = async (event) => {
       // 3b. 消费扣款入账（订单的 prepaid_card_amount > 0 时扣余额）
       // 幂等：card_transactions 用 ref_order_id + type='扣款' 的 NOT EXISTS 守护
       // 余额不足时抛错 → 整个事务回滚 → 订单保持 '待支付'（ticket §4.8 #38）
-      if (order.client_user_id && Number(order.prepaid_card_amount) > 0) {
+      if (targetOrder.client_user_id && Number(targetOrder.prepaid_card_amount) > 0) {
         const dupCheck = await client.query(
           `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
-          [orderNo]
+          [targetOrderNo]
         )
         if (dupCheck.rows.length === 0) {
-          const prepaidAmount = Number(order.prepaid_card_amount)
+          const prepaidAmount = Number(targetOrder.prepaid_card_amount)
           // 二次校验余额（FOR UPDATE 锁，防并发）
           const cardRow = await client.query(
             `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
-            [order.client_user_id]
+            [targetOrder.client_user_id]
           )
           if (cardRow.rows.length === 0 || Number(cardRow.rows[0].balance) < prepaidAmount) {
             throw new Error(`INSUFFICIENT_BALANCE: 储值卡余额不足以完成扣款`)
@@ -264,22 +316,20 @@ exports.main = async (event) => {
           await client.query(
             `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
              VALUES ($1, '扣款', $2, $3, NOW())`,
-            [cardId, -prepaidAmount, orderNo]
+            [cardId, -prepaidAmount, targetOrderNo]
           )
-          console.log(`[payNotify] 消费扣款: order=${orderNo}, card=${cardId}, amount=${prepaidAmount}`)
+          console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
-          console.log(`[payNotify] 消费扣款幂等跳过: order=${orderNo}`)
+          console.log(`[payNotify] 消费扣款幂等跳过: order=${targetOrderNo}`)
         }
       }
 
-      // 3. 自动创建业绩分配（如有指定美容师）
-      if (order.preferred_employee_id) {
-        const totalAmount = order.total_amount
-
+      // 3. 自动创建业绩分配（如有指定美容师）——以原销售单为准
+      if (targetOrder.preferred_employee_id) {
         // 查询该订单的所有明细
         const itemsResult = await client.query(
           'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
-          [orderNo]
+          [targetOrderNo]
         )
 
         // 为每个明细行创建分配记录（100% 给指定美容师）
@@ -288,14 +338,14 @@ exports.main = async (event) => {
             `INSERT INTO sale_allocations (sale_item_id, employee_id, allocation_ratio, total_amount, created_at, updated_at)
              VALUES ($1, $2, 1.00, $3, $4, $4)
              ON CONFLICT DO NOTHING`,
-            [item.sale_item_id, order.preferred_employee_id, item.received, now]
+            [item.sale_item_id, targetOrder.preferred_employee_id, item.received, now]
           )
         }
       }
 
       // 4. 重算顾客历史消费档位
       // B1 方案：'1990-1W' 档下界从 config 读取，枚举标签保留（历史 bucket id）
-      if (order.client_user_id) {
+      if (targetOrder.client_user_id) {
         const tierThreshold = await getMemberThreshold()
         await client.query(
           `UPDATE client_wechat_users
@@ -315,13 +365,13 @@ exports.main = async (event) => {
                AND status IN ('已支付', '已完成')
            ) t
            WHERE user_id = $1`,
-          [order.client_user_id, tierThreshold]
+          [targetOrder.client_user_id, tierThreshold]
         )
 
         // 5. 重算顾客类型（只升不降，已是会员客则跳过）
         const curType = await client.query(
           'SELECT customer_type FROM client_wechat_users WHERE user_id = $1',
-          [order.client_user_id]
+          [targetOrder.client_user_id]
         )
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
@@ -368,7 +418,7 @@ exports.main = async (event) => {
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,
-            [order.client_user_id, threshold]
+            [targetOrder.client_user_id, threshold]
           )
 
           const newType = typeResult.rows[0].computed_type
@@ -387,12 +437,12 @@ exports.main = async (event) => {
                       WHEN '小美客' THEN 2 WHEN '会员客' THEN 3
                     END)
              RETURNING customer_type`,
-            [order.client_user_id, newType]
+            [targetOrder.client_user_id, newType]
           )
           if (upgradeResult.rowCount > 0 && upgradeResult.rows[0].customer_type === '会员客') {
             await client.query(
               `UPDATE client_wechat_users SET became_member_at = NOW() WHERE user_id = $1`,
-              [order.client_user_id]
+              [targetOrder.client_user_id]
             )
           }
         }

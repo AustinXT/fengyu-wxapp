@@ -11,6 +11,8 @@ App<IAppOption>({
     statusBarHeight: 44,
     navBarContentHeight: 44,
     navBarHeight: 88,
+    // Ticket 2026-04-24 PR-C：多次回款"继续支付"灰度开关（默认开启；如需灰度下发可改为从 config 读）
+    continuePayEnabled: true,
   },
 
   onLaunch() {

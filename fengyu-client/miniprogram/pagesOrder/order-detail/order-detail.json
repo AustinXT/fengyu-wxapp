@@ -9,6 +9,10 @@
     "van-tag": "@vant/weapp/tag/index",
     "van-button": "@vant/weapp/button/index",
     "van-skeleton": "@vant/weapp/skeleton/index",
-    "van-toast": "@vant/weapp/toast/index"
+    "van-toast": "@vant/weapp/toast/index",
+    "van-popup": "@vant/weapp/popup/index",
+    "van-field": "@vant/weapp/field/index",
+    "van-radio": "@vant/weapp/radio/index",
+    "van-radio-group": "@vant/weapp/radio-group/index"
   }
 }

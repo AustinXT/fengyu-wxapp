@@ -377,6 +377,13 @@ async function todoList(ctx) {
       [storeId]
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
+
+    // 待审批退款单
+    const refundRows = await pg.query(
+      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND sale_order_type = '退款单' AND status = '待审批'`,
+      [storeId]
+    )
+    result.pendingRefundCount = Number(refundRows[0].cnt)
   }
 
   ctx.result = result

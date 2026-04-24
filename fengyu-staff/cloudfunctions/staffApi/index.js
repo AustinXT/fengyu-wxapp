@@ -64,6 +64,8 @@ const routes = {
   'order.createRefund':   () => require('./routes/order').createRefund,
   'order.approveRefund':  () => require('./routes/order').approveRefund,
   'order.rejectRefund':   () => require('./routes/order').rejectRefund,
+  'order.refundList':     () => require('./routes/order').refundList,
+  'order.refundDetail':   () => require('./routes/order').refundDetail,
   'order.createRepayment': () => require('./routes/order').createRepayment,
   'order.createConversion': () => require('./routes/order').createConversion,
   'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
@@ -143,7 +145,7 @@ exports.main = async (event, context) => {
     const errorMessage = error.message || '服务器内部错误'
     const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
     const errorType = errorTypeMatch ? errorTypeMatch[1] : null
-    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND', 'INSUFFICIENT_BALANCE', 'CLIENT_NOT_REGISTERED']
+    const knownTypes = ['UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS', 'PERMISSION_DENIED', 'NOT_FOUND', 'INSUFFICIENT_BALANCE', 'CLIENT_NOT_REGISTERED', 'CONFLICT', 'INVALID_STATE']
     const isKnown = errorType && knownTypes.includes(errorType)
     const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
 
@@ -154,6 +156,8 @@ exports.main = async (event, context) => {
                   errorMessage.startsWith('NOT_FOUND') ? -404 :
                   errorMessage.startsWith('INSUFFICIENT_BALANCE') ? -400 :
                   errorMessage.startsWith('CLIENT_NOT_REGISTERED') ? -400 :
+                  errorMessage.startsWith('CONFLICT') ? -409 :
+                  errorMessage.startsWith('INVALID_STATE') ? -400 :
                   -1
 
     return {
