@@ -16,7 +16,7 @@ description: >
 alwaysApply: false
 metadata:
   author: nvoyager
-  version: 1.0.0
+  version: 1.1.0
   title: CloudBase 云函数部署
   description_zh: 使用 cloudbase-mcp 部署 CloudBase 云函数（首选），MCP 不可用时回退到 tcb CLI
 ---
@@ -220,10 +220,15 @@ echo | tcb fn deploy <functionName> --envId <envId> --dir cloudfunctions/<functi
 
 ```bash
 # 比 fn deploy 更快，不重建函数配置
-tcb fn code update <functionName> --envId <envId>
+# ⚠️ tcb CLI 3.x 的 fn code update 不支持 --envId / --env-id 参数
+# envId 从项目 cloudbaserc.json 读取，需先 cd 到含该配置的目录
+cd /path/to/miniprogram-root   # 该目录下应有 cloudbaserc.json 指定 envId
+tcb fn code update <functionName>
 ```
 
 > **首次用 `fn deploy`，后续迭代用 `fn code update`**
+>
+> 如果当前目录没有 `cloudbaserc.json` 或 envId 不对，先新建/修改再部署；不要想通过命令行参数覆盖。
 
 ### 常用辅助命令
 
@@ -242,7 +247,10 @@ tcb fn log <functionName> --envId <envId>
 | 云端 `npm install` 失败，函数状态 "Creation failed" | 网络或依赖兼容性问题 | 本地先 `npm install`，在 `cloudbaserc.json` 中设置 `autoInstallDependencies: false`，连同 `node_modules` 一起上传 |
 | `Environment not found` | 当前会话无法看到目标环境（账号或权限问题） | 先 `tcb env list` 确认环境是否可见；不可见则 `tcb logout && tcb login` 切换账号重新登录 |
 | 设置 `TENCENTCLOUD_SECRETID` 环境变量后仍报 "not found" | 环境变量不会覆盖已缓存的 session token | 必须先 `tcb logout`，再 `tcb login -k --apiKeyId <id> --apiKey <key>` 显式登录 |
-| 部署到了错误的环境 | 未指定 `--envId` 时用了 CLI 默认环境 | 始终显式传 `--envId <envId>` |
+| 部署到了错误的环境 | 未指定 `--envId` 时用了 CLI 默认环境 | 始终显式传 `--envId <envId>`（`fn code update` 除外，见下方） |
+| `tcb fn code update` 报 `unknown option --envId` / `--env-id` | tcb CLI 3.x 的 `fn code update` 子命令不接受 envId 参数 | envId 从当前目录的 `cloudbaserc.json` 读取；先 `cd` 到正确项目目录，确认其中 envId 正确后再执行 |
+| `env list` 能看到目标环境但 `fn list` 报 `Environment not found`（同一账号） | `~/.cloudbase-cli/auth.json` 优先级高于环境变量；不同子命令对 credentials 的读取方式不一致，导致走到了旧 session | 切换账号时按顺序执行：①`unset TENCENTCLOUD_SECRETID TENCENTCLOUD_SECRETKEY` ②`tcb logout` ③`tcb login -k --apiKeyId <id> --apiKey <key>`（让 auth.json 写入目标账号）|
+| 并行部署两个账号互相覆盖 session | `~/.cloudbase-cli/auth.json` 是全局单例 | 并行执行时用串行 login → 完成一端 → 再 logout → login 另一端；或在不同机器/容器运行 |
 
 ---
 
