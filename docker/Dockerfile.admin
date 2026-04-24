@@ -29,6 +29,7 @@ WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /db/schema/ /db/schema/
+COPY db/utils/ /db/utils/
 COPY fengyu-admin/ .
 
 ENV NEXT_TELEMETRY_DISABLED=1

@@ -45,9 +45,11 @@ import {
   saveMemberBenefits,
   getShareGiftConfig,
   saveShareGiftConfig,
+} from './settings'
+import {
   normalizeShareGiftConfig,
   DEFAULT_SHARE_GIFT_CONFIG,
-} from './settings'
+} from '@/lib/share-gift-config'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
