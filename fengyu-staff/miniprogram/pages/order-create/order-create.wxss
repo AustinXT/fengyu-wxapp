@@ -28,6 +28,41 @@
   background: transparent;
 }
 
+/* ===== PR-B：普通商品模式的自定义分组侧边栏（替代 van-sidebar）===== */
+.grouped-sidebar {
+  background: transparent;
+}
+/* group header（一级 kind 名）：不可点击、视觉弱化 */
+.group-header {
+  font-size: 24rpx;
+  color: #888888;
+  background: #F7F7F7;
+  padding: 12rpx 16rpx;
+  letter-spacing: 1rpx;
+  /* 防御性：禁止 tap 透传 */
+  pointer-events: none;
+  user-select: none;
+}
+/* 子项（二级 category 名） */
+.cat-item {
+  position: relative;
+  font-size: 28rpx;
+  color: #333333;
+  background: #F5F2EE;
+  padding: 22rpx 16rpx;
+  line-height: 1.3;
+  border-left: 4rpx solid transparent;
+}
+.cat-item-hover {
+  background: #EAE5DE;
+}
+.cat-item--active {
+  background: #FFFFFF;
+  color: var(--color-primary);
+  font-weight: 600;
+  border-left-color: var(--color-primary);
+}
+
 /* 右侧商品滚动区 */
 .product-scroll {
   flex: 1;

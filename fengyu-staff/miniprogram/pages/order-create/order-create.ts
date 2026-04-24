@@ -10,11 +10,20 @@ const app = getApp<IAppOption>();
 /**
  * 顶部商品类型 4 选 1（PR-B 改版）
  * - 组合套餐：走 BundlePicker 子视图（products.is_bundle=true）
- * - 普通商品：productKind IN ('护理项目','家居产品') AND isBundle != true
+ * - 普通商品：productKind ∉ CARD_PRODUCT_KINDS AND isBundle != true（排除法）
  * - 体验卡 / 充值卡：productKind='体验卡' / '充值卡'（grid 布局）
  */
 const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充值卡'] as const;
 type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
+
+/**
+ * 卡类 product_kind 名单（排除法关键常量）。
+ * 同步位置（任何一处新增"卡"类都必须同步更新）：
+ *   - fengyu-admin/src/lib/product-kind.ts
+ *   - fengyu-staff/cloudfunctions/staffApi/routes/product.js
+ *   - fengyu-staff/miniprogram/pages/order-create/order-create.ts（本文件）
+ */
+const CARD_PRODUCT_KINDS = ['充值卡', '体验卡'] as const;
 
 /**
  * 订单类型（PR-C §C1）—— 与 DB 原生枚举 sale_order_type 对齐，仅使用前 3 值
@@ -116,8 +125,17 @@ interface CouponInfo {
   description?: string;
 }
 
+/** 侧边栏分组（"普通商品"模式，按 productKind 聚合） */
+interface GroupedCategory {
+  productKind: string;
+  kindSortOrder: number;
+  items: Category[];
+}
+
 interface ShopInitResponse {
   categories: Category[];
+  /** PR-B：排除卡类 + EXISTS 过滤 + 按 parent.sort_order 聚合后的分组 */
+  groupedCategories?: GroupedCategory[];
   skuList: SkuItem[];
   mallBundleGroups?: BundleSpu[];
 }
@@ -151,17 +169,18 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
 }
 
 /**
- * 商品类型过滤器（PR-B §1.2）
- * - 普通商品：productKind ∈ {护理项目, 家居产品} 且非 bundle
- * - 体验卡 / 充值卡：按 productKind 匹配
+ * 商品类型过滤器（PR-B：排除法）
+ * - 普通商品：productKind ∉ CARD_PRODUCT_KINDS 且非 bundle
+ *   未来新增的非卡一级 kind（如"福利活动"）会自动归入此 Tab，无需改代码
+ * - 体验卡 / 充值卡：按 productKind 精确匹配
  * - 组合套餐：不走 SKU 列表，由 BundlePicker 接管
  */
 function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): SkuItem[] {
   if (choice === '组合套餐') return [];
   if (choice === '普通商品') {
-    return skus.filter(s => (s.productKind === '护理项目' || s.productKind === '家居产品') && !s.isBundle);
+    return skus.filter(s => !CARD_PRODUCT_KINDS.includes(s.productKind as typeof CARD_PRODUCT_KINDS[number]) && !s.isBundle);
   }
-  // 体验卡 / 充值卡
+  // 体验卡 / 充值卡：精确匹配
   return skus.filter(s => s.productKind === choice);
 }
 
@@ -169,7 +188,7 @@ function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): Sku
 function filterCategoriesByKindChoice(categories: Category[], choice: ProductKindChoice): Category[] {
   if (choice === '组合套餐') return [];
   if (choice === '普通商品') {
-    return categories.filter(c => c.productKind === '护理项目' || c.productKind === '家居产品');
+    return categories.filter(c => !CARD_PRODUCT_KINDS.includes(c.productKind as typeof CARD_PRODUCT_KINDS[number]));
   }
   return categories.filter(c => c.productKind === choice);
 }
@@ -185,6 +204,10 @@ Page({
     catalogLoading: false,
     categories: [] as Category[],
     activeCategoryIndex: 0,
+    /** PR-B：普通商品模式下的分组结构（其他 Tab 用平坦 categories） */
+    groupedCategories: [] as GroupedCategory[],
+    /** PR-B：普通商品模式下，当前选中的 category id（驱动 active 样式 + SKU 刷新） */
+    activeCategoryId: '' as string,
     spuList: [] as DisplayItem[],
     // 组合套餐（BundlePicker 数据源）
     bundleSpus: [] as BundleSpu[],
@@ -253,6 +276,11 @@ Page({
 
   // 所有分类（未过滤）
   _allCategories: [] as Category[],
+  /**
+   * PR-B：从 shopInit 获取的"普通商品"分组结构（已排除卡类 + 空分类）。
+   * 仅在 productKindChoice === '普通商品' 时使用。
+   */
+  _allGroupedCategories: [] as GroupedCategory[],
   // 所有 SKU（未过滤，shopInit 一次性返回全量）
   _allSkus: [] as SkuItem[],
   // SKU 缓存：按 `${productKindChoice}:${categoryId}` 缓存已加载的展示列表
@@ -338,10 +366,12 @@ Page({
     try {
       const data = await callStaffApi<ShopInitResponse>('product.shopInit');
       const categories: Category[] = data.categories || [];
+      const groupedCategories: GroupedCategory[] = data.groupedCategories || [];
       const rawSkus: SkuItem[] = data.skuList || [];
       const bundleSpus: BundleSpu[] = data.mallBundleGroups || [];
 
       this._allCategories = categories;
+      this._allGroupedCategories = groupedCategories;
       this._allSkus = rawSkus;
       this._spuCache = {};
 
@@ -360,6 +390,11 @@ Page({
   /**
    * 按 productKindChoice 过滤侧边栏 + SKU 列表
    * 组合套餐不走此路径（由 BundlePicker 接管，主区域通过 wx:if 切视图）
+   *
+   * PR-B：
+   * - 普通商品模式下使用后端返回的 `groupedCategories`（已排除卡类 + EXISTS 过滤）
+   *   渲染自定义分组侧边栏；activeCategoryId 驱动 active 样式
+   * - 其他 Tab 仍用平坦 `categories` + `<van-sidebar>`
    */
   applyKindChoice(choice: ProductKindChoice) {
     const isCardType = choice === '体验卡' || choice === '充值卡';
@@ -368,17 +403,57 @@ Page({
     if (choice === '组合套餐') {
       this.setData({
         categories: [],
+        groupedCategories: [],
         activeCategoryIndex: 0,
+        activeCategoryId: '',
         spuList: [],
       });
       return;
     }
 
+    // 普通商品模式：用后端返回的分组结构渲染侧边栏
+    if (choice === '普通商品') {
+      // 防御：过滤掉 items 为空的组（ticket §6.3 空防御）
+      const groups = this._allGroupedCategories.filter(g => g.items && g.items.length > 0);
+      if (groups.length === 0) {
+        this.setData({
+          categories: [],
+          groupedCategories: [],
+          activeCategoryIndex: 0,
+          activeCategoryId: '',
+          spuList: [],
+        });
+        return;
+      }
+      // 平坦 categories（向后兼容：其他消费方可能仍读 categories 数组）
+      const flatCategories = groups.reduce<Category[]>((acc, g) => acc.concat(g.items), []);
+      const firstCat = groups[0].items[0];
+      const firstCatId = firstCat.id;
+      const cacheKey = `${choice}:${firstCatId}`;
+      let list = this._spuCache[cacheKey];
+      if (!list) {
+        const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
+        list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
+        this._spuCache[cacheKey] = list;
+      }
+      this.setData({
+        categories: flatCategories,
+        groupedCategories: groups,
+        activeCategoryIndex: 0,
+        activeCategoryId: firstCatId,
+        spuList: list,
+      });
+      return;
+    }
+
+    // 体验卡 / 充值卡：保持平坦 <van-sidebar>
     const filtered = filterCategoriesByKindChoice(this._allCategories, choice);
     if (filtered.length === 0) {
       this.setData({
         categories: [],
+        groupedCategories: [],
         activeCategoryIndex: 0,
+        activeCategoryId: '',
         spuList: [],
       });
       return;
@@ -397,7 +472,9 @@ Page({
     // 先把 activeCategoryIndex 置 -1 强制 van-sidebar 刷新
     this.setData({
       categories: filtered,
+      groupedCategories: [],
       activeCategoryIndex: -1,
+      activeCategoryId: firstCatId,
       spuList: [],
     }, () => {
       this.setData({ activeCategoryIndex: 0, spuList: list });
@@ -468,12 +545,43 @@ Page({
     const cacheKey = `${productKindChoice}:${cat.id}`;
     const cached = this._spuCache[cacheKey];
     if (cached) {
-      this.setData({ activeCategoryIndex: index, spuList: cached });
+      this.setData({ activeCategoryIndex: index, activeCategoryId: cat.id, spuList: cached });
       return;
     }
 
-    this.setData({ activeCategoryIndex: index, spuList: [] });
+    this.setData({ activeCategoryIndex: index, activeCategoryId: cat.id, spuList: [] });
     this.loadSpuList(cat.id);
+  },
+
+  /**
+   * PR-B：普通商品模式下的 category 子项点击（自定义分组侧边栏）
+   * group header 不可点击，子项通过 data-id 传递 categoryId
+   */
+  onGroupedCategoryTap(e: WechatMiniprogram.TouchEvent) {
+    const categoryId = e.currentTarget.dataset.id as string;
+    if (!categoryId || categoryId === this.data.activeCategoryId) return;
+
+    const { productKindChoice } = this.data;
+    // 同步 activeCategoryIndex（在扁平 categories 中找到对应索引，保证 van-sidebar 回退场景时一致）
+    const index = this.data.categories.findIndex(c => c.id === categoryId);
+
+    const cacheKey = `${productKindChoice}:${categoryId}`;
+    const cached = this._spuCache[cacheKey];
+    if (cached) {
+      this.setData({
+        activeCategoryId: categoryId,
+        activeCategoryIndex: index >= 0 ? index : this.data.activeCategoryIndex,
+        spuList: cached,
+      });
+      return;
+    }
+
+    this.setData({
+      activeCategoryId: categoryId,
+      activeCategoryIndex: index >= 0 ? index : this.data.activeCategoryIndex,
+      spuList: [],
+    });
+    this.loadSpuList(categoryId);
   },
 
   async loadSpuList(categoryId: string) {

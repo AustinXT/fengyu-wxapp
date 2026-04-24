@@ -13,16 +13,90 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 
+// ===== 常量 =====
+
+/**
+ * 卡类 product_kind 名单（排除法关键常量）。
+ * 同步位置（任何一处新增"卡"类都必须同步更新）：
+ *   - fengyu-admin/src/lib/product-kind.ts
+ *   - fengyu-staff/cloudfunctions/staffApi/routes/product.js（本文件）
+ *   - fengyu-staff/miniprogram/pages/order-create/order-create.ts
+ */
+const CARD_PRODUCT_KINDS = ['充值卡', '体验卡']
+
 // ===== 公共查询辅助 =====
 
-/** 查询品项分类列表 */
-async function _queryCategoryRows() {
-  return pg.query(`
-    SELECT category_id, category_name, product_kind, sales_category, sort_order
-    FROM product_categories
-    WHERE is_valid = true
-    ORDER BY sort_order ASC
-  `)
+/**
+ * 查询品项分类列表
+ *
+ * @param {Object}   [opts]
+ * @param {string[]} [opts.kindIn]       仅返回 product_kind ∈ kindIn 的二级行
+ * @param {string[]} [opts.kindNotIn]    仅返回 product_kind ∉ kindNotIn 的二级行
+ * @param {boolean}  [opts.withParentJoin=false]
+ *                                        为 true 时 JOIN 一级行（`parent.product_kind IS NULL
+ *                                        AND parent.category_name = child.product_kind`）附带出
+ *                                        `kind_name` 与 `kind_sort_order`；按
+ *                                        (parent.sort_order, child.sort_order) 排序。
+ *                                        同时强制只返回二级行（`child.product_kind IS NOT NULL`）。
+ *
+ * 无参调用保留"全量行为"（含一级行+二级行，按 sort_order 排序），
+ * 保持 `categories` action 的历史契约向后兼容。
+ *
+ * 任何"取二级分类"语义的调用都应显式传 `kindIn` / `kindNotIn` 或 `withParentJoin=true`，
+ * 避免把一级行误当作二级分类下发给客户端。
+ */
+async function _queryCategoryRows(opts = {}) {
+  const { kindIn, kindNotIn, withParentJoin } = opts || {}
+  const params = []
+  const conditions = ['child.is_valid = true']
+
+  if (Array.isArray(kindIn) && kindIn.length > 0) {
+    params.push(kindIn)
+    conditions.push(`child.product_kind = ANY($${params.length})`)
+    conditions.push('child.product_kind IS NOT NULL')
+  }
+  if (Array.isArray(kindNotIn) && kindNotIn.length > 0) {
+    params.push(kindNotIn)
+    conditions.push(`child.product_kind <> ALL($${params.length})`)
+    conditions.push('child.product_kind IS NOT NULL')
+  }
+
+  if (withParentJoin) {
+    // 显式仅返回二级行（parent.product_kind IS NULL 限定一级行）
+    if (!conditions.includes('child.product_kind IS NOT NULL')) {
+      conditions.push('child.product_kind IS NOT NULL')
+    }
+    const whereClause = conditions.join(' AND ')
+    return pg.query(
+      `
+      SELECT
+        child.category_id, child.category_name, child.product_kind,
+        child.sales_category, child.sort_order,
+        parent.category_name AS kind_name,
+        parent.sort_order    AS kind_sort_order
+      FROM product_categories child
+      JOIN product_categories parent
+        ON parent.product_kind IS NULL
+       AND parent.category_name = child.product_kind
+       AND parent.is_valid = true
+      WHERE ${whereClause}
+      ORDER BY parent.sort_order ASC, child.sort_order ASC
+    `,
+      params
+    )
+  }
+
+  const whereClause = conditions.join(' AND ')
+  return pg.query(
+    `
+    SELECT child.category_id, child.category_name, child.product_kind,
+           child.sales_category, child.sort_order
+    FROM product_categories child
+    WHERE ${whereClause}
+    ORDER BY child.sort_order ASC
+  `,
+    params
+  )
 }
 
 /** 格式化分类行 → 前端格式 */
@@ -158,13 +232,63 @@ async function _queryMallBundleGroups() {
 
 /**
  * 开单页初始化（合并接口）
- * 一次返回 categories + 第一个分类的 skuList + 套餐分组
+ * 一次返回 categories + 第一个分类的 skuList + 套餐分组 + groupedCategories
+ *
+ * PR-B：
+ *   - 侧边栏分类只下发"非卡类"（排除 CARD_PRODUCT_KINDS），卡类在前端有独立 Tab 流
+ *   - 额外 EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的 SKU，避免出现空分类
+ *   - 额外返回 `groupedCategories: [{ productKind, kindSortOrder, items: Category[] }]`
+ *     （按一级行 sortOrder 排序；同组内按二级 sortOrder 排序）
+ *   - 保留老字段 `categories`（平铺数组）以兼容旧前端 / 其他调用方
  */
 async function shopInit(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const catRows = await _queryCategoryRows()
+  // 取"非卡类"二级分类 + 一级行 JOIN（用于 groupedCategories）
+  const rawRows = await _queryCategoryRows({
+    kindNotIn: CARD_PRODUCT_KINDS,
+    withParentJoin: true,
+  })
+
+  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非 bundle SKU
+  let catRows = rawRows
+  if (rawRows.length > 0) {
+    const categoryIds = rawRows.map((r) => r.category_id)
+    const nonEmptyRows = await pg.query(
+      `
+      SELECT DISTINCT sk.category_id
+      FROM product_skus sk
+      WHERE sk.category_id = ANY($1)
+        AND sk.is_enabled = true
+        AND NOT EXISTS (
+          SELECT 1
+          FROM mall_product_skus mps
+          JOIN products p ON p.product_id = mps.product_id
+          WHERE mps.sku_id = sk.sku_id AND p.is_bundle = true
+        )
+      `,
+      [categoryIds]
+    )
+    const nonEmptySet = new Set(nonEmptyRows.map((r) => r.category_id))
+    catRows = rawRows.filter((r) => nonEmptySet.has(r.category_id))
+  }
+
   const categories = catRows.map(_formatCategory)
+
+  // 分组：按 productKind 聚合（rawRows 已按 parent.sort_order, child.sort_order 排序）
+  const groupMap = new Map()
+  for (const r of catRows) {
+    const key = r.product_kind
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        productKind: key,
+        kindSortOrder: r.kind_sort_order != null ? Number(r.kind_sort_order) : 0,
+        items: [],
+      })
+    }
+    groupMap.get(key).items.push(_formatCategory(r))
+  }
+  const groupedCategories = Array.from(groupMap.values())
 
   let skuList = []
   if (categories.length > 0) {
@@ -173,15 +297,20 @@ async function shopInit(ctx) {
 
   const mallBundleGroups = await _queryMallBundleGroups()
 
-  ctx.result = { categories, skuList, mallBundleGroups }
+  ctx.result = { categories, groupedCategories, skuList, mallBundleGroups }
 }
 
 /**
  * 品项分类列表
+ *
+ * 无参调用：保持全量行为（与历史契约一致，含一级+二级行）。
+ * 可选 payload.kindNotIn：二级行且 product_kind ∉ kindNotIn；会自动带上 product_kind IS NOT NULL。
  */
 async function categories(ctx) {
   await requireStaffBound()(ctx, async () => {})
-  const rows = await _queryCategoryRows()
+  const payload = (ctx.event && ctx.event.payload) || {}
+  const kindNotIn = Array.isArray(payload.kindNotIn) && payload.kindNotIn.length > 0 ? payload.kindNotIn : null
+  const rows = await _queryCategoryRows(kindNotIn ? { kindNotIn } : {})
   ctx.result = rows.map(_formatCategory)
 }
 
@@ -306,3 +435,10 @@ async function promotionPlans(ctx) {
 }
 
 module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
+
+// 测试专用导出：用 Object.defineProperty 以非枚举挂载，避免被 index.test.js 的
+// "路由完整性" 扫描（Object.keys）检出为未注册路由。
+Object.defineProperty(module.exports, '__testables__', {
+  enumerable: false,
+  value: { _queryCategoryRows, CARD_PRODUCT_KINDS },
+})

@@ -30,7 +30,29 @@
     <block wx:else>
       <!-- 左侧：分类侧边栏 -->
       <scroll-view class="sidebar-scroll" scroll-y>
-        <van-sidebar active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
+        <!-- PR-B：普通商品模式用自定义分组 view（van-sidebar 不支持分组） -->
+        <block wx:if="{{productKindChoice === '普通商品'}}">
+          <view
+            class="grouped-sidebar"
+            wx:for="{{groupedCategories}}"
+            wx:for-item="group"
+            wx:key="productKind"
+          >
+            <view class="group-header">{{group.productKind}}</view>
+            <view
+              wx:for="{{group.items}}"
+              wx:for-item="sub"
+              wx:key="id"
+              class="cat-item {{activeCategoryId === sub.id ? 'cat-item--active' : ''}}"
+              hover-class="cat-item-hover"
+              hover-stay-time="50"
+              data-id="{{sub.id}}"
+              bindtap="onGroupedCategoryTap"
+            >{{sub.name}}</view>
+          </view>
+        </block>
+        <!-- 其他 Tab（体验卡/充值卡）：保留 van-sidebar 平坦结构 -->
+        <van-sidebar wx:else active-key="{{activeCategoryIndex}}" bind:change="onCategoryChange">
           <van-sidebar-item
             wx:for="{{categories}}"
             wx:key="id"
