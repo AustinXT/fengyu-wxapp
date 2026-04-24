@@ -249,7 +249,7 @@ export interface ProductSku {
   updatedAt: string
   // joined
   categoryName?: string
-  productKind?: ProductKind
+  productKind?: string
   salesCategory?: SalesCategory | null
   bundlePrice?: string | null
   bundleGroupId?: number | null

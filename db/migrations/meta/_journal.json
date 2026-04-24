@@ -36,6 +36,13 @@
       "when": 1777000775134,
       "tag": "0004_yellow_magma",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777002415728,
+      "tag": "0005_true_doctor_faustus",
+      "breakpoints": true
     }
   ]
 }

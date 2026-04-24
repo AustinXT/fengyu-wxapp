@@ -9,6 +9,7 @@ vi.mock('@/db', () => ({
     insert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
+    transaction: vi.fn(),
   },
 }))
 
@@ -103,6 +104,7 @@ import {
   updateProduct,
   createCategory,
   updateCategory,
+  updateProductKind,
   createSku,
   updateSku,
   deleteSku,
@@ -241,6 +243,8 @@ describe('createCategory — 错误处理', () => {
   })
 
   it('分类编号重复（23505）→ 友好消息', async () => {
+    // 一级 kind 存在
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
     const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
@@ -249,6 +253,7 @@ describe('createCategory — 错误处理', () => {
   })
 
   it('其他 DB 异常 → 重新抛出', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
     await expect(
       createCategory({ categoryName: '测试分类', productKind: '护理项目' })
@@ -256,10 +261,19 @@ describe('createCategory — 错误处理', () => {
   })
 
   it('正常创建 → 成功', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ categoryId: 'kind-care' }]))
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const result = await createCategory({ categoryName: '测试分类', productKind: '护理项目' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('分类创建成功')
+  })
+
+  it('一级品项类型不存在 → INVALID_PRODUCT_KIND', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await createCategory({ categoryName: '测试分类', productKind: '不存在的 kind' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_PRODUCT_KIND')
+    expect(db.insert).not.toHaveBeenCalled()
   })
 })
 
@@ -297,6 +311,99 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     const result = await updateCategory('CAT-1', { categoryName: '新名称' })
     expect(result.success).toBe(true)
     expect(result.message).toContain('已更新')
+  })
+
+  it('传了不存在的 productKind → INVALID_PRODUCT_KIND', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([]))
+    const result = await updateCategory('CAT-1', { productKind: '不存在的 kind' })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_PRODUCT_KIND')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+})
+
+// ── updateProductKind 级联 ────────────────────────────────────────────────────
+
+describe('updateProductKind — 改名级联', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('改名时级联 UPDATE 子级的 product_kind', async () => {
+    // 第 1 次 select: 当前一级行；第 2 次 select: 重名检查（无重复）
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-care',
+          categoryName: '护理项目',
+          productKind: null,
+          sortOrder: 2,
+          isValid: true,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-care', { categoryName: '新护理项目' })
+    expect(result.success).toBe(true)
+    // 第 1 次 set: 更新自身 categoryName；第 2 次 set: 级联更新 productKind
+    expect(setCalls).toHaveLength(2)
+    expect(setCalls[0]).toMatchObject({ categoryName: '新护理项目' })
+    expect(setCalls[1]).toEqual({ productKind: '新护理项目' })
+  })
+
+  it('未改名时不触发级联 UPDATE', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-care',
+          categoryName: '护理项目',
+          productKind: null,
+          sortOrder: 2,
+          isValid: true,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-care', { sortOrder: 5 })
+    expect(result.success).toBe(true)
+    // 只有 1 次 set（自身 sortOrder），没有级联
+    expect(setCalls).toHaveLength(1)
+    expect(setCalls[0]).toMatchObject({ sortOrder: 5 })
   })
 })
 
