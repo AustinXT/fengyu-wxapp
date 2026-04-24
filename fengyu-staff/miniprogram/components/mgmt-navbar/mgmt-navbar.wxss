@@ -1,0 +1,30 @@
+.mgmt-tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 110rpx;
+  background: #FFFFFF;
+  border-top: 1rpx solid #EBEDF0;
+  display: flex;
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 100;
+}
+
+.mgmt-tab-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+}
+
+.mgmt-tab-item--active {
+  color: #C0322A;
+}
+
+.mgmt-tab-text {
+  margin-top: 4rpx;
+  font-size: 22rpx;
+}

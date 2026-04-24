@@ -16,6 +16,7 @@ const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
+const { settlePointsSafe } = require('../utils/points')
 const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
@@ -186,7 +187,7 @@ async function create(ctx) {
     receivedAmount: inputReceivedAmount,
   } = payload
 
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!clientPhone) {
@@ -678,7 +679,7 @@ async function qrcode(ctx) {
   const order = orders[0]
 
   // 仅本店员工可查看
-  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.storeId) {
+  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.effectiveStoreId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -759,7 +760,7 @@ async function confirmOffline(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -980,6 +981,11 @@ async function confirmOffline(ctx) {
     // 重算顾客类型（只升不降）
     await recalcCustomerType(client, order.client_user_id)
 
+    // 积分结算（订单链净额差值法，幂等）
+    // confirmOffline 是店长确认线下收款的"状态转已支付/部分支付"入口（AC-04）；
+    // 部分支付时 paid_amount 已累加，也要调用 settle 保持链上积分与实到账同步
+    await settlePointsSafe(client, saleOrderId, 'staffApi.confirmOffline')
+
     // 分享礼：首单结清（'已支付' / '已完成'）时向邀请人 + 新客各发一张动态面值代金券 + 一条站内消息
     // 幂等由 grantShareGift 内部 INSERT ... ON CONFLICT 保证；失败不阻塞主事务（ticket §9.4），
     // 用 SAVEPOINT 隔离：分享礼异常回滚到 savepoint，不影响已完成的收款状态更新。
@@ -1032,7 +1038,7 @@ async function close(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1107,7 +1113,7 @@ async function resetFailed(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1143,7 +1149,7 @@ async function list(ctx) {
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
 
   if (status) {
@@ -1198,7 +1204,7 @@ async function detail(ctx) {
 
   const orders = await pg.query(
     'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1322,7 +1328,7 @@ async function createRefund(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
@@ -1481,7 +1487,7 @@ async function approveRefund(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单' AND status = '待审批'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许审批')
 
@@ -1611,6 +1617,13 @@ async function approveRefund(ctx) {
     await refreshSpendingTier(client, refundOrder.client_user_id)
     // 重算顾客类型（退款不降级，但保持一致性）
     await recalcCustomerType(client, refundOrder.client_user_id)
+
+    // 积分冲销（订单链净额差值法，幂等）
+    // 退款单的 paid_amount 为负，并入原单链后链净额下降 → delta 为负 → 写"消费冲销"
+    // 关键：settle 对象是原销售单（refSaleOrderId），不是退款单自身
+    if (refSaleOrderId) {
+      await settlePointsSafe(client, refSaleOrderId, 'staffApi.approveRefund')
+    }
   })
 
   ctx.result = { saleOrderId, status: '已支付', refundByCard, refundByOrigin, message: '退款已审批通过' }
@@ -1630,7 +1643,7 @@ async function rejectRefund(ctx) {
   // 先查 FY-TKD 拿到 ref_sale_order_id（为作废原单上的 payments 待支付退款行）
   const refundRows = await pg.query(
     "SELECT ref_sale_order_id FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单' AND status = '待审批'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (refundRows.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许驳回')
   const refSaleOrderId = refundRows[0].ref_sale_order_id
@@ -1705,7 +1718,7 @@ async function createRepayment(ctx) {
     paymentMethod,
     note,
   } = payload
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
@@ -1946,7 +1959,7 @@ async function createRepayment(ctx) {
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
  *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
- *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.storeId
+ *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.effectiveStoreId
  *
  * payload: {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
@@ -1968,7 +1981,7 @@ async function createConversion(ctx) {
     preferredStaffWfId,
     remark,
   } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 转换单必须指定顾客 clientUserId')
@@ -2293,7 +2306,7 @@ async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { clientUserId } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -2367,7 +2380,7 @@ async function createPickup(ctx) {
        AND product_type = '院装产品'
        AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
      RETURNING sale_item_id, quantity, picked_up_quantity`,
-    [pickupQuantity, saleItemId, ctx.auth.storeId]
+    [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
   )
 
   if (result.rowCount === 0) {
@@ -2379,7 +2392,7 @@ async function createPickup(ctx) {
     )
     const row = probe[0]
     if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
-    if (row.store_id !== ctx.auth.storeId) {
+    if (row.store_id !== ctx.auth.effectiveStoreId) {
       throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
     }
     if (row.product_type !== '院装产品') {
@@ -2401,7 +2414,7 @@ async function createPickup(ctx) {
   await pg.query(
     `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [saleItemId, pickupQuantity, ctx.auth.storeId, clientUserId, ctx.auth.staffWfId, remark || null]
+    [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null]
   )
 
   const updated = result.rows ? result.rows[0] : result[0]
@@ -2456,7 +2469,7 @@ async function refundList(ctx) {
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
   if (status) {
     params.push(status)
@@ -2502,7 +2515,7 @@ async function refundDetail(ctx) {
 
   const refundRows = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (refundRows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
   const refund = refundRows[0]

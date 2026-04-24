@@ -19,9 +19,20 @@
   color: #FFFFFF;
 }
 
+.commission-store-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+
+.commission-store-wrap--clickable {
+  padding: 4rpx 10rpx;
+  border-radius: 18rpx;
+  background: rgba(255, 255, 255, 0.15);
+}
+
 .commission-store-name {
   font-size: 24rpx;
-  color: rgba(255, 255, 255, 0.75);
+  color: rgba(255, 255, 255, 0.85);
 }
 
 .role-badge {

@@ -5,7 +5,8 @@
     "pages/order-create/order-create",
     "pages/service/service",
     "pages/customer-list/customer-list",
-    "pages/profile/profile"
+    "pages/profile/profile",
+    "pages/mgmt-dashboard/mgmt-dashboard"
   ],
   "subPackages": [
     {

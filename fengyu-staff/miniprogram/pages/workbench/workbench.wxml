@@ -14,9 +14,12 @@
         <!-- 员工信息行 -->
         <view class="commission-staff-row">
           <text class="commission-staff-name">{{staffName}}</text>
-          <text class="commission-store-name">{{storeName || '未绑定门店'}}</text>
+          <view class="commission-store-wrap {{hasMultiStore ? 'commission-store-wrap--clickable' : ''}}" bindtap="openStorePicker">
+            <text class="commission-store-name">{{storeName || '未绑定门店'}}</text>
+            <van-icon wx:if="{{hasMultiStore}}" name="arrow-down" size="20rpx" color="#666" custom-style="margin-left: 4rpx;" />
+          </view>
           <view class="role-badge role-badge--{{isManager ? 'manager' : 'beautician'}}">
-            <text class="role-text">{{position || '未绑定'}}</text>
+            <text class="role-text">{{position || '职位待设置'}}</text>
           </view>
         </view>
         <view class="commission-columns">
@@ -188,4 +191,13 @@
 
   </block>
 
+  <!-- 门店切换 action sheet（多店时可用） -->
+  <van-action-sheet
+    show="{{storePickerVisible}}"
+    actions="{{storePickerActions}}"
+    cancel-text="取消"
+    bind:select="onStorePickerSelect"
+    bind:close="onStorePickerClose"
+    bind:cancel="onStorePickerClose"
+  />
 </view>

@@ -6,6 +6,7 @@
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
+const { settlePointsSafe } = require('../utils/points')
 
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）
@@ -1453,6 +1454,11 @@ async function confirmPrepaidFull(ctx) {
        WHERE sale_order_id = $2 AND status = '待支付'`,
       [userId, saleOrderId]
     )
+
+    // 积分结算（订单链净额差值法，幂等）
+    // confirmPrepaidFull 仅对 paid_amount=0 的纯卡抵扣订单：链净额=0 → delta=0 → 无写入（AC-05）
+    // 保留调用以保证"所有状态转已支付的触发点"都走同一入口
+    await settlePointsSafe(client, saleOrderId, 'clientApi.confirmPrepaidFull')
   })
 
   ctx.result = {
@@ -1701,6 +1707,9 @@ async function repay(ctx) {
          WHERE sale_order_id = $4`,
         [newStatus, nowPaidRounded, now, saleOrderId]
       )
+
+      // 积分结算（纯卡回款时原单 paid_amount 已增加，需要 settle；线上通道等 payNotify 触发）
+      await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
     }
   })
 

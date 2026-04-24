@@ -47,7 +47,7 @@ async function list(ctx) {
   const { status, todayOnly, page = 1, pageSize = 50 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
 
   if (status && status !== 'all') {
@@ -141,7 +141,7 @@ async function detail(ctx) {
     LEFT JOIN client_wechat_users wu ON a.client_user_id = wu.user_id
     LEFT JOIN service_orders so ON so.appointment_id = a.appointment_id
     WHERE a.appointment_id = $1 AND a.store_id = $2
-  `, [id, ctx.auth.storeId])
+  `, [id, ctx.auth.effectiveStoreId])
 
   if (appointments.length === 0) {
     throw new Error('INVALID_PARAMS: 预约不存在或不属于本门店')
@@ -183,7 +183,7 @@ async function confirm(ctx) {
 
   const appointments = await pg.query(
     'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
-    [appointmentId, ctx.auth.storeId]
+    [appointmentId, ctx.auth.effectiveStoreId]
   )
 
   if (appointments.length === 0) {
@@ -230,7 +230,7 @@ async function checkin(ctx) {
 
   const appointments = await pg.query(
     'SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2',
-    [appointmentId, ctx.auth.storeId]
+    [appointmentId, ctx.auth.effectiveStoreId]
   )
 
   if (appointments.length === 0) {

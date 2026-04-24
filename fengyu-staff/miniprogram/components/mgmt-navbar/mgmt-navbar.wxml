@@ -1,0 +1,18 @@
+<view class="mgmt-tab-bar">
+  <view class="mgmt-tab-item {{active === 'dashboard' ? 'mgmt-tab-item--active' : ''}}" data-key="dashboard" bindtap="onTap">
+    <van-icon name="chart-trending-o" size="44rpx" />
+    <text class="mgmt-tab-text">首页</text>
+  </view>
+  <view class="mgmt-tab-item {{active === 'ranking' ? 'mgmt-tab-item--active' : ''}}" data-key="ranking" bindtap="onTap">
+    <van-icon name="medal-o" size="44rpx" />
+    <text class="mgmt-tab-text">排行榜</text>
+  </view>
+  <view class="mgmt-tab-item {{active === 'customers' ? 'mgmt-tab-item--active' : ''}}" data-key="customers" bindtap="onTap">
+    <van-icon name="friends-o" size="44rpx" />
+    <text class="mgmt-tab-text">顾客</text>
+  </view>
+  <view class="mgmt-tab-item {{active === 'profile' ? 'mgmt-tab-item--active' : ''}}" data-key="profile" bindtap="onTap">
+    <van-icon name="manager-o" size="44rpx" />
+    <text class="mgmt-tab-text">我的</text>
+  </view>
+</view>

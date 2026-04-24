@@ -112,7 +112,7 @@ async function recharge(ctx) {
     throw new Error('INVALID_PARAMS: skuId 与 customAmount 只能二选一')
   }
 
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 

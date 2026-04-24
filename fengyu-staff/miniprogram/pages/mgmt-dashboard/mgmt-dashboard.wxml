@@ -1,0 +1,55 @@
+<!-- pages/mgmt-dashboard — 管理层 Hub：4 tab 在同页内切换 -->
+<view class="mgmt-hub">
+  <!-- 首页（数据中心） -->
+  <block wx:if="{{activeTab === 'dashboard'}}">
+    <placeholder-page
+      page-title="数据中心"
+      subtitle="功能建设中，敬请期待"
+      icon="chart-trending-o"
+      show-switch-to-store="{{canSwitchStore}}"
+    />
+  </block>
+
+  <!-- 排行榜 -->
+  <block wx:elif="{{activeTab === 'ranking'}}">
+    <placeholder-page
+      page-title="排行榜"
+      subtitle="功能建设中，敬请期待"
+      icon="medal-o"
+      show-switch-to-store="{{canSwitchStore}}"
+    />
+  </block>
+
+  <!-- 顾客 -->
+  <block wx:elif="{{activeTab === 'customers'}}">
+    <placeholder-page
+      page-title="顾客"
+      subtitle="功能建设中，敬请期待"
+      icon="friends-o"
+      show-switch-to-store="{{canSwitchStore}}"
+    />
+  </block>
+
+  <!-- 我的 -->
+  <block wx:elif="{{activeTab === 'profile'}}">
+    <view class="mgmt-profile-wrap">
+      <view class="mgmt-profile-header">
+        <view class="mgmt-profile-name">{{staffName || '未命名员工'}}</view>
+        <view class="mgmt-profile-meta">
+          <text wx:if="{{staffLevelLabel}}" class="mgmt-profile-badge">{{staffLevelLabel}}</text>
+          <text wx:if="{{position}}" class="mgmt-profile-meta-text">{{position}}</text>
+          <text wx:if="{{phone}}" class="mgmt-profile-meta-text">{{phone}}</text>
+        </view>
+      </view>
+
+      <view class="mgmt-profile-body">
+        <van-icon name="gem-o" size="120rpx" color="#C0322A" />
+        <text class="mgmt-profile-tip">管理层菜单建设中，敬请期待</text>
+        <button wx:if="{{canSwitchStore}}" class="mgmt-profile-action mgmt-profile-action--outline" bindtap="onSwitchToStore">返回门店视图</button>
+        <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
+      </view>
+    </view>
+  </block>
+
+  <mgmt-navbar active="{{activeTab}}" bind:change="onTabChange" />
+</view>

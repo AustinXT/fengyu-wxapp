@@ -10,6 +10,13 @@ import type { PointTransaction, PointTransactionSummary } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition } from '@/lib/permissions'
 
+/**
+ * 已知的 point_transactions.type 取值（自由文本字段，非 DB 枚举；下拉由 distinctTypes 动态填充）
+ * - '等级升级奖励' — cronTask 会员等级升级时发放
+ * - '消费赠送' — 订单链净额增加时自动发放（ticket 2026-04-24）
+ * - '消费冲销' — 退款导致订单链净额下降时自动冲销（ticket 2026-04-24）
+ */
+
 /** 积分流水筛选参数 */
 export interface PointTransactionFilters {
   marketId?: string
