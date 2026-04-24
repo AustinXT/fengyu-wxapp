@@ -28,7 +28,7 @@
 
 | 位置 | 现状 | 能力缺口 |
 |---|---|---|
-| `db/schema/prepaid-card.ts:14-35` | `store_id NOT NULL` + `UNIQUE(user_id, store_id)` | ⚠️ **需要变更**：DROP `store_id` 列（或改 nullable 作充值门店审计），`UNIQUE(user_id, store_id)` → `UNIQUE(user_id)`。目标：一户一账户，余额与门店无关 |
+| `db/schema/prepaid-card.ts:14-35` | `store_id NOT NULL` + `UNIQUE(user_id, store_id)` | ⚠️ **需要变更**：**DROP `store_id` 列**（决策 #2 方案 A），`UNIQUE(user_id, store_id)` → `UNIQUE(user_id)`。目标：一户一账户，余额与门店无关 |
 | `db/schema/enums.ts:48` | `cardTransactionTypeEnum = ['充值', '扣款']` | ✅ `'扣款'` 枚举存在但从未被写入（全仓 grep 0 处） |
 | `db/schema/enums.ts:23` | `paymentMethodEnum = ['微信', '支付宝', '线下']` | ⚠️ **需要扩展**：新增 `'无'` 值，用于表达"全额储值卡抵扣，无实付通道"的语义；**仍不新增"储值卡"**（储值卡是抵扣项，非支付方式） |
 | `db/schema/order.ts:57` | `payment_method` NOT NULL，单值 | ❌ 无法表达"部分储值卡 + 部分微信"；扩枚举后 `'无'` 承担"全额抵扣"场景 |
@@ -44,7 +44,7 @@
 - **储值卡是"抵扣项"，不是"支付方式"**。`payment_method` 不新增 `'储值卡'`。
 - **扩枚举加 `'无'`**：表达"实付=0，全额抵扣，不走任何支付通道"的语义。最终 `paymentMethodEnum = ['微信', '支付宝', '线下', '无']`。
 - **储值卡抵扣额不计入实付金额**。实付金额 = 走支付通道的钱 = `total_amount - prepaid_card_amount`。
-- **余额与门店无关**：一户一账户，`prepaid_cards` 的 `store_id` 从核心约束退化为"可选审计字段"（或直接 DROP）。
+- **余额与门店无关**：一户一账户，`prepaid_cards.store_id` 列**直接 DROP**（本 ticket 不保留该字段，亦不做首次充值门店审计）。
 
 #### 1.2.1 `sale_orders` 新增两列
 
@@ -74,18 +74,18 @@ paid_amount > 0  ⇒  payment_method ∈ {'微信','支付宝','线下'}
 > - 加一列 `paid_amount` 是向前兼容的：老报表继续用 `SUM(total_amount)` 得"订单总销售额"（含储值卡核销），新报表/对账用 `SUM(paid_amount)` 得"通过支付通道的实际收入"
 > - 财务对账天然清晰："微信通道应到账 = Σpaid_amount WHERE payment_method='微信'"
 
-#### 1.2.2 `prepaid_cards` schema 调整（去门店绑定，保留 store_id 作审计）
+#### 1.2.2 `prepaid_cards` schema 调整（去门店绑定，DROP `store_id` 列）
 
-**采用方案 B**（2026-04-24 产品决策 #2）：
+**采用方案 A**（2026-04-24 产品最终决策 #2，推翻原文先前倾向的"保留 nullable 作审计"选项）：
 
 - `UNIQUE(user_id, store_id)` → `UNIQUE(user_id)`：一户一账户
-- `store_id` 列保留但改 **nullable**，语义变为"**首次充值门店**"（审计字段）：
-  - 仅在首次 INSERT 时写入当时的 `ctx.auth.storeId`
-  - 后续充值 UPSERT：`ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance`（**不更新 store_id**）
-  - 消费/退款/扣减：完全不读 store_id，仅按 user_id 定位账户
-  - 经营分析用例：`SELECT store_id, SUM(balance), COUNT(*) FROM prepaid_cards GROUP BY store_id` 得各门店的首次充值客群贡献
+- `store_id` 列**整列 DROP**：
+  - 该列对消费侧业务逻辑不参与；保留 nullable 只会让后续 UPSERT 代码被"保留首次值 vs 覆盖"反复纠缠
+  - "首次充值门店"在本期及可见的下一期都没有被任何报表/页面消费，不值得为未来假设保留冗余列
+  - 如果将来需要经营分析用"首次充值门店"，从 `card_transactions` 最早一笔 `type='充值'` 的 ref_order 反查即可，不必落在主表
 - `card_transactions` 本身无 store_id，流水表不变
 - 云函数消费侧：`SELECT balance FROM prepaid_cards WHERE user_id=$1 FOR UPDATE`（无 store_id 条件）
+- 云函数充值侧（前置 ticket 联动）：`INSERT ... ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance`；INSERT 的列集里不再含 `store_id`
 
 #### 1.2.3 `paymentMethodEnum` 扩展
 
@@ -102,7 +102,7 @@ paid_amount > 0  ⇒  payment_method ∈ {'微信','支付宝','线下'}
 - `ALTER TYPE payment_method ADD VALUE '无'`
 - `ALTER TABLE prepaid_cards DROP CONSTRAINT uq_prepaid_cards_user_store`（或 drizzle 命名）
 - `ALTER TABLE prepaid_cards ADD CONSTRAINT uq_prepaid_cards_user UNIQUE (user_id)`
-- `ALTER TABLE prepaid_cards DROP COLUMN store_id`（方案 A）/ `ALTER COLUMN store_id DROP NOT NULL`（方案 B）
+- `ALTER TABLE prepaid_cards DROP COLUMN store_id`
 
 ### 1.3 ~~门店隔离的语义~~ → 跨店共享
 
@@ -280,11 +280,12 @@ admin 订单详情已显示 `payment_method`；补充显示：
 | D1 | `schema/order.ts`：`saleOrders` 新增 `prepaidCardAmount: numeric('prepaid_card_amount', { precision: 10, scale: 2 }).notNull().default('0')` |
 | D2 | `schema/order.ts`：`saleOrders` 新增 `paidAmount: numeric('paid_amount', { precision: 10, scale: 2 }).notNull().default('0')` |
 | D3 | `schema/enums.ts:23`：`paymentMethodEnum` 数组追加 `'无'` → `['微信', '支付宝', '线下', '无']` |
-| D4 | `schema/prepaid-card.ts`：<br>① 去掉 `storeId` 列（方案 A）**或**改为 nullable 保留作审计（方案 B，PR 前定）<br>② `uniqueIndex('uq_prepaid_cards_user_store')` → `uniqueIndex('uq_prepaid_cards_user').on(table.userId)`<br>③ 更新文件顶部注释：删"金额按门店隔离"的表述，改为"一户一账户，余额跨店共享" |
+| D4 | `schema/prepaid-card.ts`：<br>① 去掉 `storeId` 列（DROP COLUMN）<br>② `uniqueIndex('uq_prepaid_cards_user_store')` → `uniqueIndex('uq_prepaid_cards_user').on(table.userId)`<br>③ 更新文件顶部注释：删"金额按门店隔离"的表述，改为"一户一账户，余额跨店共享" |
 | D5 | `npm run db:generate` 产出迁移 |
 | D6 | **临时 docker PG 验证**：空库跑一遍 `drizzle-kit migrate` 成功（重点验证枚举扩展 + prepaid_cards 约束变更的 SQL 顺序） |
 | D7 | 在生成的 `.sql` 末尾追加手写段（drizzle 不会自动生成，参照 `_archive_pre_baseline_2026_04/sql/0018_green_rogue.sql` 模式）：<br>① `UPDATE sale_orders SET paid_amount = total_amount WHERE paid_amount = 0` — 历史数据回填<br>② `ALTER TABLE sale_orders ADD CONSTRAINT chk_prepaid_card_nonneg CHECK (prepaid_card_amount >= 0)`<br>③ `ALTER TABLE sale_orders ADD CONSTRAINT chk_paid_nonneg CHECK (paid_amount >= 0)`<br>④ `ALTER TABLE sale_orders ADD CONSTRAINT chk_prepaid_paid_sum CHECK (prepaid_card_amount + paid_amount = total_amount)` |
 | D8 | 跑 5434（测试库） + 5433（开发库）两库 migrate；**禁止用 psql 直连 DDL** |
+| D9 | 5433 + 5434 migrate 通过后，触发 `/cloudbase-deploy` 部署三个云函数：`clientApi`、`staffApi`、`payNotify`；部署后按 CLAUDE.md "云函数部署后" 清单验证 `PG_CONNECTION_STRING` 等关键环境变量未被重置 |
 
 ### 3.2 客户端（fengyu-client）
 
@@ -359,7 +360,7 @@ admin 订单详情已显示 `payment_method`；补充显示：
 ## 4 验收标准
 
 ### 4.1 跨店共享
-1. 顾客在 A 店充值 500 元 → `prepaid_cards` 唯一行 `user_id=X, balance=500`（无 store_id 约束，或 store_id 仅作首次审计字段）
+1. 顾客在 A 店充值 500 元 → `prepaid_cards` 唯一行 `user_id=X, balance=500`（无 store_id 列）
 2. 顾客绑定切到 B 店后在 B 店下单 300 元 → 下单页"储值卡"区块显示"余额 ¥500"，默认抵扣 300，实付 0（跨店仍可用）
 3. 顾客再次切到 C 店下单 100 元 → 区块显示"余额 ¥200"，默认抵扣 100，实付 0
 4. 云函数 `order.create` 若前端篡改 `prepaidCardAmount=500`（超余额）→ 返回 `INSUFFICIENT_BALANCE`（基础余额校验，非并发错误）
@@ -414,10 +415,10 @@ admin 订单详情已显示 `payment_method`；补充显示：
 
 ### 4.9 回归
 39. 无储值卡订单的支付流程完全不变（`prepaid_card_amount=0, paid_amount=total_amount` 默认值不影响任何老逻辑）
-40. 现有充值流程：schema 变更后，`recharge` 按 user_id UPSERT（不再按 user+store）；同一用户多次充值合并到同一行；`store_id` 保留首次充值门店（不覆盖）— **前置 ticket 代码需同步修改**
+40. 现有充值流程：schema 变更后，`recharge` 按 user_id UPSERT（不再按 user+store）；INSERT 列集不含 `store_id`；同一用户多次充值合并到同一行 — **前置 ticket `2026-04-16-client-prepaid-card-recharge` 的充值代码在本 ticket 范围内同步修改**
 41. 历史订单 migration 后 `paid_amount = total_amount`，GMV 报表老口径 `SUM(total_amount)` 数字不变
 42. 转换单负差额"多退入卡"逻辑（staffApi/order.js:1617）保留；UPSERT 维度改为 `ON CONFLICT (user_id)`；正差额"补款"沿用"店长开单 → 顾客扫码确认"链路
-43. E2E 跑通：充值 ¥500（A 店）→ 换绑 B 店 → 下单 ¥300 全额抵扣 → 查余额 ¥200、`store_id` 仍为 A（首次充值门店不变）→ 退款 ¥100 → 查余额 ¥300（三个流水行：充值 +500、扣款 -300、充值 +100）
+43. E2E 跑通：充值 ¥500（A 店）→ 换绑 B 店 → 下单 ¥300 全额抵扣 → 查余额 ¥200 → 退款 ¥100 → 查余额 ¥300（三个流水行：充值 +500、扣款 -300、充值 +100）；`prepaid_cards` 表无 `store_id` 列
 44. E2E 店长链路：店长开单 ¥300 预选全额抵扣 → 生成二维码 → 余额未扣（仍 500）→ 顾客扫码确认 → 扣成 200 → 状态 '已支付'
 
 ### 4.10 单测
@@ -434,7 +435,7 @@ admin 订单详情已显示 `payment_method`；补充显示：
 | 全额抵扣订单跳过 order.pay 直接完结，与现有"订单必须经过 pay"的前端假设冲突 | clientApi.order.create / confirmPrepaidFull 返回 `{ saleOrderId, paymentParams: null, status: '已支付', reason: 'prepaid_card_full' }`；前端按 `status` 分支跳详情页而非唤起支付 |
 | 前端可能传 `payment_method='微信'` 但 `paid_amount=0`（误选通道）| 后端强校验：`paid_amount = 0` 时强制覆盖 `payment_method='无'`（无视前端传值），不报错以避免用户体验问题 |
 | 余额不足场景：下单瞬间余额够但真正扣减时被其他端扣走 | `FOR UPDATE` + 扣减前二次校验；命中不足返回 `INSUFFICIENT_BALANCE`，订单保持"待支付"；**前端弹框由用户决定**（决策 #7），不自动降级 |
-| `prepaid_cards` schema 变更破坏前置 ticket 的充值代码 | C8 明确 `card.recharge` 需同步改 UPSERT 维度；注意 `ON CONFLICT DO UPDATE` 不覆盖 store_id 以保留首次充值门店（决策 #2）；否则首次部署会写入失败或覆盖审计字段 |
+| `prepaid_cards` schema 变更破坏前置 ticket 的充值代码 | C8 明确 `card.recharge` 需同步改：UPSERT 维度换成 `(user_id)`、INSERT 列集移除 `store_id`；此前置 ticket 代码的修改属于本 ticket 范围，PR 合并前必须同步通过单测 |
 | **店长预选订单长时间挂起 / 二维码泄露**（决策 #6）| 复用现有"待支付"订单的超时关闭机制；扫码页不做权限校验（扫到码即可确认），但二维码 URL 含订单 id，订单本身与顾客 userId 绑定，顾客 openid 不匹配时拒绝 scanAdjust / confirmPrepaidFull |
 | **店长预选余额与顾客确认时余额漂移**：店长看到 500、生成二维码，顾客扫码时已经被别的订单扣到 100 | 扫码确认页进入时实时拉 `card.balance`，若预选值 > 当前余额，UI 自动下调到 min(预选, 当前)，提示"余额已变化" |
 | 退款比例精度（§2.5 + 决策 #4）| 规则：储值卡部分 `floor(prepaid/total × refund, 2)`；原通道 = 退款总额 − 储值卡部分（反向相减，不独立计算）；保证无尾差 |
@@ -459,7 +460,7 @@ admin 订单详情已显示 `payment_method`；补充显示：
 | # | 决策 | 影响位置 |
 |---|------|---------|
 | 1 | **抵扣开关默认开**（能抵多少抵多少，用户可手动关闭） | §2.1 / §2.2 UI |
-| 2 | `prepaid_cards.store_id` **保留为 nullable**，作"**首次充值门店**"审计字段（便于经营数据分析，如各门店充值贡献统计）。不参与业务逻辑；顾客换绑门店或跨店消费时该字段**不更新**，始终保持首次充值时的值。UNIQUE 约束改为 `(user_id)` | §1.2.2 / §3.1 D4 / §3.2.1 C8 |
+| 2 | `prepaid_cards.store_id` **整列 DROP**（方案 A）。理由：消费侧不读 store_id，留 nullable 会让 UPSERT 代码在"保留首次 vs 覆盖"二选一上反复纠缠；首次充值门店如将来有分析需要，可从 `card_transactions` 首笔 `type='充值'` 反查，不必落主表。UNIQUE 约束改为 `(user_id)` | §1.2.2 / §3.1 D4 / §3.2.1 C8 |
 | 3 | 部分抵扣**不开放**自定义金额 input（全量抵扣，UI 只给开关，留待后续迭代） | §2.1 / §2.2 |
 | 4 | 退款按比例拆 + **精度约束**：**储值卡部分按比例算并向下取 2 位**（`floor((prepaid_card_amount / total_amount) × refund_amount, 2)`），**原通道部分 = 总退款额 − 储值卡部分**（反向相减，不独立计算）。保证 `储值卡退款 + 原通道退款 ≡ 总退款额`，无尾差漂移 | §2.5 / §4.7 |
 | 5 | 全额抵扣订单**创建即已支付**（order.create 同事务内完成） | §2.3 / §4.2 |
@@ -467,12 +468,13 @@ admin 订单详情已显示 `payment_method`；补充显示：
 | 7 | `INSUFFICIENT_BALANCE` → 前端**弹框**让用户决定（关抵扣重付 / 取消订单），**不做自动降级** | §4.8 / §5 |
 | 8 | 转换单 / 回款单补款**开放**储值卡抵扣（沿用 order.create 链路） | §3.3.1 S5/S6 |
 | 9 | 财务/admin 口径本期仅做**订单详情三行展示**；仪表盘 `SUM(paid_amount)` defer 到下期 | §2.6 / §3.4 |
+| 10 | **部署闭环纳入 ticket 实施**：migration 在 5433/5434 两库跑通后，同一个 PR/任务内触发 `/cloudbase-deploy` 部署 `clientApi`、`staffApi`、`payNotify`；部署后复核 CLAUDE.md 列出的关键环境变量未被重置 | §3.1 D9 |
 
 ---
 
 ## 7 前置依赖
 
-- ✅ `2026-04-16-client-prepaid-card-recharge` 已 merge：充值通路完整，`prepaid_cards` / `card_transactions` 表已有数据流入。**⚠️ 本 ticket 会反向调整该 ticket 的 schema**（去门店绑定），充值代码需同步改 UPSERT 维度（由 user+store → user）
+- ✅ `2026-04-16-client-prepaid-card-recharge` 已 merge：充值通路完整，`prepaid_cards` / `card_transactions` 表已有数据流入。**⚠️ 本 ticket 反向调整该 ticket 的 schema**（去门店绑定 + DROP store_id 列）；相应的充值代码联动修改（UPSERT 维度 `user+store → user`、INSERT 列集移除 `store_id`）**属于本 ticket 实施范围**，在 §3.2.1 C8 列为必做项而非可选
 - ✅ `p1-sale-items-store-binding` 已 merge：`sale_items.store_id` NOT NULL，订单仍记录消费门店（仅作审计，不参与储值卡扣款路由）
 - 当前 schema `store_id NOT NULL + UNIQUE(user_id, store_id)` 是**本 ticket 要修改的起点，不是要保留的约束**
 - 微信支付商户号已对接（本 ticket 不改支付 SDK，只改**订单应付金额计算**，微信支付的金额由 `paid_amount` 决定）
@@ -481,7 +483,7 @@ admin 订单详情已显示 `payment_method`；补充显示：
 
 ## 8 相关文件
 
-- `db/schema/prepaid-card.ts:14-35` — 储值卡账户 + 流水（**本 ticket 调整**：UNIQUE 去 store_id；store_id 列 DROP 或改 nullable；顶部注释撤销"门店隔离"表述）
+- `db/schema/prepaid-card.ts:14-35` — 储值卡账户 + 流水（**本 ticket 调整**：UNIQUE 去 store_id；**DROP `store_id` 列**；顶部注释撤销"门店隔离"表述）
 - `db/schema/enums.ts:23` — paymentMethodEnum（**本 ticket 扩展**：追加 `'无'` → 4 值）
 - `db/schema/enums.ts:48` — cardTransactionTypeEnum（'扣款' 枚举已存在未使用，本期启用）
 - `db/schema/order.ts:57` — payment_method 列（语义不变，扩枚举后可接受 `'无'`）

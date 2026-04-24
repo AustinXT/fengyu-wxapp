@@ -54,6 +54,10 @@ export const saleOrders = pgTable(
     customerName: varchar("customer_name", { length: 50 }),
     /** 订单总金额；退款为负数，转换=补差价，回款=本次回款金额 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
+    /** 储值卡抵扣金额（抵扣项，不计入实付）；与 paidAmount 之和须等于 totalAmount */
+    prepaidCardAmount: numeric("prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    /** 实付金额（走 payment_method 指定通道）；paid_amount = 0 ⇔ payment_method = '无' */
+    paidAmount: numeric("paid_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     preferredEmployeeId: varchar("preferred_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),

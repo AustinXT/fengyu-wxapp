@@ -20,7 +20,7 @@ export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "�
 
 export const itemDirectionEnum = pgEnum("item_direction", ["购买", "转出", "转入", "退出"]);
 
-export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下"]);
+export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下", "无"]);
 
 export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "已完成", "已取消"]);
 
