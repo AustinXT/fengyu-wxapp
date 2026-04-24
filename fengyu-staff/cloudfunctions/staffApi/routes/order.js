@@ -529,7 +529,8 @@ async function create(ctx) {
     // 线下/储值卡/无：按 paid + prepaid 与 total 的比较落地
     //   paid + prepaid == 0                    → '待支付'（纯挂账，无 payments 行）
     //   0 < paid + prepaid < total_amount      → '部分支付'
-    //   paid + prepaid == total_amount         → '已支付'
+    //   paid + prepaid == total_amount         → '待确认收款'（店长二次确认 → confirmOffline 转 '已支付'；
+    //                                              保留原 staff 流程：全额现场收款不跳过确认步骤）
     const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
     let initialStatus
     if (isOnlineMethod) {
@@ -539,9 +540,11 @@ async function create(ctx) {
     } else if (settledAmount + 0.001 < totalAmount) {
       initialStatus = '部分支付'
     } else {
-      initialStatus = '已支付'
+      initialStatus = '待确认收款'
     }
-    const paidAtValue = initialStatus === '已支付' ? now : null
+    // paid_at 语义：payments 行已支付即"有钱到账"时间，冗余到 sale_orders.paid_at；
+    // 挂账订单无入账 → NULL。'待确认收款' 订单 payments 已写'已支付'，paid_at 可落 now。
+    const paidAtValue = paidAmount > 0 ? now : null
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
@@ -564,66 +567,24 @@ async function create(ctx) {
       ]
     )
 
-    // ========== PR-2 写 sale_order_payments 流水 + 同步扣储值卡余额 ==========
+    // ========== PR-2 写 sale_order_payments 流水 ==========
     // 规则：
-    //   - 线下/储值卡/无（!isOnlineMethod）：本次 create 即是最终落账点
-    //       · prepaidCardAmount > 0 → FOR UPDATE 扣 prepaid_cards.balance + INSERT card_transactions('扣款')
-    //         并写 1 行 payments change_type='储值卡抵扣' status='已支付'
-    //       · paidAmount > 0       → 写 1 行 payments change_type='首次支付' status='已支付'
-    //       · paid+prepaid=0       → 纯挂账，无 payments 行
-    //   - 微信/支付宝（isOnlineMethod）：sale_orders 停在 '待支付'，预选储值卡保持"预选不扣卡"语义
-    //     （扣卡 + 写 payments 行延后到 payNotify / confirmOffline / confirmPrepaidFull 真正入账时完成）
-    if (!isOnlineMethod) {
-      if (prepaidCardAmount > 0) {
-        // 幂等：理论上不会重复（新订单），但保底按 ref_order_id 校验
-        const dupCheck = await client.query(
-          `SELECT 1 FROM card_transactions
-           WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
-          [saleOrderId]
-        )
-        if (dupCheck.rows.length === 0) {
-          const balRes = await client.query(
-            'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
-            [clientUserId]
-          )
-          if (balRes.rows.length === 0) {
-            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
-          }
-          const currentBalance = Number(balRes.rows[0].balance)
-          if (currentBalance + 0.001 < prepaidCardAmount) {
-            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
-          }
-          const cardId = balRes.rows[0].card_id
-          await client.query(
-            `UPDATE prepaid_cards
-             SET balance = balance - $1, updated_at = NOW()
-             WHERE card_id = $2`,
-            [prepaidCardAmount, cardId]
-          )
-          await client.query(
-            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-             VALUES ($1, '扣款', $2, $3, NOW())`,
-            [cardId, -prepaidCardAmount, saleOrderId]
-          )
-        }
-
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
-          [saleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长开单储值卡抵扣', now]
-        )
-      }
-      if (paidAmount > 0) {
-        await client.query(
-          `INSERT INTO sale_order_payments (
-            sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, operator_employee_id, note, created_at, paid_at
-          ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)`,
-          [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
-        )
-      }
+    //   - 线下/储值卡/无（!isOnlineMethod） + paidAmount > 0 → 写 1 行 payments change_type='首次支付' status='已支付'
+    //     （paidAmount 是本次现场现金入账部分，立即落"已支付"流水）
+    //   - 线下/储值卡/无 + paidAmount = 0 → 无 payments 行（纯挂账，或全额储值卡抵扣订单由 confirmOffline 扣卡+写流水）
+    //   - 微信/支付宝（isOnlineMethod）：sale_orders 停在 '待支付'，payments 行由 payNotify 回调写入
+    //
+    // 储值卡抵扣：prepaid_card_amount 写入 sale_orders 作为"预选"金额；
+    //   扣卡余额 + 写 '储值卡抵扣' payments 行统一由 confirmOffline 执行（staffApi 唯一扣卡点，
+    //   见 fengyu-staff/CLAUDE.md）。
+    if (!isOnlineMethod && paidAmount > 0) {
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
+      )
     }
 
     // 创建订单明细
@@ -656,7 +617,8 @@ async function create(ctx) {
     }
   })
 
-  // PR-2: status 由决策树中的 initialStatus 决定（待支付/部分支付/已支付）
+  // PR-2: status 与事务内 initialStatus 决策树保持一致
+  //   线上 → '待支付'；paid+prepaid=0 → '待支付'；部分 → '部分支付'；全额 → '待确认收款'
   const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
   let resolvedStatus
   if (isOnlineMethod) {
@@ -666,7 +628,7 @@ async function create(ctx) {
   } else if (resolvedSettled + 0.001 < totalAmount) {
     resolvedStatus = '部分支付'
   } else {
-    resolvedStatus = '已支付'
+    resolvedStatus = '待确认收款'
   }
 
   ctx.result = {
@@ -867,10 +829,11 @@ async function confirmOffline(ctx) {
 
   await pg.transaction(async (client) => {
     // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
-    // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写流水
+    // 预选值 > 0 且顾客已注册时，事务内锁余额 + 扣减 + 写 card_transactions + 写 '储值卡抵扣' payments 行
+    // （create 时 sale_orders.prepaid_card_amount 仅作为"预选"金额，此处才真正入账）
     const prepaidAmount = Number(order.prepaid_card_amount || 0)
     if (prepaidAmount > 0 && order.client_user_id) {
-      // 幂等：已扣过则跳过
+      // 幂等：已扣过则跳过扣卡 + payments（用 card_transactions.ref_order_id 判定）
       const dupCheck = await client.query(
         `SELECT 1 FROM card_transactions
          WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
@@ -899,6 +862,14 @@ async function confirmOffline(ctx) {
           `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
            VALUES ($1, '扣款', $2, $3, NOW())`,
           [cardId, -prepaidAmount, saleOrderId]
+        )
+        // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
+        await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method, external_txn_id,
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          [saleOrderId, prepaidAmount, ctx.auth.staffWfId, '店长确认线下收款-储值卡抵扣', now]
         )
       }
     }

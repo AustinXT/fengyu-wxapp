@@ -59,8 +59,8 @@ describe('order.create', () => {
     expect(ctx.result).toBeDefined()
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
     expect(ctx.result.totalAmount).toBe(1000)
-    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'，payments 流水同事务写入
-    expect(ctx.result.status).toBe('已支付')
+    // PR-2：线下全额现场 → 订单 '待确认收款'（店长 confirmOffline 再转 '已支付'）；首次支付 payments 流水同事务写入
+    expect(ctx.result.status).toBe('待确认收款')
     expect(ctx.result.message).toBe('开单成功')
   })
 
@@ -294,8 +294,8 @@ describe('order.create', () => {
 
     // 1000 - 200 = 800（couponDiscount=200，满足 min_spend=500）
     expect(ctx.result.totalAmount).toBe(800)
-    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'
-    expect(ctx.result.status).toBe('已支付')
+    // PR-2：线下全额现场 → 订单 '待确认收款'
+    expect(ctx.result.status).toBe('待确认收款')
   })
 
   test('优惠券不存在或已过期时报错（couponRows.length === 0）', async () => {
@@ -562,8 +562,8 @@ describe('order.create', () => {
 
     // 内部单半价：Math.round(1000 * 50) / 100 = 500
     expect(ctx.result.totalAmount).toBe(500)
-    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'
-    expect(ctx.result.status).toBe('已支付')
+    // PR-2：线下全额现场 → 订单 '待确认收款'
+    expect(ctx.result.status).toBe('待确认收款')
   })
 
   // 已废弃：'promotion'/'组合套餐' 订单类型在 PR-C（commit 4966b67/fb618ea）重构中移除
@@ -661,8 +661,8 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    // PR-2: 线下 + receivedAmount 默认全额 → '已支付'
-    expect(ctx.result.status).toBe('已支付')
+    // PR-2: 线下全额现场 → '待确认收款'
+    expect(ctx.result.status).toBe('待确认收款')
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
   })
 
@@ -750,7 +750,7 @@ describe('order.create', () => {
       }])
   }
 
-  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 已支付 + 1 行 首次支付/已支付', async () => {
+  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 待确认收款 + 1 行 首次支付/已支付', async () => {
     const ctx = mockCreateCtxOk({ receivedAmount: 200 })
     mockPgForCreate()
 
@@ -769,7 +769,7 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.status).toBe('待确认收款')
     expect(ctx.result.paidAmount).toBe(200)
     expect(ctx.result.payableAmount).toBe(200)
     expect(ctx.result.prepaidCardAmount).toBe(0)
@@ -828,7 +828,7 @@ describe('order.create', () => {
     expect(paymentInserts.length).toBe(0)
   })
 
-  test('PR-2 create 储值卡抵扣 + 部分现场 → 订单 部分支付 + 2 行 payments', async () => {
+  test('PR-2 create 储值卡抵扣 + 部分现场 → 订单 部分支付 + 仅 1 行首次支付 payments（储值卡抵扣留到 confirmOffline）', async () => {
     const ctx = mockCreateCtxOk({
       useCard: true,
       prepaidCardAmount: 50,  // 显式传入
@@ -846,17 +846,15 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{ balance: '500.00' }])
 
     const paymentInserts = []
+    const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
-          if (sql.includes('FROM card_transactions') && sql.includes("'扣款'")) {
-            return { rows: [] }  // 未扣过
-          }
-          if (sql.includes('FROM prepaid_cards') && sql.includes('FOR UPDATE')) {
-            return { rows: [{ card_id: 'card-200', balance: '500.00' }] }
-          }
           if (sql.includes('INSERT INTO sale_order_payments')) {
             paymentInserts.push({ sql, params })
+          }
+          if (sql.includes('INSERT INTO card_transactions')) {
+            cardTxnInserts.push({ sql, params })
           }
           return { rows: [], rowCount: 1 }
         }),
@@ -872,12 +870,12 @@ describe('order.create', () => {
     expect(ctx.result.payableAmount).toBe(150)
     expect(ctx.result.paidAmount).toBe(40)
     expect(ctx.result.status).toBe('部分支付')
-    // 2 行 payments：储值卡抵扣 + 首次支付
-    expect(paymentInserts.length).toBe(2)
-    expect(paymentInserts[0].sql).toMatch(/'储值卡抵扣'/)
-    expect(Number(paymentInserts[0].params[1])).toBe(50)
-    expect(paymentInserts[1].sql).toMatch(/'首次支付'/)
-    expect(Number(paymentInserts[1].params[1])).toBe(40)
+    // create 时仅写 1 行 payments：首次支付（现金部分）。储值卡抵扣 payments 行 + 扣卡归 confirmOffline
+    expect(paymentInserts.length).toBe(1)
+    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
+    expect(Number(paymentInserts[0].params[1])).toBe(40)
+    // create 不扣卡（staff CLAUDE.md：唯一扣卡点在 confirmOffline）
+    expect(cardTxnInserts.length).toBe(0)
   })
 
   test('PR-2 create 参数错误：receivedAmount > payable_amount → INVALID_PARAMS', async () => {
@@ -896,11 +894,11 @@ describe('order.create', () => {
       .rejects.toThrow(/MIXED_PAYMENT_NOT_SUPPORTED/)
   })
 
-  test('PR-2 create 不变量：paid_amount 等于该订单 payments 表 status=已支付 AND change_type IN (首次支付,回款,退款) 的 amount 之和', async () => {
-    // 场景：线下部分支付 received=80
-    //   sale_orders.paid_amount = 80
-    //   Σ(payments.amount where 已支付 且 change_type∈{首次支付,回款,退款}) = 80（只有 1 行首次支付）
-    //   储值卡抵扣不计入 paid_amount 不变量
+  test('PR-2 create 不变量：create 阶段 sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type IN (首次支付,回款,退款))', async () => {
+    // 场景：线下部分支付 received=50, prepaidCard=30（预选，create 不扣卡）
+    //   sale_orders.paid_amount = 50
+    //   Σ(payments.amount where 已支付 且 change_type∈{首次支付,回款,退款}) = 50（只有 1 行首次支付）
+    //   储值卡抵扣 payments 行 + 扣卡在 confirmOffline 发生
     const ctx = mockCreateCtxOk({
       useCard: true,
       prepaidCardAmount: 30,
@@ -917,19 +915,18 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{ balance: '500.00' }])
 
     const paymentInserts = []
+    const cardTxnInserts = []
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
-          if (sql.includes('FROM card_transactions') && sql.includes("'扣款'")) return { rows: [] }
-          if (sql.includes('FROM prepaid_cards') && sql.includes('FOR UPDATE')) {
-            return { rows: [{ card_id: 'c', balance: '500' }] }
-          }
           if (sql.includes('INSERT INTO sale_order_payments')) {
-            // 按 SQL 中的 change_type 字面量区分（create 两条 INSERT 均硬编码 change_type）
             let changeType = null
             if (sql.includes("'储值卡抵扣'")) changeType = '储值卡抵扣'
             else if (sql.includes("'首次支付'")) changeType = '首次支付'
             paymentInserts.push({ changeType, amount: Number(params[1]) })
+          }
+          if (sql.includes('INSERT INTO card_transactions')) {
+            cardTxnInserts.push({ sql, params })
           }
           return { rows: [], rowCount: 1 }
         }),
@@ -942,20 +939,21 @@ describe('order.create', () => {
     expect(ctx.result.paidAmount).toBe(50)
     expect(ctx.result.prepaidCardAmount).toBe(30)
 
-    // 不变量：sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type ∈ {首次支付,回款,退款})
+    // 不变量（create 阶段）：sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type ∈ {首次支付,回款,退款})
     const paidAmountFromPayments = paymentInserts
       .filter(p => ['首次支付', '回款', '退款'].includes(p.changeType))
       .reduce((s, p) => s + p.amount, 0)
     expect(paidAmountFromPayments).toBe(ctx.result.paidAmount)
 
-    // sale_orders.prepaid_card_amount = Σ(payments.amount WHERE 已支付 AND change_type='储值卡抵扣')
+    // create 阶段储值卡抵扣不写 payments 行，也不扣卡（归 confirmOffline）
     const prepaidFromPayments = paymentInserts
       .filter(p => p.changeType === '储值卡抵扣')
       .reduce((s, p) => s + p.amount, 0)
-    expect(prepaidFromPayments).toBe(ctx.result.prepaidCardAmount)
+    expect(prepaidFromPayments).toBe(0)
+    expect(cardTxnInserts.length).toBe(0)
 
-    // 总共 2 行（储值卡抵扣 + 首次支付）
-    expect(paymentInserts.length).toBe(2)
+    // 总共 1 行首次支付
+    expect(paymentInserts.length).toBe(1)
   })
 })
 
@@ -3191,8 +3189,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     expect(ctx.result.prepaidCardAmount).toBe(0)
     expect(ctx.result.paidAmount).toBe(1000)
     expect(ctx.result.paymentMethod).toBe('线下')
-    // PR-2: 线下全额现场 + receivedAmount 默认 payable → 直接 '已支付' + 1 行 首次支付 payments
-    expect(ctx.result.status).toBe('已支付')
+    // PR-2: 线下全额现场 + receivedAmount 默认 payable → '待确认收款' + 1 行 首次支付 payments（confirmOffline 再转 '已支付'）
+    expect(ctx.result.status).toBe('待确认收款')
   })
 
   test('前端传 prepaidCardAmount > 余额 → INSUFFICIENT_BALANCE', async () => {

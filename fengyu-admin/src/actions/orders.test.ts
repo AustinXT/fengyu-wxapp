@@ -1988,7 +1988,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('6) 储值卡抵扣 + 部分现场 → 订单 "部分支付"，2 行 payments（首次支付 + 储值卡抵扣）', async () => {
+  it('6) 储值卡抵扣 + 部分现场 → 订单 "部分支付"，create 仅 1 行首次支付（储值卡抵扣 payments 行 + 扣卡归 confirmOffline）', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P006', bag)
 
@@ -2005,8 +2005,8 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(bag.order.prepaidCardAmount).toBe('60.00')
     expect(bag.order.payableAmount).toBe('140.00')
     expect(bag.order.paidAmount).toBe('50.00')
-    expect(bag.payments).toHaveLength(2)
-    // 行 1：首次支付（线下/50）
+    expect(bag.payments).toHaveLength(1)
+    // 仅 1 行：首次支付（线下/50）—— 储值卡抵扣 payments 行由 confirmOffline 同事务扣卡时写入
     const firstPay = bag.payments.find((p) => p.changeType === '首次支付')
     expect(firstPay).toMatchObject({
       changeType: '首次支付',
@@ -2015,18 +2015,11 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
       status: '已支付',
       sourceEnd: 'admin',
     })
-    // 行 2：储值卡抵扣（储值卡/60）
     const cardPay = bag.payments.find((p) => p.changeType === '储值卡抵扣')
-    expect(cardPay).toMatchObject({
-      changeType: '储值卡抵扣',
-      amount: '60.00',
-      paymentMethod: '储值卡',
-      status: '已支付',
-      sourceEnd: 'admin',
-    })
+    expect(cardPay).toBeUndefined()
   })
 
-  it('7) 双写不变量：paid_amount = Σ(已支付 + 首次支付/回款/退款).amount', async () => {
+  it('7) 双写不变量（create 阶段）：paid_amount = Σ(已支付 + 首次支付/回款/退款).amount', async () => {
     const bag = freshBag()
     mockCreateTx('FY-XSD-WX-260424-P007', bag)
 
@@ -2052,13 +2045,13 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(paidAmount).toBe(paymentsSum)
     expect(paidAmount).toBe(120)
 
-    // 同时确认 prepaid_card_amount = Σ(储值卡抵扣).amount
+    // create 阶段 sale_orders.prepaid_card_amount 是"预选"冗余；payments 储值卡抵扣行 + 扣卡由 confirmOffline 完成
     const prepaidSnapshot = Number(bag.order.prepaidCardAmount)
     const cardSum = bag.payments
       .filter((p) => p.status === '已支付' && p.changeType === '储值卡抵扣')
       .reduce((s, p) => s + Number(p.amount), 0)
-    expect(prepaidSnapshot).toBe(cardSum)
-    expect(prepaidSnapshot).toBe(60)
+    expect(prepaidSnapshot).toBe(60) // 预选金额已写入 sale_orders 列
+    expect(cardSum).toBe(0) // 但 payments 尚未产生储值卡抵扣行
   })
 
   it('8) 线上支付（微信）+ receivedAmount 未传 → 订单 "待支付"，无 payments 行（admin 不走线上，保留既有语义）', async () => {
