@@ -6,10 +6,7 @@
     "pages/service/service",
     "pages/customer-list/customer-list",
     "pages/profile/profile",
-    "pages/mgmt-dashboard/mgmt-dashboard",
-    "pages/mgmt-ranking/mgmt-ranking",
-    "pages/mgmt-customers/mgmt-customers",
-    "pages/mgmt-profile/mgmt-profile"
+    "pages/mgmt-dashboard/mgmt-dashboard"
   ],
   "subPackages": [
     {

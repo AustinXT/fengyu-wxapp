@@ -42,7 +42,10 @@ export async function syncLogin(): Promise<void> {
   applyLoginPayload(data);
 }
 
-/** 绑定手机号（CloudID 安全解密方式） */
+/** 绑定手机号（CloudID 安全解密方式）
+ *  bindPhone 云函数已经返回完整的权限与门店数据（见 routes/auth.js::buildLevelPayload），
+ *  直接复用，不再冗余调用 auth.login。
+ */
 export async function bindPhone(cloudID: string): Promise<void> {
   const res = await wx.cloud.callFunction({
     name: 'staffApi',
@@ -55,5 +58,5 @@ export async function bindPhone(cloudID: string): Promise<void> {
   if (res.result?.code !== 0) {
     throw new Error(sanitizeErrorMessage(res.result?.message, '手机号绑定失败'));
   }
-  await syncLogin();
+  applyLoginPayload(res.result.data as LoginPayload);
 }

@@ -1,6 +1,7 @@
 {
-  "navigationBarTitleText": "数据中心",
+  "navigationBarTitleText": "管理层",
   "usingComponents": {
+    "van-icon": "@vant/weapp/icon/index",
     "placeholder-page": "../../components/placeholder-page/placeholder-page",
     "mgmt-navbar": "../../components/mgmt-navbar/mgmt-navbar"
   }

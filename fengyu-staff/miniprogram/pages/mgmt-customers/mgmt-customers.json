@@ -1,7 +1,0 @@
-{
-  "navigationBarTitleText": "顾客",
-  "usingComponents": {
-    "placeholder-page": "../../components/placeholder-page/placeholder-page",
-    "mgmt-navbar": "../../components/mgmt-navbar/mgmt-navbar"
-  }
-}
