@@ -44,6 +44,8 @@ function serializeCustomer(row: CustomerRow): Customer {
     boundStoreId: row.boundStoreId,
     boundEmployeeId: row.boundEmployeeId,
     memberLevel: row.memberLevel,
+    memberLevelUpgradedAt: row.memberLevelUpgradedAt ? row.memberLevelUpgradedAt.toISOString() : null,
+    memberLevelLockedUntil: row.memberLevelLockedUntil ? row.memberLevelLockedUntil.toISOString() : null,
     customerSource: row.customerSource,
     promoterEmployeeId: row.promoterEmployeeId,
     customerType: row.customerType,

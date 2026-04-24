@@ -557,6 +557,8 @@ const mockFullRow = {
   name: '李女士', gender: '女', boundStoreId: 'store-1', boundEmployeeId: 'EMP-001',
   boundEmployeeName: '张三',
   memberLevel: '金钻', customerSource: null, promoterEmployeeId: null,
+  memberLevelUpgradedAt: new Date('2026-03-15T14:32:00Z'),
+  memberLevelLockedUntil: new Date('2026-08-12T14:32:00Z'),
   customerType: '流量客', spendingTier: '<1990', monthlyActivity: null, customerStatus: null,
   birthday: null, occupation: null, isMarried: null, wechatName: null, skinType: null,
   improvementFocus: null, skinIssue: null, wellnessPreference: null, notes: null,
@@ -633,6 +635,26 @@ describe('getCustomerById — 单顾客查询', () => {
 
     expect(result).toBeNull()
     expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('serializeCustomer 带出保级日和升级时间 ISO 字符串', async () => {
+    mockFullSelectChain([mockFullRow])
+
+    const result = await getCustomerById('FYGK-001')
+
+    expect(result).not.toBeNull()
+    expect(result!.memberLevelUpgradedAt).toBe('2026-03-15T14:32:00.000Z')
+    expect(result!.memberLevelLockedUntil).toBe('2026-08-12T14:32:00.000Z')
+  })
+
+  it('保级字段为 null 时序列化为 null（不抛异常）', async () => {
+    const rowNoLock = { ...mockFullRow, memberLevelUpgradedAt: null, memberLevelLockedUntil: null }
+    mockFullSelectChain([rowNoLock])
+
+    const result = await getCustomerById('FYGK-001')
+
+    expect(result!.memberLevelUpgradedAt).toBeNull()
+    expect(result!.memberLevelLockedUntil).toBeNull()
   })
 })
 

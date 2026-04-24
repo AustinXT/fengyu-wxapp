@@ -90,8 +90,10 @@ export default function MemberBenefitsPageClient({
               <CardTitle>生日权益规则</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-xs text-[#999999]">
-              <p>顾客生日当天，根据其当前会员等级自动发放对应的<strong className="text-[var(--foreground)]">消息 + 积分 + 优惠券</strong>。</p>
-              <p>没有生日字段的顾客不发放；一年仅发放一次。</p>
+              <p>生日当天<strong className="text-[var(--foreground)]">凌晨 3:00</strong> 由每日定时任务按顾客当前会员等级发放<strong className="text-[var(--foreground)]">消息 + 积分 + 优惠券</strong>。</p>
+              <p>一年仅发送一次，cron 重跑不会重复发放。</p>
+              <p>没有生日的顾客、没有会员等级的顾客（流量/体验/小美客）不发放。</p>
+              <p>2/29 出生的顾客仅在闰年当日发放，非闰年跳过。</p>
             </CardContent>
           </Card>
           <MemberLevelBenefitsForm
