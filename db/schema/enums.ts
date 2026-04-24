@@ -1,7 +1,5 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
-export const productKindEnum = pgEnum("product_kind", ["护理项目", "家居产品", "充值卡", "体验卡"]);
-
 export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "院装产品"]);
 
 export const orderStatusEnum = pgEnum("order_status", [

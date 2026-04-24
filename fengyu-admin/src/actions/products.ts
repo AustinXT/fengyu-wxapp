@@ -222,11 +222,10 @@ export async function updateProductKind(
 
     // 若改名，级联更新所有子级的 product_kind
     if (newName && newName !== current.categoryName) {
-      type ProductKind = '护理项目' | '家居产品' | '充值卡' | '体验卡'
       await tx
         .update(productCategories)
-        .set({ productKind: newName as ProductKind })
-        .where(eq(productCategories.productKind, current.categoryName as ProductKind))
+        .set({ productKind: newName })
+        .where(eq(productCategories.productKind, current.categoryName))
     }
   })
 
@@ -245,12 +244,26 @@ export async function createCategory(data: {
   const session = await getSession()
   requirePermission(session, 'product:create')
 
+  // 业务校验：productKind 必须存在于"一级行"集合（productKind IS NULL 的有效行）
+  const [kindRow] = await db
+    .select({ categoryId: productCategories.categoryId })
+    .from(productCategories)
+    .where(and(
+      sql`${productCategories.productKind} IS NULL`,
+      eq(productCategories.categoryName, data.productKind),
+      eq(productCategories.isValid, true),
+    ))
+    .limit(1)
+  if (!kindRow) {
+    return { success: false, message: 'INVALID_PRODUCT_KIND: 一级品项类型不存在或已停用' }
+  }
+
   const categoryId = crypto.randomUUID()
   try {
     await db.insert(productCategories).values({
       categoryId,
       categoryName: data.categoryName,
-      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
+      productKind: data.productKind,
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
       sortOrder: data.sortOrder,
       isValid: data.isValid,
@@ -279,6 +292,22 @@ export async function updateCategory(
   const session = await getSession()
   requirePermission(session, 'product:update')
 
+  // 业务校验：若传了 productKind，必须存在于"一级行"集合
+  if (data.productKind !== undefined) {
+    const [kindRow] = await db
+      .select({ categoryId: productCategories.categoryId })
+      .from(productCategories)
+      .where(and(
+        sql`${productCategories.productKind} IS NULL`,
+        eq(productCategories.categoryName, data.productKind),
+        eq(productCategories.isValid, true),
+      ))
+      .limit(1)
+    if (!kindRow) {
+      return { success: false, message: 'INVALID_PRODUCT_KIND: 一级品项类型不存在或已停用' }
+    }
+  }
+
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(productCategories).where(eq(productCategories.categoryId, categoryId)).limit(1)
 
@@ -290,7 +319,6 @@ export async function updateCategory(
     .update(productCategories)
     .set({
       ...data,
-      productKind: data.productKind as typeof productCategories.$inferInsert['productKind'],
       salesCategory: data.salesCategory as typeof productCategories.$inferInsert['salesCategory'],
     })
     .where(whereConditions)

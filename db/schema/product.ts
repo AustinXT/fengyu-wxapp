@@ -1,6 +1,6 @@
 import { bigint, bigserial, boolean, check, index, integer, numeric, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
-import { productKindEnum, productTypeEnum, salesCategoryEnum } from './enums'
+import { productTypeEnum, salesCategoryEnum } from './enums'
 
 /**
  * 品项分类
@@ -11,7 +11,7 @@ import { productKindEnum, productTypeEnum, salesCategoryEnum } from './enums'
 export const productCategories = pgTable('product_categories', {
   categoryId: text('category_id').primaryKey(),
   categoryName: text('category_name').notNull(),
-  productKind: productKindEnum('product_kind'),
+  productKind: text('product_kind'),
   salesCategory: salesCategoryEnum('sales_category'),
   sortOrder: integer('sort_order').notNull().default(0),
   isValid: boolean('is_valid').notNull().default(true),
