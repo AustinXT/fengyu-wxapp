@@ -16,6 +16,7 @@ const { requireStaffBound, requireManager } = require('../middleware/auth')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
+const { settlePointsSafe } = require('../utils/points')
 const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
@@ -979,6 +980,11 @@ async function confirmOffline(ctx) {
     await refreshSpendingTier(client, order.client_user_id)
     // 重算顾客类型（只升不降）
     await recalcCustomerType(client, order.client_user_id)
+
+    // 积分结算（订单链净额差值法，幂等）
+    // confirmOffline 是店长确认线下收款的"状态转已支付/部分支付"入口（AC-04）；
+    // 部分支付时 paid_amount 已累加，也要调用 settle 保持链上积分与实到账同步
+    await settlePointsSafe(client, saleOrderId, 'staffApi.confirmOffline')
   })
 
   ctx.result = {
@@ -1586,6 +1592,13 @@ async function approveRefund(ctx) {
     await refreshSpendingTier(client, refundOrder.client_user_id)
     // 重算顾客类型（退款不降级，但保持一致性）
     await recalcCustomerType(client, refundOrder.client_user_id)
+
+    // 积分冲销（订单链净额差值法，幂等）
+    // 退款单的 paid_amount 为负，并入原单链后链净额下降 → delta 为负 → 写"消费冲销"
+    // 关键：settle 对象是原销售单（refSaleOrderId），不是退款单自身
+    if (refSaleOrderId) {
+      await settlePointsSafe(client, refSaleOrderId, 'staffApi.approveRefund')
+    }
   })
 
   ctx.result = { saleOrderId, status: '已支付', refundByCard, refundByOrigin, message: '退款已审批通过' }

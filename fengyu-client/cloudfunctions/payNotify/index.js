@@ -9,6 +9,7 @@ const cloud = require('wx-server-sdk')
 cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const { getMemberThreshold } = require('./config')
+const { settlePointsSafe } = require('./points')
 
 // 充值卡虚拟 SKU 标识 — 必须与 clientApi/routes/_constants.js 中的
 // RECHARGE_VIRTUAL_SKU_ID 保持一致；payNotify 是独立云函数，故重复定义。
@@ -446,6 +447,13 @@ exports.main = async (event) => {
             )
           }
         }
+      }
+
+      // 积分结算（订单链净额差值法，幂等）
+      // targetOrderNo 已指向原销售单（回款凭证单场景上面已重映射），直接作为原单 id 传入
+      const pointsResult = await settlePointsSafe(client, targetOrderNo, 'payNotify')
+      if (pointsResult.delta) {
+        console.log(`[payNotify] 积分结算: order=${targetOrderNo}, delta=${pointsResult.delta}, expected=${pointsResult.expected}`)
       }
 
       await client.query('COMMIT')

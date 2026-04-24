@@ -129,7 +129,8 @@ async function grantUpgradeBenefits(client, userId, fromLevel, toLevel, config) 
     )
   }
 
-  // 2) 积分发放
+  // 2) 积分发放 — 写流水 + 同事务更新余额缓存
+  // 余额缓存统一为 client_wechat_users.points_balance；原 customer_points 表已删除
   if (config.points && config.points > 0) {
     await client.query(
       `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
@@ -137,12 +138,11 @@ async function grantUpgradeBenefits(client, userId, fromLevel, toLevel, config) 
       [userId, config.points]
     )
     await client.query(
-      `INSERT INTO customer_points (user_id, balance, updated_at)
-       VALUES ($1, $2, NOW())
-       ON CONFLICT (user_id) DO UPDATE
-         SET balance = customer_points.balance + EXCLUDED.balance,
-             updated_at = NOW()`,
-      [userId, config.points]
+      `UPDATE client_wechat_users
+          SET points_balance    = COALESCE(points_balance, 0) + $1,
+              points_updated_at = NOW()
+        WHERE user_id = $2`,
+      [config.points, userId]
     )
   }
 
@@ -267,6 +267,52 @@ async function refreshMemberLevels(client) {
   return { upgradeCount, downgradeCount, unchangedCount, errorCount, total: memberClients.length }
 }
 
+// ============ STEP 3: points_balance 一致性校验 ============
+
+/**
+ * 校验 client_wechat_users.points_balance 与 point_transactions 流水合计是否一致
+ * 发现偏差写入 operation_logs（仅告警，不自动修复）
+ *
+ * 正确语义：points_balance = SUM(point_transactions.amount WHERE user_id = u.user_id)
+ * 决策 D7：自动修补会掩盖上游 bug，只告警让人工排查
+ */
+async function auditPointsBalance(client) {
+  const { rows } = await client.query(`
+    WITH sums AS (
+      SELECT user_id, COALESCE(SUM(amount), 0)::int AS total_from_txns
+      FROM point_transactions
+      GROUP BY user_id
+    )
+    SELECT u.user_id,
+           COALESCE(u.points_balance, 0) AS cached_balance,
+           COALESCE(s.total_from_txns, 0) AS expected_balance
+      FROM client_wechat_users u
+      LEFT JOIN sums s ON s.user_id = u.user_id
+     WHERE COALESCE(u.points_balance, 0) <> COALESCE(s.total_from_txns, 0)
+  `)
+
+  for (const row of rows) {
+    await client.query(
+      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
+       VALUES ('points.balanceMismatch', 'customer', $1, $2::jsonb, 'cronTask', NOW())`,
+      [
+        row.user_id,
+        JSON.stringify({
+          cachedBalance: Number(row.cached_balance),
+          expectedBalance: Number(row.expected_balance),
+          delta: Number(row.expected_balance) - Number(row.cached_balance),
+        }),
+      ],
+    )
+  }
+
+  const checkedCount = (
+    await client.query('SELECT COUNT(*)::int AS cnt FROM client_wechat_users')
+  ).rows[0]?.cnt || 0
+
+  return { mismatchCount: rows.length, checkedCount }
+}
+
 // ============ 入口 ============
 
 exports.main = async (event) => {
@@ -300,6 +346,15 @@ exports.main = async (event) => {
       `unchanged=${levelResult.unchangedCount} error=${levelResult.errorCount}`
     )
 
+    // STEP 3: 积分余额一致性校验（仅告警，不自动修 — 决策 D7）
+    // 规则：client_wechat_users.points_balance 应等于 SUM(point_transactions.amount)
+    // 发现偏差写 operation_logs('points.balanceMismatch')，由人工排查上游触发点 bug
+    const mismatchResult = await auditPointsBalance(client)
+    console.log(
+      `[cronTask] STEP 3: points balance audit mismatch=${mismatchResult.mismatchCount} ` +
+      `checked=${mismatchResult.checkedCount}`
+    )
+
     return {
       code: 0,
       message: 'success',
@@ -308,6 +363,7 @@ exports.main = async (event) => {
         resetCount,
         stats,
         memberLevel: levelResult,
+        pointsAudit: mismatchResult,
       },
     }
   } catch (err) {
