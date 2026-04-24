@@ -799,35 +799,34 @@ export async function createOrder(data: {
   if (isOnlinePay && receivedAmount > 0) {
     return {
       success: false,
-      message: 'MIXED_PAYMENT_NOT_SUPPORTED: admin 开单不支持线上支付，请使用线下方式录入收款',
+      message: 'INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED: admin 开单不支持线上支付，请使用线下方式录入收款',
     }
   }
 
-  // 决策树（ticket §2.1）——仅当 paymentMethod='线下' 或 '无'（全额储值卡抵扣）时走以下分支。
-  // paymentMethod='微信'/'支付宝' + receivedAmount=0 保留原"待支付"语义（不本 ticket 扩展）。
+  // 决策树（ticket §2.1，三端对齐）：
+  //   - 微信/支付宝：'待支付'（等 payNotify 回调入账）
+  //   - 线下/储值卡/无：按 paid+prepaid vs total：
+  //       0 → '待支付'（挂账）
+  //       0 < paid+prepaid < total → '部分支付'
+  //       paid+prepaid = total → '待确认收款'（店长 confirmOffline 再次确认 → '已支付'；
+  //                                            全额储值卡抵扣同样走此路径，扣卡发生在 confirmOffline）
   let initialStatus: typeof saleOrders.$inferInsert['status']
-  if (data.paymentMethod === '微信' || data.paymentMethod === '支付宝') {
+  const settledAmount = Math.round((receivedAmount + prepaidCardAmount) * 100) / 100
+  if (isOnlinePay) {
     initialStatus = '待支付'
-  } else if (payableAmount === 0) {
-    // 全额储值卡抵扣：仍为已支付（储值卡抵扣行同事务写入）
-    initialStatus = '已支付'
-  } else if (receivedAmount === 0) {
+  } else if (settledAmount === 0) {
     initialStatus = '待支付'
-  } else if (receivedAmount >= payableAmount - 0.005) {
-    // 与原行为对齐：线下全额落 '待确认收款'，走 confirmOfflinePayment 再确认
-    initialStatus = data.paymentMethod === '线下' ? '待确认收款' : '已支付'
-  } else {
-    // 0 < received < payable → 部分支付
+  } else if (settledAmount + 0.005 < totalAmount) {
     initialStatus = '部分支付'
+  } else {
+    initialStatus = '待确认收款'
   }
 
   // paid_amount 双写（应用层保障不变量）
   // 首次支付 + 线下直接计入 paid_amount（status='已支付'/'待确认收款'/'部分支付'）；
-  // '待确认收款' 下 payments 行虽然状态为'已支付'（线下）但符合"flow_status=已支付"统计；
+  // 线上（微信/支付宝）在 create 时 paid_amount=0，payNotify 回调时累加；
   // 待支付（挂账）paid_amount = 0；此处统一按 receivedAmount（线下场景）落盘。
-  const paidAmountSnapshot = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
-    ? 0
-    : receivedAmount
+  const paidAmountSnapshot = isOnlinePay ? 0 : receivedAmount
 
   // 计算 document_type（售前/售后快照）
   let documentType: '售前' | '售后' = '售前'
@@ -931,20 +930,18 @@ export async function createOrder(data: {
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
-        paidAt: initialStatus === '已支付' ? new Date() : null,
+        paidAt: paidAmountSnapshot > 0 ? new Date() : null,
       })
 
-      // ── 款项流水写入（ticket 2026-04-24 PR-3） ────────────────────────
-      // 决策树：
-      //   - 首次支付行：仅在 receivedAmount>0 且线下通道时写入（线上支付在 PR-4 由 pay/pay_notify 写）
-      //     - '线下'全额 → status='已支付'（首次已到账）
-      //     - '线下'部分 → status='已支付'（首次已到账的部分）
-      //     - receivedAmount=0 的纯挂账订单 → 不写首次支付行
-      //   - 储值卡抵扣行：prepaidCardAmount>0 时额外 1 行（change_type='储值卡抵扣'/paymentMethod='储值卡'）
-      // 注：admin 侧线下 '待确认收款' 状态下，本次开单的收款仍视为首次到账（员工已收到现金），
-      //     因此 payments.status='已支付'；订单态的 '待确认收款' 仅表示审核/凭证未闭环。
-      const nowTs = new Date()
-      if (receivedAmount > 0 && data.paymentMethod === '线下') {
+      // ── 款项流水写入（ticket 2026-04-24 PR-3，与 staff order.create 对齐） ────
+      // 规则：
+      //   - 线下/储值卡/无 + receivedAmount > 0 → 写 1 行 payments change_type='首次支付' status='已支付'
+      //     （线下现场现金部分立即落账；订单 status 可能是 '待确认收款'/'部分支付'）
+      //   - 线上（微信/支付宝）：不写 payments，由 payNotify 回调写入
+      //   - 储值卡抵扣：prepaid_card_amount 仅写入 sale_orders 作为"预选"金额；
+      //     扣卡余额 + 写 '储值卡抵扣' payments 行统一由 staff 端 confirmOffline 执行
+      //     （admin 开单的订单由店长在小程序 confirmOffline 时扣卡）
+      if (!isOnlinePay && receivedAmount > 0) {
         await tx.insert(saleOrderPayments).values({
           saleOrderId: id,
           changeType: '首次支付',
@@ -955,21 +952,7 @@ export async function createOrder(data: {
           sourceEnd: 'admin',
           operatorEmployeeId: session.employeeId,
           note: '管理后台开单首次收款',
-          paidAt: nowTs,
-        })
-      }
-      if (prepaidCardAmount > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId: id,
-          changeType: '储值卡抵扣',
-          amount: prepaidCardAmount.toFixed(2),
-          paymentMethod: '储值卡',
-          externalTxnId: null,
-          status: '已支付',
-          sourceEnd: 'admin',
-          operatorEmployeeId: session.employeeId,
-          note: '管理后台开单储值卡抵扣',
-          paidAt: nowTs,
+          paidAt: new Date(),
         })
       }
 

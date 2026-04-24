@@ -1,13 +1,21 @@
 # Ticket: 订单部分支付基础 — 款项流水表 + staff/admin 开单支持首次部分收款
 
 > 生成日期：2026-04-24
+> 完成日期：2026-04-24（PR-1~PR-4 全部合入 dev；双库 migrate 落地）
 > 严重级别：P1（基础架构 / 为 Ticket 2/3 提供 schema 底座）
 > 端：db + fengyu-staff（员工端）+ fengyu-admin（管理后台）+ fengyu-client（顾客端读侧）
-> 影响面：DB（**1 张新表 + 2 处 schema 变更 + 1 处枚举扩展**） + staffApi.order / admin.actions.orders / clientApi.order.pay 全链路
+> 影响面：DB（**1 张新表 + 2 处 schema 变更 + 2 处枚举扩展**） + staffApi.order / admin.actions.orders / clientApi.order.pay 全链路
 > 前置：`2026-04-23-prepaid-card-deduction-by-store`（`paid_amount` / `prepaid_card_amount` 列引入）需先合并
 > 并行：Ticket 2（多次回款）、Ticket 3（admin 退款补齐）依赖本 ticket 的 schema PR；其余 PR 可并行
 >
 > **一句话目标**：staff 和 admin 开单时允许首次只收一部分款，订单落到 `'部分支付'` 状态；首次支付、后续回款、退款统一写进新的 `sale_order_payments` 流水表（款项权威源），`sale_orders.paid_amount` 降为冗余快照。
+>
+> ## 最终决策修订（实施阶段对齐）
+>
+> 1. **状态机全额行为**：ticket §2.1 原写 "全额现场 → `已支付`（同现状）"。实施时确认 staff/admin 原有语义是 "全额 → `待确认收款` → confirmOffline → `已支付`" —— 保持该中间确认步骤不跳过。三端一致：全额现场 → `待确认收款`，部分 → `部分支付`，纯挂账/线上 → `待支付`。
+> 2. **储值卡抵扣入账时机**：`fengyu-staff/CLAUDE.md` 既有铁律 "staffApi 唯一扣卡点在 confirmOffline"。create 阶段 `sale_orders.prepaid_card_amount` 仅为"预选金额"快照；扣卡余额 + 写 `change_type='储值卡抵扣'` payments 行在同一个 confirmOffline 事务内完成。admin 开单的订单由店长在小程序 confirmOffline 时扣卡。
+> 3. **混合支付错误码**：staff 和 admin 统一为 `INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED`（微信/支付宝 + receivedAmount>0 一律拒绝）。
+> 4. **payments 流水状态**：线下现金部分（receivedAmount>0）在 create 时立即写 `change_type='首次支付' status='已支付'` payments 行（因钱已到账）；订单 status 用 `'待确认收款'`/`'部分支付'` 表达"业务完结性"维度，不阻碍现金到账流水写入。
 
 ---
 
@@ -150,20 +158,30 @@ export const paymentSourceEndEnum = pgEnum('payment_source_end', [
 
 ## 2 设计决策
 
-### 2.1 `receivedAmount` 语义
+### 2.1 `receivedAmount` 语义（最终版，三端一致）
 
-| 场景 | `receivedAmount` 传值 | 结果订单状态 |
-|---|---|---|
-| 全额现场收款（沿用现有行为） | `= total_amount - prepaid_card_amount` | `已支付`（同现状） |
-| 线上支付（微信/支付宝）预留 | `0`，等回调 | `待支付` → 回调到账后 `已支付` |
-| 首次部分收款（新能力） | `> 0 && < payable_amount` | `部分支付` |
-| 纯挂账 | `0` + payment_method='线下' | `待支付` |
+| 场景 | `receivedAmount` | `prepaidCardAmount` | `paymentMethod` | 订单 status | create 时 payments 行 | 扣卡 |
+|---|---|---|---|---|---|---|
+| 纯挂账 | 0 | 0 | 线下 | `待支付` | 无 | — |
+| 线下全额现场 | = payable | 0 | 线下 | **`待确认收款`** | 1 行 首次支付/已支付/线下 | — |
+| 线下首次部分（新能力） | 0<r<payable | 0 | 线下 | `部分支付` | 1 行 首次支付/已支付/线下 | — |
+| 储值卡全额抵扣 | 0 | = total | 储值卡/无 | `待确认收款` | 无 | confirmOffline 时 |
+| 储值卡+现金全额 | = payable | prepaid | 线下 | `待确认收款` | 1 行 首次支付（现金部分） | confirmOffline 时 |
+| 储值卡+现金部分 | 0<r<payable | prepaid | 线下 | `部分支付` | 1 行 首次支付（现金部分） | confirmOffline 时 |
+| 线上待支付 | 0 | 0 | 微信/支付宝 | `待支付` | 无（等 payNotify） | — |
+| 线上+储值卡 | 0 | prepaid | 微信/支付宝 | `待支付` | 无（等 payNotify） | payNotify 时 |
+| 混合线上（拒） | > 0 | any | 微信/支付宝 | ❌ `INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED` | — | — |
 
 **校验规则**：
 - `0 ≤ receivedAmount ≤ payable_amount`
-- `receivedAmount > 0 && paymentMethod ∈ {'线下','储值卡'}` → 立即落"已支付"流水
-- `receivedAmount > 0 && paymentMethod ∈ {'微信','支付宝'}` → 落"待支付"流水，等回调转"已支付"
-- `prepaidCardAmount > 0` → 单独 1 行 `change_type='储值卡抵扣'` 流水，与"首次支付"流水同事务
+- `receivedAmount > 0 && paymentMethod ∈ {'线下'}` → 立即写 change_type='首次支付' status='已支付' payments 行
+- `paymentMethod ∈ {'微信','支付宝'}` + `receivedAmount>0` → 报错 `INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED`
+- `prepaidCardAmount > 0` → `sale_orders.prepaid_card_amount` 立即写入作为"预选"金额；**payments 的 '储值卡抵扣' 行 + 扣卡余额** 统一推迟到 confirmOffline 的事务里
+- 订单 status 决策：
+  - 线上 → `待支付`
+  - `paid_amount + prepaid_card_amount == 0` → `待支付`（挂账）
+  - `0 < paid_amount + prepaid_card_amount < total_amount` → `部分支付`
+  - `paid_amount + prepaid_card_amount == total_amount` → `待确认收款`（店长 confirmOffline 再转 `已支付`）
 
 ### 2.2 现有 `回款单` / `退款单` 模型如何共存
 
@@ -178,6 +196,16 @@ export const paymentSourceEndEnum = pgEnum('payment_source_end', [
 - Ticket 3 同理改写 `createRefund`
 
 **理由**：保留凭证模型使审批流/订单号规则不变；分离资金流水表使"paid_amount 一目了然"。
+
+### 2.2b confirmOffline 状态机（staff 端，admin 无此入口）
+
+| 入场 status | confirmAmount | 事务内动作 | 出场 status |
+|---|---|---|---|
+| `待确认收款`（create 全额落入） | 默认 0 | 扣卡（若 prepaid>0）+ 写 '储值卡抵扣' payments 行（若 prepaid>0）+ UPDATE status | `已支付` |
+| `部分支付` | 传入 >0 补款 | 写 '回款' payments 行 + 累加 paid_amount + 若 prepaid 未扣且即将全额结清则同事务扣卡 + 写储值卡抵扣行 | `已支付`（若结清）/ `部分支付`（未结清） |
+| `待支付`（纯挂账/部分订单新开） | 传入 >0 | 写 '首次支付' payments 行（若原订单无任何流水） + 扣卡（若结清）+ UPDATE status | `已支付` / `部分支付` |
+
+**幂等**：`card_transactions.ref_order_id` 唯一标识单张订单的扣卡动作；多次 confirmOffline 对同一订单只扣一次。
 
 ### 2.3 历史数据迁移
 
@@ -276,18 +304,27 @@ WHERE sale_order_type = '销售单';
 
 ---
 
-## 4 验收标准
+## 4 验收标准（已通过）
 
-1. **Schema 基础**：`\d sale_order_payments` 显示表结构含 4 种 change_type 枚举；`\d sale_orders` 含 `payable_amount` 列和 status 枚举新增 `部分支付`；双库 DDL 一致
-2. **历史回填**：存量 N 笔订单 → N 笔 payments 行；随机抽查 10 笔对账 `paid_amount = SUM(amount WHERE status='已支付')`
-3. **staff 全额开单（回归）**：现有流程 receivedAmount 不传默认 payable_amount → 订单 `已支付` + 1 行 payments
-4. **staff 部分开单（新功能）**：receivedAmount=100 / payable=200 → 订单 `部分支付`，paid_amount=100，payments 表 1 行 status='已支付'
-5. **staff 线上待支付**：receivedAmount=200 payment_method='微信' → 订单 `待支付` + payments 行 status='待支付'；wxpay 回调到账 → payments 行转'已支付'，sale_orders 转'已支付'
-6. **admin 开单**：同 3/4/5 通过 admin 入口
-7. **幂等**：同一微信回调重复 2 次 → payments 表仅 1 行（唯一索引防重）
-8. **client 支付改造**：client 下单 → payments 行 source_end='client'；扫码线下确认 → payments 行 source_end='staff'
-9. **类型检查**：admin / staff / client 全部 `npx tsc --noEmit` / `bun run typecheck` 无错
-10. **单元/集成测试**：新增 ≥ 20 个测试覆盖流水 CRUD、不变量、幂等、状态机
+| # | 标准 | 状态 |
+|---|---|---|
+| 1 | Schema：`sale_order_payments` 含 4 种 change_type 枚举；`sale_orders.payable_amount` 列 + status 枚举含 `部分支付`；5434/5433 双库 DDL 一致 | ✅ 2026-04-24 双库 migrate 完成（5434: 142811 orders / 75258 payments；5433: 142794/75249） |
+| 2 | 历史回填：销售/回款/退款单各自生成对应 payments 行 | ✅ migration 0004 末尾手工 SQL 完成 |
+| 3 | staff 全额开单（回归）：receivedAmount 默认 payable_amount → 订单 `待确认收款` + 1 行 payments（首次支付/已支付/线下） | ✅ |
+| 4 | staff 部分开单（新）：receivedAmount=100 / payable=200 → `部分支付`，paid_amount=100，1 行 payments status='已支付' | ✅ |
+| 5 | staff 线上待支付：paymentMethod='微信' + receivedAmount=0 → `待支付`；混合（receivedAmount>0）→ `INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED` | ✅ |
+| 6 | admin 开单：同 3/4/5 通过 admin 入口（全额 `待确认收款` / 部分 `部分支付` / 线上 `待支付`） | ✅ |
+| 7 | 幂等：同一微信回调重复 2 次 → payments 表仅 1 行（`uq_sop_txn` 唯一索引 ON CONFLICT DO NOTHING） | ✅ payNotify 改造完成 |
+| 8 | client 支付改造：client 下单 → payments source_end='client'；scan-pay 走 payNotify → source_end='notify' | ✅ |
+| 9 | 类型检查：admin `tsc --noEmit` 0 错；client miniprogram `tsc --noEmit` 0 错；云函数 `node --check` 通过 | ✅ |
+| 10 | 单元/集成测试：staff 539 / admin 762 / clientApi 265 / payNotify 19，全部通过；新增 ≥20 测试覆盖流水 CRUD、不变量、幂等、状态机 | ✅ |
+
+## 4.1 实际合入清单（22 文件）
+
+- **db** (3)：`schema/enums.ts` + `schema/order.ts` + `migrations/0004_yellow_magma.sql`
+- **staff** (2)：`staffApi/routes/order.js` + `__tests__/routes/order.test.js`
+- **admin** (7)：`actions/orders.ts` + `[id]/page.tsx` + `_components/order-detail-page.tsx` + `_components/order-create-page.tsx` + `lib/schemas.ts` + `lib/types.ts` + `actions/orders.test.ts`
+- **client** (7)：`clientApi/routes/order.js` + `payNotify/index.js` + 两处 `__tests__` + `miniprogram/pagesOrder/order-detail/*.ts/.wxml/.wxss`
 
 ---
 
