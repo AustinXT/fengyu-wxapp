@@ -146,7 +146,7 @@ const mockSession = {
 const baseOrderData = {
   storeId: 'store-1',
   marketName: '市场A',
-  clientUserId: null,
+  clientUserId: 'user-1',
   clientPhone: '13812345678',
   customerName: '顾客甲',
   paymentMethod: '线下' as const,
@@ -225,6 +225,30 @@ describe('createOrder — 权限与 scope 校验', () => {
 
     expect(result.success).toBe(true)
     expect(db.transaction).toHaveBeenCalledOnce()
+  })
+})
+
+describe('createOrder — 顾客校验（CLIENT_NOT_REGISTERED 守卫）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+  })
+
+  it('clientUserId 为空字符串 → 拒绝，不进入事务', async () => {
+    const result = await createOrder({ ...baseOrderData, clientUserId: '' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('CLIENT_NOT_REGISTERED 拒单在 scope 校验之前触发（即使 scope 不符也优先报缺顾客）', async () => {
+    ;(isInScope as any).mockReturnValue(false)
+    const result = await createOrder({ ...baseOrderData, clientUserId: '', storeId: 'other-store' })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
   })
 })
 
@@ -625,9 +649,9 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     expect(captured.insertValues.length).toBe(0)
   })
 
-  it('订单无 clientUserId（manualPhone 开单） → 不触发 prepaid_cards 写入', async () => {
+  it('历史订单 client_user_id=null（新规前 manualPhone 遗留） → 充值入账跳过', async () => {
     const captured = mockRechargeTx({ clientUserId: null, productName: '预付充值卡 ¥500' })
-    const result = await confirmOfflinePayment('order-manual-phone')
+    const result = await confirmOfflinePayment('order-legacy-null-client')
     expect(result.success).toBe(true)
     expect(captured.executes.length).toBe(1)
     expect(captured.insertValues.length).toBe(0)
@@ -1121,13 +1145,13 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('充值卡无 clientUserId → 拒绝', async () => {
+  it('充值卡无 clientUserId → 拒绝（走入口 CLIENT_NOT_REGISTERED 守卫）', async () => {
     const result = await createOrder({
       ...baseRechargeData,
-      clientUserId: null,
+      clientUserId: '',
     })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('必须选择实名顾客')
+    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 

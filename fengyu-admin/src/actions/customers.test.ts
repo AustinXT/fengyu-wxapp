@@ -38,6 +38,7 @@ vi.mock('drizzle-orm', () => ({
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
   getTableColumns: vi.fn(() => ({})),
 }))
 
@@ -67,13 +68,14 @@ vi.mock('crypto', () => ({
   randomBytes: vi.fn(() => ({ toString: () => 'aabbcc112233' })),
 }))
 
-import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone } from './customers'
+import { updateCustomer, createCustomer, getCustomersPaginated, getCustomers, getCustomerById, searchCustomerByPhone, searchCustomers } from './customers'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, isAdminScope, requirePermission } from '@/lib/permissions'
 import { hasRole } from '@/lib/auth'
 import { logUpdate } from '@/lib/operation-log'
-import { eq, ilike } from 'drizzle-orm'
+import { clientWechatUsers } from '@db/user'
+import { eq, ilike, isNotNull } from 'drizzle-orm'
 
 const mockSession = {
   employeeId: 'MGR-001',
@@ -654,5 +656,32 @@ describe('searchCustomerByPhone — 手机号搜索', () => {
     const result = await searchCustomerByPhone('13900000000')
 
     expect(result).toBeNull()
+  })
+})
+
+describe('searchCustomers — 模糊搜索（收紧：bound_store_id 必须非空）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('空白关键字 → 直接返回 []，不查 DB', async () => {
+    const result = await searchCustomers('   ')
+    expect(result).toEqual([])
+    expect(db.select).not.toHaveBeenCalled()
+  })
+
+  it('where 子句包含 isNotNull(boundStoreId) — 未绑店顾客被过滤', async () => {
+    mockFullSelectChain([mockFullRow])
+    await searchCustomers('李')
+    expect(isNotNull).toHaveBeenCalledWith(clientWechatUsers.boundStoreId)
+  })
+
+  it('命中已绑店顾客 → 返回序列化结果', async () => {
+    mockFullSelectChain([mockFullRow])
+    const result = await searchCustomers('13812')
+    expect(result).toHaveLength(1)
+    expect(result[0].phone).toBe('13812345678')
+    expect(result[0].storeName).toBe('南昌旗舰店')
   })
 })
