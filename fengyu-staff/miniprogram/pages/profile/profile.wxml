@@ -9,7 +9,7 @@
       <view class="profile-meta">
         <text class="profile-store" wx:if="{{boundStoreName}}">{{boundStoreName}}</text>
         <van-tag color="#C0322A" text-color="#FFFFFF">
-          {{position || '未绑定'}}
+          {{position || '职位待设置'}}
         </van-tag>
       </view>
     </view>

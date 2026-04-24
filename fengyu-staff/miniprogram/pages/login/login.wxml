@@ -12,6 +12,19 @@
 
   <!-- 绑定按钮 -->
   <block wx:elif="{{!checking}}">
+    <!-- 登录层级选择：仅在同时可选门店/管理层时显示 -->
+    <view wx:if="{{availableLoginLevels.length === 2}}" class="login-level-group">
+      <van-radio-group
+        value="{{ loginLevel }}"
+        bind:change="onLoginLevelChange"
+        direction="horizontal"
+        custom-class="login-level-radio"
+      >
+        <van-radio name="store" checked-color="#C0322A" custom-class="login-level-radio-item">门店</van-radio>
+        <van-radio name="management" checked-color="#C0322A" custom-class="login-level-radio-item">管理层</van-radio>
+      </van-radio-group>
+    </view>
+
     <button open-type="getPhoneNumber" bindgetphonenumber="onGetPhoneNumber"
             class="login-btn" disabled="{{binding}}">
       {{binding ? '验证中...' : '授权手机号登录'}}

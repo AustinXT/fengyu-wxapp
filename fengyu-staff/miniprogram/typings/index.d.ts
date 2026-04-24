@@ -1,3 +1,22 @@
+// 员工层级归并结果（前端派生），取值参考云函数 utils/scope.js
+// headquarters  — 总部
+// market        — 市场
+// store_manager — 门店店长
+// store_staff   — 门店其他角色（美容师 / 咨询 / 财务门店等）
+type StaffLevel = 'headquarters' | 'market' | 'store_manager' | 'store_staff' | null
+type LoginLevel = 'store' | 'management'
+
+interface RoleBinding {
+  role: string
+  scopeId: string
+  scopeType: string // 总部 / 市场 / 门店 / 部门
+}
+
+interface ScopedStore {
+  storeId: string
+  storeName: string
+}
+
 interface IAppOption {
   globalData: {
     staffWfId: string;
@@ -8,6 +27,14 @@ interface IAppOption {
     boundStoreName: string;
     boundStoreId: string;
     phone: string;
+    // 权限层级（由云函数 auth.login/bindPhone 返回）
+    staffLevel: StaffLevel;
+    roleBindings: RoleBinding[];
+    availableLoginLevels: LoginLevel[];
+    scopedStores: ScopedStore[];
+    // 运行时
+    loginLevel: LoginLevel | null;
+    currentStoreId: string;
     pendingCartItem?: {
       spuId: string;
       skuId: string;
@@ -37,7 +64,13 @@ interface IAppOption {
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;
+    staffLevel?: StaffLevel;
+    roleBindings?: RoleBinding[];
+    availableLoginLevels?: LoginLevel[];
+    scopedStores?: ScopedStore[];
   }): void;
+  setLoginLevel(level: LoginLevel): void;
+  setCurrentStoreId(storeId: string): void;
   resetStaffInfo(): void;
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;

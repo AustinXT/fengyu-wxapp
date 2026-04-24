@@ -1,4 +1,4 @@
-// utils/cloud.ts — staffApi 调用封装（含 Mock 拦截）
+// utils/cloud.ts — staffApi 调用封装（含 Mock 拦截 + 自动附加登录层级参数）
 import { mockCallApi } from './mock-api'
 
 /**
@@ -15,17 +15,38 @@ export function sanitizeErrorMessage(msg: string, fallback: string = '请求失�
   return msg
 }
 
+/**
+ * 自动附加当前登录层级 / 当前门店到 payload，供云函数中间件校验 + 过滤
+ */
+function withAuthContext(payload: Record<string, any>): Record<string, any> {
+  try {
+    const g = getApp<IAppOption>()?.globalData
+    if (!g) return payload
+    const next: Record<string, any> = { ...payload }
+    if (g.loginLevel && next._loginLevel === undefined) {
+      next._loginLevel = g.loginLevel
+    }
+    if (g.currentStoreId && next._currentStoreId === undefined) {
+      next._currentStoreId = g.currentStoreId
+    }
+    return next
+  } catch {
+    return payload
+  }
+}
+
 export async function callStaffApi<T = any>(
   action: string,
   payload: Record<string, any> = {}
 ): Promise<T> {
+  const enriched = withAuthContext(payload)
   // Mock 拦截（MOCK_ENABLED = false 时零开销）
-  const mockResult = await mockCallApi(action, payload)
+  const mockResult = await mockCallApi(action, enriched)
   if (mockResult !== null) return mockResult as T
 
   const res = await wx.cloud.callFunction({
     name: 'staffApi',
-    data: { action, payload }
+    data: { action, payload: enriched }
   }) as any
   if (res.result?.code !== 0) {
     throw new Error(sanitizeErrorMessage(res.result?.message, '请求失败'))

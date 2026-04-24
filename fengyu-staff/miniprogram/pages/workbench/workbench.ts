@@ -3,6 +3,7 @@ import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { buildCalendarDays, formatMonthLabel } from '../../utils/calendar';
 import type { CalendarDay } from '../../utils/calendar';
+import { emit, on, EVENT_STORE_CHANGED } from '../../utils/event-bus';
 
 const app = getApp<IAppOption>();
 
@@ -13,6 +14,11 @@ Page({
     staffName: '',
     position: '',
     isManager: false,
+    currentStoreId: '',
+    scopedStores: [] as ScopedStore[],
+    hasMultiStore: false,
+    storePickerVisible: false,
+    storePickerActions: [] as Array<{ name: string; storeId: string; color?: string }>,
     today: '',
     // 今日分成
     todayCommission: '0.00',
@@ -56,13 +62,60 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, position, boundStoreName } = app.globalData;
+    this.syncStoreContext();
+    this.loadWorkbench();
+  },
+
+  onReady() {
+    // 订阅门店切换事件（其他 tab 切换门店时刷新）
+    this._unsubscribeStoreChange = on(EVENT_STORE_CHANGED, () => {
+      this.syncStoreContext();
+      this.loadWorkbench();
+    });
+  },
+
+  onUnload() {
+    if (this._unsubscribeStoreChange) this._unsubscribeStoreChange();
+  },
+
+  _unsubscribeStoreChange: null as (() => void) | null,
+
+  syncStoreContext() {
+    const { staffName, position, scopedStores, currentStoreId, boundStoreName } = app.globalData;
+    const current = scopedStores.find((s) => s.storeId === currentStoreId);
+    const displayName = current?.storeName || boundStoreName;
     this.setData({
-      storeName: boundStoreName,
+      storeName: displayName,
       staffName,
       position,
       isManager: isManager(),
+      currentStoreId: currentStoreId || '',
+      scopedStores: scopedStores || [],
+      hasMultiStore: (scopedStores || []).length > 1,
     });
+  },
+
+  openStorePicker() {
+    if (!this.data.hasMultiStore) return;
+    const actions = (this.data.scopedStores || []).map((s) => ({
+      name: s.storeName,
+      storeId: s.storeId,
+      color: s.storeId === this.data.currentStoreId ? '#C0322A' : '',
+    }));
+    this.setData({ storePickerVisible: true, storePickerActions: actions });
+  },
+
+  onStorePickerClose() {
+    this.setData({ storePickerVisible: false });
+  },
+
+  onStorePickerSelect(e: WechatMiniprogram.CustomEvent<{ storeId: string; name: string }>) {
+    const { storeId } = e.detail || ({} as any);
+    this.setData({ storePickerVisible: false });
+    if (!storeId || storeId === this.data.currentStoreId) return;
+    app.setCurrentStoreId(storeId);
+    this.syncStoreContext();
+    emit(EVENT_STORE_CHANGED, storeId);
     this.loadWorkbench();
   },
 

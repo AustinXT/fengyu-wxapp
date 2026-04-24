@@ -11,6 +11,12 @@ App<IAppOption>({
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     phone: '' as string,
+    staffLevel: null as StaffLevel,
+    roleBindings: [] as RoleBinding[],
+    availableLoginLevels: [] as LoginLevel[],
+    scopedStores: [] as ScopedStore[],
+    loginLevel: null as LoginLevel | null,
+    currentStoreId: '' as string,
   },
 
   _loginReady: undefined as unknown as Promise<void>,
@@ -29,7 +35,15 @@ App<IAppOption>({
         phone: '13800000001',
         boundStoreName: '南商市场·凤御旗舰店',
         boundStoreId: 'store-001',
+        staffLevel: 'store_manager',
+        roleBindings: [
+          { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+        ],
+        availableLoginLevels: ['store'],
+        scopedStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
       });
+      this.setLoginLevel('store');
+      this.setCurrentStoreId('store-001');
       console.log('[Mock] 使用模拟员工数据，跳过 auth.login');
       this._loginReady = Promise.resolve();
       return;
@@ -46,6 +60,12 @@ App<IAppOption>({
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
+    const staffLevel = wx.getStorageSync('staffLevel');
+    const roleBindings = wx.getStorageSync('roleBindings');
+    const availableLoginLevels = wx.getStorageSync('availableLoginLevels');
+    const scopedStores = wx.getStorageSync('scopedStores');
+    const loginLevel = wx.getStorageSync('loginLevel');
+    const currentStoreId = wx.getStorageSync('currentStoreId');
     if (staffWfId) this.globalData.staffWfId = staffWfId;
     if (staffName) this.globalData.staffName = staffName;
     if (position) this.globalData.position = position;
@@ -54,6 +74,12 @@ App<IAppOption>({
     if (phone) this.globalData.phone = phone;
     if (boundStoreName) this.globalData.boundStoreName = boundStoreName;
     if (boundStoreId) this.globalData.boundStoreId = boundStoreId;
+    if (staffLevel) this.globalData.staffLevel = staffLevel;
+    if (roleBindings) this.globalData.roleBindings = roleBindings;
+    if (availableLoginLevels) this.globalData.availableLoginLevels = availableLoginLevels;
+    if (scopedStores) this.globalData.scopedStores = scopedStores;
+    if (loginLevel) this.globalData.loginLevel = loginLevel;
+    if (currentStoreId) this.globalData.currentStoreId = currentStoreId;
   },
 
   async syncLoginState() {
@@ -63,24 +89,38 @@ App<IAppOption>({
         data: { action: 'auth.login', payload: {} }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
-        const { staffWfId, staffName, position, roles, skills, phone, boundStoreName, boundStoreId } = res.result.data;
-        this.setStaffInfo({ staffWfId, staffName, position, roles, skills, phone, boundStoreName, boundStoreId });
+        const {
+          staffWfId, staffName, position, roles, skills, phone,
+          boundStoreName, boundStoreId,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores,
+        } = res.result.data;
+        this.setStaffInfo({
+          staffWfId, staffName, position, roles, skills, phone,
+          boundStoreName, boundStoreId,
+          staffLevel, roleBindings, availableLoginLevels, scopedStores,
+        });
+        // loginLevel 若本地已有且在 available 内则保留，否则 fallback available[0]
+        const existingLogin = this.globalData.loginLevel;
+        const levels = (availableLoginLevels || []) as LoginLevel[];
+        if (existingLogin && levels.includes(existingLogin)) {
+          // 保留用户选择
+        } else if (levels.length > 0) {
+          this.setLoginLevel(levels[0]);
+        }
+        // currentStoreId：若本地已有且在 scope 内保留，否则取第一个
+        const scoped = (scopedStores || []) as ScopedStore[];
+        const cur = this.globalData.currentStoreId;
+        const inScope = !!cur && scoped.some((s) => s.storeId === cur);
+        if (!inScope && scoped.length > 0) {
+          this.setCurrentStoreId(scoped[0].storeId);
+        }
       }
     } catch (err) {
       console.error('[syncLoginState] failed:', err);
     }
   },
 
-  setStaffInfo(info: {
-    staffWfId?: string;
-    staffName?: string;
-    position?: string;
-    roles?: string[];
-    skills?: string[];
-    phone?: string;
-    boundStoreName?: string;
-    boundStoreId?: string;
-  }) {
+  setStaffInfo(info) {
     if (info.staffWfId) {
       this.globalData.staffWfId = info.staffWfId;
       wx.setStorageSync('staffWfId', info.staffWfId);
@@ -114,6 +154,32 @@ App<IAppOption>({
       this.globalData.boundStoreId = info.boundStoreId || '';
       wx.setStorageSync('boundStoreId', info.boundStoreId || '');
     }
+    if ('staffLevel' in info) {
+      this.globalData.staffLevel = info.staffLevel ?? null;
+      wx.setStorageSync('staffLevel', info.staffLevel ?? '');
+    }
+    if (info.roleBindings) {
+      this.globalData.roleBindings = info.roleBindings;
+      wx.setStorageSync('roleBindings', info.roleBindings);
+    }
+    if (info.availableLoginLevels) {
+      this.globalData.availableLoginLevels = info.availableLoginLevels;
+      wx.setStorageSync('availableLoginLevels', info.availableLoginLevels);
+    }
+    if (info.scopedStores) {
+      this.globalData.scopedStores = info.scopedStores;
+      wx.setStorageSync('scopedStores', info.scopedStores);
+    }
+  },
+
+  setLoginLevel(level) {
+    this.globalData.loginLevel = level;
+    wx.setStorageSync('loginLevel', level);
+  },
+
+  setCurrentStoreId(storeId) {
+    this.globalData.currentStoreId = storeId || '';
+    wx.setStorageSync('currentStoreId', storeId || '');
   },
 
   resetStaffInfo() {
@@ -125,6 +191,12 @@ App<IAppOption>({
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';
+    this.globalData.staffLevel = null;
+    this.globalData.roleBindings = [];
+    this.globalData.availableLoginLevels = [];
+    this.globalData.scopedStores = [];
+    this.globalData.loginLevel = null;
+    this.globalData.currentStoreId = '';
     // 清除临时页面状态
     (this.globalData as any).pendingCartItem = null;
     (this.globalData as any)._serviceCreatePreload = null;
