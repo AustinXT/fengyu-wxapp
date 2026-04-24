@@ -82,7 +82,7 @@ module.exports.min = function(n) {
         </view>
         <view class="grid-item" bindtap="onGridTap" data-type="recharge">
           <view class="grid-icon-wrap">
-            <van-icon name="gold-coin-o" size="44rpx" color="#C0322A" />
+            <van-icon name="gold-coin" size="44rpx" color="#C0322A" />
           </view>
           <text class="grid-label">充值卡</text>
         </view>
