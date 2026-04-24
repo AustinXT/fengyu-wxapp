@@ -55,7 +55,7 @@ async function create(ctx) {
   if (appointmentId) {
     const appts = await pg.query(
       "SELECT * FROM appointments WHERE appointment_id = $1 AND store_id = $2 AND status = '已确认'",
-      [appointmentId, ctx.auth.storeId]
+      [appointmentId, ctx.auth.effectiveStoreId]
     )
     if (appts.length === 0) {
       throw new Error('INVALID_PARAMS: 预约不存在、不属于本门店或状态不是已确认')
@@ -107,8 +107,8 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 院装产品不走到店服务流程`)
     }
 
-    if (si.store_id !== ctx.auth.storeId) {
-      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 仅在 ${si.store_id} 可核销，当前门店 ${ctx.auth.storeId} 无法创建服务单`)
+    if (si.store_id !== ctx.auth.effectiveStoreId) {
+      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 仅在 ${si.store_id} 可核销，当前门店 ${ctx.auth.effectiveStoreId} 无法创建服务单`)
     }
 
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
@@ -178,7 +178,7 @@ async function create(ctx) {
         serviceOrderId,
         serviceOrderType,
         ctx.auth.marketName || '',
-        ctx.auth.storeId,
+        ctx.auth.effectiveStoreId,
         resolvedServiceDate,
         resolvedStaffWfId,
         remark || '',
@@ -242,7 +242,7 @@ async function start(ctx) {
 
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.storeId]
+    [serviceOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (serviceOrders.length === 0) {
@@ -290,7 +290,7 @@ async function complete(ctx) {
 
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.storeId]
+    [serviceOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (serviceOrders.length === 0) {
@@ -478,7 +478,7 @@ async function list(ctx) {
   const { status, page = 1, pageSize = 30 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
 
   if (status) {
@@ -628,7 +628,7 @@ async function detail(ctx) {
     FROM service_orders so
     LEFT JOIN client_wechat_users wu ON so.client_user_id = wu.user_id
     WHERE so.service_order_id = $1 AND so.store_id = $2
-  `, [id, ctx.auth.storeId])
+  `, [id, ctx.auth.effectiveStoreId])
 
   if (serviceOrders.length === 0) {
     throw new Error('INVALID_PARAMS: 服务单不存在或不属于本门店')
@@ -725,7 +725,7 @@ async function cancel(ctx) {
 
   const serviceOrders = await pg.query(
     'SELECT * FROM service_orders WHERE service_order_id = $1 AND store_id = $2',
-    [serviceOrderId, ctx.auth.storeId]
+    [serviceOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (serviceOrders.length === 0) {
@@ -794,7 +794,7 @@ function generateServiceItemId() {
 async function counts(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const params = [ctx.auth.storeId]
+  const params = [ctx.auth.effectiveStoreId]
   let scopeFilter = 'so.store_id = $1'
 
   if (!ctx.auth.roles.includes('manager')) {

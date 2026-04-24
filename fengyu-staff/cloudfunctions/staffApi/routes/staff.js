@@ -15,7 +15,7 @@ async function list(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { storeId: payloadStoreId } = ctx.event.payload || {}
-  const targetStoreId = payloadStoreId || ctx.auth.storeId
+  const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
@@ -60,7 +60,7 @@ async function departments(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
   const { storeId: payloadStoreId } = ctx.event.payload || {}
-  const targetStoreId = payloadStoreId || ctx.auth.storeId
+  const targetStoreId = payloadStoreId || ctx.auth.effectiveStoreId
 
   if (!targetStoreId) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
@@ -616,7 +616,7 @@ async function dashboard(ctx) {
 
   const { startDate, endDate } = ctx.event.payload || {}
   const isManagerRole = ctx.auth.roles.includes('manager')
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const employeeId = ctx.auth.staffWfId
 
   if (!startDate || !endDate) {

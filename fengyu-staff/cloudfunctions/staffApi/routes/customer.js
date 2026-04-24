@@ -49,7 +49,7 @@ async function search(ctx) {
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
        WHERE (c.phone LIKE $1 OR c.name LIKE $1) AND c.bound_store_id = $2${typeFilter}
        LIMIT $3`,
-      [`%${keyword.trim()}%`, ctx.auth.storeId, limit],
+      [`%${keyword.trim()}%`, ctx.auth.effectiveStoreId, limit],
     );
   } else {
     rows = await pg.query(
@@ -59,7 +59,7 @@ async function search(ctx) {
        LEFT JOIN stores s ON s.store_id = c.bound_store_id
        WHERE c.bound_store_id = $1${typeFilter}
        LIMIT $2`,
-      [ctx.auth.storeId, limit],
+      [ctx.auth.effectiveStoreId, limit],
     );
   }
 
@@ -426,10 +426,10 @@ async function paidOrders(ctx) {
   let whereClause, params;
   if (clientUserId) {
     whereClause = "o.status = '已支付' AND o.client_user_id = $1 AND o.store_id = $2";
-    params = [clientUserId, ctx.auth.storeId];
+    params = [clientUserId, ctx.auth.effectiveStoreId];
   } else {
     whereClause = "o.status = '已支付' AND o.client_phone = $1 AND o.store_id = $2";
-    params = [clientPhone, ctx.auth.storeId];
+    params = [clientPhone, ctx.auth.effectiveStoreId];
   }
 
   const orders = await pg.query(
@@ -508,7 +508,7 @@ function maskPhone(phone) {
 async function stats(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
   const currentMonth = now.getMonth() + 1
@@ -577,7 +577,7 @@ async function listByTag(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 tag 参数')
   }
 
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const isManagerRole = ctx.auth.roles.includes('manager')
   const now = new Date()
   const today = now.toISOString().slice(0, 10)
@@ -899,7 +899,7 @@ async function assign(ctx) {
   // 验证员工存在且在本店
   const staffRows = await pg.query(
     'SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = $1 AND store_id = $2',
-    [employeeId, ctx.auth.storeId]
+    [employeeId, ctx.auth.effectiveStoreId]
   )
   if (staffRows.length === 0) {
     throw new Error('INVALID_PARAMS: 员工不存在或不属于本门店')

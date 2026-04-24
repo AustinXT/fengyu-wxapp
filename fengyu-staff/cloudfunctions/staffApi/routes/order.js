@@ -186,7 +186,7 @@ async function create(ctx) {
     receivedAmount: inputReceivedAmount,
   } = payload
 
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!clientPhone) {
@@ -678,7 +678,7 @@ async function qrcode(ctx) {
   const order = orders[0]
 
   // 仅本店员工可查看
-  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.storeId) {
+  if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.effectiveStoreId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
 
@@ -759,7 +759,7 @@ async function confirmOffline(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1007,7 +1007,7 @@ async function close(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1082,7 +1082,7 @@ async function resetFailed(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1118,7 +1118,7 @@ async function list(ctx) {
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
 
   if (status) {
@@ -1173,7 +1173,7 @@ async function detail(ctx) {
 
   const orders = await pg.query(
     'SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -1297,7 +1297,7 @@ async function createRefund(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
@@ -1456,7 +1456,7 @@ async function approveRefund(ctx) {
 
   const orders = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单' AND status = '待审批'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许审批')
 
@@ -1605,7 +1605,7 @@ async function rejectRefund(ctx) {
   // 先查 FY-TKD 拿到 ref_sale_order_id（为作废原单上的 payments 待支付退款行）
   const refundRows = await pg.query(
     "SELECT ref_sale_order_id FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单' AND status = '待审批'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (refundRows.length === 0) throw new Error('INVALID_PARAMS: 退款单不存在或状态不允许驳回')
   const refSaleOrderId = refundRows[0].ref_sale_order_id
@@ -1680,7 +1680,7 @@ async function createRepayment(ctx) {
     paymentMethod,
     note,
   } = payload
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
@@ -1921,7 +1921,7 @@ async function createRepayment(ctx) {
  *   - 差额=0：total_amount=0，status=已支付
  *   - 差额<0：total_amount=0，status=已支付，差额充入 prepaid_cards（UPSERT user_id+store_id）+ INSERT card_transactions
  *   - 订单号前缀与 admin 对齐为 FY-XSD-WX-（admin 侧 createConversionOrder 使用同一前缀）
- *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.storeId
+ *   - 跨店守卫：所有候选卡必须 store_id = ctx.auth.effectiveStoreId
  *
  * payload: {
  *   clientUserId: string,              // 必须实名顾客（要挂储值卡）
@@ -1943,7 +1943,7 @@ async function createConversion(ctx) {
     preferredStaffWfId,
     remark,
   } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 转换单必须指定顾客 clientUserId')
@@ -2268,7 +2268,7 @@ async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { clientUserId } = ctx.event.payload || {}
-  const storeId = ctx.auth.storeId
+  const storeId = ctx.auth.effectiveStoreId
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -2342,7 +2342,7 @@ async function createPickup(ctx) {
        AND product_type = '院装产品'
        AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
      RETURNING sale_item_id, quantity, picked_up_quantity`,
-    [pickupQuantity, saleItemId, ctx.auth.storeId]
+    [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
   )
 
   if (result.rowCount === 0) {
@@ -2354,7 +2354,7 @@ async function createPickup(ctx) {
     )
     const row = probe[0]
     if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
-    if (row.store_id !== ctx.auth.storeId) {
+    if (row.store_id !== ctx.auth.effectiveStoreId) {
       throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
     }
     if (row.product_type !== '院装产品') {
@@ -2376,7 +2376,7 @@ async function createPickup(ctx) {
   await pg.query(
     `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [saleItemId, pickupQuantity, ctx.auth.storeId, clientUserId, ctx.auth.staffWfId, remark || null]
+    [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null]
   )
 
   const updated = result.rows ? result.rows[0] : result[0]
@@ -2431,7 +2431,7 @@ async function refundList(ctx) {
   const { status, page = 1, pageSize = 20 } = ctx.event.payload || {}
   const offset = (page - 1) * pageSize
 
-  const params = [ctx.auth.storeId, pageSize, offset]
+  const params = [ctx.auth.effectiveStoreId, pageSize, offset]
   let whereExtra = ''
   if (status) {
     params.push(status)
@@ -2477,7 +2477,7 @@ async function refundDetail(ctx) {
 
   const refundRows = await pg.query(
     "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND sale_order_type = '退款单'",
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (refundRows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
   const refund = refundRows[0]

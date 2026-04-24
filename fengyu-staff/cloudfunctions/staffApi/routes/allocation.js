@@ -51,7 +51,7 @@ async function save(ctx) {
   // 查询订单
   const orders = await pg.query(
     'SELECT sale_order_id, status, allocation_status, store_id FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -210,7 +210,7 @@ async function deleteAllocation(ctx) {
 
   const orders = await pg.query(
     'SELECT sale_order_id, status, allocation_status FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2',
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
 
   if (orders.length === 0) {
@@ -315,7 +315,7 @@ async function pendingList(ctx) {
       AND o.allocation_status = '待分配'
     ORDER BY o.paid_at DESC
     LIMIT $2 OFFSET $3
-  `, [ctx.auth.storeId, pageSize, offset])
+  `, [ctx.auth.effectiveStoreId, pageSize, offset])
 
   ctx.result = { orders, page, pageSize }
 }
@@ -368,7 +368,7 @@ async function suggest(ctx) {
     `SELECT sale_order_id, status, allocation_status, store_id, market_name,
             preferred_employee_id, client_phone, customer_name
      FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2`,
-    [saleOrderId, ctx.auth.storeId]
+    [saleOrderId, ctx.auth.effectiveStoreId]
   )
   if (orders.length === 0) {
     throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
