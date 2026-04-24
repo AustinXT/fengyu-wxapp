@@ -512,7 +512,7 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
 export async function createOrder(data: {
   storeId: string
   marketName: string
-  clientUserId: string | null
+  clientUserId: string
   clientPhone: string
   customerName: string
   paymentMethod: '微信' | '支付宝' | '线下'
@@ -541,6 +541,10 @@ export async function createOrder(data: {
   const session = await getSession()
   requirePermission(session, 'sale_order:create')
 
+  if (!data.clientUserId) {
+    return { success: false, message: 'CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店' }
+  }
+
   // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
@@ -563,7 +567,7 @@ export async function createOrder(data: {
       return { success: false, message: '充值卡订单不支持叠加优惠券' }
     }
     if (!data.clientUserId) {
-      return { success: false, message: '充值卡订单必须选择实名顾客' }
+      return { success: false, message: 'CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店' }
     }
 
     const item = data.items[0]

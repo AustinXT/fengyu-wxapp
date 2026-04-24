@@ -1054,7 +1054,7 @@ export default function OrderCreatePageClient({
                   const res = await createOrder({
                     storeId: selectedStoreId,
                     marketName: store?.marketName || "未知市场",
-                    clientUserId: selectedCustomer?.userId || null,
+                    clientUserId: selectedCustomer?.userId || '',
                     clientPhone: selectedCustomer?.phone || manualPhone.trim(),
                     customerName: selectedCustomer?.name?.trim() || manualPhone.trim() || (selectedCustomer?.phone ?? ''),
                     paymentMethod: paymentMethod as '微信' | '支付宝' | '线下',

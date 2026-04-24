@@ -220,30 +220,23 @@ async function create(ctx) {
     }
   }
 
-  // 查询顾客是否已注册客户端小程序
+  // 查询顾客是否已注册客户端小程序并绑定门店
   const clientUsers = await pg.query(
-    'SELECT user_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
+    'SELECT user_id, bound_store_id FROM client_wechat_users WHERE phone = $1 LIMIT 1',
     [clientPhone]
   )
-  const clientUserId = clientUsers.length > 0 ? clientUsers[0].user_id : null
+  if (clientUsers.length === 0 || !clientUsers[0].bound_store_id) {
+    throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
+  }
+  const clientUserId = clientUsers[0].user_id
 
   // 检查是否已有待支付订单
-  if (clientUserId) {
-    const existing = await pg.query(
-      "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
-      [clientUserId]
-    )
-    if (existing.length > 0) {
-      throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
-    }
-  } else {
-    const existing = await pg.query(
-      "SELECT sale_order_id FROM sale_orders WHERE client_phone = $1 AND store_id = $2 AND status = '待支付' LIMIT 1",
-      [clientPhone, storeId]
-    )
-    if (existing.length > 0) {
-      throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
-    }
+  const existing = await pg.query(
+    "SELECT sale_order_id FROM sale_orders WHERE client_user_id = $1 AND status = '待支付' LIMIT 1",
+    [clientUserId]
+  )
+  if (existing.length > 0) {
+    throw new Error('INVALID_PARAMS: 该顾客已有待支付订单，请先完成或关闭原订单')
   }
 
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
@@ -1230,6 +1223,9 @@ async function createRepayment(ctx) {
   )
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在')
   const origOrder = origOrders[0]
+  if (!origOrder.client_user_id) {
+    throw new Error('CLIENT_NOT_REGISTERED: 原订单顾客未注册小程序或未绑定门店')
+  }
 
   let totalRepay = 0
   const repayItems = []
@@ -1364,12 +1360,15 @@ async function createConversion(ctx) {
 
   // 查顾客快照信息（姓名 / phone）
   const clientRows = await pg.query(
-    `SELECT user_id, phone, name, customer_type
+    `SELECT user_id, phone, name, customer_type, bound_store_id
      FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
     [clientUserId]
   )
   if (clientRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
   const client = clientRows[0]
+  if (!client.bound_store_id) {
+    throw new Error('CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店')
+  }
 
   const now = new Date()
   const convOrderId = await generateOrderNo('FY-XSD-WX-')
