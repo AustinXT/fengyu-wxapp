@@ -247,7 +247,11 @@ Page({
     }
     try {
       const recent: CustomerInfo[] = wx.getStorageSync('recentCustomers') || [];
-      this.setData({ recentCustomers: recent });
+      const valid = recent.filter((c) => c && c.id);
+      if (valid.length !== recent.length) {
+        wx.setStorageSync('recentCustomers', valid);
+      }
+      this.setData({ recentCustomers: valid });
     } catch (_) {}
 
     // 从商品详情页返回：检查 pendingCartItem
@@ -663,8 +667,8 @@ Page({
       if (found) {
         this.setData({ customerInfo: found });
       } else {
-        this.setData({ customerInfo: { id: '', name: '', phone } });
-        wx.showToast({ title: '未注册顾客，将以手机号开单', icon: 'none' });
+        this.setData({ customerInfo: null });
+        wx.showToast({ title: '该手机号未注册或未绑定门店', icon: 'none' });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '查询失败';
@@ -680,8 +684,13 @@ Page({
   },
 
   onStep0Next() {
-    if (!this.data.customerInfo) {
-      wx.showToast({ title: '请先选择顾客', icon: 'none' });
+    if (!this.data.customerInfo?.id) {
+      wx.showModal({
+        title: '无法开单',
+        content: '该顾客尚未注册小程序或未绑定门店。请引导顾客本人使用微信打开凤御小程序，登录并绑定门店后再来开单。',
+        showCancel: false,
+        confirmText: '知道了',
+      });
       return;
     }
     // PR-B: Step 1 "选开单模式" 已废除；Step 0 → Step 2 直跳确认页。
@@ -912,7 +921,7 @@ Page({
     this.setData({ submitting: true });
     try {
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
-        clientUserId: customerInfo.id || null,
+        clientUserId: customerInfo.id,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
         // PR-D1：使用 state（销售单 / 内部单可选 微信 / 线下）；转换单不走此分支
