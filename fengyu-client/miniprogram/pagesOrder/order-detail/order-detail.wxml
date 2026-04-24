@@ -107,6 +107,31 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     </van-cell>
   </van-cell-group>
 
+  <!-- 收款记录（只读，payments 为空时不渲染） -->
+  <view class="section-wrap" wx:if="{{payments.length > 0}}">
+    <view class="section-title">收款记录</view>
+    <view class="items-card">
+      <view
+        wx:for="{{payments}}"
+        wx:key="time_fmt"
+        wx:for-item="p"
+        class="pay-row"
+      >
+        <view class="pay-row__left">
+          <text class="pay-type">{{p.change_type}}</text>
+          <text class="pay-meta">{{p.time_fmt}} · {{p.payment_method}}</text>
+          <text wx:if="{{p.note}}" class="pay-note">{{p.note}}</text>
+        </view>
+        <view class="pay-row__right">
+          <text class="pay-amount {{p.is_refund ? 'pay-amount--refund' : ''}}">
+            {{p.is_refund ? '退 -¥' : '¥'}}{{p.amount_abs_fmt}}
+          </text>
+          <text class="pay-status" wx:if="{{p.status !== '已支付'}}">{{p.status}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
   <!-- 操作区 -->
   <view class="actions-wrap safe-area-bottom">
 

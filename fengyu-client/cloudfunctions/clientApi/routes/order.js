@@ -547,12 +547,58 @@ async function create(ctx) {
 }
 
 /**
+ * 计算订单的"本次应付剩余"
+ * = paid_amount 字段代表的剩余应付实金（不含储值卡抵扣）
+ * 订单创建时 paid_amount = total_amount - prepaid_card_amount 初值即剩余应付
+ * 首次支付/回款到账后 paid_amount 累加，当 paid_amount 达到初值 → 订单 '已支付'
+ *
+ * 对外"剩余应付"语义：
+ *   remaining = (total_amount - prepaid_card_amount) - 已到账金额
+ * 已到账金额 = Σ (payments.amount WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+ *
+ * 数据库中 sale_orders.paid_amount 现在有两种语义混用的历史原因：
+ *   - create 时（无 payments 行）：paid_amount = total_amount - prepaid_card_amount（本次应付总额）
+ *   - payNotify 到账后：paid_amount 累加实际到账金额
+ *
+ * 本 PR 改造后约定：sale_orders.paid_amount 统一为"已实际到账金额"。
+ * 初次 create 不再把 total-prepaid 赋给 paid_amount——由 payable_amount 列承担。
+ * 但因 PR-2/PR-3 尚未改 create 侧，此处通过显式判断兼容两种情况。
+ */
+async function calcPaymentRemaining(orderNo, orderRow) {
+  const totalAmount = Number(orderRow.total_amount || 0)
+  const prepaidCardAmount = Number(orderRow.prepaid_card_amount || 0)
+  const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+
+  // 已到账金额 = Σ payments 已支付行（首次支付/回款/退款）
+  // pg.query 返回 rows 数组（见 db/pg.js），不需要 .rows 解包
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(amount), 0) AS paid_sum
+     FROM sale_order_payments
+     WHERE sale_order_id = $1
+       AND status = '已支付'
+       AND change_type IN ('首次支付','回款','退款')`,
+    [orderNo]
+  )
+  const paidSum = Number(rows[0]?.paid_sum || 0)
+  const remaining = Math.round((payableAmount - paidSum) * 100) / 100
+  return { payableAmount, paidSum, remaining }
+}
+
+/**
  * 发起微信支付
+ *
+ * 本 PR 改造：pay 只"发起支付信号"，不写 payments 行。
+ * payments 行由 payNotify 回调在收到真实 transaction_id 后原子插入（带唯一索引幂等）。
+ * 订单状态保持原值（'待支付' 或 '部分支付'）。
+ *
+ * payAmount 入参（可选）：本次支付金额；省略默认为剩余应付金额。
+ * 校验：0 < payAmount <= remaining；超出或非正数 → INVALID_PARAMS。
  */
 async function pay(ctx) {
   const { userId } = ctx.auth
   const payload = ctx.event.payload || {}
   const orderNo = payload.saleOrderId || payload.orderNo
+  const payAmountInput = payload.payAmount
 
   if (!orderNo) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
@@ -578,22 +624,25 @@ async function pay(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  if (order.status !== '待支付') {
+  // 允许支付的状态：待支付 / 部分支付
+  if (order.status !== '待支付' && order.status !== '部分支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
-  // 10分钟超时检查（关闭并释放优惠券）
-  const orderTime = new Date(order.sale_order_datetime)
-  if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
-    await closeExpiredOrder(orderNo)
-    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+  // 10分钟超时检查仅对 '待支付' 生效（部分支付订单已有首次到账，不自动过期）
+  if (order.status === '待支付') {
+    const orderTime = new Date(order.sale_order_datetime)
+    if (Date.now() - orderTime.getTime() > 10 * 60 * 1000) {
+      await closeExpiredOrder(orderNo)
+      throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+    }
   }
 
   const now = new Date()
 
   // 全额储值卡抵扣：paid_amount = 0，直接短路返回已支付（订单本身已在 create 阶段置为已支付）
-  const paidAmount = Number(order.paid_amount ?? order.total_amount ?? 0)
-  if (paidAmount === 0) {
+  const paidAmountCol = Number(order.paid_amount ?? order.total_amount ?? 0)
+  if (paidAmountCol === 0 && order.status === '待支付') {
     ctx.result = {
       orderNo,
       status: '已支付',
@@ -601,6 +650,34 @@ async function pay(ctx) {
       paymentParams: null,
     }
     return
+  }
+
+  // 计算剩余应付：若订单已有 payments 行（部分支付场景）则按流水和反推
+  // 否则 remaining = paidAmountCol（create 阶段未到账）
+  const { remaining } = await calcPaymentRemaining(orderNo, order)
+  // fallback：若 payments 表为空且 order.status='待支付'，以 paid_amount 列为准
+  const hasPaymentRows = await pg.query(
+    `SELECT 1 FROM sale_order_payments WHERE sale_order_id = $1 LIMIT 1`,
+    [orderNo]
+  )
+  const effectiveRemaining = hasPaymentRows.length > 0 ? remaining : paidAmountCol
+
+  // 校验本次支付金额
+  let thisPayAmount
+  if (payAmountInput !== undefined && payAmountInput !== null) {
+    const v = Number(payAmountInput)
+    if (!Number.isFinite(v) || v <= 0) {
+      throw new Error('INVALID_PARAMS: 支付金额无效')
+    }
+    if (Math.round(v * 100) !== v * 100) {
+      throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
+    }
+    if (v > effectiveRemaining + 0.001) {
+      throw new Error('INVALID_PARAMS: 支付金额超过剩余应付')
+    }
+    thisPayAmount = Math.round(v * 100) / 100
+  } else {
+    thisPayAmount = effectiveRemaining
   }
 
   // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
@@ -618,12 +695,12 @@ async function pay(ctx) {
 
   const totalAmount = order.total_amount
 
-  // TODO: 接入真实微信支付统一下单接口
-  // total_fee 按 paid_amount（实付金额，扣除储值卡抵扣后）计算
+  // TODO: 接入真实微信支付统一下单接口；本 PR 仅返回 mock 参数。
+  // 不再写 payments 行：回调到账时由 payNotify 原子插入 payments + 更新 sale_orders。
   ctx.result = {
     orderNo,
     totalAmount,
-    paidAmount,
+    paidAmount: thisPayAmount,
     paymentMethod: '微信',
     mockMode: true,
     paymentParams: {
@@ -632,13 +709,19 @@ async function pay(ctx) {
       package: `prepay_id=wx${Date.now()}`,
       signType: 'MD5',
       paySign: 'mock_sign',
-      totalFee: Math.round(paidAmount * 100)
+      totalFee: Math.round(thisPayAmount * 100)
     }
   }
 }
 
 /**
  * 选择线下付款
+ *
+ * 业务语义：客户端"确认选择线下付款"，订单状态置 '待确认收款'，等员工店长（staff 端 confirmOffline）
+ * 确认实收。本 PR 保持此语义：不在此函数里写 payments 流水行——真正的款项落账由
+ * staff 端 confirmOffline 在 PR-2 实现时插入 payments 行。
+ *
+ * 保留原行为（仅切换状态 + 记录付款方式），但新增 note 说明与 payments 表解耦。
  */
 async function offlinePay(ctx) {
   const { userId } = ctx.auth
@@ -668,6 +751,7 @@ async function offlinePay(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
+  // 线下付款触发仍仅限 '待支付'（部分支付订单的补款走 staff 端补款入口）
   if (order.status !== '待支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许付款')
   }
@@ -695,6 +779,9 @@ async function offlinePay(ctx) {
     "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3",
     [userId, now, orderNo]
   )
+
+  // 备注：不在本 PR 写 payments 行。staff 端 confirmOffline 在 PR-2 落地时
+  // 会插入 change_type='首次支付' / payment_method='线下' / status='已支付' 的流水行。
 
   ctx.result = {
     orderNo,
@@ -857,8 +944,8 @@ async function detail(ctx) {
     expireAt = new Date(new Date(order.sale_order_datetime).getTime() + 10 * 60 * 1000).toISOString()
   }
 
-  // 并行查询美容师姓名和券名称
-  const [preferredStaffName, couponName] = await Promise.all([
+  // 并行查询美容师姓名、券名称和款项流水
+  const [preferredStaffName, couponName, paymentRows] = await Promise.all([
     order.preferred_employee_id
       ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
           .then(rows => rows.length > 0 ? rows[0].name : null)
@@ -870,8 +957,26 @@ async function detail(ctx) {
            WHERE uc.coupon_id = $1`,
           [order.coupon_id]
         ).then(rows => rows.length > 0 ? rows[0].name : null)
-      : Promise.resolve(null)
+      : Promise.resolve(null),
+    pg.query(
+      `SELECT change_type, amount, payment_method, status, paid_at, created_at, note
+       FROM sale_order_payments
+       WHERE sale_order_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [orderNo]
+    )
   ])
+
+  // 精简 payments 字段（只给前端需要的）
+  const payments = paymentRows.map(p => ({
+    change_type: p.change_type,
+    amount: Number(p.amount),
+    payment_method: p.payment_method,
+    status: p.status,
+    paid_at: p.paid_at,
+    created_at: p.created_at,
+    note: p.note,
+  }))
 
   ctx.result = {
     order: {
@@ -880,7 +985,8 @@ async function detail(ctx) {
       preferred_staff_name: preferredStaffName,
       coupon_name: couponName,
     },
-    items
+    items,
+    payments,
   }
 }
 
@@ -1062,11 +1168,17 @@ async function appointableItems(ctx) {
 
 /**
  * 发起支付宝支付
+ *
+ * 本 PR 改造：同 pay。alipayPay 只"发起支付信号"，不写 payments 行；
+ * payments 行由 payNotify（支付宝回调）在收到真实 transaction_id 后原子插入。
+ *
+ * payAmount 入参（可选）：本次支付金额；省略默认为剩余应付金额。
  */
 async function alipayPay(ctx) {
   const { userId } = ctx.auth
   const payloadAli = ctx.event.payload || {}
   const orderNo = payloadAli.saleOrderId || payloadAli.orderNo
+  const payAmountInput = payloadAli.payAmount
 
   if (!orderNo) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
@@ -1091,32 +1203,62 @@ async function alipayPay(ctx) {
     throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
-  if (order.status !== '待支付') {
+  if (order.status !== '待支付' && order.status !== '部分支付') {
     throw new Error('INVALID_PARAMS: 订单状态不允许支付')
   }
 
-  // 10分钟超时检查（关闭并释放优惠券）
-  const orderTimeAlipay = new Date(order.sale_order_datetime)
-  if (Date.now() - orderTimeAlipay.getTime() > 10 * 60 * 1000) {
-    await closeExpiredOrder(orderNo)
-    throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+  // 10分钟超时检查（仅 '待支付' 生效）
+  if (order.status === '待支付') {
+    const orderTimeAlipay = new Date(order.sale_order_datetime)
+    if (Date.now() - orderTimeAlipay.getTime() > 10 * 60 * 1000) {
+      await closeExpiredOrder(orderNo)
+      throw new Error('INVALID_PARAMS: 订单已超时，请重新下单')
+    }
   }
 
   const totalAmount = Number(order.total_amount || 0)
 
+  // 计算剩余应付 + 本次支付金额校验（逻辑同 pay）
+  const paidAmountCol = Number(order.paid_amount ?? order.total_amount ?? 0)
+  const { remaining } = await calcPaymentRemaining(orderNo, order)
+  const hasPaymentRows = await pg.query(
+    `SELECT 1 FROM sale_order_payments WHERE sale_order_id = $1 LIMIT 1`,
+    [orderNo]
+  )
+  const effectiveRemaining = hasPaymentRows.length > 0 ? remaining : paidAmountCol
+
+  let thisPayAmount
+  if (payAmountInput !== undefined && payAmountInput !== null) {
+    const v = Number(payAmountInput)
+    if (!Number.isFinite(v) || v <= 0) {
+      throw new Error('INVALID_PARAMS: 支付金额无效')
+    }
+    if (Math.round(v * 100) !== v * 100) {
+      throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
+    }
+    if (v > effectiveRemaining + 0.001) {
+      throw new Error('INVALID_PARAMS: 支付金额超过剩余应付')
+    }
+    thisPayAmount = Math.round(v * 100) / 100
+  } else {
+    thisPayAmount = effectiveRemaining
+  }
+
   const now = new Date()
   await pg.query(
-    "UPDATE sale_orders SET status = '待确认收款', payment_method = '支付宝', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
+    "UPDATE sale_orders SET payment_method = '支付宝', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
     [userId, now, orderNo]
   )
 
-  // TODO: 接入真实支付宝当面付 API
+  // TODO: 接入真实支付宝当面付 API；payments 行由 payNotify 回调写入。
   ctx.result = {
     orderNo,
     totalAmount,
+    paidAmount: thisPayAmount,
+    paymentMethod: '支付宝',
     mockMode: true,
     qrCodeUrl: `https://qr.alipay.com/mock_${orderNo}`,
-    status: '待确认收款'
+    status: order.status,
   }
 }
 

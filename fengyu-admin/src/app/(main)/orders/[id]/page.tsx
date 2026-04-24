@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getOrderById } from '@/actions/orders'
+import { getOrderById, getOrderPayments } from '@/actions/orders'
 import { getOrderAllocations } from '@/actions/allocations'
 import { getOrderLogs } from '@/actions/logs'
 import OrderDetailPageClient from '../_components/order-detail-page'
@@ -8,13 +8,21 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const [order, allocations, logs] = await Promise.all([
+  const [order, allocations, logs, payments] = await Promise.all([
     getOrderById(id),
     getOrderAllocations(id),
     getOrderLogs(id),
+    getOrderPayments(id),
   ])
 
   if (!order) notFound()
 
-  return <OrderDetailPageClient order={order} allocations={allocations} logs={logs} />
+  return (
+    <OrderDetailPageClient
+      order={order}
+      allocations={allocations}
+      logs={logs}
+      payments={payments}
+    />
+  )
 }

@@ -35,6 +35,27 @@ interface OrderDetailData {
   expire_time_fmt?: string;
 }
 
+interface OrderPayment {
+  change_type: string;
+  amount: number;
+  payment_method: string;
+  status: string;
+  paid_at: string | null;
+  created_at: string;
+  note: string | null;
+}
+
+interface OrderPaymentView {
+  change_type: string;
+  amount: number;
+  amount_abs_fmt: string;
+  is_refund: boolean;
+  payment_method: string;
+  status: string;
+  time_fmt: string;
+  note: string | null;
+}
+
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
   '待支付':     { icon: 'clock-o',   color: '#FAAD14' },
   '待确认收款': { icon: 'clock-o',   color: '#C9986A' },
@@ -52,6 +73,7 @@ Page({
     hasAppointableItems: false,
     isLoading: true,
     countdown: '',
+    payments: [] as OrderPaymentView[],
   },
 
   _countdownTimer: null as ReturnType<typeof setInterval> | null,
@@ -81,6 +103,7 @@ Page({
       const data = await callClientApi('order.detail', { saleOrderId });
       const order = (data?.order || {}) as OrderDetailData;
       const items: OrderDetailItem[] = data?.items || [];
+      const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
       // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
@@ -97,6 +120,24 @@ Page({
         expireTimeFmt = `${String(ed.getHours()).padStart(2,'0')}:${String(ed.getMinutes()).padStart(2,'0')}`;
       }
 
+      // 款项流水视图（退款标红、金额绝对值显示）
+      const payments: OrderPaymentView[] = paymentsRaw.map((p) => {
+        const amt = Number(p.amount) || 0;
+        const isRefund = amt < 0 || p.change_type === '退款';
+        const absAmt = Math.abs(amt);
+        const timeSrc = p.paid_at || p.created_at;
+        return {
+          change_type: p.change_type,
+          amount: amt,
+          amount_abs_fmt: (Math.round(absAmt * 100) / 100).toFixed(2),
+          is_refund: isRefund,
+          payment_method: p.payment_method,
+          status: p.status,
+          time_fmt: timeSrc ? formatDateTime(timeSrc) : '',
+          note: p.note,
+        };
+      });
+
       this.setData({
         order: {
           ...order,
@@ -107,6 +148,7 @@ Page({
         statusIcon: iconMeta.icon,
         statusIconColor: iconMeta.color,
         hasAppointableItems,
+        payments,
       });
 
       // 启动倒计时

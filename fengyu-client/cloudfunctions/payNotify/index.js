@@ -39,7 +39,7 @@ exports.main = async (event) => {
 
   try {
     // ========== Mock 模式：手动触发测试 ==========
-    const { orderNo, transactionId } = event
+    const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput } = event
     if (!orderNo) {
       return { code: 'FAIL', message: '缺少 orderNo' }
     }
@@ -48,7 +48,7 @@ exports.main = async (event) => {
 
     // 幂等检查：订单是否已支付
     const orderResult = await pg.query(
-      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id, prepaid_card_amount FROM sale_orders WHERE sale_order_id = $1',
+      'SELECT status, payment_method, wechat_transaction_id, preferred_employee_id, total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount FROM sale_orders WHERE sale_order_id = $1',
       [orderNo]
     )
 
@@ -59,33 +59,114 @@ exports.main = async (event) => {
 
     const order = orderResult.rows[0]
 
-    // 幂等：已支付则直接返回成功
+    // 幂等：已支付/已完成 → 尝试再写一次 payments 行（唯一索引 DO NOTHING）后直接返回
+    // 注意：这里主要是兜底重复回调。实际 payments 幂等由 uq_sop_txn 保证。
     if (order.status === '已支付' || order.status === '已完成') {
       console.log('[payNotify] 订单已支付，跳过:', orderNo)
       return { code: 'SUCCESS', message: '已处理' }
     }
 
-    // 仅处理待支付状态
-    if (order.status !== '待支付') {
+    // 处理 '待支付' / '部分支付' 两种状态
+    if (order.status !== '待支付' && order.status !== '部分支付') {
       console.warn('[payNotify] 订单状态异常:', orderNo, order.status)
       return { code: 'FAIL', message: `订单状态异常: ${order.status}` }
     }
 
     const now = new Date()
     const txnId = transactionId || `mock_txn_${Date.now()}`
+    // payment_method：默认沿用订单上记录的支付方式（pay/alipayPay 发起时已写入），
+    // 允许回调事件显式覆盖（方便 staff 端走同一 payNotify 通道）。
+    const paymentMethod = paymentMethodInput
+      || (order.payment_method === '支付宝' ? '支付宝' : '微信')
 
     // 开启事务：更新订单 + 设置单品到期日 + 自动创建业绩分配
     const client = await pg.connect()
     try {
       await client.query('BEGIN')
 
-      // 1. 更新订单状态 → 已支付
+      // ========== 核心幂等：INSERT payments 行（ON CONFLICT DO NOTHING） ==========
+      //
+      // 幂等键：uq_sop_txn (sale_order_id, payment_method, external_txn_id) WHERE external_txn_id IS NOT NULL
+      //
+      // 先决定本次金额 payAmount：优先取 event.payAmount，否则按订单剩余应付推算
+      //   remaining = (total_amount - prepaid_card_amount) - Σ payments.amount (已支付, 首次/回款/退款)
+      // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount = paid_amount 列初值
+      const payableAmount = Math.round(
+        (Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0)) * 100
+      ) / 100
+      const sumRes = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) AS paid_sum
+         FROM sale_order_payments
+         WHERE sale_order_id = $1
+           AND status = '已支付'
+           AND change_type IN ('首次支付','回款','退款')`,
+        [orderNo]
+      )
+      const paidSum = Number(sumRes.rows[0]?.paid_sum || 0)
+      const remaining = Math.round((payableAmount - paidSum) * 100) / 100
+      const thisPayAmount = (payAmountInput !== undefined && payAmountInput !== null)
+        ? Math.round(Number(payAmountInput) * 100) / 100
+        : remaining
+
+      if (!(thisPayAmount > 0)) {
+        throw new Error(`INVALID_PAY_AMOUNT: ${thisPayAmount}`)
+      }
+
+      // change_type：判断该订单是否已有 '首次支付' 行
+      const firstPayCheck = await client.query(
+        `SELECT 1 FROM sale_order_payments
+         WHERE sale_order_id = $1 AND change_type = '首次支付' LIMIT 1`,
+        [orderNo]
+      )
+      const changeType = firstPayCheck.rows.length > 0 ? '回款' : '首次支付'
+
+      // INSERT payments（幂等：重复回调 ON CONFLICT DO NOTHING）
+      const insertRes = await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method,
+          external_txn_id, status, source_end, operator_employee_id,
+          note, created_at, paid_at
+        ) VALUES ($1, $2, $3, $4, $5, '已支付', 'notify', NULL, $6, $7, $7)
+        ON CONFLICT (sale_order_id, payment_method, external_txn_id)
+          WHERE external_txn_id IS NOT NULL
+        DO NOTHING
+        RETURNING id`,
+        [orderNo, changeType, thisPayAmount, paymentMethod, txnId, `${paymentMethod} 回调到账`, now]
+      )
+
+      if (insertRes.rows.length === 0) {
+        // 唯一索引命中，重复回调；静默 ack 不再修改 sale_orders
+        await client.query('ROLLBACK')
+        console.log('[payNotify] 重复回调（uq_sop_txn 命中），跳过:', orderNo, txnId)
+        return { code: 'SUCCESS', message: '已处理（幂等）' }
+      }
+
+      // 判定订单最终状态
+      const newPaidSum = Math.round((paidSum + thisPayAmount) * 100) / 100
+      const fullyPaid = newPaidSum + 0.001 >= payableAmount
+      const newStatus = fullyPaid ? '已支付' : '部分支付'
+
+      // 1. 更新订单：paid_amount 累加（改为"已到账实金"语义）、status 置新值、paid_at（全额时）
+      // 注意：为兼容 PR-2/PR-3 前的旧语义（create 阶段把 total-prepaid 预写入 paid_amount），
+      //       此处采用"直接赋值 newPaidSum"而非 += thisPayAmount——保证重算一致。
       await client.query(
         `UPDATE sale_orders
-         SET status = '已支付', paid_at = $1, wechat_transaction_id = $2, updated_at = $1
-         WHERE sale_order_id = $3 AND status = '待支付'`,
-        [now, txnId, orderNo]
+         SET status = $1::order_status,
+             paid_amount = $2,
+             paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
+             wechat_transaction_id = COALESCE(wechat_transaction_id, $4),
+             updated_at = $3
+         WHERE sale_order_id = $5`,
+        [newStatus, newPaidSum, now, txnId, orderNo]
       )
+
+      // 后续业务动作（单品到期日 / 充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
+      // 仅当订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。
+      if (!fullyPaid) {
+        await client.query('COMMIT')
+        console.log('[payNotify] 订单部分支付到账:', orderNo, `paid_sum=${newPaidSum}/${payableAmount}`)
+        return { code: 'SUCCESS', message: '部分支付已到账' }
+      }
 
       // 2. 设置单品到期日（paid_at + 1 year）
       await client.query(

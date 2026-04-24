@@ -18,7 +18,10 @@ import {
   documentTypeEnum,
   itemDirectionEnum,
   orderStatusEnum,
+  paymentChangeTypeEnum,
+  paymentFlowStatusEnum,
   paymentMethodEnum,
+  paymentSourceEndEnum,
   productTypeEnum,
   saleOrderTypeEnum,
   salesCategoryEnum,
@@ -54,9 +57,15 @@ export const saleOrders = pgTable(
     customerName: varchar("customer_name", { length: 50 }),
     /** 订单总金额；退款为负数，转换=补差价，回款=本次回款金额 */
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(),
-    /** 储值卡抵扣金额（抵扣项，不计入实付）；与 paidAmount 之和须等于 totalAmount */
+    /** 储值卡抵扣金额（抵扣项，不计入实付） */
     prepaidCardAmount: numeric("prepaid_card_amount", { precision: 10, scale: 2 }).notNull().default("0"),
-    /** 实付金额（走 payment_method 指定通道）；paid_amount = 0 ⇔ payment_method = '无' */
+    /** 应付实金金额 = total_amount - prepaid_card_amount；创建订单时计算并冻结，作为冗余列便于前端/报表筛选 */
+    payableAmount: numeric("payable_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    /**
+     * 实付金额（走 payment_method 指定通道）；paid_amount = 0 ⇔ payment_method = '无'。
+     * 本字段是 sale_order_payments 表中 change_type ∈ (首次支付/回款/退款) 且 status='已支付' 行的 amount 之和的冗余快照，
+     * 由应用层每次 payments 变更后同事务双写维护。
+     */
     paidAmount: numeric("paid_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
@@ -210,9 +219,71 @@ export const saleAllocations = pgTable(
   ],
 );
 
+/**
+ * 订单款项流水（款项权威源）
+ *
+ * 承载首次支付、回款、退款、储值卡抵扣四类款项动作；sale_orders.paid_amount / prepaid_card_amount
+ * 为本表的冗余快照，由应用层同事务双写。
+ *
+ * 本 PR（partial-payment foundation）阶段只启用前三类；储值卡抵扣行留待后续 ticket 启用。
+ *
+ * 不变量（应用层保障，DB CHECK 覆盖符号/字段一致性）：
+ *   sale_orders.paid_amount         = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+ *   sale_orders.prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
+ */
+export const saleOrderPayments = pgTable(
+  "sale_order_payments",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    saleOrderId: varchar("sale_order_id", { length: 30 })
+      .notNull()
+      .references(() => saleOrders.saleOrderId, { onDelete: "restrict" }),
+    changeType: paymentChangeTypeEnum("change_type").notNull(),
+    /** 资金方向 × 金额：正=流入商家，负=退还顾客（退款行为负） */
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    paymentMethod: paymentMethodEnum("payment_method").notNull(),
+    /** 微信/支付宝三方交易号；线下/储值卡为 NULL */
+    externalTxnId: text("external_txn_id"),
+    status: paymentFlowStatusEnum("status").notNull(),
+    sourceEnd: paymentSourceEndEnum("source_end").notNull(),
+    /** 操作员工（顾客自助/回调时为 NULL） */
+    operatorEmployeeId: varchar("operator_employee_id", { length: 32 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    note: text("note"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
+    paidAt: timestamp("paid_at"),
+  },
+  (table) => [
+    index("idx_sop_order").on(table.saleOrderId),
+    index("idx_sop_status_created").on(table.status, table.createdAt),
+    /** 同订单同通道同三方流水号唯一：支付回调幂等键 */
+    uniqueIndex("uq_sop_txn")
+      .on(table.saleOrderId, table.paymentMethod, table.externalTxnId)
+      .where(sql`external_txn_id IS NOT NULL`),
+    /** 符号一致性：首次支付/回款/储值卡抵扣正数，退款负数 */
+    check(
+      "chk_sop_amount_sign",
+      sql`(${table.changeType} IN ('首次支付','回款','储值卡抵扣') AND ${table.amount} > 0)
+          OR (${table.changeType} = '退款' AND ${table.amount} < 0)`,
+    ),
+    /**
+     * 线上支付必须携带 external_txn_id。
+     * 等价写法：NOT IN ('微信','支付宝') 代替枚举新值列举，避免 ADD VALUE 同事务引用问题
+     */
+    check(
+      "chk_sop_method_txn",
+      sql`${table.paymentMethod} NOT IN ('微信','支付宝') OR ${table.externalTxnId} IS NOT NULL`,
+    ),
+  ],
+);
+
 export type SaleOrder = typeof saleOrders.$inferSelect;
 export type NewSaleOrder = typeof saleOrders.$inferInsert;
 export type SaleItem = typeof saleItems.$inferSelect;
 export type NewSaleItem = typeof saleItems.$inferInsert;
 export type SaleAllocation = typeof saleAllocations.$inferSelect;
 export type NewSaleAllocation = typeof saleAllocations.$inferInsert;
+export type SaleOrderPayment = typeof saleOrderPayments.$inferSelect;
+export type NewSaleOrderPayment = typeof saleOrderPayments.$inferInsert;

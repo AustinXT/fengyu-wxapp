@@ -155,6 +155,13 @@ export default function OrderCreatePageClient({
   const [selectedCouponId, setSelectedCouponId] = useState<string>("")
   const [loadingCoupons, setLoadingCoupons] = useState(false)
   const [priceOverrides, setPriceOverrides] = useState<Record<string, ItemPriceOverride>>({})
+  /**
+   * ticket 2026-04-24 PR-3 §3.4 — 本次收款
+   * 空字符串 = 未输入（默认按 payable_amount 全额收款）；
+   * 非空 = 显式收款金额（0 表示纯挂账，0<v<payable 表示部分支付）。
+   * 线上支付模式下禁用（admin 暂不支持线上支付）。
+   */
+  const [receivedAmountInput, setReceivedAmountInput] = useState<string>("")
 
   const handleSearch = async () => {
     const kw = searchKeyword.trim()
@@ -765,6 +772,35 @@ export default function OrderCreatePageClient({
                   <option value="线下">线下支付</option>
                 </Select>
               </div>
+              {/* ticket 2026-04-24 PR-3 §3.4 — 本次收款（仅线下可用） */}
+              {!isConversion && (() => {
+                const selectedCoupon = availableCoupons.find((c) => c.couponId === selectedCouponId)
+                const couponDiscount = !isInternal && selectedCoupon ? Number(selectedCoupon.discountAmount) : 0
+                const payableAmount = Math.max(0, Math.round((totalReceived - couponDiscount) * 100) / 100)
+                const isOnlinePay = paymentMethod === '微信' || paymentMethod === '支付宝'
+                return (
+                  <div>
+                    <label className="text-sm text-[#999999]">
+                      本次收款
+                      {isOnlinePay && <span className="ml-1 text-[11px]">（线上支付不支持）</span>}
+                    </label>
+                    <Input
+                      type="number"
+                      min="0"
+                      max={payableAmount}
+                      step="0.01"
+                      placeholder={`留空=全额 ¥${payableAmount.toFixed(2)}`}
+                      className="mt-1"
+                      disabled={isOnlinePay}
+                      value={isOnlinePay ? "" : receivedAmountInput}
+                      onChange={(e) => setReceivedAmountInput(e.target.value)}
+                    />
+                    <p className="text-[11px] text-[#999999] mt-1">
+                      留空或默认 = 全额收款；小于全额将落为"部分支付"订单
+                    </p>
+                  </div>
+                )
+              })()}
               <div>
                 <label className="text-sm text-[#999999]">门店</label>
                 <Select className="mt-1" value={selectedStoreId} onChange={(e) => setSelectedStoreId(e.target.value)}>
@@ -1039,6 +1075,21 @@ export default function OrderCreatePageClient({
                     }
                   }
                 }
+                // ticket 2026-04-24 PR-3 §3.4 — 本次收款解析与前端校验
+                // 空字符串 → undefined（后端按 payable_amount 全额处理）；
+                // 非空 → number，后端做 0 ≤ v ≤ payable 的最终校验。
+                let receivedAmountArg: number | undefined
+                if (paymentMethod === '微信' || paymentMethod === '支付宝') {
+                  // 线上支付：admin 不支持与 receivedAmount 共存，强制 undefined（后端也会拒绝 >0）
+                  receivedAmountArg = undefined
+                } else if (receivedAmountInput.trim() !== '') {
+                  const parsed = Number(receivedAmountInput)
+                  if (!Number.isFinite(parsed) || parsed < 0) {
+                    toast.error('本次收款金额无效'); return
+                  }
+                  receivedAmountArg = Math.round(parsed * 100) / 100
+                }
+
                 setSubmitting(true)
                 try {
                   const store = stores.find((s) => s.storeId === selectedStoreId)
@@ -1053,6 +1104,7 @@ export default function OrderCreatePageClient({
                     preferredEmployeeId: selectedEmployeeId || undefined,
                     remark: remark.trim() || null,
                     couponId: !isInternal ? (selectedCouponId || null) : null,
+                    receivedAmount: receivedAmountArg,
                     items: cart.map((item) => {
                       // 内部单后端会再 ×0.5；前端传原价 saleAmount，不要预先半价
                       // 组合套餐：priceOverrides 被 UI 锁死不会有值，这里 suppressOverride 兜底
@@ -1184,7 +1236,7 @@ export default function OrderCreatePageClient({
                 </Link>
               )}
               <Button onClick={() => {
-                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单")
+                setStep(0); setCart([]); setSelectedCustomer(null); setSearchKeyword(""); setSearchResults([]); setCreatedOrderId(""); setSearchDone(false); setPaymentConfirmed(false); setSelectedCouponId(""); setAvailableCoupons([]); setPriceOverrides({}); setOrderType("销售单"); setReceivedAmountInput("")
                 setProductKindChoice('普通商品')
                 setKindDataCache({ 组合套餐: undefined, 普通商品: undefined, 体验卡: undefined, 充值卡: undefined })
                 setHeldCards([])

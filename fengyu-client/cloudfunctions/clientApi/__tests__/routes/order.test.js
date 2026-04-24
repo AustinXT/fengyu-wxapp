@@ -476,6 +476,11 @@ describe('order.pay', () => {
       sale_order_id: 'FY-001', status: '待支付',
       client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
       sale_order_datetime: now.toISOString(),    }])
+    // calcPaymentRemaining: SUM(payments) → 0
+    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
+    // hasPaymentRows: 空
+    pg.query.mockResolvedValueOnce([])
+    // UPDATE
     pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
@@ -483,7 +488,7 @@ describe('order.pay', () => {
 
     expect(ctx.result.mockMode).toBe(true)
     expect(ctx.result.paymentParams).toBeDefined()
-    // totalFee 按 paid_amount（分）
+    // totalFee 按本次应付（分）
     expect(ctx.result.paymentParams.totalFee).toBe(10000)
     expect(ctx.result.paidAmount).toBe(100)
   })
@@ -529,6 +534,87 @@ describe('order.pay', () => {
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*超时/)
+  })
+
+  // ========== PR-4: 部分支付 / payAmount 校验 / 不写 payments 行 ==========
+
+  test('pay 发起成功后不写 payments 行（只更新 sale_orders.payment_method）', async () => {
+    const now = new Date()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付',
+      client_user_id: 'user-001', total_amount: 100, paid_amount: 100,
+      prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }])
+    // calcPaymentRemaining
+    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
+    // hasPaymentRows
+    pg.query.mockResolvedValueOnce([])
+    // UPDATE
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.pay(ctx)
+
+    // 不应出现 INSERT INTO sale_order_payments
+    const insertCall = pg.query.mock.calls.find(([sql]) =>
+      /INSERT INTO sale_order_payments/.test(sql)
+    )
+    expect(insertCall).toBeUndefined()
+  })
+
+  test('pay 携带 payAmount 超过剩余应付 → INVALID_PARAMS', async () => {
+    const now = new Date()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付',
+      client_user_id: 'user-001', total_amount: 200, paid_amount: 200,
+      prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }])
+    // calcPaymentRemaining SUM=0
+    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
+    // hasPaymentRows 空
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001', payAmount: 500 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS.*超过剩余应付/)
+  })
+
+  test('pay 携带 payAmount ≤0 → INVALID_PARAMS', async () => {
+    const now = new Date()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付',
+      client_user_id: 'user-001', total_amount: 200, paid_amount: 200,
+      prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }])
+    pg.query.mockResolvedValueOnce([{ paid_sum: 0 }])
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001', payAmount: 0 })
+    await expect(routes.pay(ctx)).rejects.toThrow(/INVALID_PARAMS/)
+  })
+
+  test('pay 在 部分支付 状态下允许发起补款（按剩余应付 200-50=150）', async () => {
+    const now = new Date()
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '部分支付',
+      client_user_id: 'user-001', total_amount: 200, paid_amount: 50,
+      prepaid_card_amount: 0,
+      sale_order_datetime: now.toISOString(),
+    }])
+    // SUM(payments) = 50（已有首次支付 50）
+    pg.query.mockResolvedValueOnce([{ paid_sum: 50 }])
+    // hasPaymentRows = 有行
+    pg.query.mockResolvedValueOnce([{ '?column?': 1 }])
+    // UPDATE
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.pay(ctx)
+
+    expect(ctx.result.paidAmount).toBe(150)
+    expect(ctx.result.paymentParams.totalFee).toBe(15000)
   })
 })
 
@@ -663,6 +749,8 @@ describe('order.detail', () => {
       sale_item_id: 'SI-001', product_name: 'A',
       cover_image: 'https://img.example.com/a.jpg',
     }])
+    // payments 并行查询（无明星员工 / 无券 → 但 payments 仍查询）
+    pg.query.mockResolvedValueOnce([])
 
     const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.detail(ctx)
@@ -670,6 +758,7 @@ describe('order.detail', () => {
     expect(ctx.result.order.sale_order_id).toBe('FY-001')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].cover_image).toBe('https://img.example.com/a.jpg')
+    expect(ctx.result.payments).toEqual([])
 
     // 验证明细查询 SQL 包含 cover_image JOIN
     const itemsQuery = pg.query.mock.calls[1][0]
@@ -686,6 +775,47 @@ describe('order.detail', () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createBoundCtx({ orderNo: 'nonexistent' })
     await expect(routes.detail(ctx)).rejects.toThrow(/INVALID_PARAMS.*订单不存在/)
+  })
+
+  test('detail 返回 payments 数组（款项流水）', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '部分支付',
+      client_user_id: 'user-001',
+      sale_order_datetime: new Date().toISOString(),
+      preferred_employee_id: null, coupon_id: null,
+    }])
+    pg.query.mockResolvedValueOnce([{
+      sale_item_id: 'SI-001', product_name: 'A', cover_image: '',
+    }])
+    // payments 查询
+    pg.query.mockResolvedValueOnce([
+      {
+        change_type: '首次支付', amount: '100.00', payment_method: '微信',
+        status: '已支付', paid_at: new Date('2026-04-24T10:00:00Z'),
+        created_at: new Date('2026-04-24T10:00:00Z'), note: '微信 回调到账',
+      },
+      {
+        change_type: '回款', amount: '200.00', payment_method: '微信',
+        status: '已支付', paid_at: new Date('2026-04-24T11:00:00Z'),
+        created_at: new Date('2026-04-24T11:00:00Z'), note: '补款',
+      },
+    ])
+
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
+    await routes.detail(ctx)
+
+    expect(ctx.result.payments).toHaveLength(2)
+    expect(ctx.result.payments[0].change_type).toBe('首次支付')
+    expect(ctx.result.payments[0].amount).toBe(100)
+    expect(ctx.result.payments[1].change_type).toBe('回款')
+    expect(ctx.result.payments[1].amount).toBe(200)
+
+    // 验证 SQL 查了 sale_order_payments 表
+    const paymentsQueryCall = pg.query.mock.calls.find(
+      ([sql]) => /FROM sale_order_payments/.test(sql)
+    )
+    expect(paymentsQueryCall).toBeDefined()
+    expect(paymentsQueryCall[0]).toMatch(/ORDER BY created_at ASC/)
   })
 })
 

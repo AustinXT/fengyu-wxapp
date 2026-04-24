@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders, saleItems } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -374,6 +374,51 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
   }
 }
 
+/**
+ * 查询订单款项流水（ticket 2026-04-24 PR-3 §3.3）
+ *
+ * 只读，按 created_at 升序返回；join staff_wechat_users 带出操作人姓名。
+ * 用于订单详情页展示款项流水表（首次支付 / 回款 / 退款 / 储值卡抵扣）。
+ */
+export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
+  const session = await getSession()
+  requirePermission(session, 'sale_order:list')
+
+  // scope 校验：只有订单所在门店在 scope 内才允许查看流水
+  const [order] = await db
+    .select({ storeId: saleOrders.storeId })
+    .from(saleOrders)
+    .where(and(eq(saleOrders.saleOrderId, saleOrderId), scopeCondition(session, saleOrders.storeId)))
+    .limit(1)
+  if (!order) return []
+
+  const rows = await db
+    .select({
+      payment: saleOrderPayments,
+      operatorName: staffWechatUsers.name,
+    })
+    .from(saleOrderPayments)
+    .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+    .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
+    .orderBy(saleOrderPayments.createdAt)
+
+  return rows.map((r) => ({
+    id: r.payment.id,
+    saleOrderId: r.payment.saleOrderId,
+    changeType: r.payment.changeType as import('@/lib/types').PaymentChangeType,
+    amount: r.payment.amount,
+    paymentMethod: r.payment.paymentMethod as import('@/lib/types').SaleOrderPayment['paymentMethod'],
+    externalTxnId: r.payment.externalTxnId,
+    status: r.payment.status as import('@/lib/types').PaymentFlowStatus,
+    sourceEnd: r.payment.sourceEnd as import('@/lib/types').PaymentSourceEnd,
+    operatorEmployeeId: r.payment.operatorEmployeeId,
+    note: r.payment.note,
+    createdAt: r.payment.createdAt.toISOString(),
+    paidAt: r.payment.paidAt?.toISOString() ?? null,
+    operatorName: r.operatorName ?? null,
+  }))
+}
+
 /** C4: 确认线下收款 — WHERE status = '待确认收款' + scope 保障幂等 */
 export async function confirmOfflinePayment(saleOrderId: string): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
@@ -545,6 +590,17 @@ export async function createOrder(data: {
   remark?: string | null
   /** 可选：顾客选择使用的优惠券实例ID */
   couponId?: string | null
+  /**
+   * 本次收款金额（ticket §2.1 决策树）
+   * - undefined → 视为全额收款（payable_amount）
+   * - 0 → 纯挂账 status='待支付'；不写 payments 流水
+   * - 0 < v < payable_amount → 部分支付 status='部分支付'；写 1 行首次支付
+   * - = payable_amount → 全额 status='已支付'（线下为'待确认收款'）；写 1 行首次支付
+   * 校验：0 ≤ v ≤ payable_amount；微信/支付宝 + v>0 禁止（MIXED_PAYMENT_NOT_SUPPORTED）
+   */
+  receivedAmount?: number
+  /** 储值卡抵扣金额（> 0 时额外写 1 行 change_type='储值卡抵扣' payments 流水） */
+  prepaidCardAmount?: number
   items: Array<{
     skuId: string
     productName: string
@@ -716,7 +772,62 @@ export async function createOrder(data: {
   }
 
   const totalAmount = Math.max(0, rawTotal - couponDiscount)
-  const initialStatus = data.paymentMethod === '线下' ? '待确认收款' : '待支付'
+
+  // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
+  // payable_amount = total_amount - prepaid_card_amount（冗余列，用于状态机决策和前端展示）
+  const prepaidCardAmount = Math.max(0, data.prepaidCardAmount ?? 0)
+  if (prepaidCardAmount > totalAmount + 0.005) {
+    return { success: false, message: '储值卡抵扣金额不能超过订单总额' }
+  }
+  const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
+
+  // 本次收款校验：
+  // - 微信/支付宝：admin 不走线上支付。未显式传 receivedAmount 时默认 0（订单落"待支付"等回调，保持既有行为）；
+  //   若显式传了 >0，按 MIXED_PAYMENT_NOT_SUPPORTED 拒绝。
+  // - 线下：未传时默认 = payable_amount（全额）；传了按决策树走。
+  const isOnlinePay = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
+  const hasReceivedAmountInput = data.receivedAmount !== undefined
+  const receivedAmount = hasReceivedAmountInput
+    ? Math.round(Number(data.receivedAmount) * 100) / 100
+    : (isOnlinePay ? 0 : payableAmount)
+  if (!Number.isFinite(receivedAmount) || receivedAmount < 0) {
+    return { success: false, message: '本次收款金额无效' }
+  }
+  if (receivedAmount > payableAmount + 0.005) {
+    return { success: false, message: '本次收款金额不能超过应付实金' }
+  }
+  if (isOnlinePay && receivedAmount > 0) {
+    return {
+      success: false,
+      message: 'MIXED_PAYMENT_NOT_SUPPORTED: admin 开单不支持线上支付，请使用线下方式录入收款',
+    }
+  }
+
+  // 决策树（ticket §2.1）——仅当 paymentMethod='线下' 或 '无'（全额储值卡抵扣）时走以下分支。
+  // paymentMethod='微信'/'支付宝' + receivedAmount=0 保留原"待支付"语义（不本 ticket 扩展）。
+  let initialStatus: typeof saleOrders.$inferInsert['status']
+  if (data.paymentMethod === '微信' || data.paymentMethod === '支付宝') {
+    initialStatus = '待支付'
+  } else if (payableAmount === 0) {
+    // 全额储值卡抵扣：仍为已支付（储值卡抵扣行同事务写入）
+    initialStatus = '已支付'
+  } else if (receivedAmount === 0) {
+    initialStatus = '待支付'
+  } else if (receivedAmount >= payableAmount - 0.005) {
+    // 与原行为对齐：线下全额落 '待确认收款'，走 confirmOfflinePayment 再确认
+    initialStatus = data.paymentMethod === '线下' ? '待确认收款' : '已支付'
+  } else {
+    // 0 < received < payable → 部分支付
+    initialStatus = '部分支付'
+  }
+
+  // paid_amount 双写（应用层保障不变量）
+  // 首次支付 + 线下直接计入 paid_amount（status='已支付'/'待确认收款'/'部分支付'）；
+  // '待确认收款' 下 payments 行虽然状态为'已支付'（线下）但符合"flow_status=已支付"统计；
+  // 待支付（挂账）paid_amount = 0；此处统一按 receivedAmount（线下场景）落盘。
+  const paidAmountSnapshot = data.paymentMethod === '微信' || data.paymentMethod === '支付宝'
+    ? 0
+    : receivedAmount
 
   // 计算 document_type（售前/售后快照）
   let documentType: '售前' | '售后' = '售前'
@@ -810,6 +921,9 @@ export async function createOrder(data: {
         clientPhone: data.clientPhone,
         customerName: data.customerName,
         totalAmount: totalAmount.toFixed(2),
+        prepaidCardAmount: prepaidCardAmount.toFixed(2),
+        payableAmount: payableAmount.toFixed(2),
+        paidAmount: paidAmountSnapshot.toFixed(2),
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
         paymentMethod: data.paymentMethod,
@@ -817,7 +931,47 @@ export async function createOrder(data: {
         preferredEmployeeId: data.preferredEmployeeId || null,
         allocationStatus: '待分配',
         remark: data.remark || null,
+        paidAt: initialStatus === '已支付' ? new Date() : null,
       })
+
+      // ── 款项流水写入（ticket 2026-04-24 PR-3） ────────────────────────
+      // 决策树：
+      //   - 首次支付行：仅在 receivedAmount>0 且线下通道时写入（线上支付在 PR-4 由 pay/pay_notify 写）
+      //     - '线下'全额 → status='已支付'（首次已到账）
+      //     - '线下'部分 → status='已支付'（首次已到账的部分）
+      //     - receivedAmount=0 的纯挂账订单 → 不写首次支付行
+      //   - 储值卡抵扣行：prepaidCardAmount>0 时额外 1 行（change_type='储值卡抵扣'/paymentMethod='储值卡'）
+      // 注：admin 侧线下 '待确认收款' 状态下，本次开单的收款仍视为首次到账（员工已收到现金），
+      //     因此 payments.status='已支付'；订单态的 '待确认收款' 仅表示审核/凭证未闭环。
+      const nowTs = new Date()
+      if (receivedAmount > 0 && data.paymentMethod === '线下') {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId: id,
+          changeType: '首次支付',
+          amount: receivedAmount.toFixed(2),
+          paymentMethod: data.paymentMethod,
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note: '管理后台开单首次收款',
+          paidAt: nowTs,
+        })
+      }
+      if (prepaidCardAmount > 0) {
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId: id,
+          changeType: '储值卡抵扣',
+          amount: prepaidCardAmount.toFixed(2),
+          paymentMethod: '储值卡',
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note: '管理后台开单储值卡抵扣',
+          paidAt: nowTs,
+        })
+      }
 
       // 原子核销优惠券：WHERE coupon_id = X AND status = '未使用' 防止重用
       // 必须在 insert sale_orders 之后，因为 used_sale_order_id 有外键约束

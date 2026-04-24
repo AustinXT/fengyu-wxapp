@@ -178,6 +178,7 @@ async function create(ctx) {
     remark: orderRemark,
     useCard,
     prepaidCardAmount: inputPrepaidCardAmount,
+    receivedAmount: inputReceivedAmount,
   } = payload
 
   const storeId = ctx.auth.storeId
@@ -432,9 +433,47 @@ async function create(ctx) {
     }
   }
 
-  const paidAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
-  // paid=0 时强制落 '无'；paid>0 保留前端传值
-  const effectivePaymentMethod = paidAmount === 0 ? '无' : paymentMethod
+  // ========== PR-2: 款项流水（sale_order_payments）语义 ==========
+  // payable_amount = total - prepaid_card_amount（扣卡后的"应付现金金额"冗余列）
+  const payableAmount = Math.round((totalAmount - prepaidCardAmount) * 100) / 100
+
+  // receivedAmount（本次现场实收）——
+  //   - 线下/储值卡/无：默认 payable_amount（保持全额现场收款回归行为）
+  //   - 微信/支付宝：默认 0（真正入账由后续 pay/alipayPay 回调写 payments 行，staff 侧 create 不写流水）
+  // 校验：0 <= receivedAmount <= payable_amount
+  //      线上（微信/支付宝）禁止非零 receivedAmount（MIXED_PAYMENT_NOT_SUPPORTED）
+  const isOnlineMethod = paymentMethod === '微信' || paymentMethod === '支付宝'
+  let receivedAmount
+  if (inputReceivedAmount === undefined || inputReceivedAmount === null) {
+    receivedAmount = isOnlineMethod ? 0 : payableAmount
+  } else {
+    receivedAmount = Number(inputReceivedAmount)
+    if (!Number.isFinite(receivedAmount) || receivedAmount < 0) {
+      throw new Error('INVALID_PARAMS: receivedAmount 必须为非负数')
+    }
+    if (receivedAmount > payableAmount + 0.001) {
+      throw new Error('INVALID_PARAMS: receivedAmount 不能超过应付金额')
+    }
+    receivedAmount = Math.round(receivedAmount * 100) / 100
+  }
+  if (isOnlineMethod && receivedAmount > 0) {
+    throw new Error('INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED: 微信/支付宝不支持部分线上支付，请改用线下或先下单后扫码')
+  }
+
+  // 落账部分（paid_amount 快照）：
+  //   线下/储值卡/无 → 本次现场实收 = receivedAmount（立即落"已支付"payments 行）
+  //   微信/支付宝    → 0（create 不写 payments，由后续回调写入）
+  const paidAmount = isOnlineMethod ? 0 : receivedAmount
+
+  // effectivePaymentMethod 仅影响 sale_orders.payment_method 展示（与原逻辑对齐）：
+  //   - 储值卡全额抵扣（payable_amount=0，即 prepaid=total）→ '无'（现金通道无需使用）
+  //   - 其他：保留前端传入的 paymentMethod
+  let effectivePaymentMethod
+  if (payableAmount === 0 && prepaidCardAmount > 0) {
+    effectivePaymentMethod = '无'
+  } else {
+    effectivePaymentMethod = paymentMethod
+  }
 
   // ========== 计算 document_type（售前/售后快照） ==========
   let documentType = '售前'
@@ -485,22 +524,33 @@ async function create(ctx) {
       }
     }
 
-    // 创建订单主表
-    // PR-D1：线下支付 → 待确认收款（与 admin 对齐），微信支付 → 待支付
-    // 储值卡预选（店长端不扣卡）：status 依然按 paymentMethod 决定
-    //   - 线下 → 待确认收款（由 confirmOffline 扣卡 + 转为已支付）
-    //   - 微信 → 待支付（由 payNotify 扣卡 + 转为已支付）
-    //   - effectivePaymentMethod='无'（全额抵扣）时，待顾客扫码端调 confirmPrepaidFull 完成
-    const initialStatus = paymentMethod === '线下' ? '待确认收款' : '待支付'
+    // ========== PR-2 状态机落地 ==========
+    // 线上支付（微信/支付宝）保留原 '待支付'（不写 payments，等 pay/alipayPay 回调）
+    // 线下/储值卡/无：按 paid + prepaid 与 total 的比较落地
+    //   paid + prepaid == 0                    → '待支付'（纯挂账，无 payments 行）
+    //   0 < paid + prepaid < total_amount      → '部分支付'
+    //   paid + prepaid == total_amount         → '已支付'
+    const settledAmount = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
+    let initialStatus
+    if (isOnlineMethod) {
+      initialStatus = '待支付'
+    } else if (settledAmount === 0) {
+      initialStatus = '待支付'
+    } else if (settledAmount + 0.001 < totalAmount) {
+      initialStatus = '部分支付'
+    } else {
+      initialStatus = '已支付'
+    }
+    const paidAtValue = initialStatus === '已支付' ? now : null
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by,
         preferred_employee_id, coupon_id, coupon_discount, remark,
-        prepaid_card_amount, paid_amount,
+        prepaid_card_amount, paid_amount, payable_amount, paid_at,
         created_at, updated_at
-      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, $6, $6)`,
+      ) VALUES ($1, $17, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $18, $19, $20, $21, $6, $6)`,
       [
         saleOrderId, saleOrderType, documentType, marketName, storeId, now,
         totalAmount, clientUserId, clientPhone, clientName,
@@ -509,9 +559,72 @@ async function create(ctx) {
         inputCouponId || null, couponDiscount,
         orderRemark || null,
         initialStatus,
-        prepaidCardAmount, paidAmount,
+        prepaidCardAmount, paidAmount, payableAmount,
+        paidAtValue,
       ]
     )
+
+    // ========== PR-2 写 sale_order_payments 流水 + 同步扣储值卡余额 ==========
+    // 规则：
+    //   - 线下/储值卡/无（!isOnlineMethod）：本次 create 即是最终落账点
+    //       · prepaidCardAmount > 0 → FOR UPDATE 扣 prepaid_cards.balance + INSERT card_transactions('扣款')
+    //         并写 1 行 payments change_type='储值卡抵扣' status='已支付'
+    //       · paidAmount > 0       → 写 1 行 payments change_type='首次支付' status='已支付'
+    //       · paid+prepaid=0       → 纯挂账，无 payments 行
+    //   - 微信/支付宝（isOnlineMethod）：sale_orders 停在 '待支付'，预选储值卡保持"预选不扣卡"语义
+    //     （扣卡 + 写 payments 行延后到 payNotify / confirmOffline / confirmPrepaidFull 真正入账时完成）
+    if (!isOnlineMethod) {
+      if (prepaidCardAmount > 0) {
+        // 幂等：理论上不会重复（新订单），但保底按 ref_order_id 校验
+        const dupCheck = await client.query(
+          `SELECT 1 FROM card_transactions
+           WHERE ref_order_id = $1 AND type = '扣款' LIMIT 1`,
+          [saleOrderId]
+        )
+        if (dupCheck.rows.length === 0) {
+          const balRes = await client.query(
+            'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE',
+            [clientUserId]
+          )
+          if (balRes.rows.length === 0) {
+            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+          }
+          const currentBalance = Number(balRes.rows[0].balance)
+          if (currentBalance + 0.001 < prepaidCardAmount) {
+            throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
+          }
+          const cardId = balRes.rows[0].card_id
+          await client.query(
+            `UPDATE prepaid_cards
+             SET balance = balance - $1, updated_at = NOW()
+             WHERE card_id = $2`,
+            [prepaidCardAmount, cardId]
+          )
+          await client.query(
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
+             VALUES ($1, '扣款', $2, $3, NOW())`,
+            [cardId, -prepaidCardAmount, saleOrderId]
+          )
+        }
+
+        await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method, external_txn_id,
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          [saleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长开单储值卡抵扣', now]
+        )
+      }
+      if (paidAmount > 0) {
+        await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method, external_txn_id,
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+          [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
+        )
+      }
+    }
 
     // 创建订单明细
     for (let i = 0; i < itemDataList.length; i++) {
@@ -543,14 +656,29 @@ async function create(ctx) {
     }
   })
 
+  // PR-2: status 由决策树中的 initialStatus 决定（待支付/部分支付/已支付）
+  const resolvedSettled = Math.round((paidAmount + prepaidCardAmount) * 100) / 100
+  let resolvedStatus
+  if (isOnlineMethod) {
+    resolvedStatus = '待支付'
+  } else if (resolvedSettled === 0) {
+    resolvedStatus = '待支付'
+  } else if (resolvedSettled + 0.001 < totalAmount) {
+    resolvedStatus = '部分支付'
+  } else {
+    resolvedStatus = '已支付'
+  }
+
   ctx.result = {
     saleOrderId,
     totalAmount,
+    payableAmount,
     couponDiscount,
     prepaidCardAmount,
     paidAmount,
+    receivedAmount,
     paymentMethod: effectivePaymentMethod,
-    status: paymentMethod === '线下' ? '待确认收款' : '待支付',
+    status: resolvedStatus,
     clientUserId,
     message: '开单成功'
   }
@@ -657,6 +785,7 @@ async function confirmOffline(ctx) {
 
   const payload = ctx.event.payload || {}
   const saleOrderId = payload.saleOrderId
+  const inputConfirmAmount = payload.confirmAmount
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
@@ -675,7 +804,8 @@ async function confirmOffline(ctx) {
   if (order.status === '待支付' && order.payment_method !== '线下') {
     throw new Error(`INVALID_PARAMS: 非线下支付订单不可直接确认收款`)
   }
-  if (!['待确认收款', '待支付'].includes(order.status)) {
+  // PR-2: 允许对 '待支付' / '待确认收款' / '部分支付' 订单确认收款
+  if (!['待确认收款', '待支付', '部分支付'].includes(order.status)) {
     throw new Error(`INVALID_PARAMS: 订单当前状态为"${order.status}"，不可确认收款`)
   }
 
@@ -690,6 +820,50 @@ async function confirmOffline(ctx) {
   )
 
   const totalReceived = items.reduce((s, i) => s + Number(i.received || 0), 0)
+
+  // ========== PR-2: 本次确认收款金额 + 目标订单状态 ==========
+  // confirmAmount 默认 = 剩余应付现金 = payable_amount - 当前 paid_amount
+  // payable_amount 旧订单可能 NULL，这里用 total - prepaid 兜底
+  const orderTotal = Number(order.total_amount || 0)
+  const orderPrepaid = Number(order.prepaid_card_amount || 0)
+  const orderPaid = Number(order.paid_amount || 0)
+  const orderPayable = order.payable_amount != null
+    ? Number(order.payable_amount)
+    : Math.round((orderTotal - orderPrepaid) * 100) / 100
+  const remainingPayable = Math.round((orderPayable - orderPaid) * 100) / 100
+
+  let confirmAmount
+  if (inputConfirmAmount === undefined || inputConfirmAmount === null) {
+    confirmAmount = remainingPayable
+  } else {
+    confirmAmount = Number(inputConfirmAmount)
+    if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
+      throw new Error('INVALID_PARAMS: confirmAmount 必须为非负数')
+    }
+    if (confirmAmount > remainingPayable + 0.001) {
+      throw new Error('INVALID_PARAMS: confirmAmount 不能超过剩余应付金额')
+    }
+    confirmAmount = Math.round(confirmAmount * 100) / 100
+  }
+
+  const newPaidAmount = Math.round((orderPaid + confirmAmount) * 100) / 100
+  const newSettled = Math.round((newPaidAmount + orderPrepaid) * 100) / 100
+  // paid + prepaid >= total → '已支付'，否则 '部分支付'
+  const targetStatus = newSettled + 0.001 >= orderTotal ? '已支付' : '部分支付'
+
+  // 仅在本次"确认现金到账"(confirmAmount > 0) 时写 payments 行
+  // 已有 payments 则本次为"回款"，否则为"首次支付"
+  let paymentChangeType = null
+  if (confirmAmount > 0) {
+    const existingPaymentsRow = await pg.query(
+      `SELECT 1 FROM sale_order_payments
+       WHERE sale_order_id = $1 AND status = '已支付'
+         AND change_type IN ('首次支付','回款','退款')
+       LIMIT 1`,
+      [saleOrderId]
+    )
+    paymentChangeType = existingPaymentsRow.length > 0 ? '回款' : '首次支付'
+  }
 
   await pg.transaction(async (client) => {
     // ========== 储值卡扣款（staffApi 唯一扣卡点）==========
@@ -729,35 +903,55 @@ async function confirmOffline(ctx) {
       }
     }
 
-    // 更新订单状态（C4: WHERE 锁定当前状态防止并发竞态）
+    // ========== PR-2: 插入 payments 流水 + 更新 sale_orders ==========
+    // 事务内单调递增 paid_amount、按决策树决定 status
+    // C4 合规：WHERE 锁定当前状态防止并发竞态
+    //
+    // paid_at 语义：
+    //   - 目标状态 '已支付' → 设为本次确认时间（作为"最后一次到账时间"快照）
+    //   - 目标状态 '部分支付' → 保留原值（若原为 NULL 则继续 NULL）
+    const paidAtValue = targetStatus === '已支付' ? now : (order.paid_at || null)
     const updateResult = await client.query(
       `UPDATE sale_orders
-       SET status = '已支付', paid_at = $1, updated_at = $1,
-           offline_confirmed_by = $2, offline_confirmed_at = $1,
+       SET status = $1, paid_amount = $2, paid_at = $3, updated_at = $4,
+           offline_confirmed_by = $5, offline_confirmed_at = $4,
            allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END
-       WHERE sale_order_id = $3 AND status = $4`,
-      [now, ctx.auth.staffWfId, saleOrderId, order.status]
+       WHERE sale_order_id = $6 AND status = $7`,
+      [targetStatus, newPaidAmount, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
     )
     if (updateResult.rowCount === 0) {
       throw new Error('INVALID_PARAMS: 订单状态已变更，请刷新后重试')
     }
 
-    // 单品到期日写入（paid_at + 1年）
-    await client.query(
-      `UPDATE sale_items
-       SET expire_date = ($1::date + INTERVAL '1 year')
-       WHERE sale_order_id = $2
-         AND product_type = '单品'
-         AND expire_date IS NULL`,
-      [now, saleOrderId]
-    )
+    if (confirmAmount > 0) {
+      await client.query(
+        `INSERT INTO sale_order_payments (
+          sale_order_id, change_type, amount, payment_method, external_txn_id,
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        [saleOrderId, paymentChangeType, confirmAmount, ctx.auth.staffWfId, '店长确认线下收款', now]
+      )
+    }
+
+    // 单品到期日写入（paid_at + 1年）——仅在本次转为 '已支付' 时触发
+    if (targetStatus === '已支付') {
+      await client.query(
+        `UPDATE sale_items
+         SET expire_date = ($1::date + INTERVAL '1 year')
+         WHERE sale_order_id = $2
+           AND product_type = '单品'
+           AND expire_date IS NULL`,
+        [now, saleOrderId]
+      )
+    }
 
     // 充值卡入账：识别明细中 product_kind='充值卡' 的行，统一 UPSERT prepaid_cards
     // - 虚拟 SKU（自定义金额路径）：面值从 product_name 的 "¥{n}" 解析
     // - 真实档位 SKU：面值从 product_skus.price 读取
     // 与 clientApi payNotify 侧的识别逻辑对称，二者均以 (ref_order_id) 幂等。
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
-    if (order.client_user_id) {
+    // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
+    if (targetStatus === '已支付' && order.client_user_id) {
       const rechargeRows = await client.query(
         `SELECT si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
@@ -813,10 +1007,13 @@ async function confirmOffline(ctx) {
 
   ctx.result = {
     saleOrderId,
-    status: '已支付',
-    paidAt: now,
+    status: targetStatus,
+    paidAt: targetStatus === '已支付' ? now : (order.paid_at || null),
+    paidAmount: newPaidAmount,
+    confirmAmount,
+    remainingPayable: Math.round((orderPayable - newPaidAmount) * 100) / 100,
     totalReceived,
-    message: '线下收款已确认'
+    message: targetStatus === '已支付' ? '线下收款已确认' : '已确认本次收款（订单仍部分支付）'
   }
 }
 

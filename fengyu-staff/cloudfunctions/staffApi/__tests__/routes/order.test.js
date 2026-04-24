@@ -59,8 +59,8 @@ describe('order.create', () => {
     expect(ctx.result).toBeDefined()
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
     expect(ctx.result.totalAmount).toBe(1000)
-    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'，payments 流水同事务写入
+    expect(ctx.result.status).toBe('已支付')
     expect(ctx.result.message).toBe('开单成功')
   })
 
@@ -294,8 +294,8 @@ describe('order.create', () => {
 
     // 1000 - 200 = 800（couponDiscount=200，满足 min_spend=500）
     expect(ctx.result.totalAmount).toBe(800)
-    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'
+    expect(ctx.result.status).toBe('已支付')
   })
 
   test('优惠券不存在或已过期时报错（couponRows.length === 0）', async () => {
@@ -562,8 +562,8 @@ describe('order.create', () => {
 
     // 内部单半价：Math.round(1000 * 50) / 100 = 500
     expect(ctx.result.totalAmount).toBe(500)
-    // PR-D1：线下支付 → 待确认收款（与 admin 对齐）
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2：线下 + receivedAmount 默认全额 → 订单直接 '已支付'
+    expect(ctx.result.status).toBe('已支付')
   })
 
   // 已废弃：'promotion'/'组合套餐' 订单类型在 PR-C（commit 4966b67/fb618ea）重构中移除
@@ -628,9 +628,9 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(800)  // 使用 special_price 而非 price
   })
 
-  // ===== PR-D1：paymentMethod 行为对齐 admin =====
+  // ===== PR-2：paymentMethod 行为 =====
 
-  test('销售单 + 线下支付 → status=待确认收款', async () => {
+  test('销售单 + 线下支付（默认 receivedAmount=payable）→ status=已支付', async () => {
     const ctx = createManagerCtx({
       clientPhone: '13800001111',
       clientName: '测试顾客',
@@ -661,7 +661,8 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2: 线下 + receivedAmount 默认全额 → '已支付'
+    expect(ctx.result.status).toBe('已支付')
     expect(ctx.result.saleOrderId).toMatch(/^FY-XSD-WX-\d{6}\d{4}$/)
   })
 
@@ -722,6 +723,240 @@ describe('order.create', () => {
     await expect(orderRoutes.create(ctx))
       .rejects.toThrow(/INVALID_PARAMS.*支付方式/)
   })
+
+  // ===== PR-2: receivedAmount + sale_order_payments =====
+
+  // mock helper for PR-2 create 场景
+  function mockCreateCtxOk(overrides = {}) {
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: '部分支付顾客',
+      items: [{ skuId: 'sku-200', quantity: 1 }],
+      paymentMethod: '线下',
+      saleOrderType: '销售单',
+      ...overrides,
+    })
+    return ctx
+  }
+
+  function mockPgForCreate(skuPrice = '200.00') {
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])  // client_wechat_users
+      .mockResolvedValueOnce([])  // 无待支付
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
+        price: skuPrice, special_price: null, session_count: 5,
+        product_name: '护理项目', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+  }
+
+  test('PR-2 create 全额现场（线下, receivedAmount=payable）→ 订单 已支付 + 1 行 首次支付/已支付', async () => {
+    const ctx = mockCreateCtxOk({ receivedAmount: 200 })
+    mockPgForCreate()
+
+    const paymentInserts = []
+    let orderInsertParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('INSERT INTO sale_orders')) orderInsertParams = params
+          if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.paidAmount).toBe(200)
+    expect(ctx.result.payableAmount).toBe(200)
+    expect(ctx.result.prepaidCardAmount).toBe(0)
+    expect(paymentInserts.length).toBe(1)
+    // INSERT 语句含 '首次支付' 字面量
+    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
+    // amount 参数（按顺序 saleOrderId, amount, paymentMethod, operator, note, now）
+    expect(Number(paymentInserts[0].params[1])).toBe(200)
+    expect(paymentInserts[0].params[2]).toBe('线下')
+  })
+
+  test('PR-2 create 首次部分（线下, 0<received<payable）→ 订单 部分支付 + 1 行 首次支付/已支付', async () => {
+    const ctx = mockCreateCtxOk({ receivedAmount: 80 })
+    mockPgForCreate()
+
+    const paymentInserts = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('部分支付')
+    expect(ctx.result.paidAmount).toBe(80)
+    expect(ctx.result.payableAmount).toBe(200)
+    expect(paymentInserts.length).toBe(1)
+    expect(paymentInserts[0].sql).toMatch(/'首次支付'/)
+    expect(Number(paymentInserts[0].params[1])).toBe(80)
+  })
+
+  test('PR-2 create 纯挂账（线下, receivedAmount=0）→ 订单 待支付，无 payments 行', async () => {
+    const ctx = mockCreateCtxOk({ receivedAmount: 0 })
+    mockPgForCreate()
+
+    const paymentInserts = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('INSERT INTO sale_order_payments')) paymentInserts.push({ sql, params })
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('待支付')
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(paymentInserts.length).toBe(0)
+  })
+
+  test('PR-2 create 储值卡抵扣 + 部分现场 → 订单 部分支付 + 2 行 payments', async () => {
+    const ctx = mockCreateCtxOk({
+      useCard: true,
+      prepaidCardAmount: 50,  // 显式传入
+      receivedAmount: 40,
+    })
+    // 顾客 + 无待支付 + SKU + 储值卡余额
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
+        price: '200.00', special_price: null, session_count: 5,
+        product_name: '护理项目', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([{ balance: '500.00' }])
+
+    const paymentInserts = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('FROM card_transactions') && sql.includes("'扣款'")) {
+            return { rows: [] }  // 未扣过
+          }
+          if (sql.includes('FROM prepaid_cards') && sql.includes('FOR UPDATE')) {
+            return { rows: [{ card_id: 'card-200', balance: '500.00' }] }
+          }
+          if (sql.includes('INSERT INTO sale_order_payments')) {
+            paymentInserts.push({ sql, params })
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    // total=200, prepaid=50, payable=150, received=40 → paid=40, settled=90 → 部分支付
+    expect(ctx.result.totalAmount).toBe(200)
+    expect(ctx.result.prepaidCardAmount).toBe(50)
+    expect(ctx.result.payableAmount).toBe(150)
+    expect(ctx.result.paidAmount).toBe(40)
+    expect(ctx.result.status).toBe('部分支付')
+    // 2 行 payments：储值卡抵扣 + 首次支付
+    expect(paymentInserts.length).toBe(2)
+    expect(paymentInserts[0].sql).toMatch(/'储值卡抵扣'/)
+    expect(Number(paymentInserts[0].params[1])).toBe(50)
+    expect(paymentInserts[1].sql).toMatch(/'首次支付'/)
+    expect(Number(paymentInserts[1].params[1])).toBe(40)
+  })
+
+  test('PR-2 create 参数错误：receivedAmount > payable_amount → INVALID_PARAMS', async () => {
+    const ctx = mockCreateCtxOk({ receivedAmount: 999 })
+    mockPgForCreate()
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*receivedAmount/)
+  })
+
+  test('PR-2 create 参数错误：微信 + receivedAmount > 0 → MIXED_PAYMENT_NOT_SUPPORTED', async () => {
+    const ctx = mockCreateCtxOk({ paymentMethod: '微信', receivedAmount: 100 })
+    mockPgForCreate()
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/MIXED_PAYMENT_NOT_SUPPORTED/)
+  })
+
+  test('PR-2 create 不变量：paid_amount 等于该订单 payments 表 status=已支付 AND change_type IN (首次支付,回款,退款) 的 amount 之和', async () => {
+    // 场景：线下部分支付 received=80
+    //   sale_orders.paid_amount = 80
+    //   Σ(payments.amount where 已支付 且 change_type∈{首次支付,回款,退款}) = 80（只有 1 行首次支付）
+    //   储值卡抵扣不计入 paid_amount 不变量
+    const ctx = mockCreateCtxOk({
+      useCard: true,
+      prepaidCardAmount: 30,
+      receivedAmount: 50,
+    })
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-200', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
+        price: '200.00', special_price: null, session_count: 5,
+        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([{ balance: '500.00' }])
+
+    const paymentInserts = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('FROM card_transactions') && sql.includes("'扣款'")) return { rows: [] }
+          if (sql.includes('FROM prepaid_cards') && sql.includes('FOR UPDATE')) {
+            return { rows: [{ card_id: 'c', balance: '500' }] }
+          }
+          if (sql.includes('INSERT INTO sale_order_payments')) {
+            // 按 SQL 中的 change_type 字面量区分（create 两条 INSERT 均硬编码 change_type）
+            let changeType = null
+            if (sql.includes("'储值卡抵扣'")) changeType = '储值卡抵扣'
+            else if (sql.includes("'首次支付'")) changeType = '首次支付'
+            paymentInserts.push({ changeType, amount: Number(params[1]) })
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.create(ctx)
+
+    expect(ctx.result.paidAmount).toBe(50)
+    expect(ctx.result.prepaidCardAmount).toBe(30)
+
+    // 不变量：sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type ∈ {首次支付,回款,退款})
+    const paidAmountFromPayments = paymentInserts
+      .filter(p => ['首次支付', '回款', '退款'].includes(p.changeType))
+      .reduce((s, p) => s + p.amount, 0)
+    expect(paidAmountFromPayments).toBe(ctx.result.paidAmount)
+
+    // sale_orders.prepaid_card_amount = Σ(payments.amount WHERE 已支付 AND change_type='储值卡抵扣')
+    const prepaidFromPayments = paymentInserts
+      .filter(p => p.changeType === '储值卡抵扣')
+      .reduce((s, p) => s + p.amount, 0)
+    expect(prepaidFromPayments).toBe(ctx.result.prepaidCardAmount)
+
+    // 总共 2 行（储值卡抵扣 + 首次支付）
+    expect(paymentInserts.length).toBe(2)
+  })
 })
 
 describe('order.confirmOffline', () => {
@@ -738,16 +973,21 @@ describe('order.confirmOffline', () => {
         status: '待确认收款',
         payment_method: '线下',
         store_id: 'store-001',
+        total_amount: '500',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '500',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-001', sku_id: 'sku-001', received: '500', product_type: '疗程卡' },
       ])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments（无历史 payments → 首次支付）
 
     let capturedUpdateSql = ''
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
-          if (sql.includes("status = '已支付'")) capturedUpdateSql = sql
+          if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) capturedUpdateSql = sql
           return { rows: [], rowCount: 1 }
         }),
       }
@@ -771,8 +1011,13 @@ describe('order.confirmOffline', () => {
         status: '待确认收款',
         payment_method: '线下',
         store_id: 'store-001',
+        total_amount: '100',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '100',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '100', product_type: '单品' }])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
@@ -842,8 +1087,13 @@ describe('order.confirmOffline', () => {
         status: '待支付',
         payment_method: '线下',  // offline → 不触发非线下拦截
         store_id: 'store-001',
+        total_amount: '300',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '300',
       }])
       .mockResolvedValueOnce([{ sale_item_id: 'item-001', received: '300', product_type: '单品' }])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }) }
@@ -868,10 +1118,15 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-001',
+        total_amount: '495',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '495',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-cz-1', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
       ])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     let upsertCalls = 0
     let txnInsertCalls = 0
@@ -924,10 +1179,15 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-002',
+        total_amount: '2940',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '2940',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-cz-v', sku_id: 'sku-recharge-virtual', received: '2940', product_type: '院装产品' },
       ])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     let txnInsertParams = null
     pg.transaction.mockImplementation(async (cb) => {
@@ -977,10 +1237,15 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-003',
+        total_amount: '495',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '495',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-cz-3', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
       ])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     let upsertCalls = 0
     let txnInsertCalls = 0
@@ -1021,10 +1286,15 @@ describe('order.confirmOffline', () => {
         payment_method: '线下',
         store_id: 'store-001',
         client_user_id: 'u-100',
+        total_amount: '300',
+        paid_amount: '0',
+        prepaid_card_amount: '0',
+        payable_amount: '300',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-norm', sku_id: 'sku-careitem', received: '300', product_type: '疗程卡' },
       ])
+      .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
     let upsertCalls = 0
     pg.transaction.mockImplementation(async (cb) => {
@@ -1047,6 +1317,123 @@ describe('order.confirmOffline', () => {
 
     expect(ctx.result.status).toBe('已支付')
     expect(upsertCalls).toBe(0)
+  })
+
+  // ===== PR-2: sale_order_payments 流水 =====
+
+  test('PR-2 confirmOffline 部分订单再次确认全额 → 订单转 已支付，新增"回款/已支付" payments 行', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-PS-001' })
+
+    // 原订单：total=200，已付 80，剩 120
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-PS-001',
+        status: '部分支付',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-ps',
+        total_amount: '200',
+        paid_amount: '80',
+        prepaid_card_amount: '0',
+        payable_amount: '200',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-1', sku_id: 'sku-1', received: '200', product_type: '疗程卡' },
+      ])
+      .mockResolvedValueOnce([{ '?column?': 1 }])  // SELECT sale_order_payments → 已存在 → 本次为"回款"
+
+    const paymentInserts = []
+    let updateParams = null
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
+            updateParams = params
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO sale_order_payments')) {
+            paymentInserts.push({ sql, params })
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    // status 转 '已支付'
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.paidAmount).toBe(200)   // 80 + 120
+    expect(ctx.result.confirmAmount).toBe(120)
+    // UPDATE params：targetStatus, newPaidAmount
+    expect(updateParams[0]).toBe('已支付')
+    expect(Number(updateParams[1])).toBe(200)
+    // 本次为"回款"流水
+    expect(paymentInserts.length).toBe(1)
+    expect(paymentInserts[0].params[1]).toBe('回款')
+    expect(Number(paymentInserts[0].params[2])).toBe(120)
+  })
+
+  test('PR-2 confirmOffline 部分订单确认更小金额 → 订单仍 部分支付，paid_amount 累加', async () => {
+    const ctx = createManagerCtx({ saleOrderId: 'FY-PS-002', confirmAmount: 30 })
+
+    // 原订单：total=200，已付 80
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_order_id: 'FY-PS-002',
+        status: '部分支付',
+        payment_method: '线下',
+        store_id: 'store-001',
+        client_user_id: 'u-ps2',
+        total_amount: '200',
+        paid_amount: '80',
+        prepaid_card_amount: '0',
+        payable_amount: '200',
+      }])
+      .mockResolvedValueOnce([
+        { sale_item_id: 'item-1', sku_id: 'sku-1', received: '200', product_type: '疗程卡' },
+      ])
+      .mockResolvedValueOnce([{ '?column?': 1 }])  // 已有 payments → 本次为"回款"
+
+    let updateParams = null
+    const paymentInserts = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (sql.includes('UPDATE sale_orders') && sql.includes('SET status')) {
+            updateParams = params
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO sale_order_payments')) {
+            paymentInserts.push({ sql, params })
+            return { rows: [], rowCount: 1 }
+          }
+          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }  // 早退 recalcCustomerType
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await orderRoutes.confirmOffline(ctx)
+
+    // status 仍 '部分支付'（80+30 = 110 < 200）
+    expect(ctx.result.status).toBe('部分支付')
+    expect(ctx.result.paidAmount).toBe(110)
+    expect(ctx.result.confirmAmount).toBe(30)
+    expect(ctx.result.remainingPayable).toBe(90)
+    expect(updateParams[0]).toBe('部分支付')
+    expect(Number(updateParams[1])).toBe(110)
+    expect(paymentInserts.length).toBe(1)
+    expect(paymentInserts[0].params[1]).toBe('回款')
+    expect(Number(paymentInserts[0].params[2])).toBe(30)
   })
 })
 
@@ -2769,7 +3156,9 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     await orderRoutes.create(ctx)
 
     expect(ctx.result.prepaidCardAmount).toBe(300.5)
-    expect(ctx.result.paidAmount).toBe(699.5)
+    // PR-2: 线上支付 pending → paidAmount=0（sale_orders.paid_amount 是"已入账"快照，不是"应付"）
+    expect(ctx.result.paidAmount).toBe(0)
+    expect(ctx.result.payableAmount).toBe(699.5)
     expect(ctx.result.paymentMethod).toBe('微信')
     expect(ctx.result.status).toBe('待支付')
   })
@@ -2802,7 +3191,8 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
     expect(ctx.result.prepaidCardAmount).toBe(0)
     expect(ctx.result.paidAmount).toBe(1000)
     expect(ctx.result.paymentMethod).toBe('线下')
-    expect(ctx.result.status).toBe('待确认收款')
+    // PR-2: 线下全额现场 + receivedAmount 默认 payable → 直接 '已支付' + 1 行 首次支付 payments
+    expect(ctx.result.status).toBe('已支付')
   })
 
   test('前端传 prepaidCardAmount > 余额 → INSUFFICIENT_BALANCE', async () => {
@@ -2933,10 +3323,12 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
+        payable_amount: '200.00',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-1', received: '500', product_type: '疗程卡' },
       ])
+      // remainingPayable=0 → confirmAmount=0 → 不查 SELECT sale_order_payments
 
     const txCalls = []
     pg.transaction.mockImplementation(async (cb) => {
@@ -2985,6 +3377,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
+        payable_amount: '200.00',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-1', received: '500', product_type: '疗程卡' },
@@ -3030,6 +3423,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         prepaid_card_amount: '300.00',
         paid_amount: '200.00',
         total_amount: '500.00',
+        payable_amount: '200.00',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-1', received: '500', product_type: '疗程卡' },
@@ -3067,6 +3461,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
         prepaid_card_amount: '0',
         paid_amount: '500.00',
         total_amount: '500.00',
+        payable_amount: '500.00',
       }])
       .mockResolvedValueOnce([
         { sale_item_id: 'item-1', received: '500', product_type: '疗程卡' },

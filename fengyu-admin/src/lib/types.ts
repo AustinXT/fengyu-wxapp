@@ -172,7 +172,7 @@ export interface SkillTag {
 
 export type ProductKind = '组合套餐' | '护理项目' | '家居产品' | '充值卡' | '体验卡'
 export type ProductType = '疗程卡' | '单品' | '院装产品'
-export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批'
+export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
 export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
@@ -551,4 +551,29 @@ export interface DashboardStats {
     totalProducts: number
     totalCustomers: number
   }
+}
+
+// ─── 订单款项流水（sale_order_payments） ───
+export type PaymentChangeType = '首次支付' | '回款' | '退款' | '储值卡抵扣'
+export type PaymentFlowStatus = '待支付' | '已支付' | '已作废' | '已退款'
+export type PaymentSourceEnd = 'client' | 'staff' | 'admin' | 'notify'
+
+/** 订单款项流水行（与 db/schema/order.ts:saleOrderPayments 对齐） */
+export interface SaleOrderPayment {
+  id: number
+  saleOrderId: string
+  changeType: PaymentChangeType
+  /** 金额字符串（numeric），退款为负 */
+  amount: string
+  /** 流水通道；储值卡抵扣对应 '储值卡' */
+  paymentMethod: PaymentMethod | '储值卡'
+  externalTxnId: string | null
+  status: PaymentFlowStatus
+  sourceEnd: PaymentSourceEnd
+  operatorEmployeeId: string | null
+  note: string | null
+  createdAt: string
+  paidAt: string | null
+  // 可选 join 字段
+  operatorName?: string | null
 }

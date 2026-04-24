@@ -79,8 +79,34 @@ function makeOrder(overrides = {}) {
     client_user_id: 'user-001',
     store_id: 'store-A',
     prepaid_card_amount: '0',
+    paid_amount: '300.00',
     ...overrides,
   }
+}
+
+/**
+ * PR-4: 默认 payments 层 mock —— 自动补齐 payNotify 新增的 3 个查询
+ *   1. SUM(amount) FROM sale_order_payments → 已到账金额，默认 0
+ *   2. SELECT 1 FROM sale_order_payments WHERE change_type='首次支付' → 默认空（触发首次支付）
+ *   3. INSERT INTO sale_order_payments ... RETURNING id → 默认返回 1 行（非重复回调）
+ *   4. UPDATE sale_orders ... status/paid_amount → 默认空
+ * 外层若传入自定义 routes，仍可在这些之前注册更具体 matcher 覆盖。
+ */
+function defaultPaymentsRoutes() {
+  return [
+    {
+      match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+      result: { rows: [{ paid_sum: '0' }], rowCount: 1 },
+    },
+    {
+      match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+      result: { rows: [], rowCount: 0 },
+    },
+    {
+      match: /INSERT INTO sale_order_payments/,
+      result: { rows: [{ id: 1 }], rowCount: 1 },
+    },
+  ]
 }
 
 /**
@@ -121,6 +147,7 @@ describe('payNotify index.js', () => {
     })
 
     setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
       // 充值 SELECT：无充值行
       { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
       // sale_items 查询（业绩分配）
@@ -158,11 +185,13 @@ describe('payNotify index.js', () => {
         makeOrder({
           total_amount: '300.00',
           prepaid_card_amount: '100.00',
+          paid_amount: '200.00', // payable = 300 - 100 = 200
         }),
       ],
     })
 
     setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
       { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
       {
         match: "type = '扣款'",
@@ -216,18 +245,27 @@ describe('payNotify index.js', () => {
     expect(mockConnect).not.toHaveBeenCalled()
   })
 
-  test('4. 重复回调（扣款已存在）→ 幂等：余额不再扣、流水不重复写入', async () => {
+  test('4. 重复回调（payments 唯一索引 DO NOTHING）→ 幂等：sale_orders 不修改', async () => {
     const { main } = loadFreshIndex()
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [makeOrder({ prepaid_card_amount: '100.00' })],
+      rows: [makeOrder({ prepaid_card_amount: '100.00', paid_amount: '200.00' })],
     })
 
     setupClientQueryRouter([
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
-      // 扣款幂等检查命中
-      { match: "type = '扣款'", result: { rows: [{ '?column?': 1 }], rowCount: 1 } },
-      { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
-      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
+      // payments SUM / first-pay check
+      {
+        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+        result: { rows: [{ paid_sum: '0' }], rowCount: 1 },
+      },
+      {
+        match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+        result: { rows: [], rowCount: 0 },
+      },
+      // INSERT ... ON CONFLICT DO NOTHING → RETURNING 空（命中唯一索引）
+      {
+        match: /INSERT INTO sale_order_payments/,
+        result: { rows: [], rowCount: 0 },
+      },
     ])
 
     const res = await main({ orderNo: 'FY-XSD-WX-2604240004' })
@@ -248,11 +286,13 @@ describe('payNotify index.js', () => {
 
   test('5. 余额不足 → 整个事务 ROLLBACK，订单保持待支付（返回 FAIL）', async () => {
     const { main } = loadFreshIndex()
+    // 构造：total=600 prepaid=500 → payable=100（fullyPaid 触发扣款分支）
     mockPoolQuery.mockResolvedValueOnce({
-      rows: [makeOrder({ prepaid_card_amount: '500.00' })],
+      rows: [makeOrder({ total_amount: '600.00', prepaid_card_amount: '500.00', paid_amount: '100.00' })],
     })
 
     setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
       { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
       { match: "type = '扣款'", result: { rows: [], rowCount: 0 } },
       // balance 不足
@@ -289,6 +329,7 @@ describe('payNotify index.js', () => {
     const upsertSpy = vi.fn(async () => ({ rows: [{ card_id: 'FY-CARD-NEW' }], rowCount: 1 }))
 
     setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
       {
         match: "pc.product_kind = '充值卡'",
         result: {
@@ -339,6 +380,7 @@ describe('payNotify index.js', () => {
     })
 
     setupClientQueryRouter([
+      ...defaultPaymentsRoutes(),
       {
         match: "pc.product_kind = '充值卡'",
         result: {
@@ -382,5 +424,180 @@ describe('payNotify index.js', () => {
     expect(res.message).toBe('已处理')
     expect(mockConnect).not.toHaveBeenCalled()
     expect(mockClientQuery).not.toHaveBeenCalled()
+  })
+
+  // ========== PR-4: payments 流水写入相关 ==========
+
+  test('PR-4.1: 首次全额到账 → payments 新行 + sale_orders 转 已支付', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({ total_amount: '300.00', prepaid_card_amount: '0', paid_amount: '300.00' })],
+    })
+
+    const insertSpy = vi.fn(async () => ({ rows: [{ id: 42 }], rowCount: 1 }))
+
+    setupClientQueryRouter([
+      {
+        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+        result: { rows: [{ paid_sum: '0' }], rowCount: 1 },
+      },
+      // 首次支付检查：无
+      {
+        match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+        result: { rows: [], rowCount: 0 },
+      },
+      { match: /INSERT INTO sale_order_payments/, result: insertSpy },
+      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
+      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
+    ])
+
+    const res = await main({ orderNo: 'FY-XSD-WX-PR4-001', transactionId: 'wx-txn-aaa' })
+    expect(res.code).toBe('SUCCESS')
+
+    // payments 插入：change_type='首次支付', amount=300
+    expect(insertSpy).toHaveBeenCalled()
+    const insertArgs = insertSpy.mock.calls[0]
+    // 在 setupClientQueryRouter 中，我们 route.result 是函数时调用无参；用 mockClientQuery.mock.calls 取 params
+    const insertParamsCall = mockClientQuery.mock.calls.find((c) =>
+      /INSERT INTO sale_order_payments/.test(c[0])
+    )
+    expect(insertParamsCall[1][1]).toBe('首次支付')
+    expect(Number(insertParamsCall[1][2])).toBe(300) // amount
+
+    // sale_orders UPDATE 转 '已支付'
+    const statusUpd = mockClientQuery.mock.calls.find(
+      (c) => /UPDATE sale_orders[\s\S]*SET status/.test(c[0])
+    )
+    expect(statusUpd).toBeDefined()
+    expect(statusUpd[1][0]).toBe('已支付') // newStatus
+    expect(Number(statusUpd[1][1])).toBe(300) // newPaidSum
+
+    // COMMIT
+    expect(mockClientQuery.mock.calls.map((c) => c[0])).toContain('COMMIT')
+  })
+
+  test('PR-4.2: 部分到账 → payments 新行 + sale_orders 保持 "部分支付"', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({ total_amount: '300.00', prepaid_card_amount: '0', paid_amount: '300.00' })],
+    })
+
+    setupClientQueryRouter([
+      {
+        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+        result: { rows: [{ paid_sum: '0' }], rowCount: 1 },
+      },
+      {
+        match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+        result: { rows: [], rowCount: 0 },
+      },
+      { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 10 }], rowCount: 1 } },
+    ])
+
+    // 显式传 payAmount=100（小于应付 300）→ 部分支付
+    const res = await main({
+      orderNo: 'FY-XSD-WX-PR4-002',
+      transactionId: 'wx-txn-part',
+      payAmount: 100,
+    })
+    expect(res.code).toBe('SUCCESS')
+    expect(res.message).toMatch(/部分支付/)
+
+    // status 应为 '部分支付'，paid_amount=100
+    const statusUpd = mockClientQuery.mock.calls.find(
+      (c) => /UPDATE sale_orders[\s\S]*SET status/.test(c[0])
+    )
+    expect(statusUpd[1][0]).toBe('部分支付')
+    expect(Number(statusUpd[1][1])).toBe(100)
+
+    // 不应走到单品到期日 / 业绩分配（fullyPaid=false 提前 COMMIT）
+    const expireUpd = mockClientQuery.mock.calls.find(
+      (c) => /UPDATE sale_items[\s\S]*SET expire_date/.test(c[0])
+    )
+    expect(expireUpd).toBeUndefined()
+    const allocIns = mockClientQuery.mock.calls.find(
+      (c) => /INSERT INTO sale_allocations/.test(c[0])
+    )
+    expect(allocIns).toBeUndefined()
+  })
+
+  test('PR-4.3: 重复回调（uq_sop_txn 命中）→ payments 不重复，sale_orders 不修改', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({ total_amount: '300.00', prepaid_card_amount: '0', paid_amount: '300.00' })],
+    })
+
+    setupClientQueryRouter([
+      {
+        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+        result: { rows: [{ paid_sum: '0' }], rowCount: 1 },
+      },
+      {
+        match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+        result: { rows: [], rowCount: 0 },
+      },
+      // INSERT ON CONFLICT DO NOTHING → RETURNING 空
+      { match: /INSERT INTO sale_order_payments/, result: { rows: [], rowCount: 0 } },
+    ])
+
+    const res = await main({ orderNo: 'FY-XSD-WX-PR4-003', transactionId: 'wx-txn-dup' })
+    expect(res.code).toBe('SUCCESS')
+    expect(res.message).toMatch(/幂等/)
+
+    // sale_orders 的 UPDATE 不应执行
+    const statusUpd = mockClientQuery.mock.calls.find(
+      (c) => /UPDATE sale_orders[\s\S]*SET status/.test(c[0])
+    )
+    expect(statusUpd).toBeUndefined()
+    // 应 ROLLBACK（实际实现里重复回调是 ROLLBACK 提前返回）
+    expect(mockClientQuery.mock.calls.map((c) => c[0])).toContain('ROLLBACK')
+  })
+
+  test('PR-4.4: 补款回调（订单已有首次支付行）→ change_type=回款', async () => {
+    const { main } = loadFreshIndex()
+    mockPoolQuery.mockResolvedValueOnce({
+      rows: [makeOrder({
+        status: '部分支付',
+        total_amount: '300.00', prepaid_card_amount: '0', paid_amount: '100.00',
+      })],
+    })
+
+    setupClientQueryRouter([
+      // 已到账 100
+      {
+        match: /SELECT COALESCE\(SUM\(amount\), 0\) AS paid_sum/,
+        result: { rows: [{ paid_sum: '100' }], rowCount: 1 },
+      },
+      // 已有首次支付行
+      {
+        match: /FROM sale_order_payments[\s\S]*change_type = '首次支付'/,
+        result: { rows: [{ '?column?': 1 }], rowCount: 1 },
+      },
+      { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 99 }], rowCount: 1 } },
+      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
+      { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
+    ])
+
+    const res = await main({
+      orderNo: 'FY-XSD-WX-PR4-004',
+      transactionId: 'wx-txn-repay',
+    })
+    expect(res.code).toBe('SUCCESS')
+
+    // INSERT 参数 change_type='回款'
+    const insertCall = mockClientQuery.mock.calls.find((c) =>
+      /INSERT INTO sale_order_payments/.test(c[0])
+    )
+    expect(insertCall).toBeDefined()
+    expect(insertCall[1][1]).toBe('回款')
+    expect(Number(insertCall[1][2])).toBe(200) // remaining = 300 - 100
+
+    // sale_orders 转 '已支付'（100 + 200 = 300）
+    const statusUpd = mockClientQuery.mock.calls.find(
+      (c) => /UPDATE sale_orders[\s\S]*SET status/.test(c[0])
+    )
+    expect(statusUpd[1][0]).toBe('已支付')
   })
 })

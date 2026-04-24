@@ -4,7 +4,21 @@ import Link from "next/link"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { StatusBadge, Badge } from "@/components/ui/badge"
-import type { SaleOrder, SaleAllocation, OperationLog } from "@/lib/types"
+import type { SaleOrder, SaleAllocation, OperationLog, SaleOrderPayment } from "@/lib/types"
+
+/** ticket 2026-04-24 PR-3 §3.3 — change_type/status 中文展示，退款金额红色 */
+const paymentChangeTypeLabelMap: Record<string, string> = {
+  首次支付: "首次支付",
+  回款: "回款",
+  退款: "退款",
+  储值卡抵扣: "储值卡抵扣",
+}
+const paymentFlowStatusColorMap: Record<string, string> = {
+  待支付: "bg-[#FFF7E6] text-[#D4820A]",
+  已支付: "bg-[#F0F9F2] text-[#3D8A5A]",
+  已作废: "bg-gray-100 text-[#888888]",
+  已退款: "bg-[#FFEBEE] text-[#C62828]",
+}
 
 const paymentMethodMap: Record<string, string> = {
   微信: "微信支付",
@@ -33,10 +47,12 @@ export default function OrderDetailPageClient({
   order,
   allocations,
   logs,
+  payments,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
   logs: OperationLog[]
+  payments?: SaleOrderPayment[]
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
@@ -161,6 +177,74 @@ export default function OrderDetailPageClient({
                 ))}
                 {items.length === 0 && (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-[#999999]">暂无明细</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 款项流水（ticket 2026-04-24 PR-3 §3.3） */}
+      <Card>
+        <CardHeader>
+          <CardTitle>款项流水</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">时间</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">类型</th>
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">通道</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">操作人</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">备注</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {(payments ?? []).map((p) => {
+                  const amt = Number(p.amount)
+                  const isRefund = p.changeType === "退款" || amt < 0
+                  return (
+                    <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {formatDateTime(p.paidAt || p.createdAt)}
+                      </td>
+                      <td className="px-4 py-3">
+                        {paymentChangeTypeLabelMap[p.changeType] ?? p.changeType}
+                      </td>
+                      <td
+                        className={`px-4 py-3 text-right font-medium ${
+                          isRefund ? "text-[#C62828]" : "text-[var(--foreground)]"
+                        }`}
+                      >
+                        {isRefund ? "" : "+"}¥{amt.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3">{p.paymentMethod}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-xs ${
+                            paymentFlowStatusColorMap[p.status] ?? "bg-gray-100 text-[#888888]"
+                          }`}
+                        >
+                          {p.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {p.operatorName || (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "-")}
+                      </td>
+                      <td className="px-4 py-3 text-[#666666]">{p.note || "-"}</td>
+                    </tr>
+                  )
+                })}
+                {(payments ?? []).length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-8 text-center text-[#999999]">
+                      暂无款项流水
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>

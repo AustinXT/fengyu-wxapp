@@ -222,3 +222,63 @@
 .pay-btn {
   flex: 2;
 }
+
+/* ===== 收款记录区 ===== */
+.pay-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20rpx 24rpx;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.pay-row:last-child {
+  border-bottom: none;
+}
+
+.pay-row__left {
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  flex: 1;
+  min-width: 0;
+}
+
+.pay-type {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.pay-meta {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.pay-note {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+}
+
+.pay-row__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4rpx;
+  flex-shrink: 0;
+}
+
+.pay-amount {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.pay-amount--refund {
+  color: var(--color-primary);
+}
+
+.pay-status {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}

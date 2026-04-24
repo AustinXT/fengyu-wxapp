@@ -60,6 +60,15 @@ export const createOrderSchema = z.object({
   saleOrderType: z.enum(['销售单', '内部单', '回款单', '转换单', '退款单']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),
+  /**
+   * 本次收款金额（部分支付基础 ticket PR-3）
+   * - 未传 / undefined → 视为全额收款（= payable_amount）
+   * - 0 → 纯挂账（status='待支付'，不写 payments 行）
+   * - 0 < v < payable_amount → 部分支付（status='部分支付'）
+   * - = payable_amount → 全额（status='已支付' 或 '待确认收款'）
+   * 上界校验由 action 层在计算出 payable_amount 后做（schema 只保障非负数）。
+   */
+  receivedAmount: z.number().min(0, '本次收款金额不能为负').optional(),
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
     productName: z.string(),

@@ -22,6 +22,7 @@ vi.mock('@db/order', () => ({
     paidAt: 'paid_at',
     paymentMethod: 'payment_method',
     prepaidCardAmount: 'prepaid_card_amount',
+    payableAmount: 'payable_amount',
     paidAmount: 'paid_amount',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
@@ -35,6 +36,22 @@ vi.mock('@db/order', () => ({
     remainingSessions: 'remaining_sessions',
     pickedUpQuantity: 'picked_up_quantity',
     quantity: 'quantity',
+    $inferInsert: {} as any,
+  },
+  /** ticket 2026-04-24 PR-3 — 款项流水表 */
+  saleOrderPayments: {
+    id: 'id',
+    saleOrderId: 'sale_order_id',
+    changeType: 'change_type',
+    amount: 'amount',
+    paymentMethod: 'payment_method',
+    externalTxnId: 'external_txn_id',
+    status: 'status',
+    sourceEnd: 'source_end',
+    operatorEmployeeId: 'operator_employee_id',
+    note: 'note',
+    createdAt: 'created_at',
+    paidAt: 'paid_at',
     $inferInsert: {} as any,
   },
 }))
@@ -1320,7 +1337,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
         insert: vi.fn().mockImplementation((_table: any) => ({
           values: vi.fn().mockImplementation((v: any) => {
             if ('saleItemId' in v) capturedItem = v
-            else if ('saleOrderId' in v && 'status' in v) capturedOrder = v
+            else if ('saleOrderId' in v && 'saleOrderType' in v) capturedOrder = v
             return Promise.resolve({})
           }),
         })),
@@ -1450,7 +1467,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
         execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260416-RC02' }]),
         insert: vi.fn().mockImplementation(() => ({
           values: vi.fn().mockImplementation((v: any) => {
-            if ('saleOrderId' in v && 'status' in v) capturedOrder = v
+            if ('saleOrderId' in v && 'saleOrderType' in v) capturedOrder = v
             return Promise.resolve({})
           }),
         })),
@@ -1815,5 +1832,248 @@ describe('createConversionOrder — 异常路径', () => {
     const result = await createConversionOrder(baseConvData)
     expect(result.success).toBe(false)
     expect(result.message).toContain('卡状态变化')
+  })
+})
+
+// ─── PR-3 §3.5 — receivedAmount + 款项流水不变量测试 ─────────────────
+// ticket: 2026-04-24-order-partial-payment-foundation.md
+//
+// 覆盖：
+//   1. 全额现场 → 订单 '已支付'（线下走 '待确认收款'） + 1 行首次支付 payments
+//   2. 部分收款 → 订单 '部分支付' + 1 行首次支付 payments
+//   3. 纯挂账（receivedAmount=0） → 订单 '待支付' + 无 payments 行
+//   4. receivedAmount > payable_amount → 业务校验错
+//   5. paymentMethod=微信 + receivedAmount>0 → MIXED_PAYMENT_NOT_SUPPORTED
+//   6. 储值卡抵扣 + 部分现场 → 订单 '部分支付' + 2 行 payments（首次支付 + 储值卡抵扣）
+//   7. 双写不变量：paid_amount = Σ(已支付 + 首次支付/回款/退款) amount
+
+describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流水）', () => {
+  /** 捕获本轮事务内的 saleOrders insert + saleOrderPayments insert 清单 */
+  interface CaptureBag {
+    order: any
+    items: any[]
+    payments: any[]
+  }
+
+  /** 构造捕获所有 insert 的 tx mock；txResult 为 orderId */
+  function mockCreateTx(orderId: string, bag: CaptureBag) {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: orderId }]),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            // 区分 3 类插入：saleOrders / saleItems / saleOrderPayments
+            if ('saleOrderId' in v && 'saleOrderType' in v) {
+              bag.order = v
+            } else if ('saleItemId' in v) {
+              bag.items.push(v)
+            } else if ('saleOrderId' in v && 'changeType' in v) {
+              bag.payments.push(v)
+            }
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+  }
+
+  function freshBag(): CaptureBag {
+    return { order: null, items: [], payments: [] }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('1) 全额现场（线下）→ 订单 "待确认收款" + 1 行首次支付 payments', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P001', bag)
+
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      // 未传 receivedAmount → 视为全额 = payable_amount = totalAmount
+    })
+
+    expect(result.success).toBe(true)
+    // 线下全额：status='待确认收款'，paid_amount=受款金额（200），写 1 行首次支付
+    expect(bag.order.status).toBe('待确认收款')
+    expect(bag.order.payableAmount).toBe('200.00')
+    expect(bag.order.paidAmount).toBe('200.00')
+    expect(bag.payments).toHaveLength(1)
+    expect(bag.payments[0]).toMatchObject({
+      changeType: '首次支付',
+      amount: '200.00',
+      paymentMethod: '线下',
+      status: '已支付',
+      sourceEnd: 'admin',
+    })
+  })
+
+  it('2) 部分收款 → 订单 "部分支付" + 1 行首次支付 payments', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P002', bag)
+
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      receivedAmount: 80, // < 200 应付
+    })
+
+    expect(result.success).toBe(true)
+    expect(bag.order.status).toBe('部分支付')
+    expect(bag.order.payableAmount).toBe('200.00')
+    expect(bag.order.paidAmount).toBe('80.00')
+    expect(bag.payments).toHaveLength(1)
+    expect(bag.payments[0]).toMatchObject({
+      changeType: '首次支付',
+      amount: '80.00',
+      paymentMethod: '线下',
+      status: '已支付',
+      sourceEnd: 'admin',
+    })
+  })
+
+  it('3) 纯挂账（receivedAmount=0） → 订单 "待支付"，无 payments 行', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P003', bag)
+
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      receivedAmount: 0,
+    })
+
+    expect(result.success).toBe(true)
+    expect(bag.order.status).toBe('待支付')
+    expect(bag.order.paidAmount).toBe('0.00')
+    expect(bag.payments).toHaveLength(0)
+  })
+
+  it('4) receivedAmount > payable_amount → 业务校验错', async () => {
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      receivedAmount: 300, // payable = 200
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不能超过应付实金')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('5) paymentMethod=微信 + receivedAmount>0 → MIXED_PAYMENT_NOT_SUPPORTED', async () => {
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '微信',
+      receivedAmount: 100,
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('MIXED_PAYMENT_NOT_SUPPORTED')
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('6) 储值卡抵扣 + 部分现场 → 订单 "部分支付"，2 行 payments（首次支付 + 储值卡抵扣）', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P006', bag)
+
+    // total=200；prepaidCard=60 → payable=140；received=50 → 部分
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      prepaidCardAmount: 60,
+      receivedAmount: 50,
+    })
+
+    expect(result.success).toBe(true)
+    expect(bag.order.status).toBe('部分支付')
+    expect(bag.order.prepaidCardAmount).toBe('60.00')
+    expect(bag.order.payableAmount).toBe('140.00')
+    expect(bag.order.paidAmount).toBe('50.00')
+    expect(bag.payments).toHaveLength(2)
+    // 行 1：首次支付（线下/50）
+    const firstPay = bag.payments.find((p) => p.changeType === '首次支付')
+    expect(firstPay).toMatchObject({
+      changeType: '首次支付',
+      amount: '50.00',
+      paymentMethod: '线下',
+      status: '已支付',
+      sourceEnd: 'admin',
+    })
+    // 行 2：储值卡抵扣（储值卡/60）
+    const cardPay = bag.payments.find((p) => p.changeType === '储值卡抵扣')
+    expect(cardPay).toMatchObject({
+      changeType: '储值卡抵扣',
+      amount: '60.00',
+      paymentMethod: '储值卡',
+      status: '已支付',
+      sourceEnd: 'admin',
+    })
+  })
+
+  it('7) 双写不变量：paid_amount = Σ(已支付 + 首次支付/回款/退款).amount', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P007', bag)
+
+    // 场景：total=200 + prepaidCard=60 → payable=140；received=120 → 部分支付
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '线下',
+      prepaidCardAmount: 60,
+      receivedAmount: 120,
+    })
+
+    expect(result.success).toBe(true)
+    // 计算不变量左侧：sale_orders.paid_amount
+    const paidAmount = Number(bag.order.paidAmount)
+    // 计算不变量右侧：Σ(payments WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+    const paymentsSum = bag.payments
+      .filter(
+        (p) =>
+          p.status === '已支付' &&
+          ['首次支付', '回款', '退款'].includes(p.changeType),
+      )
+      .reduce((s, p) => s + Number(p.amount), 0)
+    expect(paidAmount).toBe(paymentsSum)
+    expect(paidAmount).toBe(120)
+
+    // 同时确认 prepaid_card_amount = Σ(储值卡抵扣).amount
+    const prepaidSnapshot = Number(bag.order.prepaidCardAmount)
+    const cardSum = bag.payments
+      .filter((p) => p.status === '已支付' && p.changeType === '储值卡抵扣')
+      .reduce((s, p) => s + Number(p.amount), 0)
+    expect(prepaidSnapshot).toBe(cardSum)
+    expect(prepaidSnapshot).toBe(60)
+  })
+
+  it('8) 线上支付（微信）+ receivedAmount 未传 → 订单 "待支付"，无 payments 行（admin 不走线上，保留既有语义）', async () => {
+    const bag = freshBag()
+    mockCreateTx('FY-XSD-WX-260424-P008', bag)
+
+    const result = await createOrder({
+      ...baseOrderData,
+      paymentMethod: '微信',
+      // 不传 receivedAmount
+    })
+
+    expect(result.success).toBe(true)
+    expect(bag.order.status).toBe('待支付')
+    expect(bag.order.paidAmount).toBe('0.00')
+    expect(bag.payments).toHaveLength(0)
   })
 })

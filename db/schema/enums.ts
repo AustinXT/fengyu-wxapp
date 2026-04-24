@@ -12,6 +12,7 @@ export const orderStatusEnum = pgEnum("order_status", [
   "支付失败",
   "已关闭",
   "待审批",
+  "部分支付",
 ]);
 
 export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "回款单", "转换单", "退款单"]);
@@ -20,7 +21,49 @@ export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "�
 
 export const itemDirectionEnum = pgEnum("item_direction", ["购买", "转出", "转入", "退出"]);
 
-export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下", "无"]);
+export const paymentMethodEnum = pgEnum("payment_method", ["微信", "支付宝", "线下", "无", "储值卡"]);
+
+/**
+ * 款项流水类型（sale_order_payments.change_type）
+ *
+ * 首次支付：订单创建那一刻的第一笔收款，至多 1 行/订单
+ * 回款：订单存活期内多次补款
+ * 退款：Ticket 3 写入，amount 为负
+ * 储值卡抵扣：下单时使用储值卡抵扣，与"首次支付"同事务并行写 1 行（PR-3 开始启用）
+ *
+ * 与 order.ts saleOrderPayments 的 chk_sop_amount_sign CHECK 保持一致。
+ */
+export const paymentChangeTypeEnum = pgEnum("payment_change_type", [
+  "首次支付",
+  "回款",
+  "退款",
+  "储值卡抵扣",
+]);
+
+/**
+ * 款项流水状态（sale_order_payments.status）
+ *
+ * 待支付：线上支付已发起未到账
+ * 已支付：到账（线下/储值卡直接落此状态）
+ * 已作废：创建后被取消（如超时/手动关闭触发）
+ * 已退款：首次支付/回款行整笔退款时置此
+ */
+export const paymentFlowStatusEnum = pgEnum("payment_flow_status", [
+  "待支付",
+  "已支付",
+  "已作废",
+  "已退款",
+]);
+
+/**
+ * 款项来源端（sale_order_payments.source_end）
+ */
+export const paymentSourceEndEnum = pgEnum("payment_source_end", [
+  "client",
+  "staff",
+  "admin",
+  "notify",
+]);
 
 export const serviceOrderStatusEnum = pgEnum("service_order_status", ["待服务", "服务中", "已完成", "已取消"]);
 
