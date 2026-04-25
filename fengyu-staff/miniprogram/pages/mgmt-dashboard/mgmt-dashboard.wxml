@@ -25,26 +25,26 @@
         <view class="mgmt-dash-grid-large">
           <view class="dash-card dash-card--large">
             <view class="dash-card-title">门店业绩</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.storeRevenue.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.storeRevenue.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.storeRevenue.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.storeRevenue.month }}</text></view>
             <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.storeRevenue.monthlyAvgPerStore }}</text></view>
           </view>
           <view class="dash-card dash-card--large">
             <view class="dash-card-title">生美业绩</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.shengmeiRevenue.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.shengmeiRevenue.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.shengmeiRevenue.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.shengmeiRevenue.month }}</text></view>
             <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.shengmeiRevenue.monthlyAvgPerStore }}</text></view>
           </view>
           <view class="dash-card dash-card--large">
             <view class="dash-card-title">门店实耗</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.storeConsume.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.storeConsume.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.storeConsume.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.storeConsume.month }}</text></view>
             <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.storeConsume.monthlyAvgPerStore }}</text></view>
           </view>
           <view class="dash-card dash-card--large">
             <view class="dash-card-title">生美实耗</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.shengmeiConsume.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.shengmeiConsume.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.shengmeiConsume.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.shengmeiConsume.month }}</text></view>
             <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.shengmeiConsume.monthlyAvgPerStore }}</text></view>
           </view>
         </view>
@@ -53,28 +53,29 @@
         <view class="mgmt-dash-grid-small">
           <view class="dash-card dash-card--small">
             <view class="dash-card-title">客流</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.footfall.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.footfall.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.footfall.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.footfall.month }}</text></view>
           </view>
           <view class="dash-card dash-card--small">
             <view class="dash-card-title">客量</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.headcount.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.headcount.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.headcount.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.headcount.month }}</text></view>
           </view>
           <view class="dash-card dash-card--small">
             <view class="dash-card-title">新会员</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">{{ display.newMembers.today }}</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">{{ display.newMembers.month }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.newMembers.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.newMembers.month }}</text></view>
           </view>
           <view class="dash-card dash-card--small">
             <view class="dash-card-title">项目数</view>
-            <view class="dash-card-row"><text class="lbl">今日：</text><text class="val">--</text></view>
-            <view class="dash-card-row"><text class="lbl">本月：</text><text class="val">--</text></view>
+            <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.projectCount.today }}</text></view>
+            <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.projectCount.month }}</text></view>
           </view>
         </view>
 
         <!-- A. 门店状况（截面，不随日历变化） -->
         <view class="dash-section-title">门店状况</view>
+        <view class="dash-section-note dash-section-note--transitional">该区域当前为实时快照，不随所选日期变化（历史化改造进行中）</view>
 
         <view class="dash-status-row1">
           <view class="status-cell">
@@ -106,6 +107,7 @@
 
         <!-- B. 人效数据 -->
         <view class="dash-section-title">人效数据</view>
+        <view class="dash-section-note dash-section-note--transitional">分子按所选日期出数，分母（员工数）当前为实时快照（历史化改造进行中）</view>
 
         <view class="mgmt-dash-grid-small">
           <view class="dash-card dash-card--small">
@@ -150,6 +152,11 @@
             <view class="dash-card-title">人均项目数</view>
             <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.projectCount.day }}</text></view>
             <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.projectCount.month }}</text></view>
+          </view>
+          <view class="dash-card dash-card--small">
+            <view class="dash-card-title">人均提成收入</view>
+            <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.commissionIncome.day }}</text></view>
+            <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.commissionIncome.month }}</text></view>
           </view>
         </view>
 

@@ -268,3 +268,14 @@
   color: #C0322A;
   border: 2rpx solid #C0322A;
 }
+
+.dash-section-note {
+  font-size: 24rpx;
+  color: #999;
+  margin: -16rpx 0 16rpx 0;
+  padding: 0 16rpx;
+  line-height: 1.5;
+}
+.dash-section-note--transitional {
+  color: #C0322A;
+}

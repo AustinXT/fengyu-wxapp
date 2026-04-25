@@ -23,6 +23,8 @@ interface SummaryData {
   headcount: { today: number; month: number }
   newMembers: { today: number; month: number }
   projectCount: { today: number; month: number }
+  salesCommissionIncome: { today: number; month: number }
+  serviceCommissionIncome: { today: number; month: number }
   storeCount: number
   memberCount: number
   retainedMemberCount: number
@@ -55,6 +57,7 @@ interface PerEmployeeDisplay {
   headcount: PerEmployeeRow
   newMembers: PerEmployeeRow
   projectCount: PerEmployeeRow
+  commissionIncome: PerEmployeeRow
 }
 
 interface DisplayData {
@@ -244,7 +247,7 @@ Page({
       footfall: { today: formatCount(s.footfall.today), month: formatCount(s.footfall.month) },
       headcount: { today: formatCount(s.headcount.today), month: formatCount(s.headcount.month) },
       newMembers: { today: formatCount(s.newMembers.today), month: formatCount(s.newMembers.month) },
-      projectCount: { today: '--', month: '--' },
+      projectCount: { today: formatCount(s.projectCount.today), month: formatCount(s.projectCount.month) },
 
       storeStatus: {
         memberCount: formatCount(s.memberCount),
@@ -267,7 +270,11 @@ Page({
         footfall:     { day: perEmpCount(s.footfall.today),         month: perEmpCount(s.footfall.month) },
         headcount:    { day: perEmpCount(s.headcount.today),        month: perEmpCount(s.headcount.month) },
         newMembers:   { day: perEmpCount(s.newMembers.today),       month: perEmpCount(s.newMembers.month) },
-        projectCount: { day: '--', month: '--' },
+        projectCount: { day: perEmpCount(s.projectCount.today),     month: perEmpCount(s.projectCount.month) },
+        commissionIncome: {
+          day:   perEmpAmount(s.salesCommissionIncome.today + s.serviceCommissionIncome.today),
+          month: perEmpAmount(s.salesCommissionIncome.month + s.serviceCommissionIncome.month),
+        },
       },
     }
   },
