@@ -25,21 +25,46 @@
 | 新会员 | `COUNT(*)` | `client_wechat_users` | `old_member_level IS NULL` ∩ `member_level IS NOT NULL` ∩ `[member_level_upgraded_at]` |
 | 项目数 | _占位_ | _待定义_ | _待定义_ |
 
+## 门店状况 / 人效（截面快照，不随日历变化）
+
+| 指标 | 公式 | 数据源 | 筛选条件 |
+|------|------|--------|----------|
+| 会员数（memberCount） | `COUNT(*)` | `client_wechat_users` | `customer_type='会员客'` ∩ scope（`bound_store_id`） |
+| 保有会员数（retainedMemberCount） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ scope（`bound_store_id`） |
+| 员工数（employeeCount） | `COUNT(*)` | `staff_wechat_users` | `is_resigned=FALSE` ∩ `skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`） |
+
+> 三项均为"当前快照"，**不与日历日期挂钩**（结构性数据反映"看的时候的状态"，非"那一天的状态"）。
+> 若产品后续要"那一天的会员数"，需另设审计字段（与 `old_member_level` 同思路），属另开 ticket 范围。
+
 ## 派生指标
 
-| 指标 | 公式 |
-|------|------|
-| 月店均 | `本月数据 / scope 下 store 数量` （scope=单店时分母=1；分母=0 时返回 0） |
+| 指标 | 公式 | 防除零 |
+|------|------|--------|
+| 月店均 | `本月数据 / scope 下 store 数量` （scope=单店时分母=1） | 分母=0 时返回 0 |
+| 占比（memberRetainRate） | `retainedMemberCount / memberCount × 100%` | `memberCount=0 → '--'` |
+| 店均会员（avgMembersPerStore） | `memberCount / storeCount` | `storeCount=0 → '--'` |
+| 店均保有会员（avgRetainedPerStore） | `retainedMemberCount / storeCount` | 同上 |
+| 人均会员数（avgMembersPerEmp） | `memberCount / employeeCount` | `employeeCount=0 → '--'` |
+| 人均业绩 日/月 | `storeRevenue.today/.month / employeeCount` | 同上 |
+| 人均生美业绩 日/月 | `shengmeiRevenue.today/.month / employeeCount` | 同上 |
+| 人均实耗 日/月 | `storeConsume.today/.month / employeeCount` | 同上 |
+| 人均生美实耗 日/月 | `shengmeiConsume.today/.month / employeeCount` | 同上 |
+| 人均客流 日/月 | `footfall.today/.month / employeeCount` | 同上 |
+| 人均客量 日/月 | `headcount.today/.month / employeeCount` | 同上 |
+| 人均新客 日/月 | `newMembers.today/.month / employeeCount` | 同上 |
+| 人均项目数 日/月 | `projectCount.today/.month / employeeCount` | 占位（projectCount 本身仍是 `--`） |
+
+> 派生字段全部前端 `buildDisplay` 计算，不进接口；规避"加一个派生就改接口"的耦合。
 
 ---
 
 ## scope（市场/门店）过滤
 
-| scope | sale_orders / sale_items / service_orders | client_wechat_users |
-|-------|------|------|
-| 全部 | 不过滤 | 不过滤 |
-| 市场 | `store_id IN (SELECT id FROM org_nodes WHERE type='store' AND parent_id=$market)` | `bound_store_id IN (...)` |
-| 门店 | `store_id = $store` | `bound_store_id = $store` |
+| scope | sale_orders / sale_items / service_orders | client_wechat_users | staff_wechat_users |
+|-------|------|------|------|
+| 全部 | 不过滤 | 不过滤 | 不过滤 |
+| 市场 | `store_id IN (SELECT s.store_id FROM stores s JOIN org_nodes o ON s.org_node_id=o.id WHERE o.parent_id=$market AND o.type='门店')` | 同左（列名 `bound_store_id`） | 同左（列名 `store_id`） |
+| 门店 | `store_id = $store` | `bound_store_id = $store` | `store_id = $store` |
 
 > **市场维度统一走 org_nodes 子查询，不用 `service_orders.market_name` 文本匹配**：org_nodes 是关系来源，市场改名不会让历史统计漂移。
 
@@ -75,8 +100,21 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 ---
 
+## 数字格式化规则
+
+| 类别 | 规则 | 示例 |
+|------|------|------|
+| 人数 / 计数 / 单数 | 整数 + 千分位 `,` | `12,000`、`4,000`、`600` |
+| 金额（业绩 / 实耗 / 人均业绩 等） | 保留 2 位小数 + 千分位 `,` | `1,234,567.89`、`8,000.00` |
+| 占比 | 保留 2 位小数 + `%` | `33.33%` |
+| 防除零 / 数据缺失 | 一律 `--`（不显示 0） | — |
+
+> 规则由 `fengyu-staff/miniprogram/utils/number.ts` 的 `formatAmount` / `formatCount` 实现。
+> 已废弃旧"≥10000 折叠为 X.X 万"规则。
+
 ## 变更记录
 
 | 日期 | 变更 |
 |------|------|
 | 2026-04-25 | 初版：管理层数据中心首页 8 指标定义 |
+| 2026-04-25 | 追加门店状况 3 项原始指标（会员/保有/员工）+ 11 项派生指标；新增 staff_wechat_users scope 行；新增数字格式化规则（废弃"万"折叠） |
