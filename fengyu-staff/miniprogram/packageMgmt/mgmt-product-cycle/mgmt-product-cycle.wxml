@@ -1,18 +1,17 @@
-<!-- scope 提示条（只读，scope 在 hub 修改） -->
-<view class="mgmt-scope-bar">
-  <text class="mgmt-scope-label">数据范围：</text>
-  <text class="mgmt-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+<!-- 顶部筛选行：period chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+<view class="mgmt-filter-bar mgmt-filter-bar--sticky">
+  <mgmt-period-picker
+    options="{{ periodsForPicker }}"
+    value="{{ period }}"
+    bind:change="onPeriodChange"
+  />
+  <view class="mgmt-scope-tag">
+    <text>范围：</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  </view>
 </view>
 
 <view class="pc-page">
-  <!-- 顶部 period chip：sticky -->
-  <view class="pc-filter">
-    <mgmt-period-picker
-      options="{{ periodsForPicker }}"
-      value="{{ period }}"
-      bind:change="onPeriodChange"
-    />
-  </view>
 
   <!-- Section 标题 -->
   <view class="pc-section-title">品项-顾客周期</view>

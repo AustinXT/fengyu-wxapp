@@ -1,36 +1,26 @@
 /* components/mgmt-scope-picker — 市场/门店二级筛选样式 */
 
 .scope-picker {
-  width: 100%;
+  display: inline-block;
 }
 
 .scope-trigger {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8rpx;
   padding: var(--spacing-tight) var(--spacing-card);
   background: var(--color-primary-light);
-  border: 1rpx solid rgba(192, 50, 42, 0.25);
   border-radius: var(--radius-md);
   font-size: 28rpx;
   color: var(--color-primary);
   font-weight: 500;
 }
 
-.scope-trigger-main {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
-  flex: 1;
-  min-width: 0;
-}
-
 .scope-trigger-text {
-  flex: 1;
-  text-align: left;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  max-width: 240rpx;
 }
 
 .scope-popup {

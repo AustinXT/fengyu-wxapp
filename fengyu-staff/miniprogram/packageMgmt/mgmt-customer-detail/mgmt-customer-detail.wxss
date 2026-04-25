@@ -5,7 +5,7 @@
   min-height: 100vh;
 }
 
-/* 顶部 scope 提示条 → 全局 .mgmt-scope-bar（app.wxss）已统一 */
+/* 顶部筛选行 → 全局 .mgmt-filter-bar + .mgmt-scope-tag（app.wxss）已统一 */
 
 /* 头部信息卡 */
 .profile-card {

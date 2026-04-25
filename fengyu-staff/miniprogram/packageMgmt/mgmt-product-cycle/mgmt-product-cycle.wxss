@@ -1,19 +1,9 @@
 /* packageMgmt/mgmt-product-cycle — 品项数据子页样式 */
 
 .pc-page {
-  padding: var(--spacing-card);
-  padding-bottom: 80rpx;
+  padding: 0 var(--spacing-card) 80rpx;
   background: var(--color-bg-page);
   min-height: 100vh;
-}
-
-/* 顶部 period chip 区 sticky */
-.pc-filter {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--color-bg-page);
-  padding-bottom: var(--spacing-card);
 }
 
 /* Section 标题 */
@@ -38,7 +28,7 @@
 .pc-subsection-title {
   font-size: 28rpx;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--color-primary);
   padding: var(--spacing-card) var(--spacing-card) 12rpx;
   display: flex;
   align-items: center;

@@ -8,7 +8,7 @@
 .hint-wrap { padding: 80rpx 32rpx; text-align: center; }
 .hint-text { font-size: 26rpx; color: var(--color-text-hint); }
 
-/* scope 提示条 → 全局 .mgmt-scope-bar（app.wxss）已统一 */
+/* 顶部筛选行 → 全局 .mgmt-filter-bar + .mgmt-scope-tag（app.wxss）已统一 */
 
 /* sticky 筛选容器：搜索吸顶 */
 .mc-sticky-filters {

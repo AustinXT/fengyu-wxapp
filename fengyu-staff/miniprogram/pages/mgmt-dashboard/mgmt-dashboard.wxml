@@ -3,13 +3,11 @@
   <!-- 首页（数据中心） -->
   <block wx:if="{{activeTab === 'dashboard'}}">
     <view class="mgmt-dash">
-      <!-- 顶部筛选栏 -->
+      <!-- 顶部筛选栏：时间靠左 + 市场靠右，同一行 -->
       <view class="mgmt-dash-filters">
         <view class="filter-trigger" bindtap="onCalendarOpen">
-          <view class="filter-trigger-main">
-            <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
-            <text class="filter-trigger-text">{{ selectedDate || '请选择日期' }}</text>
-          </view>
+          <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
+          <text class="filter-trigger-text">{{ selectedDate || '请选择日期' }}</text>
           <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
         </view>
         <mgmt-scope-picker

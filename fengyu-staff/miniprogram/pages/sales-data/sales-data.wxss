@@ -3,23 +3,15 @@
 .sd-page {
   min-height: 100vh;
   background: var(--color-bg-page);
-  padding: var(--spacing-card);
-  padding-bottom: 80rpx;
+  padding: 0 var(--spacing-card) 80rpx;
   box-sizing: border-box;
 }
 
-/* 顶部 chip：保留"白底圆角卡片 + 下划线 chip"风格（与 product-cycle/traffic-stats 的填充式不同，因结构嵌在白容器内） */
+/* 顶部 chip：保留下划线 chip 风格（嵌入 mgmt-filter-bar 内，inline 紧凑无 sticky/卡片） */
 .sd-period-tabs {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 32rpx;
-  background: var(--color-bg-card);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-tight) var(--spacing-card);
-  margin-bottom: var(--spacing-card);
 }
 
 .sd-period-tab {
@@ -44,10 +36,6 @@
   height: 4rpx;
   background: var(--color-primary);
   border-radius: 2rpx;
-}
-
-.sd-period-placeholder {
-  flex: 1;
 }
 
 /* 区段 */

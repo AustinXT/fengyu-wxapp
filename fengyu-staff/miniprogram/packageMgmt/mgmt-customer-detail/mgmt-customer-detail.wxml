@@ -1,10 +1,12 @@
 <!-- packageMgmt/mgmt-customer-detail — 管理层 6-Tab 顾客详情（只读） -->
 <view class="container">
 
-  <!-- 顶部 scope 提示条 -->
-  <view class="mgmt-scope-bar">
-    <text class="mgmt-scope-label">数据范围：</text>
-    <text class="mgmt-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  <!-- 顶部筛选行：仅市场范围 tag（顾客详情无时间维度） -->
+  <view class="mgmt-filter-bar">
+    <view class="mgmt-scope-tag">
+      <text>范围：</text>
+      <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+    </view>
   </view>
 
   <!-- 顶层三态壳：loading / error / empty / content -->

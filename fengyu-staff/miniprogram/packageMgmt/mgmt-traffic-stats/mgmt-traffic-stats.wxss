@@ -1,19 +1,9 @@
 /* packageMgmt/mgmt-traffic-stats — 客量数据子页样式 */
 
 .tf-page {
-  padding: var(--spacing-card);
-  padding-bottom: 80rpx;
+  padding: 0 var(--spacing-card) 80rpx;
   background: var(--color-bg-page);
   min-height: 100vh;
-}
-
-/* 顶部筛选区 sticky：period chip 单独占行（scope 已上提为全局 .mgmt-scope-bar） */
-.tf-filter {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: var(--color-bg-page);
-  padding-bottom: var(--spacing-card);
 }
 
 .tf-section-title {

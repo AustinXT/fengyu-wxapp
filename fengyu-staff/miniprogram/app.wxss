@@ -202,22 +202,42 @@ page {
   gap: 24rpx;
 }
 
-/* ===== 管理层视图：scope 提示条（4 子页统一） ===== */
-.mgmt-scope-bar {
+/* ===== 管理层视图：顶部筛选行（5 页统一：左 时间/period chip，右 scope tag） ===== */
+.mgmt-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-tight);
   padding: var(--spacing-tight) var(--spacing-page);
-  background: var(--color-primary-light);
+  background: var(--color-bg-page);
+}
+
+.mgmt-filter-bar--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.mgmt-scope-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+  gap: 4rpx;
   font-size: 24rpx;
   color: var(--color-text-secondary);
+  padding: 6rpx 16rpx;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-pill);
+  border: 1rpx solid var(--color-border);
+  max-width: 280rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.mgmt-scope-bar .mgmt-scope-label {
-  color: var(--color-text-hint);
-}
-
-.mgmt-scope-bar .mgmt-scope-value {
+.mgmt-scope-tag .mgmt-scope-tag-value {
   color: var(--color-primary);
   font-weight: 600;
-  margin-left: 8rpx;
 }
 
 /* ===== 详情页状态条 ===== */

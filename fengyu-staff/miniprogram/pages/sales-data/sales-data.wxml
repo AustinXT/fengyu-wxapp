@@ -1,12 +1,6 @@
 <!-- pages/sales-data — 管理层"销售数据"页 -->
-<!-- scope 提示条（只读，scope 在 hub 修改） -->
-<view class="mgmt-scope-bar">
-  <text class="mgmt-scope-label">数据范围：</text>
-  <text class="mgmt-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
-</view>
-
-<view class="sd-page">
-  <!-- 顶部时间 chip：sticky 吸顶（保留下划线 chip 风格） -->
+<!-- 顶部筛选行：下划线 chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+<view class="mgmt-filter-bar mgmt-filter-bar--sticky">
   <view class="sd-period-tabs">
     <view
       class="sd-period-tab {{period==='month'?'active':''}}"
@@ -23,8 +17,14 @@
       data-period="year"
       bindtap="onPeriodChange"
     >本年</view>
-    <view class="sd-period-placeholder"></view>
   </view>
+  <view class="mgmt-scope-tag">
+    <text>范围：</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  </view>
+</view>
+
+<view class="sd-page">
 
   <!-- 三态壳：loading / error 时由组件接管 -->
   <mgmt-data-state state="{{ state }}" bind:retry="onRetry">

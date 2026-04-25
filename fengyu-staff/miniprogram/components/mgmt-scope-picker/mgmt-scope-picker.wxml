@@ -1,10 +1,8 @@
 <!-- components/mgmt-scope-picker — 市场/门店二级筛选 -->
 <view class="scope-picker">
   <view class="scope-trigger" bindtap="onOpen">
-    <view class="scope-trigger-main">
-      <van-icon name="shop-o" size="32rpx" color="#C0322A" />
-      <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}</text>
-    </view>
+    <van-icon name="shop-o" size="32rpx" color="#C0322A" />
+    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}</text>
     <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
   </view>
 

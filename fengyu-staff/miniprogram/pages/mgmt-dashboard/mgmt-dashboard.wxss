@@ -13,31 +13,31 @@
 
 .mgmt-dash-filters {
   display: flex;
-  flex-direction: column;
-  gap: 12rpx;
+  align-items: center;
+  gap: var(--spacing-tight);
   padding-bottom: var(--spacing-card);
 }
 
 .filter-trigger {
-  display: flex;
-  justify-content: space-between;
+  display: inline-flex;
   align-items: center;
+  gap: 8rpx;
   padding: var(--spacing-tight) var(--spacing-card);
   background: var(--color-primary-light);
-  border: 1rpx solid rgba(192, 50, 42, 0.25);
   border-radius: var(--radius-md);
   font-size: 28rpx;
   color: var(--color-primary);
-}
-
-.filter-trigger-main {
-  display: flex;
-  align-items: center;
-  gap: 12rpx;
+  flex-shrink: 0;
 }
 
 .filter-trigger-text {
   font-weight: 500;
+}
+
+/* mgmt-scope-picker 紧靠右：用 margin-left: auto 把 picker 推到行末 */
+.mgmt-dash-filters mgmt-scope-picker {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .mgmt-dash-grid-large {
