@@ -19,6 +19,10 @@ docker buildx build \
 echo "=== 2/4 传输镜像到 $SSH_HOST ==="
 docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"
 
+# compose.yml 同步：远程 docker-compose.yml 必须含本地仓库定义的服务（admin / cron-worker），
+# 否则 up 时会报 "no such service"。覆盖远程未提交的本地修改一般无影响（image 行已在仓库版）。
+scp docker/docker-compose.yml "$SSH_HOST:$REMOTE_DIR/docker-compose.yml"
+
 echo "=== 3/4 远程重启服务 ==="
 # compose.yml 已显式声明 image: fengyu-admin:latest，up 时直接复用传入的镜像
 # cron-worker 复用同一镜像、覆盖 entrypoint，跟随同一节奏滚动更新

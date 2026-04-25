@@ -2,6 +2,8 @@
 # 构建上下文：monorepo 根目录（需要访问 db/schema/）
 # 用法：docker build -f docker/Dockerfile.admin -t fengyu-admin .
 
+# base image 走 daocloud 镜像加速：本地 docker.io metadata HEAD 请求经常超时
+# 远程主机不构建镜像（仅 docker load），故域名仅影响本地 build 时的 manifest 解析
 FROM docker.m.daocloud.io/oven/bun:1-alpine AS base
 
 # Alpine apk 换阿里云镜像
