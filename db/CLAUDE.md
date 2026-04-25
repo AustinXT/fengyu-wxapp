@@ -49,10 +49,10 @@ npm run db:studio     # Drizzle Studio 可视化管理
 2. `npm run db:generate` — drizzle-kit 产出 `migrations/00NN_<name>.sql` + 对应 `meta/00NN_snapshot.json` + 更新 `meta/_journal.json`
 3. **本地验证**：起一个临时 docker PG，用 `DATABASE_URL=postgresql://postgres:...@localhost:54399/test npx drizzle-kit migrate` 在空库上跑一次，确认新 migration 能从零 apply 起整个 schema
 4. **提交 PR**：必须同时包含 `schema/*.ts` + `migrations/00NN_*.sql` + `migrations/meta/` 三者的改动，缺一不可
-5. **部署**：PR merge 后，**对两个库都跑** `npm run db:migrate`
-   - 5434/fengyu（测试库，admin 用）
-   - 5433/fengyu_wxapp（开发库，staffApi/clientApi 云函数用）
-   - 只跑一个库会造成 drift 再次扩大
+5. **部署**：PR merge 后，对生产业务库跑 `npm run db:migrate`
+   - **5434/fengyu**（唯一生产业务库，admin + 全部云函数共用）
+   - 5433/fengyu_wxapp（冷备库）可选双跑，仅作灾备演练；不双跑不影响业务
+   - 详见下文「生产库与冷备库」小节
 
 ### 严格禁止
 
@@ -70,20 +70,24 @@ npm run db:studio     # Drizzle Studio 可视化管理
 - **已在远程 apply 过的 migration 要改**：**绝对不要**改它，写一个新的 migration 来修复
 - **发现 schema.ts 和实际库 drift**：不要再 psql 补漏，一律走 `db:generate` → review SQL → `db:migrate` 流程
 
-## 两库必须同步（2026-04-10 发现）
+## 生产库与冷备库（2026-04-25 修订）
 
-项目有两个 PG 实例（详见 `project_db_dual_env.md` memory）：
+项目过去存在两个独立 PG 实例（详见 `project_db_dual_env.md` memory）。**2026-04-24** env drift 主动修复后，admin 与全部云函数（staffApi / clientApi / payNotify）已统一连同一个业务库；5433 自此停止接收业务写入：
 
 | 角色 | 连接 | 使用方 |
 |------|------|--------|
-| 测试库 | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | admin web、`db/.env` 的 `DATABASE_URL`（`db:migrate` 默认目标） |
-| 开发库 | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | staffApi/clientApi 云函数（CloudBase 环境变量 `PG_CONNECTION_STRING`） |
+| **生产业务库** | `postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu` | admin web、staffApi、clientApi、payNotify、`db/.env` 的 `DATABASE_URL`（`db:migrate` 主目标） |
+| **冷备库** | `postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp` | 仅作历史镜像；不再接业务写入；schema 可选双跑作为灾备演练 |
 
-**任何 schema 变更都必须**在两库各跑一遍 `db:migrate`。本地 `db:migrate` 只打测试库（`db/.env` 里的 URL），必须**额外**手动跑一遍：
+**任何 schema 变更必须**在 5434 跑 `db:migrate`，本地 `db:migrate` 默认目标已经是它（`db/.env` 里的 URL）。
+
+如需把 schema 变更也镜像到 5433（作为灾备演练或保留快速回滚窗口）：
 
 ```bash
 DATABASE_URL="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" npm run db:migrate
 ```
+
+冷备库已自 2026-03-23 起几乎冻结，预计 1–2 周后彻底退役（参考 `notes/tickets/2026-04-25-staffapi-pg-connection-mismatch.md`）。在此之前，对它执行 migration 是**可选**操作，不双跑不影响业务。
 
 ## Baseline reset 历史
 

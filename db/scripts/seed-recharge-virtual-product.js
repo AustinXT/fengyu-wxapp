@@ -21,7 +21,7 @@
 
 const { Client } = require('pg')
 
-const DEFAULT_PG = 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp'
+const DEFAULT_PG = 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu'
 
 const PRODUCT_ID = 'prod-recharge-virtual'
 const SKU_ID = 'sku-recharge-virtual'
