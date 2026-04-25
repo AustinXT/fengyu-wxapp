@@ -88,9 +88,9 @@ describe('staffApi 入口', () => {
     const indexSrc = fs.readFileSync(path.join(staffApiDir, 'index.js'), 'utf-8')
 
     // 提取路由表中引用的所有 moduleName.functionName（支持别名路由）
-    // 匹配模式: require('./routes/xxx').yyy
+    // 匹配模式: require('./routes/xxx').yyy （文件名允许 a-z / 0-9 / 短横线）
     const referencedFunctions = new Set()
-    const refRe = /require\('\.\/routes\/(\w+)'\)\.(\w+)/g
+    const refRe = /require\('\.\/routes\/([\w-]+)'\)\.(\w+)/g
     let rm
     while ((rm = refRe.exec(indexSrc)) !== null) {
       referencedFunctions.add(`${rm[1]}.${rm[2]}`)
