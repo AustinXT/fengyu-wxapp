@@ -2,6 +2,7 @@
 
 > 所有业务统计指标的**唯一权威定义**。新增指标必须在此登记。
 > 字段格式：`表名.列名`；筛选条件标准缩写见底部。
+> **术语备注**：以下指标定义中出现的 `product_type='院装产品'` 字面量已于 2026-04-25 在 PG enum 中重命名为 `'家居产品'`，业务口径与代码同步。
 
 ---
 
@@ -57,8 +58,9 @@
 
 > **业绩 vs 收入区别**：业绩仅含销售部分（`sale_allocations`）；收入 = 销售 + 服务提成（`service_commissions`）。两者销售部分公式相同；收入因加服务提成而 ≥ 业绩。
 >
-> **产能员工范围**（`staff_wechat_users`）：`is_resigned=FALSE` ∩ `skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`），与 employeeCount 实时口径一致。
-> 排行榜不含推广师（无产能技能）和管理者（虽可能 skills 命中但通常 is_resigned=FALSE 同时实际开单/服务记录少），与人均口径分母对齐。
+> **产能员工范围**（`staff_wechat_users`）：`hired_at IS NOT NULL ∩ hired_at::date <= NOW()::date ∩ (resigned_at IS NULL OR resigned_at::date > NOW()::date) ∩ skills && ARRAY['美容师','养生师']` ∩ scope（`store_id`）。锚点为 **NOW()**（员工排行榜本就是"当前在职产能员工"的 period 业绩，不随 selectedDate 历史化；与 employeeCount selectedDate 历史化口径**字段一致但锚点不同**）。
+> 排行榜不含推广师（无产能技能）和管理者（虽可能 skills 命中但通常实际开单/服务记录少），与人均口径分母对齐。
+> `is_resigned` 列在 staffApi 查询路径已退役（仅保留作档案当前态冗余字段），与 §"门店状况" T3 决议一致。
 >
 > **范围外**：员工无"保有会员"指标（保有会员是顾客状态，归属门店）；员工独有"收入"指标（销售提成 + 服务提成合计），门店层无对应。
 
@@ -95,6 +97,7 @@
 > - 任意 `$date` 都可还原"那一天的保有会员数"，已与 `selectedDate` 对齐。
 > - 业务规则简化：合并「保有会员-稳定」(visits_90d≥1 ∧ total_visits≥6) 与「保有会员-有效」(visits_90d≥1 ∧ total_visits≤5) 为合并态「保有会员」= `visits_90d ≥ 1`（mgmt-dashboard 当前不区分细分子类）。
 > - 性能：30 店 × 800 单/月 × 60 月 ≈ 130 万行 service_orders，90 天窗口扫描 ~7.2 万行，P95 估 200-400ms（落在 mgmt-dashboard.summary 的 800ms slow warn 阈值内）。如 EXPLAIN ANALYZE 慢可追加部分索引 `idx_svc_orders_completed_date_client(service_date, client_user_id) WHERE status='已完成' AND client_user_id IS NOT NULL`。
+> - **子页 mgmt-traffic 仍读 customer_status 列**（5 档细分需要 total_visits 预聚合，cron 跑一次比每次请求都跑划算），与本指标口径同根但锚点不同（cron 03:00 vs NOW），详见 §3 注脚。
 
 ## 客量数据子页（注册 / 客流 / 客活 / 经营 / 新会员）
 
@@ -118,13 +121,16 @@
 | 总注册数（regTotal） | `COUNT(*)` | `client_wechat_users` | `created_at <= endDate` ∩ scope（`bound_store_id`）|
 | 仅注册用户（regOnly） | 同上 | 同上 | 加 `customer_type='流量客'` |
 | 体验客（regTrial） | 同上 | 同上 | 加 `customer_type='体验客'` |
-| 会员客（regMember） | 同上 | 同上 | 加 `customer_type='会员客'` |
+| 会员客（regMember） | `COUNT(*)` | `client_wechat_users` | `c.became_member_at IS NOT NULL` ∩ `c.became_member_at::date <= endDate` ∩ scope（`bound_store_id`）<br>_2026-04-25 起切到与 mgmt-dashboard.summary.memberCount 对齐口径，仅时间锚不同（period endDate vs $date 参数）_ |
 
 > **小美客存量** 不在 UI 注册情况区显示，但同口径可由 `customer_type='小美客'` 派生。
 > **历史化注意**：`created_at <= endDate` 仅是"截至该日期已存在"。`customer_type` 是当前快照，
 > 不能反映"那一天此人是否已升级到 X"——属于和门店状况相同的快照漂移问题，与
 > [`mgmt-dashboard-metrics-date-alignment`](../tickets/2026-04-25-mgmt-dashboard-metrics-date-alignment.md)
 > 同根，本期暂以快照口径出数 + 角标提示。
+> **regMember 例外（2026-04-25 起）**：会员客已切 `became_member_at::date <= endDate`，与首页 memberCount 严格对齐；
+> regOnly/regTrial/regTotal 仍为 `customer_type` 当前快照 + `created_at <= endDate`，本期不切——流量客/体验客是非终态，
+> 业务方对其历史化诉求弱；如有需要可后续新增 `became_trial_at` / `became_xiaomei_at` 时间戳字段统一切换。
 
 ### 2. 到店客流数据（区间维度）
 
@@ -148,6 +154,11 @@
 
 > 状态来自 `client_wechat_users.customer_status`（cronTask 每日 03:00 重算；T0 修复后仅对会员客有值）。
 > 区分"截面"与"区间"：5 项状态人数为截面快照；2 项客活与 3 项激活为区间统计。
+>
+> **与首页 retainedMemberCount 的关系**：retainedStable + retainedActive 在 cronTask 跑完后等价于首页 retainedMemberCount
+> （两者均等于 `visits_90d ≥ 1` ∩ `became_member_at <= 锚点`）。存在最大 24 小时滞后（cron 03:00 跑日级聚合 vs 主页 NOW() 实时聚合）。
+> 如差距远大于一天的新增到店量，请排查 cronTask 日志。本子页 5 档细分仍读 customer_status 列（因 5 档需要 total_visits
+> 预聚合，cron 跑一次比每次请求都跑划算）；首页只要合并态 `visits_90d ≥ 1`，适合实时聚合。两者口径同根、锚点不同。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
@@ -325,7 +336,10 @@ WHERE so.status='已完成'
 
 > **为何月维度派生用月末分母**：月度业绩/实耗等数据是整月维度（`date_trunc('month', ...)`），分母选「月末在职/在营」与「整月承担产出」的口径对齐，避免月初新开店/新员工尚未产生业绩却被当作分母拉低人均/店均。
 > **为何日维度派生与屏幕展示卡用 day 分母**：屏幕的"门店数 / 员工数"卡片展示的是 `selectedDate` 当日截面，对应的派生（店均会员、人均会员）用同一截面分母才能视觉自洽。
-> **派生字段全部前端 `buildDisplay` 计算，不进接口**：规避"加一个派生就改接口"的耦合。
+> **派生字段优先前端 `buildDisplay` 计算**：避免"加一个派生就改接口"的耦合。
+> **例外**：`monthlyAvgPerStore`（4 项营收/实耗的月店均）由后端 `mgmtDashboard.summary` 预算返回（自 T6 起既成事实），
+> 原因是该字段需要月末分母 `storeCount.month`，与后端聚合查询同事务内一次性算出可避免前端竞态；前端仅做格式化展示。
+> 其余派生（人均 ×11 项、占比、店均会员、月店均人数等）继续走前端 `buildDisplay`。
 
 ---
 
@@ -389,10 +403,13 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 人数 / 计数 / 单数 | 整数 + 千分位 `,` | `12,000`、`4,000`、`600` |
 | 金额（业绩 / 实耗 / 人均业绩 等） | 保留 2 位小数 + 千分位 `,` | `1,234,567.89`、`8,000.00` |
 | 占比 | 保留 2 位小数 + `%` | `33.33%` |
+| 日历单元格金额标签（紧凑） | 整数 + 千分位（同计数规则） | `12,000`、`600` |
 | 防除零 / 数据缺失 | 一律 `--`（不显示 0） | — |
 
-> 规则由 `fengyu-staff/miniprogram/utils/number.ts` 的 `formatAmount` / `formatCount` 实现。
+> 规则由 `fengyu-staff/miniprogram/utils/number.ts` 的 `formatAmount` / `formatCount` / `formatPercent` 实现。
 > 已废弃旧"≥10000 折叠为 X.X 万"规则。
+> 日历金额标签亦不再使用"≥1000 折叠为 X.Xk"规则，统一回归整数千分位（`formatCount`）。
+> 占比一律走 `formatPercent`，禁止前端硬编码 `.toFixed(2) + '%'`（`formatPercent` 期望输入 0-1 小数，内部乘 100）。
 
 ## 变更记录
 
@@ -417,6 +434,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
 | 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
+| 2026-04-25 | 跨接口/前后端口径审计补丁：(a) `payNotify` INSERT `sale_allocations` 补 `role_type` + `is_void` 列（按 `staff.skills[1]` 派生，兜底 `'美容师'`），新增 `db/scripts/backfill-allocations-roletype.js` 双库回填存量 NULL 行；(b) `service.js` INSERT `service_commissions` 显式写 `is_void=FALSE`（防 schema drift）；(c) `staffRanking.producer_employees` CTE 由 `is_resigned=FALSE` 切 `hired_at/resigned_at + NOW()` 锚点（`is_resigned` 在 staffApi 查询路径退役）；(d) `mgmt-traffic.regMember` 切 `became_member_at::date <= endDate` 与首页 `memberCount` 对齐；(e) §3 `retainedStable/retainedActive` 与首页 `retainedMemberCount` 等价关系与 24h 滞后明示；(f) §派生指标修订 `monthlyAvgPerStore` 由后端预算的现实；(g) 废弃 `mgmt-customer-detail` 日历"≥1000 → X.Xk"折叠规则；(h) 前端 `retainRate` / 持卡占比统一走 `formatPercent` |
 
 ---
 
