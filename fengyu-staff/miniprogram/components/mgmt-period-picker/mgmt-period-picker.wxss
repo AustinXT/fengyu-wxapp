@@ -1,0 +1,23 @@
+.mpp {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-tight);
+}
+
+.mpp-chip {
+  padding: 8rpx 32rpx;
+  border: 1rpx solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-card);
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.mpp-chip--active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+.mpp-chip:active { opacity: 0.7; }

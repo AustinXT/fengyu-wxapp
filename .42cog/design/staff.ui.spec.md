@@ -265,6 +265,59 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 ```
 统一 `ios` 线框风格。引用后**必须下载到 `images/` 目录**。
 
+### 3.9 管理层视图扩展规范
+
+管理层视图（manager / 总部 / 市场 层级账号视图，共 6 页：`pages/mgmt-dashboard`、`pages/sales-data`、`packageMgmt/mgmt-traffic-stats`、`packageMgmt/mgmt-product-cycle`、`packageMgmt/mgmt-customer-list`、`packageMgmt/mgmt-customer-detail`）在 §1 设计系统的基础上扩展以下规范。
+
+#### 3.9.1 新增 CSS Token（已在 `app.wxss` 定义）
+
+| Token | 值 | 用途 |
+|-------|-----|------|
+| `--radius-sm` | `8rpx` | 小角标 / chip / 规格标签 |
+| `--radius-md` | `12rpx` | 行容器 / 筛选触发器 |
+| `--radius-lg` | `16rpx` | **标准卡片**（dash-card / customer-card / treatment-card / refund-card 等全部统一引用） |
+| `--radius-pill` | `999rpx` | 胶囊：type-tab 等 |
+| `--shadow-card` | `0 2rpx 12rpx rgba(0,0,0,0.06)` | 卡片标准阴影（与 §1.4 一致） |
+| `--shadow-card-soft` | `0 2rpx 8rpx rgba(0,0,0,0.04)` | 轻阴影（gift-card / refund-card） |
+| `--gap-grid` | `16rpx` | 网格主 gap（卡片之间） |
+| `--gap-grid-tight` | `8rpx` | 网格紧凑 gap（4 列指标） |
+| `--color-divider-soft` | `#F0F0F0` | 行内细分割线，区别于 `--color-border: #E8E8E8` 卡片外框 |
+| `--color-bg-warm` | `#F5F2EE` | 暖米色（规格标签 / customer-detail 多处复用） |
+
+**禁止散落硬编码**：管理层 6 页 wxss 中 `#999/#666/#333/#fff/#f0f0f0/#f5f5f5/#fafafa/#ddd` 必须全部用 token 替换；Vant 组件 prop 中的颜色字符串（如 `<van-icon color="#999">`）属合理硬编码。
+
+#### 3.9.2 复用组件（`miniprogram/components/`）
+
+| 组件 | props | events | 用途 |
+|---|---|---|---|
+| `mgmt-stat-card` | `count`, `label`, `size: 'lg'\|'md'`, `variant: 'default'\|'primary'\|'success'\|'warning'\|'error'\|'info'\|'muted'`, `selected: boolean`, `unit: string`, `count-color: string`（覆写） | `tap` 透传 | 统一 KPI 卡片：count 大数字 + label 小标签，垂直布局，可点击/可选中 |
+| `mgmt-period-picker` | `options: [{label, value}]`, `value` | `change` → `{value}` | 时间段筛选 chip 组（边框 + 红填充式，圆角 `--radius-sm`） |
+| `mgmt-metric-tabs` | `options`, `value`, `columns: 3\|4` | `change` | 指标切换按钮组（3 列 / 4 列网格，灰底 + 红填充选中） |
+| `mgmt-data-state` | `state: 'loading'\|'empty'\|'error'\|'content'`, `loadingText`, `emptyText`, `errorText`, `retryText` | `retry` | **整页/整段三态壳**，错误态自带"重试"按钮；slot 用于内容态 |
+
+**特殊场景透传**：当业务规定的色值（如 customer-list 6 张统计卡的鲜亮绿 `#07c160` / 橙 `#ff8f1f` / 紫 `#a06abf`）与 spec 语义色不完全对应时，通过 `count-color` prop 透传字符串，避免视觉失真。
+
+**不再造的组件**：`.status-tag--{pending,success,progress,done,error}`（已在 §3.1 全局类）已能覆盖管理层所有徽章场景，customer-detail 等不得再自定义 `.refund-type--*` / `.direction--*` 重复类。
+
+#### 3.9.3 三态壳模式（强制）
+
+管理层 6 页所有"整页/整段数据"必须使用 `<mgmt-data-state>` 包裹，**不得再写散落的 `wx:if="loading"` + 文字版"加载中..."/"暂无数据"**。错误态必须支持 `bind:retry`，由页面 ts 重新触发数据加载。
+
+分页 footer 的小 loading（"加载更多 / 没有更多"）仍然手写 `<van-loading size="24rpx" />`，与三态壳分离。
+
+#### 3.9.4 Sticky 筛选区与下拉刷新
+
+- 6 页 `.json` 必须开 `"enablePullDownRefresh": true`，`.ts` 必须实现 `onPullDownRefresh()`，结束时调 `wx.stopPullDownRefresh()`。
+- 时间段 chip / 指标切换 / 搜索框 / type-tab 的容器必须 `position: sticky; top: 0; z-index: 10; background: var(--color-bg-page);`，长列表滚动时持续可见。
+- customer-detail 的 6 Tab 用 `<van-tabs sticky>` 自动吸顶。
+- `onPullDownRefresh` 仅刷新当前可见 Tab 的数据（如 customer-detail 按 `activeTab` 路由），不无脑全量刷新。
+
+#### 3.9.5 不强行对齐项（明确保留差异）
+
+- **sales-data 的下划线 period chip**（嵌在白色卡片内的二级筛选）与其他页面的填充式 chip 是**结构性差异**，不强行用 `mgmt-period-picker` 替换。
+- **customer-list 6 张统计卡的鲜亮色** 已通过 `count-color` 透传保留视觉，不强行映射成偏暗的 spec 语义色。
+- **`tier-badge--{fan,iron,diamond}`** 的三色（粉丝灰 / 铁粉橙 / 黑钻金）由 `staff.pr.spec.md §3.14` 强制规定，保留硬编码并加注释。
+
 ---
 
 ## 4. 页面规格
@@ -1236,6 +1289,23 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 - 服务提成：服务单完成时触发，基数 = 划卡单价
 - 两维度独立计算、独立累计
 
+### 4.20 管理层视图（6 页综览）
+
+管理层视图（manager / 总部 / 市场 层级账号）独立于门店视图 5 Tab，由 `mgmt-navbar` 提供 4 Tab 底部导航。所有页面共享 §3.9 的扩展规范（10 token + 4 组件 + 三态壳 + sticky 筛选 + pull-down）。
+
+| 页面 | 路径 | 角色 | 关键组件 |
+|---|---|---|---|
+| 管理层 Hub | `pages/mgmt-dashboard` | 4 Tab：数据中心 / 门店排行 / 员工排行 / 我的 | `mgmt-period-picker` × 2、`mgmt-metric-tabs` × 2、`mgmt-data-state` × 2、`mgmt-scope-picker` |
+| 销售数据 | `pages/sales-data` | 业绩与实耗 + 业绩与品项 3 维度汇总 | `mgmt-data-state`，**保留下划线 period chip**（结构性差异，§3.9.5） |
+| 客量数据 | `packageMgmt/mgmt-traffic-stats` | 5 Section：注册 / 客流 / 会员状态 / 经营 / 新会员 | `mgmt-period-picker`、`mgmt-stat-card` × N、`mgmt-data-state` |
+| 品项数据 | `packageMgmt/mgmt-product-cycle` | 4 段表格：持卡 / 体验 / 新增 / 复购 | `mgmt-period-picker`、`mgmt-data-state` × 4（持卡 / 周期数据各自独立） |
+| 顾客档案列表 | `packageMgmt/mgmt-customer-list` | 分页搜索（关键字 / 全量），50 条 / 页 | `mgmt-data-state` |
+| 顾客档案详情 | `packageMgmt/mgmt-customer-detail` | 6 Tab：详情 / 日历 / 购买 / 持卡 / 赠送 / 退换；`van-tabs sticky` | `mgmt-data-state`（顶层）；`van-tabs sticky` 自动吸顶 |
+
+**数据流**：scope（市场 / 门店）由 hub `mgmt-dashboard` 通过 `mgmt-scope-picker` 选择，路由参数透传到各子页（`scopeType` / `scopeId` / `scopeName`），子页只读不再展示 picker，页面内仅显示 `.mc-scope-bar` 提示条（背景 `var(--color-primary-light)`）。
+
+**身份控制**：每页 `onShow` 调 `canAccessManagement()` 校验，非管理层身份重定向回 `/pages/workbench/workbench`，避免门店店长误入。
+
 ---
 
 ## 5. 交互模式
@@ -1244,10 +1314,11 @@ https://img.icons8.com/ios/100/{color}/{icon-name}.png
 
 | 场景 | 方案 |
 |------|------|
-| 页面首次加载 | `van-loading type="spinner" color="#C0322A"` 居中 |
-| 列表加载更多 | 底部 `van-loading` + "加载中..." |
+| 页面首次加载 | `van-loading type="spinner" color="#C0322A"` 居中；管理层视图统一用 `<mgmt-data-state state="loading">`（§3.9.3） |
+| 列表加载更多 | 底部 `van-loading size="24rpx"` + "加载中..." |
 | 按钮操作中 | `van-button loading` 属性 |
-| 下拉刷新 | 无（B 端不需要） |
+| 下拉刷新 | **管理层视图全部启用**（`enablePullDownRefresh: true`）；门店视图按页酌情 |
+| 加载失败重试 | 管理层视图统一用 `<mgmt-data-state state="error" bind:retry>`（§3.9.3） |
 
 ### 5.2 反馈
 
