@@ -59,6 +59,8 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # node-cron 已带 timezone 参数；TZ 系统时区作双保险，避免日志时间戳混乱
       - TZ=Asia/Shanghai
+      # 主动告警通道：企微机器人 webhook，缺失则 STEP 5/6 退化为 console.warn（详见 src/cron/lib/notify.ts）
+      - WECHAT_BOT_WEBHOOK_URL=${WECHAT_BOT_WEBHOOK_URL:-}
     depends_on:
       postgres:
         condition: service_healthy

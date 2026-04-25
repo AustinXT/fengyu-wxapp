@@ -23,12 +23,18 @@ vi.mock('@/db', () => ({
   },
 }))
 
+const notifyOpsMock = vi.fn<(msg: string) => Promise<void>>()
+vi.mock('../lib/notify', () => ({
+  notifyOps: (msg: string) => notifyOpsMock(msg),
+}))
+
 import { auditPointsBalance } from '../steps/audit-points-balance'
 
 describe('cron-worker STEP 5 — auditPointsBalance', () => {
   beforeEach(() => {
     mockExecute.mockReset()
     mockDb.transaction.mockClear()
+    notifyOpsMock.mockClear()
   })
 
   it('A. 无偏差 → mismatchCount=0', async () => {
@@ -44,6 +50,8 @@ describe('cron-worker STEP 5 — auditPointsBalance', () => {
     expect(mockExecute).toHaveBeenCalledTimes(2)
     // 永不进 transaction
     expect(mockDb.transaction).not.toHaveBeenCalled()
+    // 无偏差 → 不外推 webhook
+    expect(notifyOpsMock).not.toHaveBeenCalled()
   })
 
   it('B. 有偏差 → 每条偏差写一条 operation_logs', async () => {
@@ -73,6 +81,12 @@ describe('cron-worker STEP 5 — auditPointsBalance', () => {
     expect(detailParams.some((d) => d.includes('"delta":50'))).toBe(true)
     // u2 delta = 30 - 50 = -20
     expect(detailParams.some((d) => d.includes('"delta":-20'))).toBe(true)
+
+    // 有偏差 → 调用一次 webhook，消息含 action 标签 + 偏差总数
+    expect(notifyOpsMock).toHaveBeenCalledTimes(1)
+    const msg = notifyOpsMock.mock.calls[0][0] as string
+    expect(msg).toContain('points.balanceMismatch')
+    expect(msg).toContain('偏差用户数：2')
   })
 
   it('C. 永远不更新 client_wechat_users.points_balance', async () => {

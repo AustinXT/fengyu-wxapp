@@ -26,6 +26,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
+import { notifyOps } from '../lib/notify'
 
 export interface RoleTypeNullCheck {
   table: string
@@ -78,6 +79,20 @@ export async function auditRoleTypeNulls(db: Db): Promise<RoleTypeNullsAuditResu
         VALUES ('dataIntegrity.roleTypeNull', 'table', ${check.table}, ${detail}::jsonb, 'cronTask', NOW())
       `)
     }
+  }
+
+  if (alertedCount > 0) {
+    const lines = checks.map(
+      (c) => `- ${c.table}.${c.column} NULL 行数：${c.nullCount}`,
+    )
+    await notifyOps(
+      [
+        '⚠️ [cron-worker] dataIntegrity.roleTypeNull',
+        ...lines,
+        '',
+        `时间：${new Date().toISOString()}`,
+      ].join('\n'),
+    )
   }
 
   return { alertedCount, checks }

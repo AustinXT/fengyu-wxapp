@@ -25,12 +25,18 @@ vi.mock('@/db', () => ({
   },
 }))
 
+const notifyOpsMock = vi.fn<(msg: string) => Promise<void>>()
+vi.mock('../lib/notify', () => ({
+  notifyOps: (msg: string) => notifyOpsMock(msg),
+}))
+
 import { auditRoleTypeNulls } from '../steps/audit-role-type-nulls'
 
 describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
   beforeEach(() => {
     mockExecute.mockReset()
     mockDb.transaction.mockClear()
+    notifyOpsMock.mockClear()
   })
 
   it('A. 双表 0 NULL → alertedCount=0，仅 1 次 SELECT', async () => {
@@ -46,6 +52,8 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     // 只 1 次（SELECT），无 INSERT
     expect(mockExecute).toHaveBeenCalledTimes(1)
     expect(mockDb.transaction).not.toHaveBeenCalled()
+    // 0 NULL → 不外推 webhook
+    expect(notifyOpsMock).not.toHaveBeenCalled()
   })
 
   it('B. sale_allocations > 0 NULL → 写 1 条 operation_logs', async () => {
@@ -71,6 +79,12 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     expect(detailParam).toBeDefined()
     expect(detailParam).toContain('"table":"sale_allocations"')
     expect(detailParam).toContain('"nullCount":5')
+
+    // alertedCount > 0 → webhook 推送一次（无论命中几张表都合并 1 次）
+    expect(notifyOpsMock).toHaveBeenCalledTimes(1)
+    const msg = notifyOpsMock.mock.calls[0][0] as string
+    expect(msg).toContain('dataIntegrity.roleTypeNull')
+    expect(msg).toContain('sale_allocations.role_type NULL 行数：5')
   })
 
   it('C. 双表都 > 0 NULL → 写 2 条 operation_logs', async () => {
@@ -90,6 +104,12 @@ describe('cron-worker STEP 6 — auditRoleTypeNulls', () => {
     const allParams = insertCalls.flatMap((c) => paramsOf(c[0]))
     expect(allParams).toContain('sale_allocations')
     expect(allParams).toContain('service_commissions')
+
+    // 双表命中也只推一次 webhook，消息含两行明细
+    expect(notifyOpsMock).toHaveBeenCalledTimes(1)
+    const msg = notifyOpsMock.mock.calls[0][0] as string
+    expect(msg).toContain('sale_allocations.role_type NULL 行数：3')
+    expect(msg).toContain('service_commissions.role_type NULL 行数：7')
   })
 
   it('D. 永远不 UPDATE 业务表（只读审计）', async () => {

@@ -14,6 +14,7 @@
 
 import { sql } from 'drizzle-orm'
 import type { Db } from '../run'
+import { notifyOps } from '../lib/notify'
 
 export interface PointsAuditResult {
   mismatchCount: number
@@ -57,6 +58,25 @@ export async function auditPointsBalance(db: Db): Promise<PointsAuditResult> {
     SELECT COUNT(*)::int AS cnt FROM client_wechat_users
   `)) as Array<{ cnt: number }>
   const checkedCount = Number(checkedRows[0]?.cnt ?? 0)
+
+  if (rows.length > 0) {
+    const previewLines = rows.slice(0, 5).map((r) => {
+      const cached = Number(r.cached_balance)
+      const expected = Number(r.expected_balance)
+      return `- ${r.user_id}: cached=${cached} expected=${expected} delta=${expected - cached}`
+    })
+    const more = rows.length > 5 ? `\n- ...（共 ${rows.length} 条偏差，仅展示前 5）` : ''
+    await notifyOps(
+      [
+        '⚠️ [cron-worker] points.balanceMismatch',
+        `偏差用户数：${rows.length} / 检查总数：${checkedCount}`,
+        '',
+        previewLines.join('\n') + more,
+        '',
+        `时间：${new Date().toISOString()}`,
+      ].join('\n'),
+    )
+  }
 
   return { mismatchCount: rows.length, checkedCount }
 }
