@@ -244,9 +244,9 @@ const SALE_ITEMS = [
 ]
 
 const SALE_ALLOCATIONS = [
-  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0002', allocationRatio: '0.80', totalAmount: '1440.00', isVoid: false },
-  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0004', allocationRatio: '0.20', totalAmount: '360.00', isVoid: false },
-  { saleItemId: 'XSLSH-WX-202603100002', employeeId: 'FY-260101-0002', allocationRatio: '1.00', totalAmount: '499.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0002', roleType: '美容师', allocationRatio: '0.80', totalAmount: '1440.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100001', employeeId: 'FY-260101-0004', roleType: '美容师', allocationRatio: '0.20', totalAmount: '360.00', isVoid: false },
+  { saleItemId: 'XSLSH-WX-202603100002', employeeId: 'FY-260101-0002', roleType: '美容师', allocationRatio: '1.00', totalAmount: '499.00', isVoid: false },
 ]
 
 const APPOINTMENTS = [

@@ -1,32 +1,33 @@
 #!/usr/bin/env node
 
 /**
- * backfill-allocations-roletype.js — 一次性回填 sale_allocations.role_type
+ * backfill-service-commissions-roletype.js — 一次性回填 service_commissions.role_type
  *
  * 背景：
- *   2026-04-25 起，员工绩效与提成统计开始按 sale_allocations.role_type 分流
- *   （销售/服务等角色），存量历史分配可能 role_type 为 NULL，需要一次性回填。
+ *   2026-04-25 审计发现：service_commissions.role_type 全表 NULL（双库各 616,210 行）。
+ *   原因：历史 migration 脚本（migrate-service-records.js / migrate-presale-services.js）
+ *   INSERT 路径未填 role_type；当前 staffApi service.complete 路径已正确填，但存量未补。
+ *
+ *   2026-04-25 起，员工绩效与提成统计开始按 role_type 分流（美容师/养生师/推广师），
+ *   存量历史记录需一次性回填。
  *
  * 数据来源（COALESCE 链）：
  *   1. staff_wechat_users.skills[1] — 员工首要角色（最准），按 employee_id 关联
- *   2. '美容师'                     — 兜底默认值（理论上应能覆盖大部分历史数据）
+ *   2. '美容师'                     — 兜底默认值
  *
  * 用法：
- *   # 5434 / fengyu（测试库，admin 用）
+ *   # 5434 / fengyu（生产业务库，admin + 全部云函数共用，必跑）
  *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu" \
- *     node db/scripts/backfill-allocations-roletype.js
+ *     node db/scripts/backfill-service-commissions-roletype.js --commit
  *
- *   # 5433 / fengyu_wxapp（开发库，云函数用）
+ *   # 5433 / fengyu_wxapp（冷备库，可选）
  *   PG_CONNECTION_STRING="postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp" \
- *     node db/scripts/backfill-allocations-roletype.js
+ *     node db/scripts/backfill-service-commissions-roletype.js --commit
  *
  *   # dry-run 模式（仅预览统计，不执行 UPDATE）
- *   node db/scripts/backfill-allocations-roletype.js
+ *   node db/scripts/backfill-service-commissions-roletype.js
  *
- *   # 实际写入（commit 模式）
- *   node db/scripts/backfill-allocations-roletype.js --commit
- *
- * 重要：5434/fengyu 是当前唯一生产业务库（必跑）；5433/fengyu_wxapp 已转冷备（可选，仅作灾备演练）。
+ * 重要：5434 是生产业务库（必跑）；5433 是冷备（可选，参见 db/CLAUDE.md「生产库与冷备库」）。
  *
  * 自检：执行后 `role_type IS NULL AND is_void = FALSE` 应等于 0。
  *
@@ -43,29 +44,29 @@ const PG_CONFIG = {
 const commit = process.argv.includes('--commit')
 
 function log(msg) {
-  console.log(`[BACKFILL-ALLOCATIONS-ROLETYPE] ${new Date().toISOString()} ${msg}`)
+  console.log(`[BACKFILL-SVC-COMM-ROLETYPE] ${new Date().toISOString()} ${msg}`)
 }
 
 const PREVIEW_SQL = `
 SELECT COUNT(*) FILTER (WHERE role_type IS NULL) AS null_count,
        COUNT(*)                                  AS total,
-       COALESCE(SUM(total_amount::numeric) FILTER (WHERE role_type IS NULL), 0) AS null_amount
-  FROM sale_allocations
+       COALESCE(SUM(commission_amount::numeric) FILTER (WHERE role_type IS NULL), 0) AS null_amount
+  FROM service_commissions
  WHERE is_void = FALSE
 `
 
 const BACKFILL_BY_SKILL_SQL = `
-UPDATE sale_allocations sa
+UPDATE service_commissions sc
    SET role_type = COALESCE(swu.skills[1], '美容师'),
        updated_at = NOW()
   FROM staff_wechat_users swu
- WHERE sa.employee_id = swu.employee_id
-   AND sa.role_type IS NULL
-   AND sa.is_void = FALSE
+ WHERE sc.employee_id = swu.employee_id
+   AND sc.role_type IS NULL
+   AND sc.is_void = FALSE
 `
 
 const BACKFILL_FALLBACK_SQL = `
-UPDATE sale_allocations
+UPDATE service_commissions
    SET role_type = '美容师',
        updated_at = NOW()
  WHERE role_type IS NULL
@@ -74,14 +75,14 @@ UPDATE sale_allocations
 
 const SELFCHECK_SQL = `
 SELECT COUNT(*) AS cnt
-  FROM sale_allocations
+  FROM service_commissions
  WHERE role_type IS NULL
    AND is_void = FALSE
 `
 
 const GROUP_STATS_SQL = `
 SELECT role_type, COUNT(*) AS cnt
-  FROM sale_allocations
+  FROM service_commissions
  WHERE is_void = FALSE
  GROUP BY role_type
  ORDER BY cnt DESC
@@ -101,7 +102,7 @@ async function main() {
   try {
     const preview = await pool.query(PREVIEW_SQL)
     const { null_count, total, null_amount } = preview.rows[0]
-    log(`未作废分配总行数: ${total}`)
+    log(`未作废提成总行数: ${total}`)
     log(`其中 role_type IS NULL 行数: ${null_count}`)
     log(`其中 role_type IS NULL 涉及金额: ${null_amount}`)
 

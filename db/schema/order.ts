@@ -205,7 +205,7 @@ export const saleAllocations = pgTable(
       .references(() => staffWechatUsers.employeeId),
     allocationRatio: numeric("allocation_ratio", { precision: 5, scale: 2 }).notNull(),
     /** 员工角色类型（美容师/养生师/推广师） */
-    roleType: varchar("role_type", { length: 20 }),
+    roleType: varchar("role_type", { length: 20 }).notNull(),
     /** 部门名称快照（用于按部门分组展示） */
     departmentName: varchar("department_name", { length: 100 }),
     /** 该员工最终分配金额（退款为负数） */

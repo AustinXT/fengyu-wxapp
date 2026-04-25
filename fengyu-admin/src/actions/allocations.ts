@@ -106,10 +106,21 @@ export async function saveAllocation(data: {
     return { success: false, message: '无权操作该订单的分配' }
   }
 
+  // role_type 兜底：缺省时按员工 skills[1] 派生（与 payNotify / staffApi 一致），
+  // 仍缺则回退 '美容师'（与 backfill-allocations-roletype.js 兜底一致）。
+  let resolvedRoleType: string = data.roleType || ''
+  if (!resolvedRoleType) {
+    const [staff] = await db.execute<{ skills: string[] | null }>(sql`
+      SELECT skills FROM staff_wechat_users WHERE employee_id = ${data.employeeId} LIMIT 1
+    `) as unknown as Array<{ skills: string[] | null }>
+    const skills = Array.isArray(staff?.skills) ? staff.skills : []
+    resolvedRoleType = skills[0] || '美容师'
+  }
+
   await db.insert(saleAllocations).values({
     saleItemId: data.saleItemId,
     employeeId: data.employeeId,
-    roleType: data.roleType || null,
+    roleType: resolvedRoleType,
     allocationRatio: data.allocationRatio,
     totalAmount: data.totalAmount,
     departmentName: data.departmentName || null,

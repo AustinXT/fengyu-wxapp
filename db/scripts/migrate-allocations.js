@@ -33,7 +33,7 @@ const MSSQL_CONFIG = {
 }
 
 const PG_CONFIG = {
-  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5433/fengyu_wxapp',
+  connectionString: process.env.DATABASE_URL || 'postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu',
   max: 5,
 }
 
@@ -103,21 +103,24 @@ async function loadLookups(pgPool) {
   }
   log(`  订单-项目映射：${Object.keys(orderItemsMap).length} 个订单`)
 
-  // 有效员工 ID 集合
+  // 有效员工 ID 集合 + skills 映射（用于派生 role_type）
   const empRes = await pgPool.query(
-    "SELECT employee_id FROM staff_wechat_users WHERE employee_id IS NOT NULL"
+    "SELECT employee_id, skills FROM staff_wechat_users WHERE employee_id IS NOT NULL"
   )
   const validEmployees = new Set(empRes.rows.map(r => r.employee_id))
+  const employeeSkills = new Map(
+    empRes.rows.map(r => [r.employee_id, Array.isArray(r.skills) ? r.skills : []])
+  )
   log(`  有效员工：${validEmployees.size} 个`)
 
-  return { orderItemsMap, validEmployees }
+  return { orderItemsMap, validEmployees, employeeSkills }
 }
 
 // ─── 3. 生成 PG 分配记录 ───────────────────────────────────
 
 function generateAllocations(wfAllocations, lookups) {
-  const { orderItemsMap, validEmployees } = lookups
-  const pgAllocations = [] // { saleItemId, employeeId, allocationRatio, totalAmount, departmentName }
+  const { orderItemsMap, validEmployees, employeeSkills } = lookups
+  const pgAllocations = [] // { saleItemId, employeeId, roleType, allocationRatio, totalAmount, departmentName }
 
   const stats = {
     total: wfAllocations.length,
@@ -160,6 +163,10 @@ function generateAllocations(wfAllocations, lookups) {
       continue
     }
 
+    // role_type 派生：员工 skills[0]，缺省回退 '美容师'（与 backfill / payNotify / staffApi 一致）
+    const skills = employeeSkills.get(employeeId) || []
+    const roleType = skills[0] || '美容师'
+
     if (items.length === 1) {
       // 单 item 订单：直接映射
       stats.singleItemOrders++
@@ -171,6 +178,7 @@ function generateAllocations(wfAllocations, lookups) {
       pgAllocations.push({
         saleItemId: item.saleItemId,
         employeeId,
+        roleType,
         allocationRatio: ratio,
         totalAmount,
         departmentName: deptName,
@@ -186,6 +194,7 @@ function generateAllocations(wfAllocations, lookups) {
         pgAllocations.push({
           saleItemId: items[0].saleItemId,
           employeeId,
+          roleType,
           allocationRatio: 1.00,
           totalAmount,
           departmentName: deptName,
@@ -215,6 +224,7 @@ function generateAllocations(wfAllocations, lookups) {
           pgAllocations.push({
             saleItemId: item.saleItemId,
             employeeId,
+            roleType,
             allocationRatio: ratio,
             totalAmount: itemAlloc,
             departmentName: deptName,
@@ -269,15 +279,15 @@ async function batchUpsert(pgPool, allocations, dryRun) {
       await client.query('BEGIN')
 
       const rows = batchRows.map(r => [
-        r.saleItemId, r.employeeId, r.allocationRatio, r.totalAmount, false, r.departmentName,
+        r.saleItemId, r.employeeId, r.roleType, r.allocationRatio, r.totalAmount, false, r.departmentName,
       ])
-      const mv = buildMultiRowValues(rows, 6)
+      const mv = buildMultiRowValues(rows, 7)
       const res = await client.query(`
         INSERT INTO sale_allocations (
-          sale_item_id, employee_id, allocation_ratio, total_amount,
+          sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
           is_void, department_name
         ) VALUES ${mv.placeholders}
-        ON CONFLICT (sale_item_id, employee_id) WHERE is_void = false
+        ON CONFLICT (sale_item_id, employee_id, role_type) WHERE is_void = false
         DO UPDATE SET
           allocation_ratio = EXCLUDED.allocation_ratio,
           total_amount = EXCLUDED.total_amount,

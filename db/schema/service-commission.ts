@@ -24,7 +24,7 @@ export const serviceCommissions = pgTable(
       .notNull()
       .references(() => staffWechatUsers.employeeId),
     /** 员工角色类型（美容师/养生师/推广师） */
-    roleType: varchar('role_type', { length: 20 }),
+    roleType: varchar('role_type', { length: 20 }).notNull(),
     /** 分配比例（0.10~1.00，整十百分比） */
     allocationRatio: numeric('allocation_ratio', { precision: 5, scale: 2 }),
     /** 提成比例（从提成矩阵 order_type='服务单' 获取，无匹配规则时为 0） */
