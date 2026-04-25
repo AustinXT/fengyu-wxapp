@@ -1,0 +1,149 @@
+/* packageMgmt/mgmt-traffic-stats — 客量数据子页样式 */
+
+.tf-page {
+  padding: 24rpx;
+  padding-bottom: 80rpx;
+  background: #f5f5f5;
+  min-height: 100vh;
+}
+
+.tf-filter {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  padding-bottom: 24rpx;
+}
+
+.tf-chip {
+  padding: 8rpx 32rpx;
+  border: 1rpx solid #ddd;
+  border-radius: 8rpx;
+  font-size: 26rpx;
+  background: #fff;
+  color: #333;
+}
+
+.tf-chip.active {
+  background: #C0322A;
+  border-color: #C0322A;
+  color: #fff;
+  font-weight: 600;
+}
+
+.tf-scope {
+  margin-left: auto;
+  color: #666;
+  font-size: 24rpx;
+}
+
+.tf-section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #C0322A;
+  text-align: center;
+  margin: 32rpx 0 16rpx;
+  padding-top: 16rpx;
+  border-top: 2rpx solid #f0f0f0;
+}
+
+.tf-grid-4 {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8rpx;
+  margin-bottom: 8rpx;
+}
+
+.tf-cell {
+  background: #fff;
+  border-radius: 12rpx;
+  padding: 20rpx 12rpx;
+  text-align: center;
+}
+
+.tf-cell-lbl {
+  color: #999;
+  font-size: 22rpx;
+}
+
+.tf-cell-val {
+  color: #333;
+  font-weight: 600;
+  font-size: 28rpx;
+  margin-top: 8rpx;
+  display: block;
+}
+
+.tf-row {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 24rpx;
+  background: #fff;
+  border-radius: 12rpx;
+  margin-bottom: 8rpx;
+}
+
+.tf-row .lbl {
+  color: #666;
+  font-size: 26rpx;
+  flex: 1;
+}
+
+.tf-row .val {
+  color: #333;
+  font-weight: 600;
+  font-size: 28rpx;
+}
+
+.tf-row-mid {
+  flex: 0 0 auto;
+  margin-left: 24rpx;
+  margin-right: 16rpx;
+}
+
+.tf-status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12rpx;
+}
+
+.tf-mark {
+  color: #C0322A;
+  font-size: 22rpx;
+  margin-left: 4rpx;
+}
+
+.tf-note {
+  text-align: right;
+  color: #999;
+  font-size: 22rpx;
+  margin-top: 8rpx;
+}
+
+.tf-loading,
+.tf-empty {
+  padding: 80rpx 0;
+  text-align: center;
+  color: #999;
+  font-size: 26rpx;
+}
+
+.tf-avg-ticket {
+  background: #fff;
+  border-radius: 12rpx;
+  padding: 24rpx;
+  text-align: center;
+  margin-top: 16rpx;
+}
+
+.tf-avg-ticket .lbl {
+  color: #999;
+  font-size: 26rpx;
+}
+
+.tf-avg-ticket .val {
+  color: #C0322A;
+  font-size: 40rpx;
+  font-weight: 700;
+  margin-top: 8rpx;
+  display: block;
+}

@@ -162,7 +162,7 @@ interface TrafficData {
   status: {
     retainedStable: number
     retainedActive: number
-    dormantWarn: number               // schema='预警沉睡'
+    dormantWarn: number               // schema='沉睡'
     dormantFrozen: number
     dormantDeep: number
     activeOnce: number
@@ -247,7 +247,7 @@ metrics.md 已同步更新（"客量数据子页"章节，43 项指标 + 7 决�
 | **D-3（D-newMemberSpend）** | "新增会员对应消费"时态 | **A：区间内全部消费**。不区分成员前后 |
 | **D-4** | "会员被经营情况"会员客时态 | **A：当前快照**。T2 已历史化，会员被经营子句 T2 后切 `becameMemberAt::date <= endDate`（独立 follow-up）|
 | **D-5（D-trafficSessionsScope）** | section 2"项目数（扣卡次数）"口径 | **B：限定 `sales_category IN ('自销自耗','他销自耗')`**。与首页项目数完全对齐 |
-| **D-6（D-act-status-mapping）** | UI 沉睡 vs schema 预警沉睡 | **B：改 schema 枚举重命名**。独立 ticket [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md)；本子页本期上线时该 ticket 若未落地，前端 i18n 兜底，schema 字面量保持 `'预警沉睡'` |
+| **D-6（D-act-status-mapping）** | UI 沉睡 vs schema 预警沉睡 | **B：改 schema 枚举重命名**。已对齐（migration 0013）— 独立 ticket [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md) 已落地，schema 字面量已切换为 `'沉睡'` |
 | **D-7（D-package-path）** | 新页面分包 | **A：新建 `packageMgmt`**。后续 sales / products / customers 3 个 mgmt 子页同分包 |
 
 ---
@@ -292,7 +292,7 @@ SELECT COUNT(*) FROM member_spend;  -- 应等于 6 桶人数之和
 
 - 注册情况 / 会员被经营情况的"customer_type 历史化"切换（T2 已落地，但本子页"分母会员客时态"切换 `becameMemberAt::date <= endDate` 作为独立 follow-up，避免本 ticket 范围膨胀）
 - 销售数据 / 品项数据 / 顾客档案 3 个 mgmt-dashboard 入口（独立 ticket）
-- schema customer_status '预警沉睡'→'沉睡' 重命名（**独立 ticket** [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md)，与本子页解耦推进）
+- schema customer_status 枚举重命名（**独立 ticket** [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md)，已对齐（migration 0013），与本子页解耦推进）
 - 数字格式化的 `formatPercent` 工具函数（如 `utils/number.ts` 没有，本 ticket 内补一个）
 
 ---
