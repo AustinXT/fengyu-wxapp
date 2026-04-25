@@ -641,7 +641,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.retainedMemberCount).toBe(3)
   })
 
-  test('employeeCount SQL 命中 is_resigned=FALSE ∩ skills && ARRAY[美容师,养生师]', async () => {
+  test('employeeCount SQL 形态：hired_at IS NOT NULL ∩ hired_at::date <= $1::date ∩ (resigned_at IS NULL OR resigned_at::date > $1::date) ∩ skills && ARRAY[美容师,养生师]（T3 历史化口径，2026-04-25）', async () => {
     setupCensusMocks({ employeeCount: 8 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -650,9 +650,86 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .map((c) => c[0])
       .find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toBeDefined()
-    expect(empSql).toContain('s.is_resigned = FALSE')
+    // T3 新口径：用 hired_at + resigned_at 时间戳，不再依赖 is_resigned 实时快照
+    expect(empSql).toMatch(/s\.hired_at\s+IS\s+NOT\s+NULL/)
+    expect(empSql).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empSql).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
     expect(empSql).toMatch(/s\.skills\s*&&\s*ARRAY\['美容师','养生师'\]::text\[\]/)
+    // 旧口径：is_resigned = FALSE 不应再出现
+    expect(empSql).not.toMatch(/is_resigned\s*=\s*FALSE/)
     expect(ctx.result.employeeCount).toBe(8)
+  })
+
+  test('employeeCount 历史日期：date=2025-01-15 时 SQL 仍是 hired_at/resigned_at 守卫形态，参数透传 date', async () => {
+    setupCensusMocks({ employeeCount: 6 })
+    const ctx = makeHqCtx({ date: '2025-01-15', scopeType: 'all' })
+    await summary(ctx)
+
+    const empCall = pg.query.mock.calls.find((c) => /FROM staff_wechat_users/.test(c[0]))
+    expect(empCall).toBeDefined()
+    expect(empCall[0]).toMatch(/s\.hired_at::date\s*<=\s*\$1::date/)
+    expect(empCall[0]).toMatch(/s\.resigned_at\s+IS\s+NULL\s+OR\s+s\.resigned_at::date\s*>\s*\$1::date/)
+    expect(empCall[1]).toEqual(['2025-01-15'])
+    expect(ctx.result.employeeCount).toBe(6)
+  })
+
+  test('storeCount SQL 形态：FROM stores JOIN org_nodes ∩ opening_date::date <= $date ∩ (closed_at IS NULL OR closed_at::date > $date)（T4 历史化口径，2026-04-25）', async () => {
+    setupCensusMocks({ storeCount: 12 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
+    await summary(ctx)
+
+    const storeSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find(
+        (s) =>
+          /FROM stores s\b/.test(s) &&
+          /JOIN org_nodes o\b/.test(s) &&
+          /COUNT\(\*\)/.test(s),
+      )
+    expect(storeSql).toBeDefined()
+    expect(storeSql).toContain("o.type = '门店'")
+    expect(storeSql).toMatch(/s\.opening_date\s+IS\s+NOT\s+NULL/)
+    expect(storeSql).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+    expect(storeSql).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
+    // 旧口径：裸 FROM org_nodes 不应再出现
+    expect(storeSql).not.toMatch(/FROM org_nodes WHERE type = '门店'/)
+    expect(ctx.result.storeCount).toBe(12)
+  })
+
+  test('storeCount 历史日期：date=2025-01-15 时 SQL 含 $1::date 守卫，参数透传 date', async () => {
+    setupCensusMocks({ storeCount: 8 })
+    const ctx = makeHqCtx({ date: '2025-01-15', scopeType: 'all' })
+    await summary(ctx)
+
+    const storeCall = pg.query.mock.calls.find(
+      (c) =>
+        /FROM stores s\b/.test(c[0]) &&
+        /JOIN org_nodes o\b/.test(c[0]) &&
+        /COUNT\(\*\)/.test(c[0]),
+    )
+    expect(storeCall).toBeDefined()
+    expect(storeCall[0]).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+    expect(storeCall[1]).toEqual(['2025-01-15'])
+    expect(ctx.result.storeCount).toBe(8)
+  })
+
+  test('storeCount scopeType=market：SQL 含 o.parent_id = $1 ∩ opening_date/closed_at 走 $2::date', async () => {
+    setupCensusMocks({ storeCount: 3 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
+    await summary(ctx)
+
+    const storeCall = pg.query.mock.calls.find(
+      (c) =>
+        /FROM stores s\b/.test(c[0]) &&
+        /JOIN org_nodes o\b/.test(c[0]) &&
+        /COUNT\(\*\)/.test(c[0]),
+    )
+    expect(storeCall).toBeDefined()
+    expect(storeCall[0]).toContain('o.parent_id = $1')
+    expect(storeCall[0]).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
+    expect(storeCall[0]).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
+    expect(storeCall[1]).toEqual(['mkt-A', '2026-04-25'])
+    expect(ctx.result.storeCount).toBe(3)
   })
 
   // T2 起 memberCount SQL 形态识别：FROM client_wechat_users + became_member_at（且非 newMembers/retainedMember）
@@ -674,9 +751,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // T2 起 memberCount 用 $1=date + $2=scopeId
     expect(memberSql).toContain('o.parent_id = $2')
 
+    // T3 起 employeeCount 用 $1=date + $2=scopeId（参数顺序：[date, ...scopeParams]）
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toMatch(/s\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(empSql).toContain('o.parent_id = $1')
+    expect(empSql).toContain('o.parent_id = $2')
   })
 
   test('scopeType=store：staff/client 截面 SQL 走单值过滤', async () => {
@@ -692,12 +770,13 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // SQL 内不应有 stores 子查询风格的 IN(SELECT ...)（虽然 became_member_at IS NOT NULL 不算 IN）
     expect(memberSql).not.toMatch(/bound_store_id\s+IN\s*\(/)
 
+    // T3 起 employeeCount 用 $1=date + $2=scopeId
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
-    expect(empSql).toContain('s.store_id = $1')
+    expect(empSql).toContain('s.store_id = $2')
     expect(empSql).not.toMatch(/IN\s*\(/)
   })
 
-  test('T2 后 memberCount 已依赖 date（$1::date 出现），仅 employeeCount 仍是无 date 截面', async () => {
+  test('T2/T3 后 memberCount 与 employeeCount 都依赖 date（$1::date 出现），且都不走 date_trunc 月份聚合', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -709,9 +788,10 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     // 但仍不应出现 date_trunc（不是按月份窗口聚合）
     expect(memberSql).not.toMatch(/date_trunc/)
 
+    // T3 历史化：employeeCount 内也出现 $1::date 守卫（hired_at/resigned_at）
     const empSql = pg.query.mock.calls.map((c) => c[0]).find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toBeDefined()
-    expect(empSql).not.toMatch(/::date/)
+    expect(empSql).toMatch(/\$1::date/)
     expect(empSql).not.toMatch(/date_trunc/)
   })
 

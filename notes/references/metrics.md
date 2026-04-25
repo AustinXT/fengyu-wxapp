@@ -22,7 +22,7 @@
 |------|------|--------|----------|
 | 客流 | `COUNT(DISTINCT client_user_id)` | `service_orders.client_user_id` | `status='已完成'` ∩ `client_user_id IS NOT NULL` ∩ `[service_date]` |
 | 客量 | `COUNT(*)` | `service_orders` | `status='已完成'` ∩ `[service_date]` |
-| 新会员 | `COUNT(*)` | `client_wechat_users` | `old_member_level IS NULL` ∩ `member_level IS NOT NULL` ∩ `[member_level_upgraded_at]` |
+| 新会员 | `COUNT(*)` | `client_wechat_users` | `became_member_at IS NOT NULL` ∩ `[became_member_at]` |
 | 项目数 | `SUM(session_used)` | `service_items.session_used` | JOIN service_orders；`status='已完成'` ∩ `service_items.sales_category IN ('自销自耗','他销自耗')` ∩ `[service_date]` |
 
 > **项目数为何只算「自销自耗 / 他销自耗」**：项目数衡量的是"本店实际承接的服务次数"。`他销他耗` / `生态合作` 属于跨店或合作机构消耗，不计入本店项目数；与提成口径一致。
