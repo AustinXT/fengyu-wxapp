@@ -105,6 +105,14 @@ const routes = {
   'mgmtDashboard.summary':     () => require('./routes/mgmt-dashboard').summary,
   'mgmtDashboard.storeRanking': () => require('./routes/mgmt-dashboard').storeRanking,
   'mgmtDashboard.staffRanking': () => require('./routes/mgmt-dashboard').staffRanking,
+  'mgmtDashboard.salesData':    () => require('./routes/mgmt-dashboard').salesData,
+
+  // 管理层 - 品项数据子页
+  'mgmtProduct.cardHolders': () => require('./routes/mgmt-product').cardHolders,
+  'mgmtProduct.cycleStats':  () => require('./routes/mgmt-product').cycleStats,
+
+  // 管理层 - 客量数据子页
+  'mgmtTraffic.summary':       () => require('./routes/mgmt-traffic').summary,
 }
 
 /**

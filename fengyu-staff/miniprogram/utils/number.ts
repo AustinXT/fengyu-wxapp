@@ -23,3 +23,9 @@ export function formatCount(value: number | null | undefined): string {
   if (isInvalid(value)) return '--'
   return Math.round(value as number).toLocaleString('en-US')
 }
+
+/** 占比格式化：保留 2 位 + %（输入为 0-1 小数） */
+export function formatPercent(value: number | null | undefined): string {
+  if (isInvalid(value)) return '--'
+  return ((value as number) * 100).toFixed(2) + '%'
+}

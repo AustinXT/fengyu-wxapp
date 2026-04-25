@@ -6,7 +6,8 @@
     "pages/service/service",
     "pages/customer-list/customer-list",
     "pages/profile/profile",
-    "pages/mgmt-dashboard/mgmt-dashboard"
+    "pages/mgmt-dashboard/mgmt-dashboard",
+    "pages/sales-data/sales-data"
   ],
   "subPackages": [
     {
@@ -40,6 +41,14 @@
         "appointment-detail/appointment-detail",
         "product-detail/product-detail",
         "unbind-requests/unbind-requests"
+      ]
+    },
+    {
+      "root": "packageMgmt",
+      "name": "管理层子页",
+      "pages": [
+        "mgmt-traffic-stats/mgmt-traffic-stats",
+        "mgmt-product-cycle/mgmt-product-cycle"
       ]
     }
   ],

@@ -392,8 +392,17 @@ Page({
 
   onEntryTap(e: WechatMiniprogram.BaseEvent) {
     const entry = (e.currentTarget.dataset as { entry?: string }).entry
+    if (entry === 'traffic') {
+      const { scope } = this.data
+      const params = [
+        `scopeType=${scope.scopeType}`,
+        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      ].filter(Boolean).join('&')
+      wx.navigateTo({ url: `/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats?${params}` })
+      return
+    }
     const labelMap: Record<string, string> = {
-      traffic: '客量数据',
       sales: '销售数据',
       products: '品项数据',
       customers: '顾客档案',
