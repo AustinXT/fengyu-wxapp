@@ -10,6 +10,7 @@ interface RoleBinding {
   role: string
   scopeId: string
   scopeType: string // 总部 / 市场 / 门店 / 部门
+  scopeName: string
 }
 
 interface ScopedStore {

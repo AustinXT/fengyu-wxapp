@@ -104,6 +104,36 @@ describe('auth.login', () => {
       expect.any(Array)
     )
   })
+
+  test('已注册员工返回的 roleBindings 含 scopeName 字段（mgmt-profile 用）', async () => {
+    pg.query
+      .mockResolvedValueOnce([{
+        employee_id: 'emp-mgmt-001',
+        phone: '13900001111',
+        name: '王总',
+        position_name: '总经理',
+        is_resigned: false,
+        skills: [],
+        store_id: null,
+        store_name: null,
+        market_name: null,
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // UPDATE last_login_at
+      .mockResolvedValueOnce([
+        { role: 'admin', scope_id: 'org-hq', scope_type: '总部', scope_name: '凤御总部' },
+        { role: 'manager', scope_id: 'org-store-1', scope_type: '门店', scope_name: '龙岗店' },
+      ])  // queryRoleBindings
+      .mockResolvedValueOnce([])  // expandScopeStoreIds 内部查询
+      .mockResolvedValueOnce([])  // fetchScopedStores
+
+    const ctx = { event: {}, context: {}, auth: {}, result: null }
+    await authRoutes.login(ctx)
+
+    expect(ctx.result.roleBindings).toEqual([
+      { role: 'admin', scopeId: 'org-hq', scopeType: '总部', scopeName: '凤御总部' },
+      { role: 'manager', scopeId: 'org-store-1', scopeType: '门店', scopeName: '龙岗店' },
+    ])
+  })
 })
 
 describe('auth.bindPhone', () => {

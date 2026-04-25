@@ -53,7 +53,7 @@ async function generateEmployeeId(client) {
 async function queryRoleBindings(employeeId) {
   if (!employeeId) return []
   const rows = await pg.query(
-    `SELECT pr.role, pr.scope_id, o.type AS scope_type
+    `SELECT pr.role, pr.scope_id, o.type AS scope_type, o.name AS scope_name
      FROM permission_roles pr
      LEFT JOIN org_nodes o ON o.id = pr.scope_id
      WHERE pr.employee_id = $1`,
@@ -63,6 +63,7 @@ async function queryRoleBindings(employeeId) {
     role: r.role,
     scopeId: r.scope_id,
     scopeType: r.scope_type,
+    scopeName: r.scope_name,
   }))
 }
 

@@ -37,7 +37,7 @@ App<IAppOption>({
         boundStoreId: 'store-001',
         staffLevel: 'store_manager',
         roleBindings: [
-          { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+          { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店', scopeName: '南商市场·凤御旗舰店' },
         ],
         availableLoginLevels: ['store'],
         scopedStores: [{ storeId: 'store-001', storeName: '南商市场·凤御旗舰店' }],
