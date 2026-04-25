@@ -1,0 +1,202 @@
+/* packageMgmt/mgmt-customer-list/mgmt-customer-list.wxss */
+.hint-wrap { padding: 80rpx 32rpx; text-align: center; }
+.hint-text { font-size: 26rpx; color: #999; }
+
+/* scope 提示条 */
+.mc-scope-bar {
+  padding: 16rpx 32rpx;
+  background: var(--color-primary-light, #FFF0EE);
+  font-size: 24rpx;
+  color: var(--color-text-secondary, #666);
+}
+.mc-scope-label { color: #999; }
+.mc-scope-value {
+  color: var(--color-primary, #C0322A);
+  font-weight: 600;
+  margin-left: 8rpx;
+}
+
+/* 统计卡片 */
+.stats-section {
+  padding: 24rpx 24rpx 8rpx;
+  background: #f5f5f5;
+}
+.stats-row {
+  display: flex;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+.stat-card {
+  flex: 1;
+  border-radius: 16rpx;
+  padding: 24rpx 16rpx;
+  text-align: center;
+  background: #fff;
+}
+.stat-count {
+  font-size: 44rpx;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 8rpx;
+}
+.stat-label {
+  font-size: 22rpx;
+  color: #666;
+  line-height: 1.3;
+}
+.stat-active .stat-count { color: #07c160; }
+.stat-warning .stat-count { color: #ff8f1f; }
+.stat-lost .stat-count { color: #ee0a24; }
+.stat-sleep .stat-count { color: #9b9b9b; }
+.stat-birthday .stat-count { color: var(--color-primary); }
+.stat-birthday-next .stat-count { color: #a06abf; }
+
+/* 选中态 */
+.stat-card--selected {
+  border: 2rpx solid var(--color-primary);
+  background: var(--color-primary-light) !important;
+}
+
+/* ===== 统计栏（全部/会员客/流量客） ===== */
+.type-tabs {
+  display: flex;
+  gap: 12rpx;
+  padding: 16rpx 24rpx;
+  background: #FFFFFF;
+}
+
+.type-tab {
+  flex: 1;
+  text-align: center;
+  font-size: 24rpx;
+  padding: 14rpx 0;
+  border-radius: 32rpx;
+  background: #F5F5F5;
+  color: var(--color-text-secondary);
+}
+
+.type-tab--active {
+  background: var(--color-primary);
+  color: #FFFFFF;
+  font-weight: 600;
+}
+
+/* 加载更多 */
+.loading-more {
+  display: flex;
+  justify-content: center;
+  padding: 24rpx;
+}
+
+/* ===== 标签筛选行 ===== */
+.tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+  padding: 16rpx 24rpx;
+}
+
+/* ===== 顾客卡片 ===== */
+.customer-card {
+  background: #FFFFFF;
+  border-radius: 16rpx;
+  padding: 28rpx;
+  margin: 0 24rpx 20rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0,0,0,0.06);
+  display: flex;
+  align-items: flex-start;
+  gap: 20rpx;
+}
+
+.customer-avatar {
+  width: 80rpx;
+  height: 80rpx;
+  border-radius: 50%;
+  background: var(--color-primary-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.customer-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.customer-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-bottom: 8rpx;
+}
+
+.customer-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.customer-phone {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  display: block;
+  margin-bottom: 6rpx;
+}
+
+.customer-store {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  display: block;
+  margin-bottom: 6rpx;
+}
+
+.customer-recent {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+/* ===== 头像文字 ===== */
+.customer-avatar-text {
+  font-size: 32rpx;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.customer-list {
+  padding-top: 8rpx;
+}
+
+/* ===== VIP 徽章 ===== */
+.vip-badge {
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: 16rpx;
+  background: #FFF0EE;
+  color: var(--color-primary);
+  border: 1rpx solid rgba(192, 50, 42, 0.3);
+}
+
+/* ===== 分类徽章 ===== */
+.tier-badge {
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: 16rpx;
+}
+
+.tier-badge--fan {
+  background: #F0F0F0;
+  color: #888888;
+}
+
+.tier-badge--iron {
+  background: #FFF3E0;
+  color: #D4820A;
+}
+
+.tier-badge--diamond {
+  background: #1A1A1A;
+  color: #FFD700;
+}

@@ -1,0 +1,108 @@
+<!-- packageMgmt/mgmt-customer-list/mgmt-customer-list.wxml -->
+<view class="container">
+
+  <!-- scope 提示条（只读，scope 在 hub 修改） -->
+  <view class="mc-scope-bar">
+    <text class="mc-scope-label">数据范围：</text>
+    <text class="mc-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  </view>
+
+  <!-- 客户分类统计卡片 -->
+  <view class="stats-section">
+    <view class="stats-row">
+      <view class="stat-card stat-active {{activeTag === 'active' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="active">
+        <view class="stat-count">{{stats.active}}</view>
+        <view class="stat-label">活跃客户</view>
+      </view>
+      <view class="stat-card stat-warning {{activeTag === 'atRisk' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="atRisk">
+        <view class="stat-count">{{stats.atRisk}}</view>
+        <view class="stat-label">即将流失</view>
+      </view>
+      <view class="stat-card stat-lost {{activeTag === 'lost' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="lost">
+        <view class="stat-count">{{stats.lost}}</view>
+        <view class="stat-label">流失客户</view>
+      </view>
+    </view>
+    <view class="stats-row">
+      <view class="stat-card stat-sleep {{activeTag === 'sleeping' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="sleeping">
+        <view class="stat-count">{{stats.sleeping}}</view>
+        <view class="stat-label">沉睡客户</view>
+      </view>
+      <view class="stat-card stat-birthday {{activeTag === 'birthday' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="birthday">
+        <view class="stat-count">{{stats.birthday}}</view>
+        <view class="stat-label">本月生日</view>
+      </view>
+      <view class="stat-card stat-birthday-next {{activeTag === 'birthdayNext' ? 'stat-card--selected' : ''}}" bindtap="onStatTap" data-tag="birthdayNext">
+        <view class="stat-count">{{stats.birthdayNext}}</view>
+        <view class="stat-label">下月生日</view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 统计栏：全部/会员客/流量客 -->
+  <view class="type-tabs">
+    <view class="type-tab {{customerType === 'all' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="all">
+      全部({{stats.total}})
+    </view>
+    <view class="type-tab {{customerType === 'member' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="member">
+      会员客({{stats.memberCount}})
+    </view>
+    <view class="type-tab {{customerType === 'flow' ? 'type-tab--active' : ''}}" bindtap="onCustomerTypeTap" data-type="flow">
+      流量客({{stats.flowCount}})
+    </view>
+  </view>
+
+  <van-search
+    value="{{searchKeyword}}"
+    placeholder="搜索姓名或手机号"
+    bind:search="onSearch"
+    bind:change="onSearchChange"
+    use-action-slot
+  >
+    <view slot="action" bindtap="onSearch">搜索</view>
+  </van-search>
+
+  <view wx:if="{{loading && results.length === 0}}" class="loading-wrap">
+    <van-loading type="spinner" color="#C0322A" />
+  </view>
+
+  <view wx:elif="{{(searched || activeTag) && results.length === 0}}" class="empty-wrap">
+    <van-empty description="{{activeTag ? '该分类暂无顾客' : '未找到该顾客'}}" />
+  </view>
+
+  <view wx:elif="{{results.length > 0}}" class="customer-list">
+    <view
+      wx:for="{{results}}"
+      wx:key="index"
+      class="customer-card"
+      data-id="{{item.id}}"
+      data-client-user-id="{{item.clientUserId}}"
+      data-name="{{item.name}}"
+      bindtap="onItemTap"
+    >
+      <view class="customer-avatar">
+        <text class="customer-avatar-text">{{item.name ? item.name[0] : '?'}}</text>
+      </view>
+      <view class="customer-info">
+        <view class="customer-name-row">
+          <text class="customer-name">{{item.name || '未知'}}</text>
+          <text wx:if="{{item.memberLevel}}" class="vip-badge">{{item.memberLevel}}</text>
+          <text wx:if="{{item.tier === 'diamond'}}" class="tier-badge tier-badge--diamond">黑钻</text>
+          <text wx:elif="{{item.tier === 'iron'}}" class="tier-badge tier-badge--iron">铁粉</text>
+          <text wx:elif="{{item.tier === 'fan'}}" class="tier-badge tier-badge--fan">粉丝</text>
+        </view>
+        <text class="customer-phone">{{item.phone}}</text>
+        <text wx:if="{{item.storeName}}" class="customer-store">{{item.storeName}}</text>
+        <text wx:if="{{item.lastPurchaseName}}" class="customer-recent">最近购买：{{item.lastPurchaseName}}</text>
+        <text wx:if="{{item.lastServiceDate}}" class="customer-recent">最近到店：{{item.lastServiceDate}}</text>
+      </view>
+    </view>
+    <view wx:if="{{loading}}" class="loading-more">
+      <van-loading size="24rpx" />
+    </view>
+  </view>
+
+  <view wx:else />
+
+  <view class="safe-area-bottom" />
+</view>

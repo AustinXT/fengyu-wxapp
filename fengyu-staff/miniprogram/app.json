@@ -48,7 +48,9 @@
       "name": "管理层子页",
       "pages": [
         "mgmt-traffic-stats/mgmt-traffic-stats",
-        "mgmt-product-cycle/mgmt-product-cycle"
+        "mgmt-product-cycle/mgmt-product-cycle",
+        "mgmt-customer-list/mgmt-customer-list",
+        "mgmt-customer-detail/mgmt-customer-detail"
       ]
     }
   ],

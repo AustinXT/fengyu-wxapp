@@ -113,6 +113,16 @@ const routes = {
 
   // 管理层 - 客量数据子页
   'mgmtTraffic.summary':       () => require('./routes/mgmt-traffic').summary,
+
+  // 管理层 - 顾客档案子页
+  'mgmtCustomer.stats':         () => require('./routes/mgmt-customer').stats,
+  'mgmtCustomer.search':        () => require('./routes/mgmt-customer').search,
+  'mgmtCustomer.listByTag':     () => require('./routes/mgmt-customer').listByTag,
+  'mgmtCustomer.detail':        () => require('./routes/mgmt-customer').detail,
+  'mgmtCustomer.calendar':      () => require('./routes/mgmt-customer').calendar,
+  'mgmtCustomer.paidOrders':    () => require('./routes/mgmt-customer').paidOrders,
+  'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
+  'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
 }
 
 /**
