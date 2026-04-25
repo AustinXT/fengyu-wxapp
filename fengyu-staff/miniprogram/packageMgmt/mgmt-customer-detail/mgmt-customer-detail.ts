@@ -5,6 +5,7 @@
 //   - 保留：订单详情跳转（只读浏览）
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
+import { formatCount } from '../../utils/number';
 
 // ===== 数据接口 =====
 
@@ -336,7 +337,7 @@ Page({
         day: d,
         date: dateStr,
         amount,
-        amountLabel: amount >= 1000 ? (amount / 1000).toFixed(1) + 'k' : String(amount),
+        amountLabel: formatCount(amount),
         hasData: !!s,
       });
     }

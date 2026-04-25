@@ -3,7 +3,7 @@
 // 持卡人数为截面快照，不随 period 变化（仅 onLoad 时拉一次）
 import { canAccessManagement } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
-import { formatAmount, formatCount } from '../../utils/number'
+import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 type Period = 'month' | 'lastMonth' | 'year'
 type ScopeType = 'all' | 'market' | 'store'
@@ -117,7 +117,7 @@ Page({
       const rows: CardHolderDisplayRow[] = (resp.cardHolders || []).map((r) => ({
         productKind: r.productKind,
         count: formatCount(r.count),
-        rate: r.rate == null ? '--' : r.rate.toFixed(2) + '%',
+        rate: r.rate == null ? '--' : formatPercent(r.rate / 100),
       }))
       this.setData({
         cardHoldersData: {

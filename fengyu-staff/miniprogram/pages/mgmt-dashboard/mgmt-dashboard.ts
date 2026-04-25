@@ -2,7 +2,7 @@
 // 4 个 tab（首页/门店排行榜/员工排行榜/我的）在同一页面内切换，避免 wx.reLaunch 开销
 import { canAccessManagement } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
-import { formatAmount, formatCount } from '../../utils/number'
+import { formatAmount, formatCount, formatPercent } from '../../utils/number'
 
 const app = getApp<IAppOption>()
 
@@ -364,7 +364,7 @@ Page({
 
     const retainRate =
       s.memberCount > 0
-        ? ((s.retainedMemberCount / s.memberCount) * 100).toFixed(2) + '%'
+        ? formatPercent(s.retainedMemberCount / s.memberCount)
         : '--'
 
     return {
