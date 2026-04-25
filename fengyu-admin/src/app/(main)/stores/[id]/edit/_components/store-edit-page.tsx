@@ -73,7 +73,9 @@ export default function StoreEditPage({ store }: { store: Store }) {
           </Button>
         )}
         {store.isClosed && (
-          <span className="ml-auto text-sm text-[#888888] bg-[#F5F5F5] px-3 py-1 rounded">已关闭</span>
+          <span className="ml-auto text-sm text-[#888888] bg-[#F5F5F5] px-3 py-1 rounded">
+            已关闭{store.closedAt ? ` (${store.closedAt})` : ""}
+          </span>
         )}
       </div>
 
@@ -111,6 +113,10 @@ export default function StoreEditPage({ store }: { store: Store }) {
             <div className="space-y-2">
               <label className="text-sm font-medium">所属市场</label>
               <Input defaultValue={store.marketName ?? ""} disabled />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">闭店日期</label>
+              <Input defaultValue={store.closedAt ?? ""} disabled placeholder="在营" />
             </div>
           </div>
         </CardContent>

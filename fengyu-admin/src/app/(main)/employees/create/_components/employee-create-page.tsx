@@ -42,6 +42,8 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
     orgNodeId: "",
     positionName: "",
     birthday: "",
+    // 默认今天作为入职日，可在表单内调整；DB 兜底为 created_at::date
+    hiredAt: new Date().toISOString().slice(0, 10),
     skills: [] as string[],
   })
 
@@ -88,6 +90,7 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName.trim() || null,
         birthday: form.birthday || null,
+        hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
       })
 
@@ -221,6 +224,14 @@ export default function EmployeeCreatePage({ stores, orgNodes, positions, skillT
                 type="date"
                 value={form.birthday}
                 onChange={(e) => handleChange("birthday", e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">入职日期</label>
+              <Input
+                type="date"
+                value={form.hiredAt}
+                onChange={(e) => handleChange("hiredAt", e.target.value)}
               />
             </div>
             <div className="space-y-2 col-span-2">

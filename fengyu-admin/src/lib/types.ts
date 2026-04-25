@@ -17,6 +17,8 @@ export interface Store {
   openingDate: string | null
   bedCount: number | null
   isClosed: boolean
+  /** 闭店日期（YYYY-MM-DD）；NULL 表示在营。与 isClosed 双写一致 */
+  closedAt: string | null
   coverImage: string | null
   images: string[] | null
   district: string | null
@@ -47,6 +49,10 @@ export interface Employee {
   birthday: string | null
   skills: string[] | null
   isResigned: boolean
+  /** 入职日期（YYYY-MM-DD） */
+  hiredAt: string | null
+  /** 离职日期（YYYY-MM-DD）；NULL 表示在职。与 isResigned 双写一致 */
+  resignedAt: string | null
   lastLoginAt: string | null
   createdAt: string
   updatedAt: string

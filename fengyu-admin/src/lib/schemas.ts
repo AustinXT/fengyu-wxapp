@@ -23,6 +23,9 @@ export const changePasswordSchema = z.object({
 })
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>
 
+// 日期字符串校验：YYYY-MM-DD（admin 表单 `<Input type="date">` 格式）
+const dateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
+
 // ─── 员工表单 ───
 export const employeeSchema = z.object({
   employeeId: z.string().min(1, '员工编号不能为空'),
@@ -41,8 +44,25 @@ export const employeeSchema = z.object({
   positionName: z.string().optional().nullable(),
   birthday: z.string().optional().nullable(),
   skills: z.array(z.string()).optional().nullable(),
+  /** 入职日期；mgmt-dashboard 员工数历史化所需（ticket 2026-04-25 T3） */
+  hiredAt: dateStringSchema.optional().nullable().or(z.literal('')),
+  /** 离职日期；NULL 表示在职。与 isResigned 双写一致 */
+  resignedAt: dateStringSchema.optional().nullable().or(z.literal('')),
 })
 export type EmployeeInput = z.infer<typeof employeeSchema>
+
+// ─── 门店表单（ticket 2026-04-25 T4：闭店日期历史化） ───
+export const storeSchema = z.object({
+  storeName: z.string().min(1, '请输入门店名称'),
+  marketId: z.string().min(1, '请选择所属市场'),
+  openingDate: dateStringSchema.optional().nullable().or(z.literal('')),
+  /** 闭店日期；NULL 表示在营。与 isClosed 双写一致 */
+  closedAt: dateStringSchema.optional().nullable().or(z.literal('')),
+  bedCount: z.number().int().min(0).optional().nullable(),
+  phone: z.string().optional().nullable(),
+  businessHours: z.string().optional().nullable(),
+})
+export type StoreInput = z.infer<typeof storeSchema>
 
 // ─── 支付方式枚举（与 db/schema/enums.ts:23 对齐） ───
 // `'无'` 语义：全额储值卡抵扣，实付 = 0，不走任何支付通道

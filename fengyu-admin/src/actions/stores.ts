@@ -27,6 +27,7 @@ function rowToStore(row: {
     openingDate: s.openingDate,
     bedCount: s.bedCount,
     isClosed: s.isClosed,
+    closedAt: s.closedAt,
     coverImage: s.coverImage,
     images: s.images,
     district: s.district,
@@ -158,6 +159,8 @@ export async function updateStore(
     openingDate: string | null
     bedCount: number | null
     isClosed: boolean
+    /** 闭店日期（YYYY-MM-DD）；与 isClosed 双写一致，由 action 自动维护 */
+    closedAt: string | null
     coverImage: string | null
     images: string[] | null
     district: string | null
@@ -186,9 +189,17 @@ export async function updateStore(
     ? and(eq(stores.storeId, storeId), sql`date_trunc('milliseconds', ${stores.updatedAt}) = ${expectedUpdatedAt}`, scopeCond)
     : and(eq(stores.storeId, storeId), scopeCond)
 
+  // is_closed ↔ closed_at 双写一致：调用方仅传 isClosed 时由 action 自动推导 closedAt
+  // - isClosed=true 且未显式给 closedAt：写 today
+  // - isClosed=false：清空 closedAt（重新开业）
+  const updateData = { ...data }
+  if (data.isClosed !== undefined && data.closedAt === undefined) {
+    updateData.closedAt = data.isClosed ? new Date().toISOString().slice(0, 10) : null
+  }
+
   let result: any
   try {
-    result = await db.update(stores).set(data).where(whereConditions)
+    result = await db.update(stores).set(updateData).where(whereConditions)
   } catch (err: any) {
     throw err
   }
