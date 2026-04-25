@@ -184,12 +184,14 @@ Page({
     summary: null as SummaryData | null,
     loading: false,
     display: null as DisplayData | null,
+    summaryState: 'content' as 'loading' | 'empty' | 'error' | 'content',
 
     // 门店排行榜
     storeRanking: {
       period: 'month' as RankingPeriod,
       metric: 'revenue' as StoreRankingMetric,
       loading: false,
+      error: false,
       rows: [] as StoreRankingDisplayRow[],
       unit: 'amount' as 'amount' | 'count',
     },
@@ -198,12 +200,17 @@ Page({
       period: 'month' as RankingPeriod,
       metric: 'revenue' as StaffRankingMetric,
       loading: false,
+      error: false,
       rows: [] as StaffRankingDisplayRow[],
       unit: 'amount' as 'amount' | 'count',
     },
     rankingPeriods: RANKING_PERIODS,
     storeRankingMetrics: STORE_RANKING_METRICS,
     staffRankingMetrics: STAFF_RANKING_METRICS,
+    // 给 mgmt-period-picker / mgmt-metric-tabs 用的 { label, value } 形态
+    rankingPeriodsForPicker: RANKING_PERIODS.map((p) => ({ label: p.label, value: p.key })),
+    storeRankingMetricsForTabs: STORE_RANKING_METRICS.map((m) => ({ label: m.label, value: m.key })),
+    staffRankingMetricsForTabs: STAFF_RANKING_METRICS.map((m) => ({ label: m.label, value: m.key })),
     storeRankingMetricLabelMap: {} as Record<StoreRankingMetric, string>,
     staffRankingMetricLabelMap: {} as Record<StaffRankingMetric, string>,
   },
@@ -310,18 +317,33 @@ Page({
 
   async loadSummary() {
     if (!this.data.selectedDate) return
-    this.setData({ loading: true })
+    this.setData({
+      loading: true,
+      summaryState: this.data.display ? 'content' : 'loading',
+    })
     try {
       const summary = await callStaffApi<SummaryData>('mgmtDashboard.summary', {
         date: this.data.selectedDate,
         scopeType: this.data.scope.scopeType,
         scopeId: this.data.scope.scopeId,
       })
-      this.setData({ summary, display: this.buildDisplay(summary), loading: false })
+      this.setData({
+        summary,
+        display: this.buildDisplay(summary),
+        loading: false,
+        summaryState: 'content',
+      })
     } catch {
-      this.setData({ loading: false })
+      this.setData({
+        loading: false,
+        summaryState: this.data.display ? 'content' : 'error',
+      })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
+  },
+
+  onSummaryRetry() {
+    this.loadSummary()
   },
 
   buildDisplay(s: SummaryData): DisplayData {
@@ -434,7 +456,12 @@ Page({
       return
     }
     if (entry === 'sales') {
-      wx.navigateTo({ url: '/pages/sales-data/sales-data' })
+      const { scope } = this.data
+      const params = [
+        `scopeType=${scope.scopeType}`,
+        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+      ].filter(Boolean).join('&')
+      wx.navigateTo({ url: `/pages/sales-data/sales-data?${params}` })
       return
     }
     const labelMap: Record<string, string> = {}
@@ -456,7 +483,7 @@ Page({
 
   async loadStoreRanking() {
     const { period, metric } = this.data.storeRanking
-    this.setData({ 'storeRanking.loading': true })
+    this.setData({ 'storeRanking.loading': true, 'storeRanking.error': false })
     try {
       const resp = await callStaffApi<StoreRankingResp>('mgmtDashboard.storeRanking', {
         period,
@@ -473,14 +500,14 @@ Page({
         'storeRanking.loading': false,
       })
     } catch {
-      this.setData({ 'storeRanking.loading': false })
+      this.setData({ 'storeRanking.loading': false, 'storeRanking.error': true })
       wx.showToast({ icon: 'none', title: '排行榜加载失败' })
     }
   },
 
   async loadStaffRanking() {
     const { period, metric } = this.data.staffRanking
-    this.setData({ 'staffRanking.loading': true })
+    this.setData({ 'staffRanking.loading': true, 'staffRanking.error': false })
     try {
       const resp = await callStaffApi<StaffRankingResp>('mgmtDashboard.staffRanking', {
         period,
@@ -497,13 +524,13 @@ Page({
         'staffRanking.loading': false,
       })
     } catch {
-      this.setData({ 'staffRanking.loading': false })
+      this.setData({ 'staffRanking.loading': false, 'staffRanking.error': true })
       wx.showToast({ icon: 'none', title: '排行榜加载失败' })
     }
   },
 
-  onStoreRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
-    const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
+  onStoreRankingPeriodChange(e: WechatMiniprogram.CustomEvent<{ value: RankingPeriod }>) {
+    const period = e.detail?.value
     if (!period || period === this.data.storeRanking.period) return
     this.setData({
       'storeRanking.period': period,
@@ -512,15 +539,15 @@ Page({
     this.loadStoreRanking()
   },
 
-  onStoreRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
-    const metric = (e.currentTarget.dataset as { metric?: StoreRankingMetric }).metric
+  onStoreRankingMetricChange(e: WechatMiniprogram.CustomEvent<{ value: StoreRankingMetric }>) {
+    const metric = e.detail?.value
     if (!metric || metric === this.data.storeRanking.metric) return
     this.setData({ 'storeRanking.metric': metric })
     this.loadStoreRanking()
   },
 
-  onStaffRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
-    const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
+  onStaffRankingPeriodChange(e: WechatMiniprogram.CustomEvent<{ value: RankingPeriod }>) {
+    const period = e.detail?.value
     if (!period || period === this.data.staffRanking.period) return
     this.setData({
       'staffRanking.period': period,
@@ -529,11 +556,34 @@ Page({
     this.loadStaffRanking()
   },
 
-  onStaffRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
-    const metric = (e.currentTarget.dataset as { metric?: StaffRankingMetric }).metric
+  onStaffRankingMetricChange(e: WechatMiniprogram.CustomEvent<{ value: StaffRankingMetric }>) {
+    const metric = e.detail?.value
     if (!metric || metric === this.data.staffRanking.metric) return
     this.setData({ 'staffRanking.metric': metric })
     this.loadStaffRanking()
+  },
+
+  onStoreRankingRetry() {
+    this.loadStoreRanking()
+  },
+
+  onStaffRankingRetry() {
+    this.loadStaffRanking()
+  },
+
+  onPullDownRefresh() {
+    const { activeTab } = this.data
+    const finish = () => wx.stopPullDownRefresh()
+    if (activeTab === 'dashboard') {
+      this.loadSummary().finally(finish)
+    } else if (activeTab === 'storeRanking') {
+      this.loadStoreRanking().finally(finish)
+    } else if (activeTab === 'staffRanking') {
+      this.loadStaffRanking().finally(finish)
+    } else {
+      this.buildProfileData()
+      finish()
+    }
   },
 
   buildProfileData() {

@@ -1,11 +1,15 @@
 {
   "navigationBarTitleText": "管理层",
+  "enablePullDownRefresh": true,
   "usingComponents": {
     "van-icon": "@vant/weapp/icon/index",
     "van-calendar": "@vant/weapp/calendar/index",
     "van-grid": "@vant/weapp/grid/index",
     "van-grid-item": "@vant/weapp/grid-item/index",
     "mgmt-navbar": "../../components/mgmt-navbar/mgmt-navbar",
-    "mgmt-scope-picker": "../../components/mgmt-scope-picker/mgmt-scope-picker"
+    "mgmt-scope-picker": "../../components/mgmt-scope-picker/mgmt-scope-picker",
+    "mgmt-period-picker": "../../components/mgmt-period-picker/mgmt-period-picker",
+    "mgmt-metric-tabs": "../../components/mgmt-metric-tabs/mgmt-metric-tabs",
+    "mgmt-data-state": "../../components/mgmt-data-state/mgmt-data-state"
   }
 }
