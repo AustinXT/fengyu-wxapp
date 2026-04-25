@@ -8,7 +8,7 @@
  *   - 月店均计算 + storeCount=0 防除零
  *   - 生美 vs 全店 区分
  *   - 新会员 SQL 命中 old_member_level IS NULL
- *   - 项目数占位返回 0/0
+ *   - 项目数真实出数 + SQL 形态断言
  */
 
 const pg = globalThis.__mocks__.pg
@@ -132,8 +132,8 @@ describe('mgmtDashboard.summary scopeType=all', () => {
     const metricSqls = sqlList.filter((s) =>
       /sale_orders|service_orders|client_wechat_users|staff_wechat_users/.test(s),
     )
-    // 7 个时间相关指标 × 2（today + month）= 14；+ 3 个截面（member/retained/employee）= 17
-    expect(metricSqls.length).toBe(17)
+    // 10 个时间相关指标 × 2（today + month）= 20；+ 3 个截面（member/retained/employee）= 23
+    expect(metricSqls.length).toBe(23)
     for (const s of metricSqls) {
       expect(s).toMatch(/WHERE\s+TRUE/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
@@ -161,7 +161,10 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
     // sale/service 表过滤：so.store_id IN (SELECT s.store_id FROM stores s JOIN org_nodes o ...)
-    const saleServiceSqls = sqlList.filter((s) => /sale_orders|service_orders/.test(s))
+    // 排除 retainedMemberCount（FROM service_orders + JOIN client_wechat_users，scope 走 c.bound_store_id）
+    const saleServiceSqls = sqlList.filter(
+      (s) => /sale_orders|service_orders/.test(s) && !/became_member_at/.test(s),
+    )
     expect(saleServiceSqls.length).toBeGreaterThanOrEqual(12)
     for (const s of saleServiceSqls) {
       expect(s).toMatch(/store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
@@ -169,12 +172,12 @@ describe('mgmtDashboard.summary scopeType=market', () => {
       expect(s).toContain("o.type = '门店'")
     }
 
-    // client 表过滤：newMembers(2) + memberCount(1) + retainedMemberCount(1) = 4
+    // client 表过滤：newMembers(2) + memberCount(1) + retainedMemberCount(1, JOIN) = 4
     const clientSqls = sqlList.filter((s) => /client_wechat_users/.test(s))
     expect(clientSqls.length).toBe(4)
     for (const s of clientSqls) {
       expect(s).toMatch(/bound_store_id\s+IN\s*\(/)
-      // newMembers SQL 用 $2（$1=date），截面 SQL 用 $1（无 date）
+      // newMembers/retained SQL 用 $2（$1=date），memberCount 截面 SQL 用 $1（无 date）
       expect(s).toMatch(/o\.parent_id = \$[12]/)
     }
 
@@ -203,7 +206,10 @@ describe('mgmtDashboard.summary scopeType=store', () => {
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
 
-    const saleServiceSqls = sqlList.filter((s) => /sale_orders|service_orders/.test(s))
+    // 排除 retainedMemberCount（FROM service_orders + JOIN client_wechat_users，scope 走 c.bound_store_id）
+    const saleServiceSqls = sqlList.filter(
+      (s) => /sale_orders|service_orders/.test(s) && !/became_member_at/.test(s),
+    )
     for (const s of saleServiceSqls) {
       expect(s).toContain('so.store_id = $2')
       expect(s).not.toMatch(/store_id\s+IN\s*\(/)
@@ -241,12 +247,14 @@ describe('mgmtDashboard.summary 时间窗口', () => {
     const metricSqls = pg.query.mock.calls
       .map((c) => c[0])
       .filter((s) => /sale_orders|service_orders|client_wechat_users/.test(s))
+      // 排除 retainedMemberCount：方案 B 实时计算用 90 天 BETWEEN 窗口，不属于 day/month 二选一
+      .filter((s) => !/became_member_at/.test(s))
 
     const daySqls = metricSqls.filter((s) => /\$1::date/.test(s) && !/date_trunc/.test(s))
     const monthSqls = metricSqls.filter((s) => /date_trunc\('month',/.test(s))
 
-    expect(daySqls.length).toBe(7)
-    expect(monthSqls.length).toBe(7)
+    expect(daySqls.length).toBe(10)
+    expect(monthSqls.length).toBe(10)
   })
 })
 
@@ -334,22 +342,131 @@ describe('mgmtDashboard.summary 新会员', () => {
   })
 })
 
-describe('mgmtDashboard.summary 项目数占位 + 返回结构', () => {
-  test('projectCount 占位返回 { today: 0, month: 0 }', async () => {
-    setupDefaultMocks({ metricValue: 12 })
+describe('mgmtDashboard.summary 提成（销售/服务）', () => {
+  test('销售提成 SQL 命中 sale_allocations + role_type IN(美容师/养生师) + 已支付销售/转换单 + paid_at；值映射正确', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
+      if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
+      if (/FROM sale_allocations\b/.test(sql)) {
+        const isMonth = /date_trunc\('month',/.test(sql)
+        return [{ v: isMonth ? 12345.67 : 234.5 }]
+      }
+      return [{ v: 0 }]
+    })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
 
-    expect(ctx.result.projectCount).toEqual({ today: 0, month: 0 })
+    expect(ctx.result.salesCommissionIncome).toEqual({ today: 234.5, month: 12345.67 })
+
+    const salesSqls = pg.query.mock.calls
+      .map((c) => c[0])
+      .filter((s) => /FROM sale_allocations\b/.test(s))
+    expect(salesSqls.length).toBe(2) // today + month
+    for (const s of salesSqls) {
+      expect(s).toMatch(/SUM\(sa\.total_amount/)
+      expect(s).toContain('sa.is_void = FALSE')
+      expect(s).toMatch(/sa\.role_type\s+IN/)
+      expect(s).toContain('美容师')
+      expect(s).toContain('养生师')
+      expect(s).toContain('销售单')
+      expect(s).toContain('转换单')
+      expect(s).toContain("so.status = '已支付'")
+      expect(s).toMatch(/so\.paid_at/)
+      expect(s).toMatch(/JOIN sale_items si/)
+      expect(s).toMatch(/JOIN sale_orders so/)
+    }
+  })
+
+  test('服务提成 SQL 命中 service_commissions + role_type IN(美容师/养生师) + 已完成 + service_date；值映射正确', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
+      if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
+      if (/FROM service_commissions\b/.test(sql)) {
+        const isMonth = /date_trunc\('month',/.test(sql)
+        return [{ v: isMonth ? 6789.12 : 89.0 }]
+      }
+      return [{ v: 0 }]
+    })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
+    await summary(ctx)
+
+    expect(ctx.result.serviceCommissionIncome).toEqual({ today: 89, month: 6789.12 })
+
+    const svcSqls = pg.query.mock.calls
+      .map((c) => c[0])
+      .filter((s) => /FROM service_commissions\b/.test(s))
+    expect(svcSqls.length).toBe(2)
+    for (const s of svcSqls) {
+      expect(s).toMatch(/SUM\(sc2\.commission_amount/)
+      expect(s).toContain('sc2.is_void = FALSE')
+      expect(s).toMatch(/sc2\.role_type\s+IN/)
+      expect(s).toContain('美容师')
+      expect(s).toContain('养生师')
+      expect(s).toContain("so.status = '已完成'")
+      expect(s).toMatch(/so\.service_date/)
+      expect(s).toMatch(/JOIN service_items sit/)
+      expect(s).toMatch(/JOIN service_orders so/)
+    }
+  })
+
+  test('scopeType=market：两类提成 SQL 都走 stores JOIN org_nodes 子查询并占位 $2', async () => {
+    setupDefaultMocks({ metricValue: 0 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
+    await summary(ctx)
+
+    const sqlList = pg.query.mock.calls.map((c) => c[0])
+    const salesSqls = sqlList.filter((s) => /FROM sale_allocations\b/.test(s))
+    const svcSqls = sqlList.filter((s) => /FROM service_commissions\b/.test(s))
+    expect(salesSqls.length).toBe(2)
+    expect(svcSqls.length).toBe(2)
+    for (const s of [...salesSqls, ...svcSqls]) {
+      expect(s).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
+      expect(s).toContain('o.parent_id = $2')
+    }
+  })
+})
+
+describe('mgmtDashboard.summary 项目数真实出数 + 返回结构', () => {
+  test('projectCount 走 SUM(session_used) WHERE sales_category IN (...)，分别返回 today/month', async () => {
+    // 自定义 mock：projectCount day=7, month=42；其他指标兜底返回 12
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
+      if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
+      if (/JOIN service_items sit\b/.test(sql) && /sales_category\s+IN/.test(sql)) {
+        const isMonth = /date_trunc\('month',/.test(sql)
+        return [{ v: isMonth ? 42 : 7 }]
+      }
+      return [{ v: 12 }]
+    })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
+    await summary(ctx)
+
+    expect(ctx.result.projectCount).toEqual({ today: 7, month: 42 })
     expect(ctx.result.date).toBe('2026-04-25')
     expect(typeof ctx.result.computedAt).toBe('string')
     expect(ctx.result.footfall).toEqual({ today: 12, month: 12 })
     expect(ctx.result.headcount).toEqual({ today: 12, month: 12 })
     expect(ctx.result.newMembers).toEqual({ today: 12, month: 12 })
-    // 截面 3 字段（默认 mock 落入兜底，全部返回 metricValue=12）
     expect(ctx.result.memberCount).toBe(12)
     expect(ctx.result.retainedMemberCount).toBe(12)
     expect(ctx.result.employeeCount).toBe(12)
+
+    // SQL 形态断言：projectCount SQL 同时含
+    //   service_items + session_used + sales_category IN(...) + 已完成 + service_date
+    const projectSqls = pg.query.mock.calls
+      .map((c) => c[0])
+      .filter((s) => /JOIN service_items sit\b/.test(s) && /sales_category\s+IN/.test(s))
+    expect(projectSqls.length).toBe(2) // today + month
+    for (const s of projectSqls) {
+      expect(s).toMatch(/SUM\(sit\.session_used\)/)
+      expect(s).toContain('自销自耗')
+      expect(s).toContain('他销自耗')
+      expect(s).toContain("so.status = '已完成'")
+      expect(s).toMatch(/so\.service_date/)
+    }
   })
 })
 
@@ -369,7 +486,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       if (/FROM client_wechat_users\b/.test(sql) && /customer_type\s*=\s*'会员客'/.test(sql)) {
         return [{ v: memberCount }]
       }
-      if (/FROM client_wechat_users\b/.test(sql) && /customer_status\s+IN/.test(sql)) {
+      // T5：保有会员改方案 B 实时计算（FROM service_orders + JOIN client_wechat_users + became_member_at 守卫）
+      if (/FROM service_orders\b/.test(sql) && /became_member_at/.test(sql)) {
         return [{ v: retainedCount }]
       }
       if (/FROM staff_wechat_users\b/.test(sql)) return [{ v: employeeCount }]
@@ -391,18 +509,56 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.memberCount).toBe(10)
   })
 
-  test('retainedMemberCount SQL 命中 customer_status IN（保有会员-稳定/有效）', async () => {
+  test('retainedMemberCount SQL 形态：service_orders 90 天窗口 + JOIN client_wechat_users + became_member_at 守卫（T5 方案 B 实时计算）', async () => {
     setupCensusMocks({ memberCount: 10, retainedCount: 5 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
 
     const retainedSql = pg.query.mock.calls
       .map((c) => c[0])
-      .find((s) => /FROM client_wechat_users/.test(s) && /customer_status\s+IN/.test(s))
+      .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
     expect(retainedSql).toBeDefined()
-    expect(retainedSql).toMatch(/'保有会员-稳定'/)
-    expect(retainedSql).toMatch(/'保有会员-有效'/)
+    expect(retainedSql).toMatch(/COUNT\(DISTINCT so\.client_user_id\)/)
+    expect(retainedSql).toMatch(/JOIN client_wechat_users c\b/)
+    expect(retainedSql).toMatch(/so\.status\s*=\s*'已完成'/)
+    expect(retainedSql).toMatch(/so\.client_user_id\s+IS\s+NOT\s+NULL/)
+    expect(retainedSql).toMatch(
+      /so\.service_date\s+BETWEEN\s+\(\s*\$1::date\s*-\s*INTERVAL\s+'90 days'\s*\)\s+AND\s+\$1::date/,
+    )
+    expect(retainedSql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+    expect(retainedSql).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
+    // 不再依赖快照列 customer_status
+    expect(retainedSql).not.toMatch(/customer_status/)
     expect(ctx.result.retainedMemberCount).toBe(5)
+  })
+
+  test('retainedMemberCount scopeType=market：scope 走 c.bound_store_id IN (... parent_id = $2)', async () => {
+    setupCensusMocks({ retainedCount: 7 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
+    await summary(ctx)
+
+    const retainedSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
+    expect(retainedSql).toBeDefined()
+    expect(retainedSql).toMatch(/c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
+    expect(retainedSql).toContain('o.parent_id = $2')
+    expect(ctx.result.retainedMemberCount).toBe(7)
+  })
+
+  test('retainedMemberCount scopeType=store：scope 走 c.bound_store_id = $2 单值过滤', async () => {
+    setupCensusMocks({ retainedCount: 3 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'store', scopeId: 'store-001' })
+    await summary(ctx)
+
+    const retainedSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
+    expect(retainedSql).toBeDefined()
+    expect(retainedSql).toContain('c.bound_store_id = $2')
+    expect(retainedSql).not.toMatch(/c\.bound_store_id\s+IN\s*\(/)
+    expect(retainedSql).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
+    expect(ctx.result.retainedMemberCount).toBe(3)
   })
 
   test('employeeCount SQL 命中 is_resigned=FALSE ∩ skills && ARRAY[美容师,养生师]', async () => {
@@ -453,7 +609,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(empSql).not.toMatch(/IN\s*\(/)
   })
 
-  test('截面 3 字段不依赖 date 参数（SQL 内不出现 ::date / date_trunc）', async () => {
+  test('截面 2 字段不依赖 date 参数（memberCount + employeeCount，SQL 内不出现 ::date / date_trunc；retained 已切实时计算见单独测试）', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -462,18 +618,17 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       .map((c) => c[0])
       .filter(
         (s) =>
-          (/FROM client_wechat_users/.test(s) &&
-            (/customer_type\s*=\s*'会员客'/.test(s) || /customer_status\s+IN/.test(s))) ||
+          (/FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s)) ||
           /FROM staff_wechat_users/.test(s),
       )
-    expect(censusSqls.length).toBe(3)
+    expect(censusSqls.length).toBe(2)
     for (const s of censusSqls) {
       expect(s).not.toMatch(/::date/)
       expect(s).not.toMatch(/date_trunc/)
     }
   })
 
-  test('scopeType=all 时 3 个截面 SQL 形态：WHERE TRUE，无 store/parent_id 过滤', async () => {
+  test('scopeType=all 时 memberCount + employeeCount 走 WHERE TRUE，无 store/parent_id 过滤', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
@@ -481,8 +636,7 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const censusSqls = sqlList.filter(
       (s) =>
-        (/FROM client_wechat_users/.test(s) &&
-          (/customer_type\s*=\s*'会员客'/.test(s) || /customer_status\s+IN/.test(s))) ||
+        (/FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s)) ||
         /FROM staff_wechat_users/.test(s),
     )
     for (const s of censusSqls) {
@@ -491,6 +645,23 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
+  })
+
+  test('scopeType=all 时 retainedMemberCount SQL 走 WHERE TRUE，但仍带 90 天窗口 + became_member_at 守卫', async () => {
+    setupCensusMocks({ retainedCount: 12 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
+    await summary(ctx)
+
+    const retainedSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find((s) => /FROM service_orders/.test(s) && /became_member_at/.test(s))
+    expect(retainedSql).toBeDefined()
+    expect(retainedSql).toMatch(/WHERE\s+TRUE/)
+    expect(retainedSql).not.toMatch(/parent_id/)
+    expect(retainedSql).not.toMatch(/bound_store_id\s*=\s*\$/)
+    // 仍依赖 date（$1）做 90 天窗口与会员判定
+    expect(retainedSql).toMatch(/\$1::date/)
+    expect(ctx.result.retainedMemberCount).toBe(12)
   })
 })
 

@@ -192,9 +192,9 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 sku_id、unit_real_price
+      // 获取 sale_item 的 sku_id、unit_real_price、is_shengmei、sales_category（全部快照拷贝到 service_items）
       const siRows = await client.query(
-        `SELECT si.sku_id, si.unit_real_price, si.is_shengmei
+        `SELECT si.sku_id, si.unit_real_price, si.is_shengmei, si.sales_category
          FROM sale_items si
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
@@ -202,12 +202,13 @@ async function create(ctx) {
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
       const isShengmei = siRows.rows[0]?.is_shengmei ?? null
+      const salesCategory = siRows.rows[0]?.sales_category ?? null
 
       await client.query(
         `INSERT INTO service_items
            (service_item_id, sale_item_id, unit_real_price, service_order_id,
-            sku_id, session_used, employee_id, service_duration, is_shengmei)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            sku_id, session_used, employee_id, service_duration, is_shengmei, sales_category)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           serviceItemId,
           item.saleItemId,
@@ -217,7 +218,8 @@ async function create(ctx) {
           item.sessionUsed,
           item.employeeId || resolvedStaffWfId,
           item.serviceDuration || null,
-          isShengmei
+          isShengmei,
+          salesCategory
         ]
       )
     }

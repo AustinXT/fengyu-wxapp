@@ -281,6 +281,140 @@ describe('service.create', () => {
     expect(ctx.result.serviceOrderId).toMatch(/^HLD-WX-\d{6}\d{4}$/)
     expect(ctx.result.status).toBe('待服务')
   })
+
+  test('SELECT sale_items 取 sales_category，并把快照写入 INSERT service_items', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      assignedStaffWfId: 'emp-beautician-001',
+      items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-001',
+        remaining_sessions: 5,
+        unit_real_price: '200',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: 'client-001',
+        client_phone: '138',
+      }])
+      .mockResolvedValueOnce([])                                  // 无进行中护理单
+      .mockResolvedValueOnce([{ became_member_at: null }])        // 售前
+
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })       // advisory lock
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),      // no existing → seq=1
+      }
+      return await cb(client)
+    })
+
+    let capturedSiSelectSql = ''
+    let capturedInsertSql = ''
+    let capturedInsertParams = null
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (typeof sql === 'string' && /SELECT[\s\S]+FROM sale_items\b/.test(sql)) {
+            capturedSiSelectSql = sql
+            return {
+              rows: [{
+                sku_id: 'sku-001',
+                unit_real_price: '200',
+                is_shengmei: true,
+                sales_category: '自销自耗',
+              }],
+              rowCount: 1,
+            }
+          }
+          if (typeof sql === 'string' && /INSERT INTO service_items/.test(sql)) {
+            capturedInsertSql = sql
+            capturedInsertParams = params
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    // SELECT 列表必须含 si.sales_category
+    expect(capturedSiSelectSql).toMatch(/si\.sales_category/)
+    // INSERT 列表必须把 sales_category 一起写入（含 10 个 $n 占位符）
+    expect(capturedInsertSql).toMatch(/INSERT INTO service_items[\s\S]+sales_category/)
+    expect(capturedInsertSql).toMatch(/\$10\)/)
+    // params 顺序对应 SQL：$9=is_shengmei, $10=sales_category
+    expect(capturedInsertParams).toBeTruthy()
+    expect(capturedInsertParams[8]).toBe(true)
+    expect(capturedInsertParams[9]).toBe('自销自耗')
+  })
+
+  test('sale_items.sales_category=NULL 时 service_items 也写入 NULL，不报错', async () => {
+    const ctx = createManagerCtx({
+      clientUserId: 'client-001',
+      assignedStaffWfId: 'emp-beautician-001',
+      items: [{ saleItemId: 'item-legacy', sessionUsed: 1 }],
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        sale_item_id: 'item-legacy',
+        remaining_sessions: 5,
+        unit_real_price: '100',
+        product_type: '疗程卡',
+        order_status: '已支付',
+        store_id: 'store-001',
+        client_user_id: 'client-001',
+        client_phone: '138',
+      }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ became_member_at: null }])
+
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn()
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
+      }
+      return await cb(client)
+    })
+
+    let capturedInsertParams = null
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql, params) => {
+          if (typeof sql === 'string' && /SELECT[\s\S]+FROM sale_items\b/.test(sql)) {
+            // 古旧导入：sales_category 整行为 null
+            return {
+              rows: [{
+                sku_id: 'sku-legacy',
+                unit_real_price: '100',
+                is_shengmei: null,
+                sales_category: null,
+              }],
+              rowCount: 1,
+            }
+          }
+          if (typeof sql === 'string' && /INSERT INTO service_items/.test(sql)) {
+            capturedInsertParams = params
+          }
+          return { rows: [], rowCount: 1 }
+        }),
+      }
+      return await cb(client)
+    })
+
+    await serviceRoutes.create(ctx)
+
+    expect(ctx.result.status).toBe('待服务')
+    expect(capturedInsertParams).toBeTruthy()
+    expect(capturedInsertParams[8]).toBeNull()
+    expect(capturedInsertParams[9]).toBeNull()
+  })
 })
 
 describe('service.start', () => {

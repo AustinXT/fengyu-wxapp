@@ -290,6 +290,56 @@ async function queryHeadcount(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
+async function queryProjectCount(scopeType, scopeId, date, mode) {
+  const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(sit.session_used), 0) AS v
+       FROM service_orders so
+       JOIN service_items sit ON sit.service_order_id = so.service_order_id
+      WHERE ${sc.sql}
+        AND so.status = '已完成'
+        AND sit.sales_category IN ('自销自耗', '他销自耗')
+        AND ${timeWindow('so.service_date', mode, 1, true)}`,
+    [date, ...sc.params],
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+async function querySalesCommissionIncome(scopeType, scopeId, date, mode) {
+  const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(sa.total_amount::numeric), 0) AS v
+       FROM sale_allocations sa
+       JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
+       JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+      WHERE ${sc.sql}
+        AND sa.is_void = FALSE
+        AND sa.role_type IN ('美容师', '养生师')
+        AND so.sale_order_type IN ('销售单', '转换单')
+        AND so.status = '已支付'
+        AND ${timeWindow('so.paid_at', mode, 1, false)}`,
+    [date, ...sc.params],
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+async function queryServiceCommissionIncome(scopeType, scopeId, date, mode) {
+  const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
+  const rows = await pg.query(
+    `SELECT COALESCE(SUM(sc2.commission_amount::numeric), 0) AS v
+       FROM service_commissions sc2
+       JOIN service_items sit ON sit.service_item_id = sc2.service_item_id
+       JOIN service_orders so ON so.service_order_id = sit.service_order_id
+      WHERE ${sc.sql}
+        AND sc2.is_void = FALSE
+        AND sc2.role_type IN ('美容师', '养生师')
+        AND so.status = '已完成'
+        AND ${timeWindow('so.service_date', mode, 1, true)}`,
+    [date, ...sc.params],
+  )
+  return Number(rows[0]?.v || 0)
+}
+
 async function queryNewMembers(scopeType, scopeId, date, mode) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
@@ -316,14 +366,28 @@ async function queryMemberCount(scopeType, scopeId) {
   return Number(rows[0]?.v || 0)
 }
 
-async function queryRetainedMemberCount(scopeType, scopeId) {
-  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+/**
+ * 保有会员数（方案 B 实时计算，2026-04-25 T5 起）
+ *
+ * 口径：「$date 那天已是会员客」 ∩ 「$date 前 90 天到店至少 1 次」
+ *
+ * 不再读 client_wechat_users.customer_status 列（那是当前快照、cronTask 每日重算，
+ * 无法反映历史日期）。改为基于 service_orders 实时聚合 + became_member_at 守卫，
+ * 任意 $date 都可还原"那一天的保有会员数"。
+ */
+async function queryRetainedMemberCount(scopeType, scopeId, date) {
+  const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
-    `SELECT COUNT(*) AS v
-       FROM client_wechat_users c
+    `SELECT COUNT(DISTINCT so.client_user_id) AS v
+       FROM service_orders so
+       JOIN client_wechat_users c ON c.user_id = so.client_user_id
       WHERE ${sc.sql}
-        AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')`,
-    sc.params,
+        AND so.status = '已完成'
+        AND so.client_user_id IS NOT NULL
+        AND so.service_date BETWEEN ($1::date - INTERVAL '90 days') AND $1::date
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= $1::date`,
+    [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
 }
@@ -403,6 +467,9 @@ async function summary(ctx) {
     footfallToday, footfallMonth,
     headcountToday, headcountMonth,
     newMemToday, newMemMonth,
+    projectCountToday, projectCountMonth,
+    salesCommissionToday, salesCommissionMonth,
+    serviceCommissionToday, serviceCommissionMonth,
     memberCount, retainedMemberCount, employeeCount,
     storeCount,
     scopeName,
@@ -421,8 +488,14 @@ async function summary(ctx) {
     queryHeadcount(scopeType, scopeId, date, 'month'),
     queryNewMembers(scopeType, scopeId, date, 'day'),
     queryNewMembers(scopeType, scopeId, date, 'month'),
+    queryProjectCount(scopeType, scopeId, date, 'day'),
+    queryProjectCount(scopeType, scopeId, date, 'month'),
+    querySalesCommissionIncome(scopeType, scopeId, date, 'day'),
+    querySalesCommissionIncome(scopeType, scopeId, date, 'month'),
+    queryServiceCommissionIncome(scopeType, scopeId, date, 'day'),
+    queryServiceCommissionIncome(scopeType, scopeId, date, 'month'),
     queryMemberCount(scopeType, scopeId),
-    queryRetainedMemberCount(scopeType, scopeId),
+    queryRetainedMemberCount(scopeType, scopeId, date),
     queryEmployeeCount(scopeType, scopeId),
     queryStoreCount(scopeType, scopeId),
     resolveScopeName(scopeType, scopeId),
@@ -458,8 +531,15 @@ async function summary(ctx) {
     footfall: { today: Number(footfallToday), month: Number(footfallMonth) },
     headcount: { today: Number(headcountToday), month: Number(headcountMonth) },
     newMembers: { today: Number(newMemToday), month: Number(newMemMonth) },
-    // TODO: 待业务定义"项目数"口径后实现
-    projectCount: { today: 0, month: 0 },
+    projectCount: { today: Number(projectCountToday), month: Number(projectCountMonth) },
+    salesCommissionIncome: {
+      today: round2(salesCommissionToday),
+      month: round2(salesCommissionMonth),
+    },
+    serviceCommissionIncome: {
+      today: round2(serviceCommissionToday),
+      month: round2(serviceCommissionMonth),
+    },
     storeCount,
     memberCount,
     retainedMemberCount,

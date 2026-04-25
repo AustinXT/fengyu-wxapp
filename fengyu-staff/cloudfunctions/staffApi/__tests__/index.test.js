@@ -104,6 +104,7 @@ describe('staffApi 入口', () => {
       const moduleName = file.replace('.js', '')
       const mod = require(path.join(staffApiDir, 'routes', file))
       for (const fnName of Object.keys(mod)) {
+        if (fnName.startsWith('__')) continue
         if (!referencedFunctions.has(`${moduleName}.${fnName}`)) {
           missing.push(`${moduleName}.${fnName}`)
         }
