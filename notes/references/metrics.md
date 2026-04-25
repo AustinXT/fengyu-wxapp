@@ -153,7 +153,7 @@
 |------|------|--------|----------|
 | 保有会员-稳定（retainedStable） | `COUNT(*)` | `client_wechat_users` | `customer_status='保有会员-稳定'` ∩ scope |
 | 保有会员-有效（retainedActive） | 同上 | 同上 | `customer_status='保有会员-有效'` |
-| 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='预警沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举待重命名为 `'沉睡'`，详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)；migration 完成后此处字面量同步改为 `'沉睡'`_ |
+| 沉睡人数（dormantWarn） | 同上 | 同上 | `customer_status='沉睡'` ∩ `customer_type='会员客'`<br>_2026-04-25 决策 D-6=B：schema 枚举已重命名 `'预警沉睡'`→`'沉睡'`（migration 0013），详见 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)_ |
 | 冰冻人数（dormantFrozen） | 同上 | 同上 | `customer_status='冰冻'` |
 | 休眠人数（dormantDeep） | 同上 | 同上 | `customer_status='休眠'` |
 | 一次客活（activeOnce） | `COUNT(*)` | `client_wechat_users` | `customer_status IN ('保有会员-稳定','保有会员-有效')` ∩ 区间内到店次数 = 1 ∩ scope |
@@ -180,9 +180,8 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
   AND <scope on c.bound_store_id>
 ```
 
-> **D-act-status-mapping（已决 D-6=B）**：UI"沉睡 / 冰冻 / 休眠" 与 schema "沉睡（原预警沉睡）/ 冰冻 / 休眠" 命名对齐。
-> schema 枚举重命名独立 ticket（[`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)）；
-> 在该 ticket 落地前，本表字面量保持 `'预警沉睡'`，前端文案层映射兜底；落地后字面量同步改 `'沉睡'`。
+> **D-act-status-mapping（已决 D-6=B）**：UI"沉睡 / 冰冻 / 休眠" 与 schema "沉睡 / 冰冻 / 休眠" 命名对齐。
+> schema 枚举已通过 migration 0013 完成 `'预警沉睡'`→`'沉睡'` 重命名（独立 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)）；本表所有字面量已同步使用 `'沉睡'`。
 >
 > **D-react-source（已决 D-1=C，实时反推）**：与 T5 同思路（90 天到店窗口聚合），以 `anchor = startDate - 1` 天展开 customer_status 计算。
 > T5 已上线但未抽公共函数；本指标在 SQL 内自包含展开 anchor 日的 5 档判定。
@@ -220,7 +219,7 @@ WHERE c.customer_status IN ('保有会员-稳定','保有会员-有效')
 > JOIN client_wechat_users c ON c.user_id = v.client_user_id
 > WHERE a.visits_90d_prev = 0                                                       -- anchor 非保有
 >   AND a.last_dt IS NOT NULL
->   AND a.last_dt >= ($startDate::date - 1 - INTERVAL '6 months')::date             -- anchor 预警沉睡
+>   AND a.last_dt >= ($startDate::date - 1 - INTERVAL '6 months')::date             -- anchor 沉睡
 >   AND <scope on c.bound_store_id>
 > -- 冰冻：把 last_dt 区间换为 [($startDate-1 - 12m), ($startDate-1 - 6m))
 > -- 休眠：a.last_dt < ($startDate-1 - 12m) OR a.last_dt IS NULL
@@ -409,11 +408,12 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 追加 period 时间窗口缩写（month/lastMonth/year，锚 `NOW()`）；为 `mgmtDashboard.storeRanking` 接口服务 |
 | 2026-04-25 | 客量数据子页 5 大类指标定义（注册情况 4 项 + 到店客流 12 项 + 会员状态与客活 10 项 + 会员被经营 13 项 + 新会员经营 4 项 = 43 项）；3 个待业务确认决策点（D-trafficSessionsScope / D-react-source / D-conv-denom）；详见 ticket [`mgmt-traffic-stats-page`](../tickets/2026-04-25-mgmt-traffic-stats-page.md) |
 | 2026-04-25 | 客量数据子页 7 决策点拍板：D-1=C（本月激活实时反推，T5 已落地后自包含 anchor 展开）/ D-2=B（成交率分母=体验客+小美客）/ D-3=A（新增会员对应消费=区间内全部）/ D-4=A（会员客时态=当前快照，T2 后切）/ D-5=B（项目数限定 sales_category，与首页对齐）/ D-6=B（schema customer_status 枚举重命名 '预警沉睡'→'沉睡'，独立 ticket [`customer-status-rename-warn`](../tickets/2026-04-25-customer-status-rename-warn.md)）/ D-7=A（分包 packageMgmt） |
+| 2026-04-25 | customer_status 枚举值 '预警沉睡' → '沉睡'（schema 与 UI 对齐，详见 ticket customer-status-rename-warn） |
 | 2026-04-25 | 「新会员」判定字段从 `old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]` 切到 `became_member_at IS NOT NULL ∩ [became_member_at]`。原口径含会员等级内跃迁（初钻→星钻 等），与"首次成为会员客"业务语义偏离；统一改用 `became_member_at`（与 customer_type 跃迁同事务维护）。同步影响：`mgmtDashboard.summary.queryNewMembers`、`mgmtDashboard.storeRanking.rankingNewMember`、staff-ranking ticket、客量数据子页 §5 已对齐 |
 | 2026-04-25 | T3 — 员工数切按 `selectedDate` 历史化：`COUNT(*) WHERE s.hired_at IS NOT NULL AND s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date)`，不再依赖 `is_resigned=FALSE` 实时快照。`staff_wechat_users` 新增 `hired_at` / `resigned_at` 列（migration 0012 双库部署），admin 员工管理表单已支持编辑；当前由 `created_at::date` / `updated_at::date` 兜底回填 |
 | 2026-04-25 | T4 — 门店数切按 `selectedDate` 历史化：`COUNT(*) FROM stores s JOIN org_nodes o ON s.org_node_id=o.id WHERE o.type='门店' AND s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date)`，不再裸数 `org_nodes WHERE type='门店'`。`stores` 新增 `closed_at` 列（migration 0012），`opening_date` 已存在；admin 门店管理表单已支持编辑；`scopeType=store` 短路返回 1 |
 | 2026-04-25 | T6 完成：C 类派生指标分母切换为 selectedDate 历史化（日/月双口径），移除阶段 1 过渡角标 |
-| 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 个待业务确认决策点（D-cardholder-period/direction/fugou-revenue/cross-store-entry/package-path）；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
+| 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 决策点已全部拍板：持卡=截面快照（疗程卡+单品，remaining_sessions>0）/ 不限 item_direction / 复购业绩=客群全期收入 / entry_date 跨店合并 / 分包 packageMgmt；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
 
@@ -488,11 +488,12 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 ### 1. 持卡人数（截面快照，不随 period 变化）
 
 > 以查询时刻（NOW()）为准；切换 period chip 不影响此数据，UI 加角标"截面"提示。
+> **持卡 = 未使用完的疗程卡 或 单次卡**（`product_type IN ('疗程卡','单品')`，`remaining_sessions > 0`）。院装产品（提货物品）不计入。
 > 分母「总会员人数」同 `memberCount`（`client_wechat_users.customer_type='会员客'` ∩ scope by `bound_store_id`）。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|
-| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.product_type='疗程卡'` ∩ `si.remaining_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
+| 持卡人数（cardHolderCount）per product_kind | `COUNT(DISTINCT so.client_user_id)` | `sale_items si` JOIN `sale_orders so` JOIN `product_skus sk` JOIN `product_categories pc` | `si.product_type IN ('疗程卡','单品')` ∩ `si.remaining_sessions > 0` ∩ `so.sale_order_type IN ('销售单','转换单')` ∩ `so.status='已支付'` ∩ scope（`so.store_id`）；按 `pc.product_kind` 分组 |
 | 占比（cardHolderRate）per product_kind | `cardHolderCount / memberCount × 100%` | 派生；`memberCount=0` → `--` | — |
 
 ### 2. 体验 / 新增 / 复购（区间维度，时间轴 `paid_at`）
