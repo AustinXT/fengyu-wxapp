@@ -124,7 +124,7 @@ describe('service.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*未支付/)
   })
 
-  test('院装产品拒绝创建服务单', async () => {
+  test('家居产品拒绝创建服务单', async () => {
     const ctx = createManagerCtx({
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
     })
@@ -133,7 +133,7 @@ describe('service.create', () => {
       sale_item_id: 'item-001',
       remaining_sessions: null,
       unit_real_price: '100',
-      product_type: '院装产品',
+      product_type: '家居产品',
       order_status: '已支付',
       store_id: 'store-001',
       client_user_id: null,
@@ -141,7 +141,7 @@ describe('service.create', () => {
     }])
 
     await expect(serviceRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*院装产品/)
+      .rejects.toThrow(/INVALID_PARAMS.*家居产品/)
   })
 
   test('剩余次数不足时拒绝', async () => {

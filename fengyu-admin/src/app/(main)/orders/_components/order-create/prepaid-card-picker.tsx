@@ -57,7 +57,7 @@ function buildRechargeAddPayload(faceValue: number): { product: Product; sku: Pr
   const sku: ProductSku = {
     skuId: RECHARGE_VIRTUAL_SKU_ID,
     categoryId: '',
-    productType: '院装产品',
+    productType: '家居产品',
     specName: '预付充值卡（虚拟）',
     price: priceStr,
     specialPrice: null,

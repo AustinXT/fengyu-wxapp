@@ -789,7 +789,7 @@ function mapProductKind(raw) {
 
 /** 映射产品类型 */
 function mapProductType(raw) {
-  if (!raw) return '院装产品'
+  if (!raw) return '家居产品'
   if (raw.includes('疗程')) return '疗程卡'
   if (raw.includes('单品')) return '单品'
   return '疗程卡'
@@ -973,7 +973,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       }
     }
 
-    // ── 6c. 院装产品（UDT_M_341）── 每条 1:1 product + sku
+    // ── 6c. 家居产品（UDT_M_341，WorkFine 原表为"院装产品"）── 每条 1:1 product + sku
     // 优先找 product_kind='家居产品' 的分类，按名称匹配；无匹配则用 '美容耗材' 兜底
     let homeCatId = null
     for (const [, v] of Object.entries(catMap)) {
@@ -1009,7 +1009,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       const skuId = hashId('sku', productId, trim(row.wf_item_id))
       await client.query(`
         INSERT INTO product_skus (sku_id, product_id, product_type, spec_name, price, sort_order, service_fee)
-        VALUES ($1, $2, '院装产品', $3, $4, 0, 0)
+        VALUES ($1, $2, '家居产品', $3, $4, 0, 0)
         ON CONFLICT (sku_id) DO UPDATE SET
           spec_name = EXCLUDED.spec_name, price = EXCLUDED.price, updated_at = now()
       `, [skuId, productId, specName, parseFloat(row.price) || 0])

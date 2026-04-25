@@ -192,7 +192,7 @@ export default function SkuDetailPageClient({
                   <option value="" disabled>请选择</option>
                   <option value="疗程卡">疗程卡</option>
                   <option value="单品">单品</option>
-                  <option value="院装产品">院装产品</option>
+                  <option value="家居产品">家居产品</option>
                 </Select>
               </div>
               {requiresShengmei && (

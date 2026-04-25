@@ -103,8 +103,8 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 对应订单未支付`)
     }
 
-    if (si.product_type === '院装产品') {
-      throw new Error(`INVALID_PARAMS: 院装产品不走到店服务流程`)
+    if (si.product_type === '家居产品') {
+      throw new Error(`INVALID_PARAMS: 家居产品不走到店服务流程`)
     }
 
     if (si.store_id !== ctx.auth.effectiveStoreId) {

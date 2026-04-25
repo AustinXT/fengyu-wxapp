@@ -156,7 +156,7 @@ async function recharge(ctx) {
     // product_name 必须含 "¥{面值}"，payNotify / confirmOffline 依赖正则解析
     productName = `预付充值卡 ¥${amt}`
     skuSpecName = '预付充值卡（虚拟）'
-    productType = '院装产品'
+    productType = '家居产品'
     faceValue = amt
     payAmount = computed
   }

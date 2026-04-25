@@ -1936,7 +1936,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
       if (/GROUP BY\s+pc\.product_kind\b(?!.*pc\.category_name)/.test(sql)) return overrides.kind || []
       if (/GROUP BY\s+pc\.product_kind,\s*pc\.category_name/.test(sql)) return overrides.name || []
       if (/FROM product_categories\b/.test(sql)) return overrides.skeleton || []
-      if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
@@ -2080,7 +2080,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
           { product_kind: '家居产品', category_name: '安吉丽' },
         ]
       }
-      if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
+      if (/si\.product_type\s*=\s*'家居产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
@@ -2140,13 +2140,13 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(custRevSql).toMatch(/c\.became_member_at::date\s*</)
   })
 
-  test('产品出库 SQL 含 product_type = 院装产品', async () => {
+  test('产品出库 SQL 含 product_type = 家居产品', async () => {
     setupFullMocks()
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
-    const prodSql = sqls.find((s) => /si\.product_type\s*=\s*'院装产品'/.test(s))
+    const prodSql = sqls.find((s) => /si\.product_type\s*=\s*'家居产品'/.test(s))
     expect(prodSql).toBeDefined()
     expect(prodSql).toContain('JOIN client_wechat_users c')
     expect(prodSql).toMatch(/FILTER/)

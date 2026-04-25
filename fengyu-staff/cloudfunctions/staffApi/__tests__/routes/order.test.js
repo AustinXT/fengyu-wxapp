@@ -1122,7 +1122,7 @@ describe('order.confirmOffline', () => {
         payable_amount: '495',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-cz-1', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
+        { sale_item_id: 'item-cz-1', sku_id: 'sku-cz-500', received: '495', product_type: '家居产品' },
       ])
       .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
@@ -1183,7 +1183,7 @@ describe('order.confirmOffline', () => {
         payable_amount: '2940',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-cz-v', sku_id: 'sku-recharge-virtual', received: '2940', product_type: '院装产品' },
+        { sale_item_id: 'item-cz-v', sku_id: 'sku-recharge-virtual', received: '2940', product_type: '家居产品' },
       ])
       .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
@@ -1241,7 +1241,7 @@ describe('order.confirmOffline', () => {
         payable_amount: '495',
       }])
       .mockResolvedValueOnce([
-        { sale_item_id: 'item-cz-3', sku_id: 'sku-cz-500', received: '495', product_type: '院装产品' },
+        { sale_item_id: 'item-cz-3', sku_id: 'sku-cz-500', received: '495', product_type: '家居产品' },
       ])
       .mockResolvedValueOnce([])  // SELECT sale_order_payments
 
@@ -2369,7 +2369,7 @@ describe('order.createRefund', () => {
     await expect(orderRoutes.createRefund(ctx)).rejects.toThrow(/INVALID_STATE.*可退数量.*0/)
   })
 
-  test('院装产品退款：unused = quantity - picked_up_quantity', async () => {
+  test('家居产品退款：unused = quantity - picked_up_quantity', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-PICK',
       items: [{ saleItemId: 'item-pick', refundQuantity: 3 }],
@@ -2384,7 +2384,7 @@ describe('order.createRefund', () => {
       }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
-        sale_item_id: 'item-pick', product_type: '院装产品',
+        sale_item_id: 'item-pick', product_type: '家居产品',
         quantity: 5, picked_up_quantity: 2,  // 未提 3 件
         unit_real_price: '200', session_count: 0,
       }])
@@ -2401,7 +2401,7 @@ describe('order.createRefund', () => {
     expect(ctx.result.finalRefundAmount).toBe(600)
   })
 
-  test('院装产品超额退款拒绝（INVALID_STATE）', async () => {
+  test('家居产品超额退款拒绝（INVALID_STATE）', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-OVER',
       items: [{ saleItemId: 'item-over', refundQuantity: 10 }],  // 请求 10
@@ -2416,7 +2416,7 @@ describe('order.createRefund', () => {
       }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
-        sale_item_id: 'item-over', product_type: '院装产品',
+        sale_item_id: 'item-over', product_type: '家居产品',
         quantity: 5, picked_up_quantity: 0,  // 可退 5 < 请求 10
         unit_real_price: '100', session_count: 0,
       }])
@@ -3583,7 +3583,7 @@ describe('order.createPickup', () => {
       // UPDATE rowCount=0
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       // probe: 同店（store_id 一致）、类型正确、但已提满
-      .mockResolvedValueOnce([{ store_id: 'store-001', product_type: '院装产品', quantity: 5, picked_up_quantity: 5 }])
+      .mockResolvedValueOnce([{ store_id: 'store-001', product_type: '家居产品', quantity: 5, picked_up_quantity: 5 }])
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/INVALID_PARAMS.*超出/)
   })
 
@@ -3593,7 +3593,7 @@ describe('order.createPickup', () => {
       // UPDATE rowCount=0 因 store_id 不匹配
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       // probe: sale_item 存在但属于他店
-      .mockResolvedValueOnce([{ store_id: 'store-999', product_type: '院装产品', quantity: 5, picked_up_quantity: 0 }])
+      .mockResolvedValueOnce([{ store_id: 'store-999', product_type: '家居产品', quantity: 5, picked_up_quantity: 0 }])
     await expect(orderRoutes.createPickup(ctx)).rejects.toThrow(/仅在 store-999 可提货/)
   })
 

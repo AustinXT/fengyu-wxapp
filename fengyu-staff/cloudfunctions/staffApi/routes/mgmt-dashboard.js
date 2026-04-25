@@ -1332,7 +1332,7 @@ async function salesData(ctx) {
             AND so.service_date BETWEEN $1 AND $2`,
         svcP,
       ),
-      // SQL 5: 分客型产品出库（product_type='院装产品' 快照列）
+      // SQL 5: 分客型产品出库（product_type='家居产品' 快照列）
       pg.query(
         `SELECT
             COALESCE(SUM(si.received::numeric) FILTER (
@@ -1350,7 +1350,7 @@ async function salesData(ctx) {
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
-            AND si.product_type = '院装产品'
+            AND si.product_type = '家居产品'
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
             AND o.paid_at::date BETWEEN $1 AND $2`,

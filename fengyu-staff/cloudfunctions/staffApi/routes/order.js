@@ -601,9 +601,9 @@ async function create(ctx) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
 
-      // 院装产品无 session_count
-      const sc = d.productType === '院装产品' ? null : d.sessionCount
-      const rs = d.productType === '院装产品' ? null : d.remainingSessions
+      // 家居产品无 session_count
+      const sc = d.productType === '家居产品' ? null : d.sessionCount
+      const rs = d.productType === '家居产品' ? null : d.remainingSessions
 
       await client.query(
         `INSERT INTO sale_items (
@@ -2377,7 +2377,7 @@ async function customerHeldCards(ctx) {
 // ========== P2: 取货单 ==========
 
 /**
- * 创建取货记录（院装产品提货）
+ * 创建取货记录（家居产品提货）
  * payload: { saleItemId, pickupQuantity, remark? }
  */
 async function createPickup(ctx) {
@@ -2393,7 +2393,7 @@ async function createPickup(ctx) {
      SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
      WHERE sale_item_id = $2
        AND store_id = $3
-       AND product_type = '院装产品'
+       AND product_type = '家居产品'
        AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
      RETURNING sale_item_id, quantity, picked_up_quantity`,
     [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
@@ -2411,7 +2411,7 @@ async function createPickup(ctx) {
     if (row.store_id !== ctx.auth.effectiveStoreId) {
       throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
     }
-    if (row.product_type !== '院装产品') {
+    if (row.product_type !== '家居产品') {
       throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
     }
     throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')

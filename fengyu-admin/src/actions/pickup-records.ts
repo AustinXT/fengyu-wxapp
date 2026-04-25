@@ -208,12 +208,12 @@ export async function getPickupRecordById(
 }
 
 /**
- * 顾客可提货的院装产品销售明细
+ * 顾客可提货的家居产品销售明细
  *
  * 筛选条件：
  * - 订单已支付
  * - item_direction = '购买'
- * - product_type = '院装产品'
+ * - product_type = '家居产品'
  * - 可提数量 = quantity - COALESCE(picked_up_quantity, 0) > 0
  */
 export interface AvailablePickupItem {
@@ -252,7 +252,7 @@ export async function getAvailablePickupItems(
     WHERE o.client_user_id = ${clientUserId}
       AND o.status = '已支付'
       AND si.item_direction = '购买'
-      AND si.product_type = '院装产品'
+      AND si.product_type = '家居产品'
       AND si.quantity > COALESCE(si.picked_up_quantity, 0)
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
@@ -307,13 +307,13 @@ export async function createPickupRecord(data: {
 
   try {
     const createdId = await db.transaction(async (tx) => {
-      // 1. 原子累加 picked_up_quantity，仅院装产品，超量会被 WHERE 拦截
+      // 1. 原子累加 picked_up_quantity，仅家居产品，超量会被 WHERE 拦截
       const updated = await tx.execute(sql`
         UPDATE sale_items
            SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity},
                updated_at = NOW()
          WHERE sale_item_id = ${data.saleItemId}
-           AND product_type = '院装产品'
+           AND product_type = '家居产品'
            AND item_direction = '购买'
            AND (COALESCE(picked_up_quantity, 0) + ${data.pickupQuantity}) <= quantity
         RETURNING sale_item_id, quantity, picked_up_quantity
@@ -324,7 +324,7 @@ export async function createPickupRecord(data: {
         picked_up_quantity: number
       }>
       if (updatedRows.length === 0) {
-        throw new Error('OVER_QUANTITY: 销售明细不存在、非院装产品或超出可提数量')
+        throw new Error('OVER_QUANTITY: 销售明细不存在、非家居产品或超出可提数量')
       }
 
       // 2. 插入 pickup_records

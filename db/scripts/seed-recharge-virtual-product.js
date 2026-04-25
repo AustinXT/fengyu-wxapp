@@ -7,7 +7,7 @@
  *   - mall_categories 已存在 mall-cat-cz-01（储值卡），不动
  *   - product_categories 已存在 cat-cz-01（储值卡 / product_kind=充值卡），不动
  *   - products: prod-recharge-virtual（is_visible=false, is_enabled=false 双重隐藏）
- *   - product_skus: sku-recharge-virtual（is_enabled=false, product_type='院装产品' 避免被 payNotify 设到期日）
+ *   - product_skus: sku-recharge-virtual（is_enabled=false, product_type='家居产品' 避免被 payNotify 设到期日）
  *   - mall_product_skus: 关联两者
  *
  * 幂等：基于固定 product_id / sku_id，重复运行只 SELECT 不写。
@@ -102,20 +102,20 @@ async function main() {
            price, special_price, session_count, sort_order,
            service_fee, is_shengmei, is_enabled,
            created_at, updated_at
-         ) VALUES ($1, $2, '院装产品', $3, 0, NULL, NULL, 0, 0, NULL, false, NOW(), NOW())`,
+         ) VALUES ($1, $2, '家居产品', $3, 0, NULL, NULL, 0, 0, NULL, false, NOW(), NOW())`,
         [SKU_ID, PRODUCT_CATEGORY_ID, '预付充值卡（虚拟）'],
       )
       console.log(`[seed] inserted product_skus.${SKU_ID}`)
     } else {
       const row = skuExisting.rows[0]
-      if (row.is_enabled || row.product_type !== '院装产品') {
+      if (row.is_enabled || row.product_type !== '家居产品') {
         await client.query(
           `UPDATE product_skus
-           SET is_enabled = false, product_type = '院装产品', updated_at = NOW()
+           SET is_enabled = false, product_type = '家居产品', updated_at = NOW()
            WHERE sku_id = $1`,
           [SKU_ID],
         )
-        console.log(`[seed] updated product_skus.${SKU_ID} → is_enabled=false, product_type='院装产品'`)
+        console.log(`[seed] updated product_skus.${SKU_ID} → is_enabled=false, product_type='家居产品'`)
       } else {
         console.log(`[seed] product_skus.${SKU_ID} already exists & disabled`)
       }

@@ -608,7 +608,7 @@ export async function createOrder(data: {
     skuId: string
     productName: string
     skuSpecName: string
-    productType: '疗程卡' | '单品' | '院装产品'
+    productType: '疗程卡' | '单品' | '家居产品'
     sessionCount: number | null
     unitPrice: string
     unitRealPrice: string
@@ -685,7 +685,7 @@ export async function createOrder(data: {
           skuId: RECHARGE_VIRTUAL_SKU_ID,
           productName: `预付充值卡 ¥${faceValue}`,
           skuSpecName: '预付充值卡（虚拟）',
-          productType: '院装产品',
+          productType: '家居产品',
           sessionCount: null,
           unitPrice: expected.payAmount.toFixed(2),
           unitRealPrice: expected.payAmount.toFixed(2),
@@ -1081,7 +1081,7 @@ export async function createConversionOrder(data: {
     skuId: string
     productName: string
     skuSpecName: string
-    productType: '疗程卡' | '单品' | '院装产品'
+    productType: '疗程卡' | '单品' | '家居产品'
     sessionCount: number | null
     unitPrice: string
     quantity: number
@@ -1181,7 +1181,7 @@ export async function createConversionOrder(data: {
         skuId: string | null
         productName: string | null
         skuSpecName: string | null
-        productType: '疗程卡' | '单品' | '院装产品' | null
+        productType: '疗程卡' | '单品' | '家居产品' | null
         sessionCount: number | null
         unitPrice: string
         unitRealPrice: string

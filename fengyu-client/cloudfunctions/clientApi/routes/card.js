@@ -297,7 +297,7 @@ async function recharge(ctx) {
         session_count, remaining_sessions,
         unit_price, quantity, unit_real_price,
         sale_amount, received, service_fee
-      ) VALUES ($1, $2, $3, $4, $5, $6, '院装产品', NULL, NULL, $7, 1, $7, $7, $7, 0)`,
+      ) VALUES ($1, $2, $3, $4, $5, $6, '家居产品', NULL, NULL, $7, 1, $7, $7, $7, 0)`,
       [
         saleItemId, saleOrderId, boundStoreId, RECHARGE_VIRTUAL_SKU_ID,
         `预付充值卡 ¥${faceValue}`, '预付充值卡（虚拟）', payAmount,

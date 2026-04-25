@@ -187,7 +187,7 @@ export interface SkillTag {
  * 不再用字面量联合类型——4/17 会议要求拆分护理项目→招牌/王牌/明星，未来还会变化。
  */
 export type ProductKind = string
-export type ProductType = '疗程卡' | '单品' | '院装产品'
+export type ProductType = '疗程卡' | '单品' | '家居产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
 export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'

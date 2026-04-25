@@ -1307,7 +1307,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     skuId: RECHARGE_SKU,
     productName: '预付充值卡 ¥500',
     skuSpecName: '预付充值卡（虚拟）',
-    productType: '院装产品' as const,
+    productType: '家居产品' as const,
     sessionCount: null,
     unitPrice: '495.00',
     unitRealPrice: '495.00',
@@ -1358,7 +1358,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     expect(capturedItem.skuId).toBe(RECHARGE_SKU)
     expect(capturedItem.productName).toBe('预付充值卡 ¥500')
     expect(capturedItem.skuSpecName).toBe('预付充值卡（虚拟）')
-    expect(capturedItem.productType).toBe('院装产品')
+    expect(capturedItem.productType).toBe('家居产品')
     expect(capturedItem.sessionCount).toBe(null)
     expect(capturedItem.remainingSessions).toBe(null)
     expect(capturedItem.quantity).toBe(1)

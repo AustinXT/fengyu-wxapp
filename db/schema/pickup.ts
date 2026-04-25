@@ -7,7 +7,7 @@ import { clientWechatUsers, staffWechatUsers } from './user'
 /**
  * 提货记录
  *
- * 院装产品分次提货追踪。每次提货创建一条记录，
+ * 家居产品分次提货追踪。每次提货创建一条记录，
  * 同时原子累加 sale_items.picked_up_quantity。
  * 可提数量 = sale_items.quantity - sale_items.picked_up_quantity。
  */
@@ -15,7 +15,7 @@ export const pickupRecords = pgTable(
   'pickup_records',
   {
     id: bigserial('id', { mode: 'number' }).primaryKey(),
-    /** 关联的销售明细（院装产品购买行） */
+    /** 关联的销售明细（家居产品购买行） */
     saleItemId: varchar('sale_item_id', { length: 30 })
       .notNull()
       .references(() => saleItems.saleItemId),
