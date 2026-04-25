@@ -1,9 +1,24 @@
 # Ticket: 统一"院装产品"与"家居产品"命名为"家居产品"
 
-> **Status**: 待用户确认方案后再执行
+> **Status**: 已决策方案 B（枚举值重命名），待执行
 > **Date**: 2026-04-25
 > **Owner**: 待定
-> **Related**: `2026-04-25-product-categories-fully-dynamic.md`、`2026-04-24-normal-products-category-exclude-filter.md`
+> **Related**: `2026-04-25-product-categories-fully-dynamic.md`（product_kind 完全动态化）、`2026-04-24-normal-products-category-exclude-filter.md`
+
+---
+
+## 决策记录（2026-04-25）
+
+✅ **采用方案 B**：把 `product_type` pgEnum 中 `'院装产品'` 重命名为 `'家居产品'`。
+
+**冲突澄清**：原本担心与 `product_kind='家居产品'` 字面同名会导致代码可读性下降。实际上：
+- `product_categories.product_kind` 的值是**运营在 admin 维护的数据库内容**，命名是什么都不应该影响代码逻辑；
+- **项目代码中本来就不应该有写死 `'护理项目'` / `'家居产品'` 等 `product_kind` 字面量** —— 这是 ticket `2026-04-25-product-categories-fully-dynamic.md` 跟踪的独立问题；
+- 因此 product_type 改名后即使与 product_kind 字面同名，也不会因"代码里两个相同字面量混淆"产生问题（前者是合法的 enum 字面量比较，后者是反模式应当移除）。
+
+**WorkFine 同步脚本**：随同改名一并替换字面量（脚本已停用但留在仓库）。
+**归档 ticket**：`notes/tickets/archives/*` 不动（保留历史快照）。
+**研究文档**：`notes/research/workfine_database.md` 保留 WorkFine 原始术语"院装产品"，加备注说明 PG 已重命名。
 
 ---
 
