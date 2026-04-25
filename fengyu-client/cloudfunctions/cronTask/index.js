@@ -64,7 +64,7 @@ UPDATE client_wechat_users u
    SET customer_status = CASE
          WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
          WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
-         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '沉睡'::customer_status
          WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
          ELSE '休眠'::customer_status
        END,
@@ -269,6 +269,16 @@ async function refreshMemberLevels(client) {
 
 /**
  * 升级：UPDATE + 日志 + 权益发放；150 天保级重置
+ *
+ * 仅处理"已是会员客"内部的等级跃迁（如 初钻→星钻）；调用方 syncMemberLevels 已用
+ * `WHERE customer_type = '会员客'` 过滤，不会把非会员升到会员客。
+ *
+ * **不写 `became_member_at`**：该字段表示"首次成为会员客"的时间戳，仅由
+ * staffApi/routes/order.js (recalcCustomerType) 与 client/payNotify/index.js 在
+ * customer_type 跃迁到 '会员客' 时同事务写入。会员等级内的升降级不影响该字段。
+ *
+ * 写入字段：member_level / old_member_level（升级前等级快照） / member_level_upgraded_at（等级跃迁时间）/
+ * member_level_locked_until（150 天保级期）。这些是"会员等级审计"字段，与"是否会员客"独立。
  */
 async function processUpgrade(client, userId, oldLevel, newLevel, spend, benefitsConfig) {
   await client.query('BEGIN')
@@ -313,6 +323,10 @@ async function processUpgrade(client, userId, oldLevel, newLevel, spend, benefit
 
 /**
  * 降级：保级期内跳过并记 memberLevelHeld 日志；保级期已过则静默降级并清 locked_until
+ *
+ * 同 processUpgrade 注释：仅处理会员客内部等级跃迁，不写 `became_member_at`。
+ * 不存在"会员客降级回非会员"的业务路径——`customer_type` 一旦升到 '会员客' 就不会回退。
+ *
  * @returns {boolean} true=保级跳过；false=实际降级
  */
 async function processDowngrade(client, userId, oldLevel, newLevel, spend, lockedUntil) {

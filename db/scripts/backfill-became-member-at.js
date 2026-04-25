@@ -33,6 +33,14 @@
  * 自检：执行后 `customer_type='会员客' AND became_member_at IS NULL` 应等于 0。
  *
  * 幂等：只回填 became_member_at IS NULL 的会员客行，已写过的不会被覆盖。
+ *
+ * 历史执行状态（2026-04-25 T2 完成时已双库执行）：
+ *   - 5434/fengyu       自检通过，残留 NULL = 0
+ *   - 5433/fengyu_wxapp 自检通过，残留 NULL = 0
+ *
+ * 后续无需重跑。仅当出现下列情况之一时才需要再执行：
+ *   1. 新增了一批历史会员客（如手工 INSERT、新一轮 WorkFine 同步 backfill）→ 跑一次补全 became_member_at
+ *   2. 自检 SQL（SELECTCHECK_SQL）查到 NULL > 0
  */
 
 const { Pool } = require('pg')
