@@ -106,10 +106,11 @@ async function recalcCustomerType(client, clientUserId) {
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
          JOIN product_skus sk ON sk.sku_id = si.sku_id
          JOIN product_categories pc ON pc.category_id = sk.category_id
+         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc.product_kind <> '体验卡'
+           AND pc_parent.is_card_kind = false
        ) THEN '小美客'
        WHEN EXISTS (
          SELECT 1
@@ -117,10 +118,11 @@ async function recalcCustomerType(client, clientUserId) {
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
          JOIN product_skus sk ON sk.sku_id = si.sku_id
          JOIN product_categories pc ON pc.category_id = sk.category_id
+         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc.product_kind = '体验卡'
+           AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
        ) THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
@@ -931,6 +933,7 @@ async function confirmOffline(ctx) {
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
     // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
     if (targetStatus === '已支付' && order.client_user_id) {
+      // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
       const rechargeRows = await client.query(
         `SELECT si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
@@ -2037,11 +2040,14 @@ async function createConversion(ctx) {
               si.is_shengmei,
               so.client_user_id,
               so.status AS order_status,
-              pc.product_kind
+              pc.product_kind,
+              pc_parent.is_card_kind AS parent_is_card_kind,
+              pc_parent.category_name AS parent_category_name
        FROM sale_items si
        JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
        LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
        LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+       LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
        WHERE si.sale_item_id = ANY($1)
        FOR UPDATE OF si`,
       [convertOutSaleItemIds]
@@ -2075,7 +2081,7 @@ async function createConversion(ctx) {
         const rem = Number(row.remaining_sessions || 0)
         if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = rem
-      } else if (productType === '单品' && row.product_kind === '体验卡') {
+      } else if (productType === '单品' && row.parent_is_card_kind === true && row.parent_category_name !== '充值卡') {
         const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
         if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = remQty
@@ -2308,7 +2314,8 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致：
  *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
- *   - 体验卡单品：product_type='单品' AND pc.product_kind='体验卡' AND (quantity - picked_up_quantity) > 0
+ *   - 体验类单品卡：product_type='单品' AND parent.is_card_kind=true AND parent.category_name<>'充值卡'
+ *     AND (quantity - picked_up_quantity) > 0
  */
 async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
@@ -2330,7 +2337,7 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              WHEN si.product_type = '单品' AND pc.product_kind = '体验卡'
+              WHEN si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
                 THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
@@ -2338,13 +2345,14 @@ async function customerHeldCards(ctx) {
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
      LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+     LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE so.client_user_id = $1
        AND si.store_id = $2
        AND si.item_direction = '购买'
        AND so.status IN ('已支付', '已完成')
        AND (
             (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '单品' AND pc.product_kind = '体验卡'
+         OR (si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
               AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
        )
      ORDER BY si.sale_order_id DESC`,

@@ -33,6 +33,7 @@ const {
 async function rechargeSkus(ctx) {
   await requireManager()(ctx, async () => {})
 
+  // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
            pc.category_id, pc.category_name
@@ -139,6 +140,7 @@ async function recharge(ctx) {
     `, [skuId])
     if (skuRows.length === 0) throw new Error('INVALID_PARAMS: SKU 不存在或已下架')
     const sku = skuRows[0]
+    // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
     if (sku.product_kind !== '充值卡') throw new Error('INVALID_PARAMS: 该 SKU 不是充值卡')
     resolvedSkuId = skuId
     productName = sku.spec_name

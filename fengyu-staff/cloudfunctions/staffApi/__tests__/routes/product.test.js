@@ -155,8 +155,8 @@ describe('product.spuDetail', () => {
       price: '300', special_price: '200', is_bundle: false,
     }])
     pg.query.mockResolvedValueOnce([
-      { sku_id: 'sku-1', product_type: '疗程卡', spec_name: '基础款', price: '300', special_price: '200', session_count: 10, sort_order: 1 },
-      { sku_id: 'sku-2', product_type: '疗程卡', spec_name: '高级款', price: '500', special_price: '400', session_count: 20, sort_order: 2 },
+      { sku_id: 'sku-1', product_type: '疗程卡', spec_name: '基础款', price: '300', special_price: '200', session_count: 10, sort_order: 1, product_kind: '护理项目', kind_display_color: '#C0322A' },
+      { sku_id: 'sku-2', product_type: '疗程卡', spec_name: '高级款', price: '500', special_price: '400', session_count: 20, sort_order: 2, product_kind: '护理项目', kind_display_color: '#C0322A' },
     ])
 
     await productRoutes.spuDetail(ctx)
@@ -164,6 +164,28 @@ describe('product.spuDetail', () => {
     expect(ctx.result.spu.product_id).toBe('prod-1')
     expect(ctx.result.spu.skuList).toHaveLength(2)
     expect(ctx.result.spu.priceFrom).toBe(200)
+    // PR-D：spu 级 productKind / kindDisplayColor 由 SKU 行聚合
+    expect(ctx.result.spu.productKind).toBe('护理项目')
+    expect(ctx.result.spu.kindDisplayColor).toBe('#C0322A')
+  })
+
+  test('PR-D：所有 SKU 行均无 product_kind 时 productKind/kindDisplayColor=null', async () => {
+    const ctx = createCtx({ payload: { spuId: 'prod-1' } })
+
+    pg.query.mockResolvedValueOnce([{
+      product_id: 'prod-1', name: '面部护理', category_id: 'cat-1',
+      category_name: '护理项目', product_kind: '护理项目',
+      cover_image: null, description: null, sort_order: 1,
+      price: '300', special_price: null, is_bundle: false,
+    }])
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-1', product_type: '疗程卡', spec_name: '基础款', price: '300', special_price: null, session_count: 10, sort_order: 1 },
+    ])
+
+    await productRoutes.spuDetail(ctx)
+
+    expect(ctx.result.spu.productKind).toBeNull()
+    expect(ctx.result.spu.kindDisplayColor).toBeNull()
   })
 
   test('缺少 spuId 抛出 INVALID_PARAMS', async () => {
@@ -530,5 +552,62 @@ describe('product.promotionPlans', () => {
 
     await productRoutes.promotionPlans(ctx)
     expect(ctx.result).toEqual([])
+  })
+})
+
+// ============================================================
+// product.cardKinds（PR-D 新增）
+// ============================================================
+describe('product.cardKinds', () => {
+  test('从 DB 读 is_card_kind=true 的一级行 category_name', async () => {
+    const ctx = createCtx()
+
+    pg.query.mockResolvedValueOnce([
+      { category_name: '充值卡' },
+      { category_name: '体验卡' },
+    ])
+
+    await productRoutes.cardKinds(ctx)
+
+    expect(ctx.result).toEqual({ names: ['充值卡', '体验卡'] })
+    // SQL 关键条件断言
+    const sql = pg.query.mock.calls[0][0]
+    expect(sql).toMatch(/is_card_kind\s*=\s*true/)
+    expect(sql).toMatch(/product_kind\s+IS\s+NULL/i)
+  })
+
+  test('DB 返回空时回退到兜底常量', async () => {
+    const ctx = createCtx()
+
+    pg.query.mockResolvedValueOnce([])
+
+    await productRoutes.cardKinds(ctx)
+
+    // CARD_PRODUCT_KINDS 常量 = ['充值卡', '体验卡']
+    expect(ctx.result.names).toEqual(['充值卡', '体验卡'])
+  })
+
+  test('DB 异常时回退到兜底常量', async () => {
+    const ctx = createCtx()
+
+    pg.query.mockRejectedValueOnce(new Error('connection reset'))
+
+    await productRoutes.cardKinds(ctx)
+
+    expect(ctx.result.names).toEqual(['充值卡', '体验卡'])
+  })
+
+  test('支持任意 admin 新建的卡类（如 "测试卡"）', async () => {
+    const ctx = createCtx()
+
+    pg.query.mockResolvedValueOnce([
+      { category_name: '充值卡' },
+      { category_name: '体验卡' },
+      { category_name: '测试卡' },
+    ])
+
+    await productRoutes.cardKinds(ctx)
+
+    expect(ctx.result.names).toEqual(['充值卡', '体验卡', '测试卡'])
   })
 })

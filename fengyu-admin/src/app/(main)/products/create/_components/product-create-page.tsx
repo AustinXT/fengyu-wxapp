@@ -36,12 +36,13 @@ export default function SkuCreatePageClient({
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
 
   const selectedCategory = categories.find(c => c.categoryId === categoryId)
-  const selectedProductKind = selectedCategory?.productKind
+  // 二级行的 capability 来自父级一级行（getCategories 已 LEFT JOIN 回填）
+  const requiresShengmei = selectedCategory?.parentRequiresShengmeiFlag ?? false
 
   const handleCategoryChange = (id: string) => {
     setCategoryId(id)
     const cat = categories.find(c => c.categoryId === id)
-    if (cat && cat.productKind !== '护理项目') {
+    if (cat && !cat.parentRequiresShengmeiFlag) {
       setIsShengmei(false)
     }
     setFormDirty(true)
@@ -94,7 +95,7 @@ export default function SkuCreatePageClient({
         sessionCount,
         sortOrder,
         serviceFee,
-        isShengmei: selectedProductKind === '护理项目' ? isShengmei : null,
+        isShengmei: requiresShengmei ? isShengmei : null,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
       })
@@ -150,7 +151,7 @@ export default function SkuCreatePageClient({
                 <option value="院装产品">院装产品</option>
               </Select>
             </div>
-            {selectedProductKind === '护理项目' && (
+            {requiresShengmei && (
               <div className="space-y-2">
                 <label className="text-sm font-medium">是否生美</label>
                 <Select

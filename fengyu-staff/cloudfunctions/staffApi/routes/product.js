@@ -16,8 +16,12 @@ const { requireStaffBound } = require('../middleware/auth')
 // ===== 常量 =====
 
 /**
- * 卡类 product_kind 名单（排除法关键常量）。
- * 同步位置（任何一处新增"卡"类都必须同步更新）：
+ * @deprecated PR-D 起改用 DB `product_categories.is_card_kind=true` 作为 SSoT。
+ * 本常量仅作运行时查询失败时的兜底名单（保险措施，避免 admin 未配置 is_card_kind
+ * 时整条排除法链路退化）。新业务逻辑应优先调 `product.cardKinds` action 或
+ * 内部 `_queryCardKindNames()` 辅助函数。
+ *
+ * 历史同步位置（保留参考）：
  *   - fengyu-admin/src/lib/product-kind.ts
  *   - fengyu-staff/cloudfunctions/staffApi/routes/product.js（本文件）
  *   - fengyu-staff/miniprogram/pages/order-create/order-create.ts
@@ -378,19 +382,33 @@ async function spuDetail(ctx) {
 
   const spu = spuRows[0]
 
+  // PR-D：JOIN product_categories pc → 一级行 parent_pc，带出 product_kind / kind_display_color
+  // 供前端 product-detail 顶部 tag 渲染（颜色 DB 驱动）
   const skuList = await pg.query(`
     SELECT sk.sku_id, sk.product_type, sk.spec_name, sk.price, sk.special_price,
            sk.session_count, sk.sort_order, sk.service_fee,
            mps.bundle_price, mps.sort_order AS display_order,
            mps.bundle_group_id,
-           bg.group_name, bg.pick_count AS group_pick_count
+           bg.group_name, bg.pick_count AS group_pick_count,
+           pc.product_kind,
+           parent_pc.display_color AS kind_display_color
     FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+    LEFT JOIN product_categories parent_pc
+      ON parent_pc.product_kind IS NULL
+     AND parent_pc.category_name = pc.product_kind
     LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
       AND sk.is_enabled = true
     ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [spuId])
+
+  // PR-D：从 SKU 行聚合出 spu 级 productKind / kindDisplayColor
+  // 取首个非空 product_kind 作为该 SPU 的 kind 标签（一个 SPU 通常只属一个 kind）
+  const firstKindSku = skuList.find(s => s.product_kind)
+  const productKind = firstKindSku ? firstKindSku.product_kind : null
+  const kindDisplayColor = firstKindSku ? (firstKindSku.kind_display_color || null) : null
 
   // 构建分组信息（套餐商品）
   let bundleGroups = null
@@ -413,10 +431,41 @@ async function spuDetail(ctx) {
   ctx.result = {
     spu: {
       ...spu,
+      productKind,
+      kindDisplayColor,
       skuList,
       bundleGroups,
       priceFrom: skuList.length > 0 ? Math.min(...skuList.map(s => Number(s.special_price || s.price) || 0)) : null,
     }
+  }
+}
+
+/**
+ * 卡类一级 kind 名单（PR-D 新增）
+ *
+ * 从 `product_categories` 一级行（productKind IS NULL）中取 `is_card_kind=true`
+ * 的 `category_name` 列表，供前端"普通商品 vs 卡类"过滤使用。
+ *
+ * 返回 `{ names: string[] }`：按 sort_order 升序；DB 查询失败或无配置时回退到
+ * `CARD_PRODUCT_KINDS` 兜底常量。
+ */
+async function cardKinds(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  try {
+    const rows = await pg.query(`
+      SELECT category_name
+      FROM product_categories
+      WHERE product_kind IS NULL
+        AND is_card_kind = true
+        AND is_valid = true
+      ORDER BY sort_order ASC
+    `)
+    const names = rows.map((r) => r.category_name)
+    ctx.result = { names: names.length > 0 ? names : CARD_PRODUCT_KINDS.slice() }
+  } catch (err) {
+    // 兜底：DB 查询异常时仍返回常量名单，避免前端崩溃
+    ctx.result = { names: CARD_PRODUCT_KINDS.slice() }
   }
 }
 
@@ -434,7 +483,7 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, cardKinds, promotionList, promotionPlans }
 
 // 测试专用导出：用 Object.defineProperty 以非枚举挂载，避免被 index.test.js 的
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。

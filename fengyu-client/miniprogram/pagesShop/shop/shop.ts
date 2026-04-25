@@ -85,6 +85,9 @@ Page({
       price: Number(sku.bundle_price || sku.special_price || sku.price || 0),
       bigCategory: spu.category_name,
       productType: sku.product_type,
+      // PR-D：DB 驱动 tag 渲染（来自 product.shopInit / spuList JOIN product_categories）
+      productKind: sku.product_kind || undefined,
+      kindDisplayColor: sku.kind_display_color || undefined,
     });
 
     this.updateCartCount();

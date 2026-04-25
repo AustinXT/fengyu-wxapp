@@ -90,7 +90,7 @@
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | `福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind`） | 固定常量 |
+| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"动态聚合 `product_categories WHERE productKind IS NULL AND parent.isCardKind=false AND isValid=true` 全部一级 kind 下的二级分类 | 视图常量 + DB 驱动 |
 | 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），院装产品固定追加末尾 |
 | 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
 | 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |

@@ -241,6 +241,7 @@ exports.main = async (event) => {
       // 幂等：card_transactions.ref_order_id 单独 SELECT 去重（表无 UNIQUE 约束），
       // 外层 status 翻转 rowCount 已是第一道幂等闸。
       if (targetOrder.client_user_id && targetOrder.store_id) {
+        // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
         const rechargeRows = await client.query(
           `SELECT si.sku_id, si.product_name, sk.price AS sku_price
            FROM sale_items si
@@ -401,10 +402,11 @@ exports.main = async (event) => {
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                  JOIN product_skus sk ON sk.sku_id = si.sku_id
                  JOIN product_categories pc ON pc.category_id = sk.category_id
+                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc.product_kind <> '体验卡'
+                   AND pc_parent.is_card_kind = false
                ) THEN '小美客'
                WHEN EXISTS (
                  SELECT 1
@@ -412,10 +414,11 @@ exports.main = async (event) => {
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                  JOIN product_skus sk ON sk.sku_id = si.sku_id
                  JOIN product_categories pc ON pc.category_id = sk.category_id
+                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc.product_kind = '体验卡'
+                   AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,

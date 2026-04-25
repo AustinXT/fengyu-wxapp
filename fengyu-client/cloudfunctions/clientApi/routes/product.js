@@ -140,6 +140,8 @@ async function getProductListByCategory({ categoryId, marketName }) {
   `, params)
 
   // 批量查询所有商品的 SKU（通过 mall_product_skus 关联）
+  // PR-D：附带 product_kind + kind_display_color（一级行 display_color），
+  // 用于客户端购物车 tag 颜色渲染（DB 驱动）
   const productIds = productRows.map(p => p.product_id)
   let allSkus = []
   if (productIds.length > 0) {
@@ -149,9 +151,15 @@ async function getProductListByCategory({ categoryId, marketName }) {
         sk.price, sk.special_price, sk.session_count,
         sk.service_fee, mps.sort_order AS display_order,
         mps.bundle_price, mps.bundle_group_id,
-        bg.group_name, bg.pick_count AS group_pick_count
+        bg.group_name, bg.pick_count AS group_pick_count,
+        pc.product_kind,
+        parent_pc.display_color AS kind_display_color
       FROM mall_product_skus mps
       JOIN product_skus sk ON mps.sku_id = sk.sku_id
+      LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+      LEFT JOIN product_categories parent_pc
+        ON parent_pc.product_kind IS NULL
+       AND parent_pc.category_name = pc.product_kind
       LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
       WHERE mps.product_id = ANY($1)
         AND ${SKU_VALID_FILTER}
@@ -348,6 +356,7 @@ async function spuDetail(ctx) {
 
   const product = productRows[0]
 
+  // PR-D：JOIN product_categories pc → parent_pc，带出 product_kind + kind_display_color
   const skuList = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
@@ -355,9 +364,15 @@ async function spuDetail(ctx) {
       sk.service_fee, sk.sort_order, sk.is_shengmei,
       mps.bundle_price, mps.sort_order AS display_order,
       mps.bundle_group_id,
-      bg.group_name, bg.pick_count AS group_pick_count
+      bg.group_name, bg.pick_count AS group_pick_count,
+      pc.product_kind,
+      parent_pc.display_color AS kind_display_color
     FROM mall_product_skus mps
     JOIN product_skus sk ON mps.sku_id = sk.sku_id
+    LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
+    LEFT JOIN product_categories parent_pc
+      ON parent_pc.product_kind IS NULL
+     AND parent_pc.category_name = pc.product_kind
     LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
       AND ${SKU_VALID_FILTER}

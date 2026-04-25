@@ -12,6 +12,18 @@ export interface CartItem {
   quantity: number;
   bigCategory: string;
   productType: string;
+  /**
+   * PR-D：一级品项 kind 名（来自 product_categories 一级行）。
+   * 与 bigCategory（=商城分类 mall_categories.category_name）不同：productKind 是
+   * 业务品项（护理项目/家居产品/充值卡/体验卡 + 任意 admin 新建一级 kind）。
+   * 可选——加购时若 SKU 数据未携带则保持 undefined，购物车 tag 走 bigCategory 兜底。
+   */
+  productKind?: string;
+  /**
+   * PR-D：一级 kind 行的 display_color HEX 值（DB 驱动）。
+   * 与 productKind 配套；缺失时 tag 退化为 type='primary'。
+   */
+  kindDisplayColor?: string;
   addedAt: number;
 }
 

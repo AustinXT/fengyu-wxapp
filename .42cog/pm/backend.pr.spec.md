@@ -109,11 +109,16 @@
 |------|------|------|
 | `category_id` | text | 主键，UUID |
 | `category_name` | text | 分类名（如"蜜语生玑"），**不唯一** |
-| `product_kind` | product_kind enum | 所属商品类型：`福利活动` / `护理项目` / `家居产品` / `充值卡` |
+| `product_kind` | text | 一级行 NULL；二级行 = 父级一级行的 `category_name`。**DB 驱动**：一级行集合由 admin 维护，无字面量枚举（`product_kind` PG enum 已 DROP，2026-04-24 ticket）|
 | `sort_order` | integer | 排序序号 |
 | `is_valid` | boolean | 是否有效，NOT NULL DEFAULT true |
+| `is_card_kind` | boolean | 一级行 capability：是否为"卡类"（充值卡/体验卡）。开单页"普通商品"分支需 `parent.is_card_kind=false`。NOT NULL DEFAULT false |
+| `display_color` | text | 一级行展示色（HEX），用于商品 tag / 购物车标签的视觉色；二级行 NULL 时由前端继承父级 |
+| `display_icon` | text | 一级行展示图标（emoji 或 icon name），可空 |
+| `requires_shengmei_flag` | boolean | 一级行 capability：该 kind 下 SKU 表单是否需要"是否生美"开关。NOT NULL DEFAULT false |
 
 > `category_name` 不设唯一约束，允许不同 `product_kind` 下同名分类。
+> 新增/拆分一级 kind（如 4/17 会议护理项目→招牌/王牌/明星）零代码变更，仅 admin "品项分类 → 一级品项管理"操作即可。
 
 ### 2.5 products（商品主表）
 

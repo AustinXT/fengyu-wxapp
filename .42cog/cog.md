@@ -32,7 +32,8 @@
 
 <商品目录>
 - **商品**：商品概念层，如"蜜语生玑精华护理疗程"
-  - 商品类型（product_kind）：`福利活动` | `护理项目` | `家居产品` | `充值卡`
+  - 商品类型（product_kind）：**完全数据库驱动**，由 `product_categories WHERE productKind IS NULL AND isValid=true` 行决定。运营在 admin "品项分类 → 一级品项管理" 内增删；4/17 会议要求护理项目→招牌/王牌/明星拆分即在此操作。代码层不再硬编码字面量列表。
+  - 一级行带 capability 列：`isCardKind`（卡 vs 非卡，决定开单"普通商品"是否包含该 kind）、`displayColor`（前端 tag 颜色）、`requiresShengmeiFlag`（SKU 表单是否显示"是否生美"开关）
   - 品项分类：如"蜜语生玑"，作为商品列表左侧一级导航
   - 上下架由有效期日期控制，无独立开关
   - 可标记为套餐（套餐的 SKU 是其组成部分）

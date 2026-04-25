@@ -3398,6 +3398,7 @@ describe('order.createConversion', () => {
           unit_price: '200', unit_real_price: '200',
           sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '体验卡',
+          parent_is_card_kind: true, parent_category_name: '体验卡',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
@@ -3513,15 +3514,16 @@ describe('order.customerHeldCards', () => {
     expect(sql).toMatch(/si\.product_type = '疗程卡'[\s\S]*remaining_sessions[\s\S]*>\s*0/)
   })
 
-  test('SQL 守卫：体验卡单品 (quantity - picked_up_quantity) = 0 不出现（> 0 过滤）', async () => {
+  test('SQL 守卫：体验类单品卡 (quantity - picked_up_quantity) = 0 不出现（> 0 过滤）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'cu-001' })
     pg.query.mockResolvedValueOnce([])
 
     await orderRoutes.customerHeldCards(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    // 体验卡单品分支必须含 (quantity - COALESCE(picked_up_quantity,0)) > 0
-    expect(sql).toMatch(/pc\.product_kind = '体验卡'[\s\S]*quantity[\s\S]*picked_up_quantity[\s\S]*>\s*0/)
+    // PR-C 收敛后：体验类单品卡分支用 parent.is_card_kind=true AND parent.category_name<>'充值卡'，
+    // 必须含 (quantity - COALESCE(picked_up_quantity,0)) > 0
+    expect(sql).toMatch(/pc_parent\.is_card_kind = true[\s\S]*pc_parent\.category_name <> '充值卡'[\s\S]*quantity[\s\S]*picked_up_quantity[\s\S]*>\s*0/)
   })
 
   test('权限守卫：美容师调用 → requireManager 抛 PERMISSION_DENIED', async () => {
