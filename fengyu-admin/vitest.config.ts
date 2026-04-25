@@ -17,7 +17,6 @@ export default defineConfig({
         'src/**/*.d.ts',
         'src/**/types.ts',
         'src/lib/mock-data.ts',
-        'src/actions/data-center.ts', // 514 行，待独立轮次补充测试
       ],
       thresholds: { statements: 80, branches: 80, functions: 80, lines: 80 },
     },

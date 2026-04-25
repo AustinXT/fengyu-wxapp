@@ -41,10 +41,9 @@ fengyu-admin/
 │   │   │   ├── permissions/   # 权限管理
 │   │   │   ├── sync/          # 数据同步
 │   │   │   ├── logs/          # 操作日志
-│   │   │   ├── settings/      # 系统配置
-│   │   │   └── data-center/   # 数据中心（P2）
+│   │   │   └── settings/      # 系统配置
 │   │   └── globals.css        # Tailwind + 品牌色 CSS 变量
-│   ├── actions/               # Server Actions（19 模块，全部接真实 PG）
+│   ├── actions/               # Server Actions（18 模块，全部接真实 PG）
 │   ├── components/
 │   │   ├── ui/                # 基础 UI 组件（Button, DataTable, Pagination, AlertDialog 等）
 │   │   └── layout/            # 布局组件（Sidebar, Topbar, Breadcrumb）
@@ -92,7 +91,7 @@ bun run test:all               # Vitest + Playwright
 
 ## 测试覆盖率
 
-覆盖率范围含 `src/lib/` + `src/actions/`（`data-center.ts` 除外，514 行待补），阈值 80%：
+覆盖率范围含 `src/lib/` + `src/actions/`，阈值 80%：
 
 | 维度 | 当前值 |
 |------|--------|
@@ -101,7 +100,7 @@ bun run test:all               # Vitest + Playwright
 | Functions | 84.73% |
 | Lines | 90.50% |
 
-已测 action 模块（18/19）：orders, services, appointments, customers, employees, stores, products, commission, coupons, org, permissions, allocations, store-unbind, auth, dashboard, logs, sync, settings。
+已测 action 模块（18/18）：orders, services, appointments, customers, employees, stores, products, commission, coupons, org, permissions, allocations, store-unbind, auth, dashboard, logs, sync, settings。
 
 ## 状态色
 
