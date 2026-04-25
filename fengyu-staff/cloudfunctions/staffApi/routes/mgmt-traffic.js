@@ -148,6 +148,21 @@ async function resolveScopeName(scopeType, scopeId) {
 
 async function querySingleRegistration(scopeType, scopeId, period, customerType) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+
+  // 会员客切 became_member_at 与 mgmt-dashboard.summary.memberCount 对齐（2026-04-25）
+  if (customerType === '会员客') {
+    const rows = await pg.query(
+      `SELECT COUNT(*) AS v
+         FROM client_wechat_users c
+        WHERE ${sc.sql}
+          AND c.became_member_at IS NOT NULL
+          AND c.became_member_at::date <= ${endDateExpr(period)}`,
+      sc.params,
+    )
+    return Number(rows[0]?.v || 0)
+  }
+
+  // 其他类型仍用 customer_type 快照（regOnly/regTrial/regTotal）
   const typeClause = customerType
     ? ` AND c.customer_type = '${customerType}'`
     : ''

@@ -943,7 +943,7 @@ async function storeRanking(ctx) {
 //   - metric 集合不同：员工无 retainedMember；员工独有 income（销售提成 + 服务提成）
 //
 // 产能员工口径（与 metrics.md employeeCount 一致）：
-//   is_resigned=FALSE ∩ skills && ARRAY['美容师','养生师'] ∩ scope（store_id 可见列表）
+//   hired_at/resigned_at + NOW() 锚点 ∩ skills && ARRAY['美容师','养生师'] ∩ scope（store_id 可见列表）
 // 排序：value DESC, employee_name ASC, employee_id ASC（避免随机抖动）
 
 /**
@@ -959,7 +959,9 @@ function producerEmployeesCte(storeFilter) {
     s.store_name
   FROM staff_wechat_users sw
   LEFT JOIN stores s ON s.store_id = sw.store_id
-  WHERE sw.is_resigned = FALSE
+  WHERE sw.hired_at IS NOT NULL
+    AND sw.hired_at::date <= NOW()::date
+    AND (sw.resigned_at IS NULL OR sw.resigned_at::date > NOW()::date)
     AND sw.skills && ARRAY['美容师','养生师']
     AND ${storeFilter.sql}
 )`
