@@ -27,24 +27,6 @@
       "runtime": "Nodejs18.15",
       "handler": "index.main",
       "installDependency": false
-    },
-    {
-      "name": "cronTask",
-      "timeout": 60,
-      "path": "/cloudfunctions/cronTask",
-      "envVariables": {
-        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu"
-      },
-      "runtime": "Nodejs18.15",
-      "handler": "index.main",
-      "installDependency": true,
-      "triggers": [
-        {
-          "name": "dailyRefresh",
-          "type": "timer",
-          "config": "0 0 3 * * * *"
-        }
-      ]
     }
   ]
 }

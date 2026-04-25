@@ -90,9 +90,34 @@ bun run test:all               # Vitest + Playwright
 - **员工调店 scope 同步**：`updateEmployee` 变更 storeId 时自动同步 `permission_roles.scope_id`
 - **列表默认排序**：配置/档案型 `desc(updatedAt), desc(createdAt), desc(id)`（"编辑即浮顶"）；业务时间型 `desc(业务时间)` 优先；流水型 `desc(createdAt)`。例外必须在 `.orderBy(...)` 上方写 `// 例外：...` 注释。详见 `.42cog/dev/admin.sys.spec.md` §5
 
+## cron-worker 子模块
+
+`src/cron/` 是迁自 `fengyu-client/cloudfunctions/cronTask` 的每日 03:00 定时任务，作为独立 Node 进程（`docker-compose` 的 `cron-worker` 服务）与 admin web 同镜像部署。
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| 入口 | `src/cron/index.ts` | node-cron 调度（`0 3 * * *` Asia/Shanghai）+ `--once` 单次模式 |
+| 调度 | `src/cron/run.ts` | 串行 5 STEP，每个 STEP 独立 try/catch（单 STEP 失败不阻塞下一个） |
+| 配置缓存 | `src/cron/config.ts` | `getMemberThreshold` 双层缓存（30s/5min TTL） |
+| STEP 1 | `steps/refresh-customer-status.ts` | 重算 `customer_status`（三段式 SQL，整体一个事务） |
+| STEP 2 | `steps/refresh-member-levels.ts` | 重算 `member_level` + 升降级权益（消息/积分/优惠券） |
+| STEP 3 | `steps/grant-birthday-benefits.ts` | 当日生日权益（年度幂等键 `bday-{YYYY}`） |
+| STEP 4 | `steps/grant-thanksgiving-benefits.ts` | 仅每月 20 号；月度幂等键；优惠券固定 10 天 |
+| STEP 5 | `steps/audit-points-balance.ts` | 积分余额校验（仅告警不修复） |
+
+**本地运行**：
+```bash
+bun run cron:once   # 立即跑一次后退出，本地冒烟
+bun run cron:dev    # 长驻调度（开发模式）
+```
+
+**生产容器内手动触发**：`docker exec fengyu-cron-worker node cron-worker.js --once`
+
+**约定**：`operation_logs.source` 写 `'cronTask'`（保留语义，便于历史日志追溯）；`benefits` 类配置（含 `member_level_benefits` / `birthday_benefits` / `thanksgiving_benefits`）每次跑前重读 `system_configs`，不缓存。
+
 ## 测试覆盖率
 
-覆盖率范围含 `src/lib/` + `src/actions/`（`data-center.ts` 除外，514 行待补），阈值 80%：
+覆盖率范围含 `src/lib/` + `src/actions/` + `src/cron/`（`data-center.ts` / `cron/index.ts` 除外），阈值 80%：
 
 | 维度 | 当前值 |
 |------|--------|

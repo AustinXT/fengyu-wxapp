@@ -21,7 +21,8 @@ docker save fengyu-admin:latest | gzip | ssh "$SSH_HOST" "docker load"
 
 echo "=== 3/4 远程重启服务 ==="
 # compose.yml 已显式声明 image: fengyu-admin:latest，up 时直接复用传入的镜像
-ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose up -d admin"
+# cron-worker 复用同一镜像、覆盖 entrypoint，跟随同一节奏滚动更新
+ssh "$SSH_HOST" "cd $REMOTE_DIR && docker compose up -d admin cron-worker"
 
 echo "=== 4/4 健康检查 ==="
 sleep 5
