@@ -1,14 +1,10 @@
 // packageMgmt/mgmt-customer-list — 管理层"顾客档案"列表子页
 // scope 由 hub（mgmt-dashboard）通过路由参数透传，本页不再出 scope-picker
-// 移除门店视图的客户分配（长按 + action-sheet），纯只读列表
+// 搜索框为空 = scope 内全部顾客分页（50/页），有 keyword = 关键字分页（50/页）
 import { callStaffApi } from '../../utils/cloud';
 import { canAccessManagement } from '../../utils/role';
 
-type TagType = 'active' | 'atRisk' | 'lost' | 'sleeping' | 'birthday' | 'birthdayNext';
-
 type ScopeType = 'all' | 'market' | 'store';
-
-type CustomerType = 'all' | 'member' | 'flow';
 
 interface CustomerListItem {
   id: string | null;
@@ -24,27 +20,20 @@ interface CustomerListItem {
   source: string;
 }
 
-interface CustomerStatsResponse {
-  active: number;
-  atRisk: number;
-  lost: number;
-  sleeping: number;
-  birthday: number;
-  birthdayNext: number;
-  total: number;
-  memberCount: number;
-  flowCount: number;
-}
-
-interface CustomerTagResponse {
+interface CustomerSearchResponse {
+  scope: { type: ScopeType; id: string | null; name: string };
   customers: CustomerListItem[];
-  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
 }
 
 interface ScopePayload {
   scopeType: ScopeType;
   scopeId: string | null;
 }
+
+const PAGE_SIZE = 50;
 
 const SCOPE_TYPE_LABELS: Record<ScopeType, string> = {
   all: '全部市场',
@@ -54,7 +43,6 @@ const SCOPE_TYPE_LABELS: Record<ScopeType, string> = {
 
 Page({
   data: {
-    // scope
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '',
@@ -64,24 +52,9 @@ Page({
     results: [] as CustomerListItem[],
     loading: false,
     searched: false,
-    // 统计数据
-    stats: {
-      active: 0,
-      atRisk: 0,
-      lost: 0,
-      sleeping: 0,
-      birthday: 0,
-      birthdayNext: 0,
-      total: 0,
-      memberCount: 0,
-      flowCount: 0,
-    } as CustomerStatsResponse,
-    // 统计栏：全部/会员客/流量客
-    customerType: 'all' as CustomerType,
-    // 当前选中的标签（空 = 不筛选）
-    activeTag: '' as '' | TagType,
-    tagPage: 1,
-    tagHasMore: false,
+    page: 1,
+    hasMore: false,
+    listError: false,
   },
 
   onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
@@ -101,19 +74,18 @@ Page({
       wx.reLaunch({ url: '/pages/workbench/workbench' });
       return;
     }
-    this.loadStats();
-    if (!this.data.activeTag && !this.data.searched) {
-      this.loadDefaultList();
+    if (this.data.results.length === 0 && !this.data.listError) {
+      this.loadPage(1, true);
     }
   },
 
   onPullDownRefresh() {
-    const done = () => wx.stopPullDownRefresh();
-    this.loadStats();
-    if (this.data.activeTag) {
-      this.loadByTag(this.data.activeTag as TagType, 1, true).finally(done);
-    } else {
-      this.loadDefaultList().finally(done);
+    this.loadPage(1, true).finally(() => wx.stopPullDownRefresh());
+  },
+
+  onReachBottom() {
+    if (!this.data.loading && this.data.hasMore) {
+      this.loadPage(this.data.page + 1, false);
     }
   },
 
@@ -121,112 +93,52 @@ Page({
     return { scopeType: this.data.scopeType, scopeId: this.data.scopeId };
   },
 
-  async loadStats() {
+  async loadPage(page: number, reset: boolean): Promise<void> {
+    this.setData({ loading: true, listError: false });
     try {
-      const stats = await callStaffApi<CustomerStatsResponse>('mgmtCustomer.stats', {
+      const keyword = this.data.searchKeyword.trim();
+      const payload: Record<string, unknown> = {
         ...this.scopePayload(),
+        page,
+        pageSize: PAGE_SIZE,
+      };
+      if (keyword) payload.keyword = keyword;
+      const data = await callStaffApi<CustomerSearchResponse>('mgmtCustomer.search', payload);
+      const newResults = reset
+        ? (data.customers || [])
+        : [...this.data.results, ...(data.customers || [])];
+      this.setData({
+        results: newResults,
+        page: data.page,
+        hasMore: data.hasMore,
+        searched: !!keyword,
       });
-      this.setData({ stats });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '统计加载失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    }
-  },
-
-  async loadDefaultList(): Promise<void> {
-    this.setData({ loading: true });
-    try {
-      const { customerType } = this.data;
-      const payload: Record<string, unknown> = { ...this.scopePayload() };
-      if (customerType !== 'all') payload.customerType = customerType;
-      const data = await callStaffApi<CustomerListItem[]>('mgmtCustomer.search', payload);
-      this.setData({ results: data || [], searched: false });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
       wx.showToast({ title: msg, icon: 'none' });
-      // 保留旧 results 防闪屏
+      if (reset && this.data.results.length === 0) {
+        this.setData({ listError: true });
+      }
     } finally {
       this.setData({ loading: false });
     }
+  },
+
+  onListRetry() {
+    this.loadPage(1, true);
   },
 
   onSearchChange(e: WechatMiniprogram.CustomEvent) {
-    this.setData({ searchKeyword: e.detail as unknown as string });
-    if (!e.detail.trim()) {
-      this.setData({ activeTag: '' });
-      this.loadDefaultList();
+    const value = e.detail as unknown as string;
+    this.setData({ searchKeyword: value });
+    if (!value.trim()) {
+      // 关键字清空 → 重置回默认列表第一页
+      this.loadPage(1, true);
     }
   },
 
-  async onSearch() {
-    const keyword = this.data.searchKeyword.trim();
-    if (!keyword) {
-      this.loadDefaultList();
-      return;
-    }
-    this.setData({ loading: true, searched: true, activeTag: '' });
-    try {
-      const data = await callStaffApi<CustomerListItem[]>('mgmtCustomer.search', {
-        ...this.scopePayload(),
-        keyword,
-      });
-      this.setData({ results: data || [] });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '搜索失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    } finally {
-      this.setData({ loading: false });
-    }
-  },
-
-  // 切换统计栏：全部/会员客/流量客
-  onCustomerTypeTap(e: WechatMiniprogram.TouchEvent) {
-    const type = e.currentTarget.dataset.type as CustomerType;
-    if (type === this.data.customerType) return;
-    this.setData({ customerType: type, activeTag: '', searchKeyword: '', searched: false });
-    this.loadDefaultList();
-  },
-
-  // 点击统计卡片筛选
-  onStatTap(e: WechatMiniprogram.TouchEvent) {
-    const tag = e.currentTarget.dataset.tag as TagType;
-    if (tag === this.data.activeTag) {
-      // 取消筛选
-      this.setData({ activeTag: '', searchKeyword: '' });
-      this.loadDefaultList();
-      return;
-    }
-    this.setData({ activeTag: tag, customerType: 'all', searchKeyword: '', searched: false, tagPage: 1 });
-    this.loadByTag(tag, 1, true);
-  },
-
-  async loadByTag(tag: TagType, page: number, reset: boolean) {
-    this.setData({ loading: true });
-    try {
-      const data = await callStaffApi<CustomerTagResponse>('mgmtCustomer.listByTag', {
-        ...this.scopePayload(),
-        tag,
-        page,
-        pageSize: 20,
-      });
-      const newResults = reset ? (data.customers || []) : [...this.data.results, ...(data.customers || [])];
-      this.setData({
-        results: newResults,
-        tagPage: page,
-        tagHasMore: newResults.length < data.total,
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : '加载失败';
-      wx.showToast({ title: msg, icon: 'none' });
-    } finally {
-      this.setData({ loading: false });
-    }
-  },
-
-  onReachBottom() {
-    if (this.data.activeTag && this.data.tagHasMore && !this.data.loading) {
-      this.loadByTag(this.data.activeTag as TagType, this.data.tagPage + 1, false);
-    }
+  onSearch() {
+    this.loadPage(1, true);
   },
 
   onItemTap(e: WechatMiniprogram.TouchEvent) {

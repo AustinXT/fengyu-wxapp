@@ -3,21 +3,20 @@
  *
  * 入口：mgmt-dashboard 首页"顾客档案"卡片（entry === 'customers'）
  *
- * 8 个 action：
- *   mgmtCustomer.stats         — 6 分类 + memberCount/flowCount（scope=client_wechat_users.bound_store_id）
- *   mgmtCustomer.search        — 默认列表 / 关键字 / 手机号（scope=bound_store_id）
- *   mgmtCustomer.listByTag     — tag 分页 20（scope=bound_store_id；service_date 也限定 scope）
+ * 6 个 action：
+ *   mgmtCustomer.search        — 默认列表 / 关键字 / 手机号（scope=bound_store_id；50/页分页）
  *   mgmtCustomer.detail        — 顾客档案详情（含越权防护：bound_store_id ∈ scope）
  *   mgmtCustomer.calendar      — 月度消费日历（scope=sale_orders.store_id）
  *   mgmtCustomer.paidOrders    — 已支付订单含明细（scope=sale_orders.store_id）
  *   mgmtCustomer.giftHistory   — 赠送记录（scope=sale_orders.store_id）
- *   mgmtCustomer.refundHistory — 退换记录（scope=sale_orders.store_id）
+ *   mgmtCustomer.refundHistory — 退换记录(scope=sale_orders.store_id)
  *
  * 决策点：
  *   D-mgmt-phone-mask     — 管理层 staffLevel ∈ {headquarters, market} 手机号不脱敏
  *   D-customer-scope-source — 顾客主键过滤用 bound_store_id（确定性主键）
  *   D-detail-record-scope — 详情消费/服务/赠送/退换均按 sale_orders.store_id ∈ scope 过滤
  *   D-cross-scope-customer — 顾客 bound 不在 scope → 详情接口 403
+ *   D-search-pagination   — search 默认/关键字分支按 user_id ASC 排序 + 50/页分页（hasMore 由 rows.length===pageSize 推断）
  */
 
 const pg = require('../db/pg')
@@ -245,153 +244,64 @@ async function assertCustomerInScope(boundStoreId, scopeType, scopeId) {
 }
 
 // ====================================================================
-// stats — 6 分类 + 会员/流量
-// ====================================================================
-
-async function stats(ctx) {
-  await requireManagementLevel()(ctx, async () => {})
-
-  const { scopeType, scopeId } = ctx.event.payload || {}
-  validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
-
-  const now = new Date()
-  const today = now.toISOString().slice(0, 10)
-  const currentMonth = now.getMonth() + 1
-  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
-
-  // service_orders alias = so（scope=sale_orders.store_id 同样适用 service_orders.store_id）
-  // client_wechat_users alias = c
-  // 主查询：scope 过滤 client_wechat_users + 同 scope 过滤 service_orders（保证统计活跃度仅限当前 scope 服务）
-  const cs = buildClientScope(scopeType, scopeId, 'c', 1)
-  const sc = buildSaleScope(scopeType, scopeId, 'so', 1 + cs.params.length)
-
-  const sql = `
-    SELECT
-      c.user_id,
-      c.birthday,
-      MAX(so.service_date) AS last_service_date
-    FROM client_wechat_users c
-    LEFT JOIN service_orders so
-      ON so.client_user_id = c.user_id
-     AND so.status = '已完成'
-     AND ${sc.sql}
-    WHERE ${cs.sql}
-    GROUP BY c.user_id, c.birthday
-  `
-
-  const rows = await pg.query(sql, [...cs.params, ...sc.params])
-
-  let active = 0,
-    atRisk = 0,
-    lost = 0,
-    sleeping = 0,
-    birthday = 0,
-    birthdayNext = 0
-
-  for (const r of rows) {
-    if (r.last_service_date) {
-      const diffDays = Math.floor(
-        (new Date(today) - new Date(r.last_service_date)) / 86400000,
-      )
-      if (diffDays <= 30) active++
-      else if (diffDays <= 60) atRisk++
-      else if (diffDays <= 90) lost++
-      else sleeping++
-    } else {
-      sleeping++
-    }
-    if (r.birthday) {
-      const bMonth = new Date(r.birthday).getMonth() + 1
-      if (bMonth === currentMonth) birthday++
-      if (bMonth === nextMonth) birthdayNext++
-    }
-  }
-
-  // 会员数：client_wechat_users.customer_id IS NOT NULL ∩ scope
-  const memberCs = buildClientScope(scopeType, scopeId, 'c', 1)
-  const memberSql = `
-    SELECT COUNT(*) AS cnt FROM client_wechat_users c
-     WHERE ${memberCs.sql}
-       AND c.customer_id IS NOT NULL`
-  const memberRows = await pg.query(memberSql, memberCs.params)
-  const memberCount = Number(memberRows[0]?.cnt || 0)
-
-  const scopeName = await resolveScopeName(scopeType, scopeId)
-
-  ctx.result = {
-    scope: { type: scopeType, id: scopeId || null, name: scopeName },
-    active,
-    atRisk,
-    lost,
-    sleeping,
-    birthday,
-    birthdayNext,
-    total: rows.length,
-    memberCount,
-    flowCount: rows.length - memberCount,
-  }
-}
-
-// ====================================================================
-// search — 默认列表 / 关键字 / 手机号
+// search — 默认列表 / 关键字 / 手机号（50/页分页）
 // ====================================================================
 
 async function search(ctx) {
   await requireManagementLevel()(ctx, async () => {})
 
-  const { keyword, phone, customerType, scopeType, scopeId } = ctx.event.payload || {}
+  const { keyword, phone, page, pageSize, scopeType, scopeId } = ctx.event.payload || {}
   validateScopeParams(scopeType, scopeId)
   validateScope(ctx.auth, scopeType, scopeId)
 
   const fullPhone = isMgmtFullPhone(ctx.auth)
 
-  const typeFilter =
-    customerType === 'member'
-      ? ' AND c.customer_id IS NOT NULL'
-      : customerType === 'flow'
-        ? ' AND c.customer_id IS NULL'
-        : ''
+  const safePage = Math.max(1, Number(page) || 1)
+  const safePageSize = Math.min(100, Math.max(1, Number(pageSize) || 50))
+  const offset = (safePage - 1) * safePageSize
 
-  const limit = 20
   let rows = []
 
   if (phone) {
-    // 手机号精确：scope 不参与，按 phone 直接命中（仍按 scope 二次过滤）
+    // 手机号精确：scope 不参与，按 phone 直接命中（仍按 scope 二次过滤）；不分页（最多 0~1 命中）
     const cs = buildClientScope(scopeType, scopeId, 'c', 2)
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name, c.birthday
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-        WHERE c.phone = $1${typeFilter}
+        WHERE c.phone = $1
           AND ${cs.sql}`,
       [phone.trim(), ...cs.params],
     )
   } else if (keyword && keyword.trim()) {
     const cs = buildClientScope(scopeType, scopeId, 'c', 2)
-    const lastIdx = 2 + cs.params.length
+    const limitIdx = 2 + cs.params.length
+    const offsetIdx = limitIdx + 1
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name, c.birthday
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
         WHERE (c.phone LIKE $1 OR c.name LIKE $1)
-          AND ${cs.sql}${typeFilter}
-        LIMIT $${lastIdx}`,
-      [`%${keyword.trim()}%`, ...cs.params, limit],
+          AND ${cs.sql}
+        ORDER BY c.user_id ASC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      [`%${keyword.trim()}%`, ...cs.params, safePageSize, offset],
     )
   } else {
     const cs = buildClientScope(scopeType, scopeId, 'c', 1)
-    const lastIdx = 1 + cs.params.length
+    const limitIdx = 1 + cs.params.length
+    const offsetIdx = limitIdx + 1
     rows = await pg.query(
       `SELECT c.user_id, c.phone, c.name, c.customer_id, c.member_level,
               c.bound_store_id, s.store_name, c.birthday
          FROM client_wechat_users c
          LEFT JOIN stores s ON s.store_id = c.bound_store_id
-        WHERE ${cs.sql}${typeFilter}
-        LIMIT $${lastIdx}`,
-      [...cs.params, limit],
+        WHERE ${cs.sql}
+        ORDER BY c.user_id ASC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      [...cs.params, safePageSize, offset],
     )
   }
 
@@ -487,129 +397,9 @@ async function search(ctx) {
   ctx.result = {
     scope: { type: scopeType, id: scopeId || null, name: scopeName },
     customers,
-  }
-}
-
-// ====================================================================
-// listByTag — tag 分页 20
-// ====================================================================
-
-async function listByTag(ctx) {
-  await requireManagementLevel()(ctx, async () => {})
-
-  const { tag, page = 1, pageSize = 20, scopeType, scopeId } =
-    ctx.event.payload || {}
-  if (!tag) throw new Error('INVALID_PARAMS: 缺少 tag 参数')
-  validateScopeParams(scopeType, scopeId)
-  validateScope(ctx.auth, scopeType, scopeId)
-
-  const fullPhone = isMgmtFullPhone(ctx.auth)
-
-  const now = new Date()
-  const today = now.toISOString().slice(0, 10)
-  const currentMonth = now.getMonth() + 1
-  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1
-  const yearStart = new Date(now.getFullYear(), 0, 1).toISOString().slice(0, 10)
-
-  // 主 SQL：c scope + so scope + sale_orders scope
-  // 参数顺序：$1=yearStart, $2..=cs.params, $...=sc_so.params, $...=sc_o.params
-  const cs = buildClientScope(scopeType, scopeId, 'c', 2)
-  const scSo = buildSaleScope(scopeType, scopeId, 'so', 2 + cs.params.length)
-  const scO = buildSaleScope(scopeType, scopeId, 'o', 2 + cs.params.length + scSo.params.length)
-
-  const sql = `
-    SELECT
-      c.user_id, c.name, c.phone, c.birthday, c.member_level,
-      MAX(so.service_date) AS last_service_date,
-      COALESCE(annual.year_total, 0) AS year_consumption
-    FROM client_wechat_users c
-    LEFT JOIN service_orders so
-      ON so.client_user_id = c.user_id
-     AND so.status = '已完成'
-     AND ${scSo.sql}
-    LEFT JOIN (
-      SELECT o.client_user_id, SUM(si.received::numeric) AS year_total
-        FROM sale_orders o
-        JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-       WHERE o.status = '已支付'
-         AND o.paid_at >= $1::date
-         AND ${scO.sql}
-       GROUP BY o.client_user_id
-    ) annual ON annual.client_user_id = c.user_id
-    WHERE ${cs.sql}
-    GROUP BY c.user_id, c.name, c.phone, c.birthday, c.member_level, annual.year_total
-  `
-
-  const allRows = await pg.query(sql, [
-    yearStart,
-    ...cs.params,
-    ...scSo.params,
-    ...scO.params,
-  ])
-
-  const filtered = allRows.filter((r) => {
-    if (tag === 'birthday') {
-      return r.birthday && new Date(r.birthday).getMonth() + 1 === currentMonth
-    }
-    if (tag === 'birthdayNext') {
-      return r.birthday && new Date(r.birthday).getMonth() + 1 === nextMonth
-    }
-    const diffDays = r.last_service_date
-      ? Math.floor((new Date(today) - new Date(r.last_service_date)) / 86400000)
-      : Infinity
-    if (tag === 'active') return diffDays <= 30
-    if (tag === 'atRisk') return diffDays > 30 && diffDays <= 60
-    if (tag === 'lost') return diffDays > 60 && diffDays <= 90
-    if (tag === 'sleeping') return diffDays > 90
-    return true
-  })
-
-  const offset = (page - 1) * pageSize
-  const paged = filtered.slice(offset, offset + pageSize)
-
-  const pagedUserIds = paged.map((r) => r.user_id).filter(Boolean)
-  const lastPurchaseMap = {}
-  if (pagedUserIds.length > 0) {
-    const sc3 = buildSaleScope(scopeType, scopeId, 'o', 2)
-    const lastPurchaseRows = await pg.query(
-      `SELECT DISTINCT ON (o.client_user_id)
-              o.client_user_id, si.product_name AS last_product_name
-         FROM sale_orders o
-         JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-        WHERE o.client_user_id = ANY($1)
-          AND o.status IN ('已支付', '已完成')
-          AND si.item_direction = '购买'
-          AND ${sc3.sql}
-        ORDER BY o.client_user_id, o.paid_at DESC NULLS LAST, si.sale_item_id ASC`,
-      [pagedUserIds, ...sc3.params],
-    )
-    for (const r of lastPurchaseRows) {
-      lastPurchaseMap[r.client_user_id] = r.last_product_name
-    }
-  }
-
-  const scopeName = await resolveScopeName(scopeType, scopeId)
-
-  ctx.result = {
-    scope: { type: scopeType, id: scopeId || null, name: scopeName },
-    total: filtered.length,
-    customers: paged.map((r) => {
-      const yearTotal = Number(r.year_consumption) || 0
-      return {
-        id: null,
-        clientUserId: r.user_id,
-        name: r.name || '',
-        phone: fullPhone ? (r.phone || '') : maskPhone(r.phone),
-        phoneMasked: maskPhone(r.phone),
-        memberLevel: r.member_level,
-        lastServiceDate: r.last_service_date,
-        lastPurchaseName: lastPurchaseMap[r.user_id] || null,
-        birthday: r.birthday,
-        tier:
-          yearTotal >= 20000 ? 'diamond' : yearTotal >= 5000 ? 'iron' : yearTotal > 0 ? 'fan' : null,
-        source: 'miniprogram',
-      }
-    }),
+    page: safePage,
+    pageSize: safePageSize,
+    hasMore: phone ? false : customers.length === safePageSize,
   }
 }
 
@@ -1090,9 +880,7 @@ async function refundHistory(ctx) {
 }
 
 module.exports = {
-  stats,
   search,
-  listByTag,
   detail,
   calendar,
   paidOrders,

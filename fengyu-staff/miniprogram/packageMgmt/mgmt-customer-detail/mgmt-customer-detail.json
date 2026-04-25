@@ -1,5 +1,6 @@
 {
   "navigationBarTitleText": "顾客档案",
+  "enablePullDownRefresh": true,
   "usingComponents": {
     "van-cell": "@vant/weapp/cell/index",
     "van-cell-group": "@vant/weapp/cell-group/index",
@@ -8,6 +9,7 @@
     "van-loading": "@vant/weapp/loading/index",
     "van-empty": "@vant/weapp/empty/index",
     "van-tab": "@vant/weapp/tab/index",
-    "van-tabs": "@vant/weapp/tabs/index"
+    "van-tabs": "@vant/weapp/tabs/index",
+    "mgmt-data-state": "../../components/mgmt-data-state/mgmt-data-state"
   }
 }

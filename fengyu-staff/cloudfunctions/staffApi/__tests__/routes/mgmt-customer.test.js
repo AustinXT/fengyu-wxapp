@@ -1,9 +1,9 @@
 /**
- * mgmtCustomer 路由测试 — 8 actions（顾客档案管理层视图）
+ * mgmtCustomer 路由测试 — 6 actions（顾客档案管理层视图）
  *
  * 覆盖：
  *   - 入参/权限校验（INVALID_PARAMS / PERMISSION_DENIED）
- *   - stats / search / listByTag SQL 形态（scope 三档：all / market / store）
+ *   - search SQL 形态（scope 三档：all / market / store）+ 50/页分页
  *   - detail 越权防护（顾客 bound_store_id 不在 scope）
  *   - detail 出数（消费 / 频率 / 常购按 scope 过滤）
  *   - calendar / paidOrders / giftHistory / refundHistory 的 sale_orders.store_id IN scope 子查询
@@ -13,9 +13,7 @@
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
 const {
-  stats,
   search,
-  listByTag,
   detail,
   calendar,
   paidOrders,
@@ -52,17 +50,11 @@ function makeMarketCtx(payload = {}) {
 
 /**
  * 通用 mock：按 SQL 关键字匹配返回 rows
- *   stats 主 SQL（有 last_service_date 计算）→ statsRows
- *   memberCount SQL（customer_id IS NOT NULL）→ [{ cnt: memberCount }]
  *   resolveScopeName → name 兜底
  */
 function setupCommonMocks(opts = {}) {
   const {
-    statsRows = [],
-    memberCount = 0,
     searchRows = [],
-    listByTagRows = [],
-    listByTagPurchaseRows = [],
     detailRows = null,
     detailVisitRows = [{ last_date: null, visit_count_90d: 0 }],
     detailTopProductRows = [],
@@ -104,42 +96,13 @@ function setupCommonMocks(opts = {}) {
       return customerInScope ? [{ '?column?': 1 }] : []
     }
 
-    // stats memberCount SQL
-    if (
-      /FROM\s+client_wechat_users\s+c/.test(sql) &&
-      /COUNT\(\*\)\s+AS\s+cnt/.test(sql) &&
-      /customer_id\s+IS\s+NOT\s+NULL/.test(sql)
-    ) {
-      return [{ cnt: memberCount }]
-    }
-
-    // stats 主 SQL：含 MAX(so.service_date) AS last_service_date 且 GROUP BY c.user_id, c.birthday
-    if (
-      /MAX\(so\.service_date\)\s+AS\s+last_service_date/.test(sql) &&
-      /FROM\s+client_wechat_users\s+c/.test(sql) &&
-      /GROUP BY\s+c\.user_id,\s*c\.birthday\b/.test(sql) &&
-      !/year_consumption/.test(sql)
-    ) {
-      return statsRows
-    }
-
-    // listByTag 主 SQL：含 year_consumption + annual.year_total
-    if (
-      /annual\.year_total/.test(sql) &&
-      /FROM\s+client_wechat_users\s+c/.test(sql)
-    ) {
-      return listByTagRows
-    }
-
-    // listByTag 最近购买
+    // search 最近购买（仅 search 在用）
     if (
       /DISTINCT ON\s*\(\s*o\.client_user_id\s*\)/.test(sql) &&
       /si\.product_name\s+AS\s+last_product_name/.test(sql) &&
       /JOIN\s+sale_items\s+si/.test(sql)
     ) {
-      // search.* 也共用
-      // listByTag 用单参数 ANY；search 共用同 SQL
-      return lastPurchaseRows.length ? lastPurchaseRows : listByTagPurchaseRows
+      return lastPurchaseRows
     }
 
     // search 主 SQL：SELECT c.user_id ... LIMIT $X
@@ -289,10 +252,10 @@ function setupCommonMocks(opts = {}) {
 // ===================================================================
 
 describe('mgmtCustomer 参数与权限校验', () => {
-  test('stats 缺 scopeType 抛 INVALID_PARAMS', async () => {
+  test('search 缺 scopeType 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({})
-    await expect(stats(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
+    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
   })
 
   test('search 未知 scopeType 抛 INVALID_PARAMS', async () => {
@@ -301,16 +264,10 @@ describe('mgmtCustomer 参数与权限校验', () => {
     await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
   })
 
-  test('listByTag scopeType=market 缺 scopeId 抛 INVALID_PARAMS', async () => {
+  test('search scopeType=market 缺 scopeId 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
-    const ctx = makeHqCtx({ tag: 'active', scopeType: 'market' })
-    await expect(listByTag(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
-  })
-
-  test('listByTag 缺 tag 抛 INVALID_PARAMS', async () => {
-    setupCommonMocks()
-    const ctx = makeHqCtx({ scopeType: 'all' })
-    await expect(listByTag(ctx)).rejects.toThrow(/INVALID_PARAMS.*tag/)
+    const ctx = makeHqCtx({ scopeType: 'market' })
+    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
   })
 
   test('detail 缺三个 ID 抛 INVALID_PARAMS', async () => {
@@ -319,10 +276,10 @@ describe('mgmtCustomer 参数与权限校验', () => {
     await expect(detail(ctx)).rejects.toThrow(/INVALID_PARAMS/)
   })
 
-  test('store_manager 账号被 requireManagementLevel 拦截（stats）', async () => {
+  test('store_manager 账号被 requireManagementLevel 拦截（search）', async () => {
     setupCommonMocks()
     const ctx = createManagerCtx({ scopeType: 'all' })
-    await expect(stats(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    await expect(search(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
 
   test('market 账号选 all → PERMISSION_DENIED（search）', async () => {
@@ -331,10 +288,10 @@ describe('mgmtCustomer 参数与权限校验', () => {
     await expect(search(ctx)).rejects.toThrow(/PERMISSION_DENIED.*全部市场/)
   })
 
-  test('market 账号选其他 market → PERMISSION_DENIED（listByTag）', async () => {
+  test('market 账号选其他 market → PERMISSION_DENIED（search）', async () => {
     setupCommonMocks()
-    const ctx = makeMarketCtx({ tag: 'active', scopeType: 'market', scopeId: 'mkt-B' })
-    await expect(listByTag(ctx)).rejects.toThrow(/PERMISSION_DENIED.*越权.*市场/)
+    const ctx = makeMarketCtx({ scopeType: 'market', scopeId: 'mkt-B' })
+    await expect(search(ctx)).rejects.toThrow(/PERMISSION_DENIED.*越权.*市场/)
   })
 
   test('market 账号越权 store → PERMISSION_DENIED（detail）', async () => {
@@ -349,125 +306,11 @@ describe('mgmtCustomer 参数与权限校验', () => {
 })
 
 // ===================================================================
-// stats SQL 形态
-// ===================================================================
-
-describe('mgmtCustomer.stats SQL 形态', () => {
-  test('scope=all：主 SQL 与 memberCount SQL 都用 WHERE TRUE', async () => {
-    setupCommonMocks({ statsRows: [], memberCount: 0 })
-    const ctx = makeHqCtx({ scopeType: 'all' })
-    await stats(ctx)
-
-    const sqls = pg.query.mock.calls.map((c) => c[0])
-    const mainSql = sqls.find(
-      (s) =>
-        /MAX\(so\.service_date\)\s+AS\s+last_service_date/.test(s) &&
-        /GROUP BY\s+c\.user_id/.test(s),
-    )
-    const memberSql = sqls.find(
-      (s) =>
-        /FROM\s+client_wechat_users\s+c/.test(s) &&
-        /customer_id\s+IS\s+NOT\s+NULL/.test(s),
-    )
-
-    expect(mainSql).toBeTruthy()
-    expect(memberSql).toBeTruthy()
-    // c.bound_store_id 与 so.store_id 都使用 TRUE
-    expect(mainSql).toMatch(/WHERE\s+TRUE/)
-    expect(memberSql).toMatch(/WHERE\s+TRUE/)
-  })
-
-  test('scope=market：c.bound_store_id 与 so.store_id 都走 stores JOIN org_nodes', async () => {
-    setupCommonMocks()
-    const ctx = makeHqCtx({ scopeType: 'market', scopeId: 'mkt-A' })
-    await stats(ctx)
-
-    const sqls = pg.query.mock.calls.map((c) => c[0])
-    const mainSql = sqls.find(
-      (s) =>
-        /MAX\(so\.service_date\)\s+AS\s+last_service_date/.test(s) &&
-        /GROUP BY\s+c\.user_id/.test(s),
-    )
-    const memberSql = sqls.find(
-      (s) =>
-        /FROM\s+client_wechat_users\s+c/.test(s) &&
-        /customer_id\s+IS\s+NOT\s+NULL/.test(s),
-    )
-
-    expect(mainSql).toMatch(
-      /c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/,
-    )
-    expect(mainSql).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(mainSql).toMatch(/o\.type\s*=\s*'门店'/)
-
-    expect(memberSql).toMatch(
-      /c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/,
-    )
-  })
-
-  test('scope=store：c.bound_store_id = $1, so.store_id = $2', async () => {
-    setupCommonMocks()
-    const ctx = makeHqCtx({ scopeType: 'store', scopeId: 'store-001' })
-    await stats(ctx)
-
-    const sqls = pg.query.mock.calls.map((c) => c[0])
-    const mainSql = sqls.find(
-      (s) =>
-        /MAX\(so\.service_date\)\s+AS\s+last_service_date/.test(s) &&
-        /GROUP BY\s+c\.user_id/.test(s),
-    )
-    const memberSql = sqls.find(
-      (s) =>
-        /FROM\s+client_wechat_users\s+c/.test(s) &&
-        /customer_id\s+IS\s+NOT\s+NULL/.test(s),
-    )
-
-    // c.bound_store_id = $1 (cs占$1), so.store_id = $2 (sc 紧随)
-    expect(mainSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
-    expect(mainSql).toMatch(/so\.store_id\s*=\s*\$2/)
-    expect(memberSql).toMatch(/c\.bound_store_id\s*=\s*\$1/)
-  })
-
-  test('出数：active/atRisk/lost/sleeping/birthday 分类 + memberCount/flowCount', async () => {
-    const today = new Date()
-    const recentDate = new Date(today.getTime() - 10 * 86400000) // 10 天前
-    const atRiskDate = new Date(today.getTime() - 45 * 86400000)
-    const lostDate = new Date(today.getTime() - 75 * 86400000)
-    const sleepingDate = new Date(today.getTime() - 200 * 86400000)
-    const m = today.getMonth() + 1
-    const birthdayThisMonth = `1990-${String(m).padStart(2, '0')}-15`
-
-    setupCommonMocks({
-      statsRows: [
-        { user_id: 'u1', last_service_date: recentDate, birthday: birthdayThisMonth },
-        { user_id: 'u2', last_service_date: atRiskDate, birthday: null },
-        { user_id: 'u3', last_service_date: lostDate, birthday: null },
-        { user_id: 'u4', last_service_date: sleepingDate, birthday: null },
-        { user_id: 'u5', last_service_date: null, birthday: null },
-      ],
-      memberCount: 3,
-    })
-
-    const ctx = makeHqCtx({ scopeType: 'all' })
-    await stats(ctx)
-
-    expect(ctx.result.active).toBe(1)
-    expect(ctx.result.atRisk).toBe(1)
-    expect(ctx.result.lost).toBe(1)
-    expect(ctx.result.sleeping).toBe(2) // sleepingDate + null
-    expect(ctx.result.birthday).toBe(1)
-    expect(ctx.result.total).toBe(5)
-    expect(ctx.result.memberCount).toBe(3)
-    expect(ctx.result.flowCount).toBe(2)
-  })
-})
-
-// ===================================================================
 // search SQL 形态
 // ===================================================================
 
 describe('mgmtCustomer.search SQL 形态', () => {
-  test('默认（无 keyword/phone）scope=all：用 WHERE TRUE LIMIT $1', async () => {
+  test('默认（无 keyword/phone）scope=all：WHERE TRUE + ORDER BY c.user_id ASC + LIMIT $1 OFFSET $2', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ scopeType: 'all' })
     await search(ctx)
@@ -476,15 +319,16 @@ describe('mgmtCustomer.search SQL 形态', () => {
     const mainSql = sqls.find((s) => /SELECT\s+c\.user_id,\s+c\.phone/.test(s))
     expect(mainSql).toBeTruthy()
     expect(mainSql).toMatch(/WHERE\s+TRUE/)
-    expect(mainSql).toMatch(/LIMIT\s+\$1/)
+    expect(mainSql).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
+    expect(mainSql).toMatch(/LIMIT\s+\$1\s+OFFSET\s+\$2/)
 
     const call = pg.query.mock.calls.find((c) =>
       /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]),
     )
-    expect(call[1]).toEqual([20])
+    expect(call[1]).toEqual([50, 0])
   })
 
-  test('默认 scope=market：用 c.bound_store_id IN (...)，参数 [scopeId, 20]', async () => {
+  test('默认 scope=market：c.bound_store_id IN (...)，参数 [scopeId, 50, 0]', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ scopeType: 'market', scopeId: 'mkt-A' })
     await search(ctx)
@@ -494,11 +338,12 @@ describe('mgmtCustomer.search SQL 形态', () => {
     )
     expect(call[0]).toMatch(/c\.bound_store_id\s+IN\s*\(/)
     expect(call[0]).toMatch(/o\.parent_id\s*=\s*\$1/)
-    expect(call[0]).toMatch(/LIMIT\s+\$2/)
-    expect(call[1]).toEqual(['mkt-A', 20])
+    expect(call[0]).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
+    expect(call[0]).toMatch(/LIMIT\s+\$2\s+OFFSET\s+\$3/)
+    expect(call[1]).toEqual(['mkt-A', 50, 0])
   })
 
-  test('默认 scope=store：用 c.bound_store_id = $1，参数 [scopeId, 20]', async () => {
+  test('默认 scope=store：c.bound_store_id = $1，参数 [scopeId, 50, 0]', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ scopeType: 'store', scopeId: 'store-001' })
     await search(ctx)
@@ -507,11 +352,12 @@ describe('mgmtCustomer.search SQL 形态', () => {
       /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /LIMIT/.test(c[0]),
     )
     expect(call[0]).toMatch(/c\.bound_store_id\s*=\s*\$1/)
-    expect(call[0]).toMatch(/LIMIT\s+\$2/)
-    expect(call[1]).toEqual(['store-001', 20])
+    expect(call[0]).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
+    expect(call[0]).toMatch(/LIMIT\s+\$2\s+OFFSET\s+\$3/)
+    expect(call[1]).toEqual(['store-001', 50, 0])
   })
 
-  test('keyword=张 scope=market：LIKE $1 + c.bound_store_id IN $2 + LIMIT $3', async () => {
+  test('keyword=张 scope=market：LIKE $1 + c.bound_store_id IN $2 + LIMIT $3 OFFSET $4', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({ keyword: '张', scopeType: 'market', scopeId: 'mkt-A' })
     await search(ctx)
@@ -523,11 +369,12 @@ describe('mgmtCustomer.search SQL 形态', () => {
     expect(call[0]).toMatch(/\(c\.phone\s+LIKE\s+\$1\s+OR\s+c\.name\s+LIKE\s+\$1\)/)
     expect(call[0]).toMatch(/c\.bound_store_id\s+IN\s*\(/)
     expect(call[0]).toMatch(/o\.parent_id\s*=\s*\$2/)
-    expect(call[0]).toMatch(/LIMIT\s+\$3/)
-    expect(call[1]).toEqual(['%张%', 'mkt-A', 20])
+    expect(call[0]).toMatch(/ORDER BY\s+c\.user_id\s+ASC/)
+    expect(call[0]).toMatch(/LIMIT\s+\$3\s+OFFSET\s+\$4/)
+    expect(call[1]).toEqual(['%张%', 'mkt-A', 50, 0])
   })
 
-  test('phone=13800001111 scope=store：c.phone = $1 AND c.bound_store_id = $2', async () => {
+  test('phone=13800001111 scope=store：c.phone = $1 AND c.bound_store_id = $2（不分页）', async () => {
     setupCommonMocks({ searchRows: [] })
     const ctx = makeHqCtx({
       phone: '13800001111',
@@ -540,88 +387,112 @@ describe('mgmtCustomer.search SQL 形态', () => {
       /c\.phone\s*=\s*\$1/.test(c[0]) && /c\.bound_store_id\s*=\s*\$2/.test(c[0]),
     )
     expect(call).toBeTruthy()
+    expect(call[0]).not.toMatch(/LIMIT/)
+    expect(call[0]).not.toMatch(/OFFSET/)
     expect(call[1]).toEqual(['13800001111', 'store-001'])
   })
-})
 
-// ===================================================================
-// listByTag SQL 形态
-// ===================================================================
+  test('page=2 scope=all：OFFSET=50（pageSize 默认 50）', async () => {
+    setupCommonMocks({ searchRows: [] })
+    const ctx = makeHqCtx({ scopeType: 'all', page: 2 })
+    await search(ctx)
 
-describe('mgmtCustomer.listByTag SQL 形态', () => {
-  test('scope=all：主 SQL c/so/o 全部 WHERE TRUE，参数仅 yearStart', async () => {
-    setupCommonMocks({ listByTagRows: [] })
-    const ctx = makeHqCtx({ tag: 'active', scopeType: 'all' })
-    await listByTag(ctx)
-
-    const call = pg.query.mock.calls.find((c) => /annual\.year_total/.test(c[0]))
-    expect(call).toBeTruthy()
-    // 三处 scope 都退化为 TRUE
-    const trueCount = (call[0].match(/\bTRUE\b/g) || []).length
-    expect(trueCount).toBeGreaterThanOrEqual(3)
-    // 参数：[yearStart]（年初日期字符串，可能受时区影响显示为前一年 12-31）
-    expect(call[1].length).toBe(1)
-    expect(call[1][0]).toMatch(/^\d{4}-(?:01-01|12-31)$/)
+    const call = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    expect(call[1]).toEqual([50, 50])
   })
 
-  test('scope=market：主 SQL 含 so.store_id IN + o.store_id IN + c.bound_store_id IN', async () => {
-    setupCommonMocks({ listByTagRows: [] })
-    const ctx = makeHqCtx({ tag: 'active', scopeType: 'market', scopeId: 'mkt-A' })
-    await listByTag(ctx)
+  test('pageSize=999 → 截断为 100', async () => {
+    setupCommonMocks({ searchRows: [] })
+    const ctx = makeHqCtx({ scopeType: 'all', pageSize: 999 })
+    await search(ctx)
 
-    const call = pg.query.mock.calls.find((c) => /annual\.year_total/.test(c[0]))
-    expect(call[0]).toMatch(/so\.store_id\s+IN\s*\(/)
-    expect(call[0]).toMatch(/o\.store_id\s+IN\s*\(/)
-    expect(call[0]).toMatch(/c\.bound_store_id\s+IN\s*\(/)
-    // 参数：[yearStart, mkt-A(c), mkt-A(so), mkt-A(o)]
-    expect(call[1].slice(1)).toEqual(['mkt-A', 'mkt-A', 'mkt-A'])
+    const call = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    expect(call[1]).toEqual([100, 0])
   })
 
-  test('scope=store：主 SQL 含 so.store_id = $X + o.store_id = $Y + c.bound_store_id = $Z', async () => {
-    setupCommonMocks({ listByTagRows: [] })
-    const ctx = makeHqCtx({ tag: 'active', scopeType: 'store', scopeId: 'store-001' })
-    await listByTag(ctx)
+  test('page=0 / 负数 → 兜底为 page=1', async () => {
+    setupCommonMocks({ searchRows: [] })
+    const ctx = makeHqCtx({ scopeType: 'all', page: -3 })
+    await search(ctx)
 
-    const call = pg.query.mock.calls.find((c) => /annual\.year_total/.test(c[0]))
-    expect(call[0]).toMatch(/so\.store_id\s*=\s*\$/)
-    expect(call[0]).toMatch(/o\.store_id\s*=\s*\$/)
-    expect(call[0]).toMatch(/c\.bound_store_id\s*=\s*\$/)
-    expect(call[1]).toEqual([expect.any(String), 'store-001', 'store-001', 'store-001'])
+    const call = pg.query.mock.calls.find((c) =>
+      /SELECT\s+c\.user_id,\s+c\.phone/.test(c[0]) && /OFFSET/.test(c[0]),
+    )
+    expect(call[1]).toEqual([50, 0])
+    expect(ctx.result.page).toBe(1)
   })
 
-  test('tag=birthday 出数：仅返回当月生日；pageSize=20 默认', async () => {
-    const m = new Date().getMonth() + 1
-    const monthStr = String(m).padStart(2, '0')
+  test('返回结构：customers + page + pageSize + hasMore', async () => {
     setupCommonMocks({
-      listByTagRows: [
+      searchRows: Array.from({ length: 50 }, (_, i) => ({
+        user_id: `u${i}`,
+        phone: '13800000000',
+        name: `n${i}`,
+        customer_id: null,
+        member_level: null,
+        bound_store_id: null,
+        store_name: null,
+        birthday: null,
+      })),
+    })
+    const ctx = makeHqCtx({ scopeType: 'all', page: 1 })
+    await search(ctx)
+
+    expect(ctx.result.page).toBe(1)
+    expect(ctx.result.pageSize).toBe(50)
+    expect(ctx.result.hasMore).toBe(true)
+    expect(ctx.result.customers.length).toBe(50)
+  })
+
+  test('返回行数 < pageSize → hasMore=false', async () => {
+    setupCommonMocks({
+      searchRows: [
         {
           user_id: 'u1',
-          name: '张三',
-          phone: '13800000001',
-          birthday: `1990-${monthStr}-10`,
-          member_level: 'star',
-          last_service_date: null,
-          year_consumption: 8000,
-        },
-        {
-          user_id: 'u2',
-          name: '李四',
-          phone: '13800000002',
-          birthday: `1990-${m === 12 ? '01' : String(m + 1).padStart(2, '0')}-10`,
+          phone: '13800000000',
+          name: 'n1',
+          customer_id: null,
           member_level: null,
-          last_service_date: null,
-          year_consumption: 0,
+          bound_store_id: null,
+          store_name: null,
+          birthday: null,
         },
       ],
     })
-    const ctx = makeHqCtx({ tag: 'birthday', scopeType: 'all' })
-    await listByTag(ctx)
+    const ctx = makeHqCtx({ scopeType: 'all', page: 1 })
+    await search(ctx)
 
-    expect(ctx.result.total).toBe(1)
+    expect(ctx.result.hasMore).toBe(false)
     expect(ctx.result.customers.length).toBe(1)
-    expect(ctx.result.customers[0].clientUserId).toBe('u1')
-    // tier: 8000 → iron
-    expect(ctx.result.customers[0].tier).toBe('iron')
+  })
+
+  test('phone 命中分支 → hasMore 恒为 false', async () => {
+    setupCommonMocks({
+      searchRows: [
+        {
+          user_id: 'u1',
+          phone: '13800001111',
+          name: 'n1',
+          customer_id: null,
+          member_level: null,
+          bound_store_id: 'store-001',
+          store_name: 'A 店',
+          birthday: null,
+        },
+      ],
+    })
+    const ctx = makeHqCtx({
+      phone: '13800001111',
+      scopeType: 'store',
+      scopeId: 'store-001',
+    })
+    await search(ctx)
+
+    expect(ctx.result.hasMore).toBe(false)
   })
 })
 

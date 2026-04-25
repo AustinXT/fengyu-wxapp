@@ -115,9 +115,7 @@ const routes = {
   'mgmtTraffic.summary':       () => require('./routes/mgmt-traffic').summary,
 
   // 管理层 - 顾客档案子页
-  'mgmtCustomer.stats':         () => require('./routes/mgmt-customer').stats,
   'mgmtCustomer.search':        () => require('./routes/mgmt-customer').search,
-  'mgmtCustomer.listByTag':     () => require('./routes/mgmt-customer').listByTag,
   'mgmtCustomer.detail':        () => require('./routes/mgmt-customer').detail,
   'mgmtCustomer.calendar':      () => require('./routes/mgmt-customer').calendar,
   'mgmtCustomer.paidOrders':    () => require('./routes/mgmt-customer').paidOrders,

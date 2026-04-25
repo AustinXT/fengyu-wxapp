@@ -152,6 +152,7 @@ interface RefundRecord {
 Page({
   data: {
     loading: false,
+    customerError: false,
     customer: null as CustomerDetail | null,
     activeTab: 0,
     // scope 透传
@@ -234,7 +235,7 @@ Page({
 
   async loadCustomer() {
     if (!this._clientUserId) return;
-    this.setData({ loading: true });
+    this.setData({ loading: true, customerError: false });
     try {
       const customer = await callStaffApi<CustomerDetail>('mgmtCustomer.detail', {
         clientUserId: this._clientUserId,
@@ -247,11 +248,39 @@ Page({
         wx.showToast({ title: '顾客不在当前数据范围', icon: 'none' });
         setTimeout(() => wx.navigateBack({ delta: 1 }), 800);
       } else {
+        this.setData({ customerError: true });
         wx.showToast({ title: msg, icon: 'none' });
       }
     } finally {
       this.setData({ loading: false });
     }
+  },
+
+  onCustomerRetry() {
+    this.loadCustomer();
+  },
+
+  onPullDownRefresh() {
+    const finish = () => wx.stopPullDownRefresh();
+    const tab = this.data.activeTab;
+    let task: Promise<unknown> = this.loadCustomer();
+    if (tab === 1) {
+      this.setData({ calendarLoaded: false });
+      task = Promise.all([task, this.loadCalendar()]);
+    } else if (tab === 2) {
+      this.setData({ purchaseLoaded: false });
+      task = Promise.all([task, this.loadPurchaseHistory()]);
+    } else if (tab === 3) {
+      this.setData({ cardsLoaded: false });
+      task = Promise.all([task, this.loadTreatmentCards()]);
+    } else if (tab === 4) {
+      this.setData({ giftLoaded: false });
+      task = Promise.all([task, this.loadGiftHistory()]);
+    } else if (tab === 5) {
+      this.setData({ refundLoaded: false });
+      task = Promise.all([task, this.loadRefundHistory()]);
+    }
+    task.finally(finish);
   },
 
   onTabChange(e: WechatMiniprogram.CustomEvent) {
