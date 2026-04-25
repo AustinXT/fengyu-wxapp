@@ -106,6 +106,13 @@
       "when": 1777126189207,
       "tag": "0014_broad_thunderbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1777128179954,
+      "tag": "0015_product_type_rename_yuanzhuang_to_jiaju",
+      "breakpoints": true
     }
   ]
 }
