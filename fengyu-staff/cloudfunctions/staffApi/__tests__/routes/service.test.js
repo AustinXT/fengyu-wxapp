@@ -37,7 +37,7 @@ describe('service.create', () => {
         client_user_id: 'client-001',
         client_phone: '138',
       }])
-      // 顾客无进行中的护理单
+      // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
       // generateServiceOrderId
       .mockResolvedValueOnce([])
@@ -81,7 +81,7 @@ describe('service.create', () => {
       }])
       // 2. resolvedClientUserId 从 order 获取（L130-136）
       .mockResolvedValueOnce([{ client_user_id: 'cu-001' }])
-      // 3. 无进行中护理单
+      // 3. 无进行中服务单
       .mockResolvedValueOnce([])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -211,7 +211,7 @@ describe('service.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已关联服务单/)
   })
 
-  test('顾客有进行中护理单时拒绝', async () => {
+  test('顾客有进行中服务单时拒绝', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'client-001',
       items: [{ saleItemId: 'item-001', sessionUsed: 1 }],
@@ -231,7 +231,7 @@ describe('service.create', () => {
       .mockResolvedValueOnce([{ service_order_id: 'HLD-active' }]) // 有进行中的
 
     await expect(serviceRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*已有进行中的护理单/)
+      .rejects.toThrow(/INVALID_PARAMS.*已有进行中的服务单/)
   })
 
   test('sale_item 无 sku_id 时快照为 null（line 183 || null 分支）', async () => {
@@ -300,7 +300,7 @@ describe('service.create', () => {
         client_user_id: 'client-001',
         client_phone: '138',
       }])
-      .mockResolvedValueOnce([])                                  // 无进行中护理单
+      .mockResolvedValueOnce([])                                  // 无进行中服务单
       .mockResolvedValueOnce([{ became_member_at: null }])        // 售前
 
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -1416,7 +1416,7 @@ describe('service.create clientUserId 解析', () => {
       }])
       // 通过 clientPhone 查 client_wechat_users
       .mockResolvedValueOnce([{ user_id: 'resolved-user' }])
-      // 顾客无进行中的护理单
+      // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
 
     // generateServiceOrderId
@@ -1463,7 +1463,7 @@ describe('service.create clientUserId 解析', () => {
       }])
       // 从 sale_orders 兜底获取 client_user_id
       .mockResolvedValueOnce([{ client_user_id: 'fallback-user' }])
-      // 顾客无进行中的护理单
+      // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
 
     pg.transaction.mockImplementationOnce(async (cb) => {

@@ -15,7 +15,7 @@ PostgreSQL 数据库层，使用 Drizzle ORM 管理 schema 定义与迁移。
 | user | client_wechat_users, staff_wechat_users | 微信用户（客户端含顾客档案 + 员工端含员工档案） |
 | order | sale_orders, sale_items, sale_allocations | 订单 + 销售明细 + 营业额分配 |
 | appointment | appointments | 预约记录 |
-| service | service_orders, service_items | 护理单 + 护理明细 |
+| service | service_orders, service_items | 服务单 + 服务明细 |
 | permission | permission_roles | 权限角色分配 |
 | commission | commission_rate_matrix | 提成比例矩阵 |
 | coupon | coupon_templates, user_coupons | 优惠券模板 + 用户券实例 |

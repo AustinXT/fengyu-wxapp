@@ -297,7 +297,7 @@ staff.todoList → 6 种待办:
   → 仅可选体验卡商品
   → order.create(sale_order_type='体验')
   → 支付 → 营业额分配（不计入普通业绩统计）
-  → 创建护理单(service_order_type 由顾客 customer_type 自动判定)
+  → 创建服务单(service_order_type 由顾客 customer_type 自动判定)
   → 服务完成 → 扣次
 ```
 

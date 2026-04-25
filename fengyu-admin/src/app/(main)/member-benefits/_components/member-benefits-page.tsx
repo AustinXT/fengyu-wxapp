@@ -111,7 +111,7 @@ export default function MemberBenefitsPageClient({
               <CardTitle>感恩日权益规则</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-xs text-[#999999]">
-              <p>每月 <strong className="text-[var(--foreground)]">20 号</strong> 下护理单的顾客（即当日存在已完成或进行中服务单），按当前会员等级自动发放<strong className="text-[var(--foreground)]">消息 + 积分 + 优惠券</strong>。</p>
+              <p>每月 <strong className="text-[var(--foreground)]">20 号</strong> 下服务单的顾客（即当日存在已完成或进行中服务单），按当前会员等级自动发放<strong className="text-[var(--foreground)]">消息 + 积分 + 优惠券</strong>。</p>
               <p>本次发放的优惠券<strong className="text-[var(--foreground)]">有效期为 10 天</strong>。同一顾客同一月仅发放一次。</p>
             </CardContent>
           </Card>

@@ -16,7 +16,7 @@ export * from './order'
 // 预约
 export * from './appointment'
 
-// 护理单 + 护理明细
+// 服务单 + 服务明细
 export * from './service'
 
 // 权限角色分配

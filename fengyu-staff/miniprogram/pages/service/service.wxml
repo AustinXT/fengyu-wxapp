@@ -1,4 +1,4 @@
-<!-- pages/service/service.wxml — 护理 Tab -->
+<!-- pages/service/service.wxml — 服务 Tab -->
 <view class="container">
 
   <!-- Tab 筛选 -->
@@ -22,10 +22,10 @@
 
   <!-- 空态 -->
   <view wx:elif="{{list.length === 0}}" class="empty-wrap">
-    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : '已完成'}}的护理单" />
+    <van-empty description="暂无{{tabActive === 'pending' ? '待服务' : tabActive === 'processing' ? '服务中' : '已完成'}}的服务单" />
   </view>
 
-  <!-- 护理单列表 -->
+  <!-- 服务单列表 -->
   <view wx:else class="list-wrap">
     <view
       class="service-card"
@@ -98,7 +98,7 @@
     </view>
   </view>
 
-  <!-- FAB: 新建护理单 -->
+  <!-- FAB: 新建服务单 -->
   <view class="fab" bindtap="onNewService">
     <van-icon name="plus" size="44rpx" color="#FFFFFF" />
   </view>

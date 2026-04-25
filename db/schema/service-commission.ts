@@ -6,7 +6,7 @@ import { staffWechatUsers } from './user'
 /**
  * 服务提成（手工费/卡数提成）
  *
- * 护理单完成时触发，按"固定手工费 + 消耗比例"双字段模型计算。
+ * 服务单完成时触发，按"固定手工费 + 消耗比例"双字段模型计算。
  * 计算口径：
  *   fixed_fee      = sale_items.service_fee × service_items.session_used
  *   consume_amount = service_items.unit_real_price × session_used × commission_rate

@@ -1,4 +1,4 @@
-// pages/service/service.ts — 护理 Tab
+// pages/service/service.ts — 服务 Tab
 import { callStaffApi } from '../../utils/cloud';
 import { isManager } from '../../utils/role';
 import { getElapsedTime as _getElapsedTime, formatTime as _formatTime } from '../../utils/formatters';

@@ -274,6 +274,6 @@
     custom-class="btn-primary-brand"
     custom-style="border-radius:48rpx;"
     bind:click="onCreateService"
-  >创建护理单 ({{selectedCount}})</van-button>
+  >创建服务单 ({{selectedCount}})</van-button>
   <view class="safe-area-bottom" />
 </view>

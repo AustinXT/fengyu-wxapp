@@ -74,7 +74,7 @@
       },
       {
         "pagePath": "pages/service/service",
-        "text": "护理",
+        "text": "服务",
         "iconPath": "images/icons/tab-service.png",
         "selectedIconPath": "images/icons/tab-service-active.png"
       },

@@ -7,7 +7,7 @@ beforeAll(async () => {
   await page.waitFor(2000)
 })
 
-describe('护理管理', () => {
+describe('服务管理', () => {
   test('显示 Tab 筛选', async () => {
     const tabs = await page.$('.van-tabs')
     expect(tabs).toBeTruthy()

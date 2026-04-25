@@ -6,7 +6,7 @@ import { clientWechatUsers, staffWechatUsers } from './user'
 import { appointments } from './appointment'
 
 /**
- * 护理单主表
+ * 服务单主表
  *
  * 与订单的关联通过 service_items.sale_item_id → sale_items.sale_item_id 实现，
  * 主表不存 sale_order_id，支持同一次到店跨多笔订单核销。
@@ -47,7 +47,7 @@ export const serviceOrders = pgTable(
 )
 
 /**
- * 护理明细
+ * 服务明细
  */
 export const serviceItems = pgTable(
   'service_items',

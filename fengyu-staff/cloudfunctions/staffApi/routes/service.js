@@ -139,14 +139,14 @@ async function create(ctx) {
     }
   }
 
-  // 校验：同一顾客只能有一个进行中的护理单
+  // 校验：同一顾客只能有一个进行中的服务单
   if (resolvedClientUserId) {
     const activeSo = await pg.query(
       "SELECT service_order_id FROM service_orders WHERE client_user_id = $1 AND status IN ('待服务', '服务中') LIMIT 1",
       [resolvedClientUserId]
     )
     if (activeSo.length > 0) {
-      throw new Error(`INVALID_PARAMS: 该顾客已有进行中的护理单（${activeSo[0].service_order_id}），请先完成后再创建`)
+      throw new Error(`INVALID_PARAMS: 该顾客已有进行中的服务单（${activeSo[0].service_order_id}），请先完成后再创建`)
     }
   }
 

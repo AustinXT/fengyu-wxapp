@@ -78,8 +78,8 @@ cat backup.sql | docker exec -i fengyu-postgres psql -U fengyu fengyu
 | sale_items | 销售明细 |
 | sale_allocations | 营业额分配 |
 | appointments | 预约表 |
-| service_orders | 护理单 |
-| service_items | 护理明细 |
+| service_orders | 服务单 |
+| service_items | 服务明细 |
 | permission_roles | 权限角色分配 |
 | commission_rate_matrix | 提成比例矩阵 |
 | coupon_templates | 优惠券模板 |

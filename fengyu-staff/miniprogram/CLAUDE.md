@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |-----|------|------|
 | 工作台 | pages/workbench/workbench | 今日提成、日历、待办、顾客搜索 |
 | 开单 | pages/order-create/order-create | 4步开单流程（仅店长） |
-| 护理 | pages/service/service | 护理单列表与管理 |
+| 服务 | pages/service/service | 服务单列表与管理 |
 | 顾客 | pages/customer-list/customer-list | 顾客档案搜索与列表 |
 | 我的 | pages/profile/profile | 员工信息、门店绑定 |
 

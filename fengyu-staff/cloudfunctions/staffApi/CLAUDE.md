@@ -77,7 +77,7 @@ staffApi/
 - 锁定规则：订单待支付时可修改分配
 - 分配项关联到具体员工
 
-### 护理服务（service）
+### 服务单（service）
 - create → start → complete 生命周期
 - complete 原子扣减次数 + 幂等校验
 - 支持预约关联（appointment_id）
