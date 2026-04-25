@@ -14,6 +14,20 @@
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
 
+/**
+ * 取 selectedDate 所属月份的月末日期（YYYY-MM-DD）。
+ * 月度业绩是整月维度，对应整月在营/在职的口径，分母用月末快照。
+ */
+function lastDayOfMonth(dateStr) {
+  const [y, m] = dateStr.split('-').map(Number)
+  // m 为下一月用 0 号 = 当月月末
+  const d = new Date(Date.UTC(y, m, 0))
+  const yy = d.getUTCFullYear()
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  return `${yy}-${mm}-${dd}`
+}
+
 // 模块级缓存：存放 HQ 全量 markets 列表（按账号过滤前的视图）
 // 不同账号每次请求基于此缓存按 staffLevel + roleBindings 派生自己的视图
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -340,15 +354,23 @@ async function queryServiceCommissionIncome(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
+/**
+ * 新会员（2026-04-25 起按 became_member_at 判定）
+ *
+ * 口径：所选时段内首次成为会员客。
+ * 与 metrics.md "新会员"行严格对齐；与 became_member_at（与 customer_type='会员客' 跃迁同事务维护）作权威字段。
+ *
+ * 旧口径（已废弃）：`old_member_level IS NULL AND member_level IS NOT NULL AND [member_level_upgraded_at]`
+ * — 旧口径会把"会员等级内跃迁（初钻→星钻 等）"也算作新会员，与业务语义偏离。
+ */
 async function queryNewMembers(scopeType, scopeId, date, mode) {
   const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
     `SELECT COUNT(*) AS v
        FROM client_wechat_users c
       WHERE ${sc.sql}
-        AND c.old_member_level IS NULL
-        AND c.member_level IS NOT NULL
-        AND ${timeWindow('c.member_level_upgraded_at', mode, 1, false)}`,
+        AND c.became_member_at IS NOT NULL
+        AND ${timeWindow('c.became_member_at', mode, 1, false)}`,
     [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
@@ -508,6 +530,8 @@ async function summary(ctx) {
 
   validateScope(ctx.auth, scopeType, scopeId)
 
+  const monthEnd = lastDayOfMonth(date)
+
   const t0 = Date.now()
   const [
     storeRevToday, storeRevMonth,
@@ -520,8 +544,9 @@ async function summary(ctx) {
     projectCountToday, projectCountMonth,
     salesCommissionToday, salesCommissionMonth,
     serviceCommissionToday, serviceCommissionMonth,
-    memberCount, retainedMemberCount, employeeCount,
-    storeCount,
+    memberCount, retainedMemberCount,
+    employeeCountDay, storeCountDay,
+    employeeCountMonth, storeCountMonth,
     scopeName,
   ] = await Promise.all([
     queryStoreRevenue(scopeType, scopeId, date, 'day'),
@@ -546,14 +571,17 @@ async function summary(ctx) {
     queryServiceCommissionIncome(scopeType, scopeId, date, 'month'),
     queryMemberCount(scopeType, scopeId, date),
     queryRetainedMemberCount(scopeType, scopeId, date),
-    queryEmployeeCount(scopeType, scopeId, date),
-    queryStoreCount(scopeType, scopeId, date),
+    queryEmployeeCount(scopeType, scopeId, date),     // 当日（selectedDate 当日的在职员工数）
+    queryStoreCount(scopeType, scopeId, date),         // 当日（selectedDate 当日在营的门店数）
+    queryEmployeeCount(scopeType, scopeId, monthEnd),  // 月末（用于月度派生指标分母）
+    queryStoreCount(scopeType, scopeId, monthEnd),     // 月末（月度业绩对应的整月在营门店数）
     resolveScopeName(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
 
   const round2 = (v) => Math.round(Number(v) * 100) / 100
-  const avg = (m) => (storeCount > 0 ? round2(m / storeCount) : 0)
+  // monthlyAvgPerStore：分母用月末口径，与"月度业绩 = 整月在营"语义对齐
+  const avg = (m) => (storeCountMonth > 0 ? round2(m / storeCountMonth) : 0)
 
   ctx.result = {
     date,
@@ -590,10 +618,11 @@ async function summary(ctx) {
       today: round2(serviceCommissionToday),
       month: round2(serviceCommissionMonth),
     },
-    storeCount,
+    // T6（2026-04-25）：双口径 — day 给屏幕展示与日维度派生分母用，month 给月维度派生分母用
+    storeCount: { day: storeCountDay, month: storeCountMonth },
+    employeeCount: { day: employeeCountDay, month: employeeCountMonth },
     memberCount,
     retainedMemberCount,
-    employeeCount,
     computedAt: new Date().toISOString(),
   }
 
@@ -754,21 +783,26 @@ async function rankingRetainedMember(period, storeFilter) {
   )
 }
 
+/**
+ * 新会员排名（2026-04-25 起按 became_member_at 判定，与 metrics.md "新会员"行对齐）
+ *
+ * 旧口径（已废弃）：`old_member_level IS NULL AND member_level IS NOT NULL AND [member_level_upgraded_at]`
+ * 旧口径包含"会员等级内跃迁"，与"首次成会员"业务语义偏离。
+ */
 async function rankingNewMember(period, storeFilter) {
   return pg.query(
     `SELECT
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COUNT(c.client_user_id) AS value
+       COUNT(c.user_id) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
      LEFT JOIN client_wechat_users c
        ON c.bound_store_id = s.store_id
-       AND c.old_member_level IS NULL
-       AND c.member_level IS NOT NULL
-       AND ${timeWindowPeriod('c.member_level_upgraded_at', period, false)}
+       AND c.became_member_at IS NOT NULL
+       AND ${timeWindowPeriod('c.became_member_at', period, false)}
      WHERE ${storeFilter.sql}
      GROUP BY s.store_id, s.store_name, o.name
      ORDER BY value DESC, s.store_name ASC`,
@@ -880,9 +914,297 @@ async function storeRanking(ctx) {
   }
 }
 
+// =====================================================================
+// staffRanking —— 员工排行榜（mgmt-dashboard ranking tab 「员工」子视图）
+// =====================================================================
+//
+// 与 storeRanking 的关系：
+//   - 复用 helper：timeWindowPeriod / getVisibleStoreIds / buildStoreFilter / assignRanks
+//   - 独立 SQL：所有 metric 都先用 producer_employees CTE 锁定"产能员工"再 LEFT JOIN
+//   - metric 集合不同：员工无 retainedMember；员工独有 income（销售提成 + 服务提成）
+//
+// 产能员工口径（与 metrics.md employeeCount 一致）：
+//   is_resigned=FALSE ∩ skills && ARRAY['美容师','养生师'] ∩ scope（store_id 可见列表）
+// 排序：value DESC, employee_name ASC, employee_id ASC（避免随机抖动）
+
+/**
+ * 拼接 producer_employees CTE 头部（所有 metric 共享）。
+ * @param {{sql: string, params: any[]}} storeFilter buildStoreFilter('sw', startIdx) 的结果
+ */
+function producerEmployeesCte(storeFilter) {
+  return `WITH producer_employees AS (
+  SELECT
+    sw.employee_id,
+    sw.name        AS employee_name,
+    sw.store_id,
+    s.store_name
+  FROM staff_wechat_users sw
+  LEFT JOIN stores s ON s.store_id = sw.store_id
+  WHERE sw.is_resigned = FALSE
+    AND sw.skills && ARRAY['美容师','养生师']
+    AND ${storeFilter.sql}
+)`
+}
+
+const STAFF_ORDER_BY = `ORDER BY value DESC, pe.employee_name ASC, pe.employee_id ASC`
+
+/* ----- 6 个员工排行榜 metric 子查询 ----- */
+
+async function staffRankingRevenue(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+revenue_by_emp AS (
+  SELECT
+    sa.employee_id,
+    COALESCE(SUM(sa.total_amount::numeric), 0) AS v
+  FROM sale_allocations sa
+  JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
+  JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+  WHERE sa.is_void = FALSE
+    AND sa.role_type IN ('美容师','养生师')
+    AND so.sale_order_type IN ('销售单','转换单')
+    AND so.status = '已支付'
+    AND ${timeWindowPeriod('so.paid_at', period, false)}
+  GROUP BY sa.employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  COALESCE(r.v, 0)::numeric AS value
+FROM producer_employees pe
+LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+async function staffRankingConsume(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+consume_by_emp AS (
+  SELECT
+    sit.employee_id,
+    COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+  FROM service_items sit
+  JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+  WHERE so2.status = '已完成'
+    AND ${timeWindowPeriod('so2.service_date', period, true)}
+  GROUP BY sit.employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  COALESCE(c.v, 0)::numeric AS value
+FROM producer_employees pe
+LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+/**
+ * 新会员排名（2026-04-25 起按 became_member_at 判定，与 metrics.md "新会员"行对齐）
+ * 旧口径（已废弃）：old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]
+ *
+ * 归属字段：client_wechat_users.bound_employee_id（绑定美容师）
+ * bound_employee_id IS NULL 的新会员不归属任何员工（"无归属新会员"由监控关注，本接口不展示）
+ */
+async function staffRankingNewMember(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+new_member_by_emp AS (
+  SELECT
+    c.bound_employee_id AS employee_id,
+    COUNT(*) AS v
+  FROM client_wechat_users c
+  WHERE c.bound_employee_id IS NOT NULL
+    AND c.became_member_at IS NOT NULL
+    AND ${timeWindowPeriod('c.became_member_at', period, false)}
+  GROUP BY c.bound_employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  COALESCE(n.v, 0)::numeric AS value
+FROM producer_employees pe
+LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+async function staffRankingFootfall(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+footfall_by_emp AS (
+  SELECT
+    sit.employee_id,
+    COUNT(DISTINCT so2.client_user_id) AS v
+  FROM service_items sit
+  JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+  WHERE so2.status = '已完成'
+    AND so2.client_user_id IS NOT NULL
+    AND ${timeWindowPeriod('so2.service_date', period, true)}
+  GROUP BY sit.employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  COALESCE(f.v, 0)::numeric AS value
+FROM producer_employees pe
+LEFT JOIN footfall_by_emp f ON f.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+async function staffRankingProjectCount(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+project_by_emp AS (
+  SELECT
+    sit.employee_id,
+    COALESCE(SUM(sit.session_used), 0) AS v
+  FROM service_items sit
+  JOIN service_orders so2 ON so2.service_order_id = sit.service_order_id
+  WHERE so2.status = '已完成'
+    AND sit.sales_category IN ('自销自耗','他销自耗')
+    AND ${timeWindowPeriod('so2.service_date', period, true)}
+  GROUP BY sit.employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  COALESCE(p.v, 0)::numeric AS value
+FROM producer_employees pe
+LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+/**
+ * 收入排名 = 销售提成（业绩）+ 服务提成
+ *   - 销售部分公式与 staffRankingRevenue 完全一致
+ *   - 服务部分来自 service_commissions.commission_amount（已是计算后的实拿提成）
+ * role_type IN ('美容师','养生师') ∩ is_void=FALSE
+ */
+async function staffRankingIncome(period, storeFilter) {
+  return pg.query(
+    `${producerEmployeesCte(storeFilter)},
+sales_comm AS (
+  SELECT
+    sa.employee_id,
+    COALESCE(SUM(sa.total_amount::numeric), 0) AS v
+  FROM sale_allocations sa
+  JOIN sale_items si  ON si.sale_item_id  = sa.sale_item_id
+  JOIN sale_orders so ON so.sale_order_id = si.sale_order_id
+  WHERE sa.is_void = FALSE
+    AND sa.role_type IN ('美容师','养生师')
+    AND so.sale_order_type IN ('销售单','转换单')
+    AND so.status = '已支付'
+    AND ${timeWindowPeriod('so.paid_at', period, false)}
+  GROUP BY sa.employee_id
+),
+service_comm AS (
+  SELECT
+    sc.employee_id,
+    COALESCE(SUM(sc.commission_amount::numeric), 0) AS v
+  FROM service_commissions sc
+  JOIN service_items sit  ON sit.service_item_id   = sc.service_item_id
+  JOIN service_orders so2 ON so2.service_order_id  = sit.service_order_id
+  WHERE sc.is_void = FALSE
+    AND sc.role_type IN ('美容师','养生师')
+    AND so2.status = '已完成'
+    AND ${timeWindowPeriod('so2.service_date', period, true)}
+  GROUP BY sc.employee_id
+)
+SELECT
+  pe.employee_id,
+  pe.employee_name,
+  pe.store_id,
+  pe.store_name,
+  (COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0))::numeric AS value
+FROM producer_employees pe
+LEFT JOIN sales_comm   sc1 ON sc1.employee_id = pe.employee_id
+LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
+${STAFF_ORDER_BY}`,
+    storeFilter.params,
+  )
+}
+
+const STAFF_METRIC_DISPATCH = {
+  revenue:      staffRankingRevenue,
+  consume:      staffRankingConsume,
+  newMember:    staffRankingNewMember,
+  footfall:     staffRankingFootfall,
+  projectCount: staffRankingProjectCount,
+  income:       staffRankingIncome,
+}
+
+const VALID_STAFF_METRICS = ['revenue', 'consume', 'newMember', 'footfall', 'projectCount', 'income']
+
+/**
+ * mgmtDashboard.staffRanking
+ * 入参：{ period: 'month'|'lastMonth'|'year', metric: 6 选 1 }
+ * 出参：{ period, metric, unit, rows: [{rank, employeeId, employeeName, storeId, storeName, value}], computedAt }
+ */
+async function staffRanking(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+  const { period, metric } = ctx.event.payload || {}
+
+  if (!VALID_PERIODS.includes(period)) {
+    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+  }
+  if (!VALID_STAFF_METRICS.includes(metric)) {
+    throw new Error('INVALID_PARAMS: metric 必须是 ' + VALID_STAFF_METRICS.join('/'))
+  }
+
+  const visibleStoreIds = getVisibleStoreIds(ctx.auth)
+  // 注意：员工查询 store filter 别名是 sw（staff_wechat_users）
+  const storeFilter = buildStoreFilter(visibleStoreIds, 'sw', 1)
+
+  const t0 = Date.now()
+  const rawRows = await STAFF_METRIC_DISPATCH[metric](period, storeFilter)
+  const elapsed = Date.now() - t0
+
+  const unit = (metric === 'revenue' || metric === 'consume' || metric === 'income') ? 'amount' : 'count'
+  const rows = assignRanks(
+    rawRows.map((r) => ({
+      employeeId:   r.employee_id,
+      employeeName: r.employee_name || '',
+      storeId:      r.store_id || null,
+      storeName:    r.store_name || '',
+      value:        Number(r.value || 0),
+    })),
+  )
+
+  if (elapsed > 800) {
+    console.warn(`[mgmtDashboard.staffRanking] slow: ${elapsed}ms`, { period, metric })
+  }
+
+  ctx.result = {
+    period,
+    metric,
+    unit,
+    rows,
+    computedAt: new Date().toISOString(),
+  }
+}
+
 // 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
 function __resetMarketsCache() {
   CACHE = { ts: 0, data: null }
 }
 
-module.exports = { scopeOptions, summary, storeRanking, __resetMarketsCache }
+module.exports = { scopeOptions, summary, storeRanking, staffRanking, __resetMarketsCache }

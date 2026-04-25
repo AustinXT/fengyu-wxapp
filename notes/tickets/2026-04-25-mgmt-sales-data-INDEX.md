@@ -66,7 +66,7 @@ metrics.md（分客型/品项指标定义）──→ T1（salesData API）─�
 | 小美客/新增会员/老会员业绩 | `SUM(sale_items.received)` + 顾客分型过滤 | 销售数据页 §分客型业绩 |
 | 总实耗 | `SUM(service_items.unit_real_price * session_used)` | 业绩 / 实耗 §实耗 |
 | 分客型项目实耗 | 同上 + 顾客分型过滤 | 销售数据页 §分客型项目实耗 |
-| 分客型产品出库 | `SUM(sale_items.received)` WHERE product_kind='家居产品' + 分型 | 销售数据页 §分客型产品出库 |
+| 分客型产品出库 | `SUM(sale_items.received)` WHERE `sale_items.product_type='院装产品'` + 分型 | 销售数据页 §分客型产品出库 |
 | 三维品项汇总 | GROUP BY sales_category / product_kind / category_name | 品项维度汇总 |
 
 ### 顾客分型定义速查
@@ -74,7 +74,7 @@ metrics.md（分客型/品项指标定义）──→ T1（salesData API）─�
 | 分型 | 过滤 |
 |------|------|
 | 小美客 | `client_wechat_users.customer_type = '小美客'` |
-| 新增会员 | `became_member_at::date BETWEEN period_start AND period_end` |
+| 新增会员 | `customer_type = '会员客' AND became_member_at::date >= period_start` |
 | 老会员 | `customer_type = '会员客' AND became_member_at < period_start` |
 
 ## 关键决策记录
@@ -83,18 +83,17 @@ metrics.md（分客型/品项指标定义）──→ T1（salesData API）─�
 
 **决策**：`customer_type` / `became_member_at` 取 `client_wechat_users` 当前值，不追溯历史时点快照。
 
-**理由**：`sale_orders` 无 `customer_type` 快照列；添加快照列需 schema 变更，开发阶段不值得。历史漂移量很小（小美客在订单发生后几天内就会升会员），实际影响可接受。
+**理由**：`sale_orders` 无 `customer_type` 快照列。分型规则：新增会员 = `became_member_at >= period_start`（入会时间晚于期间起始，含期间结束后才入会的顾客），老会员 = `became_member_at < period_start`。这样 3 月下单、4 月入会的顾客在上月报表中仍归入新增会员，符合业务期望。
 
-### D2. 产品出库 = 家居产品业绩行
+### D2. 产品出库 = `sale_items.product_type = '院装产品'`
 
-**决策**：产品出库 = `sale_items.received` WHERE `product_categories.product_kind = '家居产品'`，时间轴 `paid_at`。
+**决策**：产品出库 = `sale_items.received` WHERE `sale_items.product_type = '院装产品'`，时间轴 `paid_at`。
 
 **理由**：
-- "出库"在本业务场景 = "已付款的家居产品"（顾客取走即完成，无延迟出库流程）
-- `pickup_records` 是疗程卡核销记录，与产品出库无关
-- 与总业绩同口径（`paid_at`），方便管理者对比
-
-**JOIN 代价**：需实时 JOIN `product_skus → product_categories` 获取 product_kind（无快照列），额外 2 个 JOIN，性能可接受。
+- 院装产品 = 门店备货发给顾客的实物产品，语义比 product_kind='家居产品' 更精确
+- `product_type` 是 `sale_items` 的快照列（order.create 写入时从 product_skus 拷贝），无需额外 JOIN
+- `pickup_records` 是提货记录，与本统计的销售金额口径无关
+- 与总业绩同时间轴（`paid_at`），方便对比
 
 ### D3. 业绩总值用 paid_amount，分型用 received
 

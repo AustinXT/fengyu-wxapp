@@ -104,6 +104,7 @@ const routes = {
   'mgmtDashboard.scopeOptions': () => require('./routes/mgmt-dashboard').scopeOptions,
   'mgmtDashboard.summary':     () => require('./routes/mgmt-dashboard').summary,
   'mgmtDashboard.storeRanking': () => require('./routes/mgmt-dashboard').storeRanking,
+  'mgmtDashboard.staffRanking': () => require('./routes/mgmt-dashboard').staffRanking,
 }
 
 /**

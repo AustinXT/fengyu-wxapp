@@ -73,9 +73,8 @@
           </view>
         </view>
 
-        <!-- A. 门店状况（截面，不随日历变化） -->
+        <!-- A. 门店状况（按 selectedDate 历史化，2026-04-25 T2-T6 完成） -->
         <view class="dash-section-title">门店状况</view>
-        <view class="dash-section-note dash-section-note--transitional">该区域当前为实时快照，不随所选日期变化（历史化改造进行中）</view>
 
         <view class="dash-status-row1">
           <view class="status-cell">
@@ -105,9 +104,8 @@
           </view>
         </view>
 
-        <!-- B. 人效数据 -->
+        <!-- B. 人效数据（按 selectedDate 历史化，2026-04-25 T6 完成） -->
         <view class="dash-section-title">人效数据</view>
-        <view class="dash-section-note dash-section-note--transitional">分子按所选日期出数，分母（员工数）当前为实时快照（历史化改造进行中）</view>
 
         <view class="mgmt-dash-grid-small">
           <view class="dash-card dash-card--small">
@@ -207,7 +205,18 @@
   <!-- 排行榜 -->
   <block wx:elif="{{activeTab === 'ranking'}}">
     <view class="mgmt-ranking">
-      <!-- 时间维度 chip -->
+      <!-- sub-toggle: 门店 / 员工 -->
+      <view class="ranking-dimensions">
+        <view
+          wx:for="{{rankingDimensions}}"
+          wx:key="key"
+          class="ranking-dimension {{ranking.dimension === item.key ? 'active' : ''}}"
+          data-dimension="{{item.key}}"
+          bindtap="onRankingDimensionTap"
+        >{{item.label}}</view>
+      </view>
+
+      <!-- 时间维度 chip（共享） -->
       <view class="ranking-periods">
         <view
           wx:for="{{rankingPeriods}}"
@@ -218,10 +227,19 @@
         >{{item.label}}</view>
       </view>
 
-      <!-- 6 指标按钮 -->
-      <view class="ranking-metrics">
+      <!-- 6 指标按钮（按 dimension 切换） -->
+      <view class="ranking-metrics" wx:if="{{ranking.dimension === 'store'}}">
         <view
           wx:for="{{rankingMetrics}}"
+          wx:key="key"
+          class="ranking-metric {{ranking.metric === item.key ? 'active' : ''}}"
+          data-metric="{{item.key}}"
+          bindtap="onRankingMetricTap"
+        >{{item.label}}</view>
+      </view>
+      <view class="ranking-metrics" wx:else>
+        <view
+          wx:for="{{staffRankingMetrics}}"
           wx:key="key"
           class="ranking-metric {{ranking.metric === item.key ? 'active' : ''}}"
           data-metric="{{item.key}}"
@@ -232,29 +250,53 @@
       <!-- 排行榜表格 -->
       <view class="ranking-table">
         <view class="ranking-table-title">排行榜</view>
-        <view class="ranking-table-header">
-          <view class="col col-rank">排名</view>
-          <view class="col col-name">店名</view>
-          <view class="col col-market">所属市场</view>
-          <view class="col col-value">数据</view>
-        </view>
 
-        <view wx:if="{{ranking.loading}}" class="ranking-loading">加载中…</view>
+        <!-- 门店维度 -->
+        <block wx:if="{{ranking.dimension === 'store'}}">
+          <view class="ranking-table-header">
+            <view class="col col-rank">排名</view>
+            <view class="col col-name">店名</view>
+            <view class="col col-market">所属市场</view>
+            <view class="col col-value">数据</view>
+          </view>
 
-        <block wx:elif="{{ranking.rows.length === 0}}">
-          <view class="ranking-empty">暂无排行数据</view>
+          <view wx:if="{{ranking.loading}}" class="ranking-loading">加载中…</view>
+          <view wx:elif="{{ranking.storeRows.length === 0}}" class="ranking-empty">暂无排行数据</view>
+          <block wx:else>
+            <view class="ranking-row" wx:for="{{ranking.storeRows}}" wx:key="storeId">
+              <view class="col col-rank">{{item.rank}}</view>
+              <view class="col col-name">{{item.storeName}}</view>
+              <view class="col col-market">{{item.marketName}}</view>
+              <view class="col col-value">
+                <text class="val-num">{{item.valueText}}</text>
+                <text class="val-unit">{{rankingMetricLabelMap[ranking.metric]}}</text>
+              </view>
+            </view>
+          </block>
         </block>
 
+        <!-- 员工维度 -->
         <block wx:else>
-          <view class="ranking-row" wx:for="{{ranking.rows}}" wx:key="storeId">
-            <view class="col col-rank">{{item.rank}}</view>
-            <view class="col col-name">{{item.storeName}}</view>
-            <view class="col col-market">{{item.marketName}}</view>
-            <view class="col col-value">
-              <text class="val-num">{{item.valueText}}</text>
-              <text class="val-unit">{{rankingMetricLabelMap[ranking.metric]}}</text>
-            </view>
+          <view class="ranking-table-header">
+            <view class="col col-rank">排名</view>
+            <view class="col col-name">员工姓名</view>
+            <view class="col col-market">所属门店</view>
+            <view class="col col-value">数据</view>
           </view>
+
+          <view wx:if="{{ranking.loading}}" class="ranking-loading">加载中…</view>
+          <view wx:elif="{{ranking.staffRows.length === 0}}" class="ranking-empty">暂无排行数据</view>
+          <block wx:else>
+            <view class="ranking-row" wx:for="{{ranking.staffRows}}" wx:key="employeeId">
+              <view class="col col-rank">{{item.rank}}</view>
+              <view class="col col-name">{{item.employeeName || '未命名员工'}}</view>
+              <view class="col col-market">{{item.storeName || '—'}}</view>
+              <view class="col col-value">
+                <text class="val-num">{{item.valueText}}</text>
+                <text class="val-unit">{{staffRankingMetricLabelMap[ranking.metric]}}</text>
+              </view>
+            </view>
+          </block>
         </block>
       </view>
     </view>

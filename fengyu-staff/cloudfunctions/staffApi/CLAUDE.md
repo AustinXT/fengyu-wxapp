@@ -27,7 +27,7 @@ staffApi/
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
 │   ├── service.js    # create, start, complete, cancel, list, detail, counts
-│   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking
+│   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
 └── utils/
 ```
 

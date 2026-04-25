@@ -96,7 +96,8 @@ SELECT
     WHERE c.customer_type = '小美客'
   ), 0) AS xiaomei_revenue,
   COALESCE(SUM(si.received::numeric) FILTER (
-    WHERE c.became_member_at::date BETWEEN $startDate AND $endDate
+    WHERE c.customer_type = '会员客'
+      AND c.became_member_at::date >= $startDate
   ), 0) AS new_member_revenue,
   COALESCE(SUM(si.received::numeric) FILTER (
     WHERE c.customer_type = '会员客'
@@ -130,7 +131,8 @@ SELECT
     WHERE c.customer_type = '小美客'
   ), 0) AS xiaomei_project_consume,
   COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
-    WHERE c.became_member_at::date BETWEEN $startDate AND $endDate
+    WHERE c.customer_type = '会员客'
+      AND c.became_member_at::date >= $startDate
   ), 0) AS new_member_project_consume,
   COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
     WHERE c.customer_type = '会员客'
@@ -146,13 +148,16 @@ WHERE so.status = '已完成'
 
 ### SQL 5 — 分客型产品出库（CASE 聚合）
 
+> `product_type` 是 `sale_items` 快照列，无需 JOIN product_skus/categories。
+
 ```sql
 SELECT
   COALESCE(SUM(si.received::numeric) FILTER (
     WHERE c.customer_type = '小美客'
   ), 0) AS xiaomei_product_out,
   COALESCE(SUM(si.received::numeric) FILTER (
-    WHERE c.became_member_at::date BETWEEN $startDate AND $endDate
+    WHERE c.customer_type = '会员客'
+      AND c.became_member_at::date >= $startDate
   ), 0) AS new_member_product_out,
   COALESCE(SUM(si.received::numeric) FILTER (
     WHERE c.customer_type = '会员客'
@@ -160,10 +165,8 @@ SELECT
   ), 0) AS old_member_product_out
 FROM sale_items si
 JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-JOIN product_skus sk ON sk.sku_id = si.sku_id
-JOIN product_categories pc ON pc.category_id = sk.category_id
 JOIN client_wechat_users c ON c.client_user_id = o.client_user_id
-WHERE pc.product_kind = '家居产品'
+WHERE si.product_type = '院装产品'
   AND o.sale_order_type IN ('销售单', '转换单')
   AND o.status = '已支付'
   AND o.paid_at::date BETWEEN $startDate AND $endDate

@@ -136,9 +136,8 @@ onEntryTap(e: WechatMiniprogram.BaseEvent) {
 }
 ```
 
-> 路径决策点：是否新建 `packageMgmt` 分包？参考现有 `packageOrder` 内已含 `dashboard` / `staff-performance`，
-> 可考虑放入 `packageOrder` 暂存；建议另起 `packageMgmt` 分包，避免 packageOrder 越发肥大。
-> 本期挂在 `packageMgmt`（如不接受，拍板时改路径）。
+> 已决 D-7=A：新建 `packageMgmt` 分包；后续 sales / products / customers 3 个 mgmt 子页同分包。
+> `app.json` 增 `"packageMgmt"` 条目（root: `packageMgmt`，pages: `["mgmt-traffic-stats/mgmt-traffic-stats"]`，name: `管理层子页`）。
 
 ### 3.2 新页面骨架
 
@@ -168,9 +167,9 @@ interface TrafficData {
     dormantDeep: number
     activeOnce: number
     activeTwice: number
-    reactivatedFromWarn: number | null   // 等 T5 历史化前为 null → UI 显示 '--'
-    reactivatedFromFrozen: number | null
-    reactivatedFromDeep: number | null
+    reactivatedFromWarn: number   // T5 已落地，本期出真实值（D-1=C 实时反推）
+    reactivatedFromFrozen: number
+    reactivatedFromDeep: number
   }
   memberOps: {
     buckets: Array<{                  // 6 桶
@@ -222,10 +221,10 @@ mgmtTraffic: {
 **`__tests__/routes/mgmt-traffic.test.js`** 新增：
 
 - 注册情况 4 项 SQL 形态断言（`regTotal` 不带 `customer_type` 过滤；其余 3 项各带）
-- 到店客流 4 列 ×（count / users / sessions）= 12 数字的 SQL 形态
-- 会员状态 5 项截面 + 2 项区间客活 SQL 形态；3 项激活返回 `null`
+- 到店客流 4 列 ×（count / users / sessions）= 12 数字；项目数限定 `sales_category IN ('自销自耗','他销自耗')`（D-5=B）
+- 会员状态 5 项截面 + 2 项区间客活 SQL 形态；3 项激活按 anchor=startDate-1 展开（D-1=C）
 - 会员被经营 6 桶聚合 + 客单价分母防除零
-- 新会员经营 4 项；成交率分母 `customer_type IN ('体验客','小美客')`
+- 新会员经营 4 项；成交率分母 `customer_type IN ('体验客','小美客')`（D-2=B）；分子覆盖区间内全部消费（D-3=A）
 - scope 三档（全部 / 市场 / 门店）的 WHERE 拼接断言
 
 > Mock 模式与 mgmt-dashboard.test.js 同思路（jest.mock pg）。
@@ -234,21 +233,22 @@ mgmtTraffic: {
 
 ## 4 metrics.md 联动
 
-metrics.md 已在本 ticket 同 PR 完成追加（"客量数据子页"章节，43 项指标 + 区间约定）。
-后续若决策点（D-trafficSessionsScope / D-react-source / D-conv-denom）业务方拍板，
-**先改 metrics.md 再改代码**（保持 metrics.md 是权威源）。
+metrics.md 已同步更新（"客量数据子页"章节，43 项指标 + 7 决策点全部拍板状态）。
+后续口径调整一律 **先改 metrics.md 再改代码**（保持 metrics.md 是权威源）。
 
 ---
 
-## 5 决策点（业务方需拍板）
+## 5 决策点（已拍板，2026-04-25）
 
-| 编号 | 议题 | 默认方案 | 备选 |
-|------|------|----------|------|
-| **D-trafficSessionsScope** | section 2"项目数（扣卡次数）"是否限定 `sales_category IN ('自销自耗','他销自耗')`（与首页项目数对齐） | 不限定（含全部销售类别）| 限定（与首页一致）|
-| **D-react-source** | section 3"本月激活"3 项实现 | 本期占位 `--` + 角标，等 T5 历史化能力（实时反推） | 立即上 `customer_status_history` 审计表 |
-| **D-conv-denom** | section 5"新增会员成交率"分母 | B：区间内到店的体验客 + 小美客 | A：仅体验客 / C：所有非会员客 |
-| **D-act-status-mapping** | UI"沉睡人数"对应 schema `预警沉睡`（命名差异）| 接受，前端文案层映射 | 改 schema 枚举（破坏性，不建议）|
-| **D-package-path** | 新页面落在哪个分包 | `packageMgmt`（新建分包）| `packageOrder` |
+| 编号 | 议题 | 拍板结果 |
+|------|------|---------|
+| **D-1（D-react-source）** | section 3"本月激活"3 项实现 | **C：实时反推**。T5 已落地，本期出真实值；SQL 在内自包含展开 anchor=startDate-1 的 customer_status 计算（详见 metrics.md "会员状态与客活" 章节）|
+| **D-2（D-conv-denom）** | section 5"新增会员成交率"分母 | **B：区间内到店的体验客 + 小美客**。与升级链路对齐 |
+| **D-3（D-newMemberSpend）** | "新增会员对应消费"时态 | **A：区间内全部消费**。不区分成员前后 |
+| **D-4** | "会员被经营情况"会员客时态 | **A：当前快照**。T2 已历史化，会员被经营子句 T2 后切 `becameMemberAt::date <= endDate`（独立 follow-up）|
+| **D-5（D-trafficSessionsScope）** | section 2"项目数（扣卡次数）"口径 | **B：限定 `sales_category IN ('自销自耗','他销自耗')`**。与首页项目数完全对齐 |
+| **D-6（D-act-status-mapping）** | UI 沉睡 vs schema 预警沉睡 | **B：改 schema 枚举重命名**。独立 ticket [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md)；本子页本期上线时该 ticket 若未落地，前端 i18n 兜底，schema 字面量保持 `'预警沉睡'` |
+| **D-7（D-package-path）** | 新页面分包 | **A：新建 `packageMgmt`**。后续 sales / products / customers 3 个 mgmt 子页同分包 |
 
 ---
 
@@ -290,30 +290,32 @@ SELECT COUNT(*) FROM member_spend;  -- 应等于 6 桶人数之和
 
 ## 7 不在本 ticket 范围
 
-- "本月激活"3 项的实际计算（依赖 [`metrics-date-alignment T5`](./2026-04-25-mgmt-dashboard-metrics-date-alignment.md) 落地后单独跟进，本期占位 `--`）
-- 注册情况 / 会员被经营情况的"customer_type 历史化"（等 T2 历史化完成后再升级口径）
+- 注册情况 / 会员被经营情况的"customer_type 历史化"切换（T2 已落地，但本子页"分母会员客时态"切换 `becameMemberAt::date <= endDate` 作为独立 follow-up，避免本 ticket 范围膨胀）
 - 销售数据 / 品项数据 / 顾客档案 3 个 mgmt-dashboard 入口（独立 ticket）
-- "新增会员成交率"分母候选 A/C 改造（D-conv-denom 业务方拍板后再改）
+- schema customer_status '预警沉睡'→'沉睡' 重命名（**独立 ticket** [`customer-status-rename-warn`](./2026-04-25-customer-status-rename-warn.md)，与本子页解耦推进）
 - 数字格式化的 `formatPercent` 工具函数（如 `utils/number.ts` 没有，本 ticket 内补一个）
 
 ---
 
 ## 8 工程量预估
 
-- 前端页面 + 入口跳转：M（1 天，含样式 + 与 hub 联动）
-- 后端 5 段 SQL + 路由：M（1 天，含单测）
-- 联调 + 业务方决策点澄清：S（半天）
-- **合计**：~2.5 天
+- 前端页面 + 入口跳转 + packageMgmt 分包：M（1 天）
+- 后端 5 段 SQL + 路由（含本月激活 anchor 反推 SQL 的复杂度）：M（1.5 天，含单测）
+- 联调：S（半天）
+- **合计**：~3 天
+
+> 工程量从 2.5 天上调到 3 天的差额来自 D-1=C 的本月激活 SQL（anchor=startDate-1 的 customer_status 实时反推，3 档独立查询），原方案 A（占位 `--`）零工程。
 
 ---
 
 ## 9 交付物清单
 
 - [ ] `pages/mgmt-traffic-stats/{ts,wxml,wxss,json}` 4 文件
-- [ ] `app.json` 注册新页面（或新建 `packageMgmt` 分包）
+- [ ] `app.json` 新建 `packageMgmt` 分包并注册新页面
 - [ ] `pages/mgmt-dashboard/mgmt-dashboard.ts` `onEntryTap` 跳转改造
-- [ ] `cloudfunctions/staffApi/routes/mgmt-traffic.js` 新建（5 段 SQL + 解析 period + scope）
+- [ ] `cloudfunctions/staffApi/routes/mgmt-traffic.js` 新建（5 段 SQL + 解析 period + scope + 本月激活 anchor 反推）
 - [ ] `cloudfunctions/staffApi/index.js` 路由表追加 `mgmtTraffic.summary`
 - [ ] `cloudfunctions/staffApi/__tests__/routes/mgmt-traffic.test.js` 新建
+- [ ] `utils/number.ts` 补 `formatPercent`（如缺）
 - [ ] `notes/references/metrics.md` 已同步（PR 内同 commit）
 - [ ] 微信开发者工具端到端验收 + 数据自检 SQL 通过

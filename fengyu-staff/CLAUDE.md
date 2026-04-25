@@ -32,7 +32,7 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 | appointment | list, detail, confirm, checkin |
 | coupon | available |
 | service | create, start, complete, cancel, list, detail, counts |
-| mgmtDashboard | scopeOptions, summary, storeRanking |
+| mgmtDashboard | scopeOptions, summary, storeRanking, staffRanking |
 
 ### 储值卡抵扣相关接口说明
 

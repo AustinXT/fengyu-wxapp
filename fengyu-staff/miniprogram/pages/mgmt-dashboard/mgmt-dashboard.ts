@@ -9,9 +9,14 @@ const app = getApp<IAppOption>()
 type MgmtTab = 'dashboard' | 'ranking' | 'customers' | 'profile'
 
 type RankingPeriod = 'month' | 'lastMonth' | 'year'
+type RankingDimension = 'store' | 'staff'
 type RankingMetric =
   | 'revenue' | 'consume' | 'retainedMember'
   | 'newMember' | 'projectCount' | 'footfall'
+type StaffRankingMetric =
+  | 'revenue' | 'consume' | 'newMember'
+  | 'footfall' | 'projectCount' | 'income'
+type AnyRankingMetric = RankingMetric | StaffRankingMetric
 
 interface RankingRow {
   rank: number
@@ -32,6 +37,26 @@ interface RankingResp {
   rows: RankingRow[]
 }
 
+interface StaffRankingRow {
+  rank: number
+  employeeId: string
+  employeeName: string
+  storeId: string | null
+  storeName: string
+  value: number
+}
+
+interface StaffRankingDisplayRow extends StaffRankingRow {
+  valueText: string
+}
+
+interface StaffRankingResp {
+  period: RankingPeriod
+  metric: StaffRankingMetric
+  unit: 'amount' | 'count'
+  rows: StaffRankingRow[]
+}
+
 const RANKING_PERIODS: { key: RankingPeriod; label: string }[] = [
   { key: 'month',     label: '本月' },
   { key: 'lastMonth', label: '上月' },
@@ -45,6 +70,20 @@ const RANKING_METRICS: { key: RankingMetric; label: string; unitLabel: string }[
   { key: 'newMember',      label: '新会员排名',   unitLabel: '新会员' },
   { key: 'projectCount',   label: '项目数排名',   unitLabel: '项目数' },
   { key: 'footfall',       label: '客流排名',     unitLabel: '客流' },
+]
+
+const STAFF_RANKING_METRICS: { key: StaffRankingMetric; label: string; unitLabel: string }[] = [
+  { key: 'revenue',      label: '业绩榜单',   unitLabel: '业绩' },
+  { key: 'consume',      label: '实耗榜单',   unitLabel: '实耗' },
+  { key: 'newMember',    label: '新会员排名', unitLabel: '新会员' },
+  { key: 'footfall',     label: '客流榜单',   unitLabel: '客流' },
+  { key: 'projectCount', label: '项目数榜单', unitLabel: '项目数' },
+  { key: 'income',       label: '收入榜单',   unitLabel: '收入' },
+]
+
+const RANKING_DIMENSIONS: { key: RankingDimension; label: string }[] = [
+  { key: 'store', label: '门店' },
+  { key: 'staff', label: '员工' },
 ]
 
 interface ScopeValue {
@@ -64,10 +103,11 @@ interface SummaryData {
   projectCount: { today: number; month: number }
   salesCommissionIncome: { today: number; month: number }
   serviceCommissionIncome: { today: number; month: number }
-  storeCount: number
+  // T6（2026-04-25）：双口径 — day 用于日维度派生分母 + 屏幕展示，month 用于月维度派生分母
+  storeCount: { day: number; month: number }
+  employeeCount: { day: number; month: number }
   memberCount: number
   retainedMemberCount: number
-  employeeCount: number
 }
 
 interface StoreStatusDisplay {
@@ -141,15 +181,20 @@ Page({
 
     // 排行榜
     ranking: {
+      dimension: 'store' as RankingDimension,
       period: 'month' as RankingPeriod,
-      metric: 'revenue' as RankingMetric,
+      metric: 'revenue' as AnyRankingMetric,
       loading: false,
-      rows: [] as RankingDisplayRow[],
+      storeRows: [] as RankingDisplayRow[],
+      staffRows: [] as StaffRankingDisplayRow[],
       unit: 'amount' as 'amount' | 'count',
     },
+    rankingDimensions: RANKING_DIMENSIONS,
     rankingPeriods: RANKING_PERIODS,
     rankingMetrics: RANKING_METRICS,
+    staffRankingMetrics: STAFF_RANKING_METRICS,
     rankingMetricLabelMap: {} as Record<RankingMetric, string>,
+    staffRankingMetricLabelMap: {} as Record<StaffRankingMetric, string>,
   },
 
   onLoad(options: { tab?: string }) {
@@ -161,7 +206,14 @@ Page({
       acc[m.key] = m.unitLabel
       return acc
     }, {} as Record<RankingMetric, string>)
-    this.setData({ rankingMetricLabelMap: labelMap })
+    const staffLabelMap = STAFF_RANKING_METRICS.reduce((acc, m) => {
+      acc[m.key] = m.unitLabel
+      return acc
+    }, {} as Record<StaffRankingMetric, string>)
+    this.setData({
+      rankingMetricLabelMap: labelMap,
+      staffRankingMetricLabelMap: staffLabelMap,
+    })
   },
 
   onShow() {
@@ -261,8 +313,10 @@ Page({
   },
 
   buildDisplay(s: SummaryData): DisplayData {
-    const emp = s.employeeCount
-    const stores = s.storeCount
+    // T6（2026-04-25）：双口径分母 — day 给当日 / 屏幕展示用，month 给月度派生分母用
+    const empDay = s.employeeCount.day
+    const empMonth = s.employeeCount.month
+    const storesDay = s.storeCount.day
 
     // 派生字段：除数为 0 时返回 '--'，避免 NaN/Infinity
     const safeDiv = (
@@ -271,8 +325,8 @@ Page({
       formatter: (v: number) => string,
     ): string => (d > 0 ? formatter(n / d) : '--')
 
-    const perEmpAmount = (n: number) => safeDiv(n, emp, formatAmount)
-    const perEmpCount = (n: number) => safeDiv(n, emp, formatCount)
+    const perEmpAmount = (n: number, denom: number) => safeDiv(n, denom, formatAmount)
+    const perEmpCount = (n: number, denom: number) => safeDiv(n, denom, formatCount)
 
     const retainRate =
       s.memberCount > 0
@@ -309,27 +363,28 @@ Page({
         memberCount: formatCount(s.memberCount),
         retainedMemberCount: formatCount(s.retainedMemberCount),
         retainRate,
-        storeCount: formatCount(stores),
-        employeeCount: formatCount(emp),
-        avgMembersPerStore: safeDiv(s.memberCount, stores, formatCount),
-        avgRetainedPerStore: safeDiv(s.retainedMemberCount, stores, formatCount),
-        avgMembersPerEmp: safeDiv(s.memberCount, emp, formatCount),
+        // 屏幕展示卡：按 selectedDate 当日的截面
+        storeCount: formatCount(storesDay),
+        employeeCount: formatCount(empDay),
+        avgMembersPerStore: safeDiv(s.memberCount, storesDay, formatCount),
+        avgRetainedPerStore: safeDiv(s.retainedMemberCount, storesDay, formatCount),
+        avgMembersPerEmp: safeDiv(s.memberCount, empDay, formatCount),
         // 截图中右下重复位：与上一行同口径，按字面渲染（业务暂未给出真实指标）
-        avgMembersPerEmp2: safeDiv(s.memberCount, emp, formatCount),
+        avgMembersPerEmp2: safeDiv(s.memberCount, empDay, formatCount),
       },
 
       perEmployee: {
-        revenue:      { day: perEmpAmount(s.storeRevenue.today),    month: perEmpAmount(s.storeRevenue.month) },
-        shengmeiRev:  { day: perEmpAmount(s.shengmeiRevenue.today), month: perEmpAmount(s.shengmeiRevenue.month) },
-        consume:      { day: perEmpAmount(s.storeConsume.today),    month: perEmpAmount(s.storeConsume.month) },
-        shengmeiCons: { day: perEmpAmount(s.shengmeiConsume.today), month: perEmpAmount(s.shengmeiConsume.month) },
-        footfall:     { day: perEmpCount(s.footfall.today),         month: perEmpCount(s.footfall.month) },
-        headcount:    { day: perEmpCount(s.headcount.today),        month: perEmpCount(s.headcount.month) },
-        newMembers:   { day: perEmpCount(s.newMembers.today),       month: perEmpCount(s.newMembers.month) },
-        projectCount: { day: perEmpCount(s.projectCount.today),     month: perEmpCount(s.projectCount.month) },
+        revenue:      { day: perEmpAmount(s.storeRevenue.today,    empDay), month: perEmpAmount(s.storeRevenue.month,    empMonth) },
+        shengmeiRev:  { day: perEmpAmount(s.shengmeiRevenue.today, empDay), month: perEmpAmount(s.shengmeiRevenue.month, empMonth) },
+        consume:      { day: perEmpAmount(s.storeConsume.today,    empDay), month: perEmpAmount(s.storeConsume.month,    empMonth) },
+        shengmeiCons: { day: perEmpAmount(s.shengmeiConsume.today, empDay), month: perEmpAmount(s.shengmeiConsume.month, empMonth) },
+        footfall:     { day: perEmpCount(s.footfall.today,     empDay), month: perEmpCount(s.footfall.month,     empMonth) },
+        headcount:    { day: perEmpCount(s.headcount.today,    empDay), month: perEmpCount(s.headcount.month,    empMonth) },
+        newMembers:   { day: perEmpCount(s.newMembers.today,   empDay), month: perEmpCount(s.newMembers.month,   empMonth) },
+        projectCount: { day: perEmpCount(s.projectCount.today, empDay), month: perEmpCount(s.projectCount.month, empMonth) },
         commissionIncome: {
-          day:   perEmpAmount(s.salesCommissionIncome.today + s.serviceCommissionIncome.today),
-          month: perEmpAmount(s.salesCommissionIncome.month + s.serviceCommissionIncome.month),
+          day:   perEmpAmount(s.salesCommissionIncome.today + s.serviceCommissionIncome.today, empDay),
+          month: perEmpAmount(s.salesCommissionIncome.month + s.serviceCommissionIncome.month, empMonth),
         },
       },
     }
@@ -351,41 +406,93 @@ Page({
     const key = e.detail?.key
     if (!key || key === this.data.activeTab) return
     this.setData({ activeTab: key })
-    if (key === 'ranking' && this.data.ranking.rows.length === 0) {
-      this.loadRanking()
+    if (key === 'ranking') {
+      const { dimension, storeRows, staffRows } = this.data.ranking
+      const rowsLen = dimension === 'store' ? storeRows.length : staffRows.length
+      if (rowsLen === 0) this.loadRanking()
     }
   },
 
   async loadRanking() {
-    const { period, metric } = this.data.ranking
+    const { dimension, period, metric } = this.data.ranking
     this.setData({ 'ranking.loading': true })
     try {
-      const resp = await callStaffApi<RankingResp>('mgmtDashboard.storeRanking', { period, metric })
-      const formatter = resp.unit === 'amount' ? formatAmount : formatCount
-      const rows: RankingDisplayRow[] = resp.rows.map((r) => ({
-        ...r,
-        valueText: formatter(r.value),
-      }))
-      this.setData({
-        'ranking.rows': rows,
-        'ranking.unit': resp.unit,
-        'ranking.loading': false,
-      })
+      if (dimension === 'store') {
+        const resp = await callStaffApi<RankingResp>('mgmtDashboard.storeRanking', {
+          period,
+          metric,
+        })
+        const formatter = resp.unit === 'amount' ? formatAmount : formatCount
+        const rows: RankingDisplayRow[] = resp.rows.map((r) => ({
+          ...r,
+          valueText: formatter(r.value),
+        }))
+        this.setData({
+          'ranking.storeRows': rows,
+          'ranking.unit': resp.unit,
+          'ranking.loading': false,
+        })
+      } else {
+        const resp = await callStaffApi<StaffRankingResp>('mgmtDashboard.staffRanking', {
+          period,
+          metric,
+        })
+        const formatter = resp.unit === 'amount' ? formatAmount : formatCount
+        const rows: StaffRankingDisplayRow[] = resp.rows.map((r) => ({
+          ...r,
+          valueText: formatter(r.value),
+        }))
+        this.setData({
+          'ranking.staffRows': rows,
+          'ranking.unit': resp.unit,
+          'ranking.loading': false,
+        })
+      }
     } catch {
       this.setData({ 'ranking.loading': false })
       wx.showToast({ icon: 'none', title: '排行榜加载失败' })
     }
   },
 
+  onRankingDimensionTap(e: WechatMiniprogram.BaseEvent) {
+    const dimension = (e.currentTarget.dataset as { dimension?: RankingDimension }).dimension
+    if (!dimension || dimension === this.data.ranking.dimension) return
+
+    // metric 兼容映射：切换 dimension 时若当前 metric 在新维度不存在 → fallback 到 revenue
+    const currentMetric = this.data.ranking.metric
+    const validInTarget =
+      dimension === 'store'
+        ? RANKING_METRICS.some((m) => m.key === currentMetric)
+        : STAFF_RANKING_METRICS.some((m) => m.key === currentMetric)
+    const newMetric: AnyRankingMetric = validInTarget ? currentMetric : 'revenue'
+
+    this.setData({
+      'ranking.dimension': dimension,
+      'ranking.metric': newMetric,
+    })
+
+    // 已有同 metric 的缓存则不重新请求
+    const targetRows = dimension === 'store'
+      ? this.data.ranking.storeRows
+      : this.data.ranking.staffRows
+    const hasCache = targetRows.length > 0 && newMetric === currentMetric
+    if (!hasCache) this.loadRanking()
+  },
+
   onRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
     const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
     if (!period || period === this.data.ranking.period) return
-    this.setData({ 'ranking.period': period })
+    this.setData({
+      'ranking.period': period,
+      // 切 period 清空两个维度缓存（数据已变）
+      'ranking.storeRows': [],
+      'ranking.staffRows': [],
+    })
     this.loadRanking()
   },
 
   onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
-    const metric = (e.currentTarget.dataset as { metric?: RankingMetric }).metric
+    const metric = (e.currentTarget.dataset as { metric?: AnyRankingMetric }).metric
     if (!metric || metric === this.data.ranking.metric) return
     this.setData({ 'ranking.metric': metric })
     this.loadRanking()

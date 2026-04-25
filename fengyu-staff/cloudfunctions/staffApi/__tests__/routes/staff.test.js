@@ -525,6 +525,18 @@ describe('staff.dashboard', () => {
     // 店长使用 store_id 过滤
     const footfallSql = pg.query.mock.calls[0][0]
     expect(footfallSql).toContain('so.store_id')
+
+    // 新会员（2026-04-25 起统一为"成为会员客"语义）：店长按 c.bound_store_id 归属，became_member_at 区间命中
+    const newMemberSql = pg.query.mock.calls[4][0]
+    expect(newMemberSql).toMatch(/FROM\s+client_wechat_users\s+c/)
+    expect(newMemberSql).toContain('c.bound_store_id = $1')
+    expect(newMemberSql).toContain('c.became_member_at IS NOT NULL')
+    expect(newMemberSql).toMatch(/c\.became_member_at::date\s*>=/)
+    expect(newMemberSql).toMatch(/c\.became_member_at::date\s*<=/)
+    // 旧口径残留断言：阈值过滤、首单 NOT EXISTS、preferred_employee_id 都不应再出现
+    expect(newMemberSql).not.toMatch(/total_amount\s*>=/)
+    expect(newMemberSql).not.toMatch(/NOT\s+EXISTS/)
+    expect(newMemberSql).not.toMatch(/preferred_employee_id/)
   })
 
   test('美容师只看自己的数据', async () => {
@@ -546,9 +558,15 @@ describe('staff.dashboard', () => {
     expect(ctx.result.revenue).toBe(8000)
     expect(ctx.result.newMembers).toBe(1)
 
-    // 美容师使用 assigned_employee_id 过滤
+    // 美容师使用 assigned_employee_id 过滤（service_orders 维度）
     const footfallSql = pg.query.mock.calls[0][0]
     expect(footfallSql).toContain('assigned_employee_id')
+
+    // 新会员（2026-04-25 起统一为"成为会员客"语义）：美容师按 c.bound_employee_id 归属
+    const newMemberSql = pg.query.mock.calls[4][0]
+    expect(newMemberSql).toMatch(/FROM\s+client_wechat_users\s+c/)
+    expect(newMemberSql).toContain('c.bound_employee_id = $1')
+    expect(newMemberSql).toContain('c.became_member_at IS NOT NULL')
   })
 
   test('缺少日期参数时拒绝', async () => {
