@@ -3,6 +3,13 @@
 > 生成日期：2026-04-25
 > 需求来源：用户提出的设计稿（顶部 3 个时间维度 chip + 6 个指标按钮 + 门店排行榜列表）
 > 现状：`pages/mgmt-dashboard` 的 `ranking` tab 仍是 `placeholder-page`
+>
+> **2026-04-25 修正（已合并落库）**：「新会员排名」判定字段从
+> `old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]`
+> 切到 `became_member_at IS NOT NULL ∩ [became_member_at]`（旧口径含等级跃迁，与"首次成为会员客"语义偏离）。
+> 详见 [staff-ranking INDEX §决策 D4](../2026-04-25-mgmt-staff-ranking-INDEX.md) 与 metrics.md 「新会员」行 2026-04-25 修正说明。
+> **下方 §"6 个指标对应" 与归档 API ticket §2.6 SQL 仍保留旧定义作为历史规范快照**，
+> 实际部署代码 `mgmtDashboard.rankingNewMember` 已按新口径更新。
 
 本需求被拆为 2 个 ticket（前后端可并行）：
 

@@ -10,6 +10,10 @@
 > **一句话目标**：实现 `mgmtDashboard.storeRanking(period, metric)`，
 > 返回所选时间段、所选指标下、当前账号有权见的全部门店的排行榜
 > （`[{ rank, storeId, storeName, marketName, value }]`），按 value 降序。
+>
+> **2026-04-25 修正（已合并落库）**：§2.6 「新会员排名」SQL 中 `old_member_level IS NULL ∧ member_level IS NOT NULL ∩ [member_level_upgraded_at]` 已切到 `became_member_at IS NOT NULL ∩ [became_member_at]`。
+> 实际部署代码 `mgmtDashboard.rankingNewMember` 已采用新口径，关联索引建议同步替换为 `(bound_store_id, became_member_at) WHERE became_member_at IS NOT NULL`。
+> 本归档文件保留旧 SQL 作为历史规范快照，请以 metrics.md 「新会员」行（2026-04-25 修正版）为权威定义。
 
 ---
 
