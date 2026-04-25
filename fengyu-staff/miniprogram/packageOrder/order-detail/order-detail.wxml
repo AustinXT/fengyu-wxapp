@@ -159,7 +159,7 @@
         bind:click="onRepayTap"
       >发起回款（欠 ¥{{order.remainingPayable}}）</van-button>
 
-      <!-- 创建服务单（已支付 + 非院装产品订单） -->
+      <!-- 创建服务单（已支付 + 非家居产品订单） -->
       <van-button
         wx:if="{{order.status === '已支付'}}"
         block plain type="primary"

@@ -126,10 +126,10 @@ Page({
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
-      // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非院装）
+      // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非家居产品）
       const hasAppointableItems = order.status === '已支付'
         && items.some(i =>
-            i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
+            i.product_type !== '家居产品' && (i.remaining_sessions ?? 0) > 0
           );
 
       // 格式化支付到期时间（仅时间 HH:mm）
