@@ -402,9 +402,17 @@ Page({
       wx.navigateTo({ url: `/packageMgmt/mgmt-traffic-stats/mgmt-traffic-stats?${params}` })
       return
     }
+    if (entry === 'products') {
+      const { scope } = this.data
+      const params = [
+        `scopeType=${scope.scopeType}`,
+        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+      ].filter(Boolean).join('&')
+      wx.navigateTo({ url: `/packageMgmt/mgmt-product-cycle/mgmt-product-cycle?${params}` })
+      return
+    }
     const labelMap: Record<string, string> = {
       sales: '销售数据',
-      products: '品项数据',
       customers: '顾客档案',
     }
     const label = entry && labelMap[entry] ? labelMap[entry] : '该页面'
