@@ -57,6 +57,13 @@
       "when": 1777019942236,
       "tag": "0007_black_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777076362671,
+      "tag": "0008_aspiring_pride",
+      "breakpoints": true
     }
   ]
 }

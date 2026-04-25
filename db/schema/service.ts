@@ -1,4 +1,4 @@
-import { date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { boolean, date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
 import { allocationStatusEnum, serviceOrderStatusEnum, serviceOrderTypeEnum } from './enums'
 import { stores } from './org'
 import { saleItems } from './order'
@@ -58,6 +58,8 @@ export const serviceItems = pgTable(
       .references(() => saleItems.saleItemId),
     /** sale_items.unit_real_price 快照 */
     unitRealPrice: numeric('unit_real_price', { precision: 10, scale: 2 }),
+    /** sale_items.is_shengmei 快照（从 sale_items 拷贝，避免 sku 改动后语义漂移） */
+    isShengmei: boolean('is_shengmei'),
     serviceOrderId: varchar('service_order_id', { length: 30 })
       .notNull()
       .references(() => serviceOrders.serviceOrderId),

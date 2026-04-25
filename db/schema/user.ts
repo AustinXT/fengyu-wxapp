@@ -38,6 +38,8 @@ export const clientWechatUsers = pgTable(
     memberLevelLockedUntil: timestamp('member_level_locked_until', { withTimezone: true }),
     /** 最近一次升级时间戳（审计用；定位"什么时候升的金钻"之类问题） */
     memberLevelUpgradedAt: timestamp('member_level_upgraded_at', { withTimezone: true }),
+    /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
+    oldMemberLevel: memberLevelEnum('old_member_level'),
     customerSource: customerSourceEnum('customer_source'),
     /** 推荐人（美容师员工ID） */
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),

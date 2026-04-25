@@ -166,6 +166,8 @@ export const saleItems = pgTable(
     salesCategory: salesCategoryEnum("sales_category"),
     /** 固定手工费快照（开单时从 product_skus.service_fee × quantity 持久化，用于服务完成时计算固定手工费部分的服务提成） */
     serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),
+    /** 生美标志快照（开单时从 product_skus.is_shengmei 拷贝，不随 sku 后续修改变动） */
+    isShengmei: boolean("is_shengmei"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
