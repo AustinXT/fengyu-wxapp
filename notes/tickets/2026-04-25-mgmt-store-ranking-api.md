@@ -57,8 +57,8 @@
 
 - `rows` 永远包含**全部当前账号有权见的门店**（即使 value=0 也要返回，用于"垫底"展示）
 - `rank` 后端计算，同值并列（采用 `RANK()` 而非 `ROW_NUMBER()`）；二级排序按 `store_name ASC`
-- 选 `metric='retainedMember'`：`period` 仍传但被忽略，返回的就是当前快照
-- 选 `metric='projectCount'`：占位返回 `value=0` 的全部门店列表，`rank` 全为 1（按店名升序）
+- 选 `metric='retainedMember'`：按 period 末的 refDate 实时计算（详见 §2.5），month/year 在本月内 refDate 同为今天 → 数值相同，lastMonth 反映上月底快照
+- 选 `metric='projectCount'`：按 metrics.md 真实公式（`SUM(session_used)` ∩ `sales_category IN ('自销自耗','他销自耗')`），不再占位
 - `unit` 由后端给出，前端用来选择格式化函数（`formatAmount` vs `formatCount`）
 
 ### 1.3 权限
@@ -74,18 +74,17 @@
 
 ### 2.1 时间窗口构造（与 summary 共享 helper）
 
-在 `routes/mgmt-dashboard.js` 中**追加**一个 `timeWindowPeriod`：
+在 `routes/mgmt-dashboard.js` 中**追加**两个 helper：`timeWindowPeriod`（业绩/实耗/客流/新会员/项目数用）和 `getRefDateExpr`（保有会员用）：
 
 ```js
 /**
+ * 落 period 区间（用于业绩/实耗/客流/新会员/项目数）
  * @param {string} col 列引用（含别名）
  * @param {'month'|'lastMonth'|'year'} period
  * @param {boolean} isDateColumn col 本身是 date 类型则不必再 ::date
  */
-function timeWindowPeriod(col, period, isDateColumn) {
+function timeWindowPeriod(col, period, _isDateColumn) {
   // 用 NOW() 而非外部传 date 参数：排行榜默认锚定"今天"所在的月/年
-  // 不需要日历选择器（设计稿没有），完全由 period 决定锚点
-  const left = isDateColumn ? col : `${col}::date`
   if (period === 'month') {
     return `date_trunc('month', ${col}) = date_trunc('month', NOW()::date)`
   }
@@ -94,6 +93,18 @@ function timeWindowPeriod(col, period, isDateColumn) {
   }
   // year
   return `date_trunc('year', ${col}) = date_trunc('year', NOW()::date)`
+}
+
+/**
+ * 保有会员（方案 B）的 refDate SQL 表达式
+ * - month / year：本月或本年还未结束 → 用 NOW()::date
+ * - lastMonth：上月最后一天
+ */
+function getRefDateExpr(period) {
+  if (period === 'lastMonth') {
+    return `(date_trunc('month', NOW()::date) - INTERVAL '1 day')::date`
+  }
+  return `NOW()::date`
 }
 ```
 
@@ -167,26 +178,44 @@ GROUP BY s.store_id, s.store_name, o.name
 ORDER BY value DESC, s.store_name ASC
 ```
 
-### 2.5 3️⃣ 保有会员排名（截面快照）
+### 2.5 3️⃣ 保有会员排名（方案 B 实时计算）
+
+> 复用 [`metrics-date-alignment.md` §3.5 T5](./2026-04-25-mgmt-dashboard-metrics-date-alignment.md) 方案 B 公式：
+> "$refDate 那天已是会员客（`became_member_at::date <= refDate`） ∩ refDate 前 90 天有 service_orders 已完成单"。
+> 排行榜按 `c.bound_store_id` 分组聚合。
 
 ```sql
+-- ${refDate} 由 getRefDateExpr(period) 生成；下面 SQL 直接内联
 SELECT
-  s.store_id, s.store_name, o.name AS market_name,
-  COUNT(c.client_user_id) AS value
+  s.store_id,
+  s.store_name,
+  o.name AS market_name,
+  COUNT(DISTINCT c.user_id) AS value
 FROM stores s
 JOIN org_nodes o_store ON s.org_node_id = o_store.id
 JOIN org_nodes o ON o_store.parent_id = o.id
 LEFT JOIN client_wechat_users c
   ON c.bound_store_id = s.store_id
-  AND c.customer_status IN ('保有会员-稳定','保有会员-有效')
+  AND c.became_member_at IS NOT NULL
+  AND c.became_member_at::date <= ${refDate}
+  AND EXISTS (
+    SELECT 1 FROM service_orders so
+    WHERE so.client_user_id = c.user_id
+      AND so.status = '已完成'
+      AND so.service_date BETWEEN (${refDate} - INTERVAL '90 days') AND ${refDate}
+  )
 WHERE ${storeFilter}
 GROUP BY s.store_id, s.store_name, o.name
 ORDER BY value DESC, s.store_name ASC
 ```
 
-> 不引入 period 过滤；返回值与时间维度无关。
+> **关于 `customer_status` 列**：方案 B 不依赖 `customer_status` 列，因为它是当前快照不可历史化（详见 T5 决策）。
+>
+> **行为**：
+> - period=lastMonth → refDate = 上月最后一天 → 反映上月底的保有快照
+> - period=month / year → refDate = 今天（本月/本年还未结束）→ 数值相同，反映当下保有快照
 
-### 2.6 4️⃣ 新客量排名（按"新会员"口径）
+### 2.6 4️⃣ 新会员排名
 
 ```sql
 SELECT
@@ -205,21 +234,33 @@ GROUP BY s.store_id, s.store_name, o.name
 ORDER BY value DESC, s.store_name ASC
 ```
 
-### 2.7 5️⃣ 项目数排名（占位）
+### 2.7 5️⃣ 项目数排名
+
+> metrics.md 已落定公式（2026-04-25 变更）：`SUM(service_items.session_used)` JOIN service_orders；`status='已完成'` ∩ `service_items.sales_category IN ('自销自耗','他销自耗')` ∩ `service_date` 落入 period。
 
 ```sql
--- 占位：返回所有门店 + value=0
 SELECT
-  s.store_id, s.store_name, o.name AS market_name,
-  0::numeric AS value
+  s.store_id,
+  s.store_name,
+  o.name AS market_name,
+  COALESCE(SUM(sit.session_used), 0) AS value
 FROM stores s
 JOIN org_nodes o_store ON s.org_node_id = o_store.id
 JOIN org_nodes o ON o_store.parent_id = o.id
+LEFT JOIN service_orders so2
+  ON so2.store_id = s.store_id
+  AND so2.status = '已完成'
+  AND ${timeWindowPeriod('so2.service_date', period, true)}
+LEFT JOIN service_items sit
+  ON sit.service_order_id = so2.service_order_id
+  AND sit.sales_category IN ('自销自耗','他销自耗')
 WHERE ${storeFilter}
-ORDER BY s.store_name ASC
+GROUP BY s.store_id, s.store_name, o.name
+ORDER BY value DESC, s.store_name ASC
 ```
 
-> 占位实现等待业务定义后替换；与 dashboard 首页 projectCount 占位口径同步。
+> **快照字段前置**：`service_items.sales_category` 已在 schema/service.ts:64 落库，`service.create` 已写入快照（service.js:195-210）。
+> **历史数据自检**：T1 实施前先跑 `SELECT COUNT(*) FROM service_items WHERE sales_category IS NULL`；若有 NULL，写一次性回填脚本（按 sale_items 反查）。
 
 ### 2.8 6️⃣ 客流排名
 
@@ -340,20 +381,32 @@ async function storeRanking(ctx) {
 |------|------|----------|------|
 | revenue | sale_orders | `idx_sale_orders_store_paid_at` | 已有 |
 | consume / footfall | service_orders | `idx_svc_orders_store_date` | 已有 |
-| consume | service_items | `idx_svc_items_order` | 已有 |
-| retainedMember | client_wechat_users | `(bound_store_id, customer_status)` | ⚠️ 检查；无则加部分索引 |
-| newMember | client_wechat_users | `(bound_store_id, member_level_upgraded_at)` | ⚠️ 同上 |
+| consume / projectCount | service_items | `idx_svc_items_order` | 已有 |
+| retainedMember | client_wechat_users + service_orders | `(bound_store_id, became_member_at)` + `service_orders(client_user_id, service_date) WHERE status='已完成'` | ⚠️ 与 T5 共享，T5 已规划同款索引；T5 合并后无需重复加 |
+| newMember | client_wechat_users | `(bound_store_id, member_level_upgraded_at)` | ⚠️ 检查；无则加部分索引 |
+| projectCount | service_items | `(service_order_id, sales_category)` 部分索引 | ⚠️ 检查 |
 
 如需要补索引：
 
 ```sql
-CREATE INDEX IF NOT EXISTS idx_cwu_bound_status
-  ON client_wechat_users (bound_store_id, customer_status)
-  WHERE customer_status IN ('保有会员-稳定', '保有会员-有效');
+-- 保有会员（与 T5 一致；如 T5 已合并则跳过）
+CREATE INDEX IF NOT EXISTS idx_cwu_bound_became_member
+  ON client_wechat_users (bound_store_id, became_member_at)
+  WHERE became_member_at IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_svc_orders_completed_date_client
+  ON service_orders (service_date, client_user_id)
+  WHERE status = '已完成' AND client_user_id IS NOT NULL;
+
+-- 新会员
 CREATE INDEX IF NOT EXISTS idx_cwu_bound_level_upgrade
   ON client_wechat_users (bound_store_id, member_level_upgraded_at)
   WHERE old_member_level IS NULL AND member_level IS NOT NULL;
+
+-- 项目数（自销自耗/他销自耗 是少数派，部分索引体积小）
+CREATE INDEX IF NOT EXISTS idx_svc_items_order_self_consume
+  ON service_items (service_order_id, sales_category)
+  WHERE sales_category IN ('自销自耗','他销自耗');
 ```
 
 部署后跑 `EXPLAIN ANALYZE`，P95 > 500ms 才考虑加索引。
@@ -392,8 +445,13 @@ CREATE INDEX IF NOT EXISTS idx_cwu_bound_level_upgrade
 - **二级排序稳定**：同值时 store_name ASC（避免数据库随机返回）
 - **period=lastMonth**：仅命中上月数据；本月数据不计入
 - **period=year**：当年所有月数据聚合
-- **metric=retainedMember**：3 个 period 返回数据完全相同（截面快照）
-- **metric=projectCount**：所有店 value=0
+- **metric=retainedMember + period=lastMonth**：refDate=上月最后一天；过滤 became_member_at <= refDate；过滤 service_date 在 refDate 前 90 天内
+- **metric=retainedMember + period=month/year**：refDate=今天；与 lastMonth 不同（除非数据极端巧合）
+- **metric=retainedMember 边界**：顾客 became_member_at = refDate 当天 → 算入；became_member_at = refDate+1 → 不算入
+- **metric=retainedMember 90 天边界**：唯一一次到店 service_date = refDate-89 → 算入；service_date = refDate-91 → 不算入
+- **metric=projectCount**：仅 sales_category IN ('自销自耗','他销自耗') 的 service_items 计入；'他销他耗' / '生态合作' 不计入
+- **metric=projectCount session_used**：value = SUM(session_used)，不是 COUNT(*)（防止误用）
+- **metric=newMember**：按 member_level_upgraded_at 命中 period；old_member_level IS NULL ∧ member_level IS NOT NULL
 - **权限 headquarters**：返回所有 market 下的全部店
 - **权限 market**：仅返回 auth.scopeStoreIds 内的店；其他 market 的店不出现
 - **权限 market 且 scopeStoreIds 为空**：返回 rows=[]（不报错）
@@ -425,7 +483,9 @@ wx.cloud.callFunction({
 |------|------|
 | `client_wechat_users` 个别店缺索引导致全表扫描 | §3.4 部分索引按需添加；EXPLAIN ANALYZE 验证 |
 | 上月切月时 `NOW()::date - INTERVAL '1 month'` 边界（每月 31 号问题） | 用 `date_trunc('month', ...)` 锚定，不会受到天数边界影响 |
-| 新客量口径与业务理解不一致（"新会员" vs "首次到店"） | 实现后给业务方看真实数据；如需切口径只动 §2.6 SQL，无其他影响 |
+| 保有会员 method=B 与 T5 实现漂移 | T5 是同时段姐妹 ticket；本 ticket SQL 与 T5 §3.5 公式严格一致；T5 合并后抽 helper（如 `queryRetainedAtRefDate`） |
+| 保有会员 month/year 数值相同让用户疑惑 | 这是方案 B 的本质（refDate 都是今天）；如业务想要"period 内活跃过的会员"是另一指标，需另开 ticket（INDEX 已说明） |
+| 项目数 `service_items.sales_category` 历史数据为 NULL | T1 实施前跑数据自检 SQL；缺失则补一次性回填脚本（按 sale_items 反查） |
 | `LEFT JOIN` 大表（service_items × service_orders）造成笛卡儿积 | service_items 与 service_orders 是 1-N 关系；GROUP BY 后 SUM 正确 |
 | 同店多个 market 节点（理论上 1 店只挂 1 个 market） | 前置约束保证；如出现多市场归属，业务上是数据问题，需先修 |
 
@@ -433,19 +493,20 @@ wx.cloud.callFunction({
 
 ## 6 不在本 ticket 范围
 
-- 项目数指标的真实 SQL 实现（占位返 0）
 - 前端 ranking tab UI / 调用 / 渲染（在 [Ticket 2](./2026-04-25-mgmt-store-ranking-page.md)）
 - 员工排行榜（mgmt-navbar 中另一个 tab）
 - 排行榜导出 / 下钻 / 对比
+- T5 保有会员历史化（独立 ticket，详见 [`metrics-date-alignment.md` §3.5](./2026-04-25-mgmt-dashboard-metrics-date-alignment.md)）；本 ticket 与 T5 共享公式但各自独立落地
 
 ---
 
 ## 7 交付物
 
-- [ ] `staffApi/routes/mgmt-dashboard.js` 追加 `storeRanking` 函数 + 6 个 metric 查询子函数
+- [ ] `staffApi/routes/mgmt-dashboard.js` 追加 `storeRanking` 函数 + 6 个 metric 查询子函数（含方案 B 保有会员、真实公式项目数）
 - [ ] `staffApi/index.js` 路由注册 `mgmtDashboard.storeRanking`
 - [ ] `staffApi/CLAUDE.md` 路由表追加 `storeRanking`
 - [ ] `notes/references/metrics.md` 追加 period 时间窗口缩写定义 + 变更记录
+- [ ] T1 实施前跑 `SELECT COUNT(*) FROM service_items WHERE sales_category IS NULL`；缺失则补一次性回填脚本
 - [ ] `routes/mgmt-dashboard.test.js` 追加 §4.1 全部 case
 - [ ] 部署后联调验证 6 个指标 × 3 个时间维度（共 18 组）
 - [ ] P95 < 500ms（云函数日志确认）

@@ -43,11 +43,12 @@
 
 ```
 [ 业绩排名  ]  [ 实耗排名  ]  [ 保有会员排名 ]
-[ 新客量排名 ]  [ 项目数排名 ]  [ 客流排名     ]
+[ 新会员排名 ]  [ 项目数排名 ]  [ 客流排名     ]
 ```
 
 - 选中态：背景 `#FFC85F`（截图中黄色）+ 字体加粗
 - 默认选中：业绩排名
+- 设计稿截图中第 4 个按钮文案是"新客量排名"，已确认是笔误（业务无"新客"概念），文案统一为"新会员排名"；与 metrics.md / dashboard 首页对齐
 
 ### 1.3 底部 — 排行榜表格
 
@@ -63,7 +64,7 @@
 - 数据值右下小字标注当前指标名（如"业绩"/"实耗"/"客流"）
 - 数据为金额时（unit=amount）保留 2 位小数 + 千分位；为计数时（unit=count）整数 + 千分位（用 `utils/number.ts`）
 - value=0 时仍展示 `0` 或 `0.00`（不显示 `--`，与首页"防除零→`--`"语义不同）
-- 当 `metric=projectCount` 时，全部行 value=0 → 可以选择显示"功能开发中"占位文案替代列表
+- 6 个指标均按真实公式返回数据（项目数已按 metrics.md 真实定义实现，无占位逻辑）
 
 ---
 
@@ -124,7 +125,7 @@ const RANKING_METRICS: { key: RankingMetric; label: string; unitLabel: string }[
   { key: 'revenue',        label: '业绩排名',     unitLabel: '业绩' },
   { key: 'consume',        label: '实耗排名',     unitLabel: '实耗' },
   { key: 'retainedMember', label: '保有会员排名', unitLabel: '保有会员' },
-  { key: 'newMember',      label: '新客量排名',   unitLabel: '新客量' },
+  { key: 'newMember',      label: '新会员排名',   unitLabel: '新会员' },
   { key: 'projectCount',   label: '项目数排名',   unitLabel: '项目数' },
   { key: 'footfall',       label: '客流排名',     unitLabel: '客流' },
 ]
@@ -343,17 +344,17 @@ onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
 - 首次切到 ranking 才请求；切回 dashboard 不清空 ranking.rows
 - 切换 period 或 metric 重新请求；同 period+metric 不重复请求（按需可加缓存，**首版不做**，每次都重新请求保证数据新鲜度，因为门店数据日内变化频繁）
 
-### 3.4 项目数排名占位
+### 3.4 项目数排名
 
-- T1 接口返回每店 value=0
-- 前端展示效果：所有行 value 都是 `0`，rank 全为 1，排序按店名升序（接口已处理）
-- 不额外加"开发中"提示文案；保持简洁；后续 T1 完整实现后无需改前端
+- T1 已按 metrics.md 真实定义实现（`SUM(session_used) WHERE sales_category IN ('自销自耗','他销自耗')`）
+- 前端无特殊处理，与其他金额/计数指标一致
 
-### 3.5 保有会员选时间维度
+### 3.5 保有会员排名时间维度行为
 
-- 接口返回值与 period 无关
-- 前端**不禁用**时间 chip（用户切换不会报错，只是数据相同）
-- **不加额外提示文案**（避免视觉噪音）；后续如有用户反馈再加
+- T1 按 period 末 refDate 实时计算（方案 B），随时间变化
+- **本月内已知行为**：month 与 year 的 refDate 都是今天 → 数值相同；lastMonth 反映上月底快照
+- 前端**不禁用**时间 chip，也**不加额外文案**（避免视觉噪音）；用户切 month/year 看到相同值是方案 B 的合理结果
+- 跨月（每月 1 号）后 month/year 的 refDate 仍是今天，相对 lastMonth 出现差异——这天起 month/year 自然分化（直到本年内）
 
 ---
 
@@ -366,8 +367,10 @@ onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
 | 首次进入 mgmt-dashboard，点击 ranking tab | 展示"本月 + 业绩排名"列表，rank=1 的店在最上 |
 | 切换"上月" | 列表重新加载，数据变化 |
 | 切换"实耗排名" | 列表重新加载，列右下小字变成"实耗" |
-| 切换"保有会员排名" → 切"上月" / "本年" | 列表数据保持不变（截面快照） |
-| 切换"项目数排名" | 全部 value=0，按店名升序 |
+| 切换"保有会员排名" → 切"本月" / "本年" | 列表数据相同（refDate 都是今天） |
+| 切换"保有会员排名" → 切"上月" | 列表数据可能不同（refDate 为上月最后一天） |
+| 切换"项目数排名" | 按真实公式排序，金额/计数随门店实际服务量变化 |
+| 切换"新会员排名" | 列表显示 period 内升级会员的人数排行 |
 | 切回 dashboard tab → 再切回 ranking | 不重新请求，展示之前的数据（保留状态） |
 | 网络失败（断网） | toast "排行榜加载失败"；loading 退出 |
 
@@ -403,7 +406,6 @@ onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
 - T1 后端接口实现
 - 员工排行榜（mgmt-navbar 中另一个 tab，placeholder 保留）
 - 排行榜下钻、对比、导出
-- 项目数指标的真实显示（占位与 T1 一致）
 - 下拉刷新、滚动加载、缓存策略
 
 ---
