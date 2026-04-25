@@ -388,14 +388,18 @@ describe('mgmtProduct.cycleStats SQL 形态', () => {
     expect(groupCols).not.toMatch(/store_id/)
   })
 
-  test('fugou WHERE 含 q.purchase_date <> f.entry_date（与首购同日不算复购）', async () => {
+  test('fugou WHERE 不含 q.purchase_date <> f.entry_date（2026-04-25 口径修订：取消"非首日"约束，新增 ⊆ 复购）', async () => {
     setupCycleMocks({})
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await cycleStats(ctx)
 
     const sql = getCycleSql()
     expect(sql).toMatch(/fugou\s+AS\s*\(/)
-    expect(sql).toMatch(/q\.purchase_date\s*<>\s*f\.entry_date/)
+    // fugou 仍要求"在 period 内有达标日"——通过 JOIN first_entry 仅保留已 entry 的顾客
+    expect(sql).toMatch(/fugou\s+AS\s*\(\s*SELECT\s+DISTINCT[\s\S]*?JOIN\s+first_entry\s+f/)
+    expect(sql).toMatch(/fugou\s+AS\s*\([\s\S]*?WHERE\s+q\.purchase_date\s+BETWEEN\s+\$1\s+AND\s+\$2/)
+    // 不应再含"非首日"约束
+    expect(sql).not.toMatch(/q\.purchase_date\s*<>\s*f\.entry_date/)
   })
 
   test('tiyan WHERE 用 NOT EXISTS (SELECT 1 FROM first_entry f ...)', async () => {

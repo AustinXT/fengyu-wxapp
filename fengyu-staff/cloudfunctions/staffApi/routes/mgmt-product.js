@@ -10,6 +10,7 @@
  * mgmtProduct.cycleStats — 体验/新增/复购（区间维度）
  *   达标日：SUM(received) 在 (client_user_id, store_id, product_kind, paid_at::date) 分组下 ≥ threshold
  *   entry_date：跨店合并，全历史最早达标日
+ *   复购：在 [startDate, endDate] 内有达标日（threshold 共用，不再要求"非首日"）
  *   单次 SQL（CTE 链 + 三段 UNION ALL）
  *
  * 口径定义：notes/references/metrics.md "品项顾客周期子页"章节
@@ -309,7 +310,6 @@ async function cycleStats(ctx) {
         JOIN first_entry f ON f.client_user_id = q.client_user_id
                           AND f.product_kind   = q.product_kind
        WHERE q.purchase_date BETWEEN $1 AND $2
-         AND q.purchase_date <> f.entry_date
     ),
     tiyan AS (
       SELECT DISTINCT pa.client_user_id, pa.product_kind

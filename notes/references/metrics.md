@@ -416,6 +416,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | 2026-04-25 | 品项顾客周期子页 13 项指标定义（持卡人数+占比 2 项、体验/新增/复购各 3 项 = 11 项）；qualifying day 达标日 CTE 逻辑；同一天合并规则与"非首日不算复购"规则；5 决策点已全部拍板：持卡=截面快照（疗程卡+单品，remaining_sessions>0）/ 不限 item_direction / 复购业绩=客群全期收入 / entry_date 跨店合并 / 分包 packageMgmt；详见 ticket [`mgmt-product-cycle-page`](../tickets/2026-04-25-mgmt-product-cycle-page.md) |
 | 2026-04-25 | `staff.dashboard.newMembers`（员工端单店数据看板）也切到 `became_member_at` 口径——店长按 `c.bound_store_id`、美容师按 `c.bound_employee_id` 归属。旧口径"首次消费达 system_configs.new_member_threshold"已废弃，原因：与 mgmt 看板/排行榜数字不一致导致店长/美容师困惑。同步移除 `staff.js` 中无用的 `getMemberThreshold` import。新增 `db/scripts/verify-new-member-cutover.sql` 双库验证脚本（出数对比 + 归属覆盖率 + 索引建议） |
 | 2026-04-25 | 追加"员工排行榜归属"小节（6 指标按员工分组的字段映射 + 产能员工范围）；为 `mgmtDashboard.staffRanking` 接口服务（与 storeRanking 共享 period helper / 排序约定）。员工独有 income 指标（销售提成 + 服务提成）；员工无 retainedMember（保有会员归属门店） |
+| 2026-04-25 | 复购口径修订：`fugou` CTE 去掉 `purchase_date <> entry_date` 约束。现"复购 = period 内有达标日的（已 entry）顾客"，threshold 与新增共用。三类关系由"新增 ∩ 复购 可有交集"改为"**新增 ⊆ 复购**"；动机见 ticket [`mgmt-product-repurchase-empty`](../tickets/2026-04-25-mgmt-product-repurchase-empty.md) |
 
 ---
 
@@ -505,13 +506,13 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 | **qualifying day（达标日）** | `SUM(si.received)` 在 `(client_user_id, store_id, product_kind, paid_at::date)` 分组下 ≥ `new_member_threshold`（从 `system_configs` 动态读取，工具函数 `getMemberThreshold()`，默认 1990）|
 | **entry_date（首次进入日）** | 某 client 在某 product_kind 下，全历史（截至 $endDate）中最早的达标日（跨门店合并） |
 | **新增（xinzeng）** | entry_date 落在 `[startDate, endDate]` 内的顾客 |
-| **复购（fugou）** | 在 `[startDate, endDate]` 内有达标日、且该日 ≠ entry_date 的顾客 |
+| **复购（fugou）** | 在 `[startDate, endDate]` 内有达标日的顾客（threshold 与新增共用） |
 | **体验（tiyan）** | 在 `[startDate, endDate]` 内有购买，但全历史（截至 endDate）从未有达标日的顾客 |
 
 > **同一天合并规则**：同一顾客 + 同一门店 + 同一 product_kind + 同一日期的多笔消费先合并再对比 threshold。
-> **与首购同日不算复购**：达标日等于 entry_date 时不计入 fugou（`purchase_date <> entry_date`）。
-> **三类关系**：体验 ∩ 新增 = ∅，体验 ∩ 复购 = ∅；新增 ∩ 复购 可有交集
->   （同 period 内首次达标后又在另一天再次达标时，该顾客同时计入两组）。
+> **三类关系**：体验 ∩ 新增 = ∅，体验 ∩ 复购 = ∅；**新增 ⊆ 复购**
+>   （凡 entry_date 落在 period 内的顾客，其 entry_date 当日即满足"period 内有达标日"，因此必然也在 fugou 集合中；
+>   xinzeng 视为 fugou 的"首次达标"子集，UI 表格分别展示总量供业务对照）。
 
 **底层 CTE（三类指标共用）**：
 
@@ -548,13 +549,12 @@ xinzeng AS (                                  -- 新增：entry_date 在期内
   SELECT client_user_id, product_kind FROM first_entry
   WHERE entry_date BETWEEN $startDate AND $endDate
 ),
-fugou AS (                                    -- 复购：期内达标日 ≠ entry_date
+fugou AS (                                    -- 复购：期内任一达标日（不再要求 ≠ entry_date）
   SELECT DISTINCT q.client_user_id, q.product_kind
   FROM qualifying_days q
   JOIN first_entry f ON f.client_user_id = q.client_user_id
                      AND f.product_kind  = q.product_kind
   WHERE q.purchase_date BETWEEN $startDate AND $endDate
-    AND q.purchase_date <> f.entry_date
 ),
 tiyan AS (                                    -- 体验：期内有购买但全历史无达标日
   SELECT DISTINCT pa.client_user_id, pa.product_kind
