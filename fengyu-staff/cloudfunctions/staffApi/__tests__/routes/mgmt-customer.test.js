@@ -1021,3 +1021,280 @@ describe('mgmtCustomer 手机号脱敏策略', () => {
     expect(ctx.result.phoneMasked).toBe('139****9000')
   })
 })
+
+// ===================================================================
+// detail / paidOrders / calendar / giftHistory / refundHistory 出数完整路径
+// ===================================================================
+
+describe('mgmtCustomer 出数完整路径', () => {
+  test('detail 支持 clientUserId 入参 + 姓名回退 + 美容师解析 + scope 名称', async () => {
+    setupCommonMocks({
+      detailRows: [
+        {
+          user_id: 'u-detail',
+          phone: '13700137000',
+          name: '', // 触发 nameRows 回退
+          customer_id: 'cust-id-001',
+          member_level: '金钻',
+          bound_employee_id: 'emp-bound-1',
+          skin_type: '混合性',
+          improvement_focus: '抗衰',
+          gender: '女',
+          notes: '老顾客',
+          bound_store_id: 'store-001',
+          store_name: ' A 店 ',
+          birthday: '1990-03-15',
+        },
+      ],
+      nameRows: [{ customer_name: '回退姓名' }],
+      staffRows: [{ name: '王美容师' }],
+      detailVisitRows: [{ last_date: '2026-04-20', visit_count_90d: 8 }],
+      detailTopProductRows: [{ product_name: '深层补水' }],
+      detailConsumptionRows: [{ total: 9999.5, year_total: 3000 }],
+      customerInScope: true,
+    })
+    const ctx = makeMarketCtx({
+      clientUserId: 'u-detail',
+      scopeType: 'market',
+      scopeId: 'mkt-A',
+    })
+    await detail(ctx)
+
+    expect(ctx.result.id).toBe('cust-id-001')
+    expect(ctx.result.clientUserId).toBe('u-detail')
+    expect(ctx.result.name).toBe('回退姓名')
+    expect(ctx.result.preferredStaffName).toBe('王美容师')
+    expect(ctx.result.gender).toBe('女')
+    expect(ctx.result.memberLevel).toBe('金钻')
+    expect(ctx.result.skinType).toBe('混合性')
+    expect(ctx.result.focusAreas).toBe('抗衰')
+    expect(ctx.result.notes).toBe('老顾客')
+    expect(ctx.result.storeName).toBe('A 店') // trim
+    expect(ctx.result.lastServiceDate).toBe('2026-04-20')
+    expect(ctx.result.visitFrequency).toBe('两周一次') // count90d=8 落在 [6, 12)
+    expect(ctx.result.topProductName).toBe('深层补水')
+    expect(ctx.result.totalConsumption).toBe(9999.5)
+    expect(ctx.result.yearConsumption).toBe(3000)
+    expect(ctx.result.birthday).toBe('1990-03-15')
+    expect(ctx.result.source).toBe('both') // customer_id 非空
+    expect(ctx.result.phone).toBe('13700137000') // market 不脱敏
+  })
+
+  test('detail 支持 phone 入参（id/clientUserId 都未找到时回退）', async () => {
+    let queryCount = 0
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      queryCount++
+      // assertCustomerInScope: scope 不需要校验（headquarters）
+      if (/SELECT\s+1\s+FROM\s+stores/.test(sql) || /FROM\s+stores\s+s\s+JOIN\s+org_nodes/.test(sql)) {
+        return [{ '?column?': 1 }]
+      }
+      if (/c\.user_id,\s+c\.phone,\s+c\.name,\s+c\.customer_id/.test(sql) && /WHERE\s+c\.customer_id\s*=\s*\$1/.test(sql)) {
+        return [] // id 没找到
+      }
+      if (/c\.user_id,\s+c\.phone/.test(sql) && /WHERE\s+c\.user_id\s*=\s*\$1/.test(sql)) {
+        return [] // clientUserId 没找到
+      }
+      if (/c\.user_id,\s+c\.phone/.test(sql) && /WHERE\s+c\.phone\s*=\s*\$1/.test(sql)) {
+        return [{
+          user_id: 'u-by-phone',
+          phone: '13600136000',
+          name: '李四',
+          customer_id: null,
+          member_level: null,
+          bound_employee_id: null,
+          skin_type: null,
+          improvement_focus: null,
+          gender: null,
+          notes: null,
+          bound_store_id: 'store-001',
+          store_name: 'B 店',
+          birthday: null,
+        }]
+      }
+      if (/MAX\(so\.service_date\)\s+AS\s+last_date/.test(sql)) {
+        return [{ last_date: null, visit_count_90d: 0 }]
+      }
+      if (/COALESCE\(SUM\(si\.received::numeric\),\s*0\)\s+AS\s+total/.test(sql)) {
+        return [{ total: 0, year_total: 0 }]
+      }
+      return []
+    })
+
+    const ctx = makeHqCtx({
+      id: 'not-found-id',
+      clientUserId: 'not-found-uid',
+      phone: '13600136000',
+      scopeType: 'all',
+    })
+    await detail(ctx)
+
+    expect(ctx.result.clientUserId).toBe('u-by-phone')
+    expect(ctx.result.name).toBe('李四')
+    expect(ctx.result.preferredStaffName).toBeNull() // bound_employee_id 为 null
+    expect(ctx.result.source).toBe('miniprogram') // customer_id null
+    // 至少经过了 id / clientUserId / phone 三次档案查询
+    expect(queryCount).toBeGreaterThanOrEqual(3)
+  })
+
+  test('paidOrders 出数：orders + items 完整 mapping', async () => {
+    setupCommonMocks({
+      paidOrderRows: [
+        { sale_order_id: 'so-1', status: '已支付', paid_at: '2026-04-20T10:00:00Z', store_id: 'store-001', store_name: 'A 店' },
+        { sale_order_id: 'so-2', status: '已支付', paid_at: '2026-04-21T11:00:00Z', store_id: 'store-001', store_name: 'A 店' },
+      ],
+      paidOrderItems: [
+        { sale_order_id: 'so-1', sale_item_id: 'si-1', store_id: 'store-001', session_count: 10, remaining_sessions: 8, sku_id: 'sku-1', product_type: '疗程卡', sku_spec_name: 'A 规', product_name: '深层补水' },
+        { sale_order_id: 'so-1', sale_item_id: 'si-2', store_id: 'store-001', session_count: 5, remaining_sessions: 5, sku_id: 'sku-2', product_type: '次卡', sku_spec_name: 'B 规', product_name: '基础护理' },
+        { sale_order_id: 'so-2', sale_item_id: 'si-3', store_id: 'store-001', session_count: 1, remaining_sessions: 1, sku_id: 'sku-3', product_type: '单次', sku_spec_name: 'C 规', product_name: '面部清洁' },
+      ],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'all' })
+    await paidOrders(ctx)
+
+    expect(ctx.result.scope.type).toBe('all')
+    expect(ctx.result.orders).toHaveLength(2)
+    const so1 = ctx.result.orders.find((o) => o.saleOrderId === 'so-1')
+    expect(so1.items).toHaveLength(2)
+    expect(so1.items[0].itemName).toBe('深层补水')
+    const so2 = ctx.result.orders.find((o) => o.saleOrderId === 'so-2')
+    expect(so2.items).toHaveLength(1)
+    expect(so2.items[0].itemName).toBe('面部清洁')
+  })
+
+  test('paidOrders 空结果分支：返回 orders=[] 并解析 scope 名称', async () => {
+    setupCommonMocks({ paidOrderRows: [] })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
+    await paidOrders(ctx)
+
+    expect(ctx.result.scope.type).toBe('store')
+    expect(ctx.result.scope.id).toBe('store-001')
+    expect(ctx.result.scope.name).toBe('凤御A店')
+    expect(ctx.result.orders).toEqual([])
+  })
+
+  test('calendar 出数：dailySummary + orders mapping', async () => {
+    setupCommonMocks({
+      calendarDailyRows: [
+        { pay_date: '2026-04-20', order_count: '2', total_received: '300.50' },
+        { pay_date: '2026-04-21', order_count: '1', total_received: '88.00' },
+      ],
+      calendarOrderRows: [
+        { sale_order_id: 'so-1', sale_order_type: '销售单', store_id: 'store-001', payment_method: '微信', paid_at: '2026-04-20T10:00:00Z', client_phone: '13800001111', customer_name: '张三', pay_date: '2026-04-20', total_received: '200.00' },
+        { sale_order_id: 'so-2', sale_order_type: '销售单', store_id: 'store-001', payment_method: '现金', paid_at: '2026-04-20T15:00:00Z', client_phone: '13800001111', customer_name: '张三', pay_date: '2026-04-20', total_received: '100.50' },
+        { sale_order_id: 'so-3', sale_order_type: '销售单', store_id: 'store-001', payment_method: '微信', paid_at: '2026-04-21T09:00:00Z', client_phone: '13800001111', customer_name: '张三', pay_date: '2026-04-21', total_received: '88.00' },
+      ],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', year: 2026, month: 4, scopeType: 'all' })
+    await calendar(ctx)
+
+    expect(ctx.result.year).toBe(2026)
+    expect(ctx.result.month).toBe(4)
+    expect(ctx.result.dailySummary).toHaveLength(2)
+    expect(ctx.result.dailySummary[0]).toEqual({ date: '2026-04-20', orderCount: 2, totalReceived: 300.5 })
+    expect(ctx.result.orders).toHaveLength(3)
+    expect(ctx.result.orders[0].saleOrderId).toBe('so-1')
+    expect(ctx.result.orders[0].paymentMethod).toBe('微信')
+    expect(ctx.result.orders[0].totalReceived).toBe(200)
+  })
+
+  test('calendar 支持 clientPhone 入参（替代 clientUserId）', async () => {
+    setupCommonMocks({
+      calendarDailyRows: [],
+      calendarOrderRows: [],
+    })
+    const ctx = makeHqCtx({ clientPhone: '13800001111', year: 2026, month: 4, scopeType: 'all' })
+    await calendar(ctx)
+    expect(ctx.result.dailySummary).toEqual([])
+    expect(ctx.result.orders).toEqual([])
+  })
+
+  test('giftHistory 出数：promoOrders + giftItems + scope 名称', async () => {
+    setupCommonMocks({
+      giftPromoRows: [
+        { sale_order_id: 'so-promo-1', status: '已支付', sale_order_type: '销售单', total_amount: '1200.00', created_at: '2026-04-15T10:00:00Z', paid_at: '2026-04-15T10:05:00Z' },
+      ],
+      giftItemsRows: [
+        { sale_item_id: 'gi-1', sale_order_id: 'so-gift-1', product_name: '赠品面膜', sku_spec_name: '单片', quantity: 5, session_count: null, remaining_sessions: null, received: '0', created_at: '2026-04-16T10:00:00Z', paid_at: '2026-04-16T10:05:00Z' },
+      ],
+    })
+    // 给 promoItems 查询补 mock（按 sale_order_id ANY $1）
+    const baseImpl = pg.query.getMockImplementation()
+    pg.query.mockImplementation(async (sql, params) => {
+      if (
+        /SELECT\s+si\.sale_order_id,\s+si\.sale_item_id,\s+si\.product_name/.test(sql) &&
+        /WHERE\s+si\.sale_order_id\s*=\s*ANY\(\$1\)/.test(sql) &&
+        Array.isArray(params?.[0]) && params[0].includes('so-promo-1')
+      ) {
+        return [
+          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-1', product_name: '套餐子项A', sku_spec_name: 'X', quantity: 1, session_count: 10, remaining_sessions: 9, received: '600.00' },
+          { sale_order_id: 'so-promo-1', sale_item_id: 'pi-2', product_name: '套餐子项B', sku_spec_name: 'Y', quantity: 1, session_count: 5, remaining_sessions: 5, received: '600.00' },
+        ]
+      }
+      return baseImpl(sql, params)
+    })
+
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'market', scopeId: 'mkt-A' })
+    await giftHistory(ctx)
+
+    expect(ctx.result.scope.name).toBe('华东市场')
+    expect(ctx.result.promoOrders).toHaveLength(1)
+    expect(ctx.result.promoOrders[0].saleOrderId).toBe('so-promo-1')
+    expect(ctx.result.promoOrders[0].totalAmount).toBe(1200)
+    expect(ctx.result.promoOrders[0].items).toHaveLength(2)
+    expect(ctx.result.giftItems).toHaveLength(1)
+    expect(ctx.result.giftItems[0].productName).toBe('赠品面膜')
+    expect(ctx.result.giftItems[0].quantity).toBe(5)
+  })
+
+  test('giftHistory 支持 clientPhone 入参', async () => {
+    setupCommonMocks({ giftPromoRows: [], giftItemsRows: [] })
+    const ctx = makeHqCtx({ clientPhone: '13800001111', scopeType: 'all' })
+    await giftHistory(ctx)
+    expect(ctx.result.promoOrders).toEqual([])
+    expect(ctx.result.giftItems).toEqual([])
+  })
+
+  test('refundHistory 出数：orders + items 完整 mapping', async () => {
+    setupCommonMocks({
+      refundOrderRows: [
+        { sale_order_id: 'so-r1', status: '已退款', sale_order_type: '退款单', total_amount: '500.00', refund_reason: '过敏', handling_fee: '50.00', ref_sale_order_id: 'so-orig-1', approved_by: 'mgr-1', approved_at: '2026-04-22T12:00:00Z', rejected_reason: null, created_at: '2026-04-22T10:00:00Z', paid_at: null },
+        { sale_order_id: 'so-r2', status: '已转换', sale_order_type: '转换单', total_amount: '300.00', refund_reason: null, handling_fee: null, ref_sale_order_id: 'so-orig-2', approved_by: 'mgr-1', approved_at: '2026-04-23T12:00:00Z', rejected_reason: null, created_at: '2026-04-23T10:00:00Z', paid_at: null },
+      ],
+      refundItemsRows: [
+        { sale_order_id: 'so-r1', sale_item_id: 'sri-1', item_direction: '退款', product_name: '深层补水', sku_spec_name: 'A 规', quantity: 1, received: '-500.00' },
+        { sale_order_id: 'so-r2', sale_item_id: 'sri-2', item_direction: '转换', product_name: '换购套餐', sku_spec_name: 'C 规', quantity: 1, received: '300.00' },
+      ],
+    })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'market', scopeId: 'mkt-A' })
+    await refundHistory(ctx)
+
+    expect(ctx.result.scope.name).toBe('华东市场')
+    expect(ctx.result.orders).toHaveLength(2)
+    const r1 = ctx.result.orders.find((o) => o.saleOrderId === 'so-r1')
+    expect(r1.type).toBe('退款单')
+    expect(r1.totalAmount).toBe(500)
+    expect(r1.handlingFee).toBe(50)
+    expect(r1.refundReason).toBe('过敏')
+    expect(r1.items).toHaveLength(1)
+    expect(r1.items[0].direction).toBe('退款')
+    expect(r1.items[0].received).toBe(-500)
+    const r2 = ctx.result.orders.find((o) => o.saleOrderId === 'so-r2')
+    expect(r2.handlingFee).toBeNull()
+    expect(r2.items).toHaveLength(1)
+  })
+
+  test('refundHistory 空结果分支：返回 orders=[] 并解析 scope', async () => {
+    setupCommonMocks({ refundOrderRows: [], refundItemsRows: [] })
+    const ctx = makeHqCtx({ clientUserId: 'u1', scopeType: 'store', scopeId: 'store-001' })
+    await refundHistory(ctx)
+    expect(ctx.result.orders).toEqual([])
+    expect(ctx.result.scope.name).toBe('凤御A店')
+  })
+
+  test('refundHistory 支持 clientPhone 入参', async () => {
+    setupCommonMocks({ refundOrderRows: [], refundItemsRows: [] })
+    const ctx = makeHqCtx({ clientPhone: '13800001111', scopeType: 'all' })
+    await refundHistory(ctx)
+    expect(ctx.result.orders).toEqual([])
+  })
+})
