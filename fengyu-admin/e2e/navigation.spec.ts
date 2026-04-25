@@ -41,7 +41,6 @@ test.describe('页面路由可达性', () => {
 
     { path: '/logs', heading: '操作日志' },
     { path: '/settings', heading: '系统配置' },
-    { path: '/data-center', heading: '数据中心' },
   ]
 
   for (const { path, heading } of routes) {

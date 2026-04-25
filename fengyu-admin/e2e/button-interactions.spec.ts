@@ -423,20 +423,6 @@ test.describe('操作日志交互', () => {
 })
 
 // ============================================================
-// 数据中心 — Tab
-// ============================================================
-test.describe('数据中心按钮交互', () => {
-  test('5 个 Tab 均可切换', async ({ page }) => {
-    await page.goto('/data-center')
-    for (const name of ['客户回店率', '品项占比', '经营动线', '人效分析', '排行榜']) {
-      const tab = page.getByRole('tab', { name })
-      await tab.click()
-      await expect(tab).toHaveAttribute('aria-selected', 'true')
-    }
-  })
-})
-
-// ============================================================
 // 侧边栏菜单 — 全部可导航
 // ============================================================
 test.describe('侧边栏菜单导航', () => {
@@ -457,7 +443,6 @@ test.describe('侧边栏菜单导航', () => {
     { text: '数据同步', url: /\/sync/ },
     { text: '操作日志', url: /\/logs/ },
     { text: '系统配置', url: /\/settings/ },
-    { text: '数据中心', url: /\/data-center/ },
   ]
 
   for (const { text, url } of menuItems) {

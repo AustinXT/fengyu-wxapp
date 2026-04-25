@@ -20,7 +20,6 @@ const ROUTE_LABELS: Record<string, string> = {
   "/commission": "提成矩阵",
   "/customers": "顾客管理",
   "/coupons": "优惠券管理",
-  "/data-center": "数据中心",
   "/permissions": "权限管理",
 
   "/logs": "操作日志",

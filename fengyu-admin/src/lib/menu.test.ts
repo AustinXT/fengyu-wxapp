@@ -47,7 +47,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("疗程卡管理");
 	});
 
-	it("manager 看到业务管理 + 顾客管理 + 疗程卡管理 + 数据中心", () => {
+	it("manager 看到业务管理 + 顾客管理 + 疗程卡管理", () => {
 		const labels = getMenuLabels(makeSession({ role: "manager" }));
 		expect(labels).toContain("工作台");
 		expect(labels).toContain("开单");
@@ -58,7 +58,6 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
 		expect(labels).toContain("充值卡流水");
-		expect(labels).toContain("经营数据");
 	});
 
 	it("manager 看不到系统管理", () => {
@@ -68,7 +67,7 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).not.toContain("系统配置");
 	});
 
-	it("finance 以只读角色看到订单/分配/顾客/卡包/数据中心", () => {
+	it("finance 以只读角色看到订单/分配/顾客/卡包", () => {
 		const labels = getMenuLabels(makeSession({ role: "finance" }));
 		expect(labels).toContain("工作台");
 		expect(labels).toContain("订单管理");
@@ -76,7 +75,6 @@ describe("getVisibleMenuGroups", () => {
 		expect(labels).toContain("顾客管理");
 		expect(labels).toContain("疗程卡管理");
 		expect(labels).toContain("充值卡流水");
-		expect(labels).toContain("经营数据");
 	});
 
 	it("finance 看不到开单/服务单/预约", () => {

@@ -15,7 +15,6 @@ import {
 	UserRound,
 	CreditCard,
 	Ticket,
-	BarChart3,
 	Shield,
 	Coins,
 	Wallet,
@@ -116,18 +115,6 @@ export const MENU_CONFIG: MenuGroup[] = [
 				icon: Wallet,
 				href: "/card-transactions",
 				requiredRoles: ["admin", "manager"],
-				readonlyRoles: ["finance"],
-			},
-		],
-	},
-	{
-		label: "数据中心",
-		items: [
-			{
-				label: "经营数据",
-				icon: BarChart3,
-				href: "/data-center",
-				requiredRoles: ["manager"],
 				readonlyRoles: ["finance"],
 			},
 		],
