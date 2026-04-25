@@ -85,6 +85,13 @@
       "when": 1777094943410,
       "tag": "0011_misty_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1777101074983,
+      "tag": "0012_skinny_valkyrie",
+      "breakpoints": true
     }
   ]
 }

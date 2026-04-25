@@ -47,6 +47,8 @@ export const stores = pgTable(
     openingDate: date('opening_date'),
     bedCount: integer('bed_count'),
     isClosed: boolean('is_closed').notNull().default(false),
+    /** 闭店日期；NULL 表示在营。与 is_closed 双写一致（is_closed = closed_at IS NOT NULL） */
+    closedAt: date('closed_at'),
     // 顾客向字段
     coverImage: text('cover_image'),
     images: text('images').array(),
