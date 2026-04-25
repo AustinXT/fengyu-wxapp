@@ -311,6 +311,7 @@
   <!-- 我的 -->
   <block wx:elif="{{activeTab === 'profile'}}">
     <view class="mgmt-profile-wrap">
+      <!-- Header（保留） -->
       <view class="mgmt-profile-header">
         <view class="mgmt-profile-name">{{staffName || '未命名员工'}}</view>
         <view class="mgmt-profile-meta">
@@ -321,9 +322,55 @@
       </view>
 
       <view class="mgmt-profile-body">
-        <van-icon name="gem-o" size="120rpx" color="#C0322A" />
-        <text class="mgmt-profile-tip">管理层菜单建设中，敬请期待</text>
-        <button wx:if="{{canSwitchStore}}" class="mgmt-profile-action mgmt-profile-action--outline" bindtap="onSwitchToStore">返回门店视图</button>
+        <!-- 基本信息卡 -->
+        <view class="profile-section-title">基本信息</view>
+        <view class="profile-card" wx:if="{{basicInfo}}">
+          <view class="profile-row"><text class="lbl">姓名</text><text class="val">{{basicInfo.staffName}}</text></view>
+          <view class="profile-row"><text class="lbl">工号</text><text class="val">{{basicInfo.staffWfId}}</text></view>
+          <view class="profile-row"><text class="lbl">手机号</text><text class="val">{{basicInfo.phoneFormatted}}</text></view>
+          <view class="profile-row"><text class="lbl">职位</text><text class="val">{{basicInfo.position}}</text></view>
+          <view class="profile-row"><text class="lbl">层级</text><text class="val">{{basicInfo.staffLevelLabel}}</text></view>
+        </view>
+
+        <!-- 组织归属卡 -->
+        <view class="profile-section-title">组织归属</view>
+        <view class="profile-card">
+          <view class="profile-table-header">
+            <text class="col col-role">角色</text>
+            <text class="col col-scope">作用域</text>
+          </view>
+          <view wx:if="{{roleBindingRows.length === 0}}" class="profile-empty">暂无角色绑定</view>
+          <block wx:else>
+            <view wx:for="{{roleBindingRows}}" wx:key="role" class="profile-table-row">
+              <text class="col col-role">{{item.role}}</text>
+              <text class="col col-scope">{{item.scopeText}}</text>
+            </view>
+          </block>
+        </view>
+
+        <!-- 管辖范围卡 -->
+        <view wx:if="{{storeScope}}" class="profile-section-title">管辖范围</view>
+        <view wx:if="{{storeScope}}" class="profile-card">
+          <view class="profile-store-title">{{storeScope.title}}</view>
+          <block wx:if="{{storeScope.stores.length === 0}}">
+            <view class="profile-empty">暂无管辖门店</view>
+          </block>
+          <block wx:else>
+            <view
+              wx:for="{{storeScope.stores}}"
+              wx:key="*this"
+              wx:if="{{storeScope.expanded || index < 5}}"
+              class="profile-store-item"
+            >· {{item}}</view>
+            <view
+              wx:if="{{storeScope.needToggle}}"
+              class="profile-store-toggle"
+              bindtap="onToggleStoreScope"
+            >{{storeScope.expanded ? '收起' : '展开全部 ' + storeScope.stores.length + ' 家'}}</view>
+          </block>
+        </view>
+
+        <!-- 退出登录（保留） -->
         <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
       </view>
     </view>

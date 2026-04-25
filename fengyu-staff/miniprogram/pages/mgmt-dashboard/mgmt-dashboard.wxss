@@ -239,21 +239,12 @@
 }
 
 .mgmt-profile-body {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 96rpx 48rpx;
-}
-
-.mgmt-profile-tip {
-  margin-top: 32rpx;
-  font-size: 28rpx;
-  color: #666;
+  padding-bottom: 48rpx;
 }
 
 .mgmt-profile-action {
-  margin-top: 48rpx;
-  width: 60%;
+  margin: 64rpx 24rpx 0;
+  width: auto;
   height: 80rpx;
   line-height: 80rpx;
   border-radius: 40rpx;
@@ -261,12 +252,6 @@
   color: #FFFFFF;
   font-size: 28rpx;
   border: none;
-}
-
-.mgmt-profile-action--outline {
-  background: #FFFFFF;
-  color: #C0322A;
-  border: 2rpx solid #C0322A;
 }
 
 /* 员工排行榜 tab */
@@ -391,4 +376,77 @@
   text-align: center;
   color: #999;
   font-size: 26rpx;
+}
+
+/* mgmt-profile 重设计：基本信息 / 组织归属 / 管辖范围 卡片 */
+.profile-section-title {
+  font-size: 26rpx;
+  color: #999;
+  padding: 32rpx 32rpx 12rpx;
+  letter-spacing: 1rpx;
+}
+
+.profile-card {
+  background: #fff;
+  border-radius: 16rpx;
+  margin: 0 24rpx;
+  padding: 16rpx 24rpx;
+}
+
+.profile-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 20rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+  font-size: 28rpx;
+}
+
+.profile-row:last-child { border-bottom: none; }
+.profile-row .lbl { color: #999; }
+.profile-row .val { color: #333; font-weight: 500; }
+
+.profile-table-header {
+  display: grid;
+  grid-template-columns: 200rpx 1fr;
+  padding: 16rpx 0;
+  font-size: 24rpx;
+  color: #999;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.profile-table-row {
+  display: grid;
+  grid-template-columns: 200rpx 1fr;
+  padding: 20rpx 0;
+  font-size: 28rpx;
+  color: #333;
+}
+
+.profile-table-row:not(:last-child) { border-bottom: 1rpx solid #f0f0f0; }
+
+.profile-store-title {
+  font-size: 28rpx;
+  color: #C0322A;
+  font-weight: 600;
+  padding: 12rpx 0 16rpx;
+}
+
+.profile-store-item {
+  font-size: 28rpx;
+  color: #333;
+  padding: 12rpx 0;
+}
+
+.profile-store-toggle {
+  text-align: center;
+  font-size: 26rpx;
+  color: #C0322A;
+  padding: 16rpx 0 8rpx;
+}
+
+.profile-empty {
+  text-align: center;
+  font-size: 26rpx;
+  color: #999;
+  padding: 32rpx 0;
 }

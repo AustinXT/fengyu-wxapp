@@ -153,12 +153,25 @@ const CALENDAR_MIN_YEAR = 2015
 Page({
   data: {
     activeTab: 'dashboard' as MgmtTab,
-    canSwitchStore: false,
     staffName: '',
     phone: '',
     position: '',
     staffLevelLabel: '',
     staffLevel: '',
+    basicInfo: null as null | {
+      staffName: string
+      staffWfId: string
+      phoneFormatted: string
+      position: string
+      staffLevelLabel: string
+    },
+    roleBindingRows: [] as Array<{ role: string; scopeText: string }>,
+    storeScope: null as null | {
+      title: string
+      stores: string[]
+      expanded: boolean
+      needToggle: boolean
+    },
 
     // 数据中心
     selectedDate: '',
@@ -219,15 +232,16 @@ Page({
       wx.reLaunch({ url: '/pages/workbench/workbench' })
       return
     }
-    const { staffName, phone, position, staffLevel, availableLoginLevels } = app.globalData
+    const { staffName, phone, position, staffLevel } = app.globalData
     this.setData({
-      canSwitchStore: (availableLoginLevels || []).includes('store'),
       staffName,
       phone,
       position,
       staffLevel: staffLevel || '',
       staffLevelLabel: staffLevel === 'headquarters' ? '总部' : staffLevel === 'market' ? '市场' : '',
     })
+
+    this.buildProfileData()
 
     if (this.data.activeTab === 'dashboard' && !this.data.selectedDate) {
       this.initDashboard()
@@ -522,9 +536,58 @@ Page({
     this.loadStaffRanking()
   },
 
-  onSwitchToStore() {
-    app.setLoginLevel('store')
-    wx.reLaunch({ url: '/pages/workbench/workbench' })
+  buildProfileData() {
+    const g = app.globalData
+    const staffLevelLabel = g.staffLevel === 'headquarters' ? '总部'
+      : g.staffLevel === 'market' ? '市场' : '--'
+
+    this.setData({
+      basicInfo: {
+        staffName: g.staffName || '--',
+        staffWfId: g.staffWfId || '--',
+        phoneFormatted: this.formatPhone(g.phone),
+        position: g.position || '--',
+        staffLevelLabel,
+      },
+      roleBindingRows: this.buildRoleBindingRows(g.roleBindings || []),
+      storeScope: this.buildStoreScope(g.staffLevel, g.roleBindings || [], g.scopedStores || []),
+    })
+  },
+
+  formatPhone(p: string): string {
+    if (!p || p.length !== 11) return p || '--'
+    return `${p.slice(0, 3)} ${p.slice(3, 7)} ${p.slice(7)}`
+  },
+
+  buildRoleBindingRows(bindings: RoleBinding[]) {
+    const order: Record<string, number> = { '总部': 0, '市场': 1, '门店': 2, '部门': 3 }
+    return [...bindings]
+      .sort((a, b) => (order[a.scopeType] ?? 9) - (order[b.scopeType] ?? 9))
+      .map(b => ({
+        role: b.role,
+        scopeText: `${b.scopeType || '--'} · ${b.scopeName || '--'}`,
+      }))
+  },
+
+  buildStoreScope(level: StaffLevel, bindings: RoleBinding[], stores: ScopedStore[]) {
+    if (level !== 'headquarters' && level !== 'market') return null
+    let title = ''
+    if (level === 'headquarters') {
+      title = `总部 / 全部门店（共 ${stores.length} 家）`
+    } else {
+      const m = bindings.find(b => b.scopeType === '市场')
+      title = `市场 · ${m?.scopeName || '--'}（共 ${stores.length} 家）`
+    }
+    return {
+      title,
+      stores: stores.map(s => s.storeName),
+      expanded: false,
+      needToggle: stores.length > 5,
+    }
+  },
+
+  onToggleStoreScope() {
+    this.setData({ 'storeScope.expanded': !this.data.storeScope?.expanded })
   },
 
   onLogout() {
