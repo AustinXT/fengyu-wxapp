@@ -56,12 +56,22 @@ function log(msg) {
   console.log(`[RECALC-CUSTOMER-TYPE] ${new Date().toISOString()} ${msg}`)
 }
 
+// 阈值仅从 system_configs.new_member_threshold 读取；不写死兜底值。
+// 缺失或非法时由 main() 提前 fail-fast，不再走 silent COALESCE。
+const FETCH_THRESHOLD_SQL = `
+SELECT value::numeric AS v
+  FROM system_configs
+ WHERE key = 'new_member_threshold'
+ LIMIT 1
+`
+
 // 把 recalcCustomerType + member-level 判定 + 首次达阈值时间一次性算出来，
 // 存进 _recalc_target 临时表（单事务可见），后续 UPDATE 直接 JOIN 临时表。
+// 阈值由 caller 通过 $1 参数传入（已在 main() 里 fail-fast 校验过非空非零）。
 const BUILD_TARGET_TABLE_SQL = `
 CREATE TEMP TABLE _recalc_target ON COMMIT DROP AS
 WITH threshold AS (
-  SELECT COALESCE((SELECT value::numeric FROM system_configs WHERE key = 'new_member_threshold'), 1990) AS v
+  SELECT $1::numeric AS v
 ),
 qualified_orders AS (
   -- 单订单或订单+回款链达阈值的订单。WorkFine 同步的历史已完成单 paid_at 全为 NULL，
@@ -252,9 +262,19 @@ async function main() {
   const pool = new Pool(PG_CONFIG)
   const client = await pool.connect()
   try {
+    // fail-fast：阈值必须从 system_configs 读到合法正数，否则拒绝执行
+    const thRows = (await client.query(FETCH_THRESHOLD_SQL)).rows
+    const threshold = thRows[0] ? Number(thRows[0].v) : NaN
+    if (!Number.isFinite(threshold) || threshold <= 0) {
+      log(`✗ system_configs.new_member_threshold 缺失或非法（取到 ${JSON.stringify(thRows[0])}）；脚本拒绝执行`)
+      process.exitCode = 1
+      return
+    }
+    log(`阈值: ${threshold}（来自 system_configs.new_member_threshold）`)
+
     await client.query('BEGIN')
     log('构建 _recalc_target 临时表...')
-    await client.query(BUILD_TARGET_TABLE_SQL)
+    await client.query(BUILD_TARGET_TABLE_SQL, [threshold])
 
     const transitions = await client.query(PREVIEW_TRANSITIONS_SQL)
     log(`customer_type 待跃迁分布:`)
