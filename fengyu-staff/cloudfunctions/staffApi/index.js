@@ -50,6 +50,7 @@ const routes = {
   'product.skuDetail':    () => require('./routes/product').skuDetail,
   'product.skuList':      () => require('./routes/product').skuList,
   'product.spuDetail':    () => require('./routes/product').spuDetail,
+  'product.cardKinds':    () => require('./routes/product').cardKinds,
   'product.promotionList': () => require('./routes/product').promotionList,
   'product.promotionPlans': () => require('./routes/product').promotionPlans,
 
@@ -99,6 +100,28 @@ const routes = {
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,
   'service.counts':       () => require('./routes/service').counts,
+
+  // 管理层数据中心
+  'mgmtDashboard.scopeOptions': () => require('./routes/mgmt-dashboard').scopeOptions,
+  'mgmtDashboard.summary':     () => require('./routes/mgmt-dashboard').summary,
+  'mgmtDashboard.storeRanking': () => require('./routes/mgmt-dashboard').storeRanking,
+  'mgmtDashboard.staffRanking': () => require('./routes/mgmt-dashboard').staffRanking,
+  'mgmtDashboard.salesData':    () => require('./routes/mgmt-dashboard').salesData,
+
+  // 管理层 - 品项数据子页
+  'mgmtProduct.cardHolders': () => require('./routes/mgmt-product').cardHolders,
+  'mgmtProduct.cycleStats':  () => require('./routes/mgmt-product').cycleStats,
+
+  // 管理层 - 客量数据子页
+  'mgmtTraffic.summary':       () => require('./routes/mgmt-traffic').summary,
+
+  // 管理层 - 顾客档案子页
+  'mgmtCustomer.search':        () => require('./routes/mgmt-customer').search,
+  'mgmtCustomer.detail':        () => require('./routes/mgmt-customer').detail,
+  'mgmtCustomer.calendar':      () => require('./routes/mgmt-customer').calendar,
+  'mgmtCustomer.paidOrders':    () => require('./routes/mgmt-customer').paidOrders,
+  'mgmtCustomer.giftHistory':   () => require('./routes/mgmt-customer').giftHistory,
+  'mgmtCustomer.refundHistory': () => require('./routes/mgmt-customer').refundHistory,
 }
 
 /**

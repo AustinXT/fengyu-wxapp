@@ -273,7 +273,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
-        product_name: '面部护理', sku_spec_name: '基础款', sales_category: '自采自销',
+        product_name: '面部护理', sku_spec_name: '基础款', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: '张三', client_phone: '138',
         paid_at: '2024-06-15', store_id: 'store-001',
@@ -286,7 +286,7 @@ describe('staff.performanceDetail', () => {
         commission_amount: '200.00', fixed_fee: '120.00', consume_amount: '80.00',
         role_type: '美容师', commission_rate: '0.0800',
         session_used: 2, service_unit_price: '500.00',
-        product_name: '身体护理', sku_spec_name: '高级款', sales_category: '自采自销',
+        product_name: '身体护理', sku_spec_name: '高级款', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: '李四', client_phone: '139',
       },
@@ -299,8 +299,8 @@ describe('staff.performanceDetail', () => {
     expect(ctx.result.totalServiceFee).toBe(200) // 向后兼容字段
     expect(ctx.result.totalCommission).toBe(500)
     expect(ctx.result.items).toHaveLength(2)
-    expect(ctx.result.categorySummary['自采自销'].sales).toBe(300)
-    expect(ctx.result.categorySummary['自采自销'].service).toBe(200)
+    expect(ctx.result.categorySummary['自销自耗'].sales).toBe(300)
+    expect(ctx.result.categorySummary['自销自耗'].service).toBe(200)
   })
 
   test('filterType=sale 只返回销售明细', async () => {
@@ -313,7 +313,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '500', allocation_ratio: 0.5, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
@@ -322,7 +322,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         service_price: '80', session_used: 1,
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: 'C2', client_phone: '139',
       },
@@ -345,7 +345,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '300', allocation_ratio: 0.3, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
@@ -354,7 +354,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         service_price: '100', session_used: 1,
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
         service_order_id: 'SVC-001', service_date: '2024-06-20',
         store_id: 'store-001', customer_name: 'C2', client_phone: '139',
       },
@@ -431,14 +431,14 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '100', allocation_ratio: 0.1, department_name: '美容部',
-        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自采自销',
+        product_name: 'P1', sku_spec_name: 'S1', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-001', customer_name: 'C1', client_phone: '138',
         paid_at: '2024-06-10', store_id: 'store-001',
       },
       {
         alloc_amount: '200', allocation_ratio: 0.2, department_name: '美容部',
-        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自采自销',
+        product_name: 'P2', sku_spec_name: 'S2', sales_category: '自销自耗',
         unit_real_price: '1000', received: '1000',
         sale_order_id: 'FY-002', customer_name: 'C2', client_phone: '139',
         paid_at: '2024-06-05', store_id: 'store-001',
@@ -525,6 +525,18 @@ describe('staff.dashboard', () => {
     // 店长使用 store_id 过滤
     const footfallSql = pg.query.mock.calls[0][0]
     expect(footfallSql).toContain('so.store_id')
+
+    // 新会员（2026-04-25 起统一为"成为会员客"语义）：店长按 c.bound_store_id 归属，became_member_at 区间命中
+    const newMemberSql = pg.query.mock.calls[4][0]
+    expect(newMemberSql).toMatch(/FROM\s+client_wechat_users\s+c/)
+    expect(newMemberSql).toContain('c.bound_store_id = $1')
+    expect(newMemberSql).toContain('c.became_member_at IS NOT NULL')
+    expect(newMemberSql).toMatch(/c\.became_member_at::date\s*>=/)
+    expect(newMemberSql).toMatch(/c\.became_member_at::date\s*<=/)
+    // 旧口径残留断言：阈值过滤、首单 NOT EXISTS、preferred_employee_id 都不应再出现
+    expect(newMemberSql).not.toMatch(/total_amount\s*>=/)
+    expect(newMemberSql).not.toMatch(/NOT\s+EXISTS/)
+    expect(newMemberSql).not.toMatch(/preferred_employee_id/)
   })
 
   test('美容师只看自己的数据', async () => {
@@ -546,9 +558,15 @@ describe('staff.dashboard', () => {
     expect(ctx.result.revenue).toBe(8000)
     expect(ctx.result.newMembers).toBe(1)
 
-    // 美容师使用 assigned_employee_id 过滤
+    // 美容师使用 assigned_employee_id 过滤（service_orders 维度）
     const footfallSql = pg.query.mock.calls[0][0]
     expect(footfallSql).toContain('assigned_employee_id')
+
+    // 新会员（2026-04-25 起统一为"成为会员客"语义）：美容师按 c.bound_employee_id 归属
+    const newMemberSql = pg.query.mock.calls[4][0]
+    expect(newMemberSql).toMatch(/FROM\s+client_wechat_users\s+c/)
+    expect(newMemberSql).toContain('c.bound_employee_id = $1')
+    expect(newMemberSql).toContain('c.became_member_at IS NOT NULL')
   })
 
   test('缺少日期参数时拒绝', async () => {
@@ -608,7 +626,7 @@ describe('staff.performanceDetail', () => {
         service_unit_price: '500.00',
         product_name: '面部护理',
         sku_spec_name: '单次',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
         service_order_id: `HLD-WX-2603${String(i).padStart(4, '0')}`,
         service_date: '2026-03-10',
         store_id: 'store-001',
@@ -633,7 +651,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
@@ -648,10 +666,10 @@ describe('staff.performanceDetail', () => {
 
     await staffRoutes.performanceDetail(ctx)
 
-    expect(ctx.result.categorySummary['自采自销'].service).toBe(130)
+    expect(ctx.result.categorySummary['自销自耗'].service).toBe(130)
     expect(ctx.result.categorySummary['他销他耗'].service).toBe(200)
     // 两分类之间不互相污染
-    expect(ctx.result.categorySummary['自采自销'].sales).toBe(0)
+    expect(ctx.result.categorySummary['自销自耗'].sales).toBe(0)
     expect(ctx.result.categorySummary['他销他耗'].sales).toBe(0)
   })
 
@@ -662,7 +680,7 @@ describe('staff.performanceDetail', () => {
     pg.query.mockResolvedValueOnce([
       {
         alloc_amount: '800.00', allocation_ratio: '0.80', department_name: '美容部',
-        product_name: '销售商品', sku_spec_name: '10次卡', sales_category: '自采自销',
+        product_name: '销售商品', sku_spec_name: '10次卡', sales_category: '自销自耗',
         unit_real_price: '1000.00', received: '1000.00',
         sale_order_id: 'FY-XSD-WX-260310-0001', customer_name: '张三', client_phone: null,
         paid_at: new Date('2026-03-10'), store_id: 'store-001',
@@ -673,7 +691,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '护理项目', sku_spec_name: '单次', sales_category: '自采自销',
+        product_name: '护理项目', sku_spec_name: '单次', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
@@ -694,7 +712,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1200', session_used: 2, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },
@@ -721,7 +739,7 @@ describe('staff.performanceDetail', () => {
       {
         commission_amount: '130.00', fixed_fee: '80.00', consume_amount: '50.00',
         role_type: '美容师', commission_rate: '0.1000', session_used: 1, service_unit_price: '500.00',
-        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自采自销',
+        product_name: '面部护理', sku_spec_name: '单次', sales_category: '自销自耗',
         service_order_id: 'HLD-WX-2603-0001', service_date: '2026-03-10', store_id: 'store-001',
         customer_name: '张三', client_phone: null,
       },

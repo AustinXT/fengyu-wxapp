@@ -272,7 +272,7 @@ async function batchInsert(pgPool, orders, dryRun) {
             item.saleItemId, order.saleOrderId, '购买', item.itemName,
             '疗程卡', item.sessionCount, item.remainingSessions,
             0, 1, 0, 0, 0, // unit_price, qty, unit_real_price, sale_amount, received = 0（结存无原始价格）
-            item.expireDate, '自采自销', null, // remark
+            item.expireDate, '自销自耗', null, // remark
           ])
         }
       }

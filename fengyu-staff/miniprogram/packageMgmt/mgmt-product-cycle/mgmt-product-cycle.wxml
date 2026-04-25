@@ -1,0 +1,135 @@
+<!-- 顶部筛选行：period chip 靠左 + 市场范围 tag 靠右（同一行 sticky） -->
+<view class="mgmt-filter-bar mgmt-filter-bar--sticky">
+  <mgmt-period-picker
+    options="{{ periodsForPicker }}"
+    value="{{ period }}"
+    bind:change="onPeriodChange"
+  />
+  <view class="mgmt-scope-tag">
+    <text>范围：</text>
+    <text class="mgmt-scope-tag-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  </view>
+</view>
+
+<view class="pc-page">
+
+  <!-- Section 标题 -->
+  <view class="pc-section-title">品项-顾客周期</view>
+
+  <!-- 持卡人数（截面） -->
+  <view class="pc-subsection">
+    <view class="pc-subsection-title">
+      <text>持卡人数</text>
+      <text class="pc-badge">截面</text>
+    </view>
+    <view class="pc-table">
+      <view class="pc-table-header">
+        <view class="pc-col pc-col-name">品项</view>
+        <view class="pc-col pc-col-num">持卡人数</view>
+        <view class="pc-col pc-col-num">占比</view>
+      </view>
+      <mgmt-data-state
+        state="{{ cardError ? 'error' : (cardLoading && cardHoldersData.rows.length === 0 ? 'loading' : (cardHoldersData.rows.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCardRetry"
+      >
+        <view
+          wx:for="{{cardHoldersData.rows}}"
+          wx:key="productKind"
+          class="pc-table-row {{index % 2 === 1 ? 'zebra' : ''}}"
+        >
+          <view class="pc-col pc-col-name">{{item.productKind}}</view>
+          <view class="pc-col pc-col-num">{{item.count}}</view>
+          <view class="pc-col pc-col-num">{{item.rate}}</view>
+        </view>
+      </mgmt-data-state>
+    </view>
+  </view>
+
+  <!-- 体验情况 -->
+  <view class="pc-subsection">
+    <view class="pc-subsection-title">体验情况</view>
+    <view class="pc-table">
+      <view class="pc-table-header">
+        <view class="pc-col pc-col-name">品项</view>
+        <view class="pc-col pc-col-num">人数</view>
+        <view class="pc-col pc-col-num">业绩</view>
+        <view class="pc-col pc-col-num">客单价</view>
+      </view>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.trial.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
+        <view
+          wx:for="{{display.trial}}"
+          wx:key="productKind"
+          class="pc-table-row {{index % 2 === 1 ? 'zebra' : ''}}"
+        >
+          <view class="pc-col pc-col-name">{{item.productKind}}</view>
+          <view class="pc-col pc-col-num">{{item.count}}</view>
+          <view class="pc-col pc-col-num">{{item.revenue}}</view>
+          <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
+        </view>
+      </mgmt-data-state>
+    </view>
+  </view>
+
+  <!-- 新增情况 -->
+  <view class="pc-subsection">
+    <view class="pc-subsection-title">新增情况</view>
+    <view class="pc-table">
+      <view class="pc-table-header">
+        <view class="pc-col pc-col-name">品项</view>
+        <view class="pc-col pc-col-num">人数</view>
+        <view class="pc-col pc-col-num">业绩</view>
+        <view class="pc-col pc-col-num">客单价</view>
+      </view>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.newEntry.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
+        <view
+          wx:for="{{display.newEntry}}"
+          wx:key="productKind"
+          class="pc-table-row {{index % 2 === 1 ? 'zebra' : ''}}"
+        >
+          <view class="pc-col pc-col-name">{{item.productKind}}</view>
+          <view class="pc-col pc-col-num">{{item.count}}</view>
+          <view class="pc-col pc-col-num">{{item.revenue}}</view>
+          <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
+        </view>
+      </mgmt-data-state>
+    </view>
+  </view>
+
+  <!-- 复购情况 -->
+  <view class="pc-subsection">
+    <view class="pc-subsection-title">复购情况</view>
+    <view class="pc-table">
+      <view class="pc-table-header">
+        <view class="pc-col pc-col-name">品项</view>
+        <view class="pc-col pc-col-num">人数</view>
+        <view class="pc-col pc-col-num">业绩</view>
+        <view class="pc-col pc-col-num">客单价</view>
+      </view>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.repurchase.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
+        <view
+          wx:for="{{display.repurchase}}"
+          wx:key="productKind"
+          class="pc-table-row {{index % 2 === 1 ? 'zebra' : ''}}"
+        >
+          <view class="pc-col pc-col-name">{{item.productKind}}</view>
+          <view class="pc-col pc-col-num">{{item.count}}</view>
+          <view class="pc-col pc-col-num">{{item.revenue}}</view>
+          <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
+        </view>
+      </mgmt-data-state>
+    </view>
+  </view>
+</view>

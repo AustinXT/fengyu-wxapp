@@ -24,12 +24,20 @@ interface FormData {
   categoryName: string
   sortOrder: number
   isValid: boolean
+  isCardKind: boolean
+  displayColor: string
+  displayIcon: string
+  requiresShengmeiFlag: boolean
 }
 
 const emptyForm: FormData = {
   categoryName: "",
   sortOrder: 0,
   isValid: true,
+  isCardKind: false,
+  displayColor: "",
+  displayIcon: "",
+  requiresShengmeiFlag: false,
 }
 
 export default function ProductKindManagementDialog({
@@ -70,6 +78,10 @@ export default function ProductKindManagementDialog({
       categoryName: row.categoryName,
       sortOrder: row.sortOrder,
       isValid: row.isValid,
+      isCardKind: row.isCardKind,
+      displayColor: row.displayColor ?? "",
+      displayIcon: row.displayIcon ?? "",
+      requiresShengmeiFlag: row.requiresShengmeiFlag,
     })
     setFormOpen(true)
   }
@@ -81,6 +93,12 @@ export default function ProductKindManagementDialog({
     }
     setSaving(true)
     try {
+      const capabilityFields = {
+        isCardKind: form.isCardKind,
+        displayColor: form.displayColor.trim() || null,
+        displayIcon: form.displayIcon.trim() || null,
+        requiresShengmeiFlag: form.requiresShengmeiFlag,
+      }
       if (editing) {
         const res = await updateProductKind(
           editing.categoryId,
@@ -88,6 +106,7 @@ export default function ProductKindManagementDialog({
             categoryName: form.categoryName.trim(),
             sortOrder: form.sortOrder,
             isValid: form.isValid,
+            ...capabilityFields,
           },
           editing.updatedAt,
         )
@@ -102,6 +121,7 @@ export default function ProductKindManagementDialog({
           categoryName: form.categoryName.trim(),
           sortOrder: form.sortOrder,
           isValid: form.isValid,
+          ...capabilityFields,
         })
         if (!res.success) {
           toast.error(res.message)
@@ -149,6 +169,26 @@ export default function ProductKindManagementDialog({
       cell: (row) => <span className="font-medium">{row.categoryName}</span>,
     },
     { key: "sortOrder", header: "排序" },
+    {
+      key: "isCardKind",
+      header: "卡类",
+      cell: (row) => (row.isCardKind ? <Badge variant="outline">卡</Badge> : <span className="text-[var(--muted-foreground)]">—</span>),
+    },
+    {
+      key: "displayColor",
+      header: "颜色",
+      cell: (row) => row.displayColor ? (
+        <span className="inline-flex items-center gap-2">
+          <span
+            className="inline-block w-4 h-4 rounded border"
+            style={{ backgroundColor: row.displayColor }}
+          />
+          <span className="font-mono text-xs">{row.displayColor}</span>
+        </span>
+      ) : (
+        <span className="text-[var(--destructive)] text-xs">未配置</span>
+      ),
+    },
     {
       key: "isValid",
       header: "状态",
@@ -224,6 +264,54 @@ export default function ProductKindManagementDialog({
               type="number"
               value={form.sortOrder}
               onChange={(e) => setForm({ ...form, sortOrder: parseInt(e.target.value) || 0 })}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">展示颜色（HEX，如 #C0322A）</label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="color"
+                value={form.displayColor || "#1989FA"}
+                onChange={(e) => setForm({ ...form, displayColor: e.target.value })}
+                className="w-16 p-1 h-9"
+              />
+              <Input
+                value={form.displayColor}
+                onChange={(e) => setForm({ ...form, displayColor: e.target.value })}
+                placeholder="#1989FA"
+                className="flex-1 font-mono"
+              />
+            </div>
+            <p className="text-xs text-[var(--muted-foreground)]">
+              用于商品 tag、购物车标签的视觉色；为空将不渲染 tag 颜色。
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">展示图标（可选，emoji 或 icon name）</label>
+            <Input
+              value={form.displayIcon}
+              onChange={(e) => setForm({ ...form, displayIcon: e.target.value })}
+              placeholder="留空即不展示"
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm font-medium">是否为卡类</label>
+              <p className="text-xs text-[var(--muted-foreground)]">勾选后此 kind 会从员工端 / admin 开单"普通商品"分支中排除</p>
+            </div>
+            <Switch
+              checked={form.isCardKind}
+              onCheckedChange={(checked) => setForm({ ...form, isCardKind: checked })}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <label className="text-sm font-medium">是否需要"是否生美"开关</label>
+              <p className="text-xs text-[var(--muted-foreground)]">仅护理类项目通常勾选；勾选后该 kind 下 SKU 表单显示"是否生美" Radio</p>
+            </div>
+            <Switch
+              checked={form.requiresShengmeiFlag}
+              onCheckedChange={(checked) => setForm({ ...form, requiresShengmeiFlag: checked })}
             />
           </div>
           <div className="flex items-center justify-between">

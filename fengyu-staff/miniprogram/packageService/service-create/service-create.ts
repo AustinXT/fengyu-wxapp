@@ -219,10 +219,10 @@ Page({
   async loadPaidOrders(clientUserId: string) {
     try {
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
-      // 过滤掉院装产品行
+      // 过滤掉家居产品行
       const filtered = (orders || []).map(o => ({
         ...o,
-        items: o.items.filter(i => i.productType !== '院装产品' && i.remainingSessions > 0),
+        items: o.items.filter(i => i.productType !== '家居产品' && i.remainingSessions > 0),
       })).filter(o => o.items.length > 0);
       this.setData({ paidOrders: filtered });
     } catch (_) {}

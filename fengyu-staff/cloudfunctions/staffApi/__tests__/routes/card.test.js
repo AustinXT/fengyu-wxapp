@@ -29,7 +29,7 @@ describe('card.rechargeSkus', () => {
         price: '500.00',
         special_price: '495.00',
         sort_order: 0,
-        product_type: '院装产品',
+        product_type: '家居产品',
         category_id: 'cat-cz-01',
         category_name: '储值卡',
       },
@@ -39,7 +39,7 @@ describe('card.rechargeSkus', () => {
         price: '1000.00',
         special_price: null,
         sort_order: 1,
-        product_type: '院装产品',
+        product_type: '家居产品',
         category_id: 'cat-cz-01',
         category_name: '储值卡',
       },
@@ -106,9 +106,9 @@ describe('card.recharge', () => {
         spec_name: '充值 500 元',
         price: '500.00',
         special_price: '495.00',
-        product_type: '院装产品',
+        product_type: '家居产品',
         product_kind: '充值卡',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       // 顾客查询
       .mockResolvedValueOnce([{ user_id: 'u-001', phone: '13800001111', name: '张三', customer_type: '会员客' }])
@@ -220,7 +220,7 @@ describe('card.recharge', () => {
       special_price: null,
       product_type: '疗程卡',
       product_kind: '护理项目',
-      sales_category: '自采自销',
+      sales_category: '自销自耗',
     }])
 
     await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*不是充值卡/)
@@ -273,7 +273,7 @@ describe('card.recharge', () => {
     pg.query
       .mockResolvedValueOnce([{
         sku_id: 'sku-cz-500', spec_name: '充值 500', price: '500.00', special_price: null,
-        product_type: '院装产品', product_kind: '充值卡', sales_category: null,
+        product_type: '家居产品', product_kind: '充值卡', sales_category: null,
       }])
       .mockResolvedValueOnce([])   // 顾客不存在
 
@@ -290,7 +290,7 @@ describe('card.recharge', () => {
     pg.query
       .mockResolvedValueOnce([{
         sku_id: 'sku-cz-500', spec_name: '充值 500', price: '500.00', special_price: null,
-        product_type: '院装产品', product_kind: '充值卡', sales_category: null,
+        product_type: '家居产品', product_kind: '充值卡', sales_category: null,
       }])
       .mockResolvedValueOnce([{ user_id: 'u-001', phone: '138', name: 'X', customer_type: '流量客' }])
       .mockResolvedValueOnce([{ sale_order_id: 'FY-XSD-WX-2604160001' }])

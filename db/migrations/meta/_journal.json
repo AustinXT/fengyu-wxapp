@@ -57,6 +57,62 @@
       "when": 1777019942236,
       "tag": "0007_black_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777076362671,
+      "tag": "0008_aspiring_pride",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777093066183,
+      "tag": "0009_rename_sales_category_value",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777093191570,
+      "tag": "0010_fix_commission_matrix_sales_category",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777094943410,
+      "tag": "0011_misty_nebula",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1777101074983,
+      "tag": "0012_skinny_valkyrie",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1777105149019,
+      "tag": "0013_right_romulus",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1777126189207,
+      "tag": "0014_broad_thunderbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1777128284974,
+      "tag": "0015_product_type_rename_yuanzhuang_to_jiaju",
+      "breakpoints": true
     }
   ]
 }

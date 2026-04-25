@@ -182,7 +182,7 @@ const baseOrderData = {
     unitPrice: '200.00',
     unitRealPrice: '200.00',
     quantity: 1,
-    salesCategory: '自采自销' as const,
+    salesCategory: '自销自耗' as const,
   }],
 }
 
@@ -1307,7 +1307,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     skuId: RECHARGE_SKU,
     productName: '预付充值卡 ¥500',
     skuSpecName: '预付充值卡（虚拟）',
-    productType: '院装产品' as const,
+    productType: '家居产品' as const,
     sessionCount: null,
     unitPrice: '495.00',
     unitRealPrice: '495.00',
@@ -1358,7 +1358,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     expect(capturedItem.skuId).toBe(RECHARGE_SKU)
     expect(capturedItem.productName).toBe('预付充值卡 ¥500')
     expect(capturedItem.skuSpecName).toBe('预付充值卡（虚拟）')
-    expect(capturedItem.productType).toBe('院装产品')
+    expect(capturedItem.productType).toBe('家居产品')
     expect(capturedItem.sessionCount).toBe(null)
     expect(capturedItem.remainingSessions).toBe(null)
     expect(capturedItem.quantity).toBe(1)
@@ -1636,12 +1636,12 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
         sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '5次卡',
         product_type: '疗程卡', session_count: 5, remaining_sessions: 5,
         quantity: 1, picked_up_quantity: 0, unit_price: '1000.00',
-        unit_real_price: '200.00', sales_category: '自采自销', service_fee: '0',
+        unit_real_price: '200.00', sales_category: '自销自耗', service_fee: '0',
         client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
       }],
       skuRows: [{
         skuId: 'sku-new-1', price: '1000.00', serviceFee: '0', sessionCount: 10,
-        productType: '疗程卡', salesCategory: '自采自销',
+        productType: '疗程卡', salesCategory: '自销自耗',
       }],
       onInsertOrder: (v) => { capturedOrder = v },
     })
@@ -1664,12 +1664,12 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
         sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '3次卡',
         product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
-        unit_real_price: '100.00', sales_category: '自采自销', service_fee: '0',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
         client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
       }],
       skuRows: [{
         skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
-        productType: '疗程卡', salesCategory: '自采自销',
+        productType: '疗程卡', salesCategory: '自销自耗',
       }],
       onInsertOrder: (v) => { capturedOrder = v },
     })
@@ -1693,12 +1693,12 @@ describe('createConversionOrder — 事务路径：differ=0 / >0 / <0', () => {
         sku_id: 'sku-old-1', product_name: '老疗程', sku_spec_name: '8次卡',
         product_type: '疗程卡', session_count: 8, remaining_sessions: 8,
         quantity: 1, picked_up_quantity: 0, unit_price: '100.00',
-        unit_real_price: '100.00', sales_category: '自采自销', service_fee: '0',
+        unit_real_price: '100.00', sales_category: '自销自耗', service_fee: '0',
         client_user_id: 'user-1', order_status: '已支付', product_kind: '护理项目',
       }],
       skuRows: [{
         skuId: 'sku-new-1', price: '500.00', serviceFee: '0', sessionCount: 10,
-        productType: '疗程卡', salesCategory: '自采自销',
+        productType: '疗程卡', salesCategory: '自销自耗',
       }],
       upsertCardId: 'card-new-99',
       onInsertOrder: (v) => { capturedOrder = v },
@@ -1806,7 +1806,7 @@ describe('createConversionOrder — 异常路径', () => {
             client_user_id: 'user-1', order_status: '已支付', quantity: 1,
             picked_up_quantity: 0, unit_price: '100', service_fee: '0',
             session_count: 5, product_kind: '护理项目', sku_id: 'sku-old',
-            product_name: 'xx', sku_spec_name: 'yy', sales_category: '自采自销',
+            product_name: 'xx', sku_spec_name: 'yy', sales_category: '自销自耗',
           }]
           return [{ id: 'FY-XSD-WX-260416-0001' }]
         }),
@@ -1815,7 +1815,7 @@ describe('createConversionOrder — 异常路径', () => {
             leftJoin: vi.fn().mockReturnValue({
               where: vi.fn().mockResolvedValue([{
                 skuId: 'sku-new-1', price: '500', serviceFee: '0', sessionCount: 10,
-                productType: '疗程卡', salesCategory: '自采自销',
+                productType: '疗程卡', salesCategory: '自销自耗',
               }]),
             }),
           }),

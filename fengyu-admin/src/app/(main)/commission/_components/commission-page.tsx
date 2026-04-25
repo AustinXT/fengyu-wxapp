@@ -24,7 +24,7 @@ import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import type { SkillTag } from "@/lib/types"
 
 const ORDER_TYPE_OPTIONS = ["销售单", "服务单"]
-const SALES_CATEGORY_OPTIONS = ["自采自销", "他销自耗", "他销他耗", "生态合作"]
+const SALES_CATEGORY_OPTIONS = ["自销自耗", "他销自耗", "他销他耗", "生态合作"]
 
 interface RateFormData {
   orgId: string

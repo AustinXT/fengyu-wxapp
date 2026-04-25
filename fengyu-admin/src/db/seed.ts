@@ -127,28 +127,28 @@ const CLIENTS = [
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻' as const, customerSource: '小程序' as const, birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
-// 一级分类（品项类型）：product_kind = null
+// 一级分类（品项类型）：product_kind = null；带 capability 列（DB 驱动 SSoT）
 const PRODUCT_KINDS = [
-  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true },
-  { categoryId: 'kind-care', categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true },
-  { categoryId: 'kind-home', categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true },
-  { categoryId: 'kind-card', categoryName: '充值卡', productKind: null, sortOrder: 4, isValid: true },
-  { categoryId: 'kind-trial', categoryName: '体验卡', productKind: null, sortOrder: 5, isValid: true },
+  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, isCardKind: false, displayColor: '#C0322A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, isCardKind: false, displayColor: '#1989FA', displayIcon: null,    requiresShengmeiFlag: true  },
+  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, isCardKind: false, displayColor: '#5AACA5', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, isCardKind: true,  displayColor: '#D4820A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, isCardKind: true,  displayColor: '#8B5CF6', displayIcon: null,    requiresShengmeiFlag: false },
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName
 // 注：组合套餐已从 product_kind 枚举移除（由 products.is_bundle 表达），故 cat-hl-* 的 productKind 为 null
 const PRODUCT_CATEGORIES = [
-  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: null, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: null, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: null, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, salesCategory: '自采自销' as const, sortOrder: 3, isValid: true },
-  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-01', categoryName: '新客体验', productKind: null, salesCategory: '自销自耗' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hl-02', categoryName: '季节活动', productKind: null, salesCategory: '自销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hl-03', categoryName: '周年庆', productKind: null, salesCategory: '自销自耗' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-hr-01', categoryName: '面部护理', productKind: '护理项目' as const, salesCategory: '自销自耗' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-hr-02', categoryName: '身体护理', productKind: '护理项目' as const, salesCategory: '自销自耗' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-hr-03', categoryName: '特色项目', productKind: '护理项目' as const, salesCategory: '自销自耗' as const, sortOrder: 3, isValid: true },
+  { categoryId: 'cat-jj-01', categoryName: '护肤品', productKind: '家居产品' as const, salesCategory: '自销自耗' as const, sortOrder: 1, isValid: true },
   { categoryId: 'cat-jj-02', categoryName: '养生产品', productKind: '家居产品' as const, salesCategory: '他销自耗' as const, sortOrder: 2, isValid: true },
-  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 1, isValid: true },
-  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自采自销' as const, sortOrder: 2, isValid: true },
+  { categoryId: 'cat-cz-01', categoryName: '储值卡', productKind: '充值卡' as const, salesCategory: '自销自耗' as const, sortOrder: 1, isValid: true },
+  { categoryId: 'cat-cz-02', categoryName: '次卡', productKind: '充值卡' as const, salesCategory: '自销自耗' as const, sortOrder: 2, isValid: true },
 ]
 
 // 一级分组（category_group = null，Tab/分组头，不直接关联商品）
@@ -234,13 +234,13 @@ const SALE_ORDERS = [
 ]
 
 const SALE_ITEMS = [
-  { saleItemId: 'XSLSH-WX-202603100001', saleOrderId: 'FY-XSD-WX-260310-0001', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-02', productName: '蜜语水润嫩肤护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603100002', saleOrderId: 'FY-XSD-WX-260310-0001', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-002-01', productName: '科颜美逆龄焕肤', skuSpecName: '单次', productType: '单品' as const, sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603110001', saleOrderId: 'FY-XSD-WX-260311-0002', storeId: 'store-jj01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-003-02', productName: '经络疏通养生护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603120001', saleOrderId: 'FY-XSD-WX-260312-0003', storeId: 'store-nc02', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-004-01', productName: '新客首次体验套餐', skuSpecName: '面部深层清洁', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603120002', saleOrderId: 'FY-XSD-WX-260312-0004', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-008-02', productName: '光子嫩肤仪器护理', skuSpecName: '5次卡', productType: '疗程卡' as const, sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603130001', saleOrderId: 'FY-XSD-WX-260313-0005', storeId: 'store-gqc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-005-01', productName: '凤御玻尿酸精华液', skuSpecName: '30ml', productType: '单品' as const, sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
-  { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', skuSpecName: '单次体验', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自采自销' as const },
+  { saleItemId: 'XSLSH-WX-202603100001', saleOrderId: 'FY-XSD-WX-260310-0001', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-02', productName: '蜜语水润嫩肤护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 8, unitPrice: '1999.00', quantity: 1, unitRealPrice: '1800.00', saleAmount: '1800.00', received: '1800.00', expireDate: '2027-03-10', remark: null, salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603100002', saleOrderId: 'FY-XSD-WX-260310-0001', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-002-01', productName: '科颜美逆龄焕肤', skuSpecName: '单次', productType: '单品' as const, sessionCount: 1, remainingSessions: 0, unitPrice: '599.00', quantity: 1, unitRealPrice: '499.00', saleAmount: '499.00', received: '499.00', expireDate: null, remark: null, salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603110001', saleOrderId: 'FY-XSD-WX-260311-0002', storeId: 'store-jj01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-003-02', productName: '经络疏通养生护理', skuSpecName: '10次卡', productType: '疗程卡' as const, sessionCount: 10, remainingSessions: 10, unitPrice: '2880.00', quantity: 1, unitRealPrice: '2580.00', saleAmount: '2580.00', received: '2580.00', expireDate: '2027-03-11', remark: null, salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603120001', saleOrderId: 'FY-XSD-WX-260312-0003', storeId: 'store-nc02', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-004-01', productName: '新客首次体验套餐', skuSpecName: '面部深层清洁', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '99.00', quantity: 1, unitRealPrice: '99.00', saleAmount: '99.00', received: '99.00', expireDate: '2026-12-31', remark: '新客体验', salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603120002', saleOrderId: 'FY-XSD-WX-260312-0004', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-008-02', productName: '光子嫩肤仪器护理', skuSpecName: '5次卡', productType: '疗程卡' as const, sessionCount: 5, remainingSessions: 5, unitPrice: '3880.00', quantity: 1, unitRealPrice: '3500.00', saleAmount: '3500.00', received: '3500.00', expireDate: '2027-03-12', remark: null, salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603130001', saleOrderId: 'FY-XSD-WX-260313-0005', storeId: 'store-gqc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-005-01', productName: '凤御玻尿酸精华液', skuSpecName: '30ml', productType: '单品' as const, sessionCount: null, remainingSessions: null, unitPrice: '268.00', quantity: 2, unitRealPrice: '228.00', saleAmount: '456.00', received: '456.00', expireDate: null, remark: null, salesCategory: '自销自耗' as const },
+  { saleItemId: 'XSLSH-WX-202603130002', saleOrderId: 'FY-XSD-WX-260313-0006', storeId: 'store-nc01', itemDirection: '购买' as const, refSaleItemId: null, skuId: 'sku-001-01', productName: '蜜语水润嫩肤护理', skuSpecName: '单次体验', productType: '单品' as const, sessionCount: 1, remainingSessions: 1, unitPrice: '299.00', quantity: 1, unitRealPrice: '259.00', saleAmount: '259.00', received: '259.00', expireDate: null, remark: null, salesCategory: '自销自耗' as const },
 ]
 
 const SALE_ALLOCATIONS = [
@@ -284,17 +284,17 @@ const PERMISSION_ROLES = [
 ]
 
 const COMMISSION_RATES = [
-  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '推广师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
-  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
-  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
-  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
-  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
-  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自采自销', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '自销自耗', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '自销自耗', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '推广师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0500' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '美容师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: '6707cc8b88579108', orderType: '服务单', roleType: '养生师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.1200' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自销自耗', amountTierMin: '0.00', amountTierMax: '5000.00', commissionRate: '0.0800' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '美容师', salesCategory: '自销自耗', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
+  { orgId: 'dad2db0b1249daca', orderType: '销售单', roleType: '养生师', salesCategory: '自销自耗', amountTierMin: '5000.00', amountTierMax: null, commissionRate: '0.1000' },
   { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '美容师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
   { orgId: '6707cc8b88579108', orderType: '销售单', roleType: '养生师', salesCategory: '他销自耗', amountTierMin: '0.00', amountTierMax: null, commissionRate: '0.0600' },
 ]

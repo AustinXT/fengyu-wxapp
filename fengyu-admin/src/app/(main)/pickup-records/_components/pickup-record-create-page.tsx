@@ -204,14 +204,14 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
       {customer && (
         <Card>
           <CardContent className="p-6 space-y-4">
-            <h2 className="text-base font-semibold">2. 选择院装产品</h2>
+            <h2 className="text-base font-semibold">2. 选择家居产品</h2>
             {loadingItems ? (
               <div className="text-center py-8 text-[#999999]">加载中...</div>
             ) : items.length === 0 ? (
               <div className="text-center py-8 text-[#999999]">
-                <p>该顾客暂无可提货的院装产品</p>
+                <p>该顾客暂无可提货的家居产品</p>
                 <p className="text-xs mt-1">
-                  需要顾客在已支付订单中购买了院装产品，且尚未全部提完
+                  需要顾客在已支付订单中购买了家居产品，且尚未全部提完
                 </p>
               </div>
             ) : (

@@ -1,6 +1,7 @@
 # 差异报告: 商品管理重构 + 商城管理职责分离
 
 > ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
+> ⚠️ **术语备注**：文中的 `product_type='院装产品'` 已于 2026-04-25 重命名为 `'家居产品'`（见 `notes/tickets/2026-04-25-unify-yuanzhuang-to-jiaju-naming.md`）。
 > - 结构性变更**全部取消**：`product_bundles` 三表新建、`product_kind` 10 层重审 ❌ 不执行
 > - 套餐继续承载于 `mall_*` 侧
 > - 仅执行：商品/商城权限收窄 + 套餐降级方案（见 00-decisions §3 P2-12/13）
@@ -58,7 +59,7 @@
 // L0: 源头
 productKindEnum: ["组合套餐", "护理项目", "家居产品", "充值卡", "体验卡"]  // 已 5 值
 productTypeEnum: ["疗程卡", "单品", "院装产品"]
-salesCategoryEnum: ["自采自销", "他销自耗", "他销他耗", "生态合作"]
+salesCategoryEnum: ["自销自耗", "他销自耗", "他销他耗", "生态合作"]
 ```
 
 **商品管理侧（张凯独占）** (`db/schema/product.ts:11-60`)

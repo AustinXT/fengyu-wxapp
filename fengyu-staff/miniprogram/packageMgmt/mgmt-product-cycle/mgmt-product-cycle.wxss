@@ -1,0 +1,102 @@
+/* packageMgmt/mgmt-product-cycle — 品项数据子页样式 */
+
+.pc-page {
+  padding: 0 var(--spacing-card) 80rpx;
+  background: var(--color-bg-page);
+  min-height: 100vh;
+}
+
+/* Section 标题 */
+.pc-section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+  text-align: center;
+  margin: var(--spacing-tight) 0 var(--spacing-card);
+  padding-top: var(--spacing-tight);
+  border-top: 2rpx solid var(--color-divider-soft);
+}
+
+/* 子区块 */
+.pc-subsection {
+  margin-bottom: var(--spacing-card);
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.pc-subsection-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+  padding: var(--spacing-card) var(--spacing-card) 12rpx;
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.pc-badge {
+  display: inline-block;
+  font-size: 20rpx;
+  font-weight: normal;
+  color: var(--color-primary);
+  background: var(--color-primary-light);
+  padding: 2rpx 12rpx;
+  border-radius: var(--radius-lg);
+  line-height: 1.6;
+}
+
+/* 表格 */
+.pc-table {
+  padding: 0 var(--spacing-tight) var(--spacing-tight);
+}
+
+.pc-table-header,
+.pc-table-row {
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-tight) 12rpx;
+  font-size: 26rpx;
+}
+
+.pc-table-header {
+  color: var(--color-text-hint);
+  font-size: 24rpx;
+  border-bottom: 1rpx solid var(--color-divider-soft);
+}
+
+.pc-table-row {
+  color: var(--color-text-primary);
+  border-bottom: 1rpx solid var(--color-divider-soft);
+}
+
+.pc-table-row.zebra {
+  background: var(--color-bg-page);
+}
+
+.pc-table-row:last-child {
+  border-bottom: none;
+}
+
+.pc-col {
+  flex: 1;
+  text-align: center;
+}
+
+.pc-col-name {
+  text-align: left;
+  flex: 1.2;
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+.pc-col-num {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.pc-table-header .pc-col-num,
+.pc-table-header .pc-col-name {
+  color: var(--color-text-hint);
+  font-weight: normal;
+}

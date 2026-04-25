@@ -90,8 +90,8 @@
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | `福利活动 | 护理项目 | 家居产品 | 充值卡`（`product_kind`） | 固定常量 |
-| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），院装产品固定追加末尾 |
+| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"动态聚合 `product_categories WHERE productKind IS NULL AND parent.isCardKind=false AND isValid=true` 全部一级 kind 下的二级分类 | 视图常量 + DB 驱动 |
+| 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），家居产品固定追加末尾 |
 | 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
 | 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |
 
@@ -156,7 +156,7 @@
 | 默认候选人 | 订单指定的美容师（`preferred_employee_id`） |
 | 未指定美容师 | 店长从全体可分配员工中手动选择 |
 
-**销售分类（sales_category）**: 自采自销 / 他销自耗 / 他销他耗 / 生态合作
+**销售分类（sales_category）**: 自销自耗 / 他销自耗 / 他销他耗 / 生态合作
 
 **提成比例**: 市场 × 部门 × 销售分类 × 金额阶段 → 比例（PG `commission_rate_matrix`）
 
@@ -405,7 +405,7 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 未付尾款/欠款清算：选客户 → 查看欠款 → 选回款项目 → 录入 → 营业额分配。
 
 #### 3.19 取货单
-院装产品分次提货：选已购实物 → 选数量（≤ 剩余未取）→ 确认。
+家居产品分次提货：选已购实物 → 选数量（≤ 剩余未取）→ 确认。
 
 #### 3.20 消息中心
 代办 Tab（6 种待办，同 §3.9，含已处理/未处理切换 + 类型筛选）| 通知 Tab（公告 + 订单状态变更 + 系统通知，未读角标）。依赖消息推送基础设施。

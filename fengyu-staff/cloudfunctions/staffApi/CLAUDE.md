@@ -26,7 +26,8 @@ staffApi/
 │   ├── allocation.js # save, deleteAllocation, getCommissionRates, pendingList, suggest
 │   ├── appointment.js # list, detail, confirm, checkin
 │   ├── coupon.js     # available
-│   └── service.js    # create, start, complete, cancel, list, detail, counts
+│   ├── service.js    # create, start, complete, cancel, list, detail, counts
+│   └── mgmt-dashboard.js # scopeOptions, summary, storeRanking, staffRanking
 └── utils/
 ```
 

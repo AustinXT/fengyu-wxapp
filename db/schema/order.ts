@@ -147,7 +147,7 @@ export const saleItems = pgTable(
     productName: text("product_name"),
     /** 规格名称快照 */
     skuSpecName: text("sku_spec_name"),
-    /** 商品类型快照（疗程卡/单品/院装产品） */
+    /** 商品类型快照（疗程卡/单品/家居产品） */
     productType: productTypeEnum("product_type"),
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),
@@ -160,12 +160,14 @@ export const saleItems = pgTable(
     /** 实收金额（convert_out/refund_out 行为负数） */
     received: numeric("received", { precision: 10, scale: 2 }).notNull(),
     expireDate: date("expire_date"),
-    /** 已提货数量（院装产品用，原子累加，可提 = quantity - picked_up_quantity） */
+    /** 已提货数量（家居产品用，原子累加，可提 = quantity - picked_up_quantity） */
     pickedUpQuantity: integer("picked_up_quantity").default(0),
     remark: text("remark"),
     salesCategory: salesCategoryEnum("sales_category"),
     /** 固定手工费快照（开单时从 product_skus.service_fee × quantity 持久化，用于服务完成时计算固定手工费部分的服务提成） */
     serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),
+    /** 生美标志快照（开单时从 product_skus.is_shengmei 拷贝，不随 sku 后续修改变动） */
+    isShengmei: boolean("is_shengmei"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

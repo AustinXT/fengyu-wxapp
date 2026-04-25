@@ -48,7 +48,7 @@ Page({
     return orders.map(item => {
       const hasAppointable = item.status === '已支付'
         && (item.items || []).some((i: any) =>
-          i.product_type !== '院装产品' && (i.remaining_sessions ?? 0) > 0
+          i.product_type !== '家居产品' && (i.remaining_sessions ?? 0) > 0
         );
       const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
       return {

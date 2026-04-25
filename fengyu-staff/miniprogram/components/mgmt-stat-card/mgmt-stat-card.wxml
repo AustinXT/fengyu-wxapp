@@ -1,0 +1,10 @@
+<view
+  class="msc msc--{{size}} msc--{{variant}} {{selected ? 'msc--selected' : ''}}"
+  bind:tap="onTap"
+>
+  <view class="msc-count" style="{{countColor ? 'color:' + countColor : ''}}">
+    <text>{{count}}</text>
+    <text wx:if="{{unit}}" class="msc-unit">{{unit}}</text>
+  </view>
+  <view class="msc-label">{{label}}</view>
+</view>

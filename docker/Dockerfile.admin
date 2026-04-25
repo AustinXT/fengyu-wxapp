@@ -2,7 +2,9 @@
 # 构建上下文：monorepo 根目录（需要访问 db/schema/）
 # 用法：docker build -f docker/Dockerfile.admin -t fengyu-admin .
 
-FROM oven/bun:1-alpine AS base
+# base image 走 daocloud 镜像加速：本地 docker.io metadata HEAD 请求经常超时
+# 远程主机不构建镜像（仅 docker load），故域名仅影响本地 build 时的 manifest 解析
+FROM docker.m.daocloud.io/oven/bun:1-alpine AS base
 
 # Alpine apk 换阿里云镜像
 RUN sed -i 's#https\?://dl-cdn.alpinelinux.org/alpine#https://mirrors.aliyun.com/alpine#g' /etc/apk/repositories
@@ -43,8 +45,17 @@ ENV APP_COMMIT=$APP_COMMIT
 
 RUN bun run build
 
+# 构建 cron-worker bundle 单文件（Next.js standalone 不含 src/cron/）
+# postgres-js 默认尝试 require pg-native（alpine 无该原生模块），用 --external 跳过
+# 用 .mjs 后缀让 node 18 按 ESM 解析（drizzle / postgres-js 都是 ESM-only）
+RUN bun build src/cron/index.ts \
+      --target=node \
+      --format=esm \
+      --outfile=dist/cron-worker.mjs \
+      --external pg-native
+
 # ---- 生产运行 ----
-FROM node:18-alpine AS runner
+FROM docker.m.daocloud.io/library/node:18-alpine AS runner
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -55,10 +66,12 @@ ENV HOSTNAME="0.0.0.0"
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# 复制 standalone 输出
+# 复制 standalone 输出（admin web）
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# cron-worker bundle（含所有依赖；compose 启动时通过 command 覆盖入口）
+COPY --from=builder --chown=nextjs:nodejs /app/dist/cron-worker.mjs ./cron-worker.mjs
 
 USER nextjs
 

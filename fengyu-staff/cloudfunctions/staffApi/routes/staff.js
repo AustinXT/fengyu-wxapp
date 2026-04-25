@@ -6,7 +6,6 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
-const { getMemberThreshold } = require('../utils/config')
 
 /**
  * 员工列表
@@ -697,33 +696,30 @@ async function dashboard(ctx) {
       AND so.service_date <= $${scopeParams.length + 2}
   `, [...scopeParams, start, end])
 
-  // 5. 新会员：首次消费达配置阈值（system_configs.new_member_threshold）
+  // 5. 新会员（2026-04-25 起，全公司"新会员"统一为"首次成为会员客"语义）
+  //    判定字段：c.became_member_at IS NOT NULL ∩ became_member_at IN [start, end]
+  //    归属：店长按 c.bound_store_id；美容师按 c.bound_employee_id
+  //    与 metrics.md 「新会员」行 + mgmtDashboard.summary/queryNewMembers + storeRanking/staffRanking 的 newMember 严格对齐。
+  //
+  //    旧口径（已废弃）："首次消费达 system_configs.new_member_threshold"（基于 sale_orders + 阈值），
+  //    与 mgmt 看板/排行榜数字不一致，导致店长/美容师困惑。本次统一为 customer_type 跃迁到"会员客"的时间戳口径。
   let newMemberFilter, newMemberParams
   if (isManagerRole) {
-    newMemberFilter = 'o.store_id = $1'
+    newMemberFilter = 'c.bound_store_id = $1'
     newMemberParams = [storeId]
   } else {
-    newMemberFilter = 'o.preferred_employee_id = $1'
+    newMemberFilter = 'c.bound_employee_id = $1'
     newMemberParams = [employeeId]
   }
 
-  const memberThreshold = await getMemberThreshold()
   const newMemberRows = await pg.query(`
-    SELECT COUNT(DISTINCT o.client_user_id) AS new_members
-    FROM sale_orders o
+    SELECT COUNT(*) AS new_members
+    FROM client_wechat_users c
     WHERE ${newMemberFilter}
-      AND o.status = '已支付'
-      AND o.paid_at >= $${newMemberParams.length + 1}::date
-      AND o.paid_at < ($${newMemberParams.length + 2}::date + INTERVAL '1 day')
-      AND o.total_amount >= $${newMemberParams.length + 3}
-      AND o.client_user_id IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM sale_orders o2
-        WHERE o2.client_user_id = o.client_user_id
-          AND o2.status = '已支付'
-          AND o2.paid_at < $${newMemberParams.length + 1}::date
-      )
-  `, [...newMemberParams, start, end, memberThreshold])
+      AND c.became_member_at IS NOT NULL
+      AND c.became_member_at::date >= $${newMemberParams.length + 1}::date
+      AND c.became_member_at::date <= $${newMemberParams.length + 2}::date
+  `, [...newMemberParams, start, end])
 
   ctx.result = {
     footfall: Number(footfallRows[0].footfall),

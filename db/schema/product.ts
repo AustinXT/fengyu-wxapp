@@ -7,6 +7,13 @@ import { productTypeEnum, salesCategoryEnum } from './enums'
  *
  * category_name 不设唯一约束，允许不同 product_kind 下同名分类。
  * sales_category 确定该品项的销售分类，进而决定提成比例。
+ *
+ * 一级行（productKind IS NULL）的 capability 列：
+ * - isCardKind：是否为"卡类"一级（充值卡/体验卡）。开单页"普通商品"分支需排除卡类。
+ * - displayColor / displayIcon：商品 tag 视觉渲染依据，前端不再硬编码字面量分支。
+ * - requiresShengmeiFlag：该 kind 下的 SKU 表单是否需要"是否生美"开关（替代字面量等值）。
+ *
+ * 二级行（productKind 非 NULL）：上述 capability 列 NULL，运行时按需读取父级行。
  */
 export const productCategories = pgTable('product_categories', {
   categoryId: text('category_id').primaryKey(),
@@ -15,6 +22,10 @@ export const productCategories = pgTable('product_categories', {
   salesCategory: salesCategoryEnum('sales_category'),
   sortOrder: integer('sort_order').notNull().default(0),
   isValid: boolean('is_valid').notNull().default(true),
+  isCardKind: boolean('is_card_kind').notNull().default(false),
+  displayColor: text('display_color'),
+  displayIcon: text('display_icon'),
+  requiresShengmeiFlag: boolean('requires_shengmei_flag').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 })
@@ -39,7 +50,7 @@ export const productSkus = pgTable(
     /** 标价/零售价（开单时快照到 sale_items.unit_price） */
     price: numeric('price', { precision: 10, scale: 2 }).notNull(),
     specialPrice: numeric('special_price', { precision: 10, scale: 2 }),
-    /** 疗程次数：疗程卡≥2，单品=1，院装产品=null */
+    /** 疗程次数：疗程卡≥2，单品=1，家居产品=null */
     sessionCount: integer('session_count'),
     sortOrder: integer('sort_order').notNull().default(0),
     serviceFee: numeric('service_fee', { precision: 10, scale: 2 }).notNull().default('0'),

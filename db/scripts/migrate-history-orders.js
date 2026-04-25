@@ -275,7 +275,7 @@ async function batchInsert(pgPool, orders, dryRun) {
             item.saleItemId, order.saleOrderId, '购买', item.itemName,
             item.productType, item.sessionCount, item.remainingSessions,
             item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
-            item.expireDate, '自采自销', item.remark,
+            item.expireDate, '自销自耗', item.remark,
           ])
         }
       }

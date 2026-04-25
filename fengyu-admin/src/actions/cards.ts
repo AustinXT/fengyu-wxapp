@@ -220,13 +220,13 @@ export async function getCardsPaginated(filters: CardFilters = {}): Promise<Pagi
  *   2. 单品 (product_type='单品') AND product_category.product_kind='体验卡'
  *      AND quantity - COALESCE(picked_up_quantity,0) > 0
  *
- * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、院装产品（不在业务口径内）
+ * 不包含：充值卡（走 prepaid_cards 账户，不在 sale_items 行）、家居产品（不在业务口径内）
  */
 export interface HeldCardCandidate {
   saleItemId: string
   productName: string | null
   skuSpecName: string | null
-  productType: '疗程卡' | '单品' | '院装产品'
+  productType: '疗程卡' | '单品' | '家居产品'
   /** 剩余次数（疗程卡）；单品返回 null */
   remainingSessions: number | null
   /** 剩余可提货数量（单品）；疗程卡返回 null */

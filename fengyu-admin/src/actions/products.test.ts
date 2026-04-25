@@ -20,6 +20,10 @@ vi.mock('@db/product', () => ({
     productKind: 'product_kind',
     sortOrder: 'sort_order',
     isValid: 'is_valid',
+    isCardKind: 'is_card_kind',
+    displayColor: 'display_color',
+    displayIcon: 'display_icon',
+    requiresShengmeiFlag: 'requires_shengmei_flag',
     updatedAt: 'updated_at',
   },
   products: {
@@ -80,6 +84,9 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn((...args) => ({ type: 'and', args })),
   asc: vi.fn((col) => ({ type: 'asc', col })),
   sql: Object.assign(vi.fn(() => ({ as: vi.fn() })), { raw: vi.fn() }),
+  isNull: vi.fn((col) => ({ type: 'isNull', col })),
+  isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
+  inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -110,6 +117,8 @@ import {
   updateSku,
   deleteSku,
   getCategories,
+  getProductKinds,
+  getCardKindNamesFromDb,
   getProducts,
   getProductById,
   getSkusByProductId,
@@ -406,6 +415,109 @@ describe('updateProductKind — 改名级联', () => {
     expect(setCalls).toHaveLength(1)
     expect(setCalls[0]).toMatchObject({ sortOrder: 5 })
   })
+
+  it('updateProductKind 接收 capability 字段（isCardKind / displayColor / requiresShengmeiFlag）', async () => {
+    let call = 0
+    ;(db.select as any).mockImplementation(() => {
+      call++
+      if (call === 1) {
+        return makeSelectChain([{
+          categoryId: 'kind-test', categoryName: '测试卡', productKind: null,
+          sortOrder: 9, isValid: true,
+          isCardKind: false, displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+          updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        }])()
+      }
+      return makeSelectChain([])()
+    })
+
+    const setCalls: Array<Record<string, unknown>> = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            setCalls.push(data)
+            return { where: vi.fn().mockResolvedValue({}) }
+          }),
+        }),
+      }
+      return fn(tx)
+    })
+
+    const result = await updateProductKind('kind-test', {
+      isCardKind: true,
+      displayColor: '#FF00FF',
+      requiresShengmeiFlag: false,
+    })
+    expect(result.success).toBe(true)
+    expect(setCalls[0]).toMatchObject({
+      isCardKind: true,
+      displayColor: '#FF00FF',
+      requiresShengmeiFlag: false,
+    })
+  })
+})
+
+// ── PR-A capability 接口 ──────────────────────────────────────────────────────
+
+describe('getCardKindNamesFromDb — 卡类一级 kind DB 名单', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回 is_card_kind=true 且 isValid=true 的一级 kind 名称', async () => {
+    const where = vi.fn().mockResolvedValue([
+      { name: '充值卡' },
+      { name: '体验卡' },
+    ])
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const names = await getCardKindNamesFromDb()
+    expect(names).toEqual(['充值卡', '体验卡'])
+  })
+
+  it('admin 新建 isCardKind=true 的虚拟 kind 后，名单包含该 kind', async () => {
+    const where = vi.fn().mockResolvedValue([
+      { name: '充值卡' },
+      { name: '体验卡' },
+      { name: '测试卡' },
+    ])
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const names = await getCardKindNamesFromDb()
+    expect(names).toContain('测试卡')
+    expect(names).toHaveLength(3)
+  })
+})
+
+describe('getProductKinds — 一级 kind 含 capability', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('返回结构含 isCardKind / displayColor / displayIcon / requiresShengmeiFlag', async () => {
+    const orderBy = vi.fn().mockResolvedValue([{
+      categoryId: 'kind-care', categoryName: '护理项目', productKind: null,
+      sortOrder: 2, isValid: true,
+      isCardKind: false, displayColor: '#1989FA', displayIcon: null, requiresShengmeiFlag: true,
+      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'),
+    }])
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ where })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const kinds = await getProductKinds()
+    expect(kinds[0]).toMatchObject({
+      categoryName: '护理项目',
+      isCardKind: false,
+      displayColor: '#1989FA',
+      requiresShengmeiFlag: true,
+    })
+  })
 })
 
 // ── createSku ─────────────────────────────────────────────────────────────────
@@ -543,20 +655,32 @@ describe('getCategories — 品项分类列表', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('返回序列化的分类列表', async () => {
+  it('返回序列化的分类列表（含父级 capability 回填）', async () => {
+    // getCategories 现在 LEFT JOIN parent 行，回填 parent capability 列。
     const orderBy = vi.fn().mockResolvedValue([{
-      categoryId: 'cat-1', categoryName: '护理项目', productKind: '护理项目',
-      sortOrder: 1, isValid: true,
-      createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+      child: {
+        categoryId: 'cat-1', categoryName: '面部护理', productKind: '护理项目',
+        salesCategory: '自销自耗',
+        sortOrder: 1, isValid: true,
+        isCardKind: false, displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+        createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
+      },
+      parentDisplayColor: '#1989FA',
+      parentDisplayIcon: null,
+      parentIsCardKind: false,
+      parentRequiresShengmeiFlag: true,
     }])
-    const from = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
 
     const result = await getCategories()
 
     expect(result).toHaveLength(1)
     expect(result[0].categoryId).toBe('cat-1')
-    expect(result[0].categoryName).toBe('护理项目')
+    expect(result[0].categoryName).toBe('面部护理')
+    expect(result[0].parentRequiresShengmeiFlag).toBe(true)
+    expect(result[0].parentDisplayColor).toBe('#1989FA')
   })
 })
 

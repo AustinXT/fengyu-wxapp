@@ -106,10 +106,11 @@ async function recalcCustomerType(client, clientUserId) {
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
          JOIN product_skus sk ON sk.sku_id = si.sku_id
          JOIN product_categories pc ON pc.category_id = sk.category_id
+         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc.product_kind <> '体验卡'
+           AND pc_parent.is_card_kind = false
        ) THEN '小美客'
        WHEN EXISTS (
          SELECT 1
@@ -117,10 +118,11 @@ async function recalcCustomerType(client, clientUserId) {
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
          JOIN product_skus sk ON sk.sku_id = si.sku_id
          JOIN product_categories pc ON pc.category_id = sk.category_id
+         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc.product_kind = '体验卡'
+           AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
        ) THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
@@ -254,7 +256,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                s.service_fee,
+                s.service_fee, s.is_shengmei,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -315,6 +317,7 @@ async function create(ctx) {
         received,
         salesCategory,
         serviceFee,
+        isShengmei: sku.is_shengmei ?? null,
       }
     })
   )
@@ -598,9 +601,9 @@ async function create(ctx) {
       const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
       const d = itemDataList[i]
 
-      // 院装产品无 session_count
-      const sc = d.productType === '院装产品' ? null : d.sessionCount
-      const rs = d.productType === '院装产品' ? null : d.remainingSessions
+      // 家居产品无 session_count
+      const sc = d.productType === '家居产品' ? null : d.sessionCount
+      const rs = d.productType === '家居产品' ? null : d.remainingSessions
 
       await client.query(
         `INSERT INTO sale_items (
@@ -608,8 +611,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -618,6 +621,7 @@ async function create(ctx) {
           d.saleAmount, d.received,
           d.salesCategory || null,
           d.serviceFee || 0,
+          d.isShengmei ?? null,
         ]
       )
     }
@@ -929,6 +933,7 @@ async function confirmOffline(ctx) {
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
     // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
     if (targetStatus === '已支付' && order.client_user_id) {
+      // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
       const rechargeRows = await client.query(
         `SELECT si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
@@ -1422,8 +1427,8 @@ async function createRefund(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity,
-          unit_real_price, sale_amount, received, sales_category, service_fee
-        ) VALUES ($1, $2, $3, '退出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          unit_real_price, sale_amount, received, sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '退出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, refundOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -1431,6 +1436,7 @@ async function createRefund(ctx) {
           d.unitRealPrice, -(d.refundAmount), -(d.refundAmount),
           d.salesCategory,
           d.serviceFee || 0,
+          d.isShengmei ?? null,
         ]
       )
     }
@@ -2031,13 +2037,17 @@ async function createConversion(ctx) {
               si.unit_real_price,
               si.sales_category,
               si.service_fee,
+              si.is_shengmei,
               so.client_user_id,
               so.status AS order_status,
-              pc.product_kind
+              pc.product_kind,
+              pc_parent.is_card_kind AS parent_is_card_kind,
+              pc_parent.category_name AS parent_category_name
        FROM sale_items si
        JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
        LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
        LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+       LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
        WHERE si.sale_item_id = ANY($1)
        FOR UPDATE OF si`,
       [convertOutSaleItemIds]
@@ -2071,7 +2081,7 @@ async function createConversion(ctx) {
         const rem = Number(row.remaining_sessions || 0)
         if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = rem
-      } else if (productType === '单品' && row.product_kind === '体验卡') {
+      } else if (productType === '单品' && row.parent_is_card_kind === true && row.parent_category_name !== '充值卡') {
         const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
         if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = remQty
@@ -2100,6 +2110,7 @@ async function createConversion(ctx) {
         amount,
         salesCategory: row.sales_category,
         serviceFee: outServiceFee,
+        isShengmei: row.is_shengmei ?? null,
       })
     }
 
@@ -2110,7 +2121,7 @@ async function createConversion(ctx) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
-                pc.sales_category
+                s.is_shengmei, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1`,
@@ -2133,6 +2144,7 @@ async function createConversion(ctx) {
         amount,
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
+        isShengmei: sku.is_shengmei ?? null,
       })
     }
 
@@ -2156,10 +2168,10 @@ async function createConversion(ctx) {
         sale_order_id, status, sale_order_type, document_type,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payment_method, opened_by,
+        total_amount, payable_amount, payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -2191,14 +2203,15 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
           -d.amount, -d.amount,
           d.salesCategory, d.serviceFee,
+          d.isShengmei ?? null,
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
@@ -2239,14 +2252,15 @@ async function createConversion(ctx) {
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13, $14)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount,
           d.unitPrice, d.quantity, d.amount,
           d.salesCategory, d.serviceFee,
+          d.isShengmei ?? null,
         ]
       )
     }
@@ -2300,7 +2314,8 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致：
  *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
- *   - 体验卡单品：product_type='单品' AND pc.product_kind='体验卡' AND (quantity - picked_up_quantity) > 0
+ *   - 体验类单品卡：product_type='单品' AND parent.is_card_kind=true AND parent.category_name<>'充值卡'
+ *     AND (quantity - picked_up_quantity) > 0
  */
 async function customerHeldCards(ctx) {
   await requireManager()(ctx, async () => {})
@@ -2322,7 +2337,7 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              WHEN si.product_type = '单品' AND pc.product_kind = '体验卡'
+              WHEN si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
                 THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
@@ -2330,13 +2345,14 @@ async function customerHeldCards(ctx) {
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
      LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
      LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
+     LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE so.client_user_id = $1
        AND si.store_id = $2
        AND si.item_direction = '购买'
        AND so.status IN ('已支付', '已完成')
        AND (
             (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '单品' AND pc.product_kind = '体验卡'
+         OR (si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
               AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
        )
      ORDER BY si.sale_order_id DESC`,
@@ -2361,7 +2377,7 @@ async function customerHeldCards(ctx) {
 // ========== P2: 取货单 ==========
 
 /**
- * 创建取货记录（院装产品提货）
+ * 创建取货记录（家居产品提货）
  * payload: { saleItemId, pickupQuantity, remark? }
  */
 async function createPickup(ctx) {
@@ -2377,7 +2393,7 @@ async function createPickup(ctx) {
      SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
      WHERE sale_item_id = $2
        AND store_id = $3
-       AND product_type = '院装产品'
+       AND product_type = '家居产品'
        AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
      RETURNING sale_item_id, quantity, picked_up_quantity`,
     [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
@@ -2395,7 +2411,7 @@ async function createPickup(ctx) {
     if (row.store_id !== ctx.auth.effectiveStoreId) {
       throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
     }
-    if (row.product_type !== '院装产品') {
+    if (row.product_type !== '家居产品') {
       throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
     }
     throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')

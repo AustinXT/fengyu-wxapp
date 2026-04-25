@@ -33,7 +33,7 @@ const CUSTOMER_SOURCES = ["美团", "抖音", "小程序", "推带新", "地推�
 const CUSTOMER_TYPES = ["流量客", "体验客", "小美客", "会员客"]
 const SPENDING_TIERS = ["10W+", "6-10W", "3-6W", "1-3W", "1990-1W", "<1990"]
 const MONTHLY_ACTIVITIES = ["二次客活", "一次客活", "0次客活"]
-const CUSTOMER_STATUSES = ["保有会员-稳定", "保有会员-有效", "预警沉睡", "冰冻", "休眠"]
+const CUSTOMER_STATUSES = ["保有会员-稳定", "保有会员-有效", "沉睡", "冰冻", "休眠"]
 
 const CUSTOMER_TYPE_COLORS: Record<string, string> = {
   "会员客": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
@@ -45,7 +45,7 @@ const CUSTOMER_TYPE_COLORS: Record<string, string> = {
 const CUSTOMER_STATUS_COLORS: Record<string, string> = {
   "保有会员-稳定": "border-[#3D8A5A] text-[#3D8A5A] bg-[#F0F9F2]",
   "保有会员-有效": "border-[#5E8BB3] text-[#5E8BB3] bg-[#F0F5FA]",
-  "预警沉睡": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
+  "沉睡": "border-[#D4820A] text-[#D4820A] bg-[#FFF8E6]",
   "冰冻": "border-[#D94040] text-[#D94040] bg-[#FFF0F0]",
   "休眠": "border-[#888888] text-[#888888] bg-[#F5F5F5]",
 }

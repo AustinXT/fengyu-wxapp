@@ -20,6 +20,10 @@ interface Sku {
   price: number;
   session_count: number | null;
   product_type: string;
+  /** PR-D：来自 product_categories（DB 驱动 tag 渲染） */
+  product_kind?: string;
+  /** PR-D：一级 kind 行的 display_color HEX */
+  kind_display_color?: string;
 }
 
 interface Staff {
@@ -204,6 +208,9 @@ Page({
       price: selectedSku.price,
       bigCategory: spu.category_name,
       productType: selectedSku.product_type,
+      // PR-D：DB 驱动 tag 渲染（spuDetail SQL JOIN product_categories 后注入）
+      productKind: selectedSku.product_kind || undefined,
+      kindDisplayColor: selectedSku.kind_display_color || undefined,
     }, quantity);
 
     this.setData({ cartCount: getCartCount() });

@@ -74,7 +74,7 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
             <view class="oi-sessions" wx:if="{{item.remaining_sessions !== null}}">
               <text class="oi-sessions-text">剩余 {{item.remaining_sessions}}/{{item.session_count}} 次</text>
             </view>
-            <van-tag color="#F0FAF0" text-color="#389E0D" wx:if="{{item.product_type === '院装产品'}}">已交付</van-tag>
+            <van-tag color="#F0FAF0" text-color="#389E0D" wx:if="{{item.product_type === '家居产品'}}">已交付</van-tag>
           </view>
         </view>
         <view class="oi-expire" wx:if="{{item.expire_date}}">

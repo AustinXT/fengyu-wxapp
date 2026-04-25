@@ -1,6 +1,6 @@
 import { pgEnum } from "drizzle-orm/pg-core";
 
-export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "院装产品"]);
+export const productTypeEnum = pgEnum("product_type", ["疗程卡", "单品", "家居产品"]);
 
 export const orderStatusEnum = pgEnum("order_status", [
   "待支付",
@@ -76,7 +76,7 @@ export const storeUnbindRequestStatusEnum = pgEnum("store_unbind_request_status"
   "已取消",
 ]);
 
-export const salesCategoryEnum = pgEnum("sales_category", ["自采自销", "他销自耗", "他销他耗", "生态合作"]);
+export const salesCategoryEnum = pgEnum("sales_category", ["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 
 export const couponTypeEnum = pgEnum("coupon_type", ["现金券", "品项券", "折扣券"]);
 
@@ -116,7 +116,7 @@ export const monthlyActivityEnum = pgEnum("monthly_activity", ["二次客活", "
 export const customerStatusEnum = pgEnum("customer_status", [
   "保有会员-稳定",
   "保有会员-有效",
-  "预警沉睡",
+  "沉睡",
   "冰冻",
   "休眠",
 ]);

@@ -39,6 +39,18 @@ page {
   --spacing-card:  24rpx;
   --spacing-tight: 16rpx;
 
+  /* ===== 圆角 / 阴影 / 网格 / 暖底（管理层补充） ===== */
+  --radius-sm:    8rpx;
+  --radius-md:   12rpx;
+  --radius-lg:   16rpx;
+  --radius-pill: 999rpx;
+  --shadow-card:      0 2rpx 12rpx rgba(0, 0, 0, 0.06);
+  --shadow-card-soft: 0 2rpx  8rpx rgba(0, 0, 0, 0.04);
+  --gap-grid:       16rpx;
+  --gap-grid-tight:  8rpx;
+  --color-divider-soft: #F0F0F0;
+  --color-bg-warm:      #F5F2EE;
+
   /* ===== Vant 主题覆盖 ===== */
   --button-primary-background-color: #C0322A;
   --button-primary-border-color:     #C0322A;
@@ -188,6 +200,44 @@ page {
 .action-row {
   display: flex;
   gap: 24rpx;
+}
+
+/* ===== 管理层视图：顶部筛选行（5 页统一：左 时间/period chip，右 scope tag） ===== */
+.mgmt-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-tight);
+  padding: var(--spacing-tight) var(--spacing-page);
+  background: var(--color-bg-page);
+}
+
+.mgmt-filter-bar--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.mgmt-scope-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: auto;
+  gap: 4rpx;
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  padding: 6rpx 16rpx;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-pill);
+  border: 1rpx solid var(--color-border);
+  max-width: 280rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.mgmt-scope-tag .mgmt-scope-tag-value {
+  color: var(--color-primary);
+  font-weight: 600;
 }
 
 /* ===== 详情页状态条 ===== */

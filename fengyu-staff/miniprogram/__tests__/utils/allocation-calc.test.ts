@@ -3,8 +3,8 @@ import { lookupRate, computeSummary } from '../../packageOrder/utils/allocation-
 describe('lookupRate', () => {
   // P2-14：beautyRates 键改为 roleType（与 cloudfn ratesByRole 一致）
   const beautyRates = {
-    '美容师': { '自采自销': 0.3, '配合销售': 0.15 },
-    '养生师': { '自采自销': 0.25 },
+    '美容师': { '自销自耗': 0.3, '配合销售': 0.15 },
+    '养生师': { '自销自耗': 0.25 },
   }
 
   const rates = [
@@ -12,18 +12,18 @@ describe('lookupRate', () => {
       department: '市场部',
       amountMin: 0,
       amountMax: 5000,
-      orderRates: { '自采自销': 0.1, '配合销售': 0.05 },
+      orderRates: { '自销自耗': 0.1, '配合销售': 0.05 },
     },
     {
       department: '市场部',
       amountMin: 5001,
       amountMax: 10000,
-      orderRates: { '自采自销': 0.12, '配合销售': 0.06 },
+      orderRates: { '自销自耗': 0.12, '配合销售': 0.06 },
     },
   ]
 
   test('美容师使用 beautyRates', () => {
-    const result = lookupRate('美容师', '自采自销', 1000, beautyRates, rates, 3000)
+    const result = lookupRate('美容师', '自销自耗', 1000, beautyRates, rates, 3000)
     expect(result.commissionRate).toBe(0.3)
     expect(result.amount).toBe('300.00')
   })
@@ -35,7 +35,7 @@ describe('lookupRate', () => {
   })
 
   test('养生师使用 beautyRates', () => {
-    const result = lookupRate('养生师', '自采自销', 1000, beautyRates, rates, 3000)
+    const result = lookupRate('养生师', '自销自耗', 1000, beautyRates, rates, 3000)
     expect(result.commissionRate).toBe(0.25)
     expect(result.amount).toBe('250.00')
   })
@@ -47,25 +47,25 @@ describe('lookupRate', () => {
   })
 
   test('其他角色按金额范围匹配 — 低区间', () => {
-    const result = lookupRate('市场部', '自采自销', 1000, beautyRates, rates, 3000)
+    const result = lookupRate('市场部', '自销自耗', 1000, beautyRates, rates, 3000)
     expect(result.commissionRate).toBe(0.1)
     expect(result.amount).toBe('100.00')
   })
 
   test('其他角色按金额范围匹配 — 高区间', () => {
-    const result = lookupRate('市场部', '自采自销', 1000, beautyRates, rates, 6000)
+    const result = lookupRate('市场部', '自销自耗', 1000, beautyRates, rates, 6000)
     expect(result.commissionRate).toBe(0.12)
     expect(result.amount).toBe('120.00')
   })
 
   test('其他角色无匹配范围返回 0', () => {
-    const result = lookupRate('市场部', '自采自销', 1000, beautyRates, rates, 20000)
+    const result = lookupRate('市场部', '自销自耗', 1000, beautyRates, rates, 20000)
     expect(result.commissionRate).toBe(0)
     expect(result.amount).toBe('0.00')
   })
 
   test('未知角色返回 0', () => {
-    const result = lookupRate('行政部', '自采自销', 1000, beautyRates, rates, 3000)
+    const result = lookupRate('行政部', '自销自耗', 1000, beautyRates, rates, 3000)
     expect(result.commissionRate).toBe(0)
     expect(result.amount).toBe('0.00')
   })

@@ -42,7 +42,7 @@
 | **定期同步** | 提成比例矩阵 | UDT_S_1962 + UDT_M_1964 | `commission_rate_matrix` | 每日全量同步 |
 | **一次性导入** | 品项分类 | UDT_M_229 | `product_categories` | 导入后手动维护 |
 | **一次性导入** | 可售项目 | UDT_M_1281 + UDT_M_1383 | `products` + `product_skus` | 导入后手动维护 |
-| **一次性导入** | 院装产品 | UDT_M_341 | `products` + `product_skus` | 导入后手动维护 |
+| **一次性导入** | 家居产品（WorkFine 原称"院装产品"） | UDT_M_341 | `products` + `product_skus` | 导入后手动维护 |
 | **一次性导入** | 促销方案 | UDT_S_1459 + UDT_M_1460 | `products` + `product_skus` | 导入后手动维护 |
 
 ### 3.2 不同步的 WorkFine 表
@@ -306,9 +306,11 @@ UDT_S_311（顾客档案主表）
 
 **当前可用品项分类（21 种）**: 缦之羽、蜜语生玑、中华神灸、歆笙泰妍、圣源养心、悠妃曼、美芯、安吉丽美颜之爱、科颜美、诺纤金、自定义-生美、自定义-单品、自定义-KS、自定义-SM、自定义-YM、娇莉芙-生美、娇莉芙-家居产品、娇莉芙-招牌、娇莉芙-王牌、娇莉芙-改变、娇莉芙-对外合作。
 
-### 7.2 院装产品（UDT_S_340 主表 + UDT_M_341 子表 → PG `products` + `product_skus`）
+### 7.2 家居产品（UDT_S_340 主表 + UDT_M_341 子表 → PG `products` + `product_skus`）
 
-院装产品供应商档案（19 条），子表为产品明细（1,940 条）。
+> WorkFine 原始术语为"院装产品"，2026-04-25 PG 端已重命名为"家居产品"（`product_type` enum）。
+
+家居产品供应商档案（19 条），子表为产品明细（1,940 条）。
 
 **UDT_M_341 关键字段**:
 
@@ -323,7 +325,7 @@ UDT_S_311（顾客档案主表）
 | UDF_M_1876 | 核算价 | 金额 | — 不保留 |
 | UDF_M_7494 | 是否可报货 | 文本 | `product_skus.is_active`（'是' → true） |
 
-**导入规则**: 每条院装产品生成一条 `products`（product_kind='家居产品'）+ 一条 `product_skus`（product_type='院装产品'）。
+**导入规则**: 每条 UDT_M_341 行生成一条 `products`（product_kind='家居产品'）+ 一条 `product_skus`（product_type='家居产品'）。
 
 ### 7.3 可售项目（UDT_S_1280 主表 + UDT_M_1281 子表 → PG `products` + `product_skus`）
 
@@ -388,7 +390,7 @@ WorkFine → PG 定期同步（组织与人员域）:
 WorkFine → PG 一次性导入（商品域，后续手动维护）:
   UDT_M_229 (品项分类)         ──import──→ PG product_categories
   UDT_M_1281 + UDT_M_1383 (可售项目) ──import──→ PG products + product_skus
-  UDT_M_341 (院装产品)         ──import──→ PG products + product_skus
+  UDT_M_341 (家居产品 / WorkFine 原称"院装产品") ──import──→ PG products + product_skus
   UDT_S_1459 + UDT_M_1460 (促销) ──import──→ PG products (is_bundle=true) + product_skus (is_bundle_sku=true)
 ```
 

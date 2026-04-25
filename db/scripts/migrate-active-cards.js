@@ -322,7 +322,7 @@ async function batchUpsert(pgPool, orders, dryRun) {
             item.itemName || '未知项目', item.productType,
             item.totalSessions, item.remainingSessions,
             item.unitPrice, 1, item.unitRealPrice, item.saleAmount, item.received,
-            item.expireDate, '自采自销', item.remark,
+            item.expireDate, '自销自耗', item.remark,
           ])
         }
       }

@@ -465,14 +465,14 @@ async function create(ctx) {
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, prepaid_card_amount, paid_amount, payment_method,
+        total_amount, prepaid_card_amount, paid_amount, payable_amount, payment_method,
         preferred_employee_id, coupon_id, coupon_discount,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $6, $6)`,
       [
         orderNo, initialStatus, documentType, marketName, storeId, now, userId,
         ctx.auth.phone || null, customerName,
-        totalAmount, prepaidCardAmount, paidAmount, effectivePaymentMethod,
+        totalAmount, prepaidCardAmount, paidAmount, paidAmount, effectivePaymentMethod,
         preferredStaffWfId || null, inputCouponId || null, couponDiscount,
         prepaidFullPaid ? now : null
       ]
@@ -484,14 +484,14 @@ async function create(ctx) {
       const d = itemsData[i]
       await client.query(
         `INSERT INTO sale_items (
-          sale_item_id, sale_order_id, sku_id,
+          sale_item_id, sale_order_id, store_id, sku_id,
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
           sale_amount, received, sales_category
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
-          saleItemId, orderNo, d.skuId,
+          saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
@@ -1643,14 +1643,14 @@ async function repay(ctx) {
         sale_order_id, status, sale_order_type, document_type, ref_sale_order_id,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, prepaid_card_amount, paid_amount, payment_method,
+        total_amount, prepaid_card_amount, paid_amount, payable_amount, payment_method,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '回款单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $7, $7)`,
+      ) VALUES ($1, $2, '回款单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $7, $7)`,
       [
         repaymentOrderId, onlineStatus, origOrder.document_type,
         saleOrderId, origOrder.market_name, origOrder.store_id, now,
         origOrder.client_user_id || userId, origOrder.client_phone, origOrder.customer_name,
-        credTotal, credPrepaid, credPaid, repayPaymentMethod,
+        credTotal, credPrepaid, credPaid, repayAmountInput, repayPaymentMethod,
         isPureCard ? now : null,
       ]
     )

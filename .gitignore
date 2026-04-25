@@ -37,3 +37,4 @@ delivery/
 # Progress reports (PDF output)
 reports/
 .claude/last-report.json
+.claude/scheduled_tasks.lock

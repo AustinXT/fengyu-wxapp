@@ -56,6 +56,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     orgNodeId: employee.orgNodeId ?? "",
     positionName: employee.positionName ?? "",
     birthday: employee.birthday ?? "",
+    hiredAt: employee.hiredAt ?? "",
     skills: employee.skills ?? ([] as string[]),
   })
 
@@ -105,6 +106,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       orgNodeId: employee.orgNodeId ?? "",
       positionName: employee.positionName ?? "",
       birthday: employee.birthday ?? "",
+      hiredAt: employee.hiredAt ?? "",
       skills: employee.skills ?? ([] as string[]),
     })
     setIsEditing(false)
@@ -122,6 +124,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName || null,
         birthday: form.birthday || null,
+        hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
       }, employee.updatedAt)
       if (!result.success) {
@@ -327,6 +330,22 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                   ) : (
                     <Input value={employee.birthday ?? ""} disabled />
                   )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">入职日期</label>
+                  {isEditing ? (
+                    <Input
+                      type="date"
+                      value={form.hiredAt}
+                      onChange={(e) => handleFormChange("hiredAt", e.target.value)}
+                    />
+                  ) : (
+                    <Input value={employee.hiredAt ?? ""} disabled />
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">离职日期</label>
+                  <Input value={employee.resignedAt ?? "—"} disabled />
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">所属组织</label>

@@ -121,7 +121,7 @@ describe('createOrderSchema', () => {
     unitPrice: '1999.00',
     unitRealPrice: '1800.00',
     quantity: 1,
-    salesCategory: '自采自销' as const,
+    salesCategory: '自销自耗' as const,
   }
 
   const validOrder = {
@@ -188,7 +188,7 @@ describe('commissionRateSchema', () => {
     orgId: 'org-market-nc',
     orderType: '销售单',
     roleType: '美容师',
-    salesCategory: '自采自销',
+    salesCategory: '自销自耗',
     amountTierMin: '0',
     amountTierMax: '5000',
     commissionRate: '0.08',
@@ -317,7 +317,7 @@ describe('paymentMethodSchema', () => {
         unitPrice: '1999.00',
         unitRealPrice: '1800.00',
         quantity: 1,
-        salesCategory: '自采自销' as const,
+        salesCategory: '自销自耗' as const,
       }],
     }
     expect(createOrderSchema.safeParse({ ...base, paymentMethod: '无' as const }).success).toBe(true)

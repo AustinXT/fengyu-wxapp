@@ -1,5 +1,10 @@
 # Ticket: P2-14 skillTags 驱动的业绩分配校验重写
 
+> ⚠️ 2026-04-25 后置：本 ticket 多处提到「保留旧 4 值 `[自采自销, 他销自耗, 他销他耗, 生态合作]` 不变」，
+> 该决议已于 2026-04-25 翻新（`自采自销` → `自销自耗`，详见 `00-decisions.md` #2）。
+> mass replace 后本文件中"保留旧 4 值 [自销自耗, ...]" 等描述失真，仅保留作为历史记录。
+> 当前生效 enum：`[自销自耗, 他销自耗, 他销他耗, 生态合作]`。
+
 > 生成日期：2026-04-10
 > 关联决策：`notes/adapt-plans/00-decisions.md` §2 Q5
 > 关联适配计划：`notes/adapt-plans/03-staff-commission.md` §2.2/§2.4 / §4 Phase 2.2-2.4 / Phase 3.1-3.2 / Phase 4.1
@@ -12,7 +17,7 @@
 
 业务方在 2026-04-10 权威决策（`00-decisions.md` Q5）：**业绩分配校验改为按 `staff_wechat_users.skills` 中的"有效技能标签"独立建池校验**，三角色（美容师/养生师/推广师）互不约束；废除从部门名（美容部/养生部/推广部）反推角色的映射。无结构性变更，全部为算法层重写。
 
-与 `03-staff-commission.md` 原 Phase 2.2 的差异：**`salesCategoryEnum` 换值被 00-decisions §1 取消**，本 ticket 保留旧 4 值 `[自采自销, 他销自耗, 他销他耗, 生态合作]` 不变；原 Phase 1.x 的 DB 结构性变更（service_fee 快照 / service_commissions 扩列 / salesCategoryEnum）本 ticket 不涉及，其中与服务提成相关的部分已由 commit `9a7e832` 完成。
+与 `03-staff-commission.md` 原 Phase 2.2 的差异：**`salesCategoryEnum` 换值被 00-decisions §1 取消**，本 ticket 保留旧 4 值 `[自销自耗, 他销自耗, 他销他耗, 生态合作]` 不变；原 Phase 1.x 的 DB 结构性变更（service_fee 快照 / service_commissions 扩列 / salesCategoryEnum）本 ticket 不涉及，其中与服务提成相关的部分已由 commit `9a7e832` 完成。
 
 ---
 
@@ -45,7 +50,7 @@
 | 位置 | 说明 |
 |---|---|
 | `fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts:239-289` | `onStaffSelected` 通过 `department` 查提成比例并自动填金额；员工按部门名分组 |
-| `fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts:264` | `const salesCat = item.sales_category \|\| '自采自销'` — 旧枚举硬编码兜底（保留，因 00-decisions §1 不换枚举） |
+| `fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts:264` | `const salesCat = item.sales_category \|\| '自销自耗'` — 旧枚举硬编码兜底（保留，因 00-decisions §1 不换枚举） |
 | `fengyu-staff/miniprogram/utils/allocation-calc.ts:32` | `const beautyDepts = ['美容部', '养生部']` — 部门名硬编码 |
 | `fengyu-staff/miniprogram/app.ts` globalData | 无 `skills` 字段，登录后无法缓存当前用户技能标签 |
 
@@ -243,7 +248,7 @@ async function resolveStaffRoles(staffWfId) {
   1. 删除 `beauticianInfo.resolvedDept` 相关字段，改为 `employeeRoles: string[]`
   2. 删除 `beautyDepts = ['美容师','养生师']` 白名单，改为遍历 `preferredEmployee.skills` 的每个 skill
   3. 对每个 (item × skill) 生成一条 `allocLine`，`roleType` 字段必填，`departmentName` 可选（兼容历史展示，填 `null`）
-  4. 硬编码的 `orderRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 }` **保留不变**（00-decisions §1 取消枚举换值）
+  4. 硬编码的 `orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 }` **保留不变**（00-decisions §1 取消枚举换值）
   5. 返回值中 `beauticianRequired` 保留（兼容前端），但语义含义改为 `preferredEmployeeRoles.length > 0`
 
 **注意**：`suggest` 只负责"建议值"，不参与服务端校验；因此 `suggest` 不需要实现池校验逻辑。
@@ -376,7 +381,7 @@ if (sum > received + 0.02) {
 1. `AllocLine` 新增必填字段 `roleType: string`
 2. `PickerGroup` 改为以 `skillTag: string` 分组（从后端新字段 `members[].skills` 展开：一个员工有 N 个 skills 就出现在 N 组里）
 3. `onStaffSelected` 选人后，若目标 item 对应的技能池中该员工 skills 仅一个则自动填 roleType；多个则弹二级选项（复用现有 Vant Picker 做单选）
-4. L264 硬编码 `'自采自销'` **保留不变**（00-decisions §1 未换枚举）
+4. L264 硬编码 `'自销自耗'` **保留不变**（00-decisions §1 未换枚举）
 5. 前端 **保留** `lookupRate` 作为"参考提成比例"显示用途（不参与校验），但金额字段改为由 `received × allocationRatio` 本地计算，不再等于 `received × commissionRate`
 6. 选人后呈现三个 UI 元素：选技能标签（预填）→ 选整十档分配比例 → 显示重算金额（只读）
 7. 保存前本地按 `(saleItemId, roleType)` 分池校验，每池 ≤3 人、金额合计 ≤ received（与后端完全一致）

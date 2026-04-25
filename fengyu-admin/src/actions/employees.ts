@@ -35,6 +35,8 @@ function rowToEmployee(row: {
     birthday: e.birthday,
     skills: e.skills,
     isResigned: e.isResigned,
+    hiredAt: e.hiredAt,
+    resignedAt: e.resignedAt,
     lastLoginAt: e.lastLoginAt?.toISOString() ?? null,
     createdAt: e.createdAt?.toISOString() ?? '',
     updatedAt: e.updatedAt?.toISOString() ?? '',
@@ -254,6 +256,8 @@ export async function createEmployee(data: {
   positionName?: string | null
   birthday?: string | null
   skills?: string[] | null
+  /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
+  hiredAt?: string | null
 }): Promise<{ success: boolean; message: string; employeeId?: string }> {
   const session = await getSession()
   requirePermission(session, 'employee:create')
@@ -323,6 +327,9 @@ export async function createEmployee(data: {
         birthday: data.birthday ?? null,
         skills: data.skills ?? null,
         isResigned: false,
+        // 默认按今天作为入职日（admin 表单可覆盖），mgmt-dashboard 员工数历史化所需
+        hiredAt: data.hiredAt ?? new Date().toISOString().slice(0, 10),
+        resignedAt: null,
       })
 
       return id
@@ -356,6 +363,10 @@ export async function updateEmployee(
     birthday: string | null
     skills: string[] | null
     isResigned: boolean
+    /** 入职日期（YYYY-MM-DD） */
+    hiredAt: string | null
+    /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
+    resignedAt: string | null
   }>,
   /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
   expectedUpdatedAt?: string,
@@ -397,9 +408,17 @@ export async function updateEmployee(
       )
     : and(eq(staffWechatUsers.employeeId, employeeId), scopeCond)
 
+  // is_resigned ↔ resigned_at 双写一致：调用方仅传 isResigned 时由 action 自动推导 resignedAt
+  // - isResigned=true 且未显式给 resignedAt：写 today
+  // - isResigned=false：清空 resignedAt
+  const updateData = { ...data }
+  if (data.isResigned !== undefined && data.resignedAt === undefined) {
+    updateData.resignedAt = data.isResigned ? new Date().toISOString().slice(0, 10) : null
+  }
+
   let result: any
   try {
-    result = await db.update(staffWechatUsers).set(data).where(whereConditions)
+    result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
   } catch (err: any) {
     if (err?.code === '23505') {
       if (err.detail?.includes('phone') || err.constraint?.includes('phone')) {

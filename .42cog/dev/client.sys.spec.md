@@ -161,7 +161,7 @@ product.shopInit(门店商品初始化)
 ### 7.3 预约核销
 
 ```text
-订单已支付 → order.appointableItems(remaining_sessions > 0, 非院装)
+订单已支付 → order.appointableItems(remaining_sessions > 0, 非家居产品)
   → appointment.create(选项目/美容师/时段)
     → ID 格式: apt_{timestamp}_{random}
     → 时段: 09-11/11-13/13-15/15-17/17-19

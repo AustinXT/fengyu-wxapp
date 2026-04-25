@@ -282,8 +282,8 @@ async function getCommissionRates(ctx) {
         department: dept,
         amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
         amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-        orderRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
-        serviceRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+        serviceRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
       })
     }
     const entry = grouped.get(key)
@@ -423,7 +423,7 @@ async function suggest(ctx) {
           department: dept,
           amountMin: r.amount_tier_min != null ? Number(r.amount_tier_min) : -9999.9,
           amountMax: r.amount_tier_max != null ? Number(r.amount_tier_max) : 10000000,
-          orderRates: { '自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
+          orderRates: { '自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0 },
         })
       }
       grouped.get(key).orderRates[r.sales_category] = Number(r.commission_rate) || 0
@@ -443,7 +443,7 @@ async function suggest(ctx) {
   const allocLines = []
   if (beauticianInfo && beauticianInfo.skills.length > 0) {
     for (const item of items) {
-      const salesCat = item.sales_category || '自采自销'
+      const salesCat = item.sales_category || '自销自耗'
       const received = Number(item.received) || 0
       for (const role of beauticianInfo.skills) {
         const commRate = (ratesByRole[role] && ratesByRole[role][salesCat]) || 0

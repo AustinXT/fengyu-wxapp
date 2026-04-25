@@ -38,6 +38,8 @@ export const clientWechatUsers = pgTable(
     memberLevelLockedUntil: timestamp('member_level_locked_until', { withTimezone: true }),
     /** 最近一次升级时间戳（审计用；定位"什么时候升的金钻"之类问题） */
     memberLevelUpgradedAt: timestamp('member_level_upgraded_at', { withTimezone: true }),
+    /** 上一级别快照；null 表示首次成为会员（即"新会员"判定条件） */
+    oldMemberLevel: memberLevelEnum('old_member_level'),
     customerSource: customerSourceEnum('customer_source'),
     /** 推荐人（美容师员工ID） */
     promoterEmployeeId: varchar('promoter_employee_id', { length: 30 }).references((): any => staffWechatUsers.employeeId),
@@ -115,6 +117,10 @@ export const staffWechatUsers = pgTable(
     /** 技能标签数组，由员工端手动维护 */
     skills: text('skills').array(),
     isResigned: boolean('is_resigned').notNull().default(false),
+    /** 入职日期；用于 mgmt-dashboard 员工数历史化（按 selectedDate 判定在职状态） */
+    hiredAt: date('hired_at'),
+    /** 离职日期；NULL 表示在职。与 is_resigned 双写一致（is_resigned = resigned_at IS NOT NULL） */
+    resignedAt: date('resigned_at'),
     lastLoginAt: timestamp('last_login_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),

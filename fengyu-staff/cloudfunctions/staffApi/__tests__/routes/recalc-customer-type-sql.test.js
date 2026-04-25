@@ -12,14 +12,15 @@
  * 客、非体验卡 3000 → 会员客 等）本质是集成测试，应由 §7.2 开发库真实查询和
  * §7.3 手工回归覆盖。
  *
- * 本测试做**源文件文本结构守卫**：
- *   1. 反死分支回归——两处 CASE SQL 必须同时存在 `pc.product_kind <> '体验卡'`
- *      （小美客排除）和 `pc.product_kind = '体验卡'`（体验客断言），任一缺失
- *      即视为回归到死分支状态
+ * 本测试做**源文件文本结构守卫**（PR-C 收敛后）：
+ *   1. 反死分支回归——两处 CASE SQL 必须同时存在 `pc_parent.is_card_kind = false`
+ *      （小美客排除卡类）和 `pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'`
+ *      （体验客 = 非储值的卡类），任一缺失即视为回归到死分支状态
  *   2. 镜像一致性——staffApi order.js 和 fengyu-client payNotify/index.js 的
  *      CASE 段规范化空白后必须逐字一致，防止未来单边修改漂移
  *   3. 结构完整性——会员客 ① 分支必须含 ref_sale_order_id 回款累计、ELSE 必须
  *      是 '流量客'
+ *   4. 父级 JOIN 守卫——两个分支必须 JOIN 一级行 `pc_parent`（保证 is_card_kind 列可用）
  */
 
 const fs = require('node:fs')
@@ -69,12 +70,12 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
   })
 
   describe('staffApi routes/order.js', () => {
-    test('小美客分支必须排除体验卡（反死分支）', () => {
-      expect(staffSql).toContain("pc.product_kind <> '体验卡'")
+    test('小美客分支必须排除卡类（反死分支，PR-C 收敛后用 is_card_kind=false）', () => {
+      expect(staffSql).toContain('pc_parent.is_card_kind = false')
     })
 
-    test('体验客分支必须断言体验卡（反死分支）', () => {
-      expect(staffSql).toContain("pc.product_kind = '体验卡'")
+    test('体验客分支必须断言非储值卡的卡类（PR-C 收敛后）', () => {
+      expect(staffSql).toContain("pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'")
     })
 
     test('会员客分支必须包含回款单累计', () => {
@@ -86,20 +87,21 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(staffSql).toMatch(/ELSE '流量客'/)
     })
 
-    test('必须走 sale_items → product_skus → product_categories JOIN 链', () => {
+    test('必须走 sale_items → product_skus → product_categories JOIN 链 + 一级行 JOIN', () => {
       expect(staffSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
       expect(staffSql).toContain('JOIN product_skus sk ON sk.sku_id = si.sku_id')
       expect(staffSql).toContain('JOIN product_categories pc ON pc.category_id = sk.category_id')
+      expect(staffSql).toContain('JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL')
     })
   })
 
   describe('fengyu-client payNotify/index.js（镜像）', () => {
-    test('小美客分支必须排除体验卡（反死分支）', () => {
-      expect(paynotifySql).toContain("pc.product_kind <> '体验卡'")
+    test('小美客分支必须排除卡类（反死分支，PR-C 收敛后用 is_card_kind=false）', () => {
+      expect(paynotifySql).toContain('pc_parent.is_card_kind = false')
     })
 
-    test('体验客分支必须断言体验卡（反死分支）', () => {
-      expect(paynotifySql).toContain("pc.product_kind = '体验卡'")
+    test('体验客分支必须断言非储值卡的卡类（PR-C 收敛后）', () => {
+      expect(paynotifySql).toContain("pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'")
     })
 
     test('会员客分支必须包含回款单累计', () => {

@@ -2,37 +2,307 @@
 <view class="mgmt-hub">
   <!-- 首页（数据中心） -->
   <block wx:if="{{activeTab === 'dashboard'}}">
-    <placeholder-page
-      page-title="数据中心"
-      subtitle="功能建设中，敬请期待"
-      icon="chart-trending-o"
-      show-switch-to-store="{{canSwitchStore}}"
-    />
+    <view class="mgmt-dash">
+      <!-- 顶部筛选栏：时间靠左 + 市场靠右，同一行 -->
+      <view class="mgmt-dash-filters">
+        <view class="filter-trigger" bindtap="onCalendarOpen">
+          <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
+          <text class="filter-trigger-text">{{ selectedDate || '请选择日期' }}</text>
+          <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
+        </view>
+        <mgmt-scope-picker
+          staff-level="{{ staffLevel }}"
+          default-scope="{{ defaultScope }}"
+          bind:change="onScopeChange"
+        />
+      </view>
+
+      <!-- 三态壳：loading / error 时由组件接管，content 时渲染 slot -->
+      <mgmt-data-state state="{{ summaryState }}" bind:retry="onSummaryRetry">
+        <view wx:if="{{ display }}">
+          <!-- 大卡片：2×2 -->
+          <view class="mgmt-dash-grid-large">
+            <view class="dash-card dash-card--large">
+              <view class="dash-card-title">门店业绩</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.storeRevenue.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.storeRevenue.month }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.storeRevenue.monthlyAvgPerStore }}</text></view>
+            </view>
+            <view class="dash-card dash-card--large">
+              <view class="dash-card-title">生美业绩</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.shengmeiRevenue.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.shengmeiRevenue.month }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.shengmeiRevenue.monthlyAvgPerStore }}</text></view>
+            </view>
+            <view class="dash-card dash-card--large">
+              <view class="dash-card-title">门店实耗</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.storeConsume.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.storeConsume.month }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.storeConsume.monthlyAvgPerStore }}</text></view>
+            </view>
+            <view class="dash-card dash-card--large">
+              <view class="dash-card-title">生美实耗</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.shengmeiConsume.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.shengmeiConsume.month }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月店均：</text><text class="val">{{ display.shengmeiConsume.monthlyAvgPerStore }}</text></view>
+            </view>
+          </view>
+
+          <!-- 小卡片：4×1 -->
+          <view class="mgmt-dash-grid-small">
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">客流</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.footfall.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.footfall.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">客量</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.headcount.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.headcount.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">新会员</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.newMembers.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.newMembers.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">项目数</view>
+              <view class="dash-card-row"><text class="lbl">当日：</text><text class="val">{{ display.projectCount.today }}</text></view>
+              <view class="dash-card-row"><text class="lbl">当月：</text><text class="val">{{ display.projectCount.month }}</text></view>
+            </view>
+          </view>
+
+          <!-- A. 门店状况（按 selectedDate 历史化，2026-04-25 T2-T6 完成） -->
+          <view class="dash-section-title">门店状况</view>
+
+          <view class="dash-status-row1">
+            <view class="status-cell">
+              <text class="lbl">会员数量</text>
+              <text class="val">{{ display.storeStatus.memberCount }}</text>
+            </view>
+            <view class="status-cell">
+              <text class="lbl">保有会员</text>
+              <text class="val">{{ display.storeStatus.retainedMemberCount }}</text>
+            </view>
+            <view class="status-cell">
+              <text class="lbl">占比</text>
+              <text class="val">{{ display.storeStatus.retainRate }}</text>
+            </view>
+          </view>
+
+          <view class="dash-status-row2">
+            <view class="status-block">
+              <view class="status-line"><text class="lbl">门店数</text><text class="val">{{ display.storeStatus.storeCount }}</text></view>
+              <view class="status-line"><text class="lbl">店均会员</text><text class="val">{{ display.storeStatus.avgMembersPerStore }}</text></view>
+              <view class="status-line"><text class="lbl">店均保有会员</text><text class="val">{{ display.storeStatus.avgRetainedPerStore }}</text></view>
+            </view>
+            <view class="status-block">
+              <view class="status-line"><text class="lbl">员工数</text><text class="val">{{ display.storeStatus.employeeCount }}</text></view>
+              <view class="status-line"><text class="lbl">人均会员数</text><text class="val">{{ display.storeStatus.avgMembersPerEmp }}</text></view>
+              <view class="status-line"><text class="lbl">人均会员数</text><text class="val">{{ display.storeStatus.avgMembersPerEmp2 }}</text></view>
+            </view>
+          </view>
+
+          <!-- B. 人效数据（按 selectedDate 历史化，2026-04-25 T6 完成） -->
+          <view class="dash-section-title">人效数据</view>
+
+          <view class="mgmt-dash-grid-small">
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均业绩</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.revenue.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.revenue.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均生美业绩</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.shengmeiRev.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.shengmeiRev.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均实耗</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.consume.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.consume.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均生美实耗</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.shengmeiCons.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.shengmeiCons.month }}</text></view>
+            </view>
+          </view>
+
+          <view class="mgmt-dash-grid-small">
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均客流</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.footfall.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.footfall.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均客量</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.headcount.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.headcount.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均新客</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.newMembers.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.newMembers.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均项目数</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.projectCount.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.projectCount.month }}</text></view>
+            </view>
+            <view class="dash-card dash-card--small">
+              <view class="dash-card-title">人均提成收入</view>
+              <view class="dash-card-row"><text class="lbl">日均：</text><text class="val">{{ display.perEmployee.commissionIncome.day }}</text></view>
+              <view class="dash-card-row"><text class="lbl">月均：</text><text class="val">{{ display.perEmployee.commissionIncome.month }}</text></view>
+            </view>
+          </view>
+        </view>
+      </mgmt-data-state>
+
+      <!-- C. 入口区：卡片宫格（永远显示，加载失败也能跳转） -->
+      <view class="dash-entries">
+        <van-grid column-num="{{ 4 }}" gutter="{{ 16 }}" border="{{ false }}">
+          <van-grid-item use-slot>
+            <view class="dash-entry-card" data-entry="traffic" bindtap="onEntryTap">
+              <van-icon name="friends-o" size="56rpx" color="#C0322A" />
+              <text class="dash-entry-label">客量数据</text>
+            </view>
+          </van-grid-item>
+          <van-grid-item use-slot>
+            <view class="dash-entry-card" data-entry="sales" bindtap="onEntryTap">
+              <van-icon name="balance-o" size="56rpx" color="#C0322A" />
+              <text class="dash-entry-label">销售数据</text>
+            </view>
+          </van-grid-item>
+          <van-grid-item use-slot>
+            <view class="dash-entry-card" data-entry="products" bindtap="onEntryTap">
+              <van-icon name="gift-card-o" size="56rpx" color="#C0322A" />
+              <text class="dash-entry-label">品项数据</text>
+            </view>
+          </van-grid-item>
+          <van-grid-item use-slot>
+            <view class="dash-entry-card" data-entry="customers" bindtap="onEntryTap">
+              <van-icon name="contact-o" size="56rpx" color="#C0322A" />
+              <text class="dash-entry-label">顾客档案</text>
+            </view>
+          </van-grid-item>
+        </van-grid>
+      </view>
+
+      <!-- 日历弹窗：主题色对齐 #C0322A；min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
+      <van-calendar
+        show="{{ showCalendar }}"
+        color="#C0322A"
+        bind:close="onCalendarClose"
+        bind:confirm="onCalendarConfirm"
+        show-confirm="{{ false }}"
+        min-date="{{ minDate }}"
+        max-date="{{ maxDate }}"
+        default-date="{{ defaultCalendarDate }}"
+      />
+    </view>
   </block>
 
-  <!-- 排行榜 -->
-  <block wx:elif="{{activeTab === 'ranking'}}">
-    <placeholder-page
-      page-title="排行榜"
-      subtitle="功能建设中，敬请期待"
-      icon="medal-o"
-      show-switch-to-store="{{canSwitchStore}}"
-    />
+  <!-- 门店排行榜 -->
+  <block wx:elif="{{activeTab === 'storeRanking'}}">
+    <view class="mgmt-ranking">
+      <!-- sticky 筛选区：period chip + metric tabs -->
+      <view class="ranking-filters">
+        <mgmt-period-picker
+          options="{{ rankingPeriodsForPicker }}"
+          value="{{ storeRanking.period }}"
+          bind:change="onStoreRankingPeriodChange"
+        />
+        <mgmt-metric-tabs
+          options="{{ storeRankingMetricsForTabs }}"
+          value="{{ storeRanking.metric }}"
+          columns="{{ 3 }}"
+          bind:change="onStoreRankingMetricChange"
+        />
+      </view>
+
+      <!-- 排行榜表格 -->
+      <view class="ranking-table">
+        <view class="ranking-table-title">门店排行榜</view>
+
+        <view class="ranking-table-header">
+          <view class="col col-rank">排名</view>
+          <view class="col col-name">店名</view>
+          <view class="col col-market">所属市场</view>
+          <view class="col col-value">数据</view>
+        </view>
+
+        <mgmt-data-state
+          state="{{ storeRanking.error ? 'error' : (storeRanking.loading ? 'loading' : (storeRanking.rows.length === 0 ? 'empty' : 'content')) }}"
+          empty-text="暂无排行数据"
+          bind:retry="onStoreRankingRetry"
+        >
+          <view class="ranking-row" wx:for="{{storeRanking.rows}}" wx:key="storeId">
+            <view class="col col-rank">{{item.rank}}</view>
+            <view class="col col-name">{{item.storeName}}</view>
+            <view class="col col-market">{{item.marketName}}</view>
+            <view class="col col-value">
+              <text class="val-num">{{item.valueText}}</text>
+              <text class="val-unit">{{storeRankingMetricLabelMap[storeRanking.metric]}}</text>
+            </view>
+          </view>
+        </mgmt-data-state>
+      </view>
+    </view>
   </block>
 
-  <!-- 顾客 -->
-  <block wx:elif="{{activeTab === 'customers'}}">
-    <placeholder-page
-      page-title="顾客"
-      subtitle="功能建设中，敬请期待"
-      icon="friends-o"
-      show-switch-to-store="{{canSwitchStore}}"
-    />
+  <!-- 员工排行榜 -->
+  <block wx:elif="{{activeTab === 'staffRanking'}}">
+    <view class="mgmt-ranking">
+      <!-- sticky 筛选区 -->
+      <view class="ranking-filters">
+        <mgmt-period-picker
+          options="{{ rankingPeriodsForPicker }}"
+          value="{{ staffRanking.period }}"
+          bind:change="onStaffRankingPeriodChange"
+        />
+        <mgmt-metric-tabs
+          options="{{ staffRankingMetricsForTabs }}"
+          value="{{ staffRanking.metric }}"
+          columns="{{ 3 }}"
+          bind:change="onStaffRankingMetricChange"
+        />
+      </view>
+
+      <!-- 排行榜表格 -->
+      <view class="ranking-table">
+        <view class="ranking-table-title">员工排行榜</view>
+
+        <view class="ranking-table-header">
+          <view class="col col-rank">排名</view>
+          <view class="col col-name">员工姓名</view>
+          <view class="col col-market">所属门店</view>
+          <view class="col col-value">数据</view>
+        </view>
+
+        <mgmt-data-state
+          state="{{ staffRanking.error ? 'error' : (staffRanking.loading ? 'loading' : (staffRanking.rows.length === 0 ? 'empty' : 'content')) }}"
+          empty-text="暂无排行数据"
+          bind:retry="onStaffRankingRetry"
+        >
+          <view class="ranking-row" wx:for="{{staffRanking.rows}}" wx:key="employeeId">
+            <view class="col col-rank">{{item.rank}}</view>
+            <view class="col col-name">{{item.employeeName || '未命名员工'}}</view>
+            <view class="col col-market">{{item.storeName || '—'}}</view>
+            <view class="col col-value">
+              <text class="val-num">{{item.valueText}}</text>
+              <text class="val-unit">{{staffRankingMetricLabelMap[staffRanking.metric]}}</text>
+            </view>
+          </view>
+        </mgmt-data-state>
+      </view>
+    </view>
   </block>
 
   <!-- 我的 -->
   <block wx:elif="{{activeTab === 'profile'}}">
     <view class="mgmt-profile-wrap">
+      <!-- Header（保留） -->
       <view class="mgmt-profile-header">
         <view class="mgmt-profile-name">{{staffName || '未命名员工'}}</view>
         <view class="mgmt-profile-meta">
@@ -43,9 +313,55 @@
       </view>
 
       <view class="mgmt-profile-body">
-        <van-icon name="gem-o" size="120rpx" color="#C0322A" />
-        <text class="mgmt-profile-tip">管理层菜单建设中，敬请期待</text>
-        <button wx:if="{{canSwitchStore}}" class="mgmt-profile-action mgmt-profile-action--outline" bindtap="onSwitchToStore">返回门店视图</button>
+        <!-- 基本信息卡 -->
+        <view class="profile-section-title">基本信息</view>
+        <view class="profile-card" wx:if="{{basicInfo}}">
+          <view class="profile-row"><text class="lbl">姓名</text><text class="val">{{basicInfo.staffName}}</text></view>
+          <view class="profile-row"><text class="lbl">工号</text><text class="val">{{basicInfo.staffWfId}}</text></view>
+          <view class="profile-row"><text class="lbl">手机号</text><text class="val">{{basicInfo.phoneFormatted}}</text></view>
+          <view class="profile-row"><text class="lbl">职位</text><text class="val">{{basicInfo.position}}</text></view>
+          <view class="profile-row"><text class="lbl">层级</text><text class="val">{{basicInfo.staffLevelLabel}}</text></view>
+        </view>
+
+        <!-- 组织归属卡 -->
+        <view class="profile-section-title">组织归属</view>
+        <view class="profile-card">
+          <view class="profile-table-header">
+            <text class="col col-role">角色</text>
+            <text class="col col-scope">作用域</text>
+          </view>
+          <view wx:if="{{roleBindingRows.length === 0}}" class="profile-empty">暂无角色绑定</view>
+          <block wx:else>
+            <view wx:for="{{roleBindingRows}}" wx:key="role" class="profile-table-row">
+              <text class="col col-role">{{item.role}}</text>
+              <text class="col col-scope">{{item.scopeText}}</text>
+            </view>
+          </block>
+        </view>
+
+        <!-- 管辖范围卡 -->
+        <view wx:if="{{storeScope}}" class="profile-section-title">管辖范围</view>
+        <view wx:if="{{storeScope}}" class="profile-card">
+          <view class="profile-store-title">{{storeScope.title}}</view>
+          <block wx:if="{{storeScope.stores.length === 0}}">
+            <view class="profile-empty">暂无管辖门店</view>
+          </block>
+          <block wx:else>
+            <view
+              wx:for="{{storeScope.stores}}"
+              wx:key="*this"
+              wx:if="{{storeScope.expanded || index < 5}}"
+              class="profile-store-item"
+            >· {{item}}</view>
+            <view
+              wx:if="{{storeScope.needToggle}}"
+              class="profile-store-toggle"
+              bindtap="onToggleStoreScope"
+            >{{storeScope.expanded ? '收起' : '展开全部 ' + storeScope.stores.length + ' 家'}}</view>
+          </block>
+        </view>
+
+        <!-- 退出登录（保留） -->
         <button class="mgmt-profile-action" bindtap="onLogout">退出登录</button>
       </view>
     </view>

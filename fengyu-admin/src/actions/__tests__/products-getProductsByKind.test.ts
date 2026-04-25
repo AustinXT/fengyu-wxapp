@@ -165,7 +165,7 @@ describe("getProductsByKind('__normal__') — 排除法 + 分组", () => {
         categoryId: overrides.categoryId,
         categoryName: overrides.categoryName,
         productKind: overrides.kindName,
-        salesCategory: '自采自销',
+        salesCategory: '自销自耗',
         sortOrder: overrides.categorySortOrder,
       },
       sku: {
@@ -270,7 +270,7 @@ describe("getProductsByKind('充值卡') — 平铺结构保持不变", () => {
           categoryId: 'cat-cz-01',
           categoryName: '储值卡',
           productKind: '充值卡',
-          salesCategory: '自采自销',
+          salesCategory: '自销自耗',
           sortOrder: 1,
         },
         sku: {

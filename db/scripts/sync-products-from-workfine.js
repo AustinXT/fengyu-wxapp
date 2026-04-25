@@ -5,7 +5,7 @@
  * - UDT_M_1281: 全国可售项目
  * - UDT_M_1383: 门店自定义项目
  * - UDT_M_1460: 促销方案（JOIN UDT_S_1459 取方案名和市场限制）
- * - UDT_M_341: 院装产品
+ * - UDT_M_341: 家居产品（WorkFine 原始术语为"院装产品"，PG 已统一为"家居产品"）
  */
 
 const sql = require("mssql");
@@ -40,7 +40,7 @@ function generateId(...parts) {
 
 // 生成 SKU 显示名称
 function generateSkuDisplayName(productType, sessionCount, specification = null) {
-  if (productType === "院装产品") {
+  if (productType === "家居产品") {
     return specification || "院装";
   } else if (productType === "单品") {
     return "单次体验";
@@ -51,7 +51,7 @@ function generateSkuDisplayName(productType, sessionCount, specification = null)
 
 // 映射产品类型
 function mapProductType(productTypeRaw) {
-  if (!productTypeRaw) return "院装产品";
+  if (!productTypeRaw) return "家居产品";
   if (productTypeRaw.includes("疗程卡")) return "疗程卡";
   if (productTypeRaw.includes("单品")) return "单品";
   return "疗程卡";
@@ -140,7 +140,7 @@ async function fetchWorkFineData(mssqlPool) {
         AND (s.UDF_S_17158 IS NULL OR s.UDF_S_17158 >= GETDATE())
     `,
 
-    // UDT_M_341: 院装产品
+    // UDT_M_341: 家居产品（WorkFine 原表为"院装产品"）
     UDT_M_341: `
       SELECT
         RTRIM(UDF_M_1870) AS workfine_item_id,

@@ -8,7 +8,7 @@
  *
  * 未使用数量按 sale_items.product_type 区分：
  *   疗程卡：remaining_sessions
- *   单品 / 院装产品：quantity − picked_up_quantity
+ *   单品 / 家居产品：quantity − picked_up_quantity
  */
 
 /**
@@ -79,6 +79,7 @@ function buildRefundDetails(origItems, requestItems) {
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
+      isShengmei: orig.is_shengmei ?? null,
     })
   }
 

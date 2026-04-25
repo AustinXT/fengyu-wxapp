@@ -33,6 +33,7 @@ const {
 async function rechargeSkus(ctx) {
   await requireManager()(ctx, async () => {})
 
+  // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
            pc.category_id, pc.category_name
@@ -139,6 +140,7 @@ async function recharge(ctx) {
     `, [skuId])
     if (skuRows.length === 0) throw new Error('INVALID_PARAMS: SKU 不存在或已下架')
     const sku = skuRows[0]
+    // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
     if (sku.product_kind !== '充值卡') throw new Error('INVALID_PARAMS: 该 SKU 不是充值卡')
     resolvedSkuId = skuId
     productName = sku.spec_name
@@ -154,7 +156,7 @@ async function recharge(ctx) {
     // product_name 必须含 "¥{面值}"，payNotify / confirmOffline 依赖正则解析
     productName = `预付充值卡 ¥${amt}`
     skuSpecName = '预付充值卡（虚拟）'
-    productType = '院装产品'
+    productType = '家居产品'
     faceValue = amt
     payAmount = computed
   }
@@ -223,10 +225,10 @@ async function recharge(ctx) {
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
-        sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
+        sale_order_datetime, total_amount, payable_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by, remark,
         created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $6, $6)`,
       [
         saleOrderId, initialStatus, documentType, marketName, storeId, now,
         payAmount, clientUserId, clientPhone, customerName,

@@ -241,6 +241,7 @@ exports.main = async (event) => {
       // 幂等：card_transactions.ref_order_id 单独 SELECT 去重（表无 UNIQUE 约束），
       // 外层 status 翻转 rowCount 已是第一道幂等闸。
       if (targetOrder.client_user_id && targetOrder.store_id) {
+        // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
         const rechargeRows = await client.query(
           `SELECT si.sku_id, si.product_name, sk.price AS sku_price
            FROM sale_items si
@@ -327,6 +328,14 @@ exports.main = async (event) => {
 
       // 3. 自动创建业绩分配（如有指定美容师）——以原销售单为准
       if (targetOrder.preferred_employee_id) {
+        // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
+        const empRow = await client.query(
+          'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
+          [targetOrder.preferred_employee_id]
+        )
+        const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
+        const roleType = skills[0] || '美容师'
+
         // 查询该订单的所有明细
         const itemsResult = await client.query(
           'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
@@ -336,10 +345,12 @@ exports.main = async (event) => {
         // 为每个明细行创建分配记录（100% 给指定美容师）
         for (const item of itemsResult.rows) {
           await client.query(
-            `INSERT INTO sale_allocations (sale_item_id, employee_id, allocation_ratio, total_amount, created_at, updated_at)
-             VALUES ($1, $2, 1.00, $3, $4, $4)
-             ON CONFLICT DO NOTHING`,
-            [item.sale_item_id, targetOrder.preferred_employee_id, item.received, now]
+            `INSERT INTO sale_allocations
+               (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
+                is_void, created_at, updated_at)
+             VALUES ($1, $2, $3, 1.00, $4, FALSE, $5, $5)
+             ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role DO NOTHING`,
+            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received, now]
           )
         }
       }
@@ -401,10 +412,11 @@ exports.main = async (event) => {
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                  JOIN product_skus sk ON sk.sku_id = si.sku_id
                  JOIN product_categories pc ON pc.category_id = sk.category_id
+                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc.product_kind <> '体验卡'
+                   AND pc_parent.is_card_kind = false
                ) THEN '小美客'
                WHEN EXISTS (
                  SELECT 1
@@ -412,10 +424,11 @@ exports.main = async (event) => {
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
                  JOIN product_skus sk ON sk.sku_id = si.sku_id
                  JOIN product_categories pc ON pc.category_id = sk.category_id
+                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc.product_kind = '体验卡'
+                   AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,

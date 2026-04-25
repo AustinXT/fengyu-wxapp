@@ -1,0 +1,428 @@
+/* packageMgmt/mgmt-customer-detail/mgmt-customer-detail.wxss */
+
+.container {
+  background: var(--color-bg-page);
+  min-height: 100vh;
+}
+
+/* 顶部筛选行 → 全局 .mgmt-filter-bar + .mgmt-scope-tag（app.wxss）已统一 */
+
+/* 头部信息卡 */
+.profile-card {
+  background: var(--color-bg-card);
+  color: var(--color-text-primary);
+  padding: 40rpx 32rpx 32rpx;
+  border-bottom: 3rpx solid var(--color-primary);
+}
+
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-card);
+  margin-bottom: 32rpx;
+}
+
+.profile-avatar {
+  width: 112rpx;
+  height: 112rpx;
+  border-radius: 56rpx;
+  background: var(--color-primary-light);
+  border: 2rpx solid rgba(192, 50, 42, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-name-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 8rpx;
+}
+
+.profile-name { font-size: 40rpx; font-weight: 700; color: var(--color-text-primary); }
+
+.vip-badge {
+  font-size: 20rpx;
+  font-weight: 600;
+  padding: 4rpx 12rpx;
+  border-radius: var(--radius-lg);
+  background: var(--color-primary-light);
+  color: var(--color-primary);
+  border: 1rpx solid rgba(192, 50, 42, 0.3);
+}
+
+.profile-phone { font-size: 26rpx; color: var(--color-text-secondary); }
+
+.profile-stats {
+  display: flex;
+  align-items: center;
+  background: var(--color-bg-page);
+  border-radius: var(--radius-lg);
+  padding: 20rpx;
+}
+
+.stat-item { flex: 1; text-align: center; }
+.stat-label { display: block; font-size: 22rpx; color: var(--color-text-hint); margin-bottom: 4rpx; }
+.stat-value { font-size: 32rpx; font-weight: 700; color: var(--color-primary); }
+.stat-divider { width: 1rpx; height: 48rpx; background: var(--color-border); }
+
+/* Tab 内容区 */
+.tab-content {
+  padding: var(--spacing-tight) 0;
+  min-height: 400rpx;
+}
+
+/* Tab 下方提示文案 */
+.tab-hint {
+  padding: 8rpx var(--spacing-page) var(--spacing-tight);
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  line-height: 1.5;
+}
+
+/* ===== 日历样式 ===== */
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32rpx;
+  padding: var(--spacing-tight) 0 var(--spacing-card);
+}
+
+.calendar-month-label {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.calendar-week-header {
+  display: flex;
+  padding: 0 var(--spacing-tight);
+}
+
+.calendar-week-cell {
+  flex: 1;
+  text-align: center;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  padding: 8rpx 0;
+}
+
+.calendar-grid {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 var(--spacing-tight);
+}
+
+.calendar-cell {
+  width: 14.2857%;
+  height: 92rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.calendar-day {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.calendar-amount {
+  font-size: 18rpx;
+  color: var(--color-primary);
+  font-weight: 500;
+  margin-top: 2rpx;
+}
+
+.calendar-cell--has-data .calendar-day {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.calendar-cell--selected {
+  background: var(--color-primary-light);
+  border-radius: var(--radius-sm);
+}
+
+.calendar-orders {
+  padding: var(--spacing-tight) var(--spacing-card);
+}
+
+.calendar-orders-title {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  display: block;
+  margin-bottom: 12rpx;
+}
+
+/* ===== 购买记录 ===== */
+.purchase-card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-card);
+  margin: 0 var(--spacing-card) var(--gap-grid);
+  box-shadow: var(--shadow-card);
+}
+
+.purchase-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.purchase-order-no {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+  font-family: monospace;
+}
+
+.purchase-items {
+  margin-bottom: 12rpx;
+}
+
+.purchase-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 6rpx 0;
+}
+
+.purchase-item-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.purchase-item-spec {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  background: var(--color-bg-warm);
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+}
+
+.purchase-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 12rpx;
+  border-top: 1rpx solid var(--color-divider-soft);
+}
+
+.purchase-time {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.purchase-link {
+  font-size: 24rpx;
+  color: var(--color-primary);
+}
+
+/* ===== 持卡汇总（管理层只读） ===== */
+.card-list { padding: 0 var(--spacing-card) var(--spacing-card); }
+
+.treatment-card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-card);
+  margin-bottom: var(--gap-grid);
+  border: 2rpx solid transparent;
+}
+
+.tc-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-tight);
+}
+
+.tc-info { flex: 1; min-width: 0; }
+
+.tc-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 8rpx;
+  display: block;
+}
+
+.tc-meta {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 6rpx;
+}
+
+.tc-spec {
+  font-size: 22rpx;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-warm);
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+}
+
+.tc-order {
+  font-size: 20rpx;
+  color: var(--color-text-hint);
+  font-family: monospace;
+}
+
+.tc-sessions {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ===== 赠送记录 ===== */
+.gift-section-title {
+  display: block;
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  padding: var(--spacing-tight) var(--spacing-card) 8rpx;
+}
+
+.gift-card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  padding: 20rpx var(--spacing-card);
+  margin: 0 var(--spacing-card) 12rpx;
+  box-shadow: var(--shadow-card-soft);
+}
+
+.gift-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.gift-order-no {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  font-family: monospace;
+}
+
+.gift-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 4rpx 0;
+}
+
+.gift-item-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.gift-item-spec {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  background: var(--color-bg-warm);
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+}
+
+.gift-item-sessions {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+.gift-card-time {
+  display: block;
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  margin-top: 8rpx;
+}
+
+/* ===== 退换记录 ===== */
+.refund-card {
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  padding: 20rpx var(--spacing-card);
+  margin: 0 var(--spacing-card) 12rpx;
+  box-shadow: var(--shadow-card-soft);
+}
+
+.refund-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  margin-bottom: 12rpx;
+}
+
+.refund-order-no {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  font-family: monospace;
+  flex: 1;
+}
+
+.refund-reason {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  margin-bottom: 12rpx;
+}
+
+.refund-reason-label {
+  color: var(--color-text-hint);
+}
+
+.refund-items {
+  margin-bottom: 8rpx;
+}
+
+.refund-item-row {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 4rpx 0;
+}
+
+/* refund 流向标签：在 status-tag 基础上覆写为更紧凑尺寸 */
+.refund-item-direction.status-tag {
+  font-size: 20rpx;
+  padding: 2rpx 8rpx;
+  border-radius: 6rpx;
+}
+
+.refund-item-name {
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  flex: 1;
+}
+
+.refund-item-amount {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.refund-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8rpx;
+  border-top: 1rpx solid var(--color-divider-soft);
+}
+
+.refund-card-time {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+}
+
+.refund-total {
+  font-size: 26rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+}
+
+.refund-link {
+  text-align: right;
+  padding-top: 8rpx;
+}

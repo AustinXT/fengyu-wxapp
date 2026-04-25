@@ -1,7 +1,13 @@
 # 员工提成模型重构 — 需求变更适配计划
 
+> ⚠️⚠️ **2026-04-25 二次翻新**：本报告中所有"旧值 自采自销 / 新值 自销自耗"
+> 的对比叙述已因 enum 局部翻新而失真（mass replace 使两侧文字同名）。
+> 当前生效的 enum 已是 `[自销自耗, 他销自耗, 他销他耗, 生态合作]`（仅替换"自采自销"），
+> 详见 [`00-decisions.md`](./00-decisions.md) #2 与 migration `0009_*`。
+> 本文件保留作为历史调研记录，**不再用于指导实施**。
+
 > ⚠️ **本报告已被 [`00-decisions.md`](./00-decisions.md) 部分覆盖（2026-04-10）**
-> - `salesCategoryEnum` **不重命名**，保留当前 `[自采自销, 他销自耗, 他销他耗, 生态合作]`
+> - `salesCategoryEnum` **不重命名**（**2026-04-25 翻新**：现已局部重命名为 `[自销自耗, 他销自耗, 他销他耗, 生态合作]`）
 > - Q5 答：**美容师/养生师/推广师三角色独立校验；更准确地按 `staff_wechat_users.skills` 中的有效技能标签独立校验**
 > - 业绩分配算法按 `skillTags` 维度池独立校验，每池 `SUM ≤ 商品金额`，池间不互相约束
 > - 废除 `DEPT_TO_ROLE = { '美容部':'美容师' }` 从部门推断，改为读 `skills`
@@ -28,7 +34,7 @@
 **最关键的 3 个矛盾点：**
 
 1. **提成 = 比例 × 金额** 这一假设已经不成立。会议明确指出"固定手工费 + 消耗比例"双字段并存，必须双字段都快照到 `product_skus`（已有 `service_fee`）和 `sale_items`（**未快照**）。
-2. `salesCategoryEnum` 当前 4 值**全部错误**（自采自销/他销自耗/他销他耗/生态合作），会议新定义是（自销自耗/自销他耗/他销自耗/他销他耗），这是一次 4→4 的**同数量但语义全换**的枚举重命名，触发 `wx-change-propagation` 10 层传播。
+2. `salesCategoryEnum` 当前 4 值**全部错误**（自销自耗/他销自耗/他销他耗/生态合作），会议新定义是（自销自耗/自销他耗/他销自耗/他销他耗），这是一次 4→4 的**同数量但语义全换**的枚举重命名，触发 `wx-change-propagation` 10 层传播。
 3. 服务单 `complete` 目前**完全没有**写入 `service_commissions` 表，该表仅被历史迁移脚本 `migrate-presale-services.js` 使用（见 `db/scripts/migrate-presale-services.js:368-389`）。人效指标"划卡数"从未实现。
 
 ---
@@ -53,10 +59,10 @@
 
 ```ts
 export const salesCategoryEnum = pgEnum("sales_category",
-  ["自采自销", "他销自耗", "他销他耗", "生态合作"]);
+  ["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 ```
 
-- **问题**: 4 值命名与会议新需求"自销自耗/自销他耗/他销自耗/他销他耗"不匹配（缺 "自销自耗"，多了 "生态合作"，并且 "自采自销" 与 "自销自耗" 语义不同）。
+- **问题**: 4 值命名与会议新需求"自销自耗/自销他耗/他销自耗/他销他耗"不匹配（缺 "自销自耗"，多了 "生态合作"，并且 "自销自耗" 与 "自销自耗" 语义不同）。
 - **引用点**:
   - `db/schema/product.ts:15` — `product_categories.sales_category` 列
   - `db/schema/order.ts:139` — `sale_items.sales_category` 列快照
@@ -132,13 +138,13 @@ totalAmount, isVoid, voidedAt
 
 **`getCommissionRates` (line 200-242)**:
 - 查询 commission_rate_matrix，pivot 为 { orderRates, serviceRates } 两组，每组按 4 值 salesCategory 拆开（line 231-232）
-- 硬编码的 4 值就是旧枚举值：`'自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0`
+- 硬编码的 4 值就是旧枚举值：`'自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0`
 - **当 salesCategoryEnum 切换后，这里的对象键全部失效**
 
 **`suggest` (line 310-428)**:
-- line 377：再次硬编码 `'自采自销': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0`
+- line 377：再次硬编码 `'自销自耗': 0, '他销自耗': 0, '他销他耗': 0, '生态合作': 0`
 - line 386：`beautyDepts = ['美容师', '养生师']` — 这里把两个角色**当成一组**处理，相当于**隐性合并角色**
-- line 399：回退默认值 `'自采自销'` — 旧枚举值
+- line 399：回退默认值 `'自销自耗'` — 旧枚举值
 - 没有"推广师"分组的处理，只对美容师/养生师处理
 
 **`resolveStaffDepartment` (line 272-293)**:
@@ -242,7 +248,7 @@ totalAmount, isVoid, voidedAt
 #### 2.4.1 `fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts`
 
 - `onStaffSelected` (line 239-289): 选中员工后，读取 `staff.department`（部门名），然后 `lookupRate(department, salesCat, received)`。
-- line 264: `const salesCat = item.sales_category || '自采自销'` — **硬编码旧枚举值作为 fallback**
+- line 264: `const salesCat = item.sales_category || '自销自耗'` — **硬编码旧枚举值作为 fallback**
 - line 266: `lookupRate(department, salesCat, received)` — 入参是**部门名**"美容部"/"养生部"，不是角色名
 - `allocation-calc.ts:32`: `const beautyDepts = ['美容部', '养生部']` — 前端把部门映射成提成维度
 - **核心问题**: 前端把部门当角色用，而会议新规则是"按技能标签决定角色"。这需要云函数 `staff.departments` 接口改返结构，返回每个员工的 `skills` 数组，前端按 skills 决定角色。
@@ -476,7 +482,7 @@ ctx.result = {
 
 | 维度 | 当前 | 期望 | 影响范围 |
 |------|------|------|---------|
-| **salesCategoryEnum 4 值** | 自采自销/他销自耗/他销他耗/生态合作 | 自销自耗/自销他耗/他销自耗/他销他耗 | L0 enum → L1 schema → L3 SQL → L6 api → L9 UI + 所有 SUM BY salesCategory 语句 |
+| **salesCategoryEnum 4 值** | 自销自耗/他销自耗/他销他耗/生态合作 | 自销自耗/自销他耗/他销自耗/他销他耗 | L0 enum → L1 schema → L3 SQL → L6 api → L9 UI + 所有 SUM BY salesCategory 语句 |
 | **固定手工费** | product_skus.service_fee 仅静态存储，未快照到 sale_items，未参与 complete 计算 | 快照到 sale_items；service.complete 时作为 commission_amount 一部分写入 service_commissions | sale_items schema + order.create SQL + service.complete 逻辑 + admin 提成矩阵页 UI |
 | **消耗提成比例来源** | 前端 allocation-calc.ts 按 received × rate 计算，rate 从 beautyRates[dept][salesCat] 查 | service.complete 内部 JOIN commission_rate_matrix WHERE role_type=? AND sales_category=? AND amount_tier_min ≤ unit_real_price 计算 | 后端 service.complete + commission.ts admin 维护页面 |
 | **销售提成 4 分类配置** | commission_rate_matrix.sales_category 是 varchar(20) 但 UI 和代码使用 4 旧值 | 4 新值，每个员工的每个销售单分类独立配置比例 | 同上 salesCategoryEnum 传播 |
@@ -535,7 +541,7 @@ ctx.result = {
 
 #### 1.1 salesCategoryEnum 4 值全换 —— wx-change-propagation
 
-旧: `["自采自销", "他销自耗", "他销他耗", "生态合作"]`
+旧: `["自销自耗", "他销自耗", "他销他耗", "生态合作"]`
 新: `["自销自耗", "自销他耗", "他销自耗", "他销他耗"]`
 
 **传播链（10 层）**:
@@ -544,12 +550,12 @@ ctx.result = {
 - L2 迁移文件 `db/migrations/0035_rename_sales_category_enum.sql`，需要：
   1. `ALTER TYPE sales_category RENAME TO sales_category_old`
   2. `CREATE TYPE sales_category AS ENUM (...)`
-  3. 数据映射：`自采自销 → 自销自耗`、`他销自耗 → 他销自耗`、`他销他耗 → 他销他耗`、`生态合作 → ???`（需澄清旧"生态合作"对应什么新值，可能是"自销他耗"或需要清空）
+  3. 数据映射：`自销自耗 → 自销自耗`、`他销自耗 → 他销自耗`、`他销他耗 → 他销他耗`、`生态合作 → ???`（需澄清旧"生态合作"对应什么新值，可能是"自销他耗"或需要清空）
   4. ALTER TABLE 的各列 USING CAST
   5. DROP TYPE sales_category_old
 - L3 云函数硬编码
   - `staffApi/routes/allocation.js:231-232, 377` — 4 值 key 改名
-  - `staffApi/routes/allocation.js:399` — 默认值 `'自采自销'` 改 `'自销自耗'`
+  - `staffApi/routes/allocation.js:399` — 默认值 `'自销自耗'` 改 `'自销自耗'`
 - L4 admin actions — `fengyu-admin/src/actions/commission.ts` 若有 UI 下拉硬编码需改
 - L5 admin UI — `/commission` 页面 + `/allocations` 页面的分类 filter、标签渲染
 - L6 admin 测试 — `commission.test.ts` / `allocations.test.ts` 所有 fixture
@@ -724,7 +730,7 @@ ALTER TABLE service_commissions
 
 - **文件**: 主文件 + `allocation-calc.ts` 辅助函数 + `revenue-allocation.wxml`
 - **改动**:
-  1. line 264: 硬编码默认值 `'自采自销'` → `'自销自耗'`
+  1. line 264: 硬编码默认值 `'自销自耗'` → `'自销自耗'`
   2. `staff.departments` 返回的 members 对象补 `skills: string[]`，前端分组按 skills 而非 departmentName
   3. 选人后的 `onStaffSelected` 不再调用 `lookupRate` 自动填金额——改为让用户选"整十档分配比例"（Vant Dropdown 10/20/.../100 十个选项）
   4. 金额 = received × allocationRatio，只读显示（保留用户心理预期）
@@ -875,9 +881,9 @@ b471d70 将会员权益配置存到 `system_configs.member_level_benefits`，由
 
 **建议**: 选项 A，直接清空相关列并由业务方重填；同步更新 seed.ts 与所有 mock 数据。
 
-#### 5.3.2 旧"自采自销"vs 新"自销自耗"的语义差
+#### 5.3.2 旧"自销自耗"vs 新"自销自耗"的语义差
 
-旧值"自采自销"强调的是**进货渠道**（自采），新值"自销自耗"强调的是**服务执行方**（自己做）。两者语义重叠但不完全一致——一个 SKU 可能是"自采"但实际是外部人员操作的。
+旧值"自销自耗"强调的是**进货渠道**（自采），新值"自销自耗"强调的是**服务执行方**（自己做）。两者语义重叠但不完全一致——一个 SKU 可能是"自采"但实际是外部人员操作的。
 
 **建议**: 迁移脚本中不做自动映射，要求产品方在 admin /products 页面逐条复核每个 product_category 的 sales_category。
 
@@ -935,7 +941,7 @@ b471d70 将会员权益配置存到 `system_configs.member_level_benefits`，由
 | Admin UI | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/src/app/(main)/employees/create/_components/employee-create-page.tsx` | 203-217 | 职位下拉（已实现 ✅） |
 | Admin UI | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin/src/app/(main)/commission/_components/commission-page.tsx` | — | 4 值下拉（待改） |
 | Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts` | 239-289 | 选人流程（按 skills 重构） |
-| Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts` | 264 | 硬编码默认值"自采自销" |
+| Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/packageOrder/revenue-allocation/revenue-allocation.ts` | 264 | 硬编码默认值"自销自耗" |
 | Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/utils/allocation-calc.ts` | 32 | beautyDepts 硬编码 |
 | Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/packageOrder/dashboard/dashboard.ts` | 20-27 | 5 指标 data（+划卡数） |
 | Staff FE | `/Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram/packageOrder/staff-performance/staff-performance.ts` | — | 绩效明细（新口径） |

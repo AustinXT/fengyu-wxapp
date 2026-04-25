@@ -103,8 +103,8 @@ async function create(ctx) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 对应订单未支付`)
     }
 
-    if (si.product_type === '院装产品') {
-      throw new Error(`INVALID_PARAMS: 院装产品不走到店服务流程`)
+    if (si.product_type === '家居产品') {
+      throw new Error(`INVALID_PARAMS: 家居产品不走到店服务流程`)
     }
 
     if (si.store_id !== ctx.auth.effectiveStoreId) {
@@ -192,21 +192,23 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 sku_id、unit_real_price
+      // 获取 sale_item 的 sku_id、unit_real_price、is_shengmei、sales_category（全部快照拷贝到 service_items）
       const siRows = await client.query(
-        `SELECT si.sku_id, si.unit_real_price
+        `SELECT si.sku_id, si.unit_real_price, si.is_shengmei, si.sales_category
          FROM sale_items si
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
+      const isShengmei = siRows.rows[0]?.is_shengmei ?? null
+      const salesCategory = siRows.rows[0]?.sales_category ?? null
 
       await client.query(
         `INSERT INTO service_items
            (service_item_id, sale_item_id, unit_real_price, service_order_id,
-            sku_id, session_used, employee_id, service_duration)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            sku_id, session_used, employee_id, service_duration, is_shengmei, sales_category)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
           serviceItemId,
           item.saleItemId,
@@ -215,7 +217,9 @@ async function create(ctx) {
           skuId,
           item.sessionUsed,
           item.employeeId || resolvedStaffWfId,
-          item.serviceDuration || null
+          item.serviceDuration || null,
+          isShengmei,
+          salesCategory
         ]
       )
     }
@@ -429,8 +433,9 @@ async function complete(ctx) {
       await client.query(
         `INSERT INTO service_commissions (
            service_item_id, employee_id, role_type, allocation_ratio,
-           commission_rate, commission_amount, fixed_fee, consume_amount
-         ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7)
+           commission_rate, commission_amount, fixed_fee, consume_amount,
+           is_void
+         ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7, FALSE)
          ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role DO NOTHING`,
         [
           row.service_item_id,
