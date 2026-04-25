@@ -79,6 +79,7 @@ function buildRefundDetails(origItems, requestItems) {
       refundAmount,
       salesCategory: orig.sales_category,
       serviceFee: refundServiceFee,
+      isShengmei: orig.is_shengmei ?? null,
     })
   }
 

@@ -194,19 +194,20 @@ async function create(ctx) {
 
       // 获取 sale_item 的 sku_id、unit_real_price
       const siRows = await client.query(
-        `SELECT si.sku_id, si.unit_real_price
+        `SELECT si.sku_id, si.unit_real_price, si.is_shengmei
          FROM sale_items si
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )
       const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
+      const isShengmei = siRows.rows[0]?.is_shengmei ?? null
 
       await client.query(
         `INSERT INTO service_items
            (service_item_id, sale_item_id, unit_real_price, service_order_id,
-            sku_id, session_used, employee_id, service_duration)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            sku_id, session_used, employee_id, service_duration, is_shengmei)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           serviceItemId,
           item.saleItemId,
@@ -215,7 +216,8 @@ async function create(ctx) {
           skuId,
           item.sessionUsed,
           item.employeeId || resolvedStaffWfId,
-          item.serviceDuration || null
+          item.serviceDuration || null,
+          isShengmei
         ]
       )
     }

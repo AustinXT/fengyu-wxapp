@@ -283,9 +283,9 @@ async function recharge(ctx) {
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, paid_amount, payment_method,
+        total_amount, paid_amount, payable_amount, payment_method,
         created_at, updated_at
-      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $9, '微信', $5, $5)`,
+      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $9, $9, '微信', $5, $5)`,
       [saleOrderId, documentType, marketName, boundStoreId, now, userId, phone || null, customerName, payAmount]
     )
 

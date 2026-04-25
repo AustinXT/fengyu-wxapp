@@ -223,10 +223,10 @@ async function recharge(ctx) {
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
-        sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
+        sale_order_datetime, total_amount, payable_amount, client_user_id, client_phone, customer_name,
         payment_method, opened_by, remark,
         created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $6, $6)`,
+      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $6, $6)`,
       [
         saleOrderId, initialStatus, documentType, marketName, storeId, now,
         payAmount, clientUserId, clientPhone, customerName,

@@ -254,7 +254,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                s.service_fee,
+                s.service_fee, s.is_shengmei,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -315,6 +315,7 @@ async function create(ctx) {
         received,
         salesCategory,
         serviceFee,
+        isShengmei: sku.is_shengmei ?? null,
       }
     })
   )
@@ -608,8 +609,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -618,6 +619,7 @@ async function create(ctx) {
           d.saleAmount, d.received,
           d.salesCategory || null,
           d.serviceFee || 0,
+          d.isShengmei ?? null,
         ]
       )
     }
@@ -1422,8 +1424,8 @@ async function createRefund(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity,
-          unit_real_price, sale_amount, received, sales_category, service_fee
-        ) VALUES ($1, $2, $3, '退出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          unit_real_price, sale_amount, received, sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '退出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, refundOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -1431,6 +1433,7 @@ async function createRefund(ctx) {
           d.unitRealPrice, -(d.refundAmount), -(d.refundAmount),
           d.salesCategory,
           d.serviceFee || 0,
+          d.isShengmei ?? null,
         ]
       )
     }
@@ -2031,6 +2034,7 @@ async function createConversion(ctx) {
               si.unit_real_price,
               si.sales_category,
               si.service_fee,
+              si.is_shengmei,
               so.client_user_id,
               so.status AS order_status,
               pc.product_kind
@@ -2100,6 +2104,7 @@ async function createConversion(ctx) {
         amount,
         salesCategory: row.sales_category,
         serviceFee: outServiceFee,
+        isShengmei: row.is_shengmei ?? null,
       })
     }
 
@@ -2110,7 +2115,7 @@ async function createConversion(ctx) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
-                pc.sales_category
+                s.is_shengmei, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1`,
@@ -2133,6 +2138,7 @@ async function createConversion(ctx) {
         amount,
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
+        isShengmei: sku.is_shengmei ?? null,
       })
     }
 
@@ -2156,10 +2162,10 @@ async function createConversion(ctx) {
         sale_order_id, status, sale_order_type, document_type,
         market_name, store_id, sale_order_datetime,
         client_user_id, client_phone, customer_name,
-        total_amount, payment_method, opened_by,
+        total_amount, payable_amount, payment_method, opened_by,
         preferred_employee_id, allocation_status, remark,
         paid_at, created_at, updated_at
-      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
+      ) VALUES ($1, $2, '转换单', $3, $4, $5, $6, $7, $8, $9, $10, $10, $11, $12, $13, '待分配', $14, $15, $6, $6)`,
       [
         convOrderId, orderStatus, documentType, marketName, storeId, now,
         clientUserId, client.phone || null, client.name || null,
@@ -2191,14 +2197,15 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.unitPrice, d.quantity, d.unitRealPrice,
           -d.amount, -d.amount,
           d.salesCategory, d.serviceFee,
+          d.isShengmei ?? null,
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
@@ -2239,14 +2246,15 @@ async function createConversion(ctx) {
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13)`,
+          sales_category, service_fee, is_shengmei
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13, $14)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
           d.sessionCount,
           d.unitPrice, d.quantity, d.amount,
           d.salesCategory, d.serviceFee,
+          d.isShengmei ?? null,
         ]
       )
     }
