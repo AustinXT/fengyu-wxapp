@@ -173,6 +173,22 @@ function buildClientScope(scopeType, scopeId, alias, startIdx) {
   }
 }
 
+/** staff_wechat_users.store_id scope */
+function buildStaffScope(scopeType, scopeId, alias, startIdx) {
+  if (scopeType === 'all') return { sql: 'TRUE', params: [] }
+  if (scopeType === 'store') {
+    return { sql: `${alias}.store_id = $${startIdx}`, params: [scopeId] }
+  }
+  return {
+    sql:
+      `${alias}.store_id IN (` +
+      `SELECT s.store_id FROM stores s ` +
+      `JOIN org_nodes o ON s.org_node_id = o.id ` +
+      `WHERE o.parent_id = $${startIdx} AND o.type = '门店')`,
+    params: [scopeId],
+  }
+}
+
 /**
  * 时间窗口 SQL 片段
  * @param {string} col 列引用
@@ -288,6 +304,43 @@ async function queryNewMembers(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
+async function queryMemberCount(scopeType, scopeId) {
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+  const rows = await pg.query(
+    `SELECT COUNT(*) AS v
+       FROM client_wechat_users c
+      WHERE ${sc.sql}
+        AND c.customer_type = '会员客'`,
+    sc.params,
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+async function queryRetainedMemberCount(scopeType, scopeId) {
+  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+  const rows = await pg.query(
+    `SELECT COUNT(*) AS v
+       FROM client_wechat_users c
+      WHERE ${sc.sql}
+        AND c.customer_status IN ('保有会员-稳定', '保有会员-有效')`,
+    sc.params,
+  )
+  return Number(rows[0]?.v || 0)
+}
+
+async function queryEmployeeCount(scopeType, scopeId) {
+  const sc = buildStaffScope(scopeType, scopeId, 's', 1)
+  const rows = await pg.query(
+    `SELECT COUNT(*) AS v
+       FROM staff_wechat_users s
+      WHERE ${sc.sql}
+        AND s.is_resigned = FALSE
+        AND s.skills && ARRAY['美容师','养生师']::text[]`,
+    sc.params,
+  )
+  return Number(rows[0]?.v || 0)
+}
+
 async function queryStoreCount(scopeType, scopeId) {
   if (scopeType === 'store') return 1
   if (scopeType === 'all') {
@@ -350,6 +403,7 @@ async function summary(ctx) {
     footfallToday, footfallMonth,
     headcountToday, headcountMonth,
     newMemToday, newMemMonth,
+    memberCount, retainedMemberCount, employeeCount,
     storeCount,
     scopeName,
   ] = await Promise.all([
@@ -367,6 +421,9 @@ async function summary(ctx) {
     queryHeadcount(scopeType, scopeId, date, 'month'),
     queryNewMembers(scopeType, scopeId, date, 'day'),
     queryNewMembers(scopeType, scopeId, date, 'month'),
+    queryMemberCount(scopeType, scopeId),
+    queryRetainedMemberCount(scopeType, scopeId),
+    queryEmployeeCount(scopeType, scopeId),
     queryStoreCount(scopeType, scopeId),
     resolveScopeName(scopeType, scopeId),
   ])
@@ -404,6 +461,9 @@ async function summary(ctx) {
     // TODO: 待业务定义"项目数"口径后实现
     projectCount: { today: 0, month: 0 },
     storeCount,
+    memberCount,
+    retainedMemberCount,
+    employeeCount,
     computedAt: new Date().toISOString(),
   }
 
