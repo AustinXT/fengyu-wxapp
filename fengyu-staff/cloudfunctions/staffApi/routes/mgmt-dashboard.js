@@ -472,4 +472,9 @@ async function summary(ctx) {
   }
 }
 
-module.exports = { scopeOptions, summary }
+// 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
+function __resetMarketsCache() {
+  CACHE = { ts: 0, data: null }
+}
+
+module.exports = { scopeOptions, summary, __resetMarketsCache }

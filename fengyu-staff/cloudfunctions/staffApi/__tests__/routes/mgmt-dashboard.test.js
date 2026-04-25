@@ -13,7 +13,7 @@
 
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
-const { summary } = require('../../routes/mgmt-dashboard')
+const { summary, scopeOptions, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
 
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
@@ -491,5 +491,102 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
       expect(s).not.toMatch(/store_id\s*=\s*\$/)
     }
+  })
+})
+
+// =============================================================================
+// scopeOptions —— 市场/门店二级筛选器数据源
+// =============================================================================
+
+describe('mgmtDashboard.scopeOptions', () => {
+  // 3 市场 × 2 门店的 flat rows（loadAllMarkets 查询的返回形态）
+  const THREE_MARKETS_ROWS = [
+    { market_id: 'mkt-A', market_name: '华东市场', store_id: 'store-A1', store_name: '上海A店' },
+    { market_id: 'mkt-A', market_name: '华东市场', store_id: 'store-A2', store_name: '上海B店' },
+    { market_id: 'mkt-B', market_name: '华南市场', store_id: 'store-B1', store_name: '广州A店' },
+    { market_id: 'mkt-B', market_name: '华南市场', store_id: 'store-B2', store_name: '深圳A店' },
+    { market_id: 'mkt-C', market_name: '华北市场', store_id: 'store-C1', store_name: '北京A店' },
+    { market_id: 'mkt-C', market_name: '华北市场', store_id: 'store-C2', store_name: '天津A店' },
+  ]
+
+  beforeEach(() => {
+    // 清空模块级 markets 缓存，避免跨用例污染
+    __resetMarketsCache()
+  })
+
+  test('HQ 账号返回全部市场及其门店', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
+
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'headquarters',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
+      },
+    })
+
+    await scopeOptions(ctx)
+
+    expect(ctx.result.staffLevel).toBe('headquarters')
+    expect(ctx.result.markets).toHaveLength(3)
+    expect(ctx.result.markets.map((m) => m.id).sort()).toEqual(['mkt-A', 'mkt-B', 'mkt-C'])
+    for (const m of ctx.result.markets) {
+      expect(m.stores).toHaveLength(2)
+      expect(m.stores[0]).toHaveProperty('storeId')
+      expect(m.stores[0]).toHaveProperty('storeName')
+    }
+  })
+
+  test('market 账号仅返回自己市场（按 roleBindings.scopeType=市场 过滤）', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
+
+    const ctx = createCtx({
+      auth: {
+        staffLevel: 'market',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'manager', scopeId: 'mkt-A', scopeType: '市场' }],
+      },
+    })
+
+    await scopeOptions(ctx)
+
+    expect(ctx.result.staffLevel).toBe('market')
+    expect(ctx.result.markets).toHaveLength(1)
+    expect(ctx.result.markets[0].id).toBe('mkt-A')
+    expect(ctx.result.markets[0].name).toBe('华东市场')
+    expect(ctx.result.markets[0].stores).toHaveLength(2)
+  })
+
+  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+    const ctx = createManagerCtx({})
+    await expect(scopeOptions(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    // 未走到 pg 查询（中间件在 handler 入口就抛）
+    expect(pg.query).not.toHaveBeenCalled()
+  })
+
+  test('连续两次调用命中缓存，pg.query 仅被调用一次', async () => {
+    pg.query.mockReset().mockResolvedValueOnce(THREE_MARKETS_ROWS)
+
+    const ctx1 = createCtx({
+      auth: {
+        staffLevel: 'headquarters',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
+      },
+    })
+    const ctx2 = createCtx({
+      auth: {
+        staffLevel: 'headquarters',
+        loginLevel: 'management',
+        roleBindings: [{ role: 'admin', scopeId: 'org-hq', scopeType: '总部' }],
+      },
+    })
+
+    await scopeOptions(ctx1)
+    await scopeOptions(ctx2)
+
+    expect(pg.query).toHaveBeenCalledTimes(1)
+    expect(ctx1.result.markets).toHaveLength(3)
+    expect(ctx2.result.markets).toHaveLength(3)
   })
 })
