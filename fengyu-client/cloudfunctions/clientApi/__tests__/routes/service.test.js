@@ -16,7 +16,7 @@ describe('service.detail', () => {
   test('返回服务单详情及明细', async () => {
     pg.query.mockResolvedValueOnce([{
       service_order_id: 'SVC-001', status: '进行中',
-      service_order_type: '护理', store_id: 's1', store_name: '凤御A店',
+      service_order_type: '售前', store_id: 's1', store_name: '凤御A店',
     }])
     pg.query.mockResolvedValueOnce([{
       service_item_id: 'SVI-001', sale_item_id: 'SI-001',
