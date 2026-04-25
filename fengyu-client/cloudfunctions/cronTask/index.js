@@ -32,42 +32,57 @@ function getPool() {
 }
 
 // ============ STEP 1: customer_status 重算 ============
+//
+// 业务口径：customer_status 仅对 customer_type='会员客' 的顾客有值，
+// 非会员客（流量客 / 体验客 / 小美客）一律 NULL，避免他们被误标为「保有会员-X」等。
+//
+// 三段式 SQL：
+//   段 1：非会员客一律置 NULL（清理脏数据 + 防止 customer_type 反向变更后残留）
+//   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
+//   段 3：会员客但完全无到店记录的，置 '休眠'
+
+const RESET_NON_MEMBER_STATUS_SQL = `
+UPDATE client_wechat_users
+   SET customer_status = NULL, updated_at = NOW()
+ WHERE customer_status IS NOT NULL
+   AND customer_type != '会员客'
+`
 
 const UPDATE_CUSTOMER_STATUS_SQL = `
 WITH visit_stats AS (
-  SELECT
-    so.client_user_id,
-    MAX(so.service_date) AS last_service_date,
-    COUNT(DISTINCT so.service_date) AS total_visits,
-    COUNT(DISTINCT so.service_date) FILTER (
-      WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days'
-    ) AS visits_90d
+  SELECT so.client_user_id,
+         MAX(so.service_date) AS last_service_date,
+         COUNT(DISTINCT so.service_date) AS total_visits,
+         COUNT(DISTINCT so.service_date) FILTER (
+           WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days'
+         ) AS visits_90d
   FROM service_orders so
   WHERE so.status = '已完成' AND so.client_user_id IS NOT NULL
   GROUP BY so.client_user_id
 )
 UPDATE client_wechat_users u
-SET
-  customer_status = CASE
-    WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
-    WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
-    WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
-    WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
-    ELSE '休眠'::customer_status
-  END,
-  updated_at = NOW()
-FROM visit_stats vs
-WHERE u.user_id = vs.client_user_id
+   SET customer_status = CASE
+         WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
+         WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
+         ELSE '休眠'::customer_status
+       END,
+       updated_at = NOW()
+  FROM visit_stats vs
+ WHERE u.user_id = vs.client_user_id
+   AND u.customer_type = '会员客'
 `
 
 const RESET_NO_VISITS_SQL = `
 UPDATE client_wechat_users u
-SET customer_status = '休眠'::customer_status, updated_at = NOW()
-WHERE customer_status != '休眠'
-  AND NOT EXISTS (
-    SELECT 1 FROM service_orders so
-    WHERE so.client_user_id = u.user_id AND so.status = '已完成'
-  )
+   SET customer_status = '休眠'::customer_status, updated_at = NOW()
+ WHERE u.customer_type = '会员客'
+   AND u.customer_status IS NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM service_orders so
+      WHERE so.client_user_id = u.user_id AND so.status = '已完成'
+   )
 `
 
 // ============ STEP 2: member_level 重算 + 权益发放 ============
@@ -760,14 +775,17 @@ exports.main = async (event) => {
 
   const client = await getPool().connect()
   try {
-    // STEP 1: customer_status
+    // STEP 1: customer_status（仅对会员客打标签，非会员客一律 NULL）
     await client.query('BEGIN')
 
+    const { rowCount: clearedNonMemberCount } = await client.query(RESET_NON_MEMBER_STATUS_SQL)
+    console.log(`[cronTask] STEP 1: 非会员客 customer_status 已置 NULL: ${clearedNonMemberCount}`)
+
     const { rowCount: updatedCount } = await client.query(UPDATE_CUSTOMER_STATUS_SQL)
-    console.log(`[cronTask] STEP 1: 有服务记录的顾客已更新: ${updatedCount}`)
+    console.log(`[cronTask] STEP 1: 会员客有服务记录的已更新: ${updatedCount}`)
 
     const { rowCount: resetCount } = await client.query(RESET_NO_VISITS_SQL)
-    console.log(`[cronTask] STEP 1: 无服务记录的顾客已重置: ${resetCount}`)
+    console.log(`[cronTask] STEP 1: 会员客无服务记录的已置休眠: ${resetCount}`)
 
     const { rows: stats } = await client.query(`
       SELECT customer_status, COUNT(*) AS cnt
@@ -817,6 +835,7 @@ exports.main = async (event) => {
       code: 0,
       message: 'success',
       data: {
+        clearedNonMemberCount,
         updatedCount,
         resetCount,
         stats,
@@ -843,4 +862,8 @@ exports.__test__ = {
   loadThanksgivingBenefitsConfig,
   grantThanksgivingBenefits,
   refreshThanksgivingBenefits,
+  // STEP 1 customer_status SQL（用于断言三段式 SQL 形态 + 仅对会员客生效）
+  RESET_NON_MEMBER_STATUS_SQL,
+  UPDATE_CUSTOMER_STATUS_SQL,
+  RESET_NO_VISITS_SQL,
 }
