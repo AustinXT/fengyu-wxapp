@@ -415,7 +415,7 @@ async function search(ctx) {
   const allClientUserIds = customers.map((c) => c.clientUserId).filter(Boolean)
 
   if (allClientUserIds.length > 0) {
-    const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10)
+    const yearStart = `${new Date().getFullYear()}-01-01`
 
     // 年消费（scope 过滤）
     const sc1 = buildSaleScope(scopeType, scopeId, 'o', 3)
