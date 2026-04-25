@@ -8,6 +8,45 @@ const app = getApp<IAppOption>()
 
 type MgmtTab = 'dashboard' | 'ranking' | 'customers' | 'profile'
 
+type RankingPeriod = 'month' | 'lastMonth' | 'year'
+type RankingMetric =
+  | 'revenue' | 'consume' | 'retainedMember'
+  | 'newMember' | 'projectCount' | 'footfall'
+
+interface RankingRow {
+  rank: number
+  storeId: string
+  storeName: string
+  marketName: string
+  value: number
+}
+
+interface RankingDisplayRow extends RankingRow {
+  valueText: string
+}
+
+interface RankingResp {
+  period: RankingPeriod
+  metric: RankingMetric
+  unit: 'amount' | 'count'
+  rows: RankingRow[]
+}
+
+const RANKING_PERIODS: { key: RankingPeriod; label: string }[] = [
+  { key: 'month',     label: '本月' },
+  { key: 'lastMonth', label: '上月' },
+  { key: 'year',      label: '本年' },
+]
+
+const RANKING_METRICS: { key: RankingMetric; label: string; unitLabel: string }[] = [
+  { key: 'revenue',        label: '业绩排名',     unitLabel: '业绩' },
+  { key: 'consume',        label: '实耗排名',     unitLabel: '实耗' },
+  { key: 'retainedMember', label: '保有会员排名', unitLabel: '保有会员' },
+  { key: 'newMember',      label: '新会员排名',   unitLabel: '新会员' },
+  { key: 'projectCount',   label: '项目数排名',   unitLabel: '项目数' },
+  { key: 'footfall',       label: '客流排名',     unitLabel: '客流' },
+]
+
 interface ScopeValue {
   scopeType: 'all' | 'market' | 'store'
   scopeId: string | null
@@ -99,6 +138,18 @@ Page({
     summary: null as SummaryData | null,
     loading: false,
     display: null as DisplayData | null,
+
+    // 排行榜
+    ranking: {
+      period: 'month' as RankingPeriod,
+      metric: 'revenue' as RankingMetric,
+      loading: false,
+      rows: [] as RankingDisplayRow[],
+      unit: 'amount' as 'amount' | 'count',
+    },
+    rankingPeriods: RANKING_PERIODS,
+    rankingMetrics: RANKING_METRICS,
+    rankingMetricLabelMap: {} as Record<RankingMetric, string>,
   },
 
   onLoad(options: { tab?: string }) {
@@ -106,6 +157,11 @@ Page({
     if (tab && ['dashboard', 'ranking', 'customers', 'profile'].includes(tab)) {
       this.setData({ activeTab: tab })
     }
+    const labelMap = RANKING_METRICS.reduce((acc, m) => {
+      acc[m.key] = m.unitLabel
+      return acc
+    }, {} as Record<RankingMetric, string>)
+    this.setData({ rankingMetricLabelMap: labelMap })
   },
 
   onShow() {
@@ -295,6 +351,44 @@ Page({
     const key = e.detail?.key
     if (!key || key === this.data.activeTab) return
     this.setData({ activeTab: key })
+    if (key === 'ranking' && this.data.ranking.rows.length === 0) {
+      this.loadRanking()
+    }
+  },
+
+  async loadRanking() {
+    const { period, metric } = this.data.ranking
+    this.setData({ 'ranking.loading': true })
+    try {
+      const resp = await callStaffApi<RankingResp>('mgmtDashboard.storeRanking', { period, metric })
+      const formatter = resp.unit === 'amount' ? formatAmount : formatCount
+      const rows: RankingDisplayRow[] = resp.rows.map((r) => ({
+        ...r,
+        valueText: formatter(r.value),
+      }))
+      this.setData({
+        'ranking.rows': rows,
+        'ranking.unit': resp.unit,
+        'ranking.loading': false,
+      })
+    } catch {
+      this.setData({ 'ranking.loading': false })
+      wx.showToast({ icon: 'none', title: '排行榜加载失败' })
+    }
+  },
+
+  onRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
+    const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
+    if (!period || period === this.data.ranking.period) return
+    this.setData({ 'ranking.period': period })
+    this.loadRanking()
+  },
+
+  onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
+    const metric = (e.currentTarget.dataset as { metric?: RankingMetric }).metric
+    if (!metric || metric === this.data.ranking.metric) return
+    this.setData({ 'ranking.metric': metric })
+    this.loadRanking()
   },
 
   onSwitchToStore() {

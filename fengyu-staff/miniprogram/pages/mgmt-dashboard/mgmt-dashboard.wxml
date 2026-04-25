@@ -206,12 +206,58 @@
 
   <!-- 排行榜 -->
   <block wx:elif="{{activeTab === 'ranking'}}">
-    <placeholder-page
-      page-title="排行榜"
-      subtitle="功能建设中，敬请期待"
-      icon="medal-o"
-      show-switch-to-store="{{canSwitchStore}}"
-    />
+    <view class="mgmt-ranking">
+      <!-- 时间维度 chip -->
+      <view class="ranking-periods">
+        <view
+          wx:for="{{rankingPeriods}}"
+          wx:key="key"
+          class="ranking-period {{ranking.period === item.key ? 'active' : ''}}"
+          data-period="{{item.key}}"
+          bindtap="onRankingPeriodTap"
+        >{{item.label}}</view>
+      </view>
+
+      <!-- 6 指标按钮 -->
+      <view class="ranking-metrics">
+        <view
+          wx:for="{{rankingMetrics}}"
+          wx:key="key"
+          class="ranking-metric {{ranking.metric === item.key ? 'active' : ''}}"
+          data-metric="{{item.key}}"
+          bindtap="onRankingMetricTap"
+        >{{item.label}}</view>
+      </view>
+
+      <!-- 排行榜表格 -->
+      <view class="ranking-table">
+        <view class="ranking-table-title">排行榜</view>
+        <view class="ranking-table-header">
+          <view class="col col-rank">排名</view>
+          <view class="col col-name">店名</view>
+          <view class="col col-market">所属市场</view>
+          <view class="col col-value">数据</view>
+        </view>
+
+        <view wx:if="{{ranking.loading}}" class="ranking-loading">加载中…</view>
+
+        <block wx:elif="{{ranking.rows.length === 0}}">
+          <view class="ranking-empty">暂无排行数据</view>
+        </block>
+
+        <block wx:else>
+          <view class="ranking-row" wx:for="{{ranking.rows}}" wx:key="storeId">
+            <view class="col col-rank">{{item.rank}}</view>
+            <view class="col col-name">{{item.storeName}}</view>
+            <view class="col col-market">{{item.marketName}}</view>
+            <view class="col col-value">
+              <text class="val-num">{{item.valueText}}</text>
+              <text class="val-unit">{{rankingMetricLabelMap[ranking.metric]}}</text>
+            </view>
+          </view>
+        </block>
+      </view>
+    </view>
   </block>
 
   <!-- 顾客 -->

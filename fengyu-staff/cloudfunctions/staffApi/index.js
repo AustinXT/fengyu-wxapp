@@ -103,6 +103,7 @@ const routes = {
   // 管理层数据中心
   'mgmtDashboard.scopeOptions': () => require('./routes/mgmt-dashboard').scopeOptions,
   'mgmtDashboard.summary':     () => require('./routes/mgmt-dashboard').summary,
+  'mgmtDashboard.storeRanking': () => require('./routes/mgmt-dashboard').storeRanking,
 }
 
 /**

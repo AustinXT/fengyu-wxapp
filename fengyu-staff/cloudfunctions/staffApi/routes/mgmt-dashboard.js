@@ -354,14 +354,27 @@ async function queryNewMembers(scopeType, scopeId, date, mode) {
   return Number(rows[0]?.v || 0)
 }
 
-async function queryMemberCount(scopeType, scopeId) {
-  const sc = buildClientScope(scopeType, scopeId, 'c', 1)
+/**
+ * 会员数（截面快照，2026-04-25 T2 起按 selectedDate 历史化）
+ *
+ * 口径：「$date 那天为止累计成为会员客」 = COUNT(c.became_member_at::date <= $date)
+ *
+ * 不再用 c.customer_type = '会员客'（那是当前快照，无法反映历史日期）。
+ * 改为用 c.became_member_at 时间戳，任意 $date 都可还原"那一天的会员数"。
+ *
+ * 跃迁路径在 `staffApi/routes/order.js`（recalcCustomerType）和
+ * `payNotify/index.js`（重算路径）中已与 customer_type 跃迁同步写入 became_member_at = NOW()。
+ * 历史数据由 `db/scripts/backfill-became-member-at.js` 一次性回填。
+ */
+async function queryMemberCount(scopeType, scopeId, date) {
+  const sc = buildClientScope(scopeType, scopeId, 'c', 2)
   const rows = await pg.query(
     `SELECT COUNT(*) AS v
        FROM client_wechat_users c
       WHERE ${sc.sql}
-        AND c.customer_type = '会员客'`,
-    sc.params,
+        AND c.became_member_at IS NOT NULL
+        AND c.became_member_at::date <= $1::date`,
+    [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
 }
@@ -392,30 +405,67 @@ async function queryRetainedMemberCount(scopeType, scopeId, date) {
   return Number(rows[0]?.v || 0)
 }
 
-async function queryEmployeeCount(scopeType, scopeId) {
-  const sc = buildStaffScope(scopeType, scopeId, 's', 1)
+/**
+ * 员工数（截面快照，2026-04-25 T3 起按 selectedDate 历史化）
+ *
+ * 口径：「$date 那天为止已入职且未离职」 =
+ *   COUNT(s.hired_at::date <= $date AND (s.resigned_at IS NULL OR s.resigned_at::date > $date))
+ *
+ * 不再用 s.is_resigned = FALSE（那是当前快照，无法反映历史日期）。
+ * 改为用 s.hired_at + s.resigned_at 时间戳，任意 $date 都可还原"那一天的在职员工数"。
+ *
+ * 字段维护：admin 员工管理表单写入；当前 hired_at 由 created_at::date 兜底（WorkFine 无入职日期源），
+ * resigned_at 由 updated_at::date 兜底。后续由管理后台维护。
+ */
+async function queryEmployeeCount(scopeType, scopeId, date) {
+  const sc = buildStaffScope(scopeType, scopeId, 's', 2)
   const rows = await pg.query(
     `SELECT COUNT(*) AS v
        FROM staff_wechat_users s
       WHERE ${sc.sql}
-        AND s.is_resigned = FALSE
-        AND s.skills && ARRAY['美容师','养生师']::text[]`,
-    sc.params,
+        AND s.skills && ARRAY['美容师','养生师']::text[]
+        AND s.hired_at IS NOT NULL
+        AND s.hired_at::date <= $1::date
+        AND (s.resigned_at IS NULL OR s.resigned_at::date > $1::date)`,
+    [date, ...sc.params],
   )
   return Number(rows[0]?.v || 0)
 }
 
-async function queryStoreCount(scopeType, scopeId) {
+/**
+ * 门店数（截面快照，2026-04-25 T4 起按 selectedDate 历史化）
+ *
+ * 口径：「$date 那天在营」 =
+ *   COUNT(s.opening_date::date <= $date AND (s.closed_at IS NULL OR s.closed_at::date > $date))
+ *
+ * 单店模式（scope=store）短路返回 1，不依赖快照。
+ * all/market 模式 JOIN stores 表，加 opening_date/closed_at 守卫。
+ */
+async function queryStoreCount(scopeType, scopeId, date) {
   if (scopeType === 'store') return 1
   if (scopeType === 'all') {
     const rows = await pg.query(
-      "SELECT COUNT(*)::int AS cnt FROM org_nodes WHERE type = '门店'",
+      `SELECT COUNT(*)::int AS cnt
+         FROM stores s
+         JOIN org_nodes o ON s.org_node_id = o.id
+        WHERE o.type = '门店'
+          AND s.opening_date IS NOT NULL
+          AND s.opening_date::date <= $1::date
+          AND (s.closed_at IS NULL OR s.closed_at::date > $1::date)`,
+      [date],
     )
     return Number(rows[0]?.cnt || 0)
   }
   const rows = await pg.query(
-    "SELECT COUNT(*)::int AS cnt FROM org_nodes WHERE type = '门店' AND parent_id = $1",
-    [scopeId],
+    `SELECT COUNT(*)::int AS cnt
+       FROM stores s
+       JOIN org_nodes o ON s.org_node_id = o.id
+      WHERE o.type = '门店'
+        AND o.parent_id = $1
+        AND s.opening_date IS NOT NULL
+        AND s.opening_date::date <= $2::date
+        AND (s.closed_at IS NULL OR s.closed_at::date > $2::date)`,
+    [scopeId, date],
   )
   return Number(rows[0]?.cnt || 0)
 }
@@ -494,10 +544,10 @@ async function summary(ctx) {
     querySalesCommissionIncome(scopeType, scopeId, date, 'month'),
     queryServiceCommissionIncome(scopeType, scopeId, date, 'day'),
     queryServiceCommissionIncome(scopeType, scopeId, date, 'month'),
-    queryMemberCount(scopeType, scopeId),
+    queryMemberCount(scopeType, scopeId, date),
     queryRetainedMemberCount(scopeType, scopeId, date),
-    queryEmployeeCount(scopeType, scopeId),
-    queryStoreCount(scopeType, scopeId),
+    queryEmployeeCount(scopeType, scopeId, date),
+    queryStoreCount(scopeType, scopeId, date),
     resolveScopeName(scopeType, scopeId),
   ])
   const elapsed = Date.now() - t0
@@ -552,9 +602,287 @@ async function summary(ctx) {
   }
 }
 
+// =====================================================================
+// storeRanking —— 门店排行榜（mgmt-dashboard ranking tab）
+// =====================================================================
+
+/**
+ * 落 period 区间（用于业绩/实耗/客流/新会员/项目数）
+ * 锚点固定为 NOW()::date，无 date 参数（设计稿无日历组件，3 个 period 固定相对值）
+ * @param {string} col 列引用（含别名）
+ * @param {'month'|'lastMonth'|'year'} period
+ * @param {boolean} _isDateColumn 保留形参便于未来扩展（NOW()::date 与 timestamp 比较时 PG 会自动处理）
+ */
+function timeWindowPeriod(col, period, _isDateColumn) {
+  if (period === 'month') {
+    return `date_trunc('month', ${col}) = date_trunc('month', NOW()::date)`
+  }
+  if (period === 'lastMonth') {
+    return `date_trunc('month', ${col}) = date_trunc('month', NOW()::date - INTERVAL '1 month')`
+  }
+  // year
+  return `date_trunc('year', ${col}) = date_trunc('year', NOW()::date)`
+}
+
+/**
+ * 保有会员（方案 B）的 refDate SQL 表达式
+ * - month / year：本月或本年还未结束 → 用 NOW()::date
+ * - lastMonth：上月最后一天
+ */
+function getRefDateExpr(period) {
+  if (period === 'lastMonth') {
+    return `(date_trunc('month', NOW()::date) - INTERVAL '1 day')::date`
+  }
+  return `NOW()::date`
+}
+
+/**
+ * 当前账号可见门店列表
+ * @returns {string[] | null} null 表示不过滤（headquarters）；[] 表示空集（market 但 scopeStoreIds 为空）
+ */
+function getVisibleStoreIds(auth) {
+  if (auth.staffLevel === 'headquarters') return null
+  return auth.scopeStoreIds || []
+}
+
+/**
+ * 构造 stores 表的 store_id 过滤片段
+ * @param {string[]|null} visibleStoreIds null=不过滤；[]=空集（返回 FALSE 让 SQL 短路）
+ * @param {string} alias 表别名（默认 's'）
+ * @param {number} startIdx 起始 $n 下标
+ */
+function buildStoreFilter(visibleStoreIds, alias, startIdx) {
+  if (!visibleStoreIds) return { sql: 'TRUE', params: [] }
+  if (visibleStoreIds.length === 0) {
+    return { sql: 'FALSE', params: [] }
+  }
+  return {
+    sql: `${alias}.store_id = ANY($${startIdx}::text[])`,
+    params: [visibleStoreIds],
+  }
+}
+
+/**
+ * 同值并列 RANK 跳号语义（标准 SQL RANK()）
+ * [200,100,50] → 1/2/3；[100,100,50] → 1/1/3
+ * 调用前 rows 必须已按 value DESC 排序
+ */
+function assignRanks(rows) {
+  let rank = 0
+  let lastValue = null
+  rows.forEach((row, idx) => {
+    if (row.value !== lastValue) {
+      rank = idx + 1
+      lastValue = row.value
+    }
+    row.rank = rank
+  })
+  return rows
+}
+
+/* ----- 6 个排行榜 metric 子查询 ----- */
+
+async function rankingRevenue(period, storeFilter) {
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COALESCE(SUM(so.paid_amount::numeric), 0) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN sale_orders so
+       ON so.store_id = s.store_id
+       AND so.sale_order_type IN ('销售单', '转换单')
+       AND so.status = '已支付'
+       AND ${timeWindowPeriod('so.paid_at', period, false)}
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+async function rankingConsume(period, storeFilter) {
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN service_orders so2
+       ON so2.store_id = s.store_id
+       AND so2.status = '已完成'
+       AND ${timeWindowPeriod('so2.service_date', period, true)}
+     LEFT JOIN service_items sit ON sit.service_order_id = so2.service_order_id
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+async function rankingRetainedMember(period, storeFilter) {
+  const refDate = getRefDateExpr(period)
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COUNT(DISTINCT c.user_id) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN client_wechat_users c
+       ON c.bound_store_id = s.store_id
+       AND c.became_member_at IS NOT NULL
+       AND c.became_member_at::date <= ${refDate}
+       AND EXISTS (
+         SELECT 1 FROM service_orders so
+         WHERE so.client_user_id = c.user_id
+           AND so.status = '已完成'
+           AND so.service_date BETWEEN (${refDate} - INTERVAL '90 days') AND ${refDate}
+       )
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+async function rankingNewMember(period, storeFilter) {
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COUNT(c.client_user_id) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN client_wechat_users c
+       ON c.bound_store_id = s.store_id
+       AND c.old_member_level IS NULL
+       AND c.member_level IS NOT NULL
+       AND ${timeWindowPeriod('c.member_level_upgraded_at', period, false)}
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+async function rankingProjectCount(period, storeFilter) {
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COALESCE(SUM(sit.session_used), 0) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN service_orders so2
+       ON so2.store_id = s.store_id
+       AND so2.status = '已完成'
+       AND ${timeWindowPeriod('so2.service_date', period, true)}
+     LEFT JOIN service_items sit
+       ON sit.service_order_id = so2.service_order_id
+       AND sit.sales_category IN ('自销自耗', '他销自耗')
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+async function rankingFootfall(period, storeFilter) {
+  return pg.query(
+    `SELECT
+       s.store_id,
+       s.store_name,
+       o.name AS market_name,
+       COUNT(DISTINCT so2.client_user_id) AS value
+     FROM stores s
+     JOIN org_nodes o_store ON s.org_node_id = o_store.id
+     JOIN org_nodes o ON o_store.parent_id = o.id
+     LEFT JOIN service_orders so2
+       ON so2.store_id = s.store_id
+       AND so2.status = '已完成'
+       AND so2.client_user_id IS NOT NULL
+       AND ${timeWindowPeriod('so2.service_date', period, true)}
+     WHERE ${storeFilter.sql}
+     GROUP BY s.store_id, s.store_name, o.name
+     ORDER BY value DESC, s.store_name ASC`,
+    storeFilter.params,
+  )
+}
+
+const METRIC_DISPATCH = {
+  revenue: rankingRevenue,
+  consume: rankingConsume,
+  retainedMember: rankingRetainedMember,
+  newMember: rankingNewMember,
+  projectCount: rankingProjectCount,
+  footfall: rankingFootfall,
+}
+
+const VALID_PERIODS = ['month', 'lastMonth', 'year']
+const VALID_METRICS = ['revenue', 'consume', 'retainedMember', 'newMember', 'projectCount', 'footfall']
+
+/**
+ * mgmtDashboard.storeRanking
+ * 入参：{ period: 'month'|'lastMonth'|'year', metric: 6 选 1 }
+ * 出参：{ period, metric, unit, rows: [{rank, storeId, storeName, marketName, value}], computedAt }
+ */
+async function storeRanking(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+  const { period, metric } = ctx.event.payload || {}
+
+  if (!VALID_PERIODS.includes(period)) {
+    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+  }
+  if (!VALID_METRICS.includes(metric)) {
+    throw new Error('INVALID_PARAMS: metric 必须是 ' + VALID_METRICS.join('/'))
+  }
+
+  const visibleStoreIds = getVisibleStoreIds(ctx.auth)
+  const storeFilter = buildStoreFilter(visibleStoreIds, 's', 1)
+
+  const t0 = Date.now()
+  const rawRows = await METRIC_DISPATCH[metric](period, storeFilter)
+  const elapsed = Date.now() - t0
+
+  const unit = (metric === 'revenue' || metric === 'consume') ? 'amount' : 'count'
+  const rows = assignRanks(
+    rawRows.map((r) => ({
+      storeId: r.store_id,
+      storeName: r.store_name,
+      marketName: r.market_name,
+      value: Number(r.value || 0),
+    })),
+  )
+
+  if (elapsed > 800) {
+    console.warn(`[mgmtDashboard.storeRanking] slow: ${elapsed}ms`, { period, metric })
+  }
+
+  ctx.result = {
+    period,
+    metric,
+    unit,
+    rows,
+    computedAt: new Date().toISOString(),
+  }
+}
+
 // 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
 function __resetMarketsCache() {
   CACHE = { ts: 0, data: null }
 }
 
-module.exports = { scopeOptions, summary, __resetMarketsCache }
+module.exports = { scopeOptions, summary, storeRanking, __resetMarketsCache }

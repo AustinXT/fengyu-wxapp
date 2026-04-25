@@ -13,7 +13,7 @@
 
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
-const { summary, scopeOptions, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
+const { summary, scopeOptions, storeRanking, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
 
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
@@ -48,7 +48,8 @@ function setupDefaultMocks({
   storeName = '凤御A店',
 } = {}) {
   pg.query.mockReset().mockImplementation(async (sql) => {
-    if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) {
+    // T4（2026-04-25）：storeCount SQL 历史化 → FROM stores ... JOIN org_nodes（带 opening_date/closed_at 守卫）
+    if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) {
       return [{ cnt: storeCount }]
     }
     if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) {
@@ -141,11 +142,19 @@ describe('mgmtDashboard.summary scopeType=all', () => {
       expect(s).not.toMatch(/bound_store_id\s*=\s*\$/)
     }
 
+    // T4 历史化：storeCount SQL 走 FROM stores ... JOIN org_nodes，加 opening_date/closed_at 守卫
     const storeCountSql = sqlList.find(
-      (s) => /FROM org_nodes WHERE type = '门店'/.test(s) && /COUNT\(\*\)/.test(s),
+      (s) =>
+        /FROM stores s\b/.test(s) &&
+        /JOIN org_nodes o\b/.test(s) &&
+        /COUNT\(\*\)/.test(s),
     )
     expect(storeCountSql).toBeDefined()
     expect(storeCountSql).not.toMatch(/parent_id/)
+    // 历史化守卫
+    expect(storeCountSql).toMatch(/s\.opening_date::date\s*<=\s*\$1::date/)
+    expect(storeCountSql).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$1::date/)
+    expect(storeCountSql).toMatch(/o\.type\s*=\s*'门店'/)
 
     expect(ctx.result.storeCount).toBe(5)
     expect(ctx.result.scope).toEqual({ type: 'all', id: null, name: '全部市场' })
@@ -177,21 +186,29 @@ describe('mgmtDashboard.summary scopeType=market', () => {
     expect(clientSqls.length).toBe(4)
     for (const s of clientSqls) {
       expect(s).toMatch(/bound_store_id\s+IN\s*\(/)
-      // newMembers/retained SQL 用 $2（$1=date），memberCount 截面 SQL 用 $1（无 date）
-      expect(s).toMatch(/o\.parent_id = \$[12]/)
+      // T2 起 memberCount 也用 $1=date，所有 4 条 client SQL 的 parent_id 都走 $2
+      expect(s).toContain('o.parent_id = $2')
     }
 
     // staff 表过滤：employeeCount = 1 条
+    // T3 起 employeeCount 用 $1=date + $2=scopeId（参数顺序：[date, ...scopeParams]）
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(1)
     expect(staffSqls[0]).toMatch(/store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(staffSqls[0]).toContain('o.parent_id = $1')
+    expect(staffSqls[0]).toContain('o.parent_id = $2')
 
-    // storeCount 走 parent_id 过滤
+    // storeCount 走 parent_id 过滤；T4 起 FROM stores ... JOIN org_nodes，opening_date/closed_at 守卫
     const storeCountSql = sqlList.find(
-      (s) => /FROM org_nodes WHERE type = '门店' AND parent_id/.test(s) && /COUNT/.test(s),
+      (s) =>
+        /FROM stores s\b/.test(s) &&
+        /JOIN org_nodes o\b/.test(s) &&
+        /COUNT\(\*\)/.test(s),
     )
     expect(storeCountSql).toBeDefined()
+    expect(storeCountSql).toContain("o.type = '门店'")
+    expect(storeCountSql).toContain('o.parent_id = $1')
+    expect(storeCountSql).toMatch(/s\.opening_date::date\s*<=\s*\$2::date/)
+    expect(storeCountSql).toMatch(/s\.closed_at\s+IS\s+NULL\s+OR\s+s\.closed_at::date\s*>\s*\$2::date/)
 
     expect(ctx.result.storeCount).toBe(3)
     expect(ctx.result.scope).toEqual({ type: 'market', id: 'mkt-A', name: '华东市场' })
@@ -218,18 +235,22 @@ describe('mgmtDashboard.summary scopeType=store', () => {
     const clientSqls = sqlList.filter((s) => /client_wechat_users/.test(s))
     expect(clientSqls.length).toBe(4)
     for (const s of clientSqls) {
-      // newMembers 用 $2（$1=date），截面用 $1
-      expect(s).toMatch(/c\.bound_store_id = \$[12]/)
+      // T2 起 memberCount 也用 $1=date，所有 client 截面/带日期 SQL 都用 c.bound_store_id = $2
+      expect(s).toContain('c.bound_store_id = $2')
     }
 
     // staff 表过滤：employeeCount 走 store 单值
+    // T3 起 employeeCount 用 $1=date + $2=scopeId
     const staffSqls = sqlList.filter((s) => /staff_wechat_users/.test(s))
     expect(staffSqls.length).toBe(1)
-    expect(staffSqls[0]).toContain('s.store_id = $1')
+    expect(staffSqls[0]).toContain('s.store_id = $2')
 
-    // storeCount 不调用 pg
+    // storeCount 不调用 pg（store 模式短路返回 1）；既不应有 stores JOIN COUNT，也不应有 org_nodes COUNT
     const storeCountSql = sqlList.find(
-      (s) => /FROM org_nodes WHERE type = '门店'/.test(s) && /COUNT\(\*\)/.test(s),
+      (s) =>
+        /COUNT\(\*\)/.test(s) &&
+        ((/FROM stores s\b/.test(s) && /JOIN org_nodes o\b/.test(s)) ||
+          /FROM org_nodes WHERE type = '门店'/.test(s)),
     )
     expect(storeCountSql).toBeUndefined()
 
@@ -261,7 +282,8 @@ describe('mgmtDashboard.summary 时间窗口', () => {
 describe('mgmtDashboard.summary 月店均与防除零', () => {
   test('storeCount=4 + month=400 → monthlyAvgPerStore=100', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 4 }]
+      // T4 storeCount 历史化：FROM stores ... JOIN org_nodes
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 4 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
       const isMonth = /date_trunc\('month',/.test(sql)
@@ -281,7 +303,8 @@ describe('mgmtDashboard.summary 月店均与防除零', () => {
 
   test('storeCount=0 → monthlyAvgPerStore 返回 0 而非 NaN', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 0 }]
+      // T4 storeCount 历史化：FROM stores ... JOIN org_nodes
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 0 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       return [{ v: 999 }]
     })
@@ -345,7 +368,7 @@ describe('mgmtDashboard.summary 新会员', () => {
 describe('mgmtDashboard.summary 提成（销售/服务）', () => {
   test('销售提成 SQL 命中 sale_allocations + role_type IN(美容师/养生师) + 已支付销售/转换单 + paid_at；值映射正确', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
       if (/FROM sale_allocations\b/.test(sql)) {
@@ -380,7 +403,7 @@ describe('mgmtDashboard.summary 提成（销售/服务）', () => {
 
   test('服务提成 SQL 命中 service_commissions + role_type IN(美容师/养生师) + 已完成 + service_date；值映射正确', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
       if (/FROM service_commissions\b/.test(sql)) {
@@ -432,7 +455,7 @@ describe('mgmtDashboard.summary 项目数真实出数 + 返回结构', () => {
   test('projectCount 走 SUM(session_used) WHERE sales_category IN (...)，分别返回 today/month', async () => {
     // 自定义 mock：projectCount day=7, month=42；其他指标兜底返回 12
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: 5 }]
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
       if (/JOIN service_items sit\b/.test(sql) && /sales_category\s+IN/.test(sql)) {
@@ -480,10 +503,15 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     metricValue = 0,
   } = {}) {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/FROM org_nodes\b/.test(sql) && /COUNT\(\*\)/.test(sql)) return [{ cnt: storeCount }]
+      // T4 storeCount 历史化：FROM stores ... JOIN org_nodes（不再是裸 FROM org_nodes）
+      if (/FROM stores s\b/.test(sql) && /JOIN org_nodes o\b/.test(sql) && /COUNT\(\*\)/.test(sql)) {
+        return [{ cnt: storeCount }]
+      }
       if (/FROM org_nodes\b/.test(sql) && /SELECT name\b/.test(sql)) return [{ name: '' }]
       if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) return [{ store_name: '' }]
-      if (/FROM client_wechat_users\b/.test(sql) && /customer_type\s*=\s*'会员客'/.test(sql)) {
+      // T2（2026-04-25）：会员数 SQL 历史化，FROM client_wechat_users + became_member_at::date <= $1::date
+      // 注意需要在 retainedMemberCount 分支之前匹配（retained 用 FROM service_orders）
+      if (/FROM client_wechat_users\b/.test(sql) && /became_member_at/.test(sql)) {
         return [{ v: memberCount }]
       }
       // T5：保有会员改方案 B 实时计算（FROM service_orders + JOIN client_wechat_users + became_member_at 守卫）
@@ -495,18 +523,70 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     })
   }
 
-  test('memberCount SQL 命中 customer_type = 会员客；返回值映射正确', async () => {
+  test('memberCount SQL 形态：became_member_at IS NOT NULL ∩ became_member_at::date <= $1::date（T2 历史化口径，2026-04-25）', async () => {
     setupCensusMocks({ memberCount: 10, retainedCount: 5, employeeCount: 8 })
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
 
     const memberSql = pg.query.mock.calls
       .map((c) => c[0])
-      .find((s) => /FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s))
+      .find(
+        (s) =>
+          /FROM client_wechat_users/.test(s) &&
+          /became_member_at/.test(s) &&
+          !/FROM service_orders/.test(s) &&
+          !/old_member_level/.test(s),
+      )
     expect(memberSql).toBeDefined()
-    expect(memberSql).not.toMatch(/old_member_level/)
+    // T2 新口径：用 became_member_at 时间戳，不再依赖 customer_type 实时快照
+    expect(memberSql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+    expect(memberSql).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
+    // 旧口径：customer_type='会员客'/customer_status 都不应出现
+    expect(memberSql).not.toMatch(/customer_type\s*=\s*'会员客'/)
     expect(memberSql).not.toMatch(/customer_status/)
+    expect(memberSql).not.toMatch(/old_member_level/)
     expect(ctx.result.memberCount).toBe(10)
+  })
+
+  test('memberCount 历史日期：date=2025-01-15 时 SQL 仍是 became_member_at::date <= $1::date 形态，参数透传 date', async () => {
+    setupCensusMocks({ memberCount: 7 })
+    const ctx = makeHqCtx({ date: '2025-01-15', scopeType: 'all' })
+    await summary(ctx)
+
+    const memberCall = pg.query.mock.calls.find(
+      (c) =>
+        /FROM client_wechat_users/.test(c[0]) &&
+        /became_member_at/.test(c[0]) &&
+        !/FROM service_orders/.test(c[0]) &&
+        !/old_member_level/.test(c[0]),
+    )
+    expect(memberCall).toBeDefined()
+    expect(memberCall[0]).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
+    expect(memberCall[1]).toEqual(['2025-01-15'])
+    expect(ctx.result.memberCount).toBe(7)
+  })
+
+  test('memberCount 边界 SQL 形态：使用 <= 闭区间（became_member_at = $date 当天即命中），且 IS NOT NULL 守卫排除空值', async () => {
+    setupCensusMocks({ memberCount: 3 })
+    const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
+    await summary(ctx)
+
+    const memberSql = pg.query.mock.calls
+      .map((c) => c[0])
+      .find(
+        (s) =>
+          /FROM client_wechat_users/.test(s) &&
+          /became_member_at/.test(s) &&
+          !/FROM service_orders/.test(s) &&
+          !/old_member_level/.test(s),
+      )
+    expect(memberSql).toBeDefined()
+    // 闭区间：became_member_at = $date 命中、became_member_at = $date+1 不命中
+    expect(memberSql).toMatch(/c\.became_member_at::date\s*<=\s*\$1::date/)
+    // 严格小于会漏掉当天，断言不出现
+    expect(memberSql).not.toMatch(/c\.became_member_at::date\s*<\s*\$1::date/)
+    // IS NOT NULL 守卫确保 null 顾客不命中
+    expect(memberSql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
   })
 
   test('retainedMemberCount SQL 形态：service_orders 90 天窗口 + JOIN client_wechat_users + became_member_at 守卫（T5 方案 B 实时计算）', async () => {
@@ -575,17 +655,24 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     expect(ctx.result.employeeCount).toBe(8)
   })
 
+  // T2 起 memberCount SQL 形态识别：FROM client_wechat_users + became_member_at（且非 newMembers/retainedMember）
+  const isMemberCountSql = (s) =>
+    /FROM client_wechat_users/.test(s) &&
+    /became_member_at/.test(s) &&
+    !/FROM service_orders/.test(s) &&
+    !/old_member_level/.test(s)
+
   test('scopeType=market：staff/client 截面 SQL 走 stores JOIN org_nodes 子查询', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market', scopeId: 'mkt-A' })
     await summary(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
-    const memberSql = sqlList.find(
-      (s) => /FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
-    )
+    const memberSql = sqlList.find(isMemberCountSql)
+    expect(memberSql).toBeDefined()
     expect(memberSql).toMatch(/c\.bound_store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
-    expect(memberSql).toContain('o.parent_id = $1') // 截面 SQL 无 date 占位
+    // T2 起 memberCount 用 $1=date + $2=scopeId
+    expect(memberSql).toContain('o.parent_id = $2')
 
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toMatch(/s\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
@@ -598,34 +685,34 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     await summary(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
-    const memberSql = sqlList.find(
-      (s) => /FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
-    )
-    expect(memberSql).toContain('c.bound_store_id = $1')
-    expect(memberSql).not.toMatch(/IN\s*\(/)
+    const memberSql = sqlList.find(isMemberCountSql)
+    expect(memberSql).toBeDefined()
+    // T2 起 memberCount 用 $2=scopeId（$1=date）
+    expect(memberSql).toContain('c.bound_store_id = $2')
+    // SQL 内不应有 stores 子查询风格的 IN(SELECT ...)（虽然 became_member_at IS NOT NULL 不算 IN）
+    expect(memberSql).not.toMatch(/bound_store_id\s+IN\s*\(/)
 
     const empSql = sqlList.find((s) => /FROM staff_wechat_users/.test(s))
     expect(empSql).toContain('s.store_id = $1')
     expect(empSql).not.toMatch(/IN\s*\(/)
   })
 
-  test('截面 2 字段不依赖 date 参数（memberCount + employeeCount，SQL 内不出现 ::date / date_trunc；retained 已切实时计算见单独测试）', async () => {
+  test('T2 后 memberCount 已依赖 date（$1::date 出现），仅 employeeCount 仍是无 date 截面', async () => {
     setupCensusMocks()
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'all' })
     await summary(ctx)
 
-    const censusSqls = pg.query.mock.calls
-      .map((c) => c[0])
-      .filter(
-        (s) =>
-          (/FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s)) ||
-          /FROM staff_wechat_users/.test(s),
-      )
-    expect(censusSqls.length).toBe(2)
-    for (const s of censusSqls) {
-      expect(s).not.toMatch(/::date/)
-      expect(s).not.toMatch(/date_trunc/)
-    }
+    const memberSql = pg.query.mock.calls.map((c) => c[0]).find(isMemberCountSql)
+    expect(memberSql).toBeDefined()
+    // T2 历史化：memberCount 内出现 $1::date（不再是无日期截面）
+    expect(memberSql).toMatch(/\$1::date/)
+    // 但仍不应出现 date_trunc（不是按月份窗口聚合）
+    expect(memberSql).not.toMatch(/date_trunc/)
+
+    const empSql = pg.query.mock.calls.map((c) => c[0]).find((s) => /FROM staff_wechat_users/.test(s))
+    expect(empSql).toBeDefined()
+    expect(empSql).not.toMatch(/::date/)
+    expect(empSql).not.toMatch(/date_trunc/)
   })
 
   test('scopeType=all 时 memberCount + employeeCount 走 WHERE TRUE，无 store/parent_id 过滤', async () => {
@@ -634,11 +721,8 @@ describe('mgmtDashboard.summary 门店状况 + 人效（截面字段）', () => 
     await summary(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
-    const censusSqls = sqlList.filter(
-      (s) =>
-        (/FROM client_wechat_users/.test(s) && /customer_type\s*=\s*'会员客'/.test(s)) ||
-        /FROM staff_wechat_users/.test(s),
-    )
+    const censusSqls = sqlList.filter((s) => isMemberCountSql(s) || /FROM staff_wechat_users/.test(s))
+    expect(censusSqls.length).toBe(2)
     for (const s of censusSqls) {
       expect(s).toMatch(/WHERE\s+TRUE/)
       expect(s).not.toMatch(/parent_id/)
@@ -759,5 +843,405 @@ describe('mgmtDashboard.scopeOptions', () => {
     expect(pg.query).toHaveBeenCalledTimes(1)
     expect(ctx1.result.markets).toHaveLength(3)
     expect(ctx2.result.markets).toHaveLength(3)
+  })
+})
+
+// =============================================================================
+// storeRanking —— 门店排行榜（mgmt-dashboard ranking tab）
+// =============================================================================
+
+describe('mgmtDashboard.storeRanking', () => {
+  // 默认 mock：返回 3 行（业绩 200/100/50）
+  function setupDefaultRankingMocks(rows) {
+    pg.query.mockReset().mockImplementation(async () => rows || [
+      { store_id: 'store-A1', store_name: '上海A店', market_name: '华东市场', value: 200 },
+      { store_id: 'store-A2', store_name: '上海B店', market_name: '华东市场', value: 100 },
+      { store_id: 'store-B1', store_name: '广州A店', market_name: '华南市场', value: 50 },
+    ])
+  }
+
+  // ---- 参数校验 ----
+
+  describe('参数校验', () => {
+    test('缺 period 抛 INVALID_PARAMS', async () => {
+      const ctx = makeHqCtx({ metric: 'revenue' })
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    })
+
+    test('非法 period 抛 INVALID_PARAMS', async () => {
+      const ctx = makeHqCtx({ period: 'today', metric: 'revenue' })
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    })
+
+    test('缺 metric 抛 INVALID_PARAMS', async () => {
+      const ctx = makeHqCtx({ period: 'month' })
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+    })
+
+    test('非法 metric 抛 INVALID_PARAMS', async () => {
+      const ctx = makeHqCtx({ period: 'month', metric: 'foo' })
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+    })
+  })
+
+  // ---- 权限 ----
+
+  describe('权限', () => {
+    test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+      const ctx = createManagerCtx({ period: 'month', metric: 'revenue' })
+      await expect(storeRanking(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+    })
+
+    test('headquarters：SQL 不含 store_id 过滤（WHERE TRUE）', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/WHERE\s+TRUE/)
+      expect(sql).not.toMatch(/store_id\s*=\s*ANY/)
+      expect(pg.query.mock.calls[0][1]).toEqual([])
+    })
+
+    test('market：SQL 含 s.store_id = ANY($1::text[])，参数为 scopeStoreIds', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'store-001', store_name: '上海A店', market_name: '华东市场', value: 100 },
+      ])
+      const ctx = makeMarketCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      const params = pg.query.mock.calls[0][1]
+      expect(sql).toMatch(/s\.store_id\s*=\s*ANY\(\$1::text\[\]\)/)
+      expect(params).toEqual([['store-001']])
+    })
+
+    test('market 且 scopeStoreIds 为空：SQL 走 FALSE，rows=[]', async () => {
+      // mock 返空（FALSE 条件下 stores JOIN 也会被过滤掉）
+      pg.query.mockReset().mockImplementation(async () => [])
+      const ctx = createCtx({
+        payload: { period: 'month', metric: 'revenue' },
+        auth: {
+          staffLevel: 'market',
+          loginLevel: 'management',
+          roleBindings: [{ role: 'manager', scopeId: 'mkt-empty', scopeType: '市场' }],
+          scopeStoreIds: [],
+        },
+      })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/WHERE\s+FALSE/)
+      expect(pg.query.mock.calls[0][1]).toEqual([])
+      expect(ctx.result.rows).toEqual([])
+    })
+  })
+
+  // ---- SQL 形态断言（按 metric） ----
+
+  describe('SQL 形态断言：revenue', () => {
+    test('period=month → date_trunc(\'month\', so.paid_at) = date_trunc(\'month\', NOW()::date)；条件含 销售单/转换单/已支付', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/FROM stores s/)
+      expect(sql).toMatch(/LEFT JOIN sale_orders so\b/)
+      expect(sql).toMatch(/so\.paid_at/)
+      expect(sql).toMatch(/date_trunc\('month',\s*so\.paid_at\)\s*=\s*date_trunc\('month',\s*NOW\(\)::date\)/)
+      expect(sql).toContain('销售单')
+      expect(sql).toContain('转换单')
+      expect(sql).toContain("so.status = '已支付'")
+      expect(sql).toMatch(/SUM\(so\.paid_amount/)
+      expect(sql).toMatch(/ORDER BY value DESC, s\.store_name ASC/)
+    })
+
+    test('period=lastMonth → 用 NOW()::date - INTERVAL \'1 month\'', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'lastMonth', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/date_trunc\('month',\s*NOW\(\)::date\s*-\s*INTERVAL\s+'1 month'\)/)
+    })
+
+    test('period=year → date_trunc(\'year\', so.paid_at) = date_trunc(\'year\', NOW()::date)', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'year', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/date_trunc\('year',\s*so\.paid_at\)\s*=\s*date_trunc\('year',\s*NOW\(\)::date\)/)
+    })
+  })
+
+  describe('SQL 形态断言：consume', () => {
+    test('FROM stores LEFT JOIN service_orders so2 + service_items sit；status=已完成 + service_date period', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'consume' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/LEFT JOIN service_orders so2/)
+      expect(sql).toMatch(/LEFT JOIN service_items sit/)
+      expect(sql).toContain("so2.status = '已完成'")
+      expect(sql).toMatch(/so2\.service_date/)
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
+    })
+  })
+
+  describe('SQL 形态断言：projectCount', () => {
+    test('SUM(sit.session_used) WHERE sales_category IN (\'自销自耗\',\'他销自耗\') ∩ status=已完成 ∩ service_date', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'projectCount' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/LEFT JOIN service_orders so2/)
+      expect(sql).toMatch(/LEFT JOIN service_items sit/)
+      expect(sql).toMatch(/SUM\(sit\.session_used\)/)
+      expect(sql).toMatch(/sit\.sales_category\s+IN/)
+      expect(sql).toContain('自销自耗')
+      expect(sql).toContain('他销自耗')
+      expect(sql).toContain("so2.status = '已完成'")
+      expect(sql).toMatch(/so2\.service_date/)
+    })
+  })
+
+  describe('SQL 形态断言：retainedMember', () => {
+    test('period=month → refDate = NOW()::date；含 became_member_at 守卫 + 90 天 EXISTS 子查询', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'retainedMember' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/LEFT JOIN client_wechat_users c/)
+      expect(sql).toMatch(/c\.became_member_at\s+IS\s+NOT\s+NULL/)
+      expect(sql).toMatch(/c\.became_member_at::date\s*<=\s*NOW\(\)::date/)
+      expect(sql).toMatch(/EXISTS\s*\(/)
+      expect(sql).toMatch(/FROM service_orders so/)
+      expect(sql).toContain("so.status = '已完成'")
+      expect(sql).toMatch(/INTERVAL\s+'90 days'/)
+      expect(sql).toMatch(/COUNT\(DISTINCT c\.user_id\)/)
+    })
+
+    test('period=lastMonth → refDate 用 (date_trunc(\'month\', NOW()::date) - INTERVAL \'1 day\')::date', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'lastMonth', metric: 'retainedMember' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(
+        /\(date_trunc\('month',\s*NOW\(\)::date\)\s*-\s*INTERVAL\s+'1 day'\)::date/,
+      )
+      // 不应再出现 NOW()::date 直接作为 refDate（除了上面那个 date_trunc 内部的 NOW 之外）
+      // 防回归：所有 c.became_member_at::date 比较都用 lastMonth 的 refDate
+      expect(sql).toMatch(
+        /c\.became_member_at::date\s*<=\s*\(date_trunc\('month',\s*NOW\(\)::date\)\s*-\s*INTERVAL\s+'1 day'\)::date/,
+      )
+    })
+
+    test('period=year → refDate = NOW()::date（与 month 一致）', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'year', metric: 'retainedMember' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/c\.became_member_at::date\s*<=\s*NOW\(\)::date/)
+    })
+  })
+
+  describe('SQL 形态断言：newMember', () => {
+    test('LEFT JOIN client_wechat_users + old_member_level IS NULL ∩ member_level IS NOT NULL ∩ member_level_upgraded_at period', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'newMember' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/LEFT JOIN client_wechat_users c/)
+      expect(sql).toContain('c.old_member_level IS NULL')
+      expect(sql).toContain('c.member_level IS NOT NULL')
+      expect(sql).toMatch(/c\.member_level_upgraded_at/)
+      expect(sql).toMatch(/date_trunc\('month',\s*c\.member_level_upgraded_at\)/)
+    })
+  })
+
+  describe('SQL 形态断言：footfall', () => {
+    test('COUNT(DISTINCT so2.client_user_id) + status=已完成 ∩ client_user_id IS NOT NULL ∩ service_date', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'footfall' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/LEFT JOIN service_orders so2/)
+      expect(sql).toMatch(/COUNT\(DISTINCT so2\.client_user_id\)/)
+      expect(sql).toContain("so2.status = '已完成'")
+      expect(sql).toMatch(/so2\.client_user_id\s+IS\s+NOT\s+NULL/)
+      expect(sql).toMatch(/so2\.service_date/)
+    })
+  })
+
+  // ---- 排名分配 ----
+
+  describe('排名分配（assignRanks）', () => {
+    test('[200, 100, 50] → rank 1/2/3', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: 200 },
+        { store_id: 'B', store_name: '上海B店', market_name: '华东市场', value: 100 },
+        { store_id: 'C', store_name: '上海C店', market_name: '华东市场', value: 50 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows.map((r) => r.rank)).toEqual([1, 2, 3])
+      expect(ctx.result.rows.map((r) => r.value)).toEqual([200, 100, 50])
+    })
+
+    test('[100, 100, 50] → rank 1/1/3 (RANK 跳号语义)', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: 100 },
+        { store_id: 'B', store_name: '上海B店', market_name: '华东市场', value: 100 },
+        { store_id: 'C', store_name: '上海C店', market_name: '华东市场', value: 50 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows.map((r) => r.rank)).toEqual([1, 1, 3])
+    })
+
+    test('[100, 100, 100] → rank 1/1/1 (全部并列)', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: 100 },
+        { store_id: 'B', store_name: '上海B店', market_name: '华东市场', value: 100 },
+        { store_id: 'C', store_name: '上海C店', market_name: '华东市场', value: 100 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows.map((r) => r.rank)).toEqual([1, 1, 1])
+    })
+  })
+
+  // ---- value=0 仍返回 ----
+
+  describe('value=0 也要返回（垫底展示）', () => {
+    test('mock 返一行 value=0 → 仍出现在 rows 中，rank=1', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'X', store_name: '空数据店', market_name: '华东市场', value: 0 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows).toHaveLength(1)
+      expect(ctx.result.rows[0]).toEqual({
+        rank: 1,
+        storeId: 'X',
+        storeName: '空数据店',
+        marketName: '华东市场',
+        value: 0,
+      })
+    })
+
+    test('混合：[200, 0, 0] → rank 1/2/2', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: 200 },
+        { store_id: 'B', store_name: '上海B店', market_name: '华东市场', value: 0 },
+        { store_id: 'C', store_name: '上海C店', market_name: '华东市场', value: 0 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows.map((r) => r.rank)).toEqual([1, 2, 2])
+      expect(ctx.result.rows.map((r) => r.value)).toEqual([200, 0, 0])
+    })
+  })
+
+  // ---- 二级排序 ----
+
+  describe('二级排序', () => {
+    test('SQL 含 ORDER BY value DESC, s.store_name ASC', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      const sql = pg.query.mock.calls[0][0]
+      expect(sql).toMatch(/ORDER BY\s+value\s+DESC,\s*s\.store_name\s+ASC/)
+    })
+
+    // 全 6 个 metric 都应有同样的 ORDER BY
+    test.each(['revenue', 'consume', 'retainedMember', 'newMember', 'projectCount', 'footfall'])(
+      'metric=%s SQL 含 ORDER BY value DESC, s.store_name ASC',
+      async (metric) => {
+        setupDefaultRankingMocks()
+        const ctx = makeHqCtx({ period: 'month', metric })
+        await storeRanking(ctx)
+
+        const sql = pg.query.mock.calls[0][0]
+        expect(sql).toMatch(/ORDER BY\s+value\s+DESC,\s*s\.store_name\s+ASC/)
+      },
+    )
+  })
+
+  // ---- unit 派生 ----
+
+  describe('unit 派生', () => {
+    test.each([
+      ['revenue', 'amount'],
+      ['consume', 'amount'],
+      ['retainedMember', 'count'],
+      ['newMember', 'count'],
+      ['projectCount', 'count'],
+      ['footfall', 'count'],
+    ])('metric=%s → unit=%s', async (metric, expectedUnit) => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric })
+      await storeRanking(ctx)
+      expect(ctx.result.unit).toBe(expectedUnit)
+    })
+  })
+
+  // ---- 返回结构完整性 ----
+
+  describe('返回结构', () => {
+    test('返回字段：period, metric, unit, rows, computedAt', async () => {
+      setupDefaultRankingMocks()
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.period).toBe('month')
+      expect(ctx.result.metric).toBe('revenue')
+      expect(ctx.result.unit).toBe('amount')
+      expect(Array.isArray(ctx.result.rows)).toBe(true)
+      expect(typeof ctx.result.computedAt).toBe('string')
+    })
+
+    test('rows 元素结构：{rank, storeId, storeName, marketName, value}', async () => {
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: 200 },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(ctx.result.rows[0]).toEqual({
+        rank: 1,
+        storeId: 'A',
+        storeName: '上海A店',
+        marketName: '华东市场',
+        value: 200,
+      })
+    })
+
+    test('value 类型：从 PG 返回的 string/numeric 自动转 Number', async () => {
+      // 模拟 PG numeric 列返回字符串
+      setupDefaultRankingMocks([
+        { store_id: 'A', store_name: '上海A店', market_name: '华东市场', value: '12345.67' },
+      ])
+      const ctx = makeHqCtx({ period: 'month', metric: 'revenue' })
+      await storeRanking(ctx)
+
+      expect(typeof ctx.result.rows[0].value).toBe('number')
+      expect(ctx.result.rows[0].value).toBe(12345.67)
+    })
   })
 })
