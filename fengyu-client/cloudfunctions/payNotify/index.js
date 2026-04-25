@@ -328,6 +328,14 @@ exports.main = async (event) => {
 
       // 3. 自动创建业绩分配（如有指定美容师）——以原销售单为准
       if (targetOrder.preferred_employee_id) {
+        // 读取员工 skills 推断 role_type（首位技能，缺省回退到 '美容师'）
+        const empRow = await client.query(
+          'SELECT skills FROM staff_wechat_users WHERE employee_id = $1',
+          [targetOrder.preferred_employee_id]
+        )
+        const skills = Array.isArray(empRow.rows[0]?.skills) ? empRow.rows[0].skills : []
+        const roleType = skills[0] || '美容师'
+
         // 查询该订单的所有明细
         const itemsResult = await client.query(
           'SELECT sale_item_id, received FROM sale_items WHERE sale_order_id = $1',
@@ -337,10 +345,12 @@ exports.main = async (event) => {
         // 为每个明细行创建分配记录（100% 给指定美容师）
         for (const item of itemsResult.rows) {
           await client.query(
-            `INSERT INTO sale_allocations (sale_item_id, employee_id, allocation_ratio, total_amount, created_at, updated_at)
-             VALUES ($1, $2, 1.00, $3, $4, $4)
-             ON CONFLICT DO NOTHING`,
-            [item.sale_item_id, targetOrder.preferred_employee_id, item.received, now]
+            `INSERT INTO sale_allocations
+               (sale_item_id, employee_id, role_type, allocation_ratio, total_amount,
+                is_void, created_at, updated_at)
+             VALUES ($1, $2, $3, 1.00, $4, FALSE, $5, $5)
+             ON CONFLICT ON CONSTRAINT uq_sale_alloc_item_emp_role DO NOTHING`,
+            [item.sale_item_id, targetOrder.preferred_employee_id, roleType, item.received, now]
           )
         }
       }

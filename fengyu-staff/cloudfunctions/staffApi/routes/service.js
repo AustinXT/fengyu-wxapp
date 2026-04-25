@@ -433,8 +433,9 @@ async function complete(ctx) {
       await client.query(
         `INSERT INTO service_commissions (
            service_item_id, employee_id, role_type, allocation_ratio,
-           commission_rate, commission_amount, fixed_fee, consume_amount
-         ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7)
+           commission_rate, commission_amount, fixed_fee, consume_amount,
+           is_void
+         ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7, FALSE)
          ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role DO NOTHING`,
         [
           row.service_item_id,
