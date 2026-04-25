@@ -6,8 +6,11 @@
       <!-- 顶部筛选栏 -->
       <view class="mgmt-dash-filters">
         <view class="filter-trigger" bindtap="onCalendarOpen">
-          <text>{{ selectedDate || '请选择日期' }}</text>
-          <van-icon name="arrow-down" size="24rpx" color="#999" />
+          <view class="filter-trigger-main">
+            <van-icon name="calendar-o" size="32rpx" color="#C0322A" />
+            <text class="filter-trigger-text">{{ selectedDate || '请选择日期' }}</text>
+          </view>
+          <van-icon name="arrow-down" size="24rpx" color="#C0322A" />
         </view>
         <mgmt-scope-picker
           staff-level="{{ staffLevel }}"
@@ -188,9 +191,10 @@
         </van-grid>
       </view>
 
-      <!-- 日历弹窗：min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
+      <!-- 日历弹窗：主题色对齐 #C0322A；min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
       <van-calendar
         show="{{ showCalendar }}"
+        color="#C0322A"
         bind:close="onCalendarClose"
         bind:confirm="onCalendarConfirm"
         show-confirm="{{ false }}"

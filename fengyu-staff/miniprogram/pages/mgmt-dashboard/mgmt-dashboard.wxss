@@ -23,9 +23,21 @@
   justify-content: space-between;
   align-items: center;
   padding: var(--spacing-tight) var(--spacing-card);
-  background: var(--color-bg-card);
+  background: var(--color-primary-light);
+  border: 1rpx solid rgba(192, 50, 42, 0.25);
   border-radius: var(--radius-md);
   font-size: 28rpx;
+  color: var(--color-primary);
+}
+
+.filter-trigger-main {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+.filter-trigger-text {
+  font-weight: 500;
 }
 
 .mgmt-dash-grid-large {
