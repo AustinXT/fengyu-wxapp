@@ -116,7 +116,7 @@ export const monthlyActivityEnum = pgEnum("monthly_activity", ["二次客活", "
 export const customerStatusEnum = pgEnum("customer_status", [
   "保有会员-稳定",
   "保有会员-有效",
-  "预警沉睡",
+  "沉睡",
   "冰冻",
   "休眠",
 ]);

@@ -20,7 +20,7 @@
 | 要素 | 说明 |
 |------|------|
 | **变更概念** | (1) 顾客类型分级（从 4 档 → 5 档，新增"新客"动态标签、"注册"档）；(2) 保有会员到店时间标签（3 档 → 5 档，新增 6 个月/1 年/超 1 年）；(3) 客流/客量定义固化；(4) 后台顾客筛选三类标签维度新增 |
-| **当前行为** | `customer_type` 枚举为 `流量客/体验客/小美客/会员客`；`customer_status` 枚举为 `保有会员-稳定/保有会员-有效/预警沉睡/冰冻/休眠`；staff 顾客 Tab 6 分类卡片基于"活跃/即将流失/流失/沉睡/生日"（纯按天数分桶）；admin 顾客筛选器已包含 customer_type/status/tier/activity |
+| **当前行为** | `customer_type` 枚举为 `流量客/体验客/小美客/会员客`；`customer_status` 枚举为 `保有会员-稳定/保有会员-有效/沉睡/冰冻/休眠`；staff 顾客 Tab 6 分类卡片基于"活跃/即将流失/流失/沉睡/生日"（纯按天数分桶）；admin 顾客筛选器已包含 customer_type/status/tier/activity |
 | **期望行为** | 类型枚举对齐会议："注册/体验客/流量客/会员/新客"；状态标签补齐 6 个月 / 1 年 / 超 1 年分级；staff 顾客 Tab 卡片与会议定义的类型/状态对齐；admin 保留现有筛选器并补充到店间隔标签筛选、统一语义 |
 | **受影响角色** | 全体（顾客端客户、员工端美容师/店长、admin 管理层） |
 | **受影响端** | db（枚举）、staffApi（customer/order/staff/service）、clientApi（payNotify）、cronTask、admin（customers actions + UI）、staff miniprogram（customer-list 页）、admin miniprogram（customers-page） |
@@ -54,7 +54,7 @@ export const monthlyActivityEnum = pgEnum("monthly_activity",
 export const customerStatusEnum = pgEnum("customer_status", [
   "保有会员-稳定",
   "保有会员-有效",
-  "预警沉睡",
+  "沉睡",
   "冰冻",
   "休眠",
 ])
@@ -101,7 +101,7 @@ function determineMemberLevel(spend) {
 ```sql
 WHEN visits_90d >= 1 AND total_visits >= 6 THEN '保有会员-稳定'
 WHEN visits_90d >= 1 AND total_visits <= 5 THEN '保有会员-有效'
-WHEN last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'
+WHEN last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '沉睡'
 WHEN last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'
 ELSE '休眠'
 ```
@@ -109,7 +109,7 @@ ELSE '休眠'
 含义：
 - 保有会员-稳定 = 3 个月内到店 且 历史累计 ≥ 6 次
 - 保有会员-有效 = 3 个月内到店 且 历史累计 ≤ 5 次
-- 预警沉睡 = 3~6 个月前到店
+- 沉睡 = 3~6 个月前到店
 - 冰冻 = 6~12 个月前到店
 - 休眠 = 超过 12 个月未到店（或从未到店）
 
@@ -228,7 +228,7 @@ Migration 0022 注释声明"单笔消费 >= 1990 → 会员客"，但分支 ① 
 
 **问题**：
 1. "会员 vs 流量"用 `customer_id IS NOT NULL/NULL` 判断，而不是 `customer_type`。`customer_id` 是 WorkFine 同步来的顾客编号；小程序自主录入的顾客有可能 `customer_id` 为 null 但 `customer_type='会员客'`。应改为 `customer_type`。
-2. 状态分桶的天数边界（30/60/90）与 cronTask 的 3 月/6 月/12 月/预警沉睡/冰冻/休眠完全不一致。两套语义并存。
+2. 状态分桶的天数边界（30/60/90）与 cronTask 的 3 月/6 月/12 月/沉睡/冰冻/休眠完全不一致。两套语义并存。
 3. 没有"注册"、"体验客"、"新客"分类。
 
 **listByTag 参数**：tag in `active|atRisk|lost|sleeping|birthday|birthdayNext`（`customer.js:615-619`），应扩展对齐。
@@ -266,7 +266,7 @@ const MEMBER_LEVELS = ["黑钻","金钻","粉钻","星钻","初钻"]
 const CUSTOMER_TYPES = ["流量客","体验客","小美客","会员客"]
 const SPENDING_TIERS = ["10W+","6-10W","3-6W","1-3W","1990-1W","<1990"]
 const MONTHLY_ACTIVITIES = ["二次客活","一次客活","0次客活"]
-const CUSTOMER_STATUSES = ["保有会员-稳定","保有会员-有效","预警沉睡","冰冻","休眠"]
+const CUSTOMER_STATUSES = ["保有会员-稳定","保有会员-有效","沉睡","冰冻","休眠"]
 ```
 
 顾客详情 serializeCustomer 包含上述全部字段（`customers.ts:36-68`），类型定义 `src/lib/types.ts` 对应也需联动变更。
@@ -311,8 +311,8 @@ const CUSTOMER_STATUSES = ["保有会员-稳定","保有会员-有效","预警�
 | 新增标签 | 条件 |
 |---------|------|
 | 活跃会员 | 3 个月内到店（✅ 已有，对应 `保有会员-稳定/有效`） |
-| 睡眠会员 | 超过 3 个月未到店（✅ 已有，对应 `预警沉睡`） |
-| 6 个月未到店 | 3~6 个月前到店（✅ 已有，对应 `预警沉睡` 下界，但命名未对齐） |
+| 睡眠会员 | 超过 3 个月未到店（✅ 已有，对应 `沉睡`） |
+| 6 个月未到店 | 3~6 个月前到店（✅ 已有，对应 `沉睡` 下界，但命名未对齐） |
 | 1 年未到店 | 6~12 个月前到店（✅ 已有，对应 `冰冻`） |
 | 超 1 年未到店 | 12 个月以上（✅ 已有，对应 `休眠`） |
 
@@ -352,7 +352,7 @@ const CUSTOMER_STATUSES = ["保有会员-稳定","保有会员-有效","预警�
 | 枚举 | 当前 | 期望 | 差异类型 | 处理方式 |
 |------|------|------|----------|----------|
 | `customer_type` | `流量客/体验客/小美客/会员客` | `注册/体验客/流量客/会员/新客*` | ✅ **结构性变更** | 删除"小美客"、重命名"会员客→会员"、新增"注册"；"新客"为动态标签不入枚举 |
-| `customer_status` | `保有会员-稳定/保有会员-有效/预警沉睡/冰冻/休眠` | 无变化（UI 别名映射） | ❌ 无枚举变更 | UI 层新增展示映射 |
+| `customer_status` | `保有会员-稳定/保有会员-有效/沉睡/冰冻/休眠` | 无变化（UI 别名映射） | ❌ 无枚举变更 | UI 层新增展示映射 |
 | `spending_tier` | 历史累计 6 档 | 年度累计（语义变化） | ⚠ 口径变化 | 选择方案见 §5.2 |
 | `monthly_activity` | `二次/一次/0次客活` | 无变化 | ❌ 无枚举变更 | 不动 |
 | `member_level` | `初钻/星钻/粉钻/金钻/黑钻` | 无变化（cronTask 已 b471d70 统一） | ❌ 无枚举变更 | 不动；但需校正项目记忆 `project_member_level_rules.md` 的区间描述 |
@@ -670,7 +670,7 @@ const rows = await pg.query(`
 const statusMap = Object.fromEntries(rows.map(r => [r.customer_status, Number(r.cnt)]))
 
 const active = (statusMap['保有会员-稳定'] || 0) + (statusMap['保有会员-有效'] || 0)
-const atRisk = statusMap['预警沉睡'] || 0  // 3-6 个月
+const atRisk = statusMap['沉睡'] || 0  // 3-6 个月
 const lost = statusMap['冰冻'] || 0        // 6-12 个月
 const sleeping = statusMap['休眠'] || 0    // 12+ 个月
 ```
@@ -720,7 +720,7 @@ AND (
 ```tsx
 const VISIT_INTERVALS = [
   { label: '当月到店',      statuses: ['保有会员-稳定', '保有会员-有效'] },
-  { label: '3 个月未到店', statuses: ['预警沉睡'] },
+  { label: '3 个月未到店', statuses: ['沉睡'] },
   { label: '6 个月未到店', statuses: ['冰冻', '休眠'] },
 ]
 ```

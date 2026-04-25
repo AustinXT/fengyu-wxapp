@@ -16,7 +16,7 @@
  * 仅针对会员客，基于全部历史已完成服务单（与 cronTask STEP 1 对齐）：
  *   - 保有会员-稳定：90 天内到店过，且累计到店 >= 6 天
  *   - 保有会员-有效：90 天内到店过，但累计到店 <= 5 天
- *   - 预警沉睡：最近一次到店在 90 天 ~ 6 个月前
+ *   - 沉睡：最近一次到店在 90 天 ~ 6 个月前
  *   - 冰冻：最近一次到店在 6 ~ 12 个月前
  *   - 休眠：超过 12 个月未到店（或从未到店）
  *
@@ -148,7 +148,7 @@ async function calcMonthlyActivity(client, dryRun) {
 //
 // 阈值口径（与 cronTask 一致）：
 //   - 保有会员-稳定 / 有效  使用 90 天窗口（不是 3 个月）
-//   - 预警沉睡 / 冰冻       使用 6 个月 / 12 个月
+//   - 沉睡 / 冰冻           使用 6 个月 / 12 个月
 
 const RESET_NON_MEMBER_SQL = `
 UPDATE client_wechat_users
@@ -173,7 +173,7 @@ UPDATE client_wechat_users u
    SET customer_status = CASE
          WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
          WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
-         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '沉睡'::customer_status
          WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
          ELSE '休眠'::customer_status
        END,
@@ -217,7 +217,7 @@ async function calcCustomerStatus(client, dryRun) {
                  WHEN u.customer_type != '会员客' THEN NULL
                  WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'
                  WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'
-                 WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'
+                 WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '沉睡'
                  WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'
                  ELSE '休眠'
                END AS new_status

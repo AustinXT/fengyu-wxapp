@@ -16,7 +16,7 @@
  *   段 2：会员客有到店记录的：按 visits_90d / total_visits 打状态
  *           保有会员-稳定  90天内至少到店1次 且 累计到店 >= 6 次
  *           保有会员-有效  90天内至少到店1次 且 累计到店 <= 5 次
- *           预警沉睡       最后到店 >= 6 个月前
+ *           沉睡           最后到店 >= 6 个月前
  *           冰冻           最后到店 >= 12 个月前
  *           休眠           其他（超过 12 个月未到店）
  *   段 3：会员客但完全无到店记录的：置 '休眠'
@@ -62,7 +62,7 @@ UPDATE client_wechat_users u
    SET customer_status = CASE
          WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
          WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
-         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '沉睡'::customer_status
          WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
          ELSE '休眠'::customer_status
        END,

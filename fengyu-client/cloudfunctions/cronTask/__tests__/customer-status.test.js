@@ -86,9 +86,9 @@ describe('cronTask STEP 1 — customer_status 三段式 SQL', () => {
       )
     })
 
-    it("CASE 分支 3：last_service_date >= 6 个月前 → 预警沉睡", () => {
+    it("CASE 分支 3：last_service_date >= 6 个月前 → 沉睡", () => {
       expect(UPDATE_CUSTOMER_STATUS_SQL).toMatch(
-        /last_service_date\s*>=\s*CURRENT_DATE\s*-\s*INTERVAL\s*'6 months'\s+THEN\s+'预警沉睡'/
+        /last_service_date\s*>=\s*CURRENT_DATE\s*-\s*INTERVAL\s*'6 months'\s+THEN\s+'沉睡'/
       )
     })
 
