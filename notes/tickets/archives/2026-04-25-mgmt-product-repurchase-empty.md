@@ -1,6 +1,7 @@
 # Ticket: 管理层"品项数据"子页"复购情况"显示空 — 根因排查与口径调整
 
 > 生成日期：2026-04-25
+> **实施状态：✅ 已落地**（commit 069fc33 "fix(staff): mgmt-product 复购口径去除"非首日"约束"，按方案 C 取消 `<> entry_date` 约束）
 > 严重级别：P2（管理层数据看板信息缺失，业务感知度强，不阻塞业务流程）
 > 端：fengyu-staff（mgmt-product-cycle 子页 + staffApi.mgmtProduct.cycleStats）
 > 影响面：

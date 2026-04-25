@@ -1,6 +1,7 @@
 # Ticket: staff 管理层「销售数据」页 — 业绩与品项三个汇总默认展开并填入数据
 
 > 生成日期：2026-04-25
+> **实施状态：✅ 已落地**（被后继 ticket [skeleton-and-nested-breakdown](./2026-04-25-staff-sales-data-skeleton-and-nested-breakdown.md) 合并实现，commit f58bb72 "feat(staff): sales-data 嵌套品项汇总与全动态品项骨架" 同时完成默认展开 + 嵌套骨架）
 > 严重级别：P3（管理层视图体验优化，不影响业务正确性）
 > 端：fengyu-staff（员工端小程序，**仅前端改造**，后端无变更）
 > 影响面：

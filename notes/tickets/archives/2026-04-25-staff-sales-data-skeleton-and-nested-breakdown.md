@@ -1,6 +1,7 @@
 # Ticket: staff 管理层「销售数据」页 — 经营类型骨架化 + 一二级品项嵌套合并（品项动态来源）
 
 > 生成日期：2026-04-25
+> **实施状态：✅ 已落地**（commit f58bb72 "feat(staff): sales-data 嵌套品项汇总与全动态品项骨架"：SQL 8 改 `product_kind + category_name` 嵌套 GROUP BY、新增 SQL 9 `product_categories` 骨架查询、`bySalesCategory` 4 行硬骨架、前端嵌套渲染）
 > 严重级别：P3（管理层视图体验优化，不影响业务正确性）
 > 端：fengyu-staff（员工端小程序 + staffApi 云函数）
 > 影响面：
