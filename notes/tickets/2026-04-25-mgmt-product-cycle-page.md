@@ -126,7 +126,7 @@
 - **新增**：entry_date 落在 `[startDate, endDate]` 内。
 - **复购**：在 `[startDate, endDate]` 内有达标日，且该日 ≠ entry_date。
 - **体验**：在 `[startDate, endDate]` 内有购买，但全历史（截至 endDate）从未有达标日。
-- **持卡人数**：`sale_items.remaining_sessions > 0` ∩ `product_type='疗程卡'`，当前快照。
+- **持卡人数**：`sale_items.remaining_sessions > 0` ∩ `product_type IN ('疗程卡','单品')`（含单次卡），当前快照（NOW()），不随 period 变化。
 
 ---
 
