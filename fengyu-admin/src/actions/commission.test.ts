@@ -72,7 +72,7 @@ const baseData = {
   orgId: 'market-1',
   orderType: '销售单',
   roleType: 'manager',
-  salesCategory: '自采自销',
+  salesCategory: '自销自耗',
 }
 
 // 设置 hasTierOverlap 内部的 DB select 调用
@@ -372,7 +372,7 @@ describe('getRates — 全量提成比例列表', () => {
   it('返回序列化的提成比例列表', async () => {
     const limit = vi.fn().mockResolvedValue([{
       id: 1, orgId: 'market-1', orderType: '销售单', roleType: '美容师',
-      salesCategory: '自采自销', amountTierMin: '0', amountTierMax: '1000',
+      salesCategory: '自销自耗', amountTierMin: '0', amountTierMax: '1000',
       commissionRate: '0.08',
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
       orgName: '南昌市场',

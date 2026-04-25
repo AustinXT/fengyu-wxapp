@@ -41,7 +41,7 @@ describe('order.create', () => {
         price: '1000.00',
         session_count: 10,
         product_name: '面部护理',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       // generateOrderNo
       .mockResolvedValueOnce([])
@@ -275,7 +275,7 @@ describe('order.create', () => {
         sku_id: 'sku-001', product_id: 'prod-001',
         product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{                              // 优惠券查询 → 有效
         coupon_id: 'coupon-001', user_id: 'cu-001',
@@ -415,7 +415,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
         spec_name: 'S', price: '1000.00', special_price: null, session_count: null,
-        product_name: '精华液', sales_category: '自采自销', product_kind: '家居产品',
+        product_name: '精华液', sales_category: '自销自耗', product_kind: '家居产品',
       }])
       // 折扣券：8折(0.8)，最大优惠 150
       .mockResolvedValueOnce([{
@@ -460,7 +460,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'p1', product_type: '单品',
         spec_name: 'S', price: '500.00', special_price: null, session_count: null,
-        product_name: '面膜', sales_category: '自采自销', product_kind: '家居产品',
+        product_name: '面膜', sales_category: '自销自耗', product_kind: '家居产品',
       }])
       // 折扣券：9折(0.9)，无上限
       .mockResolvedValueOnce([{
@@ -505,7 +505,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
         spec_name: '基础款', price: '1000.00', special_price: null, session_count: 10,
-        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{
         coupon_id: 'coupon-001', user_id: 'cu-001',
@@ -550,7 +550,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_id: 'prod-001', product_type: '疗程卡',
         spec_name: '基础款', price: '1000.00', special_price: null, session_count: 5,
-        product_name: '面部护理', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: '面部护理', sales_category: '自销自耗', product_kind: '护理项目',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -585,7 +585,7 @@ describe('order.create', () => {
         sku_id: 'sku-single', product_id: 'prod-002', product_type: '单品',
         spec_name: '标准', price: '200.00', special_price: null,
         session_count: null, // 单品无疗程次数 → sessionCount = null
-        product_name: '精华液', sales_category: '自采自销', product_kind: '家居产品',
+        product_name: '精华液', sales_category: '自销自耗', product_kind: '家居产品',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -615,7 +615,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-sp', product_id: 'prod-003', product_type: '疗程卡',
         spec_name: '特惠款', price: '1000.00', special_price: '800.00',
-        session_count: 5, product_name: '特价项目', sales_category: '自采自销', product_kind: '护理项目',
+        session_count: 5, product_name: '特价项目', sales_category: '自销自耗', product_kind: '护理项目',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -650,7 +650,7 @@ describe('order.create', () => {
         price: '1000.00',
         session_count: 10,
         product_name: '面部护理',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       .mockResolvedValueOnce([])  // generateOrderNo
 
@@ -686,7 +686,7 @@ describe('order.create', () => {
         price: '1000.00',
         session_count: 10,
         product_name: '面部护理',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       .mockResolvedValueOnce([])
 
@@ -746,7 +746,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: skuPrice, special_price: null, session_count: 5,
-        product_name: '护理项目', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: '护理项目', sales_category: '自销自耗', product_kind: '护理项目',
       }])
   }
 
@@ -841,7 +841,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: '200.00', special_price: null, session_count: 5,
-        product_name: '护理项目', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: '护理项目', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '500.00' }])
 
@@ -910,7 +910,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([{
         sku_id: 'sku-200', product_type: '疗程卡', spec_name: '基础款',
         price: '200.00', special_price: null, session_count: 5,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '500.00' }])
 
@@ -2155,7 +2155,7 @@ describe('order.createRefund', () => {
         sku_spec_name: '基础款', product_type: '疗程卡', session_count: 10,
         remaining_sessions: 10,
         unit_price: '1000', unit_real_price: '1000', quantity: 1,
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       // generateOrderNo
       .mockResolvedValueOnce([])
@@ -2229,7 +2229,7 @@ describe('order.createRefund', () => {
         sku_spec_name: '基础款', product_type: '疗程卡', session_count: 3,
         remaining_sessions: 3,  // 未使用 3 次
         unit_price: '1000', unit_real_price: '500', quantity: 3,
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -2264,7 +2264,7 @@ describe('order.createRefund', () => {
         sku_spec_name: '高级款', product_type: '单品', session_count: 0,
         picked_up_quantity: 0,  // 单品未提货
         unit_price: '800', unit_real_price: '800', quantity: 2,
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -2298,7 +2298,7 @@ describe('order.createRefund', () => {
         sku_spec_name: null, product_type: '单品', session_count: 0,
         picked_up_quantity: 0,
         unit_price: '300', unit_real_price: '300', quantity: 1,
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
 
     // 第一次 pg.transaction → generateOrderNo: client 返回已有订单行 → seq 递增
@@ -3037,7 +3037,7 @@ describe('order.createConversion', () => {
               product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
               quantity: 1, picked_up_quantity: 0,
               unit_price: '1000', unit_real_price: '1000',
-              sales_category: '自采自销', service_fee: '0',
+              sales_category: '自销自耗', service_fee: '0',
               client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
             }], rowCount: 1,
           })
@@ -3045,7 +3045,7 @@ describe('order.createConversion', () => {
           .mockResolvedValueOnce({
             rows: [{
               sku_id: 'sku-new', product_type: '疗程卡', spec_name: '高级款',
-              price: '1500', session_count: 10, service_fee: '0', sales_category: '自采自销',
+              price: '1500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
             }], rowCount: 1,
           })
           // INSERT sale_orders
@@ -3151,14 +3151,14 @@ describe('order.createConversion', () => {
           product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '500', unit_real_price: '500',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-eq-new', product_type: '疗程卡', spec_name: '同价款',
-          price: '500', session_count: 10, service_fee: '0', sales_category: '自采自销',
+          price: '500', session_count: 10, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
@@ -3206,14 +3206,14 @@ describe('order.createConversion', () => {
           product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '1000', unit_real_price: '1000',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-neg-new', product_type: '疗程卡', spec_name: '低价款',
-          price: '500', session_count: 5, service_fee: '0', sales_category: '自采自销',
+          price: '500', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
@@ -3278,7 +3278,7 @@ describe('order.createConversion', () => {
           product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
@@ -3312,7 +3312,7 @@ describe('order.createConversion', () => {
           product_type: '疗程卡', session_count: 5, remaining_sessions: 0,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
@@ -3346,14 +3346,14 @@ describe('order.createConversion', () => {
           product_type: '疗程卡', session_count: 3, remaining_sessions: 3,
           quantity: 1, picked_up_quantity: 0,
           unit_price: '100', unit_real_price: '100',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-x', product_type: '疗程卡', spec_name: '新款',
-          price: '200', session_count: 5, service_fee: '0', sales_category: '自采自销',
+          price: '200', session_count: 5, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
@@ -3396,14 +3396,14 @@ describe('order.createConversion', () => {
           product_type: '单品', session_count: null, remaining_sessions: null,
           quantity: 5, picked_up_quantity: 2,
           unit_price: '200', unit_real_price: '200',
-          sales_category: '自采自销', service_fee: '0',
+          sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '体验卡',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
         rows: [{
           sku_id: 'sku-new', product_type: '疗程卡', spec_name: '升级款',
-          price: '1000', session_count: 10, service_fee: '0', sales_category: '自采自销',
+          price: '1000', session_count: 10, service_fee: '0', sales_category: '自销自耗',
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT sale_orders
@@ -3627,7 +3627,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '2000.00' }])  // 储值卡余额足够
 
@@ -3671,7 +3671,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '300.50' }])  // 余额 300.50 < 1000
 
@@ -3705,7 +3705,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
 
     pg.transaction.mockImplementation(async (cb) => {
@@ -3738,7 +3738,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '100.00' }])  // 余额不足
 
@@ -3762,7 +3762,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '99999.00' }])  // 余额足够
 
@@ -3785,7 +3785,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([])  // 无卡行
 
@@ -3816,7 +3816,7 @@ describe('order.create — 储值卡预选（店长开单 = 预选，不扣卡�
       .mockResolvedValueOnce([{
         sku_id: 'sku-001', product_type: '疗程卡', spec_name: '基础款',
         price: '1000.00', special_price: null, session_count: 10,
-        product_name: 'P', sales_category: '自采自销', product_kind: '护理项目',
+        product_name: 'P', sales_category: '自销自耗', product_kind: '护理项目',
       }])
       .mockResolvedValueOnce([{ balance: '2000.00' }])
 
@@ -4255,7 +4255,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
                 product_type: '疗程卡', session_count: 2, remaining_sessions: 2,
                 quantity: 1, picked_up_quantity: 0,
                 unit_price: '1000', unit_real_price: '1000',
-                sales_category: '自采自销', service_fee: '0',
+                sales_category: '自销自耗', service_fee: '0',
                 client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
               }], rowCount: 1,
             }
@@ -4264,7 +4264,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return {
               rows: [{
                 sku_id: 'sku-cheap', product_type: '疗程卡', spec_name: '低价',
-                price: '500', session_count: 5, service_fee: '0', sales_category: '自采自销',
+                price: '500', session_count: 5, service_fee: '0', sales_category: '自销自耗',
               }], rowCount: 1,
             }
           }
@@ -4319,7 +4319,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
                 product_type: '疗程卡', session_count: 1, remaining_sessions: 1,
                 quantity: 1, picked_up_quantity: 0,
                 unit_price: '500', unit_real_price: '500',
-                sales_category: '自采自销', service_fee: '0',
+                sales_category: '自销自耗', service_fee: '0',
                 client_user_id: 'cu-001', order_status: '已支付', product_kind: '护理项目',
               }], rowCount: 1,
             }
@@ -4328,7 +4328,7 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
             return {
               rows: [{
                 sku_id: 'sku-up', product_type: '疗程卡', spec_name: '升级',
-                price: '1000', session_count: 10, service_fee: '0', sales_category: '自采自销',
+                price: '1000', session_count: 10, service_fee: '0', sales_category: '自销自耗',
               }], rowCount: 1,
             }
           }

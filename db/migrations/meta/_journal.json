@@ -64,6 +64,20 @@
       "when": 1777076362671,
       "tag": "0008_aspiring_pride",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777093066183,
+      "tag": "0009_rename_sales_category_value",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777093191570,
+      "tag": "0010_fix_commission_matrix_sales_category",
+      "breakpoints": true
     }
   ]
 }

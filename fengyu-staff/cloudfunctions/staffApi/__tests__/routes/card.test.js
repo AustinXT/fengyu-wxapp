@@ -108,7 +108,7 @@ describe('card.recharge', () => {
         special_price: '495.00',
         product_type: '院装产品',
         product_kind: '充值卡',
-        sales_category: '自采自销',
+        sales_category: '自销自耗',
       }])
       // 顾客查询
       .mockResolvedValueOnce([{ user_id: 'u-001', phone: '13800001111', name: '张三', customer_type: '会员客' }])
@@ -220,7 +220,7 @@ describe('card.recharge', () => {
       special_price: null,
       product_type: '疗程卡',
       product_kind: '护理项目',
-      sales_category: '自采自销',
+      sales_category: '自销自耗',
     }])
 
     await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*不是充值卡/)

@@ -534,7 +534,7 @@ describe('service.complete', () => {
           employee_id: 'emp-001',
           unit_real_price: '500.00',
           service_fee: '80.00',
-          sales_category: '自采自销',
+          sales_category: '自销自耗',
           skills: ['美容师'],
         },
       ])
@@ -589,7 +589,7 @@ describe('service.complete', () => {
           employee_id: 'emp-001',
           unit_real_price: '500.00',
           service_fee: '80.00',       // sale_items.service_fee 快照
-          sales_category: '自采自销',
+          sales_category: '自销自耗',
           skills: ['美容师'],          // skills[0] 自动推断 roleType
         },
       ])
@@ -727,7 +727,7 @@ describe('service.complete', () => {
           employee_id: 'emp-001',
           unit_real_price: '500.00',
           service_fee: '80.00',
-          sales_category: '自采自销',
+          sales_category: '自销自耗',
           skills: null,  // 无技能标签
         },
       ])

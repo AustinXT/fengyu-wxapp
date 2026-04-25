@@ -257,14 +257,14 @@ describe('product.shopInit', () => {
         sku_id: 'sku-bundle-1', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '套餐SKU', price: '800', special_price: null,
         session_count: 5, sort_order: 1, service_fee: '0', is_shengmei: false,
-        category_name: '面部护理', product_kind: '护理项目', sales_category: '自采自销',
+        category_name: '面部护理', product_kind: '护理项目', sales_category: '自销自耗',
         is_bundle: true,
       },
       {
         sku_id: 'sku-normal-2', category_id: 'cat-1', product_type: '疗程卡',
         spec_name: '普通SKU', price: '300', special_price: null,
         session_count: 10, sort_order: 2, service_fee: '0', is_shengmei: false,
-        category_name: '面部护理', product_kind: '护理项目', sales_category: '自采自销',
+        category_name: '面部护理', product_kind: '护理项目', sales_category: '自销自耗',
         is_bundle: false,
       },
     ])

@@ -946,7 +946,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_shengmei, is_bundle, price, sales_category,
           manage_scope, market_scope, sort_order)
-        VALUES ($1, $2, $3, $4, false, $5, '自采自销', $6, $7, 0)
+        VALUES ($1, $2, $3, $4, false, $5, '自销自耗', $6, $7, 0)
         ON CONFLICT (product_id) DO UPDATE SET
           category_id = EXCLUDED.category_id, name = EXCLUDED.name,
           is_shengmei = EXCLUDED.is_shengmei, price = EXCLUDED.price,
@@ -999,7 +999,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_bundle, price, sales_category, sort_order)
-        VALUES ($1, $2, $3, false, $4, '自采自销', 0)
+        VALUES ($1, $2, $3, false, $4, '自销自耗', 0)
         ON CONFLICT (product_id) DO UPDATE SET
           name = EXCLUDED.name, price = EXCLUDED.price, updated_at = now()
       `, [productId, cat.id, name, parseFloat(row.price) || 0])
@@ -1052,7 +1052,7 @@ async function importProducts(mssqlPool, pgPool, dryRun) {
 
       await client.query(`
         INSERT INTO products (product_id, category_id, name, is_bundle, price, market_scope, sales_category, sort_order)
-        VALUES ($1, $2, $3, true, $4, $5, '自采自销', 0)
+        VALUES ($1, $2, $3, true, $4, $5, '自销自耗', 0)
         ON CONFLICT (product_id) DO UPDATE SET
           name = EXCLUDED.name, price = EXCLUDED.price, market_scope = EXCLUDED.market_scope, updated_at = now()
       `, [productId, promoCatId, promo.name, promo.price, promo.marketScope])

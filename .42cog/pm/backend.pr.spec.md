@@ -129,7 +129,7 @@
 | `is_bundle` | boolean | 是否套餐，NOT NULL DEFAULT false |
 | `price` | numeric(10,2) | 标价/原价（套餐 = Σ(SKU.price)；否则 = min(SKU.price)。交易以 SKU 价格为准） |
 | `special_price` | numeric(10,2) \| null | 特价/促销价 |
-| `sales_category` | sales_category enum \| null | 销售分类（自采自销 / 他销自耗 / 他销他耗 / 生态合作） |
+| `sales_category` | sales_category enum \| null | 销售分类（自销自耗 / 他销自耗 / 他销他耗 / 生态合作） |
 | `manage_scope` | text \| null | 管理范围（null=总部管理） |
 | `market_scope` | text \| null | 可见范围（null=全部可见） |
 | `sort_order` | integer | 排序权重 |
@@ -240,7 +240,7 @@
 | `received` | numeric(10,2) | 实收金额（退出行为负数） |
 | `expire_date` | date \| null | 到期日（院装产品为 null） |
 | `remark` | text | 备注 |
-| `sales_category` | enum \| null | 销售分类：`自采自销` / `他销自耗` / `他销他耗` / `生态合作` |
+| `sales_category` | enum \| null | 销售分类：`自销自耗` / `他销自耗` / `他销他耗` / `生态合作` |
 
 > **索引**: `(sale_order_id)`, `(sku_id)`, `(ref_sale_item_id)`
 >

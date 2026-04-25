@@ -182,7 +182,7 @@ async function createTkklsSaleItems(pgPool, wfItems, customerMap, storeMap, dryR
             it.saleItemId, o.saleOrderId, '购买', it.itemName,
             '疗程卡', it.sessionCount, 0,
             0, 1, 0, 0, 0,
-            null, '自采自销', null,
+            null, '自销自耗', null,
           ])
         }
       }

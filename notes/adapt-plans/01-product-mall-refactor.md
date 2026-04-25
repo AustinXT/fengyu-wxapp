@@ -58,7 +58,7 @@
 // L0: 源头
 productKindEnum: ["组合套餐", "护理项目", "家居产品", "充值卡", "体验卡"]  // 已 5 值
 productTypeEnum: ["疗程卡", "单品", "院装产品"]
-salesCategoryEnum: ["自采自销", "他销自耗", "他销他耗", "生态合作"]
+salesCategoryEnum: ["自销自耗", "他销自耗", "他销他耗", "生态合作"]
 ```
 
 **商品管理侧（张凯独占）** (`db/schema/product.ts:11-60`)

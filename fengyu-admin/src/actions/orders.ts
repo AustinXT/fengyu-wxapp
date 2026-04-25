@@ -617,7 +617,7 @@ export async function createOrder(data: {
     saleAmount?: string
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
-    salesCategory?: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
 }): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
   const session = await getSession()
@@ -1085,7 +1085,7 @@ export async function createConversionOrder(data: {
     sessionCount: number | null
     unitPrice: string
     quantity: number
-    salesCategory?: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
+    salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
 }): Promise<{
   success: boolean

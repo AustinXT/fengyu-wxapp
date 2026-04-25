@@ -288,7 +288,7 @@ Page({
       }
     }
 
-    const salesCat = item.sales_category || '自采自销';
+    const salesCat = item.sales_category || '自销自耗';
     const received = Number(item.received) || 0;
     // P2-14：传 roleType 给 lookupRate（cloudfn ratesByRole 以 roleType 为键）
     const { commissionRate, amount } = this.lookupRate(roleType, salesCat, received);

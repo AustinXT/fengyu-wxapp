@@ -228,7 +228,7 @@ async function batchInsert(pgPool, orders, dryRun) {
           itemRows.push([
             item.saleItemId, order.saleOrderId, '购买', item.itemName,
             '疗程卡', item.sessionCount, item.remainingSessions,
-            0, 1, 0, 0, 0, null, '自采自销', null,
+            0, 1, 0, 0, 0, null, '自销自耗', null,
           ])
         }
       }

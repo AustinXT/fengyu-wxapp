@@ -1271,7 +1271,7 @@ export interface OrderPickerSku {
 export interface OrderPickerCategory {
   categoryId: string
   categoryName: string
-  salesCategory: '自采自销' | '他销自耗' | '他销他耗' | '生态合作' | null
+  salesCategory: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   sortOrder: number
   skus: OrderPickerSku[]
 }

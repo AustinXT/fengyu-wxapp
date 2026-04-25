@@ -76,7 +76,7 @@ export const storeUnbindRequestStatusEnum = pgEnum("store_unbind_request_status"
   "已取消",
 ]);
 
-export const salesCategoryEnum = pgEnum("sales_category", ["自采自销", "他销自耗", "他销他耗", "生态合作"]);
+export const salesCategoryEnum = pgEnum("sales_category", ["自销自耗", "他销自耗", "他销他耗", "生态合作"]);
 
 export const couponTypeEnum = pgEnum("coupon_type", ["现金券", "品项券", "折扣券"]);
 
