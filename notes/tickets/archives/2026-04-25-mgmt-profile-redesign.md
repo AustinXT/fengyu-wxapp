@@ -1,13 +1,14 @@
 # Ticket: 管理层视图「我的」tab 重设计（mgmt-dashboard profile tab）
 
 > 生成日期：2026-04-25
-> **实施状态：📝 待开发**
+> **实施状态：✅ 已落地**（commit 1ae71a3 scopeName 贯通 + commit af63ad6 mgmt-dashboard 重构"我的"区块）
 > 端：fengyu-staff（小程序前端 + staffApi 云函数）
-> 目标位置：
->   - 前端：`fengyu-staff/miniprogram/pages/mgmt-dashboard/mgmt-dashboard.{ts,wxml,wxss}`
->   - 类型：`fengyu-staff/miniprogram/typings/index.d.ts`（RoleBinding 扩展）
->   - 云函数：`fengyu-staff/cloudfunctions/staffApi/routes/auth.js`（queryRoleBindings 补 scopeName）
->   - 单元测试：`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/auth.test.js`（如已有则补 case）
+> 实施位置：
+>   - 前端：`fengyu-staff/miniprogram/pages/mgmt-dashboard/mgmt-dashboard.{ts,wxml,wxss}` 已重构（buildProfileData / roleBindingRows / storeScope 三卡）
+>   - 类型：`fengyu-staff/miniprogram/typings/index.d.ts` `RoleBinding.scopeName` 已增
+>   - 云函数：`fengyu-staff/cloudfunctions/staffApi/routes/auth.js` `queryRoleBindings` 已 SELECT `o.name AS scope_name`
+>   - 单元测试：`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/auth.test.js` 已补 scopeName case
+>   - 旧字段已清理：`onSwitchToStore` / `canSwitchStore` / "返回门店视图" 按钮 / `mgmt-profile-action--outline` / `mgmt-profile-tip` 全部移除
 > 关联：
 >   - [`mgmt-product-cycle-page`](./2026-04-25-mgmt-product-cycle-page.md) — 同期管理层 hub 子页（已落地）
 >   - [`mgmt-customer-archive-page`](./2026-04-25-mgmt-customer-archive-page.md) — 同期 hub 子页（待开发）

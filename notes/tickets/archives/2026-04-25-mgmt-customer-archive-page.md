@@ -1,14 +1,14 @@
 # Ticket: 管理层顾客档案子页（mgmt-dashboard 入口"顾客档案"）
 
 > 生成日期：2026-04-25
-> **实施状态：📝 待开发**
+> **实施状态：✅ 已落地**（前端 8 文件 + 后端 8 actions + 路由表 + 单元测试 1023 行）
 > 端：fengyu-staff（小程序前端 + staffApi 云函数）
-> 目标位置：
->   - 前端：`fengyu-staff/miniprogram/packageMgmt/mgmt-customer-list/` + `packageMgmt/mgmt-customer-detail/` 各 4 文件
->   - 入口跳转：`pages/mgmt-dashboard/mgmt-dashboard.ts:onEntryTap` `entry === 'customers'` 分支
->   - 云函数路由：`staffApi/routes/mgmt-customer.js`（新增）
->   - 路由表注册：`staffApi/index.js`
->   - 单元测试：`staffApi/__tests__/routes/mgmt-customer.test.js`
+> 实施位置：
+>   - 前端：[`packageMgmt/mgmt-customer-list/`](../../fengyu-staff/miniprogram/packageMgmt/mgmt-customer-list/) + [`packageMgmt/mgmt-customer-detail/`](../../fengyu-staff/miniprogram/packageMgmt/mgmt-customer-detail/) 各 4 文件
+>   - 入口跳转：`pages/mgmt-dashboard/mgmt-dashboard.ts:onEntryTap` `entry === 'customers'` 分支已接通
+>   - 云函数路由：[`staffApi/routes/mgmt-customer.js`](../../fengyu-staff/cloudfunctions/staffApi/routes/mgmt-customer.js)（stats / search / listByTag / detail / calendar / paidOrders / giftHistory / refundHistory）
+>   - 路由表注册：`staffApi/index.js` `mgmtCustomer.*` 8 行
+>   - 单元测试：[`staffApi/__tests__/routes/mgmt-customer.test.js`](../../fengyu-staff/cloudfunctions/staffApi/__tests__/routes/mgmt-customer.test.js)（1023 行）
 > 关联：
 >   - [`mgmt-product-cycle-page`](./2026-04-25-mgmt-product-cycle-page.md) — 同期管理层 hub 子页（scope 三档 + 越权校验风格参考）
 >   - [`mgmt-traffic-stats-page`](./2026-04-25-mgmt-traffic-stats-page.md) — 路由参数风格参考（scopeType/scopeId/scopeName）
