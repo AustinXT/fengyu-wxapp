@@ -40,6 +40,7 @@ interface IData {
   period: Period
   scopeType: ScopeType
   scopeId: string | null
+  scopeName: string
   loading: boolean
   state: 'loading' | 'error' | 'content'
 
@@ -68,6 +69,7 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     period: 'month',
     scopeType: 'all',
     scopeId: null,
+    scopeName: '',
     loading: false,
     state: 'loading',
 
@@ -89,10 +91,11 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     byProductKind: [],
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId || null
-    this.setData({ scopeType, scopeId })
+    const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
+    this.setData({ scopeType, scopeId, scopeName })
     this.loadData()
   },
 

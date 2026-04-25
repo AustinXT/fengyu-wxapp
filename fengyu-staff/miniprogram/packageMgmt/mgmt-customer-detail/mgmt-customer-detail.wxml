@@ -2,9 +2,9 @@
 <view class="container">
 
   <!-- 顶部 scope 提示条 -->
-  <view class="mc-scope-bar">
-    <text class="mc-scope-label">数据范围：</text>
-    <text class="mc-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+  <view class="mgmt-scope-bar">
+    <text class="mgmt-scope-label">数据范围：</text>
+    <text class="mgmt-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
   </view>
 
   <!-- 顶层三态壳：loading / error / empty / content -->

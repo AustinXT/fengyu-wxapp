@@ -7,27 +7,13 @@
   min-height: 100vh;
 }
 
-/* 顶部筛选区 sticky */
+/* 顶部筛选区 sticky：period chip 单独占行（scope 已上提为全局 .mgmt-scope-bar） */
 .tf-filter {
   position: sticky;
   top: 0;
   z-index: 10;
   background: var(--color-bg-page);
-  display: flex;
-  align-items: center;
-  gap: var(--gap-grid);
   padding-bottom: var(--spacing-card);
-}
-
-.tf-period-area {
-  flex: 1;
-  min-width: 0;
-}
-
-.tf-scope {
-  flex-shrink: 0;
-  color: var(--color-text-secondary);
-  font-size: 24rpx;
 }
 
 .tf-section-title {

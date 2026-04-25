@@ -5,21 +5,7 @@
   min-height: 100vh;
 }
 
-/* 顶部 scope 提示条（与 mgmt-customer-list 一致） */
-.mc-scope-bar {
-  padding: var(--spacing-tight) var(--spacing-page);
-  background: var(--color-primary-light);
-  font-size: 24rpx;
-  color: var(--color-text-secondary);
-}
-
-.mc-scope-label { color: var(--color-text-hint); }
-
-.mc-scope-value {
-  color: var(--color-primary);
-  font-weight: 600;
-  margin-left: 8rpx;
-}
+/* 顶部 scope 提示条 → 全局 .mgmt-scope-bar（app.wxss）已统一 */
 
 /* 头部信息卡 */
 .profile-card {

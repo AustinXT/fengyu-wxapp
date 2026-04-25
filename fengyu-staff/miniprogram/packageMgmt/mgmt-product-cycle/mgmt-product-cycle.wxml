@@ -1,3 +1,9 @@
+<!-- scope 提示条（只读，scope 在 hub 修改） -->
+<view class="mgmt-scope-bar">
+  <text class="mgmt-scope-label">数据范围：</text>
+  <text class="mgmt-scope-value">{{scopeName || (scopeType === 'all' ? '全部市场' : '')}}</text>
+</view>
+
 <view class="pc-page">
   <!-- 顶部 period chip：sticky -->
   <view class="pc-filter">

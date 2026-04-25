@@ -441,6 +441,7 @@ Page({
       const params = [
         `scopeType=${scope.scopeType}`,
         scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
       ].filter(Boolean).join('&')
       wx.navigateTo({ url: `/packageMgmt/mgmt-product-cycle/mgmt-product-cycle?${params}` })
       return
@@ -460,6 +461,7 @@ Page({
       const params = [
         `scopeType=${scope.scopeType}`,
         scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
       ].filter(Boolean).join('&')
       wx.navigateTo({ url: `/pages/sales-data/sales-data?${params}` })
       return

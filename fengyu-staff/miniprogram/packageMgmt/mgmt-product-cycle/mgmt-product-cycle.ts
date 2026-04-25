@@ -68,6 +68,7 @@ Page({
     periodsForPicker: PERIODS.map((p) => ({ label: p.label, value: p.key })),
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
+    scopeName: '' as string,
 
     cardLoading: false,
     cardError: false,
@@ -82,10 +83,11 @@ Page({
     display: null as CycleDisplay | null,
   },
 
-  onLoad(query: { scopeType?: string; scopeId?: string }) {
+  onLoad(query: { scopeType?: string; scopeId?: string; scopeName?: string }) {
     const scopeType = (query?.scopeType as ScopeType) || 'all'
     const scopeId = query?.scopeId ? query.scopeId : null
-    this.setData({ scopeType, scopeId })
+    const scopeName = query?.scopeName ? decodeURIComponent(query.scopeName) : ''
+    this.setData({ scopeType, scopeId, scopeName })
     // 并行触发持卡人数 + 周期数据
     this.loadCardHolders()
     this.loadCycleStats()
