@@ -13,7 +13,7 @@
 
 const pg = globalThis.__mocks__.pg
 const { createCtx, createManagerCtx } = require('../helpers')
-const { summary, scopeOptions, storeRanking, staffRanking, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
+const { summary, scopeOptions, storeRanking, staffRanking, salesData, __resetMarketsCache } = require('../../routes/mgmt-dashboard')
 
 // ---- ctx 构造 ----
 function makeHqCtx(payload = {}) {
@@ -1890,5 +1890,237 @@ describe('mgmtDashboard.staffRanking', () => {
 
       expect(ctx.result.rows[0].employeeName).toBe('')
     })
+  })
+})
+
+// =====================================================================
+// mgmtDashboard.salesData
+// =====================================================================
+
+describe('mgmtDashboard.salesData 参数与权限校验', () => {
+  test('缺 period 抛 INVALID_PARAMS', async () => {
+    const ctx = makeHqCtx({ scope: { type: 'all' } })
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+  })
+
+  test('period 非法值抛 INVALID_PARAMS', async () => {
+    const ctx = makeHqCtx({ period: 'week', scope: { type: 'all' } })
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+  })
+
+  test('scope.type 缺失抛 INVALID_PARAMS', async () => {
+    const ctx = makeHqCtx({ period: 'month', scope: {} })
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*scope\.type/)
+  })
+
+  test('scope.type=store 缺 scope.id 抛 INVALID_PARAMS', async () => {
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'store' } })
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*scope\.type/)
+  })
+
+  test('store_manager 账号被 requireManagementLevel 拦截', async () => {
+    const ctx = createManagerCtx({ period: 'month', scope: { type: 'all' } })
+    await expect(salesData(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('market 账号选 all → PERMISSION_DENIED', async () => {
+    const ctx = makeMarketCtx({ period: 'month', scope: { type: 'all' } })
+    await expect(salesData(ctx)).rejects.toThrow(/PERMISSION_DENIED.*全部市场/)
+  })
+})
+
+describe('mgmtDashboard.salesData 时间区间口径', () => {
+  function setupSalesDataMocks(overrides = {}) {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/GROUP BY\s+si\.sales_category/.test(sql)) return overrides.cat || []
+      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return overrides.kind || []
+      if (/GROUP BY\s+pc\.category_name/.test(sql)) return overrides.name || []
+      if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
+      if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
+      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.paid_amount/.test(sql)) return [{ v: overrides.revValue || 0 }]
+      return [{ v: 0 }]
+    })
+  }
+
+  test('period=month：SQL 参数 $1 为当月 01 日', async () => {
+    setupSalesDataMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const allCalls = pg.query.mock.calls
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const expectedStart = `${y}-${m}-01`
+
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    expect(totalRevCall).toBeDefined()
+    expect(totalRevCall[1][0]).toBe(expectedStart)
+  })
+
+  test('period=lastMonth：endDate 为上月最后一天（非今天）', async () => {
+    setupSalesDataMocks()
+    const ctx = makeHqCtx({ period: 'lastMonth', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const allCalls = pg.query.mock.calls
+    const now = new Date()
+    const lmY = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()
+    const lmM = now.getMonth() === 0 ? 12 : now.getMonth()
+    const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
+    const expectedEnd = `${lmY}-${String(lmM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
+
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    expect(totalRevCall[1][1]).toBe(expectedEnd)
+    // endDate 不是 today
+    const today = new Date()
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`
+    expect(totalRevCall[1][1]).not.toBe(todayStr)
+  })
+
+  test('period=year：startDate 为当年 01-01', async () => {
+    setupSalesDataMocks()
+    const ctx = makeHqCtx({ period: 'year', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const allCalls = pg.query.mock.calls
+    const expectedStart = `${new Date().getFullYear()}-01-01`
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    expect(totalRevCall[1][0]).toBe(expectedStart)
+  })
+})
+
+describe('mgmtDashboard.salesData 空数据返回全零与空数组', () => {
+  test('无订单时所有金额 = "0.00"，品项数组 = []', async () => {
+    pg.query.mockReset().mockImplementation(async () => [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }])
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const r = ctx.result
+    expect(r.totalRevenue).toBe('0.00')
+    expect(r.xiaomeiRevenue).toBe('0.00')
+    expect(r.newMemberRevenue).toBe('0.00')
+    expect(r.oldMemberRevenue).toBe('0.00')
+    expect(r.totalConsume).toBe('0.00')
+    expect(r.xiaomeiProjectConsume).toBe('0.00')
+    expect(r.newMemberProjectConsume).toBe('0.00')
+    expect(r.oldMemberProjectConsume).toBe('0.00')
+    expect(r.xiaomeiProductOut).toBe('0.00')
+    expect(r.newMemberProductOut).toBe('0.00')
+    expect(r.oldMemberProductOut).toBe('0.00')
+    expect(r.bySalesCategory).toEqual([])
+    expect(r.byProductKind).toEqual([])
+    expect(r.byCategoryName).toEqual([])
+  })
+})
+
+describe('mgmtDashboard.salesData SQL 形态断言', () => {
+  function setupFullMocks() {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/GROUP BY\s+si\.sales_category/.test(sql)) return [{ label: '自销自耗', value: 1000 }]
+      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return [{ label: '护理项目', value: 500 }]
+      if (/GROUP BY\s+pc\.category_name/.test(sql)) return [{ label: '面部护理', value: 300 }]
+      if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
+      if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
+      if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
+      if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
+      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.paid_amount/.test(sql)) return [{ v: 10000 }]
+      return [{ v: 0 }]
+    })
+  }
+
+  test('scope=all：主业务 SQL 含 WHERE TRUE，不含 store_id 过滤', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls.map(([s]) => s)
+    const mainSqls = sqls.filter((s) =>
+      /sale_orders|service_orders|sale_items/.test(s) && !/GROUP BY/.test(s)
+    )
+    for (const s of mainSqls) {
+      expect(s).toMatch(/WHERE\s+TRUE/)
+      expect(s).not.toMatch(/store_id\s*=\s*\$/)
+    }
+  })
+
+  test('scope=store：sale SQL 含 o.store_id = $3；service SQL 含 so.store_id = $3', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'store', id: 'store-001' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls.map(([s]) => s)
+    const saleSqls = sqls.filter((s) => /FROM sale_orders o\b/.test(s) || (/FROM sale_items si/.test(s) && !/GROUP BY pc\.category_name/.test(s) && !/GROUP BY pc\.product_kind/.test(s)))
+    const svcSqls = sqls.filter((s) => /FROM service_orders so\b/.test(s) || /FROM service_items sit/.test(s))
+
+    for (const s of saleSqls) {
+      expect(s).toMatch(/o\.store_id\s*=\s*\$3/)
+    }
+    for (const s of svcSqls) {
+      expect(s).toMatch(/so\.store_id\s*=\s*\$3/)
+    }
+  })
+
+  test('分客型业绩 SQL 含 FILTER WHERE + customer_type + became_member_at 判定', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls.map(([s]) => s)
+    const custRevSql = sqls.find((s) =>
+      /FROM sale_items si/.test(s) &&
+      /JOIN client_wechat_users c/.test(s) &&
+      /FILTER/.test(s) &&
+      !/product_type/.test(s)
+    )
+    expect(custRevSql).toBeDefined()
+    expect(custRevSql).toContain("customer_type = '小美客'")
+    expect(custRevSql).toContain("customer_type = '会员客'")
+    expect(custRevSql).toMatch(/c\.became_member_at::date\s*>=/)
+    expect(custRevSql).toMatch(/c\.became_member_at::date\s*</)
+  })
+
+  test('产品出库 SQL 含 product_type = 院装产品', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls.map(([s]) => s)
+    const prodSql = sqls.find((s) => /si\.product_type\s*=\s*'院装产品'/.test(s))
+    expect(prodSql).toBeDefined()
+    expect(prodSql).toContain('JOIN client_wechat_users c')
+    expect(prodSql).toMatch(/FILTER/)
+  })
+
+  test('品项汇总 value=0 的行不返回', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/GROUP BY\s+si\.sales_category/.test(sql)) return [
+        { label: '自销自耗', value: 1000 },
+        { label: '他销自耗', value: 0 },
+      ]
+      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return []
+      if (/GROUP BY\s+pc\.category_name/.test(sql)) return []
+      return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
+    })
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    expect(ctx.result.bySalesCategory).toHaveLength(1)
+    expect(ctx.result.bySalesCategory[0]).toEqual({ label: '自销自耗', value: '1000.00' })
+  })
+
+  test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/SUM\(o\.paid_amount/.test(sql)) return [{ v: '12345.678' }]
+      if (/GROUP BY/.test(sql)) return []
+      return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
+    })
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    expect(ctx.result.totalRevenue).toBe('12345.68')
+    expect(typeof ctx.result.totalRevenue).toBe('string')
   })
 })

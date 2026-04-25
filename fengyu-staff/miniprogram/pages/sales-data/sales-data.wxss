@@ -1,0 +1,234 @@
+/* pages/sales-data — 销售数据页样式 */
+
+.sd-page {
+  min-height: 100vh;
+  background: #f5f5f5;
+  padding: 24rpx;
+  padding-bottom: 80rpx;
+  box-sizing: border-box;
+}
+
+/* 顶部 chip */
+.sd-period-tabs {
+  display: flex;
+  align-items: center;
+  gap: 32rpx;
+  background: #fff;
+  border-radius: 12rpx;
+  padding: 16rpx 24rpx;
+  margin-bottom: 24rpx;
+}
+
+.sd-period-tab {
+  position: relative;
+  font-size: 28rpx;
+  color: #666;
+  padding: 8rpx 4rpx;
+}
+
+.sd-period-tab.active {
+  color: #C0322A;
+  font-weight: 600;
+}
+
+.sd-period-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -6rpx;
+  transform: translateX(-50%);
+  width: 48rpx;
+  height: 4rpx;
+  background: #C0322A;
+  border-radius: 2rpx;
+}
+
+.sd-period-placeholder {
+  flex: 1;
+}
+
+/* 区段 */
+.sd-section {
+  margin-bottom: 32rpx;
+}
+
+.sd-section-title {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: #C0322A;
+  text-align: center;
+  margin: 16rpx 0 16rpx;
+  padding-top: 8rpx;
+}
+
+/* 4 列业绩矩阵 */
+.sd-matrix-card {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8rpx;
+  background: #fff;
+  border-radius: 8rpx;
+  padding: 20rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+  margin-bottom: 16rpx;
+}
+
+.sd-matrix-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8rpx;
+  padding: 8rpx 4rpx;
+  min-width: 0;
+}
+
+.sd-cell-label {
+  font-size: 22rpx;
+  color: #999;
+  text-align: center;
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+.sd-cell-value {
+  font-size: 26rpx;
+  color: #333;
+  font-weight: 600;
+  text-align: center;
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.3;
+}
+
+/* 实耗卡：左 25% + 右 75% (3x2) */
+.sd-consume-card {
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border-radius: 8rpx;
+  padding: 20rpx 12rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+  gap: 12rpx;
+}
+
+.sd-consume-total {
+  flex: 0 0 25%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-right: 1rpx solid #f0f0f0;
+  padding: 12rpx 4rpx;
+  gap: 12rpx;
+  min-width: 0;
+}
+
+.sd-cell-value--lg {
+  font-size: 32rpx;
+  color: #C0322A;
+}
+
+.sd-consume-breakdown {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12rpx;
+  min-width: 0;
+}
+
+.sd-consume-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8rpx;
+}
+
+.sd-consume-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6rpx;
+  padding: 8rpx 4rpx;
+  min-width: 0;
+}
+
+/* 品项汇总条目 */
+.sd-breakdown-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24rpx 28rpx;
+  background: #fff;
+  border-radius: 8rpx;
+  margin-bottom: 8rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+}
+
+.sd-breakdown-item:active {
+  background: #f7f7f7;
+}
+
+.sd-breakdown-label {
+  font-size: 28rpx;
+  color: #333;
+  font-weight: 500;
+}
+
+.sd-breakdown-arrow {
+  font-size: 24rpx;
+  color: #999;
+}
+
+.sd-breakdown-list {
+  background: #fff;
+  border-radius: 8rpx;
+  margin-bottom: 12rpx;
+  padding: 8rpx 0;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.06);
+}
+
+.sd-breakdown-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16rpx 28rpx;
+  font-size: 26rpx;
+  border-top: 1rpx solid #f5f5f5;
+}
+
+.sd-breakdown-row:first-child {
+  border-top: none;
+}
+
+.sd-breakdown-name {
+  color: #666;
+  flex: 1;
+  padding-right: 16rpx;
+  word-break: break-all;
+}
+
+.sd-breakdown-value {
+  color: #333;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.sd-loading {
+  text-align: center;
+  padding: 80rpx 0;
+  color: #999;
+  font-size: 26rpx;
+}
+
+/* 小屏幕适配 */
+@media (max-width: 360px) {
+  .sd-cell-label {
+    font-size: 20rpx;
+  }
+  .sd-cell-value {
+    font-size: 24rpx;
+  }
+  .sd-cell-value--lg {
+    font-size: 28rpx;
+  }
+}

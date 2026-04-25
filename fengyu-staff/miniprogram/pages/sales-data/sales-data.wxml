@@ -1,0 +1,162 @@
+<!-- pages/sales-data — 管理层"销售数据"页 -->
+<view class="sd-page">
+  <!-- 顶部时间 chip -->
+  <view class="sd-period-tabs">
+    <view
+      class="sd-period-tab {{period==='month'?'active':''}}"
+      data-period="month"
+      bindtap="onPeriodChange"
+    >本月</view>
+    <view
+      class="sd-period-tab {{period==='lastMonth'?'active':''}}"
+      data-period="lastMonth"
+      bindtap="onPeriodChange"
+    >上月</view>
+    <view
+      class="sd-period-tab {{period==='year'?'active':''}}"
+      data-period="year"
+      bindtap="onPeriodChange"
+    >本年</view>
+    <view class="sd-period-placeholder"></view>
+  </view>
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="sd-loading">加载中...</view>
+
+  <block wx:if="{{!loading}}">
+    <!-- 业绩与实耗区 -->
+    <view class="sd-section">
+      <view class="sd-section-title">业绩与实耗</view>
+
+      <!-- 业绩卡片（4列） -->
+      <view class="sd-matrix-card">
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">总业绩</text>
+          <text class="sd-cell-value">{{totalRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">小美客业绩</text>
+          <text class="sd-cell-value">{{xiaomeiRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">新增会员业绩</text>
+          <text class="sd-cell-value">{{newMemberRevenue}}</text>
+        </view>
+        <view class="sd-matrix-cell">
+          <text class="sd-cell-label">老会员业绩</text>
+          <text class="sd-cell-value">{{oldMemberRevenue}}</text>
+        </view>
+      </view>
+
+      <!-- 实耗卡片（左大值 + 右3×2矩阵） -->
+      <view class="sd-consume-card">
+        <view class="sd-consume-total">
+          <text class="sd-cell-label">总实耗</text>
+          <text class="sd-cell-value sd-cell-value--lg">{{totalConsume}}</text>
+        </view>
+        <view class="sd-consume-breakdown">
+          <view class="sd-consume-row">
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">小美客项目实耗</text>
+              <text class="sd-cell-value">{{xiaomeiProjectConsume}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">新增会员实耗</text>
+              <text class="sd-cell-value">{{newMemberProjectConsume}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">老会员实耗</text>
+              <text class="sd-cell-value">{{oldMemberProjectConsume}}</text>
+            </view>
+          </view>
+          <view class="sd-consume-row">
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">小美客产品出库</text>
+              <text class="sd-cell-value">{{xiaomeiProductOut}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">新增会员产品出库</text>
+              <text class="sd-cell-value">{{newMemberProductOut}}</text>
+            </view>
+            <view class="sd-consume-cell">
+              <text class="sd-cell-label">老会员产品出库</text>
+              <text class="sd-cell-value">{{oldMemberProductOut}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 业绩与品项区 -->
+    <view class="sd-section">
+      <view class="sd-section-title">业绩与品项</view>
+
+      <!-- 三维汇总条目（可展开） -->
+      <view
+        class="sd-breakdown-item"
+        bindtap="onToggleSection"
+        data-section="salesCategory"
+      >
+        <text class="sd-breakdown-label">按经营类型汇总</text>
+        <text class="sd-breakdown-arrow">{{expandedSection==='salesCategory'?'▲':'▼'}}</text>
+      </view>
+      <view
+        class="sd-breakdown-list"
+        wx:if="{{expandedSection==='salesCategory' && bySalesCategory.length > 0}}"
+      >
+        <view
+          class="sd-breakdown-row"
+          wx:for="{{bySalesCategory}}"
+          wx:key="label"
+        >
+          <text class="sd-breakdown-name">{{item.label}}</text>
+          <text class="sd-breakdown-value">{{item.value}}</text>
+        </view>
+      </view>
+
+      <view
+        class="sd-breakdown-item"
+        bindtap="onToggleSection"
+        data-section="productKind"
+      >
+        <text class="sd-breakdown-label">按一级品项汇总</text>
+        <text class="sd-breakdown-arrow">{{expandedSection==='productKind'?'▲':'▼'}}</text>
+      </view>
+      <view
+        class="sd-breakdown-list"
+        wx:if="{{expandedSection==='productKind' && byProductKind.length > 0}}"
+      >
+        <view
+          class="sd-breakdown-row"
+          wx:for="{{byProductKind}}"
+          wx:key="label"
+        >
+          <text class="sd-breakdown-name">{{item.label}}</text>
+          <text class="sd-breakdown-value">{{item.value}}</text>
+        </view>
+      </view>
+
+      <view
+        class="sd-breakdown-item"
+        bindtap="onToggleSection"
+        data-section="categoryName"
+      >
+        <text class="sd-breakdown-label">按二级品项汇总</text>
+        <text class="sd-breakdown-arrow">{{expandedSection==='categoryName'?'▲':'▼'}}</text>
+      </view>
+      <view
+        class="sd-breakdown-list"
+        wx:if="{{expandedSection==='categoryName' && byCategoryName.length > 0}}"
+      >
+        <view
+          class="sd-breakdown-row"
+          wx:for="{{byCategoryName}}"
+          wx:key="label"
+        >
+          <text class="sd-breakdown-name">{{item.label}}</text>
+          <text class="sd-breakdown-value">{{item.value}}</text>
+        </view>
+      </view>
+    </view>
+  </block>
+</view>

@@ -665,6 +665,25 @@ function getRefDateExpr(period) {
   return `NOW()::date`
 }
 
+function getSalesDataPeriod(period) {
+  const now = new Date()
+  const y = now.getFullYear()
+  const m = now.getMonth() + 1
+  const d = now.getDate()
+  const p = (v) => String(v).padStart(2, '0')
+  const today = `${y}-${p(m)}-${p(d)}`
+  if (period === 'month') {
+    return { startDate: `${y}-${p(m)}-01`, endDate: today }
+  }
+  if (period === 'lastMonth') {
+    const lmY = m === 1 ? y - 1 : y
+    const lmM = m === 1 ? 12 : m - 1
+    const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
+    return { startDate: `${lmY}-${p(lmM)}-01`, endDate: `${lmY}-${p(lmM)}-${p(lastDay)}` }
+  }
+  return { startDate: `${y}-01-01`, endDate: today }
+}
+
 /**
  * 当前账号可见门店列表
  * @returns {string[] | null} null 表示不过滤（headquarters）；[] 表示空集（market 但 scopeStoreIds 为空）
@@ -1202,9 +1221,219 @@ async function staffRanking(ctx) {
   }
 }
 
+// =====================================================================
+// salesData —— 销售数据页（业绩与实耗 + 品项维度汇总）
+// =====================================================================
+
+/**
+ * mgmtDashboard.salesData
+ * 入参：{ period: 'month'|'lastMonth'|'year', scope: { type: 'all'|'market'|'store', id?: string } }
+ * 出参：totalRevenue / 分客型业绩 / totalConsume / 分客型实耗 / 品项汇总
+ *
+ * 时间轴：BETWEEN period.startDate AND period.endDate（与 summary 的 date_trunc 不同）
+ * 顾客分型：取 client_wechat_users 当前快照（新增会员 = became_member_at >= startDate）
+ */
+async function salesData(ctx) {
+  await requireManagementLevel()(ctx, async () => {})
+  const { period, scope } = ctx.event.payload || {}
+  const scopeType = scope?.type
+  const scopeId = scope?.id || null
+
+  if (!['month', 'lastMonth', 'year'].includes(period)) {
+    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+  }
+  if (!['all', 'market', 'store'].includes(scopeType)) {
+    throw new Error('INVALID_PARAMS: scope.type 必须是 all/market/store')
+  }
+  if (scopeType !== 'all' && !scopeId) {
+    throw new Error('INVALID_PARAMS: scope.type 为 market/store 时必须提供 scope.id')
+  }
+
+  validateScope(ctx.auth, scopeType, scopeId)
+
+  const { startDate, endDate } = getSalesDataPeriod(period)
+  const fmt = (v) => parseFloat(v || 0).toFixed(2)
+
+  // $1=startDate, $2=endDate, $3...=scope params
+  const scSale = buildSaleScope(scopeType, scopeId, 'o', 3)
+  const scSvc = buildSaleScope(scopeType, scopeId, 'so', 3)
+  const saleP = [startDate, endDate, ...scSale.params]
+  const svcP = [startDate, endDate, ...scSvc.params]
+
+  const t0 = Date.now()
+  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows] =
+    await Promise.all([
+      // SQL 1: 总业绩
+      pg.query(
+        `SELECT COALESCE(SUM(o.paid_amount::numeric), 0) AS v
+           FROM sale_orders o
+          WHERE ${scSale.sql}
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2`,
+        saleP,
+      ),
+      // SQL 2: 分客型业绩（单次扫描三 FILTER）
+      pg.query(
+        `SELECT
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '小美客'
+            ), 0) AS xiaomei,
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date >= $1
+            ), 0) AS new_member,
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date < $1
+            ), 0) AS old_member
+           FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           JOIN client_wechat_users c ON c.client_user_id = o.client_user_id
+          WHERE ${scSale.sql}
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2`,
+        saleP,
+      ),
+      // SQL 3: 总实耗
+      pg.query(
+        `SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS v
+           FROM service_items sit
+           JOIN service_orders so ON so.service_order_id = sit.service_order_id
+          WHERE ${scSvc.sql}
+            AND so.status = '已完成'
+            AND so.service_date BETWEEN $1 AND $2`,
+        svcP,
+      ),
+      // SQL 4: 分客型项目实耗
+      pg.query(
+        `SELECT
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
+              WHERE c.customer_type = '小美客'
+            ), 0) AS xiaomei,
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date >= $1
+            ), 0) AS new_member,
+            COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date < $1
+            ), 0) AS old_member
+           FROM service_items sit
+           JOIN service_orders so ON so.service_order_id = sit.service_order_id
+           JOIN client_wechat_users c ON c.client_user_id = so.client_user_id
+          WHERE ${scSvc.sql}
+            AND so.status = '已完成'
+            AND so.service_date BETWEEN $1 AND $2`,
+        svcP,
+      ),
+      // SQL 5: 分客型产品出库（product_type='院装产品' 快照列）
+      pg.query(
+        `SELECT
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '小美客'
+            ), 0) AS xiaomei,
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date >= $1
+            ), 0) AS new_member,
+            COALESCE(SUM(si.received::numeric) FILTER (
+              WHERE c.customer_type = '会员客'
+                AND c.became_member_at::date < $1
+            ), 0) AS old_member
+           FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           JOIN client_wechat_users c ON c.client_user_id = o.client_user_id
+          WHERE ${scSale.sql}
+            AND si.product_type = '院装产品'
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2`,
+        saleP,
+      ),
+      // SQL 6: 按经营类型汇总
+      pg.query(
+        `SELECT si.sales_category AS label,
+                COALESCE(SUM(si.received::numeric), 0) AS value
+           FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+          WHERE ${scSale.sql}
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2
+            AND si.sales_category IS NOT NULL
+          GROUP BY si.sales_category
+          ORDER BY value DESC`,
+        saleP,
+      ),
+      // SQL 7: 按一级品项汇总
+      pg.query(
+        `SELECT pc.product_kind AS label,
+                COALESCE(SUM(si.received::numeric), 0) AS value
+           FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           JOIN product_skus sk ON sk.sku_id = si.sku_id
+           JOIN product_categories pc ON pc.category_id = sk.category_id
+          WHERE ${scSale.sql}
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2
+            AND pc.product_kind IS NOT NULL
+          GROUP BY pc.product_kind
+          ORDER BY value DESC`,
+        saleP,
+      ),
+      // SQL 8: 按二级品项汇总
+      pg.query(
+        `SELECT pc.category_name AS label,
+                COALESCE(SUM(si.received::numeric), 0) AS value
+           FROM sale_items si
+           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           JOIN product_skus sk ON sk.sku_id = si.sku_id
+           JOIN product_categories pc ON pc.category_id = sk.category_id
+          WHERE ${scSale.sql}
+            AND o.sale_order_type IN ('销售单', '转换单')
+            AND o.status = '已支付'
+            AND o.paid_at::date BETWEEN $1 AND $2
+          GROUP BY pc.category_name
+          ORDER BY value DESC`,
+        saleP,
+      ),
+    ])
+
+  const elapsed = Date.now() - t0
+
+  const toList = (rows) =>
+    rows
+      .map((r) => ({ label: r.label, value: fmt(r.value) }))
+      .filter((r) => parseFloat(r.value) > 0)
+
+  ctx.result = {
+    totalRevenue: fmt(revRows[0]?.v),
+    xiaomeiRevenue: fmt(custRevRows[0]?.xiaomei),
+    newMemberRevenue: fmt(custRevRows[0]?.new_member),
+    oldMemberRevenue: fmt(custRevRows[0]?.old_member),
+    totalConsume: fmt(consRows[0]?.v),
+    xiaomeiProjectConsume: fmt(custConsRows[0]?.xiaomei),
+    newMemberProjectConsume: fmt(custConsRows[0]?.new_member),
+    oldMemberProjectConsume: fmt(custConsRows[0]?.old_member),
+    xiaomeiProductOut: fmt(prodOutRows[0]?.xiaomei),
+    newMemberProductOut: fmt(prodOutRows[0]?.new_member),
+    oldMemberProductOut: fmt(prodOutRows[0]?.old_member),
+    bySalesCategory: toList(catRows),
+    byProductKind: toList(kindRows),
+    byCategoryName: toList(nameRows),
+  }
+
+  if (elapsed > 800) {
+    console.warn(`[mgmtDashboard.salesData] slow: ${elapsed}ms`, { period, scopeType, scopeId })
+  }
+}
+
 // 测试辅助：清空 loadAllMarkets 的 5 分钟内存缓存（避免 vitest 跨用例串扰）
 function __resetMarketsCache() {
   CACHE = { ts: 0, data: null }
 }
 
-module.exports = { scopeOptions, summary, storeRanking, staffRanking, __resetMarketsCache }
+module.exports = { scopeOptions, summary, storeRanking, staffRanking, salesData, __resetMarketsCache }
