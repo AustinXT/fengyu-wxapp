@@ -101,23 +101,28 @@ const CRON_SPEND_SQL = `
     AND paid_at >= (NOW() - INTERVAL '12 months')
 `
 
-// cronTask/index.js:259-267 processUpgrade
+// cronTask/index.js:processUpgrade（已含 old_member_level 快照 + IS DISTINCT FROM 守卫）
 const CRON_UPGRADE_SQL = `
   UPDATE client_wechat_users
-     SET member_level = $1,
+     SET old_member_level = member_level,
+         member_level = $1,
          member_level_upgraded_at = NOW(),
          member_level_locked_until = NOW() + INTERVAL '150 days',
          updated_at = NOW()
    WHERE user_id = $2
+     AND member_level IS DISTINCT FROM $1
 `
 
-// cronTask/index.js:320-326 processDowngrade（保级期已过）
+// cronTask/index.js:processDowngrade（保级期已过，已含 old_member_level 快照 + IS DISTINCT FROM 守卫）
 const CRON_DOWNGRADE_SQL = `
   UPDATE client_wechat_users
-     SET member_level = $1,
+     SET old_member_level = member_level,
+         member_level = $1,
+         member_level_upgraded_at = NOW(),
          member_level_locked_until = NULL,
          updated_at = NOW()
    WHERE user_id = $2
+     AND member_level IS DISTINCT FROM $1
 `
 
 // cronTask/index.js:130-136 消息幂等插入
@@ -238,6 +243,7 @@ async function createClient(client, userId, phone) {
     ) VALUES ($1, $2, $3, 'ORG-STORE-1', '会员客', NULL)
     ON CONFLICT (user_id) DO UPDATE SET
       member_level = NULL,
+      old_member_level = NULL,
       member_level_locked_until = NULL,
       member_level_upgraded_at = NULL
   `, [userId, phone, `测试-${userId}`])
@@ -570,6 +576,76 @@ async function S8_two_upgrades_independent_idem_keys(client) {
   }
 }
 
+async function S9_upgrade_snapshots_old_level(client) {
+  const id = 'S9'; const name = 'S9 升级（初钻→星钻）：old_member_level 快照旧等级'
+  try {
+    const userId = 'FYGK-S9'
+    await createClient(client, userId, '13800000009')
+    // 先升到初钻
+    await client.query(CRON_UPGRADE_SQL, ['初钻', userId])
+    // 再升到星钻
+    await client.query(CRON_UPGRADE_SQL, ['星钻', userId])
+
+    const row = (await client.query(
+      `SELECT member_level, old_member_level FROM client_wechat_users WHERE user_id = $1`, [userId]
+    )).rows[0]
+    if (row.member_level !== '星钻') throw new Error(`level expected 星钻, got ${row.member_level}`)
+    if (row.old_member_level !== '初钻') throw new Error(`old_member_level expected 初钻, got ${row.old_member_level}`)
+
+    pass(id, name, `old=初钻 new=星钻`)
+  } catch (e) {
+    fail(id, name, e)
+  }
+}
+
+async function S10_first_upgrade_old_level_null(client) {
+  const id = 'S10'; const name = 'S10 首次升级（NULL→初钻）：old_member_level 保持 NULL'
+  try {
+    const userId = 'FYGK-S10'
+    await createClient(client, userId, '13800000010')
+    // 用户 member_level 为 NULL，首次升级到初钻
+    await client.query(CRON_UPGRADE_SQL, ['初钻', userId])
+
+    const row = (await client.query(
+      `SELECT member_level, old_member_level FROM client_wechat_users WHERE user_id = $1`, [userId]
+    )).rows[0]
+    if (row.member_level !== '初钻') throw new Error(`level expected 初钻, got ${row.member_level}`)
+    if (row.old_member_level !== null) throw new Error(`old_member_level should be NULL (first upgrade), got ${row.old_member_level}`)
+
+    pass(id, name, `old=NULL new=初钻`)
+  } catch (e) {
+    fail(id, name, e)
+  }
+}
+
+async function S11_downgrade_snapshots_old_level(client) {
+  const id = 'S11'; const name = 'S11 降级（星钻→初钻）：old_member_level 快照旧等级'
+  try {
+    const userId = 'FYGK-S11'
+    await createClient(client, userId, '13800000011')
+    // 先置为星钻（保级已过期）
+    await client.query(`
+      UPDATE client_wechat_users
+         SET member_level = '星钻',
+             member_level_upgraded_at = NOW() - INTERVAL '200 days',
+             member_level_locked_until = NOW() - INTERVAL '10 days'
+       WHERE user_id = $1
+    `, [userId])
+    // 降级到初钻
+    await client.query(CRON_DOWNGRADE_SQL, ['初钻', userId])
+
+    const row = (await client.query(
+      `SELECT member_level, old_member_level FROM client_wechat_users WHERE user_id = $1`, [userId]
+    )).rows[0]
+    if (row.member_level !== '初钻') throw new Error(`level expected 初钻, got ${row.member_level}`)
+    if (row.old_member_level !== '星钻') throw new Error(`old_member_level expected 星钻, got ${row.old_member_level}`)
+
+    pass(id, name, `old=星钻 new=初钻`)
+  } catch (e) {
+    fail(id, name, e)
+  }
+}
+
 // ---------- 主流程 ----------
 
 async function maybeStartDocker() {
@@ -640,6 +716,9 @@ async function main() {
     await S6_locked_skip_downgrade(client)
     await S7_expired_lock_downgrade(client)
     await S8_two_upgrades_independent_idem_keys(client)
+    await S9_upgrade_snapshots_old_level(client)
+    await S10_first_upgrade_old_level_null(client)
+    await S11_downgrade_snapshots_old_level(client)
 
     // 汇总
     const passCnt = results.filter((r) => r.ok).length

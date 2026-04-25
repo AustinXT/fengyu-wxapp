@@ -260,11 +260,13 @@ async function processUpgrade(client, userId, oldLevel, newLevel, spend, benefit
   try {
     await client.query(
       `UPDATE client_wechat_users
-         SET member_level = $1,
+         SET old_member_level = member_level,
+             member_level = $1,
              member_level_upgraded_at = NOW(),
              member_level_locked_until = NOW() + INTERVAL '150 days',
              updated_at = NOW()
-       WHERE user_id = $2`,
+       WHERE user_id = $2
+         AND member_level IS DISTINCT FROM $1`,
       [newLevel, userId]
     )
 
@@ -321,10 +323,13 @@ async function processDowngrade(client, userId, oldLevel, newLevel, spend, locke
   try {
     await client.query(
       `UPDATE client_wechat_users
-         SET member_level = $1,
+         SET old_member_level = member_level,
+             member_level = $1,
+             member_level_upgraded_at = NOW(),
              member_level_locked_until = NULL,
              updated_at = NOW()
-       WHERE user_id = $2`,
+       WHERE user_id = $2
+         AND member_level IS DISTINCT FROM $1`,
       [newLevel, userId]
     )
     await client.query(
