@@ -1,4 +1,8 @@
 {
   "navigationBarTitleText": "品项数据",
-  "usingComponents": {}
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "mgmt-period-picker": "../../components/mgmt-period-picker/mgmt-period-picker",
+    "mgmt-data-state": "../../components/mgmt-data-state/mgmt-data-state"
+  }
 }

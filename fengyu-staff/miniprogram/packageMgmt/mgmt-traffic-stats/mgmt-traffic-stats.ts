@@ -102,10 +102,12 @@ Page({
   data: {
     period: 'month' as Period,
     periods: PERIODS,
+    periodsForPicker: PERIODS.map((p) => ({ label: p.label, value: p.key })),
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
     scopeName: '',
     loading: false,
+    state: 'loading' as 'loading' | 'empty' | 'error' | 'content',
     summary: null as TrafficData | null,
     display: null as DisplayData | null,
   },
@@ -128,15 +130,18 @@ Page({
     }
   },
 
-  onPeriodTap(e: WechatMiniprogram.BaseEvent) {
-    const period = (e.currentTarget.dataset as { period?: Period }).period
+  onPeriodChange(e: WechatMiniprogram.CustomEvent<{ value: Period }>) {
+    const period = e.detail?.value
     if (!period || period === this.data.period) return
     this.setData({ period })
     this.loadSummary()
   },
 
   async loadSummary() {
-    this.setData({ loading: true })
+    this.setData({
+      loading: true,
+      state: this.data.display ? 'content' : 'loading',
+    })
     try {
       const summary = await callStaffApi<TrafficData>('mgmtTraffic.summary', {
         period: this.data.period,
@@ -147,11 +152,23 @@ Page({
         summary,
         display: this.buildDisplay(summary),
         loading: false,
+        state: 'content',
       })
     } catch {
-      this.setData({ loading: false })
+      this.setData({
+        loading: false,
+        state: this.data.display ? 'content' : 'error',
+      })
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
+  },
+
+  onRetry() {
+    this.loadSummary()
+  },
+
+  onPullDownRefresh() {
+    this.loadSummary().finally(() => wx.stopPullDownRefresh())
   },
 
   buildDisplay(s: TrafficData): DisplayData {

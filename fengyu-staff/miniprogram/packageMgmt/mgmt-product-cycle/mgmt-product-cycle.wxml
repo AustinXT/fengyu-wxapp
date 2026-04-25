@@ -1,13 +1,11 @@
 <view class="pc-page">
-  <!-- 顶部 period chip -->
+  <!-- 顶部 period chip：sticky -->
   <view class="pc-filter">
-    <view
-      wx:for="{{periods}}"
-      wx:key="key"
-      class="pc-chip {{item.key === period ? 'active' : ''}}"
-      data-period="{{item.key}}"
-      bindtap="onPeriodTap"
-    >{{item.label}}</view>
+    <mgmt-period-picker
+      options="{{ periodsForPicker }}"
+      value="{{ period }}"
+      bind:change="onPeriodChange"
+    />
   </view>
 
   <!-- Section 标题 -->
@@ -25,9 +23,11 @@
         <view class="pc-col pc-col-num">持卡人数</view>
         <view class="pc-col pc-col-num">占比</view>
       </view>
-      <view wx:if="{{cardLoading && cardHoldersData.rows.length === 0}}" class="pc-loading">加载中...</view>
-      <view wx:elif="{{cardHoldersData.rows.length === 0}}" class="pc-empty">暂无数据</view>
-      <block wx:else>
+      <mgmt-data-state
+        state="{{ cardError ? 'error' : (cardLoading && cardHoldersData.rows.length === 0 ? 'loading' : (cardHoldersData.rows.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCardRetry"
+      >
         <view
           wx:for="{{cardHoldersData.rows}}"
           wx:key="productKind"
@@ -37,7 +37,7 @@
           <view class="pc-col pc-col-num">{{item.count}}</view>
           <view class="pc-col pc-col-num">{{item.rate}}</view>
         </view>
-      </block>
+      </mgmt-data-state>
     </view>
   </view>
 
@@ -51,9 +51,11 @@
         <view class="pc-col pc-col-num">业绩</view>
         <view class="pc-col pc-col-num">客单价</view>
       </view>
-      <view wx:if="{{loading && !display}}" class="pc-loading">加载中...</view>
-      <view wx:elif="{{!display || display.trial.length === 0}}" class="pc-empty">暂无数据</view>
-      <block wx:else>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.trial.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
         <view
           wx:for="{{display.trial}}"
           wx:key="productKind"
@@ -64,7 +66,7 @@
           <view class="pc-col pc-col-num">{{item.revenue}}</view>
           <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
         </view>
-      </block>
+      </mgmt-data-state>
     </view>
   </view>
 
@@ -78,9 +80,11 @@
         <view class="pc-col pc-col-num">业绩</view>
         <view class="pc-col pc-col-num">客单价</view>
       </view>
-      <view wx:if="{{loading && !display}}" class="pc-loading">加载中...</view>
-      <view wx:elif="{{!display || display.newEntry.length === 0}}" class="pc-empty">暂无数据</view>
-      <block wx:else>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.newEntry.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
         <view
           wx:for="{{display.newEntry}}"
           wx:key="productKind"
@@ -91,7 +95,7 @@
           <view class="pc-col pc-col-num">{{item.revenue}}</view>
           <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
         </view>
-      </block>
+      </mgmt-data-state>
     </view>
   </view>
 
@@ -105,9 +109,11 @@
         <view class="pc-col pc-col-num">业绩</view>
         <view class="pc-col pc-col-num">客单价</view>
       </view>
-      <view wx:if="{{loading && !display}}" class="pc-loading">加载中...</view>
-      <view wx:elif="{{!display || display.repurchase.length === 0}}" class="pc-empty">暂无数据</view>
-      <block wx:else>
+      <mgmt-data-state
+        state="{{ cycleError ? 'error' : (loading && !display ? 'loading' : (!display || display.repurchase.length === 0 ? 'empty' : 'content')) }}"
+        empty-text="暂无数据"
+        bind:retry="onCycleRetry"
+      >
         <view
           wx:for="{{display.repurchase}}"
           wx:key="productKind"
@@ -118,7 +124,7 @@
           <view class="pc-col pc-col-num">{{item.revenue}}</view>
           <view class="pc-col pc-col-num">{{item.avgTicket}}</view>
         </view>
-      </block>
+      </mgmt-data-state>
     </view>
   </view>
 </view>

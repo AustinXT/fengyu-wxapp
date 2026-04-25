@@ -1,147 +1,112 @@
 <view class="tf-page">
-  <!-- 顶部筛选 -->
+  <!-- 顶部筛选区 sticky：period chip + scope 文字 -->
   <view class="tf-filter">
-    <view
-      wx:for="{{periods}}"
-      wx:key="key"
-      class="tf-chip {{item.key === period ? 'active' : ''}}"
-      data-period="{{item.key}}"
-      bindtap="onPeriodTap"
-    >{{item.label}}</view>
+    <view class="tf-period-area">
+      <mgmt-period-picker
+        options="{{ periodsForPicker }}"
+        value="{{ period }}"
+        bind:change="onPeriodChange"
+      />
+    </view>
     <view class="tf-scope">{{scopeName || '全部市场'}}</view>
   </view>
 
-  <!-- 加载中 -->
-  <view wx:if="{{loading && !display}}" class="tf-loading">加载中...</view>
+  <!-- 三态壳：loading / error 时由组件接管 -->
+  <mgmt-data-state state="{{ state }}" bind:retry="onRetry">
+    <view wx:if="{{display}}">
+      <!-- Section 1：注册情况 -->
+      <view class="tf-section-title">注册情况（截至当天）</view>
+      <view class="tf-grid-4">
+        <mgmt-stat-card size="md" count="{{display.registration.regTotal}}"  label="总注册数" />
+        <mgmt-stat-card size="md" count="{{display.registration.regOnly}}"   label="仅注册用户" />
+        <mgmt-stat-card size="md" count="{{display.registration.regTrial}}"  label="体验客" />
+        <mgmt-stat-card size="md" count="{{display.registration.regMember}}" label="会员客" />
+      </view>
 
-  <!-- 主体（display 就绪后渲染） -->
-  <block wx:if="{{display}}">
-    <!-- Section 1：注册情况 -->
-    <view class="tf-section-title">注册情况（截至当天）</view>
-    <view class="tf-grid-4">
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">总注册数</text>
-        <text class="tf-cell-val">{{display.registration.regTotal}}</text>
+      <!-- Section 2：到店客流数据 -->
+      <view class="tf-section-title">到店客流数据（区间内）</view>
+      <view class="tf-grid-4">
+        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.count}}" label="{{item.label}}" />
       </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">仅注册用户</text>
-        <text class="tf-cell-val">{{display.registration.regOnly}}</text>
+      <view class="tf-grid-4">
+        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.users}}" label="对应人数" />
       </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">体验客</text>
-        <text class="tf-cell-val">{{display.registration.regTrial}}</text>
+      <view class="tf-grid-4">
+        <mgmt-stat-card size="md" wx:for="{{display.traffic}}" wx:key="type" count="{{item.sessions}}" label="项目数" />
       </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">会员客</text>
-        <text class="tf-cell-val">{{display.registration.regMember}}</text>
-      </view>
-    </view>
 
-    <!-- Section 2：到店客流数据 -->
-    <view class="tf-section-title">到店客流数据（区间内）</view>
-    <view class="tf-grid-4">
-      <view class="tf-cell" wx:for="{{display.traffic}}" wx:key="type">
-        <text class="tf-cell-lbl">{{item.label}}</text>
-        <text class="tf-cell-val">{{item.count}}</text>
+      <!-- Section 3：会员状态与客活 -->
+      <view class="tf-section-title">会员状态与客活</view>
+      <view class="tf-status-grid">
+        <!-- 左列：截面 5 项 -->
+        <view>
+          <view class="tf-row">
+            <text class="lbl">保有会员-稳定</text>
+            <text class="val">{{display.status.retainedStable}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">保有会员-有效</text>
+            <text class="val">{{display.status.retainedActive}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">沉睡人数</text>
+            <text class="val">{{display.status.dormantWarn}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">冰冻人数</text>
+            <text class="val">{{display.status.dormantFrozen}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">休眠人数</text>
+            <text class="val">{{display.status.dormantDeep}}</text>
+          </view>
+        </view>
+        <!-- 右列：客活 2 项 + 激活 3 项（带角标） -->
+        <view>
+          <view class="tf-row">
+            <text class="lbl">一次客活</text>
+            <text class="val">{{display.status.activeOnce}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">二次客活</text>
+            <text class="val">{{display.status.activeTwice}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">本月激活（沉睡）<text class="tf-mark">*</text></text>
+            <text class="val">{{display.status.reactivatedFromWarn}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">本月激活（冰冻）<text class="tf-mark">*</text></text>
+            <text class="val">{{display.status.reactivatedFromFrozen}}</text>
+          </view>
+          <view class="tf-row">
+            <text class="lbl">本月激活（休眠）<text class="tf-mark">*</text></text>
+            <text class="val">{{display.status.reactivatedFromDeep}}</text>
+          </view>
+        </view>
       </view>
-    </view>
-    <view class="tf-grid-4">
-      <view class="tf-cell" wx:for="{{display.traffic}}" wx:key="type" wx:for-item="item">
-        <text class="tf-cell-lbl">对应人数</text>
-        <text class="tf-cell-val">{{item.users}}</text>
-      </view>
-    </view>
-    <view class="tf-grid-4">
-      <view class="tf-cell" wx:for="{{display.traffic}}" wx:key="type" wx:for-item="item">
-        <text class="tf-cell-lbl">项目数</text>
-        <text class="tf-cell-val">{{item.sessions}}</text>
-      </view>
-    </view>
+      <view class="tf-note">* 实时反推（anchor=区间起点-1）</view>
 
-    <!-- Section 3：会员状态与客活 -->
-    <view class="tf-section-title">会员状态与客活</view>
-    <view class="tf-status-grid">
-      <!-- 左列：截面 5 项 -->
-      <view>
-        <view class="tf-row">
-          <text class="lbl">保有会员-稳定</text>
-          <text class="val">{{display.status.retainedStable}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">保有会员-有效</text>
-          <text class="val">{{display.status.retainedActive}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">沉睡人数</text>
-          <text class="val">{{display.status.dormantWarn}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">冰冻人数</text>
-          <text class="val">{{display.status.dormantFrozen}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">休眠人数</text>
-          <text class="val">{{display.status.dormantDeep}}</text>
-        </view>
+      <!-- Section 4：会员被经营情况 -->
+      <view class="tf-section-title">会员被经营情况（区间内）</view>
+      <view wx:for="{{display.memberOps.buckets}}" wx:key="tier" class="tf-row">
+        <text class="lbl">{{item.tierLabel}}</text>
+        <text class="val">{{item.count}}</text>
+        <text class="lbl tf-row-mid">消费金额</text>
+        <text class="val">{{item.spend}}</text>
       </view>
-      <!-- 右列：客活 2 项 + 激活 3 项（带角标） -->
-      <view>
-        <view class="tf-row">
-          <text class="lbl">一次客活</text>
-          <text class="val">{{display.status.activeOnce}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">二次客活</text>
-          <text class="val">{{display.status.activeTwice}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">本月激活（沉睡）<text class="tf-mark">*</text></text>
-          <text class="val">{{display.status.reactivatedFromWarn}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">本月激活（冰冻）<text class="tf-mark">*</text></text>
-          <text class="val">{{display.status.reactivatedFromFrozen}}</text>
-        </view>
-        <view class="tf-row">
-          <text class="lbl">本月激活（休眠）<text class="tf-mark">*</text></text>
-          <text class="val">{{display.status.reactivatedFromDeep}}</text>
-        </view>
+      <view class="tf-avg-ticket-wrap">
+        <mgmt-stat-card size="lg" variant="primary" count="{{display.memberOps.avgTicket}}" label="会员客单价" />
       </view>
-    </view>
-    <view class="tf-note">* 实时反推（anchor=区间起点-1）</view>
 
-    <!-- Section 4：会员被经营情况 -->
-    <view class="tf-section-title">会员被经营情况（区间内）</view>
-    <view wx:for="{{display.memberOps.buckets}}" wx:key="tier" class="tf-row">
-      <text class="lbl">{{item.tierLabel}}</text>
-      <text class="val">{{item.count}}</text>
-      <text class="lbl tf-row-mid">消费金额</text>
-      <text class="val">{{item.spend}}</text>
-    </view>
-    <view class="tf-avg-ticket">
-      <text class="lbl">会员客单价</text>
-      <text class="val">{{display.memberOps.avgTicket}}</text>
-    </view>
-
-    <!-- Section 5：新会员经营 -->
-    <view class="tf-section-title">新会员经营</view>
-    <view class="tf-grid-4">
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">新增会员数</text>
-        <text class="tf-cell-val">{{display.newMembers.count}}</text>
-      </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">对应消费</text>
-        <text class="tf-cell-val">{{display.newMembers.spend}}</text>
-      </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">新会员客单价</text>
-        <text class="tf-cell-val">{{display.newMembers.avgTicket}}</text>
-      </view>
-      <view class="tf-cell">
-        <text class="tf-cell-lbl">新会员成交率</text>
-        <text class="tf-cell-val">{{display.newMembers.convRate}}</text>
+      <!-- Section 5：新会员经营 -->
+      <view class="tf-section-title">新会员经营</view>
+      <view class="tf-grid-4">
+        <mgmt-stat-card size="md" count="{{display.newMembers.count}}"     label="新增会员数" />
+        <mgmt-stat-card size="md" count="{{display.newMembers.spend}}"     label="对应消费" />
+        <mgmt-stat-card size="md" count="{{display.newMembers.avgTicket}}" label="新会员客单价" />
+        <mgmt-stat-card size="md" count="{{display.newMembers.convRate}}"  label="新会员成交率" />
       </view>
     </view>
-  </block>
+  </mgmt-data-state>
 </view>

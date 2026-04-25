@@ -65,11 +65,14 @@ Page({
   data: {
     period: 'month' as Period,
     periods: PERIODS,
+    periodsForPicker: PERIODS.map((p) => ({ label: p.label, value: p.key })),
     scopeType: 'all' as ScopeType,
     scopeId: null as string | null,
 
     cardLoading: false,
+    cardError: false,
     loading: false,
+    cycleError: false,
 
     cardHoldersData: {
       memberCount: 0,
@@ -94,8 +97,8 @@ Page({
     }
   },
 
-  onPeriodTap(e: WechatMiniprogram.BaseEvent) {
-    const period = (e.currentTarget.dataset as { period?: Period }).period
+  onPeriodChange(e: WechatMiniprogram.CustomEvent<{ value: Period }>) {
+    const period = e.detail?.value
     if (!period || period === this.data.period) return
     this.setData({ period })
     // 持卡人数不重拉
@@ -103,7 +106,7 @@ Page({
   },
 
   async loadCardHolders() {
-    this.setData({ cardLoading: true })
+    this.setData({ cardLoading: true, cardError: false })
     try {
       const resp = await callStaffApi<CardHoldersResp>('mgmtProduct.cardHolders', {
         scopeType: this.data.scopeType,
@@ -122,13 +125,13 @@ Page({
         cardLoading: false,
       })
     } catch {
-      this.setData({ cardLoading: false })
+      this.setData({ cardLoading: false, cardError: true })
       wx.showToast({ icon: 'none', title: '持卡人数加载失败' })
     }
   },
 
   async loadCycleStats() {
-    this.setData({ loading: true })
+    this.setData({ loading: true, cycleError: false })
     try {
       const resp = await callStaffApi<CycleStatsResp>('mgmtProduct.cycleStats', {
         period: this.data.period,
@@ -141,10 +144,23 @@ Page({
         loading: false,
       })
     } catch {
-      this.setData({ loading: false })
+      this.setData({ loading: false, cycleError: true })
       // 保留旧 display 防闪屏（不清空）
       wx.showToast({ icon: 'none', title: '加载失败，请重试' })
     }
+  },
+
+  onCardRetry() {
+    this.loadCardHolders()
+  },
+
+  onCycleRetry() {
+    this.loadCycleStats()
+  },
+
+  onPullDownRefresh() {
+    Promise.all([this.loadCardHolders(), this.loadCycleStats()])
+      .finally(() => wx.stopPullDownRefresh())
   },
 
   buildDisplay(s: CycleStatsResp): CycleDisplay {

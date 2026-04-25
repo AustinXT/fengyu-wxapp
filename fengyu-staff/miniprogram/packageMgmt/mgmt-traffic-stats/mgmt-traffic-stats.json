@@ -1,4 +1,9 @@
 {
   "navigationBarTitleText": "客量数据",
-  "usingComponents": {}
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "mgmt-period-picker": "../../components/mgmt-period-picker/mgmt-period-picker",
+    "mgmt-stat-card": "../../components/mgmt-stat-card/mgmt-stat-card",
+    "mgmt-data-state": "../../components/mgmt-data-state/mgmt-data-state"
+  }
 }
