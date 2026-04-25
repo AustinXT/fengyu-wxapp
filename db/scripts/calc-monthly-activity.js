@@ -13,12 +13,14 @@
  *   - 0次客活：会员客当月未到店
  *
  * ── 到店状态（customer_status）──
- * 仅针对会员客，基于全部历史已完成服务单：
- *   - 保有会员-稳定：3个月内到店过，且累计到店 >= 6 天
- *   - 保有会员-有效：3个月内到店过，但累计到店 <= 5 天
- *   - 预警沉睡：最近一次到店在 3~6 个月前
- *   - 冰冻：最近一次到店在 6~12 个月前
- *   - 休眠：超过12个月未到店（或从未到店）
+ * 仅针对会员客，基于全部历史已完成服务单（与 cronTask STEP 1 对齐）：
+ *   - 保有会员-稳定：90 天内到店过，且累计到店 >= 6 天
+ *   - 保有会员-有效：90 天内到店过，但累计到店 <= 5 天
+ *   - 预警沉睡：最近一次到店在 90 天 ~ 6 个月前
+ *   - 冰冻：最近一次到店在 6 ~ 12 个月前
+ *   - 休眠：超过 12 个月未到店（或从未到店）
+ *
+ * 非会员客（流量客 / 体验客 / 小美客）的 customer_status 一律置 NULL。
  *
  * 建议通过 cron 每日凌晨 3:00 执行：
  *   0 3 * * * cd /path/to/db && node scripts/calc-monthly-activity.js
@@ -138,81 +140,124 @@ async function calcMonthlyActivity(client, dryRun) {
 }
 
 // ── 到店状态计算 ──────────────────────────────────────────
+//
+// 三段式 SQL 与 fengyu-client/cloudfunctions/cronTask/index.js STEP 1 完全对齐：
+//   段 1：非会员客一律置 NULL
+//   段 2：会员客有到店记录的，按 visits_90d / total_visits 打状态
+//   段 3：会员客但完全无到店记录的，置 '休眠'
+//
+// 阈值口径（与 cronTask 一致）：
+//   - 保有会员-稳定 / 有效  使用 90 天窗口（不是 3 个月）
+//   - 预警沉睡 / 冰冻       使用 6 个月 / 12 个月
+
+const RESET_NON_MEMBER_SQL = `
+UPDATE client_wechat_users
+   SET customer_status = NULL, updated_at = NOW()
+ WHERE customer_status IS NOT NULL
+   AND customer_type != '会员客'
+`
+
+const UPDATE_MEMBER_WITH_VISITS_SQL = `
+WITH visit_stats AS (
+  SELECT so.client_user_id,
+         MAX(so.service_date) AS last_service_date,
+         COUNT(DISTINCT so.service_date) AS total_visits,
+         COUNT(DISTINCT so.service_date) FILTER (
+           WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days'
+         ) AS visits_90d
+  FROM service_orders so
+  WHERE so.status = '已完成' AND so.client_user_id IS NOT NULL
+  GROUP BY so.client_user_id
+)
+UPDATE client_wechat_users u
+   SET customer_status = CASE
+         WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'::customer_status
+         WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'::customer_status
+         WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'::customer_status
+         ELSE '休眠'::customer_status
+       END,
+       updated_at = NOW()
+  FROM visit_stats vs
+ WHERE u.user_id = vs.client_user_id
+   AND u.customer_type = '会员客'
+`
+
+const RESET_MEMBER_NO_VISITS_SQL = `
+UPDATE client_wechat_users u
+   SET customer_status = '休眠'::customer_status, updated_at = NOW()
+ WHERE u.customer_type = '会员客'
+   AND u.customer_status IS NULL
+   AND NOT EXISTS (
+     SELECT 1 FROM service_orders so
+      WHERE so.client_user_id = u.user_id AND so.status = '已完成'
+   )
+`
 
 async function calcCustomerStatus(client, dryRun) {
   console.log('═══ 到店状态计算 ═══\n')
 
-  // 查询每位会员客的：最近到店日期、累计到店天数
-  const statsResult = await client.query(`
-    SELECT
-      c.user_id,
-      MAX(s.service_date)::date AS last_visit_date,
-      COUNT(DISTINCT s.service_date) AS total_visit_days
-    FROM client_wechat_users c
-    LEFT JOIN service_orders s
-      ON s.client_user_id = c.user_id
-      AND s.status = '已完成'
-    WHERE c.customer_type = '会员客'
-    GROUP BY c.user_id
-  `)
-
-  const today = new Date()
-  const months3 = new Date(today); months3.setMonth(months3.getMonth() - 3)
-  const months6 = new Date(today); months6.setMonth(months6.getMonth() - 6)
-  const months12 = new Date(today); months12.setMonth(months12.getMonth() - 12)
-
-  const byStatus = {
-    '保有会员-稳定': [],
-    '保有会员-有效': [],
-    '预警沉睡': [],
-    '冰冻': [],
-    '休眠': [],
-  }
-
-  for (const row of statsResult.rows) {
-    const totalVisits = parseInt(row.total_visit_days)
-    const lastVisit = row.last_visit_date ? new Date(row.last_visit_date) : null
-
-    let status
-    if (!lastVisit) {
-      // 从未到店
-      status = '休眠'
-    } else if (lastVisit >= months3) {
-      // 3个月内到店过
-      status = totalVisits >= 6 ? '保有会员-稳定' : '保有会员-有效'
-    } else if (lastVisit >= months6) {
-      // 3~6个月前
-      status = '预警沉睡'
-    } else if (lastVisit >= months12) {
-      // 6~12个月前
-      status = '冰冻'
-    } else {
-      // 超过12个月
-      status = '休眠'
-    }
-
-    byStatus[status].push(row.user_id)
-  }
-
-  for (const [status, ids] of Object.entries(byStatus)) {
-    console.log(`  ${status}：${ids.length} 人`)
-  }
-
-  if (!dryRun) {
-    // 非会员客置 NULL
-    await client.query(`UPDATE client_wechat_users SET customer_status = NULL WHERE customer_type != '会员客'`)
-
-    for (const [status, userIds] of Object.entries(byStatus)) {
-      if (userIds.length === 0) continue
-      await client.query(
-        `UPDATE client_wechat_users SET customer_status = $1, updated_at = NOW() WHERE user_id = ANY($2)`,
-        [status, userIds]
+  if (dryRun) {
+    // dry-run：仅预览分布，不写入。读取「假设跑完后」的状态分布。
+    const { rows } = await client.query(`
+      WITH visit_stats AS (
+        SELECT so.client_user_id,
+               MAX(so.service_date) AS last_service_date,
+               COUNT(DISTINCT so.service_date) AS total_visits,
+               COUNT(DISTINCT so.service_date) FILTER (
+                 WHERE so.service_date >= CURRENT_DATE - INTERVAL '90 days'
+               ) AS visits_90d
+        FROM service_orders so
+        WHERE so.status = '已完成' AND so.client_user_id IS NOT NULL
+        GROUP BY so.client_user_id
+      ),
+      preview AS (
+        SELECT u.user_id,
+               CASE
+                 WHEN u.customer_type != '会员客' THEN NULL
+                 WHEN vs.visits_90d >= 1 AND vs.total_visits >= 6 THEN '保有会员-稳定'
+                 WHEN vs.visits_90d >= 1 AND vs.total_visits <= 5 THEN '保有会员-有效'
+                 WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '6 months' THEN '预警沉睡'
+                 WHEN vs.last_service_date >= CURRENT_DATE - INTERVAL '12 months' THEN '冰冻'
+                 ELSE '休眠'
+               END AS new_status
+        FROM client_wechat_users u
+        LEFT JOIN visit_stats vs ON vs.client_user_id = u.user_id
       )
+      SELECT new_status, COUNT(*) AS cnt FROM preview GROUP BY new_status ORDER BY new_status
+    `)
+    for (const r of rows) {
+      console.log(`  ${r.new_status === null ? '(NULL)' : r.new_status}：${r.cnt} 人`)
     }
-    console.log('\n✓ 到店状态已更新')
-  } else {
     console.log('\n⚠ 预览模式，未写入')
+    return
   }
+
+  // 段 1：非会员客一律置 NULL
+  const r1 = await client.query(RESET_NON_MEMBER_SQL)
+  console.log(`  段1 非会员客置 NULL：${r1.rowCount} 行`)
+
+  // 段 2：会员客有到店记录的
+  const r2 = await client.query(UPDATE_MEMBER_WITH_VISITS_SQL)
+  console.log(`  段2 会员客有服务记录已更新：${r2.rowCount} 行`)
+
+  // 段 3：会员客无到店记录的置 '休眠'
+  const r3 = await client.query(RESET_MEMBER_NO_VISITS_SQL)
+  console.log(`  段3 会员客无服务记录置休眠：${r3.rowCount} 行`)
+
+  // 状态分布
+  const { rows: stats } = await client.query(`
+    SELECT customer_status, COUNT(*) AS cnt
+    FROM client_wechat_users
+    GROUP BY customer_status
+    ORDER BY customer_status
+  `)
+  console.log('\n  ── 状态分布 ──')
+  for (const r of stats) {
+    console.log(`  ${r.customer_status === null ? '(NULL)' : r.customer_status}：${r.cnt} 人`)
+  }
+
+  console.log('\n✓ 到店状态已更新')
 }
 
 main()
