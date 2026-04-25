@@ -180,7 +180,13 @@ export interface SkillTag {
   updatedAt: string
 }
 
-export type ProductKind = '组合套餐' | '护理项目' | '家居产品' | '充值卡' | '体验卡'
+/**
+ * 一级品项类型名称。完全数据库驱动，由 `product_categories WHERE productKind IS NULL`
+ * 行决定，运营在 admin "品项分类 → 一级品项管理" 内增删。
+ *
+ * 不再用字面量联合类型——4/17 会议要求拆分护理项目→招牌/王牌/明星，未来还会变化。
+ */
+export type ProductKind = string
 export type ProductType = '疗程卡' | '单品' | '院装产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
 export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
@@ -213,6 +219,19 @@ export interface ProductCategory {
   salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean
+  /** 一级行 capability：是否为"卡类"（充值卡/体验卡），二级行通常 false */
+  isCardKind: boolean
+  /** 一级行的展示色（HEX），二级行 null 时由前端继承父级 */
+  displayColor: string | null
+  /** 一级行的展示图标（icon name 或 emoji），二级行 null 时由前端继承父级 */
+  displayIcon: string | null
+  /** 一级行 capability：该 kind 下 SKU 是否需要"是否生美"开关 */
+  requiresShengmeiFlag: boolean
+  /** 二级行回填：父级一级行的 capability，二级行展示/校验时使用 */
+  parentDisplayColor?: string | null
+  parentDisplayIcon?: string | null
+  parentIsCardKind?: boolean
+  parentRequiresShengmeiFlag?: boolean
   createdAt: string
   updatedAt: string
 }

@@ -127,13 +127,13 @@ const CLIENTS = [
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻' as const, customerSource: '小程序' as const, birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
-// 一级分类（品项类型）：product_kind = null
+// 一级分类（品项类型）：product_kind = null；带 capability 列（DB 驱动 SSoT）
 const PRODUCT_KINDS = [
-  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true },
-  { categoryId: 'kind-care', categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true },
-  { categoryId: 'kind-home', categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true },
-  { categoryId: 'kind-card', categoryName: '充值卡', productKind: null, sortOrder: 4, isValid: true },
-  { categoryId: 'kind-trial', categoryName: '体验卡', productKind: null, sortOrder: 5, isValid: true },
+  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, isCardKind: false, displayColor: '#C0322A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, isCardKind: false, displayColor: '#1989FA', displayIcon: null,    requiresShengmeiFlag: true  },
+  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, isCardKind: false, displayColor: '#5AACA5', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, isCardKind: true,  displayColor: '#D4820A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, isCardKind: true,  displayColor: '#8B5CF6', displayIcon: null,    requiresShengmeiFlag: false },
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName

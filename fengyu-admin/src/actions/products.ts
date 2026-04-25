@@ -4,14 +4,13 @@ import { db } from '@/db'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
 import { orgNodes } from '@db/org'
 import { alias } from 'drizzle-orm/pg-core'
-import { eq, and, asc, sql, inArray, notInArray, isNotNull, isNull } from 'drizzle-orm'
+import { eq, and, asc, sql, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
 import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
-import { CARD_PRODUCT_KINDS } from '@/lib/product-kind'
 
 /**
  * 获取所有市场节点（type='市场'），用于商品可见范围选择。
@@ -79,26 +78,52 @@ export async function getCategories(): Promise<ProductCategory[]> {
   const session = await getSession()
   requirePermission(session, 'product:list')
 
+  // LEFT JOIN 父级一级行（productKind IS NULL AND categoryName = child.productKind），
+  // 把父级 capability 列回填到二级行；一级行 parent.* 列均为 NULL（自身字段已带）。
+  const parent = alias(productCategories, 'parent_cat')
   const rows = await db
-    .select()
+    .select({
+      child: productCategories,
+      parentDisplayColor: parent.displayColor,
+      parentDisplayIcon: parent.displayIcon,
+      parentIsCardKind: parent.isCardKind,
+      parentRequiresShengmeiFlag: parent.requiresShengmeiFlag,
+    })
     .from(productCategories)
+    .leftJoin(
+      parent,
+      and(
+        isNull(parent.productKind),
+        eq(parent.categoryName, productCategories.productKind),
+      )!,
+    )
     // 例外：sortOrder 手工排序权重
     .orderBy(asc(productCategories.sortOrder))
 
-  return rows.map((c) => ({
-    categoryId: c.categoryId,
-    categoryName: c.categoryName,
-    productKind: c.productKind ?? null,
-    salesCategory: c.salesCategory as ProductCategory['salesCategory'],
-    sortOrder: c.sortOrder,
-    isValid: c.isValid,
-    createdAt: c.createdAt.toISOString(),
-    updatedAt: c.updatedAt.toISOString(),
+  return rows.map((r) => ({
+    categoryId: r.child.categoryId,
+    categoryName: r.child.categoryName,
+    productKind: r.child.productKind ?? null,
+    salesCategory: r.child.salesCategory as ProductCategory['salesCategory'],
+    sortOrder: r.child.sortOrder,
+    isValid: r.child.isValid,
+    isCardKind: r.child.isCardKind,
+    displayColor: r.child.displayColor,
+    displayIcon: r.child.displayIcon,
+    requiresShengmeiFlag: r.child.requiresShengmeiFlag,
+    parentDisplayColor: r.parentDisplayColor,
+    parentDisplayIcon: r.parentDisplayIcon,
+    parentIsCardKind: r.parentIsCardKind ?? undefined,
+    parentRequiresShengmeiFlag: r.parentRequiresShengmeiFlag ?? undefined,
+    createdAt: r.child.createdAt.toISOString(),
+    updatedAt: r.child.updatedAt.toISOString(),
   }))
 }
 
 /**
  * 获取所有一级分类（品项类型），即 product_kind IS NULL 的行。
+ * 返回 capability 列（isCardKind/displayColor/displayIcon/requiresShengmeiFlag），
+ * 供前端"普通商品 vs 卡类"判断、tag 颜色渲染、表单显隐使用。
  */
 export async function getProductKinds(): Promise<ProductCategory[]> {
   const session = await getSession()
@@ -118,9 +143,29 @@ export async function getProductKinds(): Promise<ProductCategory[]> {
     salesCategory: null,
     sortOrder: c.sortOrder,
     isValid: c.isValid,
+    isCardKind: c.isCardKind,
+    displayColor: c.displayColor,
+    displayIcon: c.displayIcon,
+    requiresShengmeiFlag: c.requiresShengmeiFlag,
     createdAt: c.createdAt.toISOString(),
     updatedAt: c.updatedAt.toISOString(),
   }))
+}
+
+/**
+ * 卡类一级 kind 名单的运行时 SSoT。从 DB 查 `is_card_kind=true AND isValid=true`。
+ * 替代 lib/product-kind.ts 的常量，admin 内新代码请优先使用本函数。
+ */
+export async function getCardKindNamesFromDb(): Promise<string[]> {
+  const rows = await db
+    .select({ name: productCategories.categoryName })
+    .from(productCategories)
+    .where(and(
+      isNull(productCategories.productKind),
+      eq(productCategories.isCardKind, true),
+      eq(productCategories.isValid, true),
+    ))
+  return rows.map((r) => r.name)
 }
 
 /**
@@ -130,6 +175,10 @@ export async function createProductKind(data: {
   categoryName: string
   sortOrder?: number
   isValid?: boolean
+  isCardKind?: boolean
+  displayColor?: string | null
+  displayIcon?: string | null
+  requiresShengmeiFlag?: boolean
 }): Promise<{ success: boolean; message: string }> {
   const session = await getSession()
   requirePermission(session, 'product:create')
@@ -158,9 +207,17 @@ export async function createProductKind(data: {
     productKind: null,
     sortOrder: data.sortOrder ?? 0,
     isValid: data.isValid ?? true,
+    isCardKind: data.isCardKind ?? false,
+    displayColor: data.displayColor ?? null,
+    displayIcon: data.displayIcon ?? null,
+    requiresShengmeiFlag: data.requiresShengmeiFlag ?? false,
   })
 
-  await logOperation(session, 'product_kind.create', 'product_category', categoryId, { categoryName: data.categoryName.trim() })
+  await logOperation(session, 'product_kind.create', 'product_category', categoryId, {
+    categoryName: data.categoryName.trim(),
+    isCardKind: data.isCardKind ?? false,
+    displayColor: data.displayColor ?? null,
+  })
   revalidatePath('/products')
   return { success: true, message: '品项类型创建成功' }
 }
@@ -175,6 +232,10 @@ export async function updateProductKind(
     categoryName: string
     sortOrder: number
     isValid: boolean
+    isCardKind: boolean
+    displayColor: string | null
+    displayIcon: string | null
+    requiresShengmeiFlag: boolean
   }>,
   expectedUpdatedAt?: string,
 ): Promise<{ success: boolean; message: string }> {
@@ -219,6 +280,10 @@ export async function updateProductKind(
     if (newName !== undefined) updateData.categoryName = newName
     if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
     if (data.isValid !== undefined) updateData.isValid = data.isValid
+    if (data.isCardKind !== undefined) updateData.isCardKind = data.isCardKind
+    if (data.displayColor !== undefined) updateData.displayColor = data.displayColor
+    if (data.displayIcon !== undefined) updateData.displayIcon = data.displayIcon
+    if (data.requiresShengmeiFlag !== undefined) updateData.requiresShengmeiFlag = data.requiresShengmeiFlag
 
     await tx
       .update(productCategories)
@@ -1247,7 +1312,7 @@ export async function deleteMallCategory(categoryId: string): Promise<{ success:
  *
  * 特殊 '__normal__'（普通商品 = 非卡类的所有二级分类）：
  *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL
- *   AND productKind NOT IN CARD_PRODUCT_KINDS），并 EXISTS 过滤非 bundle 有效 SKU。
+ *   AND parent.is_card_kind = false），并 EXISTS 过滤非 bundle 有效 SKU。
  *   返回分组结构 `{ kind: '__normal__', groups: [{ productKind, categories }] }`，
  *   group 顺序按一级行 sortOrder，组内按二级行 sortOrder。
  *
@@ -1471,7 +1536,8 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
       .where(
         and(
           isNotNull(productCategories.productKind),
-          notInArray(productCategories.productKind, CARD_PRODUCT_KINDS as readonly string[] as string[]),
+          // 普通商品 = 父级一级行 isCardKind=false（DB 驱动；不再读 CARD_PRODUCT_KINDS 常量）
+          eq(parentCat.isCardKind, false),
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           // 排除 bundle SKU（SKU 被任何 is_bundle=true 的 products 通过 mall_product_skus 关联）
