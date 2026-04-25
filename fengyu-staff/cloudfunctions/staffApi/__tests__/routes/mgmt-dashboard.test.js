@@ -2027,19 +2027,25 @@ describe('mgmtDashboard.salesData 空数据返回全零与骨架', () => {
     expect(r.bySalesCategory).toHaveLength(4)
     expect(r.bySalesCategory.map((x) => x.label)).toEqual(['自销自耗', '他销自耗', '他销他耗', '生态合作'])
     expect(r.bySalesCategory.every((x) => x.value === '0.00')).toBe(true)
+    // 经营类型分母为 0 时 ratio 全为 '—'
+    expect(r.bySalesCategory.every((x) => x.ratio === '—')).toBe(true)
     // 一级品项骨架（来自 SQL 9）
     expect(r.byProductKind).toHaveLength(2)
     const kinds = r.byProductKind.map((g) => g.label).sort()
     expect(kinds).toEqual(['家居产品', '护理项目'].sort())
+    // 一级品项分母为 0 时 ratio 全为 '—'
+    expect(r.byProductKind.every((g) => g.ratio === '—')).toBe(true)
     // 每个一级 value 为 0.00，且 children 完整列出该 kind 下所有 category_name
     const careGroup = r.byProductKind.find((g) => g.label === '护理项目')
     expect(careGroup.value).toBe('0.00')
     expect(careGroup.children).toHaveLength(2)
     expect(careGroup.children.every((c) => c.value === '0.00')).toBe(true)
+    // 二级品项分母为 0 时 ratio 全为 '—'
+    expect(careGroup.children.every((c) => c.ratio === '—')).toBe(true)
     expect(careGroup.children.map((c) => c.label).sort()).toEqual(['中华神灸', '面部护理'].sort())
     const homeGroup = r.byProductKind.find((g) => g.label === '家居产品')
     expect(homeGroup.children).toHaveLength(1)
-    expect(homeGroup.children[0]).toEqual({ label: '安吉丽美颜之爱', value: '0.00' })
+    expect(homeGroup.children[0]).toEqual({ label: '安吉丽美颜之爱', value: '0.00', ratio: '—' })
     // 不再返回 byCategoryName 字段
     expect(r.byCategoryName).toBeUndefined()
   })
@@ -2161,10 +2167,10 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
 
     expect(ctx.result.bySalesCategory).toHaveLength(4)
     expect(ctx.result.bySalesCategory).toEqual([
-      { label: '自销自耗', value: '1000.00' },
-      { label: '他销自耗', value: '0.00' },
-      { label: '他销他耗', value: '0.00' },
-      { label: '生态合作', value: '0.00' },
+      { label: '自销自耗', value: '1000.00', ratio: '100.00%' },
+      { label: '他销自耗', value: '0.00', ratio: '0.00%' },
+      { label: '他销他耗', value: '0.00', ratio: '0.00%' },
+      { label: '生态合作', value: '0.00', ratio: '0.00%' },
     ])
   })
 
@@ -2198,15 +2204,18 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(r.byProductKind.map((g) => g.label)).toEqual(['护理项目', '家居产品'])
     expect(r.byProductKind[0].value).toBe('700.00')
     expect(r.byProductKind[1].value).toBe('0.00')
-    // 护理项目 children：中华神灸(500) > 面部护理(200) > 其他(0)
+    // 一级 ratio：分母=品项总额(700)；护理项目 700/700=100%，家居产品 0/700=0%
+    expect(r.byProductKind[0].ratio).toBe('100.00%')
+    expect(r.byProductKind[1].ratio).toBe('0.00%')
+    // 护理项目 children：中华神灸(500) > 面部护理(200) > 其他(0)；二级 ratio 分母=品项总额(700)
     expect(r.byProductKind[0].children).toEqual([
-      { label: '中华神灸', value: '500.00' },
-      { label: '面部护理', value: '200.00' },
-      { label: '其他', value: '0.00' },
+      { label: '中华神灸', value: '500.00', ratio: '71.43%' },
+      { label: '面部护理', value: '200.00', ratio: '28.57%' },
+      { label: '其他', value: '0.00', ratio: '0.00%' },
     ])
     // 家居产品下骨架 1 项，全 0
     expect(r.byProductKind[1].children).toEqual([
-      { label: '安吉丽', value: '0.00' },
+      { label: '安吉丽', value: '0.00', ratio: '0.00%' },
     ])
     // 不再返回扁平 byCategoryName
     expect(r.byCategoryName).toBeUndefined()

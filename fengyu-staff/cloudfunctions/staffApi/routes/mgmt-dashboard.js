@@ -1419,17 +1419,24 @@ async function salesData(ctx) {
 
   const elapsed = Date.now() - t0
 
-  const fmtRow = (label, value) => ({ label, value: fmt(value) })
+  const fmtPct = (num, denom) => {
+    const d = parseFloat(denom || 0)
+    if (d === 0) return '—'
+    return ((parseFloat(num || 0) / d) * 100).toFixed(2) + '%'
+  }
   const cmpDescByValueAscByLabel = (a, b) => {
     const dv = parseFloat(b.value) - parseFloat(a.value)
     return dv !== 0 ? dv : a.label.localeCompare(b.label, 'zh-Hans-CN')
   }
 
-  // 经营类型骨架（4 行硬展示，pgEnum 序）
+  // 经营类型骨架（4 行硬展示，pgEnum 序）+ 占比（分母=4 行金额之和）
   const catMap = new Map(catRows.map((r) => [r.label, r.value]))
-  const bySalesCategory = SALES_CATEGORY_SKELETON.map((lbl) =>
-    fmtRow(lbl, catMap.get(lbl) || 0),
-  )
+  const salesCategoryTotal = Array.from(catMap.values())
+    .reduce((s, v) => s + parseFloat(v || 0), 0)
+  const bySalesCategory = SALES_CATEGORY_SKELETON.map((lbl) => {
+    const v = catMap.get(lbl) || 0
+    return { label: lbl, value: fmt(v), ratio: fmtPct(v, salesCategoryTotal) }
+  })
 
   // 一级/二级骨架来自 SQL 9 的 product_categories 快照
   const kindTotalMap = new Map(kindRows.map((r) => [r.label, r.value]))
@@ -1438,23 +1445,35 @@ async function salesData(ctx) {
     leafValueMap.set(`${r.kind}::${r.label}`, r.value)
   }
 
-  // 按 product_kind 分组骨架
-  const groupBuilder = new Map() // kind -> { children: [] }
+  // 品项总额（一级金额之和）— 一级和二级 ratio 的统一分母
+  const productKindTotal = kindRows
+    .reduce((s, r) => s + parseFloat(r.value || 0), 0)
+
+  // 按 product_kind 分组骨架（children 暂存数值原值供 ratio 计算）
+  const groupBuilder = new Map() // kind -> { children: [{label, value}] }
   for (const sk of skeletonRows) {
     if (!groupBuilder.has(sk.product_kind)) {
       groupBuilder.set(sk.product_kind, { children: [] })
     }
     const v = leafValueMap.get(`${sk.product_kind}::${sk.category_name}`) || 0
-    groupBuilder.get(sk.product_kind).children.push(fmtRow(sk.category_name, v))
+    groupBuilder.get(sk.product_kind).children.push({
+      label: sk.category_name,
+      value: fmt(v),
+      ratio: fmtPct(v, productKindTotal),
+    })
   }
 
   // 装配最终结构：一级 value 取 kindRows，children 排序，一级整体按 value DESC + label 升序
   const byProductKind = Array.from(groupBuilder.entries())
-    .map(([kind, { children }]) => ({
-      label: kind,
-      value: fmt(kindTotalMap.get(kind) || 0),
-      children: children.sort(cmpDescByValueAscByLabel),
-    }))
+    .map(([kind, { children }]) => {
+      const kv = kindTotalMap.get(kind) || 0
+      return {
+        label: kind,
+        value: fmt(kv),
+        ratio: fmtPct(kv, productKindTotal),
+        children: children.sort(cmpDescByValueAscByLabel),
+      }
+    })
     .sort(cmpDescByValueAscByLabel)
 
   ctx.result = {

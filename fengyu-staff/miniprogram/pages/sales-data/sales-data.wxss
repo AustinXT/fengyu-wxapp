@@ -198,6 +198,15 @@
   color: var(--color-text-primary);
   font-weight: 600;
   flex-shrink: 0;
+  padding-right: 16rpx;
+}
+
+.sd-breakdown-ratio {
+  width: 110rpx;
+  text-align: right;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
+  flex-shrink: 0;
 }
 
 /* 一级品项行：左竖条 + 主色加粗 */
@@ -229,6 +238,15 @@
   color: var(--color-primary);
   font-weight: 600;
   flex-shrink: 0;
+  padding-right: 16rpx;
+}
+.sd-kind-ratio {
+  width: 110rpx;
+  text-align: right;
+  font-size: 26rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+  flex-shrink: 0;
 }
 
 /* 二级品项行：缩进 + 灰色 · 项目符号 */
@@ -251,6 +269,14 @@
 .sd-leaf-value {
   color: var(--color-text-primary);
   font-weight: 500;
+  flex-shrink: 0;
+  padding-right: 16rpx;
+}
+.sd-leaf-ratio {
+  width: 110rpx;
+  text-align: right;
+  color: var(--color-text-secondary);
+  font-size: 24rpx;
   flex-shrink: 0;
 }
 

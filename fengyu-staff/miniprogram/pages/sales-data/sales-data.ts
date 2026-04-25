@@ -9,11 +9,13 @@ type ScopeType = 'all' | 'market' | 'store'
 interface BreakdownItem {
   label: string
   value: string
+  ratio: string
 }
 
 interface BreakdownGroup {
   label: string
   value: string
+  ratio: string
   children: BreakdownItem[]
 }
 

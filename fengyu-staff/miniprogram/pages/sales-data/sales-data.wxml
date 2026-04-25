@@ -104,6 +104,7 @@
           <view class="sd-breakdown-row" wx:for="{{bySalesCategory}}" wx:key="label">
             <text class="sd-breakdown-name">{{item.label}}</text>
             <text class="sd-breakdown-value">{{item.value}}</text>
+            <text class="sd-breakdown-ratio">{{item.ratio}}</text>
           </view>
         </view>
       </view>
@@ -120,11 +121,13 @@
               <view class="sd-kind-bar"></view>
               <text class="sd-kind-name">{{kind.label}}</text>
               <text class="sd-kind-value">{{kind.value}}</text>
+              <text class="sd-kind-ratio">{{kind.ratio}}</text>
             </view>
             <!-- 二级行：缩进 + 项目符号（骨架包含所有该一级下的二级，零值也在） -->
             <view class="sd-leaf-row" wx:for="{{kind.children}}" wx:key="label" wx:for-item="leaf">
               <text class="sd-leaf-name">· {{leaf.label}}</text>
               <text class="sd-leaf-value">{{leaf.value}}</text>
+              <text class="sd-leaf-ratio">{{leaf.ratio}}</text>
             </view>
           </block>
         </view>
