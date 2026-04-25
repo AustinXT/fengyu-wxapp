@@ -27,7 +27,7 @@
 }
 
 .sd-period-tab.active {
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
 }
 
@@ -39,7 +39,7 @@
   transform: translateX(-50%);
   width: 48rpx;
   height: 4rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   border-radius: 2rpx;
 }
 
@@ -55,7 +55,7 @@
 .sd-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
   text-align: center;
   margin: 16rpx 0 16rpx;
   padding-top: 8rpx;
@@ -126,7 +126,7 @@
 
 .sd-cell-value--lg {
   font-size: 32rpx;
-  color: #C0322A;
+  color: var(--color-primary);
 }
 
 .sd-consume-breakdown {

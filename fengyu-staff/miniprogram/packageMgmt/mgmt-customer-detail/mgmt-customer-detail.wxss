@@ -9,7 +9,7 @@
 }
 .mc-scope-label { color: #999; }
 .mc-scope-value {
-  color: var(--color-primary, #C0322A);
+  color: var(--color-primary);
   font-weight: 600;
   margin-left: 8rpx;
 }

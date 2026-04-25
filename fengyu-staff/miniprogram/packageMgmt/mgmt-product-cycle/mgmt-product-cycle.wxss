@@ -25,8 +25,8 @@
 }
 
 .pc-chip.active {
-  background: #C0322A;
-  border-color: #C0322A;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
   font-weight: 600;
 }
@@ -35,7 +35,7 @@
 .pc-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
   text-align: center;
   margin: 16rpx 0 24rpx;
   padding-top: 16rpx;
@@ -64,7 +64,7 @@
   display: inline-block;
   font-size: 20rpx;
   font-weight: normal;
-  color: #C0322A;
+  color: var(--color-primary);
   background: #FCE9E7;
   padding: 2rpx 12rpx;
   border-radius: 16rpx;

@@ -24,8 +24,8 @@
 }
 
 .tf-chip.active {
-  background: #C0322A;
-  border-color: #C0322A;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
   font-weight: 600;
 }
@@ -39,7 +39,7 @@
 .tf-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
   text-align: center;
   margin: 32rpx 0 16rpx;
   padding-top: 16rpx;
@@ -107,7 +107,7 @@
 }
 
 .tf-mark {
-  color: #C0322A;
+  color: var(--color-primary);
   font-size: 22rpx;
   margin-left: 4rpx;
 }
@@ -141,7 +141,7 @@
 }
 
 .tf-avg-ticket .val {
-  color: #C0322A;
+  color: var(--color-primary);
   font-size: 40rpx;
   font-weight: 700;
   margin-top: 8rpx;

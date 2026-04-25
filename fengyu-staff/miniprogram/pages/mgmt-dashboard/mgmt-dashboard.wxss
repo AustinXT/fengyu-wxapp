@@ -53,7 +53,7 @@
 
 .dash-card-title {
   font-size: 28rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   margin-bottom: 12rpx;
   font-weight: 600;
 }
@@ -103,7 +103,7 @@
 .dash-section-title {
   font-size: 30rpx;
   font-weight: 600;
-  color: #C0322A;
+  color: var(--color-primary);
   text-align: center;
   margin: 32rpx 0 16rpx;
   padding-top: 16rpx;
@@ -207,7 +207,7 @@
 
 .mgmt-profile-header {
   padding: 64rpx 32rpx 48rpx;
-  background: linear-gradient(135deg, #C0322A 0%, #9C261E 100%);
+  background: linear-gradient(135deg, var(--color-primary) 0%, #9C261E 100%);
   color: #FFFFFF;
 }
 
@@ -248,7 +248,7 @@
   height: 80rpx;
   line-height: 80rpx;
   border-radius: 40rpx;
-  background: #C0322A;
+  background: var(--color-primary);
   color: #FFFFFF;
   font-size: 28rpx;
   border: none;
@@ -277,8 +277,8 @@
 }
 
 .ranking-period.active {
-  background: #C0322A;
-  border-color: #C0322A;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #fff;
   font-weight: 600;
 }
@@ -302,7 +302,7 @@
 }
 
 .ranking-metric.active {
-  background: #C0322A;
+  background: var(--color-primary);
   color: #fff;
   font-weight: 600;
 }
@@ -426,7 +426,7 @@
 
 .profile-store-title {
   font-size: 28rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   font-weight: 600;
   padding: 12rpx 0 16rpx;
 }
@@ -440,7 +440,7 @@
 .profile-store-toggle {
   text-align: center;
   font-size: 26rpx;
-  color: #C0322A;
+  color: var(--color-primary);
   padding: 16rpx 0 8rpx;
 }
 
