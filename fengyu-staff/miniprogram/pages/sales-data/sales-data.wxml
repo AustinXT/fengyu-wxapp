@@ -1,6 +1,6 @@
 <!-- pages/sales-data — 管理层"销售数据"页 -->
 <view class="sd-page">
-  <!-- 顶部时间 chip -->
+  <!-- 顶部时间 chip：sticky 吸顶（保留下划线 chip 风格） -->
   <view class="sd-period-tabs">
     <view
       class="sd-period-tab {{period==='month'?'active':''}}"
@@ -20,10 +20,8 @@
     <view class="sd-period-placeholder"></view>
   </view>
 
-  <!-- 加载中 -->
-  <view wx:if="{{loading}}" class="sd-loading">加载中...</view>
-
-  <block wx:if="{{!loading}}">
+  <!-- 三态壳：loading / error 时由组件接管 -->
+  <mgmt-data-state state="{{ state }}" bind:retry="onRetry">
     <!-- 业绩与实耗区 -->
     <view class="sd-section">
       <view class="sd-section-title">业绩与实耗</view>
@@ -91,72 +89,40 @@
     <view class="sd-section">
       <view class="sd-section-title">业绩与品项</view>
 
-      <!-- 三维汇总条目（可展开） -->
-      <view
-        class="sd-breakdown-item"
-        bindtap="onToggleSection"
-        data-section="salesCategory"
-      >
-        <text class="sd-breakdown-label">按经营类型汇总</text>
-        <text class="sd-breakdown-arrow">{{expandedSection==='salesCategory'?'▲':'▼'}}</text>
-      </view>
-      <view
-        class="sd-breakdown-list"
-        wx:if="{{expandedSection==='salesCategory' && bySalesCategory.length > 0}}"
-      >
-        <view
-          class="sd-breakdown-row"
-          wx:for="{{bySalesCategory}}"
-          wx:key="label"
-        >
-          <text class="sd-breakdown-name">{{item.label}}</text>
-          <text class="sd-breakdown-value">{{item.value}}</text>
+      <!-- 1. 按经营类型汇总（pgEnum 4 行硬骨架） -->
+      <view class="sd-breakdown-group">
+        <view class="sd-breakdown-item">
+          <text class="sd-breakdown-label">按经营类型汇总</text>
+        </view>
+        <view class="sd-breakdown-list">
+          <view class="sd-breakdown-row" wx:for="{{bySalesCategory}}" wx:key="label">
+            <text class="sd-breakdown-name">{{item.label}}</text>
+            <text class="sd-breakdown-value">{{item.value}}</text>
+          </view>
         </view>
       </view>
 
-      <view
-        class="sd-breakdown-item"
-        bindtap="onToggleSection"
-        data-section="productKind"
-      >
-        <text class="sd-breakdown-label">按一级品项汇总</text>
-        <text class="sd-breakdown-arrow">{{expandedSection==='productKind'?'▲':'▼'}}</text>
-      </view>
-      <view
-        class="sd-breakdown-list"
-        wx:if="{{expandedSection==='productKind' && byProductKind.length > 0}}"
-      >
-        <view
-          class="sd-breakdown-row"
-          wx:for="{{byProductKind}}"
-          wx:key="label"
-        >
-          <text class="sd-breakdown-name">{{item.label}}</text>
-          <text class="sd-breakdown-value">{{item.value}}</text>
+      <!-- 2. 按品项汇总（一级 + 二级嵌套，骨架来自 product_categories 快照） -->
+      <view class="sd-breakdown-group">
+        <view class="sd-breakdown-item">
+          <text class="sd-breakdown-label">按品项汇总</text>
         </view>
-      </view>
-
-      <view
-        class="sd-breakdown-item"
-        bindtap="onToggleSection"
-        data-section="categoryName"
-      >
-        <text class="sd-breakdown-label">按二级品项汇总</text>
-        <text class="sd-breakdown-arrow">{{expandedSection==='categoryName'?'▲':'▼'}}</text>
-      </view>
-      <view
-        class="sd-breakdown-list"
-        wx:if="{{expandedSection==='categoryName' && byCategoryName.length > 0}}"
-      >
-        <view
-          class="sd-breakdown-row"
-          wx:for="{{byCategoryName}}"
-          wx:key="label"
-        >
-          <text class="sd-breakdown-name">{{item.label}}</text>
-          <text class="sd-breakdown-value">{{item.value}}</text>
+        <view class="sd-breakdown-list">
+          <block wx:for="{{byProductKind}}" wx:key="label" wx:for-item="kind">
+            <!-- 一级行：左竖条 + 主色加粗 -->
+            <view class="sd-kind-row">
+              <view class="sd-kind-bar"></view>
+              <text class="sd-kind-name">{{kind.label}}</text>
+              <text class="sd-kind-value">{{kind.value}}</text>
+            </view>
+            <!-- 二级行：缩进 + 项目符号（骨架包含所有该一级下的二级，零值也在） -->
+            <view class="sd-leaf-row" wx:for="{{kind.children}}" wx:key="label" wx:for-item="leaf">
+              <text class="sd-leaf-name">· {{leaf.label}}</text>
+              <text class="sd-leaf-value">{{leaf.value}}</text>
+            </view>
+          </block>
         </view>
       </view>
     </view>
-  </block>
+  </mgmt-data-state>
 </view>

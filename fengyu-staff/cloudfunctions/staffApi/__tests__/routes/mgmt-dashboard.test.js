@@ -1933,8 +1933,9 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
   function setupSalesDataMocks(overrides = {}) {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/GROUP BY\s+si\.sales_category/.test(sql)) return overrides.cat || []
-      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return overrides.kind || []
-      if (/GROUP BY\s+pc\.category_name/.test(sql)) return overrides.name || []
+      if (/GROUP BY\s+pc\.product_kind\b(?!.*pc\.category_name)/.test(sql)) return overrides.kind || []
+      if (/GROUP BY\s+pc\.product_kind,\s*pc\.category_name/.test(sql)) return overrides.name || []
+      if (/FROM product_categories\b/.test(sql)) return overrides.skeleton || []
       if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
@@ -1992,9 +1993,21 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
   })
 })
 
-describe('mgmtDashboard.salesData 空数据返回全零与空数组', () => {
-  test('无订单时所有金额 = "0.00"，品项数组 = []', async () => {
-    pg.query.mockReset().mockImplementation(async () => [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }])
+describe('mgmtDashboard.salesData 空数据返回全零与骨架', () => {
+  test('无订单时金额全 "0.00"；bySalesCategory 4 行硬骨架；byProductKind 由 product_categories 骨架决定', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      // SQL 9：product_categories 骨架（2 个 kind，3 个 leaf）
+      if (/FROM product_categories\b/.test(sql)) {
+        return [
+          { product_kind: '护理项目', category_name: '中华神灸' },
+          { product_kind: '护理项目', category_name: '面部护理' },
+          { product_kind: '家居产品', category_name: '安吉丽美颜之爱' },
+        ]
+      }
+      // 其余分组 SQL 全空
+      if (/GROUP BY/.test(sql)) return []
+      return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
+    })
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
 
@@ -2010,9 +2023,38 @@ describe('mgmtDashboard.salesData 空数据返回全零与空数组', () => {
     expect(r.xiaomeiProductOut).toBe('0.00')
     expect(r.newMemberProductOut).toBe('0.00')
     expect(r.oldMemberProductOut).toBe('0.00')
-    expect(r.bySalesCategory).toEqual([])
-    expect(r.byProductKind).toEqual([])
-    expect(r.byCategoryName).toEqual([])
+    // 经营类型 4 行硬骨架（pgEnum 4 值）
+    expect(r.bySalesCategory).toHaveLength(4)
+    expect(r.bySalesCategory.map((x) => x.label)).toEqual(['自销自耗', '他销自耗', '他销他耗', '生态合作'])
+    expect(r.bySalesCategory.every((x) => x.value === '0.00')).toBe(true)
+    // 一级品项骨架（来自 SQL 9）
+    expect(r.byProductKind).toHaveLength(2)
+    const kinds = r.byProductKind.map((g) => g.label).sort()
+    expect(kinds).toEqual(['家居产品', '护理项目'].sort())
+    // 每个一级 value 为 0.00，且 children 完整列出该 kind 下所有 category_name
+    const careGroup = r.byProductKind.find((g) => g.label === '护理项目')
+    expect(careGroup.value).toBe('0.00')
+    expect(careGroup.children).toHaveLength(2)
+    expect(careGroup.children.every((c) => c.value === '0.00')).toBe(true)
+    expect(careGroup.children.map((c) => c.label).sort()).toEqual(['中华神灸', '面部护理'].sort())
+    const homeGroup = r.byProductKind.find((g) => g.label === '家居产品')
+    expect(homeGroup.children).toHaveLength(1)
+    expect(homeGroup.children[0]).toEqual({ label: '安吉丽美颜之爱', value: '0.00' })
+    // 不再返回 byCategoryName 字段
+    expect(r.byCategoryName).toBeUndefined()
+  })
+
+  test('product_categories 全空时 byProductKind = []', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/FROM product_categories\b/.test(sql)) return []
+      if (/GROUP BY/.test(sql)) return []
+      return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
+    })
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+    expect(ctx.result.byProductKind).toEqual([])
+    // 经营类型骨架仍硬展示
+    expect(ctx.result.bySalesCategory).toHaveLength(4)
   })
 })
 
@@ -2020,8 +2062,18 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
   function setupFullMocks() {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/GROUP BY\s+si\.sales_category/.test(sql)) return [{ label: '自销自耗', value: 1000 }]
-      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return [{ label: '护理项目', value: 500 }]
-      if (/GROUP BY\s+pc\.category_name/.test(sql)) return [{ label: '面部护理', value: 300 }]
+      // SQL 8 (嵌套二级) — 必须放在 SQL 7 之前，否则会被 SQL 7 的 product_kind 正则吞掉
+      if (/GROUP BY\s+pc\.product_kind,\s*pc\.category_name/.test(sql)) {
+        return [{ kind: '护理项目', label: '面部护理', value: 300 }]
+      }
+      if (/GROUP BY\s+pc\.product_kind\b/.test(sql)) return [{ label: '护理项目', value: 500 }]
+      if (/FROM product_categories\b/.test(sql)) {
+        return [
+          { product_kind: '护理项目', category_name: '面部护理' },
+          { product_kind: '护理项目', category_name: '中华神灸' },
+          { product_kind: '家居产品', category_name: '安吉丽' },
+        ]
+      }
       if (/si\.product_type\s*=\s*'院装产品'/.test(sql)) return [{ xiaomei: 100, new_member: 200, old_member: 300 }]
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
@@ -2094,21 +2146,97 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(prodSql).toMatch(/FILTER/)
   })
 
-  test('品项汇总 value=0 的行不返回', async () => {
+  test('经营类型 4 行硬骨架 — SQL 缺失值补 "0.00"，pgEnum 顺序固定', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
       if (/GROUP BY\s+si\.sales_category/.test(sql)) return [
         { label: '自销自耗', value: 1000 },
-        { label: '他销自耗', value: 0 },
+        // 他销自耗 / 他销他耗 / 生态合作 都缺失，骨架应补 0.00
       ]
-      if (/GROUP BY\s+pc\.product_kind/.test(sql)) return []
-      if (/GROUP BY\s+pc\.category_name/.test(sql)) return []
+      if (/FROM product_categories\b/.test(sql)) return []
+      if (/GROUP BY/.test(sql)) return []
       return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
     })
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
 
-    expect(ctx.result.bySalesCategory).toHaveLength(1)
-    expect(ctx.result.bySalesCategory[0]).toEqual({ label: '自销自耗', value: '1000.00' })
+    expect(ctx.result.bySalesCategory).toHaveLength(4)
+    expect(ctx.result.bySalesCategory).toEqual([
+      { label: '自销自耗', value: '1000.00' },
+      { label: '他销自耗', value: '0.00' },
+      { label: '他销他耗', value: '0.00' },
+      { label: '生态合作', value: '0.00' },
+    ])
+  })
+
+  test('一级品项嵌套：byProductKind[i].children 来自 product_categories 骨架；有数据的二级排前，零值下沉', async () => {
+    pg.query.mockReset().mockImplementation(async (sql) => {
+      if (/GROUP BY\s+si\.sales_category/.test(sql)) return []
+      if (/GROUP BY\s+pc\.product_kind,\s*pc\.category_name/.test(sql)) {
+        return [
+          { kind: '护理项目', label: '中华神灸', value: 500 },
+          { kind: '护理项目', label: '面部护理', value: 200 },
+        ]
+      }
+      if (/GROUP BY\s+pc\.product_kind\b/.test(sql)) return [
+        { label: '护理项目', value: 700 },
+      ]
+      if (/FROM product_categories\b/.test(sql)) {
+        return [
+          { product_kind: '护理项目', category_name: '中华神灸' },
+          { product_kind: '护理项目', category_name: '面部护理' },
+          { product_kind: '护理项目', category_name: '其他' },
+          { product_kind: '家居产品', category_name: '安吉丽' },
+        ]
+      }
+      return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
+    })
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const r = ctx.result
+    // 一级按 value DESC：护理项目(700) > 家居产品(0)
+    expect(r.byProductKind.map((g) => g.label)).toEqual(['护理项目', '家居产品'])
+    expect(r.byProductKind[0].value).toBe('700.00')
+    expect(r.byProductKind[1].value).toBe('0.00')
+    // 护理项目 children：中华神灸(500) > 面部护理(200) > 其他(0)
+    expect(r.byProductKind[0].children).toEqual([
+      { label: '中华神灸', value: '500.00' },
+      { label: '面部护理', value: '200.00' },
+      { label: '其他', value: '0.00' },
+    ])
+    // 家居产品下骨架 1 项，全 0
+    expect(r.byProductKind[1].children).toEqual([
+      { label: '安吉丽', value: '0.00' },
+    ])
+    // 不再返回扁平 byCategoryName
+    expect(r.byCategoryName).toBeUndefined()
+  })
+
+  test('SQL 9 骨架查询无 scope 参数（与时间窗 / 门店无关）', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'store', id: 'store-001' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls
+    const skeletonCall = sqls.find(([s]) => /FROM product_categories\b/.test(s))
+    expect(skeletonCall).toBeDefined()
+    expect(skeletonCall[1]).toEqual([])
+    expect(skeletonCall[0]).toMatch(/product_kind IS NOT NULL/)
+    expect(skeletonCall[0]).toMatch(/category_name IS NOT NULL/)
+  })
+
+  test('SQL 8 已带 product_kind/category_name NULL 过滤 + 返回 kind 列', async () => {
+    setupFullMocks()
+    const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
+    await salesData(ctx)
+
+    const sqls = pg.query.mock.calls.map(([s]) => s)
+    const sql8 = sqls.find((s) => /GROUP BY\s+pc\.product_kind,\s*pc\.category_name/.test(s))
+    expect(sql8).toBeDefined()
+    expect(sql8).toMatch(/pc\.product_kind\s+AS\s+kind/)
+    expect(sql8).toMatch(/pc\.category_name\s+AS\s+label/)
+    expect(sql8).toMatch(/pc\.product_kind IS NOT NULL/)
+    expect(sql8).toMatch(/pc\.category_name IS NOT NULL/)
   })
 
   test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {

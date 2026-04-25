@@ -1,13 +1,20 @@
 // pages/sales-data — 管理层"销售数据"页
 // 数据来源：staffApi mgmtDashboard.salesData
+// scope 由 hub（mgmt-dashboard）通过路由参数透传
 import { callStaffApi } from '../../utils/cloud'
 
 type Period = 'month' | 'lastMonth' | 'year'
-type ExpandedSection = '' | 'salesCategory' | 'productKind' | 'categoryName'
+type ScopeType = 'all' | 'market' | 'store'
 
 interface BreakdownItem {
   label: string
   value: string
+}
+
+interface BreakdownGroup {
+  label: string
+  value: string
+  children: BreakdownItem[]
 }
 
 interface SalesDataResp {
@@ -26,13 +33,15 @@ interface SalesDataResp {
   oldMemberProductOut: string
 
   bySalesCategory: BreakdownItem[]
-  byProductKind: BreakdownItem[]
-  byCategoryName: BreakdownItem[]
+  byProductKind: BreakdownGroup[]
 }
 
 interface IData {
   period: Period
+  scopeType: ScopeType
+  scopeId: string | null
   loading: boolean
+  state: 'loading' | 'error' | 'content'
 
   totalRevenue: string
   xiaomeiRevenue: string
@@ -49,10 +58,7 @@ interface IData {
   oldMemberProductOut: string
 
   bySalesCategory: BreakdownItem[]
-  byProductKind: BreakdownItem[]
-  byCategoryName: BreakdownItem[]
-
-  expandedSection: ExpandedSection
+  byProductKind: BreakdownGroup[]
 }
 
 const INITIAL_AMOUNT = '0.00'
@@ -60,7 +66,10 @@ const INITIAL_AMOUNT = '0.00'
 Page<IData, WechatMiniprogram.IAnyObject>({
   data: {
     period: 'month',
+    scopeType: 'all',
+    scopeId: null,
     loading: false,
+    state: 'loading',
 
     totalRevenue: INITIAL_AMOUNT,
     xiaomeiRevenue: INITIAL_AMOUNT,
@@ -78,12 +87,12 @@ Page<IData, WechatMiniprogram.IAnyObject>({
 
     bySalesCategory: [],
     byProductKind: [],
-    byCategoryName: [],
-
-    expandedSection: '',
   },
 
-  onLoad() {
+  onLoad(query: { scopeType?: string; scopeId?: string }) {
+    const scopeType = (query?.scopeType as ScopeType) || 'all'
+    const scopeId = query?.scopeId || null
+    this.setData({ scopeType, scopeId })
     this.loadData()
   },
 
@@ -93,18 +102,12 @@ Page<IData, WechatMiniprogram.IAnyObject>({
     this.setData({ period }, () => this.loadData())
   },
 
-  onToggleSection(e: WechatMiniprogram.BaseEvent) {
-    const section = (e.currentTarget.dataset as { section?: ExpandedSection }).section
-    if (!section) return
-    const next: ExpandedSection = this.data.expandedSection === section ? '' : section
-    this.setData({ expandedSection: next })
-  },
-
   async loadData() {
-    this.setData({ loading: true })
+    this.setData({ loading: true, state: 'loading' })
     try {
       const d = await callStaffApi<SalesDataResp>('mgmtDashboard.salesData', {
         period: this.data.period,
+        scope: { type: this.data.scopeType, id: this.data.scopeId || undefined },
       })
       this.setData({
         totalRevenue: d.totalRevenue || INITIAL_AMOUNT,
@@ -120,12 +123,21 @@ Page<IData, WechatMiniprogram.IAnyObject>({
         oldMemberProductOut: d.oldMemberProductOut || INITIAL_AMOUNT,
         bySalesCategory: d.bySalesCategory || [],
         byProductKind: d.byProductKind || [],
-        byCategoryName: d.byCategoryName || [],
+        state: 'content',
       })
     } catch {
+      this.setData({ state: 'error' })
       wx.showToast({ icon: 'none', title: '数据加载失败' })
     } finally {
       this.setData({ loading: false })
     }
+  },
+
+  onRetry() {
+    this.loadData()
+  },
+
+  onPullDownRefresh() {
+    this.loadData().finally(() => wx.stopPullDownRefresh())
   },
 })

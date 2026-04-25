@@ -2,5 +2,8 @@
   "navigationBarTitleText": "销售数据",
   "navigationBarBackgroundColor": "#C0322A",
   "navigationBarTextStyle": "white",
-  "usingComponents": {}
+  "enablePullDownRefresh": true,
+  "usingComponents": {
+    "mgmt-data-state": "../../components/mgmt-data-state/mgmt-data-state"
+  }
 }

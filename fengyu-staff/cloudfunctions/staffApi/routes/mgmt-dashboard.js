@@ -1225,6 +1225,10 @@ async function staffRanking(ctx) {
 // salesData —— 销售数据页（业绩与实耗 + 品项维度汇总）
 // =====================================================================
 
+// 销售数据页骨架常量（仅经营类型 — 与 db/schema/enums.ts::salesCategoryEnum 同源）
+// 一级/二级品项骨架不在此写死，运行时从 product_categories 表读取（见 SQL 9）
+const SALES_CATEGORY_SKELETON = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
+
 /**
  * mgmtDashboard.salesData
  * 入参：{ period: 'month'|'lastMonth'|'year', scope: { type: 'all'|'market'|'store', id?: string } }
@@ -1261,7 +1265,7 @@ async function salesData(ctx) {
   const svcP = [startDate, endDate, ...scSvc.params]
 
   const t0 = Date.now()
-  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows] =
+  const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
       // SQL 1: 总业绩
       pg.query(
@@ -1289,7 +1293,7 @@ async function salesData(ctx) {
             ), 0) AS old_member
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-           JOIN client_wechat_users c ON c.client_user_id = o.client_user_id
+           JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
@@ -1322,7 +1326,7 @@ async function salesData(ctx) {
             ), 0) AS old_member
            FROM service_items sit
            JOIN service_orders so ON so.service_order_id = sit.service_order_id
-           JOIN client_wechat_users c ON c.client_user_id = so.client_user_id
+           JOIN client_wechat_users c ON c.user_id = so.client_user_id
           WHERE ${scSvc.sql}
             AND so.status = '已完成'
             AND so.service_date BETWEEN $1 AND $2`,
@@ -1344,7 +1348,7 @@ async function salesData(ctx) {
             ), 0) AS old_member
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-           JOIN client_wechat_users c ON c.client_user_id = o.client_user_id
+           JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
             AND si.product_type = '院装产品'
             AND o.sale_order_type IN ('销售单', '转换单')
@@ -1384,9 +1388,10 @@ async function salesData(ctx) {
           ORDER BY value DESC`,
         saleP,
       ),
-      // SQL 8: 按二级品项汇总
+      // SQL 8: 按一二级品项当期销售（嵌套用）
       pg.query(
-        `SELECT pc.category_name AS label,
+        `SELECT pc.product_kind AS kind,
+                pc.category_name AS label,
                 COALESCE(SUM(si.received::numeric), 0) AS value
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -1396,18 +1401,61 @@ async function salesData(ctx) {
             AND o.sale_order_type IN ('销售单', '转换单')
             AND o.status = '已支付'
             AND o.paid_at::date BETWEEN $1 AND $2
-          GROUP BY pc.category_name
-          ORDER BY value DESC`,
+            AND pc.product_kind IS NOT NULL
+            AND pc.category_name IS NOT NULL
+          GROUP BY pc.product_kind, pc.category_name`,
         saleP,
+      ),
+      // SQL 9: 品项骨架（不依赖时间窗 / scope，是 product_categories 表的当前全量快照）
+      pg.query(
+        `SELECT product_kind, category_name
+           FROM product_categories
+          WHERE product_kind IS NOT NULL
+            AND category_name IS NOT NULL
+          ORDER BY product_kind, category_name`,
+        [],
       ),
     ])
 
   const elapsed = Date.now() - t0
 
-  const toList = (rows) =>
-    rows
-      .map((r) => ({ label: r.label, value: fmt(r.value) }))
-      .filter((r) => parseFloat(r.value) > 0)
+  const fmtRow = (label, value) => ({ label, value: fmt(value) })
+  const cmpDescByValueAscByLabel = (a, b) => {
+    const dv = parseFloat(b.value) - parseFloat(a.value)
+    return dv !== 0 ? dv : a.label.localeCompare(b.label, 'zh-Hans-CN')
+  }
+
+  // 经营类型骨架（4 行硬展示，pgEnum 序）
+  const catMap = new Map(catRows.map((r) => [r.label, r.value]))
+  const bySalesCategory = SALES_CATEGORY_SKELETON.map((lbl) =>
+    fmtRow(lbl, catMap.get(lbl) || 0),
+  )
+
+  // 一级/二级骨架来自 SQL 9 的 product_categories 快照
+  const kindTotalMap = new Map(kindRows.map((r) => [r.label, r.value]))
+  const leafValueMap = new Map() // `${kind}::${label}` -> value
+  for (const r of nameRows) {
+    leafValueMap.set(`${r.kind}::${r.label}`, r.value)
+  }
+
+  // 按 product_kind 分组骨架
+  const groupBuilder = new Map() // kind -> { children: [] }
+  for (const sk of skeletonRows) {
+    if (!groupBuilder.has(sk.product_kind)) {
+      groupBuilder.set(sk.product_kind, { children: [] })
+    }
+    const v = leafValueMap.get(`${sk.product_kind}::${sk.category_name}`) || 0
+    groupBuilder.get(sk.product_kind).children.push(fmtRow(sk.category_name, v))
+  }
+
+  // 装配最终结构：一级 value 取 kindRows，children 排序，一级整体按 value DESC + label 升序
+  const byProductKind = Array.from(groupBuilder.entries())
+    .map(([kind, { children }]) => ({
+      label: kind,
+      value: fmt(kindTotalMap.get(kind) || 0),
+      children: children.sort(cmpDescByValueAscByLabel),
+    }))
+    .sort(cmpDescByValueAscByLabel)
 
   ctx.result = {
     totalRevenue: fmt(revRows[0]?.v),
@@ -1421,9 +1469,8 @@ async function salesData(ctx) {
     xiaomeiProductOut: fmt(prodOutRows[0]?.xiaomei),
     newMemberProductOut: fmt(prodOutRows[0]?.new_member),
     oldMemberProductOut: fmt(prodOutRows[0]?.old_member),
-    bySalesCategory: toList(catRows),
-    byProductKind: toList(kindRows),
-    byCategoryName: toList(nameRows),
+    bySalesCategory,
+    byProductKind,
   }
 
   if (elapsed > 800) {
