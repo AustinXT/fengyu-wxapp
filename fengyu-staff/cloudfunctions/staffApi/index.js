@@ -99,6 +99,9 @@ const routes = {
   'service.list':         () => require('./routes/service').list,
   'service.detail':       () => require('./routes/service').detail,
   'service.counts':       () => require('./routes/service').counts,
+
+  // 管理层数据中心
+  'mgmtDashboard.scopeOptions': () => require('./routes/mgmt-dashboard').scopeOptions,
 }
 
 /**
