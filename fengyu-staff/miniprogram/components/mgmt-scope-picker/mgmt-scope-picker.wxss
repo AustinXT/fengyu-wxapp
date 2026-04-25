@@ -1,0 +1,84 @@
+/* components/mgmt-scope-picker — 市场/门店二级筛选样式 */
+
+.scope-picker {
+  width: 100%;
+}
+
+.scope-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24rpx 32rpx;
+  background: #FFFFFF;
+  border-bottom: 1rpx solid #EEEEEE;
+  font-size: 28rpx;
+  color: #333333;
+}
+
+.scope-trigger-text {
+  flex: 1;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.scope-popup {
+  min-height: 60vh;
+  padding: 0;
+  background: #FFFFFF;
+  display: flex;
+  flex-direction: column;
+}
+
+.scope-cols {
+  display: flex;
+  min-height: 60vh;
+}
+
+.scope-col {
+  flex: 1;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.scope-col--left {
+  border-right: 1rpx solid #EEEEEE;
+}
+
+.scope-row {
+  padding: 28rpx 32rpx;
+  font-size: 28rpx;
+  color: #333333;
+  border-left: 6rpx solid transparent;
+}
+
+.scope-row--active {
+  border-left: 6rpx solid #C0322A;
+  color: #C0322A;
+  font-weight: 600;
+}
+
+.scope-actions {
+  display: flex;
+  padding: 24rpx 32rpx;
+  gap: 24rpx;
+  border-top: 1rpx solid #EEEEEE;
+}
+
+.scope-btn {
+  flex: 1;
+  height: 80rpx;
+  line-height: 80rpx;
+  text-align: center;
+  border-radius: 40rpx;
+  font-size: 28rpx;
+  border: 1rpx solid #C0322A;
+  color: #C0322A;
+  background: #FFFFFF;
+}
+
+.scope-btn--primary {
+  background: #C0322A;
+  color: #FFFFFF;
+}

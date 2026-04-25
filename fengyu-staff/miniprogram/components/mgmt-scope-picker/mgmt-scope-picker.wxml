@@ -1,0 +1,57 @@
+<!-- components/mgmt-scope-picker — 市场/门店二级筛选 -->
+<view class="scope-picker">
+  <view class="scope-trigger" bindtap="onOpen">
+    <text class="scope-trigger-text">{{ applied.scopeName || '全部市场' }}</text>
+    <van-icon name="arrow-down" size="24rpx" color="#999" />
+  </view>
+
+  <van-popup
+    show="{{ showPopup }}"
+    position="bottom"
+    round
+    bind:close="onCancel"
+  >
+    <view class="scope-popup">
+      <view class="scope-cols">
+        <scroll-view class="scope-col scope-col--left" scroll-y>
+          <view
+            wx:if="{{ staffLevel === 'headquarters' }}"
+            class="scope-row {{ current.scopeType === 'all' ? 'scope-row--active' : '' }}"
+            bindtap="onPickAll"
+          >全部市场</view>
+          <view
+            wx:for="{{ marketList }}"
+            wx:key="id"
+            class="scope-row {{ current.marketId === item.id ? 'scope-row--active' : '' }}"
+            data-market-id="{{ item.id }}"
+            bindtap="onPickMarket"
+          >{{ item.name }}</view>
+        </scroll-view>
+
+        <scroll-view
+          wx:if="{{ current.marketId }}"
+          class="scope-col"
+          scroll-y
+        >
+          <view
+            class="scope-row {{ current.scopeType === 'market' ? 'scope-row--active' : '' }}"
+            data-store-id=""
+            bindtap="onPickStore"
+          >全部门店</view>
+          <view
+            wx:for="{{ storeListByMarket[current.marketId] }}"
+            wx:key="storeId"
+            class="scope-row {{ current.scopeType === 'store' && current.scopeId === item.storeId ? 'scope-row--active' : '' }}"
+            data-store-id="{{ item.storeId }}"
+            bindtap="onPickStore"
+          >{{ item.storeName }}</view>
+        </scroll-view>
+      </view>
+
+      <view class="scope-actions">
+        <view class="scope-btn" bindtap="onCancel">取消</view>
+        <view class="scope-btn scope-btn--primary" bindtap="onConfirm">确定</view>
+      </view>
+    </view>
+  </van-popup>
+</view>
