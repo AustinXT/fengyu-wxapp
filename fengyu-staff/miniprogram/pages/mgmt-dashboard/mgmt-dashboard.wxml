@@ -153,34 +153,46 @@
           </view>
         </view>
 
-        <!-- C. 入口区 -->
+        <!-- C. 入口区：卡片宫格 -->
         <view class="dash-entries">
-          <view class="dash-entry-row" bindtap="onEntryTap" data-entry="traffic">
-            <text>查看客量数据</text>
-            <van-icon name="arrow" size="24rpx" color="#999" />
-          </view>
-          <view class="dash-entry-row" bindtap="onEntryTap" data-entry="sales">
-            <text>查看销售数据</text>
-            <van-icon name="arrow" size="24rpx" color="#999" />
-          </view>
-          <view class="dash-entry-row" bindtap="onEntryTap" data-entry="products">
-            <text>查看品项数据</text>
-            <van-icon name="arrow" size="24rpx" color="#999" />
-          </view>
-          <view class="dash-entry-row" bindtap="onEntryTap" data-entry="customers">
-            <text>查看顾客档案</text>
-            <van-icon name="arrow" size="24rpx" color="#999" />
-          </view>
+          <van-grid column-num="{{ 4 }}" gutter="{{ 16 }}" border="{{ false }}">
+            <van-grid-item use-slot>
+              <view class="dash-entry-card" data-entry="traffic" bindtap="onEntryTap">
+                <van-icon name="friends-o" size="56rpx" color="#C0322A" />
+                <text class="dash-entry-label">客量数据</text>
+              </view>
+            </van-grid-item>
+            <van-grid-item use-slot>
+              <view class="dash-entry-card" data-entry="sales" bindtap="onEntryTap">
+                <van-icon name="balance-o" size="56rpx" color="#C0322A" />
+                <text class="dash-entry-label">销售数据</text>
+              </view>
+            </van-grid-item>
+            <van-grid-item use-slot>
+              <view class="dash-entry-card" data-entry="products" bindtap="onEntryTap">
+                <van-icon name="gift-card-o" size="56rpx" color="#C0322A" />
+                <text class="dash-entry-label">品项数据</text>
+              </view>
+            </van-grid-item>
+            <van-grid-item use-slot>
+              <view class="dash-entry-card" data-entry="customers" bindtap="onEntryTap">
+                <van-icon name="contact-o" size="56rpx" color="#C0322A" />
+                <text class="dash-entry-label">顾客档案</text>
+              </view>
+            </van-grid-item>
+          </van-grid>
         </view>
       </block>
 
-      <!-- 日历弹窗 -->
+      <!-- 日历弹窗：min-date 放开到历史；show-confirm=false 让 single 模式点日期即完成 -->
       <van-calendar
         show="{{ showCalendar }}"
         bind:close="onCalendarClose"
         bind:confirm="onCalendarConfirm"
+        show-confirm="{{ false }}"
+        min-date="{{ minDate }}"
         max-date="{{ maxDate }}"
-        default-date="{{ maxDate }}"
+        default-date="{{ defaultCalendarDate }}"
       />
     </view>
   </block>

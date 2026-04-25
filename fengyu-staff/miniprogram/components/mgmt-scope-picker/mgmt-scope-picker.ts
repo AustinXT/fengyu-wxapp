@@ -61,7 +61,30 @@ Component({
         ;(res.markets || []).forEach(m => {
           storeListByMarket[m.id] = m.stores || []
         })
-        this.setData({ marketList, storeListByMarket })
+
+        // 若调用方传入的 defaultScope 是 market 维度但 scopeName 缺失（页面层占位），
+        // 按返回数据回填真实市场名，并广播一次 change 同步页面显示。
+        const applied = this.data.applied as Scope
+        let nextApplied = applied
+        if (applied.scopeType === 'market' && !applied.scopeName && applied.scopeId) {
+          const m = marketList.find(x => x.id === applied.scopeId)
+          if (m) nextApplied = { ...applied, marketId: m.id, scopeName: m.name }
+        }
+
+        this.setData({
+          marketList,
+          storeListByMarket,
+          applied: nextApplied,
+          current: nextApplied,
+        })
+
+        if (nextApplied !== applied) {
+          this.triggerEvent('change', {
+            scopeType: nextApplied.scopeType,
+            scopeId: nextApplied.scopeId,
+            scopeName: nextApplied.scopeName,
+          })
+        }
       } catch (err) {
         wx.showToast({ title: '加载范围失败', icon: 'none' })
       }
@@ -101,6 +124,7 @@ Component({
       const market = (this.data.marketList as MarketMini[]).find(m => m.id === cur.marketId)
       if (!market) return
 
+      // "全部门店" → 立即以市场维度生效并关闭
       if (storeId === '') {
         const next: Scope = {
           scopeType: 'market',
@@ -108,28 +132,30 @@ Component({
           scopeId: cur.marketId,
           scopeName: market.name,
         }
-        this.setData({ current: next })
+        this._confirmAndEmit(next)
         return
       }
 
       const stores = (this.data.storeListByMarket as Record<string, StoreMini[]>)[cur.marketId] || []
       const store = stores.find(s => s.storeId === storeId)
       if (!store) return
+      // 具体门店是终态选择 → 立即 emit 并关闭
       const next: Scope = {
         scopeType: 'store',
         marketId: cur.marketId,
         scopeId: storeId,
         scopeName: `${market.name} · ${store.storeName}`,
       }
-      this.setData({ current: next })
+      this._confirmAndEmit(next)
     },
 
     onConfirm() {
       this._confirmAndEmit(this.data.current as Scope)
     },
 
+    // 同步写入 applied + current，避免 loadOptions 异步回填时读到陈旧 current 覆盖选择
     _confirmAndEmit(scope: Scope) {
-      this.setData({ applied: scope, showPopup: false })
+      this.setData({ applied: scope, current: scope, showPopup: false })
       this.triggerEvent('change', {
         scopeType: scope.scopeType,
         scopeId: scope.scopeId,

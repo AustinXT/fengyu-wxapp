@@ -72,6 +72,9 @@ interface DisplayData {
 
 const DEFAULT_SCOPE: ScopeValue = { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
 
+// 日历历史起点：业务系统 2019 年才上线，2015 年留足缓冲
+const CALENDAR_MIN_YEAR = 2015
+
 Page({
   data: {
     activeTab: 'dashboard' as MgmtTab,
@@ -85,7 +88,9 @@ Page({
     // 数据中心
     selectedDate: '',
     showCalendar: false,
+    minDate: 0,
     maxDate: 0,
+    defaultCalendarDate: 0,
     scope: { ...DEFAULT_SCOPE } as ScopeValue,
     defaultScope: { ...DEFAULT_SCOPE } as ScopeValue,
     summary: null as SummaryData | null,
@@ -125,8 +130,16 @@ Page({
     const pad = (n: number) => String(n).padStart(2, '0')
     const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
     const maxDate = now.getTime()
+    const minDate = new Date(CALENDAR_MIN_YEAR, 0, 1).getTime()
     const defaultScope = this.computeDefaultScope()
-    this.setData({ selectedDate: today, maxDate, scope: defaultScope, defaultScope })
+    this.setData({
+      selectedDate: today,
+      minDate,
+      maxDate,
+      defaultCalendarDate: maxDate,
+      scope: defaultScope,
+      defaultScope,
+    })
     this.loadSummary()
   },
 
@@ -137,10 +150,11 @@ Page({
     }
     const marketBinding = (roleBindings || []).find((b: any) => b.scopeType === '市场')
     if (marketBinding) {
+      // scopeName 留空，由 mgmt-scope-picker 加载 scopeOptions 后回填真实市场名
       return {
         scopeType: 'market',
         scopeId: marketBinding.scopeId,
-        scopeName: (marketBinding as any).scopeName || '我的市场',
+        scopeName: '',
       }
     }
     return { scopeType: 'all', scopeId: null, scopeName: '全部市场' }
@@ -158,7 +172,11 @@ Page({
     const d = e.detail
     const pad = (n: number) => String(n).padStart(2, '0')
     const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-    this.setData({ selectedDate: date, showCalendar: false })
+    this.setData({
+      selectedDate: date,
+      showCalendar: false,
+      defaultCalendarDate: d.getTime(),
+    })
     this.loadSummary()
   },
 
