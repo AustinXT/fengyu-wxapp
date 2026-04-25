@@ -78,6 +78,13 @@
       "when": 1777093191570,
       "tag": "0010_fix_commission_matrix_sales_category",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777094943410,
+      "tag": "0011_misty_nebula",
+      "breakpoints": true
     }
   ]
 }
