@@ -141,7 +141,8 @@ async function resolveScopeName(scopeType, scopeId) {
  *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
  *     WHERE product_type IN ('疗程卡','单品') AND remaining_sessions > 0
  *     ∩ sale_order_type IN ('销售单','转换单') ∩ status='已支付' ∩ scope（so.store_id）
- *   - 会员数：client_wechat_users WHERE customer_type='会员客' ∩ scope（c.bound_store_id）
+ *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
+ *     （与 metrics.md memberCount T2 历史化口径一致；持卡人数为截面，本接口不带 $date 守卫）
  */
 async function cardHolders(ctx) {
   await requireManagementLevel()(ctx, async () => {})
@@ -177,13 +178,14 @@ async function cardHolders(ctx) {
        AND pc.product_kind IS NOT NULL
      GROUP BY pc.product_kind`
 
-  // 会员 SQL —— $1=scopeId（仅当 scopeType !== 'all'）
+  // 会员 SQL（与 metrics.md memberCount 定义对齐：T2 历史化口径，与 mgmt-dashboard.js 一致）
+  // —— $1=scopeId（仅当 scopeType !== 'all'）
   const cs = buildClientScope(scopeType, scopeId, 'c', 1)
   const memberSql = `
     SELECT COUNT(*)::int AS cnt
       FROM client_wechat_users c
      WHERE ${cs.sql}
-       AND c.customer_type = '会员客'`
+       AND c.became_member_at IS NOT NULL`
 
   const [cardRows, memberRows, scopeName] = await Promise.all([
     pg.query(cardSql, sc.params),

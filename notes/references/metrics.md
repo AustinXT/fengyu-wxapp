@@ -489,7 +489,7 @@ SELECT COUNT(*) FROM org_nodes WHERE type='store' [AND parent_id=$market]
 
 > 以查询时刻（NOW()）为准；切换 period chip 不影响此数据，UI 加角标"截面"提示。
 > **持卡 = 未使用完的疗程卡 或 单次卡**（`product_type IN ('疗程卡','单品')`，`remaining_sessions > 0`）。院装产品（提货物品）不计入。
-> 分母「总会员人数」同 `memberCount`（`client_wechat_users.customer_type='会员客'` ∩ scope by `bound_store_id`）。
+> 分母「总会员人数」同 `memberCount`（`client_wechat_users.became_member_at IS NOT NULL` ∩ scope by `bound_store_id`，T2 历史化口径；持卡为截面，本子页不带 `$date` 守卫）。
 
 | 指标 | 公式 | 数据源 | 筛选条件 |
 |------|------|--------|----------|

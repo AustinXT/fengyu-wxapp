@@ -60,8 +60,8 @@ function setupCardMocks({
     if (/FROM stores\b/.test(sql) && /SELECT store_name/.test(sql)) {
       return [{ store_name: storeName }]
     }
-    // memberCount SQL：FROM client_wechat_users + customer_type='会员客'
-    if (/FROM\s+client_wechat_users\s+c/.test(sql) && /customer_type\s*=\s*'会员客'/.test(sql)) {
+    // memberCount SQL：FROM client_wechat_users + became_member_at IS NOT NULL
+    if (/FROM\s+client_wechat_users\s+c/.test(sql) && /became_member_at\s+IS\s+NOT\s+NULL/.test(sql)) {
       return [{ cnt: memberCount }]
     }
     // 持卡 SQL：JOIN product_categories pc + product_kind 分组
@@ -157,14 +157,14 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(cardSql).toMatch(/so\.status\s*=\s*'已支付'/)
   })
 
-  test('memberCount SQL 形态：FROM client_wechat_users + customer_type=会员客', async () => {
+  test('memberCount SQL 形态：FROM client_wechat_users + became_member_at IS NOT NULL（与 metrics.md memberCount T2 历史化口径一致）', async () => {
     setupCardMocks({ cardRows: [], memberCount: 0 })
     const ctx = makeHqCtx({ scopeType: 'all' })
     await cardHolders(ctx)
 
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
+      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
     )
     expect(memberSql).toBeTruthy()
     expect(memberSql).toMatch(/COUNT\(\*\)::int\s+AS\s+cnt/)
@@ -178,7 +178,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
+      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
     )
     expect(cardSql).toMatch(/WHERE\s+TRUE/)
     expect(memberSql).toMatch(/WHERE\s+TRUE/)
@@ -194,7 +194,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
+      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
     )
 
     expect(cardSql).toMatch(/so\.store_id\s+IN\s*\(\s*SELECT\s+s\.store_id\s+FROM\s+stores\s+s/)
@@ -213,7 +213,7 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     const sqlList = pg.query.mock.calls.map((c) => c[0])
     const cardSql = sqlList.find((s) => /JOIN\s+product_categories\s+pc/.test(s))
     const memberSql = sqlList.find(
-      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /customer_type\s*=\s*'会员客'/.test(s),
+      (s) => /FROM\s+client_wechat_users\s+c/.test(s) && /became_member_at\s+IS\s+NOT\s+NULL/.test(s),
     )
 
     expect(cardSql).toMatch(/so\.store_id\s*=\s*\$1/)
