@@ -1,24 +1,22 @@
 // pages/mgmt-dashboard — 管理层 Hub 页
-// 4 个 tab（首页/排行榜/顾客/我的）在同一页面内切换，避免 wx.reLaunch 开销
+// 4 个 tab（首页/门店排行榜/员工排行榜/我的）在同一页面内切换，避免 wx.reLaunch 开销
 import { canAccessManagement } from '../../utils/role'
 import { callStaffApi } from '../../utils/cloud'
 import { formatAmount, formatCount } from '../../utils/number'
 
 const app = getApp<IAppOption>()
 
-type MgmtTab = 'dashboard' | 'ranking' | 'customers' | 'profile'
+type MgmtTab = 'dashboard' | 'storeRanking' | 'staffRanking' | 'profile'
 
 type RankingPeriod = 'month' | 'lastMonth' | 'year'
-type RankingDimension = 'store' | 'staff'
-type RankingMetric =
+type StoreRankingMetric =
   | 'revenue' | 'consume' | 'retainedMember'
   | 'newMember' | 'projectCount' | 'footfall'
 type StaffRankingMetric =
   | 'revenue' | 'consume' | 'newMember'
   | 'footfall' | 'projectCount' | 'income'
-type AnyRankingMetric = RankingMetric | StaffRankingMetric
 
-interface RankingRow {
+interface StoreRankingRow {
   rank: number
   storeId: string
   storeName: string
@@ -26,15 +24,15 @@ interface RankingRow {
   value: number
 }
 
-interface RankingDisplayRow extends RankingRow {
+interface StoreRankingDisplayRow extends StoreRankingRow {
   valueText: string
 }
 
-interface RankingResp {
+interface StoreRankingResp {
   period: RankingPeriod
-  metric: RankingMetric
+  metric: StoreRankingMetric
   unit: 'amount' | 'count'
-  rows: RankingRow[]
+  rows: StoreRankingRow[]
 }
 
 interface StaffRankingRow {
@@ -63,7 +61,7 @@ const RANKING_PERIODS: { key: RankingPeriod; label: string }[] = [
   { key: 'year',      label: '本年' },
 ]
 
-const RANKING_METRICS: { key: RankingMetric; label: string; unitLabel: string }[] = [
+const STORE_RANKING_METRICS: { key: StoreRankingMetric; label: string; unitLabel: string }[] = [
   { key: 'revenue',        label: '业绩排名',     unitLabel: '业绩' },
   { key: 'consume',        label: '实耗排名',     unitLabel: '实耗' },
   { key: 'retainedMember', label: '保有会员排名', unitLabel: '保有会员' },
@@ -79,11 +77,6 @@ const STAFF_RANKING_METRICS: { key: StaffRankingMetric; label: string; unitLabel
   { key: 'footfall',     label: '客流榜单',   unitLabel: '客流' },
   { key: 'projectCount', label: '项目数榜单', unitLabel: '项目数' },
   { key: 'income',       label: '收入榜单',   unitLabel: '收入' },
-]
-
-const RANKING_DIMENSIONS: { key: RankingDimension; label: string }[] = [
-  { key: 'store', label: '门店' },
-  { key: 'staff', label: '员工' },
 ]
 
 interface ScopeValue {
@@ -179,39 +172,44 @@ Page({
     loading: false,
     display: null as DisplayData | null,
 
-    // 排行榜
-    ranking: {
-      dimension: 'store' as RankingDimension,
+    // 门店排行榜
+    storeRanking: {
       period: 'month' as RankingPeriod,
-      metric: 'revenue' as AnyRankingMetric,
+      metric: 'revenue' as StoreRankingMetric,
       loading: false,
-      storeRows: [] as RankingDisplayRow[],
-      staffRows: [] as StaffRankingDisplayRow[],
+      rows: [] as StoreRankingDisplayRow[],
       unit: 'amount' as 'amount' | 'count',
     },
-    rankingDimensions: RANKING_DIMENSIONS,
+    // 员工排行榜
+    staffRanking: {
+      period: 'month' as RankingPeriod,
+      metric: 'revenue' as StaffRankingMetric,
+      loading: false,
+      rows: [] as StaffRankingDisplayRow[],
+      unit: 'amount' as 'amount' | 'count',
+    },
     rankingPeriods: RANKING_PERIODS,
-    rankingMetrics: RANKING_METRICS,
+    storeRankingMetrics: STORE_RANKING_METRICS,
     staffRankingMetrics: STAFF_RANKING_METRICS,
-    rankingMetricLabelMap: {} as Record<RankingMetric, string>,
+    storeRankingMetricLabelMap: {} as Record<StoreRankingMetric, string>,
     staffRankingMetricLabelMap: {} as Record<StaffRankingMetric, string>,
   },
 
   onLoad(options: { tab?: string }) {
     const tab = options?.tab as MgmtTab | undefined
-    if (tab && ['dashboard', 'ranking', 'customers', 'profile'].includes(tab)) {
+    if (tab && ['dashboard', 'storeRanking', 'staffRanking', 'profile'].includes(tab)) {
       this.setData({ activeTab: tab })
     }
-    const labelMap = RANKING_METRICS.reduce((acc, m) => {
+    const storeLabelMap = STORE_RANKING_METRICS.reduce((acc, m) => {
       acc[m.key] = m.unitLabel
       return acc
-    }, {} as Record<RankingMetric, string>)
+    }, {} as Record<StoreRankingMetric, string>)
     const staffLabelMap = STAFF_RANKING_METRICS.reduce((acc, m) => {
       acc[m.key] = m.unitLabel
       return acc
     }, {} as Record<StaffRankingMetric, string>)
     this.setData({
-      rankingMetricLabelMap: labelMap,
+      storeRankingMetricLabelMap: storeLabelMap,
       staffRankingMetricLabelMap: staffLabelMap,
     })
   },
@@ -411,10 +409,21 @@ Page({
       wx.navigateTo({ url: `/packageMgmt/mgmt-product-cycle/mgmt-product-cycle?${params}` })
       return
     }
-    const labelMap: Record<string, string> = {
-      sales: '销售数据',
-      customers: '顾客档案',
+    if (entry === 'customers') {
+      const { scope } = this.data
+      const params = [
+        `scopeType=${scope.scopeType}`,
+        scope.scopeId ? `scopeId=${encodeURIComponent(scope.scopeId)}` : '',
+        `scopeName=${encodeURIComponent(scope.scopeName || '')}`,
+      ].filter(Boolean).join('&')
+      wx.navigateTo({ url: `/packageMgmt/mgmt-customer-list/mgmt-customer-list?${params}` })
+      return
     }
+    if (entry === 'sales') {
+      wx.navigateTo({ url: '/pages/sales-data/sales-data' })
+      return
+    }
+    const labelMap: Record<string, string> = {}
     const label = entry && labelMap[entry] ? labelMap[entry] : '该页面'
     wx.showToast({ icon: 'none', title: `${label} 页面开发中` })
   },
@@ -423,96 +432,94 @@ Page({
     const key = e.detail?.key
     if (!key || key === this.data.activeTab) return
     this.setData({ activeTab: key })
-    if (key === 'ranking') {
-      const { dimension, storeRows, staffRows } = this.data.ranking
-      const rowsLen = dimension === 'store' ? storeRows.length : staffRows.length
-      if (rowsLen === 0) this.loadRanking()
+    if (key === 'storeRanking' && this.data.storeRanking.rows.length === 0) {
+      this.loadStoreRanking()
+    }
+    if (key === 'staffRanking' && this.data.staffRanking.rows.length === 0) {
+      this.loadStaffRanking()
     }
   },
 
-  async loadRanking() {
-    const { dimension, period, metric } = this.data.ranking
-    this.setData({ 'ranking.loading': true })
+  async loadStoreRanking() {
+    const { period, metric } = this.data.storeRanking
+    this.setData({ 'storeRanking.loading': true })
     try {
-      if (dimension === 'store') {
-        const resp = await callStaffApi<RankingResp>('mgmtDashboard.storeRanking', {
-          period,
-          metric,
-        })
-        const formatter = resp.unit === 'amount' ? formatAmount : formatCount
-        const rows: RankingDisplayRow[] = resp.rows.map((r) => ({
-          ...r,
-          valueText: formatter(r.value),
-        }))
-        this.setData({
-          'ranking.storeRows': rows,
-          'ranking.unit': resp.unit,
-          'ranking.loading': false,
-        })
-      } else {
-        const resp = await callStaffApi<StaffRankingResp>('mgmtDashboard.staffRanking', {
-          period,
-          metric,
-        })
-        const formatter = resp.unit === 'amount' ? formatAmount : formatCount
-        const rows: StaffRankingDisplayRow[] = resp.rows.map((r) => ({
-          ...r,
-          valueText: formatter(r.value),
-        }))
-        this.setData({
-          'ranking.staffRows': rows,
-          'ranking.unit': resp.unit,
-          'ranking.loading': false,
-        })
-      }
+      const resp = await callStaffApi<StoreRankingResp>('mgmtDashboard.storeRanking', {
+        period,
+        metric,
+      })
+      const formatter = resp.unit === 'amount' ? formatAmount : formatCount
+      const rows: StoreRankingDisplayRow[] = resp.rows.map((r) => ({
+        ...r,
+        valueText: formatter(r.value),
+      }))
+      this.setData({
+        'storeRanking.rows': rows,
+        'storeRanking.unit': resp.unit,
+        'storeRanking.loading': false,
+      })
     } catch {
-      this.setData({ 'ranking.loading': false })
+      this.setData({ 'storeRanking.loading': false })
       wx.showToast({ icon: 'none', title: '排行榜加载失败' })
     }
   },
 
-  onRankingDimensionTap(e: WechatMiniprogram.BaseEvent) {
-    const dimension = (e.currentTarget.dataset as { dimension?: RankingDimension }).dimension
-    if (!dimension || dimension === this.data.ranking.dimension) return
-
-    // metric 兼容映射：切换 dimension 时若当前 metric 在新维度不存在 → fallback 到 revenue
-    const currentMetric = this.data.ranking.metric
-    const validInTarget =
-      dimension === 'store'
-        ? RANKING_METRICS.some((m) => m.key === currentMetric)
-        : STAFF_RANKING_METRICS.some((m) => m.key === currentMetric)
-    const newMetric: AnyRankingMetric = validInTarget ? currentMetric : 'revenue'
-
-    this.setData({
-      'ranking.dimension': dimension,
-      'ranking.metric': newMetric,
-    })
-
-    // 已有同 metric 的缓存则不重新请求
-    const targetRows = dimension === 'store'
-      ? this.data.ranking.storeRows
-      : this.data.ranking.staffRows
-    const hasCache = targetRows.length > 0 && newMetric === currentMetric
-    if (!hasCache) this.loadRanking()
+  async loadStaffRanking() {
+    const { period, metric } = this.data.staffRanking
+    this.setData({ 'staffRanking.loading': true })
+    try {
+      const resp = await callStaffApi<StaffRankingResp>('mgmtDashboard.staffRanking', {
+        period,
+        metric,
+      })
+      const formatter = resp.unit === 'amount' ? formatAmount : formatCount
+      const rows: StaffRankingDisplayRow[] = resp.rows.map((r) => ({
+        ...r,
+        valueText: formatter(r.value),
+      }))
+      this.setData({
+        'staffRanking.rows': rows,
+        'staffRanking.unit': resp.unit,
+        'staffRanking.loading': false,
+      })
+    } catch {
+      this.setData({ 'staffRanking.loading': false })
+      wx.showToast({ icon: 'none', title: '排行榜加载失败' })
+    }
   },
 
-  onRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
+  onStoreRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
     const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
-    if (!period || period === this.data.ranking.period) return
+    if (!period || period === this.data.storeRanking.period) return
     this.setData({
-      'ranking.period': period,
-      // 切 period 清空两个维度缓存（数据已变）
-      'ranking.storeRows': [],
-      'ranking.staffRows': [],
+      'storeRanking.period': period,
+      'storeRanking.rows': [],
     })
-    this.loadRanking()
+    this.loadStoreRanking()
   },
 
-  onRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
-    const metric = (e.currentTarget.dataset as { metric?: AnyRankingMetric }).metric
-    if (!metric || metric === this.data.ranking.metric) return
-    this.setData({ 'ranking.metric': metric })
-    this.loadRanking()
+  onStoreRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
+    const metric = (e.currentTarget.dataset as { metric?: StoreRankingMetric }).metric
+    if (!metric || metric === this.data.storeRanking.metric) return
+    this.setData({ 'storeRanking.metric': metric })
+    this.loadStoreRanking()
+  },
+
+  onStaffRankingPeriodTap(e: WechatMiniprogram.BaseEvent) {
+    const period = (e.currentTarget.dataset as { period?: RankingPeriod }).period
+    if (!period || period === this.data.staffRanking.period) return
+    this.setData({
+      'staffRanking.period': period,
+      'staffRanking.rows': [],
+    })
+    this.loadStaffRanking()
+  },
+
+  onStaffRankingMetricTap(e: WechatMiniprogram.BaseEvent) {
+    const metric = (e.currentTarget.dataset as { metric?: StaffRankingMetric }).metric
+    if (!metric || metric === this.data.staffRanking.metric) return
+    this.setData({ 'staffRanking.metric': metric })
+    this.loadStaffRanking()
   },
 
   onSwitchToStore() {

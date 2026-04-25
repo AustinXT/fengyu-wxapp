@@ -5,7 +5,6 @@
     "van-calendar": "@vant/weapp/calendar/index",
     "van-grid": "@vant/weapp/grid/index",
     "van-grid-item": "@vant/weapp/grid-item/index",
-    "placeholder-page": "../../components/placeholder-page/placeholder-page",
     "mgmt-navbar": "../../components/mgmt-navbar/mgmt-navbar",
     "mgmt-scope-picker": "../../components/mgmt-scope-picker/mgmt-scope-picker"
   }
