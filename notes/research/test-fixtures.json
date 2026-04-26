@@ -1,0 +1,113 @@
+{
+  "_meta": {
+    "purpose": "admin Chrome E2E 测试固定夹具，对应 admin-chrome-e2e-plan.md §0.5",
+    "db": "47.113.202.7:5433/fengyu_wxapp",
+    "created_at": "2026-04-26",
+    "FY_FIX_prefix": "所有 fixture 资源的 ID 前缀，便于 grep 清理",
+    "cleanup_sql": "见文件末尾 _cleanup 字段"
+  },
+
+  "store": {
+    "store_id": "store-nc01",
+    "store_name": "南昌旗舰店",
+    "org_node_id": "org-store-nc01",
+    "market_org_node_id": "6707cc8b88579108",
+    "market_name": "南昌市场"
+  },
+
+  "customer": {
+    "user_id": "FY-FIX-CLIENT-01",
+    "customer_id": "WF-FIX-001",
+    "name": "Fixture测试客",
+    "phone": "13800138000",
+    "bound_store_id": "store-nc01",
+    "member_level": "初钻",
+    "customer_type": "会员客",
+    "customer_status": "保有会员-稳定",
+    "gender": "女",
+    "_note": "专门为测试创建，无 openid（测试不走小程序登录路径），未挂 promoter"
+  },
+
+  "prepaid_card": {
+    "card_id": "FY-FIX-CARD-01",
+    "user_id": "FY-FIX-CLIENT-01",
+    "initial_balance": 1000.00,
+    "_note": "已写一条 card_transactions 充值流水 +1000，初始 balance ≡ 流水"
+  },
+
+  "user_coupon": {
+    "coupon_id": "FY-FIX-COUPON-01",
+    "template_id": "FY-FIX-CT-01",
+    "user_id": "FY-FIX-CLIENT-01",
+    "coupon_type": "现金券",
+    "discount_value": 30.00,
+    "min_spend": 200.00,
+    "expire_in_days": 30,
+    "_note": "满 200 减 30，链路 11 测试用"
+  },
+
+  "skus": {
+    "normal_low": {
+      "sku_id": "c79157b29c9e974c",
+      "category_name": "缦之羽",
+      "product_kind": "护理项目",
+      "spec_name": "洗-无创纹身 疗程卡",
+      "price": 100.00,
+      "session_count": 1,
+      "_use": "链路 1 / 7 / 9 普通项目"
+    },
+    "normal_med": {
+      "sku_id": "2e388ba778334779",
+      "category_name": "其他",
+      "product_kind": "护理项目",
+      "spec_name": "假性皱纹管家（单部位） 疗程卡",
+      "price": 100.00,
+      "session_count": 1,
+      "_use": "链路 1 第二件商品"
+    },
+    "card": {
+      "sku_id": "sku-007-01",
+      "category_name": "储值卡",
+      "product_kind": "充值卡",
+      "spec_name": "金卡充值卡 金卡5000",
+      "price": 5000.00,
+      "session_count": 1,
+      "_use": "链路 10 储值卡 SKU"
+    },
+    "multi_session_existing": {
+      "sale_item_id": "FY-XSD-WX-2603210001-02",
+      "sale_order_id": "FY-XSD-WX-2603210001",
+      "product_name": "皮肤-脱毛 (比基尼)",
+      "session_count": 12,
+      "remaining_sessions": 12,
+      "_use": "链路 12 服务次数对账（已存在的多次卡，不要清掉）",
+      "_warning": "这是生产数据上的 sale_item，跑链路 12 时若改了 remaining_sessions 必须还原"
+    }
+  },
+
+  "test_employee_for_link5": {
+    "employee_id": "FY-TEST-MOVE",
+    "name": "调店测试员",
+    "phone": "13900139007",
+    "_note": "链路 5 调店测试用；测试结束后必须清理（不在 §0.2 7 个核心账号内）"
+  },
+
+  "stores_for_link5": {
+    "store_a": { "store_id": "store-nc01", "org_node_id": "org-store-nc01", "name": "南昌旗舰店" },
+    "store_b": { "store_id": "store-nc02", "org_node_id": "org-store-nc02", "name": "青山湖店" }
+  },
+
+  "_cleanup": {
+    "description": "所有 fixture 资源在 5433/fengyu_wxapp 上以 FY-FIX- 前缀创建。彻底清理用以下 SQL（按 FK 顺序）：",
+    "sql": [
+      "DELETE FROM card_transactions WHERE card_id LIKE 'FY-FIX-%';",
+      "DELETE FROM prepaid_cards WHERE card_id LIKE 'FY-FIX-%';",
+      "DELETE FROM user_coupons WHERE coupon_id LIKE 'FY-FIX-%';",
+      "DELETE FROM coupon_templates WHERE template_id LIKE 'FY-FIX-%';",
+      "DELETE FROM point_transactions WHERE user_id LIKE 'FY-FIX-%';",
+      "DELETE FROM sale_orders WHERE client_user_id LIKE 'FY-FIX-%';",
+      "DELETE FROM appointments WHERE client_user_id LIKE 'FY-FIX-%';",
+      "DELETE FROM client_wechat_users WHERE user_id LIKE 'FY-FIX-%';"
+    ]
+  }
+}
