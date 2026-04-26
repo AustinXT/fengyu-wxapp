@@ -42,6 +42,7 @@ export default function SkuDetailPageClient({
   const [categoryId, setCategoryId] = useState(sku.categoryId)
 
   const [isShengmei, setIsShengmei] = useState<boolean>(sku.isShengmei ?? false)
+  const [isExperience, setIsExperience] = useState<boolean>(sku.isExperience ?? false)
   const [allMarkets, setAllMarkets] = useState(!sku.marketScope)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>(
     sku.marketScope ? sku.marketScope.split(',') : []
@@ -109,6 +110,7 @@ export default function SkuDetailPageClient({
         sortOrder,
         serviceFee,
         isShengmei: requiresShengmei ? isShengmei : null,
+        isExperience,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
       }, sku.updatedAt)
@@ -322,16 +324,33 @@ export default function SkuDetailPageClient({
             <CardTitle className="text-base">启用状态</CardTitle>
           </CardHeader>
           <CardContent>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                name="isEnabled"
-                defaultChecked={sku.isEnabled}
-                onChange={() => setFormDirty(true)}
-                className="h-4 w-4 rounded border-[var(--input)]"
-              />
-              <span className="text-sm">启用</span>
-            </label>
+            <div className="space-y-3">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  name="isEnabled"
+                  defaultChecked={sku.isEnabled}
+                  onChange={() => setFormDirty(true)}
+                  className="h-4 w-4 rounded border-[var(--input)]"
+                />
+                <span className="text-sm">启用</span>
+              </label>
+
+              <div className="space-y-1">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={isExperience}
+                    onChange={(e) => { setIsExperience(e.target.checked); setFormDirty(true) }}
+                    className="h-4 w-4 rounded border-[var(--input)]"
+                  />
+                  <span className="text-sm font-medium">体验卡 SKU</span>
+                </label>
+                <p className="pl-6 text-xs text-[var(--muted-foreground)]">
+                  勾选后该 SKU 仅在小程序体验卡入口展示，不出现在商城；现有订单的快照不受改动影响
+                </p>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
