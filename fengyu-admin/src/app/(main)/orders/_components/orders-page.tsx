@@ -370,6 +370,8 @@ export default function OrdersPageClient({
                   <th className="px-4 py-3 text-left font-medium text-gray-500">顾客</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">门店</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">订单金额</th>
+                  {/* 2026-04-26 sale-order-domain-refactor：实付（received）+ 已退款（refunded_amount）；paid_amount 列已 DROP */}
+                  <th className="px-4 py-3 text-right font-medium text-gray-500">实付 / 已退</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">支付方式</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">开单人</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">下单时间</th>
@@ -395,6 +397,15 @@ export default function OrdersPageClient({
                     <td className="px-4 py-3">{order.customerName || "-"}</td>
                     <td className="px-4 py-3">{order.storeName || "-"}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(order.totalAmount).toLocaleString()}</td>
+                    {/* 实付（received） + 已退款（refunded_amount > 0 时点亮） */}
+                    <td className="px-4 py-3 text-right text-xs">
+                      <div>¥{Number(order.received ?? "0").toLocaleString()}</div>
+                      {Number(order.refundedAmount ?? "0") > 0 && (
+                        <div className="text-[#C62828] mt-0.5">
+                          已退 ¥{Number(order.refundedAmount).toLocaleString()}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3">{paymentMethodMap[order.paymentMethod] || order.paymentMethod}</td>
                     <td className="px-4 py-3">{order.openedByName || "顾客自助"}</td>
                     <td className="px-4 py-3 text-[#999999]">{formatTime(order.saleOrderDatetime)}</td>
@@ -405,7 +416,7 @@ export default function OrdersPageClient({
                 ))}
                 {orders.length === 0 && (
                   <tr>
-                    <td colSpan={10} className="px-4 py-12 text-center text-[#999999]">
+                    <td colSpan={11} className="px-4 py-12 text-center text-[#999999]">
                       {total === 0 ? "暂无订单数据" : "未找到匹配结果，请调整筛选条件"}
                     </td>
                   </tr>

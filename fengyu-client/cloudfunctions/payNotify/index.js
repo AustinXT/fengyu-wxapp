@@ -31,11 +31,85 @@ function getPg() {
 }
 
 /**
+ * D-Q1-2026-04-26 决策：payNotify 立即停用直到补完拉卡拉签名校验
+ * 详见 notes/tickets/2026-04-26-sale-order-domain-refactor.md
+ *      docs/audit/audit-04-pay-notify.md (P0-04-01)
+ *
+ * 拉卡拉对接前线上支付走"线下/储值卡"通道（admin/staff 路径），
+ * payNotify 完全不应被任何客户端/小程序/外部回调触发。
+ *
+ * 任何 invocation 都直接拒绝 + 写 operation_logs 告警，
+ * 等拉卡拉对接完成且签名校验补完后才解除此守卫。
+ *
+ * 关闭守卫的条件（缺一不可）：
+ * 1. 拉卡拉商户配置完成 + APIv3 密钥/平台证书托管到环境变量
+ * 2. 实现 verifyLakalaSignature(headers, body, secret) helper
+ * 3. 实现 IP 白名单（拉卡拉回调来源段）
+ * 4. 实现 transactionId 幂等键
+ * 5. operation_logs 'cron.audit_invariants' 跑 1 周无 violations 后才允许解除
+ *
+ * 解除时：将 PAYNOTIFY_DISABLED 改为 false，并实现完整 V3 签名校验链路。
+ * 原有业务逻辑保留在守卫之后（不删除），作为后续拉卡拉对接的参考。
+ */
+const PAYNOTIFY_DISABLED = true
+
+/**
  * 云函数入口
  *
  * 注意：member_level（钻石等级）由 cronTask 每日凌晨3点统一重算，本函数不直接更新。
  */
 exports.main = async (event) => {
+  // ========== D-Q1-2026-04-26 守卫：payNotify 全锁 ==========
+  // 必须最先执行，在任何业务逻辑、签名校验、解密之前。
+  // 必须 return（不能 throw），避免被外层 try/catch 吞掉而继续走旧逻辑。
+  if (PAYNOTIFY_DISABLED) {
+    const safeEvent = event && typeof event === 'object' ? event : {}
+    const isLikelyExternalCall = !!(safeEvent.transactionId || safeEvent.out_trade_no || safeEvent.signature)
+    const severity = isLikelyExternalCall ? 'HIGH' : 'INFO'
+    const eventKeys = Object.keys(safeEvent)
+
+    console.warn(
+      '[payNotify] DISABLED invocation rejected',
+      JSON.stringify({ severity, isLikelyExternalCall, eventKeys })
+    )
+
+    // 写 operation_logs 告警（best-effort，失败不阻塞拒绝响应）
+    try {
+      let wxContext = null
+      try {
+        wxContext = typeof cloud.getWXContext === 'function' ? cloud.getWXContext() : null
+      } catch (ctxErr) {
+        wxContext = null
+      }
+
+      const targetId = isLikelyExternalCall ? 'EXTERNAL' : 'INTERNAL'
+      const detail = {
+        _v: 1,
+        severity,
+        event_keys: eventKeys,
+        wxContext,
+        timestamp: new Date().toISOString(),
+        reason: 'PAYNOTIFY_DISABLED (D-Q1-2026-04-26)',
+      }
+
+      const pg = getPg()
+      await pg.query(
+        `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
+         VALUES ('paynotify.disabled_invocation', 'security_event', $1, $2::jsonb, 'payNotify', NOW())`,
+        [targetId, JSON.stringify(detail)]
+      )
+    } catch (logErr) {
+      console.error('[payNotify disabled] log failure:', logErr && logErr.message)
+    }
+
+    return {
+      code: -403,
+      message: 'PERMISSION_DENIED: PAYNOTIFY_DISABLED',
+      data: null,
+    }
+  }
+  // ========== 守卫结束。以下为原有业务逻辑（保留为参考，等拉卡拉对接时启用） ==========
+
   console.log('[payNotify] received event:', JSON.stringify(event))
 
   try {
