@@ -8,8 +8,13 @@
  *   1. sale_allocations:    UPDATE SET is_void=true, voided_at=NOW()  (sale_allocations 无 voided_reason)
  *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$
  *   3. user_coupons:        UPDATE SET status='未使用', used_at=NULL, used_sale_order_id=NULL（仅未过期）
- *   4. point_transactions:  INSERT 反向流水（消费冲销）+ customer_points.balance 重算
+ *   4. point_transactions:  INSERT 反向流水（type='消费冲销'）+ client_wechat_users.points_balance 重算
  *   5. pickup_records:      UPDATE picked_up_quantity 反向恢复（家居产品退款时）
+ *
+ * 列名 SOT（与 db/schema/points.ts 完全对齐）：
+ *   - point_transactions.type        （不是 change_type）
+ *   - point_transactions.ref_order_id（不是 ref_sale_order_id）
+ *   - point_transactions 无 note 列；balance 重算写 client_wechat_users.points_balance（无独立 customer_points 表）
  *
  * 调用约定：必须在 pg.transaction(client => ...) 内调用，传入事务 client。
  *
@@ -85,22 +90,22 @@ async function cascadeRefund(client, params) {
   const refundedCoupons = couponRes.rowCount || 0
 
   // ========== 通道 4: point_transactions 反向流水 ==========
-  // 写入与原"消费赠送/回款赠送"对冲的"消费冲销"行；同事务重算 customer_points.balance
-  // 为简化（与 admin 对齐口径）：把所有 ref_sale_order_id=该单 + 正向 (consume_grant/repay_grant) 的流水反冲
-  // 此处不要求严格匹配 saleItemId，因为 point_transactions 颗粒度是订单级
+  // 写入与原"消费赠送/回款赠送/获取"对冲的"消费冲销"行；同事务重算 client_wechat_users.points_balance
+  // SOT 对齐 db/schema/points.ts：列名 type / ref_order_id（不是 change_type / ref_sale_order_id）
+  // point_transactions 无 note 列。
   let reversedPoints = 0
   let pointsBalanceUpdated = false
-  // 1) 查所有原赠送流水
+  // 1) 查所有原赠送流水（注意：列名为 type，不是 change_type）
   const giftRes = await client.query(
-    `SELECT id, user_id, change_type, amount
+    `SELECT id, user_id, type, amount
        FROM point_transactions
-      WHERE ref_sale_order_id = $1
-        AND change_type IN ('消费赠送', '回款赠送')
+      WHERE ref_order_id = $1
+        AND type IN ('消费赠送', '回款赠送', '获取')
         AND amount > 0
         AND NOT EXISTS (
           SELECT 1 FROM point_transactions pt2
-          WHERE pt2.ref_sale_order_id = $1
-            AND pt2.change_type = '消费冲销'
+          WHERE pt2.ref_order_id = $1
+            AND pt2.type = '消费冲销'
             AND pt2.amount = -point_transactions.amount
         )`,
     [saleOrderId],
@@ -108,16 +113,20 @@ async function cascadeRefund(client, params) {
   for (const row of giftRes.rows) {
     await client.query(
       `INSERT INTO point_transactions
-         (user_id, ref_sale_order_id, change_type, amount, note, created_at)
-       VALUES ($1, $2, '消费冲销', $3, $4, $5)`,
-      [row.user_id, saleOrderId, -Number(row.amount), voidedReason, now],
+         (user_id, ref_order_id, type, amount, created_at)
+       VALUES ($1, $2, '消费冲销', $3, $4)`,
+      [row.user_id, saleOrderId, -Number(row.amount), now],
     )
     reversedPoints++
-    // 同事务重算 balance
+    // 同事务重算 balance（合并表 client_wechat_users.points_balance，无独立 customer_points 表）
     await client.query(
-      `UPDATE customer_points SET balance = COALESCE((
-         SELECT SUM(amount) FROM point_transactions WHERE user_id = $1
-       ), 0), updated_at = $2 WHERE user_id = $1`,
+      `UPDATE client_wechat_users
+          SET points_balance = COALESCE((
+                SELECT SUM(amount) FROM point_transactions WHERE user_id = $1
+              ), 0),
+              points_updated_at = $2,
+              updated_at = $2
+        WHERE user_id = $1`,
       [row.user_id, now],
     )
     pointsBalanceUpdated = true
