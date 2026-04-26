@@ -123,8 +123,6 @@ export interface RefundListItem {
   refundReason: string | null
   refSaleItemId: string | null
   sessionCount: number | null
-  /** 手续费（来自 sale_payment_details.handling_fee） */
-  handlingFee: string | null
   /** 操作人（发起人） */
   operatorEmployeeId: string | null
   operatorName: string | null
@@ -1191,7 +1189,6 @@ function mapRefundRow(r: {
     refundReason: r.details?.refundReason ?? null,
     refSaleItemId: r.details?.refSaleItemId ?? null,
     sessionCount: r.details?.sessionCount ?? null,
-    handlingFee: r.details?.handlingFee != null ? String(r.details.handlingFee) : null,
     operatorEmployeeId: r.details?.operatorEmployeeId ?? null,
     operatorName: r.operatorName,
     auditEmployeeId: r.details?.auditEmployeeId ?? null,

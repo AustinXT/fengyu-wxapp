@@ -2095,7 +2095,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     lockedOrder?: Record<string, any>
     orderIdGen?: string
     cardBalance?: { cardId: string; balance: number } | null
-    sumRow?: { new_paid: string; new_prepaid: string }
+    sumRow?: { new_received: string; new_prepaid: string }
     updateRowCount?: number
     throwOnStep?: string
   } = {}) {
@@ -2134,7 +2134,7 @@ describe('recordPayment — 管理后台录入回款', () => {
           if (execCall === 3 + stepOffset) {
             return Promise.resolve([
               {
-                new_paid: opts.sumRow?.new_paid ?? '0',
+                new_received: opts.sumRow?.new_received ?? '0',
                 new_prepaid: opts.sumRow?.new_prepaid ?? '0',
               },
             ])
@@ -2183,7 +2183,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     total_amount: '200.00',
     prepaid_card_amount: '0.00',
     payable_amount: '200.00',
-    paid_amount: '100.00',
+    received: '100.00',
     client_user_id: 'user-1',
     client_phone: '13800000000',
     customer_name: '顾客甲',
@@ -2197,7 +2197,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     const captured = mockRecordTx({
       lockedOrder: lockedPartialOrder,
       orderIdGen: 'FY-HKD-WX-2604250001',
-      sumRow: { new_paid: '200', new_prepaid: '0' },
+      sumRow: { new_received: '200', new_prepaid: '0' },
     })
 
     const result = await recordPayment(basePayload)
@@ -2208,10 +2208,10 @@ describe('recordPayment — 管理后台录入回款', () => {
       expect(result.data.refStatus).toBe('已支付')
       expect(result.data.refPaidAmount).toBe('200.00')
     }
-    // 凭证单 + 1 条 payments 行
-    expect(captured.insertValues.length).toBe(2)
+    // 1 条 payments 行（无凭证单 sale_orders 插入）
+    expect(captured.insertValues.length).toBe(1)
     // payments 行：change_type='回款' amount='100.00' source_end='admin'
-    const paymentInsert = captured.insertValues[1].v
+    const paymentInsert = captured.insertValues[0].v
     expect(paymentInsert).toMatchObject({
       saleOrderId: 'FY-XSD-WX-260420-0001',
       changeType: '回款',
@@ -2229,7 +2229,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     const captured1 = mockRecordTx({
       lockedOrder: lockedPartialOrder,
       orderIdGen: 'FY-HKD-WX-2604250001',
-      sumRow: { new_paid: '150', new_prepaid: '0' },
+      sumRow: { new_received: '150', new_prepaid: '0' },
     })
     const r1 = await recordPayment({ ...basePayload, repayAmount: 50 })
     expect(r1.success).toBe(true)
@@ -2237,13 +2237,13 @@ describe('recordPayment — 管理后台录入回款', () => {
       expect(r1.data.refStatus).toBe('部分支付')
       expect(r1.data.refPaidAmount).toBe('150.00')
     }
-    expect(captured1.insertValues.length).toBe(2)
+    expect(captured1.insertValues.length).toBe(1)
 
     // 第二次：再回 50 → payments SUM = 200 → '已支付'
     const captured2 = mockRecordTx({
-      lockedOrder: { ...lockedPartialOrder, paid_amount: '150.00' },
+      lockedOrder: { ...lockedPartialOrder, received: '150.00' },
       orderIdGen: 'FY-HKD-WX-2604250002',
-      sumRow: { new_paid: '200', new_prepaid: '0' },
+      sumRow: { new_received: '200', new_prepaid: '0' },
     })
     const r2 = await recordPayment({ ...basePayload, repayAmount: 50 })
     expect(r2.success).toBe(true)
@@ -2251,7 +2251,7 @@ describe('recordPayment — 管理后台录入回款', () => {
       expect(r2.data.refStatus).toBe('已支付')
       expect(r2.data.refPaidAmount).toBe('200.00')
     }
-    expect(captured2.insertValues.length).toBe(2)
+    expect(captured2.insertValues.length).toBe(1)
   })
 
   it('超额拦截：剩余欠款 100，尝试回款 150 → OVERPAY 错误，事务内抛错', async () => {
@@ -2299,7 +2299,7 @@ describe('recordPayment — 管理后台录入回款', () => {
       lockedOrder: lockedPartialOrder,
       orderIdGen: 'FY-HKD-WX-2604250001',
       cardBalance: { cardId: 'FY-CARD-USER-1', balance: 500 },
-      sumRow: { new_paid: '100', new_prepaid: '100' }, // paid=100 + prepaid=100 = total 200 → 已支付
+      sumRow: { new_received: '100', new_prepaid: '100' }, // paid=100 + prepaid=100 = total 200 → 已支付
     })
 
     const result = await recordPayment({
@@ -2314,8 +2314,8 @@ describe('recordPayment — 管理后台录入回款', () => {
     if (result.success) {
       expect(result.data.refStatus).toBe('已支付')
     }
-    // 3 次 insert：card_transactions + sale_orders 凭证单 + sale_order_payments
-    expect(captured.insertValues.length).toBe(3)
+    // 2 次 insert：card_transactions + sale_order_payments（无凭证单 sale_orders 插入）
+    expect(captured.insertValues.length).toBe(2)
     const cardTxn = captured.insertValues[0].v
     expect(cardTxn).toMatchObject({
       cardId: 'FY-CARD-USER-1',
@@ -2323,7 +2323,7 @@ describe('recordPayment — 管理后台录入回款', () => {
       amount: '-100.00',
       refOrderId: 'FY-HKD-WX-2604250001', // 指向回款凭证单
     })
-    const paymentInsert = captured.insertValues[2].v
+    const paymentInsert = captured.insertValues[1].v
     expect(paymentInsert).toMatchObject({
       changeType: '储值卡抵扣',
       amount: '100.00',
@@ -2412,7 +2412,7 @@ describe('recordPayment — 管理后台录入回款', () => {
     mockRecordTx({
       lockedOrder: lockedPartialOrder,
       orderIdGen: 'FY-HKD-WX-2604250001',
-      sumRow: { new_paid: '200', new_prepaid: '0' },
+      sumRow: { new_received: '200', new_prepaid: '0' },
       updateRowCount: 0,
     })
 
