@@ -16,11 +16,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:compile": "vitest run __tests__/compile",
-    "test:e2e": "jest --config e2e/jest.config.js",
+    "test:e2e": "node e2e/smoke.js",
     "check-wxml": "node scripts/check-wxml-bindings.js"
   },
   "devDependencies": {
-    "jest": "^30.3.0",
     "miniprogram-api-typings": "^5.1.2",
     "miniprogram-automator": "^0.12.1",
     "typescript": "^5.9.3",

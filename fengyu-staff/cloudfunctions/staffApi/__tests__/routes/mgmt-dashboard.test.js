@@ -1592,7 +1592,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
   describe('producer_employees CTE', () => {
     test.each(['revenue', 'consume', 'newMember', 'footfall', 'projectCount', 'income'])(
-      'metric=%s 含 producer_employees CTE + is_resigned=FALSE + 美容师/养生师 skills 过滤',
+      'metric=%s 含 producer_employees CTE + hired_at/resigned_at 历史口径 + 美容师/养生师 skills 过滤',
       async (metric) => {
         setupDefaultStaffMocks()
         const ctx = makeHqCtx({ period: 'month', metric })
@@ -1602,7 +1602,9 @@ describe('mgmtDashboard.staffRanking', () => {
         expect(sql).toMatch(/WITH producer_employees AS/)
         expect(sql).toMatch(/FROM staff_wechat_users sw/)
         expect(sql).toMatch(/LEFT JOIN stores s ON s\.store_id = sw\.store_id/)
-        expect(sql).toMatch(/sw\.is_resigned\s*=\s*FALSE/)
+        expect(sql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
+        expect(sql).toMatch(/sw\.hired_at::date\s*<=\s*NOW\(\)::date/)
+        expect(sql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*NOW\(\)::date/)
         expect(sql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\]/)
       },
     )

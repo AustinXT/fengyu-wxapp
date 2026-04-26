@@ -145,7 +145,7 @@ describe('mgmtTraffic.summary 入参/权限校验', () => {
 })
 
 describe('mgmtTraffic.summary 注册情况 SQL 形态', () => {
-  test('4 段都 FROM client_wechat_users + created_at <=；后 3 段含 customer_type=', async () => {
+  test('3 段用 created_at <=（regTotal/regOnly/regTrial），regMember 单独用 became_member_at', async () => {
     setupDefaultMocks()
     const ctx = makeHqCtx({ period: 'month', scopeType: 'all' })
     await summary(ctx)
@@ -156,16 +156,24 @@ describe('mgmtTraffic.summary 注册情况 SQL 形态', () => {
         /FROM client_wechat_users c/.test(s) &&
         /c\.created_at::date\s*<=/.test(s),
     )
-    expect(regSqls.length).toBe(4)
+    expect(regSqls.length).toBe(3)
 
-    // 至少有 1 段不含 customer_type=（regTotal）
+    // 1 段不含 customer_type=（regTotal）
     const noTypeSqls = regSqls.filter((s) => !/c\.customer_type\s*=\s*'/.test(s))
     expect(noTypeSqls.length).toBe(1)
 
-    // 3 段分别命中流量客 / 体验客 / 会员客
+    // 2 段分别命中流量客 / 体验客
     expect(regSqls.some((s) => /c\.customer_type\s*=\s*'流量客'/.test(s))).toBe(true)
     expect(regSqls.some((s) => /c\.customer_type\s*=\s*'体验客'/.test(s))).toBe(true)
-    expect(regSqls.some((s) => /c\.customer_type\s*=\s*'会员客'/.test(s))).toBe(true)
+
+    // regMember 单独用 became_member_at IS NOT NULL + became_member_at::date <=
+    const memberSql = sqlList.find(
+      (s) =>
+        /FROM client_wechat_users c/.test(s) &&
+        /c\.became_member_at\s+IS\s+NOT\s+NULL/.test(s) &&
+        /c\.became_member_at::date\s*<=/.test(s),
+    )
+    expect(memberSql).toBeTruthy()
   })
 
   test('返回 registration 4 项数字', async () => {
