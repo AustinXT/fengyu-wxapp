@@ -1,10 +1,23 @@
-# 审计报告：开单 + 状态机 + 订单号唯一 (02)
+# 审计报告：开单 + 状态机 + 订单号唯一 (02) — v3
 
-**审计时间**：2026-04-25
+**审计时间**：2026-04-26
 **域 ID**：02
-**审计员**：claude-opus-4-7
-**审计时长**：~25 分钟
-**关联 PR/Ticket**：partial-payment foundation (PR-2/PR-3)
+**审计员**：claude-sonnet-4-6
+**审计版本**：v3（合并 v1 + v2，独立交叉验证）
+**审计时长**：~45 分钟（合并评审）
+**关联 PR/Ticket**：sale-order-domain-refactor（2026-04-26）
+
+**合并来源**
+- v1：`docs/audit/audit-02-order-creation.md`（审计时间 2026-04-25，审计员 claude-opus-4-7）
+- v2：`docs/audit/audit-02-order-creation-v2.md`（审计时间 2026-04-26，审计员 claude-sonnet-4-6，从零独立读源码）
+
+**合并规则**
+- 同问题（相同 file:line 或实质相同）：以 v2 为准，补充 v1 细节
+- v2 新发现：新增条目，ID 延续 v2
+- v1 P0 在 v2 已修复：标记 `[CLOSED from v1]` 附修复文件
+- v1 P0 在 v2 降级：保留说明降级原因
+- 最终 P0 = v2 仍标 P0 的 + 已 CLOSED 条目
+
 **规范版本**：`real.md` v3.1.0（命中 #2 价格快照、#4 状态单向、#7 待支付唯一）+ `enums.ts` 28 枚举
 
 ---
@@ -13,63 +26,43 @@
 
 | 层 | admin | staff | client |
 |----|-------|-------|--------|
-| Schema | `db/schema/order.ts:40-117`（saleOrders）+ `db/schema/order.ts:126-188`（saleItems）+ `db/schema/order.ts:241-287`（saleOrderPayments） | ↑ | ↑ |
-| 枚举 | `db/schema/enums.ts:5-14` orderStatus(8 值) + `enums.ts:16` saleOrderType(5 值) | ↑ | ↑ |
-| Action/Route | `fengyu-admin/src/actions/orders.ts:583-1050`（createOrder）+ `:425-580`（confirmOfflinePayment / closeOrder / resetOrderFailed）+ `:1069-1516`（createConversionOrder）+ `:1522-1848`（recordPayment 回款） | `staffApi/routes/order.js:174-657`（create）+ `:662-750`（qrcode）+ `:755-1030`（confirmOffline）+ `:1035-1105`（close）+ `:1110-1146`（resetFailed）+ `:2452-2474`（generateOrderNo） | `clientApi/routes/order.js:142-550`（create）+ `:600-718`（pay）+ `:1180-1266`（alipayPay）+ `:729-794`（offlinePay）+ `:1000-1092`（cancel）+ `:888-994`（detail）+ `:51-136`（scanDetail）|
-| 唯一约束 | `db/schema/order.ts:107-113`：`uq_sale_orders_client_pending` (clientUserId 待支付) + `uq_sale_orders_phone_pending`（phone+storeId 待支付，仅 client_user_id IS NULL） | ↑ | ↑ |
-| Advisory lock | `actions/orders.ts:881,1280,1621` SQL 内 `pg_advisory_xact_lock(hashtext('sale_order_id_gen'))` | `routes/order.js:507,1394,2021,2460`（与 admin 同 key） | `routes/order.js:360`（同 key） |
-| 前端 | `(main)/orders/_components/order-create-page.tsx` + `order-create/*-picker.tsx` + `record-payment-dialog.tsx` | `pagesOrder/*` | `pagesOrder/*` |
-| 测试 | `actions/orders.test.ts` | `__tests__/order.*.spec.js`（部分） | `__tests__/order.*.spec.js`（部分） |
+| Schema | `db/schema/order.ts:40-125`（saleOrders）+ `:127-208`（saleItems）| ↑ | ↑ |
+| 枚举 | `db/schema/enums.ts:5-14` orderStatus(8 值) + `enums.ts:22` saleOrderType(5 值枚举，实际 create 仅接受 3 值) | ↑ | ↑ |
+| Action/Route | `fengyu-admin/src/actions/orders.ts:692`（createOrder）+ `:535`（confirmOfflinePayment）+ `:599`（closeOrder）+ `:654`（resetOrderFailed）+ `:1709`（recordPayment）| `staffApi/routes/order.js:162`（create）+ `:771`（confirmOffline）+ `:1068`（close）+ `:1143`（resetFailed）+ `:2491`（generateOrderNo）| `clientApi/routes/order.js:160`（create）+ `:657`（pay）+ `:785`（offlinePay）+ `:1073`（cancel）+ `:56`（scanDetail）+ `:1361`（scanAdjust）+ `:1471`（confirmPrepaidFull）+ `:1612`（repay）|
+| 唯一约束 | `db/schema/order.ts:116-121`：`uq_sale_orders_client_pending` ON `(client_user_id)` WHERE `status='待支付' AND client_user_id IS NOT NULL` + `uq_sale_orders_phone_pending` ON `(client_phone, store_id)` WHERE `status='待支付' AND client_user_id IS NULL` | ↑ | ↑ |
+| Advisory lock | admin `actions/orders.ts:1038-1052`（createOrder），`:1807-1821`（recordPayment FY-HKD 单） — 单事务持锁 ✅ | staff `routes/order.js:404`（`generateOrderNo()` 独立事务） + `:499-501`（主事务再次持锁）— **双事务！** ❌ + `routes/order.js:2056`（createConversion 同问题）| client `routes/order.js:389-390`（单事务持锁）✅ |
+| 前端 | `fengyu-admin/src/app/(main)/orders/_components/order-create/` | `pagesOrder/create/` | `pagesShop/` |
 
 ---
 
-## 2. 数据流图
+## 2. v1 vs v2 评审摘要
 
-```
-client.create
-  requirePhone → closeExpiredOrdersByUser(10min) → existing 待支付检测
-  → 事务：advisory_xact_lock('sale_order_id_gen')
-        → 锁 prepaid_cards FOR UPDATE
-        → 用 Date.UTC slice(2,10) 拼 dateStrOrder（**UTC 不是 Asia/Shanghai**）
-        → SELECT MAX(sale_order_id) LIKE 'FY-XSD-WX-{YYMMDD}%'
-        → claim user_coupons '已使用'（UPDATE rowCount=1）
-        → INSERT sale_orders(status=待支付 或 prepaidFullPaid?'已支付':'待支付')
-        → INSERT sale_items XSLSH-WX-{**YYYYMMDD**}{4}（8 位日期）
-        → 全额抵扣分支：UPDATE prepaid_cards.balance + INSERT card_transactions
-  → mock paymentParams（mockMode=true，未接真实微信/支付宝）
+### 2.1 评审结论对照
 
-staff.create (店长)
-  requireManager → effectiveStoreId 取自 ctx.auth → existing 待支付检测
-  → generateOrderNo()         ← 独立事务 #1（advisory_xact_lock 释放）
-  → pg.transaction(主事务)    ← 独立事务 #2（再次 advisory_xact_lock 同 key）
-        → SELECT MAX(sale_item_id) LIKE 'XSLSH-WX-{YYYYMMDD}%'（YYYYMMDD 8 位）
-        → claim user_coupons → INSERT sale_orders → INSERT sale_items
-        → 线下/储值卡 + paid > 0 → INSERT sale_order_payments(首次支付,'staff',已支付)
-  ⚠️ generateOrderNo 与主事务**两段独立事务**：第一段持锁结束（commit）后第二段再开新事务 + 新锁，
-     两段中间存在窗口。saleOrderId 已落于 generateOrderNo 内，但 sale_orders 行未插，
-     若第二段在 DB 写之前出错则该 id "丢号"且不影响约束（因 sale_orders 没插）。
-     真正风险：advisory lock 释放后另一并发 generateOrderNo 在 SELECT 时只看已 commit 的 max(id)，
-     由于第一段未插过 sale_orders，新 generateOrderNo 也会算出同 id（**重号**！）。
+| 发现 | v1 结论 | v2 独立结论 | 变化 |
+|------|---------|-------------|------|
+| staff create 双事务 advisory lock | P0-02-01，未修复 | P0-02v2-01，**确认存在，未修复** | 一致 |
+| UTC vs PG 时区不一致 | P0-02-02，未修复 | P0-02v2-02，**确认存在，未修复** | 一致 |
+| client cancel 缺 CAS 守卫 | P0-02-03，缺守卫 | **[CLOSED from v1]** — v2 行 1127-1133 已加 `AND status = ANY($4::order_status[])` 守卫 | 已修复 |
+| settlePointsSafe 回滚整笔收款 | P0-02-04，判 P0 | **降级 P1**（P1-02v2-05）：v2 独立读 `utils/points.js:105-125`，`settlePointsSafe` 已内置 try/catch 隔离，JS 异常不导致主事务回滚；仅 PG 死锁（error 40P01）概率极低场景仍存在 | v2 更精确 |
+| recordPayment 缺 isInScope | P0-02-05，未修复 | P0-02v2-03，**确认存在，未修复** | 一致 |
+| sale_items is_experience 遗漏 | 未发现 | **P0-02v2-05（新发现）**：staff create INSERT sale_items 遗漏 `is_experience` 列，schema 默认 false，破坏顾客类型跃迁 | v2 新 P0 |
+| allocation_status NULL | P1-02-09，未修复 | P1-02v2-06，**确认存在，未修复** | 一致 |
+| 状态机关闭集不一致 | P1-02-07，未修复 | P1-02v2-07，**确认存在，未修复** | 一致 |
+| admin confirmOfflinePayment 不写 payments | §4 提及，分类不明确 | **P1-02v2-09（v2 新标）**：admin confirmOfflinePayment 整体不写 payments，`received` 不更新，精确定位 | v2 精化 |
+| cancel CAS 已修复 | P0-02-03 | v2 行 1127-1133 已修复 | [CLOSED from v1] |
 
-admin.createOrder
-  getSession → requirePermission('sale_order:create') → isInScope(session, storeId)
-  → db.transaction(单事务)
-        → WITH lock AS (SELECT pg_advisory_xact_lock(...)) SELECT 'FY-XSD-WX-' || to_char(NOW(),'YYMMDD') ...
-                                                                 ↑ 用 PG NOW() (服务器时区，由 PG `timezone` 决定，未显式 AT TIME ZONE)
-        → 待支付重检 → INSERT sale_orders → INSERT sale_items（id 格式 `{orderId}-{NN}` ⚠️ 与 staff/client `XSLSH-WX-...` 不一致）
-        → claim user_coupons → INSERT sale_order_payments（如线下且 received>0）
+### 2.2 v1 漏判 / 误判总结
 
-confirmOffline (staff)         confirmOfflinePayment (admin)
-  WHERE status IN (...)          WHERE status='待确认收款' AND scope
-  → 储值卡扣减 + 写 '储值卡抵扣' payments
-  → 写 '首次支付'/'回款' payments → 重算 paid_amount → UPDATE status
+**v1 漏判**
+- `[P0-02v2-05]`：staff create INSERT sale_items 遗漏 `is_experience` 列 — v1 未发现
+- `[P1-02v2-09]`：admin `confirmOfflinePayment` 整体不写 `payments` 行 — v1 仅在 §4 跨端不一致表格模糊提及，未单独立项
 
-payNotify(微信回调) ── 域 04 专审，本域不展开
+**v1 误判 / 需修正**
+- `[P0-02-04 → P1-02v2-05]`：`settlePointsSafe` 的 P0 评级过于悲观。v2 独立读源码（`utils/points.js`）确认：函数已内置 try/catch 吸收 JS 异常，主事务不会因积分模块 JS 异常回滚。仅 PG 级死锁（40P01）低概率场景保留为 P1。
 
-cancel (client) → status IN ['待支付', 已支付且全额抵扣单] → '已关闭'（注意：不带 paid+prepaid=0 校验）
-close (staff) → manager 可关 待支付/待确认收款/支付失败；creator 仅可关 待支付
-resetFailed (staff) → manager: '支付失败' → '待支付'
-```
+**v1 漏判 / 低估**
+- `[P1-02v2-08]`：`saleOrderTypeEnum` 5 值但实际 create 仅接受 3 值 — v1 仅在 [P1-02-08] 提转换单前缀问题，未指出枚举本身与业务约束的脱节
 
 ---
 
@@ -77,133 +70,154 @@ resetFailed (staff) → manager: '支付失败' → '待支付'
 
 ### 3.1 P0（阻断 / 资损 / 越权）
 
-#### **[P0-02-01]** staff `create` 订单号生成与主事务**双事务、advisory lock 不连续**，并发下可生成重复 saleOrderId
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:410`（`generateOrderNo()` 调用）+ `:2452-2474`（`generateOrderNo` 内含 `pg.transaction` + advisory lock）+ `:505-628`（主事务再次 advisory lock）
-- **现象**：`generateOrderNo` 在自己的事务内拿 `pg_advisory_xact_lock(hashtext('sale_order_id_gen'))` 计算 id 后 commit，**锁立即释放**；返回的 id 在外层主事务（行 505）开新事务前的"窗口"里 sale_orders 还未 INSERT。两个并发 staff.create 进程：A 持锁算出 id=N+1 → 释放 → 还未 INSERT；B 拿锁算 id 时只看到已 commit 的 max(id)=N（A 的 N+1 未落）→ B 也算出 N+1 → 释放 → A、B 同时 INSERT → 主键冲突。
-- **风险**：高并发下店长开单失败（PK 冲突报 23505）；更严重：若 application 把异常吞掉或重试，容易写入"两单 id 重复但 saleItem 散落两单"的脏数据。违反**订单号唯一性**（§1 P0 触发条件）。
-- **复现**：两个 staff.create 同时打到同一进程；time-of-check vs time-of-write 在 `generateOrderNo` 释放锁后、主事务 INSERT 前。
-- **修复**：(L3) `generateOrderNo` 不要自己开事务，应当接收 `tx client` 参数在主事务内运行；或改为 `client.create` 模式（在主事务内一次性 advisory lock + 计算 + INSERT）。`client/routes/order.js:360-430` 与 `admin/actions/orders.ts:877-893` 已是正确模式可参考。
+#### **[P0-02v2-01]** staff `create` 与 `createConversion`：`generateOrderNo()` 独立事务释放锁后、主事务 INSERT 前存在并发重号窗口
 
-#### **[P0-02-02]** 三端订单号 `{YYMMDD}` 时区不一致，跨日时段（UTC vs Asia/Shanghai）订单号可能跨日重排或重号
+- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:404`（调用 `generateOrderNo()`）、`:2491-2512`（`generateOrderNo` 内含独立 `pg.transaction`）、`:499`（主事务内 advisory_xact_lock，再次持锁）；同问题出现在 `:2056`（`createConversion`）
+- **现象**：`generateOrderNo()` 在自己的事务内执行 `advisory_xact_lock + SELECT MAX + COMMIT`，锁在 COMMIT 时释放。返回 `saleOrderId` 后，外层在行 499 开启主事务时 `sale_orders` 还未插入。若两个并发进程：A 调 `generateOrderNo()` 得 id=N+1 → 释放锁；B 在 A 主事务 INSERT 之前调 `generateOrderNo()`，SELECT MAX 看到的还是 N，也得 id=N+1 → 两个进程都持有相同 id，随后同时 INSERT sale_orders → 主键冲突（PG error 23505）。
+- **v1 对比**：v1 [P0-02-01] 已发现，**两轮独立验证：问题仍存在，未修复**。
+- **风险**：高并发下（多个店长同时开单）PK 冲突 → 开单失败；应用层未捕获时出现重号"幽灵单"或半插数据。违反**订单号唯一性**硬约束（real.md）。
+- **复现**：模拟两个并发 staff.create 请求；在 `generateOrderNo()` commit 后、主事务 INSERT 前人工 sleep 可稳定复现。
+- **修复**：(L3) 方案一（推荐）：参照 client/admin 模式，把 advisory lock + 订单号生成逻辑直接内联到主事务内，`generateOrderNo()` 接收 `tx client` 参数而不自己开事务。方案二：废弃 `generateOrderNo()` 独立函数，改为 `generateOrderNoInTx(txClient, prefix)` 纯函数形式。
+
+#### **[P0-02v2-02]** 三端订单号 `YYMMDD` 时区不一致：staff/client 强制 UTC，admin 用 PG `NOW()` 的集群时区（未显式 `AT TIME ZONE`）
+
 - **文件**：
-  - admin `actions/orders.ts:883,889,1282,1288,1623,1629`：`to_char(NOW(),'YYMMDD')` — 取 PG 服务器时区（生产 PG 实际 timezone 未在 schema 显式 SET，默认 UTC 或随集群配置）
-  - staff `routes/order.js:2455`：`new Date().toISOString().slice(2,10).replace(/-/g,'')` — **UTC 强制**
-  - client `routes/order.js:419`：`now.toISOString().slice(2,10).replace(/-/g,'')` — **UTC 强制**
-  - sale_items id 三端：admin `routes/orders.ts:977` 用 `{orderId}-{NN}` 完全不带日期；staff `:510,601` 用 `slice(0,10)` 8 位 YYYYMMDD UTC；client `:434,483` 用 `slice(0,10)` 8 位 YYYYMMDD UTC
-- **现象**：UTC 与 Asia/Shanghai 相差 8 小时。北京时间 00:00–08:00，三端 `now.toISOString()` 仍是前一天 UTC，订单号会"回退"到前一日。若 PG NOW() 是 Asia/Shanghai（OS-tz）而 application 是 UTC，admin 与 staff/client 同一时刻生成的 dateStr 不同，序号搜索 `LIKE 'FY-XSD-WX-260425%'` vs `LIKE 'FY-XSD-WX-260424%'` 命中不同前缀池 → admin 生成 `FY-XSD-WX-2604250001`，与 staff 同时生成 `FY-XSD-WX-2604240998` 互不相干，看起来正常；**但当一日跨过 UTC 边界时，admin 仍在 4/25 而 staff 已切到 4/24，两端各自 0001 重叠**。
-- **风险**：违反"订单号唯一性"硬约束；财务对账日期错位（订单号嵌入的 YYMMDD 与业务实际日期不符）。
-- **复现**：测试环境 PG 时区设为 Asia/Shanghai，本地北京时间 00:30 同时触发 staff/client/admin 开单 → 三端 dateStr 不一致，可造同号异日。
-- **修复**：(L0) DB schema 显式 `SET timezone = 'Asia/Shanghai'`；(L3) 三端统一用 `to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYMMDD')`；application 侧 `new Date()` 改为 `dayjs().tz('Asia/Shanghai').format('YYMMDD')`。
+  - staff `routes/order.js:2494`：`new Date().toISOString().slice(2,10).replace(/-/g,'')` — **JavaScript UTC**
+  - client `routes/order.js:449`：`now.toISOString().slice(2,10).replace(/-/g,'')` — **JavaScript UTC**
+  - admin `actions/orders.ts:1042`：`to_char(NOW(), 'YYMMDD')` — **PG 集群时区**（生产 PG timezone 未在 connection level 显式设定）
+  - sale_item_id 用 `slice(0,10)` 得 YYYYMMDD 8 位（UTC），与订单号前 6 位不对齐
+- **现象**：北京时间 00:00–08:00 区间，`new Date().toISOString()` 返回前一天 UTC；如果 PG 集群设为 Asia/Shanghai（`SHOW TIMEZONE`），则 `to_char(NOW(),'YYMMDD')` = 当天北京时间，而 staff/client JS = 前一天 UTC。两端生成的 dateStr 不同，序号搜索各用不同前缀池，存在"跨夜重号"窗口。
+- **v1 对比**：v1 [P0-02-02] 已发现，**两轮独立验证确认：问题仍存在，未修复**。
+- **风险**：凌晨跨夜窗口（北京时间 00:00–08:00）可能导致订单号重复（违反唯一性硬约束）；财务对账日期错位（订单号内嵌日期与业务日期不一致）。
+- **修复**：(L0) PG 集群 `SET timezone = 'Asia/Shanghai'`；(L3) staff/client JS 端改用 `dayjs().tz('Asia/Shanghai').format('YYMMDD')`，或在 SQL 端用 `to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYMMDD')` 统一。
 
-#### **[P0-02-03]** client `cancel` 允许"已支付（全额抵扣）"订单关闭；条件靠应用层 `paid_amount=0` 推断，未上锁 + 状态机回退路径未走幂等保护
-- **文件**：`fengyu-client/cloudfunctions/clientApi/routes/order.js:1020-1085`
-- **现象**：`cancelableStatuses` 在 `paid_amount=0 && prepaid_card_amount>0 && status='已支付'` 时追加 `'已支付'`。这是**状态单向推进**（real.md #4）的破例 —— 已支付 → 已关闭。判定逻辑 1) 没用 `FOR UPDATE` 锁 sale_orders；2) UPDATE 没用 `WHERE status='已支付'` CAS 守卫，仅 `WHERE sale_order_id = $1`。
-- **风险**：并发下顾客自助 cancel 与店长 confirmOffline / 服务单 service.start 竞争：
-  - 顾客本地 detail 看到 `已支付` → 触发 cancel → SELECT 完成 → 中间 service.start 把 remaining_sessions 扣到 0；
-  - cancel 直接 UPDATE status='已关闭'，但 sale_items 已被服务单关联，造成"已关闭订单上已被服务掉的次数"幽灵数据。
-  - 更严重：刚被 admin 录入 receivable 的 prepaidFull 单，admin 还没来得及触发任何后续，顾客自助 cancel 退卡 + 关单。
-- 复现：1) 创建 prepaidFull 已支付订单；2) staff 开始 service.start；3) client 触发 cancel（同时）。
-- **修复**：(L3) cancel UPDATE 加 `AND status = $expectedStatus` CAS（与 client.closeExpiredOrder 模式对齐）；用 SELECT FOR UPDATE 锁主行；增加 sale_items.remaining_sessions 与 service_orders 关联检查（任一已被服务单引用即拒绝 cancel）。
+#### **[P0-02v2-03]** admin `recordPayment` 缺 `isInScope` 校验，scope 保护依赖权限矩阵隐式合约
 
-#### **[P0-02-04]** staff `confirmOffline` 在事务中跨多张表 UPDATE，但**积分结算 + 分享礼**写在同事务且失败回滚整笔收款
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:840-1018`
-- **现象**：line 992 `await settlePointsSafe(client, saleOrderId, 'staffApi.confirmOffline')` 在主事务里调用；分享礼 line 999-1017 用 `SAVEPOINT sp_share_gift` 隔离了。但**积分结算未用 SAVEPOINT**：若积分模块抛出（如 customer_points 行被并发触发器锁），整个 confirmOffline 事务回滚 = 顾客已给现金、扣储值卡的 UPDATE 全部回滚 = 资损。
-- **风险**：店长确认收款后系统报错，店里已收到现金但 PG 里订单仍 `待确认收款`。
-- **复现**：手动把 `customer_points` 表锁住（pg_locks），触发 confirmOffline → 应观测到现金已收 但状态未推进。
-- **修复**：(L3) 把 `settlePointsSafe` 也包在 SAVEPOINT 里，与分享礼同样降级为非阻塞；或确保 settlePointsSafe 内部已用 SAVEPOINT。
-- 验证：`grep -n SAVEPOINT staffApi/utils/points.js`（未在本次审计范围读取，但若该 helper 内部已 SAVEPOINT 则该项降级为 P1）。
+- **文件**：`fengyu-admin/src/actions/orders.ts:1780-1782`
+- **现象**：注释明确写"非 admin 的 record_payment 由权限矩阵拒绝，此处 admin 默认可跨门店；若未来扩展该权限到 scoped 角色，需要在此处做 `isInScope(session, locked.store_id)` 校验"。`closeOrder`、`confirmOfflinePayment`、`resetOrderFailed` 均有 `scopeCondition()` 内嵌到 WHERE，但 `recordPayment` 无此保护。
+- **v1 对比**：v1 [P0-02-05] 已发现，**两轮独立验证确认：隐式合约仍存在，未修复**。
+- **风险**：一旦权限矩阵授予 manager/finance 角色 `sale_order:record_payment`，该角色可对所有门店的订单执行回款，违反组织域数据隔离（real.md #6）。
+- **复现**：在 PERMISSION_MATRIX 中把 `sale_order:record_payment` 添加到 `manager` → manager 角色可 recordPayment 任意门店订单。
+- **修复**：(L7) 在 `recordPayment` 中锁完 `locked` 后立即执行 `if (!isInScope(session, locked.store_id)) throw PERMISSION_DENIED`；与 `closeOrder`/`confirmOfflinePayment` 模式对齐。
 
-#### **[P0-02-05]** admin `recordPayment` 不做 `isInScope` 校验，依赖 `sale_order:record_payment` 权限只发给 admin 角色（隐式合约）
-- **文件**：`fengyu-admin/src/actions/orders.ts:1531,1593-1594`
-- **现象**：注释明确写 "scope 保护：非 admin 的 record_payment 由权限矩阵拒绝，此处 admin 默认可跨门店；若未来扩展该权限到 scoped 角色，需要在此处做 isInScope(session, locked.store_id) 校验。"。
-- **风险**：未来 `permission_matrix` 一改（财务/区经被授权 record_payment）即破，跨门店越权回款。
-- **复现**：把 `sale_order:record_payment` 加到 manager → 任意 manager 可对全部门店订单回款。
-- **修复**：(L7) 直接在 `recordPayment` 里强制 `isInScope(session, locked.store_id)`，不依赖未来 PERMISSION_MATRIX 维护。
+#### **[P0-02v2-05]** staff `create` 的 INSERT sale_items 遗漏 `is_experience` 列，体验卡快照写入 schema 默认值 `false`，破坏顾客类型跃迁逻辑
+
+- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:610-629`（INSERT sale_items 列集）、`db/schema/order.ts:185`（`isExperience boolean NOT NULL DEFAULT false`）
+- **现象**：staff create INSERT sale_items 的列集：`sale_item_id, sale_order_id, store_id, item_direction, sku_id, product_name, sku_spec_name, product_type, session_count, remaining_sessions, unit_price, quantity, unit_real_price, sale_amount, received, sales_category, service_fee, is_shengmei, is_recharge_card`。**`is_experience` 列不在此列集中**。写入时 PG 以 schema 默认值 `false` 填充。staff create 的 `itemDataList` 中已计算 `isExperience`（行 313），但未被用于 INSERT。
+- **对比**：client create 行 527 INSERT sale_items 列集包含 `is_experience`（行 526）；admin createOrder 亦通过 Drizzle 传 `isExperience`。**仅 staff create 遗漏**。
+- **风险**：店长开单的体验卡订单，`sale_items.is_experience` 全为 `false`。`recalcCustomerType` SQL（行 86-131）用 `si.is_experience = true` 识别体验客、`si.is_experience = false` 识别小美客。店长开体验卡 → `is_experience=false` → 被判定为"小美客"而非"体验客"——顾客类型跃迁结果错误。同时影响 `sale_order_type='销售单' AND si.is_experience=true` 的筛选逻辑（staff.js 行 112）。
+- **v1 对比**：v1 未发现，**v2 独立新发现**。
+- **复现**：1) 用店长开单购买一张 `is_experience=true` 的 SKU 体验卡；2) 确认收款触发 `recalcCustomerType`；3) 顾客变成"小美客"而非"体验客"。
+- **修复**：(L3) 在 staff `create` INSERT sale_items 列集末尾补 `is_experience`，值为 `d.isExperience === true`（变量已在 itemDataList 计算，行 313）。
+
+---
 
 ### 3.2 P1（数据一致 / 状态错乱）
 
-#### **[P1-02-06]** sale_items `sale_item_id` 命名格式三端不一致（admin vs staff/client）
-- **文件**：admin `actions/orders.ts:977` `\`${id}-${String(i+1).padStart(2,'0')}\`` 例：`FY-XSD-WX-2604250001-01`（变长，含中划线）  vs  staff `routes/order.js:601` 与 client `routes/order.js:483` 都用 `XSLSH-WX-{YYYYMMDD}{4}`（30 字符上限内固定格式）
-- **现象**：schema `db/schema/order.ts:129` `varchar("sale_item_id", { length: 30 })`。admin 的 `FY-XSD-WX-2604250001-01` 长度 22，未超长但**和 staff/client 的 XSLSH-WX-... 不同前缀**。
-- **风险**：
-  - 任何按前缀匹配 sale_item_id 的报表/查询会漏数（grep `XSLSH-WX-` 找不到 admin 单）
-  - 退款/转换继承 ref_sale_item_id 时字段长度足够，但下游脱敏/序列化逻辑可能假定固定 18 字符；
-  - admin createConversion `routes/orders.ts:2199` 用 `XSLSH-WX-...{4}` 创建转入行，意味着同一系统内 admin 既产 `XSLSH-WX-` 又产 `{orderId}-NN`，混格式。
-- **修复**：(L0/L7) 统一为 `XSLSH-WX-{YYYYMMDD}{4}` 格式 + advisory lock；admin createOrder 改为与 createConversion 一致。
+#### **[P1-02v2-05]** `settlePointsSafe` 在主事务 client 上执行，若 points 内部引发 PG 死锁（非 JS 异常），事务被 PG 标记为终止，整笔收款回滚（P1 级低概率风险）
 
-#### **[P1-02-07]** orderStatus 枚举 8 值，但状态机迁移路径文档化缺失，三端各自实现允许集
-- **现象**：
-  - `db/schema/enums.ts:5-14`：`待支付 / 待确认收款 / 已支付 / 已完成 / 支付失败 / 已关闭 / 待审批 / 部分支付` 共 8 值
-  - admin `closeOrder:509`：允许从 `待支付 OR 支付失败` → `已关闭`
-  - staff `close:1058,1062`：manager 允许 `待支付 / 待确认收款 / 支付失败` → `已关闭`；creator 仅 `待支付`
-  - staff `confirmOffline:780`：允许 `待确认收款 / 待支付 / 部分支付` → `已支付/部分支付`
-  - admin `confirmOfflinePayment:450`：仅允许 `待确认收款` → `已支付`
-  - client `cancel:1023,1026`：允许 `待支付 OR (已支付 AND 全额抵扣)` → `已关闭`
-  - resetFailed (staff:1128) / resetOrderFailed (admin:563)：仅 `支付失败` → `待支付`
-- **不一致**：admin closeOrder 不允许 `待确认收款` 关闭，但 staff close manager 允许；staff confirmOffline 允许 `待支付` 直接转 `已支付/待确认收款`，admin 等价路径走 createOrder 内决策树或 record-payment。同一状态机三端规则不闭合。
-- **风险**：admin 拒绝关闭的 `待确认收款` 单店长在小程序能关；admin / staff 的"操作日志中"状态前置不同 → 审计混乱。
-- **修复**：(L0) 在 `.42cog/cog.md` 增加 orderStatus 状态机权威图；(L7+L3) 统一三端允许迁移集合；(L0) 考虑 PG `CHECK` 约束 + trigger 防止非法 UPDATE。
+> **v1 对比**：v1 [P0-02-04] 判 P0；v2 独立读 `utils/points.js:105-125` 后**降级为 P1**。`settlePointsSafe` 已内置 try/catch 捕获 JS 异常，被吞后返回 `{ error, skipped }`，主事务不因 JS 异常回滚。仅 PG 死锁（error 40P01）场景仍会终止事务，概率极低但不可完全排除。
 
-#### **[P1-02-08]** 订单号前缀语义重叠：`FY-XSD-WX-` 同时被销售单 + 转换单 createConversion 使用
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:2018`、`fengyu-admin/src/actions/orders.ts:1282` 均用 `FY-XSD-WX-` 前缀生成转换单。
-- **现象**：转换单 sale_order_type='转换单'，但订单号前缀仍为 `FY-XSD-WX-`，外观与销售单完全相同；只能靠 `sale_order_type` 字段区分。退款 / 回款分别用 `FY-TKD-WX-` / `FY-HKD-WX-` 与单据类型语义对齐。
-- **风险**：肉眼审单 / 财务报表按订单号前缀分组会把转换单误归销售；订单号查询索引混。
-- **修复**：(L0/L3) 转换单引入独立前缀 `FY-ZHD-WX-`（或类似），与 saleOrderType 一一对应；同时更新 admin / staff 双端 generateOrderNo 调用方。
+- **文件**：`staffApi/routes/order.js:1024`；`utils/points.js:109-111`
+- **现象**：`settlePointsSafe` 用 try/catch 捕获 JS 层错误。但 PG 死锁错误（error code 40P01）会由 PG 直接 ROLLBACK 并通过 pg.js error event 到达 Node，此时 `client.query` promise reject，try/catch 能捕获 → 写 operation_logs → 实际上 client 已被 PG 标记为"in failed transaction"，后续 operation_logs INSERT 也会失败（被静默吞掉），但主事务无法继续提交（PG 会在最终 COMMIT 时报 ERROR: current transaction is aborted）。实质与直接抛出无异。
+- **风险**：若 customer_points 表竞争锁（例如多个 confirmOffline 同一顾客同时发生），死锁触发概率低但可导致店长"已看到成功提示"而 DB 内收款未落账。
+- **修复**：(L3) 对 `settlePointsSafe` 也用 SAVEPOINT 包裹，与 `grantShareGift` 保持一致。
 
-#### **[P1-02-09]** staff.create 不写 `allocation_status` 初值，与 admin createOrder（`'待分配'`）口径不齐
-- **文件**：staff `routes/order.js:558-577` INSERT 列集未含 `allocation_status`；admin `actions/orders.ts:934` 显式写 `allocationStatus: '待分配'`
-- **现象**：DB 默认值无（`db/schema/order.ts:79` `allocation_status` 无 `.default(...)`）→ staff.create 写入的订单 `allocation_status = NULL`；后续 staff `confirmOffline:898` 才会 SET `'待分配' / '已分配'`。
-- **风险**：管理后台「待分配清单」按 `allocation_status='待分配'` 过滤会漏掉所有刚开未确认的店长单。
-- **修复**：(L3) staff.create INSERT 追加 `allocation_status = '待分配'`；或(L0) 让 schema 加默认值 `.default('待分配')`。
+#### **[P1-02v2-06]** staff `create` INSERT sale_orders 未写 `allocation_status` 列；admin `createOrder` 写 `allocationStatus: '待分配'`；两端初值不一致
 
-#### **[P1-02-10]** client.create 在事务内**两次**计算 dateStr，订单号 `slice(2,10)`（YYMMDD 6 位）vs item id `slice(0,10)`（YYYYMMDD 8 位），都基于同一个 `now`
-- **文件**：`clientApi/routes/order.js:419` vs `:434`
-- **现象**：变量名都叫 `dateStrOrder`/`dateStr`，但取的位数不同。功能正常；属于代码味道。schema `sale_item_id varchar(30)` 容纳 `XSLSH-WX-2026042500001`(20 字符) 没问题。
-- **风险**：若未来要给 sale_items 也建 unique index 按日序号，6/8 位混用会导致歧义匹配。
-- **修复**：(L3) 统一为同一格式（`YYMMDD` 6 位与订单号对齐，长度更紧凑）；同时 staff 端对齐。
+- **文件**：staff `routes/order.js:551-571`（INSERT sale_orders 列集无 `allocation_status`）；admin `actions/orders.ts:1093`（`allocationStatus: '待分配'`）；`db/schema/order.ts` 无默认值
+- **现象**：staff create 写入的订单 `allocation_status = NULL`（DB 默认）；admin 写入 `'待分配'`；client create 也无此列写入（同 NULL）。`allocation_status` 仅在 staff `confirmOffline` 行 924 通过 `CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END` 补填。
+- **风险**：管理后台「待分配清单」按 `allocation_status = '待分配'` 过滤，漏掉 NULL 行 → staff 开单后未确认收款前的订单不出现在分配清单，导致提成分配遗漏。
+- **修复**：(L0/L3) 方案一：`db/schema/order.ts` 中 `allocation_status` 加 `.default('待分配')`；方案二：staff create INSERT 补 `allocation_status = '待分配'`。
 
-#### **[P1-02-11]** 待支付订单唯一约束在 client_phone+storeId 维度漏覆盖跨店重号
-- **文件**：`db/schema/order.ts:111-113`：`uq_sale_orders_phone_pending` ON `(client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`
-- **现象**：店长开单先校验 `client_wechat_users` 已注册（routes/order.js:240-242 `bound_store_id` 必须）才允许下单；故 `client_user_id` 必填，phone+storeId 唯一索引基本不会触发。但**真正未注册的顾客（admin createOrder 走 RECHARGE_VIRTUAL_SKU 跳过此校验）**理论可走 client_user_id IS NULL 路径，且 admin createOrder line 626 强制要求 clientUserId（必传）—— 实际所有路径都注入 client_user_id。所以 phone+store 索引只防"未注册"残留场景。
-- **风险**：phone+store 索引允许跨店一人多单（`(phone='13900', store_A)` 与 `(phone='13900', store_B)` 都待支付）。real.md #7 「同一顾客同一时间至多 1 笔待支付」按"顾客=user_id"语义已被 `uq_sale_orders_client_pending` 覆盖；但若一日内同一手机号在 A 店没注册下单、又在 B 店注册下单（client_user_id 已绑定），则 `(phone, store_A) 索引` 不锁 `(client_user_id, *) 索引` → 形成两单待支付。
+#### **[P1-02v2-07]** 状态机关闭允许集三端不一致：admin `closeOrder` 仅允许 `待支付/支付失败`；staff `close` manager 允许 `待支付/待确认收款/支付失败`；client `cancel` 允许 `待支付/(已支付且全额抵扣)`
+
+- **文件**：admin `actions/orders.ts:616-619`；staff `routes/order.js:1090-1096`；client `routes/order.js:1102-1108`
+- **现象**：staff manager 可关闭 `待确认收款` 订单，但 admin 不可。顾客可取消"已支付全额抵扣"订单（存在业务合理性），但三端规则从未对齐。
+- **风险**：admin 无法关闭 `待确认收款` 单 → 运营人员需走到小程序才能操作；状态机规则未文档化 → 后续维护者各端各自延伸导致状态崩坏。
+- **修复**：(L0) 在 `.42cog/cog.md` 补充订单状态机权威迁移图；(L7) admin `closeOrder` 允许集补 `待确认收款`，与 staff manager 对齐。
+
+#### **[P1-02v2-08]** `saleOrderType` 枚举 5 值但 v2 实际 create 仅接受 3 值：staff/client/admin 各自过滤不同子集
+
+- **文件**：`db/schema/enums.ts:22`（枚举 5 值：销售单/内部单/回款单/转换单/退款单）；staff `routes/order.js:207-211`（仅接受销售单/内部单，拒绝回款单/退款单）；admin `actions/orders.ts:703`（接受销售单/内部单/转换单）；client create 不传 `saleOrderType`（默认 `'销售单'`）
+- **现象**：`sale-order-domain-refactor` 后回款/退款单语义已下沉到 `sale_order_payments`，但枚举未精简为 3 值。enum 与实际业务约束脱节，未来误用风险高。
+- **风险**：枚举中残留的 `回款单/退款单` 字面量若被外部程序直接传入（绕过 create 校验），仍可写入 DB，引起下游分配/积分/状态机逻辑错误。
+- **修复**：(L0) `db/schema/enums.ts` 对 `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单），写 migration；退款/回款语义完全由 `sale_order_payments.change_type` 表达。
+
+#### **[P1-02v2-09]** `admin.confirmOfflinePayment` 不写 `sale_order_payments` 流水行，与 staff/client 口径不对称
+
+- **文件**：`fengyu-admin/src/actions/orders.ts:535-596`（`confirmOfflinePayment`：UPDATE sale_orders status='已支付' + 写 expire_date + 写充值卡入账，但**无 payments 行写入**）
+- **现象**：staff `confirmOffline` 在事务内写 `payments[首次支付/回款]` + `payments[储值卡抵扣]`，保持 `received` 不变量。admin `confirmOfflinePayment` 直接置 `status='已支付'`，**不写 payments 行，`received` 字段不更新**。
+- **v1 对比**：v1 §4 跨端不一致表格中模糊提及"admin 路径不对账"，未单独立项；v2 精确定位为独立 P1。
+- **风险**：admin 确认的收款在 `sale_order_payments` 中无记录 → 款项流水不完整 → 对账缺失 → `received` 快照与 payments 行 SUM 不一致（破坏款项域不变量）。
+- **修复**：(L7) `confirmOfflinePayment` 同时写 1 行 payments `change_type='首次支付'/'回款'` + 聚合重算 `received`，与 staff `confirmOffline` 对齐。
+
+#### **[P1-02v2-10]** sale_items `sale_item_id` 格式三端不一致：admin `createOrder` 用 `{orderId}-{NN}` 格式，staff/client 用 `XSLSH-WX-{YYYYMMDD}{4}`
+
+- **文件**：admin `actions/orders.ts:1158`（admin createOrder sale_item_id 生成）；staff `routes/order.js:601` 与 client `routes/order.js:483` 均用 `XSLSH-WX-{YYYYMMDD}{4}` 格式
+- **现象**：schema `sale_item_id varchar(30)` 容纳 admin `{orderId}-{NN}` 格式（22 字符）无问题，但前缀与 staff/client 的 `XSLSH-WX-` 完全不兼容。任何按前缀匹配 sale_item_id 的报表/查询会漏掉 admin 单。
+- **修复**：(L0/L7) 统一三端为 `XSLSH-WX-{YYMMDD}{4}` 格式；admin createOrder sale_item_id 改用与 createConversion 一致的规则。
+
+#### **[P1-02v2-11]** 待支付订单唯一约束 `(client_phone, store_id)` 维度跨店重号漏覆盖
+
+- **文件**：`db/schema/order.ts:118-121` `uq_sale_orders_phone_pending ON (client_phone, store_id) WHERE status='待支付' AND client_user_id IS NULL`
+- **现象**：phone+store 索引允许同一手机号在 A 店待支付订单 `(phone='13900', store_A)` 与 B 店待支付订单 `(phone='13900', store_B)` 同时存在。real.md #7「同一顾客同一时间至多 1 笔待支付」按"顾客=user_id"语义已被 `uq_sale_orders_client_pending` 覆盖；但 `client_user_id IS NULL` 路径（WorkFine 同步的未注册顾客）存在跨店重号风险。
+- **风险**：若未来 admin/小程序绕过 client_user_id 注入创建未绑定顾客的待支付单，同一手机号跨店可累积多单。
 - **修复**：(L0) 把 `uq_sale_orders_phone_pending` 拓宽为仅按 `(client_phone) WHERE status='待支付' AND client_user_id IS NULL`（删除 store_id 维度）；或（L3）在 client/staff/admin create 分支显式 SELECT 跨店全网检查。
 
-#### **[P1-02-12]** sale_orders.totalAmount NUMERIC(10,2)，三端价格计算 JS Number 加减再 round，不足以 amplify 实战风险但不规范
-- **文件**：staff `routes/order.js:411` `Math.round(sum * 100) / 100`；client `routes/order.js:329` 等。
-- **现象**：所有"先 JS Number 累加再 *100/round"。在 ≤10 位 + 2 位小数范围内 IEEE-754 精度足够（金额单位为元，最大 99999999.99 < 2^53）；CC1 检查项满足底线。
-- **修复**：(L3) 引入 dinero.js / decimal.js 统一货币运算；属 P1 改进。
+#### **[P1-02v2-12]** 订单号前缀 `FY-XSD-WX-` 销售单与转换单共用，前缀语义重叠
 
-#### **[P1-02-13]** mock 微信支付串号：client.pay 和 alipayPay 写出 `prepay_id=wx{Date.now()}`，三端联调可能误以为已发起真实支付
-- **文件**：`clientApi/routes/order.js:712, 1262`
-- **现象**：返回 `mockMode: true` + 空签名 `paySign: 'mock_sign'` + `totalFee: Math.round(thisPayAmount * 100)`。注释 `TODO: 接入真实微信支付统一下单接口`。线上**未接真支付**。
-- **风险**：本环节不触发支付通道，全部依赖 payNotify 模拟回调；对 P0 域 04（payNotify 幂等）的真实回放路径仍是黑盒。
-- **修复**：（L3）正式接入；至少 mock 时显式标记金额为 0、显式 `if (mockMode) return mockResult` 并打日志。
+- **文件**：`staffApi/routes/order.js:2018`、`fengyu-admin/src/actions/orders.ts:1282`
+- **现象**：转换单 `sale_order_type='转换单'`，但订单号前缀仍为 `FY-XSD-WX-`，外观与销售单完全相同；只能靠 `sale_order_type` 字段区分。退款/回款分别用 `FY-TKD-WX-`/`FY-HKD-WX-` 与单据类型语义对齐。
+- **风险**：肉眼审单 / 财务报表按订单号前缀分组会把转换单误归销售；订单号查询索引混。
+- **修复**：(L0/L3) 转换单引入独立前缀 `FY-ZHD-WX-`，与 saleOrderType 一一对应。
+
+#### **[P1-02v2-13]** 错误前缀 `INVALID_STATE:`、`CONFLICT:` 不在 4 种约定内
+
+- **文件**：`clientApi/routes/order.js:1673, 1688`（`INVALID_STATE:`）；client `routes/order.js:1514, 1519, 1135`（`CONFLICT:`）
+- **现象**：前缀为非约定值，前端按约定前缀做 toast 映射会落入"未识别"分支。
+- **风险**：前端无法正确展示业务错误文案（低风险）。
+- **修复**：(L3) 改为 `INVALID_PARAMS:` 嵌套语义。
 
 ### 3.3 P2（代码质量 / 可维护）
 
-#### **[P2-02-14]** staff create / confirmOffline / close 大量复制粘贴 dateStr 计算 + advisory lock + max id 查询逻辑
+#### **[P2-02v2-14]** staff `create` 与 `createConversion` 双 advisory lock 持取浪费
+
+- **文件**：`routes/order.js:404,499,2056,2059`
+- **现象**：`generateOrderNo()` 在事务内获取 advisory lock（行 2499）；主事务开后又获取一次（行 501/2059）。第二次持锁的 `SELECT sale_item_id MAX` 在主事务内，而订单号已由第一段获取——主事务内的锁多余。
+- **修复**：(L3) 参见 P0-02v2-01 修复建议，合并后只需一次持锁。
+
+#### **[P2-02v2-15]** `client.order.js` detail/list/scanDetail 中封面图子查询 N+1
+
+- **文件**：`clientApi/routes/order.js:111-114, 926-929, 1001-1003`
+- **现象**：每行触发 `(SELECT p.cover_image FROM mall_product_skus mps JOIN products p ON ... WHERE mps.sku_id=si.sku_id LIMIT 1)` 子查询，属于 N+1 变体。
+- **修复**：(L3) 改为主查询 JOIN `mall_product_skus` + `products`，单次 JOIN 代替 N 次子查询。
+
+#### **[P2-02v2-16]** 错误前缀 `INSUFFICIENT_BALANCE:`、`CLIENT_NOT_REGISTERED:`、`MIXED_PAYMENT_NOT_SUPPORTED:` 均不在 4 种约定内
+
+- **文件**：staff `routes/order.js:233, 875, 879, 1135`；client `routes/order.js:419`
+- **修复**：(L3) 全部映射到 `INVALID_PARAMS:` 前缀，可嵌套扩展语义。
+
+#### **[P2-02v2-17]** qrcodeCache 模块级 Map 无淘汰策略，容器长期运行内存无限增长
+
+- **文件**：`staffApi/routes/order.js:27`（`const qrcodeCache = new Map()`）
+- **修复**：(L3) 改用 LRU + cap（参考 `auth.js AUTH_CACHE` 模式）。
+
+#### **[P2-02v2-18]** `client.create` 内两次计算 dateStr：`slice(2,10)` 6 位 YYMMDD vs `slice(0,10)` 8 位 YYYYMMDD，语义混乱
+
+- **文件**：`clientApi/routes/order.js:449, 464`
+- **现象**：`dateStrOrder = now.toISOString().slice(2,10)` 得 `260426`（6 位）；`dateStr = today.toISOString().slice(0,10)` 得 `20260426`（8 位）。两个变量名相近但取法不同。
+- **修复**：(L3) 统一命名并注释；推荐统一为 Asia/Shanghai 时区后的 `YYMMDD` 6 位（与订单号对齐）。
+
+#### **[P2-02v2-19]** staff/create/confirmOffline/close 大量复制粘贴 dateStr 计算 + advisory lock + max id 查询逻辑
+
 - **文件**：`routes/order.js:507-520, 1394-1402, 2018-2030, 2186-2199, 2240-2247`
 - **修复**：(L3) 抽 `helpers/order-id.js`（generate(prefix, tx, dateStr) → id）。
 
-#### **[P2-02-15]** client.create / staff.create 内嵌 200+ 行优惠券处理，优惠券处理逻辑 admin / staff / client 三端独立实现，复杂度+维护风险
+#### **[P2-02v2-20]** client.create / staff.create 内嵌优惠券处理，三端独立实现
+
 - **文件**：staff:325-407, client:244-331, admin:746-775
 - **修复**：(L3) 抽 `helpers/coupon-discount.js`（calc + distribute）。
-
-#### **[P2-02-16]** scanDetail / detail / list 多次重复 `LEFT JOIN stores`、`LEFT JOIN staff_wechat_users`，SQL 不复用
-- **修复**：(L3) 引入 helpers/order-formatter.js。
-
-#### **[P2-02-17]** 错误前缀混用：staff.create line 241 `CLIENT_NOT_REGISTERED:` / line 432 `INSUFFICIENT_BALANCE:` / line 469 `INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED:`，**不在 4 种约定前缀内**
-- **文件**：staff `routes/order.js:241, 432, 469`；client `routes/order.js:389`
-- **现象**：约定（CLAUDE.md / audit_plan.md §1）仅 `UNAUTHORIZED:` / `PHONE_REQUIRED:` / `INVALID_PARAMS:` / `PERMISSION_DENIED:` 四种。前端按前缀做 toast 文案映射时会落入"未识别错误"分支。
-- **修复**：(L3) 统一改为 `INVALID_PARAMS:CLIENT_NOT_REGISTERED:` / `INVALID_PARAMS:INSUFFICIENT_BALANCE:` 嵌套语义；或扩约定。
-
-#### **[P2-02-18]** qrcode 模块级缓存 `qrcodeCache = new Map()` 无淘汰，云函数容器复用时无限增长
-- **文件**：`staffApi/routes/order.js:27`
-- **修复**：(L3) 改 LRU + size cap（与 auth.js AUTH_CACHE 同模式）。
-
-#### **[P2-02-19]** dispatch 路径上 `pg.query(...)` 与 `client.query(...)` 返回结构不同（前者直接 rows 数组，后者返回 {rows}）容易误用
-- **现象**：staff `routes/order.js:519` `if (maxResult.rows.length > 0)`；client `routes/order.js:38` `for (const row of expired)` —— 同一路由文件内两种返回 shape 不一致。已注释（client.calcPaymentRemaining:577 "pg.query 返回 rows 数组（见 db/pg.js），不需要 .rows 解包"）但仍有 misuse 风险。
-- **修复**：(L3) 统一签名；TS 类型保护。
 
 ---
 
@@ -211,30 +225,30 @@ resetFailed (staff) → manager: '支付失败' → '待支付'
 
 | 维度 | admin | staff | client | 风险 | 优先级 |
 |------|-------|-------|--------|------|--------|
-| sale_item_id 格式 | `{orderId}-{NN}` 例 `FY-XSD-WX-2604250001-01` | `XSLSH-WX-{YYYYMMDD}{4}` | `XSLSH-WX-{YYYYMMDD}{4}` | 报表前缀分组失效；同 admin 内 createOrder 与 createConversion 互不一致 | P1（[P1-02-06]） |
-| 订单号 dateStr 来源 | `to_char(NOW(),'YYMMDD')`（PG 时区） | `new Date().toISOString().slice(2,10)`（UTC） | `now.toISOString().slice(2,10)`（UTC） | 跨时区窗口可重号 | P0（[P0-02-02]） |
-| advisory lock 持有 | 单事务持锁直到 commit ✅ | generateOrderNo 独立事务 → 主事务再开新事务 ❌ | 单事务持锁 ✅ | 重号窗口 | P0（[P0-02-01]） |
-| state machine: 关闭 | `待支付 / 支付失败` | `待支付 / 待确认收款 / 支付失败`(manager) | `待支付 / (已支付 全额抵扣)` | 三端各自一套规则 | P1（[P1-02-07]） |
-| state machine: confirm | 仅 `待确认收款` | `待支付 / 待确认收款 / 部分支付` | — | staff 比 admin 宽 | P1（[P1-02-07]） |
-| `allocation_status` 初值 | 显式 `'待分配'` ✅ | 不写（NULL）❌ | 不写（NULL，自助单）但走 payNotify 后未必修正 | 待分配清单漏单 | P1（[P1-02-09]） |
-| 错误前缀 | 全裸 throw `Error(msg)` | `INVALID_PARAMS:` + 自定义 `CLIENT_NOT_REGISTERED:` | `INVALID_PARAMS:` + `INSUFFICIENT_BALANCE:` | 前端文案映射落空 | P2（[P2-02-17]） |
-| 内部单半价处理 | 入口前对 items 全部 ×0.5（`actions/orders.ts:701-718`）✅ | `unitPrice = round(basePrice*50)/100` 行级 ✅ | client 不允许内部单 | 一致 | OK |
-| 储值卡抵扣写流水时机 | createOrder 不写 `储值卡抵扣` payments，由 confirmOffline 统一写 | 同 | 全额抵扣场景 client.create 直接扣 balance + status=已支付，**但 sale_order_payments 不写 `储值卡抵扣` 行** ❌ | client 全额抵扣单 payments 表无记录，与 admin/staff 路径不对账 | P0（建议归 03） |
-| 订单号前缀 | `FY-XSD-WX-`（销售/转换共用）+ `FY-HKD-WX-` + `FY-TKD-WX-` | 同 | 仅 `FY-XSD-WX-` | 转换 vs 销售前缀冲突 | P1（[P1-02-08]） |
+| advisory lock 持有方式 | 单事务持锁直到 COMMIT ✅ | generateOrderNo 独立事务，主事务再持 ❌ | 单事务持锁 ✅ | 并发重号窗口 | P0（P0-02v2-01）|
+| 订单号 dateStr 时区 | PG `to_char(NOW(), 'YYMMDD')`（集群时区） | JS UTC `toISOString()` | JS UTC | 跨夜重号 | P0（P0-02v2-02）|
+| `is_experience` 写入 | Drizzle 传值 ✅ | INSERT 列集遗漏 ❌ | INSERT 包含 ✅ | 顾客类型跃迁错误 | P0（P0-02v2-05）|
+| `allocation_status` 初值 | `'待分配'` ✅ | 不写（NULL）❌ | 不写（NULL）❌ | 待分配清单漏单 | P1（P1-02v2-06）|
+| `confirmOffline` payments | staff 写流水 ✅；**admin 不写** ❌ | — | — | received 快照与 payments SUM 不一致 | P1（P1-02v2-09）|
+| 关闭允许集 | `待支付/支付失败` | `待支付/待确认收款/支付失败`(mgr) | `待支付/(已支付+全额抵扣)` | 三端规则不闭合 | P1（P1-02v2-07）|
+| sale_item_id 格式 | `{orderId}-NN` | `XSLSH-WX-{YYYYMMDD}{4}` | `XSLSH-WX-{YYYYMMDD}{4}` | 报表前缀匹配失效 | P1（P1-02v2-10）|
+| 订单号前缀（转换单） | `FY-XSD-WX-`（含转换单） | `FY-XSD-WX-`（含转换单） | 仅 `FY-XSD-WX-` | 转换 vs 销售前缀冲突 | P1（P1-02v2-12）|
+| saleOrderType 5 值枚举 | 接受 3 值（含转换单） | 接受 2 值（销售单/内部单） | 仅默认销售单 | 枚举与业务约束脱节 | P1（P1-02v2-08）|
+| 错误前缀 | 中文 throw（无前缀） | `CLIENT_NOT_REGISTERED:` + `INSUFFICIENT_BALANCE:` | `CONFLICT:` + `INVALID_STATE:` | toast 映射落空 | P2（P2-02v2-13, P2-02v2-16）|
 
 ---
 
-## 5. 横切检查（套用 §3）
+## 5. 横切检查（CC1-CC9）
 
-- [ ] **CC1 数值精度**：金额 NUMERIC(10,2) ✅；JS 用 `Math.round(*100)/100` 风险面有限但不规范（[P1-02-12]）。提成比例在域 07 审。
-- [ ] **CC2 并发与幂等**：advisory lock 三端基本到位，但 staff.create 双事务[P0-02-01]、cancel 无 CAS [P0-02-03]、client 全额抵扣 cancel 路径无显式 CAS。退款单注单 noteLIKE 'FY-TKD=...' 当幂等键过于脆弱。
-- [x] **CC3 组织域数据隔离**：staff.confirmOffline / close / resetFailed / list 都用 `effectiveStoreId` 过滤；admin 用 `scopeCondition()` ✅；recordPayment 缺 isInScope（[P0-02-05]）。client 全部 `WHERE client_user_id = userId` ✅。
-- [ ] **CC4 后端统一鉴权**：staff 用 `requireManager` / `requireStaffBound`、admin 用 `requirePermission` ✅；但 admin recordPayment 假设权限矩阵保护 [P0-02-05]，client.scanDetail 无 `requirePhone` 守卫（line 51-136 直接读 `ctx.event.payload`，未校验 ctx.auth），意味着未绑定手机号也能扫码看订单详情；scanDetail 仅查 `opened_by IS NOT NULL` 但任意有 OPENID 的用户可枚举 saleOrderId 看他人订单。
-- [ ] **CC5 错误前缀**：staff/client 大量自定义前缀（`CLIENT_NOT_REGISTERED:`、`INSUFFICIENT_BALANCE:`、`MIXED_PAYMENT_NOT_SUPPORTED:`）不在 4 种约定内（[P2-02-17]）；admin 错误均为中文字符串，无前缀（继承域 01 P2-ERROR-12）。
-- [ ] **CC6 PII**：sale_orders 含 `customer_name` + `client_phone` 快照；scanDetail 返回 `clientPhone`、`customerName` 完整；listing log 写完整 phone（参考 audit-01 P0-PII-06）。
-- [x] **CC7 时间字段**：`createdAt` / `updatedAt` defaultNow ✅；`paid_at` 由各 update 显式写 ✅；`saleOrderDatetime` 是业务时间（INSERT 时 = `now`）✅。但 dateStr UTC vs PG NOW 时区不一致（[P0-02-02]）。
-- [x] **CC8 WXML/Vant**：本域无前端 WXML 直接审计，scope 在域 06/13 等。
-- [ ] **CC9 测试与残留**：admin 已有 `actions/orders.test.ts`（域 01 提及）；staff/client 有 `__tests__/order.*.spec.js` 但需验证 advisory lock 双事务模式是否有覆盖测试。废弃字段（`order_no`/`item_flow_no`/`store_name`/`customer_name`/`staff_name`）已在 schema 重命名，但 client.scanDetail 仍 SELECT `s.store_name AS store_name`（schema 里 stores.store_name 仍存在，无残留），未发现死字段引用。
+- [x] **CC1 数值精度**：金额 NUMERIC(10,2) ✅；JS `Math.round(*100)/100` 风险面有限；`totalAmount` 计算链以 `received` 为基础（already includes discount）逻辑正确；分摊尾差修正 ✅。
+- [ ] **CC2 并发与幂等**：advisory lock 三端格式基本到位；**staff create 双事务窗口（P0-02v2-01）**；cancel CAS 守卫**已修复**（`AND status = ANY($4::order_status[])` 行 1127-1133，v2 验证通过）✅；confirmOffline CAS UPDATE `WHERE status = $7` ✅；repay `FOR UPDATE` ✅。幂等键：card_transactions `ref_order_id + type` ✅；payments 无 UNIQUE 约束（由 `change_type` 自然区分，首次支付无重复保证）。
+- [x] **CC3 组织域数据隔离**：staff `confirmOffline`/`close`/`resetFailed`/`list` 均用 `effectiveStoreId` 过滤 ✅；admin 用 `scopeCondition()` ✅（除 `recordPayment` 无保护 [P0-02v2-03]）；client 全部 `WHERE client_user_id = userId` ✅。
+- [x] **CC4 后端统一鉴权**：staff `requireManager()` / `requireStaffBound()` ✅；admin `requirePermission()` ✅；client `requirePhone()` ✅（含 scanDetail/scanAdjust/confirmPrepaidFull）。`scanDetail` v2 已修复补 `requirePhone()` ✅。
+- [ ] **CC5 错误前缀**：大量自定义前缀偏离 4 种约定（P2-02v2-13, P2-02v2-16）；admin 抛中文无前缀。
+- [ ] **CC6 PII**：`sale_orders.customer_name` + `client_phone` 快照；`scanDetail` 返回 `storeName`/`openerName`（无脱敏）；`refundList` 返回 `client_phone`/`customer_name`（完整）。属已知跨域问题（audit-01 P0-PII-06 关联）。
+- [x] **CC7 时间字段**：`created_at`/`updated_at` defaultNow ✅；`paid_at` 由各 UPDATE 显式写 ✅。但 dateStr UTC vs PG NOW 时区不一致（P0-02v2-02）。
+- [x] **CC8 WXML/Vant**：本域无前端 WXML 审计（scope 在域 06/13）。
+- [ ] **CC9 测试与残留**：staff create INSERT sale_items 遗漏 `is_experience`（P0-02v2-05）；`saleOrderTypeEnum` 5 值但业务仅用 3 值（P1-02v2-08）；`wechat_transaction_id`/`alipay_transaction_id` 已从 `sale_orders` 列注释标记 DROP，但 `0000_baseline.sql` 中 UNIQUE 约束仍存（如 `sale_orders_wechat_transaction_id_unique`），若列已 DROP 则约束为僵尸（待迁移确认）。
 
 ---
 
@@ -242,53 +256,111 @@ resetFailed (staff) → manager: '支付失败' → '待支付'
 
 | 层 | 文件 | 修改 | 关联问题 |
 |----|------|------|----------|
-| L0 schema | `db/schema/order.ts:111-113` | `uq_sale_orders_phone_pending` 移除 `store_id` 维度 | P1-02-11 |
-| L0 schema | `db/schema/order.ts` | `allocation_status` 列 `.default('待分配')` | P1-02-09 |
-| L0 schema | （新建 migration） | `SET timezone='Asia/Shanghai'` 集群级 | P0-02-02 |
-| L0 schema | `db/schema/enums.ts` | 维持 8 值 orderStatus；新增独立前缀 `FY-ZHD-WX-` 转换单（前缀是 application 层，无 enum） | P1-02-08 |
-| L3 staffApi | `staffApi/routes/order.js:2452` | `generateOrderNo(prefix, tx)` 接收事务 client，禁止内部 `pg.transaction` | P0-02-01 |
-| L3 staffApi | `staffApi/routes/order.js:557` | INSERT sale_orders 列集补 `allocation_status='待分配'` | P1-02-09 |
-| L3 staffApi | `staffApi/routes/order.js:992` | `settlePointsSafe` 包 SAVEPOINT 或确认其内部已隔离 | P0-02-04 |
-| L3 staffApi | `staffApi/routes/order.js:241,432,469` | 错误前缀统一为 `INVALID_PARAMS:CLIENT_NOT_REGISTERED:` 等嵌套形式 | P2-02-17 |
-| L3 staffApi | `staffApi/routes/order.js:27` | qrcodeCache LRU 化 | P2-02-18 |
-| L3 staffApi | `helpers/order-id.js`（新文件） | 抽公共 advisory lock + dateStr + maxSeq → id | P0-02-01, P2-02-14 |
-| L3 clientApi | `clientApi/routes/order.js:1045` | cancel UPDATE 加 `AND status = $expectedStatus`；先 SELECT FOR UPDATE | P0-02-03 |
-| L3 clientApi | `clientApi/routes/order.js:419,434` | dateStr 改用 Asia/Shanghai；统一长度 | P0-02-02, P1-02-10 |
-| L3 clientApi | `clientApi/routes/order.js:51` | scanDetail 加 `requirePhone()`；URL ID 校验来源（防枚举） | CC4 |
-| L7 admin | `actions/orders.ts:1531` | `recordPayment` 强制 `isInScope(session, locked.store_id)` | P0-02-05 |
-| L7 admin | `actions/orders.ts:977` | sale_item_id 改用 `XSLSH-WX-{YYMMDD}{4}` 与 staff/client 对齐 | P1-02-06 |
-| L7 admin | `actions/orders.ts:506,564` | closeOrder / resetOrderFailed 状态机允许集与 staff 对齐 | P1-02-07 |
-| L9 前端 | `_components/order-create-page.tsx` | UI 提示状态机非法跳变 | P1-02-07 |
+| L0 schema/enums | `db/schema/enums.ts:22` | `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单），写 migration | P1-02v2-08 |
+| L0 schema | `db/schema/order.ts` | `allocationStatus` 列加 `.default('待分配')` | P1-02v2-06 |
+| L0 DB | 新 migration | `SET timezone = 'Asia/Shanghai'`（集群级）；验证生产 PG `SHOW TIMEZONE` 后决策 | P0-02v2-02 |
+| L0 schema | `db/schema/order.ts:111-113` | `uq_sale_orders_phone_pending` 移除 `store_id` 维度 | P1-02v2-11 |
+| L3 staffApi | `staffApi/routes/order.js:2491-2512` | 重构 `generateOrderNo` 为 `generateOrderNoInTx(txClient, prefix)`，不自己开事务；在 `create` 主事务内调用 | P0-02v2-01 |
+| L3 staffApi | `staffApi/routes/order.js:610-629` | INSERT sale_items 列集补 `is_experience`，值为 `d.isExperience === true`（第 19 个参数） | P0-02v2-05 |
+| L3 staffApi | `staffApi/routes/order.js:551-571` | INSERT sale_orders 列集补 `allocation_status = '待分配'` | P1-02v2-06 |
+| L3 staffApi | `staffApi/routes/order.js:1024` | 为 `settlePointsSafe` 调用添加 SAVEPOINT 保护（与 grantShareGift 同模式） | P1-02v2-05 |
+| L3 staffApi/client | `routes/order.js` 多处 | 统一时区：`dateStr` 改用 Asia/Shanghai | P0-02v2-02 |
+| L3 staffApi/client | 多处错误 throw | 错误前缀统一为 `INVALID_PARAMS:` 嵌套语义 | P2-02v2-13, P2-02v2-16 |
+| L3 staffApi | `routes/order.js:27` | `qrcodeCache` 改 LRU + cap | P2-02v2-17 |
+| L3 staffApi | `helpers/order-id.js`（新文件） | 抽公共 advisory lock + dateStr + maxSeq → id | P0-02v2-01, P2-02v2-19 |
+| L3 staffApi | `helpers/coupon-discount.js`（新文件） | 抽优惠券处理逻辑 | P2-02v2-20 |
+| L3 clientApi | `clientApi/routes/order.js:111-114` | 封面图查询 JOIN 优化，消除 N+1 | P2-02v2-15 |
+| L7 admin | `actions/orders.ts:1780` | `recordPayment` 补 `if (!isInScope(session, locked.store_id)) throw PERMISSION_DENIED` | P0-02v2-03 |
+| L7 admin | `actions/orders.ts:535-596` | `confirmOfflinePayment` 补写 payments 流水 + 重算 `received` | P1-02v2-09 |
+| L7 admin | `actions/orders.ts:616-619` | `closeOrder` 允许集补 `待确认收款`，与 staff manager 对齐 | P1-02v2-07 |
+| L7 admin | `actions/orders.ts:977` | sale_item_id 改用 `XSLSH-WX-{YYMMDD}{4}` 与 staff/client 对齐 | P1-02v2-10 |
+| L7 admin | `actions/orders.ts`（多处） | 转换单用独立前缀 `FY-ZHD-WX-` | P1-02v2-12 |
+| L9 前端 | `_components/order-create-page.tsx` | UI 提示状态机非法跳变 | P1-02v2-07 |
 
 ---
 
 ## 7. 验证 SQL（5434/fengyu，仅 SELECT / EXPLAIN）
 
 ```sql
--- 1. 验证待支付订单唯一约束当前是否被破坏（同顾客双待支付）
-SELECT client_user_id, COUNT(*) AS cnt, ARRAY_AGG(sale_order_id) AS ids
-FROM sale_orders
-WHERE status = '待支付' AND client_user_id IS NOT NULL
-GROUP BY client_user_id HAVING COUNT(*) > 1;
-
--- 2. 验证 phone+store 待支付重复（[P1-02-11] 是否曾发生）
-SELECT client_phone, COUNT(*) AS stores, ARRAY_AGG(DISTINCT store_id) AS store_ids
-FROM sale_orders
-WHERE status = '待支付' AND client_user_id IS NULL
-GROUP BY client_phone HAVING COUNT(*) > 1;
-
--- 3. 三端 saleOrderId 前缀分布（验证转换单是否混在 FY-XSD- 前缀）
+-- 1. 验证 is_experience 字段在 staff create 路径的写入情况（[P0-02v2-05]）
+-- staff开单 = opened_by IS NOT NULL
 SELECT
-  CASE
-    WHEN sale_order_id LIKE 'FY-XSD-WX-%' THEN 'FY-XSD'
-    WHEN sale_order_id LIKE 'FY-HKD-WX-%' THEN 'FY-HKD'
-    WHEN sale_order_id LIKE 'FY-TKD-WX-%' THEN 'FY-TKD'
-    ELSE 'OTHER' END AS prefix,
-  sale_order_type,
-  COUNT(*) AS cnt
-FROM sale_orders GROUP BY 1, 2 ORDER BY 1, 2;
+  so.sale_order_id,
+  so.opened_by,
+  BOOL_OR(si.is_experience) AS any_experience_true,
+  COUNT(*) AS item_cnt
+FROM sale_orders so
+JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+WHERE so.opened_by IS NOT NULL
+  AND so.created_at > NOW() - INTERVAL '30 days'
+GROUP BY so.sale_order_id, so.opened_by
+HAVING BOOL_OR(si.is_experience) = false
+  -- 若存在 product_skus.is_experience=true 对应的 sku_id 则为漏写
+LIMIT 20;
 
--- 4. sale_item_id 格式分布（验证 [P1-02-06]）
+-- 2. 验证 is_experience 跨开单来源分布（[P0-02v2-05] 辅助）
+SELECT
+  so.opened_by IS NOT NULL AS staff_opened,
+  si.is_experience,
+  COUNT(*) AS cnt
+FROM sale_orders so
+JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+JOIN product_skus sk ON sk.sku_id = si.sku_id
+WHERE sk.is_experience = true
+  AND so.created_at > NOW() - INTERVAL '30 days'
+GROUP BY 1, 2;
+-- 期望：staff_opened=true 的行 is_experience 全为 false（证明漏写），client/admin 为 true
+
+-- 3. 验证 allocation_status NULL 比例（[P1-02v2-06]）
+SELECT
+  status,
+  allocation_status,
+  opened_by IS NOT NULL AS is_staff_order,
+  COUNT(*) AS cnt
+FROM sale_orders
+WHERE created_at > NOW() - INTERVAL '7 days'
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+
+-- 4. 确认 admin confirmOfflinePayment 不写 payments 行（[P1-02v2-09]）
+SELECT so.sale_order_id, so.status, so.received,
+       COALESCE((
+         SELECT SUM(amount) FROM sale_order_payments
+         WHERE sale_order_id = so.sale_order_id
+           AND status = '已支付'
+           AND change_type IN ('首次支付','回款','储值卡抵扣')
+       ), 0) AS payments_sum
+FROM sale_orders so
+WHERE so.status = '已支付'
+  AND so.offline_confirmed_by IS NOT NULL
+  AND COALESCE((
+    SELECT SUM(amount) FROM sale_order_payments
+    WHERE sale_order_id = so.sale_order_id
+      AND status = '已支付'
+  ), 0) < so.received - 0.01
+LIMIT 20;
+
+-- 5. 验证订单号重复（[P0-02v2-01]）
+SELECT sale_order_id, COUNT(*) FROM sale_orders GROUP BY 1 HAVING COUNT(*) > 1;
+-- 期望 0 行；任何行 = 审计现场抓到重号
+
+-- 6. PG 实例时区（[P0-02v2-02] 风险面）
+SHOW TIMEZONE;
+SELECT current_setting('TIMEZONE'), NOW(), NOW() AT TIME ZONE 'Asia/Shanghai';
+
+-- 7. saleOrderType 现有分布（[P1-02v2-08] 枚举精简影响评估）
+SELECT sale_order_type, COUNT(*) FROM sale_orders GROUP BY 1 ORDER BY 1;
+
+-- 8. 状态机非法历史检测（已支付 → 已关闭 路径，[P0-02v2-03 CLOSED 验证]）
+SELECT entity_id, before_status, after_status, COUNT(*)
+FROM operation_logs
+WHERE entity_type = 'sale_order'
+  AND action = 'order.close'
+  AND before_status = '已支付'
+  AND after_status = '已关闭'
+GROUP BY 1, 2, 3;
+-- v2 cancel CAS 已修复，此查询应仅返回修复前的历史数据
+
+-- 9. sale_item_id 格式分布（[P1-02v2-10]）
 SELECT
   CASE
     WHEN sale_item_id LIKE 'XSLSH-WX-%' THEN 'XSLSH-WX (staff/client)'
@@ -297,32 +369,7 @@ SELECT
   COUNT(*) AS cnt
 FROM sale_items GROUP BY 1;
 
--- 5. 验证 allocation_status NULL 比例（[P1-02-09]）
-SELECT
-  status,
-  allocation_status,
-  COUNT(*) AS cnt
-FROM sale_orders
-WHERE created_at > NOW() - INTERVAL '7 days'
-GROUP BY 1, 2 ORDER BY 1, 2;
-
--- 6. 重号订单号检测（[P0-02-01]/[P0-02-02]）
-SELECT sale_order_id, COUNT(*) FROM sale_orders GROUP BY 1 HAVING COUNT(*) > 1;
--- 期望 0 行；任何 > 1 即审计现场抓到重号
-
--- 7. 状态机非法历史检测（已支付 → 已关闭 路径，[P0-02-03]）
--- 需要 operation_logs 配合
-SELECT entity_id, before_status, after_status, COUNT(*)
-FROM operation_logs
-WHERE entity_type = 'sale_order' AND action = 'order.close'
-  AND before_status = '已支付' AND after_status = '已关闭'
-GROUP BY 1, 2, 3;
-
--- 8. PG 实例时区（验证 [P0-02-02] 真实风险面）
-SHOW TIMEZONE;
-SELECT current_setting('TIMEZONE'), NOW(), NOW() AT TIME ZONE 'Asia/Shanghai';
-
--- 9. 同一日期上 (sale_order_id, ?) 重复（应为 0）
+-- 10. 同一日期上重复 sale_order_id（[P0-02v2-01/P0-02v2-02] 辅助）
 SELECT SUBSTRING(sale_order_id FROM 11 FOR 6) AS dt,
        COUNT(*) AS cnt,
        COUNT(DISTINCT sale_order_id) AS uniq
@@ -334,14 +381,15 @@ GROUP BY 1 HAVING COUNT(*) <> COUNT(DISTINCT sale_order_id);
 
 ## 8. 回归测试用例（建议）
 
-1. **并发开单生成订单号**：fork 两个 staff.create 协程同时调用，断言两个 saleOrderId 不重复（验 [P0-02-01]）。
-2. **跨午夜跨时区**：mock UTC `2026-04-25 23:50` + Asia/Shanghai `2026-04-26 07:50`，三端各开一单，验订单号 dateStr 一致（验 [P0-02-02]）。
-3. **client.cancel 已支付（全额抵扣）幂等**：触发两次 cancel；第二次应返回 NOT_FOUND 或保持已关闭，断言只回冲 1 次 prepaid_card_amount（验 [P0-02-03]）。
-4. **staff.confirmOffline 积分模块崩溃**：mock `settlePointsSafe` throw，断言整个 confirmOffline 事务回滚，订单仍 `待确认收款`，无 partial 状态（验 [P0-02-04]）。
-5. **状态机非法迁移**：`已支付` 单 → 调 admin.closeOrder（应被拒）→ 调 staff.close（manager）（也应拒）（验 [P1-02-07]）。
-6. **优惠券并发使用**：两个 client.create 并发使用同一 couponId，断言只有一个成功（已用 UPDATE rowCount=1 守卫）。
-7. **prepaidFullPaid race**：client 余额 = X；同时（a）client.create 抵扣 X 全额；（b）client.cancel 还在执行；断言不会出现 balance < 0。
-8. **sale_item_id 格式回归**：admin createOrder 后断言 sale_item_id LIKE 'XSLSH-WX-%'（验 [P1-02-06] 修复）。
+1. **is_experience 快照一致性**（P0-02v2-05）：用店长开单购买 `is_experience=true` SKU → 确认收款后查 `sale_items.is_experience` = `true`；顾客 `customer_type` = `'体验客'`（不是 `'小美客'`）。
+2. **并发开单不重号**（P0-02v2-01）：两个 staff.create 并发，断言两个 `saleOrderId` 不重复。
+3. **跨夜 UTC 边界**（P0-02v2-02）：mock UTC `2026-04-25T23:55:00Z`（北京 2026-04-26T07:55:00）；三端各开一单，验订单号 dateStr 均为 `260426`（北京时间当天）。
+4. **allocation_status 初值**（P1-02v2-06）：staff create 后立刻查 `sale_orders.allocation_status = '待分配'`（不是 NULL）。
+5. **admin confirmOfflinePayment payments 流水**（P1-02v2-09）：admin 确认收款后查 `sale_order_payments` 有对应 `change_type='首次支付'` 行，且 `received` 与 SUM 一致。
+6. **admin recordPayment scope 保护**（P0-02v2-03）：将 `sale_order:record_payment` 授予 manager → manager 对跨门店订单调 `recordPayment` 应返回 `PERMISSION_DENIED`。
+7. **status CAS 保护**（CLOSED from v1 验证）：并发触发 client.cancel + staff.confirmOffline，断言只有一个成功。
+8. **saleOrderType 枚举精简后旧数据读取**（P1-02v2-08）：迁移后，历史 `回款单/退款单` 类型行在 Drizzle 查询时是否出错（需迁移前确认）。
+9. **settlePointsSafe PG 死锁场景**（P1-02v2-05）：mock PG deadlock error，确认 confirmOffline 事务不静默提交（应抛出或回滚）。
 
 ---
 
@@ -350,36 +398,62 @@ GROUP BY 1 HAVING COUNT(*) <> COUNT(DISTINCT sale_order_id);
 - 单端：☐
 - 跨端（任意 2 端）：☐
 - 全栈（3 端 + DB）：☑
-- 涉及历史数据：☑（订单号格式、状态机、allocation_status 默认值）
-- 修复成本：M（schema 改动小但需 baseline 协调；application 改动覆盖 3 端 4 个文件）
+- 涉及历史数据：☑（is_experience 快照缺失影响历史 staff 开单订单；saleOrderType 枚举精简需迁移确认；`wechat_transaction_id` UNIQUE 僵尸约束需迁移确认）
+- 修复成本：M（P0-02v2-05 is_experience 修复小；P0-02v2-01 generateOrderNo 重构中等；P1-02v2-09 admin payments 中等）
 
 ---
 
-## 10. 后续待办
+## 10. P0 总览（v3 最终）
 
-- [ ] 与域 03（款项流水）对齐："储值卡抵扣" payments 行的写入责任 — client 全额抵扣 create 路径未写
+| ID | 问题 | 状态 | 来源 |
+|----|------|------|------|
+| P0-02v2-01 | staff create generateOrderNo 双事务并发重号 | **OPEN** | v1 [P0-02-01] 确认 |
+| P0-02v2-02 | 三端订单号 UTC vs PG 时区不一致 | **OPEN** | v1 [P0-02-02] 确认 |
+| P0-02v2-03 | admin recordPayment 缺 isInScope 隐式合约 | **OPEN** | v1 [P0-02-05] 确认 |
+| P0-02v2-05 | staff create INSERT sale_items 遗漏 is_experience | **OPEN** | **v2 新发现** |
+| ~~P0-02-03~~ | client cancel 缺 CAS UPDATE 守卫 | **[CLOSED from v1]** | v2 验证已修复（行 1127-1133 `AND status = ANY(...)`） |
+| ~~P0-02-04~~ | settlePointsSafe 回滚整笔收款 | **降级 P1**（P1-02v2-05） | v2 独立读 `utils/points.js`，try/catch 已隔离；仅 PG 死锁低概率残留 |
+
+**OPEN P0：4 项 | CLOSED P0：1 项 | 降级 P1 P0：1 项**
+
+---
+
+## 11. 后续待办
+
+- [ ] 与域 03（款项流水）对齐：`admin.confirmOfflinePayment` 不写 payments 是域 03 的核心遗漏
 - [ ] 与域 04（payNotify 幂等）对齐：mock 微信支付如何转入真实回调
-- [ ] 与域 05（服务单扣次原子性）对齐：cancel 已支付路径与 service.start 的竞争
-- [ ] 与域 07（销售提成分配）对齐：allocation_status 状态写入触发点
-- [ ] 与域 23（操作日志）对齐：staff.close / staff.confirmOffline 是否写 operation_logs（本审计未发现 logOperation 调用，可能漏审计）
+- [ ] 与域 05（服务单扣次）对齐：`is_experience` 遗漏同时影响 `recalcCustomerType`，需 `service.complete` 处同样复查；cancel 已支付路径与 service.start 的竞争
+- [ ] 与域 07（销售提成）对齐：`allocation_status=NULL` 会导致提成分配列表漏单
+- [ ] 与域 10（顾客会员等级）对齐：`is_experience` 快照遗漏影响历史订单的顾客类型分析
+- [ ] saleOrderType 枚举精简（P1-02v2-08）迁移时需与 admin UI filter 联动确认
+- [ ] `wechat_transaction_id`/`alipay_transaction_id` UNIQUE 僵尸约束迁移确认（CC9）
 
 ---
 
-## 横切归集追加
+## 12. 横切归集
 
-- CC2 → CROSS-CUTTING.md 新增 "advisory lock 跨事务释放窗口"（P0-02-01）
-- CC2 → CROSS-CUTTING.md 新增 "状态机非 CAS UPDATE"（P0-02-03）
-- CC4 → CROSS-CUTTING.md 新增 "admin scope 隐式合约"（P0-02-05）
-- CC5 → 后续命中：staff/client 自定义错误前缀偏离 4 种约定（[P2-02-17]）
-- CC7 → CROSS-CUTTING.md 新增 "时区不一致：UTC vs PG NOW vs Asia/Shanghai"（P0-02-02）
+- CC1 → CROSS-CUTTING.md 新增 "数值精度：JS Number vs PG NUMERIC 边界"（P1-02v2-05 关联）
+- CC2 → CROSS-CUTTING.md 新增 "advisory lock 跨事务释放窗口"（P0-02v2-01）
+- CC2 → CROSS-CUTTING.md 新增 "状态机 CAS UPDATE 守卫"（[CLOSED P0-02-03]）
+- CC2 → CROSS-CUTTING.md 新增 "PG 死锁 vs JS 异常事务行为差异"（P1-02v2-05）
+- CC3 → CROSS-CUTTING.md 新增 "admin scope 隐式合约"（P0-02v2-03）
+- CC5 → CROSS-CUTTING.md 新增 "错误前缀约定：4 种 vs 实际偏离"（P2-02v2-13, P2-02v2-16）
+- CC7 → CROSS-CUTTING.md 新增 "时区不一致：UTC vs PG NOW vs Asia/Shanghai"（P0-02v2-02）
+- CC9 → CROSS-CUTTING.md 新增 "PG UNIQUE 约束僵尸检测"（wechat_transaction_id）
 
-## Schema 修改建议追加
+## 13. Schema 修改建议追加
 
-- S02-1 `uq_sale_orders_phone_pending` 索引去掉 store_id 维度（P1-02-11）
-- S02-2 `sale_orders.allocation_status` 加默认值 `'待分配'`（P1-02-09）
-- S02-3 集群级 `SET timezone = 'Asia/Shanghai'`（P0-02-02）
+- S02-1 `uq_sale_orders_phone_pending` 索引去掉 store_id 维度（P1-02v2-11）
+- S02-2 `sale_orders.allocation_status` 加默认值 `'待分配'`（P1-02v2-06）
+- S02-3 集群级 `SET timezone = 'Asia/Shanghai'`（P0-02v2-02）
+- S02-4 `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单）（P1-02v2-08）
+- S02-5 确认 `wechat_transaction_id`/`alipay_transaction_id` UNIQUE 僵尸约束已移除（P1-02v2-09）
 
-## 枚举发现追加
+## 14. 枚举发现追加
 
 - E02-order-status：8 值齐全 ✅；三端允许迁移子集不一致 → 文档化建议（不改枚举）
-- E02-sale-order-type：5 值齐全 ✅；订单号前缀只 3 套（FY-XSD/FY-HKD/FY-TKD），转换单复用 FY-XSD（[P1-02-08]）
+- E02-sale-order-type：5 值枚举 vs 3 值实际约束，建议精简（P1-02v2-08）
+
+---
+
+**v1 报告备份已归档为** `docs/audit/audit-02-order-creation-v1-archived-20260426.md`（建议归档，本文件为现行版本）

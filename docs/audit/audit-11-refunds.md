@@ -1,8 +1,9 @@
-# 审计报告：退款 / 退换货 (11)
+# 审计报告：退款 / 退换货 (11) — v2（独立重审，2026-04-26）
 
-**审计时间**：2026-04-25
+**审计时间**：2026-04-26
 **域 ID**：11
-**审计员**：claude-opus-4-7
+**审计员**：claude-sonnet-4-6
+**说明**：本报告为独立重审，以代码为权威来源，上轮结论仅供参考。所有结论基于当前代码直接审查。
 **审计时长**：~25 分钟
 **关联 PR/Ticket**：ticket 2026-04-24-refund-admin-parity-and-rules（已落地三端 createRefund/approveRefund/rejectRefund）
 
@@ -372,3 +373,141 @@ WHERE o.client_user_id = 'cwu-y'
 - [ ] 写数据修复脚本：把已批准退款的 sale_allocations / user_coupons / service_commissions 反向冲销（需快照"何时已退款"）
 - [ ] 集成微信 V3 退款 API（替换"线下兜底"）
 - [ ] staff 补 `utils/operation-log.js` helper，approveRefund/createRefund/rejectRefund 全 logOperation
+
+---
+
+## 11. 独立重审结论（2026-04-26，claude-sonnet-4-6）
+
+**验证方法**：直接读源码，不依赖上轮报告。审查范围：
+- `fengyu-admin/src/actions/refunds.ts`（1251 行，全读）
+- `fengyu-admin/src/lib/refund-cascade.ts`（209 行，全读）
+- `fengyu-admin/src/lib/refund.ts`（169 行，全读）
+- `fengyu-admin/src/app/(main)/refunds/` 全部页面
+- `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1354–1740`（退款相关）
+- `fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js`（162 行，全读）
+- `fengyu-staff/cloudfunctions/staffApi/routes/customer.js:675–816`（refundHistory）
+- `db/schema/order.ts`（全读）；`db/schema/enums.ts`（全读）
+
+### 11.1 与前轮报告的主要分歧
+
+**架构层面关键差异（前轮报告存在误判）**：
+
+前轮报告（v1）的数据流图中描述"退款不冲销 sale_allocations / service_commissions / user_coupons"为 P0-11-01 / P0-11-04，但本次实审发现：
+
+**2026-04-26 sale-order-domain-refactor 已实现 5 通道级联冲销**：
+
+- `fengyu-admin/src/lib/refund-cascade.ts` 实现了完整的 `cascadeRefund()` 函数，在 `approveRefund` 事务内调用：
+  - 通道 1：`sale_allocations` SET `is_void=true, voided_at=NOW()`
+  - 通道 2：`service_commissions` SET `is_void=true, voided_at=NOW(), voided_reason=$reason`
+  - 通道 3：`user_coupons` 恢复 `status='未使用'`（仅未过期）
+  - 通道 4：`point_transactions` INSERT 反向流水 `type='消费冲销'` + 重算 `client_wechat_users.points_balance`
+  - 通道 5：`sale_items.picked_up_quantity` 反向恢复
+
+- `fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js` 同样实现了完整的 5 通道，被 `approveRefund` 调用。
+
+因此，前轮报告将"5 通道全未实现"列为 P0 的描述**不再成立**。但审计发现了 staff/admin 两端实现存在差异，这是新的 P0 问题。
+
+### 11.2 新增（或修正前轮）的确认发现
+
+**[CONFIRM-P0-NEW-A]** staff `approveRefund` 中 `refunded_amount` 用累加法（admin 用重算法），多次退款后漂移
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1585–1591`
+- staff：`SET refunded_amount = COALESCE(refunded_amount, 0) + $1`（累加）
+- admin：`SET refunded_amount = COALESCE(-SUM(sop.amount::numeric)..., 0)`（重算，`fengyu-admin/src/actions/refunds.ts:793–803`）
+- 风险：连续多次退款（驳回 + 重新发起）时累加错位，`received - refunded_amount` 净收入计算偏差
+- 优先级：**P0**
+
+**[CONFIRM-P0-NEW-B]** staff `cascadeRefund` channel-5（pickup 恢复）在整单退款（`saleItemId=null`）时完全跳过
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js:135–148`
+- staff：`if (saleItemId && sessionCount && Number(sessionCount) > 0)` — saleItemId 为 null 时不执行 channel-5
+- admin：`fengyu-admin/src/lib/refund-cascade.ts:181–198` — saleItemId 为 null 时按 saleOrderId 清零所有 `picked_up_quantity > 0` 的行
+- 风险：家居产品整单退款后 `picked_up_quantity` 不归零
+- 优先级：**P0**
+
+**[CONFIRM-P0-NEW-C]** staff `cascadeRefund` channel-5 有额外 `AND product_type = '家居产品'` 限制，admin 无
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js:144`
+- admin：`fengyu-admin/src/lib/refund-cascade.ts` 无此限制
+- 优先级：**P0**（防御性，未来可能漏）
+
+**[CONFIRM-P0-NEW-D]** staff `refreshSpendingTier` 不使用 `received - refunded_amount`，退款后消费档位不下降
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:40–63`
+- staff：`SUM(total_amount)`，无 `refunded_amount` 扣减，无 `sale_order_type` 过滤（含内部单）
+- admin：`SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0))` + `sale_order_type IN ('销售单','转换单')`（`fengyu-admin/src/actions/refunds.ts:1230–1250`）
+- 优先级：**P0**
+
+**[CONFIRM-P0-NEW-E]** `uq_sop_status_audit` DB partial unique 约束已存在（migration 0018），但前轮报告的 `uq_refund_inflight` 建议针对旧架构（sale_orders），已不适用新架构（退款下沉至 sale_order_payments）
+
+- 验证：`db/migrations/0018_black_madrox.sql:32` 已建 `uq_sop_status_audit`：
+  `CREATE UNIQUE INDEX ON sale_order_payments(sale_order_id, change_type) WHERE change_type='退款' AND status='待审批'`
+- 结论：in-flight 唯一性已由 DB 兜底，前轮 P0-11-02 中关于"需补 partial unique"的部分**已落地**。
+- 但：`createRefund` 仍在事务外做 SELECT 预检（race window 仍存在），DB 兜底可防止双写，仅导致第二个并发请求收到 `23505` DB 错误，`createRefund` 已捕获并映射为 `CONFLICT` 响应（`fengyu-admin/src/actions/refunds.ts:670–672`；staff 类似）。**现状可接受，非阻断性 P0**。降为 P1。
+
+**[CONFIRM-P1-NEW-F]** `sale_orders` schema 中仍保留 7 个旧退款字段（新架构已下沉至 `sale_order_payment_details`）
+
+- 文件：`db/schema/order.ts:94–108`（`refundReason`/`handlingFee`/`approvedBy`/`approvedAt`/`rejectedReason`/`overdraftDeduction`/`overdraftDeductionDetail`）
+- 这些字段属于旧"退款单"概念，2026-04-26 重构后退款数据完全在 `sale_order_payment_details` 中
+- 建议：migration DROP 这 7 列（确认无代码引用后）
+- 优先级：**P1**
+
+**[CONFIRM-P1-NEW-G]** admin 退款详情页手机号未脱敏
+
+- 文件：`fengyu-admin/src/app/(main)/refunds/[id]/page.tsx:83`
+- `{refund.clientPhone || '-'}` 展示完整手机号
+- 优先级：**P1** (CC6)
+
+**[CONFIRM-P1-NEW-H]** staff `customer.refundHistory` 管理层模式（`storeId=null`）无门店 scope 过滤
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/customer.js:698–704`
+- 管理层员工可查看全公司任意顾客退款历史
+- 优先级：**P1** (CC3)
+
+**[CONFIRM-P2-NEW-I]** `customer.refundHistory` JOIN `sale_order_payment_details` 用 INNER JOIN，若子表行缺失则退款记录隐身
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/customer.js:706–728`
+- 优先级：**P2**
+
+**[CONFIRM-P2-NEW-J]** `createRefundOrder` 别名（`export const createRefundOrder = createRefund`）无引用处，为死代码
+
+- 文件：`fengyu-admin/src/actions/refunds.ts:700`
+- 优先级：**P2**
+
+### 11.3 前轮报告仍然成立的核心 P0（已由代码确认）
+
+| ID | 描述 | 确认状态 |
+|----|------|---------|
+| P0-11-07 | rejectRefund 用 `status='已关闭'` 复用 orderStatus，无 `'已驳回'` 枚举值 | ✅ 确认（admin rejectRefund:942 `status='已作废'`，staff rejectRefund:1699 `status='已作废'`）— 注：实际写的是 `已作废` 而非 `已关闭`，但 `paymentFlowStatusEnum` 无 `'已驳回'`，审计语义问题仍存在 |
+| P1-11-08 | staff 退款操作无 operation_logs | ✅ 确认（staff routes/order.js 退款函数无 logOperation 调用；admin 有 4 处 logOperation） |
+| P0-11-05 | refundHistory 越权读 | ✅ 确认（同 CONFIRM-P1-NEW-H，但实为 P1，非 P0；无财务写入越权） |
+| P1-11-11 | staff createRefund 不调 estimateRefundOverdraft | ✅ 确认（staff createRefund 无此调用，admin 有） |
+
+### 11.4 前轮报告错误/过时的条目
+
+| 前轮 ID | 描述 | 修正 |
+|---------|------|------|
+| P0-11-01 | "退款审批不冲销 sale_allocations / service_commissions" | ❌ 已由 cascadeRefund 实现，不再成立 |
+| P0-11-04 | "退款不回退已使用优惠券" | ❌ cascadeRefund channel-3 已实现优惠券回滚（未过期），不再成立 |
+| P0-11-02 | "需补 partial unique uq_refund_inflight" | ⚠️ 已落地为 uq_sop_status_audit（migration 0018），新架构下前轮建议位置不适用，但旧建议逻辑正确 |
+| P0-11-03 | "advisory lock 双事务窗口" | ⚠️ 新架构下退款不生成 sale_orders 行（无 FY-TKD-WX- 订单号），此问题已不适用 |
+
+### 11.5 总结：本轮实际问题清单
+
+| 问题 | 优先级 | 文件 |
+|------|--------|------|
+| staff `refunded_amount` 累加法漂移 | **P0** | `staffApi/routes/order.js:1585` |
+| staff cascade channel-5 整单退款跳过 | **P0** | `staffApi/helpers/refund-cascade.js:135` |
+| staff cascade channel-5 `product_type` 额外过滤 | **P0** | `staffApi/helpers/refund-cascade.js:144` |
+| staff `refreshSpendingTier` 不扣 refunded_amount / 不过滤 sale_order_type | **P0** | `staffApi/routes/order.js:40–63` |
+| staff `refundHistory` 管理层模式无 scope 过滤 | **P1** | `staffApi/routes/customer.js:698` |
+| admin 退款详情页手机号未脱敏 | **P1** | `(main)/refunds/[id]/page.tsx:83` |
+| staff 退款操作无 operation_logs | **P1** | `staffApi/routes/order.js:1354–1740` |
+| sale_orders 7 个旧退款字段未 DROP | **P1** | `db/schema/order.ts:94–108` |
+| staff createRefund 不调 estimateRefundOverdraft（跌档不扣权益） | **P1** | `staffApi/routes/order.js:1382` |
+| `refundHistory` INNER JOIN 致数据隐身 | **P2** | `staffApi/routes/customer.js:706` |
+| `createRefundOrder` 死代码别名 | **P2** | `fengyu-admin/src/actions/refunds.ts:700` |
+| staff `rejectRefund` 不校验 rejectedReason 非空 | **P2** | `staffApi/routes/order.js:1670` |
+| admin `refunds.test.ts` 仅覆盖 `estimateRefundOverdraft` | **P2** | `fengyu-admin/src/actions/refunds.test.ts` |
+
+**评级汇总（独立重审）**：P0 × 4，P1 × 5，P2 × 4

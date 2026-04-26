@@ -40,30 +40,32 @@
 | 24 | 品项分类动态字段 | 2 | 7 | 5 | 14 | audit-24-product-category-dynamic.md |
 | **业务小计** |  | **124** | **188** | **144** | **456** |  |
 
-### 1.2 横切域（9），按 P0 降序
+### 1.2 横切域（9），按 P0 降序（2026-04-26 v2 合并后）
 
 | ID | 横切域 | P0 | P1 | P2 | 总计 | 报告 |
 |----|--------|----|----|----|------|------|
-| CC2 | 并发与幂等 | 11 | 6 | 5 | 22 | audit-CC2-concurrency-idempotency.md |
-| CC4 | 后端鉴权 | 10 | 5 | 3 | 18 | audit-CC4-auth.md |
-| CC9 | 测试与迁移残留 | 6 | 6 | 9 | 21 | audit-CC9-test-migration-residue.md |
-| CC3 | 组织域隔离 | 5 | 9 | 5 | 19 | audit-CC3-org-isolation.md |
-| CC1 | 数值精度与金额 | 5 | 6 | 5 | 16 | audit-CC1-numeric-precision.md |
-| CC6 | PII | 4 | 3 | 3 | 10 | audit-CC6-pii.md |
-| CC7 | 时间字段 | 3 | 8 | 4 | 15 | audit-CC7-time-field.md |
+| CC4 | 后端鉴权 | 11 | 5 | 3 | 19 | audit-CC4-auth.md |
+| CC2 | 并发与幂等 | 6 | 6 | 5 | 17 | audit-CC2-concurrency-idempotency.md |
+| CC3 | 组织域隔离 | 7 | 9 | 5 | 21 | audit-CC3-org-isolation.md |
+| CC1 | 数值精度与金额 | 4 | 7 | 5 | 16 | audit-CC1-numeric-precision.md |
+| CC9 | 测试与迁移残留 | 3 | 6 | 10 | 19 | audit-CC9-test-migration-residue.md |
+| CC6 | PII | 4 | 4 | 4 | 12 | audit-CC6-pii.md |
+| CC7 | 时间字段 | 3 | 10 | 4 | 17 | audit-CC7-time-field.md |
 | CC5 | 错误码 | 0 | 4 | 6 | 10 | audit-CC5-error-code.md |
-| CC8 | WXML / Vant | 0 | 5 | 5 | 10 | audit-CC8-wxml-vant.md |
-| **横切小计** |  | **44** | **52** | **45** | **141** |  |
+| CC8 | WXML / Vant | 0 | 5 | 11 | 16 | audit-CC8-wxml-vant.md |
+| **横切小计** |  | **38** | **56** | **53** | **147** | 
+
+> **v1→v2 合并变化**：CC4 新增 _testOpenid 无门控 P0；CC2 Top 2 P0 退款5通道已修复（Top 2 降级），payNotify 守卫后残留 DROP 字段新列 P0；CC3 新增 performanceDetail 跨店越权 P0；CC1 P0-CC1-03 架构性作废（0018 退款重构），P0-CC1-05 降 P2；CC5 v1"client端10处裸抛"勘误为0处；CC7 新增 approved_at 孤儿列；CC8 部分支付/待审批等新 P1 发现；CC9 2个P0已修复（prepaid_cards.store_id / recalcCustomerType magic string） |
 
 ### 1.3 全栈合计
 
 | 维度 | P0 | P1 | P2 | 总计 |
 |------|----|----|----|------|
 | 业务域（25）| 124 | 188 | 144 | 456 |
-| 横切域（9）| 44 | 52 | 45 | 141 |
-| **合计** | **168** | **240** | **189** | **597** |
+| 横切域（9）| 38 | 56 | 53 | 147 |
+| **合计** | **162** | **244** | **197** | **603** |
 
-> **去重说明**：横切域中相当部分 P0 是对业务域 P0 的归集（如 CC2-07 = audit-07/08/11/15/20 五处不冲销集合）；保持原报告口径，**实际独立修复点约 106 P0**（2026-04-26 修正：扣除 P0-SPLIT-04 / P0-10-06 / P0-15-04 / P0-15-05 共 4 项降级）。
+> **去重说明**：横切域中相当部分 P0 是对业务域 P0 的归集（如 CC2-07 = audit-07/08/11/15/20 五处不冲销集合）；保持原报告口径，**实际独立修复点约 100 P0（v1 168 - v2 新发现5 + v2 降级修复/作废10）**（2026-04-26 修正：扣除 P0-SPLIT-04 / P0-10-06 / P0-15-04 / P0-15-05 共 4 项降级）。
 
 ---
 
@@ -74,25 +76,27 @@
 
 | # | 标题 | 来源 | 影响范围 | 修复成本 |
 |---|------|------|---------|---------|
-| **1** | **payNotify 完全无微信签名校验/无 AEAD 解密/无来源校验** — 任何小程序 page 可伪造支付落账，下游 sa/sc/积分/储值卡/share-gift 全栈连环触发 | P0-04-01 / P0-CC4-01 | 全栈（3 端 + DB + 营销发放）；命中 real.md #3 + #5 | **L** |
-| **2** | **退款审批不冲销已写入的次数等价物（5 通道）** — sale_allocations / service_commissions / user_coupons / point_transactions / picked_up_quantity 全部不回滚 | P0-07-02 + P0-08-04 + P0-11-01/04 + P0-15-01 + P0-20-01 → P0-CC2-07 | 全栈业绩 + 财务 + 顾客权益；分享礼券退款后仍可用 | **L** |
-| **3** | **admin createOrder 校验优惠券完全跳过 store/market/category/product 范围** — 资损 + 越权 | P0-13-01/02/03 | admin/staff/client 三端 order.create 全部忽略 applicable_market_ids / applicable_product_ids；面值 face_value_override 跨端读取漂移 | **M** |
-| **4** | **admin applyRechargeOnOrderPaid / createConversionOrder 引用已 DROP 的 store_id 列** — admin 替顾客确认含虚拟充值 SKU 订单 100% PG 42703 失败；测试 mock 反向锁死 | P0-14-01 + P0-CC9-x | admin 核心结算路径完全失效 | **S** |
-| **5** | **staff service.create 写入不存在的 sku_id 列** — 所有 staffApi 服务单创建 100% 失败 | P0-05-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
-| **6** | **client requestUnbind 写入不存在的 from_store_name 列** — 顾客解绑流 100% 失效 | P0-12-01 | client 端唯一解绑入口完全不可用 | **S** |
-| **7** | **sale_allocations.allocationRatio 无 IN-集合 CHECK** — admin 信任前端可写 9.99 → 业绩 ×10 倍资损；admin batchSaveServiceCommissions 同模式信任前端 commissionAmount | P0-CC1-01/04 + P0-07-03 | admin 全部业绩/提成持久化路径 | **S** |
-| **8** | **staff 业务路由 store/scope 完全无过滤（cross-store 全局读改）** — customer.detail / calendar / giftHistory / refundHistory / updateNotes / assign 6 路由完全无 store_id 过滤 | P0-10-01/02/03/04 + P0-11-05 + P0-19-01/02 + P0-CC4-06 | 全集团顾客 PII 暴露；越权改备注、跨店分配 | **M** |
-| **9** | **staff buildStoreScopeCondition helper 0 路由调用** — middleware 已注入 scope，但 SQL 是否过滤完全靠开发者自觉；admin 10/28 actions 同样 0 scope | P0-CC3-01/02/05 + P0-CC4-06 | 与 #8 同根但更广覆盖 | **M** |
-| **10** | **Advisory lock 跨事务释放窗口可生成重号** — staff generateOrderNo 自带子事务，外层主事务再开新事务持锁 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
+| **1** | **payNotify 完全无微信签名校验/无 AEAD 解密/无来源校验**（🔶已封锁：PAYNOTIFY_DISABLED=true，2026-04-26 临时缓解）— 任何小程序 page 可伪造支付落账，下游 sa/sc/积分/储值卡/share-gift 全栈连环触发；守卫后业务代码残留已 DROP 字段（paid_amount/wechat_transaction_id），解除守卫即 42703 崩溃 | P0-04-01 / P0-CC4-01 | 全栈（3 端 + DB + 营销发放）；命中 real.md #3 + #5；P0-CC2-v2-01 新增守卫后残留风险 | **L** |
+| **2** | **staffApi _testOpenid 无 ALLOW_TEST_OPENID 环境变量门控（v2 新发现）** — clientApi 有保护，staffApi 无；任何人可 payload 传 `_testOpenid` 伪造任意员工身份，越权访问全部 staffApi 业务路由 | P0-CC4-09 | staff 全路由越权；命中 real.md #6 | **S** |
+| **3** | **✅ 已修复（2026-04-26）：退款审批 5 通道 cascade** — sale_allocations / service_commissions / user_coupons / point_transactions / picked_up_quantity 已实现同事务原子回滚；refund-cascade.js + refund-cascade.ts 双端落地，migration 0018 添加 voided_at 列 | P0-CC2-07 ✅ | 全栈业绩 + 财务 + 顾客权益 | **—** |
+| **4** | **admin createOrder 校验优惠券完全跳过 store/market/category/product 范围** — 资损 + 越权 | P0-13-01/02/03 | admin/staff/client 三端 order.create 全部忽略 applicable_market_ids / applicable_product_ids；面值 face_value_override 跨端读取漂移 | **M** |
+| **5** | **admin applyRechargeOnOrderPaid / createConversionOrder 引用已 DROP 的 store_id 列** — admin 替顾客确认含虚拟充值 SKU 订单 100% PG 42703 失败；测试 mock 反向锁死 | P0-14-01 + P0-CC9-03 | admin 核心结算路径完全失效 | **S** |
+| **6** | **staff service.create 写入不存在的 sku_id 列** — 所有 staffApi 服务单创建 100% 失败 | P0-05-01 / P0-CC9-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
+| **7** | **client requestUnbind 写入不存在的 from_store_name 列** — 顾客解绑流 100% 失效 | P0-12-01 / P0-CC9-03 | client 端唯一解绑入口完全不可用 | **S** |
+| **8** | **sale_allocations.allocationRatio 无 IN-集合 CHECK** — admin 信任前端可写 9.99 → 业绩 ×10 倍资损；admin batchSaveServiceCommissions 同模式信任前端 commissionAmount | P0-CC1-01/04 + P0-07-03 | admin 全部业绩/提成持久化路径 | **S** |
+| **9** | **staff 业务路由 store/scope 完全无过滤（cross-store 全局读改）** — customer.detail / calendar / giftHistory / refundHistory / updateNotes / assign 6 路由完全无 store_id 过滤；+ performanceDetail 跨店读取他店员工业绩（含顾客 PII，v2 新发现 P0-CC3-06） | P0-10-01/02/03/04 + P0-11-05 + P0-19-01/02 + P0-CC4-06 + P0-CC3-06 | 全集团顾客 PII 暴露；越权改备注、跨店分配 | **M** |
+| **10** | **clientApi order.create 无券路径 totalAmount 缺 Math.round（v2 新发现）** — `+= saleAmount` 累加后直接写库，金额精度误差最高 ±0.99 元/订单 | P0-CC1-v2-01 | client 所有无优惠券订单金额偏高或偏低 | **S** |
+| **11** | **Advisory lock 跨事务释放窗口可生成重号** — staff generateOrderNo 自带子事务，外层主事务再开新事务持锁 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
 
-### Top 10 之外的 4 个高敏 P0（2026-04-26 修正：删除 #12 跨表 OPENID 唯一）
+### Top 10 之外的 5 个高敏 P0（v2 合并后：新增 P0-CC4-09 / P0-CC3-06 / P0-CC2-v2-01）
 
 | # | 标题 | 来源 |
 |---|------|------|
-| 11 | admin server action 缺统一鉴权 wrapper（171 个 action，4 处确认漏调）| P0-CC4-02 |
-| 12 | admin 三大资金触发点全无 settlePoints | P0-15-01 |
-| 13 | admin getDashboardStats 业绩用 total_amount + 不过滤退款单 | P0-17-01/02/03 |
-| 14 | settlePointsForOrder 三端字节级副本 + cron 5 套写入散落 | P0-15-02 |
+| 12 | admin server action 缺统一鉴权 wrapper（171 个 action，4 处确认漏调）| P0-CC4-02 |
+| 13 | admin 三大资金触发点全无 settlePoints | P0-15-01 |
+| 14 | admin getDashboardStats 业绩用 total_amount + 不过滤退款单 | P0-17-01/02/03 |
+| 15 | settlePointsForOrder 三端字节级副本 + cron 5 套写入散落 | P0-15-02 |
+| 16 | payNotify 守卫后代码残留已 DROP 字段引用（paid_amount/wechat_transaction_id） | P0-CC2-v2-01 |
 
 ---
 
@@ -248,9 +252,9 @@
 
 | Epic | 包含修复 | 推荐排期 |
 |------|---------|---------|
-| E1 payNotify 安全收官 | P0-04-01/02/03/04 + S04-1/2/3 | 第 1 周 |
-| E2 退款级联 cascade（5 通道）| P0-CC2-07 + L1 helpers + L3 三端 + L11 cron | 第 1-2 周 |
-| E3 已删字段引用清理 | P0-05-01 / P0-12-01 / P0-14-01 + CC9 测试整改 | 第 1 周（与 E1 并行）|
+| E1 payNotify 安全收官 + _testOpenid 门控 | P0-04-01/02/03/04 + S04-1/2/3 + P0-CC4-09 + P0-CC2-v2-01（守卫后残留字段）| 第 1 周 |
+| E2 退款级联 cascade（5 通道）| ~~P0-CC2-07~~ ✅ 已修复（2026-04-26）；L1 helpers + L3 三端已落地；E2 改为 payNotify 安全收官 + 已删字段清理 | 第 1 周 |
+| E3 已删字段引用清理 | P0-05-01 / P0-12-01 / P0-14-01（P0-CC9-01/03）+ CC9 测试整改 | 第 1 周（与 E1 并行）|
 | E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 第 2-3 周 |
 | E5 schema 不变量 CHECK 一次性 migration | L0 P0 13 项 + L11 audit cron | 第 2 周 |
 | E6 时区统一 + 跨端口径收敛 | CC7 + CC1 + dashboard 三端口径 | 第 3-4 周 |

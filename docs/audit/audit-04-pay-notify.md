@@ -1,11 +1,14 @@
-# 审计报告：支付回调 / payNotify 幂等 (04)
+# 审计报告：支付回调 / payNotify 幂等 (04) — v3（合并版）
 
-**审计时间**：2026-04-25
+**审计时间**：2026-04-26（v1: 2026-04-25；v2: 2026-04-26；v3 合并：2026-04-26）
 **域 ID**：04
-**审计员**：claude-opus-4-7
-**审计时长**：~25 分钟
-**关联 PR/Ticket**：partial-payment foundation (PR-2/PR-3) + 多次回款 (Ticket 2026-04-24 PR-A/B/C) + share-gift-reward
+**审计员**：claude-sonnet-4-6（v1 原始：claude-opus-4-7）
+**审计时长**：v1 ~25 分钟；v2 ~25 分钟；v3 合并重审 ~30 分钟
+**关联 PR/Ticket**：
+- v1: partial-payment foundation (PR-2/PR-3) + 多次回款 (Ticket 2026-04-24 PR-A/B/C) + share-gift-reward
+- v2: [2026-04-26-sale-order-domain-refactor.md](../../notes/tickets/2026-04-26-sale-order-domain-refactor.md) D-Q1 守卫
 **规范版本**：`real.md` v3.1.0（命中 #3 支付幂等、#4 状态单向、#5 后端鉴权）+ `enums.ts` 28 枚举
+**合并说明**：v2 独立重审发现 3 项新 P0，v1 P0-04-04 已被守卫屏蔽降为 P2。v3 以 v2 为准，CLOSED 条目标记来源。
 
 ---
 
@@ -14,180 +17,249 @@
 | 层 | admin | staff | payNotify (本域) |
 |----|-------|-------|--------|
 | Schema | `db/schema/order.ts:241-287` saleOrderPayments | ↑ | ↑ |
-| 入口 | — | — | `fengyu-client/cloudfunctions/payNotify/index.js:38-510` `exports.main` |
-| 路径 | — | — | wx.cloud → CloudBase 调用 (理论应为微信支付商户 NotifyURL) |
-| 鉴权 | requirePermission | middleware.auth | **无任何鉴权 / 签名校验** |
-| 幂等键 | `actions/orders.ts:1539-1545` 应用层校验 | `staffApi/routes/order.js:826` 事务外读 | `payNotify/index.js:160-184` `INSERT ... ON CONFLICT (sale_order_id, payment_method, external_txn_id)` (uq_sop_txn) |
-| 配套 | — | — | `payNotify/config.js`（system_configs 缓存）+ `payNotify/points.js`（积分结算镜像）+ `payNotify/share-gift.js`（分享礼镜像）|
-| 测试 | — | — | `payNotify/__tests__/index.test.js`（13 用例，含 PR-4.x 部分支付/回款/凭证单镜像）|
-| 依赖 | — | — | `wx-server-sdk: latest`、`pg: ^8.11.3`（`payNotify/package.json:10-13`）— 无 `crypto`/`@wechatpay/openapi-tools`/任何签名库 |
+| 入口 | — | — | `fengyu-client/cloudfunctions/payNotify/index.js:61` `exports.main` |
+| 路径 | — | — | `wx.cloud.callFunction` 触发（当前被 DISABLED 守卫拦截）|
+| 鉴权 | requirePermission | middleware.auth | **守卫期**：`PAYNOTIFY_DISABLED = true`（L54）全拒绝；守卫解除后**仍无签名校验** |
+| 幂等键 | `sale_order_payments.uq_sop_txn` | 同 | `ON CONFLICT (sale_order_id, payment_method, external_txn_id) WHERE external_txn_id IS NOT NULL` |
+| 配套模块 | — | — | `config.js`（system_configs 缓存）+ `points.js`（积分）+ `share-gift.js`（分享礼） |
+| 测试 | — | — | `__tests__/index.test.js`（13 用例，**当前全部 FAIL**）+ `__tests__/config.test.js`（7 用例，全 pass）|
+| 文件时间戳 | — | — | `index.js`：Apr 26 18:45；`__tests__/index.test.js`：Apr 26 18:45 |
 
 ---
 
-## 2. 数据流图
+## 2. v1 vs v2 摘要对照
 
-```
-微信支付商户后台 ──HTTPS POST──▶ NotifyURL
-                                 │
-                                 ▼ (理论上应有 wechat-api-gateway 前置签名校验+解密)
-                          ┌──────────────────────────────────────┐
-                          │ payNotify/index.js exports.main(event)│
-                          │                                       │
-                          │ ⚠️ event 直接信任，无签名校验/解密  │
-                          │ event = { orderNo, transactionId,    │
-                          │            payAmount?, paymentMethod? }│
-                          └──────────────────────────────────────┘
-                                 │
-                                 ▼ (pg.query 入口幂等读)
-   SELECT sale_orders WHERE sale_order_id = $1
-   ├─ row 不存在 → return FAIL          (会触发微信无限重试 8 次)
-   ├─ status='已支付'/'已完成' → return SUCCESS（短路）
-   ├─ status≠'待支付' / '部分支付' → return FAIL  (同上)
-   └─ status∈{'待支付','部分支付'}：
-        │
-        ▼ pg.connect() BEGIN
-        ├─ 计算 thisPayAmount = event.payAmount ?? (payable - SUM(payments))
-        ├─ 决定 changeType：
-        │   - 凭证单 → 强制 '回款'
-        │   - 普通 → SELECT WHERE change_type='首次支付' 在事务内（已修复 03 域 P0-03-03）
-        ├─ INSERT INTO sale_order_payments ... ON CONFLICT (uq_sop_txn) DO NOTHING
-        │   ├─ rowCount=0 → ROLLBACK + return SUCCESS（幂等命中）
-        │   └─ rowCount=1 → 继续
-        ├─ UPDATE sale_orders.status = '已支付'/'部分支付'
-        │   + paid_amount = newPaidSum
-        │   + wechat_transaction_id = COALESCE(... , txnId)  ⚠️ 第二个 txn 永远落不进
-        ├─ if 凭证单：UPDATE 凭证单 status='已支付'
-        ├─ if !fullyPaid：COMMIT + return SUCCESS
-        ├─ UPDATE sale_items.expire_date += 1 year
-        ├─ if 充值卡 product_kind 行：UPSERT prepaid_cards + INSERT card_transactions(充值)
-        ├─ if order.prepaid_card_amount > 0：FOR UPDATE 卡 + 扣 + INSERT card_transactions(扣款)
-        ├─ if preferred_employee_id：INSERT sale_allocations × items
-        ├─ UPDATE client_wechat_users.spending_tier (按 SUM total_amount)
-        ├─ UPDATE client_wechat_users.customer_type (只升不降)
-        ├─ settlePointsSafe（积分发放/冲销）
-        ├─ SAVEPOINT sp_share_gift → grantShareGift（首单礼券+消息）
-        └─ COMMIT
-              │
-              ▼
-       return { code: 'SUCCESS', message: '成功' }
-```
+| 维度 | v1 结论 | v2 结论 | v3 处理 |
+|------|---------|---------|---------|
+| 总 P0 数 | 4 | **6（含3新）** | **6 最终 P0**（3新 + 3核心） |
+| 守卫状态 | 无守卫（持续开放）| `PAYNOTIFY_DISABLED = true`（当前有效）| v1 P0-04-01 攻击面被阻断；但 P0-04v2-01 守卫本身可绕过 |
+| 全量日志 PII | P0-04-04 | 降 P2-04v2-17（守卫屏蔽）| **CLOSED from v1**，升级条件已记录 |
+| schema drift | 未发现 | **P0-04v2-03**（paid_amount/wechat_transaction_id 已 DROP）| v2 新增 P0 |
+| 回款单逻辑 | 未发现冲突 | **P0-04v2-04**（与 0018→0019 迁移/大重构矛盾）| v2 新增 P0 |
+| 守卫可绕过 | 未发现 | **P0-04v2-01**（常量非环境变量，无 CI gate）| v2 新增 P0 |
+| payAmount 超限 | P0-04-02 ✓ | P0-04v2-05（未修复）| 保留 |
+| transactionId fallback | P0-04-03 ✓ | P0-04v2-06（未修复）| 保留 |
+| 无签名校验（根因）| P0-04-01 ✓ | P0-04v2-02（守卫解除后重现）| 保留 |
+| 测试状态 | 13 用例覆盖业务 | **13 个全部 FAIL**（守卫破坏）| v2 新增 P1 |
 
 ---
 
 ## 3. 自身漏洞
 
-### 3.1 P0（阻断 / 资损 / 越权）
+### 3.1 P0（6个，含3个新发现）
 
-#### [P0-04-01] 完全无微信支付签名校验，event 输入完全可信任 — 资损/伪造支付
-- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:38-46`
+#### [P0-04v2-01] 守卫解除条件未由 DB / CI 强制，仅靠注释约束 — 人工失误可提前解除 ⚡ TOP-1 新增
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:34-54`
 - **现象**：
   ```js
-  exports.main = async (event) => {
-    const { orderNo, transactionId, payAmount, paymentMethod } = event
-    if (!orderNo) return { code: 'FAIL', message: '缺少 orderNo' }
-    // 直接进入业务逻辑，无 V2 MD5/HMAC-SHA256 也无 V3 SHA256-RSA + 平台证书校验
+  // D-Q1-2026-04-26 决策：payNotify 立即停用直到补完拉卡拉签名校验
+  // 关闭守卫的条件（缺一不可）：
+  //   1. 拉卡拉商户配置完成 + APIv3 密钥/平台证书托管到环境变量
+  //   2. 实现 verifyLakalaSignature(headers, body, secret) helper
+  //   3. 实现 IP 白名单（拉卡拉回调来源段）
+  //   4. 实现 transactionId 幂等键
+  //   5. operation_logs 'cron.audit_invariants' 跑 1 周无 violations 后才允许解除
+  const PAYNOTIFY_DISABLED = true
   ```
-  整个文件 grep `signature` / `RSA` / `sha256` / `aes_256_gcm` / `APIv3` / `x-wechatpay` 均零命中。`package.json` 的 dependencies 仅 `wx-server-sdk` + `pg`，没有任何加解密 / 签名库。
-- **风险**：任何拥有该云函数调用权限的人（微信开放平台 + 同 envId 内）都能伪造一笔支付：
-  ```js
-  // 攻击 PoC：在 fengyu-client 任意页面（同 envId）
-  await wx.cloud.callFunction({
-    name: 'payNotify',
-    data: { orderNo: 'FY-XSD-WX-2604250001', transactionId: 'forged-' + Date.now(), payAmount: 1 }
-  })
-  ```
-  → `sale_orders.status` 被翻成 `已支付`、写入 `sale_order_payments`、扣减储值卡（若 prepaid_card_amount>0）、自动建分配、跃迁 `customer_type`、发放积分与分享礼券。**资金 + 业绩 + 积分 + 营销品资损全链路命中**。
-- **CloudBase 端调用边界**：默认 CloudBase 云函数对小程序内 `wx.cloud.callFunction` 默认开放（同 envId，无 RAM 调用方限制）。要确认是否设置了"非 HTTP 触发器拒绝"策略，但即使设置，仍需校验调用方 OPENID / 签名 — 当前完全没有。
-- **风险等级**：资金 P0（违反 `real.md` #3 支付幂等 + #5 后端统一鉴权）
+  解除守卫仅需将 `PAYNOTIFY_DISABLED = true` 改为 `false`，无任何编译时/运行时强制检查。没有 CI gate、没有 feature flag 环境变量检查、没有必需配置预检（环境变量不存在时不拒绝）。
+- **风险**：任何一次无意识的 `false` 修改（code review 疏漏 / cherry-pick / 手误）即可重激活无签名校验的旧逻辑，重现 v1 P0-04-01 的全部攻击面。一旦激活 + 发现 schema drift（见 P0-04v2-03），还会立即产生 PG 运行时错误。
+- **风险等级**：P0（违反 `real.md` #3 支付幂等 + #5 后端统一鉴权）
 - **复现**：
-  1. 在已绑定门店的客户端发起任意一笔订单（`待支付`）
-  2. 调用 `wx.cloud.callFunction({ name: 'payNotify', data: { orderNo, transactionId, payAmount: 0.01 } })`
-  3. 后台查询 `SELECT status, paid_amount FROM sale_orders WHERE sale_order_id = $orderNo` → 已支付 + paid_amount=0.01
-  4. （扩展）若 `prepaid_card_amount > 0`，且无外部充值前置，会触发 `INSUFFICIENT_BALANCE`，但订单状态在事务内回滚不变；正常场景资金已落账
-- **修复**：(L3 cloudfunctions) 接入真实微信支付时必须加：
-  - V3：从 header 取 `Wechatpay-Signature` / `Wechatpay-Serial` / `Wechatpay-Timestamp` / `Wechatpay-Nonce`，加载平台证书 `wxpay_platform_cert.pem` 用 `crypto.createVerify('RSA-SHA256').verify(...)`
-  - 解密 `resource.ciphertext`（AEAD_AES_256_GCM，`process.env.WXPAY_API_V3_KEY`）
-  - 校验 `mchid === 配置`、`appid === 配置`
-  - 短路前置：仅签名通过的事件才进入业务逻辑
+  1. `index.js:54` 改 `PAYNOTIFY_DISABLED = false`
+  2. 部署云函数
+  3. `wx.cloud.callFunction({ name: 'payNotify', data: { orderNo: 'FY-XSD-WX-XXXX', transactionId: 'forge', payAmount: 1 } })`
+  4. 订单状态被翻 `已支付`（若 schema drift 未同步修复则先 PG 报错）
+- **修复**：(L3) 改用环境变量守卫：
+  ```js
+  const PAYNOTIFY_ENABLED = process.env.PAYNOTIFY_ENABLED === 'true'
+  if (!PAYNOTIFY_ENABLED) { ... }
+  ```
+  同时在守卫解除前增加配置预检（`verifyLakalaSignature` 函数是否已导出、必需环境变量非空）。
 
-#### [P0-04-02] event.payAmount / event.paymentMethod 完全信任输入，可任意改写款项金额与通道
-- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:43, 104-105, 135-141`
+---
+
+#### [P0-04v2-03] 守卫之后代码引用 migration 0018 已 DROP 的 `paid_amount` 和 `wechat_transaction_id` 列 — schema drift ⚡ TOP-2 新增
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:127-129, 148-150, 265-274, 280-287`
 - **现象**：
+  ```js
+  // L127-129（SELECT 查 sale_orders）
+  `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
+          total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount,
+          sale_order_type, ref_sale_order_id
+   FROM sale_orders WHERE sale_order_id = $1`
+
+  // L265-274（UPDATE sale_orders）
+  `UPDATE sale_orders
+   SET status = $1::order_status,
+       paid_amount = $2,           ← 已 DROP（migration 0018 L36）
+       paid_at = ...,
+       wechat_transaction_id = COALESCE(wechat_transaction_id, $4),  ← 已 DROP（migration 0018 L37）
+       updated_at = $3
+   WHERE sale_order_id = $5`
+
+  // L280-287（凭证单 UPDATE）
+  `UPDATE sale_orders
+   SET status = '已支付'::order_status,
+       paid_at = COALESCE(paid_at, $1),
+       wechat_transaction_id = COALESCE(wechat_transaction_id, $2),  ← 已 DROP
+       updated_at = $1
+   WHERE sale_order_id = $3`
+  ```
+  `db/migrations/0018_black_madrox.sql:36-37`：
+  ```sql
+  ALTER TABLE "sale_orders" DROP COLUMN "paid_amount";
+  ALTER TABLE "sale_orders" DROP COLUMN "wechat_transaction_id";
+  ```
+  `db/schema/order.ts:72-73` 注释明确：
+  > `原 paid_amount 列与 received 重复，已 DROP；统一改用 received`
+  > `原 wechat_transaction_id / alipay_transaction_id 列已 DROP，三方流水号下沉到 sale_order_payments.external_txn_id`
+
+- **风险**：
+  1. 一旦 `PAYNOTIFY_DISABLED = false` 被设置并部署，所有走到 L266 `UPDATE sale_orders SET ... paid_amount=?` 的事务立即报 `column "paid_amount" does not exist`，整个事务 ROLLBACK，回调返回 FAIL，微信侧 8 次重试全部失败 → 订单永久卡死在 `待支付`（状态机死锁）。
+  2. SELECT L127 也会报错（`column "paid_amount" does not exist`），导致即使是幂等短路路径也无法正常工作。
+  3. 正确列名：`paid_amount` → `received`；`wechat_transaction_id` 列已移除，三方流水号应从 `sale_order_payments.external_txn_id` 取。
+- **CC2 并发幂等**：schema drift 会使所有入事务操作崩溃，幂等机制失效。
+- **风险等级**：P0（状态机死锁 + 实际订单无法完成支付）
+- **复现**：
+  1. 将 `PAYNOTIFY_DISABLED = false`
+  2. 调用 `payNotify({ orderNo: '...', transactionId: 'x', payAmount: 100 })`
+  3. 报错：`column "paid_amount" of relation "sale_orders" does not exist`
+  4. 事务回滚，order.status 保持 `待支付`
+- **修复**：(L3) 同步 v4 schema 重命名：
+  - `paid_amount` → `received`（读写均更新）
+  - `wechat_transaction_id` 相关行删除（三方流水已由 `sale_order_payments.external_txn_id` 表达）
+
+---
+
+#### [P0-04v2-04] 守卫之后代码检查 `sale_order_type = '回款单'` — 该值已在 migration 0018 从枚举移除 ⚡ TOP-3 新增
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:143, 221`
+- **现象**：
+  ```js
+  // L143
+  const isRepaymentCredential = order.sale_order_type === '回款单' && order.ref_sale_order_id
+
+  // L221
+  if (isRepaymentCredential) {
+    changeType = '回款'
+  }
+  ```
+  `db/migrations/0018_black_madrox.sql:39-41`：
+  ```sql
+  ALTER TABLE "public"."sale_orders" ALTER COLUMN "sale_order_type" SET DATA TYPE text;
+  DROP TYPE "public"."sale_order_type";
+  CREATE TYPE "public"."sale_order_type" AS ENUM('销售单', '内部单', '转换单');
+  ```
+  （`回款单` 和 `退款单` 已从枚举移除。`0019_lethal_iron_man.sql` 又 ADD VALUE 两者回来，因"还未执行大重构"而临时回退——与 `enums.ts` 中 5 值保留的说明一致。）
+
+  需区分情况：
+  - 若 migration 0018 在生产库已 apply（journal 证明是），但 0019 也已 apply（重新加回），则 `回款单` 又有效了。
+  - 但 payNotify 的 `isRepaymentCredential` 逻辑假设"回款单存在于 sale_orders"，而 [2026-04-26 ticket](../../notes/tickets/2026-04-26-sale-order-domain-refactor.md) 的设计目标是将回款下沉至 `sale_order_payments`，迁移完成后 sale_orders 中不会再有 `sale_order_type = '回款单'` 的行。
+  - 这意味着守卫解除后，`isRepaymentCredential` 路径**在重构完成后将永远 false**，是死代码；在重构完成前也因 P0-04v2-03 的 schema drift 无法运行。
+- **风险等级**：P0（逻辑将与数据不一致，且随大重构 ticket 执行会静默失效）
+- **修复**：(L3) 与 ticket `2026-04-26-sale-order-domain-refactor.md` 对齐：重构完成后 `isRepaymentCredential` 整段逻辑移除，改为直接查 `sale_order_payments[change_type='回款']` 流水。当前守卫期间无需修改，但守卫解除计划中必须包含此变更。
+
+---
+
+#### [P0-04v2-02] 守卫解除后仍无微信/拉卡拉签名校验 — 原始 P0 根因未修复（v1 P0-04-01）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:116-119`
+- **现象**：守卫解除后第一段代码：
   ```js
   const { orderNo, transactionId, payAmount: payAmountInput, paymentMethod: paymentMethodInput } = event
-  ...
-  const paymentMethod = paymentMethodInput
-    || (order.payment_method === '支付宝' ? '支付宝' : '微信')
-  ...
+  if (!orderNo) {
+    return { code: 'FAIL', message: '缺少 orderNo' }
+  }
+  ```
+  `package.json` 仅含 `wx-server-sdk` + `pg`，无任何加解密 / 签名库。注释 `// ========== Mock 模式：手动触发测试 ==========` 仍然就是当前唯一接入路径。
+  签名校验 helper（`verifyLakalaSignature`）在守卫注释中作为"关闭条件"提及，但在整个代码库中**零实现、零导入、零占位符**：
+  ```bash
+  grep -rn "verifyLakalaSignature|verifySign|crypto.*createVerify|aes_256_gcm" payNotify/
+  # → 零命中
+  ```
+- **风险**：一旦守卫误关（见 P0-04v2-01），即刻可被伪造任意已知 orderNo 的支付。资金 + 业绩 + 积分 + 营销品资损全链路命中。
+- **风险等级**：P0（与 v1 P0-04-01 同根）
+- **修复**：(L3) 解除守卫前必须：
+  - 接入拉卡拉 V3 签名校验（RSA-SHA256 验签 + AEAD-AES-256-GCM 解密）
+  - 从解密体取 `transaction_id`、`trade_amount`、`trade_type`，不信任 event 顶层
+  - 实现 IP 白名单（拉卡拉回调 IP 段）
+
+---
+
+#### [P0-04v2-05] event.payAmount 可超限，无上限校验 — 金额资损（v1 P0-04-02）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:209-215`
+- **现象**：
+  ```js
   const thisPayAmount = (payAmountInput !== undefined && payAmountInput !== null)
     ? Math.round(Number(payAmountInput) * 100) / 100
     : remaining
+  if (!(thisPayAmount > 0)) {
+    throw new Error(`INVALID_PAY_AMOUNT: ${thisPayAmount}`)
+  }
+  // 无 thisPayAmount > remaining 上限校验
   ```
-  - `payAmount` 仅校验 `> 0`，无上限校验（`thisPayAmount > remaining` 不会被拒）
-  - `paymentMethod` 直接覆盖订单内字段，调用方可把 `微信` 通道入账写成 `线下` / `储值卡` / `支付宝`
-- **风险**：
-  1. **超付不报错**：调用方 payAmount = 99999999 → INSERT payments，sale_orders.paid_amount 被刷成 99999999。`chk_sop_amount_sign` 正负性 OK 但金额无上限 → 报表 / 提成 / 积分 / 档位计算全部炸。`Math.floor(netSettled / 100)` 在 `points.js:43` 算积分 → 顾客得到天文数字积分。
-  2. **支付宝伪报为线下**：实际微信回调被攻击者截获后改 `paymentMethod='线下'` 重发（同一 `external_txn_id` 不同 method 不会命中 `uq_sop_txn`，因为唯一键是 `(sale_order_id, payment_method, external_txn_id)`），可重复入账。
-  3. **uq_sop_txn 复合键被绕过**：唯一键是 `(sale_order_id, payment_method, external_txn_id)` — 同一 external_txn_id + 不同 payment_method 仍是新行 → 重放不同 method 即可重入账。
-- **CC2 并发幂等 + CC1 数值精度** 同时命中
-- **风险等级**：P0
-- **复现**：
-  1. 订单 total=300 prepaid=0
-  2. 调用 `payNotify({orderNo, transactionId: 'A', payAmount: 1, paymentMethod: '微信'})` → 部分支付 paid_amount=1
-  3. 调用 `payNotify({orderNo, transactionId: 'A', payAmount: 1, paymentMethod: '支付宝'})` → ON CONFLICT 不命中（method 不同）→ 又 INSERT 一行 → paid_amount=2，但 `external_txn_id='A'` 重复
-- **修复**：(L3) 真实接入后 `transactionId` 应为微信解密后的 `transaction_id`，不接受 event 入参。`payAmount`/`paymentMethod` 应完全从 `resource.ciphertext` 解出，不读 event 顶层。Mock 模式应仅在 `process.env.NODE_ENV !== 'production'` 下启用。
+  调用方可传 `payAmount = 9999999`，INSERT `sale_order_payments.amount = 9999999`（通过 `chk_sop_amount_sign` 因为金额为正），随后 `UPDATE sale_orders SET received = 9999999`，顾客得到天文积分和消费档位跃迁。
+- **风险**：守卫期间被阻断，但代码漏洞未修复。
+- **风险等级**：P0（资损）
+- **修复**：(L3) 加上限：`if (thisPayAmount > remaining + 0.001) throw new Error('INVALID_PARAMS: payAmount 超出应付金额')`
 
-#### [P0-04-03] transactionId 缺省 fallback 为 `mock_txn_${Date.now()}`，每次重试都产生新幂等键
-- **文件**：`payNotify/index.js:101`
+---
+
+#### [P0-04v2-06] transactionId 缺省 fallback 为 `mock_txn_${Date.now()}` — 幂等键失效（v1 P0-04-03）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:175`
 - **现象**：
   ```js
   const txnId = transactionId || `mock_txn_${Date.now()}`
   ```
-- **风险**：调用方不传 transactionId 时（mock 测试或微信回调前置丢字段），fallback 是 `mock_txn_<timestamp>`。同一笔订单 8 次重试 → 8 个不同 txnId → 全部命中 `uq_sop_txn` 唯一键检查为不同行 → **8 笔 payments 行写入 + 8 次 paid_amount 累加**。
-  - 真实微信回调一定有 transaction_id，所以风险窗口主要在：
-    - mock 测试期被打到生产 envId（CloudBase 单 envId，多端共用）
-    - 调用方 forge 时漏传 transactionId（结合 P0-04-01 攻击）
-- **风险等级**：P0（攻击后必命中）
-- **复现**：调用 `payNotify({orderNo, payAmount: 1})` × 3 次（间隔 ≥1 ms） → 写入 3 行 payments / paid_amount += 3
-- **修复**：(L3) 移除 fallback，缺 transactionId 应直接 return FAIL；或仅在 `mock_txn_` 前缀下复用同一占位符（但接入真实回调后此分支应整体删除）
+  不传 `transactionId` 时，每次调用得到不同 `txnId`，绕过 `uq_sop_txn` 唯一索引，可重复写入 `sale_order_payments` 并累加 `received`。
+- **风险**：守卫期间被阻断，代码漏洞未修复。
+- **风险等级**：P0（重复入账）
+- **修复**：(L3) 移除 fallback，`transactionId` 为空直接 FAIL。
 
-#### [P0-04-04] event 全量 `JSON.stringify` 写入 console.log（含潜在 PII）
-- **文件**：`payNotify/index.js:39`
+---
+
+### 3.2 P1（7项）
+
+#### [P1-04v2-07] 所有 13 个业务测试在当前 codebase 全部 FAIL — 守卫破坏测试覆盖
+- **文件**：`fengyu-client/cloudfunctions/payNotify/__tests__/index.test.js`（全文 13 用例）
+- **现象**：`npm test` 输出：
+  ```
+  Test Files  1 failed | 1 passed (2)
+        Tests  13 failed | 7 passed (20)
+  ```
+  所有 13 个业务用例失败，原因：`PAYNOTIFY_DISABLED = true` 是源码中的编译时常量，`loadFreshIndex()` 每次重新 `require('../index')` 时该常量不变，所有 `main()` 调用立即返回 `{ code: -403 }`，测试断言 `code === 'SUCCESS'` / `'FAIL'` 均失败。
+  `config.test.js` 的 7 个测试因不依赖 `index.js` 仍全部通过。
+- **风险**：
+  1. CI/CD 如果运行 `npm test`，会因 13 FAIL 导致流水线红；若 CI 未覆盖该目录，这 13 个测试的信号已完全失去。
+  2. 守卫解除后业务逻辑的测试覆盖率为**零有效验证**（因 schema drift P0-04v2-03 也存在，测试即使通过也是误导）。
+  3. 关键路径（充值入账、扣减幂等、部分支付、回款凭证单）的行为完全无保障。
+- **风险等级**：P1（测试信号丢失；守卫解除后 P0 升级）
+- **修复**：
+  - 短期（守卫期间）：测试文件顶部 mock `PAYNOTIFY_ENABLED = true`，或抽离业务逻辑到独立函数单独测试。
+  - 长期（守卫解除时）：同步修复 schema drift 并更新测试。
+
+#### [P1-04v2-08] `sale_orders.operator_employee_id` / `sale_order_payments.operator_employee_id` 在 payNotify INSERT 写 NULL — 操作日志空洞
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:239`
 - **现象**：
   ```js
-  console.log('[payNotify] received event:', JSON.stringify(event))
+  ) VALUES ($1, $2, $3, $4, $5, '已支付', 'notify', NULL, $6, $7, $7)
+  //                                                   ^^^^ operator_employee_id = NULL
   ```
-- **风险**：真实微信 V3 回调 event 内含 `payer.openid` / 商户订单号 / 完整支付明细。CloudBase 控制台日志可被同账号成员查阅。命中 CC6 PII。
-- **关联**：CROSS-CUTTING.md CC6 同类（auth域 P0-PII-06）
-- **风险等级**：P0
-- **修复**：(L3) 输出脱敏：`event.orderNo`、`event.transactionId.slice(0,8) + '***'`，禁止输出整个 event
+  payNotify 是系统触发（无操作人），NULL 是正确的语义；但 `sale_order_payments.operator_employee_id` 字段已在 migration 0018 `DROP COLUMN`（schema 中已无此列），这里却仍传 NULL 占位。当前 migration 0019 又将其 ADD COLUMN 回来（临时回退），所以 DB 层实际存在此列，INSERT 不会报错。但这是 migration 0018→0019 反复的产物，与大重构目标（`operator_employee_id` 下沉到 `sale_order_payment_details` 子表）不一致。
+- **风险等级**：P1（数据一致性，与大重构方向相悖）
+- **修复**：(L3) 待大重构完成后，把操作人等详情信息 INSERT 到 `sale_order_payment_details` 子表，主表 `sale_order_payments` 中该列移除。
 
-### 3.2 P1（数据一致 / 状态错乱）
+#### [P1-04v2-09] `customer_type` / `spending_tier` 重算在主事务内无 SAVEPOINT — 异常回滚主支付
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:435-533`
+- **现象**：`spending_tier` 重算（L435-457）和 `customer_type` 重算（L459-532）直接在主事务内执行，无 SAVEPOINT 保护。若 client_wechat_users 数据异常导致 SQL 抛错，会 ROLLBACK 整个支付事务，微信侧视为 FAIL 重试。与 `share-gift` 用 SAVEPOINT 隔离（L546）的策略不一致。
+- **风险等级**：P1（支付成功率）
+- **修复**：(L3) 用 SAVEPOINT 包裹 spending_tier + customer_type 重算，与 share-gift 保持一致策略。
 
-#### [P1-04-05] 重大事务跨多业务子系统，触发逻辑可能超过微信回调 5s 时限
-- **文件**：`payNotify/index.js:108-503` 整个 BEGIN-COMMIT 事务
-- **现象**：单事务内串行触发：
-  1. SUM payments → INSERT payments → UPDATE sale_orders → UPDATE 凭证单
-  2. UPDATE sale_items expire_date
-  3. 充值卡入账：SELECT product_kind + UPSERT prepaid_cards + INSERT card_transactions × N
-  4. 消费扣款：FOR UPDATE prepaid_cards + UPDATE balance + INSERT card_transactions
-  5. SELECT staff.skills + SELECT sale_items + INSERT sale_allocations × N
-  6. UPDATE client_wechat_users.spending_tier (子查询 SUM sale_orders)
-  7. SELECT customer_type + 复杂多 EXISTS 子查询 + UPDATE client_wechat_users.customer_type + UPDATE became_member_at
-  8. settlePointsSafe（FOR UPDATE sale_orders + SUM + INSERT point_transactions + UPDATE points_balance）
-  9. grantShareGift（COUNT sale_orders + SELECT inviter + SELECT coupon_templates + INSERT user_coupons × 2 + INSERT messages × 2 + INSERT operation_logs）
-- **风险**：
-  - 微信支付回调严格要求 5s 内响应，否则视为失败重试（最多 8 次，间隔 15s/15s/30s/180s/1800s/1800s/1800s/1800s）。
-  - 真实订单 + 充值 + 业绩分配 + 消费扣款 + 顾客升级 + 积分 + 分享礼 全套触发，加上 PG 远程网络（5434 在 47.113.202.7 阿里云）：单事务往返 30+ 次 query，估计 2-4s（连接池 max=3 共享时排队更久）。
-  - 高峰期偶发超时 → 微信认为失败 → 8 次重试 → 由 uq_sop_txn 兜底幂等 → 但 customer_type / share_gift 等子动作可能在重试中放大错误
-  - 风险路径：share-gift 失败仅 ROLLBACK SAVEPOINT 不阻塞主事务，OK；但 customer_type 重算抛错则全事务回滚。
-- **风险等级**：P1（实际超时未必触发，但是支付链路稳定性隐患）
-- **修复**：(L3) 拆分：
-  - 同事务内仅做"必要写"：INSERT payments + UPDATE sale_orders.status / paid_amount + 储值卡扣减
-  - 异步副作用（业绩分配、customer_type、积分、share-gift、单品到期日）走"事件队列"或"二次触发"（CronTask 拉 unprocessed）
+#### [P1-04v2-10] 事务过重（事务内串行 9 类查询）— 微信 5s 回调时限风险
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:183-565`（整个 BEGIN-COMMIT 事务）
+- **现象**：单事务内串行触发 9 类查询（payments 聚合 → INSERT payments → UPDATE sale_orders → UPDATE sale_items → 充值卡 UPSERT → 储值卡 FOR UPDATE → sale_allocations → spending_tier → customer_type → settlePointsSafe → grantShareGift SAVEPOINT）。加上 PG 远程网络（5434 在 47.113.202.7 阿里云），估计单事务往返 30+ 次 query，高峰期偶发超时 → 微信认为失败 → 8 次重试 → 由 uq_sop_txn 兜底幂等，但 customer_type / share_gift 等子动作可能在重试中放大错误。
+- **风险等级**：P1（偶发超时 → 重试 → 幂等兜底，但中间状态可能不一致）
 
-#### [P1-04-06] FAIL 响应直接暴露内部错误信息（INSUFFICIENT_BALANCE / INVALID_PAY_AMOUNT / SQL Error）
-- **文件**：`payNotify/index.js:506-509`
+#### [P1-04v2-11] FAIL 响应直接暴露内部错误信息（SQL Error / constraint name）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:576-579`
 - **现象**：
   ```js
   } catch (err) {
@@ -195,150 +267,105 @@
     return { code: 'FAIL', message: err.message }
   }
   ```
-- **风险**：
-  - 微信支付侧把 message 视为人类可读，但泄露内部约束名（`INSUFFICIENT_BALANCE: 储值卡余额不足`、`chk_sop_amount_sign violation`、PG SQL 错误堆栈）
-  - 长 message 影响微信侧重试策略
-- **风险等级**：P1
-- **修复**：(L3) message 仅返回 `'FAIL'` 或不超过 32 字的稳定错误码；详情走 console.error / operation_logs
+  当 schema drift 触发时，`err.message` 会包含 `column "paid_amount" of relation "sale_orders" does not exist`。
+- **风险等级**：P1（PII + 结构泄露）
+- **修复**：(L3) message 仅返回 `'内部错误'` 或不超过 32 字的稳定错误码；详情走 console.error。
 
-#### [P1-04-07] 响应格式只有 V3 风格 `{ code: 'SUCCESS', message }`，无 V2 XML 兼容；CloudBase 入参非 HTTP raw body
-- **文件**：`payNotify/index.js:91, 183, 221, 505`
-- **现象**：函数返回 `{ code: 'SUCCESS' | 'FAIL', message }` JSON。微信 V3 回调要求严格 JSON `{"code": "SUCCESS", "message": "OK"}`（无 message 也行）。
-  - **真实接入路径未确定**：CloudBase 云函数对外通过 HTTP 触发器或微信支付直连；当前 mock 只能由 `wx.cloud.callFunction` 触发，**根本无法接入微信商户回调**（微信回调地址需公网 HTTPS POST，CloudBase 函数虽可用 `tcb fn http` 暴露，但需另配 HTTP 路由）。
-  - 即使配置 HTTP 触发器，event 的 body / headers 解析逻辑当前完全缺失。
-- **风险**：当前实现是"半成品 mock"，离真实接入还差签名 + body 解析 + HTTP 触发器配置三层。生产接入时若直接复用，必导致回调静默失败（微信 5s 内未拿到合规响应 → 8 次重试都失败 → 订单卡在 '待支付'）。
-- **风险等级**：P1
-- **关联**：与 P0-04-01 同根，但单独列出以提醒接入工序
-- **修复**：接入前完成 (1) HTTP 触发器配置 (2) `event.body` 解析（V2 XML / V3 JSON）(3) header 签名校验 (4) AEAD 解密 (5) 响应 Content-Type 设置
-
-#### [P1-04-08] sale_orders.wechat_transaction_id COALESCE — 部分支付场景仅记录第一笔 txnId
-- **文件**：`payNotify/index.js:197`
-- **现象**：
-  ```sql
-  wechat_transaction_id = COALESCE(wechat_transaction_id, $4)
-  ```
-  + schema `db/schema/order.ts:75` 该列有 `.unique()`：`wechatTransactionId: varchar(...).unique()`
-- **风险**：
-  1. 部分支付场景一笔订单可能收到 N 个 transactionId（首次支付 + 多次回款）。当前代码只在第一笔时写入，后续 txnId 全部丢失。审计 / 财务 / 退款查证只能从 sale_order_payments.external_txn_id 取，sale_orders.wechat_transaction_id 误导。
-  2. UNIQUE 约束跨订单：若同一 transactionId 被异常关联到多个订单（攻击场景），`COALESCE` 不会触发约束（只有第一次写）。
-  3. 与 sale_order_payments.external_txn_id 数据冗余 / 一致性无强约束保证。
-- **风险等级**：P1（数据完整性）
-- **修复**：(L0) 删除 sale_orders.wechat_transaction_id（用 sale_order_payments JOIN 替代），或改语义为"首笔 txn"并加注释；(L3) payNotify UPDATE 改为只在 NULL 时写
-
-#### [P1-04-09] 凭证单回调时凭证单状态翻转无 CAS 守卫
-- **文件**：`payNotify/index.js:204-214`
-- **现象**：
-  ```sql
-  UPDATE sale_orders
-   SET status = '已支付'::order_status,
-       paid_at = COALESCE(paid_at, $1),
-       wechat_transaction_id = COALESCE(wechat_transaction_id, $2),
-       updated_at = $1
-   WHERE sale_order_id = $3   -- ⚠️ 无 AND status = $expected
-  ```
-- **风险**：凭证单可能已被其他通道（admin.confirmOfflinePayment 处理凭证单 / staff.close 等）改成 '已关闭'。当前 UPDATE 直接覆盖回 '已支付'，破坏状态机单向推进。
-  - 实际触发条件较窄（凭证单仅在 client.repay 创建后立即回调），但理论存在状态污染。
-- **关联**：CROSS-CUTTING.md CC2 "状态机 UPDATE 缺 CAS 守卫"
-- **风险等级**：P1
-- **修复**：(L3) `WHERE sale_order_id = $3 AND status IN ('待支付', '部分支付')`
-
-#### [P1-04-10] 充值入账幂等检查范围过宽，可能漏掉同订单多商品的部分入账失败
-- **文件**：`payNotify/index.js:254-258`
+#### [P1-04v2-12] 充值幂等检查 `card_transactions WHERE ref_order_id = $1` 不限 type — 潜在误判
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:330-334`
 - **现象**：
   ```js
   const dupCheck = await client.query(
     `SELECT 1 FROM card_transactions WHERE ref_order_id = $1 LIMIT 1`,
     [targetOrderNo]
   )
-  if (dupCheck.rows.length === 0) {
-    for (const row of rechargeRows.rows) { /* INSERT */ }
-  }
   ```
-- **风险**：dupCheck 不限 type（可能是 type='扣款'）；订单同时含充值卡商品 + 消费抵扣（理论上 prepaid_card_amount=0 才允许充值，业务保证不混），但若上一次回调走到一半失败（INSERT 充值成功，扣款失败 ROLLBACK），重发时整笔回滚后的事务里 dupCheck 看不到充值行（已 ROLLBACK）。OK，rollback 安全。但若 type='扣款' 已存在（消费扣款先于充值入账），dupCheck 会误判跳过充值。**实际订单语义不会同时是充值订单 + 含 prepaid_card_amount，所以业务上排除互斥**，是 dead branch；但代码层面 contract 不显式。
+  应加 `AND type = '充值'`。
 - **风险等级**：P1（防御性）
 - **修复**：(L3) `WHERE ref_order_id = $1 AND type = '充值'`
 
-#### [P1-04-11] settlePointsSafe / grantShareGift 异常吞掉，但 customer_type 重算异常会回滚整个事务
-- **文件**：`payNotify/index.js:475-494` (share-gift 用 SAVEPOINT 隔离) vs `:384-462` customer_type / spending_tier 重算（无 SAVEPOINT）
-- **现象**：
-  - share-gift 用 SAVEPOINT，错误不阻塞主事务 ✓
-  - settlePointsSafe 内部 try/catch 自吞 ✓（但 INSERT operation_logs 的吞错也用 try { ... } catch (_) {}）
-  - **customer_type / spending_tier 部分**：直接在主事务里跑，无 try/catch。若 SQL 发生约束冲突（例如 `customer_type` 枚举边界、UNIQUE 冲突等），整个事务回滚 → 退回 INSERT payments → 微信视为 FAIL → 重试。最终幂等可保（uq_sop_txn 第二次会跳过），但中间状态污染 client_wechat_users。
+#### [P1-04v2-13] `sale_orders.received` 仅由 payNotify 聚合写入，staffApi.confirmOffline 也写 — 双写不变量需应用层同步保障
+- **文件**：`db/schema/order.ts:65-75`（received 字段注释）
+- **现象**：schema 文档明确 received 是 sale_order_payments 的冗余快照，由应用层同事务双写维护。当前 payNotify 守卫之后代码写 `paid_amount`（废弃列名），与 staffApi.confirmOffline（写 `received`）不一致，双写不变量被破坏。
 - **风险等级**：P1
-- **修复**：(L3) 把 customer_type / spending_tier 重算也用 SAVEPOINT 包裹，与 share-gift 一致策略
+- **修复**：(L3) 确认 staffApi.confirmOffline 在同事务内更新 `received`；payNotify schema drift 修复后（`paid_amount` → `received`）应对齐。
 
-### 3.3 P2（代码质量 / 可维护）
+---
 
-#### [P2-04-12] config.js 用独立 Pool（共享 PG 但开两套连接池）
-- **文件**：`payNotify/config.js:24-37`
-- **现象**：payNotify 同进程已有 `index.js:21-30 getPg()`（max=3）+ `config.js:24-37 getConfigPool()`（max=2）。同 PG_CONNECTION_STRING 但两个独立 Pool。
-- **风险**：连接池共占 5 连接（生产 PG max_connections 默认 100，5434/fengyu 估计 100-200），高并发回调时可能拖累其他云函数。
-- **修复**：合并为单 Pool 透传给 config
+### 3.3 P2（5项）
 
-#### [P2-04-13] settlePointsSafe / grantShareGift / config 跨函数代码三份镜像
-- **文件**：注释明确说明 `payNotify/share-gift.js:8-12`、`payNotify/points.js:5-7` 三端镜像，需手动同步
-- **风险**：staffApi、clientApi、payNotify 三份副本，任一处修复漏同步会引起业务漂移
-- **关联**：CROSS-CUTTING.md CC9（迁移残留 + 跨端镜像维护）
-- **修复**：（中长期）抽 npm package 共享 / 或通过云函数层依赖共用模块
-
-#### [P2-04-14] 错误前缀不符合 4 项约定（`INSUFFICIENT_BALANCE:` / `INVALID_PAY_AMOUNT:`）
-- **文件**：`payNotify/index.js:140, 311`
-- **现象**：抛 `INVALID_PAY_AMOUNT: ...` / `INSUFFICIENT_BALANCE: ...`，不在 `UNAUTHORIZED:` / `PHONE_REQUIRED:` / `INVALID_PARAMS:` / `PERMISSION_DENIED:` 内
-- **关联**：CROSS-CUTTING.md CC5（已在 audit-02 / audit-03 命中）
+#### [P2-04v2-14] config.js 独立 Pool（同 PG 两套连接池）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/config.js:23-37`
+- **现象**：payNotify 同进程已有 `index.js:21-30 getPg()`（max=3）+ `config.js:24-37 getConfigPool()`（max=2）。两个 Pool 合计 max=5，高并发时连接占用加倍。
 - **风险等级**：P2
-- **修复**：用 `INVALID_PARAMS:` 前缀
 
-#### [P2-04-15] FY-CARD-{Date.now()}{rand3} 充值卡 ID 生成不参与 advisory lock，理论可重号
-- **文件**：`payNotify/index.js:272`
-- **现象**：`FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}` — 单进程并发可重号（同毫秒 + 1/1000 随机概率）
-- **风险**：UPSERT 入口是 `ON CONFLICT (user_id) DO UPDATE`，会复用现有卡，所以 newCardId 仅在该 user 第一次充值时落库。落库时 PRIMARY KEY (card_id) 冲突会抛错，单事务 ROLLBACK → 微信重试。概率极低但存在。
+#### [P2-04v2-15] points.js / share-gift.js 三份镜像（与 clientApi / staffApi 共 3 副本）
+- **文件**：`fengyu-client/cloudfunctions/payNotify/points.js:1-7`、`share-gift.js:8-12`
+- **现象**：文件头注释明确说明"三端任一处修改后必须同步其它两份"。staffApi、clientApi、payNotify 三份副本，任一处修复漏同步会引起业务漂移。
 - **风险等级**：P2
-- **修复**：用 `gen_random_uuid()` 或 `uuid` npm 包
 
-#### [P2-04-16] 注释不准 — "Mock 模式：手动触发测试" 仍是当前实际行为
-- **文件**：`payNotify/index.js:42`
-- **现象**：注释 `// ========== Mock 模式：手动触发测试 ==========` 表明当前是 mock 模式，但生产 envId 上仍可被任何人调用 — 这是 P0-04-01 的根因。
-- **修复**：注释升级为 WARNING + 添加 NODE_ENV 守卫
+#### [P2-04v2-16] 错误前缀 `INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` 不在 4 项约定内
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:214, 386`
+- **现象**：不在 `UNAUTHORIZED:` / `PHONE_REQUIRED:` / `INVALID_PARAMS:` / `PERMISSION_DENIED:` 内，命中 CC5。
+- **风险等级**：P2
 
-#### [P2-04-17] 测试覆盖率高但不覆盖签名/解密缺失场景
-- **文件**：`payNotify/__tests__/index.test.js`（13 用例覆盖充值/扣款/幂等/部分支付/凭证单）
-- **现象**：测试只验证业务逻辑，零安全测试（伪造签名、改写 payAmount、改写 paymentMethod）
-- **风险等级**：P2（未来安全回归无保障）
-- **修复**：(L3) 加入安全测试用例
+#### [P2-04v2-17] 全量 event `JSON.stringify` 日志（守卫之后 line 113）— [CLOSED from v1 P0-04-04]
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:113`
+- **现象**：
+  ```js
+  console.log('[payNotify] received event:', JSON.stringify(event))
+  ```
+  注意：这行在 `PAYNOTIFY_DISABLED` 守卫**之后**（L113 在守卫 L64-110 结束后），所以当前已被守卫拦截，不会执行。
+- **状态**：[CLOSED from v1 P0-04-04]（守卫屏蔽）；升级条件：`PAYNOTIFY_DISABLED = false` 时，PII 重新暴露，升为 P0。
+- **修复**：(L3) 移除 `JSON.stringify(event)`，输出 `{ orderNo, txn: txnId.slice(0,8) }`
+
+#### [P2-04v2-18] `FY-CARD-${Date.now()}${Math.random()}` 充值卡 ID 生成不参与 advisory lock
+- **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:347`
+- **现象**：单进程并发可重号（同毫秒 + 1/1000 随机概率）。UPSERT 入口是 `ON CONFLICT (user_id) DO UPDATE`，会复用现有卡，所以 newCardId 仅在该 user 第一次充值时落库；落库时 PK 冲突会抛错，单事务 ROLLBACK → 微信重试。概率极低但存在。
+- **风险等级**：P2
 
 ---
 
 ## 4. 跨端不一致
 
-| 维度 | clientApi | staffApi | payNotify | 风险 | 优先级 |
-|------|-----------|----------|-----------|------|--------|
-| 事务外读 changeType ('首次支付' vs '回款') | — | `routes/order.js:826-838` 事务外读（已知 P0-03-03） | `index.js:150-156` **事务内读**（修复模式）| 同业务三端策略不一致；payNotify 实现优于 staffApi | P1 |
-| `wechat_transaction_id` 列写入 | `clientApi/routes/order.js` 不写 | `staffApi/routes/order.js` 不写 | `payNotify/index.js:197` 写入但 COALESCE | 部分支付场景历史 txn 丢失 | P1 |
-| 鉴权 | middleware OPENID + `requirePhone` | middleware roles + scope_id | **无** | payNotify 完全裸奔 | P0 |
-| 幂等键 | client.repay 用 ref_sale_order_id 防同时多回款 | confirmOffline 用事务内 SELECT | uq_sop_txn (DB unique index) | payNotify 最严格 | — |
-| 储值卡扣款 | `client.create / confirmPrepaidFull` 不写 '储值卡抵扣' payments（P0-03-02）| `confirmOffline` 写 + `createRepayment` 写 | **不写 '储值卡抵扣' payments**，但写 card_transactions(type='扣款')；依赖 sale_orders.prepaid_card_amount 列直推 | invariant 三端漂移：`prepaid_card_amount = Σ(amount where change_type='储值卡抵扣')` 在 client / payNotify 两处不成立 | P0（同 03 域 P0-03-02）|
-| 充值入账 | client.create 自助充值订单经 payNotify 入账 | staff.create 替充经 confirmOffline 同事务入账 | payNotify 入账（仅 fullyPaid 路径）| 部分支付的充值订单，到账后才入账 — 业务约束未在代码 enforce | P2 |
-| 错误前缀 | `INVALID_PARAMS:` ✓ + `PERMISSION_DENIED:` ✓ | 同 ✓ | `INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` ✗ | 命中 CC5 | P2 |
-| 失败响应 | `{ code: -1, message }` | 同 | `{ code: 'FAIL', message }` | 不一致（V3 风格 vs 内部约定）| P2 |
+| 维度 | staffApi | clientApi | payNotify | 风险 | 优先级 |
+|------|----------|-----------|-----------|------|--------|
+| `sale_orders` 列引用 | `received`（v4 正确）| `received`（v4 正确）| `paid_amount`（已 DROP）/ `wechat_transaction_id`（已 DROP）| payNotify 与 DB 不同步，激活即崩溃 | **P0** |
+| `sale_order_type` 使用 | 不再创建 `回款单` 行（已重构，仅用 `sale_order_payments[change_type='回款']`）| 同 | 仍检查 `order.sale_order_type === '回款单'` | 逻辑与数据不一致 | P0 |
+| 鉴权层 | middleware OPENID + roles | middleware OPENID + requirePhone | DISABLED 守卫（原为无鉴权） | 守卫解除后三端鉴权策略缺口 | P0 |
+| `spending_tier` / `customer_type` 重算 | `confirmOffline` 内同事务，有 SAVEPOINT | `confirmPrepaidFull` 同事务 | 无 SAVEPOINT | 重算异常回滚主支付 | P1 |
+| 操作人写入 | `operator_employee_id` 写具体员工 ID | NULL（顾客自助）| NULL（系统触发）| payNotify 为系统触发，NULL 正确；但 `operator_employee_id` 列在 0018 已迁移到子表 | P1 |
+| 错误前缀 | `INVALID_PARAMS:` ✓ | `INVALID_PARAMS:` ✓ | `INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` ✗ | CC5 | P2 |
+| 失败响应格式 | `{ code: -1, message }` | 同 | `{ code: 'FAIL', message }` | 不一致 | P2 |
 
 ---
 
-## 5. 横切检查（套用 §3 模板）
+## 5. 横切检查（CC1-CC9）
 
-- [x] **CC1 数值精度**：金额都用 NUMERIC + Math.round * 100 / 100 ✓；但 P0-04-02 payAmount 无上限 → CC1 失分
-- [ ] **CC2 并发幂等**：
-  - [x] uq_sop_txn 唯一索引 ✓
-  - [ ] event.payAmount/paymentMethod 可绕过 uq_sop_txn（P0-04-02）
-  - [ ] transactionId fallback 制造新键（P0-04-03）
-  - [ ] 凭证单 UPDATE 无 CAS（P1-04-09）
-  - [ ] 充值卡 dupCheck 不限 type（P1-04-10）
-- [x] **CC3 组织域隔离**：payNotify 不涉及多店列表查询，仅按 sale_order_id 操作单订单 ✓
-- [ ] **CC4 后端鉴权**：完全无（P0-04-01）→ 域 04 是 CC4 最严重命中
-- [ ] **CC5 错误码**：`INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` 不在 4 项约定（P2-04-14），FAIL 响应泄露内部细节（P1-04-06）
-- [ ] **CC6 PII**：event 全量 stringify（P0-04-04）
-- [x] **CC7 时间字段**：`now = new Date()` 用 JS UTC，paid_at/created_at/updated_at 都用同一个 now，时区与其他三端 03 域 P0-02-02 命中点保持一致（暂未在 04 重提）
-- [—] **CC8 WXML/Vant**：N/A（云函数无 UI）
-- [ ] **CC9 测试与残留**：13 用例业务覆盖好，但零安全测试 / 零跨函数 e2e（P2-04-17）；点积分/分享礼/config 三份镜像（P2-04-13）
+- **CC1 数值精度**：金额字段 NUMERIC(10,2)；JS 端 `Math.round(... * 100) / 100`；但 P0-04v2-05（payAmount 无上限）CC1 失分
+- **CC2 并发幂等**：
+  - [x] `uq_sop_txn` 唯一索引 ✓
+  - [x] `INSERT ... ON CONFLICT DO NOTHING RETURNING id`，`rowCount=0` 则 ROLLBACK ✓
+  - [ ] schema drift 使整个 CAS 路径在激活时崩溃（P0-04v2-03）
+  - [ ] `transactionId` fallback `mock_txn_${Date.now()}` 破坏唯一键（P0-04v2-06）
+  - [ ] `payAmount` 超限（P0-04v2-05）
+  - [ ] `customer_type` 重算无 SAVEPOINT（P1-04v2-09）
+  - [ ] 凭证单 UPDATE 无 CAS（P1-04-09，v1 条目未修复）
+  - [ ] 充值卡 dupCheck 不限 type（P1-04v2-12）
+- **CC3 组织域隔离**：payNotify 不涉及跨店列表，仅按 `sale_order_id` 操作单订单 ✓
+- **CC4 后端鉴权**：
+  - [x] 守卫期 `PAYNOTIFY_DISABLED = true` 有效阻断所有请求 ✓（P0-04v2-01 说明守卫本身可靠性不足）
+  - [ ] 守卫解除条件无强制 CI 保障（P0-04v2-01）
+  - [ ] 守卫之后代码无签名校验（P0-04v2-02）
+- **CC5 错误码**：`INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` 不在 4 项约定（P2-04v2-16）；FAIL 响应暴露内部错误（P1-04v2-11）
+- **CC6 PII**：L113 `JSON.stringify(event)` 在守卫之后，当前不执行；守卫解除后重现（P2-04v2-17，CLOSED from v1 P0-04-04）
+- **CC7 时间字段**：`now = new Date()` UTC，`paid_at`/`created_at`/`updated_at` 使用同一 `now` ✓
+- **CC8 WXML/Vant**：N/A（云函数无 UI）
+- **CC9 测试与残留**：
+  - [ ] 13 个业务测试全部 FAIL（P1-04v2-07）
+  - [ ] 守卫之后代码引用废弃列 `paid_amount` / `wechat_transaction_id`（P0-04v2-03）
+  - [ ] `回款单` 逻辑与大重构方向矛盾（P0-04v2-04）
+  - [ ] `points.js` / `share-gift.js` 三份镜像（P2-04v2-15）
 
 ---
 
@@ -346,21 +373,22 @@
 
 | 层 | 文件 | 修改 | 关联问题 |
 |----|------|------|----------|
-| L0 schema | `db/schema/order.ts:75` | 评估删除 `wechat_transaction_id` UNIQUE 列（与 sale_order_payments.external_txn_id 重叠）| P1-04-08 |
-| L0 schema | `db/schema/order.ts:269` 加 `WHERE change_type IN ('首次支付','回款')` 到 uq_sop_txn 条件 | 限定回调幂等键作用域，避免与 '储值卡抵扣' / '退款' 行冲突 | — (审计 03 已涉) |
-| L0 migration | 新 0030 | `ALTER ROLE` / 限制 payNotify 函数仅特定 RAM 主体调用（如 `tcb fn config update payNotify --triggers ...` 限定 HTTP 来源 IP whitelist 微信支付平台 IP 段）| P0-04-01 安全网外层兜底 |
-| L3 cloudfunctions | `payNotify/index.js:38-46` | 接入真实微信支付前置：1) HTTP 触发器配置 2) `event.headers['Wechatpay-Signature']` 校验 3) AEAD 解密 4) NODE_ENV 守卫 mock 入口 | P0-04-01 / P0-04-02 / P0-04-03 / P1-04-07 |
-| L3 cloudfunctions | `payNotify/index.js:39` | 移除 `JSON.stringify(event)`，输出 `{ orderNo, txnId.slice(0,8) }` | P0-04-04 |
-| L3 cloudfunctions | `payNotify/index.js:101` | 移除 mock_txn fallback，缺 transactionId 直接 FAIL | P0-04-03 |
-| L3 cloudfunctions | `payNotify/index.js:104-105` | paymentMethod 不再读 event 入参，从微信解密结果取（V3 trade_type） | P0-04-02 |
-| L3 cloudfunctions | `payNotify/index.js:135-141` | payAmount 上限校验 `<= remaining + 0.001` | P0-04-02 |
-| L3 cloudfunctions | `payNotify/index.js:204-214` | 凭证单 UPDATE 加 CAS：`AND status IN ('待支付','部分支付')` | P1-04-09 |
-| L3 cloudfunctions | `payNotify/index.js:255` | 充值 dupCheck 加 `AND type = '充值'` | P1-04-10 |
-| L3 cloudfunctions | `payNotify/index.js:362-462` | customer_type / spending_tier 重算用 SAVEPOINT 隔离 | P1-04-11 |
-| L3 cloudfunctions | `payNotify/index.js:506-509` | FAIL 响应 message 仅 `'内部错误'`，详情走 console.error | P1-04-06 |
-| L3 cloudfunctions | 整个事务 | 拆分主事务（核心写）vs 异步副作用（业绩/积分/分享礼） | P1-04-05 |
-| L3 cloudfunctions | `payNotify/index.js:140, 311` | 错误前缀改为 `INVALID_PARAMS:` | P2-04-14 |
-| L7 admin | — | admin 不涉及 | — |
+| L0 schema | `db/schema/enums.ts:19` | 更新注释：DB 5434 实际有 5 个值（migration 0018 + 0019 均已 apply）| P0-04v2-04 注释过期 |
+| L3 cloudfunctions | `payNotify/index.js:54` | 改为 `const PAYNOTIFY_ENABLED = process.env.PAYNOTIFY_ENABLED === 'true'`，加配置预检 | P0-04v2-01 |
+| L3 cloudfunctions | `payNotify/index.js:127-130, 147-151` | SELECT：移除 `paid_amount` / `wechat_transaction_id`，改为 `received` | P0-04v2-03 |
+| L3 cloudfunctions | `payNotify/index.js:265-275` | UPDATE sale_orders：`received = $2`，移除 `wechat_transaction_id = COALESCE(...)` | P0-04v2-03 |
+| L3 cloudfunctions | `payNotify/index.js:280-287` | 凭证单 UPDATE 同上，移除 `wechat_transaction_id` | P0-04v2-03 |
+| L3 cloudfunctions | `payNotify/index.js:143, 221` | 与大重构对齐：移除 `isRepaymentCredential` 路径（或加注释标记待删）| P0-04v2-04 |
+| L3 cloudfunctions | `payNotify/index.js:209-215` | 加上限校验 `if (thisPayAmount > remaining + 0.001) throw ...` | P0-04v2-05 |
+| L3 cloudfunctions | `payNotify/index.js:175` | 移除 `mock_txn_` fallback，缺 transactionId 直接 FAIL | P0-04v2-06 |
+| L3 cloudfunctions | `payNotify/index.js:113` | 移除 `JSON.stringify(event)`，输出 `{ orderNo, txn: txnId.slice(0,8) }` | P2-04v2-17 |
+| L3 cloudfunctions | `payNotify/index.js:330-334` | 充值幂等加 `AND type = '充值'` | P1-04v2-12 |
+| L3 cloudfunctions | `payNotify/index.js:435-532` | spending_tier + customer_type 重算用 SAVEPOINT 包裹 | P1-04v2-09 |
+| L3 cloudfunctions | `payNotify/index.js:576-579` | FAIL 响应 message 仅 `'内部错误'`，详情走 console.error | P1-04v2-11 |
+| L3 cloudfunctions | `payNotify/__tests__/index.test.js` | 在测试中 mock `PAYNOTIFY_ENABLED = true`（注入环境变量），恢复 13 个用例通过 | P1-04v2-07 |
+| L3 cloudfunctions | `payNotify/index.js:214, 386` | 错误前缀改 `INVALID_PARAMS:` | P2-04v2-16 |
+| L3 cloudfunctions | 守卫解除前（新增）| 实现 `verifyLakalaSignature(headers, body, secret)` + IP 白名单 | P0-04v2-02 |
+| L7 admin | — | admin 不直接调用 payNotify | — |
 | L9 前端 | — | 前端不调用 payNotify | — |
 
 ---
@@ -368,12 +396,55 @@
 ## 7. 验证 SQL（在 5434 EXPLAIN，禁止写入）
 
 ```sql
--- #1 当前 sale_order_payments 表是否已存在 mock_txn_ 前缀的行（说明生产环境已被 mock 调用过）
+-- #1 确认 paid_amount / wechat_transaction_id 是否已在 5434 生产库 DROP
+SELECT column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'sale_orders'
+  AND column_name IN ('paid_amount', 'wechat_transaction_id', 'alipay_transaction_id', 'received', 'refunded_amount')
+ORDER BY column_name;
+-- 预期：仅返回 received, refunded_amount（无 paid_amount / wechat_transaction_id）
+
+-- #2 确认 sale_order_type 枚举当前值集合（0018 DROP + 0019 ADD BACK）
+SELECT enumlabel
+FROM pg_enum
+WHERE enumtypid = 'sale_order_type'::regtype::oid
+ORDER BY enumsortorder;
+-- 预期：若 0019 applied → 5 值；若 0018 applied 且 0019 not → 3 值
+
+-- #3 当前 mock_txn_ 前缀的 payments 行（说明守卫前的 mock 调用残留）
 SELECT COUNT(*) AS mock_count, MIN(created_at) AS first_seen, MAX(created_at) AS last_seen
 FROM sale_order_payments
 WHERE external_txn_id LIKE 'mock_txn_%';
 
--- #2 同一订单同一 method 但不同 external_txn_id 的多支付行（partial-payment 正常 OR 攻击痕迹）
+-- #4 operation_logs 中 paynotify.disabled_invocation 事件数（守卫生效后记录）
+SELECT severity, target_id, COUNT(*) AS cnt, MIN(created_at) AS first_seen, MAX(created_at) AS last_seen
+FROM operation_logs,
+     jsonb_to_record(detail) AS x(severity text)
+WHERE action = 'paynotify.disabled_invocation'
+GROUP BY severity, target_id
+ORDER BY cnt DESC;
+
+-- #5 当前 sale_orders 有无 回款单 / 退款单 类型（大重构前的历史数据）
+SELECT sale_order_type, COUNT(*) AS cnt, MIN(created_at) AS first_seen
+FROM sale_orders
+GROUP BY sale_order_type
+ORDER BY cnt DESC;
+
+-- #6 uq_sop_txn 索引是否存在（payNotify 幂等依赖）
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'sale_order_payments'
+  AND indexname = 'uq_sop_txn';
+
+-- #7 operator_employee_id 列是否在 sale_order_payments 还是 sale_order_payment_details
+SELECT table_name, column_name
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name = 'operator_employee_id'
+  AND table_name IN ('sale_order_payments', 'sale_order_payment_details');
+
+-- #8 同一订单同一 method 但不同 external_txn_id 的多支付行（partial-payment 正常 OR 攻击痕迹）
 SELECT sale_order_id, payment_method, COUNT(DISTINCT external_txn_id) AS distinct_txn_count
 FROM sale_order_payments
 WHERE external_txn_id IS NOT NULL
@@ -381,38 +452,7 @@ GROUP BY sale_order_id, payment_method
 HAVING COUNT(DISTINCT external_txn_id) > 1
 ORDER BY distinct_txn_count DESC LIMIT 20;
 
--- #3 sale_orders.wechat_transaction_id 与 sale_order_payments 第一笔 external_txn_id 一致性
-SELECT o.sale_order_id, o.wechat_transaction_id, p.external_txn_id AS first_pay_txn
-FROM sale_orders o
-LEFT JOIN LATERAL (
-  SELECT external_txn_id FROM sale_order_payments
-  WHERE sale_order_id = o.sale_order_id AND change_type = '首次支付' AND status = '已支付'
-  ORDER BY created_at LIMIT 1
-) p ON TRUE
-WHERE o.wechat_transaction_id IS NOT NULL
-  AND (p.external_txn_id IS NULL OR p.external_txn_id <> o.wechat_transaction_id)
-LIMIT 20;
-
--- #4 验证 INSUFFICIENT_BALANCE 实际发生过（事务回滚但 console.error 留存，DB 看不出来；改查 share-gift 失败痕迹）
-SELECT action, target_id, detail, created_at
-FROM operation_logs
-WHERE action = 'points.settleFailed'
-ORDER BY created_at DESC LIMIT 10;
-
--- #5 重复回调命中 uq_sop_txn 的"未触发"率（payNotify 测试报"幂等"消息）—— 通过日志检索更直观
--- DB 层面无法检测，仅可作为修复后回归测试参考
-
--- #6 凭证单（'回款单'）当前是否存在 status<>'已支付' 但原单已 '已支付' 的（潜在的回调到达后业务断裂）
-SELECT c.sale_order_id AS credential_id, c.status AS credential_status,
-       o.sale_order_id AS orig_id, o.status AS orig_status
-FROM sale_orders c
-JOIN sale_orders o ON o.sale_order_id = c.ref_sale_order_id
-WHERE c.sale_order_type = '回款单'
-  AND c.status NOT IN ('已支付', '已完成', '已关闭')
-  AND o.status IN ('已支付', '已完成')
-LIMIT 20;
-
--- #7 wechat_transaction_id UNIQUE 约束当前命中（应零）
+-- #9 wechat_transaction_id UNIQUE 约束当前命中（应零）
 SELECT wechat_transaction_id, COUNT(*) FROM sale_orders
 WHERE wechat_transaction_id IS NOT NULL
 GROUP BY wechat_transaction_id HAVING COUNT(*) > 1;
@@ -422,14 +462,14 @@ GROUP BY wechat_transaction_id HAVING COUNT(*) > 1;
 
 ## 8. 回归测试用例（建议）
 
-1. **P0-04-01 安全测试**：在 staging 环境调 payNotify 伪造一笔 → 期望签名校验失败拒绝
-2. **P0-04-02 上限校验**：传 payAmount 超过 remaining → 期望 INVALID_PARAMS
-3. **P0-04-03 fallback 移除**：不传 transactionId → 期望 FAIL
-4. **P1-04-09 凭证单 CAS**：手工把凭证单状态改为 '已关闭' → 触发 payNotify → 期望保持 '已关闭'
-5. **PR-4.x 已覆盖**：首次支付 / 部分支付 / 重复回调 / 凭证单 ✓
-6. **缺：超时 robustness**：mock PG 延迟到 6s 模拟 → 检查事务是否能正确终止
-7. **缺：share-gift 失败回归**：grantShareGift 抛错 → 主事务 COMMIT 应仍生效（SAVEPOINT）
-8. **缺：customer_type 重算抛错回归**：故意造 client_wechat_users 数据非法 → 整个事务 ROLLBACK 期望验证微信侧重试 + uq_sop_txn 兜底
+1. **守卫测试**：`PAYNOTIFY_ENABLED` 未设置时调用 → 期望 `{ code: -403, message: 'PERMISSION_DENIED' }` + `operation_logs` 写入一行
+2. **schema drift 测试**：mock 环境中测试守卫解除后（`PAYNOTIFY_ENABLED=true`），首次 SELECT `sale_orders` 验证不含 `paid_amount` / `wechat_transaction_id`
+3. **P0-04v2-05 上限校验**：`payAmount > remaining` → 期望 `INVALID_PARAMS`
+4. **P0-04v2-06 缺 transactionId**：不传 `transactionId` → 期望 FAIL（不是 mock_txn fallback）
+5. **PR-4.x 回归（恢复）**：修复 schema drift 后，index.test.js 全部 13 用例应 pass
+6. **重复回调（uq_sop_txn）**：同一 `transactionId` + `sale_order_id` 第二次调用 → 期望 `{ code: 'SUCCESS', message: '已处理（幂等）' }` + `sale_orders` 无变化
+7. **customer_type SAVEPOINT**：mock `customer_type` 重算抛错 → 主事务 COMMIT 应仍生效，订单置 `已支付`
+8. **凭证单 CAS**：手工把凭证单状态改为 '已关闭' → 触发 payNotify → 期望保持 '已关闭'
 
 ---
 
@@ -437,27 +477,42 @@ GROUP BY wechat_transaction_id HAVING COUNT(*) > 1;
 
 - 单端：☐
 - 跨端（任意 2 端）：☐
-- 全栈（3 端 + DB）：☑（payNotify 的 P0-04-01 命中后，攻击面覆盖 client / staff / admin 全链路：状态机 / 业绩 / 积分 / 储值卡 / 顾客等级 / 营销品发放）
-- 涉及历史数据：☑（若已被攻击 / 误调，需查 #1 #2 #3 SQL 回溯）
-- 修复成本：**L**（需接入真实微信支付 V3 OpenAPI、配置 HTTP 触发器、加密钥管理 / 平台证书自动滚动 / Body 解析 + 签名 + 解密链路；预计 3-5 人日）
+- 全栈（3 端 + DB）：☑（schema drift 影响 payNotify 激活后的 DB 写入；守卫解除计划须同步三端 + DB 修改）
+- 涉及历史数据：☑（SQL #5 查询历史 回款单/退款单 类型数据；migration 0019 重新加回枚举值说明数据尚存）
+- 修复成本：**M**（守卫期内：修复 schema drift + 测试恢复，1-2人日；守卫解除前：实现拉卡拉签名校验，3-5人日）
 
 ---
 
 ## 10. 后续待办
 
-- [ ] 与基础设施 / DevOps 对齐：CloudBase HTTP 触发器配置 + 微信商户号 NotifyURL 注册流程
-- [ ] 接入 `@wechatpay/openapi-tools` 或自实现签名校验 + AEAD 解密
-- [ ] APIv3 KEY / 平台证书 / 商户证书的环境变量管理（注意 `tcb fn deploy --force` 重置环境变量风险，参考 [project_cloudbase_envvar_risk](../../memory/project_cloudbase_envvar_risk.md)）
-- [ ] 消除 mock 触发路径：`if (process.env.NODE_ENV === 'production' && !signedEvent) return FAIL`
-- [ ] 拆分主事务，把异步副作用迁移到独立 cron / 事件驱动模块
-- [ ] 移除 sale_orders.wechat_transaction_id 列或刷新语义注释
-- [ ] 与域 03 P0-03-02 / P0-03-03 合并 epic：sale_order_payments 不变量 + 多端入口齐写 '储值卡抵扣' 行
-- [ ] 加 e2e 安全回归测试：自动化伪造 + payAmount 上限 + transactionId 缺省
+- [ ] 确认生产库 5434 当前是否已应用 migration 0018（`paid_amount` 是否已 DROP）— 运行验证 SQL #1
+- [ ] 修复 payNotify schema drift：`paid_amount` → `received`；移除 `wechat_transaction_id` 相关行（无论守卫是否解除，代码应保持与 schema 同步）
+- [ ] 将守卫改为环境变量控制（`process.env.PAYNOTIFY_ENABLED === 'true'`）+ 加配置预检
+- [ ] 修复测试文件：使 13 个业务用例在守卫启用时跳过（`test.skip`）或通过环境变量绕过，恢复测试信号
+- [ ] 与 `2026-04-26-sale-order-domain-refactor.md` 大重构 ticket 对齐：守卫解除前，payNotify 的 `isRepaymentCredential` 整段逻辑标记 TODO 待重构
+- [ ] 实现拉卡拉签名校验 + IP 白名单（关闭守卫的前置依赖）
+- [ ] 拆分主事务，把 customer_type / spending_tier / 积分 / share-gift 等副作用迁移到独立 cron / 事件驱动（P1-04v2-10 长期优化）
+- [ ] `config.js` Pool 合并（P2-04v2-14）
+- [ ] 积分 / 分享礼三份镜像统一（P2-04v2-15，与 CROSS-CUTTING.md CC9 同类）
 
 ---
 
 ## 计数汇总
 
-- **P0**：4（P0-04-01 无签名校验、P0-04-02 event 信任、P0-04-03 transactionId fallback、P0-04-04 PII 全量日志）
-- **P1**：7（事务超时、错误信息泄露、响应格式半成品、wechat_transaction_id COALESCE、凭证单无 CAS、充值幂等过宽、customer_type 无 SAVEPOINT）
-- **P2**：6（双 Pool、三份镜像、错误前缀、card_id 生成、注释、安全测试空白）
+| 严重级别 | v1 数量 | v2 数量 | v3 最终数量 | 说明 |
+|---------|--------|--------|-----------|------|
+| **P0** | 4 | 6 | **6** | 含3个新发现（P0v2-01/03/04）；v1 P0-04-04 降级 CLOSED |
+| **P1** | 7 | 7 | **7** | 新增测试全 FAIL（P1-04v2-07）|
+| **P2** | 6 | 5 | **5** | v1 P0-04-04 降入 P2 |
+| **CLOSED** | — | — | **1** | P0-04-04（全量日志 PII，守卫屏蔽）|
+
+**P0 最终清单（6个）**：
+1. `P0-04v2-01` — 守卫可绕过（TOP-1，新增）
+2. `P0-04v2-03` — schema drift：废弃列引用（TOP-2，新增）
+3. `P0-04v2-04` — 回款单逻辑与新架构不一致（TOP-3，新增）
+4. `P0-04v2-02` — 无签名校验（v1 P0-04-01，守卫解除后重现）
+5. `P0-04v2-05` — payAmount 超限无上限（v1 P0-04-02）
+6. `P0-04v2-06` — transactionId fallback 幂等键失效（v1 P0-04-03）
+
+**CLOSED 条目**：
+- `P0-04-04`（v1）→ `P2-04v2-17`（v3）：全量日志 PII，守卫屏蔽，降为 P2 待激活

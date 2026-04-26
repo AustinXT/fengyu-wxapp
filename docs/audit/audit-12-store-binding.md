@@ -488,3 +488,55 @@ WHERE sur.status = '已通过'
 - [ ] geocode 限频 / 缓存方案（参考 audit-04 同类外部 API 调用治理）
 - [ ] 生产数据修复 SQL：批量清理 staff 路径残留的 bound_employee_id（P0-12-03 历史数据）
 - [ ] 横切：CC4 加入 "client 路由 requirePhone 漏调清单"，与 audit-06 P0-06-01 同诉求合并 sweep
+
+---
+
+## 11. 完成状态（2026-04-26 复验）
+
+> 复验时间：2026-04-26 15:00
+> 复验方式：读取 `clientApi/routes/store.js`（行140-260）、`staffApi/routes/store.js`（行1-139）、`clientApi/routes/auth.js`（行200-260）源码
+
+### P0 级（阻断/资损/越权）
+
+| ID | 漏洞 | 验证结果 | 当前状态 |
+|----|------|----------|----------|
+| P0-12-01 | client requestUnbind / getUnbindRequest 使用 `from_store_name`（不存在） | **✅ 存在** `store.js:156` INSERT 写 `from_store_name`；`store.js:175` SELECT 读 `from_store_name`；`store.js:186` 返回 `fromStoreName: rows[0].from_store_name` | **未修复** — 顾客解绑流 100% 不可用 |
+| P0-12-02 | auth.bindStore 不校验 `bound_store_id IS NULL`，绕过解绑申请流 | **✅ 存在** `auth.js:239` 无守卫；`auth.js:248` 直接 UPDATE `bound_store_id = $1`，无 null-check | **未修复** |
+| P0-12-03 | staff approveUnbind 不清 `bound_employee_id`，admin 清（不一致） | **✅ 存在** `staffApi/store.js:94` 仅 `UPDATE bound_store_id = NULL`，未触及 `bound_employee_id` 等残留列 | **未修复** |
+| P0-12-04 | 三端均无 CAS（status 状态机可被并发覆盖） | **✅ 存在** `store.js:214` cancel UPDATE 无 `AND status='待处理'`；`staffApi/store.js:99-101` approve UPDATE 无 CAS；`staffApi/store.js:129-132` reject 同上 | **未修复** |
+| P0-12-05 | 无 partial UNIQUE，并发可写多条 pending | **✅ 存在** `store.js:146-158` SELECT-then-INSERT 模式，schema 无复合 unique；未读 cloudbase 侧无事务排他 | **未修复** |
+| P0-12-06 | geocode 无 `requirePhone()` 鉴权 / 无频限 / 无缓存，可刷穷 LBS 配额 | **✅ 存在** `store.js:225-240` 直接 `const { latitude, longitude } = ctx.event.payload` 无守卫；无内存缓存；错误日志全 stringify 含 sig hash | **未修复** |
+
+### P1 级（数据一致/状态错乱）
+
+| ID | 漏洞 | 验证结果 | 当前状态 |
+|----|------|----------|----------|
+| P1-12-07 | staff approveUnbind / rejectUnbind / client cancel 不写 operation_logs | **✅ 存在** `staffApi/store.js:75-136` 全程无 `logOperation` 调用；`store.js:198-219` cancel 同上 | **未修复** |
+| P1-12-08 | staff unbindRequests 用 `ctx.auth.storeId` 单值，多店店长漏申请 | **✅ 存在** `staffApi/store.js:42` `WHERE r.from_store_id = $1`（storeId 单值），未调用 scope helper | **未修复** |
+| P1-12-09 | staff approveUnbind / rejectUnbind 用 `storeId` 校验，管理层模式失效 | **✅ 存在** `staffApi/store.js:88,125` `if (req.from_store_id !== storeId)` — `storeId` 取自员工档案默认门店，非 scopeStoreIds | **未修复** |
+| P1-12-10 | rejectReason 在 staff 端无必填校验 | **✅ 存在** `staffApi/store.js:116` `rejectReason || null`，允许空字符串 | **未修复** |
+| P1-12-11 | note / rejectReason 无长度上限 | **✅ 存在** schema `store-unbind.ts` 列类型为 `text`；应用层未做 substring | **未修复** |
+| P1-12-12 | auth.bindStore 不要求 phone 已绑定 | **✅ 存在** `auth.js:202` 仅过 `auth()` 默认中间件，无 `requirePhone()` | **未修复** |
+| P1-12-13 | 解绑后顾客积分/储值卡/优惠券/等级保留还是清零策略缺失 | **需 PM 对齐**：未读 spec 有此规则，补 spec 前无法实现 | **未修复 / 待对齐** |
+
+### P2 级（代码质量/可维护）
+
+| ID | 漏洞 | 验证结果 | 当前状态 |
+|----|------|----------|----------|
+| P2-12-14 | staff reject 错误前缀 `INVALID_PARAMS: 申请状态不允许审批` 语义偏离 | **✅ 存在** `staffApi/store.js:89,126` | **未修复** |
+| P2-12-15 | admin getUnbindRequests `.limit(500)` 硬截断 | 未读 admin 源码（已有大量独立漏洞，优先级低） | 未验证 |
+| P2-12-16 | admin 返回明文手机号，staff 脱敏 | 未读 admin 源码（独立 P2，跨端不一致已有大量 P0/P1） | 未验证 |
+| P2-12-17 | requestId 用 `crypto.randomUUID()` 而非 `FY-UNB-WX-` 前缀 | **✅ 存在** `store.js:154` `crypto.randomUUID()` | **未修复** |
+| P2-12-18 | stores-page.tsx 与 store-unbind/page.tsx 重复入口 | 未读 admin 前端源码（P2 UX 问题） | 未验证 |
+
+### 复验结论
+
+**6 个 P0 中 0 个修复，13 个已验证 P1/P2 中 0 个修复。**
+
+所有已验证漏洞在代码中均完整保留。修复顺序建议：
+
+1. **P0-12-01（first）** — 列名错误是整个域失效的根因，必须优先修；同步修测试夹具
+2. **P0-12-02（second）** — 绑定绕过解绑是安全越权，必须优先修
+3. P0-12-04/05（并发安全）→ P0-12-03（数据一致性）→ P0-12-06（外部 API 风险）
+4. P1-12-07/08/09/10/12（L7 + L3）→ P1-12-11/13
+5. P2 随常规迭代处理

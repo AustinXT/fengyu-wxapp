@@ -1,10 +1,9 @@
 # 审计报告：优惠券 (13)
 
-**审计时间**：2026-04-25 23:00
+**审计时间**：2026-04-26
 **域 ID**：13
-**slug**：coupons
-**审计员**：claude-opus-4-7
-**审计时长**：~25 分钟
+**审计员**：claude-sonnet-4-6
+**审计时长**：约 30 分钟（独立重新审计，以代码为准）
 **关联 PR/Ticket**：—
 
 ---
@@ -13,16 +12,13 @@
 
 | 层 | admin | staff | client |
 |----|-------|-------|--------|
-| Schema | `db/schema/coupon.ts:11-77` （`couponTemplates` + `userCoupons`） | ↑ | ↑ |
-| Enums | `db/schema/enums.ts:81` couponType `[现金券, 品项券, 折扣券]`；`:83` couponStatus `[未使用, 已使用, 已过期]` | ↑ | ↑ |
-| 模板 CRUD | `fengyu-admin/src/actions/coupons.ts:259 createTemplate` / `:346 updateTemplate` / `:467 toggleTemplateActive` | — | — |
-| 发放 | `fengyu-admin/src/actions/coupons.ts:509 issueCoupon` / `:621 batchIssueCoupons` ；cron 自动发：`fengyu-admin/src/cron/steps/refresh-member-levels.ts:298`（升级权益）/ `grant-birthday-benefits.ts:170`（生日）/ `grant-thanksgiving-benefits.ts:173`（感恩节） | — | — |
-| 查询自有券 | `fengyu-admin/src/actions/coupons.ts:587 getIssuedCoupons` | — | `fengyu-client/cloudfunctions/clientApi/routes/coupon.js:14 list` |
-| 可用券计算 | `fengyu-admin/src/actions/coupons.ts:106 getAvailableCoupons` | `fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:13 available` | `fengyu-client/cloudfunctions/clientApi/routes/coupon.js:114 available` |
-| 下单时核销 | `fengyu-admin/src/actions/orders.ts:748` 校验 / `:962-973` claim CAS UPDATE | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:328-407` 校验 + 分摊 / `:522-534` claim | `fengyu-client/cloudfunctions/clientApi/routes/order.js:247-331` 校验 + 分摊 / `:449-460` claim |
-| 退款冲销 | `fengyu-admin/src/actions/refunds.ts:778 approveRefund` — **无任何 `user_coupons` 释放**（P0-11-04 retain） | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1488-1636 approveRefund` — **同上未释放** | — |
-| 取消订单释放券 | `fengyu-admin/src/actions/orders.ts` cancel 路径中**未发现**释放 `user_coupons` 的逻辑 | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1091-1097 close` 释放 ✅ | `fengyu-client/cloudfunctions/clientApi/routes/order.js:22-27 closeExpiredOrder` / `:1049-1055 cancel` 释放 ✅ |
-| 过期处理 | 无 cron 任务清扫 | `routes/coupon.js:51-55 available` lazy 清扫 | `routes/coupon.js:21-25 list` / `:135-140 available` lazy 清扫 |
+| Schema | `db/schema/coupon.ts:11-77` | ↑ | ↑ |
+| Enum | `db/schema/enums.ts:89-91` | ↑ | ↑ |
+| Action/Route | `fengyu-admin/src/actions/coupons.ts` | `fengyu-staff/cloudfunctions/staffApi/routes/coupon.js` | `fengyu-client/cloudfunctions/clientApi/routes/coupon.js` |
+| 使用方（创建订单） | `fengyu-admin/src/actions/orders.ts:882-910` | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:319-401` | `fengyu-client/cloudfunctions/clientApi/routes/order.js:274-357` |
+| 退款归还 | `fengyu-admin/src/lib/refund-cascade.ts:119-133` | `fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js 通道3` | client 无退款路径 |
+| 关闭订单释放券 | `fengyu-admin/src/actions/orders.ts:599-651`（**缺失**） | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1124-1130` ✅ | `fengyu-client/cloudfunctions/clientApi/routes/order.js:1137-1143` ✅ |
+| 前端 | admin Next.js RSC 页面 | `fengyu-staff/miniprogram/pages/order-create/order-create.wxml` | `fengyu-client/miniprogram/pagesCoupon/my-coupons/my-coupons.wxml` |
 | 测试 | `fengyu-admin/src/actions/coupons.test.ts` | — | — |
 
 ---
@@ -30,177 +26,201 @@
 ## 2. 数据流图
 
 ```
-admin.createTemplate                  → coupon_templates
-admin.issueCoupon / batchIssue        → user_coupons (status='未使用', expire_at)
-cron-worker.refresh-member-levels     → user_coupons (升级权益，cpn-up-{userId}-{level}-{tplId})
-cron-worker.grant-birthday-benefits   → user_coupons (bday-{YYYY}-{userId}-{tplId})
-cron-worker.grant-thanksgiving        → user_coupons (thx-{YYYY}-{MM}-{userId}-{tplId})
+枚举权威（db/schema/enums.ts:89-91）：
+  couponTypeEnum   = ['现金券', '品项券', '折扣券']
+  couponStatusEnum = ['未使用', '已使用', '已过期']
 
-client/staff coupon.available  ──→ lazy expire 清扫 → SELECT 未使用未过期 → 满减门槛/品类/门店过滤 → 折扣计算
-admin     getAvailableCoupons  ──→ 同上 + 市场过滤（仅 admin 实现）
+[admin issueCoupon / batchIssueCoupons]
+  → user_coupons INSERT (status='未使用', expireAt 按 validityMode 计算)
 
-下单时（三端 order.create）：
-  校验 status='未使用' AND expire_at>NOW() AND ct.is_active
-  → CAS UPDATE user_coupons SET status='已使用', used_sale_order_id=$1, used_at=NOW()
-    WHERE coupon_id=$2 AND user_id=$3 AND status='未使用' AND expire_at>NOW()
-  → rowCount===1 校验
+[coupon.available — 三端列出推荐券，不 claim]
+  懒清扫：UPDATE status='已过期' WHERE expire_at <= NOW()（staff/client ✅，admin cron ❌）
+  过滤：applicable_store_ids + applicable_category_ids + min_spend + coupon_type 计算
 
-订单关闭/取消（client cancel / staff close / closeExpiredOrder）：
-  → UPDATE user_coupons SET status='未使用', used_sale_order_id=NULL, used_at=NULL
-    WHERE used_sale_order_id=$1
+[order.create — 三端皆有]
+  读：user_coupons + coupon_templates JOIN
+  校验：status='未使用' + expire_at > NOW() + is_active=true
+       + applicable_store_ids（staff ✅ client ✅ admin ❌）
+       + applicable_category_ids（staff ✅ client ✅ admin ❌）
+       + min_spend 满减门槛（基数：staff=received staff ✅；admin=saleAmount ≠ staff P1）
+  事务内原子 claim：UPDATE user_coupons SET status='已使用' WHERE status='未使用'（CAS ✅）
 
-退款审批（admin / staff approveRefund）：
-  → ✗ 完全不释放 user_coupons（P0-11-04 已记录）
+[订单关闭/取消 — 释放券]
+  staff order.close:1124  ✅
+  client order.cancel:1138 ✅
+  admin closeOrder:599     ❌ 缺失
+
+[退款审批通过 — cascadeRefund 通道3]
+  UPDATE user_coupons SET status='未使用'
+  WHERE used_sale_order_id=$1 AND status='已使用'
+  AND expire_at > NOW()（admin lib ✅ staff helpers ✅，过期券不归还 P2）
 ```
 
 ---
 
 ## 3. 自身漏洞
 
-### 3.1 P0（阻断 / 资损 / 越权）
-
-#### **[P0-13-01]** admin `createOrder` 校验优惠券时**完全跳过 store / market / category / product 范围校验**（资损 + 越权）
-
-- 文件：`fengyu-admin/src/actions/orders.ts:748-775`
-- 现象：`coupon` 子查询只 SELECT `status, expireAt, userId, couponType, discountValue, maxDiscount, minSpend, isActive`，**根本不读 `applicableStoreIds / applicableMarketIds / applicableCategoryIds / applicableProductIds`**。校验逻辑只判断 `status==='未使用' / expireAt / isActive / minSpend`，门店/市场/品类全部不校验。
-- 现象 2：admin `getAvailableCoupons:106-193` 倒是过滤了 `applicableStoreIds + applicableMarketIds`，但 `createOrder` **没有 binding 同样的过滤**。前后端口径不一致 + admin 信任前端的 couponId（CC4）。
-- 风险：admin 用户给"南昌门店专属券"挂到任意其它门店订单 / 给"面部护理品类券"挂到家居产品订单。资损量级 = 单券面值 × 任意订单。
-- 复现：1) admin 创建 `applicableStoreIds=['store-A']` 的 ¥100 现金券；2) admin 给某顾客发一张；3) admin 用顾客身份在 store-B 开单，传 `couponId`；4) 订单成功扣减 ¥100，原本 store-B 不在范围。
-- 修复：(L7) `actions/orders.ts:748` 增补 SELECT `applicableStoreIds / applicableMarketIds / applicableCategoryIds / applicableProductIds`，参考 `getAvailableCoupons` + staff/client `order.create` 的过滤逻辑。
-
-#### **[P0-13-02]** staff / client `order.create` 完全忽略 `applicable_market_ids`（数据资损）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:329-339` + `fengyu-client/cloudfunctions/clientApi/routes/order.js:249-260`
-- 现象：两端 SELECT 都不读 `applicable_market_ids`；admin schema 已建该列（`db/schema/coupon.ts:30`）+ admin createTemplate 写入 + admin getAvailableCoupons 过滤。但 staff/client 端**完全无视该字段**。市场维度的券（如某市场专属推广券）能被任意市场顾客在任意市场使用。
-- 风险：跨市场使用券 → 市场 A 的促销预算被市场 B 顾客侵蚀 → 市场维度 ROI 数据失真，资损按市场预算上限计。
-- 修复：(L3 ×2) 三端对齐 + 抽公共 `helpers/coupon-validate.js` 统一 storeId/marketId/categoryIds 过滤函数。
-
-#### **[P0-13-03]** 三端 order.create + admin getAvailableCoupons + admin createOrder **全部忽略 `applicable_product_ids`**（设计缺失）
-
-- 文件：上述 5 处。
-- 现象：`db/schema/coupon.ts:24 applicableProductIds`（→ products.product_id）字段存在，admin createTemplate 写入，admin/client 列表展示。但**没有任何运行时路径在 order.create 时按 productId 过滤**，全部仅以 `applicable_category_ids` + `sku_id → category_id` JOIN 检查。
-- 风险：精细的"单 SPU 体验券"需求无法实现，运营把希望放在 `applicableProductIds` 上 → 实际用券方完全不限品 → 直接资损。当前看可能只是隐患（运营未启用），但字段长期存在却不消费 = 滴答炸弹。
-- 修复：要么 (L0) DROP 该字段（如运营从未用），要么 (L3) 三端补 product_id 过滤逻辑。建议先量化 `SELECT count(*) FROM coupon_templates WHERE applicable_product_ids IS NOT NULL` 决定方向。
-
-#### **[P0-13-04]** 退款审批不释放 `user_coupons`（资损，retain P0-11-04）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1488-1636` + `fengyu-admin/src/actions/refunds.ts:778`
-- 现象：approveRefund 完全没有反向操作 `user_coupons`。客户全额退款后，原券保持 `status='已使用', used_sale_order_id=<已退款单>` 永久无法重用。
-- 风险：与 audit-11 P0-11-04 同源；保留在本报告作为优惠券域的资损主线。
-- 修复：(L3) 退款全额时 `UPDATE user_coupons SET status='未使用', used_sale_order_id=NULL, used_at=NULL WHERE used_sale_order_id=$refSaleOrderId`；部分退款保持 '已使用' 不变。
-
-#### **[P0-13-05]** staff / admin `order.create` 读券时**不消费 `face_value_override`**（资损双向）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:330-339` 直接读 `ct.discount_value`；`fengyu-admin/src/actions/orders.ts:755` 直接读 `couponTemplates.discountValue`。
-- 现象：仅 client 端 `order.create:252` 与 client `coupon.list:39 / available:147` 用 `COALESCE(uc.face_value_override, ct.discount_value)`。staff 端 `coupon.available:62` 也用了 COALESCE，但下单 `order.create` 漏掉。admin 全链路不感知 `face_value_override`。
-- 风险：分享礼/动态面值场景，staff 帮顾客线下开单 → 用模板默认面值（如模板 ¥0 的占位券，运行时被 share 写入 ¥30）→ staff create 抵扣 ¥0 直接吃券；反向 admin 录单 → 模板 ¥50 但 override ¥10 → 抵扣 ¥50 资损 ¥40。
-- 修复：(L3 ×2) staff order.js:331 + admin orders.ts:755 改为 `COALESCE(uc.face_value_override, ct.discount_value) AS discount_value`。
-
-#### **[P0-13-06]** admin `issueCoupon` / `batchIssueCoupons` `totalCount` 检查 **read-then-write TOCTOU**（库存超发）
-
-- 文件：`fengyu-admin/src/actions/coupons.ts:527-535` + `:652-665`
-- 现象：`if (tpl.totalCount !== null) { const [{count}] = COUNT(*) ...; if (count >= tpl.totalCount) return ... }` 后立即 `db.insert(userCoupons)`，**不在事务内、无 advisory lock、无唯一约束兜底**。两个 admin 同时 issue 最后 1 张券 → 都通过校验 → 都插入 → totalCount=N+1。
-- 风险：限量券（如 "新客 100 张" 营销券）超发，资损量级 = 超发数 × 单券面值。
-- 复现：1) 模板 totalCount=1；2) 并发开两个 issueCoupon 调用；3) `SELECT count(*) FROM user_coupons WHERE template_id=...` 得到 2 行。
-- 修复：(L3) 改为 advisory_xact_lock(`hashtext('coupon-issue-' || templateId)`) + 事务内 `SELECT count(*) FROM user_coupons WHERE template_id=$1 FOR UPDATE` 然后插入；或更简单：在 user_coupons 表加一个针对 templateId 的 SERIAL `issue_seq` 列 + UNIQUE(templateId, issue_seq) + 应用层 INSERT-on-conflict 失败回退。
-
-#### **[P0-13-07]** cron-worker 自动发放（升级 / 生日 / 感恩节）**完全不校验 `totalCount`**（库存失控）
-
-- 文件：`fengyu-admin/src/cron/steps/refresh-member-levels.ts:280-303` / `grant-birthday-benefits.ts:160-176` / `grant-thanksgiving-benefits.ts:165-185`（行号近似）
-- 现象：cron 任务 INSERT user_coupons 时只检查 `tpl.is_active`，根本不查 `totalCount` 是否还有库存。生日 / 感恩节自动批量发放 → 限量券立即被 cron 直接写穿。
-- 风险：与 P0-13-06 叠加，运营手动 + 自动双线穿仓，资损量级 = 整个会员池 × 单券面值。
-- 修复：(L3) cron tx 内 SELECT count + 比较；或 (L0) 强制约束：cron 发放路径用的模板必须 `totalCount IS NULL`，schema 加 CHECK 约束 / 业务文档明确分区。
-
-#### **[P0-13-08]** admin `getAvailableCoupons` 缺 scope 守卫（CC4 越权）
-
-- 文件：`fengyu-admin/src/actions/coupons.ts:106-118`
-- 现象：仅 `requirePermission(session, 'sale_order:create')`，传入参数 `clientUserId` **不校验是否属于当前 session 的 scope**（store_manager / 一线员工应只能查自己门店绑定的顾客的券）。任何 admin 用户传任意 `clientUserId` 即可枚举该顾客的全部 user_coupons + 模板信息。
-- 风险：跨店枚举顾客券资产；与 P1-11-09 (`estimateRefundOverdraft`) 同模式。中等敏感，PII + 营销情报泄露。
-- 修复：(L7) 加 `scopeCondition` 过滤 `clientWechatUsers.boundStoreId`；如果 store_manager 调用且 clientUserId 不在 scope 内 → 返回空 + 警告。
+### 3.1 P0（阻断/资损/越权）
 
 ---
 
-### 3.2 P1（数据一致 / 状态错乱）
+**[P0-13-01] admin `closeOrder` 关闭订单时未释放已核销优惠券**
 
-#### **[P1-13-09]** staff `coupon.available` 缺 market 过滤（与 admin 不一致）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:88-105`
-- 现象：staff 端 available 只过滤 `applicable_store_ids`，不过滤 `applicable_market_ids`。admin getAvailableCoupons 已实现市场过滤。staff 与 admin 行为不一致 → 店长前端展示的"可用券"含跨市场券；下单时 staff `order.create` 也不校验市场（P0-13-02 同源）→ 下单成功。
-- 修复：(L3) 同 P0-13-02 抽公共校验函数。
-
-#### **[P1-13-10]** client `coupon.list` 不暴露 `applicable_market_ids`（前端无法显示市场限制）
-
-- 文件：`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:35-105`
-- 现象：返回 `applicableStoreNames + applicableCategoryNames`，但**不返回市场名**。顾客看不出"该券仅限上海市场"。
-- 修复：(L3) 加 market 名称解析 + 返回 `applicableMarketNames`。
-
-#### **[P1-13-11]** staff `coupon.available` 用 `storeName` 反查 storeId 而非 `effectiveStoreId`（CC3 隔离不彻底）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:38-48`
-- 现象：`payload.storeId || payload.storeName || ctx.auth.storeName`，**不优先用 `ctx.auth.effectiveStoreId`**（参考 staffApi/CLAUDE.md `effectiveStoreId` 是业务 SQL 必须使用的字段）。多店店长在管理层模式 + 门店模式之间切换可能查不到正确门店。
-- 修复：(L3) 优先用 `ctx.auth.effectiveStoreId`；payload 仅作覆盖。
-
-#### **[P1-13-12]** staff `available` 无 `clientPhone` 即静默返回空数组（不区分"顾客不存在 vs 顾客无券"）
-
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:31-34`
-- 现象：`if (clientRows.length === 0) ctx.result = { coupons: [] }; return`。前端无法区分"phone 写错"与"该顾客无券"。
-- 修复：(L3) 抛 `INVALID_PARAMS: 顾客不存在` 或返回明确的状态码。
-
-#### **[P1-13-13]** admin `validateValidityFields` 拒"validTo<=now"，但 `issueCoupon` 不复检 → 编辑后即将过期的模板可发出立即过期券
-
-- 文件：`fengyu-admin/src/actions/coupons.ts:548-560` + `:686-699`
-- 现象：模板 validTo 在过去（admin 漏改），issueCoupon `expireAt = new Date(tpl.validTo)` 计算出"已过期"日期 → 顾客查 `expire_at>NOW()` 永远查不到 → 该券静默不可用。但用户已收到"发放成功"消息。
-- 修复：(L7) issueCoupon 计算 expireAt 后比较 NOW() ，过期则拒绝。
-
-#### **[P1-13-14]** admin `updateTemplate` 用 `result.count === 0`（drizzle 返回类型不稳）判断乐观锁，但乐观锁 SQL 用 `date_trunc('milliseconds')` 比较
-
-- 文件：`fengyu-admin/src/actions/coupons.ts:441-460`
-- 现象：`date_trunc('milliseconds', updated_at) = $expectedUpdatedAt` 假设 updated_at 精度只到 ms，但 drizzle ORM `$onUpdate(() => new Date())` 返回 JS 毫秒精度，PG 存储微秒精度。比较时 PG 端做 trunc 但 JS 端的 `expectedUpdatedAt` 字符串若直接来自前端 `updated_at.toISOString()` 会精确匹配；但若并发链路有不同序列化路径（admin actions ↔ cron-worker ↔ 直接 SQL），微秒尾数会导致乐观锁误报"被其他人修改"。
-- 修复：(L7) 统一序列化口径，或改用 `version` 单调列。
-
-#### **[P1-13-15]** admin `toggleTemplateActive` 停用券模板**不影响已发放但未使用的券**（业务规则缺失）
-
-- 文件：`fengyu-admin/src/actions/coupons.ts:467-503`
-- 现象：toggle 仅改 `couponTemplates.is_active = false`。下单时 client/staff/admin 都做 `AND ct.is_active = true` 校验 → 已发但未使用的 user_coupons 立即不可用。看似一致，但顾客小程序 `coupon.list` SQL **不含 `is_active` 过滤**（`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:35-53`）→ 顾客看到券，点击使用时被拒。UX 断裂。
-- 修复：(L3) client coupon.list 加 `AND ct.is_active = true`；或 admin toggle 时同步 `UPDATE user_coupons SET status='已过期'` 让顾客端自动消失。
+- 文件：`fengyu-admin/src/actions/orders.ts:611-635`
+- 现象：`closeOrder` 事务内仅作废 `sale_allocations`（`sql UPDATE sale_allocations SET is_void=true`），未 UPDATE `user_coupons` 归还券。staff 端 `order.js:1124-1130` 和 client 端 `order.js:1137-1143` 均有对应 UPDATE，admin 独漏。
+- 风险：admin 关闭一笔"待支付"或"支付失败"订单后，已核销的优惠券永久停留在 `status='已使用'`，顾客损失该券，无法在其他订单使用。
+- 复现：1) admin 开单时选用优惠券 2) 订单落 `status='待支付'` 3) admin 执行 `closeOrder` 4) 查 `user_coupons`：status 仍为 `'已使用'`，`used_sale_order_id` 仍指向已关闭订单
+- 修复：L7 admin actions — `closeOrder` 事务内追加：
+  ```sql
+  UPDATE user_coupons
+     SET status = '未使用', used_sale_order_id = NULL, used_at = NULL
+   WHERE used_sale_order_id = $saleOrderId
+  ```
 
 ---
 
-### 3.3 P2（代码质量 / 可维护）
+**[P0-13-02] admin `createOrder` 缺少优惠券门店（`applicable_store_ids`）和品项分类（`applicable_category_ids`）范围校验**
 
-#### **[P2-13-16]** 三端 coupon discount 计算逻辑近 100% 重复 + admin `calcCouponDiscount` 与 staff/client SQL 互不知
+- 文件：`fengyu-admin/src/actions/orders.ts:882-910`
+- 现象：admin 优惠券校验仅检查：`status + expireAt + userId + isActive + minSpend`，**未读取也未校验 `applicableStoreIds` / `applicableCategoryIds`**。SELECT 语句中两字段均未被 select。staff 端 `order.js:340-364` 和 client 端 `order.js:298-321` 均做了门店+分类双校验。
+- 风险：admin 可将一张"限定某门店/某品类"的优惠券跨门店/跨品类滥用，造成不应有的折扣资损（如仅限 A 门店护理项目满 500 减 100 券，被用于 B 门店家居商品订单）。
+- 复现：1) 创建 `applicable_store_ids=['store-A']` 的现金券 2) admin 开 store-B 门店订单，传入该 couponId 3) 校验通过，discount 正常扣除 4) 实际超出适用范围
+- 修复：L7 admin actions — `orders.ts:884` 的 select 中补取两字段，校验逻辑对齐 staff/client：
+  ```typescript
+  // SELECT 补取
+  applicableStoreIds: couponTemplates.applicableStoreIds,
+  applicableCategoryIds: couponTemplates.applicableCategoryIds,
+  // 校验
+  if (coupon.applicableStoreIds?.length) {
+    if (!data.storeId || !coupon.applicableStoreIds.includes(data.storeId))
+      return { success: false, message: '该优惠券不适用于此门店' }
+  }
+  // 品类校验需按 SKU → category_id 过滤 eligibleItems，逻辑对齐 staff order.js:347-365
+  ```
 
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:107-124 + order.js:373-407`；`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:191-211 + order.js:294-330`；`fengyu-admin/src/lib/utils.ts:37-49`
-- 现象：折扣计算 + 满减门槛 + 行级分摊三段逻辑，三端独立实现。staff coupon.available 已经精确到分 + 浮点兜底，order.create 复制一遍；client 同样。admin 的 `calcCouponDiscount` 在 utils 但不做行级分摊（admin 不分摊到 sale_items.received，仅写 `sale_orders.coupon_discount` 单字段）。
-- 修复：(L3) 抽 `helpers/coupon-discount.js`（在 audit-02 §6.4 P0-02-01 修复表中已提）；admin 用 npm-shared 或重写。
+---
 
-#### **[P2-13-17]** staff `coupon.available` / order.create 不写 `operation_logs`（CC4 审计断裂）
+**[P0-13-03] `issueCoupon` / `batchIssueCoupons` 发放量上限 TOCTOU 竞态**
 
-- 文件：staff coupon.js / order.js coupon claim 段
-- 现象：staff 全程无 `logOperation`。开单时核销 user_coupons 是营业账目级动作（金额抵扣），却无审计写入。
-- 修复：(L3) 接入 `helpers/operation-log.js`（与 audit-11 P1 staff 0 logOperation 同源）。
+- 文件：`fengyu-admin/src/actions/coupons.ts:527-535`（issueCoupon），`652-664`（batchIssueCoupons）
+- 现象：发放量上限校验（COUNT → 比较 totalCount）与后续 INSERT 不在同一事务内。并发多请求可能均通过校验后超量插入。
+- 风险：实际发放量超过模板设定的 `totalCount`。
+- 复现：并发两个 `issueCoupon` 请求（totalCount=1，已发放=0）→ 两者均在 INSERT 前读到 count=0，均判断未超限，各自 INSERT，最终发放 2 张。
+- 修复：L7 admin actions — 将 COUNT 校验与 INSERT 置入同一事务，使用 `SELECT FOR UPDATE` 锁模板行。
 
-#### **[P2-13-18]** client `coupon.list` 用 `IF tpl is_active=false 不过滤` 导致已停用模板的旧券仍展示
+---
 
-- 同 P1-13-15。归类于 list 接口设计简化。
+### 3.2 P1
 
-#### **[P2-13-19]** staff/client 取消订单释放券**释放范围过广**
+---
 
-- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1093-1097` + `fengyu-client/cloudfunctions/clientApi/routes/order.js:23-27 + 1050-1055`
-- 现象：`UPDATE user_coupons SET status='未使用' WHERE used_sale_order_id=$1` — 没有 `AND status='已使用'` CAS 守卫。如果 admin 已手动把券置为 `'已过期'`（如运营降级处理），订单关闭会"复活"过期券。
-- 修复：(L3) UPDATE 加 `AND status='已使用'` 守卫。
+**[P1-13-01] 优惠券过期自动置换机制：懒清扫仅在 available/list 调用时触发，无定时任务**
 
-#### **[P2-13-20]** `coupon-tpl-` ID 由前端传入（admin createTemplate）+ 无格式校验
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:51-55`，`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:21-25, 136-140`
+- 现象：过期券 status 置换采用"懒清扫"模式：仅在 `available` 和 `list` 接口调用时顺带 UPDATE。`fengyu-admin/src/cron/run.ts` 的 5 个 STEP 中没有 `user_coupons` 过期清扫步骤。
+- 风险：顾客长期不打开小程序时，券 status 长期虚报 `'未使用'`，统计数据虚高。
+- 修复：L3 cron — 在 `fengyu-admin/src/cron/` 新增 STEP 或在既有 STEP 追加批量清扫。
 
-- 文件：`fengyu-admin/src/actions/coupons.ts:316`
-- 现象：`templateId: data.templateId` 直接信任前端，仅靠 `23505` UNIQUE 错误反馈冲突。无前缀校验、无 length 校验、无字符集白名单（中英文/特殊字符都能进）。
-- 修复：(L7) 加正则白名单 `^coupon-[a-z0-9-]{2,40}$`，或服务端 nanoid 自动生成。
+---
 
-#### **[P2-13-21]** `userCoupons.couponId` 由 admin / cron 各自字符串拼接，无中央生成器
+**[P1-13-02] admin `getAvailableCoupons` 的 `minSpend` 校验口径与 staff/client 不一致**
 
-- 文件：admin issueCoupon `cpn-${Date.now()}-${random36(4)}`；batchIssueCoupons `cpn-${now}-${random36(4)}-${i}`；cron `cpn-up-{userId}-{level}-{tplId}` / `bday-{YYYY}-{userId}-{tplId}` / `thx-{YYYY}-{MM}-{userId}-{tplId}`
-- 现象：5 种生成模式、不同前缀、长度差异大。运营查"该顾客本次升级权益"用 LIKE 'cpn-up-...-%'（参考 `fengyu-admin/src/actions/refunds.ts:378`）依赖前缀；任一模式被改都会破坏统计。
-- 修复：(L7) 抽 `lib/coupon-id.ts`，约定 `{kind}-{...args}` 命名模式 + 单元测试覆盖。
+- 文件：`fengyu-admin/src/actions/coupons.ts:170`，对比 `fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:107-113`
+- 现象：
+  - staff/client `coupon.available`：`minSpend` 门槛基于"符合 `applicable_category_ids` 筛选后的 eligibleItems 小计"
+  - admin `getAvailableCoupons`：用 `total`（全单小计）直接与 `COALESCE(minSpend, 0)` 比较，未区分品类过滤
+- 风险：admin 开单界面展示的"可用券"列表包含实际不满足门槛的券，UI 提示不准确。
+
+---
+
+**[P1-13-03] admin `createOrder` 的 `minSpend` 基数是折扣前 saleAmount，staff 用折扣后 received**
+
+- 文件：`fengyu-admin/src/actions/orders.ts:877-909` vs `fengyu-staff/cloudfunctions/staffApi/routes/order.js:368-373`
+- 现象：
+  - admin：`saleAmountTotal = Σ(item.saleAmount)` = 行级折扣前金额
+  - staff：`eligibleTotalRaw = Σ(item.received)` = 行级折扣后实付金额
+- 风险：SKU 有行级折扣时两端满减判定可能不同，导致 admin 开单允许/拒绝与 staff 不一致。
+
+---
+
+**[P1-13-04] `issueCoupon` / `batchIssueCoupons` 日志含完整手机号（PII）**
+
+- 文件：`fengyu-admin/src/actions/coupons.ts:573-578`，`717-720`
+- 现象：`logOperation` 中 `detail.customerPhone: phone`（完整手机号）和 `detail.phones: uniquePhones`（完整手机号数组）写入 `operation_logs.detail` JSONB。
+- 风险：operation_logs 导出/备份时完整手机号随日志外泄。
+- 修复：脱敏处理：`phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')`
+
+---
+
+**[P1-13-05] staff `order.create` 未使用 `COALESCE(face_value_override, discount_value)`**
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:323-326`
+- 现象：staff `order.create` 的优惠券查询只取 `ct.discount_value`，未用 COALESCE 优先 `face_value_override`；而 staff `coupon.available`（`routes/coupon.js:63`）和 client `order.create`（`clientApi/routes/order.js:282`）均正确使用了 COALESCE。
+- 风险：分享礼等动态面值场景（`face_value_override != NULL`），staff 开单折扣计算错误（资损）。
+- 复现：1) 发券时设 `face_value_override=80`（模板 discount_value=50） 2) staff 开单选该券 3) couponDiscount 计算基于 50 而非 80
+- 修复：L3 staffApi routes — `order.js:325` 改为 `COALESCE(uc.face_value_override, ct.discount_value) AS discount_value`
+
+---
+
+**[P1-13-06] `batchIssueCoupons` 批量 INSERT 不在事务内（部分失败无回滚）**
+
+- 文件：`fengyu-admin/src/actions/coupons.ts:714`
+- 现象：`await db.insert(userCoupons).values(values)` 直接 INSERT 200 行，未包裹事务。若某行违反 PK 约束（couponId 碰撞），驱动层可能只 INSERT 前 N 行即抛错，造成部分成功部分失败。
+- 风险：审计日志记录"发放成功 N 张"，但实际数据库只有部分插入。
+- 修复：包裹在 `db.transaction()` 中，保障全有全无语义。
+
+---
+
+### 3.3 P2
+
+---
+
+**[P2-13-01] staff/client `coupon.available` 不过滤 `applicable_market_ids`**
+
+- 文件：`fengyu-staff/cloudfunctions/staffApi/routes/coupon.js:88-93`，`fengyu-client/cloudfunctions/clientApi/routes/coupon.js:176-178`
+- 现象：staff 和 client 的 `coupon.available` 只检查 `applicable_store_ids`，不检查 `applicable_market_ids`。admin `getAvailableCoupons`（`coupons.ts:129-148`）有市场级过滤。
+- 风险：市场级别限制的券在员工/顾客端"可用列表"中出现，但 `order.create` 不校验市场，实际可被跨市场使用（轻微资损）。
+
+---
+
+**[P2-13-02] 退款归还券时有 `expire_at > NOW()` 条件，已过期券退款后不归还**
+
+- 文件：`fengyu-admin/src/lib/refund-cascade.ts:128-131`，`fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js`
+- 现象：两端 cascadeRefund 通道3 均有 `AND expire_at > NOW()` 条件。若退款时券已过期，券停留在 `status='已使用'`。
+- 建议：产品层面确认：是否应去掉 expire_at 条件，让退款时始终归还（即使过期），供顾客知情（券显示为过期无法再用）。
+
+---
+
+**[P2-13-03] `getIssuedCoupons` 无分页，`.limit(500)` 硬上限**
+
+- 文件：`fengyu-admin/src/actions/coupons.ts:604`
+- 现象：大批量发放的模板超出 500 条时，admin 界面截断。
+- 修复：增加分页支持。
+
+---
+
+**[P2-13-04] `applicable_product_ids` 字段在 schema 中存在但三端均未使用（死字段）**
+
+- 文件：`db/schema/coupon.ts:24`
+- 现象：`coupon_templates.applicable_product_ids` 定义为 `text('applicable_product_ids').array()`，但 staff/client 的 available 和 order.create 均只查 `applicable_category_ids`，`applicable_product_ids` 从未出现在查询逻辑中。
+- 风险：误导开发者认为 product_id 级别的过滤有业务效果；admin create 页面也未提供 productId 选择。
+- 修复：确认无业务使用后，通过 migration DROP 该列，或补充 product_id 级别过滤逻辑。
+
+---
+
+**[P2-13-05] admin `createTemplate` 的 `templateId` 由前端生成，无服务端唯一性保障**
+
+- 文件：`fengyu-admin/src/app/(main)/coupons/_components/coupon-create-page.tsx:90`
+- 现象：`templateId = tpl-${Date.now()}`，由前端生成，后端仅靠 PK 碰撞（23505）来拦截重复提交。
+- 修复：服务端生成 templateId（`crypto.randomUUID()` 或 ULID）。
+
+---
+
+**[P2-13-06] 测试覆盖空白：admin `createOrder` 优惠券范围校验无 unit test**
+
+- 文件：`fengyu-admin/src/actions/orders.test.ts`
+- 现象：P0-13-02 的跨店/跨品类滥用场景在测试中未覆盖，漏洞因此存在且未被发现。
+- 修复：补充跨店/跨品类使用券被拒绝的 unit test。
 
 ---
 
@@ -208,30 +228,28 @@ admin     getAvailableCoupons  ──→ 同上 + 市场过滤（仅 admin 实�
 
 | 维度 | admin | staff | client | 风险 | 优先级 |
 |------|-------|-------|--------|------|--------|
-| 可用券范围过滤 | store + market 过滤 ✅ | store ✅ market ✗ | store ✅ market ✗ | 跨市场资损 | P0-13-02/13-09 |
-| 下单时校验范围 | store ✗ market ✗ category ✗ product ✗ | store ✅ category ✅ market ✗ product ✗ | store ✅ category ✅ market ✗ product ✗ | admin 完全失守 | P0-13-01 |
-| 读 face_value_override | ✗ | available ✅ / order.create ✗ | available ✅ / list ✅ / order.create ✅ | 动态面值漂移 | P0-13-05 |
-| 已使用券核销 | tx + CAS rowCount=0 抛错 ✅ | tx + CAS rowCount!==1 抛错 ✅ | tx + CAS rowCount!==1 抛错 ✅ | OK | — |
-| 释放券（订单关闭）| ✗（admin orders.ts cancel 路径未发现释放）| ✅（无 CAS 守卫，P2-13-19）| ✅（无 CAS 守卫，P2-13-19） | admin cancel 漏 | P1 |
-| 释放券（退款）| ✗ | ✗ | — | 资损（P0-13-04）| P0 |
-| 过期清扫 | ✗（无 cron） | lazy（available 时） | lazy（list/available 时） | 数据库膨胀 | P2 |
-| coupon.list 过滤 is_active | — | — | ✗ | UX 断裂 | P1-13-15 |
-| operation_logs | ✅（issue/batchIssue/create/update/toggle）| ✗（claim 0 行）| ✗ | 审计断裂 | P2-13-17 |
-| 错误码前缀 | `success: false, message:` 非 4 项前缀（admin server actions 自有体系） | `INVALID_PARAMS: / INSUFFICIENT_BALANCE:` ✅ | `INVALID_PARAMS:` ✅ | admin 与 CC5 不对齐（admin 全局问题）| P2 |
+| 门店范围校验（createOrder） | ❌ 缺失 | ✅ applicable_store_ids | ✅ applicable_store_ids | 跨店滥用资损 | **P0** |
+| 品类范围校验（createOrder） | ❌ 缺失 | ✅ applicable_category_ids | ✅ applicable_category_ids | 跨品类滥用资损 | **P0** |
+| 关闭订单释放券 | ❌ closeOrder 缺失 | ✅ order.close | ✅ order.cancel | 顾客丢券 | **P0** |
+| `face_value_override` 优先（createOrder） | ✅（前端通过 getAvailableCoupons 已拿到 override 值） | ❌ 仅 ct.discount_value | ✅ COALESCE | 动态面值不生效 | **P1** |
+| minSpend 基数 | 折扣前 saleAmount | 折扣后 received | 折扣后 saleAmount | 满减判定不一致 | P1 |
+| applicable_market_ids 过滤（available） | ✅ getAvailableCoupons 有 | ❌ staff 缺失 | ❌ client 缺失 | 推荐列表不准 | P2 |
+| 过期懒清扫触发 | 无（cron 不含此步骤） | ✅ available 触发 | ✅ available/list 触发 | 统计虚高 | P1 |
+| 批量发放事务 | ❌ batchIssueCoupons 无事务 | N/A | N/A | 部分失败不回滚 | P1 |
 
 ---
 
-## 5. 横切检查（套用 §3 模板，仅记录有问题的项）
+## 5. 横切检查
 
-- [x] **CC1 数值精度**：couponTemplates.discountValue / minSpend / maxDiscount 都是 NUMERIC(10,2) ✅；分摊到 received 用 `Math.round(× 100) / 100` + 最后一项尾差吸收 ✅。calcCouponDiscount 用 `parseFloat` 但前置已归一化 ✅。
-- [ ] **CC2 并发 / 幂等**：claim CAS ✅；但 issueCoupon/batchIssueCoupons totalCount TOCTOU [P0-13-06]、cron 不验 totalCount [P0-13-07]、cancel 释放无 CAS [P2-13-19]。
-- [ ] **CC3 组织域隔离**：admin getAvailableCoupons 无 scope 守卫 [P0-13-08]；staff coupon.available 用 storeName 而非 effectiveStoreId [P1-13-11]。
-- [ ] **CC4 后端鉴权**：admin createOrder 信任前端 couponId 不重算范围 [P0-13-01]；staff/client 范围不齐 [P0-13-02/13-03]。
-- [ ] **CC5 错误码**：admin 用 `{success:false, message:...}` 非 4 项前缀（与 CC5 全局违规同步）；staff/client ✅。
-- [ ] **CC6 PII**：admin operation_logs 写入 `customerPhone, customerName`（可能含完整手机号）— `actions/coupons.ts:577 + :720` 直接放 phone 列表入 details JSON。建议脱敏或仅存 userId。
-- [x] **CC7 时间字段**：created_at / updated_at defaultNow ✅；expire_at 写入显式 ✅；used_at 显式 NOW() ✅；时区一致（PG NOW + JS new Date 全部 UTC 落盘）✅。
-- [x] **CC8 WXML / Vant**：未审（前端 UI 不在本域）。
-- [ ] **CC9 测试 / 残留**：`fengyu-admin/src/actions/coupons.test.ts` 覆盖 admin 流程；staff/client 无 unit test；schema `applicable_product_ids` 字段死代码 [P0-13-03]。
+- [x] **CC1 数值精度**：`discount_value / min_spend / max_discount` 均为 `NUMERIC(10,2)`。三端折扣计算均用 `Math.round(...*100)/100` 归一化，尾差修正逻辑（最后一项补差）在 staff 和 client 中一致。admin `calcCouponDiscount` 返回 `number` 后 `toFixed(2)` 写 DB，精度可控。OK。
+- [ ] **CC2 并发幂等**：CAS UPDATE（WHERE status='未使用'）三端均有，防重用有效。发放量上限 TOCTOU 见 P0-13-03。
+- [ ] **CC3 组织隔离**：admin `createOrder` 缺 storeId 范围校验（P0-13-02）；staff/client 通过 userId 绑定券，隔离正确。
+- [x] **CC4 后端鉴权**：`issueCoupon`→`coupon:create`；`createTemplate`→`coupon:create`；`updateTemplate`→`coupon:update`；staff `coupon.available`→`requireStaffBound()`；client `coupon.list/available`→`requirePhone()`。链路完整。
+- [ ] **CC5 错误前缀**：staff `order.js:334` `'INVALID_PARAMS: 优惠券已失效'` 格式正确。`coupon.js` 抛错格式规范。admin Server Action 返回 `{ success: false, message }` 不需前缀，合规。
+- [ ] **CC6 PII**：`issueCoupon` 日志含完整手机号；`batchIssueCoupons` 日志含手机号数组（P1-13-04）。
+- [x] **CC7 时间字段**：`usedAt` 三端 claim 时写 `NOW()` / `new Date()`。`expireAt` 由发放时 `validityMode` 计算。`createdAt / updatedAt` Drizzle defaultNow / $onUpdate 管理。时区风险继承 CC7 横切报告。
+- [x] **CC8 WXML/Vant**：client `my-coupons.wxml` 三 tab（未使用/已使用/已过期）与 DB 枚举对齐；有空态（van-empty）、加载态（van-skeleton）、错误态。staff `order-create.wxml` 优惠券 popup 有 loading/empty 两态。Vant 属性名（`bind:change`）正确。
+- [ ] **CC9 测试与残留**：`applicable_product_ids` 死字段（P2-13-04）；admin createOrder 优惠券范围校验无测试覆盖（P2-13-06）。
 
 ---
 
@@ -239,103 +257,72 @@ admin     getAvailableCoupons  ──→ 同上 + 市场过滤（仅 admin 实�
 
 | 层 | 文件 | 修改 | 关联问题 |
 |----|------|------|----------|
-| L0 schema | `db/schema/coupon.ts:24` | 决策 `applicableProductIds` 是否启用：DROP 或在三端 order.create 实现过滤 | P0-13-03 |
-| L3 公共 helper | 新建 `helpers/coupon-validate.js`（staff/client/admin npm 共享） | 抽 store/market/category/product 过滤 + face_value_override 读取 | P0-13-01/02/03/05 |
-| L3 staffApi | `routes/order.js:330-339` | SELECT 加 `applicable_market_ids / applicable_product_ids / face_value_override`；调用 helper 过滤 | P0-13-02/03/05 |
-| L3 staffApi | `routes/order.js:1488-1636 approveRefund` | 全额退款时释放 user_coupons | P0-13-04 |
-| L3 staffApi | `routes/coupon.js:88-105` | 加市场过滤 + market 名称解析 | P0-13-02, P1-13-09/10 |
-| L3 staffApi | `routes/coupon.js:38` | 优先 `ctx.auth.effectiveStoreId` | P1-13-11 |
-| L3 staffApi | `routes/coupon.js:31-34` | 顾客不存在抛 INVALID_PARAMS | P1-13-12 |
-| L3 staffApi | `routes/order.js:1091-1097 close` | UPDATE 加 `AND status='已使用'` CAS | P2-13-19 |
-| L3 clientApi | `routes/order.js:249-260` | SELECT 加 market/product；调用 helper | P0-13-02/03 |
-| L3 clientApi | `routes/coupon.js:35-53 list` | 加 `AND ct.is_active = true` 或显示停用标识；返回 applicableMarketNames | P1-13-10/15 |
-| L3 clientApi | `routes/order.js:23-27 / 1049-1055` | UPDATE 加 `AND status='已使用'` CAS | P2-13-19 |
-| L3 cron-worker | `src/cron/steps/refresh-member-levels.ts:280` + `grant-birthday-benefits.ts:160` + `grant-thanksgiving-benefits.ts:165` | INSERT user_coupons 前事务内查 totalCount，超额日志告警跳过 | P0-13-07 |
-| L7 admin | `src/actions/orders.ts:748-775` | SELECT 加 4 个范围字段 + face_value_override；过滤逻辑对齐 staff/client | P0-13-01/05 |
-| L7 admin | `src/actions/coupons.ts:509 issueCoupon` + `:621 batchIssueCoupons` | tx 内 advisory lock + 复查 totalCount；issueCoupon 校验 expireAt > NOW() | P0-13-06, P1-13-13 |
-| L7 admin | `src/actions/coupons.ts:106 getAvailableCoupons` | 加 scope 校验 clientUserId.boundStoreId | P0-13-08 |
-| L7 admin | `src/actions/refunds.ts:778 approveRefund` | 全额退款时释放 user_coupons | P0-13-04 |
-| L7 admin | `src/actions/coupons.ts:316 createTemplate` | templateId 正则白名单或服务端 nanoid | P2-13-20 |
-| L7 admin | `lib/coupon-id.ts`（新文件） | 中央 couponId 生成器 + 单测 | P2-13-21 |
-| L9 admin UI | `_components/coupon-create-page.tsx + coupon-detail-page.tsx` | 增加 `applicableProductIds` UI（如选 keep）/ 移除（如选 drop） | P0-13-03 |
+| L7 admin actions | `fengyu-admin/src/actions/orders.ts:611-635` | `closeOrder` 事务内追加 UPDATE user_coupons 归还券 | P0-13-01 |
+| L7 admin actions | `fengyu-admin/src/actions/orders.ts:884-909` | SELECT 补取 applicableStoreIds/applicableCategoryIds，校验对齐 staff/client | P0-13-02 |
+| L7 admin actions | `fengyu-admin/src/actions/coupons.ts:527-536, 652-665` | issueCoupon/batchIssueCoupons 发放量校验与 INSERT 置同一事务 | P0-13-03 |
+| L3 staffApi routes | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:325` | `COALESCE(uc.face_value_override, ct.discount_value) AS discount_value` | P1-13-05 |
+| L7 admin actions | `fengyu-admin/src/actions/coupons.ts:573-578, 717-720` | 手机号脱敏后写日志 | P1-13-04 |
+| L7 admin actions | `fengyu-admin/src/actions/coupons.ts:714` | batchIssueCoupons INSERT 包裹事务 | P1-13-06 |
+| L3 cron | `fengyu-admin/src/cron/run.ts` | 新增批量清扫 user_coupons 过期 step | P1-13-01 |
+| L7 admin actions | `fengyu-admin/src/actions/orders.ts:877-909` | minSpend 基数统一为行级折扣后 received | P1-13-03 |
+| L3 staffApi/clientApi | `staffApi/routes/coupon.js`，`clientApi/routes/coupon.js` | 补 applicable_market_ids 市场过滤 | P2-13-01 |
+| L9/L7 admin | `coupon-create-page.tsx:90`，`coupons.ts` | templateId 改为服务端 crypto.randomUUID() | P2-13-05 |
+| L10 测试 | `fengyu-admin/src/actions/orders.test.ts` | 补充跨店/跨品类被拒 unit test | P2-13-06 |
 
 ---
 
 ## 7. 验证 SQL（在 5434 EXPLAIN，禁止写入）
 
 ```sql
--- 1) 量化 applicable_product_ids 是否被运营使用
-SELECT count(*) AS templates_with_product_filter
-FROM coupon_templates
-WHERE applicable_product_ids IS NOT NULL AND array_length(applicable_product_ids, 1) > 0;
-
--- 2) 量化 applicable_market_ids 启用程度（决定 P0-13-02 修复优先级）
-SELECT count(*) FROM coupon_templates
-WHERE applicable_market_ids IS NOT NULL AND array_length(applicable_market_ids, 1) > 0;
-
--- 3) 量化 P0-13-04：已批准退款但 user_coupons 仍 '已使用' 的资损
-SELECT count(*) AS leaked_used_coupons,
-       SUM(COALESCE(uc.face_value_override::numeric, ct.discount_value::numeric)) AS lost_value
-FROM sale_orders refund
-JOIN user_coupons uc ON uc.used_sale_order_id = refund.ref_sale_order_id
-JOIN coupon_templates ct ON ct.template_id = uc.template_id
-WHERE refund.sale_order_type = '退款单' AND refund.status = '已支付'
-  AND uc.status = '已使用';
-
--- 4) 量化 P0-13-06：limit 模板是否超发
-SELECT t.template_id, t.name, t.total_count, COUNT(uc.coupon_id) AS issued,
-       COUNT(uc.coupon_id) - t.total_count AS overflow
-FROM coupon_templates t
-JOIN user_coupons uc ON uc.template_id = t.template_id
-WHERE t.total_count IS NOT NULL
-GROUP BY t.template_id, t.name, t.total_count
-HAVING COUNT(uc.coupon_id) > t.total_count;
-
--- 5) 量化 P0-13-05：face_value_override 与 template.discount_value 不同的活券
-SELECT count(*) AS divergent_active_coupons
+-- 验证 admin closeOrder 后是否有泄露的"已使用"券（关单但券未归还）
+SELECT uc.coupon_id, uc.status, so.status AS order_status, so.sale_order_id
 FROM user_coupons uc
-JOIN coupon_templates ct ON uc.template_id = ct.template_id
-WHERE uc.face_value_override IS NOT NULL
-  AND uc.face_value_override::numeric != ct.discount_value::numeric
-  AND uc.status = '未使用'
-  AND uc.expire_at > NOW();
-
--- 6) 量化 P1-13-15：已停用模板下仍有"未使用"券
-SELECT count(*) AS undead_coupons,
-       count(DISTINCT uc.template_id) AS affected_templates
-FROM user_coupons uc
-JOIN coupon_templates ct ON uc.template_id = ct.template_id
-WHERE ct.is_active = false AND uc.status = '未使用' AND uc.expire_at > NOW();
-
--- 7) 验证 lazy expire 机制：已经"应该过期但未清扫"的券
-SELECT count(*) AS stale_unexpired
-FROM user_coupons
-WHERE status = '未使用' AND expire_at <= NOW();
-
--- 8) 跨店使用证据（P0-13-02 量化）
-SELECT count(*) AS cross_store_used
-FROM user_coupons uc
-JOIN coupon_templates ct ON uc.template_id = ct.template_id
 JOIN sale_orders so ON so.sale_order_id = uc.used_sale_order_id
 WHERE uc.status = '已使用'
-  AND ct.applicable_store_ids IS NOT NULL
+  AND so.status = '已关闭';
+
+-- 验证跨门店滥用优惠券
+SELECT uc.coupon_id, ct.applicable_store_ids, so.store_id, so.sale_order_id
+FROM user_coupons uc
+JOIN coupon_templates ct ON uc.template_id = ct.template_id
+JOIN sale_orders so ON so.coupon_id = uc.coupon_id
+WHERE ct.applicable_store_ids IS NOT NULL
+  AND array_length(ct.applicable_store_ids, 1) > 0
   AND NOT (so.store_id = ANY(ct.applicable_store_ids));
+
+-- 验证超量发放
+SELECT ct.template_id, ct.name, ct.total_count,
+       COUNT(uc.coupon_id) AS issued_count
+FROM coupon_templates ct
+JOIN user_coupons uc ON uc.template_id = ct.template_id
+WHERE ct.total_count IS NOT NULL
+GROUP BY ct.template_id, ct.name, ct.total_count
+HAVING COUNT(uc.coupon_id) > ct.total_count;
+
+-- 验证过期券 status 仍是 '未使用' 的规模
+SELECT COUNT(*) AS stale_count
+FROM user_coupons
+WHERE status = '未使用' AND expire_at < NOW();
+
+-- 验证 applicable_product_ids 死字段是否有历史数据
+SELECT COUNT(*) AS with_product_ids
+FROM coupon_templates
+WHERE applicable_product_ids IS NOT NULL
+  AND array_length(applicable_product_ids, 1) > 0;
 ```
 
 ---
 
 ## 8. 回归测试用例（建议）
 
-1. admin 创建仅限 store-A 的现金券 → 用顾客在 store-B 开单 → **应当拒绝**（当前 admin 通过）
-2. admin 创建仅限"面部护理"品类券 → 在含家居产品订单使用 → **应当只对面部护理行抵扣**
-3. share gift 写 face_value_override=¥30 → admin 录单使用 → 抵扣应为 ¥30 而非模板 ¥50
-4. admin 全额退款一张 ¥100 现金券订单 → 查 user_coupons.coupon_id → status='未使用'（依赖 P0-13-04 修复）
-5. 并发 2 admin 同时 issueCoupon limit=1 模板 → 仅 1 张写入（依赖 P0-13-06）
-6. cron 同日生日 + 升级 + 感恩节同跑 limit=10 模板 → 不超发（依赖 P0-13-07）
-7. admin 停用模板 → 顾客 client.coupon.list → 已发未用券应**消失或显示停用**
-8. admin getAvailableCoupons 用其他 store 的 clientUserId → 拒绝或返回空
-9. staff coupon.available 在管理层模式（loginLevel='management'）传 storeId → 应使用传入值；门店模式不传 → 应用 effectiveStoreId
-10. 折扣券 dv=0.85 max_discount=¥200 + eligibleTotal=¥2000 → 折扣应为 ¥200（封顶生效）；eligibleTotal=¥500 → 折扣 ¥75
+1. **admin closeOrder 释放券**：开单选券 → admin 关闭 → 查 user_coupons.status = '未使用'
+2. **admin 跨门店券被拒**：创建 applicable_store_ids=['store-A'] 券 → admin 开 store-B 订单 → 应返回失败
+3. **admin 跨品类券被拒**：创建 applicable_category_ids=['cat-护理'] 券 → admin 开含家居商品订单 → 应返回失败
+4. **并发 claim 幂等**：两请求并发提交同 couponId → 仅一个成功（CAS 保障）
+5. **face_value_override（staff）**：face_value_override=80 的券（模板 discount_value=50）→ staff order.create → couponDiscount 应为 80
+6. **发放量上限并发**：并发两请求 issueCoupon（totalCount=1，已发=0）→ 仅一个成功
+7. **过期券退款不归还**：用券 → 退款审批时券已过期 → 确认业务决策（当前不归还）
+8. **懒清扫**：`coupon.available` 调用 → 过期未使用券 status 自动变 '已过期'
 
 ---
 
@@ -343,20 +330,24 @@ WHERE uc.status = '已使用'
 
 - 单端：☐
 - 跨端（任意 2 端）：☐
-- 全栈（3 端 + DB）：☑（admin schema / actions、staff routes、client routes、cron 全链）
-- 涉及历史数据：☑（已批准退款的 user_coupons 历史回溯，超发模板回退，face_value_override 历史订单核对）
-- 修复成本：**M / L** —
-  - L0 决策 + L3 helper 抽取 ~1 周
-  - 三端 order.create + cron-worker 修改 + 数据修复脚本 ~2 周
-  - 历史数据修复（释放退款关联券、超发回收）需 PRD 决策
+- 全栈（3 端 + DB）：☑
+- 涉及历史数据：☑（P0-13-01：已关单订单下的"已使用"券需运行补数据 SQL 修复）
+- 修复成本：M（P0-13-01/02 约 3-4 小时；P0-13-03 约 1 小时；P1-13-05 约 30 分钟）
 
 ---
 
 ## 10. 后续待办
 
-- [ ] 与产品 / 运营对齐：`applicable_product_ids` 是 keep 还是 drop（P0-13-03）
-- [ ] 与产品对齐：share-gift / 分享礼链路 `face_value_override` 当前由谁写、生命周期（P0-13-05 关联）
-- [ ] 写数据修复脚本：把已批准退款的 user_coupons 反向 `status='未使用'`（与 audit-11 P0-11-04 数据修复合并）
-- [ ] 写数据修复脚本：超发的 limit 模板回收（按 created_at 倒序保留前 totalCount 张，其余 status='已过期'）
-- [ ] cron-worker 增加 `totalCount` 哨兵 + 告警通道（接前轮 cron-worker notifyOps）
-- [ ] 在 audit-CC2/CC3/CC4 段添加本域命中条目
+- [ ] **[紧急]** P0-13-01：修复 admin `closeOrder` 漏还券；执行补数据 SQL 修复历史已关单下的泄露券（参考验证 SQL 第一条）
+- [ ] **[紧急]** P0-13-02：admin `createOrder` 补 storeId + categoryIds 校验，对齐 staff/client
+- [ ] **[紧急]** P0-13-03：`issueCoupon / batchIssueCoupons` 发放量校验改为事务内操作
+- [ ] P1-13-05：staff `order.create` 优惠券查询加 COALESCE(face_value_override, discount_value)
+- [ ] P1-13-04：`issueCoupon / batchIssueCoupons` 日志手机号脱敏
+- [ ] P1-13-06：`batchIssueCoupons` INSERT 包裹事务，保障全有全无
+- [ ] P1-13-01：评估 cron-worker 是否新增定时过期清扫 STEP
+- [ ] P1-13-03：确认 minSpend 基数口径，三端统一（折扣前/折扣后）
+- [ ] P2-13-01：staff/client `coupon.available` 补 applicable_market_ids 市场过滤
+- [ ] P2-13-04：确认 `applicable_product_ids` 是否死字段，若无用通过 migration DROP
+- [ ] P2-13-05：templateId 改为服务端生成
+- [ ] P2-13-06：补充 orders.test.ts 中优惠券范围校验 unit test
+- [ ] 与退款域（域 11）对齐：退款归还已过期券的业务决策是否要修改

@@ -1,304 +1,602 @@
-# 审计报告：服务单 + 扣次原子性 (05)
+# 审计报告：服务单 + 扣次原子性 (05) — v3
 
-**审计时间**：2026-04-25 22:30
+**审计时间**：2026-04-26
 **域 ID**：05
-**审计员**：claude-opus-4-7
-**审计时长**：~25 分钟
+**审计员**：claude-sonnet-4-6
+**审计时长**：~50 分钟（三轮合并）
+**前序报告**：
+  - v1：`docs/audit/audit-05-service-order.md`（claude-opus-4-7，2026-04-25）
+  - v2：`docs/audit/audit-05-service-order-v2.md`（claude-sonnet-4-6，2026-04-26）
 **关联 PR/Ticket**：—
+**v3 合并说明**：v1 + v2 独立三轮源码审计合并，同问题以 v2 为准；v1 P0 已在 v2 验证为真时标注 `[CLOSED from v1]`；新增全局 grep 实证节（影响半径扩展至全仓 5 处）。
+
+---
+
+## v1 vs v2 摘要对照
+
+| 问题 ID | v1 编号 | v2 验证 | v3 最终状态 |
+|---------|---------|---------|-----------|
+| staff.create INSERT sku_id 列不存在 | P0-05-01 | ✅ 真 | P0-05-01（未修复）|
+| service_order_id 前缀 + lock key 分裂 | P0-05-02 | ✅ 真 | P0-05-02（未修复）|
+| create 事务外校验 TOCTOU | P0-05-03 | ✅ 真 | P0-05-03（未修复）|
+| cancel 允许"服务中"状态 | P0-05-04 | ✅ 真 | P0-05-04（未修复）|
+| rate=0 静默写 0 提成 | P0-05-05 | ✅ 真 | P0-05-05（未修复）|
+| admin complete 不写提成 | P0-05-06 | ✅ 真 | P0-05-06（未修复）|
+| 扣次归零关闭预约范围过大 | P0-05-07 | ✅ 真 | P0-05-07（未修复）|
+| 提成逻辑跨端不可对齐 | P0-05-08 | ✅ 真 | P0-05-08（重复跨端问题，归并到 P0-05-06）|
+| pg.query 吞 rowCount，start/cancel CAS 失效 | — | ⭐ 新 P0 | **P0-V2-01** |
+| admin complete items_deducted 不校验 | — | ⭐ 新 P0 | **P0-V2-02** |
+| complete 读 sale_items.sales_category live | — | ⭐ 新 P1 | P1-V2-03 |
+| admin create 未快照 is_shengmei/sales_category | — | ⭐ 新 P1 | P1-V2-04 |
+| deduct CTE 缺 store_id 过滤 | — | ⭐ 新 P2 | P2-V2-22 |
+
+**最终 P0 数量：10**
+
+---
 
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client |
 |----|-------|-------|--------|
-| Schema | `db/schema/service.ts:15-80`（service_orders / service_items）+ `db/schema/service-commission.ts:16-51` | ↑ | ↑ |
-| Action/Route | `fengyu-admin/src/actions/services.ts:285-561`（start/complete/cancel/create + 列表/详情） | `fengyu-staff/cloudfunctions/staffApi/routes/service.js:21-794`（create/start/complete/cancel/list/detail/counts） | `fengyu-client/cloudfunctions/clientApi/routes/service.js:12-138`（detail/list 只读） |
-| 前端 | `fengyu-admin/src/app/(main)/services/{page.tsx,_components/services-page.tsx,_components/service-create-page.tsx,[id]/page.tsx,create/page.tsx}` | `fengyu-staff/miniprogram/pages/service/*` | `fengyu-client/miniprogram/pages/service/*` |
-| 测试 | `fengyu-admin/src/actions/services.test.ts` | — | — |
+| Schema | `db/schema/service.ts:15-80`（service_orders / service_items）<br>`db/schema/service-commission.ts:16-62` | ↑ | ↑ |
+| Action/Route | `fengyu-admin/src/actions/services.ts:285-582` (start/complete/cancel/create/list/detail) | `fengyu-staff/cloudfunctions/staffApi/routes/service.js:21-827` (create/start/complete/cancel/list/detail/counts) | `fengyu-client/cloudfunctions/clientApi/routes/service.js:1-138` (detail/list 只读) |
+| 前端 | `fengyu-admin/src/app/(main)/services/` | `fengyu-staff/miniprogram/pages/service/*` | `fengyu-client/miniprogram/pages/service/*` |
+| 测试 | `fengyu-admin/src/actions/services.test.ts`（573行） | `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/service.test.js` | — |
+
+---
 
 ## 2. 数据流图
 
 ```
-admin.create / staff.create
-  ├─ 校验顾客活动服务单（仅 staff）
-  ├─ INSERT service_orders.待服务
-  └─ INSERT service_items（unit_real_price / is_shengmei / sales_category 从 sale_items 快照拷贝）
+staff.create (or admin.createServiceOrder)
+  ├─ [事务外] 校验预约/活动服务单/sale_items 次数 ← TOCTOU 窗口 (P0-05-03)
+  ├─ generateServiceOrderId()：pg.transaction + advisory_xact_lock (HLD-WX- prefix)
+  │   vs admin: hashtext('service_order_id_gen') lock + FY-FW- prefix  ← lock key 不一致 (P0-05-02)
+  └─ [事务内] INSERT service_orders + INSERT service_items
+       service_items 含 sku_id 列引用 → PG 42703 error (P0-05-01)
 
-staff.start / admin.startServiceOrder
-  └─ UPDATE service_orders SET status='服务中', started_at=NOW() WHERE service_order_id=$1 AND status='待服务'   <CAS>
+staff.start
+  └─ pg.query("UPDATE ... WHERE status='待服务'")  ← pg.query 返回 rows[], rowCount=undefined
+     result.rowCount === 0 永远为 false → CAS 保护失效 (P0-V2-01)
 
-staff.complete / admin.completeServiceOrder
-  ├─ FOR each service_item:
-  │    UPDATE sale_items SET remaining_sessions = remaining_sessions - sessionUsed
-  │      WHERE sale_item_id=$1 AND store_id=$2 AND remaining_sessions >= sessionUsed AND remaining_sessions IS NOT NULL  <真原子>
-  │    若扣减后剩 0：UPDATE appointments(sale_item_id) SET status='已关闭'
-  ├─ FOR each service_item: 计算 fixed_fee + consume_amount → INSERT service_commissions ON CONFLICT DO NOTHING
-  ├─ UPDATE service_orders SET status='已完成', completed_at=NOW(), commission_status='已分配'
-  │    WHERE service_order_id=$1 AND status='服务中'   <CAS>
-  └─ 关联预约：UPDATE appointments SET status='已完成' WHERE appointment_id=$1 AND status='已确认'
+staff.complete
+  └─ pg.transaction:
+       ├─ FOR each item: client.query UPDATE sale_items WHERE remaining_sessions >= n AND store_id = so.store_id
+       │    updateResult.rowCount === 0 → 抛错（client.query 正确返回 rowCount）✓
+       │    + 二次 SELECT remaining_sessions → 若 == 0 关闭预约 (关闭范围含他人 P0-05-07)
+       ├─ FOR each item: commission 计算
+       │    service_fee, sales_category 读 sale_items live (非 snapshot) ← (P1-V2-03)
+       │    rate 查 commission_rate_matrix（N次，per-item）
+       │    rate=0 + consumeBase>0 → 写 operation_logs + 仍写 rate=0 提成 (P0-05-05)
+       │    INSERT service_commissions ON CONFLICT DO NOTHING (幂等) ✓
+       └─ client.query UPDATE service_orders WHERE status='服务中'  ← CAS 正确 ✓
+            soUpdateResult.rowCount === 0 → 抛错 ✓
+       └─ 关联预约 UPDATE appointments SET status='已完成' ✓
 
-staff.cancel / admin.cancelServiceOrder
-  └─ UPDATE service_orders SET status='已取消' WHERE service_order_id=$1 AND status=$2  <CAS，不回滚次数>
+admin.completeServiceOrder
+  └─ db.execute(CTE: status_check UPDATE + deduct UPDATE)
+       status_updated == 0 → 返回失败 ✓
+       items_deducted 计算但从不检查 → deduction 静默失败 (P0-V2-02)
+       deduct CTE 无 store_id 过滤 (P2-V2-22)
+       commission 写入：无 ← (P0-05-06)
+
+staff.cancel
+  └─ pg.query("UPDATE ... WHERE status=$3")  ← pg.query 返回 rows[], rowCount=undefined
+     result.rowCount === 0 永远为 false → CAS 保护失效 (P0-V2-01)
 ```
+
+---
 
 ## 3. 自身漏洞
 
-### 3.1 P0（阻断/资损/越权）
+### 3.1 P0（10 个，阻断/资损/越权）
 
-#### [P0-05-01] staff.create 写入不存在的列 `sku_id`，**所有 staffApi 服务单创建必失败**
+#### [P0-05-01] staff.create INSERT service_items 含不存在列 sku_id，staff 服务单创建 100% 失败
+
 - **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:207-224`
-- **现象**：INSERT 语句列清单含 `sku_id`，但 `service_items` 表自 0000_baseline 起从未定义此列；schema `db/schema/service.ts:52-80` 也无 `skuId`/`sku_id` 字段。本域 0008（is_shengmei）、0011（sales_category）等增量迁移均未补 sku_id。
-- **风险**：staffApi `service.create` 调用一定抛 PG `42703 column "sku_id" of relation "service_items" does not exist`，员工端"护理"Tab 完全无法新建服务单。整条 staff 服务核销链路 100% 阻塞。这是**编码即生产事故**级别的 P0。
-- **复现**：1) 门店模式登录员工端；2) 进入"护理 → FAB 新建"；3) 选 sale_item + employee 提交；4) 后端报错 `INVALID_PARAMS:` 不会触发，PG 直接抛列不存在错误，前端显示"未识别错误"。
-- **波及**：直接导致 real.md #1 次数防超卖在 staff 链路完全失效（核销没法启动 → 不会扣次，但也会跨越业务流程，店员只能用 admin 后台代办）；使 P1 顾客端 service.list/detail 永远空。
-- **修复**：(L0/L3) 二选一：
-  - L0：补一条 migration `ALTER TABLE service_items ADD COLUMN sku_id text REFERENCES product_skus(sku_id);` 并把 schema 同步加 `skuId`
-  - L3：删除 service.js:210 INSERT 列清单中的 `sku_id` 与 `$5` 占位符及 line 217 的 `skuId` 实参（admin 不读 sku_id，业务可移除）
+- **现象**：INSERT 列清单第 5 列为 `sku_id`（line 210），但 `db/schema/service.ts` 的 serviceItems 表定义（line 52-80）无此列。所有 baseline + 增量 migration 均未对 `service_items` 增加 `sku_id`（已验证 0000_baseline.sql:292-303、0008_aspiring_pride.sql、0011_misty_nebula.sql）。
+- **风险**：PG 抛 `42703 column "sku_id" of relation "service_items" does not exist`，员工端"护理 Tab → FAB 新建"功能 100% 阻塞，完整扣次链路无法启动。real.md #1 在 staff 端完全失效。
+- **修复**：(L3) 删除 service.js:210 INSERT 列清单中的 `sku_id` 及对应 `$5` 占位符（第 5 位），同步删除 line 202 的 `const skuId` 变量引用和 line 217 的 `skuId` 实参；或 (L0) 通过新 migration 对 service_items 增加 `sku_id text REFERENCES product_skus(sku_id)` 并同步 schema.ts。
 
-#### [P0-05-02] 三端服务单号前缀 / 生成器互斥，跨端 ID 重复风险与号段碎片
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:768-790`（`HLD-WX-{YYMMDD}NNNN`）vs `fengyu-admin/src/actions/services.ts:498-516`（`FY-FW-{YYMMDD}NNNN`）
-- **现象**：staff 用 `HLD-WX-` 前缀，admin 用 `FY-FW-` 前缀，相互不感知。两端都按各自 LIKE 前缀 `MAX(后 4 位)+1`，跨端会落入两个号段空间。理论上不冲撞，但：
-  1. service_orders.serviceOrderId 是单一主键全局空间，前缀差异让"今日服务单"统计、外部对账、客服按编号搜索分裂；
-  2. `.42cog/real.md` 与 `CLAUDE.md` 全局规范规定订单号格式 `FY-XSD-WX-{YYMMDD}NNNN`，**没有任何一端遵守**该格式（包括 admin 服务单 `FY-FW-` 也是新发明的前缀）；
-  3. staff 端的 advisory lock key 是 `Buffer.from('svc_order_id').reduce((h,b)=>(h*31+b)&0x7fffffff,0)`，admin 是 `hashtext('service_order_id_gen')`，**不同 lock key**，两端并发 create 不互斥。当 admin 改用 staff 前缀时立刻可重号。
-- **风险**：当前号段冲突隐藏，但任何一端调整前缀（业务一致性修复）都会撞号；下游统计、看板、客服按号查找全部混乱；advisory lock key 不一致是潜在 P0（real.md #1/CC2 兜底失败）。
-- **复现**：1) admin 创建服务单 `FY-FW-260425XXXX`；2) staff 创建服务单 `HLD-WX-260425XXXX`；3) 顾客端 service.list 同一日两条，customerService 按"今日所有服务单"统计需 `LIKE 'HLD-WX-260425%' OR LIKE 'FY-FW-260425%'`；4) 假设运维将 admin 前缀改为 `HLD-WX-`，并发 create 因 lock key 不同 → 重号 23505。
-- **修复**：(L0/L3) 统一前缀（建议全用 `FY-FW-{YYMMDD}NNNN` 与销售单 `FY-XSD-WX-` 区分语义），并把 advisory lock key 收敛到同一 helper（`db/scripts/...` 或共享 SQL fragment）。
+---
 
-#### [P0-05-03] staff.create 整段事务前置只读 SQL 不在事务内，存在 TOCTOU 重复创建窗口
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:55-164`
-- **现象**：appointment 关联校验（line 56-69，含"该预约已关联服务单"防重）、订单行剩余次数校验（line 81-117）、活动服务单校验（line 142-151，"同一顾客只能有一个进行中的服务单"）全部在事务**外**用 `pg.query` 读，随后第 169 行才 `pg.transaction` 开 INSERT。两条以及"已存在 service_orders.appointment_id"和"已有进行中服务单"都是经典 TOCTOU：并发两次 create 均能通过事务外校验，事务内同时 INSERT，无 UNIQUE 约束兜底（appointment_id 没建 unique，client_user_id+status IN(...) 也没建 partial unique）→ 同一预约可被关联两条服务单 / 同顾客同时存在两条"待服务"。
-- **风险**：违反 real.md #1（疗程核销原子操作前提是"一次只能开一条"）+ #4（状态推进唯一）。重复服务单 → 重复 complete 时同 sale_item 被两次扣次（第二次因 CAS 守卫会失败，但提成 service_commissions 已写入两条 → 资损隐患）。
-- **修复**：(L0/L3) L0 补 partial unique：`CREATE UNIQUE INDEX uq_so_appointment ON service_orders(appointment_id) WHERE appointment_id IS NOT NULL;` + `CREATE UNIQUE INDEX uq_so_client_active ON service_orders(client_user_id) WHERE status IN ('待服务','服务中');`。L3 把所有校验移入事务并在末尾再 INSERT。
+#### [P0-05-02] service_order_id 前缀分裂 + advisory lock key 不同，跨端 create 并发不互斥
 
-#### [P0-05-04] cancel **不回滚** remaining_sessions，但允许在"服务中"状态取消（次数已部分计算？实则未扣，但语义违直觉）
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:722-764`
-- **现象**：cancel 允许 `'待服务','服务中'` 两个状态都取消，且仅 UPDATE service_orders.status='已取消'，**不动** sale_items.remaining_sessions、不动 service_commissions、不动 appointments。
-  - 实际扣次只发生在 complete，所以"服务中 → 已取消"不会造成数据资损。但 admin.cancel 仅允许"待服务"取消（services.ts:417 `eq(serviceOrders.status, '待服务')`），**两端口径不一致**。
-  - 一旦未来有人在 start 时即扣次（基于"服务开始就占用次数"的需求），现 cancel 路径会让次数永久泄漏。
-  - 当前 staff 允许"服务中→已取消"，但 commission_status 字段未置 null/'已取消'，仍保留 default null（已分配语义残留）。
-- **风险**：admin/staff 状态机分歧（CC1 跨端不一致），CC4 状态机崩坏的"灰色区域"——服务中能取消，但 admin 看到"已取消"详情时仍可能展示到一半的服务记录混乱。
-- **修复**：(L3/L7) staff.cancel 收敛到只允许"待服务"，对齐 admin。或 admin 也开放"服务中→已取消"并补 commission_status='已取消' 维度。建议前者。
+- **文件**：`service.js:773-786`（staff `HLD-WX-`，lockKey=Buffer.reduce hash）vs `services.ts:520-536`（admin `FY-FW-`，lockKey=hashtext('service_order_id_gen')）
+- **现象**：两端生成 ID 时使用不同 advisory lock key，两端并发 create 无法互斥。当前号段不冲突（前缀不同），但若业务对齐前缀后将直接产生重号（23505 unique violation）；跨端搜索/统计需 OR 两个 LIKE 前缀；real.md 全局规范订单号格式 `FY-XSD-WX-{YYMMDD}NNNN` 两端均未遵守。
+- **风险**：服务单号乱序，客服/对账混乱；前缀统一后立刻出现并发重号 P0。
+- **修复**：(L3/L7) 统一前缀 `FY-FW-{YYMMDD}NNNN`，advisory lock key 收敛到同一常量（推荐 `hashtext('svc_order_id_gen')`）。
 
-#### [P0-05-05] staff.complete 内 service_commissions UPSERT 缺关键回退；rate 缺失时静默写 rate=0
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:401-449`
-- **现象**：commission_rate_matrix 查询无匹配时 `rate=0`，仅写一条 operation_logs 提示"rate_missing"，提成 INSERT 仍照常 with `rate=0` 走完，并把 service_orders.commission_status 置为 `'已分配'`（line 454）。运维补完矩阵规则后**没有任何回扫机制**重算这批 rate=0 的提成；service_commissions 唯一索引 `uq_svc_comm_item_emp_role WHERE is_void=false`（service-commission.ts:44-46）也阻止后续重写。
-- **风险**：员工提成永久按 0 入账（直接资损 → 员工绩效页 / 月度日历少计），且没有自动告警链路（仅 operation_logs 静默）。real.md 未直接列"提成不丢"，但属于资损 P0。
-- **修复**：(L3/L7) rate=0 且 consumeBase>0 时应：
-  - 选项 A：抛错让 staff 重试（业务受阻 → 不可取）
-  - 选项 B：写入 commission_status='待分配' + 不写 service_commissions，留待 admin allocation 补；运维补矩阵后批跑回扫；service-commission.ts 唯一索引保留即可，因没写就不会冲突
-  - 选项 C：写入提成行 + commission_status='待分配' + admin 控制台展示这些 service_orders + 一键重算（admin.completeServiceOrder 当前**完全不写** service_commissions，见 P0-05-08）
+---
 
-#### [P0-05-06] admin.completeServiceOrder 完全不写 service_commissions，admin 路径下提成永久缺失
-- **文件**：`fengyu-admin/src/actions/services.ts:333-396`
-- **现象**：admin 完成服务单仅原子扣减 + 状态推进 + revalidatePath，**未触发 service_commissions 写入**，也不更新 service_orders.commission_status。staff.complete 同样动作会写完整提成 + 置 '已分配'。
-- **风险**：admin 后台触发完成的服务单，员工提成永远是 0（员工绩效报表与 staff.complete 路径下的口径完全错位）。real.md #1 + 业务 KPI 资损。
-- **修复**：(L7) 把 staff.complete 内的 commission 计算逻辑抽到 `db/helpers/service-commission.ts`，admin/staff 共用；或 admin 直接调云函数转发。
+#### [P0-05-03] create 关键校验在事务外（TOCTOU），同预约/同顾客可重复创建
 
-#### [P0-05-07] complete 触发的 appointment 自动关闭范围过大：扣到 0 即关闭"所有"该 sale_item 的待确认/已确认预约（含他人/未来不同时段）
-- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/service.js:377-385`
-- **现象**：当 sale_items.remaining_sessions 扣到 0，UPDATE 所有 `status IN ('待确认','已确认') AND sale_item_id=该卡` 的 appointments 全部置 '已关闭'。问题：
-  - 一张卡可能由多个客户共享（家庭卡/赠送）—— `appointments.client_user_id` 与 service_orders.client_user_id 可能不一致；
-  - 若 sale_item 因退款/转换重新加回次数（refund/convert 场景），已被关的预约不会回滚；
-  - 关闭未走预约状态机校验（CC4 状态机：'已确认'→'已关闭' 是合法但应记 `cancelled_reason`，当前没写 reason）。
-- **风险**：合法预约被错误关闭（C 端用户体验事故），状态机崩坏边缘。
-- **修复**：(L3) 关闭范围限定本顾客（`AND client_user_id = so.client_user_id`），写 cancelled_reason='次数耗尽'。
+- **文件**：`service.js:55-151`
+- **现象**：appointment 关联检查（line 63-69）、sale_item 次数检查（line 81-116）、顾客活动服务单检查（line 143-151）均在事务外以 `pg.query` 读，事务（line 169）仅包含 INSERT。两次并发调用可同时通过所有事务外校验并同时 INSERT，产生重复服务单。无 DB unique 约束（appointment_id 无 UNIQUE index，client_user_id+status 无 partial unique）。
+- **风险**：重复服务单 → complete 时同一 sale_item 被两次 UPDATE，第一次成功扣次，第二次 CAS 失败（若 P0-V2-01 修复后 rowCount 正确）；但 service_commissions 可能已插入两条（ON CONFLICT DO NOTHING 幂等仅按 service_item_id，两条不同服务单的 service_items 有不同 service_item_id）→ 提成重复入账，资损。
+- **修复**：(L0) DB 侧补 partial unique：`CREATE UNIQUE INDEX uq_so_appointment ON service_orders(appointment_id) WHERE appointment_id IS NOT NULL;` + `CREATE UNIQUE INDEX uq_so_client_active ON service_orders(client_user_id) WHERE status IN ('待服务','服务中');` (L3) 将所有校验移入 pg.transaction 内。
 
-#### [P0-05-08] complete 内嵌 commission 计算把 admin/staff 行为永久不可对齐 —— **重复跨端业务**
-- **文件**：`staff service.js:387-450` vs `admin services.ts:357-380`
-- **现象**：staff 在 service.complete 内用 ~60 行 JS 实时查 commission_rate_matrix，admin 同名动作完全不查。两套行为不仅不一致，且 staff 实现存在 N+1（per-item rate 查询）、N+1+1（per-item INSERT operation_logs）。real.md 未要求两端口径一致，但作为单一事实表，分歧产生不可调和资损（P0-05-06 已记）。这条作为重复体跨端不一致再单列。
-- **修复**：(L3/L7) 收敛到一处（推荐 admin 调 staffApi 内部 RPC，或抽 db helper），或者把提成生成移到 cron-worker（脱离 complete 主路径，提升原子性 + 减少 staff.complete 锁时间）。
+---
+
+#### [P0-05-04] cancel 允许"服务中"取消，admin 仅允许"待服务"，状态机两端分歧
+
+- **文件**：`service.js:746`（`['待服务','服务中'].includes(so.status)`）vs `services.ts:415-421`（`eq(serviceOrders.status, '待服务')`）
+- **现象**：staff 端可取消"服务中"的服务单；admin 端只允许取消"待服务"。两端状态机不一致。当前服务中→取消不会造成次数资损（complete 才扣次），但未来若 start 时即扣次则有资损风险；commission_status 在取消时不置为'已取消'，留 null 残留。
+- **风险**：状态机分歧导致跨端查询、报表、历史追溯混乱；未来扩展会产生资损。
+- **修复**：(L3) staff cancel 限定仅 `status === '待服务'`，对齐 admin。
+
+---
+
+#### [P0-05-05] rate=0 静默写入 0 提成，无回扫机制，员工绩效永久少计
+
+- **文件**：`service.js:412-449`
+- **现象**：commission_rate_matrix 查询无匹配时 rate=0，写 operation_logs 但仍以 rate=0 INSERT service_commissions 并将 commission_status 置 '已分配'。运营补矩阵后无自动回扫；唯一索引 `uq_svc_comm_item_emp_role WHERE is_void=false` 阻止后续重写。
+- **风险**：员工提成永久按 0 入账，绩效报表与实际不符，属资损 P0。
+- **修复**：(L3) rate=0 且 consumeBase>0 时改为：不写 service_commissions，不置 commission_status='已分配'；仅写 operation_logs；service_orders.commission_status 留 NULL 或置 '待分配'；admin 侧补"补提成"批跑 UI。
+
+---
+
+#### [P0-05-06] admin.completeServiceOrder 完全不写 service_commissions
+
+- **文件**：`fengyu-admin/src/actions/services.ts:334-397`
+- **现象**：admin 完成服务单仅 CTE 原子扣减 + 状态推进 + revalidatePath，无任何提成计算/写入逻辑，commission_status 永远不更新。staff.complete 写完整提成 + 置 '已分配'。
+- **风险**：admin 后台完成的服务单，员工提成报表永久为 0，与 staff 路径口径完全不一致，资损。
+- **修复**：(L7) admin completeServiceOrder 补提成计算逻辑，或抽共享 DB helper 供两端复用。
+
+---
+
+#### [P0-05-07] complete 次数归零关闭预约范围过大，含他人/他店预约
+
+- **文件**：`service.js:377-385`
+- **现象**：`remaining_sessions == 0` 后 UPDATE appointments SET status='已关闭' WHERE `sale_item_id = $2 AND status IN ('待确认','已确认')`，未过滤 `client_user_id`。同一张卡（如家庭卡/赠送场景）其他顾客的待确认预约也会被错误关闭。
+- **风险**：合法预约被错误关闭，无 cancelled_reason 记录，用户体验事故，状态机边缘崩坏。
+- **修复**：(L3) 加 `AND client_user_id = so.client_user_id` + 写 `cancelled_reason='次数耗尽'`。
+
+---
+
+#### [P0-V2-01] `pg.query` 包装器返回 `result.rows`（数组）丢弃 `rowCount`，`start` / `cancel` CAS 保护完全失效
+
+> **全仓穿透 bug，影响 5 处。** 本域只记录 service.js 的 2 处，另 3 处见 §3.4 扩展影响半径。
+
+- **根因文件**：`staffApi/db/pg.js:33-41`
+
+  ```js
+  async function query(sql, params = []) {
+    const client = await getPool().connect()
+    try {
+      const result = await client.query(sql, params)
+      return result.rows   // ← 仅返回 rows 数组，丢弃 rowCount
+    } finally { client.release() }
+  }
+  ```
+
+- **本域涉及**：
+  - `service.js:267-272`（`start`）：`const result = await pg.query("UPDATE ... WHERE status='待服务'")` → `if (result.rowCount === 0)` → `undefined === 0` 为 `false`，CAS 永远不触发。
+  - `service.js:751-756`（`cancel`）：同上，`status='服务中' + result.rowCount=0` 时前端显示"已取消"成功但 DB 实际已为'已完成'。
+
+- **对比**：`complete` 函数内的 CAS 均使用 `client.query()`（事务回调中的原始 PG client），正确返回 rowCount，逻辑正确。
+
+- **风险**：
+  1. `start` CAS 失效：两次并发 start 均可将服务单推至"服务中"，第二次 UPDATE 影响 0 行但 JS 侧以为成功。
+  2. `cancel` CAS 失效：cancel 与 complete 并发时，cancel 的 CAS 无法检测 complete 已先发生，DB status='已完成'，cancel UPDATE 影响 0 行，但 JS 返回 `{status:'已取消'}` → 前端状态机显示"已取消"但 DB 为"已完成"。
+  3. 违反 real.md #3（支付幂等等同于重复 cancel 不产生重复效果）、#4（状态单向推进保护机制失效）。
+
+- **全仓影响范围**（grep 实证）：
+
+  | 文件 | 行 | 操作 | pg.query 调用上下文 | 风险 |
+  |------|----|------|---------------------|------|
+  | `routes/service.js` | 271 | `start` CAS UPDATE | `pg.query` 非事务 | 本域 P0 |
+  | `routes/service.js` | 755 | `cancel` CAS UPDATE | `pg.query` 非事务 | 本域 P0 |
+  | `routes/customer.js` | 928 | 顾客分配 UPDATE | `pg.query` 非事务 | 分配不幂等 |
+  | `routes/customer.js` | 987 | 顾客备注 UPDATE | `pg.query` 非事务 | 备注更新不幂等 |
+  | `routes/appointment.js` | 209 | 预约确认 UPDATE | `pg.query` 非事务 | 确认不幂等 |
+
+  **注**：`order.js` 内所有 `.rowCount` 检查均包裹在 `pg.transaction(callback)` 内使用 `client.query()` — 这些不受影响。
+
+- **修复**：(L3)
+  - 方案 A（推荐）：在 `staffApi/db/pg.js` 增加 `queryWithCount(sql, params)` 返回 `{ rows, rowCount }`，调用方改为 `const { rows, rowCount } = await pg.queryWithCount(...)`。
+  - 方案 B：将上述 5 处 UPDATE 移入 `pg.transaction()` 内使用 `client.query()`。
+  - 方案 C（激进）：修改 `pg.query()` 直接返回完整 `result` 对象（破坏性变更，需全仓回归）。
+
+---
+
+#### [P0-V2-02] `admin.completeServiceOrder` 不校验 `items_deducted`，次数扣减静默失败但服务单变"已完成"
+
+- **文件**：`fengyu-admin/src/actions/services.ts:360-397`
+- **现象**：admin 使用 CTE 原子完成：
+  ```sql
+  WITH status_check AS (
+    UPDATE service_orders SET status='已完成', completed_at=NOW()
+    WHERE service_order_id=$1 AND status='服务中' RETURNING service_order_id
+  ),
+  deduct AS (
+    UPDATE sale_items SET remaining_sessions = remaining_sessions - si.session_used
+    FROM service_items si
+    WHERE sale_items.sale_item_id = si.sale_item_id
+      AND si.service_order_id = $1
+      AND sale_items.remaining_sessions >= si.session_used
+      AND EXISTS (SELECT 1 FROM status_check)
+    RETURNING sale_items.sale_item_id
+  )
+  SELECT
+    (SELECT COUNT(*) FROM status_check) AS status_updated,
+    (SELECT COUNT(*) FROM deduct) AS items_deducted
+  ```
+  JS 侧（line 386-388）：
+  ```ts
+  if (!row || Number(row.status_updated) === 0) {
+    return { success: false, message: '服务单状态已变更，无法完成' }
+  }
+  ```
+  `items_deducted` 被 SELECT 出来但**从未被检查**。若 `deduct` CTE 因 `remaining_sessions < session_used` 匹配 0 行，`status_check` 仍成功提交（服务单状态已变为"已完成"），但 `sale_items.remaining_sessions` **未扣减**。
+
+- **风险**：
+  1. 服务单标记"已完成"但次数未扣，违反 real.md #1（次数防超卖）。
+  2. 并发 admin.complete + staff.complete 竞争时，若 admin 先赢：status_check 成功，deduct 因 remaining_sessions 已被抢先扣减而影响 0 行 → `items_deducted=0`，次数未扣，日志返回成功 ← **数据不一致 bug**。
+  3. 此场景可被人为触发（同一服务单同时发起 admin 和 staff complete），"单扣次 vs 零扣次"结果完全取决于竞争顺序。
+
+- **修复**：(L7)
+  ```ts
+  const row = (result as any[])[0]
+  if (!row || Number(row.status_updated) === 0) {
+    return { success: false, message: '服务单状态已变更，无法完成' }
+  }
+  // 新增：检查扣次是否完整
+  const itemsDeducted = Number(row.items_deducted)
+  const expectedItems = /* SELECT COUNT(*) FROM service_items WHERE service_order_id=$1 */
+  if (itemsDeducted < expectedItems) {
+    await logOperation(session, 'service.complete.deduct_partial', ...)
+    return { success: false, message: '次数扣减失败，请检查剩余次数后重试' }
+  }
+  ```
+  根本修复：CTE 内加 CHECK，或改为显式事务 per-item 原子 UPDATE + rowCount 检查（与 staff 路径一致）。
+
+---
 
 ### 3.2 P1（数据一致 / 状态错乱）
 
-#### [P1-05-09] is_shengmei / sales_category / unit_real_price 快照仅在 create 拷贝，sale_items 退款冲销后未重算
-- **文件**：`staff service.js:196-205`
-- **现象**：service_items 三个快照字段从 sale_items 当前值拷贝。若 service_orders.create → 期间订单退款写入 refund_out 行（不动原 sale_item，新增 refund_out 行）→ 原快照可继续核销，但提成口径 sales_category 已不应再产生收益。无重算/反推机制。
-- **风险**：退款后服务单仍按原 sales_category 计算提成，real.md #2 价格快照不可变与 #3 支付幂等的边界场景。
-- **修复**：(L7) admin 退款审批后联动检查关联 service_items 是否已 complete；若已 complete 则反向 INSERT service_commissions(is_void=true) 或 INSERT 红冲行。
+#### [P1-05-09] ✅ v1 已记 — is_shengmei/sales_category/unit_real_price 退款后快照未回写
 
-#### [P1-05-10] staff.list 列表查询缺少 scope 助手（buildStoreScopeCondition）
-- **文件**：`staff service.js:480-518, 619-636`
-- **现象**：staff 服务单 list/detail/counts 只用 `so.store_id = $1`（单 store_id 取 effectiveStoreId）。管理层模式（loginLevel='management'）下 effectiveStoreId 应为 null，list/detail/counts 都会查不到任何数据（management 用户在 service Tab 看到空）。CC3 命中。
-- **风险**：管理层用户 service Tab 一片空白，不一致体验；总部 / 市场角色无法看下属门店服务单。
-- **修复**：(L3) 用 `utils/scope.js` 的 `buildStoreScopeCondition(ctx.auth, 'so.store_id', $n)`，与 order.list 同模式。
+#### [P1-05-10] ✅ v1 已记 — staff.list 缺 buildStoreScopeCondition，管理层模式服务单空白
 
-#### [P1-05-11] complete 流程内 commission 计算 N+1 查询；complete 大单（10+ items）显著拉长事务
-- **文件**：`staff service.js:401-411`
-- **现象**：每个 service_item 独立查 commission_rate_matrix 一次。事务内串行，10 个 item 即 10 次往返。
-- **风险**：CC2 长事务 + 持锁；对 sale_items 的 UPDATE 锁链拉长 → 顾客端并发 service.list 阻塞。
-- **修复**：(L3) 一次拼接 IN(...) + ORDER BY amount_tier_min DESC 用 LATERAL JOIN 批量取 rate；或事务前查好 rateMap。
+#### [P1-05-11] ✅ v1 已记 — complete 提成计算 N+1 查询（per-item rate SELECT in transaction）
 
-#### [P1-05-12] client.service.detail / list 直接返回 service_orders.assigned_employee_id（员工 ID 是内部 PK 不应暴露）
-- **文件**：`fengyu-client/cloudfunctions/clientApi/routes/service.js:23-43, 83-101`
-- **现象**：返回 employee_id（WorkFine 内部 ID 风格 string PK）。CC6 PII 命中虽不直接泄漏 PII，但暴露内部 PK 让顾客端可枚举。
-- **修复**：(L3) 仅返回 employeeName / 头像，不返回 employee_id。
+#### [P1-05-12] ✅ v1 已记 — client.service.detail 暴露 assigned_employee_id（内部 PK）
 
-#### [P1-05-13] client.service.detail 不校验 service_order 状态，已取消的服务单也对顾客可见
-- **文件**：`fengyu-client/cloudfunctions/clientApi/routes/service.js:39-46`
-- **现象**：仅 `client_user_id = $2` 过滤，未对 status 做任何过滤。已取消的服务单仍展示到顾客的"服务记录"。
-- **修复**：(L3) `AND so.status IN ('待服务','服务中','已完成')`。
+#### [P1-05-13] ✅ v1 已记 — client.service.list 不过滤已取消服务单（也含 detail：无 status 条件）
 
-#### [P1-05-14] generator 用 `Date#toISOString().slice(2,10)` UTC 时区跨午夜重号
-- **文件**：`staff service.js:769-770`
-- **现象**：与 audit-02 P0-02-02 相同模式。北京时间 00:00–08:00 staff 端用 UTC 算出昨日 dateStr，admin 用 `to_char(NOW(), 'YYMMDD')` 即 PG 服务器时区。两端跨午夜后小时窗口算出不同号段。
-- **修复**：(L3) 统一用 PG `to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYMMDD')`。
+#### [P1-05-14] ✅ v1 已记 — generateServiceOrderId 用 toISOString().slice(2,10) UTC，跨午夜号段错乱
 
-#### [P1-05-15] generateServiceItemId 用 `Math.random()`，无唯一约束（service_item_id 是 PRIMARY KEY 但靠 random 兜底）
-- **文件**：`staff service.js:792-794`
-- **现象**：`'si_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9)`，约 36^9 ≈ 10^14 空间，Birthday paradox 在 1e7 次插入下碰撞概率 < 1e-3，但有概率。admin 用 `${id}-${index}` 形式更稳。
-- **修复**：(L3) 改为 `${serviceOrderId}-${String(idx+1).padStart(2,'0')}` 同 admin。
+#### [P1-05-15] ✅ v1 已记 — generateServiceItemId 用 Math.random()，有碰撞概率
 
-#### [P1-05-16] start 不存在的幂等：重复点 start 第二次直接报"状态已变更"，前端 UI 体验差
-- **文件**：`staff service.js:266-273`
-- **现象**：start CAS WHERE status='待服务'，第二次 start 立即抛错。complete 有幂等分支（line 311-318），start 没有。前端 staff "开始服务" 按钮被网络抖动重连发两次时报错。
-- **修复**：(L3) start 加幂等：if so.status==='服务中' 直接返回成功。
+#### [P1-05-16] ✅ v1 已记 — start 无幂等分支，网络抖动重试立即抛错（P0-V2-01 修复后此问题更严重：双次请求均返回成功）
+
+#### [P1-V2-03] `complete` 提成计算读 `sale_items.sales_category`（live）而非 `service_items.sales_category`（snapshot），快照设计形同虚设
+
+- **文件**：`service.js:326-335`
+- **现象**：complete 的联查：
+  ```sql
+  SELECT sit.service_item_id, sit.sale_item_id, sit.session_used, sit.employee_id,
+         sit.unit_real_price,             -- ← 从 service_items snapshot 读（正确）
+         si.service_fee, si.sales_category -- ← 从 sale_items live 读（错误！）
+  FROM service_items sit
+  JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
+  ```
+  create 时正确地将 `sale_items.sales_category` 拷贝到 `service_items.sales_category`，但 complete 时跳过 snapshot，直接取 live 值。同理 `si.service_fee` 也是 live 读（service_items 表无 service_fee 快照列）。
+- **风险**：退款/订单修正后，提成计算使用新 sales_category，与快照语义不符。
+- **修复**：(L3) 改查询为 `sit.sales_category`；(L0) 补 schema migration 为 service_items 增加 `service_fee` 快照列。
+
+#### [P1-V2-04] `admin.createServiceOrder` 未快照 `is_shengmei` / `sales_category`
+
+- **文件**：`fengyu-admin/src/actions/services.ts:551-563`
+- **现象**：admin create 只传 `unitRealPrice`，未传 `isShengmei` / `salesCategory`：
+  ```ts
+  await tx.insert(serviceItems).values({
+    serviceItemId, serviceOrderId: id,
+    saleItemId: item.saleItemId,
+    sessionUsed: item.sessionUsed,
+    unitRealPrice: snapshot.unitRealPrice || '0',
+    employeeId: data.assignedEmployeeId,
+    // isShengmei 缺失 → DB DEFAULT NULL
+    // salesCategory 缺失 → DB DEFAULT NULL
+  })
+  ```
+- **风险**：
+  1. `is_shengmei` NULL → admin 创建的服务单"是否生美项目"统计报表出错。
+  2. 若未来修复 P1-V2-03（complete 改用 `sit.sales_category`），admin 创建的服务单在 complete 时取到 NULL → 无 rate 匹配 → rate=0 → P0-05-05 再次触发。
+- **修复**：(L7) admin createServiceOrder 在事务内为每个 item 查 `sale_items.is_shengmei, sale_items.sales_category`，写入 serviceItems.values。
+
+---
 
 ### 3.3 P2（代码质量 / 可维护）
 
-#### [P2-05-17] errorMessage 全部 INVALID_PARAMS 前缀，状态相关错误应该用 PERMISSION_DENIED 或新增前缀
-- **文件**：`staff service.js:103, 263, 321, 322, 458` 等
-- **现象**：状态机失败、剩余次数不足、关联预约非法都是 `INVALID_PARAMS:`，与 audit-02 P2-02-17 一致：自定义错误前缀（`次数不足:`、line 367）甚至直接抛中文，不在 4 约定内。CC5 命中。
-- **修复**：(L3) 引入 `STATE_INVALID:` / `RESOURCE_EXHAUSTED:` 前缀或挂在 INVALID_PARAMS 之下细分 reason 字段。
+#### [P2-05-17] ✅ v1 已记 — 错误前缀滥用 INVALID_PARAMS，状态相关/资源类错误应细分
 
-#### [P2-05-18] complete 内 SELECT remaining_sessions 二次查询冗余
-- **文件**：`staff service.js:372-385`
-- **现象**：UPDATE 后再 SELECT 看是否归 0，可改用 `RETURNING remaining_sessions` 一句。当前两次往返。
-- **修复**：(L3) 改 `UPDATE ... RETURNING remaining_sessions`。
+#### [P2-05-18] ✅ v1 已记 — complete 内 SELECT remaining_sessions 二次查询冗余，可改 RETURNING
 
-#### [P2-05-19] list 顾客姓名兜底逻辑过度复杂（client_wechat_users.name + sale_orders.customer_name）
-- **文件**：`staff service.js:560-588`
-- **现象**：先查 client_wechat_users.name，缺则从最近订单 customer_name 取。v3.1 后 client_wechat_users 已合并 customers，name 应该已齐；兜底逻辑成为死代码。
-- **修复**：(L3) 删除兜底，留警告 log。
+#### [P2-05-19] ✅ v1 已记 — list 顾客名兜底从 sale_orders 取（v3.1 后死代码）
 
-#### [P2-05-20] complete 内 INSERT operation_logs 'rate_missing' 写到 detail JSON，但 source='staffApi' 不等于其他模块用 'staffApi' 还是 'staff_api'
-- **文件**：`staff service.js:419-430`
-- **现象**：source 字段值与其他模块不一致（cron-worker 用 'cronTask'）。CC9 命中（操作日志 source 命名不规范）。
-- **修复**：(L3) 统一为 'staff_api' 或 'staffApi'，文档化。
+#### [P2-05-20] ✅ v1 已记 — operation_logs source='staffApi' 命名不规范
 
-#### [P2-05-21] start/complete/cancel 的 detail 查询都用 `SELECT *`
-- **文件**：`staff service.js:248, 295, 731`
-- **现象**：`SELECT *` 把所有列拉回 JS，包括将来新增字段；维护性差。
-- **修复**：(L3) 改 explicit column list。
+#### [P2-05-21] ✅ v1 已记 — start/complete/cancel detail 查询用 SELECT *
+
+#### [P2-V2-22] `admin.completeServiceOrder` 的 `deduct` CTE 缺 `sale_items.store_id` 过滤
+
+- **文件**：`services.ts:367-376`
+- **现象**：staff complete（line 347-351）明确加 `AND store_id = $3`（服务单所属门店），防止跨店核销。admin complete 的 deduct CTE 无此约束。
+- **风险**：理论上若 service_items 中存在跨店 sale_item 引用，admin complete 可在不同门店的 sale_item 上扣次。属 P2 低风险。
+- **修复**：(L7) deduct CTE 增加 `AND sale_items.store_id = (SELECT store_id FROM service_orders WHERE service_order_id = $1)`。
+
+---
 
 ## 4. 跨端不一致
 
 | 维度 | admin | staff | client | 风险 | 优先级 |
 |------|-------|-------|--------|------|--------|
-| 服务单号前缀 | `FY-FW-` | `HLD-WX-` | 不生成 | 号段碎片，无法跨端搜索 | P0 |
-| advisory lock key | `hashtext('service_order_id_gen')` | `Buffer.reduce` 私有 hash | — | 跨端并发 create 不互斥 | P0 |
-| service_items.sku_id INSERT | 不写（schema 也无） | **写**（PG 报列不存在） | — | staff create 100% 失败 | P0 |
+| service_order_id 前缀 | `FY-FW-` | `HLD-WX-` | 不生成 | 号段分裂，无法跨端搜索 | P0 |
+| advisory lock key | `hashtext('service_order_id_gen')` | `Buffer.reduce` 私有 hash | — | 并发 create 不互斥 | P0 |
+| service_items.sku_id INSERT | 不写（schema 无） | **写**（PG 报列不存在） | — | staff create 100% 失败 | P0 |
+| service_items 快照完整性 | `unitRealPrice` only；`is_shengmei`/`salesCategory` 缺失 | `unitRealPrice`/`is_shengmei`/`salesCategory` 均写 | — | admin 创建的 items 快照不完整 | P1 |
 | commission 写入 | 无 | 有（per-item） | — | admin 完成路径无提成 | P0 |
-| cancel 状态范围 | 仅"待服务" | 待服务+服务中 | — | 状态机分歧 | P1 |
-| start 幂等 | 无 | 无 | — | 抖动重试报错 | P1 |
-| 服务记录可见状态 | 全部 | 默认 store 内 | 全部含已取消 | client 看到无意义已取消 | P1 |
+| complete 读 sales_category | 不涉及 | live（si.sales_category）非 snapshot | — | 快照机制被绕过 | P1 |
+| CAS UPDATE rowCount 检查 | 正确（CTE COUNT 检查 status_updated）| start/cancel 失效（pg.query 包装器吞 rowCount） | — | 并发状态机保护失效 | P0 |
+| cancel 允许状态范围 | 仅"待服务" | 待服务+服务中 | — | 状态机分歧 | P1 |
+| deduct 无 store_id 过滤 | 无过滤 | 有过滤 | — | admin 理论跨店核销 | P2 |
+| 服务记录可见状态 | 全部 | store 内 | 全部含已取消 | client 看到无意义已取消 | P1 |
 | serviceItemId 生成 | `${orderId}-${idx}` | `Math.random()` | — | staff 端理论碰撞 | P1 |
-| 时区基准 | PG `to_char(NOW())` | UTC `toISOString()` | — | 跨午夜重号窗口 | P1 |
+| 时区基准 | PG `to_char(NOW())` | UTC `toISOString()` | — | 跨午夜号段错乱 | P1 |
 
-## 5. 横切检查（套用 §3）
+---
 
-- [x] CC1 数值精度：`Math.round(x*100)/100` 在 staff complete 中正确使用；NUMERIC(10,2)/(5,4) 列定义合规。
+## 5. 横切检查（§3 CC 清单）
+
+- [x] **CC1 数值精度**：
+  - NUMERIC(10,2) 列定义合规（service_commissions.commission_amount 等）。
+  - `Math.round(x * 100) / 100` 在提成计算中正确使用。
+  - `remaining_sessions` 是 integer 类型，`pg` 库返回 JS number，`=== 0` 比较正确。
+  - **CC1 OK**。
+
 - [ ] **CC2 并发幂等**：
-  - staff.create 事务外校验 → P0-05-03
-  - admin / staff lock key 不同 → P0-05-02
-  - start 无幂等 → P1-05-16
-  - generateServiceOrderId 用 toISOString slice → P1-05-14（同 audit-02 跨午夜模式后续命中）
-- [ ] **CC3 组织隔离**：staff list/detail/counts 未用 `buildStoreScopeCondition` → P1-05-10（audit-01 §CC3 后续命中，管理层模式空白）
-- [ ] **CC4 后端鉴权**：admin completeServiceOrder 用 `isAdminScope` + 预查 storeId 包含在 scopeStoreIds，但 cancel/start 直接 `scopeCondition()` 拼 WHERE，模式不统一（CC4 admin 隐式合约后续命中）。
-- [ ] **CC5 错误码**：`INVALID_PARAMS:` 滥用、混入中文裸抛、source 字段命名不规范 → P2-05-17/05-20（audit-01/02 后续命中）
-- [x] CC6 PII：service.list 顾客姓名脱敏未做（已在 audit-01 P0-PII-06 体系内），本域不重复登记；employee_id 暴露 → P1-05-12。
-- [ ] **CC7 时间字段**：started_at / completed_at 写入责任清晰；但 `Date#toISOString().slice(2,10)` 时区漂移 → P1-05-14。
-- [ ] **CC8 WXML/Vant**：未深入前端验证。
-- [ ] **CC9 测试与残留**：services.test.ts 未覆盖 staff.create 的 sku_id 列 INSERT（admin 测试覆盖不到 staff 实现），P0-05-01 是测试盲区典型。
+  - `start` CAS 完全失效（P0-V2-01）← 全仓 2 处（本域 service.js）+ 3 处（customer.js ×2, appointment.js ×1）
+  - `cancel` CAS 完全失效（P0-V2-01）
+  - `create` 事务外校验 TOCTOU（P0-05-03）
+  - admin/staff lock key 不同（P0-05-02）
+  - `complete` CAS 正确（`client.query()` 返回 rowCount）
+  - admin `completeServiceOrder` deduct 无 rowCount 校验（P0-V2-02）
+  - `generateServiceOrderId` UTC 时区（P1-05-14）
+
+- [ ] **CC3 组织隔离**：
+  - `staff.list/detail/counts` 仅用 `effectiveStoreId = $1`，管理层模式下为 null → 查不到任何记录（P1-05-10）
+  - `client.service.list` 仅用 `client_user_id = $1` 过滤，无 status 过滤（P1-05-13）
+  - `admin.completeServiceOrder` deduct 无 store_id 过滤（P2-V2-22）
+
+- [x] **CC4 后端鉴权**：
+  - 所有 staff 路由入口调用 `requireStaffBound()`（line 22、239、287、481、611、723）✓
+  - `start/complete/cancel` 额外校验 `assigned_employee_id` 或 `roles.includes('manager')` ✓
+  - admin 路由使用 `requirePermission(session, 'service:...')` + `scopeCondition` ✓
+  - client 路由通过 ctx.auth.userId 隔离 ✓
+  - **CC4 OK**（未发现未鉴权路由）。
+
+- [ ] **CC5 错误码**：
+  - `service.js:367`：`throw new Error('次数不足：...')` 无任何标准前缀，直接中文。
+  - `service.js:103,107,111,114,150,263,321,360,458` 等多处 `INVALID_PARAMS:` 用于状态机失败（应区分）。
+  - **CC5 P2**（与 v1 P2-05-17 一致）。
+
+- [ ] **CC6 PII**：
+  - `client.service.detail` 返回 `assigned_employee_id`（内部 PK），见 P1-05-12。
+  - `client.service.list` 返回 `assigned_employee_id` 和 `employee_name`。
+  - **CC6 P1**。
+
+- [ ] **CC7 时间字段**：
+  - `started_at`/`completed_at` 由对应 action 写入，责任清晰 ✓。
+  - `generateServiceOrderId` 用 `new Date().toISOString().slice(2,10)` UTC 时区，跨午夜漂移（P1-05-14）。
+  - `created_at/updated_at` DB DEFAULT 写入 ✓。
+  - `service_commission.ts:47-48`：`voidedAt / voidedReason` 新字段（2026-04-26）未在 staff complete 的 commission 写入中体现。
+  - **CC7 P1**（时区问题）。
+
+- [ ] **CC8 WXML/Vant**：未深入前端验证，继承 v1 结论。
+
+- [ ] **CC9 测试与残留**：
+  - `service.test.js` 的 create 测试用 mock transaction，不检查 INSERT 列清单是否含非法 sku_id，P0-05-01 仍是测试盲区。
+  - `services.test.ts` 的 completeServiceOrder 测试（line 259-298）不覆盖 `items_deducted=0 && status_updated=1` 场景（P0-V2-02 测试盲区）。
+  - `service.js:578-589`：list 中顾客名从 `sale_orders.customer_name` 兜底取，v3.1 后已是死代码（P2-05-19）。
+
+---
 
 ## 6. 修复建议（按 L0→L10 传播层）
 
 | 层 | 文件 | 修改 | 关联问题 |
 |----|------|------|----------|
-| L0 schema/enums | `db/schema/service.ts` + 新 migration | (a) 决策保留 `sku_id` → ADD COLUMN，否则 (b) 移除 staff INSERT 的 sku_id；新增 `appointment_id` partial unique；新增 `client_user_id WHERE status IN(...)` partial unique | P0-05-01, P0-05-03 |
-| L0 schema/enums | `db/schema/service-commission.ts` | 增加 status 列（'已生成','待重算','已作废'）支持 rate=0 重算流 | P0-05-05 |
-| L3 staff routes | `staffApi/routes/service.js:207-224` | 删除 sku_id 列引用（或改 schema 后保留） | P0-05-01 |
-| L3 staff routes | `staffApi/routes/service.js:55-164` | 整段挪入事务内，事务外只做参数校验 | P0-05-03 |
-| L3 staff routes | `staffApi/routes/service.js:722-764` | cancel 限定仅 '待服务'，对齐 admin | P0-05-04 |
-| L3 staff routes | `staffApi/routes/service.js:377-385` | 关闭预约时加 `AND client_user_id` + 写 cancelled_reason | P0-05-07 |
-| L3 staff routes | `staffApi/routes/service.js:480/619/810` | 接入 buildStoreScopeCondition | P1-05-10 |
-| L3 staff routes | `staffApi/routes/service.js:266-273` | start 加幂等分支 | P1-05-16 |
-| L3 staff routes | `staffApi/routes/service.js:769-770` | dateStr 改 PG 时区版本 | P1-05-14 |
-| L3 staff routes | `staffApi/routes/service.js:792-794` | serviceItemId 改 `${orderId}-${idx}` 模式 | P1-05-15 |
-| L3 client routes | `clientApi/routes/service.js:23-43` | 加 status IN 过滤 + 不返回 employee_id | P1-05-12, P1-05-13 |
-| L7 admin actions | `fengyu-admin/src/actions/services.ts:333-396` | 调用 staff complete 等价提成生成逻辑（或 cron 异步重算） | P0-05-06 |
-| L7 admin actions | `fengyu-admin/src/actions/services.ts:498-516` | 前缀对齐 staff（或反之），lock key 收敛 | P0-05-02 |
-| L9 staff frontend | `pages/service/*` | 增加"开始服务"重复点保护 | P1-05-16 |
+| **L0 schema/migrations** | 新 migration | 补 `service_items.service_fee` 快照列 | P1-V2-03 |
+| **L0 schema/migrations** | 新 migration | `CREATE UNIQUE INDEX uq_so_appointment ON service_orders(appointment_id) WHERE appointment_id IS NOT NULL` | P0-05-03 |
+| **L0 schema/migrations** | 新 migration | `CREATE UNIQUE INDEX uq_so_client_active ON service_orders(client_user_id) WHERE status IN ('待服务','服务中')` | P0-05-03 |
+| **L3 staff db/pg.js** | `staffApi/db/pg.js` | 增加 `queryWithCount(sql,params)` 返回 `{rows, rowCount}` 的方法；或修改 `query()` 返回完整 result（破坏性，需全仓回归） | **P0-V2-01（根因）** |
+| **L3 staff routes** | `service.js:267-272` | 改 `start` UPDATE 为 `pg.queryWithCount(...)` 或移入 transaction 内 `client.query()` | P0-V2-01 |
+| **L3 staff routes** | `service.js:751-756` | 改 `cancel` UPDATE 同上 | P0-V2-01 |
+| **L3 staff routes** | `service.js:928`（customer.js）| 改 `customer.assign` UPDATE → 同上 | P0-V2-01 扩展 |
+| **L3 staff routes** | `service.js:987`（customer.js）| 改 `customer.updateNotes` UPDATE → 同上 | P0-V2-01 扩展 |
+| **L3 staff routes** | `service.js:209`（appointment.js）| 改 `appointment.confirm` UPDATE → 同上 | P0-V2-01 扩展 |
+| **L3 staff routes** | `service.js:207-224` | 删除 sku_id 列引用及 $5 占位符 | P0-05-01 |
+| **L3 staff routes** | `service.js:55-151` | 将 appointment/saleItem/activeSo 校验整体移入 pg.transaction | P0-05-03 |
+| **L3 staff routes** | `service.js:746` | cancel 允许状态改为仅 `['待服务']` | P0-05-04 |
+| **L3 staff routes** | `service.js:377-385` | 关闭预约加 `AND client_user_id = so.client_user_id` + `cancelled_reason` | P0-05-07 |
+| **L3 staff routes** | `service.js:329` | `si.sales_category` 改 `sit.sales_category` | P1-V2-03 |
+| **L3 staff routes** | `service.js:329` | 增加 `sit.service_fee`（需先 L0 补列） | P1-V2-03 |
+| **L3 staff routes** | `service.js:480-518,619-636,801-816` | 接入 buildStoreScopeCondition | P1-05-10 |
+| **L3 staff routes** | `service.js:266-273` | start 加幂等分支（status==='服务中' 直接返回成功） | P1-05-16 |
+| **L3 staff routes** | `service.js:769-770` | dateStr 改 PG 时区 `to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYMMDD')` | P1-05-14 |
+| **L3 staff routes** | `service.js:792-794` | serviceItemId 改 `${orderId}-${idx}` 模式 | P1-05-15 |
+| **L3 client routes** | `clientApi/routes/service.js:83-101` | list 加 `AND so.status != '已取消'`；detail 同步校验 | P1-05-13 |
+| **L3 client routes** | `clientApi/routes/service.js:23-65` | detail/list 不返回 employee_id | P1-05-12 |
+| **L7 admin actions** | `services.ts:386-388` | completeServiceOrder 增加 `items_deducted` 校验；改为显式事务 per-item 原子 UPDATE 与 staff 对齐 | P0-V2-02 |
+| **L7 admin actions** | `services.ts:551-563` | createServiceOrder 补快照 is_shengmei / sales_category / service_fee | P1-V2-04 |
+| **L7 admin actions** | `services.ts:333-397` | completeServiceOrder 补提成计算（或调共享 helper） | P0-05-06 |
+| **L7 admin actions** | `services.ts:520-536` | 前缀对齐 staff（或反之），lock key 收敛至同一常量 | P0-05-02 |
+| **L7 admin actions** | `services.ts:368-376` | deduct CTE 增加 store_id 过滤 | P2-V2-22 |
+| **L9 staff frontend** | `pages/service/*` | "开始服务"按钮增加 loading 状态防重 | P1-05-16 |
+
+---
 
 ## 7. 验证 SQL（在 5434/fengyu EXPLAIN，禁止写入）
 
 ```sql
--- (1) 确认 service_items 表是否有 sku_id 列（应 0 行；P0-05-01 实证）
+-- (V2-1) 确认 service_items 确无 sku_id 列（P0-05-01 实证）
 SELECT column_name, data_type
 FROM information_schema.columns
-WHERE table_schema='public' AND table_name='service_items' AND column_name='sku_id';
+WHERE table_schema='public'
+  AND table_name='service_items'
+  AND column_name='sku_id';
+-- 预期：0 行
 
--- (2) 检查 service_orders 是否已存在跨前缀混用
+-- (V2-2) 确认 service_items 的 is_shengmei / sales_category 列存在（migration 0008/0011）
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema='public'
+  AND table_name='service_items'
+  AND column_name IN ('is_shengmei','sales_category');
+-- 预期：2 行
+
+-- (V2-3) 检查 service_items.sales_category 是否有 NULL（admin 创建路径遗留，P1-V2-04 实证）
+SELECT COUNT(*) AS null_count
+FROM service_items
+WHERE sales_category IS NULL;
+
+-- (V2-4) 检查 service_items.is_shengmei 是否有 NULL（admin 创建路径遗留，P1-V2-04 实证）
+SELECT COUNT(*) AS null_count
+FROM service_items
+WHERE is_shengmei IS NULL;
+
+-- (V2-5) 服务单 ID 前缀分布（P0-05-02 实证）
 SELECT
   CASE
-    WHEN service_order_id LIKE 'HLD-WX-%' THEN 'HLD-WX'
-    WHEN service_order_id LIKE 'FY-FW-%' THEN 'FY-FW'
+    WHEN service_order_id LIKE 'HLD-WX-%' THEN 'HLD-WX (staff)'
+    WHEN service_order_id LIKE 'FY-FW-%'  THEN 'FY-FW (admin)'
     ELSE 'OTHER'
   END AS prefix,
   COUNT(*)
 FROM service_orders
 GROUP BY 1;
 
--- (3) 是否存在同一 appointment_id 关联多条 service_orders（P0-05-03 实证）
+-- (V2-6) 检查 appointment_id 是否有重复关联（TOCTOU 产物，P0-05-03 实证）
 SELECT appointment_id, COUNT(*)
 FROM service_orders WHERE appointment_id IS NOT NULL
 GROUP BY appointment_id HAVING COUNT(*) > 1;
 
--- (4) 是否存在同顾客多条进行中服务单
+-- (V2-7) 检查同顾客多条进行中服务单（TOCTOU 产物，P0-05-03 实证）
 SELECT client_user_id, COUNT(*)
 FROM service_orders WHERE status IN ('待服务','服务中')
 GROUP BY client_user_id HAVING COUNT(*) > 1;
 
--- (5) 已完成服务单中 commission_rate=0 但 consume_amount>0 的提成行（P0-05-05 实证）
-SELECT COUNT(*)
+-- (V2-8) 检查 admin 完成服务单 commission_status 分布（P0-05-06 + P0-V2-02）
+SELECT
+  CASE WHEN commission_status IS NULL THEN 'admin路径(无commission)' ELSE commission_status END AS path,
+  COUNT(*)
+FROM service_orders
+WHERE status = '已完成'
+GROUP BY 1;
+
+-- (V2-9) 检查已完成服务单中 commission_rate=0 但 consume_amount>0 的提成行（P0-05-05 实证）
+SELECT COUNT(*) AS zero_rate_with_consume
 FROM service_commissions
 WHERE commission_rate = 0 AND consume_amount > 0 AND is_void = false;
 
--- (6) admin 路径下完成的服务单（commission_status IS NULL 且 status='已完成'）（P0-05-06 实证）
-SELECT COUNT(*) FROM service_orders WHERE status='已完成' AND commission_status IS NULL;
+-- (V2-10) 确认 service_commissions 唯一索引定义（P0-05-05 幂等保障验证）
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'service_commissions'
+  AND indexname = 'uq_svc_comm_item_emp_role';
 
--- (7) 验证 cancel 'service_order' 状态分布（P0-05-04 状态机审计）
-SELECT status, COUNT(*) FROM service_orders WHERE status='已取消' GROUP BY status;
-
--- (8) 是否存在 sale_item_id 已耗尽但仍有未关闭预约（P0-05-07 副作用）
-SELECT a.sale_item_id, a.status, si.remaining_sessions
+-- (V2-11) 检查 sale_item 次数为 0 但仍有 '已确认'/'待确认' 预约（P0-05-07 产物）
+SELECT a.appointment_id, a.client_user_id, a.sale_item_id, a.status, si.remaining_sessions
 FROM appointments a
 JOIN sale_items si ON si.sale_item_id = a.sale_item_id
-WHERE a.status IN ('待确认','已确认') AND si.remaining_sessions = 0;
+WHERE a.status IN ('待确认','已确认')
+  AND si.remaining_sessions IS NOT NULL
+  AND si.remaining_sessions = 0;
+
+-- (V2-12) 检查 admin 完成但 items_deducted 可能为 0 的历史服务单（P0-V2-02 实证，需补充）
+-- 当前 admin 实现无法从 DB 直接区分"部分扣次成功"与"完全扣次成功"，
+-- 需通过 service_items.session_used vs sale_items.remaining_sessions 变化量回推。
+SELECT so.service_order_id, so.status, so.completed_at,
+  (SELECT COUNT(*) FROM service_items si WHERE si.service_order_id = so.service_order_id) AS total_items,
+  COALESCE(sc.completed_count, 0) AS deducted_items
+FROM service_orders so
+LEFT JOIN (
+  SELECT service_order_id, COUNT(*) AS completed_count
+  FROM service_commissions WHERE is_void = false
+  GROUP BY service_order_id
+) sc ON sc.service_order_id = so.service_order_id
+WHERE so.status = '已完成'
+  AND so.completed_at > '2026-04-10'
+  AND (SELECT COUNT(*) FROM service_items si WHERE si.service_order_id = so.service_order_id)
+      > COALESCE(sc.completed_count, 0);
 ```
+
+---
 
 ## 8. 回归测试用例（建议）
 
-1. **P0-05-01 复现**：本地 5434 直接 `INSERT INTO service_items (..., sku_id, ...) VALUES (...)`，确认报 42703；写一个 staffApi 集成测试用例（mock pg）覆盖 service.create。
-2. **P0-05-02 advisory lock key 一致性**：staff + admin 并发 1000 次 service.create，确认无 23505。
-3. **P0-05-03 TOCTOU**：Goroutine/Promise.all 并发跑 5 次 staff.create 同 appointmentId 或同 clientUserId+'待服务'，断言只有 1 条插入成功。
-4. **P0-05-05 rate=0 路径**：清空 commission_rate_matrix 行执行 service.complete，验证应当不写 service_commissions（或可重算）。
-5. **P0-05-06 admin 完成不写提成**：admin completeServiceOrder 后查 service_commissions 应当与 staff.complete 等价。
-6. **P0-05-07 预约关闭范围**：构造一张共享卡 sale_item，由顾客 A 完成最后一次服务，验证顾客 B 的预约 NOT 被关闭。
-7. **P1-05-10 management 模式列表**：管理层登录调 service.list，断言能看到 scope 内全部门店服务单。
-8. **P1-05-13 client list 已取消过滤**：创建一条 cancel 的服务单，client.service.list 应不包含它。
+1. **P0-05-01** `service.create` sku_id 列不存在：在本地 5434 执行 `INSERT INTO service_items (service_item_id, sale_item_id, service_order_id, session_used, employee_id, sku_id) VALUES (...)` 确认 PG 42703；写集成测试 mock pg.transaction 后断言 client.query 被调用参数中不含 `sku_id`。
+
+2. **P0-05-02** advisory lock key 不同：grep 两端 lock key 表达式，断言不一致。
+
+3. **P0-05-03** TOCTOU：Promise.all 5 次并发 staff.create 同 appointmentId，断言 DB 仅 1 条 service_orders；再断言 partial unique 索引存在。
+
+4. **P0-05-04** cancel 状态范围：staff cancel 一条 '服务中' 的服务单，断言成功；admin cancel 同一 '服务中' 服务单，断言失败。
+
+5. **P0-05-05** rate=0 路径：清空 commission_rate_matrix 后执行 staff.complete，断言 service_commissions 中无新写入行（commission_status 应留 null/待分配）；断言 operation_logs 有 'rate_missing' 记录。
+
+6. **P0-V2-01** pg.query 包装器吞 rowCount（全仓 5 处）：
+   - 单元测试：模拟 pg.query("UPDATE") 返回 `[]`，`cancel(ctx)` 不抛错 → 确认 bug 存在
+   - 修复后：模拟 pg.queryWithCount 返回 `{ rows:[], rowCount:0 }`，`cancel(ctx)` 应抛错
+   - 同步验证 customer.assign、customer.updateNotes、appointment.confirm 的 CAS UPDATE
+
+7. **P0-V2-02** admin complete items_deducted 不检查：
+   - 模拟 `db.execute` 返回 `[{ status_updated: '1', items_deducted: '0' }]`
+   - 当前行为：返回 success:true（bug）
+   - 修复后：返回 success:false（预期）
+
+8. **P1-V2-03** sales_category snapshot vs live：
+   - 创建服务单时 sale_items.sales_category='自销自耗'
+   - 更新 sale_items.sales_category='他销自耗'
+   - staff.complete 后断言 service_commissions.role_type 对应的 commission_rate 来自 '自销自耗' 矩阵（snapshot）
+
+9. **P1-V2-04** admin create 快照完整性：admin createServiceOrder 后查 service_items，断言 `is_shengmei IS NOT NULL` 且 `sales_category IS NOT NULL`（修复后）。
+
+10. **P0-05-06** admin complete 不写提成：admin completeServiceOrder 后查 service_commissions，断言 count > 0（修复后）。
+
+---
 
 ## 9. 影响半径
 
-- 单端：☐
-- 跨端（任意 2 端）：☐
-- **全栈（3 端 + DB）：☑**
-- 涉及历史数据：☑（P0-05-05 需要回扫历史 rate=0 提成；P0-05-06 admin 路径下完成的服务单需要补提成；P0-05-07 需要回扫被错误关闭的预约）
-- 修复成本：**L**（4 个 P0 + 8 个 P1 + 5 个 P2，跨端协调，含 schema 变更）
+- **单端**：☐
+- **跨端（任意 2 端）**：☐
+- **全栈（3 端 + DB）**：☑
+- **涉及历史数据**：☑（P0-05-05 历史 rate=0 提成需回扫；P0-05-06 admin 路径完成的服务单需补提成；P0-05-07 需回扫被错误关闭的预约；P0-V2-02 需检查 admin 完成但 items_deducted=0 的历史服务单；P1-V2-04 需更新 admin 创建的 NULL 快照字段）
+- **修复成本**：**XL**（8 个 v1 P0 + 2 个 v2 P0 + 4 个 v2 P1/P2，跨端协调，含 schema 变更 + pg.js 根因修复）
+
+### P0-V2-01 全仓穿透影响明细
+
+| 文件 | 行 | 方法 | 现状 | 修复后 |
+|------|----|------|------|--------|
+| `staffApi/routes/service.js` | 271 | `start` CAS UPDATE | `result.rowCount` → `undefined` | 正确判断 0 行 |
+| `staffApi/routes/service.js` | 755 | `cancel` CAS UPDATE | `result.rowCount` → `undefined` | 正确判断 0 行 |
+| `staffApi/routes/customer.js` | 928 | `assign` UPDATE | `result.rowCount` → `undefined` | 正确判断 0 行 |
+| `staffApi/routes/customer.js` | 987 | `updateNotes` UPDATE | `result.rowCount` → `undefined` | 正确判断 0 行 |
+| `staffApi/routes/appointment.js` | 209 | `confirm` UPDATE | `result.rowCount` → `undefined` | 正确判断 0 行 |
+
+**注**：`order.js` 内所有 `.rowCount` 检查均使用 `client.query()`（在 `pg.transaction` 内），不受此 bug 影响。
+
+---
 
 ## 10. 后续待办
 
-- [ ] 与域 06 预约转单确认：service.create 校验"appointment 已关联"是否应该升 partial unique
-- [ ] 与域 07/08 提成域确认 rate=0 时的处理流（重算策略 + admin 补单 UI）
-- [ ] 与域 11 退款确认 sale_items refund 后 service_items 快照是否回写
-- [ ] 与域 23 操作日志确认 source='staffApi' vs 'staff_api' 命名规范
-- [ ] 跨域统一 ID 生成 helper（订单 / 服务单 / 款项流水 / 退款单）
+- [ ] **最高优先** 修复 `staffApi/db/pg.js` 包装器增加 `queryWithCount` 返回 `{rows, rowCount}`（P0-V2-01 根因修复），随后逐处修改上述 5 处调用点
+- [ ] **最高优先** admin completeServiceOrder 补 `items_deducted` 检查（P0-V2-02），并统一与 staff 的扣次保护策略
+- [ ] 与域 06 确认：service.create 关联预约的 partial unique 建立后，domain 06 的 appointment → service 流转是否受影响
+- [ ] 与域 07/08 提成域确认：rate=0 处理策略（P0-05-05 选项 B/C），及 service_commissions.voided_at/voided_reason 新字段联动
+- [ ] 与域 11 退款确认：退款后 sale_items.sales_category 是否变更（若变更则影响 P1-V2-03 快照漂移范围）
+- [ ] schema 新 migration：为 service_items 补 `service_fee` 快照列（P1-V2-03）；补 appointment_id partial unique（P0-05-03）；补 client_user_id+status partial unique（P0-05-03）
+- [ ] admin 历史数据修复：更新 admin 创建的 service_items.is_shengmei=NULL 和 sales_category=NULL 行（P1-V2-04）
+- [ ] admin 历史数据修复：检查 status='已完成' 且 commission_status IS NULL 的服务单，补足 service_commissions（P0-05-06）
+- [ ] 全仓回归：P0-V2-01 修复后，对 customer.assign、customer.updateNotes、appointment.confirm 进行并发幂等测试

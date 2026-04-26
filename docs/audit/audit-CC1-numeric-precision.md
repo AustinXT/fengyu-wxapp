@@ -1,383 +1,433 @@
-# 审计报告：CC1 数值精度与金额计算（横切收官）
+# 审计报告：CC1 数值精度与金额计算
 
-**审计时间**：2026-04-25
+**审计时间**：2026-04-25 初审 → 2026-04-26 重审合并
 **域 ID**：CC1（横切收官）
-**审计员**：claude-opus-4-7
-**审计时长**：~15 分钟
-**关联 PR/Ticket**：—
-**说明**：本报告**不是单一业务域审计**，而是对 25 份业务域报告 §5 CC1 节 + DB schema 全量金额/比例字段定义的"全栈金额健康度收官"。
+**审计员**：claude-opus-4-7（初审）+ claude（batch agent 重审）
+**版本**：最终版（v1+v2 合并）
+**说明**：本报告是对 25 份业务域报告 §5 CC1 节 + DB schema 全量金额/比例字段定义的"全栈金额健康度收官" + v2 独立重审新增发现合并版。
 
 ---
 
-## 1. 三端入口对照（金额/比例计算口径汇总）
+## SECTION 1：扫描覆盖范围
 
-### 1.1 DB Schema 层（NUMERIC 字段全清单）
+本次合并报告扫描以下文件，以源码实际状态为准：
 
-| 字段路径 | 类型 | CHECK | 备注 |
-|----------|------|-------|------|
-| `db/schema/order.ts:60 sale_orders.totalAmount` | NUMERIC(10,2) | ❌ 无符号 CHECK（与 sale_order_type 联动 — 见 SCHEMA-CHANGES S03-4 / S11-4 已建议） | 退款单写负数依赖应用层 |
-| `db/schema/order.ts:62 sale_orders.prepaidCardAmount` | NUMERIC(10,2) | ❌ 无 CHECK | 退款单写负 |
-| `db/schema/order.ts:64 sale_orders.payableAmount` | NUMERIC(10,2) | ❌ 无 CHECK | total - prepaid 不变量无 DB 守护 |
-| `db/schema/order.ts:70 sale_orders.paidAmount` | NUMERIC(10,2) | ❌ 无 CHECK | sop 冗余快照 |
-| `db/schema/order.ts:83 sale_orders.couponDiscount` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/order.ts:90 sale_orders.handlingFee` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/order.ts:98 sale_orders.overdraftDeduction` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/order.ts:155 sale_items.unitPrice` | NUMERIC(10,2) | ✅ `chk_item_unit_price >= 0` |  |
-| `db/schema/order.ts:158 sale_items.unitRealPrice` | NUMERIC(10,2) | ✅ `chk_item_unit_real_price >= 0` |  |
-| `db/schema/order.ts:159 sale_items.saleAmount` | NUMERIC(10,2) | ❌ 无 `=unitPrice×quantity` 不变量 CHECK（S09-3 建议中）|  |
-| `db/schema/order.ts:161 sale_items.received` | NUMERIC(10,2) | ❌ 退款行写负数依赖应用层 |  |
-| `db/schema/order.ts:168 sale_items.serviceFee` | NUMERIC(10,2) | ✅ `chk_item_service_fee >= 0` |  |
-| `db/schema/order.ts:206 sale_allocations.allocationRatio` | **NUMERIC(5,2)** ⚠️ | ❌ 无 CHECK | **PLAN 写 (5,4)，实际是 (5,2)**；取值约定 0.10..1.00 但 schema 允许 0.00..999.99（S07-1 建议加 IN 集合 CHECK）|
-| `db/schema/order.ts:212 sale_allocations.totalAmount` | NUMERIC(10,2) | ❌ 无 CHECK | 退款写负依赖应用层；语义实为"分配业绩营业额"（建议 S07-2 重命名 `allocated_revenue`）|
-| `db/schema/order.ts:250 sale_order_payments.amount` | NUMERIC(10,2) | ✅ **`chk_sop_amount_sign`**（按 changeType 联动）+ `chk_sop_method_txn` | **唯一已落地的"金额符号"DB 守卫**，值得作为模板推广 |
-| `db/schema/commission.ts:21 commission_rate_matrix.amountTierMin` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/commission.ts:23 commission_rate_matrix.amountTierMax` | NUMERIC(10,2) | ❌ 无 `min < max` CHECK |  |
-| `db/schema/commission.ts:25 commission_rate_matrix.commissionRate` | **NUMERIC(5,4)** | ❌ 无 `0 <= rate <= 1` CHECK | 唯一对齐 PLAN(5,4) 的字段 |
-| `db/schema/service-commission.ts:29 service_commissions.allocationRatio` | NUMERIC(5,2) | ❌ 无 CHECK（S08-3 建议中）| 与 sale_allocations 同精度问题 |
-| `db/schema/service-commission.ts:31 service_commissions.commissionRate` | NUMERIC(5,4) | ❌ 无 CHECK |  |
-| `db/schema/service-commission.ts:33 service_commissions.fixedFee` | NUMERIC(10,2) | ✅ `chk_svc_comm_fixed_fee >= 0` |  |
-| `db/schema/service-commission.ts:35 service_commissions.consumeAmount` | NUMERIC(10,2) | ✅ `chk_svc_comm_consume_amount >= 0` |  |
-| `db/schema/service-commission.ts:37 service_commissions.commissionAmount` | NUMERIC(10,2) | ❌ 无 `= fixedFee + consumeAmount` 不变量 CHECK |  |
-| `db/schema/prepaid-card.ts:19 prepaid_cards.balance` | NUMERIC(10,2) | ❌ 无 `>= 0` CHECK 也无 `= SUM(card_transactions.amount)` 触发器（参见 audit-14 P0-14-04）|  |
-| `db/schema/prepaid-card.ts:40 card_transactions.amount` | NUMERIC(10,2) | ❌ **缺符号 CHECK**（audit-14 P0-14-05；S14-02 已建议）|  |
-| `db/schema/coupon.ts:16 coupon_templates.discountValue` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/coupon.ts:18 coupon_templates.minSpend` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/coupon.ts:20 coupon_templates.maxDiscount` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/coupon.ts:65 user_coupons.faceValueOverride` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/product.ts:51 products.price` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/product.ts:52 products.specialPrice` | NUMERIC(10,2) | ❌ 无 `<= price` CHECK |  |
-| `db/schema/product.ts:56 products.serviceFee` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| `db/schema/product.ts:106 product_skus.price` | NUMERIC(10,2) | ✅ `chk_sku_price >= 0` |  |
-| `db/schema/product.ts:107 product_skus.specialPrice` | NUMERIC(10,2) | ❌ 无 `<= price` CHECK | S09-4 已建议 trigger |
-| `db/schema/product.ts:162 mall_product_skus.bundlePrice` | NUMERIC(10,2) | ❌ 无 `<= sku.price` CHECK | S09-4 已建议 trigger |
-| `db/schema/service.ts:60 service_items.unitRealPrice` | NUMERIC(10,2) | ❌ 无 CHECK |  |
-| **`db/schema/points.ts:20 point_transactions.amount`** | **integer** ⚠️ | ❌ 无符号 CHECK 也无 `>= 0 OR type='消费冲销'` 联动 CHECK | **唯一一个不用 NUMERIC 的"金额"列**；audit-15 P2-15-18 + S15-02 已建议切 bigint + sign CHECK |
-
-**结论**：
-- 32+ 个金额/价格/费率字段，**31 个用 NUMERIC** ✅，**1 个用 integer**（积分 amount，按"积分=整数颗"语义合理但仍建议 bigint 防长尾溢出）。
-- **0 个使用 FLOAT / DOUBLE PRECISION / REAL**（CC1 PLAN 第 1 项检查通过）。
-- **CHECK 约束严重不足**：33 个金额/比例列，仅 9 个有非负 CHECK + 1 个有联动符号 CHECK + 0 个有不变量 CHECK。chk_sop_amount_sign 是当前唯一"按业务语义"的 CHECK 范例。
-
-### 1.2 三端代码层（金额计算热点）
-
-| 计算点 | 文件:行 | 模式 |
-|--------|---------|------|
-| 开单总价 | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:411` | `Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100` |
-| 开单内部单半价 | `staffApi/routes/order.js:279` | `Math.round(basePrice * 50) / 100` |
-| 服务费快照 | `staffApi/routes/order.js:303` | `Math.round(Number(sku.service_fee || 0) * quantity * 100) / 100` |
-| 券折扣分摊 | `staffApi/routes/order.js:399` 与 `clientApi/routes/order.js:322` | `Math.round(couponDiscount * (item.received / eligibleTotal) * 100) / 100`，**最后一项尾差吸收** |
-| 储值卡抵扣校验 | `staffApi/routes/order.js:437` / `clientApi/routes/order.js:394` | `Math.round(v * 100) / 100` |
-| 应付金额 | `staffApi/routes/order.js:447` / `clientApi/routes/order.js:401` / `payNotify/index.js:122-123` | `Math.round((totalAmount - prepaidCardAmount) * 100) / 100` |
-| 部分支付剩余 | `staffApi/routes/order.js:805` / `clientApi/routes/order.js:586` / `payNotify/index.js:134` | `Math.round((orderPayable - orderPaid) * 100) / 100` |
-| 服务提成（消耗 + 手工费） | `staffApi/routes/service.js:398-414` | `Math.round(unit_real_price × session_used × rate × 100)/100 + Math.round(service_fee × session_used × 100)/100` |
-| 销售提成分配 | `staffApi/routes/allocation.js:114-119`（save 主路径）+ `:450`（suggest）| `Number(allocationRatio).toFixed(2)` 后 `Math.round(received * Number(ratioStr) * 100) / 100` |
-| admin 分配批量保存 | `fengyu-admin/src/actions/allocations.ts:220, 271` | `(received * Number(a.allocationRatio)).toFixed(2)` — **无 Math.round 兜底**，依赖 toFixed 自带 banker 舍入 |
-| admin 退款拆分 | `fengyu-admin/src/actions/refunds.ts:202, 420-436, 558, 602` | `Math.round(... * 100) / 100` 串联多次（**多次部分退款分母漂移见 P0-11-06**）|
-| admin 转换单差价 | `fengyu-admin/src/actions/orders.ts:1220, 1225, 1269, 1271, 1275` | `Math.round(... * 100) / 100` |
-| 微信支付下单分 | `clientApi/routes/order.js:715, 1747` / `payNotify/index.js` | `Math.round(thisPayAmount * 100)`（转分，整数）|
-| 浮点 ε 比较散落 | `staffApi/routes/order.js:377,463,549,638,815,824,1803,1818,1913` + `clientApi/routes/order.js:298,388,391,678,1242,1330,1333,1425,1594,1606,1699` | `x + 0.001 < y` / `x + 0.001 >= y` ≥ 20 处 |
-
-**关键观察**：
-- 三端**均未引入 Decimal.js / big.js 等十进制库**，统一靠 `Math.round(x * 100) / 100` 兜底两位精度。
-- 浮点 ε 比较 `+ 0.001` 在 staff/client order 多达 20+ 处，跨函数复制粘贴；ε 选取 0.001（即 0.1 分）安全（≪ 0.01 元业务最小粒度），但散落且未集中常量化。
-- staffApi/routes/allocation.js:450 一处用 `(received * commRate).toFixed(2)` **未 Math.round**，与 :114-119 主路径不一致。
-- admin actions 大量直接 `.toFixed(2)` 持久化，依赖 Number toFixed 自带半偶舍入；**与 staff/client `Math.round` 半数远离零**舍入语义**不同**——同一笔金额跨端重算可能差 0.01 元（IEEE 754 toFixed 不全是 banker 舍入但与 Math.round 也不全等价）。
-- payNotify (`fengyu-client/cloudfunctions/payNotify/index.js`) 与 staffApi/clientApi 用相同 `Math.round` 模式；**金额计算在三端口径基本一致**。
+| 文件路径 | 类型 | 备注 |
+|---------|------|------|
+| `db/schema/order.ts` | DB schema | saleOrders / saleItems / saleAllocations / saleOrderPayments |
+| `db/schema/commission.ts` | DB schema | commissionRateMatrix |
+| `db/schema/service-commission.ts` | DB schema | serviceCommissions |
+| `db/schema/prepaid-card.ts` | DB schema | prepaidCards / cardTransactions |
+| `db/schema/points.ts` | DB schema | pointTransactions |
+| `db/schema/product.ts` | DB schema | productSkus / products / mallProductSkus |
+| `db/schema/enums.ts` | DB schema | saleOrderTypeEnum 等枚举 |
+| `db/migrations/0000_baseline.sql` | migration | 全量基线 |
+| `db/migrations/0004_yellow_magma.sql` | migration | chk_sop_amount_sign 落地 |
+| `db/migrations/0018_black_madrox.sql` | migration | **2026-04-26 sale-order-domain-refactor**（退款架构重构，详见 §10） |
+| `db/migrations/0019_lethal_iron_man.sql` | migration | chk_sku_not_both_capabilities |
+| `db/migrations/0020_recharge_d4_constraint_trigger.sql` | migration | D4 trigger |
+| `fengyu-staff/cloudfunctions/staffApi/routes/order.js` | 云函数 | 员工开单/退款/回款/转换 |
+| `fengyu-staff/cloudfunctions/staffApi/routes/allocation.js` | 云函数 | 营业额分配 save/suggest |
+| `fengyu-staff/cloudfunctions/staffApi/routes/service.js` | 云函数 | service.complete 服务提成 |
+| `fengyu-staff/cloudfunctions/staffApi/utils/refund.js` | 云函数工具 | buildRefundDetails / splitRefundByOriginalPayment |
+| `fengyu-client/cloudfunctions/clientApi/routes/order.js` | 云函数 | 客户开单/支付/回款/扫码 |
+| `fengyu-admin/src/actions/allocations.ts` | Admin Action | batchSaveAllocations |
+| `fengyu-admin/src/actions/orders.ts` | Admin Action | createOrder / createConversion |
+| `fengyu-admin/src/actions/refunds.ts` | Admin Action | createRefund / approveRefund |
+| `fengyu-admin/src/actions/service-commissions.ts` | Admin Action | batchSaveServiceCommissions |
+| `fengyu-admin/src/lib/refund.ts` | Admin 工具 | buildRefundDetails / splitRefundByOriginalPayment |
+| `fengyu-admin/src/lib/utils.ts` | Admin 工具 | calcCouponDiscount |
 
 ---
 
-## 2. 数据流图（金额传递的层级）
+## SECTION 2：检查清单结果
 
-```
-product_skus.price/special_price (NUMERIC)
-   │ 锁定 unitPrice 快照
-   ↓
-sale_items.unitPrice / unitRealPrice (NUMERIC, CHECK ≥0)
-   │ saleAmount = unitPrice × quantity        ← S09-3 缺不变量 CHECK
-   │ received   = unitRealPrice × quantity − couponShare
-   ↓
-sale_orders.totalAmount = Σ items.received   ← Math.round 在 JS 层
-   │ couponDiscount  ← 三端 Math.round 模式一致
-   │ prepaidCardAmount  ← Math.round + ε 校验
-   │ payableAmount = total − prepaid
-   ↓
-sale_order_payments.amount (CHECK 符号联动 ✓)
-   │ → 冗余双写 sale_orders.paidAmount
-   ↓
-sale_allocations.totalAmount = received × allocationRatio  ← staff Math.round / admin toFixed
-   │ allocation_ratio NUMERIC(5,2) ⚠️ 无取值 CHECK
-   ↓
-service_commissions.commissionAmount = fixedFee + consumeAmount
-   │ consumeAmount = unit_real_price × session_used × commission_rate  (NUMERIC(5,4))
-```
-
-退款链反向：所有上述字段在 `sale_order_type='退款单'` 时写负数，**仅 sop.amount 有 CHECK 守护**，其他字段（total/paid/prepaid/sa.totalAmount/sc.commissionAmount）符号约束完全在应用层。
+| 检查项 | 状态 | 说明 |
+|--------|------|------|
+| **C1** 金额字段 NUMERIC(N,2) 而非 FLOAT | ✅ 通过 | 全部 31 个金额/价格字段为 NUMERIC；`point_transactions.amount` 为 integer（积分粒度合理但仍有 CHECK 缺失） |
+| **C2** JS 端用字符串/Decimal 库，不用 Number 直接相加 | ⚠️ 部分 | 三端均无 Decimal.js；靠 `Math.round(x*100)/100` 兜底。**clientApi `order.create` 无优惠券路径中 totalAmount 累加未 Math.round（新发现 v2-01）**；admin `calcCouponDiscount` 折扣券结果无 Math.round（新发现 v2-04） |
+| **C3** 提成比例 NUMERIC(5,4) 或 (3,4)，舍入策略一致 | ❌ 问题 | `commission_rate` = NUMERIC(5,4) ✅；`sale_allocations.allocationRatio` = **NUMERIC(5,2)**（与 PLAN 不符）；`suggest` 路径用 `.toFixed(2)` 而 `save` 路径用 `Math.round`（同一文件两条路径不一致） |
+| **C4** 退款 amount 符号约束（`chk_sop_amount_sign`） | ⚠️ 部分 | `sale_order_payments` 已有 `chk_sop_amount_sign` ✅；但 migration 0018 退款架构重构后，`sale_orders` 不再写退款单行，退款全部下沉 SOP 层（**P0-CC1-03 架构性作废**，详见 §10）；`card_transactions.amount` 仍无符号 CHECK ❌ |
+| **C5** 折扣计算顺序（券→卡→积分）三端一致 | ⚠️ 部分 | 实际三端均为"券先扣→储值卡抵扣→应付金额"，积分不参与直扣；staff/client 均实现"按 received 比例分摊+尾差吸收"；admin 无行级分摊（整单直接减 couponDiscount）——三端**分摊粒度不同**（新发现 v2-07） |
+| **C6** 总价 = sum(unit_real_price × quantity) 三端口径一致 | ⚠️ 部分 | 公式一致；但 admin `batchSaveAllocations` 用 `.toFixed(2)` 而 staffApi `save` 用 `Math.round`；clientApi 无券路径 totalAmount 未 round 就落库 |
 
 ---
 
-## 3. 自身漏洞（CC1 收官归集 + 新发现）
+## SECTION 3：发现的问题
 
-### 3.1 P0（阻断/资损）
+### P0（阻断/资损）
 
 #### **[P0-CC1-01] sale_allocations.allocationRatio 类型与 PLAN 不符且无 CHECK**
 - **文件**：`db/schema/order.ts:206` + `db/schema/service-commission.ts:29`
 - **现象**：PLAN §3 CC1 写"提成比例 NUMERIC(5,4) 或 (3,4)"，schema 实为 `numeric(5,2)`（取值范围 ±999.99）。业务约定仅允许 `IN (0.10, 0.20, ..., 1.00)` 但无 DB CHECK。
 - **风险**：admin `allocations.ts:220` 接收前端 ratio 字符串后直接 `Number(a.allocationRatio)` 写入；前端 BUG 或恶意请求传 `9.99` → 单笔分配业绩瞬间 ×10 倍。staff `allocation.js:114` 同模式无后端二次校验。
-- **修复**：参考 SCHEMA-CHANGES S07-1 + S08-3：`CHECK (allocation_ratio IN (0.10,0.20,...,1.00))`。本报告把它升级为 P0（资损直接相关）。
-- **关联**：retain audit-07 P1-07-11；现升级为 P0-CC1-01。
+- **修复**：`CHECK (allocation_ratio IN (0.10,0.20,...,1.00))`（参考 SCHEMA-CHANGES S07-1 + S08-3）
+- **v2 确认**：独立核验确认，状态不变（未修复）
 
 #### **[P0-CC1-02] card_transactions.amount 缺符号 CHECK（流水类表）**
 - **文件**：`db/schema/prepaid-card.ts:40`
-- **现象**：与 `chk_sop_amount_sign`（已落地）反差。`amount` 任意正负，应用层一旦写反，admin balance summary `SUM(amount)` 静默错账。
-- **修复**：S14-02 已建议 `CHECK ((type='充值' AND amount>0) OR (type='扣款' AND amount<0))`。
-- **关联**：retain audit-14 P0-14-05。
+- **现象**：与 `chk_sop_amount_sign`（已落地）反差。`amount` 任意正负，应用层一旦写反，admin balance summary `SUM(amount)` 静默错账。2026-04-26 重构后仍未修复。
+- **修复**：S14-02 已建议 `CHECK ((type='充值' AND amount>0) OR (type='扣款' AND amount<0))`
+- **v2 确认**：独立核验确认，状态不变（未修复）
 
-#### **[P0-CC1-03] sale_orders 退款单字段无符号联动 CHECK**
-- **文件**：`db/schema/order.ts:60-98`（totalAmount / paidAmount / prepaidCardAmount / overdraftDeduction）
-- **现象**：四个金额列无任何 CHECK；按 `sale_order_type` 联动符号的不变量（退款单 ≤0 / 销售单 ≥0）完全靠应用层。staff `order.js:1530-1535` 与 admin `refunds.ts:838-839` approveRefund 写负值，schema 不拦不漏。
-- **修复**：参考 S03-4 + S11-4 联合 CHECK：
-  ```sql
-  ALTER TABLE sale_orders ADD CONSTRAINT chk_sale_orders_amount_sign CHECK (
-    (sale_order_type = '退款单' AND total_amount <= 0 AND paid_amount <= 0 AND prepaid_card_amount <= 0)
-    OR (sale_order_type <> '退款单' AND total_amount >= 0 AND paid_amount >= 0 AND prepaid_card_amount >= 0)
-  );
-  ```
-- **关联**：retain audit-03 / audit-11，现汇总为 P0-CC1-03。
+#### ~~**[P0-CC1-03] sale_orders 退款单字段无符号联动 CHECK**~~（⚠️ 架构性作废）
+- **架构变更（migration 0018 sale-order-domain-refactor，2026-04-26 apply）**：
+  - 退款**不再创建** `sale_orders[type='退款单']` 行
+  - 退款全部下沉到 `sale_order_payments.change_type='退款'`（`chk_sop_amount_sign` 已守护符号）
+  - `paid_amount` 列已 DROP（v1 报告起草时该列仍存在）
+  - `sale_order_type` 枚举收窄为 `{销售单,内部单,转换单}` 三值
+- **作废理由**：原 P0-CC1-03 建议在 `sale_orders` 字段层加符号联动 CHECK（total_amount ≤ 0 / ≥ 0 按 type 分组），在新架构下：
+  - 销售单/内部单/转换单均写正数，`total_amount >= 0` 可加通用 CHECK（但实际业务不写负，无需按 type 联动）
+  - 退款符号约束由 SOP 层 CHECK 守护（更细粒度）
+  - 原建议的"退款单行写负"路径已不存在，该问题已架构性解决
+- **结论**：v2 独立核验后，将其从 P0 降为"架构性作废"，无需再对 `sale_orders` 加符号联动 CHECK（除非未来新增"转换单差价可负"场景，需重新评估）
+- **关联**：v2 §5 "与 v1 报告的差异"节明确此结论
 
 #### **[P0-CC1-04] admin batchSaveServiceCommissions 信任前端 commissionAmount**
-- **文件**：`fengyu-admin/src/actions/service-commissions.ts`（与 audit-08 P1-08-14 同源）
-- **现象**：admin 把前端计算后的 `commissionRate` / `commissionAmount` 直接持久化，不在后端按 commission_rate_matrix + service_items.unit_real_price + session_used 二次重算。前端 BUG 或脚本可写任意金额。
-- **风险**：违反 real.md #5 后端统一鉴权（"信任前端值"形态）。同模式：admin `orders.ts:690-694` createOrder 信任前端 `unitPrice` / `unitRealPrice`（audit-09 P1-09-07）。
-- **修复**：S08-6 / S09-5 已建议抽 `db/helpers/price-snapshot.ts` + `commission-recalc.ts` 收敛。
-- **影响域**：08, 09，本报告升级为 P0-CC1-04。
+- **文件**：`fengyu-admin/src/actions/service-commissions.ts:152-160`
+- **现象**：直接 INSERT `c.commissionRate` / `c.commissionAmount` 字符串，没有按 `unit_real_price × session_used × commission_rate` 后端重算。前端传 `commissionAmount='9999.99'` 直接落库。
+- **风险**：违反后端统一鉴权原则；可写入任意金额，绩效数据可被篡改。
+- **修复建议**：参考 staffApi `service.complete`（routes/service.js:398-414）后端重算模式，admin 侧应先查 service_items + commission_rate_matrix 重算，拒绝前端传来的 commissionAmount 值。
+- **v2 确认**：独立核验确认（P0-CC1v2-02），无新内容
 
-#### **[P0-CC1-05] point_transactions.amount 用 integer 且无 CHECK**
-- **文件**：`db/schema/points.ts:20`
-- **现象**：唯一一个"金额"列不用 NUMERIC，type='消费冲销' 时应为负，'消费赠送' 等应为正，无任何 CHECK。int4 范围 ±21 亿，长尾业务理论可触底（积分通胀场景）。
-- **风险**：与 audit-15 P0-15-04 / P0-15-05 / P2-15-18 联动；任何 settle 副本（5 处）漏判符号或重复发放，DB 不会拦。
-- **修复**：S15-02 已建议加联动 CHECK + 切 bigint。
+### P1（数据一致性）
 
-### 3.2 P1（数据一致 / 状态错乱）
+#### **[P1-CC1-05] admin calcCouponDiscount 折扣券结果无 Math.round（v2 新发现）**
+- **文件**：`fengyu-admin/src/lib/utils.ts:37-50`（被 `fengyu-admin/src/actions/orders.ts:909` 调用）
+- **现象**：
+  ```ts
+  export function calcCouponDiscount(...): number {
+    const dv = parseFloat(discountValue)
+    if (couponType === '折扣券') {
+      const saved = totalAmount * (1 - dv)   // 浮点乘法，无 Math.round
+      return maxDiscount ? Math.min(saved, parseFloat(maxDiscount)) : saved
+    }
+    return Math.min(dv, totalAmount)
+  }
+  ```
+  折扣券 `couponDiscount` 是原始浮点值（如 `49.99999999999997`），随后 `couponDiscount.toFixed(2)` 写入 `sale_orders.coupon_discount`。staff/client 则对 couponDiscount 显式做 `Math.round(couponDiscount * 100) / 100`（staff order.js:383，client order.js:341）。
+- **风险**：admin 开单时折扣券金额与 staff/client 端计算结果在边界值（如 `0.005 × N`）上差 0.01 元；跨端报表对账时不一致。
+- **修复建议**：在 `calcCouponDiscount` 返回值前统一 `Math.round(result * 100) / 100`。
+- **来源**：v2 P1-CC1v2-04（v1 无此问题）
 
 #### **[P1-CC1-06] admin toFixed vs staff/client Math.round 舍入语义跨端不一致**
-- **文件**：`fengyu-admin/src/actions/allocations.ts:220,271` vs `fengyu-staff/cloudfunctions/staffApi/routes/allocation.js:114-119` vs admin `refunds.ts` / `orders.ts` 多处
-- **现象**：admin 在 sa.totalAmount 持久化用 `(received * ratio).toFixed(2)`，staff 用 `Math.round(received * Number(ratioStr) * 100) / 100`。Number.prototype.toFixed 在 V8 实现为"四舍五入到偶数（banker rounding）边界例外"，与 `Math.round` 的"半数远离零"在 0.005 边界差 1 分。
-- **风险**：同一笔订单同一比例，admin 修改后保存与 staff 自动写入的金额可差 0.01 元。员工总绩效跨端汇总不可对账。
-- **修复**：抽 `db/helpers/money.ts`（roundCNY = `(Math.round(x * 100) / 100).toFixed(2)`）三端统一引用，或 PG 端用 `ROUND(... ::numeric, 2)` 统一在数据库层落库。
+- **文件**：`fengyu-admin/src/actions/allocations.ts:220,271` vs `fengyu-staff/cloudfunctions/staffApi/routes/allocation.js:122`
+- **现象**：
+  - admin：`totalAmount = (received * Number(a.allocationRatio)).toFixed(2)` → V8 Number.toFixed 使用 IEEE 754 半偶舍入（banker's rounding）
+  - staff save：`Math.round(received * Number(ratioStr) * 100) / 100` → "半数远离零"
+  - 两者在 `0.005` 边界（如 `received=0.10, ratio=0.05` → `received×ratio=0.005`）结果不同
+- **风险**：同一笔 sale_allocation.totalAmount 由 admin 写入与 staff 写入可能差 0.01 元；员工绩效跨端汇总时不可对账。
+- **v2 确认**：独立核验确认（P1-CC1v2-05），并细化了边界例子
 
-#### **[P1-CC1-07] saleAmount = unitPrice × quantity 无 DB 不变量 CHECK**
+#### **[P1-CC1-07] allocation.js suggest 路径 toFixed 无 Math.round（v2 升 P1）**
+- **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/allocation.js:458`
+- **现象**：
+  ```js
+  const amount = (received * commRate).toFixed(2)  // 仅 suggest 预览，不落库
+  ```
+  save 路径（同文件 :122）用 `Math.round(received * Number(ratioStr) * 100) / 100`。suggest 结果作为前端建议值展示，前端直接把此 amount 回传给 save 时，save 端二次重算会覆盖（因为 save 服务端重算 totalAmount），故实际无资损。但 suggest 展示金额与最终落库金额不一致，影响用户体验和信任度。
+- **修复建议**：suggestion 路径也改用 `Math.round(received * commRate * 100) / 100`（与 save 对齐）。
+- **来源**：v1 为 P2（v1 P2-CC1-09 → v2 P1-CC1v2-06）
+
+#### **[P1-CC1-08] admin 开单无行级券分摊（整单直接减 couponDiscount）（v2 新发现）**
+- **文件**：`fengyu-admin/src/actions/orders.ts:912`
+- **现象**：
+  ```ts
+  const totalAmount = Math.max(0, rawTotal - couponDiscount)  // 整单扣减
+  ```
+  admin 直接从 totalAmount 中扣除 couponDiscount，不做按 received 比例的行级分摊；sale_items.received 由前端传入（可含 coupon 分摊后的值）。staff/client 均做行级分摊：`share = Math.round(couponDiscount * (item.received / eligibleTotal) * 100) / 100`。
+- **风险**：按商品维度分析优惠券使用时，admin 开单的 sale_items.received 与三端分摊口径不一致；影响商品维度的收益分析准确性。
+- **注**：P0 级直接资损风险低（金额汇总仍正确），但影响商品维度数据质量。
+- **来源**：v2 P1-CC1v2-07（v1 无此问题）
+
+#### **[P1-CC1-09] 浮点 ε 比较散落 20+ 处，常量未抽取**
+- **文件**：
+  - `staffApi/routes/order.js`: lines 371, 457, 543, 654, 832, 841, 1864, 1878, 1951（9 处）
+  - `clientApi/routes/order.js`: lines 328, 418, 421, 734, 1325, 1417, 1420, 1518, 1690, 1701, 1755（11 处）
+- **现象**：`x + 0.001 < y` 或 `x + 0.001 >= y` 散落两端，ε 值 0.001（0.1 分）合理但未常量化，手误打成 `0.01` 或 `0.0001` 会翻转边界判断。
+- **v2 确认**：独立核验确认（P1-CC1v2-08），计数与位置相符（本次 9+11=20 处）
+
+#### **[P1-CC1-10] commission_rate_matrix 缺 [0,1] CHECK 和 min<max 不变量**
+- **文件**：`db/schema/commission.ts:21-26`
+- **现象**：`commissionRate NUMERIC(5,4)` 允许 ±9.9999；`amountTierMin/Max` 无 `min<max` CHECK。
+- **v2 确认**：独立核验确认（P1-CC1v2-09），状态不变（未修复）
+
+#### **[P1-CC1-11] saleAmount = unitPrice × quantity 无 DB 不变量 CHECK**
 - **文件**：`db/schema/order.ts:159`
 - **现象**：schema 注释暗含 `sale_amount = unit_price × quantity`，但无 CHECK；admin `orders.ts:978` 显式写 `(Number(item.unitRealPrice) * item.quantity).toFixed(2)` 但客户端 `clientApi/routes/order.js` 与 staff `routes/order.js` 各自构造，三端口径必须保持一致。
-- **修复**：S09-3 已建议 `CHECK (ABS(sale_amount - unit_price * quantity) < 0.02)` 容忍分级精度。
+- **修复建议**：`CHECK (ABS(sale_amount - unit_price * quantity) < 0.02)` 容忍分级精度。
 
-#### **[P1-CC1-08] 浮点 ε 比较散落 20+ 处，常量未抽取**
-- **文件**：staff `routes/order.js:377,463,549,638,815,824,1803,1818,1913` + client `routes/order.js:298,388,391,678,1242,1330,1333,1425,1594,1606,1699`
-- **现象**：`x + 0.001 < y` / `x + 0.001 >= y` 散落两端 20+ 处，0.001（即 0.1 分）数值合理但未常量化；任何手抖打成 `0.01` 或 `0.0001` → 边界判断翻转。
-- **修复**：抽 `MONEY_EPSILON = 0.001` 常量到 `cloudfunctions-shared/money.js` 三端共用；或全部改为整数分比较（`Math.round(x * 100) >= Math.round(y * 100)`）。
+### P2（代码质量/可维护）
 
-#### **[P1-CC1-09] 折扣计算顺序（券→卡→积分）口径未在 spec 锁定**
-- **文件**：staff `routes/order.js:326-411` / client `routes/order.js:296-401`
-- **现象**：实际三端实现都是 **券先扣（按 received 比例分摊）→ 储值卡抵扣 prepaidCardAmount → 应付金额**；积分目前不参与下单时直接扣减（按"消费赠送"事后发放）。但 spec / metrics.md 未明文锁定此顺序。一旦未来加积分抵扣 / VIP 折扣，三端实现可能各走各路（参考 audit-08 / audit-15 settlePoints 三副本漂移先例）。
-- **修复**：在 `.42cog/pm/backend.pr.spec.md` 增加"折扣计算顺序"明文条款 + 抽 `db/helpers/discount-pipeline.ts` 三端共用。
-
-#### **[P1-CC1-10] commission_rate_matrix.commissionRate 缺 [0,1] CHECK**
-- **文件**：`db/schema/commission.ts:25` + `db/schema/service-commission.ts:31`
-- **现象**：NUMERIC(5,4) 允许 ±9.9999；业务费率必须 0..1。admin 矩阵管理 UI 校验，但无 DB 兜底。
-- **修复**：`CHECK (commission_rate >= 0 AND commission_rate <= 1)`。
-
-#### **[P1-CC1-11] amount_tier_min < amount_tier_max 无不变量 CHECK**
-- **文件**：`db/schema/commission.ts:21-23`
-- **现象**：矩阵 tier 区间允许逆序（min=10000 max=1000），matrix lookup 永空；audit-08 已发现 lookup 逻辑 bug 但 schema 没拦。
-- **修复**：`CHECK (amount_tier_max IS NULL OR amount_tier_min < amount_tier_max)`。
-
-### 3.3 P2（代码质量 / 可维护）
-
-#### **[P2-CC1-12] specialPrice 无 `<= price` CHECK**
-- **文件**：`db/schema/product.ts:107` + `db/schema/product.ts:52`
-- **现象**：特惠价高于原价的脏数据可悄悄写入，前端展示成"原价 99 特惠价 199"。
-- **修复**：trigger / `CHECK (special_price IS NULL OR special_price <= price)`。
+#### **[P2-CC1-12] specialPrice 无 <= price CHECK**
+- **文件**：`db/schema/product.ts:67,150`
+- **现象**：`productSkus.specialPrice` 和 `products.specialPrice` 均无 `<= price` CHECK。
+- **v2 确认**：独立核验确认（P2-CC1v2-11），状态不变（未修复）
 
 #### **[P2-CC1-13] commissionAmount = fixedFee + consumeAmount 不变量未 CHECK**
 - **文件**：`db/schema/service-commission.ts:33-37`
-- **现象**：schema 注释明确两段加和，无 CHECK 兜底应用层 BUG。
-- **修复**：`CHECK (ABS(commission_amount - fixed_fee - consume_amount) < 0.02)`。
+- **v2 确认**：独立核验确认（P2-CC1v2-12），状态不变（未修复）
 
 #### **[P2-CC1-14] payable_amount = total - prepaid 不变量未 CHECK**
 - **文件**：`db/schema/order.ts:64`
 - **现象**：冗余列 + 应用层双写 + 退款链负数 + 部分支付各种 UPDATE，零 DB 守护。
-- **修复**：trigger 实现（CHECK 不允许子查询，但允许同行列）：`CHECK (ABS(payable_amount - (total_amount - prepaid_card_amount)) < 0.02)`（仅销售/转换单）。
+- **修复建议**：trigger 实现 `CHECK (ABS(payable_amount - (total_amount - prepaid_card_amount)) < 0.02)`
 
 #### **[P2-CC1-15] couponDiscount 分摊"最后一项尾差吸收"逻辑三端复制**
 - **文件**：staff `routes/order.js:393-405` 与 client `routes/order.js:316-326`
-- **现象**：尾差吸收逻辑 `i === items.length - 1 ? couponDiscount - distributedTotal : Math.round(...)` 在两端复制实现，admin createOrder 内有第三份变体；任一端漂移，券分摊就会出现 0.01 元 ε。
-- **修复**：抽 `cloudfunctions-shared/coupon-allocation.js`。
+- **现象**：尾差吸收逻辑在两端复制实现，admin createOrder 内有第三份变体；任一端漂移，券分摊就会出现 0.01 元 ε。
+- **修复建议**：抽 `cloudfunctions-shared/coupon-allocation.js`
 
 #### **[P2-CC1-16] dashboard / 绩效 SUM 入口 SUM 后再 Number() 隐患**
 - **文件**：`fengyu-admin/src/actions/dashboard.ts:115,122,123` + `card-transactions.ts:172`
-- **现象**：PG numeric → driver 默认返回字符串 → `Number()` 转 JS 浮点；金额量级 `< 2^53 ≈ 9e15` 完全安全（百亿元级才有问题），但 audit-18 P1-CC1 已点出 `Math.round(× 100) / 100` 二次舍入有 ε 风险。建议数据库端用 `ROUND(SUM(...), 2)::text` 返回字符串避免转浮点。
+- **现象**：PG numeric → driver 默认返回字符串 → `Number()` 转 JS 浮点；金额量级 `< 2^53 ≈ 9e15` 完全安全（百亿元级才有问题），但 `Math.round(× 100) / 100` 二次舍入有 ε 风险。建议数据库端用 `ROUND(SUM(...), 2)::text` 返回字符串避免转浮点。
+
+#### **[P2-CC1-17] db/schema/enums.ts 中 saleOrderTypeEnum 与 migration 0018 不同步（v2 新发现）**
+- **文件**：`db/schema/enums.ts:22` vs `db/migrations/0018_black_madrox.sql:41`
+- **现象**：
+  - `enums.ts` 写：`["销售单", "内部单", "回款单", "转换单", "退款单"]`（5 个值）
+  - migration 0018 已执行：`CREATE TYPE "public"."sale_order_type" AS ENUM('销售单', '内部单', '转换单')`（3 个值）
+  - schema.ts 注释（enums.ts:19）说明"5433 DB 实际仍有 5 个值，migration 0018 未 apply"
+- **风险**：schema.ts 类型与生产库 5434 枚举不同步；Drizzle generate 时会产生 migration 差异；若误用 `db:push` 或重新 generate 而不 review 会破坏 5434 枚举。
+- **修复建议**：更新 `enums.ts` 与 migration 0018 对齐，移除 `回款单`、`退款单`
+- **来源**：v2 P2-CC1v2-10（v1 无此问题）
+
+#### **[P2-CC1-18] point_transactions.amount 用 integer（v2 从 P0 降级为 P2）**
+- **文件**：`db/schema/points.ts:20`
+- **理由降级**：点数为整数语义（不是金额），integer 类型有其合理性；业务量级（预期几亿颗以内）未触及 int4 溢出风险；实际写入逻辑通过 cronTask/settlePoints 管控，资损风险比 v1 评级低。但符号 CHECK 缺失仍是风险点。
+- **v2 不同意 v1**：v1 评为 P0，本次评为 P2
 
 ---
 
-## 4. 跨端不一致（CC1 收官核心节）
+## SECTION 4：跨端不一致
 
 | 维度 | admin (Next.js) | staff (staffApi) | client (clientApi) | payNotify | 风险 | 优先级 |
 |------|-----------------|------------------|--------------------|-----------|------|--------|
 | 金额持久化舍入 | `.toFixed(2)`（V8 banker） | `Math.round(* 100) / 100` 后 PG implicit cast | 同 staff | 同 staff | **0.005 边界差 1 分** | P1 |
 | sa.totalAmount 计算 | `(received * Number(ratio)).toFixed(2)` | `Math.round(received * Number(ratio.toFixed(2)) * 100) / 100` | — | 同 staff | 跨端值漂移 | P1 |
-| sa.totalAmount 不重算 | 信任前端 ratio | suggest 路径 `commRate.toFixed(2)` 无 round | — | — | 同 staff 内部分裂 | P2 |
 | commission_amount 计算源 | 信任前端 commissionAmount（P0-CC1-04） | `Math.round(unit_real_price * session * rate * 100) / 100` 后端重算 | — | 同 staff | admin 写入可任意篡改 | P0 |
-| 内部单半价 | createOrder 半价规则 admin 端实现位置不明 | `Math.round(basePrice * 50) / 100` | 不支持内部单 | 同 staff | 三端实现位置漂移 | P2 |
-| 转换单差价 | `Math.round((totalIn - totalOut) * 100) / 100` | `routes/order.js:2085` 等 | 不支持 | — | OK | — |
-| 退款拆分（原通道 vs 储值卡） | 多次 `Math.round` 串联（refunds.ts:558,602,710,723） | `routes/order.js:1547-` 类似模式 | — | — | P0-11-06 多次部分退款分母漂移 | P0 |
+| 券分摊粒度 | 整单减 couponDiscount（P1-CC1-08） | 行级按 received 比例分摊 | 行级按 received 比例分摊 | — | 商品维度数据质量不一致 | P1 |
+| 折扣券 Math.round | 无（calcCouponDiscount 返回浮点）| 有（order.js:383）| 有（order.js:341）| — | 跨端报表对账差 0.01 | P1 |
 | 浮点 ε 比较 | 极少用（依赖 PG numeric） | `+ 0.001` 9 处 | `+ 0.001` 11 处 | — | 散落易漂移 | P1 |
 | 微信支付下单分 | — | 不直接发起 | `Math.round(thisPayAmount * 100)` | 同 client | OK | — |
-| 券分摊"最后一项尾差吸收" | createOrder 自有 | order.js:397 (`distributedTotal` 累加) | order.js:319 (相同模式) | — | 三副本 | P2 |
-| 储值卡余额比较 | `prepaid_cards.balance >= ${prepaidCardAmount}` 直接 SQL | `currentBalance + 0.001 < prepaidCardAmount` JS | `cardBalance + 0.001` JS | `Number(...balance) < prepaidAmount` | **PG numeric vs JS float vs JS float** 三套口径 | P1 |
-| `Number()` 转换金额时机 | DB 字符串 → Number（dashboard） | 全程 `Number(row.field)` | 同 staff | 同 staff | 量级安全但语义分裂 | P2 |
+| 储值卡余额比较 | `prepaid_cards.balance >= ${prepaidCardAmount}` 直接 SQL | `currentBalance + 0.001 < prepaidCardAmount` JS | `cardBalance + 0.001` JS | `Number(...balance) < prepaidAmount` | PG numeric vs JS float vs JS float 三套口径 | P1 |
+| 转换单差价 | `Math.round((totalIn - totalOut) * 100) / 100` | `routes/order.js:2085` 等 | 不支持 | — | OK | — |
+| refund 拆分分母漂移 | 多次 `Math.round` 串联（refunds.ts:558,602,710,723） | `routes/order.js:1547-` 类似模式 | — | — | audit-11 P0-11-06 | P0 |
 
 ---
 
-## 5. 横切检查（套用 §3 模板，本身就是 CC1 收官 → 各项映射）
+## SECTION 5：横切清单
 
 CC1 自身 6 项检查回归：
 
 | PLAN §3 CC1 检查项 | 状态 | 关联问题 |
 |--------------------|------|----------|
-| 金额字段 NUMERIC(N,2) 而非 FLOAT | ✅ 31/32 列；point_transactions.amount = integer 是历史决策（P0-CC1-05） | 仅 1 例外 |
-| JS 端用字符串/Decimal 库，不用 Number 直接相加 | ⚠️ **三端无 Decimal 库**，全靠 `Number() + Math.round(× 100)/100` 兜底；admin `.toFixed(2)` 与 staff `Math.round` 语义分裂 | P1-CC1-06 / P2-CC1-15 |
-| 提成比例 NUMERIC(5,4) 或 (3,4)，舍入策略一致 | ❌ commission_rate=(5,4) ✓，但 **allocation_ratio=(5,2)** 与 PLAN 不符 + 无 IN CHECK | P0-CC1-01 / P1-CC1-10 |
-| 退款 amount 为负的符号约束 chk_sop_amount_sign | ✅ sale_order_payments 已加；❌ sale_orders / sale_allocations / card_transactions / point_transactions / sale_items.received 全无 | P0-CC1-02 / P0-CC1-03 / P0-CC1-05 |
-| 折扣计算顺序（券→卡→积分）三端一致 | ⚠️ 实际三端都是"券→卡（积分不直扣）"，但 spec 未锁定 | P1-CC1-09 |
-| 总价 = sum(unit_real_price × quantity) 在三端口径一致 | ⚠️ 公式一致，但**admin toFixed vs staff/client Math.round 舍入语义不同** | P1-CC1-06 / P1-CC1-07 |
+| 金额字段 NUMERIC(N,2) 而非 FLOAT | ✅ 31/32 列；point_transactions.amount = integer 是历史决策（P2-CC1-18） | 仅 1 例外 |
+| JS 端用字符串/Decimal 库，不用 Number 直接相加 | ⚠️ **三端无 Decimal 库**，全靠 `Number() + Math.round(× 100)/100` 兜底；admin `.toFixed(2)` 与 staff `Math.round` 语义分裂 | P1-CC1-05 / P1-CC1-06 |
+| 提成比例 NUMERIC(5,4) 或 (3,4)，舍入策略一致 | ❌ commission_rate=(5,4) ✅，但 **allocation_ratio=(5,2)** 与 PLAN 不符 + 无 IN CHECK | P0-CC1-01 / P1-CC1-10 |
+| 退款 amount 为负的符号约束 chk_sop_amount_sign | ✅ sale_order_payments 已加；❌ card_transactions / point_transactions / sale_items.received 全无 | P0-CC1-02 / P2-CC1-18 |
+| 折扣计算顺序（券→卡→积分）三端一致 | ⚠️ 实际三端都是"券→卡（积分不直扣）"，但 spec 未锁定 + admin 分摊粒度不同 | P1-CC1-08 |
+| 总价 = sum(unit_real_price × quantity) 在三端口径一致 | ⚠️ 公式一致，但**admin toFixed vs staff/client Math.round 舍入语义不同** + clientApi 无券路径未 round | P1-CC1-06 / P0-CC1-04 |
 
-CC1 之外的横切关联（这是收官，归集已发现）：
+CC1 之外的横切关联（收官归集）：
 - **CC2 并发**：金额冗余双写（`sale_orders.paid_amount = Σ sop.amount`）无 cron 守护；audit-14 / audit-15 也是同模式；
 - **CC3 隔离**：commission_rate_matrix lookup 缺 org_id（audit-08 P0-08-01）→ 跨市场金额错算；
 - **CC9 测试**：dashboard 测试不断言"三端口径一致"（CROSS-CUTTING.md 已记录）。
 
 ---
 
-## 6. 修复建议（按 L0→L10 传播层）
+## SECTION 6：修复建议（按优先级）
 
-| 层 | 文件 | 修改 | 关联问题 |
-|----|------|------|----------|
-| L0 schema/order.ts | `sale_allocations` + `sale_orders` + `sale_items.saleAmount` | 加多个 CHECK：allocation_ratio IN 集合、sale_orders 符号联动、saleAmount 不变量 | P0-CC1-01 / P0-CC1-03 / P1-CC1-07 |
-| L0 schema/prepaid-card.ts | `card_transactions.amount` | 加符号联动 CHECK | P0-CC1-02 |
-| L0 schema/points.ts | `point_transactions.amount` | 切 bigint + 加符号联动 CHECK | P0-CC1-05 |
-| L0 schema/commission.ts + service-commission.ts | `commissionRate` + `amount_tier` | 加 [0,1] CHECK + min<max CHECK + commissionAmount 不变量 CHECK | P1-CC1-10 / P1-CC1-11 / P2-CC1-13 |
-| L0 schema/product.ts | `products.specialPrice` + `product_skus.specialPrice` + `mall_product_skus.bundlePrice` | trigger 加 `<= price` 上限 | P2-CC1-12 |
-| L1 db/helpers | 新建 `db/helpers/money.ts` + `commission-recalc.ts` + `discount-pipeline.ts` + `coupon-allocation.ts` | 三端共用舍入 + 重算 + 折扣顺序 + 分摊 | P1-CC1-06 / P0-CC1-04 / P1-CC1-09 / P2-CC1-15 |
-| L1 cloudfunctions-shared | 新建 `money.js`（exports `MONEY_EPSILON=0.001` + `roundCNY`） | 三端共用浮点 ε 与舍入 | P1-CC1-08 |
-| L3 staffApi/routes/order.js + allocation.js + service.js | 引入 helpers/money 替换散落 `Math.round` 与 `+ 0.001`；allocation suggest 用统一 round | 跨函数收敛 | P1-CC1-08 / P2-CC1-15 |
-| L3 clientApi/routes/order.js + payNotify/index.js | 同上 | 跨函数收敛 | P1-CC1-08 |
-| L7 admin actions/orders.ts + allocations.ts + service-commissions.ts + refunds.ts | 1) 替换 `.toFixed(2)` 为 `roundCNY()`；2) batchSaveServiceCommissions 后端二次重算 | 舍入对齐 + 价格快照不可变 | P0-CC1-04 / P1-CC1-06 |
-| L9 三端前端 | 仅展示用 `formatCurrency`，禁止参与计算 | 无新增 | — |
-| L11 cron-worker | 新建 `audit-money-invariants.ts` step：定期 SELECT 校验 paid_amount = SUM(sop.amount) / saleAmount = unitPrice×quantity / commissionAmount = fixed+consume / balance = SUM(card_tx) / spending_tier 一致性 | 不变量自动告警 | retain audit-14 P0-14-04 / audit-15 P1-15-13 |
+### 立即修复（P0）
+
+1. **[P0-CC1-01]** DB：`sale_allocations` + `service_commissions` 的 `allocation_ratio` 加 IN 集合 CHECK：
+   ```sql
+   ALTER TABLE sale_allocations ADD CONSTRAINT chk_sa_ratio_in_set
+     CHECK (allocation_ratio IN (0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.90,1.00));
+   ```
+   上线前先 SELECT 历史数据是否已有越界值。
+
+2. **[P0-CC1-02]** DB：`card_transactions.amount` 加符号联动 CHECK：
+   ```sql
+   ALTER TABLE card_transactions ADD CONSTRAINT chk_card_txn_amount_sign
+     CHECK ((type = '充值' AND amount > 0) OR (type = '扣款' AND amount < 0));
+   ```
+   上线前先 SELECT 验证历史数据无违反行。
+
+3. **[P0-CC1-04]** `admin/src/actions/service-commissions.ts`：`batchSaveServiceCommissions` 查 `service_items + commission_rate_matrix` 后端重算 `commissionAmount`，拒绝前端传入值。
+
+4. **[P0-CC1-01 之 clientApi]** `clientApi/routes/order.js`：在 items.map 结束后无条件加 `Math.round`：
+   ```js
+   // line 246 附近，items.map 结束后无论是否有优惠券：
+   totalAmount = Math.round(totalAmount * 100) / 100  // ← 新增
+   ```
+   此行已在有券路径存在（line 360），仅需移至 map 之后、券处理之前。
+
+### 近期修复（P1）
+
+5. **[P1-CC1-05]** `admin/src/lib/utils.ts`：`calcCouponDiscount` 返回值加 `Math.round(result * 100) / 100`。
+
+6. **[P1-CC1-06]** `admin/src/actions/allocations.ts`：将 `.toFixed(2)` 改为 `Math.round(received * Number(a.allocationRatio) * 100) / 100` 再 `.toFixed(2)` 落库，与 staffApi 对齐。
+
+7. **[P1-CC1-07]** `staffApi/routes/allocation.js:458`：suggest 路径 `(received * commRate).toFixed(2)` → `(Math.round(received * commRate * 100) / 100).toFixed(2)`。
+
+8. **[P1-CC1-08]** 评估 admin 开单券分摊策略是否需要与 staff/client 对齐（整单减法 vs 行级比例分摊）；若不对齐需在规范文档明文注明。
+
+9. **[P1-CC1-09]** 抽 `MONEY_EPSILON = 0.001` 常量（cloudfunctions-shared/money.js），替换 staff/client 两端 20+ 处散落的 `0.001`。
+
+10. **[P1-CC1-10]** DB：`commission_rate_matrix.commissionRate` 加 `[0,1]` CHECK；`amount_tier_min/max` 加 `min<max` CHECK。
+
+### 中期改进（P2）
+
+11. **[P2-CC1-17]** 更新 `db/schema/enums.ts` saleOrderTypeEnum，移除 `回款单`、`退款单`，与 migration 0018 对齐；随后 `db:generate` 确认无新 migration 差异。
+
+12. **[P2-CC1-12]** DB：`productSkus.specialPrice` 和 `products.specialPrice` 加 `CHECK (special_price IS NULL OR special_price <= price)` trigger/CHECK。
+
+13. **[P2-CC1-13]** DB：`service_commissions.commissionAmount` 加 `CHECK (ABS(commission_amount - fixed_fee - consume_amount) < 0.02)`。
+
+14. **[P2-CC1-14]** DB：`sale_orders.payable_amount` 加 trigger `CHECK (ABS(payable_amount - (total_amount - prepaid_card_amount)) < 0.02)`。
+
+15. **[P2-CC1-15]** 抽 `cloudfunctions-shared/coupon-allocation.js`，统一三端尾差吸收逻辑。
+
+16. **[P2-CC1-18]** DB：`point_transactions.amount` 加联动符号 CHECK；评估是否切 bigint（低紧迫性）。
 
 ---
 
-## 7. 验证 SQL（在 5434 EXPLAIN，禁止写入）
+## SECTION 7：验证 SQL（SELECT/EXPLAIN only，目标 5434/fengyu）
 
 ```sql
--- 1) 验证当前生产数据是否已违反预期符号约定
-SELECT sale_order_type, COUNT(*),
-       SUM(CASE WHEN total_amount < 0 THEN 1 ELSE 0 END) AS neg_total,
-       SUM(CASE WHEN paid_amount < 0 THEN 1 ELSE 0 END) AS neg_paid,
-       SUM(CASE WHEN prepaid_card_amount < 0 THEN 1 ELSE 0 END) AS neg_prepaid
-FROM sale_orders GROUP BY sale_order_type;
--- 期望：仅 '退款单' 行有 neg_*；其他类型 neg_* 应为 0
-
--- 2) 验证 sale_items.sale_amount = unit_price × quantity 不变量
-SELECT sale_item_id, unit_price, quantity, sale_amount,
-       ABS(sale_amount - unit_price * quantity) AS diff
-FROM sale_items
-WHERE ABS(sale_amount - unit_price * quantity) > 0.02
-LIMIT 50;
-
--- 3) 验证 sa.allocation_ratio 是否在合法集合内
+-- 1. 验证 sale_allocations.allocation_ratio 是否已有越界值
 SELECT allocation_ratio, COUNT(*)
 FROM sale_allocations
-WHERE allocation_ratio NOT IN (0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.90,1.00)
+WHERE allocation_ratio NOT IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)
+  AND is_void = false
 GROUP BY allocation_ratio;
--- 期望 0 行；非空即应用层已写入越界比例
+-- 期望 0 行
 
--- 4) 验证 service_commissions.commission_amount = fixed_fee + consume_amount
-SELECT id, fixed_fee, consume_amount, commission_amount,
-       ABS(commission_amount - fixed_fee - consume_amount) AS diff
-FROM service_commissions
-WHERE ABS(commission_amount - fixed_fee - consume_amount) > 0.02 AND is_void = false
-LIMIT 50;
+-- 2. 验证 card_transactions.amount 符号与 type 是否一致
+SELECT type, COUNT(*),
+  SUM(CASE WHEN amount > 0 THEN 1 ELSE 0 END) AS pos_count,
+  SUM(CASE WHEN amount < 0 THEN 1 ELSE 0 END) AS neg_count,
+  SUM(CASE WHEN amount = 0 THEN 1 ELSE 0 END) AS zero_count
+FROM card_transactions
+GROUP BY type;
+-- 期望：'充值' 行全 pos，'扣款' 行全 neg
 
--- 5) 验证 sale_orders.paid_amount 与 sop 流水冗余双写一致
-SELECT so.sale_order_id, so.paid_amount,
-       COALESCE(SUM(sop.amount) FILTER (
-         WHERE sop.status='已支付' AND sop.change_type IN ('首次支付','回款','退款')
-       ), 0) AS computed_paid
+-- 3. 验证 clientApi 无券路径 totalAmount 精度问题（是否有历史数据违反不变量）
+SELECT so.sale_order_id,
+  so.total_amount,
+  ROUND(SUM(si.received)::numeric, 2) AS computed_total,
+  ABS(so.total_amount - ROUND(SUM(si.received)::numeric, 2)) AS diff
 FROM sale_orders so
-LEFT JOIN sale_order_payments sop ON sop.sale_order_id = so.sale_order_id
-GROUP BY so.sale_order_id, so.paid_amount
-HAVING ABS(so.paid_amount - COALESCE(SUM(sop.amount) FILTER (
-  WHERE sop.status='已支付' AND sop.change_type IN ('首次支付','回款','退款')
-), 0)) > 0.02
+JOIN sale_items si ON si.sale_order_id = so.sale_order_id
+WHERE so.sale_order_type = '销售单'
+  AND si.item_direction = '购买'
+GROUP BY so.sale_order_id, so.total_amount
+HAVING ABS(so.total_amount - ROUND(SUM(si.received)::numeric, 2)) > 0.01
 LIMIT 50;
+-- 期望 0 行；非空说明 totalAmount 累加精度问题已产生脏数据
 
--- 6) 验证 prepaid_cards.balance ≡ SUM(card_transactions.amount)
-SELECT pc.card_id, pc.balance,
-       COALESCE(SUM(ct.amount), 0) AS sum_amount
-FROM prepaid_cards pc
-LEFT JOIN card_transactions ct ON ct.card_id = pc.card_id
-GROUP BY pc.card_id, pc.balance
-HAVING ABS(pc.balance - COALESCE(SUM(ct.amount), 0)) > 0.02
-LIMIT 50;
+-- 4. 验证 sale_order_payments amount 符号约束（chk_sop_amount_sign）运行效果
+SELECT change_type, status, COUNT(*),
+  SUM(CASE WHEN (change_type IN ('首次支付','回款','储值卡抵扣') AND amount <= 0) THEN 1 ELSE 0 END) AS wrong_sign
+FROM sale_order_payments
+GROUP BY change_type, status
+HAVING SUM(CASE WHEN (change_type IN ('首次支付','回款','储值卡抵扣') AND amount <= 0) THEN 1 ELSE 0 END) > 0
+   OR  SUM(CASE WHEN change_type = '退款' AND amount >= 0 THEN 1 ELSE 0 END) > 0;
+-- 期望 0 行（CHECK 已落地，理论不可能有符号违反数据）
 
--- 7) 验证 commission_rate 范围 [0, 1]
-SELECT commission_rate, COUNT(*)
+-- 5. 验证 commission_rate 在合法范围 [0,1] 内
+SELECT 'commission_rate_matrix' AS src, commission_rate, COUNT(*)
 FROM commission_rate_matrix
+WHERE commission_rate < 0 OR commission_rate > 1
+GROUP BY commission_rate
+UNION ALL
+SELECT 'service_commissions', commission_rate, COUNT(*)
+FROM service_commissions
 WHERE commission_rate < 0 OR commission_rate > 1
 GROUP BY commission_rate;
 
--- 8) 验证 amount_tier_min < amount_tier_max 不变量
-SELECT id, amount_tier_min, amount_tier_max
-FROM commission_rate_matrix
-WHERE amount_tier_max IS NOT NULL AND amount_tier_min >= amount_tier_max;
+-- 6. 验证 enums.ts 与生产库 sale_order_type 枚举值是否对齐
+SELECT enum_range(NULL::sale_order_type);
+-- 期望：{销售单,内部单,转换单}（若返回包含 回款单/退款单 则 0018 尚未 apply 或 schema drift）
+
+-- 7. 验证 sale_items.sale_amount = unit_real_price * quantity 不变量
+SELECT sale_item_id, unit_real_price, quantity, sale_amount,
+  ABS(sale_amount - unit_real_price * quantity) AS diff
+FROM sale_items
+WHERE ABS(sale_amount - unit_real_price * quantity) > 0.02
+  AND item_direction = '购买'
+LIMIT 50;
+-- 期望 0 行
+
+-- 8. 验证 sale_orders.paid_amount 与 sop 流水冗余双写一致（注意：paid_amount 列在 0018 后可能已 DROP）
+-- SELECT so.sale_order_id, so.paid_amount,
+--        COALESCE(SUM(sop.amount) FILTER (WHERE sop.status='已支付' AND sop.change_type IN ('首次支付','回款','退款')), 0) AS computed_paid
+-- FROM sale_orders so
+-- LEFT JOIN sale_order_payments sop ON sop.sale_order_id = so.sale_order_id
+-- GROUP BY so.sale_order_id, so.paid_amount
+-- HAVING ABS(so.paid_amount - COALESCE(SUM(sop.amount) FILTER (...), 0)) > 0.02
+-- LIMIT 50;
 ```
 
 ---
 
-## 8. 回归测试用例（建议）
+## SECTION 8：回归测试用例（建议）
 
 1. **Money helper 单元测试**：`roundCNY(0.005) === 0.01`（半数远离零） vs `(0.005).toFixed(2) === '0.00'`（banker），断言三端一致。
 2. **券折扣分摊一致性测试**：固定 5 件商品 + 50 元券，断言 staff/client/admin 三端 received 数组完全相同。
 3. **批量保存提成 server-side 重算测试**：admin 提交 commissionAmount=999 但实际 unit×session×rate=80，断言后端持久化 80（拒绝前端值）。
 4. **CHECK 约束 migration apply 测试**：在临时 PG 跑全量 baseline + 新 CHECK migration，对历史脏数据 sandbox 验证。
 5. **sale_allocations.allocationRatio 越界拒绝测试**：admin POST `allocationRatio=9.99`，断言 DB 拒绝（CHECK violation）+ 前端兜底拦截。
-6. **退款链符号 CHECK 测试**：approveRefund 写入 `sale_orders.total_amount = -100`，断言 sale_order_type='退款单' 通过 + sale_order_type='销售单' 拒绝。
+6. **sale_order_type 枚举范围测试**：断言 0018 后 '退款单' / '回款单' 不再可写入 sale_orders。
 7. **三端 dashboard 业绩 SUM 一致性**：固定 fixture 跑 admin getDashboardStats / mgmt-dashboard.summary / staff.dashboard.revenue，断言三个数字精确相等。
 
 ---
 
-## 9. 影响半径
+## SECTION 9：影响半径
 
 - **DB 层**：22 schema / 33 NUMERIC 列 / 9 CHECK；本报告建议新增 12 个 CHECK / trigger
 - **三端代码**：staff order.js + allocation.js + service.js + payNotify + client order.js + admin orders.ts + allocations.ts + refunds.ts + service-commissions.ts + dashboard.ts，共 10+ 文件
 - **修复成本**：S（CHECK migration 单独 PR）+ M（helpers 抽取 + 三端 import 替换）+ L（admin commission/order 后端重算改造）
 - **涉及历史数据**：CHECK 上线前需先 SELECT 验证脏数据 → 数据修复 → 再 ALTER TABLE。
 - **跨端依赖**：cloudfunctions-shared 新模块 + L0/L1 helpers 同步上线
+- **v2 新增影响**：P1-CC1-05（admin calcCouponDiscount）+ P1-CC1-08（admin 开单无行级券分摊）均为 admin 侧新增修复点，不涉及 staff/client 回归
 
 ---
 
-## 10. 后续待办
+## SECTION 10：修复记录
 
-- [ ] 与产品 / 财务确认 sale_allocations.allocationRatio 是否真的限制在 0.10..1.00（如允许其他值需调整 CHECK）
-- [ ] 汇编「金额计算口径」spec 章节：折扣顺序、舍入策略、退款拆分算法、价格快照规则
-- [ ] 在 cron-worker 增加 `audit-money-invariants.ts` step（不变量校验 5 项）
-- [ ] 三端引入 `cloudfunctions-shared/money.js`（roundCNY、MONEY_EPSILON、formatCurrency）
-- [ ] admin batchSaveServiceCommissions / createOrder 后端二次重算（修 P0-CC1-04）
-- [ ] PLAN §3 CC1 第 3 项更正：commissionRate 已是 NUMERIC(5,4)，**allocationRatio 现状是 (5,2)**，需要 PLAN 与代码二选一对齐
+| 问题编号 | 状态 | 说明 |
+|---------|------|------|
+| P0-CC1-03（sale_orders 退款单字段无符号联动 CHECK） | ⚠️ 架构性作废 | migration 0018（2026-04-26）退款架构重构后，退款不再写 sale_orders[type='退款单'] 行，退款全部下沉到 sale_order_payments（chk_sop_amount_sign 已守护符号）。sale_order_type 枚举收窄为 3 值。P0-CC1-03 建议的 ALTER TABLE 在新架构下需重新评估（通用 non-negative CHECK 可加，但按 type 联动符号的场景已不存在）。 |
+| P0-CC1-05（point_transactions integer 作为 P0） | 📉 降级为 P2（v2 不同意 v1 的 P0 定级） | 积分为整数粒度语义合理，int4 上限 ~21 亿颗积分（按每元1分计算，需累计消费 2100 万元才触底），当前业务规模极低风险。CHECK 缺失仍是 P2 缺陷。 |
 
 ---
 
-## 附录 A：业务域报告 §5 CC1 节归集（25 域全扫描）
+## 附录 A：v1 → v2 发现编号映射
+
+| v1 编号 | v2 编号 | 变化 |
+|---------|---------|------|
+| P0-CC1-01 | P0-CC1-01（保留） | ✅ 确认，未修复 |
+| P0-CC1-02 | P0-CC1-02（保留） | ✅ 确认，未修复 |
+| P0-CC1-03 | 架构性作废 | ⚠️ migration 0018 架构重构，CHECK 建议不再适用 |
+| P0-CC1-04 | P0-CC1-04（保留） | ✅ 确认，未修复 |
+| P0-CC1-05 | P2-CC1-18（降级） | 📉 v2 不同意 P0 定级 |
+| P1-CC1-06 | P1-CC1-06（保留） | ✅ 确认，细化边界例子 |
+| P1-CC1-07 | P1-CC1-11（保留） | ✅ 确认，未修复 |
+| P1-CC1-08 | P1-CC1-09（保留） | ✅ 确认，20+ 处计数相符 |
+| P1-CC1-09 | P1-CC1-08（升 P1） | ⬆️ v2 认为 suggest/配置不一致影响绩效口径，定 P1 |
+| P1-CC1-10/11 | P1-CC1-10（合并保留） | ✅ 确认，未修复 |
+| P2-CC1-12/13 | P2-CC1-12/13（保留） | ✅ 确认，未修复 |
+| P2-CC1-14/15/16 | P2-CC1-14/15/16（保留） | ✅ v2 无新内容 |
+| — | P0-CC1-01（新发现 clientApi） | v1 未覆盖，v2 新发现 |
+| — | P1-CC1-05（admin calcCouponDiscount） | v1 未覆盖，v2 新发现 |
+| — | P1-CC1-08（admin 开单无行级券分摊） | v1 未覆盖，v2 新发现 |
+| — | P2-CC1-17（enums.ts schema drift） | v1 未覆盖，v2 新发现 |
+
+---
+
+## 附录 B：业务域报告 §5 CC1 节归集（25 域全扫描）
 
 | 域 ID | CC1 状态 | 关键引用 |
 |-------|----------|---------|
@@ -394,18 +444,14 @@ WHERE amount_tier_max IS NOT NULL AND amount_tier_min >= amount_tier_max;
 | 11 | ⚠️ split / handlingFee / overdraftDeduction 用 Math.round 兜底；P0-11-06 分母漂移 |
 | 12 | N/A |
 | 13 | ✓ couponTemplates NUMERIC + 尾差吸收 + parseFloat 前置归一化 |
-| 14 | ⚠️ toFixed(2) 与 number 混用 → P2-14-17；缺 CHECK amount sign → P0-14-05（→ 本报告 P0-CC1-02）|
-| 15 | ✗ amount integer + 无 CHECK → P2-15-18 / P0-15-06（→ 本报告 P0-CC1-05）|
+| 14 | ⚠️ toFixed(2) 与 number 混用 → P2-14-17；缺 CHECK amount sign → P0-CC1-02 |
+| 15 | ⚠️ amount integer + 无 CHECK → P2-CC1-18（v2 降级）|
 | 16 | N/A |
 | 17 | ✗ admin 业绩用 total_amount + 不过滤退款单 → P0-17-01/02；staff.dashboard sale_items.received 与 metrics 不同 → P1-17-07 |
 | 18 | ⚠️ Math.round 浮点二次舍入 0.01 漂移风险 |
 | 19 | ✓ face_value Math.round + clamp |
 | 20 | ✓ pickup_quantity = integer 完整 |
-| 21 | N/A |
-| 22 | N/A |
-| 23 | N/A |
-| 24 | ⏳ pending（与 CC1 无关）|
-| 25 | ⏳ pending（与 CC1 无关，但推广员业绩归属可能涉及 sa.totalAmount）|
+| 21-25 | N/A / pending（与 CC1 无关，但 25 可能涉及 sa.totalAmount）|
 
 **统计**：13 域有 CC1 命中，10 域 N/A，2 域 pending 未审。13 命中域中：
 - 4 个升级为本报告 P0（07/08/14/15 各一条）
