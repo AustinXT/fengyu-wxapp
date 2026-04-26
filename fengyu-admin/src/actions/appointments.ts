@@ -183,7 +183,7 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
   try {
     result = await db
       .update(appointments)
-      .set({ status: '已确认' })
+      .set({ status: '已确认', confirmedAt: new Date() })
       .where(and(
         eq(appointments.appointmentId, appointmentId),
         eq(appointments.status, '待确认'),

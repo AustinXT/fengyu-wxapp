@@ -1514,7 +1514,6 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
     // JOIN 一级行（parent.productKind IS NULL AND parent.categoryName = child.productKind）
     // 以便按一级行 sortOrder 排序 group。
     const parentCat = alias(productCategories, 'parent_cat')
-    const mpsBundle = alias(mallProductSkus, 'mps_bundle')
 
     const rows = await db
       .select({
@@ -1542,10 +1541,10 @@ export async function getProductsByKind(kind: ProductKindForOrder): Promise<Orde
           eq(productSkus.isEnabled, true),
           // 排除 bundle SKU（SKU 被任何 is_bundle=true 的 products 通过 mall_product_skus 关联）
           sql`NOT EXISTS (
-            SELECT 1 FROM ${mpsBundle}
-            INNER JOIN ${products} ON ${products.productId} = ${mpsBundle.productId}
-            WHERE ${mpsBundle.skuId} = ${productSkus.skuId}
-              AND ${products.isBundle} = true
+            SELECT 1 FROM mall_product_skus mps_b
+            INNER JOIN products p_b ON p_b.product_id = mps_b.product_id
+            WHERE mps_b.sku_id = product_skus.sku_id
+              AND p_b.is_bundle = true
           )`,
         ),
       )

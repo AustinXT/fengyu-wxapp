@@ -5,7 +5,8 @@ import { serviceOrders, serviceItems } from '@db/service'
 import { saleItems, saleOrders } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { eq, desc, and, or, sql, ilike, gte, lte } from 'drizzle-orm'
+import { appointments } from '@db/appointment'
+import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
@@ -441,7 +442,6 @@ export async function createServiceOrder(data: {
   clientUserId: string
   assignedEmployeeId: string
   serviceDate: string
-  appointmentId?: string | null
   remark?: string | null
   items: Array<{
     saleItemId: string
@@ -465,6 +465,27 @@ export async function createServiceOrder(data: {
     .limit(1)
   const serviceOrderType: '售前' | '售后' =
     customerRow?.becameMemberAt && customerRow.becameMemberAt <= new Date() ? '售后' : '售前'
+
+  // 自动关联：查找该顾客在该门店已签到、且尚未关联服务单的最近预约
+  const [pendingAppt] = await db
+    .select({ appointmentId: appointments.appointmentId })
+    .from(appointments)
+    .where(
+      and(
+        eq(appointments.clientUserId, data.clientUserId),
+        eq(appointments.storeId, data.storeId),
+        eq(appointments.status, '已确认'),
+        isNotNull(appointments.checkinAt),
+        notExists(
+          db.select({ id: serviceOrders.serviceOrderId })
+            .from(serviceOrders)
+            .where(eq(serviceOrders.appointmentId, appointments.appointmentId))
+        ),
+      )
+    )
+    .orderBy(desc(appointments.checkinAt))
+    .limit(1)
+  const resolvedAppointmentId = pendingAppt?.appointmentId ?? null
 
   // 先校验剩余次数（事务外，只读查询）
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
@@ -523,7 +544,7 @@ export async function createServiceOrder(data: {
         serviceDate: data.serviceDate,
         assignedEmployeeId: data.assignedEmployeeId,
         clientUserId: data.clientUserId,
-        appointmentId: data.appointmentId || null,
+        appointmentId: resolvedAppointmentId,
         remark: data.remark || null,
       })
 

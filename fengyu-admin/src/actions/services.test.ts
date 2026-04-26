@@ -63,6 +63,8 @@ vi.mock('drizzle-orm', () => ({
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
+  isNotNull: vi.fn((col) => ({ type: 'isNotNull', col })),
+  notExists: vi.fn((subq) => ({ type: 'notExists', subq })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -113,14 +115,15 @@ function setupUpdate(count: number) {
 
 /** select chain: .from().leftJoin().innerJoin().where().limit() 或 .from().where()（直接 await） */
 function makeSelectChain(result: any[]) {
-  const limit = vi.fn().mockResolvedValue(result)
-  const whereResult = Object.assign(Promise.resolve(result), { limit })
-  const where = vi.fn().mockReturnValue(whereResult)
-  const chain: any = { where }
+  const chain: any = Object.assign(Promise.resolve(result), {
+    limit: vi.fn().mockResolvedValue(result),
+  })
+  chain.from = vi.fn().mockReturnValue(chain)
+  chain.where = vi.fn().mockReturnValue(chain)
+  chain.orderBy = vi.fn().mockReturnValue(chain)
   chain.leftJoin = vi.fn().mockReturnValue(chain)
   chain.innerJoin = vi.fn().mockReturnValue(chain)
-  const from = vi.fn().mockReturnValue(chain)
-  return vi.fn().mockReturnValue({ from })
+  return vi.fn().mockReturnValue(chain)
 }
 
 /** mock db.select() 链用于 logTransition 上下文获取：.from().leftJoin().where().limit() */

@@ -41,18 +41,18 @@ async function applyRechargeOnOrderPaid(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   saleOrderId: string,
 ): Promise<void> {
-  // 查订单主信息（需 user_id + store_id 做卡账户定位）
+  // 查订单主信息（需 user_id 做卡账户定位）
+  // 注：prepaid_cards.store_id 已于 2026-04-24 DROP，储值卡跨店共享，按 user_id 唯一
   const [order] = await tx
     .select({
       clientUserId: saleOrders.clientUserId,
-      storeId: saleOrders.storeId,
     })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
 
-  if (!order || !order.clientUserId || !order.storeId) {
-    // 未实名或门店缺失的订单不入账（与 payNotify 保护性分支一致）
+  if (!order || !order.clientUserId) {
+    // 未实名订单不入账（与 payNotify 保护性分支一致）
     return
   }
 
@@ -83,15 +83,15 @@ async function applyRechargeOnOrderPaid(
   `)
   if ((dup as unknown as any[]).length > 0) return
 
-  // UPSERT prepaid_cards（与 payNotify 的 FY-CARD- 前缀格式保持一致）
+  // UPSERT prepaid_cards（按 user_id 唯一；store_id 列已于 2026-04-24 DROP，卡跨店共享）
   const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
     .toString()
     .padStart(3, '0')}`
 
   const upsertRows = await tx.execute(sql`
-    INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
-    VALUES (${newCardId}, ${order.clientUserId}, ${order.storeId}, ${faceValue.toFixed(2)})
-    ON CONFLICT (user_id, store_id) DO UPDATE
+    INSERT INTO prepaid_cards (card_id, user_id, balance)
+    VALUES (${newCardId}, ${order.clientUserId}, ${faceValue.toFixed(2)})
+    ON CONFLICT (user_id) DO UPDATE
       SET balance = prepaid_cards.balance + EXCLUDED.balance,
           updated_at = NOW()
     RETURNING card_id
@@ -1419,11 +1419,11 @@ export async function createConversionOrder(data: {
         const creditAmount = Math.abs(priceDiff)
         prepaidCardCredit = creditAmount
 
-        // UPSERT prepaid_cards (user_id, store_id) DO UPDATE balance += creditAmount
+        // UPSERT prepaid_cards（按 user_id 唯一；store_id 列已于 2026-04-24 DROP，卡跨店共享）
         const upsertRows = await tx.execute(sql`
-          INSERT INTO prepaid_cards (card_id, user_id, store_id, balance)
-          VALUES (gen_random_uuid()::text, ${data.clientUserId}, ${data.storeId}, ${creditAmount.toFixed(2)})
-          ON CONFLICT (user_id, store_id) DO UPDATE
+          INSERT INTO prepaid_cards (card_id, user_id, balance)
+          VALUES (gen_random_uuid()::text, ${data.clientUserId}, ${creditAmount.toFixed(2)})
+          ON CONFLICT (user_id) DO UPDATE
             SET balance = prepaid_cards.balance + EXCLUDED.balance,
                 updated_at = NOW()
           RETURNING card_id
@@ -1801,7 +1801,7 @@ export async function recordPayment(input: {
       return { success: false, error: { code: 'ORDER_ID_CONFLICT', message: '订单号冲突，请稍后重试' } }
     }
     console.error('[recordPayment] unexpected error:', err)
-    return { success: false, error: { code: 'UNKNOWN', message: '录入回款失败，请稍后重试' } }
+    return { success: false, error: { code: 'UNKNOWN', message: `录入回款失败：${err?.message || String(err)}` } }
   }
 
   await logOperation(session, 'order.record_payment', 'sale_order', saleOrderId, {
