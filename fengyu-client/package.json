@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "e2e:smoke": "node e2e/smoke.js"
+  },
   "devDependencies": {
     "miniprogram-automator": "^0.12.1",
     "tencentcloud-sdk-nodejs": "^4.1.186",

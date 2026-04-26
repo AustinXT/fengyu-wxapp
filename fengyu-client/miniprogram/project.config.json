@@ -1,0 +1,11 @@
+{
+  "packOptions": {
+    "include": [],
+    "ignore": [
+      {
+        "type": "folder",
+        "value": "/minitest"
+      }
+    ]
+  }
+}
