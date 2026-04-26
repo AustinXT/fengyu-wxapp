@@ -211,6 +211,8 @@ Page({
       // PR-D：DB 驱动 tag 渲染（spuDetail SQL JOIN product_categories 后注入）
       productKind: selectedSku.product_kind || undefined,
       kindDisplayColor: selectedSku.kind_display_color || undefined,
+      // 2026-04-26 capability 化：充值卡 SKU 已在云函数侧过滤，此处兜底
+      isRechargeCard: !!selectedSku.is_recharge_card,
     }, quantity);
 
     this.setData({ cartCount: getCartCount() });

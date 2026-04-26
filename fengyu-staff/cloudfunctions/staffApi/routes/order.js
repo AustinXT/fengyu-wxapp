@@ -82,6 +82,7 @@ async function recalcCustomerType(client, clientUserId) {
 
   const threshold = await getMemberThreshold()
 
+  // SHARED-SQL-TRANSITION-CUSTOMER-TYPE: 与 payNotify/index.js 行 ~466 完全一致（待 audit-15 P0-15-02 抽离）
   const typeResult = await client.query(
     `SELECT CASE
        WHEN EXISTS (
@@ -97,25 +98,19 @@ async function recalcCustomerType(client, clientUserId) {
          SELECT 1
          FROM sale_orders o
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         JOIN product_skus sk ON sk.sku_id = si.sku_id
-         JOIN product_categories pc ON pc.category_id = sk.category_id
-         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc_parent.is_card_kind = false
+           AND si.is_experience = false
        ) THEN '小美客'
        WHEN EXISTS (
          SELECT 1
          FROM sale_orders o
          JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-         JOIN product_skus sk ON sk.sku_id = si.sku_id
-         JOIN product_categories pc ON pc.category_id = sk.category_id
-         JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
          WHERE o.client_user_id = $1
            AND o.status IN ('已支付', '已完成')
            AND o.sale_order_type = '销售单'
-           AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
+           AND si.is_experience = true
        ) THEN '体验客'
        ELSE '流量客'
      END AS computed_type`,
@@ -253,7 +248,7 @@ async function create(ctx) {
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
-                s.service_fee, s.is_shengmei,
+                s.service_fee, s.is_shengmei, s.is_experience, s.is_recharge_card,
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
@@ -315,6 +310,8 @@ async function create(ctx) {
         salesCategory,
         serviceFee,
         isShengmei: sku.is_shengmei ?? null,
+        isExperience: sku.is_experience === true,
+        isRechargeCard: sku.is_recharge_card === true,
       }
     })
   )
@@ -616,8 +613,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+          sales_category, service_fee, is_shengmei, is_recharge_card
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -627,8 +624,22 @@ async function create(ctx) {
           d.salesCategory || null,
           d.serviceFee || 0,
           d.isShengmei ?? null,
+          d.isRechargeCard === true,
         ]
       )
+    }
+
+    // 严格独立 D4：充值卡与非充值卡不可混单（与体验卡 mixed-experience 守卫并列）
+    // 写入完成后立即校验，要求订单内 sale_items.is_recharge_card 必须全 true 或全 false
+    const mixedCheck = await client.query(
+      `SELECT bool_and(is_recharge_card) AS all_recharge,
+              bool_and(NOT is_recharge_card) AS all_normal
+       FROM sale_items WHERE sale_order_id = $1`,
+      [saleOrderId]
+    )
+    const row = mixedCheck.rows[0]
+    if (!(row.all_recharge === true || row.all_normal === true)) {
+      throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
     }
   })
 
@@ -948,20 +959,19 @@ async function confirmOffline(ctx) {
       )
     }
 
-    // 充值卡入账：识别明细中 product_kind='充值卡' 的行，统一 UPSERT prepaid_cards
+    // 充值卡入账：识别明细中 sale_items.is_recharge_card=true 的行，统一 UPSERT prepaid_cards
     // - 虚拟 SKU（自定义金额路径）：面值从 product_name 的 "¥{n}" 解析
     // - 真实档位 SKU：面值从 product_skus.price 读取
     // 与 clientApi payNotify 侧的识别逻辑对称，二者均以 (ref_order_id) 幂等。
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户，跨店共享，INSERT 列集不含 store_id。
+    // 2026-04-26 重构：判定从 product_kind='充值卡' 字面量改为 sale_items.is_recharge_card capability 列
     // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
     if (targetStatus === '已支付' && order.client_user_id) {
-      // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
       const rechargeRows = await client.query(
         `SELECT si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
          LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
-         LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
-         WHERE si.sale_order_id = $1 AND pc.product_kind = '充值卡'`,
+         WHERE si.sale_order_id = $1 AND si.is_recharge_card = true`,
         [saleOrderId]
       )
       if (rechargeRows.rows.length > 0) {
@@ -2066,6 +2076,7 @@ async function createConversion(ctx) {
               si.sales_category,
               si.service_fee,
               si.is_shengmei,
+              si.is_recharge_card,
               so.client_user_id,
               so.status AS order_status,
               pc.product_kind,
@@ -2109,7 +2120,7 @@ async function createConversion(ctx) {
         const rem = Number(row.remaining_sessions || 0)
         if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = rem
-      } else if (productType === '单品' && row.parent_is_card_kind === true && row.parent_category_name !== '充值卡') {
+      } else if (productType === '单品' && row.parent_is_card_kind === true && row.is_recharge_card !== true) {
         const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
         if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = remQty
@@ -2342,7 +2353,7 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致：
  *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
- *   - 体验类单品卡：product_type='单品' AND parent.is_card_kind=true AND parent.category_name<>'充值卡'
+ *   - 体验类单品卡：product_type='单品' AND parent.is_card_kind=true AND NOT si.is_recharge_card
  *     AND (quantity - picked_up_quantity) > 0
  */
 async function customerHeldCards(ctx) {
@@ -2365,7 +2376,7 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              WHEN si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
+              WHEN si.product_type = '单品' AND pc_parent.is_card_kind = true AND NOT si.is_recharge_card
                 THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
@@ -2380,7 +2391,7 @@ async function customerHeldCards(ctx) {
        AND so.status IN ('已支付', '已完成')
        AND (
             (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '单品' AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
+         OR (si.product_type = '单品' AND pc_parent.is_card_kind = true AND NOT si.is_recharge_card
               AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
        )
      ORDER BY si.sale_order_id DESC`,

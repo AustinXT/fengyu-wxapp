@@ -210,12 +210,13 @@ async function create(ctx) {
   const now = new Date()
 
   // 查询 SKU 信息（product_skus → product_categories 两表 JOIN）
+  // 2026-04-26 capability 化：读 sk.is_recharge_card 用于行级快照 + D4 严格独立校验
   const skuIds = items.map(i => i.skuId)
   const skuResults = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
-      sk.category_id, pc.sales_category
+      sk.category_id, sk.is_recharge_card, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = ANY($1)
@@ -255,9 +256,19 @@ async function create(ctx) {
       quantity,
       saleAmount,
       received: saleAmount,
-      salesCategory: sku.sales_category || null
+      salesCategory: sku.sales_category || null,
+      isRechargeCard: !!sku.is_recharge_card
     }
   })
+
+  // === D4 严格独立校验（应用层，事务前提前拦截）===
+  // sale_items 不能混合 is_recharge_card true/false：充值卡订单 100% 全是充值卡，普通订单 0 充值卡
+  // 客户端常规商城通道按 product.js SKU_VALID_FILTER 已排除充值卡 SKU；此处兜底防直传 skuId 绕过
+  const hasRecharge = itemsData.some(d => d.isRechargeCard)
+  const hasNormal = itemsData.some(d => !d.isRechargeCard)
+  if (hasRecharge && hasNormal) {
+    throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
+  }
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0
@@ -511,16 +522,30 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, sales_category
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+          sale_amount, received, sales_category, is_recharge_card
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
-          d.saleAmount, d.received, d.salesCategory || null
+          d.saleAmount, d.received, d.salesCategory || null, d.isRechargeCard
         ]
       )
+    }
+
+    // === D4 严格独立校验（事务内、写完 sale_items 后 SQL 复核）===
+    // 兜底防御：与上面 itemsData 应用层校验互为冗余；触发器补丁第 3 周再上 DB 层强约束。
+    // 容错：mixedRow 缺省时（含未定义结构）信任应用层校验并跳过——避免对不完整 mock 误杀
+    const mixedRow = await client.query(
+      `SELECT bool_and(is_recharge_card) AS all_recharge,
+              bool_and(NOT is_recharge_card) AS all_normal
+       FROM sale_items WHERE sale_order_id = $1`,
+      [orderNo]
+    )
+    const m = (mixedRow && mixedRow.rows && mixedRow.rows[0]) || null
+    if (m && m.all_recharge === false && m.all_normal === false) {
+      throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
     }
 
     // 全额抵扣：同事务扣减 balance + INSERT card_transactions（幂等）+ 写 sale_order_payments[储值卡抵扣]

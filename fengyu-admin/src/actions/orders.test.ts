@@ -1306,6 +1306,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
   const RECHARGE_SKU = 'sku-recharge-virtual'
 
   /** 500 元档档位实付 = 500 × 0.99 = 495.00 */
+  // 2026-04-26 ticket: isRechargeCard:true 标识充值卡 SKU（capability 列权威源）
   const validRechargeItem = {
     skuId: RECHARGE_SKU,
     productName: '预付充值卡 ¥500',
@@ -1316,6 +1317,7 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     unitRealPrice: '495.00',
     quantity: 1,
     salesCategory: null,
+    isRechargeCard: true,
   }
 
   const baseRechargeData = {

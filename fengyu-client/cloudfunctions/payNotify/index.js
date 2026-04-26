@@ -305,7 +305,7 @@ exports.main = async (event) => {
         [now, targetOrderNo]
       )
 
-      // 3a. 充值卡入账（识别 product_kind='充值卡' 的行 → UPSERT prepaid_cards + INSERT card_transactions）
+      // 3a. 充值卡入账（识别 sale_items.is_recharge_card=true 的行 → UPSERT prepaid_cards + INSERT card_transactions）
       // 必须在状态翻转之后、业绩分配之前；与上述 UPDATE 同事务保证原子性。
       //
       // 覆盖两种下单路径：
@@ -314,14 +314,15 @@ exports.main = async (event) => {
       //
       // 幂等：card_transactions.ref_order_id 单独 SELECT 去重（表无 UNIQUE 约束），
       // 外层 status 翻转 rowCount 已是第一道幂等闸。
+      //
+      // 2026-04-26 capability 化：判定从 product_categories.product_kind='充值卡' 字面量
+      // 切换为 sale_items.is_recharge_card 行级快照（开单时从 product_skus.is_recharge_card 拷贝）
       if (targetOrder.client_user_id && targetOrder.store_id) {
-        // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡入账功能
         const rechargeRows = await client.query(
           `SELECT si.sku_id, si.product_name, sk.price AS sku_price
            FROM sale_items si
            LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
-           LEFT JOIN product_categories pc ON sk.category_id = pc.category_id
-           WHERE si.sale_order_id = $1 AND pc.product_kind = '充值卡'`,
+           WHERE si.sale_order_id = $1 AND si.is_recharge_card = true`,
           [targetOrderNo]
         )
         if (rechargeRows.rows.length > 0) {
@@ -462,6 +463,7 @@ exports.main = async (event) => {
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
 
+          // SHARED-SQL-TRANSITION-CUSTOMER-TYPE: 与 staffApi/routes/order.js recalcCustomerType 完全一致（待 audit-15 P0-15-02 抽离）
           const typeResult = await client.query(
             `SELECT CASE
                WHEN EXISTS (
@@ -484,25 +486,19 @@ exports.main = async (event) => {
                  SELECT 1
                  FROM sale_orders o
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 JOIN product_skus sk ON sk.sku_id = si.sku_id
-                 JOIN product_categories pc ON pc.category_id = sk.category_id
-                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc_parent.is_card_kind = false
+                   AND si.is_experience = false
                ) THEN '小美客'
                WHEN EXISTS (
                  SELECT 1
                  FROM sale_orders o
                  JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-                 JOIN product_skus sk ON sk.sku_id = si.sku_id
-                 JOIN product_categories pc ON pc.category_id = sk.category_id
-                 JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
                  WHERE o.client_user_id = $1
                    AND o.status IN ('已支付', '已完成')
                    AND o.sale_order_type = '销售单'
-                   AND pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'
+                   AND si.is_experience = true
                ) THEN '体验客'
                ELSE '流量客'
              END AS computed_type`,

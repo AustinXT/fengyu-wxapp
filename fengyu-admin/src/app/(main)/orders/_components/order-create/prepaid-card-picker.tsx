@@ -65,6 +65,9 @@ function buildRechargeAddPayload(faceValue: number): { product: Product; sku: Pr
     sortOrder: 0,
     serviceFee: '0',
     isShengmei: null,
+    // 2026-04-26 ticket：充值卡 capability 列 — 后端创建订单时按本字段判定，
+    // 取代旧的 sku.skuId === RECHARGE_VIRTUAL_SKU_ID 字面量
+    isRechargeCard: true,
     marketScope: null,
     isEnabled: true,
     createdAt: '',

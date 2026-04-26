@@ -149,7 +149,7 @@ describe('payNotify index.js', () => {
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
       // 充值 SELECT：无充值行
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       // sale_items 查询（业绩分配）
       {
         match: 'FROM sale_items WHERE sale_order_id',
@@ -192,7 +192,7 @@ describe('payNotify index.js', () => {
 
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       {
         match: "type = '扣款'",
         result: { rows: [], rowCount: 0 }, // 幂等未命中
@@ -293,7 +293,7 @@ describe('payNotify index.js', () => {
 
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: "type = '扣款'", result: { rows: [], rowCount: 0 } },
       // balance 不足
       {
@@ -331,7 +331,7 @@ describe('payNotify index.js', () => {
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
       {
-        match: "pc.product_kind = '充值卡'",
+        match: "si.is_recharge_card = true",
         result: {
           rows: [{ sku_id: 'sku-500', product_name: '充值卡 ¥500', sku_price: '500.00' }],
           rowCount: 1,
@@ -382,7 +382,7 @@ describe('payNotify index.js', () => {
     setupClientQueryRouter([
       ...defaultPaymentsRoutes(),
       {
-        match: "pc.product_kind = '充值卡'",
+        match: "si.is_recharge_card = true",
         result: {
           rows: [{ sku_id: 'sku-recharge-virtual', product_name: '自定义充值 ¥288', sku_price: null }],
           rowCount: 1,
@@ -447,7 +447,7 @@ describe('payNotify index.js', () => {
         result: { rows: [], rowCount: 0 },
       },
       { match: /INSERT INTO sale_order_payments/, result: insertSpy },
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
@@ -593,7 +593,7 @@ describe('payNotify index.js', () => {
       // INSERT payments 成功
       { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 77 }], rowCount: 1 } },
       // UPDATE 相关
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])
@@ -653,7 +653,7 @@ describe('payNotify index.js', () => {
         result: { rows: [{ '?column?': 1 }], rowCount: 1 },
       },
       { match: /INSERT INTO sale_order_payments/, result: { rows: [{ id: 99 }], rowCount: 1 } },
-      { match: "pc.product_kind = '充值卡'", result: { rows: [], rowCount: 0 } },
+      { match: "si.is_recharge_card = true", result: { rows: [], rowCount: 0 } },
       { match: 'SELECT customer_type', result: { rows: [{ customer_type: '流量客' }], rowCount: 1 } },
       { match: 'AS computed_type', result: { rows: [{ computed_type: '体验客' }], rowCount: 1 } },
     ])

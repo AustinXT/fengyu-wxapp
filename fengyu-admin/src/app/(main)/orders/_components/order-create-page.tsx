@@ -19,7 +19,6 @@ import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
 import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
-import { RECHARGE_VIRTUAL_SKU_ID } from "@/lib/recharge"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
   BundlePicker,
@@ -307,7 +306,8 @@ export default function OrderCreatePageClient({
 
   const addToCart = (product: Product, sku: ProductSku) => {
     // 充值卡订单：每单仅 1 笔，点击档位/自定义金额时替换购物车（不累加数量）
-    if (sku.skuId === RECHARGE_VIRTUAL_SKU_ID) {
+    // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 sku.isRechargeCard capability 列
+    if (sku.isRechargeCard === true) {
       setCart([{ sku, product, quantity: 1 }])
       setPriceOverrides({})
       return
@@ -410,7 +410,8 @@ export default function OrderCreatePageClient({
   const isConversion = orderType === '转换单'
   const isBundleOrder = productKindChoice === '组合套餐'
   // 充值卡订单：payAmount 已由 matchTier 计算，禁止手工改价（与 client 对齐）
-  const isRechargeOrder = cart.some((item) => item.sku.skuId === RECHARGE_VIRTUAL_SKU_ID)
+  // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 sku.isRechargeCard capability 列
+  const isRechargeOrder = cart.some((item) => item.sku.isRechargeCard === true)
   const internalRatio = isInternal ? 0.5 : 1
   // 组合套餐 / 内部单 / 充值卡均禁用手工改价，cart 金额按 specialPrice(bundlePrice) 或原价计算
   const suppressOverride = isInternal || isBundleOrder || isRechargeOrder
@@ -652,7 +653,8 @@ export default function OrderCreatePageClient({
                 <div className="space-y-2">
                   {cart.map((item) => {
                     const unitPrice = item.sku.specialPrice ? Number(item.sku.specialPrice) : Number(item.sku.price)
-                    const isRechargeItem = item.sku.skuId === RECHARGE_VIRTUAL_SKU_ID
+                    // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 sku.isRechargeCard capability 列
+                    const isRechargeItem = item.sku.isRechargeCard === true
                     return (
                       <div key={item.sku.skuId} className="flex items-center justify-between bg-[#FAFAFA] rounded px-3 py-2 text-sm">
                         <div className="flex-1 min-w-0">
@@ -1130,6 +1132,8 @@ export default function OrderCreatePageClient({
                         saleAmount: amounts.saleAmount.toFixed(2),
                         received: amounts.received.toFixed(2),
                         salesCategory: null,
+                        // 2026-04-26 ticket：充值卡 capability hint（服务端会以 product_skus 权威值覆盖）
+                        isRechargeCard: item.sku.isRechargeCard === true,
                       }
                     }),
                   })
