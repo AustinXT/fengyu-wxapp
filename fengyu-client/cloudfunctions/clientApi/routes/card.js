@@ -278,14 +278,16 @@ async function recharge(ctx) {
     const saleItemId = `XSLSH-WX-${dateStr}${String(itemSeq).padStart(4, '0')}`
 
     // d. INSERT sale_orders（实付 = payAmount，复用 total_amount 列）
-    // 充值订单全走正常支付通道，paid_amount = payAmount；prepaid_card_amount 默认 0
+    // 2026-04-26 sale-order-domain-refactor：
+    //   - paid_amount 列已 DROP，初始 received = 0（待 payNotify 回调写流水后累加）
+    //   - payable_amount = payAmount（应付实金）；prepaid_card_amount 默认 0
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, paid_amount, payable_amount, payment_method,
+        total_amount, received, payable_amount, payment_method,
         created_at, updated_at
-      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, $9, $9, '微信', $5, $5)`,
+      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, 0, $9, '微信', $5, $5)`,
       [saleOrderId, documentType, marketName, boundStoreId, now, userId, phone || null, customerName, payAmount]
     )
 

@@ -24,7 +24,8 @@ describe('order.scanDetail', () => {
       .mockResolvedValueOnce([{
         sale_order_id: 'FY-001', status: '待支付', store_id: 's1',
         sale_order_type: '销售单', total_amount: 100, store_name: '南昌旗舰店', opener_name: '张三', opened_by: 'emp-001',
-        prepaid_card_amount: 30, paid_amount: 70, payment_method: '微信', coupon_discount: 0,
+        prepaid_card_amount: 30, payable_amount: 70, received: 0, refunded_amount: 0,
+        payment_method: '微信', coupon_discount: 0,
       }])
       .mockResolvedValueOnce([{
         sale_item_id: 'SI-001', unit_price: 100, quantity: 1, received: 100,
@@ -32,13 +33,15 @@ describe('order.scanDetail', () => {
         cover_image: 'https://img.example.com/a.jpg',
       }])
 
-    const ctx = createCtx({ payload: { orderNo: 'FY-001' } })
+    const ctx = createBoundCtx({ orderNo: 'FY-001' })
     await routes.scanDetail(ctx)
 
     expect(ctx.result.order.orderNo).toBe('FY-001')
     expect(ctx.result.order.openerName).toBe('张三')
     expect(ctx.result.order.prepaidCardAmount).toBe(30)
-    expect(ctx.result.order.paidAmount).toBe(70)
+    expect(ctx.result.order.payableAmount).toBe(70)
+    expect(ctx.result.order.received).toBe(0)
+    expect(ctx.result.order.refundedAmount).toBe(0)
     expect(ctx.result.order.paymentMethod).toBe('微信')
     expect(ctx.result.items).toHaveLength(1)
     expect(ctx.result.items[0].coverImage).toBe('https://img.example.com/a.jpg')
@@ -54,7 +57,7 @@ describe('order.scanDetail', () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-002', status: '已支付',    }])
 
-    const ctx = createCtx({ payload: { orderNo: 'FY-002' } })
+    const ctx = createBoundCtx({ orderNo: 'FY-002' })
     await routes.scanDetail(ctx)
 
     expect(ctx.result.status).toBe('已支付')
@@ -62,14 +65,22 @@ describe('order.scanDetail', () => {
   })
 
   test('缺少 saleOrderId → INVALID_PARAMS', async () => {
-    const ctx = createCtx({ payload: {} })
+    const ctx = createBoundCtx({})
     await expect(routes.scanDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*saleOrderId/)
   })
 
   test('订单不存在 → INVALID_PARAMS', async () => {
     pg.query.mockResolvedValueOnce([])
-    const ctx = createCtx({ payload: { orderNo: 'nonexistent' } })
+    const ctx = createBoundCtx({ orderNo: 'nonexistent' })
     await expect(routes.scanDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*订单不存在/)
+  })
+
+  test('未绑定手机号 → PHONE_REQUIRED（audit-02 P0 修复）', async () => {
+    const ctx = createCtx({
+      payload: { orderNo: 'FY-001' },
+      auth: { phone: null },
+    })
+    await expect(routes.scanDetail(ctx)).rejects.toThrow(/PHONE_REQUIRED/)
   })
 })
 
@@ -810,12 +821,13 @@ describe('order.detail', () => {
     expect(ctx.result.payments[1].change_type).toBe('回款')
     expect(ctx.result.payments[1].amount).toBe(200)
 
-    // 验证 SQL 查了 sale_order_payments 表
+    // 验证 SQL 查了 sale_order_payments 表 + LEFT JOIN details 子表（2026-04-26 sale-order-domain-refactor）
     const paymentsQueryCall = pg.query.mock.calls.find(
       ([sql]) => /FROM sale_order_payments/.test(sql)
     )
     expect(paymentsQueryCall).toBeDefined()
-    expect(paymentsQueryCall[0]).toMatch(/ORDER BY created_at ASC/)
+    expect(paymentsQueryCall[0]).toMatch(/ORDER BY sop\.created_at ASC/)
+    expect(paymentsQueryCall[0]).toContain('sale_order_payment_details')
   })
 })
 
@@ -968,10 +980,11 @@ describe('prepaid card deduction - order.create', () => {
     expect(insertTxn.params[0]).toBe('card-abc')
     expect(insertTxn.params[1]).toBe(-300)
 
-    // 订单 INSERT 包含 prepaid_card_amount / paid_amount 两列，status='已支付'
+    // 订单 INSERT 包含 prepaid_card_amount / received（2026-04-26 paid_amount→received）, status='已支付'
     const orderInsert = txnQueries.find(q => /INSERT INTO sale_orders/.test(q.sql))
     expect(orderInsert.sql).toContain('prepaid_card_amount')
-    expect(orderInsert.sql).toContain('paid_amount')
+    expect(orderInsert.sql).toContain('received')
+    expect(orderInsert.sql).not.toContain('paid_amount')
     expect(orderInsert.params[1]).toBe('已支付') // initialStatus
   })
 
@@ -1156,9 +1169,10 @@ describe('prepaid card deduction - order.create', () => {
 
 describe('prepaid card deduction - order.cancel', () => {
   test('无扣款（prepaid_card_amount=0）：无需回冲', async () => {
+    // 2026-04-26 sale-order-domain-refactor: paid_amount → 由 payable_amount 表达"应付实金"
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-      prepaid_card_amount: 0, paid_amount: 100,
+      prepaid_card_amount: 0, payable_amount: 100, total_amount: 100,
     }])
 
     const txnCalls = []
@@ -1166,6 +1180,10 @@ describe('prepaid card deduction - order.cancel', () => {
       const client = {
         query: vi.fn(async (sql) => {
           txnCalls.push(sql)
+          // CAS 守卫：UPDATE sale_orders SET status='已关闭' 必须返回 rowCount=1
+          if (/UPDATE sale_orders SET status = '已关闭'/.test(sql)) {
+            return { rows: [], rowCount: 1 }
+          }
           return { rows: [], rowCount: 0 }
         }),
       }
@@ -1182,9 +1200,10 @@ describe('prepaid card deduction - order.cancel', () => {
   })
 
   test('已扣款（全额抵扣已支付单）：反向 INSERT 充值流水 + balance 回冲', async () => {
+    // 全额抵扣判定：payable_amount=0（即 total = prepaid_card_amount）
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-002', status: '已支付', client_user_id: 'user-001',
-      prepaid_card_amount: '300', paid_amount: '0',
+      prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
     }])
 
     const txnCalls = []
@@ -1192,6 +1211,10 @@ describe('prepaid card deduction - order.cancel', () => {
       const client = {
         query: vi.fn(async (sql, params) => {
           txnCalls.push({ sql, params })
+          // CAS 守卫：UPDATE sale_orders SET status='已关闭' 必须返回 rowCount=1
+          if (/UPDATE sale_orders SET status = '已关闭'/.test(sql)) {
+            return { rows: [], rowCount: 1 }
+          }
           // 第一次查 card_transactions 扣款流水 → 已存在
           if (/FROM card_transactions/.test(sql) && /type = '扣款'/.test(sql)) {
             return { rows: [{ id: 1 }], rowCount: 1 }
@@ -1225,7 +1248,7 @@ describe('prepaid card deduction - order.cancel', () => {
   test('已支付单但无储值卡抵扣 → 拒绝取消', async () => {
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-003', status: '已支付', client_user_id: 'user-001',
-      prepaid_card_amount: 0, paid_amount: 100,
+      prepaid_card_amount: 0, payable_amount: 100, total_amount: 100,
     }])
 
     const ctx = createBoundCtx({ orderNo: 'FY-003' })
@@ -1349,7 +1372,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', paid_amount: '0',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -1380,7 +1403,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     expect(insertTxn).toBeDefined()
     expect(Number(insertTxn.params[1])).toBe(-300)
 
-    const statusUpd = txnCalls.find(q => /UPDATE sale_orders[\s\S]*SET status = '已支付'/.test(q.sql))
+    const statusUpd = txnCalls.find(q => /UPDATE sale_orders[\s\S]*status = '已支付'/.test(q.sql))
     expect(statusUpd).toBeDefined()
   })
 
@@ -1392,7 +1415,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', paid_amount: '0',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -1410,7 +1433,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     await expect(routes.confirmPrepaidFull(ctx)).rejects.toThrow(/INSUFFICIENT_BALANCE/)
   })
 
-  test('paid_amount>0 非全额抵扣 → 拒绝', async () => {
+  test('payable_amount>0 非全额抵扣 → 拒绝（2026-04-26 paid_amount→payable_amount）', async () => {
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
         query: vi.fn(async (sql) => {
@@ -1418,7 +1441,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '100', paid_amount: '200',
+                prepaid_card_amount: '100', payable_amount: '200', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -1441,7 +1464,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '已支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', paid_amount: '0',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -1466,7 +1489,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
-                prepaid_card_amount: '300', paid_amount: '0',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }
@@ -1493,7 +1516,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
     const insertTxn = txnCalls.find(q => /INSERT INTO card_transactions/.test(q.sql))
     expect(insertTxn).toBeUndefined()
     // 但 status UPDATE 仍需执行
-    const statusUpd = txnCalls.find(q => /UPDATE sale_orders[\s\S]*SET status = '已支付'/.test(q.sql))
+    const statusUpd = txnCalls.find(q => /UPDATE sale_orders[\s\S]*status = '已支付'/.test(q.sql))
     expect(statusUpd).toBeDefined()
   })
 
@@ -1505,7 +1528,7 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
             return {
               rows: [{
                 sale_order_id: 'FY-001', status: '待支付', client_user_id: 'other-user',
-                prepaid_card_amount: '300', paid_amount: '0',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
               }],
               rowCount: 1,
             }

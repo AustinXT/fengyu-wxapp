@@ -15,7 +15,8 @@ const {
  * @param {object} opts
  * @param {string|null} opts.saleOrderType  - 原单 sale_order_type；null 表示原单不存在
  * @param {string|null} opts.clientUserId   - 原单 client_user_id
- * @param {number} opts.netSettled          - 链净 paid_amount 汇总
+ * @param {number} opts.netSettled          - 链净到账（received - refunded_amount）汇总
+ *                                            （2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount）
  * @param {number} opts.granted             - point_transactions 已发合计
  * @returns {{ client, queries }}
  */
@@ -44,8 +45,8 @@ function buildMockClient({
       }
     }
 
-    // 2. 链净汇总
-    if (/FROM\s+sale_orders/i.test(s) && /SUM\(paid_amount\)/i.test(s)) {
+    // 2. 链净汇总（2026-04-26: SUM(received - refunded_amount)）
+    if (/FROM\s+sale_orders/i.test(s) && /received/i.test(s) && /refunded_amount/i.test(s)) {
       return { rows: [{ net_settled: netSettled }] }
     }
 
