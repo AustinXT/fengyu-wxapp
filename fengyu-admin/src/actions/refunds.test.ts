@@ -24,6 +24,18 @@ vi.mock('@db/order', () => ({
   saleOrders: {},
   saleItems: {},
   saleOrderPayments: {},
+  salePaymentDetails: {},
+}))
+
+// 2026-04-26 sale-order-domain-refactor：refunds.ts 引入 cascadeRefund
+vi.mock('@/lib/refund-cascade', () => ({
+  cascadeRefund: vi.fn(async () => ({
+    voidedAllocations: 0,
+    voidedCommissions: 0,
+    refundedCoupons: 0,
+    reversedPoints: 0,
+    rolledBackPickups: 0,
+  })),
 }))
 
 vi.mock('@db/org', () => ({ stores: {} }))
