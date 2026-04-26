@@ -30,14 +30,20 @@ interface OrderDetailData {
   coupon_discount: number;
   coupon_name: string | null;
   expire_at: string | null;
-  // Ticket 2026-04-24 PR-C: 欠款额 = payable_amount - paid_amount
+  // Ticket 2026-04-26 sale-order-domain-refactor:
+  //   - 字段 paid_amount → received（已到账金额聚合快照）
+  //   - 新增 refunded_amount（已退款金额聚合快照）
+  //   - 欠款额 = payable_amount - (received - refunded_amount)
   payable_amount?: number;
-  paid_amount?: number;
+  received?: number;
+  refunded_amount?: number;
   prepaid_card_amount?: number;
   items?: OrderDetailItem[];
   order_time_fmt?: string;
   expire_time_fmt?: string;
   outstanding_fmt?: string;
+  refunded_fmt?: string;
+  has_refund?: boolean;
 }
 
 interface OrderPayment {
@@ -48,6 +54,8 @@ interface OrderPayment {
   paid_at: string | null;
   created_at: string;
   note: string | null;
+  refund_reason?: string | null;
+  audit_at?: string | null;
 }
 
 interface OrderPaymentView {
@@ -59,6 +67,7 @@ interface OrderPaymentView {
   status: string;
   time_fmt: string;
   note: string | null;
+  refund_reason: string | null;
 }
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
@@ -141,6 +150,8 @@ Page({
       }
 
       // 款项流水视图（退款标红、金额绝对值显示）
+      // 2026-04-26 sale-order-domain-refactor: 退款流水来自 sale_order_payments[change_type='退款']
+      // 不再从独立的 sale_order_type='退款单' 行聚合
       const payments: OrderPaymentView[] = paymentsRaw.map((p) => {
         const amt = Number(p.amount) || 0;
         const isRefund = amt < 0 || p.change_type === '退款';
@@ -155,20 +166,23 @@ Page({
           status: p.status,
           time_fmt: timeSrc ? formatDateTime(timeSrc) : '',
           note: p.note,
+          refund_reason: p.refund_reason ?? null,
         };
       });
 
-      // 欠款额 = payable_amount - paid_amount（皆 "已到账" 语义；兜底：payable_amount 缺失时按 total-prepaid 推算）
+      // 欠款额 = payable_amount - 净到账（received - refunded_amount）
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - paid_amount 列已 DROP；接口现返回 received / refunded_amount
+      //   - 净到账 = received - refunded_amount（与 backend invariant 对齐）
       const payable = Number(order.payable_amount ?? 0) > 0
         ? Number(order.payable_amount)
         : Math.round((Number(order.total_amount || 0) - Number(order.prepaid_card_amount || 0)) * 100) / 100;
-      const paid = Number(order.paid_amount ?? 0);
-      // 若该订单还没有 payments 行（首次支付前），paid_amount 列语义可能是"剩余应付"而非"已到账"
-      const paidSumFromPayments = paymentsRaw
-        .filter((p) => p.status === '已支付' && ['首次支付', '回款', '退款'].includes(p.change_type))
-        .reduce((s, p) => s + Number(p.amount || 0), 0);
-      const effectivePaid = paymentsRaw.length > 0 ? paidSumFromPayments : 0;
-      const outstanding = Math.max(0, Math.round((payable - effectivePaid) * 100) / 100);
+      const received = Number(order.received ?? 0);
+      const refundedAmount = Number(order.refunded_amount ?? 0);
+      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
+      const outstanding = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
+      const refundedFmt = refundedAmount.toFixed(2);
+      const hasRefund = refundedAmount > 0;
 
       this.setData({
         order: {
@@ -177,6 +191,8 @@ Page({
           order_time_fmt: formatDateTime(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
           outstanding_fmt: outstanding.toFixed(2),
+          refunded_fmt: refundedFmt,
+          has_refund: hasRefund,
         },
         statusIcon: iconMeta.icon,
         statusIconColor: iconMeta.color,

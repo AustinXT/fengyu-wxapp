@@ -51,12 +51,17 @@ Page({
           i.product_type !== '家居产品' && (i.remaining_sessions ?? 0) > 0
         );
       const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - 已退款标签由 refunded_amount > 0 推导
+      //   - 后端列表接口已返回 received / refunded_amount
+      const hasRefund = Number(item.refunded_amount || 0) > 0;
       return {
         ...item,
         statusClass: getStatusClass(item.status),
         order_time_fmt: formatOrderDate(item.sale_order_datetime),
         hasAppointable,
         itemCount,
+        has_refund: hasRefund,
       };
     });
   },

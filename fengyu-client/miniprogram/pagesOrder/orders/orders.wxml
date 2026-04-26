@@ -49,6 +49,10 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <view class="order-header-left">
           <view class="order-no-row">
             <text class="order-no">{{item.sale_order_id}}</text>
+            <!-- 2026-04-26 sale-order-domain-refactor: 已退款标签由 refunded_amount > 0 推导，不再依赖 sale_order_type='退款单' -->
+            <view wx:if="{{item.has_refund}}" class="order-refund-tag">
+              <van-tag color="#FFF1F0" text-color="#FF4D4F" size="medium">已退款</van-tag>
+            </view>
           </view>
           <text class="order-time">{{item.order_time_fmt}}</text>
         </view>

@@ -11,6 +11,10 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
     <van-icon name="{{statusIcon}}" size="80rpx" color="{{statusIconColor}}" />
     <view class="status-label-row">
       <text class="status-label">{{order.status}}</text>
+      <!-- 2026-04-26 sale-order-domain-refactor: 已退款标签由 refunded_amount > 0 推导 -->
+      <view wx:if="{{order.has_refund}}" class="refund-tag">
+        <van-tag color="#FFF1F0" text-color="#FF4D4F">已退款 ¥{{order.refunded_fmt}}</van-tag>
+      </view>
     </view>
     <text class="status-hint" wx:if="{{order.status === '待确认收款'}}">请等待店长确认收款</text>
     <block wx:elif="{{order.status === '待支付'}}">
@@ -120,7 +124,8 @@ module.exports.price = function(n) { return (Math.round(n * 100) / 100).toFixed(
         <view class="pay-row__left">
           <text class="pay-type">{{p.change_type}}</text>
           <text class="pay-meta">{{p.time_fmt}} · {{p.payment_method}}</text>
-          <text wx:if="{{p.note}}" class="pay-note">{{p.note}}</text>
+          <text wx:if="{{p.is_refund && p.refund_reason}}" class="pay-note">退款原因：{{p.refund_reason}}</text>
+          <text wx:elif="{{p.note}}" class="pay-note">{{p.note}}</text>
         </view>
         <view class="pay-row__right">
           <text class="pay-amount {{p.is_refund ? 'pay-amount--refund' : ''}}">

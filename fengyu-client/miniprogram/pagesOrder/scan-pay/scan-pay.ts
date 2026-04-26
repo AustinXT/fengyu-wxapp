@@ -16,7 +16,12 @@ interface ScanOrder {
   orderType: string;
   totalAmount: number;
   prepaidCardAmount: number;
-  paidAmount: number;
+  // 2026-04-26 sale-order-domain-refactor:
+  //   - paidAmount 字段（来自旧 paid_amount 列）已删除
+  //   - 后端 scanDetail 现返回 received / refundedAmount / payableAmount
+  payableAmount: number;
+  received: number;
+  refundedAmount: number;
   paymentMethod: PayMethod;
   couponDiscount: number;
 }
@@ -87,7 +92,16 @@ Page({
       const orderData = data.order || {};
       const totalAmount = Number(orderData.totalAmount || 0);
       const prepaid = Number(orderData.prepaidCardAmount || 0);
-      const paid = Number(orderData.paidAmount ?? totalAmount);
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - paid_amount → received（已到账）；本次应付实金 = payable - 净到账
+      //   - 兜底：payableAmount 缺失时按 total - prepaid 推算（与后端兜底逻辑一致）
+      const received = Number(orderData.received || 0);
+      const refundedAmount = Number(orderData.refundedAmount || 0);
+      const payable = Number(orderData.payableAmount) > 0
+        ? Number(orderData.payableAmount)
+        : Math.round((totalAmount - prepaid) * 100) / 100;
+      const netReceived = Math.round((received - refundedAmount) * 100) / 100;
+      const paid = Math.max(0, Math.round((payable - netReceived) * 100) / 100);
       const couponDiscount = Number(orderData.couponDiscount || 0);
       const validMethods: PayMethod[] = ['微信', '支付宝', '线下'];
       const restoredMethod = validMethods.includes(orderData.paymentMethod)
@@ -99,7 +113,9 @@ Page({
           ...orderData,
           totalAmount,
           prepaidCardAmount: prepaid,
-          paidAmount: paid,
+          payableAmount: payable,
+          received,
+          refundedAmount,
           paymentMethod: restoredMethod,
           couponDiscount,
         },
