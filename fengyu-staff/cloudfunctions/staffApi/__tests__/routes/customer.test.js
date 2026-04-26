@@ -787,41 +787,156 @@ describe('customer.listByTag', () => {
 // customer.refundHistory
 // ============================================================
 describe('customer.refundHistory', () => {
-  // 2026-04-26 sale-order-domain-refactor:
-  //   退款单语义从 sale_orders[退款单] 迁移至 sale_order_payments[change_type='退款']。
-  //   refundHistory 现在分别 query 退款流水（sale_order_payments JOIN）+ 转换单（sale_orders）+ 转换单 items。
-  //   原 mock 仍按 "退款单 + 转换单 + 合并 items" 单 query 模型组织，与新实现不匹配。
-  test.skip('返回退款和转换订单及明细 — 已废弃（sale_order_type 5→3 后 refundHistory SQL 拆分为 3 query）', async () => {
+  // 2026-04-26 sale-order-domain-refactor: refundHistory 拆分为 3 query —
+  //   1) sale_order_payments[change_type='退款'] JOIN sale_order_payment_details JOIN sale_orders
+  //   2) sale_orders[type='转换单']
+  //   3) sale_items（按 convOrderIds ANY）
+  // 返回扁平数组，按 createdAt 倒序合并退款和转换单。
+
+  test('返回退款流水（sale_order_payments）和转换单（sale_orders）— 新模型', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
 
+    // Q1: 退款流水（来自 sale_order_payments JOIN sale_order_payment_details JOIN sale_orders）
     pg.query.mockResolvedValueOnce([
       {
-        sale_order_id: 'REF-001', status: '已完成', sale_order_type: '退款单',
-        total_amount: '500', refund_reason: '质量问题', handling_fee: '50',
-        ref_sale_order_id: 'FY-001', approved_by: 'emp-001', approved_at: '2024-06-20',
-        rejected_reason: null, created_at: '2024-06-15', paid_at: null,
-      },
-      {
-        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换单',
-        total_amount: '300', refund_reason: '更换项目', handling_fee: null,
-        ref_sale_order_id: 'FY-002', approved_by: 'emp-001', approved_at: '2024-06-22',
-        rejected_reason: null, created_at: '2024-06-18', paid_at: null,
+        payment_id: 101, sale_order_id: 'FY-001',
+        amount: '-500', status: '已支付',
+        created_at: '2024-06-15T10:00:00Z', paid_at: '2024-06-20T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '质量问题',
+        audit_at: '2024-06-20T10:00:00Z',
+        audit_remark: null,
+        detail_note: JSON.stringify({
+          _v: 1,
+          handlingFee: 50,
+          refundByCard: 0,
+          refundByOrigin: 500,
+          items: [{
+            refSaleItemId: 'refitem-1',
+            quantity: 1,
+            refundAmount: 500,
+            productType: '疗程卡',
+          }],
+        }),
+        client_user_id: 'u1',
+        store_id: 'store-001',
       },
     ])
+    // Q2: 转换单（来自 sale_orders）
     pg.query.mockResolvedValueOnce([
-      { sale_order_id: 'REF-001', sale_item_id: 'refitem-1', item_direction: 'refund', product_name: '面部护理', sku_spec_name: '基础款', quantity: 1, received: '500' },
+      {
+        sale_order_id: 'CVT-001', status: '已完成', sale_order_type: '转换单',
+        total_amount: '300', created_at: '2024-06-18T10:00:00Z', paid_at: '2024-06-22T10:00:00Z',
+      },
+    ])
+    // Q3: 转换单明细
+    pg.query.mockResolvedValueOnce([
       { sale_order_id: 'CVT-001', sale_item_id: 'cvtitem-1', item_direction: '购买', product_name: '身体护理', sku_spec_name: '高级款', quantity: 1, received: '300' },
     ])
 
     await customerRoutes.refundHistory(ctx)
 
     expect(ctx.result).toHaveLength(2)
-    expect(ctx.result[0].saleOrderId).toBe('REF-001')
-    expect(ctx.result[0].type).toBe('退款单')
-    expect(ctx.result[0].handlingFee).toBe(50)
-    expect(ctx.result[0].items).toHaveLength(1)
-    expect(ctx.result[1].type).toBe('转换单')
-    expect(ctx.result[1].handlingFee).toBeNull()
+    // 排序：退款 createdAt 2024-06-18（CVT）> 2024-06-15（refund）→ CVT 在前
+    const cvt = ctx.result.find(r => r.saleOrderId === 'CVT-001')
+    const refund = ctx.result.find(r => r.paymentId === 101)
+    expect(cvt).toBeDefined()
+    expect(cvt.type).toBe('转换单')
+    expect(cvt.items).toHaveLength(1)
+    expect(refund).toBeDefined()
+    expect(refund.type).toBe('退款')
+    expect(refund.totalAmount).toBe(-500)
+    expect(refund.handlingFee).toBe(50)
+    expect(refund.items).toHaveLength(1)
+    expect(refund.items[0].refSaleItemId).toBe('refitem-1')
+  })
+
+  test('退款流水 4 状态完整展示（待审批 / 已支付 / 已作废）', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      {
+        payment_id: 1, sale_order_id: 'FY-001',
+        amount: '-100', status: '待审批',
+        created_at: '2024-06-15T10:00:00Z', paid_at: null,
+        payment_method: '线下',
+        refund_reason: '原因A', audit_at: null, audit_remark: null,
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+      {
+        payment_id: 2, sale_order_id: 'FY-002',
+        amount: '-200', status: '已支付',
+        created_at: '2024-06-16T10:00:00Z', paid_at: '2024-06-17T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '原因B', audit_at: '2024-06-17T10:00:00Z', audit_remark: '同意',
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+      {
+        payment_id: 3, sale_order_id: 'FY-003',
+        amount: '-300', status: '已作废',
+        created_at: '2024-06-17T10:00:00Z', paid_at: null,
+        payment_method: '线下',
+        refund_reason: '原因C', audit_at: '2024-06-17T11:00:00Z', audit_remark: '驳回原因',
+        detail_note: null,
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])  // 转换单
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toHaveLength(3)
+    const pending = ctx.result.find(r => r.paymentId === 1)
+    const paid = ctx.result.find(r => r.paymentId === 2)
+    const voided = ctx.result.find(r => r.paymentId === 3)
+    expect(pending.status).toBe('待审批')
+    expect(paid.status).toBe('已支付')
+    expect(paid.approvedAt).toBe('2024-06-17T10:00:00Z')
+    expect(voided.status).toBe('已作废')
+    expect(voided.rejectedReason).toBe('驳回原因')
+    // 待审批 / 已支付 状态下 rejectedReason 为 null（按源码：仅已作废返回 audit_remark）
+    expect(pending.rejectedReason).toBeNull()
+    expect(paid.rejectedReason).toBeNull()
+  })
+
+  test('store_id scope 过滤生效 — SQL WHERE 含 so.store_id', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([])  // 退款
+    pg.query.mockResolvedValueOnce([])  // 转换单
+
+    await customerRoutes.refundHistory(ctx)
+
+    // 第 1 个 query 应该是退款 SQL，包含 store_id 过滤（effectiveStoreId='store-001'）
+    const [refundSql, refundParams] = pg.query.mock.calls[0]
+    expect(refundSql).toMatch(/sop\.change_type\s*=\s*'退款'/)
+    expect(refundSql).toMatch(/FROM\s+sale_order_payments\s+sop/i)
+    expect(refundSql).toMatch(/sale_order_payment_details\s+spd/i)
+    expect(refundSql).toMatch(/so\.store_id\s*=/)
+    // params: [clientUserId, storeId, pageSize, offset]
+    expect(refundParams).toContain('store-001')
+  })
+
+  test('detail_note 解析失败时 items=[]，不抛错', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u1' })
+    pg.query.mockResolvedValueOnce([
+      {
+        payment_id: 1, sale_order_id: 'FY-001',
+        amount: '-100', status: '已支付',
+        created_at: '2024-06-15T10:00:00Z', paid_at: '2024-06-15T10:00:00Z',
+        payment_method: '线下',
+        refund_reason: '原因', audit_at: null, audit_remark: null,
+        detail_note: 'invalid-json{{{',  // 触发 try-catch
+        client_user_id: 'u1', store_id: 'store-001',
+      },
+    ])
+    pg.query.mockResolvedValueOnce([])
+
+    await customerRoutes.refundHistory(ctx)
+
+    expect(ctx.result).toHaveLength(1)
+    expect(ctx.result[0].items).toEqual([])
+    expect(ctx.result[0].handlingFee).toBeNull()
   })
 
   test('按 clientPhone 查询', async () => {

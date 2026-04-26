@@ -73,6 +73,9 @@ function setupCommonMocks(opts = {}) {
     giftItemsRows = [],
     refundOrderRows = [],
     refundItemsRows = [],
+    refundPaymentRows = [],   // 2026-04-26 sale_order_payments[change_type='退款'] JOIN spd 行
+    refundConvOrderRows = [], // 2026-04-26 sale_orders[type='转换单'] 行
+    refundConvItemRows = [],  // 2026-04-26 转换单的 sale_items 明细
     marketName = '华东市场',
     storeName = '凤御A店',
   } = opts
@@ -227,7 +230,7 @@ function setupCommonMocks(opts = {}) {
       return giftItemsRows
     }
 
-    // refundHistory 订单
+    // refundHistory 订单（旧）— 兼容尚未迁移的 callers
     if (
       /sale_order_type\s+IN\s*\(\s*'退款单'\s*,\s*'转换单'\s*\)/.test(sql) &&
       /FROM\s+sale_orders\s+o/.test(sql)
@@ -235,11 +238,29 @@ function setupCommonMocks(opts = {}) {
       return refundOrderRows
     }
 
-    // refundHistory 明细
+    // 2026-04-26 refundHistory Q1: 退款流水（sale_order_payments JOIN spd JOIN sale_orders）
+    if (
+      /FROM\s+sale_order_payments\s+sop/.test(sql) &&
+      /sop\.change_type\s*=\s*'退款'/.test(sql)
+    ) {
+      return refundPaymentRows
+    }
+
+    // 2026-04-26 refundHistory Q2: 转换单（sale_orders[type='转换单']）
+    if (
+      /FROM\s+sale_orders\s+o/.test(sql) &&
+      /o\.sale_order_type\s*=\s*'转换单'/.test(sql)
+    ) {
+      return refundConvOrderRows
+    }
+
+    // 2026-04-26 refundHistory Q3: 转换单明细
     if (
       /si\.item_direction/.test(sql) &&
       /FROM\s+sale_items\s+si\s+WHERE\s+si\.sale_order_id\s*=\s*ANY/.test(sql)
     ) {
+      // 兼容旧 callers 仍传 refundItemsRows
+      if (refundConvItemRows.length > 0) return refundConvItemRows
       return refundItemsRows
     }
 
@@ -801,27 +822,27 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
     expect(giftSql).toMatch(/o\.store_id\s+IN\s*\(/)
   })
 
-  // 2026-04-26 sale-order-domain-refactor: refundHistory 拆分为 sale_order_payments[退款] + sale_orders[转换单]
-  // 双 query；旧 SQL pattern `sale_order_type IN ('退款单','转换单')` 不再适用。
-  test.skip('refundHistory scope=market：退款单 SQL 含 o.store_id IN — 已废弃（sale_order_type 5→3 后退款单实体已删）', async () => {
+  // 2026-04-26 sale-order-domain-refactor: refundHistory 拆分为
+  //   Q1: sale_order_payments[change_type='退款'] JOIN spd JOIN sale_orders（按 store_id ∈ scope 过滤）
+  //   Q2: sale_orders[type='转换单']（同样 scope 过滤）
+  test('refundHistory scope=market：退款流水 SQL 与转换单 SQL 都含 o.store_id IN', async () => {
     setupCommonMocks({
-      refundOrderRows: [
+      refundPaymentRows: [
         {
-          sale_order_id: 'so-r1',
-          status: '已退款',
-          sale_order_type: '退款单',
-          total_amount: 100,
+          payment_id: 101,
+          sale_order_id: 'so-1',
+          amount: '-100',
+          status: '已支付',
+          created_at: '2026-04-22T10:00:00Z',
+          paid_at: '2026-04-22T11:00:00Z',
+          payment_method: '线下',
           refund_reason: '不适合',
-          handling_fee: null,
-          ref_sale_order_id: 'so-1',
-          approved_by: null,
-          approved_at: null,
-          rejected_reason: null,
-          created_at: '2026-04-22',
-          paid_at: null,
+          audit_at: '2026-04-22T11:00:00Z',
+          audit_remark: null,
+          detail_note: null,
         },
       ],
-      refundItemsRows: [],
+      refundConvOrderRows: [],
     })
     const ctx = makeHqCtx({
       clientUserId: 'u1',
@@ -831,11 +852,26 @@ describe('mgmtCustomer 细节 SQL：sale_orders.store_id IN scope', () => {
     await refundHistory(ctx)
 
     const sqls = pg.query.mock.calls.map((c) => c[0])
+    // Q1: 退款流水 SQL — 应含 store_id IN (...) 子查询（market scope）
     const refundSql = sqls.find((s) =>
-      /sale_order_type\s+IN\s*\(\s*'退款单'\s*,\s*'转换单'\s*\)/.test(s),
+      /FROM\s+sale_order_payments\s+sop/.test(s) &&
+      /sop\.change_type\s*=\s*'退款'/.test(s),
     )
+    expect(refundSql).toBeDefined()
     expect(refundSql).toMatch(/o\.store_id\s+IN\s*\(/)
-    expect(ctx.result.orders[0].type).toBe('退款单')
+    expect(refundSql).toMatch(/SELECT\s+s\.store_id\s+FROM\s+stores/)
+
+    // Q2: 转换单 SQL — 同样含 store_id IN
+    const convSql = sqls.find((s) =>
+      /o\.sale_order_type\s*=\s*'转换单'/.test(s),
+    )
+    expect(convSql).toBeDefined()
+    expect(convSql).toMatch(/o\.store_id\s+IN\s*\(/)
+
+    // 出数：退款流水正常映射
+    expect(ctx.result.orders).toHaveLength(1)
+    expect(ctx.result.orders[0].type).toBe('退款')
+    expect(ctx.result.orders[0].paymentId).toBe(101)
   })
 })
 
@@ -1127,16 +1163,35 @@ describe('mgmtCustomer 出数完整路径', () => {
     expect(ctx.result.giftItems).toEqual([])
   })
 
-  // 2026-04-26 sale-order-domain-refactor: refundHistory 退款源已迁移至 sale_order_payments[change_type='退款']，
-  // 不再走 sale_order_type='退款单'。原 mock setupCommonMocks.refundOrderRows 走 sale_orders 分支，已断链。
-  test.skip('refundHistory 出数：orders + items 完整 mapping — 已废弃（sale_order_type 5→3 后退款单实体已删）', async () => {
+  // 2026-04-26 sale-order-domain-refactor: refundHistory 退款源已迁移至
+  // sale_order_payments[change_type='退款']；转换单仍走 sale_orders[type='转换单']。
+  test('refundHistory 出数：refunds (sale_order_payments) + conversions (sale_orders[转换单]) 完整 mapping', async () => {
     setupCommonMocks({
-      refundOrderRows: [
-        { sale_order_id: 'so-r1', status: '已退款', sale_order_type: '退款单', total_amount: '500.00', refund_reason: '过敏', handling_fee: '50.00', ref_sale_order_id: 'so-orig-1', approved_by: 'mgr-1', approved_at: '2026-04-22T12:00:00Z', rejected_reason: null, created_at: '2026-04-22T10:00:00Z', paid_at: null },
-        { sale_order_id: 'so-r2', status: '已转换', sale_order_type: '转换单', total_amount: '300.00', refund_reason: null, handling_fee: null, ref_sale_order_id: 'so-orig-2', approved_by: 'mgr-1', approved_at: '2026-04-23T12:00:00Z', rejected_reason: null, created_at: '2026-04-23T10:00:00Z', paid_at: null },
+      refundPaymentRows: [
+        {
+          payment_id: 201,
+          sale_order_id: 'so-orig-1',
+          amount: '-500.00',
+          status: '已支付',
+          created_at: '2026-04-22T10:00:00Z',
+          paid_at: '2026-04-22T12:00:00Z',
+          payment_method: '线下',
+          refund_reason: '过敏',
+          audit_at: '2026-04-22T12:00:00Z',
+          audit_remark: null,
+          detail_note: JSON.stringify({
+            _v: 1,
+            handlingFee: 50,
+            refundByCard: 0,
+            refundByOrigin: 500,
+            items: [{ refSaleItemId: 'sri-1', quantity: 1, refundAmount: 500, productType: '疗程卡' }],
+          }),
+        },
       ],
-      refundItemsRows: [
-        { sale_order_id: 'so-r1', sale_item_id: 'sri-1', item_direction: '退款', product_name: '深层补水', sku_spec_name: 'A 规', quantity: 1, received: '-500.00' },
+      refundConvOrderRows: [
+        { sale_order_id: 'so-r2', status: '已转换', sale_order_type: '转换单', total_amount: '300.00', created_at: '2026-04-23T10:00:00Z', paid_at: '2026-04-23T12:00:00Z' },
+      ],
+      refundConvItemRows: [
         { sale_order_id: 'so-r2', sale_item_id: 'sri-2', item_direction: '转换', product_name: '换购套餐', sku_spec_name: 'C 规', quantity: 1, received: '300.00' },
       ],
     })
@@ -1145,17 +1200,24 @@ describe('mgmtCustomer 出数完整路径', () => {
 
     expect(ctx.result.scope.name).toBe('华东市场')
     expect(ctx.result.orders).toHaveLength(2)
-    const r1 = ctx.result.orders.find((o) => o.saleOrderId === 'so-r1')
-    expect(r1.type).toBe('退款单')
-    expect(r1.totalAmount).toBe(500)
+    // 退款流水
+    const r1 = ctx.result.orders.find((o) => o.paymentId === 201)
+    expect(r1).toBeDefined()
+    expect(r1.type).toBe('退款')
+    expect(r1.saleOrderId).toBe('so-orig-1')
+    expect(r1.totalAmount).toBe(-500)
     expect(r1.handlingFee).toBe(50)
     expect(r1.refundReason).toBe('过敏')
     expect(r1.items).toHaveLength(1)
-    expect(r1.items[0].direction).toBe('退款')
-    expect(r1.items[0].received).toBe(-500)
+    expect(r1.items[0].refSaleItemId).toBe('sri-1')
+    expect(r1.approvedAt).toBe('2026-04-22T12:00:00Z')
+    // 转换单
     const r2 = ctx.result.orders.find((o) => o.saleOrderId === 'so-r2')
-    expect(r2.handlingFee).toBeNull()
+    expect(r2).toBeDefined()
+    expect(r2.type).toBe('转换单')
+    expect(r2.totalAmount).toBe(300)
     expect(r2.items).toHaveLength(1)
+    expect(r2.items[0].direction).toBe('转换')
   })
 
   test('refundHistory 空结果分支：返回 orders=[] 并解析 scope', async () => {
