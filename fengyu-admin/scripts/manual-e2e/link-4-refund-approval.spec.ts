@@ -25,7 +25,7 @@ const PASS = 'fengyu2026'
 // ── Fixture ─────────────────────────────────────────────────────────────────
 const FIXTURE_PHONE = '13800138000'
 const SKU1_NAME = '洗-无创纹身'
-const SKU2_NAME = '假性皱纹管家'
+const SKU2_NAME = 'M3-眉'  // 同属"缦之羽"分类，唯一 ¥100，不与其他 M3 变体混淆
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
@@ -158,10 +158,8 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
 
   await mgrPage.waitForTimeout(500)
 
-  // 添加 SKU 2
-  const cat2Btn = mgrPage.getByRole('button', { name: '其他', exact: true })
-  if (await cat2Btn.count() > 0) { await cat2Btn.click(); await mgrPage.waitForTimeout(500) }
-
+  // 添加 SKU 2（同属"缦之羽"分类，无需切换分类 Tab）
+  // SKU2 = 'M3-眉'，价格 ¥100，与 SKU1 同分类，总金额 ¥200（唯一，不与其他 M3 变体混淆）
   let sku2Added = false
   const sku2NameEl = mgrPage.getByText(SKU2_NAME, { exact: false })
   if (await sku2NameEl.count() > 0) {
@@ -170,10 +168,11 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
     if (await addBtn2.count() > 0) { await addBtn2.click(); sku2Added = true; console.log(`[链路4] 已加入 SKU2: ${SKU2_NAME}`) }
   }
   if (!sku2Added) {
-    const addBtnsNow = mgrPage.getByRole('button', { name: /加入/ })
-    const cnt = await addBtnsNow.count()
-    if (cnt > 1) { await addBtnsNow.nth(1).click(); sku2Added = true }
-    else if (cnt > 0) { await addBtnsNow.first().click(); sku2Added = true }
+    // 降级：选第二个可用的"加入"按钮（排除已加入 SKU1 的位置）
+    const allAddBtns = mgrPage.getByRole('button', { name: /加入/ })
+    const cnt = await allAddBtns.count()
+    // 选最后一个（避免重选 SKU1）
+    if (cnt > 0) { await allAddBtns.last().click(); sku2Added = true; console.log(`[链路4] SKU2 降级 fallback: 选了第 ${cnt} 个"加入"按钮`) }
   }
 
   await mgrPage.waitForTimeout(500)
@@ -303,7 +302,7 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   // 等待明细出现（勾选框或商品名）
   await finPage.waitForFunction(() => {
     const t = document.body.textContent || ''
-    return t.includes('退款数量') || t.includes('可退') || t.includes('洗-无创纹身') || t.includes('假性皱纹管家')
+    return t.includes('退款数量') || t.includes('可退') || t.includes('洗-无创纹身') || t.includes('M3-眉')
   }, { timeout: 15000 })
 
   await finPage.screenshot({ path: `${TEST_RESULTS_DIR}/link-4-06-refund-items.png` })
