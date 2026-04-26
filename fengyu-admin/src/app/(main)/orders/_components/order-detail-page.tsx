@@ -30,12 +30,12 @@ const paymentMethodMap: Record<string, string> = {
   无: "无（全额抵扣）",
 }
 
+// 2026-04-26 sale-order-domain-refactor：5→3 值
+// 历史"回款单"/"退款单"语义已迁至 sale_order_payments[change_type]
 const orderTypeColorMap: Record<string, string> = {
   "销售单": "bg-[#E8F0FE] text-[#3574C4]",
   "内部单": "bg-[#F0F9F2] text-[#3D8A5A]",
-  "回款单": "bg-[#E8F5E9] text-[#2E7D32]",
   "转换单": "bg-[#E3F2FD] text-[#1565C0]",
-  "退款单": "bg-[#FFEBEE] text-[#C62828]",
 }
 
 function formatDateTime(dt: string | null) {
@@ -68,10 +68,10 @@ export default function OrderDetailPageClient({
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
-  const paidAmount = Number(order.paidAmount ?? "0")
+  const paidAmount = Number(order.received ?? "0")
   const hasPrepaidDeduction = prepaidCardAmount > 0
 
-  // 剩余欠款 = payable_amount - paid_amount（payable_amount = total_amount - prepaid_card_amount）
+  // 剩余欠款 = payable_amount - received（payable_amount = total_amount - prepaid_card_amount）
   const totalAmount = Number(order.totalAmount ?? "0")
   const payableAmount = Math.max(0, Math.round((totalAmount - prepaidCardAmount) * 100) / 100)
   const remainingPayable = Math.max(0, Math.round((payableAmount - paidAmount) * 100) / 100)

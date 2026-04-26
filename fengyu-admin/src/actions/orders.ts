@@ -139,7 +139,8 @@ export async function getOrders(): Promise<SaleOrder[]> {
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
-    paidAmount: r.order.paidAmount ?? '0',
+    received: r.order.received ?? '0',
+    refundedAmount: r.order.refundedAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
@@ -275,7 +276,8 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
-    paidAmount: r.order.paidAmount ?? '0',
+    received: r.order.received ?? '0',
+    refundedAmount: r.order.refundedAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
@@ -359,7 +361,8 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     customerName: r.order.customerName,
     totalAmount: r.order.totalAmount,
     prepaidCardAmount: r.order.prepaidCardAmount ?? '0',
-    paidAmount: r.order.paidAmount ?? '0',
+    received: r.order.received ?? '0',
+    refundedAmount: r.order.refundedAmount ?? '0',
     paymentMethod: r.order.paymentMethod as SaleOrder['paymentMethod'],
     openedBy: r.order.openedBy,
     preferredEmployeeId: r.order.preferredEmployeeId,
@@ -587,7 +590,11 @@ export async function createOrder(data: {
   clientPhone: string
   customerName: string
   paymentMethod: '微信' | '支付宝' | '线下'
-  saleOrderType: '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
+  // 2026-04-26 sale-order-domain-refactor：5→3 值
+  // '回款单' 走 recordPayment（写 sop[change_type='回款']）；
+  // '退款单' 走 createRefund（写 sop[change_type='退款']）；
+  // 此处仅接受 3 个真实业务类型
+  saleOrderType: '销售单' | '内部单' | '转换单'
   openedBy?: string
   preferredEmployeeId?: string
   remark?: string | null
@@ -825,10 +832,10 @@ export async function createOrder(data: {
     initialStatus = '待确认收款'
   }
 
-  // paid_amount 双写（应用层保障不变量）
-  // 首次支付 + 线下直接计入 paid_amount（status='已支付'/'待确认收款'/'部分支付'）；
-  // 线上（微信/支付宝）在 create 时 paid_amount=0，payNotify 回调时累加；
-  // 待支付（挂账）paid_amount = 0；此处统一按 receivedAmount（线下场景）落盘。
+  // received 双写（应用层保障不变量；2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP）
+  // 首次支付 + 线下直接计入 received（status='已支付'/'待确认收款'/'部分支付'）；
+  // 线上（微信/支付宝）在 create 时 received=0，payNotify 回调时累加；
+  // 待支付（挂账）received = 0；此处统一按 receivedAmount（线下场景）落盘。
   const paidAmountSnapshot = isOnlinePay ? 0 : receivedAmount
 
   // 计算 document_type（售前/售后快照）
@@ -925,7 +932,7 @@ export async function createOrder(data: {
         totalAmount: totalAmount.toFixed(2),
         prepaidCardAmount: prepaidCardAmount.toFixed(2),
         payableAmount: payableAmount.toFixed(2),
-        paidAmount: paidAmountSnapshot.toFixed(2),
+        received: paidAmountSnapshot.toFixed(2),
         couponId: data.couponId ?? null,
         couponDiscount: couponDiscount > 0 ? couponDiscount.toFixed(2) : '0',
         paymentMethod: data.paymentMethod,
@@ -1601,10 +1608,11 @@ export async function recordPayment(input: {
         throw new Error('CLIENT_NOT_REGISTERED')
       }
 
-      // 2) 计算欠款：payable_amount - paid_amount（储值卡已抵扣部分不占欠款）
+      // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
+      // 2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，改用 received
       const origTotal = Number(locked.total_amount || 0)
       const origPrepaidSnapshot = Number(locked.prepaid_card_amount || 0)
-      const origPaid = Number(locked.paid_amount || 0)
+      const origPaid = Number(locked.received || 0)
       const origPayable = locked.payable_amount != null
         ? Number(locked.payable_amount)
         : Math.round((origTotal - origPrepaidSnapshot) * 100) / 100
@@ -1664,29 +1672,11 @@ export async function recordPayment(input: {
         })
       }
 
-      // 6) 插入 FY-HKD 凭证单（sale_orders 行） — 本身自成闭环，status='已支付'
+      // 2026-04-26 sale-order-domain-refactor：
+      //   不再 INSERT FY-HKD 回款单（saleOrderType='回款单' 已删除），
+      //   "回款"语义完全由 sale_order_payments[change_type='回款'] 表达。
+      //   repaymentOrderId 仍生成（FY-HKD 编号格式保留用作业务流水编号 / 操作日志主键）。
       const now = new Date()
-      await tx.insert(saleOrders).values({
-        saleOrderId: repaymentOrderId,
-        status: '已支付',
-        saleOrderType: '回款单',
-        documentType: locked.document_type as any,
-        refSaleOrderId: saleOrderId,
-        marketName: locked.market_name,
-        storeId: locked.store_id,
-        saleOrderDatetime: now,
-        clientUserId: locked.client_user_id,
-        clientPhone: locked.client_phone,
-        customerName: locked.customer_name,
-        totalAmount: totalThisTime.toFixed(2),
-        prepaidCardAmount: prepaidCardAmount.toFixed(2),
-        payableAmount: repayAmount.toFixed(2),
-        paidAmount: repayAmount.toFixed(2),
-        paymentMethod,
-        openedBy: session.employeeId,
-        allocationStatus: '待分配',
-        paidAt: now,
-      })
 
       // 7) 向原销售单写 payments 流水
       //    - 线下现金/转账部分（repayAmount > 0）
@@ -1720,29 +1710,35 @@ export async function recordPayment(input: {
         })
       }
 
-      // 8) 重算原单 paid_amount / prepaid_card_amount + status
-      //    paid_amount         = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+      // 8) 重算原单 received / refunded_amount / prepaid_card_amount + status
+      //    2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一改用 received
+      //    received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款'))
+      //    refunded_amount     = -Σ(amount WHERE status='已支付' AND change_type='退款')
       //    prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
       const sumRes = await tx.execute(sql`
         SELECT
-          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','退款')
-                            THEN amount::numeric ELSE 0 END), 0) AS new_paid,
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款')
+                            THEN amount::numeric ELSE 0 END), 0) AS new_received,
           COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
-                            THEN amount::numeric ELSE 0 END), 0) AS new_prepaid
+                            THEN amount::numeric ELSE 0 END), 0) AS new_prepaid,
+          COALESCE(-SUM(CASE WHEN status = '已支付' AND change_type = '退款'
+                            THEN amount::numeric ELSE 0 END), 0) AS new_refunded
         FROM sale_order_payments
         WHERE sale_order_id = ${saleOrderId}
       `)
       const sumRow = (sumRes as unknown as any[])[0]
-      const newPaid = Math.round(Number(sumRow.new_paid) * 100) / 100
+      const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
-      const settled = Math.round((newPaid + newPrepaid) * 100) / 100
+      const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
+      const settled = Math.round((newReceived + newPrepaid) * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
       const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at ? new Date(locked.paid_at) : null)
 
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
         SET status = ${targetStatus},
-            paid_amount = ${newPaid.toFixed(2)}::numeric,
+            received = ${newReceived.toFixed(2)}::numeric,
+            refunded_amount = ${newRefunded.toFixed(2)}::numeric,
             prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
             paid_at = ${paidAtValue},
             updated_at = NOW()
@@ -1755,7 +1751,7 @@ export async function recordPayment(input: {
       return {
         repaymentOrderId,
         refStatus: targetStatus,
-        refPaidAmount: newPaid.toFixed(2),
+        refPaidAmount: newReceived.toFixed(2),
         refPrepaidCardAmount: newPrepaid.toFixed(2),
       }
     })

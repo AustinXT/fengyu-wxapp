@@ -23,7 +23,7 @@ vi.mock('@db/order', () => ({
     paymentMethod: 'payment_method',
     prepaidCardAmount: 'prepaid_card_amount',
     payableAmount: 'payable_amount',
-    paidAmount: 'paid_amount',
+    received: 'paid_amount',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
     $inferInsert: {} as any,
@@ -830,7 +830,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
       customerName: '李女士',
       totalAmount: '1999.00',
       prepaidCardAmount: '0',
-      paidAmount: '1999.00',
+      received: '1999.00',
       paymentMethod: '微信',
       openedBy: 'EMP-001',
       preferredEmployeeId: null,
@@ -999,13 +999,13 @@ describe('getOrdersPaginated — 服务端分页', () => {
   })
 
   // ── 储值卡抵扣字段（ticket §3.4 A1/A3）──────────────────────────────
-  it('返回字段包含 prepaidCardAmount + paidAmount（默认 0 的订单）', async () => {
+  it('返回字段包含 prepaidCardAmount + received（默认 0 的订单）', async () => {
     mockPaginatedChain(1, [mockOrderRow])
 
     const result = await getOrdersPaginated()
 
     expect(result.data[0].prepaidCardAmount).toBe('0')
-    expect(result.data[0].paidAmount).toBe('1999.00')
+    expect(result.data[0].received).toBe('1999.00')
   })
 
   it('部分抵扣订单字段透传：prepaid=100 + paid=200', async () => {
@@ -1015,7 +1015,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
         ...mockOrderRow.order,
         totalAmount: '300.00',
         prepaidCardAmount: '100.00',
-        paidAmount: '200.00',
+        received: '200.00',
         paymentMethod: '微信',
       },
     }
@@ -1024,7 +1024,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
     const result = await getOrdersPaginated()
 
     expect(result.data[0].prepaidCardAmount).toBe('100.00')
-    expect(result.data[0].paidAmount).toBe('200.00')
+    expect(result.data[0].received).toBe('200.00')
   })
 
   it('全额抵扣订单：paymentMethod=无 透传', async () => {
@@ -1034,7 +1034,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
         ...mockOrderRow.order,
         totalAmount: '300.00',
         prepaidCardAmount: '300.00',
-        paidAmount: '0',
+        received: '0',
         paymentMethod: '无',
       },
     }
@@ -1043,7 +1043,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
     const result = await getOrdersPaginated()
 
     expect(result.data[0].paymentMethod).toBe('无')
-    expect(result.data[0].paidAmount).toBe('0')
+    expect(result.data[0].received).toBe('0')
     expect(result.data[0].prepaidCardAmount).toBe('300.00')
   })
 
@@ -1097,7 +1097,7 @@ describe('getOrdersPaginated — 服务端分页', () => {
 })
 
 // ── getOrderById（详情页）新字段 A1 ─────────────────────────────────
-describe('getOrderById — prepaidCardAmount + paidAmount', () => {
+describe('getOrderById — prepaidCardAmount + received', () => {
   /**
    * 详情查询链：
    *   call#1 = select(order)：.from.leftJoin.leftJoin.where.limit
@@ -1138,7 +1138,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
       customerName: '李女士',
       totalAmount: '300.00',
       prepaidCardAmount: '100.00',
-      paidAmount: '200.00',
+      received: '200.00',
       paymentMethod: '微信',
       openedBy: 'EMP-001',
       preferredEmployeeId: null,
@@ -1159,7 +1159,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('订单存在 → 返回含 prepaidCardAmount + paidAmount', async () => {
+  it('订单存在 → 返回含 prepaidCardAmount + received', async () => {
     const { getOrderById } = await import('./orders')
     mockDetailChain(detailOrderBase, [])
 
@@ -1167,19 +1167,19 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
 
     expect(result).not.toBeNull()
     expect(result!.prepaidCardAmount).toBe('100.00')
-    expect(result!.paidAmount).toBe('200.00')
+    expect(result!.received).toBe('200.00')
     expect(result!.totalAmount).toBe('300.00')
     // 不变量：prepaid + paid = total
-    expect(Number(result!.prepaidCardAmount) + Number(result!.paidAmount)).toBe(300)
+    expect(Number(result!.prepaidCardAmount) + Number(result!.received)).toBe(300)
   })
 
-  it('全额抵扣订单 → paymentMethod=无 + paidAmount=0', async () => {
+  it('全额抵扣订单 → paymentMethod=无 + received=0', async () => {
     const full = {
       ...detailOrderBase,
       order: {
         ...detailOrderBase.order,
         prepaidCardAmount: '300.00',
-        paidAmount: '0',
+        received: '0',
         paymentMethod: '无',
       },
     }
@@ -1189,7 +1189,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
     const result = await getOrderById('FY-XSD-WX-260423-0002')
 
     expect(result!.paymentMethod).toBe('无')
-    expect(result!.paidAmount).toBe('0')
+    expect(result!.received).toBe('0')
     expect(result!.prepaidCardAmount).toBe('300.00')
   })
 
@@ -1199,7 +1199,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
       order: {
         ...detailOrderBase.order,
         prepaidCardAmount: '0',
-        paidAmount: '300.00',
+        received: '300.00',
         paymentMethod: '线下',
       },
     }
@@ -1209,7 +1209,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
     const result = await getOrderById('FY-XSD-WX-260423-0003')
 
     expect(result!.prepaidCardAmount).toBe('0')
-    expect(result!.paidAmount).toBe('300.00')
+    expect(result!.received).toBe('300.00')
     expect(result!.paymentMethod).toBe('线下')
   })
 
@@ -1228,7 +1228,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
       order: {
         ...detailOrderBase.order,
         prepaidCardAmount: null,
-        paidAmount: null,
+        received: null,
       },
     }
     const { getOrderById } = await import('./orders')
@@ -1237,7 +1237,7 @@ describe('getOrderById — prepaidCardAmount + paidAmount', () => {
     const result = await getOrderById('FY-LEGACY-1')
 
     expect(result!.prepaidCardAmount).toBe('0')
-    expect(result!.paidAmount).toBe('0')
+    expect(result!.received).toBe('0')
   })
 })
 
@@ -1914,7 +1914,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     // 线下全额：status='待确认收款'，paid_amount=受款金额（200），写 1 行首次支付
     expect(bag.order.status).toBe('待确认收款')
     expect(bag.order.payableAmount).toBe('200.00')
-    expect(bag.order.paidAmount).toBe('200.00')
+    expect(bag.order.received).toBe('200.00')
     expect(bag.payments).toHaveLength(1)
     expect(bag.payments[0]).toMatchObject({
       changeType: '首次支付',
@@ -1938,7 +1938,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(result.success).toBe(true)
     expect(bag.order.status).toBe('部分支付')
     expect(bag.order.payableAmount).toBe('200.00')
-    expect(bag.order.paidAmount).toBe('80.00')
+    expect(bag.order.received).toBe('80.00')
     expect(bag.payments).toHaveLength(1)
     expect(bag.payments[0]).toMatchObject({
       changeType: '首次支付',
@@ -1961,7 +1961,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
 
     expect(result.success).toBe(true)
     expect(bag.order.status).toBe('待支付')
-    expect(bag.order.paidAmount).toBe('0.00')
+    expect(bag.order.received).toBe('0.00')
     expect(bag.payments).toHaveLength(0)
   })
 
@@ -2005,7 +2005,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(bag.order.status).toBe('部分支付')
     expect(bag.order.prepaidCardAmount).toBe('60.00')
     expect(bag.order.payableAmount).toBe('140.00')
-    expect(bag.order.paidAmount).toBe('50.00')
+    expect(bag.order.received).toBe('50.00')
     expect(bag.payments).toHaveLength(1)
     // 仅 1 行：首次支付（线下/50）—— 储值卡抵扣 payments 行由 confirmOffline 同事务扣卡时写入
     const firstPay = bag.payments.find((p) => p.changeType === '首次支付')
@@ -2034,7 +2034,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
 
     expect(result.success).toBe(true)
     // 计算不变量左侧：sale_orders.paid_amount
-    const paidAmount = Number(bag.order.paidAmount)
+    const received = Number(bag.order.received)
     // 计算不变量右侧：Σ(payments WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
     const paymentsSum = bag.payments
       .filter(
@@ -2043,8 +2043,8 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
           ['首次支付', '回款', '退款'].includes(p.changeType),
       )
       .reduce((s, p) => s + Number(p.amount), 0)
-    expect(paidAmount).toBe(paymentsSum)
-    expect(paidAmount).toBe(120)
+    expect(received).toBe(paymentsSum)
+    expect(received).toBe(120)
 
     // create 阶段 sale_orders.prepaid_card_amount 是"预选"冗余；payments 储值卡抵扣行 + 扣卡由 confirmOffline 完成
     const prepaidSnapshot = Number(bag.order.prepaidCardAmount)
@@ -2067,7 +2067,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
 
     expect(result.success).toBe(true)
     expect(bag.order.status).toBe('待支付')
-    expect(bag.order.paidAmount).toBe('0.00')
+    expect(bag.order.received).toBe('0.00')
     expect(bag.payments).toHaveLength(0)
   })
 })
