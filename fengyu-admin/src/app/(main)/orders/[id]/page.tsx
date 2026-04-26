@@ -13,12 +13,16 @@ export const dynamic = 'force-dynamic'
 
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
-  const [order, allocations, logs, payments, session] = await Promise.all([
+  const session = await getSession()
+  const canListAllocations = !!(session && hasPermission(session, 'allocation:list'))
+  const canListOrders = !!(session && hasPermission(session, 'sale_order:list'))
+  const canListLogs = !!(session && hasPermission(session, 'operation_log:list'))
+
+  const [order, allocations, logs, payments] = await Promise.all([
     getOrderById(id),
-    getOrderAllocations(id),
-    getOrderLogs(id),
-    getOrderPayments(id),
-    getSession(),
+    canListAllocations ? getOrderAllocations(id) : Promise.resolve([]),
+    canListLogs ? getOrderLogs(id) : Promise.resolve([]),
+    canListOrders ? getOrderPayments(id) : Promise.resolve([]),
   ])
 
   if (!order) notFound()
