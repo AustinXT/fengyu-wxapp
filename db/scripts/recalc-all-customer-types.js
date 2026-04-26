@@ -97,29 +97,26 @@ member_first AS (
     FROM qualified_orders
    GROUP BY client_user_id
 ),
+-- 2026-04-26 sku-capability 切换：xiaomei/tiyan 直接用 sale_items.is_experience 判定
+-- 充值卡 SKU 的 is_experience=false → 充值卡购买视同"小美客"消费（D1=A）
+-- 与 staffApi/order.js recalcCustomerType + payNotify 行 ~466 同口径
 xiaomei_users AS (
   SELECT DISTINCT o.client_user_id AS user_id
     FROM sale_orders o
     JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    JOIN product_categories p ON p.category_name = pc.product_kind AND p.product_kind IS NULL
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND p.is_card_kind = false
+     AND si.is_experience = false
 ),
 tiyan_users AS (
   SELECT DISTINCT o.client_user_id AS user_id
     FROM sale_orders o
     JOIN sale_items si ON si.sale_order_id = o.sale_order_id
-    JOIN product_skus sk ON sk.sku_id = si.sku_id
-    JOIN product_categories pc ON pc.category_id = sk.category_id
-    JOIN product_categories p ON p.category_name = pc.product_kind AND p.product_kind IS NULL
    WHERE o.status IN ('已支付', '已完成')
      AND o.sale_order_type = '销售单'
      AND o.client_user_id IS NOT NULL
-     AND p.is_card_kind = true AND p.category_name <> '充值卡'
+     AND si.is_experience = true
 ),
 spend_12m AS (
   SELECT client_user_id AS user_id,

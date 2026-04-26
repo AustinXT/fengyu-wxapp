@@ -183,6 +183,12 @@ export const saleItems = pgTable(
      * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
      */
     isExperience: boolean("is_experience").notNull().default(false),
+    /**
+     * 充值卡快照（开单时从 product_skus.is_recharge_card 拷贝）。
+     * payNotify 充值入账触发依据；跃迁规则中 is_recharge_card=true 计入"非体验金额"参与会员客判定（D1=A）。
+     * 与 isExperience 互斥（product_skus 层有 CHECK 约束；sale_items 应用层校验严格独立 D4）。
+     */
+    isRechargeCard: boolean("is_recharge_card").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

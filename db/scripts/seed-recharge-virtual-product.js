@@ -5,9 +5,11 @@
  * 用途：充值卡充值功能（顾客端 card.recharge）走"销售单 + 虚拟 SPU"模型。
  * 此脚本一次性插入：
  *   - mall_categories 已存在 mall-cat-cz-01（储值卡），不动
- *   - product_categories 已存在 cat-cz-01（储值卡 / product_kind=充值卡），不动
+ *   - product_categories 已存在 cat-cz-01（储值卡 / product_kind=充值卡），不动 —— product_kind
+ *     仍作为分类标签保留；业务判定权威源是 product_skus.is_recharge_card capability 列
  *   - products: prod-recharge-virtual（is_visible=false, is_enabled=false 双重隐藏）
- *   - product_skus: sku-recharge-virtual（is_enabled=false, product_type='家居产品' 避免被 payNotify 设到期日）
+ *   - product_skus: sku-recharge-virtual（is_enabled=false, product_type='家居产品' 避免被 payNotify
+ *     设到期日；is_recharge_card=true 作为充值卡判定权威源）
  *   - mall_product_skus: 关联两者
  *
  * 幂等：基于固定 product_id / sku_id，重复运行只 SELECT 不写。
@@ -92,7 +94,7 @@ async function main() {
 
     // 2. product_skus
     const skuExisting = await client.query(
-      'SELECT sku_id, is_enabled, product_type FROM product_skus WHERE sku_id = $1',
+      'SELECT sku_id, is_enabled, product_type, is_recharge_card FROM product_skus WHERE sku_id = $1',
       [SKU_ID],
     )
     if (skuExisting.rows.length === 0) {
@@ -100,24 +102,31 @@ async function main() {
         `INSERT INTO product_skus (
            sku_id, category_id, product_type, spec_name,
            price, special_price, session_count, sort_order,
-           service_fee, is_shengmei, is_enabled,
+           service_fee, is_shengmei, is_enabled, is_recharge_card,
            created_at, updated_at
-         ) VALUES ($1, $2, '家居产品', $3, 0, NULL, NULL, 0, 0, NULL, false, NOW(), NOW())`,
+         ) VALUES ($1, $2, '家居产品', $3, 0, NULL, NULL, 0, 0, NULL, false, true, NOW(), NOW())`,
         [SKU_ID, PRODUCT_CATEGORY_ID, '预付充值卡（虚拟）'],
       )
-      console.log(`[seed] inserted product_skus.${SKU_ID}`)
+      console.log(`[seed] inserted product_skus.${SKU_ID} (is_recharge_card=true)`)
     } else {
       const row = skuExisting.rows[0]
-      if (row.is_enabled || row.product_type !== '家居产品') {
+      const needsUpdate =
+        row.is_enabled || row.product_type !== '家居产品' || row.is_recharge_card !== true
+      if (needsUpdate) {
         await client.query(
           `UPDATE product_skus
-           SET is_enabled = false, product_type = '家居产品', updated_at = NOW()
+           SET is_enabled = false,
+               product_type = '家居产品',
+               is_recharge_card = true,
+               updated_at = NOW()
            WHERE sku_id = $1`,
           [SKU_ID],
         )
-        console.log(`[seed] updated product_skus.${SKU_ID} → is_enabled=false, product_type='家居产品'`)
+        console.log(
+          `[seed] updated product_skus.${SKU_ID} → is_enabled=false, product_type='家居产品', is_recharge_card=true`,
+        )
       } else {
-        console.log(`[seed] product_skus.${SKU_ID} already exists & disabled`)
+        console.log(`[seed] product_skus.${SKU_ID} already exists & disabled & is_recharge_card=true`)
       }
     }
 
