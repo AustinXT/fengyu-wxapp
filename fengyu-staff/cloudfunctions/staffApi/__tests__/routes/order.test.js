@@ -2585,233 +2585,557 @@ describe('order.createRefund', () => {
 })
 
 // ============================================================
-// order.approveRefund
-// 2026-04-26 sale-order-domain-refactor: approveRefund 入参从 {saleOrderId} 改为 {paymentId}；
-//   数据流: UPDATE sale_order_payments[change_type='退款',status='待审批'→'已支付']
-//           + UPDATE sale_orders.refunded_amount += ABS(amount)
-//           + 5 通道 cascade（详见 helpers/refund-cascade.js）
-//   旧测试基于"sale_order_type='退款单' + ref_sale_order_id"模型，实体已删。
+// order.approveRefund — 2026-04-26 重写
 // ============================================================
-describe.skip('order.approveRefund', () => {
+//   - 入参: { paymentId, auditRemark? }
+//   - 流程（事务内）:
+//     1) CAS UPDATE sale_order_payments SET status='已支付', paid_at=NOW
+//        WHERE id=$1 AND status='待审批' → rowCount===1 校验（幂等哨兵）
+//     2) INSERT/ON CONFLICT UPDATE spd 写 audit_employee_id / audit_at / audit_remark
+//     3) UPDATE sale_orders SET refunded_amount = COALESCE + ABS(amount)
+//     4) 储值卡通道：仅当 payment_method='储值卡' 时回冲 prepaid_cards
+//     5) cascadeRefund(client, {saleOrderId, saleItemId, sessionCount, refundReason}) — 5 通道
+//     6) refreshSpendingTier + recalcCustomerType + operation_logs
+describe('order.approveRefund', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  /**
-   * 通用事务 mock：分派 SELECT SUM / SELECT sale_items / 其他 UPDATE
-   */
-  function mockApproveTxn({ refundItems = [], updateRowCount = 1, sumPaid = 0, sumPrepaid = 0 } = {}) {
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql, _params) => {
-          if (sql.includes('COALESCE(SUM')) {
-            return { rows: [{ new_paid: sumPaid, new_prepaid: sumPrepaid }], rowCount: 1 }
-          }
-          if (sql.includes("item_direction = '退出'")) {
-            return { rows: refundItems, rowCount: refundItems.length }
-          }
-          if (sql.includes('FROM card_transactions')) {
-            return { rows: [] }
-          }
-          if (sql.includes('INSERT INTO prepaid_cards')) {
-            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
-          }
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return { rows: [], rowCount: updateRowCount }
-        }),
-      }
-      return await cb(client)
-    })
+  /** 构造 sopRow（pg.query 第一次返回值，预查 sop+so+spd JOIN）*/
+  function makeSopRow(overrides = {}) {
+    return {
+      id: 1001,
+      sale_order_id: 'FY-ORIG-001',
+      amount: '-500.00',
+      status: '待审批',
+      payment_method: '线下',
+      store_id: 'store-001',
+      client_user_id: 'cu-001',
+      refund_reason: '质量问题',
+      ref_sale_item_id: 'orig-item-1',
+      session_count: 5,
+      ...overrides,
+    }
   }
 
-  test('审批退款单成功', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
+  /**
+   * 构造 approveRefund 的事务 client.query mock。
+   * 默认所有 UPDATE rowCount=1（CAS 成功）。返回 { calls, fn } 便于断言。
+   *
+   * 关键 SQL 分支：
+   *   - UPDATE sale_order_payments SET status='已支付' ... → CAS 哨兵
+   *   - INSERT INTO sale_order_payment_details ... ON CONFLICT(payment_id) DO UPDATE → 写审批
+   *   - UPDATE sale_orders SET refunded_amount = ... → 累加退款
+   *   - SELECT 1 FROM card_transactions ... type='充值' → 储值卡幂等检查
+   *   - INSERT INTO prepaid_cards ... RETURNING card_id → 储值卡回冲
+   *   - INSERT INTO card_transactions ... → 流水
+   *   - cascadeRefund 通道 1-5（已 mock 为 0 row）
+   *   - SELECT customer_type FROM client_wechat_users → recalcCustomerType
+   *   - INSERT INTO operation_logs → 审计
+   */
+  function makeApproveTxnSpy({
+    casRowCount = 1,        // CAS 哨兵 UPDATE sop 的 rowCount
+    cardDupExists = false,  // 储值卡幂等检查是否命中已有记录
+    customerType = '会员客',
+    cascadeItems = [],      // cascadeRefund 内部 SELECT sale_items 时返回
+    cascadeGifts = [],      // cascadeRefund 内部 SELECT point_transactions 时返回
+  } = {}) {
+    const calls = []
+    const fn = vi.fn(async (sql, _params) => {
+      calls.push({ sql, params: _params })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
-        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500.00', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
+      // ========= approveRefund 主路径 =========
+      // 1. CAS UPDATE sop status '待审批'→'已支付'
+      if (sql.includes('UPDATE sale_order_payments') &&
+          sql.includes("SET status = '已支付'")) {
+        return { rows: [], rowCount: casRowCount }
+      }
+      // 2. INSERT/ON CONFLICT spd
+      if (sql.includes('INSERT INTO sale_order_payment_details') &&
+          sql.includes('ON CONFLICT')) {
+        return { rows: [], rowCount: 1 }
+      }
+      // 3. UPDATE sale_orders refunded_amount
+      if (sql.includes('UPDATE sale_orders') && sql.includes('refunded_amount')) {
+        return { rows: [], rowCount: 1 }
+      }
+      // 储值卡幂等检查
+      if (sql.includes('FROM card_transactions') && /type\s*=\s*'充值'/.test(sql)) {
+        return { rows: cardDupExists ? [{ '?column?': 1 }] : [], rowCount: cardDupExists ? 1 : 0 }
+      }
+      if (sql.includes('INSERT INTO prepaid_cards')) {
+        return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO card_transactions')) {
+        return { rows: [], rowCount: 1 }
+      }
 
-    mockApproveTxn({
-      refundItems: [{ ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 1 }],
+      // ========= cascadeRefund 内部 =========
+      // SELECT sale_item_id FROM sale_items（无 saleItemId 时全单 cascade）
+      if (sql.includes('SELECT sale_item_id FROM sale_items')) {
+        return { rows: cascadeItems, rowCount: cascadeItems.length }
+      }
+      // 通道 1-2: UPDATE sale_allocations / service_commissions
+      if (sql.includes('UPDATE sale_allocations')) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (sql.includes('UPDATE service_commissions')) {
+        return { rows: [], rowCount: 0 }
+      }
+      // 通道 3: UPDATE user_coupons
+      if (sql.includes('UPDATE user_coupons')) {
+        return { rows: [], rowCount: 0 }
+      }
+      // 通道 4: SELECT point_transactions 原赠送 + INSERT 反向
+      if (sql.includes('SELECT id, user_id, type, amount') &&
+          sql.includes('FROM point_transactions')) {
+        return { rows: cascadeGifts, rowCount: cascadeGifts.length }
+      }
+      if (sql.includes('INSERT INTO point_transactions')) {
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('UPDATE client_wechat_users') && sql.includes('points_balance')) {
+        return { rows: [], rowCount: 1 }
+      }
+      // 通道 5: pickup
+      if (sql.includes('UPDATE sale_items') && sql.includes('picked_up_quantity')) {
+        return { rows: [], rowCount: 0 }
+      }
+
+      // ========= refreshSpendingTier / recalcCustomerType =========
+      if (sql.includes('SET spending_tier')) {
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
+        return { rows: [{ customer_type: customerType }], rowCount: 1 }
+      }
+      // recalcCustomerType inner SELECT CASE
+      if (sql.includes('WHEN EXISTS') && sql.includes('FROM sale_orders')) {
+        return { rows: [{ result: '会员客' }], rowCount: 1 }
+      }
+      if (sql.includes('UPDATE client_wechat_users') && sql.includes('customer_type')) {
+        return { rows: [], rowCount: 1 }
+      }
+
+      // operation_logs
+      if (sql.includes('INSERT INTO operation_logs')) {
+        return { rows: [], rowCount: 1 }
+      }
+
+      return defaultQueryResult(sql)
     })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: fn }))
+    return { calls, fn }
+  }
+
+  test('审批退款成功（线下原通道、不回冲储值卡）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1001, auditRemark: '同意退款' })
+
+    pg.query.mockResolvedValueOnce([makeSopRow({ payment_method: '线下', amount: '-500' })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    expect(ctx.result.paymentId).toBe(1001)
+    expect(ctx.result.status).toBe('已支付')
+    expect(ctx.result.refundAbs).toBe(500)
+    expect(ctx.result.saleOrderId).toBe('FY-ORIG-001')
+    expect(ctx.result.message).toMatch(/审批通过/)
+
+    // CAS 哨兵 UPDATE sop 出现且参数正确
+    const casUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_order_payments') &&
+      c.sql.includes("SET status = '已支付'") &&
+      c.sql.includes("AND status = '待审批'")
+    )
+    expect(casUpdate).toBeDefined()
+    expect(casUpdate.params[1]).toBe(1001)
+
+    // refunded_amount 累加
+    const refundedUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_orders') && c.sql.includes('refunded_amount')
+    )
+    expect(refundedUpdate).toBeDefined()
+    expect(refundedUpdate.params[0]).toBe(500)
+    expect(refundedUpdate.params[2]).toBe('FY-ORIG-001')
+
+    // 非储值卡通道，不应触发 card_transactions / prepaid_cards 写入
+    expect(calls.find(c => c.sql.includes('INSERT INTO prepaid_cards'))).toBeUndefined()
+
+    // operation_logs 写审计
+    const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
+    expect(log).toBeDefined()
+    expect(log.params[0]).toBe('1001')
+  })
+
+  test('CAS 幂等哨兵：状态已变更（rowCount=0）→ INVALID_STATE', async () => {
+    const ctx = createManagerCtx({ paymentId: 1001 })
+
+    // 注意：源码先用 pg.query 预查 status，必须返回 status='待审批' 才会进入事务；
+    // CAS 失败要发生在事务内（并发场景）
+    pg.query.mockResolvedValueOnce([makeSopRow({ status: '待审批' })])
+
+    makeApproveTxnSpy({ casRowCount: 0 })
+
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/INVALID_STATE.*状态已变更/)
+  })
+
+  test('预查阶段状态非待审批 → INVALID_STATE', async () => {
+    const ctx = createManagerCtx({ paymentId: 1001 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ status: '已支付' })])
+
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/INVALID_STATE.*不是待审批/)
+  })
+
+  test('退款流水不存在 → NOT_FOUND', async () => {
+    const ctx = createManagerCtx({ paymentId: 9999 })
+    pg.query.mockResolvedValueOnce([])
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/NOT_FOUND.*退款流水不存在/)
+  })
+
+  test('跨店审批 → PERMISSION_DENIED', async () => {
+    const ctx = createManagerCtx({ paymentId: 1001 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ store_id: 'store-OTHER' })])
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*无权审批/)
+  })
+
+  test('缺少 paymentId → INVALID_PARAMS', async () => {
+    const ctx = createManagerCtx({})
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*paymentId/)
+  })
+
+  test('非店长 → PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ paymentId: 1001 })
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('储值卡通道：payment_method=储值卡 → 回冲 prepaid_cards + 写 card_transactions(充值)', async () => {
+    const ctx = createManagerCtx({ paymentId: 1002 })
+    pg.query.mockResolvedValueOnce([makeSopRow({
+      id: 1002, payment_method: '储值卡', amount: '-300', client_user_id: 'cu-001',
+    })])
+
+    const { calls } = makeApproveTxnSpy({ cardDupExists: false })
 
     await orderRoutes.approveRefund(ctx)
 
     expect(ctx.result.status).toBe('已支付')
-    expect(ctx.result.message).toContain('审批通过')
+
+    // UPSERT prepaid_cards（amount=300 → user_id='cu-001'）
+    const upsert = calls.find(c => c.sql.includes('INSERT INTO prepaid_cards'))
+    expect(upsert).toBeDefined()
+    expect(upsert.sql).toMatch(/ON CONFLICT \(user_id\) DO UPDATE/)
+    expect(upsert.params[1]).toBe('cu-001')
+    expect(upsert.params[2]).toBe(300)
+
+    // INSERT card_transactions(type='充值', ref_order_id='SOP-1002')
+    const txn = calls.find(c => c.sql.includes('INSERT INTO card_transactions'))
+    expect(txn).toBeDefined()
+    expect(txn.sql).toMatch(/'充值'/)
+    expect(txn.params[1]).toBe(300)
+    expect(txn.params[2]).toBe('SOP-1002')
   })
 
-  test('退款单不存在拒绝', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-NOEXIST' })
-    pg.query.mockResolvedValueOnce([])
-    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*退款单不存在/)
+  test('储值卡幂等：card_transactions 已有 SOP-{id} 充值行 → 不重复写卡', async () => {
+    const ctx = createManagerCtx({ paymentId: 1003 })
+    pg.query.mockResolvedValueOnce([makeSopRow({
+      id: 1003, payment_method: '储值卡', amount: '-100', client_user_id: 'cu-001',
+    })])
+
+    const { calls } = makeApproveTxnSpy({ cardDupExists: true })
+
+    await orderRoutes.approveRefund(ctx)
+
+    // 应跳过 INSERT prepaid_cards / INSERT card_transactions
+    expect(calls.find(c => c.sql.includes('INSERT INTO prepaid_cards'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('INSERT INTO card_transactions'))).toBeUndefined()
   })
 
-  test('次数不足时回滚', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-002' })
+  test('5 通道 cascade — 通道 1（sale_allocations 软删）SQL 出现', async () => {
+    const ctx = createManagerCtx({ paymentId: 1004 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1004 })])
 
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-002', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
-        ref_sale_order_id: 'FY-ORIG-002', total_amount: '-500', client_user_id: 'cu-002',
-      }])
-      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
-
-    // UPDATE FY-TKD 成功（rowCount=1），但 UPDATE sale_items 扣次数 rowCount=0
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql) => {
-          if (sql.includes("item_direction = '退出'")) {
-            return { rows: [{ ref_sale_item_id: 'orig-item-1', session_count: 10, quantity: 5 }], rowCount: 1 }
-          }
-          if (sql.includes('UPDATE sale_items SET remaining_sessions')) {
-            return { rows: [], rowCount: 0 } // 次数不足
-          }
-          return defaultQueryResult(sql)
-        }),
-      }
-      return await cb(client)
-    })
-
-    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/剩余次数不足/)
-  })
-
-  test('非店长拒绝', async () => {
-    const ctx = createBeauticianCtx({ saleOrderId: 'FY-TKD-001' })
-    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
-  })
-
-  test('审批退款：事务内状态并发变更抛错（幂等哨兵）', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
-        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
-
-    // 幂等哨兵：首个 UPDATE FY-TKD 即 rowCount=0
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
-
-    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/退款单状态已变更/)
-  })
-
-  test('审批退款：status UPDATE 首先执行且带 AND status 锁', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-001' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-001', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
-        ref_sale_order_id: 'FY-ORIG-001', total_amount: '-500', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
-
-    const clientQuery = vi.fn(async (sql) => {
-      if (sql.includes('COALESCE(SUM')) return { rows: [{ new_paid: -500, new_prepaid: 0 }], rowCount: 1 }
-      if (sql.includes("item_direction = '退出'")) return { rows: [], rowCount: 0 }
-      if (sql.includes('SELECT customer_type FROM client_wechat_users')) return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-      return { rows: [], rowCount: 1 }
-    })
-    pg.transaction.mockImplementation(async (cb) => {
-      return await cb({ query: clientQuery })
+    const { calls } = makeApproveTxnSpy({
+      cascadeItems: [{ sale_item_id: 'item-A' }, { sale_item_id: 'item-B' }],
     })
 
     await orderRoutes.approveRefund(ctx)
 
-    // 首个 client.query 就是幂等哨兵 UPDATE FY-TKD，SQL 含 AND status = '待审批'
-    const firstSql = clientQuery.mock.calls[0][0]
-    expect(firstSql).toMatch(/UPDATE sale_orders/)
-    expect(firstSql).toMatch(/AND status = '待审批'/)
+    // 通道 1: UPDATE sale_allocations
+    const allocUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_allocations') && c.sql.includes('is_void = true')
+    )
+    // 注意：源码当传入 saleItemId 时 itemIds=[saleItemId]，否则按订单全行查询
+    // 这里 sopRow.ref_sale_item_id='orig-item-1' 走单行分支
+    expect(allocUpdate).toBeDefined()
+    expect(allocUpdate.params[1]).toEqual(['orig-item-1'])
   })
 
-  test('审批通过后 UPDATE sale_order_payments 退款行为已支付', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-PAY' })
+  test('5 通道 cascade — 通道 2（service_commissions 软删 with voided_reason）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1005 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1005, refund_reason: '过敏' })])
 
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-PAY', status: '待审批', sale_order_type: '退款单', store_id: 'store-001',
-        ref_sale_order_id: 'FY-ORIG-PAY', total_amount: '-200', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{ prepaid_card_amount: '0', total_amount: '500' }])
-
-    const clientQuery = vi.fn(async (sql) => {
-      if (sql.includes('COALESCE(SUM')) return { rows: [{ new_paid: -200, new_prepaid: 0 }], rowCount: 1 }
-      if (sql.includes("item_direction = '退出'")) return { rows: [], rowCount: 0 }
-      if (sql.includes('SELECT customer_type')) return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-      return { rows: [], rowCount: 1 }
-    })
-    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+    const { calls } = makeApproveTxnSpy()
 
     await orderRoutes.approveRefund(ctx)
 
-    // 应该至少有一条 UPDATE sale_order_payments SET status='已支付' 的 SQL，且 WHERE 含 '退款' + '待支付' + FY-TKD 过滤
-    const paymentsUpdate = clientQuery.mock.calls.find(([sql]) =>
-      sql.includes('UPDATE sale_order_payments') && sql.includes("SET status = '已支付'"))
-    expect(paymentsUpdate).toBeDefined()
-    expect(paymentsUpdate[0]).toMatch(/change_type = '退款'/)
-    expect(paymentsUpdate[0]).toMatch(/status = '待支付'/)
-    expect(paymentsUpdate[0]).toMatch(/note LIKE/)
+    const commUpdate = calls.find(c =>
+      c.sql.includes('UPDATE service_commissions') && c.sql.includes('voided_reason')
+    )
+    expect(commUpdate).toBeDefined()
+    // params[1] 应为 voidedReason 字符串
+    expect(commUpdate.params[1]).toMatch(/退款审批通过.*过敏/)
+  })
+
+  test('5 通道 cascade — 通道 3（user_coupons 回滚到未使用）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1006 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1006 })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    const couponUpdate = calls.find(c =>
+      c.sql.includes('UPDATE user_coupons') && c.sql.includes("status = '未使用'")
+    )
+    expect(couponUpdate).toBeDefined()
+    expect(couponUpdate.params[0]).toBe('FY-ORIG-001')
+  })
+
+  test('5 通道 cascade — 通道 4（point_transactions 反向 + balance 重算）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1007 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1007, client_user_id: 'cu-001' })])
+
+    const { calls } = makeApproveTxnSpy({
+      cascadeGifts: [
+        { id: 1, user_id: 'cu-001', type: '消费赠送', amount: 100 },
+        { id: 2, user_id: 'cu-001', type: '回款赠送', amount: 50 },
+      ],
+    })
+
+    await orderRoutes.approveRefund(ctx)
+
+    // 应有 2 笔反向流水
+    const reverseInserts = calls.filter(c =>
+      c.sql.includes('INSERT INTO point_transactions') &&
+      c.sql.includes("'消费冲销'")
+    )
+    expect(reverseInserts.length).toBe(2)
+    expect(reverseInserts[0].params[2]).toBe(-100)
+    expect(reverseInserts[1].params[2]).toBe(-50)
+
+    // balance 重算
+    const balanceUpdate = calls.find(c =>
+      c.sql.includes('UPDATE client_wechat_users') && c.sql.includes('points_balance')
+    )
+    expect(balanceUpdate).toBeDefined()
+  })
+
+  test('5 通道 cascade — 通道 5（pickup_records 反推家居产品 picked_up_quantity）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1008 })
+    // ref_sale_item_id + sessionCount=2 触发 pickup 反推
+    pg.query.mockResolvedValueOnce([makeSopRow({
+      id: 1008, ref_sale_item_id: 'item-pickup', session_count: 2,
+    })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    const pickupUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_items') &&
+      c.sql.includes('picked_up_quantity') &&
+      c.sql.includes("product_type = '家居产品'")
+    )
+    expect(pickupUpdate).toBeDefined()
+    expect(pickupUpdate.params[0]).toBe(2)
+    expect(pickupUpdate.params[2]).toBe('item-pickup')
+  })
+
+  test('refunded_amount 累加（多次部分退款场景：amount=200，累加 200）', async () => {
+    const ctx = createManagerCtx({ paymentId: 1009 })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1009, amount: '-200.00' })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    expect(ctx.result.refundAbs).toBe(200)
+    const refundedUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_orders') && c.sql.includes('refunded_amount')
+    )
+    // SET refunded_amount = COALESCE(refunded_amount, 0) + $1
+    expect(refundedUpdate.params[0]).toBe(200)
+  })
+
+  test('operation_logs 写审计：action / target_type / detail.cascade', async () => {
+    const ctx = createManagerCtx({ paymentId: 1010, auditRemark: 'OK' })
+    pg.query.mockResolvedValueOnce([makeSopRow({ id: 1010 })])
+
+    const { calls } = makeApproveTxnSpy()
+
+    await orderRoutes.approveRefund(ctx)
+
+    const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
+    expect(log).toBeDefined()
+    expect(log.sql).toMatch(/'order\.approveRefund'/)
+    expect(log.sql).toMatch(/'sale_order_payment'/)
+    expect(log.params[0]).toBe('1010')
+    const detail = JSON.parse(log.params[1])
+    expect(detail.saleOrderId).toBe('FY-ORIG-001')
+    expect(detail.refundAbs).toBe(500)
+    expect(detail).toHaveProperty('cascade')
   })
 })
 
 // ============================================================
-// order.rejectRefund
-// 2026-04-26 sale-order-domain-refactor: rejectRefund 入参从 {saleOrderId} 改为 {paymentId}；
-//   UPDATE sale_order_payments[退款,待审批→已作废] + sale_order_payment_details[audit_*]。
-//   旧测试基于"sale_orders[退款单].status='已关闭'"模型，实体已删。
+// order.rejectRefund — 2026-04-26 重写
 // ============================================================
-describe.skip('order.rejectRefund', () => {
+//   - 入参: { paymentId, auditRemark } （rejectedReason 兼容字段）
+//   - 流程（事务内）:
+//     1) CAS UPDATE sale_order_payments SET status='已作废' WHERE id=$1 AND status='待审批'
+//        → rowCount===1 校验（幂等哨兵）
+//     2) INSERT/ON CONFLICT spd 写 audit_employee_id / audit_at / audit_remark
+//     3) INSERT operation_logs（仅状态翻转，不触发 cascadeRefund）
+describe('order.rejectRefund', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('驳回退款单成功', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-003', rejectedReason: '不符合条件' })
-    // 预查 ref_sale_order_id
-    pg.query.mockResolvedValueOnce([{ ref_sale_order_id: 'FY-ORIG-003' }])
+  function makeSopRowReject(overrides = {}) {
+    return {
+      id: 2001,
+      sale_order_id: 'FY-ORIG-001',
+      status: '待审批',
+      store_id: 'store-001',
+      ...overrides,
+    }
+  }
 
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = { query: makeClientQueryMock({ rows: [], rowCount: 1 }) }
-      return await cb(client)
+  function makeRejectTxnSpy({ casRowCount = 1 } = {}) {
+    const calls = []
+    const fn = vi.fn(async (sql, params) => {
+      calls.push({ sql, params })
+      if (sql.includes('UPDATE sale_order_payments') &&
+          sql.includes("SET status = '已作废'")) {
+        return { rows: [], rowCount: casRowCount }
+      }
+      if (sql.includes('INSERT INTO sale_order_payment_details') &&
+          sql.includes('ON CONFLICT')) {
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO operation_logs')) {
+        return { rows: [], rowCount: 1 }
+      }
+      return defaultQueryResult(sql)
     })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: fn }))
+    return { calls, fn }
+  }
+
+  test('驳回退款成功（auditRemark 字段）— 状态翻转 + 写审批信息', async () => {
+    const ctx = createManagerCtx({ paymentId: 2001, auditRemark: '不符合条件' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject()])
+
+    const { calls } = makeRejectTxnSpy()
 
     await orderRoutes.rejectRefund(ctx)
 
-    expect(ctx.result.status).toBe('已关闭')
-    expect(ctx.result.message).toContain('已驳回')
+    expect(ctx.result.paymentId).toBe(2001)
+    expect(ctx.result.status).toBe('已作废')
+    expect(ctx.result.message).toBe('退款已驳回')
+
+    // CAS UPDATE 含 AND status='待审批'
+    const casUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_order_payments') &&
+      c.sql.includes("SET status = '已作废'") &&
+      c.sql.includes("AND status = '待审批'")
+    )
+    expect(casUpdate).toBeDefined()
+    expect(casUpdate.params[0]).toBe(2001)
+
+    // spd 写审批 — auditRemark='不符合条件'
+    const spdUpsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payment_details') &&
+      c.sql.includes('ON CONFLICT')
+    )
+    expect(spdUpsert).toBeDefined()
+    expect(spdUpsert.params[0]).toBe(2001)
+    expect(spdUpsert.params[1]).toBe('emp-001')
+    expect(spdUpsert.params[3]).toBe('不符合条件')
   })
 
-  test('驳回退款：作废 payments 待支付退款行', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-VOID', rejectedReason: '无效' })
-    pg.query.mockResolvedValueOnce([{ ref_sale_order_id: 'FY-ORIG-VOID' }])
+  test('驳回退款 — 兼容旧字段 rejectedReason', async () => {
+    const ctx = createManagerCtx({ paymentId: 2002, rejectedReason: '老前端字段' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2002 })])
 
-    const clientQuery = makeClientQueryMock({ rows: [], rowCount: 1 })
-    pg.transaction.mockImplementation(async (cb) => await cb({ query: clientQuery }))
+    const { calls } = makeRejectTxnSpy()
 
     await orderRoutes.rejectRefund(ctx)
 
-    // 应有 UPDATE sale_order_payments SET status='已作废' 的 SQL
-    const voidUpdate = clientQuery.mock.calls.find(([sql]) =>
-      sql.includes('UPDATE sale_order_payments') && sql.includes("SET status = '已作废'"))
-    expect(voidUpdate).toBeDefined()
-    expect(voidUpdate[0]).toMatch(/change_type = '退款'/)
-    expect(voidUpdate[0]).toMatch(/note LIKE/)
+    const spdUpsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payment_details')
+    )
+    expect(spdUpsert.params[3]).toBe('老前端字段')
   })
 
-  test('退款单不存在拒绝', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-NOEXIST' })
+  test('CAS 幂等哨兵：状态已变更（rowCount=0）→ INVALID_STATE', async () => {
+    const ctx = createManagerCtx({ paymentId: 2003, auditRemark: '驳回' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2003 })])
+
+    makeRejectTxnSpy({ casRowCount: 0 })
+
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/INVALID_STATE.*状态已变更/)
+  })
+
+  test('预查阶段状态非待审批 → INVALID_STATE', async () => {
+    const ctx = createManagerCtx({ paymentId: 2004, auditRemark: 'X' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2004, status: '已支付' })])
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/INVALID_STATE.*不是待审批/)
+  })
+
+  test('退款流水不存在 → NOT_FOUND', async () => {
+    const ctx = createManagerCtx({ paymentId: 99999, auditRemark: 'X' })
     pg.query.mockResolvedValueOnce([])
-    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*退款单/)
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/NOT_FOUND.*退款流水不存在/)
   })
 
-  test('非店长拒绝', async () => {
-    const ctx = createBeauticianCtx({ saleOrderId: 'FY-TKD-003' })
+  test('跨店驳回 → PERMISSION_DENIED', async () => {
+    const ctx = createManagerCtx({ paymentId: 2005, auditRemark: 'X' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2005, store_id: 'store-OTHER' })])
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*无权驳回/)
+  })
+
+  test('缺少 paymentId → INVALID_PARAMS', async () => {
+    const ctx = createManagerCtx({ auditRemark: 'X' })
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/INVALID_PARAMS.*paymentId/)
+  })
+
+  test('非店长 → PERMISSION_DENIED', async () => {
+    const ctx = createBeauticianCtx({ paymentId: 2001 })
     await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  test('不触发 cascadeRefund — 仅状态翻转 + spd 写审批 + operation_logs', async () => {
+    const ctx = createManagerCtx({ paymentId: 2006, auditRemark: 'X' })
+    pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2006 })])
+
+    const { calls } = makeRejectTxnSpy()
+
+    await orderRoutes.rejectRefund(ctx)
+
+    // 不应触发 cascade 任意通道
+    expect(calls.find(c => c.sql.includes('UPDATE sale_allocations'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('UPDATE service_commissions'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('UPDATE user_coupons'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('INSERT INTO point_transactions'))).toBeUndefined()
+    expect(calls.find(c => c.sql.includes('INSERT INTO prepaid_cards'))).toBeUndefined()
+    // 不累加 refunded_amount
+    expect(calls.find(c =>
+      c.sql.includes('UPDATE sale_orders') && c.sql.includes('refunded_amount')
+    )).toBeUndefined()
+
+    // operation_logs 写 rejectRefund
+    const log = calls.find(c => c.sql.includes('INSERT INTO operation_logs'))
+    expect(log).toBeDefined()
+    expect(log.sql).toMatch(/'order\.rejectRefund'/)
   })
 })
 
@@ -4132,127 +4456,132 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
   })
 })
 
-// 2026-04-26 sale-order-domain-refactor: approveRefund 入参 {paymentId}，原"退款单 saleOrderId"模型已删。
-// 拆分逻辑（splitRefundByOriginalPayment）已迁至 createRefund 阶段（写 detail.note JSON），
-// approveRefund 仅按 payment_method 决定是否回冲储值卡。本组测试待按新模型重写。
-describe.skip('order.approveRefund — 按比例拆分退款（储值卡部分 + 原通道部分）', () => {
+// ============================================================
+// order.createRefund — 按比例拆分退款（储值卡部分 + 原通道部分）— 2026-04-26 重写
+// ============================================================
+//   2026-04-26 sale-order-domain-refactor: 拆分逻辑（splitRefundByOriginalPayment）
+//   已迁至 createRefund 阶段，结果写入 sale_order_payment_details.note JSON。
+//   approveRefund 仅按 payment_method 决定是否回冲储值卡。
+//   本组测试覆盖 createRefund 时 refundByCard/refundByOrigin 的拆分计算。
+describe('order.createRefund — 按比例拆分退款（refundByCard/refundByOrigin）', () => {
   beforeEach(() => { vi.clearAllMocks() })
 
-  test('全额抵扣订单退款：refundByCard = refundAmount，refundByOrigin = 0', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-FULL' })
-
+  /**
+   * 通用 mock：原单 payment_method='无'（全额储值卡场景）/'微信'/'线下' 等可调。
+   * 返回 { calls, fn } 用于断言 sop INSERT 的 amount/payment_method、note JSON 的 split。
+   */
+  function setupSplitTest({
+    refSaleOrderId = 'FY-ORIG-X',
+    paymentMethod = '无',
+    prepaidCardAmount = '0',
+    totalAmount = '300',
+    saleItemId = 'item-x',
+    productType = '疗程卡',
+    sessionCount = 5,
+    remainingSessions = 5,
+    quantity = 1,
+    unitRealPrice = '100',
+    refundQuantity = 1,
+    refundReason = '测试拆分',
+    handlingFee,
+  } = {}) {
     pg.query
       .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-FULL', status: '待审批', sale_order_type: '退款单',
-        store_id: 'store-001', ref_sale_order_id: 'FY-ORIG-FULL',
-        total_amount: '-100.00', client_user_id: 'cu-001',
+        sale_order_id: refSaleOrderId, status: '已支付', store_id: 'store-001',
+        client_user_id: 'cu-001', payment_method: paymentMethod,
+        prepaid_card_amount: prepaidCardAmount, total_amount: totalAmount,
       }])
+      .mockResolvedValueOnce([])  // in-flight 校验空
       .mockResolvedValueOnce([{
-        prepaid_card_amount: '300.00', total_amount: '300.00',  // 原单全额抵扣
+        sale_item_id: saleItemId, product_type: productType,
+        session_count: sessionCount, remaining_sessions: remainingSessions,
+        quantity, picked_up_quantity: 0,
+        unit_price: unitRealPrice, unit_real_price: unitRealPrice,
+        sku_id: `sku-${saleItemId}`, product_name: 'X', sku_spec_name: 'S',
+        sales_category: '自销自耗', service_fee: '0',
       }])
-      .mockResolvedValueOnce([])  // 无退款明细
 
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql) => {
-          if (sql.includes('FROM card_transactions') && sql.includes("type = '充值'")) {
-            return { rows: [] }
-          }
-          if (sql.includes('INSERT INTO prepaid_cards')) {
-            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
-          }
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return defaultQueryResult(sql)
-        }),
+    const calls = []
+    const fn = vi.fn(async (sql, params) => {
+      calls.push({ sql, params })
+      if (sql.includes('INSERT INTO sale_order_payments') && /RETURNING\s+id/i.test(sql)) {
+        return { rows: [{ id: 5001 }], rowCount: 1 }
       }
-      return await cb(client)
+      return { rows: [], rowCount: 1 }
     })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: fn }))
 
-    await orderRoutes.approveRefund(ctx)
+    const payload = {
+      refSaleOrderId,
+      items: [{ saleItemId, refundQuantity }],
+      refundReason,
+    }
+    if (handlingFee !== undefined) payload.handlingFee = handlingFee
 
-    expect(ctx.result.status).toBe('已支付')
+    return { calls, payload }
+  }
+
+  test('全额储值卡抵扣原单：refundByCard = refundAmount，refundByOrigin = 0', async () => {
+    const { calls, payload } = setupSplitTest({
+      paymentMethod: '无',
+      prepaidCardAmount: '300',
+      totalAmount: '300',
+      unitRealPrice: '100',
+      refundQuantity: 1,  // 退 100
+    })
+    const ctx = createManagerCtx(payload)
+
+    await orderRoutes.createRefund(ctx)
+
     expect(ctx.result.refundByCard).toBe(100)
     expect(ctx.result.refundByOrigin).toBe(0)
+
+    // note JSON 中 split 一致
+    const spdInsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payment_details')
+    )
+    const note = JSON.parse(spdInsert.params[5])
+    expect(note.refundByCard).toBe(100)
+    expect(note.refundByOrigin).toBe(0)
   })
 
-  test('部分抵扣订单退款：按比例计算 refundByCard，反向相减得 refundByOrigin', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-PARTIAL' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-PARTIAL', status: '待审批', sale_order_type: '退款单',
-        store_id: 'store-001', ref_sale_order_id: 'FY-ORIG-PARTIAL',
-        total_amount: '-150.00', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{
-        prepaid_card_amount: '100.00', total_amount: '300.00',  // 原单部分抵扣
-      }])
-      .mockResolvedValueOnce([])  // 无退款明细
-
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql) => {
-          if (sql.includes('FROM card_transactions') && sql.includes("type = '充值'")) {
-            return { rows: [] }
-          }
-          if (sql.includes('INSERT INTO prepaid_cards')) {
-            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
-          }
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return defaultQueryResult(sql)
-        }),
-      }
-      return await cb(client)
+  test('部分储值卡抵扣：按比例 — prepaid=100/total=300, refund=150 → byCard=50, byOrigin=100', async () => {
+    const { calls, payload } = setupSplitTest({
+      paymentMethod: '线下',
+      prepaidCardAmount: '100',
+      totalAmount: '300',
+      unitRealPrice: '150',  // 1 件 150
+      refundQuantity: 1,
     })
+    const ctx = createManagerCtx(payload)
 
-    await orderRoutes.approveRefund(ctx)
+    await orderRoutes.createRefund(ctx)
 
-    // floor(100/300 × 150, 2) = floor(50.00, 2) = 50.00
+    // floor(100/300 × 150, 2) = floor(50.00, 2) = 50
     expect(ctx.result.refundByCard).toBe(50)
     expect(ctx.result.refundByOrigin).toBe(100)
-    // 不变量：refundByCard + refundByOrigin === refundAmount
+    // 不变量：byCard + byOrigin === refundAmount，无尾差
     expect(ctx.result.refundByCard + ctx.result.refundByOrigin).toBe(150)
+
+    const spdInsert = calls.find(c => c.sql.includes('INSERT INTO sale_order_payment_details'))
+    const note = JSON.parse(spdInsert.params[5])
+    expect(note.refundByCard).toBe(50)
+    expect(note.refundByOrigin).toBe(100)
   })
 
-  test('精度边界（ticket §4.7 #33）：prepaid=100, total=301, refund=150 → refundByCard=49.83, refundByOrigin=100.17，无尾差', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-PREC' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-PREC', status: '待审批', sale_order_type: '退款单',
-        store_id: 'store-001', ref_sale_order_id: 'FY-ORIG-PREC',
-        total_amount: '-150.00', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{
-        prepaid_card_amount: '100.00', total_amount: '301.00',
-      }])
-      .mockResolvedValueOnce([])
-
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql) => {
-          if (sql.includes('FROM card_transactions') && sql.includes("type = '充值'")) {
-            return { rows: [] }
-          }
-          if (sql.includes('INSERT INTO prepaid_cards')) {
-            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
-          }
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return defaultQueryResult(sql)
-        }),
-      }
-      return await cb(client)
+  test('精度边界：prepaid=100, total=301, refund=150 → byCard=49.83, byOrigin=100.17，无尾差', async () => {
+    const { payload } = setupSplitTest({
+      paymentMethod: '线下',
+      prepaidCardAmount: '100',
+      totalAmount: '301',
+      unitRealPrice: '150',
+      refundQuantity: 1,
     })
+    const ctx = createManagerCtx(payload)
 
-    await orderRoutes.approveRefund(ctx)
+    await orderRoutes.createRefund(ctx)
 
-    // floor((100 / 301) × 150, 2) = floor(49.83388..., 2) = 49.83
+    // floor((100/301) × 150, 2) = floor(49.83388…, 2) = 49.83
     expect(ctx.result.refundByCard).toBe(49.83)
     // 反向相减：150 - 49.83 = 100.17
     expect(ctx.result.refundByOrigin).toBe(100.17)
@@ -4260,81 +4589,40 @@ describe.skip('order.approveRefund — 按比例拆分退款（储值卡部分 +
     expect(Math.round((ctx.result.refundByCard + ctx.result.refundByOrigin) * 100) / 100).toBe(150)
   })
 
-  test('无抵扣订单退款：refundByCard=0，refundByOrigin=refundAmount', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-ZERO' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-ZERO', status: '待审批', sale_order_type: '退款单',
-        store_id: 'store-001', ref_sale_order_id: 'FY-ORIG-ZERO',
-        total_amount: '-100.00', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{
-        prepaid_card_amount: '0', total_amount: '300.00',  // 无抵扣原单
-      }])
-      .mockResolvedValueOnce([])
-
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql) => {
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return defaultQueryResult(sql)
-        }),
-      }
-      return await cb(client)
+  test('无储值卡抵扣原单：byCard=0，byOrigin=refundAmount', async () => {
+    const { payload } = setupSplitTest({
+      paymentMethod: '微信',
+      prepaidCardAmount: '0',
+      totalAmount: '300',
+      unitRealPrice: '100',
+      refundQuantity: 1,
     })
+    const ctx = createManagerCtx(payload)
 
-    await orderRoutes.approveRefund(ctx)
+    await orderRoutes.createRefund(ctx)
 
     expect(ctx.result.refundByCard).toBe(0)
     expect(ctx.result.refundByOrigin).toBe(100)
   })
 
-  test('退款单 UPDATE 写入 prepaid_card_amount / paid_amount（退款单同号负数）', async () => {
-    const ctx = createManagerCtx({ saleOrderId: 'FY-TKD-META' })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_order_id: 'FY-TKD-META', status: '待审批', sale_order_type: '退款单',
-        store_id: 'store-001', ref_sale_order_id: 'FY-ORIG-META',
-        total_amount: '-150.00', client_user_id: 'cu-001',
-      }])
-      .mockResolvedValueOnce([{
-        prepaid_card_amount: '100.00', total_amount: '300.00',
-      }])
-      .mockResolvedValueOnce([])
-
-    const txCalls = []
-    pg.transaction.mockImplementation(async (cb) => {
-      const client = {
-        query: vi.fn(async (sql, params) => {
-          txCalls.push({ sql, params })
-          if (sql.includes('FROM card_transactions') && sql.includes("type = '充值'")) {
-            return { rows: [] }
-          }
-          if (sql.includes('INSERT INTO prepaid_cards')) {
-            return { rows: [{ card_id: 'card-001' }], rowCount: 1 }
-          }
-          if (sql.includes('SELECT customer_type FROM client_wechat_users')) {
-            return { rows: [{ customer_type: '会员客' }], rowCount: 1 }
-          }
-          return defaultQueryResult(sql)
-        }),
-      }
-      return await cb(client)
+  test('handlingFee 扣减后再拆分：prepaid=100,total=300,refundRaw=150,fee=50 → byCard=floor(100/300×100,2)=33.33, byOrigin=66.67', async () => {
+    const { payload } = setupSplitTest({
+      paymentMethod: '线下',
+      prepaidCardAmount: '100',
+      totalAmount: '300',
+      unitRealPrice: '150',  // 1 件 150
+      refundQuantity: 1,
+      handlingFee: 50,
     })
+    const ctx = createManagerCtx(payload)
 
-    await orderRoutes.approveRefund(ctx)
+    await orderRoutes.createRefund(ctx)
 
-    const updateOrder = txCalls.find(c =>
-      c.sql.includes('UPDATE sale_orders') && c.sql.includes("status = '已支付'")
-    )
-    expect(updateOrder).toBeDefined()
-    // params: [now, staffWfId, saleOrderId, -refundByCard, -refundByOrigin]
-    expect(updateOrder.params[3]).toBe(-50)   // -refundByCard
-    expect(updateOrder.params[4]).toBe(-100)  // -refundByOrigin
+    // finalRefund = 150 - 50 = 100，byCard = floor(100/300 × 100, 2) = floor(33.333, 2) = 33.33
+    expect(ctx.result.finalRefundAmount).toBe(100)
+    expect(ctx.result.refundByCard).toBe(33.33)
+    expect(ctx.result.refundByOrigin).toBe(66.67)
+    expect(Math.round((ctx.result.refundByCard + ctx.result.refundByOrigin) * 100) / 100).toBe(100)
   })
 })
 
