@@ -13,7 +13,14 @@ export const orderStatusEnum = pgEnum("order_status", [
   "部分支付",
 ]);
 
-export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "回款单", "转换单", "退款单"]);
+/**
+ * 销售单据类型（sale_orders.sale_order_type）
+ *
+ * 2026-04-26 sale-order-domain-refactor 重构：5 → 3 值
+ * 删除：'回款单'（迁至 sale_order_payments[change_type='回款']）
+ *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
+ */
+export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 
@@ -42,12 +49,14 @@ export const paymentChangeTypeEnum = pgEnum("payment_change_type", [
  * 款项流水状态（sale_order_payments.status）
  *
  * 待支付：线上支付已发起未到账
- * 已支付：到账（线下/储值卡直接落此状态）
- * 已作废：创建后被取消（如超时/手动关闭触发）
- * 已退款：首次支付/回款行整笔退款时置此
+ * 待审批：退款已发起、待店长 / 财务审批（2026-04-26 sale-order-domain-refactor 新增）
+ * 已支付：到账（线下/储值卡直接落此状态；退款审批通过亦置此并 amount<0）
+ * 已作废：创建后被取消（如超时/手动关闭触发；退款被驳回亦置此）
+ * 已退款：首次支付/回款行整笔退款时置此（仅原行）
  */
 export const paymentFlowStatusEnum = pgEnum("payment_flow_status", [
   "待支付",
+  "待审批",
   "已支付",
   "已作废",
   "已退款",

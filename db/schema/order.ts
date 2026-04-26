@@ -1,4 +1,5 @@
 import {
+  bigint,
   bigserial,
   boolean,
   check,
@@ -63,17 +64,24 @@ export const saleOrders = pgTable(
     /** 应付实金金额 = total_amount - prepaid_card_amount；创建订单时计算并冻结，作为冗余列便于前端/报表筛选 */
     payableAmount: numeric("payable_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     /**
-     * 实付金额（走 payment_method 指定通道）；paid_amount = 0 ⇔ payment_method = '无'。
-     * 本字段是 sale_order_payments 表中 change_type ∈ (首次支付/回款/退款) 且 status='已支付' 行的 amount 之和的冗余快照，
+     * 实收金额（走 payment_method 指定通道）；received = 0 ⇔ payment_method = '无'。
+     * 本字段是 sale_order_payments 表中 change_type ∈ (首次支付/回款/储值卡抵扣) 且 status='已支付' 行的 amount 之和的冗余快照，
      * 由应用层每次 payments 变更后同事务双写维护。
+     *
+     * 2026-04-26 sale-order-domain-refactor：
+     *   - 原 paid_amount 列与 received 重复，已 DROP；统一改用 received
+     *   - 原 wechat_transaction_id / alipay_transaction_id 列已 DROP，三方流水号下沉到 sale_order_payments.external_txn_id
      */
-    paidAmount: numeric("paid_amount", { precision: 10, scale: 2 }).notNull().default("0"),
+    received: numeric("received", { precision: 10, scale: 2 }).notNull().default("0"),
+    /**
+     * 已退款金额（聚合 sale_order_payments[change_type='退款',status='已支付'].amount 取负值）。
+     * 由应用层每次退款审批通过后同事务双写维护。
+     */
+    refundedAmount: numeric("refunded_amount", { precision: 10, scale: 2 }).notNull().default("0"),
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     openedBy: varchar("opened_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     preferredEmployeeId: varchar("preferred_employee_id", { length: 30 }).references(() => staffWechatUsers.employeeId),
     paidAt: timestamp("paid_at"),
-    wechatTransactionId: varchar("wechat_transaction_id", { length: 64 }).unique(),
-    alipayTransactionId: varchar("alipay_transaction_id", { length: 64 }).unique(),
     offlineConfirmedBy: varchar("offline_confirmed_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     offlineConfirmedAt: timestamp("offline_confirmed_at"),
     allocationStatus: allocationStatusEnum("allocation_status"),
@@ -168,6 +176,13 @@ export const saleItems = pgTable(
     serviceFee: numeric("service_fee", { precision: 10, scale: 2 }).notNull().default("0"),
     /** 生美标志快照（开单时从 product_skus.is_shengmei 拷贝，不随 sku 后续修改变动） */
     isShengmei: boolean("is_shengmei"),
+    /**
+     * 体验卡快照（开单时从 product_skus.is_experience 拷贝）。
+     * 客户分类跃迁判定：order_non_trial_amount = SUM(received WHERE is_experience=false)，
+     * order_trial_amount = SUM(received WHERE is_experience=true)。混合订单按非体验部分判跃迁。
+     * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
+     */
+    isExperience: boolean("is_experience").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
@@ -229,13 +244,17 @@ export const saleAllocations = pgTable(
 /**
  * 订单款项流水（款项权威源）
  *
- * 承载首次支付、回款、退款、储值卡抵扣四类款项动作；sale_orders.paid_amount / prepaid_card_amount
- * 为本表的冗余快照，由应用层同事务双写。
+ * 承载首次支付、回款、退款、储值卡抵扣四类款项动作；sale_orders.received / refunded_amount /
+ * prepaid_card_amount 为本表的冗余快照，由应用层同事务双写。
  *
- * 本 PR（partial-payment foundation）阶段只启用前三类；储值卡抵扣行留待后续 ticket 启用。
+ * 2026-04-26 sale-order-domain-refactor 重构：
+ *   - operator_employee_id / note 下沉到 sale_order_payment_details（子表 1:1）
+ *   - status 新增 '待审批' 值（退款审批流：发起 → 审批 → 已支付/已作废）
+ *   - 新增 partial unique uq_sop_status_audit 防同一原单出现多笔 in-flight 退款审批
  *
  * 不变量（应用层保障，DB CHECK 覆盖符号/字段一致性）：
- *   sale_orders.paid_amount         = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','退款'))
+ *   sale_orders.received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
+ *   sale_orders.refunded_amount     = -Σ(amount WHERE status='已支付' AND change_type='退款')
  *   sale_orders.prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
  */
 export const saleOrderPayments = pgTable(
@@ -253,11 +272,6 @@ export const saleOrderPayments = pgTable(
     externalTxnId: text("external_txn_id"),
     status: paymentFlowStatusEnum("status").notNull(),
     sourceEnd: paymentSourceEndEnum("source_end").notNull(),
-    /** 操作员工（顾客自助/回调时为 NULL） */
-    operatorEmployeeId: varchar("operator_employee_id", { length: 32 }).references(
-      () => staffWechatUsers.employeeId,
-    ),
-    note: text("note"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at"),
@@ -269,6 +283,13 @@ export const saleOrderPayments = pgTable(
     uniqueIndex("uq_sop_txn")
       .on(table.saleOrderId, table.paymentMethod, table.externalTxnId)
       .where(sql`external_txn_id IS NOT NULL`),
+    /**
+     * 同一原销售单只能有一笔 in-flight 退款审批（change_type='退款' AND status='待审批'）。
+     * 防 TOCTOU：审批流并发提交时由 DB 兜底。
+     */
+    uniqueIndex("uq_sop_status_audit")
+      .on(table.saleOrderId, table.changeType)
+      .where(sql`change_type = '退款' AND status = '待审批'`),
     /** 符号一致性：首次支付/回款/储值卡抵扣正数，退款负数 */
     check(
       "chk_sop_amount_sign",
@@ -286,6 +307,63 @@ export const saleOrderPayments = pgTable(
   ],
 );
 
+/**
+ * 订单款项流水详情（子表，1:1 主表 sale_order_payments）
+ *
+ * 2026-04-26 sale-order-domain-refactor 新建。
+ * 设计原则（用户原话）："saleOrder 只记录汇总的结果和状态" —— 所有付款细节下沉到本表，
+ * 主表 sale_order_payments 仅留资金流水核心字段。
+ *
+ * payment_id 既是 PK 也是 FK。仅当 payment 行需要详情（操作人/备注/退款审批等）时才有子表行；
+ * 实际几乎所有 payment 行都有 details 行。
+ */
+export const salePaymentDetails = pgTable(
+  "sale_order_payment_details",
+  {
+    paymentId: bigint("payment_id", { mode: "number" })
+      .primaryKey()
+      .references(() => saleOrderPayments.id, { onDelete: "restrict" }),
+
+    // ── 操作人 / 备注（从主表下沉）──
+    operatorEmployeeId: varchar("operator_employee_id", { length: 32 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    note: text("note"),
+
+    // ── 退款专属 ──
+    /** 退款原因（发起人填） */
+    refundReason: text("refund_reason"),
+    /** 关联具体 sale_item（部分退款） */
+    refSaleItemId: varchar("ref_sale_item_id", { length: 30 }).references(() => saleItems.saleItemId),
+    /** 退疗程卡时的次数 */
+    sessionCount: integer("session_count"),
+
+    // ── 审批专属 ──
+    /** 审批人 */
+    auditEmployeeId: varchar("audit_employee_id", { length: 32 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    /** 审批时间 */
+    auditAt: timestamp("audit_at"),
+    /** 审批备注 / 拒绝原因 */
+    auditRemark: text("audit_remark"),
+
+    // ── 第三方回调原始 payload（拉卡拉对接后用） ──
+    rawPayload: jsonb("raw_payload"),
+
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    index("idx_sopd_operator").on(table.operatorEmployeeId),
+    index("idx_sopd_audit_employee").on(table.auditEmployeeId),
+    index("idx_sopd_ref_sale_item").on(table.refSaleItemId),
+  ],
+);
+
 export type SaleOrder = typeof saleOrders.$inferSelect;
 export type NewSaleOrder = typeof saleOrders.$inferInsert;
 export type SaleItem = typeof saleItems.$inferSelect;
@@ -294,3 +372,5 @@ export type SaleAllocation = typeof saleAllocations.$inferSelect;
 export type NewSaleAllocation = typeof saleAllocations.$inferInsert;
 export type SaleOrderPayment = typeof saleOrderPayments.$inferSelect;
 export type NewSaleOrderPayment = typeof saleOrderPayments.$inferInsert;
+export type SalePaymentDetail = typeof salePaymentDetails.$inferSelect;
+export type NewSalePaymentDetail = typeof salePaymentDetails.$inferInsert;

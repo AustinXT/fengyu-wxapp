@@ -37,6 +37,13 @@ export const serviceCommissions = pgTable(
     commissionAmount: numeric('commission_amount', { precision: 10, scale: 2 }).notNull(),
     /** 软删除标记 */
     isVoid: boolean('is_void').notNull().default(false),
+    /**
+     * 软删除时间（与 sale_allocations.voided_at 对齐；2026-04-26 sale-order-domain-refactor 新增）。
+     * 退款审批通过时由应用层级联写入，业绩重算时 WHERE voided_at IS NULL。
+     */
+    voidedAt: timestamp('voided_at'),
+    /** 软删除原因（与 sale_allocations.voided_reason 对齐；2026-04-26 新增） */
+    voidedReason: text('voided_reason'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
@@ -45,6 +52,10 @@ export const serviceCommissions = pgTable(
       .on(table.serviceItemId, table.employeeId, table.roleType)
       .where(sql`is_void = false`),
     index('idx_svc_comm_employee_id').on(table.employeeId),
+    /** 软删除筛选索引（仅索引 voided_at IS NOT NULL 的行，用于历史回滚审计） */
+    index('idx_sc_voided_at')
+      .on(table.voidedAt)
+      .where(sql`voided_at IS NOT NULL`),
     check('chk_svc_comm_fixed_fee', sql`${table.fixedFee} >= 0`),
     check('chk_svc_comm_consume_amount', sql`${table.consumeAmount} >= 0`),
   ],

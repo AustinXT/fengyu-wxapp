@@ -120,6 +120,20 @@
       "when": 1777130671865,
       "tag": "0016_grey_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1777188070003,
+      "tag": "0017_tidy_rage",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1777188661962,
+      "tag": "0018_black_madrox",
+      "breakpoints": true
     }
   ]
 }
