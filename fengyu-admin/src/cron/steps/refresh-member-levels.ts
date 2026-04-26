@@ -63,12 +63,16 @@ export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
 
   for (const row of memberClients) {
     try {
+      // 2026-04-26 sale-order-domain-refactor:
+      //   - paid_amount 列已 DROP，统一改用 received（unique source of truth）
+      //   - saleOrderType 5→3（删除"回款单"/"退款单"），过滤改为正向枚举 IN
+      //   - 业绩口径：received - refunded_amount（已含 5 通道退款冲销）；
+      //     退款审批通过后会同事务双写 refunded_amount，因此不再需要按 type 过滤退款单
       const spendRows = (await db.execute(sql`
-        SELECT COALESCE(SUM(paid_amount::numeric), 0) AS spend
+        SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS spend
         FROM sale_orders
         WHERE client_user_id = ${row.user_id}
-          AND sale_order_type = '销售单'
-          AND paid_amount > 0
+          AND sale_order_type IN ('销售单','转换单')
           AND paid_at >= (NOW() - INTERVAL '12 months')
       `)) as Array<{ spend: string | number }>
 
