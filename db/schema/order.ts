@@ -272,6 +272,15 @@ export const saleOrderPayments = pgTable(
     externalTxnId: text("external_txn_id"),
     status: paymentFlowStatusEnum("status").notNull(),
     sourceEnd: paymentSourceEndEnum("source_end").notNull(),
+    /**
+     * 操作人员工 ID（DB 5433 实际仍有此列，migration 0018 未 apply）。
+     * 保持与 DB 对齐。
+     */
+    operatorEmployeeId: varchar("operator_employee_id", { length: 30 }).references(
+      () => staffWechatUsers.employeeId,
+    ),
+    /** 备注（DB 5433 实际仍有此列，migration 0018 未 apply） */
+    note: text("note"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at"),
