@@ -96,27 +96,35 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(db.execute).not.toHaveBeenCalled()
   })
 
-  it('有 scope → 执行 3 次 DB 查询 + 返回聚合结果', async () => {
+  it('有 scope → 执行 4 次 DB 查询 + 返回聚合结果', async () => {
     mockBusinessSession(['store-1', 'store-2'])
 
     let callIndex = 0
     ;(db.execute as any).mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
-        // order stats
+        // sale_orders 域：业绩 / 实付 / 已退款 / 待办
+        // 2026-04-26 sale-order-domain-refactor：todayRevenue = SUM(received - refunded_amount)
         return Promise.resolve([{
-          today_visitors: '5',
           today_revenue: '8600.00',
           today_paid_amount: '8300.00',
+          today_refunded_amount: '200.00',
+          today_opened_customers: '6',
           pending_orders: '3',
           pending_allocations: '2',
-          yesterday_visitors: '4',
           yesterday_revenue: '7200.00',
           yesterday_paid_amount: '7000.00',
           total_paid_amount: '123456.78',
         }])
       }
       if (callIndex === 2) {
+        // service_orders 域：客流（today/yesterday）
+        return Promise.resolve([{
+          today_visitors: '5',
+          yesterday_visitors: '4',
+        }])
+      }
+      if (callIndex === 3) {
         // appointment stats
         return Promise.resolve([{ pending_appointments: '7' }])
       }
@@ -130,6 +138,8 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.todayVisitors).toBe(5)
     expect(result.todayRevenue).toBe(8600)
     expect(result.todayPaidAmount).toBe(8300)
+    expect(result.todayRefundedAmount).toBe(200)
+    expect(result.todayOpenedCustomers).toBe(6)
     expect(result.pendingOrders).toBe(3)
     expect(result.pendingAllocations).toBe(2)
     expect(result.pendingAppointments).toBe(7)
@@ -138,7 +148,7 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.yesterdayRevenue).toBe(7200)
     expect(result.yesterdayPaidAmount).toBe(7000)
     expect(result.totalPaidAmount).toBe(123456.78)
-    expect(db.execute).toHaveBeenCalledTimes(3)
+    expect(db.execute).toHaveBeenCalledTimes(4)
   })
 
   it('DB 返回 null 字段 → 默认为 0（含 paid_amount 系列字段）', async () => {
@@ -156,33 +166,37 @@ describe('getDashboardStats — business 角色（manager/finance）', () => {
     expect(result.totalPaidAmount).toBe(0)
   })
 
-  it('含储值卡抵扣场景：todayRevenue 与 todayPaidAmount 可差异（前者含抵扣额）', async () => {
+  it('含退款场景：todayRevenue 已扣 refunded_amount，todayPaidAmount 仍为毛实收', async () => {
     mockBusinessSession(['store-1'])
 
     let callIndex = 0
     ;(db.execute as any).mockImplementation(() => {
       callIndex++
       if (callIndex === 1) {
-        // 订单总额 1000（含 300 储值卡抵扣）→ paidAmount 700
+        // 毛实收 1000，已退款 300 → 净业绩 700
+        // 2026-04-26 sale-order-domain-refactor：todayRevenue = SUM(received - refunded_amount)
         return Promise.resolve([{
-          today_revenue: '1000.00',
-          today_paid_amount: '700.00',
+          today_revenue: '700.00',
+          today_paid_amount: '1000.00',
+          today_refunded_amount: '300.00',
           yesterday_revenue: '0',
           yesterday_paid_amount: '0',
-          total_paid_amount: '700.00',
+          total_paid_amount: '1000.00',
         }])
       }
       if (callIndex === 2) return Promise.resolve([{}])
+      if (callIndex === 3) return Promise.resolve([{}])
       return Promise.resolve([{}])
     })
 
     const result = await getDashboardStats()
 
-    expect(result.todayRevenue).toBe(1000)
-    expect(result.todayPaidAmount).toBe(700)
-    // 财务口径：SUM(paid_amount) < SUM(total_amount) 在有抵扣时成立
-    expect(result.todayPaidAmount).toBeLessThan(result.todayRevenue)
-    expect(result.totalPaidAmount).toBe(700)
+    expect(result.todayRevenue).toBe(700)
+    expect(result.todayPaidAmount).toBe(1000)
+    expect(result.todayRefundedAmount).toBe(300)
+    // 已退款冲销：净业绩 < 毛实收
+    expect(result.todayRevenue).toBeLessThan(result.todayPaidAmount)
+    expect(result.totalPaidAmount).toBe(1000)
   })
 })
 

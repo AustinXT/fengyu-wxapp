@@ -568,20 +568,39 @@ export interface AuthSession {
 }
 
 // Dashboard
+/**
+ * 业务角色看板统计（manager/finance）。
+ *
+ * 2026-04-26 sale-order-domain-refactor 重写 SQL 口径：
+ *   - todayVisitors / yesterdayVisitors  ← service_orders[status='已完成'] DISTINCT client_user_id（与 metrics §"客流"对齐）
+ *   - todayRevenue / yesterdayRevenue    ← SUM(received - refunded_amount)，已天然冲销退款
+ *   - todayPaidAmount / yesterdayPaidAmount ← SUM(received) 毛实收（不扣退款）
+ *   - todayRefundedAmount                ← SUM(refunded_amount)，今日已退款金额
+ *   - todayOpenedCustomers               ← sale_orders DISTINCT client_user_id（按 sale_order_datetime），辅助"今日开单顾客数"
+ *   - 全部 SQL `WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`
+ *   - 时区固定 Asia/Shanghai（与 metrics.md / mgmt-dashboard 对齐）
+ */
 export interface DashboardStats {
+  /** 今日客流（service_orders[已完成] DISTINCT client_user_id） */
   todayVisitors: number
+  /** 今日业绩 = SUM(received - refunded_amount)，已扣退款 */
   todayRevenue: number
-  /** 本日通过支付通道的实收金额（SUM paid_amount，排除储值卡抵扣） */
+  /** 今日毛实收 = SUM(received)，不扣退款 */
   todayPaidAmount: number
+  /** 今日已退款金额 = SUM(refunded_amount) */
+  todayRefundedAmount: number
+  /** 今日开单顾客数（sale_orders DISTINCT client_user_id by sale_order_datetime） */
+  todayOpenedCustomers: number
   pendingOrders: number
   pendingAllocations: number
   pendingAppointments: number
   activeServices: number
   yesterdayVisitors: number
+  /** 昨日业绩（同 todayRevenue 公式） */
   yesterdayRevenue: number
-  /** 昨日通过支付通道的实收金额 */
+  /** 昨日毛实收（同 todayPaidAmount 公式） */
   yesterdayPaidAmount: number
-  /** 全量订单累计实付金额（SUM paid_amount，用于下期财务口径） */
+  /** 全量订单累计实付金额（SUM received，'销售单'+'转换单' + 已支付） */
   totalPaidAmount: number
   /** 角色上下文：决定前端展示哪种看板 */
   roleContext: 'business' | 'admin' | 'hr' | 'product'

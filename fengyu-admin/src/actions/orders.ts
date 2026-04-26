@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -382,7 +382,10 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
 /**
  * 查询订单款项流水（ticket 2026-04-24 PR-3 §3.3）
  *
- * 只读，按 created_at 升序返回；join staff_wechat_users 带出操作人姓名。
+ * 只读，按 created_at 升序返回；
+ * - JOIN staff_wechat_users 带出操作人姓名
+ * - 2026-04-26 sale-order-domain-refactor：LEFT JOIN sale_order_payment_details 子表，
+ *   带出退款专属字段（refundReason / refSaleItemId / sessionCount / auditEmployeeId / auditAt / auditRemark）
  * 用于订单详情页展示款项流水表（首次支付 / 回款 / 退款 / 储值卡抵扣）。
  */
 export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
@@ -401,9 +404,11 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     .select({
       payment: saleOrderPayments,
       operatorName: staffWechatUsers.name,
+      detail: salePaymentDetails,
     })
     .from(saleOrderPayments)
     .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
     // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
     .orderBy(asc(saleOrderPayments.createdAt))
@@ -422,6 +427,13 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
     operatorName: r.operatorName ?? null,
+    // 2026-04-26 sale-order-domain-refactor：子表 sale_order_payment_details 字段
+    refundReason: r.detail?.refundReason ?? null,
+    refSaleItemId: r.detail?.refSaleItemId ?? null,
+    sessionCount: r.detail?.sessionCount ?? null,
+    auditEmployeeId: r.detail?.auditEmployeeId ?? null,
+    auditAt: r.detail?.auditAt?.toISOString() ?? null,
+    auditRemark: r.detail?.auditRemark ?? null,
   }))
 }
 
@@ -629,6 +641,17 @@ export async function createOrder(data: {
 }): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
   const session = await getSession()
   requirePermission(session, 'sale_order:create')
+
+  // 2026-04-26 sale-order-domain-refactor: saleOrderType 5→3 运行时硬校验
+  // 静态联合类型已限定在 createOrder data 入参；此处再做一次 runtime 兜底防绕过
+  // （旧前端/外部调用可能传入 '回款单'/'退款单'，统一拒绝）
+  const ALLOWED_SALE_ORDER_TYPES = ['销售单', '内部单', '转换单'] as const
+  if (!ALLOWED_SALE_ORDER_TYPES.includes(data.saleOrderType as typeof ALLOWED_SALE_ORDER_TYPES[number])) {
+    return {
+      success: false,
+      message: `INVALID_PARAMS: SALE_ORDER_TYPE_INVALID: 不允许的 saleOrderType: ${data.saleOrderType}（'回款单' 走 recordPayment；'退款单' 走 createRefund）`,
+    }
+  }
 
   if (!data.clientUserId) {
     return { success: false, message: 'CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店' }

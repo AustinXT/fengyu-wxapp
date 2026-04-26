@@ -23,7 +23,8 @@ vi.mock('@db/order', () => ({
     paymentMethod: 'payment_method',
     prepaidCardAmount: 'prepaid_card_amount',
     payableAmount: 'payable_amount',
-    received: 'paid_amount',
+    // 2026-04-26 sale-order-domain-refactor：DB 列名已由 paid_amount 重命名为 received
+    received: 'received',
     offlineConfirmedBy: 'offline_confirmed_by',
     offlineConfirmedAt: 'offline_confirmed_at',
     $inferInsert: {} as any,
@@ -96,7 +97,9 @@ vi.mock('@db/product', () => ({
 }))
 
 vi.mock('@db/prepaid-card', () => ({
-  prepaidCards: { cardId: 'card_id', userId: 'user_id', storeId: 'store_id', balance: 'balance' },
+  // 2026-04-24 prepaid_cards.store_id 已 DROP；2026-04-26 sale-order-domain-refactor 修复
+  // P0-14-01：移除 mock 的 storeId 字段，避免反向锁死老代码引用
+  prepaidCards: { cardId: 'card_id', userId: 'user_id', balance: 'balance' },
   cardTransactions: { id: 'id', cardId: 'card_id', type: 'type', amount: 'amount', refOrderId: 'ref_order_id' },
 }))
 

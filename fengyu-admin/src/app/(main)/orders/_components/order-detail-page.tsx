@@ -16,8 +16,13 @@ const paymentChangeTypeLabelMap: Record<string, string> = {
   退款: "退款",
   储值卡抵扣: "储值卡抵扣",
 }
+/**
+ * 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 4→5 值，新增 '待审批'
+ * （退款审批流："发起 → 待审批 → 已支付 / 已作废"）
+ */
 const paymentFlowStatusColorMap: Record<string, string> = {
   待支付: "bg-[#FFF7E6] text-[#D4820A]",
+  待审批: "bg-[#FFF7E6] text-[#D4820A]",
   已支付: "bg-[#F0F9F2] text-[#3D8A5A]",
   已作废: "bg-gray-100 text-[#888888]",
   已退款: "bg-[#FFEBEE] text-[#C62828]",
@@ -69,7 +74,10 @@ export default function OrderDetailPageClient({
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
   const paidAmount = Number(order.received ?? "0")
+  const refundedAmount = Number(order.refundedAmount ?? "0")
   const hasPrepaidDeduction = prepaidCardAmount > 0
+  // 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"标签
+  const hasRefund = refundedAmount > 0
 
   // 剩余欠款 = payable_amount - received（payable_amount = total_amount - prepaid_card_amount）
   const totalAmount = Number(order.totalAmount ?? "0")
@@ -89,9 +97,10 @@ export default function OrderDetailPageClient({
     order.saleOrderType === "销售单" &&
     (order.status === "已支付" || order.status === "已完成" || order.status === "部分支付")
 
-  // 是否存在待审批中的退款（payments 中有 change_type='退款' status='待支付' 的行）
+  // 是否存在待审批中的退款（payments 中有 change_type='退款' status∈{'待审批','待支付'}）
+  // 2026-04-26 sale-order-domain-refactor：paymentFlowStatusEnum 新增 '待审批'；兼容旧数据保留 '待支付' 检测
   const hasPendingRefund = (payments ?? []).some(
-    (p) => p.changeType === "退款" && p.status === "待支付",
+    (p) => p.changeType === "退款" && (p.status === "待审批" || p.status === "待支付"),
   )
 
   return (
@@ -138,10 +147,16 @@ export default function OrderDetailPageClient({
             </div>
             <div>
               <span className="text-[#999999]">类型</span>
-              <p className="mt-1">
+              <p className="mt-1 flex items-center gap-2">
                 <Badge variant="secondary" className={orderTypeColorMap[order.saleOrderType] || ""}>
                   {order.saleOrderType}
                 </Badge>
+                {/* 2026-04-26 sale-order-domain-refactor：refunded_amount > 0 推导"已退款"角标 */}
+                {hasRefund && (
+                  <Badge variant="secondary" className="bg-[#FFEBEE] text-[#C62828]">
+                    已退款
+                  </Badge>
+                )}
               </p>
             </div>
             <div>
@@ -183,6 +198,13 @@ export default function OrderDetailPageClient({
                   <p className="font-bold text-lg mt-1 text-[var(--foreground)]">¥{paidAmount.toLocaleString()}</p>
                 </div>
               </>
+            )}
+            {/* 2026-04-26 sale-order-domain-refactor：已退款金额由 saleOrders.refunded_amount 直接读取（聚合 sale_order_payments[退款,已支付]） */}
+            {hasRefund && (
+              <div>
+                <span className="text-[#999999]">已退款金额</span>
+                <p className="font-bold text-lg mt-1 text-[#C62828]">-¥{refundedAmount.toLocaleString()}</p>
+              </div>
             )}
             {order.remark && (
               <div className="col-span-2 md:col-span-3">
@@ -269,6 +291,22 @@ export default function OrderDetailPageClient({
                 {(payments ?? []).map((p) => {
                   const amt = Number(p.amount)
                   const isRefund = p.changeType === "退款" || amt < 0
+                  // 2026-04-26 sale-order-domain-refactor：退款行展示子表 sale_order_payment_details 字段
+                  // （refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
+                  const refundDetailParts: string[] = []
+                  if (isRefund) {
+                    if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`)
+                    if (p.refSaleItemId) refundDetailParts.push(`关联明细 ${p.refSaleItemId}`)
+                    if (p.sessionCount != null) refundDetailParts.push(`次数：${p.sessionCount}`)
+                    if (p.auditAt) {
+                      refundDetailParts.push(
+                        `审批：${formatDateTime(p.auditAt)}` +
+                          (p.auditRemark ? `（${p.auditRemark}）` : ""),
+                      )
+                    }
+                  }
+                  const noteLine = p.note || "-"
+                  const detailLine = refundDetailParts.join(" · ")
                   return (
                     <tr key={p.id} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 whitespace-nowrap">
@@ -297,7 +335,12 @@ export default function OrderDetailPageClient({
                       <td className="px-4 py-3">
                         {p.operatorName || (p.sourceEnd === "client" ? "顾客自助" : p.sourceEnd === "notify" ? "支付回调" : "-")}
                       </td>
-                      <td className="px-4 py-3 text-[#666666]">{p.note || "-"}</td>
+                      <td className="px-4 py-3 text-[#666666]">
+                        <div>{noteLine}</div>
+                        {detailLine && (
+                          <div className="text-xs text-[#999999] mt-0.5">{detailLine}</div>
+                        )}
+                      </td>
                     </tr>
                   )
                 })}
