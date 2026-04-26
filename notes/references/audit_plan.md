@@ -372,59 +372,70 @@ mkdir -p docs/audit
 
 ## 8. 进度追踪表
 
+> **2026-04-26 v1.1**：25 业务 + 9 横切全部 ✅；总览见 [SUMMARY.md](../../docs/audit/SUMMARY.md)（597 项 = 168 P0 + 240 P1 + 189 P2，去重后约 106 独立 P0 修复点）。
+
 ### P0 核心交易链路
 
-| # | 域 | 状态 | 报告路径 | 关键发现 |
+| # | 域 | 状态 | 报告路径 | 关键发现（P0/P1/P2） |
 |---|---|---|---|---|
-| 01 | 认证 / 鉴权 / 双端用户表隔离 | ⏳ pending | | |
-| 02 | 开单 + 状态机 + 订单号唯一 | ⏳ pending | | |
-| 03 | 款项流水（sale_order_payments） | ⏳ pending | | |
-| 04 | 支付回调 / payNotify 幂等 | ⏳ pending | | |
-| 05 | 服务单 + 扣次原子性 | ⏳ pending | | |
-| 06 | 预约 + 签到 → 服务单流转 | ⏳ pending | | |
-| 07 | 销售提成分配 (sale_allocations) | ⏳ pending | | |
-| 08 | 服务提成 (service_commissions) | ⏳ pending | | |
-| 09 | 商品 + SKU + 价格 + 有效期 | ⏳ pending | | |
-| 10 | 顾客 + 会员等级 | ⏳ pending | | |
+| 01 | 认证 / 鉴权 / 双端用户表隔离 | ✅ | [audit-01-auth.md](../../docs/audit/audit-01-auth.md) | 5/4/3 — payNotify 签名缺失（联动 CC4-01）；OPENID 跨表唯一作废 (D-Q2) |
+| 02 | 开单 + 状态机 + 订单号唯一 | ✅ | [audit-02-order-creation.md](../../docs/audit/audit-02-order-creation.md) | 5/8/6 — advisory lock 与待支付订单唯一约束；状态机迁移合法性 |
+| 03 | 款项流水（sale_order_payments） | ✅ | [audit-03-payment-flow.md](../../docs/audit/audit-03-payment-flow.md) | 5/7/8 — 首次支付/退款 in-flight partial unique 缺；符号 CHECK |
+| 04 | 支付回调 / payNotify 幂等 | ✅ | [audit-04-pay-notify.md](../../docs/audit/audit-04-pay-notify.md) | 4/7/6 — **Top 1 P0**：payNotify 完全无签名校验/解密/来源校验 |
+| 05 | 服务单 + 扣次原子性 | ✅ | [audit-05-service-order.md](../../docs/audit/audit-05-service-order.md) | 8/8/5 — service_items.sku_id schema vs INSERT 失配；扣次原子性 |
+| 06 | 预约 + 签到 → 服务单流转 | ✅ | [audit-06-appointment-checkin.md](../../docs/audit/audit-06-appointment-checkin.md) | 5/9/6 — appointment_id partial unique 缺；过期自动关闭 (D-Q4) |
+| 07 | 销售提成分配 (sale_allocations) | ✅ | [audit-07-sales-allocation.md](../../docs/audit/audit-07-sales-allocation.md) | 5/7/6 — allocation_ratio 无 IN-集合 CHECK；退款不冲销 sa（Top 2） |
+| 08 | 服务提成 (service_commissions) | ✅ | [audit-08-service-commission.md](../../docs/audit/audit-08-service-commission.md) | 6/8/5 — 退款不冲销 sc（Top 2 一部分）；rate=0 抛错决策 (D-Q7) |
+| 09 | 商品 + SKU + 价格 + 有效期 | ✅ | [audit-09-product-sku.md](../../docs/audit/audit-09-product-sku.md) | 3/8/5 — valid_start/valid_end 残留；三端价格快照口径漂移 |
+| 10 | 顾客 + 会员等级 | ✅ | [audit-10-customer-member-level.md](../../docs/audit/audit-10-customer-member-level.md) | 5/9/6 — spending_tier vs member_level 口径漂移（P0-10-06，与 ticket 2026-04-26-experience-card 关联，已铺设 sale_items.is_experience 基础设施） |
 
 ### P1 业务支撑
 
-| # | 域 | 状态 | 报告路径 | 关键发现 |
+| # | 域 | 状态 | 报告路径 | 关键发现（P0/P1/P2） |
 |---|---|---|---|---|
-| 11 | 退款 / 退换货 | ⏳ pending | | |
-| 12 | 门店绑定 / 解绑流 | ⏳ pending | | |
-| 13 | 优惠券 | ⏳ pending | | |
-| 14 | 充值卡 + 卡流水 | ⏳ pending | | |
-| 15 | 积分 + 等级跳档 | ⏳ pending | | |
-| 16 | 消息中心 | ⏳ pending | | |
-| 17 | 数据看板 | ⏳ pending | | |
-| 18 | 员工绩效 | ⏳ pending | | |
-| 19 | 赠送 / 分享 / 客户分配 | ⏳ pending | | |
-| 20 | 家居产品提货 | ⏳ pending | | |
+| 11 | 退款 / 退换货 | ✅ | [audit-11-refunds.md](../../docs/audit/audit-11-refunds.md) | 7/6/6 — **Top 2 P0**：退款不冲销 sa/sc/coupons/points/pickup 五通道 |
+| 12 | 门店绑定 / 解绑流 | ✅ | [audit-12-store-binding.md](../../docs/audit/audit-12-store-binding.md) | 6/7/5 — scope_id 越权；admin 引用已 DROP store_id 列（Top 4） |
+| 13 | 优惠券 | ✅ | [audit-13-coupons.md](../../docs/audit/audit-13-coupons.md) | 8/7/6 — **Top 3 P0**：admin createOrder 优惠券范围/面值校验全跳过 |
+| 14 | 充值卡 + 卡流水 | ✅ | [audit-14-prepaid-card.md](../../docs/audit/audit-14-prepaid-card.md) | 5/7/5 — **Top 4 P0**：admin applyRecharge / createConversionOrder 引用已 DROP store_id |
+| 15 | 积分 + 等级跳档 | ✅ | [audit-15-points-member-level.md](../../docs/audit/audit-15-points-member-level.md) | 4/9/7 — cron 跳档仅扫 customer_type='会员客'；admin 三资金触发点漏 settlePoints（与 ticket 2026-04-26-experience-card 跃迁 epic 关联） |
+| 16 | 消息中心 | ✅ | [audit-16-message-center.md](../../docs/audit/audit-16-message-center.md) | 4/7/4 — messageRecipientType 双轨；推送触发口径不齐 |
+| 17 | 数据看板 | ✅ | [audit-17-dashboard.md](../../docs/audit/audit-17-dashboard.md) | 6/7/6 — admin/staff/cron 三端口径漂移；时间维度限定（[memory](../../.claude/projects/-Users-nv-proj-xt-com-fengyu-wxapp/memory/project_dashboard_time_dimensions.md)） |
+| 18 | 员工绩效 | ✅ | [audit-18-employee-performance.md](../../docs/audit/audit-18-employee-performance.md) | 3/7/5 — sale_allocations 加总口径与 dashboard 不一致 |
+| 19 | 赠送 / 分享 / 客户分配 | ✅ | [audit-19-gift-share-assign.md](../../docs/audit/audit-19-gift-share-assign.md) | 5/7/6 — 退款不冲销 share-gift；assign 仅店长越权防护不足 |
+| 20 | 家居产品提货 | ✅ | [audit-20-pickup.md](../../docs/audit/audit-20-pickup.md) | 3/8/6 — 退款不冲销 picked_up_quantity（Top 2 一部分） |
 
 ### P2 后台管理
 
-| # | 域 | 状态 | 报告路径 | 关键发现 |
+| # | 域 | 状态 | 报告路径 | 关键发现（P0/P1/P2） |
 |---|---|---|---|---|
-| 21 | 组织架构 (org_nodes + stores) | ⏳ pending | | |
-| 22 | 权限矩阵 + 角色 | ⏳ pending | | |
-| 23 | 操作日志 (operation_logs) | ⏳ pending | | |
-| 24 | 品项分类动态字段 | ⏳ pending | | |
-| 25 | 流量 / 推广员 | ⏳ pending | | |
+| 21 | 组织架构 (org_nodes + stores) | ✅ | [audit-21-org-structure.md](../../docs/audit/audit-21-org-structure.md) | 5/8/6 — 邻接表无环未约束；type=门店 1:1 stores 完整性 |
+| 22 | 权限矩阵 + 角色 | ✅ | [audit-22-permission-matrix.md](../../docs/audit/audit-22-permission-matrix.md) | 3/5/3 — PERMISSION_MATRIX DB 化决策 (D-Q3)；assignRole 自删保护 (D-Q12) |
+| 23 | 操作日志 (operation_logs) | ✅ | [audit-23-operation-logs.md](../../docs/audit/audit-23-operation-logs.md) | 3/6/6 — operator_user_id 残留；关键动作 logOperation 缺 |
+| 24 | 品项分类动态字段 | ✅ | [audit-24-product-category-dynamic.md](../../docs/audit/audit-24-product-category-dynamic.md) | 2/7/5 — **2026-04-26 Round 1 落地**：体验卡 capability 列已实施（[ticket](../tickets/2026-04-26-experience-card-as-sku-flag.md)）；is_recharge_card 留 audit-24 单独 ticket |
+| 25 | 流量 / 推广员 | ✅ | [audit-25-traffic-promoter.md](../../docs/audit/audit-25-traffic-promoter.md) | 5/7/8 — 推广员业绩归属链路；sourceChannel/scope 越权 |
 
-### 横切检查（最后一轮汇总，或并行散落到各域报告）
+### 横切检查
 
-| # | 横切域 | 状态 | 汇总路径 |
-|---|---|---|---|
-| CC1 | 数值精度与金额 | ⏳ pending | |
-| CC2 | 并发与幂等 | ⏳ pending | |
-| CC3 | 组织域隔离 | ⏳ pending | |
-| CC4 | 后端鉴权 | ⏳ pending | |
-| CC5 | 错误码 | ⏳ pending | |
-| CC6 | PII | ⏳ pending | |
-| CC7 | 时间字段 | ⏳ pending | |
-| CC8 | WXML/Vant | ⏳ pending | |
-| CC9 | 测试与迁移残留 | ⏳ pending | |
+| # | 横切域 | 状态 | 报告路径 | 关键发现（P0/P1/P2） |
+|---|---|---|---|---|
+| CC1 | 数值精度与金额 | ✅ | [audit-CC1-numeric-precision.md](../../docs/audit/audit-CC1-numeric-precision.md) | 5/6/5 — sa.allocation_ratio NUMERIC(5,2) 保留 (D-CC1)；ratio IN-集合 CHECK 待补 |
+| CC2 | 并发与幂等 | ✅ | [audit-CC2-concurrency-idempotency.md](../../docs/audit/audit-CC2-concurrency-idempotency.md) | 11/6/5 — 退款 cascade 5 通道（**Top 2**）；advisory lock 多处缺 |
+| CC3 | 组织域隔离 | ✅ | [audit-CC3-org-isolation.md](../../docs/audit/audit-CC3-org-isolation.md) | 5/9/5 — staff customer.* 6 路由跨店越权 |
+| CC4 | 后端鉴权 | ✅ | [audit-CC4-auth.md](../../docs/audit/audit-CC4-auth.md) | 10/5/3 — payNotify 签名（**Top 1**）；admin 多 action withPermission 缺 |
+| CC5 | 错误码 | ✅ | [audit-CC5-error-code.md](../../docs/audit/audit-CC5-error-code.md) | 0/4/6 — 中文 throw Error 无前缀；4 项约定未统一 |
+| CC6 | PII | ✅ | [audit-CC6-pii.md](../../docs/audit/audit-CC6-pii.md) | 4/3/3 — 日志含完整手机号；列表脱敏规则未覆盖 |
+| CC7 | 时间字段 | ✅ | [audit-CC7-time-field.md](../../docs/audit/audit-CC7-time-field.md) | 3/8/4 — 时区集群级未统一 (S02-3)；checkin/started/completed 写入责任 |
+| CC8 | WXML/Vant | ✅ | [audit-CC8-wxml-vant.md](../../docs/audit/audit-CC8-wxml-vant.md) | 0/5/5 — 状态机 → UI 文案三端不一致 |
+| CC9 | 测试与迁移残留 | ✅ | [audit-CC9-test-migration-residue.md](../../docs/audit/audit-CC9-test-migration-residue.md) | 6/6/9 — admin 引用已 DROP store_id；测试反向锁死字面量（体验卡部分已随 ticket Round 1 整治） |
+
+### 跨域汇总产物
+
+| 产物 | 状态 | 路径 |
+|------|------|------|
+| 总览 SUMMARY | ✅ | [docs/audit/SUMMARY.md](../../docs/audit/SUMMARY.md) — Top 10 P0、决策清单、Epic 排期 |
+| 横切热点 | ✅ | [docs/audit/CROSS-CUTTING.md](../../docs/audit/CROSS-CUTTING.md) |
+| Schema 修改 | ✅ | [docs/audit/SCHEMA-CHANGES.md](../../docs/audit/SCHEMA-CHANGES.md) |
+| 枚举审计 | ✅ | [docs/audit/ENUM-AUDIT.md](../../docs/audit/ENUM-AUDIT.md) |
 
 ---
 
@@ -453,3 +464,4 @@ mkdir -p docs/audit
 |------|------|------|
 | 2026-04-25 | v0 | 初始 21 个域草案 |
 | 2026-04-26 | v1 | 深度优化：补足款项流水/payNotify/服务提成/提货 4 个 P0/P1 域，新增 9 个横切检查域（25 业务 + 9 横切），细化报告模板（10 节），补足循环执行规范（断点/熔断/超时/汇总），引入 7 条硬约束的强制检查 |
+| 2026-04-26 | v1.1 | 全部 25 业务 + 9 横切审计完成；§8 进度表全量标 ✅ 并附关键发现摘要；落档 SUMMARY/CROSS-CUTTING/SCHEMA-CHANGES/ENUM-AUDIT 四份汇总产物；启动首个 ticket [2026-04-26-experience-card-as-sku-flag.md](../tickets/2026-04-26-experience-card-as-sku-flag.md) Round 1（schema + 三端代码迁移） |
