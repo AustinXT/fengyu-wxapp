@@ -367,8 +367,9 @@ describe('product.shopInit', () => {
 
   test('PR-B: shopInit 的 categories/groupedCategories 不含"充值卡"/"体验卡"', async () => {
     const ctx = createCtx()
-    // 第 1 个 SQL：_queryCategoryRows(withParentJoin=true, kindNotIn=CARD_PRODUCT_KINDS)
-    // 云函数的 kindNotIn 通过 SQL 过滤，这里 mock 返回的就是已过滤后的行
+    // 2026-04-26 重构：shopInit 不再用 kindNotIn 过滤分类，改在 SKU EXISTS 阶段
+    // 用 capability 列 NOT (sk.is_recharge_card OR sk.is_experience) 过滤；
+    // 仍保留含卡类商品的分类被排除（mock 返回的 nonEmptyRows 不含 cat-card 即可）
     pg.query.mockResolvedValueOnce([
       { category_id: 'cat-h', category_name: '面部护理', product_kind: '护理项目', sales_category: null, sort_order: 1, kind_name: '护理项目', kind_sort_order: 1 },
       { category_id: 'cat-home', category_name: '洗护', product_kind: '家居产品', sales_category: null, sort_order: 1, kind_name: '家居产品', kind_sort_order: 2 },
@@ -386,20 +387,22 @@ describe('product.shopInit', () => {
     const allKinds = ctx.result.categories.map(c => c.productKind)
     expect(allKinds).not.toContain('充值卡')
     expect(allKinds).not.toContain('体验卡')
-    // 断言：groupedCategories 每一组的 productKind 均不在 CARD_PRODUCT_KINDS 中
+    // 断言：groupedCategories 每一组的 productKind 均不在卡类中
     const groupKinds = ctx.result.groupedCategories.map(g => g.productKind)
     expect(groupKinds).not.toContain('充值卡')
     expect(groupKinds).not.toContain('体验卡')
 
-    // 断言第一次 SQL：_queryCategoryRows 含 <> ALL 与 JOIN parent
+    // 断言第一次 SQL：_queryCategoryRows withParentJoin=true（无 kindNotIn）
     const sql1 = pg.query.mock.calls[0][0]
-    expect(sql1).toContain('product_kind')
-    expect(sql1).toContain('<> ALL')
     expect(sql1).toContain('JOIN product_categories parent')
     expect(sql1).toContain('product_kind IS NOT NULL')
-    // 参数中含 kindNotIn 数组
+    // 不再传 kindNotIn 数组（改用 SKU EXISTS 阶段的 capability 列过滤）
     const params1 = pg.query.mock.calls[0][1]
-    expect(params1[0]).toEqual(['充值卡', '体验卡'])
+    expect(params1).toEqual([])
+
+    // 第二次 SQL：EXISTS 过滤必须含 NOT (sk.is_recharge_card OR sk.is_experience)
+    const sql2 = pg.query.mock.calls[1][0]
+    expect(sql2).toContain('NOT (sk.is_recharge_card OR sk.is_experience)')
   })
 
   test('PR-B: 新增非卡 kind"福利活动"自动出现在 groupedCategories', async () => {

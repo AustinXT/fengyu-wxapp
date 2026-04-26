@@ -465,7 +465,8 @@ describe('mgmtDashboard.summary 生美区分', () => {
     expect(shengmeiRevSqls.length).toBe(2) // today + month
 
     const storeRevSqls = sqlList.filter(
-      (s) => /FROM sale_orders so\b/.test(s) && /SUM\(so\.paid_amount/.test(s),
+      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
+      (s) => /FROM sale_orders so\b/.test(s) && /SUM\(so\.received::numeric/.test(s),
     )
     expect(storeRevSqls.length).toBe(2)
     for (const s of storeRevSqls) {
@@ -1195,7 +1196,8 @@ describe('mgmtDashboard.storeRanking', () => {
       expect(sql).toContain('销售单')
       expect(sql).toContain('转换单')
       expect(sql).toContain("so.status = '已支付'")
-      expect(sql).toMatch(/SUM\(so\.paid_amount/)
+      // 2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount
+      expect(sql).toMatch(/SUM\(so\.received::numeric\s*-\s*COALESCE\(so\.refunded_amount,\s*0\)::numeric\)/)
       expect(sql).toMatch(/ORDER BY value DESC, s\.store_name ASC/)
     })
 
@@ -1942,7 +1944,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: overrides.consValue || 0 }]
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 0, new_member: 0, old_member: 0 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.paid_amount/.test(sql)) return [{ v: overrides.revValue || 0 }]
+      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: overrides.revValue || 0 }]
       return [{ v: 0 }]
     })
   }
@@ -1958,7 +1960,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const m = String(now.getMonth() + 1).padStart(2, '0')
     const expectedStart = `${y}-${m}-01`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
     expect(totalRevCall).toBeDefined()
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
@@ -1975,7 +1977,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
     const lastDay = new Date(Date.UTC(lmY, lmM, 0)).getUTCDate()
     const expectedEnd = `${lmY}-${String(lmM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
 
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
     expect(totalRevCall[1][1]).toBe(expectedEnd)
     // endDate 不是 today
     const today = new Date()
@@ -1990,7 +1992,7 @@ describe('mgmtDashboard.salesData 时间区间口径', () => {
 
     const allCalls = pg.query.mock.calls
     const expectedStart = `${new Date().getFullYear()}-01-01`
-    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.paid_amount/.test(sql))
+    const totalRevCall = allCalls.find(([sql]) => /SUM\(o\.received::numeric/.test(sql))
     expect(totalRevCall[1][0]).toBe(expectedStart)
   })
 })
@@ -2086,7 +2088,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
       if (/FROM service_items sit/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 50, new_member: 100, old_member: 150 }]
       if (/FROM service_items sit/.test(sql)) return [{ v: 5000 }]
       if (/FROM sale_items si/.test(sql) && /JOIN client_wechat_users/.test(sql)) return [{ xiaomei: 200, new_member: 400, old_member: 600 }]
-      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.paid_amount/.test(sql)) return [{ v: 10000 }]
+      if (/FROM sale_orders o/.test(sql) && /SUM\(o\.received::numeric/.test(sql)) return [{ v: 10000 }]
       return [{ v: 0 }]
     })
   }
@@ -2252,7 +2254,7 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
 
   test('totalRevenue 从 v 映射，金额为字符串格式 "0.00"', async () => {
     pg.query.mockReset().mockImplementation(async (sql) => {
-      if (/SUM\(o\.paid_amount/.test(sql)) return [{ v: '12345.678' }]
+      if (/SUM\(o\.received::numeric/.test(sql)) return [{ v: '12345.678' }]
       if (/GROUP BY/.test(sql)) return []
       return [{ v: 0, xiaomei: 0, new_member: 0, old_member: 0 }]
     })

@@ -5,7 +5,7 @@
  * 核心约束：
  *   - 仅店长可调用
  *   - skuId 与 customAmount 互斥
- *   - 真实 SKU 必须 product_kind='充值卡'
+ *   - 真实 SKU 必须 is_recharge_card=true（capability 列权威源，2026-04-26 起）
  *   - 自定义金额走 matchTier 校验 + 虚拟 SKU 写入
  */
 
@@ -107,7 +107,7 @@ describe('card.recharge', () => {
         price: '500.00',
         special_price: '495.00',
         product_type: '家居产品',
-        product_kind: '充值卡',
+        is_recharge_card: true,
         sales_category: '自销自耗',
       }])
       // 顾客查询
@@ -219,7 +219,7 @@ describe('card.recharge', () => {
       price: '300.00',
       special_price: null,
       product_type: '疗程卡',
-      product_kind: '护理项目',
+      is_recharge_card: false,
       sales_category: '自销自耗',
     }])
 
@@ -273,7 +273,7 @@ describe('card.recharge', () => {
     pg.query
       .mockResolvedValueOnce([{
         sku_id: 'sku-cz-500', spec_name: '充值 500', price: '500.00', special_price: null,
-        product_type: '家居产品', product_kind: '充值卡', sales_category: null,
+        product_type: '家居产品', is_recharge_card: true, sales_category: null,
       }])
       .mockResolvedValueOnce([])   // 顾客不存在
 
@@ -290,7 +290,7 @@ describe('card.recharge', () => {
     pg.query
       .mockResolvedValueOnce([{
         sku_id: 'sku-cz-500', spec_name: '充值 500', price: '500.00', special_price: null,
-        product_type: '家居产品', product_kind: '充值卡', sales_category: null,
+        product_type: '家居产品', is_recharge_card: true, sales_category: null,
       }])
       .mockResolvedValueOnce([{ user_id: 'u-001', phone: '138', name: 'X', customer_type: '流量客' }])
       .mockResolvedValueOnce([{ sale_order_id: 'FY-XSD-WX-2604160001' }])
