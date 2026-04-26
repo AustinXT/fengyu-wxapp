@@ -1,0 +1,127 @@
+<!-- pagesExperience/checkout/checkout.wxml — 体验卡独立下单页 -->
+<wxs module="price">
+module.exports.fmt = function(n) {
+  var v = parseFloat(n) || 0;
+  var r = Math.round(v * 100) / 100;
+  return r % 1 === 0 ? '' + Math.round(r) : r.toFixed(2);
+}
+</wxs>
+<van-toast id="van-toast" />
+<van-dialog id="van-dialog" />
+
+<view class="container">
+
+  <!-- 加载态 -->
+  <view wx:if="{{isLoading}}" class="loading-block">
+    <van-loading size="20px" />
+  </view>
+
+  <view wx:else>
+
+    <!-- 体验卡商品卡片（固定 1 张/单） -->
+    <view class="item-card">
+      <view class="item-cover-placeholder" wx:if="{{!coverImage}}">
+        <van-icon name="gift-o" size="60rpx" color="#FFFFFF" />
+      </view>
+      <image
+        wx:else
+        class="item-cover"
+        src="{{coverImage}}"
+        mode="aspectFill"
+      />
+      <view class="item-body">
+        <view class="item-title-row">
+          <text class="item-name">{{spuName}}</text>
+          <van-tag type="danger" plain custom-class="item-tag">体验卡</van-tag>
+        </view>
+        <text wx:if="{{skuDisplayName}}" class="item-spec">{{skuDisplayName}}</text>
+        <view class="item-footer">
+          <view class="price-group">
+            <text class="price-symbol">¥</text>
+            <text class="price-integer">{{price.fmt(unitPrice)}}</text>
+          </view>
+          <text class="item-qty">× 1</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 门店 -->
+    <view class="cell-section">
+      <van-cell-group>
+        <van-cell title="使用门店" value="{{storeName || '请绑定门店'}}" />
+      </van-cell-group>
+    </view>
+
+    <!-- 支付方式 -->
+    <view class="cell-section">
+      <view class="section-title">支付方式</view>
+      <van-radio-group value="{{paymentMethod}}" bind:change="onPayMethodChange">
+        <van-cell-group>
+          <van-cell title="微信支付" clickable data-method="微信" bind:click="onPayMethodTap">
+            <van-radio slot="right-icon" name="微信" checked-color="#C0322A" />
+          </van-cell>
+        </van-cell-group>
+      </van-radio-group>
+    </view>
+
+    <!-- 协议 -->
+    <view class="agreement-row">
+      <van-checkbox
+        value="{{agreed}}"
+        checked-color="#C0322A"
+        bind:change="onAgreementChange"
+        shape="round"
+      >
+        <text class="agreement-text">我已阅读并同意</text>
+      </van-checkbox>
+      <text class="agreement-link" bindtap="onViewAgreement">《体验卡服务协议》</text>
+    </view>
+
+    <!-- 说明 -->
+    <view class="footer-note">
+      <view class="footer-note-line">· 体验卡限购 1 张/单，仅限本人使用</view>
+      <view class="footer-note-line">· 购买后请到店核销，逾期作废</view>
+      <view class="footer-note-line">· 体验卡不与商城购物车合并结算</view>
+    </view>
+
+  </view>
+
+  <!-- 底部 sticky CTA -->
+  <view wx:if="{{!isLoading}}" class="cta-bar safe-bottom">
+    <view class="cta-info">
+      <text class="cta-info-label">实付</text>
+      <text class="cta-info-amount">¥{{price.fmt(unitPrice)}}</text>
+    </view>
+    <button
+      class="cta-btn {{!agreed ? 'cta-btn--disabled' : ''}}"
+      disabled="{{submitting || !agreed}}"
+      loading="{{submitting}}"
+      bindtap="onSubmitOrder"
+    >
+      立即支付
+    </button>
+  </view>
+
+</view>
+
+<!-- 手机绑定弹窗 -->
+<van-dialog
+  use-slot
+  show="{{showPhoneBind}}"
+  show-cancel-button
+  cancel-button-text="暂不绑定"
+  confirm-button-text="授权绑定"
+  bind:close="onClosePhoneBind"
+>
+  <view class="phone-bind-wrap">
+    <view class="phone-bind-title">需要绑定手机号</view>
+    <view class="phone-bind-desc">购买体验卡需先绑定手机号，便于到店核销</view>
+    <button
+      class="phone-bind-btn"
+      open-type="getPhoneNumber"
+      bindgetphonenumber="onGetPhoneNumber"
+    >
+      获取手机号
+    </button>
+  </view>
+</van-dialog>

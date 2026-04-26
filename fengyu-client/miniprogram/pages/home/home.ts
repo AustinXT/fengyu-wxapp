@@ -282,6 +282,10 @@ Page({
       case "recharge":
         wx.navigateTo({ url: "/pagesProfile/card-recharge/card-recharge" });
         break;
+      case "experience":
+        // 体验卡 capability 化（ticket Round 2）：独立入口 → 列表 → 详情 → 严格独立 checkout
+        wx.navigateTo({ url: "/pagesExperience/list/list" });
+        break;
       default:
         break;
     }

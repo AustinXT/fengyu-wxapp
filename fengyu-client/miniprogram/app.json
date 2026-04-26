@@ -60,6 +60,15 @@
       "pages": [
         "my-coupons/my-coupons"
       ]
+    },
+    {
+      "root": "pagesExperience",
+      "name": "experience",
+      "pages": [
+        "list/list",
+        "detail/detail",
+        "checkout/checkout"
+      ]
     }
   ],
   "tabBar": {

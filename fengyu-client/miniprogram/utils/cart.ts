@@ -31,6 +31,13 @@ export interface CartItem {
    * 以及防止字面量 bigCategory='充值卡' 散落。常规商品保持 false。
    */
   isRechargeCard?: boolean;
+  /**
+   * 2026-04-26 体验卡 capability 化（ticket Round 2）：行级标记（取自 product_skus.is_experience）。
+   * 商城常规通道已在 SKU_VALID_FILTER 排除体验卡（is_experience=true 的 SKU 不进商城商品列表）；
+   * 体验卡走独立购物流（pages/experience-card/checkout），不与商城购物车合并。
+   * 商城正常 SKU 保持 false；此字段仅用于兜底防御。
+   */
+  isExperience?: boolean;
   addedAt: number;
 }
 

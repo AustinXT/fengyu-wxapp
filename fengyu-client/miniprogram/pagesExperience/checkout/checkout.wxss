@@ -1,0 +1,243 @@
+/* pagesExperience/checkout/checkout.wxss */
+
+.container {
+  min-height: 100vh;
+  background: var(--color-bg-page);
+  padding-bottom: 220rpx;
+}
+
+.loading-block {
+  padding: 80rpx 0;
+  text-align: center;
+}
+
+/* ===== 商品卡片 ===== */
+
+.item-card {
+  background: var(--color-bg-card);
+  margin: 24rpx;
+  border-radius: 16rpx;
+  display: flex;
+  overflow: hidden;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
+}
+
+.item-cover,
+.item-cover-placeholder {
+  width: 180rpx;
+  height: 180rpx;
+  flex-shrink: 0;
+}
+
+.item-cover-placeholder {
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.item-body {
+  flex: 1;
+  padding: 20rpx 24rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+  min-width: 0;
+}
+
+.item-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12rpx;
+}
+
+.item-name {
+  flex: 1;
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.item-tag {
+  flex-shrink: 0;
+  font-size: 20rpx;
+}
+
+.item-spec {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
+.item-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8rpx;
+}
+
+.item-qty {
+  font-size: 24rpx;
+  color: var(--color-text-hint);
+}
+
+.price-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4rpx;
+}
+
+.price-symbol {
+  font-size: 22rpx;
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.price-integer {
+  font-size: 36rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+/* ===== cell 区 ===== */
+
+.cell-section {
+  margin-bottom: 24rpx;
+}
+
+.section-title {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  padding: 8rpx 32rpx 12rpx;
+}
+
+/* ===== 协议 ===== */
+
+.agreement-row {
+  background: var(--color-bg-card);
+  margin: 0 24rpx 24rpx;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  flex-wrap: wrap;
+}
+
+.agreement-text {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
+.agreement-link {
+  font-size: 24rpx;
+  color: var(--color-primary);
+}
+
+/* ===== 说明 ===== */
+
+.footer-note {
+  padding: 16rpx 36rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.footer-note-line {
+  font-size: 22rpx;
+  color: var(--color-text-hint);
+  line-height: 1.6;
+}
+
+/* ===== 底部 CTA ===== */
+
+.cta-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #FFFFFF;
+  padding: 16rpx 24rpx;
+  border-top: 1rpx solid var(--color-border);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+.safe-bottom {
+  padding-bottom: calc(16rpx + env(safe-area-inset-bottom));
+}
+
+.cta-info {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8rpx;
+}
+
+.cta-info-label {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
+}
+
+.cta-info-amount {
+  font-size: 36rpx;
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.cta-btn {
+  flex-shrink: 0;
+  background: linear-gradient(135deg, #C0322A 0%, #9B1E14 100%);
+  color: #FFFFFF;
+  font-size: 30rpx;
+  font-weight: 600;
+  border-radius: 48rpx;
+  padding: 18rpx 60rpx;
+  border: none;
+  min-width: 240rpx;
+}
+
+.cta-btn::after {
+  border: none;
+}
+
+.cta-btn--disabled {
+  background: #CCCCCC !important;
+  color: #FFFFFF !important;
+}
+
+/* ===== 手机绑定弹窗 ===== */
+
+.phone-bind-wrap {
+  padding: 40rpx 32rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16rpx;
+}
+
+.phone-bind-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.phone-bind-desc {
+  font-size: 26rpx;
+  color: var(--color-text-secondary);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.phone-bind-btn {
+  display: none;
+}
