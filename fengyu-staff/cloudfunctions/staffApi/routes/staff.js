@@ -219,13 +219,13 @@ async function todayCommission(ctx) {
     lastMonthServiceCount: Number(lastMonthSvcRows[0].service_count),
   }
 
-  // 店长：门店今日总营收
+  // 店长：门店今日总营收（2026-04-26 refactor：业绩口径 = received - refunded_amount）
   if (isManager && storeId) {
     const storeRows = await pg.query(`
-      SELECT COALESCE(SUM(si.received::numeric), 0) AS store_revenue
-      FROM sale_items si
-      JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+      SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS store_revenue
+      FROM sale_orders o
       WHERE o.store_id = $1
+        AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
         AND o.paid_at >= $2
         AND o.paid_at < $3
@@ -377,9 +377,12 @@ async function todoList(ctx) {
     )
     result.pendingAllocationCount = Number(allocRows[0].cnt)
 
-    // 待审批退款单
+    // 待审批退款流水（2026-04-26 sale-order-domain-refactor：从 sale_order_payments 推断）
     const refundRows = await pg.query(
-      `SELECT COUNT(*) AS cnt FROM sale_orders WHERE store_id = $1 AND sale_order_type = '退款单' AND status = '待审批'`,
+      `SELECT COUNT(*) AS cnt
+         FROM sale_order_payments sop
+         JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+        WHERE so.store_id = $1 AND sop.change_type = '退款' AND sop.status = '待审批'`,
       [storeId]
     )
     result.pendingRefundCount = Number(refundRows[0].cnt)
@@ -518,6 +521,7 @@ async function performanceDetail(ctx) {
     LEFT JOIN client_wechat_users cu ON cu.user_id = so.client_user_id
     WHERE sc.employee_id = $1
       AND sc.is_void = false
+      AND sc.voided_at IS NULL
       AND so.status = '已完成'
       AND so.service_date >= $2
       AND so.service_date <= $3
@@ -658,14 +662,16 @@ async function dashboard(ctx) {
   `, [...scopeParams, start, end])
 
   // 3. 业绩：收款金额汇总（已支付）
+  // 2026-04-26 sale-order-domain-refactor：sale_order_type 5→3（销售单/内部单/转换单）
+  // 业绩口径 = received - refunded_amount（直接读 sale_orders 冗余列，与 admin getDashboardStats 对齐）
   let revenueRows
   if (isManagerRole) {
     // 店长看整店业绩
     revenueRows = await pg.query(`
-      SELECT COALESCE(SUM(si.received::numeric), 0) AS revenue
+      SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS revenue
       FROM sale_orders o
-      JOIN sale_items si ON si.sale_order_id = o.sale_order_id
       WHERE o.store_id = $1
+        AND o.sale_order_type IN ('销售单', '转换单')
         AND o.status = '已支付'
         AND o.paid_at >= $2::date
         AND o.paid_at < ($3::date + INTERVAL '1 day')

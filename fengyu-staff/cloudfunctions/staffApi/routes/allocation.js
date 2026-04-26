@@ -82,8 +82,11 @@ async function save(ctx) {
       // 删除原有分配记录
       const itemIds = orderItems.map(i => i.sale_item_id)
       if (itemIds.length > 0) {
+        // 2026-04-26 D-Q8 落地：硬 DELETE → 软删除（保留历史业绩快照可追溯）
         await client.query(
-          'DELETE FROM sale_allocations WHERE sale_item_id = ANY($1) AND is_void = false',
+          `UPDATE sale_allocations
+              SET is_void = true, voided_at = NOW(), updated_at = NOW()
+            WHERE sale_item_id = ANY($1) AND is_void = false`,
           [itemIds]
         )
       }
@@ -156,11 +159,13 @@ async function save(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
-    // 删除原有的未作废分配记录
+    // 2026-04-26 D-Q8 落地：硬 DELETE → 软删除
     const itemIds = orderItems.map(i => i.sale_item_id)
     if (itemIds.length > 0) {
       await client.query(
-        'DELETE FROM sale_allocations WHERE sale_item_id = ANY($1) AND is_void = false',
+        `UPDATE sale_allocations
+            SET is_void = true, voided_at = NOW(), updated_at = NOW()
+          WHERE sale_item_id = ANY($1) AND is_void = false`,
         [itemIds]
       )
     }
@@ -230,8 +235,11 @@ async function deleteAllocation(ctx) {
     )
     const ids = itemIds.rows.map(r => r.sale_item_id)
     if (ids.length > 0) {
+      // 2026-04-26 D-Q8 落地：硬 DELETE → 软删除
       await client.query(
-        'DELETE FROM sale_allocations WHERE sale_item_id = ANY($1) AND is_void = false',
+        `UPDATE sale_allocations
+            SET is_void = true, voided_at = NOW(), updated_at = NOW()
+          WHERE sale_item_id = ANY($1) AND is_void = false`,
         [ids]
       )
     }

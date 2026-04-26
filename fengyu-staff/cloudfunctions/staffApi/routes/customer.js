@@ -670,51 +670,101 @@ async function listByTag(ctx) {
 }
 
 /**
- * 退换记录（退款单 + 转换单）
+ * 退换记录（2026-04-26 sale-order-domain-refactor 重构）
+ *
+ * 数据源 = sale_order_payments[change_type='退款'] + 转换单
+ *   退款：从 sale_order_payments[change_type='退款'] JOIN sale_order_payment_details
+ *   转换：保留原 sale_orders[sale_order_type='转换单'] 路径
+ *
+ * scope：staff 端必须加 store_id 过滤（audit-CC3 P0-CC3-02）
  */
 async function refundHistory(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { clientUserId, clientPhone } = ctx.event.payload || {}
+  const { clientUserId, clientPhone, page = 1, pageSize = 50 } = ctx.event.payload || {}
   if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
 
-  let whereClause, params
-  if (clientUserId) {
-    whereClause = "o.client_user_id = $1"
-    params = [clientUserId]
-  } else {
-    whereClause = "o.client_phone = $1"
-    params = [clientPhone]
-  }
+  const storeId = ctx.auth.effectiveStoreId
 
-  const orders = await pg.query(`
+  // 退款流水（来自 sale_order_payments）+ store_id scope
+  let refundParams, refundClientWhere
+  if (clientUserId) {
+    refundClientWhere = 'so.client_user_id = $1'
+    refundParams = [clientUserId]
+  } else {
+    refundClientWhere = 'so.client_phone = $1'
+    refundParams = [clientPhone]
+  }
+  // store_id scope（管理层模式 storeId 可能为 null，此时不附加门店过滤；
+  // 门店模式必加 so.store_id = $N）
+  let refundWhere = refundClientWhere
+  if (storeId) {
+    refundParams.push(storeId)
+    refundWhere += ` AND so.store_id = $${refundParams.length}`
+  }
+  refundParams.push(pageSize, (page - 1) * pageSize)
+  const refundRows = await pg.query(`
+    SELECT
+      sop.id AS payment_id,
+      sop.sale_order_id,
+      sop.amount,
+      sop.status,
+      sop.created_at,
+      sop.paid_at,
+      sop.payment_method,
+      spd.refund_reason,
+      spd.audit_at,
+      spd.audit_remark,
+      spd.note AS detail_note,
+      so.client_user_id,
+      so.store_id
+    FROM sale_order_payments sop
+    JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
+    JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
+    WHERE sop.change_type = '退款'
+      AND ${refundWhere}
+    ORDER BY sop.created_at DESC
+    LIMIT $${refundParams.length - 1} OFFSET $${refundParams.length}
+  `, refundParams)
+
+  // 转换单（仍保留 sale_orders 路径）+ store_id scope
+  let convParams, convClientWhere
+  if (clientUserId) {
+    convClientWhere = 'o.client_user_id = $1'
+    convParams = [clientUserId]
+  } else {
+    convClientWhere = 'o.client_phone = $1'
+    convParams = [clientPhone]
+  }
+  let convWhere = convClientWhere
+  if (storeId) {
+    convParams.push(storeId)
+    convWhere += ` AND o.store_id = $${convParams.length}`
+  }
+  const convRows = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
-           o.refund_reason, o.handling_fee, o.ref_sale_order_id,
-           o.approved_by, o.approved_at, o.rejected_reason,
            o.created_at, o.paid_at
     FROM sale_orders o
-    WHERE ${whereClause}
-      AND o.sale_order_type IN ('退款单', '转换单')
+    WHERE ${convWhere}
+      AND o.sale_order_type = '转换单'
     ORDER BY o.created_at DESC
-  `, params)
+  `, convParams)
 
-  if (orders.length === 0) {
-    ctx.result = []
-    return
+  // 转换单的明细
+  const convOrderIds = convRows.map(o => o.sale_order_id)
+  let convItems = []
+  if (convOrderIds.length > 0) {
+    convItems = await pg.query(
+      `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
+              si.product_name, si.sku_spec_name, si.quantity, si.received
+       FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+      [convOrderIds]
+    )
   }
-
-  const orderIds = orders.map(o => o.sale_order_id)
-  const items = await pg.query(
-    `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
-            si.product_name, si.sku_spec_name, si.quantity, si.received
-     FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
-    [orderIds]
-  )
-
-  const itemsByOrder = {}
-  for (const i of items) {
-    if (!itemsByOrder[i.sale_order_id]) itemsByOrder[i.sale_order_id] = []
-    itemsByOrder[i.sale_order_id].push({
+  const convItemsByOrder = {}
+  for (const i of convItems) {
+    if (!convItemsByOrder[i.sale_order_id]) convItemsByOrder[i.sale_order_id] = []
+    convItemsByOrder[i.sale_order_id].push({
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
@@ -724,20 +774,45 @@ async function refundHistory(ctx) {
     })
   }
 
-  ctx.result = orders.map(o => ({
+  const refunds = refundRows.map(r => {
+    let parsedDetail = null
+    if (r.detail_note) {
+      try {
+        parsedDetail = typeof r.detail_note === 'string' ? JSON.parse(r.detail_note) : r.detail_note
+      } catch (_) {}
+    }
+    return {
+      paymentId: r.payment_id,
+      saleOrderId: r.sale_order_id,    // 此处指向"原销售单"
+      type: '退款',
+      status: r.status,
+      totalAmount: Number(r.amount),    // 已含负号
+      refundReason: r.refund_reason,
+      handlingFee: parsedDetail?.handlingFee ?? null,
+      refOrderId: r.sale_order_id,
+      paymentMethod: r.payment_method,
+      createdAt: r.created_at,
+      paidAt: r.paid_at,
+      approvedAt: r.audit_at,
+      rejectedReason: r.status === '已作废' ? r.audit_remark : null,
+      items: parsedDetail?.items || [],
+    }
+  })
+
+  const conversions = convRows.map(o => ({
     saleOrderId: o.sale_order_id,
     type: o.sale_order_type,
     status: o.status,
     totalAmount: Number(o.total_amount),
-    refundReason: o.refund_reason,
-    handlingFee: o.handling_fee ? Number(o.handling_fee) : null,
-    refOrderId: o.ref_sale_order_id,
     createdAt: o.created_at,
     paidAt: o.paid_at,
-    approvedAt: o.approved_at,
-    rejectedReason: o.rejected_reason,
-    items: itemsByOrder[o.sale_order_id] || [],
+    items: convItemsByOrder[o.sale_order_id] || [],
   }))
+
+  // 合并 + 按时间倒序（与历史返回结构兼容：扁平数组）
+  ctx.result = [...refunds, ...conversions].sort((a, b) =>
+    new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  )
 }
 
 /**
@@ -780,7 +855,7 @@ async function giftHistory(ctx) {
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE ${whereClause}
       AND o.status IN ('已支付', '已完成')
-      AND o.sale_order_type NOT IN ('内部单', '退款单', '转换单', '回款单')
+      AND o.sale_order_type NOT IN ('内部单', '转换单')
       AND si.item_direction = '购买'
       AND si.received::numeric = 0
     ORDER BY o.created_at DESC

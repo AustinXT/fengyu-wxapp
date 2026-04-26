@@ -734,7 +734,7 @@ async function giftHistory(ctx) {
        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
       WHERE ${whereClause}
         AND o.status IN ('已支付', '已完成')
-        AND o.sale_order_type NOT IN ('内部单', '退款单', '转换单', '回款单')
+        AND o.sale_order_type NOT IN ('内部单', '转换单')
         AND si.item_direction = '购买'
         AND si.received::numeric = 0
       ORDER BY o.created_at DESC`,
@@ -817,19 +817,41 @@ async function refundHistory(ctx) {
   params.push(...sc.params)
   const whereClause = `${whereCore} AND ${sc.sql}`
 
-  const orders = await pg.query(
+  // 2026-04-26 sale-order-domain-refactor：退款数据源 sale_orders[退款单] → sale_order_payments[退款]
+  const refundRows = await pg.query(
+    `SELECT
+       sop.id AS payment_id,
+       sop.sale_order_id,
+       sop.amount,
+       sop.status,
+       sop.created_at,
+       sop.paid_at,
+       sop.payment_method,
+       spd.refund_reason,
+       spd.audit_at,
+       spd.audit_remark,
+       spd.note AS detail_note
+     FROM sale_order_payments sop
+     JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
+     JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
+    WHERE ${whereClause}
+      AND sop.change_type = '退款'
+    ORDER BY sop.created_at DESC`,
+    params,
+  )
+
+  // 转换单（仍保留 sale_orders 路径）
+  const convOrders = await pg.query(
     `SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
-            o.refund_reason, o.handling_fee, o.ref_sale_order_id,
-            o.approved_by, o.approved_at, o.rejected_reason,
             o.created_at, o.paid_at
        FROM sale_orders o
       WHERE ${whereClause}
-        AND o.sale_order_type IN ('退款单', '转换单')
+        AND o.sale_order_type = '转换单'
       ORDER BY o.created_at DESC`,
     params,
   )
 
-  if (orders.length === 0) {
+  if (refundRows.length === 0 && convOrders.length === 0) {
     const scopeName = await resolveScopeName(scopeType, scopeId)
     ctx.result = {
       scope: { type: scopeType, id: scopeId || null, name: scopeName },
@@ -838,18 +860,21 @@ async function refundHistory(ctx) {
     return
   }
 
-  const orderIds = orders.map((o) => o.sale_order_id)
-  const items = await pg.query(
-    `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
-            si.product_name, si.sku_spec_name, si.quantity, si.received
-       FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
-    [orderIds],
-  )
-
-  const itemsByOrder = {}
-  for (const i of items) {
-    if (!itemsByOrder[i.sale_order_id]) itemsByOrder[i.sale_order_id] = []
-    itemsByOrder[i.sale_order_id].push({
+  // 转换单的明细
+  const convOrderIds = convOrders.map(o => o.sale_order_id)
+  let convItems = []
+  if (convOrderIds.length > 0) {
+    convItems = await pg.query(
+      `SELECT si.sale_order_id, si.sale_item_id, si.item_direction,
+              si.product_name, si.sku_spec_name, si.quantity, si.received
+         FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
+      [convOrderIds],
+    )
+  }
+  const convItemsByOrder = {}
+  for (const i of convItems) {
+    if (!convItemsByOrder[i.sale_order_id]) convItemsByOrder[i.sale_order_id] = []
+    convItemsByOrder[i.sale_order_id].push({
       saleItemId: i.sale_item_id,
       direction: i.item_direction,
       productName: i.product_name,
@@ -859,23 +884,47 @@ async function refundHistory(ctx) {
     })
   }
 
+  const refunds = refundRows.map(r => {
+    let parsedDetail = null
+    if (r.detail_note) {
+      try {
+        parsedDetail = typeof r.detail_note === 'string' ? JSON.parse(r.detail_note) : r.detail_note
+      } catch (_) {}
+    }
+    return {
+      paymentId: r.payment_id,
+      saleOrderId: r.sale_order_id,
+      type: '退款',
+      status: r.status,
+      totalAmount: Number(r.amount),
+      refundReason: r.refund_reason,
+      handlingFee: parsedDetail?.handlingFee ?? null,
+      refOrderId: r.sale_order_id,
+      paymentMethod: r.payment_method,
+      createdAt: r.created_at,
+      paidAt: r.paid_at,
+      approvedAt: r.audit_at,
+      rejectedReason: r.status === '已作废' ? r.audit_remark : null,
+      items: parsedDetail?.items || [],
+    }
+  })
+
+  const conversions = convOrders.map(o => ({
+    saleOrderId: o.sale_order_id,
+    type: o.sale_order_type,
+    status: o.status,
+    totalAmount: Number(o.total_amount),
+    createdAt: o.created_at,
+    paidAt: o.paid_at,
+    items: convItemsByOrder[o.sale_order_id] || [],
+  }))
+
   const scopeName = await resolveScopeName(scopeType, scopeId)
   ctx.result = {
     scope: { type: scopeType, id: scopeId || null, name: scopeName },
-    orders: orders.map((o) => ({
-      saleOrderId: o.sale_order_id,
-      type: o.sale_order_type,
-      status: o.status,
-      totalAmount: Number(o.total_amount),
-      refundReason: o.refund_reason,
-      handlingFee: o.handling_fee ? Number(o.handling_fee) : null,
-      refOrderId: o.ref_sale_order_id,
-      createdAt: o.created_at,
-      paidAt: o.paid_at,
-      approvedAt: o.approved_at,
-      rejectedReason: o.rejected_reason,
-      items: itemsByOrder[o.sale_order_id] || [],
-    })),
+    orders: [...refunds, ...conversions].sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    ),
   }
 }
 

@@ -219,9 +219,11 @@ function timeWindow(col, mode, idx, isDateColumn) {
 /* ----- 7 个指标查询 ----- */
 
 async function queryStoreRevenue(scopeType, scopeId, date, mode) {
+  // 2026-04-26 sale-order-domain-refactor：paid_amount → received - refunded_amount
+  // 与 admin getDashboardStats 对齐（audit-17 P0-17-01）
   const sc = buildSaleScope(scopeType, scopeId, 'so', 2)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(so.paid_amount::numeric), 0) AS v
+    `SELECT COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS v
        FROM sale_orders so
       WHERE ${sc.sql}
         AND so.sale_order_type IN ('销售单', '转换单')
@@ -736,7 +738,7 @@ async function rankingRevenue(period, storeFilter) {
        s.store_id,
        s.store_name,
        o.name AS market_name,
-       COALESCE(SUM(so.paid_amount::numeric), 0) AS value
+       COALESCE(SUM(so.received::numeric - COALESCE(so.refunded_amount, 0)::numeric), 0) AS value
      FROM stores s
      JOIN org_nodes o_store ON s.org_node_id = o_store.id
      JOIN org_nodes o ON o_store.parent_id = o.id
@@ -1269,9 +1271,9 @@ async function salesData(ctx) {
   const t0 = Date.now()
   const [revRows, custRevRows, consRows, custConsRows, prodOutRows, catRows, kindRows, nameRows, skeletonRows] =
     await Promise.all([
-      // SQL 1: 总业绩
+      // SQL 1: 总业绩（2026-04-26 refactor：paid_amount → received - refunded_amount）
       pg.query(
-        `SELECT COALESCE(SUM(o.paid_amount::numeric), 0) AS v
+        `SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
            FROM sale_orders o
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')

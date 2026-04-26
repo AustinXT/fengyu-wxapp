@@ -440,7 +440,8 @@ async function queryMemberOps(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
   const rows = await pg.query(
     `WITH member_spend AS (
-       SELECT o.client_user_id, SUM(o.paid_amount::numeric) AS spend
+       SELECT o.client_user_id,
+              SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) AS spend
          FROM sale_orders o
          JOIN client_wechat_users c ON c.user_id = o.client_user_id
         WHERE ${sc.sql}
@@ -505,7 +506,7 @@ async function queryNewMemberCount(scopeType, scopeId, period) {
 async function queryNewMemberSpend(scopeType, scopeId, period) {
   const sc = buildSaleScope(scopeType, scopeId, 'o', 1)
   const rows = await pg.query(
-    `SELECT COALESCE(SUM(o.paid_amount::numeric), 0) AS v
+    `SELECT COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric), 0) AS v
        FROM sale_orders o
        JOIN client_wechat_users c ON c.user_id = o.client_user_id
       WHERE ${sc.sql}
