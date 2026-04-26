@@ -66,8 +66,7 @@
       "name": "experience",
       "pages": [
         "list/list",
-        "detail/detail",
-        "checkout/checkout"
+        "detail/detail"
       ]
     }
   ],

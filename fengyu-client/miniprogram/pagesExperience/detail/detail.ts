@@ -91,12 +91,15 @@ Page({
       Toast.fail('体验卡数据未就绪');
       return;
     }
-    // 严格独立 checkout：固定 1 张/单（C2 物理隔离 + 体验卡限购语义）
+    // 复用 pagesOrder/checkout 通用下单流（与 pagesShop/service-detail 同模式：query 参数直传）
+    // 体验卡 SKU 在 sale_items 层已带 is_experience 快照（云函数 order.create 自动写入），
+    // 走通用 checkout 享有员工选 / 储值卡 / 优惠券 / 多支付方式
     const params = [
       `skuId=${encodeURIComponent(sku.sku_id)}`,
       `spuName=${encodeURIComponent(sku.product_name || sku.spec_name || '体验卡')}`,
+      `quantity=1`,
     ].join('&');
-    wx.navigateTo({ url: `/pagesExperience/checkout/checkout?${params}` });
+    wx.navigateTo({ url: `/pagesOrder/checkout/checkout?${params}` });
   },
 
   onShareAppMessage() {

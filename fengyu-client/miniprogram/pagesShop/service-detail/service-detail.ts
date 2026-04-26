@@ -24,6 +24,8 @@ interface Sku {
   product_kind?: string;
   /** PR-D：一级 kind 行的 display_color HEX */
   kind_display_color?: string;
+  /** 2026-04-26 capability 化：充值卡 SKU 标志（云函数 SKU_VALID_FILTER 已排除，此处兜底） */
+  is_recharge_card?: boolean;
 }
 
 interface Staff {
