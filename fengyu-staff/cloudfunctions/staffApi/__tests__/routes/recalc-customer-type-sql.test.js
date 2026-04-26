@@ -76,10 +76,14 @@ function extractNonMemberBranches(sql) {
 describe('recalcCustomerType SQL 源文件守卫', () => {
   let staffSql
   let paynotifySql
+  let adminSql
+  let adminSrc
 
   beforeAll(() => {
     staffSql = extractCaseSql(STAFF_ORDER_JS)
     paynotifySql = extractCaseSql(PAYNOTIFY_JS)
+    adminSql = extractCaseSql(ADMIN_ORDERS_TS)
+    adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
   })
 
   describe('staffApi routes/order.js', () => {
@@ -131,11 +135,47 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
     })
   })
 
-  describe('小美客/体验客分支镜像一致性', () => {
-    test('两文件的小美客+体验客分支规范化后逐字相同', () => {
+  describe('fengyu-admin actions/orders.ts (recordPayment 触发点)', () => {
+    test('小美客分支必须使用 si.is_experience = false', () => {
+      expect(adminSql).toContain('si.is_experience = false')
+    })
+
+    test('体验客分支必须使用 si.is_experience = true', () => {
+      expect(adminSql).toContain('si.is_experience = true')
+    })
+
+    test('ELSE 兜底必须是流量客', () => {
+      expect(adminSql).toMatch(/ELSE '流量客'/)
+    })
+
+    test('不再依赖 product_categories JOIN 链（已迁移到 is_experience）', () => {
+      expect(adminSql).not.toContain('JOIN product_skus')
+      expect(adminSql).not.toContain('JOIN product_categories')
+      expect(adminSql).not.toContain('is_card_kind')
+    })
+
+    test('JOIN sale_items 直接挂 is_experience 条件', () => {
+      expect(adminSql).toContain('JOIN sale_items si ON si.sale_order_id = o.sale_order_id')
+    })
+
+    test('recordPayment 事务结清时必须调用 recalcCustomerType（防 audit-15 P0-15-01 admin 触发点跃迁缺失复发）', () => {
+      // 守卫文本特征：targetStatus === '已支付' 分支内出现 recalcCustomerType(tx, ...)
+      const pattern = /targetStatus\s*===\s*'已支付'[\s\S]{0,200}recalcCustomerType\s*\(\s*tx\s*,/
+      expect(adminSrc).toMatch(pattern)
+    })
+  })
+
+  describe('三端小美客/体验客分支镜像一致性', () => {
+    test('staff vs payNotify 规范化后逐字相同', () => {
       const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
       const paynotifyBranches = normalizeSql(extractNonMemberBranches(paynotifySql))
       expect(paynotifyBranches).toBe(staffBranches)
+    })
+
+    test('staff vs admin 规范化后逐字相同（占位符归一化后 $1 与 ${clientUserId} 等价）', () => {
+      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
+      const adminBranches = normalizeSql(extractNonMemberBranches(adminSql))
+      expect(adminBranches).toBe(staffBranches)
     })
 
     test('不再出现 ② ③ 分支字节级相同的死分支模式', () => {
@@ -143,6 +183,7 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       const olderDeadPattern = /WHEN EXISTS \(\s*SELECT 1 FROM sale_orders\s*WHERE[^)]*sale_order_type = '销售单'\s*\)\s*THEN '小美客'/
       expect(staffSql).not.toMatch(olderDeadPattern)
       expect(paynotifySql).not.toMatch(olderDeadPattern)
+      expect(adminSql).not.toMatch(olderDeadPattern)
     })
   })
 })
