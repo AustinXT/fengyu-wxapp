@@ -414,11 +414,43 @@ async function spuDetail(ctx) {
   }
 }
 
+/**
+ * 体验卡 SKU 列表（client 体验卡入口专用）
+ *
+ * 与商城常规通道（spuList / shopInit / hotList）互斥：
+ *   - 商城通道用 SKU_VALID_FILTER，默认排除 is_experience = true
+ *   - 本入口反向只取 is_experience = true 的 SKU
+ *
+ * 返回顺序按 sortOrder ASC（admin 配置项 C5），同 sortOrder 时按 sku_id 兜底稳定排序。
+ * 一并返回所属商品名 / 封面图（mall_product_skus → products JOIN），便于列表卡片直接渲染。
+ *
+ * 不做 marketName 过滤：体验卡是拉新工具，所有市场可见（如未来需限制可加 p.market_scope 校验）。
+ */
+async function experienceCardList(ctx) {
+  const rows = await pg.query(`
+    SELECT
+      sk.sku_id, sk.product_type, sk.spec_name,
+      sk.price, sk.special_price, sk.session_count,
+      sk.service_fee, sk.sort_order,
+      p.product_id, p.name AS product_name,
+      p.cover_image, p.description
+    FROM product_skus sk
+    LEFT JOIN mall_product_skus mps ON mps.sku_id = sk.sku_id
+    LEFT JOIN products p ON p.product_id = mps.product_id
+    WHERE sk.is_experience = true
+      AND sk.is_enabled = true
+    ORDER BY sk.sort_order ASC, sk.sku_id ASC
+  `)
+
+  ctx.result = { skuList: rows }
+}
+
 module.exports = {
   categories,
   spuList,
   skuDetail,
   spuDetail,
   hotList,
-  shopInit
+  shopInit,
+  experienceCardList
 }

@@ -28,6 +28,7 @@ const routes = {
   'product.spuDetail': () => require('./routes/product').spuDetail,
   'product.hotList': () => require('./routes/product').hotList,
   'product.shopInit': () => require('./routes/product').shopInit,
+  'product.experienceCardList': () => require('./routes/product').experienceCardList,
   'staff.list': () => require('./routes/staff').list,
   'staff.default': () => require('./routes/staff').defaultStaff,
   'staff.detail': () => require('./routes/staff').detail,

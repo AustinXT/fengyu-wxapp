@@ -210,13 +210,13 @@ async function create(ctx) {
   const now = new Date()
 
   // 查询 SKU 信息（product_skus → product_categories 两表 JOIN）
-  // 2026-04-26 capability 化：读 sk.is_recharge_card 用于行级快照 + D4 严格独立校验
+  // 2026-04-26 capability 化：读 sk.is_recharge_card / sk.is_experience 用于行级快照
   const skuIds = items.map(i => i.skuId)
   const skuResults = await pg.query(`
     SELECT
       sk.sku_id, sk.product_type, sk.spec_name,
       sk.price, sk.special_price, sk.session_count,
-      sk.category_id, sk.is_recharge_card, pc.sales_category
+      sk.category_id, sk.is_recharge_card, sk.is_experience, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.sku_id = ANY($1)
@@ -257,7 +257,8 @@ async function create(ctx) {
       saleAmount,
       received: saleAmount,
       salesCategory: sku.sales_category || null,
-      isRechargeCard: !!sku.is_recharge_card
+      isRechargeCard: !!sku.is_recharge_card,
+      isExperience: !!sku.is_experience
     }
   })
 
@@ -522,14 +523,14 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price,
-          sale_amount, received, sales_category, is_recharge_card
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+          sale_amount, received, sales_category, is_recharge_card, is_experience
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
         [
           saleItemId, orderNo, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
           d.sessionCount, d.remainingSessions,
           d.unitPrice, d.quantity, d.unitRealPrice,
-          d.saleAmount, d.received, d.salesCategory || null, d.isRechargeCard
+          d.saleAmount, d.received, d.salesCategory || null, d.isRechargeCard, d.isExperience
         ]
       )
     }

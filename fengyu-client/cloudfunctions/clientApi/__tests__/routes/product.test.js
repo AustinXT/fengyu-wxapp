@@ -196,3 +196,45 @@ describe('product.shopInit', () => {
     expect(ctx.result.spuList).toEqual([])
   })
 })
+
+describe('product.experienceCardList', () => {
+  test('按 sortOrder ASC 返回 is_experience = true 的 SKU 列表', async () => {
+    pg.query.mockResolvedValueOnce([
+      { sku_id: 'sku-exp-1', product_type: '单品', spec_name: '体验装', price: 99, special_price: 1, session_count: 1, service_fee: 0, sort_order: 1, product_id: 'p-trial-A', product_name: '焕活面部体验', cover_image: 'https://img/a.jpg', description: '新人专享' },
+      { sku_id: 'sku-exp-2', product_type: '单品', spec_name: '体验装', price: 199, special_price: 9, session_count: 1, service_fee: 0, sort_order: 2, product_id: 'p-trial-B', product_name: '小气泡体验', cover_image: 'https://img/b.jpg', description: null },
+    ])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList).toHaveLength(2)
+    expect(ctx.result.skuList[0].sku_id).toBe('sku-exp-1')
+    expect(ctx.result.skuList[1].sku_id).toBe('sku-exp-2')
+
+    // 验证 SQL：必须含 is_experience = true 过滤、is_enabled = true、按 sort_order ASC 排序
+    const calledSql = pg.query.mock.calls[0][0]
+    expect(calledSql).toMatch(/is_experience\s*=\s*true/)
+    expect(calledSql).toMatch(/is_enabled\s*=\s*true/)
+    expect(calledSql).toMatch(/ORDER BY sk\.sort_order ASC/)
+  })
+
+  test('SQL 不能用 SKU_VALID_FILTER（会反向过滤掉所有体验卡）', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    const calledSql = pg.query.mock.calls[0][0]
+    // SKU_VALID_FILTER 含 NOT (is_experience OR is_recharge_card)，本入口反向使用，必须不含
+    expect(calledSql).not.toMatch(/NOT\s*\(\s*sk\.is_experience\s+OR/)
+  })
+
+  test('无体验卡时返回空 skuList', async () => {
+    pg.query.mockResolvedValueOnce([])
+
+    const ctx = createBoundCtx()
+    await routes.experienceCardList(ctx)
+
+    expect(ctx.result.skuList).toEqual([])
+  })
+})
