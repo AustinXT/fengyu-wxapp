@@ -4,11 +4,11 @@
  * 独立充值流程：不走通用 order.create，脱离购物车 3 步弹层。
  *
  * 两种档位来源：
- *   A) 真实 product_kind='充值卡' 的 SKU（卡面值 = product_skus.price）
+ *   A) 真实 is_recharge_card=true 的 SKU（卡面值 = product_skus.price）
  *   B) 自定义金额 → 虚拟 SKU 'sku-recharge-virtual'（面值 = 用户输入，实付走 matchTier）
  *
  * 入账：线下走 order.confirmOffline 识别段，微信走 clientApi payNotify 识别段。
- * 两侧识别逻辑均以 "sale_items → product_skus → product_categories 且 product_kind='充值卡'" 为统一过滤，
+ * 两侧识别逻辑均以 "sale_items.is_recharge_card = true" 为统一过滤（capability 列权威源），
  * 面值按 (虚拟 SKU → product_name 正则解析) / (真实 SKU → product_skus.price) 分支取值。
  */
 
@@ -33,13 +33,13 @@ const {
 async function rechargeSkus(ctx) {
   await requireManager()(ctx, async () => {})
 
-  // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
+  // capability 列 SSoT：is_recharge_card=true 才是充值卡（与 product_kind='充值卡' 分类标签解耦）
   const rows = await pg.query(`
     SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
            pc.category_id, pc.category_name
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
-    WHERE pc.product_kind = '充值卡'
+    WHERE sk.is_recharge_card = true
       AND sk.is_enabled = true
       AND pc.is_valid = true
       AND sk.sku_id <> $1
@@ -133,15 +133,15 @@ async function recharge(ctx) {
     }
     const skuRows = await pg.query(`
       SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.product_type,
-             pc.product_kind, pc.sales_category
+             sk.is_recharge_card, pc.sales_category
       FROM product_skus sk
       JOIN product_categories pc ON sk.category_id = pc.category_id
       WHERE sk.sku_id = $1 AND sk.is_enabled = true
     `, [skuId])
     if (skuRows.length === 0) throw new Error('INVALID_PARAMS: SKU 不存在或已下架')
     const sku = skuRows[0]
-    // REQUIRES product_kind='充值卡' 一级行存在；充值卡是独立业务实体，删除该 kind 行将破坏充值卡功能
-    if (sku.product_kind !== '充值卡') throw new Error('INVALID_PARAMS: 该 SKU 不是充值卡')
+    // capability 列 SSoT：is_recharge_card=true 才是充值卡（解耦 product_kind 字面量）
+    if (!sku.is_recharge_card) throw new Error('INVALID_PARAMS: 该 SKU 不是充值卡')
     resolvedSkuId = skuId
     productName = sku.spec_name
     skuSpecName = sku.spec_name
@@ -236,14 +236,15 @@ async function recharge(ctx) {
       ]
     )
 
+    // 充值卡订单的 sale_items 必须写 is_recharge_card=true 快照（payNotify/confirmOffline 识别依据）
     await client.query(
       `INSERT INTO sale_items (
         sale_item_id, sale_order_id, store_id, item_direction, sku_id,
         product_name, sku_spec_name, product_type,
         session_count, remaining_sessions,
         unit_price, quantity, unit_real_price, sale_amount, received,
-        sales_category, service_fee
-      ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, NULL, NULL, $8, 1, $9, $9, $9, $10, 0)`,
+        sales_category, service_fee, is_recharge_card
+      ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, NULL, NULL, $8, 1, $9, $9, $9, $10, 0, true)`,
       [
         saleItemId, saleOrderId, storeId, resolvedSkuId,
         productName, skuSpecName, productType,

@@ -16,7 +16,10 @@ const { requireStaffBound } = require('../middleware/auth')
 // ===== 常量 =====
 
 /**
- * @deprecated PR-D 起改用 DB `product_categories.is_card_kind=true` 作为 SSoT。
+ * @deprecated PR-D 起改用 DB `product_categories.is_card_kind=true` 作为 SSoT；
+ *             2026-04-26 起 SKU 卡类判定改用 `product_skus.is_recharge_card` /
+ *             `product_skus.is_experience` 两个 capability 列（与体验卡一致）。
+ *
  * 本常量仅作运行时查询失败时的兜底名单（保险措施，避免 admin 未配置 is_card_kind
  * 时整条排除法链路退化）。新业务逻辑应优先调 `product.cardKinds` action 或
  * 内部 `_queryCardKindNames()` 辅助函数。
@@ -239,8 +242,11 @@ async function _queryMallBundleGroups() {
  * 一次返回 categories + 第一个分类的 skuList + 套餐分组 + groupedCategories
  *
  * PR-B：
- *   - 侧边栏分类只下发"非卡类"（排除 CARD_PRODUCT_KINDS），卡类在前端有独立 Tab 流
- *   - 额外 EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的 SKU，避免出现空分类
+ *   - 侧边栏分类只下发"非卡类"，卡类（充值卡/体验卡）在前端有独立 Tab 流
+ *   - 2026-04-26 重构：卡类判定从 product_kind 字面量切换到
+ *     `product_skus.is_recharge_card` / `product_skus.is_experience` capability 列；
+ *     即一个分类只要存在非卡类（NOT (is_recharge_card OR is_experience)）的可售非 bundle SKU 就保留
+ *   - EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的非卡类 SKU，避免出现空分类
  *   - 额外返回 `groupedCategories: [{ productKind, kindSortOrder, items: Category[] }]`
  *     （按一级行 sortOrder 排序；同组内按二级 sortOrder 排序）
  *   - 保留老字段 `categories`（平铺数组）以兼容旧前端 / 其他调用方
@@ -248,13 +254,12 @@ async function _queryMallBundleGroups() {
 async function shopInit(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  // 取"非卡类"二级分类 + 一级行 JOIN（用于 groupedCategories）
+  // 取全部二级分类 + 一级行 JOIN（用于 groupedCategories）；卡类过滤下沉到 SKU EXISTS
   const rawRows = await _queryCategoryRows({
-    kindNotIn: CARD_PRODUCT_KINDS,
     withParentJoin: true,
   })
 
-  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非 bundle SKU
+  // EXISTS 过滤：分类下必须存在 is_enabled=true 的非 bundle、非卡类 SKU
   let catRows = rawRows
   if (rawRows.length > 0) {
     const categoryIds = rawRows.map((r) => r.category_id)
@@ -264,6 +269,7 @@ async function shopInit(ctx) {
       FROM product_skus sk
       WHERE sk.category_id = ANY($1)
         AND sk.is_enabled = true
+        AND NOT (sk.is_recharge_card OR sk.is_experience)
         AND NOT EXISTS (
           SELECT 1
           FROM mall_product_skus mps

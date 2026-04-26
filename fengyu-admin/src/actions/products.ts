@@ -540,6 +540,10 @@ export async function createSku(data: {
   sortOrder?: number
   serviceFee?: string
   isShengmei?: boolean | null
+  /** 体验卡 capability 列（与 isRechargeCard 互斥） */
+  isExperience?: boolean
+  /** 充值卡 capability 列（与 isExperience 互斥） */
+  isRechargeCard?: boolean
   marketScope?: string | null
   isEnabled?: boolean
 }): Promise<{ success: boolean; message: string }> {
@@ -567,6 +571,14 @@ export async function createSku(data: {
     }
   }
 
+  // 2026-04-26 ticket：体验卡与充值卡 capability 列互斥（DB CHECK 双重保护）
+  if (data.isExperience === true && data.isRechargeCard === true) {
+    return {
+      success: false,
+      message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+    }
+  }
+
   try {
     await db.insert(productSkus).values({
       ...data,
@@ -575,6 +587,13 @@ export async function createSku(data: {
   } catch (err: any) {
     if (err?.code === '23505') return { success: false, message: 'SKU 编号已存在' }
     if (err?.code === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
+    // chk_sku_not_both_capabilities CHECK 违反（理论上应用层已先拦截，DB 兜底）
+    if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
+      return {
+        success: false,
+        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+      }
+    }
     throw err
   }
 
@@ -595,6 +614,10 @@ export async function updateSku(
     sortOrder: number
     serviceFee: string
     isShengmei: boolean | null
+    /** 体验卡 capability 列（与 isRechargeCard 互斥） */
+    isExperience: boolean
+    /** 充值卡 capability 列（与 isExperience 互斥） */
+    isRechargeCard: boolean
     marketScope: string | null
     isEnabled: boolean
   }>,
@@ -606,17 +629,41 @@ export async function updateSku(
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(productSkus).where(eq(productSkus.skuId, skuId)).limit(1)
 
+  // 2026-04-26 ticket：体验卡与充值卡 capability 互斥应用层校验
+  // 需要拼接 before 的当前值再判（增量 update 可能只传一个字段）
+  if (before) {
+    const finalIsExp = data.isExperience !== undefined ? data.isExperience : before.isExperience
+    const finalIsRc = data.isRechargeCard !== undefined ? data.isRechargeCard : before.isRechargeCard
+    if (finalIsExp === true && finalIsRc === true) {
+      return {
+        success: false,
+        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+      }
+    }
+  }
+
   const whereConditions = expectedUpdatedAt
     ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
     : eq(productSkus.skuId, skuId)
 
-  const result = await db
-    .update(productSkus)
-    .set({
-      ...data,
-      productType: data.productType as typeof productSkus.$inferInsert['productType'],
-    })
-    .where(whereConditions)
+  let result: any
+  try {
+    result = await db
+      .update(productSkus)
+      .set({
+        ...data,
+        productType: data.productType as typeof productSkus.$inferInsert['productType'],
+      })
+      .where(whereConditions)
+  } catch (err: any) {
+    if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
+      return {
+        success: false,
+        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+      }
+    }
+    throw err
+  }
 
   if ((result as any).count === 0) {
     return {

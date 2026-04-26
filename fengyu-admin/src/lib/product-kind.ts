@@ -10,8 +10,16 @@
  *
  * 运行时（actions / 路由）请用 `getCardKindNamesFromDb()` 走 DB 查询。
  *
- * @deprecated 不要在新代码里直接引用此常量。新代码应调用 actions/products.ts 的
- *             `getCardKindNamesFromDb()` 或读 `product_categories.is_card_kind` 列。
+ * 2026-04-26 capability 列方案补充：
+ *   - 充值卡判定改用 `product_skus.is_recharge_card` capability 列
+ *     （helper：`@/lib/recharge` `isRechargeCardSku(sku)`）
+ *   - 体验卡判定改用 `product_skus.is_experience` capability 列
+ *   - 本常量 `CARD_PRODUCT_KINDS` 仅供分类标签 / fallback / 测试 fixture，
+ *     新代码业务判定不要再用本常量。
+ *
+ * @deprecated 不要在新代码里直接引用此常量做业务判定。
+ *             - SKU 维度判定 → 用 `isRechargeCardSku(sku)` / `sku.isExperience`
+ *             - 分类维度查询 → 调 `getCardKindNamesFromDb()` 或读 `product_categories.is_card_kind` 列
  */
 export const CARD_PRODUCT_KINDS = ['充值卡', '体验卡'] as const
 

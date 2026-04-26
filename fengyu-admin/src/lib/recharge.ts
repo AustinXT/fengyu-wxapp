@@ -74,3 +74,20 @@ export function parseRechargeFaceValue(productName: string | null | undefined): 
   if (!Number.isFinite(v) || v <= 0) return null
   return v
 }
+
+/**
+ * 充值卡 SKU 判定 helper（2026-04-26 ticket capability 列方案）。
+ *
+ * 取代旧的 `sku.skuId === RECHARGE_VIRTUAL_SKU_ID` 字面量比对：
+ *   - SKU 上下文：传入 `{ isRechargeCard?: boolean }`，直接读 capability
+ *   - 行级快照（sale_items）：同样按 `isRechargeCard` 字段判
+ *
+ * 与 `product_skus.is_recharge_card` / `sale_items.is_recharge_card` 同义。
+ * RECHARGE_VIRTUAL_SKU_ID 仍作为虚拟 SKU 的固定 ID 保留（D3=B 单虚拟 SKU 模式），
+ * 但业务判定不再依赖该 ID。
+ */
+export function isRechargeCardSku(
+  sku: { isRechargeCard?: boolean | null } | null | undefined,
+): boolean {
+  return !!sku && sku.isRechargeCard === true
+}

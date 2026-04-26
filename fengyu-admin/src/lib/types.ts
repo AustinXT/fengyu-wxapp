@@ -279,6 +279,17 @@ export interface ProductSku {
   sortOrder: number
   serviceFee: string
   isShengmei: boolean | null
+  /**
+   * 体验卡 capability 列（与 product_skus.is_experience 同名同义）。
+   * 仅在 SKU 编辑/查询表单上下文需要，前端运行时按需读取。
+   */
+  isExperience?: boolean
+  /**
+   * 充值卡 capability 列（与 product_skus.is_recharge_card 同名同义）。
+   * 取代旧的 sku_id = RECHARGE_VIRTUAL_SKU_ID 字面量判定。
+   * 与 isExperience 互斥（DB CHECK 保护）。
+   */
+  isRechargeCard?: boolean
   marketScope: string | null
   isEnabled: boolean
   createdAt: string

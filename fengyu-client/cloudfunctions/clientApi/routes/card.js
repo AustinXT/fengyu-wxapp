@@ -292,14 +292,15 @@ async function recharge(ctx) {
     )
 
     // e. INSERT sale_items（虚拟 SKU；商品名快照含面值，便于 payNotify 解析 + admin 列表展示）
+    // 2026-04-26 capability 化：is_recharge_card=true 行级快照（payNotify 据此触发充值入账）
     await client.query(
       `INSERT INTO sale_items (
         sale_item_id, sale_order_id, store_id, sku_id,
         product_name, sku_spec_name, product_type,
         session_count, remaining_sessions,
         unit_price, quantity, unit_real_price,
-        sale_amount, received, service_fee
-      ) VALUES ($1, $2, $3, $4, $5, $6, '家居产品', NULL, NULL, $7, 1, $7, $7, $7, 0)`,
+        sale_amount, received, service_fee, is_recharge_card
+      ) VALUES ($1, $2, $3, $4, $5, $6, '家居产品', NULL, NULL, $7, 1, $7, $7, $7, 0, true)`,
       [
         saleItemId, saleOrderId, boundStoreId, RECHARGE_VIRTUAL_SKU_ID,
         `预付充值卡 ¥${faceValue}`, '预付充值卡（虚拟）', payAmount,
