@@ -16,7 +16,7 @@ import { Dialog, DialogHeader, DialogTitle, DialogFooter, DialogClose } from "@/
 import { Textarea } from "@/components/ui/textarea"
 import { approveRefund, rejectRefund } from "@/actions/refunds"
 
-export function ApprovalActions({ saleOrderId }: { saleOrderId: string }) {
+export function ApprovalActions({ refundPaymentId }: { refundPaymentId: number }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [approveOpen, setApproveOpen] = useState(false)
@@ -25,7 +25,7 @@ export function ApprovalActions({ saleOrderId }: { saleOrderId: string }) {
 
   const handleApprove = () => {
     startTransition(async () => {
-      const res = await approveRefund(saleOrderId)
+      const res = await approveRefund(refundPaymentId)
       if (res.success) {
         toast.success(
           `退款已通过 — 储值卡回冲 ¥${res.data.refundByCard.toFixed(2)} + 原路径 ¥${res.data.refundByOrigin.toFixed(2)}`,
@@ -44,7 +44,7 @@ export function ApprovalActions({ saleOrderId }: { saleOrderId: string }) {
       return
     }
     startTransition(async () => {
-      const res = await rejectRefund(saleOrderId, rejectReason.trim())
+      const res = await rejectRefund(refundPaymentId, rejectReason.trim())
       if (res.success) {
         toast.success("退款已驳回")
         setRejectOpen(false)

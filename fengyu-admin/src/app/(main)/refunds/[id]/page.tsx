@@ -28,7 +28,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   if (!data) notFound()
 
   const { refund, origOrder, payments } = data
-  const refundAmount = Math.abs(Number(refund.totalAmount))
+  const refundAmount = Math.abs(Number(refund.amount))
 
   return (
     <div className="space-y-6">
@@ -42,7 +42,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           </Link>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">退款单详情</h1>
         </div>
-        {refund.status === '待审批' && <ApprovalActions saleOrderId={refund.saleOrderId} />}
+        {refund.status === '待审批' && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}
       </div>
 
       {/* 退款单信息 */}
@@ -53,8 +53,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         <CardContent>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-y-4 gap-x-8 text-sm">
             <div>
-              <span className="text-[#999]">退款单号</span>
-              <p className="font-medium mt-1">{refund.saleOrderId}</p>
+              <span className="text-[#999]">退款流水号</span>
+              <p className="font-medium mt-1">#{refund.refundPaymentId}</p>
             </div>
             <div>
               <span className="text-[#999]">状态</span>
@@ -87,12 +87,12 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
               <p className="font-bold text-lg mt-1 text-[#C62828]">-¥{refundAmount.toFixed(2)}</p>
             </div>
             <div>
-              <span className="text-[#999]">手续费</span>
-              <p className="font-medium mt-1">¥{Number(refund.handlingFee ?? '0').toFixed(2)}</p>
+              <span className="text-[#999]">支付通道</span>
+              <p className="font-medium mt-1">{refund.paymentMethod}</p>
             </div>
             <div>
               <span className="text-[#999]">发起人</span>
-              <p className="font-medium mt-1">{refund.openedByName || '-'}</p>
+              <p className="font-medium mt-1">{refund.operatorName || '-'}</p>
             </div>
             <div>
               <span className="text-[#999]">创建时间</span>
@@ -100,20 +100,20 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div>
               <span className="text-[#999]">审批人</span>
-              <p className="font-medium mt-1">{refund.approvedByName || '-'}</p>
+              <p className="font-medium mt-1">{refund.auditorName || '-'}</p>
             </div>
             <div>
               <span className="text-[#999]">审批时间</span>
-              <p className="font-medium mt-1">{formatDateTime(refund.approvedAt)}</p>
+              <p className="font-medium mt-1">{formatDateTime(refund.auditAt)}</p>
             </div>
             <div className="col-span-2 md:col-span-3">
               <span className="text-[#999]">退款原因</span>
               <p className="font-medium mt-1">{refund.refundReason || '-'}</p>
             </div>
-            {refund.rejectedReason && (
+            {refund.auditRemark && (
               <div className="col-span-2 md:col-span-3">
                 <span className="text-[#999]">驳回原因</span>
-                <p className="font-medium mt-1 text-[#C62828]">{refund.rejectedReason}</p>
+                <p className="font-medium mt-1 text-[#C62828]">{refund.auditRemark}</p>
               </div>
             )}
           </div>
@@ -153,41 +153,34 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         </Card>
       )}
 
-      {/* 退款明细 */}
-      <Card>
-        <CardHeader>
-          <CardTitle>退款明细</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 sticky top-0">
-                <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">商品</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
-                  <th className="px-4 py-3 text-right font-medium text-gray-500">小计</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {refund.items.map((it) => (
-                  <tr key={it.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
-                    <td className="px-4 py-3 font-medium">{it.productName || '-'}</td>
-                    <td className="px-4 py-3 text-right">¥{Number(it.unitRealPrice).toFixed(2)}</td>
-                    <td className="px-4 py-3 text-right">{it.quantity}</td>
-                    <td className="px-4 py-3 text-right font-medium text-[#C62828]">
-                      ¥{Number(it.received).toFixed(2)}
-                    </td>
-                  </tr>
-                ))}
-                {refund.items.length === 0 && (
-                  <tr><td colSpan={4} className="px-4 py-8 text-center text-[#999]">暂无明细</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+      {/* 退款明细（关联商品明细） */}
+      {(refund.refSaleItemId || refund.sessionCount !== null) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>退款明细</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-y-3 gap-x-8 text-sm">
+              {refund.refSaleItemId && (
+                <div>
+                  <span className="text-[#999]">关联销售明细</span>
+                  <p className="font-medium mt-1">{refund.refSaleItemId}</p>
+                </div>
+              )}
+              {refund.sessionCount !== null && (
+                <div>
+                  <span className="text-[#999]">退回次数</span>
+                  <p className="font-medium mt-1">{refund.sessionCount} 次</p>
+                </div>
+              )}
+              <div>
+                <span className="text-[#999]">退款通道</span>
+                <p className="font-medium mt-1">{refund.paymentMethod}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 本次退款涉及的款项流水 */}
       <Card>

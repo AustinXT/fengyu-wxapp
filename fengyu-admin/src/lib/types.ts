@@ -189,7 +189,14 @@ export interface SkillTag {
 export type ProductKind = string
 export type ProductType = '疗程卡' | '单品' | '家居产品'
 export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已完成' | '支付失败' | '已关闭' | '待审批' | '部分支付'
-export type SaleOrderType = '销售单' | '内部单' | '回款单' | '转换单' | '退款单'
+/**
+ * 销售单据类型（saleOrders.sale_order_type）
+ *
+ * 2026-04-26 sale-order-domain-refactor 重构：5 → 3 值
+ * 删除：'回款单'（迁至 sale_order_payments[change_type='回款']）
+ *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
+ */
+export type SaleOrderType = '销售单' | '内部单' | '转换单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'
@@ -318,10 +325,15 @@ export interface SaleOrder {
   clientPhone: string | null
   customerName: string | null
   totalAmount: string
-  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 paidAmount 之和等于 totalAmount */
+  /** 储值卡抵扣金额（抵扣项，不计入实付）；与 received 之和等于 totalAmount */
   prepaidCardAmount: string
-  /** 实付金额（走 paymentMethod 指定通道）；paidAmount === '0' ⇔ paymentMethod === '无' */
-  paidAmount: string
+  /**
+   * 实收金额（聚合 sale_order_payments[change_type∈(首次支付/回款/储值卡抵扣), status='已支付'] 的快照）。
+   * 2026-04-26 sale-order-domain-refactor：原 paidAmount 列与 received 重复，已 DROP；统一改用 received。
+   */
+  received: string
+  /** 已退款金额（聚合 sale_order_payments[change_type='退款',status='已支付'] 取负值；2026-04-26 新增） */
+  refundedAmount: string
   paymentMethod: PaymentMethod
   openedBy: string | null
   preferredEmployeeId: string | null
@@ -584,10 +596,18 @@ export interface DashboardStats {
 
 // ─── 订单款项流水（sale_order_payments） ───
 export type PaymentChangeType = '首次支付' | '回款' | '退款' | '储值卡抵扣'
-export type PaymentFlowStatus = '待支付' | '已支付' | '已作废' | '已退款'
+/**
+ * 款项流水状态。2026-04-26 sale-order-domain-refactor 新增 '待审批'（退款审批流）。
+ */
+export type PaymentFlowStatus = '待支付' | '待审批' | '已支付' | '已作废' | '已退款'
 export type PaymentSourceEnd = 'client' | 'staff' | 'admin' | 'notify'
 
-/** 订单款项流水行（与 db/schema/order.ts:saleOrderPayments 对齐） */
+/**
+ * 订单款项流水行（与 db/schema/order.ts:saleOrderPayments 对齐）
+ *
+ * 2026-04-26 sale-order-domain-refactor：operatorEmployeeId / note 已下沉到子表
+ * salePaymentDetails；本接口的对应字段由 join 时回填。
+ */
 export interface SaleOrderPayment {
   id: number
   saleOrderId: string
@@ -599,10 +619,19 @@ export interface SaleOrderPayment {
   externalTxnId: string | null
   status: PaymentFlowStatus
   sourceEnd: PaymentSourceEnd
+  /** 子表 sale_order_payment_details.operator_employee_id（已 join） */
   operatorEmployeeId: string | null
+  /** 子表 sale_order_payment_details.note（已 join） */
   note: string | null
   createdAt: string
   paidAt: string | null
   // 可选 join 字段
   operatorName?: string | null
+  // ── 子表 sale_order_payment_details 字段（join 时回填） ──
+  refundReason?: string | null
+  refSaleItemId?: string | null
+  sessionCount?: number | null
+  auditEmployeeId?: string | null
+  auditAt?: string | null
+  auditRemark?: string | null
 }

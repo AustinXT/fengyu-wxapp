@@ -1,10 +1,10 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
-import { and, desc, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, asc, eq, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
@@ -21,21 +21,26 @@ import {
   splitRefundByOriginalPayment,
   type RefundSourceItem,
 } from '@/lib/refund'
+import { cascadeRefund } from '@/lib/refund-cascade'
 import type {
   OrderStatus,
   PaymentMethod,
   ProductType,
-  SaleItem,
   SaleOrder,
   SaleOrderPayment,
   SalesCategory,
 } from '@/lib/types'
 
-const opener = alias(staffWechatUsers, 'refund_opener')
-const approver = alias(staffWechatUsers, 'refund_approver')
+const operatorAlias = alias(staffWechatUsers, 'sopd_operator')
+const auditorAlias = alias(staffWechatUsers, 'sopd_auditor')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义
+//
+// 2026-04-26 sale-order-domain-refactor：
+//   退款不再创建 saleOrders[type='退款单']；改为写 sale_order_payments[change_type='退款']
+//   + sale_order_payment_details（refund_reason / ref_sale_item_id / session_count / audit_*）。
+//   "退款单"语义现完全由 (sop.change_type='退款') 行表达。
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RefundableItem {
@@ -64,41 +69,77 @@ export interface GetRefundableResult {
 export type CreateRefundResult =
   | {
       success: true
-      data: { refundOrderId: string; refundByCard: number; refundByOrigin: number; finalRefundAmount: number }
+      data: {
+        /** 主退款流水 ID（sale_order_payments.id），用于审批入口 */
+        refundPaymentId: number
+        refundByCard: number
+        refundByOrigin: number
+        finalRefundAmount: number
+      }
     }
   | { success: false; error: { code: string; message: string } }
 
 export type ApproveRefundResult =
-  | { success: true; data: { refundByCard: number; refundByOrigin: number } }
+  | {
+      success: true
+      data: {
+        refundByCard: number
+        refundByOrigin: number
+        cascade: {
+          voidedAllocations: number
+          voidedCommissions: number
+          refundedCoupons: number
+          reversedPoints: number
+          rolledBackPickups: number
+        }
+      }
+    }
   | { success: false; error: { code: string; message: string } }
 
 export type RejectRefundResult =
   | { success: true }
   | { success: false; error: { code: string; message: string } }
 
+/**
+ * 退款列表条目（聚合自 sale_order_payments[change_type='退款']）。
+ *
+ * 旧字段 saleOrderId 在 5→3 重构后已无独立"退款单 ID"，列表与详情统一以
+ * sale_order_payments.id（主键）作为退款流水 ID。
+ */
 export interface RefundListItem {
-  saleOrderId: string
-  refSaleOrderId: string | null
-  status: OrderStatus
-  marketName: string
-  storeId: string
+  /** sale_order_payments.id（主键，退款流水 ID） */
+  refundPaymentId: number
+  /** 关联的原销售单 ID（即 sop.sale_order_id） */
+  refSaleOrderId: string
+  /** 退款流水状态（'待审批'/'已支付'/'已作废'）→ 前端映射展示 */
+  status: '待审批' | '已支付' | '已作废' | '已退款' | '待支付'
+  marketName: string | null
+  storeId: string | null
   storeName: string | null
   customerName: string | null
   clientPhone: string | null
-  totalAmount: string
+  /** 原始 sop.amount（负数） */
+  amount: string
   refundReason: string | null
+  refSaleItemId: string | null
+  sessionCount: number | null
+  /** 手续费（来自 sale_payment_details.handling_fee） */
   handlingFee: string | null
-  rejectedReason: string | null
-  openedBy: string | null
-  openedByName: string | null
-  approvedBy: string | null
-  approvedByName: string | null
-  approvedAt: string | null
+  /** 操作人（发起人） */
+  operatorEmployeeId: string | null
+  operatorName: string | null
+  /** 审批人 */
+  auditEmployeeId: string | null
+  auditorName: string | null
+  auditAt: string | null
+  auditRemark: string | null
+  paymentMethod: string
   createdAt: string
-  updatedAt: string
+  paidAt: string | null
 }
 
 export interface RefundListFilters {
+  /** 兼容旧前端：'待审批' / '已支付'（已通过）/ '已关闭'（驳回 = '已作废'）*/
   status?: '待审批' | '已支付' | '已关闭'
   page?: number
   pageSize?: number
@@ -112,17 +153,12 @@ export interface RefundListResult {
 }
 
 export interface RefundDetailResult {
-  refund: RefundListItem & { items: SaleItem[] }
+  refund: RefundListItem
   origOrder: SaleOrder | null
+  /** 同一原单上、所有 change_type='退款' 的流水（发起+审批+其他历史退款） */
   payments: SaleOrderPayment[]
 }
 
-/**
- * 退款触发的会员等级预判 + 超额权益扣除建议
- *
- * 用户场景：顾客升级至高等级 → 已核销优惠券 / 已用升级奖励积分消费 → 发生退款
- *   → 滚动12月消费跌至低等级 + 保级期已过 → 应从退款金额中扣回已享用超额权益。
- */
 export interface EstimateOverdraftResult {
   currentLevel: MemberLevel | null
   recomputedLevel: MemberLevel | null
@@ -167,7 +203,7 @@ export async function getRefundable(saleOrderId: string): Promise<GetRefundableR
     .limit(1)
 
   if (!order) {
-    throw new Error('INVALID_PARAMS: 原订单不存在或无权访问')
+    throw new Error('NOT_FOUND: 原订单不存在或无权访问')
   }
   if (order.saleOrderType !== '销售单') {
     throw new Error('INVALID_STATE: 仅销售单支持退款')
@@ -236,13 +272,12 @@ interface LevelBenefitConfig {
   messageBody?: string
 }
 
-/** 从 system_configs.member_level_benefits 读 upgrade 场景权益配置；缺失返回空映射 */
 async function loadUpgradeBenefitsMap(): Promise<Record<string, LevelBenefitConfig>> {
   try {
     const rows = await db.execute<{ value: string }>(sql`
       SELECT value FROM system_configs WHERE key = 'member_level_benefits' LIMIT 1
     `)
-    const raw = (rows as any[])[0]?.value
+    const raw = (rows as unknown as Array<{ value: string }>)[0]?.value
     if (!raw) return {}
     const parsed = JSON.parse(raw)
     return (parsed && typeof parsed === 'object' ? parsed : {}) as Record<string, LevelBenefitConfig>
@@ -275,7 +310,6 @@ export async function estimateRefundOverdraft(params: {
 
   const refundAmount = Math.max(0, Number(params.refundAmount) || 0)
 
-  // 1) 顾客当前会员信息
   const [user] = await db
     .select({
       memberLevel: clientWechatUsers.memberLevel,
@@ -299,7 +333,6 @@ export async function estimateRefundOverdraft(params: {
   const pointRate = await getPointsToYuanRate()
   const emptyDetail = { usedCoupons: [], usedPoints: 0, grantedPoints: 0, pointsToYuanRate: pointRate }
 
-  // 无会员级 → 无级可降
   if (!currentLevel) {
     return {
       currentLevel: null,
@@ -317,16 +350,18 @@ export async function estimateRefundOverdraft(params: {
     }
   }
 
-  // 2) 滚动 12 月消费；应用退款后预判新等级（复用 PR-2 的白名单 SQL 口径）
+  // 滚动 12 月消费；2026-04-26 sale-order-domain-refactor：
+  //   - paid_amount 列已 DROP，统一改用 received - refunded_amount
+  //   - saleOrderType 5→3：'退款单'/'回款单' 已迁至 sale_order_payments
   const spendRows = await db.execute<{ spend: string }>(sql`
-    SELECT COALESCE(SUM(paid_amount::numeric), 0) AS spend
+    SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS spend
     FROM sale_orders
     WHERE client_user_id = ${params.userId}
-      AND sale_order_type = '销售单'
-      AND paid_amount > 0
+      AND sale_order_type IN ('销售单','转换单')
+      AND received > 0
       AND paid_at >= (NOW() - INTERVAL '12 months')
   `)
-  const currentSpend = Number((spendRows as any[])[0]?.spend || 0)
+  const currentSpend = Number((spendRows as unknown as Array<{ spend: string | number }>)[0]?.spend || 0)
   const projectedSpend = Math.max(0, currentSpend - refundAmount)
 
   const threshold = await getMemberThreshold()
@@ -335,7 +370,6 @@ export async function estimateRefundOverdraft(params: {
   const willDowngrade =
     isDowngrade(currentLevel, recomputedLevel) && lockedUntilStatus !== 'in_lock'
 
-  // 3) 权益配置与权益总值（即便不跌档也先算好给前端提示用，但成本极小）
   const benefitsMap = await loadUpgradeBenefitsMap()
   const currentCfg = benefitsMap[currentLevel]
   const newCfg = recomputedLevel ? benefitsMap[recomputedLevel] : undefined
@@ -346,7 +380,7 @@ export async function estimateRefundOverdraft(params: {
     ? ((await db.execute<{ template_id: string; discount_value: string }>(sql`
         SELECT template_id, discount_value FROM coupon_templates
         WHERE template_id = ANY(${allTemplateIds}::text[])
-      `)) as any[])
+      `)) as unknown as Array<{ template_id: string; discount_value: string }>)
     : []
   const tplValueById: Record<string, number> = {}
   for (const r of tplRows) tplValueById[r.template_id] = Number(r.discount_value || 0)
@@ -355,7 +389,6 @@ export async function estimateRefundOverdraft(params: {
   const newBenefitsValue = benefitsValue(newCfg, pointRate, tplValueById)
   const benefitValueDiff = Math.max(0, currentBenefitsValue - newBenefitsValue)
 
-  // 不跌档或保级期内 → 明示不扣
   if (!willDowngrade) {
     return {
       currentLevel,
@@ -373,7 +406,6 @@ export async function estimateRefundOverdraft(params: {
     }
   }
 
-  // 4) 已享用权益核算（仅 willDowngrade 场景查）
   const upgradedAtThreshold = upgradedAt ?? new Date(0)
   const couponKeyPrefix = `cpn-up-${params.userId}-${currentLevel}-`
 
@@ -390,7 +422,12 @@ export async function estimateRefundOverdraft(params: {
       AND uc.coupon_id LIKE ${couponKeyPrefix + '%'}
       AND uc.status = '已使用'
       AND uc.used_at >= ${upgradedAtThreshold}
-  `)) as any[]
+  `)) as unknown as Array<{
+    coupon_id: string
+    template_id: string
+    discount_value: string
+    used_at: Date
+  }>
 
   const usedCouponValue = usedCouponRows.reduce((s, r) => s + Number(r.discount_value || 0), 0)
 
@@ -399,17 +436,16 @@ export async function estimateRefundOverdraft(params: {
     SELECT COALESCE(SUM(amount), 0) AS granted
     FROM point_transactions
     WHERE user_id = ${params.userId} AND external_ref = ${externalRef}
-  `)) as any[]
+  `)) as unknown as Array<{ granted: string }>
   const grantedPoints = Number(grantedRows[0]?.granted || 0)
 
-  // 升级以来已消耗积分（负 amount 之和）；FIFO 近似归属升级奖励
   const usedRows = (await db.execute<{ used: string }>(sql`
     SELECT COALESCE(SUM(-amount), 0) AS used
     FROM point_transactions
     WHERE user_id = ${params.userId}
       AND amount < 0
       AND created_at >= ${upgradedAtThreshold}
-  `)) as any[]
+  `)) as unknown as Array<{ used: string }>
   const usedPointsSince = Number(usedRows[0]?.used || 0)
   const usedUpgradePoints = Math.min(grantedPoints, usedPointsSince)
   const usedPointsValue = usedUpgradePoints * pointRate
@@ -450,15 +486,15 @@ export async function estimateRefundOverdraft(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// createRefundOrder：创建退款单（凭证单 FY-TKD）
+// createRefund：发起退款（写 sale_order_payments + sale_order_payment_details）
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function createRefundOrder(input: {
+export async function createRefund(input: {
   refSaleOrderId: string
   items: Array<{ saleItemId: string; refundQuantity: number }>
   refundReason: string
   handlingFee?: number
-  /** 若 true，则退款单写入 overdraft_deduction 两列并扣减实退款；默认 true */
+  /** 若 true，则按建议扣除超额权益；默认 true */
   applyOverdraftDeduction?: boolean
 }): Promise<CreateRefundResult> {
   const session = await getSession()
@@ -476,7 +512,6 @@ export async function createRefundOrder(input: {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '退款原因不能为空' } }
   }
 
-  // 查原单 + scope 校验
   const [origOrder] = await db
     .select()
     .from(saleOrders)
@@ -484,7 +519,7 @@ export async function createRefundOrder(input: {
     .limit(1)
 
   if (!origOrder) {
-    return { success: false, error: { code: 'INVALID_PARAMS', message: '原订单不存在或无权访问' } }
+    return { success: false, error: { code: 'NOT_FOUND', message: '原订单不存在或无权访问' } }
   }
   if (origOrder.saleOrderType !== '销售单') {
     return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单支持退款' } }
@@ -499,23 +534,22 @@ export async function createRefundOrder(input: {
     return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店订单' } }
   }
 
-  // in-flight 唯一性：同一原单仅允许一笔 '待审批' FY-TKD
+  // in-flight 唯一性：同一原单只允许一笔 status='待审批' 的退款
   const inflight = await db
-    .select({ saleOrderId: saleOrders.saleOrderId })
-    .from(saleOrders)
+    .select({ id: saleOrderPayments.id })
+    .from(saleOrderPayments)
     .where(
       and(
-        eq(saleOrders.refSaleOrderId, refSaleOrderId),
-        eq(saleOrders.saleOrderType, '退款单'),
-        eq(saleOrders.status, '待审批'),
+        eq(saleOrderPayments.saleOrderId, refSaleOrderId),
+        eq(saleOrderPayments.changeType, '退款'),
+        eq(saleOrderPayments.status, '待审批'),
       ),
     )
     .limit(1)
   if (inflight.length > 0) {
-    return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款单，请先处理' } }
+    return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
   }
 
-  // 查原单明细
   const origRows = await db
     .select()
     .from(saleItems)
@@ -560,10 +594,8 @@ export async function createRefundOrder(input: {
     return { success: false, error: { code: 'INVALID_STATE', message: '无可退项' } }
   }
 
-  // 会员等级跌档 → 扣除已享用超额权益（ticket 2026-04-24 §7）
-  const applyOverdraft = input.applyOverdraftDeduction !== false  // 默认 true
+  const applyOverdraft = input.applyOverdraftDeduction !== false
   let overdraftDeduction = 0
-  let overdraftDetail: Record<string, unknown> | null = null
   if (applyOverdraft && origOrder.clientUserId) {
     const estimate = await estimateRefundOverdraft({
       userId: origOrder.clientUserId,
@@ -572,28 +604,6 @@ export async function createRefundOrder(input: {
     })
     if (estimate.willDowngrade && estimate.suggestedOverdraftDeduction > 0) {
       overdraftDeduction = estimate.suggestedOverdraftDeduction
-      overdraftDetail = {
-        _v: 1,
-        fromLevel: estimate.currentLevel,
-        toLevel: estimate.recomputedLevel,
-        upgradedAt: estimate.upgradedAt,
-        usedCouponValue: estimate.usedCouponValue,
-        usedCoupons: estimate.detail.usedCoupons.map((c) => ({
-          couponId: c.couponId,
-          discountValue: c.discountValue,
-        })),
-        grantedPoints: estimate.detail.grantedPoints,
-        usedUpgradePoints: estimate.detail.usedPoints,
-        pointsToYuanRate: estimate.detail.pointsToYuanRate,
-        usedPointsValue: estimate.usedPointsValue,
-        currentBenefitsValue: estimate.currentBenefitsValue,
-        newBenefitsValue: estimate.newBenefitsValue,
-        benefitValueDiff: estimate.benefitValueDiff,
-        refundAmount: finalRefundAmount,
-        suggestedDeduction: estimate.suggestedOverdraftDeduction,
-        actualDeduction: estimate.suggestedOverdraftDeduction,
-        adminOverride: false,
-      }
     }
   }
 
@@ -601,7 +611,6 @@ export async function createRefundOrder(input: {
     0,
     Math.round((finalRefundAmount - overdraftDeduction) * 100) / 100,
   )
-  const totalAmount = -adjustedRefundAmount
 
   const origPrepaidCardAmount = Number(origOrder.prepaidCardAmount || 0)
   const origTotalAmount = Number(origOrder.totalAmount || 0)
@@ -613,276 +622,217 @@ export async function createRefundOrder(input: {
 
   const refundPaymentMethod = resolveRefundPaymentMethod(origOrder.paymentMethod)
 
-  let refundOrderId: string
+  // 部分退款时关联具体 sale_item（多行退款时取首行；整单退款保留 null）
+  const primaryRefSaleItemId = refundDetails.length === 1 ? refundDetails[0].refSaleItemId : null
+  const primarySessionCount =
+    refundDetails.length === 1 ? refundDetails[0].sessionCount ?? refundDetails[0].quantity : null
+
+  const noteLines: string[] = [`reason=${refundReason}`]
+  if (fee > 0) noteLines.push(`fee=${fee.toFixed(2)}`)
+  if (overdraftDeduction > 0) noteLines.push(`overdraft=${overdraftDeduction.toFixed(2)}`)
+  const paymentNote = noteLines.join('; ')
+
+  let refundPaymentId: number
   try {
-    refundOrderId = await db.transaction(async (tx) => {
-      // 生成 FY-TKD 订单号（advisory lock + 当日序号）
-      const idRows = await tx.execute(sql`
-        WITH lock AS (
-          SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
-        )
-        SELECT 'FY-TKD-WX-' || to_char(NOW(), 'YYMMDD') ||
-          LPAD(
-            (SELECT COALESCE(MAX(
-              CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
-            ), 0) + 1
-            FROM sale_orders
-            WHERE sale_order_id LIKE 'FY-TKD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
-            )::TEXT, 4, '0'
-          ) AS id
-        FROM lock
-      `)
-      const id = (idRows as unknown as Array<{ id: string }>)[0]?.id
-      if (!id) throw new Error('ORDER_ID_GEN_FAILED')
+    refundPaymentId = await db.transaction(async (tx) => {
+      // 主流水：按整笔金额写一行 status='待审批'，approveRefund 时按拆分（储值卡+原通道）做实际扣减。
+      // chk_sop_amount_sign 要求 amount<0；paymentMethod 取储值卡（如全额）或原通道兜底
+      const totalAmountSign = -adjustedRefundAmount
 
-      const now = new Date()
+      const [paymentRow] = await tx
+        .insert(saleOrderPayments)
+        .values({
+          saleOrderId: refSaleOrderId,
+          changeType: '退款',
+          amount: totalAmountSign.toFixed(2),
+          paymentMethod:
+            refundByCard > 0 && refundByOrigin === 0 ? '储值卡' : refundPaymentMethod,
+          externalTxnId: null,
+          status: '待审批',
+          sourceEnd: 'admin',
+        })
+        .returning({ id: saleOrderPayments.id })
 
-      // 插入 FY-TKD 凭证单
-      await tx.insert(saleOrders).values({
-        saleOrderId: id,
-        status: '待审批',
-        saleOrderType: '退款单',
-        documentType: origOrder.documentType as typeof saleOrders.$inferInsert['documentType'],
-        refSaleOrderId: refSaleOrderId,
-        marketName: origOrder.marketName,
-        storeId: origOrder.storeId,
-        saleOrderDatetime: now,
-        clientUserId: origOrder.clientUserId,
-        clientPhone: origOrder.clientPhone,
-        customerName: origOrder.customerName,
-        totalAmount: totalAmount.toFixed(2),
-        prepaidCardAmount: '0',
-        payableAmount: '0',
-        paidAmount: '0',
-        paymentMethod: origOrder.paymentMethod,
-        openedBy: session.employeeId,
+      if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
+
+      await tx.insert(salePaymentDetails).values({
+        paymentId: paymentRow.id,
+        operatorEmployeeId: session.employeeId,
+        note: paymentNote || null,
         refundReason,
-        handlingFee: fee > 0 ? fee.toFixed(2) : null,
-        overdraftDeduction: overdraftDeduction > 0 ? overdraftDeduction.toFixed(2) : '0',
-        overdraftDeductionDetail: overdraftDetail,
+        refSaleItemId: primaryRefSaleItemId,
+        sessionCount: primarySessionCount,
       })
 
-      // 生成退款明细行 ID（与 staff 格式保持一致：XSLSH-WX-YYMMDDnnnn）
-      const dateStr = formatYYMMDD(now)
-      const maxRows = await tx.execute(sql`
-        SELECT sale_item_id FROM sale_items
-        WHERE sale_item_id LIKE ${'XSLSH-WX-' + dateStr + '%'}
-        ORDER BY sale_item_id DESC LIMIT 1
-      `)
-      let seq = 1
-      const maxArr = maxRows as unknown as Array<{ sale_item_id: string }>
-      if (maxArr.length > 0) {
-        seq = parseInt(maxArr[0].sale_item_id.slice(-4), 10) + 1
-      }
-
-      for (let i = 0; i < refundDetails.length; i++) {
-        const d = refundDetails[i]
-        const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
-        await tx.insert(saleItems).values({
-          saleItemId,
-          saleOrderId: id,
-          storeId: origOrder.storeId,
-          itemDirection: '退出',
-          refSaleItemId: d.refSaleItemId,
-          skuId: d.skuId,
-          productName: d.productName,
-          skuSpecName: d.skuSpecName,
-          productType: d.productType,
-          sessionCount: d.sessionCount,
-          unitPrice: d.unitPrice.toFixed(2),
-          quantity: d.quantity,
-          unitRealPrice: d.unitRealPrice.toFixed(2),
-          saleAmount: (-d.refundAmount).toFixed(2),
-          received: (-d.refundAmount).toFixed(2),
-          salesCategory: d.salesCategory,
-          serviceFee: (d.serviceFee || 0).toFixed(2),
-        })
-      }
-
-      // 写 payments 退款行（挂在原销售单上，status='待支付' 待 approve 翻 '已支付'）
-      const feeNote = fee > 0 ? `; fee=${fee}` : ''
-      const paymentNote = `FY-TKD=${id}; reason=${refundReason}${feeNote}`
-
-      if (refundByCard > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId: refSaleOrderId,
-          changeType: '退款',
-          amount: (-refundByCard).toFixed(2),
-          paymentMethod: '储值卡',
-          externalTxnId: null,
-          status: '待支付',
-          sourceEnd: 'admin',
-          operatorEmployeeId: session.employeeId,
-          note: paymentNote,
-        })
-      }
-      if (refundByOrigin > 0) {
-        await tx.insert(saleOrderPayments).values({
-          saleOrderId: refSaleOrderId,
-          changeType: '退款',
-          amount: (-refundByOrigin).toFixed(2),
-          paymentMethod: refundPaymentMethod,
-          externalTxnId: null,
-          status: '待支付',
-          sourceEnd: 'admin',
-          operatorEmployeeId: session.employeeId,
-          note: paymentNote,
-        })
-      }
-
-      return id
+      return paymentRow.id
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg === 'ORDER_ID_GEN_FAILED') {
-      return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '退款单号生成失败' } }
+    const pgErr = err as { code?: string; constraint?: string }
+    if (pgErr.code === '23505' && pgErr.constraint === 'uq_sop_status_audit') {
+      return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
     }
-    if ((err as { code?: string })?.code === '23505') {
-      return { success: false, error: { code: 'ORDER_ID_CONFLICT', message: '订单号冲突，请稍后重试' } }
+    if (msg === 'PAYMENT_INSERT_FAILED') {
+      return { success: false, error: { code: 'INVALID_STATE', message: '退款流水写入失败' } }
     }
-    console.error('[createRefundOrder] unexpected error:', err)
-    return { success: false, error: { code: 'UNKNOWN', message: '创建退款单失败，请稍后重试' } }
+    console.error('[createRefund] unexpected error:', err)
+    return { success: false, error: { code: 'UNKNOWN', message: '创建退款失败，请稍后重试' } }
   }
 
-  await logOperation(session, 'refund.create', 'sale_order', refundOrderId, {
+  await logOperation(session, 'refund.create', 'sale_order_payment', String(refundPaymentId), {
     refSaleOrderId,
     finalRefundAmount: finalRefundAmount.toFixed(2),
     adjustedRefundAmount: adjustedRefundAmount.toFixed(2),
     refundByCard: refundByCard.toFixed(2),
     refundByOrigin: refundByOrigin.toFixed(2),
     handlingFee: fee.toFixed(2),
-    refundReason,
     overdraftDeduction: overdraftDeduction.toFixed(2),
+    refundReason,
   })
-
-  if (overdraftDeduction > 0) {
-    await logOperation(session, 'refund.overdraftDeducted', 'sale_order', refundOrderId, {
-      refSaleOrderId,
-      overdraftDeduction: overdraftDeduction.toFixed(2),
-      detail: overdraftDetail,
-    })
-  }
 
   revalidatePath('/refunds')
   revalidatePath(`/orders/${refSaleOrderId}`)
   return {
     success: true,
-    data: { refundOrderId, refundByCard, refundByOrigin, finalRefundAmount },
+    data: { refundPaymentId, refundByCard, refundByOrigin, finalRefundAmount },
   }
 }
 
+// 兼容旧前端：alias 导出（旧 createRefundOrder 签名 → 新 createRefund）
+export const createRefundOrder = createRefund
+
 // ─────────────────────────────────────────────────────────────────────────────
-// approveRefund：审批退款单（幂等 + 扣减 + 储值卡回冲 + 翻 payments + 重算原单）
+// approveRefund：审批通过 — CAS 翻状态 + 5 通道 cascade + 重算原单
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function approveRefund(saleOrderId: string): Promise<ApproveRefundResult> {
+export async function approveRefund(refundPaymentId: number | string): Promise<ApproveRefundResult> {
   const session = await getSession()
   requirePermission(session, 'sale_order:refund')
 
-  const id = String(saleOrderId || '').trim()
-  if (!id) return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少 saleOrderId' } }
+  const idNum = Number(refundPaymentId)
+  if (!Number.isFinite(idNum) || idNum <= 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少退款流水 ID' } }
+  }
 
-  // 查询退款单
-  const [refundOrder] = await db
-    .select()
-    .from(saleOrders)
-    .where(
-      and(
-        eq(saleOrders.saleOrderId, id),
-        eq(saleOrders.saleOrderType, '退款单'),
-        eq(saleOrders.status, '待审批'),
-        scopeCondition(session, saleOrders.storeId),
-      ),
-    )
+  // 预读：取 sop + sopd（用于 cascade params + scope 校验 + 拆分回款）
+  const [pre] = await db
+    .select({
+      payment: saleOrderPayments,
+      details: salePaymentDetails,
+      orderStoreId: saleOrders.storeId,
+      orderClientUserId: saleOrders.clientUserId,
+      orderTotalAmount: saleOrders.totalAmount,
+      orderPrepaidCardAmount: saleOrders.prepaidCardAmount,
+    })
+    .from(saleOrderPayments)
+    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+    .where(eq(saleOrderPayments.id, idNum))
     .limit(1)
 
-  if (!refundOrder) {
-    return { success: false, error: { code: 'INVALID_PARAMS', message: '退款单不存在或状态不允许审批' } }
+  if (!pre || !pre.payment) {
+    return { success: false, error: { code: 'NOT_FOUND', message: '退款记录不存在' } }
   }
-
-  const refSaleOrderId = refundOrder.refSaleOrderId
-  const now = new Date()
-
-  // 读被退原单金额
-  let origPrepaidCardAmount = 0
-  let origTotalAmount = 0
-  if (refSaleOrderId) {
-    const [origRow] = await db
-      .select({
-        prepaidCardAmount: saleOrders.prepaidCardAmount,
-        totalAmount: saleOrders.totalAmount,
-      })
-      .from(saleOrders)
-      .where(eq(saleOrders.saleOrderId, refSaleOrderId))
-      .limit(1)
-    if (origRow) {
-      origPrepaidCardAmount = Number(origRow.prepaidCardAmount || 0)
-      origTotalAmount = Number(origRow.totalAmount || 0)
+  if (pre.payment.changeType !== '退款') {
+    return { success: false, error: { code: 'INVALID_STATE', message: '该流水非退款类型' } }
+  }
+  if (pre.payment.status !== '待审批') {
+    return {
+      success: false,
+      error: { code: 'INVALID_STATE', message: `当前状态"${pre.payment.status}"不允许审批` },
     }
   }
+  if (!pre.orderStoreId) {
+    return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+  }
+  if (!isInScope(session, pre.orderStoreId)) {
+    return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+  }
 
-  const refundAmount = Math.abs(Number(refundOrder.totalAmount || 0))
+  const refSaleOrderId = pre.payment.saleOrderId
+  const refundAmount = Math.abs(Number(pre.payment.amount || 0))
+  const origPrepaidCardAmount = Number(pre.orderPrepaidCardAmount || 0)
+  const origTotalAmount = Number(pre.orderTotalAmount || 0)
   const { refundByCard, refundByOrigin } = splitRefundByOriginalPayment(
     refundAmount,
     origPrepaidCardAmount,
     origTotalAmount,
   )
 
+  let cascade = {
+    voidedAllocations: 0,
+    voidedCommissions: 0,
+    refundedCoupons: 0,
+    reversedPoints: 0,
+    rolledBackPickups: 0,
+  }
+
   try {
-    await db.transaction(async (tx) => {
-      // 幂等哨兵：先翻转 FY-TKD 状态；rowCount=0 说明并发已处理
+    cascade = await db.transaction(async (tx) => {
+      const nowIso = new Date().toISOString()
+
+      // 1) CAS 翻状态：仅 '待审批' → '已支付'
       const updRes = await tx.execute(sql`
-        UPDATE sale_orders
-           SET status = '已支付', paid_at = ${now}, approved_by = ${session.employeeId},
-               approved_at = ${now}, allocation_status = '待分配',
-               prepaid_card_amount = ${(-refundByCard).toFixed(2)}::numeric,
-               paid_amount = ${(-refundByOrigin).toFixed(2)}::numeric,
-               updated_at = ${now}
-         WHERE sale_order_id = ${id} AND status = '待审批'
+        UPDATE sale_order_payments
+           SET status = '已支付',
+               paid_at = ${nowIso}
+         WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
         throw new Error('CONCURRENT_CHANGED')
       }
 
-      // 扣减原购买行 remaining_sessions（疗程卡）
-      const refundItemRows = await tx.execute(sql`
-        SELECT sale_item_id, ref_sale_item_id, quantity, session_count
-        FROM sale_items
-        WHERE sale_order_id = ${id} AND item_direction = '退出'
+      // 2) 写审批人到子表
+      await tx.execute(sql`
+        UPDATE sale_order_payment_details
+           SET audit_employee_id = ${session.employeeId},
+               audit_at = ${nowIso},
+               updated_at = NOW()
+         WHERE payment_id = ${idNum}
       `)
-      const refundItemArr = refundItemRows as unknown as Array<{
-        sale_item_id: string
-        ref_sale_item_id: string | null
-        quantity: number
-        session_count: number | null
-      }>
-      for (const ri of refundItemArr) {
-        if (ri.ref_sale_item_id && ri.session_count) {
-          const sessRes = await tx.execute(sql`
-            UPDATE sale_items
-               SET remaining_sessions = remaining_sessions - ${ri.quantity},
-                   updated_at = ${now}
-             WHERE sale_item_id = ${ri.ref_sale_item_id}
-               AND remaining_sessions >= ${ri.quantity}
-          `)
-          if ((sessRes as { rowCount?: number }).rowCount === 0) {
-            throw new Error('INSUFFICIENT_SESSIONS')
-          }
+
+      // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
+      await tx.execute(sql`
+        UPDATE sale_orders so
+           SET refunded_amount = COALESCE((
+                 SELECT -SUM(sop.amount::numeric) FROM sale_order_payments sop
+                 WHERE sop.sale_order_id = so.sale_order_id
+                   AND sop.change_type = '退款'
+                   AND sop.status = '已支付'
+               ), 0),
+               updated_at = NOW()
+         WHERE so.sale_order_id = ${refSaleOrderId}
+      `)
+
+      // 4) 扣减原购买行 remaining_sessions（疗程卡）+ 储值卡回冲
+      const refSaleItemId = pre.details?.refSaleItemId ?? null
+      const sessionCount = pre.details?.sessionCount ?? null
+      if (refSaleItemId && sessionCount && sessionCount > 0) {
+        const sessRes = await tx.execute(sql`
+          UPDATE sale_items
+             SET remaining_sessions = remaining_sessions - ${sessionCount},
+                 updated_at = NOW()
+           WHERE sale_item_id = ${refSaleItemId}
+             AND remaining_sessions >= ${sessionCount}
+        `)
+        if ((sessRes as { rowCount?: number }).rowCount === 0) {
+          throw new Error('INSUFFICIENT_SESSIONS')
         }
       }
 
-      // 储值卡部分：回冲余额 + INSERT card_transactions '充值'
-      // 幂等守卫：ref_order_id=退款单ID + type='充值' 去重
-      if (refundByCard > 0 && refundOrder.clientUserId) {
+      if (refundByCard > 0 && pre.orderClientUserId) {
+        const refOrderTag = `refund-payment-${idNum}`
         const dupRes = await tx.execute(sql`
           SELECT 1 FROM card_transactions
-          WHERE ref_order_id = ${id} AND type = '充值' LIMIT 1
+          WHERE ref_order_id = ${refOrderTag} AND type = '充值' LIMIT 1
         `)
         if ((dupRes as unknown as unknown[]).length === 0) {
-          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
+          const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
+            .toString()
+            .padStart(3, '0')}`
           const upsertRes = await tx.execute(sql`
             INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at)
-            VALUES (${newCardId}, ${refundOrder.clientUserId}, ${refundByCard.toFixed(2)}::numeric, NOW(), NOW())
+            VALUES (${newCardId}, ${pre.orderClientUserId}, ${refundByCard.toFixed(2)}::numeric, NOW(), NOW())
             ON CONFLICT (user_id) DO UPDATE
               SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW()
             RETURNING card_id
@@ -892,170 +842,145 @@ export async function approveRefund(saleOrderId: string): Promise<ApproveRefundR
 
           await tx.execute(sql`
             INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${id}, NOW())
+            VALUES (${cardId}, '充值', ${refundByCard.toFixed(2)}::numeric, ${refOrderTag}, NOW())
           `)
         }
       }
 
-      // 翻转原销售单上的 payments 退款行 '待支付' → '已支付'
-      if (refSaleOrderId) {
-        await tx.execute(sql`
-          UPDATE sale_order_payments
-             SET status = '已支付', paid_at = ${now}
-           WHERE sale_order_id = ${refSaleOrderId}
-             AND change_type = '退款' AND status = '待支付'
-             AND note LIKE ${'FY-TKD=' + id + '%'}
-        `)
+      // 5) 5 通道 cascade
+      const result = await cascadeRefund(tx, {
+        saleOrderId: refSaleOrderId,
+        saleItemId: refSaleItemId,
+        sessionCount,
+        refundReason: pre.details?.refundReason ?? '',
+      })
 
-        // 重算原单 paid_amount / prepaid_card_amount
-        const sumRes = await tx.execute(sql`
-          SELECT
-            COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','退款')
-                              THEN amount::numeric ELSE 0 END), 0) AS new_paid,
-            COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
-                              THEN amount::numeric ELSE 0 END), 0) AS new_prepaid
-          FROM sale_order_payments
-          WHERE sale_order_id = ${refSaleOrderId}
-        `)
-        const sumRow = (sumRes as unknown as Array<{ new_paid: string | number; new_prepaid: string | number }>)[0]
-        const newPaid = Math.round(Number(sumRow?.new_paid || 0) * 100) / 100
-        const newPrepaid = Math.round(Number(sumRow?.new_prepaid || 0) * 100) / 100
-        await tx.execute(sql`
-          UPDATE sale_orders
-             SET paid_amount = ${newPaid.toFixed(2)}::numeric,
-                 prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
-                 updated_at = ${now}
-           WHERE sale_order_id = ${refSaleOrderId}
-        `)
+      // 6) 重算顾客历史消费档位
+      if (pre.orderClientUserId) {
+        await refreshSpendingTierTx(tx, pre.orderClientUserId)
       }
 
-      // 重算顾客历史消费档位 + 类型（与 staff 对齐，退款减少累计消费）
-      if (refundOrder.clientUserId) {
-        await refreshSpendingTierTx(tx, refundOrder.clientUserId)
-      }
+      return result
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg === 'CONCURRENT_CHANGED') {
-      return {
-        success: false,
-        error: { code: 'CONCURRENT_CHANGED', message: '退款单状态已变更，请刷新后重试' },
-      }
+      return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
     if (msg === 'INSUFFICIENT_SESSIONS') {
-      return { success: false, error: { code: 'INSUFFICIENT_SESSIONS', message: '剩余次数不足，无法退款' } }
+      return { success: false, error: { code: 'INVALID_STATE', message: '剩余次数不足，无法退款' } }
     }
     if (msg === 'CARD_UPSERT_FAILED') {
-      return { success: false, error: { code: 'CARD_UPSERT_FAILED', message: '储值卡回冲失败' } }
+      return { success: false, error: { code: 'INVALID_STATE', message: '储值卡回冲失败' } }
     }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }
   }
 
-  await logOperation(session, 'refund.approve', 'sale_order', id, {
+  await logOperation(session, 'refund.approve', 'sale_order_payment', String(idNum), {
     refSaleOrderId,
     refundByCard: refundByCard.toFixed(2),
     refundByOrigin: refundByOrigin.toFixed(2),
+    cascade,
   })
 
   revalidatePath('/refunds')
-  revalidatePath(`/refunds/${id}`)
+  revalidatePath(`/refunds/${idNum}`)
   if (refSaleOrderId) revalidatePath(`/orders/${refSaleOrderId}`)
-  return { success: true, data: { refundByCard, refundByOrigin } }
+  return { success: true, data: { refundByCard, refundByOrigin, cascade } }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// rejectRefund：驳回退款单
+// rejectRefund：驳回退款 — CAS '待审批' → '已作废' + 写审批意见
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function rejectRefund(
-  saleOrderId: string,
+  refundPaymentId: number | string,
   rejectedReason: string,
 ): Promise<RejectRefundResult> {
   const session = await getSession()
   requirePermission(session, 'sale_order:refund')
 
-  const id = String(saleOrderId || '').trim()
+  const idNum = Number(refundPaymentId)
   const reason = String(rejectedReason || '').trim()
-  if (!id) return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少 saleOrderId' } }
-  if (!reason) return { success: false, error: { code: 'INVALID_PARAMS', message: '驳回原因不能为空' } }
+  if (!Number.isFinite(idNum) || idNum <= 0) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少退款流水 ID' } }
+  }
+  if (!reason) {
+    return { success: false, error: { code: 'INVALID_PARAMS', message: '驳回原因不能为空' } }
+  }
 
-  // 查询退款单 + scope
-  const [refundRow] = await db
+  const [pre] = await db
     .select({
-      saleOrderId: saleOrders.saleOrderId,
-      refSaleOrderId: saleOrders.refSaleOrderId,
+      payment: saleOrderPayments,
+      orderStoreId: saleOrders.storeId,
     })
-    .from(saleOrders)
-    .where(
-      and(
-        eq(saleOrders.saleOrderId, id),
-        eq(saleOrders.saleOrderType, '退款单'),
-        eq(saleOrders.status, '待审批'),
-        scopeCondition(session, saleOrders.storeId),
-      ),
-    )
+    .from(saleOrderPayments)
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
+    .where(eq(saleOrderPayments.id, idNum))
     .limit(1)
 
-  if (!refundRow) {
-    return { success: false, error: { code: 'INVALID_PARAMS', message: '退款单不存在或状态不允许驳回' } }
+  if (!pre || !pre.payment) {
+    return { success: false, error: { code: 'NOT_FOUND', message: '退款记录不存在' } }
   }
-  const refSaleOrderId = refundRow.refSaleOrderId
+  if (pre.payment.changeType !== '退款') {
+    return { success: false, error: { code: 'INVALID_STATE', message: '该流水非退款类型' } }
+  }
+  if (pre.payment.status !== '待审批') {
+    return {
+      success: false,
+      error: { code: 'INVALID_STATE', message: `当前状态"${pre.payment.status}"不允许驳回` },
+    }
+  }
+  if (!pre.orderStoreId || !isInScope(session, pre.orderStoreId)) {
+    return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+  }
+
+  const refSaleOrderId = pre.payment.saleOrderId
 
   try {
     await db.transaction(async (tx) => {
-      const now = new Date()
+      const nowIso = new Date().toISOString()
       const updRes = await tx.execute(sql`
-        UPDATE sale_orders
-           SET status = '已关闭',
-               rejected_reason = ${reason},
-               approved_by = ${session.employeeId},
-               approved_at = ${now},
-               updated_at = ${now}
-         WHERE sale_order_id = ${id}
-           AND sale_order_type = '退款单'
-           AND status = '待审批'
+        UPDATE sale_order_payments
+           SET status = '已作废'
+         WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
         throw new Error('CONCURRENT_CHANGED')
       }
 
-      // 作废原单上的 payments 退款行
-      if (refSaleOrderId) {
-        await tx.execute(sql`
-          UPDATE sale_order_payments
-             SET status = '已作废'
-           WHERE sale_order_id = ${refSaleOrderId}
-             AND change_type = '退款' AND status = '待支付'
-             AND note LIKE ${'FY-TKD=' + id + '%'}
-        `)
-      }
+      await tx.execute(sql`
+        UPDATE sale_order_payment_details
+           SET audit_employee_id = ${session.employeeId},
+               audit_at = ${nowIso},
+               audit_remark = ${reason},
+               updated_at = NOW()
+         WHERE payment_id = ${idNum}
+      `)
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg === 'CONCURRENT_CHANGED') {
-      return {
-        success: false,
-        error: { code: 'CONCURRENT_CHANGED', message: '退款单状态已变更，请刷新后重试' },
-      }
+      return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
     console.error('[rejectRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '驳回失败，请稍后重试' } }
   }
 
-  await logOperation(session, 'refund.reject', 'sale_order', id, {
+  await logOperation(session, 'refund.reject', 'sale_order_payment', String(idNum), {
     refSaleOrderId,
     rejectedReason: reason,
   })
 
   revalidatePath('/refunds')
-  revalidatePath(`/refunds/${id}`)
+  revalidatePath(`/refunds/${idNum}`)
   if (refSaleOrderId) revalidatePath(`/orders/${refSaleOrderId}`)
   return { success: true }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// listRefunds：退款单列表（带状态筛选 + 分页）
+// listRefunds：退款流水列表（聚合 sale_order_payments[change_type='退款']）
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function listRefunds(filters: RefundListFilters = {}): Promise<RefundListResult> {
@@ -1066,35 +991,51 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
   const offset = (page - 1) * pageSize
 
+  // 旧 UI 状态映射：'已关闭' → '已作废'（驳回）；其他原值透传
+  const sopStatus =
+    filters.status === '已关闭'
+      ? '已作废'
+      : filters.status === '已支付'
+        ? '已支付'
+        : filters.status === '待审批'
+          ? '待审批'
+          : null
+
   const conditions: (SQL | undefined)[] = [
-    eq(saleOrders.saleOrderType, '退款单'),
+    eq(saleOrderPayments.changeType, '退款'),
     scopeCondition(session, saleOrders.storeId),
   ]
-  if (filters.status) {
-    conditions.push(eq(saleOrders.status, filters.status))
+  if (sopStatus) {
+    conditions.push(
+      eq(saleOrderPayments.status, sopStatus as typeof saleOrderPayments.status.enumValues[number]),
+    )
   }
   const whereClause = and(...conditions)
 
   const [countRow] = await db
     .select({ count: sql<number>`cast(count(*) as int)` })
-    .from(saleOrders)
+    .from(saleOrderPayments)
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .where(whereClause)
   const total = countRow?.count ?? 0
 
   const rows = await db
     .select({
-      refund: saleOrders,
+      payment: saleOrderPayments,
+      details: salePaymentDetails,
+      order: saleOrders,
       storeName: stores.storeName,
-      openedByName: opener.name,
-      approvedByName: approver.name,
+      operatorName: operatorAlias.name,
+      auditorName: auditorAlias.name,
     })
-    .from(saleOrders)
+    .from(saleOrderPayments)
+    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-    .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-    .leftJoin(approver, eq(saleOrders.approvedBy, approver.employeeId))
+    .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
+    .leftJoin(auditorAlias, eq(salePaymentDetails.auditEmployeeId, auditorAlias.employeeId))
     .where(whereClause)
-    // 默认排序：最近修改/审批的退款单浮顶（admin.sys.spec.md §5）
-    .orderBy(desc(saleOrders.updatedAt), desc(saleOrders.createdAt))
+    .orderBy(desc(saleOrderPayments.createdAt))
     .limit(pageSize)
     .offset(offset)
 
@@ -1104,31 +1045,35 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getRefundById：退款单详情
+// getRefundById：退款流水详情（按 sale_order_payments.id）
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function getRefundById(saleOrderId: string): Promise<RefundDetailResult | null> {
+export async function getRefundById(refundPaymentId: number | string): Promise<RefundDetailResult | null> {
   const session = await getSession()
   requirePermission(session, 'sale_order:refund')
 
-  const id = String(saleOrderId || '').trim()
-  if (!id) return null
+  const idNum = Number(refundPaymentId)
+  if (!Number.isFinite(idNum) || idNum <= 0) return null
 
   const rows = await db
     .select({
-      refund: saleOrders,
+      payment: saleOrderPayments,
+      details: salePaymentDetails,
+      order: saleOrders,
       storeName: stores.storeName,
-      openedByName: opener.name,
-      approvedByName: approver.name,
+      operatorName: operatorAlias.name,
+      auditorName: auditorAlias.name,
     })
-    .from(saleOrders)
+    .from(saleOrderPayments)
+    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
+    .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-    .leftJoin(opener, eq(saleOrders.openedBy, opener.employeeId))
-    .leftJoin(approver, eq(saleOrders.approvedBy, approver.employeeId))
+    .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
+    .leftJoin(auditorAlias, eq(salePaymentDetails.auditEmployeeId, auditorAlias.employeeId))
     .where(
       and(
-        eq(saleOrders.saleOrderId, id),
-        eq(saleOrders.saleOrderType, '退款单'),
+        eq(saleOrderPayments.id, idNum),
+        eq(saleOrderPayments.changeType, '退款'),
         scopeCondition(session, saleOrders.storeId),
       ),
     )
@@ -1137,95 +1082,58 @@ export async function getRefundById(saleOrderId: string): Promise<RefundDetailRe
   if (rows.length === 0) return null
   const base = mapRefundRow(rows[0])
 
-  // 退款明细行（item_direction='退出'）
-  const itemRows = await db
-    .select()
-    .from(saleItems)
-    .where(eq(saleItems.saleOrderId, id))
-
-  const items: SaleItem[] = itemRows.map((ir) => ({
-    saleItemId: ir.saleItemId,
-    saleOrderId: ir.saleOrderId,
-    itemDirection: ir.itemDirection as SaleItem['itemDirection'],
-    refSaleItemId: ir.refSaleItemId,
-    skuId: ir.skuId,
-    sessionCount: ir.sessionCount,
-    remainingSessions: ir.remainingSessions,
-    unitPrice: ir.unitPrice,
-    quantity: ir.quantity,
-    unitRealPrice: ir.unitRealPrice,
-    saleAmount: ir.saleAmount,
-    received: ir.received,
-    expireDate: ir.expireDate,
-    remark: ir.remark,
-    salesCategory: ir.salesCategory as SalesCategory | null,
-    createdAt: ir.createdAt.toISOString(),
-    updatedAt: ir.updatedAt.toISOString(),
-    productName: ir.productName ?? undefined,
-  }))
-
-  // 原销售单（只读展示）
+  // 原销售单只读视图
   let origOrder: SaleOrder | null = null
-  if (base.refSaleOrderId) {
-    const [origRow] = await db
-      .select({
-        order: saleOrders,
-        storeName: stores.storeName,
-      })
-      .from(saleOrders)
-      .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-      .where(eq(saleOrders.saleOrderId, base.refSaleOrderId))
-      .limit(1)
-    if (origRow) {
-      const o = origRow.order
-      origOrder = {
-        saleOrderId: o.saleOrderId,
-        status: o.status as OrderStatus,
-        saleOrderType: o.saleOrderType as SaleOrder['saleOrderType'],
-        documentType: o.documentType as SaleOrder['documentType'],
-        refSaleOrderId: o.refSaleOrderId,
-        marketName: o.marketName,
-        storeId: o.storeId,
-        saleOrderDatetime: o.saleOrderDatetime.toISOString(),
-        clientUserId: o.clientUserId,
-        clientPhone: o.clientPhone,
-        customerName: o.customerName,
-        totalAmount: o.totalAmount,
-        prepaidCardAmount: o.prepaidCardAmount ?? '0',
-        paidAmount: o.paidAmount ?? '0',
-        paymentMethod: o.paymentMethod as PaymentMethod,
-        openedBy: o.openedBy,
-        preferredEmployeeId: o.preferredEmployeeId,
-        paidAt: o.paidAt?.toISOString() ?? null,
-        allocationStatus: o.allocationStatus as SaleOrder['allocationStatus'],
-        couponId: o.couponId,
-        couponDiscount: o.couponDiscount,
-        remark: o.remark,
-        createdAt: o.createdAt.toISOString(),
-        updatedAt: o.updatedAt.toISOString(),
-        storeName: origRow.storeName ?? undefined,
-      }
+  if (base.refSaleOrderId && rows[0].order) {
+    const o = rows[0].order
+    origOrder = {
+      saleOrderId: o.saleOrderId,
+      status: o.status as OrderStatus,
+      saleOrderType: o.saleOrderType as SaleOrder['saleOrderType'],
+      documentType: o.documentType as SaleOrder['documentType'],
+      refSaleOrderId: o.refSaleOrderId,
+      marketName: o.marketName,
+      storeId: o.storeId,
+      saleOrderDatetime: o.saleOrderDatetime.toISOString(),
+      clientUserId: o.clientUserId,
+      clientPhone: o.clientPhone,
+      customerName: o.customerName,
+      totalAmount: o.totalAmount,
+      prepaidCardAmount: o.prepaidCardAmount ?? '0',
+      received: o.received ?? '0',
+      refundedAmount: o.refundedAmount ?? '0',
+      paymentMethod: o.paymentMethod as PaymentMethod,
+      openedBy: o.openedBy,
+      preferredEmployeeId: o.preferredEmployeeId,
+      paidAt: o.paidAt?.toISOString() ?? null,
+      allocationStatus: o.allocationStatus as SaleOrder['allocationStatus'],
+      couponId: o.couponId,
+      couponDiscount: o.couponDiscount,
+      remark: o.remark,
+      createdAt: o.createdAt.toISOString(),
+      updatedAt: o.updatedAt.toISOString(),
+      storeName: rows[0].storeName ?? undefined,
     }
   }
 
-  // 本次退款涉及的 payments 流水（挂在原销售单上，note LIKE FY-TKD=id%）
+  // 同一原单下所有退款流水（历史 + 当前）
   let payments: SaleOrderPayment[] = []
   if (base.refSaleOrderId) {
     const payRows = await db
       .select({
         payment: saleOrderPayments,
-        operatorName: staffWechatUsers.name,
+        details: salePaymentDetails,
+        operatorName: operatorAlias.name,
       })
       .from(saleOrderPayments)
-      .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
+      .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
+      .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
       .where(
         and(
           eq(saleOrderPayments.saleOrderId, base.refSaleOrderId),
           eq(saleOrderPayments.changeType, '退款'),
-          sql`${saleOrderPayments.note} LIKE ${'FY-TKD=' + id + '%'}`,
         ),
       )
-      // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
       .orderBy(asc(saleOrderPayments.createdAt))
 
     payments = payRows.map((r) => ({
@@ -1237,16 +1145,22 @@ export async function getRefundById(saleOrderId: string): Promise<RefundDetailRe
       externalTxnId: r.payment.externalTxnId,
       status: r.payment.status as SaleOrderPayment['status'],
       sourceEnd: r.payment.sourceEnd as SaleOrderPayment['sourceEnd'],
-      operatorEmployeeId: r.payment.operatorEmployeeId,
-      note: r.payment.note,
+      operatorEmployeeId: r.details?.operatorEmployeeId ?? null,
+      note: r.details?.note ?? null,
       createdAt: r.payment.createdAt.toISOString(),
       paidAt: r.payment.paidAt?.toISOString() ?? null,
       operatorName: r.operatorName ?? null,
+      refundReason: r.details?.refundReason ?? null,
+      refSaleItemId: r.details?.refSaleItemId ?? null,
+      sessionCount: r.details?.sessionCount ?? null,
+      auditEmployeeId: r.details?.auditEmployeeId ?? null,
+      auditAt: r.details?.auditAt ? r.details.auditAt.toISOString() : null,
+      auditRemark: r.details?.auditRemark ?? null,
     }))
   }
 
   return {
-    refund: { ...base, items },
+    refund: base,
     origOrder,
     payments,
   }
@@ -1257,46 +1171,44 @@ export async function getRefundById(saleOrderId: string): Promise<RefundDetailRe
 // ─────────────────────────────────────────────────────────────────────────────
 
 function mapRefundRow(r: {
-  refund: typeof saleOrders.$inferSelect
+  payment: typeof saleOrderPayments.$inferSelect
+  details: typeof salePaymentDetails.$inferSelect | null
+  order: typeof saleOrders.$inferSelect | null
   storeName: string | null
-  openedByName: string | null
-  approvedByName: string | null
+  operatorName: string | null
+  auditorName: string | null
 }): RefundListItem {
   return {
-    saleOrderId: r.refund.saleOrderId,
-    refSaleOrderId: r.refund.refSaleOrderId,
-    status: r.refund.status as OrderStatus,
-    marketName: r.refund.marketName,
-    storeId: r.refund.storeId,
+    refundPaymentId: r.payment.id,
+    refSaleOrderId: r.payment.saleOrderId,
+    status: r.payment.status as RefundListItem['status'],
+    marketName: r.order?.marketName ?? null,
+    storeId: r.order?.storeId ?? null,
     storeName: r.storeName,
-    customerName: r.refund.customerName,
-    clientPhone: r.refund.clientPhone,
-    totalAmount: r.refund.totalAmount,
-    refundReason: r.refund.refundReason,
-    handlingFee: r.refund.handlingFee,
-    rejectedReason: r.refund.rejectedReason,
-    openedBy: r.refund.openedBy,
-    openedByName: r.openedByName,
-    approvedBy: r.refund.approvedBy,
-    approvedByName: r.approvedByName,
-    approvedAt: r.refund.approvedAt?.toISOString() ?? null,
-    createdAt: r.refund.createdAt.toISOString(),
-    updatedAt: r.refund.updatedAt.toISOString(),
+    customerName: r.order?.customerName ?? null,
+    clientPhone: r.order?.clientPhone ?? null,
+    amount: r.payment.amount,
+    refundReason: r.details?.refundReason ?? null,
+    refSaleItemId: r.details?.refSaleItemId ?? null,
+    sessionCount: r.details?.sessionCount ?? null,
+    handlingFee: r.details?.handlingFee != null ? String(r.details.handlingFee) : null,
+    operatorEmployeeId: r.details?.operatorEmployeeId ?? null,
+    operatorName: r.operatorName,
+    auditEmployeeId: r.details?.auditEmployeeId ?? null,
+    auditorName: r.auditorName,
+    auditAt: r.details?.auditAt ? r.details.auditAt.toISOString() : null,
+    auditRemark: r.details?.auditRemark ?? null,
+    paymentMethod: r.payment.paymentMethod,
+    createdAt: r.payment.createdAt.toISOString(),
+    paidAt: r.payment.paidAt?.toISOString() ?? null,
   }
-}
-
-function formatYYMMDD(d: Date): string {
-  const yy = String(d.getFullYear() % 100).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${yy}${mm}${dd}`
 }
 
 /**
  * 重算顾客历史消费档位（事务内调用，退款会减少累计消费）
  *
- * 与 staff refreshSpendingTier 对齐；'1990-1W' 下界走 system_configs.new_member_threshold。
- * 若读取配置失败则 fallback 到 1990 固定值（降级策略）。
+ * 2026-04-26 sale-order-domain-refactor：原 paid_amount 列已 DROP，统一改用
+ * received - refunded_amount；类型限定为 5→3 后的 3 值。
  */
 async function refreshSpendingTierTx(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
@@ -1304,7 +1216,6 @@ async function refreshSpendingTierTx(
 ): Promise<void> {
   if (!clientUserId) return
 
-  // 从 system_configs 读取 new_member_threshold（保持与 staff/admin 其他路径一致）
   let threshold = 1990
   try {
     const cfgRows = await tx.execute(sql`
@@ -1331,16 +1242,12 @@ async function refreshSpendingTierTx(
        END::spending_tier,
        updated_at = NOW()
        FROM (
-         SELECT COALESCE(SUM(total_amount), 0) AS total
+         SELECT COALESCE(SUM(GREATEST((received::numeric) - (refunded_amount::numeric), 0)), 0) AS total
          FROM sale_orders
          WHERE client_user_id = ${clientUserId}
            AND status IN ('已支付', '已完成')
+           AND sale_order_type IN ('销售单','转换单')
        ) t
      WHERE user_id = ${clientUserId}
   `)
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 避免未使用类型警告
-// ─────────────────────────────────────────────────────────────────────────────
-void inArray

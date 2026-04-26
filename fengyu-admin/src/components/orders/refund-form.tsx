@@ -155,7 +155,7 @@ export function RefundForm({
         applyOverdraftDeduction: applyOverdraft,
       })
       if (res.success) {
-        toast.success(`退款单已创建：${res.data.refundOrderId}，等待审批`)
+        toast.success(`退款单已创建（流水 #${res.data.refundPaymentId}），等待审批`)
         onOpenChange(false)
         router.refresh()
       } else {

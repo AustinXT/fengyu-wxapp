@@ -29,13 +29,9 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
     'system:config',
-    // 订单资金录入（ticket 2026-04-24 多次回款 PR-B）— admin 录入线下/储值卡回款，不走线上支付
-    // 需要 sale_order:list 才能访问订单详情页（getOrderById / getOrderPayments 均要求此权限）
-    'sale_order:list',
-    'sale_order:record_payment',
-    // 退款管理（ticket 2026-04-24 退款 PR-Y）— admin 创建/审批退款单
+    // 退款管理（ticket 2026-04-24 退款 PR-Y）— admin 审批退款单
     'sale_order:refund',
-    // admin 不碰业务数据（分配/服务/预约）和顾客
+    // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
     'dashboard:view',
@@ -60,6 +56,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'dashboard:view',
     'sale_order:list',
     'sale_order:refund',
+    'sale_order:record_payment',
     'sale_item:list',
     'allocation:list',
     'customer:list',

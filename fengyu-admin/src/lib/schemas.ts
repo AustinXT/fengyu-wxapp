@@ -77,6 +77,7 @@ export const createOrderSchema = z.object({
   clientPhone: z.string().regex(/^1\d{10}$/, '请输入正确的手机号'),
   customerName: z.string().min(1, '顾客姓名不能为空'),
   paymentMethod: paymentMethodSchema,
+  // 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments
   saleOrderType: z.enum(['销售单', '内部单', '回款单', '转换单', '退款单']),
   openedBy: z.string().min(1, '开单人不能为空'),
   preferredEmployeeId: z.string().optional(),

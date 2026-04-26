@@ -85,12 +85,12 @@ export default function RefundsPageClient({
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {refunds.map((r) => {
-                  const amount = Math.abs(Number(r.totalAmount))
+                  const amount = Math.abs(Number(r.amount))
                   return (
-                    <tr key={r.saleOrderId} className="hover:bg-[#FFF0EE] transition-colors">
+                    <tr key={r.refundPaymentId} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3 font-medium">
-                        <Link href={`/refunds/${r.saleOrderId}`} className="text-[var(--primary)] hover:underline">
-                          {r.saleOrderId}
+                        <Link href={`/refunds/${r.refundPaymentId}`} className="text-[var(--primary)] hover:underline">
+                          #{r.refundPaymentId}
                         </Link>
                       </td>
                       <td className="px-4 py-3">
@@ -110,10 +110,10 @@ export default function RefundsPageClient({
                       <td className="px-4 py-3 text-[#666] max-w-xs truncate" title={r.refundReason ?? ''}>
                         {r.refundReason || '-'}
                       </td>
-                      <td className="px-4 py-3">{r.openedByName || '-'}</td>
+                      <td className="px-4 py-3">{r.operatorName || '-'}</td>
                       <td className="px-4 py-3 whitespace-nowrap">{formatDateTime(r.createdAt)}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link href={`/refunds/${r.saleOrderId}`}>
+                        <Link href={`/refunds/${r.refundPaymentId}`}>
                           <Button size="sm" variant="outline">
                             {r.status === '待审批' ? '审批' : '查看'}
                           </Button>

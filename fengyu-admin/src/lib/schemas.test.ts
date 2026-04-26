@@ -170,11 +170,17 @@ describe('createOrderSchema', () => {
     expect(createOrderSchema.safeParse({ ...validOrder, items }).success).toBe(true)
   })
 
-  it('支持全部订单类型', () => {
-    const types = ['销售单', '内部单', '回款单', '转换单', '退款单'] as const
+  it('支持全部订单类型（5→3 重构后）', () => {
+    // 2026-04-26 sale-order-domain-refactor：'回款单'/'退款单' 已迁至 sale_order_payments
+    const types = ['销售单', '内部单', '转换单'] as const
     types.forEach(t => {
       expect(createOrderSchema.safeParse({ ...validOrder, saleOrderType: t }).success).toBe(true)
     })
+  })
+
+  it('已废弃订单类型 (回款单/退款单) 应被拒绝', () => {
+    expect(createOrderSchema.safeParse({ ...validOrder, saleOrderType: '回款单' }).success).toBe(false)
+    expect(createOrderSchema.safeParse({ ...validOrder, saleOrderType: '退款单' }).success).toBe(false)
   })
 
   it('非法订单类型拒绝', () => {
