@@ -153,9 +153,9 @@ async function requestUnbind(ctx) {
 
   const requestId = crypto.randomUUID()
   await pg.query(
-    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_name, status, note)
+    `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, status, note)
      VALUES ($1, $2, $3, '待处理', $4)`,
-    [requestId, userId, boundStoreName || '', note || null]
+    [requestId, userId, boundStoreId, note || null]
   )
 
   ctx.result = { requestId }
@@ -172,10 +172,12 @@ async function getUnbindRequest(ctx) {
   }
 
   const rows = await pg.query(
-    `SELECT request_id, from_store_name, status, note, created_at
-     FROM store_unbind_requests
-     WHERE user_id = $1 AND status = '待处理'
-     ORDER BY created_at DESC
+    `SELECT r.request_id, r.from_store_id, r.status, r.note, r.created_at,
+            s.store_name AS from_store_name
+     FROM store_unbind_requests r
+     LEFT JOIN stores s ON s.store_id = r.from_store_id
+     WHERE r.user_id = $1 AND r.status = '待处理'
+     ORDER BY r.created_at DESC
      LIMIT 1`,
     [userId]
   )
@@ -183,7 +185,7 @@ async function getUnbindRequest(ctx) {
   ctx.result = {
     request: rows.length > 0 ? {
       requestId: rows[0].request_id,
-      fromStoreName: rows[0].from_store_name,
+      fromStoreName: rows[0].from_store_name || '',
       status: rows[0].status,
       note: rows[0].note,
       createdAt: rows[0].created_at,

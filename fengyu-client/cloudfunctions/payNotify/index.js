@@ -125,7 +125,7 @@ exports.main = async (event) => {
     // 读 sale_order_type + ref_sale_order_id 以支持"回款凭证单"场景（Ticket 2026-04-24 PR-C）
     const orderResult = await pg.query(
       `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
-              total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount,
+              total_amount, client_user_id, store_id, prepaid_card_amount,
               sale_order_type, ref_sale_order_id
        FROM sale_orders WHERE sale_order_id = $1`,
       [orderNo]
@@ -146,7 +146,7 @@ exports.main = async (event) => {
     if (isRepaymentCredential) {
       const origRes = await pg.query(
         `SELECT status, payment_method, wechat_transaction_id, preferred_employee_id,
-                total_amount, client_user_id, store_id, prepaid_card_amount, paid_amount,
+                total_amount, client_user_id, store_id, prepaid_card_amount,
                 sale_order_type, ref_sale_order_id
          FROM sale_orders WHERE sale_order_id = $1`,
         [order.ref_sale_order_id]
@@ -192,7 +192,7 @@ exports.main = async (event) => {
       //
       // 先决定本次金额 payAmount：优先取 event.payAmount，否则按目标订单剩余应付推算
       //   remaining = (total_amount - prepaid_card_amount) - Σ payments.amount (已支付, 首次/回款/退款)
-      // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount = paid_amount 列初值
+      // 第一次回调时 payments 表为空，remaining = total_amount - prepaid_card_amount（即全单线上应付）
       const payableAmount = Math.round(
         (Number(targetOrder.total_amount || 0) - Number(targetOrder.prepaid_card_amount || 0)) * 100
       ) / 100
@@ -262,11 +262,11 @@ exports.main = async (event) => {
       const fullyPaid = newPaidSum + 0.001 >= payableAmount
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
-      // 1. 更新目标订单：paid_amount 累加、status 置新值、paid_at（全额时）
+      // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
       await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
-             paid_amount = $2,
+             received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
              wechat_transaction_id = COALESCE(wechat_transaction_id, $4),
              updated_at = $3
@@ -394,6 +394,16 @@ exports.main = async (event) => {
             `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
              VALUES ($1, '扣款', $2, $3, NOW())`,
             [cardId, -prepaidAmount, targetOrderNo]
+          )
+          // 写储值卡抵扣流水（与 confirmOffline/staffApi 一致，amount 为负数）
+          await client.query(
+            `INSERT INTO sale_order_payments (
+              sale_order_id, change_type, amount, payment_method,
+              external_txn_id, status, source_end, operator_employee_id,
+              note, created_at, paid_at
+            ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'notify', NULL,
+              $3, NOW(), NOW())`,
+            [targetOrderNo, -prepaidAmount, `储值卡抵扣 订单 ${targetOrderNo}`]
           )
           console.log(`[payNotify] 消费扣款: order=${targetOrderNo}, card=${cardId}, amount=${prepaidAmount}`)
         } else {
