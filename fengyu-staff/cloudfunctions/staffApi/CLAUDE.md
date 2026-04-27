@@ -36,7 +36,7 @@ staffApi/
 - 通过 `cloud.getWXContext()` 获取 OPENID
 - auth 中间件查询 `staff_wechat_users` 表获取员工信息
 - 员工必须已绑定手机号（openid 关联）才能使用大部分接口
-- 支持 `_testOpenid` 测试模式
+- 支持 `_testOpenid` 测试模式（需环境变量 `ALLOW_TEST_OPENID=true` 门控）
 
 ### ctx.auth 结构
 

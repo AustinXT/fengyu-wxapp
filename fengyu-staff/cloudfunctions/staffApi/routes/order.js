@@ -323,7 +323,9 @@ async function create(ctx) {
     const couponRows = await pg.query(
       `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
               ct.coupon_type, ct.discount_value, ct.min_spend, ct.max_discount,
-              ct.applicable_category_ids, ct.applicable_store_ids
+              ct.applicable_category_ids, ct.applicable_store_ids,
+              ct.applicable_product_ids, ct.applicable_market_ids,
+              COALESCE(uc.face_value_override, ct.discount_value) AS discount_value
        FROM user_coupons uc
        JOIN coupon_templates ct ON uc.template_id = ct.template_id
        WHERE uc.coupon_id = $1 AND uc.user_id = $2
@@ -343,20 +345,57 @@ async function create(ctx) {
       }
     }
 
-    // 品项分类匹配
+    // 市场匹配（通过门店 → org_nodes → parent 找市场）
+    if (couponInfo.applicable_market_ids && couponInfo.applicable_market_ids.length > 0) {
+      if (!storeId) {
+        throw new Error('INVALID_PARAMS: 该优惠券仅限特定市场使用')
+      }
+      const marketRows = await pg.query(
+        `SELECT o.parent_id AS market_id
+         FROM stores s
+         JOIN org_nodes o ON s.org_node_id = o.id
+         WHERE s.store_id = $1 AND o.type = 'store'`,
+        [storeId]
+      )
+      if (marketRows.length === 0) {
+        throw new Error('INVALID_PARAMS: 门店数据异常')
+      }
+      const storeMarketId = marketRows[0].market_id
+      if (!couponInfo.applicable_market_ids.includes(storeMarketId)) {
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于此市场')
+      }
+    }
+
+    // 品项分类 + 商品匹配
     const skuIdList = itemDataList.map(d => d.skuId)
-    const skuCats = await pg.query(
-      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
+    const skuInfos = await pg.query(
+      `SELECT ps.sku_id, ps.category_id, mps.product_id
+       FROM product_skus ps
+       LEFT JOIN mall_product_skus mps ON ps.sku_id = mps.sku_id
+       WHERE ps.sku_id = ANY($1)`,
       [skuIdList]
     )
     const catMap = new Map()
-    for (const r of skuCats) catMap.set(r.sku_id, r.category_id)
+    const prodMap = new Map()
+    for (const r of skuInfos) {
+      catMap.set(r.sku_id, r.category_id)
+      prodMap.set(r.sku_id, r.product_id)
+    }
 
     let eligibleItems
-    if (couponInfo.applicable_category_ids && couponInfo.applicable_category_ids.length > 0) {
-      eligibleItems = itemDataList.filter(d =>
-        couponInfo.applicable_category_ids.includes(catMap.get(d.skuId))
-      )
+    if (
+      (couponInfo.applicable_category_ids && couponInfo.applicable_category_ids.length > 0) ||
+      (couponInfo.applicable_product_ids && couponInfo.applicable_product_ids.length > 0)
+    ) {
+      eligibleItems = itemDataList.filter(d => {
+        const catMatch = !couponInfo.applicable_category_ids ||
+          couponInfo.applicable_category_ids.length === 0 ||
+          couponInfo.applicable_category_ids.includes(catMap.get(d.skuId))
+        const prodMatch = !couponInfo.applicable_product_ids ||
+          couponInfo.applicable_product_ids.length === 0 ||
+          couponInfo.applicable_product_ids.includes(prodMap.get(d.skuId))
+        return catMatch && prodMatch
+      })
     } else {
       eligibleItems = itemDataList
     }
@@ -1325,12 +1364,14 @@ async function detail(ctx) {
   }
 
   // 款项流水（Ticket 2 PR-A：订单详情页展示 / 回款弹层读取欠款）
-  // 仅对"销售单"读流水；回款单/退款单/转换单等凭证单的流水挂在其 ref 原单上
+  // 2026-04-26 sale-order-domain-refactor：note 下沉至 sale_order_payment_details
   const paymentRows = await pg.query(
-    `SELECT change_type, amount, payment_method, status, paid_at, created_at, note
-     FROM sale_order_payments
-     WHERE sale_order_id = $1
-     ORDER BY created_at ASC, id ASC`,
+    `SELECT sop.change_type, sop.amount, sop.payment_method, sop.status,
+            sop.paid_at, sop.created_at, sopd.note
+     FROM sale_order_payments sop
+     LEFT JOIN sale_order_payment_details sopd ON sopd.payment_id = sop.id
+     WHERE sop.sale_order_id = $1
+     ORDER BY sop.created_at ASC, sop.id ASC`,
     [saleOrderId]
   )
   const payments = paymentRows.map(p => ({
