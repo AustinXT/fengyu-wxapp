@@ -16,10 +16,10 @@ export const orderStatusEnum = pgEnum("order_status", [
 /**
  * 销售单据类型（sale_orders.sale_order_type）
  *
- * DB 5433 实际有 5 个值（migration 0018 尚未 apply，未移除回款单/退款单）。
- * 保持与 DB 对齐，schema 暂时包含全部 5 值。
+ * 2026-04-26 sale-order-domain-refactor：5→3 值。
+ * 回款单/退款单已下沉到 sale_order_payments（change_type='回款'/'退款'）。
  */
-export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "回款单", "转换单", "退款单"]);
+export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 

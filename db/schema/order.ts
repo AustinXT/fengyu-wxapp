@@ -279,14 +279,10 @@ export const saleOrderPayments = pgTable(
     status: paymentFlowStatusEnum("status").notNull(),
     sourceEnd: paymentSourceEndEnum("source_end").notNull(),
     /**
-     * 操作人员工 ID（DB 5433 实际仍有此列，migration 0018 未 apply）。
-     * 保持与 DB 对齐。
+     * 2026-04-26 sale-order-domain-refactor：
+     *   operator_employee_id / note 已下沉到 sale_order_payment_details 子表。
+     *   migration 0019 已 DROP 这两列。
      */
-    operatorEmployeeId: varchar("operator_employee_id", { length: 30 }).references(
-      () => staffWechatUsers.employeeId,
-    ),
-    /** 备注（DB 5433 实际仍有此列，migration 0018 未 apply） */
-    note: text("note"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     /** status 翻 '已支付' 的时间；线下/储值卡与 created_at 一致 */
     paidAt: timestamp("paid_at"),
