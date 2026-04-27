@@ -10,6 +10,7 @@
 
 const pg = require("../db/pg");
 const { requireStaffBound, requireManager } = require("../middleware/auth");
+const { buildStoreScopeCondition } = require("../utils/scope");
 
 /**
  * 搜索顾客（PG 单源）
@@ -180,6 +181,11 @@ async function calendar(ctx) {
     `;
   }
 
+  // Store scope filter
+  const calScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
+  whereClause += ` AND ${calScope.sql}`
+  params.push(...calScope.params)
+
   const rows = await pg.query(
     `
     SELECT
@@ -284,6 +290,17 @@ async function detail(ctx) {
 
   if (!pgUser) {
     throw new Error("INVALID_PARAMS: 顾客不存在");
+  }
+
+  // Scope check: customer must belong to a store within current employee's scope
+  if (pgUser.bound_store_id) {
+    const { effectiveStoreId, scopeStoreIds, loginLevel } = ctx.auth
+    const inScope = loginLevel === 'management'
+      ? scopeStoreIds.includes(pgUser.bound_store_id)
+      : pgUser.bound_store_id === effectiveStoreId
+    if (!inScope) {
+      throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+    }
   }
 
   const phone = pgUser.phone || "";
@@ -684,8 +701,6 @@ async function refundHistory(ctx) {
   const { clientUserId, clientPhone, page = 1, pageSize = 50 } = ctx.event.payload || {}
   if (!clientUserId && !clientPhone) throw new Error('INVALID_PARAMS: 缺少 clientUserId 或 clientPhone')
 
-  const storeId = ctx.auth.effectiveStoreId
-
   // 退款流水（来自 sale_order_payments）+ store_id scope
   let refundParams, refundClientWhere
   if (clientUserId) {
@@ -695,13 +710,11 @@ async function refundHistory(ctx) {
     refundClientWhere = 'so.client_phone = $1'
     refundParams = [clientPhone]
   }
-  // store_id scope（管理层模式 storeId 可能为 null，此时不附加门店过滤；
-  // 门店模式必加 so.store_id = $N）
   let refundWhere = refundClientWhere
-  if (storeId) {
-    refundParams.push(storeId)
-    refundWhere += ` AND so.store_id = $${refundParams.length}`
-  }
+  // Store scope filter
+  const refundScope = buildStoreScopeCondition(ctx.auth, 'so.store_id', refundParams.length + 1)
+  refundWhere += ` AND ${refundScope.sql}`
+  refundParams.push(...refundScope.params)
   refundParams.push(pageSize, (page - 1) * pageSize)
   const refundRows = await pg.query(`
     SELECT
@@ -737,10 +750,10 @@ async function refundHistory(ctx) {
     convParams = [clientPhone]
   }
   let convWhere = convClientWhere
-  if (storeId) {
-    convParams.push(storeId)
-    convWhere += ` AND o.store_id = $${convParams.length}`
-  }
+  // Store scope filter
+  const convScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', convParams.length + 1)
+  convWhere += ` AND ${convScope.sql}`
+  convParams.push(...convScope.params)
   const convRows = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
            o.created_at, o.paid_at
@@ -835,6 +848,11 @@ async function giftHistory(ctx) {
     params = [clientPhone]
   }
 
+  // Store scope filter
+  const giftScope = buildStoreScopeCondition(ctx.auth, 'o.store_id', params.length + 1)
+  whereClause += ` AND ${giftScope.sql}`
+  params.push(...giftScope.params)
+
   // 组合套餐订单（整单视为赠送/活动）
   const promoOrders = await pg.query(`
     SELECT o.sale_order_id, o.status, o.sale_order_type, o.total_amount,
@@ -912,7 +930,7 @@ async function giftHistory(ctx) {
  * 更新顾客备注
  */
 async function updateNotes(ctx) {
-  await requireStaffBound()(ctx, async () => {})
+  await requireManager()(ctx, async () => {})
 
   const { clientUserId, notes } = ctx.event.payload || {}
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
@@ -921,13 +939,21 @@ async function updateNotes(ctx) {
   const trimmed = notes.trim().slice(0, 500)
 
   const result = await pg.query(
-    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
-    [trimmed || null, clientUserId]
+    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2 AND bound_store_id = $3',
+    [trimmed || null, clientUserId, ctx.auth.effectiveStoreId]
   )
 
   if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 顾客不存在')
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内或不存在')
   }
+
+  // Audit log
+  await pg.query(
+    `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())`,
+    ['customer.updateNotes', 'client_wechat_users', clientUserId,
+     JSON.stringify({ notesLength: trimmed ? trimmed.length : 0 }), 'staffApi']
+  )
 
   ctx.result = { message: '备注已保存' }
 }
@@ -981,12 +1007,20 @@ async function assign(ctx) {
   }
 
   const result = await pg.query(
-    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
-    [employeeId, clientUserId]
+    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2 AND bound_store_id = $3',
+    [employeeId, clientUserId, ctx.auth.effectiveStoreId]
   )
   if (result.rowCount === 0) {
-    throw new Error('INVALID_PARAMS: 顾客不存在')
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内或不存在')
   }
+
+  // Audit log
+  await pg.query(
+    `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())`,
+    ['customer.assign', 'client_wechat_users', clientUserId,
+     JSON.stringify({ employeeId, employeeName: staffRows[0].name }), 'staffApi']
+  )
 
   ctx.result = {
     message: '分配成功',

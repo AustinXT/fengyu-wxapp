@@ -441,6 +441,25 @@ async function performanceDetail(ctx) {
   // 美容师只能查自己
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
 
+  // Scope guard: when querying another employee, verify they're within current scope
+  if (targetEmployeeId !== ctx.auth.staffWfId) {
+    const empRows = await pg.query(
+      'SELECT store_id FROM staff_wechat_users WHERE employee_id = $1',
+      [targetEmployeeId]
+    )
+    if (empRows.length === 0) {
+      throw new Error('INVALID_PARAMS: 员工不存在')
+    }
+    const empStoreId = empRows[0].store_id
+    const { effectiveStoreId, scopeStoreIds, loginLevel } = ctx.auth
+    const inScope = loginLevel === 'management'
+      ? (scopeStoreIds || []).includes(empStoreId)
+      : empStoreId === effectiveStoreId
+    if (!inScope) {
+      throw new Error('PERMISSION_DENIED: 无权查看该员工业绩')
+    }
+  }
+
   if (!startDate || !endDate) {
     throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')
   }
