@@ -51,6 +51,7 @@
 > 端：db / fengyu-admin / fengyu-staff / fengyu-client / cloudfunctions / cron-worker（**全栈**）
 > 来源：用户在 SUMMARY.md 决策回访时提出（替代 D-Q5-2026-04-26 中"product_kind='体验卡'"的判定方式）
 > 前置：[2026-04-26-审计 SUMMARY](../../docs/audit/SUMMARY.md) §5.1 D-Q5 / §5.2 Q5.1 / Q5.2
+> 关联重构：sale-order-domain-refactor（2026-04-27 已完成，见 §9 备注）
 > 关联 audit：[audit-10 P0-10-06](../../docs/audit/audit-10-customer-member-level.md)、[audit-15 P0-15-04/05](../../docs/audit/audit-15-points-member-level.md)、[audit-24 magic string '充值卡'](../../docs/audit/audit-24-product-category-dynamic.md)（**同模式问题**）
 > 一句话目标：把"体验卡"从**分类字面量判定**升级为 SKU 维度的 **`is_experience` boolean capability 列**，物理隔离体验卡 SKU 与普通商品 SKU；client 端独立入口，order 行级快照，跃迁规则按 SKU 行级聚合。
 
@@ -379,7 +380,7 @@ WHERE expected_type != cwu.customer_type;
 | [SUMMARY.md D-Q5-2026-04-26](../../docs/audit/SUMMARY.md) | 本 ticket **回答** Q5.1（"非体验卡"判定字段 = `is_experience`）+ Q5.2（混合订单按非体验部分总额判）|
 | [audit-24 S24-1 充值卡 capability](../../docs/audit/SCHEMA-CHANGES.md) | **平行设计**：本 ticket = `is_experience`；audit-24 = `is_recharge_card`。两者共用"capability 列替代字面量"模式，建议同 epic 实施 |
 | [audit-15 P0-15-02 settlePoints 三端副本](../../docs/audit/audit-15-points-member-level.md) | 本 ticket §3.5 / §4.2 共享 helper 是该 P0 的修复路径之一 |
-| [Q6 sale_order_type 重构 epic](../../docs/audit/SUMMARY.md) | 本 ticket 与 Q6 **解耦**：is_experience 不依赖 sale_order_type 重构；可独立先实施 |
+| [Q6 sale_order_type 重构 epic](../../docs/audit/SUMMARY.md) | 本 ticket 与 Q6 **解耦**：is_experience 不依赖 sale_order_type 重构；可独立先实施。> **2026-04-27 更新**：Q6 sale-order-domain-refactor **已完成**。saleOrderTypeEnum 5→3（'回款单'/'退款单' 已移除），退款/回款改走 sale_order_payments（change_type='退款'/'回款'），5 通道退款级联已上线。本 ticket 不受影响，但 Round 2 退款跃迁回退（§4.1 触发点 4）可直接使用新的 sale_order_payments 退款流程。 |
 | [audit-CC9 测试反向锁死](../../docs/audit/audit-CC9-test-migration-residue.md) | 本 ticket §3.1/§3.2 改测试 mock 时一并整治反向锁死反模式 |
 
 ---
@@ -396,6 +397,18 @@ WHERE expected_type != cwu.customer_type;
 
 ---
 
-## 11 一句话总结
+## 11 关联重构完成记录
+
+> **2026-04-27 更新**：sale-order-domain-refactor 已完成并落地（migration 0019+0021 applied）。
+> - saleOrderTypeEnum 从 5 值缩减为 3 值（`'销售单'`, `'内部单'`, `'转换单'`）；`'回款单'` / `'退款单'` 已移除。
+> - 退款/回款改走 `sale_order_payments`（`change_type='退款'/'回充'`）+ `sale_order_payment_details` 子表。
+> - 5 通道退款级联已上线：sale_allocations(is_void=true)、service_commissions(voided_at)、user_coupons(restored)、point_transactions(reverse)、pickup_records(rolled back)。
+> - `paymentFlowStatusEnum` 新增 `'待审批'` 值用于退款审批流。
+> - 本 ticket 客户类型跃迁逻辑（§1.4 基于 `sale_items.is_experience`）**不受影响**——跃迁判据是 SKU 行级字段而非 sale_order_type。
+> - Round 2 中退款触发跃迁回退（§4.1 触发点 4）可直接对接新的 `sale_order_payments` 退款流程。
+
+---
+
+## 12 一句话总结
 
 **`product_skus.is_experience` boolean 列**取代 `product_categories.product_kind = '体验卡'` 字面量判定 + **`sale_items.is_experience` 行级快照**支撑跃迁/对账 + **client 端独立入口**物理隔离体验卡与商城商品 + **共享 helper**收敛 4 端跃迁副本。3 周双轨过渡，影响 14 文件 41 字面量 + 三端 + cron + payNotify。

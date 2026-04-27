@@ -1,11 +1,12 @@
 # Ticket: 充值卡判定从 product_kind 字面量改为 product_skus.is_recharge_card capability 列
 
 > 生成日期：2026-04-26
-> 实施状态：📝 待实施（设计已定，等本 ticket 评审通过）
+> 实施状态：📝 待实施（设计已定，等本 ticket 评审通过；前置 sale-order-domain-refactor 已于 2026-04-27 完成）
 > 严重级别：**P0**（业务规则可演进性 + 充值入账触发正确性 + 跨端 99 处字面量散落）
 > 端：db / fengyu-admin / fengyu-staff / fengyu-client / cloudfunctions / cron-worker / payNotify（**全栈**）
 > 来源：用户在 SUMMARY.md 决策回访时提出（与体验卡 ticket 同模式 capability 化）
 > 前置：[2026-04-26-experience-card-as-sku-flag.md](./2026-04-26-experience-card-as-sku-flag.md)（**同模式平行设计**，建议**晚 1-2 周**实施以分摊风险）
+> 前置（已完成）：sale-order-domain-refactor（2026-04-27 完成；saleOrderTypeEnum 5→3，退款/回款改走 sale_order_payments，5 通道退款级联已上线）
 > 关联 audit：
 > - [audit-14 P0-14-01 admin applyRechargeOnOrderPaid 引用已 DROP store_id](../../docs/audit/audit-14-prepaid-card.md)（本 ticket 顺带修复）
 > - [audit-24 P0-24-01 magic string '充值卡'](../../docs/audit/audit-24-product-category-dynamic.md)
@@ -234,6 +235,8 @@ CREATE TRIGGER trg_sync_sku_capabilities
 
 ### 4.4 payNotify（fengyu-staff/cloudfunctions/payNotify）
 
+> **2026-04-27 更新**：payNotify 当前仍处于 `PAYNOTIFY_DISABLED=true` 状态（D-Q1 决策）。退款流程已随 sale-order-domain-refactor 改为通过 `sale_order_payments`（`change_type='退款'`）处理，不再创建独立的 `sale_order_type='退款单'` 行。本节 payNotify 充值入账触发逻辑不受退款架构变更影响（充值入账是收款方向，退款是反方向）。
+
 | 文件 | 当前 | 改后 |
 |------|------|------|
 | `index.js` 充值入账段 | `WHERE product_kind = '充值卡'` 字面量判定 | 改用 `WHERE EXISTS (SELECT 1 FROM sale_items WHERE sale_order_id = $1 AND is_recharge_card = true)` |
@@ -406,11 +409,23 @@ HAVING bool_or(is_recharge_card) AND bool_or(NOT is_recharge_card);
 | [audit-14 P0-14-01](../../docs/audit/audit-14-prepaid-card.md) | 本 ticket §4.1 / §6 第 2 周顺带修复（移除 store_id 引用）|
 | [audit-24 S24-1](../../docs/audit/SCHEMA-CHANGES.md) | 本 ticket 是 S24-1 的具体实施方案 |
 | [audit-15 P0-15-01](../../docs/audit/audit-15-points-member-level.md) | 本 ticket §5.1 / §5.2 通过共享 helper 修复 admin recordPayment 缺充值入账 |
-| [Q6 sale_order_type 重构 epic](../../docs/audit/SUMMARY.md) | 本 ticket 不依赖 Q6；可独立实施。但 Q6 落地后 §5.3 充值卡退款会简化（统一走 saleOrderPayments[退款] 流） |
-| [Q6.3 历史回滚 epic](../../docs/audit/SUMMARY.md) | 充值卡退款的"已部分消费"分支留待 Q6.3 决策（按比例 vs 全额扣余）|
+| [Q6 sale_order_type 重构 epic](../../docs/audit/SUMMARY.md) | 本 ticket 不依赖 Q6；可独立实施。> **2026-04-27 更新**：Q6 sale-order-domain-refactor **已完成**。saleOrderTypeEnum 5→3（`'回款单'`/`'退款单'` 已移除），退款/回款改走 `sale_order_payments`（`change_type='退款'/'回充'`）+ `sale_order_payment_details` 子表。§5.3 充值卡退款现已可直接走 `saleOrderPayments[退款]` 统一流（不再需要单独的退款单 sale_order 行）。`paymentFlowStatusEnum` 新增 `'待审批'` 值用于退款审批。 |
+| [Q6.3 历史回滚 epic](../../docs/audit/SUMMARY.md) | 充值卡退款的"已部分消费"分支留待 Q6.3 决策（按比例 vs 全额扣余）。> **2026-04-27 更新**：Q6.3 的 5 通道退款级联（sale_allocations / service_commissions / user_coupons / point_transactions / pickup_records）已在 domain refactor 中落地，充值卡退款可复用此级联基础设施。 |
 
 ---
 
-## 11 一句话总结
+## 11 关联重构完成记录
+
+> **2026-04-27 更新**：sale-order-domain-refactor 已完成并落地（migration 0019+0021 applied）。
+> - saleOrderTypeEnum 从 5 值缩减为 3 值（`'销售单'`, `'内部单'`, `'转换单'`）；`'回款单'` / `'退款单'` 已移除，退款/回款改走 `sale_order_payments`（`change_type='退款'/'回充'`）。
+> - `sale_order_payment_details` 子表已创建（operator, note, refund_reason, audit info 等字段从 sale_order_payments 拆出为 1:1 子表）。
+> - `paymentFlowStatusEnum` 新增 `'待审批'` 值用于退款审批流。
+> - 5 通道退款级联已上线：sale_allocations(is_void=true)、service_commissions(voided_at)、user_coupons(restored)、point_transactions(reverse)、pickup_records(rolled back)。
+> - `sale_order_payments` 不再有 `operator_employee_id` / `note` 列（移至 `sale_order_payment_details` 子表）。
+> - 对本 ticket 影响：§5.3 充值卡退款可直接走 `sale_order_payments[退款]` + 退款级联基础设施；不再需要独立的退款单 sale_order 行。payNotify 仍 `PAYNOTIFY_DISABLED=true`，充值入账触发逻辑不受影响。
+
+---
+
+## 12 一句话总结
 
 **`product_skus.is_recharge_card` boolean 列**取代 `product_categories.product_kind = '充值卡'` 字面量 + **`sale_items.is_recharge_card` 行级快照**支撑跃迁/对账 + **D3=B 单虚拟 SKU 金额自由输入** + **D4=A 严格独立**（CHECK 触发器双层保护）+ **D2=A 复用 client 现有入口**（充值仍走 sale_orders）+ **D1=A 购买充值卡参与跃迁会员客判定** + 共享 helper 收敛 4 端充值入账副本。3 周双轨过渡，影响 26 文件 99 字面量 + 三端 + cron + payNotify。**晚于体验卡 ticket 1-2 周实施（D5=B）。**
