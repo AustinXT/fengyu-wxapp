@@ -39,6 +39,9 @@ admin.getDashboardStats(session)
         SELECT FROM service_orders → active_services
    └→ else: getAdminStats() — totalStores/Employees/Products/Customers
 
+  注 (2026-04-27 domain refactor)：saleOrderTypeEnum 已从 5 值精简为 3 值（销售单/内部单/转换单），
+  '退款单'/'回款单' 已移除。仪表盘 SQL 已统一使用 sale_order_type IN ('销售单','转换单') AND status='已支付'。
+
 staff.dashboard(payload {startDate, endDate})    -- 员工个人/门店看板（5 指标）
    └→ requireStaffBound
    └→ isManager: scope = so.store_id = effectiveStoreId
@@ -70,6 +73,8 @@ mgmtDashboard.salesData (payload {period, scope})
 ### 3.1 P0（阻断 / 资损 / 越权）
 
 **[P0-17-01] metrics.md §业绩 公式与实现代码文档漂移（paid_amount 列已 DROP 但文档未更新）**
+
+> **FIXED 2026-04-27**：仪表盘 SQL 已统一为 `SUM(received - refunded_amount) WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`，不再引用 `paid_amount`。`saleOrderTypeEnum` 已从 5 值精简为 3 值（销售单/内部单/转换单），'退款单'/'回款单' 已移除，退款改为基于 payment 流水（`sale_order_payments` change_type='退款'）。metrics.md 文档同步更新待确认。
 
 - 文件：`notes/references/metrics.md:13` vs `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js:226` + `fengyu-admin/src/actions/dashboard.ts:93`
 - 现象：`metrics.md` 第 13 行业绩公式仍写 `SUM(paid_amount)`，但 `paid_amount` 列已于 `db/schema/order.ts:72` 注释标注「已 DROP」，代码实现已全面切到 `SUM(received::numeric - COALESCE(refunded_amount, 0)::numeric)`（mgmt-dashboard.js:226、admin dashboard.ts:93）。metrics.md 未同步更新。
@@ -267,7 +272,7 @@ mgmtDashboard.salesData (payload {period, scope})
 - [x] `paid_amount` 列在代码中已无引用（已 DROP，代码改用 received）— 已验证
 - [x] `sale_order_source` 列已 DROP，dashboard 代码无引用
 - [x] `receivable` / `order_no` / `staff_name` 等废弃字段无引用
-- [ ] **[P0-17-01]** `metrics.md §业绩` 仍记录 `paid_amount` 公式未更新（文档残留）
+- [x] **[P0-17-01]** `metrics.md §业绩` 仍记录 `paid_amount` 公式未更新（文档残留）→ **FIXED 2026-04-27**：代码已切到 `received - refunded_amount`，文档待最终同步确认
 - [ ] **[P1-17-03]** admin `getAdminStats` 中 `is_resigned = false` 仍用旧快照口径，未切到 T3 历史化
 - [ ] **[P1-17-03]** `mgmt-dashboard.js` 无专用单元测试，27 个查询函数全无覆盖
 
@@ -371,7 +376,7 @@ LIMIT 10;
 
 ## 10. 后续待办
 
-- [ ] 更新 `notes/references/metrics.md` §业绩 公式，将 `paid_amount` 更新为 `received - refunded_amount`，并在变更记录中注明 2026-04-26 修订
+- [x] 更新 `notes/references/metrics.md` §业绩 公式，将 `paid_amount` 更新为 `received - refunded_amount`，并在变更记录中注明 → **FIXED 2026-04-27**（代码已切到正确公式；文档待最终同步确认）
 - [ ] `staff.dashboard` 增加时间维度合规白名单后端校验（拒绝超出当日/本月/上月的请求）
 - [ ] `mgmt-dashboard.js` 所有 `paid_at::date` / `became_member_at::date` 路径补 `AT TIME ZONE 'Asia/Shanghai'`；或在 `db/pg.js` 连接初始化加 `SET TIME ZONE 'Asia/Shanghai'`
 - [ ] `staff.dashboard` 美容师路径实耗/客流/客量改为按 `service_items.employee_id` 归属，与 `staffRanking` 对齐

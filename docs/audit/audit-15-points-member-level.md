@@ -76,6 +76,7 @@ admin.recordPayment(orders.ts:1709)        ❌（已新增 recalcCustomerType，
 [admin 退款已通过 cascadeRefund 通道4 写积分冲销 —— 上一轮部分误判]
 admin.approveRefund(refunds.ts:706) → cascadeRefund → 通道4 ✅
    （上一轮标记为 P0-15-01 的"admin approveRefund 漏 settlePoints"已经通过 cascadeRefund 修复）
+   **[FIXED 2026-04-27]**：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 4（admin `lib/refund-cascade.ts:135` + staffApi `helpers/refund-cascade.js:92`）。退款审批通过时写入反向 `point_transactions(type='消费冲销')` 并重算 `client_wechat_users.points_balance`。
 
 [等级跳档（cron STEP 2，每日 03:00 Asia/Shanghai）]
 SELECT user_id FROM client_wechat_users WHERE customer_type = '会员客'
@@ -105,6 +106,8 @@ SELECT 不一致行 → INSERT operation_logs + notifyOps(企微 webhook)
 #### P0-15-01 admin 两大资金触发点完全不调用 settlePoints —— 积分漏发（admin 端确认收款/录入回款路径）
 
 > **⚠️ 重审修订**：上一轮将 admin `approveRefund` 列为第三个 P0 触发点，但实际已通过 `cascadeRefund` 通道4 写入积分冲销流水（`lib/refund-cascade.ts:135`），故退款积分冲销路径 **已正确处理**。P0 触发点由上一轮的 3 处缩减为 2 处。
+>
+> **[FIXED 2026-04-27]**（退款冲销部分）：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 4（admin + staff 双端），退款审批通过时自动写入 `point_transactions(type='消费冲销')` 并重算 `points_balance`。admin `confirmOfflinePayment` 和 `recordPayment` 缺 settlePoints 调用的问题**仍存在**（需单独修复）。
 
 - **文件**：
   - `fengyu-admin/src/actions/orders.ts:535 confirmOfflinePayment`
@@ -334,7 +337,7 @@ SELECT 不一致行 → INSERT operation_logs + notifyOps(企微 webhook)
 |------|-------|-------|--------|-----------|------|------|--------|
 | 资金触发 settle | ❌ confirmOffline / recordPayment 缺 | ✅ confirmOffline（但 P0-15-01b 导致崩） | ✅ | ✅（但 P0-15-01b 导致崩） | — | 资损（P0-15-01/P0-15-01b） | P0 |
 | settle 净额口径 | 缺 | `paid_amount`（已 DROP，错） | `received - refunded_amount`（正确） | `paid_amount`（已 DROP，错） | `received - refunded_amount`（正确） | staff/payNotify 运行时崩溃 | **P0** |
-| 退款积分冲销 | `cascadeRefund` 通道4 ✅ | `cascadeRefund` 通道4 ✅ | — | — | — | 已对齐 | — |
+| 退款积分冲销 | `cascadeRefund` 通道4 ✅ **[FIXED 2026-04-27]** | `cascadeRefund` 通道4 ✅ | — | — | — | 已对齐 | — |
 | 跳档人群 | — | — | — | — | 仅 customer_type='会员客' | 流量/体验/小美 永远无 level | P0 |
 | balance 鉴权 | requirePermission ✅ | — | **无 requirePhone** ❌ | — | — | 伪零余额 | P0 |
 | 消费额口径 | — | — | — | — | received - refunded_amount（正确）| 与 spending_tier 累计漂移 | P1 |

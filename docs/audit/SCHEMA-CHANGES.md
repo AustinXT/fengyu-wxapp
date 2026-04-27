@@ -102,17 +102,11 @@
 - **前置**：先跑 audit-03 §7 #3 验证当前是否已存在多 '首次支付' 行
 - **关联**：[P0-03-03]
 
-### S03-2 退款单 in-flight 唯一性
-- **表**：`sale_orders`
-- **现状**：staffApi/routes/order.js:1352 应用层 SELECT 校验同原单不能有两笔 '待审批' FY-TKD，但事务外读，并发不安全
-- **建议 DDL**：
-  ```sql
-  CREATE UNIQUE INDEX uq_sale_orders_refund_inflight
-    ON sale_orders (ref_sale_order_id)
-    WHERE sale_order_type = '退款单' AND status = '待审批';
-  ```
-- **前置**：跑 audit-03 §7 #4 验证当前是否已存在违规数据
-- **关联**：[P0-03-04]
+### S03-2 退款单 in-flight 唯一性 ✅ 已完成（2026-04-27 域重构收官）
+- **表**：~~`sale_orders`~~ → `sale_order_payments`
+- **现状**：~~staffApi/routes/order.js:1352 应用层 SELECT 校验同原单不能有两笔 '待审批' FY-TKD，但事务外读，并发不安全~~ → **已解决**：退款架构重构后，退款改为 `sale_order_payments[change_type='退款']` 行，migration 0018+0021 引入 `uq_sop_status_audit (sale_order_id, change_type) WHERE change_type='退款' AND status='待审批'` partial unique index，直接覆盖该缺口。sale_order_type_enum 已从 5 值收窄为 3 值，旧退款单路径不再存在。
+- **建议 DDL**：~~`CREATE UNIQUE INDEX uq_sale_orders_refund_inflight ...`~~ → **不再需要**，由 `uq_sop_status_audit` 替代
+- **关联**：[P0-03-04] → **已关闭**
 
 ### S03-3 sale_order_payments 加 `metadata jsonb` 列
 - **表**：`sale_order_payments`
@@ -128,19 +122,11 @@
   ```
 - **关联**：[P2-03-16, P2-03-17]
 
-### S03-4 sale_orders 列符号与 sale_order_type 联动 CHECK
+### S03-4 sale_orders 列符号与 sale_order_type 联动 CHECK — ⚠️ 架构性作废（2026-04-27）
 - **表**：`sale_orders`
-- **现状**：staffApi/routes/order.js:1530-1535 approveRefund UPDATE FY-TKD 把 prepaid_card_amount 写负数，paid_amount 写负数。schema 未约束符号；下游报表如 SUM(paid_amount) 会被退款单负数干扰。
-- **建议 DDL**：
-  ```sql
-  ALTER TABLE sale_orders
-    ADD CONSTRAINT chk_sale_orders_amount_sign
-    CHECK (
-      (sale_order_type = '退款单' AND total_amount <= 0 AND paid_amount <= 0 AND prepaid_card_amount <= 0)
-      OR (sale_order_type <> '退款单' AND total_amount >= 0 AND paid_amount >= 0 AND prepaid_card_amount >= 0)
-    );
-  ```
-- **关联**：[P1-03-11]
+- **现状**：~~staffApi/routes/order.js:1530-1535 approveRefund UPDATE FY-TKD 把 prepaid_card_amount 写负数，paid_amount 写负数。schema 未约束符号；下游报表如 SUM(paid_amount) 会被退款单负数干扰。~~ → **已解决**：退款不再创建 `sale_orders[type='退款单']` 行（sale_order_type_enum 已收窄为 3 值，不含'退款单'/'回款单'），退款全部下沉到 `sale_order_payments`（`chk_sop_amount_sign` 已守护符号）。`paid_amount` 列已在 migration 0018 中 DROP。销售单/内部单/转换单均写正数，原建议的按 type 联动符号 CHECK 不再需要。
+- **建议 DDL**：~~原建议的联动 CHECK~~ → **不再适用**。可选加 `CHECK (total_amount >= 0)` 通用非负约束（P2 优先级）。
+- **关联**：[P1-03-11] → **架构性作废**
 
 ### S03-5 schema 注释刷新：`'储值卡抵扣'` 启用范围
 - **文件**：`db/schema/order.ts:235`
@@ -367,28 +353,10 @@
   ```
 - **关联**：P0-07-01
 
-### S07-5 退款审批流补：原销售单 sale_allocations 按比例缩减
+### S07-5 退款审批流补：原销售单 sale_allocations 按比例缩减 ✅ 已完成（2026-04-26/27）
 - **范围**：业务代码（多端 + DB；列入 schema 是因为可能涉及新增"退款拆分行"模式）
-- **现状**：
-  - `staffApi/routes/order.js:1488-1636 approveRefund`：完全不动原单 sa
-  - `fengyu-admin/src/actions/refunds.ts:830-870 approveRefund`：同样不动
-  - schema 注释 `db/schema/order.ts:193-195` "退款业绩 total_amount 为负数" 与代码事实矛盾
-- **建议代码骨架**（任选其一）：
-  ```js
-  // 方案 A：INSERT 负 total_amount 行（保留历史，便于审计）
-  // 同事务读原单 sa 行 → 按 refundAmount/origPaidAmount 比例 INSERT 负数行
-  await client.query(`
-    INSERT INTO sale_allocations
-      (sale_item_id, employee_id, role_type, allocation_ratio, total_amount, is_void)
-    SELECT sa.sale_item_id, sa.employee_id, sa.role_type, sa.allocation_ratio,
-           -(sa.total_amount * $1)::numeric(10,2), false
-    FROM sale_allocations sa
-    JOIN sale_items si ON si.sale_item_id = sa.sale_item_id
-    WHERE si.sale_order_id = $2 AND sa.is_void = false
-  `, [refundRatio, refSaleOrderId])
-  // 方案 B：UPDATE 原行 total_amount 缩减（破坏快照不可变原则，不推荐）
-  ```
-- **关联**：P0-07-02
+- **现状**：~~`staffApi/routes/order.js:1488-1636 approveRefund`：完全不动原单 sa~~ → **已解决**：退款 cascade 已实现 `UPDATE sale_allocations SET is_void=true, voided_at=NOW()` 同事务原子操作。`fengyu-admin/src/actions/refunds.ts` 同步实现。5 通道 cascade（sa/sc/coupons/points/pickup）已在 refund-cascade.js/ts 双端落地。
+- **关联**：P0-07-02 → **已关闭**
 
 ## 来自域 08（服务提成 service_commissions）
 
@@ -459,24 +427,10 @@
   admin/staff 共用；rate=0 时返回 rateMissingItems → 调用方决定是否阻塞或置 commission_status='待分配'
 - **关联**：P0-08-02, P0-08-06, P2-08-15
 
-### S08-7 退款审批 + 服务取消 联动作废 sc（修复退款资损）
+### S08-7 退款审批 + 服务取消 联动作废 sc（修复退款资损）✅ 已完成（2026-04-26/27）
 - **范围**：业务代码
-- **现状**：`refunds.ts:830-960 approveRefund` + `staffApi/routes/order.js approveRefund` 都不动 sc
-- **建议代码骨架**：
-  ```sql
-  -- 同事务作废与原销售单的所有 service_items 关联的 sc 行
-  UPDATE service_commissions sc
-     SET is_void = true,
-         voided_at = NOW(),
-         voided_by = $session_employee_id,
-         void_reason = '退款冲销'
-   WHERE service_item_id IN (
-     SELECT sit.service_item_id FROM service_items sit
-     JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
-     WHERE si.sale_order_id = $refSaleOrderId
-   ) AND sc.is_void = false
-  ```
-- **关联**：P0-08-04（与 S07-5 销售提成退款冲销联动）
+- **现状**：~~`refunds.ts:830-960 approveRefund` + `staffApi/routes/order.js approveRefund` 都不动 sc~~ → **已解决**：退款 cascade 通道 2 已实现 `UPDATE service_commissions SET is_void=true, voided_at=NOW()` 同事务原子操作。`service_commissions.voided_at` 列由 migration 0018 添加。5 通道 cascade 已双端落地。
+- **关联**：P0-08-04 → **已关闭**（与 S07-5 同步关闭）
 
 ## 来自域 09（商品 + SKU + 价格 + 有效期）
 
@@ -633,17 +587,11 @@
 - **配套**：admin / staff `rejectRefund` 改写、admin refunds 列表筛选枚举、UI 文案
 - **关联**：[P0-11-07]
 
-### S11-2 sale_orders 退款单 in-flight 唯一性 partial unique
-- **表**：`sale_orders`
-- **现状**：staffApi/routes/order.js:1352 + admin/refunds.ts:503 均事务外读，无 DB 兜底
-- **建议 DDL**：
-  ```sql
-  CREATE UNIQUE INDEX uq_sale_orders_refund_inflight
-    ON sale_orders (ref_sale_order_id)
-    WHERE sale_order_type = '退款单' AND status = '待审批';
-  ```
-- **前置**：跑 audit-11 §7 #1 验证当前是否已存在违规数据
-- **关联**：[P0-11-02]，与 S03-2 重复，本次跨域再确认；建议改为单一 schema 事项编号
+### S11-2 sale_orders 退款单 in-flight 唯一性 partial unique ✅ 已完成（2026-04-27 域重构收官）
+- **表**：~~`sale_orders`~~ → `sale_order_payments`
+- **现状**：~~staffApi/routes/order.js:1352 + admin/refunds.ts:503 均事务外读，无 DB 兜底~~ → **已解决**：退款改为 `sale_order_payments[change_type='退款']` 行，`uq_sop_status_audit` partial unique index 已覆盖。sale_order_type_enum 不再包含'退款单'。
+- **建议 DDL**：~~原建议的 `uq_sale_orders_refund_inflight`~~ → **不再需要**，由 `uq_sop_status_audit` 替代
+- **关联**：[P0-11-02] → **已关闭**（与 S03-2 同源合并关闭）
 
 ### S11-3 sale_orders 加 original_prepaid_ratio 快照（多次退款不漂移）
 - **表**：`sale_orders`
@@ -657,27 +605,11 @@
   ```
 - **关联**：[P0-11-06]
 
-### S11-4 sale_orders 退款单金额符号 CHECK
+### S11-4 sale_orders 退款单金额符号 CHECK — ⚠️ 架构性作废（2026-04-27）
 - **表**：`sale_orders`
-- **现状**：staff/admin approveRefund 都把 FY-TKD 的 prepaid_card_amount / paid_amount 写负数；schema 未约束。`payable_amount=0` 与 `total - prepaid` 不变量也破坏。
-- **建议 DDL**：
-  ```sql
-  ALTER TABLE sale_orders
-    ADD CONSTRAINT chk_sale_orders_refund_signs
-    CHECK (
-      (sale_order_type = '退款单'
-        AND total_amount <= 0
-        AND paid_amount <= 0
-        AND prepaid_card_amount <= 0
-        AND payable_amount = 0)
-      OR (sale_order_type <> '退款单'
-        AND total_amount >= 0
-        AND paid_amount >= 0
-        AND prepaid_card_amount >= 0
-        AND payable_amount >= 0)
-    );
-  ```
-- **关联**：[P1-11-10, P1-11-11]，与 S03-4 合并
+- **现状**：~~staff/admin approveRefund 都把 FY-TKD 的 prepaid_card_amount / paid_amount 写负数；schema 未约束。`payable_amount=0` 与 `total - prepaid` 不变量也破坏。~~ → **已解决**：退款不再写 `sale_orders[type='退款单']` 行（sale_order_type_enum 已收窄为 3 值），退款全部下沉到 `sale_order_payments`（`chk_sop_amount_sign` 已守护符号）。`paid_amount` 列已 DROP。
+- **建议 DDL**：~~原建议的联动符号 CHECK~~ → **不再适用**（与 S03-4 同理）。
+- **关联**：[P1-11-10, P1-11-11] → **架构性作废**（与 S03-4 合并）
 
 ### S11-5 sale_order_payments.note 退款 metadata 结构化
 - **表**：`sale_order_payments`
@@ -685,9 +617,9 @@
 - **建议 DDL**：（与 S03-3 合并）追加 metadata jsonb，replaced note LIKE
 - **关联**：[与 S03-3 合并]
 
-### S11-6 sale_allocations 退款冲销补丁（与 S07-5 合并）
+### S11-6 sale_allocations 退款冲销补丁 ✅ 已完成（2026-04-26/27）
 - **范围**：业务代码（接 schema 不变）
-- **关联**：[P0-11-01]，与 S07-5 / S08-7 同诉求合并
+- **关联**：[P0-11-01] → **已关闭**（与 S07-5 / S08-7 同诉求合并关闭）
 
 ## 来自域 12（门店绑定 / 解绑）
 
@@ -1339,19 +1271,20 @@
 
 ## 来自横切 CC1（数值精度与金额）
 
-### S-CC1-1 批量金额 / 比例 CHECK 升级
+### S-CC1-1 批量金额 / 比例 CHECK 升级（部分完成 2026-04-27）
 - 表：order.ts (sale_orders / sale_items / sale_allocations)
 - DDL：
   ```sql
-  ALTER TABLE sale_orders ADD CONSTRAINT chk_sale_orders_amount_sign
-    CHECK ((sale_order_type IN ('销售单','转换单','内部单','回款单') AND total_amount >= 0)
-        OR (sale_order_type = '退款单' AND total_amount <= 0));
+  -- ✅ 已架构性作废（2026-04-27）：sale_order_type 不再包含'退款单'/'回款单'，
+  -- 退款符号约束由 sale_order_payments.chk_sop_amount_sign 守护
+  -- ALTER TABLE sale_orders ADD CONSTRAINT chk_sale_orders_amount_sign ... → 不再需要
+  -- 以下两项仍待：
   ALTER TABLE sale_allocations ADD CONSTRAINT chk_sale_alloc_ratio_iv
     CHECK (allocation_ratio IN (0.10,0.11,0.12,0.13,0.15,0.18,0.20,0.30,0.50,1.00));
   ALTER TABLE sale_items ADD CONSTRAINT chk_sale_item_sale_amount
     CHECK (ABS(sale_amount - unit_price * quantity) <= 0.02);
   ```
-- 关联：[P0-CC1-01 / P0-CC1-03](./audit-CC1-numeric-precision.md)
+- 关联：[P0-CC1-01 / ~~P0-CC1-03~~（架构性作废）](./audit-CC1-numeric-precision.md)
 
 ### S-CC1-2 流水符号 CHECK 推广 chk_sop_amount_sign
 - 表：prepaid-card.ts (card_transactions) + points.ts (point_transactions)
@@ -1530,9 +1463,9 @@
 - 修复根因：P0-CC7-01 / P1-CC7-09
 - CI 守卫：跑验证 SQL `SHOW timezone` 应等于 `Asia/Shanghai`
 
-### S-CC7-2 service_commissions 增 voided_at
+### S-CC7-2 service_commissions 增 voided_at ✅ 已完成（migration 0018）
 - 表：service_commissions
-- DDL：`ADD COLUMN voided_at timestamp`
+- DDL：~~`ADD COLUMN voided_at timestamp`~~ → **已落地**（migration 0018 + 退款 cascade 双端使用）
 - 关联：与 sale_allocations.voided_at 软删时间审计对称（P1-CC7-08）
 
 ### S-CC7-3 时区路线决策（withTimezone 策略）
@@ -1583,3 +1516,17 @@
 ## 待补充
 
 后续轮次发现的 schema 建议会追加到此文件。
+
+---
+
+## 2026-04-27 域重构收官备注
+
+> **sale-order-domain-refactor 域重构收官（2026-04-27）**产生以下已落地变更，对应上方标记 ✅ 的条目：
+>
+> 1. **saleOrderTypeEnum 5→3**：'回款单'/'退款单' 已移除，migration 0019+0021 已 apply，当前（'销售单','内部单','转换单'）
+> 2. **sale_order_payment_details 1:1 子表**：operator/note/退款专属（refund_reason, ref_sale_item_id, session_count）/审批专属（audit_employee_id, audit_at, audit_remark）字段全部下沉
+> 3. **paymentFlowStatusEnum** 新增 `'待审批'` 值
+> 4. **uq_sop_status_audit** partial unique index：`(sale_order_id, change_type) WHERE change_type='退款' AND status='待审批'`，覆盖退款审批并发保护
+> 5. **退款 5 通道 cascade 已实现**：sale_allocations (is_void), service_commissions (voided_at), user_coupons (restored), point_transactions (reversed), pickup_records (rolled back)
+> 6. **audit-payment-invariants cron STEP 7**：验证 5 项退款不变量
+> 7. **Dashboard**：received - refunded_amount, WHERE is_void=false

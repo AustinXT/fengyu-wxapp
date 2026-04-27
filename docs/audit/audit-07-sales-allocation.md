@@ -98,6 +98,8 @@
 
 #### [P0-07-02] ~~退款审批后原销售单 sa 不回滚~~ → **[CLOSED from v1]**
 
+> **FIXED 2026-04-27**：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 1（admin `lib/refund-cascade.ts` + staffApi `helpers/refund-cascade.js`）。退款审批通过时 `UPDATE sale_allocations SET is_void=true, voided_at=NOW()` 按 sale_item_id 批量软删原 sa 行。Dashboard 查询改用 `WHERE is_void=false` 过滤。
+
 - **v1 描述**：`approveRefund` 对原销售单的 `sale_allocations` 完全不动；顾客退款 600 元后员工业绩仍按 1000 元计算
 - **v3 结论**：**[已修复]** `helpers/refund-cascade.js` 通道 1 已在 approveRefund 时 `UPDATE sale_allocations SET is_void=true, voided_at=NOW WHERE sale_item_id = ANY(itemIds)`；admin `lib/refund-cascade.ts` 同逻辑
 - **遗留**：V3 SQL（§7）可验证退款后 over_allocated 是否已归零
@@ -142,6 +144,8 @@
 
 #### [P0-V2-07-02] pendingList 无 sale_order_type 过滤（v1 P0-07-05 同源，仍存在）
 
+> **注意 2026-04-27**：sale-order-domain-refactor 将 `saleOrderTypeEnum` 从 5 值缩减为 3 值（移除 '回款单'/'退款单'）。退款不再创建 FY-TKD 订单，退款行改为 `sale_order_payments(change_type='退款', status='已支付')`。因此退款单进入 pendingList 的问题在**新架构下不再适用**——退款不会产生 `status='已支付' + allocation_status='待分配'` 的 sale_orders 行。但 pendingList 仍应加 `AND sale_order_type IN ('销售单','转换单')` 显式守卫。
+
 - **文件**：`staffApi/routes/allocation.js:320-327`（pendingList SQL）
 - **现象**：
   ```sql
@@ -152,6 +156,7 @@
   无 `AND o.sale_order_type = '销售单'` 过滤
 - **v2/v3 重新评估**：
   - `createRefund` 创建的退款单：status='已支付'（approveRefund 后）、sale_order_type='退款单'；退款单自身**不产生** sa 行（cascadeRefund 软删的是原销售单的 sa），退款单的 `allocation_status` 默认值为 DB DEFAULT（见 baseline migration：`allocation_status` DEFAULT '待分配'）
+  - **[2026-04-27 更新]**：sale-order-domain-refactor 移除了 '退款单' 类型，退款不再创建独立 sale_orders 行。退款行改用 `sale_order_payments(change_type='退款')` 表达。因此本条描述的"退款单进入 pendingList"场景在**新架构下不再适用**，pendingList SQL 仍建议加 `AND sale_order_type IN ('销售单','转换单')` 显式守卫。
   - approveRefund 后 `refunded_amount += abs(amount)` 但**不更新**退款单自身 `allocation_status`
   - 结果：退款单审批通过后，status='已支付' + allocation_status='待分配'，命中 pendingList 条件
   - 进入队列的退款单 sale_items.received 为负数（refund_out 行），save 校验 `sum > received + TOLERANCE` 时 received=-500，任何正数 sum 都会通过，写入负数 total_amount 的 sa 行

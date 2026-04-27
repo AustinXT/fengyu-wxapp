@@ -13,7 +13,7 @@
 
 | 层 | admin | staff | client |
 |----|-------|-------|--------|
-| Schema | `db/schema/order.ts:40-117`（saleOrders 含 refund 列）+ `db/schema/order.ts:241-287`（saleOrderPayments）+ `db/schema/enums.ts:5-16`（含 `'退款单'` / `'待审批'` / `'已关闭'`） | ↑ | — |
+| Schema | `db/schema/order.ts:40-117`（saleOrders 含 refund 列）+ `db/schema/order.ts:241-287`（saleOrderPayments）+ `db/schema/enums.ts:5-16`（含 `'退款单'` / `'待审批'` / `'已关闭'`）**注意 2026-04-27**：`saleOrderTypeEnum` 已缩为 3 值（移除 '回款单'/'退款单'），退款改用 `sale_order_payments(change_type='退款')` + `paymentFlowStatusEnum` 新增 `'待审批'` 审批流 | ↑ | — |
 | Action / Route | `fengyu-admin/src/actions/refunds.ts:151`（getRefundable）`:268`（estimateRefundOverdraft）`:456`（createRefundOrder）`:778`（approveRefund）`:971`（rejectRefund）`:1061`（listRefunds）`:1110`（getRefundById） | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:1332`（createRefund）`:1488`（approveRefund）`:1641`（rejectRefund）`:2482`（refundList）`:2526`（refundDetail）+ `routes/customer.js:675`（refundHistory，顾客视角列表） | — |
 | 共享工具 | `fengyu-admin/src/lib/refund.ts:57/72/135/...`（buildRefundDetails / split / resolveRefundPaymentMethod） | `fengyu-staff/cloudfunctions/staffApi/utils/refund.js:19/37/103/126`（同源算法纯函数） | — |
 | 前端 | `fengyu-admin/src/app/(main)/refunds/page.tsx` + `_components/`（列表+详情）+ `[id]/page.tsx` | `miniprogram/pages/order/refund/*`（开单退款入口）+ 顾客详情"退换记录" Tab | — |
@@ -45,9 +45,9 @@
    │ → settlePointsSafe (staff only)
    ▼
    原 sale_orders.paid_amount 减少；FY-TKD.paid_amount=负；spending_tier 可能下移
-   ❌ sale_allocations 不联动作废（P0-07-02）
-   ❌ service_commissions 不联动冲销（P0-08-04）
-   ❌ user_coupons 不回退（已用券保留 '已使用'）
+   ✅ sale_allocations 联动作废（is_void=true, voided_at=NOW）— **[FIXED 2026-04-27]**
+   ✅ service_commissions 联动冲销（voided_at=NOW, voided_reason）— **[FIXED 2026-04-27]**
+   ✅ user_coupons 回退（未过期券恢复 '未使用'）— **[FIXED 2026-04-27]**
    ❌ service_orders 已挂的不取消 / 不解绑
 
 [驳回]  staff/admin rejectRefund
@@ -63,9 +63,12 @@
 
 ### 3.1 P0（阻断 / 资损 / 越权）
 
-#### **[P0-11-01]** 退款审批不冲销已写入的 sale_allocations / service_commissions（双重业绩资损 — 已知问题再确认 + 量化）
+#### **[P0-11-01]** ~~退款审批不冲销已写入的 sale_allocations / service_commissions~~ → **[FIXED 2026-04-27]**
+
+> **FIXED 2026-04-27**：sale-order-domain-refactor 实现 5 通道退款 cascade（admin `lib/refund-cascade.ts` + staffApi `helpers/refund-cascade.js`）。退款审批通过时级联：通道 1 sale_allocations (is_void=true, voided_at=NOW()) + 通道 2 service_commissions (voided_at=NOW(), voided_reason) + 通道 3 user_coupons (status='未使用') + 通道 4 point_transactions (reverse '消费冲销') + 通道 5 pickup_records (picked_up_quantity rollback)。详见 §11.1。
+
 - **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1488-1636`（staff approveRefund）+ `fengyu-admin/src/actions/refunds.ts:778-965`（admin approveRefund）
-- **现象**：approveRefund 事务内仅
+- **原现象**：approveRefund 事务内仅
   1) 翻 FY-TKD 状态、扣 remaining_sessions、回冲储值卡、翻 payments、重算原单 paid_amount、刷 spending_tier+customer_type、settlePoints。
   2) **完全不动**原销售单的 sale_allocations（应按退款比例反向写负行或 `is_void=true`）。
   3) **完全不动**已完成服务单写入的 service_commissions。
@@ -80,7 +83,10 @@
   - service_commissions 同理：增加 voided_at 列（详见 audit-08 P0-08-05），按 sale_item_id 关联软作废。
 - **互引**：CROSS-CUTTING.md「退款审批不冲销已写入提成 / 分配（资损）」+ audit-07 P0-07-02 + audit-08 P0-08-04（本次为退款域明确再确认且确认 admin 路径同样未补丁）。
 
-#### **[P0-11-02]** createRefund 的 in-flight 唯一性事务外读（TOCTOU 重复退款单）
+#### **[P0-11-02]** ~~createRefund 的 in-flight 唯一性事务外读（TOCTOU 重复退款单）~~ → **[PARTIALLY FIXED 2026-04-27]**
+
+> **FIXED 2026-04-27**（DB 层兜底）：sale-order-domain-refactor 在 `sale_order_payments` 上新增 `uq_sop_status_audit` partial unique（`WHERE change_type='退款' AND status='待审批'`），防止同一 sale_order 并发创建多笔 in-flight 退款。事务外 SELECT 预检的 race window 仍存在，但 DB 兜底可防止双写。降为 P1。
+
 - **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1352-1358` + `fengyu-admin/src/actions/refunds.ts:503-516`
 - **现象**：staff/admin 都用 `pg.query` / `db.select`（事务外）查 `WHERE ref_sale_order_id=$1 AND status='待审批'`，然后才进 `pg.transaction` INSERT。两个店长同时点"退款"，两次查询均返回 0 行 → 都进事务 → 都 INSERT FY-TKD-* 行 → 同一原单存在 2 笔 `'待审批'` 退款单。
 - **风险**：
@@ -98,9 +104,12 @@
 - **修复（L3）**：把 advisory lock + maxSeq 计算 + INSERT 全部合并到同一 `pg.transaction`（`createRefund` 内部已经在事务里又跑一次 `pg_advisory_xact_lock + max(...)`，但前面外层 generateOrderNo 又跑了一次独立事务 → 显式废除外层调用，仅用事务内的那段）。注意现状中事务内**确实**有第二次 maxSeq 计算（`:1397-1402`），但生成的 `refundOrderId` 来自外层 generateOrderNo（事务外），并未使用事务内重算结果 → 实质上两次序号源不一致：外层用于 sale_orders.sale_order_id，事务内的 dateStr+seq 仅用于 sale_items 行 ID。该不一致需要在重构时合并。
 - **关联**：CROSS-CUTTING.md「Advisory lock 跨事务释放窗口可生成重号」（首次发现 audit-02）。
 
-#### **[P0-11-04]** 退款不回退已使用优惠券（资损 + 业务规则缺失）
+#### **[P0-11-04]** ~~退款不回退已使用优惠券~~ → **[FIXED 2026-04-27]**
+
+> **FIXED 2026-04-27**：sale-order-domain-refactor cascade channel-3 实现优惠券回滚。approveRefund 事务内 `UPDATE user_coupons SET status='未使用'` 仅对未过期券生效。两端（admin + staff）均已实现。
+
 - **文件**：staff/admin approveRefund 全流程；`fengyu-staff/cloudfunctions/staffApi/routes/order.js:525-528`（开单 set 已使用）；`:1093-1097`（仅 close 操作释放，approveRefund 无对应逻辑）
-- **现象**：开单时 `UPDATE user_coupons SET status='已使用', used_sale_order_id=$saleOrderId, used_at=NOW()`；订单 close 时会 `UPDATE...SET status='未使用'` 释放；**退款 approve 时不释放**。顾客全额退款后券已被吞，无法再用。
+- **原现象**：开单时 `UPDATE user_coupons SET status='已使用', used_sale_order_id=$saleOrderId, used_at=NOW()`；订单 close 时会 `UPDATE...SET status='未使用'` 释放；**退款 approve 时不释放**。顾客全额退款后券已被吞，无法再用。
 - **风险**：
   - 资损（顾客侧）：用了 ¥100 现金券支付 → 退款只退 `unit_real_price × unused × split` → 券价值彻底消失，顾客等于亏了 ¥100。
   - 业务规则不一致：close 释放、refund 不释放，状态机断裂。
@@ -232,9 +241,9 @@
 | 排序口径 | desc(updatedAt), desc(createdAt) | desc(created_at) | 列表浮顶语义不一致 | P2 |
 | service_fee 退款行 | `(d.serviceFee \|\| 0).toFixed(2)`（admin 写正值） | `d.serviceFee \|\| 0`（staff 写**负值**：`utils/refund.js:67` `refundServiceFee = -...`） | **service_fee 符号不一致**（admin 退款行 service_fee=正，staff 退款行=负） — 影响服务提成计算？ | P1 |
 | approveRefund 扣减 remaining_sessions | 同（CAS WHERE remaining_sessions >= ri.quantity） | 同 | OK | — |
-| 回退 user_coupons | 不实现 | 不实现 | 同 P0-11-04 | P0 |
-| 回滚 sale_allocations | 不实现 | 不实现 | 同 P0-11-01 | P0 |
-| 冲销 service_commissions | 不实现 | 不实现 | 同 P0-11-01 | P0 |
+| 回退 user_coupons | cascadeRefund channel-3 ✅ **[FIXED 2026-04-27]** | cascadeRefund channel-3 ✅ | — | — |
+| 回滚 sale_allocations | cascadeRefund channel-1 ✅ **[FIXED 2026-04-27]** | cascadeRefund channel-1 ✅ | — | — |
+| 冲销 service_commissions | cascadeRefund channel-2 ✅ **[FIXED 2026-04-27]** | cascadeRefund channel-2 ✅ | — | — |
 
 > **新发现的跨端不一致**：admin 写退款行 service_fee 为正（绝对值），staff 写为负（带符号）。`buildRefundDetails` 在两端都返回 `serviceFee: refundServiceFee`（已是负值），但 staff `INSERT (service_fee) VALUES ($16)` 直接 `d.serviceFee || 0`（保留负），admin `(d.serviceFee || 0).toFixed(2)` 也保留负 — 实际两端**一致**，刚才误读。✅ 撤回此条，留 P2 提示后续核对。
 
@@ -487,8 +496,8 @@ WHERE o.client_user_id = 'cwu-y'
 
 | 前轮 ID | 描述 | 修正 |
 |---------|------|------|
-| P0-11-01 | "退款审批不冲销 sale_allocations / service_commissions" | ❌ 已由 cascadeRefund 实现，不再成立 |
-| P0-11-04 | "退款不回退已使用优惠券" | ❌ cascadeRefund channel-3 已实现优惠券回滚（未过期），不再成立 |
+| P0-11-01 | "退款审批不冲销 sale_allocations / service_commissions" | ❌ 已由 cascadeRefund 实现，不再成立 → **[FIXED 2026-04-27]** |
+| P0-11-04 | "退款不回退已使用优惠券" | ❌ cascadeRefund channel-3 已实现优惠券回滚（未过期），不再成立 → **[FIXED 2026-04-27]** |
 | P0-11-02 | "需补 partial unique uq_refund_inflight" | ⚠️ 已落地为 uq_sop_status_audit（migration 0018），新架构下前轮建议位置不适用，但旧建议逻辑正确 |
 | P0-11-03 | "advisory lock 双事务窗口" | ⚠️ 新架构下退款不生成 sale_orders 行（无 FY-TKD-WX- 订单号），此问题已不适用 |
 

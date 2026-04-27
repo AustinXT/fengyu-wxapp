@@ -43,7 +43,8 @@
 
 - **修复前**：旧架构以 `sale_orders[type='退款单']` 独立行建模，in-flight 无 DB 约束
 - **v2 验证**：新架构将退款改为 `sale_order_payments[change_type='退款']` 单行模型，migration 0018 引入 `uq_sop_status_audit (sale_order_id, change_type) WHERE change_type='退款' AND status='待审批'`，直接覆盖该缺口
-- **状态**：**架构性作废（v2 新架构已消除该风险场景）**
+- **2026-04-27 域重构收官**：sale_order_type_enum 5→3（'回款单'/'退款单' 移除），`paymentFlowStatusEnum` 新增 `'待审批'` 值，migration 0021 已生成并应用。退款审批并发保护由 `uq_sop_status_audit` partial unique index 完整覆盖，同订单不可能同时存在两笔 `status='待审批'` 的退款行
+- **状态**：**架构性作废（v2 新架构已消除该风险场景）+ 2026-04-27 域重构收官确认**
 
 ---
 
@@ -144,6 +145,8 @@
 - `pickup_records(sale_item_id, idempotency_key)`
 
 > 注：v1 表中的「退款单 in-flight」已通过 `uq_sop_status_audit` 覆盖（见「架构性作废」），本次关闭。
+>
+> **FIXED 2026-04-27**：`uq_sop_status_audit` partial unique index 已在 migration 0021 中确认生效。`paymentFlowStatusEnum` 新增 `'待审批'` 值，退款审批并发保护完整覆盖。sale_order_type_enum 已从 5 值收窄为 3 值（'回款单'/'退款单' 不再存在），旧退款单行路径彻底消除。
 
 ### P1-CC2-14：prepaid_cards.balance 余额不变量无 cron 守护
 
@@ -333,10 +336,10 @@ GROUP BY sale_order_id HAVING COUNT(*) > 1;
 |------|------|---------|---------|
 | A1 | Advisory lock 跨事务释放窗口 | helper 自带 pg.transaction，外层主事务再开 | 移除内层事务 |
 | A2 | 状态机 UPDATE 缺 CAS | `WHERE pk_only`，不带 status | 加 `AND status = $expected` + rowCount 校验 |
-| A3 | TOCTOU：事务外读 → 事务内 INSERT | 决策 SELECT 不在 begin 后 | 移入事务 + partial UNIQUE 兜底 |
+| A3 | TOCTOU：事务外读 → 事务内 INSERT | 决策 SELECT 不在 begin 后 | 移入事务 + partial UNIQUE 兜底 | **FIXED 2026-04-27**：退款 in-flight 场景已由 `uq_sop_status_audit` partial unique index 覆盖 |
 | A4 | Advisory lock key 跨端不互斥 | 私有 hash vs `hashtext()` | 抽 `lock-keys.ts` 单源 |
-| A5 | 状态级联缺失 | 关单/退款只改 sale_orders，不动流水/分配/券/积分 | 状态翻转事件触发器或同事务级联 |
-| A6 | 退款审批不冲销「次数等价物」| sa/sc/coupons/points/pickup 5 处不冲销 | approveRefund 同事务批量 UPDATE |
+| A5 | 状态级联缺失 | 关单/退款只改 sale_orders，不动流水/分配/券/积分 | 状态翻转事件触发器或同事务级联 | **FIXED 2026-04-27**：退款 5 通道 cascade 已实现（sa/sc/coupons/points/pickup），refund-cascade.js + refund-cascade.ts 双端落地 |
+| A6 | 退款审批不冲销「次数等价物」| sa/sc/coupons/points/pickup 5 处不冲销 | approveRefund 同事务批量 UPDATE | **FIXED 2026-04-27**：5 通道全量回滚已实现（sale_allocations is_void, service_commissions voided_at, user_coupons restored, point_transactions reversed, pickup_records rolled back） |
 | A7 | 跨端实现风格冲突（硬删 vs 软删）| staff DELETE / admin UPDATE is_void | 单端实现风格统一 |
 | A8 | 余额扣减无 `AND balance >= $1` 守卫 | 仅 FOR UPDATE 行锁 | 加原子条件 |
 | A9 | 流水类表 partial UNIQUE 缺位 | 应用层 SELECT-then-INSERT 幂等 | DB partial UNIQUE 兜底 |

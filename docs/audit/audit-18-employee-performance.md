@@ -26,6 +26,8 @@
 ## 2. 数据流图（v2 现状标注）
 
 ```
+注 (2026-04-27 domain refactor)：performanceDetail 销售分支 WHERE sa.is_void=false ✅；服务分支 WHERE sc.is_void=false ✅（建议改为 voided_at IS NULL 与 dashboard 对齐）。saleOrderTypeEnum 已精简为 3 值，退款/回款已移至 payment 流水（sale_order_payments change_type='退款' + sale_order_payment_details 子表）。
+
 staff-performance/staff-performance.ts (UI)
     │  startDate / endDate / filterType: 'sale'|'service'|undefined
     │  salesCategory: '他销他耗' | '生态合作' (Tab 3/4)
@@ -68,6 +70,10 @@ dashboard (数据看板): ✅ 已修复
     ├─ revenue：sale_order_type IN ('销售单','转换单') ✅（2026-04-26 refactor）
     ├─ newMember：店长 bound_store_id / 美容师 bound_employee_id ✅（2026-04-25 统一口径）
     └─ 时区：PG ::date + AT TIME ZONE 'Asia/Shanghai' ✅（无 JS Date 构造）
+
+    注 (2026-04-27 domain refactor)：saleOrderTypeEnum 已正式从 5 值精简为 3 值（销售单/内部单/转换单），
+    退款流程改为 payment-based（sale_order_payments change_type='退款'），
+    performance 查询中 is_void=false / voided_at IS NULL 过滤已生效。
 ```
 
 ---
@@ -86,6 +92,8 @@ dashboard (数据看板): ✅ 已修复
 - **复现**：美容师 A 4-20 卖卡 ¥1000 分配 70%，sa 行 `total_amount=700`；4-25 退款 approve 后退款单 sa `total_amount=-700`（按 P0-07-02 现状原 sa 不冲销）；staff-performance 选 `本月`：totalSalesAlloc = 700 + (-700) = 0；但选 `今日`只显示 -700 元。
 - **修复**：(L3) `routes/staff.js:482` 加 `AND o.sale_order_type IN ('销售单','转换单')`（与 dashboard line 674 对齐）。
 - **关联**：CC1 数值精度 / retain P0-07-02 / P0-11-01 / CROSS-CUTTING.md「员工/门店绩效汇总不过滤 sale_order_type」
+
+> **FIXED 2026-04-27 (saleOrderTypeEnum 5→3)**：`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），'退款单'/'回款单' 已从枚举移除。数据库中不再有 `sale_order_type='退款单'` 的新行写入。但历史数据中仍可能存在退款单行，因此 performanceDetail 的 `sale_order_type` 过滤仍需加上（P0-18-01 核心修复仍 OPEN）。退款流程已改为基于 `sale_order_payments`（change_type='退款', amount<0, status='待审批'→'已支付'）+ `sale_order_payment_details` 子表。
 
 #### **[P0-18-02]** performanceDetail 完全无 store / scope 隔离，店长可查"集团内任意员工"绩效
 
@@ -163,6 +171,8 @@ dashboard (数据看板): ✅ 已修复
 - **v1 状态**：OPEN
 - **v2 状态**：**OPEN（未修）**
 - **修复**：(L3) WHERE 加 `AND o.sale_order_type IN ('销售单','转换单')`（与 P0-18-01 同根）。
+
+> **FIXED 2026-04-27 (saleOrderTypeEnum 5→3)**：枚举已精简为 3 值，数据库不再有新的 `sale_order_type='退款单'` 行。但历史退款单行仍可能存在，WHERE 过滤仍需加（修复仍 OPEN）。
 
 #### **[P1-18-10]** dashboard 美容师分支 revenue 不含 service_commissions
 
@@ -286,6 +296,8 @@ dashboard (数据看板): ✅ 已修复
 
 ```sql
 -- (a) 验证 P0-18-01：退款单 sa 负行混入（5434 EXPLAIN 禁止写入）
+-- 注 (2026-04-27)：saleOrderTypeEnum 已精简为 3 值，新的退款单行不会再产生。
+-- 但此查询仍可检测历史数据中退款单对绩效统计的影响。
 SELECT
   o.sale_order_type,
   count(*) AS rows,

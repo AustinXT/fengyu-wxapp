@@ -162,6 +162,8 @@
 
 **[P0-08-04] 退款审批后不冲销 service_commissions — [CLOSED from v1]**
 
+> **FIXED 2026-04-27**：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 2（admin `lib/refund-cascade.ts:85-105` + staffApi `helpers/refund-cascade.js:65-79`）。退款审批通过时 `UPDATE service_commissions SET is_void=true, voided_at=NOW(), voided_reason=$reason WHERE service_item_id IN (...) AND voided_at IS NULL`。Dashboard 查询改用 `WHERE voided_at IS NULL` 过滤。
+
 - **v1 描述**：refunds.ts + order.js approveRefund 完全不动 service_commissions；schema 无 voided_at 列。
 - **v2 核实**：admin.refund-cascade.ts:85-105 通道 2 已实现 `UPDATE service_commissions SET is_void=true, voided_at=NOW(), voided_reason=$`；staff 同理。
 - **状态**：✅ **已修复（CLOSED from v1）**

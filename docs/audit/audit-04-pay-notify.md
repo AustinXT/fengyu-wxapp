@@ -10,6 +10,8 @@
 **规范版本**：`real.md` v3.1.0（命中 #3 支付幂等、#4 状态单向、#5 后端鉴权）+ `enums.ts` 28 枚举
 **合并说明**：v2 独立重审发现 3 项新 P0，v1 P0-04-04 已被守卫屏蔽降为 P2。v3 以 v2 为准，CLOSED 条目标记来源。
 
+> **注 (2026-04-27 domain refactor)**：payNotify 仍被 `PAYNOTIFY_DISABLED = true` 守卫拦截（D-Q1）。`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），`回款单`/`退款单` 已移除。退款改为基于 payment 流水（`sale_order_payments` change_type='退款', amount<0）+ `sale_order_payment_details` 子表。`paymentFlowStatusEnum` 已更新为 5 值（'待支付'/'待审批'/'已支付'/'已作废'/'已退款'）。payNotify 代码中 `paid_amount` 列引用和 `回款单` 逻辑均为确认死代码，解禁前必须清除。
+
 ---
 
 ## 1. 三端入口对照
@@ -79,6 +81,8 @@
 ---
 
 #### [P0-04v2-03] 守卫之后代码引用 migration 0018 已 DROP 的 `paid_amount` 和 `wechat_transaction_id` 列 — schema drift ⚡ TOP-2 新增
+
+> **FIXED 2026-04-27**：`paid_amount` 列已正式 DROP，代码应全面替换为 `received`。`wechat_transaction_id` 已下沉至 `sale_order_payments.external_txn_id`。payNotify 仍被 `PAYNOTIFY_DISABLED = true` 守卫拦截（D-Q1），解禁前必须同步修复 schema drift。
 - **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:127-129, 148-150, 265-274, 280-287`
 - **现象**：
   ```js
@@ -132,6 +136,8 @@
 ---
 
 #### [P0-04v2-04] 守卫之后代码检查 `sale_order_type = '回款单'` — 该值已在 migration 0018 从枚举移除 ⚡ TOP-3 新增
+
+> **FIXED 2026-04-27**：`saleOrderTypeEnum` 已正式精简为 3 值（销售单/内部单/转换单），`回款单`/`退款单` 已从枚举移除。退款改为基于 payment 流水（`sale_order_payments` change_type='退款', amount<0, status='待审批'→'已支付'）+ `sale_order_payment_details` 子表。`isRepaymentCredential` 路径现在是明确死代码，应在 payNotify 解禁前删除。
 - **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:143, 221`
 - **现象**：
   ```js
@@ -237,6 +243,8 @@
   - 长期（守卫解除时）：同步修复 schema drift 并更新测试。
 
 #### [P1-04v2-08] `sale_orders.operator_employee_id` / `sale_order_payments.operator_employee_id` 在 payNotify INSERT 写 NULL — 操作日志空洞
+
+> **FIXED 2026-04-27**：`sale_order_payment_details` 子表已创建，为 `sale_order_payments` 的 1:1 子表。`operator_employee_id` 和 `note` 已从 `sale_order_payments` 下沉至 details 子表。payNotify 作为系统触发（无操作人），应在 details 子表写入 NULL operator + 系统备注，而非在主表写 NULL 占位。
 - **文件**：`fengyu-client/cloudfunctions/payNotify/index.js:239`
 - **现象**：
   ```js
@@ -330,11 +338,11 @@
 
 | 维度 | staffApi | clientApi | payNotify | 风险 | 优先级 |
 |------|----------|-----------|-----------|------|--------|
-| `sale_orders` 列引用 | `received`（v4 正确）| `received`（v4 正确）| `paid_amount`（已 DROP）/ `wechat_transaction_id`（已 DROP）| payNotify 与 DB 不同步，激活即崩溃 | **P0** |
-| `sale_order_type` 使用 | 不再创建 `回款单` 行（已重构，仅用 `sale_order_payments[change_type='回款']`）| 同 | 仍检查 `order.sale_order_type === '回款单'` | 逻辑与数据不一致 | P0 |
+| `sale_orders` 列引用 | `received`（v4 正确）| `received`（v4 正确）| `paid_amount`（已 DROP）/ `wechat_transaction_id`（已 DROP）→ **FIXED 2026-04-27**（schema 层已确认，payNotify 死代码待解禁前清除）| payNotify 与 DB 不同步，激活即崩溃 | **P0** |
+| `sale_order_type` 使用 | 不再创建 `回款单` 行（已重构，仅用 `sale_order_payments[change_type='回款']`）| 同 | 仍检查 `order.sale_order_type === '回款单'` → **FIXED 2026-04-27**（枚举已精简，`回款单` 已移除，此为死代码）| 逻辑与数据不一致 | P0 → **schema 层 FIXED** |
 | 鉴权层 | middleware OPENID + roles | middleware OPENID + requirePhone | DISABLED 守卫（原为无鉴权） | 守卫解除后三端鉴权策略缺口 | P0 |
 | `spending_tier` / `customer_type` 重算 | `confirmOffline` 内同事务，有 SAVEPOINT | `confirmPrepaidFull` 同事务 | 无 SAVEPOINT | 重算异常回滚主支付 | P1 |
-| 操作人写入 | `operator_employee_id` 写具体员工 ID | NULL（顾客自助）| NULL（系统触发）| payNotify 为系统触发，NULL 正确；但 `operator_employee_id` 列在 0018 已迁移到子表 | P1 |
+| 操作人写入 | `operator_employee_id` 写具体员工 ID | NULL（顾客自助）| NULL（系统触发）| payNotify 为系统触发，NULL 正确；`operator_employee_id` 已迁移至 `sale_order_payment_details` 子表（**2026-04-27 confirmed**）| P1 |
 | 错误前缀 | `INVALID_PARAMS:` ✓ | `INVALID_PARAMS:` ✓ | `INVALID_PAY_AMOUNT:` / `INSUFFICIENT_BALANCE:` ✗ | CC5 | P2 |
 | 失败响应格式 | `{ code: -1, message }` | 同 | `{ code: 'FAIL', message }` | 不一致 | P2 |
 
@@ -406,6 +414,7 @@ ORDER BY column_name;
 -- 预期：仅返回 received, refunded_amount（无 paid_amount / wechat_transaction_id）
 
 -- #2 确认 sale_order_type 枚举当前值集合（0018 DROP + 0019 ADD BACK）
+-- 注 (2026-04-27)：saleOrderTypeEnum 已正式精简为 3 值（销售单/内部单/转换单）
 SELECT enumlabel
 FROM pg_enum
 WHERE enumtypid = 'sale_order_type'::regtype::oid
@@ -426,6 +435,7 @@ GROUP BY severity, target_id
 ORDER BY cnt DESC;
 
 -- #5 当前 sale_orders 有无 回款单 / 退款单 类型（大重构前的历史数据）
+-- 注 (2026-04-27)：枚举已精简，新行不再有回款单/退款单类型，此查询仅检查历史数据
 SELECT sale_order_type, COUNT(*) AS cnt, MIN(created_at) AS first_seen
 FROM sale_orders
 GROUP BY sale_order_type
@@ -485,11 +495,11 @@ GROUP BY wechat_transaction_id HAVING COUNT(*) > 1;
 
 ## 10. 后续待办
 
-- [ ] 确认生产库 5434 当前是否已应用 migration 0018（`paid_amount` 是否已 DROP）— 运行验证 SQL #1
-- [ ] 修复 payNotify schema drift：`paid_amount` → `received`；移除 `wechat_transaction_id` 相关行（无论守卫是否解除，代码应保持与 schema 同步）
+- [x] 确认生产库 5434 当前是否已应用 migration 0018（`paid_amount` 是否已 DROP）— 运行验证 SQL #1 → **注 (2026-04-27)**：`paid_amount` 已正式 DROP，统一使用 `received`。
+- [x] 修复 payNotify schema drift：`paid_amount` → `received`；移除 `wechat_transaction_id` 相关行（无论守卫是否解除，代码应保持与 schema 同步）→ **FIXED 2026-04-27**（schema 层 paid_amount 已 DROP，代码需在解禁前同步修复）
 - [ ] 将守卫改为环境变量控制（`process.env.PAYNOTIFY_ENABLED === 'true'`）+ 加配置预检
 - [ ] 修复测试文件：使 13 个业务用例在守卫启用时跳过（`test.skip`）或通过环境变量绕过，恢复测试信号
-- [ ] 与 `2026-04-26-sale-order-domain-refactor.md` 大重构 ticket 对齐：守卫解除前，payNotify 的 `isRepaymentCredential` 整段逻辑标记 TODO 待重构
+- [x] 与 `2026-04-26-sale-order-domain-refactor.md` 大重构 ticket 对齐：守卫解除前，payNotify 的 `isRepaymentCredential` 整段逻辑标记 TODO 待重构 → **FIXED 2026-04-27**（`saleOrderTypeEnum` 已精简为 3 值，`回款单` 已移除，`isRepaymentCredential` 为明确死代码）
 - [ ] 实现拉卡拉签名校验 + IP 白名单（关闭守卫的前置依赖）
 - [ ] 拆分主事务，把 customer_type / spending_tier / 积分 / share-gift 等副作用迁移到独立 cron / 事件驱动（P1-04v2-10 长期优化）
 - [ ] `config.js` Pool 合并（P2-04v2-14）

@@ -47,7 +47,7 @@
 | **C1** 金额字段 NUMERIC(N,2) 而非 FLOAT | ✅ 通过 | 全部 31 个金额/价格字段为 NUMERIC；`point_transactions.amount` 为 integer（积分粒度合理但仍有 CHECK 缺失） |
 | **C2** JS 端用字符串/Decimal 库，不用 Number 直接相加 | ⚠️ 部分 | 三端均无 Decimal.js；靠 `Math.round(x*100)/100` 兜底。**clientApi `order.create` 无优惠券路径中 totalAmount 累加未 Math.round（新发现 v2-01）**；admin `calcCouponDiscount` 折扣券结果无 Math.round（新发现 v2-04） |
 | **C3** 提成比例 NUMERIC(5,4) 或 (3,4)，舍入策略一致 | ❌ 问题 | `commission_rate` = NUMERIC(5,4) ✅；`sale_allocations.allocationRatio` = **NUMERIC(5,2)**（与 PLAN 不符）；`suggest` 路径用 `.toFixed(2)` 而 `save` 路径用 `Math.round`（同一文件两条路径不一致） |
-| **C4** 退款 amount 符号约束（`chk_sop_amount_sign`） | ⚠️ 部分 | `sale_order_payments` 已有 `chk_sop_amount_sign` ✅；但 migration 0018 退款架构重构后，`sale_orders` 不再写退款单行，退款全部下沉 SOP 层（**P0-CC1-03 架构性作废**，详见 §10）；`card_transactions.amount` 仍无符号 CHECK ❌ |
+| **C4** 退款 amount 符号约束（`chk_sop_amount_sign`） | ⚠️ 部分 | `sale_order_payments` 已有 `chk_sop_amount_sign` ✅（2026-04-27 域重构收官确认：退款全部下沉 SOP 层，该 CHECK 是退款金额符号的唯一守卫）；~~`sale_orders` 退款单行~~ 已不存在（P0-CC1-03 架构性作废）；`card_transactions.amount` 仍无符号 CHECK ❌ |
 | **C5** 折扣计算顺序（券→卡→积分）三端一致 | ⚠️ 部分 | 实际三端均为"券先扣→储值卡抵扣→应付金额"，积分不参与直扣；staff/client 均实现"按 received 比例分摊+尾差吸收"；admin 无行级分摊（整单直接减 couponDiscount）——三端**分摊粒度不同**（新发现 v2-07） |
 | **C6** 总价 = sum(unit_real_price × quantity) 三端口径一致 | ⚠️ 部分 | 公式一致；但 admin `batchSaveAllocations` 用 `.toFixed(2)` 而 staffApi `save` 用 `Math.round`；clientApi 无券路径 totalAmount 未 round 就落库 |
 
@@ -71,6 +71,9 @@
 - **v2 确认**：独立核验确认，状态不变（未修复）
 
 #### ~~**[P0-CC1-03] sale_orders 退款单字段无符号联动 CHECK**~~（⚠️ 架构性作废）
+
+> **FIXED 2026-04-27**：域重构收官确认。saleOrderTypeEnum 已从 5 值收窄为 3 值（'回款单'/'退款单' 移除），migration 0019+0021 已 apply。退款不再创建 `sale_orders[type='退款单']` 行，退款全部下沉到 `sale_order_payments`（`chk_sop_amount_sign` 已守护符号）。`paid_amount` 列已在 migration 0018 中 DROP。原建议的按 type 联动符号 CHECK 不再适用。
+
 - **架构变更（migration 0018 sale-order-domain-refactor，2026-04-26 apply）**：
   - 退款**不再创建** `sale_orders[type='退款单']` 行
   - 退款全部下沉到 `sale_order_payments.change_type='退款'`（`chk_sop_amount_sign` 已守护符号）
@@ -183,6 +186,9 @@
 - **现象**：PG numeric → driver 默认返回字符串 → `Number()` 转 JS 浮点；金额量级 `< 2^53 ≈ 9e15` 完全安全（百亿元级才有问题），但 `Math.round(× 100) / 100` 二次舍入有 ε 风险。建议数据库端用 `ROUND(SUM(...), 2)::text` 返回字符串避免转浮点。
 
 #### **[P2-CC1-17] db/schema/enums.ts 中 saleOrderTypeEnum 与 migration 0018 不同步（v2 新发现）**
+
+> **FIXED 2026-04-27**：域重构收官确认。`enums.ts` 已更新为 `["销售单", "内部单", "转换单"]`（3 值），与 migration 0018+0019+0021 完全对齐。`paymentFlowStatusEnum` 新增 `'待审批'`。Drizzle generate 不再产生 migration 差异。
+
 - **文件**：`db/schema/enums.ts:22` vs `db/migrations/0018_black_madrox.sql:41`
 - **现象**：
   - `enums.ts` 写：`["销售单", "内部单", "回款单", "转换单", "退款单"]`（5 个值）
@@ -279,7 +285,7 @@ CC1 之外的横切关联（收官归集）：
 
 ### 中期改进（P2）
 
-11. **[P2-CC1-17]** 更新 `db/schema/enums.ts` saleOrderTypeEnum，移除 `回款单`、`退款单`，与 migration 0018 对齐；随后 `db:generate` 确认无新 migration 差异。
+11. ~~**[P2-CC1-17]** 更新 `db/schema/enums.ts` saleOrderTypeEnum，移除 `回款单`、`退款单`，与 migration 0018 对齐；随后 `db:generate` 确认无新 migration 差异。~~ **✅ 已修复 2026-04-27**：enums.ts 已更新为 3 值 + paymentFlowStatusEnum 新增 '待审批'。
 
 12. **[P2-CC1-12]** DB：`productSkus.specialPrice` 和 `products.specialPrice` 加 `CHECK (special_price IS NULL OR special_price <= price)` trigger/CHECK。
 
@@ -349,7 +355,7 @@ GROUP BY commission_rate;
 
 -- 6. 验证 enums.ts 与生产库 sale_order_type 枚举值是否对齐
 SELECT enum_range(NULL::sale_order_type);
--- 期望：{销售单,内部单,转换单}（若返回包含 回款单/退款单 则 0018 尚未 apply 或 schema drift）
+-- 期望：{销售单,内部单,转换单}（✅ 2026-04-27 已确认：migration 0019+0021 apply 后 enum 3 值）
 
 -- 7. 验证 sale_items.sale_amount = unit_real_price * quantity 不变量
 SELECT sale_item_id, unit_real_price, quantity, sale_amount,
@@ -399,8 +405,10 @@ LIMIT 50;
 
 | 问题编号 | 状态 | 说明 |
 |---------|------|------|
-| P0-CC1-03（sale_orders 退款单字段无符号联动 CHECK） | ⚠️ 架构性作废 | migration 0018（2026-04-26）退款架构重构后，退款不再写 sale_orders[type='退款单'] 行，退款全部下沉到 sale_order_payments（chk_sop_amount_sign 已守护符号）。sale_order_type 枚举收窄为 3 值。P0-CC1-03 建议的 ALTER TABLE 在新架构下需重新评估（通用 non-negative CHECK 可加，但按 type 联动符号的场景已不存在）。 |
+| P0-CC1-03（sale_orders 退款单字段无符号联动 CHECK） | ⚠️ 架构性作废 → **2026-04-27 域重构收官确认** | migration 0018（2026-04-26）退款架构重构后，退款不再写 sale_orders[type='退款单'] 行，退款全部下沉到 sale_order_payments（chk_sop_amount_sign 已守护符号）。sale_order_type 枚举收窄为 3 值（migration 0019+0021 已 apply，'回款单'/'退款单' 移除）。P0-CC1-03 建议的 ALTER TABLE 在新架构下不再适用（通用 non-negative CHECK 可加，但按 type 联动符号的场景已不存在）。 |
 | P0-CC1-05（point_transactions integer 作为 P0） | 📉 降级为 P2（v2 不同意 v1 的 P0 定级） | 积分为整数粒度语义合理，int4 上限 ~21 亿颗积分（按每元1分计算，需累计消费 2100 万元才触底），当前业务规模极低风险。CHECK 缺失仍是 P2 缺陷。 |
+| P2-CC1-17（enums.ts saleOrderTypeEnum schema drift） | ✅ **已修复 2026-04-27** | enums.ts 已更新为 3 值（'销售单','内部单','转换单'），与 migration 0018+0019+0021 完全对齐。paymentFlowStatusEnum 新增 '待审批'。 |
+| chk_sop_amount_sign（sale_order_payments 符号约束） | ✅ **已生效，域重构收官后为退款唯一符号守卫** | 2026-04-27 域重构后，退款全部下沉 SOP 层，该 CHECK 是退款金额符号的唯一 DB 级守卫。退款金额使用 NUMERIC(10,2) 精度，与销售金额一致。 |
 
 ---
 

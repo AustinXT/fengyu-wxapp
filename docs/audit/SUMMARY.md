@@ -75,7 +75,7 @@
 |---|------|------|---------|---------|
 | **1** | **payNotify 完全无微信签名校验/无 AEAD 解密/无来源校验**（🔶已封锁：PAYNOTIFY_DISABLED=true，2026-04-26 临时缓解）— 任何小程序 page 可伪造支付落账，下游 sa/sc/积分/储值卡/share-gift 全栈连环触发；守卫后业务代码残留已 DROP 字段（paid_amount/wechat_transaction_id），解除守卫即 42703 崩溃 | P0-04-01 / P0-CC4-01 | 全栈（3 端 + DB + 营销发放）；命中 real.md #3 + #5；P0-CC2-v2-01 新增守卫后残留风险 | **L** |
 | **2** | **staffApi _testOpenid 无 ALLOW_TEST_OPENID 环境变量门控（v2 新发现）** — clientApi 有保护，staffApi 无；任何人可 payload 传 `_testOpenid` 伪造任意员工身份，越权访问全部 staffApi 业务路由 | P0-CC4-09 | staff 全路由越权；命中 real.md #6 | **S** |
-| **3** | **✅ 已修复（2026-04-26）：退款审批 5 通道 cascade** — sale_allocations / service_commissions / user_coupons / point_transactions / picked_up_quantity 已实现同事务原子回滚；refund-cascade.js + refund-cascade.ts 双端落地，migration 0018 添加 voided_at 列 | P0-CC2-07 ✅ | 全栈业绩 + 财务 + 顾客权益 | **—** |
+| **3** | **✅ 已修复（2026-04-26，2026-04-27 域重构收官）：退款审批 5 通道 cascade** — sale_allocations / service_commissions / user_coupons / point_transactions / picked_up_quantity 已实现同事务原子回滚；refund-cascade.js + refund-cascade.ts 双端落地，migration 0018 添加 voided_at 列；2026-04-27 域重构收官：sale_order_type_enum 5→3，`paymentFlowStatusEnum` 新增 `'待审批'`，`uq_sop_status_audit` partial unique index 覆盖退款审批并发，migration 0021 已应用 | P0-CC2-07 ✅ | 全栈业绩 + 财务 + 顾客权益 | **—** |
 | **4** | **admin createOrder 校验优惠券完全跳过 store/market/category/product 范围** — 资损 + 越权 | P0-13-01/02/03 | admin/staff/client 三端 order.create 全部忽略 applicable_market_ids / applicable_product_ids；面值 face_value_override 跨端读取漂移 | **M** |
 | **5** | **admin applyRechargeOnOrderPaid / createConversionOrder 引用已 DROP 的 store_id 列** — admin 替顾客确认含虚拟充值 SKU 订单 100% PG 42703 失败；测试 mock 反向锁死 | P0-14-01 + P0-CC9-03 | admin 核心结算路径完全失效 | **S** |
 | **6** | **staff service.create 写入不存在的 sku_id 列** — 所有 staffApi 服务单创建 100% 失败 | P0-05-01 / P0-CC9-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
@@ -92,6 +92,7 @@
 | 12 | admin server action 缺统一鉴权 wrapper（171 个 action，4 处确认漏调）| P0-CC4-02 |
 | 13 | admin 三大资金触发点全无 settlePoints | P0-15-01 |
 | 14 | admin getDashboardStats 业绩用 total_amount + 不过滤退款单 | P0-17-01/02/03 |
+> **FIXED 2026-04-27**：dashboard 已改为 `received - refunded_amount`，WHERE `is_void=false` 过滤，sale_order_type_enum 5→3 后退款单类型不再存在于 sale_orders 表。
 | 15 | settlePointsForOrder 三端字节级副本 + cron 5 套写入散落 | P0-15-02 |
 | 16 | payNotify 守卫后代码残留已 DROP 字段引用（paid_amount/wechat_transaction_id） | P0-CC2-v2-01 |
 
@@ -101,7 +102,7 @@
 
 | 模式名称 | 命中域数 | 命中域列表 | 修复路径 |
 |---------|---------|----------|---------|
-| **退款不冲销次数等价物（5 通道）** | 5 | 07/08/11/15/20 | 抽 `db/helpers/refund-cascade.ts`；新增 `service_commissions.voided_at` 列 |
+| **退款不冲销次数等价物（5 通道）** | 5 | 07/08/11/15/20 | **✅ 已修复（2026-04-26/27）**：refund-cascade.js/ts 双端落地 + 5 通道全量回滚 + sale_order_type 5→3 + uq_sop_status_audit 并发守卫 |
 | **代码引用已删 schema 字段** | 4 | 05(sku_id) / 12(from_store_name) / 14(store_id) / 09(valid_start/end) | migration 0003 后所有 DROP/RENAME 全仓 grep；CI 加 typecheck + drizzle-kit check |
 | **测试反向锁死错误代码** | 5+ | 08/12/14/24/CC9 | 修 P0 同步删/改测试；CI lint "测试不应锁死 schema 字面量" |
 | **时区漂移** | 5 | 02/05/06/17/18/CC7 | `ALTER DATABASE fengyu SET timezone='Asia/Shanghai'` + 三端禁 `new Date().toISOString().slice()` |
@@ -109,7 +110,7 @@
 | **同业务工具三/四端副本漂移** | 6+ | 07(DELETE vs is_void) / 08(roleType×3) / 10(customer_type×2) / 15(settlePoints×3) / 19(grantShareGift×3) / 20(remaining×5) | 抽 `cloudfunctions-shared/` + admin lib helper；diff 守卫 |
 | **schema 字段写入完整但消费 0** | 4 | 06(过期关闭) / 10(monthly_activity) / 13(applicable_xxx_ids) / 25(promoter_employee_id) | spec/schema docstring 关键字 grep + cron STEP 补齐 |
 | **状态机 UPDATE 缺 CAS 守卫** | 5+ 路径 | 02/03/04/06/12/CC2 — 共 12 处 | 全仓 `UPDATE.*WHERE.*_id` 扫描 + CI lint 强制 `AND status =` |
-| **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7 | 03/05/06/12/13×2/CC2 | 11 项 partial UNIQUE 索引一次性 migration |
+| **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7 | 03/05/06/12/13×2/CC2 | 11 项 partial UNIQUE 索引一次性 migration；**退款 in-flight 已由 uq_sop_status_audit 覆盖（2026-04-27）** |
 | **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享 `_shared/error-codes.js` 8 项白名单 + admin `withApiResponse` HOF |
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail |
 | **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation |
@@ -121,7 +122,7 @@
 
 ### L0 — Schema / Enums 层（一次性 migration epic）
 
-**P0（12 项）**：~~跨表 OPENID 唯一（S01-2，已作废）~~ / 手机号 CHECK（S01-1）/ sale_orders 金额符号联动 CHECK（S03-4）/ card_transactions 符号 CHECK（S-CC1-2）/ point_transactions 符号 CHECK + bigint（S-CC1-2）/ sale_allocations.allocation_ratio IN-集合 CHECK（S-CC1-1，保留 NUMERIC(5,2)）/ commission_rate BETWEEN 0 AND 1（S-CC1-3）/ prepaid_cards.balance >= 0（S-CC2-11）/ service_commissions 增 voided_at（S-CC7-2）/ 11 项 partial UNIQUE 索引（M 量级）/ PG timezone = Asia/Shanghai（S-CC7-1）/ 删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）/ uq_sop_txn 去除 method 维度（S04-2）
+**P0（12 项）**：~~跨表 OPENID 唯一（S01-2，已作废）~~ / 手机号 CHECK（S01-1）/ ~~sale_orders 金额符号联动 CHECK（S03-4）~~ ✅ 架构性作废（2026-04-27：退款不再写 sale_orders 行，enum 5→3）/ card_transactions 符号 CHECK（S-CC1-2）/ point_transactions 符号 CHECK + bigint（S-CC1-2）/ sale_allocations.allocation_ratio IN-集合 CHECK（S-CC1-1，保留 NUMERIC(5,2)）/ commission_rate BETWEEN 0 AND 1（S-CC1-3）/ prepaid_cards.balance >= 0（S-CC2-11）/ ~~service_commissions 增 voided_at（S-CC7-2）~~ ✅ 已修复（migration 0018）/ ~~11 项 partial UNIQUE 索引~~ → 退款 in-flight 已由 uq_sop_status_audit 覆盖（2026-04-27），其余 10 项仍待（M 量级）/ PG timezone = Asia/Shanghai（S-CC7-1）/ 删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）/ uq_sop_txn 去除 method 维度（S04-2）
 
 **P1（5 项）**：roleEnum PG enum / productKindEnum PG enum / system_configs 加 special_card_kind_id / sale_orders.allocation_status 加 default '待分配' / PII 历史 operation_logs.detail 一次性脱敏
 
@@ -129,7 +130,7 @@
 
 ### L1 — Helpers 层
 
-**P0（8 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/scope.ts`（含 assertCustomerInScope/assertEmployeeInScope/assertOrderInScope）/ `db/helpers/money.ts` / `cloudfunctions-shared/error-codes.js` / `cloudfunctions-shared/share-gift.js + points.js` / `db/helpers/refund-cascade.ts` / `db/helpers/role-resolve.ts`
+**P0（8 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/scope.ts`（含 assertCustomerInScope/assertEmployeeInScope/assertOrderInScope）/ `db/helpers/money.ts` / `cloudfunctions-shared/error-codes.js` / `cloudfunctions-shared/share-gift.js + points.js` / ~~`db/helpers/refund-cascade.ts`~~ ✅ 已落地（2026-04-26/27） / `db/helpers/role-resolve.ts`
 
 **P1（3 项）**：`db/helpers/dashboard-metrics.ts` / `db/helpers/sale-item-availability.ts` / `cloudfunctions-shared/sanitize.js`
 
@@ -144,7 +145,7 @@
 - admin/actions/orders.ts createOrder — 优惠券 server-side 校验范围
 - staff/client order.create — 校验 applicable_market_ids + face_value_override
 - staffApi/routes/customer.js（6 路由）— assertCustomerInScope + scope WHERE
-- approveRefund 三端 — 5 通道 cascade（sa/sc/coupons/points/picked_up）
+- ~~approveRefund 三端 — 5 通道 cascade（sa/sc/coupons/points/picked_up）~~ ✅ 已修复（2026-04-26/27 域重构收官）
 - close/cancel/closeExpired 三端 — 状态推进同事务 cascade payments/sa
 - 12 处 UPDATE 加 CAS 守卫
 - client appointment/message/points 加 requirePhone()
@@ -174,7 +175,7 @@
 
 ### L11 — Cron 守护层
 
-**P0（4 项）**：audit-money-invariants.ts（5 项不变量）/ audit-prepaid-balance.ts / audit-store-unbind-orphans.ts / audit-refund-cascade-coverage.ts
+**P0（5 项）**：audit-money-invariants.ts（5 项不变量）/ audit-prepaid-balance.ts / audit-store-unbind-orphans.ts / audit-refund-cascade-coverage.ts / audit-payment-invariants.ts（STEP 7，验证退款 5 通道不变量，2026-04-27 新增）
 
 **P1（2 项）**：dashboard.consistency.test.ts 三端业绩对齐 / CC1 不变量与 ops 工单联动
 
@@ -188,8 +189,8 @@
 | L4 | 5 | 3 | 0 | 8 |
 | L7 | 6 | 2 | 0 | 8 |
 | L9 | 0 | 6 | 2 | 8 |
-| L11 | 4 | 2 | 0 | 6 |
-| **合计** | **52** | **81** | **4** | **137** |
+| L11 | 5 | 2 | 0 | 7 |
+| **合计** | **53** | **81** | **4** | **138** |
 
 > P0 修复优先 L0→L1→L3 三层串行（schema migration 是其他层的前置）；L4 cron 与 L11 cron 守护可并行。
 
@@ -201,6 +202,9 @@
 
 | 决策 | 内容 |
 |------|------|
+| D-Q6.1-2026-04-27 | **big bang 实施**：sale_order_type_enum 5→3，migration 0019+0021 已 apply，enum 收窄为（'销售单','内部单','转换单'），代码全端已切换 |
+| D-Q6.2-2026-04-27 | **sale_order_payment_details 1:1 子表**：operator_employee_id/note 移至子表，退款专属字段（refund_reason, ref_sale_item_id, session_count, audit_*）和审批专属字段全部下沉至 details 子表 |
+| D-Q6.3-2026-04-27 | **5 通道全量回滚**：历史数据 0 行无需迁移；cascade 逻辑已实现（admin refunds.ts + staffApi order.js），覆盖 sale_allocations/service_commissions/user_coupons/point_transactions/pickup_records |
 | D-CC1-2026-04-26 | 保留 `sale_allocations.allocationRatio = NUMERIC(5,2)` 不升级，仍需补 IN-集合 CHECK |
 | D-Q1-2026-04-26 | payNotify 立即停用直到补完签名校验（注入 NODE_ENV 守卫直接抛 503）|
 | D-Q2-2026-04-26 | 跨表 OPENID 唯一约束**作废**（appid scoped 物理保证），audit-01 P0-SPLIT-04 降 P2 文档化 |
@@ -219,38 +223,38 @@
 
 ### 5.2 待用户决策清单（2026-04-26 更新）
 
-12 项原清单已答 11 项见 §5.1 决策表（Q1/Q2/Q3/Q4/Q5/Q7/Q8/Q9/Q10/Q11/Q12 + Q6 主体方向）；Q5.1/Q5.2 已通过 ticket 2026-04-26-experience-card-as-sku-flag Round 1 答复并落地（见下表 ✅ 行）；剩余 3 项 Q6 细节待补：
+12 项原清单已全部答复，见 §5.1 决策表（Q1/Q2/Q3/Q4/Q5/Q6/Q7/Q8/Q9/Q10/Q11/Q12）；Q5.1/Q5.2 已通过 ticket 2026-04-26-experience-card-as-sku-flag Round 1 答复并落地（见下表 ✅ 行）；Q6.1/Q6.2/Q6.3 已于 2026-04-27 答复并落地（见下表 ✅ 行）：
 
 | # | 决策项 | 答复 / 推荐方向 | 状态 |
 |---|--------|---------------|------|
 | Q5.1 | "非体验卡"判定字段（product_kind / is_trial / 名字 LIKE）| **`product_skus.is_experience boolean`** + `sale_items.is_experience` 行级快照（capability 列模式，物理隔离体验卡 SKU 与商城商品） | ✅ Round 1 已落地（migration 0017 + 三端） |
 | Q5.2 | 单笔混合订单（体验卡 + 普通商品）跃迁怎么算？ | **按"非体验部分总额"判跃迁**：`order_non_trial_amount = SUM(received WHERE NOT is_experience)`；混合订单 non_trial≥threshold→会员客，>0→小美客，仅体验部分→体验客 | ✅ schema 字段就位；跃迁 SQL Round 2 落地 |
-| Q6.1 | sale_order_type 5→3 重构排期：双轨过渡 vs big bang | 双轨过渡（3 周）| P0 待执行 |
-| Q6.2 | sale_order_payments 是否需补 audit_status / audit_employee_id / refund_reason 等列承载退款单字段？ | 待 schema check 后定 | P0 待评审 |
-| Q6.3 | 历史回款单/退款单迁移时是否一并冲销 sa/sc/coupons/points/pickup？ | 一并冲销（与未来 cascade 一致）| P0 待执行 |
+| Q6.1 | sale_order_type 5→3 重构排期：双轨过渡 vs big bang | **big bang（Q6.1=B）**：migration 0019+0021 已 apply，enum 5→3，代码全端已切换 | ✅ 已落地（2026-04-27） |
+| Q6.2 | sale_order_payments 是否需补 audit_status / audit_employee_id / refund_reason 等列承载退款单字段？ | **sale_order_payment_details 1:1 子表（Q6.2=B）**：operator/note/退款专属/审批专属字段全部下沉 | ✅ 已落地（2026-04-27） |
+| Q6.3 | 历史回款单/退款单迁移时是否一并冲销 sa/sc/coupons/points/pickup？ | **5 通道全量回滚（Q6.3=A）**：历史数据 0 行无需迁移；cascade 逻辑已实现 | ✅ 已落地（2026-04-27） |
 
 ### 5.3 资损金额估算
 
 | 风险 | 资损规模 / 月 | 备注 |
 |------|--------------|------|
 | payNotify 伪造支付 | **≥ 整月营业额** | 灾难级，攻击门槛 0 |
-| 退款不冲销 sa 提成 | 员工业绩 5-15% 长尾累积 | 12 月可达 100% 退款金额对应提成 |
-| 退款不冲销 user_coupons | 券面值 × 月退款单数 × 平均折扣 | 顾客主动套利风险 |
-| 退款不冲销 picked_up_quantity | 被退商品零售价 | 实物 + 退款双消费 |
+| 退款不冲销 sa 提成 | ~~员工业绩 5-15% 长尾累积~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
+| 退款不冲销 user_coupons | ~~券面值 × 月退款单数 × 平均折扣~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
+| 退款不冲销 picked_up_quantity | ~~被退商品零售价~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
 | admin createOrder 跨 store 优惠券 | 券面值 × admin 主动套利频次 | admin 内部信任问题 |
 | sale_allocations.ratio 写 9.99 | 业绩 ×10 倍 | IN-集合 CHECK 后归零 |
 | cron 跳档仅扫会员客 | 流量/体验客生日+感恩+升级三件套漏发 | 单顾客年损 ≈ 礼券 + 积分 |
 | 跨表 OPENID 重叠 | 身份混乱无法对账 | 数据完整性，资损延迟暴露 |
 | staff customer.* 6 路由 PII | 合规风险 | 不可量化（个人信息保护法）|
 
-> **修复 ROI**：payNotify 签名 + 退款 cascade + ratio CHECK 三项一次修复即可拦下 ≥ 80% 资损通道，预估 1 周内可完成。
+> **修复 ROI**：payNotify 签名 + ~~退款 cascade~~（✅ 已修复） + ratio CHECK 两项一次修复即可拦下 ≥ 80% 资损通道，预估 1 周内可完成。
 
 ### 5.4 跨域 epic 优先级
 
 | Epic | 包含修复 | 推荐排期 |
 |------|---------|---------|
 | E1 payNotify 安全收官 + _testOpenid 门控 | P0-04-01/02/03/04 + S04-1/2/3 + P0-CC4-09 + P0-CC2-v2-01（守卫后残留字段）| 第 1 周 |
-| E2 退款级联 cascade（5 通道）| ~~P0-CC2-07~~ ✅ 已修复（2026-04-26）；L1 helpers + L3 三端已落地；E2 改为 payNotify 安全收官 + 已删字段清理 | 第 1 周 |
+| E2 退款级联 cascade（5 通道）| ~~P0-CC2-07~~ ✅ 已修复（2026-04-26/27）；L1 helpers + L3 三端已落地 + 域重构收官（enum 5→3 + subtable + 并发守卫）；E2 改为 payNotify 安全收官 + 已删字段清理 | 第 1 周 ✅ |
 | E3 已删字段引用清理 | P0-05-01 / P0-12-01 / P0-14-01（P0-CC9-01/03）+ CC9 测试整改 | 第 1 周（与 E1 并行）|
 | E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 第 2-3 周 |
 | E5 schema 不变量 CHECK 一次性 migration | L0 P0 13 项 + L11 audit cron | 第 2 周 |

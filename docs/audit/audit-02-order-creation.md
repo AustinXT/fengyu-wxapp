@@ -28,6 +28,8 @@
 |----|-------|-------|--------|
 | Schema | `db/schema/order.ts:40-125`（saleOrders）+ `:127-208`（saleItems）| ↑ | ↑ |
 | 枚举 | `db/schema/enums.ts:5-14` orderStatus(8 值) + `enums.ts:22` saleOrderType(5 值枚举，实际 create 仅接受 3 值) | ↑ | ↑ |
+
+> **注 (2026-04-27)**：`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），不再有 '回款单'/'退款单'。退款改为基于 `sale_order_payments`（change_type='退款', amount<0）+ `sale_order_payment_details` 子表。
 | Action/Route | `fengyu-admin/src/actions/orders.ts:692`（createOrder）+ `:535`（confirmOfflinePayment）+ `:599`（closeOrder）+ `:654`（resetOrderFailed）+ `:1709`（recordPayment）| `staffApi/routes/order.js:162`（create）+ `:771`（confirmOffline）+ `:1068`（close）+ `:1143`（resetFailed）+ `:2491`（generateOrderNo）| `clientApi/routes/order.js:160`（create）+ `:657`（pay）+ `:785`（offlinePay）+ `:1073`（cancel）+ `:56`（scanDetail）+ `:1361`（scanAdjust）+ `:1471`（confirmPrepaidFull）+ `:1612`（repay）|
 | 唯一约束 | `db/schema/order.ts:116-121`：`uq_sale_orders_client_pending` ON `(client_user_id)` WHERE `status='待支付' AND client_user_id IS NOT NULL` + `uq_sale_orders_phone_pending` ON `(client_phone, store_id)` WHERE `status='待支付' AND client_user_id IS NULL` | ↑ | ↑ |
 | Advisory lock | admin `actions/orders.ts:1038-1052`（createOrder），`:1807-1821`（recordPayment FY-HKD 单） — 单事务持锁 ✅ | staff `routes/order.js:404`（`generateOrderNo()` 独立事务） + `:499-501`（主事务再次持锁）— **双事务！** ❌ + `routes/order.js:2056`（createConversion 同问题）| client `routes/order.js:389-390`（单事务持锁）✅ |
@@ -139,6 +141,8 @@
 
 #### **[P1-02v2-08]** `saleOrderType` 枚举 5 值但 v2 实际 create 仅接受 3 值：staff/client/admin 各自过滤不同子集
 
+> **FIXED 2026-04-27**：`saleOrderTypeEnum` 已从 5 值精简为 3 值（销售单/内部单/转换单），'回款单'/'退款单' 已从枚举移除。退款/回款语义完全由 `sale_order_payments.change_type` 表达（change_type='退款', amount<0, status='待审批'→'已支付'），不再有独立的退款单/回款单订单类型。新表 `sale_order_payment_details` 作为 1:1 子表存储 operator、note、refund reason、audit 信息。
+
 - **文件**：`db/schema/enums.ts:22`（枚举 5 值：销售单/内部单/回款单/转换单/退款单）；staff `routes/order.js:207-211`（仅接受销售单/内部单，拒绝回款单/退款单）；admin `actions/orders.ts:703`（接受销售单/内部单/转换单）；client create 不传 `saleOrderType`（默认 `'销售单'`）
 - **现象**：`sale-order-domain-refactor` 后回款/退款单语义已下沉到 `sale_order_payments`，但枚举未精简为 3 值。enum 与实际业务约束脱节，未来误用风险高。
 - **风险**：枚举中残留的 `回款单/退款单` 字面量若被外部程序直接传入（绕过 create 校验），仍可写入 DB，引起下游分配/积分/状态机逻辑错误。
@@ -233,7 +237,7 @@
 | 关闭允许集 | `待支付/支付失败` | `待支付/待确认收款/支付失败`(mgr) | `待支付/(已支付+全额抵扣)` | 三端规则不闭合 | P1（P1-02v2-07）|
 | sale_item_id 格式 | `{orderId}-NN` | `XSLSH-WX-{YYYYMMDD}{4}` | `XSLSH-WX-{YYYYMMDD}{4}` | 报表前缀匹配失效 | P1（P1-02v2-10）|
 | 订单号前缀（转换单） | `FY-XSD-WX-`（含转换单） | `FY-XSD-WX-`（含转换单） | 仅 `FY-XSD-WX-` | 转换 vs 销售前缀冲突 | P1（P1-02v2-12）|
-| saleOrderType 5 值枚举 | 接受 3 值（含转换单） | 接受 2 值（销售单/内部单） | 仅默认销售单 | 枚举与业务约束脱节 | P1（P1-02v2-08）|
+| saleOrderType 5 值枚举 | 接受 3 值（含转换单） | 接受 2 值（销售单/内部单） | 仅默认销售单 | 枚举与业务约束脱节 | P1（P1-02v2-08）→ **FIXED 2026-04-27**（枚举已精简为 3 值）|
 | 错误前缀 | 中文 throw（无前缀） | `CLIENT_NOT_REGISTERED:` + `INSUFFICIENT_BALANCE:` | `CONFLICT:` + `INVALID_STATE:` | toast 映射落空 | P2（P2-02v2-13, P2-02v2-16）|
 
 ---
@@ -256,7 +260,7 @@
 
 | 层 | 文件 | 修改 | 关联问题 |
 |----|------|------|----------|
-| L0 schema/enums | `db/schema/enums.ts:22` | `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单），写 migration | P1-02v2-08 |
+| L0 schema/enums | `db/schema/enums.ts:22` | `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单），写 migration | P1-02v2-08 → **FIXED 2026-04-27** |
 | L0 schema | `db/schema/order.ts` | `allocationStatus` 列加 `.default('待分配')` | P1-02v2-06 |
 | L0 DB | 新 migration | `SET timezone = 'Asia/Shanghai'`（集群级）；验证生产 PG `SHOW TIMEZONE` 后决策 | P0-02v2-02 |
 | L0 schema | `db/schema/order.ts:111-113` | `uq_sale_orders_phone_pending` 移除 `store_id` 维度 | P1-02v2-11 |
@@ -348,6 +352,7 @@ SHOW TIMEZONE;
 SELECT current_setting('TIMEZONE'), NOW(), NOW() AT TIME ZONE 'Asia/Shanghai';
 
 -- 7. saleOrderType 现有分布（[P1-02v2-08] 枚举精简影响评估）
+-- 注 (2026-04-27)：枚举已精简为 3 值，此查询可确认历史数据中是否有 回款单/退款单 行需要迁移处理
 SELECT sale_order_type, COUNT(*) FROM sale_orders GROUP BY 1 ORDER BY 1;
 
 -- 8. 状态机非法历史检测（已支付 → 已关闭 路径，[P0-02v2-03 CLOSED 验证]）
@@ -388,7 +393,7 @@ GROUP BY 1 HAVING COUNT(*) <> COUNT(DISTINCT sale_order_id);
 5. **admin confirmOfflinePayment payments 流水**（P1-02v2-09）：admin 确认收款后查 `sale_order_payments` 有对应 `change_type='首次支付'` 行，且 `received` 与 SUM 一致。
 6. **admin recordPayment scope 保护**（P0-02v2-03）：将 `sale_order:record_payment` 授予 manager → manager 对跨门店订单调 `recordPayment` 应返回 `PERMISSION_DENIED`。
 7. **status CAS 保护**（CLOSED from v1 验证）：并发触发 client.cancel + staff.confirmOffline，断言只有一个成功。
-8. **saleOrderType 枚举精简后旧数据读取**（P1-02v2-08）：迁移后，历史 `回款单/退款单` 类型行在 Drizzle 查询时是否出错（需迁移前确认）。
+8. **saleOrderType 枚举精简后旧数据读取**（P1-02v2-08）：→ **FIXED 2026-04-27**（枚举已精简为 3 值；历史数据迁移待确认）
 9. **settlePointsSafe PG 死锁场景**（P1-02v2-05）：mock PG deadlock error，确认 confirmOffline 事务不静默提交（应抛出或回滚）。
 
 ---
@@ -425,7 +430,7 @@ GROUP BY 1 HAVING COUNT(*) <> COUNT(DISTINCT sale_order_id);
 - [ ] 与域 05（服务单扣次）对齐：`is_experience` 遗漏同时影响 `recalcCustomerType`，需 `service.complete` 处同样复查；cancel 已支付路径与 service.start 的竞争
 - [ ] 与域 07（销售提成）对齐：`allocation_status=NULL` 会导致提成分配列表漏单
 - [ ] 与域 10（顾客会员等级）对齐：`is_experience` 快照遗漏影响历史订单的顾客类型分析
-- [ ] saleOrderType 枚举精简（P1-02v2-08）迁移时需与 admin UI filter 联动确认
+- [x] saleOrderType 枚举精简（P1-02v2-08）迁移时需与 admin UI filter 联动确认 → **FIXED 2026-04-27**（枚举已精简为 3 值）
 - [ ] `wechat_transaction_id`/`alipay_transaction_id` UNIQUE 僵尸约束迁移确认（CC9）
 
 ---
@@ -446,13 +451,13 @@ GROUP BY 1 HAVING COUNT(*) <> COUNT(DISTINCT sale_order_id);
 - S02-1 `uq_sale_orders_phone_pending` 索引去掉 store_id 维度（P1-02v2-11）
 - S02-2 `sale_orders.allocation_status` 加默认值 `'待分配'`（P1-02v2-06）
 - S02-3 集群级 `SET timezone = 'Asia/Shanghai'`（P0-02v2-02）
-- S02-4 `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单）（P1-02v2-08）
+- S02-4 `saleOrderTypeEnum` 精简为 3 值（销售单/内部单/转换单）（P1-02v2-08）→ **FIXED 2026-04-27**
 - S02-5 确认 `wechat_transaction_id`/`alipay_transaction_id` UNIQUE 僵尸约束已移除（P1-02v2-09）
 
 ## 14. 枚举发现追加
 
 - E02-order-status：8 值齐全 ✅；三端允许迁移子集不一致 → 文档化建议（不改枚举）
-- E02-sale-order-type：5 值枚举 vs 3 值实际约束，建议精简（P1-02v2-08）
+- E02-sale-order-type：5 值枚举 vs 3 值实际约束，建议精简（P1-02v2-08）→ **FIXED 2026-04-27**（已精简为 3 值）
 
 ---
 

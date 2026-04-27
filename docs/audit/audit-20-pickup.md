@@ -78,6 +78,8 @@
 
 #### P0-20-01 staff 退款 cascade 通道 5 对家居产品完全跳过，导致退款后仍可超额提货
 
+> **[FIXED 2026-04-27]**：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 5（admin `lib/refund-cascade.ts:178-199` + staffApi `helpers/refund-cascade.js:135-149`）。退款审批通过时 `picked_up_quantity` 按三级逻辑回滚：(1) 有 sessionCount 时按次回退；(2) 家居产品 sessionCount=null 时清零；(3) 整单退款 saleItemId=null 时按 saleOrderId 批量清零。P0-20-01 中描述的 staff 端 `sessionCount=null → 条件假 → 完全跳过` 问题已修正。
+
 - **文件**：`fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js:135-149`
 - **现象**：通道 5 判断条件为 `if (saleItemId && sessionCount && Number(sessionCount) > 0)`。家居产品的 `sale_items.session_count` 是 `NULL`（代码注释 `order.js:606-607` 明确"家居产品无 session_count"），故 `sessionCount = sopRow.session_count = NULL`，条件永远为假。staff 端退款审批通过后，`picked_up_quantity` **从不被冲销**。
 - **对比**：admin `refund-cascade.ts:183` 用 `const qty = sessionCount && sessionCount > 0 ? sessionCount : 1`，sessionCount=null 时默认 qty=1，**每次至少回退 1 件**，但这同样有缺陷（见 P1-20-09）。
@@ -218,6 +220,8 @@
 
 #### P1-20-09 admin cascade 通道 5 家居产品 sessionCount=null 时回退量错误（默认 1 而非退款数量）
 
+> **[FIXED 2026-04-27]**：sale-order-domain-refactor 实现 5 通道退款 cascade 通道 5 三级回滚逻辑。admin `refund-cascade.ts:183-198` 已更新：sessionCount=null 时直接清零 `picked_up_quantity`（家居/单品全量归零），不再默认 qty=1。与 staff 端对齐。
+
 - **文件**：`fengyu-admin/src/lib/refund-cascade.ts:183-198`
 - **现象**：`const qty = sessionCount && sessionCount > 0 ? sessionCount : 1`。家居产品退款时 `sessionCount = sale_items.session_count = NULL`（家居无疗程数），故 qty=1，**不论退款数量是多少都只回退 1 件**。若退 5 件家居，picked_up=3，应回退 3；实际回退 1，picked_up 变 2，仍可被再次提货 2 次。
 - **对比**：staff refund-cascade.js 通道 5 在 sessionCount=null 时直接跳过（P0-20-01），admin 此处部分回退比 staff "稍好"但数值仍错误。
@@ -276,7 +280,7 @@
 | 跨店提货 | 允许（注释明确） | 禁止（`store_id=effectiveStoreId`） | — | 规则对立 | P1-20-06 |
 | 鉴权 | manager / finance 分级 | 任意员工（requireStaffBound） | — | 普通员工越权代提 | P1-20-02 |
 | `item_direction` 守卫 | ✅ `AND item_direction='购买'` | ❌ 缺失 | — | 退出/转出行误提货 | **P0-20-02** |
-| 退款 cascade 通道 5 | ✅ 执行（但数量计算错误 qty 默认 1） | ❌ sessionCount=null 直接跳过 | — | 家居产品退款后超提不被阻止 | **P0-20-01** |
+| 退款 cascade 通道 5 | ✅ 执行（但数量计算错误 qty 默认 1） | ✅ **[FIXED 2026-04-27]** sessionCount=null 时按三级逻辑清零 | — | 家居产品退款后超提已被阻止 | ~~P0-20-01~~ FIXED |
 | 事务原子性 | ✅ db.transaction | ❌ 三步无事务 | — | INSERT 失败导致 picked_up 孤儿 | P1-20-01 |
 | operation_logs | ✅ logOperation 写入 | ❌ 不写 | — | 审计断裂 | P1-20-03 |
 | rowCount 判断 | ✅（Drizzle tx.execute 有 rowCount） | ❌（pg.query 返回 rows 数组，无 rowCount） | — | 错误分支死代码（P0-20-03） |
@@ -288,7 +292,7 @@
 - [x] **CC1 数值精度**：`pickup_quantity` / `picked_up_quantity` 均为 INTEGER，整数运算无精度问题；admin 不处理金额 ✅
 - [ ] **CC2 并发幂等**：
   - admin CAS UPDATE + 事务 ✅；staff CAS UPDATE ✅（DB 层兜底），但无事务（P1-20-01）
-  - 退款 cascade 通道 5：staff 完全跳过（**P0-20-01**）；admin 数量计算错误（P1-20-09）
+  - 退款 cascade 通道 5：staff 完全跳过 ~~（**P0-20-01**）~~ → **[FIXED 2026-04-27]**；admin 数量计算错误 ~~（P1-20-09）~~ → **[FIXED 2026-04-27]**：三级回滚逻辑已实现
   - 双击防重：admin `submitting` 状态 ✅；staff 无 idempotency key（P2-20-05）
 - [x] **CC3 组织隔离**：
   - admin `scopeCondition(session, pickupRecords.storeId)` + `isInScope(session, data.storeId)` 双重 ✅
@@ -429,10 +433,10 @@ WHERE pr.store_id <> si.store_id;
 
 ## 10. 后续待办
 
-- [ ] **P0-20-01 优先修复**：staff `refund-cascade.js` 通道 5 + admin `refund-cascade.ts` 通道 5 同步修正，对齐"家居产品退款一律清零 picked_up_quantity"语义
+- [x] ~~**P0-20-01 优先修复**：staff `refund-cascade.js` 通道 5 + admin `refund-cascade.ts` 通道 5 同步修正~~ → **[FIXED 2026-04-27]**：三级回滚逻辑已实现，家居产品 sessionCount=null 时清零 picked_up_quantity
 - [ ] **P0-20-02 优先修复**：staff `createPickup` UPDATE WHERE 加 `item_direction='购买'` 守卫
 - [ ] **P0-20-03 优先修复**：staff `createPickup` `result.rowCount` → `result.length` 且包入事务
-- [ ] 与 audit-11 退款域共审：确认 admin `refunds.ts approveRefund` 通道 4（steps 805-818）对家居产品的处理是否同样依赖 sessionCount
+- [ ] 与 audit-11 退款域共审：确认 admin `refunds.ts approveRefund` 通道 4 对家居产品的处理是否同样依赖 sessionCount（**2026-04-27 更新**：cascade 通道 5 已用三级逻辑修正，但通道 4 的家居产品处理仍需独立确认）
 - [ ] 与 audit-CC2 并发域共审：pickup 通道缺幂等键（P2-20-05），归入 CC2 横切热点
 - [ ] 与 audit-CC7 时间域共审：dateTo 漂移（P1-20-05），归入 S02-3 epic
 - [ ] 决策 P1-20-06 跨店政策：admin 允许 vs staff 禁止——确认后统一实现

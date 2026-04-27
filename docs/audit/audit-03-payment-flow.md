@@ -7,6 +7,8 @@
 **版本**：v3（合并 v1 claude-opus-4-7 + v2 claude-sonnet-4-6）
 **规范版本**：`real.md` v3.1.0 + `enums.ts` 28 枚举 + migration 0018/0019
 
+> **注 (2026-04-27 domain refactor)**：`paymentFlowStatusEnum` 已更新为 5 值（'待支付'/'待审批'/'已支付'/'已作废'/'已退款'）。新增 `sale_order_payment_details` 1:1 子表存储 operator_employee_id、note、refund_reason、audit 信息。`sale_order_payments` 的 operator_employee_id/note 已下沉至 details 子表。`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），退款改为 payment-based（change_type='退款', amount<0, status='待审批'→'已支付'）。
+
 ---
 
 ## 元信息
@@ -212,6 +214,8 @@
 
 #### **[P1-03v2-11]** `staffApi order.detail` 读取 `note` 列但该列已 DROP（migration 0018）
 
+> **FIXED 2026-04-27**：`sale_order_payment_details` 子表已创建，为 `sale_order_payments` 的 1:1 子表，存储 operator_employee_id、note、refund_reason、audit 信息。staffApi detail 查询应改为 JOIN `sale_order_payment_details` 取 note。`sale_order_payments` 的 note 列已正式下沉至 details 子表。
+
 - **文件**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:1329-1344`
 - **类型**：新发现
 - **现象**：detail 查询 SELECT 包含 `note`：
@@ -238,7 +242,7 @@
 - **[P2-03v2-14]** `admin.recordPayment` 错误前缀 `'REF_ORDER_NOT_FOUND'`、`'INVALID_STATE:'`、`'OVERPAY:'`、`'INSUFFICIENT_BALANCE:'`、`'CLIENT_NOT_REGISTERED:'`、`'ORDER_ID_GEN_FAILED'` 均不在 4 项约定（`UNAUTHORIZED: / PHONE_REQUIRED: / INVALID_PARAMS: / PERMISSION_DENIED:`），前端 toast 进入"未识别错误"分支。**与 v1 P2-03-14 同源**。
 - **[P2-03v2-15]** `createRefund.detailNote` 是 JSON 字符串序列化存入 `sale_order_payment_details.note` 文本列，解析依赖 `JSON.parse`，缺乏 schema 约束。建议改用 `raw_payload jsonb` 列（`order.ts:365` 已定义），避免文本字段存结构化数据。
 - **[P2-03v2-16]** `approveRefund` 步骤 3（UPDATE refunded_amount += ABS(amount)）是累加而非重算，但没有 CAS 守卫（`line 1586-1591`）。若多次 approveRefund 同一 paymentId（虽然 CAS 步骤 1 会阻止），不排除极端情况下 refunded_amount 重复累加。建议改为 SUM 重算（与其他端的 received 重算统一）。
-- **[P2-03v2-17]** `payNotify/index.js:480` 仍然引用 `sale_order_type = '回款单'` 的查询逻辑，此场景在 migration 0018 后永远不触发（'回款单' 已从枚举删除），但留在代码中造成误解。
+- **[P2-03v2-17]** `payNotify/index.js:480` 仍然引用 `sale_order_type = '回款单'` 的查询逻辑，此场景在 migration 0018 后永远不触发（'回款单' 已从枚举删除），但留在代码中造成误解。→ **FIXED 2026-04-27**：`saleOrderTypeEnum` 已正式精简为 3 值（销售单/内部单/转换单），`回款单` 不再存在于枚举中。
 - **[P2-03v2-18]** `admin.confirmOfflinePayment` 成功操作日志（`logTransition`）在事务 commit 之后写入（`line 590`），若 logTransition 失败不会回滚业务状态——与其他关键操作的审计逻辑一致（audit-23 已记录），但需与 CC7 时间字段一致性评估。
 - **[P2-03v2-19]** `staffApi` 错误前缀 `'CONFLICT:'`、`'INSUFFICIENT_BALANCE:'`、`'INVALID_STATE:'`、`'NOT_FOUND:'` 均不在 4 项约定（v2 新增）。
 - **[P2-03v2-20]** `staff.close` 的 `closeExpiredOrder`（`routes/order.js:1071-1098`）与 `clientApi` 的 close/cancel（`clientApi/routes/order.js:15-28, 1020-1085`）两端均未作废 payments 行，**与 P1-03v2-06 同源，分散记录**。
@@ -253,7 +257,7 @@
 | received 重算公式是否含储值卡抵扣 | ❌ recordPayment 漏 '储值卡抵扣' | ✅ 含 | ✅ 含 | N/A（DISABLED） | received 低估 → 超收 | **P0** |
 | payNotify DROP 列引用 | — | N/A | **❌ paid_amount/wechat_txn_id 仍在** | — | 解禁后即崩 | **P0** |
 | '首次支付' 并发判定位置 | 事务内 | **事务外** | 事务内 | 事务内 | 同订单双首次支付 | **P0** |
-| note/operator 字段存储位置 | ✅ JOIN salePaymentDetails | ❌ SELECT note from payments（已 DROP） | ✅ 写 sale_order_payment_details | N/A | production apply 0018 后崩溃 | **P1** |
+| note/operator 字段存储位置 | ✅ JOIN salePaymentDetails | ❌ SELECT note from payments（已 DROP）→ **FIXED 2026-04-27**（details 子表已创建）| ✅ 写 sale_order_payment_details | N/A | production apply 0018 后崩溃 | **P1** |
 | 退款储值卡回冲逻辑 | — | ❌ 按 payment_method='储值卡' 判断不准 | — | — | 混合支付退款储值卡不回冲 | **P1** |
 | payments 写入后 received 重算 | ✅ SUM 重算 | 增量加 | SUM 重算 | 增量加 | 两种策略混用，并发下可能漂移 | **P1** |
 | source_end 值 | 'admin' | 'staff' | 'client' | 'notify' | 一致 | OK |
@@ -396,6 +400,7 @@ GROUP BY o.sale_order_id, o.status, o.offline_confirmed_by IS NOT NULL
 LIMIT 20;
 
 -- V3-SQL-08：sale_order_type 枚举现有值（验证 '回款单' 是否已删除）
+-- 注 (2026-04-27)：枚举已精简为 3 值（销售单/内部单/转换单）
 SELECT enumlabel FROM pg_enum
 WHERE enumtypid = 'sale_order_type'::regtype
 ORDER BY enumsortorder;
@@ -448,7 +453,7 @@ LIMIT 20;
 
 ## 10. 后续待办
 
-- [ ] **最高优先级**：确认 migration 0018 在生产库 5434 的实际 apply 状态（`SELECT * FROM drizzle.__drizzle_migrations ORDER BY created_at DESC LIMIT 5`）；若已 apply 则 P1-03v2-11 即刻崩溃，需立即修复 staffApi detail 查询。
+- [ ] **最高优先级**：确认 migration 0018 在生产库 5434 的实际 apply 状态（`SELECT * FROM drizzle.__drizzle_migrations ORDER BY created_at DESC LIMIT 5`）；若已 apply 则 P1-03v2-11 即刻崩溃，需立即修复 staffApi detail 查询。→ **注 (2026-04-27)**：`sale_order_payment_details` 子表已创建，staffApi detail 应改为 JOIN details 子表取 note/operator。
 - [ ] **最高优先级**：写补丁 migration `uq_sop_first_payment` partial unique index（P0-03v2-03）；可独立于其他修复先行。
 - [ ] 与 域 04 (payNotify) 对齐：P0-03v2-02 是本域发现的跨功能 P0，应在 audit-04-pay-notify-v2 中连带处理（payNotify 全量重构必须覆盖遗留字段清除）。
 - [ ] 与 域 11 (退款) 对齐：P1-03v2-07 approveRefund 储值卡回冲 bug 是退款流程本身的缺陷，建议在 audit-11-refunds 中跟踪。
