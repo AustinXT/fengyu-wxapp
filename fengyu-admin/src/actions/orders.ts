@@ -3,7 +3,7 @@
 import { db } from '@/db'
 import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
-import { stores } from '@db/org'
+import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
@@ -631,6 +631,12 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
         ) AND is_void = false
       `)
 
+      // 归还优惠券（订单关闭时释放已核销的券）
+      await tx
+        .update(userCoupons)
+        .set({ status: '未使用', usedSaleOrderId: null, usedAt: null })
+        .where(eq(userCoupons.usedSaleOrderId, saleOrderId))
+
       return { matched: true }
     })
 
@@ -887,10 +893,14 @@ export async function createOrder(data: {
         expireAt: userCoupons.expireAt,
         userId: userCoupons.userId,
         couponType: couponTemplates.couponType,
-        discountValue: couponTemplates.discountValue,
+        discountValue: sql<number>`COALESCE(${userCoupons.faceValueOverride}, ${couponTemplates.discountValue})`,
         maxDiscount: couponTemplates.maxDiscount,
         minSpend: couponTemplates.minSpend,
         isActive: couponTemplates.isActive,
+        applicableStoreIds: couponTemplates.applicableStoreIds,
+        applicableCategoryIds: couponTemplates.applicableCategoryIds,
+        applicableProductIds: couponTemplates.applicableProductIds,
+        applicableMarketIds: couponTemplates.applicableMarketIds,
       })
       .from(userCoupons)
       .innerJoin(couponTemplates, eq(userCoupons.templateId, couponTemplates.templateId))
@@ -902,6 +912,46 @@ export async function createOrder(data: {
     if (coupon.status !== '未使用') return { success: false, message: '优惠券已被使用或已失效' }
     if (coupon.expireAt < new Date()) return { success: false, message: '优惠券已过期' }
     if (!coupon.isActive) return { success: false, message: '该优惠券模板已停用' }
+
+    // 范围校验：门店维度（NULL/空数组 = 不限制）
+    if (coupon.applicableStoreIds && coupon.applicableStoreIds.length > 0) {
+      if (!data.storeId || !coupon.applicableStoreIds.includes(data.storeId)) {
+        return { success: false, message: '该优惠券不适用于当前门店' }
+      }
+    }
+
+    // 范围校验：市场维度（NULL/空数组 = 不限制）
+    if (coupon.applicableMarketIds && coupon.applicableMarketIds.length > 0) {
+      const [storeRow] = await db
+        .select({ parentId: orgNodes.parentId })
+        .from(stores)
+        .innerJoin(orgNodes, eq(stores.orgNodeId, orgNodes.id))
+        .where(eq(stores.storeId, data.storeId))
+        .limit(1)
+      const marketId = storeRow?.parentId
+      if (!marketId || !coupon.applicableMarketIds.includes(marketId)) {
+        return { success: false, message: '该优惠券不适用于当前市场' }
+      }
+    }
+
+    // 范围校验：品类维度（NULL/空数组 = 不限制）
+    if (coupon.applicableCategoryIds && coupon.applicableCategoryIds.length > 0) {
+      const itemCategoryIds = data.items.map((item) => item.categoryId).filter(Boolean)
+      const hasOverlap = itemCategoryIds.some((cid) => coupon.applicableCategoryIds!.includes(cid))
+      if (!hasOverlap) {
+        return { success: false, message: '订单商品不满足优惠券的品类限制' }
+      }
+    }
+
+    // 范围校验：商品维度（NULL/空数组 = 不限制）
+    if (coupon.applicableProductIds && coupon.applicableProductIds.length > 0) {
+      const itemProductIds = data.items.map((item) => item.productId).filter(Boolean)
+      const hasOverlap = itemProductIds.some((pid) => coupon.applicableProductIds!.includes(pid))
+      if (!hasOverlap) {
+        return { success: false, message: '订单商品不满足优惠券的商品限制' }
+      }
+    }
+
     const minSpend = parseFloat(coupon.minSpend ?? '0')
     if (saleAmountTotal < minSpend) {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
