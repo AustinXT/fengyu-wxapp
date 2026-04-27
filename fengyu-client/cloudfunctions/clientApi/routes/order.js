@@ -179,9 +179,9 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 参数不完整')
   }
 
-  // 查询门店信息（获取 market_name 快照）
+  // 查询门店信息（获取 market_id/market_name 快照，用于优惠券市场范围校验）
   const storeRows = await pg.query(
-    `SELECT s.store_id, s.store_name, pm.name AS market_name
+    `SELECT s.store_id, s.store_name, pm.id AS market_id, pm.name AS market_name
      FROM stores s
      LEFT JOIN org_nodes sn ON s.org_node_id = sn.id
      LEFT JOIN org_nodes pm ON sn.parent_id = pm.id
@@ -191,6 +191,7 @@ async function create(ctx) {
   if (storeRows.length === 0) {
     throw new Error('INVALID_PARAMS: 门店不存在')
   }
+  const marketId = storeRows[0].market_id
   const marketName = storeRows[0].market_name || ''
 
   // 先清理过期的待支付订单（10分钟超时，同时释放优惠券）
@@ -281,7 +282,8 @@ async function create(ctx) {
               ct.coupon_type,
               COALESCE(uc.face_value_override, ct.discount_value) AS discount_value,
               ct.min_spend, ct.max_discount,
-              ct.applicable_category_ids, ct.applicable_store_ids
+              ct.applicable_category_ids, ct.applicable_store_ids,
+              ct.applicable_product_ids, ct.applicable_market_ids
        FROM user_coupons uc
        JOIN coupon_templates ct ON uc.template_id = ct.template_id
        WHERE uc.coupon_id = $1 AND uc.user_id = $2
@@ -297,28 +299,58 @@ async function create(ctx) {
     // 门店匹配
     if (couponInfo.applicable_store_ids && couponInfo.applicable_store_ids.length > 0) {
       if (!couponInfo.applicable_store_ids.includes(storeId)) {
-        throw new Error('INVALID_PARAMS: 该优惠券不适用于此门店')
+        throw new Error('INVALID_PARAMS: coupon store scope mismatch')
       }
     }
 
-    // 品项分类匹配（SKU 直接有 category_id）
-    const skuCats = await pg.query(
-      `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
+    // 市场匹配（市场必须在 applicable_market_ids 数组内，NULL/空 = 不限制）
+    if (couponInfo.applicable_market_ids && couponInfo.applicable_market_ids.length > 0) {
+      if (!marketId || !couponInfo.applicable_market_ids.includes(marketId)) {
+        throw new Error('INVALID_PARAMS: coupon market scope mismatch')
+      }
+    }
+
+    // 查询 SKU 的 category_id 和 product_id（用于品项/商品维度过滤）
+    const skuMeta = await pg.query(
+      `SELECT sku_id, category_id, product_id FROM product_skus WHERE sku_id = ANY($1)`,
       [skuIds]
     )
-    const catMap = new Map()
-    for (const r of skuCats) catMap.set(r.sku_id, r.category_id)
+    const skuCatMap = new Map()
+    const skuProductMap = new Map()
+    for (const r of skuMeta) {
+      skuCatMap.set(r.sku_id, r.category_id)
+      skuProductMap.set(r.sku_id, r.product_id)
+    }
 
+    // eligibleItems 过滤：同时满足 category + product 两个维度（交集）
+    // - applicable_category_ids: NULL/空 = 不限制
+    // - applicable_product_ids: NULL/空 = 不限制
+    // 任意一个维度限制不满足则排除
     let eligibleItems
     if (couponInfo.applicable_category_ids && couponInfo.applicable_category_ids.length > 0) {
+      if (couponInfo.applicable_product_ids && couponInfo.applicable_product_ids.length > 0) {
+        // 双重限制：同时满足 category AND product
+        eligibleItems = itemsData.filter(d =>
+          couponInfo.applicable_category_ids.includes(skuCatMap.get(d.skuId)) &&
+          couponInfo.applicable_product_ids.includes(skuProductMap.get(d.skuId))
+        )
+      } else {
+        // 仅 category 限制
+        eligibleItems = itemsData.filter(d =>
+          couponInfo.applicable_category_ids.includes(skuCatMap.get(d.skuId))
+        )
+      }
+    } else if (couponInfo.applicable_product_ids && couponInfo.applicable_product_ids.length > 0) {
+      // 仅 product 限制
       eligibleItems = itemsData.filter(d =>
-        couponInfo.applicable_category_ids.includes(catMap.get(d.skuId))
+        couponInfo.applicable_product_ids.includes(skuProductMap.get(d.skuId))
       )
     } else {
+      // 无限制
       eligibleItems = itemsData
     }
     if (eligibleItems.length === 0) {
-      throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
+      throw new Error('INVALID_PARAMS: coupon scope mismatch')
     }
 
     // 满减门槛（归一化到分 + 浮点兜底，与 coupon.available 保持一致）
@@ -1032,7 +1064,7 @@ async function detail(ctx) {
     pg.query(
       `SELECT sop.id, sop.change_type, sop.amount, sop.payment_method, sop.status,
               sop.paid_at, sop.created_at,
-              spd.note, spd.refund_reason, spd.audit_at
+              spd.note, spd.refund_reason, spd.audit_employee_id, spd.audit_at, spd.audit_remark
        FROM sale_order_payments sop
        LEFT JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
        WHERE sop.sale_order_id = $1
@@ -1052,6 +1084,7 @@ async function detail(ctx) {
     note: p.note,
     refund_reason: p.refund_reason || null,
     audit_at: p.audit_at || null,
+    audit_remark: p.audit_remark || null,
   }))
 
   ctx.result = {

@@ -56,6 +56,7 @@ interface OrderPayment {
   note: string | null;
   refund_reason?: string | null;
   audit_at?: string | null;
+  audit_remark?: string | null;
 }
 
 interface OrderPaymentView {
@@ -68,6 +69,7 @@ interface OrderPaymentView {
   time_fmt: string;
   note: string | null;
   refund_reason: string | null;
+  audit_remark: string | null;
 }
 
 const STATUS_ICON: Record<string, { icon: string; color: string }> = {
@@ -167,6 +169,7 @@ Page({
           time_fmt: timeSrc ? formatDateTime(timeSrc) : '',
           note: p.note,
           refund_reason: p.refund_reason ?? null,
+          audit_remark: p.audit_remark ?? null,
         };
       });
 

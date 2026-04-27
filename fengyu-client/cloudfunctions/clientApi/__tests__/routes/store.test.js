@@ -108,7 +108,7 @@ describe('store.requestUnbind', () => {
 describe('store.getUnbindRequest', () => {
   test('有 pending 申请时返回', async () => {
     pg.query.mockResolvedValueOnce([{
-      request_id: 'req-1', from_store_name: '凤御A店',
+      request_id: 'req-1', from_store_id: 'store-1', from_store_name: '凤御A店',
       status: '待处理', note: '搬家', created_at: '2025-01-01',
     }])
 
