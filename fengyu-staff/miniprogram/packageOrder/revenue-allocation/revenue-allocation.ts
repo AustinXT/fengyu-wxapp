@@ -49,7 +49,8 @@ interface AllocLine {
   staffWfId: string;
   staffName: string;
   salesCategory: string;
-  commissionRate: number;
+  commissionRate: number;      // display-only, from rate matrix
+  allocationRatio: number;     // actual allocation share, default 1.00
   amount: string;
   autoAmount: string;
   autoFilled: boolean;
@@ -301,6 +302,7 @@ Page({
       staffName: staff.staffName,
       salesCategory: salesCat,
       commissionRate,
+      allocationRatio: 1.00,
       amount,
       autoAmount: amount,
       autoFilled: false,
@@ -363,7 +365,8 @@ Page({
         staffWfId: employeeId,
         staffName: staffMap.get(employeeId) || alloc.employee_name || employeeId || '',
         salesCategory: alloc.sales_category || '',
-        commissionRate: Number(alloc.allocation_ratio) || 0,
+        commissionRate: 0, // restored allocations don't carry commission rate
+        allocationRatio: Number(alloc.allocation_ratio) || 1.00,
         amount,
         autoAmount: amount,
         autoFilled: false,
@@ -450,7 +453,7 @@ Page({
       employeeId: line.staffWfId,
       roleType: line.roleType, // P2-14：必填
       departmentName: line.department,
-      allocationRatio: line.commissionRate,
+      allocationRatio: line.allocationRatio,
       totalAmount: parseFloat(line.amount) || 0,
     }));
 

@@ -95,6 +95,14 @@
   border-radius: 8rpx;
   flex-shrink: 0;
 }
+.alloc-ratio-badge {
+  font-size: 22rpx;
+  color: #1976D2;
+  background: #E3F2FD;
+  padding: 4rpx 12rpx;
+  border-radius: 8rpx;
+  flex-shrink: 0;
+}
 .person-actions {
   display: flex;
   align-items: center;

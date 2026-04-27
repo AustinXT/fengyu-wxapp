@@ -71,6 +71,7 @@ module.exports.pct = function(rate) {
           <text class="person-name">{{line.staffName}}</text>
           <van-tag color="#1976D2" plain size="medium">{{line.department}}</van-tag>
           <text wx:if="{{line.commissionRate > 0}}" class="rate-badge">{{fmt.pct(line.commissionRate)}}%</text>
+          <text wx:if="{{line.allocationRatio !== 1 && line.allocationRatio !== undefined}}" class="alloc-ratio-badge">分成{{fmt.pct(line.allocationRatio)}}%</text>
         </view>
         <view class="person-actions">
           <view class="amount-input-wrap">
