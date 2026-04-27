@@ -244,6 +244,7 @@ export const saleAllocations = pgTable(
       .on(table.saleItemId, table.employeeId, table.roleType)
       .where(sql`is_void = false`),
     index("idx_sale_alloc_employee_id").on(table.employeeId),
+    check("chk_sale_alloc_ratio", sql`${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
   ],
 );
 

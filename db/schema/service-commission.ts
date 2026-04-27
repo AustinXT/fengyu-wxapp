@@ -58,6 +58,7 @@ export const serviceCommissions = pgTable(
       .where(sql`voided_at IS NOT NULL`),
     check('chk_svc_comm_fixed_fee', sql`${table.fixedFee} >= 0`),
     check('chk_svc_comm_consume_amount', sql`${table.consumeAmount} >= 0`),
+    check('chk_svc_comm_alloc_ratio', sql`${table.allocationRatio} IS NULL OR ${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
   ],
 )
 
