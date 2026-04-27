@@ -3,7 +3,9 @@
 import { db } from '@/db'
 import { serviceCommissions } from '@db/service-commission'
 import { serviceOrders, serviceItems } from '@db/service'
-import { eq, sql, and, inArray } from 'drizzle-orm'
+import { saleItems } from '@db/order'
+import { commissionRateMatrix } from '@db/commission'
+import { eq, sql, and, inArray, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceCommission, AuthSession } from '@/lib/types'
 import { getSession } from '@/lib/auth'
@@ -139,6 +141,38 @@ export async function batchSaveServiceCommissions(
     }
   }
 
+  // ---------- Pre-fetch pricing data for server-side calculation ----------
+  const pricingByItemId = new Map<string, {
+    unitRealPrice: string
+    sessionUsed: number
+    salesCategory: string | null
+    serviceFee: string
+  }>()
+
+  if (commissions.length > 0) {
+    const serviceItemIds = [...new Set(commissions.map((c) => c.serviceItemId))]
+    const pricingRows = await db
+      .select({
+        serviceItemId: serviceItems.serviceItemId,
+        unitRealPrice: serviceItems.unitRealPrice,
+        sessionUsed: serviceItems.sessionUsed,
+        salesCategory: serviceItems.salesCategory,
+        serviceFee: saleItems.serviceFee,
+      })
+      .from(serviceItems)
+      .innerJoin(saleItems, eq(serviceItems.saleItemId, saleItems.saleItemId))
+      .where(inArray(serviceItems.serviceItemId, serviceItemIds))
+
+    for (const row of pricingRows) {
+      pricingByItemId.set(row.serviceItemId, {
+        unitRealPrice: row.unitRealPrice ?? '0',
+        sessionUsed: row.sessionUsed,
+        salesCategory: row.salesCategory,
+        serviceFee: row.serviceFee ?? '0',
+      })
+    }
+  }
+
   try {
     await db.transaction(async (tx) => {
       await tx.execute(sql`
@@ -149,16 +183,55 @@ export async function batchSaveServiceCommissions(
       `)
 
       if (commissions.length > 0) {
-        await tx.insert(serviceCommissions).values(
-          commissions.map((c) => ({
+        // Calculate each commission server-side
+        const values = []
+        for (const c of commissions) {
+          const pricing = pricingByItemId.get(c.serviceItemId)
+          if (!pricing) {
+            throw new Error(`INVALID_PARAMS: 服务明细 ${c.serviceItemId} 不存在或缺少价格数据`)
+          }
+
+          const fixedFee = Math.round(Number(pricing.serviceFee) * pricing.sessionUsed * 100) / 100
+          const consumeBase = Math.round(Number(pricing.unitRealPrice) * pricing.sessionUsed * 100) / 100
+
+          // Look up commission rate from matrix
+          const salesCategory = pricing.salesCategory
+          const rateRows = await tx
+            .select({ commissionRate: commissionRateMatrix.commissionRate })
+            .from(commissionRateMatrix)
+            .where(and(
+              eq(commissionRateMatrix.orderType, '服务单'),
+              eq(commissionRateMatrix.roleType, c.roleType),
+              sql`${commissionRateMatrix.salesCategory} = ${salesCategory}`,
+              sql`${commissionRateMatrix.amountTierMin} <= ${consumeBase}`,
+              sql`(${commissionRateMatrix.amountTierMax} IS NULL OR ${commissionRateMatrix.amountTierMax} >= ${consumeBase})`,
+            ))
+            .orderBy(desc(commissionRateMatrix.amountTierMin))
+            .limit(1)
+
+          const rate = Number(rateRows[0]?.commissionRate || 0)
+          if (rate === 0 && consumeBase > 0) {
+            throw new Error(
+              `INVALID_STATE: COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${salesCategory}, consumeBase=${consumeBase}`
+            )
+          }
+
+          const consumeAmount = Math.round(consumeBase * rate * 100) / 100
+          const commissionAmount = Math.round((fixedFee + consumeAmount) * 100) / 100
+
+          values.push({
             serviceItemId: c.serviceItemId,
             employeeId: c.employeeId,
             roleType: c.roleType,
             allocationRatio: c.allocationRatio,
-            commissionRate: c.commissionRate,
-            commissionAmount: c.commissionAmount,
-          }))
-        )
+            commissionRate: String(rate),
+            fixedFee: String(fixedFee),
+            consumeAmount: String(consumeAmount),
+            commissionAmount: String(commissionAmount),
+          })
+        }
+
+        await tx.insert(serviceCommissions).values(values)
       }
 
       await tx

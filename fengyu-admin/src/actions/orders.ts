@@ -5,7 +5,7 @@ import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@d
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
-import { productSkus, productCategories } from '@db/product'
+import { productSkus, productCategories, mallProductSkus } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
 import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
@@ -887,6 +887,16 @@ export async function createOrder(data: {
   // 提前校验优惠券（事务外查询，避免在事务内做复杂查询）
   let couponDiscount = 0
   if (data.couponId && data.clientUserId) {
+    // 查询 SKU 的 categoryId 和 productId，用于优惠券范围校验
+    const orderSkuIds = data.items.map(i => i.skuId).filter(Boolean)
+    const [skuCatRows, skuProdRows] = await Promise.all([
+      db.select({ skuId: productSkus.skuId, categoryId: productSkus.categoryId })
+        .from(productSkus).where(inArray(productSkus.skuId, orderSkuIds)),
+      db.select({ skuId: mallProductSkus.skuId, productId: mallProductSkus.productId })
+        .from(mallProductSkus).where(inArray(mallProductSkus.skuId, orderSkuIds)),
+    ])
+    const skuCatMap = new Map(skuCatRows.map(r => [r.skuId, r.categoryId]))
+    const skuProdMap = new Map(skuProdRows.map(r => [r.skuId, r.productId]))
     const [coupon] = await db
       .select({
         status: userCoupons.status,
@@ -936,7 +946,7 @@ export async function createOrder(data: {
 
     // 范围校验：品类维度（NULL/空数组 = 不限制）
     if (coupon.applicableCategoryIds && coupon.applicableCategoryIds.length > 0) {
-      const itemCategoryIds = data.items.map((item) => item.categoryId).filter(Boolean)
+      const itemCategoryIds = data.items.map((item) => skuCatMap.get(item.skuId)).filter(Boolean) as string[]
       const hasOverlap = itemCategoryIds.some((cid) => coupon.applicableCategoryIds!.includes(cid))
       if (!hasOverlap) {
         return { success: false, message: '订单商品不满足优惠券的品类限制' }
@@ -945,7 +955,7 @@ export async function createOrder(data: {
 
     // 范围校验：商品维度（NULL/空数组 = 不限制）
     if (coupon.applicableProductIds && coupon.applicableProductIds.length > 0) {
-      const itemProductIds = data.items.map((item) => item.productId).filter(Boolean)
+      const itemProductIds = data.items.map((item) => skuProdMap.get(item.skuId)).filter(Boolean) as string[]
       const hasOverlap = itemProductIds.some((pid) => coupon.applicableProductIds!.includes(pid))
       if (!hasOverlap) {
         return { success: false, message: '订单商品不满足优惠券的商品限制' }
@@ -956,7 +966,7 @@ export async function createOrder(data: {
     if (saleAmountTotal < minSpend) {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
     }
-    couponDiscount = calcCouponDiscount(coupon.couponType, coupon.discountValue, coupon.maxDiscount ?? null, saleAmountTotal)
+    couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, saleAmountTotal)
   }
 
   const totalAmount = Math.max(0, rawTotal - couponDiscount)
