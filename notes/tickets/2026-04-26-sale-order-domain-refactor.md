@@ -635,7 +635,7 @@ pg_restore -h ... -U fengyu -d fengyu_restore --clean --create ~/backups/fengyu-
 
 ## 9 待最终确认（执行前）
 
-- [ ] 业务方对"员工历史业绩可能负数"接受度（如不接受，需 §1.5 改为方案 B"仅 cutoff 后回滚"）
+- [x] ~~业务方对"员工历史业绩可能负数"接受度~~ → **已确认接受**（2026-04-27）
 - [ ] DBA 评估 §3 数据迁移 SQL 的锁影响 + 业务低谷窗口
 - [ ] §4.2 admin /refunds 页 UI 重新设计（产品 PRD 评审）
 - [ ] §1.4 paymentFlowStatusEnum 加 '待审批' 是否影响 client 现有 UI 文案（CC8 命中）
