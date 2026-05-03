@@ -1,7 +1,7 @@
 # Ticket: sale_allocations.allocationRatio 缺 IN-集合 CHECK + admin batchSaveServiceCommissions 信任前端金额
 
 > 生成日期：2026-04-27
-> 实施状态：🟡 代码层已修复，DB CHECK 待历史数据清洗后部署
+> 实施状态：🟢 代码层 + DB CHECK 均已部署（commission_rate CHECK 待脏数据清洗后补充）
 > 严重级别：**P0**（业绩 ×10 倍资损 — SUMMARY Top10 #8）
 > 端：db / fengyu-admin / fengyu-staff
 > 来源：[SUMMARY §2 #8](../../docs/audit/SUMMARY.md) / P0-CC1-01 / P0-CC1-04 / P0-07-03
@@ -21,23 +21,24 @@
 | 2 | admin `batchSaveServiceCommissions` 信任前端 `commissionAmount` | `fengyu-admin/src/actions/service-commissions.ts` | ✅ 已修复 |
 | 3 | staff 前端将 `commissionRate` 混作 `allocationRatio` 提交 | `staff miniprogram/revenue-allocation.ts` | ✅ 已修复 |
 | 4 | `service_commissions.commission_amount` 无 CHECK | `db/schema/service-commission.ts` | ✅ Schema 已定义 |
-| 5 | `service_commissions.commission_rate` 无范围 CHECK | `db/schema/service-commission.ts` | ✅ Schema 已定义 |
+| 5 | `service_commissions.commission_rate` 无范围 CHECK | `db/schema/service-commission.ts` | 🟡 待脏数据清洗（59,966 行 rate>1） |
 
 ## 2 实施记录（2026-04-27）
 
-### Phase 1：DB CHECK 约束 — 🟡 Schema 已定义，migration 待部署
+### Phase 1：DB CHECK 约束 — ✅ 已部署
 
-**已修改文件**：
-- `db/schema/order.ts` — `saleAllocations` 表添加 `chk_sale_alloc_ratio` CHECK
-- `db/schema/service-commission.ts` — `serviceCommissions` 表添加 `chk_svc_comm_alloc_ratio`、`chk_svc_comm_commission_amount`、`chk_svc_comm_commission_rate` CHECK
+**已部署 CHECK 约束**：
+- `sale_allocations.chk_sale_alloc_ratio` — `allocation_ratio IN (0.10,...,1.00)`
+- `service_commissions.chk_svc_comm_alloc_ratio` — `allocation_ratio IS NULL OR IN (0.10,...,1.00)`
+- `service_commissions.chk_svc_comm_commission_amount` — `commission_amount >= 0`
 
-**阻塞原因**：生产库 `sale_allocations` 存在 52,065 行脏数据（占 33%）：
-- 典型值：0.25/0.33/0.17/0.13 — 明显是历史 commissionRate 被错存为 allocationRatio
-- 211 行 > 1.00（含 999.99、202.40 等极端值）
-- 全部 `is_void = false`
-- CHECK 约束无法 apply 直到脏数据清洗完成
+**未部署（阻塞中）**：
+- `service_commissions.chk_svc_comm_commission_rate` — 59,966 行 rate > 1.0（百分比误存，如 2.0 = 200%），需另案处理
 
-**用户决策**：先不加 CHECK，只修代码。历史数据待人工审核后统一处理。
+**数据清洗**：52,065 行 `sale_allocations` 脏数据已清洗并 COMMIT：
+- 单人池（20,748 行）→ ratio=1.00, total=received
+- 多人池纯脏（28,191 行）→ 按原比例归一化后归整到 0.10 档
+- 混合池（3,126 行）→ 非法行归整到 0.10
 
 ### Phase 2：admin batchSaveServiceCommissions 服务端重算 — ✅ 已完成
 
@@ -79,8 +80,7 @@
 
 ## 3 待办
 
-- [ ] **历史数据清洗**：52,065 行 `sale_allocations` 脏数据需人工审核后统一修正（归整到 0.10 档 or 置 1.00）
-- [ ] **数据清洗后 re-generate migration**：`cd db && npm run db:generate`，部署 CHECK 约束到生产
+- [ ] **commission_rate 脏数据清洗**：59,966 行 `service_commissions.commission_rate > 1.0`（百分比误存如 2.0=200%），清洗后补加 `chk_svc_comm_commission_rate` CHECK
 - [ ] **Phase 3 后续**：UI 增加独立"分配比例"下拉控件（10%~100% 整十档），当前仅有条件 badge
 - [ ] **测试**：admin batchSave 新增的服务端重算逻辑需单元测试覆盖
 
@@ -89,8 +89,10 @@
 - [x] admin `batchSaveServiceCommissions` 忽略前端 `commissionAmount`，服务端按公式重算
 - [x] staff 前端 `allocationRatio` 和 `commissionRate` 为独立字段，不再混用
 - [x] `tsc --noEmit` 零新增错误（admin）
-- [ ] `sale_allocations` 表有 `chk_sale_alloc_ratio` CHECK（待数据清洗后部署）
-- [ ] `service_commissions` 表有金额/比例 CHECK（待数据清洗后部署）
+- [x] `sale_allocations` 表有 `chk_sale_alloc_ratio` CHECK — 已部署
+- [x] `service_commissions` 表有 `chk_svc_comm_alloc_ratio` + `chk_svc_comm_commission_amount` — 已部署
+- [x] 52,065 行历史脏数据已清洗（2026-04-27 committed）
+- [ ] `service_commissions.commission_rate` BETWEEN 0 AND 1 CHECK（待脏数据清洗）
 - [ ] staff allocation 页面有独立"分配比例"下拉控件（Phase 3 后续）
 - [ ] 测试：覆盖服务端重算 + 合法/非法 allocationRatio 场景
 

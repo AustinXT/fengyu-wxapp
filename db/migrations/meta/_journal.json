@@ -157,6 +157,13 @@
       "breakpoints": true
     },
     {
+      "idx": 22,
+      "version": "7",
+      "when": 1777265958966,
+      "tag": "0022_petite_beast",
+      "breakpoints": true
+    },
+    {
       "idx": 23,
       "version": "7",
       "when": 1777813694483,

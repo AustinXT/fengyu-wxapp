@@ -6,7 +6,7 @@
 
 
 const pg = globalThis.__mocks__.pg
-const { createManagerCtx, createBeauticianCtx, createCtx } = require('../helpers')
+const { createManagerCtx, createBeauticianCtx, createCtx, createManagementCtx } = require('../helpers')
 const staffRoutes = require('../../routes/staff')
 
 
@@ -389,11 +389,13 @@ describe('staff.performanceDetail', () => {
       employeeId: 'emp-target',
     })
 
-    pg.query.mockResolvedValueOnce([])
-    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }]) // scope guard: target employee in same store
+    pg.query.mockResolvedValueOnce([]) // allocation query
+    pg.query.mockResolvedValueOnce([]) // service query
 
     await staffRoutes.performanceDetail(ctx)
 
+    // scope guard query uses target employee id
     expect(pg.query.mock.calls[0][1][0]).toBe('emp-target')
   })
 

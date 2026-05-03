@@ -77,6 +77,29 @@ function createBeauticianCtx(payload = {}, authOverrides = {}) {
 }
 
 /**
+ * 创建管理层模式 ctx（多店店长切到 management 视角）
+ */
+function createManagementCtx(payload = {}, authOverrides = {}) {
+  return createCtx({
+    payload,
+    auth: {
+      roles: ['manager'],
+      loginLevel: 'management',
+      staffLevel: 'market',
+      effectiveStoreId: null,
+      currentStoreId: null,
+      scopeStoreIds: ['store-001', 'store-002'],
+      roleBindings: [
+        { role: 'manager', scopeId: 'org-node-store-001', scopeType: '门店' },
+        { role: 'manager', scopeId: 'org-node-store-002', scopeType: '门店' },
+      ],
+      position: '市场经理',
+      ...authOverrides,
+    },
+  })
+}
+
+/**
  * 创建未绑定员工 ctx
  */
 function createUnboundCtx(payload = {}) {
@@ -135,6 +158,7 @@ module.exports = {
   createCtx,
   createManagerCtx,
   createBeauticianCtx,
+  createManagementCtx,
   createUnboundCtx,
   createMockTransactionClient,
   resetPgMock,

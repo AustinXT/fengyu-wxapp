@@ -1,0 +1,4 @@
+ALTER TABLE "sale_allocations" ADD CONSTRAINT "chk_sale_alloc_ratio" CHECK ("sale_allocations"."allocation_ratio" IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00));--> statement-breakpoint
+ALTER TABLE "service_commissions" ADD CONSTRAINT "chk_svc_comm_commission_amount" CHECK ("service_commissions"."commission_amount" >= 0);--> statement-breakpoint
+ALTER TABLE "service_commissions" ADD CONSTRAINT "chk_svc_comm_commission_rate" CHECK ("service_commissions"."commission_rate" >= 0 AND "service_commissions"."commission_rate" <= 1);--> statement-breakpoint
+ALTER TABLE "service_commissions" ADD CONSTRAINT "chk_svc_comm_alloc_ratio" CHECK ("service_commissions"."allocation_ratio" IS NULL OR "service_commissions"."allocation_ratio" IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00));
