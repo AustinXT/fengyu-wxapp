@@ -24,9 +24,9 @@ export type TransactionLike = Parameters<Parameters<typeof db.transaction>[0]>[0
 export interface CascadeRefundParams {
   /** 被退款的原销售单 ID（对应 sale_orders.sale_order_id） */
   saleOrderId: string
-  /** 部分退款时关联的具体 sale_item（来自 salePaymentDetails.refSaleItemId）；NULL = 整单退款 */
+  /** 部分退款时关联的具体 sale_item（来自 saleOrderPayments.refSaleItemId）；NULL = 整单退款 */
   saleItemId: string | null
-  /** 退疗程卡时的次数（来自 salePaymentDetails.sessionCount）；NULL 时按 1 处理 */
+  /** 退疗程卡时的次数（来自 saleOrderPayments.sessionCount）；NULL 时按 1 处理 */
   sessionCount: number | null
   /** 退款原因；写入 voided_reason 用于审计 */
   refundReason: string

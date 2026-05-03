@@ -291,8 +291,7 @@ export default function OrderDetailPageClient({
                 {(payments ?? []).map((p) => {
                   const amt = Number(p.amount)
                   const isRefund = p.changeType === "退款" || amt < 0
-                  // 2026-04-26 sale-order-domain-refactor：退款行展示子表 sale_order_payment_details 字段
-                  // （refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
+                  // 退款行展示退款专属字段（refundReason / auditEmployeeId / auditAt / auditRemark / refSaleItemId / sessionCount）
                   const refundDetailParts: string[] = []
                   if (isRefund) {
                     if (p.refundReason) refundDetailParts.push(`原因：${p.refundReason}`)

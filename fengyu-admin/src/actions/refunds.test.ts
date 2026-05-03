@@ -24,7 +24,6 @@ vi.mock('@db/order', () => ({
   saleOrders: {},
   saleItems: {},
   saleOrderPayments: {},
-  salePaymentDetails: {},
 }))
 
 // 2026-04-26 sale-order-domain-refactor：refunds.ts 引入 cascadeRefund

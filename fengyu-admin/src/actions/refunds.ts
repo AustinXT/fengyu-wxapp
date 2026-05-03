@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { stores } from '@db/org'
 import { staffWechatUsers, clientWechatUsers } from '@db/user'
 import { and, desc, asc, eq, sql } from 'drizzle-orm'
@@ -31,16 +31,15 @@ import type {
   SalesCategory,
 } from '@/lib/types'
 
-const operatorAlias = alias(staffWechatUsers, 'sopd_operator')
-const auditorAlias = alias(staffWechatUsers, 'sopd_auditor')
+const operatorAlias = alias(staffWechatUsers, 'sop_operator')
+const auditorAlias = alias(staffWechatUsers, 'sop_auditor')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义
 //
-// 2026-04-26 sale-order-domain-refactor：
-//   退款不再创建 saleOrders[type='退款单']；改为写 sale_order_payments[change_type='退款']
-//   + sale_order_payment_details（refund_reason / ref_sale_item_id / session_count / audit_*）。
-//   "退款单"语义现完全由 (sop.change_type='退款') 行表达。
+// 退款不再创建 saleOrders[type='退款单']；改为写 sale_order_payments[change_type='退款']
+// 行（refund_reason / ref_sale_item_id / session_count / audit_* 字段直接挂在主表）。
+// "退款单"语义完全由 (sop.change_type='退款') 行表达。
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface RefundableItem {
@@ -484,7 +483,7 @@ export async function estimateRefundOverdraft(params: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// createRefund：发起退款（写 sale_order_payments + sale_order_payment_details）
+// createRefund：发起退款（写 sale_order_payments[change_type='退款', status='待审批']）
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function createRefund(input: {
@@ -648,19 +647,15 @@ export async function createRefund(input: {
           externalTxnId: null,
           status: '待审批',
           sourceEnd: 'admin',
+          operatorEmployeeId: session.employeeId,
+          note: paymentNote || null,
+          refundReason,
+          refSaleItemId: primaryRefSaleItemId,
+          sessionCount: primarySessionCount,
         })
         .returning({ id: saleOrderPayments.id })
 
       if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
-
-      await tx.insert(salePaymentDetails).values({
-        paymentId: paymentRow.id,
-        operatorEmployeeId: session.employeeId,
-        note: paymentNote || null,
-        refundReason,
-        refSaleItemId: primaryRefSaleItemId,
-        sessionCount: primarySessionCount,
-      })
 
       return paymentRow.id
     })
@@ -712,18 +707,16 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
     return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少退款流水 ID' } }
   }
 
-  // 预读：取 sop + sopd（用于 cascade params + scope 校验 + 拆分回款）
+  // 预读：取 sop（用于 cascade params + scope 校验 + 拆分回款）
   const [pre] = await db
     .select({
       payment: saleOrderPayments,
-      details: salePaymentDetails,
       orderStoreId: saleOrders.storeId,
       orderClientUserId: saleOrders.clientUserId,
       orderTotalAmount: saleOrders.totalAmount,
       orderPrepaidCardAmount: saleOrders.prepaidCardAmount,
     })
     .from(saleOrderPayments)
-    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .where(eq(saleOrderPayments.id, idNum))
     .limit(1)
@@ -769,25 +762,18 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
     cascade = await db.transaction(async (tx) => {
       const nowIso = new Date().toISOString()
 
-      // 1) CAS 翻状态：仅 '待审批' → '已支付'
+      // 1) CAS 翻状态 + 同一条 UPDATE 写审批人：仅 '待审批' → '已支付'
       const updRes = await tx.execute(sql`
         UPDATE sale_order_payments
            SET status = '已支付',
-               paid_at = ${nowIso}
+               paid_at = ${nowIso},
+               audit_employee_id = ${session.employeeId},
+               audit_at = ${nowIso}
          WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
         throw new Error('CONCURRENT_CHANGED')
       }
-
-      // 2) 写审批人到子表
-      await tx.execute(sql`
-        UPDATE sale_order_payment_details
-           SET audit_employee_id = ${session.employeeId},
-               audit_at = ${nowIso},
-               updated_at = NOW()
-         WHERE payment_id = ${idNum}
-      `)
 
       // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
       await tx.execute(sql`
@@ -803,8 +789,8 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
       `)
 
       // 4) 扣减原购买行 remaining_sessions（疗程卡）+ 储值卡回冲
-      const refSaleItemId = pre.details?.refSaleItemId ?? null
-      const sessionCount = pre.details?.sessionCount ?? null
+      const refSaleItemId = pre.payment.refSaleItemId ?? null
+      const sessionCount = pre.payment.sessionCount ?? null
       if (refSaleItemId && sessionCount && sessionCount > 0) {
         const sessRes = await tx.execute(sql`
           UPDATE sale_items
@@ -850,7 +836,7 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
         saleOrderId: refSaleOrderId,
         saleItemId: refSaleItemId,
         sessionCount,
-        refundReason: pre.details?.refundReason ?? '',
+        refundReason: pre.payment.refundReason ?? '',
       })
 
       // 6) 重算顾客历史消费档位
@@ -941,21 +927,15 @@ export async function rejectRefund(
       const nowIso = new Date().toISOString()
       const updRes = await tx.execute(sql`
         UPDATE sale_order_payments
-           SET status = '已作废'
+           SET status = '已作废',
+               audit_employee_id = ${session.employeeId},
+               audit_at = ${nowIso},
+               audit_remark = ${reason}
          WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
         throw new Error('CONCURRENT_CHANGED')
       }
-
-      await tx.execute(sql`
-        UPDATE sale_order_payment_details
-           SET audit_employee_id = ${session.employeeId},
-               audit_at = ${nowIso},
-               audit_remark = ${reason},
-               updated_at = NOW()
-         WHERE payment_id = ${idNum}
-      `)
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -1020,18 +1000,16 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
   const rows = await db
     .select({
       payment: saleOrderPayments,
-      details: salePaymentDetails,
       order: saleOrders,
       storeName: stores.storeName,
       operatorName: operatorAlias.name,
       auditorName: auditorAlias.name,
     })
     .from(saleOrderPayments)
-    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-    .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
-    .leftJoin(auditorAlias, eq(salePaymentDetails.auditEmployeeId, auditorAlias.employeeId))
+    .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
+    .leftJoin(auditorAlias, eq(saleOrderPayments.auditEmployeeId, auditorAlias.employeeId))
     .where(whereClause)
     .orderBy(desc(saleOrderPayments.createdAt))
     .limit(pageSize)
@@ -1056,18 +1034,16 @@ export async function getRefundById(refundPaymentId: number | string): Promise<R
   const rows = await db
     .select({
       payment: saleOrderPayments,
-      details: salePaymentDetails,
       order: saleOrders,
       storeName: stores.storeName,
       operatorName: operatorAlias.name,
       auditorName: auditorAlias.name,
     })
     .from(saleOrderPayments)
-    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
     .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
-    .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
-    .leftJoin(auditorAlias, eq(salePaymentDetails.auditEmployeeId, auditorAlias.employeeId))
+    .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
+    .leftJoin(auditorAlias, eq(saleOrderPayments.auditEmployeeId, auditorAlias.employeeId))
     .where(
       and(
         eq(saleOrderPayments.id, idNum),
@@ -1120,12 +1096,10 @@ export async function getRefundById(refundPaymentId: number | string): Promise<R
     const payRows = await db
       .select({
         payment: saleOrderPayments,
-        details: salePaymentDetails,
         operatorName: operatorAlias.name,
       })
       .from(saleOrderPayments)
-      .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
-      .leftJoin(operatorAlias, eq(salePaymentDetails.operatorEmployeeId, operatorAlias.employeeId))
+      .leftJoin(operatorAlias, eq(saleOrderPayments.operatorEmployeeId, operatorAlias.employeeId))
       .where(
         and(
           eq(saleOrderPayments.saleOrderId, base.refSaleOrderId),
@@ -1143,17 +1117,17 @@ export async function getRefundById(refundPaymentId: number | string): Promise<R
       externalTxnId: r.payment.externalTxnId,
       status: r.payment.status as SaleOrderPayment['status'],
       sourceEnd: r.payment.sourceEnd as SaleOrderPayment['sourceEnd'],
-      operatorEmployeeId: r.details?.operatorEmployeeId ?? null,
-      note: r.details?.note ?? null,
+      operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
+      note: r.payment.note ?? null,
       createdAt: r.payment.createdAt.toISOString(),
       paidAt: r.payment.paidAt?.toISOString() ?? null,
       operatorName: r.operatorName ?? null,
-      refundReason: r.details?.refundReason ?? null,
-      refSaleItemId: r.details?.refSaleItemId ?? null,
-      sessionCount: r.details?.sessionCount ?? null,
-      auditEmployeeId: r.details?.auditEmployeeId ?? null,
-      auditAt: r.details?.auditAt ? r.details.auditAt.toISOString() : null,
-      auditRemark: r.details?.auditRemark ?? null,
+      refundReason: r.payment.refundReason ?? null,
+      refSaleItemId: r.payment.refSaleItemId ?? null,
+      sessionCount: r.payment.sessionCount ?? null,
+      auditEmployeeId: r.payment.auditEmployeeId ?? null,
+      auditAt: r.payment.auditAt ? r.payment.auditAt.toISOString() : null,
+      auditRemark: r.payment.auditRemark ?? null,
     }))
   }
 
@@ -1170,7 +1144,6 @@ export async function getRefundById(refundPaymentId: number | string): Promise<R
 
 function mapRefundRow(r: {
   payment: typeof saleOrderPayments.$inferSelect
-  details: typeof salePaymentDetails.$inferSelect | null
   order: typeof saleOrders.$inferSelect | null
   storeName: string | null
   operatorName: string | null
@@ -1186,15 +1159,15 @@ function mapRefundRow(r: {
     customerName: r.order?.customerName ?? null,
     clientPhone: r.order?.clientPhone ?? null,
     amount: r.payment.amount,
-    refundReason: r.details?.refundReason ?? null,
-    refSaleItemId: r.details?.refSaleItemId ?? null,
-    sessionCount: r.details?.sessionCount ?? null,
-    operatorEmployeeId: r.details?.operatorEmployeeId ?? null,
+    refundReason: r.payment.refundReason ?? null,
+    refSaleItemId: r.payment.refSaleItemId ?? null,
+    sessionCount: r.payment.sessionCount ?? null,
+    operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
     operatorName: r.operatorName,
-    auditEmployeeId: r.details?.auditEmployeeId ?? null,
+    auditEmployeeId: r.payment.auditEmployeeId ?? null,
     auditorName: r.auditorName,
-    auditAt: r.details?.auditAt ? r.details.auditAt.toISOString() : null,
-    auditRemark: r.details?.auditRemark ?? null,
+    auditAt: r.payment.auditAt ? r.payment.auditAt.toISOString() : null,
+    auditRemark: r.payment.auditRemark ?? null,
     paymentMethod: r.payment.paymentMethod,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,

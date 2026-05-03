@@ -635,8 +635,7 @@ export type PaymentSourceEnd = 'client' | 'staff' | 'admin' | 'notify'
 /**
  * 订单款项流水行（与 db/schema/order.ts:saleOrderPayments 对齐）
  *
- * 2026-04-26 sale-order-domain-refactor：operatorEmployeeId / note 已下沉到子表
- * salePaymentDetails；本接口的对应字段由 join 时回填。
+ * 2026-05-03 子表回收：原 sale_order_payment_details 字段全部并入主表，本接口字段一一对应主表列。
  */
 export interface SaleOrderPayment {
   id: number
@@ -649,15 +648,12 @@ export interface SaleOrderPayment {
   externalTxnId: string | null
   status: PaymentFlowStatus
   sourceEnd: PaymentSourceEnd
-  /** 子表 sale_order_payment_details.operator_employee_id（已 join） */
   operatorEmployeeId: string | null
-  /** 子表 sale_order_payment_details.note（已 join） */
   note: string | null
   createdAt: string
   paidAt: string | null
   // 可选 join 字段
   operatorName?: string | null
-  // ── 子表 sale_order_payment_details 字段（join 时回填） ──
   refundReason?: string | null
   refSaleItemId?: string | null
   sessionCount?: number | null

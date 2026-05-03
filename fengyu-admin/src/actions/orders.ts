@@ -1,7 +1,7 @@
 'use server'
 
 import { db } from '@/db'
-import { saleOrders, saleItems, saleOrderPayments, salePaymentDetails } from '@db/order'
+import { saleOrders, saleItems, saleOrderPayments } from '@db/order'
 import { userCoupons, couponTemplates } from '@db/coupon'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
@@ -477,9 +477,9 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
  * 查询订单款项流水（ticket 2026-04-24 PR-3 §3.3）
  *
  * 只读，按 created_at 升序返回；
- * - JOIN staff_wechat_users 带出操作人姓名
- * - 2026-04-26 sale-order-domain-refactor：LEFT JOIN sale_order_payment_details 子表，
- *   带出退款专属字段（refundReason / refSaleItemId / sessionCount / auditEmployeeId / auditAt / auditRemark）
+ * - LEFT JOIN staff_wechat_users 带出操作人姓名
+ * - 退款专属字段（refundReason / refSaleItemId / sessionCount / auditEmployeeId / auditAt / auditRemark）
+ *   2026-05-03 起已合并到 sale_order_payments 主表，无需 JOIN。
  * 用于订单详情页展示款项流水表（首次支付 / 回款 / 退款 / 储值卡抵扣）。
  */
 export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
@@ -498,11 +498,9 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     .select({
       payment: saleOrderPayments,
       operatorName: staffWechatUsers.name,
-      detail: salePaymentDetails,
     })
     .from(saleOrderPayments)
-    .leftJoin(salePaymentDetails, eq(salePaymentDetails.paymentId, saleOrderPayments.id))
-    .leftJoin(staffWechatUsers, eq(salePaymentDetails.operatorEmployeeId, staffWechatUsers.employeeId))
+    .leftJoin(staffWechatUsers, eq(saleOrderPayments.operatorEmployeeId, staffWechatUsers.employeeId))
     .where(eq(saleOrderPayments.saleOrderId, saleOrderId))
     // 例外：详情页支付流水按创建时间正序（按先后顺序阅读）
     .orderBy(asc(saleOrderPayments.createdAt))
@@ -516,18 +514,17 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     externalTxnId: r.payment.externalTxnId,
     status: r.payment.status as import('@/lib/types').PaymentFlowStatus,
     sourceEnd: r.payment.sourceEnd as import('@/lib/types').PaymentSourceEnd,
-    operatorEmployeeId: r.detail?.operatorEmployeeId ?? null,
-    note: r.detail?.note ?? null,
+    operatorEmployeeId: r.payment.operatorEmployeeId ?? null,
+    note: r.payment.note ?? null,
     createdAt: r.payment.createdAt.toISOString(),
     paidAt: r.payment.paidAt?.toISOString() ?? null,
     operatorName: r.operatorName ?? null,
-    // 2026-04-26 sale-order-domain-refactor：子表 sale_order_payment_details 字段
-    refundReason: r.detail?.refundReason ?? null,
-    refSaleItemId: r.detail?.refSaleItemId ?? null,
-    sessionCount: r.detail?.sessionCount ?? null,
-    auditEmployeeId: r.detail?.auditEmployeeId ?? null,
-    auditAt: r.detail?.auditAt?.toISOString() ?? null,
-    auditRemark: r.detail?.auditRemark ?? null,
+    refundReason: r.payment.refundReason ?? null,
+    refSaleItemId: r.payment.refSaleItemId ?? null,
+    sessionCount: r.payment.sessionCount ?? null,
+    auditEmployeeId: r.payment.auditEmployeeId ?? null,
+    auditAt: r.payment.auditAt?.toISOString() ?? null,
+    auditRemark: r.payment.auditRemark ?? null,
   }))
 }
 
@@ -1164,22 +1161,15 @@ export async function createOrder(data: {
       //     扣卡余额 + 写 '储值卡抵扣' payments 行统一由 staff 端 confirmOffline 执行
       //     （admin 开单的订单由店长在小程序 confirmOffline 时扣卡）
       if (!isOnlinePay && receivedAmount > 0) {
-        const [paymentRow] = await tx
-          .insert(saleOrderPayments)
-          .values({
-            saleOrderId: id,
-            changeType: '首次支付',
-            amount: receivedAmount.toFixed(2),
-            paymentMethod: data.paymentMethod,
-            externalTxnId: null,
-            status: '已支付',
-            sourceEnd: 'admin',
-            paidAt: new Date(),
-          })
-          .returning({ id: saleOrderPayments.id })
-        if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
-        await tx.insert(salePaymentDetails).values({
-          paymentId: paymentRow.id,
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId: id,
+          changeType: '首次支付',
+          amount: receivedAmount.toFixed(2),
+          paymentMethod: data.paymentMethod,
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          paidAt: new Date(),
           operatorEmployeeId: session.employeeId,
           note: '管理后台开单首次收款',
         })
@@ -1929,43 +1919,29 @@ export async function recordPayment(input: {
       //    - 线下现金/转账部分（repayAmount > 0）
       //    - 储值卡抵扣部分（prepaidCardAmount > 0）
       if (repayAmount > 0) {
-        const [paymentRow] = await tx
-          .insert(saleOrderPayments)
-          .values({
-            saleOrderId,
-            changeType: '回款',
-            amount: repayAmount.toFixed(2),
-            paymentMethod,
-            externalTxnId,
-            status: '已支付',
-            sourceEnd: 'admin',
-            paidAt: now,
-          })
-          .returning({ id: saleOrderPayments.id })
-        if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
-        await tx.insert(salePaymentDetails).values({
-          paymentId: paymentRow.id,
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '回款',
+          amount: repayAmount.toFixed(2),
+          paymentMethod,
+          externalTxnId,
+          status: '已支付',
+          sourceEnd: 'admin',
+          paidAt: now,
           operatorEmployeeId: session.employeeId,
           note: input.note?.trim() || '管理后台录入回款',
         })
       }
       if (prepaidCardAmount > 0) {
-        const [paymentRow] = await tx
-          .insert(saleOrderPayments)
-          .values({
-            saleOrderId,
-            changeType: '储值卡抵扣',
-            amount: prepaidCardAmount.toFixed(2),
-            paymentMethod: '储值卡',
-            externalTxnId: null,
-            status: '已支付',
-            sourceEnd: 'admin',
-            paidAt: now,
-          })
-          .returning({ id: saleOrderPayments.id })
-        if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
-        await tx.insert(salePaymentDetails).values({
-          paymentId: paymentRow.id,
+        await tx.insert(saleOrderPayments).values({
+          saleOrderId,
+          changeType: '储值卡抵扣',
+          amount: prepaidCardAmount.toFixed(2),
+          paymentMethod: '储值卡',
+          externalTxnId: null,
+          status: '已支付',
+          sourceEnd: 'admin',
+          paidAt: now,
           operatorEmployeeId: session.employeeId,
           note: '管理后台录入回款-储值卡抵扣',
         })
