@@ -24,7 +24,7 @@
   "homepage": "https://github.com/AustinXT/fengyu-wxapp#readme",
   "devDependencies": {
     "fs-extra": "^11.3.4",
-    "javascript-obfuscator": "^5.4.1",
-    "webpack": "^5.105.4"
+    "javascript-obfuscator": "^5.4.2",
+    "webpack": "^5.106.2"
   }
 }
