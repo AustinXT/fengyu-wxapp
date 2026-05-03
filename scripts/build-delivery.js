@@ -35,20 +35,16 @@ const CLOUD_FUNCTIONS = [
 const MINI_PROGRAMS = [
   {
     name: 'fengyu-client',
-    // 小程序源码目录
     mpSrc: path.join(ROOT, 'fengyu-client/miniprogram'),
     mpDest: path.join(DELIVERY, 'fengyu-client/miniprogram'),
-    // 额外需要复制的文件（相对于子项目根目录）
-    extraFiles: [
-      { src: path.join(ROOT, 'fengyu-client/project.config.json'), dest: path.join(DELIVERY, 'fengyu-client/project.config.json') },
-      { src: path.join(ROOT, 'fengyu-client/sitemap.json'), dest: path.join(DELIVERY, 'fengyu-client/sitemap.json') },
-    ],
+    // project.config.json 与 sitemap.json 均在 miniprogram/ 内，由 copyFiltered 自动带上
+    extraFiles: [],
   },
   {
     name: 'fengyu-staff',
     mpSrc: path.join(ROOT, 'fengyu-staff/miniprogram'),
     mpDest: path.join(DELIVERY, 'fengyu-staff/miniprogram'),
-    // staff 的 project.config.json 在 miniprogram/ 内，会被整体复制
+    // staff 同样：project.config.json 在 miniprogram/ 内
     extraFiles: [],
   },
 ]

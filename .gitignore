@@ -6,6 +6,15 @@ secrets/
 sources/*
 !sources/README.md
 
+# WeChat DevTools auto-generated Page({}) / Component({}) scaffold .js for TS-only entries.
+# DevTools prefers .js over .ts at runtime, silently shadowing TS implementations.
+# Pages / sub-package pages / components are 100% TypeScript in this repo, so blanket-ignore.
+fengyu-client/miniprogram/pages*/**/*.js
+fengyu-client/miniprogram/components/**/*.js
+fengyu-staff/miniprogram/pages*/**/*.js
+fengyu-staff/miniprogram/package*/**/*.js
+fengyu-staff/miniprogram/components/**/*.js
+
 # Next.js (fengyu-admin)
 .next/
 next-env.d.ts
