@@ -821,13 +821,13 @@ describe('order.detail', () => {
     expect(ctx.result.payments[1].change_type).toBe('回款')
     expect(ctx.result.payments[1].amount).toBe(200)
 
-    // 验证 SQL 查了 sale_order_payments 表 + LEFT JOIN details 子表（2026-04-26 sale-order-domain-refactor）
+    // 验证 SQL 查了 sale_order_payments 表（合并后无需 JOIN，note/refund_reason 直接在主表）
     const paymentsQueryCall = pg.query.mock.calls.find(
       ([sql]) => /FROM sale_order_payments/.test(sql)
     )
     expect(paymentsQueryCall).toBeDefined()
-    expect(paymentsQueryCall[0]).toMatch(/ORDER BY sop\.created_at ASC/)
-    expect(paymentsQueryCall[0]).toContain('sale_order_payment_details')
+    expect(paymentsQueryCall[0]).toMatch(/ORDER BY created_at ASC/)
+    expect(paymentsQueryCall[0]).not.toContain('sale_order_payment_details')
   })
 })
 

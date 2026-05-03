@@ -85,13 +85,11 @@ describe('order.repay', () => {
       { match: 'UPDATE prepaid_cards SET balance', result: { rows: [], rowCount: 1 } },
       // INSERT card_transactions
       { match: /INSERT INTO card_transactions/, result: { rows: [], rowCount: 1 } },
-      // INSERT payments 回款 → RETURNING id
+      // INSERT payments 回款（合并后单条 INSERT，含 note 字段）
       {
         match: /INSERT INTO sale_order_payments/,
-        result: { rows: [{ id: 999 }], rowCount: 1 },
+        result: { rows: [], rowCount: 1 },
       },
-      // INSERT details 子表
-      { match: /INSERT INTO sale_order_payment_details/, result: { rows: [], rowCount: 1 } },
       // 聚合 received/refunded → 已付清
       {
         match: /received_sum/,
@@ -122,7 +120,6 @@ describe('order.repay', () => {
     const calls = router.mock.calls.map((c) => c[0])
     // 关键 SQL 命中
     expect(calls.some((s) => /INSERT INTO sale_order_payments/.test(s))).toBe(true)
-    expect(calls.some((s) => /INSERT INTO sale_order_payment_details/.test(s))).toBe(true)
     expect(calls.some((s) => /INSERT INTO card_transactions/.test(s))).toBe(true)
     expect(calls.some((s) => /UPDATE prepaid_cards SET balance/.test(s))).toBe(true)
     // 重构后不再 INSERT INTO sale_orders（凭证单消除）

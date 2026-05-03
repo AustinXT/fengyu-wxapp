@@ -1045,9 +1045,7 @@ async function detail(ctx) {
   }
 
   // 并行查询美容师姓名、券名称和款项流水
-  // 2026-04-26 sale-order-domain-refactor:
-  //   - operator/note 已下沉到 sale_order_payment_details 子表 → LEFT JOIN 取出
-  //   - 退款流水通过同表 change_type='退款' 聚合（不再依赖独立 sale_order_type='退款单' 行）
+  // 退款流水通过同表 change_type='退款' 聚合（不再依赖独立 sale_order_type='退款单' 行）
   const [preferredStaffName, couponName, paymentRows] = await Promise.all([
     order.preferred_employee_id
       ? pg.query('SELECT name FROM staff_wechat_users WHERE employee_id = $1', [order.preferred_employee_id])
@@ -1062,13 +1060,12 @@ async function detail(ctx) {
         ).then(rows => rows.length > 0 ? rows[0].name : null)
       : Promise.resolve(null),
     pg.query(
-      `SELECT sop.id, sop.change_type, sop.amount, sop.payment_method, sop.status,
-              sop.paid_at, sop.created_at,
-              spd.note, spd.refund_reason, spd.audit_employee_id, spd.audit_at, spd.audit_remark
-       FROM sale_order_payments sop
-       LEFT JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
-       WHERE sop.sale_order_id = $1
-       ORDER BY sop.created_at ASC, sop.id ASC`,
+      `SELECT id, change_type, amount, payment_method, status,
+              paid_at, created_at,
+              note, refund_reason, audit_employee_id, audit_at, audit_remark
+       FROM sale_order_payments
+       WHERE sale_order_id = $1
+       ORDER BY created_at ASC, id ASC`,
       [orderNo]
     )
   ])
@@ -1746,20 +1743,12 @@ async function repay(ctx) {
         [cardIdUsed, -prepaidCardAmountInput, saleOrderId]
       )
       // payments 行：sale_order_id=原单；change_type='回款' + payment_method='储值卡' / status='已支付'
-      const paymentInsRes = await client.query(
+      await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method,
-          external_txn_id, status, source_end, created_at, paid_at
-        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', $3, $3)
-        RETURNING id`,
-        [saleOrderId, prepaidCardAmountInput, now]
-      )
-      // 子表 details：操作人/note 下沉
-      const newPaymentId = paymentInsRes.rows[0].id
-      await client.query(
-        `INSERT INTO sale_order_payment_details (payment_id, note, created_at, updated_at)
-         VALUES ($1, $2, NOW(), NOW())`,
-        [newPaymentId, '储值卡继续支付（client.repay）']
+          external_txn_id, status, source_end, note, created_at, paid_at
+        ) VALUES ($1, '回款', $2, '储值卡', NULL, '已支付', 'client', $3, $4, $4)`,
+        [saleOrderId, prepaidCardAmountInput, '储值卡继续支付（client.repay）', now]
       )
     }
 
