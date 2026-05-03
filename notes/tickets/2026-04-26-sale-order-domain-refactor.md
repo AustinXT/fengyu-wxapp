@@ -640,3 +640,22 @@ pg_restore -h ... -U fengyu -d fengyu_restore --clean --create ~/backups/fengyu-
 - [ ] §4.2 admin /refunds 页 UI 重新设计（产品 PRD 评审）
 - [ ] §1.4 paymentFlowStatusEnum 加 '待审批' 是否影响 client 现有 UI 文案（CC8 命中）
 - [ ] §3.1 冷备份恢复演练（dry-run restore）
+
+---
+
+## 10 后续：sale_order_payment_details 子表回收（2026-05-03）
+
+原拆分动机是"主表保持窄、热路径不拖 nullable 列与 jsonb"。线上验证后发现：
+
+- 8 处 INSERT 全部双写主表+子表，**没有任何代码路径只插主表不插子表**
+- 6 处 SELECT 全部 LEFT JOIN，**没有任何业务依赖 detail IS NULL 的语义**
+- 子表 3 个索引（idx_sopd_operator / audit_employee / ref_sale_item）从未被 WHERE 过滤走过
+- `raw_payload` jsonb 字段零使用（注释里"拉卡拉对接后用"）
+
+→ 决定回收子表，将必要字段并回 `sale_order_payments` 主表：
+
+- 新增 8 列：`operator_employee_id` / `note` / `refund_reason` / `ref_sale_item_id` / `session_count` / `audit_employee_id` / `audit_at` / `audit_remark`
+- 不引入 `raw_payload`、不引入 3 个索引
+- 数据回填 + DROP TABLE：`db/migrations/0022_keen_freak.sql`（手工调整 ADD COLUMN → UPDATE 回填 → DROP TABLE 顺序避免丢数据）
+- 顺带：`approveRefund` / `rejectRefund` 的 "状态翻转 UPDATE + 子表写审批 INSERT/UPSERT" 合并为一条 UPDATE，云函数原本两个隐式自动提交变为单语句，**原子性反而更强**
+- 涉及代码：admin orders.ts / refunds.ts / refund-cascade.ts / types.ts；staffApi order.js / customer.js / mgmt-customer.js；clientApi order.js；以及对应测试

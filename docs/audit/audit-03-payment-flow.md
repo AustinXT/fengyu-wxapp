@@ -8,6 +8,8 @@
 **规范版本**：`real.md` v3.1.0 + `enums.ts` 28 枚举 + migration 0018/0019
 
 > **注 (2026-04-27 domain refactor)**：`paymentFlowStatusEnum` 已更新为 5 值（'待支付'/'待审批'/'已支付'/'已作废'/'已退款'）。新增 `sale_order_payment_details` 1:1 子表存储 operator_employee_id、note、refund_reason、audit 信息。`sale_order_payments` 的 operator_employee_id/note 已下沉至 details 子表。`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），退款改为 payment-based（change_type='退款', amount<0, status='待审批'→'已支付'）。
+>
+> **更新 (2026-05-03)**：`sale_order_payment_details` 子表已回收（migration 0022），8 个必要字段（operator_employee_id / note / refund_reason / ref_sale_item_id / session_count / audit_employee_id / audit_at / audit_remark）合并回 `sale_order_payments` 主表；未使用的 `raw_payload` jsonb 与 3 个未走过的索引一同删除。审批流的"翻状态 + 写审批人"由两条 SQL 合并为一条 UPDATE。
 
 ---
 
