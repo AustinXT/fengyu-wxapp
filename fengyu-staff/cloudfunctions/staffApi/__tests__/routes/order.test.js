@@ -2164,14 +2164,14 @@ describe('order.qrcode', () => {
 })
 
 // ============================================================
-// order.createRefund — 2026-04-26 sale-order-domain-refactor 后重写
+// order.createRefund
 // ============================================================
 //   - 入参: { refSaleOrderId, items, refundReason, handlingFee }
 //   - 数据流（事务内）:
-//       1) INSERT sale_order_payments(change_type='退款', amount=-finalRefund, status='待审批')
-//       2) INSERT sale_order_payment_details(payment_id, operator_employee_id, refund_reason,
-//          ref_sale_item_id, session_count, note=JSON{handlingFee, refundByCard, refundByOrigin, items})
-//       3) INSERT operation_logs(action='order.createRefund', target_type='sale_order_payment')
+//       1) INSERT sale_order_payments(change_type='退款', amount=-finalRefund, status='待审批',
+//          operator_employee_id, refund_reason, ref_sale_item_id, session_count,
+//          note=JSON{handlingFee, refundByCard, refundByOrigin, items})
+//       2) INSERT operation_logs(action='order.createRefund', target_type='sale_order_payment')
 //   - 返回: { paymentId, status: '待审批', totalAmount, finalRefundAmount, refundByCard,
 //     refundByOrigin, refundPaymentMethod, message }
 //   - in-flight 唯一性：partial unique uq_sop_status_audit 防同原单第 2 笔待审批
@@ -2181,10 +2181,8 @@ describe('order.createRefund', () => {
   /**
    * 构造 createRefund 的事务 client.query mock。
    * 该路由 INSERT 顺序：
-   *   1) INSERT sale_order_payments(...) RETURNING id
-   *   2) INSERT sale_order_payment_details(...)
-   *   3) INSERT operation_logs(...)
-   * 返回 spy 与 fn，便于断言 SQL 文本和参数顺序。
+   *   1) INSERT sale_order_payments(...) RETURNING id  — 主表单条
+   *   2) INSERT operation_logs(...)
    */
   function makeRefundTxnSpy({ paymentId = 1001 } = {}) {
     const calls = []
@@ -2199,7 +2197,7 @@ describe('order.createRefund', () => {
     return { calls, fn }
   }
 
-  test('部分退款（指定 ref_sale_item_id + 疗程卡）成功 — 写入 sop + spd', async () => {
+  test('部分退款（指定 ref_sale_item_id + 疗程卡）成功 — 写入主表单条', async () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-ORIG-001',
       items: [{ saleItemId: 'item-001', refundQuantity: 1 }],
@@ -2239,30 +2237,24 @@ describe('order.createRefund', () => {
     expect(ctx.result.refundPaymentMethod).toBe('线下')
     expect(ctx.result.message).toMatch(/退款已发起.*等待审批/)
 
-    // ===== sop 写入断言（amount=-950, status='待审批', change_type='退款'）=====
+    // ===== sop 写入断言：amount=-950, status='待审批', change_type='退款'，含 operator/refund 字段 =====
     const sopInsert = calls.find(c =>
       c.sql.includes('INSERT INTO sale_order_payments') && /RETURNING\s+id/i.test(c.sql)
     )
     expect(sopInsert).toBeDefined()
     expect(sopInsert.sql).toMatch(/'退款'/)
     expect(sopInsert.sql).toMatch(/'待审批'/)
-    // 参数顺序: [refSaleOrderId, -finalRefundAmount, refundPaymentMethod, now]
+    // 合并后参数顺序: [refSaleOrderId, -finalRefundAmount, refundPaymentMethod,
+    //                  operatorEmployeeId, refundReason, refSaleItemId, sessionCount,
+    //                  noteJson, now]
     expect(sopInsert.params[0]).toBe('FY-ORIG-001')
     expect(sopInsert.params[1]).toBe(-950)
     expect(sopInsert.params[2]).toBe('线下')
-
-    // ===== spd 写入断言（refund_reason / ref_sale_item_id / session_count / note JSON）=====
-    const spdInsert = calls.find(c =>
-      c.sql.includes('INSERT INTO sale_order_payment_details')
-    )
-    expect(spdInsert).toBeDefined()
-    expect(spdInsert.params[0]).toBe(1001)            // payment_id
-    expect(spdInsert.params[1]).toBe('emp-001')        // operator_employee_id
-    expect(spdInsert.params[2]).toBe('质量问题')       // refund_reason
-    expect(spdInsert.params[3]).toBe('item-001')       // ref_sale_item_id
-    expect(spdInsert.params[4]).toBe(1)                // session_count（疗程卡退 1 次）
-    // note JSON 包含 handlingFee / refundByCard / refundByOrigin / items
-    const note = JSON.parse(spdInsert.params[5])
+    expect(sopInsert.params[3]).toBe('emp-001')
+    expect(sopInsert.params[4]).toBe('质量问题')
+    expect(sopInsert.params[5]).toBe('item-001')
+    expect(sopInsert.params[6]).toBe(1)
+    const note = JSON.parse(sopInsert.params[7])
     expect(note._v).toBe(1)
     expect(note.handlingFee).toBe(50)
     expect(note.refundByCard).toBe(0)
@@ -2301,9 +2293,11 @@ describe('order.createRefund', () => {
     expect(ctx.result.totalAmount).toBe(-600)
     expect(ctx.result.finalRefundAmount).toBe(600)
 
-    const spdInsert = calls.find(c => c.sql.includes('INSERT INTO sale_order_payment_details'))
-    expect(spdInsert.params[3]).toBe('item-pick')
-    expect(spdInsert.params[4]).toBe(3)   // 退 3 件 → quantity → 写入 session_count
+    const sopInsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payments') && /RETURNING\s+id/i.test(c.sql)
+    )
+    expect(sopInsert.params[5]).toBe('item-pick')
+    expect(sopInsert.params[6]).toBe(3)   // 退 3 件 → quantity → 写入 session_count
   })
 
   test('储值卡全额抵扣原单退款：refundByCard=金额、refundByOrigin=0、payment_method=无→线下', async () => {
@@ -2343,8 +2337,7 @@ describe('order.createRefund', () => {
     expect(sopInserts).toHaveLength(1)
     expect(sopInserts[0].params[2]).toBe('线下')
 
-    const spdInsert = calls.find(c => c.sql.includes('INSERT INTO sale_order_payment_details'))
-    const note = JSON.parse(spdInsert.params[5])
+    const note = JSON.parse(sopInserts[0].params[7])
     expect(note.refundByCard).toBe(200)
     expect(note.refundByOrigin).toBe(0)
     expect(note.refundPaymentMethod).toBe('线下')
@@ -2621,8 +2614,7 @@ describe('order.approveRefund', () => {
    * 默认所有 UPDATE rowCount=1（CAS 成功）。返回 { calls, fn } 便于断言。
    *
    * 关键 SQL 分支：
-   *   - UPDATE sale_order_payments SET status='已支付' ... → CAS 哨兵
-   *   - INSERT INTO sale_order_payment_details ... ON CONFLICT(payment_id) DO UPDATE → 写审批
+   *   - UPDATE sale_order_payments SET status='已支付', audit_employee_id=... → CAS 哨兵 + 写审批
    *   - UPDATE sale_orders SET refunded_amount = ... → 累加退款
    *   - SELECT 1 FROM card_transactions ... type='充值' → 储值卡幂等检查
    *   - INSERT INTO prepaid_cards ... RETURNING card_id → 储值卡回冲
@@ -2643,17 +2635,12 @@ describe('order.approveRefund', () => {
       calls.push({ sql, params: _params })
 
       // ========= approveRefund 主路径 =========
-      // 1. CAS UPDATE sop status '待审批'→'已支付'
+      // 1. CAS UPDATE sop status '待审批'→'已支付'（同条 UPDATE 写审批人/时间/备注）
       if (sql.includes('UPDATE sale_order_payments') &&
           sql.includes("SET status = '已支付'")) {
         return { rows: [], rowCount: casRowCount }
       }
-      // 2. INSERT/ON CONFLICT spd
-      if (sql.includes('INSERT INTO sale_order_payment_details') &&
-          sql.includes('ON CONFLICT')) {
-        return { rows: [], rowCount: 1 }
-      }
-      // 3. UPDATE sale_orders refunded_amount
+      // 2. UPDATE sale_orders refunded_amount
       if (sql.includes('UPDATE sale_orders') && sql.includes('refunded_amount')) {
         return { rows: [], rowCount: 1 }
       }
@@ -2741,14 +2728,16 @@ describe('order.approveRefund', () => {
     expect(ctx.result.saleOrderId).toBe('FY-ORIG-001')
     expect(ctx.result.message).toMatch(/审批通过/)
 
-    // CAS 哨兵 UPDATE sop 出现且参数正确
+    // CAS 哨兵 UPDATE sop（合并后参数顺序: [now, staffWfId, auditRemark, paymentId]）
     const casUpdate = calls.find(c =>
       c.sql.includes('UPDATE sale_order_payments') &&
       c.sql.includes("SET status = '已支付'") &&
       c.sql.includes("AND status = '待审批'")
     )
     expect(casUpdate).toBeDefined()
-    expect(casUpdate.params[1]).toBe(1001)
+    expect(casUpdate.params[1]).toBe('emp-001')
+    expect(casUpdate.params[2]).toBe('同意退款')
+    expect(casUpdate.params[3]).toBe(1001)
 
     // refunded_amount 累加
     const refundedUpdate = calls.find(c =>
@@ -3017,10 +3006,6 @@ describe('order.rejectRefund', () => {
           sql.includes("SET status = '已作废'")) {
         return { rows: [], rowCount: casRowCount }
       }
-      if (sql.includes('INSERT INTO sale_order_payment_details') &&
-          sql.includes('ON CONFLICT')) {
-        return { rows: [], rowCount: 1 }
-      }
       if (sql.includes('INSERT INTO operation_logs')) {
         return { rows: [], rowCount: 1 }
       }
@@ -3030,7 +3015,7 @@ describe('order.rejectRefund', () => {
     return { calls, fn }
   }
 
-  test('驳回退款成功（auditRemark 字段）— 状态翻转 + 写审批信息', async () => {
+  test('驳回退款成功（auditRemark 字段）— 单条 UPDATE 翻转状态 + 写审批信息', async () => {
     const ctx = createManagerCtx({ paymentId: 2001, auditRemark: '不符合条件' })
     pg.query.mockResolvedValueOnce([makeSopRowReject()])
 
@@ -3042,24 +3027,17 @@ describe('order.rejectRefund', () => {
     expect(ctx.result.status).toBe('已作废')
     expect(ctx.result.message).toBe('退款已驳回')
 
-    // CAS UPDATE 含 AND status='待审批'
+    // 合并后：单条 CAS UPDATE 同时翻转状态 + 写 audit_employee_id / audit_at / audit_remark
     const casUpdate = calls.find(c =>
       c.sql.includes('UPDATE sale_order_payments') &&
       c.sql.includes("SET status = '已作废'") &&
       c.sql.includes("AND status = '待审批'")
     )
     expect(casUpdate).toBeDefined()
-    expect(casUpdate.params[0]).toBe(2001)
-
-    // spd 写审批 — auditRemark='不符合条件'
-    const spdUpsert = calls.find(c =>
-      c.sql.includes('INSERT INTO sale_order_payment_details') &&
-      c.sql.includes('ON CONFLICT')
-    )
-    expect(spdUpsert).toBeDefined()
-    expect(spdUpsert.params[0]).toBe(2001)
-    expect(spdUpsert.params[1]).toBe('emp-001')
-    expect(spdUpsert.params[3]).toBe('不符合条件')
+    // 参数顺序: [staffWfId, now, remark, paymentId]
+    expect(casUpdate.params[0]).toBe('emp-001')
+    expect(casUpdate.params[2]).toBe('不符合条件')
+    expect(casUpdate.params[3]).toBe(2001)
   })
 
   test('驳回退款 — 兼容旧字段 rejectedReason', async () => {
@@ -3070,10 +3048,11 @@ describe('order.rejectRefund', () => {
 
     await orderRoutes.rejectRefund(ctx)
 
-    const spdUpsert = calls.find(c =>
-      c.sql.includes('INSERT INTO sale_order_payment_details')
+    const casUpdate = calls.find(c =>
+      c.sql.includes('UPDATE sale_order_payments') &&
+      c.sql.includes("SET status = '已作废'")
     )
-    expect(spdUpsert.params[3]).toBe('老前端字段')
+    expect(casUpdate.params[2]).toBe('老前端字段')
   })
 
   test('CAS 幂等哨兵：状态已变更（rowCount=0）→ INVALID_STATE', async () => {
@@ -4460,7 +4439,7 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
 // order.createRefund — 按比例拆分退款（储值卡部分 + 原通道部分）— 2026-04-26 重写
 // ============================================================
 //   2026-04-26 sale-order-domain-refactor: 拆分逻辑（splitRefundByOriginalPayment）
-//   已迁至 createRefund 阶段，结果写入 sale_order_payment_details.note JSON。
+//   已迁至 createRefund 阶段，结果写入 sale_order_payments.note JSON。
 //   approveRefund 仅按 payment_method 决定是否回冲储值卡。
 //   本组测试覆盖 createRefund 时 refundByCard/refundByOrigin 的拆分计算。
 describe('order.createRefund — 按比例拆分退款（refundByCard/refundByOrigin）', () => {
@@ -4536,11 +4515,11 @@ describe('order.createRefund — 按比例拆分退款（refundByCard/refundByOr
     expect(ctx.result.refundByCard).toBe(100)
     expect(ctx.result.refundByOrigin).toBe(0)
 
-    // note JSON 中 split 一致
-    const spdInsert = calls.find(c =>
-      c.sql.includes('INSERT INTO sale_order_payment_details')
+    // note JSON 中 split 一致（合并后写入主表 INSERT 的 params[7]）
+    const sopInsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payments') && /RETURNING\s+id/i.test(c.sql)
     )
-    const note = JSON.parse(spdInsert.params[5])
+    const note = JSON.parse(sopInsert.params[7])
     expect(note.refundByCard).toBe(100)
     expect(note.refundByOrigin).toBe(0)
   })
@@ -4563,8 +4542,10 @@ describe('order.createRefund — 按比例拆分退款（refundByCard/refundByOr
     // 不变量：byCard + byOrigin === refundAmount，无尾差
     expect(ctx.result.refundByCard + ctx.result.refundByOrigin).toBe(150)
 
-    const spdInsert = calls.find(c => c.sql.includes('INSERT INTO sale_order_payment_details'))
-    const note = JSON.parse(spdInsert.params[5])
+    const sopInsert = calls.find(c =>
+      c.sql.includes('INSERT INTO sale_order_payments') && /RETURNING\s+id/i.test(c.sql)
+    )
+    const note = JSON.parse(sopInsert.params[7])
     expect(note.refundByCard).toBe(50)
     expect(note.refundByOrigin).toBe(100)
   })

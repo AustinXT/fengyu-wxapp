@@ -620,20 +620,12 @@ async function create(ctx) {
     //   扣卡余额 + 写 '储值卡抵扣' payments 行统一由 confirmOffline 执行（staffApi 唯一扣卡点，
     //   见 fengyu-staff/CLAUDE.md）。
     if (!isOnlineMethod && paidAmount > 0) {
-      // 2026-04-26 refactor：operator/note 下沉至 sale_order_payment_details
-      const sopRes = await client.query(
+      await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, created_at, paid_at
-        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $4)
-        RETURNING id`,
-        [saleOrderId, paidAmount, paymentMethod, now]
-      )
-      await client.query(
-        `INSERT INTO sale_order_payment_details (
-          payment_id, operator_employee_id, note, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $4)`,
-        [sopRes.rows[0].id, ctx.auth.staffWfId, '店长开单现场收款', now]
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
       )
     }
 
@@ -930,20 +922,12 @@ async function confirmOffline(ctx) {
           [cardId, -prepaidAmount, saleOrderId]
         )
         // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
-        // 2026-04-26 refactor：operator/note 下沉至 sale_order_payment_details
-        const sopCardRes = await client.query(
+        await client.query(
           `INSERT INTO sale_order_payments (
             sale_order_id, change_type, amount, payment_method, external_txn_id,
-            status, source_end, created_at, paid_at
-          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $3)
-          RETURNING id`,
-          [saleOrderId, prepaidAmount, now]
-        )
-        await client.query(
-          `INSERT INTO sale_order_payment_details (
-            payment_id, operator_employee_id, note, created_at, updated_at
-          ) VALUES ($1, $2, $3, $4, $4)`,
-          [sopCardRes.rows[0].id, ctx.auth.staffWfId, '店长确认线下收款-储值卡抵扣', now]
+            status, source_end, operator_employee_id, note, created_at, paid_at
+          ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+          [saleOrderId, prepaidAmount, ctx.auth.staffWfId, '店长确认线下收款-储值卡抵扣', now]
         )
       }
     }
@@ -969,20 +953,12 @@ async function confirmOffline(ctx) {
     }
 
     if (confirmAmount > 0) {
-      // 2026-04-26 refactor：operator/note 下沉至 sale_order_payment_details
-      const sopOfflineRes = await client.query(
+      await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, created_at, paid_at
-        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $4)
-        RETURNING id`,
-        [saleOrderId, paymentChangeType, confirmAmount, now]
-      )
-      await client.query(
-        `INSERT INTO sale_order_payment_details (
-          payment_id, operator_employee_id, note, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $4)`,
-        [sopOfflineRes.rows[0].id, ctx.auth.staffWfId, '店长确认线下收款', now]
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        [saleOrderId, paymentChangeType, confirmAmount, ctx.auth.staffWfId, '店长确认线下收款', now]
       )
     }
 
@@ -1364,14 +1340,12 @@ async function detail(ctx) {
   }
 
   // 款项流水（Ticket 2 PR-A：订单详情页展示 / 回款弹层读取欠款）
-  // 2026-04-26 sale-order-domain-refactor：note 下沉至 sale_order_payment_details
   const paymentRows = await pg.query(
-    `SELECT sop.change_type, sop.amount, sop.payment_method, sop.status,
-            sop.paid_at, sop.created_at, sopd.note
-     FROM sale_order_payments sop
-     LEFT JOIN sale_order_payment_details sopd ON sopd.payment_id = sop.id
-     WHERE sop.sale_order_id = $1
-     ORDER BY sop.created_at ASC, sop.id ASC`,
+    `SELECT change_type, amount, payment_method, status,
+            paid_at, created_at, note
+     FROM sale_order_payments
+     WHERE sale_order_id = $1
+     ORDER BY created_at ASC, id ASC`,
     [saleOrderId]
   )
   const payments = paymentRows.map(p => ({
@@ -1392,15 +1366,14 @@ async function detail(ctx) {
   }
 }
 
-// ========== P2: 退款（2026-04-26 sale-order-domain-refactor 重构） ==========
+// ========== P2: 退款 ==========
 //
-// 重构核心：
-//   - 不再创建 sale_orders[type='退款单'] 行；退款全部下沉至 sale_order_payments
+// 模型：
+//   - 不创建 sale_orders[type='退款单'] 行；退款全部承载在 sale_order_payments
 //   - 发起：INSERT sale_order_payments(change_type='退款', amount<0, status='待审批',
-//           source_end='staff') + INSERT sale_order_payment_details(refund_reason,
-//           ref_sale_item_id, session_count, operator_employee_id)
+//           source_end='staff', operator_employee_id, refund_reason, ref_sale_item_id, session_count)
 //   - 审批：CAS UPDATE sale_order_payments SET status='已支付' AND status='待审批'
-//           + UPDATE details(audit_employee_id/audit_at/audit_remark)
+//           同一条 UPDATE 写 audit_employee_id / audit_at / audit_remark
 //           + UPDATE sale_orders.refunded_amount += ABS(amount)
 //           + 5 通道 cascade（sa/sc/coupons/points/pickup）
 //   - 驳回：CAS UPDATE sale_order_payments SET status='已作废' AND status='待审批'
@@ -1479,8 +1452,7 @@ async function createRefund(ctx) {
   // 单行模型：partial unique uq_sop_status_audit 限制每订单仅允许 1 行 (change_type='退款',
   // status='待审批')。退款总额 = refundByCard + refundByOrigin 合计写入 amount=-finalRefundAmount，
   // payment_method 取原路径（refundPaymentMethod）；储值卡部分 vs 原路径部分的拆分以及 handling_fee
-  // 等明细全部存入 sale_order_payment_details.note (JSON)。审批通过时根据 payment_method 决定
-  // 储值卡是否回冲。
+  // 等明细全部存入 note 字段（JSON）。审批通过时根据 payment_method 决定储值卡是否回冲。
   const detailNote = JSON.stringify({
     _v: 1,
     refundByCard,
@@ -1499,21 +1471,14 @@ async function createRefund(ctx) {
     const sopRes = await client.query(
       `INSERT INTO sale_order_payments (
         sale_order_id, change_type, amount, payment_method, external_txn_id,
-        status, source_end, created_at
-      ) VALUES ($1, '退款', $2, $3::payment_method, NULL, '待审批', 'staff', $4)
+        status, source_end, operator_employee_id, refund_reason,
+        ref_sale_item_id, session_count, note, created_at
+      ) VALUES ($1, '退款', $2, $3::payment_method, NULL, '待审批', 'staff', $4, $5, $6, $7, $8, $9)
       RETURNING id`,
-      [refSaleOrderId, -finalRefundAmount, refundPaymentMethod, now]
-    )
-    paymentId = sopRes.rows[0].id
-
-    // 子表写发起人/退款明细
-    await client.query(
-      `INSERT INTO sale_order_payment_details (
-        payment_id, operator_employee_id, refund_reason,
-        ref_sale_item_id, session_count, note, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
       [
-        paymentId,
+        refSaleOrderId,
+        -finalRefundAmount,
+        refundPaymentMethod,
         ctx.auth.staffWfId,
         refundReason,
         refundDetails[0]?.refSaleItemId || null,
@@ -1522,6 +1487,7 @@ async function createRefund(ctx) {
         now,
       ]
     )
+    paymentId = sopRes.rows[0].id
 
     // 审计日志
     await client.query(
@@ -1564,9 +1530,9 @@ async function createRefund(ctx) {
  *
  * 5 通道 cascade（详见 helpers/refund-cascade.js）：
  *   1. CAS UPDATE sale_order_payments status '待审批' → '已支付' + paid_at=NOW
- *   2. UPDATE sale_order_payment_details 写审批人/时间/备注
- *   3. UPDATE sale_orders.refunded_amount += ABS(amount) + updated_at
- *   4. 5 通道：sa 软删 / sc 软删 / coupons 回滚 / points 反向 / pickup 反推
+ *      + 同一条 UPDATE 写审批人/时间/备注（已并入主表）
+ *   2. UPDATE sale_orders.refunded_amount += ABS(amount) + updated_at
+ *   3. 5 通道：sa 软删 / sc 软删 / coupons 回滚 / points 反向 / pickup 反推
  */
 async function approveRefund(ctx) {
   await requireManager()(ctx, async () => {})
@@ -1577,11 +1543,10 @@ async function approveRefund(ctx) {
   // 预查 + scope 校验（ctx.auth.effectiveStoreId 必须等于原单 store_id）
   const sopRows = await pg.query(
     `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.payment_method,
-            so.store_id, so.client_user_id,
-            spd.refund_reason, spd.ref_sale_item_id, spd.session_count
+            sop.refund_reason, sop.ref_sale_item_id, sop.session_count,
+            so.store_id, so.client_user_id
        FROM sale_order_payments sop
        JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-       LEFT JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
       WHERE sop.id = $1 AND sop.change_type = '退款'`,
     [paymentId]
   )
@@ -1599,31 +1564,19 @@ async function approveRefund(ctx) {
   const now = new Date()
 
   await pg.transaction(async (client) => {
-    // 1. CAS 翻转流水状态（幂等哨兵）
+    // 1. CAS 翻转流水状态 + 同一条 UPDATE 写审批人/时间/备注（幂等哨兵）
     const cas = await client.query(
       `UPDATE sale_order_payments
-          SET status = '已支付', paid_at = $1
-        WHERE id = $2 AND status = '待审批'`,
-      [now, paymentId]
+          SET status = '已支付', paid_at = $1,
+              audit_employee_id = $2, audit_at = $1, audit_remark = $3
+        WHERE id = $4 AND status = '待审批'`,
+      [now, ctx.auth.staffWfId, auditRemark || null, paymentId]
     )
     if (cas.rowCount !== 1) {
       throw new Error('INVALID_STATE: 退款流水状态已变更，请刷新后重试')
     }
 
-    // 2. 写审批人/时间/备注到子表
-    await client.query(
-      `INSERT INTO sale_order_payment_details (
-        payment_id, audit_employee_id, audit_at, audit_remark, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $3, $3)
-      ON CONFLICT (payment_id) DO UPDATE SET
-        audit_employee_id = EXCLUDED.audit_employee_id,
-        audit_at = EXCLUDED.audit_at,
-        audit_remark = EXCLUDED.audit_remark,
-        updated_at = EXCLUDED.updated_at`,
-      [paymentId, ctx.auth.staffWfId, now, auditRemark || null]
-    )
-
-    // 3. 累加 sale_orders.refunded_amount
+    // 2. 累加 sale_orders.refunded_amount
     await client.query(
       `UPDATE sale_orders
           SET refunded_amount = COALESCE(refunded_amount, 0) + $1, updated_at = $2
@@ -1631,7 +1584,7 @@ async function approveRefund(ctx) {
       [refundAbs, now, refSaleOrderId]
     )
 
-    // 4. 储值卡通道：仅当 payment_method='储值卡' 时回冲 prepaid_cards
+    // 3. 储值卡通道：仅当 payment_method='储值卡' 时回冲 prepaid_cards
     if (sopRow.payment_method === '储值卡' && sopRow.client_user_id && refundAbs > 0) {
       const dupCheck = await client.query(
         `SELECT 1 FROM card_transactions
@@ -1657,7 +1610,7 @@ async function approveRefund(ctx) {
       }
     }
 
-    // 5. 5 通道 cascade
+    // 4. 5 通道 cascade
     const cascadeResult = await cascadeRefund(client, {
       saleOrderId: refSaleOrderId,
       saleItemId: sopRow.ref_sale_item_id,
@@ -1665,13 +1618,13 @@ async function approveRefund(ctx) {
       refundReason: sopRow.refund_reason || '退款审批通过',
     })
 
-    // 6. 重算顾客消费档位 + 顾客类型
+    // 5. 重算顾客消费档位 + 顾客类型
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
       await recalcCustomerType(client, sopRow.client_user_id)
     }
 
-    // 7. 写 operation_logs（审计）
+    // 6. 写 operation_logs（审计）
     await client.query(
       `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
        VALUES ('order.approveRefund', 'sale_order_payment', $1, $2::jsonb, $3, NOW())`,
@@ -1737,25 +1690,14 @@ async function rejectRefund(ctx) {
   await pg.transaction(async (client) => {
     const cas = await client.query(
       `UPDATE sale_order_payments
-          SET status = '已作废'
-        WHERE id = $1 AND status = '待审批'`,
-      [paymentId]
+          SET status = '已作废',
+              audit_employee_id = $1, audit_at = $2, audit_remark = $3
+        WHERE id = $4 AND status = '待审批'`,
+      [ctx.auth.staffWfId, now, remark, paymentId]
     )
     if (cas.rowCount !== 1) {
       throw new Error('INVALID_STATE: 退款流水状态已变更，请刷新后重试')
     }
-
-    await client.query(
-      `INSERT INTO sale_order_payment_details (
-        payment_id, audit_employee_id, audit_at, audit_remark, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $3, $3)
-      ON CONFLICT (payment_id) DO UPDATE SET
-        audit_employee_id = EXCLUDED.audit_employee_id,
-        audit_at = EXCLUDED.audit_at,
-        audit_remark = EXCLUDED.audit_remark,
-        updated_at = EXCLUDED.updated_at`,
-      [paymentId, ctx.auth.staffWfId, now, remark]
-    )
 
     // operation_logs 审计
     await client.query(
@@ -1938,35 +1880,21 @@ async function createRepayment(ctx) {
     if (repayAmount > 0) {
       const repayStatusRow = isOnlinePaymentMethod(paymentMethod) ? '待支付' : '已支付'
       const paidAtValue = isOnlinePaymentMethod(paymentMethod) ? null : now
-      const sopRepayRes = await client.query(
+      await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, created_at, paid_at
-        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6)
-        RETURNING id`,
-        [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, now, paidAtValue]
-      )
-      await client.query(
-        `INSERT INTO sale_order_payment_details (
-          payment_id, operator_employee_id, note, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $4)`,
-        [sopRepayRes.rows[0].id, ctx.auth.staffWfId, note || '店长发起回款', now]
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '回款', $2, $3, NULL, $4, 'staff', $5, $6, $7, $8)`,
+        [refSaleOrderId, repayAmount, paymentMethod, repayStatusRow, ctx.auth.staffWfId, note || '店长发起回款', now, paidAtValue]
       )
     }
     if (prepaidCardAmount > 0) {
-      const sopCardRes = await client.query(
+      await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
-          status, source_end, created_at, paid_at
-        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $3)
-        RETURNING id`,
-        [refSaleOrderId, prepaidCardAmount, now]
-      )
-      await client.query(
-        `INSERT INTO sale_order_payment_details (
-          payment_id, operator_employee_id, note, created_at, updated_at
-        ) VALUES ($1, $2, $3, $4, $4)`,
-        [sopCardRes.rows[0].id, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
+          status, source_end, operator_employee_id, note, created_at, paid_at
+        ) VALUES ($1, '储值卡抵扣', $2, '储值卡', NULL, '已支付', 'staff', $3, $4, $5, $5)`,
+        [refSaleOrderId, prepaidCardAmount, ctx.auth.staffWfId, '店长发起回款-储值卡抵扣', now]
       )
     }
 
@@ -2554,12 +2482,11 @@ async function generateOrderNo(prefix) {
 }
 
 /**
- * 退款列表（2026-04-26 sale-order-domain-refactor 重构）
+ * 退款列表
  *
  * payload: { status?: '待审批'|'已支付'|'已作废', page?, pageSize? }
  * 数据源 = sale_order_payments[change_type='退款'] JOIN sale_orders（按 store_id scope）
- *           + LEFT JOIN sale_order_payment_details
- * 店长：看本店全部退款流水；非店长：看自己发起的（spd.operator_employee_id）
+ * 店长：看本店全部退款流水；非店长：看自己发起的（sop.operator_employee_id）
  */
 async function refundList(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -2575,7 +2502,7 @@ async function refundList(ctx) {
   }
   if (!ctx.auth.roles.includes('manager')) {
     params.push(ctx.auth.staffWfId)
-    whereExtra += ` AND spd.operator_employee_id = $${params.length}`
+    whereExtra += ` AND sop.operator_employee_id = $${params.length}`
   }
 
   const refunds = await pg.query(`
@@ -2585,18 +2512,17 @@ async function refundList(ctx) {
       sop.amount, sop.status, sop.payment_method,
       sop.created_at, sop.paid_at,
       so.client_phone, so.customer_name,
-      spd.refund_reason, spd.audit_remark,
-      spd.operator_employee_id AS opened_by,
-      spd.audit_employee_id AS approved_by,
-      spd.audit_at AS approved_at,
-      spd.note AS detail_note,
+      sop.refund_reason, sop.audit_remark,
+      sop.operator_employee_id AS opened_by,
+      sop.audit_employee_id AS approved_by,
+      sop.audit_at AS approved_at,
+      sop.note AS detail_note,
       opener.name AS opened_by_name,
       approver.name AS approved_by_name
     FROM sale_order_payments sop
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-    LEFT JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
-    LEFT JOIN staff_wechat_users opener ON spd.operator_employee_id = opener.employee_id
-    LEFT JOIN staff_wechat_users approver ON spd.audit_employee_id = approver.employee_id
+    LEFT JOIN staff_wechat_users opener ON sop.operator_employee_id = opener.employee_id
+    LEFT JOIN staff_wechat_users approver ON sop.audit_employee_id = approver.employee_id
     WHERE so.store_id = $1 AND sop.change_type = '退款'
     ${whereExtra}
     ORDER BY sop.created_at DESC
@@ -2607,10 +2533,10 @@ async function refundList(ctx) {
 }
 
 /**
- * 退款详情（2026-04-26 sale-order-domain-refactor 重构）
+ * 退款详情
  *
  * payload: { paymentId: number }
- * 返回退款流水 + 详情 + 原单概要 + 退款明细（来自 details.note JSON）
+ * 返回退款流水 + 原单概要 + 退款明细（来自 sop.note JSON）
  */
 async function refundDetail(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -2628,16 +2554,15 @@ async function refundDetail(ctx) {
        so.total_amount AS orig_total_amount, so.received AS orig_received,
        so.prepaid_card_amount AS orig_prepaid, so.payment_method AS orig_payment_method,
        so.sale_order_datetime,
-       spd.operator_employee_id, spd.refund_reason, spd.ref_sale_item_id,
-       spd.session_count, spd.note AS detail_note,
-       spd.audit_employee_id, spd.audit_at, spd.audit_remark,
+       sop.operator_employee_id, sop.refund_reason, sop.ref_sale_item_id,
+       sop.session_count, sop.note AS detail_note,
+       sop.audit_employee_id, sop.audit_at, sop.audit_remark,
        opener.name AS opened_by_name,
        approver.name AS approved_by_name
      FROM sale_order_payments sop
      JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
-     LEFT JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
-     LEFT JOIN staff_wechat_users opener ON spd.operator_employee_id = opener.employee_id
-     LEFT JOIN staff_wechat_users approver ON spd.audit_employee_id = approver.employee_id
+     LEFT JOIN staff_wechat_users opener ON sop.operator_employee_id = opener.employee_id
+     LEFT JOIN staff_wechat_users approver ON sop.audit_employee_id = approver.employee_id
      WHERE sop.id = $1 AND sop.change_type = '退款'`,
     [queryPaymentId]
   )

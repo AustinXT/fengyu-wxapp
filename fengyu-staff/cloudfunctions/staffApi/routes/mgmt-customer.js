@@ -817,7 +817,7 @@ async function refundHistory(ctx) {
   params.push(...sc.params)
   const whereClause = `${whereCore} AND ${sc.sql}`
 
-  // 2026-04-26 sale-order-domain-refactor：退款数据源 sale_orders[退款单] → sale_order_payments[退款]
+  // 退款数据源：sale_order_payments[change_type='退款']（refund_reason / audit_* / note 已在主表）
   const refundRows = await pg.query(
     `SELECT
        sop.id AS payment_id,
@@ -827,12 +827,11 @@ async function refundHistory(ctx) {
        sop.created_at,
        sop.paid_at,
        sop.payment_method,
-       spd.refund_reason,
-       spd.audit_at,
-       spd.audit_remark,
-       spd.note AS detail_note
+       sop.refund_reason,
+       sop.audit_at,
+       sop.audit_remark,
+       sop.note AS detail_note
      FROM sale_order_payments sop
-     JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
      JOIN sale_orders o ON o.sale_order_id = sop.sale_order_id
     WHERE ${whereClause}
       AND sop.change_type = '退款'

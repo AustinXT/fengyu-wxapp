@@ -787,8 +787,8 @@ describe('customer.listByTag', () => {
 // customer.refundHistory
 // ============================================================
 describe('customer.refundHistory', () => {
-  // 2026-04-26 sale-order-domain-refactor: refundHistory 拆分为 3 query —
-  //   1) sale_order_payments[change_type='退款'] JOIN sale_order_payment_details JOIN sale_orders
+  // refundHistory 拆分为 3 query —
+  //   1) sale_order_payments[change_type='退款'] JOIN sale_orders（refund_reason / audit_* / note 在主表）
   //   2) sale_orders[type='转换单']
   //   3) sale_items（按 convOrderIds ANY）
   // 返回扁平数组，按 createdAt 倒序合并退款和转换单。
@@ -796,7 +796,7 @@ describe('customer.refundHistory', () => {
   test('返回退款流水（sale_order_payments）和转换单（sale_orders）— 新模型', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1' })
 
-    // Q1: 退款流水（来自 sale_order_payments JOIN sale_order_payment_details JOIN sale_orders）
+    // Q1: 退款流水（来自 sale_order_payments JOIN sale_orders）
     pg.query.mockResolvedValueOnce([
       {
         payment_id: 101, sale_order_id: 'FY-001',
@@ -911,7 +911,7 @@ describe('customer.refundHistory', () => {
     const [refundSql, refundParams] = pg.query.mock.calls[0]
     expect(refundSql).toMatch(/sop\.change_type\s*=\s*'退款'/)
     expect(refundSql).toMatch(/FROM\s+sale_order_payments\s+sop/i)
-    expect(refundSql).toMatch(/sale_order_payment_details\s+spd/i)
+    expect(refundSql).toMatch(/sop\.refund_reason/i)
     expect(refundSql).toMatch(/so\.store_id\s*=/)
     // params: [clientUserId, storeId, pageSize, offset]
     expect(refundParams).toContain('store-001')

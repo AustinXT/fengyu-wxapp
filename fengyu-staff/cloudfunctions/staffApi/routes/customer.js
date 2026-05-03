@@ -687,10 +687,10 @@ async function listByTag(ctx) {
 }
 
 /**
- * 退换记录（2026-04-26 sale-order-domain-refactor 重构）
+ * 退换记录
  *
  * 数据源 = sale_order_payments[change_type='退款'] + 转换单
- *   退款：从 sale_order_payments[change_type='退款'] JOIN sale_order_payment_details
+ *   退款：从 sale_order_payments[change_type='退款']（refund_reason / audit_* / note 已合并到主表）
  *   转换：保留原 sale_orders[sale_order_type='转换单'] 路径
  *
  * scope：staff 端必须加 store_id 过滤（audit-CC3 P0-CC3-02）
@@ -725,14 +725,13 @@ async function refundHistory(ctx) {
       sop.created_at,
       sop.paid_at,
       sop.payment_method,
-      spd.refund_reason,
-      spd.audit_at,
-      spd.audit_remark,
-      spd.note AS detail_note,
+      sop.refund_reason,
+      sop.audit_at,
+      sop.audit_remark,
+      sop.note AS detail_note,
       so.client_user_id,
       so.store_id
     FROM sale_order_payments sop
-    JOIN sale_order_payment_details spd ON spd.payment_id = sop.id
     JOIN sale_orders so ON so.sale_order_id = sop.sale_order_id
     WHERE sop.change_type = '退款'
       AND ${refundWhere}
