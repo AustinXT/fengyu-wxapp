@@ -1,11 +1,47 @@
-# Ticket-10c: admin actions/* 33 处野生前缀批量替换为 ApiError
+# Ticket-10c: admin actions/* 33 处野生前缀批量替换为 ApiError [已归档]
 
 > 生成日期：2026-05-17
-> 实施状态：⚪ 未开工
+> 归档日期：2026-05-17
+> 实施状态：✅ **已完成（已归档）**
+> 实施日期：2026-05-17
 > 严重级别：**P2**（admin Server Action 内 33 处野生前缀 throw 命中 `runWithApiResponse` 兜底 → 前端拿到 `{code:-1, errorType:null, message:'服务器内部错误'}`，无法按业务前缀路由 UI 分支；前端硬编码 `err.message.indexOf('CARD_NOT_FOUND')` 老前缀的 UI 分支永远走不到）
 > 端：fengyu-admin
-> 修复成本：**M**（半天到 1 天 — 5 文件分批迁，每文件迁完跑该模块的单元测试）
-> 来源：[主 ticket §4.3 / §5 L7 拆出的 follow-up](2026-05-17-error-code-prefix-whitelist-and-admin-throw.md)
+> 修复成本：**M**（实际：1 天，4 个 commit 分批落地）
+> 来源：[主 ticket §4.3 / §5 L7 拆出的 follow-up](archives/2026-05-17-error-code-prefix-whitelist-and-admin-throw.md)
+
+---
+
+## 实施小结（2026-05-17）
+
+**4 个 commit 完成 33 处全量迁移**：
+
+| Commit | 内容 |
+|--------|------|
+| `41ea65f` | `actions/lib` 抛错统一改用 ApiError —— services / service-commissions / pickup-records 各 1 处 + orders/refunds 大部分 |
+| `8269452` | refunds 补漏 `PAYMENT_INSERT_FAILED` → ApiError + 修正 system-config mock 路径 |
+| `5ec823f` | refunds.approveRefund 内剩余 throw 收敛到 ApiError |
+| `efa3218` | refunds 错误码 sentinel 匹配改 includes + rejectRefund 同步迁移 |
+| `f424816` | orders/refunds 裸前缀 throw 收尾迁移 ApiError + **snapshot 基线 33 → 0** |
+
+**最终归并映射**（与主 ticket §4.3 对齐）：
+- `CARD_*` 系列 9 处 → `NOT_FOUND: 充值卡不存在` / `INVALID_STATE: 充值卡 <原因>` / `CONFLICT:` / `INVALID_PARAMS:`
+- `ORDER_ID_GEN_FAILED` / `REF_ORDER_NOT_FOUND` → `INVALID_STATE:` / `NOT_FOUND:`
+- `CONCURRENT_CHANGED` / `CARD_CONCURRENT_CHANGED` → `CONFLICT: 数据已被其他操作修改，请刷新`
+- `INSUFFICIENT_SESSIONS` / `INSUFFICIENT_BALANCE:${...}` → `INSUFFICIENT_BALANCE:`
+- `OVERPAY:${...}` / `OVER_QUANTITY` → `INVALID_STATE:`
+- `SKU_NOT_FOUND:${...}` → `NOT_FOUND:`
+- `PREPAID_CARD_UPSERT_FAILED` / `PAYMENT_INSERT_FAILED` / `CARD_UPSERT_FAILED` → `CONFLICT:`
+- `CLIENT_NOT_REGISTERED` → 保留（已在 9 项白名单内）
+- 9 处中文裸抛 → 全部加 `INVALID_STATE:` / `INVALID_PARAMS:` 前缀
+
+**验证（最终态）**：
+- 反向 grep `grep -rn "throw new Error" fengyu-admin/src/actions/ | grep -v <9 白名单>` → stdout 空（**0 违规**）
+- snapshot 守护 `cross-end-error-codes-snapshot.test.js:166` 已从 `toBeLessThanOrEqual(33)` 收紧到 `toBe(0)`（commit `f424816`）
+- `bun run test src/actions/orders.test.ts` → 108/108 全绿
+- 配套 fix：refunds.ts 一处 sentinel 匹配从 `err.message === '前缀'` 改为 `includes`，兼容 ApiError 包装后的 `'前缀: 中文消息'` 完整 message
+
+**未做**（明确为可选/范围外）：
+- 前端硬编码 `err.message.indexOf('CARD_NOT_FOUND')` 老前缀检测（主 ticket §7.1 列出的风险）—— grep 后未发现残留，无需修改
 
 ---
 
