@@ -220,7 +220,7 @@ describe('customer.calendar', () => {
     expect(sql).toMatch(/o\.store_id\s*=\s*ANY\(\$/)
     expect(params).toContainEqual(['store-001', 'store-002'])
   })
-}))
+})
 
 // ============================================================
 // customer.detail

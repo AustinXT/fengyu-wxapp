@@ -4,6 +4,11 @@
  * 2026-04-26 sale-order-domain-refactor §1.5 落地：
  * 退款审批通过时同事务级联回滚 5 类衍生数据（与 admin/cascadeRefund 同思路）。
  *
+ * **修改本文件必须同步 fengyu-admin/src/lib/refund-cascade.ts**
+ * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
+ * `staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`
+ * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
+ *
  * 通道：
  *   1. sale_allocations:    UPDATE SET is_void=true, voided_at=NOW()  (sale_allocations 无 voided_reason)
  *   2. service_commissions: UPDATE SET is_void=true, voided_at=NOW(), voided_reason=$

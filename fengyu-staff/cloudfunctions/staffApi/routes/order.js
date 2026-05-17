@@ -324,7 +324,7 @@ async function create(ctx) {
   if (inputCouponId && clientUserId) {
     const couponRows = await pg.query(
       `SELECT uc.coupon_id, uc.user_id, uc.expire_at,
-              ct.coupon_type, ct.discount_value, ct.min_spend, ct.max_discount,
+              ct.coupon_type, ct.min_spend, ct.max_discount,
               ct.applicable_category_ids, ct.applicable_store_ids,
               ct.applicable_product_ids, ct.applicable_market_ids,
               COALESCE(uc.face_value_override, ct.discount_value) AS discount_value

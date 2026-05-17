@@ -1,16 +1,16 @@
-// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 Snapshot 守护（提交后任一字符漂移立即可见） settlePoints 关键 SQL 文本快照 1`] = `
-{
-  "granted": "SELECT COALESCE(SUM(amount), 0)::int AS granted FROM point_transactions WHERE ref_order_id = ?",
-  "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
-}
-`;
-
-exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
+exports[`applyRechargeOnOrderPaid SQL 一致性守护（三端独立副本） > Snapshot 守护：三端 UPSERT 文本任一漂移立即可见 1`] = `
 {
   "adminTs": "INSERT INTO prepaid_cards (card_id, user_id, balance) VALUES (?, ?, ?) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
   "payNotify": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
   "staff": "INSERT INTO prepaid_cards (card_id, user_id, balance, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW()) ON CONFLICT (user_id) DO UPDATE SET balance = prepaid_cards.balance + EXCLUDED.balance, updated_at = NOW() RETURNING card_id",
+}
+`;
+
+exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守护 > Snapshot 守护（提交后任一字符漂移立即可见） > settlePoints 关键 SQL 文本快照 1`] = `
+{
+  "granted": "SELECT COALESCE(SUM(amount), 0)::int AS granted FROM point_transactions WHERE ref_order_id = ?",
+  "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
 }
 `;

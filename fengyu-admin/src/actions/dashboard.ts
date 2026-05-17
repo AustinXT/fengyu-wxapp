@@ -17,6 +17,11 @@ import { requirePermission } from '@/lib/permissions'
  *   - 客流（visitors）改为 service_orders[已完成]，与 staff mgmt-dashboard 对齐
  *   - 同时保留"开单顾客数"作为辅助指标（todayOpenedCustomers）
  *   - 时区固定 Asia/Shanghai（CC7 跨午夜窗口对齐）
+ *
+ * **公式 / sale_order_type / status 过滤变更必须同步
+ * `fengyu-staff/cloudfunctions/staffApi/routes/mgmt-dashboard.js`
+ * 与 `dashboard.consistency.test.ts`**
+ * （字面量守护：SUMMARY v3 §2 #15 / ticket notes/tickets/2026-05-17-dashboard-three-end-consistency-test.md）。
  */
 const ZERO_BUSINESS: Pick<DashboardStats,
   'todayVisitors' | 'todayRevenue' | 'todayPaidAmount' | 'todayRefundedAmount' |

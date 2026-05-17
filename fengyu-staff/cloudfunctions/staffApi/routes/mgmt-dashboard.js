@@ -9,6 +9,11 @@
  * mgmtDashboard.summary — 数据中心首页 8 卡片汇总
  *   一次返回 4 张大卡（业绩/实耗，含月店均）+ 4 张小卡（客流/客量/新会员/项目数）
  *   口径定义：notes/references/metrics.md
+ *
+ * **公式 / sale_order_type / status 过滤变更必须同步
+ * `fengyu-admin/src/actions/dashboard.ts`
+ * 与 `fengyu-admin/src/actions/dashboard.consistency.test.ts`**
+ * （字面量守护：SUMMARY v3 §2 #15 / ticket notes/tickets/2026-05-17-dashboard-three-end-consistency-test.md）。
  */
 
 const pg = require('../db/pg')

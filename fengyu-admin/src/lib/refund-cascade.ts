@@ -13,7 +13,10 @@
  *
  * 调用方必须传入完整的事务对象 tx；本函数只在 tx 边界内做 5 通道写入，不开启新事务。
  *
- * 与 fengyu-staff/cloudfunctions/staffApi（如有）保持算法一致。
+ * **修改本文件必须同步 fengyu-staff/cloudfunctions/staffApi/helpers/refund-cascade.js**
+ * （独立副本设计，用户 veto cloudfunctions-shared 抽取；漂移由
+ * `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`
+ * `'SUMMARY v3 §2 #14'` describe 块的 5 通道 keyword 守护捕获）。
  */
 
 import { sql } from 'drizzle-orm'
