@@ -118,7 +118,7 @@
 | **5** | **client order.create 无券路径 totalAmount 未 Math.round** — `clientApi/routes/order.js:240-247` `totalAmount += saleAmount` 累加后无券路径不再 round（L391-392 的 round 只在 `if (couponInfo)` 块内），直写库；最终 paidAmount 虽 round，但 sale_orders.total_amount 保留浮点 | P0-CC1-v2-01 | client 所有无优惠券订单 total_amount 浮点漂移 ±0.005 | **S** |
 | ~~6~~ | ~~**L0 一次性 migration epic 剩余 8 项**~~ — **2026-05-17 全部清零** ✅ migration 0028（5 CHECK + 2 bigint + ALTER DATABASE）+ migration 0029（partial UNIQUE 10 项）+ admin points.ts safeNumber 兜底 | ~~L0 P0（13→5 剩 8）~~ → **0** | 数值/并发/时区不变量在 DB 层全部硬约束 | **DONE** |
 | **7** | **PII 三端日志全无脱敏 + admin 物理硬删 PII 字段** — `db/helpers/pii.ts` 仍未抽出；操作日志 detail 字段未 sanitize；admin deleteSku / deleteMessage / point_transactions 仍走物理 DELETE | P0-CC6 + 多域 | 个保法合规风险，不可量化资损 | **M** |
-| **8** | **状态机 UPDATE 缺 CAS 守卫（约 12 处路径）** — order/payment/appointment/service 多处 `UPDATE ... WHERE id = $1` 未带 `AND status = $prev`；事务并发下可越级状态 | 02/03/04/06/12/CC2 | 跨表状态机不变量破坏 | **M** |
+| ~~8~~ | ~~**状态机 UPDATE 缺 CAS 守卫（约 12 处路径）**~~ — **2026-05-18 全部清零** ✅ 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT 注释 + `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） | ~~02/03/04/06/12/CC2~~ | 跨表状态机不变量在应用层全部硬守卫 | **DONE** |
 | **9** | **TOCTOU partial UNIQUE 索引剩 10 项**（退款 in-flight 那 1 项已落地）— 优惠券模板发放、appointment 时段、unbind 申请等仍依赖事务外读 | L0 P0（11→10 剩） | 兜底防御缺失（应用层并发抢占可绕过）| **M** |
 | **10** | **错误前缀 4→8 项白名单未抽 + admin 裸 throw 未统一** — `cloudfunctions-shared/error-codes.js`（用户已 veto 共享目录，feedback `no-shared-cloudfunctions`）；改为各端各自 error-codes.js + 跨端字面量 snapshot 守护方案待落 | P0-CC5 + 多域 | 前端错误识别不一致 | **S** |
 
@@ -168,7 +168,7 @@
 | **scope 过滤非全覆盖** | 8+→**3** | ~~10/11/19~~ ✅（staff customer/performanceDetail 全部已加） / 01/02/CC3/CC4 仍待 scope helper 抽出 | 强制 staffApi/clientApi/admin 三端 scope helper + middleware assert |
 | **同业务工具三/四端副本漂移** | 6+→**3** | ~~15(settlePoints)~~ ✅ snapshot 守护 / ~~07(DELETE→is_void)~~ ✅ migration 0022 / ~~14 充值卡逻辑~~ ✅ E9 R2 / 08(roleType×3) / 10(customer_type×2) / 20(remaining×5) 仍待 | 用户 veto 共享目录后改 `cross-end-sql-snapshot.test.js` 字面量守护方案；剩余项各端各落 |
 | **schema 字段写入完整但消费 0** | 4 | 06(过期关闭)✅ cron 已落 / 10(monthly_activity)待 / 13(applicable_xxx_ids)✅ 校验已落 / 25(promoter_employee_id)待 | spec/schema docstring 关键字 grep + cron STEP 补齐 |
-| **状态机 UPDATE 缺 CAS 守卫** | 5+ 路径 | 02/03/04/06/12/CC2 — 共 12 处 | 全仓 `UPDATE.*WHERE.*_id` 扫描 + CI lint 强制 `AND status =`（v3 未推进） |
+| ~~**状态机 UPDATE 缺 CAS 守卫**~~ | ~~5+ 路径~~ → **0** ✅ | ~~02/03/04/06/12/CC2 — 共 12 处~~ → 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT | `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） |
 | **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7→**6** | 03/05/06/12/13×2/CC2 — ~~退款 in-flight~~ ✅ `uq_sop_status_audit` | 剩 10 项 partial UNIQUE 索引一次性 migration |
 | **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
@@ -206,7 +206,7 @@
 - **client order.js** — 无券路径补齐 totalAmount Math.round（L247 累加后 / L542 写库前）
 - **staff/client order.create** — face_value_override 跨端读取漂移核查
 - **close/cancel/closeExpired 三端** — 状态推进同事务 cascade payments/sa
-- **12 处 UPDATE 加 CAS 守卫**（02/03/04/06/12）
+- ~~**12 处 UPDATE 加 CAS 守卫**（02/03/04/06/12）~~ ✅ 2026-05-18 落地（commits d5b7741 / 346f73c / 6510e87，lint:cas-guards 守门）
 
 **已关闭**：~~admin/actions/orders.ts applyRecharge/createConversion store_id~~ ✅ / ~~admin createOrder 优惠券 server-side 校验范围~~ ✅ / ~~clientApi/routes/store.js requestUnbind from_store_name~~ ✅ / ~~staffApi/routes/customer.js 6 路由 scope WHERE + audit log~~ ✅ / ~~approveRefund 三端 5 通道 cascade~~ ✅ / ~~payNotify + admin sa 写入后置 settlePoints~~ ✅
 

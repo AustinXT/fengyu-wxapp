@@ -1,11 +1,44 @@
-# Ticket-10d: admin actions/* withPermission HOF 迁移补齐（7 文件 ~93 处）
+# Ticket-10d: admin actions/* withPermission HOF 迁移补齐（7 文件 ~93 处） [已归档]
 
 > 生成日期：2026-05-17
-> 实施状态：⚪ 未开工
+> 归档日期：2026-05-18
+> 实施状态：✅ **已完成（已归档）**
+> 实施日期：2026-05-17 至 2026-05-18
 > 严重级别：**P3**（技术债，非阻塞 — `npx tsc --noEmit` 当前通过，commit `bad9c5f` 已完成 18/25 文件的迁移，剩 7 文件混用旧 `getSession()/requirePermission(session)` 模式与新 `withPermission` HOF）
 > 端：fengyu-admin
-> 修复成本：**M**（数小时 — 7 文件 ~93 处机械迁移，每文件迁完跑该模块单元测试）
-> 来源：[commit `bad9c5f` 半完成迁移](https://github.com/...) + 主 ticket §6 验证 checklist 补完
+> 修复成本：**M**（实际：数小时 — 4 个 commit 分批落地）
+> 来源：[commit `bad9c5f` 半完成迁移] + 主 ticket §6 验证 checklist 补完
+
+---
+
+## 实施小结（2026-05-17 至 2026-05-18）
+
+**4 个 commit 完成 7 文件 ~93 处全量迁移**：
+
+| Commit | 内容 |
+|--------|------|
+| `bba509c` | refactor(admin): employees actions 全量迁移到 withPermission |
+| `7849673` | refactor(admin): actions 全量迁移到 withPermission HOF（services / customers / coupons / products / refunds 等批量） |
+| `aa50f89` | refactor(admin): orders actions 迁移到 withPermission + auth.test mock 适配（auth.test.ts 加 requirePermission 真实语义 mock；mockLoggedInAdmin 简化为单 db.select 路径） |
+| `be35b48` 等 | 期间穿插的局部 fix（含 employees.ts/customers.ts 多行 `withPermission(...)` 闭合 `})\n)` 修复 + refunds.ts 删 stale `getSession`/`requirePermission` import） |
+
+**最终态实证**：
+- `grep -rn "getSession()\|requirePermission(session" fengyu-admin/src/actions/` → **0 实际调用**（仅 1 处文档字符串残留：`auth.ts:225` JSDoc 注释 `session 入口统一从 getSession() 拿`，非代码路径）
+- `cd fengyu-admin && npx tsc --noEmit` → **静默通过**
+- `bun run test src/actions/` → 24/24 文件全绿（**623/623** 全测试通过）；仅 `src/lib/schemas.test.ts` 因 zod 测试环境 `z` import 问题失败（**pre-existing，与本 ticket 完全无关**）
+- `bun run test src/actions/auth.test.ts` → 27/27 全绿
+- `bun run test src/actions/orders.test.ts` → 108/108 全绿
+- `bun run test src/actions/employees.test.ts` → 42/42 全绿
+- `bun run test src/actions/customers.test.ts` → 46/46 全绿
+
+**关键修复点（mock 适配）**：
+- `auth.test.ts:77` `vi.mock('@/lib/permissions')` 原仅 mock `computeActions`/`expandScopeStoreIds`，HOF 接入后需补 `requirePermission` + `requireAnyPermission`
+- 适配方式：`requirePermission` mock 模拟真实语义（`!session` → throw UNAUTHORIZED，`!permissions.actions.includes(action)` → throw PERMISSION_DENIED），让 "未登录 / 非 admin" 测试用例正确短路到 catch 块
+- `mockLoggedInAdmin()` helper 简化：原模拟 3 个 db.select（staff / roles / existing-password）变为 1 个（HOF 直接从 mocked `@/lib/auth` 取 session，action 内只剩 existing-password check）
+
+**未做**（明确为可选/范围外）：
+- `src/lib/schemas.test.ts` 的 `z.object` undefined 错误 — pre-existing，与本 ticket 无关；如需修复另开 ticket
+- ESLint AST 规则（commit `bad9c5f` 声称已建）的"零容忍移除豁免"开关 — 未实施，由后续 PR 评估
 
 ---
 

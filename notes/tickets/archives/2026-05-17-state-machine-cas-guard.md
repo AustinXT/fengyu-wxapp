@@ -1,11 +1,18 @@
 # Ticket: 状态机 UPDATE 全量补 CAS 守卫（sale_orders / appointments / service_orders / sale_order_payments / store_unbind_requests）
 
 > 生成日期：2026-05-17
-> 实施状态：⚪ 未开始
+> 实施状态：✅ **已完成（2026-05-18 落地）**
 > 严重级别：**P0**（事务并发下越级状态 — SUMMARY Top10 #8）
 > 端：fengyu-admin + fengyu-staff + fengyu-client
 > 修复成本：M（1–3 天）
 > 来源：[SUMMARY §2 #8 + §3 横切热点](../../docs/audit/SUMMARY.md)
+>
+> **落地 commit**：
+> - `d5b7741 fix(cas): 三端 state-machine UPDATE 全量加 CAS 守卫 + lint 守护` — 主体（store/appointment/admin refunds + lint:cas-guards 脚本）
+> - `346f73c feat(staff): allocation tier-aware suggest + CAS 守卫 + e2e 全覆盖` — allocation.js 3 处 allocation_status CAS
+> - `6510e87 fix(payNotify): 状态机 CAS 守卫 + spending_tier 同步固化` — payNotify 主翻 + 凭证单 2 处
+>
+> **验证**：`bun run lint:cas-guards` 全绿；staffApi `npm test` 1049/1049；clientApi/payNotify 预存 14 处失败均与本 ticket 无关（PAYNOTIFY_DISABLED / 顾客 partial-unique 测试漂移）
 > 关联 audit：[audit-02 订单创建](../../docs/audit/audit-02-order-creation.md)、[audit-03 支付流程](../../docs/audit/audit-03-payment-flow.md)、[audit-04 支付回调](../../docs/audit/audit-04-pay-notify.md)、[audit-11 退款流水](../../docs/audit/audit-11-refunds.md)、[audit-05 服务单生命周期](../../docs/audit/audit-05-service-order.md)、[audit-06 预约 checkin](../../docs/audit/audit-06-appointment-checkin.md)、[audit-12 门店绑定](../../docs/audit/audit-12-store-binding.md)、[CC2 并发与幂等](../../docs/audit/audit-CC2-concurrency-idempotency.md)
 
 ---
