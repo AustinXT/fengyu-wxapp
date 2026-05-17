@@ -127,7 +127,7 @@ const config = [
      *  2. (positive) require const init to be a CallExpression
      *  3. (positive) require the callee to be withPermission / withAnyPermission
      *
-     * S2 ships these as `warn` during the migration; S5 flips to `error`.
+     * S5 flipped to `error` after ticket-10d completed full actions/ migration.
      * `src/actions/auth.ts` is ignored — it owns no-session public entries
      * (login / logout / getSessionFromCookie / checkMustChange).
      */
@@ -135,7 +135,7 @@ const config = [
     ignores: ['src/actions/**/*.test.ts', 'src/actions/auth.ts'],
     rules: {
       'no-restricted-syntax': [
-        'warn',
+        'error',
         {
           selector: 'ExportNamedDeclaration > FunctionDeclaration[async=true]',
           message:

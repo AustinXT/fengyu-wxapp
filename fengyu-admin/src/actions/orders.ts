@@ -2197,7 +2197,8 @@ export const generateOrderWxacode = withPermission(
   } catch (err: any) {
     return { success: false, message: err.message || '生成小程序码失败' }
   }
-}
+  },
+)
 
 async function requestWxacode(token: string, scene: string, page: string): Promise<ArrayBuffer> {
   const url = `https://api.weixin.qq.com/wxa/getwxacodeunlimit?access_token=${token}`
