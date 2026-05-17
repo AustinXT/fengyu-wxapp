@@ -949,7 +949,7 @@ async function confirmOffline(ctx) {
       `UPDATE sale_orders
        SET status = $1, received = $2, paid_at = $3, updated_at = $4,
            offline_confirmed_by = $5, offline_confirmed_at = $4,
-           allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END
+           allocation_status = COALESCE(allocation_status, '待分配'::allocation_status)
        WHERE sale_order_id = $6 AND status = $7`,
       [targetStatus, newReceived, paidAtValue, now, ctx.auth.staffWfId, saleOrderId, order.status]
     )

@@ -109,7 +109,7 @@ async function expandScopeStoreIds(roleBindings, pg) {
       `SELECT s.store_id
        FROM stores s
        JOIN org_nodes o ON s.org_node_id = o.id
-       WHERE o.parent_id = ANY($1::uuid[]) AND o.type = '门店'`,
+       WHERE o.parent_id = ANY($1::text[]) AND o.type = '门店'`,
       [marketIds]
     )
     for (const r of rows) store.add(r.store_id)
@@ -117,7 +117,7 @@ async function expandScopeStoreIds(roleBindings, pg) {
 
   if (storeNodeIds.length > 0) {
     const rows = await pg.query(
-      `SELECT store_id FROM stores WHERE org_node_id = ANY($1::uuid[])`,
+      `SELECT store_id FROM stores WHERE org_node_id = ANY($1::text[])`,
       [storeNodeIds]
     )
     for (const r of rows) store.add(r.store_id)

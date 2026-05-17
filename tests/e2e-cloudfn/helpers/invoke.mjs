@@ -42,96 +42,13 @@ let _staffMain = null
 let _clientMain = null
 let _payNotifyMain = null
 
-// TEST_PATCH-STAFFAPI-SQL：
-// 把 staffApi 生产 SQL 中部分 PG 严格模式下不可执行的写法在 driver 入口替换为兼容写法。
-// 这些写法在生产 cloudbase 环境历史性可执行（也许是 pg-driver 早期版本宽松解析），
-// 但当前 PG 16 + node-pg 8.x 严格校验下报错。本测试基础设施的目的不是修生产 bug，
-// 而是让真实业务路径能在本地端到端跑通验证关键不变量（积分发放无报错等）。
-// 建议向 staff team 提 issue：把以下写法在源码里修掉（详见 README "已知生产 bug" 节）。
-//
-// 替换列表（按出现位置）：
-//   1. ANY($N::uuid[]) → ANY($N::text[])
-//      位置：utils/scope.js expandScopeStoreIds 中两处（market/store 分支）
-//      原因：org_nodes.id 是 text 列，::uuid[] cast 比较时 PG 报 'text = uuid' operator 缺失
-//
-//   2. allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END
-//      → allocation_status = (CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END)::allocation_status
-//      位置：routes/order.js confirmOffline UPDATE
-//      原因：CASE 返回 text，必须 cast 到 allocation_status enum
-const SQL_PATCHES = [
-  // 1. uuid[] -> text[]
-  { from: /::uuid\[\]/g, to: '::text[]' },
-  // 2. allocation_status CASE
-  {
-    from: /allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END/g,
-    to: "allocation_status = (CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END)::allocation_status",
-  },
-]
-
-function applySqlPatches(text) {
-  let out = text
-  for (const { from, to } of SQL_PATCHES) {
-    out = out.replace(from, to)
-  }
-  return out
-}
-
-function installStaffApiSqlPatch(r) {
-  if (installStaffApiSqlPatch.__done) return
-  // 1) 包装 staff 自己 db/pg.js 的 query / transaction —— 这是 staff 业务代码统一入口
-  const staffPgPath = path.join(STAFF_API_DIR, 'db', 'pg.js')
-  const staffPg = r(staffPgPath)
-  const origQuery = staffPg.query
-  const origTxn = staffPg.transaction
-  staffPg.query = async function patchedQuery(sql, params) {
-    if (typeof sql === 'string') sql = applySqlPatches(sql)
-    if (process.env.E2E_DEBUG) console.log('[patch-staffPg.query]', String(sql).slice(0, 120).replace(/\s+/g, ' '))
-    return await origQuery.call(staffPg, sql, params)
-  }
-  staffPg.transaction = async function patchedTxn(cb) {
-    return await origTxn.call(staffPg, async (client) => {
-      const origClientQuery = client.query.bind(client)
-      client.query = function (sqlOrConfig, ...rest) {
-        let s = sqlOrConfig
-        if (typeof s === 'string') s = applySqlPatches(s)
-        else if (s && typeof s.text === 'string') s = { ...s, text: applySqlPatches(s.text) }
-        if (process.env.E2E_DEBUG) {
-          const t = typeof s === 'string' ? s : s?.text
-          if (t) console.log('[patch-txnClient.query]', String(t).slice(0, 120).replace(/\s+/g, ' '))
-        }
-        return origClientQuery(s, ...rest)
-      }
-      return await cb(client)
-    })
-  }
-
-  // 2) 包装 pg.Pool / pg.Client prototype.query —— payNotify / 其它直接 pool.connect() 路径用
-  const pgPkg = r('pg')
-  for (const cls of [pgPkg.Client, pgPkg.Pool]) {
-    if (!cls || !cls.prototype || typeof cls.prototype.query !== 'function') continue
-    const origProtoQuery = cls.prototype.query
-    cls.prototype.query = function patched(textOrConfig, ...rest) {
-      if (typeof textOrConfig === 'string') {
-        textOrConfig = applySqlPatches(textOrConfig)
-      } else if (textOrConfig && typeof textOrConfig.text === 'string') {
-        textOrConfig = { ...textOrConfig, text: applySqlPatches(textOrConfig.text) }
-      }
-      if (process.env.E2E_DEBUG) {
-        const txt = typeof textOrConfig === 'string' ? textOrConfig : textOrConfig?.text
-        if (txt) console.log(`[patch-${cls.name}.query]`, String(txt).slice(0, 120).replace(/\s+/g, ' '))
-      }
-      return origProtoQuery.call(this, textOrConfig, ...rest)
-    }
-  }
-
-  installStaffApiSqlPatch.__done = true
-  if (process.env.E2E_DEBUG) console.log('[invoke] staffApi SQL patches installed')
-}
-
+// 历史背景：曾对 staffApi 生产 SQL 中两处 PG 16 严格模式不可执行的写法做过
+// driver 入口正则替换（uuid[] cast、allocation_status CASE 返回 text）。
+// 这两处 bug 已在源码里修复——故意不再保留 SQL patch 基础设施，避免未来真有
+// SQL 漂移被静默掩盖。修复记录见本目录 README "已知生产 bug（已修复）" 节。
 function loadStaffApi() {
   if (!_staffMain) {
     const r = createRequire(path.join(STAFF_API_DIR, 'package.json'))
-    installStaffApiSqlPatch(r)
     _staffMain = r(path.join(STAFF_API_DIR, 'index.js')).main
   }
   return _staffMain
