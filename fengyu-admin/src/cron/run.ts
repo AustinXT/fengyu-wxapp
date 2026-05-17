@@ -1,5 +1,5 @@
 /**
- * runDailyJobs — 串行执行 8 个 STEP，每个 STEP 独立 try/catch
+ * runDailyJobs — 串行执行 10 个 STEP，每个 STEP 独立 try/catch
  *
  * 与原 cronTask 入口的关键差异：
  *   - 原入口的整体 try 单点：任一 STEP 抛异常 → 后续 STEP 全部跳过
@@ -17,6 +17,8 @@
  *   6. pointsAudit              — 积分余额一致性校验（只读告警）
  *   7. roleTypeNullsAudit       — sa/sc role_type NULL 监控（只读告警）
  *   8. paymentInvariants        — 5 项资金不变量守护（只读告警；新增 2026-04-26）
+ *   9. refundCascadeCoverage    — 退款 5 通道级联巡检（只读告警；新增 2026-05-18）
+ *  10. storeUnbindOrphans       — store_unbind_requests 孤儿巡检（只读告警；新增 2026-05-18）
  */
 
 import { db } from '@/db'
@@ -27,6 +29,8 @@ import { grantThanksgivingBenefits } from './steps/grant-thanksgiving-benefits'
 import { auditPointsBalance } from './steps/audit-points-balance'
 import { auditRoleTypeNulls } from './steps/audit-role-type-nulls'
 import { auditPaymentInvariants } from './steps/audit-payment-invariants'
+import { auditRefundCascadeCoverage } from './steps/audit-refund-cascade-coverage'
+import { auditStoreUnbindOrphans } from './steps/audit-store-unbind-orphans'
 import { closeExpiredAppointments } from './steps/close-expired-appointments'
 
 export type Db = typeof db
@@ -50,6 +54,8 @@ const STEPS: ReadonlyArray<readonly [string, (db: Db) => Promise<unknown>]> = [
   ['pointsAudit', auditPointsBalance],
   ['roleTypeNullsAudit', auditRoleTypeNulls],
   ['paymentInvariants', auditPaymentInvariants],
+  ['refundCascadeCoverage', auditRefundCascadeCoverage],
+  ['storeUnbindOrphans', auditStoreUnbindOrphans],
 ] as const
 
 export async function runDailyJobs(): Promise<DailyJobsResult> {
