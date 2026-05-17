@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { SkillSelect } from "@/components/ui/skill-select"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
+import { ImageUpload, toHttpUrl } from "@/components/ui/image-upload"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -55,6 +56,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
     storeId: employee.storeId ?? "",
     orgNodeId: employee.orgNodeId ?? "",
     positionName: employee.positionName ?? "",
+    avatarUrl: employee.avatarUrl ?? "",
     birthday: employee.birthday ?? "",
     hiredAt: employee.hiredAt ?? "",
     skills: employee.skills ?? ([] as string[]),
@@ -105,6 +107,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       storeId: employee.storeId ?? "",
       orgNodeId: employee.orgNodeId ?? "",
       positionName: employee.positionName ?? "",
+      avatarUrl: employee.avatarUrl ?? "",
       birthday: employee.birthday ?? "",
       hiredAt: employee.hiredAt ?? "",
       skills: employee.skills ?? ([] as string[]),
@@ -123,6 +126,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
         storeId: form.storeId || null,
         orgNodeId: form.orgNodeId || null,
         positionName: form.positionName || null,
+        avatarUrl: form.avatarUrl || null,
         birthday: form.birthday || null,
         hiredAt: form.hiredAt || null,
         skills: form.skills.length > 0 ? form.skills : null,
@@ -272,6 +276,27 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
               )}
             </CardHeader>
             <CardContent>
+              <div className="mb-6 flex items-start gap-4">
+                <label className="text-sm font-medium pt-2 w-16 flex-shrink-0">头像</label>
+                {isEditing ? (
+                  <ImageUpload
+                    value={form.avatarUrl}
+                    onChange={(v) => handleFormChange("avatarUrl", v as string)}
+                    path={`avatars/staff/${employee.employeeId}`}
+                  />
+                ) : employee.avatarUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={toHttpUrl(employee.avatarUrl)}
+                    alt={employee.name ?? ""}
+                    className="h-24 w-24 rounded-[var(--radius)] border border-[var(--input)] object-cover"
+                  />
+                ) : (
+                  <div className="flex h-24 w-24 items-center justify-center rounded-[var(--radius)] border border-[var(--input)] bg-[var(--muted)] text-2xl text-[var(--muted-foreground)]">
+                    {(employee.name ?? employee.employeeId).slice(0, 1)}
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-2 gap-x-8 gap-y-4">
                 <div className="space-y-2">
                   <label className="text-sm font-medium">员工编号</label>

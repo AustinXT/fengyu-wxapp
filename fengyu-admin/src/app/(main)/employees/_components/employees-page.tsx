@@ -10,6 +10,7 @@ import { OrgTreeSelect } from "@/components/ui/org-tree-select";
 import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { Pagination } from "@/components/ui/pagination";
+import { toHttpUrl } from "@/components/ui/image-upload";
 import { formatPhone, buildOrgPath } from "@/lib/utils";
 import { useUrlFilters } from "@/lib/hooks/use-url-filters";
 import PositionManagementDialog from "./position-management-dialog";
@@ -69,6 +70,26 @@ export default function EmployeesPage({
   const filterOrgNodes = useMemo(() => orgNodes.filter((n) => n.type !== "部门"), [orgNodes]);
 
   const columns: Column<Employee>[] = [
+    {
+      key: "avatarUrl",
+      header: "头像",
+      cell: (row) => {
+        const url = row.avatarUrl ? toHttpUrl(row.avatarUrl) : null;
+        const fallback = (row.name ?? row.employeeId ?? "?").slice(0, 1);
+        return url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={url}
+            alt={row.name ?? ""}
+            className="h-8 w-8 rounded-full object-cover border border-[var(--input)]"
+          />
+        ) : (
+          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--muted)] text-xs text-[var(--muted-foreground)] border border-[var(--input)]">
+            {fallback}
+          </div>
+        );
+      },
+    },
     { key: "employeeId", header: "员工编号" },
     {
       key: "name",

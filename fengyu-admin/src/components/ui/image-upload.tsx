@@ -29,7 +29,7 @@ const CDN_BASE =
  * 标准格式: cloud://envId.bucketSuffix/path → CDN_BASE/path（第一段含 . 则为 envId，跳过）
  * 简化格式: cloud://store-covers/nc02.jpg  → CDN_BASE/store-covers/nc02.jpg（整段都是路径）
  */
-function toHttpUrl(url: string): string {
+export function toHttpUrl(url: string): string {
   if (!url || !url.startsWith("cloud://")) return url
   const withoutProtocol = url.slice("cloud://".length)
   const slashIndex = withoutProtocol.indexOf("/")
