@@ -1,0 +1,15 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`audit-CC5 P0：四端 ERROR_PREFIXES 白名单一致性守护（staff 侧） > Snapshot 兜底（9 项前缀文本快照） > staff ERROR_PREFIXES snapshot 1`] = `
+[
+  "CLIENT_NOT_REGISTERED",
+  "CONFLICT",
+  "INSUFFICIENT_BALANCE",
+  "INVALID_PARAMS",
+  "INVALID_STATE",
+  "NOT_FOUND",
+  "PERMISSION_DENIED",
+  "PHONE_REQUIRED",
+  "UNAUTHORIZED",
+]
+`;

@@ -65,7 +65,7 @@ function setupDefaultMocks({
 describe('mgmtDashboard.summary 参数与权限校验', () => {
   test('缺 date 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scopeType: 'all' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*date/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*日期/)
   })
 
   test('日期格式错误抛 INVALID_PARAMS', async () => {
@@ -75,12 +75,12 @@ describe('mgmtDashboard.summary 参数与权限校验', () => {
 
   test('未知 scopeType 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'foo' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('scopeType=market 缺 scopeId 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ date: '2026-04-25', scopeType: 'market' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围 ID/)
   })
 
   test('store_manager 账号被 requireManagementLevel 拦截', async () => {
@@ -1108,22 +1108,22 @@ describe('mgmtDashboard.storeRanking', () => {
   describe('参数校验', () => {
     test('缺 period 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ metric: 'revenue' })
-      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
     })
 
     test('非法 period 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'today', metric: 'revenue' })
-      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
     })
 
     test('缺 metric 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'month' })
-      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*指标/)
     })
 
     test('非法 metric 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'month', metric: 'foo' })
-      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+      await expect(storeRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*指标/)
     })
   })
 
@@ -1513,27 +1513,27 @@ describe('mgmtDashboard.staffRanking', () => {
   describe('参数校验', () => {
     test('缺 period 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ metric: 'revenue' })
-      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
     })
 
     test('非法 period 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'today', metric: 'revenue' })
-      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
     })
 
     test('缺 metric 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'month' })
-      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*指标/)
     })
 
     test('非法 metric 抛 INVALID_PARAMS', async () => {
       const ctx = makeHqCtx({ period: 'month', metric: 'foo' })
-      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*指标/)
     })
 
     test('门店独有 metric=retainedMember 在员工排行榜被拒', async () => {
       const ctx = makeHqCtx({ period: 'month', metric: 'retainedMember' })
-      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*metric/)
+      await expect(staffRanking(ctx)).rejects.toThrow(/INVALID_PARAMS.*指标/)
     })
   })
 
@@ -1904,22 +1904,22 @@ describe('mgmtDashboard.staffRanking', () => {
 describe('mgmtDashboard.salesData 参数与权限校验', () => {
   test('缺 period 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scope: { type: 'all' } })
-    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
   })
 
   test('period 非法值抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'week', scope: { type: 'all' } })
-    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
   })
 
   test('scope.type 缺失抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'month', scope: {} })
-    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*scope\.type/)
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('scope.type=store 缺 scope.id 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'store' } })
-    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*scope\.type/)
+    await expect(salesData(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('store_manager 账号被 requireManagementLevel 拦截', async () => {

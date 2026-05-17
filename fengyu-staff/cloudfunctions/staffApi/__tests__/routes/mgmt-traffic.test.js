@@ -98,22 +98,22 @@ function setupDefaultMocks({
 describe('mgmtTraffic.summary 入参/权限校验', () => {
   test('缺 period 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ scopeType: 'all' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
   })
 
   test('不合法 period 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'today', scopeType: 'all' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*period/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*时间维度/)
   })
 
   test('不合法 scopeType 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'month', scopeType: 'foo' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('scopeType=market 缺 scopeId 抛 INVALID_PARAMS', async () => {
     const ctx = makeHqCtx({ period: 'month', scopeType: 'market' })
-    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
+    await expect(summary(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围 ID/)
   })
 
   test('store_manager 账号被 requireManagementLevel 拦截', async () => {

@@ -1112,15 +1112,22 @@ describe('customer.giftHistory', () => {
 // customer.updateNotes
 // ============================================================
 describe('customer.updateNotes', () => {
+  // 调用流：assertCustomerInScope(SELECT bound_store_id) → UPDATE → INSERT operation_logs
+  // helper 期望 pg.query 返回数组（与 db/pg.js wrapper 一致）
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ bound_store_id: storeId }])
+
   test('保存备注成功', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '过敏体质，注意精油用量' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([]) // UPDATE
+    pg.query.mockResolvedValueOnce([]) // audit log
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    const [sql, params] = pg.query.mock.calls[0]
+    const [sql, params] = pg.query.mock.calls[1]
     expect(sql).toContain('UPDATE client_wechat_users')
     expect(sql).toContain('notes = $1')
     expect(params[0]).toBe('过敏体质，注意精油用量')
@@ -1130,29 +1137,42 @@ describe('customer.updateNotes', () => {
   test('空备注保存为 null', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '   ' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
 
     await customerRoutes.updateNotes(ctx)
 
     expect(ctx.result.message).toContain('备注已保存')
-    expect(pg.query.mock.calls[0][1][0]).toBeNull()  // trimmed empty → null
+    expect(pg.query.mock.calls[1][1][0]).toBeNull()  // trimmed empty → null
   })
 
   test('备注超过500字截断', async () => {
     const longNotes = 'a'.repeat(600)
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: longNotes })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
 
     await customerRoutes.updateNotes(ctx)
 
-    expect(pg.query.mock.calls[0][1][0]).toHaveLength(500)
+    expect(pg.query.mock.calls[1][1][0]).toHaveLength(500)
   })
 
   test('顾客不存在时拒绝', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-nonexist', notes: 'test' })
 
-    pg.query.mockResolvedValueOnce({ rows: [], rowCount: 0 })
+    pg.query.mockResolvedValueOnce([])  // helper SELECT 命中 0 行
+
+    await expect(customerRoutes.updateNotes(ctx))
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不存在/)
+  })
+
+  test('顾客跨店时拒绝', async () => {
+    const ctx = createManagerCtx({ clientUserId: 'u-other', notes: 'test' })
+
+    mockScopeOk('store-002')  // 不在当前 scope（store-001）
 
     await expect(customerRoutes.updateNotes(ctx))
       .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
@@ -1171,24 +1191,24 @@ describe('customer.updateNotes', () => {
   })
 
   // ── scope isolation ──
-  test('UPDATE SQL 包含 bound_store_id 守卫', async () => {
+  test('scope 守卫：先调用 assertCustomerInScope（SELECT bound_store_id）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: 'test' })
-    pg.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // audit log
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.updateNotes(ctx)
-    const [sql, params] = pg.query.mock.calls[0]
-    expect(sql).toContain('bound_store_id = $3')
-    expect(params[2]).toBe('store-001')
+    const [scopeSql, scopeParams] = pg.query.mock.calls[0]
+    expect(scopeSql).toMatch(/bound_store_id\s+FROM\s+client_wechat_users/i)
+    expect(scopeParams).toEqual(['u1'])
   })
 
   test('成功时写入 operation_logs 审计日志', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', notes: '审计测试' })
-    pg.query
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+    mockScopeOk()
+    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])
     await customerRoutes.updateNotes(ctx)
-    const [auditSql, auditParams] = pg.query.mock.calls[1]
+    const [auditSql, auditParams] = pg.query.mock.calls[2]
     expect(auditSql).toContain('operation_logs')
     expect(auditParams[0]).toBe('customer.updateNotes')
     expect(auditParams[2]).toBe('u1')
@@ -1205,19 +1225,34 @@ describe('customer.updateNotes', () => {
 // customer.assign
 // ============================================================
 describe('customer.assign', () => {
+  // 调用流：
+  //   1. assertCustomerInScope → SELECT bound_store_id FROM client_wechat_users
+  //   2. assertEmployeeInScope → SELECT store_id FROM staff_wechat_users
+  //      （ctx.auth.staffWfId === targetEmployeeId 时 helper 不查 DB，直接返回）
+  //   3. SELECT name FROM staff_wechat_users
+  //   4. UPDATE client_wechat_users
+  //   5. INSERT operation_logs
+  const mockAssertChain = (boundStoreId = 'store-001', empStoreId = 'store-001') => {
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: boundStoreId }])  // assertCustomerInScope
+      .mockResolvedValueOnce([{ store_id: empStoreId }])           // assertEmployeeInScope
+  }
+
   test('店长分配顾客给美容师成功', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
 
+    mockAssertChain()
     pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])  // staff exists
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })  // UPDATE success
+      .mockResolvedValueOnce([{ name: '李四' }])  // SELECT name
+      .mockResolvedValueOnce([])                  // UPDATE
+      .mockResolvedValueOnce([])                  // audit
 
     await customerRoutes.assign(ctx)
 
     expect(ctx.result.message).toContain('分配成功')
     expect(ctx.result.employeeName).toBe('李四')
-    // 验证 UPDATE 参数
-    const [sql, params] = pg.query.mock.calls[1]
+    // call[3] = UPDATE
+    const [sql, params] = pg.query.mock.calls[3]
     expect(sql).toContain('bound_employee_id = $1')
     expect(params[0]).toBe('emp-b1')
     expect(params[1]).toBe('u1')
@@ -1229,24 +1264,24 @@ describe('customer.assign', () => {
       .rejects.toThrow(/PERMISSION_DENIED/)
   })
 
-  test('员工不存在或不属于本门店时拒绝', async () => {
+  test('员工不在 scope 时拒绝（assertEmployeeInScope）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-other' })
 
-    pg.query.mockResolvedValueOnce([])  // staff not found
+    pg.query
+      .mockResolvedValueOnce([{ bound_store_id: 'store-001' }])  // customer OK
+      .mockResolvedValueOnce([{ store_id: 'store-002' }])         // employee in other store
 
     await expect(customerRoutes.assign(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*员工不存在/)
+      .rejects.toThrow(/PERMISSION_DENIED.*员工不在当前门店范围内/)
   })
 
-  test('顾客不存在时拒绝', async () => {
+  test('顾客不存在时拒绝（assertCustomerInScope）', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u-nonexist', employeeId: 'emp-b1' })
 
-    pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // no rows updated
+    pg.query.mockResolvedValueOnce([])  // customer not found
 
     await expect(customerRoutes.assign(ctx))
-      .rejects.toThrow(/PERMISSION_DENIED.*顾客不在当前门店范围内/)
+      .rejects.toThrow(/PERMISSION_DENIED.*顾客不存在/)
   })
 
   test('缺少 clientUserId 时拒绝', async () => {
@@ -1262,26 +1297,31 @@ describe('customer.assign', () => {
   })
 
   // ── scope isolation ──
-  test('UPDATE SQL 包含 bound_store_id CAS 守卫', async () => {
+  test('scope 守卫：assertCustomerInScope + assertEmployeeInScope 双查', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
+    mockAssertChain()
     pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce([{ name: '李四' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
     await customerRoutes.assign(ctx)
-    const [sql, params] = pg.query.mock.calls[1]
-    expect(sql).toContain('bound_store_id = $3')
-    expect(params[2]).toBe('store-001')
+    const [customerScopeSql, customerScopeParams] = pg.query.mock.calls[0]
+    expect(customerScopeSql).toMatch(/bound_store_id\s+FROM\s+client_wechat_users/i)
+    expect(customerScopeParams).toEqual(['u1'])
+    const [empScopeSql, empScopeParams] = pg.query.mock.calls[1]
+    expect(empScopeSql).toMatch(/store_id\s+FROM\s+staff_wechat_users/i)
+    expect(empScopeParams).toEqual(['emp-b1'])
   })
 
   test('成功时写入 operation_logs 审计日志', async () => {
     const ctx = createManagerCtx({ clientUserId: 'u1', employeeId: 'emp-b1' })
+    mockAssertChain()
     pg.query
-      .mockResolvedValueOnce([{ employee_id: 'emp-b1', name: '李四' }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce([{ name: '李四' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
     await customerRoutes.assign(ctx)
-    const [auditSql, auditParams] = pg.query.mock.calls[2]
+    const [auditSql, auditParams] = pg.query.mock.calls[4]
     expect(auditSql).toContain('operation_logs')
     expect(auditParams[0]).toBe('customer.assign')
     expect(auditParams[2]).toBe('u1')

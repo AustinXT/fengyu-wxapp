@@ -276,19 +276,19 @@ describe('mgmtCustomer 参数与权限校验', () => {
   test('search 缺 scopeType 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({})
-    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
+    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('search 未知 scopeType 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({ scopeType: 'foo' })
-    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeType/)
+    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围类型/)
   })
 
   test('search scopeType=market 缺 scopeId 抛 INVALID_PARAMS', async () => {
     setupCommonMocks()
     const ctx = makeHqCtx({ scopeType: 'market' })
-    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*scopeId/)
+    await expect(search(ctx)).rejects.toThrow(/INVALID_PARAMS.*范围 ID/)
   })
 
   test('detail 缺三个 ID 抛 INVALID_PARAMS', async () => {
