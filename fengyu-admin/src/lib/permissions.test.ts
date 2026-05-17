@@ -8,7 +8,7 @@ const { mockRedirect } = vi.hoisted(() => {
 })
 vi.mock('next/navigation', () => ({ redirect: mockRedirect }))
 
-// Mock drizzle-orm 和 db 模块（expandScopeStoreIds 和 buildScopeWhere 需要）
+// Mock drizzle-orm 和 db 模块（expandScopeStoreIds / buildScopeWhere / getPermissionMatrix 需要）
 vi.mock('@/db', () => ({
   db: {
     select: vi.fn().mockReturnValue({
@@ -16,6 +16,8 @@ vi.mock('@/db', () => ({
         where: vi.fn().mockReturnValue([]),
       }),
     }),
+    // 默认 execute 返回空数组：getPermissionMatrix 行不存在 → 回退 DEFAULT_PERMISSION_MATRIX
+    execute: vi.fn().mockResolvedValue([]),
   },
 }))
 
@@ -24,7 +26,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, PERMISSION_MATRIX, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, DEFAULT_PERMISSION_MATRIX, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope, hasPermission, getPermissionMatrix, invalidatePermissionMatrixCache } from './permissions'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂（hasPermission 测试用）
@@ -53,9 +55,9 @@ function mockSession(overrides?: Partial<AuthSession>): AuthSession {
   }
 }
 
-describe('PERMISSION_MATRIX', () => {
+describe('DEFAULT_PERMISSION_MATRIX', () => {
   it('admin 拥有基础数据和系统管理权限', () => {
-    const adminActions = PERMISSION_MATRIX.admin
+    const adminActions = DEFAULT_PERMISSION_MATRIX.admin
     expect(adminActions).toContain('org:list')
     expect(adminActions).toContain('employee:create')
     expect(adminActions).toContain('permission:assign_admin')
@@ -64,8 +66,8 @@ describe('PERMISSION_MATRIX', () => {
     expect(adminActions).toContain('card_transaction:list')
   })
 
-  it('admin 不碰业务数据（无 sale_order/service/appointment 权限）', () => {
-    const adminActions = PERMISSION_MATRIX.admin
+  it('admin 不碰业务数据（无 sale_order:list/service/appointment 权限）', () => {
+    const adminActions = DEFAULT_PERMISSION_MATRIX.admin
     expect(adminActions).not.toContain('sale_order:list')
     expect(adminActions).not.toContain('sale_order:create')
     expect(adminActions).not.toContain('service:list')
@@ -75,7 +77,7 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('manager 拥有业务操作权限', () => {
-    const actions = PERMISSION_MATRIX.manager
+    const actions = DEFAULT_PERMISSION_MATRIX.manager
     expect(actions).toContain('sale_order:create')
     expect(actions).toContain('allocation:save')
     expect(actions).toContain('service:create')
@@ -86,7 +88,7 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('finance 仅有只读权限', () => {
-    const actions = PERMISSION_MATRIX.finance
+    const actions = DEFAULT_PERMISSION_MATRIX.finance
     expect(actions).toContain('sale_order:list')
     expect(actions).toContain('allocation:list')
     expect(actions).toContain('sale_item:list')
@@ -96,7 +98,7 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('hr 管理组织和员工', () => {
-    const actions = PERMISSION_MATRIX.hr
+    const actions = DEFAULT_PERMISSION_MATRIX.hr
     expect(actions).toContain('org:create')
     expect(actions).toContain('employee:create')
     expect(actions).toContain('permission:assign')
@@ -107,7 +109,7 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('product 管理商品和优惠券', () => {
-    const actions = PERMISSION_MATRIX.product
+    const actions = DEFAULT_PERMISSION_MATRIX.product
     expect(actions).toContain('product:create')
     expect(actions).toContain('coupon:create')
     // product 不看充值卡流水
@@ -115,7 +117,7 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('customer_mgr 只管顾客（含卡包只读）', () => {
-    const actions = PERMISSION_MATRIX.customer_mgr
+    const actions = DEFAULT_PERMISSION_MATRIX.customer_mgr
     expect(actions).toContain('customer:list')
     expect(actions).toContain('customer:update')
     expect(actions).toContain('sale_item:list')
@@ -125,20 +127,26 @@ describe('PERMISSION_MATRIX', () => {
   })
 
   it('staff 无权限（不可登录管理后台）', () => {
-    expect(PERMISSION_MATRIX.staff).toEqual([])
+    expect(DEFAULT_PERMISSION_MATRIX.staff).toEqual([])
   })
 })
 
 describe('computeActions', () => {
-  it('单角色返回对应权限列表', () => {
-    const actions = computeActions([{ role: 'product' }])
+  // computeActions 自 2026-05-18 起读取 DB 矩阵（带 fallback），
+  // 测试中默认 db.execute 返回空 → 走 DEFAULT_PERMISSION_MATRIX。
+  beforeEach(() => {
+    invalidatePermissionMatrixCache()
+  })
+
+  it('单角色返回对应权限列表', async () => {
+    const actions = await computeActions([{ role: 'product' }])
     expect(actions).toContain('product:create')
     expect(actions).toContain('coupon:list')
     expect(actions).toContain('dashboard:view')
   })
 
-  it('多角色合并去重', () => {
-    const actions = computeActions([{ role: 'hr' }, { role: 'product' }])
+  it('多角色合并去重', async () => {
+    const actions = await computeActions([{ role: 'hr' }, { role: 'product' }])
     // hr 权限
     expect(actions).toContain('employee:create')
     // product 权限
@@ -148,14 +156,87 @@ describe('computeActions', () => {
     expect(dashboardCount).toBe(1)
   })
 
-  it('空角色返回空数组', () => {
-    const actions = computeActions([])
+  it('空角色返回空数组', async () => {
+    const actions = await computeActions([])
     expect(actions).toEqual([])
   })
 
-  it('未知角色忽略', () => {
-    const actions = computeActions([{ role: 'unknown' as any }])
+  it('未知角色忽略', async () => {
+    const actions = await computeActions([{ role: 'unknown' as any }])
     expect(actions).toEqual([])
+  })
+})
+
+describe('getPermissionMatrix / cache', () => {
+  beforeEach(() => {
+    invalidatePermissionMatrixCache()
+    vi.clearAllMocks()
+  })
+
+  it('DB 行不存在时返回 DEFAULT', async () => {
+    const { db } = await import('@/db')
+    ;(db.execute as any) = vi.fn().mockResolvedValue([])
+    const matrix = await getPermissionMatrix()
+    expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
+  })
+
+  it('DB 行存在且 JSON 合法时返回解析后的矩阵', async () => {
+    const fakeMatrix: Record<RoleType, string[]> = {
+      admin: ['system:config', 'permission:assign_admin', 'admin:reset_password'],
+      manager: ['dashboard:view'],
+      finance: [], hr: [], product: [], customer_mgr: [], staff: [],
+    }
+    const { db } = await import('@/db')
+    ;(db.execute as any) = vi.fn().mockResolvedValue([{ value: JSON.stringify(fakeMatrix) }])
+    const matrix = await getPermissionMatrix()
+    expect(matrix.admin).toContain('system:config')
+    expect(matrix.manager).toEqual(['dashboard:view'])
+    expect(matrix.finance).toEqual([])
+  })
+
+  it('JSON 解析失败时回退 DEFAULT + console.error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { db } = await import('@/db')
+    ;(db.execute as any) = vi.fn().mockResolvedValue([{ value: '{not valid json' }])
+    const matrix = await getPermissionMatrix()
+    expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[permission-matrix]'),
+      expect.anything(),
+    )
+    errSpy.mockRestore()
+  })
+
+  it('DB throw 时回退 DEFAULT + console.error', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { db } = await import('@/db')
+    ;(db.execute as any) = vi.fn().mockRejectedValue(new Error('connection refused'))
+    const matrix = await getPermissionMatrix()
+    expect(matrix).toEqual(DEFAULT_PERMISSION_MATRIX)
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[permission-matrix]'),
+      expect.anything(),
+    )
+    errSpy.mockRestore()
+  })
+
+  it('连续两次调用仅查 DB 一次（命中缓存）', async () => {
+    const { db } = await import('@/db')
+    const execMock = vi.fn().mockResolvedValue([])
+    ;(db.execute as any) = execMock
+    await getPermissionMatrix()
+    await getPermissionMatrix()
+    expect(execMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('invalidatePermissionMatrixCache 后再调重新查 DB', async () => {
+    const { db } = await import('@/db')
+    const execMock = vi.fn().mockResolvedValue([])
+    ;(db.execute as any) = execMock
+    await getPermissionMatrix()
+    invalidatePermissionMatrixCache()
+    await getPermissionMatrix()
+    expect(execMock).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -176,10 +257,10 @@ describe('hasPermission', () => {
     expect(hasPermission(session, 'org:list')).toBe(false)
   })
 
-  it('admin session 拥有 admin 全部权限', () => {
+  it('admin session 拥有 admin 全部权限', async () => {
     const adminSession = makeSession(
       [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
-      computeActions([{ role: 'admin' }])
+      await computeActions([{ role: 'admin' }])
     )
     expect(hasPermission(adminSession, 'org:list')).toBe(true)
     expect(hasPermission(adminSession, 'permission:assign_admin')).toBe(true)
@@ -188,28 +269,28 @@ describe('hasPermission', () => {
 })
 
 describe('refund_approve 权限矩阵（PR-Z2）', () => {
-  it('admin 持 refund_approve', () => {
+  it('admin 持 refund_approve', async () => {
     const s = makeSession(
       [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
-      computeActions([{ role: 'admin' }]),
+      await computeActions([{ role: 'admin' }]),
     )
     expect(hasPermission(s, 'sale_order:refund_approve')).toBe(true)
   })
 
-  it('manager 持 refund_approve', () => {
+  it('manager 持 refund_approve', async () => {
     const s = makeSession(
       [{ role: 'manager', scopeId: 'org-store-nc01', scopeType: '门店' }],
-      computeActions([{ role: 'manager' }]),
+      await computeActions([{ role: 'manager' }]),
     )
     expect(hasPermission(s, 'sale_order:refund_approve')).toBe(true)
   })
 
   it.each(['finance', 'hr', 'product', 'customer_mgr'] as const)(
     '%s 不持 refund_approve',
-    (role) => {
+    async (role) => {
       const s = makeSession(
         [{ role, scopeId: 'hq', scopeType: '总部' }],
-        computeActions([{ role }]),
+        await computeActions([{ role }]),
       )
       expect(hasPermission(s, 'sale_order:refund_approve')).toBe(false)
     },
@@ -217,10 +298,10 @@ describe('refund_approve 权限矩阵（PR-Z2）', () => {
 
   it.each(['admin', 'manager', 'finance', 'hr', 'product', 'customer_mgr'] as const)(
     '%s 持 refund_create',
-    (role) => {
+    async (role) => {
       const s = makeSession(
         [{ role, scopeId: 'hq', scopeType: '总部' }],
-        computeActions([{ role }]),
+        await computeActions([{ role }]),
       )
       expect(hasPermission(s, 'sale_order:refund_create')).toBe(true)
     },

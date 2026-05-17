@@ -23,6 +23,7 @@ import {
 	MessageSquare,
 	ScrollText,
 	Settings,
+	SlidersHorizontal,
 	Unlink,
 	type LucideIcon,
 } from "lucide-react";
@@ -123,6 +124,7 @@ export const MENU_CONFIG: MenuGroup[] = [
 		label: "系统管理",
 		items: [
 			{ label: "权限管理", icon: Shield, href: "/permissions", requiredRoles: ["admin", "hr"] },
+			{ label: "权限矩阵", icon: SlidersHorizontal, href: "/settings/permission-matrix", requiredRoles: ["admin"] },
 			{ label: "消息中心", icon: MessageSquare, href: "/messages", requiredRoles: ["admin"] },
 			{ label: "操作日志", icon: ScrollText, href: "/logs", requiredRoles: ["admin"] },
 			{ label: "系统配置", icon: Settings, href: "/settings", requiredRoles: ["admin"] },

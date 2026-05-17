@@ -45,6 +45,11 @@ vi.mock('@/lib/operation-log', () => ({
   logOperation: vi.fn(),
 }))
 
+vi.mock('@/lib/admin-guard', () => ({
+  countActiveAdmins: vi.fn().mockResolvedValue(5),
+  isAdminEmployee: vi.fn().mockResolvedValue(false),
+}))
+
 vi.mock('next/cache', () => ({
   revalidatePath: vi.fn(),
 }))
@@ -62,6 +67,8 @@ import { getRoles, assignRole, revokeRole } from './permissions'
 import { db } from '@/db'
 import { getSession, hasRole } from '@/lib/auth'
 import { inArray } from 'drizzle-orm'
+import { countActiveAdmins } from '@/lib/admin-guard'
+import { logOperation } from '@/lib/operation-log'
 
 function makeRow(scopeId: string) {
   return {
@@ -241,15 +248,15 @@ describe('assignRole — AC-09 & scope constraint', () => {
     expect(db.insert).not.toHaveBeenCalled()
   })
 
-  it('admin 分配 admin 角色到不存在的节点 → 拒绝', async () => {
+  it('admin 分配 admin 角色到不存在的节点 → 抛 INVALID_PARAMS', async () => {
     ;(getSession as any).mockResolvedValue(adminSession)
     ;(hasRole as any).mockReturnValue(true)
 
     ;(db.select as any).mockImplementation(() => mockSelectOnce(null)())
 
-    const result = await assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'ghost-node' })
-
-    expect(result.success).toBe(false)
+    await expect(
+      assignRole({ employeeId: 'EMP-X', role: 'admin', scopeId: 'ghost-node' })
+    ).rejects.toThrow(/INVALID_PARAMS: 组织节点不存在/)
     expect(db.insert).not.toHaveBeenCalled()
   })
 
@@ -260,7 +267,9 @@ describe('assignRole — AC-09 & scope constraint', () => {
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
-      // 第1次：duplicate check（无 HQ check，因为 role != admin）
+      // 第1次：node.type 校验（manager 允许市场）
+      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
+      // 第2次：duplicate check
       return mockSelectOnce(null)()
     })
     const values = vi.fn().mockResolvedValue({})
@@ -287,7 +296,12 @@ describe('assignRole — AC-09 & scope constraint', () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
 
-    ;(db.select as any).mockImplementation(() => mockSelectOnce({ id: 99 })()) // existing found
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '市场' })() // node.type 校验通过
+      return mockSelectOnce({ id: 99 })() // 重复
+    })
 
     const result = await assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' })
 
@@ -299,7 +313,12 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('并发唯一冲突（23505）→ 友好消息而非 500', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    ;(db.select as any).mockImplementation(() => mockSelectOnce(null)()) // 应用层未检测到重复
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
+      return mockSelectOnce(null)()
+    })
 
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
@@ -313,12 +332,79 @@ describe('assignRole — AC-09 & scope constraint', () => {
   it('其他 DB 异常 → 重新抛出', async () => {
     ;(getSession as any).mockResolvedValue(hrSession)
     ;(hasRole as any).mockReturnValue(false)
-    ;(db.select as any).mockImplementation(() => mockSelectOnce(null)())
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '市场' })()
+      return mockSelectOnce(null)()
+    })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(new Error('connection lost')) })
 
     await expect(
       assignRole({ employeeId: 'EMP-Y', role: 'manager', scopeId: 'market-1' })
     ).rejects.toThrow('connection lost')
+  })
+
+  // ── 新增 (audit-22 P0-22-01) role × scope.type 配对 ───────────────────────
+  it('manager 分配到 部门 型 scope → 抛 INVALID_PARAMS', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '部门' })())
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Z', role: 'manager', scopeId: 'dept-1' })
+    ).rejects.toThrow(/INVALID_PARAMS: 角色不能绑定到部门型 scope/)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('hr 分配到 门店 型 scope → 抛 INVALID_PARAMS (hr 仅允许 总部/市场)', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '门店' })())
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Z', role: 'hr', scopeId: 'store-1' })
+    ).rejects.toThrow(/INVALID_PARAMS: 角色 hr 不能绑定到 门店 型 scope/)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('staff 分配到 市场 型 scope → 抛 INVALID_PARAMS (staff 仅允许 门店)', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce({ type: '市场' })())
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Z', role: 'staff', scopeId: 'market-1' })
+    ).rejects.toThrow(/INVALID_PARAMS: 角色 staff 不能绑定到 市场 型 scope/)
+    expect(db.insert).not.toHaveBeenCalled()
+  })
+
+  it('manager 分配到 总部 型 scope → 成功 (manager 三 type 全允许)', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return mockSelectOnce({ type: '总部' })()
+      return mockSelectOnce(null)()
+    })
+    const values = vi.fn().mockResolvedValue({})
+    ;(db.insert as any).mockReturnValue({ values })
+
+    const result = await assignRole({ employeeId: 'EMP-Z', role: 'manager', scopeId: 'hq-1' })
+    expect(result.success).toBe(true)
+    expect(values).toHaveBeenCalledOnce()
+  })
+
+  it('scopeId 不存在 (node=null) → 抛 INVALID_PARAMS', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(() => mockSelectOnce(null)())
+
+    await expect(
+      assignRole({ employeeId: 'EMP-Z', role: 'manager', scopeId: 'ghost-node' })
+    ).rejects.toThrow(/INVALID_PARAMS: 组织节点不存在/)
+    expect(db.insert).not.toHaveBeenCalled()
   })
 })
 
@@ -419,5 +505,49 @@ describe('revokeRole — scope + admin-only for admin roles', () => {
     ;(db.delete as any).mockReturnValue({ where })
 
     await expect(revokeRole(52)).rejects.toThrow('connection lost')
+  })
+
+  // ── 新增 (audit-22 P0-22-03 / D-Q12-2026-04-26) admin 守卫 ───────────────────
+  it('admin 撤销自己的 admin 角色 → 抛 INVALID_STATE (自删保护)', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-001' })
+
+    await expect(revokeRole(20)).rejects.toThrow(/INVALID_STATE: 不能撤销自己的 admin 角色/)
+    expect(db.delete).not.toHaveBeenCalled()
+    expect(countActiveAdmins).not.toHaveBeenCalled()
+  })
+
+  it('撤销最后一个活跃 admin → 抛 INVALID_STATE', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(1)
+    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    await expect(revokeRole(21)).rejects.toThrow(/INVALID_STATE: 系统至少需保留 1 个活跃 admin/)
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('倒数第二 admin (count=2) 跨员工撤销 → 成功 + logOperation detail 含 employeeId/scopeId', async () => {
+    ;(getSession as any).mockResolvedValue(adminSession)
+    ;(hasRole as any).mockReturnValue(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(2)
+    setupRevokeDbCalls({ role: 'admin', scopeId: 'hq-1', employeeId: 'ADMIN-002' })
+
+    const result = await revokeRole(22)
+
+    expect(result.success).toBe(true)
+    expect(db.delete).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      adminSession,
+      'permission.revoke',
+      'permission_role',
+      '22',
+      expect.objectContaining({
+        role: 'admin',
+        scopeId: 'hq-1',
+        employeeId: 'ADMIN-002',
+      }),
+    )
   })
 })

@@ -1,3 +1,4 @@
+> 状态：✅ 已完成（2026-05-18 实施 + 归档；详见 §9 R1 实施结论）
 > 生成日期：2026-05-18
 > 严重级别：P0（来源 D-Q3 决策；audit-22 P1-22-08「PERMISSION_MATRIX 双真相源」+ SUMMARY.md v4 §6.3 E10）
 > 端：**admin 单端 + db schema**（fengyu-admin / db）
@@ -537,3 +538,52 @@ S0 spike **必须先做**：Next.js 15 middleware.ts 在 edge runtime 跑，若 
 > 3. 编辑 UI 是否需要"action 描述"展示（51 个英文 key 用户难辨识）
 > 4. 多副本部署时 invalidate 跨进程方案（LISTEN/NOTIFY vs HTTP broadcast）
 > 5. system_configs.permission_matrix 行是否要写一次性 seed migration（避免首次 admin 看到"空矩阵"误判）
+
+### R1 实施结论（2026-05-18）
+
+**S0 spike 验证结果**：
+- `middleware.ts` 不 import `@/lib/permissions`，仅做 `jwtVerify(token)`，无 edge runtime 标记。async 迁移 0 冲击。
+- 生产代码仅 `actions/auth.ts:206` 一处 `computeActions(roles)` 调用，加 `await` 即可（该函数本身已是 async）。
+- 测试侧 `permissions.test.ts` 8 处直接调用 + 1 个工厂内联，全部加 `await` 并将外层 `it` 改为 async。
+
+**实际改动清单**：
+
+| 文件 | 类型 | 行号 / 说明 |
+|---|---|---|
+| `fengyu-admin/src/lib/permissions.ts` | 改 | `PERMISSION_MATRIX` → `DEFAULT_PERMISSION_MATRIX`；新增 `_matrixCache` / `PERMISSION_MATRIX_CACHE_TTL_MS=30_000` / `invalidatePermissionMatrixCache()` / `getPermissionMatrix()`；`computeActions` 改 async |
+| `fengyu-admin/src/actions/auth.ts:206` | 改 | `const actions = await computeActions(roles)` |
+| `fengyu-admin/src/actions/permission-matrix.ts` | 新建 | `getMatrix` / `saveMatrix` / `resetMatrix` 三个 server actions，全部 `withPermission('system:config')` 包装 |
+| `fengyu-admin/src/app/(main)/settings/permission-matrix/page.tsx` | 新建 | Server Component 入口，`force-dynamic`，flatten 出 ALL_ACTIONS 传给客户端 |
+| `fengyu-admin/src/app/(main)/settings/permission-matrix/_components/permission-matrix-page.tsx` | 新建 | 表格 row=action × col=role × cell=checkbox；按 action 前缀分组渲染（22 段中文段名）；列 / 行 sticky；行尾 / 列头"全选/全清"快捷按钮；useUnsavedChanges 离开保护；保存 / 重置成功后 location.reload 重建 initial 基线 |
+| `fengyu-admin/src/lib/menu.ts` | 改 | "系统管理"分组追加"权限矩阵"入口（`SlidersHorizontal` 图标，requiredRoles=['admin']） |
+| `fengyu-admin/src/lib/permissions.test.ts` | 改 | `import` rename；db mock 增 `execute`；`computeActions` 调用全部加 `await` + 外层改 async；新增 `describe('getPermissionMatrix / cache')` 6 用例（DB 行存在/缺失/JSON 失败/DB throw/缓存命中/invalidate 重查） |
+| `fengyu-admin/src/actions/__tests__/permission-matrix.test.ts` | 新建 | 4 分组 14 用例：getMatrix 4 / saveMatrix 防自锁 3 / saveMatrix happy path 4 / resetMatrix 3 |
+
+**防自锁校验**（实施时升级到 3 项必备 action，比 ticket 计划的 2 项更严）：
+- `system:config`（缺失则无法再次进入编辑页）
+- `permission:assign_admin`（缺失则无法重新授予 admin）
+- `admin:reset_password`（缺失则无法重置员工密码）
+
+任一缺失即 `INVALID_PARAMS: admin 角色必须保留 <action>...` 拒写。
+
+**降级路径已实测**：JSON parse 失败 / DB throw 全部 fallback 到 DEFAULT_PERMISSION_MATRIX + `console.error('[permission-matrix] ...')`，测试覆盖。
+
+**验证结果**：
+- `npx tsc --noEmit` EXIT 0
+- `bun run test` 52 文件 / 996 测试全绿（基线 982 → 996，新增 14 用例）
+- `bun run build` 通过，`/settings/permission-matrix` 路由已注册（5.12 kB / 125 kB）
+- `bun run lint` 无新增告警（既有告警均在不相关文件）
+- grep `computeActions(` 0 处未加 await 残留
+- grep `import.*PERMISSION_MATRIX` 0 处旧名残留
+
+**未采纳 / 推后**：
+- 第 2 项（TTL 下调到 10s）：保留 30s，与 cron-worker getMemberThreshold 一致；提交后 location.reload 让操作者立即感知
+- 第 3 项（action 中文描述）：通过前缀分组（22 段中文 group name）解决可读性，未为每个 action key 维护描述字典（51 个映射后续可加，但本批不增表）
+- 第 4 项（多副本 invalidate）：admin 当前 docker-compose 单副本，暂留 TODO 待多副本部署时通过 PG LISTEN/NOTIFY 实现
+- 第 5 项（seed migration）：不写 —— 行缺失时自然 fallback 到代码 DEFAULT，UI 进入时通过 `getMatrix()` 也走相同 fallback，避免双源同步问题
+
+**后续可能 ticket**：
+- 矩阵编辑器加 action 中文描述字典（按 PREFIX_GROUP_LABELS 模式扩到 action 级别）
+- 多副本部署落地时实施 PG LISTEN/NOTIFY 跨进程 invalidate
+- 操作日志详情页 diff 高亮（visualize before/after 矩阵差异）
+- staff 端 21 处 `roles.includes('manager')` 散落判断收敛（audit-22 P1-22-09 独立 ticket）

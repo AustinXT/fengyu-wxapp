@@ -202,8 +202,8 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
       scopeType: (r.scopeType ?? '门店') as '总部' | '市场' | '门店',
     }))
 
-    // 计算权限
-    const actions = computeActions(roles)
+    // 计算权限（computeActions 自 2026-05-18 起异步：从 DB 取权限矩阵 + 30s 缓存）
+    const actions = await computeActions(roles)
     const scopeStoreIds = await expandScopeStoreIds(roles)
 
     return {

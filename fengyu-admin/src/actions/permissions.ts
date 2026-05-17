@@ -6,11 +6,13 @@ import { staffWechatUsers } from '@db/user'
 import { orgNodes } from '@db/org'
 import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import type { PermissionRole } from '@/lib/types'
+import type { PermissionRole, RoleType } from '@/lib/types'
 import { hasRole } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { isScopeTypeValidForRole, type OrgNodeType } from '@/lib/role-scope-rules'
+import { countActiveAdmins } from '@/lib/admin-guard'
 
 export const getRoles = withPermission(
   'permission:list',
@@ -190,16 +192,24 @@ export const assignRole = withAnyPermission(
     }
   }
 
-  // admin 角色的 scopeId 必须是总部节点（spec AFF-07: scope_id 固定 headquarters）
+  // role × scope.type 配对校验（admin: 仅总部；其余按 ROLE_SCOPE_TYPES）
+  const [node] = await db
+    .select({ type: orgNodes.type })
+    .from(orgNodes)
+    .where(eq(orgNodes.id, data.scopeId))
+    .limit(1)
+  if (!node) {
+    throw new Error('INVALID_PARAMS: 组织节点不存在')
+  }
+  if (node.type === '部门') {
+    throw new Error('INVALID_PARAMS: 角色不能绑定到部门型 scope')
+  }
   if (data.role === 'admin') {
-    const [node] = await db
-      .select({ type: orgNodes.type })
-      .from(orgNodes)
-      .where(eq(orgNodes.id, data.scopeId))
-      .limit(1)
-    if (!node || node.type !== '总部') {
+    if (node.type !== '总部') {
       return { success: false, message: '系统管理员角色必须绑定总部节点' }
     }
+  } else if (!isScopeTypeValidForRole(data.role as RoleType, node.type as OrgNodeType)) {
+    throw new Error(`INVALID_PARAMS: 角色 ${data.role} 不能绑定到 ${node.type} 型 scope`)
   }
 
   // 检查是否已存在相同的角色记录，避免重复分配
@@ -249,7 +259,11 @@ export const revokeRole = withPermission(
   ): Promise<{ success: boolean; message: string }> => {
   // 查询要撤销的角色记录
   const [target] = await db
-    .select({ role: permissionRoles.role, scopeId: permissionRoles.scopeId })
+    .select({
+      role: permissionRoles.role,
+      scopeId: permissionRoles.scopeId,
+      employeeId: permissionRoles.employeeId,
+    })
     .from(permissionRoles)
     .where(eq(permissionRoles.id, id))
     .limit(1)
@@ -261,6 +275,17 @@ export const revokeRole = withPermission(
   // 只有 admin 才能撤销 admin 角色
   if (target.role === 'admin' && !hasRole(session, 'admin')) {
     return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
+  }
+
+  // admin 自删保护 + 最后 admin 保护（D-Q12-2026-04-26 / audit-22 P0-22-03）
+  if (target.role === 'admin') {
+    if (target.employeeId === session.employeeId) {
+      throw new Error('INVALID_STATE: 不能撤销自己的 admin 角色')
+    }
+    const adminCount = await countActiveAdmins()
+    if (adminCount <= 1) {
+      throw new Error('INVALID_STATE: 系统至少需保留 1 个活跃 admin')
+    }
   }
 
   // 非 admin 用户不能撤销超出自身 scope 的角色
@@ -281,6 +306,8 @@ export const revokeRole = withPermission(
 
   await logOperation(session, 'permission.revoke', 'permission_role', String(id), {
     role: target.role,
+    scopeId: target.scopeId,
+    employeeId: target.employeeId,
   })
 
   revalidatePath('/permissions')

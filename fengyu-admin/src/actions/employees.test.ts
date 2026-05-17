@@ -37,8 +37,15 @@ vi.mock('@db/permission', () => ({
   permissionRoles: {
     id: 'id',
     employeeId: 'employee_id',
+    role: 'role',
+    scopeId: 'scope_id',
     updatedBy: 'updated_by',
   },
+}))
+
+vi.mock('@/lib/admin-guard', () => ({
+  countActiveAdmins: vi.fn().mockResolvedValue(5),
+  isAdminEmployee: vi.fn().mockResolvedValue(false),
 }))
 
 vi.mock('@/lib/auth', () => ({
@@ -86,6 +93,7 @@ import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { eq, ilike, inArray, isNull } from 'drizzle-orm'
+import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 
 const mockSession = {
   employeeId: 'ADMIN-001',
@@ -333,28 +341,100 @@ describe('updateEmployee — 服务端输入校验 + 错误处理', () => {
     expect(result.message).toContain('不存在或无权')
   })
 
-  it('isResigned=true → 删除权限角色', async () => {
+  /** 离职事务 mock：返回员工现有角色列表 + delete + log 链 */
+  function mockResignTransaction(roles: any[]) {
+    const txDelete = vi.fn().mockResolvedValue({})
+    const txLimit = vi.fn() // 不需要
+    const txWhere = vi.fn().mockResolvedValue(roles)
+    const txFrom = vi.fn().mockReturnValue({ where: txWhere })
+    const txSelect = vi.fn().mockReturnValue({ from: txFrom })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: txSelect,
+        delete: vi.fn().mockReturnValue({ where: txDelete }),
+      }
+      return fn(tx)
+    })
+    return { txDelete }
+  }
+
+  it('isResigned=true (非 admin) → 事务清理权限角色 + 逐条 logOperation', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
-    // update：更新员工
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
-    // delete：删除权限
-    const deleteWhere = vi.fn().mockResolvedValue({})
-    ;(db.delete as any).mockReturnValue({ where: deleteWhere })
+    mockResignTransaction([
+      { id: 11, role: 'manager', scopeId: 'store-A' },
+      { id: 12, role: 'staff', scopeId: 'store-A' },
+    ])
 
     const result = await updateEmployee('FY-001', { isResigned: true })
 
     expect(result.success).toBe(true)
-    expect(db.delete).toHaveBeenCalledOnce()
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledTimes(2)
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'permission.revoke',
+      'permission_role',
+      '11',
+      expect.objectContaining({ role: 'manager', scopeId: 'store-A', employeeId: 'FY-001', batch: 'resignation' }),
+    )
   })
 
-  it('权限删除失败 → 重新抛出（不静默忽略）', async () => {
+  it('isResigned=true 但是最后一个活跃 admin → 抛 INVALID_STATE (UPDATE 未发生)', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(isAdminEmployee as any).mockResolvedValueOnce(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(1)
+
+    await expect(
+      updateEmployee('FY-001', { isResigned: true }),
+    ).rejects.toThrow(/INVALID_STATE: 该员工是系统最后一个活跃 admin/)
+
+    expect(db.update).not.toHaveBeenCalled()
+    expect(db.transaction).not.toHaveBeenCalled()
+  })
+
+  it('isResigned=true admin 但 count=2 → 成功离职 + 角色清理', async () => {
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+    ;(isAdminEmployee as any).mockResolvedValueOnce(true)
+    ;(countActiveAdmins as any).mockResolvedValueOnce(2)
+    const empWhere = vi.fn().mockResolvedValue({ count: 1 })
+    const empSet = vi.fn().mockReturnValue({ where: empWhere })
+    ;(db.update as any).mockReturnValue({ set: empSet })
+    mockResignTransaction([{ id: 99, role: 'admin', scopeId: 'hq-1' }])
+
+    const result = await updateEmployee('FY-002', { isResigned: true })
+
+    expect(result.success).toBe(true)
+    expect(db.transaction).toHaveBeenCalledOnce()
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'permission.revoke',
+      'permission_role',
+      '99',
+      expect.objectContaining({ role: 'admin', scopeId: 'hq-1', employeeId: 'FY-002', batch: 'resignation' }),
+    )
+  })
+
+  it('事务内 delete 抛错 → 整个 updateEmployee 抛出（事务回滚由 Drizzle 处理）', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
     const empWhere = vi.fn().mockResolvedValue({ count: 1 })
     const empSet = vi.fn().mockReturnValue({ where: empWhere })
     ;(db.update as any).mockReturnValue({ set: empSet })
-    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockRejectedValue(new Error('connection lost')) })
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([{ id: 1, role: 'manager', scopeId: 'store-A' }]),
+          }),
+        }),
+        delete: vi.fn().mockReturnValue({
+          where: vi.fn().mockRejectedValue(new Error('connection lost')),
+        }),
+      }
+      return fn(tx)
+    })
 
     await expect(updateEmployee('FY-001', { isResigned: true })).rejects.toThrow('connection lost')
   })

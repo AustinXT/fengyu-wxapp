@@ -13,6 +13,7 @@ import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
+import { countActiveAdmins, isAdminEmployee } from '@/lib/admin-guard'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -432,6 +433,17 @@ export const updateEmployee = withPermission(
     updateData.resignedAt = data.isResigned ? new Date().toISOString().slice(0, 10) : null
   }
 
+  // 离职前最后 admin 守卫（D-Q12-2026-04-26 / audit-22 P0-22-03）
+  // 必须在 UPDATE is_resigned=true 之前检查：countActiveAdmins 用 is_resigned=false JOIN 过滤
+  if (data.isResigned === true) {
+    if (await isAdminEmployee(employeeId)) {
+      const adminCount = await countActiveAdmins()
+      if (adminCount <= 1) {
+        throw new Error('INVALID_STATE: 该员工是系统最后一个活跃 admin，请先转移角色')
+      }
+    }
+  }
+
   let result: any
   try {
     result = await db.update(staffWechatUsers).set(updateData).where(whereConditions)
@@ -452,11 +464,27 @@ export const updateEmployee = withPermission(
     }
   }
 
-  // 标记离职时删除所有权限角色
+  // 标记离职时事务清理权限角色 + 逐条 logOperation（audit-22 P1-22-06 顺手关闭）
   if (data.isResigned === true) {
-    await db
-      .delete(permissionRoles)
-      .where(eq(permissionRoles.employeeId, employeeId))
+    await db.transaction(async (tx) => {
+      const roles = await tx
+        .select({
+          id: permissionRoles.id,
+          role: permissionRoles.role,
+          scopeId: permissionRoles.scopeId,
+        })
+        .from(permissionRoles)
+        .where(eq(permissionRoles.employeeId, employeeId))
+      await tx.delete(permissionRoles).where(eq(permissionRoles.employeeId, employeeId))
+      for (const r of roles) {
+        await logOperation(session, 'permission.revoke', 'permission_role', String(r.id), {
+          role: r.role,
+          scopeId: r.scopeId,
+          employeeId,
+          batch: 'resignation',
+        })
+      }
+    })
   }
 
   // §AFF-03：门店变更时同步更新 permission_roles scope

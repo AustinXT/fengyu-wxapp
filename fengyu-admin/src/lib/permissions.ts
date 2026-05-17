@@ -7,12 +7,20 @@ import type { PgColumn } from 'drizzle-orm/pg-core'
 import type { AuthSession, RoleType } from './types'
 
 /**
- * PERMISSION_MATRIX: role → actions[]
+ * DEFAULT_PERMISSION_MATRIX: role → actions[]
  *
- * 每个角色的默认权限动作列表。
- * admin 拥有所有权限；其他角色按职能分配。
+ * 每个角色的默认权限动作列表（fallback / 重置基线）。
+ * 运行时的权威值是 DB：system_configs[key='permission_matrix']；
+ * 入口统一走 getPermissionMatrix()，DB 缺失 / 解析失败时回退到本常量。
+ *
+ * 直接 import 此常量仅限：
+ *   1) admin /settings/permission-matrix 重置按钮
+ *   2) UI 列出 ALL_ACTIONS（保证矩阵编辑器与代码默认对齐）
+ *   3) 单元测试
+ * 业务代码（hasPermission / requirePermission / scopeCondition）一律不直接读矩阵，
+ * 而是吃 session.permissions.actions（已在 getSessionFromCookie 内由 computeActions 摊平）。
  */
-export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
+export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
   admin: [
     'dashboard:view',
     // 基础数据 CRUD（组织/门店/员工/商品/提成/优惠券）
@@ -96,12 +104,66 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
 }
 
 /**
- * 根据角色数组计算合并后的 actions 集合
+ * 进程级权限矩阵缓存
+ *
+ * - TTL 30s（与 cron-worker getMemberThreshold 30s/5min 双层缓存一致）
+ * - 写入后由 saveMatrix/resetMatrix 主动调用 invalidatePermissionMatrixCache()
+ * - admin 当前为 docker-compose 单副本，多进程不一致暂不处理（后续 ticket PG NOTIFY）
  */
-export function computeActions(roles: Array<{ role: RoleType }>): string[] {
+const PERMISSION_MATRIX_CACHE_TTL_MS = 30_000
+let _matrixCache: { matrix: Record<RoleType, string[]>; expiresAt: number } | null = null
+
+/** 立刻让进程内缓存失效（saveMatrix/resetMatrix 调用） */
+export function invalidatePermissionMatrixCache(): void {
+  _matrixCache = null
+}
+
+/**
+ * 取当前生效的权限矩阵：DB 优先，失败时回退 DEFAULT。
+ *
+ * - DB 行不存在 / JSON 解析失败 / DB 连接异常 → 静默回退 DEFAULT_PERMISSION_MATRIX，
+ *   并 console.error 标记，确保任何情况下 admin 都能登录。
+ * - 缓存命中直接返回；首次 / 失效 / 异常分支都不写入失败结果（让下次重试）。
+ */
+export async function getPermissionMatrix(): Promise<Record<RoleType, string[]>> {
+  const now = Date.now()
+  if (_matrixCache && _matrixCache.expiresAt > now) {
+    return _matrixCache.matrix
+  }
+  try {
+    const rows = await db.execute<{ value: string }>(
+      sql`SELECT value FROM system_configs WHERE key = 'permission_matrix' LIMIT 1`,
+    )
+    const raw = (rows as unknown as Array<{ value: string }>)[0]?.value
+    if (!raw) {
+      _matrixCache = { matrix: DEFAULT_PERMISSION_MATRIX, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
+      return DEFAULT_PERMISSION_MATRIX
+    }
+    try {
+      const parsed = JSON.parse(raw) as Record<RoleType, string[]>
+      _matrixCache = { matrix: parsed, expiresAt: now + PERMISSION_MATRIX_CACHE_TTL_MS }
+      return parsed
+    } catch (parseErr) {
+      console.error('[permission-matrix] JSON parse failed, fallback to DEFAULT', parseErr)
+      return DEFAULT_PERMISSION_MATRIX
+    }
+  } catch (dbErr) {
+    console.error('[permission-matrix] DB read failed, fallback to DEFAULT', dbErr)
+    return DEFAULT_PERMISSION_MATRIX
+  }
+}
+
+/**
+ * 根据角色数组计算合并后的 actions 集合
+ *
+ * 2026-05-18 起异步：从 getPermissionMatrix() 读取 DB 矩阵（含 30s 缓存 + DEFAULT fallback）。
+ * 调用方仅 actions/auth.ts:getSessionFromCookie（已 async），无 edge runtime 触发面。
+ */
+export async function computeActions(roles: Array<{ role: RoleType }>): Promise<string[]> {
+  const matrix = await getPermissionMatrix()
   const actionSet = new Set<string>()
   for (const { role } of roles) {
-    const actions = PERMISSION_MATRIX[role]
+    const actions = matrix[role]
     if (actions) {
       for (const a of actions) actionSet.add(a)
     }
