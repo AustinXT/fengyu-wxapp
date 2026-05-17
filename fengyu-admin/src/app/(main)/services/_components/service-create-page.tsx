@@ -306,6 +306,7 @@ export default function ServiceCreatePageClient({
                                 type="checkbox"
                                 checked={selected}
                                 onChange={() => toggleItem(item.saleItemId)}
+                                onClick={(e) => e.stopPropagation()}
                                 className="rounded"
                               />
                             </td>
