@@ -26,6 +26,7 @@ coverage/
 playwright-report/
 test-results/
 .auth/
+.last-test-context.json
 
 # PostgreSQL & Docker
 db/.env
