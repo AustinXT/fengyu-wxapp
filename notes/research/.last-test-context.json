@@ -124,13 +124,13 @@
     "cleaned": true,
     "notes": "完整路径：UI 选券 → 提交 → 确认收款 → DB 三元一致性 PASS → 并发防重 UPDATE 0"
   },
-  "link4_originSaleOrderId": "FY-XSD-WX-2605170008",
+  "link4_originSaleOrderId": "FY-XSD-WX-2605170010",
   "link4_refundSaleOrderId": "FY-TKD-WX-2604260002",
   "link4": {
     "link": 4,
     "status": "PASS",
-    "originSaleOrderId": "FY-XSD-WX-2605170008",
-    "refundPaymentId": 75404,
+    "originSaleOrderId": "FY-XSD-WX-2605170010",
+    "refundPaymentId": 75420,
     "verdicts": [
       {
         "check": "create_refund_by_finance",
@@ -193,12 +193,12 @@
       {
         "check": "db_audit_employee",
         "verdict": "PASS",
-        "actual": "FY-TEST-MGR"
+        "actual": "FY-TEST-ADM"
       },
       {
         "check": "db_audit_at_not_null",
         "verdict": "PASS",
-        "actual": "2026-05-17 04:24:40.46"
+        "actual": "2026-05-17 05:46:15.336"
       },
       {
         "check": "db_logs_count",
@@ -207,11 +207,11 @@
       }
     ],
     "cleaned": true,
-    "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → sop[change_type='退款',status='待审批'] 行；审批页 /refunds/<sop.id> 点\"审批通过\" → AlertDialog 确认 → sop.status 翻 '已支付'，audit_employee_id=FY-TEST-MGR，audit_at=2026-05-17 04:24:40.46。2026-05-03 重构后退款数据完全在 sale_order_payments，不再有 saleOrders[type='退款单'] 实体。"
+    "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → sop[change_type='退款',status='待审批'] 行；审批页 /refunds/<sop.id> 点\"审批通过\" → AlertDialog 确认 → sop.status 翻 '已支付'，audit_employee_id=FY-TEST-ADM，audit_at=2026-05-17 05:46:15.336。2026-05-03 重构后退款数据完全在 sale_order_payments，不再有 saleOrders[type='退款单'] 实体。"
   },
   "link1": {
     "saleOrderId": "FY-XSD-WX-2605170003",
     "ranAt": "2026-05-17T04:15:48.093Z"
   },
-  "link4_refundPaymentId": 75412
+  "link4_refundPaymentId": 75420
 }

@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { getMessagesPaginated, getMessageTypes } from '@/actions/messages'
-import { getSession, hasPermission } from '@/lib/auth'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import MessagesPageClient from './_components/messages-page'
 
 export const dynamic = 'force-dynamic'

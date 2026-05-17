@@ -29,8 +29,9 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
     'system:config',
-    // 退款管理（2026-05-17 PR-Z 职责拆分）— admin 可发起退款，但**不审批**（审批仅 manager）
-    'sale_order:refund_create',
+    // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
+    // admin 既可发起退款，也可审批（与 manager 并列为审批角色，manager 缺位时救场）
+    'sale_order:refund_create', 'sale_order:refund_approve',
     // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
@@ -209,6 +210,13 @@ export function scopeCondition(
 export function isInScope(session: AuthSession, storeId: string): boolean {
   if (isAdminScope(session)) return true
   return session.permissions.scopeStoreIds.includes(storeId)
+}
+
+/**
+ * Check if user has a specific permission action
+ */
+export function hasPermission(session: AuthSession, action: string): boolean {
+  return session.permissions.actions.includes(action)
 }
 
 /**

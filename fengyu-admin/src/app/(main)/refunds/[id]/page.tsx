@@ -4,7 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/badge'
 import { getRefundById } from '@/actions/refunds'
 import { ApprovalActions } from '../_components/approval-actions'
-import { getSession, hasPermission } from '@/lib/auth'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 
 export const dynamic = 'force-dynamic'
 

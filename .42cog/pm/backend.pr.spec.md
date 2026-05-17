@@ -721,11 +721,15 @@ null → 待分配               （订单支付成功）
 ### 5.5 退款审批状态机
 
 ```text
-待审批 → 已审批（已支付）     （店长审批通过，触发 remaining_sessions 原子扣减 + 退款业绩记录）
-待审批 → 已关闭              （店长驳回退款申请）
+待审批 → 已审批（已支付）     （审批人审批通过，触发 remaining_sessions 原子扣减 + 退款业绩记录）
+待审批 → 已关闭              （审批人驳回退款申请）
 ```
 
 > 退款单创建时 `status = '待审批'`，审批通过后流转为 `已支付`（复用已有状态表示退款已生效）。
+
+**审批权限**（2026-05-17 PR-Z2）：
+- admin 后台（Next.js）：`sale_order:refund_approve` 由 **admin + manager** 双角色持有；admin 在 manager 缺位时可代理审批。manager 在本店内可自审自批（接受其同时持 `refund_create`+`refund_approve`）
+- staff 端（员工端小程序，`staffApi.order.approveRefund`）：仍由 **店长（manager）** 独审，与现有移动场景一致
 
 ---
 

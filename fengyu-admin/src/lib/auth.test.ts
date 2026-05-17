@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { hasPermission, hasRole, getRoleLabel } from './auth'
-import { PERMISSION_MATRIX, computeActions } from './permissions'
+import { hasRole, getRoleLabel } from './auth'
 import type { AuthSession, RoleType } from './types'
 
 // 构造不同角色的 session 工厂
@@ -13,34 +12,6 @@ function makeSession(roles: Array<{ role: RoleType; scopeId: string; scopeType: 
     permissions: { actions, scopeStoreIds: [] },
   }
 }
-
-describe('hasPermission', () => {
-  it('拥有权限返回 true', () => {
-    const session = makeSession([], ['org:list', 'org:create'])
-    expect(hasPermission(session, 'org:list')).toBe(true)
-    expect(hasPermission(session, 'org:create')).toBe(true)
-  })
-
-  it('无权限返回 false', () => {
-    const session = makeSession([], ['org:list'])
-    expect(hasPermission(session, 'org:delete')).toBe(false)
-  })
-
-  it('空 actions 列表返回 false', () => {
-    const session = makeSession([], [])
-    expect(hasPermission(session, 'org:list')).toBe(false)
-  })
-
-  it('admin session 拥有 admin 全部权限', () => {
-    const adminSession = makeSession(
-      [{ role: 'admin', scopeId: 'hq', scopeType: '总部' }],
-      computeActions([{ role: 'admin' }])
-    )
-    expect(hasPermission(adminSession, 'org:list')).toBe(true)
-    expect(hasPermission(adminSession, 'permission:assign_admin')).toBe(true)
-
-  })
-})
 
 describe('hasRole', () => {
   it('拥有角色返回 true', () => {

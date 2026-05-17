@@ -3,7 +3,7 @@
  *
  * Step 0: FY-TEST-MGR 开单（2 件 fixture SKU ¥100+¥100=¥200）→ 确认收款
  * Step 1: FY-TEST-FIN 从订单详情页"创建退款"
- * Step 2: FY-TEST-MGR 审批通过（2026-05-17 起：仅 manager 持 sale_order:refund_approve）
+ * Step 2: FY-TEST-ADM 审批通过（2026-05-17 PR-Z2：admin + manager 双角色持 refund_approve；此处验证 admin 路径）
  * Step 3: 反例 — FY-TEST-FIN 重复退款被拒
  * Step 4: DB 验证
  * Step 5: 清理
@@ -32,7 +32,7 @@ const BASE = 'http://localhost:3000'
 // ── 账号 ───────────────────────────────────────────────────────────────────
 const MGR_PHONE = '13900139001'
 const FIN_PHONE = '13900139002'
-// FY-TEST-ADM (13900139000) no longer used: 2026-05-17 PR-Z 起 admin 不持 refund_approve
+const ADM_PHONE = '13900139000' // 2026-05-17 PR-Z2：admin 拿回 refund_approve，本 spec 用 admin 走审批路径
 const PASS = 'fengyu2026'
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
@@ -453,16 +453,17 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
 
   await finCtx.close()
 
-  // ── Step 2: FY-TEST-MGR 审批通过 ──────────────────────────────────────────
-  // 2026-05-17 PR-Z 权限职责拆分：审批改归 manager（仅其持 sale_order:refund_approve）
-  console.log('[链路4] Step 2: MGR 审批通过')
+  // ── Step 2: FY-TEST-ADM 审批通过 ──────────────────────────────────────────
+  // 2026-05-17 PR-Z2 权限职责调整：admin + manager 双角色持 refund_approve
+  // 本 spec 验证 admin 审批路径（manager 缺位代理场景）；manager 自审路径不在 spec 覆盖
+  console.log('[链路4] Step 2: ADM 审批通过')
   const admCtx = await browser.newContext()
   const admPage = await admCtx.newPage()
   admPage.on('console', (msg) => {
     if (msg.type() === 'error') console.log(`[browser-error-adm] ${msg.text()}`)
   })
 
-  await login(admPage, MGR_PHONE, PASS)
+  await login(admPage, ADM_PHONE, PASS)
 
   // 导航到退款单详情
   await admPage.goto(`${BASE}/refunds/${refundPaymentId}`)
@@ -620,7 +621,7 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   })
   verdicts.push({
     check: 'db_audit_employee',
-    verdict: dbAuditEmp === 'FY-TEST-MGR' ? 'PASS' : 'FAIL',
+    verdict: dbAuditEmp === 'FY-TEST-ADM' ? 'PASS' : 'FAIL',
     actual: dbAuditEmp,
   })
   verdicts.push({

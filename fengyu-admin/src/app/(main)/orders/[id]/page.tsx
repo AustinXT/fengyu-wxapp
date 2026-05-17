@@ -3,7 +3,7 @@ import { getOrderById, getOrderPayments } from '@/actions/orders'
 import { getOrderAllocations } from '@/actions/allocations'
 import { getOrderLogs } from '@/actions/logs'
 import { getSession } from '@/lib/auth'
-import { hasPermission } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import { db } from '@/db'
 import { prepaidCards } from '@db/prepaid-card'
 import { eq } from 'drizzle-orm'
@@ -60,6 +60,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       canRecordPayment={canRecordPayment}
       canRefund={canRefund}
       cardBalance={cardBalance}
+      canListAllocations={canListAllocations}
     />
   )
 }

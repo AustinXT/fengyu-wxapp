@@ -1,7 +1,8 @@
 import { Suspense } from 'react'
 import { getPickupRecordsPaginated } from '@/actions/pickup-records'
 import { getStores } from '@/actions/stores'
-import { getSession, hasPermission } from '@/lib/auth'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import PickupRecordsPageClient from './_components/pickup-records-page'
 
 export const dynamic = 'force-dynamic'

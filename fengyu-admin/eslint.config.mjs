@@ -46,13 +46,14 @@ const config = [
     rules: {
       /**
        * Guard against the recurring foot-gun:
-       *   import { hasPermission } from '@/lib/permissions'   // wrong — TypeError at runtime
-       *   import { requirePermission } from '@/lib/auth'      // wrong — TypeError at runtime
+       *   import { hasPermission } from '@/lib/auth'         // wrong — TypeError at runtime
+       *   import { requirePermission } from '@/lib/auth'     // wrong — TypeError at runtime
        *
-       * `hasPermission` / `hasRole` / `getRoleLabel` live in @/lib/auth.
-       * `requirePermission` / `requireAnyPermission` / `scopeCondition` /
-       * `PERMISSION_MATRIX` / `isAdminScope` / `isInScope` / `buildScopeWhere` /
-       * `computeActions` / `expandScopeStoreIds` live in @/lib/permissions.
+       * `hasRole` / `getRoleLabel` live in @/lib/auth.
+       * `hasPermission` / `requirePermission` / `requireAnyPermission` /
+       * `scopeCondition` / `PERMISSION_MATRIX` / `isAdminScope` / `isInScope` /
+       * `buildScopeWhere` / `computeActions` / `expandScopeStoreIds`
+       * live in @/lib/permissions.
        *
        * Crossing the modules silently 500'd the refunds detail page (caught
        * 2026-05-17 in link-4 E2E). Both `next lint` (no config) and tsc
@@ -64,13 +65,14 @@ const config = [
           paths: [
             {
               name: '@/lib/permissions',
-              importNames: ['hasPermission', 'hasRole', 'getRoleLabel'],
+              importNames: ['hasRole', 'getRoleLabel'],
               message:
-                "Import hasPermission / hasRole / getRoleLabel from '@/lib/auth' — these are not exported by @/lib/permissions.",
+                "Import hasRole / getRoleLabel from '@/lib/auth' — these are not exported by @/lib/permissions.",
             },
             {
               name: '@/lib/auth',
               importNames: [
+                'hasPermission',
                 'requirePermission',
                 'requireAnyPermission',
                 'scopeCondition',

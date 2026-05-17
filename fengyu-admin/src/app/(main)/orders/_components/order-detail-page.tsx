@@ -59,6 +59,7 @@ export default function OrderDetailPageClient({
   canRecordPayment = false,
   canRefund = false,
   cardBalance = null,
+  canListAllocations = true,
 }: {
   order: SaleOrder
   allocations: SaleAllocation[]
@@ -70,6 +71,11 @@ export default function OrderDetailPageClient({
   canRefund?: boolean
   /** 顾客当前储值卡余额（元，null=未查询或无账户） */
   cardBalance?: number | null
+  /**
+   * 是否拥有 `allocation:list` 权限。
+   * 缺该权限的角色（如 admin）不展示"营业额分配"分区，避免误导（admin 不参与分配流程）。
+   */
+  canListAllocations?: boolean
 }) {
   const items = order.items || []
   const prepaidCardAmount = Number(order.prepaidCardAmount ?? "0")
@@ -356,45 +362,47 @@ export default function OrderDetailPageClient({
         </CardContent>
       </Card>
 
-      {/* 营业额分配 */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>营业额分配</CardTitle>
-          {order.status === '已支付' && (
-            <Link href={`/allocations/${order.saleOrderId}`}>
-              <Button size="sm" variant="outline">编辑分配</Button>
-            </Link>
-          )}
-        </CardHeader>
-        <CardContent className="p-0">
-          {allocations.length > 0 ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 sticky top-0">
-                  <tr>
-                    <th className="px-4 py-3 text-left font-medium text-gray-500">员工</th>
-                    <th className="px-4 py-3 text-left font-medium text-gray-500">部门</th>
-                    <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
-                    <th className="px-4 py-3 text-right font-medium text-gray-500">比例</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {allocations.map((a) => (
-                    <tr key={a.id} className="hover:bg-[#FFF0EE] transition-colors">
-                      <td className="px-4 py-3 font-medium">{a.employeeName}</td>
-                      <td className="px-4 py-3">{a.departmentName || "-"}</td>
-                      <td className="px-4 py-3 text-right">¥{Number(a.totalAmount).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-right">{(Number(a.allocationRatio) * 100).toFixed(0)}%</td>
+      {/* 营业额分配 — 仅 allocation:list 权限可见（admin 不参与分配流程） */}
+      {canListAllocations && (
+        <Card>
+          <CardHeader className="flex-row items-center justify-between">
+            <CardTitle>营业额分配</CardTitle>
+            {order.status === '已支付' && (
+              <Link href={`/allocations/${order.saleOrderId}`}>
+                <Button size="sm" variant="outline">编辑分配</Button>
+              </Link>
+            )}
+          </CardHeader>
+          <CardContent className="p-0">
+            {allocations.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">员工</th>
+                      <th className="px-4 py-3 text-left font-medium text-gray-500">部门</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">金额</th>
+                      <th className="px-4 py-3 text-right font-medium text-gray-500">比例</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="px-4 py-8 text-center text-[#999999]">暂未分配</div>
-          )}
-        </CardContent>
-      </Card>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {allocations.map((a) => (
+                      <tr key={a.id} className="hover:bg-[#FFF0EE] transition-colors">
+                        <td className="px-4 py-3 font-medium">{a.employeeName}</td>
+                        <td className="px-4 py-3">{a.departmentName || "-"}</td>
+                        <td className="px-4 py-3 text-right">¥{Number(a.totalAmount).toLocaleString()}</td>
+                        <td className="px-4 py-3 text-right">{(Number(a.allocationRatio) * 100).toFixed(0)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="px-4 py-8 text-center text-[#999999]">暂未分配</div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* 操作日志 */}
       <Card>

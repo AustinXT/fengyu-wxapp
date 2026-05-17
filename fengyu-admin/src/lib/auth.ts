@@ -14,13 +14,6 @@ export async function getSession(): Promise<AuthSession | null> {
 }
 
 /**
- * Check if user has a specific permission action
- */
-export function hasPermission(session: AuthSession, action: string): boolean {
-  return session.permissions.actions.includes(action)
-}
-
-/**
  * Check if user has a specific role
  */
 export function hasRole(session: AuthSession, role: RoleType): boolean {
