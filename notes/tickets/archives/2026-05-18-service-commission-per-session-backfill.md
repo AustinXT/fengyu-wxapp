@@ -3,11 +3,11 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待实施 |
+| 实施状态 | **已收尾 2026-05-18**（dashboard SQL 已在 e0dd09f 完成；历史数据回填 N/A——上线前清空 PG，见 memory `project_pre_launch_data_wipe`；audit 文档已同步） |
 | 优先级 | **P1**（涉及金钱口径，影响员工提成对账与门店业绩看板） |
 | 端 | db（数据回填） + staff/cloudfunctions/staffApi/routes/{mgmt-dashboard,staff}.js（dashboard SQL） |
 | 修复成本 | **M**（1-2 天：回填 SQL + 联调验证 + dashboard SQL 重写 + 看板视觉回归） |
-| 关联代码 PR | 本批次 frontend/admin/staff per-session 修复（本 ticket 是配套数据 + 看板修复） |
+| 关联代码 PR | commit e0dd09f "fix(commission): per-session 单价口径修正（跨端 P1 金钱口径）" |
 | 关联 schema | `db/schema/service-commission.ts`、`db/schema/service.ts`、`db/schema/order.ts` |
 
 ---
@@ -161,11 +161,11 @@ SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * s
 
 ## 3 验收
 
-- [ ] 2.1 抽样 SELECT 出来核对，无误后 BEGIN/COMMIT 执行
-- [ ] 2.1 `service_commissions_pre_persession_backfill` 备份表保留 30 天后再删
-- [ ] 2.2 dashboard SQL 改完 → staffApi 全套单测绿（含 staff.test.js / mgmt-dashboard.test.js 断言更新）
-- [ ] 2.2 部署后看板抽样：选一个真实店铺当天数据，人工对账 1 个员工 + 1 个店铺
-- [ ] 2.3 audit md 文档公式同步
+- [~] 2.1 抽样 SELECT 出来核对，无误后 BEGIN/COMMIT 执行 — **N/A，上线前清空 PG（见 memory `project_pre_launch_data_wipe`）**
+- [~] 2.1 `service_commissions_pre_persession_backfill` 备份表保留 30 天后再删 — **N/A，同上**
+- [x] 2.2 dashboard SQL 改完 → staffApi 全套单测绿（含 staff.test.js / mgmt-dashboard.test.js 断言更新）— commit e0dd09f
+- [~] 2.2 部署后看板抽样：选一个真实店铺当天数据，人工对账 1 个员工 + 1 个店铺 — **N/A，上线前清空 PG，正式上线后再抽样**
+- [x] 2.3 audit md 文档公式同步 — 2026-05-18（audit-08 L59、audit-17 L123/L230/L328-330、audit-CC1 L103/L226）
 
 ---
 

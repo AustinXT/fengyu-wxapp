@@ -56,7 +56,7 @@
   │    ─── 提成计算 ───
   │    roleType = skills[0] || '美容师'           ← 仅取第一个 skill
   │    fixedFee = service_fee × session_used
-  │    consumeBase = unit_real_price × session_used
+  │    consumeBase = (unit_real_price × quantity / session_count) × session_used   ← per-session 折算（commit e0dd09f）
   │    rate = SELECT commission_rate FROM commission_rate_matrix
   │             WHERE order_type='服务单' AND role_type=$1
   │               AND sales_category=$2

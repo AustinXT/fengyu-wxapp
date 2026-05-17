@@ -120,9 +120,11 @@ mgmtDashboard.salesData (payload {period, scope})
 - 文件：`fengyu-staff/cloudfunctions/staffApi/routes/staff.js:639` + `:695-703`
 - 现象：美容师视角的 `scopeFilter = 'so.assigned_employee_id = $1'`，实耗 SQL 为：
   ```sql
-  SELECT SUM(sit.unit_real_price * sit.session_used)
+  -- 公式自 e0dd09f 起为 per-session：unit_real_price 是 per-card 快照，需还原 per-session
+  SELECT SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used)
   FROM service_items sit
   JOIN service_orders so ON so.service_order_id = sit.service_order_id
+  JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
   WHERE so.assigned_employee_id = $1  -- 仅过滤服务单负责人
   AND so.status = '已完成'
   ```
@@ -227,7 +229,7 @@ mgmtDashboard.salesData (payload {period, scope})
 - [x] `SUM(received::numeric - COALESCE(refunded_amount, 0)::numeric)` 使用 NUMERIC，精度正确
 - [x] `round2 = Math.round(Number(v) * 100) / 100` 保留 2 位，无 float 精度损失
 - [x] `sale_allocations.total_amount`、`service_commissions.commission_amount` 为 NUMERIC，提成计算精度正确
-- [x] `service_items.unit_real_price * session_used` NUMERIC 乘法精度正确
+- [x] `(unit_real_price × quantity / NULLIF(session_count, 0)) × session_used` per-session 折算 NUMERIC 乘法精度正确（commit e0dd09f）
 - [ ] **[P1-17-01]** salesData SQL2 分客型业绩 `SUM(si.received)` 毛口径与 SQL1 净口径不一致
 
 ### CC2 并发幂等
@@ -322,14 +324,16 @@ ORDER BY 1;
 -- 若有记录输出，则 P0-17-03 已确认（UTC 时区导致切割错误）
 
 -- 2. 验证 staff.dashboard 美容师路径实耗虚高（assigned_employee_id vs service_items.employee_id）
+--    公式：per-session = unit_real_price × quantity / NULLIF(session_count, 0)，需 JOIN sale_items（commit e0dd09f）
 SELECT
   so.assigned_employee_id,
   COUNT(DISTINCT sit.employee_id) AS executor_count,
-  COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS consume_by_assigned,
+  COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS consume_by_assigned,
   COALESCE(SUM(CASE WHEN sit.employee_id = so.assigned_employee_id
-    THEN sit.unit_real_price::numeric * sit.session_used ELSE 0 END), 0) AS consume_actual
+    THEN sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used ELSE 0 END), 0) AS consume_actual
 FROM service_orders so
 JOIN service_items sit ON sit.service_order_id = so.service_order_id
+JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
 WHERE so.status = '已完成'
   AND so.service_date >= NOW()::date - 30
 GROUP BY so.assigned_employee_id

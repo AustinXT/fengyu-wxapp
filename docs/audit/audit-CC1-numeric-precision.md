@@ -100,7 +100,7 @@
 
 #### **[P0-CC1-04] admin batchSaveServiceCommissions 信任前端 commissionAmount**
 - **文件**：`fengyu-admin/src/actions/service-commissions.ts:152-160`
-- **现象**：直接 INSERT `c.commissionRate` / `c.commissionAmount` 字符串，没有按 `unit_real_price × session_used × commission_rate` 后端重算。前端传 `commissionAmount='9999.99'` 直接落库。
+- **现象**：直接 INSERT `c.commissionRate` / `c.commissionAmount` 字符串，没有按 `(unit_real_price × quantity / NULLIF(session_count, 0)) × session_used × commission_rate` 后端重算（per-session 折算，commit e0dd09f）。前端传 `commissionAmount='9999.99'` 直接落库。
 - **风险**：违反后端统一鉴权原则；可写入任意金额，绩效数据可被篡改。
 - **修复建议**：参考 staffApi `service.complete`（routes/service.js:398-414）后端重算模式，admin 侧应先查 service_items + commission_rate_matrix 重算，拒绝前端传来的 commissionAmount 值。
 - **v2 确认**：独立核验确认（P0-CC1v2-02），无新内容
@@ -223,7 +223,7 @@
 |------|-----------------|------------------|--------------------|-----------|------|--------|
 | 金额持久化舍入 | `.toFixed(2)`（V8 banker） | `Math.round(* 100) / 100` 后 PG implicit cast | 同 staff | 同 staff | **0.005 边界差 1 分** | P1 |
 | sa.totalAmount 计算 | `(received * Number(ratio)).toFixed(2)` | `Math.round(received * Number(ratio.toFixed(2)) * 100) / 100` | — | 同 staff | 跨端值漂移 | P1 |
-| commission_amount 计算源 | 信任前端 commissionAmount（P0-CC1-04） | `Math.round(unit_real_price * session * rate * 100) / 100` 后端重算 | — | 同 staff | admin 写入可任意篡改 | P0 |
+| commission_amount 计算源 | 信任前端 commissionAmount（P0-CC1-04） | `Math.round((unit_real_price × quantity / NULLIF(session_count,0)) × session_used × rate × 100) / 100` per-session 后端重算（commit e0dd09f） | — | 同 staff | admin 写入可任意篡改 | P0 |
 | 券分摊粒度 | 整单减 couponDiscount（P1-CC1-08） | 行级按 received 比例分摊 | 行级按 received 比例分摊 | — | 商品维度数据质量不一致 | P1 |
 | 折扣券 Math.round | 无（calcCouponDiscount 返回浮点）| 有（order.js:383）| 有（order.js:341）| — | 跨端报表对账差 0.01 | P1 |
 | 浮点 ε 比较 | 极少用（依赖 PG numeric） | `+ 0.001` 9 处 | `+ 0.001` 11 处 | — | 散落易漂移 | P1 |
