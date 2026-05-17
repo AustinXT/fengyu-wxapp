@@ -10,11 +10,46 @@
  * 2. 占位值 '__e2e_mock_openid__'（兼容旧 staffApi smoke 路径——staffApi 路由全部走
  *    auth 中间件 + ctx.auth.userId，OPENID 占位即可，由 payload._testOpenid 在中间件层覆盖）
  *
- * uploadFile 是 stub —— auth.uploadAvatar 测试不真实上传 COS，返回构造 fileID。
+ * uploadFile 是 stub —— auth.uploadAvatar / staff.uploadAvatar 测试不真实上传 COS，
+ * 而是返回 fileID 字符串嵌入 envId，便于断言"跨 env upload 写到了 client envId 域"。
+ *
+ * Cloud 构造器：staff.uploadAvatar 用 `new cloud.Cloud({resourceEnv, identityless})`
+ * 跨 env 上传到 client env。mock 把 resourceEnv 嵌入返回的 fileID 中，
+ * 测试可断言 fileID.startsWith(`cloud://${CLIENT_ENV_ID}.`) 即"真的写到了 client env"。
  */
+
+function makeUploadFile(envId) {
+  return async function uploadFile({ cloudPath /*, fileContent */ }) {
+    const fileID = `cloud://${envId || 'e2e-mock.test'}.bucket/${cloudPath}`
+    return { fileID, statusCode: 200, errMsg: 'uploadFile:ok' }
+  }
+}
+
+class Cloud {
+  constructor(opts = {}) {
+    this._resourceEnv = opts.resourceEnv || 'test-env'
+    this._identityless = !!opts.identityless
+  }
+  async init() {
+    // 真实 wx-server-sdk 的 Cloud#init 是 async；保持同形态
+    return undefined
+  }
+  uploadFile(args) {
+    return makeUploadFile(this._resourceEnv)(args)
+  }
+  getWXContext() {
+    return {
+      OPENID: globalThis.__e2e_current_openid__ || '__e2e_mock_openid__',
+      APPID: 'wxe3f5d9ee6a94d22d',
+      UNIONID: undefined,
+    }
+  }
+}
+
 module.exports = {
   init: function noop() {},
   DYNAMIC_CURRENT_ENV: 'test-env',
+  Cloud,
   getWXContext: function () {
     return {
       OPENID: globalThis.__e2e_current_openid__ || '__e2e_mock_openid__',
@@ -22,9 +57,6 @@ module.exports = {
       UNIONID: undefined,
     }
   },
-  uploadFile: async function ({ cloudPath /*, fileContent */ }) {
-    // 不真上传，返回 mock fileID 让业务 SQL 继续走通
-    const fileID = `cloud://e2e-mock.test/${cloudPath}`
-    return { fileID, statusCode: 200, errMsg: 'uploadFile:ok' }
-  },
+  // 顶层 uploadFile 默认走"当前 env"（占位 e2e-mock.test）
+  uploadFile: makeUploadFile(null),
 }
