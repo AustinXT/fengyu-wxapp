@@ -834,6 +834,179 @@ describe('service.complete', () => {
     const [, , roleType] = svcCommInsert.params
     expect(roleType).toBe('美容师')  // 兜底值
   })
+
+  // ============================================================
+  // 修复 Bug：service_items.unit_real_price 是 per-card 价格快照，
+  // 需还原 per-session：unit_real_price × quantity / session_count
+  // ============================================================
+  test('5次卡 × 2: consume_amount 按 per-session 计算（非 per-card）', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-card',
+          session_used: 1,
+          employee_id: 'emp-001',
+          unit_real_price: '3500.00',   // per-card
+          service_fee: '0',
+          sales_category: '自销自耗',
+          session_count: 10,             // 5次卡 × 2张
+          quantity: 2,
+          skills: ['美容师'],
+        },
+      ])
+
+    let svcCommInsert = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) {
+        return { rows: [{ commission_rate: '0.1000' }], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 9 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    await serviceRoutes.complete(ctx)
+
+    expect(svcCommInsert).not.toBeNull()
+    // 参数顺序：service_item_id, employee_id, role_type, commission_rate, commission_amount, fixed_fee, consume_amount
+    const [, , , rate, commAmt, fixedFee, consumeAmt] = svcCommInsert.params
+    // per_session = 3500 × 2 / 10 = 700
+    // consumeBase = 700 × 1 = 700
+    // consumeAmt = 700 × 0.10 = 70
+    expect(rate).toBe(0.1)
+    expect(fixedFee).toBe(0)
+    expect(consumeAmt).toBe(70)
+    expect(commAmt).toBe(70)
+  })
+
+  test('5次卡 × 2 + sessionUsed=2: consume_amount = 1400 × rate', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-card',
+          session_used: 2,
+          employee_id: 'emp-001',
+          unit_real_price: '3500.00',
+          service_fee: '0',
+          sales_category: '自销自耗',
+          session_count: 10,
+          quantity: 2,
+          skills: ['美容师'],
+        },
+      ])
+
+    let svcCommInsert = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) {
+        return { rows: [{ commission_rate: '0.1000' }], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 8 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    await serviceRoutes.complete(ctx)
+
+    const [, , , , , , consumeAmt] = svcCommInsert.params
+    // per_session=700, consumeBase=700×2=1400, consumeAmt=1400×0.10=140
+    expect(consumeAmt).toBe(140)
+  })
+
+  test('非卡 (session_count=quantity=1): per-session 退化为 unit_real_price', async () => {
+    const ctx = createManagerCtx({ serviceOrderId: 'HLD-001' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        service_order_id: 'HLD-001',
+        status: '服务中',
+        assigned_employee_id: 'emp-001',
+        store_id: 'store-001',
+        appointment_id: null,
+      }])
+      .mockResolvedValueOnce([
+        {
+          service_item_id: 'si-1',
+          sale_item_id: 'item-single',
+          session_used: 1,
+          employee_id: 'emp-001',
+          unit_real_price: '49.80',
+          service_fee: '0',
+          sales_category: '自销自耗',
+          session_count: 1,
+          quantity: 1,
+          skills: ['美容师'],
+        },
+      ])
+
+    let svcCommInsert = null
+    const clientQueryMock = vi.fn(async (sql, params) => {
+      if (typeof sql !== 'string') return { rows: [], rowCount: 0 }
+      if (sql.includes('commission_rate_matrix')) {
+        return { rows: [{ commission_rate: '0.1000' }], rowCount: 1 }
+      }
+      if (sql.includes('INSERT INTO service_commissions')) {
+        svcCommInsert = { sql, params }
+        return { rows: [], rowCount: 1 }
+      }
+      if (sql.includes('remaining_sessions')) {
+        if (sql.includes('UPDATE')) return { rows: [], rowCount: 1 }
+        return { rows: [{ remaining_sessions: 0 }], rowCount: 1 }
+      }
+      return { rows: [], rowCount: 1 }
+    })
+
+    pg.transaction.mockImplementation(async (cb) => {
+      return await cb({ query: clientQueryMock })
+    })
+
+    await serviceRoutes.complete(ctx)
+
+    const [, , , , , , consumeAmt] = svcCommInsert.params
+    // per_session = 49.80 × 1 / 1 = 49.80; consumeBase = 49.80; consumeAmt = 4.98
+    expect(consumeAmt).toBeCloseTo(4.98, 2)
+  })
 })
 
 describe('service.cancel', () => {

@@ -26,8 +26,8 @@ interface CommissionEntry {
   skillTag: string
   employeeId: string
   ratioPercent: string
-  allocAmount: string       // 分配金额 = ratioPercent/100 × unitRealPrice
-  commissionRate: number    // 提成比例（从矩阵获取）
+  allocAmount: string       // 分配金额 = ratioPercent/100 × perSessionPrice × sessionUsed
+  commissionRate: number    // 提成比例（从矩阵获取，按 consumeBase 查档）
   commissionAmount: string  // 提成金额 = allocAmount × commissionRate
 }
 
@@ -61,10 +61,29 @@ function sortByPosition(employees: Employee[]): Employee[] {
   )
 }
 
-function calcAllocAmount(ratioPercent: string, unitPrice: number): string {
+/**
+ * 单次（per-session）价格。
+ * service_items.unit_real_price 是 sale_items.unit_real_price 的快照，
+ * 而 sale_items.unit_real_price 是 per-card 价格；
+ * 单次价格 = unit_real_price × quantity / session_count。
+ * 非卡场景 sessionCount=quantity → 自然退化为 unitRealPrice。
+ */
+function perSessionPrice(item: ServiceItemDetail): number {
+  const unit = Number(item.unitRealPrice ?? 0)
+  const sc = item.sessionCount ?? 0
+  const qty = item.quantity ?? 1
+  return sc > 0 ? (unit * qty) / sc : unit
+}
+
+/** 本次服务可分配金额基底 = perSessionPrice × sessionUsed */
+function consumeBase(item: ServiceItemDetail): number {
+  return Math.round(perSessionPrice(item) * item.sessionUsed * 100) / 100
+}
+
+function calcAllocAmount(ratioPercent: string, base: number): string {
   const ratio = Number(ratioPercent)
   if (isNaN(ratio) || ratio <= 0) return '0.00'
-  return ((ratio / 100) * unitPrice).toFixed(2)
+  return ((ratio / 100) * base).toFixed(2)
 }
 
 // --------------- 初始化 ---------------
@@ -82,7 +101,7 @@ function initCommissions(
   for (const comm of commissions) {
     if (!result[comm.serviceItemId]) continue
     const item = serviceItems.find((i) => i.serviceItemId === comm.serviceItemId)
-    const unitPrice = item ? Number(item.unitRealPrice) : 0
+    const base = item ? consumeBase(item) : 0
 
     const emp = employees.find((e) => e.employeeId === comm.employeeId)
     let skillTag = comm.roleType || ''
@@ -96,8 +115,8 @@ function initCommissions(
 
     const ratioPercent = (Number(comm.allocationRatio) * 100).toFixed(0)
 
-    const allocAmount = calcAllocAmount(ratioPercent, unitPrice)
-    const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, unitPrice)
+    const allocAmount = calcAllocAmount(ratioPercent, base)
+    const rateRef = findMatchingRate(commissionRates, marketName, skillTag, item?.salesCategory ?? null, base)
     const commRate = rateRef ? Number(rateRef.commissionRate) : Number(comm.commissionRate)
 
     result[comm.serviceItemId].push({
@@ -178,7 +197,7 @@ export default function ServiceCommissionDetailPageClient({
   ) => {
     setItemComms((prev) => {
       const item = serviceItems.find((i) => i.serviceItemId === serviceItemId)
-      const unitPrice = item ? Number(item.unitRealPrice) : 0
+      const base = item ? consumeBase(item) : 0
       const entries = prev[serviceItemId] || []
 
       return {
@@ -189,16 +208,16 @@ export default function ServiceCommissionDetailPageClient({
 
           if (field === 'skillTag') {
             updated.employeeId = ''
-            const rateRef = findMatchingRate(commissionRates, marketName, value, item?.salesCategory ?? null, unitPrice)
+            const rateRef = findMatchingRate(commissionRates, marketName, value, item?.salesCategory ?? null, base)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
           if (field === 'employeeId' && updated.skillTag) {
-            const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, item?.salesCategory ?? null, unitPrice)
+            const rateRef = findMatchingRate(commissionRates, marketName, updated.skillTag, item?.salesCategory ?? null, base)
             updated.commissionRate = rateRef ? Number(rateRef.commissionRate) : 0
           }
 
-          updated.allocAmount = calcAllocAmount(updated.ratioPercent, unitPrice)
+          updated.allocAmount = calcAllocAmount(updated.ratioPercent, base)
           updated.commissionAmount = (Number(updated.allocAmount) * updated.commissionRate).toFixed(2)
 
           return updated
@@ -300,7 +319,7 @@ function ServiceItemCard({
   onUpdate: (serviceItemId: string, entryId: number, field: 'skillTag' | 'employeeId' | 'ratioPercent', value: string) => void
   onRemove: (serviceItemId: string, entryId: number) => void
 }) {
-  const unitPrice = Number(item.unitRealPrice)
+  const base = consumeBase(item)
 
   // 按 roleType 分池统计分配比例合计（P2-14 Q5：三角色独立）
   const groupSums: Record<string, number> = {}
@@ -323,7 +342,7 @@ function ServiceItemCard({
               </span>
             )}
           </CardTitle>
-          <span className="text-lg font-bold text-[var(--primary)]">¥{unitPrice.toLocaleString()}</span>
+          <span className="text-lg font-bold text-[var(--primary)]">¥{base.toLocaleString()}</span>
         </div>
         <p className="text-xs text-[#999999] mt-1">
           核销 {item.sessionUsed} 次 · 操作员: {item.employeeName || '-'}

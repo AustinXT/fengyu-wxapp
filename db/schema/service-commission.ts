@@ -9,7 +9,9 @@ import { staffWechatUsers } from './user'
  * 服务单完成时触发，按"固定手工费 + 消耗比例"双字段模型计算。
  * 计算口径：
  *   fixed_fee      = sale_items.service_fee × service_items.session_used
- *   consume_amount = service_items.unit_real_price × session_used × commission_rate
+ *   per_session    = sale_items.unit_real_price × sale_items.quantity / sale_items.session_count
+ *                    （unit_real_price 是 per-card；卡多次需还原到 per-session；非卡 session_count=quantity 自然退化）
+ *   consume_amount = per_session × session_used × commission_rate
  *   commission_amount = fixed_fee + consume_amount
  * 与 sale_allocations（销售提成）独立追踪。
  */
@@ -31,7 +33,7 @@ export const serviceCommissions = pgTable(
     commissionRate: numeric('commission_rate', { precision: 5, scale: 4 }).notNull(),
     /** 固定手工费部分 = sale_items.service_fee × session_used（不随 commission_rate 变化） */
     fixedFee: numeric('fixed_fee', { precision: 10, scale: 2 }).notNull().default('0'),
-    /** 消耗提成部分 = unit_real_price × session_used × commission_rate */
+    /** 消耗提成部分 = per_session × session_used × commission_rate（per_session 见文件顶部公式） */
     consumeAmount: numeric('consume_amount', { precision: 10, scale: 2 }).notNull().default('0'),
     /** 提成金额合计 = fixed_fee + consume_amount */
     commissionAmount: numeric('commission_amount', { precision: 10, scale: 2 }).notNull(),

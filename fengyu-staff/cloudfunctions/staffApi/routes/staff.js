@@ -752,11 +752,14 @@ async function dashboard(ctx) {
     `, [employeeId, start, end])
   }
 
-  // 4. 消耗：服务单划卡单价汇总
+  // 4. 消耗：服务单划卡单价汇总（per-session = unit_real_price × quantity / session_count）
+  //    sale_items.unit_real_price 是 per-card 价格（如 5次卡=3500），
+  //    必须按 quantity/session_count 折算到每次消耗，否则卡多次商品会过报。
   const consumeRows = await pg.query(`
-    SELECT COALESCE(SUM(sit.unit_real_price::numeric * sit.session_used), 0) AS consume
+    SELECT COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used), 0) AS consume
     FROM service_items sit
     JOIN service_orders so ON so.service_order_id = sit.service_order_id
+    JOIN sale_items si ON si.sale_item_id = sit.sale_item_id
     WHERE ${scopeFilter}
       AND so.status = '已完成'
       AND so.service_date >= $${scopeParams.length + 1}

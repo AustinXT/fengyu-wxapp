@@ -102,6 +102,8 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
       sessionUsed: 0,
       salesCategory: null,
       serviceFee: '0',
+      sessionCount: 0,
+      quantity: 1,
     }))
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
@@ -189,5 +191,139 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
 
     expect(result.success).toBe(false)
     expect(result.message).toContain('重复')
+  })
+})
+
+// ============================================================
+// batchSaveServiceCommissions — per-session consumeBase 计算
+// Bug 修复：sale_items.unit_real_price 是 per-card 价格，
+// per-session = unit_real_price × quantity / session_count
+// ============================================================
+describe('batchSaveServiceCommissions — per-session consumeBase', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isAdminScope as any).mockReturnValue(false)
+  })
+
+  /**
+   * 注入一条带真实卡数据的 pricing 行；rate 矩阵返回 0.30。
+   * 捕获最终 INSERT 的 values 数组以验证 consume/commission 金额。
+   */
+  function setupCardScenario(pricingRow: any, rate: string = '0.3000') {
+    const items = [{ serviceItemId: pricingRow.serviceItemId }]
+    let selectCalls = 0
+    ;(db.select as any).mockImplementation(() => {
+      selectCalls++
+      if (selectCalls === 1) return makeSelectChain([{ storeId: 'store-1' }])()
+      if (selectCalls === 2) return makeSelectChain(items)()
+      return makeSelectChain([pricingRow])()
+    })
+
+    const insertedValues: any[] = []
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue({}),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockImplementation((vals: any) => {
+            insertedValues.push(...(Array.isArray(vals) ? vals : [vals]))
+            return Promise.resolve({})
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
+        }),
+        // commission_rate_matrix 查档：返回非零 rate，避免 INVALID_STATE
+        select: makeSelectChain([{ commissionRate: rate }]),
+      }
+      return fn(tx)
+    })
+
+    return insertedValues
+  }
+
+  it('5次卡 × 2 (3500/10/quantity=2) + sessionUsed=1 → consumeBase = 700', async () => {
+    // ground truth from 5434/fengyu FY-XSD-WX-2604230008-01:
+    //   unit_real_price=3500, quantity=2, session_count=10
+    //   per_session = 3500 × 2 / 10 = 700
+    //   consumeBase = 700 × sessionUsed(1) = 700
+    //   consumeAmount = 700 × 0.30 = 210, fixedFee=0, commissionAmount=210
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-card',
+      unitRealPrice: '3500',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 10,
+      quantity: 2,
+    })
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-card', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '210.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(inserted).toHaveLength(1)
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(210, 2) // 700 × 0.30
+    expect(Number(inserted[0].commissionAmount)).toBeCloseTo(210, 2) // fixedFee=0 + 210
+  })
+
+  it('5次卡 × 2 + sessionUsed=2 → consumeBase = 1400', async () => {
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-card-2',
+      unitRealPrice: '3500',
+      sessionUsed: 2,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 10,
+      quantity: 2,
+    })
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-card-2', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '420.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(420, 2) // 1400 × 0.30
+    expect(Number(inserted[0].commissionAmount)).toBeCloseTo(420, 2)
+  })
+
+  it('单次体验 (49.80/1/quantity=1) → consumeBase 退化为 unitRealPrice = 49.80', async () => {
+    // 非卡场景 session_count=quantity=1，per_session = unit_real_price
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-single',
+      unitRealPrice: '49.80',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: 1,
+      quantity: 1,
+    })
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-single', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '14.94' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(14.94, 2) // 49.80 × 0.30
+  })
+
+  it('sessionCount 缺失 (null) → fallback 用 unitRealPrice', async () => {
+    const inserted = setupCardScenario({
+      serviceItemId: 'si-null',
+      unitRealPrice: '100',
+      sessionUsed: 1,
+      salesCategory: '护理项目',
+      serviceFee: '0',
+      sessionCount: null,
+      quantity: 1,
+    })
+
+    const result = await batchSaveServiceCommissions('so-1', [
+      { serviceItemId: 'si-null', employeeId: 'EMP-001', roleType: '美容师', allocationRatio: '1.00', commissionRate: '0.30', commissionAmount: '30.00' },
+    ])
+
+    expect(result.success).toBe(true)
+    expect(Number(inserted[0].consumeAmount)).toBeCloseTo(30, 2) // 100 × 0.30
   })
 })

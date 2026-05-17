@@ -1229,9 +1229,12 @@ describe('mgmtDashboard.storeRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       expect(sql).toMatch(/LEFT JOIN service_orders so2/)
       expect(sql).toMatch(/LEFT JOIN service_items sit/)
+      expect(sql).toMatch(/LEFT JOIN sale_items si/)
       expect(sql).toContain("so2.status = '已完成'")
       expect(sql).toMatch(/so2\.service_date/)
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
+      // per-session 公式：unit_real_price 是 per-card 价（如 5次卡=3500），
+      // 折算到每次消耗 = unit_real_price × quantity / session_count，再乘 session_used
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* si\.quantity \/ NULLIF\(si\.session_count, 0\) \* sit\.session_used\)/)
     })
   })
 
@@ -1666,7 +1669,7 @@ describe('mgmtDashboard.staffRanking', () => {
   })
 
   describe('SQL 形态断言：consume（实耗）', () => {
-    test('FROM service_items sit JOIN service_orders so2；status=已完成 + service_date period', async () => {
+    test('FROM service_items sit JOIN service_orders so2 + sale_items si；status=已完成 + service_date period', async () => {
       setupDefaultStaffMocks()
       const ctx = makeHqCtx({ period: 'month', metric: 'consume' })
       await staffRanking(ctx)
@@ -1674,8 +1677,10 @@ describe('mgmtDashboard.staffRanking', () => {
       const sql = pg.query.mock.calls[0][0]
       expect(sql).toMatch(/FROM service_items sit/)
       expect(sql).toMatch(/JOIN service_orders so2/)
+      expect(sql).toMatch(/JOIN sale_items si/)
       expect(sql).toContain("so2.status = '已完成'")
-      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* sit\.session_used\)/)
+      // per-session 公式：unit_real_price × quantity / session_count × session_used
+      expect(sql).toMatch(/SUM\(sit\.unit_real_price::numeric \* si\.quantity \/ NULLIF\(si\.session_count, 0\) \* sit\.session_used\)/)
       expect(sql).toMatch(/so2\.service_date/)
     })
   })
