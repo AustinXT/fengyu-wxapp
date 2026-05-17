@@ -85,9 +85,9 @@ Page({
     const current = scopedStores.find((s) => s.storeId === currentStoreId);
     const displayName = current?.storeName || boundStoreName;
     this.setData({
-      storeName: displayName,
-      staffName,
-      position,
+      storeName: displayName || '',
+      staffName: staffName || '',
+      position: position || '',
       isManager: isManager(),
       currentStoreId: currentStoreId || '',
       scopedStores: scopedStores || [],
