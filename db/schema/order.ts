@@ -104,6 +104,9 @@ export const saleOrders = pgTable(
       .where(sql`status = '待支付' AND client_user_id IS NULL`),
     index("idx_sale_orders_store_status").on(table.storeId, table.status),
     index("idx_sale_orders_ref").on(table.refSaleOrderId),
+    index("idx_sale_orders_client_user_id")
+      .on(table.clientUserId)
+      .where(sql`client_user_id IS NOT NULL`),
   ],
 );
 
