@@ -104,12 +104,15 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
     if (!canSubmit || !customer || !selectedItem) return
     setSubmitting(true)
     try {
+      // 每次按钮点击生成新 idempotencyKey；按钮 disabled 期间双击不会重新生成
+      const idempotencyKey = `pickup-${selectedItem.saleItemId}-${Date.now()}`
       const res = await createPickupRecord({
         saleItemId: selectedItem.saleItemId,
         pickupQuantity,
         storeId: pickupStoreId,
         clientUserId: customer.userId,
         remark: remark.trim() || null,
+        idempotencyKey,
       })
       if (res.success) {
         toast.success(res.message)

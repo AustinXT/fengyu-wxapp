@@ -592,3 +592,111 @@ describe('SUMMARY v3 §2 #13：scope assert helper 双端语义对齐', () => {
     })
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// ticket 2026-05-17-toctou-partial-unique-indexes.md Phase 4 snapshot 守护
+// 防止"事务外 SELECT 防重 → 事务内 INSERT 无 ON CONFLICT"模式回归出现。
+// 7 项 partial unique + 2 项 external_ref 必须配套应用层 ON CONFLICT / catch 23505。
+// ─────────────────────────────────────────────────────────────────────────
+describe('TOCTOU partial unique 三端 INSERT 配套守护', () => {
+  const SALE_ORDER_PAYMENTS_FILES = [
+    { name: 'staffApi/order.js', path: FILES.staffOrderJs },
+    { name: 'payNotify/index.js', path: FILES.payNotifyIndexJs },
+  ]
+  // change_type 动态 / 硬编码 '首次支付' 的 INSERT 必须挂 uq_sop_first_payment 兜底
+  test('sale_order_payments 命中 uq_sop_first_payment 的 INSERT 必须带 ON CONFLICT (sale_order_id) WHERE change_type / 23505 / uq_sop_first_payment 三关键字', () => {
+    for (const { name, path: p } of SALE_ORDER_PAYMENTS_FILES) {
+      const src = readFile(p)
+      // 任何写 sale_order_payments 的代码都必须出现下列任一守护词，否则视为遗漏 ON CONFLICT
+      const hasGuard =
+        src.includes('uq_sop_first_payment') ||
+        src.includes('ON CONFLICT (sale_order_id)') ||
+        src.includes('23505')
+      expect(hasGuard, `${name} 缺失 uq_sop_first_payment 守护关键字`).toBe(true)
+    }
+  })
+
+  const CARD_TXN_FILES = [
+    { name: 'staffApi/order.js', path: FILES.staffOrderJs },
+    { name: 'clientApi/order.js', path: FILES.clientOrderJs },
+    { name: 'payNotify/index.js', path: FILES.payNotifyIndexJs },
+  ]
+  test('card_transactions INSERT 三端必须带 external_ref 列或 ON CONFLICT (external_ref)', () => {
+    for (const { name, path: p } of CARD_TXN_FILES) {
+      const src = readFile(p)
+      // 查找所有 'INSERT INTO card_transactions' 出现的位置，每条必须临近 external_ref 字样
+      const insertMatches = [...src.matchAll(/INSERT\s+INTO\s+card_transactions[\s\S]{0,500}/g)]
+      expect(insertMatches.length, `${name} 没找到 card_transactions INSERT`).toBeGreaterThan(0)
+      for (const m of insertMatches) {
+        expect(m[0], `${name} 某处 INSERT card_transactions 未带 external_ref`).toMatch(/external_ref/)
+      }
+    }
+  })
+
+  test('user_coupons INSERT 4 cron + 3 share-gift 副本必须带 external_ref 列', () => {
+    const ucFiles = [
+      path.resolve(__dirname, '../../../../../fengyu-admin/src/cron/steps/grant-birthday-benefits.ts'),
+      path.resolve(__dirname, '../../../../../fengyu-admin/src/cron/steps/grant-thanksgiving-benefits.ts'),
+      path.resolve(__dirname, '../../../../../fengyu-admin/src/cron/steps/refresh-member-levels.ts'),
+      path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/payNotify/share-gift.js'),
+      path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/share-gift.js'),
+      path.resolve(__dirname, '../../share-gift.js'),
+    ]
+    for (const p of ucFiles) {
+      const src = readFile(p)
+      const inserts = [...src.matchAll(/INSERT\s+INTO\s+user_coupons[\s\S]{0,500}/g)]
+      expect(inserts.length, `${p} 没找到 user_coupons INSERT`).toBeGreaterThan(0)
+      for (const m of inserts) {
+        expect(m[0], `${p} 的 user_coupons INSERT 未带 external_ref`).toMatch(/external_ref/)
+      }
+    }
+  })
+
+  test('staff service.create / client appointment.create / client store.requestUnbind INSERT 必须有 23505 / ON CONFLICT 守护', () => {
+    const sites = [
+      { name: 'staff service.js', file: path.resolve(__dirname, '../../routes/service.js'), table: 'service_orders' },
+      { name: 'client appointment.js', file: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/routes/appointment.js'), table: 'appointments' },
+      { name: 'client store.js', file: path.resolve(__dirname, '../../../../../fengyu-client/cloudfunctions/clientApi/routes/store.js'), table: 'store_unbind_requests' },
+    ]
+    for (const { name, file, table } of sites) {
+      const src = readFile(file)
+      const inserts = [...src.matchAll(new RegExp(`INSERT\\s+INTO\\s+${table}[\\s\\S]{0,800}`, 'g'))]
+      expect(inserts.length, `${name} 没找到 ${table} INSERT`).toBeGreaterThan(0)
+      for (const m of inserts) {
+        const block = m[0]
+        const hasGuard = block.includes('23505') || block.includes('ON CONFLICT') || block.includes('uq_')
+        expect(hasGuard, `${name} 的 ${table} INSERT 缺 23505/ON CONFLICT 守护`).toBe(true)
+      }
+    }
+  })
+
+  test('point_transactions INSERT 业务路径必须带 ON CONFLICT (user_id, ref_order_id, type)', () => {
+    const points = [
+      path.resolve(__dirname, '../../utils/points.js'),
+      path.resolve(__dirname, '../../helpers/refund-cascade.js'),
+    ]
+    for (const p of points) {
+      const src = readFile(p)
+      const inserts = [...src.matchAll(/INSERT\s+INTO\s+point_transactions[\s\S]{0,500}/g)]
+      expect(inserts.length, `${p} 没找到 point_transactions INSERT`).toBeGreaterThan(0)
+      for (const m of inserts) {
+        expect(m[0], `${p} 的 point_transactions INSERT 未带 ON CONFLICT`).toMatch(/ON CONFLICT/i)
+      }
+    }
+  })
+
+  test('pickup_records INSERT 必须带 idempotency_key 字段（staffApi createPickup + admin createPickupRecord）', () => {
+    const files = [
+      path.resolve(__dirname, '../../routes/order.js'),
+      path.resolve(__dirname, '../../../../../fengyu-admin/src/actions/pickup-records.ts'),
+    ]
+    for (const p of files) {
+      const src = readFile(p)
+      // staffApi 用 INSERT INTO pickup_records；admin 用 db.insert(pickupRecords)
+      const hasStaffInsert = /INSERT\s+INTO\s+pickup_records/.test(src)
+      const hasAdminInsert = /insert\(pickupRecords\)/.test(src)
+      expect(hasStaffInsert || hasAdminInsert, `${p} 没找到 pickup_records INSERT`).toBe(true)
+      expect(src, `${p} 的 pickup_records INSERT 未含 idempotency_key/idempotencyKey 字段`).toMatch(/idempotency_key|idempotencyKey/)
+    }
+  })
+})

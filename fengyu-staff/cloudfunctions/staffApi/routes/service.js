@@ -448,14 +448,17 @@ async function complete(ctx) {
         )
       }
 
-      // INSERT 提成记录：ON CONFLICT 保证幂等（唯一索引 where is_void=false）
+      // INSERT 提成记录：ON CONFLICT 保证幂等（partial unique index where is_void=false）
+      // 注意：uq_svc_comm_item_emp_role 是 partial unique INDEX 不是 CONSTRAINT，
+      // ON CONFLICT ON CONSTRAINT 形式会报 "constraint does not exist"，必须用列推断 + WHERE
       await client.query(
         `INSERT INTO service_commissions (
            service_item_id, employee_id, role_type, allocation_ratio,
            commission_rate, commission_amount, fixed_fee, consume_amount,
            is_void
          ) VALUES ($1, $2, $3, 1.00, $4, $5, $6, $7, FALSE)
-         ON CONFLICT ON CONSTRAINT uq_svc_comm_item_emp_role DO NOTHING`,
+         ON CONFLICT (service_item_id, employee_id, role_type) WHERE is_void = false
+         DO NOTHING`,
         [
           row.service_item_id,
           row.employee_id,

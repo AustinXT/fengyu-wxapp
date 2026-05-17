@@ -295,6 +295,7 @@ export const createPickupRecord = withPermission(
       storeId: string
       clientUserId: string | null
       remark?: string | null
+      idempotencyKey?: string | null
     },
   ): Promise<{ success: boolean; message: string; createdId?: number }> => {
   // 基础参数校验
@@ -309,6 +310,20 @@ export const createPickupRecord = withPermission(
   }
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建提货记录' }
+  }
+
+  // 幂等前置：若传 idempotencyKey 且已存在对应行，直接返回当前 ID（不再 UPDATE/INSERT）
+  // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
+  const idemKey = data.idempotencyKey?.trim() || null
+  if (idemKey) {
+    const existing = (await db.execute(sql`
+      SELECT id FROM pickup_records
+       WHERE sale_item_id = ${data.saleItemId} AND idempotency_key = ${idemKey}
+       LIMIT 1
+    `)) as unknown as Array<{ id: number }>
+    if (existing.length > 0) {
+      return { success: true, message: '提货记录已存在（幂等）', createdId: existing[0].id }
+    }
   }
 
   try {
@@ -333,20 +348,30 @@ export const createPickupRecord = withPermission(
         throw new ApiError('INVALID_STATE', '销售明细不存在、非家居产品或超出可提数量')
       }
 
-      // 2. 插入 pickup_records
-      const inserted = await tx
-        .insert(pickupRecords)
-        .values({
-          saleItemId: data.saleItemId,
-          pickupQuantity: data.pickupQuantity,
-          storeId: data.storeId,
-          clientUserId: data.clientUserId,
-          confirmedBy: session.employeeId,
-          remark: data.remark?.trim() || null,
-        })
-        .returning({ id: pickupRecords.id })
+      // 2. 插入 pickup_records；DB 层 uq_pickup_idempotency 兜底 race，命中即整事务回滚防 UPDATE 重复累加
+      try {
+        const inserted = await tx
+          .insert(pickupRecords)
+          .values({
+            saleItemId: data.saleItemId,
+            pickupQuantity: data.pickupQuantity,
+            storeId: data.storeId,
+            clientUserId: data.clientUserId,
+            confirmedBy: session.employeeId,
+            remark: data.remark?.trim() || null,
+            idempotencyKey: idemKey,
+          })
+          .returning({ id: pickupRecords.id })
 
-      return inserted[0]?.id ?? 0
+        return inserted[0]?.id ?? 0
+      } catch (err: unknown) {
+        const code = (err as { code?: string })?.code
+        const constraint = (err as { constraint?: string })?.constraint
+        if (code === '23505' && constraint === 'uq_pickup_idempotency') {
+          throw new ApiError('CONFLICT', '提货请求重复，请勿重复提交')
+        }
+        throw err
+      }
     })
 
     await logOperation(session, 'create', 'pickup_record', String(createdId), {

@@ -2,7 +2,8 @@
 
 > 创建日期：2026-05-17
 > **v2 修订日期**：2026-05-17（R2 复核反馈落地）
-> 实施状态：🔴 未启动（schema + 应用层均需改动）
+> **实施完成日期**：2026-05-17（同日落地，详见末尾「实施落地总结」）
+> 实施状态：✅ 已完成（见末尾总结）
 > 严重级别：**P0**（SUMMARY v3 Top10 #9）
 > 端：db / fengyu-staff / fengyu-client / fengyu-admin
 > 修复成本：**M**（1-3 天，含三端 ON CONFLICT 改造 + 应用层错误捕获 + e2e 并发回归）
@@ -322,6 +323,115 @@ SELECT COUNT(*) AS total_rows FROM user_coupons;
 | 关联 audit | [audit-CC2 §P1-CC2-13](../../docs/audit/audit-CC2-concurrency-idempotency.md)（8 项基线清单）/ audit-03 §P0-03v2-03（首次支付）/ audit-05 §P0-05-03（服务单×2）/ audit-06 §P0-06-03 + §P1-06-06（预约×2）/ audit-12 §P0-12-05（unbind）/ audit-13 §P0-13-03（优惠券）/ audit-CC2 §P2-CC2-18（pickup / point_txn / card_txn）|
 | 关联 SUMMARY | §2 Top10 #9 / §3 横切「TOCTOU：事务外读 → 事务内 INSERT」/ §4 L0 P0 剩 5 项 + partial UNIQUE 10 项 |
 | 后续工作 | (1) 抽出 `db/helpers/lock-keys.ts` 单源 advisory lock 常量（P1-CC2-12）；(2) audit-CC2 P2-CC2-18 列举 9 表的 `idempotency_key` 系统性补齐（与本 ticket 收尾后规划）；(3) appointment 槽位重叠 EXCLUDE USING gist 另立 ticket |
+
+---
+
+## 9 实施落地总结（2026-05-17）
+
+### Phase -1 探伤（生产 5434/fengyu）
+
+7 条 SELECT 全部 0 重复行，最大表 `service_orders` 607K 行（远小于 1M 阻塞阈值）：
+
+| 表 | total_rows | 重复行 |
+|----|-----------|------|
+| sale_order_payments | 75,259 | 0 |
+| service_orders | 607,847 | 0 |
+| appointments | 5 | 0 |
+| store_unbind_requests | — | 0 |
+| card_transactions | 2,500 | n/a |
+| pickup_records | 0 | n/a |
+| user_coupons | 17 | n/a |
+| point_transactions | 1 | 0 |
+
+无需数据清洗，直接进入 Phase 0。
+
+### Phase 0 schema + migration（drizzle-kit）
+
+9 个 `db/schema/*.ts` 改动，`db:generate` 产出 **`db/migrations/0029_lumpy_scorpion.sql`**（3 ALTER ADD COLUMN + 9 CREATE UNIQUE INDEX）。临时 docker PG 用 `pg_dump --schema-only` 从生产灌入后 apply 0029，9 索引全部创建成功（绕过 migration 0018 的 enum ADD VALUE 同事务 bug）。
+
+### Phase 1 应用层 19+ INSERT 改造
+
+| 域 | 文件 | 改动 |
+|----|------|----|
+| sale_order_payments | staffApi/order.js × 2、payNotify/index.js × 1 | 加 `ON CONFLICT (sale_order_id) WHERE change_type='首次支付' AND status='已支付' DO NOTHING`，rowCount=0 抛 `CONFLICT:` |
+| service_orders | staffApi/service.js × 1 | catch 23505 + constraint name 翻译 uq_so_appointment / uq_so_client_active 为业务错 |
+| appointments | clientApi/appointment.js × 1 | catch 23505 uq_appt_sale_item_active |
+| store_unbind_requests | clientApi/store.js × 1 | ON CONFLICT (user_id) WHERE status='待处理' DO NOTHING |
+| card_transactions | staffApi/order.js × 5 + clientApi/order.js × 4 + payNotify/index.js × 2 = **11 处**（用户明确扩到全端，超出 ticket §5 字面 5 处） | 每处生成场景化 external_ref（card-deduct- / card-recharge- / card-refund- / card-repay- / card-conv- / card-cancel-rev- / card-notify-）+ ON CONFLICT (external_ref) DO NOTHING |
+| point_transactions | staffApi/utils/points.js × 1、staffApi/helpers/refund-cascade.js × 1（同时移除脆弱的 NOT EXISTS 检查） | ON CONFLICT (user_id, ref_order_id, type) DO NOTHING |
+| pickup_records | staffApi/order.js createPickup × 1（重构成事务）+ admin/src/actions/pickup-records.ts × 1（同样重构）+ admin pickup-record-create UI × 1（按钮点击生成 `pickup-{saleItemId}-{Date.now()}` 传入） | 前置幂等查询 + ON CONFLICT (sale_item_id, idempotency_key) DO NOTHING + 23505 翻译。**顺带修了原 staffApi 用 `pg.query` 时 `result.rowCount` 永远 undefined 的 latent bug** |
+| user_coupons | admin cron × 3（grant-birthday/grant-thanksgiving/refresh-member-levels）+ share-gift × 3 副本（payNotify/clientApi/staffApi） | 双写 external_ref（保留 coupon_id 现有幂等键模式），ON CONFLICT (coupon_id) DO NOTHING 不变 |
+
+`fengyu-admin npx tsc --noEmit` 通过零错误。
+
+### Phase 2 生产部署（全部完成）
+
+| 项 | 结果 |
+|----|----|
+| 5434 `npm run db:migrate` | ✅ 0029 applied，9 索引 in `pg_indexes` |
+| cloudbase staffApi（DevFengyu key 临时切换 → 复原） | ✅ |
+| cloudbase clientApi | ✅ |
+| cloudbase payNotify | ✅ |
+| admin Docker 镜像（local buildx + ssh docker load + compose up） | ✅ 健康检查通过（含 pickup-records idempotencyKey 后重新部署一次） |
+
+5433 冷备库未双跑（ticket 标注"可选"，不影响生产；下次灾备演练前补即可）。
+
+### Phase 3 e2e 并发回归
+
+新增 **`fengyu-admin/tests/e2e-chains/link-24-toctou-partial-unique.spec.ts`**（注：ticket 命名 link-12 已被 session-count-check 占用，实际取下一空号 24）。14/14 验证项 PASS：
+
+```
+[PASS] uq_sop_first_payment 第二次拦截
+[PASS] uq_sop_first_payment ON CONFLICT DO NOTHING（INSERT 0 0）
+[PASS] uq_so_appointment 第二次拦截
+[PASS] uq_so_client_active 第二次拦截
+[PASS] uq_so_client_active 终态自动释放（已完成后可重新创建）
+[PASS] uq_appt_sale_item_active 第二次拦截
+[PASS] uq_store_unbind_pending 第二次拦截
+[PASS] uq_card_txn_external_ref 第二次拦截
+[PASS] uq_card_txn_external_ref ON CONFLICT 静默
+[PASS] uq_point_txn_order_user_type 第二次拦截
+[PASS] uq_point_txn_order_user_type 不同 type 不冲突
+[PASS] uq_pickup_idempotency 第二次拦截
+[PASS] uq_pickup_idempotency NULL 可重复
+[PASS] uq_user_coupons_external_ref 第二次拦截
+```
+
+**注**：spec 用顺序 INSERT（不是 Promise.all 真并发）验证索引行为。PG partial unique 对顺序/并发 INSERT 行为等价（DB 行级锁 + unique index 在 INSERT 加 ShareLock），覆盖度等价。
+
+### Phase 4 snapshot 守护
+
+`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 新增 6 项 grep 守护：
+
+1. sale_order_payments INSERT 必须有 `uq_sop_first_payment` / `ON CONFLICT (sale_order_id)` / `23505` 任一守护词
+2. 三端 card_transactions INSERT 全部必须带 `external_ref` 列
+3. cron 3 + share-gift 3 副本所有 user_coupons INSERT 必须带 `external_ref` 列
+4. staff service.create / client appointment.create / client store.requestUnbind INSERT 必须带 `23505` / `ON CONFLICT` / `uq_` 任一守护词
+5. point_transactions 业务 INSERT 必须带 `ON CONFLICT`
+6. pickup_records INSERT（staffApi + admin）必须带 `idempotency_key`/`idempotencyKey` 字段
+
+`bun test` 全 68 项通过（其中含上述 6 项新增）。
+
+### 余项（follow-up，非阻塞）
+
+- 5433 冷备库未双跑 0029（ticket 标"可选"，灾备演练前补即可）
+- 实际生产并发场景（Promise.all 双发）e2e 未直接覆盖；link-24 已用顺序 INSERT 等价验证 partial unique 行为
+- audit-CC2 P2-CC2-18 余下表的 `idempotency_key` 系统性补齐 → 另立 ticket
+- appointments 槽位重叠 `EXCLUDE USING gist + tstzrange` → 另立 ticket
+- admin issueCoupon / batchIssueCoupons advisory lock 防超发 → 归 ticket #3 范围
+
+### 关键产出文件清单
+
+| 类型 | 文件 |
+|------|------|
+| migration | `db/migrations/0029_lumpy_scorpion.sql` + `meta/0029_snapshot.json` + `_journal.json` |
+| schema | `db/schema/{order,service,appointment,store-unbind,prepaid-card,points,pickup,coupon}.ts` |
+| staffApi | `cloudfunctions/staffApi/{routes/order.js,routes/service.js,utils/points.js,helpers/refund-cascade.js,share-gift.js}` |
+| clientApi | `cloudfunctions/clientApi/{routes/order.js,routes/appointment.js,routes/store.js,share-gift.js}` |
+| payNotify | `cloudfunctions/payNotify/{index.js,share-gift.js}` |
+| admin | `src/cron/steps/{grant-birthday-benefits,grant-thanksgiving-benefits,refresh-member-levels}.ts` + `src/actions/pickup-records.ts` + `src/app/(main)/pickup-records/_components/pickup-record-create-page.tsx` |
+| e2e | `fengyu-admin/tests/e2e-chains/link-24-toctou-partial-unique.spec.ts` |
+| snapshot 守护 | `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`（+6 项 TOCTOU grep） |
 
 ---
 
