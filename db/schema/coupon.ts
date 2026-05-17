@@ -68,6 +68,7 @@ export const userCoupons = pgTable(
       .references(() => saleOrders.saleOrderId),
     usedAt: timestamp('used_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
   },
   (table) => [
     index('idx_user_coupons_user_status').on(table.userId, table.status),
