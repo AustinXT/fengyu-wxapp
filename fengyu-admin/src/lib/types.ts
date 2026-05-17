@@ -228,8 +228,6 @@ export interface ProductCategory {
   salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean
-  /** 一级行 capability：是否为"卡类"（充值卡/体验卡），二级行通常 false */
-  isCardKind: boolean
   /** 一级行的展示色（HEX），二级行 null 时由前端继承父级 */
   displayColor: string | null
   /** 一级行的展示图标（icon name 或 emoji），二级行 null 时由前端继承父级 */
@@ -239,7 +237,6 @@ export interface ProductCategory {
   /** 二级行回填：父级一级行的 capability，二级行展示/校验时使用 */
   parentDisplayColor?: string | null
   parentDisplayIcon?: string | null
-  parentIsCardKind?: boolean
   parentRequiresShengmeiFlag?: boolean
   createdAt: string
   updatedAt: string
@@ -292,6 +289,8 @@ export interface ProductSku {
    * 与 isExperience 互斥（DB CHECK 保护）。
    */
   isRechargeCard?: boolean
+  /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+  projectSeriesId?: number | null
   marketScope: string | null
   isEnabled: boolean
   createdAt: string
@@ -300,9 +299,19 @@ export interface ProductSku {
   categoryName?: string
   productKind?: string
   salesCategory?: SalesCategory | null
+  /** 项目系列名称（JOIN project_series_lookup.name） */
+  projectSeriesName?: string | null
   bundlePrice?: string | null
   bundleGroupId?: number | null
   groupName?: string | null
+}
+
+/** 项目系列字典（lookup 表 project_series_lookup） */
+export interface ProjectSeries {
+  id: number
+  name: string
+  sortOrder: number
+  isValid: boolean
 }
 
 export interface MallBundleGroup {

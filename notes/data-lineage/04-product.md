@@ -9,7 +9,7 @@
 - 已废弃：`db/scripts/sync-products-from-workfine.js`（写老表 `product_spu` / `product_spu_sku_map`，已在 archive 0012 一次性 drop）
 - baseline 种子（一级分类行）：`_archive/sql/0017_product_categories_hierarchy.sql:L8-13`、`_archive/sql/0029_product_kind_enum.sql:L4-17`
 - 一次性结构迁移（旧→新表数据搬运）：`_archive/sql/0012_product_mall_split.sql:L51-85` — SKU 继承 product 字段、product_categories.sales_category 聚合、mall_categories 1:1 复制
-- capability 列回填：`db/migrations/0014_broad_thunderbolt.sql:L7-27`（is_card_kind / display_color / requires_shengmei_flag）
+- capability 列回填：`db/migrations/0014_broad_thunderbolt.sql:L7-27`（display_color / requires_shengmei_flag；`is_card_kind` 列已于 migration 0034 DROP，2026-05-18 product-domain cleanup）
 - 充值卡虚拟商品 seed：`db/scripts/seed-recharge-virtual-product.js`（写 `prod-recharge-virtual` / `sku-recharge-virtual`）
 
 **PG 现状**（5434/fengyu，2026-04-26 探查）：
@@ -46,7 +46,7 @@
 | sales_category | sales_category enum | 默认值/NULL / 新系统独立 | ① archive 0012:L59-65 一次性聚合：`UPDATE product_categories pc SET sales_category = (SELECT DISTINCT ON p.category_id p.sales_category FROM products p WHERE p.sales_category IS NOT NULL)` — 当时 products 表还有 sales_category 列；② 之后由 admin 手工编辑 | archive 0012:L59-65 | enum 4 值（自销自耗/他销自耗/他销他耗/生态合作）；archive 0009 把 `自采自销 → 自销自耗`；PG 现状 32/55 行非 NULL |
 | sort_order | integer | WorkFine 直拷 / 默认值 | 历史脚本固定 `0`；admin 手填 | sync-products:L227 / products.ts:L208 | |
 | is_valid | boolean | 默认值 | 默认 `true`；admin 软删除时改 false | schema:L24 | PG 现状 1/55 行 false |
-| is_card_kind | boolean | 默认值 + 一次性回填 | 默认 false；migration 0014:L8-10 把一级行 `category_name IN ('充值卡','体验卡')` 设 true | 0014:L8-10 | PG 现状 2 行 true |
+| ~~is_card_kind~~ | ~~boolean~~ | ~~一次性回填~~ | **已删除** — migration 0034（2026-05-18）DROP COLUMN。"卡类"识别下沉到 SKU 级 `is_experience` / `is_recharge_card` capability 列 | 0034 | — |
 | display_color | text | 默认值 + 一次性回填 | 默认 NULL；migration 0014:L13-22 一级行按 category_name 写死 5 个色值（组合套餐 #C0322A / 护理项目 #1989FA / 家居产品 #5AACA5 / 充值卡 #D4820A / 体验卡 #8B5CF6） | 0014:L13-22 | PG 现状 4/55 行非 NULL（archive 0029 把"福利活动"改成"组合套餐"，但本次 0014 回填使用新名字。"福利活动"一级行未匹配上，**display_color 为 NULL**） |
 | display_icon | text | 新系统独立 | NULL / admin 手填 | — | PG 现状 0/55 行非 NULL |
 | requires_shengmei_flag | boolean | 默认值 + 一次性回填 | 默认 false；0014:L25-28 把一级行 `category_name='护理项目'` 设 true | 0014:L25-28 | PG 现状 1/55 行 true |

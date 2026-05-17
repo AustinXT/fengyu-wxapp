@@ -23,9 +23,14 @@ import {
 import { createCategory, updateCategory } from "@/actions/products"
 import ProductKindManagementDialog from "./product-kind-management-dialog"
 
+type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
+
+const SALES_CATEGORY_OPTIONS: SalesCategory[] = ['自销自耗', '他销自耗', '他销他耗', '生态合作']
+
 interface CategoryFormData {
   categoryName: string
   productKind: string
+  salesCategory: SalesCategory | ''
   sortOrder: number
   isValid: boolean
 }
@@ -54,6 +59,7 @@ export default function CategoriesPageClient({
   const [form, setForm] = useState<CategoryFormData>({
     categoryName: "",
     productKind: defaultKind,
+    salesCategory: "",
     sortOrder: 0,
     isValid: true,
   })
@@ -81,6 +87,7 @@ export default function CategoriesPageClient({
     setForm({
       categoryName: "",
       productKind: activeTab,
+      salesCategory: "",
       sortOrder: 0,
       isValid: true,
     })
@@ -92,6 +99,7 @@ export default function CategoriesPageClient({
     setForm({
       categoryName: row.categoryName,
       productKind: row.productKind ?? activeTab,
+      salesCategory: (row.salesCategory as SalesCategory | null) ?? "",
       sortOrder: row.sortOrder,
       isValid: row.isValid,
     })
@@ -109,6 +117,7 @@ export default function CategoriesPageClient({
         const catResult = await updateCategory(editingCategory.categoryId, {
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
+          salesCategory: form.salesCategory || null,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
         }, editingCategory.updatedAt)
@@ -122,6 +131,7 @@ export default function CategoriesPageClient({
         const createResult = await createCategory({
           categoryName: form.categoryName.trim(),
           productKind: form.productKind,
+          salesCategory: form.salesCategory || null,
           sortOrder: form.sortOrder,
           isValid: form.isValid,
         })
@@ -165,8 +175,13 @@ export default function CategoriesPageClient({
   const columns: Column<ProductCategory>[] = [
     {
       key: "categoryName",
-      header: "分类名称",
+      header: "二级分类名称",
       cell: (row) => <span className="font-medium">{row.categoryName}</span>,
+    },
+    {
+      key: "salesCategory",
+      header: "经营类型",
+      cell: (row) => row.salesCategory ?? <span className="text-[var(--muted-foreground)]">—</span>,
     },
     {
       key: "sortOrder",
@@ -219,8 +234,8 @@ export default function CategoriesPageClient({
           <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项类型管理</Button>
-          <Button onClick={openAddDialog}>新增分类</Button>
+          <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项一级分类管理</Button>
+          <Button onClick={openAddDialog}>新增二级分类</Button>
         </div>
       </div>
 
@@ -274,6 +289,20 @@ export default function CategoriesPageClient({
                 <option key={kind.categoryId} value={kind.categoryName}>
                   {kind.categoryName}
                 </option>
+              ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">经营类型</label>
+            <Select
+              value={form.salesCategory}
+              onChange={(e) =>
+                setForm({ ...form, salesCategory: e.target.value as SalesCategory | "" })
+              }
+            >
+              <option value="">未设置</option>
+              {SALES_CATEGORY_OPTIONS.map((sc) => (
+                <option key={sc} value={sc}>{sc}</option>
               ))}
             </Select>
           </div>

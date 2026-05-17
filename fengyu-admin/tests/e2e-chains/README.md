@@ -335,7 +335,7 @@ eval $PSQL_TEST -c "
 
 #### 前置
 读 `.last-test-context.json` 拿到链路 1 的 `saleOrderId`。
-fixture 顾客绑定店为 store-nc01 且至少一个 sale_item 是护理项目类（`is_card_kind=false`）。
+fixture 顾客绑定店为 store-nc01 且至少一个 sale_item 是护理项目类（非充值卡 / 非体验卡，即 SKU `is_experience=false AND is_recharge_card=false`）。
 
 #### 步骤
 1. 进 `/services`，点"新建服务单"

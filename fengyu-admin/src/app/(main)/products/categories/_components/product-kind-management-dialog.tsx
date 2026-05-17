@@ -24,7 +24,6 @@ interface FormData {
   categoryName: string
   sortOrder: number
   isValid: boolean
-  isCardKind: boolean
   displayColor: string
   displayIcon: string
   requiresShengmeiFlag: boolean
@@ -34,7 +33,6 @@ const emptyForm: FormData = {
   categoryName: "",
   sortOrder: 0,
   isValid: true,
-  isCardKind: false,
   displayColor: "",
   displayIcon: "",
   requiresShengmeiFlag: false,
@@ -78,7 +76,6 @@ export default function ProductKindManagementDialog({
       categoryName: row.categoryName,
       sortOrder: row.sortOrder,
       isValid: row.isValid,
-      isCardKind: row.isCardKind,
       displayColor: row.displayColor ?? "",
       displayIcon: row.displayIcon ?? "",
       requiresShengmeiFlag: row.requiresShengmeiFlag,
@@ -94,7 +91,6 @@ export default function ProductKindManagementDialog({
     setSaving(true)
     try {
       const capabilityFields = {
-        isCardKind: form.isCardKind,
         displayColor: form.displayColor.trim() || null,
         displayIcon: form.displayIcon.trim() || null,
         requiresShengmeiFlag: form.requiresShengmeiFlag,
@@ -169,11 +165,6 @@ export default function ProductKindManagementDialog({
       cell: (row) => <span className="font-medium">{row.categoryName}</span>,
     },
     { key: "sortOrder", header: "排序" },
-    {
-      key: "isCardKind",
-      header: "卡类",
-      cell: (row) => (row.isCardKind ? <Badge variant="outline">卡</Badge> : <span className="text-[var(--muted-foreground)]">—</span>),
-    },
     {
       key: "displayColor",
       header: "颜色",
@@ -292,16 +283,6 @@ export default function ProductKindManagementDialog({
               value={form.displayIcon}
               onChange={(e) => setForm({ ...form, displayIcon: e.target.value })}
               placeholder="留空即不展示"
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="text-sm font-medium">是否为卡类</label>
-              <p className="text-xs text-[var(--muted-foreground)]">勾选后此一级品项会从员工端 / 管理后台开单"普通商品"分支中排除</p>
-            </div>
-            <Switch
-              checked={form.isCardKind}
-              onCheckedChange={(checked) => setForm({ ...form, isCardKind: checked })}
             />
           </div>
           <div className="flex items-center justify-between">

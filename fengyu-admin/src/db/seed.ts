@@ -129,11 +129,11 @@ const CLIENTS = [
 
 // 一级分类（品项类型）：product_kind = null；带 capability 列（DB 驱动 SSoT）
 const PRODUCT_KINDS = [
-  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, isCardKind: false, displayColor: '#C0322A', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, isCardKind: false, displayColor: '#1989FA', displayIcon: null,    requiresShengmeiFlag: true  },
-  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, isCardKind: false, displayColor: '#5AACA5', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, isCardKind: true,  displayColor: '#D4820A', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, isCardKind: true,  displayColor: '#8B5CF6', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, displayColor: '#C0322A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, displayColor: '#1989FA', displayIcon: null,    requiresShengmeiFlag: true  },
+  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, displayColor: '#5AACA5', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, displayColor: '#D4820A', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, displayColor: '#8B5CF6', displayIcon: null,    requiresShengmeiFlag: false },
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName

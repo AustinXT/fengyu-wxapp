@@ -3861,8 +3861,8 @@ describe('order.createConversion', () => {
           unit_price: '200', unit_real_price: '200',
           sales_category: '自销自耗', service_fee: '0',
           client_user_id: 'cu-001', order_status: '已支付', product_kind: '体验卡',
-          parent_is_card_kind: true, parent_category_name: '体验卡',
-          is_recharge_card: false,
+          parent_category_name: '体验卡',
+          is_recharge_card: false, is_experience: true,
         }], rowCount: 1,
       })
       .mockResolvedValueOnce({
@@ -3987,9 +3987,9 @@ describe('order.customerHeldCards', () => {
     await orderRoutes.customerHeldCards(ctx)
 
     const sql = pg.query.mock.calls[0][0]
-    // 2026-04-26 重构：体验类单品卡分支用 parent.is_card_kind=true AND NOT si.is_recharge_card（capability 列），
+    // is_card_kind 清理后，体验类单品卡分支改用 SKU 级 capability si.is_experience = true，
     // 必须含 (quantity - COALESCE(picked_up_quantity,0)) > 0
-    expect(sql).toMatch(/pc_parent\.is_card_kind = true[\s\S]*NOT si\.is_recharge_card[\s\S]*quantity[\s\S]*picked_up_quantity[\s\S]*>\s*0/)
+    expect(sql).toMatch(/si\.is_experience = true[\s\S]*quantity[\s\S]*picked_up_quantity[\s\S]*>\s*0/)
   })
 
   test('权限守卫：美容师调用 → requireManager 抛 PERMISSION_DENIED', async () => {

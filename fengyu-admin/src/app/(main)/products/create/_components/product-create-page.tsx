@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
-import type { ProductCategory } from "@/lib/types"
+import type { ProductCategory, ProjectSeries } from "@/lib/types"
 import { createSku } from "@/actions/products"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
 import { Button } from "@/components/ui/button"
@@ -21,9 +21,11 @@ interface Market {
 export default function SkuCreatePageClient({
   categories,
   markets,
+  projectSeriesOptions,
 }: {
   categories: ProductCategory[]
   markets: Market[]
+  projectSeriesOptions: ProjectSeries[]
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
@@ -34,6 +36,7 @@ export default function SkuCreatePageClient({
   const [isShengmei, setIsShengmei] = useState<boolean>(false)
   const [isExperience, setIsExperience] = useState<boolean>(false)
   const [isRechargeCard, setIsRechargeCard] = useState<boolean>(false)
+  const [projectSeriesId, setProjectSeriesId] = useState<number | null>(null)
   const [allMarkets, setAllMarkets] = useState(true)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
 
@@ -60,7 +63,7 @@ export default function SkuCreatePageClient({
     const price = (fd.get("price") as string).trim()
 
     if (!specName) {
-      toast.error("请输入品项名称")
+      toast.error("请输入商品名称")
       return
     }
     if (!categoryId) {
@@ -105,6 +108,7 @@ export default function SkuCreatePageClient({
         isShengmei: requiresShengmei ? isShengmei : null,
         isExperience,
         isRechargeCard,
+        projectSeriesId,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
       })
@@ -113,7 +117,7 @@ export default function SkuCreatePageClient({
         return
       }
       setFormDirty(false)
-      toast.success("品项创建成功")
+      toast.success("商品创建成功")
       router.push("/products")
     } catch {
       toast.error("创建失败，请稍后重试")
@@ -128,7 +132,7 @@ export default function SkuCreatePageClient({
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
         </Button>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">新增品项</h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)]">新增商品</h1>
       </div>
 
       {/* 基本信息 */}
@@ -139,8 +143,8 @@ export default function SkuCreatePageClient({
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">品项名称</label>
-              <Input name="specName" placeholder="请输入品项名称" />
+              <label className="text-sm font-medium">商品名称</label>
+              <Input name="specName" placeholder="请输入商品名称" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">品项分类</label>
@@ -172,6 +176,26 @@ export default function SkuCreatePageClient({
                 </Select>
               </div>
             )}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">经营类型</label>
+              <Input value={selectedCategory?.salesCategory ?? "—"} disabled readOnly />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">项目系列</label>
+              <Select
+                value={projectSeriesId === null ? "" : String(projectSeriesId)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setProjectSeriesId(v === "" ? null : Number(v))
+                  setFormDirty(true)
+                }}
+              >
+                <option value="">未设置</option>
+                {projectSeriesOptions.map((s) => (
+                  <option key={s.id} value={String(s.id)}>{s.name}</option>
+                ))}
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -322,7 +346,7 @@ export default function SkuCreatePageClient({
         <Button type="button" variant="outline" onClick={() => router.back()}>
           取消
         </Button>
-        <Button type="submit" loading={saving}>创建品项</Button>
+        <Button type="submit" loading={saving}>创建商品</Button>
       </div>
     </form>
   )

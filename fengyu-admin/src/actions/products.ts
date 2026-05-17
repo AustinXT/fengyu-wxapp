@@ -2,12 +2,13 @@
 
 import { db } from '@/db'
 import { productCategories, products, productSkus, mallCategories, mallBundleGroups, mallProductSkus } from '@db/product'
+import { projectSeriesLookup } from '@db/lookup'
 import { orgNodes } from '@db/org'
 import { alias } from 'drizzle-orm/pg-core'
 import { eq, and, asc, sql, inArray, isNotNull, isNull } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import crypto from 'crypto'
-import type { ProductCategory, Product, ProductSku, MallCategory, MallBundleGroup } from '@/lib/types'
+import type { ProductCategory, Product, ProductSku, ProjectSeries, MallCategory, MallBundleGroup } from '@/lib/types'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
@@ -71,6 +72,29 @@ export const resolveManageScope = withPermission(
   },
 )
 
+// ===== 项目系列字典 =====
+
+/**
+ * 获取所有启用的项目系列（SKU 的"项目系列"下拉选项来源）。
+ */
+export const getProjectSeries = withPermission(
+  'product:list',
+  async (_session): Promise<ProjectSeries[]> => {
+    const rows = await db
+      .select({
+        id: projectSeriesLookup.id,
+        name: projectSeriesLookup.name,
+        sortOrder: projectSeriesLookup.sortOrder,
+        isValid: projectSeriesLookup.isValid,
+      })
+      .from(projectSeriesLookup)
+      .where(eq(projectSeriesLookup.isValid, true))
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(projectSeriesLookup.sortOrder), asc(projectSeriesLookup.id))
+    return rows
+  },
+)
+
 // ===== 品项分类（商品管理） =====
 
 export const getCategories = withPermission(
@@ -84,7 +108,6 @@ export const getCategories = withPermission(
         child: productCategories,
         parentDisplayColor: parent.displayColor,
         parentDisplayIcon: parent.displayIcon,
-        parentIsCardKind: parent.isCardKind,
         parentRequiresShengmeiFlag: parent.requiresShengmeiFlag,
       })
       .from(productCategories)
@@ -105,13 +128,11 @@ export const getCategories = withPermission(
       salesCategory: r.child.salesCategory as ProductCategory['salesCategory'],
       sortOrder: r.child.sortOrder,
       isValid: r.child.isValid,
-      isCardKind: r.child.isCardKind,
       displayColor: r.child.displayColor,
       displayIcon: r.child.displayIcon,
       requiresShengmeiFlag: r.child.requiresShengmeiFlag,
       parentDisplayColor: r.parentDisplayColor,
       parentDisplayIcon: r.parentDisplayIcon,
-      parentIsCardKind: r.parentIsCardKind ?? undefined,
       parentRequiresShengmeiFlag: r.parentRequiresShengmeiFlag ?? undefined,
       createdAt: r.child.createdAt.toISOString(),
       updatedAt: r.child.updatedAt.toISOString(),
@@ -121,8 +142,8 @@ export const getCategories = withPermission(
 
 /**
  * 获取所有一级分类（品项类型），即 product_kind IS NULL 的行。
- * 返回 capability 列（isCardKind/displayColor/displayIcon/requiresShengmeiFlag），
- * 供前端"普通商品 vs 卡类"判断、tag 颜色渲染、表单显隐使用。
+ * 返回 capability 列（displayColor/displayIcon/requiresShengmeiFlag），
+ * 供前端 tag 颜色渲染、表单显隐使用。
  */
 export const getProductKinds = withPermission(
   'product:list',
@@ -141,32 +162,12 @@ export const getProductKinds = withPermission(
       salesCategory: null,
       sortOrder: c.sortOrder,
       isValid: c.isValid,
-      isCardKind: c.isCardKind,
       displayColor: c.displayColor,
       displayIcon: c.displayIcon,
       requiresShengmeiFlag: c.requiresShengmeiFlag,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
     }))
-  },
-)
-
-/**
- * 卡类一级 kind 名单的运行时 SSoT。从 DB 查 `is_card_kind=true AND isValid=true`。
- * 替代 lib/product-kind.ts 的常量，admin 内新代码请优先使用本函数。
- */
-export const getCardKindNamesFromDb = withPermission(
-  'product:list',
-  async (): Promise<string[]> => {
-    const rows = await db
-      .select({ name: productCategories.categoryName })
-      .from(productCategories)
-      .where(and(
-        isNull(productCategories.productKind),
-        eq(productCategories.isCardKind, true),
-        eq(productCategories.isValid, true),
-      ))
-    return rows.map((r) => r.name)
   },
 )
 
@@ -181,7 +182,6 @@ export const createProductKind = withPermission(
       categoryName: string
       sortOrder?: number
       isValid?: boolean
-      isCardKind?: boolean
       displayColor?: string | null
       displayIcon?: string | null
       requiresShengmeiFlag?: boolean
@@ -211,7 +211,6 @@ export const createProductKind = withPermission(
       productKind: null,
       sortOrder: data.sortOrder ?? 0,
       isValid: data.isValid ?? true,
-      isCardKind: data.isCardKind ?? false,
       displayColor: data.displayColor ?? null,
       displayIcon: data.displayIcon ?? null,
       requiresShengmeiFlag: data.requiresShengmeiFlag ?? false,
@@ -219,7 +218,6 @@ export const createProductKind = withPermission(
 
     await logOperation(session, 'product_kind.create', 'product_category', categoryId, {
       categoryName: data.categoryName.trim(),
-      isCardKind: data.isCardKind ?? false,
       displayColor: data.displayColor ?? null,
     })
     revalidatePath('/products')
@@ -240,7 +238,6 @@ export const updateProductKind = withPermission(
       categoryName: string
       sortOrder: number
       isValid: boolean
-      isCardKind: boolean
       displayColor: string | null
       displayIcon: string | null
       requiresShengmeiFlag: boolean
@@ -285,7 +282,6 @@ export const updateProductKind = withPermission(
       if (newName !== undefined) updateData.categoryName = newName
       if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
       if (data.isValid !== undefined) updateData.isValid = data.isValid
-      if (data.isCardKind !== undefined) updateData.isCardKind = data.isCardKind
       if (data.displayColor !== undefined) updateData.displayColor = data.displayColor
       if (data.displayIcon !== undefined) updateData.displayIcon = data.displayIcon
       if (data.requiresShengmeiFlag !== undefined) updateData.requiresShengmeiFlag = data.requiresShengmeiFlag
@@ -447,6 +443,7 @@ export const getAllSkus = withPermission(
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
       isRechargeCard: r.sku.isRechargeCard,
+      projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
       createdAt: r.sku.createdAt.toISOString(),
@@ -468,9 +465,11 @@ export const getSkuById = withPermission(
         categoryName: productCategories.categoryName,
         productKind: productCategories.productKind,
         salesCategory: productCategories.salesCategory,
+        projectSeriesName: projectSeriesLookup.name,
       })
       .from(productSkus)
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .leftJoin(projectSeriesLookup, eq(productSkus.projectSeriesId, projectSeriesLookup.id))
       .where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt)))
       .limit(1)
 
@@ -490,6 +489,7 @@ export const getSkuById = withPermission(
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
       isRechargeCard: r.sku.isRechargeCard,
+      projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
       createdAt: r.sku.createdAt.toISOString(),
@@ -497,6 +497,7 @@ export const getSkuById = withPermission(
       categoryName: r.categoryName ?? undefined,
       productKind: r.productKind ?? undefined,
       salesCategory: (r.salesCategory as ProductSku['salesCategory']) ?? undefined,
+      projectSeriesName: r.projectSeriesName ?? null,
     }
   },
 )
@@ -533,6 +534,7 @@ export const getSkusByProductId = withPermission(
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
       isRechargeCard: r.sku.isRechargeCard,
+      projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
       bundlePrice: r.bundlePrice,
@@ -565,6 +567,8 @@ export const createSku = withPermission(
       isExperience?: boolean
       /** 充值卡 capability 列（与 isExperience 互斥） */
       isRechargeCard?: boolean
+      /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+      projectSeriesId?: number | null
       marketScope?: string | null
       isEnabled?: boolean
     },
@@ -641,6 +645,8 @@ export const updateSku = withPermission(
       isExperience: boolean
       /** 充值卡 capability 列（与 isExperience 互斥） */
       isRechargeCard: boolean
+      /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
+      projectSeriesId: number | null
       marketScope: string | null
       isEnabled: boolean
     }>,
@@ -1429,9 +1435,9 @@ export const deleteMallCategory = withPermission(
  *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
  *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
  *
- * 特殊 '__normal__'（普通商品 = 非卡类的所有二级分类）：
- *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL
- *   AND parent.is_card_kind = false），并 EXISTS 过滤非 bundle 有效 SKU。
+ * 特殊 '__normal__'（普通商品 = 非卡类 SKU 的所有二级分类）：
+ *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL），
+ *   过滤 SKU 的 isExperience=false AND isRechargeCard=false，并 EXISTS 排除 bundle SKU。
  *   返回分组结构 `{ kind: '__normal__', groups: [{ productKind, categories }] }`，
  *   group 顺序按一级行 sortOrder，组内按二级行 sortOrder。
  *
@@ -1653,8 +1659,9 @@ export const getProductsByKind = withPermission(
       .where(
         and(
           isNotNull(productCategories.productKind),
-          // 普通商品 = 父级一级行 isCardKind=false（DB 驱动；不再读 CARD_PRODUCT_KINDS 常量）
-          eq(parentCat.isCardKind, false),
+          // 普通商品 = SKU 级 capability 双假（既非体验卡也非充值卡）
+          eq(productSkus.isExperience, false),
+          eq(productSkus.isRechargeCard, false),
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),

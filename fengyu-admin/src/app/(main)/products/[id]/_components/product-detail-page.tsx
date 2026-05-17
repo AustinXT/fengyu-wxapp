@@ -4,7 +4,7 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import type { ProductSku, ProductCategory } from "@/lib/types"
+import type { ProductSku, ProductCategory, ProjectSeries } from "@/lib/types"
 import { updateSku, deleteSku } from "@/actions/products"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -30,16 +30,19 @@ export default function SkuDetailPageClient({
   sku,
   categories,
   markets,
+  projectSeriesOptions,
 }: {
   sku: ProductSku
   categories: ProductCategory[]
   markets: Market[]
+  projectSeriesOptions: ProjectSeries[]
 }) {
   const router = useRouter()
   const [saving, setSaving] = useState(false)
   const [formDirty, setFormDirty] = useState(false)
   useUnsavedChanges(formDirty)
   const [categoryId, setCategoryId] = useState(sku.categoryId)
+  const [projectSeriesId, setProjectSeriesId] = useState<number | null>(sku.projectSeriesId ?? null)
 
   const [isShengmei, setIsShengmei] = useState<boolean>(sku.isShengmei ?? false)
   const [isExperience, setIsExperience] = useState<boolean>(sku.isExperience ?? false)
@@ -76,7 +79,7 @@ export default function SkuDetailPageClient({
     const price = (fd.get("price") as string).trim()
 
     if (!specName) {
-      toast.error("请输入品项名称")
+      toast.error("请输入商品名称")
       return
     }
     if (!categoryId) {
@@ -118,6 +121,7 @@ export default function SkuDetailPageClient({
         isShengmei: requiresShengmei ? isShengmei : null,
         isExperience,
         isRechargeCard,
+        projectSeriesId,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
       }, sku.updatedAt)
@@ -144,7 +148,7 @@ export default function SkuDetailPageClient({
         toast.error(result.message)
         return
       }
-      toast.success("品项已删除")
+      toast.success("商品已删除")
       router.push("/products")
     } catch {
       toast.error("删除失败，请稍后重试")
@@ -161,7 +165,7 @@ export default function SkuDetailPageClient({
             &larr; 返回
           </Button>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">
-            品项详情 - {sku.specName}
+            商品详情 - {sku.specName}
           </h1>
         </div>
         <Button
@@ -170,7 +174,7 @@ export default function SkuDetailPageClient({
           className="text-[var(--destructive)] border-[var(--destructive)]"
           onClick={() => setDeleteDialogOpen(true)}
         >
-          删除品项
+          删除商品
         </Button>
       </div>
 
@@ -183,7 +187,7 @@ export default function SkuDetailPageClient({
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium">品项名称</label>
+                <label className="text-sm font-medium">商品名称</label>
                 <Input name="specName" defaultValue={sku.specName} />
               </div>
               <div className="space-y-2">
@@ -216,6 +220,26 @@ export default function SkuDetailPageClient({
                   </Select>
                 </div>
               )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">经营类型</label>
+                <Input value={selectedCategory?.salesCategory ?? "—"} disabled readOnly />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">项目系列</label>
+                <Select
+                  value={projectSeriesId === null ? "" : String(projectSeriesId)}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setProjectSeriesId(v === "" ? null : Number(v))
+                    setFormDirty(true)
+                  }}
+                >
+                  <option value="">未设置</option>
+                  {projectSeriesOptions.map((s) => (
+                    <option key={s.id} value={String(s.id)}>{s.name}</option>
+                  ))}
+                </Select>
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -392,7 +416,7 @@ export default function SkuDetailPageClient({
       <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <AlertDialogTitle>确认删除</AlertDialogTitle>
         <AlertDialogDescription>
-          确定要删除品项「{sku.specName}」吗？此操作不可撤销。
+          确定要删除商品「{sku.specName}」吗？此操作不可撤销。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel

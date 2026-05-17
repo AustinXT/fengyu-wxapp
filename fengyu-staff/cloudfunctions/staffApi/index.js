@@ -52,7 +52,6 @@ const routes = {
   'product.skuDetail':    () => require('./routes/product').skuDetail,
   'product.skuList':      () => require('./routes/product').skuList,
   'product.spuDetail':    () => require('./routes/product').spuDetail,
-  'product.cardKinds':    () => require('./routes/product').cardKinds,
   'product.promotionList': () => require('./routes/product').promotionList,
   'product.promotionPlans': () => require('./routes/product').promotionPlans,
 

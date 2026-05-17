@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { productTypeEnum, salesCategoryEnum } from "./enums";
+import { projectSeriesLookup } from "./lookup";
 
 /**
  * 品项分类
@@ -21,11 +22,12 @@ import { productTypeEnum, salesCategoryEnum } from "./enums";
  * sales_category 确定该品项的销售分类，进而决定提成比例。
  *
  * 一级行（productKind IS NULL）的 capability 列：
- * - isCardKind：是否为"卡类"一级（充值卡/体验卡）。开单页"普通商品"分支需排除卡类。
  * - displayColor / displayIcon：商品 tag 视觉渲染依据，前端不再硬编码字面量分支。
  * - requiresShengmeiFlag：该 kind 下的 SKU 表单是否需要"是否生美"开关（替代字面量等值）。
  *
  * 二级行（productKind 非 NULL）：上述 capability 列 NULL，运行时按需读取父级行。
+ *
+ * "卡类"识别已从 isCardKind 列下沉到 SKU 级 capability（isExperience / isRechargeCard）。
  */
 export const productCategories = pgTable("product_categories", {
   categoryId: text("category_id").primaryKey(),
@@ -34,7 +36,6 @@ export const productCategories = pgTable("product_categories", {
   salesCategory: salesCategoryEnum("sales_category"),
   sortOrder: integer("sort_order").notNull().default(0),
   isValid: boolean("is_valid").notNull().default(true),
-  isCardKind: boolean("is_card_kind").notNull().default(false),
   displayColor: text("display_color"),
   displayIcon: text("display_icon"),
   requiresShengmeiFlag: boolean("requires_shengmei_flag").notNull().default(false),
@@ -86,6 +87,10 @@ export const productSkus = pgTable(
      * 行级语义在 sale_items.is_recharge_card 快照保留，开单时拷贝。
      */
     isRechargeCard: boolean("is_recharge_card").notNull().default(false),
+    /** 项目系列（lookup 表外键，NULL=未设置） */
+    projectSeriesId: bigint("project_series_id", { mode: "number" }).references(
+      () => projectSeriesLookup.id,
+    ),
     /** 可见范围（null=全部可见） */
     marketScope: text("market_scope"),
     isEnabled: boolean("is_enabled").notNull().default(true),

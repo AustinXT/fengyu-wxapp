@@ -446,32 +446,6 @@ async function experienceCardList(ctx) {
   ctx.result = { skuList: rows }
 }
 
-/**
- * 卡类一级 kind 名单（与 staffApi product.cardKinds 行为对齐）
- *
- * 从 `product_categories` 一级行（productKind IS NULL）取 `is_card_kind=true` 的
- * `category_name` 列表，供小程序前端"普通商品 vs 卡类"过滤使用。
- * 返回 `{ names: string[] }`：按 sort_order 升序；DB 异常时返回空数组（前端兜底）。
- *
- * 与 staffApi 副本独立维护（用户决策：避免跨项目运维），
- * 一致性靠 staffApi __tests__/routes/cross-end-sql-snapshot.test.js 风格的测试守护。
- */
-async function cardKinds(ctx) {
-  try {
-    const rows = await pg.query(`
-      SELECT category_name
-      FROM product_categories
-      WHERE product_kind IS NULL
-        AND is_card_kind = true
-        AND is_valid = true
-      ORDER BY sort_order ASC
-    `)
-    ctx.result = { names: rows.map((r) => r.category_name) }
-  } catch (err) {
-    ctx.result = { names: [] }
-  }
-}
-
 module.exports = {
   categories,
   spuList,
@@ -480,5 +454,4 @@ module.exports = {
   hotList,
   shopInit,
   experienceCardList,
-  cardKinds,
 }

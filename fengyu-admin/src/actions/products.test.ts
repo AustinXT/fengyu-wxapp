@@ -20,7 +20,6 @@ vi.mock('@db/product', () => ({
     productKind: 'product_kind',
     sortOrder: 'sort_order',
     isValid: 'is_valid',
-    isCardKind: 'is_card_kind',
     displayColor: 'display_color',
     displayIcon: 'display_icon',
     requiresShengmeiFlag: 'requires_shengmei_flag',
@@ -118,7 +117,6 @@ import {
   deleteSku,
   getCategories,
   getProductKinds,
-  getCardKindNamesFromDb,
   getProducts,
   getProductById,
   getSkusByProductId,
@@ -416,7 +414,7 @@ describe('updateProductKind — 改名级联', () => {
     expect(setCalls[0]).toMatchObject({ sortOrder: 5 })
   })
 
-  it('updateProductKind 接收 capability 字段（isCardKind / displayColor / requiresShengmeiFlag）', async () => {
+  it('updateProductKind 接收 capability 字段（displayColor / requiresShengmeiFlag）', async () => {
     let call = 0
     ;(db.select as any).mockImplementation(() => {
       call++
@@ -424,7 +422,7 @@ describe('updateProductKind — 改名级联', () => {
         return makeSelectChain([{
           categoryId: 'kind-test', categoryName: '测试卡', productKind: null,
           sortOrder: 9, isValid: true,
-          isCardKind: false, displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+          displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
           updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         }])()
       }
@@ -445,51 +443,14 @@ describe('updateProductKind — 改名级联', () => {
     })
 
     const result = await updateProductKind('kind-test', {
-      isCardKind: true,
       displayColor: '#FF00FF',
       requiresShengmeiFlag: false,
     })
     expect(result.success).toBe(true)
     expect(setCalls[0]).toMatchObject({
-      isCardKind: true,
       displayColor: '#FF00FF',
       requiresShengmeiFlag: false,
     })
-  })
-})
-
-// ── PR-A capability 接口 ──────────────────────────────────────────────────────
-
-describe('getCardKindNamesFromDb — 卡类一级 kind DB 名单', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    ;(getSession as any).mockResolvedValue(mockSession)
-  })
-
-  it('返回 is_card_kind=true 且 isValid=true 的一级 kind 名称', async () => {
-    const where = vi.fn().mockResolvedValue([
-      { name: '充值卡' },
-      { name: '体验卡' },
-    ])
-    const from = vi.fn().mockReturnValue({ where })
-    ;(db.select as any).mockReturnValue({ from })
-
-    const names = await getCardKindNamesFromDb()
-    expect(names).toEqual(['充值卡', '体验卡'])
-  })
-
-  it('admin 新建 isCardKind=true 的虚拟 kind 后，名单包含该 kind', async () => {
-    const where = vi.fn().mockResolvedValue([
-      { name: '充值卡' },
-      { name: '体验卡' },
-      { name: '测试卡' },
-    ])
-    const from = vi.fn().mockReturnValue({ where })
-    ;(db.select as any).mockReturnValue({ from })
-
-    const names = await getCardKindNamesFromDb()
-    expect(names).toContain('测试卡')
-    expect(names).toHaveLength(3)
   })
 })
 
@@ -499,11 +460,11 @@ describe('getProductKinds — 一级 kind 含 capability', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('返回结构含 isCardKind / displayColor / displayIcon / requiresShengmeiFlag', async () => {
+  it('返回结构含 displayColor / displayIcon / requiresShengmeiFlag', async () => {
     const orderBy = vi.fn().mockResolvedValue([{
       categoryId: 'kind-care', categoryName: '护理项目', productKind: null,
       sortOrder: 2, isValid: true,
-      isCardKind: false, displayColor: '#1989FA', displayIcon: null, requiresShengmeiFlag: true,
+      displayColor: '#1989FA', displayIcon: null, requiresShengmeiFlag: true,
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'),
     }])
     const where = vi.fn().mockReturnValue({ orderBy })
@@ -513,7 +474,6 @@ describe('getProductKinds — 一级 kind 含 capability', () => {
     const kinds = await getProductKinds()
     expect(kinds[0]).toMatchObject({
       categoryName: '护理项目',
-      isCardKind: false,
       displayColor: '#1989FA',
       requiresShengmeiFlag: true,
     })
@@ -706,12 +666,11 @@ describe('getCategories — 品项分类列表', () => {
         categoryId: 'cat-1', categoryName: '面部护理', productKind: '护理项目',
         salesCategory: '自销自耗',
         sortOrder: 1, isValid: true,
-        isCardKind: false, displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+        displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
         createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
       },
       parentDisplayColor: '#1989FA',
       parentDisplayIcon: null,
-      parentIsCardKind: false,
       parentRequiresShengmeiFlag: true,
     }])
     const leftJoin = vi.fn().mockReturnValue({ orderBy })

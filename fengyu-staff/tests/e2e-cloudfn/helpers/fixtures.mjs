@@ -277,7 +277,7 @@ export async function createTestProduct({
 } = {}) {
   // 一级品项（'护理项目' / '家居产品' / '充值卡' / '体验卡'）在生产库已 seed。
   // 不再 INSERT 测试级 level-1 行，避免与生产同名 category_name 触发 LEFT JOIN 重复
-  // （createConversion 的 held query 通过 category_name 匹配 parent_is_card_kind）。
+  // （createConversion 的 held query 通过 si.is_experience capability 列识别"体验单品卡"）。
   // 二级分类（product_kind=该一级名，sales_category 决定提成）
   const subCatId = `${NS}_CAT_${suffix}`
   await pgQuery(

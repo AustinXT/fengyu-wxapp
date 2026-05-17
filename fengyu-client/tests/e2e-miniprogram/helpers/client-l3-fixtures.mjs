@@ -42,9 +42,9 @@ export async function ensureClientCategories() {
   await query(
     `INSERT INTO product_categories (
        category_id, category_name, product_kind, sales_category,
-       sort_order, is_valid, is_card_kind
+       sort_order, is_valid
      )
-     VALUES ($1, $2, '护理项目', '自销自耗'::sales_category, 0, true, false)
+     VALUES ($1, $2, '护理项目', '自销自耗'::sales_category, 0, true)
      ON CONFLICT (category_id) DO NOTHING`,
     [L3_PROD_CATEGORY_ID, `${NS}_品项分类`]
   )

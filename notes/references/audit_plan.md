@@ -93,7 +93,7 @@
 | 21 | **组织架构（org_nodes 邻接表 + stores 1:1）** | `(main)/org` + `(main)/stores/[id]` | `routes/store.list` | `routes/store.list/detail` | orgNodeType 4 值、邻接表无环、type=门店 1:1 stores、scope_id FK 完整性 |
 | 22 | **权限矩阵 + 角色（permission_roles）** | `(main)/permissions` | middleware 读取 | — | roles 数组解析、scope_id 范围控制、positionScope 3 值（总部/市场/门店） |
 | 23 | **操作日志（operation_logs）** | `(main)/logs` | 写入 | 写入 | operator_employee_id 写入完整（v3.3 后）、关键动作（开单/退款/分配/解绑审批）必写、operator_user_id 已废弃 |
-| 24 | **品项分类动态字段** | `(main)/products/categories` | — | `routes/product.categories` | migration 0014 字段（isCardKind/displayColor/displayIcon/requiresShengmeiFlag）一致 |
+| 24 | **品项分类动态字段** | `(main)/products/categories` | — | `routes/product.categories` | migration 0014 字段（displayColor/displayIcon/requiresShengmeiFlag）一致；`isCardKind` 列已于 0034 DROP |
 | 25 | **流量 / 推广员链路** | — | `routes/mgmt-traffic.js` | `routes/auth.bindStore` 写 sourceChannel/promoterEmployeeId | 推广员业绩归属、来源渠道枚举、推广员变更追溯 |
 
 ---

@@ -47,9 +47,9 @@ export async function ensureTestCategories({
   await pgQuery(
     `INSERT INTO product_categories (
        category_id, category_name, product_kind, sales_category,
-       sort_order, is_valid, is_card_kind
+       sort_order, is_valid
      )
-     VALUES ($1, $2, $3, $4::sales_category, 0, true, false)
+     VALUES ($1, $2, $3, $4::sales_category, 0, true)
      ON CONFLICT (category_id) DO NOTHING`,
     [productCategoryId, `${NS}_品项分类`, productKind, salesCategory]
   )

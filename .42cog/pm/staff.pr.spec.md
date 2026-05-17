@@ -91,7 +91,7 @@
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"动态聚合 `product_categories WHERE productKind IS NULL AND parent.isCardKind=false AND isValid=true` 全部一级 kind 下的二级分类。**Tab 标签仅 UI 渲染分支用**——SQL 过滤一律走 `is_experience` / `is_recharge_card` capability 列，详见 `backend.pr.spec.md` §4 #23 | 视图常量 + DB 驱动 |
+| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"过滤 SKU `is_experience=false AND is_recharge_card=false`（capability 列驱动）。**Tab 标签仅 UI 渲染分支用**——SQL 过滤一律走 `is_experience` / `is_recharge_card` capability 列，详见 `backend.pr.spec.md` §4 #23 | 视图常量 + capability 列 |
 | 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），家居产品固定追加末尾 |
 | 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
 | 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |

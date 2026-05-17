@@ -2089,7 +2089,6 @@ async function createConversion(ctx) {
               so.client_user_id,
               so.status AS order_status,
               pc.product_kind,
-              pc_parent.is_card_kind AS parent_is_card_kind,
               pc_parent.category_name AS parent_category_name
        FROM sale_items si
        JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
@@ -2129,7 +2128,7 @@ async function createConversion(ctx) {
         const rem = Number(row.remaining_sessions || 0)
         if (rem <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = rem
-      } else if (productType === '单品' && row.parent_is_card_kind === true && row.is_recharge_card !== true) {
+      } else if (productType === '单品' && row.is_experience === true) {
         const remQty = Number(row.quantity) - Number(row.picked_up_quantity || 0)
         if (remQty <= 0) throw new Error('INVALID_PARAMS: 部分卡已耗尽')
         qty = remQty
@@ -2371,7 +2370,7 @@ async function createConversion(ctx) {
  *
  * 口径与 admin getCustomerHeldCards 保持一致：
  *   - 疗程卡：product_type='疗程卡' AND remaining_sessions > 0
- *   - 体验类单品卡：product_type='单品' AND parent.is_card_kind=true AND NOT si.is_recharge_card
+ *   - 体验类单品卡：product_type='单品' AND si.is_experience=true
  *     AND (quantity - picked_up_quantity) > 0
  */
 async function customerHeldCards(ctx) {
@@ -2394,22 +2393,19 @@ async function customerHeldCards(ctx) {
             CASE
               WHEN si.product_type = '疗程卡'
                 THEN si.unit_real_price * COALESCE(si.remaining_sessions, 0)
-              WHEN si.product_type = '单品' AND pc_parent.is_card_kind = true AND NOT si.is_recharge_card
+              WHEN si.product_type = '单品' AND si.is_experience = true
                 THEN si.unit_real_price * (si.quantity - COALESCE(si.picked_up_quantity, 0))
               ELSE 0
             END AS deductible_amount
      FROM sale_items si
      JOIN sale_orders so ON si.sale_order_id = so.sale_order_id
-     LEFT JOIN product_skus ps ON si.sku_id = ps.sku_id
-     LEFT JOIN product_categories pc ON ps.category_id = pc.category_id
-     LEFT JOIN product_categories pc_parent ON pc_parent.category_name = pc.product_kind AND pc_parent.product_kind IS NULL
      WHERE so.client_user_id = $1
        AND si.store_id = $2
        AND si.item_direction = '购买'
        AND so.status IN ('已支付', '已完成')
        AND (
             (si.product_type = '疗程卡' AND COALESCE(si.remaining_sessions, 0) > 0)
-         OR (si.product_type = '单品' AND pc_parent.is_card_kind = true AND NOT si.is_recharge_card
+         OR (si.product_type = '单品' AND si.is_experience = true
               AND (si.quantity - COALESCE(si.picked_up_quantity, 0)) > 0)
        )
      ORDER BY si.sale_order_id DESC`,

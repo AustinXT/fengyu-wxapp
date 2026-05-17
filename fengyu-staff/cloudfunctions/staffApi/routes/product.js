@@ -13,24 +13,6 @@
 const pg = require('../db/pg')
 const { requireStaffBound } = require('../middleware/auth')
 
-// ===== 常量 =====
-
-/**
- * @deprecated PR-D 起改用 DB `product_categories.is_card_kind=true` 作为 SSoT；
- *             2026-04-26 起 SKU 卡类判定改用 `product_skus.is_recharge_card` /
- *             `product_skus.is_experience` 两个 capability 列（与体验卡一致）。
- *
- * 本常量仅作运行时查询失败时的兜底名单（保险措施，避免 admin 未配置 is_card_kind
- * 时整条排除法链路退化）。新业务逻辑应优先调 `product.cardKinds` action 或
- * 内部 `_queryCardKindNames()` 辅助函数。
- *
- * 历史同步位置（保留参考）：
- *   - fengyu-admin/src/lib/product-kind.ts
- *   - fengyu-staff/cloudfunctions/staffApi/routes/product.js（本文件）
- *   - fengyu-staff/miniprogram/pages/order-create/order-create.ts
- */
-const CARD_PRODUCT_KINDS = ['充值卡', '体验卡']
-
 // ===== 公共查询辅助 =====
 
 /**
@@ -450,35 +432,6 @@ async function spuDetail(ctx) {
 }
 
 /**
- * 卡类一级 kind 名单（PR-D 新增）
- *
- * 从 `product_categories` 一级行（productKind IS NULL）中取 `is_card_kind=true`
- * 的 `category_name` 列表，供前端"普通商品 vs 卡类"过滤使用。
- *
- * 返回 `{ names: string[] }`：按 sort_order 升序；DB 查询失败或无配置时回退到
- * `CARD_PRODUCT_KINDS` 兜底常量。
- */
-async function cardKinds(ctx) {
-  await requireStaffBound()(ctx, async () => {})
-
-  try {
-    const rows = await pg.query(`
-      SELECT category_name
-      FROM product_categories
-      WHERE product_kind IS NULL
-        AND is_card_kind = true
-        AND is_valid = true
-      ORDER BY sort_order ASC
-    `)
-    const names = rows.map((r) => r.category_name)
-    ctx.result = { names: names.length > 0 ? names : CARD_PRODUCT_KINDS.slice() }
-  } catch (err) {
-    // 兜底：DB 查询异常时仍返回常量名单，避免前端崩溃
-    ctx.result = { names: CARD_PRODUCT_KINDS.slice() }
-  }
-}
-
-/**
  * 促销方案列表（已迁移至 PG 商品体系）
  * 原 WorkFine 促销查询已废弃，bundle 商品为后续实现
  */
@@ -492,11 +445,11 @@ async function promotionPlans(ctx) {
   ctx.result = []
 }
 
-module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, cardKinds, promotionList, promotionPlans }
+module.exports = { shopInit, categories, skuList, skuDetail, spuDetail, promotionList, promotionPlans }
 
 // 测试专用导出：用 Object.defineProperty 以非枚举挂载，避免被 index.test.js 的
 // "路由完整性" 扫描（Object.keys）检出为未注册路由。
 Object.defineProperty(module.exports, '__testables__', {
   enumerable: false,
-  value: { _queryCategoryRows, CARD_PRODUCT_KINDS },
+  value: { _queryCategoryRows },
 })

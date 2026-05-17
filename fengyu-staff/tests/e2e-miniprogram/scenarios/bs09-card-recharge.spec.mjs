@@ -35,7 +35,7 @@ const RECHARGE_FACE_VALUE = 500;
 let miniProgram = null;
 
 async function ensureRechargeSku() {
-  // is_card_kind=true 的一级品项（充值卡）在生产 seed，直接挂二级分类
+  // 一级品项 '充值卡' 在生产 seed，本 fixture 直接挂二级分类（SKU 用 is_recharge_card capability 判定）
   await tx(async (c) => {
     await c.query(
       `INSERT INTO product_categories (category_id, category_name, product_kind, sales_category, sort_order, is_valid)

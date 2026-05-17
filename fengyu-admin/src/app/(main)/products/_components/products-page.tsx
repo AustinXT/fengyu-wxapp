@@ -86,7 +86,7 @@ export default function ProductsPageClient({
   const columns: Column<ProductSku>[] = [
     {
       key: "specName",
-      header: "品项名称",
+      header: "商品名称",
       cell: (row) => <span className="font-medium">{row.specName}</span>,
     },
     {
@@ -170,7 +170,7 @@ export default function ProductsPageClient({
             <Button variant="outline">品项分类</Button>
           </Link>
           <Link href="/products/create">
-            <Button>新增品项</Button>
+            <Button>新增商品</Button>
           </Link>
         </div>
       </div>
@@ -189,7 +189,7 @@ export default function ProductsPageClient({
           }}
         />
         <Input
-          placeholder="搜索品项名称"
+          placeholder="搜索商品名称"
           value={searchInput}
           onChange={(e) => handleSearchChange(e.target.value)}
           className="max-w-xs"

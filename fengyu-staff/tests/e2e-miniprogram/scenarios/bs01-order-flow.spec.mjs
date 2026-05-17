@@ -64,8 +64,8 @@ async function callPage(fn, ...args) {
 async function setupProductsAndCoupon() {
   await query(
     `INSERT INTO product_categories
-       (category_id, category_name, product_kind, sales_category, sort_order, is_valid, is_card_kind)
-     VALUES ($1, 'L3 BS01 护理类', '护理项目', '他销自耗', 0, true, false)
+       (category_id, category_name, product_kind, sales_category, sort_order, is_valid)
+     VALUES ($1, 'L3 BS01 护理类', '护理项目', '他销自耗', 0, true)
      ON CONFLICT (category_id) DO UPDATE SET is_valid = true`,
     [L3_CATEGORY_ID],
   );

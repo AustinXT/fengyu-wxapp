@@ -17,13 +17,10 @@ const PRODUCT_KIND_CHOICES = ['组合套餐', '普通商品', '体验卡', '充�
 type ProductKindChoice = typeof PRODUCT_KIND_CHOICES[number];
 
 /**
- * @deprecated PR-D 起优先调云函数 `product.cardKinds` 拉取（DB `is_card_kind=true` SSoT）。
- * 本常量仅作为运行时拉取失败 / DB 未配置时的兜底名单。
+ * 卡类一级 kind 名单（"普通商品" Tab 的排除项）。
  *
- * 历史同步位置（保留参考，新业务逻辑应优先用 page.data.cardKinds）：
- *   - fengyu-admin/src/lib/product-kind.ts
- *   - fengyu-staff/cloudfunctions/staffApi/routes/product.js
- *   - fengyu-staff/miniprogram/pages/order-create/order-create.ts（本文件）
+ * is_card_kind 列已下线（2026-05-18 product-domain cleanup）。
+ * "充值卡" / "体验卡" 是稳定的一级 kind 名称约定，新增卡类需同步本常量。
  */
 const CARD_PRODUCT_KINDS = ['充值卡', '体验卡'] as const;
 
@@ -174,30 +171,24 @@ function skuToDisplay(sku: SkuItem): DisplayItem {
 
 /**
  * 商品类型过滤器（PR-B：排除法）
- * - 普通商品：productKind ∉ cardKinds 且非 bundle
- *   未来新增的非卡一级 kind（如"福利活动"）会自动归入此 Tab，无需改代码
+ * - 普通商品：productKind ∉ CARD_PRODUCT_KINDS 且非 bundle
  * - 体验卡 / 充值卡：按 productKind 精确匹配
  * - 组合套餐：不走 SKU 列表，由 BundlePicker 接管
- *
- * PR-D：cardKinds 由调用方传入（运行时从 product.cardKinds 拉取，DB 驱动），
- * 缺省时走 CARD_PRODUCT_KINDS 兜底常量。
  */
-function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice, cardKinds?: readonly string[]): SkuItem[] {
+function filterSkusByKindChoice(skus: SkuItem[], choice: ProductKindChoice): SkuItem[] {
   if (choice === '组合套餐') return [];
-  const effectiveCardKinds = cardKinds && cardKinds.length > 0 ? cardKinds : CARD_PRODUCT_KINDS;
   if (choice === '普通商品') {
-    return skus.filter(s => !effectiveCardKinds.includes(s.productKind) && !s.isBundle);
+    return skus.filter(s => !CARD_PRODUCT_KINDS.includes(s.productKind as typeof CARD_PRODUCT_KINDS[number]) && !s.isBundle);
   }
   // 体验卡 / 充值卡：精确匹配
   return skus.filter(s => s.productKind === choice);
 }
 
 /** 分类过滤器（按选中商品类型裁剪侧边栏候选分类） */
-function filterCategoriesByKindChoice(categories: Category[], choice: ProductKindChoice, cardKinds?: readonly string[]): Category[] {
+function filterCategoriesByKindChoice(categories: Category[], choice: ProductKindChoice): Category[] {
   if (choice === '组合套餐') return [];
-  const effectiveCardKinds = cardKinds && cardKinds.length > 0 ? cardKinds : CARD_PRODUCT_KINDS;
   if (choice === '普通商品') {
-    return categories.filter(c => !effectiveCardKinds.includes(c.productKind));
+    return categories.filter(c => !CARD_PRODUCT_KINDS.includes(c.productKind as typeof CARD_PRODUCT_KINDS[number]));
   }
   return categories.filter(c => c.productKind === choice);
 }
@@ -209,11 +200,6 @@ Page({
     productKindChoices: PRODUCT_KIND_CHOICES as unknown as string[],
     productKindChoiceIndex: 1, // 默认"普通商品"
     productKindChoice: '普通商品' as ProductKindChoice,
-    /**
-     * PR-D：卡类一级 kind 名单（DB 驱动，onLoad 拉取）。
-     * 拉取失败时退化为 CARD_PRODUCT_KINDS 兜底常量。
-     */
-    cardKinds: [] as string[],
     // 商品目录（侧边栏分类 + SKU 列表）
     catalogLoading: false,
     categories: [] as Category[],
@@ -299,22 +285,6 @@ Page({
   _allSkus: [] as SkuItem[],
   // SKU 缓存：按 `${productKindChoice}:${categoryId}` 缓存已加载的展示列表
   _spuCache: {} as Record<string, DisplayItem[]>,
-
-  /**
-   * PR-D：onLoad 时拉取 DB 驱动的"卡类一级 kind"名单写入 page.data.cardKinds。
-   * 失败时保持空数组，filter 函数会自动回退到 CARD_PRODUCT_KINDS 兜底常量。
-   */
-  async onLoad() {
-    try {
-      const data = await callStaffApi<{ names: string[] }>('product.cardKinds');
-      const names = Array.isArray(data?.names) ? data.names.filter((n) => typeof n === 'string' && n) : [];
-      if (names.length > 0) {
-        this.setData({ cardKinds: names });
-      }
-    } catch (_err) {
-      // 静默失败：filter 函数会自动用 CARD_PRODUCT_KINDS 常量兜底
-    }
-  },
 
   onShow() {
     if (!app.globalData.staffWfId) {
@@ -463,7 +433,7 @@ Page({
       let list = this._spuCache[cacheKey];
       if (!list) {
         const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
-        list = filterSkusByKindChoice(skusInCat, choice, this.data.cardKinds).map(skuToDisplay);
+        list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
         this._spuCache[cacheKey] = list;
       }
       this.setData({
@@ -477,7 +447,7 @@ Page({
     }
 
     // 体验卡 / 充值卡：保持平坦 <van-sidebar>
-    const filtered = filterCategoriesByKindChoice(this._allCategories, choice, this.data.cardKinds);
+    const filtered = filterCategoriesByKindChoice(this._allCategories, choice);
     if (filtered.length === 0) {
       this.setData({
         categories: [],
@@ -495,7 +465,7 @@ Page({
     if (!list) {
       // 首次进入该 choice 的首分类：从 _allSkus 本地过滤
       const skusInCat = this._allSkus.filter(s => s.categoryId === firstCatId);
-      list = filterSkusByKindChoice(skusInCat, choice, this.data.cardKinds).map(skuToDisplay);
+      list = filterSkusByKindChoice(skusInCat, choice).map(skuToDisplay);
       this._spuCache[cacheKey] = list;
     }
 
@@ -621,7 +591,7 @@ Page({
     // 优先用本地 _allSkus 过滤（shopInit 已返全量）
     const localSkus = this._allSkus.filter(s => s.categoryId === categoryId);
     if (localSkus.length > 0) {
-      const list = filterSkusByKindChoice(localSkus, productKindChoice, this.data.cardKinds).map(skuToDisplay);
+      const list = filterSkusByKindChoice(localSkus, productKindChoice).map(skuToDisplay);
       this._spuCache[cacheKey] = list;
       this.setData({ spuList: list });
       return;
@@ -633,7 +603,7 @@ Page({
       const skus = await callStaffApi<SkuItem[]>('product.skuList', { categoryId });
       // 追加到 _allSkus（便于后续缓存命中）
       this._allSkus = this._allSkus.concat(skus || []);
-      const list = filterSkusByKindChoice(skus || [], productKindChoice, this.data.cardKinds).map(skuToDisplay);
+      const list = filterSkusByKindChoice(skus || [], productKindChoice).map(skuToDisplay);
       this._spuCache[cacheKey] = list;
       this.setData({ spuList: list, catalogLoading: false });
     } catch (_) {
