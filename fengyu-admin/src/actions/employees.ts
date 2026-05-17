@@ -9,8 +9,8 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import type { Employee } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 
@@ -50,10 +50,9 @@ function rowToEmployee(row: {
  * 员工选择器数据源 — 用于顾客分配、分配营业额、开单选店员等 picker 场景。
  * 主管理列表（含筛选 + 分页 + 乐观锁编辑）请使用 getEmployeesPaginated。
  */
-export async function getEmployees(): Promise<Employee[]> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployees = withPermission(
+  'employee:list',
+  async (session): Promise<Employee[]> => {
   const rows = await db
     .select()
     .from(staffWechatUsers)
@@ -65,16 +64,19 @@ export async function getEmployees(): Promise<Employee[]> {
     .limit(500)
 
   return rows.map(rowToEmployee)
-}
+  },
+)
 
 /**
  * 搜索在职员工（不限 scope），用于推荐人选择等场景。
  * 返回简要信息，最多 20 条。
  */
-export async function searchEmployees(keyword: string): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:update')
-
+export const searchEmployees = withPermission(
+  'customer:update',
+  async (
+    _session,
+    keyword: string,
+  ): Promise<{ employeeId: string; name: string | null; phone: string | null }[]> => {
   const trimmed = keyword.trim()
   if (!trimmed) return []
 
@@ -124,10 +126,9 @@ export interface PaginatedEmployees {
  * status 映射：active → is_resigned = false, resigned → is_resigned = true
  * 搜索支持：姓名、员工编号、手机号（ILIKE）
  */
-export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Promise<PaginatedEmployees> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployeesPaginated = withPermission(
+  'employee:list',
+  async (session, filters: EmployeeFilters = {}): Promise<PaginatedEmployees> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -207,12 +208,12 @@ export async function getEmployeesPaginated(filters: EmployeeFilters = {}): Prom
     })),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
-export async function getEmployeeById(employeeId: string): Promise<Employee | null> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployeeById = withPermission(
+  'employee:list',
+  async (session, employeeId: string): Promise<Employee | null> => {
   const rows = await db
     .select()
     .from(staffWechatUsers)
@@ -222,13 +223,13 @@ export async function getEmployeeById(employeeId: string): Promise<Employee | nu
 
   if (rows.length === 0) return null
   return rowToEmployee(rows[0])
-}
+  },
+)
 
 /** 获取组织架构第 2 级节点（市场 + 总部部门，用于筛选下拉） */
-export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: string; type: string }[]> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getOrgLevel2ForFilter = withPermission(
+  'employee:list',
+  async (): Promise<{ id: string; name: string; type: string }[]> => {
   const [hq] = await db
     .select({ id: orgNodes.id })
     .from(orgNodes)
@@ -244,25 +245,28 @@ export async function getOrgLevel2ForFilter(): Promise<{ id: string; name: strin
     .orderBy(asc(orgNodes.sortOrder))
 
   return rows.map(r => ({ id: r.id, name: r.name ?? '', type: r.type }))
-}
+  },
+)
 
 
-export async function createEmployee(data: {
-  phone: string
-  name: string
-  gender?: string | null
-  idCard?: string | null
-  storeId?: string | null
-  orgNodeId?: string | null
-  positionName?: string | null
-  birthday?: string | null
-  skills?: string[] | null
-  /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
-  hiredAt?: string | null
-}): Promise<{ success: boolean; message: string; employeeId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'employee:create')
-
+export const createEmployee = withPermission(
+  'employee:create',
+  async (
+    session,
+    data: {
+      phone: string
+      name: string
+      gender?: string | null
+      idCard?: string | null
+      storeId?: string | null
+      orgNodeId?: string | null
+      positionName?: string | null
+      birthday?: string | null
+      skills?: string[] | null
+      /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
+      hiredAt?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; employeeId?: string }> => {
   // 服务端输入校验（手机号格式 + 必填字段）
   if (!data.name?.trim()) {
     return { success: false, message: '姓名不能为空' }
@@ -352,32 +356,33 @@ export async function createEmployee(data: {
   await logOperation(session, 'employee.create', 'employee', employeeId, { name: data.name })
   revalidatePath('/employees')
   return { success: true, message: '员工创建成功', employeeId }
-}
+  },
+)
 
-export async function updateEmployee(
-  employeeId: string,
-  data: Partial<{
-    phone: string | null
-    name: string | null
-    gender: string | null
-    idCard: string | null
-    storeId: string | null
-    orgNodeId: string | null
-    positionName: string | null
-    birthday: string | null
-    skills: string[] | null
-    isResigned: boolean
-    /** 入职日期（YYYY-MM-DD） */
-    hiredAt: string | null
-    /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
-    resignedAt: string | null
-  }>,
-  /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'employee:update')
-
+export const updateEmployee = withPermission(
+  'employee:update',
+  async (
+    session,
+    employeeId: string,
+    data: Partial<{
+      phone: string | null
+      name: string | null
+      gender: string | null
+      idCard: string | null
+      storeId: string | null
+      orgNodeId: string | null
+      positionName: string | null
+      birthday: string | null
+      skills: string[] | null
+      isResigned: boolean
+      /** 入职日期（YYYY-MM-DD） */
+      hiredAt: string | null
+      /** 离职日期（YYYY-MM-DD）；与 isResigned 双写一致，由 action 自动维护 */
+      resignedAt: string | null
+    }>,
+    /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 服务端输入校验
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
