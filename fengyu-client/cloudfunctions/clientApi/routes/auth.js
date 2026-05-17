@@ -151,6 +151,7 @@ async function bindPhone(ctx) {
   invalidateAuthCache(OPENID)
 
   // 补全历史订单的 client_user_id（仅首绑场景触发）
+  // CAS-EXEMPT: 仅回写顾客 user_id（PII），不翻 status
   const updateResult = await pg.query(
     `UPDATE sale_orders
      SET client_user_id = $1, updated_at = $2

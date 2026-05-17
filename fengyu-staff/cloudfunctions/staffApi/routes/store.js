@@ -88,17 +88,24 @@ async function approveUnbind(ctx) {
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
-  // 事务：解绑顾客门店 + 更新申请状态
+  // 事务：先 CAS 锁申请状态 → 命中后再解绑顾客门店
+  // 顺序调换 + CAS（state-machine-cas-guard ticket §4.5）：
+  // 命中失败立即 throw → pg.transaction 自动 ROLLBACK，不会误解绑顾客门店
   await pg.transaction(async (client) => {
+    const upd = await client.query(
+      `UPDATE store_unbind_requests
+       SET status = '已通过', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
+       WHERE request_id = $2 AND status = '待处理'`,
+      [staffWfId, requestId]
+    )
+    if (upd.rowCount === 0) {
+      throw new Error(
+        `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已通过`
+      )
+    }
     await client.query(
       `UPDATE client_wechat_users SET bound_store_id = NULL WHERE user_id = $1`,
       [req.user_id]
-    )
-    await client.query(
-      `UPDATE store_unbind_requests
-       SET status = '已通过', reviewed_by = $1, reviewed_at = NOW(), updated_at = NOW()
-       WHERE request_id = $2`,
-      [staffWfId, requestId]
     )
   })
 
@@ -125,12 +132,17 @@ async function rejectUnbind(ctx) {
   if (req.from_store_id !== storeId) throw new Error('PERMISSION_DENIED: 无权审批此申请')
   if (req.status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许审批')
 
-  await pg.query(
+  const rejectUpd = await pg.query(
     `UPDATE store_unbind_requests
      SET status = '已拒绝', reviewed_by = $1, reviewed_at = NOW(), reject_reason = $2, updated_at = NOW()
-     WHERE request_id = $3`,
+     WHERE request_id = $3 AND status = '待处理'`,
     [staffWfId, rejectReason || null, requestId]
   )
+  if (rejectUpd.rowCount === 0) {
+    throw new Error(
+      `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已拒绝`
+    )
+  }
 
   ctx.result = { success: true }
 }

@@ -80,17 +80,44 @@ describe('store.approveUnbind', () => {
   test('审批通过解绑申请', async () => {
     const ctx = createManagerCtx({ requestId: 'req-001' })
 
-    pg.query
-      .mockResolvedValueOnce([{
-        user_id: 'u1',
-        from_store_id: 'store-001',
-        status: '待处理',
-      }])
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE client_wechat_users
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE store_unbind_requests
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'u1',
+      from_store_id: 'store-001',
+      status: '待处理',
+    }])
+
+    // 事务内：先 CAS UPDATE store_unbind_requests（rowCount=1），再 UPDATE client_wechat_users
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = {
+        query: vi.fn(async () => ({ rows: [], rowCount: 1 })),
+      }
+      return await cb(client)
+    })
 
     await storeRoutes.approveUnbind(ctx)
     expect(ctx.result.success).toBe(true)
+  })
+
+  test('CAS 守卫：申请已被他人审批 → 抛 INVALID_STATE 且不解绑顾客', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-001' })
+
+    pg.query.mockResolvedValueOnce([{
+      user_id: 'u1',
+      from_store_id: 'store-001',
+      status: '待处理',
+    }])
+
+    // 事务内：CAS UPDATE 命中 0 行（被另一会话先翻），第二个 UPDATE 不应被调用
+    const clientQuery = vi.fn(async () => ({ rows: [], rowCount: 0 }))
+    pg.transaction.mockImplementationOnce(async (cb) => {
+      const client = { query: clientQuery }
+      return await cb(client)
+    })
+
+    await expect(storeRoutes.approveUnbind(ctx))
+      .rejects.toThrow(/INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests/)
+    // 只调了 CAS UPDATE 一次，client_wechat_users 没被解绑
+    expect(clientQuery).toHaveBeenCalledTimes(1)
   })
 
   test('非本门店申请拒绝审批', async () => {
@@ -153,6 +180,20 @@ describe('store.rejectUnbind', () => {
 
     await storeRoutes.rejectUnbind(ctx)
     expect(ctx.result.success).toBe(true)
+  })
+
+  test('CAS 守卫：申请已被他人改 → 抛 INVALID_STATE', async () => {
+    const ctx = createManagerCtx({ requestId: 'req-001', rejectReason: '不允许' })
+
+    pg.query
+      .mockResolvedValueOnce([{
+        from_store_id: 'store-001',
+        status: '待处理',
+      }])
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+
+    await expect(storeRoutes.rejectUnbind(ctx))
+      .rejects.toThrow(/INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests/)
   })
 
   test('缺少 requestId 拒绝', async () => {

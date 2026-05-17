@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:delivery": "node scripts/build-delivery.js"
+    "build:delivery": "node scripts/build-delivery.js",
+    "lint:cas-guards": "node scripts/lint-cas-guards.mjs"
   },
   "repository": {
     "type": "git",

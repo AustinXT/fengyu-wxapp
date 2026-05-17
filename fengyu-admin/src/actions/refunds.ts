@@ -793,6 +793,7 @@ export const approveRefund = withPermission(
       }
 
       // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
+      // CAS-EXEMPT: 仅累加 refunded_amount，status 由其他路径（recordPayment 等）另行 CAS
       await tx.execute(sql`
         UPDATE sale_orders so
            SET refunded_amount = COALESCE((

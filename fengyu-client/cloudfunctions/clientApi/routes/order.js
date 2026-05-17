@@ -777,11 +777,13 @@ async function pay(ctx) {
 
   // 自动绑定 client_user_id（仅 staff 来源且未绑定时）
   if (!order.client_user_id && order.opened_by) {
+    // CAS-EXEMPT: 仅写 PII（client_user_id）+ 支付方式，不翻 status
     await pg.query(
       'UPDATE sale_orders SET client_user_id = $1, payment_method = $2, updated_at = $3 WHERE sale_order_id = $4',
       [userId, '微信', now, orderNo]
     )
   } else {
+    // CAS-EXEMPT: 仅设支付方式，不翻 status
     await pg.query(
       "UPDATE sale_orders SET payment_method = '微信', updated_at = $1 WHERE sale_order_id = $2",
       [now, orderNo]
@@ -874,10 +876,13 @@ async function offlinePay(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
-    "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3",
+  const offlineUpd = await pg.query(
+    "UPDATE sale_orders SET status = '待确认收款', client_user_id = COALESCE(client_user_id, $1), payment_method = '线下', updated_at = $2 WHERE sale_order_id = $3 AND status = '待支付'",
     [userId, now, orderNo]
   )
+  if (offlineUpd.rowCount === 0) {
+    throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${orderNo}:待支付→待确认收款`)
+  }
 
   // 备注：不在本 PR 写 payments 行。staff 端 confirmOffline 在 PR-2 落地时
   // 会插入 change_type='首次支付' / payment_method='线下' / status='已支付' 的流水行。
@@ -1366,6 +1371,7 @@ async function alipayPay(ctx) {
   }
 
   const now = new Date()
+  // CAS-EXEMPT: 仅设支付方式（支付宝）+ PII（client_user_id），不翻 status
   await pg.query(
     "UPDATE sale_orders SET payment_method = '支付宝', client_user_id = COALESCE(client_user_id, $1), updated_at = $2 WHERE sale_order_id = $3",
     [userId, now, orderNo]
@@ -1762,6 +1768,7 @@ async function repay(ctx) {
 
     // 4. 线上回款：不写 payments 行（payNotify 回调写）；仅更新原单 payment_method 反映最近通道
     if (!isPureCard) {
+      // CAS-EXEMPT: 仅设支付方式，不翻 status（status 由后续 STEP 5 重算或 payNotify 推进）
       await client.query(
         `UPDATE sale_orders SET payment_method = $1, updated_at = $2
          WHERE sale_order_id = $3`,
@@ -1784,16 +1791,20 @@ async function repay(ctx) {
       const newNet = Math.round((newReceived - newRefunded) * 100) / 100
       const fullyPaid = newNet + 0.001 >= payableAmount
       finalStatus = fullyPaid ? '已支付' : '部分支付'
-      await client.query(
+      const repayUpd = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              refunded_amount = $3,
              paid_at = CASE WHEN $1::text = '已支付' THEN COALESCE(paid_at, $4) ELSE paid_at END,
              updated_at = $4
-         WHERE sale_order_id = $5`,
+         WHERE sale_order_id = $5
+           AND status IN ('待支付', '部分支付', '待确认收款')`,
         [finalStatus, newReceived, newRefunded, now, saleOrderId]
       )
+      if (repayUpd.rowCount === 0) {
+        throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:→${finalStatus}`)
+      }
       // 积分结算（纯卡回款时 received 已增加，需 settle；线上通道等 payNotify 触发）
       await settlePointsSafe(client, saleOrderId, 'clientApi.repay')
     }

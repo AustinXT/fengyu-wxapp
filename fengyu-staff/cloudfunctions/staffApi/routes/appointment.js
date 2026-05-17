@@ -258,6 +258,7 @@ async function checkin(ctx) {
   }
 
   const now = new Date()
+  // CAS-EXEMPT: 仅写 checkin_at 时间戳，不翻 status
   await pg.query(
     'UPDATE appointments SET checkin_at = $1, updated_at = $1 WHERE appointment_id = $2',
     [now, appointmentId]

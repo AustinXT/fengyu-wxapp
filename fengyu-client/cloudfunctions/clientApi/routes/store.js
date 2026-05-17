@@ -218,10 +218,15 @@ async function cancelUnbindRequest(ctx) {
   if (rows[0].user_id !== userId) throw new Error('PERMISSION_DENIED: 无权操作此申请')
   if (rows[0].status !== '待处理') throw new Error('INVALID_PARAMS: 申请状态不允许取消')
 
-  await pg.query(
-    `UPDATE store_unbind_requests SET status = '已取消', updated_at = NOW() WHERE request_id = $1`,
+  const cancelUpd = await pg.query(
+    `UPDATE store_unbind_requests SET status = '已取消', updated_at = NOW() WHERE request_id = $1 AND status = '待处理'`,
     [requestId]
   )
+  if (cancelUpd.rowCount === 0) {
+    throw new Error(
+      `INVALID_STATE: STATE_TRANSITION_BLOCKED:store_unbind_requests:${requestId}:待处理→已取消`
+    )
+  }
 
   ctx.result = { success: true }
 }

@@ -1607,6 +1607,7 @@ async function approveRefund(ctx) {
     }
 
     // 2. 累加 sale_orders.refunded_amount
+    // CAS-EXEMPT: 仅累加资金列 refunded_amount，不翻 status
     await client.query(
       `UPDATE sale_orders
           SET refunded_amount = COALESCE(refunded_amount, 0) + $1, updated_at = $2

@@ -214,12 +214,16 @@ async function cancel(ctx) {
   }
 
   const now = new Date()
-  await pg.query(
+  const cancelUpd = await pg.query(
     `UPDATE appointments
      SET status = '已取消', cancelled_reason = $1, updated_at = $2
-     WHERE appointment_id = $3`,
+     WHERE appointment_id = $3
+       AND status IN ('待确认', '已确认')`,
     [cancelledReason || '', now, appointmentId]
   )
+  if (cancelUpd.rowCount === 0) {
+    throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:appointments:${appointmentId}:→已取消`)
+  }
 
   ctx.result = {
     appointmentId,
