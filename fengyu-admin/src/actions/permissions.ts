@@ -7,14 +7,14 @@ import { orgNodes } from '@db/org'
 import { eq, and, inArray, sql, desc, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { PermissionRole } from '@/lib/types'
-import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { hasRole } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
+import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 
-export async function getRoles(): Promise<PermissionRole[]> {
-  const session = await getSession()
-  requirePermission(session, 'permission:list')
-
+export const getRoles = withPermission(
+  'permission:list',
+  async (session): Promise<PermissionRole[]> => {
   // 非 admin 用户只能看自身 scope 内的角色分配（AC-05 数据隔离）
   const isAdmin = hasRole(session, 'admin')
   const userScopeIds = session.roles.map(r => r.scopeId)
@@ -55,13 +55,13 @@ export async function getRoles(): Promise<PermissionRole[]> {
     employeeName: r.employeeName ?? undefined,
     scopeName: r.scopeName ?? undefined,
   }))
-}
+  },
+)
 
 /** 按 scope 查询角色分配 */
-export async function getRolesByScope(scopeId: string): Promise<PermissionRole[]> {
-  const session = await getSession()
-  requirePermission(session, 'permission:list')
-
+export const getRolesByScope = withPermission(
+  'permission:list',
+  async (session, scopeId: string): Promise<PermissionRole[]> => {
   const isAdmin = hasRole(session, 'admin')
   if (!isAdmin) {
     const userScopeIds = session.roles.map(r => r.scopeId)
@@ -98,13 +98,13 @@ export async function getRolesByScope(scopeId: string): Promise<PermissionRole[]
     employeeName: r.employeeName ?? undefined,
     scopeName: r.scopeName ?? undefined,
   }))
-}
+  },
+)
 
 /** 查询每个 scope 的角色分配数量 */
-export async function getRoleCountsByScope(): Promise<Record<string, number>> {
-  const session = await getSession()
-  requirePermission(session, 'permission:list')
-
+export const getRoleCountsByScope = withPermission(
+  'permission:list',
+  async (session): Promise<Record<string, number>> => {
   const isAdmin = hasRole(session, 'admin')
   const userScopeIds = session.roles.map(r => r.scopeId)
   if (!isAdmin && userScopeIds.length === 0) return {}
@@ -127,16 +127,16 @@ export async function getRoleCountsByScope(): Promise<Record<string, number>> {
     result[r.scopeId] = r.count
   }
   return result
-}
+  },
+)
 
 /**
  * 按员工查询权限角色，用于员工详情页。
  * 页面级 scopeCondition 已保证只有可访问的员工才会到达此处，无需再做 scope 过滤。
  */
-export async function getEmployeeRoles(employeeId: string): Promise<PermissionRole[]> {
-  const session = await getSession()
-  requirePermission(session, 'employee:list')
-
+export const getEmployeeRoles = withPermission(
+  'employee:list',
+  async (_session, employeeId: string): Promise<PermissionRole[]> => {
   const rows = await db
     .select({
       id: permissionRoles.id,
@@ -164,20 +164,22 @@ export async function getEmployeeRoles(employeeId: string): Promise<PermissionRo
     updatedAt: r.updatedAt.toISOString(),
     scopeName: r.scopeName ?? undefined,
   }))
-}
+  },
+)
 
-export async function assignRole(data: {
-  employeeId: string
-  role: string
-  scopeId: string
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-
-  // admin 角色只有 admin 可分配
-  if (data.role === 'admin') {
-    requirePermission(session, 'permission:assign_admin')
-  } else {
-    requirePermission(session, 'permission:assign')
+export const assignRole = withAnyPermission(
+  ['permission:assign', 'permission:assign_admin'],
+  async (
+    session,
+    data: {
+      employeeId: string
+      role: string
+      scopeId: string
+    },
+  ): Promise<{ success: boolean; message: string }> => {
+  // admin 角色只有持 'permission:assign_admin' 才能分配
+  if (data.role === 'admin' && !hasPermission(session, 'permission:assign_admin')) {
+    throw new Error('PERMISSION_DENIED: 无权执行 permission:assign_admin')
   }
 
   // 非 admin 用户不能分配超出自身 scope 的权限
@@ -236,14 +238,15 @@ export async function assignRole(data: {
   revalidatePath('/permissions')
   revalidatePath('/employees')
   return { success: true, message: '角色分配成功' }
-}
+  },
+)
 
-export async function revokeRole(
-  id: number,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'permission:revoke')
-
+export const revokeRole = withPermission(
+  'permission:revoke',
+  async (
+    session,
+    id: number,
+  ): Promise<{ success: boolean; message: string }> => {
   // 查询要撤销的角色记录
   const [target] = await db
     .select({ role: permissionRoles.role, scopeId: permissionRoles.scopeId })
@@ -283,4 +286,5 @@ export async function revokeRole(
   revalidatePath('/permissions')
   revalidatePath('/employees')
   return { success: true, message: '角色已撤销' }
-}
+  },
+)

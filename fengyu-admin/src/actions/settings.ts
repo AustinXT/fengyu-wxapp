@@ -2,8 +2,7 @@
 
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
-import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logUpdate } from '@/lib/operation-log'
 import { uploadFile, reuploadToFixedPath, deleteByCloudPaths, callClientFunction } from '@/lib/cloudbase'
 import { invalidateMemberThreshold } from '@/lib/member-threshold'
@@ -119,10 +118,9 @@ function normalizeBenefits(input: unknown): MemberLevelBenefitsMap {
   return result
 }
 
-export async function getSettings(): Promise<SystemSettings> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const getSettings = withPermission(
+  'system:config',
+  async (): Promise<SystemSettings> => {
   try {
     const rows = await db.execute<{ key: string; value: string }>(sql`
       SELECT key, value FROM system_configs
@@ -142,12 +140,12 @@ export async function getSettings(): Promise<SystemSettings> {
   } catch {
     return { ...DEFAULT_SETTINGS }
   }
-}
+  },
+)
 
-export async function saveSettings(settings: SystemSettings): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const saveSettings = withPermission(
+  'system:config',
+  async (session, settings: SystemSettings): Promise<{ success: boolean; message: string }> => {
   try {
     const oldSettings = await getSettings()
 
@@ -238,15 +236,15 @@ export async function saveSettings(settings: SystemSettings): Promise<{ success:
     console.error('Save settings error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
-}
+  },
+)
 
 /**
  * 加载所有有效的优惠券模板（用于权益配置中的多选下拉）
  */
-export async function listActiveCouponTemplates(): Promise<Array<{ templateId: string; name: string }>> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const listActiveCouponTemplates = withPermission(
+  'system:config',
+  async (): Promise<Array<{ templateId: string; name: string }>> => {
   const rows = await db.execute<{ template_id: string; name: string }>(sql`
     SELECT template_id, name FROM coupon_templates
     WHERE is_active = true
@@ -254,16 +252,16 @@ export async function listActiveCouponTemplates(): Promise<Array<{ templateId: s
     LIMIT 200
   `)
   return (rows as any[]).map((r) => ({ templateId: r.template_id, name: r.name }))
-}
+  },
+)
 
 /**
  * 读取三种场景（升级/生日/感恩日）的会员权益配置。
  * 任一场景缺失或 JSON 损坏静默降级为默认空值。
  */
-export async function getMemberBenefits(): Promise<MemberBenefitsBundle> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const getMemberBenefits = withPermission(
+  'system:config',
+  async (): Promise<MemberBenefitsBundle> => {
   const bundle: MemberBenefitsBundle = {
     upgrade: emptyBenefits(),
     birthday: emptyBenefits(),
@@ -291,7 +289,8 @@ export async function getMemberBenefits(): Promise<MemberBenefitsBundle> {
   }
 
   return bundle
-}
+  },
+)
 
 // ─── 分享礼运营配置（ticket 2026-04-24 share-gift-reward PR-2） ───
 
@@ -301,10 +300,9 @@ const SHARE_GIFT_CONFIG_KEY = 'share_gift_config'
  * 读取分享礼配置。
  * 行缺失 / JSON 损坏均降级为 DEFAULT_SHARE_GIFT_CONFIG。
  */
-export async function getShareGiftConfig(): Promise<ShareGiftConfig> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const getShareGiftConfig = withPermission(
+  'system:config',
+  async (): Promise<ShareGiftConfig> => {
   try {
     const rows = await db.execute<{ value: string }>(sql`
       SELECT value FROM system_configs WHERE key = ${SHARE_GIFT_CONFIG_KEY} LIMIT 1
@@ -319,18 +317,19 @@ export async function getShareGiftConfig(): Promise<ShareGiftConfig> {
   } catch {
     return { ...DEFAULT_SHARE_GIFT_CONFIG }
   }
-}
+  },
+)
 
 /**
  * 保存分享礼配置（UPSERT system_configs）。
  * 规范化 + 审计日志 + revalidatePath('/share-gift')。
  */
-export async function saveShareGiftConfig(
-  config: ShareGiftConfig,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const saveShareGiftConfig = withPermission(
+  'system:config',
+  async (
+    session,
+    config: ShareGiftConfig,
+  ): Promise<{ success: boolean; message: string }> => {
   try {
     const oldConfig = await getShareGiftConfig()
     const normalized = normalizeShareGiftConfig(config)
