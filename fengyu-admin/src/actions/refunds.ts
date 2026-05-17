@@ -14,7 +14,7 @@ import { assertOrderInScope } from '@/lib/scope-assert'
 import { logOperation } from '@/lib/operation-log'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
-import { getPointsToYuanRate } from './settings'
+import { getPointsToYuanRate } from '@/lib/system-config'
 import {
   buildRefundDetails,
   calculateUnusedQuantity,

@@ -11,6 +11,7 @@ import type { ServiceCommission, AuthSession } from '@/lib/types'
 import { isAdminScope } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 
 /** 校验服务单是否在用户 scope 内 */
 async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSession): Promise<boolean> {
@@ -211,8 +212,9 @@ export const batchSaveServiceCommissions = withPermission(
 
           const rate = Number(rateRows[0]?.commissionRate || 0)
           if (rate === 0 && consumeBase > 0) {
-            throw new Error(
-              `INVALID_STATE: COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${salesCategory}, consumeBase=${consumeBase}`
+            throw new ApiError(
+              'INVALID_STATE',
+              `COMMISSION_RATE_MISSING: serviceItemId=${c.serviceItemId}, roleType=${c.roleType}, salesCategory=${salesCategory}, consumeBase=${consumeBase}`
             )
           }
 

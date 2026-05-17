@@ -11,6 +11,7 @@ import type { SQL } from 'drizzle-orm'
 import { isInScope, scopeCondition } from '@/lib/permissions'
 import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 
 export interface AdminPickupRecord {
   id: number
@@ -329,7 +330,7 @@ export const createPickupRecord = withPermission(
         picked_up_quantity: number
       }>
       if (updatedRows.length === 0) {
-        throw new Error('OVER_QUANTITY: 销售明细不存在、非家居产品或超出可提数量')
+        throw new ApiError('INVALID_STATE', '销售明细不存在、非家居产品或超出可提数量')
       }
 
       // 2. 插入 pickup_records

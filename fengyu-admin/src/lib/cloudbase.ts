@@ -1,4 +1,5 @@
 import cloudbase from "@cloudbase/node-sdk"
+import { ApiError } from "@/lib/api-error"
 
 export const CDN_BASE =
   "https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la"
@@ -26,7 +27,7 @@ export async function uploadFile(
     fileContent: buffer,
   })
   if (!result.fileID) {
-    throw new Error("上传失败")
+    throw new ApiError("INVALID_STATE", "文件上传失败，请重试")
   }
 
   // 获取实际可访问的临时下载 URL（CDN 签名链接）
@@ -53,7 +54,7 @@ export async function reuploadToFixedPath(
   const cleanUrl = sourceUrl.split("?")[0]
   if (cleanUrl.endsWith(`/${targetPath}`)) return
   const res = await fetch(cleanUrl)
-  if (!res.ok) throw new Error(`Failed to download ${cleanUrl}: ${res.status}`)
+  if (!res.ok) throw new ApiError("INVALID_STATE", `资源下载失败 (HTTP ${res.status})`)
   const buffer = Buffer.from(await res.arrayBuffer())
   await uploadFile(buffer, targetPath)
 }

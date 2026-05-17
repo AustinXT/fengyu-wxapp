@@ -365,35 +365,19 @@ export const saveShareGiftConfig = withPermission(
     console.error('Save share gift config error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
-}
-
-/**
- * 积分折算元比例（system_configs.points_to_yuan_rate，默认 0.01 即 100 积分 = 1 元）
- * 用于 estimateRefundOverdraft 计算已用升级奖励积分的现金等价值
- */
-export async function getPointsToYuanRate(): Promise<number> {
-  try {
-    const rows = await db.execute<{ value: string }>(sql`
-      SELECT value FROM system_configs WHERE key = 'points_to_yuan_rate' LIMIT 1
-    `)
-    const raw = (rows as any[])[0]?.value
-    const parsed = raw !== undefined ? Number(raw) : NaN
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0.01
-  } catch {
-    return 0.01
-  }
-}
+  },
+)
 
 /**
  * 保存三种场景的会员权益配置（一次性写入三份 JSON）。
  * 权益变更不影响 newMemberThreshold 缓存广播逻辑。
  */
-export async function saveMemberBenefits(
-  bundle: MemberBenefitsBundle,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'system:config')
-
+export const saveMemberBenefits = withPermission(
+  'system:config',
+  async (
+    session,
+    bundle: MemberBenefitsBundle,
+  ): Promise<{ success: boolean; message: string }> => {
   try {
     const oldBundle = await getMemberBenefits()
 
@@ -441,4 +425,5 @@ export async function saveMemberBenefits(
     console.error('Save member benefits error:', err)
     return { success: false, message: '保存失败，请稍后重试' }
   }
-}
+  },
+)

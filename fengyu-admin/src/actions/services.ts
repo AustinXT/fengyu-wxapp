@@ -13,6 +13,7 @@ import type { ServiceOrder } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
 import { logOperation, logTransition } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 
 function serializeServiceOrder(r: {
   service_order: typeof serviceOrders.$inferSelect
@@ -533,7 +534,7 @@ export async function createServiceOrder(data: {
         FROM lock
       `)
       const id = (idRows as any[])[0]?.id as string
-      if (!id) throw new Error('服务单号生成失败')
+      if (!id) throw new ApiError('INVALID_STATE', '服务单号生成失败')
 
       await tx.insert(serviceOrders).values({
         serviceOrderId: id,

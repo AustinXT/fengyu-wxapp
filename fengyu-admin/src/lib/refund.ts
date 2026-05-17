@@ -90,9 +90,7 @@ export function buildRefundDetails(
       throw new Error(`INVALID_PARAMS: 明细 ${req.saleItemId} 退款数量必须大于 0`)
     }
     if (requested > maxUnused) {
-      throw new Error(
-        `INVALID_STATE: 明细 ${req.saleItemId} 可退数量 ${maxUnused} 不足 ${requested}`,
-      )
+      throw new Error(`INVALID_STATE: 明细 ${req.saleItemId} 可退数量 ${maxUnused} 不足 ${requested}`)
     }
 
     const unitRealPrice = Number(orig.unit_real_price)

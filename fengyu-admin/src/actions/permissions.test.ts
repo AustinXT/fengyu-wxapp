@@ -37,6 +37,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAnyPermission: vi.fn(),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
