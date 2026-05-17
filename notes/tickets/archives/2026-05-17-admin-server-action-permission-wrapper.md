@@ -1,4 +1,39 @@
-# Ticket: admin Server Action 抽统一鉴权 HOF（withPermission wrapper）
+# Ticket: admin Server Action 抽统一鉴权 HOF（withPermission wrapper） [已归档]
+
+> 归档日期：2026-05-18
+> 实施状态：✅ **已完成（S1–S5 全部落地）**
+>
+> ## 实施小结
+>
+> 主方案（§3.1 渐进 HOF 路径）走通，未触发回退方案 B。S1 `bun run build` + e2e 验证 Next.js 15 `'use server'` + `export const = withPermission(...)` 表达式形态可用，全量 25 个 actions 文件迁移完成。
+>
+> | Stage | 状态 | 关键 commit |
+> |-------|------|------------|
+> | S1 — HOF 抽出 + positions 示范 + build/e2e 门禁 | ✅ | `bad9c5f` (HOF + ESLint AST 规则 + 全 actions 迁移) |
+> | S2 — lint 规则 warn + CLAUDE.md 写法范式 | ✅ | `bad9c5f` + `f102f0e` |
+> | S3a — 25 文件全量迁移 | ✅ | `f9422d6` `9651afd` `f25d8a8` `bba509c` `7849673` `aa50f89` `12c762a` |
+> | S3b — 18 个 test 文件 mock 适配（含 `vi.mock('@/lib/permissions')` 补 `requirePermission`/`requireAnyPermission` 真实语义） | ✅ | `aa50f89` 等；详见归档子 ticket `archives/2026-05-17-admin-with-permission-completion.md` |
+> | S4 — `auth.ts` 2 处 isAdmin 旁路修复 + `PERMISSION_MATRIX` 新增 `admin:reset_password` | ✅ | `f9422d6`（HOF 迁移内一并落地，统一用 `getSession` 不再 `getSessionFromCookie`） |
+> | S5 — lint warn → error | ✅ | 2026-05-18 本次 |
+>
+> ## 验收实证（2026-05-18）
+>
+> - `grep "^  const session = await getSession()" fengyu-admin/src/actions/ | grep -v test | grep -v auth.ts` → **0 命中**
+> - `grep "roles\.some.*role === 'admin'" fengyu-admin/src/actions/` → **0 命中**（2 处旁路已走 HOF）
+> - `grep "^export async function" fengyu-admin/src/actions/*.ts | grep -v test` → 仅 `auth.ts`（在 lint ignore 名单内：login/logout/changePassword/getSessionFromCookie/checkMustChange）
+> - `bun run lint` → **0 error**（actions 守卫已升 error；其余仅前序遗留 warn）
+> - **故意制造违例验证**：临时 `actions/__lint-fixture.ts` 写裸 `export async function naughty()` → lint 立即报 `Server Actions must be wrapped with withPermission(...) ... no-restricted-syntax`，删除后 0 error
+> - `npx tsc --noEmit` → **静默通过**
+> - `bun run test` → **51 文件 / 976 用例全绿**
+> - `fengyu-admin/eslint.config.mjs:137` → `'no-restricted-syntax': ['error', ...]`（3 条规则：反向 ban `export async function` + 正向校验 `init.type=CallExpression` + 正向校验 `init.callee.name in [withPermission, withAnyPermission]`，§4.3 R2 三条全部落地）
+>
+> ## 与原 ticket 草案的差异
+>
+> 1. **HOF 草案 R2 fixes 全部采纳**：import `requirePermission` 来源用 `@/lib/permissions`（避开 PR-Z2 `no-restricted-imports` 守卫）；lint AST 三条全装（反向 ban + 正向 CallExpression + 正向白名单 callee）。
+> 2. **S4 session 入口统一为 `getSession`**：HOF 内部统一从 `@/lib/auth` 取 session，`auth.ts:225` JSDoc 注释明示 `getSession()` 与 `getSessionFromCookie()` 行为等价（前者是后者 wrapper）。未提供 `withPermissionFromCookie` 变体。
+> 3. **PERMISSION_MATRIX 新增 `admin:reset_password`**：`fengyu-admin/src/lib/permissions.ts:35`，仅 admin 角色拥有。
+>
+> ---
 
 > **v2 修订摘要（2026-05-17 R2 复核后）**
 >

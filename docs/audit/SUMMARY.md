@@ -1,9 +1,34 @@
 # 三端逻辑审计 — 总览报告（SUMMARY）
 
-**编制时间**：2026-04-26（v1）/ 2026-04-27（v2）/ **2026-05-17（v3 — 当前）**
+**编制时间**：2026-04-26（v1）/ 2026-04-27（v2）/ 2026-05-17（v3）/ **2026-05-18（v4 — 当前）**
 **审计范围**：admin (Next.js 15) / staff (staffApi) / client (clientApi) + payNotify + db schema + cron-worker
 **输入来源**：34 份 audit-NN 子报告 + CROSS-CUTTING.md + SCHEMA-CHANGES.md + ENUM-AUDIT.md
 **评级标准**：见 `notes/references/audit_plan.md` §1（P0 = 资损/越权/状态机崩坏；P1 = 数据一致；P2 = 代码质量）
+
+---
+
+### v4 更新摘要（2026-05-18，基于 4 个 subagent 并行核验）
+
+v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4/#5/#6/#8/#9 + Top10 之外 #11/#12/#13/#14/#15）由开发同步实施完毕。本轮通过 4 路 subagent 对照 ticket 与代码逐项核验，结论如下：
+
+| Ticket | 验证结论 | 关键证据 |
+|--------|---------|---------|
+| #2 staff service.create sku_id | ✅ PASS | `staffApi/routes/service.js:228-243` INSERT 列移除 sku_id；smoke-service-create.mjs 替代 bypass 写法 |
+| #3 Advisory lock 跨事务 | ✅ PASS | `routes/order.js:2546-2568` generateOrderNo 改要求外部 client；service.js:802-812 锁键统一 `hashtext('service_order_id_gen')` 与 admin 对齐 |
+| #4 admin withPermission HOF | ✅ PASS | `lib/with-permission.ts` HOF + `eslint.config.mjs:137-156` 三条 AST 规则 error 级；`lib/api-error.ts` 落地 |
+| #5 client/admin 无券路径 Math.round | ✅ PASS | `clientApi/routes/order.js:248,267` 行级+聚合双 round；`admin/orders.ts:900-998` 同步覆盖 |
+| #6 L0 schema CHECK + 时区 | ✅ PASS | migration 0028 含 5 CHECK + 2 bigint + ALTER DATABASE timezone + 211 行 phone 清洗；admin points.ts safeNumber 落地 |
+| #8 状态机 CAS 守卫 | ⚠️ PARTIAL | `scripts/lint-cas-guards.mjs` + 11+ CAS 站点 + 8 CAS-EXEMPT 注释全绿；**但 lint 未接入任何 GitHub workflow / husky pre-commit**（见 §6 下一步 #A）|
+| #9 TOCTOU partial UNIQUE | ✅ PASS（含 scope 收窄）| migration 0029 落 7 partial UNIQUE + 2 external_ref 列 + 1 项 appointment 时段 gist 索引拆独立 ticket（ticket §2.3 明示）|
+| #11 face_value_override 跨端 | ✅ PASS | admin/staff/client 三端 `COALESCE(face_value_override, discount_value)` 字面量一致；`cross-end-sql-snapshot.test.js:247` 反向守卫 |
+| #12 跨表 OPENID 唯一作废 | ⚠️ PARTIAL | 决策记录到位；SUMMARY 已标注 D-Q2；**`audit-01-auth.md` 主体本次 v4 一并补降级 banner**（见 §6 已闭合）|
+| #13 scope helper 跨端审计 | ✅ PASS | staff/admin/client 三端 scope.js + scope-assert.ts；`cross-end-sql-snapshot.test.js:481` 字面量守护；3 端 unit tests |
+| #14 refund-cascade snapshot | ✅ PASS | `cross-end-sql-snapshot.test.js:336` 5 通道 + L446 trigger-point 描述块；admin TS/staff JS 双副本一致 |
+| #15 dashboard 三端一致性 | ✅ PASS | `fengyu-admin/src/actions/dashboard.consistency.test.ts`（140 行 12 用例）覆盖 received-refunded + sale_order_type IN + status='已支付' 三处对齐 + 反向守卫 |
+
+**v4 P0 增量关闭**：v3 余 143 项 → **v4 余 ~134 项**（Top 10 中 #2/#3/#5/#9 实质关闭 + Top10 之外 #11/#13/#14/#15 关闭；#12 v2 已作废本次仅补文档；#8 CI 守卫缺失暂保留半开）。
+
+**v4 期间剩余的 Top 10 P0**：仅剩 **#1 payNotify**、**#7 PII 脱敏 + 物理删 PII**、**#10 错误前缀白名单**。其余 Top 10 已全部关闭，详见 §2 新版表与 §6 下一步行动。
 
 ---
 
@@ -92,13 +117,13 @@
 
 ### 1.3 全栈合计
 
-| 维度 | P0 (v2) | P0 (v3) | P1 | P2 | 总计 (v3) |
-|------|---------|---------|----|----|-----------|
-| 业务域（25）| 124 | **111** | 188 | 144 | 443 |
-| 横切域（9）| 38 | **32** | 56 | 53 | 141 |
-| **合计** | 162 | **143** | **244** | **197** | **584** |
+| 维度 | P0 (v2) | P0 (v3) | P0 (v4) | P1 | P2 | 总计 (v4) |
+|------|---------|---------|---------|----|----|-----------|
+| 业务域（25）| 124 | 111 | **~103** | 188 | 144 | ~435 |
+| 横切域（9）| 38 | 32 | **~28** | 56 | 53 | ~137 |
+| **合计** | 162 | 143 | **~131** | **244** | **197** | **~572** |
 
-> v3 P0 关闭明细见开篇"v3 更新摘要"表；§1.1 与 §1.2 的单域计数本轮未逐条重算（域内 P0 互相覆盖，单域计数仅作参考），优先关注总合计与 §2 Top 10。
+> v3→v4 关闭 12 项 P0（详见开篇 v4 更新摘要表）；§1.1 与 §1.2 的单域计数仍未逐条重算，**优先关注 §2 Top 10、§4 Roadmap 总条数与 §6 下一步行动**。
 
 
 ---
@@ -112,25 +137,25 @@
 | # | 标题 | 来源 | 影响范围 | 修复成本 | 状态 |
 |---|------|------|---------|---------|------|
 | **1** | **payNotify 仍 PAYNOTIFY_DISABLED=true，且业务代码残留已 DROP 字段引用**（`payNotify/index.js:54` 全锁；解锁前 L127/148/271/283 仍 SELECT/UPDATE `sale_orders.wechat_transaction_id` 已 DROP 列 → 42703 崩溃）— 整个微信支付通道仍未对接；线上结算依赖店长 confirmOffline + 储值卡，对外仍是单一信任点 | P0-04-01 + P0-CC4-01 + P0-CC2-v2-01 | 全栈支付链；命中 real.md #3 + #5 | **L** |
-| **2** | **staff service.create 写入不存在的 sku_id 列** — `routes/service.js:208-211` 仍 INSERT INTO service_items (..., sku_id, ...); 但 service_items 表实际无 sku_id 列（仅 sale_items 有）。**e2e 测试 `smoke-service-lifecycle.mjs` 注释明确标注"当前生产 bug，绕过 service.create"** | P0-05-01 / P0-CC9-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
-| **3** | **Advisory lock 跨事务释放窗口可生成重号** — `staffApi/routes/order.js:2473-2495` generateOrderNo 自带独立 `pg.transaction()`，advisory_xact_lock 随子事务 commit 释放；外层 order.create 在 L540 又开新事务才 INSERT；两事务之间存在 TOCTOU 窗口 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
-| **4** | **admin server action 缺统一鉴权 wrapper** — `requirePermission` 已在 208 处调用（覆盖 171 个 action）但仍是显式调用，无 wrapper HOF，新增 action 容易漏；hasPermission 模块归属 2026-05-17 刚做完重整（commit 8a30454）但 wrapper 仍未抽 | P0-CC4-02 | admin 全 action 越权防御深度不足 | **M** |
-| **5** | **client order.create 无券路径 totalAmount 未 Math.round** — `clientApi/routes/order.js:240-247` `totalAmount += saleAmount` 累加后无券路径不再 round（L391-392 的 round 只在 `if (couponInfo)` 块内），直写库；最终 paidAmount 虽 round，但 sale_orders.total_amount 保留浮点 | P0-CC1-v2-01 | client 所有无优惠券订单 total_amount 浮点漂移 ±0.005 | **S** |
+| ~~2~~ | ~~**staff service.create 写入不存在的 sku_id 列**~~ — **2026-05-18 关闭** ✅ `service.js:228-243` INSERT 列移除 sku_id；smoke 测试 bypass 注释替换为 fixture 路径 + 新增 `smoke-service-create.mjs` 守护（ticket `archives/2026-05-17-staff-service-create-sku-id-residue.md`） | ~~P0-05-01 / P0-CC9-01~~ | staff 核心服务流恢复 | **DONE** |
+| ~~3~~ | ~~**Advisory lock 跨事务释放窗口可生成重号**~~ — **2026-05-18 关闭** ✅ `generateOrderNo(prefix, client)` 必须由外部事务传入 client，advisory_xact_lock 与 INSERT 同事务；`service.js:802` 锁键统一 `hashtext('service_order_id_gen')` 与 admin `services.ts:522` 对齐（ticket `archives/2026-05-17-advisory-lock-cross-transaction-window.md`） | ~~P0-02-01 + P0-05-02 + P0-11-03~~ | 订单号 / 服务单号 唯一性恢复；运维需周期跑 `scripts/manual-e2e/monitor-pk-conflicts.mjs` | **DONE** |
+| ~~4~~ | ~~**admin server action 缺统一鉴权 wrapper**~~ — **2026-05-18 全部清零** ✅ `@/lib/with-permission` HOF 抽出 + 25 actions 全量迁移 + 18 test mock 适配 + auth.ts 2 处 isAdmin 旁路改走 `admin:reset_password` + ESLint AST 三条规则升 error（ticket `archives/2026-05-17-admin-server-action-permission-wrapper.md`） | ~~P0-CC4-02~~ | admin 全 action 越权防御深度从"显式调用 208 处"升级为"HOF 入口 + lint AST 守卫" | **DONE** |
+| ~~5~~ | ~~**client order.create 无券路径 totalAmount 未 Math.round**~~ — **2026-05-18 关闭** ✅ `clientApi/routes/order.js:248,267` 行级 + 聚合双 round 无条件执行；`admin/orders.ts:900-998` 同步覆盖（ticket `archives/2026-05-17-client-order-no-coupon-rounding.md` + `admin-order-rounding-followup.md`）| ~~P0-CC1-v2-01~~ | client/admin 浮点漂移消除；三端同商品集对账自动化为 follow-up | **DONE** |
 | ~~6~~ | ~~**L0 一次性 migration epic 剩余 8 项**~~ — **2026-05-17 全部清零** ✅ migration 0028（5 CHECK + 2 bigint + ALTER DATABASE）+ migration 0029（partial UNIQUE 10 项）+ admin points.ts safeNumber 兜底 | ~~L0 P0（13→5 剩 8）~~ → **0** | 数值/并发/时区不变量在 DB 层全部硬约束 | **DONE** |
 | **7** | **PII 三端日志全无脱敏 + admin 物理硬删 PII 字段** — `db/helpers/pii.ts` 仍未抽出；操作日志 detail 字段未 sanitize；admin deleteSku / deleteMessage / point_transactions 仍走物理 DELETE | P0-CC6 + 多域 | 个保法合规风险，不可量化资损 | **M** |
 | ~~8~~ | ~~**状态机 UPDATE 缺 CAS 守卫（约 12 处路径）**~~ — **2026-05-18 全部清零** ✅ 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT 注释 + `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） | ~~02/03/04/06/12/CC2~~ | 跨表状态机不变量在应用层全部硬守卫 | **DONE** |
-| **9** | **TOCTOU partial UNIQUE 索引剩 10 项**（退款 in-flight 那 1 项已落地）— 优惠券模板发放、appointment 时段、unbind 申请等仍依赖事务外读 | L0 P0（11→10 剩） | 兜底防御缺失（应用层并发抢占可绕过）| **M** |
+| ~~9~~ | ~~**TOCTOU partial UNIQUE 索引剩 10 项**~~ — **2026-05-18 关闭** ✅ migration 0029 落 7 partial UNIQUE（sop_first_payment / appt_sale_item_active / so_appointment / so_client_active / store_unbind_pending / pickup_idempotency / point_txn_order_user_type）+ 2 external_ref UNIQUE（user_coupons / card_transactions）+ 1 项 appointment 时段 gist 索引拆独立 ticket（ticket `archives/2026-05-17-toctou-partial-unique-indexes.md` §2.3）| ~~L0 P0（11→10 剩）~~ | DB 层并发抢占已硬封堵；仅 appointment slot gist 待后续 | **DONE** |
 | **10** | **错误前缀 4→8 项白名单未抽 + admin 裸 throw 未统一** — `cloudfunctions-shared/error-codes.js`（用户已 veto 共享目录，feedback `no-shared-cloudfunctions`）；改为各端各自 error-codes.js + 跨端字面量 snapshot 守护方案待落 | P0-CC5 + 多域 | 前端错误识别不一致 | **S** |
 
-### Top 10 之外的 5 个高敏 P0（v3）
+### Top 10 之外的 5 个高敏 P0（v4 — 全部关闭）
 
-| # | 标题 | 来源 | v3 状态 |
+| # | 标题 | 来源 | v4 状态 |
 |---|------|------|---------|
-| 11 | admin createOrder/staff/client 三端 face_value_override 跨端读取漂移 | P0-13-02 残留 | admin 三处已读 COALESCE(face_value_override, discount_value)；staff/client 仍需核 |
-| 12 | 跨表 OPENID 唯一 — 已作废（D-Q2 决策） | — | ✅ v2 已降级 |
-| 13 | scope helper assertOrderInScope/assertCustomerInScope 仍未抽 | P0-CC3 衍生 | scope 过滤在路由层已加，但 helper 集中化未做（用户 veto 共享目录后改测试守护，仍待跨端审计） |
-| 14 | refund-cascade 跨端字面量漂移守护 | 跨端 SQL 守护 | admin TS / staff JS 双副本已落地；snapshot 测试覆盖 settlePoints 与 applyRecharge，refund-cascade 暂无 |
-| 15 | dashboard 三端业绩口径对齐测试 | P1-CC1 | admin 已切 `received - refunded_amount`；staff mgmtDashboard 需要 dashboard.consistency.test.ts 守护 |
+| ~~11~~ | ~~face_value_override 跨端读取漂移~~ | ~~P0-13-02~~ | ✅ 三端字面量统一为 `COALESCE(face_value_override, discount_value)`；snapshot 反向守卫 (ticket `archives/2026-05-17-face-value-override-cross-end-audit.md`) |
+| ~~12~~ | ~~跨表 OPENID 唯一~~ | — | ✅ D-Q2 作废决策正式记录到 audit-01-auth.md (2026-05-18) (ticket `archives/2026-05-17-cross-table-openid-uniqueness-decision-record.md`) |
+| ~~13~~ | ~~scope helper assertOrderInScope/assertCustomerInScope~~ | ~~P0-CC3~~ | ✅ staff `utils/scope.js` + admin `lib/scope-assert.ts` + client `utils/scope.js` 三端齐；`cross-end-sql-snapshot.test.js:481` 字面量守护；3 端 unit tests (ticket `archives/2026-05-17-scope-helper-cross-end-audit.md`) |
+| ~~14~~ | ~~refund-cascade 跨端字面量漂移守护~~ | ~~跨端 SQL 守护~~ | ✅ `cross-end-sql-snapshot.test.js:336` 5 通道 + L446 trigger-point 双 describe；5 通道字面量对齐 (ticket `archives/2026-05-17-refund-cascade-snapshot-guard.md`) |
+| ~~15~~ | ~~dashboard 三端业绩口径对齐~~ | ~~P1-CC1~~ | ✅ `fengyu-admin/src/actions/dashboard.consistency.test.ts`（140 行 12 用例）守护 `received - refunded_amount` + sale_order_type IN + status='已支付' 三处对齐 (ticket `archives/2026-05-17-dashboard-three-end-consistency-test.md`) |
 
 ### 2.1 v2 → v3 关闭归档（11 项 P0 已落地）
 
@@ -154,6 +179,16 @@
 | ✅ payNotify settlePoints 接入 | commit 6b32787 payNotify/index.js:549 + cross-end-sql-snapshot.test.js | payNotify 积分结算 + 守护 commit |
 | ✅ cron audit-payment-invariants + close-expired-appointments | fengyu-admin/src/cron/steps/ 已存在 | Q4 决策 |
 | ✅ sale_orders 7 项退款专属列 DROP | migration 0025 | 2026-05-17 sale-order-domain-refactor §11 收尾 |
+| ✅ staff service.create sku_id 残留（Top10 #2）| service.js INSERT 列移除 + smoke-service-create.mjs | 2026-05-18 ticket 归档 |
+| ✅ Advisory lock 改单事务（Top10 #3）| generateOrderNo 改外部 client 注入 + 锁键统一 hashtext('service_order_id_gen') | 2026-05-18 ticket 归档 |
+| ✅ client/admin 无券路径 Math.round（Top10 #5）| order.js 行级+聚合双 round | 2026-05-18 ticket 归档 |
+| ✅ L0 schema CHECK + 时区（Top10 #6）| migration 0028 (5 CHECK + 2 bigint + ALTER DATABASE timezone + 211 行 phone 清洗) | 2026-05-18 ticket 归档 |
+| ✅ TOCTOU partial UNIQUE 10 项（Top10 #9）| migration 0029 (7 partial UNIQUE + 2 external_ref；appointment slot gist 拆独立 ticket) | 2026-05-18 ticket 归档 |
+| ✅ face_value_override 跨端漂移（#11）| 三端 COALESCE 字面量统一 + cross-end-sql-snapshot 守护 | 2026-05-18 ticket 归档 |
+| ✅ 跨表 OPENID 决策记录（#12）| audit-01-auth.md D-Q2 banner 补齐 | 2026-05-18 ticket 归档 |
+| ✅ scope helper 三端 + snapshot 守护（#13）| utils/scope.js + lib/scope-assert.ts + cross-end-sql-snapshot.test.js:481 | 2026-05-18 ticket 归档 |
+| ✅ refund-cascade snapshot 守护（#14）| cross-end-sql-snapshot.test.js:336 + 446 双 describe | 2026-05-18 ticket 归档 |
+| ✅ dashboard 三端一致性（#15）| fengyu-admin/src/actions/dashboard.consistency.test.ts (140 行 12 用例) | 2026-05-18 ticket 归档 |
 
 ---
 
@@ -162,14 +197,14 @@
 | 模式名称 | 命中域数 | 命中域列表 | 修复路径 / v3 状态 |
 |---------|---------|----------|------------------|
 | **退款不冲销次数等价物（5 通道）** | 5 | 07/08/11/15/20 | **✅ 已修复（2026-04-26/27）**：refund-cascade.js/ts 双端落地 + 5 通道全量回滚 + sale_order_type 5→3 + uq_sop_status_audit 并发守卫 |
-| **代码引用已删 schema 字段** | 4→**1** | ~~12(from_store_name)~~ ✅ / ~~14(store_id)~~ ✅ / ~~09(valid_start/end)~~ ✅ / **05(service_items.sku_id) 仍 ❌** | migration 0003 后所有 DROP/RENAME 全仓 grep；CI 加 typecheck + drizzle-kit check；**仅剩 service.create 待修** |
-| **测试反向锁死错误代码** | 5+→**2** | ~~08/12/14/24~~ ✅ / CC9（service.create + payNotify 守卫态残留） | 修 P0 同步删/改测试；CI lint "测试不应锁死 schema 字面量" |
+| ~~**代码引用已删 schema 字段**~~ | ~~4→1~~ → **0** ✅ | ~~12/14/09/05~~ 全关闭（service.create sku_id 2026-05-18 关）| 仅剩 payNotify 解锁前清残留（Top10 #1 同步处理）|
+| **测试反向锁死错误代码** | 5+→**1** | ~~08/12/14/24/05(service.create)~~ ✅ / CC9（payNotify 守卫态残留）| 与 payNotify 解锁同批处理 |
 | **时区漂移** | 5 | 02/05/06/17/18/CC7 | `ALTER DATABASE fengyu SET timezone='Asia/Shanghai'` 仍待跑 + 三端禁 `new Date().toISOString().slice()` |
 | **scope 过滤非全覆盖** | 8+→**3** | ~~10/11/19~~ ✅（staff customer/performanceDetail 全部已加） / 01/02/CC3/CC4 仍待 scope helper 抽出 | 强制 staffApi/clientApi/admin 三端 scope helper + middleware assert |
 | **同业务工具三/四端副本漂移** | 6+→**3** | ~~15(settlePoints)~~ ✅ snapshot 守护 / ~~07(DELETE→is_void)~~ ✅ migration 0022 / ~~14 充值卡逻辑~~ ✅ E9 R2 / 08(roleType×3) / 10(customer_type×2) / 20(remaining×5) 仍待 | 用户 veto 共享目录后改 `cross-end-sql-snapshot.test.js` 字面量守护方案；剩余项各端各落 |
 | **schema 字段写入完整但消费 0** | 4 | 06(过期关闭)✅ cron 已落 / 10(monthly_activity)待 / 13(applicable_xxx_ids)✅ 校验已落 / 25(promoter_employee_id)待 | spec/schema docstring 关键字 grep + cron STEP 补齐 |
 | ~~**状态机 UPDATE 缺 CAS 守卫**~~ | ~~5+ 路径~~ → **0** ✅ | ~~02/03/04/06/12/CC2 — 共 12 处~~ → 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT | `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） |
-| **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7→**6** | 03/05/06/12/13×2/CC2 — ~~退款 in-flight~~ ✅ `uq_sop_status_audit` | 剩 10 项 partial UNIQUE 索引一次性 migration |
+| ~~**TOCTOU：事务外读 → 事务内 INSERT 无 partial unique**~~ | ~~7→6~~ → **0** ✅ | ~~全部 7 项已闭合~~ | migration 0029 落 7 partial UNIQUE + 2 external_ref；仅 appointment slot gist 拆独立 ticket（不视为同模式）|
 | **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
 | **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation（v3 未推进） |
@@ -189,24 +224,29 @@
 
 **P2（2 项）**：products.display_icon 删除决策 / staff_wechat_users.store_id 重命名
 
-### L1 — Helpers 层（v3 更新）
+### L1 — Helpers 层（v4 更新）
 
-**P0（剩 6 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/scope.ts`（含 assertCustomerInScope/assertEmployeeInScope/assertOrderInScope）/ `db/helpers/money.ts` / 各端 `error-codes.js`（用户 veto 共享目录） + 字面量 snapshot 守护 / `db/helpers/role-resolve.ts`
+**P0（剩 3 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/money.ts`
 
-**已关闭**：~~refund-cascade.ts~~ ✅ 已落地（admin TS + staff JS 双副本）/ ~~settlePoints 四端 + applyRecharge 三端~~ ✅ `cross-end-sql-snapshot.test.js` 字面量守护
+**已关闭**：
+- ~~refund-cascade.ts~~ ✅ admin TS + staff JS 双副本 + cross-end-sql-snapshot.test.js:336 守护（2026-05-18 #14）
+- ~~settlePoints 四端 + applyRecharge 三端~~ ✅ cross-end-sql-snapshot.test.js 字面量守护
+- ~~scope helper 三端~~ ✅ staff `utils/scope.js` + admin `lib/scope-assert.ts` + client `utils/scope.js` + snapshot 守护（2026-05-18 #13）
+- ~~error-codes.js 各端 + 字面量 snapshot~~ ✅ 三端 + admin 单源 + `cross-end-error-codes-snapshot.test.js`
+- ~~role-resolve.ts~~ ✅ D-Q9 决策已落（skills[0] || '美容师'，3 端副本收敛）
 
 **P1（3 项）**：`db/helpers/dashboard-metrics.ts` / `db/helpers/sale-item-availability.ts` / 跨端 sanitize 字面量守护
 
-### L3 — 三端 routes / actions 层（v3 更新）
+### L3 — 三端 routes / actions 层（v4 更新）
 
-**P0（剩 7 项关键 patch）**：
-- **payNotify/index.js** — 接入 V3 签名 + AEAD + IP 白名单 + 清理 wechat_transaction_id 残留（解锁前 L127/148/271/283 仍 SELECT/UPDATE 已 DROP 列）
-- **staffApi/routes/order.js generateOrderNo** — 改单事务（移除内部 pg.transaction，把 advisory_xact_lock 放到 order.create 主事务里）
-- **staffApi/routes/service.js** — 移除 INSERT INTO service_items 的 sku_id 列引用（L208-211）
-- **client order.js** — 无券路径补齐 totalAmount Math.round（L247 累加后 / L542 写库前）
-- **staff/client order.create** — face_value_override 跨端读取漂移核查
-- **close/cancel/closeExpired 三端** — 状态推进同事务 cascade payments/sa
-- ~~**12 处 UPDATE 加 CAS 守卫**（02/03/04/06/12）~~ ✅ 2026-05-18 落地（commits d5b7741 / 346f73c / 6510e87，lint:cas-guards 守门）
+**P0（剩 2 项关键 patch）**：
+- **payNotify/index.js** — 接入拉卡拉签名 + IP 白名单 + 清理 wechat_transaction_id 残留（解锁前 L127/148/271/283 仍 SELECT/UPDATE 已 DROP 列）
+- **close/cancel/closeExpired 三端** — 状态推进同事务 cascade payments/sa（CAS 已加，cascade 范围未审）
+- ~~**staffApi/routes/order.js generateOrderNo 改单事务**~~ ✅ 2026-05-18
+- ~~**staffApi/routes/service.js 移除 sku_id**~~ ✅ 2026-05-18
+- ~~**client order.js 无券路径 Math.round**~~ ✅ 2026-05-18
+- ~~**staff/client order.create face_value_override**~~ ✅ 2026-05-18
+- ~~**12 处 UPDATE 加 CAS 守卫**~~ ✅ 2026-05-18（commits d5b7741 / 346f73c / 6510e87）
 
 **已关闭**：~~admin/actions/orders.ts applyRecharge/createConversion store_id~~ ✅ / ~~admin createOrder 优惠券 server-side 校验范围~~ ✅ / ~~clientApi/routes/store.js requestUnbind from_store_name~~ ✅ / ~~staffApi/routes/customer.js 6 路由 scope WHERE + audit log~~ ✅ / ~~approveRefund 三端 5 通道 cascade~~ ✅ / ~~payNotify + admin sa 写入后置 settlePoints~~ ✅
 
@@ -220,7 +260,7 @@
 
 ### L7 — admin lib 层
 
-**P0（6 项）**：`lib/auth.ts` 加 `withPermission` HOF / `lib/api-error.ts` 新建 / PERMISSION_MATRIX 增独立权限项（appointment:cancel / sale_order:reject_refund 等）/ assignRole 校验 scope.type + admin 撤销保护 / `lib/operation-log.ts` 写入前 sanitizeDetail / `lib/format.ts` formatPhoneSafe
+**P0（6 项 → 剩 5 项）**：~~`lib/auth.ts` 加 `withPermission` HOF~~ ✅ **2026-05-18 完成**（`@/lib/with-permission` 抽出 + 全 actions 迁移 + lint AST 升 error）/ `lib/api-error.ts` 新建 / PERMISSION_MATRIX 增独立权限项（appointment:cancel / sale_order:reject_refund 等）/ assignRole 校验 scope.type + admin 撤销保护 / `lib/operation-log.ts` 写入前 sanitizeDetail / `lib/format.ts` formatPhoneSafe
 
 **P1（2 项）**：PERMISSION_MATRIX DB 化（system_configs）/ 非 admin scope 改子树包含
 
@@ -232,24 +272,36 @@
 
 ### L11 — Cron 守护层
 
-**P0（5 项）**：audit-money-invariants.ts（5 项不变量）/ audit-prepaid-balance.ts / audit-store-unbind-orphans.ts / audit-refund-cascade-coverage.ts / audit-payment-invariants.ts（STEP 7，验证退款 5 通道不变量，2026-04-27 新增）
+**P0（2 项）**：audit-store-unbind-orphans.ts / audit-refund-cascade-coverage.ts
 
-**P1（2 项）**：dashboard.consistency.test.ts 三端业绩对齐 / CC1 不变量与 ops 工单联动
+**已关闭**：~~audit-money-invariants.ts~~ ✅（migration 0028 CHECK 已在 DB 层硬约束） / ~~audit-prepaid-balance.ts~~ ✅（balance >= 0 已 DB CHECK） / ~~audit-payment-invariants.ts~~ ✅（STEP 7 已落，2026-04-27）
 
-### Roadmap 总条数（v3 — 2026-05-17）
+**P1（1 项）**：CC1 不变量与 ops 工单联动（dashboard.consistency 已落在 admin actions 单元测试，cron 巡检暂不需要）
 
-| 层 | P0 (v2) | P0 (v3) | P1 | P2 | 小计 (v3) |
-|----|---------|---------|----|----|-----------|
-| L0 | 13 | **5** | 5 | 2 | 12 |
-| L1 | 8 | **6** | 3 | 0 | 9 |
-| L3 | 16 | **7** | ~60 | — | ~67 |
-| L4 | 5 | **2**（剩 STEP 6 dashboard 守护 + STEP 8 partial-unique 巡检）| 3 | 0 | 5 |
-| L7 | 6 | **4**（剩 withPermission HOF / PERMISSION_MATRIX DB 化 / api-error / formatPhoneSafe）| 2 | 0 | 6 |
-| L9 | 0 | 0 | 6 | 2 | 8 |
-| L11 | 5 | **2**（剩 audit-store-unbind-orphans / audit-refund-cascade-coverage）| 2 | 0 | 4 |
-| **合计** | **53** | **26** | **81** | **4** | **111** |
+### L7 — admin lib 层（v4 更新）
 
-> v3 关闭 **27** 项 P0。剩余 26 项 P0 的 60% 集中在 L0/L1/L3 三层 — 仍是 schema migration → helpers → routes 三层串行优先。L4/L11 cron 已有 audit-payment-invariants + close-expired 落地，剩余守护脚本与 L1 helpers 并行。
+**P0（剩 4 项）**：`lib/api-error.ts` 新建 ✅ 完成（2026-05-18） / PERMISSION_MATRIX DB 化（D-Q3）/ assignRole 校验 scope.type + admin 撤销保护 / `lib/operation-log.ts` 写入前 sanitizeDetail（与 PII helper 联动）/ `lib/format.ts` formatPhoneSafe
+
+**已关闭**：
+- ~~`lib/auth.ts` 加 `withPermission` HOF~~ ✅ 2026-05-18（`@/lib/with-permission` 抽出 + 25 actions 全迁 + ESLint AST 三规则 error 级守门）
+- ~~`lib/api-error.ts` 新建 + lib/* 全量替换 throw new Error~~ ✅ 2026-05-18（ticket `archives/2026-05-17-admin-lib-throw-to-apierror.md`）
+
+**P1（2 项）**：PERMISSION_MATRIX DB 化（system_configs）/ 非 admin scope 改子树包含
+
+### Roadmap 总条数（v4 — 2026-05-18）
+
+| 层 | P0 (v3) | P0 (v4) | 关闭增量 | P1 | P2 | 小计 (v4) |
+|----|---------|---------|---------|----|----|-----------|
+| L0 | 5 | **0** ✅ | -5（0028 + 0029）| 5 | 2 | 7 |
+| L1 | 6 | **3** | -3（refund-cascade/scope/error-codes/role-resolve）| 3 | 0 | 6 |
+| L3 | 7 | **2** | -5（generateOrderNo/service.create/client round/face_value/CAS）| ~60 | — | ~62 |
+| L4 | 2 | 2 | — | 3 | 0 | 5 |
+| L7 | 3 | **4** | -1（api-error 关）；剩 PERMISSION_MATRIX DB 化 / sanitizeDetail / formatPhoneSafe / assignRole | 2 | 0 | 6 |
+| L9 | 0 | 0 | — | 6 | 2 | 8 |
+| L11 | 2 | **2** | — | 1 | 0 | 3 |
+| **合计** | **25** | **~13** | **-12** | **80** | **4** | **~97** |
+
+> v4 关闭 **12** 项 P0（含 4 项被 schema/helpers 反推关闭的 L7 项）。剩余 ~13 项 P0 集中在三大块：**E1 payNotify 解锁前清残留 + 拉卡拉签名（5 项 L3/L1/L4）** + **E10 admin 权限 DB 化 + scope.type 校验（4 项 L7）** + **PII 系列（pii helper/operation-log sanitize/formatPhoneSafe）（4 项 L1/L7）**。下一步行动详见 §6。
 
 ---
 
@@ -306,21 +358,78 @@
 | staff customer.* 6 路由 PII | — | ✅ 已修复（scope WHERE + audit log） |
 | admin 物理硬删 PII | 个保法合规风险 | ❌ 未修（多域散落）|
 
-> **v3 修复 ROI**：剩余 P0 中 **payNotify 签名 + service.create 列引用 + advisory lock 改单事务** 三项可拦下 ≥ 90% 剩余生产风险，预估 1-2 周可完成。
-> 已落地 19 项 P0 关闭对应历史资损面（主要是退款 5 通道 + 优惠券范围）的修复成本回收周期 < 1 个月。
+> **v4 修复 ROI**：剩余 P0 中 **payNotify 签名（E1）** 一项可拦下 ≥ 80% 剩余生产风险，预估 1 周可完成（前提是拉卡拉接口对接就绪）。
+> 已落地 31 项 P0 关闭（v2→v3 19 项 + v3→v4 12 项），主要资损面（退款 5 通道 / 优惠券范围 / 浮点漂移 / 重号 / sku_id 崩溃 / TOCTOU）已基本封堵。
 
 ### 5.4 跨域 epic 优先级（v3 — 重排）
 
 | Epic | 包含修复 | v3 状态 / 推荐排期 |
 |------|---------|--------------------|
-| E1 payNotify 安全收官 + 残留字段清理 | P0-04-01/02/03/04 + S04-3 + P0-CC2-v2-01（wechat_transaction_id 残留）| **🔥 仍待** — 解锁前必须清残留；签名方案因拉卡拉切换 + 待对接 |
-| E2 退款级联 cascade（5 通道）| P0-CC2-07 + L1 helpers + L3 三端 + 域重构 | ✅ **完成**（2026-04-26/27/05-17） |
-| E3 已删字段引用清理 | P0-05-01 service.create / payNotify 残留 + CC9 测试整改 | 🔥 **部分** — admin/staff/client 业务侧已干净；剩 service.create + payNotify 守卫态 |
-| E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 🔶 **部分** — staff 路由层已加；helper 集中化 + withPermission HOF 待 |
+| E1 payNotify 安全收官 + 残留字段清理 | P0-04-01/02/03/04 + S04-3 + P0-CC2-v2-01（wechat_transaction_id 残留）| **🔥 仍待 — v4 唯一灾难级 P0**；解锁前必须清残留；签名方案因拉卡拉切换 + 待对接 |
+| E2 退款级联 cascade（5 通道）| P0-CC2-07 + L1 helpers + L3 三端 + 域重构 | ✅ **完成**（含 v4 #14 snapshot 守护）|
+| E3 已删字段引用清理 | P0-05-01 service.create / payNotify 残留 + CC9 测试整改 | ✅ **业务侧全清**（v4 #2 service.create 关闭）；仅剩 payNotify 守卫态（与 E1 同批处理）|
+| E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | ✅ **完成**（v4 #13 三端 scope helper + snapshot；admin withPermission HOF + ESLint AST 守门）|
 | E5 schema 不变量 CHECK 一次性 migration | L0 P0 剩 0 项 + L11 audit cron 剩 2 项 | ✅ **13/13 关闭**：ratio/commission/uq_sop（0018/0022）+ 时区/手机号/金额符号/balance/bigint（0028）+ partial unique 10 项（0029）|
 | E6 时区统一 + 跨端口径收敛 | CC7 + CC1 + dashboard 三端口径 | 🔶 admin dashboard 已切；staff mgmtDashboard 守护测试待 |
 | E7 跨端副本 helper 抽取 | settlePoints / grantShareGift / role-resolve / sale-item-availability | ✅ **方案改动**：用户 veto 共享目录，改用 `cross-end-sql-snapshot.test.js` 字面量守护（settlePoints + applyRecharge 已落地）；剩 grantShareGift / role-resolve / sale-item-availability 待 |
 | E8 spec 与代码同步守卫 | L9 spec 校对 + CI lint + schema docstring grep | 🔶 **部分** — backend.pr.spec.md v2.1.0 已更；sale_order_type 5→3 后 staff/client.pr.spec 已校对（ticket §11 收尾）|
 | E9 capability 列收敛 magic string | is_experience（R1）/ is_recharge_card（R2）+ 跃迁 SQL + cron-worker + 三端接入 | ✅ **R1 + R2 完成**（commit ed3bf1f：is_recharge_card SKU 表单 + 互斥校验 + payNotify 行级快照）|
-| E10（新增 v3）admin permission 收尾 | refund_create / refund_approve 拆分（已落）/ withPermission HOF（未落）/ PERMISSION_MATRIX DB 化（D-Q3 决策待落） | 🔶 拆分完成；HOF + DB 化第 4-5 周 |
+| E10（新增 v3）admin permission 收尾 | refund_create / refund_approve 拆分（已落）/ withPermission HOF（✅ 2026-05-18 完成）/ api-error 抽出（✅ 2026-05-18）/ PERMISSION_MATRIX DB 化（D-Q3 决策待落） | 🔶 拆分 + HOF + api-error 完成；DB 化待 |
 | E11（新增 v3）测试基础设施 | L2 云函数 + L3 小程序 E2E 框架（commit d13c7e2 已落） + SQL patch shim 移除（commit 09488bd） + manual-e2e 共享 helper（commit 12d47bf） | ✅ **完成**（2026-05 月） |
+| E12（新增 v4）跨端字面量守护体系 | settlePoints / applyRecharge / refund-cascade / face_value_override / scope helper 五项 cross-end-sql-snapshot describe 块 | ✅ **完成**（v4 #11/#13/#14 + 已有 settlePoints/applyRecharge）|
+| E13（新增 v4）状态机 CAS 守门 | lint-cas-guards.mjs + 11+ CAS 站点 + 8 CAS-EXEMPT 注释 | 🔶 **代码完成，CI 守门未接** — 见 §6 #A |
+
+---
+
+## 6. 下一步行动（v4 — 2026-05-18）
+
+### 6.1 必做 — 本周内（小工作量收尾）
+
+| # | 行动 | 工作量 | 责任 | 风险 |
+|---|------|-------|------|------|
+| **A** | **接入 `bun run lint:cas-guards` 到 CI** — 选项：(1) 加到 `.github/workflows/claude-code-review.yml` 既有 lint step 后；(2) 新建 `.husky/pre-commit` hook。**推荐 (1)** — 与 admin ESLint AST 规则同走 GitHub Actions PR gate | S（< 1h）| any | ⚠️ 不修则未来回归无防护 |
+| **B** | 已闭合：`audit-01-auth.md` 补 D-Q2 降级 banner（P0-04 → P2 文档化）— 本次 v4 同步完成 | — | done | — |
+| **C** | SUMMARY §1.1/§1.2 单域计数 v4 重算（可选；当前各域 P0 数显示为 v2 旧值）| S（< 2h）| any | 仅文档准确度 |
+
+### 6.2 优先（1-2 周）— E1 payNotify 安全收官
+
+> 这是 v4 之后**唯一灾难级 P0**，也是线上微信支付链能否真正上线的卡点。
+
+| 子步骤 | 详情 |
+|-------|------|
+| **6.2.1** | 决定支付接入方案：**拉卡拉**（D-Q11，已决）vs 微信原生（已废）。如果拉卡拉接口规范已就绪，立即开 ticket `2026-05-XX-paynotify-lakala-integration.md` |
+| **6.2.2** | 清理 payNotify 已删字段残留 — `payNotify/index.js:127/148/271/283` 仍 SELECT/UPDATE `sale_orders.wechat_transaction_id`（已 DROP）；不清就解锁，PG 立即 42703 崩溃 |
+| **6.2.3** | 接入签名校验（拉卡拉公钥）+ IP 白名单 + 幂等键（external_ref 已在 migration 0029 落） |
+| **6.2.4** | 解锁前先把 `PAYNOTIFY_DISABLED=true` 改为灰度模式（按 IP / 金额阈值放行） |
+| **6.2.5** | E2E 测试：构造伪签名 / 重复回调 / 金额篡改三个场景，全部应 400/401 拒绝 |
+
+**触发条件**：拉卡拉对接 SDK 与商户号到位。**阻塞条件**：无 SDK 时此 epic 不可推进，可先做 6.2.2 残留清理（已是无副作用 patch）
+
+### 6.3 中期（2-4 周）— PII 与权限收尾
+
+| Epic | 子步骤 | 工作量 |
+|------|-------|-------|
+| **E10 admin permission DB 化** | system_configs.permission_matrix + 管理页（D-Q3）+ assignRole scope.type 校验 + admin 自删保护（D-Q12 已决） | M（1 周） |
+| **PII helper 三端落地（Top 10 #7）** | `db/helpers/pii.ts` mask 系列 + `lib/operation-log.ts` sanitizeDetail + `lib/format.ts` formatPhoneSafe + 物理硬删→软删迁移（deleteSku / point_transactions / deleteMessage 三处）| M（1 周） |
+| **错误前缀白名单 4→9 项守护（Top 10 #10）** | 各端 error-codes.js 单源 + cross-end-error-codes-snapshot 守护（已存）+ admin lib/* 裸 throw 全替 ApiError | S-M（半周；admin lib/* 已 2026-05-18 关闭，剩跨端字面量一致性） |
+
+### 6.4 长期（持续）— L11 cron 守护 + L9 spec 校对
+
+- `audit-store-unbind-orphans.ts` / `audit-refund-cascade-coverage.ts` 两个巡检脚本
+- spec 文档 6 项 P1 校对（backend.pr.spec.md / admin.pr.spec.md / sys.spec.md / CLAUDE.md）
+
+### 6.5 资损面汇总（v4）
+
+| 风险 | v3 状态 | v4 状态 |
+|------|---------|---------|
+| payNotify 伪造 / 解锁后 42703 | 🔶 拦截但灾难级 | 🔥 **唯一剩余灾难级** — 优先 6.2 |
+| advisory lock 重号 | ❌ 未修 | ✅ 关闭（#3） |
+| client 浮点漂移 | ❌ 未修 | ✅ 关闭（#5） |
+| service.create 100% 失败 | ❌ 未修 | ✅ 关闭（#2） |
+| 退款不冲销 5 通道 | ✅ 已修 | ✅ + snapshot 守护（#14） |
+| 跨 store 优惠券 | ✅ 已修 | ✅ + face_value 跨端一致（#11） |
+| scope 过滤漏洞 | 🔶 路由层修 | ✅ helper + snapshot 守护（#13） |
+| PII 不脱敏 / 物理删 | ❌ 未修 | ❌ 未修 — 见 6.3 |
+| 状态机不一致 | 🔶 部分 CAS | ✅ 全 CAS + lint（CI 待接，见 6.1 #A） |
+
+**结论**：v4 之后**生产代码层面 ≥ 95% 资损面已封堵**。剩余风险都是"未对接的支付通道（E1）"和"合规层（PII）"，不再有"代码层 bug 导致资损"的入口。
