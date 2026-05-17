@@ -861,13 +861,13 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg === 'CONCURRENT_CHANGED') {
+    if (msg.includes('CONCURRENT_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
-    if (msg === 'INSUFFICIENT_SESSIONS') {
+    if (msg.includes('INSUFFICIENT_SESSIONS')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '剩余次数不足，无法退款' } }
     }
-    if (msg === 'CARD_UPSERT_FAILED') {
+    if (msg.includes('CARD_UPSERT_FAILED')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '储值卡回冲失败' } }
     }
     console.error('[approveRefund] unexpected error:', err)
@@ -958,12 +958,12 @@ export async function rejectRefund(
          WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
-        throw new Error('CONCURRENT_CHANGED')
+        throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (msg === 'CONCURRENT_CHANGED') {
+    if (msg.includes('CONCURRENT_CHANGED')) {
       return { success: false, error: { code: 'CONFLICT', message: '退款状态已变更，请刷新后重试' } }
     }
     console.error('[rejectRefund] unexpected error:', err)
