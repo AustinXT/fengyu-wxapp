@@ -7,6 +7,11 @@
 **关联 PR/Ticket**：—
 **前置归集**：[CROSS-CUTTING.md §CC5](./CROSS-CUTTING.md#cc5-错误码与错误前缀)
 
+> **✅ 2026-05-18 v4 闭合（仅供历史参考）**
+> 四端 error-codes 已对齐 **9 项白名单** + cross-end snapshot 已守护 + admin lib/* / actions/* 0 处裸抛 + CI 已接入 PR gate（`.github/workflows/lint.yml`）。
+> 本报告以下 "4 项约定" 段为历史快照（2026-04-26 v2 审计时点），最新约定见 `CLAUDE.md §错误前缀约定`（9 项 + 二级前缀 `[A-Z_]+` 语法）。
+> 闭合 ticket：`notes/tickets/archives/2026-05-18-error-prefix-whitelist-cross-end-consistency.md`
+
 > **域定义**：横切收官审计——三端"错误前缀规范化 + 响应外壳一致性"全栈健康专项。CC5 不属于单业务域，本报告统一收口 25 个业务域报告内 CC5 节的散点命中。
 
 ---

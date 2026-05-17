@@ -209,7 +209,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | **schema 字段写入完整但消费 0** | 4 | 06(过期关闭)✅ cron 已落 / 10(monthly_activity)待 / 13(applicable_xxx_ids)✅ 校验已落 / 25(promoter_employee_id)待 | spec/schema docstring 关键字 grep + cron STEP 补齐 |
 | ~~**状态机 UPDATE 缺 CAS 守卫**~~ | ~~5+ 路径~~ → **0** ✅ | ~~02/03/04/06/12/CC2 — 共 12 处~~ → 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT | `scripts/lint-cas-guards.mjs` + `.github/workflows/lint.yml` PR gate（commits d5b7741 / 346f73c / 6510e87 + lint workflow 2026-05-18） |
 | ~~**TOCTOU：事务外读 → 事务内 INSERT 无 partial unique**~~ | ~~7→6~~ → **0** ✅ | ~~全部 7 项已闭合~~ | migration 0029 落 7 partial UNIQUE + 2 external_ref；仅 appointment slot gist 拆独立 ticket（不视为同模式）|
-| **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
+| ~~**错误前缀偏离 4 项约定 + admin 裸 throw**~~ → **9 项白名单已统一** | ~~多域~~ → **0** ✅ | ~~01/02/03/04/24/CC5~~ | 四端 error-codes 9 项白名单 + cross-end snapshot + admin ApiError + CI PR gate（ticket archives/2026-05-18-error-prefix-whitelist-cross-end-consistency.md）|
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
 | **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation（v3 未推进） |
 | **金额/比例字段无 CHECK 约束** | ~~5+→2~~ → **0** ✅ | ~~07(ratio)~~ ✅ migration 0022 / ~~svc_comm~~ ✅ migration 0022 / ~~14(card_tx)~~ ✅ migration 0028 / ~~15(pt)~~ ✅ migration 0028 | 全部补齐 |

@@ -261,7 +261,7 @@ GROUP BY customer_id HAVING count(*) > 1;
 ### 自身漏洞（13 项）
 - [ ] SQL 全部参数化（`$1, $2`，无字符串拼接，无 `template literal` SQL）
 - [ ] OPENID 鉴权在路由入口校验（不在业务逻辑中）
-- [ ] 错误前缀符合 4 项约定
+- [ ] 错误前缀符合 9 项白名单（含二级前缀 `[A-Z_]+` 语法）
 - [ ] 涉及金额/扣次/状态的 UPDATE 用 CAS 或在事务内
 - [ ] 状态机迁移有显式枚举校验，禁止任意 status 赋值
 - [ ] 数值用 NUMERIC，避免 JS Number 精度
@@ -422,7 +422,7 @@ mkdir -p docs/audit
 | CC2 | 并发与幂等 | ✅ | [audit-CC2-concurrency-idempotency.md](../../docs/audit/audit-CC2-concurrency-idempotency.md) | 11/6/5 — 退款 cascade 5 通道（**Top 2**）；advisory lock 多处缺 |
 | CC3 | 组织域隔离 | ✅ | [audit-CC3-org-isolation.md](../../docs/audit/audit-CC3-org-isolation.md) | 5/9/5 — staff customer.* 6 路由跨店越权 |
 | CC4 | 后端鉴权 | ✅ | [audit-CC4-auth.md](../../docs/audit/audit-CC4-auth.md) | 10/5/3 — payNotify 签名（**Top 1**）；admin 多 action withPermission 缺 |
-| CC5 | 错误码 | ✅ | [audit-CC5-error-code.md](../../docs/audit/audit-CC5-error-code.md) | 0/4/6 — 中文 throw Error 无前缀；4 项约定未统一 |
+| CC5 | 错误码 | ✅ | [audit-CC5-error-code.md](../../docs/audit/audit-CC5-error-code.md) | 0/4/6 — 中文 throw Error 无前缀；9 项白名单已统一（2026-05-18 闭合）|
 | CC6 | PII | ✅ | [audit-CC6-pii.md](../../docs/audit/audit-CC6-pii.md) | 4/3/3 — 日志含完整手机号；列表脱敏规则未覆盖 |
 | CC7 | 时间字段 | ✅ | [audit-CC7-time-field.md](../../docs/audit/audit-CC7-time-field.md) | 3/8/4 — 时区集群级未统一 (S02-3)；checkin/started/completed 写入责任 |
 | CC8 | WXML/Vant | ✅ | [audit-CC8-wxml-vant.md](../../docs/audit/audit-CC8-wxml-vant.md) | 0/5/5 — 状态机 → UI 文案三端不一致 |

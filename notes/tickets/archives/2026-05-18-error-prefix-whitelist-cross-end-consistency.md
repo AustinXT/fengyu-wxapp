@@ -1,3 +1,10 @@
+> **✅ 2026-05-18 R1 闭合**
+> - **S3 staff 裸抛**：grep 实证 service.js:386 + order.js:1027 已自然带 `INVALID_PARAMS:` 前缀（ticket §3.1 描述的旧行号 367/988 已无效），无需修。staff routes 仅剩 2 处内部 helper assertion（`generateOrderNo / generateServiceOrderId: client is required`）— 事务上下文不变量守护，不属用户面错误，保留。
+> - **S2 CI 接入**：`.github/workflows/lint.yml` 新增 `cross-end-snapshots-staff` + `cross-end-snapshots-admin` 两 job，跑 cross-end-error-codes-snapshot.test.js + cross-end-sql-snapshot.test.js + admin error-codes-cross-end.test.ts。
+> - **S4 文档校对**：audit-CC5-error-code.md 顶部加 v4 闭合 banner；SUMMARY.md L212 `4 项约定` → `9 项白名单已统一`；audit_plan.md L264/L425 同步。其他历史 docs/audit/* 不动（语义由 audit-CC5 banner 总括覆盖）。
+> - **附带修复**：cross-end-sql-snapshot.test.js L216/223/230 三处 regex stale（假设 `export async function` 形态，实际 admin orders.ts 已用 `export const ... = withPermission(...)` 包装）—— 兼容 regex 两形态后 81/81 全绿。
+> - **反向守护扩展**（admin lib/* + client routes，0 violations 实测）按用户决策本批不做，未来如再审计可单独 ticket 启用。
+>
 > 生成日期：2026-05-18
 > 严重级别：P1（**降级** — Top10 #10 实质 80% 已闭合；本 ticket 是收尾守护 + CI 监控）
 > 端：**三端 + admin + payNotify**（fengyu-admin / fengyu-staff / fengyu-client / payNotify）

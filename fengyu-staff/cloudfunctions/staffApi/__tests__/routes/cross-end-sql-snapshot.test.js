@@ -213,21 +213,23 @@ describe('audit-15 P0-15-01 触发点守护：admin 两处必须调用 settlePoi
 
   test('confirmOfflinePayment 内必须调用 settlePointsSafe(tx, saleOrderId, "admin.confirmOffline")', () => {
     // 截取 confirmOfflinePayment 函数体（从函数声明到下一个 export）
-    const fnMatch = adminSrc.match(/export async function confirmOfflinePayment[\s\S]*?(?=\nexport |\n\/\*\* )/)
+    // 兼容 `export async function X(...)` 和 `export const X = withPermission(...)` 两种形态
+    const fnMatch = adminSrc.match(/export (?:async function|const) confirmOfflinePayment[\s\S]*?(?=\nexport (?:async function|const) |\n\/\*\* )/)
     expect(fnMatch).not.toBeNull()
     const fnBody = fnMatch[0]
     expect(fnBody).toMatch(/settlePointsSafe\s*\(\s*tx\s*,\s*saleOrderId\s*,\s*['"]admin\.confirmOffline['"]/)
   })
 
   test('recordPayment 内必须调用 settlePointsSafe(tx, saleOrderId, "admin.recordPayment")', () => {
-    const fnMatch = adminSrc.match(/export async function recordPayment[\s\S]*?(?=\nexport |\n\/\*\* )/)
+    const fnMatch = adminSrc.match(/export (?:async function|const) recordPayment[\s\S]*?(?=\nexport (?:async function|const) |\n\/\*\* )/)
     expect(fnMatch).not.toBeNull()
     const fnBody = fnMatch[0]
     expect(fnBody).toMatch(/settlePointsSafe\s*\(\s*tx\s*,\s*saleOrderId\s*,\s*['"]admin\.recordPayment['"]/)
   })
 
   test('confirmOfflinePayment 结清时必须调用 recalcCustomerType（与 recordPayment 对齐）', () => {
-    const fnMatch = adminSrc.match(/export async function confirmOfflinePayment[\s\S]*?(?=\nexport |\n\/\*\* )/)
+    const fnMatch = adminSrc.match(/export (?:async function|const) confirmOfflinePayment[\s\S]*?(?=\nexport (?:async function|const) |\n\/\*\* )/)
+    expect(fnMatch).not.toBeNull()
     const fnBody = fnMatch[0]
     expect(fnBody).toMatch(/recalcCustomerType\s*\(\s*tx\s*,/)
   })
