@@ -1,7 +1,54 @@
 # Ticket: 体验卡判定从 product_kind 字面量改为 product_skus.is_experience capability 列
 
 > 生成日期：2026-04-26
-> 实施状态：🟡 进行中（2026-04-26 完成 Round 1：schema + 三端核心代码迁移；新页面/cron-worker/payNotify 共享 helper defer 至 Round 2）
+> 实施状态：🟢 主体已完成（Round 1 + Round 2 核心项落地）。剩余仅"共享 helper 收敛"与"测试字面量整治"两条非阻塞 polish；cron-worker 计划已作废（项目无此 runtime）
+
+## 实施进度（2026-05-17 全栈复检）
+
+| 范围 | 状态 | 证据 |
+|------|------|------|
+| Schema migration 0017_tidy_rage | ✅ | `product_skus.is_experience` + `sale_items.is_experience` + 部分索引 + 历史回填 |
+| admin 三端核心迁移 (10 文件) | ✅ | `actions/orders.ts` `actions/cards.ts` `actions/products.ts` `lib/product-kind.ts` `lib/types.ts` `trial-card-picker.tsx` `prepaid-card-picker.tsx` `order-create-page.tsx` `db/seed.ts` |
+| staff staffApi 迁移 (5 文件) | ✅ | `routes/product.js` shopInit 过滤 + `routes/order.js` create/createConversion/createRefund 写快照 + `utils/refund.js` 镜像 |
+| client clientApi 迁移 | ✅ | `routes/product.js:429 experienceCardList` action + SKU_VALID_FILTER 默认排除 + `routes/order.js` 写快照 |
+| client miniprogram 入口 | ✅ | `pages/home/home.wxml:89` grid 入口 → `pages/home/home.ts:287 navigateTo /pagesExperience/list/list` |
+| client 体验卡列表/详情页 | ✅ | `pagesExperience/list/` + `pagesExperience/detail/`（subpackage `app.json:65 root: pagesExperience`）|
+| 体验卡下单流 | ⚠️ 简化 | 体验卡走 `pagesOrder/checkout` 通用流（detail.ts:103，注释说明"复用 checkout 享有员工选/储值卡/优惠券/多支付方式"），并未严格"独立购物车"——已与产品对齐为简化方案 |
+| payNotify 跃迁 SQL | ✅ | `payNotify/index.js` 已用 `si.is_experience`（跃迁 CASE 段三端字节同义）|
+| staff confirmOffline / admin recordPayment 跃迁触发 | ✅ | `recalc-customer-type-sql.test.js` 守卫 + `cross-end-sql-snapshot.test.js:196` confirmOfflinePayment 结清调用 recalcCustomerType |
+| 跃迁规则混合订单按非体验部分判 | ✅ | staff `routes/order.js:73 recalcCustomerType` SQL `si.is_experience = false` 直接判，与 §1.4 算法一致 |
+| **共享 helper 抽取** | ❌ 未做 | `cloudfunctions-shared/customer-type-transition.js` 不存在；当前为三端独立副本（admin orders.ts + staff order.js + payNotify index.js），靠 `__tests__/routes/recalc-customer-type-sql.test.js` SQL 字节守卫 mitigate |
+| **cron-worker 迁移** | ❌ 作废 | cron-worker 实际存在于 `fengyu-admin/src/cron/`，但 `customer_type` 跃迁是 **event-driven**（payNotify + confirmOffline + recordPayment 收款触发点推动）。cron 仅跑 `refresh-customer-status`（活跃/沉睡判断，与 customer_type 正交）、`refresh-member-levels` 等。原 §3.4 "cron-worker steps/refresh-customer-type.ts" 计划基于错误假设，作废 |
+| **测试字面量反向锁死整治** | ❌ 未做 | `mgmt-product.test.js` / `product.test.js` 仍含 `product_kind='体验卡'` 维度断言；与 audit-CC9 同步整治留待统一 epic |
+| 字面量残留扫描 | ⚠️ 44 处 | 主要分布：admin `order-create-page.tsx` UI Tab 标签（合法）、`lib/product-kind.ts CARD_PRODUCT_KINDS` 兜底常量、`db/seed.ts` 分类种子、staff/admin 测试 mock、注释 |
+
+### 自 Round 1（2026-04-26）以来的增量交付
+
+- 0017 migration apply + 历史回填验证通过（5434 在线）
+- client experienceCardList action（`fengyu-client/cloudfunctions/clientApi/routes/product.js:429`）
+- client 首页"体验卡"grid 入口（`pages/home/home.wxml:89`，icon + 跳转）
+- client `pagesExperience/list` + `pagesExperience/detail` subpackage 建成
+- 体验卡 detail 接入通用 checkout（决策从"严格独立购物车" pivot 为"复用 checkout"，commit `08679eb refactor(client-mp): 移除体验页结账页 + 跳转路由调整`）
+- payNotify / staff order.js / admin orders.ts 三端 recalcCustomerType SQL 全部用 `si.is_experience`
+- `recalc-customer-type-sql.test.js` SQL 字节守卫上线（三端漂移触发 CI 失败）
+- `cross-end-sql-snapshot.test.js:196` confirmOfflinePayment 结清必须调用 recalcCustomerType 断言
+
+### 剩余收尾（建议合并到一个 PR 收口）
+
+1. **测试反向锁死整治**：`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/{product,mgmt-product,order}.test.js` 把 `'体验卡'` GROUP BY 维度断言改读 `is_experience` 列（与 audit-CC9 P0-CC9-* 同步）
+2. **(可选) 共享 helper 抽取**：当前 SQL 字节守卫已有效预防漂移；如团队最终落地 `cloudfunctions-shared/` 方案，再统一收敛三端副本。若不打算抽取，应在 §4.2 标注 SQL 字节守卫为终态方案，关闭此项
+3. **(可选) `CARD_PRODUCT_KINDS` 兜底常量去硬编码**：`fengyu-staff/cloudfunctions/staffApi/routes/product.js:32` + `fengyu-admin/src/lib/product-kind.ts:24`；当前已有 `cardKinds` action 从 DB 读 `is_card_kind=true`，兜底常量保留可接受
+4. **作废 cron-worker 计划**：删除 §3.4 / §5（第 2 周）/ §5（第 3 周）对 cron-worker 的引用，或追加备注"项目无 cron-worker，跃迁完全靠收款触发点推动"
+
+### 关键代码锚点
+
+- staff `recalcCustomerType`: `fengyu-staff/cloudfunctions/staffApi/routes/order.js:73`
+- admin `recalcCustomerType`: `fengyu-admin/src/actions/orders.ts:135`
+- payNotify 跃迁 SQL: `fengyu-client/cloudfunctions/payNotify/index.js`（搜 `is_experience`）
+- 三端字节守卫: `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recalc-customer-type-sql.test.js`
+- client experienceCardList: `fengyu-client/cloudfunctions/clientApi/routes/product.js:429`
+
+---
 
 ## 实施进度（2026-04-26 Round 1）
 
@@ -38,13 +85,14 @@
 
 ⚠️ **payNotify 跃迁 SQL** 当前用 `pc_parent.is_card_kind = true AND pc_parent.category_name <> '充值卡'` 间接识别体验卡（capability 列模式），不是 `product_kind = '体验卡'` 字面量；本轮保持不动，跃迁 SQL 整体迁移到 `sale_items.is_experience` 留 Round 2 处理（与 §4.2 共享 helper 一并）
 
-## 范围外（Round 2 待评审）
+## 范围外（Round 2 历史规划 — 当前状态见顶部 2026-05-17 复检表）
 
-- ⏳ **client miniprogram 体验卡入口/列表/详情/独立购物车页** — 需 UI 设计对齐（§3.3 后半 + §10 C2/C5）
-- ⏳ **cron-worker（不存在）+ refresh-customer-type 跃迁 SQL 迁移** — 需先确认 cron-worker 部署模式
-- ⏳ **cloudfunctions-shared/customer-type-transition.js 共享 helper** — 跨云函数共享方案需确认（与 audit-15 P0-15-02 副本收敛 epic 协同）
-- ⏳ **payNotify / staff confirmOffline / admin recordPayment 三处接入共享 helper** — 依赖上一项
-- ⏳ **测试反向锁死字面量整治**（与 audit-CC9 同步） — `__tests__/routes/mgmt-product.test.js` 仍含 product_kind='体验卡' GROUP BY 维度（非业务判定，但建议后续解耦）
+- ✅ **client miniprogram 体验卡入口/列表/详情** — home grid 入口 + pagesExperience subpackage 已上线
+- 🔄 **独立购物车页** — 决策 pivot：复用通用 checkout（commit 08679eb），不再做严格独立购物车
+- ❌→ 作废 **cron-worker + refresh-customer-type 跃迁 SQL 迁移** — cron-worker 存在于 `fengyu-admin/src/cron/`，但 customer_type 跃迁是 event-driven（收款触发点推动），cron 仅管 customer_status / member_levels 等，原计划基于错误假设
+- ⏳ **cloudfunctions-shared/customer-type-transition.js 共享 helper** — 仍未抽取；当前由 `recalc-customer-type-sql.test.js` SQL 字节守卫 mitigate
+- ✅ **payNotify / staff confirmOffline / admin recordPayment 三处跃迁触发** — 三端跃迁 SQL 全部用 `si.is_experience`，触发点齐全
+- ⏳ **测试反向锁死字面量整治**（与 audit-CC9 同步） — `__tests__/routes/mgmt-product.test.js` 仍含 product_kind='体验卡' GROUP BY 维度
 
 
 > 严重级别：**P0**（业务规则可演进性 + 客户分类跃迁正确性）

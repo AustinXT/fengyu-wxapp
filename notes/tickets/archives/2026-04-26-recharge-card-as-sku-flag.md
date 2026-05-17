@@ -1,7 +1,64 @@
 # Ticket: 充值卡判定从 product_kind 字面量改为 product_skus.is_recharge_card capability 列
 
 > 生成日期：2026-04-26
-> 实施状态：📝 待实施（设计已定，等本 ticket 评审通过；前置 sale-order-domain-refactor 已于 2026-04-27 完成）
+> 实施状态：🟢 主体已完成（schema + D4 trigger + 三端代码 + payNotify + 应用层 D4 守卫全部落地）。剩余仅"字面量审视/清理"polish
+
+## 实施进度（2026-05-17 全栈复检）
+
+| 范围 | 状态 | 证据 |
+|------|------|------|
+| Schema migration 0019_lethal_iron_man | ✅ | `product_skus.is_recharge_card` + `sale_items.is_recharge_card` + `chk_sku_not_both_capabilities` CHECK + 索引 + 历史回填（已 apply 5434） |
+| Schema migration 0020 D4 DB trigger | ✅ | `trg_check_no_mixed_recharge` CONSTRAINT TRIGGER DEFERRABLE INITIALLY DEFERRED（5434 在线） |
+| 5434 数据回填 | ✅ | `product_skus.is_recharge_card=true` 命中 2 行（虚拟 SKU + 历史种子） |
+| admin 代码迁移 | ✅ | `actions/orders.ts:43 applyRechargeOnOrderPaid` 用 `saleItems.isRechargeCard=true` 识别；`actions/products.ts` / `lib/product-kind.ts` / `lib/recharge.ts` / `lib/types.ts` / `prepaid-card-picker.tsx` / `product-create-page.tsx` / `product-detail-page.tsx` 全链路 isRechargeCard |
+| staff staffApi 代码迁移 | ✅ | `routes/card.js` rechargeSkus 用 `is_recharge_card=true`；`routes/order.js:987` 写快照 + D4 校验；`routes/product.js` shopInit 双 capability 排除 |
+| client clientApi 代码迁移 | ✅ | `routes/card.js` + `routes/order.js:266/570` 应用层 D4 双层守卫（事务前 + 事务内 SQL 复核） + `routes/product.js` |
+| payNotify 充值入账 | ✅ | `index.js:308 applyRechargeOnOrderPaid` 用 `WHERE si.sale_order_id=$1 AND si.is_recharge_card=true` 识别（capability 列 SSoT） |
+| D4 严格独立校验（应用层）| ✅ | admin `orders.ts:1117/1286` + staff `order.js:678` + client `order.js:272/581` 三端均抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED` |
+| D4 严格独立校验（DB 兜底）| ✅ | migration 0020 `trg_check_no_mixed_recharge` 已部署 |
+| 跃迁规则（D1=A 充值参与会员客判定）| ✅ | 跃迁 SQL 用 `is_experience=false` 包含所有非体验，充值卡 received 自动计入；三端 SQL 字节守卫 `recalc-customer-type-sql.test.js` |
+| client 入口（D2=A 复用现有）| ✅ | 首页"充值卡"图标 + `pagesProfile/prepaid-cards` + `pagesProfile/card-recharge` 现有入口已对接 capability 列 |
+| audit-14 P0-14-01 修复 | ✅ | `applyRechargeOnOrderPaid` 不再引用已 DROP 的 `prepaid_cards.store_id`（卡跨店共享按 user_id 唯一） |
+| 测试覆盖 | ✅ | admin `orders.test.ts` + staff `card.test.js` / `order.test.js` / `product.test.js` + client/payNotify `__tests__` 均含 is_recharge_card 断言（22 个文件覆盖） |
+| **字面量残留** | ⚠️ 53 处 | 主要分布：admin `order-create-page.tsx` UI Tab 标签（合法，与 capability 列并行）、`db/seed.ts` 分类种子（合法）、`lib/product-kind.ts:24 CARD_PRODUCT_KINDS` 兜底常量（cardKinds action 从 DB 读取后兜底，合法）、staff `routes/product.js:32` 同上、注释/历史变更说明（合法）、测试 mock（与 audit-CC9 同步整治） |
+
+### 三端 D4 应用层守卫锚点
+
+- **admin**：`fengyu-admin/src/actions/orders.ts:1103`（事务前 mixed 校验）+ `:1286`（事务内 SQL 复核）
+- **staff**：`fengyu-staff/cloudfunctions/staffApi/routes/order.js:668`（写完 sale_items 后 SQL 校验 + 抛错）
+- **client**：`fengyu-client/cloudfunctions/clientApi/routes/order.js:266`（事务前提前拦截）+ `:570`（事务内复核）
+- **DB 兜底**：`trg_check_no_mixed_recharge` 在 COMMIT 时 deferred 校验，拒绝跨实现漏校验
+
+### 跃迁规则一致性（与体验卡 ticket §1.4 协调）
+
+```
+new_type = CASE
+  WHEN EXISTS(sale_orders 满足总额阈值 + 销售单)              THEN '会员客'
+  WHEN EXISTS(sale_items.is_experience=false 的销售单)         THEN '小美客'
+  WHEN EXISTS(sale_items.is_experience=true  的销售单)         THEN '体验客'
+  ELSE '流量客'
+END
+```
+
+充值卡 SKU 的 `is_experience=false`、`is_recharge_card=true`，跃迁 SQL 不直接判 is_recharge_card，
+而是通过 `is_experience=false` 把充值订单纳入"非体验"通道，与 D1=A 决策"充值参与会员客判定"自然契合。
+
+### 剩余收尾（建议合并到一个 PR 收口）
+
+1. **(可选) `CARD_PRODUCT_KINDS` 兜底常量去硬编码**：`fengyu-staff/cloudfunctions/staffApi/routes/product.js:32` + `fengyu-admin/src/lib/product-kind.ts:24`；当前 `cardKinds` action 已从 DB 读 `is_card_kind=true`，兜底常量保留可接受
+2. **(可选) admin order-create-page.tsx UI Tab 改读 DB**：当前 `PRODUCT_KIND_CHOICES` 写死 4 值含 `'充值卡'/'体验卡'`，是 UI 渲染分支标签（非业务判定），改读 `cardKinds` 后可零硬编码新增"季卡"
+3. **测试反向锁死整治**（与体验卡 ticket + audit-CC9 同步）：staff `__tests__/routes/{product,mgmt-product,order}.test.js` 把 `'充值卡'` GROUP BY 维度断言改读 `is_recharge_card`
+4. **spec 文档更新**：`.42cog/pm/backend.pr.spec.md` / `staff.pr.spec.md` 充值入账章节注明 capability 列 SSoT + D4 严格独立约束
+
+### 关键代码锚点
+
+- payNotify 充值入账：`fengyu-client/cloudfunctions/payNotify/index.js:308`
+- admin applyRechargeOnOrderPaid：`fengyu-admin/src/actions/orders.ts:43`
+- staff card.rechargeSkus：`fengyu-staff/cloudfunctions/staffApi/routes/card.js:30`
+- client D4 守卫：`fengyu-client/cloudfunctions/clientApi/routes/order.js:266`
+- D4 DB trigger：`db/migrations/0020_recharge_d4_constraint_trigger.sql`
+
+---
 > 严重级别：**P0**（业务规则可演进性 + 充值入账触发正确性 + 跨端 99 处字面量散落）
 > 端：db / fengyu-admin / fengyu-staff / fengyu-client / cloudfunctions / cron-worker / payNotify（**全栈**）
 > 来源：用户在 SUMMARY.md 决策回访时提出（与体验卡 ticket 同模式 capability 化）
