@@ -60,6 +60,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - PG 连接池 max 5，懒初始化；云函数用原生 `pg` 库写 SQL，不引入 Drizzle
 - 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`，使用 advisory lock 防并发
 - 品牌主色 `#C0322A`（中国红）
+- **禁止跨端共享代码目录** — 不抽取 `cloudfunctions-shared/` / npm workspace / git submodule / symlink；clientApi、staffApi、payNotify、fengyu-admin 四端共有的工具函数（如 `refund-cascade`、`settlePoints`、`scope`、`error-codes`）一律**各自保留独立副本**，一致性靠 `cross-end-sql-snapshot.test.js` / `cross-end-error-codes-snapshot.test.js` 字面量 snapshot 守护。改一端必同步其它端 + 跑 snapshot 测试。**用户已 veto cloudfunctions-shared 方案**（参考 `notes/memory/feedback_no_shared_cloudfunctions.md`）。
 
 ## 常用命令
 

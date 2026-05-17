@@ -501,7 +501,7 @@ Tabs 按 `product_kind` 分栏：`福利活动` | `护理项目` | `家居产品
 | 价格 | price, special_price | Input (number) |
 | 销售属性 | sales_category, manage_scope, market_scope | Select |
 | 展示 | cover_image, detail_images[] | 图片上传 |
-| 有效期 | valid_start, valid_end, sort_order | DatePicker, Input |
+| 上下架 | is_enabled, sort_order | Switch, Input |
 
 **SKU 管理**（嵌在商品详情页内）：
 

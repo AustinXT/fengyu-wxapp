@@ -138,12 +138,11 @@
 | `manage_scope` | text \| null | 管理范围（null=总部管理） |
 | `market_scope` | text \| null | 可见范围（null=全部可见） |
 | `sort_order` | integer | 排序权重 |
-| `valid_start` | date \| null | 有效期开始（null=立即生效） |
-| `valid_end` | date \| null | 有效期结束（null=永久有效） |
+| `is_enabled` | boolean | 上下架开关（false=下架），NOT NULL DEFAULT true |
 
-> **关键设计**: `valid_start` + `valid_end` 替代 `is_active`；`sales_category` 在商品层（非 SKU 层）。
+> **关键设计**: `is_enabled` 上下架开关替代 `is_active`（2026-04 schema reset 落地）；`sales_category` 在商品层（非 SKU 层）。
 >
-> **有效期叠加规则**: 商品和 SKU 各有 `valid_start/valid_end`，查询时**两层同时校验**，任一层过期即不可购买。
+> **上下架叠加规则**: 商品和 SKU 各有 `is_enabled`，查询时**两层同时校验**，任一层 false 即不可购买。
 
 ### 2.6 product_skus（商品规格）
 
@@ -159,8 +158,7 @@
 | `is_bundle_sku` | boolean | 是否为套餐组成部分，NOT NULL DEFAULT false |
 | `sort_order` | integer | 排序序号 |
 | `service_fee` | numeric(10,2) | 手工费，NOT NULL DEFAULT 0 |
-| `valid_start` | date \| null | 有效期开始 |
-| `valid_end` | date \| null | 有效期结束 |
+| `is_enabled` | boolean | 上下架开关（false=下架），NOT NULL DEFAULT true |
 | `is_experience` | boolean | **capability 列**：是否为体验卡 SKU（替代 `product_kind='体验卡'` 字面量判定），NOT NULL DEFAULT false |
 | `is_recharge_card` | boolean | **capability 列**：是否为充值卡 SKU（替代 `product_kind='充值卡'` 字面量判定），NOT NULL DEFAULT false |
 
@@ -541,6 +539,21 @@ delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
 - 扫描 `client_wechat_users.points_balance ≠ SUM(point_transactions.amount)` 的行
 - 偏差写入 `operation_logs('points.balanceMismatch')`，供人工排查上游触发点 bug
 - **不自动修复**（决策 D7：自动修会掩盖触发点 bug）
+
+#### 2.21.8 储值卡抵扣启用范围（2026-05-18 补）
+
+| 端 | 入口 | 支持范围 | 备注 |
+|----|------|----------|------|
+| client | `clientApi.order.confirmPrepaidFull` | 全额抵扣（paid=0） | 适用"待支付"订单一次性走完 |
+| client | `clientApi.order.repay`（纯卡分支） | 回款抵扣 | 已支付订单二次回款 |
+| staff  | `staffApi.order.confirmOffline` | 全额或部分抵扣 | 店长二次确认时可勾选 |
+| admin  | — | **不支持** | admin 录单仅写 received（手工录票据，不动余额）|
+
+**业务约束**：
+- 卡余额扣减走 `prepaid_cards.balance` + 写 `card_transactions` 流水（一笔抵扣 = 一行流水）
+- 不允许跨顾客抵扣（`prepaid_cards.user_id` 必须 = 订单的 `client_user_id`）
+- 不允许跨门店：储值卡按 `bound_store_id` 维度结算（详见 `notes/tickets/archives/2026-04-23-prepaid-card-deduction-by-store.md`）
+- 退款时按比例回冲：5 通道之 #5 反向 GREATEST + insert reverse card_transaction（已在 `lib/refund-cascade.ts` 落地）
 
 ---
 

@@ -152,3 +152,18 @@ adminApi:sync.trigger → 互斥锁检查
 - **staff 不可登录管理后台**；customer_mgr 可登录（仅看到顾客管理菜单）
 - **admin 只分配 admin**：只有 admin 角色可分配/撤销 admin；hr 不可操作 admin 角色
 - **scope 传递约束**：hr 分配权限时，被分配者的 scope_id 必须在操作者 scope 范围内
+
+## 错误码（admin 抛出路径）
+
+admin Server Actions / API Routes 通过 `lib/api-error.ts` 的 `ApiError` 类抛错，前端 catch 后用 `getErrorType(err)` 提取前缀（与三端 9 项白名单完全一致，由 `error-codes-cross-end.test.ts` snapshot 守护）。
+
+| 场景 | 抛出方式 | 前缀 / code |
+|------|---------|-------------|
+| 未登录 / token 失效 | middleware 重定向 `/login` 或抛 ApiError | `UNAUTHORIZED:` (-401) |
+| 权限不足 | `requirePermission()` 不满足 | `PERMISSION_DENIED:` (-403) |
+| 数据找不到 | `notFound()` 或 ApiError | `NOT_FOUND:` (-404) |
+| 状态机阻塞 | `throw new ApiError('INVALID_STATE: STATE_TRANSITION_BLOCKED: 订单已支付不可编辑')` | `INVALID_STATE:` (-400) |
+| 乐观锁失败 | UPDATE rowCount=0 抛 ApiError | `CONFLICT:` (-409) + "数据已被修改，请刷新" |
+| 入参不合法 | Zod 校验失败 | `INVALID_PARAMS:` (-400) |
+
+详细 9 项白名单与跨端 snapshot 见 [`sys.spec.md`](sys.spec.md) "错误码体系" 一节，不在本文件复述。
