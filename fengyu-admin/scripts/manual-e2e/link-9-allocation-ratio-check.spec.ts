@@ -43,7 +43,7 @@ const RESIGNED_EMPLOYEE_ID = 'FY-260101-0010'
 const RESIGNED_EMPLOYEE_NAME = '郑强'
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
-const CONTEXT_FILE = path.resolve(__dirname, '../../../notes/research/.last-test-context.json')
+const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 
 // -----------------------------------------------------------------------
 // 工具函数

@@ -43,6 +43,8 @@ export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OP
   }
 
   // 把 login 结果写入 globalData / storage，模拟前端 syncLogin 的副作用
+  // 同时 hook wx.cloud.callFunction：让 page 内 callStaffApi 自动附 _testOpenid
+  // （否则 page 调用 staffApi 走 IDE 真实 OPENID，requireManager 失败）
   await miniProgram.evaluate((loginData, openid) => {
     const app = getApp();
     if (app && typeof app.setStaffInfo === 'function') {
@@ -50,10 +52,26 @@ export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OP
     } else if (app && app.globalData) {
       Object.assign(app.globalData, loginData);
     }
-    // 缓存测试 openid 标记，方便后续 callStaffApi 自动附加
-    try {
-      wx.setStorageSync('_test_openid', openid);
-    } catch (e) {}
+    try { wx.setStorageSync('_test_openid', openid); } catch (e) {}
+
+    // 全局 hook：所有 wx.cloud.callFunction(staffApi) 自动注入 _testOpenid
+    if (!wx.__e2e_callfn_hooked) {
+      wx.__e2e_callfn_hooked = true;
+      const orig = wx.cloud.callFunction.bind(wx.cloud);
+      wx.cloud.callFunction = function (opts) {
+        try {
+          const testOpenid = wx.getStorageSync('_test_openid');
+          if (testOpenid && opts?.name === 'staffApi' && opts.data?.payload) {
+            if (opts.data.payload._testOpenid === undefined) {
+              opts.data.payload = { ...opts.data.payload, _testOpenid: testOpenid };
+            }
+          } else if (testOpenid && opts?.name === 'staffApi' && opts.data && !opts.data.payload) {
+            opts.data = { ...opts.data, payload: { _testOpenid: testOpenid } };
+          }
+        } catch (e) {}
+        return orig(opts);
+      };
+    }
   }, result.data, testOpenid);
 
   return result.data;
@@ -84,6 +102,28 @@ export async function loginClientWithTestOpenid(miniProgram, testOpenid = TEST_O
     );
   }
   return result.data;
+}
+
+/**
+ * H3：切账号（不重启 IDE）。清空 storage + globalData，然后重走 login。
+ *
+ * ⚠️ 已知限制：auth.login 用 cloud.getWXContext().OPENID，不读 _testOpenid。
+ *   所以 login 返回的 staffWfId/roles 还是 IDE 真实账号决定。
+ *   loginAs 主要让后续 action（callStaffApiWithTestOpenid 带 _testOpenid）走对的 scope。
+ *   断言"前端 globalData 身份"时需要谨慎 — staffWfId 字段不一定等于 newOpenid 对应的 employee_id。
+ */
+export async function loginAs(miniProgram, newOpenid) {
+  await miniProgram.evaluate(() => {
+    try { wx.removeStorageSync('_test_openid'); } catch (e) {}
+    const app = getApp();
+    if (app?.globalData) {
+      // 保留 systemInfo / appId 等系统字段，清掉用户态字段
+      const keep = { systemInfo: app.globalData.systemInfo, appId: app.globalData.appId };
+      Object.keys(app.globalData).forEach(k => { delete app.globalData[k]; });
+      Object.assign(app.globalData, keep);
+    }
+  });
+  return loginStaffWithTestOpenid(miniProgram, newOpenid);
 }
 
 /**

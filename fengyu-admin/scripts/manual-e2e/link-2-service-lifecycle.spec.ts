@@ -26,7 +26,7 @@ const FIXTURE_SKU_ID = 'sku-001-01'
 const FIXTURE_SKU_NAME = '蜜语水润嫩肤护理'
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
-const CONTEXT_FILE = path.resolve(__dirname, '../../../notes/research/.last-test-context.json')
+const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 
 function ensureDir(dir: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -554,7 +554,7 @@ test('链路2：服务单生命周期 → 开始服务 → 完成服务 → 幂�
   console.log(`[链路2] DB started_at < completed_at: ${dbTimeOrder}`)
   console.log(`[链路2] DB session_sum: ${dbSessionSum}`)
   console.log(`[链路2] DB item_count: ${dbItemCount}`)
-  console.log(`[链路2] DB commissions_rows: ${dbCommissionsRows}`)
+  console.log(`[链路2] DB commissions_rows: ${dbCommissionsRows} (预期 0：未分配 sale_allocations 时不会产生提成行)`)
   console.log(`[链路2] DB remaining_sessions_after_complete: ${dbRemainingAfterComplete}`)
 
   expect(dbStatus).toBe('已完成')

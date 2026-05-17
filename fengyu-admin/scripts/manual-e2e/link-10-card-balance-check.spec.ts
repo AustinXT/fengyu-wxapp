@@ -16,6 +16,11 @@
  *             → card_transactions 扣款 −100
  *   Step 3 — 反例：直接 SQL 污染 balance+1 → 期望 FAIL → 回滚 → 期望 PASS
  *   Step 4 — 清理：删除 Step1、Step2 产生的 sale_orders + sale_items（不清理 card_transactions）
+ *
+ * afterAll 严格回滚 fixture 卡到 baseline：
+ *   - 删除测试期间新增的 card_transactions（id NOT IN baseline 集合 AND card_id=FY-FIX-CARD-01）
+ *   - 把 prepaid_cards.balance 还原到 baseline 余额
+ *   afterAll 内的任何异常都被吞掉（只 console.error），不让清理失败把测试本身标 fail
  */
 
 import { test, expect } from '@playwright/test'
@@ -157,14 +162,28 @@ let rechargeOrderId: string   // Step 1 sale_order_id
 let deductOrderId: string     // Step 2 sale_order_id
 const verdicts: Array<{ check: string; actual: string; verdict: string }> = []
 
+// baseline 快照：测试开始前 fixture 卡的状态（用于 afterAll 严格回滚）
+let baselineBalance: number = 0
+const baselineCardTxnIds: Set<number> = new Set()
+
 // ============================================================
-// Step 0: read initial balance + sanity check
+// Step 0: read initial balance + sanity check + snapshot baseline txn ids
 // ============================================================
-test('Step 0: 读初始余额 + 初始余额对账', async () => {
+test('Step 0: 读初始余额 + 初始余额对账 + 快照 baseline 流水', async () => {
   test.setTimeout(300000)
   const balRaw = psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`)
   initialBalance = parseFloat(balRaw) || 0
+  baselineBalance = initialBalance
   console.log(`[link-10] 初始余额: ${initialBalance}`)
+
+  // 快照 baseline 流水 id（视为已存在的合法流水，afterAll 不会动它们）
+  const baselineIdsRaw = psql(`SELECT id FROM card_transactions WHERE card_id='${CARD_ID}' ORDER BY id`)
+  baselineCardTxnIds.clear()
+  for (const line of baselineIdsRaw.split('\n').map((s) => s.trim()).filter(Boolean)) {
+    const idNum = parseInt(line, 10)
+    if (!Number.isNaN(idNum)) baselineCardTxnIds.add(idNum)
+  }
+  console.log(`[link-10] baseline 流水 id 集合 (size=${baselineCardTxnIds.size}): [${Array.from(baselineCardTxnIds).join(',')}]`)
 
   const r = reconcile()
   console.log(`[link-10] 初始对账: book=${r.bookBalance} calc=${r.calcBalance} verdict=${r.verdict}`)
@@ -484,6 +503,7 @@ test('Step 4: 清理测试订单（保留 card_transactions）', async () => {
   console.log(`[link-10 Step4] 清理订单: recharge=${rechargeOrderId}, deduct=${deductOrderId}`)
 
   // 使用共享清理工具（保留 card_transactions 真实流水）
+  // 真正把 fixture 卡回滚到 baseline 是在 afterAll 钩子里做（强 DELETE 新增流水 + 还原 balance）
   if (rechargeOrderId) cleanupSaleOrder(rechargeOrderId, psql, { logPrefix: '[link-10 Step4]', preserveCardTransactions: true })
   if (deductOrderId) cleanupSaleOrder(deductOrderId, psql, { logPrefix: '[link-10 Step4]', preserveCardTransactions: true })
 
@@ -493,4 +513,51 @@ test('Step 4: 清理测试订单（保留 card_transactions）', async () => {
 
   // card_transactions 保留，balance 现在应等于流水净额（初始1000+充值500-扣款100=1400）
   expect(rFinal.verdict).toBe('PASS')
+})
+
+// ============================================================
+// afterAll: 严格回滚 fixture 卡到 baseline 状态
+//   - DELETE 所有 baseline 之后新增的 card_transactions
+//   - UPDATE prepaid_cards.balance 还原到 baselineBalance
+//   afterAll 内的异常被 try/catch 吞掉，仅 console.error，不让清理失败标 fail 测试
+// ============================================================
+test.afterAll(() => {
+  console.log(`[link-10 afterAll] 开始严格回滚 fixture 卡 ${CARD_ID} 到 baseline`)
+  try {
+    if (baselineCardTxnIds.size === 0) {
+      // baseline 集合为空时严禁裸 DELETE（会清掉 fixture 初始流水），改为 NOT IN (0) 保护
+      // 但 Step 0 必然执行（哪怕 expect 失败也会 push id），所以理论上不该到这里
+      console.error('[link-10 afterAll] WARN: baselineCardTxnIds 为空，跳过 DELETE 以防误删 fixture 初始流水')
+    } else {
+      const idList = Array.from(baselineCardTxnIds).join(',')
+      // 先查出要删的 id（用于日志），再 DELETE（严格条件：card_id 锁定 + id NOT IN baseline 集合，双重过滤防误删）
+      const toDeleteRaw = psql(`SELECT id FROM card_transactions WHERE card_id='${CARD_ID}' AND id NOT IN (${idList}) ORDER BY id`)
+      const toDeleteIds = toDeleteRaw
+        .split('\n')
+        .map((s) => s.trim())
+        .filter((s) => /^\d+$/.test(s))
+      psql(`DELETE FROM card_transactions WHERE card_id='${CARD_ID}' AND id NOT IN (${idList})`)
+      console.log(`[link-10 afterAll] 已删除 ${toDeleteIds.length} 条新增 card_transactions: [${toDeleteIds.join(',')}]`)
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 afterAll] ERROR 删除 card_transactions 失败: ${msg}`)
+  }
+
+  try {
+    psql(`UPDATE prepaid_cards SET balance=${baselineBalance}, updated_at=NOW() WHERE card_id='${CARD_ID}'`)
+    console.log(`[link-10 afterAll] 已还原 prepaid_cards.balance=${baselineBalance}`)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 afterAll] ERROR 还原 balance 失败: ${msg}`)
+  }
+
+  try {
+    const finalBal = psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`).trim()
+    const finalCount = psql(`SELECT count(*) FROM card_transactions WHERE card_id='${CARD_ID}'`).trim()
+    console.log(`[link-10 afterAll] 收尾确认: balance=${finalBal}, txn_count=${finalCount}, baseline_count=${baselineCardTxnIds.size}`)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error(`[link-10 afterAll] ERROR 收尾确认失败: ${msg}`)
+  }
 })

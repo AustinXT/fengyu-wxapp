@@ -65,6 +65,25 @@ async function loginAsAdmin(page: import('@playwright/test').Page) {
 test.describe.serial('链路 5：员工调店 scope 同步', () => {
   test.setTimeout(180_000)
 
+  // 跑完所有 Step 后兜底清理 FY-TEST-MOVE 残留（按 FK 顺序，单条失败仅 log 不抛）
+  test.afterAll(async () => {
+    const cleanupStmts: Array<[string, string]> = [
+      ['operation_logs', `DELETE FROM operation_logs WHERE target_id='${EMPLOYEE_ID}'`],
+      ['permission_roles', `DELETE FROM permission_roles WHERE employee_id='${EMPLOYEE_ID}'`],
+      ['admin_passwords', `DELETE FROM admin_passwords WHERE employee_id='${EMPLOYEE_ID}'`],
+      ['staff_wechat_users', `DELETE FROM staff_wechat_users WHERE employee_id='${EMPLOYEE_ID}'`],
+    ]
+    for (const [tag, sql] of cleanupStmts) {
+      try {
+        runSQL(sql)
+        console.log(`[link-5 afterAll cleanup] ${tag}: ok`)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message.split('\n')[0] : String(e)
+        console.error(`[link-5 afterAll cleanup] ${tag}: skipped (${msg})`)
+      }
+    }
+  })
+
   test('Step A: 预清理 + DB 创建员工 FY-TEST-MOVE（挂门店 A store-nc01）', async () => {
     // 预清理
     runSQL(`DELETE FROM operation_logs WHERE target_id='${EMPLOYEE_ID}'`)

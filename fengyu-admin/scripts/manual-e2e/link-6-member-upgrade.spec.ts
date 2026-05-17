@@ -20,7 +20,7 @@
  * Schema 注（已与 5433 实际表结构核对，2026-05-17）：
  *   - messages 表使用 (recipient_type, recipient_id)，不是 recipient_user_id
  *   - point_transactions.external_ref = `member-upgrade-${userId}-${toLevel}`
- *     （uq_point_txns_external_ref 是幂等键；admin-chrome-e2e-plan.md 写的
+ *     （uq_point_txns_external_ref 是幂等键；本目录 README.md 写的
  *      `level_upgrade_粉钻_2026` 是旧式样，最新实现见
  *      src/cron/steps/refresh-member-levels.ts L238）
  *   - member_level_benefits 当前 5 等级 couponTemplateIds 全空 → 升级不会发券
@@ -106,6 +106,20 @@ test.beforeAll(() => {
   psql(`DELETE FROM messages WHERE idempotency_key='${IDEM_KEY}'`)
   psql(`DELETE FROM user_coupons WHERE coupon_id LIKE 'cpn-up-${FIXTURE_USER_ID}-%'`)
 
+  // 自愈：若过去运行未做积分余额复算，cached points_balance 可能漂移。
+  // 从 point_transactions 实际 SUM 重算 client_wechat_users.points_balance
+  // （余额缓存已合并至 client_wechat_users，参 db/schema/points.ts），
+  // 保证起点干净（也避免 STEP 5 audit warning）。
+  try {
+    psql(
+      `UPDATE client_wechat_users SET points_balance = COALESCE((` +
+        `SELECT SUM(amount) FROM point_transactions WHERE user_id = client_wechat_users.user_id` +
+        `), 0), updated_at = NOW() WHERE user_id = '${FIXTURE_USER_ID}'`,
+    )
+  } catch (e) {
+    console.log(`[链路6 setup] 复算 points_balance 出错（非致命）: ${e}`)
+  }
+
   baselinePointTxnCount = parseInt(
     psql(`SELECT count(*) FROM point_transactions WHERE user_id='${FIXTURE_USER_ID}'`),
     10,
@@ -129,25 +143,65 @@ test.beforeAll(() => {
 
 // ── afterAll：复位 fixture，删 cron 产出 ────────────────────────────────────
 test.afterAll(() => {
-  // 还原顾客等级到 NULL（与 beforeAll 起点一致）
-  psql(
-    `UPDATE client_wechat_users SET member_level=NULL, old_member_level=NULL, ` +
-      `member_level_upgraded_at=NULL, member_level_locked_until=NULL ` +
-      `WHERE user_id='${FIXTURE_USER_ID}'`,
-  )
+  // 还原顾客等级到 NULL（与 beforeAll 起点一致）。
+  // 修复：原条件 `WHERE old_member_level IS NOT NULL` 在 NULL→初钻升级路径下永远不命中
+  //       （cron 把升级前的 NULL 写进 old_member_level → teardown 条件不满足 →
+  //        member_level 被永久留在「初钻」，污染下一轮 baseline）。
+  //       现统一无条件重置 4 列到 NULL，与 beforeAll 行为对齐。
+  // 注：fixture 的 baseline 即 member_level=NULL（见 beforeAll Line 97-101 +
+  //     test Step 0 Line 223 `expect(preLevel).toBe('NULL')`），所以直接写死 NULL 即可。
+  try {
+    psql(
+      `UPDATE client_wechat_users SET member_level=NULL, old_member_level=NULL, ` +
+        `member_level_upgraded_at=NULL, member_level_locked_until=NULL, updated_at=NOW() ` +
+        `WHERE user_id='${FIXTURE_USER_ID}'`,
+    )
+  } catch (e) {
+    console.error(`[链路6 teardown] 重置 fixture 顾客等级出错（非致命）: ${e}`)
+  }
 
   // 删 cron 产出（幂等键唯一行）
-  psql(`DELETE FROM point_transactions WHERE external_ref='${IDEM_KEY}'`)
-  psql(`DELETE FROM messages WHERE idempotency_key='${IDEM_KEY}'`)
-  psql(`DELETE FROM user_coupons WHERE coupon_id LIKE 'cpn-up-${FIXTURE_USER_ID}-%'`)
+  try {
+    psql(`DELETE FROM point_transactions WHERE external_ref='${IDEM_KEY}'`)
+  } catch (e) {
+    console.error(`[链路6 teardown] 删 point_transactions 出错（非致命）: ${e}`)
+  }
+  try {
+    psql(`DELETE FROM messages WHERE idempotency_key='${IDEM_KEY}'`)
+  } catch (e) {
+    console.error(`[链路6 teardown] 删 messages 出错（非致命）: ${e}`)
+  }
+  try {
+    psql(`DELETE FROM user_coupons WHERE coupon_id LIKE 'cpn-up-${FIXTURE_USER_ID}-%'`)
+  } catch (e) {
+    console.error(`[链路6 teardown] 删 user_coupons 出错（非致命）: ${e}`)
+  }
+
+  // 重算 client_wechat_users.points_balance：上面 DELETE 了 cron STEP 2 写的
+  // 奖励 point_transactions，但 cached balance 已被 processUpgrade 增过，必须
+  // 从剩余 transactions SUM 重算，否则会漂移 → STEP 5 audit warning。
+  // （余额缓存合并至 client_wechat_users，参 db/schema/points.ts）
+  try {
+    psql(
+      `UPDATE client_wechat_users SET points_balance = COALESCE((` +
+        `SELECT SUM(amount) FROM point_transactions WHERE user_id = client_wechat_users.user_id` +
+        `), 0), updated_at = NOW() WHERE user_id = '${FIXTURE_USER_ID}'`,
+    )
+  } catch (e) {
+    console.error(`[链路6 teardown] 复算 points_balance 出错（非致命）: ${e}`)
+  }
 
   // 删 cron 写的 operation_logs（target_id=user_id 且 source='cronTask'）
-  psql(
-    `DELETE FROM operation_logs ` +
-      `WHERE target_id='${FIXTURE_USER_ID}' AND source='cronTask' ` +
-      `AND action IN ('customer.memberLevelChange','customer.memberLevelHeld') ` +
-      `AND created_at > NOW() - INTERVAL '1 hour'`,
-  )
+  try {
+    psql(
+      `DELETE FROM operation_logs ` +
+        `WHERE target_id='${FIXTURE_USER_ID}' AND source='cronTask' ` +
+        `AND action IN ('customer.memberLevelChange','customer.memberLevelHeld') ` +
+        `AND created_at > NOW() - INTERVAL '1 hour'`,
+    )
+  } catch (e) {
+    console.error(`[链路6 teardown] 删 operation_logs 出错（非致命）: ${e}`)
+  }
   console.log('[链路6 teardown] 已清理 cron 产出，复位 fixture 顾客状态为 NULL')
 })
 

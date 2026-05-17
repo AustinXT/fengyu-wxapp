@@ -1,0 +1,140 @@
+#!/usr/bin/env bun
+// L3 client journey j3 - checkout & offline pay
+//
+// 目标：购物车 → 结算 → order.create → order.offlinePay
+// 步骤：
+//   1. launch + login + fixture（ensureClientProductCatalog 建商品/SKU）
+//   2. evaluate 写 localStorage checkoutItems 模拟"已加购"
+//   3. navigateTo /pagesOrder/checkout/checkout 验证页面打开
+//   4. 直接 callFunction order.create（绕过 UI 提交），断言返回 saleOrderId + status='待支付'
+//   5. PG 断言：sale_orders 行存在且 status='待支付'
+//   6. callFunction order.offlinePay，PG 断言 status='待确认收款' + payment_method='线下'
+
+import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
+import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import {
+  cleanupL3TestData,
+  ensureBaseFixtures,
+  TEST_STORE_ID,
+} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+import { assertRowCount, assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+import { loginAsTestClient } from './helpers/client-l3-login.mjs'
+import {
+  ensureClientProductCatalog,
+  L3_PRODUCT_ID,
+  L3_SKU_NORMAL_ID,
+} from './helpers/client-l3-fixtures.mjs'
+
+const STEPS = [
+  ['1. evaluate 写 checkoutItems 模拟加购', async (ctx) => {
+    const item = {
+      skuId: L3_SKU_NORMAL_ID,
+      productId: L3_PRODUCT_ID,
+      productName: 'TEST_E2E_L3_测试商品',
+      skuSpecName: 'TEST_E2E_L3_普通规格',
+      unitPrice: 100,
+      price: 100,
+      quantity: 1,
+      productType: '单品',
+      storeId: TEST_STORE_ID,
+    }
+    await ctx.mp.reLaunch('/pages/home/home')
+    await new Promise((r) => setTimeout(r, 1500))
+    await ctx.mp.evaluate((it) => {
+      wx.setStorageSync('cart', { items: [it] })
+      wx.setStorageSync('checkoutItems', [it])
+      return true
+    }, item)
+  }],
+
+  ['2. navigateTo checkout 页', async (ctx) => {
+    await ctx.mp.navigateTo('/pagesOrder/checkout/checkout')
+    await new Promise((r) => setTimeout(r, 2000))
+    const page = await ctx.mp.currentPage()
+    if (!page?.path?.includes('checkout')) {
+      throw new Error(`current path=${page?.path} 非 checkout`)
+    }
+  }],
+
+  ['3. order.create 返回待支付订单', async (ctx) => {
+    const res = await ctx.invoke('order.create', {
+      storeId: TEST_STORE_ID,
+      items: [{ skuId: L3_SKU_NORMAL_ID, quantity: 1 }],
+      paymentMethod: '线下',
+    })
+    if (!res || res.code !== 0) {
+      throw new Error(`order.create failed: ${JSON.stringify(res)}`)
+    }
+    const saleOrderId = res.data?.saleOrderId
+    if (!saleOrderId) throw new Error(`order.create no saleOrderId in data: ${JSON.stringify(res.data)}`)
+    ctx.saleOrderId = saleOrderId
+    // create 默认返回 '待支付'（offline 走 offlinePay 二段确认）
+    if (res.data.status && res.data.status !== '待支付') {
+      throw new Error(`order.create status expect 待支付, got ${res.data.status}`)
+    }
+  }],
+
+  ['4. PG 断言：sale_orders 行存在且待支付', async (ctx) => {
+    await assertRowCount('sale_orders', { sale_order_id: ctx.saleOrderId }, 1)
+    await assertColumnValue(
+      'sale_orders',
+      { sale_order_id: ctx.saleOrderId },
+      { status: '待支付', client_user_id: ctx.userId }
+    )
+    // sale_items 应至少 1 行
+    const items = await query(
+      `SELECT sale_item_id FROM sale_items WHERE sale_order_id = $1`,
+      [ctx.saleOrderId]
+    )
+    if (items.length === 0) throw new Error('sale_items 0 行')
+  }],
+
+  ['5. order.offlinePay 切换为待确认收款', async (ctx) => {
+    const res = await ctx.invoke('order.offlinePay', { saleOrderId: ctx.saleOrderId })
+    if (!res || res.code !== 0) {
+      throw new Error(`order.offlinePay failed: ${JSON.stringify(res)}`)
+    }
+    await assertColumnValue(
+      'sale_orders',
+      { sale_order_id: ctx.saleOrderId },
+      { status: '待确认收款', payment_method: '线下' }
+    )
+  }],
+]
+
+let mp = null
+let pass = false
+console.log(`[j3-checkout-pay] start | ${new Date().toISOString()}`)
+try {
+  await cleanupL3TestData()
+  await ensureBaseFixtures()
+  await ensureClientProductCatalog()
+
+  mp = await launchClient()
+  const auth = await loginAsTestClient(mp)
+  const ctx = { mp, ...auth }
+
+  for (const [name, fn] of STEPS) {
+    process.stdout.write(`  · ${name} ... `)
+    await fn(ctx)
+    console.log('OK')
+  }
+  pass = true
+} catch (e) {
+  console.error(`  FAIL: ${e.message}`)
+  if (process.env.E2E_DEBUG) console.error(e.stack)
+} finally {
+  if (mp) {
+    try {
+      await mp.evaluate(() => {
+        wx.removeStorageSync('cart')
+        wx.removeStorageSync('checkoutItems')
+      })
+    } catch {}
+    await disconnect(mp)
+  }
+  await cleanupL3TestData()
+  await closePool()
+  console.log(`[j3-checkout-pay] ${pass ? 'PASS' : 'FAIL'}`)
+  process.exit(pass ? 0 : 1)
+}

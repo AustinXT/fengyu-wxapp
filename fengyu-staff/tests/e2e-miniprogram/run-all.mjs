@@ -36,20 +36,17 @@ import automator from 'miniprogram-automator';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTOMATOR_PORT = 9420;
 
-const SMOKES = [
-  {
-    name: 'smoke-client-home',
-    requiresTestOpenid: false,
-    expectAppId: 'wx811eb4ded3dfba3f',
-    label: 'client',
-  },
-  {
-    name: 'smoke-staff-confirm-offline',
+// 自动发现 smoke-staff-*.mjs（迁后此目录只剩 staff smoke）
+import fs from 'node:fs';
+const SMOKES = fs.readdirSync(__dirname)
+  .filter(f => /^smoke-staff-.*\.mjs$/.test(f))
+  .sort()
+  .map(f => ({
+    name: f.replace(/\.mjs$/, ''),
     requiresTestOpenid: true,
     expectAppId: 'wxe3f5d9ee6a94d22d',
     label: 'staff',
-  },
-];
+  }));
 
 function runOne(name) {
   return new Promise((resolve) => {

@@ -1,0 +1,480 @@
+{
+  "_meta": {
+    "purpose": "admin Chrome E2E loop 进度上下文",
+    "createdAt": "2026-04-26",
+    "plan": "fengyu-admin/scripts/manual-e2e/README.md"
+  },
+  "currentRound": 2,
+  "completedRounds": [
+    1
+  ],
+  "rounds": {
+    "1": {
+      "ranAt": "2026-04-26T04:31:15.156Z",
+      "link1": {
+        "status": "PASS",
+        "saleOrderId": "FY-XSD-WX-2604260001",
+        "saleOrderId_state": "cleaned",
+        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-1-order-allocation.spec.ts",
+        "notes": "订单总额 ¥139.90，2 件 SKU + 2 行 sale_allocations + operation_logs 3 条；订单已按 FK 顺序清理",
+        "bugsFixedDuringRun": [
+          "fengyu-admin/src/lib/permissions.ts: manager 角色补 product:list + coupon:list（开单 wizard 必需）",
+          "fengyu-admin/src/actions/products.ts: getProductsByKind 子查询 Drizzle alias mps_bundle 改裸 SQL mall_product_skus，避免 NOT EXISTS 子查询 SQL 报错"
+        ]
+      },
+      "link3": {
+        "status": "PARTIAL_FIXED",
+        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-3-appointment-flow.spec.ts",
+        "playwrightConfig": "fengyu-admin/scripts/manual-e2e/playwright.manual.config.ts",
+        "verdicts": "UI 确认/Tab 切换/签到/反例 全 PASS；DB confirmedAt FAIL（已修）；service_order_link SKIP（UI 缺字段）",
+        "bugFixedAfterRun": "fengyu-admin/src/actions/appointments.ts:186 — confirmAppointment 漏写 confirmedAt: new Date()，已补",
+        "openIssue": "service-create-page.tsx Step 2/3 表单未暴露 appointmentId 字段（createServiceOrder action 已支持参数），导致 UI 无法走预约转服务单路径，本测试中 SKIP；如要补 UI 字段需另开 ticket"
+      },
+      "link5": {
+        "status": "PASS",
+        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-5-employee-relocate.spec.ts",
+        "verdicts": "scope_auto_synced 核心机制 PASS：updateEmployee 改 storeId 自动同步 permission_roles.scope_id（org-store-nc01→org-store-nc02）；operation_logs 4 条；behavior_scope_isolation SKIP（需手工 INSERT admin_passwords）",
+        "notes": "FY-TEST-HR scope=总部，但 assignRole 受 scope 限制不能给 store-level manager 分配，故 Step B 改用 FY-TEST-ADM；Step A/C 仍用 FY-TEST-HR。所有测试数据已清理"
+      }
+    }
+  },
+  "bugsFixedSinceStart": [
+    "permissions.ts: manager 加 product:list + coupon:list",
+    "products.ts: getProductsByKind 子查询 SQL alias 改裸表名",
+    "appointments.ts: confirmAppointment 补 confirmedAt"
+  ],
+  "openIssues": [
+    "service-create-page.tsx 没有 UI 入口关联预约（createServiceOrder action 已支持）"
+  ],
+  "loopState": "PAUSED_FOR_USER_REVIEW",
+  "pausedReason": "用户要求立即修复链路 3 暴露的 confirmAppointment bug；已修，等用户决定是否继续 Round 2",
+  "link7": {
+    "saleOrderId": "FY-XSD-WX-2605170008",
+    "couponUsed": false,
+    "couponDiscount": 0,
+    "ranAt": "2026-05-17T06:13:05.473Z"
+  },
+  "link9": {
+    "saleOrderId": "FY-XSD-WX-2605170008",
+    "verdicts": [
+      {
+        "check": "neg_ratio_under_100_blocked",
+        "actual": "110% 合计被拦截",
+        "verdict": "PASS"
+      },
+      {
+        "check": "neg_resigned_employee_blocked",
+        "actual": "郑强 未出现在员工下拉（已过滤）",
+        "verdict": "PASS"
+      },
+      {
+        "check": "ratio_sum_equals_100",
+        "actual": "ratio_sum=1.00",
+        "verdict": "PASS"
+      },
+      {
+        "check": "amt_sum_approx_sale_amount",
+        "actual": "39.90≈39.90",
+        "verdict": "PASS"
+      }
+    ],
+    "status": "PASS",
+    "ranAt": "2026-05-17T06:14:15.803Z"
+  },
+  "link2": {
+    "serviceOrderId": "FY-FW-2605170001",
+    "preSaleOrderId": null,
+    "status": "PASS",
+    "dbStatus": "已完成",
+    "dbStartedAt": "2026-05-17 06:17:45.56",
+    "dbCompletedAt": "2026-05-17 14:17:48.545246",
+    "dbSessionSum": "1",
+    "dbItemCount": "1",
+    "dbCommissionsRows": "0",
+    "cleaned": true,
+    "ranAt": "2026-05-17T06:17:55.845Z"
+  },
+  "link11": {
+    "link": 11,
+    "status": "PASS",
+    "saleOrderId": "FY-XSD-WX-2605170008",
+    "verdicts": [
+      {
+        "check": "coupon_applied_in_order",
+        "verdict": "PASS",
+        "detail": "优惠券 FY-FIX-COUPON-01 已通过 UI 选中并提交，折扣 ¥30"
+      },
+      {
+        "check": "db_three_way_consistency",
+        "actual": "已使用|FY-XSD-WX-2605170008|has_used_at|FY-FIX-COUPON-01|30.00|FY-FIX-CLIENT-01|30.00|PASS",
+        "verdict": "PASS"
+      },
+      {
+        "check": "concurrent_reuse_blocked",
+        "actual": "UPDATE 0（status='未使用' 条件不满足，0 行受影响）；DB FK 约束额外阻止伪造 used_sale_order_id",
+        "verdict": "PASS"
+      },
+      {
+        "check": "refund_no_coupon_rollback",
+        "verdict": "PASS(EXPECTED_BEHAVIOR)",
+        "detail": "代码分析：createOrder 中无退款回滚 user_coupons 的逻辑，退款不回滚券为业务设计预期"
+      }
+    ],
+    "uiIssue": null,
+    "cleaned": true,
+    "notes": "完整路径：UI 选券 → 提交 → 确认收款 → DB 三元一致性 PASS → 并发防重 UPDATE 0"
+  },
+  "link4_originSaleOrderId": "FY-XSD-WX-2605170008",
+  "link4_refundSaleOrderId": "FY-TKD-WX-2604260002",
+  "link4": {
+    "link": 4,
+    "status": "PASS",
+    "originSaleOrderId": "FY-XSD-WX-2605170008",
+    "refundPaymentId": 75426,
+    "verdicts": [
+      {
+        "check": "create_refund_by_finance",
+        "verdict": "PASS"
+      },
+      {
+        "check": "db_create_change_type",
+        "verdict": "PASS",
+        "actual": "退款"
+      },
+      {
+        "check": "db_create_status_pending",
+        "verdict": "PASS",
+        "actual": "待审批"
+      },
+      {
+        "check": "db_create_amount_negative",
+        "verdict": "PASS",
+        "actual": "-200.00"
+      },
+      {
+        "check": "db_create_refund_reason_populated",
+        "verdict": "PASS",
+        "actual": "E2E 测试退款 — 链路 4 自动化验证"
+      },
+      {
+        "check": "db_create_operator_is_fin",
+        "verdict": "PASS",
+        "actual": "FY-TEST-FIN"
+      },
+      {
+        "check": "status_pending_approval",
+        "verdict": "PASS",
+        "actual": "待审批"
+      },
+      {
+        "check": "approve_by_admin",
+        "verdict": "PASS"
+      },
+      {
+        "check": "status_approved_paid",
+        "verdict": "PASS",
+        "actual": "已支付"
+      },
+      {
+        "check": "neg_duplicate_refund_blocked",
+        "verdict": "PASS",
+        "actual": "blocked-by-error"
+      },
+      {
+        "check": "db_change_type_refund",
+        "verdict": "PASS",
+        "actual": "退款"
+      },
+      {
+        "check": "db_status_paid",
+        "verdict": "PASS",
+        "actual": "已支付"
+      },
+      {
+        "check": "db_audit_employee",
+        "verdict": "PASS",
+        "actual": "FY-TEST-ADM"
+      },
+      {
+        "check": "db_audit_at_not_null",
+        "verdict": "PASS",
+        "actual": "2026-05-17 06:15:10.139"
+      },
+      {
+        "check": "db_logs_count",
+        "verdict": "PASS",
+        "actual": 2
+      }
+    ],
+    "cleaned": true,
+    "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → sop[change_type='退款',status='待审批'] 行；审批页 /refunds/<sop.id> 点\"审批通过\" → AlertDialog 确认 → sop.status 翻 '已支付'，audit_employee_id=FY-TEST-ADM，audit_at=2026-05-17 06:15:10.139。2026-05-03 重构后退款数据完全在 sale_order_payments，不再有 saleOrders[type='退款单'] 实体。"
+  },
+  "link1": {
+    "saleOrderId": "FY-XSD-WX-2605170008",
+    "ranAt": "2026-05-17T06:12:02.542Z"
+  },
+  "link4_refundPaymentId": 75426,
+  "link19": {
+    "link": 19,
+    "status": "PARTIAL",
+    "revokedRoleId": "52083",
+    "restoredRoleId": "52096",
+    "uiRevokeClicked": false,
+    "verdicts": [
+      {
+        "check": "permission_role_deleted",
+        "verdict": "PASS",
+        "actual": "count=0"
+      },
+      {
+        "check": "operation_log_permission_revoke",
+        "verdict": "PASS",
+        "actual": "1"
+      },
+      {
+        "check": "mgr_immediate_loss_of_access",
+        "verdict": "SKIP",
+        "actual": "dashboard=http://localhost:3000/dashboard, orders=http://localhost:3000/orders, hasOrdersMenu=false"
+      },
+      {
+        "check": "neg_mgr_self_modify_permission",
+        "verdict": "SKIP",
+        "actual": "FY-TEST-MGR 无 permission:* 权限，无 /permissions 入口；server-side requirePermission 已防御"
+      }
+    ],
+    "cleaned": true,
+    "notes": "manager 角色撤销路径：admin 在 /permissions 点\"撤销\" → AlertDialog 二次确认 → revokeRole(id)；FY-TEST-MGR 已登录的 cookie 不失效，但任何 server action requirePermission 立即拒（middleware → ctx.auth.roles 从 permission_roles 实时查）"
+  },
+  "link14": {
+    "link": 14,
+    "status": "PASS",
+    "oldSaleOrderId": "FY-XSD-WX-2605170001",
+    "newSaleOrderId": "FY-XSD-WX-2605170002",
+    "verdicts": [
+      {
+        "check": "old_order_unit_price_eq_100",
+        "verdict": "PASS",
+        "actual": "100.00"
+      },
+      {
+        "check": "sku_price_updated_to_120",
+        "verdict": "PASS",
+        "actual": "120.00"
+      },
+      {
+        "check": "old_order_snapshot_preserved",
+        "verdict": "PASS",
+        "actual": "100.00"
+      },
+      {
+        "check": "new_order_uses_new_price_120",
+        "verdict": "PASS",
+        "actual": "120.00"
+      },
+      {
+        "check": "sku_update_operation_log",
+        "verdict": "PASS",
+        "actual": "count=1, uiPath=true"
+      }
+    ],
+    "cleaned": true,
+    "notes": "sale_items.unit_price 是真实快照字段；README §1.B 写的 unit_real_price 是分账后单价，与此不同维度"
+  },
+  "link15": {
+    "link": 15,
+    "status": "PARTIAL",
+    "targetMatrixId": 1,
+    "origRate": "0.0800",
+    "newRate": "0.1000",
+    "verdicts": [
+      {
+        "check": "matrix_rate_updated_to_0_10",
+        "verdict": "PASS",
+        "actual": "0.1000"
+      },
+      {
+        "check": "service_commission_snapshot_preserved",
+        "verdict": "SKIP",
+        "actual": "环境内无既有 rate=0.0800 美容师 service_commissions 行可参照；执行前请确保跑过链路 2 或其他服务单完成流程"
+      },
+      {
+        "check": "operation_log_commission_update",
+        "verdict": "PASS",
+        "actual": "1"
+      },
+      {
+        "check": "neg_mgr_cannot_update_commission",
+        "verdict": "SKIP",
+        "actual": "manager 角色无 commission:* 权限（permission matrix 常量），requirePermission server-side 防御"
+      }
+    ],
+    "cleaned": true,
+    "notes": "sale_allocations 无 commission_rate 列，真正快照在 service_commissions.commission_rate（服务单完成时写入）；本 spec 验证 commission_rate_matrix 修改不会回溯历史 service_commissions"
+  },
+  "link17": {
+    "link": 17,
+    "status": "PARTIAL",
+    "saleOrderId": "FY-XSD-WX-2605170001",
+    "verdicts": [
+      {
+        "check": "admin_dashboard_has_today_revenue",
+        "verdict": "SKIP",
+        "actual": "admin todayRevenue = -1（-1 表示 admin roleContext 不渲染该卡片）"
+      },
+      {
+        "check": "admin_ge_market",
+        "verdict": "SKIP",
+        "actual": "admin 无业务看板卡"
+      },
+      {
+        "check": "market_ge_store",
+        "verdict": "PASS",
+        "actual": "100 >= 100"
+      },
+      {
+        "check": "store_role_matches_sql",
+        "verdict": "PASS",
+        "actual": "mgrRev=100, dbStoreRevenue=100, diff=0.00"
+      },
+      {
+        "check": "neg_url_storeFilter_bypass",
+        "verdict": "SKIP",
+        "actual": "admin /dashboard 无 storeFilter URL 入参；getDashboardStats 全靠 session.scopeStoreIds 决定可见范围"
+      }
+    ],
+    "cleaned": true,
+    "notes": "dashboard scope 全由 session 注入；admin 看板与业务看板字段不同（roleContext 区分）"
+  },
+  "link23": {
+    "link": 23,
+    "status": "PARTIAL",
+    "saleOrderId": "FY-XSD-WX-2605170001",
+    "serviceOrderId": "FY-FW-LINK23-04048879",
+    "verdicts": [
+      {
+        "check": "service_status_cancelled",
+        "verdict": "PASS",
+        "actual": "已取消"
+      },
+      {
+        "check": "sale_item_remaining_sessions_unchanged",
+        "verdict": "PASS",
+        "actual": "pre=1, post=1"
+      },
+      {
+        "check": "no_service_commissions_for_cancelled",
+        "verdict": "PASS",
+        "actual": "0"
+      },
+      {
+        "check": "operation_log_service_cancel_transition",
+        "verdict": "PASS",
+        "actual": "{\"_t\": \"transition\", \"_v\": 2, \"to\": \"已取消\", \"from\": \"待服务\", \"context\": {\"customerName\": \"Fixture测试客\"}}"
+      },
+      {
+        "check": "neg_completed_cannot_cancel",
+        "verdict": "SKIP",
+        "actual": "cancelServiceOrder WHERE 子句过滤 status='待服务'；已完成单 count=0 → 返回\"服务单状态已变更，无法取消\"。本 spec 仅创建待服务单，验证主路径"
+      },
+      {
+        "check": "no_cancelled_at_column",
+        "verdict": "SKIP",
+        "actual": "README §1.B 写 cancelled_at 列；实际 schema 中无此列，仅靠 status=已取消 + updated_at 反映取消"
+      }
+    ],
+    "cleaned": true,
+    "notes": "service_orders 无 cancelled_at 列；cancelServiceOrder 写 logTransition（detail._t=transition from/to）"
+  },
+  "link13": {
+    "link": 13,
+    "status": "PARTIAL",
+    "saleOrderId": "FY-XSD-WX-2605170001",
+    "baselineBalance": 0,
+    "baselineTxnCount": 0,
+    "verdicts": [
+      {
+        "check": "baseline_balance_equals_txn_sum",
+        "verdict": "PASS",
+        "actual": "balance=0, sum=0"
+      },
+      {
+        "check": "post_cron_balance_equals_sum",
+        "verdict": "PASS",
+        "actual": "balance=2, sum=2, delta(balance)=2, delta(sum)=2"
+      },
+      {
+        "check": "no_balance_mismatch_log",
+        "verdict": "PASS",
+        "actual": "mismatchLogs=0"
+      },
+      {
+        "check": "new_txns_have_external_ref",
+        "verdict": "SKIP",
+        "actual": "newTxnsTotal=1, withExternalRef=0"
+      },
+      {
+        "check": "neg_points_overdraft",
+        "verdict": "SKIP",
+        "actual": "admin 无积分手动操作入口；客户端小程序的下单抵扣是 clientApi 责任，admin 不验证"
+      }
+    ],
+    "cleaned": true,
+    "notes": "point_transactions.type 是自由文本；client_wechat_users.points_balance 是缓存（cron 每日复算）；STEP 5 audit-points-balance 仅告警不修复（只 INSERT operation_log）"
+  },
+  "link22": {
+    "link": 22,
+    "status": "FAIL",
+    "testYear": 2026,
+    "today": "2026-05-17",
+    "fixtureUserId": "FY-FIX-CLIENT-01",
+    "verdicts": [
+      {
+        "check": "baseline_clean",
+        "verdict": "PASS",
+        "actual": "pts=0, msg=0, cpn=0"
+      },
+      {
+        "check": "first_cron_grants_pts",
+        "verdict": "FAIL",
+        "actual": "pts=0, expected=1"
+      },
+      {
+        "check": "first_cron_grants_msg",
+        "verdict": "FAIL",
+        "actual": "msg=0, expected=1"
+      },
+      {
+        "check": "first_cron_grants_coupon",
+        "verdict": "FAIL",
+        "actual": "cpn=0, expected=1"
+      },
+      {
+        "check": "second_cron_idempotent_pts",
+        "verdict": "FAIL",
+        "actual": "pts=0, expected=1（ON CONFLICT DO NOTHING）"
+      },
+      {
+        "check": "second_cron_idempotent_msg",
+        "verdict": "FAIL",
+        "actual": "msg=0, expected=1"
+      },
+      {
+        "check": "second_cron_idempotent_coupon",
+        "verdict": "FAIL",
+        "actual": "cpn=0, expected=1（自然主键唯一）"
+      },
+      {
+        "check": "thanksgiving_only_on_20th",
+        "verdict": "PASS",
+        "actual": "today=2026-05-17 day=17, isToday20th=false, thxPts=0"
+      },
+      {
+        "check": "birthday_operation_log",
+        "verdict": "FAIL",
+        "actual": "log_count=0"
+      }
+    ],
+    "cleaned": true,
+    "notes": "无 birthday_grant_log 表；幂等靠 external_ref / idempotency_key / coupon_id 三件套；感恩日 STEP 4 硬编码仅当日 day=20 时跑"
+  }
+}

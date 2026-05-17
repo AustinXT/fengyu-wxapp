@@ -33,6 +33,9 @@ function dbExec(sql: string): void {
   execSync(`${PG_CMD} -c "${sql.replace(/"/g, '\\"')}"`, { stdio: 'pipe' })
 }
 
+// 跨 test 共享：B2 创建出的服务单号（用于 afterAll 清理）
+const createdServiceOrderIds: string[] = []
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Fixture：每次跑前清掉残留再 INSERT，跑完再 DELETE
 // 顺序遵守 FK：先把可能引用本 appointment 的 service_orders 解绑，再删 appointment
@@ -41,6 +44,27 @@ async function cleanupAppointmentFixture() {
   // service_orders.appointment_id 是 FK；解绑之前所有引用，再删本预约
   dbExec(`UPDATE service_orders SET appointment_id=NULL WHERE appointment_id='${APPT_ID}'`)
   dbExec(`DELETE FROM appointments WHERE appointment_id='${APPT_ID}'`)
+  dbExec(`DELETE FROM operation_logs WHERE target_id='${APPT_ID}'`)
+}
+
+/** 清理 B2 阶段创建的服务单（service_items → service_orders → operation_logs）。单条失败仅 log 不抛 */
+function cleanupServiceOrder(soid: string) {
+  if (!soid) return
+  const stmts: Array<[string, string]> = [
+    ['service_commissions', `DELETE FROM service_commissions WHERE service_item_id IN (SELECT service_item_id FROM service_items WHERE service_order_id='${soid}')`],
+    ['service_items', `DELETE FROM service_items WHERE service_order_id='${soid}'`],
+    ['service_orders', `DELETE FROM service_orders WHERE service_order_id='${soid}'`],
+    ['operation_logs', `DELETE FROM operation_logs WHERE target_id='${soid}'`],
+  ]
+  for (const [tag, sql] of stmts) {
+    try {
+      dbExec(sql)
+      console.log(`[link-3 afterAll cleanup] ${tag} (${soid}): ok`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message.split('\n')[0] : String(e)
+      console.error(`[link-3 afterAll cleanup] ${tag} (${soid}): skipped (${msg})`)
+    }
+  }
 }
 
 async function insertAppointmentFixture() {
@@ -60,9 +84,17 @@ test.beforeAll(async () => {
 })
 
 test.afterAll(async () => {
-  // 段 B2 跑完会产生 service_orders；先解 appointment 引用再删 appointment（不删 service_orders，
-  // 它由 service_orders FK 自然保留；若要彻底清理可手动按 service_order_id 删）
-  await cleanupAppointmentFixture()
+  // 段 B2 跑完会产生 service_orders；先按 ID 清掉这些服务单（含 service_items / operation_logs），
+  // 再解 appointment 引用并删 appointment 本身。单条失败均 try/catch 不抛。
+  for (const soid of createdServiceOrderIds) {
+    cleanupServiceOrder(soid)
+  }
+  try {
+    await cleanupAppointmentFixture()
+  } catch (e) {
+    const msg = e instanceof Error ? e.message.split('\n')[0] : String(e)
+    console.error(`[link-3 afterAll cleanup] appointment fixture: skipped (${msg})`)
+  }
 })
 
 /** 以 FY-TEST-MGR（13900139001/fengyu2026）身份登录 */
@@ -270,6 +302,8 @@ test.describe('段 B：签到 → 新建服务单 → appointment_id 自动关�
     const serviceOrderId = (await serviceOrderIdEl.textContent())?.trim() ?? ''
     console.log('[INFO] Created serviceOrderId =', serviceOrderId)
     expect(serviceOrderId).toMatch(/^FY-FW-/)
+    // 记录待 afterAll 清理（FK 顺序：service_items → service_orders → operation_logs）
+    if (serviceOrderId) createdServiceOrderIds.push(serviceOrderId)
 
     await page.screenshot({ path: `${SHOTS}/link3-B2-success.png`, fullPage: true })
 

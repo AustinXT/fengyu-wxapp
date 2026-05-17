@@ -38,7 +38,7 @@ const SKU1_NAME = '洗-无创纹身'          // 缦之羽 SKU
 const SKU2_NAME = '假性皱纹管家'          // 另一 SKU
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
-const CONTEXT_FILE = path.resolve(__dirname, '../../../notes/research/.last-test-context.json')
+const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 
 // -----------------------------------------------------------------------
 // 工具函数

@@ -42,7 +42,7 @@ const SKU2_NAME = 'M3-眉'  // 同属"缦之羽"分类，唯一 ¥100，不与�
 
 // ── Paths ───────────────────────────────────────────────────────────────────
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
-const CONTEXT_FILE = path.resolve(__dirname, '../../../notes/research/.last-test-context.json')
+const CONTEXT_FILE = path.resolve(__dirname, './.last-test-context.json')
 
 // ── DB helper ───────────────────────────────────────────────────────────────
 function psql(sql: string): string {

@@ -515,9 +515,8 @@ test('链路11：优惠券使用一致性', async ({ page }) => {
       : `UI 降级路径：${uiIssue}；并发防重仍通过 DB 直接验证`,
   }
 
-  const contextDir = path.resolve(__dirname, '../../../notes/research')
-  if (!fs.existsSync(contextDir)) fs.mkdirSync(contextDir, { recursive: true })
-  const contextFile = path.resolve(contextDir, '.last-test-context.json')
+  const contextFile = path.resolve(__dirname, './.last-test-context.json')
+  if (!fs.existsSync(path.dirname(contextFile))) fs.mkdirSync(path.dirname(contextFile), { recursive: true })
   let ctx: Record<string, unknown> = {}
   try { ctx = JSON.parse(fs.readFileSync(contextFile, 'utf8')) } catch { /* noop */ }
   fs.writeFileSync(contextFile, JSON.stringify({ ...ctx, link11: resultJson }, null, 2))
