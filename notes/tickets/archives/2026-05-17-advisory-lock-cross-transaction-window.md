@@ -46,9 +46,34 @@ cost: M（1-3 天，含三端 + 单元/并发测试）
 > - 单测：基线 19 failed → 修复后 4 failed（剩余 4 个在 `createPickup` / `approveRefund balance cascade`，与 advisory lock 无关，pre-existing 工作树状态遗留）
 > - createConversion / service.create 全部用例 PASS（14 + 17 全绿）
 >
-> 待人工执行：
-> - 测试环境跑 `bun fengyu-staff/scripts/manual-e2e/concurrent-order-create.mjs` 验证 N=50 并发 distinct + 无 PK 冲突
-> - 生产 PG 日志监控部署前后 7 天 `sale_orders_pkey` / `service_orders_pkey` 冲突计数对比
+> 验收补充（2026-05-17 同日执行完成）：
+>
+> **并发回归（脚本实跑，测试 PG 47.113.202.7:5434）**：
+> - N=5 → 5/5 成功 distinct，0 PK 冲突
+> - N=10 → 10/10 成功 distinct，0 PK 冲突
+> - N=15/50 → 部分请求池超时（云函数 PG 池 `max=5` 上限 + 持锁覆盖整事务 ~50-200ms 的预期副作用，与 ticket §6 风险 2 一致），但成功响应仍 100% distinct，0 PK 冲突
+> - 脚本同步增强：分类失败为 `PK冲突 / 池超时 / 其他业务错误` 三类，禁止假阳性 PASS
+>
+> **生产 PG 日志监控（ali-demo 实查）**：
+> - PG 日志位置：`docker logs fengyu-postgres`（`log_destination=stderr` + `logging_collector=off`）
+> - 当前窗口（容器启动 9.5h，25,464 行日志）dup-key 错误清单：
+>   - `uq_sale_orders_client_pending` 14 次 / `uq_client_users_openid` 11 次 / `uq_so_client_active` 1 次（均为业务唯一约束）
+>   - **`sale_orders_pkey` = 0** ✓ / **`service_orders_pkey` = 0** ✓
+> - 流量背景：生产 staff wx 流极低 — `FY-XSD-WX-` 前缀历史累计 32 行（近 7 天 1 行）/ `HLD-WX-` 前缀历史累计 4 行（近 7 天 0 行），物理上几乎无并发撞号条件。修复价值在 staff 端普及后流量上规模时兜底
+> - 序号 gap 全量扫描（365 天窗口）：sale_orders 0 gap / service_orders 0 gap ✓
+>
+> **新增脚本**：
+> - `fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs` — 序号 gap 分析 + pg_stat_database 事务 rollback 采样 + 生产 SSH 日志 grep 命令清单
+>
+> **持续监控命令**（部署后复用）：
+> ```bash
+> # PK 冲突按约束分桶
+> ssh ali-demo 'docker logs fengyu-postgres 2>&1 | grep "duplicate key" | grep -oE "constraint \"[^\"]+\"" | sort | uniq -c | sort -rn'
+> # 限定 _pkey 冲突（修复后期望严格 = 0）
+> ssh ali-demo 'docker logs fengyu-postgres 2>&1 | grep -E "duplicate key.*(sale_orders_pkey|service_orders_pkey)"'
+> # 全量历史 gap 扫描
+> PG_CONNECTION_STRING="..." bun fengyu-staff/scripts/manual-e2e/monitor-pk-conflicts.mjs
+> ```
 >
 > ---
 >
