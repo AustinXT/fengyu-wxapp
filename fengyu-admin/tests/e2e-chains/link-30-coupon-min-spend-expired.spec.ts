@@ -251,12 +251,13 @@ test('链路 30：优惠券 min_spend 未达标 + 已过期反例', async ({ pag
   })
 
   // ---- 额外 SQL 等价验证（无 UI 路径，直接复述过滤逻辑） ----
-  // min_spend：100 元订单不可用满 500 减 50；200 元订单 vs DISCOUNT(min_spend=200) 可用
+  // 200 元订单：FY-FIX-CT-MINSPEND(min=500) EXCLUDE / FY-FIX-CT-DISCOUNT(min=200) OK
+  // （以 UI 实际凑单金额 ¥200 为基准）
   const minSpendCases = psql(
-    `SELECT string_agg(template_id || '=' || CASE WHEN min_spend > 100 THEN 'EXCLUDE' ELSE 'OK' END, '|' ORDER BY template_id) FROM coupon_templates WHERE template_id IN ('FY-FIX-CT-MINSPEND','FY-FIX-CT-DISCOUNT')`,
+    `SELECT string_agg(template_id || '=' || CASE WHEN min_spend > 200 THEN 'EXCLUDE' ELSE 'OK' END, '|' ORDER BY template_id) FROM coupon_templates WHERE template_id IN ('FY-FIX-CT-MINSPEND','FY-FIX-CT-DISCOUNT')`,
   )
   verdicts.push({
-    check: 'SQL 等价：100 元订单下 FY-FIX-CT-MINSPEND=EXCLUDE / FY-FIX-CT-DISCOUNT=OK',
+    check: 'SQL 等价：200 元订单下 FY-FIX-CT-MINSPEND=EXCLUDE / FY-FIX-CT-DISCOUNT=OK',
     verdict: /FY-FIX-CT-MINSPEND=EXCLUDE/.test(minSpendCases) && /FY-FIX-CT-DISCOUNT=OK/.test(minSpendCases)
       ? 'PASS'
       : 'FAIL',

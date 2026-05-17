@@ -134,14 +134,15 @@ test('链路 29：品项券限定 category 过滤', async ({ page }) => {
     { timeout: 15000 },
   )
 
-  const couponSelect = page.locator('select').filter({ hasText: /不使用优惠券|品项|FY-FIX-CT-ITEM|FY-FIX-CPN-ITEM/ })
+  // 用 "不使用优惠券" 唯一定位（订单类型/咨询师 select 也含"不指定"会误中）
+  const couponSelect = page.locator('select').filter({ hasText: /不使用优惠券/ }).first()
   let couponUsed = false
   let uiOptions: string[] = []
   if (await couponSelect.count() > 0) {
     uiOptions = await couponSelect.locator('option').allTextContents()
     console.log('[链路29] 优惠券选项:', uiOptions)
     const targetOption = uiOptions.find(
-      (o) => o.includes('FY-FIX-CT-ITEM') || o.includes('FY-FIX-CPN-ITEM') || o.includes('品项'),
+      (o) => o.includes('缦之羽专属') || o.includes('FY-FIX-CT-ITEM') || o.includes('FY-FIX-CPN-ITEM') || o.includes('品项'),
     )
     if (targetOption && !targetOption.includes('不使用')) {
       await couponSelect.selectOption({ label: targetOption })
@@ -218,7 +219,7 @@ test('链路 29：品项券限定 category 过滤', async ({ page }) => {
   // ---- SQL 反例：品项券 applicable_category_ids 应限定缦之羽 ----
   // 命中校验：HIT_SKU 的 category 必须在 applicable_category_ids 中
   const hitCategoryRow = psql(
-    `SELECT category_id FROM product_skus s JOIN products p ON p.product_id=s.product_id WHERE s.sku_id='${HIT_SKU_ID}'`,
+    `SELECT category_id FROM product_skus WHERE sku_id='${HIT_SKU_ID}'`,
   )
   verdicts.push({
     check: `命中 SKU（洗-无创纹身）的 category_id = ${APPLICABLE_CATEGORY_ID}（缦之羽）`,
@@ -228,7 +229,7 @@ test('链路 29：品项券限定 category 过滤', async ({ page }) => {
 
   // 不命中校验：MISS_SKU 的 category 不能在 applicable_category_ids 中
   const missCategoryRow = psql(
-    `SELECT category_id FROM product_skus s JOIN products p ON p.product_id=s.product_id WHERE s.sku_id='${MISS_SKU_ID}'`,
+    `SELECT category_id FROM product_skus WHERE sku_id='${MISS_SKU_ID}'`,
   )
   verdicts.push({
     check: `不命中 SKU（假性皱纹管家）的 category_id != ${APPLICABLE_CATEGORY_ID}`,

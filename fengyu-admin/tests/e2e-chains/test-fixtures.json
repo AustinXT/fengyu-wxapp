@@ -153,15 +153,16 @@
   "bundle": {
     "product_id": "FY-FIX-BUNDLE-01",
     "category_id": "mall-2aca5df619b4cfc6",
-    "name": "Fixture 套餐 ¥180 (洗+假性皱纹)",
+    "name": "Fixture 套餐 ¥180 (SKU A + SKU B)",
     "price": 200.00,
     "special_price": 180.00,
     "is_bundle": true,
     "linked_skus": [
-      { "sku_id": "c79157b29c9e974c", "bundle_price": 90.00 },
-      { "sku_id": "2e388ba778334779", "bundle_price": 90.00 }
+      { "sku_id": "FY-FIX-SKU-BUNDLE-A", "bundle_price": 90.00, "category": "缦之羽", "spec_name": "Fixture 套餐子 SKU A ¥100" },
+      { "sku_id": "FY-FIX-SKU-BUNDLE-B", "bundle_price": 90.00, "category": "美卿", "spec_name": "Fixture 套餐子 SKU B ¥100" }
     ],
-    "_use": "链路 27 组合套餐下单：BundlePicker 一次加购全部 SKU，sale_items.unit_real_price 用 bundle_price"
+    "_use": "链路 27 组合套餐下单：BundlePicker 一次加购全部 SKU，sale_items.unit_real_price 用 bundle_price",
+    "_bug_fixed": "2026-05-18：原始 fixture 把 c79157b29c9e974c/2e388ba778334779 关联到 bundle，导致 NOT EXISTS bundle 过滤把这两张普通 SKU 从 normal-sku-picker 排除，污染 link-1/7/11/28/29/30/31。已改用专属 FY-FIX-SKU-BUNDLE-A/B 隔离。"
   },
 
   "test_employee_for_link5": {
@@ -186,7 +187,8 @@
       "DELETE FROM mall_product_skus WHERE product_id='FY-FIX-BUNDLE-01';",
       "DELETE FROM mall_bundle_groups WHERE product_id='FY-FIX-BUNDLE-01';",
       "DELETE FROM products WHERE product_id LIKE 'FY-FIX-%';",
-      "DELETE FROM product_skus WHERE sku_id LIKE 'FY-FIX-%';",
+      "-- product_skus: 含 FY-FIX-SKU-TRIAL + FY-FIX-SKU-BUNDLE-A / B",
+      "DELETE FROM product_skus WHERE sku_id LIKE 'FY-FIX-SKU-%';",
       "DELETE FROM point_transactions WHERE user_id LIKE 'FY-FIX-%';",
       "DELETE FROM sale_orders WHERE client_user_id LIKE 'FY-FIX-%';",
       "DELETE FROM appointments WHERE client_user_id LIKE 'FY-FIX-%';",

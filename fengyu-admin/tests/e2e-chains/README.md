@@ -1617,19 +1617,30 @@ SELECT cleanup_sale_order(:sale_order_id);
 | 21 | link-21-pickup-records | ❌ FAIL | — | 开单 wizard Step 2 找不到分类"歆笙泰妍" / SKU"法米索深层清洁啫喱"。admin 开单页 Step 2 可能默认不展示家居 product_kind（需切大类 Tab）| spec UI 流程 | **fix spec**：探明 admin 开单是否支持家居 product_kind；若不支持则改走 SQL 直建订单 |
 | 22 | link-22-cron-birthday-boundary | ❌ FAIL | 2/9 PASS + 7 FAIL | cron STEP 2 refresh-member-levels 因 fixture 当前 rolling-12mo spend=¥1242 < ¥1980 阈值，把 beforeAll 设的"初钻"**降级回 NULL**，STEP 3 birthday 查询过滤掉 → total=0；所有 grant 项 0 | spec 设计交互 | **fix spec**：beforeAll 先开 ¥1000 单 + 确认收款补足 spend 到 ≥1980，afterAll 一并清；或直接调 grant-birthday 单 STEP 跳过 cron-once 全跑 |
 | 23 | link-23-service-cancel-session-rollback | ✅ PASS | 4/4 PASS + 2 SKIP | 2 项 SKIP 是设计（已完成单不可取消 + 无 cancelled_at 列）| 设计 SKIP | 接受 |
-| 25 | link-25-order-experience-card | ⬜ TODO | 待跑 | 体验卡分支首跑 | — | run + record |
-| 26 | link-26-order-recharge-card | ⬜ TODO | 待跑 | 充值卡 + 强制销售单反例 | — | run + record |
-| 27 | link-27-order-bundle-package | ⬜ TODO | 待跑 | 组合套餐跳过购物车 | — | run + record |
-| 28 | link-28-coupon-discount-percent | ⬜ TODO | 待跑 | 折扣券封顶 | — | run + record |
-| 29 | link-29-coupon-item-restricted | ⬜ TODO | 待跑 | 品项券命中/不命中 | — | run + record |
-| 30 | link-30-coupon-min-spend-expired | ⬜ TODO | 待跑 | min_spend + 过期 2 路反例 | — | run + record |
-| 31 | link-31-order-internal-type | ⬜ TODO | 待跑 | 内部单 3 路反例 | — | run + record |
+| 25 | link-25-order-experience-card | ✅ PASS | 7/7 | trial-card-picker 流程顺畅 + DB 全段校验通过 | — | — |
+| 26 | link-26-order-recharge-card | ✅ PASS | 12/12 | UI 内部/转换单 disabled 反例 + balance +500 + card_txn 充值流水全通过 | — | — |
+| 27 | link-27-order-bundle-package | ✅ PASS | 6/6 | BundlePicker 直跳 Step 3，子 SKU=2 + 每行 bundle_price 90 + 合计 180 落库 | — | — |
+| 28 | link-28-coupon-discount-percent | ✅ PASS | 8/8 | UI 套折扣券 ¥300 → 封顶 ¥50 → 实付 ¥250 + SQL 等价 4 组（含边界 ¥250）| — | — |
+| 29 | link-29-coupon-item-restricted | ✅ PASS | 8/8 | 命中缦之羽 SKU ¥100 → 折 ¥30 → 实付 ¥70 + applicable_category_ids 字段断言双向 | — | — |
+| 30 | link-30-coupon-min-spend-expired | ✅ PASS | 9/9 | 凑单 ¥200 时 min500 券与已过期券都不在 select；正例对照 DISCOUNT/COUPON-01 可见 | — | — |
+| 31 | link-31-order-internal-type | ✅ PASS | 8/8 | UI 反例 3 路（按钮 pressed / 优惠券不渲染 / 改价 input 全 disabled）+ DB 4 段（type=内部单 / coupon_id=NULL / prepaid=0 / total 半价 ¥50）| — | — |
 
-**统计**：6 PASS（含 4 PARTIAL）+ 5 FAIL + 7 TODO（25-31 待首跑），其中 2 条 admin bug、3 条 spec 问题。
+**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）**。25-31 全部一次跑通（含 fixture bundle SKU 关联修正 + 2 个 spec 微调），无 admin bug 暴露。
 
 **未持久化产物**：
 - 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）
 - `.last-test-context.json` 仅含 PASS/PARTIAL 6 条 + link-22 失败明细；4 条 FAIL（link-16/18/20/21）因在 writeCtx 之前抛错未写 context
+
+### 25-31 首跑踩坑记录（2026-05-18）
+
+**自修复（已落地）**：
+1. `src/actions/orders.ts:1813` `export type RecordPaymentResult` 在 `'use server'` 文件不合法 → 改为内联到 `recordPayment` 返回类型签名
+2. `src/actions/orders.ts:2200` `generateOrderWxacode` HOF 缺 `},)` 闭合 → 修正
+3. fixture bundle `FY-FIX-BUNDLE-01` 原始用 `c79157b29c9e974c` / `2e388ba778334779` 作子 SKU → `NOT EXISTS bundle` 过滤把这两张普通 SKU 从 normal-sku-picker 排除，污染 link-1/7/11/28/29/30/31 → 换用专属 `FY-FIX-SKU-BUNDLE-A/B` 隔离
+4. link-28/29/30 三条 spec 微调：scrollIntoView / select 定位歧义 / SQL JOIN 列名 / 等价校验 expected 值
+
+**待你判断**：
+- 无（25-31 全部 PASS，没有 admin 端疑似 bug）
 
 ---
 

@@ -105,9 +105,11 @@ test('链路 28：折扣券触发封顶', async ({ page }) => {
   }
   for (let i = 0; i < 3; i++) {
     const nameEl = page.getByText('洗-无创纹身', { exact: false }).first()
+    await nameEl.scrollIntoViewIfNeeded({ timeout: 5000 })
     await expect(nameEl).toBeVisible({ timeout: 5000 })
     const card = nameEl.locator('..').locator('..')
     const add = card.getByRole('button', { name: /加入/ })
+    await add.scrollIntoViewIfNeeded()
     await add.click()
     await page.waitForTimeout(300)
     console.log(`[链路28] 加入第 ${i + 1} 件`)
