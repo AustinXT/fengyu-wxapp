@@ -18,6 +18,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogTitle, Al
 import { Separator } from "@/components/ui/separator"
 import { getRoleLabel } from "@/lib/auth"
 import { formatDate, buildOrgPath, findAncestorMarketId, getPositionScope } from "@/lib/utils"
+import { formatPhoneSafe } from "@/lib/format"
 import { updateEmployee } from "@/actions/employees"
 import { assignRole, revokeRole } from "@/actions/permissions"
 import { resetToDefaultPassword } from "@/actions/auth"
@@ -555,7 +556,7 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
                 <div>
                   <div className="font-medium">登录账号</div>
                   <div className="text-sm text-[var(--muted-foreground)]">
-                    手机号登录：{employee.phone ?? "未绑定"}
+                    手机号登录：{employee.phone ? formatPhoneSafe(employee.phone) : "未绑定"}
                   </div>
                 </div>
                 <Badge

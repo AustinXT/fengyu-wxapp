@@ -346,8 +346,10 @@ describe('customer.detail', () => {
     expect(ctx.result.preferredStaffName).toBeNull()
     expect(ctx.result.totalConsumption).toBe(8000)
     expect(ctx.result.yearConsumption).toBe(3000)
-    // maskPhone('138001') → length=6, ≤7 → '1****01'
-    expect(ctx.result.phoneMasked).toBe('1****01')
+    // 新 maskPhone（pii.js v2，2026-05-18 起）：length 6 ≤ 7 走"首末保留"分支，
+    // 返回 s[0] + '*' × (len-2) + s[-1] = '1****1'（6 字符，与输入等长）。
+    // 旧实现返回 '1****01'（7 字符，比输入还长）— 是 bug，本 ticket 一并修正。
+    expect(ctx.result.phoneMasked).toBe('1****1')
   })
 
   test('手机号全为空白时拒绝', async () => {

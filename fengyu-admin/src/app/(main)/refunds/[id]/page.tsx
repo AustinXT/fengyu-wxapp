@@ -6,6 +6,7 @@ import { getRefundById } from '@/actions/refunds'
 import { ApprovalActions } from '../_components/approval-actions'
 import { getSession } from '@/lib/auth'
 import { hasPermission } from '@/lib/permissions'
+import { formatPhoneSafe } from '@/lib/format'
 
 export const dynamic = 'force-dynamic'
 
@@ -85,7 +86,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
             </div>
             <div>
               <span className="text-[#999]">手机号</span>
-              <p className="font-medium mt-1">{refund.clientPhone || '-'}</p>
+              <p className="font-medium mt-1">{formatPhoneSafe(refund.clientPhone)}</p>
             </div>
             <div>
               <span className="text-[#999]">退款金额</span>

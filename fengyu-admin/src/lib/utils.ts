@@ -11,6 +11,10 @@ export function formatCurrency(amount: number | string): string {
   return `¥${num.toFixed(2)}`
 }
 
+/**
+ * @deprecated 仅对 11 位手机号脱敏，其他长度返回明文。新代码请用
+ * `import { formatPhoneSafe } from '@/lib/format'`（基于 pii.maskPhone，全长度统一脱敏）。
+ */
 export function formatPhone(phone: string): string {
   if (!phone || phone.length !== 11) return phone
   return `${phone.slice(0, 3)}****${phone.slice(7)}`

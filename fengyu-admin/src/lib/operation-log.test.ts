@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Mock db
-const mockInsert = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
+// Mock db — capture last detail passed to values() for assertion
+const capturedValues: Array<Record<string, unknown>> = []
+const mockValues = vi.fn(async (v: Record<string, unknown>) => {
+  capturedValues.push(v)
+  return {}
+})
+const mockInsert = vi.fn().mockReturnValue({ values: mockValues })
 vi.mock('@/db', () => ({
   db: {
     insert: (...args: unknown[]) => mockInsert(...args),
@@ -44,6 +49,7 @@ function mockSession(overrides?: Partial<AuthSession>): AuthSession {
 describe('logOperation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    capturedValues.length = 0
   })
 
   it('写入操作日志到 operation_logs 表', async () => {
@@ -76,6 +82,37 @@ describe('logOperation', () => {
     await logOperation(session, 'store.update', 'store', 'S001')
 
     expect(mockInsert).toHaveBeenCalled()
+    expect(capturedValues[0]!.detail).toBeNull()
+  })
+
+  it('detail.phone 入库时被 mask（sanitizeDetail 接入）', async () => {
+    const session = mockSession()
+    await logOperation(session, 'customer.update', 'customer', 'C-001', {
+      phone: '13812345678',
+      name: '张三',
+      idCard: '110101199001011234',
+      email: 'foo@bar.com',
+      openid: 'oABC1234XYZ5678',
+      amount: 100,
+    })
+    expect(mockInsert).toHaveBeenCalled()
+    const detail = capturedValues[0]!.detail as Record<string, unknown>
+    expect(detail.phone).toBe('138****5678')
+    expect(detail.name).toBe('张三') // name 不在 SENSITIVE_KEYS 默认表
+    expect(detail.idCard).toBe('1101**********1234')
+    expect(detail.email).toBe('f*o@bar.com')
+    expect(detail.openid).toBe('oABC*******5678')
+    expect(detail.amount).toBe(100) // 非敏感字段保持原值
+  })
+
+  it('detail 嵌套对象内 phone 也被脱敏', async () => {
+    const session = mockSession()
+    await logOperation(session, 'customer.update', 'customer', 'C-001', {
+      snapshot: { phone: '13812345678', nickname: '小明' },
+    })
+    const detail = capturedValues[0]!.detail as { snapshot: { phone: string; nickname: string } }
+    expect(detail.snapshot.phone).toBe('138****5678')
+    expect(detail.snapshot.nickname).toBe('小明')
   })
 })
 
@@ -122,12 +159,15 @@ describe('computeChanges', () => {
 })
 
 describe('logUpdate', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); capturedValues.length = 0 })
 
-  it('有变更 → 写入 _v:2 _t:update detail', async () => {
+  it('有变更 → 写入 _v:3 _t:update detail', async () => {
     const session = mockSession()
     await logUpdate(session, 'store.update', 'store', 'S001', { storeName: '旧名' }, { storeName: '新名' })
     expect(mockInsert).toHaveBeenCalled()
+    const detail = capturedValues[0]!.detail as { _v: number; _t: string }
+    expect(detail._v).toBe(3)
+    expect(detail._t).toBe('update')
   })
 
   it('无实际变更 → 不写入日志', async () => {
@@ -135,22 +175,55 @@ describe('logUpdate', () => {
     await logUpdate(session, 'store.update', 'store', 'S001', { storeName: '同' }, { storeName: '同' })
     expect(mockInsert).not.toHaveBeenCalled()
   })
+
+  it('changes.phone.from/to 通过继承 key 上下文被脱敏（ticket §6.5 验证项）', async () => {
+    const session = mockSession()
+    await logUpdate(session, 'customer.update', 'customer', 'C-001',
+      { phone: '13800000000' },
+      { phone: '13812345678' })
+    const detail = capturedValues[0]!.detail as { changes: Record<string, { from: unknown; to: unknown }> }
+    expect(detail.changes.phone.from).toBe('138****0000')
+    expect(detail.changes.phone.to).toBe('138****5678')
+  })
+
+  it('changes.amount 等非敏感 diff 字段保持原值', async () => {
+    const session = mockSession()
+    await logUpdate(session, 'order.update', 'sale_order', 'ORD-001',
+      { amount: '100.00' },
+      { amount: '200.00' })
+    const detail = capturedValues[0]!.detail as { changes: Record<string, { from: unknown; to: unknown }> }
+    expect(detail.changes.amount.from).toBe('100.00')
+    expect(detail.changes.amount.to).toBe('200.00')
+  })
 })
 
 describe('logTransition', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); capturedValues.length = 0 })
 
-  it('写入 _v:2 _t:transition detail', async () => {
+  it('写入 _v:3 _t:transition detail', async () => {
     const session = mockSession()
     await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待确认收款', '已支付', {
       customerName: '张三', totalAmount: '1980.00',
     })
     expect(mockInsert).toHaveBeenCalled()
+    const detail = capturedValues[0]!.detail as { _v: number; _t: string }
+    expect(detail._v).toBe(3)
+    expect(detail._t).toBe('transition')
   })
 
   it('无 context 时不含 context 字段', async () => {
     const session = mockSession()
     await logTransition(session, 'service.start', 'service_order', 'SVC-001', '待服务', '服务中')
     expect(mockInsert).toHaveBeenCalled()
+  })
+
+  it('context.phone 字段被脱敏', async () => {
+    const session = mockSession()
+    await logTransition(session, 'order.confirmPayment', 'sale_order', 'ORD-001', '待确认收款', '已支付', {
+      phone: '13812345678', amount: '100.00',
+    })
+    const detail = capturedValues[0]!.detail as { context: { phone: string; amount: string } }
+    expect(detail.context.phone).toBe('138****5678')
+    expect(detail.context.amount).toBe('100.00')
   })
 })

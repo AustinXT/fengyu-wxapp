@@ -22,6 +22,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { approveUnbind, rejectUnbind, type UnbindRequest } from "@/actions/store-unbind"
+import { formatPhoneSafe } from "@/lib/format"
 
 function formatDate(dt: string) {
   return new Date(dt).toLocaleString("zh-CN", {
@@ -113,7 +114,7 @@ export default function StoreUnbindPage({ requests }: Props) {
                     <tr key={req.requestId} className="hover:bg-[#FFF0EE] transition-colors">
                       <td className="px-4 py-3"><StatusBadge status="待确认" /></td>
                       <td className="px-4 py-3 font-medium">{req.customerName || "-"}</td>
-                      <td className="px-4 py-3">{req.customerPhone || "-"}</td>
+                      <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
                       <td className="px-4 py-3">{req.fromStoreName || "-"}</td>
                       <td className="px-4 py-3 text-[#999999] max-w-32 truncate">{req.note || "-"}</td>
                       <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>
@@ -180,7 +181,7 @@ export default function StoreUnbindPage({ requests }: Props) {
                           <StatusBadge status={req.status === "已通过" ? "已完成" : "已取消"} />
                         </td>
                         <td className="px-4 py-3 font-medium">{req.customerName || "-"}</td>
-                        <td className="px-4 py-3">{req.customerPhone || "-"}</td>
+                        <td className="px-4 py-3">{formatPhoneSafe(req.customerPhone)}</td>
                         <td className="px-4 py-3">{req.fromStoreName || "-"}</td>
                         <td className="px-4 py-3 text-[#999999] max-w-40 truncate">{req.rejectReason || "-"}</td>
                         <td className="px-4 py-3 text-[#999999]">{formatDate(req.createdAt)}</td>

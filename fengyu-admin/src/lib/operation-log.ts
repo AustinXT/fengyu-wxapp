@@ -1,6 +1,7 @@
 import { db } from '@/db'
 import { operationLogs } from '@db/operation-log'
 import type { AuthSession } from './types'
+import { sanitizeDetail } from './pii'
 
 /**
  * 对比 before/after，返回实际变更的字段 diff。
@@ -67,7 +68,7 @@ export async function logOperation(
     action,
     targetType,
     targetId,
-    detail: detail ?? null,
+    detail: detail ? sanitizeDetail(detail) : null,
     source: 'adminApi',
   })
 }
@@ -75,7 +76,8 @@ export async function logOperation(
 /**
  * 写入更新操作日志（结构化 diff）
  *
- * detail 格式：{ _v: 2, _t: 'update', changes: { field: { from, to } } }
+ * detail 格式：{ _v: 3, _t: 'update', changes: { field: { from, to } } }
+ * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail（敏感 PII 字段入库前脱敏）
  */
 export async function logUpdate(
   session: AuthSession,
@@ -88,7 +90,7 @@ export async function logUpdate(
   const changes = computeChanges(before, after)
   if (!changes) return
   await logOperation(session, action, targetType, targetId, {
-    _v: 2,
+    _v: 3,
     _t: 'update',
     changes,
   })
@@ -97,7 +99,8 @@ export async function logUpdate(
 /**
  * 写入状态变更日志（状态流转 + 上下文）
  *
- * detail 格式：{ _v: 2, _t: 'transition', from, to, context? }
+ * detail 格式：{ _v: 3, _t: 'transition', from, to, context? }
+ * _v: 3 起 detail 在 logOperation 内统一跑 sanitizeDetail
  */
 export async function logTransition(
   session: AuthSession,
@@ -109,7 +112,7 @@ export async function logTransition(
   context?: Record<string, unknown>,
 ) {
   await logOperation(session, action, targetType, targetId, {
-    _v: 2,
+    _v: 3,
     _t: 'transition',
     from,
     to,

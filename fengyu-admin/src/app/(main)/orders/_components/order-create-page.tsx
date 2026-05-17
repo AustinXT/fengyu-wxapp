@@ -19,6 +19,7 @@ import { getAvailableCoupons } from "@/actions/coupons"
 import { getProductsByKind, type ProductKindForOrder, type OrderPickerResult, type OrderPickerNormalGroup, type OrderPickerCategory } from "@/actions/products"
 import { getCustomerHeldCards, type HeldCardCandidate } from "@/actions/cards"
 import { formatDate } from "@/lib/utils"
+import { formatPhoneSafe } from "@/lib/format"
 import type { ProductSku, Store, Employee, Customer, AvailableCoupon } from "@/lib/types"
 import {
   BundlePicker,
@@ -504,7 +505,7 @@ export default function OrderCreatePageClient({
                       >
                         <div className="flex items-center gap-4">
                           <span className="font-medium min-w-[4em]">{c.name || "-"}</span>
-                          <span className="text-[#999999]">{c.phone}</span>
+                          <span className="text-[#999999]">{formatPhoneSafe(c.phone)}</span>
                           {c.memberLevel && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-[#FFF8E6] text-[#D4820A]">{c.memberLevel}</span>
                           )}
@@ -538,7 +539,7 @@ export default function OrderCreatePageClient({
                       </div>
                       <div>
                         <span className="text-[#999999]">手机</span>
-                        <p className="font-medium">{selectedCustomer.phone}</p>
+                        <p className="font-medium">{formatPhoneSafe(selectedCustomer.phone)}</p>
                       </div>
                       <div>
                         <span className="text-[#999999]">会员等级</span>

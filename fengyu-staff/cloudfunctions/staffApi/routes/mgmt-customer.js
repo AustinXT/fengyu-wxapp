@@ -21,6 +21,7 @@
 
 const pg = require('../db/pg')
 const { requireManagementLevel } = require('../middleware/auth')
+const { maskPhone } = require('../utils/pii')
 
 // ====================================================================
 // 共享 helper（与 mgmt-product.js 完全一致的本地副本，避免跨 module 耦合）
@@ -99,15 +100,6 @@ function validateScopeParams(scopeType, scopeId) {
   if (scopeType !== 'all' && !scopeId) {
     throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
-}
-
-/** 手机号脱敏（管理层不会被调用，作为兜底） */
-function maskPhone(phone) {
-  if (!phone) return ''
-  const p = String(phone).trim()
-  if (p.length <= 4) return '****'
-  if (p.length <= 7) return p.slice(0, 1) + '****' + p.slice(-2)
-  return p.slice(0, 3) + '****' + p.slice(-4)
 }
 
 /** 是否对管理层返回原始手机号（D-mgmt-phone-mask） */

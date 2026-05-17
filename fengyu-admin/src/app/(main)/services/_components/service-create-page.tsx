@@ -12,6 +12,7 @@ import { searchCustomerByPhone } from "@/actions/customers"
 import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
 import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
+import { formatPhoneSafe } from "@/lib/format"
 
 const steps = ["选择顾客", "选择项目", "确认提交"]
 
@@ -232,7 +233,7 @@ export default function ServiceCreatePageClient({
                     </div>
                     <div>
                       <span className="text-[#999999]">手机</span>
-                      <p className="font-medium">{selectedCustomer.phone}</p>
+                      <p className="font-medium">{formatPhoneSafe(selectedCustomer.phone)}</p>
                     </div>
                     <div>
                       <span className="text-[#999999]">会员等级</span>
@@ -322,7 +323,12 @@ export default function ServiceCreatePageClient({
                             <td className="px-4 py-3 text-right">
                               {item.remainingSessions}/{item.sessionCount ?? "-"}
                             </td>
-                            <td className="px-4 py-3 text-right">¥{Number(item.unitRealPrice).toFixed(2)}</td>
+                            <td className="px-4 py-3 text-right">
+                              ¥{(item.sessionCount && item.sessionCount > 0
+                                ? Number(item.unitRealPrice) / item.sessionCount
+                                : Number(item.unitRealPrice)
+                              ).toFixed(2)}
+                            </td>
                             <td className="px-4 py-3">{item.expireDate || "永久"}</td>
                             <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
                               {selected && (

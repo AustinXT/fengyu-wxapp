@@ -15,6 +15,7 @@ import { DataTable, type Column } from "@/components/ui/data-table"
 import { Dialog, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { Pagination } from "@/components/ui/pagination"
 import { formatCurrency, formatDate } from "@/lib/utils"
+import { formatPhoneSafe } from "@/lib/format"
 import { OrgTreeSelect } from "@/components/ui/org-tree-select"
 import { updateTemplate, issueCoupon, batchIssueCoupons, getCustomersForBatchIssue, getOrgNodesForBatchIssue } from "@/actions/coupons"
 import type { CouponTemplate, CouponType, IssuedCoupon, BatchCouponCustomer, OrgNode } from "@/lib/types"
@@ -913,7 +914,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
                             />
                           </td>
                           <td className="px-3 py-2 font-medium">{c.name || "—"}</td>
-                          <td className="px-3 py-2 font-mono">{c.phone || "—"}</td>
+                          <td className="px-3 py-2 font-mono">{formatPhoneSafe(c.phone)}</td>
                           <td className="px-3 py-2">{c.storeName || "—"}</td>
                           <td className="px-3 py-2">{c.memberLevel || "—"}</td>
                         </tr>
@@ -944,7 +945,7 @@ export default function CouponDetailPage({ template, markets, issuedCoupons, cat
               <div className="text-sm font-medium text-[#D94040]">以下手机号未匹配到顾客：</div>
               {batchErrors.map((e) => (
                 <div key={e.phone} className="text-sm text-[#D94040] font-mono">
-                  {e.phone}
+                  {formatPhoneSafe(e.phone)}
                 </div>
               ))}
             </div>

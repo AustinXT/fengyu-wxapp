@@ -12,6 +12,7 @@ import {
   getOrgNodesForBatchMessage,
 } from '@/actions/messages'
 import type { BatchMessageCustomer, OrgNode } from '@/lib/types'
+import { formatPhoneSafe } from '@/lib/format'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -700,7 +701,7 @@ export default function MessagesPage({ messages, messageTypes, total, canSend }:
                               />
                             </td>
                             <td className="px-3 py-2 font-medium">{c.name || '—'}</td>
-                            <td className="px-3 py-2 font-mono">{c.phone || '—'}</td>
+                            <td className="px-3 py-2 font-mono">{formatPhoneSafe(c.phone)}</td>
                             <td className="px-3 py-2">{c.storeName || '—'}</td>
                             <td className="px-3 py-2">{c.memberLevel || '—'}</td>
                           </tr>

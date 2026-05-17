@@ -16,6 +16,7 @@ const {
   assertCustomerInScope,
   assertEmployeeInScope,
 } = require("../utils/scope");
+const { maskPhone } = require("../utils/pii");
 
 /**
  * 搜索顾客（PG 单源）
@@ -504,17 +505,6 @@ async function paidOrders(ctx) {
     storeName: o.store_name || "",
     items: itemsByOrder[o.sale_order_id] || [],
   }));
-}
-
-/**
- * 手机号脱敏
- */
-function maskPhone(phone) {
-  if (!phone) return "";
-  const p = String(phone).trim();
-  if (p.length <= 4) return "****";
-  if (p.length <= 7) return p.slice(0, 1) + "****" + p.slice(-2);
-  return p.slice(0, 3) + "****" + p.slice(-4);
 }
 
 /**

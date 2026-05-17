@@ -1,0 +1,96 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`audit-CC6 P0：三端 PII helper 一致性守护（staff 侧） > Snapshot 兜底 > staff fixture 表 snapshot 1`] = `
+[
+  {
+    "expected": "138****5678",
+    "fn": "maskPhone",
+    "input": "13812345678",
+    "staffActual": "138****5678",
+  },
+  {
+    "expected": "1***5",
+    "fn": "maskPhone",
+    "input": "12345",
+    "staffActual": "1***5",
+  },
+  {
+    "expected": "",
+    "fn": "maskPhone",
+    "input": "",
+    "staffActual": "",
+  },
+  {
+    "expected": "",
+    "fn": "maskPhone",
+    "input": null,
+    "staffActual": "",
+  },
+  {
+    "expected": "张*",
+    "fn": "maskName",
+    "input": "张三",
+    "staffActual": "张*",
+  },
+  {
+    "expected": "王*明",
+    "fn": "maskName",
+    "input": "王小明",
+    "staffActual": "王*明",
+  },
+  {
+    "expected": "李**六",
+    "fn": "maskName",
+    "input": "李四五六",
+    "staffActual": "李**六",
+  },
+  {
+    "expected": "*",
+    "fn": "maskName",
+    "input": "王",
+    "staffActual": "*",
+  },
+  {
+    "expected": "1101**********1234",
+    "fn": "maskIdCard",
+    "input": "110101199001011234",
+    "staffActual": "1101**********1234",
+  },
+  {
+    "expected": "*****",
+    "fn": "maskIdCard",
+    "input": "12345",
+    "staffActual": "*****",
+  },
+  {
+    "expected": "f*o@bar.com",
+    "fn": "maskEmail",
+    "input": "foo@bar.com",
+    "staffActual": "f*o@bar.com",
+  },
+  {
+    "expected": "a@b.c",
+    "fn": "maskEmail",
+    "input": "a@b.c",
+    "staffActual": "a@b.c",
+  },
+  {
+    "expected": "a*@c.d",
+    "fn": "maskEmail",
+    "input": "ab@c.d",
+    "staffActual": "a*@c.d",
+  },
+  {
+    "expected": "oABC*******5678",
+    "fn": "maskOpenid",
+    "input": "oABC1234XYZ5678",
+    "staffActual": "oABC*******5678",
+  },
+  {
+    "expected": "*****",
+    "fn": "maskOpenid",
+    "input": "short",
+    "staffActual": "*****",
+  },
+]
+`;

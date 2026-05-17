@@ -22,6 +22,7 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
+import { formatPhoneSafe } from "@/lib/format"
 import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
 
@@ -514,7 +515,7 @@ export default function CustomerDetailPage({
                     <div ref={promoterRef} className="relative">
                       <Input
                         placeholder="输入姓名或手机号搜索"
-                        value={promoterOpen ? promoterSearch : (selectedPromoter ? `${selectedPromoter.name}${selectedPromoter.phone ? ` (${selectedPromoter.phone})` : ""}` : "")}
+                        value={promoterOpen ? promoterSearch : (selectedPromoter ? `${selectedPromoter.name}${selectedPromoter.phone ? ` (${formatPhoneSafe(selectedPromoter.phone)})` : ""}` : "")}
                         onFocus={() => { setPromoterOpen(true); setPromoterSearch("") }}
                         onChange={(e) => { setPromoterSearch(e.target.value); setPromoterOpen(true); doPromoterSearch(e.target.value) }}
                       />
@@ -547,7 +548,7 @@ export default function CustomerDetailPage({
                                   setPromoterSearch("")
                                 }}
                               >
-                                {emp.name}{emp.phone ? ` (${emp.phone})` : ""}
+                                {emp.name}{emp.phone ? ` (${formatPhoneSafe(emp.phone)})` : ""}
                               </li>
                             ))
                           )}

@@ -15,6 +15,7 @@ import {
   type AvailablePickupItem,
 } from '@/actions/pickup-records'
 import type { Customer, Store } from '@/lib/types'
+import { formatPhoneSafe } from '@/lib/format'
 
 interface Props {
   stores: Store[]
@@ -176,7 +177,7 @@ export default function PickupRecordCreatePageClient({ stores }: Props) {
                   </div>
                   <div>
                     <span className="text-[#999999]">手机</span>
-                    <p className="font-medium">{customer.phone}</p>
+                    <p className="font-medium">{formatPhoneSafe(customer.phone)}</p>
                   </div>
                   <div>
                     <span className="text-[#999999]">会员等级</span>
