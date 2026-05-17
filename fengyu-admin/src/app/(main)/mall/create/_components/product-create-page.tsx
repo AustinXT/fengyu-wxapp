@@ -1,21 +1,21 @@
-"use client"
+"use client";
 
-import { useState, useMemo } from "react"
-import { useRouter } from "next/navigation"
-import { toast } from "sonner"
-import type { MallCategory } from "@/lib/types"
-import { createProduct } from "@/actions/products"
-import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select } from "@/components/ui/select"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
-import { ImageUpload } from "@/components/ui/image-upload"
+import { useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import type { MallCategory } from "@/lib/types";
+import { createProduct } from "@/actions/products";
+import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { ImageUpload } from "@/components/ui/image-upload";
 
 interface Market {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 export default function MallProductCreatePageClient({
@@ -23,62 +23,62 @@ export default function MallProductCreatePageClient({
   markets,
   manageScope,
 }: {
-  mallCategories: MallCategory[]
-  markets: Market[]
-  manageScope: { scopeId: string | null; scopeName: string }
+  mallCategories: MallCategory[];
+  markets: Market[];
+  manageScope: { scopeId: string | null; scopeName: string };
 }) {
-  const router = useRouter()
-  const [saving, setSaving] = useState(false)
-  const [categoryId, setCategoryId] = useState("")
-  const [coverImage, setCoverImage] = useState("")
-  const [detailImages, setDetailImages] = useState<string[]>([])
-  const [formDirty, setFormDirty] = useState(false)
-  useUnsavedChanges(formDirty)
+  const router = useRouter();
+  const [saving, setSaving] = useState(false);
+  const [categoryId, setCategoryId] = useState("");
+  const [coverImage, setCoverImage] = useState("");
+  const [detailImages, setDetailImages] = useState<string[]>([]);
+  const [formDirty, setFormDirty] = useState(false);
+  useUnsavedChanges(formDirty);
 
-  const [isBundle, setIsBundle] = useState(false)
-  const [allMarkets, setAllMarkets] = useState(true)
-  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
+  const [isBundle, setIsBundle] = useState(false);
+  const [allMarkets, setAllMarkets] = useState(true);
+  const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([]);
 
   // Mall category groups for grouped select
   const mallGroups = useMemo(
     () => mallCategories.filter((c) => c.categoryGroup === null).sort((a, b) => a.sortOrder - b.sortOrder),
     [mallCategories],
-  )
+  );
   const mallSubCats = useMemo(
     () => mallCategories.filter((c) => c.categoryGroup !== null).sort((a, b) => a.sortOrder - b.sortOrder),
     [mallCategories],
-  )
+  );
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const form = e.currentTarget
-    const fd = new FormData(form)
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
 
-    const name = (fd.get("name") as string).trim()
-    const price = (fd.get("price") as string).trim()
+    const name = (fd.get("name") as string).trim();
+    const price = (fd.get("price") as string).trim();
 
     if (!name) {
-      toast.error("请输入商品名称")
-      return
+      toast.error("请输入商城展示名称");
+      return;
     }
     if (!categoryId) {
-      toast.error("请选择商城分类")
-      return
+      toast.error("请选择商城分类");
+      return;
     }
     if (!price) {
-      toast.error("请输入标价")
-      return
+      toast.error("请输入标价");
+      return;
     }
 
-    const specialPrice = (fd.get("specialPrice") as string).trim() || null
-    const description = (fd.get("description") as string).trim() || null
-    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
-    const isEnabled = fd.get("isEnabled") === "on"
-    const isVisible = fd.get("isVisible") === "on"
+    const specialPrice = (fd.get("specialPrice") as string).trim() || null;
+    const description = (fd.get("description") as string).trim() || null;
+    const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
+    const isEnabled = fd.get("isEnabled") === "on";
+    const isVisible = fd.get("isVisible") === "on";
 
-    const productId = `prod-${Date.now()}`
+    const productId = `prod-${Date.now()}`;
 
-    setSaving(true)
+    setSaving(true);
     try {
       const result = await createProduct({
         productId,
@@ -91,24 +91,24 @@ export default function MallProductCreatePageClient({
         price,
         specialPrice,
         manageScope: manageScope.scopeId,
-        marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
+        marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
         sortOrder,
         isEnabled,
         isVisible,
-      })
+      });
       if (!result.success) {
-        toast.error(result.message)
-        return
+        toast.error(result.message);
+        return;
       }
-      setFormDirty(false)
-      toast.success("商品创建成功，请在详情页管理套餐分组")
-      router.push(`/mall/${productId}`)
+      setFormDirty(false);
+      toast.success("商品创建成功，请在详情页管理套餐分组");
+      router.push(`/mall/${productId}`);
     } catch {
-      toast.error("创建失败，请稍后重试")
+      toast.error("创建失败，请稍后重试");
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   return (
     <form onSubmit={handleSubmit} onInput={() => setFormDirty(true)} className="space-y-4">
@@ -127,16 +127,16 @@ export default function MallProductCreatePageClient({
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">商品名称</label>
-              <Input name="name" placeholder="请输入商品名称" />
+              <label className="text-sm font-medium">商城展示名称</label>
+              <Input name="name" placeholder="请输入商城展示名称" />
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">商城分类</label>
               <Select
                 value={categoryId}
                 onChange={(e) => {
-                  setCategoryId(e.target.value)
-                  setFormDirty(true)
+                  setCategoryId(e.target.value);
+                  setFormDirty(true);
                 }}
               >
                 <option value="">请选择商城分类</option>
@@ -157,7 +157,10 @@ export default function MallProductCreatePageClient({
               <label className="text-sm font-medium">是否套餐</label>
               <Select
                 value={isBundle ? "true" : "false"}
-                onChange={(e) => { setIsBundle(e.target.value === "true"); setFormDirty(true) }}
+                onChange={(e) => {
+                  setIsBundle(e.target.value === "true");
+                  setFormDirty(true);
+                }}
               >
                 <option value="false">否</option>
                 <option value="true">是</option>
@@ -214,11 +217,7 @@ export default function MallProductCreatePageClient({
             </div>
             <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">封面图</label>
-              <ImageUpload
-                value={coverImage}
-                onChange={(v) => setCoverImage(v as string)}
-                path="product-covers"
-              />
+              <ImageUpload value={coverImage} onChange={(v) => setCoverImage(v as string)} path="product-covers" />
             </div>
             <div className="col-span-2 space-y-2">
               <label className="text-sm font-medium">详情图</label>
@@ -250,9 +249,9 @@ export default function MallProductCreatePageClient({
                 type="checkbox"
                 checked={allMarkets}
                 onChange={(e) => {
-                  setAllMarkets(e.target.checked)
-                  if (e.target.checked) setSelectedMarketIds([])
-                  setFormDirty(true)
+                  setAllMarkets(e.target.checked);
+                  if (e.target.checked) setSelectedMarketIds([]);
+                  setFormDirty(true);
                 }}
                 className="h-4 w-4 rounded border-[var(--input)]"
               />
@@ -267,11 +266,9 @@ export default function MallProductCreatePageClient({
                       checked={selectedMarketIds.includes(m.id)}
                       onChange={(e) => {
                         setSelectedMarketIds((prev) =>
-                          e.target.checked
-                            ? [...prev, m.id]
-                            : prev.filter((id) => id !== m.id)
-                        )
-                        setFormDirty(true)
+                          e.target.checked ? [...prev, m.id] : prev.filter((id) => id !== m.id),
+                        );
+                        setFormDirty(true);
                       }}
                       className="h-4 w-4 rounded border-[var(--input)]"
                     />
@@ -319,8 +316,10 @@ export default function MallProductCreatePageClient({
         <Button type="button" variant="outline" onClick={() => router.back()}>
           取消
         </Button>
-        <Button type="submit" loading={saving}>创建商品</Button>
+        <Button type="submit" loading={saving}>
+          创建商品
+        </Button>
       </div>
     </form>
-  )
+  );
 }
