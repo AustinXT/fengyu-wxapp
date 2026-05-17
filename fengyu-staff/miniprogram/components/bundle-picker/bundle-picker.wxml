@@ -16,7 +16,7 @@
       bindtap="onSelectBundle"
     >
       <view wx:if="{{item.coverImage}}" class="bundle-cover">
-        <image src="{{item.coverImage}}" mode="aspectFill" lazy-load />
+        <image class="bundle-cover-img" src="{{item.coverImage}}" mode="aspectFill" lazy-load />
       </view>
       <view wx:else class="bundle-cover bundle-cover--placeholder">
         <van-icon name="gift-o" size="64rpx" color="#C0322A" />
