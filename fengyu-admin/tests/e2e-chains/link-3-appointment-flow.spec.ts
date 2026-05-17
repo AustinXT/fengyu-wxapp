@@ -6,7 +6,7 @@
  *   - 段 B2 复用 FY-FIX-CLIENT-01 已有的可用 sale_item（remaining_sessions > 0），不再 INSERT 临时 SIID
  *
  * 跑法：
- *   bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts \
+ *   bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts \
  *     link-3-appointment-flow.spec.ts --project=chromium --reporter=list
  */
 

@@ -1,17 +1,17 @@
 # Admin Chrome 手动 E2E 测试流程
 
-**最近一次更新**：2026-05-17（迁移至 `fengyu-admin/scripts/manual-e2e/` + 新增 11 条业务扩展链路）
+**最近一次更新**：2026-05-17（迁移至 `fengyu-admin/tests/e2e-chains/` + 新增 11 条业务扩展链路）
 **目的**：为"用真实浏览器（人工 / Claude in Chrome / Playwright headed）走一遍 admin 业务流程"提供可执行的测试地图。
-**与现有 Playwright E2E 的区别**：现有 25 个 `e2e/*.spec.ts` 中 87% 是页面渲染断言，本套 spec 聚焦**跨页面、跨角色、有状态机、有金额/积分会计恒等式**的端到端业务闭环——这些场景写自动化成本高、肉眼一眼能看出问题。
+**与现有 Playwright E2E 的区别**：现有 25 个 `tests/e2e-pages/*.spec.ts` 中 87% 是页面渲染断言，本套 spec 聚焦**跨页面、跨角色、有状态机、有金额/积分会计恒等式**的端到端业务闭环——这些场景写自动化成本高、肉眼一眼能看出问题。
 
 ---
 
 ## 0. 目录约定（2026-05-17 之后）
 
-所有 admin E2E 手动测试相关文件已统一收敛到 `fengyu-admin/scripts/manual-e2e/`：
+所有 admin E2E 手动测试相关文件已统一收敛到 `fengyu-admin/tests/e2e-chains/`：
 
 ```
-fengyu-admin/scripts/manual-e2e/
+fengyu-admin/tests/e2e-chains/
 ├── README.md                       # 本文件（原 notes/research/admin-chrome-e2e-plan.md）
 ├── playwright.manual.config.ts     # 独立 Playwright 配置（不走主 e2e 流程）
 ├── test-fixtures.json              # 固定测试夹具索引（顾客/SKU/卡/券）
@@ -25,9 +25,9 @@ fengyu-admin/scripts/manual-e2e/
 
 | 旧路径（已弃） | 新路径 |
 |---------------|--------|
-| `notes/research/admin-chrome-e2e-plan.md` | `fengyu-admin/scripts/manual-e2e/README.md` |
-| `notes/research/test-fixtures.json` | `fengyu-admin/scripts/manual-e2e/test-fixtures.json` |
-| `notes/research/.last-test-context.json` | `fengyu-admin/scripts/manual-e2e/.last-test-context.json` |
+| `notes/research/admin-chrome-e2e-plan.md` | `fengyu-admin/tests/e2e-chains/README.md` |
+| `notes/research/test-fixtures.json` | `fengyu-admin/tests/e2e-chains/test-fixtures.json` |
+| `notes/research/.last-test-context.json` | `fengyu-admin/tests/e2e-chains/.last-test-context.json` |
 
 → spec 文件内 `CONTEXT_FILE` 已统一为 `path.resolve(__dirname, './.last-test-context.json')`。
 
@@ -40,8 +40,8 @@ fengyu-admin/scripts/manual-e2e/
 **CC 当前可用的浏览器驱动手段**（按优先级排序）：
 
 1. **Playwright headed 临时脚本**（默认推荐）
-   - 直接写到 `fengyu-admin/scripts/manual-e2e/link-N-xxx.spec.ts`
-   - `cd fengyu-admin && bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts scripts/manual-e2e/link-N-xxx.spec.ts`
+   - 直接写到 `fengyu-admin/tests/e2e-chains/link-N-xxx.spec.ts`
+   - `cd fengyu-admin && bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts tests/e2e-chains/link-N-xxx.spec.ts`
    - 可看浏览器、可读 console、可截图、可断点
    - CC 写脚本 → 用户在终端跑 → CC 读输出 / 截图
 
@@ -61,7 +61,7 @@ fengyu-admin/scripts/manual-e2e/
 - 状态枚举值**全部用中文**（`已支付` `待确认` `已完成`），不是英文
 - 链路间上下文（订单号 / 服务单号）通过 `./.last-test-context.json` 传递（§0.6）
 - 写新 spec 之前，**必读** `_helpers/cleanup.ts` 与最近一次成功的相邻链路 spec，复用其 helper 与选择器
-- 不能复用 `e2e/` 主流程下的 storageState（双方 fixture 假设不同），手动 e2e 自己维护 `.auth/` 子目录
+- 不能复用 `tests/e2e-pages/` 主流程下的 storageState（双方 fixture 假设不同），手动 e2e 自己维护 `.auth/` 子目录
 
 ---
 
@@ -138,7 +138,7 @@ eval $PSQL_TEST < /tmp/snap-before-XXXX.sql
 
 **默认模式：Playwright headed 临时脚本**（无须 MCP，最稳）
 
-骨架（CC 写到 `fengyu-admin/scripts/manual-e2e/link-N-xxx.spec.ts`）：
+骨架（CC 写到 `fengyu-admin/tests/e2e-chains/link-N-xxx.spec.ts`）：
 
 ```ts
 import { test, expect } from '@playwright/test'
@@ -166,11 +166,11 @@ test('链路 N：xxx', async ({ page }) => {
 跑命令：
 ```bash
 cd fengyu-admin
-bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts \
-  scripts/manual-e2e/link-N-xxx.spec.ts
+bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts \
+  tests/e2e-chains/link-N-xxx.spec.ts
 ```
 
-**选择器优先级**（参考已有 `e2e/orders.spec.ts` 的写法）：
+**选择器优先级**（参考已有 `tests/e2e-pages/orders.spec.ts` 的写法）：
 1. `getByRole('button'/'heading'/'columnheader', { name: /中文/ })` — 首选
 2. `getByPlaceholder(/中文/)` — 输入框
 3. `getByText('精确文案')` — 文案锚点
@@ -186,7 +186,7 @@ bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts \
 每个测试角色需要一份 `.auth/{role}.json`：
 
 ```ts
-// scripts/manual-e2e/setup/login-roles.setup.ts
+// tests/e2e-chains/setup/login-roles.setup.ts
 import { test as setup } from '@playwright/test'
 const ROLES = [
   { phone: '13900139000', file: '.auth/admin.json' },
@@ -209,7 +209,7 @@ for (const { phone, file } of ROLES) {
 }
 ```
 
-跑一次：`bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts scripts/manual-e2e/setup/login-roles.setup.ts`
+跑一次：`bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts tests/e2e-chains/setup/login-roles.setup.ts`
 
 ## 0.5 固定测试夹具（fixtures）
 
@@ -226,9 +226,9 @@ for (const { phone, file } of ROLES) {
 | 充值卡 SKU | `sku-007-01`（金卡 5000）| 链路 10 |
 | 多次卡（已存在）| sale_item `FY-XSD-WX-2603210001-02`（脱毛 12 次卡）| 链路 12 次数对账 |
 
-**CC 读 fixture**（从 `scripts/manual-e2e/` 内部读）：
+**CC 读 fixture**（从 `tests/e2e-chains/` 内部读）：
 ```bash
-CFIX="$(cat scripts/manual-e2e/test-fixtures.json)"
+CFIX="$(cat tests/e2e-chains/test-fixtures.json)"
 CLIENT_USER_ID=$(echo "$CFIX" | jq -r '.customer.user_id')
 CLIENT_PHONE=$(echo "$CFIX" | jq -r '.customer.phone')
 SKU_NORMAL=$(echo "$CFIX" | jq -r '.skus.normal_low.sku_id')
@@ -239,7 +239,7 @@ COUPON_ID=$(echo "$CFIX" | jq -r '.user_coupon.coupon_id')
 
 **何时重建 fixture**：被链路测试污染（如 user_coupon 状态变 "已使用" 没还原）时跑：
 ```bash
-eval $PSQL_TEST < <(jq -r '._cleanup.sql[]' scripts/manual-e2e/test-fixtures.json)
+eval $PSQL_TEST < <(jq -r '._cleanup.sql[]' tests/e2e-chains/test-fixtures.json)
 # 然后重新跑下方"重建 fixture" SQL 块（见文档历史 commit）
 ```
 
@@ -249,7 +249,7 @@ eval $PSQL_TEST < <(jq -r '._cleanup.sql[]' scripts/manual-e2e/test-fixtures.jso
 
 链路有依赖（链路 4 需要链路 1 的订单），用上下文文件传递：
 
-`scripts/manual-e2e/.last-test-context.json`（CC 自己维护，跟代码一起 commit）：
+`tests/e2e-chains/.last-test-context.json`（CC 自己维护，跟代码一起 commit）：
 ```json
 {
   "link1": { "saleOrderId": "FY-XSD-WX-26042600001", "ranAt": "2026-04-26T10:00:00Z" },
@@ -307,7 +307,7 @@ eval $PSQL_TEST < <(jq -r '._cleanup.sql[]' scripts/manual-e2e/test-fixtures.jso
 
 #### DB 验证脚本（CC 跑完链路后执行）
 ```bash
-SOID=$(jq -r '.link1.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link1.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
   SELECT 'order' AS kind, status, total_amount, paid_amount, allocation_status FROM sale_orders WHERE sale_order_id='$SOID'
   UNION ALL SELECT 'items', count(*)::text, NULL, NULL, NULL FROM sale_items WHERE sale_order_id='$SOID'
@@ -351,7 +351,7 @@ fixture 顾客绑定店为 store-nc01 且至少一个 sale_item 是护理项目�
 
 #### DB 验证
 ```bash
-SOID=$(jq -r '.link2.serviceOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link2.serviceOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
   SELECT 'order' AS k, status::text, started_at::text, completed_at::text, commission_status::text
     FROM service_orders WHERE service_order_id='$SOID'
@@ -449,8 +449,8 @@ DELETE FROM operation_logs WHERE target_id='TEST-APT-001';
 
 #### DB 验证
 ```bash
-RPID=$(jq -r '.link4.refundPaymentId' scripts/manual-e2e/.last-test-context.json)
-SOID=$(jq -r '.link1.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+RPID=$(jq -r '.link4.refundPaymentId' tests/e2e-chains/.last-test-context.json)
+SOID=$(jq -r '.link1.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
   SELECT 'refund_payment' AS k, status::text, change_type::text, amount::text, audit_employee_id
     FROM sale_order_payments WHERE id=$RPID
@@ -586,7 +586,7 @@ sale_items.sale_amount    ==  unit_real_price * quantity      （CHECK 自验）
 
 #### 检查点（一条 SQL 全验完）
 ```bash
-SOID=$(jq -r '.link7.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link7.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
 WITH o AS (SELECT * FROM sale_orders WHERE sale_order_id='$SOID'),
      i AS (SELECT sum(sale_amount) AS s_items, sum(unit_real_price*quantity) AS s_calc
@@ -636,7 +636,7 @@ sale_orders.payable_amount  ==  total_amount - prepaid_card_amount - paid_amount
 
 #### 检查点
 ```bash
-SOID=$(jq -r '.link1.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link1.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
 WITH o AS (SELECT * FROM sale_orders WHERE sale_order_id='$SOID'),
      p AS (SELECT
@@ -684,7 +684,7 @@ SUM(sale_allocations.allocation_ratio * sale_allocations.total_amount / 100)
 
 #### 检查点
 ```bash
-SOID=$(jq -r '.link1.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link1.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
 WITH per_item AS (
   SELECT si.sale_item_id, si.sale_amount,
@@ -776,7 +776,7 @@ fixture 顾客有 1 张状态='未使用'、未过期的 user_coupon。
 #### 检查点
 ```bash
 COUPON_ID="<coupon_id>"
-SOID=$(jq -r '.link1.saleOrderId' scripts/manual-e2e/.last-test-context.json)
+SOID=$(jq -r '.link1.saleOrderId' tests/e2e-chains/.last-test-context.json)
 eval $PSQL_TEST -c "
 SELECT
   uc.status::text, uc.used_sale_order_id, uc.used_at,
@@ -1595,7 +1595,7 @@ SQL
 | 类型 | 文件 | 说明 |
 |------|------|------|
 | 文档 | `README.md` | 本文件（业务链路设计 + 执行规范） |
-| 配置 | `playwright.manual.config.ts` | 独立配置，避免污染 `e2e/` 主流程 |
+| 配置 | `playwright.manual.config.ts` | 独立配置，避免污染 `tests/e2e-pages/` 主流程 |
 | 夹具 | `test-fixtures.json` | 固定测试夹具 ID / phone 索引 |
 | 状态 | `.last-test-context.json` | 跨链路上下文（订单号 / 服务单号 / payment id） |
 | 工具 | `_helpers/cleanup.ts` | 销售单全 FK 链清理（L1-L7 顺序，单条 try/catch 不中断） |

@@ -2,7 +2,7 @@
   "_meta": {
     "purpose": "admin Chrome E2E loop 进度上下文",
     "createdAt": "2026-04-26",
-    "plan": "fengyu-admin/scripts/manual-e2e/README.md"
+    "plan": "fengyu-admin/tests/e2e-chains/README.md"
   },
   "currentRound": 2,
   "completedRounds": [
@@ -15,7 +15,7 @@
         "status": "PASS",
         "saleOrderId": "FY-XSD-WX-2604260001",
         "saleOrderId_state": "cleaned",
-        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-1-order-allocation.spec.ts",
+        "scriptPath": "fengyu-admin/tests/e2e-chains/link-1-order-allocation.spec.ts",
         "notes": "订单总额 ¥139.90，2 件 SKU + 2 行 sale_allocations + operation_logs 3 条；订单已按 FK 顺序清理",
         "bugsFixedDuringRun": [
           "fengyu-admin/src/lib/permissions.ts: manager 角色补 product:list + coupon:list（开单 wizard 必需）",
@@ -24,15 +24,15 @@
       },
       "link3": {
         "status": "PARTIAL_FIXED",
-        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-3-appointment-flow.spec.ts",
-        "playwrightConfig": "fengyu-admin/scripts/manual-e2e/playwright.manual.config.ts",
+        "scriptPath": "fengyu-admin/tests/e2e-chains/link-3-appointment-flow.spec.ts",
+        "playwrightConfig": "fengyu-admin/tests/e2e-chains/playwright.manual.config.ts",
         "verdicts": "UI 确认/Tab 切换/签到/反例 全 PASS；DB confirmedAt FAIL（已修）；service_order_link SKIP（UI 缺字段）",
         "bugFixedAfterRun": "fengyu-admin/src/actions/appointments.ts:186 — confirmAppointment 漏写 confirmedAt: new Date()，已补",
         "openIssue": "service-create-page.tsx Step 2/3 表单未暴露 appointmentId 字段（createServiceOrder action 已支持参数），导致 UI 无法走预约转服务单路径，本测试中 SKIP；如要补 UI 字段需另开 ticket"
       },
       "link5": {
         "status": "PASS",
-        "scriptPath": "fengyu-admin/scripts/manual-e2e/link-5-employee-relocate.spec.ts",
+        "scriptPath": "fengyu-admin/tests/e2e-chains/link-5-employee-relocate.spec.ts",
         "verdicts": "scope_auto_synced 核心机制 PASS：updateEmployee 改 storeId 自动同步 permission_roles.scope_id（org-store-nc01→org-store-nc02）；operation_logs 4 条；behavior_scope_isolation SKIP（需手工 INSERT admin_passwords）",
         "notes": "FY-TEST-HR scope=总部，但 assignRole 受 scope 限制不能给 store-level manager 分配，故 Step B 改用 FY-TEST-ADM；Step A/C 仍用 FY-TEST-HR。所有测试数据已清理"
       }

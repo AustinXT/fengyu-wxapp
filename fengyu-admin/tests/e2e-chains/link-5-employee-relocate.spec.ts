@@ -3,7 +3,7 @@
  *
  * 跑法：
  *   cd /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-admin
- *   bunx playwright test scripts/manual-e2e/link-5-employee-relocate.spec.ts --headed --project=chromium --reporter=list
+ *   bunx playwright test tests/e2e-chains/link-5-employee-relocate.spec.ts --headed --project=chromium --reporter=list
  *
  * 说明：
  * - employee_id 由 server 自动生成（FY-YYMMDD001），UI 无法指定 FY-TEST-MOVE

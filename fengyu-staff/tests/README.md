@@ -97,6 +97,6 @@ bun fengyu-staff/tests/e2e-miniprogram/smoke-staff-confirm-offline.mjs
 - `tests/e2e-cloudfn/` (repo 根) — 留 payNotify (client 域) + recordPayment (admin 域) smoke
 - `tests/e2e-miniprogram/` (repo 根) — 留 client home smoke
 - `fengyu-client/tests/` — client 端单独 e2e（独立维护）
-- `fengyu-admin/scripts/manual-e2e/` — admin 12 link Playwright 测试
+- `fengyu-admin/tests/e2e-chains/` — admin 跨页业务链路 Playwright 测试（link-1~23）
 
 各子项目的 e2e 测试在该项目自己的目录下；不集中放 root `tests/`。

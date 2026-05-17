@@ -26,7 +26,7 @@
  *   - member_level_benefits 当前 5 等级 couponTemplateIds 全空 → 升级不会发券
  *
  * 跑法：
- *   bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts \
+ *   bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts \
  *     link-6-member-upgrade.spec.ts --project=chromium --reporter=list
  */
 

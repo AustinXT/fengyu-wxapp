@@ -57,10 +57,11 @@ fengyu-admin/
 │       ├── menu.ts            # 角色驱动菜单可见性
 │       ├── utils.ts           # cn() + 格式化工具
 │       └── hooks/             # useUrlFilters, useUnsavedChanges
-├── e2e/                       # Playwright E2E 测试（21 spec）
-├── tests/
+├── tests/                     # 唯一测试入口（详见 tests/README.md）
 │   ├── setup.ts               # Vitest setup
-│   └── e2e-actions/           # bun-driven admin Server Action smoke（如 recordPayment）
+│   ├── e2e-actions/           # bun + 直调 Server Action smoke（如 recordPayment）
+│   ├── e2e-pages/             # Playwright 自动套件（21 spec + visual/，CI 跑）
+│   └── e2e-chains/            # Playwright 跨页跨角色业务链路（link-1~23 + 独立 config）
 └── vitest.config.ts
 ```
 
@@ -82,6 +83,10 @@ bun run test:all               # Vitest + Playwright
 # admin Server Action smoke（bun-driven，直接 import admin actions + 真 PG）
 bun fengyu-admin/tests/e2e-actions/smoke-record-payment.mjs   # recordPayment 全链路
 bun fengyu-admin/tests/e2e-actions/cleanup.mjs                # 清理 TE2L2_ 命名空间残留
+
+# admin Chrome 跨页业务链路（Playwright headed/headless 都行）
+bun run test:e2e:manual                                       # 全套 23 link
+bunx playwright test --config=tests/e2e-chains/playwright.manual.config.ts tests/e2e-chains/link-1-*.spec.ts
 ```
 
 ## 架构要点
