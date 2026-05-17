@@ -1,5 +1,6 @@
 "use client"
 
+import { useTransition } from "react"
 import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -44,8 +45,21 @@ export default function AllocationsPageClient({
   const currentPage = Math.max(1, Number(get("page", "1")) || 1)
   const pageSize = PAGE_SIZE_OPTIONS.includes(Number(get("size"))) ? Number(get("size")) : 20
 
+  // Why: 切换 Tab / 分页走 router.replace 触发 Server Component 重渲染，
+  // 同路由 searchParam 变更不会触发 loading.tsx，~500ms 内 UI 完全冻结无反馈。
+  // useTransition 提供 isPending 让我们在数据流转期间 dim 当前内容并禁用交互。
+  const [isPending, startTransition] = useTransition()
+
   const handleTabChange = (value: string) => {
-    setMany({ tab: value === 'sale' ? '' : value, page: '', size: '' })
+    startTransition(() => {
+      setMany({ tab: value === 'sale' ? '' : value, page: '', size: '' })
+    })
+  }
+  const handlePageChange = (p: number) => {
+    startTransition(() => set("page", p === 1 ? "" : String(p)))
+  }
+  const handlePageSizeChange = (size: number) => {
+    startTransition(() => setMany({ size: String(size), page: '' }))
   }
 
   return (
@@ -53,38 +67,43 @@ export default function AllocationsPageClient({
       <h1 className="text-2xl font-bold text-[var(--foreground)]">营业额分配</h1>
 
       <Tabs value={tab} onValueChange={handleTabChange}>
-        <TabsList>
-          <TabsTrigger value="sale">销售提成</TabsTrigger>
-          <TabsTrigger value="service">服务提成</TabsTrigger>
+        <TabsList aria-busy={isPending}>
+          <TabsTrigger value="sale" disabled={isPending}>销售提成</TabsTrigger>
+          <TabsTrigger value="service" disabled={isPending}>服务提成</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="sale">
-          <SaleAllocationTable orders={orders} />
-          <div className="mt-4">
-            <Pagination
-              total={saleTotal}
-              pageSize={pageSize}
-              page={currentPage}
-              onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
-              pageSizeOptions={PAGE_SIZE_OPTIONS}
-              onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
-            />
-          </div>
-        </TabsContent>
+        <div
+          className={isPending ? "opacity-60 pointer-events-none transition-opacity" : "transition-opacity"}
+          aria-busy={isPending}
+        >
+          <TabsContent value="sale">
+            <SaleAllocationTable orders={orders} />
+            <div className="mt-4">
+              <Pagination
+                total={saleTotal}
+                pageSize={pageSize}
+                page={currentPage}
+                onPageChange={handlePageChange}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
+                onPageSizeChange={handlePageSizeChange}
+              />
+            </div>
+          </TabsContent>
 
-        <TabsContent value="service">
-          <ServiceCommissionTable serviceOrders={serviceOrders} />
-          <div className="mt-4">
-            <Pagination
-              total={serviceTotal}
-              pageSize={pageSize}
-              page={currentPage}
-              onPageChange={(p) => set("page", p === 1 ? "" : String(p))}
-              pageSizeOptions={PAGE_SIZE_OPTIONS}
-              onPageSizeChange={(size) => setMany({ size: String(size), page: '' })}
-            />
-          </div>
-        </TabsContent>
+          <TabsContent value="service">
+            <ServiceCommissionTable serviceOrders={serviceOrders} />
+            <div className="mt-4">
+              <Pagination
+                total={serviceTotal}
+                pageSize={pageSize}
+                page={currentPage}
+                onPageChange={handlePageChange}
+                pageSizeOptions={PAGE_SIZE_OPTIONS}
+                onPageSizeChange={handlePageSizeChange}
+              />
+            </div>
+          </TabsContent>
+        </div>
       </Tabs>
     </div>
   )
