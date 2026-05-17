@@ -165,6 +165,7 @@ async function list(ctx) {
       s.store_name,
       a.employee_id,
       a.employee_name,
+      sw.avatar_url AS employee_avatar_url,
       a.appointment_time,
       a.notes,
       a.sale_item_id,
@@ -175,6 +176,7 @@ async function list(ctx) {
     FROM appointments a
     LEFT JOIN sale_items si ON a.sale_item_id = si.sale_item_id
     LEFT JOIN stores s ON a.store_id = s.store_id
+    LEFT JOIN staff_wechat_users sw ON a.employee_id = sw.employee_id
     ${whereClause}
     ORDER BY a.appointment_time DESC
     LIMIT $${params.length - 1} OFFSET $${params.length}

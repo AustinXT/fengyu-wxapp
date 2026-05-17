@@ -107,7 +107,7 @@ async function login(ctx) {
   const users = await pg.query(`
     SELECT
       u.employee_id, u.phone, u.name, u.position_name, u.is_resigned,
-      u.skills,
+      u.skills, u.avatar_url,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -131,6 +131,7 @@ async function login(ctx) {
       availableLoginLevels: [],
       scopedStores: [],
       skills: [],
+      avatarUrl: null,
       boundStoreName: null,
       boundStoreId: null,
     }
@@ -160,6 +161,7 @@ async function login(ctx) {
     availableLoginLevels: level.availableLoginLevels,
     scopedStores: level.scopedStores,
     skills: isActive && Array.isArray(user.skills) ? user.skills : [],
+    avatarUrl: user.avatar_url || null,
     boundStoreName: isActive ? user.store_name : null,
     boundStoreId: isActive ? user.store_id : null,
   }
@@ -217,7 +219,7 @@ async function bindPhone(ctx) {
   const empRows = await pg.query(`
     SELECT
       u.employee_id, u.openid, u.name, u.position_name, u.is_resigned,
-      u.skills,
+      u.skills, u.avatar_url,
       u.store_id,
       s.store_name,
       m.name AS market_name
@@ -259,6 +261,7 @@ async function bindPhone(ctx) {
       availableLoginLevels: level.availableLoginLevels,
       scopedStores: level.scopedStores,
       skills: Array.isArray(emp.skills) ? emp.skills : [],
+      avatarUrl: emp.avatar_url || null,
       boundStoreName: emp.store_name,
       boundStoreId: emp.store_id,
     }
@@ -292,6 +295,7 @@ async function bindPhone(ctx) {
     availableLoginLevels: [],
     scopedStores: [],
     skills: [],
+    avatarUrl: null,
     boundStoreName: null,
     boundStoreId: null,
   }

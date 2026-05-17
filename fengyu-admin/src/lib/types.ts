@@ -46,6 +46,8 @@ export interface Employee {
   storeId: string | null
   orgNodeId: string | null
   positionName: string | null
+  /** 头像 URL（cloud:// 或 https://；通过 image-upload 组件 toHttpUrl 渲染） */
+  avatarUrl: string | null
   birthday: string | null
   skills: string[] | null
   isResigned: boolean

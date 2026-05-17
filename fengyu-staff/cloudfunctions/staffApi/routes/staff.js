@@ -2,11 +2,32 @@
  * 员工模块路由（员工端）
  * staff.list — 门店员工列表
  * staff.departments — 部门列表（含可分配员工）
+ * staff.uploadAvatar — 员工头像上传（跨 env 写入 client env COS）
  */
 
+const cloud = require('wx-server-sdk')
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
 const { assertEmployeeInScope } = require('../utils/scope')
+
+// 客户端 envId（顾客小程序所属 CloudBase env）。员工上传的头像必须落在此 env，
+// 顾客小程序才能用 <image src="cloud://..."> 直接渲染（跨 env cloud:// 不可读）。
+// 可通过环境变量 CLIENT_ENV_ID 覆盖，便于多环境部署。
+const CLIENT_ENV_ID = process.env.CLIENT_ENV_ID || 'cloud1-3gpht4b01ff88838'
+
+// 跨 env Cloud 实例（懒初始化；同一进程复用）
+let _crossEnvCloud = null
+async function getCrossEnvCloud() {
+  if (_crossEnvCloud) return _crossEnvCloud
+  const c = new cloud.Cloud({
+    resourceEnv: CLIENT_ENV_ID,
+    // 不需要身份代入（仅做 uploadFile 资源操作）
+    identityless: true,
+  })
+  await c.init()
+  _crossEnvCloud = c
+  return c
+}
 
 /**
  * 员工列表
@@ -26,6 +47,7 @@ async function list(ctx) {
       u.employee_id,
       u.name,
       u.position_name AS position,
+      u.avatar_url,
       d.name AS department,
       s.store_name,
       m.name AS market_name
@@ -45,6 +67,7 @@ async function list(ctx) {
       staffWfId: r.employee_id,
       name: r.name || '',
       position: r.position || '',
+      avatarUrl: r.avatar_url || null,
       department: r.department || '',
       storeName: r.store_name || '',
       marketName: r.market_name || '',
@@ -73,6 +96,7 @@ async function departments(ctx) {
       u.name,
       u.position_name AS position,
       u.skills,
+      u.avatar_url,
       d.name AS department
     FROM staff_wechat_users u
     LEFT JOIN org_nodes d ON u.org_node_id = d.id
@@ -94,6 +118,7 @@ async function departments(ctx) {
         u.name,
         u.position_name AS position,
         u.skills,
+        u.avatar_url,
         d.name AS department,
         s.store_name
       FROM staff_wechat_users u
@@ -120,6 +145,7 @@ async function departments(ctx) {
       name: r.name || '',
       position: r.position || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
+      avatarUrl: r.avatar_url || null,
       department: '美容部'
     }))
   }
@@ -132,6 +158,7 @@ async function departments(ctx) {
       name: r.name || '',
       position: r.position || '',
       skills: Array.isArray(r.skills) ? r.skills : [],
+      avatarUrl: r.avatar_url || null,
       department: dept,
       storeName: r.store_name || ''
     })
@@ -741,4 +768,61 @@ async function dashboard(ctx) {
   }
 }
 
-module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard }
+/**
+ * 头像上传（员工本人自助）
+ *
+ * 客户端传 base64，云函数解码后跨 env 上传到 client env 的 avatars/staff/{employeeId}/ 路径，
+ * 并同步更新 staff_wechat_users.avatar_url。fileID 形如 `cloud://<client envId>.<bucket>/...`，
+ * 客户端小程序可直接 <image src="cloud://..."> 渲染；员工端小程序需 toHttpUrl 转 HTTPS 后渲染。
+ */
+async function uploadAvatar(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
+  const { base64, ext } = ctx.event.payload || {}
+  const { OPENID } = cloud.getWXContext()
+  const employeeId = ctx.auth.staffWfId
+
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  const allowedExts = ['jpg', 'jpeg', 'png', 'webp']
+  if (!allowedExts.includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+
+  if (!employeeId) {
+    throw new Error('UNAUTHORIZED: 员工档案未关联')
+  }
+
+  const rand = Math.random().toString(36).slice(2, 8)
+  const cloudPath = `avatars/staff/${employeeId}/${Date.now()}_${rand}.${normalizedExt}`
+
+  // 跨 env upload —— 写到 client env COS，便于顾客小程序直接 cloud:// 渲染
+  const crossEnvCloud = await getCrossEnvCloud()
+  const uploadRes = await crossEnvCloud.uploadFile({ cloudPath, fileContent: buffer })
+  const fileID = uploadRes.fileID
+  if (!fileID) {
+    throw new Error('INVALID_PARAMS: 上传失败')
+  }
+
+  await pg.query(
+    'UPDATE staff_wechat_users SET avatar_url = $1, updated_at = NOW() WHERE employee_id = $2',
+    [fileID, employeeId]
+  )
+
+  // 清除 auth 缓存，下一次 login/任意接口能读到新头像
+  invalidateAuthCache(OPENID)
+
+  ctx.result = { fileID, avatarUrl: fileID }
+}
+
+module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard, uploadAvatar }

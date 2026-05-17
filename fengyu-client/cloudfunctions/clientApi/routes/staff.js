@@ -16,18 +16,27 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 storeId 参数')
   }
 
-  const staffList = await pg.query(`
+  const rows = await pg.query(`
     SELECT
       employee_id AS staff_id,
       name,
       position_name AS position,
-      phone
+      phone,
+      avatar_url
     FROM staff_wechat_users
     WHERE store_id = $1
       AND is_resigned = false
       AND position_name IN ('美容师', '高级美容师', '资深美容师')
     ORDER BY name
   `, [storeId])
+
+  const staffList = rows.map(r => ({
+    staff_id: r.staff_id,
+    name: r.name,
+    position: r.position,
+    phone: r.phone,
+    avatarUrl: r.avatar_url || null,
+  }))
 
   ctx.result = { staffList }
 }
@@ -65,6 +74,7 @@ async function defaultStaff(ctx) {
     ctx.result = {
       mainStaffId: null,
       mainStaffName: null,
+      mainStaffAvatarUrl: null,
       storeName: customers.length > 0 ? customers[0].store_name : null
     }
     return
@@ -78,7 +88,8 @@ async function defaultStaff(ctx) {
     SELECT
       employee_id AS staff_id,
       name,
-      position_name AS position
+      position_name AS position,
+      avatar_url
     FROM staff_wechat_users
     WHERE employee_id = $1 AND is_resigned = false
   `, [mainStaffId])
@@ -87,6 +98,7 @@ async function defaultStaff(ctx) {
     mainStaffId,
     mainStaffName: staffList.length > 0 ? staffList[0].name : null,
     mainStaffPosition: staffList.length > 0 ? staffList[0].position : null,
+    mainStaffAvatarUrl: staffList.length > 0 ? (staffList[0].avatar_url || null) : null,
     storeName
   }
 }
@@ -101,7 +113,7 @@ async function detail(ctx) {
 
   // Basic info
   const staffRows = await pg.query(`
-    SELECT s.employee_id, s.name, s.position_name, s.skills, s.gender,
+    SELECT s.employee_id, s.name, s.position_name, s.skills, s.gender, s.avatar_url,
            s.store_id, st.store_name
     FROM staff_wechat_users s
     LEFT JOIN stores st ON s.store_id = st.store_id
@@ -130,6 +142,7 @@ async function detail(ctx) {
     position: staff.position_name,
     skills: staff.skills || [],
     gender: staff.gender,
+    avatarUrl: staff.avatar_url || null,
     storeId: staff.store_id,
     storeName: staff.store_name,
     serviceCount: countRows[0]?.count || 0,

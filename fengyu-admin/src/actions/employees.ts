@@ -33,6 +33,7 @@ function rowToEmployee(row: {
     storeId: e.storeId,
     orgNodeId: e.orgNodeId,
     positionName: e.positionName,
+    avatarUrl: e.avatarUrl,
     birthday: e.birthday,
     skills: e.skills,
     isResigned: e.isResigned,
@@ -264,6 +265,8 @@ export const createEmployee = withPermission(
       positionName?: string | null
       birthday?: string | null
       skills?: string[] | null
+      /** 头像 URL（admin /api/upload 返回的 cloud:// fileID 或 https CDN URL） */
+      avatarUrl?: string | null
       /** 入职日期（YYYY-MM-DD）；缺省由 DB 默认 NULL，由后续兜底 */
       hiredAt?: string | null
     },
@@ -333,6 +336,7 @@ export const createEmployee = withPermission(
         storeId: data.storeId ?? null,
         orgNodeId: data.orgNodeId ?? null,
         positionName: data.positionName ?? null,
+        avatarUrl: data.avatarUrl ?? null,
         birthday: data.birthday ?? null,
         skills: data.skills ?? null,
         isResigned: false,
@@ -373,6 +377,8 @@ export const updateEmployee = withPermission(
       storeId: string | null
       orgNodeId: string | null
       positionName: string | null
+      /** 头像 URL（cloud:// fileID 或 https CDN URL；null = 清空头像） */
+      avatarUrl: string | null
       birthday: string | null
       skills: string[] | null
       isResigned: boolean
