@@ -280,28 +280,41 @@ exports.main = async (event) => {
       const newStatus = fullyPaid ? '已支付' : '部分支付'
 
       // 1. 更新目标订单：received 累加、status 置新值、paid_at（全额时）
-      await client.query(
+      // CAS 守卫（state-machine-cas-guard ticket）：只允许从 待支付/部分支付/待确认收款 翻转
+      const updResult = await client.query(
         `UPDATE sale_orders
          SET status = $1::order_status,
              received = $2,
              paid_at = CASE WHEN $1::text = '已支付' THEN $3 ELSE paid_at END,
              wechat_transaction_id = COALESCE(wechat_transaction_id, $4),
              updated_at = $3
-         WHERE sale_order_id = $5`,
+         WHERE sale_order_id = $5
+           AND status IN ('待支付', '部分支付', '待确认收款')`,
         [newStatus, newPaidSum, now, txnId, targetOrderNo]
       )
+      if (updResult.rowCount === 0) {
+        // 主单已被其他事务先翻至终态（已支付/已关闭等），回滚 payment 插入并幂等 ack 微信
+        await client.query('ROLLBACK')
+        console.warn('[payNotify] state-transition-blocked:', targetOrderNo, '→', newStatus)
+        return { code: 'SUCCESS', message: '订单状态已变更（幂等）' }
+      }
 
       // 1b. 回款凭证单：同步翻 '已支付' + 记录 paid_at + 记录 txn
       if (isRepaymentCredential) {
-        await client.query(
+        const credUpd = await client.query(
           `UPDATE sale_orders
            SET status = '已支付'::order_status,
                paid_at = COALESCE(paid_at, $1),
                wechat_transaction_id = COALESCE(wechat_transaction_id, $2),
                updated_at = $1
-           WHERE sale_order_id = $3`,
+           WHERE sale_order_id = $3
+             AND status IN ('待支付', '部分支付', '待确认收款')`,
           [now, txnId, orderNo]
         )
+        if (credUpd.rowCount === 0) {
+          // 凭证单允许延迟一致，仅记 warn 不 rollback
+          console.warn('[payNotify] credential state-transition-blocked:', orderNo)
+        }
       }
 
       // 后续业务动作（单品到期日 / 充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
@@ -460,9 +473,9 @@ exports.main = async (event) => {
       }
 
       // 4. 重算顾客历史消费档位
-      // B1 方案：'1990-1W' 档下界从 config 读取，枚举标签保留（历史 bucket id）
+      // spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随
+      // system_configs.new_member_threshold 变化；门槛只影响 customer_type / member_level
       if (targetOrder.client_user_id) {
-        const tierThreshold = await getMemberThreshold()
         await client.query(
           `UPDATE client_wechat_users
            SET spending_tier = CASE
@@ -470,7 +483,7 @@ exports.main = async (event) => {
              WHEN t.total >= 60000  THEN '6-10W'
              WHEN t.total >= 30000  THEN '3-6W'
              WHEN t.total >= 10000  THEN '1-3W'
-             WHEN t.total >= $2     THEN '1990-1W'
+             WHEN t.total >= 1990   THEN '1990-1W'
              ELSE '<1990'
            END::spending_tier,
            updated_at = NOW()
@@ -481,7 +494,7 @@ exports.main = async (event) => {
                AND status IN ('已支付', '已完成')
            ) t
            WHERE user_id = $1`,
-          [targetOrder.client_user_id, tierThreshold]
+          [targetOrder.client_user_id]
         )
 
         // 5. 重算顾客类型（只升不降，已是会员客则跳过）
