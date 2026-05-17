@@ -232,10 +232,13 @@ export default function CustomerDetailPage({
     }
   }
 
-  // Employees filtered by customer's bound store
+  // Employees filtered by customer's bound store — 严格美容师身份（skills 含 '美容师'），
+  // 与 client `staff.list` / staff `staff.list` / admin orders|services create 统一。
   const storeEmployees = useMemo(() => {
-    if (!customer.boundStoreId) return employees.filter((e) => !e.isResigned)
-    return employees.filter((e) => !e.isResigned && e.storeId === customer.boundStoreId)
+    const isBeautician = (e: typeof employees[number]) =>
+      !e.isResigned && e.skills?.includes('美容师')
+    if (!customer.boundStoreId) return employees.filter(isBeautician)
+    return employees.filter((e) => isBeautician(e) && e.storeId === customer.boundStoreId)
   }, [employees, customer.boundStoreId])
 
   const activeSaleItems = useMemo(() => {

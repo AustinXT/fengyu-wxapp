@@ -240,7 +240,7 @@ export default function OrderCreatePageClient({
     if (customer.boundStoreId && stores.some(s => s.storeId === customer.boundStoreId)) {
       setSelectedStoreId(customer.boundStoreId)
     }
-    if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned)) {
+    if (customer.boundEmployeeId && employees.some(e => e.employeeId === customer.boundEmployeeId && !e.isResigned && e.skills?.includes('美容师'))) {
       setSelectedEmployeeId(customer.boundEmployeeId)
     }
     void prefetchKindData(productKindChoice)
@@ -824,7 +824,7 @@ export default function OrderCreatePageClient({
                 <label className="text-sm text-[#999999]">指定美容师（可选）</label>
                 <Select className="mt-1" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
                   <option value="">不指定</option>
-                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId)).map((e) => (
+                  {employees.filter((e) => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')).map((e) => (
                     <option key={e.employeeId} value={e.employeeId}>{e.name} ({e.positionName})</option>
                   ))}
                 </Select>

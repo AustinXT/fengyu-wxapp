@@ -71,6 +71,9 @@ async function list(ctx) {
     throw new Error('INVALID_PARAMS: 缺少门店信息')
   }
 
+  // 严格按 skills 数组含 '美容师' 判定美容师身份 ——
+  // 与 clientApi/routes/staff.js + admin orders/services/customers picker 单源对齐。
+  // 经理/督导/财智部等岗位即使 store_id 匹配也不应进入美容师选择列表。
   const staffRows = await pg.query(`
     SELECT
       u.employee_id,
@@ -88,6 +91,7 @@ async function list(ctx) {
     WHERE u.is_resigned = false
       AND u.store_id = $1
       AND u.employee_id IS NOT NULL
+      AND '美容师' = ANY(u.skills)
     ORDER BY d.name, u.name
   `, [targetStoreId])
 

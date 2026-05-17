@@ -150,7 +150,7 @@ export default function ServiceCreatePageClient({
     selectedItems.find(i => i.saleItemId === saleItemId)?.sessionUsed ?? 1
 
   const filteredEmployees = employees.filter(
-    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId)
+    e => !e.isResigned && (!selectedStoreId || e.storeId === selectedStoreId) && e.skills?.includes('美容师')
   )
 
   const canSubmit = selectedItems.length > 0 && selectedStoreId && selectedEmployeeId
