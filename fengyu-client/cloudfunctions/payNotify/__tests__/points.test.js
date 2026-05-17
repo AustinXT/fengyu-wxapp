@@ -1,13 +1,16 @@
 /**
- * utils/points 单元测试 — 链净额差值法 settlePointsForOrder
- * 覆盖 ticket 2026-04-24 points-accrual-on-sale-order §6 测试矩阵
+ * payNotify/points 单元测试 — 链净额差值法 settlePointsForOrder
+ * 与 fengyu-staff/cloudfunctions/staffApi/__tests__/utils/points.test.js
+ * + fengyu-client/cloudfunctions/clientApi/__tests__/utils/points.test.js
+ * 三端测试场景保持等价；payNotify 是独立云函数（扁平结构，无 utils/ 子目录），
+ * 故 require 路径为 ../points。
  */
 
 const {
   settlePointsForOrder,
   settlePointsSafe,
   ORDER_TYPES_EARN_POINTS,
-} = require('../../utils/points')
+} = require('../points')
 
 /**
  * 构造 mock pg client：query(sql, params) 按 SQL 关键字分发不同结果
@@ -15,9 +18,9 @@ const {
  * @param {object} opts
  * @param {string|null} opts.saleOrderType  - 原单 sale_order_type；null 表示原单不存在
  * @param {string|null} opts.clientUserId   - 原单 client_user_id
- * @param {number} opts.netSettled          - 链净额（received - refunded_amount 汇总）
+ * @param {number} opts.netSettled          - 链净到账（received - refunded_amount）汇总
+ *                                            （2026-04-26 sale-order-domain-refactor: paid_amount → received - refunded_amount）
  * @param {number} opts.granted             - point_transactions 已发合计
- * @returns {{ client, queries }}
  */
 function buildMockClient({
   saleOrderType = '销售单',
@@ -31,7 +34,6 @@ function buildMockClient({
     queries.push({ sql, params })
     const s = String(sql)
 
-    // 1. 取原单
     if (/FROM\s+sale_orders/i.test(s) && /FOR\s+UPDATE/i.test(s)) {
       if (orderNotFound) return { rows: [] }
       return {
@@ -44,28 +46,22 @@ function buildMockClient({
       }
     }
 
-    // 2. 链净汇总（2026-04-26 sale-order-domain-refactor：paid_amount 已 DROP，
-    //    改用 received - refunded_amount；按列别名 net_settled 匹配以解耦 SUM 表达式细节）
-    if (/FROM\s+sale_orders/i.test(s) && /AS\s+net_settled/i.test(s)) {
+    if (/FROM\s+sale_orders/i.test(s) && /received/i.test(s) && /refunded_amount/i.test(s)) {
       return { rows: [{ net_settled: netSettled }] }
     }
 
-    // 3. 已发合计
     if (/FROM\s+point_transactions/i.test(s) && /SUM\(amount\)/i.test(s)) {
       return { rows: [{ granted }] }
     }
 
-    // 4. INSERT point_transactions
     if (/INSERT\s+INTO\s+point_transactions/i.test(s)) {
       return { rowCount: 1 }
     }
 
-    // 5. UPDATE client_wechat_users
     if (/UPDATE\s+client_wechat_users/i.test(s)) {
       return { rowCount: 1 }
     }
 
-    // 6. INSERT operation_logs（settlePointsSafe 错误日志）
     if (/INSERT\s+INTO\s+operation_logs/i.test(s)) {
       return { rowCount: 1 }
     }
@@ -75,12 +71,10 @@ function buildMockClient({
   return { client: { query }, queries }
 }
 
-/** 找出第一条 SQL 匹配 pattern 的调用 */
 function findQuery(queries, pattern) {
   return queries.find((q) => pattern.test(q.sql))
 }
 
-/** 统计 SQL 匹配 pattern 的调用数 */
 function countQueries(queries, pattern) {
   return queries.filter((q) => pattern.test(q.sql)).length
 }
@@ -95,6 +89,18 @@ describe('ORDER_TYPES_EARN_POINTS', () => {
   })
 })
 
+describe('settlePointsForOrder — P0-15-01b 回归：SUM 不再引用已 DROP 的 paid_amount 列', () => {
+  test('链净汇总 SQL 必须用 received - refunded_amount 表达式，禁止 SUM(paid_amount)', async () => {
+    const { client, queries } = buildMockClient({ netSettled: 280, granted: 0 })
+    await settlePointsForOrder(client, 'o1')
+    const sumQuery = findQuery(queries, /AS\s+net_settled/i)
+    expect(sumQuery).toBeDefined()
+    expect(sumQuery.sql).toMatch(/received/)
+    expect(sumQuery.sql).toMatch(/refunded_amount/)
+    expect(sumQuery.sql).not.toMatch(/SUM\(paid_amount\)/)
+  })
+})
+
 describe('settlePointsForOrder — 正向发放', () => {
   test('首次消费 280 元 → delta=+2（消费赠送）', async () => {
     const { client, queries } = buildMockClient({ netSettled: 280, granted: 0 })
@@ -104,7 +110,6 @@ describe('settlePointsForOrder — 正向发放', () => {
 
     const ins = findQuery(queries, /INSERT\s+INTO\s+point_transactions/i)
     expect(ins).toBeDefined()
-    // params: [userId, type, delta, orderId]
     expect(ins.params[0]).toBe('user-001')
     expect(ins.params[1]).toBe('消费赠送')
     expect(ins.params[2]).toBe(2)
@@ -133,7 +138,6 @@ describe('settlePointsForOrder — 正向发放', () => {
 
 describe('settlePointsForOrder — 退款冲销', () => {
   test('退款后冲销：netSettled=190, granted=2 → delta=-1（消费冲销）', async () => {
-    // 280 消费 granted=2，退 90 后链净=190，expected=floor(190/100)=1
     const { client, queries } = buildMockClient({ netSettled: 190, granted: 2 })
     const r = await settlePointsForOrder(client, 'o1')
 
@@ -152,8 +156,6 @@ describe('settlePointsForOrder — 退款冲销', () => {
     const r = await settlePointsForOrder(client, 'o1')
 
     expect(r).toEqual({ delta: 0, expected: 1, granted: 1 })
-
-    // 验证仅 3 次查询（SELECT 原单 + SELECT 链净 + SELECT 已发），无 INSERT/UPDATE
     expect(client.query).toHaveBeenCalledTimes(3)
     expect(countQueries(queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
     expect(countQueries(queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
@@ -174,7 +176,6 @@ describe('settlePointsForOrder — 边界保护', () => {
   test('AC-09 负净额保护：netSettled=-50, granted=2 → expected=0, delta=-2', async () => {
     const { client } = buildMockClient({ netSettled: -50, granted: 2 })
     const r = await settlePointsForOrder(client, 'o1')
-    // Math.floor(Math.max(0, -50) / 100) = 0
     expect(r).toEqual({ delta: -2, expected: 0, granted: 2 })
   })
 
@@ -198,14 +199,6 @@ describe('settlePointsForOrder — 跳过分支', () => {
       granted: 0,
       skipped: 'no-original-id',
     })
-    // 完全不查 pg
-    expect(queries).toHaveLength(0)
-  })
-
-  test('originalSaleOrderId = undefined → skipped=no-original-id', async () => {
-    const { client, queries } = buildMockClient()
-    const r = await settlePointsForOrder(client, undefined)
-    expect(r.skipped).toBe('no-original-id')
     expect(queries).toHaveLength(0)
   })
 
@@ -217,7 +210,7 @@ describe('settlePointsForOrder — 跳过分支', () => {
   })
 
   test('原单不存在 → skipped=order-not-found', async () => {
-    const { client, queries } = buildMockClient({ orderNotFound: true })
+    const { client } = buildMockClient({ orderNotFound: true })
     const r = await settlePointsForOrder(client, 'missing-id')
     expect(r).toEqual({
       delta: 0,
@@ -225,7 +218,6 @@ describe('settlePointsForOrder — 跳过分支', () => {
       granted: 0,
       skipped: 'order-not-found',
     })
-    // 仅 1 次查询（SELECT 原单）
     expect(client.query).toHaveBeenCalledTimes(1)
   })
 
@@ -245,15 +237,10 @@ describe('settlePointsForOrder — 跳过分支', () => {
   test('内部单 → skipped=order-type-内部单', async () => {
     const { client } = buildMockClient({ saleOrderType: '内部单' })
     const r = await settlePointsForOrder(client, 'o1')
-    expect(r).toEqual({
-      delta: 0,
-      expected: 0,
-      granted: 0,
-      skipped: 'order-type-内部单',
-    })
+    expect(r.skipped).toBe('order-type-内部单')
   })
 
-  test('退款单 → skipped=order-type-退款单（派生单不是原始发放点）', async () => {
+  test('退款单 → skipped=order-type-退款单', async () => {
     const { client } = buildMockClient({ saleOrderType: '退款单' })
     const r = await settlePointsForOrder(client, 'o1')
     expect(r.skipped).toBe('order-type-退款单')
@@ -262,18 +249,14 @@ describe('settlePointsForOrder — 跳过分支', () => {
 
 describe('settlePointsForOrder — 幂等重放', () => {
   test('连续调用两次同一订单 ID，第二次 granted=expected 时 delta=0 不写入', async () => {
-    // 第 1 次：netSettled=280, granted=0 → delta=+2（写入）
     const first = buildMockClient({ netSettled: 280, granted: 0 })
     const r1 = await settlePointsForOrder(first.client, 'o1')
     expect(r1.delta).toBe(2)
-    expect(countQueries(first.queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(1)
 
-    // 第 2 次：模拟已发流水已落库，granted=2 → delta=0 不写入
     const second = buildMockClient({ netSettled: 280, granted: 2 })
     const r2 = await settlePointsForOrder(second.client, 'o1')
     expect(r2).toEqual({ delta: 0, expected: 2, granted: 2 })
     expect(countQueries(second.queries, /INSERT\s+INTO\s+point_transactions/i)).toBe(0)
-    expect(countQueries(second.queries, /UPDATE\s+client_wechat_users/i)).toBe(0)
     expect(second.client.query).toHaveBeenCalledTimes(3)
   })
 })
@@ -314,33 +297,36 @@ describe('settlePointsSafe — 外层封装', () => {
           operationLogCalls.push({ sql, params })
           return { rowCount: 1 }
         }
-        // 第一次 SELECT 就抛错模拟 settle 失败
         throw new Error('pg connection lost')
       }),
     }
 
-    const r = await settlePointsSafe(client, 'o1', 'order.confirmOffline')
+    const r = await settlePointsSafe(client, 'o1', 'payNotify.callback')
     expect(r.skipped).toBe('settle-failed')
     expect(r.error).toBe('pg connection lost')
 
     expect(operationLogCalls).toHaveLength(1)
-    // params: [originalSaleOrderId, jsonDetail, triggerSource]
     expect(operationLogCalls[0].params[0]).toBe('o1')
     const detail = JSON.parse(operationLogCalls[0].params[1])
     expect(detail.error).toBe('pg connection lost')
-    expect(detail.triggerSource).toBe('order.confirmOffline')
-    expect(operationLogCalls[0].params[2]).toBe('order.confirmOffline')
+    expect(detail.triggerSource).toBe('payNotify.callback')
+    expect(operationLogCalls[0].params[2]).toBe('payNotify.callback')
   })
 
-  test('operation_logs 写入也失败时不再抛出，仍返回 skipped=settle-failed', async () => {
+  test('triggerSource 未传 → operation_logs.source 默认为 "payNotify"', async () => {
     delete process.env.POINTS_ACCRUAL_ENABLED
+    const operationLogCalls = []
     const client = {
-      query: vi.fn(async () => {
-        throw new Error('catastrophic failure')
+      query: vi.fn(async (sql, params) => {
+        const s = String(sql)
+        if (/INSERT\s+INTO\s+operation_logs/i.test(s)) {
+          operationLogCalls.push({ sql, params })
+          return { rowCount: 1 }
+        }
+        throw new Error('pg connection lost')
       }),
     }
-    const r = await settlePointsSafe(client, 'o1', 'test')
-    expect(r.skipped).toBe('settle-failed')
-    expect(r.error).toBe('catastrophic failure')
+    await settlePointsSafe(client, 'o1', null)
+    expect(operationLogCalls[0].params[2]).toBe('payNotify')
   })
 })

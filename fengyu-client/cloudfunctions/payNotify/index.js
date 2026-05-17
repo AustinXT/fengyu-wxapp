@@ -473,7 +473,9 @@ exports.main = async (event) => {
         if (curType.rows[0]?.customer_type !== '会员客') {
           const threshold = await getMemberThreshold()
 
-          // SHARED-SQL-TRANSITION-CUSTOMER-TYPE: 与 staffApi/routes/order.js recalcCustomerType 完全一致（待 audit-15 P0-15-02 抽离）
+          // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
+          // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
+          // 守护（会员客分支允许 payNotify 特有的回款单累计差异）。
           const typeResult = await client.query(
             `SELECT CASE
                WHEN EXISTS (

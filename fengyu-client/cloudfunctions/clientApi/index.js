@@ -29,6 +29,7 @@ const routes = {
   'product.hotList': () => require('./routes/product').hotList,
   'product.shopInit': () => require('./routes/product').shopInit,
   'product.experienceCardList': () => require('./routes/product').experienceCardList,
+  'product.cardKinds': () => require('./routes/product').cardKinds,
   'staff.list': () => require('./routes/staff').list,
   'staff.default': () => require('./routes/staff').defaultStaff,
   'staff.detail': () => require('./routes/staff').detail,

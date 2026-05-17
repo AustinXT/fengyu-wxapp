@@ -82,7 +82,9 @@ async function recalcCustomerType(client, clientUserId) {
 
   const threshold = await getMemberThreshold()
 
-  // SHARED-SQL-TRANSITION-CUSTOMER-TYPE: 与 payNotify/index.js 行 ~466 完全一致（待 audit-15 P0-15-02 抽离）
+  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
+  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
+  // 守护，任一端漂移立即触发测试失败。
   const typeResult = await client.query(
     `SELECT CASE
        WHEN EXISTS (
@@ -644,8 +646,8 @@ async function create(ctx) {
           product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei, is_recharge_card
-        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          sales_category, service_fee, is_shengmei, is_recharge_card, is_experience
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
         [
           saleItemId, saleOrderId, storeId, d.skuId,
           d.productName, d.skuSpecName, d.productType,
@@ -656,6 +658,9 @@ async function create(ctx) {
           d.serviceFee || 0,
           d.isShengmei ?? null,
           d.isRechargeCard === true,
+          // is_experience 行级快照（capability 列，2026-04-26 ticket）：从 product_skus.is_experience
+          // 拷贝；用于客户分类跃迁（per-order SUM FILTER WHERE si.is_experience）。
+          d.isExperience === true,
         ]
       )
     }
@@ -2046,6 +2051,7 @@ async function createConversion(ctx) {
               si.service_fee,
               si.is_shengmei,
               si.is_recharge_card,
+              si.is_experience,
               so.client_user_id,
               so.status AS order_status,
               pc.product_kind,
@@ -2119,6 +2125,7 @@ async function createConversion(ctx) {
         salesCategory: row.sales_category,
         serviceFee: outServiceFee,
         isShengmei: row.is_shengmei ?? null,
+        isExperience: row.is_experience === true,
       })
     }
 
@@ -2129,7 +2136,7 @@ async function createConversion(ctx) {
       if (!req || !req.skuId) throw new Error('INVALID_PARAMS: 转入项目缺少 skuId')
       const skuRes = await tx.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.session_count, s.service_fee,
-                s.is_shengmei, pc.sales_category
+                s.is_shengmei, s.is_experience, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
          WHERE s.sku_id = $1`,
@@ -2153,6 +2160,7 @@ async function createConversion(ctx) {
         salesCategory: sku.sales_category,
         serviceFee: inServiceFee,
         isShengmei: sku.is_shengmei ?? null,
+        isExperience: sku.is_experience === true,
       })
     }
 
@@ -2211,8 +2219,8 @@ async function createConversion(ctx) {
           sale_item_id, sale_order_id, store_id, item_direction, ref_sale_item_id,
           sku_id, product_name, sku_spec_name, product_type,
           session_count, unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei
-        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+          sales_category, service_fee, is_shengmei, is_experience
+        ) VALUES ($1, $2, $3, '转出', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           saleItemId, convOrderId, storeId, d.refSaleItemId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -2220,6 +2228,9 @@ async function createConversion(ctx) {
           -d.amount, -d.amount,
           d.salesCategory, d.serviceFee,
           d.isShengmei ?? null,
+          // 转出行镜像原 sale_items.is_experience：负 received × is_experience=true 与原订单
+          // trial_amount 累计自洽，避免跃迁 SQL 被误判（2026-04-26 ticket）。
+          d.isExperience === true,
         ]
       )
       // 原子扣减原卡余量（幂等守卫：余量不足则 rowCount=0）
@@ -2260,8 +2271,8 @@ async function createConversion(ctx) {
           sku_id, product_name, sku_spec_name, product_type,
           session_count, remaining_sessions,
           unit_price, quantity, unit_real_price, sale_amount, received,
-          sales_category, service_fee, is_shengmei
-        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13, $14)`,
+          sales_category, service_fee, is_shengmei, is_experience
+        ) VALUES ($1, $2, $3, '转入', $4, $5, $6, $7, $8, $8, $9, $10, $9, $11, $11, $12, $13, $14, $15)`,
         [
           saleItemId, convOrderId, storeId,
           d.skuId, d.productName, d.skuSpecName, d.productType,
@@ -2269,6 +2280,8 @@ async function createConversion(ctx) {
           d.unitPrice, d.quantity, d.amount,
           d.salesCategory, d.serviceFee,
           d.isShengmei ?? null,
+          // 转入行从 product_skus.is_experience 快照写入（2026-04-26 ticket）
+          d.isExperience === true,
         ]
       )
     }

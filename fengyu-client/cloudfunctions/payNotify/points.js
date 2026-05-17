@@ -31,8 +31,10 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
     return { delta: 0, expected: 0, granted: 0, skipped: `order-type-${saleOrderType}` }
   }
 
+  // 2026-04-26 sale-order-domain-refactor: paid_amount 已 DROP，改用 received - refunded_amount
+  // 退款单 refunded_amount 为正，回款单 received 为正；累加得链净额
   const sumRes = await client.query(
-    `SELECT COALESCE(SUM(paid_amount), 0)::numeric AS net_settled
+    `SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled
        FROM sale_orders
       WHERE sale_order_id = $1
          OR ref_sale_order_id = $1`,
