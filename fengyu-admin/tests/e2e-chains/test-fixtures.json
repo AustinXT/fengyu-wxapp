@@ -3,6 +3,7 @@
     "purpose": "admin Chrome E2E 测试固定夹具，对应 fengyu-admin/tests/e2e-chains/README.md §0.5",
     "db": "47.113.202.7:5433/fengyu_wxapp",
     "created_at": "2026-04-26",
+    "last_extended_at": "2026-05-18 (link-25~31)",
     "FY_FIX_prefix": "所有 fixture 资源的 ID 前缀，便于 grep 清理",
     "cleanup_sql": "见文件末尾 _cleanup 字段"
   },
@@ -47,15 +48,58 @@
     "_note": "满 200 减 30，链路 11 测试用"
   },
 
+  "user_coupons_extended": {
+    "_intro": "2026-05-18 新增：4 张不同类型/状态的 user_coupons，用于 link-28~30",
+    "discount_8pct": {
+      "coupon_id": "FY-FIX-CPN-DISCOUNT",
+      "template_id": "FY-FIX-CT-DISCOUNT",
+      "user_id": "FY-FIX-CLIENT-01",
+      "coupon_type": "折扣券",
+      "discount_value": 0.80,
+      "min_spend": 200.00,
+      "max_discount": 50.00,
+      "_use": "链路 28 折扣券：8 折 + 触发封顶 vs 不触发封顶 2 组"
+    },
+    "item_restricted": {
+      "coupon_id": "FY-FIX-CPN-ITEM",
+      "template_id": "FY-FIX-CT-ITEM",
+      "user_id": "FY-FIX-CLIENT-01",
+      "coupon_type": "品项券",
+      "discount_value": 30.00,
+      "applicable_category_ids": ["d303ac8871eafd97"],
+      "_applicable_note": "applicable_category_ids 指向 '缦之羽' category（含 SKU c79157b29c9e974c '洗-无创纹身'）",
+      "_use": "链路 29 品项券：命中可用 / 不命中不可用 2 组"
+    },
+    "min_spend_500": {
+      "coupon_id": "FY-FIX-CPN-MINSPEND",
+      "template_id": "FY-FIX-CT-MINSPEND",
+      "user_id": "FY-FIX-CLIENT-01",
+      "coupon_type": "现金券",
+      "discount_value": 50.00,
+      "min_spend": 500.00,
+      "_use": "链路 30 反例 A：凑单仅 200 时该券应不可选"
+    },
+    "expired": {
+      "coupon_id": "FY-FIX-CPN-EXPIRED",
+      "template_id": "FY-FIX-CT-EXPIRED",
+      "user_id": "FY-FIX-CLIENT-01",
+      "coupon_type": "现金券",
+      "discount_value": 20.00,
+      "expire_at": "2026-01-01 00:00:00",
+      "_use": "链路 30 反例 B：已过期券不应出现在 select"
+    }
+  },
+
   "skus": {
     "normal_low": {
       "sku_id": "c79157b29c9e974c",
       "category_name": "缦之羽",
+      "category_id": "d303ac8871eafd97",
       "product_kind": "护理项目",
       "spec_name": "洗-无创纹身 疗程卡",
       "price": 100.00,
       "session_count": 1,
-      "_use": "链路 1 / 7 / 9 普通项目"
+      "_use": "链路 1 / 7 / 9 / 27 / 28 / 29 普通项目"
     },
     "normal_med": {
       "sku_id": "2e388ba778334779",
@@ -64,7 +108,7 @@
       "spec_name": "假性皱纹管家（单部位） 疗程卡",
       "price": 100.00,
       "session_count": 1,
-      "_use": "链路 1 第二件商品"
+      "_use": "链路 1 / 27 第二件商品"
     },
     "card": {
       "sku_id": "sku-007-01",
@@ -75,6 +119,26 @@
       "session_count": 1,
       "_use": "链路 10 储值卡 SKU"
     },
+    "recharge_virtual": {
+      "sku_id": "sku-recharge-virtual",
+      "category_name": "储值卡",
+      "product_kind": "充值卡",
+      "spec_name": "预付充值卡（虚拟）",
+      "_use": "链路 26 充值卡虚拟 SKU（实际写入 sale_items 的 sku_id）",
+      "_tiers_note": "档位来自 fengyu-admin/src/lib/recharge.ts：500/1000/5000，折扣 0.99/0.98/0.95；matchTier 由 picker 调用"
+    },
+    "trial_card": {
+      "sku_id": "FY-FIX-SKU-TRIAL",
+      "category_name": "68体验卡",
+      "category_id": "b8299c9a-42d9-4933-a2ab-629902fff514",
+      "product_kind": "体验卡",
+      "spec_name": "Fixture 体验卡 ¥99 1次",
+      "price": 99.00,
+      "session_count": 1,
+      "product_type": "单品",
+      "is_experience": true,
+      "_use": "链路 25 体验卡下单（trial-card-picker）"
+    },
     "multi_session_existing": {
       "sale_item_id": "FY-XSD-WX-2603210001-02",
       "sale_order_id": "FY-XSD-WX-2603210001",
@@ -84,6 +148,20 @@
       "_use": "链路 12 服务次数对账（已存在的多次卡，不要清掉）",
       "_warning": "这是生产数据上的 sale_item，跑链路 12 时若改了 remaining_sessions 必须还原"
     }
+  },
+
+  "bundle": {
+    "product_id": "FY-FIX-BUNDLE-01",
+    "category_id": "mall-2aca5df619b4cfc6",
+    "name": "Fixture 套餐 ¥180 (洗+假性皱纹)",
+    "price": 200.00,
+    "special_price": 180.00,
+    "is_bundle": true,
+    "linked_skus": [
+      { "sku_id": "c79157b29c9e974c", "bundle_price": 90.00 },
+      { "sku_id": "2e388ba778334779", "bundle_price": 90.00 }
+    ],
+    "_use": "链路 27 组合套餐下单：BundlePicker 一次加购全部 SKU，sale_items.unit_real_price 用 bundle_price"
   },
 
   "test_employee_for_link5": {
@@ -104,11 +182,16 @@
       "DELETE FROM card_transactions WHERE card_id LIKE 'FY-FIX-%';",
       "DELETE FROM prepaid_cards WHERE card_id LIKE 'FY-FIX-%';",
       "DELETE FROM user_coupons WHERE coupon_id LIKE 'FY-FIX-%';",
-      "DELETE FROM coupon_templates WHERE template_id LIKE 'FY-FIX-%';",
+      "DELETE FROM coupon_templates WHERE template_id LIKE 'FY-FIX-CT-%';",
+      "DELETE FROM mall_product_skus WHERE product_id='FY-FIX-BUNDLE-01';",
+      "DELETE FROM mall_bundle_groups WHERE product_id='FY-FIX-BUNDLE-01';",
+      "DELETE FROM products WHERE product_id LIKE 'FY-FIX-%';",
+      "DELETE FROM product_skus WHERE sku_id LIKE 'FY-FIX-%';",
       "DELETE FROM point_transactions WHERE user_id LIKE 'FY-FIX-%';",
       "DELETE FROM sale_orders WHERE client_user_id LIKE 'FY-FIX-%';",
       "DELETE FROM appointments WHERE client_user_id LIKE 'FY-FIX-%';",
       "DELETE FROM client_wechat_users WHERE user_id LIKE 'FY-FIX-%';"
-    ]
+    ],
+    "_extended_at": "2026-05-18：新增 trial SKU / bundle product / 4 张 coupon_template / 4 张 user_coupon 的清理顺序"
   }
 }

@@ -1,6 +1,6 @@
 # Admin Chrome 手动 E2E 测试流程
 
-**最近一次更新**：2026-05-17（迁移至 `fengyu-admin/tests/e2e-chains/` + 新增 11 条业务扩展链路）
+**最近一次更新**：2026-05-18（新增 link-25~31 商品类型 4 选 1 + 优惠券 3 类型覆盖）
 **目的**：为"用真实浏览器（人工 / Claude in Chrome / Playwright headed）走一遍 admin 业务流程"提供可执行的测试地图。
 **与现有 Playwright E2E 的区别**：现有 25 个 `tests/e2e-pages/*.spec.ts` 中 87% 是页面渲染断言，本套 spec 聚焦**跨页面、跨角色、有状态机、有金额/积分会计恒等式**的端到端业务闭环——这些场景写自动化成本高、肉眼一眼能看出问题。
 
@@ -225,6 +225,12 @@ for (const { phone, file } of ROLES) {
 | 普通 SKU 2 | `2e388ba778334779`（假性皱纹管家 ¥100）| 链路 1 第二件 |
 | 充值卡 SKU | `sku-007-01`（金卡 5000）| 链路 10 |
 | 多次卡（已存在）| sale_item `FY-XSD-WX-2603210001-02`（脱毛 12 次卡）| 链路 12 次数对账 |
+| 体验卡 SKU | `FY-FIX-SKU-TRIAL`（¥99，is_experience=true）| 链路 25 |
+| 组合套餐 | `FY-FIX-BUNDLE-01`（原价 ¥200 / 打包 ¥180，含 2 张 ¥90 SKU）| 链路 27 |
+| 折扣券模板 | `FY-FIX-CT-DISCOUNT`（8 折，min 200，max ¥50）+ user_coupon `FY-FIX-CPN-DISCOUNT` | 链路 28 |
+| 品项券模板 | `FY-FIX-CT-ITEM`（限缦之羽 category，¥30）+ user_coupon `FY-FIX-CPN-ITEM` | 链路 29 |
+| min_spend 反例券 | `FY-FIX-CT-MINSPEND`（满 500 减 50）+ user_coupon `FY-FIX-CPN-MINSPEND` | 链路 30 反例 A |
+| 过期反例券 | `FY-FIX-CT-EXPIRED`（已过期 2026-01-01）+ user_coupon `FY-FIX-CPN-EXPIRED` | 链路 30 反例 B |
 
 **CC 读 fixture**（从 `tests/e2e-chains/` 内部读）：
 ```bash
@@ -1324,6 +1330,272 @@ DELETE FROM operation_logs WHERE target_id=:soid;
 
 ---
 
+### 链路 25：体验卡下单（trial-card 分支）
+
+**spec**：`link-25-order-experience-card.spec.ts`
+**主题**：体验卡 SKU 通过专用 `trial-card-picker` UX 下单，与普通 SKU 路径互斥；下单后 sale_items 写入体验卡特征字段。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（trial-card-picker tab）→ `/orders/[id]`
+**关键不变量**：
+```
+products.is_experience = true 的 SKU 必须通过 trial-card-picker 选择，不出现在常规 SKU 列表
+sale_items.unit_price = product_skus.price 快照（¥99）
+sale_items.product_kind = '体验卡'（快照自 products.product_kind）
+体验卡下单不进购物车 → 直接生成销售单
+```
+
+#### 前置
+- fixture 体验卡 SKU `FY-FIX-SKU-TRIAL` 已存在（is_experience=true，price=99）
+
+#### 步骤
+1. 进 `/orders/create`，切到 trial-card-picker tab
+2. 选 `FY-FIX-SKU-TRIAL` → 选顾客 `FY-FIX-CLIENT-01` → 提交
+3. 跳转订单详情，DB 校验
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| UI | trial-card-picker tab 可见，含 `FY-FIX-SKU-TRIAL` 卡片 |
+| UI | 常规 SKU 列表不含 `FY-FIX-SKU-TRIAL` |
+| DB | sale_items.sku_id='FY-FIX-SKU-TRIAL'，unit_price=99 |
+| DB | sale_items.product_kind='体验卡' |
+| DB | sale_orders.total_amount=99 |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+```
+
+---
+
+### 链路 26：充值卡下单（virtual SKU + matchTier + 强制销售单反例）
+
+**spec**：`link-26-order-recharge-card.spec.ts`
+**主题**：充值卡是虚拟 SKU（自动按金额 matchTier 选 SKU），下单后充值流水入账、balance 增量正确；反例：非"销售单"类型不允许下充值卡。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（充值卡 tab）→ `/orders/[id]`
+**关键不变量**：
+```
+充值金额 → matchTier(price) → 命中虚拟 SKU
+prepaid_card_transactions 写一条 +金额 流水（type='充值'）
+client_wechat_users.card_balance 增量 == 充值金额
+反例：sale_order_type != '销售单' 时下充值卡 → 应被拒（INVALID_STATE）
+```
+
+#### 前置
+- fixture 顾客 `FY-FIX-CLIENT-01` 当前 card_balance 记基线
+
+#### 步骤
+1. 进 `/orders/create` → 充值卡 tab → 填金额 ¥5000 → matchTier 命中 `sku-007-01`
+2. 提交订单 → 确认收款 → balance 应 +5000
+3. 反例：尝试以"内部单"类型创建充值卡订单 → 应被拒
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| DB | prepaid_card_transactions 新增 1 行 +5000 type='充值' |
+| DB | client_wechat_users.card_balance delta=+5000 |
+| DB | sale_items.sku_id 命中 matchTier 结果 |
+| 反例 | sale_order_type='内部单' 下充值卡 → 拒（INVALID_STATE / PERMISSION_DENIED） |
+| 幂等 | 同订单二次确认收款不再加 balance |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+-- prepaid_card_transactions cascade
+```
+
+---
+
+### 链路 27：组合套餐下单（BundlePicker 跳过购物车 + 套餐打包价）
+
+**spec**：`link-27-order-bundle-package.spec.ts`
+**主题**：is_bundle=true 商品通过 BundlePicker 一键下单，跳过购物车；套餐价 < SKU 单价 SUM；sale_items 写入子 SKU 行，total 锚定打包价。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（BundlePicker）→ `/orders/[id]`
+**关键不变量**：
+```
+products.is_bundle=true → BundlePicker 入口
+套餐 FY-FIX-BUNDLE-01：原价 ¥200（2 × ¥90 = ¥180 SKU），打包 ¥180
+sale_orders.total_amount = bundle.special_price（¥180），非 SUM(sku.price)
+sale_items 写 2 行子 SKU，每行 unit_price=90
+不进购物车 → 直接生成销售单
+```
+
+#### 前置
+- fixture `FY-FIX-BUNDLE-01` 已存在，含 2 张 SKU
+
+#### 步骤
+1. 进 `/orders/create` → BundlePicker tab → 选 `FY-FIX-BUNDLE-01`
+2. 选顾客 → 直接提交（跳过购物车）
+3. 跳转详情，DB 校验
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| UI | BundlePicker 显示套餐卡片（含原价/打包价对比） |
+| UI | 不经过购物车页面 |
+| DB | sale_orders.total_amount=180（不是 200） |
+| DB | sale_items 2 行，unit_price 各 90 |
+| DB | sale_orders.bundle_id='FY-FIX-BUNDLE-01' |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+```
+
+---
+
+### 链路 28：折扣券触发封顶（calcCouponDiscount + max_discount=50）
+
+**spec**：`link-28-coupon-discount-percent.spec.ts`
+**主题**：折扣券（type='discount'）按 percent 折扣，但 max_discount 封顶生效；UI 计算与 SQL 算法等价。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（apply coupon）
+**关键不变量**：
+```
+discount_amount = MIN(subtotal × (1 - percent), max_discount)
+FY-FIX-CT-DISCOUNT：percent=0.8（8 折），min_spend=200，max_discount=50
+等价场景：
+  subtotal=200 → calc=40 < 50 → 取 40
+  subtotal=300 → calc=60 > 50 → 封顶 50
+  subtotal=500 → calc=100 > 50 → 封顶 50
+  subtotal=199 → 不达 min_spend → 拒
+```
+
+#### 前置
+- fixture `FY-FIX-CPN-DISCOUNT`（user_coupon 已发，未使用）
+
+#### 步骤
+1. 4 组场景：subtotal=200/300/500/199，分别尝试应用折扣券
+2. UI 显示折扣金额 vs SQL `calcCouponDiscount` 返回值等价校验
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| UI/SQL | subtotal=200 → discount=40 |
+| UI/SQL | subtotal=300 → discount=50（封顶） |
+| UI/SQL | subtotal=500 → discount=50（封顶） |
+| 反例 | subtotal=199 → 拒（INSUFFICIENT_BALANCE / INVALID_STATE） |
+| DB | sale_orders.coupon_discount 与 UI 显示一致 |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+UPDATE user_coupons SET status='未使用', used_at=NULL WHERE id='FY-FIX-CPN-DISCOUNT';
+```
+
+---
+
+### 链路 29：品项券限定（applicable_category_ids 命中 vs 不命中）
+
+**spec**：`link-29-coupon-item-restricted.spec.ts`
+**主题**：品项券通过 `applicable_category_ids` 限定可用 category；命中减免，不命中拒绝。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（apply coupon）
+**关键不变量**：
+```
+FY-FIX-CT-ITEM：applicable_category_ids=[缦之羽 category_id]，¥30 减免
+正例：购物车含缦之羽 SKU → 减 ¥30
+反例：购物车仅含非缦之羽 SKU → 拒（INVALID_STATE: COUPON_NOT_APPLICABLE）
+```
+
+#### 前置
+- fixture `FY-FIX-CPN-ITEM`（user_coupon 已发）
+- 缦之羽 SKU `c79157b29c9e974c` + 非缦之羽 SKU `2e388ba778334779`
+
+#### 步骤
+1. 正例：购物车加缦之羽 SKU → 应用品项券 → 减 30
+2. 反例：购物车清空换加非缦之羽 SKU → 应用品项券 → 应被拒
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| 正例 | sale_orders.coupon_discount=30 |
+| 反例 | UI 提示"该券不适用所选商品" / action 抛 INVALID_STATE |
+| DB | 反例下 user_coupons.status 仍='未使用' |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+UPDATE user_coupons SET status='未使用', used_at=NULL WHERE id='FY-FIX-CPN-ITEM';
+```
+
+---
+
+### 链路 30：min_spend 未达标 + 过期券（2 路反例）
+
+**spec**：`link-30-coupon-min-spend-expired.spec.ts`
+**主题**：优惠券筛选规则的两个边界反例 — min_spend 不达标 / 已过期 — 均必须在 UI 列表 + apply action 双层拒绝。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create`（coupon picker）
+**关键不变量**：
+```
+反例 A — FY-FIX-CT-MINSPEND（满 500 减 50）：subtotal=200 → 列表灰显 / apply 拒
+反例 B — FY-FIX-CT-EXPIRED（valid_to=2026-01-01）：列表过滤掉 / apply 拒
+两者 user_coupons.status 始终='未使用'
+```
+
+#### 前置
+- fixture `FY-FIX-CPN-MINSPEND` + `FY-FIX-CPN-EXPIRED`（均未使用）
+
+#### 步骤
+1. 反例 A：购物车 subtotal=200，打开优惠券选择器 → MINSPEND 灰显或不可选 → 强制 apply API 应拒
+2. 反例 B：打开优惠券选择器 → EXPIRED 不在可用列表 → 强制 apply API 应拒
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| UI | MINSPEND 在列表灰显（subtotal < 500 时） |
+| UI | EXPIRED 不出现在可用列表 |
+| action | apply MINSPEND → INVALID_STATE / INSUFFICIENT_BALANCE |
+| action | apply EXPIRED → INVALID_STATE / NOT_FOUND |
+| DB | 两券 status 仍='未使用'，used_at IS NULL |
+
+#### 清理
+不创建订单，无需清理；若反例 SQL 直接 apply 成功（不应该）则回滚。
+
+---
+
+### 链路 31：内部单（禁改价 + 不能用券 + 不能用储值卡 3 路反例）
+
+**spec**：`link-31-order-internal-type.spec.ts`
+**主题**：sale_order_type='内部单' 的三条强约束 — 禁改价（unit_price 锁定原价）+ 不能用优惠券 + 不能用储值卡支付；均必须 admin 层拒。
+**角色**：FY-TEST-MGR
+**涉及页面**：`/orders/create?type=internal` → `/orders/[id]`
+**关键不变量**：
+```
+sale_order_type='内部单'：
+  1. unit_price 必须 = product_skus.price（禁手工改价）
+  2. 不允许 coupon_id（apply coupon → 拒）
+  3. 不允许 prepaid_card_amount > 0（用卡支付 → 拒）
+```
+
+#### 前置
+- fixture 顾客 `FY-FIX-CLIENT-01`，普通 SKU `c79157b29c9e974c`，任一 `FY-FIX-CPN-*` 券，`FY-FIX-CARD-01` 储值卡
+
+#### 步骤
+1. 反例 1：开内部单时手工传 unit_price=50（原价 100）→ 拒
+2. 反例 2：开内部单时挂 coupon_id → 拒
+3. 反例 3：内部单确认收款时 prepaid_card_amount=100 → 拒
+4. 正例：内部单原价 + 无券 + 现金支付 → 通过
+
+#### 检查点
+| 类型 | 检查项 |
+|------|--------|
+| 反例 1 | createOrder → INVALID_STATE / PERMISSION_DENIED（禁改价） |
+| 反例 2 | apply coupon → INVALID_STATE: COUPON_NOT_ALLOWED_FOR_INTERNAL |
+| 反例 3 | recordPayment(prepaid_card_amount>0) → INVALID_STATE |
+| 正例 | sale_orders.total_amount=100，status='已支付' |
+
+#### 清理
+```sql
+SELECT cleanup_sale_order(:sale_order_id);
+-- 不需要回滚券/卡（反例未实际扣减）
+```
+
+---
+
 ### §1.B 跑批结果（首跑 2026-05-17）
 
 > **维护规则**：每次 spec 或对应 admin 实现修复后，必须回来更新本表 + 行末 `状态 / 最近一次结果` 字段。
@@ -1345,8 +1617,15 @@ DELETE FROM operation_logs WHERE target_id=:soid;
 | 21 | link-21-pickup-records | ❌ FAIL | — | 开单 wizard Step 2 找不到分类"歆笙泰妍" / SKU"法米索深层清洁啫喱"。admin 开单页 Step 2 可能默认不展示家居 product_kind（需切大类 Tab）| spec UI 流程 | **fix spec**：探明 admin 开单是否支持家居 product_kind；若不支持则改走 SQL 直建订单 |
 | 22 | link-22-cron-birthday-boundary | ❌ FAIL | 2/9 PASS + 7 FAIL | cron STEP 2 refresh-member-levels 因 fixture 当前 rolling-12mo spend=¥1242 < ¥1980 阈值，把 beforeAll 设的"初钻"**降级回 NULL**，STEP 3 birthday 查询过滤掉 → total=0；所有 grant 项 0 | spec 设计交互 | **fix spec**：beforeAll 先开 ¥1000 单 + 确认收款补足 spend 到 ≥1980，afterAll 一并清；或直接调 grant-birthday 单 STEP 跳过 cron-once 全跑 |
 | 23 | link-23-service-cancel-session-rollback | ✅ PASS | 4/4 PASS + 2 SKIP | 2 项 SKIP 是设计（已完成单不可取消 + 无 cancelled_at 列）| 设计 SKIP | 接受 |
+| 25 | link-25-order-experience-card | ⬜ TODO | 待跑 | 体验卡分支首跑 | — | run + record |
+| 26 | link-26-order-recharge-card | ⬜ TODO | 待跑 | 充值卡 + 强制销售单反例 | — | run + record |
+| 27 | link-27-order-bundle-package | ⬜ TODO | 待跑 | 组合套餐跳过购物车 | — | run + record |
+| 28 | link-28-coupon-discount-percent | ⬜ TODO | 待跑 | 折扣券封顶 | — | run + record |
+| 29 | link-29-coupon-item-restricted | ⬜ TODO | 待跑 | 品项券命中/不命中 | — | run + record |
+| 30 | link-30-coupon-min-spend-expired | ⬜ TODO | 待跑 | min_spend + 过期 2 路反例 | — | run + record |
+| 31 | link-31-order-internal-type | ⬜ TODO | 待跑 | 内部单 3 路反例 | — | run + record |
 
-**统计**：6 PASS（含 4 PARTIAL）+ 5 FAIL，其中 2 条 admin bug、3 条 spec 问题。
+**统计**：6 PASS（含 4 PARTIAL）+ 5 FAIL + 7 TODO（25-31 待首跑），其中 2 条 admin bug、3 条 spec 问题。
 
 **未持久化产物**：
 - 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）
@@ -1520,6 +1799,8 @@ SQL
 | P1 | 链路 14（SKU 价格快照保护）| 改价后历史漂移=报表灾难 |
 | P1 | 链路 15（提成矩阵即时生效）| 老分配被新比例污染=月底提成对不上账 |
 | P1 | 链路 18（操作日志完整性）| 审计合规底线 |
+| P1 | 链路 25（体验卡下单）| 商品类型分支覆盖缺口，trial-card-picker UX |
+| P1 | 链路 27（组合套餐下单）| 特殊 UX（跳过购物车）+ 打包价 snapshot |
 | P2 | 链路 11（优惠券使用幂等）| 单券一次，并发场景需关注 |
 | P2 | 链路 6（cron 会员升级）| 异步任务，滞后但不阻塞 |
 | P2 | 链路 16（顾客重分配快照保留）| 业绩归属相关，错配导致顾问纠纷 |
@@ -1528,6 +1809,11 @@ SQL
 | P2 | 链路 21（取货流程）| 实物 SKU 占比低，但不可超取 |
 | P2 | 链路 22（cron 边界）| 一年一次的生日等，跨日误判会造成漏发 |
 | P2 | 链路 23（服务单异常关闭）| 取消路径较冷，但 session 错扣不可逆 |
+| P2 | 链路 26（充值卡下单）| 强制销售单反例 + 充值流水入账幂等 |
+| P2 | 链路 28（折扣券封顶）| calcCouponDiscount max_discount 路径 |
+| P2 | 链路 29（品项券限定）| applicable_category_ids 过滤逻辑 |
+| P2 | 链路 30（min_spend + 过期）| 优惠券筛选 2 路反例 |
+| P2 | 链路 31（内部单）| 禁改价 + 不能用券 + 不能用储值卡 3 路反例 |
 | P3 | 链路 3（预约转服务单）| 转换路径手动，不必经 |
 | P3 | 1.C（全库快照对账）| 每个 batch 结尾跑一次 |
 | P3 | 角色切换矩阵 | 部分 e2e 已覆盖 |
@@ -1622,3 +1908,10 @@ SQL
 | 链路 21 | `link-21-pickup-records.spec.ts` | 已实现（2026-05-17，使用已存在家居 SKU） |
 | 链路 22 | `link-22-cron-birthday-boundary.spec.ts` | 已实现（2026-05-17，含 cron × 2 次幂等验证） |
 | 链路 23 | `link-23-service-cancel-session-rollback.spec.ts` | 已实现（2026-05-17） |
+| 链路 25 | `link-25-order-experience-card.spec.ts` | 已实现（2026-05-18） |
+| 链路 26 | `link-26-order-recharge-card.spec.ts` | 已实现（2026-05-18，含 balance 增量 + 强制销售单反例） |
+| 链路 27 | `link-27-order-bundle-package.spec.ts` | 已实现（2026-05-18） |
+| 链路 28 | `link-28-coupon-discount-percent.spec.ts` | 已实现（2026-05-18，UI + SQL 等价 4 组） |
+| 链路 29 | `link-29-coupon-item-restricted.spec.ts` | 已实现（2026-05-18） |
+| 链路 30 | `link-30-coupon-min-spend-expired.spec.ts` | 已实现（2026-05-18） |
+| 链路 31 | `link-31-order-internal-type.spec.ts` | 已实现（2026-05-18） |
