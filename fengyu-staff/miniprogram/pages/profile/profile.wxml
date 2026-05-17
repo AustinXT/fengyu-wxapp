@@ -1,8 +1,12 @@
 <!-- pages/profile/profile.wxml — 我的 -->
 <view class="container">
   <view class="profile-header brand-gradient">
-    <view class="avatar-wrap">
-      <van-icon name="manager" size="80rpx" color="#BBBBBB" />
+    <view class="avatar-wrap" bindtap="onChooseAvatar">
+      <image wx:if="{{avatarHttpUrl}}" src="{{avatarHttpUrl}}" class="avatar-image" mode="aspectFill" />
+      <van-icon wx:else name="manager" size="80rpx" color="#BBBBBB" />
+      <view class="avatar-edit-badge">
+        <van-icon name="photo-o" size="24rpx" color="#FFFFFF" />
+      </view>
     </view>
     <view class="profile-info">
       <text class="profile-name">{{staffName || '未登录'}}</text>

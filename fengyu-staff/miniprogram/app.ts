@@ -8,6 +8,7 @@ App<IAppOption>({
     position: '' as string,
     roles: [] as string[],
     skills: [] as string[], // P2-14：技能标签，用于业绩分配角色推断
+    avatarUrl: '' as string,
     boundStoreName: '' as string,
     boundStoreId: '' as string,
     phone: '' as string,
@@ -57,6 +58,7 @@ App<IAppOption>({
     const position = wx.getStorageSync('position');
     const roles = wx.getStorageSync('roles');
     const skills = wx.getStorageSync('skills');
+    const avatarUrl = wx.getStorageSync('avatarUrl');
     const phone = wx.getStorageSync('phone');
     const boundStoreName = wx.getStorageSync('boundStoreName');
     const boundStoreId = wx.getStorageSync('boundStoreId');
@@ -71,6 +73,7 @@ App<IAppOption>({
     if (position) this.globalData.position = position;
     if (roles) this.globalData.roles = roles;
     if (skills) this.globalData.skills = skills;
+    if (avatarUrl) this.globalData.avatarUrl = avatarUrl;
     if (phone) this.globalData.phone = phone;
     if (boundStoreName) this.globalData.boundStoreName = boundStoreName;
     if (boundStoreId) this.globalData.boundStoreId = boundStoreId;
@@ -90,12 +93,12 @@ App<IAppOption>({
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
         const {
-          staffWfId, staffName, position, roles, skills, phone,
+          staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
           staffLevel, roleBindings, availableLoginLevels, scopedStores,
         } = res.result.data;
         this.setStaffInfo({
-          staffWfId, staffName, position, roles, skills, phone,
+          staffWfId, staffName, position, roles, skills, avatarUrl, phone,
           boundStoreName, boundStoreId,
           staffLevel, roleBindings, availableLoginLevels, scopedStores,
         });
@@ -140,6 +143,11 @@ App<IAppOption>({
     if (info.skills) {
       this.globalData.skills = info.skills;
       wx.setStorageSync('skills', info.skills);
+    }
+    // 头像允许清空（'avatarUrl' in info 才覆盖；undefined 视为不变）
+    if ('avatarUrl' in info) {
+      this.globalData.avatarUrl = info.avatarUrl || '';
+      wx.setStorageSync('avatarUrl', info.avatarUrl || '');
     }
     if (info.phone) {
       this.globalData.phone = info.phone;
@@ -188,6 +196,7 @@ App<IAppOption>({
     this.globalData.position = '';
     this.globalData.roles = [];
     this.globalData.skills = [];
+    this.globalData.avatarUrl = '';
     this.globalData.phone = '';
     this.globalData.boundStoreName = '';
     this.globalData.boundStoreId = '';

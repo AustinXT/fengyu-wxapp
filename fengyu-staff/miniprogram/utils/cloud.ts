@@ -2,6 +2,33 @@
 import { mockCallApi } from './mock-api'
 
 /**
+ * 客户端 env 的 COS CDN base（员工头像跨 env 写入 client env，需要 HTTPS 渲染时使用）。
+ * 与 admin `src/components/ui/image-upload.tsx` 的 CDN_BASE 同源。
+ */
+const CLIENT_ENV_CDN_BASE = 'https://636c-cloud1-3gpht4b01ff88838-1406056527.tcb.qcloud.la'
+
+/**
+ * 将 cloud:// 协议的 fileID 转换为 HTTPS CDN URL。
+ *
+ * 标准格式: cloud://envId.bucketSuffix/path → CDN_BASE/path（第一段含 . 则为 envId，跳过）
+ * 简化格式: cloud://staff-avatars/xxx.jpg  → CDN_BASE/staff-avatars/xxx.jpg
+ * HTTPS / 空：原样返回
+ *
+ * 员工端小程序展示自己的头像必须经此转换（cloud:// 不能跨 env 渲染）。
+ */
+export function toHttpUrl(url: string): string {
+  if (!url || !url.startsWith('cloud://')) return url
+  const withoutProtocol = url.slice('cloud://'.length)
+  const slashIndex = withoutProtocol.indexOf('/')
+  if (slashIndex === -1) return url
+  const firstSegment = withoutProtocol.slice(0, slashIndex)
+  if (firstSegment.includes('.')) {
+    return `${CLIENT_ENV_CDN_BASE}/${withoutProtocol.slice(slashIndex + 1)}`
+  }
+  return `${CLIENT_ENV_CDN_BASE}/${withoutProtocol}`
+}
+
+/**
  * 业务 API 错误对象 —— 与 client 端 callClientApi 对称。
  * 调用方按 `err.errorType` 路由不同 UI 分支（推荐），
  * 而不是按 `err.message` 字符串 indexOf 匹配（旧写法，errorType 改名时易脆）。

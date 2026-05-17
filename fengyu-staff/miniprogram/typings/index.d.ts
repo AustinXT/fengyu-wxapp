@@ -25,6 +25,8 @@ interface IAppOption {
     position: string;
     roles: string[];
     skills: string[]; // P2-14：技能标签（用于业绩分配角色推断）
+    /** 头像 URL（cloud:// fileID；员工端渲染前需通过 toHttpUrl 转 HTTPS） */
+    avatarUrl: string;
     boundStoreName: string;
     boundStoreId: string;
     phone: string;
@@ -62,6 +64,7 @@ interface IAppOption {
     position?: string;
     roles?: string[];
     skills?: string[];
+    avatarUrl?: string | null;
     phone?: string;
     boundStoreName?: string;
     boundStoreId?: string;

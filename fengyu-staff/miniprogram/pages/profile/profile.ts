@@ -1,5 +1,5 @@
 // pages/profile/profile.ts — 我的
-import { callStaffApi } from '../../utils/cloud';
+import { callStaffApi, toHttpUrl } from '../../utils/cloud';
 import { bindPhone } from '../../utils/auth';
 import { isManager } from '../../utils/role';
 
@@ -11,6 +11,8 @@ Page({
     position: '',
     staffWfId: '',
     phone: '',
+    avatarUrl: '',
+    avatarHttpUrl: '',
     boundStoreName: '',
     isManager: false,
     // 门店绑定
@@ -24,16 +26,79 @@ Page({
       wx.reLaunch({ url: '/pages/login/login' })
       return
     }
-    const { staffName, position, staffWfId, phone, boundStoreName } = app.globalData;
-    this.setData({ staffName, position, staffWfId, phone, boundStoreName, isManager: isManager() });
+    const { staffName, position, staffWfId, phone, boundStoreName, avatarUrl } = app.globalData;
+    this.setData({
+      staffName, position, staffWfId, phone, boundStoreName,
+      avatarUrl: avatarUrl || '',
+      avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
+      isManager: isManager(),
+    });
+  },
+
+  /**
+   * 选图 + 调云函数上传（跨 env 写入 client env COS）
+   * 复刻自 client `pagesProfile/profile-edit/profile-edit.ts` 同款套路
+   */
+  async onChooseAvatar() {
+    if (!app.globalData.staffWfId) {
+      wx.showToast({ title: '请先登录', icon: 'none' });
+      return;
+    }
+    try {
+      const res = await wx.chooseMedia({
+        count: 1,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+        sizeType: ['compressed'],
+      });
+      const tempFilePath = res.tempFiles[0].tempFilePath;
+      if (!tempFilePath) return;
+
+      wx.showLoading({ title: '上传中...', mask: true });
+      const ext = (tempFilePath.split('.').pop() || 'jpg').toLowerCase();
+
+      // 小程序端直传 COS 默认被存储安全规则拦截，统一走云函数代理上传
+      const base64 = await new Promise<string>((resolve, reject) => {
+        wx.getFileSystemManager().readFile({
+          filePath: tempFilePath,
+          encoding: 'base64',
+          success: (r) => resolve(r.data as string),
+          fail: reject,
+        });
+      });
+
+      const data = await callStaffApi<{ fileID: string; avatarUrl: string }>(
+        'staff.uploadAvatar',
+        { base64, ext },
+      );
+      const fileID = data?.fileID || '';
+      // 同步 globalData + 当前 setData（HTTPS 用于渲染，cloud:// 持久化保留 protocol）
+      app.setStaffInfo({ avatarUrl: fileID });
+      this.setData({
+        avatarUrl: fileID,
+        avatarHttpUrl: fileID ? toHttpUrl(fileID) : '',
+      });
+      wx.hideLoading();
+      wx.showToast({ title: '头像已更新', icon: 'success' });
+    } catch (err) {
+      wx.hideLoading();
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('chooseMedia:fail cancel')) return;
+      wx.showToast({ title: msg || '上传失败', icon: 'none' });
+    }
   },
 
   async onGetPhoneNumber(e: WechatMiniprogram.CustomEvent) {
     if (!e.detail.cloudID) return
     try {
       await bindPhone(e.detail.cloudID)
-      const { phone, staffWfId, staffName, position, boundStoreName } = app.globalData
-      this.setData({ phone, staffWfId, staffName, position, boundStoreName, isManager: isManager() })
+      const { phone, staffWfId, staffName, position, boundStoreName, avatarUrl } = app.globalData
+      this.setData({
+        phone, staffWfId, staffName, position, boundStoreName,
+        avatarUrl: avatarUrl || '',
+        avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
+        isManager: isManager(),
+      })
       wx.showToast({ title: '绑定成功', icon: 'success' })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '绑定失败';
