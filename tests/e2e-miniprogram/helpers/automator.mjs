@@ -153,15 +153,29 @@ export async function launch(projectPath) {
   const port = await ensureIdeReady();
 
   // 路径一：connect 已运行的 IDE
-  try {
-    const wsEndpoint = `ws://127.0.0.1:${port}`;
-    const mp = await automator.connect({ wsEndpoint });
-    return mp;
-  } catch (e) {
-    // connect 失败说明端口虽然 HTTP 通了但不是 automator 协议端口（不是 ws 入口）
-    // 此时退化到 launch（让 launcher 自己 spawn 一个新的 auto session）
-    console.warn(`[L3 E2E] connect(${port}) 失败：${e.message}；退化到 launch 模式`);
+  //
+  // **关键**：微信开发者工具 1.06+ 的 automation ws server **只在 IPv6 (::1) 上监听 9420**，
+  // 同端口的 IPv4 (127.0.0.1) 是普通 HTTP backend（返回 404，不是 ws upgrade 入口）。
+  // 直接 ws://127.0.0.1:9420 会失败。改用 localhost 让 OS 优先解析到 IPv6 (::1)，
+  // 或显式用 [::1]。
+  //
+  // 另：cli auto 输出 "✔ auto" 后 IPv6 ws server 仍需 15~60s 才真正起来；
+  // 这里加重试循环，期间不打印每次失败，最多等 60s。
+  const connectDeadline = Date.now() + 60_000;
+  let lastErr = null;
+  while (Date.now() < connectDeadline) {
+    for (const host of ['localhost', '[::1]', '127.0.0.1']) {
+      const wsEndpoint = `ws://${host}:${port}`;
+      try {
+        const mp = await automator.connect({ wsEndpoint });
+        return mp;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
   }
+  console.warn(`[L3 E2E] connect(${port}) 60s 内三种 host 都失败：${lastErr?.message}；退化到 launch 模式`);
 
   // 路径二：launch（让 launcher spawn cli auto --auto-port）
   const launchPromise = automator.launch({

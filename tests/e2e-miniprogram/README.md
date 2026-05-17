@@ -27,6 +27,65 @@
 
    返回任意 HTTP 响应（不是 `Connection refused`）即视为开启成功。
 
+#### 重要：IPv4 vs IPv6 ws server
+
+实测在 macOS 上，IDE 在同一个 9420 端口同时开了**两个不同协议的 server**：
+
+| 协议 | 监听地址 | 用途 | curl 响应 |
+|------|----------|------|----------|
+| HTTP backend | `127.0.0.1:9420` (IPv4) | IDE 内部 HTTP 接口 | `404 Cannot GET /` |
+| WebSocket automation | `[::1]:9420` (IPv6) | miniprogram-automator 入口 | `426 Upgrade Required` |
+
+`helpers/automator.mjs` 的 `connect()` 已经按顺序尝试 `localhost / [::1] / 127.0.0.1`，
+让 OS 优先解析到 IPv6 命中 ws server。**不要硬编码 `ws://127.0.0.1:9420`**，它一定连不上。
+
+诊断命令：
+
+```bash
+# 检查 IPv6 listener 是否就位（必须有 IPv6 那行才能 ws 连通）
+lsof -nP -iTCP:9420 -sTCP:LISTEN
+```
+
+如果只有 IPv4 listener 没有 IPv6，说明 IDE 没真正进入 automation 模式，
+通常需要在 IDE 中实际**打开过项目并加载完成**才会建 IPv6 ws server。
+
+### 1.5 IDE 项目装载
+
+`smoke-client-*` 要求 IDE 装 `fengyu-client/miniprogram`（appid `wx811eb4ded3dfba3f`）；  
+`smoke-staff-*` 要求 IDE 装 `fengyu-staff/miniprogram`（appid `wxe3f5d9ee6a94d22d`）。
+
+切换项目（**必须 quit IDE 后再 cli auto**，否则会被拒）：
+
+```bash
+# 完全清理 IDE（含 pkill 守护进程）
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli quit
+pkill -9 -f wechatwebdevtools
+sleep 5
+
+# 启 IDE 并装载 staff 项目，自动化 9420
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli auto \
+  --project /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram \
+  --port 9420
+
+# 等到 lsof 出现 IPv6 9420 listener（通常需要 15~30s，有时更久）
+until lsof -nP -iTCP:9420 -sTCP:LISTEN 2>/dev/null | grep -q IPv6; do sleep 3; done
+
+# 现在可以跑 staff smoke
+bun tests/e2e-miniprogram/smoke-staff-confirm-offline.mjs
+```
+
+切到 client：
+
+```bash
+# 同样：quit + pkill + cli auto，--project 指向 client
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli auto \
+  --project /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-client/miniprogram \
+  --port 9420
+```
+
+**经验**：IDE 起 IPv6 ws server 的时机有偶然性。如果 60s 后还没起 IPv6 listener，
+关闭 IDE 重来一次；或者用 GUI 打开 IDE→装项目→设置中勾选 "服务端口=9420"→重启 IDE。
+
 ### 2. （可选，店长流程才需要）开启云函数 ALLOW_TEST_OPENID
 
 `smoke-client-home.mjs` 不需要登录，可跳过此步。
@@ -35,26 +94,44 @@
 **安全提示**：`ALLOW_TEST_OPENID=true` 会允许任意 `_testOpenid` 参数覆盖真实 OPENID。
 **仅限开发环境**，正式上线必须关闭。
 
-由用户在终端执行（本测试代码不会自动执行此命令）：
+#### 当前状态
+
+`fengyu-staff/cloudbaserc.json` 已含 `ALLOW_TEST_OPENID=true`，
+远端 staffApi 已通过 `tcb fn config update staffApi` 同步部署，验证已生效：
 
 ```bash
-# staffApi（员工端）
-tcb fn config update staffApi \
-  --envVars 'ALLOW_TEST_OPENID=true,PG_CONNECTION_STRING=postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu,CLIENT_SECRET=<原值>'
-
-# clientApi（顾客端，按需）
-tcb fn config update clientApi \
-  --envVars 'ALLOW_TEST_OPENID=true,PG_CONNECTION_STRING=postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu,TMAP_KEY=<原值>,TMAP_SECRET=<原值>'
+tcb fn detail staffApi | grep -A1 'Environment variables'
+# 应包含 ALLOW_TEST_OPENID=true; CLIENT_SECRET=...; MSSQL_...; PG_CONNECTION_STRING=...; WXACODE_ENV_VERSION=develop
 ```
 
-**注意**：`tcb fn config update` 会**整体覆盖**环境变量，必须把所有原有变量一并附上，
-否则会丢 `PG_CONNECTION_STRING` 等。请先 `tcb fn detail staffApi` 拿到原配置。
-
-测试完成后建议关闭：
+#### 重新打开（如果以后被关掉）
 
 ```bash
-tcb fn config update staffApi --envVars 'PG_CONNECTION_STRING=...,CLIENT_SECRET=...'  # 不带 ALLOW_TEST_OPENID
+# 走 cloudbaserc.json 中的 envVariables，TCB CLI 会选 Override/Merge
+cd /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff
+printf '\n' | TENCENTCLOUD_SECRETID=<.env 里> TENCENTCLOUD_SECRETKEY=<.env 里> \
+  tcb fn config update staffApi
+# 选 "Override update" (默认第一项)
 ```
+
+`cloudbaserc.json` 的 envVariables 永远是 source of truth；用 `Override update` 是最稳的姿势
+（不依赖远端现状），但要确保 cloudbaserc.json 中已包含全部 5 个变量：
+ALLOW_TEST_OPENID / CLIENT_SECRET / MSSQL_CONNECTION_STRING / PG_CONNECTION_STRING / WXACODE_ENV_VERSION。
+
+#### 关闭测试模式（生产化前必跑）
+
+```bash
+cd /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff
+# 1) 编辑 cloudbaserc.json，删除 envVariables 里的 "ALLOW_TEST_OPENID": "true" 那行
+# 2) 重新 push 配置
+printf '\n' | TENCENTCLOUD_SECRETID=<key> TENCENTCLOUD_SECRETKEY=<secret> \
+  tcb fn config update staffApi
+# 3) 校验
+tcb fn detail staffApi | grep -A1 'Environment variables'  # 应不再包含 ALLOW_TEST_OPENID
+```
+
+**不要使用** `tcb fn deploy --force`（会重置环境变量）。
+**也不要**直接用 tcb 命令行传 `--envVars`（已废弃，CLI 3.x 走 cloudbaserc.json）。
 
 ### 3. 安装依赖
 
@@ -89,6 +166,27 @@ bun tests/e2e-miniprogram/smoke-staff-confirm-offline.mjs
 
 ```bash
 bun tests/e2e-miniprogram/run-all.mjs
+```
+
+`run-all.mjs` 会先 probe IDE 当前装的项目 appId，**只跑匹配的 smoke**，
+其他标 `SKIP`。这是因为切换 IDE 项目 + 等 IPv6 ws ready 在 macOS 上不稳定，
+所以采用"装好一个跑一个"的策略：
+
+```bash
+# 跑 staff 一族
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli auto \
+  --project /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-staff/miniprogram --port 9420
+# 等 IPv6 listener 起来
+until lsof -nP -iTCP:9420 -sTCP:LISTEN | grep -q IPv6; do sleep 3; done
+bun tests/e2e-miniprogram/run-all.mjs   # client SKIP，staff PASS
+
+# 跑 client 一族
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli quit
+pkill -9 -f wechatwebdevtools && sleep 5
+/Applications/wechatwebdevtools.app/Contents/MacOS/cli auto \
+  --project /Users/nv/proj.xt.com/fengyu-wxapp/fengyu-client/miniprogram --port 9420
+until lsof -nP -iTCP:9420 -sTCP:LISTEN | grep -q IPv6; do sleep 3; done
+bun tests/e2e-miniprogram/run-all.mjs   # staff SKIP，client PASS
 ```
 
 ### 清理 fixture

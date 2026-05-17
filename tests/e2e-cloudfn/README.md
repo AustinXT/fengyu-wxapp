@@ -11,7 +11,7 @@ tests/e2e-cloudfn/
 ├── README.md                          # 本文件
 ├── setup.mjs                          # 全局 setup：环境变量 / 命名空间常量 / 共享 PG 池
 ├── helpers/
-│   ├── invoke.mjs                     # require staffApi / clientApi / payNotify 入口 + wx-server-sdk mock + 已知 SQL bug patch
+│   ├── invoke.mjs                     # require staffApi / clientApi / payNotify 入口 + wx-server-sdk mock
 │   ├── wx-server-sdk-mock.js          # wx-server-sdk 模块替身
 │   ├── fixtures.mjs                   # createTestStaff / createTestClient / createTestSaleOrder / cleanupTestData
 │   └── pg-snapshot.mjs                # 关键表快照 + before/after diff
@@ -65,20 +65,23 @@ E2E_DEBUG=1 bun tests/e2e-cloudfn/smoke-confirm-offline.mjs
 `cleanupTestData()` 用 `LIKE 'TE2L2%'` 精确清理；额外按测试手机号 (199990990xx) 防御，
 避免命名空间漂移导致残留。**绝不**碰非测试数据。
 
-## 已知生产 bug（本基础设施通过 SQL patch 绕过）
+## 已知生产 bug（已修复）
 
-跑 smoke-confirm-offline 时，invoke.mjs 在 PG driver 入口对发出去的 SQL 做了两条
-正则替换，对应 staffApi 当前代码里**两条会在 PG 16 严格模式下报错的 SQL**：
+L2 基础设施搭建过程中暴露的两个 staffApi 生产 SQL bug，已在源码里修复，
+对应的 SQL_PATCHES 也已从 `helpers/invoke.mjs` 移除（避免未来真有 SQL 漂移
+被运行时 patch 静默掩盖）。
 
-| # | 文件 | 原 SQL 片段 | PG 16 报错 | 测试侧 patch |
-|---|------|-------------|------------|--------------|
-| 1 | `staffApi/utils/scope.js` `expandScopeStoreIds` 两处 | `ANY($1::uuid[])` | `operator does not exist: text = uuid`（`org_nodes.id` 是 text） | → `ANY($1::text[])` |
-| 2 | `staffApi/routes/order.js` `confirmOffline` UPDATE | `allocation_status = CASE WHEN allocation_status = '已分配' THEN '已分配' ELSE '待分配' END` | `column "allocation_status" is of type allocation_status but expression is of type text` | → 包一层 `(...)::allocation_status` |
+| # | 文件 | 原 bug | PG 16 报错 | 修复 |
+|---|------|--------|------------|------|
+| 1 | `staffApi/utils/scope.js` `expandScopeStoreIds` 两处 | `ANY($1::uuid[])` | `operator does not exist: text = uuid`（`org_nodes.id` 是 text） | 改为 `ANY($1::text[])` |
+| 2 | `staffApi/routes/order.js` `confirmOffline` UPDATE | `allocation_status = CASE WHEN ... END`（CASE 返回 text 触发 enum 类型错配） | `column "allocation_status" is of type allocation_status but expression is of type text` | 改为 `COALESCE(allocation_status, '待分配'::allocation_status)`（等价语义：保留非 NULL，NULL 时置默认）|
 
-这些 patch 仅在 L2 测试进程内生效（运行时 monkey-patch），**没有改任何生产代码文件**。
-建议向 staff team 提 issue 修复源码（详见 `helpers/invoke.mjs` 的 `SQL_PATCHES` 注释）。
+修复 commit 由本次 L2 巩固工作产出（见 git log "fix(staffApi): scope/order SQL 类型修正"）。
+生产 operation_logs 0 命中说明 bug 暴露在路径上但未触发（manager 4 层登录 +
+confirmOffline 为近期新功能，无真实流量）。
 
-⚠️ 当 staff team 修复源码后，本 patch 列表也应同步清空 — 否则将"加固"已存在的 bug。
+⚠️ 未来如果发现新的 SQL 漂移，先在源码修；**不要**在 invoke.mjs 重新引入
+SQL_PATCHES 基础设施——那会让本地测试和生产行为偏离，掩盖真实 bug。
 
 ## 设计要点
 
@@ -110,8 +113,9 @@ E2E_DEBUG=1 bun tests/e2e-cloudfn/smoke-confirm-offline.mjs
    可能 bun 升级后 API 改了。检查 `helpers/invoke.mjs` 顶部 `installWxServerSdkMock()`
 3. **`PERMISSION_DENIED: 仅店长可执行此操作`** — auth 缓存命中过期的旧 fixture。
    清理后重跑：`bun tests/e2e-cloudfn/cleanup.mjs && bun tests/e2e-cloudfn/smoke-confirm-offline.mjs`
-4. **`operator does not exist: text = uuid`** — 新增的 SQL 触发了 staffApi 同样的 `::uuid[]` 模式，
-   或 patch 未覆盖。在 `helpers/invoke.mjs` 的 `SQL_PATCHES` 里加一条
+4. **`operator does not exist: text = uuid`** — 新增的 SQL 触发了 `::uuid[]` 模式但
+   `org_nodes.id` / `stores.org_node_id` 等都是 text 列。**直接修源码**改为 `::text[]`，
+   不要再走 SQL_PATCHES 路线（已废弃，详见上节"已知生产 bug（已修复）"）
 5. **admin smoke 报 NEXT_REDIRECT** — `_admin-preload.mjs` 的 mock 列表不全，
    admin 又走到了 redirect 路径。把缺的模块加进 `plugin().module(...)`
 
