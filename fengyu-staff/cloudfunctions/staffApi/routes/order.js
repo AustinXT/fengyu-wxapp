@@ -2709,6 +2709,231 @@ async function refundDetail(ctx) {
   }
 }
 
+// ========== B5: 寄存单（剩余次数初始化）==========
+
+/**
+ * 创建寄存单（店长专用）
+ *
+ * 寄存单是把"顾客在 WorkFine 上的剩余次数"初始化到小程序的特殊订单：
+ *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
+ *   - 不收钱：received=0 / payable_amount=0 / total_amount=0 / payment_method='无' / status='已支付'
+ *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
+ *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
+ *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
+ *
+ * payload: {
+ *   clientUserId: string,
+ *   items: [{ skuId: string, quantity?: number }],
+ *   remark?: string,
+ * }
+ *
+ * 拒绝字段（任一存在即报 INVALID_STATE: DEPOSIT_NO_DISCOUNT）:
+ *   couponId, prepaidCardAmount, useCard, items[*].customPrice, items[*].discount
+ */
+async function createDeposit(ctx) {
+  await requireManager()(ctx, async () => {})
+
+  const payload = ctx.event.payload || {}
+  const {
+    clientUserId,
+    items,
+    remark,
+    couponId,
+    prepaidCardAmount,
+    useCard,
+  } = payload
+  const storeId = ctx.auth.effectiveStoreId
+  const marketName = ctx.auth.marketName || ''
+
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 寄存单必须指定顾客 clientUserId')
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('INVALID_PARAMS: 寄存单至少需要 1 个商品')
+  }
+  if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
+
+  // 拒绝任何抵扣（统一二级前缀 DEPOSIT_NO_DISCOUNT）
+  if (couponId) {
+    throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许使用优惠券')
+  }
+  if (prepaidCardAmount || useCard) {
+    throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许使用储值卡')
+  }
+  const hasCustomPrice = items.some(
+    it => it && (it.customPrice !== undefined && it.customPrice !== null)
+  )
+  if (hasCustomPrice) {
+    throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许手工改价')
+  }
+  const hasDiscount = items.some(it => it && Number(it.discount) > 0)
+  if (hasDiscount) {
+    throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许行级优惠')
+  }
+
+  // 查顾客（client_identity_rule：仅看 bound_store_id，不要求 openid，
+  // 因 WorkFine 老顾客可能没绑微信）
+  const clientRows = await pg.query(
+    `SELECT user_id, phone, name, customer_type, bound_store_id
+     FROM client_wechat_users WHERE user_id = $1 LIMIT 1`,
+    [clientUserId]
+  )
+  if (clientRows.length === 0) throw new Error('INVALID_PARAMS: 顾客不存在')
+  const client = clientRows[0]
+  if (!client.bound_store_id) {
+    throw new Error('CLIENT_NOT_REGISTERED: 顾客未绑定门店')
+  }
+
+  // 拉 SKU 信息（参考 createConversion 的 SKU JOIN 模式）
+  const itemDataList = await Promise.all(items.map(async (item) => {
+    if (!item || !item.skuId) {
+      throw new Error('INVALID_PARAMS: items 缺少 skuId')
+    }
+    const skuRows = await pg.query(
+      `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
+              s.service_fee, s.is_shengmei, s.is_experience, s.is_recharge_card,
+              pc.sales_category, pc.product_kind
+       FROM product_skus s
+       JOIN product_categories pc ON s.category_id = pc.category_id
+       WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
+      [item.skuId]
+    )
+    if (skuRows.length === 0) {
+      throw new Error(`INVALID_PARAMS: 商品 ${item.skuId} 不存在`)
+    }
+    const sku = skuRows[0]
+    if (sku.is_recharge_card === true) {
+      throw new Error('INVALID_STATE: DEPOSIT_NO_DISCOUNT: 寄存单不允许充值卡（无次数维度）')
+    }
+    const quantity = Number(item.quantity) || 1
+    if (quantity <= 0) {
+      throw new Error('INVALID_PARAMS: quantity 必须为正')
+    }
+    // 原价快照（供审计），不入 received
+    const basePrice = Number(sku.special_price || sku.price)
+    // session_count × quantity（与 order.create 一致）
+    const sessionCount = sku.session_count != null
+      ? Number(sku.session_count) * quantity
+      : null
+    return {
+      skuId: item.skuId,
+      productName: sku.spec_name,
+      skuSpecName: sku.spec_name,
+      productType: sku.product_type,
+      productKind: sku.product_kind,
+      sessionCount,
+      remainingSessions: sessionCount,
+      unitPrice: basePrice,
+      unitRealPrice: basePrice,
+      quantity,
+      saleAmount: Math.round(basePrice * quantity * 100) / 100,
+      received: 0,
+      salesCategory: sku.sales_category || null,
+      serviceFee: 0,
+      isShengmei: sku.is_shengmei ?? null,
+      isExperience: sku.is_experience === true,
+      isRechargeCard: false,
+    }
+  }))
+
+  const now = new Date()
+  let saleOrderId
+
+  await pg.transaction(async (tx) => {
+    // 订单号（advisory lock 防并发）
+    saleOrderId = await generateOrderNo('FY-XSD-WX-', tx)
+
+    // document_type：寄存单是把老顾客剩余次数初始化进来，固定 '售后'
+    const documentType = '售后'
+
+    // INSERT sale_orders —— 寄存单核心：金额全 0、status 直接已支付、payment_method='无'
+    await tx.query(
+      `INSERT INTO sale_orders (
+        sale_order_id, status, sale_order_type, document_type, market_name, store_id,
+        sale_order_datetime, total_amount, client_user_id, client_phone, customer_name,
+        payment_method, opened_by,
+        preferred_employee_id, coupon_id, coupon_discount, remark,
+        prepaid_card_amount, received, payable_amount, paid_at,
+        allocation_status, created_at, updated_at
+      ) VALUES ($1, '已支付', '寄存单', $2, $3, $4, $5, 0, $6, $7, $8, '无', $9,
+                NULL, NULL, 0, $10, 0, 0, 0, $5,
+                '待分配', $5, $5)`,
+      [
+        saleOrderId, documentType, marketName, storeId, now,
+        clientUserId, client.phone || null, client.name || null,
+        ctx.auth.staffWfId,
+        remark || null,
+      ]
+    )
+
+    // sale_item 流水号序列
+    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+    const maxResult = await tx.query(
+      `SELECT sale_item_id FROM sale_items
+       WHERE sale_item_id LIKE $1
+       ORDER BY sale_item_id DESC LIMIT 1`,
+      [`XSLSH-WX-${dateStr}%`]
+    )
+    let seq = 1
+    if (maxResult.rows.length > 0) {
+      seq = parseInt(maxResult.rows[0].sale_item_id.slice(-4)) + 1
+    }
+
+    // INSERT sale_items —— received=0；session_count/remaining_sessions 正常写
+    for (let i = 0; i < itemDataList.length; i++) {
+      const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+      const d = itemDataList[i]
+      const sc = d.productType === '家居产品' ? null : d.sessionCount
+      const rs = d.productType === '家居产品' ? null : d.remainingSessions
+
+      await tx.query(
+        `INSERT INTO sale_items (
+          sale_item_id, sale_order_id, store_id, item_direction, sku_id,
+          product_name, sku_spec_name, product_type,
+          session_count, remaining_sessions,
+          unit_price, quantity, unit_real_price, sale_amount, received,
+          sales_category, service_fee, is_shengmei, is_recharge_card, is_experience
+        ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0, $14, 0, $15, false, $16)`,
+        [
+          saleItemId, saleOrderId, storeId, d.skuId,
+          d.productName, d.skuSpecName, d.productType,
+          sc, rs,
+          d.unitPrice, d.quantity, d.unitRealPrice,
+          d.saleAmount,
+          d.salesCategory,
+          d.isShengmei ?? null,
+          d.isExperience,
+        ]
+      )
+    }
+
+    // 审计日志
+    await tx.query(
+      `INSERT INTO operation_logs (action, target_type, target_id, detail, source, created_at)
+       VALUES ('order.createDeposit', 'sale_order', $1, $2::jsonb, $3, NOW())`,
+      [
+        saleOrderId,
+        JSON.stringify({
+          _v: 1,
+          clientUserId,
+          itemCount: itemDataList.length,
+          totalSessionCount: itemDataList.reduce(
+            (acc, it) => acc + (it.sessionCount != null ? it.sessionCount : 0),
+            0
+          ),
+          operatorEmployeeId: ctx.auth.staffWfId,
+        }),
+        'staffApi',
+      ]
+    )
+  })
+
+  ctx.result = {
+    saleOrderId,
+    status: '已支付',
+    itemCount: itemDataList.length,
+    message: '寄存单已创建',
+  }
+}
+
 module.exports = {
   create,
   qrcode,
@@ -2726,4 +2951,5 @@ module.exports = {
   createConversion,
   customerHeldCards,
   createPickup,
+  createDeposit,
 }

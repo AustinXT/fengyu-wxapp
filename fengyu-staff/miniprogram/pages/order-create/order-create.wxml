@@ -242,7 +242,7 @@
           顾客：{{customerInfo.name || customerInfo.phone}} · {{saleOrderType}}
         </text>
 
-        <!-- PR-C §C1 — 订单类型 3 选 1 -->
+        <!-- PR-C §C1 / B5 — 订单类型 4 选 1（寄存单：剩余次数初始化，不收钱） -->
         <view class="order-type-cards">
           <view
             class="order-type-card {{saleOrderType === '销售单' ? 'order-type-card--active' : ''}}"
@@ -268,6 +268,14 @@
             <text class="order-type-card-name {{(!isManager || !customerInfo.id) ? 'order-type-card-name--gray' : ''}}">转换单</text>
             <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '卡折抵换购'}}</text>
           </view>
+          <view
+            class="order-type-card {{saleOrderType === '寄存单' ? 'order-type-card--active' : ''}} {{(!isManager || !customerInfo.id) ? 'order-type-card--disabled' : ''}}"
+            data-type="寄存单"
+            bindtap="onSelectSaleOrderType"
+          >
+            <text class="order-type-card-name {{(!isManager || !customerInfo.id) ? 'order-type-card-name--gray' : ''}}">寄存单</text>
+            <text class="order-type-card-desc">{{!customerInfo.id ? '需已注册顾客' : '剩余次数寄存'}}</text>
+          </view>
         </view>
 
         <!-- PR-C §C3 — 转换单 Panel（saleOrderType='转换单' 时渲染） -->
@@ -277,6 +285,25 @@
             convertInAmount="{{cartTotal}}"
             bind:change="onConversionPanelChange"
           />
+        </block>
+
+        <!-- B5 — 寄存单：不收款，仅展示商品项 + 次数 -->
+        <block wx:elif="{{saleOrderType === '寄存单'}}">
+          <view class="deposit-banner">
+            <text>寄存单：不收款，仅初始化剩余次数到小程序，可生成服务单核销</text>
+          </view>
+          <view class="confirm-items">
+            <view class="confirm-item-block" wx:for="{{cart}}" wx:key="skuId">
+              <view class="confirm-item-header">
+                <text class="confirm-item-name">{{item.spuName}}</text>
+                <text class="confirm-item-spec">{{item.specName}}</text>
+              </view>
+              <view class="confirm-item-row">
+                <text class="confirm-item-label">数量</text>
+                <text class="confirm-item-value">× {{item.quantity}}</text>
+              </view>
+            </view>
+          </view>
         </block>
 
         <!-- 销售单 / 内部单：行级明细 -->
@@ -460,7 +487,7 @@
             custom-class="btn-primary-brand"
             custom-style="border-radius:40rpx;"
             bind:click="onSubmitOrder"
-          >生成付款码</van-button>
+          >{{saleOrderType === '寄存单' ? '确认寄存' : '生成付款码'}}</van-button>
         </view>
       </view>
     </view>

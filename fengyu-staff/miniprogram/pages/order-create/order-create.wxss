@@ -600,3 +600,15 @@
   color: #FA8C16;
   font-weight: 500;
 }
+
+/* ===== B5 寄存单 banner ===== */
+.deposit-banner {
+  background: #FFF7E6;
+  border: 1rpx solid #FA8C16;
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 24rpx;
+  font-size: 26rpx;
+  color: #874D00;
+  line-height: 1.5;
+}

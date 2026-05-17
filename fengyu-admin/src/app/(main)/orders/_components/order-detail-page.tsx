@@ -37,10 +37,12 @@ const paymentMethodMap: Record<string, string> = {
 
 // 2026-04-26 sale-order-domain-refactor：5→3 值
 // 历史"回款单"/"退款单"语义已迁至 sale_order_payments[change_type]
+// 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
 const orderTypeColorMap: Record<string, string> = {
   "销售单": "bg-[#E8F0FE] text-[#3574C4]",
   "内部单": "bg-[#F0F9F2] text-[#3D8A5A]",
   "转换单": "bg-[#E3F2FD] text-[#1565C0]",
+  "寄存单": "bg-[#F3F4F6] text-[#6B7280]",
 }
 
 function formatDateTime(dt: string | null) {
@@ -133,6 +135,13 @@ export default function OrderDetailPageClient({
         <div className="rounded-[var(--radius)] bg-[#FFF7E6] border border-[#F3C77E] px-4 py-3 text-sm text-[#D4820A]">
           该订单有退款申请正在审批中，审批完成后可再次发起退款。
           <Link href="/refunds" className="ml-2 underline">查看退款管理</Link>
+        </div>
+      )}
+
+      {/* B5 — 寄存单提示：不计入营业额 / 提成 / 客单价等统计；仅次数维度纳入 cardHolders */}
+      {order.saleOrderType === "寄存单" && (
+        <div className="rounded-[var(--radius)] bg-[#F3F4F6] border border-[#D1D5DB] px-4 py-3 text-sm text-[#6B7280]">
+          此订单为剩余次数寄存单，不收款、不计入营业额 / 提成 / 客单价统计；可正常生成服务单核销次数。
         </div>
       )}
 

@@ -38,10 +38,12 @@ const PAYMENT_METHOD_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 // 2026-04-26 sale-order-domain-refactor：5→3 值
+// 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额，灰底标识）
 const orderTypeColorMap: Record<string, string> = {
   销售单: "bg-[#E8F0FE] text-[#3574C4]",
   内部单: "bg-[#F0F9F2] text-[#3D8A5A]",
   转换单: "bg-[#E3F2FD] text-[#1565C0]",
+  寄存单: "bg-[#F3F4F6] text-[#6B7280]",
 };
 
 function formatTime(dt: string) {
@@ -302,7 +304,8 @@ export default function OrdersPageClient({
             <Select className="w-40" value={typeFilter} onChange={(e) => setFilter("type", e.target.value)}>
               <option value="">全部单据</option>
               {/* 2026-04-26 sale-order-domain-refactor：5→3 值；'回款单'/'退款单' 已迁至 sale_order_payments */}
-              {(["销售单", "内部单", "转换单"] as SaleOrderType[]).map((t) => (
+              {/* 2026-05-18 B5：+寄存单（剩余次数初始化，不计金额） */}
+              {(["销售单", "内部单", "转换单", "寄存单"] as SaleOrderType[]).map((t) => (
                 <option key={t} value={t}>
                   {t}
                 </option>

@@ -197,8 +197,10 @@ export type OrderStatus = '待支付' | '待确认收款' | '已支付' | '已�
  * 2026-04-26 sale-order-domain-refactor 重构：5 → 3 值
  * 删除：'回款单'（迁至 sale_order_payments[change_type='回款']）
  *       '退款单'（迁至 sale_order_payments[change_type='退款', amount<0]）
+ * 2026-05-18 B5：+'寄存单'（WorkFine 剩余次数初始化，金额维度不入统计，
+ *       次数维度可生成 service_orders 核销）
  */
-export type SaleOrderType = '销售单' | '内部单' | '转换单'
+export type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单'
 export type PaymentMethod = '微信' | '支付宝' | '线下' | '无'
 export type ServiceOrderStatus = '待服务' | '服务中' | '已完成' | '已取消'
 export type ServiceOrderType = '售前' | '售后'

@@ -186,13 +186,15 @@
 
 ### 2.8 sale_orders（订单主表）
 
-> **三种销售单据 + 支付流水模型**：sale_orders 仅承载**销售单 / 内部单 / 转换单**三类，通过 `sale_order_type` 区分。回款 / 退款下沉至 `sale_order_payments`（sop）表，通过 `change_type='回款' / '退款'` 区分；转换单通过 `ref_sale_order_id` 引用原销售单。
+> **四种销售单据 + 支付流水模型**：sale_orders 承载**销售单 / 内部单 / 转换单 / 寄存单**四类，通过 `sale_order_type` 区分。回款 / 退款下沉至 `sale_order_payments`（sop）表，通过 `change_type='回款' / '退款'` 区分；转换单通过 `ref_sale_order_id` 引用原销售单。
+>
+> **寄存单（2026-05-18 B5 新增）**：WorkFine 剩余次数初始化专用，仅店长手动开（`order.createDeposit` / admin `createDepositOrder`）；不收钱（`received=0` / `payable=0` / `total=0` / `payment_method='无'` / `status='已支付'`）、禁所有抵扣（couponId / prepaidCardAmount / customPrice 任一存在即报 `INVALID_STATE: DEPOSIT_NO_DISCOUNT`）；sale_items 保留原价快照供审计但 `received=0`；金额维度统计天然排除（不动 `IN ('销售单','转换单')` 列表），次数维度持卡人数 `mgmt-product.cardHolders` 显式纳入。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，单号格式见下表 |
 | `status` | enum | `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` / `待审批` |
-| `sale_order_type` | enum | `销售单` / `内部单` / `转换单` |
+| `sale_order_type` | enum | `销售单` / `内部单` / `转换单` / `寄存单`（2026-05-18 B5 新增寄存单） |
 | `ref_sale_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；回款/转换/退款引用原单 |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |

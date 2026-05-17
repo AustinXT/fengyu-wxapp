@@ -1807,6 +1807,233 @@ export const createConversionOrder = withPermission(
   },
 )
 
+// ========== B5: 寄存单（剩余次数初始化） ==========
+
+/**
+ * 管理后台开寄存单（admin）
+ *
+ * 与 staffApi.order.createDeposit 语义对齐：
+ *   - 复用 sale_orders + sale_items，可生成 service_orders 核销
+ *   - 不收钱：received=0 / payable=0 / total=0 / payment_method='无' / status='已支付'
+ *   - 拒绝任何抵扣（优惠券 / 储值卡 / 行级 customPrice）
+ *   - 所有金额维度统计排除（dashboard / 提成 / 客单价）
+ *   - 次数维度统计纳入（mgmt-product.cardHolders 持卡人数）
+ *   - 仅 manager 角色（沿用 'sale_order:create' 权限）
+ *
+ * 输入：
+ *   storeId / marketName / clientUserId（必填）+ items[{skuId, quantity}] + remark
+ */
+export const createDepositOrder = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
+      storeId: string
+      marketName: string
+      clientUserId: string
+      preferredEmployeeId?: string
+      remark?: string | null
+      items: Array<{
+        skuId: string
+        quantity: number
+      }>
+    },
+  ): Promise<{ success: boolean; message: string; saleOrderId?: string; itemCount?: number }> => {
+    if (!isInScope(session, data.storeId)) {
+      return { success: false, message: '无权在该门店创建订单' }
+    }
+    if (!data.clientUserId) {
+      return { success: false, message: '寄存单必须指定顾客' }
+    }
+    if (!Array.isArray(data.items) || data.items.length === 0) {
+      return { success: false, message: '寄存单至少需要 1 个商品' }
+    }
+    for (const it of data.items) {
+      if (!it || !it.skuId) return { success: false, message: 'items 缺少 skuId' }
+      if (!Number.isFinite(it.quantity) || it.quantity <= 0) {
+        return { success: false, message: 'items.quantity 必须为正' }
+      }
+    }
+
+    // 查顾客（client_identity_rule：bound_store_id 即可，openid 可空）
+    const [client] = await db
+      .select({
+        userId: clientWechatUsers.userId,
+        phone: clientWechatUsers.phone,
+        name: clientWechatUsers.name,
+        boundStoreId: clientWechatUsers.boundStoreId,
+      })
+      .from(clientWechatUsers)
+      .where(eq(clientWechatUsers.userId, data.clientUserId))
+      .limit(1)
+    if (!client) {
+      return { success: false, message: '顾客不存在' }
+    }
+    if (!client.boundStoreId) {
+      return { success: false, message: '顾客未绑定门店' }
+    }
+
+    // 拉 SKU 信息（含 product_kind / is_recharge_card 校验）
+    const skuIds = data.items.map(i => i.skuId)
+    const skuRows = await db
+      .select({
+        skuId: productSkus.skuId,
+        productType: productSkus.productType,
+        specName: productSkus.specName,
+        price: productSkus.price,
+        specialPrice: productSkus.specialPrice,
+        sessionCount: productSkus.sessionCount,
+        isShengmei: productSkus.isShengmei,
+        isExperience: productSkus.isExperience,
+        isRechargeCard: productSkus.isRechargeCard,
+        salesCategory: productCategories.salesCategory,
+        productKind: productCategories.productKind,
+      })
+      .from(productSkus)
+      .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .where(and(inArray(productSkus.skuId, skuIds), isNull(productSkus.deletedAt)))
+    if (skuRows.length !== skuIds.length) {
+      return { success: false, message: '部分商品不存在或已下架' }
+    }
+    if (skuRows.some(s => s.isRechargeCard === true)) {
+      return { success: false, message: '寄存单不允许充值卡（无次数维度）' }
+    }
+    const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
+
+    // 在事务内生成订单号 + 写 sale_orders + sale_items
+    let saleOrderId: string
+    try {
+      saleOrderId = await db.transaction(async (tx) => {
+        const idRows = await tx.execute(sql`
+          WITH lock AS (
+            SELECT pg_advisory_xact_lock(hashtext('sale_order_id_gen'))
+          )
+          SELECT 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') ||
+            LPAD(
+              (SELECT COALESCE(MAX(
+                CAST(NULLIF(SUBSTRING(sale_order_id FROM '.{4}$'), '') AS INTEGER)
+              ), 0) + 1
+              FROM sale_orders
+              WHERE sale_order_id LIKE 'FY-XSD-WX-' || to_char(NOW(), 'YYMMDD') || '%'
+              )::TEXT, 4, '0'
+            ) AS id
+          FROM lock
+        `)
+        const id = (idRows as any[])[0]?.id as string
+        if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
+
+        const now = new Date()
+        await tx.insert(saleOrders).values({
+          saleOrderId: id,
+          status: '已支付',
+          saleOrderType: '寄存单',
+          documentType: '售后',
+          marketName: data.marketName,
+          storeId: data.storeId,
+          saleOrderDatetime: now,
+          clientUserId: data.clientUserId,
+          clientPhone: client.phone || null,
+          customerName: client.name || null,
+          totalAmount: '0',
+          prepaidCardAmount: '0',
+          payableAmount: '0',
+          received: '0',
+          paymentMethod: '无',
+          openedBy: session.employeeId || null,
+          preferredEmployeeId: data.preferredEmployeeId || null,
+          couponId: null,
+          couponDiscount: '0',
+          remark: data.remark || null,
+          paidAt: now,
+          allocationStatus: '待分配',
+        })
+
+        // 生成 sale_item 流水号序列
+        const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
+        const maxRows = await tx.execute(sql`
+          SELECT sale_item_id FROM sale_items
+          WHERE sale_item_id LIKE ${`XSLSH-WX-${dateStr}%`}
+          ORDER BY sale_item_id DESC LIMIT 1
+        `)
+        let seq = 1
+        const lastRow = (maxRows as any[])[0]
+        if (lastRow && lastRow.sale_item_id) {
+          seq = parseInt(String(lastRow.sale_item_id).slice(-4)) + 1
+        }
+
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i]
+          const sku = skuMap.get(item.skuId)!
+          const saleItemId = `XSLSH-WX-${dateStr}${String(seq + i).padStart(4, '0')}`
+          const basePrice = Number(sku.specialPrice || sku.price)
+          const quantity = item.quantity
+          // 次数 × 数量；家居产品不带次数
+          const sc = sku.productType === '家居产品'
+            ? null
+            : (sku.sessionCount != null ? Number(sku.sessionCount) * quantity : null)
+
+          await tx.insert(saleItems).values({
+            saleItemId,
+            saleOrderId: id,
+            storeId: data.storeId,
+            itemDirection: '购买',
+            skuId: sku.skuId,
+            productName: sku.specName,
+            skuSpecName: sku.specName,
+            productType: sku.productType,
+            sessionCount: sc,
+            remainingSessions: sc,
+            unitPrice: String(basePrice),
+            quantity,
+            unitRealPrice: String(basePrice),
+            saleAmount: (Math.round(basePrice * quantity * 100) / 100).toFixed(2),
+            received: '0',
+            salesCategory: sku.salesCategory ?? null,
+            serviceFee: '0',
+            isShengmei: sku.isShengmei ?? null,
+            isRechargeCard: false,
+            isExperience: sku.isExperience === true,
+          })
+        }
+
+        return id
+      })
+    } catch (err: any) {
+      if (err instanceof ApiError) {
+        return { success: false, message: err.message }
+      }
+      return { success: false, message: err?.message || '寄存单创建失败' }
+    }
+
+    await logOperation(
+      session,
+      'order.createDeposit',
+      'sale_order',
+      saleOrderId,
+      {
+        _v: 1,
+        clientUserId: data.clientUserId,
+        itemCount: data.items.length,
+        totalSessionCount: data.items.reduce((acc, it) => {
+          const sku = skuMap.get(it.skuId)
+          const sc = sku && sku.sessionCount != null
+            ? Number(sku.sessionCount) * it.quantity
+            : 0
+          return acc + sc
+        }, 0),
+      },
+    )
+
+    revalidatePath('/orders')
+    return {
+      success: true,
+      message: `寄存单已创建（${data.items.length} 项）`,
+      saleOrderId,
+      itemCount: data.items.length,
+    }
+  },
+)
+
 // ========== 录入回款（ticket 2026-04-24 多次回款 PR-B） ==========
 
 /**

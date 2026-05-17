@@ -30,7 +30,7 @@ const CARD_PRODUCT_KINDS = ['充值卡', '体验卡'] as const;
  * - 内部单：managerOnly，所有 SKU 半价（后端计算），禁优惠券/禁改价
  * - 转换单：managerOnly，调 order.createConversion；需要已注册 clientUserId
  */
-type SaleOrderType = '销售单' | '内部单' | '转换单';
+type SaleOrderType = '销售单' | '内部单' | '转换单' | '寄存单';
 
 interface CartItem {
   spuId: string;
@@ -929,11 +929,11 @@ Page({
   onSelectSaleOrderType(e: WechatMiniprogram.TouchEvent) {
     const next = e.currentTarget.dataset.type as SaleOrderType;
     if (!next || next === this.data.saleOrderType) return;
-    if ((next === '内部单' || next === '转换单') && !this.data.isManager) {
+    if ((next === '内部单' || next === '转换单' || next === '寄存单') && !this.data.isManager) {
       wx.showToast({ title: '仅店长可用', icon: 'none' });
       return;
     }
-    if (next === '转换单' && !this.data.customerInfo) {
+    if ((next === '转换单' || next === '寄存单') && !this.data.customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
       return;
     }
@@ -952,7 +952,12 @@ Page({
       // PR-D1：切到转换单时重置销售/内部单的 paymentMethod，避免脏值（转换单走 ConversionPanel 内部 picker）
       update.paymentMethod = '微信';
     }
-    // 切到非销售单时清空行级 customPrice（后端内部单/转换单均不接受 customPrice）
+    // B5：寄存单清空储值卡预选（不允许任何抵扣）
+    if (next === '寄存单') {
+      update.useCard = false;
+      update.prepaidCardAmount = 0;
+    }
+    // 切到非销售单时清空行级 customPrice（后端内部单/转换单/寄存单均不接受 customPrice）
     if (next !== '销售单') {
       const cart = this.data.cart.map(c => ({ ...c, customPrice: '' }));
       update.cart = cart;
@@ -1143,6 +1148,10 @@ Page({
     if (saleOrderType === '转换单') {
       return this._submitConversion();
     }
+    // B5 — 分支到 createDeposit（寄存单，剩余次数初始化）
+    if (saleOrderType === '寄存单') {
+      return this._submitDeposit();
+    }
 
     this.setData({ submitting: true });
     try {
@@ -1270,6 +1279,56 @@ Page({
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '转换失败';
+      wx.showToast({ title: msg, icon: 'none' });
+    } finally {
+      this.setData({ submitting: false });
+    }
+  },
+
+  /**
+   * B5 — 寄存单提交：order.createDeposit
+   * - 不收钱、不抵扣、status='已支付'
+   * - 仅传 clientUserId + items[{skuId,quantity}] + remark
+   * - 提交成功后直接返回上一页（无付款码流程）
+   */
+  async _submitDeposit() {
+    const { customerInfo, cart, remark, submitting } = this.data;
+    if (!customerInfo) {
+      wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
+      return;
+    }
+    if (!customerInfo.clientUserId) {
+      wx.showToast({ title: '顾客尚未注册小程序', icon: 'none' });
+      return;
+    }
+    if (cart.length === 0) {
+      wx.showToast({ title: '请先选择商品', icon: 'none' });
+      return;
+    }
+    if (submitting) return;
+    this.setData({ submitting: true });
+    try {
+      const res = await callStaffApi<{ saleOrderId: string; itemCount: number; status: string }>(
+        'order.createDeposit',
+        {
+          clientUserId: customerInfo.clientUserId,
+          items: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
+          remark: remark || undefined,
+        }
+      );
+      this.saveRecentCustomer(customerInfo);
+      this.updateCart([]);
+      this.setData({
+        showCheckout: false,
+        saleOrderType: '销售单',
+      });
+      wx.showToast({
+        title: `寄存单已创建（${res.itemCount} 项）`,
+        icon: 'success',
+        duration: 2000,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '寄存失败';
       wx.showToast({ title: msg, icon: 'none' });
     } finally {
       this.setData({ submitting: false });

@@ -72,6 +72,7 @@ const routes = {
   'order.createConversion': () => require('./routes/order').createConversion,
   'order.customerHeldCards': () => require('./routes/order').customerHeldCards,
   'order.createPickup':   () => require('./routes/order').createPickup,
+  'order.createDeposit':  () => require('./routes/order').createDeposit,
 
   // 营业额分配
   'allocation.save':         () => require('./routes/allocation').save,

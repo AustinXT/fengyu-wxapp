@@ -726,7 +726,7 @@ async function giftHistory(ctx) {
        JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
       WHERE ${whereClause}
         AND o.status IN ('已支付', '已完成')
-        AND o.sale_order_type NOT IN ('内部单', '转换单')
+        AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
         AND si.item_direction = '购买'
         AND si.received::numeric = 0
       ORDER BY o.created_at DESC`,

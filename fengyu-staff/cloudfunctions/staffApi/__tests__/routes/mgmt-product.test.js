@@ -153,7 +153,8 @@ describe('mgmtProduct.cardHolders SQL 形态', () => {
     expect(cardSql).toMatch(/JOIN\s+product_categories\s+pc/)
     expect(cardSql).toMatch(/COUNT\(DISTINCT\s+so\.client_user_id\)/)
     expect(cardSql).toMatch(/GROUP BY\s+pc\.product_kind/)
-    expect(cardSql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*\)/)
+    // 2026-05-18 B5：寄存单（剩余次数初始化）按次数维度纳入持卡人数
+    expect(cardSql).toMatch(/so\.sale_order_type\s+IN\s*\(\s*'销售单'\s*,\s*'转换单'\s*,\s*'寄存单'\s*\)/)
     expect(cardSql).toMatch(/so\.status\s*=\s*'已支付'/)
   })
 

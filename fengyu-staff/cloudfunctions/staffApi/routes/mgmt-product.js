@@ -141,7 +141,8 @@ async function resolveScopeName(scopeType, scopeId) {
  * SQL：
  *   - 持卡：sale_items JOIN sale_orders JOIN product_skus JOIN product_categories
  *     WHERE product_type IN ('疗程卡','单品') AND remaining_sessions > 0
- *     ∩ sale_order_type IN ('销售单','转换单') ∩ status='已支付' ∩ scope（so.store_id）
+ *     ∩ sale_order_type IN ('销售单','转换单','寄存单') ∩ status='已支付' ∩ scope（so.store_id）
+ *     （寄存单为 WorkFine 剩余次数初始化，按次数维度纳入持卡人数）
  *   - 会员数：client_wechat_users WHERE became_member_at IS NOT NULL ∩ scope（c.bound_store_id）
  *     （与 metrics.md memberCount T2 历史化口径一致；持卡人数为截面，本接口不带 $date 守卫）
  */
@@ -173,7 +174,7 @@ async function cardHolders(ctx) {
      WHERE ${sc.sql}
        AND si.product_type IN ('疗程卡','单品')
        AND si.remaining_sessions > 0
-       AND so.sale_order_type IN ('销售单','转换单')
+       AND so.sale_order_type IN ('销售单','转换单','寄存单')
        AND so.status = '已支付'
        AND so.client_user_id IS NOT NULL
        AND pc.product_kind IS NOT NULL
