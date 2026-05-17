@@ -116,7 +116,7 @@
 | **3** | **Advisory lock 跨事务释放窗口可生成重号** — `staffApi/routes/order.js:2473-2495` generateOrderNo 自带独立 `pg.transaction()`，advisory_xact_lock 随子事务 commit 释放；外层 order.create 在 L540 又开新事务才 INSERT；两事务之间存在 TOCTOU 窗口 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
 | **4** | **admin server action 缺统一鉴权 wrapper** — `requirePermission` 已在 208 处调用（覆盖 171 个 action）但仍是显式调用，无 wrapper HOF，新增 action 容易漏；hasPermission 模块归属 2026-05-17 刚做完重整（commit 8a30454）但 wrapper 仍未抽 | P0-CC4-02 | admin 全 action 越权防御深度不足 | **M** |
 | **5** | **client order.create 无券路径 totalAmount 未 Math.round** — `clientApi/routes/order.js:240-247` `totalAmount += saleAmount` 累加后无券路径不再 round（L391-392 的 round 只在 `if (couponInfo)` 块内），直写库；最终 paidAmount 虽 round，但 sale_orders.total_amount 保留浮点 | P0-CC1-v2-01 | client 所有无优惠券订单 total_amount 浮点漂移 ±0.005 | **S** |
-| **6** | **L0 一次性 migration epic 剩余 8 项**（时区 / 充值卡余额 / point/card_transactions 符号 / point bigint / 11→10 项 partial unique / sale_orders.allocation_status default 等）— 退款 in-flight 已由 `uq_sop_status_audit` 覆盖；ratio/commission CHECK 已落 migration 0022；剩余项零碎积压 | L0 P0（13→5 剩 8）| 数值/并发/时区不变量在 DB 层无兜底 | **M** |
+| ~~6~~ | ~~**L0 一次性 migration epic 剩余 8 项**~~ — **2026-05-17 全部清零** ✅ migration 0028（5 CHECK + 2 bigint + ALTER DATABASE）+ migration 0029（partial UNIQUE 10 项）+ admin points.ts safeNumber 兜底 | ~~L0 P0（13→5 剩 8）~~ → **0** | 数值/并发/时区不变量在 DB 层全部硬约束 | **DONE** |
 | **7** | **PII 三端日志全无脱敏 + admin 物理硬删 PII 字段** — `db/helpers/pii.ts` 仍未抽出；操作日志 detail 字段未 sanitize；admin deleteSku / deleteMessage / point_transactions 仍走物理 DELETE | P0-CC6 + 多域 | 个保法合规风险，不可量化资损 | **M** |
 | **8** | **状态机 UPDATE 缺 CAS 守卫（约 12 处路径）** — order/payment/appointment/service 多处 `UPDATE ... WHERE id = $1` 未带 `AND status = $prev`；事务并发下可越级状态 | 02/03/04/06/12/CC2 | 跨表状态机不变量破坏 | **M** |
 | **9** | **TOCTOU partial UNIQUE 索引剩 10 项**（退款 in-flight 那 1 项已落地）— 优惠券模板发放、appointment 时段、unbind 申请等仍依赖事务外读 | L0 P0（11→10 剩） | 兜底防御缺失（应用层并发抢占可绕过）| **M** |
@@ -173,7 +173,7 @@
 | **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
 | **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation（v3 未推进） |
-| **金额/比例字段无 CHECK 约束** | 5+→**2** | ~~07(ratio)~~ ✅ / ~~svc_comm~~ ✅ migration 0022 / 14(card_tx) / 15(pt) 待 | 一次性补齐剩余 2 项 CHECK |
+| **金额/比例字段无 CHECK 约束** | ~~5+→2~~ → **0** ✅ | ~~07(ratio)~~ ✅ migration 0022 / ~~svc_comm~~ ✅ migration 0022 / ~~14(card_tx)~~ ✅ migration 0028 / ~~15(pt)~~ ✅ migration 0028 | 全部补齐 |
 
 ---
 
@@ -181,9 +181,9 @@
 
 ### L0 — Schema / Enums 层（一次性 migration epic — v3 更新）
 
-**P0（剩 5 项）**：手机号 CHECK（S01-1）/ card_transactions 符号 CHECK（S-CC1-2）/ point_transactions 符号 CHECK + bigint（S-CC1-2）/ prepaid_cards.balance >= 0（S-CC2-11）/ PG timezone = Asia/Shanghai（S-CC7-1）/ 剩余 10 项 partial UNIQUE 索引
+**P0（剩 0 项）✅**：剩余 partial UNIQUE 10 项已由 migration 0029 收口（独立 ticket `2026-05-17-toctou-partial-unique-indexes.md`，2026-05-17 落地）
 
-**已关闭**：~~跨表 OPENID 唯一（S01-2）~~ 作废 / ~~sale_orders 金额符号联动 CHECK（S03-4）~~ 架构性作废 / ~~service_commissions voided_at（S-CC7-2）~~ migration 0018 / ~~sale_allocations.allocation_ratio CHECK（S-CC1-1）~~ migration 0022 / ~~commission_rate CHECK（S-CC1-3）~~ migration 0022 / ~~退款 in-flight partial unique~~ migration 0018 uq_sop_status_audit / ~~删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）~~ migration 0018 / ~~uq_sop_txn 去除 method 维度（S04-2）~~ migration 0018 / ~~7 项退款专属列 DROP~~ migration 0025
+**已关闭**：~~跨表 OPENID 唯一（S01-2）~~ 作废 / ~~sale_orders 金额符号联动 CHECK（S03-4）~~ 架构性作废 / ~~service_commissions voided_at（S-CC7-2）~~ migration 0018 / ~~sale_allocations.allocation_ratio CHECK（S-CC1-1）~~ migration 0022 / ~~commission_rate CHECK（S-CC1-3）~~ migration 0022 / ~~退款 in-flight partial unique~~ migration 0018 uq_sop_status_audit / ~~删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）~~ migration 0018 / ~~uq_sop_txn 去除 method 维度（S04-2）~~ migration 0018 / ~~7 项退款专属列 DROP~~ migration 0025 / ~~手机号 CHECK（S01-1）~~ migration 0028 + 211 行 phone NULL 清洗 / ~~card_transactions 符号 CHECK（S-CC1-2）~~ migration 0028 / ~~point_transactions 符号 CHECK + bigint（S-CC1-2）~~ migration 0028 + admin points.ts safeNumber / ~~prepaid_cards.balance >= 0（S-CC2-11）~~ migration 0028 / ~~PG timezone = Asia/Shanghai（S-CC7-1）~~ migration 0028 ALTER DATABASE 双库
 
 **P1（5 项）**：roleEnum PG enum / productKindEnum PG enum / system_configs 加 special_card_kind_id / sale_orders.allocation_status 加 default '待分配' / PII 历史 operation_logs.detail 一次性脱敏
 
@@ -317,7 +317,7 @@
 | E2 退款级联 cascade（5 通道）| P0-CC2-07 + L1 helpers + L3 三端 + 域重构 | ✅ **完成**（2026-04-26/27/05-17） |
 | E3 已删字段引用清理 | P0-05-01 service.create / payNotify 残留 + CC9 测试整改 | 🔥 **部分** — admin/staff/client 业务侧已干净；剩 service.create + payNotify 守卫态 |
 | E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 🔶 **部分** — staff 路由层已加；helper 集中化 + withPermission HOF 待 |
-| E5 schema 不变量 CHECK 一次性 migration | L0 P0 剩 5 项 + L11 audit cron 剩 2 项 | 🔶 **5/13 关闭**：ratio/commission/uq_sop ✅；剩 时区/金额符号/partial unique 10 项 |
+| E5 schema 不变量 CHECK 一次性 migration | L0 P0 剩 0 项 + L11 audit cron 剩 2 项 | ✅ **13/13 关闭**：ratio/commission/uq_sop（0018/0022）+ 时区/手机号/金额符号/balance/bigint（0028）+ partial unique 10 项（0029）|
 | E6 时区统一 + 跨端口径收敛 | CC7 + CC1 + dashboard 三端口径 | 🔶 admin dashboard 已切；staff mgmtDashboard 守护测试待 |
 | E7 跨端副本 helper 抽取 | settlePoints / grantShareGift / role-resolve / sale-item-availability | ✅ **方案改动**：用户 veto 共享目录，改用 `cross-end-sql-snapshot.test.js` 字面量守护（settlePoints + applyRecharge 已落地）；剩 grantShareGift / role-resolve / sale-item-availability 待 |
 | E8 spec 与代码同步守卫 | L9 spec 校对 + CI lint + schema docstring grep | 🔶 **部分** — backend.pr.spec.md v2.1.0 已更；sale_order_type 5→3 后 staff/client.pr.spec 已校对（ticket §11 收尾）|

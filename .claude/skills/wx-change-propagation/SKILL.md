@@ -50,7 +50,7 @@ metadata:
 | L7 | `fengyu-client/cloudfunctions/clientApi/routes/*.js` + `fengyu-staff/cloudfunctions/staffApi/routes/*.js` | 云函数原生 SQL 硬编码：`IN ('值1', '值2')`、`=== '值'` |
 | L8 | `fengyu-staff/miniprogram/utils/formatters.ts` + `fengyu-client/miniprogram/utils/format.ts` | 标签映射 Record — **两端文件名不同，容易只改一个** |
 | L9 | `*/miniprogram/**/pages/**/*.{wxml,ts}` + `fengyu-admin/src/app/**/*.tsx` | WXML `wx:if`/`wx:elif` 条件、TSX 条件渲染、下拉选项数组 |
-| L10 | `fengyu-admin/src/actions/*.test.ts` + `fengyu-admin/e2e/*.spec.ts` + `fengyu-staff/miniprogram/mock/*.ts` + `**/__tests__/**` | 测试断言、mock 数据、E2E selector 中的枚举文本 |
+| L10 | `fengyu-admin/src/actions/*.test.ts` + `fengyu-admin/tests/e2e-pages/*.spec.ts` + `fengyu-admin/tests/e2e-chains/*.spec.ts` + `fengyu-staff/miniprogram/mock/*.ts` + `**/__tests__/**` | 测试断言、mock 数据、E2E selector 中的枚举文本 |
 
 ### 层序约束
 
@@ -229,7 +229,7 @@ L10 测试                        — 新增字段的断言
 
 ### 4.7 admin E2E 测试
 
-`fengyu-admin/e2e/*.spec.ts` 中的 selector 和断言可能包含枚举文本（如按钮文字、下拉选项）。
+`fengyu-admin/tests/e2e-pages/*.spec.ts` 与 `fengyu-admin/tests/e2e-chains/*.spec.ts` 中的 selector 和断言可能包含枚举文本（如按钮文字、下拉选项）。
 
 ---
 
