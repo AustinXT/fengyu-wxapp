@@ -1,5 +1,16 @@
 #!/usr/bin/env node
 /**
+ * @deprecated 2026-05-18 — 旧的"全字段历史订单导入"策略已废弃。
+ *
+ * 用户反馈："你抓的多就错的多"。会议（meeting-20260507）决议改用
+ * "4 字段最小化 + 顾客到店触发核对"工作流，由 import-workfine-legacy.js 实现：
+ *   - 只抓 phone / store_name / amount / order_date
+ *   - status='未审核'，不进入任何统计/cron
+ *   - 顾客小程序登录 → admin /legacy-orders 核对 → 触发标签重算
+ *
+ * 本脚本保留供历史审计与回滚参考，不再调用。任何新的 WorkFine→PG 历史回填
+ * 请使用 db/scripts/import-workfine-legacy.js。
+ *
  * migrate-history-orders.js — 导入 WorkFine 全部历史订单到 PG
  *
  * 补全 Round 1（仅活跃疗程卡）遗漏的历史订单：已用完疗程卡、过期卡、单品销售等。

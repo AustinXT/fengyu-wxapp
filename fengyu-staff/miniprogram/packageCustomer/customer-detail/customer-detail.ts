@@ -25,6 +25,8 @@ interface CustomerDetail {
   lastServiceDate: string | null;
   visitFrequency: string | null;
   topProductName: string | null;
+  /** WorkFine 历史订单待核对数（按手机号匹配；> 0 时顾客详情展示徽章提示） */
+  legacyOrderCount: number;
 }
 
 /** Wave 2B 新增 customer.customerBalance 响应（跨店统一余额） */

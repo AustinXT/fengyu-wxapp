@@ -331,10 +331,19 @@ async function detail(ctx) {
 
   // 到店信息（上次到店 + 到店频率 + 常购商品），并行查询
   const clientUserId = pgUser.user_id;
-  const [visitInfo, purchaseInfo] = await Promise.all([
+  const [visitInfo, purchaseInfo, legacyCountRow] = await Promise.all([
     getVisitInfo(clientUserId),
     getTopProduct(clientUserId),
+    // 历史订单待核对数（按 phone 匹配；未绑定 client_user_id 的 legacy 行也算）
+    phone
+      ? pg.query(
+          `SELECT COUNT(*)::int AS cnt FROM sale_orders
+           WHERE legacy_source = 'workfine' AND status = '未审核' AND client_phone = $1`,
+          [phone],
+        )
+      : Promise.resolve([{ cnt: 0 }]),
   ]);
+  const legacyOrderCount = legacyCountRow[0]?.cnt || 0;
 
   ctx.result = {
     id: pgUser.customer_id || null,
@@ -355,6 +364,7 @@ async function detail(ctx) {
     totalConsumption,
     yearConsumption,
     source: pgUser.customer_id ? "both" : "miniprogram",
+    legacyOrderCount,
   };
 }
 
@@ -861,7 +871,7 @@ async function giftHistory(ctx) {
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE ${whereClause}
       AND o.status IN ('已支付', '已完成')
-      AND o.sale_order_type NOT IN ('内部单', '转换单')
+      AND o.sale_order_type NOT IN ('内部单', '转换单', '寄存单')
       AND si.item_direction = '购买'
       AND si.received::numeric = 0
     ORDER BY o.created_at DESC

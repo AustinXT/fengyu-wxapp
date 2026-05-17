@@ -159,6 +159,26 @@ async function bindPhone(ctx) {
     [userId, now, phoneNumber]
   )
 
+  // 同步回填 WorkFine 历史导入订单的 client_user_id；不翻 status（仍 '未审核'）。
+  // 顾客本次绑定让 admin /legacy-orders 列表的"已匹配顾客"列变绿，便于店员核对。
+  // 实际审核动作发生在管理后台，触发标签重算见 lib/recompute-customer-tags.ts。
+  // 注意：上面那条 UPDATE 已经覆盖 legacy_source IS NOT NULL 的行（条件未排除 legacy），
+  // 这里不再重复 UPDATE 以免双写 updated_at；只做幂等查询打日志，便于排查。
+  try {
+    const legacyCheckRows = await pg.query(
+      `SELECT COUNT(*)::int AS cnt FROM sale_orders
+       WHERE legacy_source = 'workfine' AND client_user_id = $1`,
+      [userId]
+    )
+    const legacyLinked = legacyCheckRows[0]?.cnt || 0
+    if (legacyLinked > 0) {
+      console.log(`[bindPhone] linked ${legacyLinked} WorkFine legacy orders to user ${userId} (phone=${phoneNumber})`)
+    }
+  } catch (err) {
+    // 仅用于日志统计，失败不影响绑定主流程
+    console.error('[bindPhone] legacy order link check failed', err && err.message)
+  }
+
   ctx.result = {
     success: true,
     userId,

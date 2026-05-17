@@ -34,6 +34,10 @@ const ADMIN_ORDERS_TS = path.resolve(
   __dirname,
   '../../../../../fengyu-admin/src/actions/orders.ts'
 )
+const ADMIN_RECOMPUTE_TS = path.resolve(
+  __dirname,
+  '../../../../../fengyu-admin/src/lib/recompute-customer-tags.ts'
+)
 
 /**
  * 从源文件提取 `SELECT CASE ... END AS computed_type` 段
@@ -78,12 +82,14 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
   let paynotifySql
   let adminSql
   let adminSrc
+  let adminRecomputeSql
 
   beforeAll(() => {
     staffSql = extractCaseSql(STAFF_ORDER_JS)
     paynotifySql = extractCaseSql(PAYNOTIFY_JS)
     adminSql = extractCaseSql(ADMIN_ORDERS_TS)
     adminSrc = fs.readFileSync(ADMIN_ORDERS_TS, 'utf8')
+    adminRecomputeSql = extractCaseSql(ADMIN_RECOMPUTE_TS)
   })
 
   describe('staffApi routes/order.js', () => {
@@ -178,12 +184,19 @@ describe('recalcCustomerType SQL 源文件守卫', () => {
       expect(adminBranches).toBe(staffBranches)
     })
 
+    test('admin recompute-customer-tags.ts vs staff（legacy 订单审核通过触发的第 4 端副本）', () => {
+      const staffBranches = normalizeSql(extractNonMemberBranches(staffSql))
+      const recomputeBranches = normalizeSql(extractNonMemberBranches(adminRecomputeSql))
+      expect(recomputeBranches).toBe(staffBranches)
+    })
+
     test('不再出现 ② ③ 分支字节级相同的死分支模式', () => {
       // 旧 bug 模式：两个相邻 WHEN EXISTS 块完全一样，只查 sale_orders 不 JOIN
       const olderDeadPattern = /WHEN EXISTS \(\s*SELECT 1 FROM sale_orders\s*WHERE[^)]*sale_order_type = '销售单'\s*\)\s*THEN '小美客'/
       expect(staffSql).not.toMatch(olderDeadPattern)
       expect(paynotifySql).not.toMatch(olderDeadPattern)
       expect(adminSql).not.toMatch(olderDeadPattern)
+      expect(adminRecomputeSql).not.toMatch(olderDeadPattern)
     })
   })
 })

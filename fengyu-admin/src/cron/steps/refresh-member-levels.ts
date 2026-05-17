@@ -22,13 +22,13 @@ import { determineMemberLevel, isUpgrade, isDowngrade } from '../lib/member-leve
 import { loadJsonConfig } from '../lib/benefits-loader'
 import { getMemberThreshold } from '../config'
 
-interface BenefitItem {
+export interface BenefitItem {
   messageTitle?: string
   messageBody?: string
   points?: number
   couponTemplateIds?: string[]
 }
-type BenefitsConfig = Record<string, BenefitItem>
+export type BenefitsConfig = Record<string, BenefitItem>
 
 export interface MemberLevelsResult {
   total: number
@@ -130,8 +130,10 @@ export async function refreshMemberLevels(db: Db): Promise<MemberLevelsResult> {
 /**
  * 升级路径：UPDATE 等级 + 写 150 天保级期 + memberLevelChange 日志 + 三件套权益
  * 全在一个事务内；任一步失败 → 全部回滚（包括权益发放）。
+ *
+ * 2026-05-18：export 给 src/lib/recompute-customer-tags.ts 复用（历史订单审核通过时单顾客触发）。
  */
-async function processUpgrade(
+export async function processUpgrade(
   db: Db,
   userId: string,
   oldLevel: string | null,
@@ -180,7 +182,7 @@ async function processUpgrade(
  *
  * @returns true=保级跳过；false=实际降级
  */
-async function processDowngrade(
+export async function processDowngrade(
   db: Db,
   userId: string,
   oldLevel: string | null,

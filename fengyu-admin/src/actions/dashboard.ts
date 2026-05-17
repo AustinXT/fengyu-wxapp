@@ -108,7 +108,7 @@ export const getDashboardStats = withPermission('dashboard:view', async (session
         END), 0) AS today_refunded_amount,
         COUNT(DISTINCT CASE
           WHEN (sale_order_datetime AT TIME ZONE 'Asia/Shanghai')::date = (SELECT today FROM bounds)
-            AND status NOT IN ('已关闭', '支付失败')
+            AND status NOT IN ('已关闭', '支付失败', '未审核', '已作废')
             AND sale_order_type IN ('销售单', '转换单')
           THEN client_user_id
         END) AS today_opened_customers,

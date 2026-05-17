@@ -25,6 +25,7 @@ import {
 	Settings,
 	SlidersHorizontal,
 	Unlink,
+	History,
 	type LucideIcon,
 } from "lucide-react";
 import type { AuthSession, RoleType } from "./types";
@@ -59,6 +60,12 @@ export const MENU_CONFIG: MenuGroup[] = [
 		items: [
 			{ label: "开单", icon: ShoppingCart, href: "/orders/create", requiredRoles: ["manager"] },
 			{ label: "订单管理", icon: FileText, href: "/orders", requiredRoles: ["manager"], readonlyRoles: ["finance"] },
+			{
+				label: "历史订单核对",
+				icon: History,
+				href: "/legacy-orders",
+				requiredRoles: ["admin", "manager"],
+			},
 			{
 				label: "营业额分配",
 				icon: PieChart,

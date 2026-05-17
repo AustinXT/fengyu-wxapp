@@ -35,6 +35,12 @@
           <text class="stat-value">¥{{customer.yearConsumption}}</text>
         </view>
       </view>
+      <view wx:if="{{customer.legacyOrderCount > 0}}" class="legacy-orders-badge">
+        <van-icon name="warning-o" size="32rpx" color="#D4820A" />
+        <text class="legacy-orders-text">
+          历史订单 {{customer.legacyOrderCount}} 条待核对（请到管理后台核对）
+        </text>
+      </view>
     </view>
 
     <!-- 6-Tab 导航 -->
