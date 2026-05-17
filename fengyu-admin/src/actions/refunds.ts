@@ -8,8 +8,7 @@ import { and, desc, asc, eq, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
-import { getSession } from '@/lib/auth'
-import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
 import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { assertOrderInScope } from '@/lib/scope-assert'
 import { logOperation } from '@/lib/operation-log'
@@ -1212,26 +1211,15 @@ function mapRefundRow(r: {
  *
  * 2026-04-26 sale-order-domain-refactor：原 paid_amount 列已 DROP，统一改用
  * received - refunded_amount；类型限定为 5→3 后的 3 值。
+ *
+ * spending_tier 档位边界为固定值（含 '1990-1W' 档下界 1990），不随
+ * system_configs.new_member_threshold 变化；门槛只影响 customer_type / member_level。
  */
 async function refreshSpendingTierTx(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   clientUserId: string,
 ): Promise<void> {
   if (!clientUserId) return
-
-  let threshold = 1990
-  try {
-    const cfgRows = await tx.execute(sql`
-      SELECT value FROM system_configs WHERE key = 'new_member_threshold' LIMIT 1
-    `)
-    const first = (cfgRows as unknown as Array<{ value: string | number }>)[0]
-    if (first?.value != null) {
-      const v = Number(first.value)
-      if (Number.isFinite(v) && v > 0) threshold = v
-    }
-  } catch {
-    // 配置读取失败时使用默认值
-  }
 
   await tx.execute(sql`
     UPDATE client_wechat_users
@@ -1240,7 +1228,7 @@ async function refreshSpendingTierTx(
          WHEN t.total >= 60000  THEN '6-10W'
          WHEN t.total >= 30000  THEN '3-6W'
          WHEN t.total >= 10000  THEN '1-3W'
-         WHEN t.total >= ${threshold} THEN '1990-1W'
+         WHEN t.total >= 1990   THEN '1990-1W'
          ELSE '<1990'
        END::spending_tier,
        updated_at = NOW()
