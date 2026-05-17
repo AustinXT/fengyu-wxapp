@@ -71,14 +71,19 @@ function ensureDir(dir: string) {
 }
 
 // 跑 cron:once（spawn admin 子进程，长时跑 5 个 STEP；返回 stdout 用于日志）
+//
+// 实测耗时：STEP 2 refresh-member-levels 对 ~1648 个 '会员客' 做循环 spend 聚合，
+// 单次跑下来 ~3.5 分钟（210s）。整体 cron:once ~3.5 分钟。timeout 给到 8 分钟兜底。
 function runCronOnce(): string {
-  console.log('[链路6] 触发 cron:once …')
+  console.log('[链路6] 触发 cron:once …(预计 3-5 分钟)')
+  const t0 = Date.now()
   const out = execSync('bun run cron:once', {
     cwd: ADMIN_DIR,
     encoding: 'utf8',
-    timeout: 120000,
+    timeout: 480000, // 8 分钟
+    maxBuffer: 32 * 1024 * 1024, // STEP 5 paymentInvariants 输出可达数 MB
   })
-  console.log('[链路6] cron:once 完成')
+  console.log(`[链路6] cron:once 完成 (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
   return out
 }
 
@@ -163,7 +168,8 @@ async function login(page: import('@playwright/test').Page, phone: string, pass:
 // ── 测试主体 ─────────────────────────────────────────────────────────────────
 
 test('链路6：会员等级升级（cron 触发）', async ({ page }) => {
-  test.setTimeout(300_000)
+  // 单测整体超时：2 次 cron run × ~3.5 分钟 + UI ~1 分钟 + 缓冲 ⇒ 15 分钟
+  test.setTimeout(900_000)
   ensureDir(TEST_RESULTS_DIR)
 
   page.on('console', (msg) => {

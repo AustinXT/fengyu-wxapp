@@ -56,12 +56,15 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     it('从星钻升到黑钻 → upgradeCount=1，写日志+权益', async () => {
       // load benefits config
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
-      // SELECT memberClients
+      // SELECT memberClients（含 spend，单条批量查询）
       mockExecute.mockResolvedValueOnce([
-        { user_id: 'u1', member_level: '星钻', member_level_locked_until: null },
+        {
+          user_id: 'u1',
+          member_level: '星钻',
+          member_level_locked_until: null,
+          spend: '120000',
+        },
       ])
-      // SELECT spend
-      mockExecute.mockResolvedValueOnce([{ spend: '120000' }])
 
       // tx 内：UPDATE level + INSERT operation_logs + grantUpgradeBenefits 三件套
       mockExecute.mockResolvedValueOnce([]) // UPDATE
@@ -98,9 +101,13 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     it('配置缺失也仍升级（仅跳过权益）', async () => {
       mockExecute.mockResolvedValueOnce([]) // member_level_benefits 不存在
       mockExecute.mockResolvedValueOnce([
-        { user_id: 'u1', member_level: null, member_level_locked_until: null },
+        {
+          user_id: 'u1',
+          member_level: null,
+          member_level_locked_until: null,
+          spend: '12000',
+        },
       ])
-      mockExecute.mockResolvedValueOnce([{ spend: '12000' }])
       mockExecute.mockResolvedValueOnce([]) // UPDATE level
       mockExecute.mockResolvedValueOnce([]) // INSERT operation_logs
 
@@ -115,15 +122,15 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     it('lockedUntil 在未来 → heldCount=1，不更新 member_level', async () => {
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
       const future = new Date(Date.now() + 10 * 86400000)
+      // spend 较低 → 触发降级判定
       mockExecute.mockResolvedValueOnce([
         {
           user_id: 'u1',
           member_level: '黑钻',
           member_level_locked_until: future,
+          spend: '5000',
         },
       ])
-      // spend 较低 → 触发降级判定
-      mockExecute.mockResolvedValueOnce([{ spend: '5000' }])
       // 单条 INSERT memberLevelHeld（无事务）
       mockExecute.mockResolvedValueOnce([])
 
@@ -153,9 +160,9 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
           user_id: 'u1',
           member_level: '黑钻',
           member_level_locked_until: past,
+          spend: '5000',
         },
       ])
-      mockExecute.mockResolvedValueOnce([{ spend: '5000' }])
       // tx 内：UPDATE + INSERT log
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([])
@@ -185,9 +192,13 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
     it('newLevel === oldLevel → unchangedCount++', async () => {
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
       mockExecute.mockResolvedValueOnce([
-        { user_id: 'u1', member_level: '黑钻', member_level_locked_until: null },
+        {
+          user_id: 'u1',
+          member_level: '黑钻',
+          member_level_locked_until: null,
+          spend: '120000',
+        },
       ])
-      mockExecute.mockResolvedValueOnce([{ spend: '120000' }])
 
       const result = await refreshMemberLevels(mockDb as never)
 
@@ -204,19 +215,28 @@ describe('cron-worker STEP 2 — refreshMemberLevels', () => {
   })
 
   describe('F. 单用户失败不影响其他用户', () => {
-    it('查 spend 抛错 → 该用户 errorCount++，下个用户继续', async () => {
+    it('某用户事务内 UPDATE 抛错 → 该用户 errorCount++，下个用户继续', async () => {
       mockExecute.mockResolvedValueOnce([{ value: JSON.stringify(BLACK_BENEFITS) }])
+      // 批量 SELECT memberClients（含 spend）
       mockExecute.mockResolvedValueOnce([
-        { user_id: 'u-fail', member_level: '初钻', member_level_locked_until: null },
-        { user_id: 'u-ok', member_level: '初钻', member_level_locked_until: null },
+        {
+          user_id: 'u-fail',
+          member_level: '初钻',
+          member_level_locked_until: null,
+          spend: '12000',
+        },
+        {
+          user_id: 'u-ok',
+          member_level: '初钻',
+          member_level_locked_until: null,
+          spend: '12000',
+        },
       ])
 
-      // u-fail：SELECT spend 抛错
-      mockExecute.mockRejectedValueOnce(new Error('spend select fail'))
+      // u-fail：升级事务的 UPDATE level 抛错
+      mockExecute.mockRejectedValueOnce(new Error('update fail'))
 
-      // u-ok：SELECT spend 正常 → 升到星钻
-      mockExecute.mockResolvedValueOnce([{ spend: '12000' }])
-      // tx 内：UPDATE + INSERT log + 三件套
+      // u-ok：tx 内 UPDATE + INSERT log + 三件套
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([])
       mockExecute.mockResolvedValueOnce([])
