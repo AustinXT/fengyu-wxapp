@@ -22,8 +22,7 @@ import { projectSeriesLookup } from "./lookup";
  * sales_category 确定该品项的销售分类，进而决定提成比例。
  *
  * 一级行（productKind IS NULL）的 capability 列：
- * - displayColor / displayIcon：商品 tag 视觉渲染依据，前端不再硬编码字面量分支。
- * - requiresShengmeiFlag：该 kind 下的 SKU 表单是否需要"是否生美"开关（替代字面量等值）。
+ * - displayColor：商品 tag 视觉渲染依据，前端不再硬编码字面量分支。
  *
  * 二级行（productKind 非 NULL）：上述 capability 列 NULL，运行时按需读取父级行。
  *
@@ -37,8 +36,6 @@ export const productCategories = pgTable("product_categories", {
   sortOrder: integer("sort_order").notNull().default(0),
   isValid: boolean("is_valid").notNull().default(true),
   displayColor: text("display_color"),
-  displayIcon: text("display_icon"),
-  requiresShengmeiFlag: boolean("requires_shengmei_flag").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at")
     .notNull()
@@ -147,32 +144,43 @@ export const mallCategories = pgTable("mall_categories", {
  * 展示属性（封面图、详情图、描述）和管理范围在此层。
  * is_bundle=true 时为套餐，分组选择逻辑由 mall_bundle_groups 管理。
  */
-export const products = pgTable("products", {
-  productId: text("product_id").primaryKey(),
-  categoryId: text("category_id")
-    .notNull()
-    .references(() => mallCategories.categoryId),
-  name: text("name").notNull(),
-  coverImage: text("cover_image"),
-  detailImages: text("detail_images").array(),
-  description: text("description"),
-  isBundle: boolean("is_bundle").notNull().default(false),
-  /** 展示价/套餐总价 */
-  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
-  specialPrice: numeric("special_price", { precision: 10, scale: 2 }),
-  /** 管理范围（null=总部管理） */
-  manageScope: text("manage_scope"),
-  /** 可见范围（null=全部可见） */
-  marketScope: text("market_scope"),
-  sortOrder: integer("sort_order").notNull().default(0),
-  isEnabled: boolean("is_enabled").notNull().default(true),
-  isVisible: boolean("is_visible").notNull().default(true),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at")
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
-});
+export const products = pgTable(
+  "products",
+  {
+    productId: text("product_id").primaryKey(),
+    categoryId: text("category_id")
+      .notNull()
+      .references(() => mallCategories.categoryId),
+    name: text("name").notNull(),
+    coverImage: text("cover_image"),
+    detailImages: text("detail_images").array(),
+    description: text("description"),
+    isBundle: boolean("is_bundle").notNull().default(false),
+    /** 展示价/套餐总价 */
+    price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+    specialPrice: numeric("special_price", { precision: 10, scale: 2 }),
+    /** 管理范围（null=总部管理） */
+    manageScope: text("manage_scope"),
+    /** 可见范围（null=全部可见） */
+    marketScope: text("market_scope"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isVisible: boolean("is_visible").notNull().default(true),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+    /** 软删时间戳；NULL=未删。商城列表/前端展示一律按 deleted_at IS NULL 过滤 */
+    deletedAt: timestamp("deleted_at"),
+    /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */
+    deletedBy: text("deleted_by"),
+  },
+  (table) => [
+    index("idx_products_active")
+      .on(table.productId)
+      .where(sql`deleted_at IS NULL`),
+  ],
+);
 
 /**
  * 商城管理 — 套餐分组

@@ -25,8 +25,6 @@ interface FormData {
   sortOrder: number
   isValid: boolean
   displayColor: string
-  displayIcon: string
-  requiresShengmeiFlag: boolean
 }
 
 const emptyForm: FormData = {
@@ -34,8 +32,6 @@ const emptyForm: FormData = {
   sortOrder: 0,
   isValid: true,
   displayColor: "",
-  displayIcon: "",
-  requiresShengmeiFlag: false,
 }
 
 export default function ProductKindManagementDialog({
@@ -77,23 +73,19 @@ export default function ProductKindManagementDialog({
       sortOrder: row.sortOrder,
       isValid: row.isValid,
       displayColor: row.displayColor ?? "",
-      displayIcon: row.displayIcon ?? "",
-      requiresShengmeiFlag: row.requiresShengmeiFlag,
     })
     setFormOpen(true)
   }
 
   async function handleSubmit() {
     if (!form.categoryName.trim()) {
-      toast.error("请输入品项类型名称")
+      toast.error("请输入品项一级分类名称")
       return
     }
     setSaving(true)
     try {
       const capabilityFields = {
         displayColor: form.displayColor.trim() || null,
-        displayIcon: form.displayIcon.trim() || null,
-        requiresShengmeiFlag: form.requiresShengmeiFlag,
       }
       if (editing) {
         const res = await updateProductKind(
@@ -111,7 +103,7 @@ export default function ProductKindManagementDialog({
           if (res.message.includes("已被其他人修改")) router.refresh()
           return
         }
-        toast.success("品项类型已更新")
+        toast.success("品项一级分类已更新")
       } else {
         const res = await createProductKind({
           categoryName: form.categoryName.trim(),
@@ -123,7 +115,7 @@ export default function ProductKindManagementDialog({
           toast.error(res.message)
           return
         }
-        toast.success("品项类型已创建")
+        toast.success("品项一级分类已创建")
       }
       setFormOpen(false)
       router.refresh()
@@ -148,7 +140,7 @@ export default function ProductKindManagementDialog({
         if (res.message.includes("已被其他人修改")) router.refresh()
         return
       }
-      toast.success("品项类型已停用")
+      toast.success("品项一级分类已停用")
       setDisableTarget(null)
       router.refresh()
     } catch {
@@ -223,30 +215,30 @@ export default function ProductKindManagementDialog({
     <>
       <Dialog open={open} onOpenChange={onOpenChange} className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>品项类型管理</DialogTitle>
+          <DialogTitle>品项一级分类管理</DialogTitle>
         </DialogHeader>
         <div className="mt-4">
           <div className="flex items-center justify-end mb-3">
             <Button size="sm" onClick={openAdd}>
-              新增类型
+              新增一级分类
             </Button>
           </div>
-          <DataTable columns={columns} data={sorted} emptyText="暂无品项类型" />
+          <DataTable columns={columns} data={sorted} emptyText="暂无品项一级分类" />
         </div>
       </Dialog>
 
       {/* Add/Edit form dialog */}
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogHeader>
-          <DialogTitle>{editing ? "编辑品项类型" : "新增品项类型"}</DialogTitle>
+          <DialogTitle>{editing ? "编辑品项一级分类" : "新增品项一级分类"}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4 mt-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">类型名称 *</label>
+            <label className="text-sm font-medium">分类名称 *</label>
             <Input
               value={form.categoryName}
               onChange={(e) => setForm({ ...form, categoryName: e.target.value })}
-              placeholder="请输入品项类型名称"
+              placeholder="请输入品项一级分类名称"
             />
           </div>
           <div className="space-y-2">
@@ -277,24 +269,6 @@ export default function ProductKindManagementDialog({
               用于商品 tag、购物车标签的视觉色；为空将不渲染 tag 颜色。
             </p>
           </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">展示图标（可选，emoji 或 icon name）</label>
-            <Input
-              value={form.displayIcon}
-              onChange={(e) => setForm({ ...form, displayIcon: e.target.value })}
-              placeholder="留空即不展示"
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <label className="text-sm font-medium">是否需要"是否生美"开关</label>
-              <p className="text-xs text-[var(--muted-foreground)]">仅护理类项目通常勾选；勾选后该一级品项下商品表单显示"是否生美"选项</p>
-            </div>
-            <Switch
-              checked={form.requiresShengmeiFlag}
-              onCheckedChange={(checked) => setForm({ ...form, requiresShengmeiFlag: checked })}
-            />
-          </div>
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium">启用状态</label>
             <Switch checked={form.isValid} onCheckedChange={(checked) => setForm({ ...form, isValid: checked })} />
@@ -314,7 +288,7 @@ export default function ProductKindManagementDialog({
       <AlertDialog open={!!disableTarget} onOpenChange={(o) => !o && setDisableTarget(null)}>
         <AlertDialogTitle>确认停用</AlertDialogTitle>
         <AlertDialogDescription>
-          确定要停用品项类型「{disableTarget?.categoryName}」吗？停用后该类型下的二级分类仍保留，但不再显示为可选分组。
+          确定要停用品项一级分类「{disableTarget?.categoryName}」吗？停用后该一级分类下的二级分类仍保留，但不再显示为可选分组。
         </AlertDialogDescription>
         <AlertDialogFooter>
           <AlertDialogCancel onClick={() => setDisableTarget(null)} disabled={disabling}>

@@ -69,7 +69,7 @@ export default function CategoriesPageClient({
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
-  // 品项类型管理 dialog
+  // 品项一级分类管理 dialog
   const [kindDialogOpen, setKindDialogOpen] = useState(false)
 
   const categoriesByKind = useMemo(() => {
@@ -108,7 +108,7 @@ export default function CategoriesPageClient({
 
   const handleSubmit = async () => {
     if (!form.categoryName.trim()) {
-      toast.error("请输入分类名称")
+      toast.error("请输入二级分类名称")
       return
     }
     setSaving(true)
@@ -126,7 +126,7 @@ export default function CategoriesPageClient({
           if (catResult.message.includes("已被其他人修改")) router.refresh()
           return
         }
-        toast.success("分类已更新")
+        toast.success("二级分类已更新")
       } else {
         const createResult = await createCategory({
           categoryName: form.categoryName.trim(),
@@ -139,7 +139,7 @@ export default function CategoriesPageClient({
           toast.error(createResult.message)
           return
         }
-        toast.success("分类已创建")
+        toast.success("二级分类已创建")
       }
       setDialogOpen(false)
       router.refresh()
@@ -161,7 +161,7 @@ export default function CategoriesPageClient({
         if (disableResult.message.includes("已被其他人修改")) router.refresh()
         return
       }
-      toast.success("分类已停用")
+      toast.success("二级分类已停用")
       setDisableTarget(null)
       router.refresh()
     } catch (err) {
@@ -254,14 +254,14 @@ export default function CategoriesPageClient({
               <DataTable
                 columns={columns}
                 data={(categoriesByKind[kind.categoryName] ?? [])}
-                emptyText="暂无分类"
+                emptyText="暂无二级分类"
               />
             </TabsContent>
           ))}
         </Tabs>
       ) : (
         <div className="text-center py-8 text-[var(--muted-foreground)]">
-          暂无品项类型，请先通过「品项类型管理」添加
+          暂无品项一级分类，请先通过「品项一级分类管理」添加
         </div>
       )}
 
@@ -280,7 +280,7 @@ export default function CategoriesPageClient({
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">品项类型 *</label>
+            <label className="text-sm font-medium">品项一级分类 *</label>
             <Select
               value={form.productKind}
               onChange={(e) => setForm({ ...form, productKind: e.target.value })}
@@ -348,7 +348,7 @@ export default function CategoriesPageClient({
         </AlertDialogFooter>
       </AlertDialog>
 
-      {/* 品项类型管理 Dialog */}
+      {/* 品项一级分类管理 Dialog */}
       <ProductKindManagementDialog
         open={kindDialogOpen}
         onOpenChange={setKindDialogOpen}

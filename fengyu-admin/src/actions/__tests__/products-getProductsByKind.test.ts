@@ -36,9 +36,9 @@ vi.mock('@db/product', () => ({
     productId: 'product_id',
     categoryId: 'category_id',
     isBundle: 'is_bundle',
-    isEnabled: 'is_enabled',
     isVisible: 'is_visible',
     sortOrder: 'sort_order',
+    deletedAt: 'deleted_at',
   },
   productSkus: {
     skuId: 'sku_id',

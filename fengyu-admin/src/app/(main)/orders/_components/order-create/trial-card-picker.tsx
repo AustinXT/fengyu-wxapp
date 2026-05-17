@@ -35,7 +35,6 @@ export function TrialCardPicker({ categories, onAdd }: NormalKindPickerProps) {
               manageScope: null,
               marketScope: null,
               sortOrder: sku.sortOrder,
-              isEnabled: true,
               isVisible: true,
               createdAt: '',
               updatedAt: '',

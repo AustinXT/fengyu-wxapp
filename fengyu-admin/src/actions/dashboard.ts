@@ -42,7 +42,7 @@ async function getAdminStats() {
     SELECT
       (SELECT COUNT(*) FROM stores WHERE is_closed = false) AS total_stores,
       (SELECT COUNT(*) FROM staff_wechat_users WHERE is_resigned = false) AS total_employees,
-      (SELECT COUNT(*) FROM products WHERE is_enabled = true) AS total_products,
+      (SELECT COUNT(*) FROM products WHERE deleted_at IS NULL) AS total_products,
       (SELECT COUNT(*) FROM client_wechat_users) AS total_customers
   `)
   const r = (rows as any[])[0] ?? {}

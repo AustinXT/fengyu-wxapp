@@ -57,15 +57,9 @@ export default function SkuDetailPageClient({
   const [deleting, setDeleting] = useState(false)
 
   const selectedCategory = categories.find(c => c.categoryId === categoryId)
-  // 二级行的 capability 来自父级一级行（getCategories 已 LEFT JOIN 回填）
-  const requiresShengmei = selectedCategory?.parentRequiresShengmeiFlag ?? false
 
   const handleCategoryChange = (id: string) => {
     setCategoryId(id)
-    const cat = categories.find(c => c.categoryId === id)
-    if (cat && !cat.parentRequiresShengmeiFlag) {
-      setIsShengmei(false)
-    }
     setFormDirty(true)
   }
 
@@ -118,7 +112,7 @@ export default function SkuDetailPageClient({
         sessionCount,
         sortOrder,
         serviceFee,
-        isShengmei: requiresShengmei ? isShengmei : null,
+        isShengmei,
         isExperience,
         isRechargeCard,
         projectSeriesId,
@@ -208,18 +202,16 @@ export default function SkuDetailPageClient({
                   <option value="家居产品">家居产品</option>
                 </Select>
               </div>
-              {requiresShengmei && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">是否生美</label>
-                  <Select
-                    value={isShengmei ? "true" : "false"}
-                    onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
-                  >
-                    <option value="false">否（科美）</option>
-                    <option value="true">是（生美）</option>
-                  </Select>
-                </div>
-              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">是否生美</label>
+                <Select
+                  value={isShengmei ? "true" : "false"}
+                  onChange={(e) => { setIsShengmei(e.target.value === "true"); setFormDirty(true) }}
+                >
+                  <option value="false">否（科美）</option>
+                  <option value="true">是（生美）</option>
+                </Select>
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">经营类型</label>
                 <Input value={selectedCategory?.salesCategory ?? "—"} disabled readOnly />

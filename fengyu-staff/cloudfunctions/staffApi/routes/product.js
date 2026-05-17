@@ -173,7 +173,7 @@ async function _queryMallBundleGroups() {
            p.price, p.special_price, p.sort_order
     FROM products p
     WHERE p.is_bundle = true
-      AND p.is_enabled = true
+      AND p.deleted_at IS NULL
       AND p.is_visible = true
     ORDER BY p.sort_order ASC
   `)

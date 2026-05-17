@@ -47,8 +47,8 @@ const actionLabels: Record<string, string> = {
   "sync.full": "全量同步", "sync.incremental": "增量同步",
   // 系统
   "system.saveConfig": "保存系统配置",
-  // 品项类型
-  "product_kind.update": "编辑品项类型",
+  // 品项一级分类
+  "product_kind.update": "编辑品项一级分类",
   // 商城
   "mall_product_sku.update": "编辑商城规格", "mall_product_sku.delete": "移除商城规格",
   "mall_category.create": "创建商城分类", "mall_category.update": "编辑商城分类",
@@ -102,7 +102,7 @@ const fieldLabels: Record<string, string> = {
   // 组织
   type: "类型", parentId: "上级节点", isActive_org: "是否启用",
   // 商品
-  categoryName: "分类名称", productKind: "品项类型", salesCategory: "销售分类",
+  categoryName: "分类名称", productKind: "品项一级分类", salesCategory: "销售分类",
   categoryId: "分类", specName: "规格名称", price: "价格",
   specialPrice: "特惠价", sessionCount: "次数", serviceFee: "服务费",
   isShengmei: "是否生美", marketScope: "市场范围", productType: "商品类型",

@@ -49,7 +49,6 @@ function buildRechargeAddPayload(faceValue: number): { product: Product; sku: Pr
     manageScope: null,
     marketScope: null,
     sortOrder: 0,
-    isEnabled: true,
     isVisible: true,
     createdAt: '',
     updatedAt: '',

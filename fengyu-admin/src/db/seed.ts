@@ -127,13 +127,13 @@ const CLIENTS = [
   { userId: 'FYGK-20260310-0008', openid: 'o_client_pengyu', phone: '13900139008', customerId: null, name: '彭玉', boundStoreId: 'store-nc02', boundEmployeeId: 'FY-260301-0005', memberLevel: '初钻' as const, customerSource: '小程序' as const, birthday: '1997-10-22', occupation: '护士', isMarried: false, wechatName: '小彭', skinType: '混合性', improvementFocus: '补水保湿', skinIssue: '季节性干燥', wellnessPreference: null },
 ]
 
-// 一级分类（品项类型）：product_kind = null；带 capability 列（DB 驱动 SSoT）
+// 一级分类（品项一级分类）：product_kind = null；带 capability 列（DB 驱动 SSoT）
 const PRODUCT_KINDS = [
-  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, displayColor: '#C0322A', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, displayColor: '#1989FA', displayIcon: null,    requiresShengmeiFlag: true  },
-  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, displayColor: '#5AACA5', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, displayColor: '#D4820A', displayIcon: null,    requiresShengmeiFlag: false },
-  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, displayColor: '#8B5CF6', displayIcon: null,    requiresShengmeiFlag: false },
+  { categoryId: 'kind-combo', categoryName: '组合套餐', productKind: null, sortOrder: 1, isValid: true, displayColor: '#C0322A' },
+  { categoryId: 'kind-care',  categoryName: '护理项目', productKind: null, sortOrder: 2, isValid: true, displayColor: '#1989FA' },
+  { categoryId: 'kind-home',  categoryName: '家居产品', productKind: null, sortOrder: 3, isValid: true, displayColor: '#5AACA5' },
+  { categoryId: 'kind-card',  categoryName: '充值卡',   productKind: null, sortOrder: 4, isValid: true, displayColor: '#D4820A' },
+  { categoryId: 'kind-trial', categoryName: '体验卡',   productKind: null, sortOrder: 5, isValid: true, displayColor: '#8B5CF6' },
 ]
 
 // 二级分类：product_kind = 所属一级分类的 categoryName
@@ -176,14 +176,14 @@ const MALL_CATEGORIES = [
 ]
 
 const PRODUCTS = [
-  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, isEnabled: true, isVisible: true },
-  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
-  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, isEnabled: true, isVisible: true },
+  { productId: 'prod-001', categoryId: 'mall-cat-hr-01', name: '蜜语水润嫩肤护理', coverImage: 'cloud://product-covers/prod-001.jpg', detailImages: ['cloud://product-details/prod-001-1.jpg', 'cloud://product-details/prod-001-2.jpg'], description: '深层补水+嫩肤修复，改善干燥粗糙肌肤，恢复水润光泽。', isBundle: false, price: '299.00', specialPrice: '259.00', manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-002', categoryId: 'mall-cat-hr-01', name: '科颜美逆龄焕肤', coverImage: 'cloud://product-covers/prod-002.jpg', detailImages: ['cloud://product-details/prod-002-1.jpg'], description: '采用进口科颜美精华，深层修复肌肤屏障，抗衰紧致。', isBundle: false, price: '599.00', specialPrice: '499.00', manageScope: null, marketScope: null, sortOrder: 2, isVisible: true },
+  { productId: 'prod-003', categoryId: 'mall-cat-hr-02', name: '经络疏通养生护理', coverImage: 'cloud://product-covers/prod-003.jpg', detailImages: null, description: '中医经络手法，疏通全身气血，缓解疲劳酸痛。', isBundle: false, price: '388.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-004', categoryId: 'mall-cat-hl-01', name: '新客首次体验套餐', coverImage: 'cloud://product-covers/prod-004.jpg', detailImages: null, description: '首次到店顾客专享，面部深层清洁+基础护理+肩颈放松。', isBundle: true, price: '99.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-005', categoryId: 'mall-cat-jj-01', name: '凤御玻尿酸精华液', coverImage: 'cloud://product-covers/prod-005.jpg', detailImages: ['cloud://product-details/prod-005-1.jpg'], description: '高浓度玻尿酸精华，深层补水锁水，改善肌肤干燥。', isBundle: false, price: '268.00', specialPrice: '228.00', manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-006', categoryId: 'mall-cat-jj-02', name: '艾草精油礼盒', coverImage: 'cloud://product-covers/prod-006.jpg', detailImages: null, description: '天然艾草精油套装，适合家庭养生艾灸使用。', isBundle: false, price: '198.00', specialPrice: '168.00', manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-007', categoryId: 'mall-cat-cz-01', name: '金卡充值卡', coverImage: 'cloud://product-covers/prod-007.jpg', detailImages: null, description: '充值5000元享金卡会员权益，全场项目9折优惠。', isBundle: false, price: '5000.00', specialPrice: null, manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
+  { productId: 'prod-008', categoryId: 'mall-cat-hr-03', name: '光子嫩肤仪器护理', coverImage: 'cloud://product-covers/prod-008.jpg', detailImages: ['cloud://product-details/prod-008-1.jpg'], description: '先进光子嫩肤仪器，改善色素沉着、毛孔粗大、细纹等肌肤问题。', isBundle: false, price: '880.00', specialPrice: '780.00', manageScope: null, marketScope: null, sortOrder: 1, isVisible: true },
 ]
 
 const PRODUCT_SKUS = [
@@ -340,7 +340,7 @@ async function seed() {
     console.log('  client_wechat_users...')
     await tx.insert(clientWechatUsers).values(CLIENTS).onConflictDoNothing()
 
-    // 5a. product_categories — 一级分类（品项类型）
+    // 5a. product_categories — 一级分类（品项一级分类）
     console.log('  product_categories (kinds)...')
     await tx.insert(productCategories).values(PRODUCT_KINDS).onConflictDoNothing()
 

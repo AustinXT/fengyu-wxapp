@@ -73,7 +73,6 @@ export default function MallProductCreatePageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null;
     const description = (fd.get("description") as string).trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
-    const isEnabled = fd.get("isEnabled") === "on";
     const isVisible = fd.get("isVisible") === "on";
 
     const productId = `prod-${Date.now()}`;
@@ -93,7 +92,6 @@ export default function MallProductCreatePageClient({
         manageScope: manageScope.scopeId,
         marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
         sortOrder,
-        isEnabled,
         isVisible,
       });
       if (!result.success) {
@@ -281,32 +279,21 @@ export default function MallProductCreatePageClient({
         </CardContent>
       </Card>
 
-      {/* 启用与展示 */}
+      {/* 客户端展示 */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">启用与展示</CardTitle>
+          <CardTitle className="text-base">客户端展示</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-6">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                name="isEnabled"
-                defaultChecked
-                className="h-4 w-4 rounded border-[var(--input)]"
-              />
-              <span className="text-sm">启用</span>
-            </label>
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                name="isVisible"
-                defaultChecked
-                className="h-4 w-4 rounded border-[var(--input)]"
-              />
-              <span className="text-sm">客户端展示</span>
-            </label>
-          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              name="isVisible"
+              defaultChecked
+              className="h-4 w-4 rounded border-[var(--input)]"
+            />
+            <span className="text-sm">在客户端商城中展示</span>
+          </label>
         </CardContent>
       </Card>
 

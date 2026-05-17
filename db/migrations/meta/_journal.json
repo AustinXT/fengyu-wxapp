@@ -246,6 +246,20 @@
       "when": 1779051503924,
       "tag": "0034_lively_kylun",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1779053493371,
+      "tag": "0035_outgoing_purple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1779053657134,
+      "tag": "0036_glamorous_nocturne",
+      "breakpoints": true
     }
   ]
 }

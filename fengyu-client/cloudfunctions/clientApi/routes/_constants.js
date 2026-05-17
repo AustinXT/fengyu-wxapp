@@ -6,7 +6,7 @@
  */
 
 // 充值卡虚拟商品 — 顾客端「充值卡充值」走 sale_orders + sale_items 模型，
-// 用此虚拟 SPU/SKU 占位。products.is_visible=false / is_enabled=false 双重隐藏，
+// 用此虚拟 SPU/SKU 占位。products 行通过 is_visible=false 或 deleted_at IS NOT NULL 隐藏，
 // 在 product.shopInit / spuList / spuDetail / 搜索 中均不会暴露。
 const RECHARGE_VIRTUAL_PRODUCT_ID = 'prod-recharge-virtual'
 const RECHARGE_VIRTUAL_SKU_ID = 'sku-recharge-virtual'

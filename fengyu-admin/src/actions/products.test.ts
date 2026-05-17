@@ -21,8 +21,6 @@ vi.mock('@db/product', () => ({
     sortOrder: 'sort_order',
     isValid: 'is_valid',
     displayColor: 'display_color',
-    displayIcon: 'display_icon',
-    requiresShengmeiFlag: 'requires_shengmei_flag',
     updatedAt: 'updated_at',
   },
   products: {
@@ -276,11 +274,11 @@ describe('createCategory — 错误处理', () => {
     expect(result.message).toContain('分类创建成功')
   })
 
-  it('一级品项类型不存在 → INVALID_PARAMS', async () => {
+  it('品项一级分类不存在 → INVALID_PARAMS', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const result = await createCategory({ categoryName: '测试分类', productKind: '不存在的 kind' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('一级品项类型不存在或已停用')
+    expect(result.message).toContain('品项一级分类不存在或已停用')
     expect(db.insert).not.toHaveBeenCalled()
   })
 })
@@ -325,7 +323,7 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const result = await updateCategory('CAT-1', { productKind: '不存在的 kind' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('一级品项类型不存在或已停用')
+    expect(result.message).toContain('品项一级分类不存在或已停用')
     expect(db.update).not.toHaveBeenCalled()
   })
 })
@@ -414,7 +412,7 @@ describe('updateProductKind — 改名级联', () => {
     expect(setCalls[0]).toMatchObject({ sortOrder: 5 })
   })
 
-  it('updateProductKind 接收 capability 字段（displayColor / requiresShengmeiFlag）', async () => {
+  it('updateProductKind 接收 capability 字段（displayColor）', async () => {
     let call = 0
     ;(db.select as any).mockImplementation(() => {
       call++
@@ -422,7 +420,7 @@ describe('updateProductKind — 改名级联', () => {
         return makeSelectChain([{
           categoryId: 'kind-test', categoryName: '测试卡', productKind: null,
           sortOrder: 9, isValid: true,
-          displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+          displayColor: null,
           updatedAt: new Date('2026-01-01T00:00:00.000Z'),
         }])()
       }
@@ -444,12 +442,10 @@ describe('updateProductKind — 改名级联', () => {
 
     const result = await updateProductKind('kind-test', {
       displayColor: '#FF00FF',
-      requiresShengmeiFlag: false,
     })
     expect(result.success).toBe(true)
     expect(setCalls[0]).toMatchObject({
       displayColor: '#FF00FF',
-      requiresShengmeiFlag: false,
     })
   })
 })
@@ -460,11 +456,11 @@ describe('getProductKinds — 一级 kind 含 capability', () => {
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('返回结构含 displayColor / displayIcon / requiresShengmeiFlag', async () => {
+  it('返回结构含 displayColor', async () => {
     const orderBy = vi.fn().mockResolvedValue([{
       categoryId: 'kind-care', categoryName: '护理项目', productKind: null,
       sortOrder: 2, isValid: true,
-      displayColor: '#1989FA', displayIcon: null, requiresShengmeiFlag: true,
+      displayColor: '#1989FA',
       createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'),
     }])
     const where = vi.fn().mockReturnValue({ orderBy })
@@ -475,7 +471,6 @@ describe('getProductKinds — 一级 kind 含 capability', () => {
     expect(kinds[0]).toMatchObject({
       categoryName: '护理项目',
       displayColor: '#1989FA',
-      requiresShengmeiFlag: true,
     })
   })
 })
@@ -660,18 +655,16 @@ describe('getCategories — 品项分类列表', () => {
   })
 
   it('返回序列化的分类列表（含父级 capability 回填）', async () => {
-    // getCategories 现在 LEFT JOIN parent 行，回填 parent capability 列。
+    // getCategories 现在 LEFT JOIN parent 行，回填 parent displayColor。
     const orderBy = vi.fn().mockResolvedValue([{
       child: {
         categoryId: 'cat-1', categoryName: '面部护理', productKind: '护理项目',
         salesCategory: '自销自耗',
         sortOrder: 1, isValid: true,
-        displayColor: null, displayIcon: null, requiresShengmeiFlag: false,
+        displayColor: null,
         createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-03-15'),
       },
       parentDisplayColor: '#1989FA',
-      parentDisplayIcon: null,
-      parentRequiresShengmeiFlag: true,
     }])
     const leftJoin = vi.fn().mockReturnValue({ orderBy })
     const from = vi.fn().mockReturnValue({ leftJoin })
@@ -682,7 +675,6 @@ describe('getCategories — 品项分类列表', () => {
     expect(result).toHaveLength(1)
     expect(result[0].categoryId).toBe('cat-1')
     expect(result[0].categoryName).toBe('面部护理')
-    expect(result[0].parentRequiresShengmeiFlag).toBe(true)
     expect(result[0].parentDisplayColor).toBe('#1989FA')
   })
 })
@@ -705,7 +697,7 @@ describe('getProducts — 商品列表', () => {
         const from = vi.fn().mockReturnValue({ groupBy })
         return { from }
       }
-      // 主查询: select → from → leftJoin → leftJoin → orderBy → limit
+      // 主查询: select → from → leftJoin → leftJoin → where → orderBy → limit
       const limit = vi.fn().mockResolvedValue([{
         product: {
           productId: 'prod-1', name: '蜜语面膜', categoryId: 'cat-1',
@@ -713,13 +705,14 @@ describe('getProducts — 商品列表', () => {
           price: '199.00', specialPrice: null, salesCategory: null,
           manageScope: null, marketScope: null,
           coverImage: null, detailImages: null,
-          isEnabled: true, isVisible: true, sortOrder: 1,
+          isVisible: true, sortOrder: 1,
           createdAt: new Date(), updatedAt: new Date(),
         },
         categoryName: '护理项目', productKind: '护理项目', skuCount: 2,
       }])
       const orderBy = vi.fn().mockReturnValue({ limit })
-      const leftJoin2 = vi.fn().mockReturnValue({ orderBy })
+      const where = vi.fn().mockReturnValue({ orderBy })
+      const leftJoin2 = vi.fn().mockReturnValue({ where })
       const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
       const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
       return { from }
@@ -758,7 +751,7 @@ describe('getProductById — 单商品查询', () => {
         price: '199.00', specialPrice: null, salesCategory: null,
         manageScope: null, marketScope: null,
         coverImage: null, detailImages: null,
-        isEnabled: true, isVisible: true, sortOrder: 1,
+        isVisible: true, sortOrder: 1,
         createdAt: new Date(), updatedAt: new Date(),
       },
       categoryName: '护理项目', productKind: '护理项目',

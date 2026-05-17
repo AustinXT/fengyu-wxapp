@@ -107,8 +107,6 @@ export const getCategories = withPermission(
       .select({
         child: productCategories,
         parentDisplayColor: parent.displayColor,
-        parentDisplayIcon: parent.displayIcon,
-        parentRequiresShengmeiFlag: parent.requiresShengmeiFlag,
       })
       .from(productCategories)
       .leftJoin(
@@ -129,11 +127,7 @@ export const getCategories = withPermission(
       sortOrder: r.child.sortOrder,
       isValid: r.child.isValid,
       displayColor: r.child.displayColor,
-      displayIcon: r.child.displayIcon,
-      requiresShengmeiFlag: r.child.requiresShengmeiFlag,
       parentDisplayColor: r.parentDisplayColor,
-      parentDisplayIcon: r.parentDisplayIcon,
-      parentRequiresShengmeiFlag: r.parentRequiresShengmeiFlag ?? undefined,
       createdAt: r.child.createdAt.toISOString(),
       updatedAt: r.child.updatedAt.toISOString(),
     }))
@@ -141,9 +135,8 @@ export const getCategories = withPermission(
 )
 
 /**
- * 获取所有一级分类（品项类型），即 product_kind IS NULL 的行。
- * 返回 capability 列（displayColor/displayIcon/requiresShengmeiFlag），
- * 供前端 tag 颜色渲染、表单显隐使用。
+ * 获取所有一级分类（品项一级分类），即 product_kind IS NULL 的行。
+ * 返回 capability 列（displayColor），供前端 tag 颜色渲染使用。
  */
 export const getProductKinds = withPermission(
   'product:list',
@@ -163,8 +156,6 @@ export const getProductKinds = withPermission(
       sortOrder: c.sortOrder,
       isValid: c.isValid,
       displayColor: c.displayColor,
-      displayIcon: c.displayIcon,
-      requiresShengmeiFlag: c.requiresShengmeiFlag,
       createdAt: c.createdAt.toISOString(),
       updatedAt: c.updatedAt.toISOString(),
     }))
@@ -172,7 +163,7 @@ export const getProductKinds = withPermission(
 )
 
 /**
- * 创建一级分类（品项类型）
+ * 创建一级分类（品项一级分类）
  */
 export const createProductKind = withPermission(
   'product:create',
@@ -183,12 +174,10 @@ export const createProductKind = withPermission(
       sortOrder?: number
       isValid?: boolean
       displayColor?: string | null
-      displayIcon?: string | null
-      requiresShengmeiFlag?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
     if (!data.categoryName.trim()) {
-      return { success: false, message: '请输入品项类型名称' }
+      return { success: false, message: '请输入品项一级分类名称' }
     }
 
     // 检查重名（同名一级分类）
@@ -201,7 +190,7 @@ export const createProductKind = withPermission(
       ))
       .limit(1)
     if (existing) {
-      return { success: false, message: `品项类型「${data.categoryName.trim()}」已存在` }
+      return { success: false, message: `品项一级分类「${data.categoryName.trim()}」已存在` }
     }
 
     const categoryId = crypto.randomUUID()
@@ -212,8 +201,6 @@ export const createProductKind = withPermission(
       sortOrder: data.sortOrder ?? 0,
       isValid: data.isValid ?? true,
       displayColor: data.displayColor ?? null,
-      displayIcon: data.displayIcon ?? null,
-      requiresShengmeiFlag: data.requiresShengmeiFlag ?? false,
     })
 
     await logOperation(session, 'product_kind.create', 'product_category', categoryId, {
@@ -221,12 +208,12 @@ export const createProductKind = withPermission(
       displayColor: data.displayColor ?? null,
     })
     revalidatePath('/products')
-    return { success: true, message: '品项类型创建成功' }
+    return { success: true, message: '品项一级分类创建成功' }
   },
 )
 
 /**
- * 更新一级分类（品项类型）
+ * 更新一级分类（品项一级分类）
  * 若 categoryName 变更，事务内同步更新所有子级的 product_kind 值。
  */
 export const updateProductKind = withPermission(
@@ -239,8 +226,6 @@ export const updateProductKind = withPermission(
       sortOrder: number
       isValid: boolean
       displayColor: string | null
-      displayIcon: string | null
-      requiresShengmeiFlag: boolean
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
@@ -251,7 +236,7 @@ export const updateProductKind = withPermission(
       .where(eq(productCategories.categoryId, categoryId))
       .limit(1)
     if (!current) {
-      return { success: false, message: '品项类型不存在' }
+      return { success: false, message: '品项一级分类不存在' }
     }
 
     // 乐观锁检查
@@ -272,7 +257,7 @@ export const updateProductKind = withPermission(
         ))
         .limit(1)
       if (dup) {
-        return { success: false, message: `品项类型「${newName}」已存在` }
+        return { success: false, message: `品项一级分类「${newName}」已存在` }
       }
     }
 
@@ -283,8 +268,6 @@ export const updateProductKind = withPermission(
       if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder
       if (data.isValid !== undefined) updateData.isValid = data.isValid
       if (data.displayColor !== undefined) updateData.displayColor = data.displayColor
-      if (data.displayIcon !== undefined) updateData.displayIcon = data.displayIcon
-      if (data.requiresShengmeiFlag !== undefined) updateData.requiresShengmeiFlag = data.requiresShengmeiFlag
 
       await tx
         .update(productCategories)
@@ -302,7 +285,7 @@ export const updateProductKind = withPermission(
 
     await logUpdate(session, 'product_kind.update', 'product_category', categoryId, current as Record<string, unknown>, data)
     revalidatePath('/products')
-    return { success: true, message: '品项类型已更新' }
+    return { success: true, message: '品项一级分类已更新' }
   },
 )
 
@@ -329,7 +312,7 @@ export const createCategory = withPermission(
       ))
       .limit(1)
     if (!kindRow) {
-      return { success: false, message: 'INVALID_PARAMS: 一级品项类型不存在或已停用' }
+      return { success: false, message: 'INVALID_PARAMS: 品项一级分类不存在或已停用' }
     }
 
     const categoryId = crypto.randomUUID()
@@ -379,7 +362,7 @@ export const updateCategory = withPermission(
         ))
         .limit(1)
       if (!kindRow) {
-        return { success: false, message: 'INVALID_PARAMS: 一级品项类型不存在或已停用' }
+        return { success: false, message: 'INVALID_PARAMS: 品项一级分类不存在或已停用' }
       }
     }
 
@@ -1174,6 +1157,7 @@ export const getProducts = withPermission(
       .from(products)
       .leftJoin(mallCategories, eq(products.categoryId, mallCategories.categoryId))
       .leftJoin(skuCountSq, eq(products.productId, skuCountSq.productId))
+      .where(isNull(products.deletedAt))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
       .limit(500)
@@ -1191,7 +1175,6 @@ export const getProducts = withPermission(
       manageScope: r.product.manageScope,
       marketScope: r.product.marketScope,
       sortOrder: r.product.sortOrder,
-      isEnabled: r.product.isEnabled,
       isVisible: r.product.isVisible,
       createdAt: r.product.createdAt.toISOString(),
       updatedAt: r.product.updatedAt.toISOString(),
@@ -1212,7 +1195,7 @@ export const getProductById = withPermission(
       })
       .from(products)
       .leftJoin(mallCategories, eq(products.categoryId, mallCategories.categoryId))
-      .where(eq(products.productId, productId))
+      .where(and(eq(products.productId, productId), isNull(products.deletedAt)))
       .limit(1)
 
     if (rows.length === 0) return null
@@ -1231,7 +1214,6 @@ export const getProductById = withPermission(
       manageScope: r.product.manageScope,
       marketScope: r.product.marketScope,
       sortOrder: r.product.sortOrder,
-      isEnabled: r.product.isEnabled,
       isVisible: r.product.isVisible,
       createdAt: r.product.createdAt.toISOString(),
       updatedAt: r.product.updatedAt.toISOString(),
@@ -1257,7 +1239,6 @@ export const createProduct = withPermission(
       manageScope?: string | null
       marketScope?: string | null
       sortOrder?: number
-      isEnabled?: boolean
       isVisible?: boolean
     },
   ): Promise<{ success: boolean; message: string }> => {
@@ -1306,7 +1287,6 @@ export const updateProduct = withPermission(
       manageScope: string | null
       marketScope: string | null
       sortOrder: number
-      isEnabled: boolean
       isVisible: boolean
     }>,
     expectedUpdatedAt?: string,
@@ -1315,8 +1295,8 @@ export const updateProduct = withPermission(
     const [before] = await db.select().from(products).where(eq(products.productId, productId)).limit(1)
 
     const whereConditions = expectedUpdatedAt
-      ? and(eq(products.productId, productId), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
-      : eq(products.productId, productId)
+      ? and(eq(products.productId, productId), isNull(products.deletedAt), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
+      : and(eq(products.productId, productId), isNull(products.deletedAt))
 
     const result = await db
       .update(products)
@@ -1326,13 +1306,60 @@ export const updateProduct = withPermission(
     if ((result as any).count === 0) {
       return {
         success: false,
-        message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
+        message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在或已删除',
       }
     }
 
     await logUpdate(session, 'product.update', 'product', productId, before as Record<string, unknown>, data)
     revalidatePath('/mall')
     return { success: true, message: '商品信息已更新' }
+  },
+)
+
+/** 软删除商品（设置 deleted_at 和 deleted_by）。复用 product:update 权限。 */
+export const deleteProduct = withPermission(
+  'product:update',
+  async (
+    session,
+    productId: string,
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
+    const [before] = await db
+      .select()
+      .from(products)
+      .where(and(eq(products.productId, productId), isNull(products.deletedAt)))
+      .limit(1)
+    if (!before) {
+      return { success: false, message: '商品不存在或已删除' }
+    }
+
+    const whereConditions = expectedUpdatedAt
+      ? and(eq(products.productId, productId), isNull(products.deletedAt), sql`date_trunc('milliseconds', ${products.updatedAt}) = ${expectedUpdatedAt}`)
+      : and(eq(products.productId, productId), isNull(products.deletedAt))
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await db
+      .update(products)
+      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .where(whereConditions)
+
+    if (result.count === 0) {
+      return {
+        success: false,
+        message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品状态变更，请刷新重试',
+      }
+    }
+
+    await logOperation(session, 'product.delete', 'product', productId, {
+      snapshot: {
+        name: before.name,
+        categoryId: before.categoryId,
+        price: before.price,
+        isBundle: before.isBundle,
+      },
+    })
+    revalidatePath('/mall')
+    return { success: true, message: '商品已删除' }
   },
 )
 
@@ -1540,7 +1567,7 @@ export const getProductsByKind = withPermission(
   'product:list',
   async (_session, kind: ProductKindForOrder): Promise<OrderPickerResult> => {
   if (kind === '__bundle__') {
-    // 套餐商品：products WHERE is_bundle AND is_enabled AND is_visible
+    // 套餐商品：products WHERE is_bundle AND is_visible AND deleted_at IS NULL
     const bundleRows = await db
       .select({
         productId: products.productId,
@@ -1551,7 +1578,7 @@ export const getProductsByKind = withPermission(
         sortOrder: products.sortOrder,
       })
       .from(products)
-      .where(and(eq(products.isBundle, true), eq(products.isEnabled, true), eq(products.isVisible, true)))
+      .where(and(eq(products.isBundle, true), eq(products.isVisible, true), isNull(products.deletedAt)))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(products.sortOrder))
 

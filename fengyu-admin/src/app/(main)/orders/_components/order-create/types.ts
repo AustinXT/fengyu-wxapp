@@ -34,7 +34,7 @@ export interface PickerCommonProps {
 
 /**
  * 普通商品 picker（分组结构）props。
- * groups[].productKind 为一级品项类型名（显示为 group header，不可点击）；
+ * groups[].productKind 为品项一级分类名（显示为 group header，不可点击）；
  * groups[].categories 为该 productKind 下的二级分类列表（可点击，选中态）。
  */
 export interface NormalGroupPickerProps extends PickerCommonProps {

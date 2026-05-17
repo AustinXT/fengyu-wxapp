@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { useUnsavedChanges } from "@/lib/hooks/use-unsaved-changes";
 import type { Product, ProductSku, ProductCategory, MallCategory, MallBundleGroup } from "@/lib/types";
 import {
-  updateProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice,
+  updateProduct, deleteProduct, addSkuToProduct, removeSkuFromProduct, updateSkuBundlePrice,
   createBundleGroup, updateBundleGroup, deleteBundleGroup,
 } from "@/actions/products";
 import { Button } from "@/components/ui/button";
@@ -105,6 +105,30 @@ export default function MallProductDetailPageClient({
   const [deletingGroupId, setDeletingGroupId] = useState<number | null>(null);
   const [deletingGroup, setDeletingGroup] = useState(false);
 
+  // Delete product dialog
+  const [deleteProductDialogOpen, setDeleteProductDialogOpen] = useState(false);
+  const [deletingProduct, setDeletingProduct] = useState(false);
+
+  const handleDeleteProduct = async () => {
+    setDeletingProduct(true);
+    try {
+      const result = await deleteProduct(product.productId, product.updatedAt);
+      if (!result.success) {
+        toast.error(result.message);
+        if (result.message.includes("已被其他人修改")) router.refresh();
+        return;
+      }
+      toast.success("商品已删除");
+      setDeleteProductDialogOpen(false);
+      setFormDirty(false);
+      router.push("/mall");
+    } catch {
+      toast.error("删除失败，请稍后重试");
+    } finally {
+      setDeletingProduct(false);
+    }
+  };
+
   // SKU Picker computed (uses skuCategories = product_categories)
   const linkedSkuIds = useMemo(() => new Set(skus.map((s) => s.skuId)), [skus]);
 
@@ -155,7 +179,6 @@ export default function MallProductDetailPageClient({
     const specialPrice = (fd.get("specialPrice") as string).trim() || null;
     const description = (fd.get("description") as string).trim() || null;
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0;
-    const isEnabled = fd.get("isEnabled") === "on";
     const isVisible = fd.get("isVisible") === "on";
 
     setSaving(true);
@@ -174,7 +197,6 @@ export default function MallProductDetailPageClient({
           manageScope: manageScope.scopeId,
           marketScope: allMarkets ? null : selectedMarketIds.length > 0 ? selectedMarketIds.join(",") : null,
           sortOrder,
-          isEnabled,
           isVisible,
         },
         product.updatedAt,
@@ -413,7 +435,15 @@ export default function MallProductDetailPageClient({
         <Button type="button" variant="outline" size="sm" onClick={() => router.back()}>
           &larr; 返回
         </Button>
-        <h1 className="text-2xl font-bold text-[var(--foreground)]">商品详情 - {product.name}</h1>
+        <h1 className="text-2xl font-bold text-[var(--foreground)] flex-1">商品详情 - {product.name}</h1>
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          onClick={() => setDeleteProductDialogOpen(true)}
+        >
+          删除商品
+        </Button>
       </div>
 
       {/* 是否套餐切换 */}
@@ -665,34 +695,22 @@ export default function MallProductDetailPageClient({
           </CardContent>
         </Card>
 
-        {/* 启用与展示 */}
+        {/* 客户端展示 */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">启用与展示</CardTitle>
+            <CardTitle className="text-base">客户端展示</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex gap-6">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  name="isEnabled"
-                  defaultChecked={product.isEnabled}
-                  onChange={() => setFormDirty(true)}
-                  className="h-4 w-4 rounded border-[var(--input)]"
-                />
-                <span className="text-sm">启用</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  name="isVisible"
-                  defaultChecked={product.isVisible}
-                  onChange={() => setFormDirty(true)}
-                  className="h-4 w-4 rounded border-[var(--input)]"
-                />
-                <span className="text-sm">客户端展示</span>
-              </label>
-            </div>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                name="isVisible"
+                defaultChecked={product.isVisible}
+                onChange={() => setFormDirty(true)}
+                className="h-4 w-4 rounded border-[var(--input)]"
+              />
+              <span className="text-sm">在客户端商城中展示</span>
+            </label>
           </CardContent>
         </Card>
 
@@ -855,6 +873,25 @@ export default function MallProductDetailPageClient({
           </AlertDialogCancel>
           <AlertDialogAction onClick={handleDeleteGroup} disabled={deletingGroup}>
             {deletingGroup ? "删除中..." : "删除"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* Delete Product Confirmation */}
+      <AlertDialog open={deleteProductDialogOpen} onOpenChange={setDeleteProductDialogOpen}>
+        <AlertDialogTitle>确认删除商品</AlertDialogTitle>
+        <AlertDialogDescription>
+          确认删除「{product.name}」？删除后将从商城列表中移除，已下单的历史数据不受影响。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel
+            onClick={() => setDeleteProductDialogOpen(false)}
+            disabled={deletingProduct}
+          >
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDeleteProduct} disabled={deletingProduct}>
+            {deletingProduct ? "删除中..." : "删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>

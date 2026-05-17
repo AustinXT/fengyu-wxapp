@@ -183,8 +183,8 @@ export interface SkillTag {
 }
 
 /**
- * 一级品项类型名称。完全数据库驱动，由 `product_categories WHERE productKind IS NULL`
- * 行决定，运营在 admin "品项分类 → 一级品项管理" 内增删。
+ * 品项一级分类名称。完全数据库驱动，由 `product_categories WHERE productKind IS NULL`
+ * 行决定，运营在 admin "品项分类 → 品项一级分类管理" 内增删。
  *
  * 不再用字面量联合类型——4/17 会议要求拆分护理项目→招牌/王牌/明星，未来还会变化。
  */
@@ -224,20 +224,14 @@ export const ROLE_LABELS: Record<RoleType, string> = {
 export interface ProductCategory {
   categoryId: string
   categoryName: string
-  productKind: string | null  // null = 一级分类（品项类型）
+  productKind: string | null  // null = 一级分类（品项一级分类）
   salesCategory: SalesCategory | null
   sortOrder: number
   isValid: boolean
   /** 一级行的展示色（HEX），二级行 null 时由前端继承父级 */
   displayColor: string | null
-  /** 一级行的展示图标（icon name 或 emoji），二级行 null 时由前端继承父级 */
-  displayIcon: string | null
-  /** 一级行 capability：该 kind 下 SKU 是否需要"是否生美"开关 */
-  requiresShengmeiFlag: boolean
-  /** 二级行回填：父级一级行的 capability，二级行展示/校验时使用 */
+  /** 二级行回填：父级一级行的展示色，二级行展示时使用 */
   parentDisplayColor?: string | null
-  parentDisplayIcon?: string | null
-  parentRequiresShengmeiFlag?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -256,7 +250,6 @@ export interface Product {
   manageScope: string | null
   marketScope: string | null
   sortOrder: number
-  isEnabled: boolean
   isVisible: boolean
   createdAt: string
   updatedAt: string

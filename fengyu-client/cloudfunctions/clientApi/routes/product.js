@@ -13,7 +13,7 @@ const pg = require('../db/pg')
  *   - sk.is_recharge_card = true：充值卡（仅 card-recharge 入口走单一虚拟 SKU）
  * 两类 capability 列互斥（CHECK chk_sku_not_both_capabilities）。
  */
-const PRODUCT_VALID_FILTER = `p.is_enabled = true AND p.is_visible = true`
+const PRODUCT_VALID_FILTER = `p.deleted_at IS NULL AND p.is_visible = true`
 const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT (sk.is_experience OR sk.is_recharge_card)`
 
 /**

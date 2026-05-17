@@ -116,7 +116,6 @@ export function NormalSkuPicker({ groups, kindLabel, onAdd }: NormalGroupPickerP
                 manageScope: null,
                 marketScope: null,
                 sortOrder: sku.sortOrder,
-                isEnabled: true,
                 isVisible: true,
                 createdAt: '',
                 updatedAt: '',

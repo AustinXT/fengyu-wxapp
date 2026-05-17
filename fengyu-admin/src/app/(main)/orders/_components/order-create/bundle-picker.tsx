@@ -96,7 +96,6 @@ function BundleRow({ bundle, onAdd, onBundleAdded }: BundleRowProps) {
       manageScope: null,
       marketScope: null,
       sortOrder: bundle.sortOrder,
-      isEnabled: true,
       isVisible: true,
       createdAt: '',
       updatedAt: '',
