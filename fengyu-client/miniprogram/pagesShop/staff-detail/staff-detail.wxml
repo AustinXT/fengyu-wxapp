@@ -18,8 +18,9 @@
 
     <!-- 头部信息 -->
     <view class="staff-header">
-      <view class="staff-avatar">
-        <van-icon name="manager" size="64px" color="var(--color-primary)" />
+      <view class="staff-avatar staff-avatar--large">
+        <image wx:if="{{staff.avatarUrl}}" src="{{staff.avatarUrl}}" class="staff-avatar-img staff-avatar-img--large" mode="aspectFill" />
+        <van-icon wx:else name="manager" size="64px" color="var(--color-primary)" />
       </view>
       <view class="staff-info">
         <view class="staff-name-row">

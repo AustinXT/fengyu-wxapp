@@ -20,6 +20,7 @@ interface Staff {
   employee_id: string;
   name: string;
   position: string;
+  avatarUrl?: string;
 }
 
 Page({
@@ -30,6 +31,7 @@ Page({
     unitPrice: 0,
     staffWfId: '',
     staffName: '',
+    staffAvatarUrl: '',
     storeName: '',
     paymentMethod: '微信' as '微信' | '支付宝' | '线下',
     agreed: false,
@@ -213,7 +215,8 @@ Page({
       const staffList: Staff[] = (data?.staffList || []).map((s: any) => ({
         employee_id: s.staff_id,
         name: s.name,
-        position: s.position
+        position: s.position,
+        avatarUrl: s.avatarUrl || '',
       }));
       this.setData({ staffList });
     } catch {
@@ -225,11 +228,16 @@ Page({
     try {
       // 若 URL 已传入 staffWfId，不覆盖
       if (this.data.staffWfId) return;
-      const data = await callClientApi('staff.default', {});
+      const data = await callClientApi<{
+        mainStaffId: string | null;
+        mainStaffName: string | null;
+        mainStaffAvatarUrl: string | null;
+      }>('staff.default', {});
       if (data?.mainStaffId) {
         this.setData({
           staffWfId: data.mainStaffId,
           staffName: data.mainStaffName || '',
+          staffAvatarUrl: data.mainStaffAvatarUrl || '',
         });
       }
     } catch {
@@ -295,9 +303,11 @@ Page({
 
   onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
     const { wfId, name } = e.detail;
+    const matched = this.data.staffList.find((s) => s.employee_id === wfId);
     this.setData({
       staffWfId: wfId,
       staffName: name,
+      staffAvatarUrl: matched?.avatarUrl || '',
       showStaffPopup: false,
     });
   },

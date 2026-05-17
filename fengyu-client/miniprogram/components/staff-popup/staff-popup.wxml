@@ -33,7 +33,8 @@
         data-name="{{item.name}}"
       >
         <view class="staff-avatar">
-          <van-icon name="manager-o" size="48rpx" color="#C0322A" />
+          <image wx:if="{{item.avatarUrl}}" src="{{item.avatarUrl}}" class="staff-avatar-img" mode="aspectFill" />
+          <van-icon wx:else name="manager-o" size="48rpx" color="#C0322A" />
         </view>
         <text class="staff-name">{{item.name}}</text>
         <text class="staff-title">{{item.position}}</text>

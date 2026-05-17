@@ -32,6 +32,13 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.staff-avatar-img--large {
+  width: 160rpx;
+  height: 160rpx;
+  border-radius: 80rpx;
 }
 
 .staff-info {

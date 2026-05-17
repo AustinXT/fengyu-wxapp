@@ -354,3 +354,23 @@
   font-size: 26rpx;
   color: var(--color-text-secondary);
 }
+
+/* van-cell 左侧美容师头像（icon slot） */
+.cell-staff-avatar {
+  width: 56rpx;
+  height: 56rpx;
+  margin-right: 16rpx;
+  border-radius: 28rpx;
+  background: var(--color-primary-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.cell-staff-avatar-img {
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 28rpx;
+}

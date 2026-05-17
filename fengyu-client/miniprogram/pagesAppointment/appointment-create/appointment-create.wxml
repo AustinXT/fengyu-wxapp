@@ -75,9 +75,14 @@
       title="{{selectedStaffName || '不指定'}}"
       label="{{defaultStaffName ? '主美容师：' + defaultStaffName : ''}}"
       is-link
-      icon="manager-o"
+      use-icon-slot
       bindtap="onShowStaffPopup"
-    />
+    >
+      <view slot="icon" class="cell-staff-avatar">
+        <image wx:if="{{selectedStaffAvatarUrl}}" src="{{selectedStaffAvatarUrl}}" class="cell-staff-avatar-img" mode="aspectFill" />
+        <van-icon wx:else name="manager-o" size="36rpx" color="#C0322A" />
+      </view>
+    </van-cell>
   </van-cell-group>
 
   <!-- 备注 -->

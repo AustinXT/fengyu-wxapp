@@ -172,6 +172,14 @@ page {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+}
+
+/* 美容师头像（image 模式；与 .staff-avatar 容器尺寸对齐） */
+.staff-avatar-img {
+  width: 96rpx;
+  height: 96rpx;
+  border-radius: 48rpx;
 }
 
 .staff-name {

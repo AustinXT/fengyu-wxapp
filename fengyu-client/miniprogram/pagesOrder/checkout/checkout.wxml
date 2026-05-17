@@ -40,8 +40,14 @@ module.exports.date = function(s) {
       title="指定美容师"
       value="{{staffName || '不指定'}}"
       is-link
+      use-icon-slot
       bindtap="onSelectStaff"
-    />
+    >
+      <view slot="icon" class="cell-staff-avatar">
+        <image wx:if="{{staffAvatarUrl}}" src="{{staffAvatarUrl}}" class="cell-staff-avatar-img" mode="aspectFill" />
+        <van-icon wx:else name="manager-o" size="36rpx" color="#C0322A" />
+      </view>
+    </van-cell>
     <van-cell title="门店" value="{{storeName}}" />
   </van-cell-group>
 

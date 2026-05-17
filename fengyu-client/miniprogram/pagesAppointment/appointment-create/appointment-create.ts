@@ -32,6 +32,7 @@ Page({
     defaultStaffName: '',
     selectedStaffWfId: '',
     selectedStaffName: '',
+    selectedStaffAvatarUrl: '',
 
     notes: '',
 
@@ -118,6 +119,7 @@ Page({
         employee_id: s.staff_id,
         name: s.name,
         position: s.position,
+        avatarUrl: s.avatarUrl || '',
       }));
       this.setData({ staffList });
     } catch {
@@ -127,11 +129,16 @@ Page({
 
   async loadDefaultStaff() {
     try {
-      const data = await callClientApi('staff.default', {});
+      const data = await callClientApi<{
+        mainStaffId: string | null;
+        mainStaffName: string | null;
+        mainStaffAvatarUrl: string | null;
+      }>('staff.default', {});
       if (data?.mainStaffId) {
         this.setData({
           selectedStaffWfId: data.mainStaffId,
           selectedStaffName: data.mainStaffName || '',
+          selectedStaffAvatarUrl: data.mainStaffAvatarUrl || '',
         });
       }
     } catch {
@@ -215,7 +222,14 @@ Page({
 
   onStaffSelect(e: WechatMiniprogram.CustomEvent<{ wfId: string; name: string }>) {
     const { wfId, name } = e.detail;
-    this.setData({ selectedStaffWfId: wfId, selectedStaffName: name, showStaffPopup: false });
+    // 从已加载的 staffList 里反查头像（弹层 select 事件只携带 id/name，避免破坏现有契约）
+    const matched = (this.data.staffList as any[]).find((s) => s.employee_id === wfId);
+    this.setData({
+      selectedStaffWfId: wfId,
+      selectedStaffName: name,
+      selectedStaffAvatarUrl: matched?.avatarUrl || '',
+      showStaffPopup: false,
+    });
   },
 
   onGoOrders() {
