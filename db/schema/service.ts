@@ -1,4 +1,5 @@
-import { boolean, date, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { boolean, date, index, integer, numeric, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { allocationStatusEnum, salesCategoryEnum, serviceOrderStatusEnum, serviceOrderTypeEnum } from './enums'
 import { stores } from './org'
 import { saleItems } from './order'
@@ -43,6 +44,14 @@ export const serviceOrders = pgTable(
     index('idx_svc_orders_store_date').on(table.storeId, table.serviceDate),
     index('idx_svc_orders_assigned_employee').on(table.assignedEmployeeId),
     index('idx_svc_orders_client_user_id').on(table.clientUserId),
+    /** 同一预约只能关联 1 张服务单：防 TOCTOU 双 staff 同 appointmentId 同时 create */
+    uniqueIndex('uq_so_appointment')
+      .on(table.appointmentId)
+      .where(sql`appointment_id IS NOT NULL`),
+    /** 同一顾客同时只能有 1 张活跃服务单：防同顾客双 create */
+    uniqueIndex('uq_so_client_active')
+      .on(table.clientUserId)
+      .where(sql`status IN ('待服务','服务中')`),
   ],
 )
 

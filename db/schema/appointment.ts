@@ -1,4 +1,5 @@
-import { index, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { appointmentStatusEnum } from './enums'
 import { stores } from './org'
 import { clientWechatUsers, staffWechatUsers } from './user'
@@ -43,6 +44,10 @@ export const appointments = pgTable(
     index('idx_appts_store_id').on(table.storeId),
     index('idx_appts_client_user_id').on(table.clientUserId),
     index('idx_appts_employee_time').on(table.employeeId, table.appointmentTime),
+    /** 同一 sale_item 同时只能有 1 个活跃预约：防 client 双发 create */
+    uniqueIndex('uq_appt_sale_item_active')
+      .on(table.saleItemId)
+      .where(sql`sale_item_id IS NOT NULL AND status IN ('待确认','已确认')`),
   ],
 )
 

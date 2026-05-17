@@ -1,4 +1,4 @@
-import { bigserial, check, index, integer, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { bigserial, check, index, integer, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { saleItems } from './order'
 import { stores } from './org'
@@ -32,11 +32,16 @@ export const pickupRecords = pgTable(
       .notNull()
       .references(() => staffWechatUsers.employeeId),
     remark: text('remark'),
+    /** 调用方传入的幂等键（如 pickup-{saleItemId}-{timestamp}），NULL 时不参与唯一约束（向后兼容旧前端） */
+    idempotencyKey: text('idempotency_key'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [
     index('idx_pickup_records_sale_item').on(table.saleItemId),
     index('idx_pickup_records_client').on(table.clientUserId),
+    uniqueIndex('uq_pickup_idempotency')
+      .on(table.saleItemId, table.idempotencyKey)
+      .where(sql`idempotency_key IS NOT NULL`),
     check('chk_pickup_quantity', sql`${table.pickupQuantity} > 0`),
   ],
 )

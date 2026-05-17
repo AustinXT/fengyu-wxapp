@@ -301,6 +301,13 @@ export const saleOrderPayments = pgTable(
     uniqueIndex("uq_sop_status_audit")
       .on(table.saleOrderId, table.changeType)
       .where(sql`change_type = '退款' AND status = '待审批'`),
+    /**
+     * 同一销售单只能有一笔成功的"首次支付"；后续付款必须落 change_type='回款'。
+     * 防 TOCTOU：confirmOffline / payNotify 并发回调时由 DB 兜底。
+     */
+    uniqueIndex("uq_sop_first_payment")
+      .on(table.saleOrderId)
+      .where(sql`change_type = '首次支付' AND status = '已支付'`),
     /** 符号一致性：首次支付/回款/储值卡抵扣正数，退款负数 */
     check(
       "chk_sop_amount_sign",

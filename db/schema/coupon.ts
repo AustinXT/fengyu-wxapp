@@ -1,4 +1,5 @@
-import { boolean, index, integer, numeric, pgTable, text, timestamp, varchar } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, numeric, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 import { couponStatusEnum, couponTypeEnum } from './enums'
 import { clientWechatUsers } from './user'
 import { saleOrders } from './order'
@@ -63,6 +64,8 @@ export const userCoupons = pgTable(
     expireAt: timestamp('expire_at').notNull(),
     /** 运行时动态面值（分享礼等场景写入）；NULL 时读取点回退到 template.discount_value */
     faceValueOverride: numeric('face_value_override', { precision: 10, scale: 2 }),
+    /** 外部幂等引用（cron 批次键如 bday-{YYYY}-{userId}-{templateId} / share-gift sg-{role}-{saleOrderId}），NULL 时不参与唯一约束 */
+    externalRef: text('external_ref'),
     /** 使用时写入的订单ID */
     usedSaleOrderId: varchar('used_sale_order_id', { length: 30 })
       .references(() => saleOrders.saleOrderId),
@@ -74,6 +77,9 @@ export const userCoupons = pgTable(
     index('idx_user_coupons_user_status').on(table.userId, table.status),
     index('idx_user_coupons_used_order').on(table.usedSaleOrderId),
     index('idx_user_coupons_expire').on(table.expireAt),
+    uniqueIndex('uq_user_coupons_external_ref')
+      .on(table.externalRef)
+      .where(sql`external_ref IS NOT NULL`),
   ],
 )
 
