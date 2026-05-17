@@ -1,4 +1,5 @@
 {
+  "_comment": "TEMPLATE — copy to cloudbaserc.json (gitignored), fill secrets from fengyu-client/.env, then deploy",
   "envId": "cloud1-3gpht4b01ff88838",
   "version": "2.0",
   "functionRoot": "cloudfunctions",
@@ -8,10 +9,11 @@
       "timeout": 30,
       "path": "/cloudfunctions/clientApi",
       "envVariables": {
-        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu",
-        "MSSQL_CONNECTION_STRING": "Server=47.96.87.33,1433;Database=wkdb_20220804_86cd3292;User Id=SD;Password=Se4Qimoh;TrustServerCertificate=True",
-        "TMAP_KEY": "SGWBZ-H4UO5-KFFII-IRE76-4SWAT-Y4BSZ",
-        "TMAP_SECRET": "i35ZizQTNeTsALWjKIjf5jbX7xP5LKuJ"
+        "PG_CONNECTION_STRING": "<from .env PG_CONNECTION_STRING>",
+        "MSSQL_CONNECTION_STRING": "<from .env MSSQL_CONNECTION_STRING>",
+        "TMAP_KEY": "<from .env TMAP_KEY>",
+        "TMAP_SECRET": "<from .env TMAP_SECRET>",
+        "ALLOW_TEST_OPENID": "<from .env ALLOW_TEST_OPENID>"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",
@@ -22,7 +24,7 @@
       "timeout": 30,
       "path": "/cloudfunctions/payNotify",
       "envVariables": {
-        "PG_CONNECTION_STRING": "postgresql://fengyu:fengyu123@47.113.202.7:5434/fengyu"
+        "PG_CONNECTION_STRING": "<from .env PG_CONNECTION_STRING>"
       },
       "runtime": "Nodejs18.15",
       "handler": "index.main",

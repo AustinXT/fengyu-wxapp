@@ -1,0 +1,23 @@
+{
+  "_comment": "TEMPLATE — copy to cloudbaserc.json (gitignored), fill secrets from fengyu-staff/.env, then deploy",
+  "envId": "cloud1-9g3ydpg512eecc99",
+  "version": "2.0",
+  "functionRoot": "cloudfunctions",
+  "functions": [
+    {
+      "name": "staffApi",
+      "timeout": 30,
+      "path": "/cloudfunctions/staffApi",
+      "envVariables": {
+        "PG_CONNECTION_STRING": "<from .env PG_CONNECTION_STRING>",
+        "MSSQL_CONNECTION_STRING": "<from .env MSSQL_CONNECTION_STRING>",
+        "CLIENT_SECRET": "<from .env CLIENT_SECRET>",
+        "WXACODE_ENV_VERSION": "<from .env WXACODE_ENV_VERSION>",
+        "ALLOW_TEST_OPENID": "<from .env ALLOW_TEST_OPENID>"
+      },
+      "runtime": "Nodejs18.15",
+      "handler": "index.main",
+      "installDependency": false
+    }
+  ]
+}
