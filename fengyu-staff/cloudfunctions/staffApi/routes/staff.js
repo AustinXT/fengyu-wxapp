@@ -11,22 +11,25 @@ const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
 const { assertEmployeeInScope } = require('../utils/scope')
 
 // 客户端 envId（顾客小程序所属 CloudBase env）。员工上传的头像必须落在此 env，
-// 顾客小程序才能用 <image src="cloud://..."> 直接渲染（跨 env cloud:// 不可读）。
-// 可通过环境变量 CLIENT_ENV_ID 覆盖，便于多环境部署。
+// 顾客小程序才能直接渲染（cloud:// 跨 env 不可读；HTTPS CDN URL 跨 env 透明）。
+// 与 fengyu-admin/src/lib/cloudbase.ts 同源 — admin 上传商品/门店图片就是用同款 SDK。
 const CLIENT_ENV_ID = process.env.CLIENT_ENV_ID || 'cloud1-3gpht4b01ff88838'
 
-// 跨 env Cloud 实例（懒初始化；同一进程复用）
-let _crossEnvCloud = null
-async function getCrossEnvCloud() {
-  if (_crossEnvCloud) return _crossEnvCloud
-  const c = new cloud.Cloud({
-    resourceEnv: CLIENT_ENV_ID,
-    // 不需要身份代入（仅做 uploadFile 资源操作）
-    identityless: true,
+// 跨 env CloudBase Node SDK 实例（懒初始化；同一进程复用）。
+//
+// 关键：wx-server-sdk 的 new Cloud({resourceEnv}) 在 3.0.4 不支持运行时跨 env，
+// 必须用 @cloudbase/node-sdk + 显式 secret 凭证。Tencent Cloud API 凭证由
+// CloudBase 环境变量提供（与 fengyu-admin 同一份子账号 .env 注入）。
+let _tcb = null
+function getCrossEnvTcb() {
+  if (_tcb) return _tcb
+  const tcb = require('@cloudbase/node-sdk')
+  _tcb = tcb.init({
+    env: CLIENT_ENV_ID,
+    secretId: process.env.TENCENTCLOUD_SECRETID,
+    secretKey: process.env.TENCENTCLOUD_SECRETKEY,
   })
-  await c.init()
-  _crossEnvCloud = c
-  return c
+  return _tcb
 }
 
 /**
@@ -771,9 +774,13 @@ async function dashboard(ctx) {
 /**
  * 头像上传（员工本人自助）
  *
- * 客户端传 base64，云函数解码后跨 env 上传到 client env 的 avatars/staff/{employeeId}/ 路径，
- * 并同步更新 staff_wechat_users.avatar_url。fileID 形如 `cloud://<client envId>.<bucket>/...`，
- * 客户端小程序可直接 <image src="cloud://..."> 渲染；员工端小程序需 toHttpUrl 转 HTTPS 后渲染。
+ * 客户端传 base64，云函数解码后通过 @cloudbase/node-sdk 跨 env 写入 client env 的
+ * `avatars/staff/{employeeId}/` 路径，再 getTempFileURL 拿到 HTTPS 可访问 URL，
+ * 与 fengyu-admin/src/lib/cloudbase.ts.uploadFile() 同款 contract。
+ *
+ * PG `staff_wechat_users.avatar_url` 存 HTTPS URL（不是 cloud:// fileID）：
+ *   - 三端 `<image src="https://...">` 透明渲染，无跨 env 协议歧义
+ *   - 与 admin 商品 / 门店图片走同一桶 + 同一 CDN base，运维一致
  */
 async function uploadAvatar(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -806,23 +813,31 @@ async function uploadAvatar(ctx) {
   const rand = Math.random().toString(36).slice(2, 8)
   const cloudPath = `avatars/staff/${employeeId}/${Date.now()}_${rand}.${normalizedExt}`
 
-  // 跨 env upload —— 写到 client env COS，便于顾客小程序直接 cloud:// 渲染
-  const crossEnvCloud = await getCrossEnvCloud()
-  const uploadRes = await crossEnvCloud.uploadFile({ cloudPath, fileContent: buffer })
+  // 跨 env upload — 用 @cloudbase/node-sdk 显式 envId + Tencent secret 凭证
+  const tcb = getCrossEnvTcb()
+  const uploadRes = await tcb.uploadFile({ cloudPath, fileContent: buffer })
   const fileID = uploadRes.fileID
   if (!fileID) {
     throw new Error('INVALID_PARAMS: 上传失败')
   }
 
+  // 拿 HTTPS 可访问 URL（与 admin 同款；公共读桶返回固定 CDN URL，私有桶返回签名链接）
+  const urlRes = await tcb.getTempFileURL({ fileList: [fileID] })
+  const fileItem = urlRes.fileList && urlRes.fileList[0]
+  const httpsUrl = fileItem && fileItem.tempFileURL
+  if (!httpsUrl) {
+    throw new Error('INVALID_PARAMS: 头像上传成功但生成访问链接失败')
+  }
+
   await pg.query(
     'UPDATE staff_wechat_users SET avatar_url = $1, updated_at = NOW() WHERE employee_id = $2',
-    [fileID, employeeId]
+    [httpsUrl, employeeId]
   )
 
   // 清除 auth 缓存，下一次 login/任意接口能读到新头像
   invalidateAuthCache(OPENID)
 
-  ctx.result = { fileID, avatarUrl: fileID }
+  ctx.result = { fileID, avatarUrl: httpsUrl }
 }
 
 module.exports = { list, departments, todayCommission, monthlyCalendar, todoList, bindStore, performanceDetail, dashboard, uploadAvatar }
