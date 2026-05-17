@@ -785,7 +785,7 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
          WHERE id = ${idNum} AND status = '待审批'
       `)
       if ((updRes as { rowCount?: number }).rowCount === 0) {
-        throw new Error('CONCURRENT_CHANGED')
+        throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 退款状态已变更，请刷新后重试')
       }
 
       // 3) 重算原单 refunded_amount = -SUM(已支付退款 amount)
@@ -813,7 +813,7 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
              AND remaining_sessions >= ${sessionCount}
         `)
         if ((sessRes as { rowCount?: number }).rowCount === 0) {
-          throw new Error('INSUFFICIENT_SESSIONS')
+          throw new ApiError('INVALID_STATE', 'INSUFFICIENT_SESSIONS: 剩余次数不足，无法退款')
         }
       }
 
@@ -835,7 +835,7 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
             RETURNING card_id
           `)
           const cardId = (upsertRes as unknown as Array<{ card_id: string }>)[0]?.card_id
-          if (!cardId) throw new Error('CARD_UPSERT_FAILED')
+          if (!cardId) throw new ApiError('INVALID_STATE', 'CARD_UPSERT_FAILED: 储值卡回冲失败')
 
           await tx.execute(sql`
             INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
