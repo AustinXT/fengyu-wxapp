@@ -278,11 +278,11 @@ describe('createCategory — 错误处理', () => {
     expect(result.message).toContain('分类创建成功')
   })
 
-  it('一级品项类型不存在 → INVALID_PRODUCT_KIND', async () => {
+  it('一级品项类型不存在 → INVALID_PARAMS', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const result = await createCategory({ categoryName: '测试分类', productKind: '不存在的 kind' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('INVALID_PRODUCT_KIND')
+    expect(result.message).toContain('一级品项类型不存在或已停用')
     expect(db.insert).not.toHaveBeenCalled()
   })
 })
@@ -323,11 +323,11 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     expect(result.message).toContain('已更新')
   })
 
-  it('传了不存在的 productKind → INVALID_PRODUCT_KIND', async () => {
+  it('传了不存在的 productKind → INVALID_PARAMS', async () => {
     ;(db.select as any).mockImplementation(makeSelectChain([]))
     const result = await updateCategory('CAT-1', { productKind: '不存在的 kind' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('INVALID_PRODUCT_KIND')
+    expect(result.message).toContain('一级品项类型不存在或已停用')
     expect(db.update).not.toHaveBeenCalled()
   })
 })
@@ -555,12 +555,12 @@ describe('createSku — 输入校验 + 错误处理', () => {
     expect(result.message).toContain('疗程卡的次数必须 >= 1')
   })
 
-  it('SKU 编号重复（23505）→ 友好消息', async () => {
+  it('商品编号重复（23505）→ 友好消息', async () => {
     const pgError = Object.assign(new Error('duplicate key'), { code: '23505' })
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockRejectedValue(pgError) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(false)
-    expect(result.message).toContain('SKU 编号已存在')
+    expect(result.message).toContain('商品编号已存在')
   })
 
   it('品项分类不存在（23503）→ 友好消息', async () => {
@@ -580,7 +580,7 @@ describe('createSku — 输入校验 + 错误处理', () => {
     ;(db.insert as any).mockReturnValue({ values: vi.fn().mockResolvedValue({}) })
     const result = await createSku(baseSkuData)
     expect(result.success).toBe(true)
-    expect(result.message).toContain('SKU 创建成功')
+    expect(result.message).toContain('商品创建成功')
   })
 })
 
@@ -599,11 +599,11 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
     ;(db.update as any).mockReturnValue({ set })
   }
 
-  it('rowCount=0，无乐观锁 → 报告 SKU 不存在', async () => {
+  it('rowCount=0，无乐观锁 → 报告商品不存在', async () => {
     setupUpdate(0)
     const result = await updateSku('SKU-999', { specName: '新规格' })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('SKU 不存在')
+    expect(result.message).toContain('商品不存在')
   })
 
   it('rowCount=0，有乐观锁 → 报告并发冲突', async () => {

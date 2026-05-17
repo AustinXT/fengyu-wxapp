@@ -269,7 +269,7 @@ describe('createOrder — 权限与 scope 校验', () => {
   })
 })
 
-describe('createOrder — 顾客校验（CLIENT_NOT_REGISTERED 守卫）', () => {
+describe('createOrder — 顾客校验（顾客未注册守卫）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
@@ -280,16 +280,16 @@ describe('createOrder — 顾客校验（CLIENT_NOT_REGISTERED 守卫）', () =>
     const result = await createOrder({ ...baseOrderData, clientUserId: '' })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
+    expect(result.message).toContain('顾客未注册')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('CLIENT_NOT_REGISTERED 拒单在 scope 校验之前触发（即使 scope 不符也优先报缺顾客）', async () => {
+  it('顾客未注册拒单在 scope 校验之前触发（即使 scope 不符也优先报缺顾客）', async () => {
     ;(isInScope as any).mockReturnValue(false)
     const result = await createOrder({ ...baseOrderData, clientUserId: '', storeId: 'other-store' })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
+    expect(result.message).toContain('顾客未注册')
   })
 })
 
@@ -1517,13 +1517,13 @@ describe('createOrder — 充值卡订单（与 client 虚拟 SKU 对齐）', ()
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('充值卡无 clientUserId → 拒绝（走入口 CLIENT_NOT_REGISTERED 守卫）', async () => {
+  it('充值卡无 clientUserId → 拒绝（走入口顾客未注册守卫）', async () => {
     const result = await createOrder({
       ...baseRechargeData,
       clientUserId: '',
     })
     expect(result.success).toBe(false)
-    expect(result.message).toContain('CLIENT_NOT_REGISTERED')
+    expect(result.message).toContain('顾客未注册')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
@@ -2083,7 +2083,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
-  it('5) paymentMethod=微信 + receivedAmount>0 → MIXED_PAYMENT_NOT_SUPPORTED', async () => {
+  it('5) paymentMethod=微信 + receivedAmount>0 → 不支持混合支付', async () => {
     const result = await createOrder({
       ...baseOrderData,
       paymentMethod: '微信',
@@ -2091,7 +2091,7 @@ describe('createOrder — PR-3 部分支付基础（receivedAmount + 款项流�
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('MIXED_PAYMENT_NOT_SUPPORTED')
+    expect(result.message).toContain('系统管理员开单不支持线上支付')
     expect(db.transaction).not.toHaveBeenCalled()
   })
 
