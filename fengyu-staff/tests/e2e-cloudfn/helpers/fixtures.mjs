@@ -69,6 +69,75 @@ export async function ensureTestStore() {
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// 提成比例矩阵（commission_rate_matrix）
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * 注入测试市场（默认 TEST_MARKET_ORG_ID）下的 commission_rate_matrix 规则。
+ *
+ * 覆盖维度：
+ *   - 销售单 × {美容师, 养生师, 推广师} × {自销自耗, 他销自耗, 他销他耗} × tier
+ *   - 服务单 × {美容师, 养生师} × {自销自耗, 他销自耗, 他销他耗} × tier
+ *   - 自销自耗 故意拆 2 tier（0-5000 / 5000-NULL）→ 验证服务提成 tier 切换
+ *   - 生态合作 故意不配 → 验证服务提成兜底 rate=0 + 写 rate_missing 日志
+ *
+ * 注意：
+ *   1. allocation.suggest 实际只取首 tier（amount_tier_min=0），销售单 tier 切换在 suggest 侧不生效
+ *      （已知偏差，不在此 fixture 范围）
+ *   2. service.complete 真正按 consumeBase 查 tier_max 命中
+ *   3. org_id 是市场节点（org_nodes.type='市场'），同市场多门店共享
+ *
+ * 幂等：ON CONFLICT 更新 commission_rate。
+ *
+ * @param {object} opts
+ * @param {string} opts.orgId - 市场 org_node id（默认 TEST_MARKET_ORG_ID）
+ * @returns {Promise<{orgId, ruleCount}>}
+ */
+export async function ensureTestCommissionMatrix({
+  orgId = TEST_MARKET_ORG_ID,
+} = {}) {
+  await ensureTestStore()
+
+  // [order_type, role_type, sales_category, tier_min, tier_max, rate]
+  const rules = [
+    // ── 销售单 ──
+    ['销售单', '美容师', '自销自耗', 0,    5000, 0.08],
+    ['销售单', '美容师', '自销自耗', 5000, null, 0.10],
+    ['销售单', '美容师', '他销自耗', 0,    null, 0.06],
+    ['销售单', '美容师', '他销他耗', 0,    null, 0.05],
+    ['销售单', '养生师', '自销自耗', 0,    null, 0.08],
+    ['销售单', '养生师', '他销自耗', 0,    null, 0.06],
+    ['销售单', '养生师', '他销他耗', 0,    null, 0.05],
+    ['销售单', '推广师', '自销自耗', 0,    null, 0.05],
+    ['销售单', '推广师', '他销自耗', 0,    null, 0.05],
+    // ── 服务单 ──
+    ['服务单', '美容师', '自销自耗', 0,    5000, 0.12],
+    ['服务单', '美容师', '自销自耗', 5000, null, 0.18],
+    ['服务单', '美容师', '他销自耗', 0,    null, 0.10],
+    ['服务单', '美容师', '他销他耗', 0,    null, 0.08],
+    ['服务单', '养生师', '自销自耗', 0,    null, 0.12],
+    ['服务单', '养生师', '他销自耗', 0,    null, 0.10],
+    ['服务单', '养生师', '他销他耗', 0,    null, 0.08],
+  ]
+
+  for (const [orderType, roleType, salesCat, tierMin, tierMax, rate] of rules) {
+    await pgQuery(
+      `INSERT INTO commission_rate_matrix
+         (org_id, order_type, role_type, sales_category,
+          amount_tier_min, amount_tier_max, commission_rate)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT ON CONSTRAINT uq_commission_matrix
+         DO UPDATE SET commission_rate = EXCLUDED.commission_rate,
+                       amount_tier_max = EXCLUDED.amount_tier_max,
+                       updated_at = NOW()`,
+      [orgId, orderType, roleType, salesCat, tierMin, tierMax, rate]
+    )
+  }
+
+  return { orgId, ruleCount: rules.length }
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // 员工 + 权限
 // ────────────────────────────────────────────────────────────────────────
 
@@ -341,6 +410,71 @@ export async function createTestSaleOrder({
   } finally {
     client.release()
   }
+}
+
+/**
+ * 在已有 sale_order 上追加一行 sale_item（默认 createTestSaleOrder 只插 1 行；
+ * 多 SKU / 多 sales_category 用例用此 helper 增补第 2/N 行）。
+ *
+ * 注意：调用方负责保证 sale_order_id 已存在；同时调用方需自己更新 sale_orders.total_amount/received
+ * 来包含新增 item 的金额（如要让 allocation.suggest 拿到完整 received）。
+ *
+ * @param {object} opts
+ * @param {string} opts.saleOrderId   - 已存在的销售单 ID
+ * @param {string} opts.saleItemId    - 新行 ID（调用方控制，建议 ${saleOrderId}_ITEM_N）
+ * @param {string} opts.skuId
+ * @param {string} opts.productName
+ * @param {string} opts.productType   - '疗程卡' / '单品' / '家居产品'
+ * @param {number} opts.quantity
+ * @param {number} opts.unitPrice     - 单价（= unit_real_price 默认）
+ * @param {number} opts.salesCategory - 必填
+ * @returns {Promise<{saleItemId}>}
+ */
+export async function createTestSaleItem({
+  saleOrderId,
+  saleItemId,
+  storeId = TEST_STORE_ID,
+  skuId = null,
+  productName = `${NS}_追加商品`,
+  productType = '单品',
+  quantity = 1,
+  unitPrice,
+  sessionCount = null,
+  salesCategory,
+  isShengmei = null,
+  isExperience = false,
+  isRechargeCard = false,
+} = {}) {
+  if (!saleOrderId) throw new Error('createTestSaleItem: saleOrderId required')
+  if (!saleItemId) throw new Error('createTestSaleItem: saleItemId required')
+  if (unitPrice == null) throw new Error('createTestSaleItem: unitPrice required')
+  if (!salesCategory) throw new Error('createTestSaleItem: salesCategory required')
+
+  const saleAmount = Number(unitPrice) * Number(quantity)
+
+  await pgQuery(
+    `INSERT INTO sale_items (
+       sale_item_id, sale_order_id, store_id, item_direction,
+       sku_id, product_name, sku_spec_name, product_type,
+       session_count, remaining_sessions,
+       unit_price, quantity, unit_real_price, sale_amount, received,
+       is_experience, is_recharge_card, is_shengmei, sales_category
+     )
+     VALUES ($1, $2, $3, '购买'::item_direction,
+             $4, $5, '默认', $6::product_type,
+             $7, $7,
+             $8, $9, $8, $10, $10,
+             $11, $12, $13, $14::sales_category)`,
+    [
+      saleItemId, saleOrderId, storeId,
+      skuId, productName, productType,
+      sessionCount,
+      unitPrice, quantity, saleAmount,
+      isExperience, isRechargeCard, isShengmei, salesCategory,
+    ]
+  )
+
+  return { saleItemId }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -768,7 +902,10 @@ export async function cleanupTestData(prefix = NS) {
     [`DELETE FROM product_skus WHERE sku_id LIKE $1`, [like]],
     [`DELETE FROM product_categories WHERE category_id LIKE $1`, [like]],
 
-    // ─── 12) 门店 / 组织（门店 → 市场 → 总部）───
+    // ─── 12) 提成矩阵（FK → org_nodes，必须先于 org_nodes 删）───
+    [`DELETE FROM commission_rate_matrix WHERE org_id LIKE $1`, [like]],
+
+    // ─── 13) 门店 / 组织（门店 → 市场 → 总部）───
     [`DELETE FROM stores WHERE store_id LIKE $1 OR org_node_id LIKE $1`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '门店'`, [like]],
     [`DELETE FROM org_nodes WHERE id LIKE $1 AND type = '市场'`, [like]],
