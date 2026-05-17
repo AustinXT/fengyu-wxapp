@@ -87,7 +87,7 @@ vi.mock('drizzle-orm/pg-core', () => ({
   alias: vi.fn((_table, aliasName) => ({ _aliasName: aliasName })),
 }))
 
-import { createEmployee, updateEmployee, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
+import { createEmployee, updateEmployee, getEmployees, getEmployeesPaginated, getOrgLevel2ForFilter } from './employees'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope } from '@/lib/permissions'
@@ -921,5 +921,68 @@ describe('getOrgLevel2ForFilter', () => {
     const result = await getOrgLevel2ForFilter()
 
     expect(result).toEqual([])
+  })
+})
+
+// 2026-05-18 picker LIMIT 截断回归：getEmployees() 是开单/服务单/分配/客户分配 picker
+// 共用数据源；曾经写死 .limit(500)，全库 2000+ 员工时按 name 排序后某店员工被截断，
+// 导致 admin /orders/create 选南昌万科店时下拉只显示 2 人（其余 14 人因 name 落在 500
+// 行之后被截）。这里断言链路不再调 limit，且 select 链路顺序为 from → leftJoin × 2 →
+// where → orderBy。
+describe('getEmployees — picker 数据源不得有 LIMIT', () => {
+  const pickerSession = {
+    employeeId: 'ADMIN-001',
+    name: 'admin',
+    phone: '',
+    roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' }],
+    permissions: { actions: ['employee:list'], scopeStoreIds: [] },
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(pickerSession)
+  })
+
+  it('链路止于 orderBy（不再链式 .limit），并返回全量行', async () => {
+    const allRows = Array.from({ length: 1234 }, (_, i) => ({
+      staff_wechat_users: {
+        employeeId: `FY-${String(i).padStart(6, '0')}`,
+        openid: null,
+        phone: null,
+        name: `员工${i}`,
+        gender: null,
+        idCard: null,
+        storeId: i % 2 === 0 ? 'store-A' : 'store-B',
+        orgNodeId: null,
+        positionName: '美容师',
+        avatarUrl: null,
+        birthday: null,
+        skills: ['美容师'],
+        isResigned: false,
+        hiredAt: null,
+        resignedAt: null,
+        lastLoginAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      stores: { storeName: i % 2 === 0 ? '南昌万科店' : '南昌天虹店' },
+      org_nodes: null,
+    }))
+
+    // orderBy 直接 resolve 全量数据；如果代码意外再调 .limit 会得到 undefined.limit
+    // → TypeError，测试失败。
+    const orderBy = vi.fn().mockResolvedValue(allRows)
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin2 = vi.fn().mockReturnValue({ where })
+    const leftJoin1 = vi.fn().mockReturnValue({ leftJoin: leftJoin2 })
+    const from = vi.fn().mockReturnValue({ leftJoin: leftJoin1 })
+    ;(db.select as any).mockReturnValue({ from })
+
+    const result = await getEmployees()
+
+    expect(result).toHaveLength(1234)
+    expect(orderBy).toHaveBeenCalledTimes(1)
+    // 防止有人未来再加回 .limit() —— orderBy 返回的 promise 上不应有 .limit 被调
+    expect((orderBy.mock.results[0]?.value as any).limit).toBeUndefined()
   })
 })

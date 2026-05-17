@@ -51,6 +51,11 @@ function rowToEmployee(row: {
 /**
  * 员工选择器数据源 — 用于顾客分配、分配营业额、开单选店员等 picker 场景。
  * 主管理列表（含筛选 + 分页 + 乐观锁编辑）请使用 getEmployeesPaginated。
+ *
+ * 不加 LIMIT：picker 必须返回 scope 内全部员工，否则前端按 storeId 二次过滤
+ * 时会因排序截断丢失目标 store 的人（详见 2026-05-18 admin/orders/create
+ * 南昌万科店 dropdown 只显示 2 人的根因复盘）。scoped 角色天然受 scopeCondition
+ * 限制；admin 角色无 scope，会全量拉（当前 ~2000 行在职员工，prop 体量可接受）。
  */
 export const getEmployees = withPermission(
   'employee:list',
@@ -63,7 +68,6 @@ export const getEmployees = withPermission(
     .where(scopeCondition(session, staffWechatUsers.storeId))
     // 例外：picker 字母序（人眼扫视更友好）
     .orderBy(asc(staffWechatUsers.name))
-    .limit(500)
 
   return rows.map(rowToEmployee)
   },
