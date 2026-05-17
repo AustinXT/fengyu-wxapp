@@ -1,11 +1,32 @@
-# Ticket-10b: admin lib/* 2 处 cloudbase 裸 throw 收敛到 ApiError
+# Ticket-10b: admin lib/* 2 处 cloudbase 裸 throw 收敛到 ApiError [已归档]
 
 > 生成日期：2026-05-17
-> 实施状态：⚪ 未开工
+> 归档日期：2026-05-17
+> 实施状态：✅ **已完成（已归档）**
+> 实施日期：2026-05-17
 > 严重级别：**P2**（Server Action 调用 cloudbase upload/reupload 失败时，原样裸抛冒泡命中 `runWithApiResponse` 的"非白名单 → 服务器内部错误"兜底，吞掉真实失败原因）
 > 端：fengyu-admin
 > 修复成本：**XS**（10 分钟 — 2 处单行替换 + import ApiError）
 > 来源：[主 ticket §1.2 拆出的 follow-up](2026-05-17-error-code-prefix-whitelist-and-admin-throw.md)
+
+---
+
+## 实施小结（2026-05-17）
+
+**改动 3 个文件**：
+1. `fengyu-admin/src/lib/cloudbase.ts:2` — 新增 `import { ApiError } from "@/lib/api-error"`
+2. `fengyu-admin/src/lib/cloudbase.ts:29-30` — `throw new Error("上传失败")` → `throw new ApiError("INVALID_STATE", "文件上传失败，请重试")`
+3. `fengyu-admin/src/lib/cloudbase.ts:57` — `throw new Error(\`Failed to download ${cleanUrl}: ${res.status}\`)` → `throw new ApiError("INVALID_STATE", \`资源下载失败 (HTTP ${res.status})\`)` （URL 不放进消息避免泄露 cloudbase 内部路径）
+4. `fengyu-admin/src/lib/refund.ts:92-94` — §2.3 可选项：多行 throw 折成单行，让反向 grep 守护脚本基线归零
+
+**验证**：
+- `cd fengyu-admin && npx tsc --noEmit` → 静默通过
+- §3.2 反向 grep `grep -rn "throw new Error" fengyu-admin/src/lib/ | grep -v <9白名单>` → stdout 空 = baseline 0 ✓
+- `bun run test src/actions/refunds.test.ts` → 3 失败但与本 ticket **完全无关**（工作树内另一处遗留改动：`actions/refunds.ts:17` 把 `getPointsToYuanRate` 从 `./settings` 切到 `@/lib/system-config`，`git stash` 后净 HEAD 6/6 绿）
+
+**未做**（明确为可选/范围外）：
+- §3.3 手测 admin 头像上传 / 商品图重传 UI 失败路径（需 dev server + 真实 cloudbase 凭据）
+- 主 ticket §3.2 提到的 cross-end snapshot 测试新增 `lib/` 反向断言基线 0（属 snapshot 测试扩展，非 10b 修复范围）
 
 ---
 
