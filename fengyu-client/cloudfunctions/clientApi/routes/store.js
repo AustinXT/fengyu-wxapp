@@ -151,12 +151,18 @@ async function requestUnbind(ctx) {
     throw new Error('INVALID_PARAMS: 已有待审批的解绑申请，请等待审批结果')
   }
 
+  // partial unique uq_store_unbind_pending 兜底 TOCTOU：同顾客双击提交
   const requestId = crypto.randomUUID()
-  await pg.query(
+  const insRes = await pg.query(
     `INSERT INTO store_unbind_requests (request_id, user_id, from_store_id, status, note)
-     VALUES ($1, $2, $3, '待处理', $4)`,
+     VALUES ($1, $2, $3, '待处理', $4)
+     ON CONFLICT (user_id) WHERE status = '待处理' DO NOTHING
+     RETURNING request_id`,
     [requestId, userId, boundStoreId, note || null]
   )
+  if (insRes.length === 0) {
+    throw new Error('CONFLICT: 已有待审批的解绑申请，请等待审批结果')
+  }
 
   ctx.result = { requestId }
 }

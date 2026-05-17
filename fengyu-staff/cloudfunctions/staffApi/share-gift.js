@@ -102,11 +102,13 @@ async function grantShareGift(client, order) {
     ['invitee', order.clientUserId],
   ]
   for (const [role, userId] of couponRecipients) {
+    const couponId = `sg-${role}-${order.saleOrderId}`
+    // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底 TOCTOU
     await client.query(
-      `INSERT INTO user_coupons (coupon_id, template_id, user_id, status, expire_at, face_value_override, created_at)
-       VALUES ($1, $2, $3, '未使用', $4, $5, NOW())
+      `INSERT INTO user_coupons (coupon_id, template_id, user_id, status, expire_at, face_value_override, external_ref, created_at)
+       VALUES ($1, $2, $3, '未使用', $4, $5, $6, NOW())
        ON CONFLICT (coupon_id) DO NOTHING`,
-      [`sg-${role}-${order.saleOrderId}`, cfg.couponTemplateId, userId, expireAt, value]
+      [couponId, cfg.couponTemplateId, userId, expireAt, value, couponId]
     )
   }
 

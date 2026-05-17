@@ -232,27 +232,43 @@ exports.main = async (event) => {
 
       // INSERT payments（幂等：重复回调 ON CONFLICT DO NOTHING）
       // 注意：payments.sale_order_id 写 targetOrderNo（原销售单），不是凭证单
-      const insertRes = await client.query(
-        `INSERT INTO sale_order_payments (
-          sale_order_id, change_type, amount, payment_method,
-          external_txn_id, status, source_end, operator_employee_id,
-          note, created_at, paid_at
-        ) VALUES ($1, $2, $3, $4, $5, '已支付', 'notify', NULL, $6, $7, $7)
-        ON CONFLICT (sale_order_id, payment_method, external_txn_id)
-          WHERE external_txn_id IS NOT NULL
-        DO NOTHING
-        RETURNING id`,
-        [
-          targetOrderNo, changeType, thisPayAmount, paymentMethod, txnId,
-          isRepaymentCredential
-            ? `${paymentMethod} 回款到账 凭证 ${orderNo}`
-            : `${paymentMethod} 回调到账`,
-          now,
-        ]
-      )
+      // 两层 partial unique 防 TOCTOU：
+      //   1) uq_sop_txn (sale_order_id, payment_method, external_txn_id) — 同 txnId 重复回调
+      //   2) uq_sop_first_payment (sale_order_id) WHERE change_type='首次支付' AND status='已支付'
+      //      — 同订单两个不同支付通道同时回调，避免双 '首次支付' 行
+      // 任一索引命中均视为幂等成功（重复回调），静默 ACK
+      let insertRes
+      try {
+        insertRes = await client.query(
+          `INSERT INTO sale_order_payments (
+            sale_order_id, change_type, amount, payment_method,
+            external_txn_id, status, source_end, operator_employee_id,
+            note, created_at, paid_at
+          ) VALUES ($1, $2, $3, $4, $5, '已支付', 'notify', NULL, $6, $7, $7)
+          ON CONFLICT (sale_order_id, payment_method, external_txn_id)
+            WHERE external_txn_id IS NOT NULL
+          DO NOTHING
+          RETURNING id`,
+          [
+            targetOrderNo, changeType, thisPayAmount, paymentMethod, txnId,
+            isRepaymentCredential
+              ? `${paymentMethod} 回款到账 凭证 ${orderNo}`
+              : `${paymentMethod} 回调到账`,
+            now,
+          ]
+        )
+      } catch (err) {
+        if (err && err.code === '23505' && err.constraint === 'uq_sop_first_payment') {
+          // 并发不同通道同时回调同订单，第二个落 uq_sop_first_payment；视为重复回调
+          await client.query('ROLLBACK')
+          console.log('[payNotify] 并发首次支付（uq_sop_first_payment 命中），跳过:', orderNo, txnId)
+          return { code: 'SUCCESS', message: '已处理（幂等）' }
+        }
+        throw err
+      }
 
       if (insertRes.rows.length === 0) {
-        // 唯一索引命中，重复回调；静默 ack 不再修改 sale_orders
+        // uq_sop_txn 命中，重复回调；静默 ack 不再修改 sale_orders
         await client.query('ROLLBACK')
         console.log('[payNotify] 重复回调（uq_sop_txn 命中），跳过:', orderNo, txnId)
         return { code: 'SUCCESS', message: '已处理（幂等）' }
@@ -320,7 +336,7 @@ exports.main = async (event) => {
       // 切换为 sale_items.is_recharge_card 行级快照（开单时从 product_skus.is_recharge_card 拷贝）
       if (targetOrder.client_user_id && targetOrder.store_id) {
         const rechargeRows = await client.query(
-          `SELECT si.sku_id, si.product_name, sk.price AS sku_price
+          `SELECT si.sale_item_id, si.sku_id, si.product_name, sk.price AS sku_price
            FROM sale_items si
            LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
            WHERE si.sale_order_id = $1 AND si.is_recharge_card = true`,
@@ -356,9 +372,10 @@ exports.main = async (event) => {
               )
               const cardId = upsertRes.rows[0].card_id
               await client.query(
-                `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-                 VALUES ($1, '充值', $2, $3, NOW())`,
-                [cardId, faceValue, targetOrderNo]
+                `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+                 VALUES ($1, '充值', $2, $3, $4, NOW())
+                 ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+                [cardId, faceValue, targetOrderNo, `card-recharge-${row.sale_item_id}`]
               )
               console.log(`[payNotify] 充值入账: order=${targetOrderNo}, card=${cardId}, faceValue=${faceValue}, skuId=${row.sku_id}`)
             }
@@ -392,9 +409,10 @@ exports.main = async (event) => {
             [prepaidAmount, cardId]
           )
           await client.query(
-            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-             VALUES ($1, '扣款', $2, $3, NOW())`,
-            [cardId, -prepaidAmount, targetOrderNo]
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+             VALUES ($1, '扣款', $2, $3, $4, NOW())
+             ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+            [cardId, -prepaidAmount, targetOrderNo, `card-deduct-${targetOrderNo}`]
           )
           // 写储值卡抵扣流水（与 confirmOffline/staffApi 一致，amount 为负数）
           await client.query(

@@ -101,27 +101,31 @@ async function cascadeRefund(client, params) {
   let reversedPoints = 0
   let pointsBalanceUpdated = false
   // 1) 查所有原赠送流水（注意：列名为 type，不是 change_type）
+  // 原脆弱 NOT EXISTS 检查已移除，改由 DB 层 uq_point_txn_order_user_type 兜底
   const giftRes = await client.query(
     `SELECT id, user_id, type, amount
        FROM point_transactions
       WHERE ref_order_id = $1
         AND type IN ('消费赠送', '回款赠送', '获取')
-        AND amount > 0
-        AND NOT EXISTS (
-          SELECT 1 FROM point_transactions pt2
-          WHERE pt2.ref_order_id = $1
-            AND pt2.type = '消费冲销'
-            AND pt2.amount = -point_transactions.amount
-        )`,
+        AND amount > 0`,
     [saleOrderId],
   )
   for (const row of giftRes.rows) {
-    await client.query(
+    // partial unique (user_id, ref_order_id, type='消费冲销') 兜底；命中则 rowCount=0 静默
+    const insRes = await client.query(
       `INSERT INTO point_transactions
          (user_id, ref_order_id, type, amount, created_at)
-       VALUES ($1, $2, '消费冲销', $3, $4)`,
+       VALUES ($1, $2, '消费冲销', $3, $4)
+       ON CONFLICT (user_id, ref_order_id, type)
+         WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+       DO NOTHING
+       RETURNING id`,
       [row.user_id, saleOrderId, -Number(row.amount), now],
     )
+    if (insRes.rows.length === 0) {
+      // 已有同 (user_id, ref_order_id, '消费冲销') 行，跳过 balance 重算（已被前一次覆盖）
+      continue
+    }
     reversedPoints++
     // 同事务重算 balance（合并表 client_wechat_users.points_balance，无独立 customer_points 表）
     await client.query(

@@ -174,25 +174,40 @@ async function create(ctx) {
     serviceOrderId = await generateServiceOrderId(client)
 
     // 创建服务单主表
-    await client.query(
-      `INSERT INTO service_orders (
-        service_order_id, status, service_order_type, market_name, store_id,
-        service_date, assigned_employee_id,
-        remark, client_user_id, appointment_id, created_at, updated_at
-      ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
-      [
-        serviceOrderId,
-        serviceOrderType,
-        ctx.auth.marketName || '',
-        ctx.auth.effectiveStoreId,
-        resolvedServiceDate,
-        resolvedStaffWfId,
-        remark || '',
-        resolvedClientUserId,
-        appointmentId || null,
-        now
-      ]
-    )
+    // partial unique 兜底 TOCTOU：
+    //   uq_so_appointment(appointment_id) WHERE appointment_id IS NOT NULL — 同预约双 create
+    //   uq_so_client_active(client_user_id) WHERE status IN ('待服务','服务中') — 同顾客双 create
+    try {
+      await client.query(
+        `INSERT INTO service_orders (
+          service_order_id, status, service_order_type, market_name, store_id,
+          service_date, assigned_employee_id,
+          remark, client_user_id, appointment_id, created_at, updated_at
+        ) VALUES ($1, '待服务', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)`,
+        [
+          serviceOrderId,
+          serviceOrderType,
+          ctx.auth.marketName || '',
+          ctx.auth.effectiveStoreId,
+          resolvedServiceDate,
+          resolvedStaffWfId,
+          remark || '',
+          resolvedClientUserId,
+          appointmentId || null,
+          now
+        ]
+      )
+    } catch (err) {
+      if (err && err.code === '23505') {
+        if (err.constraint === 'uq_so_appointment') {
+          throw new Error('CONFLICT: 该预约已关联服务单，不可重复创建')
+        }
+        if (err.constraint === 'uq_so_client_active') {
+          throw new Error('CONFLICT: 该顾客已有进行中的服务单，请先完成后再创建')
+        }
+      }
+      throw err
+    }
 
     // 创建服务明细
     for (const item of normalizedItems) {

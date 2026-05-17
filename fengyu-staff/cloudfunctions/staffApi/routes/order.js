@@ -626,13 +626,20 @@ async function create(ctx) {
     //   扣卡余额 + 写 '储值卡抵扣' payments 行统一由 confirmOffline 执行（staffApi 唯一扣卡点，
     //   见 fengyu-staff/CLAUDE.md）。
     if (!isOnlineMethod && paidAmount > 0) {
-      await client.query(
+      const insRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
           status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        ) VALUES ($1, '首次支付', $2, $3, NULL, '已支付', 'staff', $4, $5, $6, $6)
+        ON CONFLICT (sale_order_id)
+          WHERE change_type = '首次支付' AND status = '已支付'
+        DO NOTHING
+        RETURNING id`,
         [saleOrderId, paidAmount, paymentMethod, ctx.auth.staffWfId, '店长开单现场收款', now]
       )
+      if (insRes.rows.length === 0) {
+        throw new Error('CONFLICT: 订单已收款，请勿重复提交')
+      }
     }
 
     // 创建订单明细
@@ -926,9 +933,10 @@ async function confirmOffline(ctx) {
           [prepaidAmount, cardId]
         )
         await client.query(
-          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-           VALUES ($1, '扣款', $2, $3, NOW())`,
-          [cardId, -prepaidAmount, saleOrderId]
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+           VALUES ($1, '扣款', $2, $3, $4, NOW())
+           ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+          [cardId, -prepaidAmount, saleOrderId, `card-deduct-${saleOrderId}`]
         )
         // 同事务写 '储值卡抵扣' payments 行（扣卡与流水同发生）
         await client.query(
@@ -962,13 +970,21 @@ async function confirmOffline(ctx) {
     }
 
     if (confirmAmount > 0) {
-      await client.query(
+      // change_type='首次支付' 时由 uq_sop_first_payment 兜底 TOCTOU；'回款' 不受影响
+      const insRes = await client.query(
         `INSERT INTO sale_order_payments (
           sale_order_id, change_type, amount, payment_method, external_txn_id,
           status, source_end, operator_employee_id, note, created_at, paid_at
-        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)`,
+        ) VALUES ($1, $2, $3, '线下', NULL, '已支付', 'staff', $4, $5, $6, $6)
+        ON CONFLICT (sale_order_id)
+          WHERE change_type = '首次支付' AND status = '已支付'
+        DO NOTHING
+        RETURNING id`,
         [saleOrderId, paymentChangeType, confirmAmount, ctx.auth.staffWfId, '店长确认线下收款', now]
       )
+      if (insRes.rows.length === 0) {
+        throw new Error('CONFLICT: 订单已收款，请勿重复提交')
+      }
     }
 
     // 单品到期日写入（paid_at + 1年）——仅在本次转为 '已支付' 时触发
@@ -992,7 +1008,7 @@ async function confirmOffline(ctx) {
     // PR-2: 仅在本次转为 '已支付' 时触发充值卡入账（部分支付尚未全额结清）
     if (targetStatus === '已支付' && order.client_user_id) {
       const rechargeRows = await client.query(
-        `SELECT si.sku_id, si.product_name, sk.price AS sku_price
+        `SELECT si.sale_item_id, si.sku_id, si.product_name, sk.price AS sku_price
          FROM sale_items si
          LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
          WHERE si.sale_order_id = $1 AND si.is_recharge_card = true`,
@@ -1028,9 +1044,10 @@ async function confirmOffline(ctx) {
             )
             const cardId = upsertRes.rows[0].card_id
             await client.query(
-              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-               VALUES ($1, '充值', $2, $3, NOW())`,
-              [cardId, faceValue, saleOrderId]
+              `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+               VALUES ($1, '充值', $2, $3, $4, NOW())
+               ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+              [cardId, faceValue, saleOrderId, `card-recharge-${row.sale_item_id}`]
             )
           }
         }
@@ -1617,9 +1634,10 @@ async function approveRefund(ctx) {
         )
         const cardId = upsertRes.rows[0].card_id
         await client.query(
-          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-           VALUES ($1, '充值', $2, $3, NOW())`,
-          [cardId, refundAbs, `SOP-${paymentId}`]
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+           VALUES ($1, '充值', $2, $3, $4, NOW())
+           ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+          [cardId, refundAbs, `SOP-${paymentId}`, `card-refund-${paymentId}`]
         )
       }
     }
@@ -1825,7 +1843,7 @@ async function createRepayment(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或不属于本门店')
   const origOrder = origOrders[0]
   if (!origOrder.client_user_id) {
-    throw new Error('INVALID_PARAMS: 原订单顾客未注册小程序或未绑定门店')
+    throw new Error('CLIENT_NOT_REGISTERED: 原订单顾客未注册小程序或未绑定门店')
   }
 
   const now = new Date()
@@ -1883,9 +1901,10 @@ async function createRepayment(ctx) {
         [prepaidCardAmount, cardId]
       )
       await client.query(
-        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-         VALUES ($1, '扣款', $2, $3, NOW())`,
-        [cardId, -prepaidCardAmount, repayRefId]
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+         VALUES ($1, '扣款', $2, $3, $4, NOW())
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardId, -prepaidCardAmount, repayRefId, `card-repay-${repayRefId}`]
       )
     }
 
@@ -2318,9 +2337,10 @@ async function createConversion(ctx) {
       if (!cardId) throw new Error('INVALID_PARAMS: 储值卡入账失败，请稍后重试')
 
       await tx.query(
-        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
-         VALUES ($1, '充值', $2, $3)`,
-        [cardId, creditAmount.toFixed(2), convOrderId]
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+         VALUES ($1, '充值', $2, $3, $4)
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardId, creditAmount.toFixed(2), convOrderId, `card-conv-${convOrderId}`]
       )
     }
 
@@ -2416,57 +2436,93 @@ async function customerHeldCards(ctx) {
 async function createPickup(ctx) {
   await requireStaffBound()(ctx, async () => {})
 
-  const { saleItemId, pickupQuantity, remark } = ctx.event.payload || {}
+  const { saleItemId, pickupQuantity, remark, idempotencyKey } = ctx.event.payload || {}
   if (!saleItemId) throw new Error('INVALID_PARAMS: 缺少 saleItemId')
   if (!pickupQuantity || pickupQuantity <= 0) throw new Error('INVALID_PARAMS: 取货数量必须大于0')
 
-  // 原子累加 picked_up_quantity（强制本店）
-  const result = await pg.query(
-    `UPDATE sale_items
-     SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
-     WHERE sale_item_id = $2
-       AND store_id = $3
-       AND product_type = '家居产品'
-       AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
-     RETURNING sale_item_id, quantity, picked_up_quantity`,
-    [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
-  )
-
-  if (result.rowCount === 0) {
-    // 区分跨店 / 已提满 / 类型错误三种失败
-    const probe = await pg.query(
-      `SELECT store_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
-       FROM sale_items WHERE sale_item_id = $1`,
-      [saleItemId]
+  // 幂等前置：若前端传 idempotencyKey 且已存在对应行，直接返回当前状态（不再 UPDATE/INSERT）
+  // 配合 DB 层 uq_pickup_idempotency 兜底 sub-ms 并发
+  if (idempotencyKey) {
+    const existRes = await pg.query(
+      `SELECT id FROM pickup_records WHERE sale_item_id = $1 AND idempotency_key = $2 LIMIT 1`,
+      [saleItemId, idempotencyKey]
     )
-    const row = probe[0]
-    if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
-    if (row.store_id !== ctx.auth.effectiveStoreId) {
-      throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
+    if (existRes.length > 0) {
+      const curRes = await pg.query(
+        `SELECT quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+         FROM sale_items WHERE sale_item_id = $1`,
+        [saleItemId]
+      )
+      const r = curRes[0]
+      ctx.result = {
+        saleItemId,
+        pickedUp: Number(r.picked_up_quantity),
+        total: Number(r.quantity),
+        remaining: Number(r.quantity) - Number(r.picked_up_quantity),
+        message: '取货成功（幂等）',
+      }
+      return
     }
-    if (row.product_type !== '家居产品') {
-      throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
-    }
-    throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')
   }
 
-  // 查顾客信息
-  const itemRows = await pg.query(
-    `SELECT si.sale_order_id, o.client_user_id
-     FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
-     WHERE si.sale_item_id = $1`,
-    [saleItemId]
-  )
-  const clientUserId = itemRows.length > 0 ? itemRows[0].client_user_id : null
+  let updated
+  await pg.transaction(async (client) => {
+    // 1) 原子累加 picked_up_quantity（强制本店）
+    const result = await client.query(
+      `UPDATE sale_items
+       SET picked_up_quantity = COALESCE(picked_up_quantity, 0) + $1, updated_at = NOW()
+       WHERE sale_item_id = $2
+         AND store_id = $3
+         AND product_type = '家居产品'
+         AND (COALESCE(picked_up_quantity, 0) + $1) <= quantity
+       RETURNING sale_item_id, quantity, picked_up_quantity`,
+      [pickupQuantity, saleItemId, ctx.auth.effectiveStoreId]
+    )
 
-  // 插入提货记录
-  await pg.query(
-    `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null]
-  )
+    if (result.rowCount === 0) {
+      // 区分跨店 / 已提满 / 类型错误三种失败
+      const probe = await client.query(
+        `SELECT store_id, product_type, quantity, COALESCE(picked_up_quantity, 0) AS picked_up_quantity
+         FROM sale_items WHERE sale_item_id = $1`,
+        [saleItemId]
+      )
+      const row = probe.rows[0]
+      if (!row) throw new Error('INVALID_PARAMS: 商品不存在')
+      if (row.store_id !== ctx.auth.effectiveStoreId) {
+        throw new Error(`INVALID_PARAMS: 该商品仅在 ${row.store_id} 可提货，当前门店无法操作`)
+      }
+      if (row.product_type !== '家居产品') {
+        throw new Error('INVALID_PARAMS: 该商品类型不支持提货')
+      }
+      throw new Error('INVALID_PARAMS: 取货数量超出可提货数量')
+    }
 
-  const updated = result.rows ? result.rows[0] : result[0]
+    // 2) 查顾客信息
+    const itemRows = await client.query(
+      `SELECT si.sale_order_id, o.client_user_id
+       FROM sale_items si JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+       WHERE si.sale_item_id = $1`,
+      [saleItemId]
+    )
+    const clientUserId = itemRows.rows.length > 0 ? itemRows.rows[0].client_user_id : null
+
+    // 3) 插入提货记录（DB 层 uq_pickup_idempotency 兜底 race；命中则整事务 rollback 防 UPDATE 重复累加）
+    try {
+      await client.query(
+        `INSERT INTO pickup_records (sale_item_id, pickup_quantity, store_id, client_user_id, confirmed_by, remark, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [saleItemId, pickupQuantity, ctx.auth.effectiveStoreId, clientUserId, ctx.auth.staffWfId, remark || null, idempotencyKey || null]
+      )
+    } catch (err) {
+      if (err && err.code === '23505' && err.constraint === 'uq_pickup_idempotency') {
+        throw new Error('CONFLICT: 提货请求重复，请勿重复提交')
+      }
+      throw err
+    }
+
+    updated = result.rows[0]
+  })
+
   ctx.result = {
     saleItemId,
     pickedUp: updated.picked_up_quantity,

@@ -15,6 +15,14 @@ const { createManagerCtx, createBeauticianCtx } = require('../helpers')
 const orderRoutes = require('../../routes/order')
 
 /**
+ * 共享 helper：assertOrderInScope 在路由内会先 SELECT store_id FROM sale_orders WHERE sale_order_id = $1。
+ * 调用方在每个会触达 createRefund / close / approve / reject 的测试里先 mock 一行通过即可。
+ */
+function mockScopeAllow(storeId = 'store-001') {
+  pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+}
+
+/**
  * 2026-04-26 sale-order-domain-refactor: order.js 现在大量使用
  *   INSERT INTO sale_order_payments (...) RETURNING id
  *   INSERT INTO prepaid_cards (...) RETURNING card_id
@@ -2187,7 +2195,11 @@ describe('order.qrcode', () => {
 //     refundByOrigin, refundPaymentMethod, message }
 //   - in-flight 唯一性：partial unique uq_sop_status_audit 防同原单第 2 笔待审批
 describe('order.createRefund', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // assertOrderInScope helper SELECT store_id FROM sale_orders（先于业务 SELECT *）
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+  })
 
   /**
    * 构造 createRefund 的事务 client.query mock。
@@ -2795,7 +2807,7 @@ describe('order.approveRefund', () => {
   test('跨店审批 → PERMISSION_DENIED', async () => {
     const ctx = createManagerCtx({ paymentId: 1001 })
     pg.query.mockResolvedValueOnce([makeSopRow({ store_id: 'store-OTHER' })])
-    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*无权审批/)
+    await expect(orderRoutes.approveRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*订单不在当前门店范围内/)
   })
 
   test('缺少 paymentId → INVALID_PARAMS', async () => {
@@ -3090,7 +3102,7 @@ describe('order.rejectRefund', () => {
   test('跨店驳回 → PERMISSION_DENIED', async () => {
     const ctx = createManagerCtx({ paymentId: 2005, auditRemark: 'X' })
     pg.query.mockResolvedValueOnce([makeSopRowReject({ id: 2005, store_id: 'store-OTHER' })])
-    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*无权驳回/)
+    await expect(orderRoutes.rejectRefund(ctx)).rejects.toThrow(/PERMISSION_DENIED.*订单不在当前门店范围内/)
   })
 
   test('缺少 paymentId → INVALID_PARAMS', async () => {
@@ -4443,7 +4455,11 @@ describe('order.confirmOffline — 储值卡扣款（staffApi 唯一扣卡点）
 //   approveRefund 仅按 payment_method 决定是否回冲储值卡。
 //   本组测试覆盖 createRefund 时 refundByCard/refundByOrigin 的拆分计算。
 describe('order.createRefund — 按比例拆分退款（refundByCard/refundByOrigin）', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // assertOrderInScope helper SELECT store_id FROM sale_orders（先于业务 SELECT *）
+    pg.query.mockResolvedValueOnce([{ store_id: 'store-001' }])
+  })
 
   /**
    * 通用 mock：原单 payment_method='无'（全额储值卡场景）/'微信'/'线下' 等可调。

@@ -599,9 +599,10 @@ async function create(ctx) {
           [prepaidCardAmount, cardIdForDeduction]
         )
         await client.query(
-          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
-           VALUES ($1, '扣款', $2, $3)`,
-          [cardIdForDeduction, -prepaidCardAmount, orderNo]
+          `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+           VALUES ($1, '扣款', $2, $3, $4)
+           ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+          [cardIdForDeduction, -prepaidCardAmount, orderNo, `card-deduct-${orderNo}`]
         )
         // 同事务写 payments 流水：change_type='储值卡抵扣' / status='已支付'
         // 维护不变量 received = SUM(payments WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
@@ -1196,9 +1197,10 @@ async function cancel(ctx) {
             [prepaidCardAmount, cardId]
           )
           await client.query(
-            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
-             VALUES ($1, '充值', $2, $3)`,
-            [cardId, prepaidCardAmount, orderNo]
+            `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+             VALUES ($1, '充值', $2, $3, $4)
+             ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+            [cardId, prepaidCardAmount, orderNo, `card-cancel-rev-${orderNo}`]
           )
         }
       }
@@ -1565,9 +1567,10 @@ async function confirmPrepaidFull(ctx) {
         [prepaidCardAmount, cardId]
       )
       await client.query(
-        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id)
-         VALUES ($1, '扣款', $2, $3)`,
-        [cardId, -prepaidCardAmount, saleOrderId]
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+         VALUES ($1, '扣款', $2, $3, $4)
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardId, -prepaidCardAmount, saleOrderId, `card-deduct-${saleOrderId}`]
       )
       // 维护 received 不变量：写 sale_order_payments[储值卡抵扣,已支付]
       // 注意此处用 INSERT ... ON CONFLICT 兜底（万一 create 已写过，避免双写违 chk_sop_amount_sign）
@@ -1740,10 +1743,12 @@ async function repay(ctx) {
          WHERE card_id = $2`,
         [prepaidCardAmountInput, cardIdUsed]
       )
+      // repay 可合法多次调用同 saleOrderId（分批回款），用 timestamp 区分，partial unique 仅防 sub-ms 双发
       await client.query(
-        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, created_at)
-         VALUES ($1, '扣款', $2, $3, NOW())`,
-        [cardIdUsed, -prepaidCardAmountInput, saleOrderId]
+        `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref, created_at)
+         VALUES ($1, '扣款', $2, $3, $4, NOW())
+         ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING`,
+        [cardIdUsed, -prepaidCardAmountInput, saleOrderId, `card-repay-${saleOrderId}-${now.getTime()}`]
       )
       // payments 行：sale_order_id=原单；change_type='回款' + payment_method='储值卡' / status='已支付'
       await client.query(

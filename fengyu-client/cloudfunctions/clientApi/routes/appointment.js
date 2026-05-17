@@ -102,20 +102,28 @@ async function create(ctx) {
   if (!clientName) clientName = users[0]?.phone || ''
 
   // 创建预约
+  // partial unique uq_appt_sale_item_active 兜底 TOCTOU：同 sale_item 双发 create
   const appointmentId = generateAppointmentId()
   const now = new Date()
 
-  await pg.query(`
-    INSERT INTO appointments (
-      appointment_id, status, store_id,
-      client_user_id, client_name, employee_id, employee_name,
-      appointment_time, notes, sale_item_id, created_at, updated_at
-    ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-  `, [
-    appointmentId, storeId,
-    userId, clientName, staffWfId || null, inputStaffName || '',
-    parsedTime, notes || '', saleItemId || null, now
-  ])
+  try {
+    await pg.query(`
+      INSERT INTO appointments (
+        appointment_id, status, store_id,
+        client_user_id, client_name, employee_id, employee_name,
+        appointment_time, notes, sale_item_id, created_at, updated_at
+      ) VALUES ($1, '待确认', $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+    `, [
+      appointmentId, storeId,
+      userId, clientName, staffWfId || null, inputStaffName || '',
+      parsedTime, notes || '', saleItemId || null, now
+    ])
+  } catch (err) {
+    if (err && err.code === '23505' && err.constraint === 'uq_appt_sale_item_active') {
+      throw new Error('CONFLICT: 该订单明细已有待确认或已确认的预约')
+    }
+    throw err
+  }
 
   ctx.result = {
     appointmentId,

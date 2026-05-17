@@ -304,10 +304,11 @@ async function grantUpgradeBenefits(
       }
 
       const couponId = `cpn-up-${userId}-${toLevel}-${templateId}`
+      const externalRef = couponId  // 双写 external_ref：DB 层 uq_user_coupons_external_ref 兜底
       await tx.execute(sql`
         INSERT INTO user_coupons
-          (coupon_id, template_id, user_id, status, expire_at, created_at)
-        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${expireAt}, NOW())
+          (coupon_id, template_id, user_id, status, expire_at, external_ref, created_at)
+        VALUES (${couponId}, ${templateId}, ${userId}, '未使用', ${expireAt}, ${externalRef}, NOW())
         ON CONFLICT (coupon_id) DO NOTHING
       `)
     }

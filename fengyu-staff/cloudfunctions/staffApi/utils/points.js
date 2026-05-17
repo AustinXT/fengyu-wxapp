@@ -79,9 +79,14 @@ async function settlePointsForOrder(client, originalSaleOrderId) {
   }
 
   const type = delta > 0 ? '消费赠送' : '消费冲销'
+  // partial unique uq_point_txn_order_user_type (user_id, ref_order_id, type) WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+  // 兜底 TOCTOU：双发 settle 同订单 → 第二次静默跳过
   await client.query(
     `INSERT INTO point_transactions (user_id, type, amount, ref_order_id, created_at)
-     VALUES ($1, $2, $3, $4, NOW())`,
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (user_id, ref_order_id, type)
+       WHERE ref_order_id IS NOT NULL AND type IN ('消费赠送','消费冲销')
+     DO NOTHING`,
     [userId, type, delta, originalSaleOrderId],
   )
   await client.query(
