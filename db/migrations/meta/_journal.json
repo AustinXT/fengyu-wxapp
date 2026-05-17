@@ -211,6 +211,20 @@
       "when": 1779026520631,
       "tag": "0029_lumpy_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1779032341606,
+      "tag": "0030_easy_maestro",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1779033322404,
+      "tag": "0031_gifted_shadow_king",
+      "breakpoints": true
     }
   ]
 }

@@ -44,6 +44,20 @@ export const serviceOrders = pgTable(
     index('idx_svc_orders_store_date').on(table.storeId, table.serviceDate),
     index('idx_svc_orders_assigned_employee').on(table.assignedEmployeeId),
     index('idx_svc_orders_client_user_id').on(table.clientUserId),
+    /**
+     * 服务单列表默认排序 + 状态筛选支撑索引。
+     * Why: admin allocations「服务提成」Tab 与 services 列表均走
+     *   `WHERE status=? ORDER BY updated_at DESC, created_at DESC LIMIT N`，
+     *   '已完成' 行占全表 ~100%，缺索引会全表 Parallel Seq Scan + top-N heapsort（实测 163ms/20 行）。
+     *   加该复合索引后变为 Index Scan + LIMIT 早终止。
+     * NULLS FIRST 必填：SQL 标准 `ORDER BY x DESC` 默认 NULLS FIRST；
+     *   Drizzle `.desc()` 生成 `DESC NULLS LAST` 与之不匹配，PG 不会用索引顺序。
+     */
+    index('idx_svc_orders_status_updated').on(
+      table.status,
+      table.updatedAt.desc().nullsFirst(),
+      table.createdAt.desc().nullsFirst(),
+    ),
     /** 同一预约只能关联 1 张服务单：防 TOCTOU 双 staff 同 appointmentId 同时 create */
     uniqueIndex('uq_so_appointment')
       .on(table.appointmentId)
