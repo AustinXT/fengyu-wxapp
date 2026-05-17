@@ -161,8 +161,8 @@ describe('audit-CC5 P0：admin actions/ 范围 0 处非白名单裸 throw（除�
       stdout = (err.stdout && err.stdout.toString()) || ''
     }
     const violationCount = stdout.split('\n').filter((line) => line.trim()).length
-    // 本 ticket（10）已示范迁移 employees.ts 1 处（Error → ApiError），actions/ 仍剩 33 处由 ticket-10c 处理。
-    // 守护"不增"——禁止任何新 PR 再引入野生前缀 throw。基线 = 33；ticket-10c 每迁完一批同步下调。
-    expect(violationCount).toBeLessThanOrEqual(33)
+    // ticket-10c（2026-05-17）已全量收敛 admin actions/ 内 33 处野生前缀 throw → ApiError。
+    // 守护"不增"——禁止任何新 PR 再引入未在 9 项白名单内的裸 throw。
+    expect(violationCount).toBe(0)
   })
 })

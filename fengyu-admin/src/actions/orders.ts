@@ -15,6 +15,7 @@ import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation, logTransition } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import {
@@ -77,8 +78,9 @@ async function applyRechargeOnOrderPaid(
 
   const faceValue = parseRechargeFaceValue(rechargeItems[0].productName)
   if (faceValue == null) {
-    throw new Error(
-      `[applyRechargeOnOrderPaid] 充值订单 product_name 无法解析面值: ${rechargeItems[0].productName}`,
+    throw new ApiError(
+      'INVALID_STATE',
+      `充值订单 product_name 无法解析面值: ${rechargeItems[0].productName}`,
     )
   }
 
@@ -102,7 +104,7 @@ async function applyRechargeOnOrderPaid(
     RETURNING card_id
   `)
   const cardId = (upsertRows as unknown as any[])[0]?.card_id as string | undefined
-  if (!cardId) throw new Error('[applyRechargeOnOrderPaid] prepaid_cards UPSERT 失败')
+  if (!cardId) throw new ApiError('CONFLICT', '充值卡数据写入冲突，请重试')
 
   await tx.insert(cardTransactions).values({
     cardId,
@@ -1145,7 +1147,7 @@ export async function createOrder(data: {
         FROM lock
       `)
       const id = (idRows as any[])[0]?.id as string
-      if (!id) throw new Error('订单号生成失败')
+      if (!id) throw new ApiError('INVALID_STATE', '订单号生成失败')
 
       // 检查该顾客是否已有待支付订单（partial unique index 保护）
       if (initialStatus === '待支付' && data.clientUserId) {
@@ -1160,7 +1162,7 @@ export async function createOrder(data: {
           )
           .limit(1)
         if (existing.length > 0) {
-          throw new Error(`该顾客已有待支付订单 ${existing[0].saleOrderId}，请先关闭后再创建新订单`)
+          throw new ApiError('CONFLICT', `该顾客已有待支付订单 ${existing[0].saleOrderId}，请先关闭后再创建新订单`)
         }
       }
 
@@ -1221,7 +1223,7 @@ export async function createOrder(data: {
           .where(and(eq(userCoupons.couponId, data.couponId), eq(userCoupons.status, '未使用')))
 
         if ((voidResult as any).count === 0) {
-          throw new Error('优惠券已被使用，请刷新后重试')
+          throw new ApiError('CONFLICT', '优惠券已被使用，请刷新后重试')
         }
       }
 
@@ -1460,7 +1462,7 @@ export async function createConversionOrder(data: {
 
       const held = Array.from(heldRows as unknown as Iterable<Record<string, unknown>>)
       if (held.length !== data.convertOutSaleItemIds.length) {
-        throw new Error('CARD_NOT_FOUND')
+        throw new ApiError('NOT_FOUND', 'CARD_NOT_FOUND: 部分卡不存在或已失效')
       }
 
       let totalOut = 0
@@ -1483,11 +1485,11 @@ export async function createConversionOrder(data: {
 
       for (const row of held) {
         // 归属校验：store_id / client_user_id / direction / 状态
-        if (row.store_id !== data.storeId) throw new Error('CARD_STORE_MISMATCH')
-        if (row.client_user_id !== data.clientUserId) throw new Error('CARD_OWNER_MISMATCH')
-        if (row.item_direction !== '购买') throw new Error('CARD_DIRECTION_INVALID')
+        if (row.store_id !== data.storeId) throw new ApiError('INVALID_STATE', 'CARD_STORE_MISMATCH: 所选卡不属于当前门店')
+        if (row.client_user_id !== data.clientUserId) throw new ApiError('INVALID_STATE', 'CARD_OWNER_MISMATCH: 所选卡不属于该顾客')
+        if (row.item_direction !== '购买') throw new ApiError('INVALID_STATE', 'CARD_DIRECTION_INVALID: 所选行非购买行，不可折抵')
         if (row.order_status !== '已支付' && row.order_status !== '已完成') {
-          throw new Error('CARD_ORDER_STATUS_INVALID')
+          throw new ApiError('INVALID_STATE', 'CARD_ORDER_STATUS_INVALID: 原订单状态不允许转换')
         }
 
         const unit = Number(row.unit_real_price)
@@ -1496,14 +1498,14 @@ export async function createConversionOrder(data: {
         let qty = 0
         if (productType === '疗程卡') {
           const rem = Number(row.remaining_sessions ?? 0)
-          if (rem <= 0) throw new Error('CARD_EXHAUSTED')
+          if (rem <= 0) throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
           qty = rem
         } else if (productType === '单品' && row.is_experience === true) {
           const remQty = Number(row.quantity) - Number(row.picked_up_quantity ?? 0)
-          if (remQty <= 0) throw new Error('CARD_EXHAUSTED')
+          if (remQty <= 0) throw new ApiError('INVALID_STATE', 'CARD_EXHAUSTED: 所选卡已耗尽，无法折抵')
           qty = remQty
         } else {
-          throw new Error('CARD_TYPE_INVALID')
+          throw new ApiError('INVALID_PARAMS', 'CARD_TYPE_INVALID: 所选行类型不支持折抵')
         }
 
         const amount = Math.round(unit * qty * 100) / 100
@@ -1556,7 +1558,7 @@ export async function createConversionOrder(data: {
       }> = []
       for (const inItem of data.convertInItems) {
         const sku = skuMap.get(inItem.skuId)
-        if (!sku) throw new Error(`SKU_NOT_FOUND:${inItem.skuId}`)
+        if (!sku) throw new ApiError('NOT_FOUND', `SKU_NOT_FOUND: 转入商品不存在 (${inItem.skuId})`)
         const amount = Math.round(Number(sku.price) * inItem.quantity * 100) / 100
         totalIn += amount
         const serviceFee = Math.round(Number(sku.serviceFee ?? 0) * inItem.quantity * 100) / 100
@@ -1582,7 +1584,7 @@ export async function createConversionOrder(data: {
         FROM lock
       `)
       const saleOrderId = (idRows as any[])[0]?.id as string
-      if (!saleOrderId) throw new Error('ORDER_ID_GEN_FAILED')
+      if (!saleOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 订单号生成失败')
 
       // 4. 计算 documentType（售前/售后）
       let documentType: '售前' | '售后' = client.customerType === '会员客' ? '售后' : '售前'
@@ -1658,7 +1660,7 @@ export async function createConversionOrder(data: {
                 sql`COALESCE(${saleItems.remainingSessions}, 0) >= ${out.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new Error('CARD_CONCURRENT_CHANGED')
+          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
         } else if (out.productType === '单品') {
           const upd = await tx
             .update(saleItems)
@@ -1670,7 +1672,7 @@ export async function createConversionOrder(data: {
                 sql`${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0) >= ${out.quantity}`,
               ),
             )
-          if ((upd as any).count === 0) throw new Error('CARD_CONCURRENT_CHANGED')
+          if ((upd as any).count === 0) throw new ApiError('CONFLICT', 'CARD_CONCURRENT_CHANGED: 卡状态变化，请重试')
         }
       }
 
@@ -1725,7 +1727,7 @@ export async function createConversionOrder(data: {
           RETURNING card_id
         `)
         const cardId = (upsertRows as any[])[0]?.card_id as string
-        if (!cardId) throw new Error('PREPAID_CARD_UPSERT_FAILED')
+        if (!cardId) throw new ApiError('CONFLICT', 'PREPAID_CARD_UPSERT_FAILED: 储值卡入账失败，请稍后重试')
 
         await tx.insert(cardTransactions).values({
           cardId,
@@ -1745,17 +1747,17 @@ export async function createConversionOrder(data: {
     })
   } catch (err: any) {
     const m = err?.message as string | undefined
-    if (m === 'CARD_NOT_FOUND') return { success: false, message: '部分卡不存在或已失效' }
-    if (m === 'CARD_STORE_MISMATCH') return { success: false, message: '所选卡不属于当前门店' }
-    if (m === 'CARD_OWNER_MISMATCH') return { success: false, message: '所选卡不属于该顾客' }
-    if (m === 'CARD_DIRECTION_INVALID') return { success: false, message: '所选行非购买行，不可折抵' }
-    if (m === 'CARD_ORDER_STATUS_INVALID') return { success: false, message: '原订单状态不允许转换' }
-    if (m === 'CARD_EXHAUSTED') return { success: false, message: '所选卡已耗尽，无法折抵' }
-    if (m === 'CARD_TYPE_INVALID') return { success: false, message: '所选行类型不支持折抵' }
-    if (m === 'CARD_CONCURRENT_CHANGED') return { success: false, message: '卡状态变化，请重试' }
-    if (m === 'ORDER_ID_GEN_FAILED') return { success: false, message: '订单号生成失败，请稍后重试' }
-    if (m === 'PREPAID_CARD_UPSERT_FAILED') return { success: false, message: '储值卡入账失败，请稍后重试' }
-    if (m?.startsWith('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
+    if (m?.includes('CARD_NOT_FOUND')) return { success: false, message: '部分卡不存在或已失效' }
+    if (m?.includes('CARD_STORE_MISMATCH')) return { success: false, message: '所选卡不属于当前门店' }
+    if (m?.includes('CARD_OWNER_MISMATCH')) return { success: false, message: '所选卡不属于该顾客' }
+    if (m?.includes('CARD_DIRECTION_INVALID')) return { success: false, message: '所选行非购买行，不可折抵' }
+    if (m?.includes('CARD_ORDER_STATUS_INVALID')) return { success: false, message: '原订单状态不允许转换' }
+    if (m?.includes('CARD_EXHAUSTED')) return { success: false, message: '所选卡已耗尽，无法折抵' }
+    if (m?.includes('CARD_TYPE_INVALID')) return { success: false, message: '所选行类型不支持折抵' }
+    if (m?.includes('CARD_CONCURRENT_CHANGED')) return { success: false, message: '卡状态变化，请重试' }
+    if (m?.includes('ORDER_ID_GEN_FAILED')) return { success: false, message: '订单号生成失败，请稍后重试' }
+    if (m?.includes('PREPAID_CARD_UPSERT_FAILED')) return { success: false, message: '储值卡入账失败，请稍后重试' }
+    if (m?.includes('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (err?.code === '23503') {
       console.error('[createConversionOrder] fk_violation:', err)
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }
@@ -1882,7 +1884,7 @@ export async function recordPayment(input: {
       `)
       const lockedRows = lockRes as unknown as any[]
       if (lockedRows.length === 0) {
-        throw new Error('REF_ORDER_NOT_FOUND')
+        throw new ApiError('NOT_FOUND', 'REF_ORDER_NOT_FOUND: 原订单不存在')
       }
       const locked = lockedRows[0]
 
@@ -1894,7 +1896,7 @@ export async function recordPayment(input: {
       }
 
       if (!locked.client_user_id && prepaidCardAmount > 0) {
-        throw new Error('CLIENT_NOT_REGISTERED')
+        throw new ApiError('CLIENT_NOT_REGISTERED', '顾客未注册小程序，无法使用储值卡抵扣')
       }
 
       // 2) 计算欠款：payable_amount - received（储值卡已抵扣部分不占欠款）
@@ -1909,7 +1911,7 @@ export async function recordPayment(input: {
 
       // 3) 超额校验
       if (totalThisTime > remainingPayable + 0.001) {
-        throw new Error(`OVERPAY:${remainingPayable.toFixed(2)}`)
+        throw new ApiError('CONFLICT', `OVERPAY:${remainingPayable.toFixed(2)}: 本次回款金额超过订单欠款`)
       }
 
       // 4) 生成 FY-HKD 凭证单号（advisory lock + 当日序号，前缀 FY-HKD-WX-YYMMDDNNNN）
@@ -1929,7 +1931,7 @@ export async function recordPayment(input: {
         FROM lock
       `)
       const repaymentOrderId = (idRows as unknown as any[])[0]?.id as string
-      if (!repaymentOrderId) throw new Error('ORDER_ID_GEN_FAILED')
+      if (!repaymentOrderId) throw new ApiError('INVALID_STATE', 'ORDER_ID_GEN_FAILED: 回款单号生成失败')
 
       // 5) 储值卡抵扣：锁余额 + 扣减 + 写 card_transactions
       if (prepaidCardAmount > 0) {
@@ -2044,7 +2046,7 @@ export async function recordPayment(input: {
         WHERE sale_order_id = ${saleOrderId} AND status = ${locked.status}
       `)
       if ((updRes as any).rowCount === 0) {
-        throw new Error('CONCURRENT_CHANGED')
+        throw new ApiError('CONFLICT', 'CONCURRENT_CHANGED: 订单状态已变更，请刷新后重试')
       }
 
       // 9) customer_type 跃迁（仅在本次回款使订单结清，即翻为'已支付'时触发）
@@ -2068,27 +2070,29 @@ export async function recordPayment(input: {
     })
   } catch (err: any) {
     const msg = err?.message as string | undefined
-    if (msg === 'REF_ORDER_NOT_FOUND') {
+    if (msg?.includes('REF_ORDER_NOT_FOUND')) {
       return { success: false, error: { code: 'REF_ORDER_NOT_FOUND', message: '原订单不存在' } }
     }
-    if (msg?.startsWith('INVALID_STATE:')) {
+    // 状态机拒绝（保留原行为：行 1895 throw new Error(`INVALID_STATE:${locked.status}`) 仍生效）
+    if (msg?.startsWith('INVALID_STATE:') && !msg.includes('ORDER_ID_GEN_FAILED')) {
       const status = msg.split(':')[1] || ''
       return {
         success: false,
         error: { code: 'INVALID_STATE', message: `订单当前状态"${status}"不允许回款` },
       }
     }
-    if (msg === 'CLIENT_NOT_REGISTERED') {
+    if (msg?.includes('CLIENT_NOT_REGISTERED')) {
       return { success: false, error: { code: 'CLIENT_NOT_REGISTERED', message: '顾客未注册小程序，无法使用储值卡抵扣' } }
     }
-    if (msg?.startsWith('OVERPAY:')) {
-      const remaining = msg.split(':')[1] || '0.00'
+    const overpayMatch = msg?.match(/OVERPAY:([\d.]+)/)
+    if (overpayMatch) {
+      const remaining = overpayMatch[1] || '0.00'
       return {
         success: false,
         error: { code: 'OVERPAY', message: `本次回款金额超过订单欠款（剩余 ¥${remaining}）` },
       }
     }
-    if (msg === 'INSUFFICIENT_BALANCE:NO_CARD') {
+    if (msg?.includes('INSUFFICIENT_BALANCE:NO_CARD')) {
       return { success: false, error: { code: 'INSUFFICIENT_BALANCE', message: '顾客无储值卡账户' } }
     }
     if (msg?.startsWith('INSUFFICIENT_BALANCE:')) {
@@ -2098,10 +2102,10 @@ export async function recordPayment(input: {
         error: { code: 'INSUFFICIENT_BALANCE', message: `储值卡余额不足（当前 ¥${balance}）` },
       }
     }
-    if (msg === 'CONCURRENT_CHANGED') {
+    if (msg?.includes('CONCURRENT_CHANGED')) {
       return { success: false, error: { code: 'CONCURRENT_CHANGED', message: '订单状态已变更，请刷新后重试' } }
     }
-    if (msg === 'ORDER_ID_GEN_FAILED') {
+    if (msg?.includes('ORDER_ID_GEN_FAILED')) {
       return { success: false, error: { code: 'ORDER_ID_GEN_FAILED', message: '回款单号生成失败，请稍后重试' } }
     }
     if (err?.code === '23505') {
@@ -2137,7 +2141,7 @@ let tokenExpiresAt = 0
 
 async function getClientAccessToken(forceRefresh = false): Promise<string> {
   if (!WX_CLIENT_SECRET) {
-    throw new Error('未配置 WX_CLIENT_SECRET 环境变量')
+    throw new ApiError('INVALID_STATE', '未配置 WX_CLIENT_SECRET 环境变量')
   }
   if (!forceRefresh && cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken
@@ -2146,7 +2150,7 @@ async function getClientAccessToken(forceRefresh = false): Promise<string> {
   const res = await fetch(url)
   const data = await res.json()
   if (data.errcode) {
-    throw new Error(`获取 access_token 失败: ${data.errcode} ${data.errmsg}`)
+    throw new ApiError('INVALID_STATE', `获取微信 access_token 失败: ${data.errcode} ${data.errmsg}`)
   }
   cachedToken = data.access_token
   tokenExpiresAt = Date.now() + (data.expires_in - 300) * 1000

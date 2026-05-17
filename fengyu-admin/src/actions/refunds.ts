@@ -10,6 +10,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { assertOrderInScope } from '@/lib/scope-assert'
 import { logOperation } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
@@ -183,11 +184,10 @@ export interface EstimateOverdraftResult {
 // getRefundable：查询原单可退明细
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function getRefundable(saleOrderId: string): Promise<GetRefundableResult> {
-  const session = await getSession()
-  // 读：提单人（refund_create）和审批人（refund_approve）任一即可
-  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
-
+// 读：提单人（refund_create）和审批人（refund_approve）任一即可
+export const getRefundable = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, saleOrderId: string): Promise<GetRefundableResult> => {
   const [order] = await db
     .select({
       storeId: saleOrders.storeId,
@@ -259,7 +259,8 @@ export async function getRefundable(saleOrderId: string): Promise<GetRefundableR
     origPaymentMethod: order.paymentMethod as PaymentMethod,
     clientUserId: order.clientUserId ?? null,
   }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // estimateRefundOverdraft：退款预判 + 超额权益扣除建议（读端，无副作用）
@@ -300,15 +301,17 @@ function benefitsValue(
   return points + coupons
 }
 
-export async function estimateRefundOverdraft(params: {
-  userId: string
-  refundAmount: number
-  originalSaleOrderId: string
-}): Promise<EstimateOverdraftResult> {
-  const session = await getSession()
-  // 读：提单人和审批人都需要估算超额信息
-  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
-
+// 读：提单人和审批人都需要估算超额信息
+export const estimateRefundOverdraft = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (
+    _session,
+    params: {
+      userId: string
+      refundAmount: number
+      originalSaleOrderId: string
+    },
+  ): Promise<EstimateOverdraftResult> => {
   const refundAmount = Math.max(0, Number(params.refundAmount) || 0)
 
   const [user] = await db
@@ -484,24 +487,26 @@ export async function estimateRefundOverdraft(params: {
       pointsToYuanRate: pointRate,
     },
   }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // createRefund：发起退款（写 sale_order_payments[change_type='退款', status='待审批']）
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function createRefund(input: {
+export const createRefund = withPermission(
+  'sale_order:refund_create',
+  async (
+    session,
+    input: {
   refSaleOrderId: string
   items: Array<{ saleItemId: string; refundQuantity: number }>
   refundReason: string
   handlingFee?: number
   /** 若 true，则按建议扣除超额权益；默认 true */
   applyOverdraftDeduction?: boolean
-}): Promise<CreateRefundResult> {
-  const session = await getSession()
-  // 写：提单（所有 admin 角色均可发起）
-  requirePermission(session, 'sale_order:refund_create')
-
+    },
+  ): Promise<CreateRefundResult> => {
   const refSaleOrderId = String(input.refSaleOrderId || '').trim()
   if (!refSaleOrderId) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少原销售单号' } }
@@ -694,7 +699,8 @@ export async function createRefund(input: {
     success: true,
     data: { refundPaymentId, refundByCard, refundByOrigin, finalRefundAmount },
   }
-}
+  },
+)
 
 // 兼容旧前端：alias 导出（旧 createRefundOrder 签名 → 新 createRefund）
 export const createRefundOrder = createRefund
@@ -703,11 +709,10 @@ export const createRefundOrder = createRefund
 // approveRefund：审批通过 — CAS 翻状态 + 5 通道 cascade + 重算原单
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function approveRefund(refundPaymentId: number | string): Promise<ApproveRefundResult> {
-  const session = await getSession()
-  // 写：审批通过（仅 manager 持有 refund_approve）
-  requirePermission(session, 'sale_order:refund_approve')
-
+// 写：审批通过（仅 manager 持有 refund_approve）
+export const approveRefund = withPermission(
+  'sale_order:refund_approve',
+  async (session, refundPaymentId: number | string): Promise<ApproveRefundResult> => {
   const idNum = Number(refundPaymentId)
   if (!Number.isFinite(idNum) || idNum <= 0) {
     return { success: false, error: { code: 'INVALID_PARAMS', message: '缺少退款流水 ID' } }
@@ -885,20 +890,21 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
   revalidatePath(`/refunds/${idNum}`)
   if (refSaleOrderId) revalidatePath(`/orders/${refSaleOrderId}`)
   return { success: true, data: { refundByCard, refundByOrigin, cascade } }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // rejectRefund：驳回退款 — CAS '待审批' → '已作废' + 写审批意见
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function rejectRefund(
-  refundPaymentId: number | string,
-  rejectedReason: string,
-): Promise<RejectRefundResult> {
-  const session = await getSession()
-  // 写：驳回（仅 manager 持有 refund_approve）
-  requirePermission(session, 'sale_order:refund_approve')
-
+// 写：驳回（仅 manager 持有 refund_approve）
+export const rejectRefund = withPermission(
+  'sale_order:refund_approve',
+  async (
+    session,
+    refundPaymentId: number | string,
+    rejectedReason: string,
+  ): Promise<RejectRefundResult> => {
   const idNum = Number(refundPaymentId)
   const reason = String(rejectedReason || '').trim()
   if (!Number.isFinite(idNum) || idNum <= 0) {
@@ -979,17 +985,17 @@ export async function rejectRefund(
   revalidatePath(`/refunds/${idNum}`)
   if (refSaleOrderId) revalidatePath(`/orders/${refSaleOrderId}`)
   return { success: true }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // listRefunds：退款流水列表（聚合 sale_order_payments[change_type='退款']）
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function listRefunds(filters: RefundListFilters = {}): Promise<RefundListResult> {
-  const session = await getSession()
-  // 读：提单人和审批人都需要看流水
-  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
-
+// 读：提单人和审批人都需要看流水
+export const listRefunds = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, filters: RefundListFilters = {}): Promise<RefundListResult> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
   const offset = (page - 1) * pageSize
@@ -1043,17 +1049,17 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
   const refunds: RefundListItem[] = rows.map((r) => mapRefundRow(r))
 
   return { refunds, total, page, pageSize }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getRefundById：退款流水详情（按 sale_order_payments.id）
 // ─────────────────────────────────────────────────────────────────────────────
 
-export async function getRefundById(refundPaymentId: number | string): Promise<RefundDetailResult | null> {
-  const session = await getSession()
-  // 读：审批页详情，提单人和审批人都要看
-  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
-
+// 读：审批页详情，提单人和审批人都要看
+export const getRefundById = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, refundPaymentId: number | string): Promise<RefundDetailResult | null> => {
   const idNum = Number(refundPaymentId)
   if (!Number.isFinite(idNum) || idNum <= 0) return null
 
@@ -1162,7 +1168,8 @@ export async function getRefundById(refundPaymentId: number | string): Promise<R
     origOrder,
     payments,
   }
-}
+  },
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 内部工具
