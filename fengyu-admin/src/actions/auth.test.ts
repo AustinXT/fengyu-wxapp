@@ -77,6 +77,20 @@ vi.mock('drizzle-orm', () => ({
 vi.mock('@/lib/permissions', () => ({
   computeActions: vi.fn(() => ['dashboard:view']),
   expandScopeStoreIds: vi.fn(async () => ['store-1']),
+  // 2026-05-17 PR-Z2 后：resetEmployeePassword/resetToDefaultPassword 走 withPermission HOF，
+  // HOF 内部会调 requirePermission；mock 为 noop 让测试用例直接验证业务行为
+  requirePermission: vi.fn(),
+}))
+
+// HOF 用 getSession（lib/auth.ts）拿 session；mock 返回 admin session
+vi.mock('@/lib/auth', () => ({
+  getSession: vi.fn(async () => ({
+    employeeId: 'EMP-001',
+    name: '测试 admin',
+    phone: '13800138000',
+    roles: [{ role: 'admin', scopeId: 'hq-1', scopeType: '总部' as const }],
+    permissions: { actions: ['admin:reset_password'], scopeStoreIds: [] },
+  })),
 }))
 
 vi.mock('@/lib/operation-log', () => ({
@@ -415,41 +429,32 @@ describe('resetEmployeePassword — admin UPSERT', () => {
     })
   }
 
-  it('未登录 → 失败', async () => {
-    mockCookieStore.get.mockReturnValue(undefined)
-
-    const result = await resetEmployeePassword('EMP-002', 'newPass')
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('未登录')
-  })
-
-  it('非 admin → 失败', async () => {
-    mockCookieStore.get.mockReturnValue({ value: 'token' })
-    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
-
-    let selectCallIndex = 0
-    ;(db.select as any).mockImplementation(() => {
-      selectCallIndex++
-      if (selectCallIndex === 1) {
-        const limit = vi.fn().mockResolvedValue([staffRow])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      // roles: manager, not admin
-      const where = vi.fn().mockResolvedValue([
-        { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
-      ])
-      const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
-      return { from }
+  it('未登录 → redirect /login (HOF 接管)', async () => {
+    // mock @/lib/auth.getSession 返回 null（HOF 触发 redirect）
+    const { getSession } = await import('@/lib/auth')
+    ;(getSession as any).mockResolvedValueOnce(null)
+    // mock redirect 抛错（与 next/navigation 默认行为一致）
+    const { redirect } = await import('next/navigation')
+    ;(redirect as any).mockImplementationOnce((url: string) => {
+      throw new Error(`NEXT_REDIRECT:${url}`)
     })
 
-    const result = await resetEmployeePassword('EMP-002', 'newPass')
+    await expect(resetEmployeePassword('EMP-002', 'newPass'))
+      .rejects.toThrow(/NEXT_REDIRECT/)
+  })
 
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('仅系统管理员')
+  it('非 admin → throw PERMISSION_DENIED (HOF 接管)', async () => {
+    const { getSession } = await import('@/lib/auth')
+    ;(getSession as any).mockResolvedValueOnce({
+      employeeId: 'EMP-001',
+      name: 'manager',
+      phone: '13800001111',
+      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
+      permissions: { actions: ['sale_order:list'], scopeStoreIds: ['store-1'] },
+    })
+
+    await expect(resetEmployeePassword('EMP-002', 'newPass'))
+      .rejects.toThrow('PERMISSION_DENIED: 无权执行 admin:reset_password')
   })
 
   it('admin + 无现有记录 → INSERT', async () => {
@@ -576,11 +581,8 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
   it('员工无手机号 → 失败', async () => {
     mockAdminSession()
 
-    const counter = { value: 0 }
+    // HOF 接管 session 注入；首个 db.select 即"目标员工手机号"查询
     ;(db.select as any).mockImplementation(() => {
-      counter.value++
-      if (counter.value <= 2) return mockAdminRoles(counter)
-      // target employee phone lookup — no phone
       const limit = vi.fn().mockResolvedValue([{ phone: null }])
       const where = vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ where })
@@ -599,8 +601,8 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
     const counter = { value: 0 }
     ;(db.select as any).mockImplementation(() => {
       counter.value++
-      if (counter.value <= 2) return mockAdminRoles(counter)
-      if (counter.value === 3) {
+      // HOF 接管 session 注入，原 mockAdminRoles 不再被触发
+      if (counter.value === 1) {
         // target employee phone
         const limit = vi.fn().mockResolvedValue([{ phone: '15958024944' }])
         const where = vi.fn().mockReturnValue({ limit })
@@ -633,8 +635,8 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
     const counter = { value: 0 }
     ;(db.select as any).mockImplementation(() => {
       counter.value++
-      if (counter.value <= 2) return mockAdminRoles(counter)
-      if (counter.value === 3) {
+      // HOF 接管 session 注入，原 mockAdminRoles 不再被触发
+      if (counter.value === 1) {
         // target employee phone
         const limit = vi.fn().mockResolvedValue([{ phone: '13812345678' }])
         const where = vi.fn().mockReturnValue({ limit })

@@ -12,8 +12,8 @@ import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
-import { getSession } from '@/lib/auth'
-import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission, withAnyPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { calcCouponDiscount } from '@/lib/utils'
@@ -205,10 +205,9 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
   }
 }
 
-export async function getOrders(): Promise<SaleOrder[]> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:list')
-
+export const getOrders = withPermission(
+  'sale_order:list',
+  async (session): Promise<SaleOrder[]> => {
   const rows = await db
     .select({
       order: saleOrders,
@@ -252,7 +251,8 @@ export async function getOrders(): Promise<SaleOrder[]> {
     storeName: r.storeName ?? undefined,
     openedByName: r.openedByName ?? undefined,
   }))
-}
+  },
+)
 
 /** 订单列表筛选参数 */
 export interface OrderFilters {
@@ -282,10 +282,9 @@ export interface PaginatedOrders {
  * 替代 getOrders() 的客户端过滤模式，支持大数据量下的高效分页。
  * 筛选条件通过 URL searchParams → Server Component → 此函数流转。
  */
-export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<PaginatedOrders> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:list')
-
+export const getOrdersPaginated = withPermission(
+  'sale_order:list',
+  async (session, filters: OrderFilters = {}): Promise<PaginatedOrders> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -391,18 +390,14 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
   }))
 
   return { data, total }
-}
+  },
+)
 
-export async function getOrderById(saleOrderId: string): Promise<SaleOrder | null> {
-  const session = await getSession()
-  // 订单详情页可由订单查看者（sale_order:list）或退款相关角色
-  // （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
-  requireAnyPermission(session, [
-    'sale_order:list',
-    'sale_order:refund_create',
-    'sale_order:refund_approve',
-  ])
-
+// 订单详情页可由订单查看者（sale_order:list）或退款相关角色
+// （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
+export const getOrderById = withAnyPermission(
+  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, saleOrderId: string): Promise<SaleOrder | null> => {
   const rows = await db
     .select({
       order: saleOrders,
@@ -481,7 +476,8 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
     openedByName: r.openedByName ?? undefined,
     items,
   }
-}
+  },
+)
 
 /**
  * 查询订单款项流水（ticket 2026-04-24 PR-3 §3.3）
@@ -492,15 +488,10 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
  *   2026-05-03 起已合并到 sale_order_payments 主表，无需 JOIN。
  * 用于订单详情页展示款项流水表（首次支付 / 回款 / 退款 / 储值卡抵扣）。
  */
-export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
-  const session = await getSession()
-  // 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
-  requireAnyPermission(session, [
-    'sale_order:list',
-    'sale_order:refund_create',
-    'sale_order:refund_approve',
-  ])
-
+// 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
+export const getOrderPayments = withAnyPermission(
+  ['sale_order:list', 'sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> => {
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db
     .select({ storeId: saleOrders.storeId })
@@ -541,13 +532,13 @@ export async function getOrderPayments(saleOrderId: string): Promise<import('@/l
     auditAt: r.payment.auditAt?.toISOString() ?? null,
     auditRemark: r.payment.auditRemark ?? null,
   }))
-}
+  },
+)
 
 /** C4: 确认线下收款 — WHERE status = '待确认收款' + scope 保障幂等 */
-export async function confirmOfflinePayment(saleOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:update')
-
+export const confirmOfflinePayment = withPermission(
+  'sale_order:update',
+  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [orderCtx] = await db
     .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
@@ -620,13 +611,13 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
 
   revalidatePath('/orders')
   return { success: true, message: '确认收款成功' }
-}
+  },
+)
 
 /** C4: 关闭订单 — 仅待支付/支付失败可关闭，同时作废关联的分配记录 */
-export async function closeOrder(saleOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:update')
-
+export const closeOrder = withPermission(
+  'sale_order:update',
+  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [orderCtx] = await db
     .select({ status: saleOrders.status, customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
@@ -681,13 +672,13 @@ export async function closeOrder(saleOrderId: string): Promise<{ success: boolea
   revalidatePath('/orders')
   revalidatePath('/allocations')
   return { success: true, message: '订单已关闭' }
-}
+  },
+)
 
 /** C4: 重置支付失败 → 待支付（仅店长） */
-export async function resetOrderFailed(saleOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:update')
-
+export const resetOrderFailed = withPermission(
+  'sale_order:update',
+  async (session, saleOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [orderCtx] = await db
     .select({ customerName: saleOrders.customerName, totalAmount: saleOrders.totalAmount })
@@ -719,10 +710,15 @@ export async function resetOrderFailed(saleOrderId: string): Promise<{ success: 
 
   revalidatePath('/orders')
   return { success: true, message: '已重置为待支付' }
-}
+  },
+)
 
 /** 管理后台开单 — source='admin' */
-export async function createOrder(data: {
+export const createOrder = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
   storeId: string
   marketName: string
   clientUserId: string
@@ -771,10 +767,8 @@ export async function createOrder(data: {
      */
     isRechargeCard?: boolean
   }>
-}): Promise<{ success: boolean; message: string; saleOrderId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:create')
-
+    },
+  ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
   // 2026-04-26 sale-order-domain-refactor: saleOrderType 5→3 运行时硬校验
   // 静态联合类型已限定在 createOrder data 入参；此处再做一次 runtime 兜底防绕过
   // （旧前端/外部调用可能传入 '回款单'/'退款单'，统一拒绝）
@@ -1336,7 +1330,8 @@ export async function createOrder(data: {
 
   revalidatePath('/orders')
   return { success: true, message: '订单创建成功', saleOrderId }
-}
+  },
+)
 
 /**
  * 转换单 — 顾客持卡折抵换购
@@ -1355,7 +1350,11 @@ export async function createOrder(data: {
  * 6. INSERT 转出行（sale_amount/received 为负折抵，item_direction='转出'，ref_sale_item_id）
  * 7. INSERT 转入行（item_direction='转入'，sale_amount/received=转入金额）
  */
-export async function createConversionOrder(data: {
+export const createConversionOrder = withPermission(
+  'sale_order:create',
+  async (
+    session,
+    data: {
   storeId: string
   marketName: string
   /** 转换单必须实名顾客（要挂储值卡），不允许 manualPhone */
@@ -1376,7 +1375,8 @@ export async function createConversionOrder(data: {
     quantity: number
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
   }>
-}): Promise<{
+    },
+  ): Promise<{
   success: boolean
   message: string
   saleOrderId?: string
@@ -1384,10 +1384,7 @@ export async function createConversionOrder(data: {
   totalOut?: number
   priceDiff?: number
   prepaidCardCredit?: number
-}> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:create')
-
+  }> => {
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建订单' }
   }
@@ -1796,7 +1793,8 @@ export async function createConversionOrder(data: {
     priceDiff: result.priceDiff,
     prepaidCardCredit: result.prepaidCardCredit,
   }
-}
+  },
+)
 
 // ========== 录入回款（ticket 2026-04-24 多次回款 PR-B） ==========
 
@@ -1817,17 +1815,19 @@ export type RecordPaymentResult =
   | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string } }
   | { success: false; error: { code: string; message: string } }
 
-export async function recordPayment(input: {
+export const recordPayment = withPermission(
+  'sale_order:record_payment',
+  async (
+    session,
+    input: {
   saleOrderId: string
   repayAmount: number
   paymentMethod: '线下' | '储值卡'
   externalTxnId?: string
   prepaidCardAmount?: number
   note?: string
-}): Promise<RecordPaymentResult> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:record_payment')
-
+    },
+  ): Promise<RecordPaymentResult> => {
   // 入参归一 + 基本校验（Zod 在前端/Action 边界均可使用；此处做防御校验避免直接被调用时绕过）
   const saleOrderId = String(input.saleOrderId || '').trim()
   if (!saleOrderId) {
@@ -2128,7 +2128,8 @@ export async function recordPayment(input: {
   revalidatePath('/orders')
   revalidatePath(`/orders/${saleOrderId}`)
   return { success: true, data: result }
-}
+  },
+)
 
 // ========== 小程序码生成 ==========
 
