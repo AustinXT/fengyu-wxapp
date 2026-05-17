@@ -25,6 +25,8 @@
   "devDependencies": {
     "fs-extra": "^11.3.4",
     "javascript-obfuscator": "^5.4.2",
+    "miniprogram-automator": "^0.12.1",
+    "pg": "^8.20.0",
     "webpack": "^5.106.2"
   }
 }

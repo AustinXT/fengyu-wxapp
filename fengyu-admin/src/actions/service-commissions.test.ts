@@ -39,6 +39,7 @@ vi.mock('drizzle-orm', () => ({
   eq: vi.fn((a, b) => ({ type: 'eq', a, b })),
   and: vi.fn((...args) => ({ type: 'and', args })),
   inArray: vi.fn((col, vals) => ({ type: 'inArray', col, vals })),
+  desc: vi.fn((col) => ({ type: 'desc', col })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn() }),
 }))
 
@@ -72,9 +73,13 @@ const mockSession = {
 
 function makeSelectChain(result: any[]) {
   const limit = vi.fn().mockResolvedValue(result)
-  const whereResult = Object.assign(Promise.resolve(result), { limit })
+  const orderBy = vi.fn().mockReturnValue({ limit })
+  const whereResult = Object.assign(Promise.resolve(result), { limit, orderBy })
   const where = vi.fn().mockReturnValue(whereResult)
-  const from = vi.fn().mockReturnValue({ where })
+  const innerJoin = vi.fn().mockReturnValue({ where, innerJoin: vi.fn(), leftJoin: vi.fn() })
+  // leftJoin/rightJoin reserved for parity if future queries need them
+  const leftJoin = vi.fn().mockReturnValue({ where, innerJoin, leftJoin: vi.fn() })
+  const from = vi.fn().mockReturnValue({ where, innerJoin, leftJoin })
   return vi.fn().mockReturnValue({ from })
 }
 
@@ -89,11 +94,22 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
   })
 
   function mockScopeAndItems(items: Array<{ serviceItemId: string }>) {
+    // Pricing rows mirror serviceItems with sessionUsed=0/unitRealPrice='0' so
+    // consumeBase=0 → rate-lookup result of 0 is acceptable (no INVALID_STATE).
+    const pricingRows = items.map((i) => ({
+      serviceItemId: i.serviceItemId,
+      unitRealPrice: '0',
+      sessionUsed: 0,
+      salesCategory: null,
+      serviceFee: '0',
+    }))
     let callCount = 0
     ;(db.select as any).mockImplementation(() => {
       callCount++
       if (callCount === 1) return makeSelectChain([{ storeId: 'store-1' }])()
-      return makeSelectChain(items)()
+      if (callCount === 2) return makeSelectChain(items)()
+      // 3rd call: pricing JOIN serviceItems × saleItems
+      return makeSelectChain(pricingRows)()
     })
   }
 
@@ -105,6 +121,9 @@ describe('batchSaveServiceCommissions — 技能标签池校验（P2-14）', () 
         update: vi.fn().mockReturnValue({
           set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({}) }),
         }),
+        // commission-rate lookup inside the tx loop — empty array is fine because
+        // consumeBase=0 (see pricingRows above) so rate=0 will not throw.
+        select: makeSelectChain([]),
       }
       return fn(tx)
     })
