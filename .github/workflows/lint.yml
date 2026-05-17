@@ -1,0 +1,25 @@
+name: Repo-level lint
+
+on:
+  pull_request:
+    paths:
+      - 'fengyu-admin/src/**/*.ts'
+      - 'fengyu-admin/src/**/*.tsx'
+      - 'fengyu-admin/src/**/*.js'
+      - 'fengyu-staff/cloudfunctions/**/*.js'
+      - 'fengyu-client/cloudfunctions/**/*.js'
+      - 'scripts/lint-cas-guards.mjs'
+      - '.github/workflows/lint.yml'
+
+jobs:
+  cas-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run CAS guard lint
+        run: node scripts/lint-cas-guards.mjs

@@ -3,7 +3,8 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | ⏳ 待实施 |
+| 实施状态 | ✅ 已实施（2026-05-18） |
+| 落地证据 | `.github/workflows/lint.yml`（job `cas-guards`，setup-node@v4 → `node scripts/lint-cas-guards.mjs`）；SUMMARY §2 #8 / §3 状态机行 / §4 E13 / §6.1 #A / §7 状态机不一致行 全部更新 |
 | 优先级 | **P1**（CI 守门缺失，回归无防护；非资损，但 Top10 #8 闭环依赖） |
 | 端 | 项目根（`.github/workflows/`） |
 | 修复成本 | **S**（< 1h） |
