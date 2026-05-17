@@ -1,18 +1,14 @@
 import { Suspense } from 'react'
 import { getStores } from '@/actions/stores'
-import { getUnbindRequests } from '@/actions/store-unbind'
 import StoresPage from './_components/stores-page'
 
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const [stores, unbindRequests] = await Promise.all([
-    getStores(),
-    getUnbindRequests().catch(() => []),
-  ])
+  const stores = await getStores()
   return (
     <Suspense>
-      <StoresPage stores={stores} unbindRequests={unbindRequests} />
+      <StoresPage stores={stores} />
     </Suspense>
   )
 }
