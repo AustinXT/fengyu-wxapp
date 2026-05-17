@@ -1,4 +1,4 @@
-import { boolean, check, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
+import { bigint, boolean, check, date, integer, index, pgTable, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core'
 import { sql } from 'drizzle-orm'
 import { stores, orgNodes } from './org'
 import { customerTypeEnum, customerStatusEnum, monthlyActivityEnum, spendingTierEnum, memberLevelEnum, customerSourceEnum } from './enums'
@@ -69,7 +69,7 @@ export const clientWechatUsers = pgTable(
     wellnessPreference: varchar('wellness_preference', { length: 200 }),
     notes: text('notes'),
     /** 积分余额缓存（权威源为 point_transactions，由 cronTask 每日重算写入） */
-    pointsBalance: integer('points_balance').notNull().default(0),
+    pointsBalance: bigint('points_balance', { mode: 'number' }).notNull().default(0),
     /** 最近积分更新时间 */
     pointsUpdatedAt: timestamp('points_updated_at'),
     lastLoginAt: timestamp('last_login_at'),
@@ -83,6 +83,7 @@ export const clientWechatUsers = pgTable(
     index('idx_client_users_bound_store_id').on(table.boundStoreId),
     index('idx_client_users_inviter').on(table.inviterUserId).where(sql`inviter_user_id IS NOT NULL`),
     check('chk_inviter_not_self', sql`${table.inviterUserId} IS NULL OR ${table.inviterUserId} <> ${table.userId}`),
+    check('chk_cwu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
   ],
 )
 
@@ -129,6 +130,7 @@ export const staffWechatUsers = pgTable(
     uniqueIndex('uq_staff_users_openid').on(table.openid).where(sql`openid IS NOT NULL`),
     uniqueIndex('uq_staff_users_phone').on(table.phone).where(sql`phone IS NOT NULL`),
     index('idx_staff_users_store_resigned').on(table.storeId, table.isResigned),
+    check('chk_swu_phone_format', sql`${table.phone} IS NULL OR ${table.phone} ~ '^1[3-9][0-9]{9}$'`),
   ],
 )
 

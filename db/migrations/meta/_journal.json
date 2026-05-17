@@ -197,6 +197,13 @@
       "when": 1778997105696,
       "tag": "0027_strong_terror",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1779026171958,
+      "tag": "0028_fine_maelstrom",
+      "breakpoints": true
     }
   ]
 }
