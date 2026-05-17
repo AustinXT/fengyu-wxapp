@@ -180,13 +180,13 @@
 
 ### 2.8 sale_orders（订单主表）
 
-> **四种单据统一模型**：sale_orders + sale_items + sale_allocations 覆盖**销售单、回款单、转换单、退款单**，通过 `sale_order_type` 区分。回款/转换/退款通过 `ref_sale_order_id` 引用原销售单。
+> **三种销售单据 + 支付流水模型**：sale_orders 仅承载**销售单 / 内部单 / 转换单**三类，通过 `sale_order_type` 区分。回款 / 退款下沉至 `sale_order_payments`（sop）表，通过 `change_type='回款' / '退款'` 区分；转换单通过 `ref_sale_order_id` 引用原销售单。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `sale_order_id` | varchar(30) | 主键，单号格式见下表 |
 | `status` | enum | `待支付` / `待确认收款` / `已支付` / `已完成` / `支付失败` / `已关闭` / `待审批` |
-| `sale_order_type` | enum | `普通` / `体验` / `内部` / `福利活动` / `回款` / `转换` / `退款` |
+| `sale_order_type` | enum | `销售单` / `内部单` / `转换单` |
 | `ref_sale_order_id` | varchar(30) \| null | FK → `sale_orders.sale_order_id`；回款/转换/退款引用原单 |
 | `market_name` | varchar(100) | 所属市场（快照） |
 | `store_id` | text | FK → `stores.store_id`，NOT NULL |
@@ -223,7 +223,7 @@
 
 ### 2.9 sale_items（销售明细）
 
-> **复用说明**：sale_items 用于销售、回款、转换、退款四种单据的明细行。`item_direction` 标识行的方向语义：
+> **复用说明**：sale_items 用于**销售单 / 内部单 / 转换单**三类的明细行；退款 / 回款已下沉至 `sale_order_payments`，部分退款时通过 `sale_order_payments.ref_sale_item_id` 关联原明细行。`item_direction` 标识行的方向语义：
 > - `购买`（默认）：正常购买行
 > - `转出`：转换退出行，`quantity` = 退次数，`received` = 负数
 > - `转入`：转换转入行，创建新的 sale_item
@@ -486,9 +486,9 @@ delta    = expected - SUM(point_transactions.amount WHERE ref_order_id = X)
 |-----------------|:-----------:|-----------------------|
 | 销售单          | ✅          | 自身 `sale_order_id` |
 | 内部单          | ❌          | — |
-| 回款单          | ✅          | `ref_sale_order_id`（合并到原销售单重算） |
 | 转换单          | ✅          | `ref_sale_order_id`（补现金差价时有 delta） |
-| 退款单          | ✅          | `ref_sale_order_id`（delta 为负 → 冲销） |
+
+> 回款 / 退款不再独立单据，统一以 `sale_order_payments.change_type='回款' / '退款'` 表达。积分重算入口由 admin `recordPayment`（回款）/ admin `/refunds` 审批通过（退款）触发，仍按对应支付流水所属的 `sale_order_id`（部分退款时为 `sale_order_payments.ref_sale_item_id` 反查的原销售单）合并重算。
 
 #### 2.21.4 type 取值约定
 
@@ -662,7 +662,7 @@ login 返回中包含 `permissions` 字段：
 9. 订单关闭/支付失败时，对应的营业额分配记录一并标记为无效（`is_void = true`）
 10. **服务单来源约束**：`service_items.sale_item_id` 必须关联已支付订单的 `sale_items` 行
 11. **体验/引流服务**需先创建体验单（`sale_order_type = '体验'`），支付确认后再创建服务单；体验单仅可选择体验卡商品（`product_kind = '福利活动'` 中的体验类项目），不计入普通业绩统计；体验单面向潜在客户（散客到店），由店长创建并指定归属美容师；**先服务后付款不在 MVP 范围**
-12. **开单流程分级选择**：先选大类（销售单 / 回款单 / 转换单），选销售单后再选子类型（普通单 / 体验单 / 内部单）
+12. **开单流程分级选择**：先选大类（销售单 / 内部单 / 转换单），不再支持开"回款单" / "退款单"——回款走 admin `recordPayment` / 客户端在线支付，退款走 admin `/refunds` 审批流程
 13. **内部单规则**：`sale_order_type = '内部'`，员工/家属消费按半价（`unit_price = product_skus.price × 0.5`）；不算顾客数、不计入会员等级升级消费额；走正常支付和营业额分配流程
 14. **顾客端自助下单的营业额分配**：已指定美容师→系统自动创建分配记录；未指定→不创建
 15. **营业额分配锁定规则**：待支付且顾客未扫码时可修改；扫码后锁定

@@ -169,6 +169,20 @@
       "when": 1777813694483,
       "tag": "0023_keen_freak",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1778984420841,
+      "tag": "0024_cleanup_commission_rate",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1778987524333,
+      "tag": "0025_drop_sale_orders_refund_columns",
+      "breakpoints": true
     }
   ]
 }

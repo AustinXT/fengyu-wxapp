@@ -59,7 +59,7 @@ export const serviceCommissions = pgTable(
     check('chk_svc_comm_fixed_fee', sql`${table.fixedFee} >= 0`),
     check('chk_svc_comm_consume_amount', sql`${table.consumeAmount} >= 0`),
     check('chk_svc_comm_commission_amount', sql`${table.commissionAmount} >= 0`),
-    // TODO: commission_rate CHECK (>=0 AND <=1) blocked by 59,966 dirty rows (rates stored as percentage e.g. 2.0 instead of 0.02)
+    check('chk_svc_comm_commission_rate', sql`${table.commissionRate} >= 0 AND ${table.commissionRate} <= 1`),
     check('chk_svc_comm_alloc_ratio', sql`${table.allocationRatio} IS NULL OR ${table.allocationRatio} IN (0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00)`),
   ],
 )

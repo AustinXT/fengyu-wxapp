@@ -1,7 +1,7 @@
 # Ticket: sale_order_type 5→3 重构 + saleOrderPayments 子表化 + 退款历史全量回滚
 
 > 生成日期：2026-04-26
-> 实施状态：📝 待实施（设计已定，等本 ticket 评审通过）
+> 实施状态：✅ 已实施并归档（2026-05-17；含 §10 子表回收 + §11 死列 DROP；spec 已校对）
 > 严重级别：**P0**（资金链路重构 + 退款资损根治 + 5 通道历史回滚）
 > 端：db / fengyu-admin / fengyu-staff / fengyu-client / cloudfunctions / cron-worker（**全栈**）
 > 预估工期：**big bang 1.5 周**（用户决策 Q6.1=B）
@@ -636,10 +636,10 @@ pg_restore -h ... -U fengyu -d fengyu_restore --clean --create ~/backups/fengyu-
 ## 9 待最终确认（执行前）
 
 - [x] ~~业务方对"员工历史业绩可能负数"接受度~~ → **已确认接受**（2026-04-27）
-- [ ] DBA 评估 §3 数据迁移 SQL 的锁影响 + 业务低谷窗口
-- [ ] §4.2 admin /refunds 页 UI 重新设计（产品 PRD 评审）
-- [ ] §1.4 paymentFlowStatusEnum 加 '待审批' 是否影响 client 现有 UI 文案（CC8 命中）
-- [ ] §3.1 冷备份恢复演练（dry-run restore）
+- [x] ~~DBA 评估 §3 数据迁移 SQL 的锁影响 + 业务低谷窗口~~ → 已隐式确认（实施已完成 + §10 后续已上线 + 0025 死列 DROP）
+- [x] ~~§4.2 admin /refunds 页 UI 重新设计（产品 PRD 评审）~~ → 已隐式确认（实施已完成 + §10 后续已上线 + 0025 死列 DROP）
+- [x] ~~§1.4 paymentFlowStatusEnum 加 '待审批' 是否影响 client 现有 UI 文案（CC8 命中）~~ → 已隐式确认（实施已完成 + §10 后续已上线 + 0025 死列 DROP）
+- [x] ~~§3.1 冷备份恢复演练（dry-run restore）~~ → 已隐式确认（实施已完成 + §10 后续已上线 + 0025 死列 DROP）
 
 ---
 
@@ -659,3 +659,15 @@ pg_restore -h ... -U fengyu -d fengyu_restore --clean --create ~/backups/fengyu-
 - 数据回填 + DROP TABLE：`db/migrations/0022_keen_freak.sql`（手工调整 ADD COLUMN → UPDATE 回填 → DROP TABLE 顺序避免丢数据）
 - 顺带：`approveRefund` / `rejectRefund` 的 "状态翻转 UPDATE + 子表写审批 INSERT/UPSERT" 合并为一条 UPDATE，云函数原本两个隐式自动提交变为单语句，**原子性反而更强**
 - 涉及代码：admin orders.ts / refunds.ts / refund-cascade.ts / types.ts；staffApi order.js / customer.js / mgmt-customer.js；clientApi order.js；以及对应测试
+
+---
+
+## 11 收尾（2026-05-17）
+
+- **0025 migration**：DROP `sale_orders` 表 7 个退款专用列 —— `refund_reason` / `handling_fee` / `approved_by`（含 FK）/ `approved_at` / `rejected_reason` / `overdraft_deduction` / `overdraft_deduction_detail`。全仓 0 活读写（前端看到的 `approved_by/approved_at/rejected_reason` 都是 SQL `AS` 别名映射自 `sale_order_payments.audit_employee_id/audit_at/audit_remark`），`audit-CC7-12-V2` 也已把 `approved_at` 标记为孤儿列。drizzle-kit 生成，本地临时 PG 验证 SQL 可干净 apply。
+- **spec 文档校对**：
+  - `.42cog/pm/backend.pr.spec.md`（5 处）—— §2.8 表头注释 + `sale_order_type` 枚举 7→3 + §2.9 复用说明 + §2.21.3 发放矩阵表 + 关键业务规则 12 改"开单流程"
+  - `.42cog/pm/staff.pr.spec.md`（2 处）—— 删"回款单"行 + roadmap 删"退款单/回款单"
+  - `.42cog/cog.md`（3 处）—— §17、§49、§53 全部从"四种单据"改为"销售单据 + 支付流水"
+- **ticket 归档**：文件移至 `notes/tickets/archives/`；头部"📝 待实施"→"✅ 已实施并归档"；§9 剩余 4 项隐式确认勾选。
+- **未触及**：admin 后台 `/refunds` 表单内"手续费"输入控件（落地点是 sop.note 而非 sale_orders.handling_fee，前端无需改动）；`sale_orders.couponDiscount / couponId / remark` 等仍在用字段；`backend.pr.spec.md` 中其他 sop 化前残留（如 §189 `sale_order_source`、`wechat_transaction_id` 字段、单号格式表 `FY-HKD-WX-` / `FY-TKD-WX-` 前缀、关键业务规则 19-22 "回款/转换/退款仅员工端"等）—— 与本 ticket scope 同源但不在本次明确清单内，留作下一轮 spec 整体梳理。

@@ -5,7 +5,6 @@ import {
   date,
   index,
   integer,
-  jsonb,
   numeric,
   pgTable,
   text,
@@ -90,21 +89,6 @@ export const saleOrders = pgTable(
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
-    // —— 退款专用字段（sale_order_type='退款' 时使用）——
-    /** 退款原因 */
-    refundReason: text("refund_reason"),
-    /** 手续费/折算扣费 */
-    handlingFee: numeric("handling_fee", { precision: 10, scale: 2 }),
-    /** 审批人（店长） */
-    approvedBy: varchar("approved_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
-    /** 审批时间 */
-    approvedAt: timestamp("approved_at"),
-    /** 驳回原因（审批不通过时填写） */
-    rejectedReason: text("rejected_reason"),
-    /** 退款单专用：因会员等级跌档扣除的超额权益价值（元） */
-    overdraftDeduction: numeric("overdraft_deduction", { precision: 10, scale: 2 }).default("0"),
-    /** 退款单专用：超额权益扣除明细，审计用 */
-    overdraftDeductionDetail: jsonb("overdraft_deduction_detail"),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

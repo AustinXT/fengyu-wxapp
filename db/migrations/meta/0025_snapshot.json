@@ -1,6 +1,6 @@
 {
-  "id": "55305831-b223-4633-846d-df8e2740bd57",
-  "prevId": "48835350-d12d-4bd9-ae0e-b7a496f36362",
+  "id": "e464fb57-0842-4cd2-b4a2-af6692a78fde",
+  "prevId": "9a7eaba7-ac67-4eef-b7a2-ef49f73e0cdc",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2497,49 +2497,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "refund_reason": {
-          "name": "refund_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "handling_fee": {
-          "name": "handling_fee",
-          "type": "numeric(10, 2)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approved_by": {
-          "name": "approved_by",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "approved_at": {
-          "name": "approved_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rejected_reason": {
-          "name": "rejected_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "overdraft_deduction": {
-          "name": "overdraft_deduction",
-          "type": "numeric(10, 2)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'0'"
-        },
-        "overdraft_deduction_detail": {
-          "name": "overdraft_deduction_detail",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp",
@@ -2703,19 +2660,6 @@
           "tableTo": "staff_wechat_users",
           "columnsFrom": [
             "offline_confirmed_by"
-          ],
-          "columnsTo": [
-            "employee_id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "sale_orders_approved_by_staff_wechat_users_employee_id_fk": {
-          "name": "sale_orders_approved_by_staff_wechat_users_employee_id_fk",
-          "tableFrom": "sale_orders",
-          "tableTo": "staff_wechat_users",
-          "columnsFrom": [
-            "approved_by"
           ],
           "columnsTo": [
             "employee_id"
