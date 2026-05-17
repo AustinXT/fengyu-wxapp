@@ -126,7 +126,8 @@ function _formatCategory(r) {
 async function _queryFormattedSkuList(categoryId, productKind) {
   const params = []
   const conditions = [
-    `sk.is_enabled = true`
+    `sk.is_enabled = true`,
+    `sk.deleted_at IS NULL`
   ]
 
   if (categoryId) {
@@ -269,6 +270,7 @@ async function shopInit(ctx) {
       FROM product_skus sk
       WHERE sk.category_id = ANY($1)
         AND sk.is_enabled = true
+        AND sk.deleted_at IS NULL
         AND NOT (sk.is_recharge_card OR sk.is_experience)
         AND NOT EXISTS (
           SELECT 1
@@ -352,7 +354,7 @@ async function skuDetail(ctx) {
       pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
-    WHERE sk.sku_id = $1
+    WHERE sk.sku_id = $1 AND sk.deleted_at IS NULL
   `, [skuId])
 
   if (rows.length === 0) {
@@ -407,6 +409,7 @@ async function spuDetail(ctx) {
     LEFT JOIN mall_bundle_groups bg ON mps.bundle_group_id = bg.id
     WHERE mps.product_id = $1
       AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
     ORDER BY COALESCE(bg.sort_order, 0) ASC, mps.sort_order ASC
   `, [spuId])
 

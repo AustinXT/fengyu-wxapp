@@ -4,7 +4,7 @@ import { db } from '@/db'
 import { messages } from '@db/message'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { orgNodes, stores } from '@db/org'
-import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { withPermission } from '@/lib/with-permission'
@@ -58,7 +58,7 @@ export const getMessagesPaginated = withPermission(
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
 
-  const conditions: (SQL | undefined)[] = []
+  const conditions: (SQL | undefined)[] = [isNull(messages.deletedAt)]
 
   if (filters.recipientType) {
     conditions.push(eq(messages.recipientType, filters.recipientType))
@@ -159,6 +159,7 @@ export const getMessageTypes = withPermission(
   const rows = await db
     .selectDistinct({ messageType: messages.messageType })
     .from(messages)
+    .where(isNull(messages.deletedAt))
 
   return rows
     .map((r) => r.messageType)
@@ -168,7 +169,10 @@ export const getMessageTypes = withPermission(
 )
 
 /**
- * 删除单条消息（物理删除）
+ * 删除单条消息（软删除）
+ *
+ * 流程：1) SELECT snapshot 用于 log；2) logOperation 携带快照（sanitize 自动跑）；3) UPDATE 置 deleted_at/by。
+ * 历史 detail/recipient 等 PII 字段由 logOperation 内的 sanitizeDetail 在入库前脱敏。
  */
 export const deleteMessage = withPermission(
   'message:delete',
@@ -176,18 +180,41 @@ export const deleteMessage = withPermission(
     session,
     id: number,
   ): Promise<{ success: boolean; message: string }> => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result: any = await db.delete(messages).where(eq(messages.id, id))
+    const [snapshot] = await db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.id, id), isNull(messages.deletedAt)))
+      .limit(1)
 
-  if (result.count === 0) {
-    return { success: false, message: '消息不存在或已被删除' }
-  }
+    if (!snapshot) {
+      return { success: false, message: '消息不存在或已被删除' }
+    }
 
-  await logOperation(session, 'message.delete', 'message', String(id))
+    await logOperation(session, 'message.delete', 'message', String(id), {
+      snapshot: {
+        id: snapshot.id,
+        recipientType: snapshot.recipientType,
+        recipientId: snapshot.recipientId,
+        title: snapshot.title,
+        messageType: snapshot.messageType,
+        isRead: snapshot.isRead,
+        createdAt: snapshot.createdAt,
+      },
+    })
 
-  const { revalidatePath } = await import('next/cache')
-  revalidatePath('/messages')
-  return { success: true, message: '消息已删除' }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await db
+      .update(messages)
+      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .where(and(eq(messages.id, id), isNull(messages.deletedAt)))
+
+    if (result.count === 0) {
+      return { success: false, message: '消息状态变更，请刷新重试' }
+    }
+
+    const { revalidatePath } = await import('next/cache')
+    revalidatePath('/messages')
+    return { success: true, message: '消息已删除' }
   },
 )
 

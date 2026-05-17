@@ -5,6 +5,7 @@ vi.mock('@/db', () => ({
     select: vi.fn(),
     insert: vi.fn(),
     delete: vi.fn(),
+    update: vi.fn(),
   },
 }))
 
@@ -20,6 +21,8 @@ vi.mock('@db/message', () => ({
     refEntityType: 'ref_entity_type',
     refEntityId: 'ref_entity_id',
     createdAt: 'created_at',
+    deletedAt: 'deleted_at',
+    deletedBy: 'deleted_by',
   },
 }))
 
@@ -80,6 +83,7 @@ vi.mock('drizzle-orm', () => ({
   desc: vi.fn((col) => ({ type: 'desc', col })),
   inArray: vi.fn((a, b) => ({ type: 'inArray', a, b })),
   isNotNull: vi.fn((a) => ({ type: 'isNotNull', a })),
+  isNull: vi.fn((a) => ({ type: 'isNull', a })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   gte: vi.fn((a, b) => ({ type: 'gte', a, b })),
   lte: vi.fn((a, b) => ({ type: 'lte', a, b })),
@@ -98,6 +102,7 @@ import {
   batchSendMessages,
   getCustomersForBatchMessage,
   getOrgNodesForBatchMessage,
+  deleteMessage,
 } from './messages'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
@@ -490,5 +495,66 @@ describe('getOrgNodesForBatchMessage', () => {
     expect(result[0].id).toBe('hq-1')
     expect(result[0].type).toBe('总部')
     expect(result[0].createdAt).toBe('2026-01-01T00:00:00.000Z')
+  })
+})
+
+// ── deleteMessage — 软删流程 ─────────────────────────────────────────
+
+describe('deleteMessage — 软删', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  function setupUpdate(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+  }
+
+  it('消息不存在 / 已删 → 拒绝（不进入 update）', async () => {
+    enqueueSelect([{ terminal: 'limit', rows: [] }])
+    const result = await deleteMessage(123)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在或已被删除')
+    expect(db.update).not.toHaveBeenCalled()
+    expect(logOperation).not.toHaveBeenCalled()
+  })
+
+  it('未删消息 → 写入审计日志 + 软删 + 成功', async () => {
+    enqueueSelect([{
+      terminal: 'limit',
+      rows: [{
+        id: 123, recipientType: '客户', recipientId: 'C-1',
+        title: '订单已确认', messageType: 'order', isRead: false,
+        createdAt: new Date('2026-05-18T10:00:00Z'),
+      }],
+    }])
+    setupUpdate(1)
+    const result = await deleteMessage(123)
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('已删除')
+    expect(logOperation).toHaveBeenCalledWith(
+      mockSession,
+      'message.delete',
+      'message',
+      '123',
+      expect.objectContaining({ snapshot: expect.any(Object) }),
+    )
+    expect(db.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('软删 update rowCount=0 → 并发冲突提示', async () => {
+    enqueueSelect([{
+      terminal: 'limit',
+      rows: [{
+        id: 123, recipientType: '客户', recipientId: 'C-1',
+        title: 'x', messageType: null, isRead: false, createdAt: new Date(),
+      }],
+    }])
+    setupUpdate(0)
+    const result = await deleteMessage(123)
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('请刷新重试')
   })
 })

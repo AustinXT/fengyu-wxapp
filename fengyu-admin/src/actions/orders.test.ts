@@ -115,6 +115,7 @@ vi.mock('drizzle-orm', () => ({
   gt: vi.fn((a, b) => ({ type: 'gt', a, b })),
   ilike: vi.fn((a, b) => ({ type: 'ilike', a, b })),
   inArray: vi.fn((col, arr) => ({ type: 'inArray', col, arr })),
+  isNull: vi.fn((a) => ({ type: 'isNull', a })),
   sql: Object.assign(vi.fn(() => ({})), { raw: vi.fn(), join: vi.fn() }),
 }))
 

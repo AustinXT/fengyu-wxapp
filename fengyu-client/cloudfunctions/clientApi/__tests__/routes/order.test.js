@@ -118,6 +118,36 @@ describe('order.create', () => {
     expect(ctx.result.status).toBe('待支付')
   })
 
+  test('sale_items.session_count / remaining_sessions 应 = sku.session_count × quantity', async () => {
+    pg.query.mockResolvedValueOnce([{ store_id: 's1', store_name: '测试店', market_name: '华东' }])
+    pg.query.mockResolvedValueOnce([])  // closeExpiredOrdersByUser
+    pg.query.mockResolvedValueOnce([])  // check pending
+    pg.query.mockResolvedValueOnce([{   // SKU query
+      sku_id: 'sku-1', product_id: 'p1', product_type: '疗程卡',
+      spec_name: '标准', price: '100', special_price: null,
+      session_count: 2, product_name: '护理A', sales_category: null,
+    }])
+
+    const clientQuery = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-1', quantity: 5 }],
+      paymentMethod: '微信',
+    })
+    await routes.create(ctx)
+
+    const insertItemCall = clientQuery.mock.calls.find(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCall).toBeDefined()
+    // INSERT 列顺序: ... product_type, session_count, remaining_sessions, unit_price, quantity, ...
+    // params: $1=saleItemId $2=orderNo $3=storeId $4=skuId $5=productName $6=skuSpecName
+    //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
+    expect(insertItemCall[1][7]).toBe(10)  // session_count = 2 × 5
+    expect(insertItemCall[1][8]).toBe(10)  // remaining_sessions = 2 × 5
+    expect(insertItemCall[1][10]).toBe(5)  // quantity 透传
+  })
+
   test('无手机号 → PHONE_REQUIRED', async () => {
     const ctx = createCtx({
       payload: { storeId: 's1', items: [{ skuId: 'sku-1' }], paymentMethod: '微信' },

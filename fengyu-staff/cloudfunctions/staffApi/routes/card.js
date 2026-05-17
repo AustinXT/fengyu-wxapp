@@ -41,6 +41,7 @@ async function rechargeSkus(ctx) {
     JOIN product_categories pc ON sk.category_id = pc.category_id
     WHERE sk.is_recharge_card = true
       AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
       AND pc.is_valid = true
       AND sk.sku_id <> $1
     ORDER BY sk.price ASC, sk.sort_order ASC
@@ -136,7 +137,7 @@ async function recharge(ctx) {
              sk.is_recharge_card, pc.sales_category
       FROM product_skus sk
       JOIN product_categories pc ON sk.category_id = pc.category_id
-      WHERE sk.sku_id = $1 AND sk.is_enabled = true
+      WHERE sk.sku_id = $1 AND sk.is_enabled = true AND sk.deleted_at IS NULL
     `, [skuId])
     if (skuRows.length === 0) throw new Error('INVALID_PARAMS: 商品不存在或已下架')
     const sku = skuRows[0]

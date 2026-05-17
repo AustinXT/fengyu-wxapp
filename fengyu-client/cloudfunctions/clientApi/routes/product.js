@@ -14,7 +14,7 @@ const pg = require('../db/pg')
  * 两类 capability 列互斥（CHECK chk_sku_not_both_capabilities）。
  */
 const PRODUCT_VALID_FILTER = `p.is_enabled = true AND p.is_visible = true`
-const SKU_VALID_FILTER = `sk.is_enabled = true AND NOT (sk.is_experience OR sk.is_recharge_card)`
+const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT (sk.is_experience OR sk.is_recharge_card)`
 
 /**
  * 内部函数：获取商品分类列表（mall_categories）
@@ -247,7 +247,7 @@ async function skuDetail(ctx) {
       pc.category_id, pc.category_name, pc.product_kind, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
-    WHERE sk.sku_id = $1
+    WHERE sk.sku_id = $1 AND sk.deleted_at IS NULL
   `, [skuId])
 
   if (rows.length === 0) {
@@ -439,6 +439,7 @@ async function experienceCardList(ctx) {
     LEFT JOIN products p ON p.product_id = mps.product_id
     WHERE sk.is_experience = true
       AND sk.is_enabled = true
+      AND sk.deleted_at IS NULL
     ORDER BY sk.sort_order ASC, sk.sku_id ASC
   `)
 

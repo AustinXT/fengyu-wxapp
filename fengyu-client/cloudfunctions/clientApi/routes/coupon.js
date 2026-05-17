@@ -163,7 +163,7 @@ async function available(ctx) {
   // 解析每个 SKU 的 category_id（SKU 直接有 category_id，无需 JOIN products）
   const skuIds = items.map(i => i.skuId)
   const skuCats = await pg.query(
-    `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1)`,
+    `SELECT sku_id, category_id FROM product_skus WHERE sku_id = ANY($1) AND deleted_at IS NULL`,
     [skuIds]
   )
   const catMap = new Map()

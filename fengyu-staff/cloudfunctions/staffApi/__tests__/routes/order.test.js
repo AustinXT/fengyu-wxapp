@@ -297,6 +297,45 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(1) // customPrice 而非原价
   })
 
+  test('sale_items.session_count / remaining_sessions 应 = sku.session_count × quantity', async () => {
+    const ctx = createManagerCtx({
+      clientPhone: '13800002222',
+      clientName: '量乘次数顾客',
+      items: [{ skuId: 'sku-001', quantity: 4 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-001',
+        product_id: 'prod-001',
+        product_type: '疗程卡',
+        spec_name: '基础款',
+        price: '100.00',
+        session_count: 3,
+        product_name: '面部护理',
+        sales_category: '自销自耗',
+      }])
+      .mockResolvedValueOnce([])
+
+    const clientQuery = makeClientQueryMock({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await orderRoutes.create(ctx)
+
+    const insertItemCall = clientQuery.mock.calls.find(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCall).toBeDefined()
+    // INSERT 列顺序: ... product_type, session_count, remaining_sessions, unit_price, quantity, ...
+    // params: $1=saleItemId $2=saleOrderId $3=storeId $4=skuId $5=productName $6=skuSpecName
+    //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
+    expect(insertItemCall[1][7]).toBe(12)  // session_count = 3 × 4
+    expect(insertItemCall[1][8]).toBe(12)  // remaining_sessions = 3 × 4
+    expect(insertItemCall[1][10]).toBe(4)  // quantity 透传
+  })
+
   // ===== 优惠券路径覆盖 =====
 
   test('开单成功 + 现金券抵扣（全单适用，无分类限制）', async () => {

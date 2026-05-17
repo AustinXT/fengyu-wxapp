@@ -623,27 +623,71 @@ describe('updateSku — rowCount=0 静默成功修复', () => {
 
 // ── deleteSku ─────────────────────────────────────────────────────────────────
 
-describe('deleteSku — 引用校验', () => {
+describe('deleteSku — 引用校验 + 软删', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(getSession as any).mockResolvedValue(mockSession)
   })
 
-  it('SKU 被订单引用 → 拒绝删除', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([{ saleItemId: 'item-1' }]))
+  // 软删流程需要两次 db.select：1) saleItems 引用 guard；2) productSkus 快照。
+  function setupSelectsForDelete(refRows: any[], snapshotRows: any[]) {
+    let callCount = 0
+    ;(db.select as any).mockImplementation(() => {
+      callCount += 1
+      const rows = callCount === 1 ? refRows : snapshotRows
+      return makeSelectChain(rows)()
+    })
+  }
+
+  function setupUpdateForDelete(count: number) {
+    const where = vi.fn().mockResolvedValue({ count })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+  }
+
+  it('SKU 被订单引用 → 拒绝删除（不进入快照/软删流程）', async () => {
+    setupSelectsForDelete([{ saleItemId: 'item-1' }], [])
     const result = await deleteSku('SKU-001')
     expect(result.success).toBe(false)
     expect(result.message).toContain('已被订单引用')
     expect(db.delete).not.toHaveBeenCalled()
+    expect(db.update).not.toHaveBeenCalled()
   })
 
-  it('SKU 未被引用 → 成功删除', async () => {
-    ;(db.select as any).mockImplementation(makeSelectChain([]))
+  it('SKU 不存在 / 已删 → 报告不存在', async () => {
+    setupSelectsForDelete([], [])
+    const result = await deleteSku('SKU-999')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('不存在')
+    expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('SKU 未被引用 → 软删成功（mallProductSkus 物理删 + productSkus update deleted_at）', async () => {
+    setupSelectsForDelete([], [{
+      skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
+      price: '100.00', productType: '护理项目', isExperience: false, isRechargeCard: false,
+    }])
     ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
+    setupUpdateForDelete(1)
     const result = await deleteSku('SKU-001')
     expect(result.success).toBe(true)
     expect(result.message).toContain('已删除')
-    expect(db.delete).toHaveBeenCalledTimes(2)
+    // mallProductSkus 物理删一次
+    expect(db.delete).toHaveBeenCalledTimes(1)
+    // productSkus 软删一次
+    expect(db.update).toHaveBeenCalledTimes(1)
+  })
+
+  it('软删 update rowCount=0 → 并发冲突提示', async () => {
+    setupSelectsForDelete([], [{
+      skuId: 'SKU-001', categoryId: 'CAT-1', specName: '测试规格',
+      price: '100.00', productType: '护理项目', isExperience: false, isRechargeCard: false,
+    }])
+    ;(db.delete as any).mockReturnValue({ where: vi.fn().mockResolvedValue({}) })
+    setupUpdateForDelete(0)
+    const result = await deleteSku('SKU-001')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('请刷新重试')
   })
 })
 
@@ -830,7 +874,8 @@ describe('getAllSkus — 全量 SKU', () => {
     const mockRow = { sku: mockSkuRow, categoryName: '护理项目', productKind: '护理项目', salesCategory: null }
     const limit = vi.fn().mockResolvedValue([mockRow])
     const orderBy = vi.fn().mockReturnValue({ limit })
-    const leftJoin = vi.fn().mockReturnValue({ orderBy })
+    const where = vi.fn().mockReturnValue({ orderBy })
+    const leftJoin = vi.fn().mockReturnValue({ where, orderBy })
     const from = vi.fn().mockReturnValue({ leftJoin })
     ;(db.select as any).mockReturnValue({ from })
 

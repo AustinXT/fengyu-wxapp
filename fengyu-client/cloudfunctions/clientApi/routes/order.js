@@ -220,7 +220,7 @@ async function create(ctx) {
       sk.category_id, sk.is_recharge_card, sk.is_experience, pc.sales_category
     FROM product_skus sk
     JOIN product_categories pc ON sk.category_id = pc.category_id
-    WHERE sk.sku_id = ANY($1)
+    WHERE sk.sku_id = ANY($1) AND sk.deleted_at IS NULL
   `, [skuIds])
 
   // 构建 SKU 映射
@@ -252,8 +252,9 @@ async function create(ctx) {
       productName: sku.spec_name,
       skuSpecName: sku.spec_name,
       productType: sku.product_type,
-      sessionCount: sku.session_count,
-      remainingSessions: sku.session_count,
+      // session_count 是"次"维度（service.complete 按次扣减），应 = sku.session_count × quantity
+      sessionCount: sku.session_count != null ? Number(sku.session_count) * quantity : null,
+      remainingSessions: sku.session_count != null ? Number(sku.session_count) * quantity : null,
       unitPrice,
       unitRealPrice,
       quantity,
@@ -315,7 +316,7 @@ async function create(ctx) {
 
     // 查询 SKU 的 category_id 和 product_id（用于品项/商品维度过滤）
     const skuMeta = await pg.query(
-      `SELECT sku_id, category_id, product_id FROM product_skus WHERE sku_id = ANY($1)`,
+      `SELECT sku_id, category_id, product_id FROM product_skus WHERE sku_id = ANY($1) AND deleted_at IS NULL`,
       [skuIds]
     )
     const skuCatMap = new Map()

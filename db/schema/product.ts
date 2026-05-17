@@ -94,6 +94,10 @@ export const productSkus = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    /** 软删时间戳；NULL=未删。仅"误创建/下架超出 valid_end 范围"等清理场景使用 */
+    deletedAt: timestamp("deleted_at"),
+    /** 软删操作人（staff_wechat_users.employee_id 字符串快照） */
+    deletedBy: text("deleted_by"),
   },
   (table) => [
     index("idx_product_skus_category_id").on(table.categoryId),
@@ -103,6 +107,9 @@ export const productSkus = pgTable(
     index("idx_product_skus_is_recharge_card")
       .on(table.isRechargeCard)
       .where(sql`${table.isRechargeCard} = true`),
+    index("idx_product_skus_active")
+      .on(table.skuId)
+      .where(sql`deleted_at IS NULL`),
     check("chk_sku_price", sql`${table.price} >= 0`),
     check("chk_sku_service_fee", sql`${table.serviceFee} >= 0`),
     check("chk_sku_session_count", sql`${table.sessionCount} IS NULL OR ${table.sessionCount} >= 1`),

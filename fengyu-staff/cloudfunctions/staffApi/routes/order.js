@@ -254,7 +254,7 @@ async function create(ctx) {
                 pc.sales_category, pc.product_kind
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
-         WHERE s.sku_id = $1`,
+         WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
         [item.skuId]
       )
       if (skuRows.length === 0) {
@@ -282,6 +282,9 @@ async function create(ctx) {
       }
 
       const quantity = item.quantity || 1
+      // sale_items.session_count / remaining_sessions 是"次"维度（service.complete 按次扣减），
+      // 应 = sku.session_count × quantity；之前漏乘 quantity 导致剩余次数显示 1/1 而非 N/N
+      if (sessionCount != null) sessionCount = sessionCount * quantity
       const saleAmount = unitPrice * quantity
 
       // 优惠金额
@@ -374,7 +377,7 @@ async function create(ctx) {
       `SELECT ps.sku_id, ps.category_id, mps.product_id
        FROM product_skus ps
        LEFT JOIN mall_product_skus mps ON ps.sku_id = mps.sku_id
-       WHERE ps.sku_id = ANY($1)`,
+       WHERE ps.sku_id = ANY($1) AND ps.deleted_at IS NULL`,
       [skuIdList]
     )
     const catMap = new Map()
@@ -2170,7 +2173,7 @@ async function createConversion(ctx) {
                 s.is_shengmei, s.is_experience, pc.sales_category
          FROM product_skus s
          JOIN product_categories pc ON s.category_id = pc.category_id
-         WHERE s.sku_id = $1`,
+         WHERE s.sku_id = $1 AND s.deleted_at IS NULL`,
         [req.skuId]
       )
       if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在`)
@@ -2184,7 +2187,8 @@ async function createConversion(ctx) {
         productName: sku.spec_name,
         skuSpecName: sku.spec_name,
         productType: sku.product_type,
-        sessionCount: sku.session_count != null ? Number(sku.session_count) : null,
+        // 同 create：session_count 是"次"维度，需 × qty
+        sessionCount: sku.session_count != null ? Number(sku.session_count) * qty : null,
         unitPrice: Number(sku.price),
         quantity: qty,
         amount,

@@ -429,6 +429,7 @@ export const getAllSkus = withPermission(
       })
       .from(productSkus)
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
+      .where(isNull(productSkus.deletedAt))
       // 例外：sortOrder 手工排序权重
       .orderBy(asc(productSkus.sortOrder))
       .limit(1000)
@@ -470,7 +471,7 @@ export const getSkuById = withPermission(
       })
       .from(productSkus)
       .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-      .where(eq(productSkus.skuId, skuId))
+      .where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt)))
       .limit(1)
 
     if (rows.length === 0) return null
@@ -645,8 +646,8 @@ export const updateSku = withPermission(
     }>,
     expectedUpdatedAt?: string,
   ): Promise<{ success: boolean; message: string }> => {
-    // 获取旧值用于日志 diff
-    const [before] = await db.select().from(productSkus).where(eq(productSkus.skuId, skuId)).limit(1)
+    // 获取旧值用于日志 diff（不取已软删 SKU）
+    const [before] = await db.select().from(productSkus).where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt))).limit(1)
 
     // 2026-04-26 ticket：体验卡与充值卡 capability 互斥应用层校验
     // 需要拼接 before 的当前值再判（增量 update 可能只传一个字段）
@@ -710,11 +711,42 @@ export const deleteSku = withPermission(
       return { success: false, message: '该商品已被订单引用，无法删除。可通过设置有效期下架' }
     }
 
-    // 先删关联
-    await db.delete(mallProductSkus).where(eq(mallProductSkus.skuId, skuId))
-    await db.delete(productSkus).where(eq(productSkus.skuId, skuId))
+    // 取 SKU 快照用于审计（含规格名/价格/类别）
+    const [snapshot] = await db
+      .select()
+      .from(productSkus)
+      .where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt)))
+      .limit(1)
+    if (!snapshot) {
+      return { success: false, message: '商品不存在或已被删除' }
+    }
 
-    await logOperation(session, 'sku.delete', 'product_sku', skuId)
+    await logOperation(session, 'sku.delete', 'product_sku', skuId, {
+      snapshot: {
+        skuId: snapshot.skuId,
+        categoryId: snapshot.categoryId,
+        specName: snapshot.specName,
+        price: snapshot.price,
+        productType: snapshot.productType,
+        isExperience: snapshot.isExperience,
+        isRechargeCard: snapshot.isRechargeCard,
+      },
+    })
+
+    // 关联表 mall_product_skus 物理删（无 PII，纯关联数据）
+    await db.delete(mallProductSkus).where(eq(mallProductSkus.skuId, skuId))
+
+    // product_skus 软删
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result: any = await db
+      .update(productSkus)
+      .set({ deletedAt: new Date(), deletedBy: session.employeeId })
+      .where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt)))
+
+    if (result.count === 0) {
+      return { success: false, message: '商品状态变更，请刷新重试' }
+    }
+
     revalidatePath('/products')
     return { success: true, message: '商品已删除' }
   },
@@ -1625,6 +1657,7 @@ export const getProductsByKind = withPermission(
           eq(parentCat.isCardKind, false),
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
+          isNull(productSkus.deletedAt),
           // 排除 bundle SKU（SKU 被任何 is_bundle=true 的 products 通过 mall_product_skus 关联）
           sql`NOT EXISTS (
             SELECT 1 FROM mall_product_skus mps_b
@@ -1698,7 +1731,7 @@ export const getProductsByKind = withPermission(
     })
     .from(productSkus)
     .innerJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-    .where(and(eq(productCategories.productKind, kind), eq(productSkus.isEnabled, true), eq(productCategories.isValid, true)))
+    .where(and(eq(productCategories.productKind, kind), eq(productSkus.isEnabled, true), eq(productCategories.isValid, true), isNull(productSkus.deletedAt)))
     // 例外：sortOrder 手工排序权重
     .orderBy(asc(productCategories.sortOrder), asc(productSkus.sortOrder))
 

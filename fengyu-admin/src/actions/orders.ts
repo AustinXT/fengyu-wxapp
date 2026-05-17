@@ -7,7 +7,7 @@ import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus, productCategories, mallProductSkus } from '@db/product'
 import { prepaidCards, cardTransactions } from '@db/prepaid-card'
-import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray } from 'drizzle-orm'
+import { eq, desc, asc, and, or, sql, ilike, gte, lt, gt, inArray, isNull } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
@@ -916,7 +916,7 @@ export const createOrder = withPermission(
     const orderSkuIds = data.items.map(i => i.skuId).filter(Boolean)
     const [skuCatRows, skuProdRows] = await Promise.all([
       db.select({ skuId: productSkus.skuId, categoryId: productSkus.categoryId })
-        .from(productSkus).where(inArray(productSkus.skuId, orderSkuIds)),
+        .from(productSkus).where(and(inArray(productSkus.skuId, orderSkuIds), isNull(productSkus.deletedAt))),
       db.select({ skuId: mallProductSkus.skuId, productId: mallProductSkus.productId })
         .from(mallProductSkus).where(inArray(mallProductSkus.skuId, orderSkuIds)),
     ])
@@ -1092,7 +1092,7 @@ export const createOrder = withPermission(
         isExperience: productSkus.isExperience,
       })
       .from(productSkus)
-      .where(inArray(productSkus.skuId, skuIdList))
+      .where(and(inArray(productSkus.skuId, skuIdList), isNull(productSkus.deletedAt)))
     for (const r of skuRows) {
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
@@ -1235,8 +1235,12 @@ export const createOrder = withPermission(
         const skuServiceFee = Number(skuFeeMap.get(item.skuId) || 0)
         const serviceFee = (skuServiceFee * item.quantity).toFixed(2)
 
-        // sessionCount 以服务端 productSkus.session_count 为权威（对组合套餐疗程卡兜底）
-        const sessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
+        // sessionCount 以服务端 productSkus.session_count 为权威（对组合套餐疗程卡兜底）。
+        // sale_items.session_count / remaining_sessions 是"行总次数"维度
+        // （service.complete 按次扣减 remaining_sessions），应 = sku.session_count × quantity；
+        // 漏乘 quantity 会导致剩余次数显示 1/1 而非 N/N，且核销超过 1 次即被扣减守护卡住。
+        const skuSessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
+        const sessionCount = skuSessionCount != null ? skuSessionCount * item.quantity : null
 
         // is_recharge_card 行级快照：以服务端 product_skus.is_recharge_card 为权威
         // （前端 isRechargeCard 已被 D4 校验比对过；此处直接读取 map 防篡改）
@@ -1543,7 +1547,7 @@ export const createConversionOrder = withPermission(
         })
         .from(productSkus)
         .leftJoin(productCategories, eq(productSkus.categoryId, productCategories.categoryId))
-        .where(inArray(productSkus.skuId, inSkuIds))
+        .where(and(inArray(productSkus.skuId, inSkuIds), isNull(productSkus.deletedAt)))
       const skuMap = new Map(skuRows.map((r) => [r.skuId, r]))
 
       let totalIn = 0
@@ -1681,7 +1685,9 @@ export const createConversionOrder = withPermission(
         // sessionCount 以服务端查到的 productSkus.session_count 为权威，
         // 组合套餐前端 payload 里疗程卡会丢失该字段（bundleSkuToProductSku 硬编码 null），
         // 这里兜底保证 remaining_sessions 正确，否则卡永远无法核销。
-        const sessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
+        // 同 createOrder：sale_items.session_count 是行总次数维度，需 × quantity。
+        const skuSessionCount = inRow.sku.sessionCount ?? inRow.item.sessionCount
+        const sessionCount = skuSessionCount != null ? skuSessionCount * inRow.item.quantity : null
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId,

@@ -232,6 +232,13 @@
       "when": 1779034737360,
       "tag": "0032_thankful_mystique",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1779041983657,
+      "tag": "0033_cool_stranger",
+      "breakpoints": true
     }
   ]
 }
