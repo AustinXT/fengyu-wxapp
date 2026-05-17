@@ -15,11 +15,43 @@ cost: M（1-3 天，含三端 + 单元/并发测试）
   - 参考正确范式：fengyu-client/cloudfunctions/clientApi/routes/order.js:420-460
   - 参考正确范式：fengyu-staff/cloudfunctions/staffApi/routes/card.js:190-220
   - 跨端原则：[no-shared-cloudfunctions](MEMORY)
-状态: 🔴 未开始（仅生成 ticket，R2 复核反馈已合入）
+状态: ✅ 已完成（2026-05-17）
 ---
 
 # Ticket: Advisory lock 跨事务释放窗口 — generateOrderNo / generateServiceOrderId TOCTOU
 
+> ### 实施结果（2026-05-17）
+>
+> **全部 7 个 patch 已应用，跨端 lock key 统一完成。**
+>
+> 源码变更（2 文件）：
+> - `fengyu-staff/cloudfunctions/staffApi/routes/order.js`：
+>   - `generateOrderNo(prefix, client)` 强制 client 参数 + dateStr 移入函数体首行（防跨午夜）+ 不再自开 `pg.transaction`
+>   - `order.create` (L444-L545) — 删除 L445 事务外 `generateOrderNo()` + 删除 L542 重复 advisory_xact_lock + 移入事务回调首行
+>   - `createConversion` (L2029-L2033) — 同等改造
+> - `fengyu-staff/cloudfunctions/staffApi/routes/service.js`：
+>   - `generateServiceOrderId(client)` 强制 client 参数 + dateStr 移入函数体首行
+>   - lock key 从自定义 `Buffer.from('svc_order_id')` hash 统一为 `hashtext('service_order_id_gen')`，与 admin `services.ts:522` 跨端互锁
+>   - `service.create` (L166) 改用 `let serviceOrderId` 在事务外声明、事务回调首行赋值
+>
+> 测试调整（2 文件）：
+> - `__tests__/routes/order.test.js`：7 个 createConversion 测试 mock 调整（合并两个 pg.transaction.mockImplementationOnce 为单一主事务 mock + 添加 SELECT sale_order_id LIKE 桩）
+> - `__tests__/routes/service.test.js`：6 个 service.create 测试同等调整
+>
+> 新增脚本：
+> - `fengyu-staff/scripts/manual-e2e/concurrent-order-create.mjs` — N=50 并发 order.create 回归脚本（按 [test-colocation] 置于子项目下，文件后缀 `.mjs` 以对齐 staffApi 现有 e2e 风格而非 ticket 原写的 `.spec.ts`）
+>
+> 验收：
+> - 跨端 grep：`svc_order_id` / `Buffer.from('svc_order_id')` 全仓 0 命中；`hashtext('service_order_id_gen')` 在 staffApi/service.js + admin/services.ts 各 1 命中 ✓
+> - 单测：基线 19 failed → 修复后 4 failed（剩余 4 个在 `createPickup` / `approveRefund balance cascade`，与 advisory lock 无关，pre-existing 工作树状态遗留）
+> - createConversion / service.create 全部用例 PASS（14 + 17 全绿）
+>
+> 待人工执行：
+> - 测试环境跑 `bun fengyu-staff/scripts/manual-e2e/concurrent-order-create.mjs` 验证 N=50 并发 distinct + 无 PK 冲突
+> - 生产 PG 日志监控部署前后 7 天 `sale_orders_pkey` / `service_orders_pkey` 冲突计数对比
+>
+> ---
+>
 > ### v2 修订摘要（2026-05-17，复核反馈后）
 > - 修订状态：R1 → **R2（复核反馈合入）**
 > - 关键修订：
