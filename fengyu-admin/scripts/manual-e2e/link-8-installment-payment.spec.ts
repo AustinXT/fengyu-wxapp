@@ -3,10 +3,13 @@
  *
  * 场景：创建一笔部分支付订单（paid=100, payable=100），然后分 3 次回款（¥50→¥30→¥20）直到结清。
  * 每次回款后验证 SQL 不变量：
- *   paid_amount == SUM(sale_order_payments.amount) WHERE change_type IN (首次支付,回款,储值卡抵扣) — 退款
- *   payable_amount == total_amount - prepaid_card_amount - paid_amount
+ *   received == SUM(sale_order_payments.amount) WHERE change_type IN (首次支付,回款,储值卡抵扣) — 退款
+ *   payable_amount == total_amount - prepaid_card_amount  （固定值，建单时计算并冻结）
  * 第三次结清后验证 status 转为 '已支付'。
  * 还测反例：在结清前录入超额回款 → UI 应拦截。
+ *
+ * 注：2026-04-26 sale-order-domain-refactor 后 paid_amount 列已 DROP，统一改用 received。
+ * 注：录入回款需 sale_order:record_payment 权限，仅 finance 角色拥有；admin 无此权限。
  */
 
 import { test, expect } from '@playwright/test'
@@ -18,8 +21,8 @@ const BASE = 'http://localhost:3000'
 
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
-const ADMIN_PHONE = '13900139000'
-const ADMIN_PASS = 'fengyu2026'
+const FINANCE_PHONE = '13900139002'
+const FINANCE_PASS = 'fengyu2026'
 const FIXTURE_PHONE = '13800138000'
 
 const TEST_RESULTS_DIR = path.resolve(__dirname, '../../test-results')
@@ -42,23 +45,22 @@ function ensureDir(dir: string) {
 
 // 计算 SQL 不变量，返回 'PASS' 或详情
 // 实际系统不变量（经代码审查确认）：
-//   1. paid_amount == SUM(WHERE status='已支付' AND change_type IN (首次支付,回款,退款)) 的 amount 累加
+//   1. received == SUM(WHERE status='已支付' AND change_type IN (首次支付,回款,退款,储值卡抵扣)) 的 amount 累加
 //      （退款 amount 为负数，所以 SUM 自然减去）
 //   2. payable_amount == total_amount - prepaid_card_amount（建单时固定，不随回款变化）
 // 注意：任务描述中的 payable_amount = total - prepaid - paid 是"剩余欠款"语义，
-//      但实际列 payable_amount 是固定的"应付总额"；"剩余欠款"= payable_amount - paid_amount
+//      但实际列 payable_amount 是固定的"应付总额"；"剩余欠款"= payable_amount - received
 function checkInvariants(saleOrderId: string): { verdict: string; detail: string } {
   // Single-line SQL to avoid shell escaping issues
-  const sql = `WITH o AS (SELECT status,total_amount,paid_amount,payable_amount,prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'), p AS (SELECT COALESCE(SUM(CASE WHEN status='已支付' AND change_type IN ('首次支付','回款','退款') THEN amount::numeric ELSE 0 END),0) AS paid_sum, COUNT(*) AS rows FROM sale_order_payments WHERE sale_order_id='${saleOrderId}') SELECT o.status,o.total_amount,o.paid_amount,o.payable_amount,o.prepaid_card_amount,p.paid_sum,p.rows, CASE WHEN ABS(CAST(o.paid_amount AS FLOAT)-CAST(p.paid_sum AS FLOAT))<0.01 AND ABS(CAST(o.payable_amount AS FLOAT)-(CAST(o.total_amount AS FLOAT)-CAST(o.prepaid_card_amount AS FLOAT)))<0.01 THEN 'PASS' ELSE 'FAIL' END AS verdict FROM o,p`
+  const sql = `WITH o AS (SELECT status,total_amount,received,payable_amount,prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'), p AS (SELECT COALESCE(SUM(CASE WHEN status='已支付' AND change_type IN ('首次支付','回款','退款','储值卡抵扣') THEN amount::numeric ELSE 0 END),0) AS paid_sum, COUNT(*) AS rows FROM sale_order_payments WHERE sale_order_id='${saleOrderId}') SELECT o.status,o.total_amount,o.received,o.payable_amount,o.prepaid_card_amount,p.paid_sum,p.rows, CASE WHEN ABS(CAST(o.received AS FLOAT)-CAST(p.paid_sum AS FLOAT))<0.01 AND ABS(CAST(o.payable_amount AS FLOAT)-(CAST(o.total_amount AS FLOAT)-CAST(o.prepaid_card_amount AS FLOAT)))<0.01 THEN 'PASS' ELSE 'FAIL' END AS verdict FROM o,p`
   const result = dbQuery(sql)
   const lastPipe = result.lastIndexOf('|')
   const verdict = lastPipe >= 0 ? result.substring(lastPipe + 1).trim() : 'UNKNOWN'
   return { verdict, detail: result }
 }
 
-test.setTimeout(300000)
-
 test('链路8：多次回款累加一致性', async ({ page }) => {
+  test.setTimeout(300000)
   ensureDir(TEST_RESULTS_DIR)
 
   page.on('console', (msg) => {
@@ -273,7 +275,7 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   // 等待创建后订单落库
   await page.waitForTimeout(2000)
 
-  let orderRow = dbQuery(`SELECT status, total_amount, paid_amount, payable_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
+  let orderRow = dbQuery(`SELECT status, total_amount, received, payable_amount, prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
   console.log(`[链路8] 创建后订单行: ${orderRow}`)
 
   // 如果不是部分支付，用 DB 降级方案
@@ -288,22 +290,22 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
     initialPaid = parseFloat(row[2] || '0')
   }
   // payable_amount in this system = total - prepaid (fixed at creation, does NOT decrease with payments)
-  // remaining debt = payable_amount - paid_amount
-  const payableFixed = parseFloat(orderRow.split('|')[3] || '0')
+  // remaining debt = payable_amount - received
+  let payableFixed = parseFloat(orderRow.split('|')[3] || '0')
   const prepaidFixed = parseFloat(orderRow.split('|')[4] ?? '0')
 
   if (currentStatus !== '部分支付') {
     console.log(`[链路8] 当前状态: ${currentStatus}，执行降级方案（DB 手动设置部分支付）`)
     usedFallback = true
 
-    // 计算半额作为 paid_amount（payable_amount 是固定的 total - prepaid，不改）
+    // 计算半额作为 received（payable_amount 是固定的 total - prepaid，不改）
     initialPaid = Math.round(payableFixed / 2 * 100) / 100
 
-    // 若 paid_amount 已经 >= payable_amount（例如已全额收款），改小一半
+    // 若 received 已经 >= payable_amount（例如已全额收款），改小一半
     if (initialPaid >= payableFixed) initialPaid = Math.round(payableFixed * 0.4 * 100) / 100
 
-    // 更新 paid_amount + status，payable_amount 保持不变（系统语义：payable = total - prepaid）
-    dbQuery(`UPDATE sale_orders SET paid_amount=${initialPaid}, status='部分支付' WHERE sale_order_id='${saleOrderId}'`)
+    // 更新 received + status，payable_amount 保持不变（系统语义：payable = total - prepaid）
+    dbQuery(`UPDATE sale_orders SET received=${initialPaid}, status='部分支付' WHERE sale_order_id='${saleOrderId}'`)
 
     // 更新 sale_order_payments 中第一条记录的金额（若有）
     const existingPayment = dbQuery(`SELECT id FROM sale_order_payments WHERE sale_order_id='${saleOrderId}' LIMIT 1`)
@@ -315,13 +317,14 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
       }
     }
 
-    orderRow = dbQuery(`SELECT status, total_amount, paid_amount, payable_amount, prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
+    orderRow = dbQuery(`SELECT status, total_amount, received, payable_amount, prepaid_card_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
     console.log(`[链路8] 降级后订单行: ${orderRow}`)
+    payableFixed = parseFloat(orderRow.split('|')[3] || '0')
   }
 
-  // remaining debt = payable_amount - paid_amount
+  // remaining debt = payable_amount - received
   const remainingAfterCreate = Math.round((payableFixed - initialPaid) * 100) / 100
-  console.log(`[链路8] 初始状态: total=${totalAmountDB}, paid=${initialPaid}, payable_fixed=${payableFixed}, remaining=${remainingAfterCreate}`)
+  console.log(`[链路8] 初始状态: total=${totalAmountDB}, received=${initialPaid}, payable_fixed=${payableFixed}, remaining=${remainingAfterCreate}`)
 
   // 验证初始状态
   const invCheck0 = checkInvariants(saleOrderId)
@@ -331,9 +334,10 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   console.log(`[链路8] 初始状态检查: ${partial_payment_verdict}`)
 
   // ================================================================
-  // STEP 2: 以 FY-TEST-ADM 登录，录入 3 次回款
+  // STEP 2: 以 FY-TEST-FIN 登录，录入 3 次回款
+  // 注：admin 角色无 sale_order:record_payment 权限，仅 finance 有
   // ================================================================
-  console.log('[链路8] Step 2: 切换到管理员账号...')
+  console.log('[链路8] Step 2: 切换到财务账号...')
 
   // 清除 session cookie，强制重新登录
   await page.context().clearCookies()
@@ -342,11 +346,11 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   await expect(page.getByRole('button', { name: /登\s*录/ })).toBeVisible({ timeout: 20000 })
   await page.waitForTimeout(500)
 
-  await page.locator('#phone').fill(ADMIN_PHONE)
-  await page.locator('#password').fill(ADMIN_PASS)
+  await page.locator('#phone').fill(FINANCE_PHONE)
+  await page.locator('#password').fill(FINANCE_PASS)
   await page.getByRole('button', { name: /登\s*录/ }).click()
   await page.waitForURL(/\/dashboard/, { timeout: 20000 })
-  console.log('[链路8] 管理员登录成功')
+  console.log('[链路8] 财务登录成功')
 
   // 进入订单详情页
   await page.goto(`${BASE}/orders/${saleOrderId}`)
@@ -478,7 +482,7 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   await page.waitForTimeout(1000)
   // 捕获 toast 错误消息（sonner toast 挂在 body 下的 [data-sonner-toaster] 元素）
   const toastEl1 = await page.locator('[data-sonner-toaster]').textContent().catch(() => '')
-  if (toastEl1) console.log(`[链路8] Toast 内容: ${toastEl1.substring(0, 200)}`)
+  if (toastEl1) console.log(`[链路8] Toast 内容: ${toastEl1.substring(0, 2000)}`)
   // 检查输入框当前值（React state 视角）
   const amtValAfterClick1 = await amountInput1.inputValue().catch(() => '')
   console.log(`[链路8] 确认后 amount input 值: ${amtValAfterClick1}`)
@@ -492,12 +496,12 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   await page.waitForTimeout(1500)
 
   // 立即查 DB 验证支付是否写入
-  const paidAfter1 = dbQuery(`SELECT paid_amount FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
-  console.log(`[链路8] 第一次回款后 DB paid_amount: ${paidAfter1}`)
+  const paidAfter1 = dbQuery(`SELECT received FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
+  console.log(`[链路8] 第一次回款后 DB received: ${paidAfter1}`)
   // 如果支付未写入，说明存在问题
-  if (parseFloat(paidAfter1) <= 34) {
+  if (parseFloat(paidAfter1) <= initialPaid + 0.01) {
     const errorMsg = await page.textContent('body')
-    console.warn(`[链路8] 警告：支付后 paid_amount 未增加（页面内容摘要）: ${errorMsg?.substring(0, 200)}`)
+    console.warn(`[链路8] 警告：支付后 received 未增加（页面内容摘要）: ${errorMsg?.substring(0, 200)}`)
   }
 
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-8-07-after-1st-payment.png` })
@@ -678,7 +682,7 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
       { check: 'neg_overpayment_blocked', verdict: verdicts.neg_overpayment_blocked },
     ],
     cleaned: true,
-    notes: `usedFallback=${usedFallback}; change_type枚举: {首次支付,回款,退款,储值卡抵扣}; 线下回款需填外部交易号; payable_amount在本系统固定为total-prepaid（不随回款变化），剩余欠款=payable_amount-paid_amount`,
+    notes: `usedFallback=${usedFallback}; change_type枚举: {首次支付,回款,退款,储值卡抵扣}; 线下回款需填外部交易号; payable_amount在本系统固定为total-prepaid（不随回款变化），剩余欠款=payable_amount-received; FY-TEST-FIN(finance)执行录入回款（admin无此权限）`,
   }
   console.log('[链路8] RESULT JSON:', JSON.stringify(result, null, 2))
 })

@@ -1,9 +1,9 @@
 /**
  * 链路 3 回归：预约 → 确认（验证 confirmed_at）→ 签到 → 新建服务单（验证自动关联 appointment_id）
  *
- * 前置条件：
- *   - TEST-APT-001 已 INSERT（状态=待确认）
- *   - TEST-SIID-TMP01 已 INSERT（remaining_sessions > 0，归属 FY-FIX-CLIENT-01）
+ * Fixture（由本 spec 自管理，beforeAll INSERT / afterAll DELETE）：
+ *   - TEST-APT-001（状态=待确认；FY-FIX-CLIENT-01 / store-nc01 / FY-TEST-MGR）
+ *   - 段 B2 复用 FY-FIX-CLIENT-01 已有的可用 sale_item（remaining_sessions > 0），不再 INSERT 临时 SIID
  *
  * 跑法：
  *   bunx playwright test --config=scripts/manual-e2e/playwright.manual.config.ts \
@@ -18,9 +18,52 @@ import { execSync } from 'child_process'
 const BASE = 'http://localhost:3000'
 const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp'
 
+const APPT_ID = 'TEST-APT-001'
+const FIX_CLIENT_ID = 'FY-FIX-CLIENT-01'
+const FIX_STORE_ID = 'store-nc01'
+const FIX_EMP_ID = 'FY-TEST-MGR'
+const FIX_EMP_NAME = '测试店长'
+const FIX_CLIENT_NAME = 'Fixture测试客'
+
 function dbQuery(sql: string): string {
   return execSync(`${PG_CMD} -t -A -c "${sql.replace(/"/g, '\\"')}"`).toString().trim()
 }
+
+function dbExec(sql: string): void {
+  execSync(`${PG_CMD} -c "${sql.replace(/"/g, '\\"')}"`, { stdio: 'pipe' })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Fixture：每次跑前清掉残留再 INSERT，跑完再 DELETE
+// 顺序遵守 FK：先把可能引用本 appointment 的 service_orders 解绑，再删 appointment
+// ──────────────────────────────────────────────────────────────────────────────
+async function cleanupAppointmentFixture() {
+  // service_orders.appointment_id 是 FK；解绑之前所有引用，再删本预约
+  dbExec(`UPDATE service_orders SET appointment_id=NULL WHERE appointment_id='${APPT_ID}'`)
+  dbExec(`DELETE FROM appointments WHERE appointment_id='${APPT_ID}'`)
+}
+
+async function insertAppointmentFixture() {
+  await cleanupAppointmentFixture()
+  dbExec(
+    `INSERT INTO appointments
+      (appointment_id, status, store_id, client_user_id, client_name,
+       employee_id, employee_name, appointment_time)
+     VALUES
+      ('${APPT_ID}', '待确认', '${FIX_STORE_ID}', '${FIX_CLIENT_ID}', '${FIX_CLIENT_NAME}',
+       '${FIX_EMP_ID}', '${FIX_EMP_NAME}', NOW() + INTERVAL '1 day')`,
+  )
+}
+
+test.beforeAll(async () => {
+  await insertAppointmentFixture()
+})
+
+test.afterAll(async () => {
+  // 段 B2 跑完会产生 service_orders；先解 appointment 引用再删 appointment（不删 service_orders，
+  // 它由 service_orders FK 自然保留；若要彻底清理可手动按 service_order_id 删）
+  await cleanupAppointmentFixture()
+})
 
 /** 以 FY-TEST-MGR（13900139001/fengyu2026）身份登录 */
 async function login(page: import('@playwright/test').Page) {

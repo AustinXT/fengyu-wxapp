@@ -7,6 +7,18 @@
  * Step 3: 反例 — FY-TEST-FIN 重复退款被拒
  * Step 4: DB 验证
  * Step 5: 清理
+ *
+ * Schema 注意（2026-05-03 后）：
+ *   - 旧版"退款单"实体（saleOrders[type='退款单']）已废除
+ *   - 退款数据完全下沉到 sale_order_payments[change_type='退款']
+ *   - 流水 ID = sale_order_payments.id（正整数；toast 文案 #XXXX；/refunds/<id> URL 参数）
+ *   - 审批字段：status（'待审批'→'已支付' 或 '已作废'）、audit_employee_id、audit_at、audit_remark
+ *
+ * 已知 UI flakiness：admin AlertDialog 使用 native <dialog>+showModal() 实现。
+ * Playwright 在某些环境下 "审批通过" 按钮 click 触发 React onClick 不稳定，可能导致
+ * Step 2 的二次确认弹层不能正常打开。Step 1（创建退款 + DB 校验）+ /refunds 详情页
+ * 渲染均完全可验证。修复方向：将 admin 的 AlertDialog 从 <dialog>+showModal() 改为
+ * 普通 div + portal 实现，避免 top-layer 事件路由问题。
  */
 
 import { test, expect } from '@playwright/test'
@@ -70,13 +82,20 @@ async function login(page: import('@playwright/test').Page, phone: string, pass:
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-test.setTimeout(300_000)
 
 test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) => {
+  test.setTimeout(300_000)
   ensureDir(TEST_RESULTS_DIR)
 
   let originSaleOrderId = ''
-  let refundSaleOrderId = ''
+  /**
+   * 退款流水主键（sale_order_payments.id，正整数）。
+   *
+   * 2026-05-03 重构：旧版"退款单"概念（saleOrders[type='退款单']）已废除，
+   * 退款数据完全下沉到 sale_order_payments[change_type='退款']。
+   * 流水 ID 与 toast 中 `#XXXX` 一致，亦即 /refunds/<id> 详情页的 URL 参数。
+   */
+  let refundPaymentId = 0
 
   const verdicts: Array<{ check: string; verdict: string; actual?: string | number }> = []
 
@@ -336,41 +355,86 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   if (bodyAfterSubmit?.includes('退款失败') || bodyAfterSubmit?.includes('系统错误')) {
     const toastMsg = await finPage.locator('[data-sonner-toast]').first().textContent().catch(() => 'unknown')
     console.log(`[链路4] 退款创建失败，toast: ${toastMsg}`)
-    // 从 DB 查一下是否尽管有错误但还是创建了
-    const dbId = psql(`SELECT sale_order_id FROM sale_orders WHERE sale_order_type='退款单' AND ref_sale_order_id='${originSaleOrderId}' ORDER BY created_at DESC LIMIT 1`)
+    // 从 DB 查一下是否尽管有错误但还是创建了（流水 id；新版 schema：sale_order_payments）
+    const dbId = psql(
+      `SELECT id FROM sale_order_payments
+        WHERE sale_order_id='${originSaleOrderId}' AND change_type='退款'
+        ORDER BY created_at DESC LIMIT 1`,
+    )
     if (!dbId) throw new Error(`退款创建失败，toast: ${toastMsg}`)
-    refundSaleOrderId = dbId
-    console.log(`[链路4] 从 DB 救回 refundSaleOrderId: ${dbId}`)
+    refundPaymentId = Number(dbId)
+    console.log(`[链路4] 从 DB 救回 refundPaymentId: ${dbId}`)
   }
 
   await finPage.screenshot({ path: `${TEST_RESULTS_DIR}/link-4-08-refund-created.png` })
 
-  // 从 toast 里快速提取退款单号（退款单前缀是 FY-TKD-WX-）
+  // 从 toast 里提取退款流水号（admin UI 文案：`退款单已创建（流水 #XXXX），等待审批`，XXXX = sop.id）
   await finPage.waitForTimeout(500)
   const toastEl = finPage.locator('[data-sonner-toast]').first()
   if (await toastEl.count() > 0) {
     const toastText = await toastEl.textContent()
-    const mTkd = toastText?.match(/FY-TKD-WX-\d{10}/)
-    const mAny = toastText?.match(/FY-\w{3}-WX-\d{10}/)
-    if (mTkd) refundSaleOrderId = mTkd[0]
-    else if (mAny && mAny[0] !== originSaleOrderId) refundSaleOrderId = mAny[0]
     console.log(`[链路4] toast text: ${toastText?.substring(0, 100)}`)
+    const mFlow = toastText?.match(/#(\d+)/)
+    if (mFlow) refundPaymentId = Number(mFlow[1])
   }
 
-  // 最可靠方式：直接从 DB 查（退款单用 FY-TKD-WX- 前缀）
-  if (!refundSaleOrderId) {
-    const dbId = psql(`SELECT sale_order_id FROM sale_orders WHERE sale_order_type='退款单' AND ref_sale_order_id='${originSaleOrderId}' ORDER BY created_at DESC LIMIT 1`)
-    if (dbId) { refundSaleOrderId = dbId; console.log(`[链路4] refundSaleOrderId from DB: ${dbId}`) }
+  // 最可靠方式：直接从 DB 查（按原单 + change_type='退款' 取最新一笔）
+  if (!refundPaymentId) {
+    const dbId = psql(
+      `SELECT id FROM sale_order_payments
+        WHERE sale_order_id='${originSaleOrderId}' AND change_type='退款'
+        ORDER BY created_at DESC LIMIT 1`,
+    )
+    if (dbId) {
+      refundPaymentId = Number(dbId)
+      console.log(`[链路4] refundPaymentId from DB: ${dbId}`)
+    }
   }
 
-  console.log(`[链路4] refundSaleOrderId: ${refundSaleOrderId}`)
-  expect(refundSaleOrderId).toMatch(/^FY-\w{3}-WX-\d{10}$/)
-  writeContext({ link4_refundSaleOrderId: refundSaleOrderId })
+  console.log(`[链路4] refundPaymentId: ${refundPaymentId}`)
+  expect(refundPaymentId).toBeGreaterThan(0)
+  writeContext({ link4_refundPaymentId: refundPaymentId })
 
   verdicts.push({ check: 'create_refund_by_finance', verdict: 'PASS' })
 
-  // 导航到退款单详情页，检查状态为"待审批"
-  await finPage.goto(`${BASE}/refunds/${refundSaleOrderId}`)
+  // ── DB 即时校验：sale_order_payments 行字段正确 ──
+  const dbCreate = psql(
+    `SELECT change_type || '|' || status || '|' || amount || '|' ||
+            COALESCE(refund_reason,'') || '|' || COALESCE(operator_employee_id,'')
+       FROM sale_order_payments WHERE id=${refundPaymentId}`,
+  )
+  const [dbCtype, dbCstatus, dbCamount, dbCreason, dbCoperator] = dbCreate.split('|')
+  console.log(
+    `[链路4] DB(create): change_type=${dbCtype} status=${dbCstatus} amount=${dbCamount} reason=${dbCreason} operator=${dbCoperator}`,
+  )
+  verdicts.push({
+    check: 'db_create_change_type',
+    verdict: dbCtype === '退款' ? 'PASS' : 'FAIL',
+    actual: dbCtype,
+  })
+  verdicts.push({
+    check: 'db_create_status_pending',
+    verdict: dbCstatus === '待审批' ? 'PASS' : 'FAIL',
+    actual: dbCstatus,
+  })
+  verdicts.push({
+    check: 'db_create_amount_negative',
+    verdict: Number(dbCamount) < 0 ? 'PASS' : 'FAIL',
+    actual: dbCamount,
+  })
+  verdicts.push({
+    check: 'db_create_refund_reason_populated',
+    verdict: dbCreason && dbCreason.length > 0 ? 'PASS' : 'FAIL',
+    actual: dbCreason,
+  })
+  verdicts.push({
+    check: 'db_create_operator_is_fin',
+    verdict: dbCoperator === 'FY-TEST-FIN' ? 'PASS' : 'FAIL',
+    actual: dbCoperator,
+  })
+
+  // 导航到退款流水详情页，检查状态为"待审批"
+  await finPage.goto(`${BASE}/refunds/${refundPaymentId}`)
   await expect(finPage.getByText('退款单详情')).toBeVisible({ timeout: 15000 })
 
   await finPage.waitForTimeout(1000)
@@ -399,7 +463,7 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   await login(admPage, ADM_PHONE, PASS)
 
   // 导航到退款单详情
-  await admPage.goto(`${BASE}/refunds/${refundSaleOrderId}`)
+  await admPage.goto(`${BASE}/refunds/${refundPaymentId}`)
   await expect(admPage.getByText('退款单详情')).toBeVisible({ timeout: 15000 })
   await admPage.waitForTimeout(1000)
 
@@ -410,13 +474,19 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   await expect(approveBtn).toBeVisible({ timeout: 10000 })
   await approveBtn.click()
 
-  // 二次确认弹层
-  await expect(admPage.getByText('确认审批通过？')).toBeVisible({ timeout: 5000 })
+  // 二次确认弹层（AlertDialog 用 native <dialog>+showModal()）。
+  // AlertDialog 的 children 始终挂在 DOM 中，无论 dialog open 与否；必须用
+  // HTMLDialogElement.open 属性判定弹层是否真正打开，否则会在关闭状态下点到按钮。
+  await admPage.waitForFunction(() => {
+    const dlgs = Array.from(document.querySelectorAll('dialog')) as HTMLDialogElement[]
+    return dlgs.some((d) => d.open)
+  }, { timeout: 10000 })
   await admPage.screenshot({ path: `${TEST_RESULTS_DIR}/link-4-10b-confirm-dialog.png` })
 
-  const confirmApproveBtn = admPage.getByRole('button', { name: '确认通过' })
-  await expect(confirmApproveBtn).toBeVisible({ timeout: 5000 })
-  await confirmApproveBtn.click()
+  // 用 Playwright locator.dispatchEvent 触发 click（不经过 hit-test，绕开
+  // <dialog> 在 top-layer 时 Playwright 可见性误判；事件由 Playwright 注入，React 能正常接收）
+  const confirmApproveBtn = admPage.locator('dialog[open] button').filter({ hasText: '确认通过' }).first()
+  await confirmApproveBtn.dispatchEvent('click')
   console.log('[链路4] 已点击"确认通过"')
 
   // 等待：审批完成（toast 成功）或错误提示（5 秒内出现）
@@ -442,7 +512,7 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   await admPage.screenshot({ path: `${TEST_RESULTS_DIR}/link-4-12-status-paid.png` })
 
   // 检查 DB 里的实际状态（最可靠）
-  const dbStatusAfterApprove = psql(`SELECT status FROM sale_orders WHERE sale_order_id='${refundSaleOrderId}'`)
+  const dbStatusAfterApprove = psql(`SELECT status FROM sale_order_payments WHERE id=${refundPaymentId}`)
   const isApproved = dbStatusAfterApprove === '已支付'
   console.log(`[链路4] 审批后 DB 状态: ${dbStatusAfterApprove}, isApproved: ${isApproved}`)
 
@@ -516,24 +586,45 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   // ── Step 4: DB 验证 ────────────────────────────────────────────────────────
   console.log('[链路4] Step 4: DB 验证')
 
-  const dbRefundType = psql(`SELECT sale_order_type FROM sale_orders WHERE sale_order_id='${refundSaleOrderId}'`)
-  const dbRefundStatus = psql(`SELECT status FROM sale_orders WHERE sale_order_id='${refundSaleOrderId}'`)
-  const dbApprovedBy = psql(`SELECT approved_by FROM sale_orders WHERE sale_order_id='${refundSaleOrderId}'`)
-  const dbLogsCount = psql(`SELECT count(*) FROM operation_logs WHERE target_id='${refundSaleOrderId}'`)
-  const dbPointsTxn = psql(`SELECT coalesce(sum(amount),0) FROM point_transactions WHERE ref_order_id='${refundSaleOrderId}'`)
+  // 2026-05-03 重构：退款不再 INSERT sale_orders 行；改读 sale_order_payments
+  const dbRefundRow = psql(
+    `SELECT change_type || '|' || status || '|' || COALESCE(audit_employee_id,'') || '|' ||
+            (CASE WHEN audit_at IS NULL THEN '' ELSE audit_at::text END) || '|' ||
+            COALESCE(audit_remark,'') || '|' || amount
+       FROM sale_order_payments WHERE id=${refundPaymentId}`,
+  )
+  const [dbRefundType, dbRefundStatus, dbAuditEmp, dbAuditAt, dbAuditRemark, dbRefundAmount] =
+    dbRefundRow.split('|')
+  // operation_logs 主键现在用 sop.id 作为 target_id（refunds.ts 的 logOperation 调用）
+  const dbLogsCount = psql(
+    `SELECT count(*) FROM operation_logs WHERE target_id='${refundPaymentId}'`,
+  )
 
-  console.log(`[链路4] DB: type=${dbRefundType} status=${dbRefundStatus} approved_by=${dbApprovedBy} logs=${dbLogsCount} points_sum=${dbPointsTxn}`)
+  console.log(
+    `[链路4] DB(approve): change_type=${dbRefundType} status=${dbRefundStatus} ` +
+      `audit_employee_id=${dbAuditEmp} audit_at=${dbAuditAt} audit_remark=${dbAuditRemark} ` +
+      `amount=${dbRefundAmount} logs=${dbLogsCount}`,
+  )
 
   verdicts.push({
-    check: 'db_refund_type_correct',
-    verdict: dbRefundType === '退款单' ? 'PASS' : 'FAIL',
+    check: 'db_change_type_refund',
+    verdict: dbRefundType === '退款' ? 'PASS' : 'FAIL',
     actual: dbRefundType,
   })
-
   verdicts.push({
-    check: 'db_approved_by',
-    verdict: dbApprovedBy === 'FY-TEST-ADM' ? 'PASS' : 'FAIL',
-    actual: dbApprovedBy,
+    check: 'db_status_paid',
+    verdict: dbRefundStatus === '已支付' ? 'PASS' : 'FAIL',
+    actual: dbRefundStatus,
+  })
+  verdicts.push({
+    check: 'db_audit_employee',
+    verdict: dbAuditEmp === 'FY-TEST-ADM' ? 'PASS' : 'FAIL',
+    actual: dbAuditEmp,
+  })
+  verdicts.push({
+    check: 'db_audit_at_not_null',
+    verdict: dbAuditAt && dbAuditAt.length > 0 ? 'PASS' : 'FAIL',
+    actual: dbAuditAt,
   })
 
   const logsCount = parseInt(dbLogsCount, 10)
@@ -548,14 +639,14 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
 
   let cleaned = false
   try {
-    psql(`DELETE FROM point_transactions WHERE ref_order_id='${refundSaleOrderId}'`)
-    psql(`DELETE FROM card_transactions WHERE ref_order_id='${refundSaleOrderId}'`)
-    psql(`DELETE FROM operation_logs WHERE target_id='${refundSaleOrderId}'`)
-    psql(`DELETE FROM sale_order_payments WHERE sale_order_id='${refundSaleOrderId}'`)
-    psql(`DELETE FROM sale_items WHERE sale_order_id='${refundSaleOrderId}'`)
-    psql(`DELETE FROM sale_orders WHERE sale_order_id='${refundSaleOrderId}'`)
+    // 1) 删退款流水（sale_order_payments）+ 关联审计/积分/储值卡流水
+    //    refund 现已下沉到 sop，没有"退款单 sale_order"实体可删
+    psql(`DELETE FROM point_transactions WHERE external_ref='refund-payment-${refundPaymentId}'`)
+    psql(`DELETE FROM card_transactions WHERE ref_order_id='refund-payment-${refundPaymentId}'`)
+    psql(`DELETE FROM operation_logs WHERE target_id='${refundPaymentId}'`)
+    psql(`DELETE FROM sale_order_payments WHERE id=${refundPaymentId}`)
 
-    // 原销售单
+    // 2) 原销售单 + 其全部支付流水/明细分配
     psql(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${originSaleOrderId}')`)
     psql(`DELETE FROM sale_order_payments WHERE sale_order_id='${originSaleOrderId}'`)
     psql(`DELETE FROM sale_items WHERE sale_order_id='${originSaleOrderId}'`)
@@ -586,10 +677,15 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
     link: 4,
     status: allPass ? 'PASS' : 'PARTIAL',
     originSaleOrderId,
-    refundSaleOrderId,
+    refundPaymentId,
     verdicts,
     cleaned,
-    notes: `退款入口：订单详情页 /orders/<id> "创建退款"按钮 → Dialog 选明细 → 提交 → 状态"待审批"；审批页 /refunds/<id> 点"审批通过"→ AlertDialog 确认 → 状态变"已支付"；DB approved_by=${dbApprovedBy}；点数流水总额=${dbPointsTxn}`,
+    notes:
+      `退款入口：订单详情页 /orders/<id> "创建退款"按钮 → Dialog 选明细 → 提交 → ` +
+      `sop[change_type='退款',status='待审批'] 行；审批页 /refunds/<sop.id> 点"审批通过" → ` +
+      `AlertDialog 确认 → sop.status 翻 '已支付'，audit_employee_id=${dbAuditEmp}，` +
+      `audit_at=${dbAuditAt}。2026-05-03 重构后退款数据完全在 sale_order_payments，不再有 ` +
+      `saleOrders[type='退款单'] 实体。`,
   }
 
   console.log('\n[链路4] === 最终报告 ===')

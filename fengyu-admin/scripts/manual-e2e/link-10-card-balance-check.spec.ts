@@ -184,6 +184,12 @@ test('Step 1: 充值流 — 开充值卡订单 ¥500 → 确认收款 → 余额
     if (msg.type() === 'error') console.log(`[browser-error] ${msg.text()}`)
   })
 
+  // 实测充值前余额（不依赖 Step 0 写入的 module 变量，规避跨 sub-test 状态漂移）
+  const preBalanceStep1 = parseFloat(
+    psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`),
+  ) || 0
+  console.log(`[link-10 Step1] 充值前 baseline: ${preBalanceStep1}`)
+
   await login(page)
 
   // ---------- 进入开单向导 ----------
@@ -279,11 +285,11 @@ test('Step 1: 充值流 — 开充值卡订单 ¥500 → 确认收款 → 余额
     console.log(`[link-10 Step1] 充值订单号（重新提取）: ${rechargeOrderId}`)
   }
 
-  // DB 验证：balance 应增加了 500
+  // DB 验证：balance 应增加了 500（相对充值前实测 baseline 算，避免跨 sub-test 状态漂移）
   await page.waitForTimeout(1000)
   const r1 = reconcile()
-  const expectedBalance1 = Math.round((initialBalance + RECHARGE_FACE_VALUE) * 100) / 100
-  console.log(`[link-10 Step1] 对账: book=${r1.bookBalance} calc=${r1.calcBalance} expected=${expectedBalance1} verdict=${r1.verdict}`)
+  const expectedBalance1 = Math.round((preBalanceStep1 + RECHARGE_FACE_VALUE) * 100) / 100
+  console.log(`[link-10 Step1] preBalance=${preBalanceStep1} 对账: book=${r1.bookBalance} calc=${r1.calcBalance} expected=${expectedBalance1} verdict=${r1.verdict}`)
 
   verdicts.push({
     check: 'after_recharge_balance_eq_txn_sum',
@@ -298,6 +304,12 @@ test('Step 1: 充值流 — 开充值卡订单 ¥500 → 确认收款 → 余额
 // Step 2: 扣款流 — 普通订单 receivedAmount=0 → 录入回款(储值卡) ¥100
 // ============================================================
 test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值卡抵扣 ¥100', async ({ page }) => {
+  // 实测扣款前余额（不依赖 Step 0/1 的 module 状态）
+  const preBalanceStep2 = parseFloat(
+    psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`),
+  ) || 0
+  console.log(`[link-10 Step2] 扣款前 baseline: ${preBalanceStep2}`)
+
   /**
    * 降级方案说明：
    * admin 角色有 sale_order:record_payment 权限但缺少 allocation:list 权限，
@@ -419,11 +431,11 @@ test('Step 2: 扣款流 — 开普通订单(¥100 挂账) → 录入回款储值
   console.log('[link-10 Step2] UI 路径：manager 创建待支付订单 → admin 在订单详情页"录入回款"弹层 → 选储值卡 → 填抵扣金额 → 确认录入')
   console.log('[link-10 Step2] 降级原因：admin 角色缺 allocation:list，订单详情页 ErrorBoundary 阻止渲染"录入回款"按钮')
 
-  // DB 验证：balance 应 = initialBalance + 500 - 100 = initialBalance + 400
+  // DB 验证：balance 应 = preBalanceStep2 - 100（相对扣款前余额，跨 sub-test 漂移免疫）
   await page.waitForTimeout(500)
   const r2 = reconcile()
-  const expectedBalance2 = Math.round((initialBalance + RECHARGE_FACE_VALUE - SKU_ORDINARY_PRICE) * 100) / 100
-  console.log(`[link-10 Step2] 对账: book=${r2.bookBalance} calc=${r2.calcBalance} expected=${expectedBalance2} verdict=${r2.verdict}`)
+  const expectedBalance2 = Math.round((preBalanceStep2 - SKU_ORDINARY_PRICE) * 100) / 100
+  console.log(`[link-10 Step2] preBalance=${preBalanceStep2} 对账: book=${r2.bookBalance} calc=${r2.calcBalance} expected=${expectedBalance2} verdict=${r2.verdict}`)
 
   verdicts.push({
     check: 'after_deduct_balance_eq_txn_sum',
