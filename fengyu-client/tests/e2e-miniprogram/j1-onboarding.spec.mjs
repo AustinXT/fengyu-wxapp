@@ -9,14 +9,14 @@
 //   4. PG 断言：client_wechat_users WHERE openid=ctx.openid 行存在且 bound_store_id=TEST_STORE_ID
 //   5. switchTab 到 /pages/appointment/appointment，断言 page.path 切换成功
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertRowCount, assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertRowCount, assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 
 const CLIENT_APPID = 'wx811eb4ded3dfba3f'

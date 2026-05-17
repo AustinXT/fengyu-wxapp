@@ -27,7 +27,7 @@ import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
   ensureTestStore,
   cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 async function caseListAll() {

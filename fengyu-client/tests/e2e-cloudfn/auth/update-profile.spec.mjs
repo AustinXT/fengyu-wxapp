@@ -18,7 +18,7 @@ import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.m
 import {
   ensureTestStore,
   cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 const TEST_OPENID = `${NS}_UP_OPENID`

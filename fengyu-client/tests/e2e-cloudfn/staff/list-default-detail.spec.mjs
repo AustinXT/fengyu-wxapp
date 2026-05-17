@@ -24,7 +24,7 @@ import { invokeAs, invokePublic } from '../helpers/invoke-client.mjs'
 import {
   ensureTestStore, createTestStaff, createTestClient,
   cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 const BEAUTICIAN_1_ID = `${NS}_BEAUTY1`

@@ -17,7 +17,7 @@ import {
   ensureTestCategories, createTestProduct, createTestSku,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
-import { cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { cleanupTestData } from '../helpers/fixtures.mjs'
 
 async function caseCategoriesHasTest() {
   await ensureTestCategories()

@@ -11,14 +11,14 @@
 //   6. navigateTo 到 /pagesProfile/card-recharge/card-recharge，callFunction 'card.recharge' {faceValue:1000}
 //      → 验证返回 saleOrderId/payAmount，PG 验证 sale_items.is_recharge_card=true 新增 1 行
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertRowCount, assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertRowCount, assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientPrepaidCard,

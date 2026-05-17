@@ -20,7 +20,7 @@ import {
   TEST_CLIENT2_OPENID,
 } from '../setup.mjs'
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
-import { createTestClient, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
   createTestPendingSaleOrder, createTestClient2, cleanupClientExtras,
   forceUpdateOrderStatus,

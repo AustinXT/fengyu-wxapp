@@ -10,13 +10,13 @@
 //   5. message.unreadCount → 验证返回 2
 //   6. message.read(messageId) → PG 验证 is_read=true，再 unreadCount → 1
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   createClientMessages,

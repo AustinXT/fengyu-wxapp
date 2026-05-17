@@ -14,15 +14,15 @@
 //
 // 当前默认走 probe 模式，因为 cloudbaserc.json 未含 ALLOW_TEST_OPENID。
 
-import { query } from '../../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { query } from './pg.mjs'
 import {
   TEST_STORE_ID,
   ensureBaseFixtures,
-} from '../../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+} from './fixtures.mjs'
 import {
   NAMESPACE,
   TEST_CLIENT_USER_ID, TEST_OPENID_CLIENT, TEST_CLIENT_PHONE,
-} from '../../../../tests/e2e-miniprogram/helpers/constants.mjs'
+} from './constants.mjs'
 
 const NS = NAMESPACE.replace(/_$/, '')
 

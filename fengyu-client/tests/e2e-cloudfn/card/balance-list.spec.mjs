@@ -17,7 +17,7 @@ import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
   createTestPrepaidCard, cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
-import { ensureTestStore, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
 /**
  * 独立 fixture：建一个带 openid/phone 的顾客，避开根 createTestClient 的全局常量

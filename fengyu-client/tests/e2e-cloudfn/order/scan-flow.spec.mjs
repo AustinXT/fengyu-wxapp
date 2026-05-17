@@ -30,7 +30,7 @@ import {
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
 import {
   createTestClient, createTestStaff, cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import {
   createTestPrepaidCard, setCardBalance, createTestClient2,
   cleanupClientExtras,

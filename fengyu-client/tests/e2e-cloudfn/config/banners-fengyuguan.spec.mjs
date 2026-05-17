@@ -22,7 +22,7 @@
 import '../setup.mjs'
 import { NS, closePool, pgQuery } from '../setup.mjs'
 import { invokePublic } from '../helpers/invoke-client.mjs'
-import { cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { cleanupTestData } from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 const BANNER_KEY = 'banner_images'

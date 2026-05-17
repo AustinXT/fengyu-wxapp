@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-export const REPO_ROOT = path.resolve(__dirname, '..', '..')
+export const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 
 // ─── 必须在 require 任何云函数 / pg 之前注入 ───
 process.env.ALLOW_TEST_OPENID = 'true'

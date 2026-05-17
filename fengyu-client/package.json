@@ -1,6 +1,5 @@
 {
   "scripts": {
-    "e2e:smoke": "node e2e/smoke.js",
     "test:l2": "bun tests/e2e-cloudfn/run-all.mjs",
     "test:l2:cleanup": "bun tests/e2e-cloudfn/cleanup.mjs",
     "test:l3": "bun tests/e2e-miniprogram/run-all.mjs",

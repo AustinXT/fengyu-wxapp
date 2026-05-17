@@ -15,8 +15,8 @@ import path from 'node:path'
 
 // REPO_ROOT 不能依赖 cwd（cwd=admin/）；用 import.meta.url 反推
 const __filename = new URL(import.meta.url).pathname
-const TESTS_DIR = path.dirname(__filename) // .../tests/e2e-cloudfn
-const REPO_ROOT = path.resolve(TESTS_DIR, '..', '..')
+const TESTS_DIR = path.dirname(__filename) // .../fengyu-admin/tests/e2e-actions
+const REPO_ROOT = path.resolve(TESTS_DIR, '..', '..', '..')
 const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 
 // 在 import setup.mjs 前注入正确的环境变量

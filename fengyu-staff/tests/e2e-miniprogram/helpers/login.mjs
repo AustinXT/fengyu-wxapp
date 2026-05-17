@@ -16,7 +16,7 @@ import { TEST_OPENID_MANAGER, TEST_OPENID_CLIENT } from './constants.mjs';
  * @param {string} testOpenid
  * @returns {Promise<any>} login 返回的 data（含 staffWfId / roles 等）
  */
-export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OPENID_MANAGER) {
+export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OPENID_MANAGER, currentStoreId = null) {
   // miniProgram.evaluate 在小程序运行时上下文执行，可直接用 wx.cloud
   const result = await miniProgram.evaluate((openid) => {
     return new Promise((resolve, reject) => {
@@ -43,36 +43,50 @@ export async function loginStaffWithTestOpenid(miniProgram, testOpenid = TEST_OP
   }
 
   // 把 login 结果写入 globalData / storage，模拟前端 syncLogin 的副作用
-  // 同时 hook wx.cloud.callFunction：让 page 内 callStaffApi 自动附 _testOpenid
-  // （否则 page 调用 staffApi 走 IDE 真实 OPENID，requireManager 失败）
-  await miniProgram.evaluate((loginData, openid) => {
+  // 同时 hook wx.cloud.callFunction：让 page 内 callStaffApi 自动附 _testOpenid + _currentStoreId + _loginLevel
+  // （否则 utils/cloud.ts 会把 IDE 真账号 globalData.currentStoreId 注入 → 后端
+  //   resolveRuntimeAuth 看到不在 fixture scope 的 storeId → throw "无权访问该门店"）
+  await miniProgram.evaluate((loginData, openid, storeIdOverride) => {
     const app = getApp();
     if (app && typeof app.setStaffInfo === 'function') {
       app.setStaffInfo(loginData);
     } else if (app && app.globalData) {
       Object.assign(app.globalData, loginData);
     }
+    // 把 fixture scope 显式覆盖到 globalData，避免 utils/cloud.ts 注入到 IDE 真账号的旧 scope
+    if (app?.globalData && storeIdOverride) {
+      app.globalData.currentStoreId = storeIdOverride;
+      app.globalData.loginLevel = 'store';
+      app.globalData.staffLevel = 'store_manager';
+    }
     try { wx.setStorageSync('_test_openid', openid); } catch (e) {}
+    try {
+      if (storeIdOverride) wx.setStorageSync('_test_current_store_id', storeIdOverride);
+      else wx.removeStorageSync('_test_current_store_id');
+    } catch (e) {}
 
-    // 全局 hook：所有 wx.cloud.callFunction(staffApi) 自动注入 _testOpenid
+    // 全局 hook：所有 wx.cloud.callFunction(staffApi) 自动注入 _testOpenid + _currentStoreId + _loginLevel
     if (!wx.__e2e_callfn_hooked) {
       wx.__e2e_callfn_hooked = true;
       const orig = wx.cloud.callFunction.bind(wx.cloud);
       wx.cloud.callFunction = function (opts) {
         try {
           const testOpenid = wx.getStorageSync('_test_openid');
-          if (testOpenid && opts?.name === 'staffApi' && opts.data?.payload) {
-            if (opts.data.payload._testOpenid === undefined) {
-              opts.data.payload = { ...opts.data.payload, _testOpenid: testOpenid };
+          const testStoreId = wx.getStorageSync('_test_current_store_id');
+          if (testOpenid && opts?.name === 'staffApi') {
+            if (opts.data && !opts.data.payload) {
+              opts.data = { ...opts.data, payload: {} };
             }
-          } else if (testOpenid && opts?.name === 'staffApi' && opts.data && !opts.data.payload) {
-            opts.data = { ...opts.data, payload: { _testOpenid: testOpenid } };
+            const p = opts.data.payload;
+            if (p._testOpenid === undefined) p._testOpenid = testOpenid;
+            if (testStoreId && p._currentStoreId === undefined) p._currentStoreId = testStoreId;
+            if (testStoreId && p._loginLevel === undefined) p._loginLevel = 'store';
           }
         } catch (e) {}
         return orig(opts);
       };
     }
-  }, result.data, testOpenid);
+  }, result.data, testOpenid, currentStoreId);
 
   return result.data;
 }
@@ -112,9 +126,10 @@ export async function loginClientWithTestOpenid(miniProgram, testOpenid = TEST_O
  *   loginAs 主要让后续 action（callStaffApiWithTestOpenid 带 _testOpenid）走对的 scope。
  *   断言"前端 globalData 身份"时需要谨慎 — staffWfId 字段不一定等于 newOpenid 对应的 employee_id。
  */
-export async function loginAs(miniProgram, newOpenid) {
+export async function loginAs(miniProgram, newOpenid, currentStoreId = null) {
   await miniProgram.evaluate(() => {
     try { wx.removeStorageSync('_test_openid'); } catch (e) {}
+    try { wx.removeStorageSync('_test_current_store_id'); } catch (e) {}
     const app = getApp();
     if (app?.globalData) {
       // 保留 systemInfo / appId 等系统字段，清掉用户态字段
@@ -123,7 +138,7 @@ export async function loginAs(miniProgram, newOpenid) {
       Object.assign(app.globalData, keep);
     }
   });
-  return loginStaffWithTestOpenid(miniProgram, newOpenid);
+  return loginStaffWithTestOpenid(miniProgram, newOpenid, currentStoreId);
 }
 
 /**

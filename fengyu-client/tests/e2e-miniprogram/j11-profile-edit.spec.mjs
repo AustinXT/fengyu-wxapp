@@ -15,13 +15,13 @@
 //   降级到"只跑 size 校验失败分支"会丢主路径覆盖。COS 残留通过命名空间路径
 //   `avatars/{OPENID}/` 可见，手动清理可选；不影响功能。
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 
 const NEW_NAME = 'TEST_E2E_L3_改名'

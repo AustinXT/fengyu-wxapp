@@ -10,13 +10,13 @@
 //   5. coupon.available {storeId, items[{skuId,quantity:1,amount:100}]} → 包含该券
 //   6. coupon.available {amount:50}（不满门槛） → 不返回该券
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+} from './helpers/fixtures.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientCoupon,

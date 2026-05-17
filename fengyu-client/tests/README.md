@@ -35,11 +35,7 @@ bun fengyu-client/tests/e2e-miniprogram/cleanup.mjs
 
 ## 命名空间约定
 
-- L2 沿用根 `tests/e2e-cloudfn/` 的 `TE2L2_` 前缀（= TEST_E2E_L2 缩写），与 staff 端测试共享 fixture 基础设施
-- L3 沿用根 `tests/e2e-miniprogram/` 的 `TEST_E2E_L3_` 前缀
+- L2 用 `TE2L2_` 前缀（= TEST_E2E_L2 缩写），与 staff/admin 端的同前缀约定一致，方便统一清理
+- L3 用 `TEST_E2E_L3_` 前缀
 
-helpers 通过相对路径引用根 `tests/` 下的共享 helpers（`pg-snapshot.mjs` / `fixtures.mjs` / `automator.mjs` 等），client 端只新增专属 fixture（产品、SKU、优惠券、储值卡等）。
-
-## 与现有 `fengyu-client/e2e/` 的关系
-
-`fengyu-client/e2e/smoke.js` 是早期独立 smoke 脚本，已被 L3 j1-onboarding + j2-shopping-to-cart 覆盖。计划在 L3 12 条 journey 全部稳定后归档删除。当前并存，npm script `e2e:smoke` 仍可用。
+helpers 全部位于 `tests/e2e-cloudfn/helpers/` 和 `tests/e2e-miniprogram/helpers/`，自包含。client 专属 fixture（产品、SKU、优惠券、储值卡等）放在 `client-fixtures.mjs` / `client-l3-fixtures.mjs`。

@@ -9,7 +9,7 @@
  */
 import './setup.mjs'
 import { NS, closePool } from './setup.mjs'
-import { cleanupTestData } from '../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { cleanupTestData } from './helpers/fixtures.mjs'
 import { cleanupClientExtras } from './helpers/client-fixtures.mjs'
 
 async function main() {

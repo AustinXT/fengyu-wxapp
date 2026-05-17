@@ -29,7 +29,7 @@ import { invokeAs } from '../helpers/invoke-client.mjs'
 import {
   createTestClient, createTestStaff, ensureTestStore,
   createTestSaleOrder, cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import { cleanupClientExtras, createTestClient2 } from '../helpers/client-fixtures.mjs'
 
 /**

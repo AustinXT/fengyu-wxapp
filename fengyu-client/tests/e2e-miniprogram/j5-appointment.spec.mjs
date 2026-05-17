@@ -17,21 +17,21 @@
 //   - 美容师字段名为 staffWfId（不是 employeeId），且 staffName 由前端传
 //   - 同一 sale_item_id 只能有 1 个待确认/已确认预约（业务唯一约束）
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   ensureTestBeautician,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertRowCount } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertRowCount } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientProductCatalog,
   L3_SKU_COURSE_ID,
 } from './helpers/client-l3-fixtures.mjs'
-import { TEST_CLIENT_PHONE } from '../../../tests/e2e-miniprogram/helpers/constants.mjs'
+import { TEST_CLIENT_PHONE } from './helpers/constants.mjs'
 
 const NS = 'TEST_E2E_L3'
 

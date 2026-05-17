@@ -27,7 +27,7 @@ import {
   pgQuery,
 } from '../setup.mjs'
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
-import { createTestClient, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import { cleanupClientExtras, createTestMessage, createTestClient2 } from '../helpers/client-fixtures.mjs'
 
 async function caseListDesc() {

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const REPO_ROOT = path.resolve(__dirname, '..', '..')
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const ADMIN_DIR = path.join(REPO_ROOT, 'fengyu-admin')
 const PRELOAD = path.join(__dirname, '_admin-preload.mjs')
 const IMPL = path.join(__dirname, 'smoke-record-payment.impl.mjs')

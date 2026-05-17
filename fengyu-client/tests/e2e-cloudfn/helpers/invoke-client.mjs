@@ -15,7 +15,7 @@
  * 不传 openid（公开接口）：
  *   const res = await invokePublic('store.list', {})
  */
-import { invokeClientApi as rawInvoke } from '../../../../tests/e2e-cloudfn/helpers/invoke.mjs'
+import { invokeClientApi as rawInvoke } from './invoke.mjs'
 
 export async function invokeAs(openid, action, payload = {}) {
   if (!openid) throw new Error('invokeAs: openid required')

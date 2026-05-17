@@ -13,20 +13,20 @@
 //   6. callFunction 'order.cancel' → PG status='已关闭'（cancel 路由实际行为，
 //      源码 routes/order.js:1158 UPDATE sale_orders SET status = '已关闭' ...）
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertRowCount, assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertRowCount, assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientProductCatalog,
   L3_SKU_NORMAL_ID,
 } from './helpers/client-l3-fixtures.mjs'
-import { TEST_CLIENT_PHONE } from '../../../tests/e2e-miniprogram/helpers/constants.mjs'
+import { TEST_CLIENT_PHONE } from './helpers/constants.mjs'
 
 const NS = 'TEST_E2E_L3'
 

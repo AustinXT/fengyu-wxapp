@@ -8,16 +8,16 @@
 //
 // IMPORTANT: spec 跑前/跑后调用 `cleanupL3TestData()`（来自根 fixtures.mjs）一次性清干净。
 
-import { query, tx } from '../../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { query, tx } from './pg.mjs'
 import {
   TEST_STORE_ID,
   ensureBaseFixtures,
-} from '../../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+} from './fixtures.mjs'
 import {
   NAMESPACE,
   TEST_CLIENT_USER_ID, TEST_CLIENT_PHONE,
   TEST_STAFF_EMPLOYEE_ID,
-} from '../../../../tests/e2e-miniprogram/helpers/constants.mjs'
+} from './constants.mjs'
 
 const NS = NAMESPACE.replace(/_$/, '')  // 'TEST_E2E_L3'
 

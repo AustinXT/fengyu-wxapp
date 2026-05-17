@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // 清理 L3 client 命名空间残留
-import { cleanupL3TestData } from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { closePool } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { cleanupL3TestData } from './helpers/fixtures.mjs'
+import { closePool } from './helpers/pg.mjs'
 
 try {
   console.log(`[L3 cleanup] start | ${new Date().toISOString()}`)

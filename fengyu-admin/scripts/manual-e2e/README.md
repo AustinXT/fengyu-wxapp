@@ -1324,6 +1324,36 @@ DELETE FROM operation_logs WHERE target_id=:soid;
 
 ---
 
+### §1.B 跑批结果（首跑 2026-05-17）
+
+> **维护规则**：每次 spec 或对应 admin 实现修复后，必须回来更新本表 + 行末 `状态 / 最近一次结果` 字段。
+> 列含义：
+> - **结果**：最近一次跑批的终态（PASS / PARTIAL / FAIL / TODO）
+> - **类别**：FAIL/PARTIAL 时此问题归属（admin bug / spec UI 选择器 / spec 设计交互 / spec 检测逻辑 / 设计 SKIP — 后者非问题）
+> - **行动**：still-FAIL 项的 next step（fix admin / fix spec / 接受 SKIP）
+
+| 链路 | spec 文件 | 最近结果 | verdicts | 关键问题 | 类别 | 行动 |
+|------|----------|---------|---------|---------|------|------|
+| 13 | link-13-points-balance-check | ✅ PARTIAL | 3/4 PASS + 1 SKIP | `new_txns_external_ref` SKIP：消费触发的 +2 积分不带 external_ref（cron 内 type='消费冲销' 不写 external_ref，只有奖励类才写）| 设计 SKIP | 接受 |
+| 14 | link-14-sku-price-snapshot | ✅ PASS | 5/5 | — | — | — |
+| 15 | link-15-commission-matrix-snapshot | ✅ PARTIAL | 2/4 PASS + 2 SKIP | `service_commission_snapshot_preserved` SKIP：环境无既有 rate=0.08 美容师 service_commissions 行可参照；`neg_mgr_cannot_update` SKIP 是设计 | spec 设计 | 跑前先用 link-2 流程产生一条该 role/category 的服务结算行 |
+| 16 | link-16-customer-promoter-snapshot | ❌ FAIL | — | CSM 进 `/customers/[id]` 触发 `getEmployees()` → `PERMISSION_DENIED: 无权执行 employee:list` → ErrorBoundary 弹出 → 找不到"顾客详情"标题 | 🔴 **admin bug** | **fix admin**：`/customers/[id]/page.tsx` 不该无条件 `getEmployees()`，或把 employee:list 加到 customer_mgr 权限矩阵 |
+| 17 | link-17-dashboard-three-role-aggregation | ✅ PARTIAL | 2/5 PASS + 3 SKIP | admin 角色 dashboard 不渲染"今日业绩"卡片（roleContext='admin' 走另一套）；`neg_url_storeFilter` 设计 SKIP（无此 URL 入参）| 设计 SKIP | 接受 |
+| 18 | link-18-operation-log-integrity | ❌ FAIL | — | 同 link-16 同根因：CSM 进 `/customers/[id]` 崩溃 | 🔴 **admin bug** | 同 link-16 一并修 |
+| 19 | link-19-permission-revoke-immediate | ✅ PARTIAL | 2/4 PASS + 2 SKIP | `mgr_immediate_loss_of_access` SKIP — 检测逻辑过严：实际 `/orders` 已 PERMISSION_DENIED + `hasOrdersMenu=false`，spec 应判 PASS 而非 SKIP | spec 检测逻辑 | **fix spec**：把 `hasOrdersMenu=false` 或 ErrorBoundary 命中也视为 access lost |
+| 20 | link-20-coupon-batch-issue | ❌ FAIL | — | 提交按钮选择器歧义：`getByRole('button', { name: '批量发放' }).last()` 在外层 dialog 触发器与弹窗内提交按钮都有 → backdrop 拦截 click 重试 30+ 次超时 | spec UI 选择器 | **fix spec**：在 `locator('dialog[open]')` 作用域内找提交按钮 |
+| 21 | link-21-pickup-records | ❌ FAIL | — | 开单 wizard Step 2 找不到分类"歆笙泰妍" / SKU"法米索深层清洁啫喱"。admin 开单页 Step 2 可能默认不展示家居 product_kind（需切大类 Tab）| spec UI 流程 | **fix spec**：探明 admin 开单是否支持家居 product_kind；若不支持则改走 SQL 直建订单 |
+| 22 | link-22-cron-birthday-boundary | ❌ FAIL | 2/9 PASS + 7 FAIL | cron STEP 2 refresh-member-levels 因 fixture 当前 rolling-12mo spend=¥1242 < ¥1980 阈值，把 beforeAll 设的"初钻"**降级回 NULL**，STEP 3 birthday 查询过滤掉 → total=0；所有 grant 项 0 | spec 设计交互 | **fix spec**：beforeAll 先开 ¥1000 单 + 确认收款补足 spend 到 ≥1980，afterAll 一并清；或直接调 grant-birthday 单 STEP 跳过 cron-once 全跑 |
+| 23 | link-23-service-cancel-session-rollback | ✅ PASS | 4/4 PASS + 2 SKIP | 2 项 SKIP 是设计（已完成单不可取消 + 无 cancelled_at 列）| 设计 SKIP | 接受 |
+
+**统计**：6 PASS（含 4 PARTIAL）+ 5 FAIL，其中 2 条 admin bug、3 条 spec 问题。
+
+**未持久化产物**：
+- 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）
+- `.last-test-context.json` 仅含 PASS/PARTIAL 6 条 + link-22 失败明细；4 条 FAIL（link-16/18/20/21）因在 writeCtx 之前抛错未写 context
+
+---
+
 ## 1.C 跨链路全局一致性快照
 
 **用途**：跑完所有链路后，跑一次全库对账，确认没有污染遗留。CC 在每次 batch 测试结束时调用。

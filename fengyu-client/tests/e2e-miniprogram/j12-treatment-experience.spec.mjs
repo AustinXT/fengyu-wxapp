@@ -17,13 +17,13 @@
 //   6. navigateTo /pagesExperience/detail/detail?skuId=_SKU_E；
 //      callFunction 'product.skuDetail' {skuId:_SKU_E} → 验证 SKU 数据
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query, tx } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query, tx } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+} from './helpers/fixtures.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientProductCatalog,
@@ -33,7 +33,7 @@ import {
 import {
   TEST_CLIENT_PHONE,
   TEST_STAFF_EMPLOYEE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/constants.mjs'
+} from './helpers/constants.mjs'
 
 const COURSE_ORDER_ID = 'TEST_E2E_L3_ORD_COURSE1'
 const COURSE_ITEM_ID = 'TEST_E2E_L3_ITM_COURSE1'

@@ -6,9 +6,9 @@
 // 3. 当前 IDE 装载的项目 appId 是否匹配 client（wx811eb4ded3dfba3f）
 // 4. 基础 fixture（org/store）就绪
 
-import { ensureIdeReady, launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { query, closePool } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
-import { ensureBaseFixtures } from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+import { ensureIdeReady, launchClient, disconnect } from './helpers/automator.mjs'
+import { query, closePool } from './helpers/pg.mjs'
+import { ensureBaseFixtures } from './helpers/fixtures.mjs'
 
 const CLIENT_APPID = 'wx811eb4ded3dfba3f'
 

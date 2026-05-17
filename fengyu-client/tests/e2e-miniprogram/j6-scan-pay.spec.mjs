@@ -15,14 +15,14 @@
 //   8. card_transactions WHERE ref_order_id=saleOrderId AND type='扣款' 应有 1 行 amount=-300
 //      （路由 INSERT 写入的 amount 是负值，见 routes/order.js confirmPrepaidFull:1567）
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   ensureTestBeautician,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertRowCount, assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertRowCount, assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientPrepaidCard,

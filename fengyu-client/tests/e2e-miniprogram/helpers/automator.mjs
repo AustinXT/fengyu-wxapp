@@ -104,7 +104,7 @@ export async function ensureIdeReady() {
     if (port !== WX_AUTOMATOR_PORT) {
       console.warn(
         `[L3 E2E] 自动发现 IDE 自动化端口 = ${port}（默认 ${WX_AUTOMATOR_PORT} 不通）。\n` +
-        `         建议下次运行加 env：WX_AUTOMATOR_PORT=${port}  bun tests/e2e-miniprogram/...\n` +
+        `         建议下次运行加 env：WX_AUTOMATOR_PORT=${port}  bun fengyu-client/tests/e2e-miniprogram/...\n` +
         `         或在 "设置 → 安全 → 服务端口" 把端口固定为 ${WX_AUTOMATOR_PORT}。`,
       );
     }

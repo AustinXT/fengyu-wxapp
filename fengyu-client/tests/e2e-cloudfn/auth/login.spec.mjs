@@ -14,7 +14,7 @@ import {
   TEST_STORE_ID,
 } from '../setup.mjs'
 import { invokeAs } from '../helpers/invoke-client.mjs'
-import { ensureTestStore, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 import { pgQuery } from '../setup.mjs'
 

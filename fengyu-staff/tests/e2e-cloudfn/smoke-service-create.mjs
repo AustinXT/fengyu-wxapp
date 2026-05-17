@@ -2,10 +2,6 @@
 /**
  * service.create 冒烟
  *
- * ⚠️ 当前已知生产 bug 守护：
- *   - routes/service.js:207 INSERT service_items 含 'sku_id' 列，但 service_items 表无此列
- *   - 该 bug 修复（删除 sku_id 列引用 + 删除对应 $5 参数）后此 smoke 自动转 PASS
- *
  * 验证：
  *   1. 已支付 销售单 + 疗程卡 sale_item 可创建服务单
  *   2. service.create 写入 service_orders (待服务) + service_items（unit_real_price / is_shengmei /
@@ -57,11 +53,6 @@ async function main() {
   })
   if (createRes.code !== 0) {
     errors.push(`service.create 应成功，实际 code=${createRes.code} msg=${createRes.message}`)
-    // 已知 bug：sku_id 列不存在 → 立即报告
-    if (String(createRes.message || '').includes('sku_id')) {
-      rec(`  ⚠️  KNOWN PROD BUG: routes/service.js:207 INSERT 含 'sku_id' 列；service_items schema 无此列`)
-      rec(`     修复：删除 SQL 中的 sku_id 列 + 对应 $5 参数（重新编号其后参数）`)
-    }
   } else {
     const sid = createRes.data.serviceOrderId
     if (!/^HLD-WX-\d{6}\d{4}$/.test(sid)) errors.push(`serviceOrderId 格式不对: ${sid}`)

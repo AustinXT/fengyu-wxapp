@@ -22,7 +22,7 @@ import {
   launchStaff, disconnect, navigateToTab, waitForData,
 } from '../helpers/automator.mjs';
 import { loginStaffWithTestOpenid, callStaffApiWithTestOpenid } from '../helpers/login.mjs';
-import { installToastHook, assertToast, clearToasts } from '../helpers/toast.mjs';
+import { installToastHook, assertToast, clearToasts, autoConfirmModal } from '../helpers/toast.mjs';
 import { snapshot, dumpRecentSnapshots, resetSnapshots } from '../helpers/screenshot.mjs';
 import { query, pgPoll, closePool } from '../helpers/pg.mjs';
 import {
@@ -75,7 +75,9 @@ async function run() {
 
   console.log('[step 0.2] launch + login + installToastHook');
   miniProgram = await launchStaff();
-  await loginStaffWithTestOpenid(miniProgram, TEST_OPENID_MANAGER);
+  // 传 fixture.client.storeId 让 hook 同时注入 _currentStoreId / _loginLevel
+  // 否则 utils/cloud.ts 会把 IDE 真账号的 globalData.currentStoreId 注入 → 后端 throw "无权访问该门店"
+  await loginStaffWithTestOpenid(miniProgram, TEST_OPENID_MANAGER, fixture.client.storeId);
   await installToastHook(miniProgram);
 
   // 通过 confirmOffline 把订单置 '已支付' + allocation_status='待分配'
@@ -91,10 +93,36 @@ async function run() {
     [fixture.orderId],
   );
 
+  // 诊断：先直接调 todoList 看后端 scope 链是否对，把"后端 SQL 数错"跟"前端没渲染"两类失败分开
+  const todo = await callStaffApiWithTestOpenid(
+    miniProgram, 'staff.todoList', {}, TEST_OPENID_MANAGER,
+  );
+  console.log('  [diag] todoList.pendingAllocationCount=', todo.pendingAllocationCount);
+  if (!todo.pendingAllocationCount || todo.pendingAllocationCount < 1) {
+    throw new Error(`fixture 未被 todoList 计入（后端 SQL/scope 问题）：${JSON.stringify(todo)}`);
+  }
+
   // ─── Step 1：workbench 徽章 pendingAllocationCount=1 ───
   console.log('[step 1] navigateToTab workbench → 等 pendingAllocationCount=1');
   await clearToasts(miniProgram);
+  // 兜底：确保 globalData 关键字段非空，避免 workbench.onShow reLaunch 到 login
+  await miniProgram.evaluate((staffWfId, storeId) => {
+    const app = getApp();
+    if (app?.globalData) {
+      if (!app.globalData.staffWfId) app.globalData.staffWfId = staffWfId;
+      if (!app.globalData.scopedStores || app.globalData.scopedStores.length === 0) {
+        app.globalData.scopedStores = [{ storeId, storeName: 'L3 测试门店' }];
+      }
+      app.globalData.boundStoreName = app.globalData.boundStoreName || 'L3 测试门店';
+    }
+  }, TEST_MANAGER_EMPLOYEE_ID, fixture.client.storeId);
   await navigateToTab(miniProgram, '/pages/workbench/workbench');
+  // 主动触发 loadWorkbench：switchTab 到当前 tab 时 onShow 不一定再触发
+  const wbPage = await miniProgram.currentPage();
+  console.log('  [diag] currentPage.route =', wbPage.path || wbPage.route);
+  try { await wbPage.callMethod('loadWorkbench'); } catch (e) {
+    console.warn('  [diag] callMethod loadWorkbench 失败:', e.message);
+  }
   await waitForData(miniProgram, (d) => d.pendingAllocationCount === 1, { timeoutMs: 8000 });
   await snapshot(miniProgram, 'bs04-step1-workbench-badge');
   console.log('  ok — pendingAllocationCount=1');
@@ -125,22 +153,43 @@ async function run() {
   console.log('  ok — totalAmount=', allocData.totalAmount, ' items=', allocData.items.length);
 
   // ─── Step 4：suggest 已自动填 allocLines（"智能分配"语义）───
-  console.log('[step 4] 验证 suggest 已自动填 allocLines.length≥1');
+  // 注意：页面把带 allocLines 的数据放在 `displayItems`，不是 `items`（items 是原始 OrderItem）
+  console.log('[step 4] 验证 suggest 已自动填 displayItems[*].allocLines.length≥1');
   await waitForData(miniProgram, (d) => {
-    const items = d.items || [];
-    return items.some(it => Array.isArray(it.allocLines) && it.allocLines.length >= 1);
+    const displayItems = d.displayItems || [];
+    return displayItems.some(it => Array.isArray(it.allocLines) && it.allocLines.length >= 1);
   }, { timeoutMs: 5000 });
   const allocData2 = await (await miniProgram.currentPage()).data();
-  const totalLines = (allocData2.items || [])
+  const totalLines = (allocData2.displayItems || [])
     .reduce((s, it) => s + (it.allocLines?.length || 0), 0);
   console.log('  ok — auto-suggested allocLines 共', totalLines, '条');
   await snapshot(miniProgram, 'bs04-step4-suggested-filled');
 
-  // ─── Step 5（降级）：跳过手动调 ratio，直接保存 ───
-  console.log('[step 5] 降级：跳过手动调 ratio（picker 操作 automator 不稳）');
+  // ─── Step 5（降级）：跳过手动调 ratio picker，直接 setData 写入 ratio=1.00 ───
+  // suggest 后端不填 allocationRatio（设计意图是用户用 picker 选 10%-100%）
+  // 我们直接把所有 allocLines 的 allocationRatio 写成 '1.00'（100%），amount 重算为 received
+  console.log('[step 5] 降级：跳过 picker，直接 setData 写 allocationRatio=1.00');
+  const allocDataBeforeRatio = await allocPage.data();
+  const patchedDI = (allocDataBeforeRatio.displayItems || []).map(it => ({
+    ...it,
+    allocLines: (it.allocLines || []).map(l => ({
+      ...l,
+      allocationRatio: 1.00,
+      amount: String(Number(it.received || 0).toFixed(2)),
+    })),
+  }));
+  await allocPage.setData({ displayItems: patchedDI });
 
   // ─── Step 6：tap "保存" → 验证 toast + 回 list 徽章=0 + PG ───
   console.log('[step 6] 调 onSave（直接 callMethod，避免 Vant 按钮 tap 不稳）');
+  // 诊断：抓一份 allocLines 看是否缺 staffWfId/department/roleType
+  // - 缺 staffWfId/department → onSave 视作"无 effective 行"→ 触发 onSkipAllocation 弹 wx.showModal → 冻结 ws
+  // - 缺 roleType → onSave 抛 toast 后 return（"缺少技能标签..."），spec 等错 toast
+  // 同时预先 autoConfirmModal，万一真的弹了 modal 也能被自动点掉，避免死锁
+  const preSaveData = await allocPage.data();
+  const allLines = (preSaveData.displayItems || []).flatMap(it => it.allocLines || []);
+  console.log('  [diag] allocLines =', JSON.stringify(allLines));
+  await autoConfirmModal(miniProgram);
   await clearToasts(miniProgram);
   await allocPage.callMethod('onSave');
   await assertToast(miniProgram, '分配已保存', { timeoutMs: 5000 });

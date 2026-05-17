@@ -11,15 +11,15 @@
 //   5. callFunction 'auth.bindStore' {storeId: _STORE_B} → 验证 res.code===0
 //   6. PG 断言：client_wechat_users.bound_store_id = _STORE_B
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool, query } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool, query } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
   TEST_MARKET_ORG_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
-import { assertColumnValue } from '../../../tests/e2e-miniprogram/helpers/pg-assert.mjs'
+} from './helpers/fixtures.mjs'
+import { assertColumnValue } from './helpers/pg-assert.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 
 const STORE_B_ORG_ID = 'TEST_E2E_L3_STORE_ORG_B'

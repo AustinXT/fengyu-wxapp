@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
 /**
- * service.start + complete 生命周期冒烟（绕过 service.create）
+ * service.start + complete 生命周期冒烟（fixture 直造服务单，独立于 service.create）
  *
- * NOTE：service.create 当前生产 bug — routes/service.js:207 INSERT service_items 列 'sku_id'
- *       但 service_items 表无此列。create 走 fixture (createTestServiceOrder) 绕过；
- *       此 smoke 仅验证 start + complete + 幂等 路径。
- *       create 路径 bug 一旦修复（删除 sku_id 列引用），追加 smoke-service-create.mjs。
+ * service.create 路径由 smoke-service-create.mjs 独立守护。
+ * 此处用 createTestServiceOrder fixture 直造 PG 记录，跳过业务校验以便测 start/complete 状态机。
  *
  * 验证：
  *   1. service.start: 待服务 → 服务中，记 started_at

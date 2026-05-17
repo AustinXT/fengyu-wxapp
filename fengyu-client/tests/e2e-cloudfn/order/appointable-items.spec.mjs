@@ -23,7 +23,7 @@ import {
   TEST_CLIENT_OPENID, TEST_CLIENT_USER_ID, TEST_STORE_ID,
 } from '../setup.mjs'
 import { invokeAs } from '../helpers/invoke-client.mjs'
-import { createTestClient, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
   createTestPendingSaleOrder, cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'

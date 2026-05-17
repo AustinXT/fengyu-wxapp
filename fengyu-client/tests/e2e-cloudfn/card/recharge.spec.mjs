@@ -17,7 +17,7 @@ import {
 } from '../setup.mjs'
 import { invokeAs, invokePublic, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
-import { ensureTestStore, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
 async function makeClient(suffix, { phone = `1999909${suffix}`, withStore = true } = {}) {
   const userId = `${NS}_CLI_${suffix}`

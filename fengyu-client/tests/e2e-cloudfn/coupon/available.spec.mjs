@@ -23,7 +23,7 @@ import {
   createTestSku, createTestCoupon, createTestCouponTemplate,
   cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
-import { ensureTestStore, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { ensureTestStore, cleanupTestData } from '../helpers/fixtures.mjs'
 
 async function makeClient(suffix) {
   const userId = `${NS}_CLI_${suffix}`

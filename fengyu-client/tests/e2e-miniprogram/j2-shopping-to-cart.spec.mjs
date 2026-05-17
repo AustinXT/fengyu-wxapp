@@ -12,13 +12,13 @@
 //   6. evaluate 写 localStorage（cart + checkoutItems）模拟加购操作
 //   7. navigateTo /pagesShop/shopping-cart/shopping-cart，断言页面 data.items 含刚加的 SKU
 
-import { launchClient, disconnect } from '../../../tests/e2e-miniprogram/helpers/automator.mjs'
-import { closePool } from '../../../tests/e2e-miniprogram/helpers/pg.mjs'
+import { launchClient, disconnect } from './helpers/automator.mjs'
+import { closePool } from './helpers/pg.mjs'
 import {
   cleanupL3TestData,
   ensureBaseFixtures,
   TEST_STORE_ID,
-} from '../../../tests/e2e-miniprogram/helpers/fixtures.mjs'
+} from './helpers/fixtures.mjs'
 import { loginAsTestClient } from './helpers/client-l3-login.mjs'
 import {
   ensureClientProductCatalog,

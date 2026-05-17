@@ -71,7 +71,7 @@ cd fengyu-client && printf '\n' | tcb fn config update clientApi
 - 商品：`TEST_E2E_L3_PROD` / `TEST_E2E_L3_SKU_N|C|E`
 - 储值卡：`TEST_E2E_L3_CARD`
 - 优惠券：`TEST_E2E_L3_CTPL` / `TEST_E2E_L3_CPN`
-- 清理：根 `tests/e2e-miniprogram/helpers/fixtures.mjs::cleanupL3TestData()`
+- 清理：`./helpers/fixtures.mjs::cleanupL3TestData()`
 
 ## 故障排查
 

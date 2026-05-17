@@ -20,7 +20,7 @@ import {
   TEST_SKU_NORMAL_ID, TEST_SKU_EXPERIENCE_ID, TEST_PRODUCT_ID,
 } from '../setup.mjs'
 import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.mjs'
-import { ensureTestStore, createTestClient, cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { ensureTestStore, createTestClient, cleanupTestData } from '../helpers/fixtures.mjs'
 import {
   ensureTestCategories, createTestSku, createTestProduct,
   cleanupClientExtras,

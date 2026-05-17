@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const REPO_ROOT = path.resolve(__dirname, '..', '..')
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 
 const SESSION = {
   employeeId: process.env.TEST_ADMIN_EMP_ID || 'TE2L2_MGR',

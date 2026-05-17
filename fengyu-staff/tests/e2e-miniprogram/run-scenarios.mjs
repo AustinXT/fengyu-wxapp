@@ -79,6 +79,7 @@ if (currentAppId !== STAFF_APPID) {
 const resultsDir = path.join(__dirname, 'test-results');
 fs.mkdirSync(resultsDir, { recursive: true });
 
+const PER_SPEC_TIMEOUT_MS = 5 * 60 * 1000; // 5 分钟硬上限，防 finally(disconnect/closePool) 死锁
 function run(spec) {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -86,16 +87,25 @@ function run(spec) {
     const child = spawn(process.execPath, [path.join(SCENARIOS_DIR, spec)], {
       env: process.env,
     });
+    let timedOut = false;
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      buf.push(`\n[run-scenarios] ⏰ ${spec} 超出 ${PER_SPEC_TIMEOUT_MS / 1000}s，SIGKILL 子进程\n`);
+      process.stderr.write(`\n[run-scenarios] ⏰ TIMEOUT ${spec} → SIGKILL\n`);
+      try { child.kill('SIGKILL'); } catch {}
+    }, PER_SPEC_TIMEOUT_MS);
     child.stdout.on('data', d => { process.stdout.write(d); buf.push(d.toString()); });
     child.stderr.on('data', d => { process.stderr.write(d); buf.push(d.toString()); });
     child.on('exit', (code) => {
+      clearTimeout(watchdog);
       const out = buf.join('');
+      const finalCode = timedOut ? 124 : (code ?? 1);
       let logPath = null;
-      if (code !== 0) {
+      if (finalCode !== 0) {
         logPath = path.join(resultsDir, spec.replace(/\.spec\.mjs$/, '.scenario.log'));
         fs.writeFileSync(logPath, out.split('\n').slice(-80).join('\n'));
       }
-      resolve({ spec, code: code ?? 1, elapsedMs: Date.now() - start, logPath });
+      resolve({ spec, code: finalCode, elapsedMs: Date.now() - start, logPath, timedOut });
     });
   });
 }

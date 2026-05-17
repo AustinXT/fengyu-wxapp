@@ -3,7 +3,7 @@
  * clientApi.auth.uploadAvatar 全分支
  *
  * 路由源：fengyu-client/cloudfunctions/clientApi/routes/auth.js → uploadAvatar
- * Mock：tests/e2e-cloudfn/helpers/wx-server-sdk-mock.js → uploadFile 返回
+ * Mock：./helpers/wx-server-sdk-mock.js → uploadFile 返回
  *       fileID = 'cloud://e2e-mock.test/{cloudPath}'
  *
  * 用例：
@@ -24,7 +24,7 @@ import { invokeAs, expectError, expectSuccess } from '../helpers/invoke-client.m
 import {
   ensureTestStore,
   cleanupTestData,
-} from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+} from '../helpers/fixtures.mjs'
 import { cleanupClientExtras } from '../helpers/client-fixtures.mjs'
 
 const TEST_OPENID = `${NS}_UA_OPENID`

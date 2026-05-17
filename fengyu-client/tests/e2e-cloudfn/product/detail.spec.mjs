@@ -14,7 +14,7 @@ import { invokePublic } from '../helpers/invoke-client.mjs'
 import {
   createTestSku, cleanupClientExtras,
 } from '../helpers/client-fixtures.mjs'
-import { cleanupTestData } from '../../../../tests/e2e-cloudfn/helpers/fixtures.mjs'
+import { cleanupTestData } from '../helpers/fixtures.mjs'
 
 async function caseSkuDetailHappy() {
   await createTestSku({

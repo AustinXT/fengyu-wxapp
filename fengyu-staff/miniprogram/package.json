@@ -16,7 +16,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:compile": "vitest run __tests__/compile",
-    "test:e2e": "node e2e/smoke.js",
     "check-wxml": "node scripts/check-wxml-bindings.js"
   },
   "devDependencies": {
