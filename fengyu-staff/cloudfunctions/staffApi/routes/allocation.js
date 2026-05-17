@@ -449,13 +449,18 @@ async function suggest(ctx) {
   }
 
   // 7. tier-aware 提成比例查找：按 (role, salesCat, totalAmount) 命中 tier 区间
-  // 规则：amountMin <= totalAmount <= amountMax；多 tier 命中时取 amountMin 最大者（高 tier 优先）
-  // 与 service.complete 的 `ORDER BY amount_tier_min DESC LIMIT 1` 语义一致
+  // 规则：amountMin <= totalAmount <= amountMax；多 tier 命中时取 amountMin 最大者（高 tier 优先），
+  //       与 service.complete 的 `ORDER BY amount_tier_min DESC LIMIT 1` 语义一致。
+  // 注意：rates 是 pivot 后的 grouped 结构，每个 grouped 项的 orderRates 含全部 4 个 sales_category 占位
+  //      （未配的为 0）。需跳过 orderRates[salesCat]==0 的 grouped 项，避免同 amountMin 多 grouped 项
+  //      中误选未配该 sales_category 的那条。
   function lookupTierRate(role, salesCat, amount) {
     let hit = null
     for (const r of rates) {
       if (r.department !== role) continue
       if (amount < r.amountMin || amount > r.amountMax) continue
+      const rate = r.orderRates[salesCat]
+      if (!rate || rate <= 0) continue
       if (!hit || r.amountMin > hit.amountMin) hit = r
     }
     return (hit && hit.orderRates[salesCat]) || 0

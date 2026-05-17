@@ -20,6 +20,13 @@ interface DisplayItem {
 
 /**
  * 查提成比例并计算金额（纯函数版本）
+ *
+ * tier 算法：amountMin <= totalAmount <= amountMax 命中；
+ *           多 tier 命中时取 amountMin 最大者（高 tier 优先），与 cloudfn allocation.suggest
+ *           的 lookupTierRate / service.complete 的 ORDER BY amount_tier_min DESC LIMIT 1 一致。
+ *
+ * `beautyRates` 参数保留为向后兼容（cloudfn ratesByRole 仍下发首 tier 索引），
+ * 但当 rates 数组有该 role 的规则时，**优先**用 rates + tier 查找，不再读 beautyRates。
  */
 export function lookupRate(
   dept: string,
@@ -29,19 +36,28 @@ export function lookupRate(
   rates: RateRow[],
   totalAmount: number
 ): { commissionRate: number; amount: string } {
-  // P2-14 Q5：beautyRates 现在以 roleType 为键（cloudfn 内部叫 ratesByRole），
-  // dept 参数语义也改为 roleType。白名单覆盖三个 SKILL_TAGS。
-  const beautyDepts = ['美容师', '养生师', '推广师']
-  if (beautyDepts.includes(dept)) {
-    const commRate = (beautyRates[dept] && beautyRates[dept][salesCat]) || 0
+  // 1) 优先按 (role, tier) 命中 rates（统一路径，覆盖所有 role）
+  // rates 是 pivot 后的 grouped 结构，orderRates 全 sales_category 占位 0（未配的为 0）。
+  // 需跳过 orderRates[salesCat]==0 的 grouped 项，避免同 amountMin 多 grouped 项中误选未配该 sales_category 的。
+  let hit: RateRow | null = null
+  for (const r of rates) {
+    if (r.department !== dept) continue
+    if (totalAmount < r.amountMin || totalAmount > r.amountMax) continue
+    const rate = r.orderRates[salesCat]
+    if (!rate || rate <= 0) continue
+    if (!hit || r.amountMin > hit.amountMin) hit = r
+  }
+  if (hit) {
+    const commRate = hit.orderRates[salesCat] || 0
     return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) }
   }
-  for (const rate of rates) {
-    if (rate.department === dept && totalAmount >= rate.amountMin && totalAmount <= rate.amountMax) {
-      const commRate = rate.orderRates[salesCat] || 0
-      return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) }
-    }
+
+  // 2) 兜底：rates 没有该 role 但 beautyRates 有（兼容 cloudfn 老版本只下发 beautyRates 的场景）
+  if (beautyRates[dept]) {
+    const commRate = beautyRates[dept][salesCat] || 0
+    return { commissionRate: commRate, amount: (receivable * commRate).toFixed(2) }
   }
+
   return { commissionRate: 0, amount: '0.00' }
 }
 
