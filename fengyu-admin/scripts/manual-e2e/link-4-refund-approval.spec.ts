@@ -3,7 +3,7 @@
  *
  * Step 0: FY-TEST-MGR 开单（2 件 fixture SKU ¥100+¥100=¥200）→ 确认收款
  * Step 1: FY-TEST-FIN 从订单详情页"创建退款"
- * Step 2: FY-TEST-ADM 审批通过
+ * Step 2: FY-TEST-MGR 审批通过（2026-05-17 起：仅 manager 持 sale_order:refund_approve）
  * Step 3: 反例 — FY-TEST-FIN 重复退款被拒
  * Step 4: DB 验证
  * Step 5: 清理
@@ -25,13 +25,14 @@ import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 
 // ── 账号 ───────────────────────────────────────────────────────────────────
 const MGR_PHONE = '13900139001'
 const FIN_PHONE = '13900139002'
-const ADM_PHONE = '13900139000'
+// FY-TEST-ADM (13900139000) no longer used: 2026-05-17 PR-Z 起 admin 不持 refund_approve
 const PASS = 'fengyu2026'
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
@@ -452,15 +453,16 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
 
   await finCtx.close()
 
-  // ── Step 2: FY-TEST-ADM 审批通过 ──────────────────────────────────────────
-  console.log('[链路4] Step 2: ADM 审批通过')
+  // ── Step 2: FY-TEST-MGR 审批通过 ──────────────────────────────────────────
+  // 2026-05-17 PR-Z 权限职责拆分：审批改归 manager（仅其持 sale_order:refund_approve）
+  console.log('[链路4] Step 2: MGR 审批通过')
   const admCtx = await browser.newContext()
   const admPage = await admCtx.newPage()
   admPage.on('console', (msg) => {
     if (msg.type() === 'error') console.log(`[browser-error-adm] ${msg.text()}`)
   })
 
-  await login(admPage, ADM_PHONE, PASS)
+  await login(admPage, MGR_PHONE, PASS)
 
   // 导航到退款单详情
   await admPage.goto(`${BASE}/refunds/${refundPaymentId}`)
@@ -618,7 +620,7 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
   })
   verdicts.push({
     check: 'db_audit_employee',
-    verdict: dbAuditEmp === 'FY-TEST-ADM' ? 'PASS' : 'FAIL',
+    verdict: dbAuditEmp === 'FY-TEST-MGR' ? 'PASS' : 'FAIL',
     actual: dbAuditEmp,
   })
   verdicts.push({
@@ -639,19 +641,15 @@ test('链路4：退款申请 → 审批 → 多表对冲', async ({ browser }) =
 
   let cleaned = false
   try {
-    // 1) 删退款流水（sale_order_payments）+ 关联审计/积分/储值卡流水
+    // 1) 删退款流水关联的非 FK 引用（external_ref 是 text 不是 FK）
     //    refund 现已下沉到 sop，没有"退款单 sale_order"实体可删
-    psql(`DELETE FROM point_transactions WHERE external_ref='refund-payment-${refundPaymentId}'`)
-    psql(`DELETE FROM card_transactions WHERE ref_order_id='refund-payment-${refundPaymentId}'`)
-    psql(`DELETE FROM operation_logs WHERE target_id='${refundPaymentId}'`)
-    psql(`DELETE FROM sale_order_payments WHERE id=${refundPaymentId}`)
+    try { psql(`DELETE FROM point_transactions WHERE external_ref='refund-payment-${refundPaymentId}'`) } catch { /* ignore */ }
+    try { psql(`DELETE FROM card_transactions WHERE ref_order_id='refund-payment-${refundPaymentId}'`) } catch { /* ignore */ }
+    try { psql(`DELETE FROM operation_logs WHERE target_id='${refundPaymentId}'`) } catch { /* ignore */ }
+    try { psql(`DELETE FROM sale_order_payments WHERE id=${refundPaymentId}`) } catch { /* ignore */ }
 
-    // 2) 原销售单 + 其全部支付流水/明细分配
-    psql(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${originSaleOrderId}')`)
-    psql(`DELETE FROM sale_order_payments WHERE sale_order_id='${originSaleOrderId}'`)
-    psql(`DELETE FROM sale_items WHERE sale_order_id='${originSaleOrderId}'`)
-    psql(`DELETE FROM operation_logs WHERE target_id='${originSaleOrderId}'`)
-    psql(`DELETE FROM sale_orders WHERE sale_order_id='${originSaleOrderId}'`)
+    // 2) 原销售单 + 其全部 FK 依赖（共享清理工具）
+    cleanupSaleOrder(originSaleOrderId, psql, { logPrefix: '[链路4]' })
 
     // 恢复 fixture 顾客会员等级
     try {

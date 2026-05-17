@@ -75,11 +75,15 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
 
 export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]> {
   const session = await getSession()
-  // 查看订单操作日志：拥有订单查看权限（sale_order:list）、退款审批权限（sale_order:refund）
-  // 或操作日志查看权限（operation_log:list）任一即可。
-  // 这样 admin（仅持 operation_log:list + sale_order:refund）和 manager/finance（持 sale_order:list）
-  // 都能在订单详情页看到日志。
-  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund', 'operation_log:list'])
+  // 查看订单操作日志：订单查看者（sale_order:list）、退款提单人/审批人
+  // （sale_order:refund_create / sale_order:refund_approve）或操作日志查看者
+  // （operation_log:list）任一即可。
+  requireAnyPermission(session, [
+    'sale_order:list',
+    'sale_order:refund_create',
+    'sale_order:refund_approve',
+    'operation_log:list',
+  ])
 
   const rows = await db
     .select()

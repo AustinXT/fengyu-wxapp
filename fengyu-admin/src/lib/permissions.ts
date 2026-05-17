@@ -29,8 +29,8 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
     'system:config',
-    // 退款管理（ticket 2026-04-24 退款 PR-Y）— admin 审批退款单
-    'sale_order:refund',
+    // 退款管理（2026-05-17 PR-Z 职责拆分）— admin 可发起退款，但**不审批**（审批仅 manager）
+    'sale_order:refund_create',
     // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
@@ -41,7 +41,8 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list',
     'coupon:list',
     'sale_order:list', 'sale_order:create', 'sale_order:update',
-    'sale_order:refund',
+    // 退款：店长可发起申请 + 审批（含 reject）— 唯一持 approve 的角色
+    'sale_order:refund_create', 'sale_order:refund_approve',
     'sale_item:list',
     'allocation:list', 'allocation:save',
     'service:list', 'service:create', 'service:update',
@@ -55,7 +56,7 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
   finance: [
     'dashboard:view',
     'sale_order:list',
-    'sale_order:refund',
+    'sale_order:refund_create',
     'sale_order:record_payment',
     'sale_item:list',
     'allocation:list',
@@ -71,16 +72,20 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'store:list', 'store:create', 'store:update',
     'employee:list', 'employee:create', 'employee:update',
     'permission:list', 'permission:assign', 'permission:revoke',
+    // 退款发起：2026-05-17 PR-Z — 所有 admin 角色都能提退款申请
+    'sale_order:refund_create',
   ],
   product: [
     'dashboard:view',
     'product:list', 'product:create', 'product:update',
     'coupon:list', 'coupon:create', 'coupon:update',
+    'sale_order:refund_create',
   ],
   customer_mgr: [
     'dashboard:view',
     'customer:list', 'customer:update', 'customer:create',
     'sale_item:list',
+    'sale_order:refund_create',
   ],
   staff: [],
 }
@@ -224,7 +229,8 @@ export function requirePermission(session: AuthSession | null, action: string): 
  * 权限校验：拥有 actions 中任一即可通过（OR 关系）
  *
  * 用于同一 Server Action 服务多个角色的场景：例如订单详情页 getOrderById
- * 既可被业务查看者（sale_order:list）调用，也可被审批人（sale_order:refund，admin）调用。
+ * 既可被业务查看者（sale_order:list）调用，也可被退款相关角色
+ * （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）调用。
  */
 export function requireAnyPermission(
   session: AuthSession | null,

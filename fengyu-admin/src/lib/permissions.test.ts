@@ -178,16 +178,16 @@ describe('requireAnyPermission', () => {
 
   it('拥有列表中任一权限即通过', () => {
     const session = mockSession({
-      permissions: { actions: ['sale_order:refund'], scopeStoreIds: [] },
+      permissions: { actions: ['sale_order:refund_approve'], scopeStoreIds: [] },
     })
-    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])).not.toThrow()
+    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund_approve'])).not.toThrow()
   })
 
   it('无任何匹配权限抛出 PERMISSION_DENIED', () => {
     const session = mockSession({
       permissions: { actions: ['dashboard:view'], scopeStoreIds: [] },
     })
-    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund']))
+    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund_approve']))
       .toThrow(/PERMISSION_DENIED/)
   })
 })

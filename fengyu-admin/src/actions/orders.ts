@@ -393,8 +393,13 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
 
 export async function getOrderById(saleOrderId: string): Promise<SaleOrder | null> {
   const session = await getSession()
-  // 订单详情页可由订单查看者（sale_order:list）或退款审批人（sale_order:refund，admin）访问
-  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])
+  // 订单详情页可由订单查看者（sale_order:list）或退款相关角色
+  // （sale_order:refund_create 提单人 / sale_order:refund_approve 审批人）访问
+  requireAnyPermission(session, [
+    'sale_order:list',
+    'sale_order:refund_create',
+    'sale_order:refund_approve',
+  ])
 
   const rows = await db
     .select({
@@ -487,8 +492,12 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
  */
 export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
   const session = await getSession()
-  // 详情页支付流水：订单查看者或退款审批人均可读
-  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])
+  // 详情页支付流水：订单查看者或退款相关角色（提单人 / 审批人）均可读
+  requireAnyPermission(session, [
+    'sale_order:list',
+    'sale_order:refund_create',
+    'sale_order:refund_approve',
+  ])
 
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db

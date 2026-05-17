@@ -9,7 +9,7 @@ import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation } from '@/lib/operation-log'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
@@ -183,7 +183,8 @@ export interface EstimateOverdraftResult {
 
 export async function getRefundable(saleOrderId: string): Promise<GetRefundableResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 读：提单人（refund_create）和审批人（refund_approve）任一即可
+  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
 
   const [order] = await db
     .select({
@@ -303,7 +304,8 @@ export async function estimateRefundOverdraft(params: {
   originalSaleOrderId: string
 }): Promise<EstimateOverdraftResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 读：提单人和审批人都需要估算超额信息
+  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
 
   const refundAmount = Math.max(0, Number(params.refundAmount) || 0)
 
@@ -495,7 +497,8 @@ export async function createRefund(input: {
   applyOverdraftDeduction?: boolean
 }): Promise<CreateRefundResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 写：提单（所有 admin 角色均可发起）
+  requirePermission(session, 'sale_order:refund_create')
 
   const refSaleOrderId = String(input.refSaleOrderId || '').trim()
   if (!refSaleOrderId) {
@@ -700,7 +703,8 @@ export const createRefundOrder = createRefund
 
 export async function approveRefund(refundPaymentId: number | string): Promise<ApproveRefundResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 写：审批通过（仅 manager 持有 refund_approve）
+  requirePermission(session, 'sale_order:refund_approve')
 
   const idNum = Number(refundPaymentId)
   if (!Number.isFinite(idNum) || idNum <= 0) {
@@ -883,7 +887,8 @@ export async function rejectRefund(
   rejectedReason: string,
 ): Promise<RejectRefundResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 写：驳回（仅 manager 持有 refund_approve）
+  requirePermission(session, 'sale_order:refund_approve')
 
   const idNum = Number(refundPaymentId)
   const reason = String(rejectedReason || '').trim()
@@ -963,7 +968,8 @@ export async function rejectRefund(
 
 export async function listRefunds(filters: RefundListFilters = {}): Promise<RefundListResult> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 读：提单人和审批人都需要看流水
+  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
 
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? (filters.pageSize as number) : 20
@@ -1026,7 +1032,8 @@ export async function listRefunds(filters: RefundListFilters = {}): Promise<Refu
 
 export async function getRefundById(refundPaymentId: number | string): Promise<RefundDetailResult | null> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:refund')
+  // 读：审批页详情，提单人和审批人都要看
+  requireAnyPermission(session, ['sale_order:refund_create', 'sale_order:refund_approve'])
 
   const idNum = Number(refundPaymentId)
   if (!Number.isFinite(idNum) || idNum <= 0) return null

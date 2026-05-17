@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/badge'
 import { getRefundById } from '@/actions/refunds'
 import { ApprovalActions } from '../_components/approval-actions'
+import { getSession, hasPermission } from '@/lib/auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -27,6 +28,9 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const data = await getRefundById(id)
   if (!data) notFound()
 
+  const session = await getSession()
+  const canApprove = !!(session && hasPermission(session, 'sale_order:refund_approve'))
+
   const { refund, origOrder, payments } = data
   const refundAmount = Math.abs(Number(refund.amount))
 
@@ -42,7 +46,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
           </Link>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">退款单详情</h1>
         </div>
-        {refund.status === '待审批' && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}
+        {refund.status === '待审批' && canApprove && <ApprovalActions refundPaymentId={refund.refundPaymentId} />}
       </div>
 
       {/* 退款单信息 */}
