@@ -1,15 +1,59 @@
-# Ticket: 错误前缀 4→9 项白名单统一 + admin 裸 throw 收敛到 ApiError + 各端独立副本 + 跨端字面量 snapshot 守护
+# Ticket: 错误前缀 4→9 项白名单统一 + admin 裸 throw 收敛到 ApiError + 各端独立副本 + 跨端字面量 snapshot 守护 [已归档]
 
 > 生成日期：2026-05-17
-> 实施状态：⚪ 未开工
+> 归档日期：2026-05-17
+> 实施状态：✅ **已完成（已归档）**
+> 实施日期：2026-05-17
 > 严重级别：**P0**（SUMMARY v3 Top10 #10 — UX 实效失效 + admin 越权可达不可识别）
 > 端：fengyu-admin / fengyu-staff (staffApi) / fengyu-client (clientApi + payNotify)
-> 修复成本：**S**（半天到 1 天 — 4 个 error-codes.js 独立副本 + admin lib/api-error.ts + 全仓批量替换 + snapshot 测试）
+> 修复成本：**S**（实际：1 天，含三端云函数 + admin + snapshot 守护 + 33 处野生前缀全量收敛）
 > 来源：[SUMMARY v3 §2 Top10 #10](../../docs/audit/SUMMARY.md) + [SUMMARY §3 横切热点（错误前缀偏离 4 项约定 + admin 裸 throw）](../../docs/audit/SUMMARY.md) + [audit-CC5](../../docs/audit/audit-CC5-error-code.md)
 > 关联 audit：audit-01 / audit-02 / audit-03 / audit-04 / audit-24 / audit-CC5（25/25 业务域全部命中，admin 规范率 17%）
 > 用户决策约束：
 > - **不抽取 `cloudfunctions-shared/`**（feedback `no-shared-cloudfunctions`，2026-04-26）— 改为各端各自 `error-codes.js` 独立副本 + 跨端字面量 snapshot 守护
 > - 参考已落地同模式：[`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js`](../../fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-sql-snapshot.test.js)（守护 settlePoints 四端 + applyRecharge 三端 SQL 字面量）
+
+---
+
+## 实施小结（2026-05-17）
+
+**4 处 error-codes 单源 + 1 处 admin TS（4 端字节同义）** — commit `711d7cc`
+- `fengyu-staff/cloudfunctions/staffApi/utils/error-codes.js`
+- `fengyu-client/cloudfunctions/clientApi/utils/error-codes.js`
+- `fengyu-client/cloudfunctions/payNotify/error-codes.js`
+- `fengyu-admin/src/lib/api-error.ts`（含 `ApiError` class + `runWithApiResponse` HOF + 9 项白名单 `ERROR_PREFIXES`）
+
+**9 项白名单**（含且仅含）：`UNAUTHORIZED` / `PHONE_REQUIRED` / `INVALID_PARAMS` / `PERMISSION_DENIED` / `NOT_FOUND` / `INSUFFICIENT_BALANCE` / `CONFLICT` / `INVALID_STATE` / `CLIENT_NOT_REGISTERED`。`PHONE_REQUIRED` 与 `PERMISSION_DENIED` 共用 -403、`INVALID_PARAMS`/`INVALID_STATE`/`INSUFFICIENT_BALANCE`/`CLIENT_NOT_REGISTERED` 共用 -400 → 前端按 `errorType` 区分。
+
+**二级前缀语法** `<一级>: <子标签>: <消息>`（如 `INVALID_STATE: STATE_TRANSITION_BLOCKED: ...`）已文档化，子标签仅供日志归类。
+
+**三端 index.js 全局 catch** 改用 `buildErrorResponse(err)` 替代原内联 knownTypes 映射 — commit `711d7cc`
+
+**staff 路由 2 处裸抛规范化** — commit `711d7cc`：service.js（全角冒号→`INVALID_PARAMS:`）、order.js confirmOffline（`[confirmOffline]`→`INVALID_PARAMS:`）
+
+**L9 staff cloud.ts** 改 `throw new Error(message)` 为 `new StaffApiError({code, errorType, data, message})`，把 `code/errorType/data` 挂 Error 实例 → `mgmt-customer-detail.ts` 的 PERMISSION_DENIED 分支真实可达（P1-CC5-02 修复达成）
+
+**admin 33 处野生前缀全量收敛到 ApiError** — 由 follow-up [ticket-10c](archives/2026-05-17-admin-actions-throw-batch-migration.md) 在 commit `41ea65f` / `8269452` / `5ec823f` / `efa3218` 完成（orders 25 + refunds 5 + services 1 + service-commissions 1 + pickup-records 1）
+
+**admin lib/* 2 处 cloudbase 裸抛** — 由 follow-up [ticket-10b](archives/2026-05-17-admin-lib-throw-to-apierror.md) 完成
+
+**跨端 snapshot 双份守护**（test-colocation feedback 对齐）：
+- `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-error-codes-snapshot.test.js`（staff 侧 vitest 13 用例 + actions/ 反向断言 violationCount = 0）— commit `ca4780c` + `2b1c32f`
+- `fengyu-admin/src/lib/__tests__/error-codes-cross-end.test.ts`（admin 侧 vitest 14 用例，含 ApiError/runWithApiResponse 行为测试）
+
+**文档同步**（5 处）：root `CLAUDE.md`、`.42cog/dev/client.sys.spec.md`、`.42cog/dev/staff.sys.spec.md`、`fengyu-staff/CLAUDE.md`、`fengyu-client/CLAUDE.md`、`staffApi/CLAUDE.md` 全部从 "4 项白名单" 同步到 9 项 + 二级前缀语法说明
+
+**配套前端 callClientApi 对称**：客户端 `cloud.ts` 已含 `err.errorType` 挂载，本 ticket 把 staff `cloud.ts` 拉齐
+
+**验证全绿**：
+- `cd fengyu-admin && bun run test src/actions/orders.test.ts` → 108/108 全绿
+- `cd fengyu-staff/cloudfunctions/staffApi && vitest run __tests__/routes/cross-end-error-codes-snapshot.test.js` → 13/13 全绿
+- `cd fengyu-admin && vitest run src/lib/__tests__/error-codes-cross-end.test.ts` → 14/14 全绿
+- `npx tsc --noEmit`（admin）→ 静默通过
+- snapshot 反向断言基线 34 → 33 → **0**（ticket-10c 全量收敛后）
+
+**剩余技术债**（非本 ticket 责任，独立 ticket 跟踪）：
+- [ticket-10d: admin actions/* withPermission HOF 迁移补齐](2026-05-17-admin-with-permission-completion.md) — 7 文件 ~93 处 `getSession()/requirePermission(session)` 旧模式待迁；当前 `tsc` 通过、build 不阻塞，纯技术债
 
 ---
 
