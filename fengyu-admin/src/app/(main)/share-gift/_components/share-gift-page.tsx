@@ -71,7 +71,7 @@ export default function ShareGiftPageClient({
 
   const handleSave = async () => {
     if (config.enabled && !config.couponTemplateId) {
-      toast.error('启用后必须选择券模板')
+      toast.error('开启分享礼后，必须选一张代金券模板才能保存')
       return
     }
     setSaving(true)
@@ -102,9 +102,10 @@ export default function ShareGiftPageClient({
           <CardTitle>分享礼规则</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-xs text-[#999999]">
-          <p>老用户通过小程序分享邀请<strong className="text-[var(--foreground)]">新客首单结清</strong>时，系统按下列比例向邀请人和新客<strong className="text-[var(--foreground)]">各发一张动态面值代金券 + 一条站内消息</strong>。</p>
-          <p>面值 = <code>paid_amount × percent</code>，clamp 到 <code>[minFaceValue, maxFaceValue]</code>。储值卡全额抵扣（paid_amount=0）不触发。以 <code>sale_order_id</code> 为幂等键保证一单一礼。</p>
-          <p>关闭开关或未选择券模板时，<code>grantShareGift</code> 直接跳过。</p>
+          <p>老顾客通过小程序分享，把<strong className="text-[var(--foreground)]">新顾客</strong>邀请进来并完成<strong className="text-[var(--foreground)]">首笔订单付款</strong>之后，系统会给邀请人和新顾客<strong className="text-[var(--foreground)]">各发一张代金券，并各自收到一条站内消息提醒</strong>。</p>
+          <p>代金券的金额按"本单实付金额 × 下方设置的比例"算出来，并保证不低于"面值下限"、不高于"面值上限"。</p>
+          <p>如果这笔单子是<strong className="text-[var(--foreground)]">储值卡全额抵扣（实付 0 元）</strong>，不发分享礼。同一笔订单<strong className="text-[var(--foreground)]">只会发一次</strong>，重复触发不会重复发券。</p>
+          <p>下方"启用分享礼"关闭、或者没选券模板时，系统不会发放任何分享礼。</p>
         </CardContent>
       </Card>
 
@@ -116,7 +117,7 @@ export default function ShareGiftPageClient({
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-medium text-[var(--foreground)]">启用分享礼</div>
-              <div className="text-xs text-[#999999]">关闭后云函数 grantShareGift 直接 return</div>
+              <div className="text-xs text-[#999999]">关闭后系统不再发放分享礼，已经发出去的代金券不受影响</div>
             </div>
             <Switch
               checked={config.enabled}
@@ -126,7 +127,7 @@ export default function ShareGiftPageClient({
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium text-[var(--foreground)]">分享礼比例</label>
+              <label className="text-sm font-medium text-[var(--foreground)]">代金券比例</label>
               <div className="flex items-center gap-2">
                 <Input
                   type="number"
@@ -137,10 +138,10 @@ export default function ShareGiftPageClient({
                   onChange={(e) => update('percent', Number(e.target.value) || 0)}
                 />
                 <span className="text-sm text-[#999999] shrink-0">
-                  ≈ {(config.percent * 100).toFixed(1)}%
+                  相当于 {(config.percent * 100).toFixed(1)}%
                 </span>
               </div>
-              <div className="text-xs text-[#999999]">范围 0.01 ~ 0.50，默认 0.15</div>
+              <div className="text-xs text-[#999999]">本单实付金额的多少比例发给顾客，最低 1%、最高 50%，建议 15%</div>
             </div>
 
             <div className="space-y-1">
@@ -152,7 +153,7 @@ export default function ShareGiftPageClient({
                 value={config.minFaceValue}
                 onChange={(e) => update('minFaceValue', Number(e.target.value) || 0)}
               />
-              <div className="text-xs text-[#999999]">计算结果 &lt; 该值时取该值</div>
+              <div className="text-xs text-[#999999]">算出来的金额比这个低，就按这个金额发（避免发出太小的券）</div>
             </div>
 
             <div className="space-y-1">
@@ -164,18 +165,18 @@ export default function ShareGiftPageClient({
                 value={config.maxFaceValue}
                 onChange={(e) => update('maxFaceValue', Number(e.target.value) || 0)}
               />
-              <div className="text-xs text-[#999999]">计算结果 &gt; 该值时取该值</div>
+              <div className="text-xs text-[#999999]">算出来的金额比这个高，就按这个金额发（避免发出过大的券）</div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <label className="text-sm font-medium text-[var(--foreground)]">券模板</label>
+              <label className="text-sm font-medium text-[var(--foreground)]">使用的代金券模板</label>
               <Select
                 value={config.couponTemplateId}
                 onChange={(e) => update('couponTemplateId', e.target.value)}
               >
-                <option value="">请选择券模板</option>
+                <option value="">请选择一张代金券模板</option>
                 {couponTemplates.map((t) => (
                   <SelectOption key={t.templateId} value={t.templateId}>
                     {t.name}
@@ -183,20 +184,20 @@ export default function ShareGiftPageClient({
                 ))}
               </Select>
               {config.enabled && !config.couponTemplateId ? (
-                <div className="text-xs text-[#D94040]">启用后必选</div>
+                <div className="text-xs text-[#D94040]">开启分享礼后必须选一张模板</div>
               ) : selectedTemplate ? (
                 <div className="text-xs text-[#999999]">
-                  已选：{selectedTemplate.name}
+                  已选：{selectedTemplate.name}（券的使用门槛、品类限制等按模板里的设置走，金额按上方比例覆盖）
                 </div>
               ) : (
                 <div className="text-xs text-[#999999]">
-                  运行时券面值由 paid_amount × percent 动态计算（user_coupons.face_value_override）
+                  代金券的使用门槛、可用品类等按模板里的设置走；金额则按上面"比例"重新算出来
                 </div>
               )}
             </div>
 
             <div className="space-y-1">
-              <label className="text-sm font-medium text-[var(--foreground)]">兜底有效期（天）</label>
+              <label className="text-sm font-medium text-[var(--foreground)]">默认有效期（天）</label>
               <Input
                 type="number"
                 min={1}
@@ -206,15 +207,15 @@ export default function ShareGiftPageClient({
                 onChange={(e) => update('validityDays', Math.floor(Number(e.target.value)) || 0)}
               />
               <div className="text-xs text-[#999999]">
-                模板为 <code>days</code> 模式按模板 valid_days 发；<code>fixed</code> 模式按模板 valid_to；两者缺失时用此值
+                只有在所选模板没有设置有效期时，才会用这里的天数兜底（一般保持 90 天即可）
               </div>
             </div>
           </div>
 
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-[var(--foreground)]">邀请人必须已有结清订单</div>
-              <div className="text-xs text-[#999999]">关：新注册用户也可作为邀请人；开：仅老客户有效</div>
+              <div className="text-sm font-medium text-[var(--foreground)]">要求邀请人本人也有过付款订单</div>
+              <div className="text-xs text-[#999999]">关闭：任何注册过的老顾客都可以邀请；开启：邀请人本人必须至少有一笔已付款的订单才能享受分享礼</div>
             </div>
             <Switch
               checked={config.inviterMustHavePaidOrder}
@@ -229,16 +230,18 @@ export default function ShareGiftPageClient({
           <CardTitle>站内消息文案</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="text-xs text-[#999999]">
-            支持占位符：
-            <code className="mx-1">{'{paidAmount}'}</code>
-            <code className="mx-1">{'{couponValue}'}</code>
-            <code className="mx-1">{'{validityDays}'}</code>
-            。标题留空该条不发但另一条照发（云函数 console.warn 巡检）。
+          <div className="text-xs text-[#999999] space-y-1">
+            <div>正文里可以使用下面三个"自动替换符"，发送时会被换成实际金额和天数：</div>
+            <div className="pl-2 leading-6">
+              <code className="mx-1">{'{paidAmount}'}</code> — 新顾客本单实付金额（元）<br />
+              <code className="mx-1">{'{couponValue}'}</code> — 本次发出的代金券金额（元）<br />
+              <code className="mx-1">{'{validityDays}'}</code> — 代金券有效期（天）
+            </div>
+            <div>某一边的"标题"留空时，这一边就不发消息，另一边照常发。</div>
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-[var(--foreground)]">给邀请人</div>
+            <div className="text-sm font-semibold text-[var(--foreground)]">发给邀请人（老顾客）的消息</div>
             <div className="space-y-1">
               <label className="text-xs text-[#999999]">标题</label>
               <Input
@@ -253,13 +256,13 @@ export default function ShareGiftPageClient({
                 rows={3}
                 value={config.messageInviterBody}
                 onChange={(e) => update('messageInviterBody', e.target.value)}
-                placeholder="您邀请的新客首单已结清（¥{paidAmount}），向您赠送一张 ¥{couponValue} 代金券，{validityDays} 天内有效。"
+                placeholder="您邀请的新顾客首单已付款（¥{paidAmount}），送您一张 ¥{couponValue} 代金券，{validityDays} 天内有效。"
               />
             </div>
           </div>
 
           <div className="space-y-2">
-            <div className="text-sm font-semibold text-[var(--foreground)]">给新客</div>
+            <div className="text-sm font-semibold text-[var(--foreground)]">发给新顾客的消息</div>
             <div className="space-y-1">
               <label className="text-xs text-[#999999]">标题</label>
               <Input
@@ -274,7 +277,7 @@ export default function ShareGiftPageClient({
                 rows={3}
                 value={config.messageInviteeBody}
                 onChange={(e) => update('messageInviteeBody', e.target.value)}
-                placeholder="欢迎首次下单！感谢好友分享，赠送您一张 ¥{couponValue} 代金券，{validityDays} 天内有效。"
+                placeholder="欢迎首次下单！感谢好友分享，送您一张 ¥{couponValue} 代金券，{validityDays} 天内有效。"
               />
             </div>
           </div>
@@ -287,13 +290,13 @@ export default function ShareGiftPageClient({
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="text-xs text-[#999999]">
-            示例：新客首单 paid_amount = ¥{previewVars.paidAmount}，按当前配置计算券面值 ¥{previewVars.couponValue}，有效期 {previewVars.validityDays} 天
+            假设新顾客首单实付 ¥{previewVars.paidAmount}，按当前设置算出来的代金券金额是 ¥{previewVars.couponValue}，有效期 {previewVars.validityDays} 天，效果如下：
           </div>
 
           <div className="rounded-md border border-[var(--border)] p-3 space-y-1 bg-[var(--muted)]/30">
-            <div className="text-xs text-[#999999]">给邀请人</div>
+            <div className="text-xs text-[#999999]">发给邀请人（老顾客）</div>
             <div className="text-sm font-medium text-[var(--foreground)]">
-              {renderMessage(config.messageInviterTitle, previewVars) || <span className="text-[#D94040]">（标题为空，不发送）</span>}
+              {renderMessage(config.messageInviterTitle, previewVars) || <span className="text-[#D94040]">（标题为空，不会发这条消息）</span>}
             </div>
             <div className="text-sm text-[var(--foreground)] whitespace-pre-wrap">
               {renderMessage(config.messageInviterBody, previewVars)}
@@ -301,9 +304,9 @@ export default function ShareGiftPageClient({
           </div>
 
           <div className="rounded-md border border-[var(--border)] p-3 space-y-1 bg-[var(--muted)]/30">
-            <div className="text-xs text-[#999999]">给新客</div>
+            <div className="text-xs text-[#999999]">发给新顾客</div>
             <div className="text-sm font-medium text-[var(--foreground)]">
-              {renderMessage(config.messageInviteeTitle, previewVars) || <span className="text-[#D94040]">（标题为空，不发送）</span>}
+              {renderMessage(config.messageInviteeTitle, previewVars) || <span className="text-[#D94040]">（标题为空，不会发这条消息）</span>}
             </div>
             <div className="text-sm text-[var(--foreground)] whitespace-pre-wrap">
               {renderMessage(config.messageInviteeBody, previewVars)}
