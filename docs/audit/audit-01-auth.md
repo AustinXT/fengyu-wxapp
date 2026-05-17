@@ -101,15 +101,18 @@ v1 由 claude-opus-4-7 独立完成，着眼整体架构层面，识别出 6 个
 
 ---
 
-#### **[P0-04]** 跨表 OPENID 无全局唯一约束，员工可同时在 client_wechat_users 出现
+#### ~~**[P0-04]** 跨表 OPENID 无全局唯一约束~~ — **已降级 P2（D-Q2 决策作废，2026-04-26）**
+
+> **v3/v4 状态**：根据 D-Q2-2026-04-26 决策，本项**作废**。理由：client 与 staff 使用**不同 appid**（client `wx811eb4ded3dfba3f` / staff `wxe3f5d9ee6a94d22d`），微信 OPENID 在 appid scoped 体系下物理上不会跨 appid 重复，跨表唯一约束属于过度防御。SUMMARY §5.1 D-Q2 与 §2 Top10 #12 均已标注。本节保留作为审计追溯，不再作为待修项。决策记录见 ticket `notes/tickets/archives/2026-05-17-cross-table-openid-uniqueness-decision-record.md`。
+
 - **来源**：v1 P0-SPLIT-04 = v2 P0-01-V2-03，高度一致
 - **文件**：`db/schema/user.ts:80` (client UNIQUE INDEX) + `db/schema/user.ts:129` (staff UNIQUE INDEX) + `clientApi/routes/auth.js:33-45` (login INSERT)
-- **现象**：两表各有表内 UNIQUE INDEX，但无跨表约束。`clientApi/routes/auth.js:login` 新用户路径直接 INSERT，不查询 `staff_wechat_users.openid`。
-- **风险**：支付回调/同步脚本按 openid 路由身份时可能误入错表；payNotify 解锁后按 openid 找 client_user_id 可能走到错行；充值卡/积分被错误账户访问。
-- **修复**：
-  - (L3) `clientApi/routes/auth.js:login` INSERT 前查询 `staff_wechat_users WHERE openid=$1`，命中则拒绝
-  - (L3) `staffApi/routes/auth.js:bindPhone` 对称查 `client_wechat_users WHERE openid=$1`
-  - (L0 可选) 物化视图 + UNIQUE INDEX 实现跨表硬约束
+- ~~**现象**：两表各有表内 UNIQUE INDEX，但无跨表约束。`clientApi/routes/auth.js:login` 新用户路径直接 INSERT，不查询 `staff_wechat_users.openid`。~~
+- ~~**风险**：支付回调/同步脚本按 openid 路由身份时可能误入错表；payNotify 解锁后按 openid 找 client_user_id 可能走到错行；充值卡/积分被错误账户访问。~~
+- ~~**修复**：~~
+  - ~~(L3) `clientApi/routes/auth.js:login` INSERT 前查询 `staff_wechat_users WHERE openid=$1`，命中则拒绝~~
+  - ~~(L3) `staffApi/routes/auth.js:bindPhone` 对称查 `client_wechat_users WHERE openid=$1`~~
+  - ~~(L0 可选) 物化视图 + UNIQUE INDEX 实现跨表硬约束~~
 
 ---
 
@@ -349,17 +352,17 @@ WHERE table_name = 'operation_logs'
 - 涉及历史数据：☑（phone 格式异常数据可能已存在；operation_logs 历史 PII 待回填脱敏）
 - 修复成本：**L**（涉及 schema CHECK 约束 + staffApi/clientApi middleware + admin JWT 重构 + 可选跨表唯一约束）
 
-**v3 P0 计数**：5（活跃）+ 1（待重新评估降级）+ 1（降级）= **7 项原始 → 5 活跃 P0**
+**v4 P0 计数**（2026-05-18 重置）：4（活跃）+ 2（降级）+ 1（关闭）= **7 项原始 → 4 活跃 P0**
 
 | ID | 状态 | 说明 |
 |----|------|------|
-| P0-01（testOpenid 无门禁）| 活跃 | **最高优先，热修复** |
-| P0-02（JWT_SECRET fallback）| 活跃 | 生产必填项 |
-| P0-03（customer.search phone 漏 scope）| 活跃 | 精确定位代码行 |
-| P0-04（跨表 openid）| 活跃 | 两版一致确认 |
-| P0-05（内存锁重置）| 活跃 | v2 新发现 |
-| P0-AUTH-01（Admin wrapper）| 待降级→P2 | v2 已将其降至 P2-01-V2-10，建议合并处理 |
-| P0-PHONE-05（phone 格式）| 降级→P1 | 以 v2 为准（P1-01） |
+| P0-01（testOpenid 无门禁）| ✅ **已关闭**（2026-04-27 ALLOW_TEST_OPENID env 门禁 + ticket 归档） | SUMMARY v3 §"v3 期间新关闭的 P0" #1 |
+| P0-02（JWT_SECRET fallback）| 活跃 | 生产必填项（部署前 env 校验） |
+| P0-03（customer.search phone 漏 scope）| ✅ **已关闭**（2026-04-27 staff customer 6 路由 scope 隔离 ticket） | SUMMARY v3 §"v3 期间新关闭的 P0" #7 |
+| ~~P0-04（跨表 openid）~~ | **降级→P2 / 作废**（D-Q2-2026-04-26，v4 banner 补齐 2026-05-18）| 决策记录 ticket `archives/2026-05-17-cross-table-openid-uniqueness-decision-record.md`；理由：client/staff 不同 appid 物理隔离 |
+| P0-05（内存锁重置）| 活跃 | v2 新发现，部署后窗口（admin 登录暴力破解）|
+| P0-AUTH-01（Admin wrapper）| ✅ **已关闭**（2026-05-18 withPermission HOF + ESLint AST 守门）| ticket `archives/2026-05-17-admin-with-permission-completion.md` |
+| P0-PHONE-05（phone 格式）| ✅ **已关闭**（migration 0028 `chk_*_phone_format` CHECK + 211 行 NULL 清洗）| SUMMARY v4 §"v4 更新摘要" #6 |
 
 **P1 计数**：6（P1-01~P1-06）
 **P2 计数**：5（P2-01~P2-05）
