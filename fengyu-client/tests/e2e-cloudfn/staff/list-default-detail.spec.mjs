@@ -6,8 +6,12 @@
  *
  * 实测要点：
  *   - staff.list 是公开接口（无 auth 中间件），但仍要求 storeId 参数
- *   - list 过滤条件：is_resigned=false AND position_name IN ('美容师','高级美容师','资深美容师')
- *     → createTestStaff 默认 position_name='门店经理'，不会出现在 list 结果，需自行 INSERT 美容师行
+ *   - list 过滤条件：is_resigned=false AND '美容师' = ANY(skills)
+ *     → "美容师身份"按 skills 数组判定，不按 position_name —— 店长 / 美容顾问 等
+ *       岗位若 skills 标了 '美容师' 也会入选；反之 position_name='美容师' 但 skills
+ *       为空也不会入选
+ *     → createTestStaff 默认 skills=['美容师']，所以会出现在 list；
+ *       本地建 beautician 也必须显式置 skills=['美容师']
  *   - defaultStaff 走 auth 中间件，但路由要求 ctx.auth.phone 存在；否则直接返回空对象
  *     → 测试时必须建带 phone 的顾客（createTestClient 默认就带 phone）
  *   - detail 公开（无认证），只要 employeeId 存在且 is_resigned=false 即可
@@ -33,7 +37,7 @@ const BEAUTICIAN_1_PHONE = '19999099011'
 const BEAUTICIAN_2_PHONE = '19999099012'
 
 /**
- * 本地辅助：直接 INSERT 一个美容师行（绕过 createTestStaff 默认的"门店经理"）
+ * 本地辅助：直接 INSERT 一个美容师行（skills 含 '美容师'，与 clientApi.staff.list 过滤一致）
  */
 async function createBeautician({
   employeeId,
@@ -41,6 +45,7 @@ async function createBeautician({
   name,
   positionName = '美容师',
   isResigned = false,
+  skills = ['美容师'],
 } = {}) {
   await ensureTestStore()
   await pgQuery(
@@ -49,18 +54,21 @@ async function createBeautician({
        position_name, skills, is_resigned, hired_at
      )
      VALUES ($1, NULL, $2, $3, '女', $4, $5, $6,
-             ARRAY['美容']::text[], $7, CURRENT_DATE)
+             $8::text[], $7, CURRENT_DATE)
      ON CONFLICT (employee_id) DO UPDATE
        SET phone = EXCLUDED.phone, name = EXCLUDED.name,
            position_name = EXCLUDED.position_name,
+           skills = EXCLUDED.skills,
            is_resigned = EXCLUDED.is_resigned`,
-    [employeeId, phone, name, TEST_STORE_ID, TEST_STORE_ORG_ID, positionName, isResigned]
+    [employeeId, phone, name, TEST_STORE_ID, TEST_STORE_ORG_ID, positionName, isResigned, skills]
   )
 }
 
 async function caseListBeauticians() {
   await ensureTestStore()
-  await createTestStaff()  // 店长（不应出现在 list）
+  // 店长 createTestStaff 默认 skills=['美容师']，按 skills 过滤会出现 —— 这是产品意图：
+  // 店长有 '美容师' 技能就应能接 美容师 单。本用例不做 manager 排除断言。
+  await createTestStaff()
   await createBeautician({
     employeeId: BEAUTICIAN_1_ID,
     phone: BEAUTICIAN_1_PHONE,
@@ -72,19 +80,24 @@ async function caseListBeauticians() {
     name: `${NS}_高级美A`,
     positionName: '高级美容师',
   })
+  // 反面对照：插一个 position='美容师' 但 skills 不含 '美容师' 的员工，应不出现
+  const NON_BEAUTY_ID = `${NS}_NONBEAUTY`
+  await createBeautician({
+    employeeId: NON_BEAUTY_ID,
+    phone: '19999099013',
+    name: `${NS}_无技能美容师`,
+    positionName: '美容师',
+    skills: ['清洁'],  // 故意不含 '美容师'
+  })
 
   const res = await invokePublic('staff.list', { storeId: TEST_STORE_ID })
   if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
-  if (!Array.isArray(res.data.staffList) || res.data.staffList.length < 2) {
-    throw new Error(`expect ≥ 2 beauticians, got ${res.data.staffList?.length}`)
-  }
-  // 店长不应被返回（position_name='门店经理'）
   const ids = res.data.staffList.map(s => s.staff_id)
-  if (ids.includes(TEST_MANAGER_EMP_ID)) {
-    throw new Error(`manager should be filtered out, got ${JSON.stringify(ids)}`)
-  }
   if (!ids.includes(BEAUTICIAN_1_ID) || !ids.includes(BEAUTICIAN_2_ID)) {
     throw new Error(`missing beauticians, got ${JSON.stringify(ids)}`)
+  }
+  if (ids.includes(NON_BEAUTY_ID)) {
+    throw new Error(`position='美容师' 但 skills 不含'美容师' 不应入选，got ${JSON.stringify(ids)}`)
   }
 }
 
@@ -167,7 +180,7 @@ async function caseDetail() {
 }
 
 const CASES = [
-  ['list returns only beauticians (not manager)', caseListBeauticians],
+  ['list filters by skills @> [美容师] (含技能就入选，不含就不选)', caseListBeauticians],
   ['list filters resigned beautician', caseListResignedFiltered],
   ['defaultStaff bound → returns mainStaffId/Name', caseDefaultStaffBound],
   ['defaultStaff not bound → mainStaffId=null', caseDefaultStaffNotBound],

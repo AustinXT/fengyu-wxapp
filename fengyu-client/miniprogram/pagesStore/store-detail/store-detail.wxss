@@ -152,10 +152,16 @@
   gap: 24rpx 0;
 }
 
-.source-radio-item {
+.source-radio-cell {
   width: 50%;
   box-sizing: border-box;
   padding-right: 16rpx;
+}
+
+.source-radio-cell .van-radio__label {
+  font-size: 28rpx;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
 .source-promoter {

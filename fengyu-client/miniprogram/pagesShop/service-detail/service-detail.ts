@@ -33,6 +33,7 @@ interface Staff {
   staff_id: string;
   name: string;
   position: string;
+  avatarUrl?: string;
 }
 
 Page({
@@ -140,7 +141,8 @@ Page({
         employee_id: s.staff_id,
         staff_id: s.staff_id,
         name: s.name,
-        position: s.position
+        position: s.position,
+        avatarUrl: s.avatarUrl || '',
       }));
       this.setData({ staffList });
     } catch {

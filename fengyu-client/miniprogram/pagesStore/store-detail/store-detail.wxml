@@ -146,13 +146,16 @@
         <block wx:for="{{sourceGroups}}" wx:key="label" wx:for-item="group">
           <view class="source-group-title">{{group.label}}</view>
           <view class="source-group-items">
-            <van-radio
+            <view
               wx:for="{{group.channels}}"
               wx:key="*this"
-              name="{{item}}"
-              checked-color="#C0322A"
-              custom-class="source-radio-item"
-            >{{item}}</van-radio>
+              class="source-radio-cell"
+            >
+              <van-radio
+                name="{{item}}"
+                checked-color="#C0322A"
+              >{{item}}</van-radio>
+            </view>
           </view>
         </block>
       </view>
