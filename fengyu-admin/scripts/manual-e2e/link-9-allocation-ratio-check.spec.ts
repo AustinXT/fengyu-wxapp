@@ -10,10 +10,20 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
+
+// DB helper（与其他 spec 一致）
+function psql(sql: string): string {
+  return execSync(
+    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+    { encoding: 'utf8', timeout: 15000 },
+  ).trim()
+}
 
 // -----------------------------------------------------------------------
 // 常量
@@ -650,8 +660,7 @@ test('链路9：营业额分配比例对账', async ({ page }) => {
   // ========================================================================
   // Step 7: DB 对账验证
   // ========================================================================
-  // 通过 psql 查询验证分配记录
-  const { execSync } = await import('child_process')
+  // 通过 psql 查询验证分配记录（execSync 已在文件顶部 import）
 
   let dbCheckPassed = false
   let ratioSumActual = ''
@@ -709,13 +718,10 @@ test('链路9：营业额分配比例对账', async ({ page }) => {
   })
 
   // ========================================================================
-  // Step 8: 清理
+  // Step 8: 清理（共享工具，递归清理回款单 + 全部 FK 依赖）
   // ========================================================================
   try {
-    execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -c "DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${saleOrderId}'); DELETE FROM sale_items WHERE sale_order_id='${saleOrderId}'; DELETE FROM sale_order_payments WHERE sale_order_id='${saleOrderId}'; DELETE FROM sale_orders WHERE sale_order_id='${saleOrderId}'; DELETE FROM operation_logs WHERE target_id='${saleOrderId}';"`,
-      { encoding: 'utf8' }
-    )
+    cleanupSaleOrder(saleOrderId, psql, { logPrefix: '[链路9]' })
     results.cleaned = true
     console.log(`[链路9] 清理完成: ${saleOrderId}`)
   } catch (e) {

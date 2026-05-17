@@ -13,6 +13,7 @@ import { test, expect } from '@playwright/test'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
@@ -461,15 +462,9 @@ test('链路11：优惠券使用一致性', async ({ page }) => {
   )
   console.log('[链路11] 已重置 coupon 状态')
 
-  // 清理测试订单
+  // 清理测试订单（共享工具，递归回款单 + 全部 FK）
   if (saleOrderId) {
-    runSQL(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${saleOrderId}')`)
-    runSQL(`DELETE FROM service_items WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${saleOrderId}')`)
-    runSQL(`DELETE FROM sale_items WHERE sale_order_id='${saleOrderId}'`)
-    runSQL(`DELETE FROM sale_order_payments WHERE sale_order_id='${saleOrderId}'`)
-    runSQL(`DELETE FROM operation_logs WHERE target_id='${saleOrderId}'`)
-    runSQL(`DELETE FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
-    console.log(`[链路11] 已清理订单 ${saleOrderId}`)
+    cleanupSaleOrder(saleOrderId, runSQL, { logPrefix: '[链路11]' })
   }
 
   // ---- 最终汇总 ----

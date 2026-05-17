@@ -16,6 +16,7 @@ import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 
@@ -635,22 +636,8 @@ test('链路8：多次回款累加一致性', async ({ page }) => {
   // STEP 5: 清理测试数据
   // ================================================================
   console.log('[链路8] Step 5: 清理测试数据...')
-  dbQuery(`DELETE FROM sale_order_payments WHERE sale_order_id='${saleOrderId}'`)
-  dbQuery(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${saleOrderId}')`)
-  dbQuery(`DELETE FROM sale_items WHERE sale_order_id='${saleOrderId}'`)
-  dbQuery(`DELETE FROM operation_logs WHERE target_id='${saleOrderId}'`)
-  // 找关联的回款单并删除
-  const relatedOrders = dbQuery(`SELECT sale_order_id FROM sale_orders WHERE ref_sale_order_id='${saleOrderId}'`)
-  if (relatedOrders) {
-    for (const relId of relatedOrders.split('\n').filter(Boolean)) {
-      const rid = relId.trim()
-      dbQuery(`DELETE FROM sale_order_payments WHERE sale_order_id='${rid}'`)
-      dbQuery(`DELETE FROM sale_items WHERE sale_order_id='${rid}'`)
-      dbQuery(`DELETE FROM operation_logs WHERE target_id='${rid}'`)
-      dbQuery(`DELETE FROM sale_orders WHERE sale_order_id='${rid}'`)
-    }
-  }
-  dbQuery(`DELETE FROM sale_orders WHERE sale_order_id='${saleOrderId}'`)
+  // 共享清理工具（自动递归回款/凭证单）
+  cleanupSaleOrder(saleOrderId, dbQuery, { logPrefix: '[链路8]' })
   console.log('[链路8] 清理完成')
 
   // ================================================================

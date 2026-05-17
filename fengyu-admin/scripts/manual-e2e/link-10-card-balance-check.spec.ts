@@ -20,6 +20,7 @@
 
 import { test, expect } from '@playwright/test'
 import { execSync } from 'child_process'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 const MANAGER_PHONE = '13900139001'
@@ -156,12 +157,11 @@ let rechargeOrderId: string   // Step 1 sale_order_id
 let deductOrderId: string     // Step 2 sale_order_id
 const verdicts: Array<{ check: string; actual: string; verdict: string }> = []
 
-test.setTimeout(300000)
-
 // ============================================================
 // Step 0: read initial balance + sanity check
 // ============================================================
 test('Step 0: 读初始余额 + 初始余额对账', async () => {
+  test.setTimeout(300000)
   const balRaw = psql(`SELECT balance FROM prepaid_cards WHERE card_id='${CARD_ID}'`)
   initialBalance = parseFloat(balRaw) || 0
   console.log(`[link-10] 初始余额: ${initialBalance}`)
@@ -483,43 +483,9 @@ test('Step 3: 反例验证 — SQL 污染 balance+1 → FAIL → 回滚 → PASS
 test('Step 4: 清理测试订单（保留 card_transactions）', async () => {
   console.log(`[link-10 Step4] 清理订单: recharge=${rechargeOrderId}, deduct=${deductOrderId}`)
 
-  const cleanupOrder = (soid: string) => {
-    if (!soid) return
-    try {
-      psql(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${soid}')`)
-    } catch { /* ignore */ }
-    try {
-      psql(`DELETE FROM service_items WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id='${soid}')`)
-    } catch { /* ignore */ }
-    try {
-      psql(`DELETE FROM sale_items WHERE sale_order_id='${soid}'`)
-    } catch { /* ignore */ }
-    try {
-      psql(`DELETE FROM operation_logs WHERE target_id='${soid}'`)
-    } catch { /* ignore */ }
-    // 清理回款凭证单 (FY-HKD 前缀，ref_sale_order_id=soid)
-    const hkdRows = psql(`SELECT sale_order_id FROM sale_orders WHERE ref_sale_order_id='${soid}'`).trim()
-    if (hkdRows) {
-      for (const hkdId of hkdRows.split('\n').map((r) => r.trim()).filter(Boolean)) {
-        try { psql(`DELETE FROM sale_order_payments WHERE sale_order_id='${hkdId}'`) } catch { /* ignore */ }
-        try { psql(`DELETE FROM operation_logs WHERE target_id='${hkdId}'`) } catch { /* ignore */ }
-        // card_transactions referencing HKD repayment order: null out ref to allow HKD deletion
-        try { psql(`UPDATE card_transactions SET ref_order_id=NULL WHERE ref_order_id='${hkdId}'`) } catch { /* ignore */ }
-        try { psql(`DELETE FROM sale_orders WHERE sale_order_id='${hkdId}'`) } catch { /* ignore */ }
-      }
-    }
-    // 清理主订单 payments
-    try { psql(`DELETE FROM sale_order_payments WHERE sale_order_id='${soid}'`) } catch { /* ignore */ }
-    // card_transactions 保留真实流水（任务要求）；null out ref_order_id 以解除 FK 约束
-    // 这样 sale_orders 可删除，流水仍保留（无 ref）
-    try { psql(`UPDATE card_transactions SET ref_order_id=NULL WHERE ref_order_id='${soid}'`) } catch { /* ignore */ }
-    try { psql(`UPDATE sale_orders SET ref_sale_order_id=NULL WHERE ref_sale_order_id='${soid}'`) } catch { /* ignore */ }
-    try { psql(`DELETE FROM sale_orders WHERE sale_order_id='${soid}'`) } catch { /* ignore */ }
-    console.log(`[link-10 Step4] 已清理订单 ${soid}`)
-  }
-
-  if (rechargeOrderId) cleanupOrder(rechargeOrderId)
-  if (deductOrderId) cleanupOrder(deductOrderId)
+  // 使用共享清理工具（保留 card_transactions 真实流水）
+  if (rechargeOrderId) cleanupSaleOrder(rechargeOrderId, psql, { logPrefix: '[link-10 Step4]', preserveCardTransactions: true })
+  if (deductOrderId) cleanupSaleOrder(deductOrderId, psql, { logPrefix: '[link-10 Step4]', preserveCardTransactions: true })
 
   // 最终对账（card_transactions 保留 → 需手动核对余额是否与初始余额+流水一致）
   const rFinal = reconcile()

@@ -11,10 +11,25 @@
  */
 
 import { test, expect } from '@playwright/test'
+import { execSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
+
+// DB helper（与其他 spec 一致）
+function psql(sql: string): string {
+  try {
+    return execSync(
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      { encoding: 'utf8', timeout: 15000 },
+    ).trim()
+  } catch (e) {
+    const err = e as { message?: string; stderr?: string }
+    throw new Error(`psql: ${err.message ?? ''}\n${err.stderr ?? ''}`)
+  }
+}
 
 const MANAGER_PHONE = '13900139001'
 const MANAGER_PASS = 'fengyu2026'
@@ -330,4 +345,13 @@ test('链路7：订单金额三方对账', async ({ page }) => {
   await page.screenshot({ path: `${TEST_RESULTS_DIR}/link-7-09-order-paid.png` })
 
   console.log(`[链路7] 链路完成，订单号: ${saleOrderId}，优惠券使用: ${couponUsed}，折扣: ¥${couponDiscount}`)
+
+  // ---- Step 99: 清理测试数据（共享工具） ----
+  if (saleOrderId) {
+    try {
+      cleanupSaleOrder(saleOrderId, psql, { logPrefix: '[链路7]' })
+    } catch (e) {
+      console.log(`[链路7] 清理出错（非致命）: ${e}`)
+    }
+  }
 })

@@ -16,6 +16,7 @@ import { test, expect } from '@playwright/test'
 import fs from 'fs'
 import path from 'path'
 import { execSync } from 'child_process'
+import { cleanupSaleOrder } from './_helpers/cleanup'
 
 const BASE = 'http://localhost:3000'
 
@@ -105,11 +106,8 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   } else {
     console.log('[链路12] Step0 无现有多次卡，通过 SQL 注入创建 10次卡 sale_item...')
 
-    // 清理可能的遗留数据
-    runPsql(`DELETE FROM service_commissions WHERE service_item_id IN (SELECT service_item_id FROM service_items si2 WHERE si2.sale_item_id='${PRE_SALE_ITEM_ID}')`)
-    runPsql(`DELETE FROM service_items WHERE sale_item_id='${PRE_SALE_ITEM_ID}'`)
-    runPsql(`DELETE FROM sale_items WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`)
-    runPsql(`DELETE FROM sale_orders WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`)
+    // 清理可能的遗留数据（共享工具，幂等）
+    cleanupSaleOrder(PRE_SALE_ORDER_ID, runPsql, { logPrefix: '[链路12-Step0]' })
 
     // 查询 store_id for fixture customer
     const storeId = runPsql(
@@ -510,11 +508,9 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   )
   console.log(`[链路12] Step4 服务单 ${serviceOrderId} 清理完成，remaining_sessions 已恢复`)
 
-  // 若 SQL 注入了前置订单，清理之
+  // 若 SQL 注入了前置订单，清理之（共享工具）
   if (sqlInjected) {
-    runPsql(`DELETE FROM sale_items WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`)
-    runPsql(`DELETE FROM sale_orders WHERE sale_order_id='${PRE_SALE_ORDER_ID}'`)
-    runPsql(`DELETE FROM operation_logs WHERE target_id='${PRE_SALE_ORDER_ID}'`)
+    cleanupSaleOrder(PRE_SALE_ORDER_ID, runPsql, { logPrefix: '[链路12-Step4]' })
     console.log(`[链路12] Step4 注入订单 ${PRE_SALE_ORDER_ID} 已清理`)
   }
 
