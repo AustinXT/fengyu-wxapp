@@ -276,7 +276,9 @@ export async function getCustomerHeldCards(
           ),
           and(
             eq(saleItems.productType, '单品'),
-            eq(productCategories.productKind, '体验卡'),
+            // capability 列判定（2026-04-26 ticket）：取代旧的 join product_categories
+            // + productKind = '体验卡' 字面量；行级快照在开单时拷贝自 product_skus.is_experience
+            eq(saleItems.isExperience, true),
             sql`${saleItems.quantity} - COALESCE(${saleItems.pickedUpQuantity}, 0) > 0`,
           ),
         ),

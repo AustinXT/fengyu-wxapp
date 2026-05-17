@@ -94,6 +94,8 @@ vi.mock('@db/product', () => ({
   productSkus: { skuId: 'sku_id', specName: 'spec_name', productId: 'product_id', categoryId: 'category_id', price: 'price', serviceFee: 'service_fee', sessionCount: 'session_count', productType: 'product_type' },
   products: { productId: 'product_id', name: 'name' },
   productCategories: { categoryId: 'category_id', productKind: 'product_kind', salesCategory: 'sales_category' },
+  // 2026-04-27 dfa4847: orders.ts createOrder 优惠券范围校验需查 mall_product_skus → product 的映射
+  mallProductSkus: { productId: 'product_id', skuId: 'sku_id', bundleGroupId: 'bundle_group_id', bundlePrice: 'bundle_price', sortOrder: 'sort_order' },
 }))
 
 vi.mock('@db/prepaid-card', () => ({
@@ -126,6 +128,7 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('@/lib/permissions', () => ({
   requirePermission: vi.fn(),
+  requireAnyPermission: vi.fn(),
   scopeCondition: vi.fn(() => undefined),
   isInScope: vi.fn(),
 }))
@@ -154,7 +157,20 @@ vi.mock('@/lib/member-threshold', () => ({
   MEMBER_THRESHOLD_TAG: 'new_member_threshold',
 }))
 
+// 把 settlePointsSafe mock 成 noop，避免它在每个 confirmOfflinePayment/recordPayment
+// 测试里增加 3-5 次 tx.execute 调用而打破现有精确次数断言；
+// 单独的 "settle/recalc 触发点" describe 会复位 mock 来验证调用契约
+vi.mock('@/lib/points-settle', () => ({
+  settlePointsSafe: vi.fn(async () => ({
+    delta: 0,
+    expected: 0,
+    granted: 0,
+    skipped: 'mocked-in-test',
+  })),
+}))
+
 import { createOrder, confirmOfflinePayment, closeOrder, resetOrderFailed, getOrdersPaginated, createConversionOrder, recordPayment } from './orders'
+import { settlePointsSafe } from '@/lib/points-settle'
 import { db } from '@/db'
 import { getSession } from '@/lib/auth'
 import { isInScope, scopeCondition } from '@/lib/permissions'
@@ -722,6 +738,89 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
   })
 })
 
+describe('P0-15-01 修复：admin 两触发点必须调用 settlePointsSafe', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    mockSelectBefore([{ customerName: '顾客甲', totalAmount: '300.00' }])
+  })
+
+  it('confirmOfflinePayment 成功路径 → settlePointsSafe 以 admin.confirmOffline 调用', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue({ count: 1 }),
+          }),
+        }),
+        execute: vi.fn().mockResolvedValue({}),
+        select: vi.fn().mockImplementation(() => {
+          const chain: any = {}
+          chain.from = vi.fn().mockReturnValue(chain)
+          chain.where = vi.fn().mockReturnValue(chain)
+          chain.limit = vi.fn().mockResolvedValue([])
+          return chain
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(tx)
+    })
+
+    const result = await confirmOfflinePayment('FY-XSD-WX-2604240001')
+    expect(result.success).toBe(true)
+    expect(settlePointsSafe).toHaveBeenCalledTimes(1)
+    const [, saleOrderId, source] = (settlePointsSafe as any).mock.calls[0]
+    expect(saleOrderId).toBe('FY-XSD-WX-2604240001')
+    expect(source).toBe('admin.confirmOffline')
+  })
+
+  it('recordPayment 成功路径 → settlePointsSafe 以 admin.recordPayment 调用', async () => {
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      let executeCall = 0
+      const tx = {
+        execute: vi.fn().mockImplementation(() => {
+          executeCall++
+          // 1: SELECT FOR UPDATE，2: 生成回款单号
+          if (executeCall === 1) {
+            return Promise.resolve([
+              {
+                client_user_id: 'user-001',
+                status: '待支付',
+                total_amount: '300.00',
+                received: '0',
+                prepaid_card_amount: '0',
+                payable_amount: '300.00',
+              },
+            ])
+          }
+          if (executeCall === 2) return Promise.resolve([{ id: 'FY-HKD-WX-2604240001' }])
+          // 后续 SUM + UPDATE
+          if (executeCall === 3) {
+            return Promise.resolve([
+              { new_received: '300', new_prepaid: '0', new_refunded: '0' },
+            ])
+          }
+          return Promise.resolve({ rowCount: 1 })
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue({}) }),
+      }
+      return fn(tx)
+    })
+
+    const result = await recordPayment({
+      saleOrderId: 'FY-XSD-WX-2604240001',
+      repayAmount: 300,
+      paymentMethod: '线下',
+      externalTxnId: 'BANK-TEST-001',
+    })
+    expect(result.success).toBe(true)
+    expect(settlePointsSafe).toHaveBeenCalledTimes(1)
+    const [, saleOrderId, source] = (settlePointsSafe as any).mock.calls[0]
+    expect(saleOrderId).toBe('FY-XSD-WX-2604240001')
+    expect(source).toBe('admin.recordPayment')
+  })
+})
+
 describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -761,7 +860,9 @@ describe('closeOrder — 事务原子性（关闭 + 作废分配）', () => {
         execute: vi.fn().mockResolvedValue({}),
       }
       const result = await fn(tx)
-      expect(tx.update).toHaveBeenCalledOnce() // 关闭订单
+      // 2026-04 closeOrder: tx.update 调用两次（saleOrders 关单 + userCoupons 归还核销券），
+      // tx.execute 调用一次（作废 sale_allocations）
+      expect(tx.update).toHaveBeenCalledTimes(2)
       expect(tx.execute).toHaveBeenCalledOnce() // 作废分配
       return result
     })

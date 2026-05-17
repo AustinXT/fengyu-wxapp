@@ -15,14 +15,22 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   const { id } = await params
   const session = await getSession()
   const canListAllocations = !!(session && hasPermission(session, 'allocation:list'))
-  const canListOrders = !!(session && hasPermission(session, 'sale_order:list'))
-  const canListLogs = !!(session && hasPermission(session, 'operation_log:list'))
+  // 支付流水 + 审计日志：订单查看者、退款审批人、操作日志查看者任一即可看
+  const canViewOrderDetail = !!(session && (
+    hasPermission(session, 'sale_order:list') ||
+    hasPermission(session, 'sale_order:refund')
+  ))
+  const canListLogs = !!(session && (
+    hasPermission(session, 'operation_log:list') ||
+    hasPermission(session, 'sale_order:list') ||
+    hasPermission(session, 'sale_order:refund')
+  ))
 
   const [order, allocations, logs, payments] = await Promise.all([
     getOrderById(id),
     canListAllocations ? getOrderAllocations(id) : Promise.resolve([]),
     canListLogs ? getOrderLogs(id) : Promise.resolve([]),
-    canListOrders ? getOrderPayments(id) : Promise.resolve([]),
+    canViewOrderDetail ? getOrderPayments(id) : Promise.resolve([]),
   ])
 
   if (!order) notFound()

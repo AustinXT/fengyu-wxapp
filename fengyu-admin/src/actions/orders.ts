@@ -13,7 +13,7 @@ import type { SQL } from 'drizzle-orm'
 import type { SaleOrder, SaleItem, OrderStatus } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
@@ -22,6 +22,7 @@ import {
   matchTier,
   parseRechargeFaceValue,
 } from '@/lib/recharge'
+import { settlePointsSafe } from '@/lib/points-settle'
 
 const opener = alias(staffWechatUsers, 'opener')
 
@@ -142,8 +143,9 @@ async function recalcCustomerType(tx: AdminTx, clientUserId: string): Promise<vo
 
   const threshold = await getMemberThreshold()
 
-  // SHARED-SQL-TRANSITION-CUSTOMER-TYPE: 与 staffApi/routes/order.js + payNotify/index.js
-  // 小美客/体验客分支字面一致（待 audit-15 P0-15-02 抽离至 cloudfunctions-shared/）
+  // 三端 SQL 独立副本（admin actions/orders.ts + staffApi routes/order.js + payNotify index.js）
+  // 修改时必须同步另外两端；一致性由 staffApi __tests__/routes/recalc-customer-type-sql.test.js
+  // 与 cross-end-sql-snapshot.test.js 守护，任一端漂移立即触发测试失败。
   const typeRes = await tx.execute(sql`
     SELECT CASE
        WHEN EXISTS (
@@ -391,7 +393,8 @@ export async function getOrdersPaginated(filters: OrderFilters = {}): Promise<Pa
 
 export async function getOrderById(saleOrderId: string): Promise<SaleOrder | null> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:list')
+  // 订单详情页可由订单查看者（sale_order:list）或退款审批人（sale_order:refund，admin）访问
+  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])
 
   const rows = await db
     .select({
@@ -484,7 +487,8 @@ export async function getOrderById(saleOrderId: string): Promise<SaleOrder | nul
  */
 export async function getOrderPayments(saleOrderId: string): Promise<import('@/lib/types').SaleOrderPayment[]> {
   const session = await getSession()
-  requirePermission(session, 'sale_order:list')
+  // 详情页支付流水：订单查看者或退款审批人均可读
+  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])
 
   // scope 校验：只有订单所在门店在 scope 内才允许查看流水
   const [order] = await db
@@ -573,6 +577,21 @@ export async function confirmOfflinePayment(saleOrderId: string): Promise<{ succ
       // 充值卡入账（若订单含虚拟 SKU）：UPSERT prepaid_cards + 记流水
       // 与 fengyu-client payNotify 的充值入账逻辑完全同义，幂等由 ref_order_id 去重保障
       await applyRechargeOnOrderPaid(tx, saleOrderId)
+
+      // 积分发放（修复 audit-15 P0-15-01：admin confirmOfflinePayment 触发点缺失）
+      // 与 staff confirmOffline / payNotify / client confirmPrepaidFull 三端对齐
+      await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
+
+      // customer_type 跃迁（仅在订单有顾客归属时触发）
+      // 与 recordPayment / staff / payNotify 三端对齐
+      const [orderUser] = await tx
+        .select({ clientUserId: saleOrders.clientUserId })
+        .from(saleOrders)
+        .where(eq(saleOrders.saleOrderId, saleOrderId))
+        .limit(1)
+      if (orderUser?.clientUserId) {
+        await recalcCustomerType(tx, orderUser.clientUserId)
+      }
 
       return { matched: true }
     })
@@ -1043,14 +1062,16 @@ export async function createOrder(data: {
   }
 
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
-  // 与 is_recharge_card（capability 权威源，2026-04-26 ticket）。
+  // 与 is_recharge_card / is_experience（capability 权威源，2026-04-26 ticket）。
   // 用于 sale_items 快照：service_fee 供服务完成时参与提成计算，
   // session_count 对组合套餐路径做兜底（bundleSkuToProductSku 硬编码 null，前端传来不可信），
-  // is_recharge_card 在写入 sale_items 时拷贝并参与 D4 严格独立校验。
+  // is_recharge_card 在写入 sale_items 时拷贝并参与 D4 严格独立校验，
+  // is_experience 拷贝用于客户分类跃迁（per-order SUM FILTER WHERE is_experience）。
   const skuIdList = data.items.map(i => i.skuId).filter((s): s is string => !!s)
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
   const skuRechargeMap = new Map<string, boolean>()
+  const skuExperienceMap = new Map<string, boolean>()
   if (skuIdList.length > 0) {
     const skuRows = await db
       .select({
@@ -1058,6 +1079,7 @@ export async function createOrder(data: {
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
         isRechargeCard: productSkus.isRechargeCard,
+        isExperience: productSkus.isExperience,
       })
       .from(productSkus)
       .where(inArray(productSkus.skuId, skuIdList))
@@ -1065,6 +1087,7 @@ export async function createOrder(data: {
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
       skuRechargeMap.set(r.skuId, r.isRechargeCard === true)
+      skuExperienceMap.set(r.skuId, r.isExperience === true)
     }
   }
 
@@ -1209,6 +1232,11 @@ export async function createOrder(data: {
         // （前端 isRechargeCard 已被 D4 校验比对过；此处直接读取 map 防篡改）
         const isRechargeCard = skuRechargeMap.get(item.skuId) ?? (item.isRechargeCard === true)
 
+        // is_experience 行级快照：以服务端 product_skus.is_experience 为权威。
+        // 用于客户分类跃迁 SQL（SUM(received) FILTER WHERE si.is_experience）。
+        // capability 列与 isRechargeCard 互斥（DB CHECK chk_sku_not_both_capabilities 保证）。
+        const isExperience = skuExperienceMap.get(item.skuId) ?? false
+
         await tx.insert(saleItems).values({
           saleItemId,
           saleOrderId: id,
@@ -1228,6 +1256,7 @@ export async function createOrder(data: {
           salesCategory: item.salesCategory || null,
           serviceFee,
           isRechargeCard,
+          isExperience,
         })
       }
 
@@ -1400,6 +1429,7 @@ export async function createConversionOrder(data: {
           si.unit_real_price,
           si.sales_category,
           si.service_fee,
+          si.is_experience,
           so.client_user_id,
           so.status AS order_status,
           pc.product_kind
@@ -1433,6 +1463,7 @@ export async function createConversionOrder(data: {
         amount: number
         salesCategory: string | null
         serviceFee: number
+        isExperience: boolean
       }
       const outItems: OutItem[] = []
 
@@ -1453,7 +1484,7 @@ export async function createConversionOrder(data: {
           const rem = Number(row.remaining_sessions ?? 0)
           if (rem <= 0) throw new Error('CARD_EXHAUSTED')
           qty = rem
-        } else if (productType === '单品' && row.product_kind === '体验卡') {
+        } else if (productType === '单品' && row.is_experience === true) {
           const remQty = Number(row.quantity) - Number(row.picked_up_quantity ?? 0)
           if (remQty <= 0) throw new Error('CARD_EXHAUSTED')
           qty = remQty
@@ -1481,10 +1512,11 @@ export async function createConversionOrder(data: {
           amount,
           salesCategory: (row.sales_category as string) ?? null,
           serviceFee: outServiceFee,
+          isExperience: row.is_experience === true,
         })
       }
 
-      // 2. 加载转入 SKU 详情（price / service_fee / session_count / sales_category）
+      // 2. 加载转入 SKU 详情（price / service_fee / session_count / sales_category / is_experience）
       const inSkuIds = data.convertInItems.map((i) => i.skuId)
       const skuRows = await tx
         .select({
@@ -1493,6 +1525,7 @@ export async function createConversionOrder(data: {
           serviceFee: productSkus.serviceFee,
           sessionCount: productSkus.sessionCount,
           productType: productSkus.productType,
+          isExperience: productSkus.isExperience,
           salesCategory: productCategories.salesCategory,
         })
         .from(productSkus)
@@ -1594,6 +1627,9 @@ export async function createConversionOrder(data: {
           received: (-out.amount).toFixed(2),
           salesCategory: (out.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ?? null,
           serviceFee: out.serviceFee.toFixed(2),
+          // 转出行镜像原 sale_items.is_experience：负 received × is_experience=true 会冲销
+          // 原订单的 trial_amount 累计，与跃迁 SQL 的"只升不降"语义一致。
+          isExperience: out.isExperience,
         })
 
         // 原子标记耗尽：疗程卡 remaining_sessions=0；单品 picked_up_quantity=quantity
@@ -1654,6 +1690,8 @@ export async function createConversionOrder(data: {
             (inRow.sku.salesCategory as typeof saleItems.$inferInsert['salesCategory']) ??
             null,
           serviceFee: inRow.serviceFee.toFixed(2),
+          // 转入行从 product_skus.is_experience 快照写入
+          isExperience: inRow.sku.isExperience === true,
         })
       }
 
@@ -1969,7 +2007,17 @@ export async function recordPayment(input: {
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
       const settled = Math.round((newReceived + newPrepaid) * 100) / 100
       const targetStatus: OrderStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
-      const paidAtValue = targetStatus === '已支付' ? now : (locked.paid_at ? new Date(locked.paid_at) : null)
+      // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
+      // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。
+      const paidAtIso: string | null =
+        targetStatus === '已支付'
+          ? now.toISOString()
+          : locked.paid_at
+            ? typeof locked.paid_at === 'string'
+              ? locked.paid_at
+              : new Date(locked.paid_at).toISOString()
+            : null
+      const paidAtValue = paidAtIso
 
       const updRes = await tx.execute(sql`
         UPDATE sale_orders
@@ -1991,6 +2039,11 @@ export async function recordPayment(input: {
       if (targetStatus === '已支付' && locked.client_user_id) {
         await recalcCustomerType(tx, locked.client_user_id)
       }
+
+      // 10) 积分发放（修复 audit-15 P0-15-01：admin recordPayment 触发点缺失）
+      //     无论本次是否结清都尝试 settle：链净额差值法天然幂等，
+      //     可正确处理"分次回款只发增量积分"的场景
+      await settlePointsSafe(tx, saleOrderId, 'admin.recordPayment')
 
       return {
         repaymentOrderId,

@@ -24,7 +24,7 @@ vi.mock('@db/org', () => ({
   stores: { storeId: 'store_id', orgNodeId: 'org_node_id' },
 }))
 
-import { computeActions, requirePermission, buildScopeWhere, PERMISSION_MATRIX, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope } from './permissions'
+import { computeActions, requirePermission, requireAnyPermission, buildScopeWhere, PERMISSION_MATRIX, expandScopeStoreIds, isAdminScope, scopeCondition, isInScope } from './permissions'
 import type { AuthSession } from './types'
 
 // Helper: 创建 mock session
@@ -166,6 +166,29 @@ describe('requirePermission', () => {
     })
     expect(() => requirePermission(session, 'employee:create'))
       .toThrow('PERMISSION_DENIED: 无权执行 employee:create')
+  })
+})
+
+describe('requireAnyPermission', () => {
+  it('session 为 null 时重定向到登录页', () => {
+    mockRedirect.mockClear()
+    expect(() => requireAnyPermission(null, ['employee:list'])).toThrow()
+    expect(mockRedirect).toHaveBeenCalledWith('/login?expired=1')
+  })
+
+  it('拥有列表中任一权限即通过', () => {
+    const session = mockSession({
+      permissions: { actions: ['sale_order:refund'], scopeStoreIds: [] },
+    })
+    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund'])).not.toThrow()
+  })
+
+  it('无任何匹配权限抛出 PERMISSION_DENIED', () => {
+    const session = mockSession({
+      permissions: { actions: ['dashboard:view'], scopeStoreIds: [] },
+    })
+    expect(() => requireAnyPermission(session, ['sale_order:list', 'sale_order:refund']))
+      .toThrow(/PERMISSION_DENIED/)
   })
 })
 

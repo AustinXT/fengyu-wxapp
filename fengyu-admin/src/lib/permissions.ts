@@ -219,3 +219,22 @@ export function requirePermission(session: AuthSession | null, action: string): 
     throw new Error(`PERMISSION_DENIED: 无权执行 ${action}`)
   }
 }
+
+/**
+ * 权限校验：拥有 actions 中任一即可通过（OR 关系）
+ *
+ * 用于同一 Server Action 服务多个角色的场景：例如订单详情页 getOrderById
+ * 既可被业务查看者（sale_order:list）调用，也可被审批人（sale_order:refund，admin）调用。
+ */
+export function requireAnyPermission(
+  session: AuthSession | null,
+  actions: string[],
+): asserts session is AuthSession {
+  if (!session) {
+    redirect('/login?expired=1')
+  }
+  const has = actions.some((a) => session.permissions.actions.includes(a))
+  if (!has) {
+    throw new Error(`PERMISSION_DENIED: 无权执行 ${actions.join(' 或 ')}`)
+  }
+}

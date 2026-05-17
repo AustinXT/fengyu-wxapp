@@ -5,7 +5,7 @@ import { operationLogs } from '@db/operation-log'
 import { desc, eq, and, gte, lte, like, sql } from 'drizzle-orm'
 import type { OperationLog } from '@/lib/types'
 import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { requirePermission, requireAnyPermission } from '@/lib/permissions'
 
 export interface LogFilter {
   operatorName?: string
@@ -75,8 +75,11 @@ export async function getLogs(filter?: LogFilter): Promise<OperationLog[]> {
 
 export async function getOrderLogs(saleOrderId: string): Promise<OperationLog[]> {
   const session = await getSession()
-  // 查看订单操作日志只需订单查看权限（不需要全局操作日志权限）
-  requirePermission(session, 'sale_order:list')
+  // 查看订单操作日志：拥有订单查看权限（sale_order:list）、退款审批权限（sale_order:refund）
+  // 或操作日志查看权限（operation_log:list）任一即可。
+  // 这样 admin（仅持 operation_log:list + sale_order:refund）和 manager/finance（持 sale_order:list）
+  // 都能在订单详情页看到日志。
+  requireAnyPermission(session, ['sale_order:list', 'sale_order:refund', 'operation_log:list'])
 
   const rows = await db
     .select()
