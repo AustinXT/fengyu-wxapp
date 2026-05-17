@@ -72,6 +72,8 @@ export interface ServiceOrderFilters {
   dateFrom?: string
   dateTo?: string
   search?: string
+  /** 提成状态筛选（'待分配' | '已分配'，用于营业额分配页） */
+  commissionStatus?: string
   page?: number
   pageSize?: number
 }
@@ -122,6 +124,9 @@ export const getServiceOrdersPaginated = withPermission(
         sql`EXISTS (SELECT 1 FROM client_wechat_users cw WHERE cw.user_id = ${serviceOrders.clientUserId} AND cw.name ILIKE ${pattern})`,
       ),
     )
+  }
+  if (filters.commissionStatus === '待分配' || filters.commissionStatus === '已分配') {
+    conditions.push(eq(serviceOrders.commissionStatus, filters.commissionStatus))
   }
 
   const whereClause = and(...conditions)

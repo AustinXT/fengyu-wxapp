@@ -1,14 +1,16 @@
 "use client"
 
-import { useTransition } from "react"
+import { useCallback, useRef, useState, useTransition } from "react"
 import Link from "next/link"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import { Pagination } from "@/components/ui/pagination"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
-import type { SaleOrder, ServiceOrder } from "@/lib/types"
+import type { SaleOrder, ServiceOrder, Store } from "@/lib/types"
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50]
 
@@ -30,12 +32,14 @@ function formatDate(dt: string) {
  */
 export default function AllocationsPageClient({
   tab,
+  stores = [],
   orders = [],
   saleTotal = 0,
   serviceOrders = [],
   serviceTotal = 0,
 }: {
   tab: 'sale' | 'service'
+  stores?: Store[]
   orders?: SaleOrder[]
   saleTotal?: number
   serviceOrders?: ServiceOrder[]
@@ -49,6 +53,30 @@ export default function AllocationsPageClient({
   // 同路由 searchParam 变更不会触发 loading.tsx，~500ms 内 UI 完全冻结无反馈。
   // useTransition 提供 isPending 让我们在数据流转期间 dim 当前内容并禁用交互。
   const [isPending, startTransition] = useTransition()
+
+  const setFilter = useCallback(
+    (key: string, value: string) => {
+      startTransition(() => setMany({ [key]: value, page: '' }))
+    },
+    [setMany],
+  )
+
+  const allocStatus = get("allocStatus")
+  const storeFilter = get("store")
+  const dateFrom = get("from")
+  const dateTo = get("to")
+
+  // 搜索框防抖：本地 state 即时响应，URL 延迟更新
+  const [searchInput, setSearchInput] = useState(get("q"))
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      setSearchInput(value)
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      debounceRef.current = setTimeout(() => setFilter("q", value), 300)
+    },
+    [setFilter],
+  )
 
   const handleTabChange = (value: string) => {
     startTransition(() => {
@@ -65,6 +93,58 @@ export default function AllocationsPageClient({
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-[var(--foreground)]">营业额分配</h1>
+
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex flex-wrap gap-3">
+            <Select
+              className="w-36"
+              value={allocStatus}
+              onChange={(e) => setFilter("allocStatus", e.target.value)}
+            >
+              <option value="">全部状态</option>
+              <option value="待分配">待分配</option>
+              <option value="已分配">已分配</option>
+            </Select>
+            <Select
+              className="w-40"
+              value={storeFilter}
+              onChange={(e) => setFilter("store", e.target.value)}
+            >
+              <option value="">全部门店</option>
+              {stores.map((s) => (
+                <option key={s.storeId} value={s.storeId}>
+                  {s.storeName}
+                </option>
+              ))}
+            </Select>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground whitespace-nowrap">
+                {tab === 'service' ? '服务日期' : '下单日期'}
+              </span>
+              <Input
+                type="date"
+                className="w-36"
+                value={dateFrom}
+                onChange={(e) => setFilter("from", e.target.value)}
+              />
+              <span className="text-[#999999]">-</span>
+              <Input
+                type="date"
+                className="w-36"
+                value={dateTo}
+                onChange={(e) => setFilter("to", e.target.value)}
+              />
+            </div>
+            <Input
+              className="w-64"
+              placeholder={tab === 'service' ? '搜索服务单号/顾客/美容师' : '搜索订单号/顾客/手机号'}
+              value={searchInput}
+              onChange={(e) => handleSearchChange(e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       <Tabs value={tab} onValueChange={handleTabChange}>
         <TabsList aria-busy={isPending}>
@@ -157,7 +237,9 @@ function SaleAllocationTable({ orders }: { orders: SaleOrder[] }) {
               })}
               {orders.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">暂无需要分配的订单</td>
+                  <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">
+                    暂无匹配的订单，可调整筛选条件
+                  </td>
                 </tr>
               )}
             </tbody>
@@ -216,7 +298,9 @@ function ServiceCommissionTable({ serviceOrders }: { serviceOrders: ServiceOrder
               })}
               {serviceOrders.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">暂无需要分配的服务单</td>
+                  <td colSpan={7} className="px-4 py-12 text-center text-[#999999]">
+                    暂无匹配的服务单，可调整筛选条件
+                  </td>
                 </tr>
               )}
             </tbody>

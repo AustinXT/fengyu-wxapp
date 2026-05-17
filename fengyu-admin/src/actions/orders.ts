@@ -266,6 +266,8 @@ export interface OrderFilters {
   paymentMethod?: string
   /** 是否仅筛选"有储值卡抵扣"的订单（prepaid_card_amount > 0） */
   hasPrepaidDeduction?: boolean
+  /** 分配状态筛选（'待分配' | '已分配'，用于营业额分配页） */
+  allocationStatus?: string
   page?: number
   pageSize?: number
 }
@@ -331,6 +333,9 @@ export const getOrdersPaginated = withPermission(
   // 有储值卡抵扣（prepaid_card_amount > 0）
   if (filters.hasPrepaidDeduction) {
     conditions.push(gt(saleOrders.prepaidCardAmount, '0'))
+  }
+  if (filters.allocationStatus === '待分配' || filters.allocationStatus === '已分配') {
+    conditions.push(eq(saleOrders.allocationStatus, filters.allocationStatus))
   }
 
   const whereClause = and(...conditions)
