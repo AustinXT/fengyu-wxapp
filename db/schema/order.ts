@@ -5,6 +5,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -89,6 +90,19 @@ export const saleOrders = pgTable(
     couponDiscount: numeric("coupon_discount", { precision: 10, scale: 2 }).default("0"),
     /** 订单备注（员工端开单时填写） */
     remark: text("remark"),
+    /**
+     * 历史订单来源标记。NULL=系统原生订单；'workfine'=WorkFine 历史导入（默认 status='未审核'）。
+     * 由 db/scripts/import-workfine-legacy.js 写入；admin /legacy-orders 页按此筛选。
+     */
+    legacySource: text("legacy_source"),
+    /** WorkFine 顾客编号原值（核对辅助；与 client_user_id 并存） */
+    legacyCustomerId: text("legacy_customer_id"),
+    /** 抓取时的原始 4 字段快照 {legacy_order_no, phone, store_name, amount, sale_date, customer_id, customer_name} */
+    legacyRawSnapshot: jsonb("legacy_raw_snapshot"),
+    /** 历史订单核对通过时间 */
+    auditedAt: timestamp("audited_at"),
+    /** 历史订单核对人 */
+    auditedBy: varchar("audited_by", { length: 30 }).references(() => staffWechatUsers.employeeId),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()
@@ -107,6 +121,14 @@ export const saleOrders = pgTable(
     index("idx_sale_orders_client_user_id")
       .on(table.clientUserId)
       .where(sql`client_user_id IS NOT NULL`),
+    /** 历史订单按手机号筛选热路径（admin /legacy-orders 主筛选） */
+    index("idx_legacy_source_phone")
+      .on(table.legacySource, table.clientPhone)
+      .where(sql`legacy_source IS NOT NULL`),
+    /** 历史订单按状态聚合（COUNT 未审核数） */
+    index("idx_legacy_source_status")
+      .on(table.legacySource, table.status)
+      .where(sql`legacy_source IS NOT NULL`),
   ],
 );
 

@@ -11,6 +11,8 @@ export const orderStatusEnum = pgEnum("order_status", [
   "已关闭",
   "待审批",
   "部分支付",
+  "未审核",
+  "已作废",
 ]);
 
 /**
@@ -18,8 +20,10 @@ export const orderStatusEnum = pgEnum("order_status", [
  *
  * 2026-04-26 sale-order-domain-refactor：5→3 值。
  * 回款单/退款单已下沉到 sale_order_payments（change_type='回款'/'退款'）。
+ * 2026-05-18 新增"寄存单"：WorkFine 剩余次数初始化专用，不收钱、不入金额统计；
+ * 但 sale_items 正常落 remaining_sessions 供 service_orders 核销。
  */
-export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单"]);
+export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单", "寄存单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 
