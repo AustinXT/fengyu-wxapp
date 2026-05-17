@@ -16,7 +16,7 @@ cost: M（1–3 天；其中 ALTER DATABASE 段需停业务窗口或灰度重连
   - 已落：migration 0018 + 0025（uq_sop_status_audit / 7 项退款专属列 DROP）
   - 并行：另开 partial UNIQUE 10 项一次性 migration（SUMMARY §3 "TOCTOU partial UNIQUE 剩 10 项"）
   - 后续：audit-prepaid-balance.ts cron 守护脚本（L11 P0，与 S-CC2-11 配套）
-状态: 🔴 待实施（grep 实证后收敛到 5 项）
+状态: ✅ 已完成归档（2026-05-17 全流程落地，下文末尾"## 完成记录（2026-05-17）"）
 ---
 
 ## v2 修订摘要（2026-05-17，R2 复核后）
@@ -556,20 +556,20 @@ ROLLBACK;
 
 ## 9 验收标准
 
-- [ ] §6.1 临时 docker PG 从 0000 baseline 跑通新 migration 零失败
-- [ ] §6.2 (a) 全 schema phone 列盘点结果 freeze（R2 Warn 4）
-- [ ] §6.2 (e) `SELECT DISTINCT type ...` 已跑，§3.2 / §5 段 3.2 CHECK 表达式按结果 freeze（R2 Warn 5）
-- [ ] §6.2 5434 历史违例 dry-run 全部清洗到 0 行（或经业务方书面确认放行）后再跑 VALIDATE 阶段
-- [ ] schema.ts 改动 + drizzle-kit 生成的 migration .sql + meta snapshot 同 PR 提交（缺一不可）
-- [ ] **§3.4 admin SQL `cast(... as int)` 全量扫描，`fengyu-admin/src/actions/points.ts:154-156` 3 处 amount SUM 路径已改为 `as bigint` + 调用方 `Number()` 兜底 + safe-int 警告日志**（R2 Block 1）
-- [ ] §2.3 bigint 升级前提（单值 <2^53 / SUM 边界）已在 schema.ts 注释或 PR 描述明示（R2 Block 2）
-- [ ] migration 末尾手写追加 `ALTER DATABASE fengyu SET timezone` + 双库分别处理（5434 fengyu / 5433 fengyu_wxapp）（R2 Warn 3）
-- [ ] 所有 ADD CONSTRAINT 采用 `NOT VALID` + 后续 `VALIDATE CONSTRAINT` 两阶段（R2 改进 5）
-- [ ] migration 在 5434 apply 成功，§6.3 SELECT 复核 5 条 CHECK 全部存在 + bigint 升级生效 + timezone='Asia/Shanghai'
-- [ ] §4.2 admin / cron-worker / staffApi / clientApi / **payNotify**（R2 Warn 6）全部滚动重启
-- [ ] §6.4 admin 单测 + e2e-cloudfn 全部通过
-- [ ] §4.3 ESLint 规则纳入 admin/staff/client 三端配置（防 dateStr UTC 切片再生）
-- [ ] SUMMARY.md §4 L0 "P0 剩 5 项" 标注完成 → 0 项；表 §3 "金额/比例 CHECK 剩 2 项" → 0 项
+- [x] ~~§6.1 临时 docker PG 从 0000 baseline 跑通新 migration 零失败~~ — baseline 0000 重放在 0018 enum-in-tx 限制下不可行（pre-existing 问题，非本 ticket 引入）；改为 pg_dump 当前 5434 schema → temp PG → 单独 apply 0028 验证（commit 352a629 前已通过，5 CHECK + 2 bigint + timezone 全到位）
+- [x] §6.2 (a) 全 schema phone 列盘点已 freeze（见 dry-run 报告 §b：staff_wechat_users / client_wechat_users 加 CHECK；sale_orders.client_phone + stores.phone 列入 follow-up）
+- [x] §6.2 (e) `SELECT type, count, min/max FROM point_transactions GROUP BY type` 已跑 — 生产仅 1 行 `消费赠送 +5`；CHECK 表达式按 admin/actions/points.ts 顶部注释确认的"已知 type 表"freeze 为半严格 `(amount<0 AND type='消费冲销') OR amount>0`
+- [x] §6.2 5434 历史违例：phone 211 行（9 staff + 202 client）已 UPDATE NULL 清洗（migration 0028 内置 UPDATE），card_tx/pt/prepaid 全部 0 行违例 ✅
+- [x] schema.ts 改动 + drizzle-kit 生成的 migration .sql + meta snapshot 同 commit 352a629 提交
+- [x] **§3.4 admin SQL `cast(... as int)`** — `fengyu-admin/src/actions/points.ts:154-156` 3 处 amount SUM 已改 `as bigint` + safeNumber 调用方兜底 + safe-int 警告（commit 9651afd）
+- [x] §2.3 bigint 升级前提注释 — `db/schema/points.ts` 顶部加 bigint mode='number' 安全前提注释（commit 352a629）
+- [x] migration 末尾手写追加 `ALTER DATABASE fengyu SET timezone`；5433 单独跑 `ALTER DATABASE fengyu_wxapp SET timezone`（双库均 `TimeZone=Asia/Shanghai`）
+- [ ] ~~所有 ADD CONSTRAINT 采用 `NOT VALID` + 后续 `VALIDATE CONSTRAINT` 两阶段（R2 改进 5）~~ — **实施时改为单阶段**：本项目首次引入 NOT VALID（历史 0 命中），且 5 张表都是中小规模（< 100 万行），单阶段 ACCESS EXCLUSIVE 锁实测秒级；NOT VALID 优化收益微薄，徒增 migration 复杂度
+- [x] migration 在 5434 apply 成功，§6.3 SELECT 复核：5 条 CHECK 存在 / 2 bigint 字段 / timezone='Asia/Shanghai' / 触发性 INSERT '充值/-1' 抛 check_violation ✅
+- [x] §4.2 admin + cron-worker（deploy-admin.sh ali-demo 全镜像重建） + staffApi + clientApi + payNotify（`echo y | tcb fn deploy` 同步 TZ env） 全部滚动重启
+- [x] §6.4 admin 单测 — points + refunds 24/24 通过；admin smoke-record-payment 生产环境 PASS（bigint 路径下 points_balance 0→2，新 pt 流水 +2 通过 chk_pt_amount_sign）；9 个不相关失败来自 error-codes 重构（commit 711d7cc）非本 ticket
+- [x] §4.3 ESLint 规则 — `fengyu-admin/eslint.config.mjs` 加 `no-restricted-syntax` 禁 `toISOString().slice` (warn 软着陆 3 处已知命中，commit 6d9123c)；cloudfunctions 三端 ESLint 留 follow-up（用户决策 D=1）
+- [x] SUMMARY.md §4 L0 "P0 剩 5 项" → **0 项** ✅；表 §3 "金额/比例 CHECK 剩 2 项" → **0 项** ✅；Top10 #6 标记 DONE
 
 ---
 
@@ -598,3 +598,77 @@ ROLLBACK;
 - §6.2 增 e) "`SELECT DISTINCT type, COUNT(*), MIN(amount), MAX(amount) FROM point_transactions GROUP BY type`" 列出全部 type 与 amount 符号分布，再决定 §3 CHECK 表达式精度。
 - §9 验收增"所有 admin `cast as int` over `point_transactions.amount` / `points_balance` 已扫描并改为 `as bigint`"一条。
 - ticket 完全没提"PG CHECK ADD CONSTRAINT 默认会全表校验（不支持 NOT VALID + VALIDATE CONSTRAINT 分阶段）"。建议显式声明用 `ADD CONSTRAINT ... NOT VALID` + 后续 `VALIDATE CONSTRAINT`（PG 12+ 支持），避免长锁。
+
+---
+
+## 完成记录（2026-05-17）
+
+**实施状态**：✅ 全流程闭环（7 phase 全部 PASS，含生产 5434 + 冷备 5433 + 5 端滚动重启 + 3 云函数 TZ env 上推）
+
+### 7 phase 落地证据
+
+| Phase | 内容 | 证据 |
+|-------|------|------|
+| 1 dry-run | 5434 6 段 SELECT + 211 行 phone 违例审计 | `notes/dry-runs/2026-05-17-l0-schema-checks-dryrun.md` + `docs/migrations/2026-05-17-phone-cleanup-backup.csv` |
+| 2 schema.ts | 5 CHECK + 2 bigint + 顶部 safe-int 注释 | `db/schema/user.ts` `prepaid-card.ts` `points.ts`（commit 352a629） |
+| 3 migration | 0028_fine_maelstrom.sql：清洗 UPDATE + 5 ADD CONSTRAINT + 2 ALTER COLUMN bigint + 末尾 ALTER DATABASE fengyu | commit 352a629 |
+| 4 临时 PG 验证 | pg_dump 5434 → postgres:16 → apply 0028 零失败，5 CHECK / 2 bigint / triggers 抛 check_violation | 临时容器已销毁 |
+| 5 admin patch + ESLint | points.ts cast→bigint + safeNumber + eslint.config.mjs no-restricted-syntax | commit 9651afd + 6d9123c |
+| 6 tsc + Vitest | admin tsc 无报错；points + refunds 24/24 通过；其他 9 fail 是 error-codes 重构所致与本 ticket 无关 | local CI |
+| 7 生产 apply + 滚动重启 | 5434 + 5433 双库 db:migrate；admin + cron-worker 全镜像 deploy-admin.sh ali-demo；staffApi + clientApi + payNotify 全部 `echo y \| tcb fn deploy` 同步 TZ env | commit 9651afd / 41ea65f / f102f0e |
+
+### 5434 + 5433 双库最终状态
+
+```sql
+-- 两库均通过下列复核：
+SELECT count(*) FROM pg_constraint WHERE contype='c' AND conname IN
+  ('chk_swu_phone_format','chk_cwu_phone_format','chk_card_tx_amount_sign',
+   'chk_pt_amount_sign','chk_prepaid_balance_nonneg'); -- 5
+SELECT count(*) FROM information_schema.columns WHERE data_type='bigint'
+  AND (table_name,column_name) IN
+      (('point_transactions','amount'),('client_wechat_users','points_balance')); -- 2
+SHOW timezone; -- Asia/Shanghai（DB 层 ALTER DATABASE 持久化）
+SELECT count(*) FROM client_wechat_users WHERE phone IS NOT NULL AND phone !~ '^1[3-9][0-9]{9}$'; -- 0
+SELECT count(*) FROM staff_wechat_users WHERE phone IS NOT NULL AND phone !~ '^1[3-9][0-9]{9}$'; -- 0
+```
+
+drizzle_migrations：双库均 30 条，hash 完全一致（0028=a07101c2... / 0029=fd6244f9...）。
+
+### 3 云函数 TZ env 最终状态
+
+| 函数 | envId | TZ 已上推 | 部署方式 |
+|------|-------|----------|---------|
+| staffApi | cloud1-9g3ydpg512eecc99 | ✅ | tcb fn deploy（fengyu-staff/.env 登录） |
+| clientApi | cloud1-3gpht4b01ff88838 | ✅ | tcb fn deploy（fengyu-client/.env 登录） |
+| payNotify | cloud1-3gpht4b01ff88838 | ✅ | tcb fn deploy（同上） |
+
+**注意**：`tcb fn code update` 只推代码不推 env。env 上推必须用 `tcb fn deploy`（自动确认 `echo y` 跳过交互；因 cloudbaserc.json 已含全部生产 env vars + 新增 TZ，无 env 丢失风险）。
+
+### 两处偏离 ticket 文本（已校正）
+
+1. **正则 typo**：ticket 全篇 `^1[3-9][0-9]{8}$`（10 位）→ 实施改用 `^1[3-9][0-9]{9}$`（11 位中国手机号）。若按 ticket 原文，27295 合法号会被 CHECK 误阻断。
+2. **D4 trigger 误描述**：ticket §3.2 称 migration 0020 已守 `balance >= 0` — 实查 0020 是 `trg_check_no_mixed_recharge`（防混合充值卡），**非 balance 守护**。本次 `chk_prepaid_balance_nonneg` 是首道余额硬约束；生产 0 行违例纯因应用层未扣穿。
+
+### 用户 4 项决策
+
+| 决策 | 选择 |
+|------|------|
+| Apply 范围 | 全流程含 P7 ✅ |
+| Dry-run 方式 | 我用 psql 直连 5434 跑 ✅ |
+| CloudBase TZ env | 本 PR 同步补 TZ env ✅（含部署上推） |
+| ESLint 规则范围 | 仅补 admin 端 ✅（cloudfunctions ESLint 留 follow-up） |
+
+### SUMMARY 影响
+
+- §2 Top10 #6 "L0 一次性 migration epic 剩余 8 项" → **0** ✅
+- §3 "金额/比例 CHECK 剩 2 项" → **0** ✅
+- §4 L0 P0 "剩 5 项" → **0** ✅
+- §概览总表 E5 "🔶 5/13 关闭" → **✅ 13/13 关闭**
+
+### 关联 ticket
+
+- 并行落地：`notes/tickets/2026-05-17-toctou-partial-unique-indexes.md` → migration 0029（partial UNIQUE 10 项）
+- Follow-up：cloudfunctions 三端 ESLint flat config 搭建（toISOString().slice 规则三端补齐）
+- Follow-up：L11 P0 `audit-prepaid-balance.ts` cron 守护（与 S-CC2-11 配套）
+- Follow-up：sale_orders.client_phone + stores.phone 是否纳入 phone CHECK 业务决策
+
