@@ -8,8 +8,8 @@ import { commissionRateMatrix } from '@db/commission'
 import { eq, sql, and, inArray, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceCommission, AuthSession } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, isAdminScope } from '@/lib/permissions'
+import { isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 
 /** 校验服务单是否在用户 scope 内 */
@@ -25,10 +25,9 @@ async function verifyServiceOrderScope(serviceOrderId: string, session: AuthSess
   return !!order && scopeIds.includes(order.storeId)
 }
 
-export async function getServiceOrderCommissions(serviceOrderId: string): Promise<ServiceCommission[]> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:list')
-
+export const getServiceOrderCommissions = withPermission(
+  'allocation:list',
+  async (session, serviceOrderId: string): Promise<ServiceCommission[]> => {
   if (!(await verifyServiceOrderScope(serviceOrderId, session))) {
     return []
   }
@@ -60,7 +59,8 @@ export async function getServiceOrderCommissions(serviceOrderId: string): Promis
     employeeName: r.employee_name ?? undefined,
     departmentName: r.department_name ?? undefined,
   }))
-}
+  },
+)
 
 /** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
 function getPoolKey(roleType: string): string {
@@ -71,20 +71,20 @@ function getPoolKey(roleType: string): string {
 const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0.70', '0.80', '0.90', '1.00'])
 
 /** 批量保存服务提成（先作废旧的，再插入新的） */
-export async function batchSaveServiceCommissions(
-  serviceOrderId: string,
-  commissions: Array<{
-    serviceItemId: string
-    employeeId: string
-    roleType: string
-    allocationRatio: string
-    commissionRate: string
-    commissionAmount: string
-  }>
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:save')
-
+export const batchSaveServiceCommissions = withPermission(
+  'allocation:save',
+  async (
+    session,
+    serviceOrderId: string,
+    commissions: Array<{
+      serviceItemId: string
+      employeeId: string
+      roleType: string
+      allocationRatio: string
+      commissionRate: string
+      commissionAmount: string
+    }>,
+  ): Promise<{ success: boolean; message: string }> => {
   if (!(await verifyServiceOrderScope(serviceOrderId, session))) {
     return { success: false, message: '无权操作该服务单的提成分配' }
   }
@@ -252,4 +252,5 @@ export async function batchSaveServiceCommissions(
 
   revalidatePath('/allocations')
   return { success: true, message: '服务提成保存成功' }
-}
+  },
+)

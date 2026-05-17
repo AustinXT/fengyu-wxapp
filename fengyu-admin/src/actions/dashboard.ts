@@ -3,8 +3,8 @@
 import { db } from '@/db'
 import { sql } from 'drizzle-orm'
 import type { DashboardStats } from '@/lib/types'
-import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { hasRole } from '@/lib/auth'
+import { withPermission } from '@/lib/with-permission'
 
 /**
  * 业务角色看板（manager/finance）零默认值。
@@ -54,10 +54,7 @@ async function getAdminStats() {
   }
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
-  const session = await getSession()
-  requirePermission(session, 'dashboard:view')
-
+export const getDashboardStats = withPermission('dashboard:view', async (session): Promise<DashboardStats> => {
   // 判断角色上下文
   const isAdmin = hasRole(session, 'admin')
   const isHr = hasRole(session, 'hr')
@@ -212,4 +209,4 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     roleContext,
     adminStats,
   }
-}
+})

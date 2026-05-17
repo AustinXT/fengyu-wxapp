@@ -91,6 +91,45 @@ const config = [
       ],
     },
   },
+  {
+    /**
+     * Enforce that every Server Action export in src/actions/ goes through
+     * the withPermission / withAnyPermission HOF (see @/lib/with-permission).
+     *
+     * Three rules together close the gap:
+     *  1. (reverse) ban bare `export async function` — forces HOF rewrite
+     *  2. (positive) require const init to be a CallExpression
+     *  3. (positive) require the callee to be withPermission / withAnyPermission
+     *
+     * S2 ships these as `warn` during the migration; S5 flips to `error`.
+     * `src/actions/auth.ts` is ignored — it owns no-session public entries
+     * (login / logout / getSessionFromCookie / checkMustChange).
+     */
+    files: ['src/actions/**/*.ts'],
+    ignores: ['src/actions/**/*.test.ts', 'src/actions/auth.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector: 'ExportNamedDeclaration > FunctionDeclaration[async=true]',
+          message:
+            'Server Actions must be wrapped with withPermission(...) or withAnyPermission(...). Use: export const myAction = withPermission("action:key", async (session, ...args) => { ... })',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type!="CallExpression"]',
+          message:
+            'Exported Server Action must be initialized by calling withPermission(...) or withAnyPermission(...).',
+        },
+        {
+          selector:
+            'ExportNamedDeclaration > VariableDeclaration > VariableDeclarator[init.type="CallExpression"][init.callee.type="Identifier"][init.callee.name!=/^(withPermission|withAnyPermission)$/]',
+          message:
+            'Exported Server Action initializer must be withPermission or withAnyPermission (got a different callee).',
+        },
+      ],
+    },
+  },
 ]
 
 export default config

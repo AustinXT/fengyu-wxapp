@@ -7,8 +7,8 @@ import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers } from '@db/user'
 import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 
 // ============================================================================
 // 管理端卡包列表（/cards 页面）
@@ -75,10 +75,9 @@ export interface PaginatedCards {
  *   - exhausted: remaining_sessions = 0
  *   - expired:   expire_date IS NOT NULL AND expire_date < CURRENT_DATE
  */
-export async function getCardsPaginated(filters: CardFilters = {}): Promise<PaginatedCards> {
-  const session = await getSession()
-  requirePermission(session, 'sale_item:list')
-
+export const getCardsPaginated = withPermission(
+  'sale_item:list',
+  async (session, filters: CardFilters = {}): Promise<PaginatedCards> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -203,7 +202,8 @@ export async function getCardsPaginated(filters: CardFilters = {}): Promise<Pagi
     })),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
 // ============================================================================
 // 转换单候选卡（PR-A 新增）
@@ -236,13 +236,13 @@ export interface HeldCardCandidate {
   deductibleAmount: string
 }
 
-export async function getCustomerHeldCards(
-  clientUserId: string,
-  storeId: string,
-): Promise<HeldCardCandidate[]> {
-  const session = await getSession()
-  requirePermission(session, 'sale_order:list')
-
+export const getCustomerHeldCards = withPermission(
+  'sale_order:list',
+  async (
+    session,
+    clientUserId: string,
+    storeId: string,
+  ): Promise<HeldCardCandidate[]> => {
   if (!clientUserId || !storeId) return []
   // scope 校验：admin 可全量，其余角色需 storeId 在 scope 内
   if (!isInScope(session, storeId)) return []
@@ -312,4 +312,5 @@ export async function getCustomerHeldCards(
       deductibleAmount: (unit * remQty).toFixed(2),
     }
   })
-}
+  },
+)

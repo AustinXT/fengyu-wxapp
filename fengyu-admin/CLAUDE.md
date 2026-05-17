@@ -58,6 +58,9 @@ fengyu-admin/
 │       ├── utils.ts           # cn() + 格式化工具
 │       └── hooks/             # useUrlFilters, useUnsavedChanges
 ├── e2e/                       # Playwright E2E 测试（21 spec）
+├── tests/
+│   ├── setup.ts               # Vitest setup
+│   └── e2e-actions/           # bun-driven admin Server Action smoke（如 recordPayment）
 └── vitest.config.ts
 ```
 
@@ -75,6 +78,10 @@ bun run test:watch             # Vitest watch 模式
 bun run test:coverage          # 覆盖率报告（Stmts 89% / Funcs 84%，含 src/lib + src/actions）
 bun run test:e2e               # Playwright E2E（需运行中的 dev server）
 bun run test:all               # Vitest + Playwright
+
+# admin Server Action smoke（bun-driven，直接 import admin actions + 真 PG）
+bun fengyu-admin/tests/e2e-actions/smoke-record-payment.mjs   # recordPayment 全链路
+bun fengyu-admin/tests/e2e-actions/cleanup.mjs                # 清理 TE2L2_ 命名空间残留
 ```
 
 ## 架构要点
@@ -82,12 +89,44 @@ bun run test:all               # Vitest + Playwright
 - **Server Actions 直连 PG**：19 个 action 模块通过 Drizzle ORM 操作 PostgreSQL，无 mock
 - **JWT 认证**：middleware.ts 校验 `fy-admin-token` cookie → 查 `permission_roles` → 构造 `ctx.auth`
 - **6 角色权限**：admin/manager/finance/hr/product/customer_mgr，PERMISSION_MATRIX 代码常量
+- **统一鉴权 HOF**：`src/actions/**/*.ts` 的每个 export 必经 `withPermission(action, fn)` / `withAnyPermission(actions[], fn)`（`@/lib/with-permission`），ESLint `no-restricted-syntax` AST 规则强制（`auth.ts` 公共入口除外）。详见下方"Server Actions 写法范式"
 - **scope 数据隔离**：`scopeCondition(session, table.storeId)` — admin 无过滤，其他角色按 `scopeStoreIds` 过滤
 - **乐观锁**：所有数据管理 UPDATE 携带 `WHERE updated_at = $prev`，rowCount=0 提示刷新；所有编辑表单均传递 `expectedUpdatedAt`
 - **审计日志**：所有增删改通过 `logOperation()` 写入 `operation_logs`（AC-11 全覆盖）
 - **服务端分页**：6 个列表页（orders/services/appointments/customers/employees/allocations）使用 DB 级 WHERE + COUNT + LIMIT/OFFSET，通过 `searchParams` 驱动 Server Component 重新查询；Pagination 组件含输入防护（负值/NaN/越界/除零）
 - **员工调店 scope 同步**：`updateEmployee` 变更 storeId 时自动同步 `permission_roles.scope_id`
 - **列表默认排序**：配置/档案型 `desc(updatedAt), desc(createdAt), desc(id)`（"编辑即浮顶"）；业务时间型 `desc(业务时间)` 优先；流水型 `desc(createdAt)`。例外必须在 `.orderBy(...)` 上方写 `// 例外：...` 注释。详见 `.42cog/dev/admin.sys.spec.md` §5
+
+## Server Actions 写法范式
+
+每个 Server Action 必须用 HOF 包装，HOF 内部承担 `getSession + requirePermission` 入口拦截。业务函数收到非空 `AuthSession` 作为第一参数；`scopeCondition` / `isInScope` / `hasPermission` / `logOperation` 在体内继续按需调用。
+
+**单一权限**（`withPermission`）：
+
+```ts
+'use server'
+import { withPermission } from '@/lib/with-permission'
+
+export const createPosition = withPermission(
+  'employee:update',
+  async (session, data: { name: string }) => {
+    await db.insert(positions).values({ ...data })
+    await logOperation(session, 'position.create', 'position', data.id, data)
+    return { success: true }
+  },
+)
+```
+
+**OR 关系**（`withAnyPermission`，业务+审批双角色入口）：
+
+```ts
+export const getRefundDetail = withAnyPermission(
+  ['sale_order:refund_create', 'sale_order:refund_approve'],
+  async (session, refundId: string) => { /* ... */ },
+)
+```
+
+**禁用裸 `export async function`**（`auth.ts` 公共入口 `login` / `logout` / `getSessionFromCookie` / `checkMustChange` 例外）；权限不足 throw `PERMISSION_DENIED: <action>`，session 缺失 redirect `/login?expired=1`。
 
 ## cron-worker 子模块
 

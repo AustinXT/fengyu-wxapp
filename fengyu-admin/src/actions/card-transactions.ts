@@ -7,8 +7,9 @@ import { stores, orgNodes } from '@db/org'
 import { and, desc, eq, gte, ilike, inArray, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { AdminCardTransaction, CardTransactionSummary } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
+import type { AuthSession } from '@/lib/types'
+import { scopeCondition } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 
 /** 充值卡流水筛选参数 */
 export interface CardTransactionFilters {
@@ -38,13 +39,13 @@ export interface PaginatedCardTransactions {
  * 与 points 模块保持一致。
  */
 function buildConditions(
-  session: Awaited<ReturnType<typeof getSession>>,
+  session: AuthSession,
   filters: CardTransactionFilters,
 ): SQL[] {
   const conditions: SQL[] = []
 
   // scope 数据隔离（基于顾客当前绑定门店，近似"卡账户归属门店"）
-  const scope = scopeCondition(session!, clientWechatUsers.boundStoreId)
+  const scope = scopeCondition(session, clientWechatUsers.boundStoreId)
   if (scope) conditions.push(scope)
 
   // 市场二级筛选：市场 → 该市场下所有门店
@@ -91,12 +92,12 @@ function buildConditions(
  * 汇总按金额符号判断（amount > 0 = 充值 / amount < 0 = 扣款），避免脏数据下 type 与符号不一致。
  * 类型枚举为静态 2 值（`充值`/`扣款`），下拉在前端硬编码，不做 selectDistinct。
  */
-export async function getCardTransactionsPaginated(
-  filters: CardTransactionFilters = {},
-): Promise<PaginatedCardTransactions> {
-  const session = await getSession()
-  requirePermission(session, 'card_transaction:list')
-
+export const getCardTransactionsPaginated = withPermission(
+  'card_transaction:list',
+  async (
+    session,
+    filters: CardTransactionFilters = {},
+  ): Promise<PaginatedCardTransactions> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50, 100].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -189,4 +190,5 @@ export async function getCardTransactionsPaginated(
       userCount: summaryRow?.userCount ?? 0,
     },
   }
-}
+  },
+)
