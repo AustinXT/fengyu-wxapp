@@ -113,6 +113,8 @@ export const staffWechatUsers = pgTable(
     /** 指向 type='部门' 的部门节点（挂在所属门店 org_node 下，无门店员工挂总部） */
     orgNodeId: text('org_node_id').references(() => orgNodes.id),
     positionName: varchar('position_name', { length: 50 }),
+    /** 头像 URL（admin 后台 / 员工小程序"我的"上传，跨 env 写入 client env COS，存 cloud:// fileID） */
+    avatarUrl: text('avatar_url'),
     // Layer 4 — 个人档案
     birthday: date('birthday'),
     /** 技能标签数组，由员工端手动维护 */
