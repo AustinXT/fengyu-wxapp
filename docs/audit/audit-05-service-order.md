@@ -12,6 +12,18 @@
 
 ---
 
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | v3 原状态 | 2026-05-17 复核 |
+> |---------|---------|-----------------|
+> | **P0-05-01** staff service.create 写 `service_items.sku_id` 不存在列 | 未修复 | **❌ 仍未修复** — `fengyu-staff/cloudfunctions/staffApi/routes/service.js:208-211` 仍 INSERT INTO service_items 含 `sku_id` 列；e2e `smoke-service-lifecycle.mjs:3-8` 明确标注"当前生产 bug，绕过 service.create"。**SUMMARY v3 Top 10 #2** |
+> | **P0-05-02** 服务单号前缀 + advisory lock key 分裂（generateOrderNo 跨事务） | 未修复 | **❌ 仍未修复** — `routes/order.js:2473-2495` 仍内嵌独立 `pg.transaction()`。**SUMMARY v3 Top 10 #3** |
+> | 其余 P0-05-03 至 P0-05-08 + V2-01/02 | 未修复 | 未复核（与 v3 排期一致，留待下轮）|
+>
+> 详情见 [SUMMARY v3 §2 Top 10](SUMMARY.md#2-top-10-p0v3--按资损越权严重度排序2026-05-17-重置)。
+
+---
+
 ## v1 vs v2 摘要对照
 
 | 问题 ID | v1 编号 | v2 验证 | v3 最终状态 |

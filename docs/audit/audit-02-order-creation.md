@@ -11,6 +11,17 @@
 - v1：`docs/audit/audit-02-order-creation.md`（审计时间 2026-04-25，审计员 claude-opus-4-7）
 - v2：`docs/audit/audit-02-order-creation-v2.md`（审计时间 2026-04-26，审计员 claude-sonnet-4-6，从零独立读源码）
 
+---
+
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-02-01** Advisory lock 跨事务释放窗口可生成重号 | 未修复 | ❌ **仍未修** — `staffApi/routes/order.js:2473-2495 generateOrderNo` 内嵌独立 `pg.transaction()`；外层 order.create L540 又开新事务才 INSERT；TOCTOU 窗口存在。SUMMARY v3 Top 10 #3 |
+> | sale_order_type 5→3 域重构 | — | ✅ migration 0019/0021 全栈落地（"回款单/退款单"已迁至 sale_order_payments）|
+> | uq_sop_status_audit 退款审批并发 | — | ✅ migration 0018 落地 |
+> | 其余 P0/P1 | — | 未复核 |
+
 **合并规则**
 - 同问题（相同 file:line 或实质相同）：以 v2 为准，补充 v1 细节
 - v2 新发现：新增条目，ID 延续 v2

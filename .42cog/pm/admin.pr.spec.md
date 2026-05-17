@@ -159,9 +159,9 @@ admin 管理权限分配/撤销、WorkFine → PG 数据同步、操作日志查
 
 **商品字段**: name, category_id, description, is_shengmei, is_bundle, price, special_price, sales_category, manage_scope, market_scope, cover_image, detail_images[], valid_start, valid_end, sort_order
 
-**SKU 字段**: spec_name, product_type, price, special_price, session_count, service_fee, is_bundle_sku, valid_start, valid_end
+**SKU 字段**: spec_name, product_type, price, special_price, session_count, service_fee, is_bundle_sku, valid_start, valid_end, **is_experience, is_recharge_card**（capability 列，业务判定 SSoT，详见 `backend.pr.spec.md` §2.6 + §4 #23/#24）
 
-**约束**: price/service_fee ≥ 0；session_count ≥ 1（非 null）；套餐赠品 price=0；有效期叠加（商品+SKU 均有效才展示）；下架=设 valid_end；价格变更不影响已有订单
+**约束**: price/service_fee ≥ 0；session_count ≥ 1（非 null）；套餐赠品 price=0；有效期叠加（商品+SKU 均有效才展示）；下架=设 valid_end；价格变更不影响已有订单；`is_experience` 与 `is_recharge_card` 互斥（DB CHECK `chk_sku_not_both_capabilities`）；UI 编辑两个 capability 列勾选互斥提示
 
 #### AFF-05 提成比例矩阵配置
 

@@ -12,6 +12,19 @@
 
 ---
 
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-CC9-01** staff service.create 测试 mock 锁死 sku_id 列 | 待 | ❌ **仍生效** — `tests/e2e-cloudfn/smoke-service-lifecycle.mjs:3-8` 注释明确："service.create 当前生产 bug — routes/service.js:207 INSERT service_items 列 'sku_id'... create 路径 bug 一旦修复（删除 sku_id 列引用），追加 smoke-service-create.mjs"。测试用"绕过 create"+ fixtures 直插数据替代 |
+> | **P0-CC9-03** admin orders.test 锁死 store_id / valid_start 列 | 待 | ✅ **已修复** — 列已 DROP；orders.test.ts 重写完成 |
+> | **L2 SQL patch shim** | 待 | ✅ **已移除** — commit 09488bd："test(infra): L2 移除 SQL patch shim + L3 IPv6 ws 兼容 + run-all 自动 SKIP" |
+> | **L2/L3 E2E 测试框架新增** | — | ✅ commit d13c7e2 |
+> | **payNotify 守卫态 SQL mock 残留** | — | 🔶 解锁前需同步清理 payNotify/__tests__/index.test.js |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 扫描覆盖范围
 
 | 层 | 扫描目标 | 说明 |

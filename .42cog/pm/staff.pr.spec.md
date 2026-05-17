@@ -91,7 +91,7 @@
 
 | 层级 | 内容 | 数据来源 |
 |------|------|----------|
-| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"动态聚合 `product_categories WHERE productKind IS NULL AND parent.isCardKind=false AND isValid=true` 全部一级 kind 下的二级分类 | 视图常量 + DB 驱动 |
+| 顶部 Tab | 视图常量 4 选 1：`组合套餐 \| 普通商品 \| 体验卡 \| 充值卡`；其中"普通商品"动态聚合 `product_categories WHERE productKind IS NULL AND parent.isCardKind=false AND isValid=true` 全部一级 kind 下的二级分类。**Tab 标签仅 UI 渲染分支用**——SQL 过滤一律走 `is_experience` / `is_recharge_card` capability 列，详见 `backend.pr.spec.md` §4 #23 | 视图常量 + DB 驱动 |
 | 左侧分类 | 品项分类选择器 | PG `product_categories`（仅含有效 SKU），家居产品固定追加末尾 |
 | 右侧列表 | SPU 卡片 | PG `products` + `product_skus`（按 categoryId 缓存） |
 | 商品详情 | SKU 规格选择 | `product_skus.price` / `session_count` |
@@ -456,6 +456,13 @@ A→B 项目转换 + 差价处理。待确认：可用数量 vs 剩余次数、�
 ## 6. 约束与数据模型
 
 > 数据模型见 `backend.pr.spec.md` §2；环境约束见 `real.md`。
+>
+> **特别注意**：体验卡 / 充值卡判定一律走 `product_skus.is_experience` / `is_recharge_card` capability 列（`backend.pr.spec.md` §2.6 / §4 #23）。`sale_items` 行级快照（§2.9）支撑跃迁/对账。staffApi 已落地的相关约束：
+> - `order.create` / `createConversion` / `createRefund` 写入 sale_items 时拷贝两列快照
+> - `order.create` 含 **D4 严格独立校验**：同一订单 sale_items 不能混合 `is_recharge_card` true/false，抛 `MIXED_RECHARGE_NOT_ALLOWED`
+> - `order.confirmOffline` 结清时调用 `recalcCustomerType` 触发 customer_type 跃迁（`backend.pr.spec.md` §4 #25）
+> - `product.shopInit` / `skuList` 默认 `is_experience = false AND is_recharge_card = false` 过滤普通商品
+> - `card.rechargeSkus` 走 `is_recharge_card = true` 查充值卡虚拟 SKU 列表
 
 ---
 

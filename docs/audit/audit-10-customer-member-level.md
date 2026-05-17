@@ -9,6 +9,21 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | v3 原状态 | 2026-05-17 复核 |
+> |---------|---------|-----------------|
+> | **P0-10-01** customer.detail 无 store_id scope | 未修复 | ✅ **已修复** — `routes/customer.js:296-300` 加 `bound_store_id ∈ scopeStoreIds` 守卫 |
+> | **P0-10-02** customer.calendar 无 store_id scope | 未修复 | ✅ **已修复** — L185 `buildStoreScopeCondition('o.store_id')` |
+> | **P0-10-03** customer.updateNotes 无 WHERE 守卫 + 无 audit | 未修复 | ✅ **已修复** — L932 requireManager + L941 `WHERE ... AND bound_store_id = $3` + L950-955 logOperation |
+> | **P0-10-04** customer.assign 无 store_id 守卫 + 无 audit | 未修复 | ✅ **已修复** — L992-1024 requireManager + bound_store_id WHERE + logOperation |
+> | refresh-member-levels 性能 N+1 | — | ✅ **已优化**（commit 626d0b4：单 JOIN 重写，1500× 提速，~210s → ~673ms） |
+> | 其余 P1/P2 | 未修复 | 未复核 |
+>
+> 详情见 [SUMMARY v3](SUMMARY.md) 与 ticket `2026-04-27-staff-customer-scope-isolation.md`。
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff（门店级）| staff（管理层）| client |

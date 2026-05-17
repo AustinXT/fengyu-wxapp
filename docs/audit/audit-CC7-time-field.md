@@ -15,6 +15,18 @@
 
 ---
 
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 | 原状态 | 2026-05-17 复核 |
+> |------|--------|-----------------|
+> | service_commissions.voided_at | 待 | ✅ migration 0018 已 ADD |
+> | PG timezone = Asia/Shanghai | 待 | ❌ **仍未跑** — 数据库实例级 ALTER 待 ops 安排（L0 P0 剩 5 项之一）|
+> | sale_orders 7 项时间/退款列下沉（approved_at, rejected_reason 等） | 待 | ✅ migration 0025 DROP（CC7-12-V2 孤儿列） |
+> | 三端禁 `new Date().toISOString().slice()` lint | 待 | ❌ **未做** — 需要 ESLint 规则；commit f5e6093 已加 ESLint flat config，可在此基础上加规则 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 三端入口对照（关键时间字段责任）
 
 | 类别 | DB schema 字段 | admin 写入 | staff 写入 | client 写入 | payNotify 写入 | cron-worker 写入 |

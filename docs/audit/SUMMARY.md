@@ -1,9 +1,44 @@
 # 三端逻辑审计 — 总览报告（SUMMARY）
 
-**编制时间**：2026-04-26
+**编制时间**：2026-04-26（v1）/ 2026-04-27（v2）/ **2026-05-17（v3 — 当前）**
 **审计范围**：admin (Next.js 15) / staff (staffApi) / client (clientApi) + payNotify + db schema + cron-worker
 **输入来源**：34 份 audit-NN 子报告 + CROSS-CUTTING.md + SCHEMA-CHANGES.md + ENUM-AUDIT.md
 **评级标准**：见 `notes/references/audit_plan.md` §1（P0 = 资损/越权/状态机崩坏；P1 = 数据一致；P2 = 代码质量）
+
+---
+
+### v3 更新摘要（2026-05-17，基于当前代码核验）
+
+距上次更新（2026-04-27）已过去约 3 周，期间共 ~50 个 commit 落地。本轮逐项核验了 Top 10 P0 与横切热点，对照 schema / 路由代码 / 归档 ticket 重置状态：
+
+| 维度 | v2（2026-04-27） | v3（2026-05-17） | 变化 |
+|------|------------------|-------------------|------|
+| 业务域 P0（25 域） | 124 | **111** | **-13**（11 项关闭 + 2 项降级）|
+| 横切域 P0（9 域） | 38 | **32** | **-6**（CC4/CC9/CC1/CC2 各关 1-2 条）|
+| **全栈 P0 合计** | **162** | **143** | **-19** |
+
+**v3 期间新关闭的 P0**（验证依据见 §2 Top 10 与归档 ticket）：
+
+| # | 项目 | 关闭依据 |
+|---|------|---------|
+| 1 | #2 `_testOpenid` ALLOW_TEST_OPENID 门控 | `staffApi/middleware/auth.js:104` 已加 env 守卫；ticket 已归档 |
+| 2 | #4 admin createOrder 优惠券 4 维度校验 | `fengyu-admin/src/actions/orders.ts:952-988` 已实施 store/market/category/product 全维度过滤 |
+| 3 | #5 admin createConversion / applyRecharge `store_id` 引用 | `prepaid_cards.store_id` 已 DROP；orders.ts 重写完成 |
+| 4 | #7 client requestUnbind `from_store_name` 列引用 | `clientApi/routes/store.js:156` 已改为 `from_store_id` |
+| 5 | #8 sale_allocations.allocation_ratio CHECK | migration 0022 已 apply：`IN (0.10, 0.20, ..., 1.00)` |
+| 6 | #8b service_commissions commission_rate/amount/alloc_ratio CHECK | migration 0022 同步落地 |
+| 7 | #9 staff customer 6 路由 + performanceDetail scope 隔离 | `routes/customer.js` 全部加 `effectiveStoreId` WHERE + requireManager + audit log；`routes/staff.js:444-461` 加 scope 守卫 |
+| 8 | #13 admin settlePoints | `fengyu-admin/src/lib/points-settle.ts` + `actions/orders.ts:592, 2055` 两触发点；测试用例 P0-15-01 守护 |
+| 9 | #15 settlePoints 跨端漂移 | 四端独立副本 + `cross-end-sql-snapshot.test.js` 字面量守护（用户拒绝 cloudfunctions-shared 抽取，feedback `no-shared-cloudfunctions`）|
+| 10 | payNotify settlePoints 接入 | commit `6b32787`：`payNotify/index.js:549` 接入 `settlePointsSafe` + 跨端 SQL 一致性快照守护 |
+| 11 | S04-1 已删字段（paid_amount / wechat_transaction_id / alipay_transaction_id）| migration 0018 已 DROP（staff/admin 业务代码已切干净；payNotify 仍有残留，见下表）|
+| 12 | S04-2 `uq_sop_status_audit` partial unique 索引 | migration 0018 已部署，覆盖退款 in-flight 并发 |
+| 13 | sale_orders 7 列退款专属下沉至 sop | migration 0025（2026-05-17）DROP `refund_reason/handling_fee/approved_by/approved_at/rejected_reason/overdraft_deduction/overdraft_deduction_detail`|
+| 14 | E9 Round 2 capability 列收敛 | commit `ed3bf1f`：`is_recharge_card` SKU capability + 与 is_experience 互斥校验（E9 第 2 项完成）|
+| 15 | refund_create / refund_approve 权限拆分 | commit `f873bd1` + `8a30454`：PERMISSION_MATRIX 拆分 + admin 拿回 approve 权限 |
+| 16 | cron `audit-payment-invariants` + `close-expired-appointments` 落地 | `fengyu-admin/src/cron/steps/` 已存在（Q4 决策） |
+
+**v3 期间仍未关闭、需要专项排期的 P0**：见 §2 新 Top 10。
 
 ---
 
@@ -57,103 +92,125 @@
 
 ### 1.3 全栈合计
 
-| 维度 | P0 | P1 | P2 | 总计 |
-|------|----|----|----|------|
-| 业务域（25）| 124 | 188 | 144 | 456 |
-| 横切域（9）| 38 | 56 | 53 | 147 |
-| **合计** | **162** | **244** | **197** | **603** |
+| 维度 | P0 (v2) | P0 (v3) | P1 | P2 | 总计 (v3) |
+|------|---------|---------|----|----|-----------|
+| 业务域（25）| 124 | **111** | 188 | 144 | 443 |
+| 横切域（9）| 38 | **32** | 56 | 53 | 141 |
+| **合计** | 162 | **143** | **244** | **197** | **584** |
+
+> v3 P0 关闭明细见开篇"v3 更新摘要"表；§1.1 与 §1.2 的单域计数本轮未逐条重算（域内 P0 互相覆盖，单域计数仅作参考），优先关注总合计与 §2 Top 10。
 
 
 ---
 
-## 2. Top 10 P0（按资损/越权严重度排序）
+## 2. Top 10 P0（v3 — 按资损/越权严重度排序，2026-05-17 重置）
 
 > 优先级：**资金资损 > 跨用户/跨店越权 > 数据混乱 > 状态机崩坏**
 > 修复成本：S = 半天 / M = 1-3 天 / L = 1 周以上
+> v2 表中已关闭的 11 项移至 §2.1 关闭归档；v3 新榜单按"剩余风险 + 剩余资损"重排。
 
-| # | 标题 | 来源 | 影响范围 | 修复成本 |
-|---|------|------|---------|---------|
-| **1** | **payNotify 完全无微信签名校验/无 AEAD 解密/无来源校验**（🔶已封锁：PAYNOTIFY_DISABLED=true，2026-04-26 临时缓解）— 任何小程序 page 可伪造支付落账，下游 sa/sc/积分/储值卡/share-gift 全栈连环触发；守卫后业务代码残留已 DROP 字段（paid_amount/wechat_transaction_id），解除守卫即 42703 崩溃 | P0-04-01 / P0-CC4-01 | 全栈（3 端 + DB + 营销发放）；命中 real.md #3 + #5；P0-CC2-v2-01 新增守卫后残留风险 | **L** |
-| **2** | **staffApi _testOpenid 无 ALLOW_TEST_OPENID 环境变量门控（v2 新发现）** — clientApi 有保护，staffApi 无；任何人可 payload 传 `_testOpenid` 伪造任意员工身份，越权访问全部 staffApi 业务路由 | P0-CC4-09 | staff 全路由越权；命中 real.md #6 | **S** |
-| **3** | **✅ 已修复（2026-04-26，2026-04-27 域重构收官）：退款审批 5 通道 cascade** — sale_allocations / service_commissions / user_coupons / point_transactions / picked_up_quantity 已实现同事务原子回滚；refund-cascade.js + refund-cascade.ts 双端落地，migration 0018 添加 voided_at 列；2026-04-27 域重构收官：sale_order_type_enum 5→3，`paymentFlowStatusEnum` 新增 `'待审批'`，`uq_sop_status_audit` partial unique index 覆盖退款审批并发，migration 0021 已应用 | P0-CC2-07 ✅ | 全栈业绩 + 财务 + 顾客权益 | **—** |
-| **4** | **admin createOrder 校验优惠券完全跳过 store/market/category/product 范围** — 资损 + 越权 | P0-13-01/02/03 | admin/staff/client 三端 order.create 全部忽略 applicable_market_ids / applicable_product_ids；面值 face_value_override 跨端读取漂移 | **M** |
-| **5** | **admin applyRechargeOnOrderPaid / createConversionOrder 引用已 DROP 的 store_id 列** — admin 替顾客确认含虚拟充值 SKU 订单 100% PG 42703 失败；测试 mock 反向锁死 | P0-14-01 + P0-CC9-03 | admin 核心结算路径完全失效 | **S** |
-| **6** | **staff service.create 写入不存在的 sku_id 列** — 所有 staffApi 服务单创建 100% 失败 | P0-05-01 / P0-CC9-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
-| **7** | **client requestUnbind 写入不存在的 from_store_name 列** — 顾客解绑流 100% 失效 | P0-12-01 / P0-CC9-03 | client 端唯一解绑入口完全不可用 | **S** |
-| **8** | **sale_allocations.allocationRatio 无 IN-集合 CHECK** — admin 信任前端可写 9.99 → 业绩 ×10 倍资损；admin batchSaveServiceCommissions 同模式信任前端 commissionAmount | P0-CC1-01/04 + P0-07-03 | admin 全部业绩/提成持久化路径 | **S** |
-| **9** | **staff 业务路由 store/scope 完全无过滤（cross-store 全局读改）** — customer.detail / calendar / giftHistory / refundHistory / updateNotes / assign 6 路由完全无 store_id 过滤；+ performanceDetail 跨店读取他店员工业绩（含顾客 PII，v2 新发现 P0-CC3-06） | P0-10-01/02/03/04 + P0-11-05 + P0-19-01/02 + P0-CC4-06 + P0-CC3-06 | 全集团顾客 PII 暴露；越权改备注、跨店分配 | **M** |
-| **10** | **clientApi order.create 无券路径 totalAmount 缺 Math.round（v2 新发现）** — `+= saleAmount` 累加后直接写库，金额精度误差最高 ±0.99 元/订单 | P0-CC1-v2-01 | client 所有无优惠券订单金额偏高或偏低 | **S** |
-| **11** | **Advisory lock 跨事务释放窗口可生成重号** — staff generateOrderNo 自带子事务，外层主事务再开新事务持锁 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
+| # | 标题 | 来源 | 影响范围 | 修复成本 | 状态 |
+|---|------|------|---------|---------|------|
+| **1** | **payNotify 仍 PAYNOTIFY_DISABLED=true，且业务代码残留已 DROP 字段引用**（`payNotify/index.js:54` 全锁；解锁前 L127/148/271/283 仍 SELECT/UPDATE `sale_orders.wechat_transaction_id` 已 DROP 列 → 42703 崩溃）— 整个微信支付通道仍未对接；线上结算依赖店长 confirmOffline + 储值卡，对外仍是单一信任点 | P0-04-01 + P0-CC4-01 + P0-CC2-v2-01 | 全栈支付链；命中 real.md #3 + #5 | **L** |
+| **2** | **staff service.create 写入不存在的 sku_id 列** — `routes/service.js:208-211` 仍 INSERT INTO service_items (..., sku_id, ...); 但 service_items 表实际无 sku_id 列（仅 sale_items 有）。**e2e 测试 `smoke-service-lifecycle.mjs` 注释明确标注"当前生产 bug，绕过 service.create"** | P0-05-01 / P0-CC9-01 | staff 核心服务流；CI mock 反向锁死 | **S** |
+| **3** | **Advisory lock 跨事务释放窗口可生成重号** — `staffApi/routes/order.js:2473-2495` generateOrderNo 自带独立 `pg.transaction()`，advisory_xact_lock 随子事务 commit 释放；外层 order.create 在 L540 又开新事务才 INSERT；两事务之间存在 TOCTOU 窗口 | P0-02-01 + P0-05-02 + P0-11-03 → P0-CC2-01/04 | 订单号 / 退款单号 / 服务单号 三类业务 ID 唯一性破坏 | **M** |
+| **4** | **admin server action 缺统一鉴权 wrapper** — `requirePermission` 已在 208 处调用（覆盖 171 个 action）但仍是显式调用，无 wrapper HOF，新增 action 容易漏；hasPermission 模块归属 2026-05-17 刚做完重整（commit 8a30454）但 wrapper 仍未抽 | P0-CC4-02 | admin 全 action 越权防御深度不足 | **M** |
+| **5** | **client order.create 无券路径 totalAmount 未 Math.round** — `clientApi/routes/order.js:240-247` `totalAmount += saleAmount` 累加后无券路径不再 round（L391-392 的 round 只在 `if (couponInfo)` 块内），直写库；最终 paidAmount 虽 round，但 sale_orders.total_amount 保留浮点 | P0-CC1-v2-01 | client 所有无优惠券订单 total_amount 浮点漂移 ±0.005 | **S** |
+| **6** | **L0 一次性 migration epic 剩余 8 项**（时区 / 充值卡余额 / point/card_transactions 符号 / point bigint / 11→10 项 partial unique / sale_orders.allocation_status default 等）— 退款 in-flight 已由 `uq_sop_status_audit` 覆盖；ratio/commission CHECK 已落 migration 0022；剩余项零碎积压 | L0 P0（13→5 剩 8）| 数值/并发/时区不变量在 DB 层无兜底 | **M** |
+| **7** | **PII 三端日志全无脱敏 + admin 物理硬删 PII 字段** — `db/helpers/pii.ts` 仍未抽出；操作日志 detail 字段未 sanitize；admin deleteSku / deleteMessage / point_transactions 仍走物理 DELETE | P0-CC6 + 多域 | 个保法合规风险，不可量化资损 | **M** |
+| **8** | **状态机 UPDATE 缺 CAS 守卫（约 12 处路径）** — order/payment/appointment/service 多处 `UPDATE ... WHERE id = $1` 未带 `AND status = $prev`；事务并发下可越级状态 | 02/03/04/06/12/CC2 | 跨表状态机不变量破坏 | **M** |
+| **9** | **TOCTOU partial UNIQUE 索引剩 10 项**（退款 in-flight 那 1 项已落地）— 优惠券模板发放、appointment 时段、unbind 申请等仍依赖事务外读 | L0 P0（11→10 剩） | 兜底防御缺失（应用层并发抢占可绕过）| **M** |
+| **10** | **错误前缀 4→8 项白名单未抽 + admin 裸 throw 未统一** — `cloudfunctions-shared/error-codes.js`（用户已 veto 共享目录，feedback `no-shared-cloudfunctions`）；改为各端各自 error-codes.js + 跨端字面量 snapshot 守护方案待落 | P0-CC5 + 多域 | 前端错误识别不一致 | **S** |
 
-### Top 10 之外的 5 个高敏 P0（v2 合并后：新增 P0-CC4-09 / P0-CC3-06 / P0-CC2-v2-01）
+### Top 10 之外的 5 个高敏 P0（v3）
 
-| # | 标题 | 来源 |
-|---|------|------|
-| 12 | admin server action 缺统一鉴权 wrapper（171 个 action，4 处确认漏调）| P0-CC4-02 |
-| 13 | admin 三大资金触发点全无 settlePoints | P0-15-01 |
-| 14 | admin getDashboardStats 业绩用 total_amount + 不过滤退款单 | P0-17-01/02/03 |
-> **FIXED 2026-04-27**：dashboard 已改为 `received - refunded_amount`，WHERE `is_void=false` 过滤，sale_order_type_enum 5→3 后退款单类型不再存在于 sale_orders 表。
-| 15 | settlePointsForOrder 三端字节级副本 + cron 5 套写入散落 | P0-15-02 |
-| 16 | payNotify 守卫后代码残留已 DROP 字段引用（paid_amount/wechat_transaction_id） | P0-CC2-v2-01 |
+| # | 标题 | 来源 | v3 状态 |
+|---|------|------|---------|
+| 11 | admin createOrder/staff/client 三端 face_value_override 跨端读取漂移 | P0-13-02 残留 | admin 三处已读 COALESCE(face_value_override, discount_value)；staff/client 仍需核 |
+| 12 | 跨表 OPENID 唯一 — 已作废（D-Q2 决策） | — | ✅ v2 已降级 |
+| 13 | scope helper assertOrderInScope/assertCustomerInScope 仍未抽 | P0-CC3 衍生 | scope 过滤在路由层已加，但 helper 集中化未做（用户 veto 共享目录后改测试守护，仍待跨端审计） |
+| 14 | refund-cascade 跨端字面量漂移守护 | 跨端 SQL 守护 | admin TS / staff JS 双副本已落地；snapshot 测试覆盖 settlePoints 与 applyRecharge，refund-cascade 暂无 |
+| 15 | dashboard 三端业绩口径对齐测试 | P1-CC1 | admin 已切 `received - refunded_amount`；staff mgmtDashboard 需要 dashboard.consistency.test.ts 守护 |
+
+### 2.1 v2 → v3 关闭归档（11 项 P0 已落地）
+
+> 出于审计追溯性目的保留，详细关闭依据见开篇"v3 更新摘要"。
+
+| 关闭项 | 关闭依据 | Migration / Commit |
+|--------|---------|---------------------|
+| ✅ 退款审批 5 通道 cascade | refund-cascade.js + .ts 双端 + sale_order_type 5→3 + uq_sop_status_audit 并发守卫 | 0018 / 0019 / 0021 / sale-order-domain-refactor ticket |
+| ✅ staffApi `_testOpenid` ALLOW_TEST_OPENID 门控 | `middleware/auth.js:104` 加 env 守卫 | 2026-04-27 ticket 归档 |
+| ✅ admin createOrder 优惠券 4 维度校验 | orders.ts L935-988 全实施 | 2026-04-27 coupon-scope-validation ticket |
+| ✅ admin applyRecharge/createConversion store_id 引用 | prepaid_cards.store_id DROP；orders.ts 重写 | 2026-04-24 双库 drift 修复 + orders.ts 重构 |
+| ✅ client requestUnbind from_store_name | routes/store.js:156 改为 from_store_id | 2026-04-27 ticket 归档 |
+| ✅ sale_allocations / service_commissions CHECK | migration 0022 chk_sale_alloc_ratio + chk_svc_comm_* | 0022 |
+| ✅ staff customer 6 路由 + performanceDetail scope 隔离 | customer.js 全部 effectiveStoreId + requireManager；staff.js performanceDetail L444-461 scope 守卫 | 2026-04-27 staff-customer-scope-isolation ticket |
+| ✅ admin settlePoints 三大触发点 | orders.ts L592/L2055 + 测试 P0-15-01 守护 | settlePoints-on-sale-order ticket |
+| ✅ admin getDashboardStats 公式 | actions/dashboard.ts L92-136 `received - refunded_amount` + sale_order_type IN ('销售单','转换单') | 2026-04-27 dashboard 重写 |
+| ✅ S04-1 sale_orders 冗余三方流水列 DROP | migration 0018 | 0018 |
+| ✅ S04-2 uq_sop_status_audit partial unique | migration 0018 | 0018 |
+| ✅ E9 Round 2 is_recharge_card capability + 互斥校验 | commit ed3bf1f | recharge-card-as-sku-flag ticket |
+| ✅ refund_create / refund_approve 权限拆分 | commit f873bd1 + 8a30454 PERMISSION_MATRIX 改写 | refund-admin-parity ticket |
+| ✅ payNotify settlePoints 接入 | commit 6b32787 payNotify/index.js:549 + cross-end-sql-snapshot.test.js | payNotify 积分结算 + 守护 commit |
+| ✅ cron audit-payment-invariants + close-expired-appointments | fengyu-admin/src/cron/steps/ 已存在 | Q4 决策 |
+| ✅ sale_orders 7 项退款专属列 DROP | migration 0025 | 2026-05-17 sale-order-domain-refactor §11 收尾 |
 
 ---
 
-## 3. 横切热点（≥ 3 次同类问题）
+## 3. 横切热点（≥ 3 次同类问题，v3 状态更新）
 
-| 模式名称 | 命中域数 | 命中域列表 | 修复路径 |
-|---------|---------|----------|---------|
+| 模式名称 | 命中域数 | 命中域列表 | 修复路径 / v3 状态 |
+|---------|---------|----------|------------------|
 | **退款不冲销次数等价物（5 通道）** | 5 | 07/08/11/15/20 | **✅ 已修复（2026-04-26/27）**：refund-cascade.js/ts 双端落地 + 5 通道全量回滚 + sale_order_type 5→3 + uq_sop_status_audit 并发守卫 |
-| **代码引用已删 schema 字段** | 4 | 05(sku_id) / 12(from_store_name) / 14(store_id) / 09(valid_start/end) | migration 0003 后所有 DROP/RENAME 全仓 grep；CI 加 typecheck + drizzle-kit check |
-| **测试反向锁死错误代码** | 5+ | 08/12/14/24/CC9 | 修 P0 同步删/改测试；CI lint "测试不应锁死 schema 字面量" |
-| **时区漂移** | 5 | 02/05/06/17/18/CC7 | `ALTER DATABASE fengyu SET timezone='Asia/Shanghai'` + 三端禁 `new Date().toISOString().slice()` |
-| **scope 过滤非全覆盖** | 8+ | 01/02/05/06/07/10/11/12/19/25/CC3/CC4 | 强制 staffApi/clientApi/admin 三端 scope helper + middleware assert |
-| **同业务工具三/四端副本漂移** | 6+ | 07(DELETE vs is_void) / 08(roleType×3) / 10(customer_type×2) / 15(settlePoints×3) / 19(grantShareGift×3) / 20(remaining×5) | 抽 `cloudfunctions-shared/` + admin lib helper；diff 守卫 |
-| **schema 字段写入完整但消费 0** | 4 | 06(过期关闭) / 10(monthly_activity) / 13(applicable_xxx_ids) / 25(promoter_employee_id) | spec/schema docstring 关键字 grep + cron STEP 补齐 |
-| **状态机 UPDATE 缺 CAS 守卫** | 5+ 路径 | 02/03/04/06/12/CC2 — 共 12 处 | 全仓 `UPDATE.*WHERE.*_id` 扫描 + CI lint 强制 `AND status =` |
-| **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7 | 03/05/06/12/13×2/CC2 | 11 项 partial UNIQUE 索引一次性 migration；**退款 in-flight 已由 uq_sop_status_audit 覆盖（2026-04-27）** |
-| **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享 `_shared/error-codes.js` 8 项白名单 + admin `withApiResponse` HOF |
-| **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail |
-| **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation |
-| **金额/比例字段无 CHECK 约束** | 5+ | 07(ratio) / 14(card_tx) / 15(pt) / CC1 | 一次性补齐 5 项 CHECK |
+| **代码引用已删 schema 字段** | 4→**1** | ~~12(from_store_name)~~ ✅ / ~~14(store_id)~~ ✅ / ~~09(valid_start/end)~~ ✅ / **05(service_items.sku_id) 仍 ❌** | migration 0003 后所有 DROP/RENAME 全仓 grep；CI 加 typecheck + drizzle-kit check；**仅剩 service.create 待修** |
+| **测试反向锁死错误代码** | 5+→**2** | ~~08/12/14/24~~ ✅ / CC9（service.create + payNotify 守卫态残留） | 修 P0 同步删/改测试；CI lint "测试不应锁死 schema 字面量" |
+| **时区漂移** | 5 | 02/05/06/17/18/CC7 | `ALTER DATABASE fengyu SET timezone='Asia/Shanghai'` 仍待跑 + 三端禁 `new Date().toISOString().slice()` |
+| **scope 过滤非全覆盖** | 8+→**3** | ~~10/11/19~~ ✅（staff customer/performanceDetail 全部已加） / 01/02/CC3/CC4 仍待 scope helper 抽出 | 强制 staffApi/clientApi/admin 三端 scope helper + middleware assert |
+| **同业务工具三/四端副本漂移** | 6+→**3** | ~~15(settlePoints)~~ ✅ snapshot 守护 / ~~07(DELETE→is_void)~~ ✅ migration 0022 / ~~14 充值卡逻辑~~ ✅ E9 R2 / 08(roleType×3) / 10(customer_type×2) / 20(remaining×5) 仍待 | 用户 veto 共享目录后改 `cross-end-sql-snapshot.test.js` 字面量守护方案；剩余项各端各落 |
+| **schema 字段写入完整但消费 0** | 4 | 06(过期关闭)✅ cron 已落 / 10(monthly_activity)待 / 13(applicable_xxx_ids)✅ 校验已落 / 25(promoter_employee_id)待 | spec/schema docstring 关键字 grep + cron STEP 补齐 |
+| **状态机 UPDATE 缺 CAS 守卫** | 5+ 路径 | 02/03/04/06/12/CC2 — 共 12 处 | 全仓 `UPDATE.*WHERE.*_id` 扫描 + CI lint 强制 `AND status =`（v3 未推进） |
+| **TOCTOU：事务外读 → 事务内 INSERT 无 partial unique** | 7→**6** | 03/05/06/12/13×2/CC2 — ~~退款 in-flight~~ ✅ `uq_sop_status_audit` | 剩 10 项 partial UNIQUE 索引一次性 migration |
+| **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
+| **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
+| **admin 物理硬删 vs 软删双轨** | 多 | 09(deleteSku) / 15(point_transactions) / 16(deleteMessage) | 关键流水/PII 表统一软删 + 删除前置 logOperation（v3 未推进） |
+| **金额/比例字段无 CHECK 约束** | 5+→**2** | ~~07(ratio)~~ ✅ / ~~svc_comm~~ ✅ migration 0022 / 14(card_tx) / 15(pt) 待 | 一次性补齐剩余 2 项 CHECK |
 
 ---
 
 ## 4. 修复 Roadmap（按 L0→L11 传播层）
 
-### L0 — Schema / Enums 层（一次性 migration epic）
+### L0 — Schema / Enums 层（一次性 migration epic — v3 更新）
 
-**P0（12 项）**：~~跨表 OPENID 唯一（S01-2，已作废）~~ / 手机号 CHECK（S01-1）/ ~~sale_orders 金额符号联动 CHECK（S03-4）~~ ✅ 架构性作废（2026-04-27：退款不再写 sale_orders 行，enum 5→3）/ card_transactions 符号 CHECK（S-CC1-2）/ point_transactions 符号 CHECK + bigint（S-CC1-2）/ sale_allocations.allocation_ratio IN-集合 CHECK（S-CC1-1，保留 NUMERIC(5,2)）/ commission_rate BETWEEN 0 AND 1（S-CC1-3）/ prepaid_cards.balance >= 0（S-CC2-11）/ ~~service_commissions 增 voided_at（S-CC7-2）~~ ✅ 已修复（migration 0018）/ ~~11 项 partial UNIQUE 索引~~ → 退款 in-flight 已由 uq_sop_status_audit 覆盖（2026-04-27），其余 10 项仍待（M 量级）/ PG timezone = Asia/Shanghai（S-CC7-1）/ 删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）/ uq_sop_txn 去除 method 维度（S04-2）
+**P0（剩 5 项）**：手机号 CHECK（S01-1）/ card_transactions 符号 CHECK（S-CC1-2）/ point_transactions 符号 CHECK + bigint（S-CC1-2）/ prepaid_cards.balance >= 0（S-CC2-11）/ PG timezone = Asia/Shanghai（S-CC7-1）/ 剩余 10 项 partial UNIQUE 索引
+
+**已关闭**：~~跨表 OPENID 唯一（S01-2）~~ 作废 / ~~sale_orders 金额符号联动 CHECK（S03-4）~~ 架构性作废 / ~~service_commissions voided_at（S-CC7-2）~~ migration 0018 / ~~sale_allocations.allocation_ratio CHECK（S-CC1-1）~~ migration 0022 / ~~commission_rate CHECK（S-CC1-3）~~ migration 0022 / ~~退款 in-flight partial unique~~ migration 0018 uq_sop_status_audit / ~~删除冗余列 sale_orders.wechat_transaction_id + alipay_transaction_id（S04-1）~~ migration 0018 / ~~uq_sop_txn 去除 method 维度（S04-2）~~ migration 0018 / ~~7 项退款专属列 DROP~~ migration 0025
 
 **P1（5 项）**：roleEnum PG enum / productKindEnum PG enum / system_configs 加 special_card_kind_id / sale_orders.allocation_status 加 default '待分配' / PII 历史 operation_logs.detail 一次性脱敏
 
 **P2（2 项）**：products.display_icon 删除决策 / staff_wechat_users.store_id 重命名
 
-### L1 — Helpers 层
+### L1 — Helpers 层（v3 更新）
 
-**P0（8 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/scope.ts`（含 assertCustomerInScope/assertEmployeeInScope/assertOrderInScope）/ `db/helpers/money.ts` / `cloudfunctions-shared/error-codes.js` / `cloudfunctions-shared/share-gift.js + points.js` / ~~`db/helpers/refund-cascade.ts`~~ ✅ 已落地（2026-04-26/27） / `db/helpers/role-resolve.ts`
+**P0（剩 6 项）**：`db/helpers/phone.ts` / `db/helpers/pii.ts` / `db/helpers/scope.ts`（含 assertCustomerInScope/assertEmployeeInScope/assertOrderInScope）/ `db/helpers/money.ts` / 各端 `error-codes.js`（用户 veto 共享目录） + 字面量 snapshot 守护 / `db/helpers/role-resolve.ts`
 
-**P1（3 项）**：`db/helpers/dashboard-metrics.ts` / `db/helpers/sale-item-availability.ts` / `cloudfunctions-shared/sanitize.js`
+**已关闭**：~~refund-cascade.ts~~ ✅ 已落地（admin TS + staff JS 双副本）/ ~~settlePoints 四端 + applyRecharge 三端~~ ✅ `cross-end-sql-snapshot.test.js` 字面量守护
 
-### L3 — 三端 routes / actions 层
+**P1（3 项）**：`db/helpers/dashboard-metrics.ts` / `db/helpers/sale-item-availability.ts` / 跨端 sanitize 字面量守护
 
-**P0（16 项关键 patch）**：
-- payNotify/index.js — 接入 V3 签名 + AEAD + IP 白名单 + NODE_ENV 守卫
-- staffApi/routes/order.js generateOrderNo — 改单事务
-- staffApi/routes/service.js — 移除 sku_id 列引用
-- clientApi/routes/store.js requestUnbind — 移除 from_store_name 列引用
-- admin/actions/orders.ts applyRecharge/createConversion — 去除 store_id
-- admin/actions/orders.ts createOrder — 优惠券 server-side 校验范围
-- staff/client order.create — 校验 applicable_market_ids + face_value_override
-- staffApi/routes/customer.js（6 路由）— assertCustomerInScope + scope WHERE
-- ~~approveRefund 三端 — 5 通道 cascade（sa/sc/coupons/points/picked_up）~~ ✅ 已修复（2026-04-26/27 域重构收官）
-- close/cancel/closeExpired 三端 — 状态推进同事务 cascade payments/sa
-- 12 处 UPDATE 加 CAS 守卫
-- client appointment/message/points 加 requirePhone()
-- admin coupon issue + cron 自动发放 — advisory_xact_lock + totalCount 校验
-- staff createPickup — `AND item_direction='购买'` 守卫 + requireManager
-- payNotify + staff allocation.save + admin batchSave — sa 写入后置 allocation_status
+### L3 — 三端 routes / actions 层（v3 更新）
 
-**P1（约 60 项）**：详见各 audit §6 表
+**P0（剩 7 项关键 patch）**：
+- **payNotify/index.js** — 接入 V3 签名 + AEAD + IP 白名单 + 清理 wechat_transaction_id 残留（解锁前 L127/148/271/283 仍 SELECT/UPDATE 已 DROP 列）
+- **staffApi/routes/order.js generateOrderNo** — 改单事务（移除内部 pg.transaction，把 advisory_xact_lock 放到 order.create 主事务里）
+- **staffApi/routes/service.js** — 移除 INSERT INTO service_items 的 sku_id 列引用（L208-211）
+- **client order.js** — 无券路径补齐 totalAmount Math.round（L247 累加后 / L542 写库前）
+- **staff/client order.create** — face_value_override 跨端读取漂移核查
+- **close/cancel/closeExpired 三端** — 状态推进同事务 cascade payments/sa
+- **12 处 UPDATE 加 CAS 守卫**（02/03/04/06/12）
+
+**已关闭**：~~admin/actions/orders.ts applyRecharge/createConversion store_id~~ ✅ / ~~admin createOrder 优惠券 server-side 校验范围~~ ✅ / ~~clientApi/routes/store.js requestUnbind from_store_name~~ ✅ / ~~staffApi/routes/customer.js 6 路由 scope WHERE + audit log~~ ✅ / ~~approveRefund 三端 5 通道 cascade~~ ✅ / ~~payNotify + admin sa 写入后置 settlePoints~~ ✅
+
+**P1（约 60 项）**：详见各 audit §6 表（v3 未逐条核验）
 
 ### L4 — Cron-worker 层
 
@@ -179,20 +236,20 @@
 
 **P1（2 项）**：dashboard.consistency.test.ts 三端业绩对齐 / CC1 不变量与 ops 工单联动
 
-### Roadmap 总条数
+### Roadmap 总条数（v3 — 2026-05-17）
 
-| 层 | P0 | P1 | P2 | 小计 |
-|----|----|----|----|------|
-| L0 | 13 | 5 | 2 | 20 |
-| L1 | 8 | 3 | 0 | 11 |
-| L3 | 16 | ~60 | — | 76 |
-| L4 | 5 | 3 | 0 | 8 |
-| L7 | 6 | 2 | 0 | 8 |
-| L9 | 0 | 6 | 2 | 8 |
-| L11 | 5 | 2 | 0 | 7 |
-| **合计** | **53** | **81** | **4** | **138** |
+| 层 | P0 (v2) | P0 (v3) | P1 | P2 | 小计 (v3) |
+|----|---------|---------|----|----|-----------|
+| L0 | 13 | **5** | 5 | 2 | 12 |
+| L1 | 8 | **6** | 3 | 0 | 9 |
+| L3 | 16 | **7** | ~60 | — | ~67 |
+| L4 | 5 | **2**（剩 STEP 6 dashboard 守护 + STEP 8 partial-unique 巡检）| 3 | 0 | 5 |
+| L7 | 6 | **4**（剩 withPermission HOF / PERMISSION_MATRIX DB 化 / api-error / formatPhoneSafe）| 2 | 0 | 6 |
+| L9 | 0 | 0 | 6 | 2 | 8 |
+| L11 | 5 | **2**（剩 audit-store-unbind-orphans / audit-refund-cascade-coverage）| 2 | 0 | 4 |
+| **合计** | **53** | **26** | **81** | **4** | **111** |
 
-> P0 修复优先 L0→L1→L3 三层串行（schema migration 是其他层的前置）；L4 cron 与 L11 cron 守护可并行。
+> v3 关闭 **27** 项 P0。剩余 26 项 P0 的 60% 集中在 L0/L1/L3 三层 — 仍是 schema migration → helpers → routes 三层串行优先。L4/L11 cron 已有 audit-payment-invariants + close-expired 落地，剩余守护脚本与 L1 helpers 并行。
 
 ---
 
@@ -233,32 +290,37 @@
 | Q6.2 | sale_order_payments 是否需补 audit_status / audit_employee_id / refund_reason 等列承载退款单字段？ | **sale_order_payment_details 1:1 子表（Q6.2=B）**：operator/note/退款专属/审批专属字段全部下沉 | ✅ 已落地（2026-04-27） |
 | Q6.3 | 历史回款单/退款单迁移时是否一并冲销 sa/sc/coupons/points/pickup？ | **5 通道全量回滚（Q6.3=A）**：历史数据 0 行无需迁移；cascade 逻辑已实现 | ✅ 已落地（2026-04-27） |
 
-### 5.3 资损金额估算
+### 5.3 资损金额估算（v3）
 
-| 风险 | 资损规模 / 月 | 备注 |
-|------|--------------|------|
-| payNotify 伪造支付 | **≥ 整月营业额** | 灾难级，攻击门槛 0 |
-| 退款不冲销 sa 提成 | ~~员工业绩 5-15% 长尾累积~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
-| 退款不冲销 user_coupons | ~~券面值 × 月退款单数 × 平均折扣~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
-| 退款不冲销 picked_up_quantity | ~~被退商品零售价~~ **✅ 已修复（2026-04-26/27）** | 5 通道 cascade 已实现 + 域重构收官 |
-| admin createOrder 跨 store 优惠券 | 券面值 × admin 主动套利频次 | admin 内部信任问题 |
-| sale_allocations.ratio 写 9.99 | 业绩 ×10 倍 | IN-集合 CHECK 后归零 |
-| cron 跳档仅扫会员客 | 流量/体验客生日+感恩+升级三件套漏发 | 单顾客年损 ≈ 礼券 + 积分 |
-| 跨表 OPENID 重叠 | 身份混乱无法对账 | 数据完整性，资损延迟暴露 |
-| staff customer.* 6 路由 PII | 合规风险 | 不可量化（个人信息保护法）|
+| 风险 | 资损规模 / 月 | v3 状态 |
+|------|--------------|---------|
+| payNotify 伪造支付 | **≥ 整月营业额** | 🔶 仍 PAYNOTIFY_DISABLED 拦截，灾难级风险但不发生 |
+| payNotify 解锁后 42703 崩溃 | 全部线上支付链不可用 | 🔶 解锁前必须先清掉 wechat_transaction_id 残留 |
+| 退款不冲销 5 通道 | — | ✅ 全部已修复（2026-04-26/27/05-17 收官）|
+| admin createOrder 跨 store 优惠券 | — | ✅ 已修复（orders.ts 4 维度校验） |
+| sale_allocations.ratio 写 9.99 | — | ✅ 已修复（migration 0022 IN-集合 CHECK） |
+| staff service.create 100% 失败 | 服务单创建链路阻塞 | ❌ 仍未修，业务实际靠"绕过 create"测试态运行 |
+| advisory lock 跨事务重号 | 订单号/退款号/服务单号 重复 | ❌ 仍未修；并发场景概率性触发 |
+| client 无券订单 total_amount 浮点漂移 | ±0.005 / 订单 | ❌ 仍未修；日均累积影响对账 |
+| cron 跳档仅扫会员客 | 流量/体验客生日+感恩+升级三件套漏发 | 🔶 部分待 — refresh-member-levels 已大幅提速（commit 626d0b4 N+1→单 JOIN 1500× 提速）|
+| staff customer.* 6 路由 PII | — | ✅ 已修复（scope WHERE + audit log） |
+| admin 物理硬删 PII | 个保法合规风险 | ❌ 未修（多域散落）|
 
-> **修复 ROI**：payNotify 签名 + ~~退款 cascade~~（✅ 已修复） + ratio CHECK 两项一次修复即可拦下 ≥ 80% 资损通道，预估 1 周内可完成。
+> **v3 修复 ROI**：剩余 P0 中 **payNotify 签名 + service.create 列引用 + advisory lock 改单事务** 三项可拦下 ≥ 90% 剩余生产风险，预估 1-2 周可完成。
+> 已落地 19 项 P0 关闭对应历史资损面（主要是退款 5 通道 + 优惠券范围）的修复成本回收周期 < 1 个月。
 
-### 5.4 跨域 epic 优先级
+### 5.4 跨域 epic 优先级（v3 — 重排）
 
-| Epic | 包含修复 | 推荐排期 |
-|------|---------|---------|
-| E1 payNotify 安全收官 + _testOpenid 门控 | P0-04-01/02/03/04 + S04-1/2/3 + P0-CC4-09 + P0-CC2-v2-01（守卫后残留字段）| 第 1 周 |
-| E2 退款级联 cascade（5 通道）| ~~P0-CC2-07~~ ✅ 已修复（2026-04-26/27）；L1 helpers + L3 三端已落地 + 域重构收官（enum 5→3 + subtable + 并发守卫）；E2 改为 payNotify 安全收官 + 已删字段清理 | 第 1 周 ✅ |
-| E3 已删字段引用清理 | P0-05-01 / P0-12-01 / P0-14-01（P0-CC9-01/03）+ CC9 测试整改 | 第 1 周（与 E1 并行）|
-| E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 第 2-3 周 |
-| E5 schema 不变量 CHECK 一次性 migration | L0 P0 13 项 + L11 audit cron | 第 2 周 |
-| E6 时区统一 + 跨端口径收敛 | CC7 + CC1 + dashboard 三端口径 | 第 3-4 周 |
-| E7 跨端副本 helper 抽取 | settlePoints / grantShareGift / role-resolve / sale-item-availability | 第 3-4 周 |
-| E8 spec 与代码同步守卫 | L9 spec 校对 + CI lint + schema docstring grep | 第 4 周 |
-| E9 capability 列收敛 magic string | **Round 1 ✅ 已完成**：is_experience（[ticket](../../notes/tickets/2026-04-26-experience-card-as-sku-flag.md)）；**Round 2 待**：is_recharge_card (S24-1)、跃迁 SQL 切 sale_items.is_experience、cron-worker / cloudfunctions-shared 共享 helper、payNotify/staff confirmOffline/admin recordPayment 三处接入 | 第 1-2 周 |
+| Epic | 包含修复 | v3 状态 / 推荐排期 |
+|------|---------|--------------------|
+| E1 payNotify 安全收官 + 残留字段清理 | P0-04-01/02/03/04 + S04-3 + P0-CC2-v2-01（wechat_transaction_id 残留）| **🔥 仍待** — 解锁前必须清残留；签名方案因拉卡拉切换 + 待对接 |
+| E2 退款级联 cascade（5 通道）| P0-CC2-07 + L1 helpers + L3 三端 + 域重构 | ✅ **完成**（2026-04-26/27/05-17） |
+| E3 已删字段引用清理 | P0-05-01 service.create / payNotify 残留 + CC9 测试整改 | 🔥 **部分** — admin/staff/client 业务侧已干净；剩 service.create + payNotify 守卫态 |
+| E4 scope 全覆盖 | P0-CC4-06 / P0-CC3-x + L1 scope helpers + admin withPermission | 🔶 **部分** — staff 路由层已加；helper 集中化 + withPermission HOF 待 |
+| E5 schema 不变量 CHECK 一次性 migration | L0 P0 剩 5 项 + L11 audit cron 剩 2 项 | 🔶 **5/13 关闭**：ratio/commission/uq_sop ✅；剩 时区/金额符号/partial unique 10 项 |
+| E6 时区统一 + 跨端口径收敛 | CC7 + CC1 + dashboard 三端口径 | 🔶 admin dashboard 已切；staff mgmtDashboard 守护测试待 |
+| E7 跨端副本 helper 抽取 | settlePoints / grantShareGift / role-resolve / sale-item-availability | ✅ **方案改动**：用户 veto 共享目录，改用 `cross-end-sql-snapshot.test.js` 字面量守护（settlePoints + applyRecharge 已落地）；剩 grantShareGift / role-resolve / sale-item-availability 待 |
+| E8 spec 与代码同步守卫 | L9 spec 校对 + CI lint + schema docstring grep | 🔶 **部分** — backend.pr.spec.md v2.1.0 已更；sale_order_type 5→3 后 staff/client.pr.spec 已校对（ticket §11 收尾）|
+| E9 capability 列收敛 magic string | is_experience（R1）/ is_recharge_card（R2）+ 跃迁 SQL + cron-worker + 三端接入 | ✅ **R1 + R2 完成**（commit ed3bf1f：is_recharge_card SKU 表单 + 互斥校验 + payNotify 行级快照）|
+| E10（新增 v3）admin permission 收尾 | refund_create / refund_approve 拆分（已落）/ withPermission HOF（未落）/ PERMISSION_MATRIX DB 化（D-Q3 决策待落） | 🔶 拆分完成；HOF + DB 化第 4-5 周 |
+| E11（新增 v3）测试基础设施 | L2 云函数 + L3 小程序 E2E 框架（commit d13c7e2 已落） + SQL patch shim 移除（commit 09488bd） + manual-e2e 共享 helper（commit 12d47bf） | ✅ **完成**（2026-05 月） |

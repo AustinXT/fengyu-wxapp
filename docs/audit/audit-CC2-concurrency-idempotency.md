@@ -13,6 +13,19 @@
 
 ---
 
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-CC2-07** 退款审批不冲销 5 通道 | v2 已修复 | ✅ **已确认** — refund-cascade.js/ts 双端在 migration 0018 voided_at + 0019 enum 5→3 + 0021 子表化 + 0023 子表回收后保持工作 |
+> | **P0-CC2-v2-01** payNotify DROP 字段残留 | 待解除守卫后修复 | ❌ **仍未清理** — payNotify/index.js L127/148/271/283 仍 SELECT/UPDATE `sale_orders.wechat_transaction_id`；解锁前必须先清；SUMMARY v3 Top 10 #1 |
+> | **P0-CC2-01/04** Advisory lock 跨事务释放窗口 | 待 | ❌ **仍未修** — staffApi/routes/order.js:2473-2495 `generateOrderNo` 仍内嵌独立 `pg.transaction()`；SUMMARY v3 Top 10 #3 |
+> | **退款 in-flight partial unique** | v2 架构性作废 | ✅ **以另一形式落地** — migration 0018 `uq_sop_status_audit ON (sale_order_id, change_type) WHERE change_type='退款' AND status='待审批'` |
+> | 11 项 partial UNIQUE 索引（含上） | 待 | 🔶 1 项已落（uq_sop_status_audit），10 项仍待 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 修复记录（v2 验证关闭）
 
 > 以下条目已通过 v2 实时代码扫描确认修复。

@@ -8,6 +8,15 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-12-01** client requestUnbind 写不存在的 `from_store_name` 列 | 未修复 | ✅ **已修复** — `clientApi/routes/store.js:156` 已改用 `from_store_id`；ticket `2026-04-27-client-requestUnbind-from-store-name.md` 归档 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client |

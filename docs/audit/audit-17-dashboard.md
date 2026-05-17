@@ -8,6 +8,17 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-17-01/02/03** admin getDashboardStats 用 total_amount + 不过滤退款单 | 未修复 | ✅ **已修复** — `actions/dashboard.ts:13-16` 注释说明从 `SUM(total_amount) WHERE sale_order_type != '退款单'` 切到 `SUM(received - refunded_amount) WHERE sale_order_type IN ('销售单','转换单') AND status='已支付'`；L92-136 实施 |
+> | **sale_order_type 5→3 重构** | — | ✅ migration 0019/0021 全栈落地（退款单类型不再存在于 sale_orders 表）|
+> | staff mgmtDashboard 三端口径对齐 | — | 🔶 部分 — admin 已切；staff mgmtDashboard 需要 `dashboard.consistency.test.ts` 守护（SUMMARY v3 E6）|
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff (管理层) | staff (门店员工) | client |

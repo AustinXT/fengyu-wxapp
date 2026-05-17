@@ -10,6 +10,21 @@
 **规范版本**：`real.md` v3.1.0（命中 #3 支付幂等、#4 状态单向、#5 后端鉴权）+ `enums.ts` 28 枚举
 **合并说明**：v2 独立重审发现 3 项新 P0，v1 P0-04-04 已被守卫屏蔽降为 P2。v3 以 v2 为准，CLOSED 条目标记来源。
 
+---
+
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-04-01** payNotify 无 V3 签名 / AEAD / 来源校验 | 守卫屏蔽 | ❌ **仍未补** — `payNotify/index.js:54 PAYNOTIFY_DISABLED=true` 仍生效；微信支付方案因切换至拉卡拉（D-Q11）继续等对接。SUMMARY v3 Top 10 #1 |
+> | **守卫后业务代码残留已 DROP 字段** | v2 新增 P0-CC2-v2-01 | ❌ **仍未清理** — L127/148/271/283 仍引用 `sale_orders.wechat_transaction_id`（migration 0018 已 DROP）；解锁守卫立即 42703 崩溃 |
+> | **S04-1** 删除冗余三方流水列 | 待 | ✅ **已修复** — migration 0018 DROP paid_amount + wechat_transaction_id + alipay_transaction_id |
+> | **S04-2** uq_sop_txn partial unique | 待 | ✅ **已修复** — migration 0018 `uq_sop_status_audit` 覆盖退款 in-flight |
+> | **payNotify settlePoints 接入** | 待 | ✅ **已修复** — commit 6b32787：L549 接入 `settlePointsSafe` + 跨端 SQL 一致性 snapshot 守护 |
+> | **payNotify is_recharge_card 切行级快照** | E9 R2 待 | ✅ **已修复** — L325 改用 `si.is_recharge_card`；L504/513 用 `si.is_experience` |
+> | 其余 P0/P1 | — | 未复核 |
+>
+
 > **注 (2026-04-27 domain refactor)**：payNotify 仍被 `PAYNOTIFY_DISABLED = true` 守卫拦截（D-Q1）。`saleOrderTypeEnum` 已精简为 3 值（销售单/内部单/转换单），`回款单`/`退款单` 已移除。退款改为基于 payment 流水（`sale_order_payments` change_type='退款', amount<0）+ `sale_order_payment_details` 子表。`paymentFlowStatusEnum` 已更新为 5 值（'待支付'/'待审批'/'已支付'/'已作废'/'已退款'）。payNotify 代码中 `paid_amount` 列引用和 `回款单` 逻辑均为确认死代码，解禁前必须清除。
 
 ---

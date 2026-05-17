@@ -11,6 +11,17 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-15-01** admin 三大资金触发点全无 settlePoints | 未修复 | ✅ **已修复** — `fengyu-admin/src/lib/points-settle.ts` 抽出 `settlePointsSafe`；`actions/orders.ts:592` (confirmOfflinePayment) + `:2055` (recordPayment) 两处调用；orders.test.ts P0-15-01 守护用例覆盖 |
+> | **P0-15-02** settlePointsForOrder 三端字节级副本 + cron 5 套写入散落 | 未修复 | ✅ **方案修复** — 用户 veto cloudfunctions-shared 抽取（feedback `no-shared-cloudfunctions`）；改用 `staffApi/__tests__/routes/cross-end-sql-snapshot.test.js` 跨端 SQL 字面量守护（settlePoints 四端 + applyRecharge 三端） |
+> | **payNotify settlePoints 接入** | 未修复 | ✅ **已修复** — commit 6b32787：`payNotify/index.js:549` 接入 `settlePointsSafe` |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 重审说明
 
 本报告是对上一轮（claude-opus-4-7）审计报告的独立复核。所有发现均基于当前实际代码（2026-04-26 最新提交），不依赖上一轮结论。

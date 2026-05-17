@@ -11,6 +11,19 @@
 - clientApi 12 个私域路由缺 requirePhone：保留 v1 评级，v2 补充精确化
 - client order.scanDetail：v2 确认已有 requirePhone 守卫 → 已修复 ✅
 
+---
+
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-CC4-01** payNotify 无签名/AEAD/IP 校验 | 🔶 守卫屏蔽 | ❌ **仍待补**（PAYNOTIFY_DISABLED 仍 true；签名方案因切换至拉卡拉等对接）|
+> | **P0-CC4-02** admin server action 缺统一 wrapper | 待 | 🔶 **部分** — `requirePermission` 208 处显式调用（覆盖 171 action），但无 HOF wrapper；新增 action 仍易漏 |
+> | **P0-CC4-06** staff customer 6 路由 + performanceDetail scope 缺 | 待 | ✅ **已修复** — 全部加 effectiveStoreId WHERE + requireManager + audit log（详见 audit-10 复核块）|
+> | **P0-CC4-09** staffApi `_testOpenid` 无 ALLOW_TEST_OPENID 门控 | v2 新增 | ✅ **已修复** — `middleware/auth.js:104` 加 `process.env.ALLOW_TEST_OPENID === 'true'` 守卫；ticket `2026-04-27-staffapi-test-openid-gate.md` 归档 |
+> | refund_create / refund_approve 拆分 | — | ✅ **已落** — commit f873bd1 + 8a30454（refunds.ts L241 注释说明）|
+> | 其余 P0/P1 | — | 未复核 |
+
 **总 P0/P1/P2**：14 P0 / 9 P1 / 6 P2（含 v1 10 + v2 4 独立新发现）
 
 ---

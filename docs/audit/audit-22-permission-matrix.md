@@ -11,6 +11,18 @@
 > 并对 admin/staff"两套真相源"问题作了定量补充。
 > 合并后重新计数：**5 P0 + 6 P1 + 4 P2 = 15 findings**（v1 11 + v2 新增 4，无重复）。
 
+---
+
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | refund_create / refund_approve 权限拆分 | 待 | ✅ **已落** — commit f873bd1：PERMISSION_MATRIX 拆分；commit 8a30454：admin 拿回 refund_approve + hasPermission 模块归属重整 |
+> | `requirePermission` 显式调用覆盖 | 待 | 🔶 **部分** — 208 处显式调用，171 个 action 全覆盖；但仍无 HOF wrapper（SUMMARY v3 Top 10 #4）|
+> | PERMISSION_MATRIX DB 化（D-Q3 决策）| 待 | ❌ **未做** — 仍为代码常量（permissions.ts L15）|
+> | assignRole admin 自删保护（D-Q12） | 待 | 未复核 |
+> | 其余 P0/P1 | — | 未复核 |
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client |

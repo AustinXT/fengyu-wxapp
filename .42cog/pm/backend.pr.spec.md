@@ -161,8 +161,16 @@
 | `service_fee` | numeric(10,2) | 手工费，NOT NULL DEFAULT 0 |
 | `valid_start` | date \| null | 有效期开始 |
 | `valid_end` | date \| null | 有效期结束 |
+| `is_experience` | boolean | **capability 列**：是否为体验卡 SKU（替代 `product_kind='体验卡'` 字面量判定），NOT NULL DEFAULT false |
+| `is_recharge_card` | boolean | **capability 列**：是否为充值卡 SKU（替代 `product_kind='充值卡'` 字面量判定），NOT NULL DEFAULT false |
 
-> **索引**: `(product_id)`。**CHECK**: `price >= 0`、`service_fee >= 0`、`session_count IS NULL OR >= 1`。**FK 引用**: `sale_items.sku_id`。
+> **索引**: `(product_id)`、`(is_experience) WHERE is_experience = true`、`(is_recharge_card) WHERE is_recharge_card = true`。
+>
+> **CHECK**: `price >= 0`、`service_fee >= 0`、`session_count IS NULL OR >= 1`、`chk_sku_not_both_capabilities: NOT (is_experience AND is_recharge_card)`（互斥）。
+>
+> **FK 引用**: `sale_items.sku_id`。
+>
+> **capability 列 SSoT 原则**（2026-04-26 ticket，详见 §4 #23）：业务判定（跃迁 / 充值入账 / 入口过滤 / D4 严格独立校验）一律读 `is_experience` / `is_recharge_card`，不再读 `product_categories.product_kind` 字面量。`product_kind` 仅作为商品组织/分类标签，admin 可改名而不影响业务逻辑。新增卡类（如"季卡"）只需在 `product_categories` 加一行 + 加 capability 列即可零字面量散落。
 
 ### 2.7 commission_rate_matrix（提成比例矩阵）
 
@@ -246,10 +254,14 @@
 | `expire_date` | date \| null | 到期日（家居产品为 null） |
 | `remark` | text | 备注 |
 | `sales_category` | enum \| null | 销售分类：`自销自耗` / `他销自耗` / `他销他耗` / `生态合作` |
+| `is_experience` | boolean | **capability 快照**：开单时从 `product_skus.is_experience` 拷贝；customer_type 跃迁判据，行级不可变，NOT NULL DEFAULT false |
+| `is_recharge_card` | boolean | **capability 快照**：开单时从 `product_skus.is_recharge_card` 拷贝；payNotify 充值入账触发判据 + D4 严格独立校验，NOT NULL DEFAULT false |
 
-> **索引**: `(sale_order_id)`, `(sku_id)`, `(ref_sale_item_id)`
+> **索引**: `(sale_order_id)`, `(sku_id)`, `(ref_sale_item_id)`、`(sale_order_id) WHERE is_recharge_card = true`
 >
 > **CHECK**: `unit_price >= 0`、`unit_real_price >= 0`、`remaining_sessions IS NULL OR >= 0`、`quantity > 0`。`sale_amount` 和 `received` 允许负值（退款/转换退出行）。
+>
+> **DB 兜底触发器** `trg_check_no_mixed_recharge`（CONSTRAINT TRIGGER DEFERRABLE INITIALLY DEFERRED）：同一 `sale_order_id` 的 sale_items 不能混合 `is_recharge_card = true / false`，COMMIT 时拒绝。应用层（admin / staff / client）已加显式 `MIXED_RECHARGE_NOT_ALLOWED` 双层守卫，DB trigger 是跨实现兜底。
 
 ### 2.10 sale_allocations（营业额分配）
 
@@ -673,6 +685,15 @@ login 返回中包含 `permissions` 字段：
 20. **转换规则**：`ref_sale_order_id` 必填；转换单包含 `转出` 行和 `转入` 行，单事务完成；`转出` 原子扣减 `remaining_sessions`；`total_amount` = 补差价
 21. **退款规则**：创建时状态为 `待审批`；店长审批后原子扣减 `remaining_sessions`；`total_amount` 为负数；handling_fee 存入 `remark`
 22. **回款/转换/退款仅员工端操作**
+23. **capability 列 SSoT**（2026-04-26 ticket 落地）：体验卡 / 充值卡 等"特殊 SKU 行为"判定一律读 `product_skus.is_experience` / `is_recharge_card`，**禁止**写 `WHERE product_kind = '体验卡'` / `'充值卡'` 字面量。两列互斥（`chk_sku_not_both_capabilities` CHECK 保护）。`product_kind` 仅作组织/分类标签。开单时 `sale_items` 自动快照同名列，行级不可变（admin 后续修改 SKU capability 不影响历史订单）。
+24. **D4 充值卡严格独立**：同一订单 `sale_items.is_recharge_card` 必须全 true 或全 false；混合下单抛 `INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED`。三端应用层（admin / staff / client）已加显式守卫，DB trigger `trg_check_no_mixed_recharge` 在 COMMIT 兜底。
+25. **customer_type 跃迁（event-driven）**：在三处收款触发点同步重算 — `payNotify`（线上支付回调）/ `staffApi.order.confirmOffline`（线下确认）/ `admin.recordPayment`（后台补录）。跃迁 SQL **三端独立副本**（admin `actions/orders.ts` + staffApi `routes/order.js` + payNotify `index.js`），由 `staffApi/__tests__/routes/recalc-customer-type-sql.test.js` 字节守卫一致性。判定逻辑：
+    - `EXISTS(销售单 total_amount ≥ threshold)` → `会员客`
+    - `EXISTS(销售单 sale_items.is_experience = false)` → `小美客`（充值卡的 `is_experience = false`，自动计入此通道，D1=A 决策）
+    - `EXISTS(销售单 sale_items.is_experience = true)` → `体验客`
+    - 否则 `流量客`
+    - 客户分类**只升不降**（取 max(current, computed)）
+    - `customer_type='会员客'` 早退出，无需重算
 
 ---
 

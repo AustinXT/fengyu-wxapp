@@ -8,6 +8,18 @@
 
 ---
 
+> ### 🔥 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-CC1-01/04** sale_allocations.allocation_ratio 无 IN-集合 CHECK | 待 | ✅ **已修复** — migration 0022 `chk_sale_alloc_ratio CHECK (allocation_ratio IN (0.10,...,1.00))` |
+> | **P0-CC1-03** commission_rate 无 BETWEEN 0 AND 1 CHECK | 待 | ✅ **已修复** — migration 0022 `chk_svc_comm_commission_rate` + `chk_svc_comm_alloc_ratio` |
+> | **P0-CC1-v2-01** client order.create 无券路径 totalAmount 缺 Math.round | 待 | ❌ **仍未修** — `clientApi/routes/order.js:240-247` `totalAmount += saleAmount` 累加后无券路径不再 round（L391-392 仅在 `if (couponInfo)` 块内）。SUMMARY v3 Top 10 #5 |
+> | card_transactions 符号 CHECK / point_transactions 符号 CHECK + bigint / prepaid_cards.balance >= 0 | 待 | ❌ **仍未做** — L0 P0 剩 5 项之一 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## SECTION 1：扫描覆盖范围
 
 本次合并报告扫描以下文件，以源码实际状态为准：

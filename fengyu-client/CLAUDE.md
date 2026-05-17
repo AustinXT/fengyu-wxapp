@@ -52,7 +52,33 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 - `.42cog/dev/client.sys.spec.md` — 系统架构
 - `.42cog/design/client.ui.spec.md` — UI 设计
 
+## 自动化测试
+
+三层覆盖，全部位于 `fengyu-client/tests/`：
+
+| 层 | 路径 | 入口 | 速度 | IDE 依赖 |
+|----|------|------|------|----------|
+| L1 unit | `cloudfunctions/clientApi/__tests__/` | bun test | <1s/spec | 否 |
+| **L2 e2e-cloudfn** | `tests/e2e-cloudfn/` | bun .../run-all.mjs | ~8 分钟全套 | 否（本地 require + 真 PG） |
+| **L3 e2e-miniprogram** | `tests/e2e-miniprogram/` | bun .../run-all.mjs | ~10 分钟 12 journey | 是（automator + IDE 9420） |
+
+**L2 覆盖**：29 spec / 132 用例，穷举所有 12 模块 ~54 个 action 的 happy + 边界 + 错误分支。命名空间 `TE2L2_*`。
+
+**L3 覆盖**：12 条用户旅程（onboarding / shopping / checkout / order / appointment / scan-pay / prepaid-card / points-messages / coupon / store-switch / profile-edit / treatment-experience）。命名空间 `TEST_E2E_L3_*`。
+
+跑法见 `tests/README.md` 和各层 README。
+
+### 改 client 代码后必做
+
+1. 改 `cloudfunctions/clientApi/routes/<模块>.js` 后，跑该模块 L2 spec：
+   ```bash
+   bun fengyu-client/tests/e2e-cloudfn/run-all.mjs --module <模块名>
+   ```
+2. 改 `miniprogram/pages/*` 后，跑对应 L3 journey（前提 IDE 装 fengyu-client + IPv6 9420 ready）
+3. 改 schema / 枚举：先全套 L2 (`bun ...run-all.mjs`) 跑一次防回归
+
 ## 子目录文档
 
 - `miniprogram/CLAUDE.md` — 前端详细文档（页面结构、状态管理、UI 主题）
 - `cloudfunctions/clientApi/CLAUDE.md` — API 网关详细文档（认证、数据库、业务流程）
+- `tests/README.md` — L2/L3 自动化测试总览

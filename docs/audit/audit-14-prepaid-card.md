@@ -8,6 +8,18 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-14-01** admin applyRecharge/createConversion 引用已 DROP 的 `prepaid_cards.store_id` | 未修复 | ✅ **已修复** — `prepaid_cards.store_id` 已于 2026-04-24 DROP；orders.ts L43-105 重写为 user_id 唯一 UPSERT |
+> | **E9 R2 充值卡 capability** | 待 R2 | ✅ **已完成** — commit ed3bf1f：`product_skus.is_recharge_card` SKU 表单 + 与 is_experience 互斥校验；payNotify 切 sale_items.is_recharge_card 行级快照 |
+> | **D4 充值卡 SKU 严格独立** | 待 | ✅ **已完成** — `clientApi/routes/order.js:266-273` MIXED_RECHARGE_NOT_ALLOWED 应用层校验 + migration 0020 DB trigger 兜底 |
+> | **充值卡积分结算** | 待 | ✅ **已完成** — commit 74f5b49 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 对比上轮（claude-opus-4-7，2026-04-25 23:30）
 
 | P0-14-01 | admin applyRecharge/createConversionOrder 引用已 DROP store_id | **已修复** — 代码已改为 `(user_id)` ON CONFLICT，注释明确记录 |

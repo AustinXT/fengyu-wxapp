@@ -53,7 +53,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d    # 本地数据库
+docker compose -f docker/docker-compose.yml up -d                   # 本地数据库
+bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs                       # staff L2 全套（35 个 smoke）
+bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs --filter order        # 按 module 过滤
+bun fengyu-staff/tests/e2e-miniprogram/run-all.mjs                   # staff L3 全套（需 IDE 装 staff 项目）
 ```
 
 数据库迁移命令见 `db/CLAUDE.md`，云函数部署见 cloudbase-deploy skill，小程序前端使用微信开发者工具打开。

@@ -8,6 +8,19 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-13-01** admin createOrder 不校验 applicable_store_ids | 未修复 | ✅ **已修复** — `fengyu-admin/src/actions/orders.ts:952-957` |
+> | **P0-13-02** admin createOrder 不校验 applicable_market_ids | 未修复 | ✅ **已修复** — orders.ts:959-971（含 market 反查）|
+> | **P0-13-03** admin createOrder 不校验 applicable_category/product_ids | 未修复 | ✅ **已修复** — orders.ts:973-988 |
+> | **client/staff 三端 face_value_override 跨端读取** | 未修复 | 🔶 admin 三处已加 COALESCE；staff/client 仍需核（SUMMARY v3 §2 #11）|
+> | ticket | — | ✅ ticket `2026-04-27-coupon-scope-validation.md` 已归档 |
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client |

@@ -8,6 +8,15 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 | 原状态 | 2026-05-17 复核 |
+> |------|--------|-----------------|
+> | E9 Round 1：`product_skus.is_experience` capability | 待 | ✅ 已完成（migration 0017） |
+> | E9 Round 2：`product_skus.is_recharge_card` capability + 与 is_experience 互斥校验 | 待 | ✅ **完成** — commit ed3bf1f：admin SKU 表单可勾选"充值卡 SKU"，与"体验卡"互斥；DB trigger migration 0020 D4 严格独立守卫 |
+> | valid_start / valid_end 已 DROP 字段引用 | 待 | ✅ admin/staff/client 业务侧已切到 `is_enabled`；测试反向锁死也已修 |
+> | 其余 P0/P1 | — | 未复核 |
+
 ## 元信息
 
 | 项目 | 值 |

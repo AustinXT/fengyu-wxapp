@@ -9,6 +9,21 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | v2 原状态 | 2026-05-17 复核 |
+> |---------|---------|-----------------|
+> | **P0-11-01** 退款审批不冲销 sa（业绩长尾资损）| 未修复 | ✅ **已修复** — `db/helpers/refund-cascade.ts` + `staffApi/helpers/refund-cascade.js` 双端落地，5 通道全量回滚 |
+> | **P0-11-03** 退款单号 advisory lock 跨事务释放 | 未修复 | ❌ **仍未修复** — generateOrderNo 仍内嵌独立 pg.transaction（与 P0-05-02 同源），SUMMARY v3 Top 10 #3 |
+> | **P0-11-04** 退款不回滚 user_coupons / points / pickup | 未修复 | ✅ **已修复** — 5 通道 cascade 收官 |
+> | **P0-11-05** refundHistory 无 store_id scope | 未修复 | ✅ **已修复** — `routes/customer.js:704+715` buildStoreScopeCondition('so.store_id') |
+> | **退款权限拆分** | — | ✅ **完成** — commit f873bd1：拆 refund_create / refund_approve；commit 8a30454 admin 拿回 refund_approve |
+> | **退款审批并发守卫** | — | ✅ **完成** — migration 0018 `uq_sop_status_audit` partial unique 覆盖退款 in-flight |
+>
+> 关联 ticket：`2026-04-26-sale-order-domain-refactor.md`（域重构收官 2026-05-17）
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client |

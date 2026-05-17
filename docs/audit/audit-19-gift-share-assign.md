@@ -10,6 +10,17 @@
 
 ---
 
+> ### ✅ 2026-05-17 复核状态
+>
+> | 问题 ID | 原状态 | 2026-05-17 复核 |
+> |---------|--------|-----------------|
+> | **P0-19-01** customer.assign 无 store_id 守卫 | 未修复 | ✅ **已修复** — `routes/customer.js:992-1024` requireManager + bound_store_id WHERE + logOperation |
+> | **P0-19-02** customer.giftHistory 无 store_id scope | 未修复 | ✅ **已修复** — buildStoreScopeCondition('so.store_id') |
+> | grantShareGift 三端副本 | 待 | 🔶 仍有 3 端副本；待 `cross-end-sql-snapshot.test.js` 扩展守护 grantShareGift（SUMMARY v3 E7）|
+> | 其余 P0/P1 | — | 未复核 |
+
+---
+
 ## 1. 三端入口对照
 
 | 层 | admin | staff | client | payNotify |
