@@ -99,13 +99,18 @@ export async function ensureTestCommissionMatrix({
   await ensureTestStore()
 
   // [order_type, role_type, sales_category, tier_min, tier_max, rate]
+  //
+  // 销售单 自销自耗 拆 2 tier 验证 allocation.suggest 的 tier 阶梯切换
+  // （allocation.js 已修复 lookupTierRate，按 totalAmount 精确命中 tier）。
+  // 服务单 自销自耗 同样拆 tier，验证 service.complete 的 ORDER BY tier_min DESC LIMIT 1。
   const rules = [
     // ── 销售单 ──
     ['销售单', '美容师', '自销自耗', 0,    5000, 0.08],
     ['销售单', '美容师', '自销自耗', 5000, null, 0.10],
     ['销售单', '美容师', '他销自耗', 0,    null, 0.06],
     ['销售单', '美容师', '他销他耗', 0,    null, 0.05],
-    ['销售单', '养生师', '自销自耗', 0,    null, 0.08],
+    ['销售单', '养生师', '自销自耗', 0,    5000, 0.08],
+    ['销售单', '养生师', '自销自耗', 5000, null, 0.10],
     ['销售单', '养生师', '他销自耗', 0,    null, 0.06],
     ['销售单', '养生师', '他销他耗', 0,    null, 0.05],
     ['销售单', '推广师', '自销自耗', 0,    null, 0.05],

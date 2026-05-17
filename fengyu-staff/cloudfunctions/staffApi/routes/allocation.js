@@ -90,10 +90,13 @@ async function save(ctx) {
           [itemIds]
         )
       }
-      await client.query(
-        "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2",
+      const upd = await client.query(
+        "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2 AND allocation_status IN ('待分配', '已分配')",
         [now, saleOrderId]
       )
+      if (upd.rowCount === 0) {
+        throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→已分配`)
+      }
     })
     ctx.result = { saleOrderId, message: '已标记为无需分配', allocationCount: 0 }
     return
@@ -189,10 +192,13 @@ async function save(ctx) {
     }
 
     // 更新订单分配状态
-    await client.query(
-      "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2",
+    const upd = await client.query(
+      "UPDATE sale_orders SET allocation_status = '已分配', updated_at = $1 WHERE sale_order_id = $2 AND allocation_status IN ('待分配', '已分配')",
       [now, saleOrderId]
     )
+    if (upd.rowCount === 0) {
+      throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→已分配`)
+    }
   })
 
   ctx.result = {
@@ -243,10 +249,13 @@ async function deleteAllocation(ctx) {
         [ids]
       )
     }
-    await client.query(
-      "UPDATE sale_orders SET allocation_status = '待分配', updated_at = $1 WHERE sale_order_id = $2",
+    const upd = await client.query(
+      "UPDATE sale_orders SET allocation_status = '待分配', updated_at = $1 WHERE sale_order_id = $2 AND allocation_status = '已分配'",
       [now, saleOrderId]
     )
+    if (upd.rowCount === 0) {
+      throw new Error(`INVALID_STATE: STATE_TRANSITION_BLOCKED:sale_orders:${saleOrderId}:allocation_status→待分配`)
+    }
   })
 
   ctx.result = {
@@ -439,7 +448,21 @@ async function suggest(ctx) {
     rates = [...grouped.values()]
   }
 
-  // 7. 按 role_type 索引提成比例（P2-14：三角色均纳入，不再过滤白名单）
+  // 7. tier-aware 提成比例查找：按 (role, salesCat, totalAmount) 命中 tier 区间
+  // 规则：amountMin <= totalAmount <= amountMax；多 tier 命中时取 amountMin 最大者（高 tier 优先）
+  // 与 service.complete 的 `ORDER BY amount_tier_min DESC LIMIT 1` 语义一致
+  function lookupTierRate(role, salesCat, amount) {
+    let hit = null
+    for (const r of rates) {
+      if (r.department !== role) continue
+      if (amount < r.amountMin || amount > r.amountMax) continue
+      if (!hit || r.amountMin > hit.amountMin) hit = r
+    }
+    return (hit && hit.orderRates[salesCat]) || 0
+  }
+
+  // 向后兼容字段：ratesByRole 仍以 role 为键暴露首 tier 的 orderRates（前端老版本可能依赖）。
+  // 新代码（含本文件 allocLines 生成）走 lookupTierRate；前端 allocation-calc 已切到 rates 数组。
   const ratesByRole = {}
   for (const rate of rates) {
     if (!ratesByRole[rate.department]) {
@@ -448,13 +471,14 @@ async function suggest(ctx) {
   }
 
   // 8. 生成分配行：对每个 (item × skill) 生成一条 allocLine，roleType 必填
+  // commRate 按 totalAmount 命中 tier，amount = item.received × commRate
   const allocLines = []
   if (beauticianInfo && beauticianInfo.skills.length > 0) {
     for (const item of items) {
       const salesCat = item.sales_category || '自销自耗'
       const received = Number(item.received) || 0
       for (const role of beauticianInfo.skills) {
-        const commRate = (ratesByRole[role] && ratesByRole[role][salesCat]) || 0
+        const commRate = lookupTierRate(role, salesCat, totalAmount)
         const amount = (received * commRate).toFixed(2)
         allocLines.push({
           saleItemId: item.sale_item_id,

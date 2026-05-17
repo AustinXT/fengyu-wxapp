@@ -79,7 +79,8 @@ describe('allocation.save', () => {
 
     pg.transaction.mockImplementation(async (cb) => {
       const client = {
-        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+        // 软删 sale_allocations + CAS UPDATE sale_orders 均要命中
+        query: vi.fn().mockResolvedValue({ rows: [], rowCount: 1 }),
       }
       return await cb(client)
     })

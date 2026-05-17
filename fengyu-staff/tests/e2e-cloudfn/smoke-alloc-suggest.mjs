@@ -3,12 +3,15 @@
  * allocation.suggest 冒烟
  *
  * 验证：
- *   1. 已支付 + 待分配 订单可生成 allocLines
- *   2. 按 preferred_employee_id 解析员工 skills
- *   3. 每个 (item × skill) 生成一条 allocLine
- *   4. 员工 skills 为空时 deptAnomalous=true
+ *   A. 单 SKU + 单 sales_category，双 skill 员工 → 每个 skill 1 条 allocLine，
+ *      rate 来自 commission_rate_matrix，amount = received × rate
+ *   B. 多 SKU + 多 sales_category 同订单 → 每个 sale_item 各 1 条 allocLine，
+ *      rate / amount 按 sales_category 切换
+ *   C. 跨市场隔离 → market_name 不命中矩阵时 rates=[] / allocLines.commRate=0
+ *   D. tier 阶梯切换 → 同 sales_category 不同 totalAmount 命中不同 tier rate
  *
- * 不依赖 commission_rate_matrix 数据（commRate=0 时 allocLine 仍生成）
+ * 依赖：ensureTestCommissionMatrix() 注入规则到 TEST_MARKET_ORG_ID
+ *      （销售单 自销自耗 拆 tier(0,5000)=0.08 + tier(5000,NULL)=0.10）
  */
 import './setup.mjs'
 import {
@@ -18,8 +21,9 @@ import {
 } from './setup.mjs'
 import { invokeStaffApi } from './helpers/invoke.mjs'
 import {
-  ensureTestStore, createTestStaff, createTestClient,
-  createTestSaleOrder, cleanupTestData,
+  ensureTestStore, ensureTestCommissionMatrix,
+  createTestStaff, createTestClient, createTestProduct,
+  createTestSaleOrder, createTestSaleItem, cleanupTestData,
 } from './helpers/fixtures.mjs'
 
 let pass = false
@@ -31,9 +35,11 @@ async function main() {
 
   await cleanupTestData(NS)
   await ensureTestStore()
-  // 店长（用于调用）
+  await ensureTestCommissionMatrix()
+
+  // 店长（调用者）
   await createTestStaff()
-  // 美容师 + 养生师双 skill 员工（preferred_employee）
+  // 美容师 + 养生师双 skill 员工（用例 A）
   await createTestStaff({
     employeeId: `${NS}_BEAU`,
     openid: `${NS}_BEAU_OPENID`,
@@ -43,7 +49,17 @@ async function main() {
     positionName: '美容师',
     skills: ['美容师', '养生师'],
   })
-  // 无 skill 员工（测 deptAnomalous）
+  // 单 skill 美容师（用例 B、C）
+  await createTestStaff({
+    employeeId: `${NS}_BEAU_SOLO`,
+    openid: `${NS}_BEAU_SOLO_OPENID`,
+    phone: '19999099007',
+    name: `${NS}_美容师单技`,
+    isManager: false,
+    positionName: '美容师',
+    skills: ['美容师'],
+  })
+  // 无 skill 员工（用例 deptAnomalous）
   await createTestStaff({
     employeeId: `${NS}_NOSKILL`,
     openid: `${NS}_NOSKILL_OPENID`,
@@ -55,57 +71,230 @@ async function main() {
   })
   await createTestClient()
 
-  // ─── A. preferred 有双 skill 员工 ───
+  // SKU 准备：A 用 他销自耗 / B 用 自销自耗 + 他销他耗
+  const skuA = await createTestProduct({
+    suffix: 'ALLOC_A',
+    productKind: '家居产品', productType: '家居产品',
+    salesCategory: '他销自耗', price: 500,
+    sessionCount: null, isShengmei: false,
+  })
+  const skuB1 = await createTestProduct({
+    suffix: 'ALLOC_B1',
+    productKind: '家居产品', productType: '家居产品',
+    salesCategory: '自销自耗', price: 200,
+    sessionCount: null, isShengmei: false,
+  })
+  const skuB2 = await createTestProduct({
+    suffix: 'ALLOC_B2',
+    productKind: '家居产品', productType: '家居产品',
+    salesCategory: '他销他耗', price: 300,
+    sessionCount: null, isShengmei: false,
+  })
+
+  const errors = []
+
+  // ─── 用例 A：单 SKU 单 sales_category，双 skill 员工 ───
   const orderA = `${NS}_SUG_A`
   await createTestSaleOrder({
     saleOrderId: orderA, clientUserId: TEST_CLIENT_USER_ID,
-    productType: '单品', quantity: 1, totalAmount: 500,
+    skuId: skuA.skuId, productName: skuA.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 500,
     status: '已支付', salesCategory: '他销自耗',
     preferredEmployeeId: `${NS}_BEAU`,
   })
-  await pgQuery(`UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`, [orderA])
-
-  const errors = []
+  await pgQuery(
+    `UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`,
+    [orderA]
+  )
 
   const sugA = await invokeStaffApi('allocation.suggest', {
     _testOpenid: TEST_MANAGER_OPENID,
     saleOrderId: orderA,
   })
   if (sugA.code !== 0) {
-    errors.push(`suggest A 应成功，实际 code=${sugA.code} msg=${sugA.message}`)
+    errors.push(`A.suggest 应成功 实际 code=${sugA.code} msg=${sugA.message}`)
   } else {
     const lines = sugA.data.allocLines || []
     rec(`  A: ${lines.length} allocLines (双 skill × 1 item)`)
-    if (lines.length !== 2) errors.push(`A.allocLines 应=2（1 item × 2 skills），实际=${lines.length}`)
+    if (lines.length !== 2) errors.push(`A.allocLines 应=2，实际=${lines.length}`)
+    for (const l of lines) {
+      if (l.salesCategory !== '他销自耗') errors.push(`A.salesCategory 应=他销自耗，实际=${l.salesCategory}`)
+      const rate = Number(l.commissionRate)
+      const amt = Number(l.amount)
+      if (Math.abs(rate - 0.06) > 0.0001) errors.push(`A.${l.roleType}.rate 应=0.06，实际=${rate}`)
+      if (Math.abs(amt - 30.00) > 0.01) errors.push(`A.${l.roleType}.amount 应=30.00，实际=${amt}`)
+    }
     const roles = new Set(lines.map(l => l.roleType))
     if (!roles.has('美容师') || !roles.has('养生师')) {
-      errors.push(`A.roleType 应含 美容师 + 养生师，实际=${[...roles].join(',')}`)
+      errors.push(`A.roles 应含 {美容师,养生师}，实际={${[...roles].join(',')}}`)
     }
-    if (sugA.data.beauticianRequired !== true) errors.push(`A.beauticianRequired 应=true（有 skills）`)
-    if (sugA.data.deptAnomalous === true) errors.push(`A.deptAnomalous 应=false（有 skills）`)
+    if (sugA.data.beauticianRequired !== true) errors.push(`A.beauticianRequired 应=true`)
+    if (sugA.data.deptAnomalous === true) errors.push(`A.deptAnomalous 应=false`)
   }
 
-  // ─── B. preferred 无 skill 员工 ───
+  // ─── 用例 B：多 SKU 多 sales_category 同订单 ───
   const orderB = `${NS}_SUG_B`
   await createTestSaleOrder({
     saleOrderId: orderB, clientUserId: TEST_CLIENT_USER_ID,
-    productType: '单品', quantity: 1, totalAmount: 300,
-    status: '已支付', salesCategory: '他销自耗',
-    preferredEmployeeId: `${NS}_NOSKILL`,
+    skuId: skuB1.skuId, productName: skuB1.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 500,  // 200(item1) + 300(item2)
+    status: '已支付', salesCategory: '自销自耗',
+    preferredEmployeeId: `${NS}_BEAU_SOLO`,
   })
-  await pgQuery(`UPDATE sale_orders SET allocation_status = '待分配', received = total_amount WHERE sale_order_id = $1`, [orderB])
+  // createTestSaleOrder 的第一行 received 默认 = totalAmount = 500，需要先纠正为 200
+  await pgQuery(
+    `UPDATE sale_items SET unit_price=200, unit_real_price=200, sale_amount=200, received=200
+       WHERE sale_order_id=$1`,
+    [orderB]
+  )
+  // 追加第二个 sale_item，salesCategory=他销他耗
+  await createTestSaleItem({
+    saleOrderId: orderB,
+    saleItemId: `${orderB}_ITEM_2`,
+    skuId: skuB2.skuId,
+    productName: skuB2.specName,
+    productType: '家居产品',
+    quantity: 1,
+    unitPrice: 300,
+    salesCategory: '他销他耗',
+  })
+  await pgQuery(
+    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
+    [orderB]
+  )
 
   const sugB = await invokeStaffApi('allocation.suggest', {
     _testOpenid: TEST_MANAGER_OPENID,
     saleOrderId: orderB,
   })
   if (sugB.code !== 0) {
-    errors.push(`suggest B 应成功，实际 code=${sugB.code}`)
+    errors.push(`B.suggest 应成功 实际 code=${sugB.code} msg=${sugB.message}`)
   } else {
-    rec(`  B: deptAnomalous=${sugB.data.deptAnomalous} beauticianRequired=${sugB.data.beauticianRequired}`)
-    if (sugB.data.deptAnomalous !== true) errors.push(`B.deptAnomalous 应=true（员工无 skills），实际=${sugB.data.deptAnomalous}`)
-    if (sugB.data.beauticianRequired === true) errors.push(`B.beauticianRequired 应=false`)
-    if ((sugB.data.allocLines || []).length !== 0) errors.push(`B.allocLines 应=0（无 skills 不生成），实际=${(sugB.data.allocLines || []).length}`)
+    const lines = sugB.data.allocLines || []
+    rec(`  B: ${lines.length} allocLines (单 skill × 2 items)`)
+    if (lines.length !== 2) errors.push(`B.allocLines 应=2，实际=${lines.length}`)
+    const byCat = Object.fromEntries(lines.map(l => [l.salesCategory, l]))
+    const l1 = byCat['自销自耗']
+    const l2 = byCat['他销他耗']
+    if (!l1) errors.push(`B 缺少 自销自耗 allocLine`)
+    else {
+      if (Math.abs(Number(l1.commissionRate) - 0.08) > 0.0001) errors.push(`B.自销自耗.rate 应=0.08，实际=${l1.commissionRate}`)
+      if (Math.abs(Number(l1.amount) - 16.00) > 0.01) errors.push(`B.自销自耗.amount 应=16.00（200×0.08），实际=${l1.amount}`)
+    }
+    if (!l2) errors.push(`B 缺少 他销他耗 allocLine`)
+    else {
+      if (Math.abs(Number(l2.commissionRate) - 0.05) > 0.0001) errors.push(`B.他销他耗.rate 应=0.05，实际=${l2.commissionRate}`)
+      if (Math.abs(Number(l2.amount) - 15.00) > 0.01) errors.push(`B.他销他耗.amount 应=15.00（300×0.05），实际=${l2.amount}`)
+    }
+  }
+
+  // ─── 用例 C：跨市场隔离（market_name 不命中矩阵）───
+  const orderC = `${NS}_SUG_C`
+  await createTestSaleOrder({
+    saleOrderId: orderC, clientUserId: TEST_CLIENT_USER_ID,
+    skuId: skuA.skuId, productName: skuA.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 500,
+    status: '已支付', salesCategory: '他销自耗',
+    preferredEmployeeId: `${NS}_BEAU_SOLO`,
+  })
+  // 把订单 market_name 改成不存在的市场，让 commission_rate_matrix JOIN 拿不到行
+  await pgQuery(
+    `UPDATE sale_orders SET market_name='${NS}_不存在市场', allocation_status='待分配', received=total_amount
+       WHERE sale_order_id=$1`,
+    [orderC]
+  )
+
+  const sugC = await invokeStaffApi('allocation.suggest', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    saleOrderId: orderC,
+  })
+  if (sugC.code !== 0) {
+    errors.push(`C.suggest 应成功 实际 code=${sugC.code} msg=${sugC.message}`)
+  } else {
+    const lines = sugC.data.allocLines || []
+    const ratesCount = (sugC.data.rates || []).length
+    rec(`  C: rates=${ratesCount} allocLines=${lines.length} (跨市场隔离)`)
+    if (ratesCount !== 0) errors.push(`C.rates 应=0（市场不存在），实际=${ratesCount}`)
+    if (lines.length !== 1) errors.push(`C.allocLines 应=1（单 skill），实际=${lines.length}`)
+    if (lines.length > 0) {
+      const rate = Number(lines[0].commissionRate)
+      const amt = Number(lines[0].amount)
+      if (rate !== 0) errors.push(`C.commRate 应=0（无矩阵规则），实际=${rate}`)
+      if (amt !== 0) errors.push(`C.amount 应=0（无矩阵规则），实际=${amt}`)
+    }
+  }
+
+  // ─── 用例 D：销售单 tier 阶梯切换 ───
+  // 自销自耗 tier(0,5000)=0.08 + tier(5000,NULL)=0.10
+  // D1 小金额订单 2000 → 命中 tier1 rate=0.08
+  // D2 大金额订单 8000 → 命中 tier2 rate=0.10
+  const skuD = await createTestProduct({
+    suffix: 'ALLOC_D',
+    productKind: '家居产品', productType: '家居产品',
+    salesCategory: '自销自耗', price: 2000,
+    sessionCount: null, isShengmei: false,
+  })
+
+  const orderD1 = `${NS}_SUG_D1`
+  await createTestSaleOrder({
+    saleOrderId: orderD1, clientUserId: TEST_CLIENT_USER_ID,
+    skuId: skuD.skuId, productName: skuD.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 2000,
+    status: '已支付', salesCategory: '自销自耗',
+    preferredEmployeeId: `${NS}_BEAU_SOLO`,
+  })
+  await pgQuery(
+    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
+    [orderD1]
+  )
+
+  const sugD1 = await invokeStaffApi('allocation.suggest', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    saleOrderId: orderD1,
+  })
+  if (sugD1.code !== 0) {
+    errors.push(`D1.suggest 应成功 实际 code=${sugD1.code} msg=${sugD1.message}`)
+  } else {
+    const lines = sugD1.data.allocLines || []
+    rec(`  D1: totalAmount=2000 allocLines=${lines.length} (tier1 切换)`)
+    if (lines.length !== 1) errors.push(`D1.allocLines 应=1，实际=${lines.length}`)
+    if (lines.length > 0) {
+      const rate = Number(lines[0].commissionRate)
+      const amt = Number(lines[0].amount)
+      if (Math.abs(rate - 0.08) > 0.0001) errors.push(`D1.rate 应=0.08（tier1），实际=${rate}`)
+      if (Math.abs(amt - 160.00) > 0.01) errors.push(`D1.amount 应=160.00（2000×0.08），实际=${amt}`)
+    }
+  }
+
+  const orderD2 = `${NS}_SUG_D2`
+  await createTestSaleOrder({
+    saleOrderId: orderD2, clientUserId: TEST_CLIENT_USER_ID,
+    skuId: skuD.skuId, productName: skuD.specName,
+    productType: '家居产品', quantity: 1, totalAmount: 8000,
+    status: '已支付', salesCategory: '自销自耗',
+    preferredEmployeeId: `${NS}_BEAU_SOLO`,
+  })
+  await pgQuery(
+    `UPDATE sale_orders SET allocation_status='待分配', received=total_amount WHERE sale_order_id=$1`,
+    [orderD2]
+  )
+
+  const sugD2 = await invokeStaffApi('allocation.suggest', {
+    _testOpenid: TEST_MANAGER_OPENID,
+    saleOrderId: orderD2,
+  })
+  if (sugD2.code !== 0) {
+    errors.push(`D2.suggest 应成功 实际 code=${sugD2.code} msg=${sugD2.message}`)
+  } else {
+    const lines = sugD2.data.allocLines || []
+    rec(`  D2: totalAmount=8000 allocLines=${lines.length} (tier2 切换)`)
+    if (lines.length !== 1) errors.push(`D2.allocLines 应=1，实际=${lines.length}`)
+    if (lines.length > 0) {
+      const rate = Number(lines[0].commissionRate)
+      const amt = Number(lines[0].amount)
+      if (Math.abs(rate - 0.10) > 0.0001) errors.push(`D2.rate 应=0.10（tier2），实际=${rate}`)
+      if (Math.abs(amt - 800.00) > 0.01) errors.push(`D2.amount 应=800.00（8000×0.10），实际=${amt}`)
+    }
   }
 
   if (errors.length) {
@@ -116,7 +305,7 @@ async function main() {
 
   pass = true
   exitCode = 0
-  rec(`  ✅ PASS — suggest 按 skills 生成 allocLines + deptAnomalous 守卫正确`)
+  rec(`  ✅ PASS — A/B/C/D 四用例均通过：SKU×sales_category×市场隔离×tier 阶梯`)
 }
 
 try {
