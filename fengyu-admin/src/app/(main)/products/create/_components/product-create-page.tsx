@@ -290,10 +290,10 @@ export default function SkuCreatePageClient({
                   onChange={(e) => { setIsExperience(e.target.checked); setFormDirty(true) }}
                   className="h-4 w-4 rounded border-[var(--input)]"
                 />
-                <span className="text-sm font-medium">体验卡 SKU</span>
+                <span className="text-sm font-medium">体验卡商品</span>
               </label>
               <p className="pl-6 text-xs text-[var(--muted-foreground)]">
-                勾选后该 SKU 仅在小程序体验卡入口展示，不出现在商城；现有订单的快照不受改动影响
+                勾选后该商品仅在小程序体验卡入口展示，不出现在商城；现有订单的快照不受改动影响
               </p>
             </div>
 
@@ -306,10 +306,10 @@ export default function SkuCreatePageClient({
                   onChange={(e) => { setIsRechargeCard(e.target.checked); setFormDirty(true) }}
                   className="h-4 w-4 rounded border-[var(--input)]"
                 />
-                <span className="text-sm font-medium">充值卡 SKU</span>
+                <span className="text-sm font-medium">充值卡商品</span>
               </label>
               <p className="pl-6 text-xs text-[var(--muted-foreground)]">
-                勾选后该 SKU 在订单确认收款时会自动累加到顾客预付卡余额（与体验卡互斥）；现有订单的快照不受改动影响
+                勾选后该商品在订单确认收款时会自动累加到顾客预付卡余额（与体验卡互斥）；现有订单的快照不受改动影响
               </p>
             </div>
           </div>

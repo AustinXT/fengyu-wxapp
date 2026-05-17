@@ -297,7 +297,7 @@ export default function ProductKindManagementDialog({
           <div className="flex items-center justify-between">
             <div>
               <label className="text-sm font-medium">是否为卡类</label>
-              <p className="text-xs text-[var(--muted-foreground)]">勾选后此 kind 会从员工端 / admin 开单"普通商品"分支中排除</p>
+              <p className="text-xs text-[var(--muted-foreground)]">勾选后此一级品项会从员工端 / 管理后台开单"普通商品"分支中排除</p>
             </div>
             <Switch
               checked={form.isCardKind}
@@ -307,7 +307,7 @@ export default function ProductKindManagementDialog({
           <div className="flex items-center justify-between">
             <div>
               <label className="text-sm font-medium">是否需要"是否生美"开关</label>
-              <p className="text-xs text-[var(--muted-foreground)]">仅护理类项目通常勾选；勾选后该 kind 下 SKU 表单显示"是否生美" Radio</p>
+              <p className="text-xs text-[var(--muted-foreground)]">仅护理类项目通常勾选；勾选后该一级品项下商品表单显示"是否生美"选项</p>
             </div>
             <Switch
               checked={form.requiresShengmeiFlag}

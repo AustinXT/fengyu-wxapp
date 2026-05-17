@@ -196,7 +196,7 @@ export async function assignRole(data: {
       .where(eq(orgNodes.id, data.scopeId))
       .limit(1)
     if (!node || node.type !== '总部') {
-      return { success: false, message: 'admin 角色必须绑定总部节点' }
+      return { success: false, message: '系统管理员角色必须绑定总部节点' }
     }
   }
 
@@ -257,7 +257,7 @@ export async function revokeRole(
 
   // 只有 admin 才能撤销 admin 角色
   if (target.role === 'admin' && !hasRole(session, 'admin')) {
-    return { success: false, message: '只有系统管理员才能撤销 admin 角色' }
+    return { success: false, message: '只有系统管理员才能撤销系统管理员角色' }
   }
 
   // 非 admin 用户不能撤销超出自身 scope 的角色

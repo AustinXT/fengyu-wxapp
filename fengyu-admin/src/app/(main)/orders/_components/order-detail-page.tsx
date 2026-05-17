@@ -232,7 +232,7 @@ export default function OrderDetailPageClient({
             <table className="w-full text-sm">
               <thead className="bg-gray-50 sticky top-0">
                 <tr>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">SKU 名称</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>

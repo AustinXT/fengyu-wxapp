@@ -12,6 +12,7 @@ import type { Employee } from '@/lib/types'
 import { getSession } from '@/lib/auth'
 import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { logOperation, logUpdate } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 
 const storeNode = alias(orgNodes, 'store_node')
 const marketNode = alias(orgNodes, 'market_node')
@@ -313,7 +314,10 @@ export async function createEmployee(data: {
         FROM lock
       `)
       const id = (idRows as any[])[0]?.id as string
-      if (!id) throw new Error('员工编号生成失败')
+      // P0 audit-CC5 示范：用 ApiError 替代裸 throw，让错误前缀（INVALID_STATE）
+      // 走 9 项白名单通道，前端可按 errorType 路由。
+      // 其余 33 处 admin actions 裸 throw 由 ticket-10c 全量迁移。
+      if (!id) throw new ApiError('INVALID_STATE', '员工编号生成失败')
 
       await tx.insert(staffWechatUsers).values({
         employeeId: id,

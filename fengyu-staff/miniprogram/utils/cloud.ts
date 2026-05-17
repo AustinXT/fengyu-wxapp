@@ -2,6 +2,19 @@
 import { mockCallApi } from './mock-api'
 
 /**
+ * 业务 API 错误对象 —— 与 client 端 callClientApi 对称。
+ * 调用方按 `err.errorType` 路由不同 UI 分支（推荐），
+ * 而不是按 `err.message` 字符串 indexOf 匹配（旧写法，errorType 改名时易脆）。
+ *
+ * 9 项官方 errorType 见 staffApi/utils/error-codes.js 的 ERROR_PREFIXES。
+ */
+export interface StaffApiError extends Error {
+  code?: number
+  errorType?: string
+  data?: unknown
+}
+
+/**
  * 过滤技术性错误信息，确保用户看到的是友好提示
  * 后端已做兜底（非业务错误返回"服务器内部错误"），此处为前端防御层
  */
@@ -49,7 +62,13 @@ export async function callStaffApi<T = any>(
     data: { action, payload: enriched }
   }) as any
   if (res.result?.code !== 0) {
-    throw new Error(sanitizeErrorMessage(res.result?.message, '请求失败'))
+    // 与 callClientApi 对称：把 code/errorType/data 挂到 Error 实例，
+    // 调用方按 err.errorType 路由不同 UI 分支（如 PERMISSION_DENIED 走"返回上一页"）
+    const err: StaffApiError = new Error(sanitizeErrorMessage(res.result?.message, '请求失败'))
+    err.code = res.result?.code
+    err.errorType = res.result?.errorType
+    err.data = res.result?.data
+    throw err
   }
   return res.result.data as T
 }

@@ -245,7 +245,10 @@ Page({
       this.setData({ customer });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '加载失败';
-      if (msg.indexOf('PERMISSION_DENIED') >= 0) {
+      // 优先按 errorType 路由（callStaffApi 已把 errorType 挂到 Error 实例），
+      // 回退到 message indexOf 兜底（仅在 errorType 字段未透出时生效）
+      const errorType = (err as { errorType?: string } | null)?.errorType;
+      if (errorType === 'PERMISSION_DENIED' || (!errorType && msg.indexOf('PERMISSION_DENIED') >= 0)) {
         wx.showToast({ title: '顾客不在当前数据范围', icon: 'none' });
         setTimeout(() => wx.navigateBack({ delta: 1 }), 800);
       } else {

@@ -785,7 +785,7 @@ export async function createOrder(data: {
   }
 
   if (!data.clientUserId) {
-    return { success: false, message: 'CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店' }
+    return { success: false, message: '顾客未注册小程序或未绑定门店' }
   }
 
   // 校验 storeId 在用户 scope 内
@@ -812,7 +812,7 @@ export async function createOrder(data: {
       return { success: false, message: '充值卡订单不支持叠加优惠券' }
     }
     if (!data.clientUserId) {
-      return { success: false, message: 'CLIENT_NOT_REGISTERED: 顾客未注册小程序或未绑定门店' }
+      return { success: false, message: '顾客未注册小程序或未绑定门店' }
     }
 
     const item = data.items[0]
@@ -899,15 +899,19 @@ export async function createOrder(data: {
   }
 
   // 计算商品总金额（基于 received 实收）
-  const rawTotal = data.items.reduce((sum, item) => {
+  // 浮点 round 兜底（行级 + 累加后），与 staff order.js L446 / client order.js L267 对齐
+  // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
+  const rawTotal = Math.round(data.items.reduce((sum, item) => {
     const computed = Number(item.unitRealPrice) * item.quantity
-    return sum + (item.received ? Number(item.received) : (item.saleAmount ? Number(item.saleAmount) : computed))
-  }, 0)
+    const itemAmount = item.received ? Number(item.received) : (item.saleAmount ? Number(item.saleAmount) : computed)
+    return sum + Math.round(itemAmount * 100) / 100
+  }, 0) * 100) / 100
 
   // 应付金额合计（用于优惠券 minSpend 校验）
-  const saleAmountTotal = data.items.reduce((sum, item) => {
-    return sum + (item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity)
-  }, 0)
+  const saleAmountTotal = Math.round(data.items.reduce((sum, item) => {
+    const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+    return sum + Math.round(itemSale * 100) / 100
+  }, 0) * 100) / 100
 
   // 提前校验优惠券（事务外查询，避免在事务内做复杂查询）
   let couponDiscount = 0
@@ -992,9 +996,10 @@ export async function createOrder(data: {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
     }
     couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, saleAmountTotal)
+    couponDiscount = Math.round(couponDiscount * 100) / 100
   }
 
-  const totalAmount = Math.max(0, rawTotal - couponDiscount)
+  const totalAmount = Math.round(Math.max(0, rawTotal - couponDiscount) * 100) / 100
 
   // ── 款项流水 / 部分支付基础（ticket 2026-04-24 PR-3） ─────────────
   // payable_amount = total_amount - prepaid_card_amount（冗余列，用于状态机决策和前端展示）
@@ -1022,7 +1027,7 @@ export async function createOrder(data: {
   if (isOnlinePay && receivedAmount > 0) {
     return {
       success: false,
-      message: 'INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED: admin 开单不支持线上支付，请使用线下方式录入收款',
+      message: '系统管理员开单不支持线上支付，请使用线下方式录入收款',
     }
   }
 
@@ -1114,7 +1119,7 @@ export async function createOrder(data: {
     if (hasRecharge && hasNormal) {
       return {
         success: false,
-        message: 'INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED: 充值卡 SKU 不允许与普通商品混单',
+        message: '充值卡商品不允许与普通商品混单',
       }
     }
   }
@@ -1283,7 +1288,7 @@ export async function createOrder(data: {
       const guardRow = (guard as unknown as Array<{ all_recharge: boolean | null; all_normal: boolean | null }>)?.[0]
       if (guardRow && guardRow.all_recharge === false && guardRow.all_normal === false) {
         // 仅当 DB 明确返回 "既有 recharge 又有 normal" 时抛错（混合场景）
-        throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
+        throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
       }
 
       return id
@@ -1299,10 +1304,10 @@ export async function createOrder(data: {
     if (err?.message === '优惠券已被使用，请刷新后重试') {
       return { success: false, message: err.message }
     }
-    if (err?.message === 'INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED') {
+    if (err?.message === 'INVALID_PARAMS: 充值卡商品不允许与普通商品混单') {
       return {
         success: false,
-        message: 'INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED: 充值卡 SKU 不允许与普通商品混单',
+        message: '充值卡商品不允许与普通商品混单',
       }
     }
     // PG 外键违反（storeId / skuId / clientUserId 不存在）
@@ -1750,7 +1755,7 @@ export async function createConversionOrder(data: {
     if (m === 'CARD_CONCURRENT_CHANGED') return { success: false, message: '卡状态变化，请重试' }
     if (m === 'ORDER_ID_GEN_FAILED') return { success: false, message: '订单号生成失败，请稍后重试' }
     if (m === 'PREPAID_CARD_UPSERT_FAILED') return { success: false, message: '储值卡入账失败，请稍后重试' }
-    if (m?.startsWith('SKU_NOT_FOUND:')) return { success: false, message: '转入 SKU 不存在' }
+    if (m?.startsWith('SKU_NOT_FOUND:')) return { success: false, message: '转入商品不存在' }
     if (err?.code === '23503') {
       console.error('[createConversionOrder] fk_violation:', err)
       return { success: false, message: '关联数据不存在，请检查门店、商品或顾客信息' }

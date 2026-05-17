@@ -45,7 +45,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 小程序前端**仅允许 TypeScript (`.ts`)**，禁止 `.js`；云函数用 `.js`（CloudBase 不支持 TS 直接运行）
 - 认证基于微信 OPENID（`cloud.getWXContext()`），客户和员工使用独立用户表
 - 云函数响应格式：`{ code: 0, message: "success", data: {} }`，错误码 -1/-400/-401/-403
-- 错误前缀约定：`UNAUTHORIZED:`、`PHONE_REQUIRED:`、`INVALID_PARAMS:`、`PERMISSION_DENIED:`
+- 错误前缀约定（9 项白名单，三端云函数 + admin 共用单源；详见各端 `utils/error-codes.js` 与 `fengyu-admin/src/lib/api-error.ts`）：
+  - `UNAUTHORIZED:` (-401) — 未登录 / openid 失效
+  - `PHONE_REQUIRED:` (-403) — 未绑定手机号（**与 `PERMISSION_DENIED` 共享 -403，前端必须按 `errorType` 区分**）
+  - `INVALID_PARAMS:` (-400) — 入参不合法
+  - `PERMISSION_DENIED:` (-403) — 鉴权失败
+  - `NOT_FOUND:` (-404) — 资源不存在 / 不可见
+  - `INSUFFICIENT_BALANCE:` (-400) — 储值卡余额 / 剩余次数不足
+  - `CONFLICT:` (-409) — 并发冲突 / 唯一约束 / 状态被改
+  - `INVALID_STATE:` (-400) — 状态机不允许该操作
+  - `CLIENT_NOT_REGISTERED:` (-400) — 顾客未注册 / 未绑定门店（仅 staff/admin 抛）
+- 二级前缀语法：允许 `<一级前缀>: <子标签>: <用户消息>` 嵌套（如 `INVALID_STATE: STATE_TRANSITION_BLOCKED: ...`），一级前缀仍走 9 项白名单，子标签 `[A-Z_]+` 仅供日志归类，不计入白名单。
+- 跨端一致性由 snapshot 守护：`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-error-codes-snapshot.test.js` + `fengyu-admin/src/lib/__tests__/error-codes-cross-end.test.ts` 任一漂移立即失败。
 - PG 连接池 max 5，懒初始化；云函数用原生 `pg` 库写 SQL，不引入 Drizzle
 - 订单号格式：`FY-XSD-WX-{YYMMDD}{4位序号}`，使用 advisory lock 防并发
 - 品牌主色 `#C0322A`（中国红）

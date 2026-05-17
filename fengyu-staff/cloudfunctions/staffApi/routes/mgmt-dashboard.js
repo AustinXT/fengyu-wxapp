@@ -526,13 +526,13 @@ async function summary(ctx) {
   const { date, scopeType, scopeId } = ctx.event.payload || {}
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    throw new Error('INVALID_PARAMS: date 必填，且格式为 YYYY-MM-DD')
+    throw new Error('INVALID_PARAMS: 日期必填，且格式为 YYYY-MM-DD')
   }
   if (!['all', 'market', 'store'].includes(scopeType)) {
-    throw new Error('INVALID_PARAMS: scopeType 必须是 all/market/store')
+    throw new Error('INVALID_PARAMS: 范围类型必须是 全部/市场/门店')
   }
   if (scopeType !== 'all' && !scopeId) {
-    throw new Error('INVALID_PARAMS: scopeType 为 market/store 时必须提供 scopeId')
+    throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 
   validateScope(ctx.auth, scopeType, scopeId)
@@ -894,6 +894,12 @@ const METRIC_DISPATCH = {
 const VALID_PERIODS = ['month', 'lastMonth', 'year']
 const VALID_METRICS = ['revenue', 'consume', 'retainedMember', 'newMember', 'projectCount', 'footfall']
 
+// 用户面错误信息使用中文标签（与 internal enum value 一一对应）
+const PERIOD_CN = '本月/上月/本年'
+const METRIC_CN = '业绩/实耗/留存会员/新会员/项目数/客流'
+const STAFF_METRIC_CN = '业绩/实耗/新会员/客流/项目数/收入'
+const SCOPE_TYPE_CN = '全部/市场/门店'
+
 /**
  * mgmtDashboard.storeRanking
  * 入参：{ period: 'month'|'lastMonth'|'year', metric: 6 选 1 }
@@ -904,10 +910,10 @@ async function storeRanking(ctx) {
   const { period, metric } = ctx.event.payload || {}
 
   if (!VALID_PERIODS.includes(period)) {
-    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+    throw new Error('INVALID_PARAMS: 时间维度必须是 ' + PERIOD_CN)
   }
   if (!VALID_METRICS.includes(metric)) {
-    throw new Error('INVALID_PARAMS: metric 必须是 ' + VALID_METRICS.join('/'))
+    throw new Error('INVALID_PARAMS: 指标必须是 ' + METRIC_CN)
   }
 
   const visibleStoreIds = getVisibleStoreIds(ctx.auth)
@@ -1192,10 +1198,10 @@ async function staffRanking(ctx) {
   const { period, metric } = ctx.event.payload || {}
 
   if (!VALID_PERIODS.includes(period)) {
-    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+    throw new Error('INVALID_PARAMS: 时间维度必须是 ' + PERIOD_CN)
   }
   if (!VALID_STAFF_METRICS.includes(metric)) {
-    throw new Error('INVALID_PARAMS: metric 必须是 ' + VALID_STAFF_METRICS.join('/'))
+    throw new Error('INVALID_PARAMS: 指标必须是 ' + STAFF_METRIC_CN)
   }
 
   const visibleStoreIds = getVisibleStoreIds(ctx.auth)
@@ -1253,13 +1259,13 @@ async function salesData(ctx) {
   const scopeId = scope?.id || null
 
   if (!['month', 'lastMonth', 'year'].includes(period)) {
-    throw new Error('INVALID_PARAMS: period 必须是 month/lastMonth/year')
+    throw new Error('INVALID_PARAMS: 时间维度必须是 ' + PERIOD_CN)
   }
   if (!['all', 'market', 'store'].includes(scopeType)) {
-    throw new Error('INVALID_PARAMS: scope.type 必须是 all/market/store')
+    throw new Error('INVALID_PARAMS: 范围类型必须是 ' + SCOPE_TYPE_CN)
   }
   if (scopeType !== 'all' && !scopeId) {
-    throw new Error('INVALID_PARAMS: scope.type 为 market/store 时必须提供 scope.id')
+    throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 
   validateScope(ctx.auth, scopeType, scopeId)

@@ -6,6 +6,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
+const { assertEmployeeInScope } = require('../utils/scope')
 
 /**
  * 员工列表
@@ -442,23 +443,8 @@ async function performanceDetail(ctx) {
   const targetEmployeeId = (isManager && queryEmployeeId) ? queryEmployeeId : ctx.auth.staffWfId
 
   // Scope guard: when querying another employee, verify they're within current scope
-  if (targetEmployeeId !== ctx.auth.staffWfId) {
-    const empRows = await pg.query(
-      'SELECT store_id FROM staff_wechat_users WHERE employee_id = $1',
-      [targetEmployeeId]
-    )
-    if (empRows.length === 0) {
-      throw new Error('INVALID_PARAMS: 员工不存在')
-    }
-    const empStoreId = empRows[0].store_id
-    const { effectiveStoreId, scopeStoreIds, loginLevel } = ctx.auth
-    const inScope = loginLevel === 'management'
-      ? (scopeStoreIds || []).includes(empStoreId)
-      : empStoreId === effectiveStoreId
-    if (!inScope) {
-      throw new Error('PERMISSION_DENIED: 无权查看该员工业绩')
-    }
-  }
+  // assertEmployeeInScope 自查（staffWfId === targetEmployeeId）直接放行，无需 DB
+  await assertEmployeeInScope(pg, ctx.auth, targetEmployeeId)
 
   if (!startDate || !endDate) {
     throw new Error('INVALID_PARAMS: 缺少 startDate 或 endDate')

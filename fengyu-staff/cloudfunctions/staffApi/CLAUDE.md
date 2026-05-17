@@ -31,6 +31,18 @@ staffApi/
 └── utils/
 ```
 
+## 错误前缀约定（9 项白名单，单源 `utils/error-codes.js`）
+
+云函数全局 catch 用 `buildErrorResponse(err)` 把 throw 转成 `{code, message, errorType, data}`。
+任何 throw 必须使用以下 9 项前缀之一，否则降级为 `{code:-1, errorType:null, message:'服务器内部错误'}`：
+
+`UNAUTHORIZED(-401)` / `PHONE_REQUIRED(-403)` / `INVALID_PARAMS(-400)` / `PERMISSION_DENIED(-403)` /
+`NOT_FOUND(-404)` / `INSUFFICIENT_BALANCE(-400)` / `CONFLICT(-409)` / `INVALID_STATE(-400)` /
+`CLIENT_NOT_REGISTERED(-400)`
+
+二级前缀语法：`<一级>: <子标签>: <消息>`，子标签 `[A-Z_]+` 不计入白名单但允许（如 `INVALID_STATE: STATE_TRANSITION_BLOCKED: ...`）。
+跨端一致性由 `__tests__/routes/cross-end-error-codes-snapshot.test.js` 守护。
+
 ## 认证
 
 - 通过 `cloud.getWXContext()` 获取 OPENID

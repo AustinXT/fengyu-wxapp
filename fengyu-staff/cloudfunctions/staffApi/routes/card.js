@@ -129,7 +129,7 @@ async function recharge(ctx) {
   if (hasSkuId) {
     if (skuId === RECHARGE_VIRTUAL_SKU_ID) {
       // 显式传虚拟 SKU 但未给 customAmount —— 拒绝（避免面值零订单）
-      throw new Error('INVALID_PARAMS: 虚拟 SKU 需通过 customAmount 下单')
+      throw new Error('INVALID_PARAMS: 虚拟商品需通过自定义金额下单')
     }
     const skuRows = await pg.query(`
       SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.product_type,
@@ -138,10 +138,10 @@ async function recharge(ctx) {
       JOIN product_categories pc ON sk.category_id = pc.category_id
       WHERE sk.sku_id = $1 AND sk.is_enabled = true
     `, [skuId])
-    if (skuRows.length === 0) throw new Error('INVALID_PARAMS: SKU 不存在或已下架')
+    if (skuRows.length === 0) throw new Error('INVALID_PARAMS: 商品不存在或已下架')
     const sku = skuRows[0]
     // capability 列 SSoT：is_recharge_card=true 才是充值卡（解耦 product_kind 字面量）
-    if (!sku.is_recharge_card) throw new Error('INVALID_PARAMS: 该 SKU 不是充值卡')
+    if (!sku.is_recharge_card) throw new Error('INVALID_PARAMS: 该商品不是充值卡')
     resolvedSkuId = skuId
     productName = sku.spec_name
     skuSpecName = sku.spec_name

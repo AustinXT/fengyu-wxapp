@@ -97,10 +97,10 @@ describe('product.skuDetail', () => {
     await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*skuId/)
   })
 
-  test('SKU 不存在 → INVALID_PARAMS', async () => {
+  test('商品不存在 → INVALID_PARAMS', async () => {
     pg.query.mockResolvedValueOnce([])
     const ctx = createCtx({ payload: { skuId: 'nonexistent' } })
-    await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*SKU 不存在/)
+    await expect(routes.skuDetail(ctx)).rejects.toThrow(/INVALID_PARAMS.*商品不存在/)
   })
 })
 

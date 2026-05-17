@@ -10,7 +10,12 @@
 
 const pg = require("../db/pg");
 const { requireStaffBound, requireManager } = require("../middleware/auth");
-const { buildStoreScopeCondition } = require("../utils/scope");
+const {
+  buildStoreScopeCondition,
+  isStoreInScope,
+  assertCustomerInScope,
+  assertEmployeeInScope,
+} = require("../utils/scope");
 
 /**
  * 搜索顾客（PG 单源）
@@ -293,14 +298,8 @@ async function detail(ctx) {
   }
 
   // Scope check: customer must belong to a store within current employee's scope
-  if (pgUser.bound_store_id) {
-    const { effectiveStoreId, scopeStoreIds, loginLevel } = ctx.auth
-    const inScope = loginLevel === 'management'
-      ? scopeStoreIds.includes(pgUser.bound_store_id)
-      : pgUser.bound_store_id === effectiveStoreId
-    if (!inScope) {
-      throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
-    }
+  if (pgUser.bound_store_id && !isStoreInScope(ctx.auth, pgUser.bound_store_id)) {
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
   }
 
   const phone = pgUser.phone || "";
@@ -937,14 +936,14 @@ async function updateNotes(ctx) {
 
   const trimmed = notes.trim().slice(0, 500)
 
-  const result = await pg.query(
-    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2 AND bound_store_id = $3',
-    [trimmed || null, clientUserId, ctx.auth.effectiveStoreId]
-  )
+  // scope 守卫：assertCustomerInScope 校验顾客存在 + bound_store_id ∈ 当前 scope
+  // （store 模式 = effectiveStoreId；management 模式 = scopeStoreIds）
+  await assertCustomerInScope(pg, ctx.auth, clientUserId)
 
-  if (result.rowCount === 0) {
-    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内或不存在')
-  }
+  await pg.query(
+    'UPDATE client_wechat_users SET notes = $1, updated_at = NOW() WHERE user_id = $2',
+    [trimmed || null, clientUserId]
+  )
 
   // Audit log
   await pg.query(
@@ -996,22 +995,22 @@ async function assign(ctx) {
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
 
-  // 验证员工存在且在本店
+  // scope 守卫：顾客与员工都必须 ∈ 当前 scope
+  await assertCustomerInScope(pg, ctx.auth, clientUserId)
+  await assertEmployeeInScope(pg, ctx.auth, employeeId)
+
   const staffRows = await pg.query(
-    'SELECT employee_id, name FROM staff_wechat_users WHERE employee_id = $1 AND store_id = $2',
-    [employeeId, ctx.auth.effectiveStoreId]
+    'SELECT name FROM staff_wechat_users WHERE employee_id = $1',
+    [employeeId]
   )
   if (staffRows.length === 0) {
-    throw new Error('INVALID_PARAMS: 员工不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 员工不存在')
   }
 
-  const result = await pg.query(
-    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2 AND bound_store_id = $3',
-    [employeeId, clientUserId, ctx.auth.effectiveStoreId]
+  await pg.query(
+    'UPDATE client_wechat_users SET bound_employee_id = $1, updated_at = NOW() WHERE user_id = $2',
+    [employeeId, clientUserId]
   )
-  if (result.rowCount === 0) {
-    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内或不存在')
-  }
 
   // Audit log
   await pg.query(

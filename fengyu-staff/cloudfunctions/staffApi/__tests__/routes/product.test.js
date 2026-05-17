@@ -137,7 +137,7 @@ describe('product.skuDetail', () => {
     pg.query.mockResolvedValueOnce([])
 
     await expect(productRoutes.skuDetail(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*SKU.*不存在/)
+      .rejects.toThrow(/INVALID_PARAMS.*商品不存在/)
   })
 })
 

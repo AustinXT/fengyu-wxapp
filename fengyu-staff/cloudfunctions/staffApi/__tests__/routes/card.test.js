@@ -233,7 +233,7 @@ describe('card.recharge', () => {
       paymentMethod: '线下',
     })
     pg.query.mockResolvedValueOnce([])  // SKU 查询空
-    await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*SKU 不存在/)
+    await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*商品不存在/)
   })
 
   test('显式传虚拟 SKU 但无 customAmount 拒绝', async () => {
@@ -242,7 +242,7 @@ describe('card.recharge', () => {
       skuId: 'sku-recharge-virtual',
       paymentMethod: '线下',
     })
-    await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*虚拟 SKU/)
+    await expect(cardRoutes.recharge(ctx)).rejects.toThrow(/INVALID_PARAMS.*虚拟商品/)
   })
 
   test('自定义金额低于下限拒绝', async () => {

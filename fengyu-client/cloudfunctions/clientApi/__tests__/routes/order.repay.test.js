@@ -242,7 +242,7 @@ describe('order.repay', () => {
 
   test('paymentMethod 非法 → INVALID_PARAMS', async () => {
     const ctx = createBoundCtx({ saleOrderId: 'FY-XSD-WX-xx', paymentMethod: '现金', repayAmount: 50 })
-    await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*paymentMethod/)
+    await expect(routes.repay(ctx)).rejects.toThrow(/INVALID_PARAMS.*支付方式/)
   })
 
   test('储值卡通道 repayAmount 非零 → INVALID_PARAMS', async () => {

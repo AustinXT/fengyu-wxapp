@@ -356,7 +356,7 @@ async function skuDetail(ctx) {
   `, [skuId])
 
   if (rows.length === 0) {
-    throw new Error('INVALID_PARAMS: SKU 不存在')
+    throw new Error('INVALID_PARAMS: 商品不存在')
   }
 
   ctx.result = { sku: rows[0] }

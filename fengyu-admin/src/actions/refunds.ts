@@ -10,6 +10,7 @@ import { alias } from 'drizzle-orm/pg-core'
 import { revalidatePath } from 'next/cache'
 import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { assertOrderInScope } from '@/lib/scope-assert'
 import { logOperation } from '@/lib/operation-log'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
@@ -737,11 +738,18 @@ export async function approveRefund(refundPaymentId: number | string): Promise<A
       error: { code: 'INVALID_STATE', message: `当前状态"${pre.payment.status}"不允许审批` },
     }
   }
-  if (!pre.orderStoreId) {
+  if (!pre.orderStoreId || !pre.payment.saleOrderId) {
     return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
   }
-  if (!isInScope(session, pre.orderStoreId)) {
-    return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+  // scope 守卫：assertOrderInScope 统一三端语义（详见 lib/scope-assert.ts）
+  try {
+    await assertOrderInScope(session, pre.payment.saleOrderId)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.startsWith('PERMISSION_DENIED:')) {
+      return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+    }
+    throw err
   }
 
   const refSaleOrderId = pre.payment.saleOrderId
@@ -921,8 +929,18 @@ export async function rejectRefund(
       error: { code: 'INVALID_STATE', message: `当前状态"${pre.payment.status}"不允许驳回` },
     }
   }
-  if (!pre.orderStoreId || !isInScope(session, pre.orderStoreId)) {
-    return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+  if (!pre.orderStoreId || !pre.payment.saleOrderId) {
+    return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+  }
+  // scope 守卫：assertOrderInScope 统一三端语义
+  try {
+    await assertOrderInScope(session, pre.payment.saleOrderId)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.startsWith('PERMISSION_DENIED:')) {
+      return { success: false, error: { code: 'PERMISSION_DENIED', message: '无权操作该门店退款' } }
+    }
+    throw err
   }
 
   const refSaleOrderId = pre.payment.saleOrderId

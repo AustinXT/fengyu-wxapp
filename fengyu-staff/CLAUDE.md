@@ -41,6 +41,14 @@ Vant Weapp 需在 DevTools 中执行"构建 npm"（packNpmManually 模式）。
 - `order.confirmOffline` — 店长确认线下收款时，若订单有 `prepaid_card_amount > 0` 则事务内扣 balance + INSERT `card_transactions(type='扣款')` + 置已支付
 - `order.approveRefund` — 退款审批通过时按 `floor(prepaid/total × refund, 2)` 比例拆分，储值卡部分 INSERT `type='充值'` 回冲 balance，返回 `{refundByCard, refundByOrigin}`
 
+## 错误前缀约定
+
+云函数 throw 必须使用 9 项官方白名单前缀（详见 `cloudfunctions/staffApi/utils/error-codes.js`）：
+`UNAUTHORIZED` / `PHONE_REQUIRED` / `INVALID_PARAMS` / `PERMISSION_DENIED` /
+`NOT_FOUND` / `INSUFFICIENT_BALANCE` / `CONFLICT` / `INVALID_STATE` / `CLIENT_NOT_REGISTERED`
+
+前端通过 `callStaffApi` 抛错时 `err.errorType` 字段保留前缀名（`PHONE_REQUIRED` 与 `PERMISSION_DENIED` 共用 -403，必须按 `errorType` 区分而非按 code）。
+
 ## 环境变量（云函数）
 
 - `PG_CONNECTION_STRING` — PostgreSQL 连接串

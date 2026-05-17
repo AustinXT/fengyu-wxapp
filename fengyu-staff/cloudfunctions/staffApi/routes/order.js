@@ -13,6 +13,7 @@
 
 const pg = require('../db/pg')
 const { requireStaffBound, requireManager } = require('../middleware/auth')
+const { assertOrderInScope, isStoreInScope } = require('../utils/scope')
 const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
@@ -210,7 +211,7 @@ async function create(ctx) {
     throw new Error('INVALID_PARAMS: 回款/退款已下沉至 sale_order_payments，order.create 不再支持此类型')
   }
   if (!['销售单', '内部单'].includes(saleOrderType)) {
-    throw new Error('INVALID_PARAMS: saleOrderType 值不合法（仅支持 销售单/内部单）')
+    throw new Error('INVALID_PARAMS: 订单类型不合法（仅支持 销售单/内部单）')
   }
 
   // 内部单守卫：不允许叠加优惠券
@@ -258,7 +259,7 @@ async function create(ctx) {
         [item.skuId]
       )
       if (skuRows.length === 0) {
-        throw new Error(`INVALID_PARAMS: SKU ${item.skuId} 不存在`)
+        throw new Error(`INVALID_PARAMS: 商品 ${item.skuId} 不存在`)
       }
       const sku = skuRows[0]
 
@@ -442,7 +443,9 @@ async function create(ctx) {
   }
 
   const now = new Date()
-  const saleOrderId = await generateOrderNo()
+  // saleOrderId 在事务内由 generateOrderNo(undefined, client) 生成，保证 advisory lock
+  // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
+  let saleOrderId
   const totalAmount = Math.round(itemDataList.reduce((sum, d) => sum + d.received, 0) * 100) / 100
 
   // ========== 储值卡预选（店长开单 = 预选，不扣卡）==========
@@ -461,13 +464,13 @@ async function create(ctx) {
     if (inputPrepaidCardAmount !== undefined && inputPrepaidCardAmount !== null) {
       const inputAmount = Number(inputPrepaidCardAmount)
       if (!Number.isFinite(inputAmount) || inputAmount < 0) {
-        throw new Error('INVALID_PARAMS: prepaidCardAmount 必须为非负数')
+        throw new Error('INVALID_PARAMS: 储值卡抵扣金额必须为非负数')
       }
       if (inputAmount > currentBalance) {
         throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
       }
       if (inputAmount > maxPrepayable) {
-        throw new Error('INVALID_PARAMS: prepaidCardAmount 超过应抵上限')
+        throw new Error('INVALID_PARAMS: 储值卡抵扣金额超过应抵上限')
       }
       prepaidCardAmount = Math.round(inputAmount * 100) / 100
     } else {
@@ -493,15 +496,15 @@ async function create(ctx) {
   } else {
     receivedAmount = Number(inputReceivedAmount)
     if (!Number.isFinite(receivedAmount) || receivedAmount < 0) {
-      throw new Error('INVALID_PARAMS: receivedAmount 必须为非负数')
+      throw new Error('INVALID_PARAMS: 实收金额必须为非负数')
     }
     if (receivedAmount > payableAmount + 0.001) {
-      throw new Error('INVALID_PARAMS: receivedAmount 不能超过应付金额')
+      throw new Error('INVALID_PARAMS: 实收金额不能超过应付金额')
     }
     receivedAmount = Math.round(receivedAmount * 100) / 100
   }
   if (isOnlineMethod && receivedAmount > 0) {
-    throw new Error('INVALID_PARAMS:MIXED_PAYMENT_NOT_SUPPORTED: 微信/支付宝不支持部分线上支付，请改用线下或先下单后扫码')
+    throw new Error('INVALID_PARAMS: 微信/支付宝不支持部分线上支付，请改用线下或先下单后扫码')
   }
 
   // 落账部分（paid_amount 快照）：
@@ -538,8 +541,9 @@ async function create(ctx) {
   }
 
   await pg.transaction(async (client) => {
-    // Advisory lock 防并发流水号冲突
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    // 生成 saleOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))，
+    // 锁持有到外层 COMMIT，闭合 TOCTOU）。同一事务内再次请求同 key 是 no-op（reentrant）
+    saleOrderId = await generateOrderNo(undefined, client)
 
     const today = now
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '')
@@ -675,7 +679,7 @@ async function create(ctx) {
     )
     const row = mixedCheck.rows[0]
     if (!(row.all_recharge === true || row.all_normal === true)) {
-      throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
+      throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
     }
   })
 
@@ -863,10 +867,10 @@ async function confirmOffline(ctx) {
   } else {
     confirmAmount = Number(inputConfirmAmount)
     if (!Number.isFinite(confirmAmount) || confirmAmount < 0) {
-      throw new Error('INVALID_PARAMS: confirmAmount 必须为非负数')
+      throw new Error('INVALID_PARAMS: 本次确认金额必须为非负数')
     }
     if (confirmAmount > remainingPayable + 0.001) {
-      throw new Error('INVALID_PARAMS: confirmAmount 不能超过剩余应付金额')
+      throw new Error('INVALID_PARAMS: 本次确认金额不能超过剩余应付金额')
     }
     confirmAmount = Math.round(confirmAmount * 100) / 100
   }
@@ -1005,7 +1009,7 @@ async function confirmOffline(ctx) {
             if (row.sku_id === RECHARGE_VIRTUAL_SKU_ID) {
               const m = (row.product_name || '').match(/¥\s*(\d+(?:\.\d+)?)/)
               if (!m) {
-                throw new Error(`[confirmOffline] 充值订单 product_name 无法解析面值: ${row.product_name}`)
+                throw new Error(`INVALID_PARAMS: 充值订单 product_name 无法解析面值: ${row.product_name}`)
               }
               faceValue = parseFloat(m[1])
             } else {
@@ -1094,13 +1098,16 @@ async function close(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
   }
 
+  // scope 守卫
+  await assertOrderInScope(pg, ctx.auth, saleOrderId)
+
   const orders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2",
-    [saleOrderId, ctx.auth.effectiveStoreId]
+    'SELECT * FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId]
   )
 
   if (orders.length === 0) {
-    throw new Error('INVALID_PARAMS: 订单不存在或不属于本门店')
+    throw new Error('INVALID_PARAMS: 订单不存在')
   }
 
   const order = orders[0]
@@ -1402,18 +1409,20 @@ async function createRefund(ctx) {
   await requireManager()(ctx, async () => {})
 
   const { refSaleOrderId, items, refundReason, handlingFee } = ctx.event.payload || {}
-  const storeId = ctx.auth.effectiveStoreId
 
   if (!refSaleOrderId) throw new Error('INVALID_PARAMS: 缺少原销售单号')
   if (!items || !Array.isArray(items) || items.length === 0) throw new Error('INVALID_PARAMS: 退款明细不能为空')
   if (!refundReason) throw new Error('INVALID_PARAMS: 退款原因不能为空')
 
-  // 查原单 + 校验状态/归属
+  // scope 守卫
+  await assertOrderInScope(pg, ctx.auth, refSaleOrderId)
+
+  // 查原单 + 校验状态
   const origOrders = await pg.query(
-    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND store_id = $2 AND status IN ('已支付', '已完成', '部分支付')",
-    [refSaleOrderId, storeId]
+    "SELECT * FROM sale_orders WHERE sale_order_id = $1 AND status IN ('已支付', '已完成', '部分支付')",
+    [refSaleOrderId]
   )
-  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或状态不允许退款')
+  if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单状态不允许退款')
   const origOrder = origOrders[0]
 
   // in-flight 唯一性：同一原单仅允许一笔 '待审批' 退款（DB 上有 partial unique uq_sop_status_audit 兜底）
@@ -1557,8 +1566,8 @@ async function approveRefund(ctx) {
   )
   if (sopRows.length === 0) throw new Error('NOT_FOUND: 退款流水不存在')
   const sopRow = sopRows[0]
-  if (sopRow.store_id !== ctx.auth.effectiveStoreId) {
-    throw new Error('PERMISSION_DENIED: 无权审批该退款')
+  if (!isStoreInScope(ctx.auth, sopRow.store_id)) {
+    throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
   }
   if (sopRow.status !== '待审批') {
     throw new Error('INVALID_STATE: 退款流水状态不是待审批')
@@ -1683,8 +1692,8 @@ async function rejectRefund(ctx) {
   )
   if (sopRows.length === 0) throw new Error('NOT_FOUND: 退款流水不存在')
   const sopRow = sopRows[0]
-  if (sopRow.store_id !== ctx.auth.effectiveStoreId) {
-    throw new Error('PERMISSION_DENIED: 无权驳回该退款')
+  if (!isStoreInScope(ctx.auth, sopRow.store_id)) {
+    throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
   }
   if (sopRow.status !== '待审批') {
     throw new Error('INVALID_STATE: 退款流水状态不是待审批')
@@ -1780,7 +1789,7 @@ async function createRepayment(ctx) {
 
   // 微信扫码回款暂未实现（待业务接入微信扫码付款码链路）
   if (paymentMethod === '微信') {
-    throw new Error('INVALID_PARAMS:WX_SCAN_NOT_IMPLEMENTED 微信扫码回款暂未开放')
+    throw new Error('INVALID_PARAMS: 微信扫码回款暂未开放')
   }
 
   // 推导 repayAmount：优先显式入参，否则按 items 合计
@@ -1793,7 +1802,7 @@ async function createRepayment(ctx) {
     repayAmount = 0
   }
   if (!Number.isFinite(repayAmount) || repayAmount < 0) {
-    throw new Error('INVALID_PARAMS: repayAmount 必须为非负数')
+    throw new Error('INVALID_PARAMS: 还款金额必须为非负数')
   }
   repayAmount = Math.round(repayAmount * 100) / 100
 
@@ -1805,7 +1814,7 @@ async function createRepayment(ctx) {
 
   // 储值卡付款方式下不应再传 repayAmount>0（语义是纯储值卡回款）
   if (paymentMethod === '储值卡' && repayAmount > 0) {
-    throw new Error('INVALID_PARAMS: 储值卡付款方式下不应传 repayAmount（应通过 prepaidCardAmount 传递）')
+    throw new Error('INVALID_PARAMS: 储值卡付款方式下不应传还款金额（应通过储值卡抵扣金额传递）')
   }
 
   // 先查原单（非锁，校验门店/顾客归属）
@@ -1816,7 +1825,7 @@ async function createRepayment(ctx) {
   if (origOrders.length === 0) throw new Error('INVALID_PARAMS: 原订单不存在或不属于本门店')
   const origOrder = origOrders[0]
   if (!origOrder.client_user_id) {
-    throw new Error('CLIENT_NOT_REGISTERED: 原订单顾客未注册小程序或未绑定门店')
+    throw new Error('INVALID_PARAMS: 原订单顾客未注册小程序或未绑定门店')
   }
 
   const now = new Date()
@@ -1850,7 +1859,7 @@ async function createRepayment(ctx) {
 
     // 3) 超额校验
     if (totalThisTime > remainingPayable + 0.001) {
-      throw new Error('INVALID_PARAMS:OVERPAY 本次回款金额超过订单欠款')
+      throw new Error('INVALID_PARAMS: 本次回款金额超过订单欠款')
     }
 
     // 4) 储值卡抵扣：锁余额 → 扣减 → 写流水
@@ -2010,7 +2019,7 @@ async function createConversion(ctx) {
     throw new Error('INVALID_PARAMS: 请选择至少一个转入项目')
   }
   if (!paymentMethod || !['微信', '线下'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: paymentMethod 仅支持 微信/线下')
+    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/线下')
   }
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
 
@@ -2027,10 +2036,13 @@ async function createConversion(ctx) {
   }
 
   const now = new Date()
-  const convOrderId = await generateOrderNo('FY-XSD-WX-')
+  // convOrderId 在事务内由 generateOrderNo('FY-XSD-WX-', tx) 生成，保证 advisory lock
+  // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
+  let convOrderId
 
   const result = await pg.transaction(async (tx) => {
-    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+    // 生成 convOrderId（内部独占 advisory_xact_lock(hashtext('sale_order_id_gen'))）
+    convOrderId = await generateOrderNo('FY-XSD-WX-', tx)
 
     // 1. 锁候选卡 FOR UPDATE（跨店守卫 + 状态/方向过滤 + 余量过滤）
     const heldResult = await tx.query(
@@ -2142,7 +2154,7 @@ async function createConversion(ctx) {
          WHERE s.sku_id = $1`,
         [req.skuId]
       )
-      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: SKU ${req.skuId} 不存在`)
+      if (skuRes.rows.length === 0) throw new Error(`INVALID_PARAMS: 商品 ${req.skuId} 不存在`)
       const sku = skuRes.rows[0]
       const qty = Number(req.quantity) || 1
       const amount = Math.round(Number(sku.price) * qty * 100) / 100
@@ -2468,30 +2480,35 @@ async function createPickup(ctx) {
 
 /**
  * 生成订单号
+ *
+ * advisory lock 必须与最终 INSERT 在同一事务内才能闭合 TOCTOU 窗口。
+ * 调用方必须传入外层事务的 client，函数内不再自开 pg.transaction。
+ *
  * @param prefix 前缀，如 'FY-XSD-WX-', 'FY-TKD-WX-' 等
+ * @param client 外层事务的 pg client（必传）
  */
-async function generateOrderNo(prefix) {
+async function generateOrderNo(prefix, client) {
+  if (!client) {
+    throw new Error('generateOrderNo: client is required (must be called inside an outer transaction)')
+  }
   if (!prefix) prefix = 'FY-XSD-WX-'
+  // dateStr 在事务内计算，避免跨午夜窗口（事务外算的 dateStr 可能落到上一日）
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
-
   const likePattern = `${prefix}${dateStr}%`
-  // 使用 advisory lock 防止并发生成重复订单号（与 admin orders.ts 对齐：hashtext('sale_order_id_gen')）
-  const result = await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
-    const rows = await client.query(`
-      SELECT sale_order_id FROM sale_orders
-      WHERE sale_order_id LIKE $1
-      ORDER BY sale_order_id DESC LIMIT 1
-    `, [likePattern])
-    let seq = 1
-    if (rows.rows.length > 0) {
-      seq = parseInt(rows.rows[0].sale_order_id.slice(-4)) + 1
-    }
-    return `${prefix}${dateStr}${String(seq).padStart(4, '0')}`
-  })
 
-  return result
+  // 与 admin orders.ts 对齐：hashtext('sale_order_id_gen')
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
+  const rows = await client.query(`
+    SELECT sale_order_id FROM sale_orders
+    WHERE sale_order_id LIKE $1
+    ORDER BY sale_order_id DESC LIMIT 1
+  `, [likePattern])
+  let seq = 1
+  if (rows.rows.length > 0) {
+    seq = parseInt(rows.rows[0].sale_order_id.slice(-4)) + 1
+  }
+  return `${prefix}${dateStr}${String(seq).padStart(4, '0')}`
 }
 
 /**

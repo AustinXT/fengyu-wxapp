@@ -8,6 +8,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 // 导入中间件
 const { auth } = require('./middleware/auth')
+const { buildErrorResponse } = require('./utils/error-codes')
 
 // 路由映射表 —— 懒加载：只在匹配到 action 时才 require 对应模块
 const routes = {
@@ -116,30 +117,6 @@ exports.main = async (event, context) => {
     }
   } catch (error) {
     console.error(`[${action}] Error:`, error)
-
-    // 解析错误类型——仅透传已知前缀的业务错误，其余一律返回通用提示
-    const errorMessage = error.message || '服务器内部错误'
-    const errorTypeMatch = errorMessage.match(/^([A-Z_]+):\s*/)
-    const errorType = errorTypeMatch ? errorTypeMatch[1] : null
-    const knownTypes = [
-      'UNAUTHORIZED', 'PHONE_REQUIRED', 'INVALID_PARAMS',
-      'PERMISSION_DENIED', 'NOT_FOUND', 'INSUFFICIENT_BALANCE'
-    ]
-    const isKnown = errorType && knownTypes.includes(errorType)
-    const displayMessage = isKnown ? errorMessage.slice(errorTypeMatch[0].length) : '服务器内部错误'
-
-    const code = errorMessage.startsWith('UNAUTHORIZED') ? -401 :
-                  errorMessage.startsWith('PHONE_REQUIRED') ? -403 :
-                  errorMessage.startsWith('INVALID_PARAMS') ? -400 :
-                  errorMessage.startsWith('PERMISSION_DENIED') ? -403 :
-                  errorMessage.startsWith('NOT_FOUND') ? -404 :
-                  -1
-
-    return {
-      code,
-      message: displayMessage,
-      errorType: isKnown ? errorType : null,
-      data: error.data || null
-    }
+    return buildErrorResponse(error)
   }
 }

@@ -75,7 +75,7 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 服务明细缺少 saleItemId')
     }
     if (!item.sessionUsed || item.sessionUsed <= 0) {
-      throw new Error('INVALID_PARAMS: sessionUsed 必须大于 0')
+      throw new Error('INVALID_PARAMS: 本次使用次数必须大于 0')
     }
 
     const saleItemRows = await pg.query(`
@@ -163,10 +163,16 @@ async function create(ctx) {
     }
   }
 
-  const serviceOrderId = await generateServiceOrderId()
+  // serviceOrderId 在事务内由 generateServiceOrderId(client) 生成，保证 advisory lock
+  // 持有窗口覆盖 SELECT MAX → INSERT 全程，闭合 TOCTOU
+  let serviceOrderId
   const now = new Date()
 
   await pg.transaction(async (client) => {
+    // 生成 serviceOrderId（内部独占 advisory_xact_lock(hashtext('service_order_id_gen'))，
+    // 与 admin services.ts 跨端互锁）
+    serviceOrderId = await generateServiceOrderId(client)
+
     // 创建服务单主表
     await client.query(
       `INSERT INTO service_orders (
@@ -192,14 +198,13 @@ async function create(ctx) {
     for (const item of normalizedItems) {
       const serviceItemId = generateServiceItemId()
 
-      // 获取 sale_item 的 sku_id、unit_real_price、is_shengmei、sales_category（全部快照拷贝到 service_items）
+      // 获取 sale_item 的 unit_real_price、is_shengmei、sales_category（全部快照拷贝到 service_items）
       const siRows = await client.query(
-        `SELECT si.sku_id, si.unit_real_price, si.is_shengmei, si.sales_category
+        `SELECT si.unit_real_price, si.is_shengmei, si.sales_category
          FROM sale_items si
          WHERE si.sale_item_id = $1`,
         [item.saleItemId]
       )
-      const skuId = siRows.rows[0]?.sku_id || null
       const unitRealPrice = siRows.rows[0]?.unit_real_price || null
       const isShengmei = siRows.rows[0]?.is_shengmei ?? null
       const salesCategory = siRows.rows[0]?.sales_category ?? null
@@ -207,14 +212,13 @@ async function create(ctx) {
       await client.query(
         `INSERT INTO service_items
            (service_item_id, sale_item_id, unit_real_price, service_order_id,
-            sku_id, session_used, employee_id, service_duration, is_shengmei, sales_category)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            session_used, employee_id, service_duration, is_shengmei, sales_category)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           serviceItemId,
           item.saleItemId,
           unitRealPrice,
           serviceOrderId,
-          skuId,
           item.sessionUsed,
           item.employeeId || resolvedStaffWfId,
           item.serviceDuration || null,
@@ -364,7 +368,7 @@ async function complete(ctx) {
           throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
         }
         if (probe.remaining_sessions !== null) {
-          throw new Error(`次数不足：订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
+          throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
         }
       }
 
@@ -765,28 +769,39 @@ async function cancel(ctx) {
 
 // ========== 辅助函数 ==========
 
-async function generateServiceOrderId() {
+/**
+ * 生成服务单 ID
+ *
+ * advisory lock 必须与最终 INSERT 在同一事务内才能闭合 TOCTOU 窗口。
+ * 调用方必须传入外层事务的 client，函数内不再自开 pg.transaction。
+ *
+ * lock key 与 admin services.ts 对齐：hashtext('service_order_id_gen')，
+ * 保证 staffApi + admin 跨端互锁（旧的 Buffer 自定义 hash 与 admin 互不相交，
+ * 会导致跨端并发撞号）。
+ *
+ * @param client 外层事务的 pg client（必传）
+ */
+async function generateServiceOrderId(client) {
+  if (!client) {
+    throw new Error('generateServiceOrderId: client is required (must be called inside an outer transaction)')
+  }
+  // dateStr 在事务内计算，避免跨午夜窗口
   const today = new Date()
   const dateStr = today.toISOString().slice(2, 10).replace(/-/g, '')
-
-  // 使用 advisory lock 防止并发生成重复 ID
   const likePattern = `HLD-WX-${dateStr}%`
-  const lockKey = Buffer.from('svc_order_id').reduce((h, b) => (h * 31 + b) & 0x7fffffff, 0)
-  const result = await pg.transaction(async (client) => {
-    await client.query('SELECT pg_advisory_xact_lock($1)', [lockKey])
-    const rows = await client.query(`
-      SELECT service_order_id FROM service_orders
-      WHERE service_order_id LIKE $1
-      ORDER BY service_order_id DESC LIMIT 1
-    `, [likePattern])
-    let seq = 1
-    if (rows.rows.length > 0) {
-      seq = parseInt(rows.rows[0].service_order_id.slice(-4)) + 1
-    }
-    return `HLD-WX-${dateStr}${String(seq).padStart(4, '0')}`
-  })
 
-  return result
+  // 与 admin services.ts:522 对齐：hashtext('service_order_id_gen')
+  await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['service_order_id_gen'])
+  const rows = await client.query(`
+    SELECT service_order_id FROM service_orders
+    WHERE service_order_id LIKE $1
+    ORDER BY service_order_id DESC LIMIT 1
+  `, [likePattern])
+  let seq = 1
+  if (rows.rows.length > 0) {
+    seq = parseInt(rows.rows[0].service_order_id.slice(-4)) + 1
+  }
+  return `HLD-WX-${dateStr}${String(seq).padStart(4, '0')}`
 }
 
 function generateServiceItemId() {

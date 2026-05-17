@@ -94,10 +94,10 @@ function buildClientScope(scopeType, scopeId, alias, startIdx) {
  */
 function validateScopeParams(scopeType, scopeId) {
   if (!['all', 'market', 'store'].includes(scopeType)) {
-    throw new Error('INVALID_PARAMS: scopeType 必须是 all/market/store')
+    throw new Error('INVALID_PARAMS: 范围类型必须是 全部/市场/门店')
   }
   if (scopeType !== 'all' && !scopeId) {
-    throw new Error('INVALID_PARAMS: scopeType 为 market/store 时必须提供 scopeId')
+    throw new Error('INVALID_PARAMS: 范围类型为市场/门店时必须提供范围 ID')
   }
 }
 

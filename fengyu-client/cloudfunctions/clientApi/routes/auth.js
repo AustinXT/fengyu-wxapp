@@ -94,7 +94,7 @@ async function bindPhone(ctx) {
 
     const resolved = phoneData.data
     if (!resolved) {
-      throw new Error('INVALID_PARAMS: CloudID 未被解密，请检查是否放在 data 顶层')
+      throw new Error('INVALID_PARAMS: 登录凭证未被解密，请稍后重试')
     }
 
     phoneNumber = resolved.purePhoneNumber || resolved.phoneNumber
@@ -362,7 +362,7 @@ async function uploadAvatar(ctx) {
   const buffer = Buffer.from(base64, 'base64')
   // 空 base64 解码得到空 buffer；过大图片拒绝（> 2MB）
   if (buffer.length === 0) {
-    throw new Error('INVALID_PARAMS: base64 解码为空')
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
   }
   if (buffer.length > 2 * 1024 * 1024) {
     throw new Error('INVALID_PARAMS: 图片大小超过 2MB')

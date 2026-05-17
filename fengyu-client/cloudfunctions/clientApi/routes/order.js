@@ -232,18 +232,20 @@ async function create(ctx) {
   // 验证所有 SKU 存在
   for (const item of items) {
     if (!skuMap[item.skuId]) {
-      throw new Error(`INVALID_PARAMS: SKU ${item.skuId} 不存在`)
+      throw new Error(`INVALID_PARAMS: 商品 ${item.skuId} 不存在`)
     }
   }
 
   // 预计算明细数据
+  // 浮点 round 兜底（与 staff order.js L446 聚合点 round 对齐；行级 + 累加后双 round）
+  // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md
   let totalAmount = 0
   const itemsData = items.map(item => {
     const sku = skuMap[item.skuId]
     const unitPrice = Number(sku.price)
     const unitRealPrice = Number(sku.special_price || sku.price)
     const quantity = item.quantity || 1
-    const saleAmount = unitRealPrice * quantity
+    const saleAmount = Math.round(unitRealPrice * quantity * 100) / 100
     totalAmount += saleAmount
     return {
       skuId: item.skuId,
@@ -262,6 +264,7 @@ async function create(ctx) {
       isExperience: !!sku.is_experience
     }
   })
+  totalAmount = Math.round(totalAmount * 100) / 100
 
   // === D4 严格独立校验（应用层，事务前提前拦截）===
   // sale_items 不能混合 is_recharge_card true/false：充值卡订单 100% 全是充值卡，普通订单 0 充值卡
@@ -269,7 +272,7 @@ async function create(ctx) {
   const hasRecharge = itemsData.some(d => d.isRechargeCard)
   const hasNormal = itemsData.some(d => !d.isRechargeCard)
   if (hasRecharge && hasNormal) {
-    throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
+    throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
   }
 
   // ========== 优惠券处理 ==========
@@ -578,7 +581,7 @@ async function create(ctx) {
     )
     const m = (mixedRow && mixedRow.rows && mixedRow.rows[0]) || null
     if (m && m.all_recharge === false && m.all_normal === false) {
-      throw new Error('INVALID_PARAMS: MIXED_RECHARGE_NOT_ALLOWED')
+      throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
     }
 
     // 全额抵扣：同事务扣减 balance + INSERT card_transactions（幂等）+ 写 sale_order_payments[储值卡抵扣]
@@ -1651,13 +1654,13 @@ async function repay(ctx) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
   }
   if (!['微信', '支付宝', '储值卡'].includes(paymentMethod)) {
-    throw new Error('INVALID_PARAMS: paymentMethod 仅支持 微信/支付宝/储值卡')
+    throw new Error('INVALID_PARAMS: 支付方式仅支持 微信/支付宝/储值卡')
   }
   if (!Number.isFinite(repayAmountInput) || repayAmountInput < 0) {
-    throw new Error('INVALID_PARAMS: repayAmount 无效')
+    throw new Error('INVALID_PARAMS: 还款金额无效')
   }
   if (!Number.isFinite(prepaidCardAmountInput) || prepaidCardAmountInput < 0) {
-    throw new Error('INVALID_PARAMS: prepaidCardAmount 无效')
+    throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
   }
   if (Math.round(repayAmountInput * 100) !== repayAmountInput * 100
       || Math.round(prepaidCardAmountInput * 100) !== prepaidCardAmountInput * 100) {

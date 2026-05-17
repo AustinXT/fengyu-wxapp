@@ -426,10 +426,11 @@ Page({
     const { displayItems, saleOrderId } = this.data;
 
     // 从 displayItems 扁平化收集所有有效行
+    // P2-14 后：roleType 才是身份载体；department/departmentName 已 deprecated，suggest 始终返回 null
     const effectiveLines: AllocLine[] = [];
     for (const di of displayItems) {
       for (const l of di.allocLines) {
-        if (l.staffWfId && l.department) {
+        if (l.staffWfId && l.roleType) {
           effectiveLines.push(l);
         }
       }
@@ -440,19 +441,11 @@ Page({
       return;
     }
 
-    // 扁平化为云函数期望的格式：每行 = 一条 sale_item + 一个员工
-    // P2-14 Q5：payload 必须携带 roleType；若某行 roleType 缺失（历史记录）则提示补录
-    for (const line of effectiveLines) {
-      if (!line.roleType) {
-        wx.showToast({ title: `${line.staffName} 缺少技能标签，请删除后重选`, icon: 'none', duration: 2500 });
-        return;
-      }
-    }
     const allocations = effectiveLines.map(line => ({
       saleItemId: line.saleItemId,
       employeeId: line.staffWfId,
-      roleType: line.roleType, // P2-14：必填
-      departmentName: line.department,
+      roleType: line.roleType,
+      departmentName: line.department || null,
       allocationRatio: line.allocationRatio,
       totalAmount: parseFloat(line.amount) || 0,
     }));

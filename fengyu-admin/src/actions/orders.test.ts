@@ -2530,3 +2530,208 @@ describe('recordPayment — 管理后台录入回款', () => {
     }
   })
 })
+
+/**
+ * 浮点 round 兜底测试（admin createOrder）
+ *
+ * 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
+ *
+ * 与 client/staff 三端对齐：rawTotal 行级 + 累加后 round；totalAmount 减券后 round。
+ *
+ * 注：admin L1173 `totalAmount.toFixed(2)` 已掩盖内存浮点漂移至 DB 字符串层，
+ * L1042 `settledAmount + 0.005 < totalAmount` 的 0.005 容差也兜住状态判定边界。
+ * 本测试为**回归守护**（DB 字符串永远 ≤ 2 位）+ **三端一致性守护**，
+ * 不是 TDD（修复前后均 pass）。若未来移除 .toFixed(2) 或收紧 0.005 容差，
+ * 这些测试将成为 load-bearing 防漂移网。
+ *
+ * Node 实测漂移：
+ *   0.1 * 3 = 0.30000000000000004
+ *   1.1 * 3 = 3.3000000000000003
+ *   0.29 * 100 = 28.999999999999996
+ */
+describe('createOrder — 浮点 round 兜底（R2 真漂移 case）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  function captureOrderTx() {
+    const captured: { order?: any } = {}
+    ;(db.transaction as any).mockImplementation(async (fn: any) => {
+      const tx = {
+        execute: vi.fn().mockResolvedValue([{ id: 'FY-XSD-WX-260517-FL01' }]),
+        insert: vi.fn().mockImplementation(() => ({
+          values: vi.fn().mockImplementation((v: any) => {
+            if ('saleOrderId' in v && 'saleOrderType' in v) captured.order = v
+            return Promise.resolve({})
+          }),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+        }),
+      }
+      return fn(tx)
+    })
+    return captured
+  }
+
+  // 断言：value 必须是 number 且小数位 ≤ 2（浮点漂移会让 (v*100) % 1 !== 0）
+  function expectAt2Decimals(value: number) {
+    expect(typeof value).toBe('number')
+    expect(Number.isFinite(value)).toBe(true)
+    expect((value * 100) % 1).toBe(0)
+  }
+
+  // 断言：DB 字符串值（toFixed(2) 串）必须精确 2 位，不含 3+ 位漂移
+  function expectStringAt2Decimals(value: string) {
+    expect(typeof value).toBe('string')
+    // 必须正好 2 位小数；浮点 toFixed(2) 表面上掩盖漂移，但若内存层泄漏 3+ 位会 fail
+    expect(value).toMatch(/^-?\d+\.\d{2}$/)
+    // 字符串 → 数值 → 二次验证：还原成 number 后小数位仍 ≤ 2（防 toFixed 截断假象）
+    expect((Number(value) * 100) % 1).toBe(0)
+  }
+
+  it('无券 0.1×3 ─ saleAmount=0.30000000000000004 应聚合为 0.30', async () => {
+    const captured = captureOrderTx()
+
+    await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-float-01',
+        productName: '浮点驱动商品',
+        skuSpecName: '标准',
+        productType: '单品' as const,
+        sessionCount: null,
+        unitPrice: '0.10',
+        unitRealPrice: '0.10',
+        quantity: 3,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(captured.order).toBeDefined()
+    expectStringAt2Decimals(captured.order.totalAmount)
+    expect(Number(captured.order.totalAmount)).toBe(0.30)
+  })
+
+  it('无券 1.1×3 ─ 漂移 +3e-16 应聚合为 3.30', async () => {
+    const captured = captureOrderTx()
+
+    await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-float-02',
+        productName: '浮点驱动商品',
+        skuSpecName: '标准',
+        productType: '单品' as const,
+        sessionCount: null,
+        unitPrice: '1.10',
+        unitRealPrice: '1.10',
+        quantity: 3,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(captured.order).toBeDefined()
+    expectStringAt2Decimals(captured.order.totalAmount)
+    expect(Number(captured.order.totalAmount)).toBe(3.30)
+  })
+
+  it('无券 0.29×100 ─ 大 quantity 漂移应聚合为 29.00', async () => {
+    const captured = captureOrderTx()
+
+    await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-float-03',
+        productName: '浮点驱动商品',
+        skuSpecName: '标准',
+        productType: '单品' as const,
+        sessionCount: null,
+        unitPrice: '0.29',
+        unitRealPrice: '0.29',
+        quantity: 100,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(captured.order).toBeDefined()
+    expectStringAt2Decimals(captured.order.totalAmount)
+    expect(Number(captured.order.totalAmount)).toBe(29.00)
+  })
+
+  it('无券多商品 0.1×3 + 0.2×3 ─ 累加点漂移应聚合为 0.90', async () => {
+    const captured = captureOrderTx()
+
+    await createOrder({
+      ...baseOrderData,
+      items: [
+        {
+          skuId: 'sku-float-a',
+          productName: '浮点 A',
+          skuSpecName: '标准',
+          productType: '单品' as const,
+          sessionCount: null,
+          unitPrice: '0.10',
+          unitRealPrice: '0.10',
+          quantity: 3,
+          salesCategory: '自销自耗' as const,
+        },
+        {
+          skuId: 'sku-float-b',
+          productName: '浮点 B',
+          skuSpecName: '标准',
+          productType: '单品' as const,
+          sessionCount: null,
+          unitPrice: '0.20',
+          unitRealPrice: '0.20',
+          quantity: 3,
+          salesCategory: '自销自耗' as const,
+        },
+      ],
+    })
+
+    expect(captured.order).toBeDefined()
+    expectStringAt2Decimals(captured.order.totalAmount)
+    expect(Number(captured.order.totalAmount)).toBe(0.90)
+  })
+
+  it('有券路径回归：现金券抵扣后 totalAmount 仍 ≤ 2 位', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      userId: 'user-1',
+      status: '未使用',
+      expireAt: new Date(Date.now() + 86400_000),
+      isActive: true,
+      couponType: '现金券',
+      discountValue: '0.50',
+      maxDiscount: null,
+      minSpend: '0',
+    }))
+    ;(calcCouponDiscount as any).mockReturnValue(0.50)
+    const captured = captureOrderTx()
+
+    await createOrder({
+      ...baseOrderData,
+      clientUserId: 'user-1',
+      couponId: 'coupon-float',
+      items: [{
+        skuId: 'sku-float-c',
+        productName: '浮点驱动商品',
+        skuSpecName: '标准',
+        productType: '单品' as const,
+        sessionCount: null,
+        unitPrice: '0.29',
+        unitRealPrice: '0.29',
+        quantity: 7,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(captured.order).toBeDefined()
+    expectStringAt2Decimals(captured.order.totalAmount)
+    // 0.29 * 7 = 2.0299999999999994 → round 2.03，减 0.50 = 1.53
+    expectAt2Decimals(Number(captured.order.totalAmount))
+  })
+})

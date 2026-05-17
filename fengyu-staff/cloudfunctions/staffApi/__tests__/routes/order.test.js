@@ -207,7 +207,7 @@ describe('order.create', () => {
     })
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*saleOrderType/)
+      .rejects.toThrow(/INVALID_PARAMS.*订单类型不合法/)
   })
 
   test('SKU 不存在时拒绝', async () => {
@@ -224,7 +224,7 @@ describe('order.create', () => {
       .mockResolvedValueOnce([])  // SKU 不存在
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*SKU.*不存在/)
+      .rejects.toThrow(/INVALID_PARAMS.*商品.*不存在/)
   })
 
   test('优惠金额超过 saleAmount 时拒绝', async () => {
@@ -916,7 +916,7 @@ describe('order.create', () => {
     mockPgForCreate()
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*receivedAmount/)
+      .rejects.toThrow(/INVALID_PARAMS.*实收金额/)
   })
 
   test('PR-2 create 参数错误：微信 + receivedAmount > 0 → MIXED_PAYMENT_NOT_SUPPORTED', async () => {
@@ -924,7 +924,7 @@ describe('order.create', () => {
     mockPgForCreate()
 
     await expect(orderRoutes.create(ctx))
-      .rejects.toThrow(/MIXED_PAYMENT_NOT_SUPPORTED/)
+      .rejects.toThrow(/微信\/支付宝不支持部分线上支付/)
   })
 
   test('PR-2 create 不变量：create 阶段 sale_orders.paid_amount = Σ(payments.amount WHERE 已支付 AND change_type IN (首次支付,回款,退款))', async () => {
@@ -3278,7 +3278,7 @@ describe('order.createRepayment', () => {
       total_amount: '200', paid_amount: '100', prepaid_card_amount: '0',
       payable_amount: '200', client_user_id: 'cu-001',
     })
-    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/OVERPAY/)
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/本次回款金额超过订单欠款/)
   })
 
   test('已关闭订单防回款 → INVALID_STATE', async () => {
@@ -3360,7 +3360,7 @@ describe('order.createRepayment', () => {
     const ctx = createManagerCtx({
       refSaleOrderId: 'FY-001', repayAmount: 100, paymentMethod: '微信',
     })
-    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/WX_SCAN_NOT_IMPLEMENTED/)
+    await expect(orderRoutes.createRepayment(ctx)).rejects.toThrow(/微信扫码回款暂未开放/)
   })
 
   test('缺少原单号拒绝', async () => {
@@ -3431,17 +3431,14 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '张三', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    // 2) generateOrderNo 内部事务（rows 为空 → seq=1）
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
-    // 3) 主事务
+    // 2) 单一主事务：generateOrderNo（advisory lock + SELECT sale_order_id LIKE）+ 主流程
     pg.transaction.mockImplementationOnce(async (cb) => {
       const tx = {
         query: vi.fn()
-          // advisory_xact_lock
+          // generateOrderNo: advisory_xact_lock(hashtext('sale_order_id_gen'))
           .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+          // generateOrderNo: SELECT sale_order_id FROM sale_orders WHERE LIKE → seq=1
+          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
           // SELECT held items（FOR UPDATE）— 余 1 次（整张卡折抵 → totalOut=1000）
           .mockResolvedValueOnce({
             rows: [{
@@ -3523,7 +3520,7 @@ describe('order.createConversion', () => {
       paymentMethod: '非法',
     })
     await expect(orderRoutes.createConversion(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*paymentMethod/)
+      .rejects.toThrow(/INVALID_PARAMS.*支付方式仅支持/)
   })
 
   test('非店长拒绝', async () => {
@@ -3549,14 +3546,10 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    // 2) generateOrderNo 内部事务
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
-    // 3) 主事务（totalOut=500×2=1000, totalIn=500×2=1000 → priceDiff=0）
+    // 2) 单一主事务（totalOut=500×2=1000, totalIn=500×2=1000 → priceDiff=0）
     const txQuery = vi.fn()
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-eq-001', store_id: 'store-001', item_direction: '购买',
@@ -3604,14 +3597,11 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '王五', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
 
-    // totalOut=1000×2=2000, totalIn=500×1=500 → priceDiff=-1500
+    // 单一主事务 totalOut=1000×2=2000, totalIn=500×1=500 → priceDiff=-1500
     const txQuery = vi.fn()
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-neg-001', store_id: 'store-001', item_direction: '购买',
@@ -3648,7 +3638,9 @@ describe('order.createConversion', () => {
 
     // 断言序列：第 9 次（index 8）为 UPSERT prepaid_cards，第 10 次（index 9）为 INSERT card_transactions
     // 2026-04-24 schema 变更：UNIQUE(user_id)，一户一账户；INSERT 列集不含 store_id
-    const upsertCall = txQuery.mock.calls[8]
+    // 注：advisory lock + SELECT sale_order_id LIKE 占据 txQuery.mock.calls[0..1]，业务调用顺移 +1
+    const upsertCall = txQuery.mock.calls.find(c => /INSERT INTO prepaid_cards/.test(c[0]))
+    expect(upsertCall).toBeDefined()
     expect(upsertCall[0]).toMatch(/INSERT INTO prepaid_cards/)
     expect(upsertCall[0]).toMatch(/ON CONFLICT \(user_id\) DO UPDATE/)
     expect(upsertCall[0]).not.toMatch(/store_id/)
@@ -3657,7 +3649,8 @@ describe('order.createConversion', () => {
     expect(upsertCall[1][0]).toBe('cu-001')
     expect(upsertCall[1][1]).toBe('1500.00')
 
-    const txnCall = txQuery.mock.calls[9]
+    const txnCall = txQuery.mock.calls.find(c => /INSERT INTO card_transactions/.test(c[0]))
+    expect(txnCall).toBeDefined()
     expect(txnCall[0]).toMatch(/INSERT INTO card_transactions/)
     expect(txnCall[0]).toMatch(/'充值'/)
     // 参数：cardId, amount, refOrderId
@@ -3746,12 +3739,9 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: 'C', customer_type: '流量客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
     const txQuery = vi.fn()
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-race', store_id: 'store-001', item_direction: '购买',
@@ -3792,16 +3782,13 @@ describe('order.createConversion', () => {
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
 
     // 体验卡单品：quantity=5, picked_up_quantity=2 → 剩余 3，unit_real_price=200
     // totalOut = 200 × 3 = 600
     // totalIn = 1000 × 1 = 1000 → priceDiff=400
     const txQuery = vi.fn()
-      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // generateOrderNo: advisory_xact_lock
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // generateOrderNo: SELECT sale_order_id LIKE
       .mockResolvedValueOnce({
         rows: [{
           sale_item_id: 'item-exp-001', store_id: 'store-001', item_direction: '购买',
@@ -4621,10 +4608,6 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -4632,6 +4615,8 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
         query: vi.fn(async (sql, params) => {
           txCalls.push({ sql, params })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+          // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
+          if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
           if (sql.includes('FOR UPDATE OF si')) {
             return {
               rows: [{
@@ -4685,10 +4670,6 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
     pg.query.mockResolvedValueOnce([{
       user_id: 'cu-001', phone: '138', name: '李四', customer_type: '会员客', bound_store_id: 'store-001',
     }])
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = { query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }) }
-      return await cb(client)
-    })
 
     const txCalls = []
     pg.transaction.mockImplementationOnce(async (cb) => {
@@ -4696,6 +4677,8 @@ describe('order.createConversion — schema 变更：UPSERT 按 user_id、不含
         query: vi.fn(async (sql) => {
           txCalls.push({ sql })
           if (sql.includes('advisory_xact_lock')) return { rows: [], rowCount: 1 }
+          // generateOrderNo: SELECT sale_order_id LIKE → empty → seq=1
+          if (sql.includes('FROM sale_orders') && sql.includes('LIKE $1')) return { rows: [], rowCount: 0 }
           if (sql.includes('FOR UPDATE OF si')) {
             return {
               rows: [{

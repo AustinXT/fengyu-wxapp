@@ -39,22 +39,19 @@ describe('service.create', () => {
       }])
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
-      // generateServiceOrderId
-      .mockResolvedValueOnce([])
 
-    // 第一次 transaction: generateServiceOrderId（advisory lock + SELECT 最大 ID）
+    // 单一 transaction：generateServiceOrderId（advisory lock + SELECT 最大 ID）+ INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // advisory lock
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),   // 无已有服务单 → seq=1
-      }
-      return await cb(client)
-    })
-    // 第二次 transaction: INSERT 服务单 + 服务明细
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && sql.includes('FROM service_orders') && sql.includes('LIKE $1')) {
+            return { rows: [], rowCount: 0 }  // 无已有服务单 → seq=1
+          }
+          return { rows: [{ unit_real_price: '100' }], rowCount: 1 }
+        }),
       }
       return await cb(client)
     })
@@ -234,54 +231,6 @@ describe('service.create', () => {
       .rejects.toThrow(/INVALID_PARAMS.*已有进行中的服务单/)
   })
 
-  test('sale_item 无 sku_id 时快照为 null（line 183 || null 分支）', async () => {
-    const ctx = createManagerCtx({
-      clientUserId: 'client-001',
-      assignedStaffWfId: 'emp-beautician-001',
-      items: [{ saleItemId: 'item-no-sku', sessionUsed: 1 }],
-    })
-
-    pg.query
-      .mockResolvedValueOnce([{
-        sale_item_id: 'item-no-sku',
-        remaining_sessions: 3,
-        unit_real_price: '200',
-        product_type: '疗程卡',
-        order_status: '已支付',
-        store_id: 'store-001',
-        client_user_id: 'client-001',
-        client_phone: '138',
-      }])
-      .mockResolvedValueOnce([]) // check active service orders → 无进行中
-      .mockResolvedValueOnce([{ customer_type: '流量客' }]) // customer_type 查询 → 售前
-
-    // pg.transaction #1: generateServiceOrderId
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // advisory lock
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }), // no existing → seq=1
-      }
-      return await cb(client)
-    })
-
-    // pg.transaction #2: INSERT service_orders + SELECT sku_id(null) + INSERT service_items
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT service_orders
-          .mockResolvedValueOnce({ rows: [{ sku_id: null, unit_real_price: null }], rowCount: 1 }) // sku_id 为 null → || null 分支
-          .mockResolvedValueOnce({ rows: [], rowCount: 1 }), // INSERT service_items
-      }
-      return await cb(client)
-    })
-
-    await serviceRoutes.create(ctx)
-
-    expect(ctx.result.serviceOrderId).toMatch(/^HLD-WX-\d{6}\d{4}$/)
-    expect(ctx.result.status).toBe('待服务')
-  })
-
   test('SELECT sale_items 取 sales_category，并把快照写入 INSERT service_items', async () => {
     const ctx = createManagerCtx({
       clientUserId: 'client-001',
@@ -303,26 +252,24 @@ describe('service.create', () => {
       .mockResolvedValueOnce([])                                  // 无进行中服务单
       .mockResolvedValueOnce([{ became_member_at: null }])        // 售前
 
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })       // advisory lock
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),      // no existing → seq=1
-      }
-      return await cb(client)
-    })
-
     let capturedSiSelectSql = ''
     let capturedInsertSql = ''
     let capturedInsertParams = null
+    // 单一 transaction：generateServiceOrderId（advisory lock + SELECT 服务单 ID）
+    // + INSERT service_orders + SELECT sale_items + INSERT service_items
     pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 } // generateServiceOrderId: no existing → seq=1
+          }
           if (typeof sql === 'string' && /SELECT[\s\S]+FROM sale_items\b/.test(sql)) {
             capturedSiSelectSql = sql
             return {
               rows: [{
-                sku_id: 'sku-001',
                 unit_real_price: '200',
                 is_shengmei: true,
                 sales_category: '自销自耗',
@@ -344,13 +291,13 @@ describe('service.create', () => {
 
     // SELECT 列表必须含 si.sales_category
     expect(capturedSiSelectSql).toMatch(/si\.sales_category/)
-    // INSERT 列表必须把 sales_category 一起写入（含 10 个 $n 占位符）
+    // INSERT 列表必须把 sales_category 一起写入（含 9 个 $n 占位符）
     expect(capturedInsertSql).toMatch(/INSERT INTO service_items[\s\S]+sales_category/)
-    expect(capturedInsertSql).toMatch(/\$10\)/)
-    // params 顺序对应 SQL：$9=is_shengmei, $10=sales_category
+    expect(capturedInsertSql).toMatch(/\$9\)/)
+    // params 顺序对应 SQL：$8=is_shengmei, $9=sales_category
     expect(capturedInsertParams).toBeTruthy()
-    expect(capturedInsertParams[8]).toBe(true)
-    expect(capturedInsertParams[9]).toBe('自销自耗')
+    expect(capturedInsertParams[7]).toBe(true)
+    expect(capturedInsertParams[8]).toBe('自销自耗')
   })
 
   test('sale_items.sales_category=NULL 时 service_items 也写入 NULL，不报错', async () => {
@@ -374,24 +321,21 @@ describe('service.create', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ became_member_at: null }])
 
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
-      }
-      return await cb(client)
-    })
-
     let capturedInsertParams = null
+    // 单一 transaction：generateServiceOrderId + INSERT service_orders + SELECT sale_items + INSERT service_items
     pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
         query: vi.fn(async (sql, params) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 } // generateServiceOrderId: no existing → seq=1
+          }
           if (typeof sql === 'string' && /SELECT[\s\S]+FROM sale_items\b/.test(sql)) {
             // 古旧导入：sales_category 整行为 null
             return {
               rows: [{
-                sku_id: 'sku-legacy',
                 unit_real_price: '100',
                 is_shengmei: null,
                 sales_category: null,
@@ -412,8 +356,8 @@ describe('service.create', () => {
 
     expect(ctx.result.status).toBe('待服务')
     expect(capturedInsertParams).toBeTruthy()
+    expect(capturedInsertParams[7]).toBeNull()
     expect(capturedInsertParams[8]).toBeNull()
-    expect(capturedInsertParams[9]).toBeNull()
   })
 })
 
@@ -1419,23 +1363,24 @@ describe('service.create clientUserId 解析', () => {
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
 
-    // generateServiceOrderId
+    // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
-      }
-      return await cb(client)
-    })
-    // INSERT 服务单
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 } // generateServiceOrderId: no existing → seq=1
+          }
+          return { rows: [{ unit_real_price: '100' }], rowCount: 1 }
+        }),
       }
       await cb(client)
-      // 验证 INSERT 的 client_user_id 参数（参数列表第 8 项，索引 [7]）
-      const insertCall = client.query.mock.calls[0]
+      // 验证 INSERT service_orders 的 client_user_id 参数（参数列表第 8 项，索引 [7]）
+      const insertCall = client.query.mock.calls.find(c =>
+        typeof c[0] === 'string' && c[0].includes('INSERT INTO service_orders'))
+      expect(insertCall).toBeDefined()
       expect(insertCall[1][7]).toBe('resolved-user')
     })
 
@@ -1466,20 +1411,23 @@ describe('service.create clientUserId 解析', () => {
       // 顾客无进行中的服务单
       .mockResolvedValueOnce([])
 
+    // 单一 transaction：generateServiceOrderId + INSERT 服务单 + 服务明细
     pg.transaction.mockImplementationOnce(async (cb) => {
       const client = {
-        query: vi.fn()
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-          .mockResolvedValueOnce({ rows: [], rowCount: 0 }),
-      }
-      return await cb(client)
-    })
-    pg.transaction.mockImplementationOnce(async (cb) => {
-      const client = {
-        query: vi.fn().mockResolvedValue({ rows: [{ sku_id: 'sku-001', unit_real_price: '100' }], rowCount: 1 }),
+        query: vi.fn(async (sql) => {
+          if (typeof sql === 'string' && sql.includes('pg_advisory_xact_lock')) {
+            return { rows: [], rowCount: 0 }
+          }
+          if (typeof sql === 'string' && /FROM service_orders[\s\S]*LIKE \$1/.test(sql)) {
+            return { rows: [], rowCount: 0 } // generateServiceOrderId: no existing → seq=1
+          }
+          return { rows: [{ unit_real_price: '100' }], rowCount: 1 }
+        }),
       }
       await cb(client)
-      const insertCall = client.query.mock.calls[0]
+      const insertCall = client.query.mock.calls.find(c =>
+        typeof c[0] === 'string' && c[0].includes('INSERT INTO service_orders'))
+      expect(insertCall).toBeDefined()
       expect(insertCall[1][7]).toBe('fallback-user')
     })
 
@@ -1513,6 +1461,6 @@ describe('service.create clientUserId 解析', () => {
     })
 
     await expect(serviceRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*sessionUsed.*大于 0/)
+      .rejects.toThrow(/INVALID_PARAMS.*本次使用次数必须大于 0/)
   })
 })

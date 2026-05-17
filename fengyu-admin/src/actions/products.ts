@@ -325,7 +325,7 @@ export async function createCategory(data: {
     ))
     .limit(1)
   if (!kindRow) {
-    return { success: false, message: 'INVALID_PRODUCT_KIND: 一级品项类型不存在或已停用' }
+    return { success: false, message: 'INVALID_PARAMS: 一级品项类型不存在或已停用' }
   }
 
   const categoryId = crypto.randomUUID()
@@ -374,7 +374,7 @@ export async function updateCategory(
       ))
       .limit(1)
     if (!kindRow) {
-      return { success: false, message: 'INVALID_PRODUCT_KIND: 一级品项类型不存在或已停用' }
+      return { success: false, message: 'INVALID_PARAMS: 一级品项类型不存在或已停用' }
     }
   }
 
@@ -581,7 +581,7 @@ export async function createSku(data: {
   if (data.isExperience === true && data.isRechargeCard === true) {
     return {
       success: false,
-      message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+      message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
     }
   }
 
@@ -591,13 +591,13 @@ export async function createSku(data: {
       productType: data.productType as typeof productSkus.$inferInsert['productType'],
     })
   } catch (err: any) {
-    if (err?.code === '23505') return { success: false, message: 'SKU 编号已存在' }
+    if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
     if (err?.code === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
     // chk_sku_not_both_capabilities CHECK 违反（理论上应用层已先拦截，DB 兜底）
     if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
       return {
         success: false,
-        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+        message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
       }
     }
     throw err
@@ -605,7 +605,7 @@ export async function createSku(data: {
 
   await logOperation(session, 'sku.create', 'product_sku', data.skuId, { specName: data.specName })
   revalidatePath('/products')
-  return { success: true, message: 'SKU 创建成功' }
+  return { success: true, message: '商品创建成功' }
 }
 
 export async function updateSku(
@@ -643,7 +643,7 @@ export async function updateSku(
     if (finalIsExp === true && finalIsRc === true) {
       return {
         success: false,
-        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+        message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
       }
     }
   }
@@ -665,7 +665,7 @@ export async function updateSku(
     if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
       return {
         success: false,
-        message: 'INVALID_PARAMS: 体验卡与充值卡为互斥 capability，不能同时为 true',
+        message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
       }
     }
     throw err
@@ -674,7 +674,7 @@ export async function updateSku(
   if ((result as any).count === 0) {
     return {
       success: false,
-      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : 'SKU 不存在',
+      message: expectedUpdatedAt ? '数据已被其他人修改，请刷新后重试' : '商品不存在',
     }
   }
 
@@ -694,7 +694,7 @@ export async function deleteSku(skuId: string): Promise<{ success: boolean; mess
     .where(eq(saleItems.skuId, skuId))
     .limit(1)
   if (ref) {
-    return { success: false, message: '该 SKU 已被订单引用，无法删除。可通过设置有效期下架' }
+    return { success: false, message: '该商品已被订单引用，无法删除。可通过设置有效期下架' }
   }
 
   // 先删关联
@@ -703,7 +703,7 @@ export async function deleteSku(skuId: string): Promise<{ success: boolean; mess
 
   await logOperation(session, 'sku.delete', 'product_sku', skuId)
   revalidatePath('/products')
-  return { success: true, message: 'SKU 已删除' }
+  return { success: true, message: '商品已删除' }
 }
 
 // ===== 商城商品-SKU 关联 =====

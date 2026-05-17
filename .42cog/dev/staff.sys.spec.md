@@ -168,12 +168,16 @@ event { action, payload }
   → 响应: { code: 0, message, data } 或 { code: -1/-400/-401/-403, message }
 ```
 
-**错误码体系**：
+**错误码体系**（9 项官方白名单，单源：`cloudfunctions/staffApi/utils/error-codes.js`）：
 - `0` — 成功
-- `-1` — 通用错误
-- `-400` — 参数错误（`INVALID_PARAMS:` 前缀）
+- `-1` — 通用错误（非白名单前缀降级）
+- `-400` — 参数错误 / 状态机阻塞 / 余额不足 / 顾客未注册（前缀 `INVALID_PARAMS:` / `INVALID_STATE:` / `INSUFFICIENT_BALANCE:` / `CLIENT_NOT_REGISTERED:`，**按 `errorType` 区分**）
 - `-401` — 未认证（`UNAUTHORIZED:` 前缀）
-- `-403` — 权限不足（`PERMISSION_DENIED:` 前缀）
+- `-403` — 手机号未绑定 / 权限不足（`PHONE_REQUIRED:` 或 `PERMISSION_DENIED:`，**按 `errorType` 区分**）
+- `-404` — 资源不存在（`NOT_FOUND:` 前缀）
+- `-409` — 并发冲突（`CONFLICT:` 前缀）
+
+跨端一致性由 `__tests__/routes/cross-end-error-codes-snapshot.test.js` snapshot 守护，任一端漂移立即报错。
 
 ## 6. 约束保障机制
 

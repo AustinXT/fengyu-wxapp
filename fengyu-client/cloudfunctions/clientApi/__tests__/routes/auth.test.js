@@ -503,7 +503,7 @@ describe('auth.uploadAvatar', () => {
     cloud.getWXContext.mockReturnValue({ OPENID: 'user-openid' })
     const ctx = createCtx({ payload: { base64: '!!!', ext: 'jpg' } })
     // '!!!' 在 base64 解码下得到空 Buffer
-    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*解码为空/)
+    await expect(routes.uploadAvatar(ctx)).rejects.toThrow(/INVALID_PARAMS.*头像数据解析失败/)
   })
 
   test('用户不存在 → UNAUTHORIZED', async () => {

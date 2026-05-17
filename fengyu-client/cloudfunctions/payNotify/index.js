@@ -10,6 +10,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 
 const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
+const { parseErrorPrefix } = require('./error-codes')
 
 // 充值卡虚拟 SKU 标识 — 必须与 clientApi/routes/_constants.js 中的
 // RECHARGE_VIRTUAL_SKU_ID 保持一致；payNotify 是独立云函数，故重复定义。
@@ -586,7 +587,10 @@ exports.main = async (event) => {
 
     return { code: 'SUCCESS', message: '成功' }
   } catch (err) {
-    console.error('[payNotify] Error:', err)
+    // [CC5] 用 parseErrorPrefix 给错误日志做归类（ops 按 errorType 监控告警）
+    // 响应仍保持微信支付/拉卡拉协议要求的 {code: 'SUCCESS'|'FAIL', message} 外壳
+    const parsed = parseErrorPrefix(err && err.message)
+    console.error('[payNotify] Error:', err, parsed ? { errorType: parsed.prefix } : { errorType: null })
     return { code: 'FAIL', message: err.message }
   }
 }
