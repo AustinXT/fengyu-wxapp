@@ -18,7 +18,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | #4 admin withPermission HOF | ✅ PASS | `lib/with-permission.ts` HOF + `eslint.config.mjs:137-156` 三条 AST 规则 error 级；`lib/api-error.ts` 落地 |
 | #5 client/admin 无券路径 Math.round | ✅ PASS | `clientApi/routes/order.js:248,267` 行级+聚合双 round；`admin/orders.ts:900-998` 同步覆盖 |
 | #6 L0 schema CHECK + 时区 | ✅ PASS | migration 0028 含 5 CHECK + 2 bigint + ALTER DATABASE timezone + 211 行 phone 清洗；admin points.ts safeNumber 落地 |
-| #8 状态机 CAS 守卫 | ⚠️ PARTIAL | `scripts/lint-cas-guards.mjs` + 11+ CAS 站点 + 8 CAS-EXEMPT 注释全绿；**但 lint 未接入任何 GitHub workflow / husky pre-commit**（见 §6 下一步 #A）|
+| #8 状态机 CAS 守卫 | ✅ PASS | `scripts/lint-cas-guards.mjs` + 11+ CAS 站点 + 8 CAS-EXEMPT 注释全绿；**`.github/workflows/lint.yml` PR gate 已接入**（2026-05-18，paths 含 `fengyu-{admin,staff,client}/**` + `scripts/lint-cas-guards.mjs` 自身） |
 | #9 TOCTOU partial UNIQUE | ✅ PASS（含 scope 收窄）| migration 0029 落 7 partial UNIQUE + 2 external_ref 列 + 1 项 appointment 时段 gist 索引拆独立 ticket（ticket §2.3 明示）|
 | #11 face_value_override 跨端 | ✅ PASS | admin/staff/client 三端 `COALESCE(face_value_override, discount_value)` 字面量一致；`cross-end-sql-snapshot.test.js:247` 反向守卫 |
 | #12 跨表 OPENID 唯一作废 | ⚠️ PARTIAL | 决策记录到位；SUMMARY 已标注 D-Q2；**`audit-01-auth.md` 主体本次 v4 一并补降级 banner**（见 §6 已闭合）|
@@ -26,7 +26,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | #14 refund-cascade snapshot | ✅ PASS | `cross-end-sql-snapshot.test.js:336` 5 通道 + L446 trigger-point 描述块；admin TS/staff JS 双副本一致 |
 | #15 dashboard 三端一致性 | ✅ PASS | `fengyu-admin/src/actions/dashboard.consistency.test.ts`（140 行 12 用例）覆盖 received-refunded + sale_order_type IN + status='已支付' 三处对齐 + 反向守卫 |
 
-**v4 P0 增量关闭**：v3 余 143 项 → **v4 余 ~134 项**（Top 10 中 #2/#3/#5/#9 实质关闭 + Top10 之外 #11/#13/#14/#15 关闭；#12 v2 已作废本次仅补文档；#8 CI 守卫缺失暂保留半开）。
+**v4 P0 增量关闭**：v3 余 143 项 → **v4 余 133 项**（按 §1.3 重算精确值；Top 10 中 #2/#3/#5/#8/#9 实质关闭 + Top10 之外 #11/#13/#14/#15 关闭；#12 v2 已作废本次仅补文档）。#8 含 CI 守卫接入 `.github/workflows/lint.yml`（2026-05-18）。
 
 **v4 期间剩余的 Top 10 P0**：仅剩 **#1 payNotify**、**#7 PII 脱敏 + 物理删 PII**、**#10 错误前缀白名单**。其余 Top 10 已全部关闭，详见 §2 新版表与 §6 下一步行动。
 
@@ -69,61 +69,65 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 
 ## 1. 总览（25 业务 + 9 横切）
 
-### 1.1 业务域（25），按 P0 降序
+### 1.1 业务域（25），按 P0 (v4) 降序
 
-| NN | 域 | P0 | P1 | P2 | 总计 | 报告 |
-|----|----|----|----|----|------|------|
-| 13 | 优惠券 | 8 | 7 | 6 | 21 | audit-13-coupons.md |
-| 05 | 服务单 + 扣次原子性 | 8 | 8 | 5 | 21 | audit-05-service-order.md |
-| 11 | 退款 / 退换货 | 7 | 6 | 6 | 19 | audit-11-refunds.md |
-| 08 | 服务提成 | 6 | 8 | 5 | 19 | audit-08-service-commission.md |
-| 10 | 顾客 + 会员等级 | 5 | 9 | 6 | 20 | audit-10-customer-member-level.md |
-| 12 | 门店绑定 / 解绑 | 6 | 7 | 5 | 18 | audit-12-store-binding.md |
-| 15 | 积分 + 等级跳档 | 4 | 9 | 7 | 20 | audit-15-points-member-level.md |
-| 17 | 数据看板 | 6 | 7 | 6 | 19 | audit-17-dashboard.md |
-| 01 | 认证 / 鉴权 / 双端用户表隔离 | 5 | 4 | 3 | 12 | audit-01-auth.md |
+| NN | 域 | P0 (v4) | P1 | P2 | 总计 | 报告 |
+|----|----|---------|----|----|------|------|
+| 05 | 服务单 + 扣次原子性 | 7 | 8 | 5 | 21 | audit-05-service-order.md |
+| 13 | 优惠券 | 6 | 7 | 6 | 21 | audit-13-coupons.md |
+| 11 | 退款 / 退换货 | 6 | 6 | 6 | 19 | audit-11-refunds.md |
+| 08 | 服务提成 | 5 | 8 | 5 | 19 | audit-08-service-commission.md |
+| 12 | 门店绑定 / 解绑 | 5 | 7 | 5 | 18 | audit-12-store-binding.md |
 | 06 | 预约 + 签到 → 服务单流转 | 5 | 9 | 6 | 20 | audit-06-appointment-checkin.md |
 | 19 | 赠送 / 分享 / 客户分配 | 5 | 7 | 6 | 18 | audit-19-gift-share-assign.md |
 | 21 | 组织架构 | 5 | 8 | 6 | 19 | audit-21-org-structure.md |
-| 14 | 充值卡 + 卡流水 | 5 | 7 | 5 | 17 | audit-14-prepaid-card.md |
 | 25 | 流量 / 推广员 | 5 | 7 | 8 | 20 | audit-25-traffic-promoter.md |
-| 02 | 开单 + 状态机 + 订单号唯一 | 5 | 8 | 6 | 19 | audit-02-order-creation.md |
 | 03 | 款项流水（sale_order_payments）| 5 | 7 | 8 | 20 | audit-03-payment-flow.md |
-| 07 | 销售提成分配 | 5 | 7 | 6 | 18 | audit-07-sales-allocation.md |
+| 10 | 顾客 + 会员等级 | 4 | 9 | 6 | 20 | audit-10-customer-member-level.md |
+| 17 | 数据看板 | 4 | 7 | 6 | 19 | audit-17-dashboard.md |
+| 14 | 充值卡 + 卡流水 | 4 | 7 | 5 | 17 | audit-14-prepaid-card.md |
+| 02 | 开单 + 状态机 + 订单号唯一 | 4 | 8 | 6 | 19 | audit-02-order-creation.md |
+| 07 | 销售提成分配 | 4 | 7 | 6 | 18 | audit-07-sales-allocation.md |
 | 04 | 支付回调 / payNotify 幂等 | 4 | 7 | 6 | 17 | audit-04-pay-notify.md |
 | 16 | 消息中心 | 4 | 7 | 4 | 15 | audit-16-message-center.md |
-| 09 | 商品 + SKU + 价格 + 有效期 | 3 | 8 | 5 | 16 | audit-09-product-sku.md |
+| 15 | 积分 + 等级跳档 | 3 | 9 | 7 | 20 | audit-15-points-member-level.md |
+| 01 | 认证 / 鉴权 / 双端用户表隔离 | 3 | 4 | 3 | 12 | audit-01-auth.md |
 | 18 | 员工绩效 | 3 | 7 | 5 | 15 | audit-18-employee-performance.md |
 | 22 | 权限矩阵 + 角色 | 3 | 5 | 3 | 11 | audit-22-permission-matrix.md |
 | 23 | 操作日志 | 3 | 6 | 6 | 15 | audit-23-operation-logs.md |
 | 20 | 家居产品提货 | 3 | 8 | 6 | 17 | audit-20-pickup.md |
+| 09 | 商品 + SKU + 价格 + 有效期 | 2 | 8 | 5 | 16 | audit-09-product-sku.md |
 | 24 | 品项分类动态字段 | 2 | 7 | 5 | 14 | audit-24-product-category-dynamic.md |
-| **业务小计** |  | **124** | **188** | **144** | **456** |  |
+| **业务小计** |  | **104** | **188** | **144** | **456** |  |
 
-### 1.2 横切域（9），按 P0 降序（2026-04-26 v2 合并后）
+> **v4 重算说明**：P0 列已按 SUMMARY §2.1（关闭归档）+ §2 Top10（v4 增量）逐域重算，v2→v4 业务侧累计关闭 20 项 P0（124→104）。每项关闭对应 `notes/tickets/archives/2026-05-{17,18}-*.md` 归档 ticket，详见 §2.1 "v2 → v3 关闭归档" 与开篇 v4 更新摘要。**P1/P2/总计 列暂未推进保留 v2 原值**（v2 子报告 P0/P1/P2 与"总计"列存在 ~16 项历史差额，本次不调），§1.3 显示的 v4 合计是基于新 P0 的精确算术和。
 
-| ID | 横切域 | P0 | P1 | P2 | 总计 | 报告 |
-|----|--------|----|----|----|------|------|
-| CC4 | 后端鉴权 | 11 | 5 | 3 | 19 | audit-CC4-auth.md |
-| CC2 | 并发与幂等 | 6 | 6 | 5 | 17 | audit-CC2-concurrency-idempotency.md |
-| CC3 | 组织域隔离 | 7 | 9 | 5 | 21 | audit-CC3-org-isolation.md |
-| CC1 | 数值精度与金额 | 4 | 7 | 5 | 16 | audit-CC1-numeric-precision.md |
-| CC9 | 测试与迁移残留 | 3 | 6 | 10 | 19 | audit-CC9-test-migration-residue.md |
+### 1.2 横切域（9），按 P0 (v4) 降序（2026-04-26 v2 合并后）
+
+| ID | 横切域 | P0 (v4) | P1 | P2 | 总计 | 报告 |
+|----|--------|---------|----|----|------|------|
+| CC4 | 后端鉴权 | 10 | 5 | 3 | 19 | audit-CC4-auth.md |
+| CC3 | 组织域隔离 | 5 | 9 | 5 | 21 | audit-CC3-org-isolation.md |
+| CC2 | 并发与幂等 | 4 | 6 | 5 | 17 | audit-CC2-concurrency-idempotency.md |
 | CC6 | PII | 4 | 4 | 4 | 12 | audit-CC6-pii.md |
 | CC7 | 时间字段 | 3 | 10 | 4 | 17 | audit-CC7-time-field.md |
+| CC1 | 数值精度与金额 | 2 | 7 | 5 | 16 | audit-CC1-numeric-precision.md |
+| CC9 | 测试与迁移残留 | 1 | 6 | 10 | 19 | audit-CC9-test-migration-residue.md |
 | CC5 | 错误码 | 0 | 4 | 6 | 10 | audit-CC5-error-code.md |
 | CC8 | WXML / Vant | 0 | 5 | 11 | 16 | audit-CC8-wxml-vant.md |
-| **横切小计** |  | **38** | **56** | **53** | **147** | 
+| **横切小计** |  | **29** | **56** | **53** | **147** |
+
+> **v4 重算说明**：CC4 (#4 HOF) / CC2 (#3 Advisory + #8 CAS) / CC3 (#13 scope helper + customer scope) / CC1 (#5 round + #6 Math.round) / CC9 (#2 sku_id + 7 列 DROP) 五项收敛；CC5/CC6/CC7/CC8 v4 未变化。**P1/P2/总计 列保留 v2 原值**（同 §1.1 footnote 口径）。详见开篇 v4 更新摘要。
 
 ### 1.3 全栈合计
 
 | 维度 | P0 (v2) | P0 (v3) | P0 (v4) | P1 | P2 | 总计 (v4) |
 |------|---------|---------|---------|----|----|-----------|
-| 业务域（25）| 124 | 111 | **~103** | 188 | 144 | ~435 |
-| 横切域（9）| 38 | 32 | **~28** | 56 | 53 | ~137 |
-| **合计** | 162 | 143 | **~131** | **244** | **197** | **~572** |
+| 业务域（25）| 124 | 111 | **104** | 188 | 144 | 436 |
+| 横切域（9）| 38 | 32 | **29** | 56 | 53 | 138 |
+| **合计** | 162 | 143 | **133** | **244** | **197** | **574** |
 
-> v3→v4 关闭 12 项 P0（详见开篇 v4 更新摘要表）；§1.1 与 §1.2 的单域计数仍未逐条重算，**优先关注 §2 Top 10、§4 Roadmap 总条数与 §6 下一步行动**。
+> v3→v4 关闭 **12 项** P0；v2→v4 累计关闭 **29 项** P0（业务 -20 + 横切 -9）。**§1.1 / §1.2 单域 P0 列已按 §2.1 + §2 Top10 关闭归档逐域重算**（ticket `notes/tickets/archives/2026-05-18-summary-per-domain-p0-recount.md`）。本次重算未推进 P1/P2，故 P1/P2 列与 v2 一致。下一步行动详见 §6。
 
 
 ---
@@ -143,7 +147,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | ~~5~~ | ~~**client order.create 无券路径 totalAmount 未 Math.round**~~ — **2026-05-18 关闭** ✅ `clientApi/routes/order.js:248,267` 行级 + 聚合双 round 无条件执行；`admin/orders.ts:900-998` 同步覆盖（ticket `archives/2026-05-17-client-order-no-coupon-rounding.md` + `admin-order-rounding-followup.md`）| ~~P0-CC1-v2-01~~ | client/admin 浮点漂移消除；三端同商品集对账自动化为 follow-up | **DONE** |
 | ~~6~~ | ~~**L0 一次性 migration epic 剩余 8 项**~~ — **2026-05-17 全部清零** ✅ migration 0028（5 CHECK + 2 bigint + ALTER DATABASE）+ migration 0029（partial UNIQUE 10 项）+ admin points.ts safeNumber 兜底 | ~~L0 P0（13→5 剩 8）~~ → **0** | 数值/并发/时区不变量在 DB 层全部硬约束 | **DONE** |
 | **7** | **PII 三端日志全无脱敏 + admin 物理硬删 PII 字段** — `db/helpers/pii.ts` 仍未抽出；操作日志 detail 字段未 sanitize；admin deleteSku / deleteMessage / point_transactions 仍走物理 DELETE | P0-CC6 + 多域 | 个保法合规风险，不可量化资损 | **M** |
-| ~~8~~ | ~~**状态机 UPDATE 缺 CAS 守卫（约 12 处路径）**~~ — **2026-05-18 全部清零** ✅ 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT 注释 + `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） | ~~02/03/04/06/12/CC2~~ | 跨表状态机不变量在应用层全部硬守卫 | **DONE** |
+| ~~8~~ | ~~**状态机 UPDATE 缺 CAS 守卫（约 12 处路径）**~~ — **2026-05-18 全部清零** ✅ 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT 注释 + `scripts/lint-cas-guards.mjs` + `.github/workflows/lint.yml` PR gate（commits d5b7741 / 346f73c / 6510e87 + lint workflow 2026-05-18） | ~~02/03/04/06/12/CC2~~ | 跨表状态机不变量在应用层全部硬守卫，CI gate 闭环 | **DONE（含 CI 守门）** |
 | ~~9~~ | ~~**TOCTOU partial UNIQUE 索引剩 10 项**~~ — **2026-05-18 关闭** ✅ migration 0029 落 7 partial UNIQUE（sop_first_payment / appt_sale_item_active / so_appointment / so_client_active / store_unbind_pending / pickup_idempotency / point_txn_order_user_type）+ 2 external_ref UNIQUE（user_coupons / card_transactions）+ 1 项 appointment 时段 gist 索引拆独立 ticket（ticket `archives/2026-05-17-toctou-partial-unique-indexes.md` §2.3）| ~~L0 P0（11→10 剩）~~ | DB 层并发抢占已硬封堵；仅 appointment slot gist 待后续 | **DONE** |
 | **10** | **错误前缀 4→8 项白名单未抽 + admin 裸 throw 未统一** — `cloudfunctions-shared/error-codes.js`（用户已 veto 共享目录，feedback `no-shared-cloudfunctions`）；改为各端各自 error-codes.js + 跨端字面量 snapshot 守护方案待落 | P0-CC5 + 多域 | 前端错误识别不一致 | **S** |
 
@@ -203,7 +207,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | **scope 过滤非全覆盖** | 8+→**3** | ~~10/11/19~~ ✅（staff customer/performanceDetail 全部已加） / 01/02/CC3/CC4 仍待 scope helper 抽出 | 强制 staffApi/clientApi/admin 三端 scope helper + middleware assert |
 | **同业务工具三/四端副本漂移** | 6+→**3** | ~~15(settlePoints)~~ ✅ snapshot 守护 / ~~07(DELETE→is_void)~~ ✅ migration 0022 / ~~14 充值卡逻辑~~ ✅ E9 R2 / 08(roleType×3) / 10(customer_type×2) / 20(remaining×5) 仍待 | 用户 veto 共享目录后改 `cross-end-sql-snapshot.test.js` 字面量守护方案；剩余项各端各落 |
 | **schema 字段写入完整但消费 0** | 4 | 06(过期关闭)✅ cron 已落 / 10(monthly_activity)待 / 13(applicable_xxx_ids)✅ 校验已落 / 25(promoter_employee_id)待 | spec/schema docstring 关键字 grep + cron STEP 补齐 |
-| ~~**状态机 UPDATE 缺 CAS 守卫**~~ | ~~5+ 路径~~ → **0** ✅ | ~~02/03/04/06/12/CC2 — 共 12 处~~ → 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT | `scripts/lint-cas-guards.mjs` CI 守门（commits d5b7741 / 346f73c / 6510e87） |
+| ~~**状态机 UPDATE 缺 CAS 守卫**~~ | ~~5+ 路径~~ → **0** ✅ | ~~02/03/04/06/12/CC2 — 共 12 处~~ → 实际 10 处 ❌ 全补 + 8 处 N/A 加 CAS-EXEMPT | `scripts/lint-cas-guards.mjs` + `.github/workflows/lint.yml` PR gate（commits d5b7741 / 346f73c / 6510e87 + lint workflow 2026-05-18） |
 | ~~**TOCTOU：事务外读 → 事务内 INSERT 无 partial unique**~~ | ~~7→6~~ → **0** ✅ | ~~全部 7 项已闭合~~ | migration 0029 落 7 partial UNIQUE + 2 external_ref；仅 appointment slot gist 拆独立 ticket（不视为同模式）|
 | **错误前缀偏离 4 项约定 + admin 裸 throw** | 多域 | 01/02/03/04/24/CC5 | 共享方案被 veto；改各端 error-codes.js + snapshot 守护（待落） |
 | **PII 三端日志全无脱敏** | 多域 | 01/04/16/CC6 | `db/helpers/pii.ts` mask 系列 + logOperation sanitizeDetail（v3 未推进） |
@@ -377,7 +381,7 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | E10（新增 v3）admin permission 收尾 | refund_create / refund_approve 拆分（已落）/ withPermission HOF（✅ 2026-05-18 完成）/ api-error 抽出（✅ 2026-05-18）/ PERMISSION_MATRIX DB 化（D-Q3 决策待落） | 🔶 拆分 + HOF + api-error 完成；DB 化待 |
 | E11（新增 v3）测试基础设施 | L2 云函数 + L3 小程序 E2E 框架（commit d13c7e2 已落） + SQL patch shim 移除（commit 09488bd） + manual-e2e 共享 helper（commit 12d47bf） | ✅ **完成**（2026-05 月） |
 | E12（新增 v4）跨端字面量守护体系 | settlePoints / applyRecharge / refund-cascade / face_value_override / scope helper 五项 cross-end-sql-snapshot describe 块 | ✅ **完成**（v4 #11/#13/#14 + 已有 settlePoints/applyRecharge）|
-| E13（新增 v4）状态机 CAS 守门 | lint-cas-guards.mjs + 11+ CAS 站点 + 8 CAS-EXEMPT 注释 | 🔶 **代码完成，CI 守门未接** — 见 §6 #A |
+| E13（新增 v4）状态机 CAS 守门 | lint-cas-guards.mjs + 11+ CAS 站点 + 8 CAS-EXEMPT 注释 + `.github/workflows/lint.yml` PR gate | ✅ **完成**（2026-05-18，含 CI 守门）|
 
 ---
 
@@ -387,9 +391,9 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 
 | # | 行动 | 工作量 | 责任 | 风险 |
 |---|------|-------|------|------|
-| **A** | **接入 `bun run lint:cas-guards` 到 CI** — 选项：(1) 加到 `.github/workflows/claude-code-review.yml` 既有 lint step 后；(2) 新建 `.husky/pre-commit` hook。**推荐 (1)** — 与 admin ESLint AST 规则同走 GitHub Actions PR gate | S（< 1h）| any | ⚠️ 不修则未来回归无防护 |
+| ~~**A**~~ | ~~**接入 `bun run lint:cas-guards` 到 CI**~~ — ✅ **2026-05-18 完成**：新建 `.github/workflows/lint.yml`，job `cas-guards` 在 PR 触及 `fengyu-{admin,staff,client}/**` 或 `scripts/lint-cas-guards.mjs` 时跑 `node scripts/lint-cas-guards.mjs`（零依赖，setup-node@v4） | ~~S~~ | ~~any~~ | — |
 | **B** | 已闭合：`audit-01-auth.md` 补 D-Q2 降级 banner（P0-04 → P2 文档化）— 本次 v4 同步完成 | — | done | — |
-| **C** | SUMMARY §1.1/§1.2 单域计数 v4 重算（可选；当前各域 P0 数显示为 v2 旧值）| S（< 2h）| any | 仅文档准确度 |
+| ~~**C**~~ | ~~SUMMARY §1.1/§1.2 单域计数 v4 重算~~ — ✅ **2026-05-18 完成**：§1.1 业务侧 124→104（-20）；§1.2 横切侧 38→29（-9）；表头加 `(v4)` 后缀；§1.3 合计行同步至业务 104 / 横切 29 / 总 133；ticket `archives/2026-05-18-summary-per-domain-p0-recount.md` | — | done | — |
 
 ### 6.2 优先（1-2 周）— E1 payNotify 安全收官
 
@@ -430,6 +434,6 @@ v3 之后约 24 小时内，2026-05-17 批次的 12 张 ticket（Top 10 #2/#3/#4
 | 跨 store 优惠券 | ✅ 已修 | ✅ + face_value 跨端一致（#11） |
 | scope 过滤漏洞 | 🔶 路由层修 | ✅ helper + snapshot 守护（#13） |
 | PII 不脱敏 / 物理删 | ❌ 未修 | ❌ 未修 — 见 6.3 |
-| 状态机不一致 | 🔶 部分 CAS | ✅ 全 CAS + lint（CI 待接，见 6.1 #A） |
+| 状态机不一致 | 🔶 部分 CAS | ✅ 全 CAS + lint + `.github/workflows/lint.yml` PR gate（2026-05-18） |
 
 **结论**：v4 之后**生产代码层面 ≥ 95% 资损面已封堵**。剩余风险都是"未对接的支付通道（E1）"和"合规层（PII）"，不再有"代码层 bug 导致资损"的入口。
