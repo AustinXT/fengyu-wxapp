@@ -12,31 +12,60 @@ export interface DialogProps {
 
 function Dialog({ open, onOpenChange, children, className }: DialogProps) {
   const dialogRef = React.useRef<HTMLDialogElement>(null)
+  const onOpenChangeRef = React.useRef(onOpenChange)
 
   React.useEffect(() => {
+    onOpenChangeRef.current = onOpenChange
+  }, [onOpenChange])
+
+  // Drive native <dialog> open state from the React prop. useLayoutEffect
+  // ensures showModal() runs before paint, avoiding the React 19 concurrent
+  // rendering race where the dialog never appears.
+  React.useLayoutEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
 
     if (open) {
-      if (!dialog.open) dialog.showModal()
+      if (!dialog.open) {
+        try {
+          dialog.showModal()
+        } catch (err) {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[Dialog] showModal failed, falling back to .show()", err)
+          }
+          try {
+            dialog.show()
+          } catch {
+            dialog.setAttribute("open", "")
+          }
+        }
+      }
     } else {
       if (dialog.open) dialog.close()
     }
   }, [open])
 
+  // Bind native "close" event once (use ref for callback to avoid re-attaching
+  // on every parent re-render, which previously raced with showModal).
   React.useEffect(() => {
     const dialog = dialogRef.current
     if (!dialog) return
 
-    const handleClose = () => onOpenChange(false)
+    const handleClose = () => onOpenChangeRef.current(false)
     dialog.addEventListener("close", handleClose)
     return () => dialog.removeEventListener("close", handleClose)
-  }, [onOpenChange])
+  }, [])
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDialogElement>) => {
+    // Only treat clicks landing on the <dialog> itself as backdrop clicks —
+    // clicks bubbling up from descendants have a different target and should
+    // not close the dialog (regression fix: old code would close on inner
+    // clicks when the dialog rect hadn't committed yet).
+    if (e.target !== e.currentTarget) return
     const dialog = dialogRef.current
     if (!dialog) return
     const rect = dialog.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
     const isInDialog =
       rect.top <= e.clientY &&
       e.clientY <= rect.top + rect.height &&
