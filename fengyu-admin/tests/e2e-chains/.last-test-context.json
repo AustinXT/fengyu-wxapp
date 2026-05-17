@@ -476,5 +476,29 @@
     ],
     "cleaned": true,
     "notes": "无 birthday_grant_log 表；幂等靠 external_ref / idempotency_key / coupon_id 三件套；感恩日 STEP 4 硬编码仅当日 day=20 时跑"
+  },
+  "link25": {
+    "saleOrderId": "FY-XSD-WX-2605180001",
+    "verdicts": 7,
+    "failed": 0,
+    "status": "PASS",
+    "ranAt": "2026-05-17T17:19:01.027Z"
+  },
+  "link27": {
+    "saleOrderId": "FY-XSD-WX-2605180001",
+    "bundleProductId": "FY-FIX-BUNDLE-01",
+    "verdicts": 6,
+    "failed": 0,
+    "status": "PASS",
+    "ranAt": "2026-05-17T17:19:48.490Z"
+  },
+  "link26": {
+    "saleOrderId": "FY-XSD-WX-2605180001",
+    "balanceBefore": 1000,
+    "balanceAfter": 1500,
+    "verdicts": 12,
+    "failed": 0,
+    "status": "PASS",
+    "ranAt": "2026-05-17T17:20:37.185Z"
   }
 }
