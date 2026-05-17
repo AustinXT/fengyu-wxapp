@@ -114,7 +114,9 @@ interface DisplayItem {
 }
 
 interface CustomerInfo {
-  id: string;
+  id: string | null;
+  clientUserId: string;
+  customerNo?: string | null;
   name: string;
   phone: string;
   phoneMasked?: string;
@@ -524,8 +526,8 @@ Page({
       }
       const customer = this.data.customerInfo;
       const params: string[] = [];
-      if (customer?.id) {
-        params.push(`clientUserId=${encodeURIComponent(customer.id)}`);
+      if (customer?.clientUserId) {
+        params.push(`clientUserId=${encodeURIComponent(customer.clientUserId)}`);
         if (customer.name) params.push(`customerName=${encodeURIComponent(customer.name)}`);
         if (customer.phone) params.push(`customerPhone=${encodeURIComponent(customer.phone)}`);
       }
@@ -851,10 +853,10 @@ Page({
   },
 
   onStep0Next() {
-    if (!this.data.customerInfo?.id) {
+    if (!this.data.customerInfo) {
       wx.showModal({
         title: '无法开单',
-        content: '该顾客尚未注册小程序或未绑定门店。请引导顾客本人使用微信打开凤御小程序，登录并绑定门店后再来开单。',
+        content: '请先用手机号搜索并选择已绑定门店的顾客。',
         showCancel: false,
         confirmText: '知道了',
       });
@@ -877,7 +879,7 @@ Page({
    */
   async loadCustomerBalance() {
     const customer = this.data.customerInfo;
-    if (!customer?.id || this.data.prepaidCardLoaded) {
+    if (!customer?.clientUserId || this.data.prepaidCardLoaded) {
       // 即便已加载，进入 Step 2 仍触发一次 recompute（覆盖切回 Step 0 修改后再回来的场景）
       this.recomputePrepaidAmounts();
       return;
@@ -885,7 +887,7 @@ Page({
     this.setData({ customerBalanceLoading: true });
     try {
       const data = await callStaffApi<CustomerBalanceResponse>('customer.customerBalance', {
-        customerUserId: customer.id,
+        customerUserId: customer.clientUserId,
       });
       const balance = Math.max(0, Number(data?.balance) || 0);
       this.setData({
@@ -961,7 +963,7 @@ Page({
       wx.showToast({ title: '仅店长可用', icon: 'none' });
       return;
     }
-    if (next === '转换单' && !this.data.customerInfo?.id) {
+    if (next === '转换单' && !this.data.customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
       return;
     }
@@ -1179,7 +1181,7 @@ Page({
       const useCard = this.data.useCard && this.data.prepaidCardAmount > 0;
       const prepaidCardAmount = useCard ? this.data.prepaidCardAmount : 0;
       const res = await callStaffApi<OrderCreateResponse>('order.create', {
-        clientUserId: customerInfo.id,
+        clientUserId: customerInfo.clientUserId,
         clientPhone: customerInfo.phone,
         clientName: customerInfo.name || customerInfo.phone,
         // PR-D1：使用 state（销售单 / 内部单可选 微信 / 线下）；转换单不走此分支
@@ -1243,7 +1245,7 @@ Page({
       customerInfo, cart, remark, submitting,
       conversionSelectedSaleItemIds, conversionPriceDiff, conversionPaymentMethod,
     } = this.data;
-    if (!customerInfo?.id) {
+    if (!customerInfo) {
       wx.showToast({ title: '请先用手机号确认顾客身份', icon: 'none' });
       return;
     }
@@ -1263,7 +1265,7 @@ Page({
       const res = await callStaffApi<{
         saleOrderId: string; priceDiff: number; prepaidCardCredit: number; status: string;
       }>('order.createConversion', {
-        clientUserId: customerInfo.id,
+        clientUserId: customerInfo.clientUserId,
         convertOutSaleItemIds: conversionSelectedSaleItemIds,
         convertInItems: cart.map(c => ({ skuId: c.skuId, quantity: c.quantity })),
         paymentMethod,

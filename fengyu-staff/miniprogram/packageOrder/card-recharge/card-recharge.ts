@@ -41,7 +41,9 @@ interface RechargeSkusResponse {
 }
 
 interface CustomerInfo {
-  id: string;
+  id: string | null;
+  clientUserId: string;
+  customerNo?: string | null;
   name: string;
   phone: string;
   phoneMasked?: string;
@@ -132,7 +134,8 @@ Page({
     if (query?.clientUserId && query?.customerName) {
       this.setData({
         customerInfo: {
-          id: query.clientUserId,
+          id: null,
+          clientUserId: query.clientUserId,
           name: query.customerName,
           phone: query.customerPhone || '',
           phoneMasked: query.customerPhone ? query.customerPhone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2') : '',
@@ -194,13 +197,13 @@ Page({
     try {
       const results = await callStaffApi<CustomerInfo[]>('customer.search', { phone });
       const found = results && results[0];
-      if (found && found.id) {
+      if (found && found.clientUserId) {
         this.setData({ customerInfo: found });
         this.updateCta();
       } else {
         wx.showModal({
-          title: '顾客未注册',
-          content: '充值需顾客已注册小程序，请先引导顾客注册后再充值。',
+          title: '顾客未绑定门店',
+          content: '该手机号尚未绑定本系统门店，请先引导顾客本人登录小程序并绑定门店后再充值。',
           showCancel: false,
           confirmColor: '#C0322A',
         });
@@ -348,13 +351,13 @@ Page({
   async onSubmit() {
     if (this.data.submitting || this.data.ctaDisabled) return;
     const { customerInfo, selectedSkuId, customMode, customInput, paymentMethod } = this.data;
-    if (!customerInfo?.id) {
+    if (!customerInfo?.clientUserId) {
       wx.showToast({ title: '请选择顾客', icon: 'none' });
       return;
     }
 
     const payload: Record<string, unknown> = {
-      clientUserId: customerInfo.id,
+      clientUserId: customerInfo.clientUserId,
       paymentMethod,
     };
     if (customMode) {

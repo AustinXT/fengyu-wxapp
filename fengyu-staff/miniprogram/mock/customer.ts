@@ -28,8 +28,8 @@ const MOCK_CUSTOMERS = [
     yearConsumption: 8800,
   },
   {
-    id: 'client-003',
-    clientUserId: null,
+    id: null,
+    clientUserId: 'client-wx-003',
     name: '李晓华',
     phone: '13622230000',
     phoneMasked: '136****3000',
