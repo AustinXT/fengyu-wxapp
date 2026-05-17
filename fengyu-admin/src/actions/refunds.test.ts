@@ -62,7 +62,7 @@ vi.mock('@/lib/permissions', () => ({
 vi.mock('@/lib/operation-log', () => ({ logOperation: vi.fn() }))
 vi.mock('@/lib/member-threshold', () => ({ getMemberThreshold: vi.fn(async () => 1990) }))
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }))
-vi.mock('./settings', () => ({ getPointsToYuanRate: vi.fn(async () => 0.01) }))
+vi.mock('@/lib/system-config', () => ({ getPointsToYuanRate: vi.fn(async () => 0.01) }))
 
 import { estimateRefundOverdraft } from './refunds'
 import { db } from '@/db'

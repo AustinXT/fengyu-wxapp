@@ -12,6 +12,7 @@ import { getSession } from '@/lib/auth'
 import { requirePermission, requireAnyPermission, scopeCondition, isInScope } from '@/lib/permissions'
 import { assertOrderInScope } from '@/lib/scope-assert'
 import { logOperation } from '@/lib/operation-log'
+import { ApiError } from '@/lib/api-error'
 import { determineMemberLevel, isDowngrade, type MemberLevel } from '../../../db/utils/member-level'
 import { getMemberThreshold } from '@/lib/member-threshold'
 import { getPointsToYuanRate } from '@/lib/system-config'
@@ -659,7 +660,7 @@ export async function createRefund(input: {
         })
         .returning({ id: saleOrderPayments.id })
 
-      if (!paymentRow) throw new Error('PAYMENT_INSERT_FAILED')
+      if (!paymentRow) throw new ApiError('INVALID_STATE', 'PAYMENT_INSERT_FAILED: 退款流水写入失败')
 
       return paymentRow.id
     })
@@ -669,7 +670,7 @@ export async function createRefund(input: {
     if (pgErr.code === '23505' && pgErr.constraint === 'uq_sop_status_audit') {
       return { success: false, error: { code: 'CONFLICT', message: '存在未完结退款申请，请先处理' } }
     }
-    if (msg === 'PAYMENT_INSERT_FAILED') {
+    if (msg.includes('PAYMENT_INSERT_FAILED')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '退款流水写入失败' } }
     }
     console.error('[createRefund] unexpected error:', err)
