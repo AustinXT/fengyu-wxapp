@@ -113,7 +113,7 @@ export default function ServiceDetailPageClient({
                     <td className="px-4 py-3 text-right">
                       {item.unitRealPrice
                         ? `¥${(item.sessionCount && item.sessionCount > 0
-                            ? Number(item.unitRealPrice) / item.sessionCount
+                            ? (Number(item.unitRealPrice) * (item.quantity ?? 1)) / item.sessionCount
                             : Number(item.unitRealPrice)
                           ).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                         : "-"}

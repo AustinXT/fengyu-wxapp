@@ -190,6 +190,7 @@ export interface ServiceItemDetail {
   salesCategory: string | null
   remainingSessions: number | null
   sessionCount: number | null
+  quantity: number | null
 }
 
 export const getServiceItems = withPermission(
@@ -207,7 +208,8 @@ export const getServiceItems = withPermission(
       sli.sku_spec_name AS sku_name,
       sli.sales_category,
       sli.remaining_sessions,
-      sli.session_count
+      sli.session_count,
+      sli.quantity AS sli_quantity
     FROM service_items si
     LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
     LEFT JOIN sale_items sli ON sli.sale_item_id = si.sale_item_id
@@ -226,6 +228,7 @@ export const getServiceItems = withPermission(
     salesCategory: r.sales_category ?? null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+    quantity: r.sli_quantity !== null && r.sli_quantity !== undefined ? Number(r.sli_quantity) : null,
   }))
   },
 )
