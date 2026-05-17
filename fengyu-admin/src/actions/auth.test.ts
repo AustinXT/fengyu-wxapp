@@ -78,11 +78,20 @@ vi.mock('@/lib/permissions', () => ({
   computeActions: vi.fn(() => ['dashboard:view']),
   expandScopeStoreIds: vi.fn(async () => ['store-1']),
   // 2026-05-17 PR-Z2 后：resetEmployeePassword/resetToDefaultPassword 走 withPermission HOF，
-  // HOF 内部会调 requirePermission；mock 为 noop 让测试用例直接验证业务行为
-  requirePermission: vi.fn(),
+  // HOF 内部会调 requirePermission；mock 模拟真实语义 — null session 抛 UNAUTHORIZED，
+  // 缺权限抛 PERMISSION_DENIED（让"未登录 / 非 admin"测试用例短路到 catch 块）
+  requirePermission: vi.fn((session: any, action: string) => {
+    if (!session) {
+      throw new Error('UNAUTHORIZED: 未登录或登录已过期')
+    }
+    if (!session.permissions?.actions?.includes(action)) {
+      throw new Error(`PERMISSION_DENIED: 仅系统管理员可操作`)
+    }
+  }),
 }))
 
-// HOF 用 getSession（lib/auth.ts）拿 session；mock 返回 admin session
+// HOF 用 getSession（lib/auth.ts）拿 session；默认返回 admin session，
+// 单测可通过 vi.mocked(getSession).mockResolvedValueOnce(null|otherSession) 覆盖
 vi.mock('@/lib/auth', () => ({
   getSession: vi.fn(async () => ({
     employeeId: 'EMP-001',
@@ -402,26 +411,10 @@ describe('resetEmployeePassword — admin UPSERT', () => {
     mockCookieStore.get.mockReturnValue({ value: 'admin-token' })
     ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'ADMIN-001' } })
 
-    let selectCallIndex = 0
+    // HOF 直接从 mocked `@/lib/auth` 取 session，不再调 db；action 内只剩 1 个 db.select（existing password check）
     ;(db.select as any).mockImplementation(() => {
-      selectCallIndex++
-      if (selectCallIndex === 1) {
-        // staff
-        const limit = vi.fn().mockResolvedValue([{ employeeId: 'ADMIN-001', name: '管理员', phone: '13800000000' }])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      if (selectCallIndex === 2) {
-        // roles
-        const where = vi.fn().mockResolvedValue([
-          { role: 'admin', scopeId: 'hq-1', scopeType: '总部' },
-        ])
-        const leftJoin = vi.fn().mockReturnValue({ where })
-        const from = vi.fn().mockReturnValue({ leftJoin })
-        return { from }
-      }
-      // existing password check（selectCallIndex === 3）
+      // existing password check 默认返回空数组（INSERT 路径）；
+      // "已有记录 → UPDATE" 用例自行覆盖
       const limit = vi.fn().mockResolvedValue([])
       const where = vi.fn().mockReturnValue({ limit })
       const from = vi.fn().mockReturnValue({ where })
@@ -429,28 +422,22 @@ describe('resetEmployeePassword — admin UPSERT', () => {
     })
   }
 
-  it('未登录 → redirect /login (HOF 接管)', async () => {
-    // mock @/lib/auth.getSession 返回 null（HOF 触发 redirect）
-    const { getSession } = await import('@/lib/auth')
-    ;(getSession as any).mockResolvedValueOnce(null)
-    // mock redirect 抛错（与 next/navigation 默认行为一致）
-    const { redirect } = await import('next/navigation')
-    ;(redirect as any).mockImplementationOnce((url: string) => {
-      throw new Error(`NEXT_REDIRECT:${url}`)
+  // 旧 "未登录"/"非 admin" 旁路已由 withPermission HOF 接管，原 throw 检测改在
+  // src/lib/with-permission.test.ts 覆盖；此处仅保留业务路径（admin/UPSERT）测试。
+  it('未登录 → HOF redirect /login (by with-permission.test.ts)', async () => {
+    const { requirePermission } = await import('@/lib/permissions')
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('NEXT_REDIRECT:/login?expired=1')
     })
 
     await expect(resetEmployeePassword('EMP-002', 'newPass'))
       .rejects.toThrow(/NEXT_REDIRECT/)
   })
 
-  it('非 admin → throw PERMISSION_DENIED (HOF 接管)', async () => {
-    const { getSession } = await import('@/lib/auth')
-    ;(getSession as any).mockResolvedValueOnce({
-      employeeId: 'EMP-001',
-      name: 'manager',
-      phone: '13800001111',
-      roles: [{ role: 'manager', scopeId: 'store-1', scopeType: '门店' }],
-      permissions: { actions: ['sale_order:list'], scopeStoreIds: ['store-1'] },
+  it('非 admin → HOF throw PERMISSION_DENIED', async () => {
+    const { requirePermission } = await import('@/lib/permissions')
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权执行 admin:reset_password')
     })
 
     await expect(resetEmployeePassword('EMP-002', 'newPass'))
@@ -543,39 +530,23 @@ describe('resetToDefaultPassword — 手机号后 6 位', () => {
   }
 
   it('未登录 → 失败', async () => {
-    mockCookieStore.get.mockReturnValue(undefined)
-
-    const result = await resetToDefaultPassword('EMP-002')
-
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('未登录')
-  })
-
-  it('非 admin → 失败', async () => {
-    mockCookieStore.get.mockReturnValue({ value: 'token' })
-    ;(jwtVerify as any).mockResolvedValue({ payload: { employeeId: 'EMP-001' } })
-
-    let selectCallIndex = 0
-    ;(db.select as any).mockImplementation(() => {
-      selectCallIndex++
-      if (selectCallIndex === 1) {
-        const limit = vi.fn().mockResolvedValue([staffRow])
-        const where = vi.fn().mockReturnValue({ limit })
-        const from = vi.fn().mockReturnValue({ where })
-        return { from }
-      }
-      const where = vi.fn().mockResolvedValue([
-        { role: 'manager', scopeId: 'store-1', scopeType: '门店' },
-      ])
-      const leftJoin = vi.fn().mockReturnValue({ where })
-      const from = vi.fn().mockReturnValue({ leftJoin })
-      return { from }
+    const { requirePermission } = await import('@/lib/permissions')
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('NEXT_REDIRECT:/login?expired=1')
     })
 
-    const result = await resetToDefaultPassword('EMP-002')
+    await expect(resetToDefaultPassword('EMP-002'))
+      .rejects.toThrow(/NEXT_REDIRECT/)
+  })
 
-    expect(result.success).toBe(false)
-    expect(result.message).toContain('仅系统管理员')
+  it('非 admin → HOF throw PERMISSION_DENIED', async () => {
+    const { requirePermission } = await import('@/lib/permissions')
+    ;(requirePermission as any).mockImplementationOnce(() => {
+      throw new Error('PERMISSION_DENIED: 无权执行 admin:reset_password')
+    })
+
+    await expect(resetToDefaultPassword('EMP-002'))
+      .rejects.toThrow('PERMISSION_DENIED: 无权执行 admin:reset_password')
   })
 
   it('员工无手机号 → 失败', async () => {

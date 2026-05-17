@@ -701,9 +701,6 @@ export const createRefund = withPermission(
   },
 )
 
-// 兼容旧前端：alias 导出（旧 createRefundOrder 签名 → 新 createRefund）
-export const createRefundOrder = createRefund
-
 // ─────────────────────────────────────────────────────────────────────────────
 // approveRefund：审批通过 — CAS 翻状态 + 5 通道 cascade + 重算原单
 // ─────────────────────────────────────────────────────────────────────────────

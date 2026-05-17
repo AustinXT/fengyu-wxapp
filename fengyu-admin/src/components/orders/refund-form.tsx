@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
-  createRefundOrder,
+  createRefund,
   estimateRefundOverdraft,
   getRefundable,
   type EstimateOverdraftResult,
@@ -147,7 +147,7 @@ export function RefundForm({
     }
 
     startTransition(async () => {
-      const res = await createRefundOrder({
+      const res = await createRefund({
         refSaleOrderId: saleOrderId,
         items: payload,
         refundReason: refundReason.trim(),

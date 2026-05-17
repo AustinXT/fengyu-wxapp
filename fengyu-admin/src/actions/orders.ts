@@ -1811,9 +1811,8 @@ export const createConversionOrder = withPermission(
  *
  * 返回：{ success: true, data: { repaymentOrderId } } 或 { success: false, error: { code, message } }
  */
-export type RecordPaymentResult =
-  | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string } }
-  | { success: false; error: { code: string; message: string } }
+// 注：'use server' 文件不允许 export type/const 非函数（Next.js 限制）。
+// 原 RecordPaymentResult 类型直接内联到 recordPayment 返回类型上。
 
 export const recordPayment = withPermission(
   'sale_order:record_payment',
@@ -1827,7 +1826,10 @@ export const recordPayment = withPermission(
   prepaidCardAmount?: number
   note?: string
     },
-  ): Promise<RecordPaymentResult> => {
+  ): Promise<
+    | { success: true; data: { repaymentOrderId: string; refStatus: OrderStatus; refPaidAmount: string; refPrepaidCardAmount: string } }
+    | { success: false; error: { code: string; message: string } }
+  > => {
   // 入参归一 + 基本校验（Zod 在前端/Action 边界均可使用；此处做防御校验避免直接被调用时绕过）
   const saleOrderId = String(input.saleOrderId || '').trim()
   if (!saleOrderId) {
@@ -2159,7 +2161,9 @@ async function getClientAccessToken(forceRefresh = false): Promise<string> {
 }
 
 /** 生成客户端小程序码，返回 base64 data URL */
-export async function generateOrderWxacode(saleOrderId: string): Promise<{ success: boolean; dataUrl?: string; message?: string }> {
+export const generateOrderWxacode = withPermission(
+  'sale_order:list',
+  async (_session, saleOrderId: string): Promise<{ success: boolean; dataUrl?: string; message?: string }> => {
   if (!WX_CLIENT_SECRET) {
     return { success: false, message: '未配置小程序密钥' }
   }
