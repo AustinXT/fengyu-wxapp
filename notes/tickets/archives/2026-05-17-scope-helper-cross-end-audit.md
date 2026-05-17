@@ -1,9 +1,10 @@
-# Ticket: scope 隔离 helper 跨端审计 + 缺口补齐
+# Ticket: scope 隔离 helper 跨端审计 + 缺口补齐 [已归档]
 
 > 生成日期：2026-05-17
-> 实施状态：🟡 **Phase 1（含 client 端）+ Phase 3 已落地；Phase 2 路由替换待 PR-2**
-> 实施日期：2026-05-17（Phase 1 + 3）
-> PR：E7 + E6 收尾 PR（与 #11/#14/#15 合并）
+> 归档日期：2026-05-17
+> 实施状态：✅ **Phase 1 + 2 + 3 全部落地（已归档）**
+> 实施日期：2026-05-17（Phase 1 + 3 + 2）
+> PR：E7 + E6 收尾 PR（与 #11/#14/#15 合并）+ 后续 PR-2（Phase 2 路由替换）
 > 严重级别：P0（衍生自 P0-CC3-x / P0-CC4-06；非阻塞但纵深防御缺失）
 > 端：fengyu-staff / fengyu-client / fengyu-admin
 > 来源：[SUMMARY v3 §2 #13](../../docs/audit/SUMMARY.md)
@@ -108,14 +109,27 @@ describe('scope helper 跨端语义一致性', () => {
 - [x] client utils/scope.js 新建（`assertUserStoreBound` + `assertUserOwnsOrder`）
 - [x] admin lib/scope-assert.ts 新建（三个 assert，admin 角色走快路径）
 
-### Phase 2 — 路由替换（1 天） — ⏳ 留 PR-2
+### Phase 2 — 路由替换（1 天） — ✅ 全部落地（2026-05-17）
 
-- [ ] `staffApi/routes/customer.js` detail / updateNotes / assign / giftHistory / refundHistory / calendar — inline 改 helper 调用
-- [ ] `staffApi/routes/staff.js` performanceDetail — 12 行 inline 改一行 await
-- [ ] `staffApi/routes/order.js` createRefund / approveRefund / rejectRefund / close / cancel — scope 检查统一
-- [ ] admin actions/orders.ts approveRefund / rejectRefund — 接 `assertOrderInScope`
+- [x] `staffApi/routes/customer.js`：
+  - `detail` — 5 行 inline scope check 改为 `isStoreInScope(ctx.auth, pgUser.bound_store_id)`（已加载实体，无需额外查询）
+  - `updateNotes` — `assertCustomerInScope` 前置守卫，UPDATE 删 `bound_store_id` WHERE 条件
+  - `assign` — `assertCustomerInScope` + `assertEmployeeInScope` 双守卫
+  - calendar / giftHistory / refundHistory — 既有 `buildStoreScopeCondition` 已 helper 化（无 inline 待改）
+- [x] `staffApi/routes/staff.js` `performanceDetail` — 12 行 inline 改一行 `await assertEmployeeInScope(pg, ctx.auth, targetEmployeeId)`（自查路径 helper 内部短路）
+- [x] `staffApi/routes/order.js`：
+  - `close` — assertOrderInScope 前置，SELECT 去 `store_id = $2`
+  - `createRefund` — assertOrderInScope 前置，原单查询去 store_id 过滤
+  - `approveRefund` / `rejectRefund` — 已 JOIN 拿到 store_id，inline `!== effectiveStoreId` 改 `!isStoreInScope(ctx.auth, sopRow.store_id)`（无需额外查询）
+  - cancel — order.js 无 cancel 路由（仅 close）
+- [x] admin `actions/refunds.ts` approveRefund / rejectRefund — `try/await assertOrderInScope` + catch 转 `{success:false, error:{code:'PERMISSION_DENIED'}}`
+  - 注：原 ticket 路径写 `actions/orders.ts`，实际位置在 `actions/refunds.ts`
 
-> Phase 2 范围按 ticket 原排期单独 PR；当前 PR 仅落 helper 基础设施与守护测试，不动业务路由，避免回归风险。
+测试同步：
+- staff customer.test.js（10 测试）updateNotes/assign mock 链改为 array shape + 追加 assertXxxInScope SELECT
+- staff order.test.js（19 测试）createRefund describe-level beforeEach 注入 `mockScopeAllow()`；close 各测试逐行加 `mockScopeOk()`；approve/reject 跨店期望值改 `订单不在当前门店范围内`
+- staff Vitest 全套 1041/1041 通过 ✅
+- admin refunds.test.ts 6/6 通过 ✅（其他 admin 测试失败均为 pre-existing 与本 ticket 无关）
 
 ### Phase 3 — 守护测试（半天） — ✅ 全部落地
 
@@ -127,10 +141,10 @@ describe('scope helper 跨端语义一致性', () => {
 
 ## 5 验证 Checklist
 
-- [ ] grep `bound_store_id = \$` 在路由层应基本消失（仅留 admin 系统级查询）— **PR-2 验证**
-- [ ] e2e 跨店越权场景全部抛 `PERMISSION_DENIED:`（非 200 + 空 data）— **PR-2 验证**
+- [x] 路由层 `bound_store_id = \$` inline 守卫已全部抽出至 helper（customer.detail/updateNotes/assign + staff.performanceDetail + order.close/createRefund/approveRefund/rejectRefund）
+- [ ] e2e 跨店越权场景全部抛 `PERMISSION_DENIED:`（非 200 + 空 data）— **e2e 需 PG 起容器，本轮以单元测试 + 跨端 snapshot 替代验证**
 - [x] snapshot 守护：故意改 staff helper SQL 后测试失败 + 错误信息提示同步 admin（cross-end-sql-snapshot.test.js 已覆盖）
-- [x] 单元测试：staff 49 用例 + client 11 用例全过
+- [x] 单元测试：staff 1041/1041 + admin refunds 6/6 全过
 
 ---
 
@@ -146,4 +160,4 @@ describe('scope helper 跨端语义一致性', () => {
 
 M（2 天），E4 scope 全覆盖 epic 收尾。
 - **PR-1（E7+E6 收尾 PR，2026-05-17 ✅ 已合并）**：Phase 1（含 client）+ Phase 3 全部
-- **PR-2（待）**：Phase 2 路由层 inline scope 替换 helper（staff customer.js/staff.js/order.js × 多处 + admin orders.ts approveRefund/rejectRefund）
+- **PR-2（2026-05-17 ✅ 已落地）**：Phase 2 路由层 inline scope 替换 helper（staff customer.js/staff.js/order.js × 多处 + admin refunds.ts approveRefund/rejectRefund）
