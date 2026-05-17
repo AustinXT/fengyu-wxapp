@@ -6,8 +6,8 @@ import { clientWechatUsers } from '@db/user'
 import { stores } from '@db/org'
 import { eq, desc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope } from '@/lib/permissions'
+import { scopeCondition, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logTransition } from '@/lib/operation-log'
 
 export interface UnbindRequest {
@@ -23,10 +23,9 @@ export interface UnbindRequest {
   createdAt: string
 }
 
-export async function getUnbindRequests(): Promise<UnbindRequest[]> {
-  const session = await getSession()
-  requirePermission(session, 'store_unbind:list')
-
+export const getUnbindRequests = withPermission(
+  'store_unbind:list',
+  async (session): Promise<UnbindRequest[]> => {
   const rows = await db
     .select({
       request: storeUnbindRequests,
@@ -54,12 +53,12 @@ export async function getUnbindRequests(): Promise<UnbindRequest[]> {
     rejectReason: r.request.rejectReason,
     createdAt: r.request.createdAt.toISOString(),
   }))
-}
+  },
+)
 
-export async function approveUnbind(requestId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'store_unbind:approve')
-
+export const approveUnbind = withPermission(
+  'store_unbind:approve',
+  async (session, requestId: string): Promise<{ success: boolean; message: string }> => {
   // 查找请求并校验 scope
   const [request] = await db
     .select()
@@ -104,15 +103,16 @@ export async function approveUnbind(requestId: string): Promise<{ success: boole
 
   revalidatePath('/store-unbind')
   return { success: true, message: '解绑申请已通过' }
-}
+  },
+)
 
-export async function rejectUnbind(
-  requestId: string,
-  reason: string
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'store_unbind:reject')
-
+export const rejectUnbind = withPermission(
+  'store_unbind:reject',
+  async (
+    session,
+    requestId: string,
+    reason: string,
+  ): Promise<{ success: boolean; message: string }> => {
   const [request] = await db
     .select()
     .from(storeUnbindRequests)
@@ -149,4 +149,5 @@ export async function rejectUnbind(
 
   revalidatePath('/store-unbind')
   return { success: true, message: '解绑申请已拒绝' }
-}
+  },
+)

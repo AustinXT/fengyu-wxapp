@@ -7,8 +7,8 @@ import { permissionRoles } from '@db/permission'
 import { eq, and, asc, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { OrgNode } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, isAdminScope } from '@/lib/permissions'
+import { isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import type { AuthSession } from '@/lib/types'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
@@ -37,10 +37,9 @@ async function isNodeInScope(session: AuthSession, nodeId: string): Promise<bool
   return false
 }
 
-export async function getOrgNodes(): Promise<OrgNode[]> {
-  const session = await getSession()
-  requirePermission(session, 'org:list')
-
+export const getOrgNodes = withPermission(
+  'org:list',
+  async (): Promise<OrgNode[]> => {
   const rows = await db
     .select()
     .from(orgNodes)
@@ -56,19 +55,22 @@ export async function getOrgNodes(): Promise<OrgNode[]> {
     createdAt: row.createdAt?.toISOString() ?? '',
     updatedAt: row.updatedAt?.toISOString() ?? '',
   }))
-}
+  },
+)
 
-export async function createOrgNode(data: {
-  id: string
-  name: string
-  type: OrgNode['type']
-  parentId: string | null
-  sortOrder: number
-  isActive: boolean
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:create')
-
+export const createOrgNode = withPermission(
+  'org:create',
+  async (
+    session,
+    data: {
+      id: string
+      name: string
+      type: OrgNode['type']
+      parentId: string | null
+      sortOrder: number
+      isActive: boolean
+    },
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验 type 是否有效
   if (!VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
@@ -117,23 +119,24 @@ export async function createOrgNode(data: {
   await logOperation(session, 'org.create', 'org_node', data.id, { name: data.name, type: data.type })
   revalidatePath('/org')
   return { success: true, message: '节点创建成功' }
-}
+  },
+)
 
-export async function updateOrgNode(
-  id: string,
-  data: Partial<{
-    name: string
-    type: OrgNode['type']
-    parentId: string | null
-    sortOrder: number
-    isActive: boolean
-  }>,
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:update')
-
+export const updateOrgNode = withPermission(
+  'org:update',
+  async (
+    session,
+    id: string,
+    data: Partial<{
+      name: string
+      type: OrgNode['type']
+      parentId: string | null
+      sortOrder: number
+      isActive: boolean
+    }>,
+    /** 乐观锁：提交时携带的 updated_at */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验 type 是否有效
   if (data.type && !VALID_NODE_TYPES.includes(data.type as typeof VALID_NODE_TYPES[number])) {
     return { success: false, message: `无效的节点类型: ${data.type}` }
@@ -168,14 +171,15 @@ export async function updateOrgNode(
   await logUpdate(session, 'org.update', 'org_node', id, before as Record<string, unknown>, data)
   revalidatePath('/org')
   return { success: true, message: '节点已更新' }
-}
+  },
+)
 
-export async function deleteOrgNode(
-  id: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'org:delete')
-
+export const deleteOrgNode = withPermission(
+  'org:delete',
+  async (
+    session,
+    id: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // scope 隔离
   if (!(await isNodeInScope(session, id))) {
     return { success: false, message: '无权操作该节点' }
@@ -237,4 +241,5 @@ export async function deleteOrgNode(
   await logOperation(session, 'org.delete', 'org_node', id)
   revalidatePath('/org')
   return { success: true, message: '节点已删除' }
-}
+  },
+)

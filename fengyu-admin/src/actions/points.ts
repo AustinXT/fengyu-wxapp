@@ -172,9 +172,9 @@ export const getPointTransactionsPaginated = withPermission(
       .offset(offset),
     db
       .select({
-        totalEarn: sql<number>`cast(coalesce(sum(case when ${pointTransactions.amount} > 0 then ${pointTransactions.amount} else 0 end), 0) as int)`,
-        totalSpend: sql<number>`cast(coalesce(sum(case when ${pointTransactions.amount} < 0 then -${pointTransactions.amount} else 0 end), 0) as int)`,
-        netChange: sql<number>`cast(coalesce(sum(${pointTransactions.amount}), 0) as int)`,
+        totalEarn: sql<bigint>`cast(coalesce(sum(case when ${pointTransactions.amount} > 0 then ${pointTransactions.amount} else 0 end), 0) as bigint)`,
+        totalSpend: sql<bigint>`cast(coalesce(sum(case when ${pointTransactions.amount} < 0 then -${pointTransactions.amount} else 0 end), 0) as bigint)`,
+        netChange: sql<bigint>`cast(coalesce(sum(${pointTransactions.amount}), 0) as bigint)`,
         txnCount: sql<number>`cast(count(*) as int)`,
         userCount: sql<number>`cast(count(distinct ${pointTransactions.userId}) as int)`,
       })
@@ -205,9 +205,9 @@ export const getPointTransactionsPaginated = withPermission(
     })),
     total: countRow?.count ?? 0,
     summary: {
-      totalEarn: summaryRow?.totalEarn ?? 0,
-      totalSpend: summaryRow?.totalSpend ?? 0,
-      netChange: summaryRow?.netChange ?? 0,
+      totalEarn: safeNumber(summaryRow?.totalEarn, 'totalEarn'),
+      totalSpend: safeNumber(summaryRow?.totalSpend, 'totalSpend'),
+      netChange: safeNumber(summaryRow?.netChange, 'netChange'),
       txnCount: summaryRow?.txnCount ?? 0,
       userCount: summaryRow?.userCount ?? 0,
     },

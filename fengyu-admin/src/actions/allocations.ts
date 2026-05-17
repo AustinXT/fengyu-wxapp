@@ -5,8 +5,8 @@ import { saleAllocations, saleOrders, saleItems } from '@db/order'
 import { eq, sql, and, inArray } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { SaleAllocation, AuthSession } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, isAdminScope, isInScope } from '@/lib/permissions'
+import { isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 
 /** 校验订单是否在用户 scope 内（admin 始终通过） */
@@ -36,10 +36,9 @@ async function verifySaleItemScope(saleItemId: string, session: AuthSession): Pr
   return verifyOrderScope(item.saleOrderId, session)
 }
 
-export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllocation[]> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:list')
-
+export const getOrderAllocations = withPermission(
+  'allocation:list',
+  async (session, saleOrderId: string): Promise<SaleAllocation[]> => {
   // 校验订单 scope
   if (!(await verifyOrderScope(saleOrderId, session))) {
     return []
@@ -88,19 +87,22 @@ export async function getOrderAllocations(saleOrderId: string): Promise<SaleAllo
     employeeName: r.employee_name ?? undefined,
     departmentName: r.department_name ?? undefined,
   }))
-}
+  },
+)
 
-export async function saveAllocation(data: {
-  saleItemId: string
-  employeeId: string
-  roleType?: string
-  allocationRatio: string
-  totalAmount: string
-  departmentName?: string
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:save')
-
+export const saveAllocation = withPermission(
+  'allocation:save',
+  async (
+    session,
+    data: {
+      saleItemId: string
+      employeeId: string
+      roleType?: string
+      allocationRatio: string
+      totalAmount: string
+      departmentName?: string
+    },
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验 saleItemId 对应的订单在 scope 内
   if (!(await verifySaleItemScope(data.saleItemId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
@@ -132,12 +134,12 @@ export async function saveAllocation(data: {
 
   revalidatePath('/allocations')
   return { success: true, message: '分配已保存' }
-}
+  },
+)
 
-export async function deleteAllocation(id: number): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:save')
-
+export const deleteAllocation = withPermission(
+  'allocation:save',
+  async (session, id: number): Promise<{ success: boolean; message: string }> => {
   // 先查出分配记录，校验存在性 + scope
   const [alloc] = await db
     .select({ saleItemId: saleAllocations.saleItemId, isVoid: saleAllocations.isVoid })
@@ -161,7 +163,8 @@ export async function deleteAllocation(id: number): Promise<{ success: boolean; 
 
   revalidatePath('/allocations')
   return { success: true, message: '分配已删除' }
-}
+  },
+)
 
 /** 技能标签池键：每个 roleType 独立建池（P2-14 Q5：池间互不约束） */
 function getPoolKey(roleType: string): string {
@@ -175,20 +178,20 @@ const VALID_RATIOS = new Set(['0.10', '0.20', '0.30', '0.40', '0.50', '0.60', '0
 const AMOUNT_TOLERANCE = 0.02
 
 /** 批量保存分配（先作废旧的，再插入新的） */
-export async function batchSaveAllocations(
-  saleOrderId: string,
-  allocations: Array<{
-    saleItemId: string
-    employeeId: string
-    roleType: string
-    allocationRatio: string
-    totalAmount: string
-    departmentName?: string
-  }>
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'allocation:save')
-
+export const batchSaveAllocations = withPermission(
+  'allocation:save',
+  async (
+    session,
+    saleOrderId: string,
+    allocations: Array<{
+      saleItemId: string
+      employeeId: string
+      roleType: string
+      allocationRatio: string
+      totalAmount: string
+      departmentName?: string
+    }>,
+  ): Promise<{ success: boolean; message: string }> => {
   // 校验订单 scope
   if (!(await verifyOrderScope(saleOrderId, session))) {
     return { success: false, message: '无权操作该订单的分配' }
