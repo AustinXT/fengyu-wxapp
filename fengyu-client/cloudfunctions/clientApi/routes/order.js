@@ -299,14 +299,14 @@ async function create(ctx) {
     // 门店匹配
     if (couponInfo.applicable_store_ids && couponInfo.applicable_store_ids.length > 0) {
       if (!couponInfo.applicable_store_ids.includes(storeId)) {
-        throw new Error('INVALID_PARAMS: coupon store scope mismatch')
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于此门店')
       }
     }
 
     // 市场匹配（市场必须在 applicable_market_ids 数组内，NULL/空 = 不限制）
     if (couponInfo.applicable_market_ids && couponInfo.applicable_market_ids.length > 0) {
       if (!marketId || !couponInfo.applicable_market_ids.includes(marketId)) {
-        throw new Error('INVALID_PARAMS: coupon market scope mismatch')
+        throw new Error('INVALID_PARAMS: 该优惠券不适用于此市场')
       }
     }
 
@@ -350,7 +350,7 @@ async function create(ctx) {
       eligibleItems = itemsData
     }
     if (eligibleItems.length === 0) {
-      throw new Error('INVALID_PARAMS: coupon scope mismatch')
+      throw new Error('INVALID_PARAMS: 该优惠券不适用于当前商品')
     }
 
     // 满减门槛（归一化到分 + 浮点兜底，与 coupon.available 保持一致）

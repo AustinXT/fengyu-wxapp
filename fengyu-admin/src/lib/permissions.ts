@@ -22,6 +22,8 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'commission:list', 'commission:create', 'commission:update', 'commission:delete',
     'coupon:list', 'coupon:create', 'coupon:update',
+    // 营业额分配（只读，便于审批退款时核对）
+    'allocation:list',
     // 系统管理（权限/日志/消息/配置）
     'permission:list', 'permission:assign', 'permission:revoke', 'permission:assign_admin',
     'operation_log:list',
