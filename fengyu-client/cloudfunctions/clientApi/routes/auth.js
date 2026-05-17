@@ -397,10 +397,68 @@ async function uploadAvatar(ctx) {
   ctx.result = { fileID, avatarUrl: fileID }
 }
 
+/**
+ * 员工头像上传（跨 env 入口，仅供 staffApi 通过 HTTP 触发器 + HMAC 调用）
+ *
+ * staffApi 不能直接写 client env 的 COS（wx-server-sdk 跨 env upload 不可靠），
+ * 转由本 action 在 client env 内 `cloud.uploadFile + getTempFileURL`，
+ * 返回的 HTTPS URL 与 admin 写入的 `products.cover_image` 完全同 shape
+ * （都是 client env CDN 域），保证三端 `<image src>` 透明渲染。
+ *
+ * 守卫：
+ *   - index.js HTTP 入口校验 HMAC(body, CLIENT_SECRET) + 时间戳 + allowlist；
+ *     校验通过后才在 ctx.event 注入 `_fromHttp=true, _hmacVerified=true`
+ *   - 本函数额外断言这两个 flag，防止任何无签名 cloud.callFunction 直调
+ */
+async function uploadStaffAvatar(ctx) {
+  if (!ctx.event._fromHttp || ctx.event._hmacVerified !== true) {
+    throw new Error('PERMISSION_DENIED: 仅允许 HMAC 验签的 HTTP 入口')
+  }
+
+  const { base64, ext, employeeId } = ctx.event.payload || {}
+  if (!base64 || typeof base64 !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 base64 参数')
+  }
+  if (!employeeId || typeof employeeId !== 'string') {
+    throw new Error('INVALID_PARAMS: 缺少 employeeId')
+  }
+
+  const normalizedExt = String(ext || 'jpg').toLowerCase()
+  if (!['jpg', 'jpeg', 'png', 'webp'].includes(normalizedExt)) {
+    throw new Error('INVALID_PARAMS: 不支持的图片格式')
+  }
+
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.length === 0) {
+    throw new Error('INVALID_PARAMS: 头像数据解析失败')
+  }
+  if (buffer.length > 2 * 1024 * 1024) {
+    throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
+  }
+
+  const rand = Math.random().toString(36).slice(2, 8)
+  const cloudPath = `avatars/staff/${employeeId}/${Date.now()}_${rand}.${normalizedExt}`
+
+  // 同 env upload（client env），与 admin product-covers/* 写入同一桶
+  const uploadRes = await cloud.uploadFile({ cloudPath, fileContent: buffer })
+  if (!uploadRes.fileID) {
+    throw new Error('INVALID_PARAMS: 上传失败')
+  }
+
+  const urlRes = await cloud.getTempFileURL({ fileList: [uploadRes.fileID] })
+  const fi = urlRes.fileList && urlRes.fileList[0]
+  if (!fi || fi.status !== 0 || !fi.tempFileURL) {
+    throw new Error('INVALID_PARAMS: 头像上传成功但生成访问链接失败')
+  }
+
+  ctx.result = { fileID: uploadRes.fileID, avatarUrl: fi.tempFileURL }
+}
+
 module.exports = {
   login,
   bindPhone,
   bindStore,
   updateProfile,
-  uploadAvatar
+  uploadAvatar,
+  uploadStaffAvatar
 }

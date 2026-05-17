@@ -9,7 +9,6 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@cloudbase/node-sdk": "^3.18.1",
     "mssql": "^10.0.1",
     "pg": "^8.11.3",
     "wx-server-sdk": "latest"
