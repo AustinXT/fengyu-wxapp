@@ -2,34 +2,60 @@
  * 员工模块路由（员工端）
  * staff.list — 门店员工列表
  * staff.departments — 部门列表（含可分配员工）
- * staff.uploadAvatar — 员工头像上传（跨 env 写入 client env COS）
+ * staff.uploadAvatar — 员工头像上传（HTTPS POST 转发到 clientApi 写入 client env COS）
  */
 
 const cloud = require('wx-server-sdk')
+const https = require('https')
+const crypto = require('crypto')
+const { URL } = require('url')
 const pg = require('../db/pg')
 const { requireStaffBound, invalidateAuthCache } = require('../middleware/auth')
 const { assertEmployeeInScope } = require('../utils/scope')
 
-// 客户端 envId（顾客小程序所属 CloudBase env）。员工上传的头像必须落在此 env，
-// 顾客小程序才能直接渲染（cloud:// 跨 env 不可读；HTTPS CDN URL 跨 env 透明）。
-// 与 fengyu-admin/src/lib/cloudbase.ts 同源 — admin 上传商品/门店图片就是用同款 SDK。
-const CLIENT_ENV_ID = process.env.CLIENT_ENV_ID || 'cloud1-3gpht4b01ff88838'
-
-// 跨 env CloudBase Node SDK 实例（懒初始化；同一进程复用）。
+// 跨 env 转上传相关 env vars：
+// - CLIENT_API_HTTP_URL：clientApi 的 HTTP 触发器 URL（部署 clientApi 后 tcb fn detail 拿）
+// - CLIENT_SECRET：与 clientApi 共享的 HMAC 密钥，已存在（原本给 wxacode.js 用）
 //
-// 关键：wx-server-sdk 的 new Cloud({resourceEnv}) 在 3.0.4 不支持运行时跨 env，
-// 必须用 @cloudbase/node-sdk + 显式 secret 凭证。Tencent Cloud API 凭证由
-// CloudBase 环境变量提供（与 fengyu-admin 同一份子账号 .env 注入）。
-let _tcb = null
-function getCrossEnvTcb() {
-  if (_tcb) return _tcb
-  const tcb = require('@cloudbase/node-sdk')
-  _tcb = tcb.init({
-    env: CLIENT_ENV_ID,
-    secretId: process.env.TENCENTCLOUD_SECRETID,
-    secretKey: process.env.TENCENTCLOUD_SECRETKEY,
+// 不再用 wx-server-sdk 的 new Cloud({resourceEnv})（实测 v3.0.4 静默忽略 resourceEnv）；
+// 也不引 @cloudbase/node-sdk（避免多套 SDK 凭证管理）。
+// 直接 https.request 到 clientApi HTTP 触发器，clientApi 在自己 env 内上传 + getTempFileURL 返回 HTTPS URL。
+// 这个 URL 与 admin 写入的 products.cover_image 完全同 shape，三端 `<image src>` 透明渲染。
+const CLIENT_API_HTTP_URL = process.env.CLIENT_API_HTTP_URL
+const CLIENT_SECRET = process.env.CLIENT_SECRET
+
+/**
+ * HTTPS POST JSON helper（同 utils/wxacode.js 的 httpGet 同款风格，本地 Promise 包装）
+ * 返回 { status, json, raw }
+ */
+function postJson(urlStr, body, headers) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(urlStr)
+    const data = Buffer.from(body, 'utf-8')
+    const req = https.request({
+      method: 'POST',
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + (u.search || ''),
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': data.length,
+        ...headers,
+      },
+    }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf-8')
+        let json = null
+        try { json = JSON.parse(text) } catch (_) {}
+        resolve({ status: res.statusCode, json, raw: text })
+      })
+    })
+    req.on('error', reject)
+    req.write(data)
+    req.end()
   })
-  return _tcb
 }
 
 /**
@@ -774,13 +800,22 @@ async function dashboard(ctx) {
 /**
  * 头像上传（员工本人自助）
  *
- * 客户端传 base64，云函数解码后通过 @cloudbase/node-sdk 跨 env 写入 client env 的
- * `avatars/staff/{employeeId}/` 路径，再 getTempFileURL 拿到 HTTPS 可访问 URL，
- * 与 fengyu-admin/src/lib/cloudbase.ts.uploadFile() 同款 contract。
+ * 流程：
+ *   1. 本函数前置校验参数（与 clientApi.auth.uploadStaffAvatar 重复一份，让 base64 损坏/超 2MB
+ *      等错误更早抛出，节省一次跨 env HTTPS 往返）
+ *   2. HMAC-SHA256(body, CLIENT_SECRET) 签 body，HTTPS POST 到 clientApi HTTP 触发器
+ *   3. clientApi 在 client env 内 cloud.uploadFile + getTempFileURL，返回 HTTPS URL
+ *   4. 本函数把 HTTPS URL 写入 PG staff_wechat_users.avatar_url
  *
- * PG `staff_wechat_users.avatar_url` 存 HTTPS URL（不是 cloud:// fileID）：
- *   - 三端 `<image src="https://...">` 透明渲染，无跨 env 协议歧义
- *   - 与 admin 商品 / 门店图片走同一桶 + 同一 CDN base，运维一致
+ * 为什么不直接在 staff env 写 staff env COS：
+ *   - 客户端小程序读 staff env URL 需要额外配域名白名单 + staff env COS 还得改公共读策略
+ *   - 复用 admin → client env COS 的已有写路径（products.cover_image 已实证）最一致
+ *
+ * 为什么不用 wx-server-sdk 跨 env：
+ *   - wx-server-sdk@3.0.4 的 new Cloud({resourceEnv}) 实测被静默忽略（fileID 仍落 staff env）
+ *   - 不用 @cloudbase/node-sdk：避免再引一套 SDK + 腾讯云 secret 凭证管理
+ *
+ * 安全：HMAC 防伪 + timestamp 防重放 + clientApi HTTP 入口 allowlist 仅 uploadStaffAvatar
  */
 async function uploadAvatar(ctx) {
   await requireStaffBound()(ctx, async () => {})
@@ -789,15 +824,14 @@ async function uploadAvatar(ctx) {
   const { OPENID } = cloud.getWXContext()
   const employeeId = ctx.auth.staffWfId
 
+  // 前置参数校验
   if (!base64 || typeof base64 !== 'string') {
     throw new Error('INVALID_PARAMS: 缺少 base64 参数')
   }
   const normalizedExt = String(ext || 'jpg').toLowerCase()
-  const allowedExts = ['jpg', 'jpeg', 'png', 'webp']
-  if (!allowedExts.includes(normalizedExt)) {
+  if (!['jpg', 'jpeg', 'png', 'webp'].includes(normalizedExt)) {
     throw new Error('INVALID_PARAMS: 不支持的图片格式')
   }
-
   const buffer = Buffer.from(base64, 'base64')
   if (buffer.length === 0) {
     throw new Error('INVALID_PARAMS: 头像数据解析失败')
@@ -805,28 +839,40 @@ async function uploadAvatar(ctx) {
   if (buffer.length > 2 * 1024 * 1024) {
     throw new Error('INVALID_PARAMS: 图片大小超过 2MB')
   }
-
   if (!employeeId) {
     throw new Error('UNAUTHORIZED: 员工档案未关联')
   }
-
-  const rand = Math.random().toString(36).slice(2, 8)
-  const cloudPath = `avatars/staff/${employeeId}/${Date.now()}_${rand}.${normalizedExt}`
-
-  // 跨 env upload — 用 @cloudbase/node-sdk 显式 envId + Tencent secret 凭证
-  const tcb = getCrossEnvTcb()
-  const uploadRes = await tcb.uploadFile({ cloudPath, fileContent: buffer })
-  const fileID = uploadRes.fileID
-  if (!fileID) {
-    throw new Error('INVALID_PARAMS: 上传失败')
+  if (!CLIENT_API_HTTP_URL || !CLIENT_SECRET) {
+    throw new Error('INVALID_STATE: CLIENT_API_HTTP_URL/CLIENT_SECRET 未配置')
   }
 
-  // 拿 HTTPS 可访问 URL（与 admin 同款；公共读桶返回固定 CDN URL，私有桶返回签名链接）
-  const urlRes = await tcb.getTempFileURL({ fileList: [fileID] })
-  const fileItem = urlRes.fileList && urlRes.fileList[0]
-  const httpsUrl = fileItem && fileItem.tempFileURL
+  // 签 + 发
+  const body = JSON.stringify({
+    action: 'auth.uploadStaffAvatar',
+    payload: { base64, ext: normalizedExt, employeeId },
+    timestamp: Date.now(),
+  })
+  const sig = crypto.createHmac('sha256', CLIENT_SECRET).update(body).digest('hex')
+
+  let resp
+  try {
+    resp = await postJson(CLIENT_API_HTTP_URL, body, { 'x-fengyu-signature': sig })
+  } catch (err) {
+    throw new Error(`INVALID_STATE: 跨 env 上传请求失败：${err.message}`)
+  }
+
+  if (resp.status !== 200 || !resp.json) {
+    throw new Error(`INVALID_STATE: 跨 env 上传 HTTP status=${resp.status}, body=${(resp.raw || '').slice(0, 200)}`)
+  }
+  if (resp.json.code !== 0) {
+    // clientApi 已 buildErrorResponse，errorType 已是 9 项白名单之一；message 含前缀
+    throw new Error(resp.json.message || 'INVALID_STATE: 跨 env 上传失败')
+  }
+
+  const httpsUrl = resp.json.data && resp.json.data.avatarUrl
+  const fileID = resp.json.data && resp.json.data.fileID
   if (!httpsUrl) {
-    throw new Error('INVALID_PARAMS: 头像上传成功但生成访问链接失败')
+    throw new Error('INVALID_STATE: clientApi 未返回 avatarUrl')
   }
 
   await pg.query(

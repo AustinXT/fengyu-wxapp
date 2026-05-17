@@ -3,29 +3,25 @@
  * staff.uploadAvatar 全分支
  *
  * 路由源：fengyu-staff/cloudfunctions/staffApi/routes/staff.js → uploadAvatar
- * Mock：./helpers/wx-server-sdk-mock.js
- *   - new cloud.Cloud({resourceEnv: <client envId>, identityless: true}) 实例的 uploadFile
- *     会返回 fileID = `cloud://<resourceEnv>.bucket/${cloudPath}`
- *     便于断言"真的跨 env 写到了 client envId 域"
+ * Mock：./helpers/https-mock.js（拦截 require('https').request 中 hostname=mock-clientapi.test 的请求）
+ *   - 模拟 clientApi HTTP 触发器响应：校验 HMAC + 返回 fileID/avatarUrl 嵌入 client envId 字符串
+ *   - 便于断言"staffApi 真的转发到了 clientApi + URL 落在 client env CDN"
  *
- * 用例（与 client auth.uploadAvatar 对齐 + 跨 env 断言）：
- *   1. happy: base64 非空 + ext='jpg' → fileID 落在 CLIENT_ENV_ID 域 + PG avatar_url 写入
+ * 用例：
+ *   1. happy: base64 非空 + ext='jpg' → avatarUrl 是 HTTPS + 域为 client env CDN + PG avatar_url 写入
  *   2. 不支持的 ext='gif' → INVALID_PARAMS: 不支持的图片格式
  *   3. 缺 base64: {} → INVALID_PARAMS: 缺少 base64 参数
- *   4. 空 base64: base64='' → INVALID_PARAMS: 缺少 base64 参数（!base64 falsy 检查在 size 之前）
+ *   4. 空 base64: base64='' → INVALID_PARAMS: 缺少 base64 参数
  *   5. 大于 2MB：3MB base64 → INVALID_PARAMS: 图片大小超过 2MB
  */
 import './setup.mjs'
 import {
   NS, TEST_MANAGER_OPENID, TEST_MANAGER_EMP_ID, pgQuery, closePool,
 } from './setup.mjs'
-import { invokeStaffApi } from './helpers/invoke.mjs'
+import { invokeStaffApi, MOCK_CLIENT_ENV_ID, MOCK_CLIENT_CDN_BASE } from './helpers/invoke.mjs'
 import {
   ensureTestStore, createTestStaff, cleanupTestData,
 } from './helpers/fixtures.mjs'
-
-// 与 routes/staff.js 中的 CLIENT_ENV_ID 默认值保持同步（routes/staff.js 读 process.env.CLIENT_ENV_ID 覆盖）
-const EXPECTED_CLIENT_ENV_ID = process.env.CLIENT_ENV_ID || 'cloud1-3gpht4b01ff88838'
 
 // 一张最小 4 字节有效 JPG 的 base64（避免空 buffer 触发 size=0 守卫）
 const TINY_BASE64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString('base64')
@@ -51,26 +47,34 @@ async function caseHappy() {
   })
   if (r.code !== 0) return failCase('happy', `code=${r.code} msg=${r.message}`)
   const fileID = r.data?.fileID
-  // 关键断言：跨 env upload 真把 fileID 写到了 client envId 域
-  const expectedPrefix = `cloud://${EXPECTED_CLIENT_ENV_ID}.`
-  if (!fileID || !fileID.startsWith(expectedPrefix)) {
-    return failCase('happy', `fileID 应以 "${expectedPrefix}" 开头（验证跨 env upload 写入 client env），实际=${fileID}`)
+  const avatarUrl = r.data?.avatarUrl
+
+  // 关键断言 1：clientApi 返回的 avatarUrl 是 HTTPS + 域为 client env CDN
+  if (!avatarUrl || !avatarUrl.startsWith(MOCK_CLIENT_CDN_BASE)) {
+    return failCase('happy', `avatarUrl 应以 "${MOCK_CLIENT_CDN_BASE}" 开头（验证跨 env URL 落 client env CDN），实际=${avatarUrl}`)
   }
-  if (!fileID.endsWith('.jpg')) {
-    return failCase('happy', `fileID 应以 .jpg 结尾，实际=${fileID}`)
+  if (!avatarUrl.endsWith('.jpg')) {
+    return failCase('happy', `avatarUrl 应以 .jpg 结尾，实际=${avatarUrl}`)
   }
-  if (!fileID.includes(`/avatars/staff/${TEST_MANAGER_EMP_ID}/`)) {
-    return failCase('happy', `fileID 应含 /avatars/staff/${TEST_MANAGER_EMP_ID}/ 路径，实际=${fileID}`)
+  if (!avatarUrl.includes(`/avatars/staff/${TEST_MANAGER_EMP_ID}/`)) {
+    return failCase('happy', `avatarUrl 应含 /avatars/staff/${TEST_MANAGER_EMP_ID}/ 路径，实际=${avatarUrl}`)
   }
-  // PG 行已写
+
+  // 关键断言 2：fileID 是 client envId 域的 cloud:// 协议（admin/clientApi 上传后产物）
+  const expectedFileIDPrefix = `cloud://${MOCK_CLIENT_ENV_ID}.`
+  if (!fileID || !fileID.startsWith(expectedFileIDPrefix)) {
+    return failCase('happy', `fileID 应以 "${expectedFileIDPrefix}" 开头，实际=${fileID}`)
+  }
+
+  // 关键断言 3：PG 行已写，存的是 HTTPS URL
   const rows = await pgQuery(
     `SELECT avatar_url FROM staff_wechat_users WHERE employee_id = $1`,
     [TEST_MANAGER_EMP_ID]
   )
-  if (rows[0]?.avatar_url !== fileID) {
-    return failCase('happy', `PG avatar_url mismatch: ${rows[0]?.avatar_url} vs ${fileID}`)
+  if (rows[0]?.avatar_url !== avatarUrl) {
+    return failCase('happy', `PG avatar_url mismatch: ${rows[0]?.avatar_url} vs ${avatarUrl}`)
   }
-  passCase(`happy — fileID 跨 env 写入 ${EXPECTED_CLIENT_ENV_ID} + PG 同步`)
+  passCase(`happy — clientApi 转发返回 HTTPS URL (${MOCK_CLIENT_ENV_ID}) + PG 同步`)
 }
 
 async function caseUnsupportedExt() {
@@ -137,7 +141,7 @@ const CASES = [
 
 async function main() {
   rec(`[smoke-staff-upload-avatar] start | ${CASES.length} cases | ${new Date().toISOString()}`)
-  rec(`  CLIENT_ENV_ID expected: ${EXPECTED_CLIENT_ENV_ID}`)
+  rec(`  CLIENT_ENV_ID expected: ${MOCK_CLIENT_ENV_ID}  CDN: ${MOCK_CLIENT_CDN_BASE}`)
   await cleanupTestData(NS)
   await ensureTestStore()
   await createTestStaff() // TEST_MANAGER_EMP_ID + TEST_MANAGER_OPENID

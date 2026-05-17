@@ -13,6 +13,7 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import Module from 'node:module'
+import https from 'node:https'
 import { fileURLToPath } from 'node:url'
 import { REPO_ROOT } from '../setup.mjs'
 
@@ -31,6 +32,46 @@ function installWxServerSdkMock() {
 }
 
 installWxServerSdkMock()
+
+// ─── 安装 https 选择性短路（仅拦截 clientApi HTTP 触发器 host） ───
+// staff.uploadAvatar 用 require('https').request 转发到 clientApi；测试不能真发外网请求。
+// 但 wxacode.js 等用 https 调微信 OpenAPI 必须保持透传，所以用按 hostname 选择性拦截。
+const httpsMockModule = require(path.join(__dirname, 'https-mock.js'))
+const MOCK_CLIENT_API_HOSTNAME = 'mock-clientapi.test'
+const MOCK_CLIENT_API_URL = `https://${MOCK_CLIENT_API_HOSTNAME}/clientApi-test`
+const MOCK_CLIENT_SECRET = process.env.CLIENT_SECRET || 'TEST_CLIENT_SECRET_FIXTURE'
+
+// 注：用 require() 而非 import 让 CommonJS 风格兼容 patch
+function _require(p) {
+  return createRequire(import.meta.url)(p)
+}
+
+function installHttpsMock() {
+  if (Module.__httpsMockInstalled) return
+  // 直接 monkey-patch 内置 https.request（云函数代码 require('https') 拿到同一个 module 对象）
+  const httpsMock = _require(path.join(__dirname, 'https-mock.js'))
+  httpsMock.setMockConfig({
+    hostname: MOCK_CLIENT_API_HOSTNAME,
+    clientSecret: MOCK_CLIENT_SECRET,
+    real: https,
+  })
+  const realRequest = https.request.bind(https)
+  https.request = function patchedRequest(options, callback) {
+    return httpsMock.patchedRequest(options, callback)
+  }
+  // 保留真实入口
+  https.__realRequest = realRequest
+  Module.__httpsMockInstalled = true
+  // 注入到 process.env，方便云函数代码读到 mock URL
+  process.env.CLIENT_API_HTTP_URL = MOCK_CLIENT_API_URL
+  process.env.CLIENT_SECRET = MOCK_CLIENT_SECRET
+}
+
+installHttpsMock()
+
+// 暴露给 spec 断言
+export const MOCK_CLIENT_ENV_ID = httpsMockModule.CLIENT_ENV_ID
+export const MOCK_CLIENT_CDN_BASE = httpsMockModule.CDN_BASE
 
 // ─── 路径常量 ───
 export const STAFF_API_DIR = path.join(REPO_ROOT, 'fengyu-staff', 'cloudfunctions', 'staffApi')
