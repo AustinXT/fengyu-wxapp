@@ -9,6 +9,10 @@ const {
   deriveAvailableLoginLevels,
   expandScopeStoreIds,
   buildStoreScopeCondition,
+  isStoreInScope,
+  assertCustomerInScope,
+  assertOrderInScope,
+  assertEmployeeInScope,
 } = require('../../utils/scope')
 
 describe('deriveStaffLevel', () => {
@@ -246,5 +250,159 @@ describe('buildStoreScopeCondition', () => {
       7
     )
     expect(c.sql).toBe('store_id = $7')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SUMMARY v3 §2 #13：scope assert helper 单元测试
+// ticket: notes/tickets/2026-05-17-scope-helper-cross-end-audit.md
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('isStoreInScope（纯函数）', () => {
+  test('门店模式：等于 effectiveStoreId → true', () => {
+    expect(isStoreInScope({ loginLevel: 'store', effectiveStoreId: 'S1', scopeStoreIds: [] }, 'S1')).toBe(true)
+  })
+  test('门店模式：不等于 effectiveStoreId → false', () => {
+    expect(isStoreInScope({ loginLevel: 'store', effectiveStoreId: 'S1', scopeStoreIds: ['S1', 'S2'] }, 'S2')).toBe(false)
+  })
+  test('管理层模式：在 scopeStoreIds 内 → true', () => {
+    expect(isStoreInScope({ loginLevel: 'management', effectiveStoreId: null, scopeStoreIds: ['S1', 'S2'] }, 'S2')).toBe(true)
+  })
+  test('管理层模式：不在 scopeStoreIds 内 → false', () => {
+    expect(isStoreInScope({ loginLevel: 'management', effectiveStoreId: null, scopeStoreIds: ['S1'] }, 'S2')).toBe(false)
+  })
+  test('storeId 为空 → false（防 null 越权）', () => {
+    expect(isStoreInScope({ loginLevel: 'store', effectiveStoreId: 'S1', scopeStoreIds: [] }, null)).toBe(false)
+    expect(isStoreInScope({ loginLevel: 'store', effectiveStoreId: 'S1', scopeStoreIds: [] }, undefined)).toBe(false)
+    expect(isStoreInScope({ loginLevel: 'store', effectiveStoreId: 'S1', scopeStoreIds: [] }, '')).toBe(false)
+  })
+})
+
+/**
+ * 构造一个最小可用 pg client mock。
+ * 每个测试用例传入自定义 row 序列即可。
+ */
+function makePgMock(rowQueue) {
+  const queries = []
+  return {
+    queries,
+    query: vi.fn(async (sql, params) => {
+      queries.push({ sql, params })
+      const next = rowQueue.shift()
+      return next === undefined ? [] : next
+    }),
+  }
+}
+
+describe('assertCustomerInScope', () => {
+  test('缺 clientUserId → INVALID_PARAMS', async () => {
+    const client = makePgMock([])
+    await expect(assertCustomerInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' })).rejects.toThrow(
+      /INVALID_PARAMS:\s*缺少\s*clientUserId/,
+    )
+    expect(client.queries.length).toBe(0)
+  })
+
+  test('顾客不存在 → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[]])
+    await expect(
+      assertCustomerInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'U_NOT_EXIST'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*顾客不存在/)
+  })
+
+  test('顾客绑店不在 scope → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[{ bound_store_id: 'S99' }]])
+    await expect(
+      assertCustomerInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'U1'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*顾客不在当前门店范围内/)
+  })
+
+  test('顾客在 scope → 返回 boundStoreId', async () => {
+    const client = makePgMock([[{ bound_store_id: 'S1' }]])
+    const result = await assertCustomerInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'U1')
+    expect(result).toEqual({ boundStoreId: 'S1' })
+  })
+
+  test('管理层模式：顾客绑店 ∈ scopeStoreIds → 通过', async () => {
+    const client = makePgMock([[{ bound_store_id: 'S2' }]])
+    const result = await assertCustomerInScope(
+      client,
+      { loginLevel: 'management', effectiveStoreId: null, scopeStoreIds: ['S1', 'S2'] },
+      'U1',
+    )
+    expect(result).toEqual({ boundStoreId: 'S2' })
+  })
+})
+
+describe('assertOrderInScope', () => {
+  test('缺 saleOrderId → INVALID_PARAMS', async () => {
+    const client = makePgMock([])
+    await expect(assertOrderInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' })).rejects.toThrow(
+      /INVALID_PARAMS:\s*缺少\s*saleOrderId/,
+    )
+  })
+
+  test('订单不存在 → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[]])
+    await expect(
+      assertOrderInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'FY-XSD-WX-NOT'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*订单不存在/)
+  })
+
+  test('订单 store_id 不在 scope → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[{ store_id: 'S99' }]])
+    await expect(
+      assertOrderInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'FY-XSD-WX-001'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*订单不在当前门店范围内/)
+  })
+
+  test('订单 store_id 等于 effectiveStoreId → 返回 storeId', async () => {
+    const client = makePgMock([[{ store_id: 'S1' }]])
+    const result = await assertOrderInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1' }, 'FY-XSD-WX-001')
+    expect(result).toEqual({ storeId: 'S1' })
+  })
+})
+
+describe('assertEmployeeInScope', () => {
+  test('缺 employeeId → INVALID_PARAMS', async () => {
+    const client = makePgMock([])
+    await expect(assertEmployeeInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1', staffWfId: 'E1' })).rejects.toThrow(
+      /INVALID_PARAMS:\s*缺少\s*employeeId/,
+    )
+  })
+
+  test('查询自己 → 无条件通过（不走 DB）', async () => {
+    const client = makePgMock([])
+    const result = await assertEmployeeInScope(
+      client,
+      { loginLevel: 'store', effectiveStoreId: 'S1', staffWfId: 'E1', storeId: 'S1' },
+      'E1',
+    )
+    expect(result).toEqual({ storeId: 'S1' })
+    expect(client.queries.length).toBe(0) // 自查无需 DB
+  })
+
+  test('员工不存在 → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[]])
+    await expect(
+      assertEmployeeInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1', staffWfId: 'E0' }, 'E_NOT_EXIST'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*员工不存在/)
+  })
+
+  test('员工 store_id 不在 scope → PERMISSION_DENIED', async () => {
+    const client = makePgMock([[{ store_id: 'S99' }]])
+    await expect(
+      assertEmployeeInScope(client, { loginLevel: 'store', effectiveStoreId: 'S1', staffWfId: 'E0' }, 'E1'),
+    ).rejects.toThrow(/PERMISSION_DENIED:\s*员工不在当前门店范围内/)
+  })
+
+  test('员工在 scope → 返回 storeId', async () => {
+    const client = makePgMock([[{ store_id: 'S1' }]])
+    const result = await assertEmployeeInScope(
+      client,
+      { loginLevel: 'store', effectiveStoreId: 'S1', staffWfId: 'E0' },
+      'E1',
+    )
+    expect(result).toEqual({ storeId: 'S1' })
   })
 })

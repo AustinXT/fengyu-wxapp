@@ -158,11 +158,111 @@ function buildStoreScopeCondition(auth, column, startIndex = 1) {
   }
 }
 
+/**
+ * 判定一个 storeId 是否在当前 auth scope 内（不查 DB，纯内存判定）
+ *
+ * 门店模式：必须等于 effectiveStoreId
+ * 管理层模式：必须 ∈ scopeStoreIds
+ *
+ * @param {{effectiveStoreId: string|null, scopeStoreIds: string[]|null, loginLevel: string}} auth
+ * @param {string|null|undefined} storeId
+ * @returns {boolean}
+ */
+function isStoreInScope(auth, storeId) {
+  if (!storeId) return false
+  if (auth.loginLevel === 'management') {
+    const ids = auth.scopeStoreIds || []
+    return ids.includes(storeId)
+  }
+  return storeId === auth.effectiveStoreId
+}
+
+/**
+ * 断言 client_user_id 在当前 scope 内，否则抛 PERMISSION_DENIED。
+ * 不抛即通过；通过路径返回 { boundStoreId } 供调用方复用。
+ *
+ * SUMMARY v3 §2 #13 / ticket 2026-05-17-scope-helper-cross-end-audit.md
+ *
+ * @param {{query: Function}} client - 事务客户端或 pg 池
+ * @param {object} auth - ctx.auth
+ * @param {string} clientUserId
+ * @returns {Promise<{boundStoreId: string|null}>}
+ */
+async function assertCustomerInScope(client, auth, clientUserId) {
+  if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
+  const rows = await client.query(
+    'SELECT bound_store_id FROM client_wechat_users WHERE user_id = $1',
+    [clientUserId],
+  )
+  if (rows.length === 0) {
+    throw new Error('PERMISSION_DENIED: 顾客不存在')
+  }
+  const boundStoreId = rows[0].bound_store_id
+  if (!isStoreInScope(auth, boundStoreId)) {
+    throw new Error('PERMISSION_DENIED: 顾客不在当前门店范围内')
+  }
+  return { boundStoreId }
+}
+
+/**
+ * 断言 sale_order_id 在当前 scope 内，否则抛 PERMISSION_DENIED。
+ *
+ * @param {{query: Function}} client
+ * @param {object} auth
+ * @param {string} saleOrderId
+ * @returns {Promise<{storeId: string|null}>}
+ */
+async function assertOrderInScope(client, auth, saleOrderId) {
+  if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+  const rows = await client.query(
+    'SELECT store_id FROM sale_orders WHERE sale_order_id = $1',
+    [saleOrderId],
+  )
+  if (rows.length === 0) {
+    throw new Error('PERMISSION_DENIED: 订单不存在')
+  }
+  const storeId = rows[0].store_id
+  if (!isStoreInScope(auth, storeId)) {
+    throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
+  }
+  return { storeId }
+}
+
+/**
+ * 断言 employee_id 在当前 scope 内（按 staff_wechat_users.store_id），否则抛 PERMISSION_DENIED。
+ * 允许"查询自己"无条件通过（auth.staffWfId 等于目标）。
+ *
+ * @param {{query: Function}} client
+ * @param {object} auth
+ * @param {string} employeeId
+ * @returns {Promise<{storeId: string|null}>}
+ */
+async function assertEmployeeInScope(client, auth, employeeId) {
+  if (!employeeId) throw new Error('INVALID_PARAMS: 缺少 employeeId')
+  if (auth.staffWfId === employeeId) return { storeId: auth.storeId || null }
+  const rows = await client.query(
+    'SELECT store_id FROM staff_wechat_users WHERE employee_id = $1',
+    [employeeId],
+  )
+  if (rows.length === 0) {
+    throw new Error('PERMISSION_DENIED: 员工不存在')
+  }
+  const storeId = rows[0].store_id
+  if (!isStoreInScope(auth, storeId)) {
+    throw new Error('PERMISSION_DENIED: 员工不在当前门店范围内')
+  }
+  return { storeId }
+}
+
 module.exports = {
   deriveStaffLevel,
   deriveAvailableLoginLevels,
   expandScopeStoreIds,
   buildStoreScopeCondition,
+  isStoreInScope,
+  assertCustomerInScope,
+  assertOrderInScope,
+  assertEmployeeInScope,
   LEVEL_HEADQUARTERS,
   LEVEL_MARKET,
   LEVEL_STORE_MANAGER,
