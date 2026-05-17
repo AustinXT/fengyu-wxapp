@@ -33,6 +33,7 @@ export default function SkuCreatePageClient({
 
   const [isShengmei, setIsShengmei] = useState<boolean>(false)
   const [isExperience, setIsExperience] = useState<boolean>(false)
+  const [isRechargeCard, setIsRechargeCard] = useState<boolean>(false)
   const [allMarkets, setAllMarkets] = useState(true)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
 
@@ -82,6 +83,11 @@ export default function SkuCreatePageClient({
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const isEnabled = fd.get("isEnabled") === "on"
 
+    if (isExperience && isRechargeCard) {
+      toast.error("体验卡与充值卡 capability 互斥，不能同时勾选")
+      return
+    }
+
     const skuId = `sku-${Date.now()}`
 
     setSaving(true)
@@ -98,6 +104,7 @@ export default function SkuCreatePageClient({
         serviceFee,
         isShengmei: requiresShengmei ? isShengmei : null,
         isExperience,
+        isRechargeCard,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
       })
@@ -279,6 +286,7 @@ export default function SkuCreatePageClient({
                 <input
                   type="checkbox"
                   checked={isExperience}
+                  disabled={isRechargeCard}
                   onChange={(e) => { setIsExperience(e.target.checked); setFormDirty(true) }}
                   className="h-4 w-4 rounded border-[var(--input)]"
                 />
@@ -286,6 +294,22 @@ export default function SkuCreatePageClient({
               </label>
               <p className="pl-6 text-xs text-[var(--muted-foreground)]">
                 勾选后该 SKU 仅在小程序体验卡入口展示，不出现在商城；现有订单的快照不受改动影响
+              </p>
+            </div>
+
+            <div className="space-y-1">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={isRechargeCard}
+                  disabled={isExperience}
+                  onChange={(e) => { setIsRechargeCard(e.target.checked); setFormDirty(true) }}
+                  className="h-4 w-4 rounded border-[var(--input)]"
+                />
+                <span className="text-sm font-medium">充值卡 SKU</span>
+              </label>
+              <p className="pl-6 text-xs text-[var(--muted-foreground)]">
+                勾选后该 SKU 在订单确认收款时会自动累加到顾客预付卡余额（与体验卡互斥）；现有订单的快照不受改动影响
               </p>
             </div>
           </div>
