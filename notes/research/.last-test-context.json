@@ -124,17 +124,42 @@
     "cleaned": true,
     "notes": "完整路径：UI 选券 → 提交 → 确认收款 → DB 三元一致性 PASS → 并发防重 UPDATE 0"
   },
-  "link4_originSaleOrderId": "FY-XSD-WX-2605170003",
+  "link4_originSaleOrderId": "FY-XSD-WX-2605170008",
   "link4_refundSaleOrderId": "FY-TKD-WX-2604260002",
   "link4": {
     "link": 4,
     "status": "PASS",
-    "originSaleOrderId": "FY-XSD-WX-2604260003",
-    "refundSaleOrderId": "FY-TKD-WX-2604260002",
+    "originSaleOrderId": "FY-XSD-WX-2605170008",
+    "refundPaymentId": 75404,
     "verdicts": [
       {
         "check": "create_refund_by_finance",
         "verdict": "PASS"
+      },
+      {
+        "check": "db_create_change_type",
+        "verdict": "PASS",
+        "actual": "退款"
+      },
+      {
+        "check": "db_create_status_pending",
+        "verdict": "PASS",
+        "actual": "待审批"
+      },
+      {
+        "check": "db_create_amount_negative",
+        "verdict": "PASS",
+        "actual": "-200.00"
+      },
+      {
+        "check": "db_create_refund_reason_populated",
+        "verdict": "PASS",
+        "actual": "E2E 测试退款 — 链路 4 自动化验证"
+      },
+      {
+        "check": "db_create_operator_is_fin",
+        "verdict": "PASS",
+        "actual": "FY-TEST-FIN"
       },
       {
         "check": "status_pending_approval",
@@ -152,18 +177,28 @@
       },
       {
         "check": "neg_duplicate_refund_blocked",
-        "verdict": "SKIP",
-        "actual": "not-blocked"
+        "verdict": "PASS",
+        "actual": "blocked-by-error"
       },
       {
-        "check": "db_refund_type_correct",
+        "check": "db_change_type_refund",
         "verdict": "PASS",
-        "actual": "退款单"
+        "actual": "退款"
       },
       {
-        "check": "db_approved_by",
+        "check": "db_status_paid",
         "verdict": "PASS",
-        "actual": "FY-TEST-ADM"
+        "actual": "已支付"
+      },
+      {
+        "check": "db_audit_employee",
+        "verdict": "PASS",
+        "actual": "FY-TEST-MGR"
+      },
+      {
+        "check": "db_audit_at_not_null",
+        "verdict": "PASS",
+        "actual": "2026-05-17 04:24:40.46"
       },
       {
         "check": "db_logs_count",
@@ -172,11 +207,11 @@
       }
     ],
     "cleaned": true,
-    "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → 状态\"待审批\"；审批页 /refunds/<id> 点\"审批通过\"→ AlertDialog 确认 → 状态变\"已支付\"；DB approved_by=FY-TEST-ADM；点数流水总额=0"
+    "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → sop[change_type='退款',status='待审批'] 行；审批页 /refunds/<sop.id> 点\"审批通过\" → AlertDialog 确认 → sop.status 翻 '已支付'，audit_employee_id=FY-TEST-MGR，audit_at=2026-05-17 04:24:40.46。2026-05-03 重构后退款数据完全在 sale_order_payments，不再有 saleOrders[type='退款单'] 实体。"
   },
   "link1": {
-    "saleOrderId": "FY-XSD-WX-2605160001",
-    "ranAt": "2026-05-16T15:33:31.951Z"
+    "saleOrderId": "FY-XSD-WX-2605170003",
+    "ranAt": "2026-05-17T04:15:48.093Z"
   },
-  "link4_refundPaymentId": 75360
+  "link4_refundPaymentId": 75412
 }
