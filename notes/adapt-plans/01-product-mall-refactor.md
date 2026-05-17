@@ -487,7 +487,7 @@ updateBundleItem(itemId, data)
 - `fengyu-admin/src/lib/permissions.ts` PERMISSION_MATRIX 新增 `mall_mgr` 条目；`product` 角色移除 `coupon:*`；admin 加 `mall:*` / `product:delete`
 - `fengyu-admin/src/lib/menu.ts` 商城管理入口改为 `requiredRoles: ['admin', 'mall_mgr']`
 - `fengyu-admin/src/app/(main)/permissions/` 页面需补 `mall_mgr` 选项
-- `fengyu-admin/e2e/permissions.spec.ts` 和 `products.spec.ts` 补用例
+- `fengyu-admin/tests/e2e-pages/permissions.spec.ts` 和 `products.spec.ts` 补用例
 - `seed.ts` 补一个 mall_mgr demo 用户
 
 #### B-2 店长编辑品项分类
@@ -598,8 +598,8 @@ updateBundleItem(itemId, data)
 - `actions/mall.test.ts`（拆分后的）
 - `staffApi/__tests__/routes/product.test.js` 补 `bundleList/bundleDetail`
 - `staffApi/__tests__/routes/order.test.js` 补套餐开单用例
-- `fengyu-admin/e2e/products.spec.ts` 增加 bundle CRUD spec
-- `fengyu-admin/e2e/permissions.spec.ts` 增加 `mall_mgr` 角色验证
+- `fengyu-admin/tests/e2e-pages/products.spec.ts` 增加 bundle CRUD spec
+- `fengyu-admin/tests/e2e-pages/permissions.spec.ts` 增加 `mall_mgr` 角色验证
 
 ---
 
@@ -710,7 +710,7 @@ updateBundleItem(itemId, data)
 | L8 | `staff/formatters`, `client/format` | 需验证 | 可能未含「组合套餐」→ 显示时 fallback 到默认 |
 | L9 | `staff/pages/order-create/order-create.ts:7` | 1 | ✅ 已在 `BIG_CATEGORIES` |
 | L9 | `admin/src/app/(main)/products/_components/products-page.tsx:96` | 1 | OK |
-| L10 | `fengyu-admin/e2e/products.spec.ts`, `staffApi/__tests__/routes/product.test.js` | 需验证 | 可能测试数据中未使用 |
+| L10 | `fengyu-admin/tests/e2e-pages/products.spec.ts`, `staffApi/__tests__/routes/product.test.js` | 需验证 | 可能测试数据中未使用 |
 
 **缓解措施**：
 - Phase A 执行后，需立即 **交接 `/wx-change-propagation` 对「组合套餐」做一次全 10 层扫描**，确认每个出现点都已适配"组合套餐 = 真套餐（需要 bundle 结构）而非 SKU"的新语义

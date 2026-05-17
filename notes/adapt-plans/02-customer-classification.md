@@ -554,7 +554,7 @@ const CUSTOMER_STATUSES = ["保有会员-稳定","保有会员-有效","沉睡",
 17. L6 `fengyu-staff/miniprogram/pages/customer-list/customer-list.ts:14` — `CustomerType` 联合类型（前端对应） + `.wxml` 类型卡片列表
 18. L7 `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/customer.test.js` — 测试固件
 19. L7 `fengyu-admin/src/actions/customers.test.ts` — 测试固件
-20. L7 `fengyu-admin/e2e/customers.spec.ts`（若存在） — E2E 断言
+20. L7 `fengyu-admin/tests/e2e-pages/customers.spec.ts`（若存在） — E2E 断言
 
 交接命令：
 
@@ -749,7 +749,7 @@ UI 方案由设计确认后实施。
 
 - `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/customer.test.js` — 新增 5 类型与新客统计的用例
 - `fengyu-admin/src/actions/customers.test.ts` — 筛选参数新增
-- `fengyu-admin/e2e/*.spec.ts` — 如有顾客相关断言
+- `fengyu-admin/tests/e2e-pages/*.spec.ts` — 如有顾客相关断言
 
 ### 5.5 seed 数据
 
