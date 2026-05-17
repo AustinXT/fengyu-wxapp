@@ -293,7 +293,7 @@ SELECT COUNT(*) AS total_rows FROM user_coupons;
   - cron grant-birthday-benefits 重跑同年 → ON CONFLICT (external_ref) 静默
   - share-gift 同 orderId/recipient 双发 → 仅 1 张券
   - **pickup 双发必须带 idempotencyKey** 才能验证 unique 命中（不带不验证）
-- [ ] e2e 复用 `fengyu-admin/scripts/manual-e2e/link-*.spec.ts` 模式，新增 `link-12-toctou-partial-unique.spec.ts`
+- [ ] e2e 复用 `fengyu-admin/tests/e2e-chains/link-*.spec.ts` 模式，新增 `link-12-toctou-partial-unique.spec.ts`
 
 ### Phase 4：snapshot 守护
 
