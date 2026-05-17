@@ -8,8 +8,8 @@ import { clientWechatUsers, staffWechatUsers } from '@db/user'
 import { productSkus } from '@db/product'
 import { and, desc, eq, gte, ilike, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
-import { getSession } from '@/lib/auth'
-import { isInScope, requirePermission, scopeCondition } from '@/lib/permissions'
+import { isInScope, scopeCondition } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 
 export interface AdminPickupRecord {
@@ -54,12 +54,12 @@ export interface PaginatedPickupRecords {
  * scope 基于 pickup_records.store_id（提货门店）。
  * JOIN sale_items/stores/client/staff/product/sku 拼接展示信息。
  */
-export async function getPickupRecordsPaginated(
-  filters: PickupRecordFilters = {},
-): Promise<PaginatedPickupRecords> {
-  const session = await getSession()
-  requirePermission(session, 'pickup_record:list')
-
+export const getPickupRecordsPaginated = withPermission(
+  'pickup_record:list',
+  async (
+    session,
+    filters: PickupRecordFilters = {},
+  ): Promise<PaginatedPickupRecords> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -150,17 +150,18 @@ export async function getPickupRecordsPaginated(
     })),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
 /**
  * 提货记录详情（单条）
  */
-export async function getPickupRecordById(
-  id: number,
-): Promise<AdminPickupRecord | null> {
-  const session = await getSession()
-  requirePermission(session, 'pickup_record:list')
-
+export const getPickupRecordById = withPermission(
+  'pickup_record:list',
+  async (
+    session,
+    id: number,
+  ): Promise<AdminPickupRecord | null> => {
   const rows = await db
     .select({
       record: pickupRecords,
@@ -205,7 +206,8 @@ export async function getPickupRecordById(
     itemQuantity: r.itemQuantity ?? undefined,
     itemPickedUpQuantity: r.itemPickedUpQuantity ?? undefined,
   }
-}
+  },
+)
 
 /**
  * 顾客可提货的家居产品销售明细
@@ -229,12 +231,12 @@ export interface AvailablePickupItem {
   storeName: string | null
 }
 
-export async function getAvailablePickupItems(
-  clientUserId: string,
-): Promise<AvailablePickupItem[]> {
-  const session = await getSession()
-  requirePermission(session, 'pickup_record:create')
-
+export const getAvailablePickupItems = withPermission(
+  'pickup_record:create',
+  async (
+    _session,
+    clientUserId: string,
+  ): Promise<AvailablePickupItem[]> => {
   const rows = await db.execute(sql`
     SELECT
       si.sale_item_id,
@@ -271,7 +273,8 @@ export async function getAvailablePickupItems(
     storeId: r.store_id as string,
     storeName: (r.store_name as string | null) ?? null,
   }))
-}
+  },
+)
 
 /**
  * 创建提货记录
@@ -281,16 +284,18 @@ export async function getAvailablePickupItems(
  *   (COALESCE(picked_up_quantity, 0) + $1) <= quantity
  * 若超出可提数量，UPDATE 返回 0 行，事务回滚。
  */
-export async function createPickupRecord(data: {
-  saleItemId: string
-  pickupQuantity: number
-  storeId: string
-  clientUserId: string | null
-  remark?: string | null
-}): Promise<{ success: boolean; message: string; createdId?: number }> {
-  const session = await getSession()
-  requirePermission(session, 'pickup_record:create')
-
+export const createPickupRecord = withPermission(
+  'pickup_record:create',
+  async (
+    session,
+    data: {
+      saleItemId: string
+      pickupQuantity: number
+      storeId: string
+      clientUserId: string | null
+      remark?: string | null
+    },
+  ): Promise<{ success: boolean; message: string; createdId?: number }> => {
   // 基础参数校验
   if (!data.saleItemId) {
     return { success: false, message: '缺少销售明细号' }
@@ -361,4 +366,5 @@ export async function createPickupRecord(data: {
     }
     return { success: false, message: msg }
   }
-}
+  },
+)

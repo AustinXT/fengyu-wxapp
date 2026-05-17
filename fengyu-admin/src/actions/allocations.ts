@@ -317,4 +317,5 @@ export const batchSaveAllocations = withPermission(
 
   revalidatePath('/allocations')
   return { success: true, message: '分配保存成功' }
-}
+  },
+)

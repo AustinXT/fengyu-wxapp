@@ -7,9 +7,9 @@ import { eq, desc, and, or, sql, ilike, gte, lt } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { Appointment } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition } from '@/lib/permissions'
-import { logOperation, logTransition } from '@/lib/operation-log'
+import { scopeCondition } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
+import { logTransition } from '@/lib/operation-log'
 
 function serializeAppointment(r: {
   appointment: typeof appointments.$inferSelect
@@ -34,10 +34,9 @@ function serializeAppointment(r: {
   }
 }
 
-export async function getAppointments(): Promise<Appointment[]> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:list')
-
+export const getAppointments = withPermission(
+  'appointment:list',
+  async (session): Promise<Appointment[]> => {
   const rows = await db
     .select({
       appointment: appointments,
@@ -51,7 +50,8 @@ export async function getAppointments(): Promise<Appointment[]> {
     .limit(500)
 
   return rows.map(serializeAppointment)
-}
+  },
+)
 
 /** 预约列表筛选参数 */
 export interface AppointmentFilters {
@@ -83,10 +83,9 @@ export interface PaginatedAppointments {
  *
  * badge 数量通过额外 COUNT 查询获取（scope 范围内全局统计，不受其他筛选影响）。
  */
-export async function getAppointmentsPaginated(filters: AppointmentFilters = {}): Promise<PaginatedAppointments> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:list')
-
+export const getAppointmentsPaginated = withPermission(
+  'appointment:list',
+  async (session, filters: AppointmentFilters = {}): Promise<PaginatedAppointments> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -165,13 +164,13 @@ export async function getAppointmentsPaginated(filters: AppointmentFilters = {})
     pendingCount: badgeRow?.pending ?? 0,
     confirmedCount: badgeRow?.confirmed ?? 0,
   }
-}
+  },
+)
 
 /** C4: 确认预约 — WHERE status = '待确认' + scope 校验 */
-export async function confirmAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:confirm')
-
+export const confirmAppointment = withPermission(
+  'appointment:confirm',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [apptCtx] = await db
     .select({ clientName: appointments.clientName, employeeName: appointments.employeeName, appointmentTime: appointments.appointmentTime })
@@ -204,13 +203,13 @@ export async function confirmAppointment(appointmentId: string): Promise<{ succe
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已确认' }
-}
+  },
+)
 
 /** 签到 — 仅记录时间，不改状态 + scope 校验 */
-export async function checkinAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:checkin')
-
+export const checkinAppointment = withPermission(
+  'appointment:checkin',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [apptCtx] = await db
     .select({ clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
@@ -242,13 +241,13 @@ export async function checkinAppointment(appointmentId: string): Promise<{ succe
 
   revalidatePath('/appointments')
   return { success: true, message: '签到成功' }
-}
+  },
+)
 
 /** 取消预约 — WHERE status IN ('待确认', '已确认') + scope 校验 */
-export async function cancelAppointment(appointmentId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'appointment:confirm')
-
+export const cancelAppointment = withPermission(
+  'appointment:confirm',
+  async (session, appointmentId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [apptCtx] = await db
     .select({ status: appointments.status, clientName: appointments.clientName, appointmentTime: appointments.appointmentTime })
@@ -280,4 +279,5 @@ export async function cancelAppointment(appointmentId: string): Promise<{ succes
 
   revalidatePath('/appointments')
   return { success: true, message: '预约已取消' }
-}
+  },
+)

@@ -6,8 +6,8 @@ import { eq, and, sql, asc } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { alias } from 'drizzle-orm/pg-core'
 import type { Store } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isAdminScope } from '@/lib/permissions'
+import { scopeCondition, isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import type { AuthSession } from '@/lib/types'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
@@ -45,10 +45,7 @@ function rowToStore(row: {
   }
 }
 
-export async function getStores(): Promise<Store[]> {
-  const session = await getSession()
-  requirePermission(session, 'store:list')
-
+export const getStores = withPermission('store:list', async (session): Promise<Store[]> => {
   const rows = await db
     .select()
     .from(stores)
@@ -60,45 +57,47 @@ export async function getStores(): Promise<Store[]> {
     .limit(200)
 
   return rows.map(rowToStore)
-}
+})
 
-export async function getStoreById(storeId: string): Promise<Store | null> {
-  const session = await getSession()
-  requirePermission(session, 'store:list')
+export const getStoreById = withPermission(
+  'store:list',
+  async (session, storeId: string): Promise<Store | null> => {
+    const rows = await db
+      .select()
+      .from(stores)
+      .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
+      .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
+      .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
 
-  const rows = await db
-    .select()
-    .from(stores)
-    .leftJoin(storeNode, eq(stores.orgNodeId, storeNode.id))
-    .leftJoin(marketNode, eq(storeNode.parentId, marketNode.id))
-    .where(and(eq(stores.storeId, storeId), scopeCondition(session, stores.storeId)))
+    if (rows.length === 0) return null
+    return rowToStore(rows[0])
+  },
+)
 
-  if (rows.length === 0) return null
-  return rowToStore(rows[0])
-}
-
-export async function createStore(data: {
-  storeId: string
-  storeName: string
-  marketId: string  // 所属市场的 org_node id（必填）
-  openingDate?: string | null
-  bedCount?: number | null
-  isClosed?: boolean
-  coverImage?: string | null
-  images?: string[] | null
-  district?: string | null
-  streetAddress?: string | null
-  latitude?: string | null
-  longitude?: string | null
-  phone?: string | null
-  businessHours?: string | null
-  description?: string | null
-  announcement?: string | null
-  parkingInfo?: string | null
-}): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'store:create')
-
+export const createStore = withPermission(
+  'store:create',
+  async (
+    session,
+    data: {
+      storeId: string
+      storeName: string
+      marketId: string  // 所属市场的 org_node id（必填）
+      openingDate?: string | null
+      bedCount?: number | null
+      isClosed?: boolean
+      coverImage?: string | null
+      images?: string[] | null
+      district?: string | null
+      streetAddress?: string | null
+      latitude?: string | null
+      longitude?: string | null
+      phone?: string | null
+      businessHours?: string | null
+      description?: string | null
+      announcement?: string | null
+      parkingInfo?: string | null
+    },
+  ): Promise<{ success: boolean; message: string }> => {
   // scope 隔离：非 admin 只能在自己 scope 的市场下创建门店
   if (!isAdminScope(session)) {
     const scopeIds = new Set(session.roles.map((r: AuthSession['roles'][number]) => r.scopeId))
@@ -149,36 +148,37 @@ export async function createStore(data: {
   await logOperation(session, 'store.create', 'store', data.storeId, { storeName: data.storeName, orgNodeId })
   revalidatePath('/stores')
   return { success: true, message: '门店创建成功' }
-}
+  },
+)
 
-export async function updateStore(
-  storeId: string,
-  data: Partial<{
-    storeName: string
-    orgNodeId: string | null
-    openingDate: string | null
-    bedCount: number | null
-    isClosed: boolean
-    /** 闭店日期（YYYY-MM-DD）；与 isClosed 双写一致，由 action 自动维护 */
-    closedAt: string | null
-    coverImage: string | null
-    images: string[] | null
-    district: string | null
-    streetAddress: string | null
-    latitude: string | null
-    longitude: string | null
-    phone: string | null
-    businessHours: string | null
-    description: string | null
-    announcement: string | null
-    parkingInfo: string | null
-  }>,
-  /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'store:update')
-
+export const updateStore = withPermission(
+  'store:update',
+  async (
+    session,
+    storeId: string,
+    data: Partial<{
+      storeName: string
+      orgNodeId: string | null
+      openingDate: string | null
+      bedCount: number | null
+      isClosed: boolean
+      /** 闭店日期（YYYY-MM-DD）；与 isClosed 双写一致，由 action 自动维护 */
+      closedAt: string | null
+      coverImage: string | null
+      images: string[] | null
+      district: string | null
+      streetAddress: string | null
+      latitude: string | null
+      longitude: string | null
+      phone: string | null
+      businessHours: string | null
+      description: string | null
+      announcement: string | null
+      parkingInfo: string | null
+    }>,
+    /** 乐观锁：提交时携带的 updated_at，后端校验防止并发覆盖 */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 获取旧值用于日志 diff
   const [before] = await db.select().from(stores).where(eq(stores.storeId, storeId)).limit(1)
 
@@ -214,18 +214,22 @@ export async function updateStore(
   await logUpdate(session, 'store.update', 'store', storeId, before as Record<string, unknown>, data)
   revalidatePath('/stores')
   return { success: true, message: '门店信息已更新' }
-}
+  },
+)
 
 /** 根据门店 ID 获取同市场下所有门店 ID（含自身） */
-export async function getMarketStoreIds(storeId: string): Promise<string[]> {
-  const rows = await db.execute(sql`
-    SELECT s2.store_id
-    FROM stores s1
-    JOIN org_nodes sn1 ON s1.org_node_id = sn1.id
-    JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = '门店'
-    JOIN stores s2 ON s2.org_node_id = sn2.id
-    WHERE s1.store_id = ${storeId}
-  `)
-  const ids = (rows as any[]).map((r: any) => r.store_id as string)
-  return ids.length > 0 ? ids : [storeId]
-}
+export const getMarketStoreIds = withPermission(
+  'store:list',
+  async (_session, storeId: string): Promise<string[]> => {
+    const rows = await db.execute(sql`
+      SELECT s2.store_id
+      FROM stores s1
+      JOIN org_nodes sn1 ON s1.org_node_id = sn1.id
+      JOIN org_nodes sn2 ON sn2.parent_id = sn1.parent_id AND sn2.type = '门店'
+      JOIN stores s2 ON s2.org_node_id = sn2.id
+      WHERE s1.store_id = ${storeId}
+    `)
+    const ids = (rows as any[]).map((r: any) => r.store_id as string)
+    return ids.length > 0 ? ids : [storeId]
+  },
+)

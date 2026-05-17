@@ -7,8 +7,7 @@ import { orgNodes, stores } from '@db/org'
 import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { alias } from 'drizzle-orm/pg-core'
-import { getSession } from '@/lib/auth'
-import { requirePermission } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import type { OrgNode, BatchMessageCustomer } from '@/lib/types'
 
@@ -49,12 +48,12 @@ export interface PaginatedMessages {
  * messages 表无 store_id，不走 scope 过滤；该页面仅 admin 可见（管理员对全局消息做审计/清理）。
  * JOIN client_wechat_users / staff_wechat_users 用于展示接收人姓名。
  */
-export async function getMessagesPaginated(
-  filters: MessageFilters = {},
-): Promise<PaginatedMessages> {
-  const session = await getSession()
-  requirePermission(session, 'message:list')
-
+export const getMessagesPaginated = withPermission(
+  'message:list',
+  async (
+    _session,
+    filters: MessageFilters = {},
+  ): Promise<PaginatedMessages> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -148,15 +147,15 @@ export async function getMessagesPaginated(
     }),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
 /**
  * 获取所有 message_type 用于筛选下拉
  */
-export async function getMessageTypes(): Promise<string[]> {
-  const session = await getSession()
-  requirePermission(session, 'message:list')
-
+export const getMessageTypes = withPermission(
+  'message:list',
+  async (): Promise<string[]> => {
   const rows = await db
     .selectDistinct({ messageType: messages.messageType })
     .from(messages)
@@ -165,17 +164,18 @@ export async function getMessageTypes(): Promise<string[]> {
     .map((r) => r.messageType)
     .filter((t): t is string => t !== null && t !== '')
     .sort()
-}
+  },
+)
 
 /**
  * 删除单条消息（物理删除）
  */
-export async function deleteMessage(
-  id: number,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'message:delete')
-
+export const deleteMessage = withPermission(
+  'message:delete',
+  async (
+    session,
+    id: number,
+  ): Promise<{ success: boolean; message: string }> => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const result: any = await db.delete(messages).where(eq(messages.id, id))
 
@@ -188,7 +188,8 @@ export async function deleteMessage(
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/messages')
   return { success: true, message: '消息已删除' }
-}
+  },
+)
 
 // ----------------------------------------------------------------------------
 // 批量发送消息相关 Actions
@@ -284,41 +285,43 @@ async function buildBatchMessageCustomerWhere(filters: {
  * 组织树节点列表（批量发送消息筛选用）。
  * 权限走 message:send，避免依赖 org:list。
  */
-export async function getOrgNodesForBatchMessage(): Promise<OrgNode[]> {
-  const session = await getSession()
-  requirePermission(session, 'message:send')
-
-  const rows = await db
-    .select()
-    .from(orgNodes)
-    // 例外：sortOrder 手工排序权重
-    .orderBy(asc(orgNodes.sortOrder))
-  return rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    parentId: row.parentId,
-    sortOrder: row.sortOrder,
-    isActive: row.isActive,
-    createdAt: row.createdAt?.toISOString() ?? '',
-    updatedAt: row.updatedAt?.toISOString() ?? '',
-  }))
-}
+export const getOrgNodesForBatchMessage = withPermission(
+  'message:send',
+  async (): Promise<OrgNode[]> => {
+    const rows = await db
+      .select()
+      .from(orgNodes)
+      // 例外：sortOrder 手工排序权重
+      .orderBy(asc(orgNodes.sortOrder))
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      parentId: row.parentId,
+      sortOrder: row.sortOrder,
+      isActive: row.isActive,
+      createdAt: row.createdAt?.toISOString() ?? '',
+      updatedAt: row.updatedAt?.toISOString() ?? '',
+    }))
+  },
+)
 
 /**
  * 批量发送消息时的顾客分页列表。
  * 不要求顾客有手机号（消息中心按 userId 投递，与优惠券不同）。
  */
-export async function getCustomersForBatchMessage(filters: {
-  orgNodeId?: string
-  memberLevel?: string
-  search?: string
-  page?: number
-  pageSize?: number
-}): Promise<{ data: BatchMessageCustomer[]; total: number }> {
-  const session = await getSession()
-  requirePermission(session, 'message:send')
-
+export const getCustomersForBatchMessage = withPermission(
+  'message:send',
+  async (
+    _session,
+    filters: {
+      orgNodeId?: string
+      memberLevel?: string
+      search?: string
+      page?: number
+      pageSize?: number
+    },
+  ): Promise<{ data: BatchMessageCustomer[]; total: number }> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -364,7 +367,8 @@ export async function getCustomersForBatchMessage(filters: {
     })),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
 export interface BatchSendMessagesParams {
   title: string
@@ -389,12 +393,12 @@ export interface BatchSendMessagesParams {
  *
  * 消息仅允许 recipient_type='客户'（员工消息暂不支持批量发送）。
  */
-export async function batchSendMessages(
-  params: BatchSendMessagesParams,
-): Promise<{ success: boolean; message: string; count?: number }> {
-  const session = await getSession()
-  requirePermission(session, 'message:send')
-
+export const batchSendMessages = withPermission(
+  'message:send',
+  async (
+    session,
+    params: BatchSendMessagesParams,
+  ): Promise<{ success: boolean; message: string; count?: number }> => {
   // 1. 基础校验
   const title = params.title?.trim() ?? ''
   if (!title) {
@@ -490,4 +494,5 @@ export async function batchSendMessages(
     message: `已向 ${recipientIds.length} 位顾客发送消息`,
     count: recipientIds.length,
   }
-}
+  },
+)
