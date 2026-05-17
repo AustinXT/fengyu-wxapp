@@ -96,7 +96,8 @@ Page({
     // 走通用 checkout 享有员工选 / 储值卡 / 优惠券 / 多支付方式
     const params = [
       `skuId=${encodeURIComponent(sku.sku_id)}`,
-      `spuName=${encodeURIComponent(sku.product_name || sku.spec_name || '体验卡')}`,
+      // 文案兜底用通用占位"商品"，避免字面量散落（云函数后端不依赖此字段判定卡类）
+      `spuName=${encodeURIComponent(sku.product_name || sku.spec_name || '商品')}`,
       `quantity=1`,
     ].join('&');
     wx.navigateTo({ url: `/pagesOrder/checkout/checkout?${params}` });

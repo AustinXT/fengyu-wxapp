@@ -49,13 +49,13 @@
   "loopState": "PAUSED_FOR_USER_REVIEW",
   "pausedReason": "用户要求立即修复链路 3 暴露的 confirmAppointment bug；已修，等用户决定是否继续 Round 2",
   "link7": {
-    "saleOrderId": "FY-XSD-WX-2604260001",
+    "saleOrderId": "FY-XSD-WX-2605160002",
     "couponUsed": false,
     "couponDiscount": 0,
-    "ranAt": "2026-04-26T05:59:05.743Z"
+    "ranAt": "2026-05-16T15:34:38.695Z"
   },
   "link9": {
-    "saleOrderId": "FY-XSD-WX-2604260004",
+    "saleOrderId": "FY-XSD-WX-2605160003",
     "verdicts": [
       {
         "check": "neg_ratio_under_100_blocked",
@@ -79,25 +79,25 @@
       }
     ],
     "status": "PASS",
-    "ranAt": "2026-04-26T06:05:30.118Z"
+    "ranAt": "2026-05-16T15:35:52.058Z"
   },
   "link2": {
-    "serviceOrderId": "FY-FW-2604260001",
+    "serviceOrderId": "FY-FW-2605160002",
     "preSaleOrderId": null,
     "status": "PASS",
     "dbStatus": "已完成",
-    "dbStartedAt": "2026-04-26 06:26:36.927",
-    "dbCompletedAt": "2026-04-26 14:26:39.887534",
+    "dbStartedAt": "2026-05-16 15:37:49.219",
+    "dbCompletedAt": "2026-05-16 23:37:52.367798",
     "dbSessionSum": "1",
     "dbItemCount": "1",
     "dbCommissionsRows": "0",
     "cleaned": true,
-    "ranAt": "2026-04-26T06:26:46.592Z"
+    "ranAt": "2026-05-16T15:37:59.844Z"
   },
   "link11": {
     "link": 11,
     "status": "PASS",
-    "saleOrderId": "FY-XSD-WX-2604260002",
+    "saleOrderId": "FY-XSD-WX-2605160007",
     "verdicts": [
       {
         "check": "coupon_applied_in_order",
@@ -106,7 +106,7 @@
       },
       {
         "check": "db_three_way_consistency",
-        "actual": "已使用|FY-XSD-WX-2604260002|has_used_at|FY-FIX-COUPON-01|30.00|FY-FIX-CLIENT-01|30.00|PASS",
+        "actual": "已使用|FY-XSD-WX-2605160007|has_used_at|FY-FIX-COUPON-01|30.00|FY-FIX-CLIENT-01|30.00|PASS",
         "verdict": "PASS"
       },
       {
@@ -124,7 +124,7 @@
     "cleaned": true,
     "notes": "完整路径：UI 选券 → 提交 → 确认收款 → DB 三元一致性 PASS → 并发防重 UPDATE 0"
   },
-  "link4_originSaleOrderId": "FY-XSD-WX-2604260003",
+  "link4_originSaleOrderId": "FY-XSD-WX-2605170003",
   "link4_refundSaleOrderId": "FY-TKD-WX-2604260002",
   "link4": {
     "link": 4,
@@ -173,5 +173,10 @@
     ],
     "cleaned": true,
     "notes": "退款入口：订单详情页 /orders/<id> \"创建退款\"按钮 → Dialog 选明细 → 提交 → 状态\"待审批\"；审批页 /refunds/<id> 点\"审批通过\"→ AlertDialog 确认 → 状态变\"已支付\"；DB approved_by=FY-TEST-ADM；点数流水总额=0"
-  }
+  },
+  "link1": {
+    "saleOrderId": "FY-XSD-WX-2605160001",
+    "ranAt": "2026-05-16T15:33:31.951Z"
+  },
+  "link4_refundPaymentId": 75360
 }

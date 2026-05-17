@@ -1,7 +1,7 @@
 # Ticket: sale_allocations.allocationRatio 缺 IN-集合 CHECK + admin batchSaveServiceCommissions 信任前端金额
 
 > 生成日期：2026-04-27
-> 实施状态：🟢 代码层 + DB CHECK 均已部署（commission_rate CHECK 待脏数据清洗后补充）
+> 实施状态：🟢 代码层 + DB CHECK 均已部署（2026-05-17 commission_rate CHECK 经 migration 0024 补齐）
 > 严重级别：**P0**（业绩 ×10 倍资损 — SUMMARY Top10 #8）
 > 端：db / fengyu-admin / fengyu-staff
 > 来源：[SUMMARY §2 #8](../../docs/audit/SUMMARY.md) / P0-CC1-01 / P0-CC1-04 / P0-07-03
@@ -21,7 +21,7 @@
 | 2 | admin `batchSaveServiceCommissions` 信任前端 `commissionAmount` | `fengyu-admin/src/actions/service-commissions.ts` | ✅ 已修复 |
 | 3 | staff 前端将 `commissionRate` 混作 `allocationRatio` 提交 | `staff miniprogram/revenue-allocation.ts` | ✅ 已修复 |
 | 4 | `service_commissions.commission_amount` 无 CHECK | `db/schema/service-commission.ts` | ✅ Schema 已定义 |
-| 5 | `service_commissions.commission_rate` 无范围 CHECK | `db/schema/service-commission.ts` | 🟡 待脏数据清洗（59,966 行 rate>1） |
+| 5 | `service_commissions.commission_rate` 无范围 CHECK | `db/schema/service-commission.ts` | ✅ 2026-05-17 migration 0024 部署（脏数据已 0 行，CHECK 已生效） |
 
 ## 2 实施记录（2026-04-27）
 
@@ -31,9 +31,7 @@
 - `sale_allocations.chk_sale_alloc_ratio` — `allocation_ratio IN (0.10,...,1.00)`
 - `service_commissions.chk_svc_comm_alloc_ratio` — `allocation_ratio IS NULL OR IN (0.10,...,1.00)`
 - `service_commissions.chk_svc_comm_commission_amount` — `commission_amount >= 0`
-
-**未部署（阻塞中）**：
-- `service_commissions.chk_svc_comm_commission_rate` — 59,966 行 rate > 1.0（百分比误存，如 2.0 = 200%），需另案处理
+- `service_commissions.chk_svc_comm_commission_rate` — `commission_rate >= 0 AND <= 1`（2026-05-17 migration 0024 补齐）
 
 **数据清洗**：52,065 行 `sale_allocations` 脏数据已清洗并 COMMIT：
 - 单人池（20,748 行）→ ratio=1.00, total=received
@@ -80,7 +78,8 @@
 
 ## 3 待办
 
-- [ ] **commission_rate 脏数据清洗**：59,966 行 `service_commissions.commission_rate > 1.0`（百分比误存如 2.0=200%），清洗后补加 `chk_svc_comm_commission_rate` CHECK
+- [x] **commission_rate 脏数据清洗 + CHECK**：migration 0024 (`0024_cleanup_commission_rate.sql`) 已部署 5434。Plan B 全部归零（与新代码"矩阵无匹配置 0"一致），同时 ADD `chk_svc_comm_commission_rate`。2026-05-17 诊断 5434 脏数据已为 0，UPDATE 是 no-op；CHECK 验证违例 INSERT 被拒绝
+- [x] **schema vs snapshot drift 修复**：`db/schema/service-commission.ts:62` 取消 TODO 注释加回 check 调用；同时修复 `0023_snapshot.json` prevId 错误指向 0021 的历史 bug
 - [ ] **Phase 3 后续**：UI 增加独立"分配比例"下拉控件（10%~100% 整十档），当前仅有条件 badge
 - [ ] **测试**：admin batchSave 新增的服务端重算逻辑需单元测试覆盖
 
@@ -92,7 +91,7 @@
 - [x] `sale_allocations` 表有 `chk_sale_alloc_ratio` CHECK — 已部署
 - [x] `service_commissions` 表有 `chk_svc_comm_alloc_ratio` + `chk_svc_comm_commission_amount` — 已部署
 - [x] 52,065 行历史脏数据已清洗（2026-04-27 committed）
-- [ ] `service_commissions.commission_rate` BETWEEN 0 AND 1 CHECK（待脏数据清洗）
+- [x] `service_commissions.commission_rate` BETWEEN 0 AND 1 CHECK（2026-05-17 migration 0024 部署到 5434）
 - [ ] staff allocation 页面有独立"分配比例"下拉控件（Phase 3 后续）
 - [ ] 测试：覆盖服务端重算 + 合法/非法 allocationRatio 场景
 

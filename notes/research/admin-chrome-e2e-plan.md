@@ -494,13 +494,23 @@ DELETE FROM staff_wechat_users WHERE employee_id='FY-TEST-MOVE';
 
 ### 链路 6：会员升级权益（cron 触发）
 
+> **TODO（2026-05-17 修正）**：本链路的 Playwright spec 暂未编写。**经核实**：
+> `member_level_thresholds` 这个 config key 在代码里**从未存在**，4 个高等级阈值
+> （黑钻 ≥100000 / 金钻 ≥60000 / 粉钻 ≥30000 / 星钻 ≥10000）**硬编码**在
+> `fengyu-admin/src/cron/lib/member-level.ts:25-32`，不走 DB。
+> 仅初钻阈值（`new_member_threshold`，默认 1980）走 `system_configs` 配置，5433 已就绪。
+> 故 cron STEP 2 触发升级**不需要补 DB 配置**，可直接编 spec；当前 skip 仅因优先级排序，非缺前置。
+
 **角色**：FY-TEST-ADM（手动触发 cron）
 **涉及页面**：`/customers/[user_id]` → `/settings`（看权益规则）→ 客户端小程序"消息"页（可选）
 **关键约束**：cron `0 3 * * *` Asia/Shanghai 自动跑，本地用 `bun run cron:once` 手动触发；STEP 2 = `refresh-customer-status` 后续的 `refresh-member-levels`
 
 #### 前置
 - 1 个顾客年度消费额接近升级阈值（差几百元，可在 `client_wechat_users` 找已绑店且 member_level 不是顶级"黑钻"的）
-- `system_configs.config_key='member_level_benefits'` / `member_level_thresholds` 已配置（5434 库 0 行 → 跑 cron 前要先确认有配置或本测试 skip）
+- `system_configs.key='member_level_benefits'`（5 等级权益配置，5433 已就绪）
+- `system_configs.key='new_member_threshold'`（初钻阈值，默认 1980，5433 已就绪）
+- **不要写 `member_level_thresholds`**：4 个高等级阈值是硬编码常量（`src/cron/lib/member-level.ts:25-32`），非 DB 配置；若业务要配置化属另起需求
+- 注意：`system_configs` 主键列名是 `key`（不是 `config_key`），过去文档误写为 `config_key`，以 `\d system_configs` 为准
 
 #### 步骤
 1. `/customers/{user_id}` 查看当前 `member_level`（例如"星钻"）+ 当前年度消费额
@@ -834,28 +844,56 @@ GROUP BY si.session_count, si.remaining_sessions;"
 
 **用途**：跑完所有链路后，跑一次全库对账，确认没有污染遗留。CC 在每次 batch 测试结束时调用。
 
+> **Schema 注意（2026-05-03 后）**：`sale_orders.paid_amount` 列已被 DROP；款项侧权威源是
+> `sale_order_payments` 表。`sale_orders` 上保留 `received` / `refunded_amount` /
+> `prepaid_card_amount` / `payable_amount` 作为冗余快照（应用层同事务双写）。下列查询使用
+> `received - refunded_amount` 替代旧 `paid_amount`，并把支付分项检查改写为 JOIN
+> `sale_order_payments` 聚合。
+>
+> **历史数据噪声**：WorkFine 一次性导入的旧订单 `sale_order_payments` 含数据但
+> `sale_orders.received` 未回填，跑下面 1/2 两条会得到约 7.5 万 baseline `bad_rows`；
+> 调用方应以"测试前后 delta == 0"作为判定，而非要求绝对 `bad_rows=0`。
+
 ```bash
 eval $PSQL_TEST <<'SQL'
--- 1. 所有 sale_orders 金额方程
+-- 1. sale_orders 金额方程：total_amount = (received - refunded_amount) + payable_amount
+--    （paid_amount 列已 DROP；payable_amount 仍为冗余快照，由应用层双写。
+--     仅检查"应已完结"状态，避免待支付/草稿态噪声）
 SELECT 'sale_orders_money' AS check_name, count(*) AS bad_rows FROM (
   SELECT sale_order_id FROM sale_orders so
-  WHERE so.total_amount <> so.paid_amount + so.payable_amount + so.prepaid_card_amount
+  WHERE so.total_amount IS DISTINCT FROM
+        (so.received::numeric - so.refunded_amount::numeric) + so.payable_amount::numeric
+    AND so.sale_order_type IN ('销售单','转换单')
+    AND so.status IN ('已支付','已完成','部分支付')
 ) x;
 
--- 2. 所有支付流水累加 = paid_amount
+-- 2. sale_orders.received / refunded_amount / prepaid_card_amount 三个冗余快照
+--    必须等于 sale_order_payments 同方向聚合（权威源）：
+--      received        = SUM(amount FILTER change_type IN ('首次支付','回款','储值卡抵扣') AND status='已支付')
+--      prepaid_card    = SUM(amount FILTER change_type='储值卡抵扣'                AND status='已支付')
+--      refunded_amount = -SUM(amount FILTER change_type='退款'                      AND status='已支付')
 SELECT 'payments_sum' AS check_name, count(*) AS bad_rows FROM (
   SELECT so.sale_order_id FROM sale_orders so
   LEFT JOIN (
     SELECT sale_order_id,
-      sum(CASE WHEN change_type IN ('首次支付','回款','储值卡抵扣') THEN amount
-               WHEN change_type='退款' THEN amount ELSE 0 END) AS net
-    FROM sale_order_payments GROUP BY sale_order_id
+      COALESCE(SUM(amount) FILTER (
+        WHERE change_type IN ('首次支付','回款','储值卡抵扣') AND status='已支付'), 0) AS paid,
+      COALESCE(SUM(amount) FILTER (
+        WHERE change_type='储值卡抵扣' AND status='已支付'), 0) AS prepaid_card,
+      COALESCE(-SUM(amount) FILTER (
+        WHERE change_type='退款' AND status='已支付'), 0) AS refunded
+    FROM sale_order_payments
+    GROUP BY sale_order_id
   ) p ON p.sale_order_id = so.sale_order_id
-  WHERE so.paid_amount IS DISTINCT FROM COALESCE(p.net, 0)
-    AND so.sale_order_type='销售单'
+  WHERE so.sale_order_type='销售单'
+    AND (
+      so.received            IS DISTINCT FROM COALESCE(p.paid, 0)
+      OR so.prepaid_card_amount IS DISTINCT FROM COALESCE(p.prepaid_card, 0)
+      OR so.refunded_amount     IS DISTINCT FROM COALESCE(p.refunded, 0)
+    )
 ) x;
 
--- 3. 储值卡 balance ≡ 流水累加
+-- 3. 储值卡 balance ≡ 流水累加（schema 未变）
 SELECT 'cards_balance' AS check_name, count(*) AS bad_rows FROM (
   SELECT pc.card_id
   FROM prepaid_cards pc
@@ -867,7 +905,7 @@ SELECT 'cards_balance' AS check_name, count(*) AS bad_rows FROM (
     ELSE 0 END), 0)
 ) x;
 
--- 4. 服务次数对账
+-- 4. 服务次数对账（schema 未变）
 SELECT 'sessions_balance' AS check_name, count(*) AS bad_rows FROM (
   SELECT si.sale_item_id FROM sale_items si
   LEFT JOIN (SELECT sale_item_id, sum(session_used) AS used FROM service_items GROUP BY 1) u
@@ -876,7 +914,7 @@ SELECT 'sessions_balance' AS check_name, count(*) AS bad_rows FROM (
     AND si.session_count <> si.remaining_sessions + COALESCE(u.used, 0)
 ) x;
 
--- 5. 营业额分配 ratio_sum
+-- 5. 营业额分配 ratio_sum（schema 未变）
 SELECT 'allocation_ratio' AS check_name, count(*) AS bad_rows FROM (
   SELECT sa.sale_item_id, sum(sa.allocation_ratio) AS r
   FROM sale_allocations sa WHERE sa.is_void=false
@@ -885,7 +923,11 @@ SELECT 'allocation_ratio' AS check_name, count(*) AS bad_rows FROM (
 SQL
 ```
 
-每条 `bad_rows=0` = 全库一致；`>0` = 历史数据 / 测试遗留 / bug 致污染，需查证。
+每条检查的判定：
+- `cards_balance` / `sessions_balance` / `allocation_ratio`：`bad_rows=0` 即全库一致；`>0` 多半是测试遗留或 bug。
+- `sale_orders_money` / `payments_sum`：先在 batch 测试开始前跑一次取 baseline，结束时再跑取 after，
+  比对 `after - before == 0` 即为本轮无污染。绝对值 `bad_rows≈7.5 万` 是 WorkFine 历史导入遗留（详见上方
+  schema 注意框）。
 
 ---
 
