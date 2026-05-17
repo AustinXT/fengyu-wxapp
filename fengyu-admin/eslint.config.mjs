@@ -43,6 +43,32 @@ const config = [
     },
   },
   {
+    /**
+     * 禁止 `toISOString().slice(...)` 切片日期字符串 — 按 UTC 截断会跨午夜重号
+     * （audit-CC7 P0-CC7-01 根因之一；订单号 dateStr 漂移）。
+     *
+     * 推荐替代：
+     *   - SQL 侧：`to_char(NOW() AT TIME ZONE 'Asia/Shanghai', 'YYYYMMDD')`
+     *   - JS 侧：`dayjs.tz('Asia/Shanghai').format('YYYYMMDD')`
+     *   - PG 端 timezone 已锁 Asia/Shanghai（migration 0028）后，`NOW()::date` 也安全
+     *
+     * 当前用 'warn' 软着陆 — admin 现存 10 处命中需逐个评估（状态字段初始化等非订单号路径
+     * 可加 `// eslint-disable-next-line no-restricted-syntax` 局部豁免；订单号路径走 SQL 改造，
+     * 与 audit-CC7 P0-CC7-01 系列 ticket 一并清理）。
+     */
+    rules: {
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector:
+            "CallExpression[callee.type='MemberExpression'][callee.property.name='slice'][callee.object.type='CallExpression'][callee.object.callee.type='MemberExpression'][callee.object.callee.property.name='toISOString']",
+          message:
+            "禁止 `xxx.toISOString().slice(...)` 切片日期 —— 按 UTC 截断会跨午夜重号。改用 SQL 端 to_char(NOW() AT TIME ZONE 'Asia/Shanghai',...) 或 JS dayjs.tz('Asia/Shanghai').format(...)",
+        },
+      ],
+    },
+  },
+  {
     rules: {
       /**
        * Guard against the recurring foot-gun:

@@ -1477,9 +1477,14 @@ describe('order.close', () => {
     vi.clearAllMocks()
   })
 
+  // assertOrderInScope helper 调用 SELECT store_id FROM sale_orders（在 SELECT * 之前）
+  const mockScopeOk = (storeId = 'store-001') =>
+    pg.query.mockResolvedValueOnce([{ store_id: storeId }])
+
   test('店长可关闭待支付订单（C4: UPDATE WHERE 含 status 条件）', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
@@ -1514,6 +1519,7 @@ describe('order.close', () => {
   test('店长可关闭支付失败订单', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '支付失败',
@@ -1537,6 +1543,7 @@ describe('order.close', () => {
   test('店长不能关闭已支付订单', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '已支付',
@@ -1551,6 +1558,7 @@ describe('order.close', () => {
   test('开单人可取消自己的待支付订单', async () => {
     const ctx = createBeauticianCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
@@ -1574,6 +1582,7 @@ describe('order.close', () => {
   test('非开单人美容师不能关闭订单', async () => {
     const ctx = createBeauticianCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
@@ -1588,6 +1597,7 @@ describe('order.close', () => {
   test('并发竞态：close UPDATE rowCount=0 时报错', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
@@ -1614,14 +1624,15 @@ describe('order.close', () => {
 
   test('订单不存在时拒绝', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-NONEXIST' })
-    pg.query.mockResolvedValueOnce([])
+    pg.query.mockResolvedValueOnce([])  // assertOrderInScope 命中 0 行
     await expect(orderRoutes.close(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*不存在/)
+      .rejects.toThrow(/PERMISSION_DENIED.*订单不存在/)
   })
 
   test('关闭订单时作废分配并释放优惠券', async () => {
     const ctx = createManagerCtx({ saleOrderId: 'FY-001' })
 
+    mockScopeOk()
     pg.query.mockResolvedValueOnce([{
       sale_order_id: 'FY-001',
       status: '待支付',
@@ -3825,7 +3836,9 @@ describe('order.createConversion', () => {
     expect(ctx.result.status).toBe('待确认收款') // priceDiff>0 + 线下
 
     // 验证走的是单品分支：UPDATE 语句包含 picked_up_quantity = quantity，不含 remaining_sessions = 0
-    const updateCall = txQuery.mock.calls[6]
+    // 注：generateOrderNo 内 advisory lock + SELECT sale_order_id LIKE 占 [0..1]，业务调用 +1 偏移
+    const updateCall = txQuery.mock.calls.find(c => /picked_up_quantity = quantity/.test(c[0]))
+    expect(updateCall).toBeDefined()
     expect(updateCall[0]).toMatch(/picked_up_quantity = quantity/)
     expect(updateCall[0]).not.toMatch(/SET remaining_sessions = 0/)
     // 参数 $4 = 折抵数量（剩余 3）
