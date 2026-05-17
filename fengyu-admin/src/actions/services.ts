@@ -10,8 +10,8 @@ import { eq, desc, and, or, sql, ilike, gte, lte, isNotNull, notExists } from 'd
 import type { SQL } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import type { ServiceOrder } from '@/lib/types'
-import { getSession } from '@/lib/auth'
-import { requirePermission, scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
+import { scopeCondition, isInScope, isAdminScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 
@@ -42,10 +42,9 @@ function serializeServiceOrder(r: {
   }
 }
 
-export async function getServiceOrders(): Promise<ServiceOrder[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrders = withPermission(
+  'service:list',
+  async (session): Promise<ServiceOrder[]> => {
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -63,7 +62,8 @@ export async function getServiceOrders(): Promise<ServiceOrder[]> {
     .limit(500)
 
   return rows.map(serializeServiceOrder)
-}
+  },
+)
 
 /** 服务单列表筛选参数 */
 export interface ServiceOrderFilters {
@@ -88,10 +88,9 @@ export interface PaginatedServiceOrders {
  * 替代 getServiceOrders() 的客户端过滤模式。
  * 搜索支持：服务单号、顾客姓名、美容师姓名（跨表 ILIKE）。
  */
-export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrdersPaginated = withPermission(
+  'service:list',
+  async (session, filters: ServiceOrderFilters = {}): Promise<PaginatedServiceOrders> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -154,12 +153,12 @@ export async function getServiceOrdersPaginated(filters: ServiceOrderFilters = {
     .offset(offset)
 
   return { data: rows.map(serializeServiceOrder), total }
-}
+  },
+)
 
-export async function getServiceOrderById(serviceOrderId: string): Promise<ServiceOrder | null> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceOrderById = withPermission(
+  'service:list',
+  async (session, serviceOrderId: string): Promise<ServiceOrder | null> => {
   const rows = await db
     .select({
       service_order: serviceOrders,
@@ -176,7 +175,8 @@ export async function getServiceOrderById(serviceOrderId: string): Promise<Servi
 
   if (rows.length === 0) return null
   return serializeServiceOrder(rows[0])
-}
+  },
+)
 
 export interface ServiceItemDetail {
   serviceItemId: string
@@ -192,10 +192,9 @@ export interface ServiceItemDetail {
   sessionCount: number | null
 }
 
-export async function getServiceItems(serviceOrderId: string): Promise<ServiceItemDetail[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:list')
-
+export const getServiceItems = withPermission(
+  'service:list',
+  async (_session, serviceOrderId: string): Promise<ServiceItemDetail[]> => {
   const rows = await db.execute(sql`
     SELECT
       si.service_item_id,
@@ -228,7 +227,8 @@ export async function getServiceItems(serviceOrderId: string): Promise<ServiceIt
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
   }))
-}
+  },
+)
 
 /** 顾客可用服务项目（已支付订单中有剩余次数的疗程卡/单品） */
 export interface AvailableSaleItem {
@@ -243,10 +243,9 @@ export interface AvailableSaleItem {
   expireDate: string | null
 }
 
-export async function getAvailableSaleItems(clientUserId: string): Promise<AvailableSaleItem[]> {
-  const session = await getSession()
-  requirePermission(session, 'service:create')
-
+export const getAvailableSaleItems = withPermission(
+  'service:create',
+  async (_session, clientUserId: string): Promise<AvailableSaleItem[]> => {
   const rows = await db.execute(sql`
     SELECT
       si.sale_item_id,
@@ -281,13 +280,13 @@ export async function getAvailableSaleItems(clientUserId: string): Promise<Avail
     unitRealPrice: r.unit_real_price ?? '0',
     expireDate: r.expire_date,
   }))
-}
+  },
+)
 
 /** C4: 开始服务 — WHERE status = '待服务' */
-export async function startServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
-
+export const startServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [svcCtx] = await db
     .select({
@@ -326,16 +325,16 @@ export async function startServiceOrder(serviceOrderId: string): Promise<{ succe
 
   revalidatePath('/services')
   return { success: true, message: '服务已开始' }
-}
+  },
+)
 
 /**
  * C1+C4: 完成服务 — 原子扣减 remaining_sessions + 状态推进
  * scope 通过预检查实现：非 admin 先验证服务单归属，再执行原子 SQL
  */
-export async function completeServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
-
+export const completeServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志 + 非 admin scope 预检查
   const [svcCtx] = await db
     .select({
@@ -395,13 +394,13 @@ export async function completeServiceOrder(serviceOrderId: string): Promise<{ su
 
   revalidatePath('/services')
   return { success: true, message: '服务已完成' }
-}
+  },
+)
 
 /** C4: 取消服务 — WHERE status = '待服务'，不扣次数 */
-export async function cancelServiceOrder(serviceOrderId: string): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:update')
-
+export const cancelServiceOrder = withPermission(
+  'service:update',
+  async (session, serviceOrderId: string): Promise<{ success: boolean; message: string }> => {
   // 获取上下文用于日志
   const [svcCtx] = await db
     .select({ customerName: clientWechatUsers.name })
@@ -434,10 +433,15 @@ export async function cancelServiceOrder(serviceOrderId: string): Promise<{ succ
 
   revalidatePath('/services')
   return { success: true, message: '服务已取消' }
-}
+  },
+)
 
 /** 管理后台创建服务单 */
-export async function createServiceOrder(data: {
+export const createServiceOrder = withPermission(
+  'service:create',
+  async (
+    session,
+    data: {
   storeId: string
   marketName: string
   clientUserId: string
@@ -448,10 +452,8 @@ export async function createServiceOrder(data: {
     saleItemId: string
     sessionUsed: number
   }>
-}): Promise<{ success: boolean; message: string; serviceOrderId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'service:create')
-
+    },
+  ): Promise<{ success: boolean; message: string; serviceOrderId?: string }> => {
   // 校验 storeId 在用户 scope 内
   if (!isInScope(session, data.storeId)) {
     return { success: false, message: '无权在该门店创建服务单' }
@@ -580,4 +582,5 @@ export async function createServiceOrder(data: {
 
   revalidatePath('/services')
   return { success: true, message: '服务单创建成功', serviceOrderId }
-}
+  },
+)

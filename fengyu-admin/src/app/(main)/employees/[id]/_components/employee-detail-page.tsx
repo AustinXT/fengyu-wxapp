@@ -188,8 +188,14 @@ export default function EmployeeDetailPage({ employee, roles, stores, orgNodes, 
       } else {
         toast.error(res.message)
       }
-    } catch {
-      toast.error("密码重置失败，请稍后重试")
+    } catch (err) {
+      // withPermission HOF 在权限不足时 throw PERMISSION_DENIED:<action>，把它友好化为中文消息
+      const msg = err instanceof Error ? err.message : ''
+      if (msg.startsWith('PERMISSION_DENIED:')) {
+        toast.error('仅系统管理员可重置密码')
+      } else {
+        toast.error('密码重置失败，请稍后重试')
+      }
     } finally {
       setResettingPwd(false)
     }

@@ -10,6 +10,7 @@ import { permissionRoles } from '@db/permission'
 import { orgNodes } from '@db/org'
 import { eq } from 'drizzle-orm'
 import { computeActions, expandScopeStoreIds } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation } from '@/lib/operation-log'
 import type { AuthSession, RoleType } from '@/lib/types'
 
@@ -219,22 +220,17 @@ export async function getSessionFromCookie(): Promise<AuthSession | null> {
 
 /**
  * 管理员为其他员工重置密码（创建或覆盖 admin_passwords）
+ *
+ * 2026-05-17 PR-Z2 后续：原手写 `isAdmin` 旁路改走 admin:reset_password 权限 + withPermission HOF。
+ * session 入口统一从 getSession() 拿（lib/auth.ts 是 getSessionFromCookie 的 wrapper，行为等价）。
  */
-export async function resetEmployeePassword(
-  employeeId: string,
-  newPassword: string
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSessionFromCookie()
-  if (!session) {
-    return { success: false, message: '未登录' }
-  }
-
-  // 仅 admin 可重置他人密码
-  const isAdmin = session.roles.some(r => r.role === 'admin')
-  if (!isAdmin) {
-    return { success: false, message: '仅系统管理员可重置密码' }
-  }
-
+export const resetEmployeePassword = withPermission(
+  'admin:reset_password',
+  async (
+    session,
+    employeeId: string,
+    newPassword: string,
+  ): Promise<{ success: boolean; message: string }> => {
   const passwordHash = await hash(newPassword, 12)
 
   // UPSERT: 若无记录则创建，有则更新
@@ -263,24 +259,20 @@ export async function resetEmployeePassword(
   })
 
   return { success: true, message: '密码重置成功，用户首次登录需修改密码' }
-}
+  },
+)
 
 /**
  * 管理员将员工密码重置为初始密码（手机号后 6 位）
+ *
+ * 同 resetEmployeePassword：admin:reset_password 权限 + withPermission HOF。
  */
-export async function resetToDefaultPassword(
-  employeeId: string
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSessionFromCookie()
-  if (!session) {
-    return { success: false, message: '未登录' }
-  }
-
-  const isAdmin = session.roles.some(r => r.role === 'admin')
-  if (!isAdmin) {
-    return { success: false, message: '仅系统管理员可重置密码' }
-  }
-
+export const resetToDefaultPassword = withPermission(
+  'admin:reset_password',
+  async (
+    session,
+    employeeId: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 查询员工手机号
   const [staff] = await db
     .select({ phone: staffWechatUsers.phone })
@@ -321,7 +313,8 @@ export async function resetToDefaultPassword(
   })
 
   return { success: true, message: '已重置为初始密码（手机号后 6 位），首次登录需修改密码' }
-}
+  },
+)
 
 /**
  * 检查 mustChange 标记（middleware 用）

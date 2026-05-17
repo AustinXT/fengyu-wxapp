@@ -6,8 +6,9 @@ import { stores, orgNodes } from '@db/org'
 import { eq, and, or, desc, asc, inArray, sql, ilike, isNotNull, getTableColumns } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Customer, SaleOrder, SaleItem, Appointment } from '@/lib/types'
-import { getSession, hasRole } from '@/lib/auth'
-import { requirePermission, scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
+import { hasRole } from '@/lib/auth'
+import { scopeCondition, isAdminScope, isInScope } from '@/lib/permissions'
+import { withPermission } from '@/lib/with-permission'
 import { logOperation, logUpdate } from '@/lib/operation-log'
 
 // 标量子查询 — 替代 3 个 LEFT JOIN（stores → storeNode → marketNode）
@@ -69,10 +70,9 @@ function serializeCustomer(row: CustomerRow): Customer {
   }
 }
 
-export async function searchCustomerByPhone(phone: string): Promise<Customer | null> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const searchCustomerByPhone = withPermission(
+  'customer:list',
+  async (_session, phone: string): Promise<Customer | null> => {
   const rows = await db
     .select(customerColumns)
     .from(clientWechatUsers)
@@ -81,16 +81,16 @@ export async function searchCustomerByPhone(phone: string): Promise<Customer | n
 
   if (rows.length === 0) return null
   return serializeCustomer(rows[0])
-}
+  },
+)
 
 /**
  * 模糊搜索顾客 — 按姓名或手机号 ILIKE 匹配，返回最多 20 条结果。
  * 用于开单页面的顾客搜索。
  */
-export async function searchCustomers(keyword: string): Promise<Customer[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const searchCustomers = withPermission(
+  'customer:list',
+  async (session, keyword: string): Promise<Customer[]> => {
   const trimmed = keyword.trim()
   if (!trimmed) return []
 
@@ -113,12 +113,12 @@ export async function searchCustomers(keyword: string): Promise<Customer[]> {
     .limit(20)
 
   return rows.map(serializeCustomer)
-}
+  },
+)
 
-export async function getCustomers(): Promise<Customer[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomers = withPermission(
+  'customer:list',
+  async (session): Promise<Customer[]> => {
   // admin 不碰顾客数据（规范约束），但 scopeCondition 会返回 undefined（无过滤）
   // 非 admin 角色按 boundStoreId scope 过滤
   const rows = await db
@@ -130,7 +130,8 @@ export async function getCustomers(): Promise<Customer[]> {
     .limit(500)
 
   return rows.map(serializeCustomer)
-}
+  },
+)
 
 /** 顾客列表筛选参数 */
 export interface CustomerFilters {
@@ -159,10 +160,9 @@ export interface PaginatedCustomers {
  * scope 基于 boundStoreId（顾客归属门店）。
  * 搜索支持：姓名、手机号（ILIKE）。
  */
-export async function getCustomersPaginated(filters: CustomerFilters = {}): Promise<PaginatedCustomers> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomersPaginated = withPermission(
+  'customer:list',
+  async (session, filters: CustomerFilters = {}): Promise<PaginatedCustomers> => {
   const page = Math.max(1, filters.page || 1)
   const pageSize = [10, 20, 50].includes(filters.pageSize ?? 0) ? filters.pageSize! : 20
   const offset = (page - 1) * pageSize
@@ -227,12 +227,12 @@ export async function getCustomersPaginated(filters: CustomerFilters = {}): Prom
     data: rows.map(serializeCustomer),
     total: countRow?.count ?? 0,
   }
-}
+  },
+)
 
-export async function getCustomerById(userId: string): Promise<Customer | null> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomerById = withPermission(
+  'customer:list',
+  async (session, userId: string): Promise<Customer | null> => {
   // admin 纯角色不碰顾客数据（admin+manager 双角色可访问）
   const isAdminOnly = isAdminScope(session) && !hasRole(session, 'manager') && !hasRole(session, 'customer_mgr') && !hasRole(session, 'finance')
   if (isAdminOnly) return null
@@ -245,12 +245,12 @@ export async function getCustomerById(userId: string): Promise<Customer | null> 
 
   if (rows.length === 0) return null
   return serializeCustomer(rows[0])
-}
+  },
+)
 
-export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomerOrders = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<SaleOrder[]> => {
   const { saleOrders, saleItems } = await import('@db/order')
   const { stores } = await import('@db/org')
   const { staffWechatUsers } = await import('@db/user')
@@ -351,12 +351,12 @@ export async function getCustomerOrders(userId: string): Promise<SaleOrder[]> {
   }
 
   return orders
-}
+  },
+)
 
-export async function getCustomerAppointments(userId: string): Promise<Appointment[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomerAppointments = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<Appointment[]> => {
   const { appointments } = await import('@db/appointment')
   const { stores } = await import('@db/org')
   const { desc } = await import('drizzle-orm')
@@ -391,11 +391,15 @@ export async function getCustomerAppointments(userId: string): Promise<Appointme
       storeName: r.storeName ?? undefined,
     }
   })
-}
+  },
+)
 
-export async function updateCustomer(
-  userId: string,
-  data: Partial<{
+export const updateCustomer = withPermission(
+  'customer:update',
+  async (
+    session,
+    userId: string,
+    data: Partial<{
     name: string | null
     gender: string | null
     phone: string | null
@@ -413,13 +417,10 @@ export async function updateCustomer(
     promoterEmployeeId: string | null
     boundStoreId: string | null
     boundEmployeeId: string | null
-  }>,
-  /** 乐观锁：提交时携带的 updated_at */
-  expectedUpdatedAt?: string,
-): Promise<{ success: boolean; message: string }> {
-  const session = await getSession()
-  requirePermission(session, 'customer:update')
-
+    }>,
+    /** 乐观锁：提交时携带的 updated_at */
+    expectedUpdatedAt?: string,
+  ): Promise<{ success: boolean; message: string }> => {
   // 服务端输入校验
   if (data.phone !== undefined && data.phone !== null && !/^1\d{10}$/.test(data.phone)) {
     return { success: false, message: '手机号格式不正确（需为 11 位手机号）' }
@@ -471,17 +472,20 @@ export async function updateCustomer(
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
   return { success: true, message: '顾客信息已更新' }
-}
+  },
+)
 
-export async function createCustomer(data: {
+export const createCustomer = withPermission(
+  'customer:create',
+  async (
+    session,
+    data: {
   phone: string
   name: string
   boundStoreId?: string | null
   boundEmployeeId?: string | null
-}): Promise<{ success: boolean; message: string; userId?: string }> {
-  const session = await getSession()
-  requirePermission(session, 'customer:create')
-
+    },
+  ): Promise<{ success: boolean; message: string; userId?: string }> => {
   // 服务端输入校验
   if (!data.name?.trim()) {
     return { success: false, message: '姓名不能为空' }
@@ -543,7 +547,8 @@ export async function createCustomer(data: {
   const { revalidatePath } = await import('next/cache')
   revalidatePath('/customers')
   return { success: true, message: '顾客创建成功', userId }
-}
+  },
+)
 
 /* ============================================================
  * P1 — 手机号变更日志（顾客详情 Tab，只读）
@@ -574,10 +579,9 @@ export interface PhoneChangeLog {
  *      detail 形如 { _v: 2, _t: 'update', changes: { phone: { from, to }, ... } }
  *      仅 changes.phone 存在的记录被纳入
  */
-export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneChangeLog[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getCustomerPhoneChangeLogs = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<PhoneChangeLog[]> => {
   const { operationLogs } = await import('@db/operation-log')
 
   // scope 保护：非 admin 需确认顾客在其 scope 内（复用 getCustomerById 的 scope 过滤）
@@ -651,7 +655,8 @@ export async function getCustomerPhoneChangeLogs(userId: string): Promise<PhoneC
       operatorName: r.operatorEmployeeId ? (r.operatorName ?? null) : null,
     }
   })
-}
+  },
+)
 
 /* ============================================================
  * P1 — 顾客合并工具（孤儿档案认领）
@@ -675,10 +680,9 @@ export interface OrphanProfile {
  *
  * 用于顾客详情页展示"合并历史档案"入口。
  */
-export async function getOrphanProfilesByUserId(userId: string): Promise<OrphanProfile[]> {
-  const session = await getSession()
-  requirePermission(session, 'customer:list')
-
+export const getOrphanProfilesByUserId = withPermission(
+  'customer:list',
+  async (_session, userId: string): Promise<OrphanProfile[]> => {
   // 先拿到当前行（受 scope 限制）
   const current = await getCustomerById(userId)
   if (!current || !current.phone) return []
@@ -719,7 +723,8 @@ export async function getOrphanProfilesByUserId(userId: string): Promise<OrphanP
     notes: r.notes,
     createdAt: r.createdAt.toISOString(),
   }))
-}
+  },
+)
 
 /**
  * 合并客户档案（孤儿行 → 活跃行）
@@ -737,13 +742,13 @@ export async function getOrphanProfilesByUserId(userId: string): Promise<OrphanP
  *   3. DELETE 孤儿行
  *   4. 审计日志 admin.mergeClientProfile
  */
-export async function mergeClientProfile(
-  sourceUserId: string,
-  orphanUserId: string,
-): Promise<{ success: boolean; message: string; fieldsMigrated?: string[]; ordersReassigned?: number }> {
-  const session = await getSession()
-  requirePermission(session, 'customer:update')
-
+export const mergeClientProfile = withPermission(
+  'customer:update',
+  async (
+    session,
+    sourceUserId: string,
+    orphanUserId: string,
+  ): Promise<{ success: boolean; message: string; fieldsMigrated?: string[]; ordersReassigned?: number }> => {
   // 仅店长 / admin 允许合并
   if (!hasRole(session, 'manager') && !isAdminScope(session)) {
     return { success: false, message: '仅店长或管理员可执行顾客合并' }
@@ -857,4 +862,5 @@ export async function mergeClientProfile(
   revalidatePath(`/customers/${sourceUserId}`)
 
   return { success: true, message: `已合并 ${fieldsMigrated.length} 个字段，${ordersReassigned} 笔订单归属已更新`, fieldsMigrated, ordersReassigned }
-}
+  },
+)

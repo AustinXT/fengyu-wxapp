@@ -102,7 +102,8 @@ export const searchEmployees = withPermission(
     .limit(20)
 
   return rows
-}
+  },
+)
 
 /** 员工列表筛选参数 */
 export interface EmployeeFilters {
@@ -488,4 +489,5 @@ export const updateEmployee = withPermission(
   revalidatePath('/employees')
   revalidatePath('/permissions')
   return { success: true, message: '员工信息已更新' }
-}
+  },
+)

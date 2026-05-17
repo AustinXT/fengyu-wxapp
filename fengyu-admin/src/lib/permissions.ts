@@ -31,6 +31,8 @@ export const PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'message:list', 'message:delete', 'message:send',
     'system:config',
+    // 重置员工密码（admin 专属，取代原 isAdmin 旁路）
+    'admin:reset_password',
     // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
     // admin 既可发起退款，也可审批（与 manager 并列为审批角色，manager 缺位时救场）
     'sale_order:refund_create', 'sale_order:refund_approve',
