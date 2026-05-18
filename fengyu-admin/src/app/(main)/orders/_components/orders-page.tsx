@@ -284,9 +284,14 @@ export default function OrdersPageClient({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">订单管理</h1>
-        <Link href="/orders/create">
-          <Button>新建订单</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/orders/create-deposit">
+            <Button variant="outline">开寄存单</Button>
+          </Link>
+          <Link href="/orders/create">
+            <Button>新建订单</Button>
+          </Link>
+        </div>
       </div>
 
       {/* Filters — URL-driven, 触发服务端重新查询 */}
