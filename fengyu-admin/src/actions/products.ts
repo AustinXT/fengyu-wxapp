@@ -336,6 +336,69 @@ export const createCategory = withPermission(
   },
 )
 
+/**
+ * 硬删除品项分类（决策 D11=A：未引用允许硬删，否则提示停用）。
+ *
+ * 校验顺序：
+ *   1. SKU 引用（product_skus.category_id 含软删）→ 拒绝
+ *   2. 优惠券引用（coupon_templates.applicable_category_ids @> categoryId）→ 拒绝
+ *   3. CAS 守卫：UPDATED_AT 匹配才允许 DELETE
+ *
+ * 复用 product:update 权限（与 deleteSku / deleteMallCategory / deleteProduct 一致）。
+ */
+export const deleteCategory = withPermission(
+  'product:update',
+  async (
+    session,
+    categoryId: string,
+    expectedUpdatedAt: string,
+  ): Promise<{ success: boolean; message: string }> => {
+    // 1. 校验：无 SKU 引用（含软删的 SKU 也算引用，避免误删历史）
+    const [skuRef] = await db
+      .select({ c: sql<number>`count(*)::int` })
+      .from(productSkus)
+      .where(eq(productSkus.categoryId, categoryId))
+    if (skuRef && skuRef.c > 0) {
+      return {
+        success: false,
+        message: `INVALID_STATE: REFERENCE_EXISTS: 该分类下还有 ${skuRef.c} 个 SKU，无法删除；请先停用`,
+      }
+    }
+
+    // 2. 校验：无 coupon_templates.applicable_category_ids 引用
+    const couponRefRes: any = await db.execute(sql`
+      SELECT COUNT(*)::int AS c FROM coupon_templates
+      WHERE ${categoryId} = ANY(applicable_category_ids)
+    `)
+    const couponRefRow = Array.isArray(couponRefRes)
+      ? couponRefRes[0]
+      : couponRefRes?.rows?.[0]
+    const couponRefCount = Number(couponRefRow?.c ?? 0)
+    if (couponRefCount > 0) {
+      return {
+        success: false,
+        message: `INVALID_STATE: REFERENCE_EXISTS: 该分类被 ${couponRefCount} 张优惠券引用，无法删除；请先停用`,
+      }
+    }
+
+    // 3. 真删（CAS 守卫）
+    const result: any = await db
+      .delete(productCategories)
+      .where(and(
+        eq(productCategories.categoryId, categoryId),
+        sql`date_trunc('milliseconds', ${productCategories.updatedAt}) = ${expectedUpdatedAt}`,
+      ))
+
+    if ((result?.count ?? 0) === 0) {
+      return { success: false, message: 'CONFLICT: 分类已被其他人修改或已不存在，请刷新' }
+    }
+
+    await logOperation(session, 'category.delete', 'product_category', categoryId, {})
+    revalidatePath('/products')
+    return { success: true, message: '分类已删除' }
+  },
+)
+
 export const updateCategory = withPermission(
   'product:update',
   async (

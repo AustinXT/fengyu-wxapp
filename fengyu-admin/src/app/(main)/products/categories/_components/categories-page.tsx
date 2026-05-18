@@ -20,7 +20,7 @@ import {
   AlertDialogCancel,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
-import { createCategory, updateCategory } from "@/actions/products"
+import { createCategory, updateCategory, deleteCategory } from "@/actions/products"
 import ProductKindManagementDialog from "./product-kind-management-dialog"
 
 type SalesCategory = '自销自耗' | '他销自耗' | '他销他耗' | '生态合作'
@@ -69,6 +69,13 @@ export default function CategoriesPageClient({
   const [disableTarget, setDisableTarget] = useState<ProductCategory | null>(null)
   const [disabling, setDisabling] = useState(false)
 
+  // AlertDialog state for delete confirmation（仅已停用行显示删除按钮）
+  const [deleteTarget, setDeleteTarget] = useState<ProductCategory | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
+  // 列表筛选：是否包含已停用（默认仅展示启用）
+  const [includeDisabled, setIncludeDisabled] = useState(false)
+
   // 品项一级分类管理 dialog
   const [kindDialogOpen, setKindDialogOpen] = useState(false)
 
@@ -77,10 +84,11 @@ export default function CategoriesPageClient({
     for (const kind of activeKinds) {
       map[kind.categoryName] = categories
         .filter((c) => c.productKind === kind.categoryName)
+        .filter((c) => includeDisabled || c.isValid)
         .sort((a, b) => a.sortOrder - b.sortOrder)
     }
     return map
-  }, [categories, activeKinds])
+  }, [categories, activeKinds, includeDisabled])
 
   const openAddDialog = () => {
     setEditingCategory(null)
@@ -172,6 +180,27 @@ export default function CategoriesPageClient({
     }
   }
 
+  const handleDelete = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try {
+      const deleteResult = await deleteCategory(deleteTarget.categoryId, deleteTarget.updatedAt)
+      if (!deleteResult.success) {
+        toast.error(deleteResult.message)
+        if (deleteResult.message.includes("CONFLICT")) router.refresh()
+        return
+      }
+      toast.success("二级分类已删除")
+      setDeleteTarget(null)
+      router.refresh()
+    } catch (err) {
+      toast.error("删除失败")
+      console.error(err)
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   const columns: Column<ProductCategory>[] = [
     {
       key: "categoryName",
@@ -211,14 +240,25 @@ export default function CategoriesPageClient({
           <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openEditDialog(row)}>
             编辑
           </Button>
-          <Button
-            variant="link"
-            size="sm"
-            className="h-auto p-0 text-[var(--destructive)]"
-            onClick={() => setDisableTarget(row)}
-          >
-            停用
-          </Button>
+          {row.isValid ? (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDisableTarget(row)}
+            >
+              停用
+            </Button>
+          ) : (
+            <Button
+              variant="link"
+              size="sm"
+              className="h-auto p-0 text-[var(--destructive)]"
+              onClick={() => setDeleteTarget(row)}
+            >
+              删除
+            </Button>
+          )}
         </div>
       ),
     },
@@ -233,7 +273,16 @@ export default function CategoriesPageClient({
           </Button>
           <h1 className="text-2xl font-bold text-[var(--foreground)]">品项分类</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={includeDisabled}
+              onChange={(e) => setIncludeDisabled(e.target.checked)}
+              className="h-4 w-4 rounded border-[var(--input)]"
+            />
+            <span>包含已停用</span>
+          </label>
           <Button variant="outline" onClick={() => setKindDialogOpen(true)}>品项一级分类管理</Button>
           <Button onClick={openAddDialog}>新增二级分类</Button>
         </div>
@@ -344,6 +393,22 @@ export default function CategoriesPageClient({
           </AlertDialogCancel>
           <AlertDialogAction onClick={handleDisable} disabled={disabling}>
             {disabling ? "停用中..." : "确认停用"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialog>
+
+      {/* Delete Confirmation（仅已停用行可触发） */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogTitle>确认删除</AlertDialogTitle>
+        <AlertDialogDescription>
+          确定要删除分类「{deleteTarget?.categoryName}」吗？此操作不可恢复。若该分类被 SKU 或优惠券引用将自动拒绝。
+        </AlertDialogDescription>
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={() => setDeleteTarget(null)} disabled={deleting}>
+            取消
+          </AlertDialogCancel>
+          <AlertDialogAction onClick={handleDelete} disabled={deleting}>
+            {deleting ? "删除中..." : "确认删除"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialog>

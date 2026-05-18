@@ -10,6 +10,7 @@ vi.mock('@/db', () => ({
     update: vi.fn(),
     delete: vi.fn(),
     transaction: vi.fn(),
+    execute: vi.fn(),
   },
 }))
 
@@ -109,6 +110,7 @@ import {
   updateProduct,
   createCategory,
   updateCategory,
+  deleteCategory,
   updateProductKind,
   createSku,
   updateSku,
@@ -325,6 +327,68 @@ describe('updateCategory — rowCount=0 静默成功修复', () => {
     expect(result.success).toBe(false)
     expect(result.message).toContain('品项一级分类不存在或已停用')
     expect(db.update).not.toHaveBeenCalled()
+  })
+
+  it('updateCategory({isValid: false}) → 成功（停用路径走 update 而非 delete）', async () => {
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    const set = vi.fn().mockReturnValue({ where })
+    ;(db.update as any).mockReturnValue({ set })
+    const result = await updateCategory('CAT-1', { isValid: false }, '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(true)
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ isValid: false }))
+  })
+})
+
+// ── deleteCategory ────────────────────────────────────────────────────────────
+
+describe('deleteCategory — 引用校验 + 硬删', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+  })
+
+  it('有 SKU 引用 → 拒绝删除，提示 REFERENCE_EXISTS', async () => {
+    // 第 1 次 select: SKU 引用计数（>0）
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 3 }]))
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_STATE: REFERENCE_EXISTS')
+    expect(result.message).toContain('3 个 SKU')
+    expect(db.execute).not.toHaveBeenCalled()
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('有优惠券引用 → 拒绝删除，提示 REFERENCE_EXISTS', async () => {
+    // 第 1 次 select: SKU 引用计数（0）
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    // 第 2 次：db.execute 返回优惠券引用计数（drizzle 返回 array-like {rows: [...]} 或 array）
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 2 }] })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('INVALID_STATE: REFERENCE_EXISTS')
+    expect(result.message).toContain('2 张优惠券')
+    expect(db.delete).not.toHaveBeenCalled()
+  })
+
+  it('无引用 + CAS 命中 → 删除成功', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 0 }] })
+    const where = vi.fn().mockResolvedValue({ count: 1 })
+    ;(db.delete as any).mockReturnValue({ where })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('分类已删除')
+    expect(db.delete).toHaveBeenCalledTimes(1)
+  })
+
+  it('CAS 未命中（被改） → CONFLICT 提示', async () => {
+    ;(db.select as any).mockImplementation(makeSelectChain([{ c: 0 }]))
+    ;(db.execute as any).mockResolvedValue({ rows: [{ c: 0 }] })
+    const where = vi.fn().mockResolvedValue({ count: 0 })
+    ;(db.delete as any).mockReturnValue({ where })
+    const result = await deleteCategory('CAT-1', '2026-05-18T00:00:00.000Z')
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('CONFLICT')
   })
 })
 
