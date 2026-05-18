@@ -87,9 +87,12 @@ App<IAppOption>({
 
   async syncLoginState() {
     try {
+      const payload: Record<string, any> = {};
+      const devOpenid = wx.getStorageSync('__devTestOpenid');
+      if (devOpenid) payload._testOpenid = devOpenid;
       const res = await wx.cloud.callFunction({
         name: 'staffApi',
-        data: { action: 'auth.login', payload: {} }
+        data: { action: 'auth.login', payload }
       }) as any;
       if (res.result?.code === 0 && res.result.data) {
         const {
@@ -210,5 +213,29 @@ App<IAppOption>({
     (this.globalData as any).pendingCartItem = null;
     (this.globalData as any)._serviceCreatePreload = null;
     wx.clearStorageSync();
+  },
+
+  async switchTestUser(openid, phone) {
+    if (openid) {
+      if (!phone) {
+        console.error('[switchTestUser] phone 必填：dev openid 需绑定到员工 phone');
+        return;
+      }
+      const res: any = await wx.cloud.callFunction({
+        name: 'staffApi',
+        data: {
+          action: 'auth.bindPhone',
+          payload: { _testOpenid: openid, phoneNumber: phone },
+        },
+      });
+      if (res.result?.code !== 0) {
+        console.error('[switchTestUser] bind 失败:', res.result);
+        return;
+      }
+      console.log('[switchTestUser] bound:', res.result.data?.staffName || '(无姓名)', '<-', phone);
+    }
+    this.resetStaffInfo();
+    if (openid) wx.setStorageSync('__devTestOpenid', openid);
+    wx.reLaunch({ url: '/pages/login/login' });
   },
 });

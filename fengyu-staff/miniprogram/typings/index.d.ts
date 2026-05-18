@@ -78,5 +78,6 @@ interface IAppOption {
   resetStaffInfo(): void;
   restoreFromCache(): void;
   syncLoginState(): Promise<void>;
+  switchTestUser(openid: string | null, phone?: string): Promise<void>;
   _loginReady: Promise<void>;
 }
