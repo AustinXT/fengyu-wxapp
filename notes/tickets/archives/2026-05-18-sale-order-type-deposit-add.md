@@ -306,3 +306,36 @@ if (saleOrderType === '寄存单') {
 | 关联 feedback | `notes/memory/feedback_no_shared_cloudfunctions.md`（snapshot 守护）/ `notes/memory/feedback_no_legacy_compat.md`（开发期直接扩枚举）|
 | 关联 skill | `wx-change-propagation`（结构性变更 L0-L10 传播图，本 ticket 严格按此执行）|
 | 关联 spec | 实施后需更新 `.42cog/pm/backend.pr.spec.md` + `admin.pr.spec.md` + `staff.pr.spec.md` |
+
+---
+
+## 完成记录
+
+- **完成日期**：2026-05-18
+- **完成 commit**：
+  - `fae6cea` feat(db): legacy_orders + 寄存单 双特性 schema 迁移（0037+0038）— migration 0038 + saleOrderTypeEnum 加 '寄存单'
+  - `3ffef69` feat(deposit-order): B5 寄存单全链路（admin/staff/小程序 createDeposit）— 14 文件 / 892 行
+  - `7a35e83` feat(admin/deposit-order): 寄存单 admin 入口 + 独立创建页 — 3 文件 / 391 行
+- **实际落地清单**（合计 17 文件）：
+  - **db schema**：`db/schema/enums.ts` + `db/migrations/0038_steady_jazinda.sql`
+  - **staff 云函数**：`staffApi/routes/order.js` 新增 `createDeposit`（226 行，独立 action，参考 createConversion/createPickup 范式；非 order.create 分支）
+  - **staff 小程序**：`pages/order-create/order-create.{ts,wxml,wxss}` 4 选 1 单据类型 + 独立 `_submitDeposit` 流程（无付款码）
+  - **admin actions**：`actions/orders.ts` 新增 `createDepositOrder`（227 行，与 staff 端镜像）
+  - **admin UI**：`/orders/create-deposit/page.tsx` + `_components/deposit-order-create-page.tsx`（368 行，与 /orders/create 解耦：仅 `getProductsByKind('__normal__')`）
+  - **admin 列表/详情**：`orders/_components/orders-page.tsx` grey badge + `order-detail-page.tsx` 顶部 banner "不计营业额/提成/客单价"
+  - **统计 SQL**：
+    - 持卡人数 `mgmt-product.cardHolders`：IN list **加** '寄存单'（次数维度纳入）
+    - 赠送记录 `giftHistory`（staff/admin 两端）：NOT IN **加** '寄存单'
+    - 金额维度（营业额/提成/客单价/dashboard）：天然由 `IN ('销售单','转换单')` 排除 → 不动
+  - **测试**：`staffApi/__tests__/routes/mgmt-product.test.js` 形态守卫同步更新
+  - **spec**：`.42cog/pm/backend.pr.spec.md` §2.8 四种销售单据模型 + INVALID_STATE 错误码
+- **DoD 偏差**：
+  - [x] PR-1 enum 在 5434 落地（migration 0038）
+  - [x] PR-2 staff/admin createDeposit 全链路（独立 action 范式，**未**走 order.create 分支）
+  - [x] PR-3 mgmt 统计 SQL 全量加过滤（金额排除 / 次数 cardHolders 纳入）
+  - [x] PR-4 admin /orders 列表筛选 + 创建入口
+  - [x] PR-5 dashboard 不受寄存单污染（cross-end snapshot 测试通过）
+- **决策应用**：D4=A（实际 admin 也独立 `/orders/create-deposit` 入口，比 ticket 设计更明确）/ D5=A（不生成 sale_allocations）
+- **架构亮点**：未走"在 order.create 加分支"的捷径，而是新建独立 `createDeposit` / `createDepositOrder` action，符合现有 `createConversion`/`createPickup`/`createRefund` 范式
+- **关联归档**：同批 `2026-05-18-workfine-legacy-orders-unaudited-flow.md` / `2026-05-18-treatment-card-listing-filter-audit.md`
+- **关联 memory**：`project_deposit_sale_order_type.md`

@@ -286,3 +286,32 @@ WHERE legacy_source='workfine'
 | 关联 cron | `fengyu-admin/src/cron/steps/refresh-customer-status.ts` + `refresh-member-levels.ts`（重算逻辑复用）|
 | 关联 ticket | 同批 `2026-05-18-deposit-sale-order-type.md`（寄存单是另一类初始化订单，与本 ticket 互补）|
 | 关联 spec | 实施后需更新 `.42cog/pm/backend.pr.spec.md` §legacy_orders + `admin.pr.spec.md` 新 AC |
+
+---
+
+## 完成记录
+
+- **完成日期**：2026-05-18
+- **完成 commit**：
+  - `fae6cea` feat(db): legacy_orders + 寄存单 双特性 schema 迁移（0037+0038）— 含 migration 0037 + sale_orders 5 列 + orderStatusEnum 加 '未审核'/'已作废' + 双 partial 索引
+  - `d69fe77` feat(legacy-orders): WorkFine 历史订单"未审核+顾客触发核对"工作流 — 17 文件 / 1866 行
+- **实际落地清单**（合计 17 文件）：
+  - **db schema**：`db/schema/enums.ts` / `db/schema/order.ts` / `db/migrations/0037_careful_maximus.sql` + meta
+  - **抓取脚本**：`db/scripts/import-workfine-legacy.js`（338 行，4 字段最小化）；旧 `migrate-history-orders.js` 加 @deprecated
+  - **admin 管理页**：`fengyu-admin/src/app/(main)/legacy-orders/page.tsx` + `_components/legacy-orders-page.tsx`（440 行）
+  - **admin actions**：`fengyu-admin/src/actions/legacy-orders.ts`（341 行，4 个 Server Actions：list / approve / reject / updatePhone）
+  - **admin lib**：`recompute-customer-tags.ts`（319 行，4 段重算 helper）+ `permissions.ts`（4 个新 key）+ `menu.ts`（侧栏入口）
+  - **dashboard 修补**：`actions/dashboard.ts` today_opened_customers 排除 '未审核'/'已作废'
+  - **staff 云函数**：`staffApi/routes/customer.js` detail 返回 legacyOrderCount（顺手补 giftHistory 寄存单排除）
+  - **staff 小程序**：`miniprogram/packageCustomer/customer-detail/` 加橙色 badge "X 条待核对"
+  - **client 云函数**：`clientApi/routes/auth.js` bindPhone 自动回填 client_user_id + 日志
+  - **测试**：`recalc-customer-type-sql.test.js` 新增 4 端 SQL snapshot 对比
+- **DoD 偏差**：
+  - [x] PR-1 schema 落地（0037）
+  - [x] PR-2 抓取脚本（待用户实跑 `--dry-run`）
+  - [x] PR-3 admin 未审核订单页
+  - [x] PR-4 触发核对 hook
+  - [⚠️] 手动 smoke：实际 WorkFine 抓取尚未运行；admin /legacy-orders dev 服务器手动验证 + L3 e2e 待用户启动
+- **决策应用**：D1=A（2020-01-01 时间窗）/ D2=A（status=已支付）/ D3=A（38 处 SQL 加排除）
+- **关联归档**：同批 `2026-05-18-sale-order-type-deposit-add.md` / `2026-05-18-treatment-card-listing-filter-audit.md`
+- **关联 memory**：`project_legacy_orders_workflow.md`

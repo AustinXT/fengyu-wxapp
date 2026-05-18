@@ -217,6 +217,16 @@ goInventory() {
 
 **依赖关系**：FU-1 → FU-2 → FU-3 → FU-4 → FU-5（串行；FU-3 是 FU-4/5 的硬阻塞，未与用户确认前不得动写入路径）。
 
+---
+
+## 实施路径修正（2026-05-18）
+
+**ticket 原始路径有误**：本 ticket 写的是 `fengyu-staff/miniprogram/pages/my/my.{ts,wxml}`，但实际 staff 我的页是 **`fengyu-staff/miniprogram/pages/profile/profile.{ts,wxml,wxss,json}`**（grep 确认）。
+
+实施时所有 `pages/my/my.*` 路径替换为 `pages/profile/profile.*`。占位页路径保持 `packageMy/inventory/inventory.*`（业务包名不变），或改为 `packageMy/profile-inventory/` 视分包配置而定。
+
+**决策应用**：D12=A（manager / admin / finance 三角色可见）
+
 ### 后续 spec 更新
 
 完整功能开发时（FU-4/5 阶段）需要：

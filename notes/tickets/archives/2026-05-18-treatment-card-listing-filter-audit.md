@@ -155,3 +155,20 @@ WHERE si.sale_order_id = so.sale_order_id
 | 关联 ticket | `archives/2026-04-23-prepaid-card-deduction-by-store.md`（store_id 引入）/ `archives/2026-04-26-sale-order-domain-refactor.md` |
 | 关联代码 | `fengyu-admin/src/actions/cards.ts:78-180` / `fengyu-staff/cloudfunctions/staffApi/routes/customer.js:950+` |
 | 后续 | 若 §2-C 命中，需开 follow-up ticket 调整 scope 矩阵 |
+
+---
+
+## 完成记录
+
+- **完成日期**：2026-05-18
+- **完成 commit**：`a982e99` feat(audit): 疗程卡列表缺卡 P1 普查脚本 + smoke 防回归
+- **实际落地清单**：
+  - `db/scripts/audit-treatment-card-listing.js`（215 行）— 5 个 read-only 普查 SQL（H1 product_type / H2 item_direction / H3 remaining_sessions / X1 /cards vs 转换单候选差集 / X2 store 维度分布）
+  - `fengyu-admin/tests/e2e-actions/smoke-cards-listing-filter.{mjs,impl.mjs}` — 防回归 smoke（spawn 子进程 + mock 注入）
+- **DoD 偏差**：
+  - [x] §2 Step 1 4 个普查 SQL 已落（实际扩到 5 个，新增 X1 差集 / X2 分布）
+  - [⚠️] §2 Step 2 修复路径未走 —— 普查发现 H4-a / 5 值 sale_order_type **结构上已不可能命中**，无需 §2-B/C 数据回填
+  - [x] 防回归 smoke 已写
+  - [⚠️] D6 决策（卡列表 scope 是否放开）暂未触发 —— 普查结果显示无漏卡，scope 维持现状
+- **决策应用**：D6=A → 普查证实无需放开 scope
+- **关联归档**：同批 `2026-05-18-workfine-legacy-orders-unaudited-flow.md` / `2026-05-18-sale-order-type-deposit-add.md`

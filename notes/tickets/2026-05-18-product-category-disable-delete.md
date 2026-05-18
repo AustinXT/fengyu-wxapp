@@ -165,3 +165,33 @@ export const deleteCategory = withPermission(
 | 关联 actions | `fengyu-admin/src/actions/products.ts:292-450` |
 | 关联 UI | `fengyu-admin/src/app/(main)/products/categories/_components/` 2 个组件 |
 | 关联 ticket | `archives/2026-04-25-product-categories-fully-dynamic.md`（一/二级 DB 驱动落地）|
+
+---
+
+## 当前进度（2026-05-18 部分完成）
+
+### ✅ 已完成（基于 grep 实证）
+
+- **PR-1 二级分类停用按钮**：`fengyu-admin/src/app/(main)/products/categories/_components/categories-page.tsx:158`
+  ```ts
+  const disableResult = await updateCategory(disableTarget.categoryId, { isValid: false }, disableTarget.updatedAt)
+  ```
+  附 AlertDialog 二次确认（line 336-340）：「确定要停用分类「{categoryName}」吗？停用后该分类下的商品将不再展示。」
+- **action 层**：`updateCategory({isValid: false})` 已通（schema 早就有 isValid 列）
+
+### ❌ 仍需完成
+
+- **PR-1 列表"状态"列展示** + "包含已停用 ☐" 筛选器 — 当前列表无该列、无该筛选器
+- **PR-2 一级分类（productKind）停用** — `product-kind-management-dialog.tsx` 未扩 isValid 入参
+- **PR-3 deleteCategory action**（硬删除路径）— `fengyu-admin/src/actions/products.ts` 仅有 `deleteMallCategory`（商城分类硬删除），**无** `deleteCategory`（品项分类）。D11=A 决策需要落地：未引用允许硬删，其它走停用
+- **PR-4 商品创建/SKU 下拉过滤已停用分类** — 需 grep `listCategories` 调用点确认是否带 `is_valid=true` 默认过滤
+
+### 实施时聚焦（剩余 PR 估时 S ≈ 半天）
+
+1. categories-page.tsx 加 "状态" 列 + 筛选器（30 min）
+2. product-kind-management-dialog.tsx 加 "停用" 开关（20 min）
+3. actions/products.ts 新增 `deleteCategory(categoryId, expectedUpdatedAt)` — 校验 sku 引用 + coupon.applicable_category_ids 引用（45 min）
+4. 商品创建/编辑页 SKU 下拉默认过滤 is_valid（15 min）
+5. e2e + vitest case（30 min）
+
+**决策应用**：D11=A（未引用允许硬删）
