@@ -138,9 +138,17 @@ export default function CardsPage({ cards, stores, orgNodes, total }: Props) {
 			key: "typeBadge",
 			header: "类型",
 			cell: (row) => {
-				const label = (row.sessionCount ?? 0) === 1 ? "单次卡" : "疗程卡";
+				// B2 兜底：单次卡若历史行 quantity>1（未拆历史数据），显示"单次卡 ×N"
+				// 新行（修写入侧后）quantity 恒 = 1，labelKey 走"单次卡"分支即可
+				// ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+				const sessionCount = row.sessionCount ?? 0;
+				const labelKey = sessionCount === 1 ? "单次卡" : "疗程卡";
+				const label =
+					sessionCount === 1
+						? `单次卡${row.quantity > 1 ? ` ×${row.quantity}` : ""}`
+						: `${sessionCount}次卡`;
 				return (
-					<Badge variant="outline" className={TYPE_BADGE_MAP[label] ?? ""}>
+					<Badge variant="outline" className={TYPE_BADGE_MAP[labelKey] ?? ""}>
 						{label}
 					</Badge>
 				);

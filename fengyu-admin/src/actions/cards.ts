@@ -43,6 +43,12 @@ export interface AdminCard {
   sessionCount: number | null
   /** 剩余次数 */
   remainingSessions: number | null
+  /**
+   * 购买数量（B2 兜底字段）：
+   * 修写入侧（疗程卡 quantity>1 拆 N 行）后，正常情况下 quantity 应恒 = 1。
+   * 列表渲染层用此字段做"老卡 ×N"兜底显示（D8=B 决策不动历史）。
+   */
+  quantity: number
   /** 有效期（YYYY-MM-DD 或 null） */
   expireDate: string | null
   /** 购买时间（paid_at，ISO） */
@@ -162,6 +168,7 @@ export const getCardsPaginated = withPermission(
       skuSpecName: saleItems.skuSpecName,
       sessionCount: saleItems.sessionCount,
       remainingSessions: saleItems.remainingSessions,
+      quantity: saleItems.quantity,
       expireDate: saleItems.expireDate,
       paidAt: saleOrders.paidAt,
       storeId: saleItems.storeId,
@@ -191,6 +198,7 @@ export const getCardsPaginated = withPermission(
       skuSpecName: r.skuSpecName ?? null,
       sessionCount: r.sessionCount ?? null,
       remainingSessions: r.remainingSessions ?? null,
+      quantity: r.quantity ?? 1,
       expireDate: r.expireDate ?? null,
       paidAt: r.paidAt?.toISOString() ?? null,
       storeId: r.storeId,
