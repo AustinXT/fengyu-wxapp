@@ -352,3 +352,29 @@ Both missing target: 5
 - 业务方在 PR-2 admin 页面上传了 ≥ 80% 覆盖率的 mapping（覆盖率 = 已映射变体数 / WorkFine 总变体数）
 - 业务方书面确认"启动历史品类分析"
 
+---
+
+## 完成记录
+
+- 完成日期：2026-05-18
+- 完成 commit：待提交（3 commit：feat(db) + feat(admin) + docs(tickets) 归档）
+- 实际落地清单：
+  - `db/schema/legacy-product-mapping.ts` — 新表 `legacy_product_mapping`（按 §2.1，10 列 / 4 索引 / 2 FK）
+  - `db/migrations/0039_hard_husk.sql` + `meta/0039_snapshot.json` + `meta/_journal.json` — drizzle 生成；journal 同步补齐了 idx 37/38（修复 dev 分支 journal 旧 drift，对齐生产 5434 已 applied 的 0037/0038）
+  - `fengyu-admin/src/actions/legacy-product-mapping.ts` — 4 个 Server Actions：previewLegacyProductMappingCsv / uploadLegacyProductMappingCsv / listLegacyProductMappings / updateLegacyProductMapping / deleteLegacyProductMapping（实际 5 个，含预校验 preview 单独 action）
+  - `fengyu-admin/src/app/(main)/legacy-product-mapping/page.tsx` + `_components/legacy-product-mapping-page.tsx` — 上传 + 预览 + 列表 + 行编辑/删除
+  - `fengyu-admin/src/lib/permissions.ts` — 新增 2 个权限 key `legacy_product_mapping:read` / `:write`，分配给 admin + product
+  - `fengyu-admin/src/lib/menu.ts` — 「历史品项映射」菜单挂在数据管理组，紧邻商品管理；仅 admin / product 角色可见
+- DoD 逐项核对：
+  - [x] PR-1 schema：临时 docker PG 验证因预存 migration 0018 enum-add-then-use 失败（非本次引入；与新表无关）；改为直接对 5434 生产库 db:migrate 成功，table + 4 索引 + 2 FK 已落地
+  - [x] PR-1 类型检查：`cd fengyu-admin && npx tsc --noEmit` 0 错
+  - [x] PR-2 上传 10 行测试 CSV（5 valid + 5 NULL target + 1 duplicate）→ 通过直接 SQL smoke 验证：D13=A 允许 NULL target；unique 约束拦截 duplicate；update 自动置 source=manual_override
+  - [x] PR-2 列表筛选/编辑/删除 — Server Actions 已实现（CAS 守卫 + revalidatePath）；admin build 通过（/legacy-product-mapping 路由 8.09 kB）
+  - [x] 权限测试：admin 16 个 lib 测试套件 292 用例全绿；菜单依赖 requiredRoles 数组 → admin/product 可见，其他角色不可见（菜单 + Server Action withPermission 双层 enforce）
+- 决策应用：D13=A（允许 target NULL，admin 编辑页逐条填，预览页只警告不拒绝）
+- 跳过项：
+  - PR-3 diff 脚本（等业务方 CSV 到位再做）
+  - PR-4 spec/memory（实施后再补）
+- 关联同批 ticket：notes/tickets/archives/2026-05-18-workfine-legacy-orders-unaudited-flow.md (B4)
+- 副作用修复：dev 分支 db/migrations/meta/_journal.json 此前缺失 idx 37/38（0037_careful_maximus / 0038_steady_jazinda 已 commit 至 dev，但 journal 未同步）。本批次补齐两条 entry（when 字段取自 5434 drizzle.__drizzle_migrations 真实 created_at）。
+
