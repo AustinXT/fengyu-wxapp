@@ -179,3 +179,33 @@ const label = (row.sessionCount ?? 0) === 1
 | 关联代码 | `fengyu-staff/cloudfunctions/staffApi/routes/order.js:243-330` / `fengyu-admin/src/actions/cards.ts:106-110` |
 | 关联 ticket | `archives/2026-04-26-sale-order-domain-refactor.md`（按 sale_item 维度模型）|
 | 相邻 ticket | `2026-05-18-treatment-card-listing-filter-audit.md`（B1 列表过滤问题，先排查再修本 ticket） |
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-18
+- 决策应用：**D8=B**（不做历史迁移，仅修写入侧；老卡走 §4 兜底渲染）
+- 实际落地清单：
+  - `fengyu-staff/cloudfunctions/staffApi/routes/order.js` — `rawItemDataList` → `itemDataList` 扩展循环：疗程卡 quantity>1 拆 N 行（每行 quantity=1, sessionCount=sku.session_count, saleAmount/received/serviceFee 按 N 等分，最后一行吸收尾差）。家居产品继续合行。
+  - `fengyu-admin/src/actions/orders.ts` — `createOrder` 内 `data.items.flatMap(...)` 同步拆行逻辑（与 staff 字面量对齐）。
+  - `fengyu-admin/src/actions/cards.ts` — `AdminCard` 增加 `quantity` 字段，SELECT 与 mapping 同步。
+  - `fengyu-admin/src/app/(main)/cards/_components/cards-page.tsx:141` — 类型 Badge：单次卡若 `quantity>1`（老卡）显示"单次卡 ×N"兜底；新卡 quantity 恒=1 走"单次卡"原标签。
+  - 测试：
+    - `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/order.test.js` — 3 个新增（B2 拆行：3次卡 ×4 / 单次卡 ×10 / 家居产品 ×10）
+    - `fengyu-admin/src/actions/orders.test.ts` — 3 个新增（同上 3 场景，新增 `createOrder — B2 拆行` describe）
+- DoD 逐项核对：
+  - [x] PR-1 staffApi 拆行（单次卡 ×10 → 10 行 / 10次卡 ×2 → 2 行 / 家居 ×10 → 1 行 合行）
+  - [x] PR-1 折扣/优惠券 sum 守恒（最后一行吸收尾差；单次卡 ×10 测试断言 totalReceived=200_000 分）
+  - [x] PR-2 admin createOrder 同步（与 staff 拆行规则对齐）
+  - [x] PR-4 cards 列表 ×N 兜底渲染
+  - [-] PR-3 历史迁移：**未做**（D8=B 决策跳过，由前端兜底渲染覆盖老卡）
+- 测试结果：
+  - staffApi `order.test.js`：189 个测试，189 pass
+  - admin `orders.test.ts`：114 个测试，114 pass（新增 3 个 B2 拆行用例）
+  - admin `cards.test.ts`：22 个测试，22 pass
+  - `cross-end-sql-snapshot.test.js`：68 个测试，68 pass
+  - admin tsc / staff miniprogram tsc：0 错
+- 同时修复（合并入 PR-1）：
+  - 原 `sale_items.session_count = sku.session_count × quantity` 注释行（line 287）失效：拆行后每行 quantity=1，sessionCount 不再 × quantity，自然恢复"剩余次数 N/N"的正确显示。
+- 关联同批 ticket：`notes/tickets/archives/2026-05-18-treatment-card-listing-filter-audit.md`（B1 读侧 audit，与本 ticket B2 写侧形成完整闭环）

@@ -246,7 +246,7 @@ async function create(ctx) {
   }
 
   // 获取 SKU 信息 + 价格（product_skus → product_categories 两表 JOIN）
-  const itemDataList = await Promise.all(
+  const rawItemDataList = await Promise.all(
     items.map(async (item) => {
       const skuRows = await pg.query(
         `SELECT s.sku_id, s.product_type, s.spec_name, s.price, s.special_price, s.session_count,
@@ -320,6 +320,48 @@ async function create(ctx) {
       }
     })
   )
+
+  // ========== B2 拆行：疗程卡 quantity>1 → N 行 quantity=1 ==========
+  // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+  // 业务语义：每张卡（无论 sku.session_count 是 1 还是 N）都是独立可转换/核销的实体，
+  // 应在 sale_items 写成 N 行（每行 quantity=1, session_count=sku.session_count）。
+  // 家居产品（productType='家居产品'）继续合行（quantity 累加）。
+  // 折扣/服务费/sale_amount/received 按 N 等分，最后一行吸收尾差，确保 sum 守恒。
+  const itemDataList = []
+  for (const d of rawItemDataList) {
+    if (d.productType === '疗程卡' && d.quantity > 1) {
+      const n = d.quantity
+      const perSession = d.sessionCount != null ? Math.round(d.sessionCount / n) : null
+      const perSaleAmount = Math.round((d.saleAmount * 100) / n) / 100
+      const perReceived = Math.round((d.received * 100) / n) / 100
+      const perServiceFee = Math.round((d.serviceFee * 100) / n) / 100
+      for (let i = 0; i < n; i++) {
+        const isLast = i === n - 1
+        const saleAmountRow = isLast
+          ? Math.round((d.saleAmount - perSaleAmount * (n - 1)) * 100) / 100
+          : perSaleAmount
+        const receivedRow = isLast
+          ? Math.round((d.received - perReceived * (n - 1)) * 100) / 100
+          : perReceived
+        const serviceFeeRow = isLast
+          ? Math.round((d.serviceFee - perServiceFee * (n - 1)) * 100) / 100
+          : perServiceFee
+        itemDataList.push({
+          ...d,
+          quantity: 1,
+          sessionCount: perSession,
+          remainingSessions: perSession,
+          saleAmount: saleAmountRow,
+          received: receivedRow,
+          serviceFee: serviceFeeRow,
+          // unitRealPrice 保持原值（每行已是单张价）：received / 1
+          unitRealPrice: receivedRow,
+        })
+      }
+    } else {
+      itemDataList.push(d)
+    }
+  }
 
   // ========== 优惠券处理 ==========
   let couponDiscount = 0

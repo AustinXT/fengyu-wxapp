@@ -297,7 +297,10 @@ describe('order.create', () => {
     expect(ctx.result.totalAmount).toBe(1) // customPrice 而非原价
   })
 
-  test('sale_items.session_count / remaining_sessions 应 = sku.session_count × quantity', async () => {
+  test('B2 拆行：3次卡 ×4 → 4 行 sale_items（每行 quantity=1, session_count=3）', async () => {
+    // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+    // 修写入侧前：1 行 quantity=4, session_count=12（× quantity）
+    // 修写入侧后：4 行 quantity=1, session_count=3（每张独立卡）
     const ctx = createManagerCtx({
       clientPhone: '13800002222',
       clientName: '量乘次数顾客',
@@ -326,14 +329,100 @@ describe('order.create', () => {
 
     await orderRoutes.create(ctx)
 
-    const insertItemCall = clientQuery.mock.calls.find(c => /INSERT INTO sale_items/.test(c[0]))
-    expect(insertItemCall).toBeDefined()
-    // INSERT 列顺序: ... product_type, session_count, remaining_sessions, unit_price, quantity, ...
-    // params: $1=saleItemId $2=saleOrderId $3=storeId $4=skuId $5=productName $6=skuSpecName
-    //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
-    expect(insertItemCall[1][7]).toBe(12)  // session_count = 3 × 4
-    expect(insertItemCall[1][8]).toBe(12)  // remaining_sessions = 3 × 4
-    expect(insertItemCall[1][10]).toBe(4)  // quantity 透传
+    const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCalls).toHaveLength(4)  // 拆为 4 行
+    for (const call of insertItemCalls) {
+      // params: $1=saleItemId $2=saleOrderId $3=storeId $4=skuId $5=productName $6=skuSpecName
+      //         $7=productType $8=session_count $9=remaining_sessions $10=unit_price $11=quantity ...
+      expect(call[1][7]).toBe(3)   // session_count = sku.session_count（不再 × quantity）
+      expect(call[1][8]).toBe(3)   // remaining_sessions = session_count
+      expect(call[1][10]).toBe(1)  // quantity = 1（每张卡独立）
+    }
+  })
+
+  test('B2 拆行：单次卡 ×10 → 10 行 sale_items（每行 quantity=1, session_count=1）', async () => {
+    // 核心场景：单次卡 ×10（sku.session_count=1, quantity=10）
+    // 期望：10 行独立卡，每行 quantity=1 / session_count=1 / remaining_sessions=1
+    const ctx = createManagerCtx({
+      clientPhone: '13800003333',
+      clientName: '单次卡顾客',
+      items: [{ skuId: 'sku-single', quantity: 10 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-single',
+        product_id: 'prod-single',
+        product_type: '疗程卡',
+        spec_name: '单次身体护理',
+        price: '200.00',
+        session_count: 1,
+        product_name: '身体护理',
+        sales_category: '自销自耗',
+      }])
+      .mockResolvedValueOnce([])
+
+    const clientQuery = makeClientQueryMock({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await orderRoutes.create(ctx)
+
+    const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCalls).toHaveLength(10)  // 单次卡 ×10 → 10 行
+    let totalReceived = 0
+    for (const call of insertItemCalls) {
+      expect(call[1][7]).toBe(1)   // session_count = 1
+      expect(call[1][8]).toBe(1)   // remaining_sessions = 1
+      expect(call[1][10]).toBe(1)  // quantity = 1
+      // params[13] = received（unit_price=$10 quantity=$11 unit_real_price=$12 sale_amount=$13 received=$14）
+      totalReceived += Number(call[1][13])
+    }
+    // 守恒：sum(received) ≈ 200 × 10 = 2000
+    expect(Math.round(totalReceived * 100)).toBe(200_000)
+    expect(ctx.result.totalAmount).toBe(2000)
+  })
+
+  test('B2 不拆：家居产品 ×10 → 1 行 sale_items（quantity=10）', async () => {
+    // 家居产品（productType='家居产品'）继续合行，不受 B2 拆行影响
+    const ctx = createManagerCtx({
+      clientPhone: '13800004444',
+      clientName: '家居产品顾客',
+      items: [{ skuId: 'sku-home', quantity: 10 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-home',
+        product_id: 'prod-home',
+        product_type: '家居产品',
+        spec_name: '精华液',
+        price: '300.00',
+        session_count: null,
+        product_name: '精华液',
+        sales_category: '自销自耗',
+        product_kind: '家居产品',
+      }])
+      .mockResolvedValueOnce([])
+
+    const clientQuery = makeClientQueryMock({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await orderRoutes.create(ctx)
+
+    const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCalls).toHaveLength(1)  // 家居产品合行
+    expect(insertItemCalls[0][1][10]).toBe(10)  // quantity = 10（合行）
+    // 家居产品 session_count/remaining_sessions 强制 null（order.js L654 sc/rs 三元）
+    expect(insertItemCalls[0][1][7]).toBeNull()
+    expect(insertItemCalls[0][1][8]).toBeNull()
   })
 
   // ===== 优惠券路径覆盖 =====
