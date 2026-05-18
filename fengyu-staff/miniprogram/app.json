@@ -52,6 +52,13 @@
         "mgmt-customer-list/mgmt-customer-list",
         "mgmt-customer-detail/mgmt-customer-detail"
       ]
+    },
+    {
+      "root": "packageMy",
+      "name": "我的子页",
+      "pages": [
+        "inventory/inventory"
+      ]
     }
   ],
   "tabBar": {

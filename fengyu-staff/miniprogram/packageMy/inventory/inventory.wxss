@@ -1,0 +1,68 @@
+/* packageMy/inventory/inventory.wxss */
+.container {
+  min-height: 100vh;
+  background: #F5F5F5;
+  padding: 32rpx 24rpx;
+  box-sizing: border-box;
+}
+
+.header {
+  padding: 32rpx 16rpx 16rpx;
+}
+
+.title {
+  font-size: 40rpx;
+  font-weight: 600;
+  color: #333333;
+}
+
+.notice {
+  margin: 16rpx 0 32rpx;
+  padding: 24rpx 28rpx;
+  background: #FFFFFF;
+  border-left: 6rpx solid #C0322A;
+  border-radius: 12rpx;
+  display: flex;
+  flex-direction: column;
+  gap: 8rpx;
+}
+
+.notice-line {
+  font-size: 28rpx;
+  color: #333333;
+  line-height: 1.6;
+}
+
+.tables-preview {
+  margin: 24rpx 0;
+  padding: 24rpx;
+  background: #FFFFFF;
+  border-radius: 16rpx;
+}
+
+.section-title {
+  display: block;
+  font-size: 26rpx;
+  color: #666666;
+  margin-bottom: 16rpx;
+}
+
+.table-item {
+  padding: 24rpx 28rpx;
+  margin-top: 12rpx;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+}
+
+.table-item.disabled {
+  background: #F5F5F5;
+  color: #999999;
+}
+
+.footer {
+  margin-top: 48rpx;
+  padding: 24rpx;
+  text-align: center;
+  font-size: 24rpx;
+  color: #999999;
+}

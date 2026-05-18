@@ -1,0 +1,22 @@
+<!-- packageMy/inventory/inventory.wxml — 库存管理（占位页） -->
+<view class="container">
+  <view class="header">
+    <text class="title">库存管理</text>
+  </view>
+
+  <view class="notice">
+    <text class="notice-line">功能开发中，敬请期待。</text>
+    <text class="notice-line">库存操作目前仍在 WorkFine 桌面端进行。</text>
+  </view>
+
+  <view class="tables-preview">
+    <text class="section-title">即将支持的功能：</text>
+    <view class="table-item disabled" wx:for="{{tables}}" wx:key="*this">
+      <text>{{item}}</text>
+    </view>
+  </view>
+
+  <view class="footer">
+    <text>详细需求请联系管理员</text>
+  </view>
+</view>

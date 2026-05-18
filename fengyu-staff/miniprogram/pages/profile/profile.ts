@@ -15,6 +15,7 @@ Page({
     avatarHttpUrl: '',
     boundStoreName: '',
     isManager: false,
+    canSeeInventory: false,
     // 门店绑定
     showStorePicker: false,
     storeList: [] as Array<{ storeId: string; storeName: string }>,
@@ -27,11 +28,14 @@ Page({
       return
     }
     const { staffName, position, staffWfId, phone, boundStoreName, avatarUrl } = app.globalData;
+    const roles = app.globalData.roles ?? [];
+    const canSeeInventory = ['manager', 'admin', 'finance'].some(r => roles.includes(r));
     this.setData({
       staffName, position, staffWfId, phone, boundStoreName,
       avatarUrl: avatarUrl || '',
       avatarHttpUrl: avatarUrl ? toHttpUrl(avatarUrl) : '',
       isManager: isManager(),
+      canSeeInventory,
     });
   },
 
@@ -168,6 +172,10 @@ Page({
 
   onNavAllocationList() {
     wx.navigateTo({ url: '/packageOrder/allocation-list/allocation-list' });
+  },
+
+  onNavInventory() {
+    wx.navigateTo({ url: '/packageMy/inventory/inventory' });
   },
 
   onLogout() {
