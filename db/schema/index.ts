@@ -57,3 +57,6 @@ export * from './system-config'
 
 // 查找表（职位 + 技能标签）
 export * from './lookup'
+
+// WorkFine 原品项 → 新品项映射表（B10 接收接口）
+export * from './legacy-product-mapping'
