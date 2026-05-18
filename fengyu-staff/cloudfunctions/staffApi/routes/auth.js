@@ -176,9 +176,15 @@ async function login(ctx) {
  *   2. 找不到 → 自动建档（生成 FY-WX-{YYMMDD}{序号} employee_id）
  */
 async function bindPhone(ctx) {
-  const { OPENID } = cloud.getWXContext()
-  const { phoneNumber: directPhone } = ctx.event.payload || {}
+  const { OPENID: realOpenid } = cloud.getWXContext()
+  const { phoneNumber: directPhone, _testOpenid: payloadTestOpenid } = ctx.event.payload || {}
   const phoneData = ctx.event.phoneData
+
+  // 测试模式：_testOpenid 覆盖真实 openid（与 middleware/auth.js 同源逻辑）
+  const testOpenid = process.env.ALLOW_TEST_OPENID === 'true'
+    ? (payloadTestOpenid || ctx.event._testOpenid)
+    : null
+  const OPENID = testOpenid || realOpenid
 
   let phoneNumber = null
 
@@ -196,8 +202,11 @@ async function bindPhone(ctx) {
       throw new Error('INVALID_PARAMS: 无法从 CloudID 获取手机号')
     }
   }
-  // 方式2: 直接传入手机号（测试用）
+  // 方式2: 直接传入手机号（测试用，仅 ALLOW_TEST_OPENID=true 时启用）
   else if (directPhone) {
+    if (process.env.ALLOW_TEST_OPENID !== 'true') {
+      throw new Error('INVALID_PARAMS: phoneNumber 直传仅在测试环境启用')
+    }
     phoneNumber = directPhone
   } else {
     throw new Error('INVALID_PARAMS: 缺少 phoneData 或 phoneNumber 参数')

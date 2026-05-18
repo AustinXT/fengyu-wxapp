@@ -56,17 +56,22 @@ export function sanitizeErrorMessage(msg: string, fallback: string = '请求失�
 
 /**
  * 自动附加当前登录层级 / 当前门店到 payload，供云函数中间件校验 + 过滤
+ * 开发期：localStorage `__devTestOpenid` 存在则注入 `_testOpenid`，便于切换测试员工身份
+ *        （远端云函数需 ALLOW_TEST_OPENID=true 才生效；生产关闭后自动失效）
  */
 function withAuthContext(payload: Record<string, any>): Record<string, any> {
   try {
     const g = getApp<IAppOption>()?.globalData
-    if (!g) return payload
     const next: Record<string, any> = { ...payload }
-    if (g.loginLevel && next._loginLevel === undefined) {
+    if (g?.loginLevel && next._loginLevel === undefined) {
       next._loginLevel = g.loginLevel
     }
-    if (g.currentStoreId && next._currentStoreId === undefined) {
+    if (g?.currentStoreId && next._currentStoreId === undefined) {
       next._currentStoreId = g.currentStoreId
+    }
+    if (next._testOpenid === undefined) {
+      const devOpenid = wx.getStorageSync('__devTestOpenid')
+      if (devOpenid) next._testOpenid = devOpenid
     }
     return next
   } catch {
