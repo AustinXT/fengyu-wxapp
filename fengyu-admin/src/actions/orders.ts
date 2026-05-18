@@ -899,6 +899,56 @@ export const createOrder = withPermission(
     }
   }
 
+  // ========== B2 拆行：疗程卡 quantity>1 → N 行 quantity=1 ==========
+  // ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+  // 业务语义：每张卡（无论 sku.session_count 是 1 还是 N）都是独立可转换/核销的实体，
+  // 应在 sale_items 写成 N 行（每行 quantity=1, session_count=sku.session_count）。
+  // 家居产品（productType='家居产品'）继续合行（quantity 累加）。
+  // 与 staff order.js 同步（见 cross-end-sql-snapshot 守护）。
+  // saleAmount / received 按 N 等分，最后一行吸收尾差，确保 sum 守恒。
+  data = {
+    ...data,
+    items: data.items.flatMap((item) => {
+      if (item.productType !== '疗程卡' || item.quantity <= 1) {
+        return [item]
+      }
+      const n = item.quantity
+      const totalSale = item.saleAmount !== undefined
+        ? Number(item.saleAmount)
+        : Number(item.unitRealPrice) * n
+      const totalReceived = item.received !== undefined
+        ? Number(item.received)
+        : totalSale
+      const perSaleCents = Math.round((totalSale * 100) / n)
+      const perReceivedCents = Math.round((totalReceived * 100) / n)
+      const totalSaleCents = Math.round(totalSale * 100)
+      const totalReceivedCents = Math.round(totalReceived * 100)
+      const rows: typeof item[] = []
+      for (let i = 0; i < n; i++) {
+        const isLast = i === n - 1
+        const saleCents = isLast
+          ? totalSaleCents - perSaleCents * (n - 1)
+          : perSaleCents
+        const receivedCents = isLast
+          ? totalReceivedCents - perReceivedCents * (n - 1)
+          : perReceivedCents
+        const saleStr = (saleCents / 100).toFixed(2)
+        const receivedStr = (receivedCents / 100).toFixed(2)
+        rows.push({
+          ...item,
+          quantity: 1,
+          // unitRealPrice 重写为本行实付金额（每行 quantity=1）
+          unitRealPrice: receivedStr,
+          // saleAmount / received 仅在原入参显式提供时保留分行覆盖；
+          // 否则保留原入参的 undefined（让后续按 unitRealPrice × 1 计算）
+          saleAmount: item.saleAmount !== undefined ? saleStr : undefined,
+          received: item.received !== undefined ? receivedStr : undefined,
+        })
+      }
+      return rows
+    }),
+  }
+
   // 计算商品总金额（基于 received 实收）
   // 浮点 round 兜底（行级 + 累加后），与 staff order.js L446 / client order.js L267 对齐
   // 见 notes/tickets/2026-05-17-client-order-no-coupon-rounding.md §5.2
@@ -908,13 +958,8 @@ export const createOrder = withPermission(
     return sum + Math.round(itemAmount * 100) / 100
   }, 0) * 100) / 100
 
-  // 应付金额合计（用于优惠券 minSpend 校验）
-  const saleAmountTotal = Math.round(data.items.reduce((sum, item) => {
-    const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
-    return sum + Math.round(itemSale * 100) / 100
-  }, 0) * 100) / 100
-
   // 提前校验优惠券（事务外查询，避免在事务内做复杂查询）
+  // ticket B9：minSpend / 折扣基数已切换到 eligibleTotal（scope 内应付合计），不再使用全单合计
   let couponDiscount = 0
   if (data.couponId && data.clientUserId) {
     // 查询 SKU 的 categoryId 和 productId，用于优惠券范围校验
@@ -974,29 +1019,46 @@ export const createOrder = withPermission(
       }
     }
 
-    // 范围校验：品类维度（NULL/空数组 = 不限制）
-    if (coupon.applicableCategoryIds && coupon.applicableCategoryIds.length > 0) {
-      const itemCategoryIds = data.items.map((item) => skuCatMap.get(item.skuId)).filter(Boolean) as string[]
-      const hasOverlap = itemCategoryIds.some((cid) => coupon.applicableCategoryIds!.includes(cid))
-      if (!hasOverlap) {
-        return { success: false, message: '订单商品不满足优惠券的品类限制' }
+    // 范围校验：品类 + 商品维度（NULL/空数组 = 不限制；同时设置时取交集）
+    // 计算 eligibleItems：满足 category AND product 双重限制
+    // 与 client/staff order.create 对齐（fengyu-client/cloudfunctions/clientApi/routes/order.js L329-355
+    // 和 fengyu-staff/cloudfunctions/staffApi/routes/order.js L390-410）
+    const hasCatRestriction = !!(coupon.applicableCategoryIds && coupon.applicableCategoryIds.length > 0)
+    const hasProdRestriction = !!(coupon.applicableProductIds && coupon.applicableProductIds.length > 0)
+    let eligibleItems = data.items
+    if (hasCatRestriction || hasProdRestriction) {
+      eligibleItems = data.items.filter((item) => {
+        const catMatch = !hasCatRestriction
+          || coupon.applicableCategoryIds!.includes(skuCatMap.get(item.skuId) as string)
+        const prodMatch = !hasProdRestriction
+          || coupon.applicableProductIds!.includes(skuProdMap.get(item.skuId) as string)
+        return catMatch && prodMatch
+      })
+      if (eligibleItems.length === 0) {
+        const msg = hasCatRestriction && hasProdRestriction
+          ? '订单商品不满足优惠券的品类与商品限制'
+          : hasProdRestriction
+            ? '订单商品不满足优惠券的商品限制'
+            : '订单商品不满足优惠券的品类限制'
+        return { success: false, message: msg }
       }
     }
 
-    // 范围校验：商品维度（NULL/空数组 = 不限制）
-    if (coupon.applicableProductIds && coupon.applicableProductIds.length > 0) {
-      const itemProductIds = data.items.map((item) => skuProdMap.get(item.skuId)).filter(Boolean) as string[]
-      const hasOverlap = itemProductIds.some((pid) => coupon.applicableProductIds!.includes(pid))
-      if (!hasOverlap) {
-        return { success: false, message: '订单商品不满足优惠券的商品限制' }
-      }
-    }
+    // 满减门槛 / 折扣基数：必须基于 eligibleItems（scope 内）应付金额合计，而非全单
+    // ticket B9：admin 此前用 saleAmountTotal 作为基数，与 client/staff 行为不一致；
+    // 见 notes/tickets/2026-05-18-coupon-binding-restriction-not-enforced.md
+    const eligibleTotalRaw = eligibleItems.reduce((sum, item) => {
+      const itemSale = item.saleAmount ? Number(item.saleAmount) : Number(item.unitRealPrice) * item.quantity
+      return sum + Math.round(itemSale * 100) / 100
+    }, 0)
+    const eligibleTotal = Math.round(eligibleTotalRaw * 100) / 100
 
     const minSpend = parseFloat(coupon.minSpend ?? '0')
-    if (saleAmountTotal < minSpend) {
+    // +0.001 兜底 JS 浮点累计误差，与 client/staff coupon.available 保持一致
+    if (eligibleTotal + 0.001 < minSpend) {
       return { success: false, message: `订单金额未满足优惠券最低消费 ¥${minSpend.toFixed(2)}` }
     }
-    couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, saleAmountTotal)
+    couponDiscount = calcCouponDiscount(coupon.couponType, String(coupon.discountValue), coupon.maxDiscount ?? null, eligibleTotal)
     couponDiscount = Math.round(couponDiscount * 100) / 100
   }
 

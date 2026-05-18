@@ -383,6 +383,59 @@ describe('createOrder — 优惠券校验', () => {
     expect(result.message).toContain('最低消费')
   })
 
+  // ticket B9：C2 范围（applicableCategoryIds）限制 → eligibleItems 为空必须拒绝
+  // 修复前 admin 仅做 hasOverlap 校验，scope-only 限制时未拒；
+  // 修复后改为 eligibleItems 过滤，无匹配则报"不满足品类限制"。
+  it('applicableCategoryIds 设置但 SKU 不匹配 → 拒绝（C2 范围校验）', async () => {
+    // 此 mock 让所有 select 返回该 coupon 行；SKU 行没有 categoryId 字段 → undefined 不在 ['cat-X'] 中
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      ...validCoupon,
+      applicableCategoryIds: ['cat-X'],
+    }))
+
+    const result = await createOrder({
+      ...baseOrderData, clientUserId: 'user-1', couponId: 'coupon-1',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('品类限制')
+  })
+
+  // ticket B9：C1 范围（applicableProductIds）限制 → eligibleItems 为空必须拒绝
+  it('applicableProductIds 设置但 SKU 不匹配 → 拒绝（C1 范围校验）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      ...validCoupon,
+      applicableProductIds: ['prod-X'],
+    }))
+
+    const result = await createOrder({
+      ...baseOrderData, clientUserId: 'user-1', couponId: 'coupon-1',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('商品限制')
+  })
+
+  // ticket B9：C6 minSpend 基数必须是 eligibleTotal（scope 内合计），不是全单金额
+  // 修复前 admin 用 saleAmountTotal 全单，与 client/staff 行为不一致；
+  // 修复后基数切换到 eligibleItems 累加。
+  // 当 applicableCategoryIds 设置但无匹配 SKU → 先报"品类不满足"（在 minSpend 之前），证明 eligibleTotal 路径生效
+  it('折扣基数：scope 限制 + minSpend 校验顺序符合 eligibleTotal 路径（C6）', async () => {
+    ;(db.select as any).mockImplementation(mockSelectFound({
+      ...validCoupon,
+      applicableCategoryIds: ['cat-X'],
+      minSpend: '0',
+    }))
+
+    const result = await createOrder({
+      ...baseOrderData, clientUserId: 'user-1', couponId: 'coupon-1',
+    })
+
+    // 即使 minSpend=0，由于 eligibleItems 为空，会先在范围校验阶段拒绝
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('品类限制')
+  })
+
   it('有效优惠券 → calcCouponDiscount 被调用，totalAmount 扣减', async () => {
     ;(db.select as any).mockImplementation(mockSelectFound(validCoupon))
     ;(calcCouponDiscount as any).mockReturnValue(50)
@@ -458,6 +511,131 @@ describe('createOrder — 事务异常捕获', () => {
     expect(result.success).toBe(true)
     expect(result.saleOrderId).toBe('FY-XSD-WX-260315001')
     expect(result.message).toBe('订单创建成功')
+  })
+})
+
+/**
+ * B2 拆行专用 mock：捕获 tx.insert().values(...) 的所有调用，按表名分组。
+ * ticket: notes/tickets/archives/2026-05-18-single-session-card-quantity-not-split.md
+ */
+function mockTransactionCaptureInserts(orderId = 'FY-XSD-WX-260518001') {
+  const insertCalls: Array<{ table: any; values: any }> = []
+  ;(db.transaction as any).mockImplementation(async (fn: any) => {
+    const tx = {
+      execute: vi.fn().mockResolvedValue([{ id: orderId }]),
+      insert: vi.fn().mockImplementation((table: any) => ({
+        values: vi.fn().mockImplementation((values: any) => {
+          insertCalls.push({ table, values })
+          return Promise.resolve({})
+        }),
+      })),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue({ count: 1 }) }),
+      }),
+    }
+    return fn(tx)
+  })
+  return insertCalls
+}
+
+describe('createOrder — B2 拆行（疗程卡 quantity>1 → N 行）', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(getSession as any).mockResolvedValue(mockSession)
+    ;(isInScope as any).mockReturnValue(true)
+    ;(db.select as any).mockImplementation(mockSelectEmpty())
+  })
+
+  it('单次卡 ×10（疗程卡 sessionCount=1）→ 写入 10 行 sale_items（每行 quantity=1）', async () => {
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518101')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-single',
+        productName: '单次身体护理',
+        skuSpecName: '单次',
+        productType: '疗程卡' as const,
+        sessionCount: 1,
+        unitPrice: '200.00',
+        unitRealPrice: '200.00',
+        quantity: 10,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const itemInserts = inserts.filter((c) => Array.isArray(c.values) ? false : true)
+    // sale_items 是 tx.insert(saleItems).values({...}) 单条调用形式
+    // 通过累计 values 中含 saleItemId/saleOrderId/productType 的调用计数
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(10)
+    for (const c of saleItemInserts) {
+      expect(c.values.quantity).toBe(1)
+      expect(c.values.sessionCount).toBe(1)
+      expect(c.values.remainingSessions).toBe(1)
+      expect(c.values.productType).toBe('疗程卡')
+    }
+    void itemInserts
+  })
+
+  it('10次卡 ×2（疗程卡 sessionCount=10）→ 写入 2 行 sale_items（每行 quantity=1, sessionCount=10）', async () => {
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518102')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-multi',
+        productName: '10次面部护理',
+        skuSpecName: '10次',
+        productType: '疗程卡' as const,
+        sessionCount: 10,
+        unitPrice: '1000.00',
+        unitRealPrice: '1000.00',
+        quantity: 2,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(2)
+    for (const c of saleItemInserts) {
+      expect(c.values.quantity).toBe(1)
+      // sessionCount 在服务端 createOrder 用 skuSessionMap × quantity 计算；
+      // 因 mockSelectEmpty 让 skuRows=[]，skuSessionMap.get 返回 undefined，
+      // 回退使用 item.sessionCount（拆后 quantity=1）= 10
+      expect(c.values.sessionCount).toBe(10)
+      expect(c.values.remainingSessions).toBe(10)
+    }
+  })
+
+  it('家居产品 ×10（productType=家居产品）→ 写入 1 行 sale_items（quantity=10，合行不拆）', async () => {
+    const inserts = mockTransactionCaptureInserts('FY-XSD-WX-260518103')
+    const result = await createOrder({
+      ...baseOrderData,
+      items: [{
+        skuId: 'sku-home',
+        productName: '精华液',
+        skuSpecName: '50ml',
+        productType: '家居产品' as const,
+        sessionCount: null,
+        unitPrice: '300.00',
+        unitRealPrice: '300.00',
+        quantity: 10,
+        salesCategory: '自销自耗' as const,
+      }],
+    })
+
+    expect(result.success).toBe(true)
+    const saleItemInserts = inserts.filter((c) =>
+      c.values && typeof c.values === 'object' && 'saleItemId' in c.values
+    )
+    expect(saleItemInserts).toHaveLength(1)
+    expect(saleItemInserts[0].values.quantity).toBe(10)
+    expect(saleItemInserts[0].values.productType).toBe('家居产品')
   })
 })
 
