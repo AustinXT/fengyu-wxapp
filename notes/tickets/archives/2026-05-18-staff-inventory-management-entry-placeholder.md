@@ -233,3 +233,33 @@ goInventory() {
 - 更新 `.42cog/pm/staff.pr.spec.md` 新增 §inventory_management 章节
 - 更新 `.42cog/dev/sys.spec.md`（staff 端）说明 MSSQL 写入通道
 - memory 新增 `project_staff_inventory_workflow.md` 记录"为什么复制门店级录入而非重构 WorkFine"决策
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-18
+- 完成 commit：`2f9f7b7` (feat) + 本 commit (docs/归档)
+- 实际落地清单：
+  - `fengyu-staff/miniprogram/pages/profile/profile.ts` — 计算 `canSeeInventory` + 新增 `onNavInventory()` 跳转方法
+  - `fengyu-staff/miniprogram/pages/profile/profile.wxml` — 在"工作功能"分组追加"库存管理"项（`wx:if="{{canSeeInventory}}"`，图标 `goods-collect-o`）
+  - `fengyu-staff/miniprogram/packageMy/inventory/inventory.{ts,wxml,wxss,json}` — 占位页（新建）
+  - `fengyu-staff/miniprogram/app.json` — 新增 `packageMy` 分包并注册 `inventory/inventory`
+- DoD 逐项核对：
+  - [x] manager 角色 → 可见入口（roles 数组含 'manager'）
+  - [x] admin 角色 → 可见入口
+  - [x] finance 角色 → 可见入口
+  - [x] 美容师角色（不含 manager/admin/finance）→ 不可见
+  - [x] 角色组合 → 单一菜单项，不重复
+  - [x] 点击跳转 `/packageMy/inventory/inventory` 无报错
+  - [x] 占位页展示 8 张表名灰色不可点击（`.disabled` 样式 `color:#999/background:#F5F5F5`，无 bindtap）
+  - [x] 顶部红色边框 notice，底部"详细需求请联系管理员"
+  - [x] `cd fengyu-staff/miniprogram && npx tsc --noEmit` 0 错
+  - [x] app.json 新增 `packageMy` 分包，构建路径正确
+- 决策应用：D12=A（manager / admin / finance 三角色可见）
+- 路径修正：原 ticket 写 `pages/my/my.{ts,wxml}`，实际是 `pages/profile/profile.{ts,wxml,wxss,json}`；占位页路径保持 `packageMy/inventory/`
+- 实现细节备注：
+  - `isManager()` 当前基于 `staffLevel === 'store_manager'`，与 roles 数组语义不再 1:1；因此本 ticket 的入口判定**直接读 `globalData.roles?.some(...)`**（按 ticket §1.2 简化方案），与 D12=A 决策一致
+  - 占位页 0 网络请求、0 写入路径，符合 `feedback_mssql_readonly.md` 约束
+- follow-up：FU-1~FU-5（见 ticket §5），等用户决定开发完整功能时启动
+- 关联同批 ticket：`notes/tickets/archives/2026-05-18-*.md`
