@@ -16,9 +16,6 @@ header-includes:
     \fancyfoot[C]{\thepage}
     \usepackage{xcolor}
     \definecolor{brand}{HTML}{C0322A}
-    \usepackage{titlesec}
-    \titleformat{\section}{\Large\bfseries\color{brand}}{}{0em}{}
-    \titleformat{\subsection}{\large\bfseries}{}{0em}{}
-    \usepackage{enumitem}
-    \setlist[itemize]{itemsep=2pt, parsep=0pt}
+    \let\oldsection\section
+    \renewcommand{\section}[1]{\oldsection{\color{brand}#1}}
 ---
