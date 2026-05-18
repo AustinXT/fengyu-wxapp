@@ -195,3 +195,27 @@ export const deleteCategory = withPermission(
 5. e2e + vitest case（30 min）
 
 **决策应用**：D11=A（未引用允许硬删）
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-18
+- 完成 commit：见 git log（feat(admin/products): 品项分类硬删除 + 列表筛选器 + 操作按钮路径分支）
+- 实际落地清单：
+  - `fengyu-admin/src/actions/products.ts` — 新增 `deleteCategory(categoryId, expectedUpdatedAt)` action（SKU + coupon 双重引用校验 → CAS 守卫 DELETE）
+  - `fengyu-admin/src/app/(main)/products/categories/_components/categories-page.tsx` — 顶部加 "包含已停用" checkbox（默认 false）；状态列已存在；操作列按 isValid 分支：valid → "停用"，invalid → "删除"；新增 deleteTarget AlertDialog
+  - `fengyu-admin/src/actions/products.test.ts` — 新增 5 case：`updateCategory({isValid: false})` 成功；`deleteCategory` 4 case（SKU 引用 / coupon 引用 / 无引用成功 / CAS 失败）
+- 既已就绪（本批次确认无需新增）：
+  - `product-kind-management-dialog.tsx` — 一级停用按钮 + `updateProductKind({isValid: false})` 路径早已存在
+  - `CategoryCascader` 下拉组件 — 已按 `isValid` 过滤一级（line 55）+ 二级（line 87），SKU 创建/编辑页自动继承
+  - `getCategories` action — 由 client 端 useMemo `includeDisabled` 过滤决定可见性，service action 保留全量返回（"包含已停用" 切换无需再 round-trip 后端）
+  - 权限：复用 `product:update`，与 `deleteSku` / `deleteMallCategory` / `deleteProduct` 一致；无需扩 PERMISSION_MATRIX
+- DoD 逐项核对：
+  - [x] `npx tsc --noEmit` 0 错
+  - [x] `bun run test` 全套 1070 通过（含新增 5 case）
+  - [x] `bun run lint` 无 error（仅遗留 unused eslint-disable 警告，与本 PR 无关）
+  - [x] cross-end error-codes snapshot 14/14 通过（`INVALID_STATE: REFERENCE_EXISTS` 子标签合规）
+  - [x] 已停用行才显示"删除"按钮；启用行只显示"停用"
+- 决策应用：D11=A（未引用允许硬删）
+- 关联同批 ticket：归档至 `notes/tickets/archives/2026-05-18-product-category-disable-delete.md`
