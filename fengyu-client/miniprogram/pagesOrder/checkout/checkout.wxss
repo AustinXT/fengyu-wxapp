@@ -3,7 +3,15 @@
 .container {
   min-height: 100vh;
   background: var(--color-bg-page);
-  padding-bottom: 160rpx;
+  /* 留足底部空间：submit-bar (~100rpx) + tip 行 (~70rpx) + 安全区，避免遮挡协议勾选 */
+  padding-bottom: calc(280rpx + env(safe-area-inset-bottom));
+}
+
+/* 底部提交按钮：拉宽 + 不换行，避免"支付宝付款 / 确认支付（已抵扣）"等多字按钮文字溢出 */
+.checkout-submit-btn {
+  min-width: 240rpx !important;
+  padding: 0 28rpx !important;
+  white-space: nowrap !important;
 }
 
 /* 消费协议行 */

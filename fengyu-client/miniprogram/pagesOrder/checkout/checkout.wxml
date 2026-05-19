@@ -147,7 +147,8 @@ module.exports.date = function(s) {
   <van-submit-bar
     wx:if="{{!showPhoneBind}}"
     price="{{price.cents(paidAmount)}}"
-    button-text="{{!showPayMethodGroup ? '确认支付（已抵扣）' : (paymentMethod === '微信' ? '微信支付' : paymentMethod === '支付宝' ? '支付宝付款' : '提交订单')}}"
+    button-text="{{!showPayMethodGroup ? '确认支付' : (paymentMethod === '微信' ? '微信支付' : paymentMethod === '支付宝' ? '支付宝付款' : '提交订单')}}"
+    button-class="checkout-submit-btn"
     loading="{{submitting}}"
     disabled="{{!agreed || submitting}}"
     tip="{{!agreed ? '请先同意消费协议' : false}}"
