@@ -958,9 +958,13 @@ async function storeRanking(ctx) {
 //   - 独立 SQL：所有 metric 都先用 producer_employees CTE 锁定"产能员工"再 LEFT JOIN
 //   - metric 集合不同：员工无 retainedMember；员工独有 income（销售提成 + 服务提成）
 //
-// 产能员工口径（与 metrics.md employeeCount 一致）：
-//   hired_at/resigned_at + NOW() 锚点 ∩ skills && ARRAY['美容师','养生师'] ∩ scope（store_id 可见列表）
-// 排序：value DESC, employee_name ASC, employee_id ASC（避免随机抖动）
+// 产能员工口径（2026-05-20 修订，原 skills && ARRAY['美容师','养生师'] 已删除）：
+//   hired_at/resigned_at + NOW() 锚点 ∩ scope（store_id 可见列表）
+// 不再用 skills 字段门控 — staff_wechat_users.skills 在历史员工档案中 1174/2020 为 NULL/空（如刘恋
+// FY-240804002 hired_at=2026-03-13、skills 空但有 888 元 allocation），导致 ranking 漏算 33% 业绩。
+// 角色过滤由各 metric 子查询通过 sale_allocations.role_type 等字段自然完成；
+// 末尾再用 WHERE COALESCE(value,0) > 0 把零值员工排除（无业绩不入榜）。
+// metrics.md employeeCount 指标仍保留 skills 过滤（语义是"产能技师在职数"，与 ranking 候选池语义不同）。
 
 /**
  * 拼接 producer_employees CTE 头部（所有 metric 共享）。
@@ -978,7 +982,6 @@ function producerEmployeesCte(storeFilter) {
   WHERE sw.hired_at IS NOT NULL
     AND sw.hired_at::date <= NOW()::date
     AND (sw.resigned_at IS NULL OR sw.resigned_at::date > NOW()::date)
-    AND sw.skills && ARRAY['美容师','养生师']
     AND ${storeFilter.sql}
 )`
 }
@@ -1012,6 +1015,7 @@ SELECT
   COALESCE(r.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN revenue_by_emp r ON r.employee_id = pe.employee_id
+WHERE COALESCE(r.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1039,6 +1043,7 @@ SELECT
   COALESCE(c.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN consume_by_emp c ON c.employee_id = pe.employee_id
+WHERE COALESCE(c.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1072,6 +1077,7 @@ SELECT
   COALESCE(n.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN new_member_by_emp n ON n.employee_id = pe.employee_id
+WHERE COALESCE(n.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1099,6 +1105,7 @@ SELECT
   COALESCE(f.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN footfall_by_emp f ON f.employee_id = pe.employee_id
+WHERE COALESCE(f.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1126,6 +1133,7 @@ SELECT
   COALESCE(p.v, 0)::numeric AS value
 FROM producer_employees pe
 LEFT JOIN project_by_emp p ON p.employee_id = pe.employee_id
+WHERE COALESCE(p.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1176,6 +1184,7 @@ SELECT
 FROM producer_employees pe
 LEFT JOIN sales_comm   sc1 ON sc1.employee_id = pe.employee_id
 LEFT JOIN service_comm sc2 ON sc2.employee_id = pe.employee_id
+WHERE COALESCE(sc1.v, 0) + COALESCE(sc2.v, 0) > 0
 ${STAFF_ORDER_BY}`,
     storeFilter.params,
   )
@@ -1296,22 +1305,24 @@ async function salesData(ctx) {
             AND o.paid_at::date BETWEEN $1 AND $2`,
         saleP,
       ),
-      // SQL 2: 分客型业绩（单次扫描三 FILTER）
+      // SQL 2: 分客型业绩（2026-05-20 P0-2 修复）
+      //   原口径 SUM(si.received) 在订单有 received 但无 sale_items 行时漏算（如缺明细订单）。
+      //   现改用订单层 SUM(o.received - refunded_amount)，与 SQL 1 总额同口径，保证守恒；
+      //   并把 became_member_at IS NULL（历史回填缺口）的"会员客"归到"老会员"（COALESCE 兜底）。
       pg.query(
         `SELECT
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
               WHERE c.customer_type = '小美客'
             ), 0) AS xiaomei,
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
             ), 0) AS new_member,
-            COALESCE(SUM(si.received::numeric) FILTER (
+            COALESCE(SUM(o.received::numeric - COALESCE(o.refunded_amount, 0)::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
             ), 0) AS old_member
-           FROM sale_items si
-           JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
+           FROM sale_orders o
            JOIN client_wechat_users c ON c.user_id = o.client_user_id
           WHERE ${scSale.sql}
             AND o.sale_order_type IN ('销售单', '转换单')
@@ -1330,7 +1341,7 @@ async function salesData(ctx) {
             AND so.service_date BETWEEN $1 AND $2`,
         svcP,
       ),
-      // SQL 4: 分客型项目实耗
+      // SQL 4: 分客型项目实耗（2026-05-20 P0-3 修复：became_member_at NULL 兜底归老会员）
       pg.query(
         `SELECT
             COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
@@ -1338,11 +1349,11 @@ async function salesData(ctx) {
             ), 0) AS xiaomei,
             COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
             ), 0) AS new_member,
             COALESCE(SUM(sit.unit_real_price::numeric * si.quantity / NULLIF(si.session_count, 0) * sit.session_used) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
             ), 0) AS old_member
            FROM service_items sit
            JOIN service_orders so ON so.service_order_id = sit.service_order_id
@@ -1353,7 +1364,7 @@ async function salesData(ctx) {
             AND so.service_date BETWEEN $1 AND $2`,
         svcP,
       ),
-      // SQL 5: 分客型产品出库（product_type='家居产品' 快照列）
+      // SQL 5: 分客型产品出库（product_type='家居产品' 行级；2026-05-20 P0-3 修复 NULL 兜底）
       pg.query(
         `SELECT
             COALESCE(SUM(si.received::numeric) FILTER (
@@ -1361,11 +1372,11 @@ async function salesData(ctx) {
             ), 0) AS xiaomei,
             COALESCE(SUM(si.received::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date >= $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date >= $1
             ), 0) AS new_member,
             COALESCE(SUM(si.received::numeric) FILTER (
               WHERE c.customer_type = '会员客'
-                AND c.became_member_at::date < $1
+                AND COALESCE(c.became_member_at, '1970-01-01'::timestamp)::date < $1
             ), 0) AS old_member
            FROM sale_items si
            JOIN sale_orders o ON o.sale_order_id = si.sale_order_id

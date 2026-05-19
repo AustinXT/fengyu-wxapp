@@ -1555,7 +1555,9 @@ describe('mgmtDashboard.staffRanking', () => {
 
       const sql = pg.query.mock.calls[0][0]
       // 产能员工 CTE 内 WHERE 末尾应是 TRUE
-      expect(sql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\][\s\S]*?AND\s+TRUE/)
+      // 2026-05-20 P0-4 修复：去掉 sw.skills 过滤（漏算 33% 业绩），由 metric SQL 自然过滤
+      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+TRUE/)
+      expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
       expect(sql).not.toMatch(/sw\.store_id\s*=\s*ANY/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
     })
@@ -1587,7 +1589,9 @@ describe('mgmtDashboard.staffRanking', () => {
       await staffRanking(ctx)
 
       const sql = pg.query.mock.calls[0][0]
-      expect(sql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\][\s\S]*?AND\s+FALSE/)
+      // 2026-05-20 P0-4 修复：CTE 不再含 sw.skills && filter
+      expect(sql).toMatch(/resigned_at::date\s*>\s*NOW\(\)::date\)?[\s\S]*?AND\s+FALSE/)
+      expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
       expect(pg.query.mock.calls[0][1]).toEqual([])
       expect(ctx.result.rows).toEqual([])
     })
@@ -1597,7 +1601,7 @@ describe('mgmtDashboard.staffRanking', () => {
 
   describe('producer_employees CTE', () => {
     test.each(['revenue', 'consume', 'newMember', 'footfall', 'projectCount', 'income'])(
-      'metric=%s 含 producer_employees CTE + hired_at/resigned_at 历史口径 + 美容师/养生师 skills 过滤',
+      'metric=%s 含 producer_employees CTE + hired_at/resigned_at 历史口径（2026-05-20 P0-4: 去 skills 过滤 + 末尾 WHERE COALESCE > 0）',
       async (metric) => {
         setupDefaultStaffMocks()
         const ctx = makeHqCtx({ period: 'month', metric })
@@ -1610,7 +1614,10 @@ describe('mgmtDashboard.staffRanking', () => {
         expect(sql).toMatch(/sw\.hired_at\s+IS\s+NOT\s+NULL/)
         expect(sql).toMatch(/sw\.hired_at::date\s*<=\s*NOW\(\)::date/)
         expect(sql).toMatch(/sw\.resigned_at\s+IS\s+NULL\s+OR\s+sw\.resigned_at::date\s*>\s*NOW\(\)::date/)
-        expect(sql).toMatch(/sw\.skills\s*&&\s*ARRAY\['美容师','养生师'\]/)
+        // 已去除 skills 过滤
+        expect(sql).not.toMatch(/sw\.skills\s*&&\s*ARRAY/)
+        // 末尾零值过滤（income 是 COALESCE(sc1.v,0)+COALESCE(sc2.v,0) > 0，其它是单一 COALESCE(x.v,0) > 0）
+        expect(sql).toMatch(/WHERE\s+COALESCE\(\w+\.v,\s*0\)[\s\S]*?>\s*0/)
       },
     )
 
@@ -2130,14 +2137,15 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     }
   })
 
-  test('分客型业绩 SQL 含 FILTER WHERE + customer_type + became_member_at 判定', async () => {
+  test('分客型业绩 SQL 含 FILTER WHERE + customer_type + became_member_at 判定（2026-05-20 P0-2/P0-3 修复：订单层 + NULL 兜底）', async () => {
     setupFullMocks()
     const ctx = makeHqCtx({ period: 'month', scope: { type: 'all' } })
     await salesData(ctx)
 
     const sqls = pg.query.mock.calls.map(([s]) => s)
+    // 现在 SQL 2 改成 FROM sale_orders o（订单层），不再 FROM sale_items
     const custRevSql = sqls.find((s) =>
-      /FROM sale_items si/.test(s) &&
+      /FROM sale_orders o/.test(s) &&
       /JOIN client_wechat_users c/.test(s) &&
       /FILTER/.test(s) &&
       !/product_type/.test(s)
@@ -2145,8 +2153,11 @@ describe('mgmtDashboard.salesData SQL 形态断言', () => {
     expect(custRevSql).toBeDefined()
     expect(custRevSql).toContain("customer_type = '小美客'")
     expect(custRevSql).toContain("customer_type = '会员客'")
-    expect(custRevSql).toMatch(/c\.became_member_at::date\s*>=/)
-    expect(custRevSql).toMatch(/c\.became_member_at::date\s*</)
+    // NULL 兜底：COALESCE(c.became_member_at, '1970-01-01'::timestamp)
+    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamp\)::date\s*>=/)
+    expect(custRevSql).toMatch(/COALESCE\(c\.became_member_at,\s*'1970-01-01'::timestamp\)::date\s*</)
+    // 守恒：使用 o.received - refunded_amount，与 SQL 1 总额同口径
+    expect(custRevSql).toMatch(/SUM\(o\.received::numeric - COALESCE\(o\.refunded_amount/)
   })
 
   test('产品出库 SQL 含 product_type = 家居产品', async () => {
