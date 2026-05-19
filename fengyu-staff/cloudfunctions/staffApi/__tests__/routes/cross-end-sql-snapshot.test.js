@@ -702,3 +702,42 @@ describe('TOCTOU partial unique 三端 INSERT 配套守护', () => {
     }
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave 2 S1：三端 order.create 优惠券折扣基数必须用 eligibleTotal（防 B9 资损 bug 重现）
+// ticket: notes/tickets/archives/2026-05-18-coupon-binding-restriction-not-enforced.md
+//
+// B9 修复将 admin 折扣基数从 saleAmountTotal → eligibleTotal（scope 内应付合计），
+// 与 staff / client 端行为对齐。此守护防止任一端回退到 saleAmountTotal 出现资损：
+//   - 全单合计含不可叠加项时，把折扣计在全单基数上会让客户少付。
+//   - calcCouponDiscount 入参 / minSpend 比较两条路径都需守护。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Wave 2 S1：三端 order.create eligibleTotal 守护（防 B9 资损 bug 重现）', () => {
+  test('三端必须使用 eligibleTotal 作折扣基数，不得退回 saleAmountTotal', () => {
+    const adminSrc = readFile(FILES.adminOrdersTs)
+    const staffSrc = readFile(FILES.staffOrderJs)
+    const clientSrc = readFile(FILES.clientOrderJs)
+
+    // 正向：三端必须含 eligibleTotal
+    expect(adminSrc).toContain('eligibleTotal')
+    expect(staffSrc).toContain('eligibleTotal')
+    expect(clientSrc).toContain('eligibleTotal')
+
+    // 反向：calcCouponDiscount 末位入参（折扣基数）不得为 saleAmountTotal（防 B9 资损 bug 重现）
+    // [^;]*? 跨过中间嵌套的 String(...)/可选链等括号，仅守护"同一条 calcCouponDiscount 调用语句"
+    expect(adminSrc).not.toMatch(/calcCouponDiscount\([^;]*?saleAmountTotal\s*\)/)
+    expect(staffSrc).not.toMatch(/calcCouponDiscount\([^;]*?saleAmountTotal\s*\)/)
+    expect(clientSrc).not.toMatch(/calcCouponDiscount\([^;]*?saleAmountTotal\s*\)/)
+    // 退化形态防护：staff/client 的 Math.min / 乘法基数也不允许用 saleAmountTotal 作为基数（pg 端不通过 calcCouponDiscount）
+    // 防止 staff/client 内联实现回退：couponDiscount = Math.min(..., saleAmountTotal) 或 saleAmountTotal * (1 - ...)
+    expect(staffSrc).not.toMatch(/Math\.min\([^;]*?saleAmountTotal\s*\)/)
+    expect(staffSrc).not.toMatch(/saleAmountTotal\s*\*\s*\(\s*1\s*-/)
+    expect(clientSrc).not.toMatch(/Math\.min\([^;]*?saleAmountTotal\s*\)/)
+    expect(clientSrc).not.toMatch(/saleAmountTotal\s*\*\s*\(\s*1\s*-/)
+
+    // 反向：minSpend 比较不得用 saleAmountTotal（admin 此前在 L967 误用）
+    expect(adminSrc).not.toMatch(/saleAmountTotal\s*<\s*minSpend/)
+    expect(staffSrc).not.toMatch(/saleAmountTotal\s*<\s*minSpend/)
+    expect(clientSrc).not.toMatch(/saleAmountTotal\s*<\s*minSpend/)
+  })
+})
