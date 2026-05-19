@@ -45,7 +45,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // admin 既可发起退款，也可审批（与 manager 并列为审批角色，manager 缺位时救场）
     'sale_order:refund_create', 'sale_order:refund_approve',
     // 历史订单核对（WorkFine 导入的 status='未审核' 订单，仅 admin/manager 操作）
-    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject', 'legacy_order:update_phone',
+    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
+    'legacy_order:update_phone', 'legacy_order:update_amount',
     // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
@@ -68,7 +69,8 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'data_center:dashboard',
     'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
     // 历史订单核对（manager 是顾客到店时的主要操作角色）
-    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject', 'legacy_order:update_phone',
+    'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
+    'legacy_order:update_phone', 'legacy_order:update_amount',
   ],
   finance: [
     'dashboard:view',

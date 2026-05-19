@@ -20,7 +20,11 @@ export interface LegacyOrderFilters {
   storeId?: string
   dateFrom?: string
   dateTo?: string
-  /** 'matched' = client_user_id IS NOT NULL；'unmatched' = NULL；undefined = 不过滤 */
+  /**
+   * 'matched' = 该 phone 已在 client_wechat_users 中且 openid IS NOT NULL（真·小程序注册顾客）；
+   * 'unmatched' = 未注册小程序（client_user_id 为空，或关联到 WorkFine 同步的 openid IS NULL 幽灵行）；
+   * undefined = 不过滤
+   */
   matched?: 'matched' | 'unmatched'
   page?: number
   pageSize?: number
@@ -40,6 +44,8 @@ export interface LegacyOrderRow {
   legacyCustomerId: string | null
   legacyRawSnapshot: unknown
   updatedAt: string
+  /** true = 该顾客已用此手机号注册小程序（client_wechat_users.openid IS NOT NULL） */
+  hasMiniprogramAccount: boolean
 }
 
 export interface PaginatedLegacyOrders {
@@ -78,11 +84,13 @@ export const listLegacyOrders = withPermission(
     if (filters.dateTo) {
       conditions.push(lt(saleOrders.saleOrderDatetime, new Date(filters.dateTo + 'T23:59:59.999')))
     }
+    // 小程序匹配语义：client_wechat_users.openid IS NOT NULL 才算真·小程序注册顾客
+    // （WorkFine 同步的幽灵顾客 openid 为 null，不算）
     if (filters.matched === 'matched') {
-      conditions.push(isNotNull(saleOrders.clientUserId))
+      conditions.push(isNotNull(clientWechatUsers.openid))
     }
     if (filters.matched === 'unmatched') {
-      conditions.push(isNull(saleOrders.clientUserId))
+      conditions.push(isNull(clientWechatUsers.openid))
     }
 
     const whereClause = and(...conditions)
@@ -90,6 +98,7 @@ export const listLegacyOrders = withPermission(
     const [countRow] = await db
       .select({ count: sql<number>`cast(count(*) as int)` })
       .from(saleOrders)
+      .leftJoin(clientWechatUsers, eq(saleOrders.clientUserId, clientWechatUsers.userId))
       .where(whereClause)
     const total = countRow?.count ?? 0
 
@@ -98,6 +107,7 @@ export const listLegacyOrders = withPermission(
         order: saleOrders,
         storeName: stores.storeName,
         clientName: clientWechatUsers.name,
+        clientOpenid: clientWechatUsers.openid,
       })
       .from(saleOrders)
       .leftJoin(stores, eq(saleOrders.storeId, stores.storeId))
@@ -122,6 +132,7 @@ export const listLegacyOrders = withPermission(
       legacyCustomerId: r.order.legacyCustomerId,
       legacyRawSnapshot: r.order.legacyRawSnapshot,
       updatedAt: r.order.updatedAt.toISOString(),
+      hasMiniprogramAccount: r.clientOpenid !== null,
     }))
 
     return { data, total }
@@ -287,6 +298,86 @@ export const batchApproveLegacyOrders = withPermission(
 
     revalidatePath('/legacy-orders')
     return { success: true, approvedCount: items.length, affectedUserIds: [...affectedUserIds] }
+  },
+)
+
+/**
+ * 改金额：WorkFine 历史订单金额错误时核对前先修正。
+ *
+ * - CAS 守卫（updated_at）
+ * - 同步更新 total_amount + payable_amount（导入时两者相等）
+ * - 在 legacy_raw_snapshot.original_amount 留底（仅首次修改时写入；后续改不覆盖，保留最早值）
+ * - **不**触发标签重算 — approve 时统一重算
+ */
+export const updateLegacyOrderAmount = withPermission(
+  'legacy_order:update_amount',
+  async (
+    session,
+    saleOrderId: string,
+    newAmount: number,
+    expectedUpdatedAt: string,
+  ): Promise<{ success: true; from: string; to: string }> => {
+    if (!Number.isFinite(newAmount) || newAmount <= 0) {
+      throw new Error('INVALID_PARAMS: 金额必须为正数')
+    }
+    // 限制小数位数 + 上限，防错填
+    if (newAmount > 9999999.99) {
+      throw new Error('INVALID_PARAMS: 金额过大')
+    }
+    const newAmountStr = newAmount.toFixed(2)
+    const expectedDate = new Date(expectedUpdatedAt)
+
+    const previousAmount = await db.transaction(async (tx) => {
+      // 读旧值（用作精确 from / to 审计；与 CAS 同条件，确保读到的就是即将被更新的行）
+      const oldRes = await tx.execute(sql`
+        SELECT total_amount
+          FROM sale_orders
+         WHERE sale_order_id = ${saleOrderId}
+           AND legacy_source = 'workfine'
+           AND status = '未审核'
+           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+      `)
+      const oldRows = oldRes as unknown as Array<{ total_amount: string }>
+      if (oldRows.length === 0) {
+        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+      }
+      const prev = oldRows[0].total_amount
+
+      // legacy_raw_snapshot.original_amount: 首次修改时写入当前 total_amount（最早值）；
+      // 后续修改保留早先 original_amount 不覆盖。
+      const updRes = await tx.execute(sql`
+        UPDATE sale_orders
+           SET total_amount = ${newAmountStr}::numeric,
+               payable_amount = ${newAmountStr}::numeric,
+               legacy_raw_snapshot = jsonb_set(
+                 COALESCE(legacy_raw_snapshot, '{}'::jsonb),
+                 '{original_amount}',
+                 CASE
+                   WHEN legacy_raw_snapshot ? 'original_amount'
+                     THEN legacy_raw_snapshot->'original_amount'
+                   ELSE to_jsonb(total_amount)
+                 END,
+                 true
+               ),
+               updated_at = NOW()
+         WHERE sale_order_id = ${saleOrderId}
+           AND legacy_source = 'workfine'
+           AND status = '未审核'
+           AND date_trunc('milliseconds', updated_at) = ${expectedDate}
+      `)
+      if (((updRes as { rowCount?: number }).rowCount ?? 0) === 0) {
+        throw new Error('CONFLICT: 订单已被审核或状态已变更，请刷新后重试')
+      }
+      return prev
+    })
+
+    await logOperation(session, 'legacy_order.update_amount', 'sale_order', saleOrderId, {
+      _v: 3,
+      _t: 'update',
+      changes: { totalAmount: { from: previousAmount, to: newAmountStr } },
+    })
+    revalidatePath('/legacy-orders')
+    return { success: true, from: previousAmount, to: newAmountStr }
   },
 )
 
