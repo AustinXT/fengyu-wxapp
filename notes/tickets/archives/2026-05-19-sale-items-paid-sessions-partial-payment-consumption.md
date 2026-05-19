@@ -1,11 +1,13 @@
-> ⚠️ Ticket，需用户拍板决策点后方可实施；勿在阅读后直接进入编码。
+> ✅ 已归档（2026-05-19）— 全部 DoD 完成；保留作为决策与实施记录。
+> 关联 commits：`c40bb3b` (4 端核心 + DB schema) / `781b85b` (NULL 兼容兜底) / `c1a4cb1` (link-12 强化 + link-45 新增)
 
 # Ticket: sale_items 新增 paid_sessions（已支付次数）——支持部分支付订单按支付比例消费
 
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-19 |
-| 实施状态 | **L0/L1/L2 已落地**（2026-05-19）；L3 单元 + 跨端 snapshot 完成；e2e 链路 link-XX 部分支付消费待补 |
+| 实施状态 | **已归档** — L0/L1/L2/L3 + e2e link-12 强化 + link-45 新增 全部完成，跨端 snapshot 守护就位 |
+| 归档日期 | 2026-05-19 |
 | 优先级 | **P1**（业务核心：当前部分支付订单完全无法消费——`service.create` 强行要求 `order_status='已支付'`） |
 | 端 | db / fengyu-staff / fengyu-client / fengyu-admin / payNotify（四端联动） |
 | 修复成本 | **L**（DB 字段 + 4 端 SQL/Action 改造 + 12 个前端页面改显示 + 跨端 snapshot 更新 + 新增 e2e 链路） |
@@ -311,8 +313,12 @@ WHERE sale_item_id = $2
 - [x] 前端：12 个页面（client 4 + staff 6 + admin 2）全部接入 paidSessions 展示；client/staff 加三段进度条（D10=A 主色 #C0322A）；service-create 选卡过滤 paid - used > 0；云函数 SELECT 同步追加 `si.paid_sessions` 字段返回
 - [x] staff e2e-cloudfn 单元：`bunx vitest run` 1148/1153（5 个 pre-existing 失败与本 ticket 无关，已通过 stash 验证）
 - [x] admin: `cd fengyu-admin && npx tsc --noEmit` 0 错误；`bunx vitest run` **1083/1083** 全过
-- [ ] **TODO**：admin e2e-chains link-12 加 paid_sessions 维度断言；link-8 部分支付 service.create 断言由 fail 改 pass；新增 link-XX-partial-payment-consume.spec.ts 完整链路（推荐独立 commit）
-- [ ] **TODO**：`bun fengyu-staff/tests/e2e-cloudfn/run-all.mjs` 真 PG 跑批；`bun fengyu-client/tests/e2e-cloudfn/run-all.mjs --module order`
+- [x] **link-12 加 paid_sessions 维度断言**（commit 改 SQL invariant 含 `(session_count - remaining_sessions) <= paid_sessions`；Step1 断言 paid=sc；Step2 断言 paid 不变 + used<=paid；INSERT 注入 paid_sessions=session_count）
+- [x] **link-45 新增**：`link-45-partial-payment-consume.spec.ts` — 注入部分支付订单（received=5000/total=10000，paid_sessions=5）→ UI 创建服务单 ✓ → SQL 模拟用满 paid → UI 验证 D6 锁死 → SQL 模拟回款 + 重算 → UI 重新可选
+- [~] **link-8** — 不涉及 service.create（仅多次回款累加），无需改
+- [x] **staff e2e-cloudfn 回归**：order/service module 跑批，**未引入新回归**（验证 `git checkout 旧代码 + 重跑 = 同样 fail`：smoke-order-create-sales / smoke-service-cancel / smoke-service-commission 均 pre-existing）
+- [x] **修复 NULL 兼容**（commit 781b85b）：staff `service.js` 校验 + admin `services.ts` 校验改 `paid = paid_sessions ?? session_count`；admin `completeServiceOrder` 原子 SQL 同步改 `COALESCE(paid_sessions, session_count)`。fixture 未写 paid_sessions 的旧 sale_items 视为全付（不引入 e2e 回归）
+- [x] **client e2e-cloudfn order**：5 spec pass / 1 spec fail（`create.spec` 缺 `products.is_enabled` 列 — pre-existing schema 漂移，与本 ticket 无关）
 
 ## 5.1 实施落地清单（commit 提示）
 
