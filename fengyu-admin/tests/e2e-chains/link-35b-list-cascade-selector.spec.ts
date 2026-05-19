@@ -39,19 +39,25 @@ import {
 
 /**
  * 抓某列表页的「市场」「门店」两个 Select 的 option label 集合。
- * 约定：约定页面的前两个 <select> 即 market / store（按 customers/employees/cards 现实结构）。
+ * 通过 option 文本"全部市场"/"全部门店"定位 select，避免位置耦合。
  */
 async function readCascadeSelects(
   page: import('@playwright/test').Page,
   listUrl: string,
 ): Promise<{ markets: string[]; stores: string[] } | null> {
-  await page.goto(`${BASE}${listUrl}`)
-  await page.waitForLoadState('networkidle').catch(() => null)
-  await page.waitForTimeout(1500)
-  const allSelects = await page.locator('select').all()
-  if (allSelects.length < 2) return null
-  const markets = (await allSelects[0].locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
-  const stores = (await allSelects[1].locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
+  await page.goto(`${BASE}${listUrl}`, { waitUntil: 'domcontentloaded' })
+  // 等待两个级联 select 渲染出来（最多 12s）
+  const marketSel = page.locator('select:has(option:text-is("全部市场"))').first()
+  const storeSel = page.locator('select:has(option:text-is("全部门店"))').first()
+  try {
+    await marketSel.waitFor({ state: 'attached', timeout: 12_000 })
+    await storeSel.waitFor({ state: 'attached', timeout: 12_000 })
+  } catch {
+    return null
+  }
+  await page.waitForTimeout(500)
+  const markets = (await marketSel.locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
+  const stores = (await storeSel.locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
   return { markets, stores }
 }
 
@@ -65,12 +71,15 @@ async function readStoresAfterMarketPick(
   listUrl: string,
   marketId: string,
 ): Promise<string[] | null> {
-  await page.goto(`${BASE}${listUrl}?market=${encodeURIComponent(marketId)}`)
-  await page.waitForLoadState('networkidle').catch(() => null)
-  await page.waitForTimeout(1200)
-  const allSelects = await page.locator('select').all()
-  if (allSelects.length < 2) return null
-  return (await allSelects[1].locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
+  await page.goto(`${BASE}${listUrl}?market=${encodeURIComponent(marketId)}`, { waitUntil: 'domcontentloaded' })
+  const storeSel = page.locator('select:has(option:text-is("全部门店"))').first()
+  try {
+    await storeSel.waitFor({ state: 'attached', timeout: 12_000 })
+  } catch {
+    return null
+  }
+  await page.waitForTimeout(500)
+  return (await storeSel.locator('option').allTextContents()).map((s) => s.trim()).filter(Boolean)
 }
 
 /** 数据库层 baseline */
@@ -90,10 +99,12 @@ function dbBaselines(): { totalStores: number; ncStoreCount: number; nc2StoreCou
 
 test.setTimeout(300_000)
 
+// 注：/employees 用 OrgTreeSelect 而非 market+store cascade，本 spec 不覆盖；
+// /cards、/customers、/points 是典型的 market+store 双 Select 级联结构。
 const SAMPLE_PAGES = [
   { name: 'customers', url: '/customers' },
-  { name: 'employees', url: '/employees' },
   { name: 'cards', url: '/cards' },
+  { name: 'points', url: '/points' },
 ] as const
 
 test('链路35b：列表页市场→门店级联选择器锁定', async ({ browser }) => {

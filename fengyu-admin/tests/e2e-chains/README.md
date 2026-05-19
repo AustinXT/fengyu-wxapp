@@ -1632,6 +1632,33 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 **spec**：`link-35-store-selector-cascade.spec.ts`
 **主题**：在 `/orders/create` 向导 Step 3 的「门店」select 下拉中，店长仅见自店、市场经理见所辖门店、admin 见全部。验证 server-side `getStores` + scopeCondition 在 UI 下拉数据流上生效。
 
+### 链路 35b：列表页市场→门店级联选择器锁定（2026-05-19 补完）
+
+**spec**：`link-35b-list-cascade-selector.spec.ts`
+**主题**：admin 7 个列表页（/customers、/employees、/stores、/cards、/coupons、/points、/card-transactions）带「市场 + 门店」二级级联筛选器；`stores` 由 `getStores()` server-side scope 过滤，`orgNodes`（市场）未过滤但级联后 `filteredStores` 自然为空。抽样 3 页（customers/employees/cards）验证：
+- MGR(nc01)：stores 下拉只见 1 店；选"南昌市场2" → filteredStores=空
+- MKT(南昌)：stores 下拉 = 南昌市场旗下 31 店；选"南昌市场2" → filteredStores=空
+- ADM：stores 全部、markets 全部；级联功能可用
+**注**：URL 直接注入 `?store=他店` 越权已由 link-32（数据隔离）兜底，本 spec 不重复验证。
+
+### 链路 35c：表单 store/employee select 锁定（2026-05-19 补完）
+
+**spec**：`link-35c-form-store-select.spec.ts`
+**主题**：admin 表单页的 store/employee select 应严格按 scope 过滤。覆盖 `/services/create` 的"门店 + 负责美容师"双下拉（employee 联动 store），并验证菜单/路由守卫：
+- MGR(nc01)：services/create 仅见 nc01 + 自店员工；直接访问 `/employees/new` `/permissions` → 拒
+- MKT(南昌)：services/create 见南昌旗下门店 + 市场内员工
+- ADM：services/create 全部门店；可访问 `/employees/new`
+- HR：可访问 `/employees/new`，store 下拉含全部门店（HR 是 HQ scope）
+
+### 链路 35d：OrgTreeSelect 与 /permissions scope 守卫（2026-05-19 补完）
+
+**spec**：`link-35d-org-tree-picker.spec.ts`
+**主题**：admin 仓库唯一的"组织树挑选器"出现在 `/permissions` 的"分配角色"对话框（`OrgTreeSelect` 组件）。由于 org 域 CRUD + permissions:assign 仅 admin/hr 触达，二者均 HQ scope，UI 上不存在"越权选父节点"路径；本 spec 转而验证：
+- MGR 直接访问 `/permissions` → 拒（菜单可见性 + route guard）
+- ADM 视角下 OrgTreeSelect 排除"部门"类型（excludeTypes 实际生效）
+- ADM 视角下 OrgTreeSelect 渲染节点数 ≈ DB 非部门节点数（HQ + 市场 + 门店全部可见）
+**说明**：server-side `isNodeInScope()`（actions/org.ts:18-37）由代码审计覆盖，本 spec 不重复测。
+
 ### 链路 36：调店后旧 session 快照行为
 
 **spec**：`link-36-employee-relocate-session.spec.ts`
@@ -1710,8 +1737,11 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 | 29 | link-29-coupon-item-restricted | ✅ PASS | 8/8 | 命中缦之羽 SKU ¥100 → 折 ¥30 → 实付 ¥70 + applicable_category_ids 字段断言双向 | — | — |
 | 30 | link-30-coupon-min-spend-expired | ✅ PASS | 9/9 | 凑单 ¥200 时 min500 券与已过期券都不在 select；正例对照 DISCOUNT/COUPON-01 可见 | — | — |
 | 31 | link-31-order-internal-type | ✅ PASS | 8/8 | UI 反例 3 路（按钮 pressed / 优惠券不渲染 / 改价 input 全 disabled）+ DB 4 段（type=内部单 / coupon_id=NULL / prepaid=0 / total 半价 ¥50）| — | — |
+| 35b | link-35b-list-cascade-selector | ⏳ TODO | — | 2026-05-19 新增：列表页市场→门店级联选择器锁定（customers/employees/cards 抽样）| — | 待首跑 |
+| 35c | link-35c-form-store-select | ⏳ TODO | — | 2026-05-19 新增：services/create + employees/new 表单 store/employee select 范围 + MGR 越权访问拒 | — | 待首跑 |
+| 35d | link-35d-org-tree-picker | ⏳ TODO | — | 2026-05-19 新增：/permissions OrgTreeSelect 排除"部门" + MGR 路由拒 | — | 待首跑 |
 
-**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）**。25-31 全部一次跑通（含 fixture bundle SKU 关联修正 + 2 个 spec 微调），无 admin bug 暴露。
+**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 TODO（35b/35c/35d，2026-05-19 新增待跑）**。25-31 全部一次跑通（含 fixture bundle SKU 关联修正 + 2 个 spec 微调），无 admin bug 暴露。
 
 **未持久化产物**：
 - 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）
@@ -1727,6 +1757,38 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 
 **待你判断**：
 - 无（25-31 全部 PASS，没有 admin 端疑似 bug）
+
+---
+
+## 1.E staff 端 scope 镜像链路（双端一致性引用）
+
+admin 端通过 `PERMISSION_MATRIX` + `scopeCondition` + `expandScopeStoreIds` 实施 scope；
+staff 端（staffApi 云函数）独立实施同等约束（`cloudfunctions/staffApi/utils/scope.js` +
+`mgmt-dashboard.validateScope` + `mgmt-product.validateScope` + `assertCustomerInScope`）。
+
+两端实现**物理隔离**（per CLAUDE.md "禁止跨端共享代码目录" 约束 + memory
+[no-shared-cloudfunctions](../../notes/memory/feedback_no_shared_cloudfunctions.md)），
+但 scope 语义必须保持一致。staff 端镜像链路位于：
+
+`fengyu-staff/tests/scope-isolation/README.md`
+
+7 条链路与本 README 对照表：
+
+| 编号 | staff 链路主题 | 对应 admin 链路 |
+|------|---------------|---------------|
+| S-1 | `customer.search` 跨店不可见 | 32（列表数据隔离） |
+| S-2 | `customer.giftHistory` / `paidOrders` / `calendar` 店内过滤 | 32 |
+| S-3 | `customer.assign` 越权拒绝（`assertCustomerInScope`） | 37（cross-store action） |
+| S-4 | `mgmtDashboard.scopeOptions` 级联返回 | 35b（admin 列表级联） |
+| S-5 | `mgmtDashboard.summary` `validateScope` 校验 | 33（市场聚合） + 34（admin 基线） |
+| S-6 | `mgmt-product.entryDates` scope 一致 | 32 |
+| S-7 | `order.create` 不可指定他店 `store_id` | 37 |
+
+**双端一致性维护规则**：
+- admin 修改 scope 行为 → 同步检查 staff 端等价路径（customer / mgmt-dashboard / mgmt-product / order）
+- staff 修改 scope 行为 → 同步回查 admin actions + `lib/permissions.ts:scopeCondition`
+- 一致性硬约束：`cross-end-sql-snapshot.test.js` + `cross-end-error-codes-snapshot.test.ts`
+  字面量 snapshot 任一漂移立即 fail（admin / staff / clientApi / payNotify 四端）
 
 ---
 
@@ -1888,6 +1950,9 @@ SQL
 | P0 | 链路 7（订单金额三方对账）| 单笔金额方程不立 → 财务报表错 |
 | P0 | 链路 13（积分体系闭环）| 与等级/退款双向联动，是另一条"虚拟钱"通道 |
 | P0 | 链路 19（角色权限即时收回）| 安全相关，离职/调岗场景必测 |
+| P0 | 链路 35b（列表页级联选择器锁定）| 7 个列表页样板，UI 越权最常见入口 |
+| P1 | 链路 35c（表单 store/employee select 锁定）| 服务单/分配场景的提交侧防护 |
+| P2 | 链路 35d（OrgTreeSelect + permissions 守卫）| 仅 admin/hr 可达，覆盖度补足而已 |
 | P1 | 链路 1（开单 → 分配）| 最高频业务，链路 7-9 的前置 |
 | P1 | 链路 8（多次回款累加）| 部分支付 → 全付的状态机 |
 | P1 | 链路 9（分配比例对账）| 提成核算关键 |
@@ -2012,3 +2077,6 @@ SQL
 | 链路 29 | `link-29-coupon-item-restricted.spec.ts` | 已实现（2026-05-18） |
 | 链路 30 | `link-30-coupon-min-spend-expired.spec.ts` | 已实现（2026-05-18） |
 | 链路 31 | `link-31-order-internal-type.spec.ts` | 已实现（2026-05-18） |
+| 链路 35b | `link-35b-list-cascade-selector.spec.ts` | 已实现（2026-05-19，3 抽样列表页 + 跨市场反例） |
+| 链路 35c | `link-35c-form-store-select.spec.ts` | 已实现（2026-05-19，services/create 联动 + MGR 路由拒） |
+| 链路 35d | `link-35d-org-tree-picker.spec.ts` | 已实现（2026-05-19，OrgTreeSelect excludeTypes + MGR 路由拒） |
