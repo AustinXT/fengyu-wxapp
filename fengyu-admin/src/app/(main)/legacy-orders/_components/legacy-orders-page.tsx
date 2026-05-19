@@ -25,6 +25,7 @@ import {
   approveLegacyOrder,
   batchApproveLegacyOrders,
   rejectLegacyOrder,
+  updateLegacyOrderAmount,
   updateLegacyOrderPhone,
   type LegacyOrderRow,
 } from "@/actions/legacy-orders"
@@ -58,6 +59,8 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
   const [rejectTarget, setRejectTarget] = useState<LegacyOrderRow | null>(null)
   const [phoneTarget, setPhoneTarget] = useState<LegacyOrderRow | null>(null)
   const [newPhone, setNewPhone] = useState("")
+  const [amountTarget, setAmountTarget] = useState<LegacyOrderRow | null>(null)
+  const [newAmount, setNewAmount] = useState("")
   const [batchOpen, setBatchOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
@@ -126,6 +129,31 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
       setPending(false)
       setPhoneTarget(null)
       setNewPhone("")
+    }
+  }
+
+  const handleUpdateAmount = async () => {
+    if (!amountTarget) return
+    const parsed = Number(newAmount)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      toast.error("请输入大于 0 的金额")
+      return
+    }
+    setPending(true)
+    try {
+      const res = await updateLegacyOrderAmount(
+        amountTarget.saleOrderId,
+        parsed,
+        amountTarget.updatedAt,
+      )
+      toast.success(`金额已更新：¥${res.from} → ¥${res.to}（核对通过后才重算标签）`)
+      refreshAndClear()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "更新失败")
+    } finally {
+      setPending(false)
+      setAmountTarget(null)
+      setNewAmount("")
     }
   }
 
@@ -290,17 +318,29 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
                       <td className="px-4 py-3 font-mono">{formatPhoneSafe(o.clientPhone) || "-"}</td>
                       <td className="px-4 py-3">{o.customerName || o.clientName || "-"}</td>
                       <td className="px-4 py-3">{o.storeName || "-"}</td>
-                      <td className="px-4 py-3 text-right font-medium">¥ {Number(o.totalAmount).toFixed(2)}</td>
+                      <td className="px-4 py-3 text-right font-medium">
+                        ¥ {Number(o.totalAmount).toFixed(2)}
+                        {(() => {
+                          const snap = o.legacyRawSnapshot as { original_amount?: number | string } | null
+                          const orig = snap?.original_amount
+                          if (orig === undefined || orig === null) return null
+                          return (
+                            <div className="text-[10px] text-[#999999] line-through font-normal">
+                              原 ¥ {Number(orig).toFixed(2)}
+                            </div>
+                          )
+                        })()}
+                      </td>
                       <td className="px-4 py-3 text-[#999999]">{formatDateTime(o.saleOrderDatetime)}</td>
                       <td className="px-4 py-3 text-center">
-                        {o.clientUserId ? (
+                        {o.hasMiniprogramAccount ? (
                           <span className="text-[#3D8A5A]">✓ 已匹配</span>
                         ) : (
                           <span className="text-[#D94040]">✗ 未匹配</span>
                         )}
                       </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex gap-1">
+                        <div className="flex flex-wrap gap-1">
                           <Button
                             size="sm"
                             variant="outline"
@@ -317,6 +357,17 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
                             disabled={pending}
                           >
                             作废
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setAmountTarget(o)
+                              setNewAmount(String(Number(o.totalAmount).toFixed(2)))
+                            }}
+                            disabled={pending}
+                          >
+                            改金额
                           </Button>
                           <Button
                             size="sm"
@@ -419,6 +470,45 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
             取消
           </Button>
           <Button onClick={handleUpdatePhone} disabled={pending}>
+            确认更新
+          </Button>
+        </DialogFooter>
+      </Dialog>
+
+      {/* 改金额 */}
+      <Dialog open={!!amountTarget} onOpenChange={(open) => !open && setAmountTarget(null)}>
+        <DialogHeader>
+          <DialogTitle>修改订单金额（WorkFine 错填修正）</DialogTitle>
+        </DialogHeader>
+        <div className="mt-4 space-y-2">
+          <label className="text-sm text-[#666666]">
+            当前金额：¥ {amountTarget ? Number(amountTarget.totalAmount).toFixed(2) : "-"}
+          </label>
+          <Input
+            type="number"
+            step="0.01"
+            min="0"
+            value={newAmount}
+            onChange={(e) => setNewAmount(e.target.value)}
+            placeholder="新金额"
+          />
+          <p className="text-xs text-[#999999]">
+            修改后将保留 WorkFine 原始金额到 legacy_raw_snapshot.original_amount（仅首次修改写入）。
+            <br />
+            <strong>不</strong>会立即重算顾客标签 / 等级 — 核对通过后才统一重算。
+          </p>
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setAmountTarget(null)
+              setNewAmount("")
+            }}
+          >
+            取消
+          </Button>
+          <Button onClick={handleUpdateAmount} disabled={pending}>
             确认更新
           </Button>
         </DialogFooter>
