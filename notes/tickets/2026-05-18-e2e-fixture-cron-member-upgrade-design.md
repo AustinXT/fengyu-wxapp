@@ -80,3 +80,25 @@ documents and moves on; spec 标 `.skip()` 直到 fixture 拍板。
 - `notes/memory/project_member_level_rules.md`（初钻阈值 1980）
 - `src/cron/steps/refresh-member-levels.ts`
 - `src/cron/steps/grant-birthday-benefits.ts`
+
+---
+
+## 完成记录
+
+- **完成日期**：2026-05-19
+- **决策**：D1=B（spec beforeAll 真实 admin createOrder + 收款顶 fixture spend）
+- **改动范围**（2 文件）：
+  - `fengyu-admin/tests/e2e-chains/link-6-member-upgrade.spec.ts` — beforeAll 新增 chromium launch + 真实 admin /orders/create 流程：登录 MGR (13900139001 / fengyu2026) → 选 fixture 顾客 (13800138000) → 缦之羽分类下 SKU1 (洗-无创纹身 ¥100) 累加 20 件 → 凑 ¥2000 → 提交销售单 + 线下支付 → 确认收款。beforeAll 末校验 12mo spend ≥ 1980，否则报错。afterAll 用 `cleanupSaleOrder` 完整回滚补 spend 订单（含 sale_items / sale_allocations / payments / 自引用回款单）
+  - `fengyu-admin/tests/e2e-chains/link-22-cron-birthday-boundary.spec.ts` — 同 link-6 beforeAll 流程；额外保留原有 `member_level='初钻'` 设置（Q2 答案，避免 cron STEP 2 即便看到 spend ≥ 1980 还要触发"升级"消息流）；afterAll 加 `cleanupSaleOrder` 清补 spend 订单
+- **TypeScript 类型检查**：`npx tsc --noEmit` 全项目 0 错误
+- **Playwright 解析**：`bunx playwright test --list` 7 个 test 全部正确枚举
+- **DoD 偏差**：
+  - [x] beforeAll 真实 admin createOrder + confirmOfflinePayment ✓
+  - [x] beforeAll 校验 12mo spend ≥ 1980 ✓
+  - [x] Q2 答案：link-22 同步把 member_level 顶到 '初钻'（link-6 仍走 NULL→初钻 升级路径，因为 link-6 测的就是升级行为本身）✓
+  - [x] afterAll cleanupSaleOrder 清补 spend 订单 ✓
+  - [⚠️] DoD 1 测试 PASS：**SKIP 执行验证**。当前 `fengyu-admin/.env.local` 的 `DATABASE_URL` 指向 5434/fengyu（生产业务库），而 e2e-chains spec 的 psql 仍连 5433/fengyu_wxapp（测试库）；FY-TEST-MGR (13900139001) 测试账号仅存在于 5433。admin dev server login 因 5434 无此账号 → 测试超时。此 DB 不一致是已知问题，归属 ticket `2026-05-18-e2e-chains-test-db-mismatch.md`（用户指令"以当前 README 写的连接串为准，B1 fixture 迁移在另一个 agent 中进行"，本 agent 不动 admin 配置）
+- **关联引用**：
+  - 配套 ticket `2026-05-18-e2e-link-10-card-pollution.md`（D2）同批归档
+  - 关联 memory：`project_test_fixture_resting_state.md`、`project_member_level_rules.md`
+  - 待修 DB 配置：`2026-05-18-e2e-chains-test-db-mismatch.md`

@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待实施 |
+| 实施状态 | ✅ 已完成（2026-05-19，方案 A）|
 | 优先级 | **P1**（阻塞 customer_mgr 角色全部顾客详情操作；link-16 / 18 / 3 / 12 多条 e2e 被牵连）|
 | 端 | fengyu-admin |
 | 修复成本 | **S**（要么补权限、要么改 page.tsx 数据获取条件）|
@@ -91,3 +91,16 @@
 - `src/lib/with-permission.ts`（HOF 入口拦截）
 - `tests/e2e-chains/link-16-customer-promoter-snapshot.spec.ts`
 - `tests/e2e-chains/link-18-operation-log-integrity.spec.ts`
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 决策：方案 A（page.tsx 条件 fetch）
+- 实际落地：
+  - `fengyu-admin/src/app/(main)/customers/[id]/page.tsx` — 拆出 `getSession()` 先取，按 `hasPermission(session, 'employee:list')` / `'store:list'` 判定是否调 `getEmployees()` / `getStores()`，无权限时传 `[]`
+- DoD：
+  - [x] customer_mgr (FY-TEST-CSM) 进 `/customers/[id]` 不再触发 `PERMISSION_DENIED: employee:list / store:list`
+  - [x] admin / manager 行为不变（继续 fetch）
+  - [x] `npx tsc --noEmit` 0 错

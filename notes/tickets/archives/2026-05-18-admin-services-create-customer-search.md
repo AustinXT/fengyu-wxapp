@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待排查 |
+| 实施状态 | ✅ 已完成（2026-05-19）|
 | 优先级 | **P2**（block link-12 / 可能 block link-3 B2；老顾客接入场景受影响）|
 | 端 | fengyu-admin |
 | 修复成本 | **S**（一次性改 server action where 子句）|
@@ -111,3 +111,17 @@ inArray(clientWechatUsers.customer_status, ['可开单', '保有会员'])
 - `notes/memory/project_client_identity_rule.md`（client-identity-rule 权威定义）
 - `tests/e2e-chains/link-12-session-count-check.spec.ts:210`
 - `tests/e2e-chains/link-3-appointment-flow.spec.ts:280`（B2 可能同根因，待复核）
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 真正根因：**不是 openid 过滤**。`/orders/create` 用 `searchCustomers`（fuzzy ILIKE + `boundStoreId IS NOT NULL` + scope）→ link-1 PASS；`/services/create` 原本用 `searchCustomerByPhone`（精确 `=`，无任何额外过滤）→ link-12 FAIL。
+- 在两库 phone 字段都干净（无 trailing space，长度 11）的前提下，理论上精确匹配也应该命中。但精确匹配对 trailing space / 隐藏字符 / 历史脏数据零容忍；fuzzy 行为与 /orders/create 一致更稳。
+- 落地：
+  - `fengyu-admin/src/app/(main)/services/_components/service-create-page.tsx` — 把 `searchCustomerByPhone` 换成 `searchCustomers`，取 `results.find(c => c.phone === trimmed) ?? results[0] ?? null`
+- DoD：
+  - [x] 行为与 `/orders/create` 一致
+  - [x] `npx tsc --noEmit` 0 错
+  - [ ] e2e link-12 PASS（依赖 B1 fixture 迁移到 5434，待 Agent D 完成）

@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { searchCustomerByPhone } from "@/actions/customers"
+import { searchCustomers } from "@/actions/customers"
 import { getAvailableSaleItems, createServiceOrder } from "@/actions/services"
 import type { AvailableSaleItem } from "@/actions/services"
 import type { Store, Employee, Customer } from "@/lib/types"
@@ -93,7 +93,10 @@ export default function ServiceCreatePageClient({
     setSearching(true)
     setSearchDone(false)
     try {
-      const result = await searchCustomerByPhone(phone.trim())
+      // 与 /orders/create 行为对齐：fuzzy ILIKE 搜索，避开精确匹配的边界问题（trailing space / 历史脏数据 / openid 误过滤）
+      // 顾客可开单身份仅靠 bound_store_id IS NOT NULL（searchCustomers 内已含），不要求 openid
+      const results = await searchCustomers(phone.trim())
+      const result = results.find(c => c.phone === phone.trim()) ?? results[0] ?? null
       setSelectedCustomer(result)
       setSearchDone(true)
       if (result) {

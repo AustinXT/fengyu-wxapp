@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待排查 |
+| 实施状态 | ✅ 已完成（2026-05-19）|
 | 优先级 | **P1**（看板是高频运营页，数字不准 = 经营决策错）|
 | 端 | fengyu-admin |
 | 修复成本 | **S–M**（视根因，1 个查询缺过滤 / scope 注入路径 bug / 时区或日期窗口 bug）|
@@ -108,3 +108,20 @@ C. 现状（看不到）是 bug 但不优先修
 - `src/app/(main)/dashboard/page.tsx`
 - `tests/e2e-chains/link-17-dashboard-three-role-aggregation.spec.ts`
 - `notes/memory/project_dashboard_time_dimensions.md`（dashboard 时间维度规则）
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 真正根因：**时区 cast 方向反了**。`paid_at` / `sale_order_datetime` 列是 `timestamp WITHOUT time zone`（Drizzle 写入 `new Date()` 以 UTC 字面值落库），但 dashboard SQL 写的是 `(paid_at AT TIME ZONE 'Asia/Shanghai')::date` — PG 把这个 naive 时间**当作 Shanghai 本地时间**重新解释，再回 UTC 偏 8 小时。结果落在 16:00 UTC 之后的订单（次日凌晨 Shanghai）会被错算成前一天。
+- 5434 实测：FY-XSD-WX-2605180001 paid_at=2026-05-17 19:34（naive，实为 UTC）；buggy ::date='2026-05-17'，正确应是 '2026-05-18'。
+- 落地：
+  - `fengyu-admin/src/actions/dashboard.ts` L92/98/104/110/125/131 — 6 处 `(<col> AT TIME ZONE 'Asia/Shanghai')` 改为 `(<col> AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai')`
+  - L85/151 `NOW() AT TIME ZONE 'Asia/Shanghai'` 不动（NOW() 返回 timestamptz，cast 方向正确）
+- Q2 决策：admin 角色 dashboard 不需要"今日业绩"卡 — 当前 backend 已走 `roleContext='admin' + ZERO_BUSINESS` 分支，无需 UI 改动。
+- 后续：staff `routes/mgmt-customer.js` + `routes/customer.js` 有同 bug 模式（5 处），按"不抽共享目录"约束需要独立修 + 跨端 snapshot，另起 ticket。
+- DoD：
+  - [x] dashboard.ts 6 处改完
+  - [x] `npx tsc --noEmit` 0 错
+  - [ ] e2e link-17 PASS（依赖 B1 fixture 迁移到 5434，待 Agent D 完成）
