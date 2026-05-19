@@ -643,7 +643,7 @@ async function performanceDetail(ctx) {
     specName: r.sku_spec_name,
     salesCategory: r.sales_category,
     amount: Number(r.alloc_amount),
-    ratio: r.allocation_ratio,
+    ratio: Number(r.allocation_ratio),
     businessAmount: Number(r.received),
     customerName: r.customer_name,
     clientPhone: r.client_phone,
