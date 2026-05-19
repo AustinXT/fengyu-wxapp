@@ -104,12 +104,33 @@ async function caseOversize() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '图片大小超过 2MB' })
 }
 
+/**
+ * routes/auth.js line 433-436 uploadStaffAvatar 函数体首行守卫：
+ *   if (!ctx.event._fromHttp || ctx.event._hmacVerified !== true) {
+ *     throw new Error('PERMISSION_DENIED: 仅允许 HMAC 验签的 HTTP 入口')
+ *   }
+ *
+ * 入口分流：
+ *   - HTTP 触发器入口（handleHttpEntry）做 HMAC 校验通过后才注入 _fromHttp=true + _hmacVerified=true
+ *   - cloud.callFunction 入口（本测试 invokeAs）走 routes 表，ctx.event 不会有这两个 flag
+ *     → 二次断言失败，throw PERMISSION_DENIED
+ *
+ * 验证：通过 cloud.callFunction 路径直调 auth.uploadStaffAvatar → PERMISSION_DENIED
+ */
+async function caseHttpEntryRequiresFromHttpFlag() {
+  await ensureTestStore()
+  await seedUser()
+  const res = await invokeAs(TEST_OPENID, 'auth.uploadStaffAvatar', {})
+  expectError(res, 'PERMISSION_DENIED', { messageIncludes: 'HMAC' })
+}
+
 const CASES = [
   ['happy: base64 + ext=jpg → fileID + PG avatar_url', caseHappy],
   ['ext=gif → INVALID_PARAMS (unsupported)', caseUnsupportedExt],
   ['no base64 → INVALID_PARAMS', caseMissingBase64],
   ['empty base64 → INVALID_PARAMS (caught by falsy check first)', caseEmptyBase64],
   ['> 2MB → INVALID_PARAMS', caseOversize],
+  ['uploadStaffAvatar via cloud.callFunction → PERMISSION_DENIED (missing _fromHttp)', caseHttpEntryRequiresFromHttpFlag],
 ]
 
 let pass = 0, fail = 0

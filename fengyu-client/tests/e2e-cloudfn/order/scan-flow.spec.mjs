@@ -353,6 +353,78 @@ async function caseConfirmPrepaidFullLatestVersionOK() {
   }
 }
 
+/**
+ * 2026-05-19 dirty-read 后续守卫：scanAdjust **不做** 版本号校验。
+ *
+ * 路由源：routes/order.js 1418-1525 行 scanAdjust 体内仅 SELECT card_id/balance/updated_at
+ * 作为返回快照，没有任何 expectedBalanceUpdatedAt 入参校验。
+ * 与 confirmPrepaidFull 形成对照：扣款链路才严格 CAS，预选/调整链路允许过期读。
+ *
+ * 用例契约：
+ *   - 第一次 scanAdjust → 拿到 balanceSnapshot.updatedAt 作为 ts1
+ *   - 外部 SQL `UPDATE prepaid_cards SET balance = balance + 0, updated_at = NOW()` 强制
+ *     推进 PG updated_at（prepaid_cards 表无 ON UPDATE 触发器，需显式 SET）
+ *   - 第二次 scanAdjust → balanceSnapshot.updatedAt = ts2，ts2 >= ts1，且仍 code=0
+ *     （证明 scanAdjust 不卡版本号，任何过期 expectedBalanceUpdatedAt 也不应触发 CONFLICT）
+ */
+async function caseStaleBalanceVersionInScanAdjust() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  const orderNo = `${NS}_SCN_STL2`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 300 })
+
+  // 第一次 scanAdjust
+  const res1 = await invokeAs(TEST_CLIENT_OPENID, 'order.scanAdjust', {
+    saleOrderId: orderNo,
+    useCard: true,
+    prepaidCardAmount: 100,
+    paymentMethod: '微信',
+  })
+  if (res1.code !== 0) throw new Error(`expect code=0, got ${res1.code}: ${res1.message}`)
+  if (!res1.data.balanceSnapshot?.updatedAt) {
+    throw new Error('expect first balanceSnapshot.updatedAt to be present')
+  }
+  const ts1 = new Date(res1.data.balanceSnapshot.updatedAt).getTime()
+
+  // 外部强制推进 updated_at（prepaid_cards 表无 PG ON UPDATE 触发器，需显式 SET）
+  // 等一拍避免 NOW() 与首次 ts 同毫秒
+  await new Promise(r => setTimeout(r, 50))
+  await pgQuery(
+    `UPDATE prepaid_cards SET balance = balance + 0, updated_at = NOW() WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+
+  // 第二次 scanAdjust：仍应 code=0，且 balanceSnapshot.updatedAt > ts1
+  // 同时塞一个"假装是上次记录的"过期 expectedBalanceUpdatedAt，验证 scanAdjust 不卡版本号
+  const stalleUpdatedAt = '2020-01-01T00:00:00.000Z'
+  const res2 = await invokeAs(TEST_CLIENT_OPENID, 'order.scanAdjust', {
+    saleOrderId: orderNo,
+    useCard: true,
+    prepaidCardAmount: 100,
+    paymentMethod: '微信',
+    expectedBalanceUpdatedAt: stalleUpdatedAt,
+  })
+  if (res2.code !== 0) {
+    throw new Error(`expect scanAdjust to ignore stale version, got code=${res2.code} ${res2.message}`)
+  }
+  if (!res2.data.balanceSnapshot?.updatedAt) {
+    throw new Error('expect second balanceSnapshot.updatedAt to be present')
+  }
+  const ts2 = new Date(res2.data.balanceSnapshot.updatedAt).getTime()
+  if (!(ts2 >= ts1)) {
+    throw new Error(`expect ts2(${ts2}) >= ts1(${ts1}) after external updated_at bump`)
+  }
+  // 余额未变（scanAdjust 不扣款）
+  const cardRows = await pgQuery(
+    `SELECT balance FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  if (Number(cardRows[0].balance) !== 500) {
+    throw new Error(`expect balance unchanged=500, got: ${cardRows[0].balance}`)
+  }
+}
+
 const CASES = [
   ['scanDetail happy (staff-opened, status=待支付) → returns order + items', caseScanDetailHappy],
   ['scanAdjust full prepaid (300 from 1000 balance, payable→0)', caseScanAdjustFullPrepaid],
@@ -363,6 +435,7 @@ const CASES = [
   ['scanAdjust 返回 balanceSnapshot 含 updatedAt 字段', caseScanAdjustReturnsBalanceSnapshot],
   ['confirmPrepaidFull 用过期版本号 → CONFLICT，余额未变', caseConfirmPrepaidFullStaleVersionConflict],
   ['confirmPrepaidFull 用最新版本号 → 成功', caseConfirmPrepaidFullLatestVersionOK],
+  ['scanAdjust 不做版本号校验 → 过期 expectedBalanceUpdatedAt 仍 code=0', caseStaleBalanceVersionInScanAdjust],
 ]
 
 let pass = 0, fail = 0

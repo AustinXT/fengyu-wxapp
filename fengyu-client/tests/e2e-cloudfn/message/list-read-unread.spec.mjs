@@ -120,6 +120,56 @@ async function caseReadMissingMessageId() {
   expectError(res, 'INVALID_PARAMS', { messageIncludes: '缺少 messageId' })
 }
 
+/**
+ * 路由源：routes/message.js line 40-50
+ * read action 仅接受单个 messageId（无 messageIds 数组分支），所以批量已读
+ * 由前端循环调用实现。本 case 验证 N-1 一致性：N 条未读 → 循环已读 N-1 条 →
+ * unreadCount 应返回 1（剩 1 条未读）。
+ *
+ * 用例：N=4 条未读 → 循环 read({messageId}) 3 次 → unreadCount=1
+ */
+async function caseMessageReadThenUnreadConsistency() {
+  await createTestClient()
+  const ids = []
+  for (let i = 0; i < 4; i++) {
+    const { id } = await createTestMessage({
+      recipientType: '客户',
+      isRead: false,
+      title: `${NS}_batch_${i}`,
+    })
+    ids.push(id)
+  }
+
+  // 循环 read 前 3 条
+  for (const id of ids.slice(0, 3)) {
+    const r = await invokeAs(TEST_CLIENT_OPENID, 'message.read', { messageId: id })
+    if (r.code !== 0) throw new Error(`expect read code=0, got ${r.code}: ${r.message}`)
+    if (r.data.success !== true) throw new Error(`expect success=true, got ${r.data.success}`)
+  }
+
+  // 立即调 unreadCount
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'message.unreadCount', {})
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data.count !== 1) {
+    throw new Error(`expect unreadCount=1 (3 read of 4), got ${res.data.count}`)
+  }
+
+  // 二次确认：第 4 条 PG 仍 false，前 3 条 PG 已是 true
+  const pgRows = await pgQuery(
+    `SELECT id, is_read FROM messages WHERE id = ANY($1::bigint[]) ORDER BY id`,
+    [ids]
+  )
+  const readMap = Object.fromEntries(pgRows.map(r => [String(r.id), r.is_read]))
+  for (const id of ids.slice(0, 3)) {
+    if (readMap[String(id)] !== true) {
+      throw new Error(`expect msg ${id} read=true, got ${readMap[String(id)]}`)
+    }
+  }
+  if (readMap[String(ids[3])] !== false) {
+    throw new Error(`expect msg ${ids[3]} read=false, got ${readMap[String(ids[3])]}`)
+  }
+}
+
 const CASES = [
   ['list 3 msgs → desc order', caseListDesc],
   ['list pagination → page=1 pageSize=2 returns 2', caseListPagination],
@@ -127,6 +177,7 @@ const CASES = [
   ['read cross-user → no-op (target stays unread)', caseReadCrossUser],
   ['unreadCount 3 of 5 → 3', caseUnreadCount],
   ['read missing messageId → INVALID_PARAMS', caseReadMissingMessageId],
+  ['批量 read 3 of 4 (循环单 id) → unreadCount=1', caseMessageReadThenUnreadConsistency],
 ]
 
 let pass = 0, fail = 0
