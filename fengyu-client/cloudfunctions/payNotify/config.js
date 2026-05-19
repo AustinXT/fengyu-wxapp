@@ -10,7 +10,13 @@
  * 失败兜底：返回 FALLBACK_THRESHOLD（1980）
  */
 
-const { Pool } = require('pg')
+const pg = require('pg')
+const { Pool } = pg
+
+// 全局 OID 解析：让 numeric/bigint 直接返回 JS Number 而不是字符串。
+// 安全前提：业务金额 ≤ 9999.99（numeric(10,2)）、积分单值 << 2^53，详见 db/schema/points.ts 注释。
+pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
+pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
 
 const FALLBACK_THRESHOLD = 1980
 const CACHE_TTL_MS = 5 * 60 * 1000

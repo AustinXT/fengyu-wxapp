@@ -22,8 +22,11 @@ const RECHARGE_VIRTUAL_SKU_ID = 'sku-recharge-virtual'
 let pgPool = null
 function getPg() {
   if (!pgPool) {
-    const { Pool } = require('pg')
-    pgPool = new Pool({
+    const pg = require('pg')
+    // 全局 OID 解析：numeric/bigint → JS Number（详见 db/pg.js 注释）
+    pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))
+    pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))
+    pgPool = new pg.Pool({
       connectionString: process.env.PG_CONNECTION_STRING,
       max: 3,
       idleTimeoutMillis: 60000
