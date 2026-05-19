@@ -175,6 +175,11 @@ async function create(ctx) {
     prepaidCardAmount: inputPrepaidCardAmount // 可选, 前端传的抵扣金额
   } = payload
 
+  // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
+  if (Array.isArray(inputCouponId)) {
+    throw new Error('INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持 1 张优惠券')
+  }
+
   if (!storeId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
     throw new Error('INVALID_PARAMS: 参数不完整')
   }

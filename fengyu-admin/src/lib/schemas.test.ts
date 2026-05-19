@@ -162,6 +162,19 @@ describe('createOrderSchema', () => {
     expect(createOrderSchema.safeParse({ ...validOrder, items: [badItem] }).success).toBe(false)
   })
 
+  // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券
+  it('J3 couponId 单值字符串通过', () => {
+    expect(createOrderSchema.safeParse({ ...validOrder, couponId: 'coupon-001' }).success).toBe(true)
+  })
+
+  it('J3 couponId null 通过（可选）', () => {
+    expect(createOrderSchema.safeParse({ ...validOrder, couponId: null }).success).toBe(true)
+  })
+
+  it('J3 couponId 数组拒绝（MULTIPLE_COUPON_NOT_SUPPORTED）', () => {
+    expect(createOrderSchema.safeParse({ ...validOrder, couponId: ['c1', 'c2'] }).success).toBe(false)
+  })
+
   it('多件商品通过', () => {
     const items = [
       validItem,

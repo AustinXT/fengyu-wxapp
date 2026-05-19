@@ -467,6 +467,82 @@ describe('order.create', () => {
     expect(ctx.result.status).toBe('待确认收款')
   })
 
+  test('J3 拒绝数组形式 couponId（一张订单仅支持 1 张券）', async () => {
+    // B9 ticket follow-up：防绕过 schema 直接传 couponId: ['c1','c2']
+    const ctx = createManagerCtx({
+      clientPhone: '13800001111',
+      clientName: 'X',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '线下',
+      couponId: ['c1', 'c2'],  // 数组形式应被拒绝
+    })
+
+    await expect(orderRoutes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*MULTIPLE_COUPON_NOT_SUPPORTED.*1 张优惠券/)
+  })
+
+  test('S2 拆行 + 优惠券分摊守恒：单次卡 ×10 + 满 500 减 50 券', async () => {
+    // B2 拆行 + B9 优惠券分摊端到端验证：
+    //   - 单次卡 ×10（单价 100）→ 拆 10 行 sale_items
+    //   - 现金券满 500 减 50 → 分摊到每行 received
+    //   - 守恒：sum(received) = 1000 - 50 = 950
+    const ctx = createManagerCtx({
+      clientPhone: '13800002222',
+      clientName: 'S2 顾客',
+      items: [{ skuId: 'sku-single', quantity: 10 }],
+      paymentMethod: '线下',
+      orderType: 'normal',
+      couponId: 'coupon-s2',
+    })
+
+    pg.query
+      .mockResolvedValueOnce([{ user_id: 'cu-001', bound_store_id: 'store-001' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        sku_id: 'sku-single',
+        product_id: 'prod-single',
+        product_type: '疗程卡',
+        spec_name: '单次身体护理',
+        price: '100.00',
+        special_price: null,
+        session_count: 1,
+        product_name: '身体护理',
+        sales_category: '自销自耗',
+        product_kind: '护理项目',
+      }])
+      .mockResolvedValueOnce([{
+        coupon_id: 'coupon-s2', user_id: 'cu-001',
+        coupon_type: '现金券', discount_value: '50', min_spend: '500',
+        applicable_store_ids: null, applicable_category_ids: null,
+        expire_at: new Date(Date.now() + 86400000),
+      }])
+      .mockResolvedValueOnce([{ sku_id: 'sku-single', category_id: 'cat-001' }])
+
+    const clientQuery = makeClientQueryMock({ rows: [], rowCount: 1 })
+    pg.transaction.mockImplementation(async (cb) => cb({ query: clientQuery }))
+
+    await orderRoutes.create(ctx)
+
+    // 验证拆 10 行 + 分摊守恒
+    const insertItemCalls = clientQuery.mock.calls.filter(c => /INSERT INTO sale_items/.test(c[0]))
+    expect(insertItemCalls).toHaveLength(10)
+
+    let totalReceived = 0
+    let totalSaleAmount = 0
+    for (const call of insertItemCalls) {
+      expect(call[1][10]).toBe(1)  // quantity = 1
+      expect(call[1][7]).toBe(1)   // session_count = 1
+      totalReceived += Number(call[1][13])  // received
+      totalSaleAmount += Number(call[1][12])  // sale_amount
+    }
+
+    // 守恒：sum(received) = 1000 - 50 = 950（券抵扣 50 元）
+    expect(Math.round(totalReceived * 100)).toBe(95_000)
+    // 守恒：sum(sale_amount) = 1000（原价不变，券作用在 received）
+    expect(Math.round(totalSaleAmount * 100)).toBe(100_000)
+    expect(ctx.result.totalAmount).toBe(950)
+  })
+
   test('优惠券不存在或已过期时报错（couponRows.length === 0）', async () => {
     const ctx = createManagerCtx({
       clientPhone: '138', clientName: 'X',

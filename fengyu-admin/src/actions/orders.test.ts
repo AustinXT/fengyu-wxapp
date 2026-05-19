@@ -316,6 +316,17 @@ describe('createOrder — 优惠券校验', () => {
     minSpend: '100',
   }
 
+  it('J3 数组形式 couponId → 拒绝 MULTIPLE_COUPON_NOT_SUPPORTED', async () => {
+    // B9 ticket follow-up：runtime 兜底防外部调用绕过 schema 校验直接传 array
+    const result = await createOrder({
+      ...baseOrderData, clientUserId: 'user-1',
+      couponId: ['c1', 'c2'] as unknown as string,  // 故意类型穿透模拟绕过
+    })
+    expect(result.success).toBe(false)
+    expect(result.message).toContain('MULTIPLE_COUPON_NOT_SUPPORTED')
+    expect(result.message).toContain('1 张优惠券')
+  })
+
   it('优惠券不存在 → 拒绝', async () => {
     ;(db.select as any).mockImplementation(mockSelectEmpty())
 

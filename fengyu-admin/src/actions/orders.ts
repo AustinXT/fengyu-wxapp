@@ -785,6 +785,15 @@ export const createOrder = withPermission(
     }
   }
 
+  // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券；schema 已用 z.string() 拒绝 array，
+  // 此处再做 runtime 兜底防外部调用绕过 schema 校验
+  if (Array.isArray(data.couponId)) {
+    return {
+      success: false,
+      message: 'INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持 1 张优惠券',
+    }
+  }
+
   if (!data.clientUserId) {
     return { success: false, message: '顾客未注册小程序或未绑定门店' }
   }

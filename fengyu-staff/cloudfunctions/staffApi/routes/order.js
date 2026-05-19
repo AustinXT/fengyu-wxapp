@@ -182,6 +182,11 @@ async function create(ctx) {
   const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
 
+  // J3 (B9 ticket follow-up): 拒绝数组形式 couponId — 一张订单仅支持 1 张优惠券
+  if (Array.isArray(inputCouponId)) {
+    throw new Error('INVALID_PARAMS: MULTIPLE_COUPON_NOT_SUPPORTED: 一张订单仅支持 1 张优惠券')
+  }
+
   if (!clientPhone) {
     throw new Error('INVALID_PARAMS: 顾客手机号为必填项')
   }

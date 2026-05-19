@@ -90,6 +90,8 @@ export const createOrderSchema = z.object({
    * 上界校验由 action 层在计算出 payable_amount 后做（schema 只保障非负数）。
    */
   receivedAmount: z.number().min(0, '本次收款金额不能为负').optional(),
+  // J3 (B9 ticket follow-up): 一张订单仅支持 1 张优惠券，schema 层用 z.string() 拒绝 array
+  couponId: z.string().optional().nullable(),
   items: z.array(z.object({
     skuId: z.string().min(1, 'SKU ID 不能为空'),
     productName: z.string(),

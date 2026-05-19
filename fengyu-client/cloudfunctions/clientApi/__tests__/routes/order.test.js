@@ -181,6 +181,18 @@ describe('order.create', () => {
     await expect(routes.create(ctx)).rejects.toThrow(/INVALID_PARAMS.*参数不完整/)
   })
 
+  test('J3 拒绝数组形式 couponId（一张订单仅支持 1 张券）', async () => {
+    // B9 ticket follow-up：防绕过 schema 直接传 couponId: ['c1','c2']
+    const ctx = createBoundCtx({
+      storeId: 's1',
+      items: [{ skuId: 'sku-001', quantity: 1 }],
+      paymentMethod: '微信',
+      couponId: ['c1', 'c2'],
+    })
+    await expect(routes.create(ctx))
+      .rejects.toThrow(/INVALID_PARAMS.*MULTIPLE_COUPON_NOT_SUPPORTED.*1 张优惠券/)
+  })
+
   // ========== 优惠券抵扣路径 ==========
 
   function mockBaseCreateQueries(skuOverrides = {}) {
