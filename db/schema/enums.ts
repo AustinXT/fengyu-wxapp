@@ -22,8 +22,11 @@ export const orderStatusEnum = pgEnum("order_status", [
  * 回款单/退款单已下沉到 sale_order_payments（change_type='回款'/'退款'）。
  * 2026-05-18 新增"寄存单"：WorkFine 剩余次数初始化专用，不收钱、不入金额统计；
  * 但 sale_items 正常落 remaining_sessions 供 service_orders 核销。
+ * 2026-05-19 新增"充值单"：充值卡退出 SKU 化，独立用 sale_order_type 区分；
+ * 充值单不写 sale_items，total_amount=面值、payable_amount=实付，
+ * 入账识别从 sale_items.is_recharge_card 改为本枚举值。
  */
-export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单", "寄存单"]);
+export const saleOrderTypeEnum = pgEnum("sale_order_type", ["销售单", "内部单", "转换单", "寄存单", "充值单"]);
 
 export const allocationStatusEnum = pgEnum("allocation_status", ["待分配", "已分配"]);
 

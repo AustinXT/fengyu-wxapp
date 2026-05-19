@@ -732,7 +732,14 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
             where: vi.fn().mockResolvedValue({ count }),
           }),
         }),
-        execute: vi.fn().mockResolvedValue({}),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          // ticket 2026-05-19-cuddly-pancake：confirmOfflinePayment 新增 SUM 重算 received
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+          }
+          return Promise.resolve({})
+        }),
         select: vi.fn().mockImplementation(() => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
@@ -765,7 +772,13 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
             where: vi.fn().mockResolvedValue({ count: 1 }),
           }),
         }),
-        execute: vi.fn().mockResolvedValue({}),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+          }
+          return Promise.resolve({})
+        }),
         select: vi.fn().mockImplementation(() => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
@@ -887,6 +900,10 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
           // recalcCustomerType 内的 SELECT customer_type → 空（保护性路径）
           if (/SELECT\s+customer_type/i.test(text)) {
             return Promise.resolve([])
+          }
+          // ticket 2026-05-19-cuddly-pancake：confirmOfflinePayment 新增 SUM 重算 received
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
           }
           // 默认（到期日 UPDATE / paid_sessions UPDATE+SELECT / 扣卡 UPDATE / INSERT 等）→ {}
           return Promise.resolve({})
@@ -1043,6 +1060,10 @@ describe('confirmOfflinePayment — 储值卡抵扣扣款（ticket 2026-05-19）
           if (/SELECT\s+customer_type/i.test(text)) {
             return Promise.resolve([])
           }
+          // ticket 2026-05-19-cuddly-pancake：confirmOfflinePayment 新增 SUM 重算 received
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+          }
           return Promise.resolve({})
         }),
         select: vi.fn().mockImplementation(() => {
@@ -1142,7 +1163,13 @@ describe('P0-15-01 修复：admin 两触发点必须调用 settlePointsSafe', ()
             where: vi.fn().mockResolvedValue({ count: 1 }),
           }),
         }),
-        execute: vi.fn().mockResolvedValue({}),
+        execute: vi.fn().mockImplementation((sqlArg: any) => {
+          const text: string = sqlArg?.__sqlText ?? ''
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+          }
+          return Promise.resolve({})
+        }),
         select: vi.fn().mockImplementation(() => {
           const chain: any = {}
           chain.from = vi.fn().mockReturnValue(chain)
@@ -2192,6 +2219,9 @@ describe('applyRechargeOnOrderPaid — 真实 SKU 路径面值取自 sku.price',
           if (/SELECT\s+customer_type/i.test(text)) {
             return Promise.resolve([])
           }
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
+          }
           return Promise.resolve({})
         }),
         select: vi.fn().mockImplementation(() => {
@@ -2262,6 +2292,9 @@ describe('applyRechargeOnOrderPaid — 真实 SKU 路径面值取自 sku.price',
           }
           if (/SELECT\s+customer_type/i.test(text)) {
             return Promise.resolve([])
+          }
+          if (/AS\s+new_received/i.test(text)) {
+            return Promise.resolve([{ new_received: '0', new_prepaid: '0' }])
           }
           return Promise.resolve({})
         }),
@@ -3106,7 +3139,7 @@ describe('recordPayment — 管理后台录入回款', () => {
       lockedOrder: lockedPartialOrder,
       orderIdGen: 'FY-HKD-WX-2604250001',
       cardBalance: { cardId: 'FY-CARD-USER-1', balance: 500 },
-      sumRow: { new_received: '100', new_prepaid: '100' }, // paid=100 + prepaid=100 = total 200 → 已支付
+      sumRow: { new_received: '200', new_prepaid: '100' }, // received(含抵扣) 100现金+100储值卡=200 = total → 已支付
     })
 
     const result = await recordPayment({

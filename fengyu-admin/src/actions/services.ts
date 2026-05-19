@@ -279,6 +279,7 @@ export const getAvailableSaleItems = withPermission(
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
       AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
+      AND (si.session_count IS NULL OR COALESCE(si.paid_sessions, 0) >= si.session_count)
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 

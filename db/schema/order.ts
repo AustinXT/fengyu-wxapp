@@ -168,8 +168,9 @@ export const saleItems = pgTable(
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),
     /**
-     * 已支付次数（按 (received + prepaid_card_amount) / total_amount × session_count 取 floor）。
-     * 每次 sale_orders.received 或 prepaid_card_amount 变化（首次支付/回款/退款/微信回调）后必须重算。
+     * 已支付次数（按 (received - refunded_amount) / total_amount × session_count 取 floor）。
+     * 其中 sale_orders.received 已含 '储值卡抵扣' change_type 流水（与三端 paid-sessions.js / admin paid-sessions.ts 跨端字节同义）。
+     * 每次 sale_orders.received 变化（首次支付/回款/储值卡抵扣/退款/微信回调）后必须重算。
      * 业务不变量（应用层守护）：(session_count - remaining_sessions) <= paid_sessions。
      * NULL 表示非次数卡（单品/家居等 session_count 为 NULL 的行）。
      */
@@ -198,12 +199,6 @@ export const saleItems = pgTable(
      * 与 unit_price/unit_real_price 同属价格快照族，admin 后续修改 product_skus.is_experience 不影响历史订单。
      */
     isExperience: boolean("is_experience").notNull().default(false),
-    /**
-     * 充值卡快照（开单时从 product_skus.is_recharge_card 拷贝）。
-     * payNotify 充值入账触发依据；跃迁规则中 is_recharge_card=true 计入"非体验金额"参与会员客判定（D1=A）。
-     * 与 isExperience 互斥（product_skus 层有 CHECK 约束；sale_items 应用层校验严格独立 D4）。
-     */
-    isRechargeCard: boolean("is_recharge_card").notNull().default(false),
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at")
       .notNull()

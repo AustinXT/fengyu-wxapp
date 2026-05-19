@@ -1,11 +1,17 @@
 /**
  * paid_sessions 计算与重算 — 单源四端字节同义（ticket 2026-05-19-sale-items-paid-sessions）
  *
- * 语义：已支付金额（received + prepaid_card_amount）按比例可换到的次数，行级 floor。
+ * 语义：净已支付金额按比例可换到的次数，行级 floor。
  * 公式：paid_sessions = floor( min(1, settled / total_amount) × session_count )
- *   - settled = sale_orders.received + sale_orders.prepaid_card_amount
- *   - total_amount <= 0  → paid_sessions = session_count（免单兜底全付）
+ *   - settled = max(0, received - refunded_amount)
+ *   - sale_orders.received 不变量已含 '储值卡抵扣' change_type 行
+ *     （admin confirmOfflinePayment / recordPayment SUM 公式跨端对齐 staff/order.js），不能重复加 prepaid_card_amount
+ *   - total_amount <= 0  → paid_sessions = session_count（免单/寄存兜底全付）
  *   - session_count IS NULL → paid_sessions = NULL（非次数卡）
+ *
+ * D3=A 退款扣减：refunded_amount 增加 → settled 下降 → paid_sessions 自动倒退；
+ * 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，
+ * recalcPaidSessionsForOrder 抛 CONFLICT 阻止退款，保护"已消费次数不可撤销"不变量。
  *
  * 同时维护两个出口：
  *   1) computePaidSessionsForItem(...) — JS 纯函数，order.create 写入新行时使用

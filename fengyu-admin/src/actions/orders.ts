@@ -665,6 +665,32 @@ export const confirmOfflinePayment = withPermission(
         }
       }
 
+      // 重算 received / prepaid_card_amount（与 staff confirmOffline routes/order.js L2005-2030 字面对齐）：
+      //   received = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
+      //   prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
+      // admin createOrder 时已写入现金/线下部分到 received（L1383）；本步把本次新增的 '储值卡抵扣'
+      // payments 行合并进 received，恢复"received 含全部已支付金额"的跨端不变量，让 paid_sessions
+      // 重算公式 settled = received - refunded 能算到 session_count 上限。
+      const sumRes = await tx.execute(sql`
+        SELECT
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
+                            THEN amount::numeric ELSE 0 END), 0) AS new_received,
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
+                            THEN amount::numeric ELSE 0 END), 0) AS new_prepaid
+        FROM sale_order_payments
+        WHERE sale_order_id = ${saleOrderId}
+      `)
+      const sumRow = (sumRes as unknown as any[])[0]
+      const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
+      const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
+      await tx.execute(sql`
+        UPDATE sale_orders
+        SET received = ${newReceived.toFixed(2)}::numeric,
+            prepaid_card_amount = ${newPrepaid.toFixed(2)}::numeric,
+            updated_at = NOW()
+        WHERE sale_order_id = ${saleOrderId}
+      `)
+
       // 充值卡入账（若订单含虚拟 SKU）：UPSERT prepaid_cards + 记流水
       // 与 fengyu-client payNotify 的充值入账逻辑完全同义，幂等由 ref_order_id 去重保障
       await applyRechargeOnOrderPaid(tx, saleOrderId)
@@ -673,7 +699,7 @@ export const confirmOfflinePayment = withPermission(
       // 与 staff confirmOffline / payNotify / client confirmPrepaidFull 三端对齐
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
 
-      // paid_sessions 重算（ticket 2026-05-19）：'待确认收款' → '已支付' 通常 received 已写
+      // paid_sessions 重算：received 已含储值卡抵扣，settled = received - refunded 即可
       await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // customer_type 跃迁（仅在订单有顾客归属时触发）
@@ -2453,12 +2479,14 @@ export const recordPayment = withPermission(
 
       // 8) 重算原单 received / refunded_amount / prepaid_card_amount + status
       //    2026-04-26 sale-order-domain-refactor：paid_amount 列已 DROP，统一改用 received
-      //    received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款'))
+      //    received            = Σ(amount WHERE status='已支付' AND change_type IN ('首次支付','回款','储值卡抵扣'))
+      //                            ※ 与 staff confirmOffline / createRepayment 跨端字面对齐；
+      //                              received 含储值卡抵扣，paid_sessions SQL settled = received - refunded 才能取到上限。
       //    refunded_amount     = -Σ(amount WHERE status='已支付' AND change_type='退款')
       //    prepaid_card_amount = Σ(amount WHERE status='已支付' AND change_type='储值卡抵扣')
       const sumRes = await tx.execute(sql`
         SELECT
-          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款')
+          COALESCE(SUM(CASE WHEN status = '已支付' AND change_type IN ('首次支付','回款','储值卡抵扣')
                             THEN amount::numeric ELSE 0 END), 0) AS new_received,
           COALESCE(SUM(CASE WHEN status = '已支付' AND change_type = '储值卡抵扣'
                             THEN amount::numeric ELSE 0 END), 0) AS new_prepaid,
@@ -2471,7 +2499,7 @@ export const recordPayment = withPermission(
       const newReceived = Math.round(Number(sumRow.new_received) * 100) / 100
       const newPrepaid = Math.round(Number(sumRow.new_prepaid) * 100) / 100
       const newRefunded = Math.round(Number(sumRow.new_refunded) * 100) / 100
-      const settled = Math.round((newReceived + newPrepaid) * 100) / 100
+      const settled = newReceived
       const targetStatus: OrderStatus = settled + 0.001 >= origTotal ? '已支付' : '部分支付'
       // paid_at 通过 sql 模板内插，必须传 ISO 字符串而非 Date — pg 对 Date 走 String() 会变成
       // "Sun May 17 2026 02:17:57 GMT+0800 (China Standard Time)" 这种 PG 不能解析的 locale 形式。
