@@ -3,7 +3,14 @@
  * 用于读写小程序专属数据(订单、预约、用户等)
  */
 
-const { Pool } = require('pg')
+const pg = require('pg')
+const { Pool } = pg
+
+// 全局 OID 解析：让 numeric/bigint 直接返回 JS Number 而不是字符串。
+// 安全前提：业务金额 ≤ 9999.99（numeric(10,2)）、积分单值 << 2^53，详见 db/schema/points.ts 注释。
+// 一旦业务量级逼近 2^53 需切回 bigint mode + BigInt 处理（届时撤销 OID=20 的设置）。
+pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)))    // int8 / bigint
+pg.types.setTypeParser(1700, (val) => (val === null ? null : parseFloat(val)))    // numeric
 
 // 延迟初始化连接池(冷启动优化)
 let pool = null
