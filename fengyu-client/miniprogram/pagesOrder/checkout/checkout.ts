@@ -663,6 +663,10 @@ Page({
   async pollOrderAfterLakala() {
     const saleOrderId: string = this.data.awaitingLakalaOrderId;
     if (!saleOrderId) return;
+    const isRecharge = this.data.isRecharge;
+    const successUrl = isRecharge
+      ? '/pagesProfile/prepaid-cards/prepaid-cards'
+      : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
     const maxAttempts = 30;
     const interval = 2000;
     for (let i = 0; i < maxAttempts; i++) {
@@ -671,8 +675,8 @@ Page({
         const status = order?.order?.status || order?.status;
         if (status === '已支付' || status === '部分支付') {
           this.setData({ awaitingLakalaOrderId: '' });
-          Toast.success('支付成功');
-          setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 800);
+          Toast.success(isRecharge ? '充值成功' : '支付成功');
+          setTimeout(() => wx.redirectTo({ url: successUrl }), 800);
           return;
         }
         if (status === '已关闭' || status === '支付失败') {
