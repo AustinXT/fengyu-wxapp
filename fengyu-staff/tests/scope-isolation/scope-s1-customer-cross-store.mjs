@@ -143,15 +143,13 @@ async function main() {
   // ── 6. MGR(nc01) calendar 查 NC02 顾客 → 0 行或被拒 ──
   {
     const today = new Date()
-    const yearStart = `${today.getFullYear()}-01-01`
-    const yearEnd = `${today.getFullYear() + 1}-01-01`
     const r = await invokeStaffApi('customer.calendar', {
       _testOpenid: SCOPE_OPENID.MGR,
       _loginLevel: 'store',
       _currentStoreId: SCOPE_TOPOLOGY.STORE_NC01,
       clientUserId: SCOPE_CLIENTS.NC02,
-      startDate: yearStart,
-      endDate: yearEnd,
+      year: today.getFullYear(),
+      month: today.getMonth() + 1, // JS month is 0-based; route expects 1-based
     })
     if (r.code !== 0) {
       const isDenied = r.code === -403 || /PERMISSION_DENIED|NOT_FOUND/.test(r.message || '')

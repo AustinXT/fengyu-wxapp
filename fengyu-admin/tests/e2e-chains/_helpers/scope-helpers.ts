@@ -16,7 +16,7 @@
 import { execSync } from 'child_process'
 import type { Page } from '@playwright/test'
 
-export const BASE = 'http://localhost:3000'
+export const BASE = process.env.ADMIN_BASE_URL || 'http://localhost:3000'
 export const ADMIN_PASS = 'fengyu2026'
 
 /** 测试账号（5434 上已 seed） */

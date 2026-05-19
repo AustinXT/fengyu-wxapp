@@ -13,7 +13,7 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_MARKETS, TEST_STORES_MULTI, closePool, testPhone,
+  NS, pgQuery, TEST_MARKETS, TEST_STORES_MULTI, closePool, testPhone,
 } from './setup.mjs'
 import {
   createTestOrg, createTestStaffWithRoles, createTestClient, createTestSaleOrder,
@@ -79,6 +79,7 @@ async function run() {
   })
 
   await invalidateStaffAuthCache([MGR_A1.oid, FIN_MKT_A.oid, FIN_MKT_B.oid, STAFF_A2.oid])
+  await pgQuery(`SELECT 1`) // PG 连接池屏障（多笔 INSERT 后避免首次 auth.login 拉空）
 
   const results = []
 

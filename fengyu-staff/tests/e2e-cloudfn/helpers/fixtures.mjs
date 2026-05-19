@@ -1065,14 +1065,18 @@ export async function cleanupTestData(prefix = NS) {
     ],
 
     // ─── 8) sale_orders（自引用 ref_sale_order_id：先打断）───
+    // 注：order.create 真实开单生成的 sale_order_id 格式是 FY-XSD-WX-* 不带 NS 前缀，
+    // 必须按 store_id LIKE 兜底，否则残留单会阻挡 stores 删除。
     [
       `UPDATE sale_orders SET ref_sale_order_id = NULL
-         WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1 OR opened_by LIKE $1`,
+         WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1
+            OR opened_by LIKE $1 OR store_id LIKE $1`,
       [like],
     ],
     [
       `DELETE FROM sale_orders
-         WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1 OR opened_by LIKE $1`,
+         WHERE sale_order_id LIKE $1 OR client_user_id LIKE $1
+            OR opened_by LIKE $1 OR store_id LIKE $1`,
       [like],
     ],
 

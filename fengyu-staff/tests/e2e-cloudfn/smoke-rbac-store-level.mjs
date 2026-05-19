@@ -15,7 +15,7 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_STORES_MULTI, closePool, testPhone,
+  NS, pgQuery, TEST_STORES_MULTI, closePool, testPhone,
 } from './setup.mjs'
 import {
   createTestOrg, createTestStaffWithRoles, createTestClient,
@@ -55,6 +55,7 @@ async function run() {
 
   // 每轮测试前清缓存（同进程 staffApi require 起来后 AUTH_CACHE 长期共享）
   await invalidateStaffAuthCache(employees.map((e) => e.oid))
+  await pgQuery(`SELECT 1`) // PG 连接池屏障
 
   const results = []
 

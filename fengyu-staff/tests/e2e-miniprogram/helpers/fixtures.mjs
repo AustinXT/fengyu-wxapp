@@ -9,20 +9,30 @@ import {
   TEST_OPENID_MANAGER,
   TEST_OPENID_STAFF,
   TEST_OPENID_CLIENT,
+  TEST_OPENID_FINANCE_STORE, TEST_OPENID_CUSTMGR_STORE, TEST_OPENID_HR_STORE,
+  TEST_OPENID_MANAGER_MARKET, TEST_OPENID_MANAGER_HQ, TEST_OPENID_FINANCE_HQ,
+  TEST_OPENID_MANAGER_A2, TEST_OPENID_MANAGER_B1,
   TEST_MANAGER_EMPLOYEE_ID,
   TEST_STAFF_EMPLOYEE_ID,
   TEST_CLIENT_USER_ID,
   TEST_CLIENT_PHONE,
   TEST_MANAGER_PHONE,
+  TEST_FIN_STORE_EMP_ID, TEST_CM_STORE_EMP_ID, TEST_HR_STORE_EMP_ID,
+  TEST_MGR_MARKET_EMP_ID, TEST_MGR_HQ_EMP_ID, TEST_FIN_HQ_EMP_ID,
+  TEST_MGR_A2_EMP_ID, TEST_MGR_B1_EMP_ID,
   TEST_ORDER_PREFIX,
   TEST_ITEM_PREFIX,
+  TEST_HQ_ORG_ID, TEST_MARKET_A_ORG_ID,
+  TEST_STORE_A1_ID, TEST_STORE_A1_ORG_ID,
+  TEST_STORE_A2_ID, TEST_STORE_A2_ORG_ID,
+  TEST_MARKET_B_ORG_ID, TEST_STORE_B1_ID, TEST_STORE_B1_ORG_ID,
 } from './constants.mjs';
 
-// 测试组织节点 id
-const TEST_HQ_ID = 'TEST_E2E_L3_HQ';
-const TEST_MARKET_ID = 'TEST_E2E_L3_MK';
-const TEST_STORE_ID = 'TEST_E2E_L3_STORE';
-const TEST_STORE_ORG_ID = 'TEST_E2E_L3_STORE_ORG';
+// 测试组织节点 id（保留旧别名供既有 smoke 兼容）
+const TEST_HQ_ID = TEST_HQ_ORG_ID;
+const TEST_MARKET_ID = TEST_MARKET_A_ORG_ID;
+const TEST_STORE_ID = TEST_STORE_A1_ID;
+const TEST_STORE_ORG_ID = TEST_STORE_A1_ORG_ID;
 
 /**
  * 准备基础组织/门店 fixture（幂等：用 ON CONFLICT DO NOTHING；不清理已有数据）。
@@ -84,6 +94,215 @@ export async function createTestManager() {
     phone: TEST_MANAGER_PHONE,
     storeId: TEST_STORE_ID,
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 多市场 / 多门店组织（bs10/11/12 使用）
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * 在 ensureBaseFixtures 之上再建：
+ *   - market_A 多加 1 个门店 (A2)
+ *   - 新 market_B + 1 个门店 (B1)
+ *
+ * 幂等。返回 { hqId, marketAId, marketBId, stores: {A1, A2, B1} }。
+ */
+export async function ensureMultiMarketFixtures() {
+  await ensureBaseFixtures();
+  await tx(async (c) => {
+    // 在 market_A 下挂 A2 门店
+    await c.query(
+      `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+       VALUES ($1, 'L3 测试 A2', '门店', $2, 1, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [TEST_STORE_A2_ORG_ID, TEST_MARKET_A_ORG_ID]
+    );
+    await c.query(
+      `INSERT INTO stores (store_id, store_name, org_node_id, is_closed)
+       VALUES ($1, 'L3 测试 A2', $2, false)
+       ON CONFLICT (store_id) DO NOTHING`,
+      [TEST_STORE_A2_ID, TEST_STORE_A2_ORG_ID]
+    );
+    // market_B + B1 门店
+    await c.query(
+      `INSERT INTO org_nodes (id, name, type, parent_id, sort_order, is_active)
+       VALUES
+         ($1, 'L3 测试市场 B', '市场', $2, 1, true),
+         ($3, 'L3 测试 B1',   '门店', $1, 0, true)
+       ON CONFLICT (id) DO NOTHING`,
+      [TEST_MARKET_B_ORG_ID, TEST_HQ_ORG_ID, TEST_STORE_B1_ORG_ID]
+    );
+    await c.query(
+      `INSERT INTO stores (store_id, store_name, org_node_id, is_closed)
+       VALUES ($1, 'L3 测试 B1', $2, false)
+       ON CONFLICT (store_id) DO NOTHING`,
+      [TEST_STORE_B1_ID, TEST_STORE_B1_ORG_ID]
+    );
+  });
+  return {
+    hqId: TEST_HQ_ORG_ID,
+    marketAId: TEST_MARKET_A_ORG_ID,
+    marketBId: TEST_MARKET_B_ORG_ID,
+    stores: {
+      A1: { storeId: TEST_STORE_A1_ID, orgId: TEST_STORE_A1_ORG_ID },
+      A2: { storeId: TEST_STORE_A2_ID, orgId: TEST_STORE_A2_ORG_ID },
+      B1: { storeId: TEST_STORE_B1_ID, orgId: TEST_STORE_B1_ORG_ID },
+    },
+  };
+}
+
+/**
+ * 通用：按 role × scope 建测试员工。
+ *
+ * 配对约束（与 L2 / project_role_scope_pairing.md 一致）：
+ *   - manager / finance / customer_mgr / hr：scope ∈ {总部, 市场, 门店}
+ *   - product：scope ∈ {总部, 市场}
+ *   - staff：scope = 门店
+ *
+ * 不在合法配对内会抛错。
+ *
+ * @param {object} opts
+ * @param {string} opts.role - 'manager' | 'finance' | 'customer_mgr' | 'hr' | 'product' | 'staff'
+ * @param {string} opts.scopeType - '总部' | '市场' | '门店'
+ * @param {string} opts.scopeId - org_nodes.id（默认按 scopeType 推断）
+ * @param {string} opts.employeeId
+ * @param {string} opts.openid
+ * @param {string} opts.phone
+ * @param {string} opts.fallbackStoreId - staff_wechat_users.store_id（默认 A1）
+ * @returns {Promise<{employeeId, openid, phone, scopeType, scopeId}>}
+ */
+export async function createTestStaffByRole({
+  role,
+  scopeType,
+  scopeId = null,
+  employeeId,
+  openid,
+  phone,
+  fallbackStoreId = TEST_STORE_A1_ID,
+  fallbackOrgNodeId = TEST_STORE_A1_ORG_ID,
+} = {}) {
+  if (!role) throw new Error('createTestStaffByRole: role required');
+  if (!scopeType) throw new Error('createTestStaffByRole: scopeType required');
+  if (!employeeId) throw new Error('createTestStaffByRole: employeeId required');
+  if (!openid) throw new Error('createTestStaffByRole: openid required');
+  if (!phone) throw new Error('createTestStaffByRole: phone required');
+
+  // 配对校验
+  const allowed = {
+    manager: ['总部', '市场', '门店'],
+    finance: ['总部', '市场', '门店'],
+    customer_mgr: ['总部', '市场', '门店'],
+    hr: ['总部', '市场', '门店'],
+    product: ['总部', '市场'],
+    staff: ['门店'],
+  };
+  if (!allowed[role]) throw new Error(`createTestStaffByRole: unknown role=${role}`);
+  if (!allowed[role].includes(scopeType)) {
+    throw new Error(`createTestStaffByRole: role=${role} 不允许 scope=${scopeType}（合法: ${allowed[role].join(',')}）`);
+  }
+
+  // 默认 scopeId
+  if (!scopeId) {
+    if (scopeType === '总部') scopeId = TEST_HQ_ORG_ID;
+    else if (scopeType === '市场') scopeId = TEST_MARKET_A_ORG_ID;
+    else if (scopeType === '门店') scopeId = TEST_STORE_A1_ORG_ID;
+  }
+
+  await ensureMultiMarketFixtures();
+
+  await tx(async (c) => {
+    await c.query(
+      `INSERT INTO staff_wechat_users
+         (employee_id, openid, phone, name, position_name, store_id, org_node_id, is_resigned)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+       ON CONFLICT (employee_id) DO UPDATE
+         SET openid = EXCLUDED.openid,
+             phone = EXCLUDED.phone,
+             store_id = EXCLUDED.store_id,
+             org_node_id = EXCLUDED.org_node_id,
+             position_name = EXCLUDED.position_name,
+             is_resigned = false`,
+      [employeeId, openid, phone, `L3 ${role}@${scopeType}`, `${role} (${scopeType})`,
+       fallbackStoreId, fallbackOrgNodeId]
+    );
+    await c.query(
+      `INSERT INTO permission_roles (employee_id, role, scope_id, created_by)
+       VALUES ($1, $2, $3, 'L3_E2E_TEST')
+       ON CONFLICT (employee_id, role, scope_id) DO NOTHING`,
+      [employeeId, role, scopeId]
+    );
+  });
+
+  return { employeeId, openid, phone, scopeType, scopeId };
+}
+
+/**
+ * 一次性建 bs10/11/12 用到的完整人员组合：
+ *   - 1× manager@A1（默认店长，沿用 TEST_OPENID_MANAGER）
+ *   - 1× manager@A2（A 市场第二门店店长，bs12 跨店测试用）
+ *   - 1× manager@market_A（市场经理，bs11 多店切换用）
+ *   - 1× manager@HQ（总部经理，bs10 scope 全开用）
+ *   - 1× finance@HQ（bs10 仅管理层进入 mgmt 验证）
+ *   - 1× manager@market_B / @store_B1（bs10 跨市场拒绝用，可选）
+ */
+export async function createTestPersonnelMatrix() {
+  await ensureMultiMarketFixtures();
+  // 默认店长（manager@A1）— 沿用既有 helper
+  const mgrA1 = await createTestManager();
+
+  // 其余角色
+  const mgrA2 = await createTestStaffByRole({
+    role: 'manager', scopeType: '门店', scopeId: TEST_STORE_A2_ORG_ID,
+    employeeId: TEST_MGR_A2_EMP_ID, openid: TEST_OPENID_MANAGER_A2,
+    phone: '13900000010',
+    fallbackStoreId: TEST_STORE_A2_ID, fallbackOrgNodeId: TEST_STORE_A2_ORG_ID,
+  });
+  const mgrMarket = await createTestStaffByRole({
+    role: 'manager', scopeType: '市场', scopeId: TEST_MARKET_A_ORG_ID,
+    employeeId: TEST_MGR_MARKET_EMP_ID, openid: TEST_OPENID_MANAGER_MARKET,
+    phone: '13900000011',
+  });
+  const mgrHQ = await createTestStaffByRole({
+    role: 'manager', scopeType: '总部', scopeId: TEST_HQ_ORG_ID,
+    employeeId: TEST_MGR_HQ_EMP_ID, openid: TEST_OPENID_MANAGER_HQ,
+    phone: '13900000012',
+  });
+  const finHQ = await createTestStaffByRole({
+    role: 'finance', scopeType: '总部', scopeId: TEST_HQ_ORG_ID,
+    employeeId: TEST_FIN_HQ_EMP_ID, openid: TEST_OPENID_FINANCE_HQ,
+    phone: '13900000013',
+  });
+  const mgrB1 = await createTestStaffByRole({
+    role: 'manager', scopeType: '门店', scopeId: TEST_STORE_B1_ORG_ID,
+    employeeId: TEST_MGR_B1_EMP_ID, openid: TEST_OPENID_MANAGER_B1,
+    phone: '13900000014',
+    fallbackStoreId: TEST_STORE_B1_ID, fallbackOrgNodeId: TEST_STORE_B1_ORG_ID,
+  });
+  return { mgrA1, mgrA2, mgrMarket, mgrHQ, finHQ, mgrB1 };
+}
+
+/**
+ * bs06 5 角色矩阵专用：在 A1 门店上分别造 finance / customer_mgr / hr 三个员工
+ * （manager@A1 和 staff@A1 由 createTestManager / createTestStaffEmployee 各自负责）。
+ */
+export async function createTestStoreLevelNonManagers() {
+  await ensureBaseFixtures();
+  const finStore = await createTestStaffByRole({
+    role: 'finance', scopeType: '门店', scopeId: TEST_STORE_A1_ORG_ID,
+    employeeId: TEST_FIN_STORE_EMP_ID, openid: TEST_OPENID_FINANCE_STORE,
+    phone: '13900000020',
+  });
+  const cmStore = await createTestStaffByRole({
+    role: 'customer_mgr', scopeType: '门店', scopeId: TEST_STORE_A1_ORG_ID,
+    employeeId: TEST_CM_STORE_EMP_ID, openid: TEST_OPENID_CUSTMGR_STORE,
+    phone: '13900000021',
+  });
+  const hrStore = await createTestStaffByRole({
+    role: 'hr', scopeType: '门店', scopeId: TEST_STORE_A1_ORG_ID,
+    employeeId: TEST_HR_STORE_EMP_ID, openid: TEST_OPENID_HR_STORE,
+    phone: '13900000022',
+  });
+  return { finStore, cmStore, hrStore };
 }
 
 /**

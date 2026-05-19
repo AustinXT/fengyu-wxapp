@@ -10,7 +10,7 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_HQ_ORG_ID, TEST_STORES_MULTI, closePool, testPhone,
+  NS, pgQuery, TEST_HQ_ORG_ID, TEST_STORES_MULTI, closePool, testPhone,
 } from './setup.mjs'
 import {
   createTestOrg, createTestDeptNode, createTestStaffWithRoles, createTestClient,
@@ -56,6 +56,7 @@ async function run() {
   })
 
   await invalidateStaffAuthCache([FIN_STORE.oid, CM_STORE.oid, DEPT_EMP.oid])
+  await pgQuery(`SELECT 1`) // PG 连接池屏障（多笔 INSERT 后避免首次 auth.login 拉空）
 
   const results = []
   const minimalCreate = {

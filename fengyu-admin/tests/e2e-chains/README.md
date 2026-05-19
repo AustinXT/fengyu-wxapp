@@ -1737,11 +1737,20 @@ seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TE
 | 29 | link-29-coupon-item-restricted | ✅ PASS | 8/8 | 命中缦之羽 SKU ¥100 → 折 ¥30 → 实付 ¥70 + applicable_category_ids 字段断言双向 | — | — |
 | 30 | link-30-coupon-min-spend-expired | ✅ PASS | 9/9 | 凑单 ¥200 时 min500 券与已过期券都不在 select；正例对照 DISCOUNT/COUPON-01 可见 | — | — |
 | 31 | link-31-order-internal-type | ✅ PASS | 8/8 | UI 反例 3 路（按钮 pressed / 优惠券不渲染 / 改价 input 全 disabled）+ DB 4 段（type=内部单 / coupon_id=NULL / prepaid=0 / total 半价 ¥50）| — | — |
-| 35b | link-35b-list-cascade-selector | ⏳ TODO | — | 2026-05-19 新增：列表页市场→门店级联选择器锁定（customers/employees/cards 抽样）| — | 待首跑 |
-| 35c | link-35c-form-store-select | ⏳ TODO | — | 2026-05-19 新增：services/create + employees/new 表单 store/employee select 范围 + MGR 越权访问拒 | — | 待首跑 |
-| 35d | link-35d-org-tree-picker | ⏳ TODO | — | 2026-05-19 新增：/permissions OrgTreeSelect 排除"部门" + MGR 路由拒 | — | 待首跑 |
+| 35b | link-35b-list-cascade-selector | 🟡 BLOCKED | — | 2026-05-19 首跑：spec 写完但 Next.js dev server 不稳定（`(auth)/login/page.js` 客户端 chunk 间歇 404，导致 login form 无法 hydrate），需在 production build (`bun run build && bun run start`) 或 dev server 稳定后回跑 | env / Next dev mode | 待 prod build 或 dev mode 修复 |
+| 35c | link-35c-form-store-select | 🟡 BLOCKED | — | 同 35b 阻塞原因 | env / Next dev mode | 待 prod build |
+| 35d | link-35d-org-tree-picker | 🟡 BLOCKED | — | 同 35b 阻塞原因 | env / Next dev mode | 待 prod build |
 
-**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 TODO（35b/35c/35d，2026-05-19 新增待跑）**。25-31 全部一次跑通（含 fixture bundle SKU 关联修正 + 2 个 spec 微调），无 admin bug 暴露。
+**统计**：13 PASS（含 4 PARTIAL）+ 5 FAIL（13-23）+ **7 PASS（25-31，2026-05-18 首跑全绿）** + **3 BLOCKED（35b/35c/35d，2026-05-19 spec 已写但 dev server `(auth)` 客户端 chunk 间歇 404，待 prod build 跑批）**。
+
+**关于 35b/35c/35d 阻塞**：spec 文件已写完并通过 TypeScript 编译。问题在 Next.js dev server 上：
+- `.next/static/chunks/app/(auth)/login/page.js` 客户端 chunk 间歇返回 404
+- 表现：login form 服务端渲染正常但客户端不 hydrate → click 登录按钮无 POST → 卡 /login
+- 复现：`rm -rf .next && bun run dev` 后随机出现，与 (auth)/(main) 双 route group 编译竞态有关
+- 解决方案 1：跑批前 `bun run build && bun run start` 切到 production server（需先修 `src/actions/inventory/doc-no.ts` 的 `Server Actions must be wrapped` lint error）
+- 解决方案 2：等 Next.js 15.5 dev mode 修复后回跑
+
+跨端 mirror 验证：staff 端 7 路 scope-isolation 测试（`fengyu-staff/tests/scope-isolation/`）4 spec / 21 check 全 PASS（2026-05-19，详见 staff README §4），间接验证了 admin 与 staff scope 语义一致性的双端实现都到位。
 
 **未持久化产物**：
 - 跑批原始 stdout 日志保存在 `/tmp/link-runs/link-{13..23}.log`（重启后丢失，需要再跑可重新生成）

@@ -260,3 +260,48 @@ tests/e2e-miniprogram/
 | 速度 | 快（秒级） | 慢（启动 IDE ~10s+） |
 
 L2 跑回归 + 边界；L3 跑关键路径（登录、下单、收款、预约）。
+
+## 业务场景 spec（scenarios/bs*.spec.mjs）
+
+| 编号 | 文件 | 优先级 | 说明 |
+|------|------|--------|------|
+| BS-01 | bs01-order-flow | P0 | 完整开单链路 |
+| BS-02 | bs02-refund-approve | P0 | 退款审批 |
+| BS-03 | bs03-service-lifecycle | P0 | 服务单 Tab 自动迁移 |
+| BS-04 | bs04-allocation | P0 | 营业额分配徽章联动 |
+| BS-05 | bs05-appt-to-service | P1 | 预约 → 到店 → 服务单 |
+| BS-06 | bs06-role-visibility | P1 | 4 类身份 18 条 UI 显隐矩阵 |
+| BS-07 | bs07-customer-assign | P1 | 顾客分配双 actor |
+| BS-08 | bs08-conversion-panel | P1 | ConversionPanel 交互 |
+| BS-09 | bs09-card-recharge | P1 | 充值卡开单 → qrcode |
+| **BS-10** | **bs10-mgmt-scope-options** | **P1** | **管理层 scope 切换（HQ/market/store）** |
+| **BS-11** | **bs11-multi-store-switch** | **P1** | **市场经理 workbench 切 A1↔A2** |
+| **BS-12** | **bs12-cross-store-deny** | **P1** | **跨店越权 UI 拒绝** |
+
+### 跑业务场景
+
+```bash
+# 一键脚本（自动 quit/cli auto staff 项目）
+./fengyu-staff/tests/run-staff-l3.sh --scenarios
+
+# 过滤跑（推荐迭代时）
+./fengyu-staff/tests/run-staff-l3.sh --scenarios --filter bs10,bs11,bs12
+
+# 全部 12 个场景
+./fengyu-staff/tests/run-staff-l3.sh --scenarios --bail
+```
+
+### BS-10/11/12 fixture 依赖
+
+这三个 spec 共用 `createTestPersonnelMatrix()`（2 市场 × 3 门店 + 5 个不同 role/scope 员工），由 `helpers/fixtures.mjs` 提供：
+
+| 员工 | role | scope | openid 常量 |
+|------|------|-------|------------|
+| mgrA1 | manager | 门店 A1 | TEST_OPENID_MANAGER |
+| mgrA2 | manager | 门店 A2 | TEST_OPENID_MANAGER_A2 |
+| mgrMarket | manager | 市场 A | TEST_OPENID_MANAGER_MARKET |
+| mgrHQ | manager | 总部 | TEST_OPENID_MANAGER_HQ |
+| finHQ | finance | 总部 | TEST_OPENID_FINANCE_HQ |
+| mgrB1 | manager | 门店 B1 | TEST_OPENID_MANAGER_B1 |
+
+需要远端 staffApi 已开启 `ALLOW_TEST_OPENID=true`（见上文 §2）。

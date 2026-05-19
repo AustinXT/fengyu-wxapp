@@ -45,12 +45,23 @@
 | BS-07 | 顾客分配（拓客）：店长选员工 → 美容师列表 -1 → 顾客切到目标员工 | P1 | 4 | 双 actor，需切换登录 |
 | BS-08 | 转换单 ConversionPanel：选源卡 → 选目标 → 差额展示 → 提交 → 储值卡入账 | P1 | 5 | ConversionPanel 组件交互复杂 |
 | BS-09 | 充值卡开单：选 SKU/自定义金额 → 提交 → qrcode → 顾客扫码 callback → balance | P1 | 5 | qrcode → callback 链路 |
-| BS-10 | 会员等级跳档可视化：开单后 customer-detail 顾客 tag 从 '初钻' → '星钻' | P2 | 3 | 业务规则触发 UI tag 更新 |
-| BS-11 | 多店店长切店：profile bindStore → workbench 数据切换 | P2 | 3 | scope 切换 + 缓存失效 |
-| BS-12 | 退款理由必填 / customPrice 守卫的 toast 文案 | P2 | 2 | 错误提示 UX |
-| BS-13 | 数据看板（dashboard）周期切换 + 排行榜联动 | P3 | 3 | 仅读路径，价值有限 |
+| BS-10 | **mgmt-dashboard scope 切换**：HQ 看 ≥2 markets / market 看自己市场 / HQ 下钻到 store | **P1** | 3 | scope-picker → loadSummary 联动 + 后端 scopeOptions 跨账号差异 |
+| BS-11 | **多店店长切店**：market manager 在 workbench 切 A1↔A2 / globalData.currentStoreId 同步 | **P1** | 3 | scope 切换 + 缓存失效 |
+| BS-12 | **跨店越权 UI 拒绝**：manager@A1 navigateTo storeB 订单详情 → 应拒绝渲染对方数据 | **P1** | 3 | 后端 effectiveStoreId WHERE 兜底 + 前端兜底显示 |
+| BS-13 | 会员等级跳档可视化：开单后 customer-detail 顾客 tag 从 '初钻' → '星钻' | P2 | 3 | 业务规则触发 UI tag 更新 |
+| BS-14 | 退款理由必填 / customPrice 守卫的 toast 文案 | P2 | 2 | 错误提示 UX |
+| BS-15 | 数据看板（dashboard）周期切换 + 排行榜联动 | P3 | 3 | 仅读路径，价值有限 |
 
-**首批做 P0 共 4 个**；P1 看时间排进 round 2；P2/P3 留 backlog。
+**首批做 P0 共 4 个**（已实施 BS-01~BS-04）；P1 round 2 实施 BS-05~BS-12（9 个，已实施）；P2/P3 BS-13~BS-15 留 backlog。
+
+### BS-06 / BS-10 / BS-11 / BS-12 实施摘要（2026-05-19）
+
+| Spec | 文件 | 用例数 | 验证点 |
+|------|------|--------|--------|
+| BS-06 角色显隐 | `scenarios/bs06-role-visibility.spec.mjs` | 18 | manager / beautician(store_staff) / mgmt-market / mgmt-hq 四类身份在 workbench/profile/customer-list/service 的元素显隐 + canAccessManagement() |
+| BS-10 mgmt scope | `scenarios/bs10-mgmt-scope-options.spec.mjs` | 3 | HQ 默认 scope=all + ≥2 markets / market 默认 scope=market+1 market / HQ 切到 store_A1 后 loadSummary OK |
+| BS-11 切店 | `scenarios/bs11-multi-store-switch.spec.mjs` | 3 | hasMultiStore=true + 默认 A1 / onStorePickerSelect(A2) globalData 同步 / 再切回 A1 |
+| BS-12 越权 | `scenarios/bs12-cross-store-deny.spec.mjs` | 3 | A1 调 detail 拿 B 单 → INVALID_PARAMS / navigate 进 order-detail 不渲染 B 数据 / B 店长查同单 OK 对照 |
 
 ---
 

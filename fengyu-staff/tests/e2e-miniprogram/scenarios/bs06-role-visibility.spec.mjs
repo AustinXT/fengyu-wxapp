@@ -33,9 +33,17 @@ import { TEST_OPENID_MANAGER } from '../helpers/constants.mjs';
 let miniProgram = null;
 
 // 矩阵：每条 (role, page, text, expect, mode?)
-// mode: 'dom' (默认，DOM 文本查找) | 'data' (读 page.data().isManager)
+// mode: 'dom' (默认，DOM 文本查找) | 'data' (读 page.data().isManager / canAccessManagement / loginLevel)
+//
+// role 取值：
+//   - manager:       前端 staffLevel='store_manager' → 5-tab 完整 + 店长按钮可见
+//   - beautician:    前端 staffLevel='store_staff' → 5-tab 完整 + 店长按钮隐藏
+//                    （等价于 finance/customer_mgr/hr/staff × 门店 scope 五类）
+//   - mgmt-market:   前端 staffLevel='market', availableLoginLevels=['store','management']
+//                    → 登录页"管理层"radio 可选 + canAccessManagement()=true
+//   - mgmt-hq:       前端 staffLevel='headquarters' → 同 market 但 scopeStoreIds 全量
 const MATRIX = [
-  // ---- workbench：6 个店长专属 cell ----
+  // ---- workbench：6 个店长专属 cell（store_manager vs 其他）----
   { role: 'manager',    page: '/pages/workbench/workbench',         text: '门店今日营收',     expect: 'visible' },
   { role: 'beautician', page: '/pages/workbench/workbench',         text: '门店今日营收',     expect: 'hidden'  },
   { role: 'manager',    page: '/pages/workbench/workbench',         text: '待确认收款',       expect: 'visible' },
@@ -53,25 +61,40 @@ const MATRIX = [
   // ---- service：sanity（两角色都该看到的标题文案，防止误改）----
   { role: 'manager',    page: '/pages/service/service',             text: '待服务',           expect: 'visible' },
   { role: 'beautician', page: '/pages/service/service',             text: '待服务',           expect: 'visible' },
+  // ---- management 视角：canAccessManagement / availableLoginLevels（数据模式，不依赖 DOM）----
+  { role: 'mgmt-market', page: '/pages/profile/profile',            text: null,               expect: 'visible', mode: 'canAccessManagement' },
+  { role: 'mgmt-hq',     page: '/pages/profile/profile',            text: null,               expect: 'visible', mode: 'canAccessManagement' },
+  { role: 'manager',     page: '/pages/profile/profile',            text: null,               expect: 'hidden',  mode: 'canAccessManagement' },
+  { role: 'beautician',  page: '/pages/profile/profile',            text: null,               expect: 'hidden',  mode: 'canAccessManagement' },
 ];
 
 const SEL = '.van-cell, .van-cell__title, .van-cell__value, .van-action-sheet__description, view, text, navigator';
 
 /**
- * 覆写当前小程序运行时身份为 manager / 美容师。
- * 注意：app.ts 里 staffLevel = 'store_manager' 对应 isManager()=true；'store_staff' 对应 false。
+ * 覆写当前小程序运行时身份。
+ * - manager:       staffLevel='store_manager' → isManager()=true
+ * - beautician:    staffLevel='store_staff'   → isManager()=false (等价 finance/customer_mgr/hr/staff)
+ * - mgmt-market:   staffLevel='market', availableLoginLevels=['store','management'] → canAccessManagement()=true
+ * - mgmt-hq:       staffLevel='headquarters'，scopedStores=[A1,A2,B1] → canAccessManagement()=true
  */
 async function setRole(role) {
-  const staffLevel = role === 'manager' ? 'store_manager' : 'store_staff';
-  await miniProgram.evaluate((lv) => {
+  const config = {
+    'manager':     { staffLevel: 'store_manager', avail: ['store'],               loginLevel: 'store' },
+    'beautician':  { staffLevel: 'store_staff',   avail: ['store'],               loginLevel: 'store' },
+    'mgmt-market': { staffLevel: 'market',        avail: ['store', 'management'], loginLevel: 'store' },
+    'mgmt-hq':     { staffLevel: 'headquarters',  avail: ['store', 'management'], loginLevel: 'store' },
+  }[role];
+  if (!config) throw new Error(`setRole: 未知 role=${role}`);
+
+  await miniProgram.evaluate((cfg) => {
     const app = getApp();
     if (app?.globalData) {
-      app.globalData.staffLevel = lv;
-      // 顺手把 loginLevel/boundStoreId 兜个值，避免 onShow 中 syncStoreContext 用空字段
-      if (!app.globalData.loginLevel) app.globalData.loginLevel = 'store';
+      app.globalData.staffLevel = cfg.staffLevel;
+      app.globalData.availableLoginLevels = cfg.avail;
+      if (!app.globalData.loginLevel) app.globalData.loginLevel = cfg.loginLevel;
       if (!app.globalData.scopedStores) app.globalData.scopedStores = [];
     }
-  }, staffLevel);
+  }, config);
 }
 
 /**
@@ -122,6 +145,22 @@ async function runOne(entry, idx) {
         throw new Error(`data.isManager=${data.isManager} 期望=${expected}`);
       }
       return { ok: true, msg: `${tag} → data.isManager=${data.isManager}` };
+    }
+
+    if (entry.mode === 'canAccessManagement') {
+      // 验证当前身份是否能进入管理层模式（availableLoginLevels 含 'management' 或 staffLevel ∈ {hq, market}）
+      const actual = await miniProgram.evaluate(() => {
+        const app = getApp();
+        const lv = app?.globalData?.staffLevel;
+        const avail = app?.globalData?.availableLoginLevels || [];
+        // 与 utils/role.ts:canAccessManagement() 同语义
+        return lv === 'headquarters' || lv === 'market' || avail.includes('management');
+      });
+      const expected = entry.expect === 'visible';
+      if (actual !== expected) {
+        throw new Error(`canAccessManagement()=${actual} 期望=${expected}`);
+      }
+      return { ok: true, msg: `${tag} → canAccessManagement=${actual}` };
     }
 
     // DOM 模式

@@ -17,7 +17,7 @@
  */
 import './setup.mjs'
 import {
-  NS, TEST_HQ_ORG_ID, TEST_STORES_MULTI, closePool, testPhone,
+  NS, pgQuery, TEST_HQ_ORG_ID, TEST_STORES_MULTI, closePool, testPhone,
 } from './setup.mjs'
 import {
   createTestOrg, createTestStaffWithRoles, createTestClient,
@@ -52,6 +52,7 @@ async function run() {
     phone: testPhone(2), boundStoreId: STORE_A1.storeId,
   })
   await invalidateStaffAuthCache(employees.map((e) => e.oid))
+  await pgQuery(`SELECT 1`) // PG 连接池屏障
 
   const results = []
 

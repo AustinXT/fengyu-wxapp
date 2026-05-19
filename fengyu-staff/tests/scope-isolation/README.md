@@ -187,9 +187,24 @@ headquarters 全量，market 仅自己 scope。
 
 ---
 
-## 4. 后续行动
+## 4. 跑批结果（2026-05-19 首跑）
 
-- [ ] 跑首批（S-1 + S-3 + S-4），收集结果并回填本 README 跑批结果表
+| spec | 结果 | checks | 备注 |
+|------|------|--------|------|
+| `scope-s1-customer-cross-store.mjs` | ✅ PASS | 6/6 | search keyword 隔离 + phone cross-store 身份匹配 + paidOrders/calendar 跨店拒 |
+| `scope-s3-customer-assign-deny.mjs` | ✅ PASS | 3/3 | 顾客/员工双层 scope 守卫 + 正例对照 + DB 防御断言 |
+| `scope-s4-mgmt-dashboard-cascade.mjs` | ✅ PASS | 6/6 | scopeOptions ADM/MKT 级联 + summary 4 路 validateScope 反例 |
+| `scope-s8-mgr-cross-store-deny.mjs` | ✅ PASS | 6/6 | 店长 A 跨店访问 store-nc02 数据 6 路全拒（含 order.qrcode） |
+
+**总计**：4 spec / 21 check / 100% PASS。Total runtime ~8s（pure cloudfn smoke，零 UI 开销）。
+
+首跑 spec 微调记录：
+- `scope-s1` calendar 入参从 `startDate/endDate` 改为 `year/month`（与 customer.calendar 路由签名对齐）
+- `scope-s4` validateScope 断言从 `message.includes('PERMISSION_DENIED')` 改为 `code === -403 || errorType === 'PERMISSION_DENIED'`（云函数 buildErrorResponse 已剥离前缀，message 仅保留可读文案）
+
+## 5. 后续行动
+
+- [x] 跑首批（S-1 + S-3 + S-4 + S-8），收集结果并回填本 README 跑批结果表 ✅ 2026-05-19
 - [ ] 实施 S-6 / S-7 自动化（如发现 mgmt-product / order.create 漂移再补）
 - [ ] CI 集成：scope-isolation/run-all.mjs 加入 staff smoke 流水
 - [ ] admin / staff 双端一致性回归任务：每次改 customer / mgmt-* 路由后必跑 admin link-32 + staff scope-s1

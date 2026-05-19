@@ -84,7 +84,7 @@ async function main() {
       date: today,
       scopeType: 'all',
     })
-    const isDenied = r.code !== 0 && /PERMISSION_DENIED/.test(r.message || '')
+    const isDenied = r.code === -403 || r.errorType === 'PERMISSION_DENIED'
     if (!isDenied) {
       errors.push(`(S5.1) MKT summary scopeType=all 应拒, 实际 code=${r.code} msg=${r.message}`)
     } else {
@@ -101,7 +101,7 @@ async function main() {
       scopeType: 'market',
       scopeId: SCOPE_TOPOLOGY.MARKET_NC2,
     })
-    const isDenied = r.code !== 0 && /PERMISSION_DENIED/.test(r.message || '')
+    const isDenied = r.code === -403 || r.errorType === 'PERMISSION_DENIED'
     if (!isDenied) {
       errors.push(`(S5.2) MKT summary market=NC2 应拒, 实际 code=${r.code} msg=${r.message}`)
     } else {
@@ -118,7 +118,7 @@ async function main() {
       scopeType: 'store',
       scopeId: SCOPE_TOPOLOGY.STORE_OTHER_MARKET,
     })
-    const isDenied = r.code !== 0 && /PERMISSION_DENIED/.test(r.message || '')
+    const isDenied = r.code === -403 || r.errorType === 'PERMISSION_DENIED'
     if (!isDenied) {
       errors.push(`(S5.3) MKT summary store=他市场门店 应拒, 实际 code=${r.code} msg=${r.message}`)
     } else {
@@ -151,7 +151,7 @@ async function main() {
       scopeType: 'store',
       scopeId: SCOPE_TOPOLOGY.STORE_NC01,
     })
-    const isDenied = r.code !== 0 && /PERMISSION_DENIED|UNAUTHORIZED/.test(r.message || '')
+    const isDenied = r.code === -403 || r.code === -401 || r.errorType === 'PERMISSION_DENIED' || r.errorType === 'UNAUTHORIZED'
     if (!isDenied) {
       errors.push(`(S5.5) MGR summary 应被 requireManagementLevel 拦截, 实际 code=${r.code} msg=${r.message}`)
     } else {
