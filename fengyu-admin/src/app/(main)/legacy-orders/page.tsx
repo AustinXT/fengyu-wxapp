@@ -1,6 +1,8 @@
 import { Suspense } from 'react'
 import { listLegacyOrders } from '@/actions/legacy-orders'
 import { getStores } from '@/actions/stores'
+import { getSession } from '@/lib/auth'
+import { hasPermission } from '@/lib/permissions'
 import LegacyOrdersPageClient from './_components/legacy-orders-page'
 
 export const dynamic = 'force-dynamic'
@@ -15,7 +17,7 @@ export default async function Page({
   const matched =
     params.matched === 'matched' || params.matched === 'unmatched' ? params.matched : undefined
 
-  const [{ data: orders, total }, stores] = await Promise.all([
+  const [{ data: orders, total }, stores, session] = await Promise.all([
     listLegacyOrders({
       phone: params.q,
       storeId: params.store,
@@ -26,7 +28,10 @@ export default async function Page({
       pageSize: params.size ? Number(params.size) : undefined,
     }),
     getStores(),
+    getSession(),
   ])
+
+  const canPull = session ? hasPermission(session, 'legacy_order:pull') : false
 
   return (
     <Suspense>
@@ -34,6 +39,7 @@ export default async function Page({
         orders={orders}
         total={total}
         stores={stores.map((s) => ({ storeId: s.storeId, storeName: s.storeName }))}
+        canPull={canPull}
       />
     </Suspense>
   )

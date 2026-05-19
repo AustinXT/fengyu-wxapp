@@ -44,9 +44,11 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     // 退款管理（2026-05-17 PR-Z 职责拆分；2026-05-17 PR-Z2 admin 拿回 approve 权）
     // admin 既可发起退款，也可审批（与 manager 并列为审批角色，manager 缺位时救场）
     'sale_order:refund_create', 'sale_order:refund_approve',
-    // 历史订单核对（WorkFine 导入的 status='未审核' 订单，仅 admin/manager 操作）
+    // 历史订单核对（WorkFine 导入的 status='未审核' 订单）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
-    'legacy_order:update_phone', 'legacy_order:update_amount',
+    'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
+    // 门店库存（4 类单据 v1，2026-05-19；admin 全开）
+    'inventory:list', 'inventory:create', 'inventory:update', 'inventory:delete',
     // admin 不碰业务数据（订单/分配/服务/预约/顾客）
   ],
   manager: [
@@ -70,7 +72,9 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'store_unbind:list', 'store_unbind:approve', 'store_unbind:reject',
     // 历史订单核对（manager 是顾客到店时的主要操作角色）
     'legacy_order:list', 'legacy_order:approve', 'legacy_order:reject',
-    'legacy_order:update_phone', 'legacy_order:update_amount',
+    'legacy_order:update_phone', 'legacy_order:update_amount', 'legacy_order:pull',
+    // 门店库存（manager 是主要录入者，删除需 admin）
+    'inventory:list', 'inventory:create', 'inventory:update',
   ],
   finance: [
     'dashboard:view',
@@ -84,6 +88,10 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'card_transaction:list',
     'pickup_record:list',
     'data_center:dashboard',
+    // 历史订单：可查看 + 按顾客拉取（核对动作仍归 admin/manager）
+    'legacy_order:list', 'legacy_order:pull',
+    // 门店库存（finance 只读）
+    'inventory:list',
   ],
   hr: [
     'dashboard:view',
@@ -99,12 +107,16 @@ export const DEFAULT_PERMISSION_MATRIX: Record<RoleType, string[]> = {
     'product:list', 'product:create', 'product:update',
     'coupon:list', 'coupon:create', 'coupon:update',
     'sale_order:refund_create',
+    // 门店库存（商品负责人只读，关注 SKU 流转）
+    'inventory:list',
   ],
   customer_mgr: [
     'dashboard:view',
     'customer:list', 'customer:update', 'customer:create',
     'sale_item:list',
     'sale_order:refund_create',
+    // 历史订单：可查看 + 按顾客拉取（核对动作仍归 admin/manager）
+    'legacy_order:list', 'legacy_order:pull',
   ],
   staff: [],
 }

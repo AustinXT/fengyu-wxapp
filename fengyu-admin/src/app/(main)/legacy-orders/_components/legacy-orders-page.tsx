@@ -31,6 +31,7 @@ import {
 } from "@/actions/legacy-orders"
 import { useUrlFilters } from "@/lib/hooks/use-url-filters"
 import { formatPhoneSafe } from "@/lib/format"
+import PullWorkfineDialog from "./pull-workfine-dialog"
 
 function formatDateTime(dt: string) {
   return new Date(dt).toLocaleString("zh-CN", {
@@ -43,9 +44,10 @@ interface Props {
   orders: LegacyOrderRow[]
   total: number
   stores: Array<{ storeId: string; storeName: string }>
+  canPull?: boolean
 }
 
-export default function LegacyOrdersPageClient({ orders, total, stores }: Props) {
+export default function LegacyOrdersPageClient({ orders, total, stores, canPull = false }: Props) {
   const router = useRouter()
   const { get, set, setMany } = useUrlFilters()
   const [, startTransition] = useTransition()
@@ -63,6 +65,7 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
   const [newAmount, setNewAmount] = useState("")
   const [batchOpen, setBatchOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [pullOpen, setPullOpen] = useState(false)
 
   const allOnPageSelected = useMemo(
     () => orders.length > 0 && orders.every((o) => selected.has(o.saleOrderId)),
@@ -199,12 +202,21 @@ export default function LegacyOrdersPageClient({ orders, total, stores }: Props)
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-bold text-[var(--foreground)]">历史订单核对</h1>
-        <span className="text-sm text-[#999999]">
-          顾客到店登录后，按手机号筛选并核对 4 字段（金额/日期/门店/手机号）
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="hidden md:inline text-sm text-[#999999]">
+            顾客到店登录后，按手机号筛选并核对 4 字段（金额/日期/门店/手机号）
+          </span>
+          {canPull && (
+            <Button size="sm" onClick={() => setPullOpen(true)}>
+              拉取顾客历史
+            </Button>
+          )}
+        </div>
       </div>
+
+      <PullWorkfineDialog open={pullOpen} onOpenChange={setPullOpen} />
 
       {/* 筛选 */}
       <Card>

@@ -38,6 +38,8 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
     ? hasRole(session, 'admin') || hasRole(session, 'manager') || hasRole(session, 'customer_mgr')
     : false
 
+  const canPullLegacy = session ? hasPermission(session, 'legacy_order:pull') : false
+
   return (
     <CustomerDetailPage
       customer={customer}
@@ -48,6 +50,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       phoneChangeLogs={phoneChangeLogs}
       orphanProfiles={orphanProfiles}
       canEditPhone={canEditPhone}
+      canPullLegacy={canPullLegacy}
     />
   )
 }

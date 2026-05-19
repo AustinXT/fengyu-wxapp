@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 /**
+ * @deprecated 2026-05-19 — 改用 admin /legacy-orders 的 manual pull 工作流（按顾客拉取）。
+ * 此脚本保留作为 fallback / 紧急批量回填用途；新流程见
+ * fengyu-admin/src/actions/legacy-orders.ts 的 importWorkfineOrdersByCustomer。
+ *
  * import-workfine-legacy.js — 一次性抓 WorkFine 历史订单 4 字段进 sale_orders.status='未审核'
  *
  * 取代 migrate-history-orders.js（已 DEPRECATED）。设计原则："抓的多就错的多"：

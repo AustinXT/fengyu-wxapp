@@ -25,6 +25,7 @@ import { formatCurrency, formatDate, formatDateTime } from "@/lib/utils"
 import { formatPhoneSafe } from "@/lib/format"
 import { updateCustomer, mergeClientProfile, type PhoneChangeLog, type OrphanProfile } from "@/actions/customers"
 import { searchEmployees } from "@/actions/employees"
+import PullWorkfineDialog from "@/app/(main)/legacy-orders/_components/pull-workfine-dialog"
 
 interface CustomerDetailPageProps {
   customer: Customer
@@ -35,6 +36,7 @@ interface CustomerDetailPageProps {
   phoneChangeLogs: PhoneChangeLog[]
   orphanProfiles: OrphanProfile[]
   canEditPhone?: boolean
+  canPullLegacy?: boolean
 }
 
 export default function CustomerDetailPage({
@@ -46,9 +48,11 @@ export default function CustomerDetailPage({
   phoneChangeLogs,
   orphanProfiles,
   canEditPhone = false,
+  canPullLegacy = false,
 }: CustomerDetailPageProps) {
   const router = useRouter()
   const [merging, setMerging] = useState<string | null>(null)
+  const [pullLegacyOpen, setPullLegacyOpen] = useState(false)
 
   // 手机号编辑（独立于"基本档案 编辑/保存"，因为手机号修改影响登录/会员识别，需要单独的二次确认流程）
   const [phoneEditing, setPhoneEditing] = useState(false)
@@ -347,7 +351,23 @@ export default function CustomerDetailPage({
             {customer.memberLevel}
           </Badge>
         )}
+        {canPullLegacy && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setPullLegacyOpen(true)}
+          >
+            拉取 WorkFine 历史订单
+          </Button>
+        )}
       </div>
+
+      <PullWorkfineDialog
+        open={pullLegacyOpen}
+        onOpenChange={setPullLegacyOpen}
+        defaultPhone={customer.phone ?? undefined}
+      />
 
       {orphanProfiles.length > 0 && (
         <Card>
