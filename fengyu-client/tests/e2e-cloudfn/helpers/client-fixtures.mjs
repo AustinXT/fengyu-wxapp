@@ -72,12 +72,12 @@ export async function createTestProduct({
   await pgQuery(
     `INSERT INTO products (
        product_id, category_id, name, price, is_bundle,
-       sort_order, is_enabled, is_visible
+       sort_order, is_visible
      )
-     VALUES ($1, $2, $3, $4::numeric, $5, 0, true, $6)
+     VALUES ($1, $2, $3, $4::numeric, $5, 0, $6)
      ON CONFLICT (product_id) DO UPDATE
        SET name = EXCLUDED.name, price = EXCLUDED.price,
-           is_visible = EXCLUDED.is_visible, is_enabled = true`,
+           is_visible = EXCLUDED.is_visible`,
     [productId, TEST_MALL_CATEGORY_ID, name, price, isBundle, isVisible]
   )
   return { productId }
