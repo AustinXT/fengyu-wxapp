@@ -79,6 +79,43 @@ describe('deriveStaffLevel', () => {
       deriveStaffLevel([{ role: 'finance', scopeType: '门店' }])
     ).toBe('store_staff')
   })
+
+  test('(manager, 总部) + (manager, 市场) + (manager, 门店) → headquarters（三层全开取最高）', () => {
+    expect(
+      deriveStaffLevel([
+        { role: 'manager', scopeType: '总部' },
+        { role: 'manager', scopeType: '市场' },
+        { role: 'manager', scopeType: '门店' },
+      ])
+    ).toBe('headquarters')
+  })
+
+  test('门店级 finance + customer_mgr + hr 同时 → store_staff（无 manager 门店则全归 store_staff）', () => {
+    expect(
+      deriveStaffLevel([
+        { role: 'finance', scopeType: '门店' },
+        { role: 'customer_mgr', scopeType: '门店' },
+        { role: 'hr', scopeType: '门店' },
+      ])
+    ).toBe('store_staff')
+  })
+
+  test('(manager, 门店) + (finance, 门店) → store_manager（同人多角色，manager 门店优先于其他门店角色）', () => {
+    expect(
+      deriveStaffLevel([
+        { role: 'manager', scopeType: '门店' },
+        { role: 'finance', scopeType: '门店' },
+      ])
+    ).toBe('store_manager')
+  })
+
+  test('(staff, 门店) → store_staff', () => {
+    expect(deriveStaffLevel([{ role: 'staff', scopeType: '门店' }])).toBe('store_staff')
+  })
+
+  test('(product, 总部) → headquarters', () => {
+    expect(deriveStaffLevel([{ role: 'product', scopeType: '总部' }])).toBe('headquarters')
+  })
 })
 
 describe('deriveAvailableLoginLevels', () => {
