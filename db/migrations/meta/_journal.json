@@ -281,6 +281,13 @@
       "when": 1779118897863,
       "tag": "0039_hard_husk",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1779163088843,
+      "tag": "0040_add_paid_sessions_to_sale_items",
+      "breakpoints": true
     }
   ]
 }

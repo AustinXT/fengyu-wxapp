@@ -118,7 +118,7 @@ describe('service.create', () => {
     }])
 
     await expect(serviceRoutes.create(ctx))
-      .rejects.toThrow(/INVALID_PARAMS.*未支付/)
+      .rejects.toThrow(/INVALID_PARAMS.*不可消费/)  // ticket 2026-05-19：消息改为"订单状态为 X，不可消费"
   })
 
   test('家居产品拒绝创建服务单', async () => {

@@ -18,6 +18,7 @@ const { generateWxacode, uploadToCloudStorage } = require('../utils/wxacode')
 const { getMemberThreshold } = require('../utils/config')
 const { RECHARGE_VIRTUAL_SKU_ID } = require('../utils/recharge')
 const { settlePointsSafe } = require('../utils/points')
+const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 const {
   buildRefundDetails,
   splitRefundByOriginalPayment,
@@ -737,6 +738,10 @@ async function create(ctx) {
     if (!(row.all_recharge === true || row.all_normal === true)) {
       throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
     }
+
+    // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
+    // 按行级 floor 计算；部分支付订单 paid_sessions < session_count，限定后续 service.create 上限。
+    await recalcPaidSessionsForOrder(client, saleOrderId)
   })
 
   // PR-2: status 与事务内 initialStatus 决策树保持一致
@@ -1103,6 +1108,9 @@ async function confirmOffline(ctx) {
       }
     }
 
+    // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+    await recalcPaidSessionsForOrder(client, saleOrderId)
+
     // 重算顾客历史消费档位
     await refreshSpendingTier(client, order.client_user_id)
     // 重算顾客类型（只升不降）
@@ -1384,6 +1392,7 @@ async function detail(ctx) {
   const items = await pg.query(`
     SELECT
       si.sale_item_id, si.sku_id, si.session_count, si.remaining_sessions,
+      si.paid_sessions,
       si.unit_price, si.quantity, si.unit_real_price, si.sale_amount, si.received,
       si.expire_date, si.remark, si.sales_category,
       si.product_name, si.sku_spec_name, si.product_type
@@ -1700,6 +1709,10 @@ async function approveRefund(ctx) {
       refundReason: sopRow.refund_reason || '退款审批通过',
     })
 
+    // 4.1 paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
+    // 若新 paid_sessions < 已消费次数(session_count - remaining_sessions)，抛 CONFLICT 阻止退款
+    await recalcPaidSessionsForOrder(client, refSaleOrderId)
+
     // 5. 重算顾客消费档位 + 顾客类型
     if (sopRow.client_user_id) {
       await refreshSpendingTier(client, sopRow.client_user_id)
@@ -2015,6 +2028,9 @@ async function createRepayment(ctx) {
     if (updateRes.rowCount === 0) {
       throw new Error('INVALID_STATE: 原订单状态已变更，请刷新后重试')
     }
+
+    // paid_sessions 重算（ticket 2026-05-19）：回款增长 → 解锁更多可消费次数
+    await recalcPaidSessionsForOrder(client, refSaleOrderId)
 
     // 重算顾客消费档位 + 顾客类型（付清后累计消费可能跨阈值）
     await refreshSpendingTier(client, locked.client_user_id)
@@ -2393,6 +2409,10 @@ async function createConversion(ctx) {
         [cardId, creditAmount.toFixed(2), convOrderId, `card-conv-${convOrderId}`]
       )
     }
+
+    // paid_sessions 初始写入（ticket 2026-05-19）：转换单 total_amount=差额（可能=0），
+    // 公式走 op.total_amount <= 0 → 兜底 = session_count（转入新卡视为全付获得）
+    await recalcPaidSessionsForOrder(tx, convOrderId)
 
     return { totalIn, totalOut, priceDiff, orderStatus, prepaidCardCredit }
   })
@@ -2951,6 +2971,10 @@ async function createDeposit(ctx) {
         ]
       )
     }
+
+    // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0，公式走 op.total_amount <= 0
+    // → paid_sessions = session_count（全付兜底），与"WorkFine 剩余次数初始化"语义一致
+    await recalcPaidSessionsForOrder(tx, saleOrderId)
 
     // 审计日志
     await tx.query(

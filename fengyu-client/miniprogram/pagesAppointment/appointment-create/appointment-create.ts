@@ -79,18 +79,33 @@ Page({
         for (const item of (order.items || [])) {
           const itemStoreId = order.storeId || '';
           const isCrossStore = !!bookingStoreId && !!itemStoreId && itemStoreId !== bookingStoreId;
+          // ticket 2026-05-19 paid_sessions：可选条件升级为"还有已付未用的次数"
+          const total = Number(item.sessionCount ?? 0);
+          const remaining = Number(item.remainingSessions ?? 0);
+          const paid = Number(item.paidSessions ?? 0);
+          const used = Math.max(0, total - remaining);
+          const paidUnused = Math.max(0, paid - used);
+          const noPaidQuota = !(paid > 0 && paidUnused > 0);
+          // 禁用优先级：跨店 > 无已付未用次数
+          const disabled = isCrossStore || noPaidQuota;
+          const disabled_reason = isCrossStore
+            ? `仅在 ${order.storeName || itemStoreId} 可用`
+            : (noPaidQuota ? '无已付未用次数' : '');
           items.push({
             sale_item_id: item.saleItemId,
             product_name: item.productName,
             sku_spec_name: item.skuSpecName,
-            remaining_sessions: item.remainingSessions,
-            session_count: item.sessionCount,
+            remaining_sessions: remaining,
+            session_count: total,
+            paid_sessions: paid,
+            used_sessions: used,
+            paid_unused_sessions: paidUnused,
             product_type: item.productType,
             sale_order_id: order.saleOrderId,
             store_id: itemStoreId,
             store_name: order.storeName,
-            disabled: isCrossStore,
-            disabled_reason: isCrossStore ? `仅在 ${order.storeName || itemStoreId} 可用` : '',
+            disabled,
+            disabled_reason,
           });
         }
       }

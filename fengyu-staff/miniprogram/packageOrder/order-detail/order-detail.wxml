@@ -43,8 +43,14 @@
         <view class="item-price-row">
           <text class="item-price">实收 ¥{{item.totalPrice}}</text>
           <text wx:if="{{item.sessionCount > 1}}" class="item-sessions">
-            剩余 {{item.remainingSessions}} / {{item.sessionCount}} 次
+            已用 {{item.usedSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次
           </text>
+        </view>
+        <!-- 三段进度条：已用（灰）/ 剩余可用（主色）/ 已付未用（浅色）/ 未付（灰条余下） -->
+        <view wx:if="{{item.sessionCount > 1}}" class="session-bar">
+          <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
+          <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
+          <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
         </view>
         <text class="item-flow-no">{{item.saleItemId}}</text>
       </view>

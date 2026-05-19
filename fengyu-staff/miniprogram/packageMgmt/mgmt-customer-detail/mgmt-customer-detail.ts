@@ -72,6 +72,7 @@ interface PaidOrderItem {
   spec: string;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
   productType: string;
   storeId?: string;
 }
@@ -93,6 +94,12 @@ interface TreatmentCard {
   spec: string;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
+  usedSessions: number;
+  paidUnusedSessions: number;
+  remainPct: number;
+  paidUnusedPct: number;
+  unpaidPct: number;
   saleOrderId: string;
   paidAt: string;
   storeId?: string;
@@ -107,6 +114,7 @@ interface GiftItem {
   quantity: number;
   sessionCount: number;
   remainingSessions: number;
+  paidSessions: number | null;
   createdAt?: string;
 }
 
@@ -122,6 +130,7 @@ interface PromoOrder {
     quantity: number;
     sessionCount?: number;
     remainingSessions?: number;
+    paidSessions?: number | null;
   }>;
 }
 
@@ -400,12 +409,25 @@ Page({
       for (const order of orders) {
         for (const item of order.items) {
           if (item.remainingSessions > 0) {
+            const total = Number(item.totalSessions || 0);
+            const remain = Number(item.remainingSessions || 0);
+            const paid = item.paidSessions == null ? 0 : Number(item.paidSessions);
+            const used = Math.max(total - remain, 0);
+            const paidUnused = Math.max(paid - used, 0);
+            const unpaid = Math.max(total - paid, 0);
+            const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
             cards.push({
               saleItemId: item.saleItemId,
               itemName: item.itemName,
               spec: item.spec,
               remainingSessions: item.remainingSessions,
               totalSessions: item.totalSessions,
+              paidSessions: item.paidSessions,
+              usedSessions: used,
+              paidUnusedSessions: paidUnused,
+              remainPct: pct(remain),
+              paidUnusedPct: pct(paidUnused),
+              unpaidPct: pct(unpaid),
               saleOrderId: order.saleOrderId,
               paidAt: order.paidAt,
             });

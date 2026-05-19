@@ -375,6 +375,7 @@ export interface SaleItem {
   skuId: string | null
   sessionCount: number | null
   remainingSessions: number | null
+  paidSessions: number | null
   unitPrice: string
   quantity: number
   unitRealPrice: string

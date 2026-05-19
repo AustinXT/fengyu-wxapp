@@ -29,3 +29,7 @@ exports[`audit-15 P0-15-02 协同：四端 settlePointsForOrder SQL 一致性守
   "netSettled": "SELECT COALESCE(SUM(COALESCE(received,0) - COALESCE(refunded_amount,0)), 0)::numeric AS net_settled FROM sale_orders WHERE sale_order_id = ? OR ref_sale_order_id = ?",
 }
 `;
+
+exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 > Snapshot 守护（任一字符漂移即可见） > paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;
+
+exports[`ticket 2026-05-19 paid_sessions 重算 SQL 四端字节同义守护 Snapshot 守护（任一字符漂移即可见） paid_sessions 重算 SQL 文本快照 1`] = `"UPDATE sale_items SET paid_sessions = CASE WHEN sale_items.session_count IS NULL THEN NULL WHEN op.total_amount <= 0 THEN sale_items.session_count ELSE LEAST(sale_items.session_count, FLOOR(LEAST(1, op.settled::numeric / op.total_amount) * sale_items.session_count)::integer) END, updated_at = NOW() FROM (SELECT total_amount, GREATEST(0, received - COALESCE(refunded_amount, 0)) AS settled FROM sale_orders WHERE sale_order_id = ?) op WHERE sale_items.sale_order_id = ?"`;

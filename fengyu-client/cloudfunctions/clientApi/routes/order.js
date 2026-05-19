@@ -7,6 +7,7 @@ const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
+const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
 
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）
@@ -590,6 +591,10 @@ async function create(ctx) {
       throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
     }
 
+    // paid_sessions 初始写入（ticket 2026-05-19）：基于 sale_orders.received + prepaid_card_amount
+    // 客户端 create 通常 received=0（待支付，等微信回调），paid_sessions=0 → service.create 时受 D6 限额阻塞
+    await recalcPaidSessionsForOrder(client, orderNo)
+
     // 全额抵扣：同事务扣减 balance + INSERT card_transactions（幂等）+ 写 sale_order_payments[储值卡抵扣]
     if (prepaidFullPaid) {
       // 幂等检查：若 ref_order_id + type='扣款' 已存在则跳过
@@ -966,7 +971,9 @@ async function list(ctx) {
         si.sale_item_id,
         si.quantity,
         si.received,
+        si.session_count,
         si.remaining_sessions,
+        si.paid_sessions,
         si.product_name,
         si.sku_spec_name,
         si.product_type,
@@ -1039,6 +1046,7 @@ async function detail(ctx) {
       si.product_type,
       si.session_count,
       si.remaining_sessions,
+      si.paid_sessions,
       si.unit_price,
       si.unit_real_price,
       si.quantity,
@@ -1252,6 +1260,7 @@ async function appointableItems(ctx) {
       si.product_type,
       si.session_count,
       si.remaining_sessions,
+      si.paid_sessions,
       si.unit_price,
       si.unit_real_price,
       si.sale_amount,
@@ -1290,6 +1299,7 @@ async function appointableItems(ctx) {
       productType: item.product_type,
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
+      paidSessions: item.paid_sessions,
       unitPrice: item.unit_price,
       unitRealPrice: item.unit_real_price,
       saleAmount: item.sale_amount,

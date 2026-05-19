@@ -24,6 +24,7 @@ import {
   type RefundSourceItem,
 } from '@/lib/refund'
 import { cascadeRefund } from '@/lib/refund-cascade'
+import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 import type {
   OrderStatus,
   PaymentMethod,
@@ -854,6 +855,10 @@ export const approveRefund = withPermission(
         refundReason: pre.payment.refundReason ?? '',
       })
 
+      // 5.1) paid_sessions 重算（ticket 2026-05-19，D3=A）：refunded_amount 增长 → settled 下降
+      // 若新 paid_sessions < 已消费次数，抛 CONFLICT 阻止退款
+      await recalcPaidSessionsForOrder(tx, refSaleOrderId)
+
       // 6) 重算顾客历史消费档位
       if (pre.orderClientUserId) {
         await refreshSpendingTierTx(tx, pre.orderClientUserId)
@@ -871,6 +876,9 @@ export const approveRefund = withPermission(
     }
     if (msg.includes('CARD_UPSERT_FAILED')) {
       return { success: false, error: { code: 'INVALID_STATE', message: '储值卡回冲失败' } }
+    }
+    if (msg.includes('PAID_SESSIONS_UNDERFLOW')) {
+      return { success: false, error: { code: 'CONFLICT', message: '该订单已有消费次数，本次退款会使已支付次数低于已消费次数，请先取消相关服务单回滚消费再退款' } }
     }
     console.error('[approveRefund] unexpected error:', err)
     return { success: false, error: { code: 'UNKNOWN', message: '审批退款失败，请稍后重试' } }

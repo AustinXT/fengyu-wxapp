@@ -1,7 +1,7 @@
 // pages/treatment-cards/treatment-cards.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { calculateProgress } from '../../utils/format';
+import { calculateTriProgress } from '../../utils/format';
 
 Page({
   data: {
@@ -24,15 +24,24 @@ Page({
       const data = await callClientApi('order.appointableItems', { includeInactive: true });
       const orders: any[] = data?.orders || [];
 
-      // 展平为卡片列表
+      // 展平为卡片列表（含三段进度：已用 / 已付未用 / 未付）
       const cards: any[] = [];
       for (const order of orders) {
         for (const item of (order.items || [])) {
+          const paid = Number(item.paidSessions ?? 0);
+          const total = Number(item.sessionCount ?? 0);
+          const remaining = Number(item.remainingSessions ?? 0);
+          const used = Math.max(0, total - remaining);
+          const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
           cards.push({
             ...item,
+            paidSessions: paid,
             saleOrderId: order.saleOrderId,
             storeName: order.storeName,
-            percent: calculateProgress(item.sessionCount, item.remainingSessions),
+            usedSessions: used,
+            usedPct,
+            paidUnusedPct,
+            unpaidPct,
             expireFmt: item.expireDate ? item.expireDate.slice(0, 10) : '',
           });
         }

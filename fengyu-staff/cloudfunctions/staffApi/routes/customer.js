@@ -481,6 +481,7 @@ async function paidOrders(ctx) {
       si.store_id,
       si.session_count,
       si.remaining_sessions,
+      si.paid_sessions,
       si.sku_id,
       si.product_type,
       si.sku_spec_name,
@@ -502,6 +503,7 @@ async function paidOrders(ctx) {
       sessionCount: item.session_count,
       remainingSessions: item.remaining_sessions,
       totalSessions: item.session_count,
+      paidSessions: item.paid_sessions,
       productType: item.product_type || "",
     });
   }
@@ -865,7 +867,7 @@ async function giftHistory(ctx) {
   // 套餐内赠品（received=0 的明细行，排除组合套餐）
   const giftItems = await pg.query(`
     SELECT si.sale_item_id, si.sale_order_id, si.product_name, si.sku_spec_name,
-           si.quantity, si.session_count, si.remaining_sessions,
+           si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions,
            si.received, o.created_at, o.paid_at
     FROM sale_items si
     JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
@@ -883,7 +885,7 @@ async function giftHistory(ctx) {
   if (promoOrderIds.length > 0) {
     promoItems = await pg.query(
       `SELECT si.sale_order_id, si.sale_item_id, si.product_name, si.sku_spec_name,
-              si.quantity, si.session_count, si.remaining_sessions, si.received
+              si.quantity, si.session_count, si.remaining_sessions, si.paid_sessions, si.received
        FROM sale_items si WHERE si.sale_order_id = ANY($1) ORDER BY si.sale_item_id`,
       [promoOrderIds]
     )
@@ -898,6 +900,7 @@ async function giftHistory(ctx) {
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
+      paidSessions: i.paid_sessions,
     })
   }
 
@@ -919,6 +922,7 @@ async function giftHistory(ctx) {
       quantity: i.quantity,
       sessionCount: i.session_count,
       remainingSessions: i.remaining_sessions,
+      paidSessions: i.paid_sessions,
       createdAt: i.created_at,
     })),
   }

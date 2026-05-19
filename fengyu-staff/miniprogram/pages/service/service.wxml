@@ -58,7 +58,7 @@
       >
         <text class="item-name">{{si.itemName}}</text>
         <text class="item-spec">{{si.spec}}</text>
-        <text class="item-sessions" wx:if="{{si.totalSessions > 1}}">剩余 {{si.remainingSessions}}/{{si.totalSessions}} 次</text>
+        <text class="item-sessions" wx:if="{{si.totalSessions > 1}}">剩余 {{si.remainingSessions}} / 已付 {{si.paidSessions}} / 共 {{si.totalSessions}} 次</text>
       </view>
 
       <!-- 时间信息 -->

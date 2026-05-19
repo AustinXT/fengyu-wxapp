@@ -27,10 +27,37 @@ export function formatDiscount(coupon: { couponType: string; discountValue: numb
   return `¥${Number(coupon.discountValue).toFixed(0)}`;
 }
 
-/** 疗程卡进度百分比 */
+/** 疗程卡进度百分比（旧接口，已用占比，仅向后兼容） */
 export function calculateProgress(sessionCount: number, remainingSessions: number): number {
   if (sessionCount <= 0) return 0;
   return Math.round(((sessionCount - remainingSessions) / sessionCount) * 100);
+}
+
+/**
+ * 疗程卡三段进度（剩余可用 / 已付未用 / 未付）
+ * - usedPct: 已用 = (total - remaining) / total
+ * - paidUnusedPct: 已付未用 = max(0, paid - used) / total
+ * - unpaidPct: 未付 = max(0, total - paid) / total
+ * 三段加起来 ≤ 100，剩余可用段 = 已付未用段（颜色 #C0322A 品牌主色）
+ */
+export function calculateTriProgress(
+  sessionCount: number,
+  remainingSessions: number,
+  paidSessions: number
+): { usedPct: number; paidUnusedPct: number; unpaidPct: number } {
+  const total = Number(sessionCount) || 0;
+  const remaining = Number(remainingSessions) || 0;
+  const paid = Number(paidSessions) || 0;
+  if (total <= 0) return { usedPct: 0, paidUnusedPct: 0, unpaidPct: 0 };
+  const used = Math.max(0, total - remaining);
+  const paidUnused = Math.max(0, paid - used);
+  const unpaid = Math.max(0, total - paid);
+  const pct = (n: number) => Math.round((n / total) * 10000) / 100;
+  return {
+    usedPct: pct(used),
+    paidUnusedPct: pct(paidUnused),
+    unpaidPct: pct(unpaid),
+  };
 }
 
 /** 清理错误消息前缀（如 "INVALID_PARAMS: xxx" → "xxx"） */

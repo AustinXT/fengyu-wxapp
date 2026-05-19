@@ -46,17 +46,36 @@ Page({
 
   _mapOrders(orders: any[]) {
     return orders.map(item => {
+      // 可预约判定：已支付 + 至少一项有"已付未用"次数（paid_sessions - used > 0）
+      // ticket 2026-05-19 paid_sessions：可消费门槛由 remaining > 0 升级为"还有已付未用的次数"
       const hasAppointable = item.status === '已支付'
-        && (item.items || []).some((i: any) =>
-          i.product_type !== '家居产品' && (i.remaining_sessions ?? 0) > 0
-        );
+        && (item.items || []).some((i: any) => {
+          if (i.product_type === '家居产品') return false;
+          const total = Number(i.session_count ?? 0);
+          const remaining = Number(i.remaining_sessions ?? 0);
+          const paid = Number(i.paid_sessions ?? 0);
+          const used = Math.max(0, total - remaining);
+          return paid > 0 && (paid - used) > 0;
+        });
       const itemCount = (item.items || []).reduce((sum: number, i: any) => sum + (i.quantity || 1), 0);
       // 2026-04-26 sale-order-domain-refactor:
       //   - 已退款标签由 refunded_amount > 0 推导
       //   - 后端列表接口已返回 received / refunded_amount
       const hasRefund = Number(item.refunded_amount || 0) > 0;
+      // 列表项三段次数展示（ticket 2026-05-19）
+      const mappedItems = (item.items || []).map((i: any) => {
+        const total = Number(i.session_count ?? 0);
+        const remaining = Number(i.remaining_sessions ?? 0);
+        const paid = Number(i.paid_sessions ?? 0);
+        return {
+          ...i,
+          paid_sessions: paid,
+          used_sessions: Math.max(0, total - remaining),
+        };
+      });
       return {
         ...item,
+        items: mappedItems,
         statusClass: getStatusClass(item.status),
         order_time_fmt: formatOrderDate(item.sale_order_datetime),
         hasAppointable,

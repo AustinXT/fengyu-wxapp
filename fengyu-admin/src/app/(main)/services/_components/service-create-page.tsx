@@ -286,7 +286,7 @@ export default function ServiceCreatePageClient({
                         <th className="px-4 py-3 text-left font-medium text-gray-500">商品名称</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">规格</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">类型</th>
-                        <th className="px-4 py-3 text-right font-medium text-gray-500">剩余/总次数</th>
+                        <th className="px-4 py-3 text-right font-medium text-gray-500">已用/已付/共</th>
                         <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                         <th className="px-4 py-3 text-left font-medium text-gray-500">到期日</th>
                         <th className="px-4 py-3 text-center font-medium text-gray-500">划卡次数</th>
@@ -322,7 +322,10 @@ export default function ServiceCreatePageClient({
                               </span>
                             </td>
                             <td className="px-4 py-3 text-right">
-                              {item.remainingSessions}/{item.sessionCount ?? "-"}
+                              {/* ticket 2026-05-19 D10=A：三段简写 已用/已付/共 */}
+                              {item.sessionCount !== null
+                                ? `${item.sessionCount - (item.remainingSessions ?? 0)}/${item.paidSessions ?? 0}/${item.sessionCount}`
+                                : "-"}
                             </td>
                             <td className="px-4 py-3 text-right">
                               ¥{(item.sessionCount && item.sessionCount > 0

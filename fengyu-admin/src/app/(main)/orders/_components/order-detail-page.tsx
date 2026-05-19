@@ -245,23 +245,26 @@ export default function OrderDetailPageClient({
                   <th className="px-4 py-3 text-right font-medium text-gray-500">单价</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">数量</th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">实收</th>
-                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态/剩余次数</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500">状态/次数（已用/已付/共）</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {items.map((item) => (
+                {items.map((item) => {
+                  // ticket 2026-05-19 D10=A：三段次数展示
+                  // 已用 = sessionCount - remainingSessions；已付 = paidSessions ?? 0；共 = sessionCount
+                  const sessionCell = item.sessionCount !== null
+                    ? `已用 ${item.sessionCount - (item.remainingSessions ?? 0)} / 已付 ${item.paidSessions ?? 0} / 共 ${item.sessionCount} 次`
+                    : "单品"
+                  return (
                   <tr key={item.saleItemId} className="hover:bg-[#FFF0EE] transition-colors">
                     <td className="px-4 py-3 font-medium">{item.skuName || item.productName || "-"}</td>
                     <td className="px-4 py-3 text-right">¥{Number(item.unitPrice).toLocaleString()}</td>
                     <td className="px-4 py-3 text-right">{item.quantity}</td>
                     <td className="px-4 py-3 text-right font-medium">¥{Number(item.received).toLocaleString()}</td>
-                    <td className="px-4 py-3">
-                      {item.sessionCount !== null
-                        ? `剩余 ${item.remainingSessions ?? 0}/${item.sessionCount} 次`
-                        : "单品"}
-                    </td>
+                    <td className="px-4 py-3">{sessionCell}</td>
                   </tr>
-                ))}
+                  )
+                })}
                 {items.length === 0 && (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-[#999999]">暂无明细</td></tr>
                 )}

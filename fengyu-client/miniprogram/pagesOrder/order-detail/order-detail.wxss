@@ -165,6 +165,35 @@
   color: var(--color-text-secondary);
 }
 
+/* 三段进度条（订单详情服务明细，ticket 2026-05-19 paid_sessions） */
+.oi-progress {
+  display: flex;
+  height: 8rpx;
+  width: 220rpx;
+  margin-top: 8rpx;
+  border-radius: 4rpx;
+  overflow: hidden;
+  background: var(--color-border);
+}
+.oi-progress__seg {
+  height: 100%;
+}
+.oi-progress__seg--used {
+  background: #B0B0B0;
+}
+.oi-progress__seg--paid-unused {
+  background: var(--color-primary);
+}
+.oi-progress__seg--unpaid {
+  background: repeating-linear-gradient(
+    45deg,
+    #F0F0F0,
+    #F0F0F0 4rpx,
+    #E4E4E4 4rpx,
+    #E4E4E4 8rpx
+  );
+}
+
 .oi-expire {
   display: flex;
   align-items: center;

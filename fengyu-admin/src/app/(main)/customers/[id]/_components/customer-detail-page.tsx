@@ -294,18 +294,17 @@ export default function CustomerDetailPage({
       cell: (row) => <span>{row.skuName ?? "—"}</span>,
     },
     {
+      // ticket 2026-05-19 D10=A：合并展示「已用 / 已付 / 共」三段次数
       key: "sessionCount",
-      header: "总次数",
-      cell: (row) => <span>{row.sessionCount ?? "—"}</span>,
-    },
-    {
-      key: "remainingSessions",
-      header: "剩余次数",
-      cell: (row) => (
-        <span className="font-medium text-[#C0322A]">
-          {row.remainingSessions ?? "—"}
-        </span>
-      ),
+      header: "已用/已付/共",
+      cell: (row) =>
+        row.sessionCount !== null ? (
+          <span className="font-medium text-[#C0322A]">
+            {`${row.sessionCount - (row.remainingSessions ?? 0)}/${row.paidSessions ?? 0}/${row.sessionCount}`}
+          </span>
+        ) : (
+          <span>—</span>
+        ),
     },
     {
       key: "expireDate",

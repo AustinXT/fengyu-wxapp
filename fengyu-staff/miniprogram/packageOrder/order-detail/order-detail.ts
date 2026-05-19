@@ -40,6 +40,7 @@ interface RawOrderItem {
   received?: string;
   session_count?: number;
   remaining_sessions?: number;
+  paid_sessions?: number | null;
 }
 
 interface RawAllocation {
@@ -87,6 +88,15 @@ interface DisplayOrderItem {
   totalPrice: string;
   sessionCount: number | undefined;
   remainingSessions: number | undefined;
+  paidSessions: number | undefined;
+  /** 已用次数 = sessionCount - remainingSessions（0 兜底） */
+  usedSessions: number;
+  /** 已付未用次数 = max(paidSessions - usedSessions, 0) */
+  paidUnusedSessions: number;
+  /** 三段进度条百分比（用于 WXML 内联 style） */
+  remainPct: number;
+  paidUnusedPct: number;
+  unpaidPct: number;
 }
 
 interface DisplayAllocation {
@@ -161,14 +171,30 @@ Page({
     try {
       const res = await callStaffApi<OrderDetailResponse>('order.detail', { saleOrderId });
       const o = res.order || {} as RawOrder;
-      const items: DisplayOrderItem[] = (res.items || []).map((it) => ({
-        saleItemId: it.sale_item_id,
-        itemName: it.product_name || it.sku_spec_name || '—',
-        spec: it.sku_spec_name || '',
-        totalPrice: it.received || '0',
-        sessionCount: it.session_count,
-        remainingSessions: it.remaining_sessions,
-      }));
+      const items: DisplayOrderItem[] = (res.items || []).map((it) => {
+        const sc = Number(it.session_count || 0);
+        const rs = Number(it.remaining_sessions || 0);
+        const ps = it.paid_sessions == null ? 0 : Number(it.paid_sessions);
+        const used = Math.max(sc - rs, 0);
+        const paidUnused = Math.max(ps - used, 0);
+        const remain = rs;
+        const unpaid = Math.max(sc - ps, 0);
+        const pct = (n: number) => (sc > 0 ? Math.round((n / sc) * 1000) / 10 : 0);
+        return {
+          saleItemId: it.sale_item_id,
+          itemName: it.product_name || it.sku_spec_name || '—',
+          spec: it.sku_spec_name || '',
+          totalPrice: it.received || '0',
+          sessionCount: it.session_count,
+          remainingSessions: it.remaining_sessions,
+          paidSessions: it.paid_sessions == null ? undefined : Number(it.paid_sessions),
+          usedSessions: used,
+          paidUnusedSessions: paidUnused,
+          remainPct: pct(remain),
+          paidUnusedPct: pct(paidUnused),
+          unpaidPct: pct(unpaid),
+        };
+      });
       const allocation: DisplayAllocation[] = (res.allocations || []).map((a) => ({
         staffName: a.employee_name || a.employee_id || '',
         department: a.department_name || '',

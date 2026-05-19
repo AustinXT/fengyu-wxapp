@@ -83,6 +83,7 @@ interface PaidOrderItem {
   spec: string;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
   productType: string;
   storeId?: string;
 }
@@ -104,6 +105,14 @@ interface TreatmentCard {
   spec: string;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
+  /** 可消费次数 = min(remaining, paid - used)。stepper.max 用此值。 */
+  consumableSessions: number;
+  usedSessions: number;
+  paidUnusedSessions: number;
+  remainPct: number;
+  paidUnusedPct: number;
+  unpaidPct: number;
   saleOrderId: string;
   paidAt: string;
   selected: boolean;
@@ -119,6 +128,7 @@ interface GiftItem {
   quantity: number;
   sessionCount: number;
   remainingSessions: number;
+  paidSessions: number | null;
 }
 
 interface PromoOrder {
@@ -371,19 +381,34 @@ Page({
       const cards: TreatmentCard[] = [];
       for (const order of orders) {
         for (const item of order.items) {
-          if (item.remainingSessions > 0) {
-            cards.push({
-              saleItemId: item.saleItemId,
-              itemName: item.itemName,
-              spec: item.spec,
-              remainingSessions: item.remainingSessions,
-              totalSessions: item.totalSessions,
-              saleOrderId: order.saleOrderId,
-              paidAt: order.paidAt,
-              selected: false,
-              sessionCount: 1,
-            });
-          }
+          const total = Number(item.totalSessions || 0);
+          const remain = Number(item.remainingSessions || 0);
+          const paid = item.paidSessions == null ? 0 : Number(item.paidSessions);
+          const used = Math.max(total - remain, 0);
+          const paidUnused = Math.max(paid - used, 0);
+          const unpaid = Math.max(total - paid, 0);
+          const consumable = Math.max(0, Math.min(remain, paid - used));
+          // D6=A：paid_sessions=0 或 已用满已付 → 整张卡锁死，不显示
+          if (consumable <= 0) continue;
+          const pct = (n: number) => (total > 0 ? Math.round((n / total) * 1000) / 10 : 0);
+          cards.push({
+            saleItemId: item.saleItemId,
+            itemName: item.itemName,
+            spec: item.spec,
+            remainingSessions: item.remainingSessions,
+            totalSessions: item.totalSessions,
+            paidSessions: item.paidSessions,
+            consumableSessions: consumable,
+            usedSessions: used,
+            paidUnusedSessions: paidUnused,
+            remainPct: pct(remain),
+            paidUnusedPct: pct(paidUnused),
+            unpaidPct: pct(unpaid),
+            saleOrderId: order.saleOrderId,
+            paidAt: order.paidAt,
+            selected: false,
+            sessionCount: 1,
+          });
         }
       }
       this.setData({ treatmentCards: cards, cardsLoaded: true, selectedCount: 0 });

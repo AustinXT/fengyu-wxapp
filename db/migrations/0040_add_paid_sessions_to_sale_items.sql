@@ -1,0 +1,2 @@
+ALTER TABLE "sale_items" ADD COLUMN "paid_sessions" integer;--> statement-breakpoint
+ALTER TABLE "sale_items" ADD CONSTRAINT "chk_item_paid_sessions" CHECK ("sale_items"."paid_sessions" IS NULL OR ("sale_items"."paid_sessions" >= 0 AND "sale_items"."paid_sessions" <= "sale_items"."session_count"));

@@ -167,6 +167,13 @@ export const saleItems = pgTable(
     productType: productTypeEnum("product_type"),
     sessionCount: integer("session_count"),
     remainingSessions: integer("remaining_sessions"),
+    /**
+     * 已支付次数（按 (received + prepaid_card_amount) / total_amount × session_count 取 floor）。
+     * 每次 sale_orders.received 或 prepaid_card_amount 变化（首次支付/回款/退款/微信回调）后必须重算。
+     * 业务不变量（应用层守护）：(session_count - remaining_sessions) <= paid_sessions。
+     * NULL 表示非次数卡（单品/家居等 session_count 为 NULL 的行）。
+     */
+    paidSessions: integer("paid_sessions"),
     /** 原价快照（开单时持久化） */
     unitPrice: numeric("unit_price", { precision: 10, scale: 2 }).notNull(),
     quantity: integer("quantity").notNull().default(1),
@@ -211,6 +218,7 @@ export const saleItems = pgTable(
     check("chk_item_unit_price", sql`${table.unitPrice} >= 0`),
     check("chk_item_unit_real_price", sql`${table.unitRealPrice} >= 0`),
     check("chk_item_remaining", sql`${table.remainingSessions} IS NULL OR ${table.remainingSessions} >= 0`),
+    check("chk_item_paid_sessions", sql`${table.paidSessions} IS NULL OR (${table.paidSessions} >= 0 AND ${table.paidSessions} <= ${table.sessionCount})`),
     check("chk_item_quantity", sql`${table.quantity} > 0`),
     check("chk_item_service_fee", sql`${table.serviceFee} >= 0`),
   ],

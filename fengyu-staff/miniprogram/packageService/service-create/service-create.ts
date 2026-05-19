@@ -11,6 +11,9 @@ interface PaidOrderItem {
   sessionCount: number;
   remainingSessions: number;
   totalSessions: number;
+  paidSessions: number | null;
+  /** 可消费次数 = min(remaining, paid - used) = min(remaining, paid - (total - remaining)) */
+  consumableSessions: number;
   productType: string;
   storeId?: string;
 }
@@ -219,10 +222,20 @@ Page({
   async loadPaidOrders(clientUserId: string) {
     try {
       const orders = await callStaffApi<PaidOrder[]>('customer.paidOrders', { clientUserId });
-      // 过滤掉家居产品行
+      // 过滤掉家居产品行 + paid_sessions=0 / 已用满已付次数 的卡完全锁死（D6=A）
+      // 可消费次数 = min(remaining, paid - used)；其中 used = total - remaining
       const filtered = (orders || []).map(o => ({
         ...o,
-        items: o.items.filter(i => i.productType !== '家居产品' && i.remainingSessions > 0),
+        items: o.items
+          .map(i => {
+            const total = Number(i.totalSessions || i.sessionCount || 0);
+            const remain = Number(i.remainingSessions || 0);
+            const paid = i.paidSessions == null ? 0 : Number(i.paidSessions);
+            const used = Math.max(total - remain, 0);
+            const consumable = Math.max(0, Math.min(remain, paid - used));
+            return { ...i, consumableSessions: consumable };
+          })
+          .filter(i => i.productType !== '家居产品' && i.consumableSessions > 0),
       })).filter(o => o.items.length > 0);
       this.setData({ paidOrders: filtered });
     } catch (_) {}

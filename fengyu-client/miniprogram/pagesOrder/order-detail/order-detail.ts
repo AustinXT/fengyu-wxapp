@@ -1,7 +1,7 @@
 // pages/order-detail/order-detail.ts
 import Toast from '@vant/weapp/toast/toast';
 import { callClientApi } from '../../utils/cloud';
-import { formatDateTime } from '../../utils/format';
+import { formatDateTime, calculateTriProgress } from '../../utils/format';
 
 interface OrderDetailItem {
   sale_item_id: string;
@@ -10,10 +10,16 @@ interface OrderDetailItem {
   product_type: string;
   session_count: number;
   remaining_sessions: number | null;
+  paid_sessions: number | null;
   unit_price: number;
   quantity: number;
   received: number;
   expire_date: string | null;
+  // 视图字段（前端计算注入）
+  used_sessions?: number;
+  used_pct?: number;
+  paid_unused_pct?: number;
+  unpaid_pct?: number;
 }
 
 interface OrderDetailData {
@@ -137,11 +143,34 @@ Page({
       const paymentsRaw: OrderPayment[] = (data as any)?.payments || [];
       const iconMeta = STATUS_ICON[order.status] || STATUS_ICON['已关闭'];
 
-      // 是否有可预约项目（已支付 + 剩余次数 > 0 + 非家居产品）
+      // 是否有可预约项目（已支付 + 至少一项"已付未用" > 0 + 非家居产品）
+      // ticket 2026-05-19 paid_sessions：可消费门槛升级为"还有已付未用的次数"
       const hasAppointableItems = order.status === '已支付'
-        && items.some(i =>
-            i.product_type !== '家居产品' && (i.remaining_sessions ?? 0) > 0
-          );
+        && items.some(i => {
+            if (i.product_type === '家居产品') return false;
+            const total = Number(i.session_count ?? 0);
+            const remaining = Number(i.remaining_sessions ?? 0);
+            const paid = Number(i.paid_sessions ?? 0);
+            const used = Math.max(0, total - remaining);
+            return paid > 0 && (paid - used) > 0;
+          });
+
+      // 注入三段进度展示字段（已用 / 已付未用 / 未付）
+      const itemsWithProgress: OrderDetailItem[] = items.map(i => {
+        const total = Number(i.session_count ?? 0);
+        const remaining = Number(i.remaining_sessions ?? 0);
+        const paid = Number(i.paid_sessions ?? 0);
+        const used = Math.max(0, total - remaining);
+        const { usedPct, paidUnusedPct, unpaidPct } = calculateTriProgress(total, remaining, paid);
+        return {
+          ...i,
+          paid_sessions: paid,
+          used_sessions: used,
+          used_pct: usedPct,
+          paid_unused_pct: paidUnusedPct,
+          unpaid_pct: unpaidPct,
+        };
+      });
 
       // 格式化支付到期时间（仅时间 HH:mm）
       let expireTimeFmt = '';
@@ -190,7 +219,7 @@ Page({
       this.setData({
         order: {
           ...order,
-          items,
+          items: itemsWithProgress,
           order_time_fmt: formatDateTime(order.sale_order_datetime),
           expire_time_fmt: expireTimeFmt,
           outstanding_fmt: outstanding.toFixed(2),

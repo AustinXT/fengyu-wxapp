@@ -81,7 +81,9 @@ async function create(ctx) {
     const saleItemRows = await pg.query(`
       SELECT
         si.sale_item_id,
+        si.session_count,
         si.remaining_sessions,
+        si.paid_sessions,
         si.unit_real_price,
         si.product_type,
         o.status AS order_status,
@@ -99,8 +101,9 @@ async function create(ctx) {
 
     const si = saleItemRows[0]
 
-    if (si.order_status !== '已支付') {
-      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 对应订单未支付`)
+    // 订单状态门槛（ticket 2026-05-19 D2=A）：允许 已支付 / 部分支付 两种状态消费
+    if (!['已支付', '部分支付'].includes(si.order_status)) {
+      throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 对应订单状态为 ${si.order_status}，不可消费`)
     }
 
     if (si.product_type === '家居产品') {
@@ -113,6 +116,20 @@ async function create(ctx) {
 
     if (si.remaining_sessions !== null && si.remaining_sessions < item.sessionUsed) {
       throw new Error(`INVALID_PARAMS: 订单行 ${item.saleItemId} 剩余次数不足`)
+    }
+
+    // paid_sessions 限额校验（ticket 2026-05-19 D6=A）：paid_sessions=0 时整张卡锁死
+    // session_count != null 同时覆盖 undefined（兼容历史 mock，生产语义不变）
+    if (si.session_count != null) {
+      const paid = si.paid_sessions == null ? 0 : Number(si.paid_sessions)
+      if (paid <= 0) {
+        throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${item.saleItemId} 尚未支付，无可用次数，请先完成付款`)
+      }
+      const usedNow = Number(si.session_count) - Number(si.remaining_sessions)
+      const usedAfter = usedNow + Number(item.sessionUsed)
+      if (usedAfter > paid) {
+        throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${item.saleItemId} 已支付次数不足（已付 ${paid}/${si.session_count}，已用 ${usedNow}，本次需 ${item.sessionUsed}），请先完成付款`)
+      }
     }
   }
 
@@ -360,19 +377,22 @@ async function complete(ctx) {
     // 原子扣减每条订单行的剩余次数（强制 sale_items.store_id 与服务单门店一致，
     // 防止本店服务单核销他店购买的卡）
     for (const item of items) {
+      // 原子扣减条件叠加 paid_sessions 限额（ticket 2026-05-19）：
+      //   扣减后已用次数 (session_count - (remaining - sessionUsed)) 不得超 paid_sessions
       const updateResult = await client.query(
         `UPDATE sale_items
          SET remaining_sessions = remaining_sessions - $1
          WHERE sale_item_id = $2
            AND store_id = $3
            AND remaining_sessions >= $1
-           AND remaining_sessions IS NOT NULL`,
+           AND remaining_sessions IS NOT NULL
+           AND (session_count - remaining_sessions + $1) <= COALESCE(paid_sessions, 0)`,
         [item.session_used, item.sale_item_id, so.store_id]
       )
 
       if (updateResult.rowCount === 0) {
         const checkRows = await client.query(
-          'SELECT store_id, remaining_sessions FROM sale_items WHERE sale_item_id = $1',
+          'SELECT store_id, session_count, remaining_sessions, paid_sessions FROM sale_items WHERE sale_item_id = $1',
           [item.sale_item_id]
         )
         if (checkRows.rows.length === 0) {
@@ -382,9 +402,15 @@ async function complete(ctx) {
         if (probe.store_id !== so.store_id) {
           throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 仅在 ${probe.store_id} 可核销，当前服务单门店 ${so.store_id}`)
         }
-        if (probe.remaining_sessions !== null) {
+        if (probe.remaining_sessions !== null && probe.remaining_sessions < item.session_used) {
           throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 剩余次数不足 ${item.session_used}`)
         }
+        if (probe.session_count !== null) {
+          const paid = probe.paid_sessions == null ? 0 : Number(probe.paid_sessions)
+          const usedNow = Number(probe.session_count) - Number(probe.remaining_sessions)
+          throw new Error(`INSUFFICIENT_BALANCE: 订单行 ${item.sale_item_id} 已支付次数不足（已付 ${paid}/${probe.session_count}，已用 ${usedNow}，本次需 ${item.session_used}），请先完成付款`)
+        }
+        throw new Error(`INVALID_PARAMS: 订单行 ${item.sale_item_id} 扣减失败`)
       }
 
       // 查询扣减后剩余次数，若归零则关闭对应预约
@@ -557,6 +583,7 @@ async function list(ctx) {
         sli.sku_spec_name,
         sli.remaining_sessions,
         sli.session_count,
+        sli.paid_sessions,
         si.service_duration
       FROM service_items si
       LEFT JOIN sale_items sli ON si.sale_item_id = sli.sale_item_id
@@ -572,6 +599,7 @@ async function list(ctx) {
       spec: i.sku_spec_name || '',
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
+      paidSessions: i.paid_sessions,
     })
   }
 
@@ -682,6 +710,7 @@ async function detail(ctx) {
       si.service_duration,
       sli.session_count,
       sli.remaining_sessions,
+      sli.paid_sessions,
       sli.sku_spec_name,
       sli.product_type,
       sli.product_name
@@ -741,6 +770,7 @@ async function detail(ctx) {
       serviceDuration: i.service_duration,
       remainingSessions: i.remaining_sessions,
       totalSessions: i.session_count,
+      paidSessions: i.paid_sessions,
     }))
   }
 }

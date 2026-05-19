@@ -152,7 +152,12 @@
                       <text class="tc-spec">{{item.spec}}</text>
                       <text class="tc-order">{{item.saleOrderId}}</text>
                     </view>
-                    <text class="tc-sessions">剩余 {{item.remainingSessions}}/{{item.totalSessions}} 次</text>
+                    <text class="tc-sessions">剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.totalSessions}} 次</text>
+                    <view class="session-bar">
+                      <view class="session-bar__seg session-bar__seg--remain" style="width:{{item.remainPct}}%"></view>
+                      <view class="session-bar__seg session-bar__seg--paid-unused" style="width:{{item.paidUnusedPct}}%"></view>
+                      <view class="session-bar__seg session-bar__seg--unpaid" style="width:{{item.unpaidPct}}%"></view>
+                    </view>
                   </view>
                 </view>
               </view>
@@ -177,7 +182,7 @@
                   <view wx:for="{{item.items}}" wx:for-item="gi" wx:key="productName" class="gift-item-row">
                     <text class="gift-item-name">{{gi.productName}}</text>
                     <text class="gift-item-spec">{{gi.specName}}</text>
-                    <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.remainingSessions}}/{{gi.sessionCount}}</text>
+                    <text wx:if="{{gi.remainingSessions != null}}" class="gift-item-sessions">剩余 {{gi.remainingSessions}} / 已付 {{gi.paidSessions}} / 共 {{gi.sessionCount}}</text>
                   </view>
                   <text class="gift-card-time">{{item.paidAt}}</text>
                 </view>
@@ -191,7 +196,7 @@
                     <text class="gift-item-spec">{{item.specName}}</text>
                   </view>
                   <view wx:if="{{item.sessionCount}}" class="gift-item-row">
-                    <text class="gift-item-sessions">剩余 {{item.remainingSessions}}/{{item.sessionCount}} 次</text>
+                    <text class="gift-item-sessions">剩余 {{item.remainingSessions}} / 已付 {{item.paidSessions}} / 共 {{item.sessionCount}} 次</text>
                   </view>
                   <text class="gift-card-time">{{item.createdAt}}</text>
                 </view>

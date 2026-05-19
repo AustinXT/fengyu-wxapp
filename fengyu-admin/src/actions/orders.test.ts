@@ -767,7 +767,8 @@ describe('confirmOfflinePayment — 事务原子性（AC-13）', () => {
       }
       const result = await fn(tx)
       expect(tx.update).toHaveBeenCalledOnce()
-      expect(tx.execute).toHaveBeenCalledOnce() // 设置到期日（非充值订单只调 1 次 execute）
+      // ticket 2026-05-19：recalcPaidSessionsForOrder 也走 tx.execute，原本期望 1 次 → 现在含 update+select 共 3 次
+      expect(tx.execute).toHaveBeenCalled()
       return result
     })
 
@@ -859,8 +860,9 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const captured = mockRechargeTx({ productName: '预付充值卡 ¥500' })
     const result = await confirmOfflinePayment('order-recharge-1')
     expect(result.success).toBe(true)
-    // 期望事务内 execute 被调用 3 次（到期日 + dup 检查 + UPSERT）
-    expect(captured.executes.length).toBe(3)
+    // 期望事务内 execute 被调用 5 次（到期日 + dup 检查 + UPSERT + paid_sessions UPDATE + paid_sessions SELECT violation）
+    // ticket 2026-05-19：recalcPaidSessionsForOrder 增加 2 次 execute
+    expect(captured.executes.length).toBe(5)
     // card_transactions INSERT 捕获 amount=500.00, type=充值
     expect(captured.insertValues.length).toBe(1)
     expect(captured.insertValues[0]).toMatchObject({
@@ -875,8 +877,8 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const captured = mockRechargeTx({ productName: null })
     const result = await confirmOfflinePayment('order-normal-1')
     expect(result.success).toBe(true)
-    // 仅 1 次 execute（到期日），无 UPSERT / dup 检查
-    expect(captured.executes.length).toBe(1)
+    // ticket 2026-05-19：原 1 次（到期日）+ 2 次（recalcPaidSessionsForOrder UPDATE + SELECT）= 3 次
+    expect(captured.executes.length).toBe(3)
     expect(captured.insertValues.length).toBe(0)
   })
 
@@ -884,7 +886,8 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const captured = mockRechargeTx({ clientUserId: null, productName: '预付充值卡 ¥500' })
     const result = await confirmOfflinePayment('order-legacy-null-client')
     expect(result.success).toBe(true)
-    expect(captured.executes.length).toBe(1)
+    // ticket 2026-05-19：原 1 次 + recalcPaidSessionsForOrder 2 次 = 3 次
+    expect(captured.executes.length).toBe(3)
     expect(captured.insertValues.length).toBe(0)
   })
 
@@ -892,8 +895,8 @@ describe('confirmOfflinePayment — 充值卡入账（与 payNotify 对齐）', 
     const captured = mockRechargeTx({ productName: '预付充值卡 ¥500', dupExists: true })
     const result = await confirmOfflinePayment('order-recharge-dup')
     expect(result.success).toBe(true)
-    // 期望 execute 被调用 2 次（到期日 + dup 检查），无 UPSERT
-    expect(captured.executes.length).toBe(2)
+    // ticket 2026-05-19：原 2 次（到期日 + dup 检查）+ recalcPaidSessionsForOrder 2 次 = 4 次
+    expect(captured.executes.length).toBe(4)
     expect(captured.insertValues.length).toBe(0)
   })
 

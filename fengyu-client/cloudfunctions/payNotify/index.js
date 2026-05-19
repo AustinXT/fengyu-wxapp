@@ -11,6 +11,7 @@ cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })
 const { getMemberThreshold } = require('./config')
 const { settlePointsSafe } = require('./points')
 const { parseErrorPrefix } = require('./error-codes')
+const { recalcPaidSessionsForOrder } = require('./paid-sessions')
 
 // 充值卡虚拟 SKU 标识 — 必须与 clientApi/routes/_constants.js 中的
 // RECHARGE_VIRTUAL_SKU_ID 保持一致；payNotify 是独立云函数，故重复定义。
@@ -316,6 +317,10 @@ exports.main = async (event) => {
           console.warn('[payNotify] credential state-transition-blocked:', orderNo)
         }
       }
+
+      // paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+      // 部分支付也需要触发：让顾客刚回款的部分立即可消费
+      await recalcPaidSessionsForOrder(client, targetOrderNo)
 
       // 后续业务动作（单品到期日 / 充值入账 / 消费扣款 / 业绩分配 / 顾客档位重算）
       // 仅当目标订单整单结清（fullyPaid = true）时才触发，避免部分支付中途产生副作用。

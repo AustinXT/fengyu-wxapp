@@ -277,6 +277,21 @@
   font-weight: 600;
 }
 
+/* 疗程卡三段进度条（剩余可用 / 已付未用 / 未付） */
+.session-bar {
+  display: flex;
+  height: 8rpx;
+  width: 100%;
+  margin-top: 8rpx;
+  border-radius: 4rpx;
+  overflow: hidden;
+  background: #EFEFEF;
+}
+.session-bar__seg { height: 100%; }
+.session-bar__seg--remain { background: #C0322A; }
+.session-bar__seg--paid-unused { background: #F2B6B0; }
+.session-bar__seg--unpaid { background: #DDD; }
+
 /* ===== 赠送记录 ===== */
 .gift-section-title {
   display: block;

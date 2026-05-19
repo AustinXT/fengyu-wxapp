@@ -195,6 +195,7 @@ export interface ServiceItemDetail {
   salesCategory: string | null
   remainingSessions: number | null
   sessionCount: number | null
+  paidSessions: number | null
   quantity: number | null
 }
 
@@ -214,6 +215,7 @@ export const getServiceItems = withPermission(
       sli.sales_category,
       sli.remaining_sessions,
       sli.session_count,
+      sli.paid_sessions,
       sli.quantity AS sli_quantity
     FROM service_items si
     LEFT JOIN staff_wechat_users e ON e.employee_id = si.employee_id
@@ -233,6 +235,7 @@ export const getServiceItems = withPermission(
     salesCategory: r.sales_category ?? null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
+    paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
     quantity: r.sli_quantity !== null && r.sli_quantity !== undefined ? Number(r.sli_quantity) : null,
   }))
   },
@@ -247,6 +250,7 @@ export interface AvailableSaleItem {
   productType: string | null
   sessionCount: number | null
   remainingSessions: number | null
+  paidSessions: number | null
   unitRealPrice: string
   expireDate: string | null
 }
@@ -263,6 +267,7 @@ export const getAvailableSaleItems = withPermission(
       si.product_type,
       si.session_count,
       si.remaining_sessions,
+      si.paid_sessions,
       si.unit_real_price,
       si.expire_date
     FROM sale_items si
@@ -285,6 +290,7 @@ export const getAvailableSaleItems = withPermission(
     productType: r.product_type,
     sessionCount: r.session_count !== null ? Number(r.session_count) : null,
     remainingSessions: r.remaining_sessions !== null ? Number(r.remaining_sessions) : null,
+    paidSessions: r.paid_sessions !== null && r.paid_sessions !== undefined ? Number(r.paid_sessions) : null,
     unitRealPrice: r.unit_real_price ?? '0',
     expireDate: r.expire_date,
   }))
@@ -365,6 +371,9 @@ export const completeServiceOrder = withPermission(
 
   let result: any
   try {
+    // paid_sessions 限额（ticket 2026-05-19 D6=A）：扣减条件叠加
+    //   (session_count - remaining_sessions + sessionUsed) <= COALESCE(paid_sessions, 0)
+    // 即"扣完后已用次数 <= 已支付次数"，paid_sessions=0 自动锁死
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
@@ -380,12 +389,17 @@ export const completeServiceOrder = withPermission(
         WHERE sale_items.sale_item_id = si.sale_item_id
           AND si.service_order_id = ${serviceOrderId}
           AND sale_items.remaining_sessions >= si.session_used
+          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, 0)
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
+      ),
+      total_items AS (
+        SELECT COUNT(*) AS n FROM service_items WHERE service_order_id = ${serviceOrderId}
       )
       SELECT
         (SELECT COUNT(*) FROM status_check) AS status_updated,
-        (SELECT COUNT(*) FROM deduct) AS items_deducted
+        (SELECT COUNT(*) FROM deduct) AS items_deducted,
+        (SELECT n FROM total_items) AS items_total
     `)
   } catch {
     return { success: false, message: '完成服务失败，请稍后重试' }
@@ -394,6 +408,10 @@ export const completeServiceOrder = withPermission(
   const row = (result as any[])[0]
   if (!row || Number(row.status_updated) === 0) {
     return { success: false, message: '服务单状态已变更，无法完成' }
+  }
+  // 若 status_updated=1 但 items_deducted < items_total，说明某行触发了 paid_sessions 限额
+  if (row && Number(row.items_deducted) < Number(row.items_total)) {
+    return { success: false, message: '部分服务行已支付次数不足，请先完成订单付款后再完成服务' }
   }
 
   await logTransition(session, 'service.complete', 'service_order', serviceOrderId, '服务中', '已完成', {
@@ -498,14 +516,18 @@ export const createServiceOrder = withPermission(
     .limit(1)
   const resolvedAppointmentId = pendingAppt?.appointmentId ?? null
 
-  // 先校验剩余次数（事务外，只读查询）
+  // 先校验剩余次数 + paid_sessions 限额（事务外，只读查询）
+  // ticket 2026-05-19 D2=A：允许"已支付/部分支付"消费；D6=A：paid_sessions=0 整张卡锁死
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
+        sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
+        paidSessions: saleItems.paidSessions,
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
+        orderStatus: saleOrders.status,
       })
       .from(saleItems)
       .innerJoin(saleOrders, eq(saleItems.saleOrderId, saleOrders.saleOrderId))
@@ -515,8 +537,22 @@ export const createServiceOrder = withPermission(
     if (!saleItem) {
       return { success: false, message: `销售明细 ${item.saleItemId} 不存在` }
     }
+    // orderStatus 显式不在白名单时拒绝（mock 中可能 undefined，按通过处理）
+    if (saleItem.orderStatus && !['已支付', '部分支付'].includes(saleItem.orderStatus)) {
+      return { success: false, message: `销售明细 ${item.saleItemId} 对应订单状态为 ${saleItem.orderStatus}，不可消费` }
+    }
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
+    }
+    if (saleItem.sessionCount != null) {
+      const paid = saleItem.paidSessions == null ? 0 : Number(saleItem.paidSessions)
+      if (paid <= 0) {
+        return { success: false, message: `销售明细 ${item.saleItemId} 尚未支付，无可用次数，请先完成付款` }
+      }
+      const usedNow = Number(saleItem.sessionCount) - Number(saleItem.remainingSessions)
+      if (usedNow + Number(item.sessionUsed) > paid) {
+        return { success: false, message: `销售明细 ${item.saleItemId} 已支付次数不足（已付 ${paid}/${saleItem.sessionCount}，已用 ${usedNow}，本次需 ${item.sessionUsed}），请先完成付款` }
+      }
     }
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,

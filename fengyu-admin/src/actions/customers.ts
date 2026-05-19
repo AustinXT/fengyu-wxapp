@@ -334,6 +334,7 @@ export const getCustomerOrders = withPermission(
         skuId: ir.item.skuId,
         sessionCount: ir.item.sessionCount,
         remainingSessions: ir.item.remainingSessions,
+        paidSessions: ir.item.paidSessions,
         unitPrice: ir.item.unitPrice,
         quantity: ir.item.quantity,
         unitRealPrice: ir.item.unitRealPrice,

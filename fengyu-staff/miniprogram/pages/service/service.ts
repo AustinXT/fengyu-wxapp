@@ -20,6 +20,7 @@ interface ServiceItem {
     spec: string;
     remainingSessions: number;
     totalSessions: number;
+    paidSessions: number | null;
   }>;
 }
 

@@ -24,6 +24,7 @@ import {
   parseRechargeFaceValue,
 } from '@/lib/recharge'
 import { settlePointsSafe } from '@/lib/points-settle'
+import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 
 const opener = alias(staffWechatUsers, 'opener')
 
@@ -437,6 +438,7 @@ export const getOrderById = withAnyPermission(
     skuId: ir.item.skuId,
     sessionCount: ir.item.sessionCount,
     remainingSessions: ir.item.remainingSessions,
+    paidSessions: ir.item.paidSessions,
     unitPrice: ir.item.unitPrice,
     quantity: ir.item.quantity,
     unitRealPrice: ir.item.unitRealPrice,
@@ -588,6 +590,9 @@ export const confirmOfflinePayment = withPermission(
       // 积分发放（修复 audit-15 P0-15-01：admin confirmOfflinePayment 触发点缺失）
       // 与 staff confirmOffline / payNotify / client confirmPrepaidFull 三端对齐
       await settlePointsSafe(tx, saleOrderId, 'admin.confirmOffline')
+
+      // paid_sessions 重算（ticket 2026-05-19）：'待确认收款' → '已支付' 通常 received 已写
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       // customer_type 跃迁（仅在订单有顾客归属时触发）
       // 与 recordPayment / staff / payNotify 三端对齐
@@ -1367,6 +1372,9 @@ export const createOrder = withPermission(
         throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
       }
 
+      // paid_sessions 初始写入（ticket 2026-05-19）：admin createOrder 通常 received=0 → paid_sessions=0
+      await recalcPaidSessionsForOrder(tx, id)
+
       return id
     })
   } catch (err: any) {
@@ -1816,6 +1824,9 @@ export const createConversionOrder = withPermission(
         })
       }
 
+      // paid_sessions 写入（ticket 2026-05-19）：转换单 total_amount=差额，可能=0 → 兜底全付
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
+
       return {
         saleOrderId,
         totalIn: Math.round(totalIn * 100) / 100,
@@ -2066,6 +2077,9 @@ export const createDepositOrder = withPermission(
             isExperience: sku.isExperience === true,
           })
         }
+
+        // paid_sessions 写入（ticket 2026-05-19）：寄存单 total_amount=0 → 兜底全付 = session_count
+        await recalcPaidSessionsForOrder(tx, id)
 
         return id
       })
@@ -2371,6 +2385,9 @@ export const recordPayment = withPermission(
       //     无论本次是否结清都尝试 settle：链净额差值法天然幂等，
       //     可正确处理"分次回款只发增量积分"的场景
       await settlePointsSafe(tx, saleOrderId, 'admin.recordPayment')
+
+      // 11) paid_sessions 重算（ticket 2026-05-19）：received 增长 → paid_sessions 单调上升
+      await recalcPaidSessionsForOrder(tx, saleOrderId)
 
       return {
         repaymentOrderId,
