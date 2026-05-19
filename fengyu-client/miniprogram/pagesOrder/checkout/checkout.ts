@@ -448,11 +448,14 @@ Page({
     try {
       if (this.data.existingOrderNo && this.data.paymentMethod === '线下') {
         // 扫码 + 线下付款
+        // 线下：余额需等店长 confirmOffline 后才到账，充值单跳 order-detail 看"待确认收款"状态
+        // （跳 prepaid-cards 会展示未更新的旧余额，造成"我刚充值怎么没到账"的困惑）
         await callClientApi('order.offlinePay', { saleOrderId: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
+        const existingId = this.data.existingOrderNo;
         setTimeout(() => {
           if (this.data.isRecharge) {
-            wx.redirectTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
+            wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${existingId}` });
           } else {
             wx.navigateBack();
           }
@@ -608,21 +611,21 @@ Page({
     // 兜底：原 mock 流程（wx.requestPayment + mock 参数）
     const paymentParams = data?.paymentParams || {};
     const isRecharge = this.data.isRecharge;
-    const fallbackUrl = isRecharge
-      ? '/pagesProfile/prepaid-cards/prepaid-cards'
-      : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
+    const detailUrl = `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
+    const successUrl = isRecharge ? '/pagesProfile/prepaid-cards/prepaid-cards' : detailUrl;
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
-      // 用户主动取消支付，静默跳转订单详情（订单仍处于待支付，可重新支付）
+      // 用户主动取消支付，跳订单详情（订单仍处于待支付，可重新支付）
+      // 充值单同样跳 order-detail（不去 prepaid-cards，避免"充值成功？余额怎么没变"的错觉）
       if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
-        wx.redirectTo({ url: fallbackUrl });
+        wx.redirectTo({ url: detailUrl });
         return;
       }
       throw err;
     }
     Toast.success(isRecharge ? '充值成功' : '支付成功');
-    setTimeout(() => wx.redirectTo({ url: fallbackUrl }), 1200);
+    setTimeout(() => wx.redirectTo({ url: successUrl }), 1200);
   },
 
   async jumpLakalaCashier(
