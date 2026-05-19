@@ -1,9 +1,25 @@
-# Ticket: products.category_id 全部 `mall-` 前缀，但 product_categories 没有任何 `mall-` 前缀行（FK 全断）
+# Ticket: products.category_id 全部 `mall-` 前缀，但 product_categories 没有任何 `mall-` 前缀行（FK 全断）— 【归档：INVALID】
+
+> **归档备注（2026-05-19）**
+>
+> ticket 的根因假设错了。本仓商品域有**两个 categories 表**并存：
+> - `mall_categories`（49 行，全部 `mall-` 前缀）— **`products.category_id` 真正的 FK 目标**
+> - `product_categories`（61 行，无前缀）— `product_skus.category_id` 的 FK 目标
+>
+> 证据：
+> - `\d products` 显示 `FOREIGN KEY (category_id) REFERENCES mall_categories(category_id)`
+> - 5434 跑 `UPDATE products SET category_id = substring(category_id from 6) WHERE category_id LIKE 'mall-%'` 立刻被 FK 拦截（`Key (category_id)=(cat-hr-01) is not present in mall_categories`），事务已 ROLLBACK，5434 数据未污染
+>
+> 即所谓"FK 全断"的现象只是错把 `product_categories` 当成 `products` 的 FK 目标。实际两张表是**两套独立类目体系**，products 与 mall_categories 一一对齐，product_skus 与 product_categories 一一对齐。
+>
+> link-21 失败的真正原因（admin 加家居 SKU 用 "歆笙泰妍" 找不到）是页面 join 错了一边类目表，需要单开 ticket 排查"该入口该用 mall_categories 还是 product_categories"。本 ticket 不修复任何 products 行。
+>
+> 用户决策（2026-05-19）：归档为 INVALID，link-21 单独追。
 
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-18 |
-| 实施状态 | 待排查 + 紧急修复 |
+| 实施状态 | **已归档（INVALID）** |
 | 优先级 | **P0**（全部 961 / 962 个商品对应不到任何分类 → admin 开单页按分类 Tab 浏览拿不到 SKU；客户端商城同样受影响）|
 | 端 | fengyu-admin + fengyu-client + db |
 | 修复成本 | **M**（一次性数据修正 + 排查源头 + 防回归）|

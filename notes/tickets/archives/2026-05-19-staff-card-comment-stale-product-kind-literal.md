@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-19 |
-| 实施状态 | 待实施 |
+| 实施状态 | ✅ 已完成（2026-05-19，commit 4702f85）|
 | 优先级 | **P3**（仅注释噪音；不影响运行时；可能误导阅读者）|
 | 端 | fengyu-staff |
 | 修复成本 | **XS**（1 行注释编辑）|
@@ -85,3 +85,15 @@ grep -rn "product_kind.*充值卡\|充值卡.*product_kind" --include="*.js" --i
 - `fengyu-staff/cloudfunctions/staffApi/routes/card.js` L27-31
 - 2026-04-26 ticket：sale-order-domain-refactor（capability 化背景）
 - `db/schema/product.ts` L78-119（is_recharge_card / is_experience 互斥 CHECK）
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 完成 commit：`4702f85`（docs(card): 注释 + CLAUDE.md card 路由表补全）
+- 实际落地：
+  - `fengyu-staff/cloudfunctions/staffApi/routes/card.js` L30 — 注释改为 `tiers 来自 product_skus.is_recharge_card=true 行（capability 列 SSoT）`
+- DoD：
+  - [x] 注释字面量 `product_kind='充值卡'` 移除
+  - [x] 配套 §3 全仓 grep 检查（命中均为历史说明）

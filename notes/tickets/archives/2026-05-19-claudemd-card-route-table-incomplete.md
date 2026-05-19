@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-19 |
-| 实施状态 | 待实施 |
+| 实施状态 | ✅ 已完成（2026-05-19，commit 4702f85）|
 | 优先级 | **P3**（文档导航缺漏；不影响运行时；影响新人/AI 检索）|
 | 端 | fengyu-staff + fengyu-client（CLAUDE.md 文档）|
 | 修复成本 | **XS**（4 行 markdown 编辑）|
@@ -108,3 +108,18 @@ module.exports = { list, balance, history, rechargeConfig, recharge, matchTier }
 - `fengyu-client/CLAUDE.md`、`fengyu-client/cloudfunctions/clientApi/CLAUDE.md`
 - `fengyu-staff/cloudfunctions/staffApi/index.js`（实际注册源）
 - `fengyu-client/cloudfunctions/clientApi/index.js`（实际注册源）
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 完成 commit：`4702f85`
+- 实际落地：
+  - `fengyu-staff/CLAUDE.md` 路由表新增 `| card | rechargeSkus, recharge |`
+  - `fengyu-staff/cloudfunctions/staffApi/CLAUDE.md` 同步补 card 行
+  - `fengyu-client/CLAUDE.md` card 行改为 `list, history, balance, rechargeConfig, recharge`
+  - `fengyu-client/cloudfunctions/clientApi/CLAUDE.md` 同步
+- DoD：
+  - [x] 四个 CLAUDE.md 路由表补齐
+  - [⚠️] §3 lint 脚本（index.js vs CLAUDE.md 漂移检测）未做 — 后续可作独立 ticket

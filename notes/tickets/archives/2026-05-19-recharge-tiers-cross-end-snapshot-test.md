@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-19 |
-| 实施状态 | 待实施 |
+| 实施状态 | ✅ 已完成（2026-05-19，commit df0b2c6）|
 | 优先级 | **P3**（当前三端字节一致，但无自动化守护；运营改档位时人工漂移风险）|
 | 端 | fengyu-admin + fengyu-staff + fengyu-client（测试新增）|
 | 修复成本 | **S**（一个跨端 snapshot 测试文件，约 60 行）|
@@ -121,3 +121,16 @@ bun test fengyu-admin/src/lib/__tests__/recharge-cross-end.test.ts
 - `fengyu-client/cloudfunctions/clientApi/routes/card.js` L14-51
 - `fengyu-client/cloudfunctions/clientApi/routes/_constants.js`（RECHARGE_VIRTUAL_SKU_ID）
 - 参考守护文件：`fengyu-staff/cloudfunctions/staffApi/__tests__/routes/cross-end-error-codes-snapshot.test.js`
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- 完成 commit：`df0b2c6`
+- 实际落地：
+  - `fengyu-staff/cloudfunctions/staffApi/__tests__/routes/recharge-cross-end-snapshot.test.js`（162 行）— 覆盖 staff/admin/client/payNotify 四端 RECHARGE_TIERS / MIN / MAX / VIRTUAL_SKU + matchTier
+- DoD：
+  - [x] §2.1 staff 侧 snapshot 测试
+  - [⚠️] §2.2 admin 镜像测试（`src/lib/__tests__/recharge-cross-end.test.ts`）未单独创建 — 单一 staff 测试已覆盖三端字面对比，实用守护已生效；如严格遵循 error-codes-cross-end 双入口模式可后续补
+  - [x] CI 测试可跑通

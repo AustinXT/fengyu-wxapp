@@ -1,9 +1,20 @@
-# Ticket: splitRefundByOriginalPayment 多次部分退款 floor 累计误差
+# Ticket: splitRefundByOriginalPayment 多次部分退款 floor 累计误差 — 【已归档：被 I4 覆盖】
+
+> **归档备注（2026-05-19）**
+>
+> 本 ticket 决策为 **C 方案（不修拆分逻辑，靠定时审计告警）**。在实施 C 方案过程中发现 `fengyu-admin/src/cron/steps/audit-payment-invariants.ts` 的 **I4 不变量已经实现储值卡余额校验**：
+> - 阈值 **0.01 元**（比本 ticket 拟定的 0.10 元更严，能捕获更小漂移）
+> - 写 `operation_logs(action='cron.audit_invariants')` + 调 `notifyOps()` 告警通道
+> - 已注册到 cron `run.ts` 并随每日 03:00 跑批
+>
+> 因此本 ticket 的"新建定时审计 STEP"任务**重复劳动**，决定不新建独立 STEP。本文件归档保留作为决策记录。
+>
+> 后续如果业务接受度变化（例如严格审计上线），可重新评估 A 方案"最后一笔补差"或 B 方案"动态比例"。
 
 | 字段 | 值 |
 |------|-----|
 | 生成日期 | 2026-05-19 |
-| 实施状态 | 待用户判断要不要修 |
+| 实施状态 | **已归档（被 audit-payment-invariants I4 覆盖）** |
 | 优先级 | **P2**（每次部分退款 floor 误差 ≤ 0.01 元；多次累计 ≤ 几分钱；严格审计场景下不闭合）|
 | 端 | fengyu-admin + fengyu-staff（三端同源副本）|
 | 修复成本 | **S**（在最后一笔退款时补差，或改为"剩余预付/剩余总额"动态比例）|
