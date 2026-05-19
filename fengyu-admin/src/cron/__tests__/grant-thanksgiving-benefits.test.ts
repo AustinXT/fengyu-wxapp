@@ -154,12 +154,16 @@ describe('cron-worker STEP 4 — grantThanksgivingBenefits', () => {
       )
       expect(couponInsertCall).toBeDefined()
       const couponParams = paramsOf(couponInsertCall![0])
-      const expireAt = couponParams.find((p): p is Date => p instanceof Date)
-      expect(expireAt).toBeInstanceOf(Date)
+      // expireAt 在 SQL 模板中传 toISOString() 字符串（bun.sql 驱动不支持 Date 参数）
+      const expireAtIso = couponParams.find(
+        (p): p is string => typeof p === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(p),
+      )
+      expect(expireAtIso).toBeDefined()
+      const expireMs = new Date(expireAtIso!).getTime()
       const expectedMin = before + 10 * 86400000
       const expectedMax = after + 10 * 86400000
-      expect(expireAt!.getTime()).toBeGreaterThanOrEqual(expectedMin - 1000)
-      expect(expireAt!.getTime()).toBeLessThanOrEqual(expectedMax + 1000)
+      expect(expireMs).toBeGreaterThanOrEqual(expectedMin - 1000)
+      expect(expireMs).toBeLessThanOrEqual(expectedMax + 1000)
     })
 
     it('SELECT coupon_templates 不读 validity_mode/valid_days/valid_to（仅 is_active）', async () => {
