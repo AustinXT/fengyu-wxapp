@@ -1401,6 +1401,53 @@ describe('prepaid card deduction - order.scanAdjust', () => {
     })
     await expect(routes.scanAdjust(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
   })
+
+  // ====== 2026-05-19 dirty-read 修复：余额快照 + 版本号 ======
+  test('scanAdjust 返回 balanceSnapshot 包含 updatedAt（版本号）', async () => {
+    const fakeUpdatedAt = new Date('2026-05-19T10:00:00Z')
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+      opened_by: 'emp-001', total_amount: 300, prepaid_card_amount: 0, paid_amount: 300,
+    }])
+    pg.query.mockResolvedValueOnce([{ card_id: 'card-1', balance: '500', updated_at: fakeUpdatedAt }])
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-001',
+      useCard: true,
+      prepaidCardAmount: 100,
+      paymentMethod: '微信',
+    })
+    await routes.scanAdjust(ctx)
+
+    expect(ctx.result.balanceSnapshot).toEqual({
+      cardId: 'card-1',
+      balance: 500,
+      updatedAt: fakeUpdatedAt,
+    })
+
+    // 校验 SQL 选取了 updated_at 字段
+    const balanceQuery = pg.query.mock.calls[1][0]
+    expect(balanceQuery).toContain('updated_at')
+  })
+
+  test('scanAdjust 无卡（顾客无 prepaid_cards 行）→ balanceSnapshot = null', async () => {
+    pg.query.mockResolvedValueOnce([{
+      sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+      opened_by: 'emp-001', total_amount: 300, prepaid_card_amount: 0, paid_amount: 300,
+    }])
+    pg.query.mockResolvedValueOnce([]) // 无卡
+    pg.query.mockResolvedValueOnce({ rowCount: 1 })
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-001',
+      useCard: false,
+      paymentMethod: '微信',
+    })
+    await routes.scanAdjust(ctx)
+
+    expect(ctx.result.balanceSnapshot).toBeNull()
+  })
 })
 
 describe('prepaid card deduction - order.confirmPrepaidFull', () => {
@@ -1583,5 +1630,75 @@ describe('prepaid card deduction - order.confirmPrepaidFull', () => {
 
     const ctx = createBoundCtx({ saleOrderId: 'FY-001' })
     await expect(routes.confirmPrepaidFull(ctx)).rejects.toThrow(/PERMISSION_DENIED/)
+  })
+
+  // ====== 2026-05-19 dirty-read 修复：版本号校验 ======
+  test('confirmPrepaidFull 传过期 expectedBalanceUpdatedAt → 抛 CONFLICT，余额不变', async () => {
+    const lockedTs = new Date('2026-05-19T10:00:00Z')
+    const expectedTs = new Date('2026-05-19T09:55:00Z') // 5 分钟前的快照，已过期
+    const txnCalls = []
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          txnCalls.push({ sql })
+          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+            return {
+              rows: [{
+                sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+              }],
+              rowCount: 1,
+            }
+          }
+          if (/FROM prepaid_cards WHERE user_id = \$1 FOR UPDATE/.test(sql)) {
+            return { rows: [{ card_id: 'card-1', balance: '500', updated_at: lockedTs }], rowCount: 1 }
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({
+      saleOrderId: 'FY-001',
+      expectedBalanceUpdatedAt: expectedTs.toISOString(),
+    })
+    await expect(routes.confirmPrepaidFull(ctx)).rejects.toThrow(/CONFLICT.*余额已变动/)
+    // 不应执行 UPDATE balance / INSERT card_transactions
+    const balUpd = txnCalls.find(q => /UPDATE prepaid_cards SET balance = balance - /.test(q.sql))
+    expect(balUpd).toBeUndefined()
+    const insertTxn = txnCalls.find(q => /INSERT INTO card_transactions/.test(q.sql))
+    expect(insertTxn).toBeUndefined()
+  })
+
+  test('confirmPrepaidFull 不传 expectedBalanceUpdatedAt → 兼容旧前端（版本校验跳过）', async () => {
+    const lockedTs = new Date('2026-05-19T10:00:00Z')
+    pg.transaction.mockImplementation(async (cb) => {
+      const client = {
+        query: vi.fn(async (sql) => {
+          if (/SELECT sale_order_id, status, client_user_id/.test(sql)) {
+            return {
+              rows: [{
+                sale_order_id: 'FY-001', status: '待支付', client_user_id: 'user-001',
+                prepaid_card_amount: '300', payable_amount: '0', total_amount: '300',
+              }],
+              rowCount: 1,
+            }
+          }
+          if (/FROM prepaid_cards WHERE user_id = \$1 FOR UPDATE/.test(sql)) {
+            return { rows: [{ card_id: 'card-1', balance: '500', updated_at: lockedTs }], rowCount: 1 }
+          }
+          if (/FROM card_transactions/.test(sql) && /type = '扣款'/.test(sql)) {
+            return { rows: [], rowCount: 0 }
+          }
+          return { rows: [], rowCount: 0 }
+        }),
+      }
+      return cb(client)
+    })
+
+    const ctx = createBoundCtx({ saleOrderId: 'FY-001' }) // 不传 expectedBalanceUpdatedAt
+    await routes.confirmPrepaidFull(ctx)
+    expect(ctx.result.status).toBe('已支付')
   })
 })

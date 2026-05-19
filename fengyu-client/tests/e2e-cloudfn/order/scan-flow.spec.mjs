@@ -256,6 +256,103 @@ async function caseScanAdjustCrossUserDenied() {
   expectError(res, 'PERMISSION_DENIED')
 }
 
+// ====== 2026-05-19 dirty-read 修复：余额快照 + 版本号校验 ======
+
+async function caseScanAdjustReturnsBalanceSnapshot() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '500.00' })
+  const orderNo = `${NS}_SCN_SNAP`.slice(0, 30)
+  await createStaffOpenedPending({ saleOrderId: orderNo, totalAmount: 300 })
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.scanAdjust', {
+    saleOrderId: orderNo,
+    useCard: true,
+    prepaidCardAmount: 100,
+    paymentMethod: '微信',
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (!res.data.balanceSnapshot) {
+    throw new Error('expect balanceSnapshot in result, got undefined/null')
+  }
+  if (Number(res.data.balanceSnapshot.balance) !== 500) {
+    throw new Error(`expect balanceSnapshot.balance=500, got: ${res.data.balanceSnapshot.balance}`)
+  }
+  if (!res.data.balanceSnapshot.updatedAt) {
+    throw new Error('expect balanceSnapshot.updatedAt to be present')
+  }
+  // updatedAt 应与 PG prepaid_cards.updated_at 一致
+  const cardRows = await pgQuery(
+    `SELECT updated_at FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  const pgTs = new Date(cardRows[0].updated_at).getTime()
+  const snapTs = new Date(res.data.balanceSnapshot.updatedAt).getTime()
+  if (pgTs !== snapTs) {
+    throw new Error(`updatedAt mismatch: pg=${pgTs}, snapshot=${snapTs}`)
+  }
+}
+
+async function caseConfirmPrepaidFullStaleVersionConflict() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '1000.00' })
+  const orderNo = `${NS}_SCN_STAL`.slice(0, 30)
+  // 订单全额抵扣（prepaid=300, payable=0）
+  await createStaffOpenedPending({
+    saleOrderId: orderNo, totalAmount: 300, prepaidCardAmount: 300,
+  })
+  // 模拟过期版本：用一个已知与现行 prepaid_cards.updated_at 不一致的时间戳
+  const stalleUpdatedAt = '2020-01-01T00:00:00.000Z'
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.confirmPrepaidFull', {
+    saleOrderId: orderNo,
+    expectedBalanceUpdatedAt: stalleUpdatedAt,
+  })
+  expectError(res, 'CONFLICT')
+  // 余额未变
+  const cardRows = await pgQuery(
+    `SELECT balance FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  if (Number(cardRows[0].balance) !== 1000) {
+    throw new Error(`expect balance unchanged=1000, got: ${cardRows[0].balance}`)
+  }
+  // 订单仍是待支付
+  const ord = await pgQuery(`SELECT status FROM sale_orders WHERE sale_order_id = $1`, [orderNo])
+  if (ord[0].status !== '待支付') throw new Error(`expect status=待支付, got: ${ord[0].status}`)
+}
+
+async function caseConfirmPrepaidFullLatestVersionOK() {
+  await createTestClient()
+  await createTestStaff()
+  await createTestPrepaidCard({ userId: TEST_CLIENT_USER_ID, balance: '1000.00' })
+  const orderNo = `${NS}_SCN_LTST`.slice(0, 30)
+  await createStaffOpenedPending({
+    saleOrderId: orderNo, totalAmount: 300, prepaidCardAmount: 300,
+  })
+  // 取当前 prepaid_cards.updated_at 作为有效版本
+  const cardRows = await pgQuery(
+    `SELECT updated_at FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  const latestUpdatedAt = new Date(cardRows[0].updated_at).toISOString()
+  const res = await invokeAs(TEST_CLIENT_OPENID, 'order.confirmPrepaidFull', {
+    saleOrderId: orderNo,
+    expectedBalanceUpdatedAt: latestUpdatedAt,
+  })
+  if (res.code !== 0) throw new Error(`expect code=0, got ${res.code}: ${res.message}`)
+  if (res.data.status !== '已支付') {
+    throw new Error(`expect status=已支付, got: ${res.data.status}`)
+  }
+  // 余额 1000 → 700
+  const after = await pgQuery(
+    `SELECT balance FROM prepaid_cards WHERE user_id = $1`,
+    [TEST_CLIENT_USER_ID]
+  )
+  if (Number(after[0].balance) !== 700) {
+    throw new Error(`expect balance=700, got: ${after[0].balance}`)
+  }
+}
+
 const CASES = [
   ['scanDetail happy (staff-opened, status=待支付) → returns order + items', caseScanDetailHappy],
   ['scanAdjust full prepaid (300 from 1000 balance, payable→0)', caseScanAdjustFullPrepaid],
@@ -263,6 +360,9 @@ const CASES = [
   ['confirmPrepaidFull happy → 扣款 written + balance -300 + status=已支付', caseConfirmPrepaidFullHappy],
   ['confirmPrepaidFull insufficient balance → INSUFFICIENT_BALANCE, no write', caseConfirmPrepaidFullInsufficient],
   ['scanAdjust cross-user → PERMISSION_DENIED', caseScanAdjustCrossUserDenied],
+  ['scanAdjust 返回 balanceSnapshot 含 updatedAt 字段', caseScanAdjustReturnsBalanceSnapshot],
+  ['confirmPrepaidFull 用过期版本号 → CONFLICT，余额未变', caseConfirmPrepaidFullStaleVersionConflict],
+  ['confirmPrepaidFull 用最新版本号 → 成功', caseConfirmPrepaidFullLatestVersionOK],
 ]
 
 let pass = 0, fail = 0

@@ -295,6 +295,96 @@ describe('scan-pay 页面行为', () => {
     expect(payCalls).toBe(1);
   });
 
+  // ====== 2026-05-19 dirty-read 修复 ======
+  test('pushAdjust 后 balanceUpdatedAt 写入 data（来自 scanAdjust.balanceSnapshot.updatedAt）', async () => {
+    const snapTs = '2026-05-19T10:00:00.000Z';
+    callClientApiMock.mockImplementation((action: string, payload: any) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-VER-1', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 300, paidAmount: 0,
+            paymentMethod: '无', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') return Promise.resolve({ balance: 500, cardId: 'c1' });
+      if (action === 'order.scanAdjust') {
+        return Promise.resolve({
+          saleOrderId: payload.saleOrderId,
+          prepaidCardAmount: 300,
+          paidAmount: 0,
+          balanceSnapshot: { cardId: 'c1', balance: 500, updatedAt: snapTs },
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-VER-1');
+    inst.data.orderNo = 'FY-VER-1';
+
+    // 切换抵扣开关 → 触发 pushAdjust
+    await inst.onUseCardChange({ detail: false });
+    expect(inst.data.balanceUpdatedAt).toBe(snapTs);
+
+    // 关掉抵扣后再开回 → pushAdjust 再次写入版本号
+    await inst.onUseCardChange({ detail: true });
+    expect(inst.data.balanceUpdatedAt).toBe(snapTs);
+  });
+
+  test('confirmPrepaidFull 抛 CONFLICT → 调用 handleBalanceConflict + 重拉 card.balance', async () => {
+    const snapTs = '2026-05-19T10:00:00.000Z';
+    let balanceCalls = 0;
+    callClientApiMock.mockImplementation((action: string) => {
+      if (action === 'order.scanDetail') {
+        return Promise.resolve({
+          order: {
+            orderNo: 'FY-VER-2', status: '待支付', storeId: 's1', storeName: '门店A',
+            openerName: '王五', orderType: '销售单',
+            totalAmount: 300, prepaidCardAmount: 300, paidAmount: 0,
+            paymentMethod: '无', couponDiscount: 0,
+          },
+          items: [],
+        });
+      }
+      if (action === 'card.balance') {
+        balanceCalls += 1;
+        // 第一次 onLoad 阶段返回 500，CONFLICT 后第二次返回 80
+        return Promise.resolve({ balance: balanceCalls === 1 ? 500 : 80, cardId: 'c1' });
+      }
+      if (action === 'order.scanAdjust') {
+        return Promise.resolve({
+          balanceSnapshot: { cardId: 'c1', balance: 500, updatedAt: snapTs },
+        });
+      }
+      if (action === 'order.confirmPrepaidFull') {
+        const err: any = new Error('CONFLICT: 储值卡余额已变动，请刷新页面后重新选择抵扣金额');
+        err.errorType = 'CONFLICT';
+        throw err;
+      }
+      return Promise.resolve({});
+    });
+
+    const inst = createPageInstance();
+    await inst.loadOrder('FY-VER-2');
+    inst.data.orderNo = 'FY-VER-2';
+    // 模拟前端已记下版本号
+    inst.data.balanceUpdatedAt = snapTs;
+
+    await inst.onSubmit();
+
+    // confirmPrepaidFull 抛 CONFLICT → handleBalanceConflict 被走到
+    // 表现：再次调用 card.balance（balanceCalls=2）+ data.cardBalance 更新为 80 + balanceUpdatedAt 重置 null
+    expect(balanceCalls).toBe(2);
+    expect(inst.data.cardBalance).toBe(80);
+    expect(inst.data.balanceUpdatedAt).toBeNull();
+    // 不应进入 INSUFFICIENT_BALANCE 弹框分支
+    expect(wxMock.showModal).not.toHaveBeenCalled();
+  });
+
   test('余额为 0：储值卡开关灰显且无法切 on（disabled wxml binding + onUseCardChange 拦截）', async () => {
     callClientApiMock.mockImplementation((action: string) => {
       if (action === 'order.scanDetail') {

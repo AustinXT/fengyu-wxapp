@@ -1450,9 +1450,10 @@ async function scanAdjust(ctx) {
   const totalAmount = Number(order.total_amount || 0)
 
   // 读当前余额（本端点不扣款，不加 FOR UPDATE）
+  // 2026-05-19 dirty-read 修复：返回 balanceSnapshot（含 updated_at 版本号），供 confirmPrepaidFull 校验
   let cardBalance = 0
   const cardRows = await pg.query(
-    'SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1',
+    'SELECT card_id, balance, updated_at FROM prepaid_cards WHERE user_id = $1',
     [userId]
   )
   if (cardRows.length > 0) {
@@ -1514,6 +1515,12 @@ async function scanAdjust(ctx) {
     paidAmount,
     paymentMethod: effectivePaymentMethod,
     status: '待支付',
+    // 2026-05-19 dirty-read 修复：返回余额快照（含版本号 updatedAt），前端在 confirmPrepaidFull 时回传校验
+    balanceSnapshot: cardRows.length > 0 ? {
+      cardId: cardRows[0].card_id,
+      balance: Number(cardRows[0].balance),
+      updatedAt: cardRows[0].updated_at,
+    } : null,
   }
 }
 
@@ -1531,6 +1538,9 @@ async function confirmPrepaidFull(ctx) {
   const { userId } = ctx.auth
   const payload = ctx.event.payload || {}
   const saleOrderId = payload.saleOrderId || payload.orderNo
+  // 2026-05-19 dirty-read 修复：可选版本号，scanAdjust 时记录的 prepaid_cards.updated_at 快照
+  // 不传时保持向后兼容（老前端继续可用）
+  const expectedBalanceUpdatedAt = payload.expectedBalanceUpdatedAt
 
   if (!saleOrderId) {
     throw new Error('INVALID_PARAMS: 缺少 saleOrderId 参数')
@@ -1564,7 +1574,7 @@ async function confirmPrepaidFull(ctx) {
     }
 
     const cardRows = await client.query(
-      `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+      `SELECT card_id, balance, updated_at FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
       [userId]
     )
     if (cardRows.rows.length === 0) {
@@ -1572,6 +1582,16 @@ async function confirmPrepaidFull(ctx) {
     }
     const cardId = cardRows.rows[0].card_id
     const cardBalance = Number(cardRows.rows[0].balance)
+    // 2026-05-19 dirty-read 修复：FOR UPDATE 锁后版本号校验
+    // 若前端传了 expectedBalanceUpdatedAt 且与锁定行的 updated_at 不一致 → CONFLICT
+    // 不传时保持向后兼容（不校验）
+    if (expectedBalanceUpdatedAt) {
+      const lockedTs = new Date(cardRows.rows[0].updated_at).getTime()
+      const expectedTs = new Date(expectedBalanceUpdatedAt).getTime()
+      if (!Number.isFinite(expectedTs) || lockedTs !== expectedTs) {
+        throw new Error('CONFLICT: 储值卡余额已变动，请刷新页面后重新选择抵扣金额')
+      }
+    }
     if (cardBalance + 0.001 < prepaidCardAmount) {
       throw new Error('INSUFFICIENT_BALANCE: 储值卡余额不足')
     }

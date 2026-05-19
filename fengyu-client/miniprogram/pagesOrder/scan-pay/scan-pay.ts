@@ -54,6 +54,9 @@ Page({
     couponDiscount: 0,
     totalAmount: 0,
     showPayMethodGroup: true,
+    // 2026-05-19 dirty-read 修复：余额版本号（来自 scanAdjust.balanceSnapshot.updatedAt）
+    // confirmPrepaidFull 时回传，后端 FOR UPDATE 锁后比对，不一致 → CONFLICT
+    balanceUpdatedAt: null as string | null,
     // 支付宝二维码弹窗（保留以兼容 wxml，但 §4.6 推荐路径仅微信/线下/全额抵扣）
     showAlipayQr: false,
     alipayQrUrl: '',
@@ -153,14 +156,18 @@ Page({
     return r;
   },
 
-  /** 同步当前抵扣方案到后端（不阻塞 UI） */
+  /** 同步当前抵扣方案到后端（不阻塞 UI）
+   *  2026-05-19 dirty-read 修复：从 scanAdjust 响应中提取 balanceSnapshot.updatedAt 写入 data，供 confirmPrepaidFull 校验
+   */
   async pushAdjust(useCard: boolean, paidAmount: number, paymentMethod: PayMethod): Promise<void> {
     try {
-      await callClientApi('order.scanAdjust', {
+      const res = await callClientApi<{ balanceSnapshot?: { updatedAt?: string } | null }>('order.scanAdjust', {
         saleOrderId: this.data.orderNo,
         useCard,
         paymentMethod: paidAmount > 0 ? paymentMethod : undefined,
       });
+      const updatedAt = res && res.balanceSnapshot ? res.balanceSnapshot.updatedAt || null : null;
+      this.setData({ balanceUpdatedAt: updatedAt });
     } catch (err: any) {
       Toast.fail(err?.message || '调整失败');
       throw err;
@@ -207,8 +214,13 @@ Page({
     try {
       await this.executeConfirm();
     } catch (err: any) {
+      const errorType = err?.errorType || '';
       const msg = err?.message || err?.errMsg || '';
-      if (msg.includes('INSUFFICIENT_BALANCE')) {
+      // 2026-05-19 dirty-read 修复：CONFLICT 优先于 INSUFFICIENT_BALANCE
+      // CONFLICT 表示余额在 scanAdjust → confirmPrepaidFull 期间被改动，需要用户重选抵扣方案
+      if (errorType === 'CONFLICT' || /CONFLICT/.test(msg)) {
+        await this.handleBalanceConflict(msg);
+      } else if (msg.includes('INSUFFICIENT_BALANCE')) {
         await this.handleInsufficientBalance();
       } else {
         Toast.fail(msg || '支付失败，请重试');
@@ -220,11 +232,15 @@ Page({
 
   /** 根据当前 paid/method 路由到对应支付端点 */
   async executeConfirm(): Promise<void> {
-    const { orderNo, paidAmount, paymentMethod } = this.data;
+    const { orderNo, paidAmount, paymentMethod, balanceUpdatedAt } = this.data;
     const route = decideConfirmRoute(paidAmount, paymentMethod);
 
     if (route === 'confirmPrepaidFull') {
-      await callClientApi('order.confirmPrepaidFull', { saleOrderId: orderNo });
+      // 2026-05-19 dirty-read 修复：回传版本号，让后端校验余额未变动
+      await callClientApi('order.confirmPrepaidFull', {
+        saleOrderId: orderNo,
+        expectedBalanceUpdatedAt: balanceUpdatedAt || undefined,
+      });
       Toast.success('支付成功');
       setTimeout(() => {
         wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
@@ -249,6 +265,25 @@ Page({
     setTimeout(() => {
       wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${orderNo}` });
     }, 1200);
+  },
+
+  /** 2026-05-19 dirty-read 修复：余额版本冲突
+   *  scanAdjust 时读到的 balance 与 confirmPrepaidFull 时锁到的 balance 版本不一致
+   *  → 重新拉余额 + 提示用户重新选择抵扣金额（不自动重试，让用户主动决定）
+   */
+  async handleBalanceConflict(_errMsg?: string): Promise<void> {
+    try {
+      const balanceData = await callClientApi<{ balance: number; cardId: string | null }>('card.balance', {});
+      const newBalance = Number(balanceData?.balance || 0);
+      this.setData({
+        cardBalance: newBalance,
+        // 旧版本号已失效，重置；用户重新调 pushAdjust 时会再写入
+        balanceUpdatedAt: null,
+      });
+    } catch (_e) {
+      // 拉余额失败时 UI 保留旧值，不阻塞提示
+    }
+    Toast.fail('储值卡余额已变动，请重新选择抵扣金额');
   },
 
   /** 余额不足：弹框 → 关抵扣重付 / 取消订单 */
