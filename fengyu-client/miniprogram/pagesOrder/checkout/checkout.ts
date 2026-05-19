@@ -310,6 +310,9 @@ Page({
 
   /** 根据当前 totalAmount/couponDiscount/cardBalance/useCard 重算抵扣明细 */
   recomputeAmounts() {
+    // 充值单分支：paidAmount 已由 loadExistingOrder 写定为 payable_amount，不参与抵扣计算
+    if (this.data.isRecharge) return;
+
     const totalAmount = this.data.fromCart
       ? Number(this.data.totalPrice) || 0
       : (Number(this.data.unitPrice) || 0) * (Number(this.data.quantity) || 1);
@@ -447,7 +450,13 @@ Page({
         // 扫码 + 线下付款
         await callClientApi('order.offlinePay', { saleOrderId: this.data.existingOrderNo });
         Toast.success('已提交，等待店长确认收款');
-        setTimeout(() => wx.navigateBack(), 1500);
+        setTimeout(() => {
+          if (this.data.isRecharge) {
+            wx.redirectTo({ url: '/pagesProfile/prepaid-cards/prepaid-cards' });
+          } else {
+            wx.navigateBack();
+          }
+        }, 1500);
         return;
       }
 
@@ -576,8 +585,13 @@ Page({
 
   onAlipayDone() {
     const saleOrderId = this.data.alipayOrderNo;
+    const isRecharge = this.data.isRecharge;
     this.setData({ showAlipayQr: false });
-    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+    wx.redirectTo({
+      url: isRecharge
+        ? '/pagesProfile/prepaid-cards/prepaid-cards'
+        : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`,
+    });
   },
 
   onAlipayClose() {
@@ -593,18 +607,22 @@ Page({
     }
     // 兜底：原 mock 流程（wx.requestPayment + mock 参数）
     const paymentParams = data?.paymentParams || {};
+    const isRecharge = this.data.isRecharge;
+    const fallbackUrl = isRecharge
+      ? '/pagesProfile/prepaid-cards/prepaid-cards'
+      : `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}`;
     try {
       await wx.requestPayment(paymentParams);
     } catch (err: any) {
       // 用户主动取消支付，静默跳转订单详情（订单仍处于待支付，可重新支付）
       if ((err?.errMsg || '').toLowerCase().includes('cancel')) {
-        wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
+        wx.redirectTo({ url: fallbackUrl });
         return;
       }
       throw err;
     }
-    Toast.success('支付成功');
-    setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
+    Toast.success(isRecharge ? '充值成功' : '支付成功');
+    setTimeout(() => wx.redirectTo({ url: fallbackUrl }), 1200);
   },
 
   async jumpLakalaCashier(

@@ -843,47 +843,29 @@ async function pay(ctx) {
   const totalAmount = order.total_amount
 
   const merchant = await resolveLakalaMerchant(order.store_id)
-  if (merchant) {
-    const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
-      orderNo,
-      merchantNo: merchant.merchantNo,
-      termNo: merchant.termNo,
-      payAmountYuan: thisPayAmount,
-      payMode: 'WECHAT',
-    })
-    const envCfg = lakalaConfig.readConfig()
-    ctx.result = {
-      orderNo,
-      totalAmount,
-      paidAmount: thisPayAmount,
-      paymentMethod: '微信',
-      mockMode: false,
-      lakala: {
-        counterUrl,
-        payOrderNo,
-        appId: LAKALA_CASHIER_APPID,
-        envVersion: envCfg.env,
-        openMode: 'embedded',
-      },
-    }
-    return
+  if (!merchant) {
+    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-
-  // 兜底：mock 模式（联调阶段 / 门店未启用拉卡拉时）
+  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+    orderNo,
+    merchantNo: merchant.merchantNo,
+    termNo: merchant.termNo,
+    payAmountYuan: thisPayAmount,
+    payMode: 'WECHAT',
+  })
+  const envCfg = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '微信',
-    mockMode: true,
-    paymentParams: {
-      timeStamp: String(Math.floor(Date.now() / 1000)),
-      nonceStr: Math.random().toString(36).substr(2),
-      package: `prepay_id=wx${Date.now()}`,
-      signType: 'MD5',
-      paySign: 'mock_sign',
-      totalFee: Math.round(thisPayAmount * 100)
-    }
+    lakala: {
+      counterUrl,
+      payOrderNo,
+      appId: LAKALA_CASHIER_APPID,
+      envVersion: envCfg.env,
+      openMode: 'embedded',
+    },
   }
 }
 
@@ -1460,41 +1442,29 @@ async function alipayPay(ctx) {
   )
 
   const merchantAli = await resolveLakalaMerchant(order.store_id)
-  if (merchantAli) {
-    const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
-      orderNo,
-      merchantNo: merchantAli.merchantNo,
-      termNo: merchantAli.termNo,
-      payAmountYuan: thisPayAmount,
-      payMode: 'ALIPAY',
-    })
-    const envCfgAli = lakalaConfig.readConfig()
-    ctx.result = {
-      orderNo,
-      totalAmount,
-      paidAmount: thisPayAmount,
-      paymentMethod: '支付宝',
-      mockMode: false,
-      lakala: {
-        counterUrl,
-        payOrderNo,
-        appId: LAKALA_CASHIER_APPID,
-        envVersion: envCfgAli.env,
-        openMode: 'embedded',
-      },
-      status: order.status,
-    }
-    return
+  if (!merchantAli) {
+    throw new Error('INVALID_STATE: LAKALA_NOT_CONFIGURED: 该门店未启用拉卡拉聚合支付，请联系管理员')
   }
-
-  // 兜底：mock 模式
+  const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+    orderNo,
+    merchantNo: merchantAli.merchantNo,
+    termNo: merchantAli.termNo,
+    payAmountYuan: thisPayAmount,
+    payMode: 'ALIPAY',
+  })
+  const envCfgAli = lakalaConfig.readConfig()
   ctx.result = {
     orderNo,
     totalAmount,
     paidAmount: thisPayAmount,
     paymentMethod: '支付宝',
-    mockMode: true,
-    qrCodeUrl: `https://qr.alipay.com/mock_${orderNo}`,
+    lakala: {
+      counterUrl,
+      payOrderNo,
+      appId: LAKALA_CASHIER_APPID,
+      envVersion: envCfgAli.env,
+      openMode: 'embedded',
+    },
     status: order.status,
   }
 }
