@@ -73,12 +73,12 @@ function seed(): void {
       sale_item_id, sale_order_id, store_id, item_direction, sku_id,
       product_name, sku_spec_name, product_type, session_count, remaining_sessions,
       unit_price, quantity, unit_real_price, sale_amount, received,
-      service_fee, is_recharge_card, is_experience, created_at, updated_at
+      service_fee, is_experience, created_at, updated_at
     ) VALUES (
       '${SIID}', '${SOID}', '${STORE_ID}', '购买', '${SKU_ID}',
       '洗-无创纹身 疗程卡', '洗-无创纹身 疗程卡', '单品', ${INITIAL_SESSIONS}, ${INITIAL_SESSIONS},
       100, ${QUANTITY}, 100, 1000, 0,
-      0, false, false, NOW(), NOW()
+      0, false, NOW(), NOW()
     )
   `)
 
@@ -96,12 +96,12 @@ function seed(): void {
   // 4) service_item：扣 1 次
   psql(`
     INSERT INTO service_items (
-      service_item_id, service_order_id, sale_item_id, sku_id,
-      product_name, session_used, unit_real_price, service_duration,
+      service_item_id, service_order_id, sale_item_id,
+      session_used, employee_id, unit_real_price, service_duration,
       created_at, updated_at
     ) VALUES (
-      '${SVC_ITEM_ID}', '${SVC_ID}', '${SIID}', '${SKU_ID}',
-      '洗-无创纹身', ${SESSION_USED}, 0, 30,
+      '${SVC_ITEM_ID}', '${SVC_ID}', '${SIID}',
+      ${SESSION_USED}, 'FY-TEST-MGR', 0, 30,
       NOW(), NOW()
     )
   `)

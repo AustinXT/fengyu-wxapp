@@ -38,11 +38,12 @@ const MOCK_CUSTOMER_ID = 'WF-MOCK-001'
 /** 清理 WF-ORD-001（含可能关联的 operation_logs / sale_items / sale_allocations 等子表） */
 function cleanupMockOrder(): void {
   // 子表（防外键）：sale_items / sale_allocations 现阶段不会被 import 流程写入（仅 sale_orders 一条），
-  // 但为安全起见，先清子表再清主表
-  psql(`DELETE FROM sale_allocations WHERE sale_order_id = '${MOCK_ORDER_NO}'`)
+  // 但为安全起见，先清子表再清主表。
+  // sale_allocations 表无 sale_order_id 列（v4.0 扁平化为按 sale_item_id 关联），需通过子查询删除。
+  psql(`DELETE FROM sale_allocations WHERE sale_item_id IN (SELECT sale_item_id FROM sale_items WHERE sale_order_id = '${MOCK_ORDER_NO}')`)
   psql(`DELETE FROM sale_items WHERE sale_order_id = '${MOCK_ORDER_NO}'`)
   psql(
-    `DELETE FROM operation_logs WHERE entity_type = 'sale_order' AND entity_id = '${MOCK_ORDER_NO}'`,
+    `DELETE FROM operation_logs WHERE target_type = 'sale_order' AND target_id = '${MOCK_ORDER_NO}'`,
   )
   psql(`DELETE FROM sale_orders WHERE sale_order_id = '${MOCK_ORDER_NO}' AND legacy_source = 'workfine'`)
 }

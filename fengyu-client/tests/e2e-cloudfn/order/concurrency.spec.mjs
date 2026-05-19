@@ -166,9 +166,11 @@ async function caseHighSeqRollsToFiveDigits() {
   const cleanups = [
     `DELETE FROM card_transactions WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
     `DELETE FROM point_transactions WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
-    `DELETE FROM user_coupons WHERE ref_order_id LIKE $1 AND ref_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM user_coupons WHERE used_sale_order_id LIKE $1 AND used_sale_order_id ~ '${fiveDigitRe}'`,
     `DELETE FROM sale_order_payments WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
-    `DELETE FROM sale_allocations WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'`,
+    `DELETE FROM sale_allocations WHERE sale_item_id IN (
+       SELECT sale_item_id FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'
+     )`,
     `DELETE FROM appointments WHERE sale_item_id IN (
        SELECT sale_item_id FROM sale_items WHERE sale_order_id LIKE $1 AND sale_order_id ~ '${fiveDigitRe}'
      )`,
