@@ -70,6 +70,20 @@ Page({
     paidAmount: 0,                // 由 recomputeAmounts 派生
     showPayMethodGroup: true,     // 由 recomputeAmounts 派生：实付 > 0 才显示
     netBeforeCard: 0,             // 应抵扣部分（=总价-券），UI 显示用
+    // 充值单分支：sale_order_type='充值单' 时隐藏商品/美容师/抵扣，只展示充值摘要
+    isRecharge: false,
+    rechargeFaceValue: 0,
+    rechargePayAmount: 0,
+    rechargeBonus: 0,
+    rechargeDiscountLabel: '',
+    // 拉卡拉收银台跳转：跳走时记录 saleOrderId，跳回 onShow 启动轮询
+    awaitingLakalaOrderId: '',
+  },
+
+  onShow() {
+    if (this.data.awaitingLakalaOrderId) {
+      this.pollOrderAfterLakala();
+    }
   },
 
   onLoad(options) {
@@ -176,6 +190,34 @@ Page({
       // 还原支付方式（避免默认 wechat 覆盖用户原选）
       const validMethods = ['微信', '支付宝', '线下'] as const;
       const restoredMethod = validMethods.includes(order.payment_method) ? order.payment_method : '微信';
+
+      // 充值单分支：精简摘要 + paidAmount 直接取 payable_amount，跳过抵扣/美容师/商品明细
+      if (order.sale_order_type === '充值单') {
+        const faceValue = Number(order.total_amount || 0);
+        const payable = Number(order.payable_amount || 0);
+        const bonus = Math.round((faceValue - payable) * 100) / 100;
+        const discount = faceValue > 0 ? Math.round((payable / faceValue) * 100) / 100 : 1;
+        const discountLabel = (discount * 10).toFixed(1).replace(/\.0$/, '') + ' 折';
+        this.setData({
+          isRecharge: true,
+          spuName: '充值卡',
+          storeName: order.store_name || '',
+          paymentMethod: restoredMethod,
+          rechargeFaceValue: faceValue,
+          rechargePayAmount: payable,
+          rechargeBonus: bonus,
+          rechargeDiscountLabel: discountLabel,
+          // 实付直接落 payable_amount；showPayMethodGroup 必须为 true 才能选支付方式
+          paidAmount: payable,
+          showPayMethodGroup: payable > 0,
+          prepaidCardAmount: 0,
+          couponDiscount: 0,
+          netBeforeCard: 0,
+          // 充值单不需要协议勾选（充值说明已展示在 recharge 页 footer）
+          agreed: true,
+        });
+        return;
+      }
 
       this.setData({
         spuName: items.length > 1
@@ -518,7 +560,12 @@ Page({
   },
 
   async doAlipayPay(saleOrderId: string) {
-    const data = await callClientApi('order.alipayPay', { saleOrderId });
+    const data = await callClientApi<any>('order.alipayPay', { saleOrderId });
+    if (data?.lakala?.counterUrl) {
+      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+      return;
+    }
+    // 兜底：mock 二维码
     this.setData({
       showAlipayQr: true,
       alipayQrUrl: data?.qrCodeUrl || '',
@@ -539,7 +586,12 @@ Page({
   },
 
   async doWechatPay(saleOrderId: string) {
-    const data = await callClientApi('order.pay', { saleOrderId });
+    const data = await callClientApi<any>('order.pay', { saleOrderId });
+    if (data?.lakala?.counterUrl) {
+      await this.jumpLakalaCashier(saleOrderId, data.lakala);
+      return;
+    }
+    // 兜底：原 mock 流程（wx.requestPayment + mock 参数）
     const paymentParams = data?.paymentParams || {};
     try {
       await wx.requestPayment(paymentParams);
@@ -553,6 +605,71 @@ Page({
     }
     Toast.success('支付成功');
     setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 1200);
+  },
+
+  async jumpLakalaCashier(
+    saleOrderId: string,
+    lakala: { counterUrl: string; appId: string; envVersion: 'release' | 'trial'; openMode?: 'embedded' | 'fullscreen' }
+  ) {
+    const path = `payment-cashier/pages/checkout/index?source=WECHATMINI&counterUrl=${encodeURIComponent(lakala.counterUrl)}`;
+    this.setData({ awaitingLakalaOrderId: saleOrderId });
+    try {
+      if (lakala.openMode === 'fullscreen') {
+        await new Promise<void>((resolve, reject) => {
+          wx.navigateToMiniProgram({
+            appId: lakala.appId,
+            path,
+            envVersion: lakala.envVersion,
+            success: () => resolve(),
+            fail: reject,
+          });
+        });
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          (wx as any).openEmbeddedMiniProgram({
+            appId: lakala.appId,
+            path,
+            envVersion: lakala.envVersion,
+            success: () => resolve(),
+            fail: reject,
+          });
+        });
+      }
+    } catch (err: any) {
+      this.setData({ awaitingLakalaOrderId: '' });
+      Toast.fail(err?.errMsg || '调起收银台失败');
+      throw err;
+    }
+  },
+
+  async pollOrderAfterLakala() {
+    const saleOrderId: string = this.data.awaitingLakalaOrderId;
+    if (!saleOrderId) return;
+    const maxAttempts = 30;
+    const interval = 2000;
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const order = await callClientApi<any>('order.detail', { saleOrderId });
+        const status = order?.order?.status || order?.status;
+        if (status === '已支付' || status === '部分支付') {
+          this.setData({ awaitingLakalaOrderId: '' });
+          Toast.success('支付成功');
+          setTimeout(() => wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` }), 800);
+          return;
+        }
+        if (status === '已关闭' || status === '支付失败') {
+          this.setData({ awaitingLakalaOrderId: '' });
+          Toast.fail('订单已关闭');
+          return;
+        }
+      } catch {
+        // 网络异常忽略，下次再试
+      }
+      await new Promise((r) => setTimeout(r, interval));
+    }
+    this.setData({ awaitingLakalaOrderId: '' });
+    Toast.fail('未检测到支付到账，请刷新订单详情');
+    wx.redirectTo({ url: `/pagesOrder/order-detail/order-detail?saleOrderId=${saleOrderId}` });
   },
 
   onShareAppMessage() {

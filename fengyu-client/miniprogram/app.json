@@ -110,6 +110,9 @@
   "requiredPrivateInfos": [
     "getFuzzyLocation"
   ],
+  "navigateToMiniProgramAppIdList": [
+    "wx889424d565967811"
+  ],
   "window": {
     "backgroundTextStyle": "light",
     "navigationBarBackgroundColor": "#FFFFFF",

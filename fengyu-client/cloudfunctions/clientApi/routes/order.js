@@ -8,6 +8,62 @@ const { requirePhone } = require('../middleware/auth')
 const { getMemberThreshold } = require('../utils/config')
 const { settlePointsSafe } = require('../utils/points')
 const { recalcPaidSessionsForOrder } = require('../utils/paid-sessions')
+const lakalaClient = require('../utils/lakala-client')
+const lakalaConfig = require('../utils/lakala-config')
+
+const LAKALA_CASHIER_APPID = 'wx889424d565967811'
+
+async function resolveLakalaMerchant(storeId) {
+  if (!lakalaConfig.isReady()) return null
+  if (!storeId) return null
+  const rows = await pg.query(
+    'SELECT lakala_merchant_no, lakala_term_no, lakala_enabled FROM stores WHERE store_id = $1',
+    [storeId]
+  )
+  if (rows.length === 0) return null
+  const row = rows[0]
+  if (!row.lakala_enabled) return null
+  const cfg = lakalaConfig.readConfig()
+  const merchantNo = row.lakala_merchant_no || cfg.defaultMerchantNo
+  const termNo = row.lakala_term_no || cfg.defaultTermNo
+  if (!merchantNo || !termNo) return null
+  return { merchantNo, termNo }
+}
+
+async function createLakalaCounterOrder({ orderNo, merchantNo, termNo, payAmountYuan, payMode }) {
+  const cfg = lakalaConfig.readConfig()
+  const efficientTime = lakalaClient.formatReqTime(new Date(Date.now() + 10 * 60 * 1000))
+  const totalAmountFen = String(Math.round(payAmountYuan * 100))
+  // out_order_no 加秒级时间戳后缀避免拉卡拉判重（同一 sale_order_id 多次发起支付场景）
+  // FY-XSD-WX-YYMMDDXXXX (19) + '_' + ts10 = 30 字符 ≤ 32 上限
+  // pay_order_no（拉卡拉平台号）落 sale_order_payments.external_txn_id 维护跨次幂等，不依赖此后缀
+  const outOrderNo = `${orderNo}_${Math.floor(Date.now() / 1000)}`
+  const reqData = {
+    out_order_no: outOrderNo,
+    merchant_no: merchantNo,
+    term_no: termNo,
+    total_amount: totalAmountFen,
+    order_efficient_time: efficientTime,
+    notify_url: cfg.notifyUrl || '',
+    order_info: `凤御美容订单 ${orderNo}`,
+    support_refund: '1',
+    support_repeat_pay: '1',
+    support_cancel: '0',
+    counter_param: JSON.stringify({ pay_mode: payMode }),
+    trade_biz_tp: '100A06',
+  }
+  const resp = await lakalaClient.request({
+    path: '/v3/ccss/counter/order/special_create',
+    reqData,
+  })
+  if (!resp.ok) {
+    throw new Error(`INVALID_STATE: LAKALA_PREORDER_FAILED: ${resp.code} ${resp.msg || ''}`)
+  }
+  return {
+    counterUrl: resp.resp_data.counter_url,
+    payOrderNo: resp.resp_data.pay_order_no,
+  }
+}
 
 /**
  * 关闭过期订单并释放关联优惠券（原子操作）
@@ -447,7 +503,8 @@ async function create(ctx) {
         if (!Number.isFinite(v) || v < 0) {
           throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
         }
-        if (Math.round(v * 100) !== v * 100) {
+        // 浮点容差：39.8 * 100 在 JS 里是 3980.0000000000005，严格 !== 会误判
+        if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
           throw new Error('INVALID_PARAMS: 储值卡抵扣金额最多保留 2 位小数')
         }
         if (v > cardBalance + 0.001) {
@@ -756,7 +813,8 @@ async function pay(ctx) {
     if (!Number.isFinite(v) || v <= 0) {
       throw new Error('INVALID_PARAMS: 支付金额无效')
     }
-    if (Math.round(v * 100) !== v * 100) {
+    // 浮点容差：39.8 * 100 在 JS 里是 3979.9999999999995，严格 !== 会误判
+    if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
       throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
     }
     if (v > effectiveRemaining + 0.001) {
@@ -784,8 +842,34 @@ async function pay(ctx) {
 
   const totalAmount = order.total_amount
 
-  // TODO: 接入真实微信支付统一下单接口；本 PR 仅返回 mock 参数。
-  // 不再写 payments 行：回调到账时由 payNotify 原子插入 payments + 更新 sale_orders。
+  const merchant = await resolveLakalaMerchant(order.store_id)
+  if (merchant) {
+    const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+      orderNo,
+      merchantNo: merchant.merchantNo,
+      termNo: merchant.termNo,
+      payAmountYuan: thisPayAmount,
+      payMode: 'WECHAT',
+    })
+    const envCfg = lakalaConfig.readConfig()
+    ctx.result = {
+      orderNo,
+      totalAmount,
+      paidAmount: thisPayAmount,
+      paymentMethod: '微信',
+      mockMode: false,
+      lakala: {
+        counterUrl,
+        payOrderNo,
+        appId: LAKALA_CASHIER_APPID,
+        envVersion: envCfg.env,
+        openMode: 'embedded',
+      },
+    }
+    return
+  }
+
+  // 兜底：mock 模式（联调阶段 / 门店未启用拉卡拉时）
   ctx.result = {
     orderNo,
     totalAmount,
@@ -1356,7 +1440,8 @@ async function alipayPay(ctx) {
     if (!Number.isFinite(v) || v <= 0) {
       throw new Error('INVALID_PARAMS: 支付金额无效')
     }
-    if (Math.round(v * 100) !== v * 100) {
+    // 浮点容差：39.8 * 100 在 JS 里是 3979.9999999999995，严格 !== 会误判
+    if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
       throw new Error('INVALID_PARAMS: 支付金额最多保留 2 位小数')
     }
     if (v > effectiveRemaining + 0.001) {
@@ -1374,7 +1459,35 @@ async function alipayPay(ctx) {
     [userId, now, orderNo]
   )
 
-  // TODO: 接入真实支付宝当面付 API；payments 行由 payNotify 回调写入。
+  const merchantAli = await resolveLakalaMerchant(order.store_id)
+  if (merchantAli) {
+    const { counterUrl, payOrderNo } = await createLakalaCounterOrder({
+      orderNo,
+      merchantNo: merchantAli.merchantNo,
+      termNo: merchantAli.termNo,
+      payAmountYuan: thisPayAmount,
+      payMode: 'ALIPAY',
+    })
+    const envCfgAli = lakalaConfig.readConfig()
+    ctx.result = {
+      orderNo,
+      totalAmount,
+      paidAmount: thisPayAmount,
+      paymentMethod: '支付宝',
+      mockMode: false,
+      lakala: {
+        counterUrl,
+        payOrderNo,
+        appId: LAKALA_CASHIER_APPID,
+        envVersion: envCfgAli.env,
+        openMode: 'embedded',
+      },
+      status: order.status,
+    }
+    return
+  }
+
+  // 兜底：mock 模式
   ctx.result = {
     orderNo,
     totalAmount,
@@ -1450,7 +1563,8 @@ async function scanAdjust(ctx) {
       if (!Number.isFinite(v) || v < 0) {
         throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
       }
-      if (Math.round(v * 100) !== v * 100) {
+      // 浮点容差：39.8 * 100 在 JS 里是 3980.0000000000005，严格 !== 会误判
+      if (Math.abs(Math.round(v * 100) - v * 100) > 1e-6) {
         throw new Error('INVALID_PARAMS: 储值卡抵扣金额最多保留 2 位小数')
       }
       if (v > cardBalance + 0.001) {
@@ -1692,8 +1806,9 @@ async function repay(ctx) {
   if (!Number.isFinite(prepaidCardAmountInput) || prepaidCardAmountInput < 0) {
     throw new Error('INVALID_PARAMS: 储值卡抵扣金额无效')
   }
-  if (Math.round(repayAmountInput * 100) !== repayAmountInput * 100
-      || Math.round(prepaidCardAmountInput * 100) !== prepaidCardAmountInput * 100) {
+  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  if (Math.abs(Math.round(repayAmountInput * 100) - repayAmountInput * 100) > 1e-6
+      || Math.abs(Math.round(prepaidCardAmountInput * 100) - prepaidCardAmountInput * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 金额最多保留 2 位小数')
   }
   const totalNew = Math.round((repayAmountInput + prepaidCardAmountInput) * 100) / 100
