@@ -18,101 +18,47 @@ import { logOperation, logTransition } from '@/lib/operation-log'
 import { ApiError } from '@/lib/api-error'
 import { calcCouponDiscount } from '@/lib/utils'
 import { getMemberThreshold } from '@/lib/member-threshold'
-import {
-  RECHARGE_VIRTUAL_SKU_ID,
-  matchTier,
-  parseRechargeFaceValue,
-} from '@/lib/recharge'
+// TODO: 后续若 admin 需自建充值订单入口，从 '@/lib/recharge' 引入 loadRechargeConfig + matchTier
 import { settlePointsSafe } from '@/lib/points-settle'
 import { recalcPaidSessionsForOrder } from '@/lib/paid-sessions'
 
 const opener = alias(staffWechatUsers, 'opener')
 
 /**
- * 充值卡订单入账（与 fengyu-client/cloudfunctions/payNotify/index.js:100-147 保持同义）
+ * 充值卡订单入账（2026-05-20 重构：充值卡剥离 SKU 化）
  *
- * 在订单状态翻转到"已支付"的同事务内调用：
- *   1. 查 sale_items 是否存在 is_recharge_card = true 的行（capability 列判定，
- *      取代 sku_id = RECHARGE_VIRTUAL_SKU_ID 字面量）
- *   2. 从 product_name "预付充值卡 ¥500" 解析面值
- *   3. 幂等：若 card_transactions.ref_order_id 已存在，跳过
- *   4. UPSERT prepaid_cards (user_id) DO UPDATE balance += faceValue
- *      （prepaid_cards.store_id 已于 2026-04-24 DROP，储值卡跨店共享，audit-14 P0-14-01 修复完成）
- *   5. INSERT card_transactions (type='充值', amount=faceValue, ref_order_id)
+ * 在订单状态翻转到"已支付"的同事务内调用。识别 sale_orders.sale_order_type='充值单'，
+ * 面值直接读 sale_orders.total_amount（不再扫 sale_items）。
  *
- * 幂等依赖 card_transactions.ref_order_id 无重复（表无 UNIQUE，SELECT 先查）。
+ * 幂等：card_transactions.external_ref 唯一约束 + ref_order_id 软查；
+ * 与 staff order.confirmOffline + payNotify 同源（external_ref='card-topup-{saleOrderId}'）。
  */
 async function applyRechargeOnOrderPaid(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   saleOrderId: string,
 ): Promise<void> {
-  // 查订单主信息（需 user_id 做卡账户定位）
-  // 注：prepaid_cards.store_id 已于 2026-04-24 DROP，储值卡跨店共享，按 user_id 唯一
   const [order] = await tx
     .select({
       clientUserId: saleOrders.clientUserId,
+      saleOrderType: saleOrders.saleOrderType,
+      totalAmount: saleOrders.totalAmount,
     })
     .from(saleOrders)
     .where(eq(saleOrders.saleOrderId, saleOrderId))
     .limit(1)
 
-  if (!order || !order.clientUserId) {
-    // 未实名订单不入账（与 payNotify 保护性分支一致）
-    return
-  }
+  // 非充值单 / 未实名订单 → 跳过
+  if (!order || !order.clientUserId || order.saleOrderType !== '充值单') return
 
-  // 查该订单是否含充值卡明细行（capability 列判定，2026-04-26 ticket：
-  // 取代旧的 skuId = RECHARGE_VIRTUAL_SKU_ID 字面量；行级快照在开单时拷贝自
-  // product_skus.is_recharge_card，admin 后续修改 SKU 不影响历史订单）
-  //
-  // 2026-05-19 ticket：面值解析双路径化，与 staff order.js / payNotify 字面一致：
-  //   - 真实档位 SKU（admin/staff 真实 SKU 路径）：faceValue = product_skus.price
-  //   - 虚拟 SKU（自定义金额路径，sku_id = RECHARGE_VIRTUAL_SKU_ID）：从
-  //     product_name "¥{n}" 正则解析（parseRechargeFaceValue）
-  // 跨端守护：staff routes/order.js L1064-1088 + payNotify index.js L357-379 同义。
-  const rechargeItems = await tx.execute(sql`
-    SELECT si.sku_id, si.product_name, sk.price AS sku_price
-    FROM sale_items si
-    LEFT JOIN product_skus sk ON si.sku_id = sk.sku_id
-    WHERE si.sale_order_id = ${saleOrderId}
-      AND si.is_recharge_card = true
-    LIMIT 1
-  `)
-  const rechargeRows = rechargeItems as unknown as Array<{
-    sku_id: string
-    product_name: string | null
-    sku_price: string | null
-  }>
+  const faceValue = Number(order.totalAmount)
+  if (!(faceValue > 0)) return
 
-  if (rechargeRows.length === 0) return
-
-  const rechargeRow = rechargeRows[0]
-  let faceValue: number | null = null
-  if (rechargeRow.sku_id && rechargeRow.sku_id !== RECHARGE_VIRTUAL_SKU_ID) {
-    // 真实 SKU：从 product_skus.price 读取面值（防 product_name 被改名失配）
-    const priceNum = Number(rechargeRow.sku_price)
-    if (Number.isFinite(priceNum) && priceNum > 0) {
-      faceValue = priceNum
-    }
-  }
-  if (faceValue == null) {
-    // 虚拟 SKU 或 真实 SKU 无法定位 sku.price（兜底）：从 product_name 解析
-    faceValue = parseRechargeFaceValue(rechargeRow.product_name)
-  }
-  if (faceValue == null) {
-    throw new ApiError(
-      'INVALID_STATE',
-      `充值订单面值解析失败: sku_id=${rechargeRow.sku_id} product_name=${rechargeRow.product_name}`,
-    )
-  }
-
-  // 幂等：防重放（外层 status 翻转已是第一道闸，此处再确认一次）
+  // 幂等：防重放
   const dup = await tx.execute(sql`
-    SELECT 1 FROM card_transactions WHERE ref_order_id = ${saleOrderId} LIMIT 1
+    SELECT 1 FROM card_transactions WHERE ref_order_id = ${saleOrderId} AND type = '充值' LIMIT 1
   `)
   if ((dup as unknown as any[]).length > 0) return
 
-  // UPSERT prepaid_cards（按 user_id 唯一；store_id 列已于 2026-04-24 DROP，卡跨店共享）
   const newCardId = `FY-CARD-${Date.now()}${Math.floor(Math.random() * 1000)
     .toString()
     .padStart(3, '0')}`
@@ -128,12 +74,11 @@ async function applyRechargeOnOrderPaid(
   const cardId = (upsertRows as unknown as any[])[0]?.card_id as string | undefined
   if (!cardId) throw new ApiError('CONFLICT', '充值卡数据写入冲突，请重试')
 
-  await tx.insert(cardTransactions).values({
-    cardId,
-    type: '充值',
-    amount: faceValue.toFixed(2),
-    refOrderId: saleOrderId,
-  })
+  await tx.execute(sql`
+    INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+    VALUES (${cardId}, '充值', ${faceValue.toFixed(2)}, ${saleOrderId}, ${'card-topup-' + saleOrderId})
+    ON CONFLICT (external_ref) WHERE external_ref IS NOT NULL DO NOTHING
+  `)
 }
 
 /**
@@ -884,12 +829,6 @@ export const createOrder = withPermission(
     /** 手动实付金额（可选，覆盖 saleAmount） */
     received?: string
     salesCategory?: '自销自耗' | '他销自耗' | '他销他耗' | '生态合作' | null
-    /**
-     * 充值卡标志（可选；2026-04-26 ticket capability 列判定）。
-     * 前端开单时由 PrepaidCardPicker 根据 SKU 的 is_recharge_card 列设置 true；
-     * 服务端仍以 product_skus.is_recharge_card 为权威，会重新查询并以服务端值覆盖（防篡改）。
-     */
-    isRechargeCard?: boolean
   }>
     },
   ): Promise<{ success: boolean; message: string; saleOrderId?: string }> => {
@@ -922,113 +861,8 @@ export const createOrder = withPermission(
     return { success: false, message: '无权在该门店创建订单' }
   }
 
-  // ===== 充值卡订单识别与强校验 =====
-  // 2026-04-26 ticket：判定路径由 sku_id 字面量切换为 product_skus.is_recharge_card capability 列。
-  // 前端 cart 上的 isRechargeCard 仅作 UI hint；权威值在事务前批量查 product_skus 时拿到。
-  // 与 client 虚拟 SKU 模型对齐（fengyu-client/cloudfunctions/clientApi/routes/card.js）：
-  //   - 强制销售单、严格一件、无优惠券、必须实名顾客
-  //
-  // 2026-05-19 ticket：picker 增加"真实 SKU 档位"路径后，校验分两支：
-  //   - 虚拟 SKU（自定义金额路径）：保留 parseRechargeFaceValue + matchTier 校验 +
-  //     sale_items 字段强制覆盖（兼容 staff card.js / client card.js 字面写入）
-  //   - 真实 SKU（is_recharge_card=true 档位 SKU）：DB 拉 price/special_price 验
-  //     unitRealPrice 防篡改，不强制覆盖 productName/skuSpecName/productType（已正确）
-  const isRechargeOrder = data.items.some((i) => i.isRechargeCard === true)
-  if (isRechargeOrder) {
-    if (data.items.length !== 1) {
-      return { success: false, message: '充值卡订单不允许与其他商品混单' }
-    }
-    if (data.saleOrderType !== '销售单') {
-      return { success: false, message: '充值卡仅支持销售单，不能作为内部单/转换单等开立' }
-    }
-    if (data.couponId) {
-      return { success: false, message: '充值卡订单不支持叠加优惠券' }
-    }
-    if (!data.clientUserId) {
-      return { success: false, message: '顾客未注册小程序或未绑定门店' }
-    }
-
-    const item = data.items[0]
-    if (item.quantity !== 1) {
-      return { success: false, message: '充值卡每单仅限 1 笔' }
-    }
-
-    const isVirtualSku = item.skuId === RECHARGE_VIRTUAL_SKU_ID
-    if (isVirtualSku) {
-      // 虚拟 SKU 路径（自定义金额）：保留原 matchTier 校验 + 字段强制覆盖
-      const faceValue = parseRechargeFaceValue(item.productName)
-      if (faceValue == null) {
-        return { success: false, message: '充值卡面值解析失败，请重新选择档位' }
-      }
-
-      let expected: { discount: number; payAmount: number }
-      try {
-        expected = matchTier(faceValue)
-      } catch (err: any) {
-        const msg = err?.message?.startsWith('INVALID_PARAMS:')
-          ? err.message.replace(/^INVALID_PARAMS:\s*/, '')
-          : '充值金额不符合档位规则'
-        return { success: false, message: msg }
-      }
-
-      const clientPayAmount = Number(item.unitRealPrice)
-      if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expected.payAmount) > 0.01) {
-        return { success: false, message: '充值卡实付金额与档位不匹配，请刷新页面后重试' }
-      }
-
-      // 字段强制覆盖：与 client card.js 写入的 sale_items 保持完全一致
-      // RECHARGE_VIRTUAL_SKU_ID 仍作为虚拟 SKU 行的 ID 值（D3=B 单一虚拟 SKU 模式），
-      // 但业务判定从此走 isRechargeCard 列。
-      data = {
-        ...data,
-        items: [
-          {
-            skuId: RECHARGE_VIRTUAL_SKU_ID,
-            productName: `预付充值卡 ¥${faceValue}`,
-            skuSpecName: '预付充值卡（虚拟）',
-            productType: '家居产品',
-            sessionCount: null,
-            unitPrice: expected.payAmount.toFixed(2),
-            unitRealPrice: expected.payAmount.toFixed(2),
-            quantity: 1,
-            saleAmount: expected.payAmount.toFixed(2),
-            received: expected.payAmount.toFixed(2),
-            salesCategory: null,
-            isRechargeCard: true,
-          },
-        ],
-      }
-    } else {
-      // 真实 SKU 路径（is_recharge_card=true 档位 SKU）：拉 DB 验 unitRealPrice，
-      // 不覆盖前端字段（真实 SKU 的 productName / skuSpecName 已是 spec_name 正确值）
-      const skuRowsRes = await db.execute(sql`
-        SELECT price, special_price, is_recharge_card, is_enabled, deleted_at
-        FROM product_skus
-        WHERE sku_id = ${item.skuId}
-        LIMIT 1
-      `)
-      const skuRows = skuRowsRes as unknown as Array<{
-        price: string
-        special_price: string | null
-        is_recharge_card: boolean
-        is_enabled: boolean
-        deleted_at: Date | string | null
-      }>
-      if (skuRows.length === 0 || !skuRows[0].is_enabled || skuRows[0].deleted_at != null) {
-        return { success: false, message: '充值卡 SKU 不存在或未启用' }
-      }
-      if (!skuRows[0].is_recharge_card) {
-        return { success: false, message: '所选 SKU 不是充值卡，请刷新页面后重试' }
-      }
-      const expectedPayAmount = Number(skuRows[0].special_price ?? skuRows[0].price)
-      const clientPayAmount = Number(item.unitRealPrice)
-      if (!Number.isFinite(clientPayAmount) || Math.abs(clientPayAmount - expectedPayAmount) > 0.01) {
-        return { success: false, message: '充值卡实付金额与 SKU 配置不匹配，请刷新页面后重试' }
-      }
-      // 不覆盖 productName / skuSpecName / productType：真实 SKU 字段已经正确，
-      // 面值在 applyRechargeOnOrderPaid 时从 product_skus.price 读取，无需 product_name 兜底。
-    }
-  }
+  // 充值卡剥离 SKU 化（2026-05-20）：充值订单走独立 createRechargeOrder action，
+  // 不再走 createSaleOrder。这里删除原"isRechargeOrder 识别 + 字段强制覆盖"块。
 
   // 内部单自动半价：入口统一在事务前对 items 金额 ×0.5；unit_price（原价快照）保持不变。
   // 服务费 (service_fee) 不受半价影响，仍按 SKU 配置快照。
@@ -1304,15 +1138,14 @@ export const createOrder = withPermission(
   }
 
   // 事务外批量查询本次涉及 sku 的 service_fee（固定手工费）、session_count（疗程卡次数）
-  // 与 is_recharge_card / is_experience（capability 权威源，2026-04-26 ticket）。
+  // 与 is_experience（capability 权威源）。
   // 用于 sale_items 快照：service_fee 供服务完成时参与提成计算，
   // session_count 对组合套餐路径做兜底（bundleSkuToProductSku 硬编码 null，前端传来不可信），
-  // is_recharge_card 在写入 sale_items 时拷贝并参与 D4 严格独立校验，
   // is_experience 拷贝用于客户分类跃迁（per-order SUM FILTER WHERE is_experience）。
+  // 充值卡剥离 SKU 化（2026-05-20）后无需 is_recharge_card 字段。
   const skuIdList = data.items.map(i => i.skuId).filter((s): s is string => !!s)
   const skuFeeMap = new Map<string, string>()
   const skuSessionMap = new Map<string, number | null>()
-  const skuRechargeMap = new Map<string, boolean>()
   const skuExperienceMap = new Map<string, boolean>()
   if (skuIdList.length > 0) {
     const skuRows = await db
@@ -1320,7 +1153,6 @@ export const createOrder = withPermission(
         skuId: productSkus.skuId,
         serviceFee: productSkus.serviceFee,
         sessionCount: productSkus.sessionCount,
-        isRechargeCard: productSkus.isRechargeCard,
         isExperience: productSkus.isExperience,
       })
       .from(productSkus)
@@ -1328,29 +1160,11 @@ export const createOrder = withPermission(
     for (const r of skuRows) {
       skuFeeMap.set(r.skuId, r.serviceFee)
       skuSessionMap.set(r.skuId, r.sessionCount)
-      skuRechargeMap.set(r.skuId, r.isRechargeCard === true)
       skuExperienceMap.set(r.skuId, r.isExperience === true)
     }
   }
 
-  // ===== D4 严格独立校验 =====
-  // 充值卡订单 100% 全是充值卡 SKU；普通订单 0 个充值卡 SKU。
-  // 以服务端 product_skus.is_recharge_card 为权威，前端 isRechargeCard 仅作 UI hint。
-  // （注意：充值卡走"字段强制覆盖"分支后 data.items[0].skuId 仍是 RECHARGE_VIRTUAL_SKU_ID，
-  //  skuRechargeMap 已查到 true，所以这里 all-recharge 也会 pass。）
-  if (skuIdList.length > 0) {
-    const flags = data.items.map((it) =>
-      it.skuId ? (skuRechargeMap.get(it.skuId) ?? false) : false,
-    )
-    const hasRecharge = flags.some((f) => f === true)
-    const hasNormal = flags.some((f) => f === false)
-    if (hasRecharge && hasNormal) {
-      return {
-        success: false,
-        message: '充值卡商品不允许与普通商品混单',
-      }
-    }
-  }
+  // 充值卡剥离 SKU 化（2026-05-20）后 D4 混单守卫已删除（充值订单走独立 createRechargeOrder 入口）。
 
   // 事务：ID 生成 + 优惠券核销 + 订单 + 明细，原子提交或全部回滚
   let saleOrderId: string
@@ -1474,13 +1288,8 @@ export const createOrder = withPermission(
         const skuSessionCount = skuSessionMap.get(item.skuId) ?? item.sessionCount
         const sessionCount = skuSessionCount != null ? skuSessionCount * item.quantity : null
 
-        // is_recharge_card 行级快照：以服务端 product_skus.is_recharge_card 为权威
-        // （前端 isRechargeCard 已被 D4 校验比对过；此处直接读取 map 防篡改）
-        const isRechargeCard = skuRechargeMap.get(item.skuId) ?? (item.isRechargeCard === true)
-
         // is_experience 行级快照：以服务端 product_skus.is_experience 为权威。
         // 用于客户分类跃迁 SQL（SUM(received) FILTER WHERE si.is_experience）。
-        // capability 列与 isRechargeCard 互斥（DB CHECK chk_sku_not_both_capabilities 保证）。
         const isExperience = skuExperienceMap.get(item.skuId) ?? false
 
         await tx.insert(saleItems).values({
@@ -1501,27 +1310,11 @@ export const createOrder = withPermission(
           received,
           salesCategory: item.salesCategory || null,
           serviceFee,
-          isRechargeCard,
           isExperience,
         })
       }
 
-      // D4 事后兜底校验：sale_items 写入后跑 SQL 确认 all_recharge OR all_normal。
-      // 应用层入参校验已在事务前做过（hasRecharge && hasNormal），此处再做一道
-      // DB 视图层校验，防止极端情况下并发/事务可见性问题导致绕过（与 ticket §2.4 对齐）。
-      // 仅当查询确实返回了一行且 mixed=true 时才抛错；若 driver 返回空（测试 mock 场景）
-      // 或 bool_and 为 null（无行），跳过——应用层 hasRecharge && hasNormal 已经做了主校验。
-      const guard = await tx.execute(sql`
-        SELECT
-          bool_and(is_recharge_card) AS all_recharge,
-          bool_and(NOT is_recharge_card) AS all_normal
-        FROM sale_items WHERE sale_order_id = ${id}
-      `)
-      const guardRow = (guard as unknown as Array<{ all_recharge: boolean | null; all_normal: boolean | null }>)?.[0]
-      if (guardRow && guardRow.all_recharge === false && guardRow.all_normal === false) {
-        // 仅当 DB 明确返回 "既有 recharge 又有 normal" 时抛错（混合场景）
-        throw new Error('INVALID_PARAMS: 充值卡商品不允许与普通商品混单')
-      }
+      // 充值卡剥离 SKU 化（2026-05-20）后 D4 事后兜底校验已删除（migration 0043 拆触发器）
 
       // paid_sessions 初始写入（ticket 2026-05-19）：admin createOrder 通常 received=0 → paid_sessions=0
       await recalcPaidSessionsForOrder(tx, id)
@@ -2106,7 +1899,7 @@ export const createDepositOrder = withPermission(
       return { success: false, message: '顾客未绑定门店' }
     }
 
-    // 拉 SKU 信息（含 product_kind / is_recharge_card 校验）
+    // 拉 SKU 信息（充值卡剥离 SKU 化后，寄存单输入只剩普通商品）
     const skuIds = data.items.map(i => i.skuId)
     const skuRows = await db
       .select({
@@ -2118,7 +1911,6 @@ export const createDepositOrder = withPermission(
         sessionCount: productSkus.sessionCount,
         isShengmei: productSkus.isShengmei,
         isExperience: productSkus.isExperience,
-        isRechargeCard: productSkus.isRechargeCard,
         salesCategory: productCategories.salesCategory,
         productKind: productCategories.productKind,
       })
@@ -2127,9 +1919,6 @@ export const createDepositOrder = withPermission(
       .where(and(inArray(productSkus.skuId, skuIds), isNull(productSkus.deletedAt)))
     if (skuRows.length !== skuIds.length) {
       return { success: false, message: '部分商品不存在或已下架' }
-    }
-    if (skuRows.some(s => s.isRechargeCard === true)) {
-      return { success: false, message: '寄存单不允许充值卡（无次数维度）' }
     }
     const skuMap = new Map(skuRows.map(s => [s.skuId, s]))
 
@@ -2224,7 +2013,6 @@ export const createDepositOrder = withPermission(
             salesCategory: sku.salesCategory ?? null,
             serviceFee: '0',
             isShengmei: sku.isShengmei ?? null,
-            isRechargeCard: false,
             isExperience: sku.isExperience === true,
           })
         }

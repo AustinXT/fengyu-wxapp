@@ -1,93 +1,98 @@
 /**
- * 充值卡档位配置与匹配逻辑（admin 侧）
+ * 充值卡档位配置加载 + matchTier 工具（admin 侧）
  *
- * ⚠️ 必须与 client 云函数 `fengyu-client/cloudfunctions/clientApi/routes/card.js`
- *    的 RECHARGE_TIERS / RECHARGE_MIN_AMOUNT / RECHARGE_MAX_AMOUNT / matchTier 保持一致。
- *    档位或折扣变更时务必两端同改，否则 admin 开单与 client 小程序充值的面值/实付
- *    会出现不一致，引发对账问题。
+ * 2026-05-20 充值卡剥离 SKU 化：档位与边界从 client/staff 代码硬编码同步迁到 system_configs。
+ * 三端（admin / staff / client）行为通过同步读取相同的 system_configs 行保持一致。
  *
- * 同样，RECHARGE_VIRTUAL_SKU_ID 与 `fengyu-client/cloudfunctions/clientApi/routes/_constants.js`
- * 以及 `fengyu-client/cloudfunctions/payNotify/index.js` 重复定义保持同值。
- *
- * TODO(future): 改"不发版"运营档位时，独立成 recharge_tier_config 表，admin 维护，
- *               client/云函数从 DB 读。本期硬编码。
+ * key:
+ *   recharge.tiers     — JSON 数组 [{faceValue, payAmount}, ...]
+ *   recharge.minAmount — 字符串数字，最低充值金额
+ *   recharge.maxAmount — 字符串数字，单次上限
  */
 
-export const RECHARGE_VIRTUAL_SKU_ID = 'sku-recharge-virtual'
+import { db } from '@/db'
+import { systemConfigs } from '@db/system-config'
+import { inArray } from 'drizzle-orm'
 
 export interface RechargeTier {
   faceValue: number
-  discount: number
+  payAmount: number
 }
 
-export const RECHARGE_TIERS: readonly RechargeTier[] = [
-  { faceValue: 500, discount: 0.99 },
-  { faceValue: 1000, discount: 0.98 },
-  { faceValue: 5000, discount: 0.95 },
-]
-
-export const RECHARGE_MIN_AMOUNT = 500
-export const RECHARGE_MAX_AMOUNT = 100000
+export interface RechargeConfig {
+  tiers: RechargeTier[]
+  minAmount: number
+  maxAmount: number
+}
 
 /**
- * 按充值面值匹配折扣并计算实付金额（区间左闭右开）。
+ * 从 system_configs 读取充值档位配置
  *
- * 500-999   → 9.9 折
- * 1000-4999 → 9.8 折
- * ≥5000     → 9.5 折
- *
- * @throws Error 前缀为 INVALID_PARAMS，由调用方捕获后 return {success:false,message} 或原样透出
+ * @throws 'INVALID_STATE: ...' 配置缺失或格式错误
  */
-export function matchTier(amount: number): { discount: number; payAmount: number } {
+export async function loadRechargeConfig(): Promise<RechargeConfig> {
+  const rows = await db
+    .select({ key: systemConfigs.key, value: systemConfigs.value })
+    .from(systemConfigs)
+    .where(inArray(systemConfigs.key, ['recharge.tiers', 'recharge.minAmount', 'recharge.maxAmount']))
+
+  const cfg: Record<string, string> = {}
+  for (const r of rows) cfg[r.key] = r.value
+  if (!cfg['recharge.tiers'] || !cfg['recharge.minAmount'] || !cfg['recharge.maxAmount']) {
+    throw new Error('INVALID_STATE: 系统未配置充值卡档位（system_configs.recharge.*）')
+  }
+  let tiers: RechargeTier[]
+  try {
+    tiers = JSON.parse(cfg['recharge.tiers'])
+  } catch (e) {
+    throw new Error('INVALID_STATE: recharge.tiers 配置格式错误（非合法 JSON）')
+  }
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    throw new Error('INVALID_STATE: recharge.tiers 必须为非空数组')
+  }
+  for (const t of tiers) {
+    if (typeof t.faceValue !== 'number' || typeof t.payAmount !== 'number') {
+      throw new Error('INVALID_STATE: recharge.tiers 条目缺少 faceValue/payAmount')
+    }
+  }
+  tiers.sort((a, b) => a.faceValue - b.faceValue)
+  const minAmount = Number(cfg['recharge.minAmount'])
+  const maxAmount = Number(cfg['recharge.maxAmount'])
+  if (!Number.isFinite(minAmount) || !Number.isFinite(maxAmount) || minAmount <= 0 || maxAmount < minAmount) {
+    throw new Error('INVALID_STATE: recharge.minAmount/maxAmount 配置无效')
+  }
+  return { tiers, minAmount, maxAmount }
+}
+
+/**
+ * 按面值匹配档位实付（精确命中或按最大 ≤ amount 的档位折扣比换算）
+ *
+ * @throws Error 前缀 INVALID_PARAMS
+ */
+export function matchTier(amount: number, cfg: RechargeConfig): { discount: number; payAmount: number } {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误')
   }
-  // 小数位 ≤ 2
   if (Math.round(amount * 100) !== amount * 100) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
   }
-  if (amount < RECHARGE_MIN_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${RECHARGE_MIN_AMOUNT}`)
+  if (amount < cfg.minAmount) {
+    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${cfg.minAmount}`)
   }
-  if (amount > RECHARGE_MAX_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${RECHARGE_MAX_AMOUNT}`)
+  if (amount > cfg.maxAmount) {
+    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${cfg.maxAmount}`)
   }
-
-  let discount = RECHARGE_TIERS[0].discount
-  for (const tier of RECHARGE_TIERS) {
-    if (amount >= tier.faceValue) discount = tier.discount
+  const hit = cfg.tiers.find(t => t.faceValue === amount)
+  if (hit) {
+    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1
+    return { discount, payAmount: hit.payAmount }
   }
-
-  const payAmount = Math.round(amount * discount * 100) / 100
+  let baseTier = cfg.tiers[0]
+  for (const t of cfg.tiers) {
+    if (amount >= t.faceValue) baseTier = t
+  }
+  const ratio = baseTier.payAmount / baseTier.faceValue
+  const payAmount = Math.round(amount * ratio * 100) / 100
+  const discount = Math.round(ratio * 100) / 100
   return { discount, payAmount }
-}
-
-/**
- * 从 sale_items.product_name（形如 "预付充值卡 ¥500"）中解析面值。
- * @returns 面值（数字）；无法解析返回 null。
- */
-export function parseRechargeFaceValue(productName: string | null | undefined): number | null {
-  if (!productName) return null
-  const m = productName.match(/¥\s*(\d+(?:\.\d+)?)/)
-  if (!m) return null
-  const v = parseFloat(m[1])
-  if (!Number.isFinite(v) || v <= 0) return null
-  return v
-}
-
-/**
- * 充值卡 SKU 判定 helper（2026-04-26 ticket capability 列方案）。
- *
- * 取代旧的 `sku.skuId === RECHARGE_VIRTUAL_SKU_ID` 字面量比对：
- *   - SKU 上下文：传入 `{ isRechargeCard?: boolean }`，直接读 capability
- *   - 行级快照（sale_items）：同样按 `isRechargeCard` 字段判
- *
- * 与 `product_skus.is_recharge_card` / `sale_items.is_recharge_card` 同义。
- * RECHARGE_VIRTUAL_SKU_ID 仍作为虚拟 SKU 的固定 ID 保留（D3=B 单虚拟 SKU 模式），
- * 但业务判定不再依赖该 ID。
- */
-export function isRechargeCardSku(
-  sku: { isRechargeCard?: boolean | null } | null | undefined,
-): boolean {
-  return !!sku && sku.isRechargeCard === true
 }

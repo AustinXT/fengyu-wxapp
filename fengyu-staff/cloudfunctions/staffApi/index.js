@@ -96,9 +96,12 @@ const routes = {
   // 优惠券
   'coupon.available':     () => require('./routes/coupon').available,
 
-  // 充值卡（店长替顾客充值）
-  'card.rechargeSkus':    () => require('./routes/card').rechargeSkus,
+  // 充值卡（店长替顾客充值 + 退款审批流）
+  'card.rechargeTiers':   () => require('./routes/card').rechargeTiers,
   'card.recharge':        () => require('./routes/card').recharge,
+  'card.createRefund':    () => require('./routes/card').createRefund,
+  'card.approveRefund':   () => require('./routes/card').approveRefund,
+  'card.rejectRefund':    () => require('./routes/card').rejectRefund,
 
   // 服务单
   'service.create':       () => require('./routes/service').create,

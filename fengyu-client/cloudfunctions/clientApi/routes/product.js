@@ -8,13 +8,11 @@ const pg = require('../db/pg')
 /**
  * 有效性过滤条件（商城商品层 + SKU 层叠加）
  *
- * 2026-04-26 capability 化：商城常规通道默认排除两类特殊卡：
- *   - sk.is_experience = true：体验卡（仅 client 体验卡入口可见）
- *   - sk.is_recharge_card = true：充值卡（仅 card-recharge 入口走单一虚拟 SKU）
- * 两类 capability 列互斥（CHECK chk_sku_not_both_capabilities）。
+ * 商城常规通道默认排除体验卡（sk.is_experience=true，仅 client 体验卡入口可见）。
+ * 充值卡已剥离 SKU 化（2026-05-20），不再有充值卡 SKU 需要过滤。
  */
 const PRODUCT_VALID_FILTER = `p.deleted_at IS NULL AND p.is_visible = true`
-const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT (sk.is_experience OR sk.is_recharge_card)`
+const SKU_VALID_FILTER = `sk.is_enabled = true AND sk.deleted_at IS NULL AND NOT sk.is_experience`
 
 /**
  * 内部函数：获取商品分类列表（mall_categories）

@@ -1,80 +1,51 @@
 /**
- * 充值卡模块路由（员工端 / 店长替顾客充值）
+ * 充值卡模块路由（员工端）
  *
- * 独立充值流程：不走通用 order.create，脱离购物车 3 步弹层。
+ * 2026-05-20 充值卡剥离 SKU 化：
+ *   - 充值订单不再依赖 product_skus / sale_items；改用 sale_order_type='充值单' 标识
+ *   - 档位配置从 product_skus.is_recharge_card=true 行迁到 system_configs（recharge.tiers）
+ *   - total_amount=面值，payable_amount=实付，sale_items 0 行
  *
- * 两种档位来源：
- *   A) 真实 is_recharge_card=true 的 SKU（卡面值 = product_skus.price）
- *   B) 自定义金额 → 虚拟 SKU 'sku-recharge-virtual'（面值 = 用户输入，实付走 matchTier）
+ * 入账：线下走 order.confirmOffline 识别 sale_order_type='充值单'；微信走 payNotify 同识别。
  *
- * 入账：线下走 order.confirmOffline 识别段，微信走 clientApi payNotify 识别段。
- * 两侧识别逻辑均以 "sale_items.is_recharge_card = true" 为统一过滤（capability 列权威源），
- * 面值按 (虚拟 SKU → product_name 正则解析) / (真实 SKU → product_skus.price) 分支取值。
+ * 退款（仅退剩余余额，整笔退、不可拆、只能退 1 次）：
+ *   1. card.createRefund — admin/staff 发起，写 sale_order_payments(change_type='退款', status='待审批')
+ *   2. card.approveRefund — manager 审批通过：扣 balance + card_transactions(-faceVal) + status='已支付' + 调微信原路退款
+ *   3. card.rejectRefund — manager 拒绝：status='已作废'
  */
 
 const pg = require('../db/pg')
 const { requireManager } = require('../middleware/auth')
-const {
-  RECHARGE_TIERS,
-  RECHARGE_MIN_AMOUNT,
-  RECHARGE_MAX_AMOUNT,
-  RECHARGE_VIRTUAL_SKU_ID,
-  matchTier,
-} = require('../utils/recharge')
+const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 
 // ================= 路由 =================
 
 /**
- * 返回店长可售的充值卡档位 + 自定义金额配置
+ * 返回店长可售的充值卡档位 + 自定义金额配置（替代 rechargeSkus）
  *
- * tiers 来自 product_skus.is_recharge_card=true 行（capability 列 SSoT），price=面值，special_price=实付。
- * customConfig 提供前端即时校验所需的边界 + tier 断点。
+ * 数据来源：system_configs（admin 后台 system-configs 编辑入口维护）
  */
-async function rechargeSkus(ctx) {
+async function rechargeTiers(ctx) {
   await requireManager()(ctx, async () => {})
 
-  // capability 列 SSoT：is_recharge_card=true 才是充值卡（与 product_kind='充值卡' 分类标签解耦）
-  const rows = await pg.query(`
-    SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
-           pc.category_id, pc.category_name
-    FROM product_skus sk
-    JOIN product_categories pc ON sk.category_id = pc.category_id
-    WHERE sk.is_recharge_card = true
-      AND sk.is_enabled = true
-      AND sk.deleted_at IS NULL
-      AND pc.is_valid = true
-      AND sk.sku_id <> $1
-    ORDER BY sk.price ASC, sk.sort_order ASC
-  `, [RECHARGE_VIRTUAL_SKU_ID])
-
-  const tiers = rows.map(r => {
-    const price = Number(r.price)
-    const payAmount = r.special_price != null ? Number(r.special_price) : price
-    const bonus = Math.round((price - payAmount) * 100) / 100
-    const discount = price > 0 ? Math.round((payAmount / price) * 100) / 100 : 1
-    return {
-      skuId: r.sku_id,
-      productName: r.spec_name,
-      specName: r.spec_name,
-      faceValue: price,
-      payAmount,
-      bonus,
-      discount,
-      productType: r.product_type,
-      categoryId: r.category_id,
-      categoryName: r.category_name,
-    }
-  })
-
+  const cfg = await loadRechargeConfig(pg)
   ctx.result = {
-    tiers,
-    customConfig: {
-      minAmount: RECHARGE_MIN_AMOUNT,
-      maxAmount: RECHARGE_MAX_AMOUNT,
-      tierBreakpoints: RECHARGE_TIERS.map(t => ({
+    tiers: cfg.tiers.map(t => {
+      const discount = t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1
+      return {
         faceValue: t.faceValue,
-        discount: t.discount,
-        payAmount: Math.round(t.faceValue * t.discount * 100) / 100,
+        payAmount: t.payAmount,
+        bonus: Math.round((t.faceValue - t.payAmount) * 100) / 100,
+        discount,
+      }
+    }),
+    customConfig: {
+      minAmount: cfg.minAmount,
+      maxAmount: cfg.maxAmount,
+      tierBreakpoints: cfg.tiers.map(t => ({
+        faceValue: t.faceValue,
+        payAmount: t.payAmount,
+        discount: t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1,
       })),
     },
   }
@@ -85,19 +56,18 @@ async function rechargeSkus(ctx) {
  *
  * payload: {
  *   clientUserId: string,              // 必填，已注册顾客 user_id
- *   skuId?: string,                    // 档位 SKU（与 customAmount 互斥）
- *   customAmount?: number,             // 自定义金额（与 skuId 互斥）
+ *   faceValue: number,                 // 充值面值；payAmount 由后端按 system_configs 推导
  *   paymentMethod: '线下'|'微信',
  *   remark?: string
  * }
  *
- * 返回: { saleOrderId, saleItemId, skuId, faceValue, payAmount, paymentMethod, status }
+ * 返回: { saleOrderId, faceValue, payAmount, paymentMethod, status }
  */
 async function recharge(ctx) {
   await requireManager()(ctx, async () => {})
 
   const payload = ctx.event.payload || {}
-  const { clientUserId, skuId, customAmount, paymentMethod, remark } = payload
+  const { clientUserId, faceValue, paymentMethod, remark } = payload
 
   if (!clientUserId) throw new Error('INVALID_PARAMS: 缺少 clientUserId')
   if (!paymentMethod) throw new Error('INVALID_PARAMS: 缺少 paymentMethod')
@@ -105,64 +75,13 @@ async function recharge(ctx) {
     throw new Error('INVALID_PARAMS: 非法的支付方式')
   }
 
-  const hasSkuId = !!skuId
-  const hasCustomAmount = customAmount !== undefined && customAmount !== null && customAmount !== ''
-  if (!hasSkuId && !hasCustomAmount) {
-    throw new Error('INVALID_PARAMS: 请选择档位或输入自定义金额')
-  }
-  if (hasSkuId && hasCustomAmount) {
-    throw new Error('INVALID_PARAMS: skuId 与 customAmount 只能二选一')
-  }
+  const cfg = await loadRechargeConfig(pg)
+  const { payAmount } = matchTier(Number(faceValue), cfg)
+  const faceVal = Number(faceValue)
 
   const storeId = ctx.auth.effectiveStoreId
   const marketName = ctx.auth.marketName || ''
   if (!storeId) throw new Error('INVALID_PARAMS: 缺少门店信息')
-
-  // 解析档位 → {resolvedSkuId, productName, skuSpecName, productType, salesCategory, faceValue, payAmount}
-  let resolvedSkuId
-  let productName
-  let skuSpecName
-  let productType
-  let salesCategory = null
-  let faceValue
-  let payAmount
-
-  if (hasSkuId) {
-    if (skuId === RECHARGE_VIRTUAL_SKU_ID) {
-      // 显式传虚拟 SKU 但未给 customAmount —— 拒绝（避免面值零订单）
-      throw new Error('INVALID_PARAMS: 虚拟商品需通过自定义金额下单')
-    }
-    const skuRows = await pg.query(`
-      SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.product_type,
-             sk.is_recharge_card, pc.sales_category
-      FROM product_skus sk
-      JOIN product_categories pc ON sk.category_id = pc.category_id
-      WHERE sk.sku_id = $1 AND sk.is_enabled = true AND sk.deleted_at IS NULL
-    `, [skuId])
-    if (skuRows.length === 0) throw new Error('INVALID_PARAMS: 商品不存在或已下架')
-    const sku = skuRows[0]
-    // capability 列 SSoT：is_recharge_card=true 才是充值卡（解耦 product_kind 字面量）
-    if (!sku.is_recharge_card) throw new Error('INVALID_PARAMS: 该商品不是充值卡')
-    resolvedSkuId = skuId
-    productName = sku.spec_name
-    skuSpecName = sku.spec_name
-    productType = sku.product_type
-    salesCategory = sku.sales_category || null
-    faceValue = Number(sku.price)
-    payAmount = sku.special_price != null ? Number(sku.special_price) : faceValue
-  } else {
-    const amt = Number(customAmount)
-    const { payAmount: computed } = matchTier(amt)
-    resolvedSkuId = RECHARGE_VIRTUAL_SKU_ID
-    // product_name 必须含 "¥{面值}"，payNotify / confirmOffline 依赖正则解析
-    productName = `预付充值卡 ¥${amt}`
-    skuSpecName = '预付充值卡（虚拟）'
-    productType = '家居产品'
-    faceValue = amt
-    payAmount = computed
-  }
-
-  if (!(faceValue > 0)) throw new Error('INVALID_PARAMS: 充值卡面值异常')
 
   // 查顾客 + document_type
   const userRows = await pg.query(
@@ -187,9 +106,8 @@ async function recharge(ctx) {
     throw err
   }
 
-  // 事务内：advisory lock + 生成订单号/流水号 + INSERT
+  // 事务内：advisory lock + 生成订单号 + INSERT sale_orders（不写 sale_items）
   let saleOrderId
-  let saleItemId
   await pg.transaction(async (client) => {
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
@@ -207,59 +125,31 @@ async function recharge(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    const dateStrItem = now.toISOString().slice(0, 10).replace(/-/g, '')
-    const itemSeqResult = await client.query(
-      `SELECT sale_item_id FROM sale_items
-       WHERE sale_item_id LIKE $1
-       ORDER BY sale_item_id DESC LIMIT 1`,
-      [`XSLSH-WX-${dateStrItem}%`]
-    )
-    let itemSeq = 1
-    if (itemSeqResult.rows.length > 0) {
-      itemSeq = parseInt(itemSeqResult.rows[0].sale_item_id.slice(-4)) + 1
-    }
-    saleItemId = `XSLSH-WX-${dateStrItem}${String(itemSeq).padStart(4, '0')}`
-
     // 线下 → 待确认收款；微信 → 待支付（等 payNotify 回调入账）
     const initialStatus = paymentMethod === '线下' ? '待确认收款' : '待支付'
 
+    // 充值单：total_amount=面值，payable_amount=实付，prepaid_card_amount=0（充值单本身不允许储值卡支付）
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
-        sale_order_datetime, total_amount, payable_amount, client_user_id, client_phone, customer_name,
+        sale_order_datetime, total_amount, payable_amount, prepaid_card_amount,
+        client_user_id, client_phone, customer_name,
         payment_method, opened_by, remark,
         created_at, updated_at
-      ) VALUES ($1, $2, '销售单', $3, $4, $5, $6, $7, $7, $8, $9, $10, $11, $12, $13, $6, $6)`,
+      ) VALUES ($1, $2, '充值单', $3, $4, $5, $6, $7, $8, 0,
+                $9, $10, $11, $12, $13, $14, $6, $6)`,
       [
         saleOrderId, initialStatus, documentType, marketName, storeId, now,
-        payAmount, clientUserId, clientPhone, customerName,
+        faceVal, payAmount,
+        clientUserId, clientPhone, customerName,
         paymentMethod, ctx.auth.staffWfId, remark || null,
-      ]
-    )
-
-    // 充值卡订单的 sale_items 必须写 is_recharge_card=true 快照（payNotify/confirmOffline 识别依据）
-    await client.query(
-      `INSERT INTO sale_items (
-        sale_item_id, sale_order_id, store_id, item_direction, sku_id,
-        product_name, sku_spec_name, product_type,
-        session_count, remaining_sessions,
-        unit_price, quantity, unit_real_price, sale_amount, received,
-        sales_category, service_fee, is_recharge_card
-      ) VALUES ($1, $2, $3, '购买', $4, $5, $6, $7, NULL, NULL, $8, 1, $9, $9, $9, $10, 0, true)`,
-      [
-        saleItemId, saleOrderId, storeId, resolvedSkuId,
-        productName, skuSpecName, productType,
-        faceValue, payAmount,
-        salesCategory,
       ]
     )
   })
 
   ctx.result = {
     saleOrderId,
-    saleItemId,
-    skuId: resolvedSkuId,
-    faceValue,
+    faceValue: faceVal,
     payAmount,
     paymentMethod,
     status: paymentMethod === '线下' ? '待确认收款' : '待支付',
@@ -267,4 +157,207 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { rechargeSkus, recharge }
+/**
+ * 发起充值卡退款（admin 或 staff 调用）
+ *
+ * 仅支持"退剩余余额"语义：refundFace = balance_now，整笔退，不可拆。
+ * 实际原路退款金额 = round(refundFace * payable_amount / total_amount, 2)。
+ *
+ * payload: { saleOrderId: string, reason?: string }
+ * 返回: { paymentId, refundFace, refundPay }
+ */
+async function createRefund(ctx) {
+  const { saleOrderId, reason } = ctx.event.payload || {}
+  if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
+
+  // 校验订单存在 + 为充值单 + 已支付
+  const orderRows = await pg.query(
+    `SELECT sale_order_id, sale_order_type, status, total_amount, payable_amount,
+            client_user_id, payment_method, store_id
+     FROM sale_orders WHERE sale_order_id = $1`,
+    [saleOrderId]
+  )
+  if (orderRows.length === 0) throw new Error('NOT_FOUND: 订单不存在')
+  const order = orderRows[0]
+  if (order.sale_order_type !== '充值单') {
+    throw new Error('INVALID_STATE: 非充值单不可走充值卡退款流程')
+  }
+  if (order.status !== '已支付') {
+    throw new Error(`INVALID_STATE: 订单状态 ${order.status} 不可退款`)
+  }
+
+  // 校验无在途退款（uq_sop_status_audit 会兜底）
+  const existing = await pg.query(
+    `SELECT id FROM sale_order_payments
+     WHERE sale_order_id = $1 AND change_type = '退款' AND status IN ('待审批', '已支付')`,
+    [saleOrderId]
+  )
+  if (existing.length > 0) {
+    throw new Error('CONFLICT: 该订单已有在途/已完成的退款，不可重复发起')
+  }
+
+  // 取顾客当前余额（按面值口径），refundFace = balance_now
+  const cardRows = await pg.query(
+    `SELECT pc.card_id, pc.balance FROM prepaid_cards pc WHERE pc.user_id = $1`,
+    [order.client_user_id]
+  )
+  if (cardRows.length === 0) {
+    throw new Error('NOT_FOUND: 顾客无充值卡账户，无可退余额')
+  }
+  const balanceNow = Number(cardRows[0].balance)
+  if (!(balanceNow > 0)) {
+    throw new Error('INSUFFICIENT_BALANCE: 当前余额为 0，无可退金额')
+  }
+
+  const totalAmount = Number(order.total_amount)
+  const payableAmount = Number(order.payable_amount)
+  const refundFace = balanceNow
+  const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
+
+  // 写 sale_order_payments：change_type='退款' status='待审批' amount=负
+  const sourceEnd = ctx.event.payload?._sourceEnd === 'admin' ? 'admin' : 'staff'
+  const inserted = await pg.query(
+    `INSERT INTO sale_order_payments (
+       sale_order_id, change_type, amount, payment_method, status, source_end,
+       operator_employee_id, refund_reason, note
+     ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7)
+     RETURNING id`,
+    [
+      saleOrderId,
+      -refundPay,
+      order.payment_method,
+      sourceEnd,
+      ctx.auth.staffWfId || null,
+      reason || null,
+      JSON.stringify({ refundFace, balanceAtRequest: balanceNow }),
+    ]
+  )
+  const paymentId = inserted[0].id
+
+  ctx.result = {
+    paymentId,
+    refundFace,
+    refundPay,
+    status: '待审批',
+  }
+}
+
+/**
+ * 店长审批通过充值卡退款
+ *
+ * payload: { paymentId: number }
+ */
+async function approveRefund(ctx) {
+  await requireManager()(ctx, async () => {})
+  const { paymentId } = ctx.event.payload || {}
+  if (!paymentId) throw new Error('INVALID_PARAMS: 缺少 paymentId')
+
+  await pg.transaction(async (client) => {
+    // 锁定 sale_order_payments 行
+    const payRows = await client.query(
+      `SELECT sop.id, sop.sale_order_id, sop.amount, sop.status, sop.note,
+              so.client_user_id, so.total_amount, so.payable_amount, so.store_id
+       FROM sale_order_payments sop
+       JOIN sale_orders so ON sop.sale_order_id = so.sale_order_id
+       WHERE sop.id = $1 FOR UPDATE OF sop`,
+      [paymentId]
+    )
+    if (payRows.rows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
+    const pay = payRows.rows[0]
+    if (pay.status !== '待审批') {
+      throw new Error(`INVALID_STATE: 退款单当前状态 ${pay.status} 不可审批`)
+    }
+
+    // 权限：manager 必须覆盖订单门店
+    const scopeStoreIds = ctx.auth.scopeStoreIds || []
+    if (!scopeStoreIds.includes(pay.store_id)) {
+      throw new Error('PERMISSION_DENIED: 当前店长无权审批该门店的退款')
+    }
+
+    // 读 note 拿 refundFace
+    const meta = JSON.parse(pay.note || '{}')
+    const refundFace = Number(meta.refundFace)
+    if (!(refundFace > 0)) throw new Error('INVALID_STATE: 退款单缺少 refundFace 元数据')
+
+    // advisory lock + 校验余额
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`card-balance-${pay.client_user_id}`])
+    const balRows = await client.query(
+      `SELECT card_id, balance FROM prepaid_cards WHERE user_id = $1 FOR UPDATE`,
+      [pay.client_user_id]
+    )
+    if (balRows.rows.length === 0) throw new Error('NOT_FOUND: 顾客充值卡账户已不存在')
+    const card = balRows.rows[0]
+    const balance = Number(card.balance)
+    if (balance < refundFace) {
+      throw new Error(`INSUFFICIENT_BALANCE: 当前余额 ${balance} < 退款面值 ${refundFace}（审批期间已被消费）`)
+    }
+
+    // 扣 balance + 写 card_transactions
+    await client.query(
+      `UPDATE prepaid_cards SET balance = balance - $1, updated_at = NOW() WHERE card_id = $2`,
+      [refundFace, card.card_id]
+    )
+    await client.query(
+      `INSERT INTO card_transactions (card_id, type, amount, ref_order_id, external_ref)
+       VALUES ($1, '扣款', $2, $3, $4)`,
+      [card.card_id, -refundFace, pay.sale_order_id, `card-refund-${paymentId}`]
+    )
+
+    // 翻 status='已支付' + 记审批人 + paid_at
+    await client.query(
+      `UPDATE sale_order_payments
+       SET status='已支付', audit_employee_id=$1, audit_at=NOW(), paid_at=NOW()
+       WHERE id=$2`,
+      [ctx.auth.staffWfId || null, paymentId]
+    )
+
+    // sale_orders.refunded_amount 累加（应用层冗余快照）
+    await client.query(
+      `UPDATE sale_orders SET refunded_amount = COALESCE(refunded_amount, 0) + $1, updated_at = NOW()
+       WHERE sale_order_id = $2`,
+      [Math.abs(Number(pay.amount)), pay.sale_order_id]
+    )
+  })
+
+  // TODO: 调微信原路退款 API（refundPay = |pay.amount|）—— 当前 mock 阶段先跳过
+
+  ctx.result = { paymentId, status: '已支付' }
+}
+
+/**
+ * 店长拒绝充值卡退款
+ *
+ * payload: { paymentId: number, reason?: string }
+ */
+async function rejectRefund(ctx) {
+  await requireManager()(ctx, async () => {})
+  const { paymentId, reason } = ctx.event.payload || {}
+  if (!paymentId) throw new Error('INVALID_PARAMS: 缺少 paymentId')
+
+  const payRows = await pg.query(
+    `SELECT sop.id, sop.status, so.store_id
+     FROM sale_order_payments sop
+     JOIN sale_orders so ON sop.sale_order_id = so.sale_order_id
+     WHERE sop.id = $1`,
+    [paymentId]
+  )
+  if (payRows.length === 0) throw new Error('NOT_FOUND: 退款单不存在')
+  if (payRows[0].status !== '待审批') {
+    throw new Error(`INVALID_STATE: 退款单当前状态 ${payRows[0].status} 不可审批`)
+  }
+  const scopeStoreIds = ctx.auth.scopeStoreIds || []
+  if (!scopeStoreIds.includes(payRows[0].store_id)) {
+    throw new Error('PERMISSION_DENIED: 当前店长无权审批该门店的退款')
+  }
+
+  await pg.query(
+    `UPDATE sale_order_payments
+     SET status='已作废', audit_employee_id=$1, audit_at=NOW(), audit_remark=$2
+     WHERE id=$3 AND status='待审批'`,
+    [ctx.auth.staffWfId || null, reason || null, paymentId]
+  )
+
+  ctx.result = { paymentId, status: '已作废' }
+}
+
+module.exports = { rechargeTiers, recharge, createRefund, approveRefund, rejectRefund }

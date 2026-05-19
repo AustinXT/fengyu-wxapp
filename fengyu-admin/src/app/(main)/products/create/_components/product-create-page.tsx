@@ -35,7 +35,6 @@ export default function SkuCreatePageClient({
 
   const [isShengmei, setIsShengmei] = useState<boolean>(false)
   const [isExperience, setIsExperience] = useState<boolean>(false)
-  const [isRechargeCard, setIsRechargeCard] = useState<boolean>(false)
   const [projectSeriesId, setProjectSeriesId] = useState<number | null>(null)
   const [allMarkets, setAllMarkets] = useState(true)
   const [selectedMarketIds, setSelectedMarketIds] = useState<string[]>([])
@@ -80,11 +79,6 @@ export default function SkuCreatePageClient({
     const sortOrder = parseInt(fd.get("sortOrder") as string) || 0
     const isEnabled = fd.get("isEnabled") === "on"
 
-    if (isExperience && isRechargeCard) {
-      toast.error("体验卡与充值卡 capability 互斥，不能同时勾选")
-      return
-    }
-
     const skuId = `sku-${Date.now()}`
 
     setSaving(true)
@@ -101,7 +95,6 @@ export default function SkuCreatePageClient({
         serviceFee,
         isShengmei,
         isExperience,
-        isRechargeCard,
         projectSeriesId,
         marketScope: allMarkets ? null : (selectedMarketIds.length > 0 ? selectedMarketIds.join(',') : null),
         isEnabled,
@@ -302,7 +295,6 @@ export default function SkuCreatePageClient({
                 <input
                   type="checkbox"
                   checked={isExperience}
-                  disabled={isRechargeCard}
                   onChange={(e) => { setIsExperience(e.target.checked); setFormDirty(true) }}
                   className="h-4 w-4 rounded border-[var(--input)]"
                 />
@@ -313,21 +305,7 @@ export default function SkuCreatePageClient({
               </p>
             </div>
 
-            <div className="space-y-1">
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={isRechargeCard}
-                  disabled={isExperience}
-                  onChange={(e) => { setIsRechargeCard(e.target.checked); setFormDirty(true) }}
-                  className="h-4 w-4 rounded border-[var(--input)]"
-                />
-                <span className="text-sm font-medium">充值卡商品</span>
-              </label>
-              <p className="pl-6 text-xs text-[var(--muted-foreground)]">
-                勾选后该商品在订单确认收款时会自动累加到顾客预付卡余额（与体验卡互斥）；现有订单的快照不受改动影响
-              </p>
-            </div>
+            {/* 充值卡已退出 SKU/商品域（2026-05-20），无需勾选项；充值订单走独立入口 */}
           </div>
         </CardContent>
       </Card>

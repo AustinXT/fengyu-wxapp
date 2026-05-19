@@ -5,6 +5,7 @@ import { saleItems, saleOrders } from '@db/order'
 import { productSkus, productCategories } from '@db/product'
 import { stores, orgNodes } from '@db/org'
 import { clientWechatUsers } from '@db/user'
+import { prepaidCards } from '@db/prepaid-card'
 import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { scopeCondition, isInScope } from '@/lib/permissions'
@@ -324,83 +325,72 @@ export const getCustomerHeldCards = withPermission(
 )
 
 // ============================================================================
-// 充值卡可售档位（admin 开单页 PrepaidCardPicker 数据源）
+// 充值档位配置（admin 开单页 PrepaidCardPicker 数据源）
+//
+// 2026-05-20 充值卡剥离 SKU 化：档位/边界来源从 product_skus 迁到 system_configs。
+// admin / staff / client 三端均通过同步读取相同的 system_configs 行保持一致。
 // ============================================================================
 
+import { loadRechargeConfig, type RechargeTier } from '@/lib/recharge'
+
 /**
- * 充值卡 SKU 档位（与 fengyu-staff card.rechargeSkus 字面对齐）
- *
- * SQL 与字段映射均字面对齐 staffApi/routes/card.js L37-67，
- * 跨端守护见 staff routes/card.js 同名结构。
+ * 充值档位（system_configs 驱动；admin 开单页可选档位）
  */
-export interface RechargeCardSku {
-  skuId: string
-  /** spec_name（卡名） */
-  specName: string
-  /** 面值 = product_skus.price */
+export interface RechargeCardTier {
+  /** 面值 */
   faceValue: number
-  /** 实付 = special_price ?? price */
+  /** 实付 */
   payAmount: number
-  /** 赠送金额 = faceValue - payAmount（>=0） */
+  /** 赠送金额 = faceValue - payAmount */
   bonus: number
-  /** 折扣 = payAmount / faceValue（0~1） */
+  /** 折扣 = payAmount / faceValue */
   discount: number
-  productType: string
-  categoryId: string
-  categoryName: string
 }
 
 /**
- * 拉 admin 开单页可选的充值卡档位（is_recharge_card=true 真实 SKU）
+ * 拉 admin 开单页可选的充值档位（system_configs.recharge.tiers 驱动）
  *
- * 排除虚拟 SKU `sku-recharge-virtual`（自定义金额路径独占）；
- * 排除停售 / 已删除 / 分类失效项。
- *
- * SQL 字面对齐 fengyu-staff/cloudfunctions/staffApi/routes/card.js 的 rechargeSkus。
  * 权限：复用 sale_order:create —— 开单页 SSR 时一同 fetch。
  */
-export const getRechargeCardSkus = withPermission(
+export const getRechargeCardTiers = withPermission(
   'sale_order:create',
-  async (_session): Promise<RechargeCardSku[]> => {
-    const rowsRes = await db.execute(sql`
-      SELECT sk.sku_id, sk.spec_name, sk.price, sk.special_price, sk.sort_order, sk.product_type,
-             pc.category_id, pc.category_name
-      FROM product_skus sk
-      JOIN product_categories pc ON sk.category_id = pc.category_id
-      WHERE sk.is_recharge_card = true
-        AND sk.is_enabled = true
-        AND sk.deleted_at IS NULL
-        AND pc.is_valid = true
-        AND sk.sku_id <> 'sku-recharge-virtual'
-      ORDER BY sk.price ASC, sk.sort_order ASC
-    `)
-    const rows = rowsRes as unknown as Array<{
-      sku_id: string
-      spec_name: string
-      price: string
-      special_price: string | null
-      sort_order: number | null
-      product_type: string
-      category_id: string
-      category_name: string
-    }>
-
-    return rows.map((r) => {
-      const price = Number(r.price)
-      const payAmount = r.special_price != null ? Number(r.special_price) : price
-      const bonus = Math.round((price - payAmount) * 100) / 100
-      const discount = price > 0 ? Math.round((payAmount / price) * 100) / 100 : 1
+  async (_session): Promise<RechargeCardTier[]> => {
+    const cfg = await loadRechargeConfig()
+    return cfg.tiers.map((t: RechargeTier) => {
+      const discount = t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1
       return {
-        skuId: r.sku_id,
-        specName: r.spec_name,
-        faceValue: price,
-        payAmount,
-        bonus,
+        faceValue: t.faceValue,
+        payAmount: t.payAmount,
+        bonus: Math.round((t.faceValue - t.payAmount) * 100) / 100,
         discount,
-        productType: r.product_type,
-        categoryId: r.category_id,
-        categoryName: r.category_name,
       }
     })
+  },
+)
+
+// 向后兼容旧函数名（如有调用方未及时切换）
+export const getRechargeCardSkus = getRechargeCardTiers
+export type RechargeCardSku = RechargeCardTier
+
+/**
+ * 查询顾客充值卡余额（跨店统一；admin 新增开单页"充值卡抵扣"使用）
+ *
+ * 与 staff customer.customerBalance 同 SQL，使用 prepaid_cards.balance（聚合维护的余额列）。
+ * 没有 prepaid_cards 行 / 余额 ≤ 0 → 返回 0。
+ *
+ * 权限：sale_order:create（开单上下文）
+ */
+export const getCustomerCardBalance = withPermission(
+  'sale_order:create',
+  async (_session, clientUserId: string): Promise<number> => {
+    if (!clientUserId) return 0
+    const rows = await db
+      .select({ balance: prepaidCards.balance })
+      .from(prepaidCards)
+      .where(eq(prepaidCards.userId, clientUserId))
+      .limit(1)
+    if (!rows.length) return 0
+    const n = Number(rows[0].balance)
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0
   },
 )

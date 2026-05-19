@@ -1,53 +1,84 @@
 /**
- * 充值卡模块路由
+ * 充值卡模块路由（顾客端）
+ *
+ * 2026-05-20 充值卡剥离 SKU 化：
+ *   - 充值订单写 sale_orders type='充值单'，不写 sale_items（0 明细行）
+ *   - 档位/边界配置来源从代码硬编码迁到 system_configs（recharge.tiers/minAmount/maxAmount）
+ *   - 入账识别从 sale_items.is_recharge_card 改为 sale_orders.sale_order_type='充值单'
  */
 
 const pg = require('../db/pg')
 const { requirePhone } = require('../middleware/auth')
-const { RECHARGE_VIRTUAL_SKU_ID } = require('./_constants')
 
 // =============================================================
-// 充值档位配置
+// 内部：从 system_configs 加载档位 + 匹配
 // =============================================================
-// TODO(future): 后续运营要"改档不发版"时，独立成 recharge_tier_config 表
-// 由 admin 维护。本期硬编码，rechargeConfig 接口已支持后续无缝迁移。
-const RECHARGE_TIERS = [
-  { faceValue: 500, discount: 0.99 },
-  { faceValue: 1000, discount: 0.98 },
-  { faceValue: 5000, discount: 0.95 },
-]
-const RECHARGE_MIN_AMOUNT = 500
-const RECHARGE_MAX_AMOUNT = 100000
+
+async function _loadRechargeConfig(client) {
+  const queryRunner = client || pg
+  const rows = await queryRunner.query(
+    `SELECT key, value FROM system_configs WHERE key IN ('recharge.tiers','recharge.minAmount','recharge.maxAmount')`
+  )
+  const cfg = {}
+  for (const r of rows) cfg[r.key] = r.value
+  if (!cfg['recharge.tiers'] || !cfg['recharge.minAmount'] || !cfg['recharge.maxAmount']) {
+    throw new Error('INVALID_STATE: 系统未配置充值卡档位')
+  }
+  let tiers
+  try { tiers = JSON.parse(cfg['recharge.tiers']) } catch (e) {
+    throw new Error('INVALID_STATE: recharge.tiers 配置格式错误')
+  }
+  if (!Array.isArray(tiers) || tiers.length === 0) {
+    throw new Error('INVALID_STATE: recharge.tiers 必须为非空数组')
+  }
+  for (const t of tiers) {
+    if (typeof t.faceValue !== 'number' || typeof t.payAmount !== 'number') {
+      throw new Error('INVALID_STATE: recharge.tiers 条目格式错误')
+    }
+  }
+  tiers.sort((a, b) => a.faceValue - b.faceValue)
+  const minAmount = Number(cfg['recharge.minAmount'])
+  const maxAmount = Number(cfg['recharge.maxAmount'])
+  if (!Number.isFinite(minAmount) || !Number.isFinite(maxAmount) || minAmount <= 0 || maxAmount < minAmount) {
+    throw new Error('INVALID_STATE: recharge.minAmount/maxAmount 配置无效')
+  }
+  return { tiers, minAmount, maxAmount }
+}
 
 /**
- * 按充值面值匹配折扣（区间左闭右开）
- * @param {number} amount - 面值
- * @returns {{ discount: number, payAmount: number }}
- * @throws 校验失败抛 'INVALID_PARAMS: ...'
+ * 按面值匹配档位实付（精确命中或按最大 ≤ amount 的档位折扣比换算）
+ *
+ * @param {number} amount
+ * @param {object} cfg - { tiers, minAmount, maxAmount }
+ * @returns {{ payAmount: number, discount: number }}
+ * @throws 'INVALID_PARAMS: ...'
  */
-function matchTier(amount) {
+function matchTier(amount, cfg) {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误')
   }
-  // 小数位 ≤ 2
   if (Math.round(amount * 100) !== amount * 100) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数')
   }
-  if (amount < RECHARGE_MIN_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${RECHARGE_MIN_AMOUNT}`)
+  if (amount < cfg.minAmount) {
+    throw new Error(`INVALID_PARAMS: 最低充值金额 ¥${cfg.minAmount}`)
   }
-  if (amount > RECHARGE_MAX_AMOUNT) {
-    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${RECHARGE_MAX_AMOUNT}`)
+  if (amount > cfg.maxAmount) {
+    throw new Error(`INVALID_PARAMS: 单次充值上限 ¥${cfg.maxAmount}`)
   }
-
-  // 区间匹配：500-999 → 9.9 折，1000-4999 → 9.8 折，≥5000 → 9.5 折
-  let discount = RECHARGE_TIERS[0].discount
-  for (const tier of RECHARGE_TIERS) {
-    if (amount >= tier.faceValue) discount = tier.discount
+  const hit = cfg.tiers.find(t => t.faceValue === amount)
+  if (hit) {
+    const discount = amount > 0 ? Math.round((hit.payAmount / amount) * 100) / 100 : 1
+    return { payAmount: hit.payAmount, discount }
   }
-
-  const payAmount = Math.round(amount * discount * 100) / 100
-  return { discount, payAmount }
+  let baseTier = cfg.tiers[0]
+  for (const t of cfg.tiers) {
+    if (amount >= t.faceValue) baseTier = t
+  }
+  const ratio = baseTier.payAmount / baseTier.faceValue
+  const payAmount = Math.round(amount * ratio * 100) / 100
+  const discount = Math.round(ratio * 100) / 100
+  return { payAmount, discount }
 }
 
 // =============================================================
@@ -70,7 +101,6 @@ async function list(ctx) {
   ctx.result = {
     cards: cards.map(c => ({
       cardId: c.card_id,
-      // PG numeric 经 node-postgres 返回字符串，需显式转 number 保证前端合约
       balance: Number(c.balance),
       createdAt: c.created_at,
     }))
@@ -111,14 +141,12 @@ async function history(ctx) {
   if (!cardId) throw new Error('INVALID_PARAMS: 缺少 cardId')
   const offset = (page - 1) * pageSize
 
-  // Verify card ownership
   const cards = await pg.query(
     'SELECT card_id FROM prepaid_cards WHERE card_id = $1 AND user_id = $2',
     [cardId, userId]
   )
   if (cards.length === 0) throw new Error('INVALID_PARAMS: 充值卡不存在')
 
-  // Get transactions (last 6 months)
   const records = await pg.query(`
     SELECT ct.id, ct.type, ct.amount, ct.ref_order_id, ct.created_at
     FROM card_transactions ct
@@ -131,7 +159,6 @@ async function history(ctx) {
     records: records.map(r => ({
       id: r.id,
       type: r.type,
-      // PG numeric 经 node-postgres 返回字符串，需显式转 number 保证前端合约
       amount: Number(r.amount),
       refOrderId: r.ref_order_id,
       createdAt: r.created_at,
@@ -141,22 +168,24 @@ async function history(ctx) {
 
 /**
  * 拉取充值档位配置（公开接口，无需登录）
+ *
+ * 2026-05-20 数据来源：system_configs（admin 维护）
  */
 async function rechargeConfig(ctx) {
+  const cfg = await _loadRechargeConfig()
   ctx.result = {
-    tiers: RECHARGE_TIERS.map(t => ({
+    tiers: cfg.tiers.map(t => ({
       faceValue: t.faceValue,
-      discount: t.discount,
-      payAmount: Math.round(t.faceValue * t.discount * 100) / 100,
+      payAmount: t.payAmount,
+      discount: t.faceValue > 0 ? Math.round((t.payAmount / t.faceValue) * 100) / 100 : 1,
     })),
-    minAmount: RECHARGE_MIN_AMOUNT,
-    maxAmount: RECHARGE_MAX_AMOUNT,
+    minAmount: cfg.minAmount,
+    maxAmount: cfg.maxAmount,
   }
 }
 
 /**
  * 关闭过期的待支付订单（10 分钟）以释放唯一约束 uq_sale_orders_client_pending
- * 与 order.create 中的同名逻辑保持一致，避免环依赖故在此独立实现一份精简版
  */
 async function _closeExpiredPendingByUser(client, userId) {
   const expired = await client.query(
@@ -180,27 +209,31 @@ async function _closeExpiredPendingByUser(client, userId) {
 }
 
 /**
- * 创建充值订单
+ * 创建充值订单（顾客端发起）
  *
- * payload: { faceValue: number }   // 面值；实付由后端按 faceValue 推导
+ * 2026-05-20 重构：
+ *   - sale_orders.sale_order_type='充值单'，不写 sale_items
+ *   - total_amount=面值，payable_amount=实付，prepaid_card_amount=0
+ *   - 入账由 payNotify 在 status 翻 '已支付' 时触发
+ *
+ * payload: { faceValue: number }   // 面值；实付按 system_configs 推导
  * 返回:    { saleOrderId, faceValue, payAmount, paymentParams, mockMode }
  */
 async function recharge(ctx) {
-  // 必须绑定手机号
   await requirePhone()(ctx, async () => {})
 
   const { userId, boundStoreId, boundMarketName, phone } = ctx.auth
   const { faceValue } = ctx.event.payload || {}
 
-  // 1. 校验金额并匹配档位
-  const { discount, payAmount } = matchTier(Number(faceValue))
+  const cfg = await _loadRechargeConfig()
+  const { discount, payAmount } = matchTier(Number(faceValue), cfg)
+  const faceVal = Number(faceValue)
 
-  // 2. 校验已绑定门店（D1 决策：充值卡按已绑定门店入账）
   if (!boundStoreId) {
     throw new Error('INVALID_PARAMS: 请先绑定门店')
   }
 
-  // 3. 查询门店 market_name 快照（与 order.create 逻辑一致）
+  // 查询门店 market_name 快照
   const storeRows = await pg.query(
     `SELECT s.store_id, s.store_name, pm.name AS market_name
      FROM stores s
@@ -214,7 +247,7 @@ async function recharge(ctx) {
   }
   const marketName = storeRows[0].market_name || boundMarketName || ''
 
-  // 4. 查询顾客姓名（用于 customer_name 快照）
+  // 查询顾客姓名 + document_type
   let customerName = null
   let documentType = '售前'
   {
@@ -228,13 +261,10 @@ async function recharge(ctx) {
     }
   }
 
-  // 5. 事务内创建订单（订单号 + 流水号在事务+锁内原子生成）
   let saleOrderId
   await pg.transaction(async (client) => {
-    // a. 关闭该用户已过期的待支付订单（释放唯一约束）
     await _closeExpiredPendingByUser(client, userId)
 
-    // b. 检查是否仍有待支付订单（单 client_user_id 唯一约束）
     const existing = await client.query(
       `SELECT sale_order_id FROM sale_orders
        WHERE client_user_id = $1 AND status = '待支付'`,
@@ -246,7 +276,6 @@ async function recharge(ctx) {
       throw err
     }
 
-    // c. advisory lock 防并发序号冲突
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['sale_order_id_gen'])
 
     const now = new Date()
@@ -263,56 +292,23 @@ async function recharge(ctx) {
     }
     saleOrderId = `FY-XSD-WX-${dateStrOrder}${String(orderSeq).padStart(4, '0')}`
 
-    // 流水号
-    const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '')
-    const itemSeqResult = await client.query(
-      `SELECT sale_item_id FROM sale_items
-       WHERE sale_item_id LIKE $1
-       ORDER BY sale_item_id DESC LIMIT 1`,
-      [`XSLSH-WX-${dateStr}%`]
-    )
-    let itemSeq = 1
-    if (itemSeqResult.rows.length > 0) {
-      itemSeq = parseInt(itemSeqResult.rows[0].sale_item_id.slice(-4)) + 1
-    }
-    const saleItemId = `XSLSH-WX-${dateStr}${String(itemSeq).padStart(4, '0')}`
-
-    // d. INSERT sale_orders（实付 = payAmount，复用 total_amount 列）
-    // 2026-04-26 sale-order-domain-refactor：
-    //   - paid_amount 列已 DROP，初始 received = 0（待 payNotify 回调写流水后累加）
-    //   - payable_amount = payAmount（应付实金）；prepaid_card_amount 默认 0
+    // 充值单：sale_order_type='充值单'、total_amount=面值、payable_amount=实付、不写 sale_items
     await client.query(
       `INSERT INTO sale_orders (
         sale_order_id, status, sale_order_type, document_type, market_name, store_id,
         sale_order_datetime, client_user_id, client_phone, customer_name,
-        total_amount, received, payable_amount, payment_method,
+        total_amount, received, payable_amount, prepaid_card_amount, payment_method,
         created_at, updated_at
-      ) VALUES ($1, '待支付', '销售单', $2, $3, $4, $5, $6, $7, $8, $9, 0, $9, '微信', $5, $5)`,
-      [saleOrderId, documentType, marketName, boundStoreId, now, userId, phone || null, customerName, payAmount]
-    )
-
-    // e. INSERT sale_items（虚拟 SKU；商品名快照含面值，便于 payNotify 解析 + admin 列表展示）
-    // 2026-04-26 capability 化：is_recharge_card=true 行级快照（payNotify 据此触发充值入账）
-    await client.query(
-      `INSERT INTO sale_items (
-        sale_item_id, sale_order_id, store_id, sku_id,
-        product_name, sku_spec_name, product_type,
-        session_count, remaining_sessions,
-        unit_price, quantity, unit_real_price,
-        sale_amount, received, service_fee, is_recharge_card
-      ) VALUES ($1, $2, $3, $4, $5, $6, '家居产品', NULL, NULL, $7, 1, $7, $7, $7, 0, true)`,
-      [
-        saleItemId, saleOrderId, boundStoreId, RECHARGE_VIRTUAL_SKU_ID,
-        `预付充值卡 ¥${faceValue}`, '预付充值卡（虚拟）', payAmount,
-      ]
+      ) VALUES ($1, '待支付', '充值单', $2, $3, $4, $5, $6, $7, $8, $9, 0, $10, 0, '微信', $5, $5)`,
+      [saleOrderId, documentType, marketName, boundStoreId, now,
+       userId, phone || null, customerName, faceVal, payAmount]
     )
   })
 
-  // 6. 生成微信支付 mock 参数（沿用 order.pay 同款 mock 结构）
-  // TODO: 接入真实微信支付统一下单接口（与 order.pay 同步替换）
+  // mock 微信支付参数；TODO 接入真实统一下单
   ctx.result = {
     saleOrderId,
-    faceValue: Number(faceValue),
+    faceValue: faceVal,
     payAmount,
     discount,
     paymentMethod: '微信',
@@ -327,4 +323,4 @@ async function recharge(ctx) {
   }
 }
 
-module.exports = { list, balance, history, rechargeConfig, recharge, matchTier }
+module.exports = { list, balance, history, rechargeConfig, recharge, matchTier, _loadRechargeConfig }

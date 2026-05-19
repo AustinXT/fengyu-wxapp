@@ -119,7 +119,6 @@ function _formatSkuRow(sk) {
     serviceFee: Number(sk.service_fee) || 0,
     isShengmei: sk.is_shengmei,
     isExperience: !!sk.is_experience,
-    isRechargeCard: !!sk.is_recharge_card,
     isBundle: !!sk.is_bundle,
   }
 }
@@ -130,13 +129,13 @@ function _formatSkuRow(sk) {
  * 通过 mall_product_skus → products 反查是否有任一关联商品 is_bundle=true，
  * 有则标记该 SKU isBundle=true 供前端 BundlePicker 过滤使用。
  *
- * 卡类 capability 列下发：is_experience / is_recharge_card 透传给前端，
- * 让"普通商品"过滤等业务逻辑按 SKU capability 判定，而非 product_kind 字面量。
+ * 卡类 capability 列下发：is_experience 透传给前端，"普通商品"过滤按 SKU capability 判定。
+ * 充值卡已剥离 SKU 化（2026-05-20），不再用 is_recharge_card 过滤。
  *
  * @param {string|null} categoryId
  * @param {string|null} productKind
  * @param {Object} [opts]
- * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience/is_recharge_card SKU
+ * @param {boolean} [opts.excludeCards=false] true 时 WHERE 排除 is_experience SKU（体验卡）
  */
 async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
   const { excludeCards = false } = opts || {}
@@ -157,7 +156,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
   }
 
   if (excludeCards) {
-    conditions.push(`NOT (sk.is_recharge_card OR sk.is_experience)`)
+    conditions.push(`NOT sk.is_experience`)
   }
 
   const whereClause = 'WHERE ' + conditions.join(' AND ')
@@ -166,7 +165,7 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
-           sk.is_experience, sk.is_recharge_card,
+           sk.is_experience,
            pc.category_name, pc.product_kind, pc.sales_category,
            COALESCE((
              SELECT bool_or(p.is_bundle)
@@ -187,8 +186,8 @@ async function _queryFormattedSkuList(categoryId, productKind, opts = {}) {
  *
  * staff 开单页"体验卡 Tab"展示用：admin 端 getProductsByKind('体验卡') 走
  * SKU 级 capability eq(is_experience,true) 直查；staff 端原先把体验卡硬塞进
- * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT (is_recharge_card OR
- * is_experience) EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
+ * "分类侧边栏 + SKU"通用容器导致空列表（shopInit 的 NOT is_experience
+ * EXISTS 过滤会把仅含体验卡 SKU 的分类整行过滤掉）。
  *
  * 体验卡按业务约定不会出现在 bundle 组合里，is_bundle 直接写 false 避开 mall_product_skus 子查询。
  */
@@ -197,7 +196,7 @@ async function _queryExperienceSkus() {
     SELECT sk.sku_id, sk.category_id, sk.product_type, sk.spec_name,
            sk.price, sk.special_price, sk.session_count, sk.sort_order,
            sk.service_fee, sk.is_shengmei,
-           sk.is_experience, sk.is_recharge_card,
+           sk.is_experience,
            pc.category_name, pc.product_kind, pc.sales_category,
            false AS is_bundle
     FROM product_skus sk
@@ -277,11 +276,10 @@ async function _queryMallBundleGroups() {
  * 一次返回 categories + 第一个分类的 skuList + 套餐分组 + groupedCategories
  *
  * PR-B：
- *   - 侧边栏分类只下发"非卡类"，卡类（充值卡/体验卡）在前端有独立 Tab 流
- *   - 2026-04-26 重构：卡类判定从 product_kind 字面量切换到
- *     `product_skus.is_recharge_card` / `product_skus.is_experience` capability 列；
- *     即一个分类只要存在非卡类（NOT (is_recharge_card OR is_experience)）的可售非 bundle SKU 就保留
- *   - EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的非卡类 SKU，避免出现空分类
+ *   - 侧边栏分类只下发"非卡类"，体验卡在前端有独立 Tab 流；充值卡已剥离商品域（2026-05-20）
+ *   - 卡类判定走 SKU 级 `product_skus.is_experience` capability 列；
+ *     即一个分类只要存在非体验卡（NOT is_experience）的可售非 bundle SKU 就保留
+ *   - EXISTS 过滤：分类下必须存在 is_enabled=true 且非 bundle 的非体验卡 SKU，避免出现空分类
  *   - 额外返回 `groupedCategories: [{ productKind, kindSortOrder, items: Category[] }]`
  *     （按一级行 sortOrder 排序；同组内按二级 sortOrder 排序）
  *   - 保留老字段 `categories`（平铺数组）以兼容旧前端 / 其他调用方
@@ -305,7 +303,7 @@ async function shopInit(ctx) {
       WHERE sk.category_id = ANY($1)
         AND sk.is_enabled = true
         AND sk.deleted_at IS NULL
-        AND NOT (sk.is_recharge_card OR sk.is_experience)
+        AND NOT sk.is_experience
         AND NOT EXISTS (
           SELECT 1
           FROM mall_product_skus mps
@@ -367,7 +365,7 @@ async function categories(ctx) {
 /**
  * SKU 列表（按品项分类）
  *
- * payload.excludeCards 透传到底层查询：true 时排除 is_experience/is_recharge_card SKU。
+ * payload.excludeCards 透传到底层查询：true 时排除 is_experience SKU（体验卡）。
  * 默认 false 以保持向后兼容（其他调用方未传则行为不变）。
  */
 async function skuList(ctx) {

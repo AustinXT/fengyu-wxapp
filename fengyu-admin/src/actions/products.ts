@@ -494,7 +494,6 @@ export const getAllSkus = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
-      isRechargeCard: r.sku.isRechargeCard,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -540,7 +539,6 @@ export const getSkuById = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
-      isRechargeCard: r.sku.isRechargeCard,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -585,7 +583,6 @@ export const getSkusByProductId = withPermission(
       serviceFee: r.sku.serviceFee,
       isShengmei: r.sku.isShengmei,
       isExperience: r.sku.isExperience,
-      isRechargeCard: r.sku.isRechargeCard,
       projectSeriesId: r.sku.projectSeriesId,
       marketScope: r.sku.marketScope,
       isEnabled: r.sku.isEnabled,
@@ -615,10 +612,8 @@ export const createSku = withPermission(
       sortOrder?: number
       serviceFee?: string
       isShengmei?: boolean | null
-      /** 体验卡 capability 列（与 isRechargeCard 互斥） */
+      /** 体验卡 capability 列 */
       isExperience?: boolean
-      /** 充值卡 capability 列（与 isExperience 互斥） */
-      isRechargeCard?: boolean
       /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
       projectSeriesId?: number | null
       marketScope?: string | null
@@ -646,13 +641,8 @@ export const createSku = withPermission(
       }
     }
 
-    // 2026-04-26 ticket：体验卡与充值卡 capability 列互斥（DB CHECK 双重保护）
-    if (data.isExperience === true && data.isRechargeCard === true) {
-      return {
-        success: false,
-        message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
-      }
-    }
+    // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验仅剩 isExperience 单值，
+    // 无需互斥防护；chk_sku_not_both_capabilities CHECK 同 migration 0043 已 DROP。
 
     try {
       await db.insert(productSkus).values({
@@ -662,13 +652,6 @@ export const createSku = withPermission(
     } catch (err: any) {
       if (err?.code === '23505') return { success: false, message: '商品编号已存在' }
       if (err?.code === '23503') return { success: false, message: '品项分类不存在，请检查 categoryId' }
-      // chk_sku_not_both_capabilities CHECK 违反（理论上应用层已先拦截，DB 兜底）
-      if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
-        return {
-          success: false,
-          message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
-        }
-      }
       throw err
     }
 
@@ -693,10 +676,8 @@ export const updateSku = withPermission(
       sortOrder: number
       serviceFee: string
       isShengmei: boolean | null
-      /** 体验卡 capability 列（与 isRechargeCard 互斥） */
+      /** 体验卡 capability 列 */
       isExperience: boolean
-      /** 充值卡 capability 列（与 isExperience 互斥） */
-      isRechargeCard: boolean
       /** 项目系列 lookup id（FK → project_series_lookup.id），null=未设置 */
       projectSeriesId: number | null
       marketScope: string | null
@@ -707,41 +688,19 @@ export const updateSku = withPermission(
     // 获取旧值用于日志 diff（不取已软删 SKU）
     const [before] = await db.select().from(productSkus).where(and(eq(productSkus.skuId, skuId), isNull(productSkus.deletedAt))).limit(1)
 
-    // 2026-04-26 ticket：体验卡与充值卡 capability 互斥应用层校验
-    // 需要拼接 before 的当前值再判（增量 update 可能只传一个字段）
-    if (before) {
-      const finalIsExp = data.isExperience !== undefined ? data.isExperience : before.isExperience
-      const finalIsRc = data.isRechargeCard !== undefined ? data.isRechargeCard : before.isRechargeCard
-      if (finalIsExp === true && finalIsRc === true) {
-        return {
-          success: false,
-          message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
-        }
-      }
-    }
+    // 充值卡剥离 SKU 化（2026-05-20）后，capability 互斥校验已失去对象，应用层守卫删除。
 
     const whereConditions = expectedUpdatedAt
       ? and(eq(productSkus.skuId, skuId), sql`date_trunc('milliseconds', ${productSkus.updatedAt}) = ${expectedUpdatedAt}`)
       : eq(productSkus.skuId, skuId)
 
-    let result: any
-    try {
-      result = await db
-        .update(productSkus)
-        .set({
-          ...data,
-          productType: data.productType as typeof productSkus.$inferInsert['productType'],
-        })
-        .where(whereConditions)
-    } catch (err: any) {
-      if (err?.code === '23514' && /not_both_capabilities/i.test(err?.constraint || err?.message || '')) {
-        return {
-          success: false,
-          message: 'INVALID_PARAMS: 体验卡与充值卡互斥，不能同时勾选',
-        }
-      }
-      throw err
-    }
+    const result = await db
+      .update(productSkus)
+      .set({
+        ...data,
+        productType: data.productType as typeof productSkus.$inferInsert['productType'],
+      })
+      .where(whereConditions)
 
     if ((result as any).count === 0) {
       return {
@@ -787,7 +746,6 @@ export const deleteSku = withPermission(
         price: snapshot.price,
         productType: snapshot.productType,
         isExperience: snapshot.isExperience,
-        isRechargeCard: snapshot.isRechargeCard,
       },
     })
 
@@ -1524,17 +1482,17 @@ export const deleteMallCategory = withPermission(
  *
 具名 kind：平铺 categories + skus，过滤 isEnabled。
  *   - '体验卡' → WHERE product_skus.is_experience=true（SKU 级 capability SSoT）
- *   - '充值卡' → WHERE product_skus.is_recharge_card=true（SKU 级 capability SSoT）
  *   - 其他字面量 kind → WHERE product_categories.product_kind=$kind（向后兼容）
  *   类型签名用 string 表达（productKindEnum 已删除，运营可自由新建 kind）。
+ *   2026-05-20：'充值卡' 已退出 SKU/商品域，admin 走独立充值单入口（card 模块）。
  *
  * 特殊 '__bundle__'：
  *   返回 `products WHERE is_bundle=true AND is_enabled AND is_visible` 的套餐，
  *   展开关联的 mall_bundle_groups + mall_product_skus（N 选 M 所需数据）。
  *
- * 特殊 '__normal__'（普通商品 = 非卡类 SKU 的所有二级分类）：
+ * 特殊 '__normal__'（普通商品 = 非体验卡 SKU 的所有二级分类）：
  *   JOIN 一级行（productKind IS NULL）+ 二级行（productKind IS NOT NULL），
- *   过滤 SKU 的 isExperience=false AND isRechargeCard=false，并 EXISTS 排除 bundle SKU。
+ *   过滤 SKU 的 isExperience=false，并 EXISTS 排除 bundle SKU。
  *   返回分组结构 `{ kind: '__normal__', groups: [{ productKind, categories }] }`，
  *   group 顺序按一级行 sortOrder，组内按二级行 sortOrder。
  *
@@ -1756,9 +1714,8 @@ export const getProductsByKind = withPermission(
       .where(
         and(
           isNotNull(productCategories.productKind),
-          // 普通商品 = SKU 级 capability 双假（既非体验卡也非充值卡）
+          // 普通商品 = 非体验卡 SKU（充值卡 2026-05-20 已退出 SKU 域）
           eq(productSkus.isExperience, false),
-          eq(productSkus.isRechargeCard, false),
           eq(productCategories.isValid, true),
           eq(productSkus.isEnabled, true),
           isNull(productSkus.deletedAt),
@@ -1828,15 +1785,13 @@ export const getProductsByKind = withPermission(
   }
 
   // 具名 kind：平铺 categories
-  // - '体验卡' / '充值卡' 用 SKU 级 capability 列判定（与 product_kind 字面量解耦，
-  //   即使某 SKU 错挂在非卡类分类下，capability=true 仍会进入对应 Tab；反之亦然）
+  // - '体验卡' 用 SKU 级 capability 列判定（与 product_kind 字面量解耦）
   // - 其他具名 kind 保留 product_kind 字面量匹配（向后兼容）
+  // - '充值卡' 已退出 SKU/商品域（2026-05-20），由独立 card 入口处理
   const capabilityCondition =
     kind === '体验卡'
       ? eq(productSkus.isExperience, true)
-      : kind === '充值卡'
-        ? eq(productSkus.isRechargeCard, true)
-        : eq(productCategories.productKind, kind)
+      : eq(productCategories.productKind, kind)
 
   const rows = await db
     .select({

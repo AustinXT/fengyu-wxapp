@@ -1,17 +1,12 @@
 /**
  * 跨路由共享的常量
  *
- * 这里定义的 ID 由 db/scripts/seed-recharge-virtual-product.js 一次性 seed 到双库。
- * 修改此处常量前，先确认 5433 + 5434 两库都有对应行（详见 seed 脚本）。
+ * 2026-05-20 充值卡剥离 SKU 化后：
+ *   - 充值订单不再用虚拟 SKU 占位（不写 sale_items 行）
+ *   - 充值订单由 sale_orders.sale_order_type='充值单' 标识
+ *   - 历史虚拟 SKU 'sku-recharge-virtual' / 'prod-recharge-virtual' 已由 migration 0043 清理
+ *
+ * 当前文件保留为占位；后续若有跨路由常量再行添加。
  */
 
-// 充值卡虚拟商品 — 顾客端「充值卡充值」走 sale_orders + sale_items 模型，
-// 用此虚拟 SPU/SKU 占位。products 行通过 is_visible=false 或 deleted_at IS NOT NULL 隐藏，
-// 在 product.shopInit / spuList / spuDetail / 搜索 中均不会暴露。
-const RECHARGE_VIRTUAL_PRODUCT_ID = 'prod-recharge-virtual'
-const RECHARGE_VIRTUAL_SKU_ID = 'sku-recharge-virtual'
-
-module.exports = {
-  RECHARGE_VIRTUAL_PRODUCT_ID,
-  RECHARGE_VIRTUAL_SKU_ID,
-}
+module.exports = {}
