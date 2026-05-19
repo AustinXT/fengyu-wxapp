@@ -273,13 +273,12 @@ export const getAvailableSaleItems = withPermission(
     FROM sale_items si
     INNER JOIN sale_orders o ON o.sale_order_id = si.sale_order_id
     WHERE o.client_user_id = ${clientUserId}
-      AND o.status = '已支付'
+      AND o.status IN ('已支付', '部分支付')
       AND si.item_direction = '购买'
       AND si.product_type IN ('疗程卡', '单品')
       AND si.remaining_sessions IS NOT NULL
       AND si.remaining_sessions > 0
       AND (si.expire_date IS NULL OR si.expire_date > CURRENT_DATE)
-      AND (si.session_count IS NULL OR COALESCE(si.paid_sessions, 0) >= si.session_count)
     ORDER BY o.paid_at DESC, si.sale_item_id
   `)
 
@@ -372,9 +371,8 @@ export const completeServiceOrder = withPermission(
 
   let result: any
   try {
-    // paid_sessions 限额（ticket 2026-05-19 D6=A）：扣减条件叠加
-    //   (session_count - remaining_sessions + sessionUsed) <= COALESCE(paid_sessions, 0)
-    // 即"扣完后已用次数 <= 已支付次数"，paid_sessions=0 自动锁死
+    // 2026-05-20 ticket：扣减条件放宽——只校验 remaining_sessions >= sessionUsed
+    // paid_sessions 限额（旧 D6=A 规则）已废止，部分支付订单也可消费
     result = await db.execute(sql`
       WITH status_check AS (
         UPDATE service_orders
@@ -390,7 +388,6 @@ export const completeServiceOrder = withPermission(
         WHERE sale_items.sale_item_id = si.sale_item_id
           AND si.service_order_id = ${serviceOrderId}
           AND sale_items.remaining_sessions >= si.session_used
-          AND (sale_items.session_count - sale_items.remaining_sessions + si.session_used) <= COALESCE(sale_items.paid_sessions, sale_items.session_count)
           AND EXISTS (SELECT 1 FROM status_check)
         RETURNING sale_items.sale_item_id
       ),
@@ -517,15 +514,15 @@ export const createServiceOrder = withPermission(
     .limit(1)
   const resolvedAppointmentId = pendingAppt?.appointmentId ?? null
 
-  // 先校验剩余次数 + paid_sessions 限额（事务外，只读查询）
-  // ticket 2026-05-19 D2=A：允许"已支付/部分支付"消费；D6=A：paid_sessions=0 整张卡锁死
+  // 先校验订单状态 + 剩余次数（事务外，只读查询）
+  // 2026-05-20 ticket：放宽消费条件——只要"已支付/部分支付" + remainingSessions > 0 即可消费
+  // 不再校验 paid_sessions 限额（之前的 D6=A 锁死规则已废止）
   const saleItemSnapshots: Array<{ saleItemId: string; unitRealPrice: string }> = []
   for (const item of data.items) {
     const [saleItem] = await db
       .select({
         sessionCount: saleItems.sessionCount,
         remainingSessions: saleItems.remainingSessions,
-        paidSessions: saleItems.paidSessions,
         unitRealPrice: saleItems.unitRealPrice,
         saleOrderType: saleOrders.saleOrderType,
         orderStatus: saleOrders.status,
@@ -544,17 +541,6 @@ export const createServiceOrder = withPermission(
     }
     if (saleItem.remainingSessions !== null && saleItem.remainingSessions < item.sessionUsed) {
       return { success: false, message: `销售明细 ${item.saleItemId} 剩余次数不足（剩余 ${saleItem.remainingSessions}，需要 ${item.sessionUsed}）` }
-    }
-    if (saleItem.sessionCount != null) {
-      // paid_sessions NULL 视为 session_count（兼容历史数据 / 旧 fixture）
-      const paid = saleItem.paidSessions == null ? Number(saleItem.sessionCount) : Number(saleItem.paidSessions)
-      if (paid <= 0) {
-        return { success: false, message: `销售明细 ${item.saleItemId} 尚未支付，无可用次数，请先完成付款` }
-      }
-      const usedNow = Number(saleItem.sessionCount) - Number(saleItem.remainingSessions)
-      if (usedNow + Number(item.sessionUsed) > paid) {
-        return { success: false, message: `销售明细 ${item.saleItemId} 已支付次数不足（已付 ${paid}/${saleItem.sessionCount}，已用 ${usedNow}，本次需 ${item.sessionUsed}），请先完成付款` }
-      }
     }
     saleItemSnapshots.push({
       saleItemId: item.saleItemId,
