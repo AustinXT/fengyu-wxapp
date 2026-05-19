@@ -15,7 +15,7 @@
  */
 
 const pg = require('../db/pg')
-const { requireManager } = require('../middleware/auth')
+const { requireManager, requireStaffBound } = require('../middleware/auth')
 const { loadRechargeConfig, matchTier } = require('../utils/recharge')
 
 // ================= 路由 =================
@@ -167,6 +167,8 @@ async function recharge(ctx) {
  * 返回: { paymentId, refundFace, refundPay }
  */
 async function createRefund(ctx) {
+  await requireStaffBound()(ctx, async () => {})
+
   const { saleOrderId, reason } = ctx.event.payload || {}
   if (!saleOrderId) throw new Error('INVALID_PARAMS: 缺少 saleOrderId')
 
@@ -212,15 +214,20 @@ async function createRefund(ctx) {
   const totalAmount = Number(order.total_amount)
   const payableAmount = Number(order.payable_amount)
   const refundFace = balanceNow
+  if (!(totalAmount > 0)) throw new Error('INVALID_STATE: 订单总额异常，无法计算退款金额')
   const refundPay = Math.round((refundFace * payableAmount / totalAmount) * 100) / 100
 
   // 写 sale_order_payments：change_type='退款' status='待审批' amount=负
+  // external_txn_id 必填占位（chk_sop_method_txn 对 微信/支付宝 NOT NULL 强校验）；
+  // approveRefund 调微信退款 API 后会 UPDATE 为真实 refund_id。
+  // 占位串须每次唯一（uq_sop_txn）。
   const sourceEnd = ctx.event.payload?._sourceEnd === 'admin' ? 'admin' : 'staff'
+  const placeholderTxnId = `refund-pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const inserted = await pg.query(
     `INSERT INTO sale_order_payments (
        sale_order_id, change_type, amount, payment_method, status, source_end,
-       operator_employee_id, refund_reason, note
-     ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7)
+       operator_employee_id, refund_reason, note, external_txn_id
+     ) VALUES ($1, '退款', $2, $3, '待审批', $4, $5, $6, $7, $8)
      RETURNING id`,
     [
       saleOrderId,
@@ -230,6 +237,7 @@ async function createRefund(ctx) {
       ctx.auth.staffWfId || null,
       reason || null,
       JSON.stringify({ refundFace, balanceAtRequest: balanceNow }),
+      placeholderTxnId,
     ]
   )
   const paymentId = inserted[0].id
@@ -275,7 +283,12 @@ async function approveRefund(ctx) {
     }
 
     // 读 note 拿 refundFace
-    const meta = JSON.parse(pay.note || '{}')
+    let meta
+    try {
+      meta = JSON.parse(pay.note || '{}')
+    } catch (e) {
+      throw new Error('INVALID_STATE: 退款单元数据格式异常（note 非合法 JSON）')
+    }
     const refundFace = Number(meta.refundFace)
     if (!(refundFace > 0)) throw new Error('INVALID_STATE: 退款单缺少 refundFace 元数据')
 

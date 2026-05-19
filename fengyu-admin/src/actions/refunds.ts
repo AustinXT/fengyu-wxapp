@@ -529,6 +529,15 @@ export const createRefund = withPermission(
     return { success: false, error: { code: 'NOT_FOUND', message: '原订单不存在或无权访问' } }
   }
   if (origOrder.saleOrderType !== '销售单') {
+    if (origOrder.saleOrderType === '充值单') {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_STATE',
+          message: '该订单为充值卡订单，退款请在员工端 → 充值卡 → 退款审批 发起',
+        },
+      }
+    }
     return { success: false, error: { code: 'INVALID_STATE', message: '仅销售单支持退款' } }
   }
   if (!['已支付', '已完成', '部分支付'].includes(origOrder.status)) {
@@ -723,6 +732,7 @@ export const approveRefund = withPermission(
       orderClientUserId: saleOrders.clientUserId,
       orderTotalAmount: saleOrders.totalAmount,
       orderPrepaidCardAmount: saleOrders.prepaidCardAmount,
+      orderSaleOrderType: saleOrders.saleOrderType,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -743,6 +753,17 @@ export const approveRefund = withPermission(
   }
   if (!pre.orderStoreId || !pre.payment.saleOrderId) {
     return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+  }
+  // 跨端守卫：充值单退款必须走员工端（按"退剩余余额"扣 prepaid_cards.balance），
+  // admin 销售单退款链路（cascadeRefund + splitRefundByOriginalPayment）会让余额完全不动
+  if (pre.orderSaleOrderType === '充值单') {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_STATE',
+        message: '充值卡退款请在员工端审批（员工端 → 充值卡 → 退款审批）',
+      },
+    }
   }
   // scope 守卫：assertOrderInScope 统一三端语义（详见 lib/scope-assert.ts）
   try {
@@ -923,6 +944,7 @@ export const rejectRefund = withPermission(
     .select({
       payment: saleOrderPayments,
       orderStoreId: saleOrders.storeId,
+      orderSaleOrderType: saleOrders.saleOrderType,
     })
     .from(saleOrderPayments)
     .leftJoin(saleOrders, eq(saleOrders.saleOrderId, saleOrderPayments.saleOrderId))
@@ -943,6 +965,16 @@ export const rejectRefund = withPermission(
   }
   if (!pre.orderStoreId || !pre.payment.saleOrderId) {
     return { success: false, error: { code: 'NOT_FOUND', message: '原销售单不存在' } }
+  }
+  // 跨端守卫：充值单退款必须走员工端，admin 不允许驳回（保持与 approveRefund 对称）
+  if (pre.orderSaleOrderType === '充值单') {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_STATE',
+        message: '充值卡退款请在员工端审批（员工端 → 充值卡 → 退款审批）',
+      },
+    }
   }
   // scope 守卫：assertOrderInScope 统一三端语义
   try {
