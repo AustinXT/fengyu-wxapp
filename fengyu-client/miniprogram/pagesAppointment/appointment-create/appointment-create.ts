@@ -212,8 +212,9 @@ Page({
   },
 
   onTimeSlotTap(e: WechatMiniprogram.TouchEvent) {
-    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean };
-    if (disabled) {
+    const { value, text, disabled } = e.currentTarget.dataset as { value: string; text: string; disabled?: boolean | string };
+    const isDisabled = disabled === true || disabled === 'true';
+    if (isDisabled) {
       Toast('该时段已过，请选择其他时段');
       return;
     }

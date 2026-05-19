@@ -26,11 +26,22 @@
   color: var(--color-text-hint) !important;
 }
 
+/* ===== 时段 picker 行 ===== */
+.time-slot-row {
+  padding: 20rpx 32rpx 24rpx;
+  background: var(--color-bg-card);
+}
+
+.time-slot-row-title {
+  font-size: 28rpx;
+  color: var(--color-text-primary);
+  margin-bottom: 12rpx;
+}
+
 /* ===== 时段 tag 按钮 ===== */
 .time-slots {
   display: flex;
   gap: 16rpx;
-  margin-top: 16rpx;
   flex-wrap: wrap;
 }
 
