@@ -177,6 +177,38 @@
     "store_b": { "store_id": "store-nc02", "org_node_id": "org-store-nc02", "name": "青山湖店" }
   },
 
+  "scope_fixtures": {
+    "_intro": "2026-05-19 新增：link-32~37 / link-44 共用的 scope/cron 测试夹具。run _helpers/seed-scope-fixtures.sql to seed。",
+    "topology": {
+      "headquarters": { "id": "16d1184b46db099a", "name": "总部" },
+      "market_nc": { "id": "6707cc8b88579108", "name": "南昌市场", "_note": "FY-TEST-MKT 的 scope；含 store-nc01 + store-nc02" },
+      "market_nc2": { "id": "ec9ca0f5c96be174", "name": "南昌市场2", "_note": "用作跨市场反例（link-33）" }
+    },
+    "stores": {
+      "nc01": { "store_id": "store-nc01", "org_node_id": "org-store-nc01", "name": "南昌旗舰店", "_market": "market_nc" },
+      "nc02": { "store_id": "store-nc02", "org_node_id": "org-store-nc02", "name": "青山湖店", "_market": "market_nc" },
+      "other_market": { "store_id": "b79a82e33d6cf4f3", "name": "南昌龙珠店", "_market": "market_nc2", "_use": "link-32/33 跨市场反例" }
+    },
+    "test_employee_mgr2": {
+      "employee_id": "FY-TEST-MGR2",
+      "name": "测试店长2",
+      "phone": "13900139007",
+      "store_id": "store-nc02",
+      "scope_id": "org-store-nc02",
+      "role": "manager",
+      "_note": "link-32~37 跨店反例账号；密码与 FY-TEST-MGR 同 (fengyu2026)"
+    },
+    "test_clients": {
+      "nc01": { "user_id": "FY-FIX-CLIENT-01", "bound_store_id": "store-nc01", "_existing": true },
+      "nc02": { "user_id": "FY-TEST-CLIENT-NC02", "name": "NC02测试客", "phone": "13800138002", "bound_store_id": "store-nc02" },
+      "other_market": { "user_id": "FY-TEST-CLIENT-OM", "name": "OM测试客", "phone": "13800138003", "bound_store_id": "b79a82e33d6cf4f3" }
+    },
+    "cron_batch_clients": {
+      "_intro": "link-44 cron 批量幂等测试用，5 个顾客生日同日（CURRENT_DATE 的 1990-MM-DD）",
+      "user_ids": ["FY-TEST-CRON-01", "FY-TEST-CRON-02", "FY-TEST-CRON-03", "FY-TEST-CRON-04", "FY-TEST-CRON-05"]
+    }
+  },
+
   "_cleanup": {
     "description": "所有 fixture 资源在 5433/fengyu_wxapp 上以 FY-FIX- 前缀创建。彻底清理用以下 SQL（按 FK 顺序）：",
     "sql": [
@@ -192,8 +224,13 @@
       "DELETE FROM point_transactions WHERE user_id LIKE 'FY-FIX-%';",
       "DELETE FROM sale_orders WHERE client_user_id LIKE 'FY-FIX-%';",
       "DELETE FROM appointments WHERE client_user_id LIKE 'FY-FIX-%';",
-      "DELETE FROM client_wechat_users WHERE user_id LIKE 'FY-FIX-%';"
+      "DELETE FROM client_wechat_users WHERE user_id LIKE 'FY-FIX-%';",
+      "-- link-32~44 scope/cron 夹具清理（独立于 FY-FIX- 命名空间）",
+      "DELETE FROM client_wechat_users WHERE user_id LIKE 'FY-TEST-CLIENT-%' OR user_id LIKE 'FY-TEST-CRON-%';",
+      "DELETE FROM permission_roles WHERE employee_id='FY-TEST-MGR2';",
+      "DELETE FROM admin_passwords WHERE employee_id='FY-TEST-MGR2';",
+      "DELETE FROM staff_wechat_users WHERE employee_id='FY-TEST-MGR2';"
     ],
-    "_extended_at": "2026-05-18：新增 trial SKU / bundle product / 4 张 coupon_template / 4 张 user_coupon 的清理顺序"
+    "_extended_at": "2026-05-19：新增 FY-TEST-MGR2 + FY-TEST-CLIENT-NC02/OM + FY-TEST-CRON-01~05 的清理"
   }
 }

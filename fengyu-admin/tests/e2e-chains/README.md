@@ -1596,6 +1596,92 @@ SELECT cleanup_sale_order(:sale_order_id);
 
 ---
 
+## 1.D 业务扩展链路（32-44，2026-05-19 新增）
+
+聚焦三个高风险缺口：**scope 列表过滤**、**订单×卡次复杂场景**、**数值守护**。
+
+### 前置一次性 seed
+
+跑这批新链路前先执行（幂等）：
+
+```bash
+PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp \
+  -f tests/e2e-chains/_helpers/seed-scope-fixtures.sql
+```
+
+seed 写入：FY-TEST-MGR2（store-nc02 manager）、FY-TEST-CLIENT-NC02 / FY-TEST-CLIENT-OM（跨店/跨市场顾客）、FY-TEST-CRON-01~05（同日生日批量顾客）。详见 `test-fixtures.json` 的 `scope_fixtures` 字段。
+
+### 链路 32：店长 scope 列表隔离全覆盖
+
+**spec**：`link-32-store-scope-list-isolation.spec.ts`
+**主题**：FY-TEST-MGR（scope=org-store-nc01）应见不到 store-nc02 的任何数据；通过 SQL seed 7 类实体（订单/sale_item/预约/服务单/取货）于 store-nc02，从 UI 列表搜索 → 0 命中；直接访问详情页 → 404/无权。
+**关键守护**：`scopeCondition()` 在 19 个 action 中正确应用；详情页 single-row scope guard 不被绕过。
+
+### 链路 33：市场经理跨市场隔离
+
+**spec**：`link-33-market-scope-aggregation.spec.ts`
+**主题**：FY-TEST-MKT（scope=南昌市场 6707cc8b88579108）应见所辖 store-nc01 + store-nc02 全部订单，但不见 南昌市场2 (ec9ca0f5c96be174) 任何门店；同时验证 `expandScopeStoreIds(market)` 返回的 store_id 列表正确。
+
+### 链路 34：总部 admin 全量可见基线
+
+**spec**：`link-34-admin-full-visibility.spec.ts`
+**主题**：作为 link-32/33 对照组 — FY-TEST-ADM scope='总部'，`scopeCondition()` 返回 undefined，访问同样 3 笔订单全部可见。DB 反证 admin scope_id 类型 = '总部'。
+
+### 链路 35：级联下拉选择器约束
+
+**spec**：`link-35-store-selector-cascade.spec.ts`
+**主题**：在 `/orders/create` 向导 Step 3 的「门店」select 下拉中，店长仅见自店、市场经理见所辖门店、admin 见全部。验证 server-side `getStores` + scopeCondition 在 UI 下拉数据流上生效。
+
+### 链路 36：调店后旧 session 快照行为
+
+**spec**：`link-36-employee-relocate-session.spec.ts`
+**主题**：scope 是登录 session 的 snapshot。当 admin 把员工从 store-nc01 调到 store-nc02 后，**同一 session 刷新仍按旧 scope 显示**（不会自动收回）；logout/login 后才切换。验证 `getSessionFromCookie + expandScopeStoreIds` 的 snapshot 语义不变。
+
+### 链路 37：跨店操作 server-side 拦截
+
+**spec**：`link-37-cross-store-action-deny.spec.ts`
+**主题**：店长 A（store-nc01）即使猜到店 B 的 sale_order_id，访问 `/orders/[soid]` / `/allocations/[soid]` / `/refunds/create?orderId=[soid]` 均被拦截；DB snapshot 操作前后完全不变。
+
+### 链路 38：寄存单（deposit）完整生命周期
+
+**spec**：`link-38-deposit-order-lifecycle.spec.ts`
+**主题**：sale_order_type='寄存单' 的核心 invariant — total_amount=0、status='已支付'、payment_method='无'。复用 service.complete 链路扣 remaining_sessions；**service_commissions 写入**（与正常服务一致，2026-05-19 业务决策）。聚合：金额维度排除，次数维度（card holders）纳入。
+
+### 链路 39：转换单 3 种差额场景
+
+**spec**：`link-39-conversion-order-flow.spec.ts`
+**主题**：sale_order_type='转换单' 在 priceDiff < 0 / = 0 / > 0 三种场景下：
+- diff<0：差额 UPSERT prepaid_cards.balance + 写 card_transactions(充值)，订单 status='已支付'
+- diff=0：order total=0，status='已支付'
+- diff>0：order total=diff，status='待支付'
+
+且原卡 remaining_sessions = 0；转出 sale_item 行 sale_amount < 0。
+
+### 链路 40：充值卡退款 → 余额回退 + 卡流水冲销
+
+**spec**：`link-40-recharge-card-refund.spec.ts`
+**主题**：充值卡退款须满足恒等公式 `balance ≡ Σ(card_transactions.amount × sign)`；退款用 type='扣款', amount<0（chk 约束）。反例：已消费 ¥100 后试图退全额 ¥500 → 被 `chk_prepaid_balance_nonneg` 阻止。
+
+### 链路 41：优惠券 × 疗程卡退款金额公式
+
+**spec**：`link-41-coupon-treatment-refund.spec.ts`
+**主题**：使用现金券 ¥100 折后的 10 次疗程卡（¥900/10=90 per 次），退 7 次时退款金额必须用 **折后单价 ¥90 × 7 = ¥630**，而非原价 ¥100 × 7 = ¥700。同时验证 user_coupons.status 回滚 '未使用'。
+
+### 链路 42：bundle 套餐次数 + 退款不按子项折算
+
+**spec**：`link-42-bundle-session-and-refund.spec.ts`
+**主题**：bundle 套餐（products.is_bundle=true）的子 SKU 各占一行 sale_items；每行 unit_real_price=bundle_price/sub_count；Σ(sale_amount)=bundle 价；退款按 order.received 整单退（不按子项剩余折算）。
+
+### 链路 43：appointment × sale_item 唯一性 + 卡耗尽自动关
+
+**spec**：`link-43-appointment-sale-item-unique.spec.ts`
+**主题**：`uq_appt_sale_item_active` 阻止同 sale_item 的两条 active appointments；appointment 状态推到 '已完成' 后释放 partial unique slot；sale_item.remaining_sessions=0 时业务流自动 close 残留活跃预约（service.js:396-403）。
+
+### 链路 44：cron 并发幂等（生日批量）
+
+**spec**：`link-44-cron-batch-idempotent.spec.ts`
+**主题**：cron STEP 3 (grant-birthday-benefits) 在多顾客同日触发时，messages.idempotency_key / point_transactions.external_ref / user_coupons.coupon_id 全部 UNIQUE 防御。二次触发（同一天）总行数不变；并发模拟（手动 INSERT 同 key）被 DB UNIQUE 拒绝。
+
 ### §1.B 跑批结果（首跑 2026-05-17）
 
 > **维护规则**：每次 spec 或对应 admin 实现修复后，必须回来更新本表 + 行末 `状态 / 最近一次结果` 字段。

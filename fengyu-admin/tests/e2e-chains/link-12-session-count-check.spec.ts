@@ -86,12 +86,13 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   let initialRemainingSessions = 0
   let sqlInjected = false
 
-  // 先找现有数据
+  // 先找现有数据（ticket 2026-05-19：要求 paid_sessions = session_count，避免历史数据 paid 不足致 service.create 被 D6 锁死）
   const existingCheck = runPsql(
     `SELECT si.sale_item_id, si.session_count, si.remaining_sessions ` +
     `FROM sale_items si JOIN sale_orders so ON so.sale_order_id = si.sale_order_id ` +
     `WHERE so.client_user_id = '${FIXTURE_CLIENT_ID}' ` +
     `AND si.session_count > 1 AND si.remaining_sessions > 0 AND so.status = '已支付' ` +
+    `AND COALESCE(si.paid_sessions, 0) >= si.session_count - si.remaining_sessions + 1 ` +
     `AND si.sale_item_id NOT LIKE '%9901%' ` +
     `LIMIT 1`
   )
@@ -140,15 +141,15 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
     )
     console.log(`[链路12] Step0 INSERT sale_order: ${insertOrder}`)
 
-    // INSERT sale_item (10次卡)
+    // INSERT sale_item (10次卡 + paid_sessions=session_count，全付订单 ticket 2026-05-19)
     const insertItem = runPsql(
       `INSERT INTO sale_items ` +
-      `(sale_item_id, sale_order_id, item_direction, sku_id, session_count, remaining_sessions, ` +
+      `(sale_item_id, sale_order_id, item_direction, sku_id, session_count, remaining_sessions, paid_sessions, ` +
       `unit_price, quantity, unit_real_price, sale_amount, received, ` +
       `product_name, sku_spec_name, product_type, store_id, created_at, updated_at) ` +
       `VALUES ` +
       `('${PRE_SALE_ITEM_ID}', '${PRE_SALE_ORDER_ID}', '购买', '${MULTI_SESSION_SKU_ID}', ` +
-      `${MULTI_SESSION_COUNT}, ${MULTI_SESSION_COUNT}, ` +
+      `${MULTI_SESSION_COUNT}, ${MULTI_SESSION_COUNT}, ${MULTI_SESSION_COUNT}, ` +
       `1999.00, 1, 1999.00, 1999.00, 1999.00, ` +
       `'蜜语水润嫩肤护理', '${MULTI_SESSION_SKU_NAME}', '疗程卡', '${storeId}', NOW(), NOW()) ` +
       `ON CONFLICT (sale_item_id) DO NOTHING`
@@ -170,22 +171,25 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   console.log('[链路12] Step1 初始不变量验证...')
 
   const initialInvariant = runPsql(
-    `SELECT si.session_count, si.remaining_sessions, ` +
+    `SELECT si.session_count, si.remaining_sessions, COALESCE(si.paid_sessions, 0) AS paid_sessions, ` +
     `COALESCE(sum(svi.session_used), 0) AS total_used, ` +
     `CASE WHEN si.session_count = si.remaining_sessions + COALESCE(sum(svi.session_used), 0) ` +
+    `AND (si.session_count - si.remaining_sessions) <= COALESCE(si.paid_sessions, 0) ` +
     `THEN 'PASS' ELSE 'FAIL' END AS verdict ` +
     `FROM sale_items si LEFT JOIN service_items svi ON svi.sale_item_id = si.sale_item_id ` +
     `WHERE si.sale_item_id='${saleItemId}' ` +
-    `GROUP BY si.session_count, si.remaining_sessions`
+    `GROUP BY si.session_count, si.remaining_sessions, si.paid_sessions`
   )
   console.log(`[链路12] Step1 初始不变量: "${initialInvariant}"`)
 
-  const [sc, rs, tu, verdict] = initialInvariant.split('|')
+  const [sc, rs, ps, tu, verdict] = initialInvariant.split('|')
   const initialVerdict = verdict || 'FAIL'
-  const initialActual = `${sc}=${rs}+${tu}`
+  const initialActual = `sc=${sc} rem=${rs} paid=${ps} used=${tu}`
 
   expect(initialVerdict).toBe('PASS')
-  console.log(`[链路12] Step1 初始不变量 PASS: ${initialActual}`)
+  // ticket 2026-05-19：已支付订单 paid_sessions == session_count
+  expect(parseInt(ps)).toBe(parseInt(sc))
+  console.log(`[链路12] Step1 初始不变量 PASS: ${initialActual}; paid_sessions=session_count ✓`)
 
   // ============================================================
   // Step 2: UI 消耗一次（新建服务单→开始→完成）
@@ -387,23 +391,28 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
   await expect(completedBadge).toBeVisible({ timeout: 10000 })
   console.log('[链路12] Step2 服务已完成（已完成）✓')
 
-  // Step 2 后对账验证
+  // Step 2 后对账验证 + paid_sessions 维度（ticket 2026-05-19）
   const afterInvariant = runPsql(
-    `SELECT si.session_count, si.remaining_sessions, ` +
+    `SELECT si.session_count, si.remaining_sessions, COALESCE(si.paid_sessions, 0) AS paid_sessions, ` +
     `COALESCE(sum(svi.session_used), 0) AS total_used, ` +
     `CASE WHEN si.session_count = si.remaining_sessions + COALESCE(sum(svi.session_used), 0) ` +
+    `AND (si.session_count - si.remaining_sessions) <= COALESCE(si.paid_sessions, 0) ` +
     `THEN 'PASS' ELSE 'FAIL' END AS verdict ` +
     `FROM sale_items si LEFT JOIN service_items svi ON svi.sale_item_id = si.sale_item_id ` +
     `WHERE si.sale_item_id='${saleItemId}' ` +
-    `GROUP BY si.session_count, si.remaining_sessions`
+    `GROUP BY si.session_count, si.remaining_sessions, si.paid_sessions`
   )
   console.log(`[链路12] Step2 消耗后不变量: "${afterInvariant}"`)
 
-  const [sc2, rs2, tu2, verdict2] = afterInvariant.split('|')
+  const [sc2, rs2, ps2, tu2, verdict2] = afterInvariant.split('|')
   const afterVerdict = verdict2 || 'FAIL'
-  const afterActual = `${sc2}=${rs2}+${tu2}`
+  const afterActual = `sc=${sc2} rem=${rs2} paid=${ps2} used=${tu2}`
 
   expect(afterVerdict).toBe('PASS')
+  // ticket 2026-05-19：消耗后 paid_sessions 不变（service.complete 不动 paid_sessions）
+  expect(parseInt(ps2)).toBe(parseInt(ps))
+  // 已用次数 <= paid_sessions（D6 限额不被违反）
+  expect(parseInt(sc2) - parseInt(rs2)).toBeLessThanOrEqual(parseInt(ps2))
 
   // remaining_sessions 减少了 1
   const expectedRemainingAfter = parseInt(rs) - 1
@@ -536,6 +545,8 @@ test('链路12：服务次数对账（购买-已用=剩余）', async ({ page })
     remainingAfter: parseInt(rs2),
     totalUsedBefore: parseInt(tu),
     totalUsedAfter: parseInt(tu2),
+    paidSessionsBefore: parseInt(ps),
+    paidSessionsAfter: parseInt(ps2),
     negExhaustedVerdict,
     sessionCount: initialSessionCount,
   }
