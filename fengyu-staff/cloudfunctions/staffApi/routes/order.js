@@ -799,7 +799,10 @@ async function qrcode(ctx) {
 
   const order = orders[0]
 
-  // 仅本店员工可查看
+  // 仅本店员工可查看：先 scope 守卫拒绝跨店；店员模式额外按 effectiveStoreId 限本店
+  if (!isStoreInScope(ctx.auth, order.store_id)) {
+    throw new Error('PERMISSION_DENIED: 订单不在当前门店范围内')
+  }
   if (!ctx.auth.roles.includes('manager') && order.store_id !== ctx.auth.effectiveStoreId) {
     throw new Error('PERMISSION_DENIED: 无权查看该订单')
   }
