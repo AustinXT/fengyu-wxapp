@@ -102,7 +102,9 @@ async function buildLevelPayload(employeeId) {
  *   - 未找到 → 返回 isNewUser:true（需 bindPhone 建档或关联）
  */
 async function login(ctx) {
-  const { OPENID } = cloud.getWXContext()
+  // 用 ctx.auth.openid（中间件已合并 _testOpenid），不要直接 cloud.getWXContext()
+  // 否则测试模式 switchTestUser 切身份失效——_testOpenid 被忽略，永远返回真实员工
+  const OPENID = ctx.auth.openid
 
   const users = await pg.query(`
     SELECT
@@ -219,7 +221,15 @@ async function bindPhone(ctx) {
     [OPENID]
   )
   if (byOpenid.length > 0 && byOpenid[0].phone !== phoneNumber) {
-    throw new Error('INVALID_PARAMS: 该微信账号已绑定其他手机号，如需变更请联系管理员')
+    if (testOpenid) {
+      // 测试模式：dev openid 允许重新映射到另一员工，先把旧绑定置空
+      await pg.query(
+        'UPDATE staff_wechat_users SET openid = NULL WHERE employee_id = $1',
+        [byOpenid[0].employee_id]
+      )
+    } else {
+      throw new Error('INVALID_PARAMS: 该微信账号已绑定其他手机号，如需变更请联系管理员')
+    }
   }
   // byOpenid.length === 0 → 继续往下按 phone 查 / INSERT
   // byOpenid.length > 0 且 phone 相同 → 幂等，phone 查询会命中同一行走 UPDATE openid（no-op）
@@ -246,7 +256,10 @@ async function bindPhone(ctx) {
     const emp = empRows[0]
 
     if (emp.openid && emp.openid !== OPENID) {
-      throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
+      if (!testOpenid) {
+        throw new Error('INVALID_PARAMS: 该手机号已被其他账号绑定，请联系管理员')
+      }
+      // 测试模式：允许覆盖目标员工的旧 openid 绑定（下面的 UPDATE 会写新 OPENID）
     }
 
     await pg.query(

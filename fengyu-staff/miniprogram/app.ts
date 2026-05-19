@@ -215,12 +215,9 @@ App<IAppOption>({
     wx.clearStorageSync();
   },
 
-  async switchTestUser(openid, phone) {
-    if (openid) {
-      if (!phone) {
-        console.error('[switchTestUser] phone 必填：dev openid 需绑定到员工 phone');
-        return;
-      }
+  async switchTestUser(phone) {
+    if (phone) {
+      const openid = `dev-${phone}`;
       const res: any = await wx.cloud.callFunction({
         name: 'staffApi',
         data: {
@@ -233,9 +230,16 @@ App<IAppOption>({
         return;
       }
       console.log('[switchTestUser] bound:', res.result.data?.staffName || '(无姓名)', '<-', phone);
+      this.resetStaffInfo();
+      wx.setStorageSync('__devTestOpenid', openid);
+      // reLaunch 不会重跑 App.onLaunch，必须手动重跑 syncLoginState
+      // 让 globalData.staffWfId 在 login 页 onLoad 之前就填上 dev 身份
+      this._loginReady = this.syncLoginState();
+      await this._loginReady;
+    } else {
+      this.resetStaffInfo();
+      this._loginReady = Promise.resolve();
     }
-    this.resetStaffInfo();
-    if (openid) wx.setStorageSync('__devTestOpenid', openid);
     wx.reLaunch({ url: '/pages/login/login' });
   },
 });
