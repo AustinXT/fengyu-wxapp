@@ -26,7 +26,8 @@ import { projectSeriesLookup } from "./lookup";
  *
  * 二级行（productKind 非 NULL）：上述 capability 列 NULL，运行时按需读取父级行。
  *
- * "卡类"识别已从 isCardKind 列下沉到 SKU 级 capability（isExperience / isRechargeCard）。
+ * "体验卡"识别由 SKU 级 capability isExperience 标记；
+ * 充值卡已退出 SKU/商品域，由 sale_orders.sale_order_type='充值单' 表达（2026-05-19）。
  */
 export const productCategories = pgTable("product_categories", {
   categoryId: text("category_id").primaryKey(),
@@ -76,14 +77,6 @@ export const productSkus = pgTable(
      * 行级语义在 sale_items.is_experience 快照保留，开单时拷贝，与价格快照同模式。
      */
     isExperience: boolean("is_experience").notNull().default(false),
-    /**
-     * 是否充值卡（capability 列）。
-     * 取代 product_categories.product_kind='充值卡' 字面量判定，与 isExperience 正交且互斥。
-     * 充值卡走"单一虚拟 SKU + 金额自由输入"模式（D3=B）。
-     * payNotify 充值入账识别、staff/client 充值入口、admin 充值卡管理统一改用本列。
-     * 行级语义在 sale_items.is_recharge_card 快照保留，开单时拷贝。
-     */
-    isRechargeCard: boolean("is_recharge_card").notNull().default(false),
     /** 项目系列（lookup 表外键，NULL=未设置） */
     projectSeriesId: bigint("project_series_id", { mode: "number" }).references(
       () => projectSeriesLookup.id,
@@ -106,16 +99,12 @@ export const productSkus = pgTable(
     index("idx_product_skus_is_experience")
       .on(table.isExperience)
       .where(sql`${table.isExperience} = true`),
-    index("idx_product_skus_is_recharge_card")
-      .on(table.isRechargeCard)
-      .where(sql`${table.isRechargeCard} = true`),
     index("idx_product_skus_active")
       .on(table.skuId)
       .where(sql`deleted_at IS NULL`),
     check("chk_sku_price", sql`${table.price} >= 0`),
     check("chk_sku_service_fee", sql`${table.serviceFee} >= 0`),
     check("chk_sku_session_count", sql`${table.sessionCount} IS NULL OR ${table.sessionCount} >= 1`),
-    check("chk_sku_not_both_capabilities", sql`NOT (${table.isExperience} AND ${table.isRechargeCard})`),
   ],
 );
 

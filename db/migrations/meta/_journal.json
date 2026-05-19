@@ -302,6 +302,13 @@
       "when": 1779190584157,
       "tag": "0042_curvy_piledriver",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1779206386479,
+      "tag": "0043_pretty_shaman",
+      "breakpoints": true
     }
   ]
 }
