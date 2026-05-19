@@ -639,27 +639,37 @@ Page({
   ) {
     const path = `payment-cashier/pages/checkout/index?source=WECHATMINI&counterUrl=${encodeURIComponent(lakala.counterUrl)}`;
     this.setData({ awaitingLakalaOrderId: saleOrderId });
+
+    const tryFullscreen = () => new Promise<void>((resolve, reject) => {
+      wx.navigateToMiniProgram({
+        appId: lakala.appId,
+        path,
+        envVersion: lakala.envVersion,
+        success: () => resolve(),
+        fail: reject,
+      });
+    });
+
+    const tryEmbedded = () => new Promise<void>((resolve, reject) => {
+      (wx as any).openEmbeddedMiniProgram({
+        appId: lakala.appId,
+        path,
+        envVersion: lakala.envVersion,
+        success: () => resolve(),
+        fail: reject,
+      });
+    });
+
     try {
-      if (lakala.openMode === 'fullscreen') {
-        await new Promise<void>((resolve, reject) => {
-          wx.navigateToMiniProgram({
-            appId: lakala.appId,
-            path,
-            envVersion: lakala.envVersion,
-            success: () => resolve(),
-            fail: reject,
-          });
-        });
+      if (lakala.openMode === 'embedded') {
+        try {
+          await tryEmbedded();
+        } catch {
+          // 半屏失败兜底降级到全屏
+          await tryFullscreen();
+        }
       } else {
-        await new Promise<void>((resolve, reject) => {
-          (wx as any).openEmbeddedMiniProgram({
-            appId: lakala.appId,
-            path,
-            envVersion: lakala.envVersion,
-            success: () => resolve(),
-            fail: reject,
-          });
-        });
+        await tryFullscreen();
       }
     } catch (err: any) {
       this.setData({ awaitingLakalaOrderId: '' });
