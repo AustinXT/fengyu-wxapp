@@ -20,7 +20,7 @@ const BASE = 'http://localhost:3000'
 // DB helper（与其他 spec 一致）
 function psql(sql: string): string {
   return execSync(
-    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+    `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
     { encoding: 'utf8', timeout: 15000 },
   ).trim()
 }
@@ -672,7 +672,7 @@ test('链路9：营业额分配比例对账', async ({ page }) => {
   try {
     const sqlQuery = `WITH per_item AS (SELECT si.sale_item_id, si.sale_amount, sum(sa.allocation_ratio) FILTER (WHERE sa.is_void=false) AS ratio_sum, sum(sa.total_amount) FILTER (WHERE sa.is_void=false) AS amt_sum FROM sale_items si LEFT JOIN sale_allocations sa ON sa.sale_item_id = si.sale_item_id WHERE si.sale_order_id='${saleOrderId}' GROUP BY si.sale_item_id, si.sale_amount) SELECT sale_item_id, sale_amount, ratio_sum, amt_sum, CASE WHEN ratio_sum=1.00 AND ABS(COALESCE(amt_sum,0) - sale_amount) < 0.05 THEN 'PASS' ELSE 'FAIL' END AS verdict FROM per_item`
     const output = execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -c "${sqlQuery}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -c "${sqlQuery}"`,
       { encoding: 'utf8' }
     )
     console.log('[链路9] DB 对账结果:\n', output)

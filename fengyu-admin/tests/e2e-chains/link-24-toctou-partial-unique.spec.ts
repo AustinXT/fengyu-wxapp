@@ -23,7 +23,6 @@
  *   4) 清理测试数据
  *
  * 数据库：5434/fengyu（生产业务库；migration 0029 已 apply）
- * 不连 5433 冷备库（5433 暂无 0029）
  *
  * 跑法：
  *   bunx playwright test --config=fengyu-admin/tests/e2e-chains/playwright.manual.config.ts \

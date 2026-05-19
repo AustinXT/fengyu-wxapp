@@ -40,7 +40,7 @@ function ensureDir(dir: string) {
 function psql(sql: string): string {
   try {
     return execSync(
-      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp -t -A -c "${sql.replace(/"/g, '\\"')}"`,
+      `PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu -t -A -c "${sql.replace(/"/g, '\\"')}"`,
       { encoding: 'utf8', timeout: 15000 },
     ).trim()
   } catch (e) {
@@ -84,7 +84,7 @@ test('链路18：操作日志完整性 + 审计', async ({ page }) => {
   const oldNotes = psql(`SELECT COALESCE(notes,'') FROM client_wechat_users WHERE user_id='${FIXTURE_USER_ID}'`)
   console.log(`[链路18] fixture 顾客原 notes: "${oldNotes}"`)
 
-  // cutoff 必须用 DB 时钟（5433 上的 NOW()），避免本地时钟漂移导致 created_at > cutoff 判定失误
+  // cutoff 必须用 DB 时钟（5434 上的 NOW()），避免本地时钟漂移导致 created_at > cutoff 判定失误
   const cutoffStr = psql(`SELECT NOW()::text`)
   console.log(`[链路18] DB cutoff: ${cutoffStr}`)
 

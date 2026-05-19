@@ -16,7 +16,7 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 
 const BASE = 'http://localhost:3000'
-const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5433 -U fengyu -d fengyu_wxapp'
+const PG_CMD = 'PGPASSWORD=fengyu123 psql -h 47.113.202.7 -p 5434 -U fengyu -d fengyu'
 
 const APPT_ID = 'TEST-APT-001'
 const FIX_CLIENT_ID = 'FY-FIX-CLIENT-01'

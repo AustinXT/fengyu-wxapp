@@ -7,7 +7,7 @@
  *   3. 自动递归清理 ref_sale_order_id 指向当前单的回款/凭证单；
  *   4. 调用方只需传入 sale_order_id 与已定义的 psql 函数（执行 SQL 并返回 stdout 字符串）。
  *
- * FK 依赖图（5433 fengyu_wxapp，2026-05-17 审计）：
+ * FK 依赖图（5434 fengyu，2026-05-17 审计）：
  *   sale_orders   ← point_transactions.ref_order_id
  *                 ← card_transactions.ref_order_id          (NULL 化 ⇒ 保留流水)
  *                 ← sale_items.sale_order_id
