@@ -38,7 +38,8 @@ export function matchTier(amount: number): MatchTierResult {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
     throw new Error('INVALID_PARAMS: 充值金额格式错误');
   }
-  if (Math.round(amount * 100) !== amount * 100) {
+  // 浮点容差：39.8 * 100 在 JS 里不是精确的 3980，严格 !== 会误判
+  if (Math.abs(Math.round(amount * 100) - amount * 100) > 1e-6) {
     throw new Error('INVALID_PARAMS: 充值金额最多保留 2 位小数');
   }
   if (amount < RECHARGE_MIN_AMOUNT) {
