@@ -307,3 +307,28 @@ grep -A 30 "## 完成记录" notes/tickets/archives/2026-05-18-treatment-card-li
 grep -A 30 "## 完成记录" notes/tickets/archives/2026-05-18-workfine-legacy-orders-unaudited-flow.md
 grep -A 30 "## 完成记录" notes/tickets/archives/2026-05-18-sale-order-type-deposit-add.md
 ```
+
+---
+
+## 完成记录
+
+- 完成日期：2026-05-19
+- Wave 1 全部 5 张 ticket 已归档至 `notes/tickets/archives/`：
+
+| Ticket | 状态 | 决策应用 | 归档文件 |
+|--------|------|---------|---------|
+| B2 单次卡拆行 | ✅ | D8=B（不做历史迁移） | `archives/2026-05-18-single-session-card-quantity-not-split.md` |
+| B3 分类硬删除 | ✅ | D11=A（无引用允许硬删） | `archives/2026-05-18-product-category-disable-delete.md` |
+| B6 staff 库存管理占位 | ✅ | D12=A（manager/admin/finance 可见） | `archives/2026-05-18-staff-inventory-management-entry-placeholder.md` |
+| B9 优惠券绑定限制 | ✅ | D9=B（不限同模板领取张数） | `archives/2026-05-18-coupon-binding-restriction-not-enforced.md` |
+| B10 映射表 schema + 上传页 | ⚠️ SUPERSEDED | D13=A 实施后被 2026-05-19 决策反转推翻 | `archives/2026-05-18-product-mapping-table-intake.md` |
+
+- DoD 偏差：
+  - [⚠️] B10：PR-1 schema + PR-2 admin 上传页**已落地**，但 2026-05-19 决策反转后整体移除（migration 0041 DROP 表，admin 页/actions/菜单全部回退）。SUPERSEDED 详情见 `archives/2026-05-19-legacy-product-mapping-removal.md` + MEMORY `legacy-data-scope`。
+- 历史已归档（Wave 0 由 acba98 / d69fe77 / 3ffef69 / 7a35e83 / fae6cea 落地）：
+  - B1 卡列表 scope 普查
+  - B4 历史订单未审核工作流
+  - B5 寄存单 sale_order_type
+- 各 ticket 完整完成记录（实际落地清单 + commit + DoD 逐项）见 §H 列出的归档文件末尾"## 完成记录"小节。
+
+
