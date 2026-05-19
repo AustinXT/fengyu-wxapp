@@ -8,7 +8,7 @@
 docs/
 ├── guides/           # 使用指南
 ├── api/              # API 文档
-└── changes/          # 变更记录
+└── changes/          # 变更记录（arch / ops / fix 三类顺序编号）
 ```
 
 ## 使用建议
@@ -16,3 +16,19 @@ docs/
 - 文档使用中文，文件名使用英文
 - 随代码变更同步更新相关文档
 - 架构设计等开发者文档放在 `notes/` 下
+
+## 变更记录索引
+
+### arch — 架构决策
+
+| 编号 | 日期 | 标题 |
+|------|------|------|
+| [001](changes/arch/001_legacy-orders-manual-pull-pivot.md) | 2026-05-19 | admin /legacy-orders 改为按顾客手动拉取（弃用全量 bulk 导入） |
+
+### ops — 生产操作
+
+_暂无_
+
+### fix — 故障复盘
+
+_暂无_
